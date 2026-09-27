@@ -1,0 +1,47 @@
+# cargo-nextest configuration (copied from iemmixer @ 22372bc and adapted).
+# The mutation jobs select the `mutants` profile (NEXTEST_PROFILE=mutants);
+# the other jobs use the default profile. scripts/mutants_recheck.py tests a
+# mutant again with `mutants-recheck` when its catch was a timeout.
+
+[profile.mutants]
+# A mutant is caught at its first failing test: stop there and end the tests
+# still running, so a mutant that makes some tests hang is caught by a bounded
+# test in seconds instead of holding the run until cargo-mutants' 60 s
+# timeout (TIMEOUT).
+fail-fast = { max-fail = 1, terminate = "immediate" }
+# Every test is bounded: a test still running after 2 × 5 s is ended and
+# counts as failed (on-timeout defaults to "fail"), which with fail-fast above
+# ends the run and catches the mutant. A catch by a timeout is only
+# provisional: the post-check tests that mutant again with `mutants-recheck`
+# below. Give a slower package or test its own override here, from its
+# measured time (the mutation-warmup job prints every test's duration under
+# this profile).
+slow-timeout = { period = "5s", terminate-after = 2, grace-period = "2s" }
+
+# The dedicated bounded tests start first: a mutant that makes the hub's
+# serve loop hang or return early fails their 6 s assertion (a real FAIL)
+# before any hung test reaches its timeout. Add a new bounded test here;
+# scripts/test_mutants_recheck.py checks that every name still exists.
+[[profile.mutants.overrides]]
+filter = 'test(=serve_until_answers_then_stops_within_six_seconds)'
+priority = 100
+
+# fohmixer-hub: its graceful-stop tests start the real binary and one holds
+# the 5 s stop drain on purpose, so a single test needs more than 10 s of
+# headroom on a loaded mutation shard. 30 s stays well inside cargo-mutants'
+# 60 s timeout.
+[[profile.mutants.overrides]]
+filter = 'package(fohmixer-hub)'
+slow-timeout = { period = "10s", terminate-after = 3, grace-period = "2s" }
+
+[profile.mutants-recheck]
+# One mutant at a time (--jobs 1), every test bounded at 60 s: a test that is
+# merely slow passes; a mutant caught again by a timeout here hangs.
+# cargo-mutants' --timeout for the recheck (120 s) covers it. The `all()`
+# override is needed: an override of the inherited profile (fohmixer-hub's
+# 30 s) would win over a base value.
+inherits = "mutants"
+
+[[profile.mutants-recheck.overrides]]
+filter = 'all()'
+slow-timeout = { period = "30s", terminate-after = 2, grace-period = "2s" }

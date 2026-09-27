@@ -9,3 +9,22 @@ venv/
 
 # MCP client config (symlink with auth headers) — never commit
 .mcp.json
+
+# Rust build output and the UI bundle (Trunk writes it; CI builds it)
+target/
+crates/fohmixer-ui/dist/
+# Playwright
+e2e/node_modules/
+e2e/playwright-report/
+e2e/test-results/
+# cargo-mutants output
+mutants.out/
+mutants.out.old/
+# Harness-local Claude Code settings and in-session worker worktrees
+.claude/settings.local.json
+.claude/worktrees/
+# Secrets and keys never enter this public repo (spec §5.2)
+TARGETS.md
+credentials.json
+*.pem
+*.key
