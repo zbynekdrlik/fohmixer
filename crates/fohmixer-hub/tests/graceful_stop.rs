@@ -62,10 +62,15 @@ fn listening_port(log: &str) -> Option<u16> {
 
 /// One `GET /api/version` on its own connection; the status line.
 fn version_status(port: u16) -> Option<String> {
+    status_line(port, "/api/version")
+}
+
+/// One `GET <path>` on its own connection; the status line.
+fn status_line(port: u16, path: &str) -> Option<String> {
     let mut s = TcpStream::connect(("127.0.0.1", port)).ok()?;
     s.set_read_timeout(Some(Duration::from_secs(2))).ok()?;
-    s.write_all(b"GET /api/version HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
-        .ok()?;
+    let request = format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
+    s.write_all(request.as_bytes()).ok()?;
     let mut text = String::new();
     s.read_to_string(&mut text).ok()?;
     text.lines().next().map(str::to_string)
@@ -75,22 +80,12 @@ fn version_status(port: u16) -> Option<String> {
 /// hub logs it), once it answers `/api/version`. No probe-then-release port:
 /// parallel tests would be handed the same just-freed port.
 fn start() -> Server {
-    let dir = tempfile::tempdir().unwrap();
-    let log = std::fs::File::create(dir.path().join("hub.log")).unwrap();
-    let child = Command::new(env!("CARGO_BIN_EXE_fohmixer-hub"))
-        .env("PORT", "0")
-        .env("NO_COLOR", "1")
-        .env_remove("RUST_LOG")
-        .stdin(Stdio::null())
-        .stdout(Stdio::from(log.try_clone().unwrap()))
-        .stderr(Stdio::from(log))
-        .spawn()
-        .expect("spawn fohmixer-hub");
-    let mut server = Server {
-        child,
-        port: 0,
-        dir,
-    };
+    start_with(&[])
+}
+
+/// [`start`] with the environment `envs` on top.
+fn start_with(envs: &[(&str, &str)]) -> Server {
+    let mut server = spawn_hub(envs);
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         if server.port == 0
@@ -110,6 +105,32 @@ fn start() -> Server {
             server.log()
         );
         std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// The hub binary with `PORT=0`, no inherited `RUST_LOG` and the environment
+/// `envs` on top, its output in the server's log; not waited for.
+fn spawn_hub(envs: &[(&str, &str)]) -> Server {
+    let dir = tempfile::tempdir().unwrap();
+    let log = std::fs::File::create(dir.path().join("hub.log")).unwrap();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_fohmixer-hub"));
+    command
+        .env("PORT", "0")
+        .env("NO_COLOR", "1")
+        .env_remove("RUST_LOG");
+    for (name, value) in envs {
+        command.env(name, value);
+    }
+    let child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(log.try_clone().unwrap()))
+        .stderr(Stdio::from(log))
+        .spawn()
+        .expect("spawn fohmixer-hub");
+    Server {
+        child,
+        port: 0,
+        dir,
     }
 }
 
@@ -221,6 +242,7 @@ fn a_bad_port_exits_1_naming_it() {
     let output = Command::new(env!("CARGO_BIN_EXE_fohmixer-hub"))
         .env("PORT", "not-a-port")
         .env("NO_COLOR", "1")
+        .env_remove("RUST_LOG")
         .stdin(Stdio::null())
         .output()
         .expect("run fohmixer-hub");
@@ -229,5 +251,43 @@ fn a_bad_port_exits_1_naming_it() {
     assert!(
         stderr.contains("fohmixer-hub: PORT=not-a-port is not a port number"),
         "{stderr}"
+    );
+}
+
+#[test]
+fn rust_log_raises_the_hub_s_own_level() {
+    let _serial = serial();
+    let mut server = start_with(&[("RUST_LOG", "fohmixer_hub=debug")]);
+    // A missing file is logged at debug level only.
+    assert_eq!(
+        status_line(server.port, "/missing.js").as_deref(),
+        Some("HTTP/1.1 404 Not Found")
+    );
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !server.log().contains("static file not found") {
+        assert!(
+            Instant::now() < deadline,
+            "RUST_LOG=fohmixer_hub=debug did not enable the hub's debug lines: {}",
+            server.log()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let sent = request_stop(&server, "TERM");
+    let status = exit_within(&mut server, sent, Duration::from_secs(6));
+    assert_eq!(status.code(), Some(0), "{}", server.log());
+}
+
+#[test]
+fn a_bad_rust_log_exits_1_naming_it() {
+    let _serial = serial();
+    let mut server = spawn_hub(&[("RUST_LOG", "fohmixer_hub=loud")]);
+    // It must end by itself; a hub still serving after 10 s fails the test
+    // (and is asked to stop by Server's drop).
+    let status = exit_within(&mut server, Instant::now(), Duration::from_secs(10));
+    let log = server.log();
+    assert_eq!(status.code(), Some(1), "{log}");
+    assert!(
+        log.contains("fohmixer-hub: RUST_LOG=fohmixer_hub=loud is not a valid log filter"),
+        "{log}"
     );
 }
