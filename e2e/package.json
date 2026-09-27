@@ -1,0 +1,12 @@
+{
+  "name": "fohmixer-e2e",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Playwright E2E tests for fohmixer (Chromium and WebKit/iPad)",
+  "scripts": {
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.58.2"
+  }
+}
