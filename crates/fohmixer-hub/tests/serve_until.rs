@@ -84,9 +84,7 @@ async fn answers_then_stops() {
         .expect("the serve task did not panic");
     result.expect("serve_until returns Ok");
     assert!(stopped.elapsed() < Duration::from_secs(6));
-    // The listener is closed: a new connection is refused. (Not a re-bind:
-    // the server's side of the connection just closed may still hold the
-    // port in FIN_WAIT/TIME_WAIT.)
+    // The listener is closed: a new connection is refused.
     assert!(
         std::net::TcpStream::connect(addr).is_err(),
         "the listener still accepts after serve_until returned"

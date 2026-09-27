@@ -272,6 +272,7 @@ mod tests {
             let csp = header_of(&response, "content-security-policy");
             assert!(csp.starts_with("default-src 'self';"), "{path}: {csp}");
             assert!(csp.contains("'wasm-unsafe-eval'"), "{path}: {csp}");
+            assert!(csp.contains("connect-src 'self';"), "{path}: {csp}");
         }
     }
 

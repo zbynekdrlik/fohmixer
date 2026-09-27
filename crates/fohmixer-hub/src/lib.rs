@@ -49,12 +49,13 @@ pub fn app_router() -> Router {
         HeaderName::from_static("referrer-policy"),
         HeaderValue::from_static("strict-origin-when-cross-origin"),
     );
-    // CSP allows WASM + inline scripts (Trunk's loader), inline styles
-    // (Leptos) and WebSocket connections (S3).
+    // CSP allows WASM + inline scripts (Trunk's loader) and inline styles
+    // (Leptos); connections go to this server only (S3's WebSocket is
+    // same-origin, which 'self' covers).
     let csp = SetResponseHeaderLayer::overriding(
         HeaderName::from_static("content-security-policy"),
         HeaderValue::from_static(
-            "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:; img-src 'self' data:; font-src 'self'",
+            "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; font-src 'self'",
         ),
     );
 
@@ -129,7 +130,10 @@ where
     let serve = axum::serve(listener, app_router().into_make_service()).with_graceful_shutdown(
         async move {
             stop.await;
-            tracing::info!("stop requested: the listener closes, open requests get up to 5 s");
+            tracing::info!(
+                drain_s = STOP_DRAIN.as_secs(),
+                "stop requested: the listener closes, open requests get the drain"
+            );
             stop_seen.notify_one();
         },
     );
@@ -138,7 +142,10 @@ where
         () = async {
             stopping.notified().await;
             tokio::time::sleep(STOP_DRAIN).await;
-        } => tracing::warn!("HTTP requests still open 5 s after the stop: stopping without them"),
+        } => tracing::warn!(
+            drain_s = STOP_DRAIN.as_secs(),
+            "HTTP requests still open after the drain: stopping without them"
+        ),
     }
     tracing::info!("HTTP server stopped");
     Ok(())

@@ -53,7 +53,11 @@ impl Drop for Server {
 /// The port the hub reports in its "HTTP server listening" line
 /// (`addr=0.0.0.0:<port>`), once it has logged it.
 fn listening_port(log: &str) -> Option<u16> {
-    let line = log.lines().find(|l| l.contains("HTTP server listening"))?;
+    // Whole lines only: the hub may be half-way through writing the last one.
+    let line = log
+        .split_inclusive('\n')
+        .filter(|l| l.ends_with('\n'))
+        .find(|l| l.contains("HTTP server listening"))?;
     let addr = line
         .split_whitespace()
         .find_map(|w| w.strip_prefix("addr="))?;
@@ -231,7 +235,14 @@ fn an_unfinished_request_holds_the_stop_at_most_five_seconds() {
     );
     // Up to 5 s for the open request, then the process ends on its own.
     let status = exit_within(&mut server, sent, Duration::from_secs(8));
+    let took = sent.elapsed();
     assert_eq!(status.code(), Some(0), "{}", server.log());
+    // The open request got its drain: the stop did not cut it at once.
+    assert!(
+        took >= Duration::from_secs(4),
+        "stopped after {took:?}: the open request got no drain: {}",
+        server.log()
+    );
     assert!(port_is_free(server.port));
     drop(stuck);
 }

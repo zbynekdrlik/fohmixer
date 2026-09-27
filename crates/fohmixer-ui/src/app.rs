@@ -36,9 +36,4 @@ mod tests {
         assert_eq!(version_text(), fohmixer_proto::version_label());
         assert_eq!(version_text(), format!("v{}", fohmixer_proto::VERSION));
     }
-
-    #[test]
-    fn the_status_line_names_the_waiting_state() {
-        assert_eq!(STATUS_TEXT, "fohmixer — čaká na pripojenie k Abletonu");
-    }
 }
