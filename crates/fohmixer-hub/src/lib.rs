@@ -136,7 +136,6 @@ mod tests {
     #[test]
     fn the_port_defaults_to_8480() {
         assert_eq!(port_from(None).unwrap(), 8480);
-        assert_eq!(DEFAULT_PORT, 8480);
     }
 
     #[test]

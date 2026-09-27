@@ -1,0 +1,425 @@
+name: CI
+
+# The iemmixer CI baseline (copied from iemmixer @ 22372bc and adapted, spec
+# §5.4): integrity, the Python job for the Live script on SimLive, fmt and
+# clippy (native and wasm32), tests with a coverage floor, the Trunk build,
+# Playwright E2E in Chromium and WebKit (iPad) with the console guard,
+# cargo-deny, gitleaks, the version check and diff-scoped mutation testing.
+
+on:
+  push:
+    branches: [master, dev]
+  pull_request:
+    branches: [master, dev]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'push' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  integrity:
+    name: integrity
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Integrity scan (skips, pins, workflow constructs, force-kill)
+        run: python3 scripts/check_integrity.py
+      - name: Script self-tests
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s scripts -p 'test_*.py' -v
+          python3 scripts/test_check_disposal_safety.py
+      - name: Leptos disposal safety
+        run: python3 scripts/check_disposal_safety.py
+      - name: Version consistency
+        run: python3 scripts/check_version.py
+
+  python:
+    name: python
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Python 3.11 (the Python Live 12 embeds)
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+      - name: ruff (pinned)
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet ruff==0.16.2
+          ruff --version
+          ruff check .
+      - name: FohMixer script tests on SimLive
+        run: python -m unittest discover -s live-script/tests -v
+
+  lint:
+    name: lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Rust toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Placeholder UI dist (rust-embed needs the folder)
+        run: mkdir -p crates/fohmixer-ui/dist && echo placeholder > crates/fohmixer-ui/dist/index.html
+      - name: rustfmt
+        run: cargo fmt --all -- --check
+      - name: Clippy (native, all targets and features)
+        run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+      - name: Clippy (UI and protocol for wasm32)
+        run: cargo clippy --locked -p fohmixer-ui -p fohmixer-proto --target wasm32-unknown-unknown -- -D warnings
+
+  test:
+    name: test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Rust toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Placeholder UI dist (rust-embed needs the folder)
+        run: mkdir -p crates/fohmixer-ui/dist && echo placeholder > crates/fohmixer-ui/dist/index.html
+      - uses: taiki-e/install-action@7623a79cdfecb99d681017af368ca353d9f49bb5 # v2.87.19
+        with:
+          tool: cargo-llvm-cov@0.9.1
+      - name: UI unit tests (native)
+        run: cargo test --locked -p fohmixer-ui --lib
+      - name: Tests with line coverage (fohmixer-proto, fohmixer-hub) against the floor
+        # Runs after a failed UI test step too (the job still fails): one CI
+        # cycle reports every failing test.
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          cargo llvm-cov --locked --no-fail-fast --package fohmixer-proto --package fohmixer-hub --all-features \
+            --json --summary-only --output-path "$RUNNER_TEMP/coverage.json"
+          pct="$(jq '.data[0].totals.lines.percent' "$RUNNER_TEMP/coverage.json")"
+          floor="$(tr -d '[:space:]' < .github/coverage-floor)"
+          echo "line coverage: ${pct}% (floor ${floor}%)"
+          awk -v p="$pct" -v f="$floor" 'BEGIN { exit !(p >= f) }' \
+            || { echo "::error::line coverage ${pct}% is below the floor ${floor}%"; exit 1; }
+
+  wasm:
+    name: wasm
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Rust toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: taiki-e/install-action@7623a79cdfecb99d681017af368ca353d9f49bb5 # v2.87.19
+        with:
+          tool: trunk@0.21.14
+      - name: Build the UI (release)
+        working-directory: crates/fohmixer-ui
+        run: trunk build --release --locked
+      - name: Verify the bundle
+        run: |
+          set -euo pipefail
+          test -f crates/fohmixer-ui/dist/index.html
+          ls crates/fohmixer-ui/dist/*.wasm
+          test -f crates/fohmixer-ui/dist/manifest.json
+          test -f crates/fohmixer-ui/dist/icons/icon-192.png
+          test -f crates/fohmixer-ui/dist/icons/icon-512.png
+          # The app loader is ours (Trunk.toml pattern_script): every
+          # placeholder filled in, and not Trunk's default top-level init.
+          grep -q 'WebAssembly.compileStreaming' crates/fohmixer-ui/dist/index.html
+          if grep -qE '\{(base|js|wasm)\}' crates/fohmixer-ui/dist/index.html; then
+            echo "::error::dist/index.html has an unfilled loader placeholder"
+            exit 1
+          fi
+          if grep -q 'const wasm = await init(' crates/fohmixer-ui/dist/index.html; then
+            echo "::error::dist/index.html has Trunk's default loader"
+            exit 1
+          fi
+          # Spec R5: v1 has no service worker.
+          if grep -q 'serviceWorker' crates/fohmixer-ui/dist/index.html; then
+            echo "::error::dist/index.html registers a service worker (spec R5: none in v1)"
+            exit 1
+          fi
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: wasm-dist
+          path: crates/fohmixer-ui/dist/
+          retention-days: 1
+          if-no-files-found: error
+
+  e2e:
+    name: e2e
+    needs: [wasm]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Rust toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: wasm-dist
+          path: crates/fohmixer-ui/dist
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Build the hub (release, the real UI embedded)
+        run: cargo build --locked --release -p fohmixer-hub
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: e2e/package-lock.json
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ hashFiles('e2e/package-lock.json') }}
+      - name: Install Playwright (Chromium and WebKit)
+        working-directory: e2e
+        run: |
+          set -euo pipefail
+          npm ci
+          npx playwright install --with-deps chromium webkit
+      - name: Start the hub
+        env:
+          RUST_LOG: info
+          PORT: "8480"
+        run: |
+          set -euo pipefail
+          nohup ./target/release/fohmixer-hub > "$RUNNER_TEMP/hub.log" 2>&1 &
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:8480/api/version > /dev/null; then echo "hub ready after ${i}s"; exit 0; fi
+            sleep 1
+          done
+          cat "$RUNNER_TEMP/hub.log"
+          exit 1
+      - name: Playwright (Chromium and WebKit iPad, clean console)
+        working-directory: e2e
+        env:
+          CI: "true"
+          E2E_BASE_URL: http://127.0.0.1:8480
+        run: npx playwright test --reporter=list,html
+      - name: Upload failure evidence
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: e2e-failure
+          path: |
+            e2e/test-results/
+            e2e/playwright-report/
+            ${{ runner.temp }}/hub.log
+          retention-days: 7
+
+  supply-chain:
+    name: supply-chain
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Rust toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: taiki-e/install-action@7623a79cdfecb99d681017af368ca353d9f49bb5 # v2.87.19
+        with:
+          tool: cargo-deny@0.20.2
+      - name: cargo-deny (advisories, bans, licences, sources)
+        run: cargo deny --locked check advisories bans licenses sources
+
+  secrets:
+    name: secrets
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install gitleaks 8.30.1 (checksum-verified)
+        run: |
+          set -euo pipefail
+          curl -fsSL -o "$RUNNER_TEMP/gitleaks.tar.gz" https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  $RUNNER_TEMP/gitleaks.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/gitleaks.tar.gz" -C "$RUNNER_TEMP" gitleaks
+      - name: gitleaks (full history)
+        run: '"$RUNNER_TEMP/gitleaks" git --no-banner --redact --exit-code 1 .'
+
+  version:
+    name: version
+    if: github.event_name == 'pull_request' && github.base_ref == 'master'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Head version greater than master
+        run: python3 scripts/check_version.py --base-ref origin/master
+
+  mutants-list:
+    name: mutants-list
+    # The PR's diff-scoped mutants, and the shard count they need: one shard
+    # per MUTANTS_PER_SHARD mutants, so every shard fits its 20-minute budget.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      shards: ${{ steps.count.outputs.shards }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Rust toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+      - uses: taiki-e/install-action@7623a79cdfecb99d681017af368ca353d9f49bb5 # v2.87.19
+        with:
+          tool: cargo-mutants@27.1.0
+      - name: Count the diff-scoped mutants (parsed, not compiled)
+        id: count
+        env:
+          # Mutants one shard tests within its 20-minute budget, setup included.
+          MUTANTS_PER_SHARD: "12"
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          git diff "origin/${BASE_REF}...HEAD" -- '*.rs' > "$RUNNER_TEMP/pr.diff"
+          count=0
+          if [ -s "$RUNNER_TEMP/pr.diff" ]; then
+            cargo mutants --list --in-diff "$RUNNER_TEMP/pr.diff" \
+              --package fohmixer-proto --package fohmixer-hub --package fohmixer-ui > "$RUNNER_TEMP/mutants.txt"
+            count="$(wc -l < "$RUNNER_TEMP/mutants.txt")"
+            cat "$RUNNER_TEMP/mutants.txt"
+          fi
+          shards=$(( (count + MUTANTS_PER_SHARD - 1) / MUTANTS_PER_SHARD ))
+          if [ "$shards" -lt 1 ]; then shards=1; fi
+          matrix="$(python3 -c 'import json, sys; print(json.dumps(list(range(int(sys.argv[1])))))' "$shards")"
+          echo "mutants in the diff against ${BASE_REF}: $count; shards at <= $MUTANTS_PER_SHARD per shard: $shards"
+          echo "shards=$matrix" >> "$GITHUB_OUTPUT"
+
+  mutation-warmup:
+    name: mutation-warmup
+    if: github.event_name == 'pull_request'
+    needs: [test]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Rust toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: mutation
+      - name: Placeholder UI dist (rust-embed needs the folder)
+        run: mkdir -p crates/fohmixer-ui/dist && echo placeholder > crates/fohmixer-ui/dist/index.html
+      - uses: taiki-e/install-action@7623a79cdfecb99d681017af368ca353d9f49bb5 # v2.87.19
+        with:
+          tool: cargo-nextest@0.9.146
+      - name: Build the mutants profile once (the shards restore this cache)
+        run: cargo nextest run --locked --cargo-profile mutants --no-run -p fohmixer-proto -p fohmixer-hub -p fohmixer-ui --all-features --all-targets
+      - name: Unmutated tests under the mutants profile (every test's duration; the shards skip the baseline)
+        env:
+          # A test that fails or times out here unmutated would make every
+          # mutant of its package look caught; the durations set the
+          # per-package bounds in .config/nextest.toml. One package per run,
+          # as cargo-mutants tests a mutant.
+          NEXTEST_PROFILE: mutants
+        run: |
+          set -euo pipefail
+          failed=()
+          for p in fohmixer-proto fohmixer-hub fohmixer-ui; do
+            echo "::group::$p"
+            cargo nextest run --locked --cargo-profile mutants --no-fail-fast -p "$p" --all-features --all-targets || failed+=("$p")
+            echo "::endgroup::"
+          done
+          if [ "${#failed[@]}" -ne 0 ]; then
+            echo "::error::unmutated tests fail under the mutants profile in: ${failed[*]}"
+            exit 1
+          fi
+
+  mutation:
+    name: mutation shard ${{ matrix.shard }}
+    if: github.event_name == 'pull_request'
+    needs: [mutants-list, mutation-warmup]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        # 0-based (cargo-mutants --shard k/n); computed by mutants-list
+        shard: ${{ fromJSON(needs.mutants-list.outputs.shards) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Rust toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: mutation
+          save-if: false
+      - name: Placeholder UI dist (rust-embed needs the folder)
+        run: mkdir -p crates/fohmixer-ui/dist && echo placeholder > crates/fohmixer-ui/dist/index.html
+      - uses: taiki-e/install-action@7623a79cdfecb99d681017af368ca353d9f49bb5 # v2.87.19
+        with:
+          tool: cargo-mutants@27.1.0,cargo-nextest@0.9.146
+      - name: Warm target (dependencies restored; workspace crates build once, then are copied per job)
+        run: cargo nextest run --locked --cargo-profile mutants --no-run -p fohmixer-proto -p fohmixer-hub -p fohmixer-ui --all-features --all-targets
+      - name: Diff-scoped mutants
+        env:
+          # .config/nextest.toml: stop at the first failing test (fail fast on hangs).
+          NEXTEST_PROFILE: mutants
+          BASE_REF: ${{ github.base_ref }}
+          SHARD: ${{ matrix.shard }}
+          SHARDS: ${{ strategy.job-total }}
+        run: |
+          set -euo pipefail
+          git diff "origin/${BASE_REF}...HEAD" -- '*.rs' > "$RUNNER_TEMP/pr.diff"
+          if [ ! -s "$RUNNER_TEMP/pr.diff" ]; then
+            echo "No Rust changes against ${BASE_REF}: no mutants to test."
+            exit 0
+          fi
+          packages=(--package fohmixer-proto --package fohmixer-hub --package fohmixer-ui)
+          # --timeout: with --baseline=skip cargo-mutants has no measured test
+          # time and would allow 300 s per mutant.
+          status=0
+          cargo mutants --in-diff "$RUNNER_TEMP/pr.diff" --baseline=skip --timeout 60 --jobs 2 --copy-target=true \
+            --shard "${SHARD}/${SHARDS}" "${packages[@]}" --all-features -- --all-targets || status=$?
+          case "$status" in
+            0|2|3) ;;
+            *) echo "::error::cargo-mutants failed to run (exit $status)"; exit "$status" ;;
+          esac
+          if [ -f mutants.out/missed.txt ] && [ -s mutants.out/missed.txt ]; then
+            echo "--- missed mutants ---"
+            cat mutants.out/missed.txt
+          fi
+          # A mutant caught only by a timeout (not a failing test) is tested
+          # again, one at a time, with the mutants-recheck profile (60 s per
+          # test); a survivor fails the gate (exit 2).
+          recheck=0
+          python3 scripts/mutants_recheck.py --out mutants.out -- \
+            --baseline=skip --timeout 120 --jobs 1 --copy-target=true "${packages[@]}" --all-features -- --all-targets || recheck=$?
+          if [ "$status" -ne 0 ]; then exit "$status"; fi
+          exit "$recheck"

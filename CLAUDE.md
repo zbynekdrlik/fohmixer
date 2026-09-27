@@ -13,6 +13,7 @@ Two branches: `master` (production) and `dev`. Work on `dev`; open a PR `dev` �
 - Playwright E2E (console guard, Chromium + WebKit iPad projects, base URL) → `.claude/rules/e2e.md` (auto-loads on `e2e/**`)
 - Leptos `view!` gotchas and disposal safety → `.claude/rules/leptos-view-macro.md` (auto-loads on `crates/fohmixer-ui/**`)
 - Public-repo hygiene (what never enters this repo) → `.claude/rules/public-repo-hygiene.md` (auto-loads everywhere)
+- CI, toolchain, placeholder dist, coverage floor, mutation gate → `.claude/rules/ci.md` (auto-loads on workflows, `.cargo/mutants.toml`, `.config/nextest.toml`, crates)
 
 ## Always-apply rules
 

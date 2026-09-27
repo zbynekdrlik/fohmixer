@@ -1,7 +1,8 @@
 # cargo-mutants (copied from iemmixer @ 22372bc; iemmixer-only excludes
-# dropped): PR gate in .github/workflows/ci.yml (diff-scoped; the shard count
-# is computed by the `mutants-list` job from the diff's mutant count). The
-# shards pass --copy-target=true after a warm-up build and --timeout 60 (with
+# dropped): the PR gate in .github/workflows/ci.yml is diff-scoped, its shard
+# count computed by the `mutants-list` job from the diff's mutant count; the
+# full sweep is .github/workflows/mutation-full.yml (on demand). Both pass
+# --copy-target=true after a warm-up build and --timeout 60 (with
 # --baseline=skip there is no measured test time, so a hung mutant would
 # otherwise hold its job for 300 s). Tests run per package only. A mutant
 # caught only by a timeout is tested again by scripts/mutants_recheck.py.
@@ -9,4 +10,20 @@ profile = "mutants"
 test_tool = "nextest"
 
 exclude_re = [
+  # The WASM entry point mounts the app into the browser DOM (web_sys): a
+  # native test cannot run it. e2e/tests/app-load.spec.ts drives it (the app
+  # mounts and the loading shell goes).
+  "fohmixer-ui/src/lib\\.rs.*replace main with \\(\\)",
+  # Leptos component bodies: a PascalCase function is a component, and native
+  # tests cannot mount one (web_sys panics off wasm). Their pure logic lives
+  # in tested helpers (version_text); the E2E suite drives the components.
+  "fohmixer-ui/src/.* in [A-Z][A-Za-z]*$",
+  # The panic hook's browser-only wrappers: installing the hook, rendering the
+  # overlay into document.body and the fire-and-forget fetch need a browser.
+  # Their logic is the tested build_overlay_html, format_panic_payload,
+  # truncate_for_display and html_escape.
+  "fohmixer-ui/src/lifecycle\\.rs.*replace (install_panic_hook|render_panic_overlay|post_panic_report) with \\(\\)",
+  # Takes a PanicHookInfo, which only a real panic hook receives; its body is
+  # the tested format_panic_payload.
+  "fohmixer-ui/src/lifecycle\\.rs.*replace format_panic_message -> String with ",
 ]
