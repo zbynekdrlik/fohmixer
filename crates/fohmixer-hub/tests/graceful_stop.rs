@@ -49,6 +49,7 @@ async fn serve_until_answers_then_stops_within_six_seconds() {
         text.contains(&format!("\"version\":\"{}\"", fohmixer_proto::VERSION)),
         "{text}"
     );
+    drop(stream);
 
     let stopped = Instant::now();
     stop_tx.send(()).unwrap();
@@ -58,8 +59,14 @@ async fn serve_until_answers_then_stops_within_six_seconds() {
         .expect("the serve task did not panic");
     result.expect("serve_until returns Ok");
     assert!(stopped.elapsed() < Duration::from_secs(6));
-    // The listener is closed: the port is free again.
-    assert!(TcpListener::bind(addr).is_ok());
+    // The listener is closed: a new connection is refused. (Not a re-bind
+    // check: the server's side of the connection just closed can still hold
+    // the port for a while, in FIN_WAIT or TIME_WAIT, after the listener is
+    // gone; the process tests below check the port with the process ended.)
+    assert!(
+        TcpStream::connect(addr).is_err(),
+        "the listener still accepts after serve_until returned"
+    );
 }
 
 /// A bind failure is an error naming the address, not a hang.
