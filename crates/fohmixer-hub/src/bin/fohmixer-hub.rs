@@ -2,7 +2,8 @@
 //!
 //!   fohmixer-hub      serve the UI and the API on 0.0.0.0:$PORT (default 8480)
 //!
-//! Logging: `RUST_LOG` on top of `fohmixer_hub=info`. SIGTERM or SIGINT
+//! Logging: `RUST_LOG` when set (e.g. `fohmixer_hub=debug`), else
+//! `fohmixer_hub=info`; an invalid `RUST_LOG` stops the start. SIGTERM or SIGINT
 //! (Windows: Ctrl-Break or Ctrl-C) stop it gracefully: open requests get up
 //! to 5 s, then it exits 0. Nothing is force-killed (spec I7).
 
@@ -17,8 +18,7 @@ fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            tracing::error!(error = %format!("{e:#}"), "fohmixer-hub failed");
-            // The logger may not be up yet (a bad RUST_LOG): stderr always.
+            // stderr, not the logger: it may not be up yet (a bad RUST_LOG).
             eprintln!("fohmixer-hub: {e:#}");
             ExitCode::FAILURE
         }
@@ -26,11 +26,9 @@ fn main() -> ExitCode {
 }
 
 fn run() -> anyhow::Result<()> {
+    let rust_log = std::env::var("RUST_LOG").ok();
     tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("fohmixer_hub=info".parse()?),
-        )
+        .with_env_filter(fohmixer_hub::log_filter(rust_log.as_deref())?)
         .init();
     tracing::info!("Starting fohmixer-hub v{}", fohmixer_proto::full_version());
     let port_env = std::env::var("PORT").ok();

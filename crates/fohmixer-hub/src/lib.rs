@@ -67,6 +67,21 @@ pub fn app_router() -> Router {
         .layer(csp)
 }
 
+/// The log filter when `RUST_LOG` is not set (or empty).
+pub const DEFAULT_LOG_FILTER: &str = "fohmixer_hub=info";
+
+/// The log filter from the `RUST_LOG` environment value: exactly what it
+/// says when set (so `fohmixer_hub=debug` raises the hub's own level),
+/// [`DEFAULT_LOG_FILTER`] when it is not set or empty, and an error naming it
+/// when it does not parse (never silently ignored).
+pub fn log_filter(rust_log: Option<&str>) -> anyhow::Result<tracing_subscriber::EnvFilter> {
+    match rust_log.map(str::trim).filter(|spec| !spec.is_empty()) {
+        None => Ok(tracing_subscriber::EnvFilter::new(DEFAULT_LOG_FILTER)),
+        Some(spec) => tracing_subscriber::EnvFilter::try_new(spec)
+            .with_context(|| format!("RUST_LOG={spec} is not a valid log filter")),
+    }
+}
+
 /// The HTTP port from the `PORT` environment value: [`DEFAULT_PORT`] when it
 /// is not set, an error when it is not a port number.
 pub fn port_from(value: Option<&str>) -> anyhow::Result<u16> {
@@ -142,6 +157,37 @@ mod tests {
     fn the_port_comes_from_the_environment_value() {
         assert_eq!(port_from(Some("9000")).unwrap(), 9000);
         assert_eq!(port_from(Some("0")).unwrap(), 0);
+    }
+
+    #[test]
+    fn the_log_filter_defaults_to_the_hub_at_info() {
+        assert_eq!(log_filter(None).unwrap().to_string(), "fohmixer_hub=info");
+        assert_eq!(
+            log_filter(Some("")).unwrap().to_string(),
+            "fohmixer_hub=info"
+        );
+        assert_eq!(
+            log_filter(Some("  ")).unwrap().to_string(),
+            "fohmixer_hub=info"
+        );
+    }
+
+    #[test]
+    fn rust_log_is_the_whole_filter() {
+        assert_eq!(
+            log_filter(Some("fohmixer_hub=debug")).unwrap().to_string(),
+            "fohmixer_hub=debug"
+        );
+        assert_eq!(log_filter(Some("warn")).unwrap().to_string(), "warn");
+    }
+
+    #[test]
+    fn a_bad_rust_log_is_an_error_naming_it() {
+        let error = log_filter(Some("fohmixer_hub=loud")).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "RUST_LOG=fohmixer_hub=loud is not a valid log filter"
+        );
     }
 
     #[test]
