@@ -6,3 +6,6 @@ venv/
 .env
 *.env.local
 .DS_Store
+
+# MCP client config (symlink with auth headers) — never commit
+.mcp.json
