@@ -1,14 +1,14 @@
-"""SimLive's `_Framework.ControlSurface`: the base class a remote script
-subclasses. S0 needs only construction and `disconnect()`; S2 adds what the
-FohMixer script uses (`schedule_message`, `song()`, ...)."""
+"""SimLive's fake of `_Framework.ControlSurface`: the base class of a remote
+script. S0 needs construction and `disconnect()`; S2 adds what the FohMixer
+script uses (`song()`, `schedule_message`, ...)."""
 
 
 class ControlSurface:
-    """The fake of `_Framework.ControlSurface.ControlSurface`."""
+    def __init__(self, c_instance, *args, **kwargs):
+        self._c_instance = c_instance
 
-    def __init__(self, c_instance):
-        self.c_instance = c_instance
-        self.disconnected = False
+    def log_message(self, *message):
+        pass
 
     def disconnect(self):
-        self.disconnected = True
+        pass

@@ -1,1 +1,1 @@
-"""SimLive's `_Framework`: Live's legacy control-surface framework (fake)."""
+"""SimLive's fake of Live's legacy `_Framework` control-surface package."""
