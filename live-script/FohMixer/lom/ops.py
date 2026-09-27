@@ -123,7 +123,7 @@ def _add_listener(obj, where, args, ctx):
 def _remove_listener(obj, where, args, ctx):
     _check_keys(args, "remove_listener", ("prop",))
     prop = prop_name(args)
-    ctx.subscriptions.remove(ctx.registry.put(obj, where), prop, ctx.connection)
+    ctx.subscriptions.remove(ctx.subscriptions.key_for(obj, prop, where), ctx.connection)
 
 
 def _describe(obj, where, args, ctx):
