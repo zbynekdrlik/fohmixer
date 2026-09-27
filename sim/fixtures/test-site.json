@@ -1,0 +1,74 @@
+{
+  "name": "Test Site",
+  "live_version": [12, 2, 5],
+  "tracks": [
+    {"name": "Hand1 #", "color": 16725558, "volume": 0.85},
+    {"name": "Hand2 #", "color": 16725558, "volume": 0.8},
+    {"name": "Hand3 #", "color": 16725558, "volume": 0.75},
+    {"name": "Hand4 #", "color": 16725558, "volume": 0.7, "mute": true},
+    {
+      "name": "Vocals Repro grp#",
+      "color": 10927616,
+      "children": [
+        {
+          "name": "Vocal 1 repro#",
+          "devices": [{"template": "eq8", "name": "EQ Eight"}]
+        },
+        {"name": "Vocal 2 repro#", "panning": -0.25},
+        {"name": "Vocal 3 repro#", "panning": 0.25},
+        {"name": "Keys 1"}
+      ]
+    },
+    {
+      "name": "Stems grp#",
+      "color": 3947580,
+      "fold_state": 1,
+      "children": [
+        {"name": "Drums #"},
+        {"name": "Bass #"},
+        {"name": "Keys 1", "volume": 0.6}
+      ]
+    },
+    {
+      "name": "Mics Stage #",
+      "devices": [
+        {
+          "template": "rack",
+          "name": "Stage Rack",
+          "chains": [
+            {"name": "Dry"},
+            {
+              "name": "Wet",
+              "devices": [
+                {
+                  "template": "plain",
+                  "name": "Reverb",
+                  "parameters": [
+                    {"name": "Dry/Wet", "value": 30.0, "min": 0.0, "max": 100.0, "display": "percent"}
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {"name": "TechAlert #", "mute": true}
+  ],
+  "returns": [
+    {
+      "name": "A-Reverb #",
+      "devices": [
+        {
+          "template": "plain",
+          "name": "Reverb",
+          "parameters": [
+            {"name": "Decay Time", "value": 2500.0, "min": 200.0, "max": 60000.0}
+          ]
+        }
+      ]
+    },
+    {"name": "B-Main repro #"}
+  ],
+  "master": {"name": "Main"}
+}
