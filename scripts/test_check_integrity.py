@@ -44,7 +44,7 @@ class IntegrityTests(unittest.TestCase):
 
     def test_ignored_rust_test(self) -> None:
         self.put("crates/a/src/lib.rs", "#[test]\n" + IGNORE + "\nfn skipped() {}\n")
-        self.assertEqual(ci.violations(self.root), ["crates/a/src/lib.rs:2: #[ignore] test"])
+        self.assertEqual(ci.violations(self.root), [f"crates/a/src/lib.rs:2: {IGNORE} test"])
 
     def test_skipped_or_focused_e2e(self) -> None:
         for body in (f'test{SKIP}("x", async () => {{}});', f'test{ONLY}("x", async () => {{}});',
@@ -141,7 +141,7 @@ class IntegrityTests(unittest.TestCase):
         self.put("crates/b/src/lib.rs", "#[test]\n" + IGNORE + "\nfn skipped() {}\n")
         self.put("scripts/stop.cmd", "taskkill /im fohmixer-hub.exe\n")
         self.assertEqual(ci.violations(self.root), [
-            "crates/b/src/lib.rs:2: #[ignore] test",
+            f"crates/b/src/lib.rs:2: {IGNORE} test",
             f"scripts/stop.cmd:1: force-kill command (spec {KILL})",
         ])
 
