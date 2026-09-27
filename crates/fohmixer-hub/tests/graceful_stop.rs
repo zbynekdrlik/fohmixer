@@ -1,95 +1,31 @@
-//! The hub stops gracefully (copied from iemmixer's
-//! `iem-server/tests/graceful_stop.rs` @ 22372bc and adapted): the stop
-//! closes the listener at once, open requests get up to 5 s, the process
-//! exits 0 and the port is free.
+//! The hub binary stops gracefully (copied from iemmixer's
+//! `iem-server/tests/graceful_stop.rs` @ 22372bc and adapted): SIGTERM or
+//! SIGINT closes the listener at once, open requests get up to 5 s, the
+//! process exits 0 and the port is free. The in-process `serve_until` tests
+//! are in `tests/serve_until.rs`.
 //!
-//! Unix only: the process tests send SIGTERM/SIGINT. The Windows stop
-//! (Ctrl-Break to the hub's console) is exercised on the PC from S3 on.
+//! Unix only: the tests send SIGTERM/SIGINT. The Windows stop (Ctrl-Break to
+//! the hub's console) is exercised on the PC from S3 on.
+//!
+//! One test at a time (`SERIAL` here, the `hub-ports` test group under
+//! nextest): the tests check that a stopped hub's port is refused and free,
+//! and the kernel readily hands a just-freed port to the next bind to port
+//! 0, so a hub another test starts at that moment could take it.
 #![cfg(unix)]
 
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::oneshot;
+static SERIAL: Mutex<()> = Mutex::new(());
 
-/// In-process: `serve_until` binds, reports the address, answers
-/// `/api/version`, and returns `Ok` within 6 s of the stop.
-#[tokio::test]
-async fn serve_until_answers_then_stops_within_six_seconds() {
-    let (ready_tx, ready_rx) = oneshot::channel();
-    let (stop_tx, stop_rx) = oneshot::channel::<()>();
-    let task = tokio::spawn(fohmixer_hub::serve_until(
-        SocketAddr::from(([127, 0, 0, 1], 0)),
-        ready_tx,
-        async move {
-            let _ = stop_rx.await;
-        },
-    ));
-    let addr = tokio::time::timeout(Duration::from_secs(5), ready_rx)
-        .await
-        .expect("ready within 5 s")
-        .expect("serve_until reports its address");
-    assert_ne!(addr.port(), 0, "the bound port, not the requested 0");
-
-    let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
-    stream
-        .write_all(b"GET /api/version HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
-        .await
-        .unwrap();
-    let mut text = String::new();
-    tokio::time::timeout(Duration::from_secs(5), stream.read_to_string(&mut text))
-        .await
-        .expect("an answer within 5 s")
-        .unwrap();
-    assert!(text.starts_with("HTTP/1.1 200 OK"), "{text}");
-    assert!(
-        text.contains(&format!("\"version\":\"{}\"", fohmixer_proto::VERSION)),
-        "{text}"
-    );
-    drop(stream);
-
-    let stopped = Instant::now();
-    stop_tx.send(()).unwrap();
-    let result = tokio::time::timeout(Duration::from_secs(6), task)
-        .await
-        .expect("serve_until returns within 6 s of the stop")
-        .expect("the serve task did not panic");
-    result.expect("serve_until returns Ok");
-    assert!(stopped.elapsed() < Duration::from_secs(6));
-    // The listener is closed: a new connection is refused. (Not a re-bind
-    // check: the server's side of the connection just closed can still hold
-    // the port for a while, in FIN_WAIT or TIME_WAIT, after the listener is
-    // gone; the process tests below check the port with the process ended.)
-    assert!(
-        TcpStream::connect(addr).is_err(),
-        "the listener still accepts after serve_until returned"
-    );
-}
-
-/// A bind failure is an error naming the address, not a hang.
-#[tokio::test]
-async fn serve_until_reports_a_taken_port() {
-    let taken = TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = taken.local_addr().unwrap();
-    let (ready_tx, ready_rx) = oneshot::channel();
-    let result = tokio::time::timeout(
-        Duration::from_secs(5),
-        fohmixer_hub::serve_until(addr, ready_tx, std::future::pending()),
-    )
-    .await
-    .expect("a bind failure returns at once");
-    let error = result.expect_err("the port is taken");
-    assert!(
-        format!("{error:#}").starts_with(&format!("binding {addr}")),
-        "{error:#}"
-    );
-    assert!(
-        ready_rx.await.is_err(),
-        "no ready signal without a listener"
-    );
+/// This test's turn; a panicked earlier test does not block the rest.
+fn serial() -> MutexGuard<'static, ()> {
+    SERIAL
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 struct Server {
@@ -114,13 +50,14 @@ impl Drop for Server {
     }
 }
 
-/// A local port nobody listens on (the probe listener is closed again).
-fn free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
+/// The port the hub reports in its "HTTP server listening" line
+/// (`addr=0.0.0.0:<port>`), once it has logged it.
+fn listening_port(log: &str) -> Option<u16> {
+    let line = log.lines().find(|l| l.contains("HTTP server listening"))?;
+    let addr = line
+        .split_whitespace()
+        .find_map(|w| w.strip_prefix("addr="))?;
+    addr.parse::<SocketAddr>().ok().map(|a| a.port())
 }
 
 /// One `GET /api/version` on its own connection; the status line.
@@ -134,13 +71,14 @@ fn version_status(port: u16) -> Option<String> {
     text.lines().next().map(str::to_string)
 }
 
-/// The hub binary on a free port, once it answers `/api/version`.
+/// The hub binary on a port of its own (`PORT=0`: the kernel picks one, the
+/// hub logs it), once it answers `/api/version`. No probe-then-release port:
+/// parallel tests would be handed the same just-freed port.
 fn start() -> Server {
     let dir = tempfile::tempdir().unwrap();
     let log = std::fs::File::create(dir.path().join("hub.log")).unwrap();
-    let port = free_port();
     let child = Command::new(env!("CARGO_BIN_EXE_fohmixer-hub"))
-        .env("PORT", port.to_string())
+        .env("PORT", "0")
         .env("NO_COLOR", "1")
         .env_remove("RUST_LOG")
         .stdin(Stdio::null())
@@ -148,10 +86,19 @@ fn start() -> Server {
         .stderr(Stdio::from(log))
         .spawn()
         .expect("spawn fohmixer-hub");
-    let mut server = Server { child, port, dir };
+    let mut server = Server {
+        child,
+        port: 0,
+        dir,
+    };
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
-        if version_status(port).as_deref() == Some("HTTP/1.1 200 OK") {
+        if server.port == 0
+            && let Some(port) = listening_port(&server.log())
+        {
+            server.port = port;
+        }
+        if server.port != 0 && version_status(server.port).as_deref() == Some("HTTP/1.1 200 OK") {
             return server;
         }
         if let Some(status) = server.child.try_wait().unwrap() {
@@ -225,6 +172,7 @@ fn refused_within_2s(port: u16, since: Instant) -> bool {
 
 #[test]
 fn sigterm_stops_the_hub_with_exit_0_and_frees_the_port() {
+    let _serial = serial();
     let mut server = start();
     let sent = request_stop(&server, "TERM");
     let status = exit_within(&mut server, sent, Duration::from_secs(6));
@@ -239,6 +187,7 @@ fn sigterm_stops_the_hub_with_exit_0_and_frees_the_port() {
 
 #[test]
 fn sigint_stops_it_too() {
+    let _serial = serial();
     let mut server = start();
     let sent = request_stop(&server, "INT");
     let status = exit_within(&mut server, sent, Duration::from_secs(6));
@@ -249,6 +198,7 @@ fn sigint_stops_it_too() {
 
 #[test]
 fn an_unfinished_request_holds_the_stop_at_most_five_seconds() {
+    let _serial = serial();
     let mut server = start();
     let stuck = unfinished_request(server.port);
     let sent = request_stop(&server, "TERM");
@@ -267,6 +217,7 @@ fn an_unfinished_request_holds_the_stop_at_most_five_seconds() {
 
 #[test]
 fn a_bad_port_exits_1_naming_it() {
+    let _serial = serial();
     let output = Command::new(env!("CARGO_BIN_EXE_fohmixer-hub"))
         .env("PORT", "not-a-port")
         .env("NO_COLOR", "1")

@@ -3,6 +3,19 @@
 # the other jobs use the default profile. scripts/mutants_recheck.py tests a
 # mutant again with `mutants-recheck` when its catch was a timeout.
 
+# The hub's port tests run one at a time (in every profile: the default
+# profile's overrides apply to all profiles). A child process spawned while a
+# test's listener is open holds a copy of that socket until its exec, and the
+# kernel readily hands a just-freed port to the next bind to port 0; either
+# way a parallel hub test could answer another test's "the port is refused /
+# free" check.
+[test-groups]
+hub-ports = { max-threads = 1 }
+
+[[profile.default.overrides]]
+filter = 'binary_id(fohmixer-hub::graceful_stop) | binary_id(fohmixer-hub::serve_until)'
+test-group = 'hub-ports'
+
 [profile.mutants]
 # A mutant is caught at its first failing test: stop there and end the tests
 # still running, so a mutant that makes some tests hang is caught by a bounded
