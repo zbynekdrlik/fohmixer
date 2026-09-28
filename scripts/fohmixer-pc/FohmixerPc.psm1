@@ -475,18 +475,24 @@ function Test-FohHubToml {
     # config check`, config.rs, the one set of rules), before the install
     # stops the running hub: a config the new hub would refuse never reaches
     # the data folder (the hub would not start, the emergency path included).
-    # Throws with the hub's reason.
+    # The text goes to a file of its own in $Dir (never inside the bundle's
+    # tree, which becomes app\<version>). Returns the hub's answer; throws
+    # with its reason.
     param([Parameter(Mandatory)][string]$Exe, [Parameter(Mandatory)][string]$Text, [Parameter(Mandatory)][string]$Dir)
-    $file = Join-Path $Dir 'fohmixer-hub.toml.check'
+    $file = Join-Path $Dir ('.check-' + [guid]::NewGuid().ToString('N') + '.toml')
     [IO.File]::WriteAllText($file, $Text, $script:Utf8NoBom)
     try {
-        $ErrorActionPreference = 'Continue'
-        $said = (& $Exe config check $file 2>&1 | ForEach-Object { "$_" }) -join ' '
+        # Continue only around the native call: its stderr is its answer.
+        $said = & {
+            $ErrorActionPreference = 'Continue'
+            (& $Exe config check $file 2>&1 | ForEach-Object { "$_" }) -join ' '
+        }
         $code = $LASTEXITCODE
     } finally {
-        if (Test-Path -LiteralPath $file) { Remove-Item -LiteralPath $file }
+        Remove-Item -LiteralPath $file
     }
     if ($code -ne 0) { throw "the new config is refused by the hub (exit $code): $said" }
+    return $said
 }
 
 function Set-FohConfigText {
@@ -1037,7 +1043,8 @@ function Invoke-FohInstall {
     try {
         # The new config, checked by the new hub before anything else changes.
         $tomlText = New-FohHubToml -HttpPort $HttpPort -BandPort $BandPort -MasterPort $MasterPort -Remote $remoteToml
-        Test-FohHubToml -Exe (Join-Path $unpacked.dir $script:HubExe) -Text $tomlText -Dir $unpacked.dir
+        $accepted = Test-FohHubToml -Exe (Join-Path $unpacked.dir $script:HubExe) -Text $tomlText -Dir (Split-Path -Parent $unpacked.dir)
+        Write-Host "fohmixer install: the new hub accepts the config ($accepted)"
         if (-not $NoTask) {
             Set-FohDataDirAcl -Path $DataDir -User $BandUser
             # 1. the running hub

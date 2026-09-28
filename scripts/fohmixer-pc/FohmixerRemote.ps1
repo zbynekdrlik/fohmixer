@@ -62,6 +62,13 @@ function Get-FohPublicUrl {
     return "https://${Name}:$HttpsPort/"
 }
 
+function ConvertTo-FohTomlString {
+    # $Value as a TOML basic string: backslash and quote escaped, so the hub
+    # reads (and checks) exactly the value given.
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Value)
+    return ('"' + $Value.Replace('\', '\\').Replace('"', '\"') + '"')
+}
+
 function Get-FohRemoteToml {
     # The remote-access tables of fohmixer-hub.toml (CRLF lines, '' without a
     # public name). [acme] always goes with [tls]; [access] with a team;
@@ -71,11 +78,11 @@ function Get-FohRemoteToml {
           [string[]]$AccessAud = @(), [switch]$Tunnel, [int]$TunnelMetricsPort = 20241)
     if (-not $Name) { return '' }
     $lines = @('', '[tls]', ('name = "{0}"' -f $Name), ('port = {0}' -f $HttpsPort), '', '[acme]')
-    if ($AcmeEmail) { $lines += ('email = "{0}"' -f $AcmeEmail) }
-    if ($AcmeDirectory) { $lines += ('directory = "{0}"' -f $AcmeDirectory) }
+    if ($AcmeEmail) { $lines += ('email = ' + (ConvertTo-FohTomlString $AcmeEmail)) }
+    if ($AcmeDirectory) { $lines += ('directory = ' + (ConvertTo-FohTomlString $AcmeDirectory)) }
     if ($AccessTeam) {
-        $auds = ($AccessAud | ForEach-Object { '"' + $_ + '"' }) -join ', '
-        $lines += @('', '[access]', ('team_domain = "{0}"' -f $AccessTeam), ('aud = [{0}]' -f $auds))
+        $auds = ($AccessAud | ForEach-Object { ConvertTo-FohTomlString $_ }) -join ', '
+        $lines += @('', '[access]', ('team_domain = ' + (ConvertTo-FohTomlString $AccessTeam)), ('aud = [{0}]' -f $auds))
     }
     if ($Tunnel) {
         $lines += @('', '[tunnel]', ('ready_url = "http://127.0.0.1:{0}/ready"' -f $TunnelMetricsPort))

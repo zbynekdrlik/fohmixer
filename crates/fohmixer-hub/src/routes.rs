@@ -683,6 +683,15 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(tunnel.status(), StatusCode::FORBIDDEN);
+        let body = tunnel.into_body().collect().await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(
+            body["message"]
+                .as_str()
+                .unwrap()
+                .starts_with("Refused (no_access)"),
+            "{body}"
+        );
         hub.stop();
     }
 

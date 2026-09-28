@@ -322,6 +322,7 @@ try {
         -AccessTeam 'team.cloudflareaccess.com' -AccessAud @('aud-1', 'aud-2') -Tunnel -TunnelMetricsPort 20241
     Assert ($gotRemote -ceq $wantRemote) 'remote-toml-has-tls-acme-access-and-tunnel'
     Assert ((Get-FohRemoteToml -Name '') -ceq '') 'remote-toml-empty-without-a-name'
+    Assert ((Get-FohRemoteToml -Name 'foh.example.org' -AcmeEmail 'a\b"c@example.org') -like '*email = "a\\b\"c@example.org"*') 'remote-toml-escapes-backslash-and-quote'
     $staging = 'https://acme-staging-v02.api.letsencrypt.org/directory'
     Assert ((Get-FohRemoteToml -Name 'foh.example.org' -HttpsPort 8443 -AcmeDirectory $staging) -ceq
         ("`r`n[tls]`r`nname = `"foh.example.org`"`r`nport = 8443`r`n`r`n[acme]`r`ndirectory = `"$staging`"`r`n")) 'remote-toml-without-access-or-tunnel'
@@ -360,7 +361,7 @@ try {
     $checkDir = Join-Path $base 'toml-check'
     New-Item -ItemType Directory -Force -Path $checkDir | Out-Null
     $goodToml = New-FohHubToml -HttpPort 18481 -BandPort 39181 -MasterPort 39182 -Remote $gotRemote
-    Assert ((ErrorOf { Test-FohHubToml -Exe $HubExe -Text $goodToml -Dir $checkDir }) -ceq '') 'hub-toml-check-accepts-the-install-toml'
+    Assert ((Test-FohHubToml -Exe $HubExe -Text $goodToml -Dir $checkDir) -like '*: OK*') 'hub-toml-check-accepts-the-install-toml'
     $badToml = New-FohHubToml -HttpPort 18481 -BandPort 39181 -MasterPort 39182 -Remote (Get-FohRemoteToml -Name 'foh.example.org' -AcmeDirectory 'http://acme.example.org/directory')
     Assert ((ErrorOf { Test-FohHubToml -Exe $HubExe -Text $badToml -Dir $checkDir }) -like '*refused by the hub (exit 2)*an https URL*') 'hub-toml-check-refuses-with-the-hubs-reason'
     Assert (@(Get-ChildItem -LiteralPath $checkDir -Force).Count -eq 0) 'hub-toml-check-leaves-no-file'
@@ -653,7 +654,9 @@ try {
             @{ remote = $true; over = @{ AcmeDirectory = 'http://acme.example.org/directory' }; says = '*an https URL*'; what = 'a-plain-http-acme-directory' },
             # No quote here: Windows PowerShell 5.1 passes one to powershell.exe unescaped (it is lost).
             @{ remote = $true; over = @{ AcmeEmail = 'owner example.org' }; says = '*an address like owner@example.org*'; what = 'an-acme-email-with-a-space' },
-            @{ remote = $true; over = @{ AcmeEmail = 'owner\x@example.org' }; says = '*refused by the hub*'; what = 'a-toml-breaking-acme-email' })) {
+            # A backslash reaches the hub as given (escaped in the toml), and the hub refuses it.
+            @{ remote = $true; over = @{ AcmeEmail = 'owner\x@example.org' }; says = '*an address like owner@example.org*'; what = 'an-acme-email-with-a-backslash' },
+            @{ remote = $true; over = @{ AccessAud = 'aud-1, aud.2' }; says = '*AUD tag*'; what = 'a-dot-in-an-aud' })) {
         $o = @{}
         if ($r.remote) { $o = $remoteOver.Clone() }
         foreach ($k in @($r.over.Keys)) { $o[$k] = $r.over[$k] }
@@ -662,6 +665,8 @@ try {
         Assert ($res.code -ne 0 -and $res.out -like $r.says) "install-refuses-$($r.what)"
         $newer = @(Get-ChangedFiles $watchR)
         Assert ($newer.Count -eq 0) "install-refused-$($r.what)-before-any-change ($($newer -join ', '))"
+        $left = @(Get-ChildItem -LiteralPath (Join-Path $dataR 'app') -Force | Where-Object { $_.Name.StartsWith('.') })
+        Assert ($left.Count -eq 0) "install-refused-$($r.what)-leaves-no-unpacked-bundle-or-check-file ($($left.Name -join ', '))"
     }
 
     # ---- the tasks, registered for this user in a test folder (never started) ----

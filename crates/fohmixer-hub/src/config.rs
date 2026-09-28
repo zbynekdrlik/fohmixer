@@ -212,6 +212,15 @@ pub fn is_email(value: &str) -> bool {
     })
 }
 
+/// Whether `value` is an Access application's AUD tag: letters, digits, `-`
+/// and `_` (Cloudflare's are 64 hex digits), never empty.
+pub fn is_aud(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
 /// Whether a URL may be fetched by the hub: `https://…`, or `http://` to a
 /// loopback address (test doubles, cloudflared's readiness), never plain
 /// http across a network.
@@ -295,7 +304,6 @@ impl Config {
         }
     }
 
-    /// Parses and validates a config text for `data_dir`.
     /// `fohmixer-hub config check <file>` (the installer runs it before it
     /// stops the running hub): `file` read and validated as the config, its
     /// folder as the data folder. The error names the file and the problem.
@@ -307,6 +315,7 @@ impl Config {
         Ok(())
     }
 
+    /// Parses and validates a config text for `data_dir`.
     pub fn parse(text: &str, data_dir: &Path) -> anyhow::Result<Self> {
         let mut config: Self = toml::from_str(text)?;
         config.data_dir = data_dir.to_path_buf();
@@ -385,8 +394,11 @@ impl Config {
                     access.team_domain
                 );
             }
-            if access.aud.is_empty() || access.aud.iter().any(|a| a.trim().is_empty()) {
-                bail!("[access] aud: the Access application's AUD tag(s), none empty");
+            if access.aud.is_empty() || access.aud.iter().any(|a| !is_aud(a)) {
+                bail!(
+                    "[access] aud {:?}: the Access application's AUD tag(s), letters, digits, - and _",
+                    access.aud
+                );
             }
             if !url_allowed(&access.jwks()) {
                 bail!("[access] jwks_url {:?}: an https URL", access.jwks());
@@ -614,6 +626,10 @@ mod tests {
                 "AUD tag",
             ),
             (
+                "[access]\nteam_domain = \"t.example.com\"\naud = [\"a\", \"b.c\"]\n",
+                "AUD tag",
+            ),
+            (
                 "[access]\nteam_domain = \"t.example.com\"\naud = [\"a\"]\njwks_url = \"http://keys.example.com/\"\n",
                 "jwks_url",
             ),
@@ -742,6 +758,25 @@ mod tests {
             "a\\b@example.org",
         ] {
             assert!(!is_email(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn an_aud_tag_is_letters_digits_hyphens_and_underscores() {
+        for good in ["a", "aud-1", "A_b-9", &"f".repeat(64)] {
+            assert!(is_aud(good), "{good}");
+        }
+        for bad in [
+            "",
+            " ",
+            "aud 1",
+            "aud.1",
+            "aud\"1",
+            "aud\n",
+            "aud/1",
+            "aud\u{e9}",
+        ] {
+            assert!(!is_aud(bad), "{bad:?}");
         }
     }
 

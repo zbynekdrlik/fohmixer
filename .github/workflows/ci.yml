@@ -174,8 +174,8 @@ jobs:
         run: cargo clippy --locked -p fohmixer-hub --all-targets -- -D warnings
       - name: Sealed-secret tests (DPAPI; the PIN pepper, the Cloudflare token)
         run: cargo test --locked -p fohmixer-hub --lib -- "pepper::" "sealed::" "cf_token::"
-      - name: Hub API tests on Windows (the layout, auth; no Live host needed)
-        run: cargo test --locked -p fohmixer-hub --test layout --test auth
+      - name: Hub API tests on Windows (the layout, auth, the installer's config check; no Live host needed)
+        run: cargo test --locked -p fohmixer-hub --test layout --test auth --test config_cli
       - name: PC install self-test (Windows PowerShell 5.1 as on the PC; the debug hub started and stopped by Ctrl-Break)
         run: |
           cargo build --locked -p fohmixer-hub

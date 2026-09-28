@@ -22,7 +22,9 @@
 //! 2. **LAN is never authenticated, and the `Local` branch does no network
 //!    I/O at all**: with the internet, Cloudflare or the tunnel down, the
 //!    mixer still opens on the LAN (and on the emergency plain-http path).
-//! 3. **Internet** needs a valid Access JWT (`Cf-Access-Jwt-Assertion`, or
+//! 3. **No peer address** (a listener without `ConnectInfo`): refused
+//!    (`no_peer_address`), a valid token or not — fail closed.
+//! 4. **Internet** needs a valid Access JWT (`Cf-Access-Jwt-Assertion`, or
 //!    the `CF_Authorization` cookie a browser and its WebSocket upgrade
 //!    carry), RS256 against the team's key set, with `exp`, `aud` and `iss`
 //!    required. Without `[access]` in the config every internet request is
