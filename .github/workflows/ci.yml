@@ -67,20 +67,31 @@ jobs:
         run: ruff format --check live-script sim tools e2e/harness
       - name: Test dependencies (websockets test client only; the script itself is stdlib-only)
         run: python -m pip install --quiet -r requirements-dev.txt
-      - name: SimLive and FohMixer script tests (unit + socket-level against sim/host.py)
+      # Each test step runs after a failed one too (the job still fails): one
+      # CI cycle reports every failing suite, so a red SimLive test does not
+      # hide a red script or importer test.
+      - name: SimLive tests
+        if: ${{ !cancelled() }}
         run: |
           set -euo pipefail
           python -m unittest discover -s sim/tests -v 2>&1 | tee "$RUNNER_TEMP/sim-tests.log"
+      - name: FohMixer script tests (unit + socket-level against sim/host.py)
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
           python -m unittest discover -s live-script/tests -v 2>&1 | tee "$RUNNER_TEMP/script-tests.log"
       - name: TouchOSC import tool tests (synthetic .tosc + .als fixtures)
+        if: ${{ !cancelled() }}
         run: |
           set -euo pipefail
           python -m unittest discover -s tools/import-tosc -p 'test_*.py' -v 2>&1 | tee "$RUNNER_TEMP/import-tests.log"
       - name: E2E harness tests (against real sim/host.py processes)
+        if: ${{ !cancelled() }}
         run: |
           set -euo pipefail
           python -m unittest discover -s e2e/harness -p 'test_*.py' -v 2>&1 | tee "$RUNNER_TEMP/harness-tests.log"
       - name: No skipped or expected-failure tests
+        if: ${{ !cancelled() }}
         run: |
           set -euo pipefail
           # unittest marks a skip as "... skipped 'reason'" and counts it as "(skipped=N)";
