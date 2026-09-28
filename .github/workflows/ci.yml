@@ -63,8 +63,8 @@ jobs:
           python -m pip install --quiet ruff==0.16.2
           ruff --version
           ruff check .
-      - name: ruff format (script, SimLive, import tool)
-        run: ruff format --check live-script sim tools
+      - name: ruff format (script, SimLive, import tool, E2E harness)
+        run: ruff format --check live-script sim tools e2e/harness
       - name: Test dependencies (websockets test client only; the script itself is stdlib-only)
         run: python -m pip install --quiet -r requirements-dev.txt
       - name: SimLive and FohMixer script tests (unit + socket-level against sim/host.py)
@@ -76,12 +76,16 @@ jobs:
         run: |
           set -euo pipefail
           python -m unittest discover -s tools/import-tosc -p 'test_*.py' -v 2>&1 | tee "$RUNNER_TEMP/import-tests.log"
+      - name: E2E harness tests (against real sim/host.py processes)
+        run: |
+          set -euo pipefail
+          python -m unittest discover -s e2e/harness -p 'test_*.py' -v 2>&1 | tee "$RUNNER_TEMP/harness-tests.log"
       - name: No skipped or expected-failure tests
         run: |
           set -euo pipefail
           # unittest marks a skip as "... skipped 'reason'" and counts it as "(skipped=N)";
           # a test NAME may contain the word, so match the markers only.
-          if grep -E "\.\.\. (skipped|expected failure|unexpected success)|skipped=|expected failures=" "$RUNNER_TEMP/sim-tests.log" "$RUNNER_TEMP/script-tests.log" "$RUNNER_TEMP/import-tests.log"; then
+          if grep -E "\.\.\. (skipped|expected failure|unexpected success)|skipped=|expected failures=" "$RUNNER_TEMP/sim-tests.log" "$RUNNER_TEMP/script-tests.log" "$RUNNER_TEMP/import-tests.log" "$RUNNER_TEMP/harness-tests.log"; then
             echo "::error::a Python test was skipped"; exit 1
           fi
 
@@ -243,27 +247,46 @@ jobs:
           set -euo pipefail
           npm ci
           npx playwright install --with-deps chromium webkit
-      - name: Start the hub
-        env:
-          RUST_LOG: info
-          PORT: "8480"
+      - name: Engineer PIN (random per run, masked)
         run: |
           set -euo pipefail
-          # Its data folder (secrets, pepper): a fresh one, outside the tree.
+          # The hub's data folder (secrets, pepper, PIN, layout): a fresh
+          # one, outside the tree.
           export FOHMIXER_DATA="$RUNNER_TEMP/hub-data"
           mkdir -p "$FOHMIXER_DATA"
-          nohup ./target/release/fohmixer-hub > "$RUNNER_TEMP/hub.log" 2>&1 &
-          for i in $(seq 1 30); do
-            if curl -sf http://127.0.0.1:8480/api/version > /dev/null; then echo "hub ready after ${i}s"; exit 0; fi
+          pin="$(python3 -c 'import secrets; print(f"{secrets.randbelow(10000):04d}")')"
+          echo "::add-mask::$pin"
+          printf '%s\n' "$pin" | ./target/release/fohmixer-hub pin set-engineer
+          echo "E2E_PIN=$pin" >> "$GITHUB_ENV"
+      - name: Start the hub with two SimLive hosts (e2e/harness/harness.py)
+        env:
+          RUST_LOG: info
+        run: |
+          set -euo pipefail
+          # band and master (the real FohMixer script on SimLive, meters at
+          # 30 Hz), the hub on the import tool's synthetic layout, and the
+          # harness's control API for the tests (127.0.0.1:39190).
+          mkdir -p "$RUNNER_TEMP/e2e-logs"
+          nohup python3 e2e/harness/harness.py --hub ./target/release/fohmixer-hub \
+            --data "$RUNNER_TEMP/hub-data" \
+            --layout tools/import-tosc/fixtures/expected-layout.json \
+            --log-dir "$RUNNER_TEMP/e2e-logs" > "$RUNNER_TEMP/e2e-logs/harness.log" 2>&1 &
+          for i in $(seq 1 60); do
+            if curl -sf http://127.0.0.1:39190/health > /dev/null \
+              && curl -sf http://127.0.0.1:8480/api/version > /dev/null; then
+              echo "harness ready after ${i}s"
+              exit 0
+            fi
             sleep 1
           done
-          cat "$RUNNER_TEMP/hub.log"
+          cat "$RUNNER_TEMP/e2e-logs/harness.log"
           exit 1
       - name: Playwright (Chromium and WebKit iPad, clean console)
         working-directory: e2e
         env:
           CI: "true"
           E2E_BASE_URL: http://127.0.0.1:8480
+          E2E_HARNESS_URL: http://127.0.0.1:39190
         run: npx playwright test --reporter=list,html
       - name: Upload failure evidence
         if: failure()
@@ -273,7 +296,7 @@ jobs:
           path: |
             e2e/test-results/
             e2e/playwright-report/
-            ${{ runner.temp }}/hub.log
+            ${{ runner.temp }}/e2e-logs/
           retention-days: 7
 
   supply-chain:

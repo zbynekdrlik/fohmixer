@@ -33,4 +33,31 @@ exclude_re = [
   # Takes a PanicHookInfo, which only a real panic hook receives; its body is
   # the tested format_panic_payload.
   "fohmixer-ui/src/lifecycle\\.rs.*replace format_panic_message -> String with ",
+  # S4 (#8): the UI's browser glue. web-sys calls panic off wasm, so a native
+  # test cannot run these; each decides nothing itself - the decisions are
+  # the tested pure modules (behave/*, binding, stage, net, raf's Registry,
+  # the store's Slot, Wanted, Badge, slot_failure and range_from) - and the
+  # E2E suite drives every one of them in Chromium and WebKit.
+  # dom.rs: the clock, style/attribute writes, the console, local storage.
+  "fohmixer-ui/src/dom\\.rs.*(replace|in) (now|log|error|set_style|set_attr|viewport|current_element|child|storage|storage_get|storage_set|storage_remove)( |$)",
+  # net.rs: the fetch wrapper and the handshake reload (location.reload).
+  "fohmixer-ui/src/net\\.rs.*(replace|in) (fetch_text|last_reload|reload)( |$)",
+  # raf.rs: requestAnimationFrame scheduling around the tested Registry.
+  "fohmixer-ui/src/raf\\.rs.*(replace|in) (register|unregister|schedule|tick)( |$)",
+  # store.rs: the WebSocket, timers and signals of LiveStore, its Socket and
+  # its Inner state (the pure Slot/Wanted/Badge/slot_failure/range_from stay).
+  "fohmixer-ui/src/store\\.rs.*(replace|in) (LiveStore|Socket|Inner)::",
+  # auth.rs: local storage and the login request (login_outcome, login_body
+  # and LoginError::message are the tested decisions).
+  "fohmixer-ui/src/auth\\.rs.*(replace|in) (stored_token|login)( |$)",
+  # app.rs: the address bar (history.replaceState); page_path is tested.
+  "fohmixer-ui/src/app\\.rs.*(replace|in) show_path( |$)",
+  # components: the failure flash (a timer), a flag write through the store,
+  # the frame-loop registration of a mounted element.
+  "fohmixer-ui/src/components/mod\\.rs.*(replace|in) fail_flash( |$)",
+  "fohmixer-ui/src/components/buttons\\.rs.*(replace|in) toggle_flag( |$)",
+  "fohmixer-ui/src/components/meter\\.rs.*(replace|in) animate( |$)",
+  # pages/surface.rs: a tab press (store, local storage) and the remembered
+  # pages' read; choose and selected_path are the tested decisions.
+  "fohmixer-ui/src/pages/surface\\.rs.*(replace|in) (Nav::select|remembered_pages)( |$)",
 ]
