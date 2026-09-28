@@ -211,7 +211,7 @@ pub(crate) mod double {
         })
     }
 
-    async fn zones(
+    async fn zones_route(
         State(api): State<Shared>,
         headers: HeaderMap,
         Query(q): Query<BTreeMap<String, String>>,
@@ -308,7 +308,7 @@ pub(crate) mod double {
             next_id: 0,
         }));
         let app = Router::new()
-            .route("/client/v4/zones", get(zones))
+            .route("/client/v4/zones", get(zones_route))
             .route(
                 "/client/v4/zones/{zone}/dns_records",
                 get(list_or_add).post(list_or_add),

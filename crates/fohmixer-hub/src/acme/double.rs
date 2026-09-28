@@ -164,7 +164,8 @@ fn check_jws(ca: &mut Ca, url: &str, body: &[u8]) -> Result<Checked, String> {
         let mut key = vec![4u8];
         key.extend(b64(x)?);
         key.extend(b64(y)?);
-        let url = format!("{}/acct/{}", ca.base, ca.id());
+        let n = ca.id();
+        let url = format!("{}/acct/{n}", ca.base);
         (url, key.clone(), Some((key, thumbprint(x, y))))
     };
     let signed = format!("{protected64}.{payload64}");

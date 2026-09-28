@@ -2,3 +2,11 @@
 # test fixture and why it is not a secret; a real secret is never allowlisted.
 [extend]
 useDefault = true
+
+# E2E fixture (#17, e2e/tests/remote.spec.ts and the e2e job in ci.yml): the
+# Cloudflare Access application AUD tag the test hub is configured with. An
+# AUD tag is a public ID even in production (it is in every Access JWT), and
+# this one is invented for the test run: not a secret.
+[[allowlists]]
+description = "the E2E test run's invented Access AUD tag"
+regexes = ['''^fohmixer-e2e-aud$''']

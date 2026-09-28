@@ -221,7 +221,8 @@ fn a_key_set_yields_its_usable_rsa_keys() {
     assert_eq!(keys.keys().collect::<Vec<_>>(), vec!["kid-1"]);
     assert!(
         parse_jwks(b"{\"keys\": 1}")
-            .unwrap_err()
+            .err()
+            .unwrap()
             .contains("does not parse")
     );
     assert!(parse_jwks(b"{}").is_err());

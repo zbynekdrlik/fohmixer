@@ -417,7 +417,8 @@ jobs:
           E2E_HTTPS_URL: https://foh.e2e.test:8443
           E2E_ACCESS_TEAM: fohmixer-e2e.cloudflareaccess.com
           E2E_ACCESS_AUD: fohmixer-e2e-aud
-        run: E2E_ACCESS_KEY="$E2E_REMOTE_DIR/access.pem" npx playwright test --reporter=list,html
+        # NODE_EXTRA_CA_CERTS: the tests' own requests (Node) trust the test CA too.
+        run: E2E_ACCESS_KEY="$E2E_REMOTE_DIR/access.pem" NODE_EXTRA_CA_CERTS="$E2E_REMOTE_DIR/ca.pem" npx playwright test --reporter=list,html
       - name: Upload failure evidence
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

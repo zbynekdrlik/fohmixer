@@ -363,13 +363,13 @@ impl Config {
                 bail!("[access] jwks_url {:?}: an https URL", access.jwks());
             }
         }
-        if let Some(tunnel) = &self.tunnel {
-            if !url_allowed(&tunnel.ready_url) {
-                bail!(
-                    "[tunnel] ready_url {:?}: cloudflared's local readiness URL",
-                    tunnel.ready_url
-                );
-            }
+        if let Some(tunnel) = &self.tunnel
+            && !url_allowed(&tunnel.ready_url)
+        {
+            bail!(
+                "[tunnel] ready_url {:?}: cloudflared's local readiness URL",
+                tunnel.ready_url
+            );
         }
         Ok(())
     }
@@ -510,7 +510,7 @@ mod tests {
             "https://team.cloudflareaccess.com/cdn-cgi/access/certs"
         );
         assert_eq!(
-            config.tunnel.unwrap().ready_url,
+            config.tunnel.as_ref().unwrap().ready_url,
             "http://127.0.0.1:20241/ready"
         );
         assert_eq!(
@@ -529,8 +529,11 @@ mod tests {
         let tls = explicit.tls.clone().unwrap();
         assert_eq!((tls.port, tls.redirect_http), (8443, false));
         assert_eq!(explicit.acme.clone().unwrap().propagation_s, 0);
-        assert_eq!(explicit.acme.unwrap().email, None);
-        assert_eq!(explicit.access.unwrap().jwks(), "http://127.0.0.1:9/certs");
+        assert_eq!(explicit.acme.as_ref().unwrap().email, None);
+        assert_eq!(
+            explicit.access.as_ref().unwrap().jwks(),
+            "http://127.0.0.1:9/certs"
+        );
         assert_eq!(
             explicit.trusted_hosts(),
             vec!["foh.local".to_string(), "foh.example.org".to_string()]
