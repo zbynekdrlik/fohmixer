@@ -199,7 +199,9 @@
       "h": 65.0
      },
      "z": 17,
-     "style": {},
+     "style": {
+      "bg": "#3D61B8FF"
+     },
      "binding": {
       "instance": "band",
       "anchor": {
@@ -217,7 +219,9 @@
       "h": 65.0
      },
      "z": 18,
-     "style": {},
+     "style": {
+      "bg": "#3D61B8FF"
+     },
      "binding": {
       "instance": "band",
       "anchor": {

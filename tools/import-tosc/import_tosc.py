@@ -587,8 +587,9 @@ class Importer:
 
     def style(self, node, text=None):
         style = {}
-        if node.prop("background", False) and "color" in node.props:
-            style["bg"] = color_hex(node.prop("color"))
+        bg = self.fill(node)
+        if bg:
+            style["bg"] = bg
         if text:
             style["text"] = text
         if "textColor" in node.props:
@@ -765,7 +766,8 @@ class Importer:
         if _is_strip(node):
             out.append(self.strip(node, ax, ay, shown, path))
         elif node.type == "GROUP" and node.child("btn_solo"):
-            out.append(self.item("solo", frame, self.style(node), binding=self.binding(node.name)))
+            style = self.control_style(node, "btn_solo")
+            out.append(self.item("solo", frame, style, binding=self.binding(node.name)))
         elif node.type == "GROUP" and node.child("btn_mute"):
             out.append(
                 self.item(
