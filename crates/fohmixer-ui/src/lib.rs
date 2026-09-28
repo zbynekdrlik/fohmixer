@@ -1,10 +1,25 @@
-//! fohmixer UI: the Leptos CSR app the hub serves (Trunk builds it to WASM).
+//! fohmixer UI: the engineer's touch surface (spec §2.5), a Leptos CSR app
+//! the hub serves (Trunk builds it to WASM).
 //!
-//! S0 shows the version and a status line; the touch surfaces arrive in S4
-//! (spec §2.5).
+//! - `behave`: the TouchOSC-parity behaviour as pure state machines;
+//! - `binding`, `stage`, `net`: the pure rules of the subscriptions, the
+//!   stage geometry and the hub connection;
+//! - `store`: the hub connection and Live's state (`LiveStore`);
+//! - `components`, `pages`: the view; `raf`: the shared animation loop;
+//!   `dom`, `auth`: browser helpers.
 
 pub mod app;
+pub mod auth;
+pub mod behave;
+pub mod binding;
+pub mod components;
+pub mod dom;
 pub mod lifecycle;
+pub mod net;
+pub mod pages;
+pub mod raf;
+pub mod stage;
+pub mod store;
 
 use wasm_bindgen::prelude::*;
 
