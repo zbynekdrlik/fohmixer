@@ -73,7 +73,9 @@ jobs:
       - name: No skipped or expected-failure tests
         run: |
           set -euo pipefail
-          if grep -E "skipped|expected failure" "$RUNNER_TEMP/sim-tests.log" "$RUNNER_TEMP/script-tests.log"; then
+          # unittest marks a skip as "... skipped 'reason'" and counts it as "(skipped=N)";
+          # a test NAME may contain the word, so match the markers only.
+          if grep -E "\.\.\. (skipped|expected failure|unexpected success)|skipped=|expected failures=" "$RUNNER_TEMP/sim-tests.log" "$RUNNER_TEMP/script-tests.log"; then
             echo "::error::a Python test was skipped"; exit 1
           fi
 
