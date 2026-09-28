@@ -104,6 +104,29 @@ class DisplayTest(unittest.TestCase):
         self.assertEqual(self._display(0.1), "-48.5 dB")
         self.assertEqual(self._display(0.001), "-69.3 dB")
 
+    def test_db_strings_are_live_s_three_significant_digits(self):
+        # Real Live showed "-0.811 dB" on the PC (#9, finding 4): Live writes
+        # dB values with 3 significant digits, at most 3 decimals, 0 as 0.00.
+        # SimLive writes what Live would, so tests see real strings.
+        self.assertEqual(self._display(0.829725), "-0.811 dB")
+        self.assertEqual(self._display(0.85), "0.00 dB")
+        self.assertEqual(self._display(0.84), "-0.400 dB")
+        self.assertEqual(self._display(0.7), "-6.00 dB")
+        self.assertEqual(self._display(0.6001), "-10.0 dB")  # -9.996 rounds up a digit
+        self.assertEqual(self._display(0.5), "-14.0 dB")
+        self.assertEqual(self._display(1.0), "6.00 dB")
+        self.assertEqual(self._display(0.8499), "-0.004 dB")
+        self.assertEqual(self._display(0.84999), "0.00 dB")
+        self.assertEqual(self._display(0.0), "-inf dB")
+        gain = next(
+            p
+            for p in site_builder.build(_simpath.FIXTURE).tracks[5].devices[0].parameters
+            if p.name == "1 Gain A"
+        )
+        self.assertEqual(gain.str_for_value(-3.5), "-3.50 dB")
+        self.assertEqual(gain.str_for_value(12.26), "12.3 dB")
+        self.assertEqual(gain.str_for_value(0.0), "0.00 dB")
+
     def test_str_for_value_does_not_change_value(self):
         self.vol.value = 0.85
         self.assertEqual(self.vol.str_for_value(0.5), "-14.0 dB")
