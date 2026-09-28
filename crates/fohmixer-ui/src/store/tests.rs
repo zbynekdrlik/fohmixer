@@ -201,23 +201,16 @@ fn a_control_is_ready_with_every_value_and_red_with_any_unresolved_binding() {
         at: 0.0,
     };
     let error = Slot::Error("no track named Hand9".into());
-    assert_eq!(Readiness::of([&value, &value]), Readiness::Ready);
-    assert_eq!(Readiness::of([&value, &Slot::Pending]), Readiness::Waiting);
+    let of = |slots: &[&Slot]| Readiness::all(slots.iter().map(|s| Readiness::of_slot(s)));
+    assert_eq!(of(&[&value, &value]), Readiness::Ready);
+    assert_eq!(of(&[&value, &Slot::Pending]), Readiness::Waiting);
     assert_eq!(
-        Readiness::of([&Slot::Pending, &error, &value]),
+        of(&[&Slot::Pending, &error, &value]),
         Readiness::Unresolved,
         "an unresolved binding outranks a missing value"
     );
-    assert_eq!(Readiness::of([&value, &error]), Readiness::Unresolved);
-    assert_eq!(
-        Readiness::of(Vec::<&Slot>::new()),
-        Readiness::Ready,
-        "nothing to wait for"
-    );
-    assert_eq!(
-        Readiness::all([Readiness::Waiting, Readiness::Ready]),
-        Readiness::Waiting
-    );
+    assert_eq!(of(&[&value, &error]), Readiness::Unresolved);
+    assert_eq!(of(&[]), Readiness::Ready, "nothing to wait for");
     assert_eq!(
         [Readiness::Ready, Readiness::Waiting, Readiness::Unresolved].map(Readiness::name),
         ["ready", "waiting", "unresolved"]
@@ -226,4 +219,27 @@ fn a_control_is_ready_with_every_value_and_red_with_any_unresolved_binding() {
         [Readiness::Ready, Readiness::Waiting, Readiness::Unresolved].map(Readiness::disabled),
         ["false", "true", "true"]
     );
+}
+
+#[test]
+fn a_range_read_without_an_answer_keeps_the_range_before() {
+    let range = |min: f64, max: f64| -> Result<Vec<Value>, String> {
+        Ok(vec![
+            json!({"ok": true, "data": min}),
+            json!({"ok": true, "data": max}),
+        ])
+    };
+    let before = Some((0.0, 1.0));
+    assert_eq!(next_range(before, &range(-15.0, 15.0)), Some((-15.0, 15.0)));
+    assert_eq!(
+        next_range(before, &Err("no result within 3 s".into())),
+        before,
+        "a stalled Live: keep it"
+    );
+    let gone: Result<Vec<Value>, String> = Ok(vec![
+        json!({"ok": false, "error": "no parameter"}),
+        json!({"ok": false, "error": "no parameter"}),
+    ]);
+    assert_eq!(next_range(before, &gone), None, "Live says it is gone");
+    assert_eq!(next_range(None, &Err("offline".into())), None);
 }

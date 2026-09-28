@@ -36,7 +36,7 @@ exclude_re = [
   # S4 (#8): the UI's browser glue. web-sys calls panic off wasm, so a native
   # test cannot run these; each carries out decisions made by the tested pure
   # modules (behave/*, binding, stage, net, raf's Registry, the store's Slot,
-  # Readiness, Wanted, Badge, slot_failure, range_from and store/conn.rs's
+  # Readiness, Wanted, Badge, slot_failure, range_from, next_range and store/conn.rs's
   # Conn, replaces and instance_change), and the E2E suite drives every one
   # of them in Chromium and WebKit.
   # dom.rs: the clocks, style/attribute writes, the console, local storage.

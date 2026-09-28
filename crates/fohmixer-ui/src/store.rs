@@ -12,7 +12,7 @@
 //! disabled (`Readiness`).
 //!
 //! The pure parts are unit-tested natively: here `Slot`, `Readiness`,
-//! `Wanted`, `Badge`, `slot_failure` and `range_from`, in `conn` the
+//! `Wanted`, `Badge`, `slot_failure`, `range_from` and `next_range`, in `conn` the
 //! connection's decisions (reconnect, hello, the watchdog, the layout and
 //! instance changes). `LiveStore` (`live`) is the browser glue that carries
 //! them out.
@@ -129,11 +129,6 @@ impl Readiness {
     /// unresolved binding outranks a missing value).
     pub fn all(each: impl IntoIterator<Item = Self>) -> Self {
         each.into_iter().max().unwrap_or(Self::Ready)
-    }
-
-    /// The readiness of a control bound to `slots`.
-    pub fn of<'a>(slots: impl IntoIterator<Item = &'a Slot>) -> Self {
-        Self::all(slots.into_iter().map(Self::of_slot))
     }
 
     /// The control's `data-binding`.
@@ -280,6 +275,19 @@ pub fn range_from(outcome: &Result<Vec<Value>, String>) -> Option<(f64, f64)> {
     };
     let (min, max) = (number(0)?, number(1)?);
     (max > min).then_some((min, max))
+}
+
+/// A parameter's range after a read: the new one, or, when the read got no
+/// answer (the hub or a stalled Live did not reply), the one before. A read
+/// Live answered without a range (the parameter is gone) clears it.
+pub fn next_range(
+    before: Option<(f64, f64)>,
+    outcome: &Result<Vec<Value>, String>,
+) -> Option<(f64, f64)> {
+    match outcome {
+        Ok(_) => range_from(outcome),
+        Err(_) => before,
+    }
 }
 
 /// The key under which the engineer's token is stored.

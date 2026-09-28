@@ -15,7 +15,7 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 
 use super::conn::{self, Conn, Tick};
-use super::{InstanceView, ResultFn, Slot, TOKEN_KEY, range_from, slot_failure};
+use super::{InstanceView, ResultFn, Slot, TOKEN_KEY, next_range, slot_failure};
 use crate::binding::{SubSpec, unfold_targets};
 use crate::dom;
 use crate::net::{self, Decision, LayoutFetch};
@@ -701,7 +701,7 @@ impl LiveStore {
             instance,
             vec![get("min"), get("max")],
             Some(Box::new(move |outcome: Result<Vec<Value>, String>| {
-                let _ = signal.try_set(range_from(&outcome));
+                let _ = signal.try_update(|range| *range = next_range(*range, &outcome));
             })),
         );
     }
