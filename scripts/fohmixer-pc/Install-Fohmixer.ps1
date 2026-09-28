@@ -39,9 +39,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File <unzipped bundle>\Install-Fo
 param(
     # The CI bundle zip (the artifact fohmixer-windows-<version>-<sha> of a master push).
     [Parameter(Mandatory)][string]$BundleZip,
-    # The Windows account that runs the band Live (and the hub).
+    # The Windows account that runs the band Live (and the hub): a local account
+    # of this PC, without a domain part (looked up as <computer>\<name>, also
+    # where the account is named like the computer).
     [Parameter(Mandatory)][string]$BandUser,
-    # The Windows account that runs the master Live.
+    # The Windows account that runs the master Live (a local account, as -BandUser).
     [Parameter(Mandatory)][string]$MasterUser,
     [string]$DataDir = (Join-Path $env:ProgramData 'fohmixer'),
     [int]$HttpPort = 8480,

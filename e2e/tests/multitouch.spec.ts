@@ -1,6 +1,6 @@
 import { test, expect, type Page } from "./support/fixtures";
 import type { Locator } from "@playwright/test";
-import { LiveClient, centre, harness, openSurface, ready, ret, shown, strip, track, until, volume } from "./support/live";
+import { LiveClient, centre, frames, harness, openSurface, ready, ret, shown, strip, track, until, volume } from "./support/live";
 
 // Several faders at once (spec §2.5 input layer, S4 design note §3): each
 // fader follows its own pointer. Chromium gets real touch input through the
@@ -134,7 +134,12 @@ test.describe("A host restart in the middle of a drag", () => {
     await page.mouse.move(x, y);
     await page.mouse.down();
     for (let i = 1; i <= 5; i++) await page.mouse.move(x, y - 8 * i);
-    const finger = await until(() => shown(fader), (v) => v > 0.55, "the finger's value");
+    // The fader shows a move at its next animation frame. Polling for the
+    // first value above 0.55 could catch a frame drawn between two moves
+    // (WebKit on the runner: 0.05 below the finger's last value).
+    await frames(page);
+    const finger = await shown(fader);
+    expect(finger).toBeGreaterThan(0.55);
     const restart = harness("/host/band/restart");
     // While Live is away the fader keeps the finger's value.
     await expect(fader).toHaveAttribute("aria-disabled", "true");
