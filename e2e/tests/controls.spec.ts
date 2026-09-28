@@ -23,11 +23,11 @@ test.describe("Solo buttons", () => {
     await ready(solo);
     await expect(solo).toHaveText("SOLO Stems");
     await expect(solo).toHaveAttribute("data-on", "false");
-    await expect(solo).toHaveCSS("background-color", "rgb(60, 60, 60)");
+    await expect(solo).not.toHaveClass(/\bon\b/);
     await solo.click();
     await until(() => live.get("band", stems, "solo"), (v) => v === true, "Stems soloed");
     await expect(solo).toHaveAttribute("data-on", "true");
-    await expect(solo).toHaveCSS("background-color", "rgb(61, 97, 184)");
+    await expect(solo).toHaveClass(/\bon\b/);
     // Independent: the other solo stays as it was.
     expect(await live.get("band", vocals, "solo")).toBe(true);
     await solo.click();
@@ -132,8 +132,67 @@ test.describe("TechAlert", () => {
       await expect(overlay).toHaveAttribute("data-visible", "false");
       await page.waitForTimeout(70);
     }
-    // Its strip's mute is the same track's.
-    await expect(strip(page, "TechAlert #").getByTestId("mute")).toHaveAttribute("data-muted", "true");
+    // Its button shows the same track's mute: dark while muted.
+    await expect(page.getByTestId("alert-toggle")).toHaveAttribute("data-on", "false");
+  });
+
+  test("the TechAlert button unmutes and mutes its track; the wash follows", async ({ page }) => {
+    const alert = track("TechAlert #");
+    await live.set("band", alert, "mute", true);
+    await openSurface(page);
+    const button = page.getByTestId("rail").getByTestId("alert-toggle");
+    const overlay = page.getByTestId("alert");
+    await ready(button);
+    try {
+      await button.click();
+      await until(() => live.get("band", alert, "mute"), (v) => v === false, "TechAlert on");
+      await expect(button).toHaveAttribute("data-on", "true");
+      await expect(overlay).toHaveAttribute("data-active", "true");
+      await button.click();
+      await until(() => live.get("band", alert, "mute"), (v) => v === true, "TechAlert off");
+      await expect(button).toHaveAttribute("data-on", "false");
+      await expect(overlay).toHaveAttribute("data-active", "false");
+    } finally {
+      await live.set("band", alert, "mute", true);
+    }
+  });
+});
+
+test.describe("SOLO clear", () => {
+  test("the pill shows while a solo of the page is on and clears only those", async ({ page }) => {
+    // #21: the pill in the top bar turns off every solo Live reports on.
+    const stems = track("Stems grp#");
+    const vocals = track("Vocals Repro grp#");
+    await live.set("band", stems, "solo", false);
+    await live.set("band", vocals, "solo", false);
+    await openSurface(page);
+    const pill = page.getByTestId("solo-clear");
+    await ready(page.locator('[data-testid="solo"][data-track="Stems grp#"]'));
+    await expect(pill).toHaveAttribute("data-on", "false");
+    await expect(pill).toBeHidden();
+    try {
+      await live.set("band", vocals, "solo", true);
+      await expect(pill).toHaveAttribute("data-on", "true");
+      await expect(pill).toBeVisible();
+      await pill.click();
+      await until(() => live.get("band", vocals, "solo"), (v) => v === false, "Vocals unsoloed");
+      expect(await live.get("band", stems, "solo")).toBe(false);
+      await expect(pill).toBeHidden();
+      // Both on: both off.
+      await live.set("band", vocals, "solo", true);
+      await live.set("band", stems, "solo", true);
+      await expect(pill).toBeVisible();
+      await pill.click();
+      await until(() => live.get("band", stems, "solo"), (v) => v === false, "Stems unsoloed");
+      await until(() => live.get("band", vocals, "solo"), (v) => v === false, "Vocals unsoloed");
+      // A page without solos has no pill to show.
+      await live.set("band", vocals, "solo", true);
+      await page.locator('[data-testid="tab"][data-page="cue"]').click();
+      await expect(pill).toBeHidden();
+    } finally {
+      await live.set("band", stems, "solo", false);
+      await live.set("band", vocals, "solo", false);
+    }
   });
 });
 

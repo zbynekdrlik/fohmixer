@@ -3,7 +3,9 @@ import {
   LiveClient,
   centre,
   clipped,
+  dbForm,
   doubleTap,
+  frames,
   hostLine,
   harness,
   openSurface,
@@ -33,17 +35,26 @@ test.afterEach(async () => {
 const HAND2 = track("Hand2 #");
 
 test.describe("A strip", () => {
-  test("shows Live's display string for the volume", async ({ page }) => {
+  test("shows Live's volume in TouchOSC's form, white exactly at 0 dB", async ({ page }) => {
+    // #21 (parity audit #13): Live's own value (X1), one decimal, no unit.
     await live.set("band", volume(HAND2), "value", 0.85);
     await openSurface(page);
     const db = strip(page, "Hand2 #").getByTestId("db");
-    await expect(db).toHaveText(await live.display("band", volume(HAND2), 0.85));
-    await expect(db).toHaveText("0.00 dB");
+    expect(await live.display("band", volume(HAND2), 0.85)).toBe("0.00 dB");
+    await expect(db).toHaveText("0.0");
+    await expect(db).toHaveClass(/\bunity\b/);
+    await expect(db).toHaveCSS("color", "rgb(255, 255, 255)");
     await live.set("band", volume(HAND2), "value", 0.7);
-    await expect(db).toHaveText(await live.display("band", volume(HAND2), 0.7));
+    await expect(db).toHaveText(dbForm(await live.display("band", volume(HAND2), 0.7)));
+    await expect(db).not.toHaveClass(/\bunity\b/);
+    await expect(db).toHaveCSS("color", "rgb(155, 231, 168)");
+    await live.set("band", volume(HAND2), "value", 0.0);
+    await expect(db).toHaveText("−∞");
+    await live.set("band", volume(HAND2), "value", 0.85);
     await expect(strip(page, "Hand2 #").getByTestId("strip-label")).toHaveText("Hand2");
     await expect(strip(page, "B-Main repro #").getByTestId("strip-label")).toHaveText("Main");
     await expect(strip(page, "Hand2 #").getByTestId("strip-instance")).toHaveText("band");
+    await expect(strip(page, "B-Main repro #").getByTestId("strip-instance")).toHaveText("band · ret");
   });
 
   test("its texts fit their boxes: the dB text, the name and the instance", async ({ page }) => {
@@ -55,7 +66,7 @@ test.describe("A strip", () => {
       await live.set("band", volume(VOCAL1), "value", 0.829725);
       await openSurface(page);
       const narrow = strip(page, "Vocal 1 repro#");
-      await expect(narrow.getByTestId("db")).toHaveText(await live.display("band", volume(VOCAL1), 0.829725));
+      await expect(narrow.getByTestId("db")).toHaveText(dbForm(await live.display("band", volume(VOCAL1), 0.829725)));
       await expect(narrow.getByTestId("strip-instance")).toHaveText(/band/i);
       for (const name of ["Vocal 1 repro#", "Hand2 #", "B-Main repro #"]) {
         for (const part of ["db", "strip-label", "strip-instance"]) {
@@ -96,7 +107,7 @@ test.describe("A strip", () => {
     await until(() => shown(fader), (v) => Math.abs(v - 0.5) < 0.001, "the fader at 0.5");
     await doubleTap(fader);
     await until(() => live.get("band", volume(HAND2), "value"), (v) => Math.abs(v - 0.85) < 1e-6, "0 dB", 6000);
-    await expect(strip(page, "Hand2 #").getByTestId("db")).toHaveText("0.00 dB");
+    await expect(strip(page, "Hand2 #").getByTestId("db")).toHaveText("0.0");
   });
 
   test("a pan drag moves Live's panning and a double tap centres it", async ({ page }) => {
@@ -151,6 +162,52 @@ test.describe("A strip", () => {
     await live.set("master", hand1, "mute", false);
   });
 
+  test("the name button takes the track's colour from Live and follows it", async ({ page }) => {
+    // #21: the strip's name button is its mute, lit in the track's Live
+    // colour (SimLive's Hand2 #: 0xFF3636) with the text that reads on it.
+    await live.set("band", HAND2, "mute", false);
+    const before = await live.get("band", HAND2, "color");
+    try {
+      await openSurface(page);
+      const mute = strip(page, "Hand2 #").getByTestId("mute");
+      await ready(mute);
+      await expect(mute).toHaveCSS("background-color", "rgb(255, 54, 54)");
+      await expect(mute).toHaveCSS("color", "rgb(16, 16, 26)");
+      await live.set("band", HAND2, "color", 0x1e3a8a);
+      await expect(mute).toHaveCSS("background-color", "rgb(30, 58, 138)");
+      await expect(mute).toHaveCSS("color", "rgb(244, 244, 250)");
+      // Muted: dark whatever the colour, with its MUTE mark.
+      await mute.click();
+      await expect(mute).toHaveAttribute("data-muted", "true");
+      await expect(mute).toHaveCSS("background-color", "rgb(31, 31, 46)");
+      await expect(mute.locator(".mute-mark")).toBeVisible();
+    } finally {
+      await live.set("band", HAND2, "color", before);
+      await live.set("band", HAND2, "mute", false);
+    }
+  });
+
+  test("the dB scale sits beside the fader, its 0 at the fader's 0 dB", async ({ page }) => {
+    // #21 (parity audit #12): TouchOSC's labels at the fader positions of
+    // their levels.
+    await live.set("band", volume(HAND2), "value", 0.85);
+    await openSurface(page);
+    const s = strip(page, "Hand2 #");
+    const ticks = s.getByTestId("scale").locator(".tick");
+    await expect(ticks).toHaveText(["+6", "0", "−6", "−12", "−18", "−24", "−40"]);
+    const fader = s.getByTestId("fader");
+    await ready(fader);
+    await until(() => shown(fader), (v) => Math.abs(v - 0.85) < 0.001, "the fader at 0 dB");
+    await frames(page);
+    const cap = (await s.locator(".fader-cap").boundingBox())!;
+    const zero = (await ticks.nth(1).boundingBox())!;
+    expect(Math.abs(cap.y + cap.height / 2 - (zero.y + zero.height / 2))).toBeLessThan(2);
+    // +6 dB is the top of the travel.
+    const track = (await fader.boundingBox())!;
+    const top = (await ticks.nth(0).boundingBox())!;
+    expect(Math.abs(top.y + top.height / 2 - track.y)).toBeLessThan(2);
+  });
+
   test("the meter moves with Live's meter", async ({ page }) => {
     await openSurface(page);
     const meter = strip(page, "Hand2 #").getByTestId("meter");
@@ -178,7 +235,7 @@ test.describe("A strip", () => {
     await selectPage(page, "others");
     const master = strip(page, "Hand1 #", "master");
     await expect(master.getByTestId("strip-instance")).toHaveText("master");
-    await expect(master.getByTestId("db")).toHaveText(await live.display("master", volume(track("Hand1 #")), 0.6));
+    await expect(master.getByTestId("db")).toHaveText(dbForm(await live.display("master", volume(track("Hand1 #")), 0.6)));
   });
 });
 
@@ -219,7 +276,7 @@ test.describe("Controls wait for Live's value (I8)", () => {
     await restart;
     await expect(fader).toHaveAttribute("aria-disabled", "false", { timeout: 10_000 });
     // The restarted host has its fixture's values again (Hand2 # at 0.8).
-    await expect(strip(page, "Hand2 #").getByTestId("db")).toHaveText(await live.display("band", volume(HAND2), 0.8));
+    await expect(strip(page, "Hand2 #").getByTestId("db")).toHaveText(dbForm(await live.display("band", volume(HAND2), 0.8)));
     await until(() => shown(fader), (v) => Math.abs(v - 0.8) < 0.001, "the fader at Live's value");
   });
 

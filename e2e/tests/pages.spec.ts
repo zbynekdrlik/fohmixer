@@ -1,27 +1,20 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test, expect } from "./support/fixtures";
-import { clipped, harness, hubSubscriptions, openSurface, selectPage, strip, textSize, until } from "./support/live";
+import { clipped, harness, hubSubscriptions, openSurface, selectPage, strip, until } from "./support/live";
 
-// Pages, pagers, the overlay and the layout (spec F1, F19; S4 design note §2,
-// §5): the imported synthetic layout, only the visible pages subscribed.
+// Pages, the pager, the rail, the rows of sections (the redesign, #21; spec
+// §4.2): the imported synthetic layout (schema 2), only the controls on
+// screen subscribed.
 
 const LAYOUT = join(__dirname, "..", "..", "tools", "import-tosc", "fixtures", "expected-layout.json");
 const layout = () => JSON.parse(readFileSync(LAYOUT, "utf-8"));
 
-/** `#RRGGBB[AA]` as [r, g, b, alpha rounded to 2 decimals]. */
-function hex(color: string): number[] {
-  const m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})?$/i.exec(color);
+/** `#RRGGBB` as a computed `rgb(r, g, b)`. */
+function rgb(color: string): string {
+  const m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})/i.exec(color);
   if (!m) throw new Error(`not a layout colour: ${color}`);
-  const alpha = m[4] === undefined ? 1 : parseInt(m[4], 16) / 255;
-  return [parseInt(m[1], 16), parseInt(m[2], 16), parseInt(m[3], 16), Math.round(alpha * 100) / 100];
-}
-
-/** An element's computed background colour as [r, g, b, alpha rounded to 2 decimals]. */
-async function background(el: import("@playwright/test").Locator): Promise<number[]> {
-  const css = await el.evaluate((node: Element) => getComputedStyle(node).backgroundColor);
-  const n = (css.match(/[\d.]+/g) || []).map(Number);
-  return [n[0], n[1], n[2], Math.round((n.length > 3 ? n[3] : 1) * 100) / 100];
+  return `rgb(${parseInt(m[1], 16)}, ${parseInt(m[2], 16)}, ${parseInt(m[3], 16)})`;
 }
 
 /** The subscriptions the page holds (its `data-subs`). */
@@ -35,6 +28,11 @@ async function expectHubToHold(page: import("@playwright/test").Page, subs: numb
   await until(hubSubscriptions, (n) => n === subs + 1, `the hub to hold ${subs + 1} subscriptions`);
 }
 
+/** The ids of the groups on screen, in document order. */
+async function groups(page: import("@playwright/test").Page): Promise<string[]> {
+  return page.locator('[data-testid="group"]').evaluateAll((els) => els.map((e) => e.getAttribute("data-group") || ""));
+}
+
 test.describe("Pages and tabs", () => {
   test("the tabs follow the layout and FOH is shown first", async ({ page }) => {
     await openSurface(page);
@@ -45,11 +43,13 @@ test.describe("Pages and tabs", () => {
     const pager = page.locator('[data-testid="tabbar"][data-level="1"] [data-testid="tab"]');
     await expect(pager).toHaveText(["STAGE", "OTHERS"]);
     await expect(pager.nth(0)).toHaveAttribute("data-selected", "true");
+    // A page without a pager has no second tab bar.
+    await selectPage(page, "cue");
+    await expect(page.locator('[data-testid="tabbar"][data-level="1"]')).toHaveCount(0);
+    await selectPage(page, "foh");
   });
 
-  test("every tab shows its whole title, along a vertical bar", async ({ page }) => {
-    // #9, finding 2: the nested pager's tabs (a 65 px bar on the left) cut
-    // their titles off and did not turn them.
+  test("every tab shows its whole title", async ({ page }) => {
     await openSurface(page);
     for (const level of ["0", "1"]) {
       const tabs = page.locator(`[data-testid="tabbar"][data-level="${level}"] [data-testid="tab"]`);
@@ -60,47 +60,18 @@ test.describe("Pages and tabs", () => {
         expect(await clipped(tab), `level ${level} tab ${await tab.getAttribute("data-page")}`).toEqual([]);
       }
     }
-    const stage = page.locator('[data-testid="tabbar"][data-level="1"] [data-testid="tab"][data-page="stage"]');
-    const { w, h } = await textSize(stage);
-    expect(h, "the title runs along the vertical bar").toBeGreaterThan(w * 2);
   });
 
-  test("a lit tab takes its page's colour and size; pagers and pages draw their backgrounds", async ({ page }) => {
-    // #7, items 7-8: the real project's tabs are grey when off and their
-    // page's colour when lit (tabColorOn, textSizeOn); the pagers and pages
-    // fill themselves (the grey canvas, the black nested pager, the
-    // near-black STAGE page).
-    const fixture = layout();
-    const foh = fixture.pages.find((p: any) => p.id === "foh");
-    const [stagePage, othersPage] = foh.pager.pages;
-    await openSurface(page);
-    const bar = '[data-testid="tabbar"][data-level="1"] [data-testid="tab"]';
-    const stageTab = page.locator(`${bar}[data-page="stage"]`);
-    const othersTab = page.locator(`${bar}[data-page="others"]`);
-    await expect(stageTab).toHaveAttribute("data-selected", "true");
-    expect(await background(stageTab)).toEqual(hex(stagePage.tab.color_on));
-    expect(await background(othersTab)).toEqual(hex(othersPage.tab.color));
-    await expect(stageTab).toHaveCSS("font-size", `${stagePage.tab.text_size_on}px`);
-    await expect(othersTab).toHaveCSS("font-size", `${othersPage.tab.text_size}px`);
-    expect(await background(page.getByTestId("stage"))).toEqual(hex(fixture.background));
-    expect(await background(page.getByTestId("pager-background"))).toEqual(hex(foh.pager.background));
-    const stageBackground = page.locator('[data-testid="page-background"][data-page="stage"]');
-    expect(await background(stageBackground)).toEqual(hex(stagePage.background));
-    await selectPage(page, "others");
-    expect(await background(othersTab)).toEqual(hex(othersPage.tab.color_on));
-    expect(await background(stageTab)).toEqual(hex(stagePage.tab.color));
-    await expect(page.locator('[data-testid="page-background"][data-page="others"]')).toHaveCount(0);
-    await selectPage(page, "stage");
-  });
-
-  test("the nested pager switches its pages and remembers them", async ({ page }) => {
+  test("the nested pager switches its sub-pages, keeps the fixed groups and remembers the choice", async ({ page }) => {
     await openSurface(page);
     await expect(strip(page, "Keys 1")).toBeVisible();
     await expect(strip(page, "Hand1 #", "master")).toHaveCount(0);
+    await expect(strip(page, "B-Main repro #")).toBeVisible();
     await selectPage(page, "others");
     await expect(strip(page, "Hand1 #", "master")).toBeVisible();
     await expect(strip(page, "Keys 1")).toHaveCount(0);
-    // Another root page and back: the pager still shows OTHERS; so does a reload.
+    await expect(strip(page, "B-Main repro #")).toBeVisible();
+    // Another page and back: the pager still shows OTHERS; so does a reload.
     await selectPage(page, "cue");
     await selectPage(page, "foh");
     await expect(strip(page, "Hand1 #", "master")).toBeVisible();
@@ -109,12 +80,13 @@ test.describe("Pages and tabs", () => {
     await selectPage(page, "stage");
   });
 
-  test("the overlay stays on every page", async ({ page }) => {
+  test("the global controls are on every page, at the foot of the rail", async ({ page }) => {
     await openSurface(page);
     for (const id of ["cue", "conf", "foh"]) {
       await selectPage(page, id);
-      await expect(strip(page, "TechAlert #")).toBeVisible();
-      await expect(page.getByTestId("refresh")).toHaveText("REFRESH ALL");
+      const rail = page.getByTestId("rail");
+      await expect(rail.getByTestId("alert-toggle")).toBeVisible();
+      await expect(rail.getByTestId("refresh")).toHaveText("REFRESH ALL");
     }
     await selectPage(page, "cue");
     await expect(page.locator('[data-testid="param-toggle"][data-label="Vox 1 TU"]')).toBeVisible();
@@ -122,42 +94,102 @@ test.describe("Pages and tabs", () => {
     await expect(page.getByTestId("label").first()).toContainText("unfold_band: 'Vocals Repro grp#'");
     await selectPage(page, "foh");
   });
+});
 
-  test("areas show their colours and titles, items sit on their frames", async ({ page }) => {
+test.describe("The page is a rail and rows of sections", () => {
+  test("the rail holds the page's function controls in the layout's order", async ({ page }) => {
     await openSurface(page);
-    const effects = page.locator('[data-testid="area"]', { hasText: "EFFECTS" });
-    await expect(effects).toBeVisible();
-    await expect(effects).toHaveCSS("background-color", "rgb(99, 99, 99)");
-    // F19: the Hand2 # strip at its canvas frame (2180, 105, 161 × 700), scaled.
-    const stage = await page.getByTestId("stage").boundingBox();
-    const box = await strip(page, "Hand2 #").boundingBox();
-    expect(stage && box).toBeTruthy();
-    const scale = stage!.width / 2360;
-    expect(Math.abs(box!.x - (stage!.x + 2180 * scale))).toBeLessThan(1.5);
-    expect(Math.abs(box!.y - (stage!.y + 105 * scale))).toBeLessThan(1.5);
-    expect(Math.abs(box!.width - 161 * scale)).toBeLessThan(1.5);
-    expect(Math.abs(box!.height - 700 * scale)).toBeLessThan(1.5);
-    // The stage fits the viewport, centred.
-    const viewport = page.viewportSize()!;
-    expect(Math.abs(stage!.x * 2 + stage!.width - viewport.width)).toBeLessThan(2);
-    expect(Math.abs(stage!.y * 2 + stage!.height - viewport.height)).toBeLessThan(2);
+    const kinds = await page
+      .getByTestId("rail")
+      .locator(".btn")
+      .evaluateAll((els) => els.map((e) => e.getAttribute("data-testid")));
+    const rail = layout().pages[1].rail.map((c: any) =>
+      ({ stage: "stage-mics", hub_toggle: "stage-aut", solo: "solo", param_toggle: "param-toggle" })[c.kind as string],
+    );
+    expect(kinds).toEqual([...rail, "alert-toggle", "refresh"]);
+    await expect(page.getByTestId("solo").first()).toHaveText("SOLO Vocals");
+  });
+
+  test("sections show in rows in the layout's order, with their titles and colours", async ({ page }) => {
+    const fixture = layout();
+    const foh = fixture.pages[1];
+    await openSurface(page);
+    const rows = page.getByTestId("row");
+    await expect(rows).toHaveCount(foh.rows.length);
+    // Row by row: the groups (the pager's selected sub-page in its place).
+    const expected: string[][] = foh.rows.map((row: any) =>
+      row.sections.flatMap((s: any) => (s.kind === "pager" ? s.pages[0].sections.map((g: any) => g.id) : [s.id])),
+    );
+    for (let r = 0; r < expected.length; r++) {
+      const ids = await rows
+        .nth(r)
+        .locator('[data-testid="group"]')
+        .evaluateAll((els) => els.map((e) => e.getAttribute("data-group")));
+      expect(ids, `row ${r}`).toEqual(expected[r]);
+    }
+    expect(await groups(page)).toEqual(expected.flat());
+    // Titles and colour markers.
+    for (const row of foh.rows) {
+      for (const section of row.sections) {
+        if (section.kind !== "group") continue;
+        const group = page.locator(`[data-testid="group"][data-group="${section.id}"]`);
+        await expect(group.getByTestId("group-title")).toHaveText(section.title ?? "");
+        if (section.color) await expect(group.locator(".group-mark")).toHaveCSS("background-color", rgb(section.color));
+      }
+    }
+    // The strips of a group in its order.
+    const effects = foh.rows.flatMap((r: any) => r.sections).find((s: any) => s.title === "EFFECTS");
+    const names = await page
+      .locator(`[data-testid="group"][data-group="${effects.id}"] [data-testid="strip"]`)
+      .evaluateAll((els) => els.map((e) => `${e.getAttribute("data-instance")}:${e.getAttribute("data-track")}`));
+    expect(names).toEqual(effects.controls.map((c: any) => `${c.binding.instance}:${c.binding.anchor.name}`));
     await expect(strip(page, "B-Main repro #")).toHaveAttribute("data-kind", "return");
+  });
+
+  test("every row's strips share one width, a wide strip is 1.1 of it, and nothing overflows", async ({ page }) => {
+    await openSurface(page);
+    const widths = await page.locator('[data-testid="strip"]:not(.wide)').evaluateAll((els) =>
+      els.map((e) => e.getBoundingClientRect().width),
+    );
+    expect(widths.length).toBeGreaterThan(3);
+    for (const w of widths) expect(Math.abs(w - widths[0])).toBeLessThan(0.6);
+    expect(widths[0]).toBeGreaterThanOrEqual(64);
+    expect(widths[0]).toBeLessThanOrEqual(120.5);
+    const wide = await strip(page, "B-Main repro #").evaluate((e) => e.getBoundingClientRect().width);
+    expect(Math.abs(wide - widths[0] * 1.1)).toBeLessThan(0.6);
+    // The page never scrolls; this layout fits without a row scrolling.
+    const size = await page.evaluate(() => ({
+      w: document.documentElement.scrollWidth,
+      h: document.documentElement.scrollHeight,
+      vw: innerWidth,
+      vh: innerHeight,
+    }));
+    expect(size.w).toBeLessThanOrEqual(size.vw);
+    expect(size.h).toBeLessThanOrEqual(size.vh);
+    await expect(page.locator('[data-testid="row"].scrolls')).toHaveCount(0);
+    for (const s of await page.locator('[data-testid="strip"]').all()) {
+      const box = (await s.boundingBox())!;
+      expect(box.x + box.width).toBeLessThanOrEqual(size.vw + 0.5);
+      expect(box.y + box.height).toBeLessThanOrEqual(size.vh + 0.5);
+    }
   });
 });
 
-test.describe("Subscriptions follow the pages on screen", () => {
+test.describe("Subscriptions follow the controls on screen", () => {
   test("a page switch subscribes the new page and releases the old one", async ({ page }) => {
     await openSurface(page);
     await selectPage(page, "stage");
     const foh = await pageSubs(page);
-    // 28 plus the master return strip on the main page (4 subscriptions).
-    expect(foh).toBe(32);
+    // Rail (stage, two solos, five toggles' targets), the STAGE sub-page's
+    // and the fixed groups' strips (volume, pan, mute, meter, colour each),
+    // the parameter fader and TechAlert: 55 keys.
+    expect(foh).toBe(55);
     await expectHubToHold(page, foh);
     await selectPage(page, "cue");
-    await expectHubToHold(page, 3);
+    await expectHubToHold(page, 2);
     await selectPage(page, "foh");
     await selectPage(page, "others");
-    await expectHubToHold(page, 29);
+    await expectHubToHold(page, 51);
     await selectPage(page, "stage");
     await expectHubToHold(page, foh);
   });
@@ -165,19 +197,24 @@ test.describe("Subscriptions follow the pages on screen", () => {
   test("a layout change while a page is open releases the old subscriptions", async ({ page }) => {
     await openSurface(page);
     await selectPage(page, "stage");
-    await expectHubToHold(page, 32);
+    await expectHubToHold(page, 55);
     const changed = layout();
-    changed.pages[1].items = changed.pages[1].items.filter(
-      (item: any) => !(item.kind === "strip" && item.binding.anchor.name === "Hand2 #"),
-    );
+    for (const row of changed.pages[1].rows) {
+      for (const section of row.sections) {
+        if (section.kind !== "group") continue;
+        section.controls = section.controls.filter(
+          (c: any) => !(c.kind === "strip" && c.binding.instance === "band" && c.binding.anchor.name === "Hand2 #"),
+        );
+      }
+    }
     try {
       await harness("/hub/layout", { layout: changed });
       await expect(strip(page, "Hand2 #")).toHaveCount(0, { timeout: 10_000 });
-      await expectHubToHold(page, 28);
+      await expectHubToHold(page, 50);
     } finally {
       await harness("/hub/layout/reset");
     }
     await expect(strip(page, "Hand2 #")).toBeVisible({ timeout: 10_000 });
-    await expectHubToHold(page, 32);
+    await expectHubToHold(page, 55);
   });
 });

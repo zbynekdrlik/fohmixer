@@ -38,12 +38,23 @@ const HAND4 = track("Hand4 #");
 /** The stylesheet's red for an unresolved binding (`--danger`). */
 const RED = "rgb(255, 59, 48)";
 
+/** Every control of a layout (schema 2): rails, groups, every sub-page, global. */
+function controls(layout: any): any[] {
+  const groups = (sections: any[]): any[] =>
+    sections.flatMap((s: any) => (s.kind === "pager" ? s.pages.flatMap((p: any) => groups(p.sections)) : [s]));
+  return [
+    ...layout.pages.flatMap((p: any) => [
+      ...(p.rail ?? []),
+      ...(p.rows ?? []).flatMap((r: any) => groups(r.sections).flatMap((g: any) => g.controls)),
+    ]),
+    ...(layout.global ?? []),
+  ];
+}
+
 /** REPRO's target in a layout. */
 function reproTarget(layout: any): any {
-  const item = layout.pages
-    .flatMap((p: any) => p.items)
-    .find((i: any) => i.kind === "param_toggle" && i.label === "REPRO");
-  return item.targets[0];
+  const control = controls(layout).find((c: any) => c.kind === "param_toggle" && c.label === "REPRO");
+  return control.targets[0];
 }
 
 /** The layout the hub serves now. */

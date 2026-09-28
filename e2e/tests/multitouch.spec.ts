@@ -1,6 +1,20 @@
 import { test, expect, type Page } from "./support/fixtures";
 import type { Locator } from "@playwright/test";
-import { LiveClient, centre, frames, harness, openSurface, ready, ret, shown, strip, track, until, volume } from "./support/live";
+import {
+  LiveClient,
+  centre,
+  dbForm,
+  frames,
+  harness,
+  openSurface,
+  ready,
+  ret,
+  shown,
+  strip,
+  track,
+  until,
+  volume,
+} from "./support/live";
 
 // Several faders at once (spec §2.5 input layer, S4 design note §3): each
 // fader follows its own pointer. Chromium gets real touch input through the
@@ -174,7 +188,7 @@ test.describe("A host restart in the middle of a drag", () => {
     expect(Math.abs(now - finger)).toBeGreaterThan(0.01);
     // After the release and its hold the fader shows that value.
     await until(() => shown(fader), (v) => Math.abs(v - 0.8) < 0.001, "the fader at Live's value", 5000);
-    await expect(strip(page, B.name).getByTestId("db")).toHaveText(await live.display("band", B.target, 0.8));
+    await expect(strip(page, B.name).getByTestId("db")).toHaveText(dbForm(await live.display("band", B.target, 0.8)));
   });
 });
 
