@@ -10,9 +10,11 @@
 #   replaces the copies (Live's logs stay), bad input changes nothing;
 # - the real hub started by the task's launcher (Start-FohmixerHub.ps1) on the
 #   installed toml and stopped by the stop task's script (Stop-FohmixerHub.ps1,
-#   Ctrl-Break): a graceful stop within 10 s, exit code 0;
+#   Ctrl-Break), both run exactly as their tasks run them (conhost --headless):
+#   a graceful stop within 10 s, exit code 0;
 # - the two tasks registered for this user in a test task folder and read back;
-# - the data folder's DACL on a test folder.
+# - the firewall rule as a disabled test rule, and the data folder's DACL on a
+#   test folder.
 # Only its own test objects are removed; nothing is ended by force (spec I7).
 param([Parameter(Mandatory)][string]$HubExe)
 Set-StrictMode -Version Latest
@@ -55,23 +57,39 @@ function Get-InstallArgs([hashtable]$Over = @{}) {
     return , ($list + '-NoTask')
 }
 
-function Set-OldStamps([string[]]$Paths) {
-    foreach ($p in $Paths) {
-        $items = @(Get-Item -LiteralPath $p)
-        if ($items[0].PSIsContainer) { $items = @(Get-ChildItem -LiteralPath $p -Recurse -File -Force) }
-        foreach ($i in $items) { $i.LastWriteTimeUtc = $script:old }
-    }
-}
-
-function Get-NewerFiles([string[]]$Paths) {
-    # The files under $Paths written since Set-OldStamps.
+function Get-StampedFiles([string[]]$Paths) {
     $out = @()
     foreach ($p in $Paths) {
         $items = @(Get-Item -LiteralPath $p)
         if ($items[0].PSIsContainer) { $items = @(Get-ChildItem -LiteralPath $p -Recurse -File -Force) }
-        foreach ($i in $items) { if ($i.LastWriteTimeUtc -ne $script:old) { $out += $i.FullName } }
+        $out += $items
     }
     return $out
+}
+
+function Set-Stamps([hashtable]$Watched) {
+    # Every file under each path gets that path's time. The app folder gets
+    # another time than the copies made from it: Copy-Item keeps a file's time,
+    # so a needless re-copy would otherwise go unseen.
+    foreach ($p in $Watched.Keys) { foreach ($i in @(Get-StampedFiles @($p))) { $i.LastWriteTimeUtc = $Watched[$p] } }
+}
+
+function Get-ChangedFiles([hashtable]$Watched) {
+    # The files under each path whose time is no longer that path's (written since Set-Stamps).
+    $out = @()
+    foreach ($p in $Watched.Keys) {
+        foreach ($i in @(Get-StampedFiles @($p))) { if ($i.LastWriteTimeUtc -ne $Watched[$p]) { $out += $i.FullName } }
+    }
+    return $out
+}
+
+function Start-AsTask([string]$Script) {
+    # One of the bundle's scripts started exactly as its task starts it
+    # (conhost --headless, the task command); the process to wait for.
+    $cmd = Get-FohTaskCommand -Script $Script -DataDir $data
+    $p = Start-Process -FilePath $cmd.execute -ArgumentList $cmd.arguments -WorkingDirectory $data -PassThru
+    $null = $p.Handle
+    return $p
 }
 
 function Assert-Copy([string]$Copy, [string]$Bundle, [string]$Instance, [int]$Port, [string]$What) {
@@ -99,7 +117,9 @@ $layout = Join-Path $repo 'crates\fohmixer-hub\tests\fixtures\layout-ok.json'
 $bandLib = Join-Path $base 'Users\band-user\Documents\Ableton\User Library'
 $masterLib = Join-Path $base 'Users\master-user\Documents\Ableton\User Library'
 $data = Join-Path $base 'data'
-$script:old = [datetime]::SpecifyKind((Get-Date '2001-01-01T00:00:00'), [DateTimeKind]::Utc)
+$old = New-Object DateTime 2001, 1, 1, 0, 0, 0, ([DateTimeKind]::Utc)
+$oldApp = $old.AddDays(1)
+$fwName = 'fohmixer-selftest-' + $id
 $me = [Security.Principal.WindowsIdentity]::GetCurrent().Name
 New-Item -ItemType Directory -Force -Path $bandLib, $masterLib | Out-Null
 
@@ -112,6 +132,9 @@ try {
     Assert ((Format-FohArg 'C:\a b\') -ceq '"C:\a b"') 'arg-quoted-without-a-trailing-backslash'
     Assert ((ErrorOf { Format-FohArg 'a"b' }) -like '*double quote*') 'arg-refuses-a-quote'
     foreach ($u in @('', ' band', 'band.', 'PC\band', 'a/b', 'a:b')) { Assert ((ErrorOf { Test-FohUserName $u }) -like '*user name refused*') "user-name-refuses-[$u]" }
+    $meSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    Assert ((Get-FohSid $me) -ceq $meSid -and (Get-FohSid (Get-FohLeafName $me)) -ceq $meSid) 'sid-of-an-account-with-or-without-its-computer'
+    Assert ((Get-FohSid 'S-1-5-18') -ceq 'S-1-5-18' -and (Get-FohSid ('no-such-account-' + $id)) -ceq '') 'sid-taken-as-it-is-or-empty-for-an-unknown-account'
 
     $cargo = Join-Path $base 'Cargo.toml'
     [IO.File]::WriteAllText($cargo, "[package]`nversion = `"9.9.9`"`n[workspace.package]`nversion = `"1.2.3-dev.4`"`nedition = `"2024`"`n")
@@ -168,7 +191,6 @@ try {
         Assert ($res.code -ne 0 -and $res.out -like $r.says) "install-refuses-$($r.what)"
         Assert (-not (Test-Path -LiteralPath $none)) "install-refused-$($r.what)-before-any-change"
     }
-    Assert (-not (Test-Path -LiteralPath (Join-Path $bandLib 'Remote Scripts'))) 'refused-installs-wrote-no-user-copy'
 
     # A bundle changed after its sums: refused naming the file, nothing installed.
     $stage3 = Join-Path $base 'stage-tampered'
@@ -181,6 +203,8 @@ try {
     Assert ($res.code -ne 0 -and $res.out -cmatch 'FohMixer/surface\.py: sha256 [0-9a-f]{64}, SHA256SUMS says [0-9a-f]{64}') 'install-refuses-a-tampered-bundle-naming-the-file'
     Assert (@(Get-ChildItem -LiteralPath (Join-Path $data3 'app') -Force).Count -eq 0 -and
         -not (Test-Path -LiteralPath (Join-Path $data3 'fohmixer-hub.toml'))) 'tampered-bundle-installs-nothing-and-leaves-no-unpack-folder'
+    Assert (-not (Test-Path -LiteralPath (Join-Path $bandLib 'Remote Scripts')) -and
+        -not (Test-Path -LiteralPath (Join-Path $masterLib 'Remote Scripts'))) 'refused-installs-wrote-no-user-copy'
 
     # ---- install 1 ----
     $r1 = Invoke-Ps $install (Get-InstallArgs)
@@ -195,12 +219,13 @@ try {
     Assert-Copy -Copy $bandCopy -Bundle (Join-Path $appV1 'FohMixer') -Instance 'band' -Port 39181 -What 'install-1-band'
     Assert-Copy -Copy $masterCopy -Bundle (Join-Path $appV1 'FohMixer') -Instance 'master' -Port 39182 -What 'install-1-master'
 
-    # ---- the real hub: the task's launcher starts it, the stop task's script stops it ----
-    Assert ((Stop-FohHub -DataDir $data -TaskPath $taskFolder) -ceq 'no hub was running') 'stop-with-no-hub-running-does-nothing'
-    $launcher = Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden -PassThru -ArgumentList @(
-        '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File',
-        (Format-FohArg (Join-Path $appV1 'Start-FohmixerHub.ps1')), '-DataDir', (Format-FohArg $data))
-    $null = $launcher.Handle
+    # ---- the real hub, started and stopped exactly as the tasks do it ----
+    $idle = Stop-FohHub -DataDir $data -TaskPath $taskFolder
+    Assert (-not $idle.stopped -and $idle.text -ceq 'no hub was running') 'stop-with-no-hub-running-does-nothing'
+    $s0 = Invoke-Ps (Join-Path $appV1 'Stop-FohmixerHub.ps1') @('-DataDir', $data)
+    Assert ($s0.code -eq 0 -and (Read-FohStopResult -DataDir $data -TimeoutSeconds 1).message -ceq 'no hub running') 'stop-script-with-no-hub-running-reports-code-0'
+    Remove-Item -LiteralPath (Join-Path $data 'logs\hub-stop.result.json')
+    $launcher = Start-AsTask (Join-Path $appV1 'Start-FohmixerHub.ps1')
     $answer = Wait-FohHubReady -HttpPort 18481 -Version $v1 -TimeoutSeconds 60
     Assert ($answer.version -ceq $v1) "hub-answers-the-bundle-version-on-the-installed-toml ($($answer.version))"
     $hubs = @(Get-FohHubProcess -DataDir $data)
@@ -209,34 +234,39 @@ try {
     $e = ErrorOf { Stop-FohHub -DataDir $data -TaskPath $taskFolder }
     Assert ($e -like '*fohmixer-hub-stop is missing*') "stop-without-the-stop-task-refuses ($e)"
     Assert (@(Get-FohHubProcess -DataDir $data).Count -eq 1) 'stop-without-the-stop-task-leaves-the-hub-running'
-    $s = Invoke-Ps (Join-Path $appV1 'Stop-FohmixerHub.ps1') @('-DataDir', $data)
-    Assert ($s.code -eq 0) 'stop-script-exits-0'
+    $stopper = Start-AsTask (Join-Path $appV1 'Stop-FohmixerHub.ps1')
+    $result = Read-FohStopResult -DataDir $data -TimeoutSeconds 60
+    Assert ([int]$result.code -eq 0 -and $result.message -like "Ctrl-Break sent to pid $($hubs[0].pid) *") "stop-script-in-its-own-console-reports-code-0 ($($result.message))"
+    Assert ($stopper.WaitForExit(30000)) 'stop-script-ends'
     Assert (@(Wait-FohHubExit -DataDir $data -TimeoutSeconds 10).Count -eq 0) 'hub-exits-within-10-s-of-ctrl-break'
-    Assert ($launcher.WaitForExit(10000)) 'launcher-exits-with-the-hub'
-    Assert ($launcher.ExitCode -eq 0) "hub-and-launcher-exit-0 ($($launcher.ExitCode))"
+    Assert ($launcher.WaitForExit(15000)) 'launcher-ends-with-the-hub'
     $hubLog = [IO.File]::ReadAllText((Join-Path $data 'logs\hub.out.log'))
     Write-Host $hubLog
     Assert ($hubLog.Contains('Ctrl-Break: stopping') -and $hubLog.Contains('fohmixer-hub stopped')) 'hub-stopped-gracefully-on-ctrl-break'
     Assert (-not $hubLog.Contains([string][char]27)) 'hub-log-without-colour-codes'
     Assert ([IO.File]::ReadAllText((Join-Path $data 'logs\hub-stop.log')) -like "*Ctrl-Break sent to pid $($hubs[0].pid)*") 'stop-log-names-the-pid'
-    Assert ([IO.File]::ReadAllText((Join-Path $data 'logs\hub-launch.log')) -like "*exited with 0*") 'launch-log-records-the-exit'
+    Assert ([IO.File]::ReadAllText((Join-Path $data 'logs\hub-launch.log')) -like "*pid $($hubs[0].pid) exited with 0*") 'hub-exit-code-0-in-the-launch-log'
 
     # ---- install 2: the same bundle and parameters write nothing ----
     New-Item -ItemType Directory -Force -Path (Join-Path $bandCopy 'logs') | Out-Null
     [IO.File]::WriteAllText((Join-Path $bandCopy 'logs\FohMixer.log'), "Live's log`n")
     [IO.File]::WriteAllText((Join-Path $bandCopy 'stale.py'), "# not in the bundle`n")
-    $watched = @($appV1, $bandCopy, $masterCopy, (Join-Path $data 'fohmixer-hub.toml'), (Join-Path $data 'layout.json'), (Join-Path $data 'app\current.txt'))
-    Set-OldStamps $watched
+    $watched = @{}
+    $watched[$appV1] = $oldApp
+    foreach ($p in @($bandCopy, $masterCopy, (Join-Path $data 'fohmixer-hub.toml'), (Join-Path $data 'layout.json'), (Join-Path $data 'app\current.txt'))) {
+        $watched[$p] = $old
+    }
+    Set-Stamps $watched
     $r2 = Invoke-Ps $install (Get-InstallArgs)
     Assert ($r2.code -eq 0) 'install-2-exits-0'
-    $newer = @(Get-NewerFiles $watched)
+    $newer = @(Get-ChangedFiles $watched)
     Assert ($newer.Count -eq 0) "install-2-writes-nothing ($($newer -join ', '))"
     Assert (Test-Path -LiteralPath (Join-Path $bandCopy 'stale.py')) 'install-2-keeps-a-copy-of-the-same-version'
 
     # ---- install 3: another master port rewrites the master Config.py and the toml only ----
     $r3 = Invoke-Ps $install (Get-InstallArgs @{ MasterPort = 39183 })
     Assert ($r3.code -eq 0) 'install-3-exits-0'
-    $newer = @(Get-NewerFiles $watched | ForEach-Object { $_.Substring($base.Length) }) | Sort-Object
+    $newer = @(Get-ChangedFiles $watched | ForEach-Object { $_.Substring($base.Length) }) | Sort-Object
     $wantNewer = @(
         (Join-Path $masterCopy 'Config.py').Substring($base.Length),
         (Join-Path $data 'fohmixer-hub.toml').Substring($base.Length)) | Sort-Object
@@ -266,7 +296,9 @@ try {
 
     # ---- the tasks, registered for this user in a test folder (never started) ----
     Register-FohHubTasks -AppDir $appV1 -DataDir $data -User $me -TaskPath $taskFolder
-    $ps = Join-Path ([Environment]::GetFolderPath('System')) 'WindowsPowerShell\v1.0\powershell.exe'
+    $system = [Environment]::GetFolderPath('System')
+    $conhost = Join-Path $system 'conhost.exe'
+    $ps = Join-Path $system 'WindowsPowerShell\v1.0\powershell.exe'
     foreach ($n in @('fohmixer-hub', 'fohmixer-hub-stop')) {
         $t = Get-ScheduledTask -TaskPath $taskFolder -TaskName $n
         $st = $t.Settings
@@ -274,23 +306,34 @@ try {
         Assert ($st.ExecutionTimeLimit -eq 'PT0S' -and "$($st.MultipleInstances)" -eq 'IgnoreNew') "task-$n-no-time-limit-ignorenew"
         Assert (-not $st.AllowHardTerminate) "task-$n-never-ended-hard"
         Assert (-not $st.DisallowStartIfOnBatteries -and -not $st.StopIfGoingOnBatteries -and -not $st.IdleSettings.StopOnIdleEnd -and $st.Priority -eq 4) "task-$n-no-battery-or-idle-stop-normal-priority"
-        Assert ($t.Actions[0].Execute -eq $ps -and $t.Actions[0].WorkingDirectory -eq $data) "task-$n-runs-windows-powershell-in-the-data-folder"
+        Assert ($t.Actions[0].Execute -eq $conhost -and $t.Actions[0].WorkingDirectory -eq $data) "task-$n-runs-in-a-headless-console-in-the-data-folder"
         Assert ("$($t.State)" -ne 'Running') "task-$n-not-started"
     }
     $h = Get-ScheduledTask -TaskPath $taskFolder -TaskName 'fohmixer-hub'
-    $wantArgs = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}" -DataDir "{1}"'
-    Assert ($h.Actions[0].Arguments -ceq ($wantArgs -f (Join-Path $appV1 'Start-FohmixerHub.ps1'), $data)) "task-hub-runs-the-launcher ($($h.Actions[0].Arguments))"
+    $wantArgs = '--headless "{0}" -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File "{1}" -DataDir "{2}"'
+    Assert ($h.Actions[0].Arguments -ceq ($wantArgs -f $ps, (Join-Path $appV1 'Start-FohmixerHub.ps1'), $data)) "task-hub-runs-the-launcher ($($h.Actions[0].Arguments))"
     Assert (@($h.Triggers).Count -eq 1 -and $h.Triggers[0].CimClass.CimClassName -eq 'MSFT_TaskLogonTrigger' -and
-        $h.Triggers[0].UserId -like ('*' + (Get-FohLeafName $me))) 'task-hub-starts-at-the-users-logon'
-    Assert ($h.Settings.RestartCount -eq 3 -and $h.Settings.RestartInterval -eq 'PT1M') 'task-hub-restarts-on-failure-3x1min'
+        (Get-FohSid ([string]$h.Triggers[0].UserId)) -ceq $meSid) 'task-hub-starts-at-the-users-logon'
+    Assert ($h.Settings.RestartCount -eq 3 -and $h.Settings.RestartInterval -eq 'PT1M') 'task-hub-restarts-after-a-failed-start-3x1min'
     $st = Get-ScheduledTask -TaskPath $taskFolder -TaskName 'fohmixer-hub-stop'
-    Assert ($st.Actions[0].Arguments -ceq ($wantArgs -f (Join-Path $appV1 'Stop-FohmixerHub.ps1'), $data)) 'task-stop-runs-the-stop-script'
+    Assert ($st.Actions[0].Arguments -ceq ($wantArgs -f $ps, (Join-Path $appV1 'Stop-FohmixerHub.ps1'), $data)) 'task-stop-runs-the-stop-script'
     Assert ($null -eq $st.Triggers -or @($st.Triggers).Count -eq 0) 'task-stop-has-no-trigger'
     Assert ($st.Settings.RestartCount -eq 0) 'task-stop-never-restarts'
     Register-FohHubTasks -AppDir $appV2 -DataDir $data -User $me -TaskPath $taskFolder
     Assert (@(Get-ScheduledTask -TaskPath $taskFolder).Count -eq 2) 'tasks-updated-in-place-by-the-next-install'
     $h = Get-ScheduledTask -TaskPath $taskFolder -TaskName 'fohmixer-hub'
-    Assert ($h.Actions[0].Arguments -ceq ($wantArgs -f (Join-Path $appV2 'Start-FohmixerHub.ps1'), $data)) 'task-hub-runs-the-new-version'
+    Assert ($h.Actions[0].Arguments -ceq ($wantArgs -f $ps, (Join-Path $appV2 'Start-FohmixerHub.ps1'), $data)) 'task-hub-runs-the-new-version'
+
+    # ---- the firewall rule, as a disabled test rule ----
+    Assert (Set-FohFirewallRule -Port 18481 -Name $fwName -Disabled) 'firewall-rule-created'
+    $fr = Get-NetFirewallRule -Name $fwName
+    $pf = $fr | Get-NetFirewallPortFilter
+    Assert ("$($fr.Direction)" -eq 'Inbound' -and "$($fr.Action)" -eq 'Allow' -and "$($fr.Enabled)" -eq 'False' -and
+        "$($pf.Protocol)" -eq 'TCP' -and "$(@($pf.LocalPort))" -eq '18481') 'firewall-rule-inbound-tcp-on-the-http-port'
+    Assert ((((@("$($fr.Profile)" -split ',\s*') | Sort-Object)) -join ',') -eq 'Domain,Private') 'firewall-rule-on-the-domain-and-private-profiles'
+    Assert (-not (Set-FohFirewallRule -Port 18481 -Name $fwName -Disabled)) 'firewall-rule-second-run-changes-nothing'
+    Set-NetFirewallRule -Name $fwName -LocalPort 18482
+    Assert ((Set-FohFirewallRule -Port 18481 -Name $fwName -Disabled) -and "$(@(($fr | Get-NetFirewallPortFilter).LocalPort))" -eq '18481') 'firewall-rule-drift-is-repaired'
 
     # ---- the data folder's DACL ----
     $aclDir = Join-Path $base 'acl'
@@ -299,7 +342,6 @@ try {
     Set-FohDataDirAcl -Path $aclDir -User $me
     Assert (@(Test-FohDataDirAcl -Path $aclDir -User $me).Count -eq 0) 'dacl-reads-back'
     $below = Get-Acl -LiteralPath (Join-Path $aclDir 'secrets\key')
-    $meSid = (New-Object Security.Principal.NTAccount $me).Translate([Security.Principal.SecurityIdentifier]).Value
     $sids = @($below.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]) | Where-Object { $_.IsInherited } |
             ForEach-Object { $_.IdentityReference.Value } | Sort-Object)
     Assert (($sids -join ',') -ceq ((@('S-1-5-18', 'S-1-5-32-544', $meSid) | Sort-Object) -join ',')) "dacl-inherited-by-the-files-below ($($sids -join ','))"
@@ -330,6 +372,9 @@ try {
         $sch.Connect()
         $sch.GetFolder('\').DeleteFolder($taskFolder.Trim('\'), 0)
     } catch { Write-Host "cleanup: task folder $taskFolder ($($_.Exception.Message))" }
+    try {
+        if ($null -ne (Get-FohFirewallRule -Name $fwName)) { Remove-NetFirewallRule -Name $fwName }
+    } catch { Write-Host "cleanup: firewall rule $fwName ($($_.Exception.Message))" }
     try { Remove-Item -LiteralPath $base -Recurse -Force } catch { Write-Host "cleanup: $base ($($_.Exception.Message))" }
 }
 Write-Host 'Test-Fohmixer: all passed'

@@ -8,12 +8,13 @@ docs/superpowers/specs/2026-09-28-s5-deploy-design.md, section 3).
 Run it elevated, in Windows PowerShell 5.1, from the unzipped bundle, with the
 bundle zip itself as -BundleZip. It is idempotent: a second run with the same
 bundle and parameters writes nothing (it does stop and start the hub again).
-Every input is checked before anything changes. In order:
+Every parameter is checked before anything changes, and the bundle (against
+its SHA256SUMS) before the hub is stopped. Then, in order:
   1. stops the running hub: Ctrl-Break through the fohmixer-hub-stop task, then
      a wait of up to 10 s; a hub that does not stop is reported, never ended
      (spec I7);
-  2. unpacks the bundle (checked against its SHA256SUMS) to
-     <DataDir>\app\<version> and points <DataDir>\app\current.txt at it;
+  2. installs the bundle as <DataDir>\app\<version> and points
+     <DataDir>\app\current.txt at it;
   3. writes <DataDir>\fohmixer-hub.toml (HTTP port, the band and master
      instances, layout.json);
   4. copies -Layout (the import's output) to <DataDir>\layout.json;
@@ -21,11 +22,15 @@ Every input is checked before anything changes. In order:
      that user's INSTANCE and PORT in Config.py (replaced only when version.py
      differs); Live's preferences and a running Live are never touched;
   6. registers the tasks fohmixer-hub (at the band user's logon, Interactive,
-     Limited, no time limit, IgnoreNew, never ended hard) and fohmixer-hub-stop,
-     and starts fohmixer-hub;
-  7. polls http://127.0.0.1:<HttpPort>/api/version (up to 20 s) and prints it.
+     Limited, no time limit, IgnoreNew, never ended hard, in a console without
+     a window) and fohmixer-hub-stop, and the firewall rule fohmixer-hub-http
+     (TCP <HttpPort>, Domain and Private profiles);
+  7. starts fohmixer-hub and polls http://127.0.0.1:<HttpPort>/api/version (up
+     to 20 s) and prints it.
 The data folder gets a protected DACL: SYSTEM, Administrators and the band user.
+When a step after the stop fails, the hub task is started again.
 -NoTask (the self-test) leaves out steps 1, 6, 7 and the DACL.
+Errors: one "fohmixer install FAILED: ..." line on stderr, exit code 1.
 
 .EXAMPLE
 powershell -NoProfile -ExecutionPolicy Bypass -File <unzipped bundle>\Install-Fohmixer.ps1 -BundleZip <bundle zip> -BandUser <band account> -MasterUser <master account> -Layout <import folder>\layout.json
