@@ -227,7 +227,9 @@ pub fn FaderView(targets: Vec<Target>, shaping: bool) -> impl IntoView {
         >
             <div class="fader-groove"></div>
             <div class="fader-fill"></div>
-            <div class="fader-cap"></div>
+            <div class="fader-rail">
+                <div class="fader-cap"></div>
+            </div>
         </div>
     }
 }
