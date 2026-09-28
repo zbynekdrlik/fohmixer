@@ -117,6 +117,15 @@ class ImportTest(unittest.TestCase):
         self.assertEqual(alert["style"]["bg"], "#FF00001F")
         self.assertTrue(self.dropped("battery"), self.report["dropped"])
 
+    def test_the_battery_gauge_is_dropped_whole_and_reported_once(self):
+        # The battery script sits on the gauge's fader; the group, its box
+        # and its "100%" label go with it (no static fake gauge).
+        self.assertEqual(
+            [d for d in self.report["dropped"] if "battery" in d["node"] or "X5" in d["why"]],
+            [{"node": "root/battery", "why": "the battery gauge (X5)"}],
+        )
+        self.assertEqual([i["kind"] for i in self.layout["overlay"]], ["strip", "refresh", "alert"])
+
     def test_an_alert_box_before_its_techalert_strip_is_kept(self):
         # In the real project the hidden alert box is the root's second
         # child, before REFRESH ALL, the battery and the TechAlert strip.

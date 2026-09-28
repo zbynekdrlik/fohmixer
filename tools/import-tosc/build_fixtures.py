@@ -617,12 +617,33 @@ def project():
         [
             pager,
             tech_alert,
+            # The battery gauge: a plain group whose fader carries the
+            # battery script, with a box and a "100%" label.
             N(
                 "GROUP",
                 "battery",
                 (66, 1152, 136, 80),
-                [N("FADER", "level", (0, 0, 136, 40)), label("pct", (0, 40, 136, 40), "80%")],
-                script=BATTERY_SCRIPT,
+                [
+                    N("BOX", "+", (104, 36, 24, 23), color=(0, 1, 0, 0.43)),
+                    N(
+                        "FADER",
+                        "main",
+                        (5, 25, 112, 45),
+                        script=BATTERY_SCRIPT,
+                        orientation=1,
+                        background=True,
+                        color=(0, 1, 0, 0.27),
+                    ),
+                    label(
+                        "label",
+                        (4, 26, 119, 44),
+                        "100%",
+                        background=True,
+                        color=(0, 1, 0, 0.27),
+                    ),
+                ],
+                background=True,
+                color=(0, 0, 0, 0),
             ),
             label(
                 "refresh",
