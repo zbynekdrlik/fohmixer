@@ -140,6 +140,21 @@ pub struct LayoutConfig {
     /// default when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fader_shaping: Option<bool>,
+    /// The Live properties the strip meters show (spec X2): switchable until
+    /// the K2 measurement decides (#5); `level` when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meter_source: Option<MeterSource>,
+}
+
+/// The meter source of the strips (spec X2).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MeterSource {
+    /// `output_meter_level`: one bar (TouchOSC parity).
+    #[default]
+    Level,
+    /// `output_meter_left` and `output_meter_right`: two bars.
+    Lr,
 }
 
 /// A group track to unfold: its instance and exact name.
