@@ -159,16 +159,31 @@ test.describe("A strip", () => {
 });
 
 test.describe("Controls wait for Live's value (I8)", () => {
-  test("right after load the controls are disabled until their first value", async ({ page }) => {
+  test("right after load the controls are disabled until their first value and take no input", async ({ page }) => {
     await live.set("band", HAND2, "mute", false);
+    const level = await live.get("band", volume(HAND2), "value");
     // The band host's main thread stops: its values are held back.
     await hostLine("band", "stall 4000");
     await openSurfaceDuringStall(page);
     const fader = strip(page, "Hand2 #").getByTestId("fader");
+    const mute = strip(page, "Hand2 #").getByTestId("mute");
     await expect(fader).toHaveAttribute("aria-disabled", "true");
-    await expect(strip(page, "Hand2 #").getByTestId("mute")).toHaveAttribute("aria-disabled", "true");
+    await expect(mute).toHaveAttribute("aria-disabled", "true");
+    // A tap and a drag on the disabled controls write nothing (a write would
+    // wait in the stalled host and land after the stall).
+    const m = await centre(mute);
+    await page.mouse.click(m.x, m.y);
+    const f = await centre(fader);
+    await page.mouse.move(f.x, f.y);
+    await page.mouse.down();
+    for (let i = 1; i <= 5; i++) await page.mouse.move(f.x, f.y - 10 * i);
+    await page.mouse.up();
+    expect(await fader.getAttribute("aria-disabled"), "still disabled after the input").toBe("true");
     await expect(fader).toHaveAttribute("aria-disabled", "false", { timeout: 10_000 });
-    await ready(strip(page, "Hand2 #").getByTestId("mute"));
+    await ready(mute);
+    await page.waitForTimeout(300);
+    expect(await live.get("band", HAND2, "mute")).toBe(false);
+    expect(await live.get("band", volume(HAND2), "value")).toBe(level);
   });
 
   test("a host restart disables the controls until Live is back with its values", async ({ page }) => {

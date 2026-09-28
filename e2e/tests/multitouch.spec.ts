@@ -142,10 +142,54 @@ test.describe("A host restart in the middle of a drag", () => {
     await restart;
     await expect(fader).toHaveAttribute("aria-disabled", "false", { timeout: 10_000 });
     await page.mouse.up();
-    // After the release and its hold the fader shows Live's current value:
-    // the restarted host's own, never the finger's stale one.
+    // The restarted host has its fixture's value (Hand2 # at 0.8) and the
+    // release sent nothing: the finger's stale value never reached Live.
     const now = await live.get("band", B.target, "value");
-    await until(() => shown(fader), (v) => Math.abs(v - now) < 0.001, "the fader at Live's value", 5000);
-    await expect(strip(page, B.name).getByTestId("db")).toHaveText(await live.display("band", B.target, now));
+    expect(now).toBeCloseTo(0.8, 9);
+    expect(Math.abs(now - finger)).toBeGreaterThan(0.01);
+    // After the release and its hold the fader shows that value.
+    await until(() => shown(fader), (v) => Math.abs(v - 0.8) < 0.001, "the fader at Live's value", 5000);
+    await expect(strip(page, B.name).getByTestId("db")).toHaveText(await live.display("band", B.target, 0.8));
+  });
+});
+
+test.describe("A hub restart in the middle of a drag", () => {
+  // While the hub is down the page's reconnect requests fail: the browser
+  // reports them as failed resource loads (and a socket that could not
+  // connect, should one attempt land in the gap).
+  test.use({
+    allowedConsole: [[/^Failed to load resource: /, /^WebSocket connection to '.*' failed/], { scope: "test" }],
+  });
+
+  test("the fader stays under the finger and writes again after the reconnect (I4)", async ({ page }) => {
+    await live.set("band", B.target, "value", 0.5);
+    await openSurface(page);
+    const surface = page.getByTestId("surface");
+    const fader = strip(page, B.name).getByTestId("fader");
+    await ready(fader);
+    await until(() => shown(fader), (v) => Math.abs(v - 0.5) < 0.001, "the fader at 0.5");
+    // Marks the element: a rebuilt stage would lose the mark.
+    await fader.evaluate((el) => el.setAttribute("data-e2e-kept", "1"));
+    const { x, y } = await centre(fader);
+    await page.mouse.move(x, y);
+    await page.mouse.down();
+    for (let i = 1; i <= 3; i++) await page.mouse.move(x, y - 8 * i);
+    await until(() => live.get("band", B.target, "value"), (v) => v > 0.51, "the first moves in Live");
+    const restart = harness("/hub/restart", { rotate_secret: false });
+    await expect(surface).toHaveAttribute("data-connected", "false");
+    await restart;
+    await expect(surface).toHaveAttribute("data-connected", "true", { timeout: 15_000 });
+    await ready(fader);
+    // The same layout again rebuilt nothing: the same element, still held.
+    await expect(fader).toHaveAttribute("data-e2e-kept", "1");
+    const before = await live.get("band", B.target, "value");
+    for (let i = 4; i <= 9; i++) await page.mouse.move(x, y - 8 * i);
+    await until(
+      () => live.get("band", B.target, "value"),
+      (v) => v > before + 0.01,
+      "the finger to drive the fader again",
+    );
+    await page.mouse.up();
+    await expect(fader).not.toHaveClass(/failed/, { timeout: 2000 });
   });
 });

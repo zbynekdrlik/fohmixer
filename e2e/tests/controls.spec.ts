@@ -1,5 +1,5 @@
 import { test, expect } from "./support/fixtures";
-import { LiveClient, hostLine, openSurface, ready, strip, track, until } from "./support/live";
+import { LiveClient, centre, hostLine, openSurface, ready, strip, track, until } from "./support/live";
 
 // Solo, the stage mics with STAGE AUT, TechAlert and REFRESH ALL (spec F6,
 // F7, F14–F16, I5).
@@ -33,6 +33,29 @@ test.describe("Solo buttons", () => {
     await solo.click();
     await until(() => live.get("band", stems, "solo"), (v) => v === false, "Stems unsoloed");
     await live.set("band", vocals, "solo", false);
+  });
+
+  test("a solo whose group track is renamed turns red and takes no tap (I5)", async ({ page }) => {
+    const stems = track("Stems grp#");
+    await live.set("band", stems, "solo", false);
+    await openSurface(page);
+    const solo = page.locator('[data-testid="solo"][data-track="Stems grp#"]');
+    await ready(solo);
+    await expect(solo).toHaveAttribute("data-binding", "ready");
+    try {
+      expect(await hostLine("band", 'rename "Stems grp#" "Stems grp X"')).toBe("RENAMED 1");
+      await expect(solo).toHaveAttribute("data-binding", "unresolved");
+      await expect(solo).toHaveAttribute("aria-disabled", "true");
+      await expect(solo).toHaveCSS("background-color", "rgb(255, 59, 48)");
+      const { x, y } = await centre(solo);
+      await page.mouse.click(x, y);
+      await page.waitForTimeout(300);
+      expect(await live.get("band", track("Stems grp X"), "solo")).toBe(false);
+    } finally {
+      await hostLine("band", 'rename "Stems grp X" "Stems grp#"');
+    }
+    await expect(solo).toHaveAttribute("data-binding", "ready");
+    await ready(solo);
   });
 });
 
@@ -108,26 +131,34 @@ test.describe("TechAlert", () => {
 });
 
 test.describe("REFRESH ALL", () => {
-  test("a renamed track turns its strip red; renamed back and refreshed, it binds again", async ({ page }) => {
+  test("a renamed track turns its strip red; a refresh cannot bind a name that is gone", async ({ page }) => {
     await openSurface(page);
     const hand2 = strip(page, "Hand2 #");
     const refresh = page.getByTestId("refresh");
+    const surface = page.getByTestId("surface");
     await expect(hand2.getByTestId("status")).toHaveAttribute("data-state", "bound");
     try {
       expect(await hostLine("band", 'rename "Hand2 #" "Hand2 X"')).toBe("RENAMED 1");
       await expect(hand2.getByTestId("status")).toHaveAttribute("data-state", "unbound");
+      await expect(hand2.getByTestId("fader")).toHaveAttribute("data-binding", "unresolved");
+      const before = Number(await surface.getAttribute("data-refreshes"));
       await refresh.click();
       await expect(refresh).toHaveAttribute("data-flash", "true");
       await expect(refresh).toHaveAttribute("data-flash", "false");
+      // The refresh ran (every subscription again), and the name is still
+      // gone: the strip stays red and disabled.
+      await expect(surface).toHaveAttribute("data-refreshes", String(before + 1));
       await expect(hand2.getByTestId("status")).toHaveAttribute("data-state", "unbound");
       await expect(hand2.getByTestId("fader")).toHaveAttribute("aria-disabled", "true");
     } finally {
       await hostLine("band", 'rename "Hand2 X" "Hand2 #"');
     }
-    await page.waitForTimeout(600);
-    await refresh.click();
+    // Renamed back, the hub binds it again by itself (its name guard, F3),
+    // with no refresh.
+    const refreshes = await surface.getAttribute("data-refreshes");
     await expect(hand2.getByTestId("status")).toHaveAttribute("data-state", "bound");
     await ready(hand2.getByTestId("fader"));
+    await expect(surface).toHaveAttribute("data-refreshes", refreshes ?? "");
   });
 
   test("refresh unfolds the configured group tracks", async ({ page }) => {

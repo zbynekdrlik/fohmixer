@@ -1,5 +1,19 @@
 import { test, expect, type Page } from "./support/fixtures";
-import { LiveClient, centre, doubleTap, openSurface, ready, selectPage, track, until, volume } from "./support/live";
+import {
+  BASE,
+  LiveClient,
+  centre,
+  doubleTap,
+  harness,
+  hostLine,
+  openSurface,
+  ready,
+  selectPage,
+  token,
+  track,
+  until,
+  volume,
+} from "./support/live";
 
 // The former MIDI controls (spec F17, F18, D10, X10): toggles and a fader that
 // write their target parameters directly and show the targets' real state.
@@ -21,6 +35,23 @@ const REVERB = "live_set return_tracks[name=A-Reverb #]";
 const VOC1 = track("Vocal 1 repro#");
 const VOC2 = track("Vocal 2 repro#");
 const HAND4 = track("Hand4 #");
+/** The stylesheet's red for an unresolved binding (`--danger`). */
+const RED = "rgb(255, 59, 48)";
+
+/** REPRO's target in a layout. */
+function reproTarget(layout: any): any {
+  const item = layout.pages
+    .flatMap((p: any) => p.items)
+    .find((i: any) => i.kind === "param_toggle" && i.label === "REPRO");
+  return item.targets[0];
+}
+
+/** The layout the hub serves now. */
+async function served(): Promise<any> {
+  const response = await fetch(`${BASE}/api/layout`, { headers: { authorization: `Bearer ${await token()}` } });
+  if (!response.ok) throw new Error(`layout: ${response.status}`);
+  return (await response.json()).layout;
+}
 
 test.describe("Former MIDI toggles", () => {
   test("a toggle writes its target and shows Live's state", async ({ page }) => {
@@ -86,11 +117,43 @@ test.describe("Former MIDI toggles", () => {
     await until(() => live.get("band", HAND4, "mute"), (v) => v === true, "unlatched");
   });
 
-  test("a toggle whose target the set lacks stays disabled", async ({ page }) => {
+  test("a toggle whose target the set lacks stays disabled and red", async ({ page }) => {
     await openSurface(page);
     const autotune = toggle(page, "AUTOTUNE");
     await expect(autotune).toHaveAttribute("data-state", "unknown");
     await expect(autotune).toHaveAttribute("aria-disabled", "true");
+    await expect(autotune).toHaveAttribute("data-binding", "unresolved");
+    await expect(autotune).toHaveCSS("background-color", RED);
+  });
+
+  test("a write Live refuses is shown on the control, never retried (I6)", async ({ page }) => {
+    const repro = "live_set tracks[name=Hand4 #] mixer_device sends 1";
+    await live.set("band", repro, "value", 0.0);
+    // REPRO writes 5.0 for "on": a send's range is 0..1, so Live refuses it.
+    const refused = structuredClone(await served());
+    reproTarget(refused).on = 5.0;
+    await harness("/hub/layout", { layout: refused });
+    try {
+      await until(() => served(), (l) => reproTarget(l).on === 5, "the hub to serve the edited layout");
+      await openSurface(page);
+      const toggleEl = toggle(page, "REPRO");
+      await ready(toggleEl);
+      await expect(toggleEl).toHaveAttribute("data-state", "off");
+      await toggleEl.click();
+      await expect(toggleEl).toHaveClass(/failed/);
+      await expect(toggleEl).not.toHaveClass(/failed/, { timeout: 2000 });
+      // Never retried: no second flash and Live keeps its value.
+      const deadline = Date.now() + 1500;
+      while (Date.now() < deadline) {
+        await expect(toggleEl).not.toHaveClass(/failed/, { timeout: 100 });
+        await page.waitForTimeout(100);
+      }
+      expect(await live.get("band", repro, "value")).toBe(0);
+      await expect(toggleEl).toHaveAttribute("data-state", "off");
+    } finally {
+      await harness("/hub/layout/reset");
+      await until(() => served(), (l) => reproTarget(l).on === 1, "the original layout served again");
+    }
   });
 
   test("the cue page's toggle writes its track", async ({ page }) => {
@@ -129,5 +192,23 @@ test.describe("The former MIDI fader", () => {
     const d = await live.get("band", drums, "value");
     expect(await live.get("band", bass, "value")).toBeCloseTo(d, 9);
     await expect(podklady.getByTestId("param-display")).toHaveText(await live.display("band", drums, d));
+  });
+
+  test("Podklady All waits for every target: one that does not resolve turns it red", async ({ page }) => {
+    await openSurface(page);
+    const fader = page.locator('[data-testid="param-fader"][data-label="Podklady All"]').getByTestId("fader");
+    await ready(fader);
+    await expect(fader).toHaveAttribute("data-binding", "ready");
+    try {
+      // The second target goes: the fader must not write the first alone.
+      expect(await hostLine("band", 'rename "Bass #" "Bass X"')).toBe("RENAMED 1");
+      await expect(fader).toHaveAttribute("data-binding", "unresolved");
+      await expect(fader).toHaveAttribute("aria-disabled", "true");
+      await expect(fader).toHaveCSS("background-color", RED);
+    } finally {
+      await hostLine("band", 'rename "Bass X" "Bass #"');
+    }
+    await expect(fader).toHaveAttribute("data-binding", "ready");
+    await ready(fader);
   });
 });
