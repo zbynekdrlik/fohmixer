@@ -319,16 +319,10 @@ body {
     font: 700 12px/1 var(--ui);
     letter-spacing: 1px;
     cursor: pointer;
-    animation: solo-pulse 1.6s ease-in-out infinite;
 }
 
 .solo-clear.on {
     display: inline-flex;
-}
-
-@keyframes solo-pulse {
-    0%, 100% { box-shadow: 0 0 0 0 rgba(244, 211, 94, 0.55); }
-    50% { box-shadow: 0 0 0 7px rgba(244, 211, 94, 0); }
 }
 
 .status-cluster {
@@ -351,7 +345,6 @@ body {
 
 .hub-dot.online {
     background: var(--accent);
-    box-shadow: 0 0 6px var(--accent-glow);
 }
 
 .badge {
@@ -367,10 +360,10 @@ body {
     background: var(--faint);
 }
 
+/* Static: an endless animation repaints every frame (#21: the CI's WebKit
+   drew 2.5 fps with them, 15 without). */
 .badge.online .badge-dot {
     background: var(--ok);
-    box-shadow: 0 0 6px rgba(54, 214, 122, 0.5);
-    animation: beat 1s ease-out infinite;
 }
 
 .badge.busy .badge-dot {
@@ -379,11 +372,6 @@ body {
 
 .badge.offline .badge-dot {
     background: var(--danger);
-}
-
-@keyframes beat {
-    0% { transform: scale(1.35); }
-    40%, 100% { transform: scale(1); }
 }
 
 .version {
@@ -648,7 +636,6 @@ body {
     width: var(--strip-w, 76px);
     min-height: 0;
     padding: 6px 4px 5px;
-    overflow: hidden;
     border: 1px solid transparent;
     border-radius: 9px;
     background: var(--panel);
@@ -658,11 +645,14 @@ body {
     width: calc(var(--strip-w, 76px) * 1.1);
 }
 
+/* No rounded clip on the strip (a clip is painted again with every change
+   inside it): its edge lines round their own corners. */
 .strip::before {
     content: "";
     position: absolute;
     inset: 0 0 auto 0;
     height: 3px;
+    border-radius: 9px 9px 0 0;
     background: var(--gc, var(--accent));
     opacity: 0.9;
 }
@@ -675,6 +665,7 @@ body {
     bottom: 0;
     left: 0;
     width: 3px;
+    border-radius: 9px 0 0 9px;
     background: var(--mute);
 }
 
@@ -853,6 +844,7 @@ body {
     inset: 0;
     opacity: 0;
     transform: translateY(calc((1 - var(--pk, 0)) * 100%));
+    will-change: transform;
 }
 
 .meter-peak::before {
@@ -868,7 +860,6 @@ body {
 .meter-bar {
     position: relative;
     overflow: hidden;
-    border-radius: 2px;
     background: #0e0e18;
 }
 
@@ -883,12 +874,15 @@ body {
     );
 }
 
+/* The moving parts on layers of their own: a meter frame composites, it
+   paints nothing around it. */
 .meter-cover {
     position: absolute;
     inset: 0;
     background: #0e0e18;
     transform-origin: top;
     transform: scaleY(1);
+    will-change: transform;
 }
 
 /* The fader: the cap's centre runs the whole track (`--p`, 0 at the
@@ -941,6 +935,7 @@ body {
     z-index: 1;
     pointer-events: none;
     transform: translateY(calc((1 - var(--p, 0)) * 100%));
+    will-change: transform;
 }
 
 .fader-cap {
@@ -951,9 +946,9 @@ body {
     height: 22px;
     margin: -11px 0 0 -16px;
     border: 1px solid #4a4a66;
+    border-bottom-color: #15151f;
     border-radius: 6px;
     background: linear-gradient(#3a3a52, #262638);
-    box-shadow: 0 3px 8px rgba(0, 0, 0, 0.55);
 }
 
 .fader-cap::before {
@@ -970,7 +965,6 @@ body {
 
 .fader:active .fader-cap {
     border-color: var(--accent);
-    box-shadow: 0 0 12px var(--accent-glow), 0 3px 8px rgba(0, 0, 0, 0.55);
 }
 
 .strip-dbrow {
@@ -1012,7 +1006,6 @@ body {
     justify-content: center;
     height: 34px;
     padding: 0 4px;
-    overflow: hidden;
     border-radius: 7px;
     background: #1f1f2e;
     box-shadow: inset 0 0 0 1px var(--mute-dim);
@@ -1028,7 +1021,7 @@ body {
    dark text reads on it. */
 .mute.lit {
     background: var(--tc, var(--accent));
-    box-shadow: 0 0 10px color-mix(in srgb, var(--tc, var(--accent)) 35%, transparent);
+    box-shadow: none;
     color: var(--tt, #10101a);
 }
 
@@ -1133,8 +1126,6 @@ body {
 }
 
 @media (prefers-reduced-motion: reduce) {
-    .solo-clear,
-    .badge.online .badge-dot,
     .mute.armed,
     .btn.armed {
         animation: none;
