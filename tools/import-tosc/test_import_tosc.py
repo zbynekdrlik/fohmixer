@@ -117,6 +117,25 @@ class ImportTest(unittest.TestCase):
         self.assertEqual(alert["style"]["bg"], "#FF00001F")
         self.assertTrue(self.dropped("battery"), self.report["dropped"])
 
+    def test_an_alert_box_before_its_techalert_strip_is_kept(self):
+        # In the real project the hidden alert box is the root's second
+        # child, before REFRESH ALL, the battery and the TechAlert strip.
+        path = os.path.join(self.dir, "alert-first.tosc")
+        with open(path, "wb") as f:
+            f.write(build_fixtures.tosc_bytes(build_fixtures.alert_first(build_fixtures.project())))
+        layout = import_tosc.import_files(path, self.als)
+        overlay = layout["overlay"]
+        # Node order stays the z-order: the box blinks under the overlay.
+        self.assertEqual([i["kind"] for i in overlay], ["alert", "refresh", "strip"])
+        self.assertEqual([i["z"] for i in overlay], sorted(i["z"] for i in overlay))
+        self.assertEqual(overlay[0]["binding"], overlay[2]["binding"])
+        self.assertEqual(overlay[0]["frame"], {"x": 0.0, "y": 80.0, "w": 2360.0, "h": 1553.0})
+        self.assertEqual(overlay[0]["period_ms"], 300)
+        self.assertFalse(
+            [d for d in layout["report"]["dropped"] if "alert box" in d["why"]],
+            layout["report"]["dropped"],
+        )
+
     def test_frames_are_composed_into_canvas_coordinates(self):
         # A label at (10,10) in a group at (100,100) on a page at (0,59).
         marks = [i for i in items(self.foh) if i["kind"] == "label" and i["text"] == "[]"]

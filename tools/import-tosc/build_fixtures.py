@@ -554,8 +554,19 @@ def project():
     )
 
 
-def tosc_bytes():
-    xml = "<?xml version='1.0' encoding='UTF-8'?><lexml version='6'>" + project().xml() + "</lexml>"
+def alert_first(root):
+    """``root`` with its children in the real project's order: the hidden alert
+    box right after the pager, the TechAlert strip last."""
+    by_name = {c.props["name"]: c for c in root.children}
+    order = ("pager1", "alert", "refresh", "battery", "band_TechAlert #")
+    root.children = [by_name[name] for name in order]
+    return root
+
+
+def tosc_bytes(root=None):
+    """The zlib-compressed project file of ``root`` (default: ``project()``)."""
+    root = project() if root is None else root
+    xml = "<?xml version='1.0' encoding='UTF-8'?><lexml version='6'>" + root.xml() + "</lexml>"
     return zlib.compress(xml.encode("utf-8"), 9)
 
 
