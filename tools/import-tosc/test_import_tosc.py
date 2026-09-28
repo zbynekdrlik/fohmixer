@@ -313,6 +313,26 @@ class ImportTest(unittest.TestCase):
         self.assertEqual(repro["targets"][0]["binding"]["path"], "mixer_device sends 1")
         self.assertEqual((repro["targets"][0]["on"], repro["targets"][0]["off"]), (1.0, 0.0))
 
+    def test_a_standalone_midi_button_keeps_its_place_and_its_sibling_label(self):
+        # REPRO is a button outside any group, at (75,909) on the page at
+        # (0,59): its frame is composed once, and the label drawn over it
+        # (a sibling node) names it.
+        repro = [
+            i for i in items(self.foh) if i["kind"] == "param_toggle" and i["label"] == "REPRO"
+        ]
+        self.assertEqual(len(repro), 1, [i.get("label") for i in items(self.foh)])
+        self.assertEqual(repro[0]["frame"], {"x": 75.0, "y": 968.0, "w": 102.0, "h": 60.0})
+        self.assertEqual(repro[0]["press"], "toggle")
+        self.assertEqual(
+            self.verdict("CC31 ch14"),
+            {"control": "REPRO", "message": "CC31 ch14", "verdict": "clean", "targets": 1},
+        )
+        # The label is the control's, not a second static text over it.
+        self.assertFalse([i for i in all_items(self.layout) if i.get("text") == "REPRO"])
+        self.assertFalse(
+            [d for d in self.report["dropped"] if "button42" in d["node"]], self.report["dropped"]
+        )
+
     def test_unmapped_partial_and_unsupported_controls_are_dropped(self):
         self.assertEqual(self.verdict("CC28 ch14")["why"], "no mapping in the set")
         self.assertEqual(self.verdict("NOTE29 ch14")["why"], "no mapping in the set")

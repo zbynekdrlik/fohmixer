@@ -397,22 +397,20 @@ def project():
                 "ZVUKAR",
                 state_label=False,
             ),
-            midi_group(
-                "group80",
-                (27, 898, 102, 60),
-                N(
-                    "BUTTON",
-                    "button42",
-                    (0, 0, 102, 30),
-                    [],
-                    [_midi("CONTROLCHANGE", 13, 31)],
-                    buttonType=1,
-                    press=True,
-                    release=True,
-                ),
-                "REPRO",
-                state_label=False,
+            # A former MIDI button outside any group (as on the real
+            # sidebar): its visible label is a sibling drawn over it.
+            N(
+                "BUTTON",
+                "button42",
+                (75, 909, 102, 60),
+                [],
+                [_midi("CONTROLCHANGE", 13, 31)],
+                buttonType=1,
+                press=True,
+                release=True,
+                color=(0.53, 0.34, 0, 1),
             ),
+            label("label942", (67, 898, 119, 84), "REPRO", textColor=WHITE, textSize=24),
             midi_group(
                 "group81",
                 (27, 960, 102, 60),
