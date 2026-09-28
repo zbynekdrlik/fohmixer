@@ -379,6 +379,38 @@ def _midi_of(node):
     return next((m for m in node.midi if m.enabled and m.send), None)
 
 
+def _static_labels(nodes):
+    """The labels among ``nodes`` that can name a former MIDI control."""
+    return [
+        n
+        for n in nodes
+        if n.type == "LABEL"
+        and not n.script.strip()
+        and n.text.strip()
+        and n.text.strip().upper() != "ON/OFF"
+    ]
+
+
+def _covers(a, b):
+    """Whether two frames of one parent overlap by at least half the smaller one."""
+    w = min(a[0] + a[2], b[0] + b[2]) - max(a[0], b[0])
+    h = min(a[1] + a[3], b[1] + b[3]) - max(a[1], b[1])
+    return w > 0 and h > 0 and w * h >= min(a[2] * a[3], b[2] * b[3]) / 2
+
+
+def _with_labels(children):
+    """Each child with the sibling labels drawn over it when it is a former MIDI
+    control outside a group; those labels name the control and are skipped."""
+    labels, taken = {}, set()
+    static = _static_labels(children)
+    for control in children:
+        if control.type in ("BUTTON", "FADER") and _midi_of(control):
+            own = [n for n in static if id(n) not in taken and _covers(n.frame, control.frame)]
+            labels[id(control)] = own
+            taken.update(id(n) for n in own)
+    return [(c, labels.get(id(c), [])) for c in children if id(c) not in taken]
+
+
 def _message(midi):
     kind = "NOTE" if midi.kind.startswith("NOTE") else "CC"
     return f"{kind}{midi.data1} ch{midi.channel + 1}"
@@ -519,9 +551,9 @@ class Importer:
             raise ImportError_("the project has no root pager")
         tabbar, pages = self.pager(pager, 0.0, 0.0, "root")
         overlay = []
-        for child in self.root.children:
+        for child, labels in _with_labels(self.root.children):
             if child is not pager:
-                self.collect(child, 0.0, 0.0, overlay, "root", root_level=True)
+                self.collect(child, 0.0, 0.0, overlay, "root", labels, root_level=True)
         self.check_config()
         self.check_bindings()
         return {
@@ -580,7 +612,7 @@ class Importer:
             tab["color"] = color_hex(node.prop("tabColorOff"))
         page = {"id": page_id, "title": title, "tab": tab, "items": []}
         path = f"{where}/{node.name}"
-        for child in node.children:
+        for child, labels in _with_labels(node.children):
             if child.type == "PAGER":
                 if "pager" in page:
                     self.drop(f"{path}/{child.name}", "a second pager on one page")
@@ -597,12 +629,14 @@ class Importer:
                     "pages": pages,
                 }
             else:
-                self.collect(child, ax, ay, page["items"], path)
+                self.collect(child, ax, ay, page["items"], path, labels)
         return page
 
     # --- nodes ---
 
-    def collect(self, node, ox, oy, out, where, root_level=False):
+    def collect(self, node, ox, oy, out, where, labels=(), root_level=False):
+        """A node and its children; ``ox``/``oy`` is its parent's canvas origin,
+        ``labels`` the sibling labels that name it (a former MIDI control)."""
         x, y, w, h = node.frame
         ax, ay = ox + x, oy + y
         path = f"{where}/{node.name}"
@@ -646,14 +680,15 @@ class Importer:
         elif node.type == "GROUP" and any(_midi_of(c) for c in node.children):
             self.midi_group(node, ax, ay, out, path)
         elif node.type in ("BUTTON", "FADER") and _midi_of(node):
-            self.midi_control(node, ax, ay, node.name, out, path)
+            label = labels[0].text.strip() if labels else node.name
+            self.midi_control(node, ox, oy, label, out, where)
         elif node.type in ("LABEL", "BUTTON") and "refresh" in node.script.lower():
             out.append(self.item("refresh", frame, self.style(node), label=node.text or node.name))
         elif node.type == "GROUP":
             if node.prop("background", False):
                 out.append(self.item("area", frame, self.style(node)))
-            for child in node.children:
-                self.collect(child, ax, ay, out, path)
+            for child, labels in _with_labels(node.children):
+                self.collect(child, ax, ay, out, path, labels)
         elif node.type == "BOX":
             out.append(
                 self.item("area", frame, {"bg": color_hex(node.prop("color", (0, 0, 0, 1)))})
@@ -744,14 +779,7 @@ class Importer:
 
     def midi_group(self, node, ox, oy, out, path):
         control = next(c for c in node.children if _midi_of(c))
-        static = [
-            c
-            for c in node.children
-            if c.type == "LABEL"
-            and not c.script.strip()
-            and c.text.strip()
-            and c.text.strip().upper() != "ON/OFF"
-        ]
+        static = _static_labels(node.children)
         label = static[0].text.strip() if static else control.name
         for child in node.children:
             if child is control or (static and child is static[0]):
@@ -762,7 +790,8 @@ class Importer:
                 self.drop(f"{path}/{child.name}", "part of a former MIDI control")
         self.midi_control(control, ox, oy, label, out, path)
 
-    def midi_control(self, node, ox, oy, label, out, path):
+    def midi_control(self, node, ox, oy, label, out, where):
+        """A former MIDI control; ``ox``/``oy`` is its parent's canvas origin."""
         midi = _midi_of(node)
         x, y, w, h = node.frame
         ax, ay = ox + x, oy + y
@@ -774,7 +803,7 @@ class Importer:
             item = self.midi_item(node, midi, label, self.frame(ax, ay, w, h))
         except Drop as e:
             entry["why"] = str(e)
-            self.drop(f"{path}/{node.name}", f"former MIDI control {entry['message']}: {e}")
+            self.drop(f"{where}/{node.name}", f"former MIDI control {entry['message']}: {e}")
             return
         entry["verdict"] = "clean"
         entry["targets"] = len(item["targets"])
