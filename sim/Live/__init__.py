@@ -324,10 +324,28 @@ def volume_to_db(value):
     return 118.426374 * value ** (5567 / 7504) - 70.0
 
 
+def _live_number(value):
+    """A number as Live writes a dB value: 3 significant digits, at most 3
+    decimals, and 0 as ``0.00`` ("-0.811", "-6.00", "-14.0", "12.3").
+
+    From the one string captured on the real Live (#9: "-0.811 dB") and
+    Live's three-significant-digit display elsewhere; to be checked against
+    more captured strings (S2 design note §5.3).
+    """
+    for decimals in (3, 2, 1, 0):
+        text = f"{value:.{decimals}f}"
+        digits = len(text.lstrip("-").replace(".", "").lstrip("0"))
+        if digits <= 3 or decimals == 0:
+            break
+    if float(text) == 0.0:
+        return "0.00"
+    return text
+
+
 def _db_text(db):
     if db <= -70.0 or math.isinf(db):
         return "-inf dB"
-    return f"{round(db, 1) + 0.0:.1f} dB"
+    return f"{_live_number(db)} dB"
 
 
 def _format(kind, value, items):
@@ -342,7 +360,7 @@ def _format(kind, value, items):
         index = round(value)
         return items[index] if 0 <= index < len(items) else str(index)
     if kind == "db":
-        return f"{round(value, 1) + 0.0:.1f} dB"
+        return f"{_live_number(value)} dB"
     if kind == "hz":
         if value >= 1000.0:
             return f"{value / 1000.0:.2f} kHz"
