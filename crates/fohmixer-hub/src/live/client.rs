@@ -409,10 +409,15 @@ impl Session<'_> {
                 health.connected = true;
                 health.busy = false;
                 health.last_heartbeat = Instant::now();
+                // Every field spelled out: no struct-update base (its
+                // "delete field" mutants escape the recheck's --re filter).
                 *lock(self.snapshot) = Snapshot {
                     online: true,
+                    busy: false,
                     info: info.clone(),
-                    ..Snapshot::default()
+                    main_tick_age_ms: None,
+                    connect_failures: 0,
+                    last_error: None,
                 };
                 self.emit(LiveEvent::Connected(info));
             }
