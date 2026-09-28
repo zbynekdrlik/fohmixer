@@ -161,6 +161,73 @@ jobs:
         run: cargo test --locked -p fohmixer-hub --lib "pepper::"
       - name: Hub API tests on Windows (the layout, auth; no Live host needed)
         run: cargo test --locked -p fohmixer-hub --test layout --test auth
+      - name: PC install self-test (Windows PowerShell 5.1 as on the PC; the debug hub started and stopped by Ctrl-Break)
+        run: |
+          cargo build --locked -p fohmixer-hub
+          if ($LASTEXITCODE -ne 0) { throw "cargo build failed ($LASTEXITCODE)" }
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/fohmixer-pc/Test-Fohmixer.ps1 -HubExe target/debug/fohmixer-hub.exe
+          if ($LASTEXITCODE -ne 0) { throw "Test-Fohmixer.ps1 failed ($LASTEXITCODE)" }
+
+  bundle:
+    name: bundle
+    # The Windows release bundle for the Ableton PC (S5 design note section 2):
+    # only a hosted-CI build of master is ever installed there. The hub is built
+    # with the real UI (wasm-dist) embedded, zipped with the FohMixer script, the
+    # PC scripts, VERSION and SHA256SUMS by the module the install itself uses,
+    # installed once with -NoTask as a check, and uploaded as
+    # fohmixer-windows-<version>-<sha> (Install-Fohmixer.ps1 -BundleZip).
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    needs: [wasm, windows]
+    runs-on: windows-2025
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Rust toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: wasm-dist
+          path: crates/fohmixer-ui/dist
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Build the hub (release, the real UI embedded)
+        run: cargo build --locked --release -p fohmixer-hub
+      - name: Zip the bundle (hub, FohMixer script, PC scripts, VERSION, SHA256SUMS)
+        id: zip
+        shell: powershell
+        run: |
+          Import-Module ./scripts/fohmixer-pc/FohmixerPc.psm1 -Force
+          $b = New-FohBundle -RepoRoot $PWD.Path -HubExe target/release/fohmixer-hub.exe -OutDir $env:RUNNER_TEMP -Sha $env:GITHUB_SHA
+          Get-Content -LiteralPath (Join-Path $b.stage 'SHA256SUMS')
+          [IO.File]::AppendAllText($env:GITHUB_OUTPUT, "name=$($b.name)`n")
+      - name: Install the zip once (-NoTask, a temp data folder, two fake User Libraries)
+        shell: powershell
+        env:
+          BUNDLE: ${{ steps.zip.outputs.name }}
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP 'bundle-check'
+          $band = Join-Path $root 'band\User Library'
+          $master = Join-Path $root 'master\User Library'
+          New-Item -ItemType Directory -Force -Path $band, $master | Out-Null
+          $zip = Join-Path $env:RUNNER_TEMP "$env:BUNDLE.zip"
+          $data = Join-Path $root 'data'
+          powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $env:RUNNER_TEMP "$env:BUNDLE\Install-Fohmixer.ps1") -BundleZip $zip `
+            -BandUser band -MasterUser master -DataDir $data -BandUserLibrary $band -MasterUserLibrary $master -NoTask
+          if ($LASTEXITCODE -ne 0) { throw "the install of $zip failed ($LASTEXITCODE)" }
+          $version = (Get-Content -LiteralPath (Join-Path $env:RUNNER_TEMP "$env:BUNDLE\VERSION") -Raw).Trim()
+          foreach ($f in @("app\$version\fohmixer-hub.exe", 'fohmixer-hub.toml')) {
+            if (-not (Test-Path -LiteralPath (Join-Path $data $f) -PathType Leaf)) { throw "the install wrote no $f" }
+          }
+          foreach ($lib in @($band, $master)) {
+            if (-not (Test-Path -LiteralPath (Join-Path $lib 'Remote Scripts\FohMixer\version.py') -PathType Leaf)) { throw "no FohMixer copy in $lib" }
+          }
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.zip.outputs.name }}
+          path: ${{ runner.temp }}/${{ steps.zip.outputs.name }}.zip
+          retention-days: 30
+          if-no-files-found: error
 
   wasm:
     name: wasm
