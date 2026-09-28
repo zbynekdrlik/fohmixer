@@ -399,6 +399,16 @@ def _intersect(a, b):
     return (x0, y0, x1 - x0, y1 - y0)
 
 
+def _is_battery(node):
+    """The battery gauge (X5): the node reading the battery, or the group
+    around it (its box and "NN%" label go with it)."""
+
+    def reads(n):
+        return "getBatteryLevel" in n.script
+
+    return reads(node) or (node.type == "GROUP" and any(reads(c) for c in node.children))
+
+
 def _is_refresh(node):
     """The REFRESH ALL control: a label or button whose code asks for the refresh."""
     code = LUA_COMMENT.sub("", node.script)
@@ -698,7 +708,7 @@ class Importer:
         ax, ay = ox + x, oy + y
         rect = (ax, ay, w, h)
         path = f"{where}/{node.name}"
-        if "getBatteryLevel" in node.script:
+        if _is_battery(node):
             self.drop(path, "the battery gauge (X5)")
             return
         if not node.visible:
