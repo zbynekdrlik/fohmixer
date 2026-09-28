@@ -13,6 +13,8 @@ paths:
   - "crates/fohmixer-hub/src/remote.rs"
   - "crates/fohmixer-hub/src/tunnel.rs"
   - "crates/fohmixer-hub/src/http_client.rs"
+  - "crates/fohmixer-hub/src/config.rs"
+  - "crates/fohmixer-hub/tests/config_cli.rs"
   - "crates/fohmixer-hub/src/test_keys.rs"
   - "crates/fohmixer-hub/tests/remote.rs"
   - "crates/fohmixer-ui/sw.js"
