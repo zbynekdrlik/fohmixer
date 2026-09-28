@@ -291,6 +291,15 @@ class ImportTest(unittest.TestCase):
         self.assertEqual(aut[0]["key"], "stage_aut")
         self.assertEqual(aut[0]["label"], "STAGE AUT")
 
+    def test_stage_buttons_take_their_inner_buttons_colour(self):
+        # The stage and STAGE AUT groups are transparent; their blue is on
+        # the inner buttons.
+        stage = by_kind(items(self.foh), "stage")[0]
+        aut = by_kind(items(self.foh), "hub_toggle")[0]
+        self.assertEqual(stage["style"]["bg"], "#000594FF")
+        self.assertEqual(aut["style"]["bg"], "#000594FF")
+        self.assertEqual(stage["style"]["text"], "STAGE")
+
     # --- config ---
 
     def test_the_config_text_is_read(self):
