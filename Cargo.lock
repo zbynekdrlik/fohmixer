@@ -447,7 +447,7 @@ checksum = "37909eebbb50d72f9059c3b6d82c0463f2ff062c9e95845c43a6c9c0355411be"
 
 [[package]]
 name = "fohmixer-hub"
-version = "0.1.0-dev.1"
+version = "0.1.0-dev.2"
 dependencies = [
  "anyhow",
  "axum",
@@ -467,7 +467,7 @@ dependencies = [
 
 [[package]]
 name = "fohmixer-proto"
-version = "0.1.0-dev.1"
+version = "0.1.0-dev.2"
 dependencies = [
  "chrono",
  "serde",
@@ -476,7 +476,7 @@ dependencies = [
 
 [[package]]
 name = "fohmixer-ui"
-version = "0.1.0-dev.1"
+version = "0.1.0-dev.2"
 dependencies = [
  "console_error_panic_hook",
  "fohmixer-proto",
