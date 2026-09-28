@@ -4,7 +4,8 @@
 //! The first message is `hello`; a client without a protocol, or with one
 //! this hub does not serve, is closed with code 4001 and reloads. Then:
 //! commands go straight to their instance (in order) and their results
-//! come back as `result`; `sub`/`unsub`/`set_hub` go to the router. A
+//! come back as `result`; `sub`/`unsub`/`set_hub` go to the router; `ping`
+//! is answered `pong` (the client's watchdog). A
 //! writer task drains the client's outbox, so a slow client never holds up
 //! anyone else; a client that takes longer than [`SEND_TIMEOUT`] to accept
 //! a message is closed (it reconnects and resyncs).
@@ -153,6 +154,9 @@ fn handle_text(hub: &Hub, client: ClientId, outbox: &Arc<Outbox>, text: &str) {
         }),
         Ok(ClientMsg::Unsub { sub }) => hub.route(RouterMsg::Unsub { client, sub }),
         Ok(ClientMsg::SetHub { key, value }) => hub.route(RouterMsg::SetHub { client, key, value }),
+        // Through the outbox like every answer: a pong proves the writer
+        // still reaches the client.
+        Ok(ClientMsg::Ping) => outbox.reply(ServerMsg::Pong),
         Err(e) => {
             tracing::warn!(client, error = %e, "unreadable client message");
             outbox.reply(ServerMsg::Error {

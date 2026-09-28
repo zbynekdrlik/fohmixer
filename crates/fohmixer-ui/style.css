@@ -1,12 +1,20 @@
-/* fohmixer UI (S0): the header with the version and the status line. The
-   touch surfaces and their styles arrive in S4 (spec §2.5). */
+/* fohmixer UI (S4): the login and the scaled mixer stage. Positions, sizes
+   and the layout's colours come from the layout document (inline styles);
+   this sheet draws the controls. Moving parts (fader caps, fills, pan
+   dots, meter bars) are moved by the animation loop with transforms. */
 :root {
     color-scheme: dark;
     --bg: #000000;
-    --panel: #111418;
-    --text: #e0e0e0;
+    --stage: #0b0d10;
+    --panel: #15181d;
+    --text: #e6e8eb;
     --muted: #8a9099;
-    --accent: #4fc3f7;
+    --accent: #34c1dc;
+    --lit: #d8a31a;
+    --off: #2a2d33;
+    --danger: #ff3b30;
+    --ok: #2ecc40;
+    --warn: #f5a623;
 }
 
 * {
@@ -17,43 +25,535 @@ html,
 body {
     margin: 0;
     height: 100%;
+    overflow: hidden;
     background: var(--bg);
     color: var(--text);
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    /* A touch surface: no text selection, no double-tap zoom. */
+    /* A touch surface: no text selection, no callouts, no zoom. */
     -webkit-user-select: none;
     user-select: none;
-    touch-action: manipulation;
+    -webkit-touch-callout: none;
+    touch-action: none;
 }
 
 .app {
-    display: flex;
-    flex-direction: column;
-    height: 100%;
+    position: fixed;
+    inset: 0;
 }
 
-.app-header {
+/* --- login --- */
+
+.login {
+    position: absolute;
+    inset: 0;
     display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    padding: 0.5rem 1rem;
+    align-items: center;
+    justify-content: center;
+    outline: none;
+    touch-action: manipulation;
+}
+
+.login-box {
+    width: 20rem;
+    padding: 1.5rem;
+    border-radius: 12px;
     background: var(--panel);
-    border-bottom: 1px solid #222831;
+    text-align: center;
 }
 
-.app-title {
-    font-weight: 600;
-    letter-spacing: 0.1em;
+.login-title {
+    margin: 0 0 0.25rem;
+    font-size: 1.1rem;
+    letter-spacing: 0.15em;
     text-transform: uppercase;
 }
 
-.app-version {
+.login-hint {
+    margin: 0 0 1rem;
+    color: var(--muted);
+}
+
+.pin-dots {
+    display: flex;
+    justify-content: center;
+    gap: 0.75rem;
+    margin-bottom: 1.25rem;
+}
+
+.pin-dot {
+    width: 0.9rem;
+    height: 0.9rem;
+    border-radius: 50%;
+    border: 2px solid var(--muted);
+}
+
+.pin-dot.filled {
+    background: var(--accent);
+    border-color: var(--accent);
+}
+
+.pin-dot.error {
+    border-color: var(--danger);
+}
+
+.pin-pad {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 0.5rem;
+}
+
+.pin-key {
+    height: 3.2rem;
+    border: 0;
+    border-radius: 8px;
+    background: var(--off);
+    color: var(--text);
+    font: inherit;
+    font-size: 1.3rem;
+    cursor: pointer;
+}
+
+.pin-key:active {
+    background: #3a3f47;
+}
+
+.login-error {
+    margin: 1rem 0 0;
+    color: var(--danger);
+}
+
+.login-version {
+    position: absolute;
+    top: 0.6rem;
+    right: 0.9rem;
     color: var(--muted);
     font-size: 0.85rem;
     font-variant-numeric: tabular-nums;
 }
 
-.app-status {
-    margin: auto;
+/* --- surface and stage --- */
+
+.surface {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+    background: var(--bg);
+}
+
+.surface-wait {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
     color: var(--muted);
+}
+
+.stage {
+    position: absolute;
+    left: 0;
+    top: 0;
+    transform-origin: 0 0;
+    background: var(--stage);
+    overflow: hidden;
+    touch-action: none;
+}
+
+.layer {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+}
+
+.item {
+    position: absolute;
+    pointer-events: auto;
+    overflow: hidden;
+}
+
+[aria-disabled="true"] {
+    opacity: 0.35;
+    cursor: not-allowed;
+}
+
+.failed {
+    box-shadow: inset 0 0 0 5px var(--danger);
+}
+
+/* A binding that does not resolve (I5): red, whatever the control. */
+[data-binding="unresolved"] {
+    opacity: 1;
+    background-color: var(--danger) !important;
+}
+
+/* tab bars */
+
+.tabbar {
+    position: absolute;
+    z-index: 900;
+    pointer-events: auto;
+    background: #050607;
+}
+
+.tab {
+    position: absolute;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #ffffff;
+    font-size: 30px;
+    border-right: 2px solid #000000;
+    border-bottom: 2px solid #000000;
+    cursor: pointer;
+    white-space: nowrap;
+    overflow: hidden;
+}
+
+.tab.selected {
+    filter: brightness(1.8);
+    box-shadow: inset 0 -6px 0 var(--accent);
+}
+
+.tabbar.vertical .tab.selected {
+    box-shadow: inset -6px 0 0 var(--accent);
+}
+
+.status-cluster {
+    position: absolute;
+    z-index: 950;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 18px;
+    padding: 0 18px;
+    color: var(--muted);
+    font-size: 24px;
+    pointer-events: none;
+}
+
+.hub-dot {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--danger);
+}
+
+.hub-dot.online {
+    background: var(--ok);
+}
+
+.badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.badge-dot {
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: var(--danger);
+}
+
+.badge.online .badge-dot {
+    background: var(--ok);
+}
+
+.badge.busy .badge-dot {
+    background: var(--warn);
+}
+
+.version {
+    font-variant-numeric: tabular-nums;
+}
+
+/* areas and texts */
+
+.area {
+    border-radius: 6px;
+    pointer-events: none;
+}
+
+.area-title {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #ffffff;
+    font-size: 22px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+}
+
+.area.vertical .area-title {
+    writing-mode: vertical-rl;
+    transform: rotate(180deg);
+}
+
+.label {
+    pointer-events: none;
+    white-space: pre-wrap;
+    color: #d7dade;
+    font-size: 22px;
+    line-height: 1.35;
+}
+
+.conf-info {
+    position: absolute;
+    left: 40px;
+    bottom: 40px;
+    color: var(--muted);
+    font-size: 26px;
+    font-variant-numeric: tabular-nums;
+}
+
+/* strips */
+
+.strip {
+    border-radius: 8px;
+    background: var(--panel);
+}
+
+.strip > *,
+.fader,
+.pan,
+.mute,
+.meter,
+.status {
+    position: absolute;
+}
+
+.fader {
+    touch-action: none;
+    cursor: ns-resize;
+}
+
+.fader-groove {
+    position: absolute;
+    left: calc(50% - 3px);
+    top: 18px;
+    bottom: 18px;
+    width: 6px;
+    border-radius: 3px;
+    background: #2b3038;
+}
+
+.fader-fill {
+    position: absolute;
+    left: 30%;
+    right: 30%;
+    top: 18px;
+    bottom: 18px;
+    border-radius: 4px;
+    background: rgba(52, 193, 220, 0.35);
+    transform-origin: 50% 100%;
+    transform: scaleY(0);
+}
+
+.fader-cap {
+    position: absolute;
+    left: 6px;
+    right: 6px;
+    bottom: 0;
+    height: 36px;
+    border-radius: 5px;
+    background: linear-gradient(#e3e6ea, #9aa2ad);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.6);
+}
+
+.fader-cap::after {
+    content: "";
+    position: absolute;
+    left: 8px;
+    right: 8px;
+    top: 16px;
+    height: 4px;
+    background: #20242a;
+}
+
+.pan {
+    touch-action: none;
+    cursor: ew-resize;
+}
+
+.pan-track {
+    position: absolute;
+    left: 14px;
+    right: 14px;
+    top: calc(50% - 2px);
+    height: 4px;
+    border-radius: 2px;
+    background: #2b3038;
+}
+
+.pan-dot {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 28px;
+    height: 100%;
+    border-radius: 14px;
+    background: #646464;
+}
+
+.mute {
+    border-radius: 6px;
+    background: var(--off);
+    cursor: pointer;
+}
+
+.mute.lit {
+    background: var(--lit);
+}
+
+.mute.armed {
+    animation: armed 0.25s ease-in-out infinite alternate;
+}
+
+@keyframes armed {
+    from {
+        box-shadow: inset 0 0 0 0 #ffffff;
+    }
+    to {
+        box-shadow: inset 0 0 0 6px #ffffff;
+    }
+}
+
+.meter {
+    display: flex;
+    gap: 1px;
+    pointer-events: none;
+}
+
+.meter-bar {
+    position: relative;
+    flex: 1;
+    background: #101215;
+}
+
+.meter-fill {
+    position: absolute;
+    inset: 0;
+    background: rgb(0, 204, 0);
+    transform-origin: 50% 100%;
+    transform: scaleY(0);
+}
+
+.status {
+    border-radius: 4px;
+    background: rgb(255, 0, 0);
+    pointer-events: none;
+}
+
+.strip-db,
+.strip-label,
+.strip-instance {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+    white-space: nowrap;
+    overflow: hidden;
+}
+
+.strip-db {
+    color: #ffffff;
+    font-size: 22px;
+    font-variant-numeric: tabular-nums;
+    text-shadow: 0 1px 3px #000000;
+}
+
+.strip-label {
+    color: #ffffff;
+    font-size: 24px;
+    font-weight: 700;
+    text-shadow: 0 1px 3px #000000;
+}
+
+.strip-instance {
+    color: rgba(255, 255, 255, 0.7);
+    font-size: 15px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+}
+
+/* buttons */
+
+.button {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 4px;
+    border-radius: 8px;
+    background: #3c3c3c;
+    color: #ffffff;
+    font-size: 22px;
+    font-weight: 700;
+    text-align: center;
+    cursor: pointer;
+}
+
+.button.on {
+    filter: brightness(1.7);
+    box-shadow: inset 0 0 0 4px rgba(255, 255, 255, 0.85);
+}
+
+.param-toggle[data-state="off"],
+.hub-toggle:not(.on),
+.stage-mics:not(.on) {
+    filter: brightness(0.6);
+}
+
+.param-toggle[data-state="on"] {
+    filter: brightness(1.7);
+    box-shadow: inset 0 0 0 4px rgba(255, 255, 255, 0.85);
+}
+
+.param-toggle[data-state="mixed"] {
+    background-image: linear-gradient(135deg, rgba(255, 255, 255, 0.28) 50%, transparent 50%);
+}
+
+.refresh.flash {
+    background: #ffff00 !important;
+    color: #000000;
+}
+
+.param-fader {
+    border-radius: 8px;
+}
+
+.param-fader-text {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 6px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+    pointer-events: none;
+    color: #ffffff;
+    font-size: 18px;
+    text-shadow: 0 1px 3px #000000;
+}
+
+.param-fader-display {
+    font-variant-numeric: tabular-nums;
+}
+
+/* The TechAlert overlay never takes a touch. */
+.alert {
+    pointer-events: none !important;
+}
+
+/* An unresolved TechAlert binding: a red frame (the overlay covers the
+   stage, so no fill), shown whatever the blink says. */
+.alert[data-binding="unresolved"] {
+    visibility: visible !important;
+    background-color: transparent !important;
+    box-shadow: inset 0 0 0 4px var(--danger);
 }

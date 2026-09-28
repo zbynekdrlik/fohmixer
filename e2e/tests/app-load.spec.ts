@@ -5,7 +5,8 @@ test.describe("The app loads", () => {
     await page.goto("/");
     await expect(page.getByTestId("app")).toBeVisible();
     await expect(page).toHaveTitle("fohmixer");
-    await expect(page.getByTestId("status")).toHaveText("fohmixer — čaká na pripojenie k Abletonu");
+    // A device without a token gets the engineer login.
+    await expect(page.getByTestId("login")).toBeVisible();
     // The loading shell is gone once the app has mounted.
     await expect(page.locator("#app-shell")).toHaveCount(0);
   });

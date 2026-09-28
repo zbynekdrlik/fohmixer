@@ -31,6 +31,12 @@ if (wasmModule) {
 }
 </script>
 '''
+# The app's preload: the bindings only. Trunk's default also preloads the
+# WASM module (`as="fetch"`); WebKit (the iPad) never matches that preload to
+# the loader's fetch and warns a few seconds after load that it was preloaded
+# for nothing, and the loader fetches the module at once anyway. CI checks
+# the built index.html has no WASM preload (wasm job).
+pattern_preload = '<link rel="modulepreload" href="{base}{js}" crossorigin="anonymous">'
 
 [watch]
 watch = ["src", "index.html", "style.css"]

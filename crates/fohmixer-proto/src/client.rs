@@ -63,6 +63,9 @@ pub enum ClientMsg {
     Unsub { sub: String },
     /// Set a hub value (only `stage_aut`).
     SetHub { key: String, value: Value },
+    /// A liveness probe, answered by `pong` (the client's watchdog: a
+    /// socket that stays silent is half-open and is replaced).
+    Ping,
 }
 
 /// The state of one subscription: Live's value (and display string), or why
@@ -143,6 +146,8 @@ pub enum ServerMsg {
     Hub { key: String, value: Value },
     /// The layout changed: GET `/api/layout` for revision `rev`.
     Layout { rev: u64 },
+    /// The answer to `ping`.
+    Pong,
     /// A request the hub could not serve (`id` of the `cmd`, if any).
     Error {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -301,6 +306,7 @@ mod tests {
             },
             json!({"type": "set_hub", "key": "stage_aut", "value": true}),
         );
+        round_trip_client(ClientMsg::Ping, json!({"type": "ping"}));
     }
 
     #[test]
@@ -387,6 +393,7 @@ mod tests {
             ServerMsg::Layout { rev: 3 },
             json!({"type": "layout", "rev": 3}),
         );
+        round_trip_server(ServerMsg::Pong, json!({"type": "pong"}));
         round_trip_server(
             ServerMsg::Error {
                 id: Some("c1".into()),

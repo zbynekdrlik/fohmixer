@@ -550,3 +550,28 @@ fn strip_children_are_listed_by_name() {
         ]
     );
 }
+
+/// The meter source switch (spec X2, #5): absent is `level` (TouchOSC
+/// parity), `lr` names the two bars, anything else does not parse.
+#[test]
+fn the_meter_source_is_level_unless_lr_is_named() {
+    let layout = parse(sample());
+    assert_eq!(layout.config.meter_source, None);
+    assert_eq!(MeterSource::default(), MeterSource::Level);
+    let mut v = sample();
+    v["config"]["meter_source"] = json!("lr");
+    let layout = parse(v);
+    assert_eq!(layout.config.meter_source, Some(MeterSource::Lr));
+    assert_eq!(
+        serde_json::to_value(&layout.config).unwrap()["meter_source"],
+        json!("lr")
+    );
+    let mut v = sample();
+    v["config"]["meter_source"] = json!("level");
+    assert_eq!(parse(v).config.meter_source, Some(MeterSource::Level));
+    let mut v = sample();
+    v["config"]["meter_source"] = json!("stereo");
+    assert!(serde_json::from_value::<Layout>(v).is_err());
+    let absent = serde_json::to_value(&parse(sample()).config).unwrap();
+    assert!(absent.get("meter_source").is_none(), "{absent}");
+}
