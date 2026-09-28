@@ -195,18 +195,19 @@ fn every_item_kind_subscribes_what_it_shows() {
             .map(SubSpec::key)
             .collect()
     };
-    assert!(keys(0).is_empty(), "an area");
+    // The six inert sidebar backdrops (areas) come first, in node order.
+    assert!((0..7).all(|i| keys(i).is_empty()), "areas");
     assert_eq!(
-        keys(1),
+        keys(7),
         ["band|live_set tracks[name=Mics Stage #]|mute|false"]
     );
-    assert!(keys(2).is_empty(), "the STAGE AUT hub toggle");
+    assert!(keys(8).is_empty(), "the STAGE AUT hub toggle");
     assert_eq!(
-        keys(3),
+        keys(9),
         ["band|live_set tracks[name=Vocals Repro grp#]|solo|false"]
     );
     assert_eq!(
-        keys(6),
+        keys(12),
         [
             "band|live_set tracks[name=Vocal 1 repro#]|mute|false",
             "band|live_set tracks[name=Vocal 2 repro#]|mute|false"
@@ -214,16 +215,16 @@ fn every_item_kind_subscribes_what_it_shows() {
         "VOC MIC: every target"
     );
     assert_eq!(
-        keys(10),
+        keys(16),
         [
             "band|live_set tracks[name=Drums #] mixer_device volume|value|true",
             "band|live_set tracks[name=Bass #] mixer_device volume|value|false"
         ],
         "Podklady All: the first target's display string"
     );
-    assert!(keys(12).is_empty(), "a label");
+    assert!(keys(19).is_empty(), "a label");
     // A toggle's targets never bring a display string; a fader's first does.
-    let ItemKind::ParamToggle { targets, .. } = &foh.items[6].kind else {
+    let ItemKind::ParamToggle { targets, .. } = &foh.items[12].kind else {
         panic!("VOC MIC is a param toggle");
     };
     assert!(
@@ -271,7 +272,8 @@ fn visible_keys(layout: &Layout, path: &[usize]) -> Vec<String> {
 fn only_the_visible_pages_and_the_overlay_are_subscribed() {
     let layout = imported();
     let stage = visible_keys(&layout, &[1, 0]);
-    assert_eq!(stage.len(), 28);
+    // 28 plus the master return strip on the main page (4 keys).
+    assert_eq!(stage.len(), 32);
     let sorted = {
         let mut s = stage.clone();
         s.sort();
@@ -282,9 +284,15 @@ fn only_the_visible_pages_and_the_overlay_are_subscribed() {
     let tech = "band|live_set tracks[name=TechAlert #]|mute|false".to_string();
     assert!(stage.contains(&tech), "the overlay");
     assert!(stage.contains(&"band|live_set tracks[name=Keys 1]|mute|false".to_string()));
-    assert!(!stage.iter().any(|k| k.starts_with("master|")));
+    // The only master keys on STAGE are the main page's own return strip.
+    assert!(
+        stage
+            .iter()
+            .filter(|k| k.starts_with("master|"))
+            .all(|k| k.contains("A-Echo"))
+    );
     let others = visible_keys(&layout, &[1, 1]);
-    assert_eq!(others.len(), 25);
+    assert_eq!(others.len(), 29);
     assert!(others.contains(&"master|live_set tracks[name=Hand1 #]|mute|false".to_string()));
     assert!(
         !others.iter().any(|k| k.contains("Keys 1")),
