@@ -9,6 +9,13 @@
 profile = "mutants"
 test_tool = "nextest"
 
+exclude_globs = [
+  # Windows-only DPAPI calls (copied from iemmixer): not compiled on the
+  # Linux runners; the `windows` CI job builds them and runs the `pepper::`
+  # tests against them.
+  "crates/fohmixer-hub/src/pepper/dpapi.rs",
+]
+
 exclude_re = [
   # The WASM entry point mounts the app into the browser DOM (web_sys): a
   # native test cannot run it. e2e/tests/app-load.spec.ts drives it (the app

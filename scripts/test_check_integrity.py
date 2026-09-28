@@ -58,7 +58,8 @@ class IntegrityTests(unittest.TestCase):
                      f"@{UNITTEST}{SKIP}Unless(False, 'x')", f"        self{SKIP}Test('x')",
                      f"@{UNITTEST}.expectedFailure", f"@{PYTEST}.mark{SKIP}", f"@{PYTEST}.mark.xfail",
                      f"    {PYTEST}{SKIP}('x')", f"@skip{'If'}(True, 'x')"):
-            for rel in ("live-script/tests/test_a.py", "sim/tests/test_b.py", "scripts/test_c.py"):
+            for rel in ("live-script/tests/test_a.py", "sim/tests/test_b.py", "scripts/test_c.py",
+                        "tools/import-tosc/test_d.py"):
                 with tempfile.TemporaryDirectory() as d:
                     root = Path(d)
                     (root / rel).parent.mkdir(parents=True)
@@ -104,6 +105,7 @@ class IntegrityTests(unittest.TestCase):
             "scripts/pc/Pc.psm1": "# Stop-Process is never used\nfunction X { }\n",
             "live-script/FohMixer/a.py": "# os.kill is not how Live stops\nx = proc.kill()\n",
             "sim/Live/a.py": "p.terminate()\n",
+            "tools/import-tosc/a.py": "p.terminate()\n",
             ".github/workflows/ci.yml": "jobs:\n  a:\n    steps:\n" + PINNED + "      # taskkill\n",
         }
         for rel, text in cases.items():
