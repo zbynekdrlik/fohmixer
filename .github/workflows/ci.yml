@@ -202,6 +202,13 @@ jobs:
             echo "::error::dist/index.html has Trunk's default loader"
             exit 1
           fi
+          # No preload of the WASM module (Trunk.toml pattern_preload): WebKit
+          # never matches it to the loader's fetch and warns on the console.
+          if grep -oE '<link[^>]*>' crates/fohmixer-ui/dist/index.html | grep 'rel="preload"' | grep -q '\.wasm'; then
+            echo "::error::dist/index.html preloads the WASM module"
+            exit 1
+          fi
+          grep -q 'rel="modulepreload"' crates/fohmixer-ui/dist/index.html
           # Spec R5: v1 has no service worker.
           if grep -q 'serviceWorker' crates/fohmixer-ui/dist/index.html; then
             echo "::error::dist/index.html registers a service worker (spec R5: none in v1)"

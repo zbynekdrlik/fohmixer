@@ -32,13 +32,17 @@ pub fn AlertView(
     let period = f64::from(period_ms);
     root.on_load(move |el: web_sys::HtmlDivElement| {
         let mut shown: Option<bool> = None;
+        let mut was_active: Option<bool> = None;
         let id = raf::register(Box::new(move |now: f64, _step: f64| {
             let active = slot.try_with_untracked(Slot::flag).flatten() == Some(false);
+            if was_active != Some(active) {
+                dom::set_attr(&el, "data-active", if active { "true" } else { "false" });
+                was_active = Some(active);
+            }
             let on = blink_on(active, now, period);
             if shown != Some(on) {
                 dom::set_style(&el, "visibility", if on { "visible" } else { "hidden" });
                 dom::set_attr(&el, "data-visible", if on { "true" } else { "false" });
-                dom::set_attr(&el, "data-active", if active { "true" } else { "false" });
                 shown = Some(on);
             }
         }));
