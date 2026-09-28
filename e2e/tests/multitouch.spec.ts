@@ -68,6 +68,26 @@ function pointerTouch(targets: Map<number, Locator>): Touch {
   };
 }
 
+/**
+ * A value of Live once it holds still: three equal reads 100 ms apart
+ * (within 5 s). A drag's last sends reach Live some frames after the last
+ * move; on a slow WebKit runner a fixed wait read fader A 0.027 short of
+ * its last send (#17's CI), and the "A stays where it was lifted" check then
+ * compared against a value A had not reached yet.
+ */
+async function settled(page: Page, read: () => Promise<number>): Promise<number> {
+  let last = await read();
+  let same = 0;
+  for (let i = 0; i < 50; i++) {
+    await page.waitForTimeout(100);
+    const now = await read();
+    same = now === last ? same + 1 : 0;
+    last = now;
+    if (same >= 2) return now;
+  }
+  throw new Error(`the value never held still (last ${last})`);
+}
+
 let live: LiveClient;
 test.beforeEach(async () => {
   live = await LiveClient.open();
@@ -104,10 +124,10 @@ test.describe("Two fingers on two faders", () => {
     ];
     await touch.start(at(0));
     for (let step = 1; step <= 8; step++) await touch.move(at(step));
-    // Both moved at once, each its own way (the sends settle within frames).
+    // Both moved at once, each its own way (read once the sends settled).
     await page.waitForTimeout(300);
-    const a1 = await live.get("band", A.target, "value");
-    const b1 = await live.get("band", B.target, "value");
+    const a1 = await settled(page, () => live.get("band", A.target, "value"));
+    const b1 = await settled(page, () => live.get("band", B.target, "value"));
     expect(a1).toBeGreaterThan(0.63);
     expect(b1).toBeLessThan(0.57);
     // Finger 11 lifts; finger 12 keeps dragging B down.

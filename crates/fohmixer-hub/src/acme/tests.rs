@@ -64,23 +64,24 @@ async fn a_certificate_comes_by_dns01_and_the_record_goes_again() {
     assert!(pem.chain.contains("BEGIN CERTIFICATE"));
     assert!(pem.key.contains("PRIVATE KEY"));
     // The challenge record was written, checked by the CA, and removed.
-    let cf_state = cf_api.lock().unwrap();
-    assert!(cf_state.records.is_empty(), "no record stays");
-    assert!(
-        cf_state
-            .calls
-            .iter()
-            .any(|c| c == "POST /zones/zone-1/dns_records"),
-        "{:?}",
-        cf_state.calls
-    );
-    assert!(
-        cf_state
-            .calls
-            .iter()
-            .any(|c| c.starts_with("DELETE /zones/zone-1/dns_records/rec"))
-    );
-    drop(cf_state);
+    {
+        let cf_state = cf_api.lock().unwrap();
+        assert!(cf_state.records.is_empty(), "no record stays");
+        assert!(
+            cf_state
+                .calls
+                .iter()
+                .any(|c| c == "POST /zones/zone-1/dns_records"),
+            "{:?}",
+            cf_state.calls
+        );
+        assert!(
+            cf_state
+                .calls
+                .iter()
+                .any(|c| c.starts_with("DELETE /zones/zone-1/dns_records/rec"))
+        );
+    }
     let accounts = ca.lock().unwrap().new_accounts.clone();
     assert_eq!(accounts.len(), 1);
     assert_eq!(

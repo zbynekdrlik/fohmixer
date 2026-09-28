@@ -139,7 +139,7 @@ pub async fn check_host(State(hub): State<Hub>, request: Request, next: Next) ->
 }
 
 /// Where a plain-HTTP request is redirected (307, the method kept): to
-/// `https://<name>[:port]<path>` when it names the `[tls]` name, that
+/// `https://<name>[:https_port]<path>` when it names the `[tls]` name, that
 /// redirect is on, and no proxy handled it (the tunnel's requests arrive
 /// here as plain HTTP from cloudflared: redirecting them would loop). A
 /// request by IP address — the emergency path — or by another name is never
@@ -149,6 +149,7 @@ pub fn redirect_target(
     host: Option<&str>,
     proxied: bool,
     tls: Option<&crate::config::TlsCfg>,
+    https_port: u16,
     path_and_query: &str,
 ) -> Option<String> {
     let tls = tls.filter(|tls| tls.redirect_http && !proxied)?;
@@ -156,10 +157,10 @@ pub fn redirect_target(
     if !name.eq_ignore_ascii_case(&tls.name) {
         return None;
     }
-    let port = if tls.port == 443 {
+    let port = if https_port == 443 {
         String::new()
     } else {
-        format!(":{}", tls.port)
+        format!(":{https_port}")
     };
     Some(format!("https://{}{port}{path_and_query}", tls.name))
 }
@@ -172,7 +173,13 @@ pub async fn https_redirect(State(hub): State<Hub>, request: Request, next: Next
         .and_then(|h| h.to_str().ok());
     let path = request.uri().path_and_query().map_or("/", |pq| pq.as_str());
     let proxied = crate::access::has_proxy_header(request.headers());
-    match redirect_target(host, proxied, hub.config.tls.as_ref(), path) {
+    let tls = hub.config.tls.as_ref();
+    // The port the HTTPS listener is bound to (the configured one before).
+    let port = hub
+        .https
+        .get()
+        .map_or(tls.map_or(443, |t| t.port), |https| https.addr().port());
+    match redirect_target(host, proxied, tls, port, path) {
         Some(location) => axum::response::Redirect::temporary(&location).into_response(),
         None => next.run(request).await,
     }
@@ -550,16 +557,15 @@ mod tests {
         let on = tls(443, true);
         let t = Some(&on);
         assert_eq!(
-            redirect_target(Some("foh.example.org:8480"), false, t, "/p?x=1").as_deref(),
+            redirect_target(Some("foh.example.org:8480"), false, t, 443, "/p?x=1").as_deref(),
             Some("https://foh.example.org/p?x=1")
         );
         assert_eq!(
-            redirect_target(Some("FOH.example.org"), false, t, "/").as_deref(),
+            redirect_target(Some("FOH.example.org"), false, t, 443, "/").as_deref(),
             Some("https://foh.example.org/")
         );
-        let other_port = tls(8443, true);
         assert_eq!(
-            redirect_target(Some("foh.example.org:8480"), false, Some(&other_port), "/").as_deref(),
+            redirect_target(Some("foh.example.org:8480"), false, t, 8443, "/").as_deref(),
             Some("https://foh.example.org:8443/")
         );
         // Never by IP (the emergency path), another name, the tunnel, no
@@ -571,17 +577,24 @@ mod tests {
             "foh.local",
             "example.org",
         ] {
-            assert_eq!(redirect_target(Some(host), false, t, "/"), None, "{host}");
+            assert_eq!(
+                redirect_target(Some(host), false, t, 443, "/"),
+                None,
+                "{host}"
+            );
         }
-        assert_eq!(redirect_target(Some("foh.example.org"), true, t, "/"), None);
-        assert_eq!(redirect_target(None, false, t, "/"), None);
+        assert_eq!(
+            redirect_target(Some("foh.example.org"), true, t, 443, "/"),
+            None
+        );
+        assert_eq!(redirect_target(None, false, t, 443, "/"), None);
         let off = tls(443, false);
         assert_eq!(
-            redirect_target(Some("foh.example.org"), false, Some(&off), "/"),
+            redirect_target(Some("foh.example.org"), false, Some(&off), 443, "/"),
             None
         );
         assert_eq!(
-            redirect_target(Some("foh.example.org"), false, None, "/"),
+            redirect_target(Some("foh.example.org"), false, None, 443, "/"),
             None
         );
     }

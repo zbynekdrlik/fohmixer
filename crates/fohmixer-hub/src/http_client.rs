@@ -185,7 +185,7 @@ mod tests {
                 get(|| async { (axum::http::StatusCode::IM_A_TEAPOT, "short and stout") }),
             )
             .route("/big", get(|| async { vec![b'x'; 2 * MAX_BODY] }))
-            .route("/slow", get(|| std::future::pending::<&'static str>()));
+            .route("/slow", get(std::future::pending::<&'static str>));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
