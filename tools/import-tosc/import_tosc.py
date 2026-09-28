@@ -5,7 +5,9 @@
                            --out layout.json [--report report.md]
 
 Spec §2.6 and the S3 design note §7. It reads the TouchOSC Mk2 project
-(lexml, zlib), composes parent-relative frames into canvas coordinates, and
+(lexml, zlib), composes parent-relative frames into canvas coordinates, clips
+each node to the part TouchOSC shows (inside its group, page, pager and the
+canvas; a clipped node is reported, one with nothing shown is dropped), and
 classifies nodes by their role, not by their script alone: strips (by the
 names of their parts), solo buttons, the stage mics and STAGE AUT, areas,
 labels, the root overlay (the TechAlert strip, REFRESH ALL, the alert box).
@@ -52,6 +54,9 @@ STRIP_PARTS = {
 # A return track is named with a leading letter and a hyphen (`A-…`).
 RETURN_NAME = re.compile(r"^[A-Z]-")
 SCALE_LABEL = re.compile(r"^-?\d+$")
+# A label's stored text that is a value readout, not a name.
+VALUE_TEXT = re.compile(r"^[-+]?\s*(\d+([.,]\d+)?|inf|∞)\s*(%|db|dbfs)?$", re.IGNORECASE)
+LETTER = re.compile(r"[^\W\d_]")
 CONF_LINE = re.compile(r"^\s*([A-Za-z_]\w*)\s*:\s*(.*?)\s*$")
 MACRO = re.compile(r"^MacroControls\.(\d+)$")
 # The full MIDI-map ranges (the set's units) and the LOM range they map to.
@@ -62,6 +67,10 @@ FULL_RANGES = {
     "macro": ((0.0, 127.0), (0.0, 127.0)),
 }
 MACRO_BUS_CHANNEL = 16
+# REFRESH ALL asks the document script to refresh every strip (abl-touchosc's
+# global_refresh_button.lua); other scripts only mention a refresh.
+REFRESH_CALL = re.compile(r"""\bnotify\s*\(\s*["']refresh_all_groups["']""")
+LUA_COMMENT = re.compile(r"--\[(=*)\[.*?\]\1\]|--[^\n]*", re.DOTALL)
 
 
 class ImportError_(Exception):
@@ -379,6 +388,73 @@ def _midi_of(node):
     return next((m for m in node.midi if m.enabled and m.send), None)
 
 
+def _intersect(a, b):
+    """The overlap of two ``(x, y, w, h)`` rectangles; None when they do not overlap."""
+    if a is None or b is None:
+        return None
+    x0, y0 = max(a[0], b[0]), max(a[1], b[1])
+    x1, y1 = min(a[0] + a[2], b[0] + b[2]), min(a[1] + a[3], b[1] + b[3])
+    if x1 <= x0 or y1 <= y0:
+        return None
+    return (x0, y0, x1 - x0, y1 - y0)
+
+
+def _is_battery(node):
+    """The battery gauge (X5): the node reading the battery, or the group
+    around it (its box and "NN%" label go with it)."""
+
+    def reads(n):
+        return "getBatteryLevel" in n.script
+
+    return reads(node) or (node.type == "GROUP" and any(reads(c) for c in node.children))
+
+
+def _is_refresh(node):
+    """The REFRESH ALL control: a label or button whose code asks for the refresh."""
+    code = LUA_COMMENT.sub("", node.script)
+    return node.type in ("LABEL", "BUTTON") and REFRESH_CALL.search(code) is not None
+
+
+def _name_labels(nodes):
+    """The labels among ``nodes`` that name a former MIDI control: visible
+    words, whatever script they carry (the real ones restyle on incoming OSC);
+    not the "ON/OFF" state nor a value readout ("- 0.0", "-inf", "100%")."""
+    return [
+        n
+        for n in nodes
+        if n.type == "LABEL"
+        and n.visible
+        and LETTER.search(n.text)
+        and n.text.strip().upper() != "ON/OFF"
+        and not VALUE_TEXT.match(n.text.strip())
+    ]
+
+
+def _label_text(labels):
+    """The name the labels spell together, in node order ("Podklady" "All")."""
+    return " ".join(" ".join(n.text.split()) for n in labels)
+
+
+def _covers(a, b):
+    """Whether two frames of one parent overlap by at least half the smaller one."""
+    w = min(a[0] + a[2], b[0] + b[2]) - max(a[0], b[0])
+    h = min(a[1] + a[3], b[1] + b[3]) - max(a[1], b[1])
+    return w > 0 and h > 0 and w * h >= min(a[2] * a[3], b[2] * b[3]) / 2
+
+
+def _with_labels(children):
+    """Each child with the sibling labels drawn over it when it is a former MIDI
+    control outside a group; those labels name the control and are skipped."""
+    labels, taken = {}, set()
+    names = _name_labels(children)
+    for control in children:
+        if control.type in ("BUTTON", "FADER") and _midi_of(control):
+            own = [n for n in names if id(n) not in taken and _covers(n.frame, control.frame)]
+            labels[id(control)] = own
+            taken.update(id(n) for n in own)
+    return [(c, labels.get(id(c), [])) for c in children if id(c) not in taken]
+
+
 def _message(midi):
     kind = "NOTE" if midi.kind.startswith("NOTE") else "CC"
     return f"{kind}{midi.data1} ch{midi.channel + 1}"
@@ -403,6 +479,7 @@ class Importer:
         self.set = live_set
         self.set_instance = set_instance
         self.canvas = root.frame[2], root.frame[3]
+        self.canvas_rect = (0.0, 0.0, float(root.frame[2]), float(root.frame[3]))
         instances, unfold, guards = _config(_find_config(root) or "")
         self.instances = instances or ["band"]
         self.unfold = unfold
@@ -413,6 +490,7 @@ class Importer:
             "source": source,
             "instances": self.instances,
             "dropped": [],
+            "clipped": [],
             "midi": [],
             "stale_config": [],
             "unresolved": [],
@@ -425,6 +503,7 @@ class Importer:
             "scripts": {},
         }
         self.bindings = []  # (instance, anchor) of strips, solos, stages
+        self.alerts = []  # (item, its layer, path): bound after the whole overlay
         self.page_ids = set()  # unique across every pager
         self._scripts(root, None)
         # A strip decoration carrying a part's script is named for it.
@@ -472,11 +551,25 @@ class Importer:
     def frame(self, x, y, w, h):
         return {"x": float(x), "y": float(y), "w": float(w), "h": float(h)}
 
-    def inside(self, x, y, w, h):
-        cw, ch = self.canvas
-        return (
-            w > 0 and h > 0 and x >= -0.5 and y >= -0.5 and x + w <= cw + 0.5 and y + h <= ch + 0.5
-        )
+    def clip(self, rect, clip):
+        """(the part of ``rect`` TouchOSC shows, why none shows).
+
+        TouchOSC clips a node to its parent group, page and pager (``clip``,
+        their visible part) and to the canvas."""
+        if _intersect(rect, self.canvas_rect) is None:
+            return None, "off the canvas"
+        part = _intersect(rect, clip)
+        return part, None if part else "outside its parent"
+
+    def visible(self, rect, clip, path):
+        """The shown part of a node; a node with none is dropped, a clipped one
+        is reported."""
+        part, why = self.clip(rect, clip)
+        if part is None:
+            self.drop(path, why)
+        elif part != rect:
+            self.report["clipped"].append(path)
+        return part
 
     def split(self, name):
         """(instance, track name) of a group name: a known instance prefix, else band."""
@@ -506,6 +599,17 @@ class Importer:
             style["vertical"] = True
         return style
 
+    def control_style(self, node, button, text=None):
+        """The style of a control group; a transparent group shows the colour
+        of its inner ``button`` (the stage mics, STAGE AUT)."""
+        style = self.style(node, text)
+        inner = node.child(button)
+        drawn = style.get("bg") is not None and not style["bg"].endswith("00")
+        if inner is not None and "color" in inner.props and not drawn:
+            rest = {k: v for k, v in style.items() if k != "bg"}
+            style = {"bg": color_hex(inner.prop("color")), **rest}
+        return style
+
     def item(self, kind, frame, style=None, **fields):
         item = {"kind": kind, "frame": frame, "z": self.next_z(), "style": style or {}}
         item.update(fields)
@@ -517,11 +621,16 @@ class Importer:
         pager = next((c for c in self.root.children if c.type == "PAGER"), None)
         if pager is None:
             raise ImportError_("the project has no root pager")
-        tabbar, pages = self.pager(pager, 0.0, 0.0, "root")
+        # The root group is the canvas: it clips the pager and the overlay.
+        shown = _intersect(pager.frame, self.canvas_rect)
+        tabbar, pages = self.pager(pager, 0.0, 0.0, shown, "root")
         overlay = []
-        for child in self.root.children:
+        for child, labels in _with_labels(self.root.children):
             if child is not pager:
-                self.collect(child, 0.0, 0.0, overlay, "root", root_level=True)
+                self.collect(
+                    child, 0.0, 0.0, self.canvas_rect, overlay, "root", labels, root_level=True
+                )
+        self.resolve_alerts()
         self.check_config()
         self.check_bindings()
         return {
@@ -540,7 +649,8 @@ class Importer:
             "report": self.report,
         }
 
-    def pager(self, node, ox, oy, where):
+    def pager(self, node, ox, oy, shown, where):
+        """A pager; ``shown`` is its visible part, which clips its pages."""
         x, y, _, _ = node.frame
         ax, ay = ox + x, oy + y
         if _midi_of(node):
@@ -550,7 +660,7 @@ class Importer:
             if page.type != "GROUP":
                 self.drop(f"{where}/{node.name}/{page.name}", "not a page")
                 continue
-            pages.append(self.page(page, ax, ay, f"{where}/{node.name}"))
+            pages.append(self.page(page, ax, ay, shown, f"{where}/{node.name}"))
         default = int(float(node.values.get("page", "0") or 0))
         if not 0 <= default < max(1, len(pages)):
             self.drop(f"{where}/{node.name}", f"default page {default} out of range: 0")
@@ -565,9 +675,10 @@ class Importer:
             page["tab"]["text_size"] = self.tab_text
         return tabbar, pages
 
-    def page(self, node, ox, oy, where):
-        x, y, _, _ = node.frame
+    def page(self, node, ox, oy, clip, where):
+        x, y, w, h = node.frame
         ax, ay = ox + x, oy + y
+        shown = _intersect((ax, ay, w, h), clip)
         title = node.prop("tabLabel", "") or node.name
         base = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-") or "page"
         page_id, n = base, 1
@@ -580,47 +691,53 @@ class Importer:
             tab["color"] = color_hex(node.prop("tabColorOff"))
         page = {"id": page_id, "title": title, "tab": tab, "items": []}
         path = f"{where}/{node.name}"
-        for child in node.children:
+        for child, labels in _with_labels(node.children):
             if child.type == "PAGER":
                 if "pager" in page:
                     self.drop(f"{path}/{child.name}", "a second pager on one page")
                     continue
                 cx, cy, cw, chh = child.frame
-                if not child.visible or not self.inside(ax + cx, ay + cy, cw, chh):
-                    why = "hidden" if not child.visible else "off the canvas"
-                    self.drop(f"{path}/{child.name}", why)
+                if not child.visible:
+                    self.drop(f"{path}/{child.name}", "hidden")
                     continue
-                tabbar, pages = self.pager(child, ax, ay, path)
-                page["pager"] = {
-                    "frame": self.frame(ax + cx, ay + cy, cw, chh),
-                    "tabbar": tabbar,
-                    "pages": pages,
-                }
+                sub = self.visible((ax + cx, ay + cy, cw, chh), shown, f"{path}/{child.name}")
+                if sub is None:
+                    continue
+                tabbar, pages = self.pager(child, ax, ay, sub, path)
+                page["pager"] = {"frame": self.frame(*sub), "tabbar": tabbar, "pages": pages}
             else:
-                self.collect(child, ax, ay, page["items"], path)
+                self.collect(child, ax, ay, shown, page["items"], path, labels)
         return page
 
     # --- nodes ---
 
-    def collect(self, node, ox, oy, out, where, root_level=False):
+    def collect(self, node, ox, oy, clip, out, where, labels=(), root_level=False):
+        """A node and its children. ``ox``/``oy`` is its parent's canvas
+        origin, ``clip`` the parent's visible part, ``labels`` the sibling
+        labels that name it (a former MIDI control)."""
         x, y, w, h = node.frame
         ax, ay = ox + x, oy + y
+        rect = (ax, ay, w, h)
         path = f"{where}/{node.name}"
-        if "getBatteryLevel" in node.script:
+        if _is_battery(node):
             self.drop(path, "the battery gauge (X5)")
             return
         if not node.visible:
             if root_level and node.type == "BOX" and node.script.strip():
-                self.alert(node, ax, ay, out, path)
+                self.alert(node, rect, clip, out, path)
             else:
                 self.drop(path, "hidden")
             return
-        if not self.inside(ax, ay, w, h):
-            self.drop(path, "off the canvas")
+        if node.type in ("BUTTON", "FADER") and _midi_of(node):
+            label = _label_text(labels) or node.name
+            self.midi_control(node, ox, oy, clip, label, out, where)
             return
-        frame = self.frame(ax, ay, w, h)
+        shown = self.visible(rect, clip, path)
+        if shown is None:
+            return
+        frame = self.frame(*shown)
         if _is_strip(node):
-            out.append(self.strip(node, ax, ay, frame, path))
+            out.append(self.strip(node, ax, ay, shown, path))
         elif node.type == "GROUP" and node.child("btn_solo"):
             out.append(self.item("solo", frame, self.style(node), binding=self.binding(node.name)))
         elif node.type == "GROUP" and node.child("btn_mute"):
@@ -628,7 +745,7 @@ class Importer:
                 self.item(
                     "stage",
                     frame,
-                    self.style(node, self.group_text(node)),
+                    self.control_style(node, "btn_mute", self.group_text(node)),
                     binding=self.binding(node.name),
                     aut=self.has(self.root, "btn_stage_aut"),
                 )
@@ -638,22 +755,20 @@ class Importer:
                 self.item(
                     "hub_toggle",
                     frame,
-                    self.style(node),
+                    self.control_style(node, "btn_stage_aut"),
                     key="stage_aut",
                     label=self.group_text(node) or "STAGE AUT",
                 )
             )
         elif node.type == "GROUP" and any(_midi_of(c) for c in node.children):
-            self.midi_group(node, ax, ay, out, path)
-        elif node.type in ("BUTTON", "FADER") and _midi_of(node):
-            self.midi_control(node, ax, ay, node.name, out, path)
-        elif node.type in ("LABEL", "BUTTON") and "refresh" in node.script.lower():
+            self.midi_group(node, ax, ay, shown, out, path)
+        elif _is_refresh(node):
             out.append(self.item("refresh", frame, self.style(node), label=node.text or node.name))
         elif node.type == "GROUP":
             if node.prop("background", False):
                 out.append(self.item("area", frame, self.style(node)))
-            for child in node.children:
-                self.collect(child, ax, ay, out, path)
+            for child, labels in _with_labels(node.children):
+                self.collect(child, ax, ay, shown, out, path, labels)
         elif node.type == "BOX":
             out.append(
                 self.item("area", frame, {"bg": color_hex(node.prop("color", (0, 0, 0, 1)))})
@@ -662,6 +777,10 @@ class Importer:
             out.append(self.item("area", frame, self.style(node, node.text), title=node.text))
         elif node.type in ("LABEL", "TEXT"):
             out.append(self.item("label", frame, self.style(node), text=node.text))
+        elif node.type == "BUTTON" and node.prop("background", False):
+            # A button with no function here (a backdrop carrying the inert
+            # mute script): only its fill is kept, as an inert area.
+            out.append(self.item("area", frame, self.style(node)))
         else:
             self.drop(path, f"a {node.type} without a function here")
 
@@ -671,29 +790,39 @@ class Importer:
     def group_text(self, node):
         return next((c.text for c in node.children if c.type == "LABEL" and c.text), "")
 
-    def alert(self, node, ax, ay, out, path):
-        """The hidden full-screen box that blinks while TechAlert is unmuted."""
-        strips = [i for i in out if i["kind"] == "strip" and i["strip_kind"] == "meter_mute_only"]
-        if not strips:
-            self.drop(path, "an alert box without a TechAlert strip")
-            return
-        _, _, w, h = node.frame
-        cw, ch = self.canvas
-        x0, y0 = max(0.0, ax), max(0.0, ay)
-        x1, y1 = min(cw, ax + w), min(ch, ay + h)
-        if (x0, y0, x1, y1) != (ax, ay, ax + w, ay + h):
-            self.report["notes"].append(f"{path}: clipped to the canvas")
-        out.append(
-            self.item(
-                "alert",
-                self.frame(x0, y0, x1 - x0, y1 - y0),
-                {"bg": color_hex(node.prop("color", (1, 0, 0, 0.12)))},
-                binding=strips[0]["binding"],
-                period_ms=ALERT_PERIOD_MS,
-            )
-        )
+    def alert(self, node, rect, clip, out, path):
+        """The hidden full-screen box that blinks while TechAlert is unmuted.
 
-    def strip(self, node, ax, ay, frame, path):
+        It keeps its place (z) in node order; its TechAlert strip may come
+        later among the root's children, so ``resolve_alerts`` binds it once
+        the whole overlay is collected."""
+        shown = self.visible(rect, clip, path)
+        if shown is None:
+            return
+        item = self.item(
+            "alert",
+            self.frame(*shown),
+            {"bg": color_hex(node.prop("color", (1, 0, 0, 0.12)))},
+            binding=None,
+            period_ms=ALERT_PERIOD_MS,
+        )
+        out.append(item)
+        self.alerts.append((item, out, path))
+
+    def resolve_alerts(self):
+        """Binds each alert box to the TechAlert strip of its layer, or drops it."""
+        for item, out, path in self.alerts:
+            strips = [
+                i for i in out if i["kind"] == "strip" and i["strip_kind"] == "meter_mute_only"
+            ]
+            if strips:
+                item["binding"] = strips[0]["binding"]
+            else:
+                out.remove(item)
+                self.drop(path, "an alert box without a TechAlert strip")
+
+    def strip(self, node, ax, ay, shown, path):
+        """A strip; ``shown`` is its visible part, which clips its parts."""
         mute_hashes = self._role_hash("mute")
         meter_hashes = self._role_hash("meter")
         children = {}
@@ -701,10 +830,9 @@ class Importer:
             cx, cy, cw, ch = child.frame
             part = STRIP_PARTS.get(child.name)
             if part and part not in children:
-                if self.inside(ax + cx, ay + cy, cw, ch):
-                    children[part] = self.frame(ax + cx, ay + cy, cw, ch)
-                else:
-                    self.drop(f"{path}/{child.name}", "a strip part off the canvas")
+                seen = self.visible((ax + cx, ay + cy, cw, ch), shown, f"{path}/{child.name}")
+                if seen is not None:
+                    children[part] = self.frame(*seen)
             elif child.name == "db_meter_label":
                 self.count("meter dBFS labels (D11)")
             elif child.script.strip() and script_hash(child.script) in mute_hashes:
@@ -724,7 +852,7 @@ class Importer:
             kind = "return"
         elif node.prop("background", False):
             kind = "solid"
-        elif frame["w"] < NARROW_BELOW:
+        elif node.frame[2] < NARROW_BELOW:
             kind = "narrow"
         else:
             kind = "standard"
@@ -732,7 +860,7 @@ class Importer:
         self.guards_used.update(guarded)
         return self.item(
             "strip",
-            frame,
+            self.frame(*shown),
             self.style(node),
             binding=binding,
             strip_kind=kind,
@@ -742,40 +870,40 @@ class Importer:
 
     # --- former MIDI controls ---
 
-    def midi_group(self, node, ox, oy, out, path):
+    def midi_group(self, node, ox, oy, shown, out, path):
         control = next(c for c in node.children if _midi_of(c))
-        static = [
-            c
-            for c in node.children
-            if c.type == "LABEL"
-            and not c.script.strip()
-            and c.text.strip()
-            and c.text.strip().upper() != "ON/OFF"
-        ]
-        label = static[0].text.strip() if static else control.name
+        names = _name_labels(node.children)
+        label = _label_text(names) or control.name
+        used = {id(control)} | {id(n) for n in names}
         for child in node.children:
-            if child is control or (static and child is static[0]):
+            if id(child) in used:
                 continue
             if child.type == "LABEL":
                 self.count("labels of former MIDI controls")
             else:
                 self.drop(f"{path}/{child.name}", "part of a former MIDI control")
-        self.midi_control(control, ox, oy, label, out, path)
+        self.midi_control(control, ox, oy, shown, label, out, path)
 
-    def midi_control(self, node, ox, oy, label, out, path):
+    def midi_control(self, node, ox, oy, clip, label, out, where):
+        """A former MIDI control; ``ox``/``oy`` is its parent's canvas origin,
+        ``clip`` the parent's visible part."""
         midi = _midi_of(node)
         x, y, w, h = node.frame
-        ax, ay = ox + x, oy + y
+        rect = (ox + x, oy + y, w, h)
+        path = f"{where}/{node.name}"
         entry = {"control": label, "message": _message(midi), "verdict": "dropped", "targets": 0}
         self.report["midi"].append(entry)
+        shown, why = self.clip(rect, clip)
         try:
-            if not self.inside(ax, ay, w, h):
-                raise Drop("off the canvas")
-            item = self.midi_item(node, midi, label, self.frame(ax, ay, w, h))
+            if shown is None:
+                raise Drop(why)
+            item = self.midi_item(node, midi, label, self.frame(*shown))
         except Drop as e:
             entry["why"] = str(e)
-            self.drop(f"{path}/{node.name}", f"former MIDI control {entry['message']}: {e}")
+            self.drop(path, f"former MIDI control {entry['message']}: {e}")
             return
+        if shown != rect:
+            self.report["clipped"].append(path)
         entry["verdict"] = "clean"
         entry["targets"] = len(item["targets"])
         out.append(item)
@@ -932,6 +1060,7 @@ def report_markdown(layout):
         )
     sections = [
         ("Dropped nodes", [f"{d['node']}: {d['why']}" for d in r["dropped"]]),
+        ("Clipped to their visible part", r["clipped"]),
         ("Stale config (not fixed)", r["stale_config"]),
         ("Unresolved bindings", r["unresolved"]),
         (
