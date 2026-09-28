@@ -21,13 +21,8 @@ pub const RECONNECT_FIRST: Duration = Duration::from_millis(250);
 /// The longest reconnect delay.
 pub const RECONNECT_MAX: Duration = Duration::from_secs(2);
 
-/// Whether an instance is busy (spec §2.4): its main-thread tick is older
-/// than 150 ms, or its heartbeat is overdue.
-pub fn is_busy(main_tick_age_ms: f64, since_heartbeat: Duration) -> bool {
-    busy_reason(main_tick_age_ms, since_heartbeat).is_some()
-}
-
-/// Why an instance is busy (for the log), or `None` when it is not.
+/// Why an instance is busy (spec §2.4), or `None` when it is not: its
+/// main-thread tick is older than 150 ms, or its heartbeat is overdue.
 pub fn busy_reason(main_tick_age_ms: f64, since_heartbeat: Duration) -> Option<String> {
     if main_tick_age_ms > BUSY_TICK_AGE_MS {
         Some(format!(
@@ -65,7 +60,7 @@ pub fn late_heartbeat(
         .zip(arrived_ms)
         .map(|(sent, arrived)| arrived - sent);
     Some(format!(
-        "a heartbeat {} ms after the previous one: the script's thread made it {} after its previous one, it spent {} on the way",
+        "a heartbeat {} ms after the previous one (or the connect): the script's thread made it {} after its previous one, it spent {} on the way",
         since_previous.as_millis(),
         known(gap_ms),
         known(transit)
@@ -242,6 +237,7 @@ mod tests {
 
     #[test]
     fn busy_is_a_late_tick_or_an_overdue_heartbeat() {
+        let is_busy = |age: f64, since: Duration| busy_reason(age, since).is_some();
         let fresh = Duration::from_millis(100);
         assert!(!is_busy(10.0, fresh));
         assert!(!is_busy(150.0, fresh));
@@ -290,13 +286,13 @@ mod tests {
             )
             .as_deref(),
             Some(
-                "a heartbeat 301 ms after the previous one: the script's thread made it 1290 ms after its previous one, it spent 2 ms on the way"
+                "a heartbeat 301 ms after the previous one (or the connect): the script's thread made it 1290 ms after its previous one, it spent 2 ms on the way"
             )
         );
         assert_eq!(
             late_heartbeat(Duration::from_millis(1500), None, None, Some(1.0)).as_deref(),
             Some(
-                "a heartbeat 1500 ms after the previous one: the script's thread made it unknown after its previous one, it spent unknown on the way"
+                "a heartbeat 1500 ms after the previous one (or the connect): the script's thread made it unknown after its previous one, it spent unknown on the way"
             )
         );
         assert!(
