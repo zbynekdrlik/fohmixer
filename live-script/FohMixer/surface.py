@@ -5,7 +5,8 @@ Live's main thread runs ``_on_timer`` every ``TIMER_INTERVAL_MS`` from
 fallback). Each call records ``last_main_tick``, runs queued commands within
 the work budget (``Drain``), then flushes dirty subscriptions. Sockets live on
 the transport's threads; a heartbeat thread reports ``main_tick_age_ms``
-without the main thread, so a stall shows while it lasts.
+without the main thread, so a stall shows while it lasts, and ``gap_ms``, the
+time since its own previous heartbeat.
 """
 
 import collections
@@ -29,6 +30,17 @@ PROTO = 1
 STALL_LOG_MS = 200.0
 SHUTDOWN_GRACE_S = 0.3
 ERROR_LOG_INTERVAL_S = 60.0
+
+
+def heartbeat_data(age_ms, max_cmd_ms, gap_s):
+    """A heartbeat's data. ``gap_ms`` is the time since this thread's previous
+    heartbeat (nominally ``HEARTBEAT_INTERVAL_MS``): far longer means the thread
+    itself did not run, not that a sent heartbeat was held up (#9)."""
+    return {
+        "main_tick_age_ms": round(age_ms, 1),
+        "max_cmd_ms": round(max_cmd_ms, 3),
+        "gap_ms": round(gap_s * 1000.0, 1),
+    }
 
 
 class Drain:
@@ -229,14 +241,14 @@ class FohMixer(ControlSurface):
 
     def _heartbeat_loop(self):
         interval_s = Config.HEARTBEAT_INTERVAL_MS / 1000.0
+        previous = time.monotonic()
         while not self._heartbeat_stop.wait(interval_s):
-            age_ms = (time.monotonic() - self.last_main_tick) * 1000.0
+            now = time.monotonic()
+            age_ms = (now - self.last_main_tick) * 1000.0
             self._server.broadcast_heartbeat(
-                {
-                    "main_tick_age_ms": round(age_ms, 1),
-                    "max_cmd_ms": round(self._drain.max_cmd_ms, 3),
-                }
+                heartbeat_data(age_ms, self._drain.max_cmd_ms, now - previous)
             )
+            previous = now
 
     # --- lifecycle ---
 

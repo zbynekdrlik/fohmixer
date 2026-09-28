@@ -2,7 +2,8 @@
 # Copyright (c) 2022 Leo Bernard. MIT License, see LICENSE-ableton-js.
 # Kept: the accept thread, one reader thread per connection, the frame loop.
 # Changed (design §3.7, §3.9): the main thread never sends (a sender thread per
-# connection drains a bounded result queue and a latest-value map), no static
+# connection drains a bounded result queue and a latest-value map, one frame at
+# a time, a pending heartbeat first), no static
 # server, no auth, no port files, SO_EXCLUSIVEADDRUSE on Windows, and a close
 # that finishes the WebSocket close handshake and then resets the connection so
 # the port can be bound again at once (Windows keeps an exclusive port busy
@@ -74,7 +75,7 @@ class Connection:
     - ``results``: a bounded queue of result/event messages, in order; going past
       ``result_queue_max`` closes the connection (the hub resyncs);
     - ``values``: the latest item per key, sent as one ``values`` frame;
-    - ``heartbeat``: the latest heartbeat only.
+    - ``heartbeat``: the latest heartbeat only, sent before anything else.
     """
 
     _ids = itertools.count(1)
@@ -201,6 +202,25 @@ class Connection:
         self.abort()
         return False
 
+    def _take_next(self):
+        """The next message to send (the lock held), by priority: the pending
+        heartbeat, then the results and events in order, then every pending
+        value as one ``values`` message; ``None`` when nothing waits.
+
+        One message at a time, so a heartbeat set while a frame is being sent
+        goes out right after it, never behind results queued meanwhile: a late
+        heartbeat makes the hub report Live busy (#9).
+        """
+        if self._heartbeat is not None:
+            heartbeat, self._heartbeat = self._heartbeat, None
+            return heartbeat
+        if self._out:
+            return self._out.popleft()
+        if self._values:
+            values, self._values = self._values, {}
+            return {"event": "values", "data": list(values.values()), "ts": now_ms()}
+        return None
+
     def _send_loop(self):
         try:
             while True:
@@ -211,25 +231,15 @@ class Connection:
                         self._cond.wait()
                     if self._state == CLOSED:
                         return
-                    messages = list(self._out)
-                    self._out.clear()
-                    heartbeat, self._heartbeat = self._heartbeat, None
-                    values, self._values = self._values, {}
-                    closing = self._state == CLOSING
-                for message in messages:
+                    message = self._take_next()
+                if message is not None:
                     frame = message if isinstance(message, bytes) else encode_message(message)
                     self._sock.sendall(frame)
-                if heartbeat is not None:
-                    self._sock.sendall(encode_message(heartbeat))
-                if values:
-                    data = list(values.values())
-                    self._sock.sendall(
-                        encode_message({"event": "values", "data": data, "ts": now_ms()})
-                    )
-                if closing:
-                    self._sock.sendall(encode_close_frame())
-                    self._close_wait.wait(CLOSE_HANDSHAKE_TIMEOUT_S)
-                    return
+                    continue
+                # Nothing left and closing: the close handshake.
+                self._sock.sendall(encode_close_frame())
+                self._close_wait.wait(CLOSE_HANDSHAKE_TIMEOUT_S)
+                return
         except OSError as e:
             if self._state == OPEN:
                 self._log.warning("connection %s: send failed (%s), closing it", self.id, e)

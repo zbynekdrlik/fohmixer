@@ -12,7 +12,7 @@ import FohMixer
 import site_builder
 from c_instance import CInstance
 from FohMixer import Config
-from FohMixer.surface import Drain
+from FohMixer.surface import Drain, heartbeat_data
 from main_thread import MainThread
 from websockets.sync.client import connect
 
@@ -223,6 +223,15 @@ class SurfaceLifecycleTest(unittest.TestCase):
             text = f.read()
         self.assertIn("FohMixer", text)
         self.assertIn("WARNING fohmixer.lifecycle", text)
+
+
+class HeartbeatDataTest(unittest.TestCase):
+    def test_heartbeat_data_rounds_ages_and_reports_the_threads_own_gap(self):
+        self.assertEqual(
+            heartbeat_data(31.25, 0.12345, 0.10749),
+            {"main_tick_age_ms": 31.2, "max_cmd_ms": 0.123, "gap_ms": 107.5},
+        )
+        self.assertEqual(heartbeat_data(0.0, 0.0, 1.5)["gap_ms"], 1500.0)
 
 
 if __name__ == "__main__":
