@@ -8,7 +8,14 @@ script's timer, its scheduled messages and the optional meter animation.
 ``--port 0`` binds a free port. Prints ``READY <port>`` on stdout once the
 WebSocket server is bound. Control lines on stdin (never over the WebSocket):
 
-    stall <ms>    block the main thread for <ms> milliseconds
+    stall <ms>                  block the main thread for <ms> milliseconds
+    rename "<old>" "<new>"      rename every track and return named <old>, as a
+                                user in Live would (listeners fire); prints
+                                ``RENAMED <count>``
+    listeners <prop> <path>     print ``LISTENERS <n>``: the Live listeners on
+                                <prop> of the object at the LOM <path> (the
+                                hub tests prove one listener per key), or
+                                ``LISTENERS -1`` when the path does not resolve
 
 SIGTERM or SIGINT calls ``FohMixer.disconnect()`` on the main thread and exits 0.
 Used by the S2 integration tests and by the hub (S3) and UI (S4) tests.
@@ -17,6 +24,7 @@ Used by the S2 integration tests and by the hub (S3) and UI (S4) tests.
 import argparse
 import math
 import os
+import shlex
 import signal
 import sys
 import tempfile
@@ -71,13 +79,55 @@ def announce_ready(surface):
         print(f"READY {surface.server.port}", flush=True)
 
 
-def read_controls(main_thread):
+def rename_tracks(song, old, new):
+    """Rename every track and return named ``old`` (main thread); the count."""
+    renamed = 0
+    for track in [*song.tracks, *song.return_tracks]:
+        if track.name == old:
+            track._sim_set("name", new)
+            renamed += 1
+    return renamed
+
+
+def count_listeners(song, prop, text):
+    """The listeners on ``prop`` of the object at ``text`` (main thread); -1 if unresolved."""
+    from FohMixer.lom import path as lom_path
+    from FohMixer.lom.errors import FohError
+
+    try:
+        obj, _ = lom_path.resolve_path(text, song, Live.Application.get_application())
+    except FohError:
+        return -1
+    return obj._sim_listener_count(prop)
+
+
+def control(main_thread, song, line):
+    """One control line: the answer to print, or None."""
+    words = line.split(None, 2)
+    if len(words) == 2 and words[0] == "stall" and words[1].isdigit():
+        main_thread.stall(int(words[1]))
+        return None
+    if words and words[0] == "rename":
+        try:
+            names = shlex.split(line)[1:]
+        except ValueError:
+            names = []
+        if len(names) == 2:
+            count = main_thread.call(lambda: rename_tracks(song, names[0], names[1]))
+            return f"RENAMED {count}"
+    if len(words) == 3 and words[0] == "listeners":
+        prop, text = words[1], words[2].strip()
+        return f"LISTENERS {main_thread.call(lambda: count_listeners(song, prop, text))}"
+    if words:
+        print(f"host: unknown control line: {line.strip()!r}", file=sys.stderr, flush=True)
+    return None
+
+
+def read_controls(main_thread, song):
     for line in sys.stdin:
-        parts = line.split()
-        if len(parts) == 2 and parts[0] == "stall" and parts[1].isdigit():
-            main_thread.stall(int(parts[1]))
-        elif parts:
-            print(f"host: unknown control line: {line.strip()!r}", file=sys.stderr, flush=True)
+        answer = control(main_thread, song, line)
+        if answer is not None:
+            print(answer, flush=True)
 
 
 def main(argv=None):
@@ -107,7 +157,7 @@ def main(argv=None):
     signal.signal(signal.SIGTERM, lambda signum, frame: main_thread.request_stop())
     signal.signal(signal.SIGINT, lambda signum, frame: main_thread.request_stop())
     threading.Thread(target=announce_ready, args=(surface,), daemon=True).start()
-    threading.Thread(target=read_controls, args=(main_thread,), daemon=True).start()
+    threading.Thread(target=read_controls, args=(main_thread, song), daemon=True).start()
     main_thread.run_forever(on_stop=on_stop)
     main_thread.uninstall()
     if main_thread.errors:

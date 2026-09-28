@@ -226,6 +226,34 @@ class IntegrationTest(unittest.TestCase):
         self.clients.append(client)
         return client
 
+    def answer(self, host, line):
+        host.control(line)
+        return host.stdout.get(timeout=5).strip()
+
+    def test_host_control_lines_rename_tracks_and_count_listeners(self):
+        host = self.host()
+        a = self.client(host)
+        volume = "live_set tracks[name=Hand1 #] mixer_device volume"
+        self.assertEqual(self.answer(host, f"listeners value {volume}"), "LISTENERS 0")
+        a.call(volume, "add_listener", {"prop": "value"})
+        self.assertEqual(self.answer(host, f"listeners value {volume}"), "LISTENERS 1")
+        name = a.call("live_set tracks 0", "add_listener", {"prop": "name"})
+        self.assertEqual(self.answer(host, 'rename "Hand1 #" "Hand9 #"'), "RENAMED 1")
+        self.assertEqual(a.wait_value(name["key"])["value"], "Hand9 #")
+        self.assertEqual(self.answer(host, f"listeners value {volume}"), "LISTENERS -1")
+        self.assertEqual(
+            self.answer(host, "listeners value live_set tracks 0 mixer_device volume"),
+            "LISTENERS 1",
+        )
+        self.assertEqual(self.answer(host, 'rename "Nobody" "Else"'), "RENAMED 0")
+        for line in ('rename "unbalanced', "rename one", "bogus line", "stall 10"):
+            host.control(line)
+        self.assertEqual(self.answer(host, 'rename "Hand9 #" "Hand1 #"'), "RENAMED 1")
+        deadline = time.monotonic() + 2
+        while "".join(host.stderr).count("unknown control line") < 3:
+            self.assertLess(time.monotonic(), deadline, "".join(host.stderr))
+            time.sleep(0.02)
+
     def test_connect_event(self):
         a = self.client(self.host())
         self.assertEqual(

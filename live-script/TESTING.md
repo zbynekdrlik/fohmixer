@@ -25,7 +25,7 @@ set -euo pipefail
 ! grep -E "skipped|expected failure" sim-tests.log script-tests.log
 ```
 
-Expected today: `Ran 20 tests` (sim) and `Ran 91 tests` (script), both `OK`,
+Expected today: `Ran 20 tests` (sim) and `Ran 95 tests` (script), both `OK`,
 about 20 s in total.
 
 ## Notes for the runner
@@ -47,6 +47,16 @@ about 20 s in total.
 python3 sim/host.py --port 39101 --instance band --site sim/fixtures/test-site.json --meters-hz 30
 ```
 
-It prints `READY <port>` once the WebSocket server is bound, takes `stall <ms>`
-lines on stdin to block the simulated main thread, and exits 0 on SIGTERM
-after the script's `disconnect()`.
+It prints `READY <port>` once the WebSocket server is bound and exits 0 on
+SIGTERM after the script's `disconnect()`. Control lines on stdin (the hub's
+tests use them; `live-script/tests/test_integration.py` tests them):
+
+- `stall <ms>` blocks the simulated main thread;
+- `rename "<old>" "<new>"` renames every track and return named `<old>`, as a
+  user in Live would (the `name` listeners fire), and prints `RENAMED <count>`;
+- `listeners <prop> <path>` prints `LISTENERS <n>`, the Live listeners on
+  `<prop>` of the object at the LOM `<path>` (`-1` when the path does not
+  resolve): the hub's tests prove one listener per key with it.
+
+The hub's Rust tests (`crates/fohmixer-hub/tests/`) start it with `python3`
+(`FOHMIXER_PYTHON` overrides); it needs nothing beyond the standard library.
