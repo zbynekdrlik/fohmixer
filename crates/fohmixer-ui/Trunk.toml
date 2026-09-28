@@ -39,7 +39,7 @@ if (wasmModule) {
 pattern_preload = '<link rel="modulepreload" href="{base}{js}" crossorigin="anonymous">'
 
 [watch]
-watch = ["src", "index.html", "style.css"]
+watch = ["src", "index.html", "style.css", "sw.js"]
 ignore = ["./target", "./dist"]
 
 [serve]
