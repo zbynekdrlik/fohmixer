@@ -25,7 +25,7 @@ set -euo pipefail
 ! grep -E "skipped|expected failure" sim-tests.log script-tests.log
 ```
 
-Expected today: `Ran 20 tests` (sim) and `Ran 95 tests` (script), both `OK`,
+Expected today: `Ran 21 tests` (sim) and `Ran 97 tests` (script), both `OK`,
 about 20 s in total.
 
 ## Notes for the runner
