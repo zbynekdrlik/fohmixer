@@ -77,7 +77,8 @@ pub struct NameCheck {
     runs: BTreeMap<String, Run>,
     inflight: HashMap<String, Asked>,
     report: BTreeMap<String, Vec<Unresolved>>,
-    next: u64,
+    next_run: u64,
+    next_uuid: u64,
     outgoing: Vec<Outgoing>,
 }
 
@@ -92,8 +93,8 @@ impl NameCheck {
 
     /// Checks every target of `instance` (it is connected) again.
     pub fn start(&mut self, instance: &str) {
-        self.next += 1;
-        let id = self.next;
+        self.next_run += 1;
+        let id = self.next_run;
         let targets = self.targets.get(instance).cloned().unwrap_or_default();
         // Answers of an older check of the instance still arrive (the
         // script answers every request): the run number voids them.
@@ -113,8 +114,8 @@ impl NameCheck {
             },
         );
         for chunk in chunks {
-            self.next += 1;
-            let uuid = format!("n{}", self.next);
+            self.next_uuid += 1;
+            let uuid = format!("n{}", self.next_uuid);
             let commands = chunk
                 .iter()
                 .map(|target| json!({"target": target, "name": "get_prop", "args": {"prop": "name"}}))
@@ -334,6 +335,26 @@ mod tests {
         check.set_targets(targets(&[], &["live_set tracks[name=D]"]));
         assert!(!check.on_result("master", &before[0].uuid, &[fine()]));
         assert!(!check.is_checked("master"));
+    }
+
+    #[test]
+    fn a_disconnect_voids_only_its_own_instances_check() {
+        let mut check = NameCheck::default();
+        check.set_targets(targets(
+            &["live_set tracks[name=A]"],
+            &["live_set tracks[name=C]"],
+        ));
+        check.start("band");
+        check.start("master");
+        let out = check.drain_outgoing();
+        assert_eq!(out.len(), 2);
+        check.stop("band");
+        let master = out.iter().find(|o| o.instance == "master").unwrap();
+        assert!(check.on_result("master", &master.uuid, &[fine()]));
+        assert!(check.is_checked("master"));
+        let band = out.iter().find(|o| o.instance == "band").unwrap();
+        assert!(!check.on_result("band", &band.uuid, &[fine()]));
+        assert!(!check.is_checked("band"));
     }
 
     #[test]

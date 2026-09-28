@@ -139,6 +139,13 @@ pub fn canonical_target(text: &str) -> String {
     }
 }
 
+/// How many characters from `pos` on satisfy `pred`. (The scanner counts
+/// runs with iterators, never with a hand-stepped index: no mutant of it can
+/// loop or grow a result forever.)
+fn run_of(chars: &[char], pos: usize, pred: impl Fn(&char) -> bool) -> usize {
+    chars[pos..].iter().take_while(|&c| pred(c)).count()
+}
+
 /// An identifier at `pos`: `[A-Za-z_][A-Za-z0-9_]*`, and the position after it.
 fn ident(chars: &[char], pos: usize) -> Option<(String, usize)> {
     let first = *chars.get(pos)?;
@@ -146,13 +153,7 @@ fn ident(chars: &[char], pos: usize) -> Option<(String, usize)> {
     if !starts {
         return None;
     }
-    let mut end = pos;
-    while chars
-        .get(end)
-        .is_some_and(|c| c.is_ascii_alphanumeric() || *c == '_')
-    {
-        end += 1;
-    }
+    let end = pos + run_of(chars, pos, |c| c.is_ascii_alphanumeric() || *c == '_');
     Some((chars[pos..end].iter().collect(), end))
 }
 
@@ -164,21 +165,21 @@ fn rest(chars: &[char], pos: usize) -> String {
 /// a root).
 fn steps_from(chars: &[char], mut pos: usize, mut need_sep: bool) -> Result<Vec<Step>, PathError> {
     let mut steps: Vec<Step> = Vec::new();
-    while pos < chars.len() {
+    // Every round consumes at least one character, so the scan ends within
+    // `len` rounds; the bound only stops a broken scanner from looping.
+    for _ in 0..=chars.len() {
+        if pos >= chars.len() {
+            break;
+        }
         if need_sep {
             if !chars[pos].is_whitespace() {
                 return Err(PathError::syntax(rest(chars, pos)));
             }
-            while chars.get(pos).is_some_and(|c| c.is_whitespace()) {
-                pos += 1;
-            }
+            pos += run_of(chars, pos, |c| c.is_whitespace());
         }
         need_sep = true;
         if chars[pos].is_ascii_digit() {
-            let mut end = pos;
-            while chars.get(end).is_some_and(char::is_ascii_digit) {
-                end += 1;
-            }
+            let end = pos + run_of(chars, pos, char::is_ascii_digit);
             let digits: String = chars[pos..end].iter().collect();
             let index: u32 = digits
                 .parse()
@@ -221,22 +222,19 @@ fn steps_from(chars: &[char], mut pos: usize, mut need_sep: bool) -> Result<Vec<
 }
 
 /// The name text from `pos` to its closing `]`, and the position after it.
-fn read_name(chars: &[char], mut pos: usize) -> Result<(String, usize), PathError> {
+/// (An iterator, not index arithmetic: every step consumes a character, so
+/// no mutant of it can loop while the name grows.)
+fn read_name(chars: &[char], pos: usize) -> Result<(String, usize), PathError> {
     let mut out = String::new();
-    while pos < chars.len() {
-        match chars[pos] {
-            '\\' => match chars.get(pos + 1) {
-                Some(&c) if c == ']' || c == '\\' => {
-                    out.push(c);
-                    pos += 2;
-                }
+    let mut rest = chars.iter().enumerate().skip(pos);
+    while let Some((i, &c)) = rest.next() {
+        match c {
+            '\\' => match rest.next() {
+                Some((_, &escaped)) if escaped == ']' || escaped == '\\' => out.push(escaped),
                 _ => return Err(PathError::syntax("bad escape in [name=")),
             },
-            ']' => return Ok((out, pos + 1)),
-            c => {
-                out.push(c);
-                pos += 1;
-            }
+            ']' => return Ok((out, i + 1)),
+            c => out.push(c),
         }
     }
     Err(PathError::syntax("unterminated [name="))
@@ -282,6 +280,7 @@ mod tests {
         for text in [
             "live_set",
             "live_set tracks 3 mixer_device volume",
+            "live_set tracks 12 devices 10 parameters 107",
             "live_set tracks[name=Vocal 1 repro#] devices[name=EQ Eight] parameters 1",
             r"live_set tracks[name=a\]b\\c]",
         ] {
