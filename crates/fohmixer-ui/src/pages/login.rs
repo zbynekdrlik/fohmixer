@@ -98,9 +98,8 @@ pub fn Login(session: RwSignal<Option<String>>) -> impl IntoView {
             .collect_view()
     };
     let keys = KEYS
-        .iter()
-        .map(|key| {
-            let key: &'static str = *key;
+        .into_iter()
+        .map(|key: &'static str| {
             view! {
                 <button
                     type="button"
