@@ -227,6 +227,10 @@ try {
     New-Item -ItemType Directory -Force -Path (Join-Path $prefsPick 'Live 13 Beta\Preferences'), (Join-Path $prefsPick 'Live 14') | Out-Null
     Assert ((Get-FohLivePrefsFile -Prefs $prefsPick) -eq (Join-Path $prefsPick 'Live 12.10\Preferences\Library.cfg')) 'live-prefs-of-the-newest-version-by-number'
     Assert ((Get-FohLivePrefsFile -Prefs (Join-Path $base 'no-such-prefs')) -ceq '') 'live-prefs-none-without-the-folder'
+    # The owner can name the one in use: a "Live <version>" folder or the file.
+    $cfg122 = Join-Path $prefsPick 'Live 12.2\Preferences\Library.cfg'
+    Assert ((Get-FohLivePrefsFile -Prefs (Join-Path $prefsPick 'Live 12.2')) -eq $cfg122) 'live-prefs-of-a-named-version-folder'
+    Assert ((Get-FohLivePrefsFile -Prefs $cfg122) -eq $cfg122) 'live-prefs-given-as-the-file'
     Assert ((Get-FohLiveUserLibrary -Cfg (Join-Path $prefsPick 'Live 12.2\Preferences\Library.cfg')) -eq $bandLib) 'live-user-library-is-projectpath-and-projectname'
     Assert ((Get-FohLiveUserLibrary -Cfg (Join-Path $prefsPick 'Live 9.7.7\Preferences\Library.cfg')) -ceq '') 'live-user-library-none-for-an-empty-userlibrary'
     Assert ((ErrorOf { Test-FohLiveUserLibrary -User 'u' -Prefs $prefsPick -UserLibrary $bandLib -Switch 'Band' }) -like '*uses the User Library*-BandUserLibrary*') 'live-user-library-elsewhere-names-the-switch'
@@ -294,7 +298,7 @@ try {
     Assert ($b1.name -ceq "fohmixer-windows-$v1-$sha" -and (Test-Path -LiteralPath $b1.zip -PathType Leaf)) 'bundle-named-by-version-and-commit'
     $zip = [IO.Compression.ZipFile]::OpenRead($b1.zip)
     try { $entries = @($zip.Entries | ForEach-Object { $_.FullName }) } finally { $zip.Dispose() }
-    foreach ($n in @('VERSION', 'SHA256SUMS', 'fohmixer-hub.exe', 'Install-Fohmixer.ps1', 'FohmixerPc.psm1', 'Start-FohmixerHub.ps1',
+    foreach ($n in @('VERSION', 'SHA256SUMS', 'fohmixer-hub.exe', 'Install-Fohmixer.ps1', 'FohmixerPc.psm1', 'FohmixerLivePrefs.ps1', 'Start-FohmixerHub.ps1',
             'Stop-FohmixerHub.ps1', 'FohMixer/__init__.py', 'FohMixer/Config.py', 'FohMixer/version.py', 'FohMixer/transport/server.py')) {
         Assert ($entries -ccontains $n) "bundle-holds-$n"
     }

@@ -57,8 +57,9 @@ param(
     # Live's User Library of each user, when not <SystemDrive>\Users\<user>\Documents\Ableton\User Library.
     [string]$BandUserLibrary = '',
     [string]$MasterUserLibrary = '',
-    # The folder of each user's Live preferences (Live <version>\Preferences\Library.cfg), when not
-    # <SystemDrive>\Users\<user>\AppData\Roaming\Ableton: only read, to check Live uses the User Library.
+    # Each user's Live preferences, only read, to check Live uses the User Library: the folder
+    # holding "Live <version>" folders (the newest version's Library.cfg counts; default
+    # <SystemDrive>\Users\<user>\AppData\Roaming\Ableton), one "Live <version>" folder, or its Library.cfg.
     [string]$BandAbletonPrefs = '',
     [string]$MasterAbletonPrefs = '',
     # The self-test: no stop, no DACL, no tasks, no start, no readiness poll.

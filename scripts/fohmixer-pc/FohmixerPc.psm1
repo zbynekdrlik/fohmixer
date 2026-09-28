@@ -22,11 +22,15 @@ $script:TaskPath = '\fohmixer\'
 $script:HubTask = 'fohmixer-hub'
 $script:StopTask = 'fohmixer-hub-stop'
 # What a bundle holds besides SHA256SUMS (design note section 2).
-$script:BundleFiles = @('VERSION', 'fohmixer-hub.exe', 'Install-Fohmixer.ps1', 'FohmixerPc.psm1',
+$script:BundleFiles = @('VERSION', 'fohmixer-hub.exe', 'Install-Fohmixer.ps1', 'FohmixerPc.psm1', 'FohmixerLivePrefs.ps1',
     'Start-FohmixerHub.ps1', 'Stop-FohmixerHub.ps1',
     'FohMixer/__init__.py', 'FohMixer/Config.py', 'FohMixer/version.py')
 # A SemVer version that is also a safe folder name (no trailing dot, no "..").
 $script:SemVer = '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?\z'
+
+# The check of Live's User Library setting (Get-FohLivePrefsFile,
+# Get-FohLiveUserLibrary, Test-FohLiveUserLibrary), in a file of its own.
+. (Join-Path $PSScriptRoot 'FohmixerLivePrefs.ps1')
 
 # Ctrl-Break through another process's console (the hub's graceful stop, as in
 # iemmixer's iem-win console.rs): detach from this process's console, attach to
@@ -981,81 +985,6 @@ function Test-FohUserName {
     param([Parameter(Mandatory)][AllowEmptyString()][string]$Name)
     if ($Name -cnotmatch '^[^"/\\\[\]:;|=,+*?<>]+\z' -or $Name.Trim() -cne $Name -or $Name.EndsWith('.')) {
         throw "user name refused: [$Name] (an account name of this PC, without a domain part)"
-    }
-}
-
-function Get-FohLivePrefsFile {
-    # The Library.cfg that Live uses among a user's Live preferences under
-    # $Prefs (<Prefs>\Live <version>\Preferences\Library.cfg, one folder per
-    # Live version): the newest version's, by version number (12.10 is newer
-    # than 12.2); a folder not named "Live <version>" is not Live's. '' when
-    # there is none.
-    param([Parameter(Mandatory)][string]$Prefs)
-    if (-not (Test-Path -LiteralPath $Prefs -PathType Container)) { return '' }
-    $best = ''
-    $bestVersion = $null
-    foreach ($d in @(Get-ChildItem -LiteralPath $Prefs -Directory -Force)) {
-        $m = [regex]::Match($d.Name, '^Live (\d+)(\.\d+){0,3}\z')
-        if (-not $m.Success) { continue }
-        $text = $d.Name.Substring(5)
-        if (-not $text.Contains('.')) { $text += '.0' }
-        $cfg = Join-Path $d.FullName 'Preferences\Library.cfg'
-        if (-not (Test-Path -LiteralPath $cfg -PathType Leaf)) { continue }
-        $version = [version]$text
-        if ($null -eq $bestVersion -or $version -gt $bestVersion) {
-            $best = $cfg
-            $bestVersion = $version
-        }
-    }
-    return $best
-}
-
-function Get-FohLiveUserLibrary {
-    # The User Library a Live Library.cfg sets: ProjectPath\ProjectName of
-    # ContentLibrary/UserLibrary/LibraryProject (Live writes ProjectPath with
-    # forward slashes). '' for <UserLibrary /> (no User Library set: Live then
-    # lists no Remote Scripts of one, #9).
-    param([Parameter(Mandatory)][string]$Cfg)
-    try {
-        $xml = [xml][IO.File]::ReadAllText($Cfg)
-    } catch {
-        throw "$Cfg is not a Library.cfg Live wrote: $($_.Exception.Message)"
-    }
-    $project = '/Ableton/ContentLibrary/UserLibrary/LibraryProject'
-    $path = $xml.SelectSingleNode("$project/ProjectPath/@Value")
-    $name = $xml.SelectSingleNode("$project/ProjectName/@Value")
-    if ($null -eq $path -or $null -eq $name -or -not $path.Value -or -not $name.Value) { return '' }
-    $folder = $path.Value.Replace('/', '\')
-    return [IO.Path]::GetFullPath([IO.Path]::Combine($folder, $name.Value)).TrimEnd('\')
-}
-
-function Test-FohLiveUserLibrary {
-    # The install's check, before anything changes, that Live uses the User
-    # Library FohMixer goes into (#9: the master user's Library.cfg had
-    # <UserLibrary />, so Live never listed FohMixer). Only reads Live's
-    # preferences; the fix is the owner's, in Live. $Switch names the
-    # install's parameters (Band or Master).
-    param(
-        [Parameter(Mandatory)][string]$User,
-        [Parameter(Mandatory)][string]$Prefs,
-        [Parameter(Mandatory)][string]$UserLibrary,
-        [Parameter(Mandatory)][string]$Switch
-    )
-    $cfg = Get-FohLivePrefsFile -Prefs $Prefs
-    if (-not $cfg) {
-        throw ("no Library.cfg of Live for $User under $Prefs (Live <version>\Preferences\Library.cfg): " +
-            "start Live once as $User, or pass the folder of its Live preferences with -${Switch}AbletonPrefs")
-    }
-    $used = Get-FohLiveUserLibrary -Cfg $cfg
-    $parent = Split-Path -Parent $UserLibrary
-    if (-not $used) {
-        throw ("Live of $User has no User Library set (${cfg}: UserLibrary is empty), so it would not list FohMixer: " +
-            "in Live as $User open Settings > Library, set the location of the User Library to $parent, " +
-            'restart Live, then run the install again')
-    }
-    if ($used -ne $UserLibrary.TrimEnd('\')) {
-        throw ("Live of $User uses the User Library $used (${cfg}), not ${UserLibrary}: pass -${Switch}UserLibrary " +
-            "`"$used`", or set $parent in Live's Settings > Library and restart Live")
     }
 }
 
