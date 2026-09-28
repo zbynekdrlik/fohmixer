@@ -150,6 +150,45 @@ class ImportTest(unittest.TestCase):
         self.assertEqual(len(backdrops), 5, [i["kind"] for i in items(self.foh)])
         self.assertEqual(backdrops[0]["frame"], {"x": 40.0, "y": 174.0, "w": 101.0, "h": 77.0})
 
+    def test_partly_visible_nodes_are_clipped_not_dropped(self):
+        # A return strip 28 px past the canvas's bottom edge (all its parts
+        # inside) is kept, clipped; its double-click guard matches it.
+        echo = self.strip_named("A-Echo")
+        self.assertEqual(echo["strip_kind"], "return")
+        self.assertEqual(echo["frame"], {"x": 2180.0, "y": 898.0, "w": 161.0, "h": 742.0})
+        self.assertEqual(len(echo["children"]), 8)
+        self.assertTrue(echo["mute_guard"])
+        self.assertNotIn(
+            "double_click_mute 'master_A-Echo': matches no strip", self.report["stale_config"]
+        )
+        # The bottom row's area and its vertical title, past the bottom edge.
+        areas = {a.get("title"): a for a in by_kind(items(self.foh), "area") if "title" in a}
+        self.assertEqual(areas[""]["frame"], {"x": 271.0, "y": 901.0, "w": 529.0, "h": 739.0})
+        self.assertEqual(areas["EFFECTS"]["frame"], {"x": 247.0, "y": 902.0, "w": 53.0, "h": 738.0})
+        # A nested page's backdrop larger than the pager: its part in the page.
+        backdrop = self.sub["STAGE"]["items"][0]
+        self.assertEqual(backdrop["style"]["bg"], "#9D9DA0FF")
+        self.assertEqual(backdrop["frame"], {"x": 294.0, "y": 61.0, "w": 1681.0, "h": 773.0})
+        # The TechAlert meter, taller than its group: its part in the group.
+        self.assertEqual(
+            self.strip_named("TechAlert #")["children"]["meter"],
+            {"x": 77.0, "y": 1144.0, "w": 10.0, "h": 12.0},
+        )
+        # A box starting above its page (under the root tab bar).
+        box9 = [a for a in by_kind(items(self.foh), "area") if a["frame"]["x"] == 37.0]
+        self.assertEqual(box9[0]["frame"], {"x": 37.0, "y": 59.0, "w": 178.0, "h": 1185.0})
+        # Each clipped node is reported.
+        for path in (
+            "root/pager1/WORSHIP/master_A-Echo",
+            "root/pager1/WORSHIP/effects_area",
+            "root/pager1/WORSHIP/effects",
+            "root/pager1/WORSHIP/FOH /STAGE/backdrop",
+            "root/band_TechAlert #/meter",
+            "root/pager1/WORSHIP/box9",
+            "root/alert",
+        ):
+            self.assertIn(path, self.report["clipped"])
+
     def test_frames_are_composed_into_canvas_coordinates(self):
         # A label at (10,10) in a group at (100,100) on a page at (0,59).
         marks = [i for i in items(self.foh) if i["kind"] == "label" and i["text"] == "[]"]
@@ -206,13 +245,14 @@ class ImportTest(unittest.TestCase):
 
     def test_decorative_script_carriers_are_dropped(self):
         decoration = self.report["decoration"]
-        # Five full strips on the canvas: two backdrop buttons with the mute
-        # script each (the off-canvas strip is dropped whole).
-        self.assertEqual(decoration["mute script carriers"], 10)
-        self.assertEqual(decoration["second meter bars"], 5)
-        self.assertEqual(decoration["scale labels"], 5)
-        self.assertEqual(decoration["tick lines"], 5)
-        self.assertEqual(decoration["meter dBFS labels (D11)"], 5)
+        # Six full strips on the canvas (one of them partly): two backdrop
+        # buttons with the mute script each (the off-canvas strip is
+        # dropped whole).
+        self.assertEqual(decoration["mute script carriers"], 12)
+        self.assertEqual(decoration["second meter bars"], 6)
+        self.assertEqual(decoration["scale labels"], 6)
+        self.assertEqual(decoration["tick lines"], 6)
+        self.assertEqual(decoration["meter dBFS labels (D11)"], 6)
         for item in all_items(self.layout):
             self.assertNotIn("button1", json.dumps(item))
 

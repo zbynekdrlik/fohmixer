@@ -51,6 +51,7 @@ CONFIG_TEXT = (
     "unfold_band: 'Vocals Repro grp#'\n"
     "unfold_band: 'Old grp#'\n"
     "double_click_mute: 'master_Hand1 #'\n"
+    "double_click_mute: 'master_A-Echo'\n"
     "double_click_mute: 'band_Nothing'\n"
 )
 
@@ -190,7 +191,9 @@ def backdrop(name, frame):
 def alert_strip(name, x, y):
     """The TechAlert strip: meter, status, mute and label, no fader or pan."""
     parts = [
-        N("FADER", "meter", (1, 5, 10, 87), script=METER_SCRIPT),
+        # Taller than its group, as in the real project: TouchOSC shows the
+        # 12 px inside the group.
+        N("FADER", "meter", (10, 85, 10, 552), script=METER_SCRIPT),
         N("BOX", "status_indicator", (20, 5, 80, 15)),
         N("BUTTON", "mute", (15, 50, 94, 40), script=MUTE_SCRIPT, buttonType=1),
         label("track_label", (16, 55, 92, 30), "TechAlert"),
@@ -268,6 +271,17 @@ def project():
         "STAGE",
         (65, 0, 1681, 773),
         [
+            # A grey backdrop far larger than the pager: what shows is the
+            # part inside the page.
+            label(
+                "backdrop",
+                (-243, -80, 2512, 920),
+                "",
+                background=True,
+                orientation=3,
+                locked=True,
+                color=(0.616, 0.616, 0.627, 1),
+            ),
             N("BOX", "panel", (0, 0, 1681, 773), color=(0.73, 1, 0.65, 0.34)),
             label(
                 "title",
@@ -310,6 +324,8 @@ def project():
         (0, 59, 2360, 1581),
         [
             N("BOX", "box8", (27, 10, 198, 1240), color=(0, 0, 0, 0.5)),
+            # Starts above the page, under the root tab bar.
+            N("BOX", "box9", (37, -55, 178, 1240), color=(0, 0, 0, 0.5)),
             # Dark backdrops behind the sidebar controls: they carry the
             # mute script but are never notified (inert).
             *[
@@ -498,9 +514,19 @@ def project():
                     label("fdr_label", (0, 420, 101, 19), "- 0.0", script=DB_SCRIPT),
                 ],
             ),
+            # The bottom row's area and its vertical title overhang the
+            # canvas's bottom edge, as in the real project.
+            label(
+                "effects_area",
+                (271, 842, 529, 754),
+                "",
+                background=True,
+                orientation=3,
+                color=(0.39, 0.39, 0.39, 1),
+            ),
             label(
                 "effects",
-                (247, 843, 24, 700),
+                (247, 843, 53, 748),
                 "EFFECTS",
                 background=True,
                 orientation=3,
@@ -517,6 +543,17 @@ def project():
                 color=(0.38, 0.47, 1, 1),
             ),
             strip("Hand2 #", 2180, 46, w=161, h=700, background=True, color=(0.96, 1, 0.08, 1)),
+            # A return strip 28 px past the canvas's bottom edge; every part
+            # of it is inside.
+            strip(
+                "master_A-Echo",
+                2180,
+                839,
+                w=161,
+                h=770,
+                background=True,
+                color=(0.96, 1, 0.08, 1),
+            ),
             strip("master_Hand3 #", 1420, 1770),
             label("hidden", (1610, 834, 50, 20), "gone", visible=False),
         ],
