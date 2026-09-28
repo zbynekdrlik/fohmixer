@@ -59,6 +59,14 @@ def raw_client(port, rcvbuf=4096):
     return sock
 
 
+def send_buffer_frames(frame_bytes):
+    """How many frames of ``frame_bytes`` the kernel's largest TCP send buffer
+    holds (Linux: the third field of ``tcp_wmem``), rounded up."""
+    with open("/proc/sys/net/ipv4/tcp_wmem", encoding="ascii") as f:
+        largest = int(f.read().split()[2])
+    return -(-largest // frame_bytes)
+
+
 def read_server_events(sock, count, timeout=10.0):
     """The next ``count`` JSON messages the server sent on a raw client socket."""
     sock.settimeout(timeout)
@@ -240,19 +248,22 @@ class TransportTest(unittest.TestCase):
         stalled = raw_client(self.port)
         self.addCleanup(stalled.close)
         conn = wait_for(lambda: [c for c in self.server.connections() if c.id not in before])[0]
-        # 200 × 64 KB: far more than the socket buffers hold (4 MB at most on
-        # Linux), so most results are still queued when the heartbeat is set.
-        payload = "x" * 65536
-        for n in range(200):
+        # Twice as many 64 KB results as the kernel's largest send buffer
+        # holds, and 100 more: at least half of them are still queued when the
+        # heartbeat is set, whatever the runner's buffer sizes.
+        frame = 65536
+        count = 2 * send_buffer_frames(frame) + 100
+        payload = "x" * frame
+        for n in range(count):
             conn.push_result(f"u{n}", [{"ok": True, "data": payload}])
         time.sleep(0.2)
         self.server.broadcast_heartbeat({"main_tick_age_ms": 1.0})
-        events = read_server_events(stalled, 202)
+        events = read_server_events(stalled, count + 2)
         order = [e.get("uuid") or e["event"] for e in events]
         self.assertEqual(order[0], "connect")
         self.assertEqual(order.count("heartbeat"), 1)
-        self.assertLess(order.index("heartbeat"), 100, f"late heartbeat: {order[:8]}…")
-        self.assertEqual([u for u in order if u.startswith("u")], [f"u{n}" for n in range(200)])
+        self.assertLess(order.index("heartbeat"), count // 2, f"late heartbeat: {order[:8]}…")
+        self.assertEqual([u for u in order if u.startswith("u")], [f"u{n}" for n in range(count)])
 
     def test_shutdown_then_rebind_at_once_without_time_wait(self):
         ws, _conn, _ = self.client()
