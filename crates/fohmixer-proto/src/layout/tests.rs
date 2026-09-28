@@ -7,6 +7,7 @@ fn sample() -> Value {
     json!({
         "schema": 1,
         "canvas": {"w": 2360, "h": 1640},
+        "background": "#9D9DA0FF",
         "tabbar": {"orientation": "top", "bar_size": 59, "default_page": 0},
         "pages": [{
             "id": "main",
@@ -40,7 +41,10 @@ fn sample() -> Value {
             "pager": {
                 "frame": {"x": 229, "y": 61, "w": 1746, "h": 773},
                 "tabbar": {"orientation": "left", "bar_size": 65, "default_page": 0},
-                "pages": [{"id": "stage", "title": "STAGE", "tab": {"color": "#BBFFA656"}, "items": []},
+                "background": "#000000FF",
+                "pages": [{"id": "stage", "title": "STAGE", "background": "#000000F9",
+                           "tab": {"color": "#404040FF", "color_on": "#BBFFA656", "text_size": 36, "text_size_on": 51},
+                           "items": []},
                           {"id": "others", "title": "OTHERS", "items": [
                              {"kind": "label", "frame": {"x": 300, "y": 100, "w": 50, "h": 20}, "text": "HANDS"}]}]
             }
@@ -81,8 +85,32 @@ fn the_sample_parses_validates_and_round_trips() {
     assert_eq!(strip.strip_kind, StripKind::Standard);
     assert!(strip.mute_guard);
     assert_eq!(layout.pages[0].items[1].z, 2);
+    assert_eq!(layout.background.as_deref(), Some("#9D9DA0FF"));
+    let pager = layout.pages[0].pager.as_ref().unwrap();
+    assert_eq!(pager.background.as_deref(), Some("#000000FF"));
+    let stage = &pager.pages[0];
+    assert_eq!(stage.background.as_deref(), Some("#000000F9"));
+    assert_eq!(
+        stage.tab,
+        Tab {
+            color: Some("#404040FF".into()),
+            color_on: Some("#BBFFA656".into()),
+            text_size: Some(36.0),
+            text_size_on: Some(51.0),
+        }
+    );
+    assert_eq!(pager.pages[1].background, None);
+    assert_eq!(pager.pages[1].tab, Tab::default());
     let again: Layout = serde_json::from_value(serde_json::to_value(&layout).unwrap()).unwrap();
     assert_eq!(again, layout);
+    // Absent fields stay absent when written back.
+    let written = serde_json::to_value(&layout).unwrap();
+    assert!(
+        written["pages"][0]["pager"]["pages"][1]
+            .get("background")
+            .is_none()
+    );
+    assert!(written["pages"][1]["tab"].get("color_on").is_none());
 }
 
 #[test]
@@ -256,6 +284,10 @@ fn schema_canvas_pages_and_misc_are_checked() {
     v["overlay"][0]["period_ms"] = json!(0);
     v["pages"][0]["items"][3]["key"] = json!("tempo");
     v["pages"][0]["tab"]["color"] = json!("gray");
+    v["pages"][0]["tab"]["color_on"] = json!("#12345");
+    v["pages"][0]["background"] = json!("black");
+    v["pages"][0]["pager"]["background"] = json!("#00000G");
+    v["background"] = json!("#9D9DA0F");
     v["overlay"][0]["style"]["bg"] = json!("#FF00001");
     v["pages"][0]["pager"]["tabbar"]["default_page"] = json!(2);
     v["pages"][1]["id"] = json!("");
@@ -264,8 +296,12 @@ fn schema_canvas_pages_and_misc_are_checked() {
         errors(v),
         vec![
             "schema: schema 2 is not 1".to_string(),
+            r##"background: "#9D9DA0F" is not #RRGGBB or #RRGGBBAA"##.to_string(),
             r#"pages[0].tab.color: "gray" is not #RRGGBB or #RRGGBBAA"#.to_string(),
+            r##"pages[0].tab.color_on: "#12345" is not #RRGGBB or #RRGGBBAA"##.to_string(),
+            r#"pages[0].background: "black" is not #RRGGBB or #RRGGBBAA"#.to_string(),
             r#"pages[0].items[3]: unknown hub value "tempo""#.to_string(),
+            r##"pages[0].pager.background: "#00000G" is not #RRGGBB or #RRGGBBAA"##.to_string(),
             "pages[0].pager.pages: default page 2 of 2 pages".to_string(),
             "pages[1]: empty page id".to_string(),
             r##"overlay[0].style.bg: "#FF00001" is not #RRGGBB or #RRGGBBAA"##.to_string(),

@@ -4,6 +4,7 @@
   "w": 2360.0,
   "h": 1640.0
  },
+ "background": "#9D9DA0FF",
  "tabbar": {
   "orientation": "top",
   "bar_size": 59.0,
@@ -15,7 +16,9 @@
    "title": "Cue",
    "tab": {
     "color": "#404040FF",
-    "text_size": 33.0
+    "color_on": "#808080FF",
+    "text_size": 33.0,
+    "text_size_on": 52.0
    },
    "items": [
     {
@@ -54,7 +57,9 @@
    "title": "FOH",
    "tab": {
     "color": "#404040FF",
-    "text_size": 33.0
+    "color_on": "#808080FF",
+    "text_size": 33.0,
+    "text_size_on": 52.0
    },
    "items": [
     {
@@ -687,6 +692,7 @@
      "w": 1746.0,
      "h": 773.0
     },
+    "background": "#000000FF",
     "tabbar": {
      "orientation": "left",
      "bar_size": 65.0,
@@ -697,9 +703,12 @@
       "id": "stage",
       "title": "STAGE",
       "tab": {
-       "color": "#BAFFA657",
-       "text_size": 36.0
+       "color": "#404040FF",
+       "color_on": "#BAFFA657",
+       "text_size": 36.0,
+       "text_size_on": 51.0
       },
+      "background": "#000000F9",
       "items": [
        {
         "kind": "area",
@@ -891,8 +900,10 @@
       "id": "others",
       "title": "OTHERS",
       "tab": {
-       "color": "#FA00004A",
-       "text_size": 36.0
+       "color": "#404040FF",
+       "color_on": "#FA00004A",
+       "text_size": 36.0,
+       "text_size_on": 51.0
       },
       "items": [
        {
@@ -975,7 +986,9 @@
    "title": "Conf",
    "tab": {
     "color": "#404040FF",
-    "text_size": 33.0
+    "color_on": "#808080FF",
+    "text_size": 33.0,
+    "text_size_on": 52.0
    },
    "items": [
     {

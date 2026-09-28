@@ -30,6 +30,9 @@ const CANVAS_SLACK: f64 = 0.5;
 pub struct Layout {
     pub schema: u32,
     pub canvas: Canvas,
+    /// The root pager's fill, under every page (the whole canvas).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background: Option<String>,
     /// The root tab bar (the top-level pages' tabs).
     #[serde(default)]
     pub tabbar: TabBar,
@@ -94,14 +97,19 @@ pub struct TabBar {
     pub default_page: usize,
 }
 
-/// One page's tab.
+/// One page's tab: its colour and text size, and both while it is lit
+/// (its page shown; TouchOSC's tabColorOn / textSizeOn).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Tab {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color_on: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text_size: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_size_on: Option<f64>,
 }
 
 /// A page (a tab of the root tab bar or of a nested pager).
@@ -112,6 +120,10 @@ pub struct Page {
     pub title: String,
     #[serde(default)]
     pub tab: Tab,
+    /// The page's fill, under its items (the area of its pager or the
+    /// canvas below the tab bar).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background: Option<String>,
     #[serde(default)]
     pub items: Vec<Item>,
     /// A nested pager on this page.
@@ -124,6 +136,9 @@ pub struct Page {
 #[serde(deny_unknown_fields)]
 pub struct Pager {
     pub frame: Frame,
+    /// The pager's fill, under its tab bar and its pages.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background: Option<String>,
     #[serde(default)]
     pub tabbar: TabBar,
     pub pages: Vec<Page>,
@@ -429,6 +444,9 @@ impl Layout {
         if !sized {
             v.error("canvas", format!("{w}×{h} is not a canvas size"));
         }
+        if let Some(color) = &self.background {
+            v.color("background", color);
+        }
         v.pages("pages", &self.pages, &self.tabbar);
         for (i, item) in self.overlay.iter().enumerate() {
             v.item(&format!("overlay[{i}]"), item);
@@ -550,8 +568,14 @@ impl Validator {
         } else if !self.page_ids.insert(page.id.clone()) {
             self.error(at, format!("duplicate page id {:?}", page.id));
         }
-        if let Some(color) = &page.tab.color {
-            self.color(&format!("{at}.tab.color"), color);
+        for (name, color) in [
+            ("tab.color", &page.tab.color),
+            ("tab.color_on", &page.tab.color_on),
+            ("background", &page.background),
+        ] {
+            if let Some(color) = color {
+                self.color(&format!("{at}.{name}"), color);
+            }
         }
         for (i, item) in page.items.iter().enumerate() {
             self.item(&format!("{at}.items[{i}]"), item);
@@ -559,6 +583,9 @@ impl Validator {
         if let Some(pager) = &page.pager {
             let pager_at = format!("{at}.pager");
             self.frame(&pager_at, &pager.frame);
+            if let Some(color) = &pager.background {
+                self.color(&format!("{pager_at}.background"), color);
+            }
             self.pages(&format!("{pager_at}.pages"), &pager.pages, &pager.tabbar);
         }
     }
