@@ -313,11 +313,12 @@ fn StatusCluster(frame: Frame) -> impl IntoView {
             .into_iter()
             .map(|(name, instance)| {
                 let state = Badge::of(&instance).name();
+                let instance_name = name.clone();
                 view! {
                     <span
                         class={format!("badge {state}")}
                         data-testid="badge"
-                        data-instance={name.clone()}
+                        data-instance=instance_name
                         data-state=state
                     >
                         <i class="badge-dot"></i>

@@ -89,9 +89,11 @@ pub fn meter_props(source: MeterSource) -> &'static [&'static str] {
 pub fn strip_subs(strip: &Strip, source: MeterSource) -> StripSubs {
     let c = &strip.children;
     let b = &strip.binding;
-    let volume = (c.fader.is_some() || c.db.is_some())
-        .then(|| spec(b, "mixer_device volume", "value", true))
-        .flatten();
+    let volume = if c.fader.is_some() || c.db.is_some() {
+        spec(b, "mixer_device volume", "value", true)
+    } else {
+        None
+    };
     let pan = c
         .pan
         .and_then(|_| spec(b, "mixer_device panning", "value", false));

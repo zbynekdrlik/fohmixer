@@ -131,6 +131,7 @@ pub fn ParamToggleView(
             "false"
         }
     };
+    let label_attr = label.clone();
     let press_name = match press {
         Press::Toggle => "toggle",
         Press::DoubleTapLatch => "double_tap_latch",
@@ -141,7 +142,7 @@ pub fn ParamToggleView(
             class="item button param-toggle"
             class:failed=move || failed.get()
             data-testid="param-toggle"
-            data-label={label.clone()}
+            data-label=label_attr
             data-press=press_name
             data-state=move || state_name(state())
             aria-disabled=disabled
@@ -182,6 +183,7 @@ pub fn ParamFaderView(
         .first()
         .map_or_else(|| RwSignal::new(Slot::Pending), |(s, _)| store.slot(s));
     let display = move || slot.with(|s| s.display().unwrap_or_default().to_string());
+    let label_attr = label.clone();
     let inner = Frame {
         x: 0.0,
         y: 0.0,
@@ -192,10 +194,10 @@ pub fn ParamFaderView(
         <div
             class="item param-fader"
             data-testid="param-fader"
-            data-label={label.clone()}
+            data-label=label_attr
             style={stage::item_style(frame, z, &style)}
         >
-            <FaderView frame=inner slot=slot targets=specs shaping=false />
+            <FaderView frame=inner state=slot targets=specs shaping=false />
             <div class="param-fader-text">
                 <span class="param-fader-label">{label}</span>
                 <span class="param-fader-display" data-testid="param-display">{display}</span>

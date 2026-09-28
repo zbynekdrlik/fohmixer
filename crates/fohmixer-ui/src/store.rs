@@ -220,9 +220,11 @@ pub fn range_from(outcome: &Result<Vec<Value>, String>) -> Option<(f64, f64)> {
     let slots = outcome.as_ref().ok()?;
     let number = |i: usize| -> Option<f64> {
         let slot = slots.get(i)?;
-        (slot.get("ok") == Some(&json!(true)))
-            .then(|| slot.get("data").and_then(Value::as_f64))
-            .flatten()
+        if slot.get("ok") == Some(&json!(true)) {
+            slot.get("data").and_then(Value::as_f64)
+        } else {
+            None
+        }
     };
     let (min, max) = (number(0)?, number(1)?);
     (max > min).then_some((min, max))

@@ -49,7 +49,7 @@ pub fn StripView(
             view! {
                 <FaderView
                     frame={at(f)}
-                    slot=slot
+                    state=slot
                     targets={vec![(spec, Law::Volume)]}
                     shaping={settings.shaping}
                 />
@@ -59,13 +59,13 @@ pub fn StripView(
         .pan
         .zip(pan)
         .zip(subs.pan.clone())
-        .map(|((f, slot), spec)| view! { <PanView frame={at(f)} slot=slot spec=spec /> });
+        .map(|((f, slot), spec)| view! { <PanView frame={at(f)} state=slot spec=spec /> });
     let mute_view = c
         .mute
         .zip(mute)
         .zip(subs.mute.clone())
         .map(|((f, slot), spec)| {
-            view! { <MuteView frame={at(f)} slot=slot spec=spec guarded={strip.mute_guard} /> }
+            view! { <MuteView frame={at(f)} state=slot spec=spec guarded={strip.mute_guard} /> }
         });
     let meter = c
         .meter

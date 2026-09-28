@@ -51,8 +51,14 @@ fn toggle_flag(store: LiveStore, spec: &SubSpec, slot: RwSignal<Slot>, failed: R
 /// A strip's mute: lit while the track is audible; a guarded strip needs a
 /// second tap within 500 ms (the first arms and pulses).
 #[component]
-pub fn MuteView(frame: Frame, slot: RwSignal<Slot>, spec: SubSpec, guarded: bool) -> impl IntoView {
+pub fn MuteView(
+    frame: Frame,
+    state: RwSignal<Slot>,
+    spec: SubSpec,
+    guarded: bool,
+) -> impl IntoView {
     let store = expect_context::<LiveStore>();
+    let slot = state;
     let spec = StoredValue::new(spec);
     let guard = StoredValue::new(MuteGuard::default());
     let armed = RwSignal::new(false);

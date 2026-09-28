@@ -68,16 +68,17 @@ impl Law {
     }
 }
 
-/// A vertical fader showing `slot` (by the first target's law) and
+/// A vertical fader showing `state` (by the first target's law) and
 /// writing every target, each by its own law.
 #[component]
 pub fn FaderView(
     frame: Frame,
-    slot: RwSignal<Slot>,
+    state: RwSignal<Slot>,
     targets: Vec<(SubSpec, Law)>,
     shaping: bool,
 ) -> impl IntoView {
     let store = expect_context::<LiveStore>();
+    let slot = state;
     let law = targets.first().map_or(Law::Volume, |(_, law)| *law);
     let targets = StoredValue::new(targets);
     let ctl = StoredValue::new(FaderCtl::new(shaping, law.glide_to()));

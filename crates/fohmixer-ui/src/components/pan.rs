@@ -20,8 +20,9 @@ const DOT: f64 = 28.0;
 
 /// A pan control showing and writing Live's panning.
 #[component]
-pub fn PanView(frame: Frame, slot: RwSignal<Slot>, spec: SubSpec) -> impl IntoView {
+pub fn PanView(frame: Frame, state: RwSignal<Slot>, spec: SubSpec) -> impl IntoView {
     let store = expect_context::<LiveStore>();
+    let slot = state;
     let spec = StoredValue::new(spec);
     let ctl = StoredValue::new(PanCtl::default());
     let failed = RwSignal::new(false);
