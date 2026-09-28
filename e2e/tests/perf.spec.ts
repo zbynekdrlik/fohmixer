@@ -45,3 +45,57 @@ test.describe("Frames while the surface loads", () => {
     expect(r.max, `long gaps (start+length ms): ${r.long.join(", ")}; marks: ${r.marks.join(", ")}`).toBeLessThan(700);
   });
 });
+
+// A diagnosis of the WebKit frame rate (#21): the same surface with one
+// suspect of the stylesheet switched off at a time, frames counted for 2 s.
+// The minimum rate over the variants must stay above 1 fps (the run exists
+// to print the table; it is removed once the cause is fixed).
+test.describe("Frame rate by stylesheet suspect", () => {
+  test("frames per second with each suspect off", async ({ page }) => {
+    await openSurface(page);
+    const variants: [string, string][] = [
+      ["baseline", ""],
+      ["no :has rules", "has"],
+      ["no animations", "* { animation: none !important; }"],
+      ["no shadows", "* { box-shadow: none !important; }"],
+      ["no gradients", ".meter-zones, .fader-fill, .fader-cap, .param-toggle { background: #3a6 !important; }"],
+      ["no color-mix", ".btn, .btn.on, .mute.lit { background: #223 !important; border-color: #334 !important; }"],
+      ["no meters", ".meter { display: none !important; }"],
+      ["no strips", ".strip { visibility: hidden !important; }"],
+    ];
+    const table: string[] = [];
+    for (const [name, css] of variants) {
+      const fps = await page.evaluate(async ([name, css]) => {
+        document.getElementById("diag")?.remove();
+        if (css === "has") {
+          for (const sheet of Array.from(document.styleSheets)) {
+            const rules = Array.from(sheet.cssRules);
+            for (let i = rules.length - 1; i >= 0; i--) {
+              if ((rules[i] as CSSStyleRule).selectorText?.includes(":has(")) sheet.deleteRule(i);
+            }
+          }
+        } else if (css) {
+          const style = document.createElement("style");
+          style.id = "diag";
+          style.textContent = css;
+          document.head.appendChild(style);
+        }
+        await new Promise((r) => setTimeout(r, 300));
+        let n = 0;
+        const end = performance.now() + 2000;
+        await new Promise<void>((done) => {
+          const tick = () => {
+            n++;
+            if (performance.now() < end) requestAnimationFrame(tick);
+            else done();
+          };
+          requestAnimationFrame(tick);
+        });
+        return n / 2;
+      }, [name, css]);
+      table.push(`${name}: ${fps} fps`);
+    }
+    console.log(`frame rate by suspect: ${table.join(" | ")}`);
+    expect(table.length).toBe(variants.length);
+  });
+});
