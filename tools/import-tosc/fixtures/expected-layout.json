@@ -1,0 +1,1092 @@
+{
+ "schema": 1,
+ "canvas": {
+  "w": 2360.0,
+  "h": 1640.0
+ },
+ "tabbar": {
+  "orientation": "top",
+  "bar_size": 59.0,
+  "default_page": 1
+ },
+ "pages": [
+  {
+   "id": "cue",
+   "title": "Cue",
+   "tab": {
+    "color": "#404040FF",
+    "text_size": 33.0
+   },
+   "items": [
+    {
+     "kind": "param_toggle",
+     "frame": {
+      "x": 591.0,
+      "y": 169.0,
+      "w": 156.0,
+      "h": 60.0
+     },
+     "z": 1,
+     "style": {
+      "bg": "#75CC26FF"
+     },
+     "label": "Vox 1 TU",
+     "targets": [
+      {
+       "binding": {
+        "instance": "band",
+        "anchor": {
+         "kind": "track",
+         "name": "Vocal 3 repro#"
+        }
+       },
+       "prop": "mute",
+       "on": false,
+       "off": true
+      }
+     ],
+     "press": "toggle"
+    }
+   ]
+  },
+  {
+   "id": "foh",
+   "title": "FOH",
+   "tab": {
+    "color": "#404040FF",
+    "text_size": 33.0
+   },
+   "items": [
+    {
+     "kind": "area",
+     "frame": {
+      "x": 27.0,
+      "y": 69.0,
+      "w": 198.0,
+      "h": 1240.0
+     },
+     "z": 2,
+     "style": {
+      "bg": "#00000080"
+     }
+    },
+    {
+     "kind": "stage",
+     "frame": {
+      "x": 27.0,
+      "y": 78.0,
+      "w": 115.0,
+      "h": 85.0
+     },
+     "z": 8,
+     "style": {
+      "bg": "#000594FF",
+      "text": "STAGE"
+     },
+     "binding": {
+      "instance": "band",
+      "anchor": {
+       "kind": "track",
+       "name": "Mics Stage #"
+      }
+     },
+     "aut": true
+    },
+    {
+     "kind": "hub_toggle",
+     "frame": {
+      "x": 27.0,
+      "y": 180.0,
+      "w": 115.0,
+      "h": 85.0
+     },
+     "z": 9,
+     "style": {
+      "bg": "#000594FF"
+     },
+     "key": "stage_aut",
+     "label": "STAGE AUT"
+    },
+    {
+     "kind": "solo",
+     "frame": {
+      "x": 27.0,
+      "y": 278.0,
+      "w": 161.0,
+      "h": 65.0
+     },
+     "z": 10,
+     "style": {},
+     "binding": {
+      "instance": "band",
+      "anchor": {
+       "kind": "track",
+       "name": "Vocals Repro grp#"
+      }
+     }
+    },
+    {
+     "kind": "solo",
+     "frame": {
+      "x": 27.0,
+      "y": 333.0,
+      "w": 161.0,
+      "h": 65.0
+     },
+     "z": 11,
+     "style": {},
+     "binding": {
+      "instance": "band",
+      "anchor": {
+       "kind": "track",
+       "name": "Stems grp#"
+      }
+     }
+    },
+    {
+     "kind": "param_toggle",
+     "frame": {
+      "x": 27.0,
+      "y": 455.0,
+      "w": 149.0,
+      "h": 60.0
+     },
+     "z": 12,
+     "style": {
+      "bg": "#875700FF"
+     },
+     "label": "REVERB",
+     "targets": [
+      {
+       "binding": {
+        "instance": "band",
+        "anchor": {
+         "kind": "return",
+         "name": "A-Reverb #"
+        }
+       },
+       "prop": "mute",
+       "on": false,
+       "off": true
+      }
+     ],
+     "press": "toggle"
+    },
+    {
+     "kind": "param_toggle",
+     "frame": {
+      "x": 27.0,
+      "y": 545.0,
+      "w": 197.0,
+      "h": 60.0
+     },
+     "z": 13,
+     "style": {
+      "bg": "#808080FF"
+     },
+     "label": "VOC MIC",
+     "targets": [
+      {
+       "binding": {
+        "instance": "band",
+        "anchor": {
+         "kind": "track",
+         "name": "Vocal 1 repro#"
+        }
+       },
+       "prop": "mute",
+       "on": false,
+       "off": true
+      },
+      {
+       "binding": {
+        "instance": "band",
+        "anchor": {
+         "kind": "track",
+         "name": "Vocal 2 repro#"
+        }
+       },
+       "prop": "mute",
+       "on": false,
+       "off": true
+      }
+     ],
+     "press": "double_tap_latch"
+    },
+    {
+     "kind": "param_toggle",
+     "frame": {
+      "x": 27.0,
+      "y": 672.0,
+      "w": 204.0,
+      "h": 60.0
+     },
+     "z": 14,
+     "style": {
+      "bg": "#808080FF"
+     },
+     "label": "AUTOTUNE",
+     "targets": [
+      {
+       "binding": {
+        "instance": "band",
+        "anchor": {
+         "kind": "track",
+         "name": "Vocal 1 repro#"
+        },
+        "path": "devices[name=Vox Chain] chains[name=Main] devices[name=Latencies] parameters 1"
+       },
+       "prop": "value",
+       "on": 127.0,
+       "off": 0.0
+      }
+     ],
+     "press": "toggle"
+    },
+    {
+     "kind": "param_toggle",
+     "frame": {
+      "x": 27.0,
+      "y": 805.0,
+      "w": 160.0,
+      "h": 60.0
+     },
+     "z": 15,
+     "style": {
+      "bg": "#808080FF"
+     },
+     "label": "ZVUKAR",
+     "targets": [
+      {
+       "binding": {
+        "instance": "band",
+        "anchor": {
+         "kind": "track",
+         "name": "Hand4 #"
+        }
+       },
+       "prop": "mute",
+       "on": false,
+       "off": true
+      }
+     ],
+     "press": "pulse_and_double_tap_latch"
+    },
+    {
+     "kind": "param_toggle",
+     "frame": {
+      "x": 27.0,
+      "y": 957.0,
+      "w": 102.0,
+      "h": 30.0
+     },
+     "z": 16,
+     "style": {
+      "bg": "#808080FF"
+     },
+     "label": "REPRO",
+     "targets": [
+      {
+       "binding": {
+        "instance": "band",
+        "anchor": {
+         "kind": "track",
+         "name": "Hand4 #"
+        },
+        "path": "mixer_device sends 1"
+       },
+       "prop": "value",
+       "on": 1.0,
+       "off": 0.0
+      }
+     ],
+     "press": "toggle"
+    },
+    {
+     "kind": "param_fader",
+     "frame": {
+      "x": 755.0,
+      "y": 1079.0,
+      "w": 101.0,
+      "h": 399.0
+     },
+     "z": 17,
+     "style": {
+      "bg": "#808080FF"
+     },
+     "label": "Podklady All",
+     "targets": [
+      {
+       "binding": {
+        "instance": "band",
+        "anchor": {
+         "kind": "track",
+         "name": "Drums #"
+        },
+        "path": "mixer_device volume"
+       },
+       "prop": "value",
+       "scale": "cc_linear"
+      },
+      {
+       "binding": {
+        "instance": "band",
+        "anchor": {
+         "kind": "track",
+         "name": "Bass #"
+        },
+        "path": "mixer_device volume"
+       },
+       "prop": "value",
+       "scale": "cc_linear"
+      }
+     ]
+    },
+    {
+     "kind": "area",
+     "frame": {
+      "x": 247.0,
+      "y": 902.0,
+      "w": 24.0,
+      "h": 700.0
+     },
+     "z": 18,
+     "style": {
+      "bg": "#636363FF",
+      "text": "EFFECTS",
+      "vertical": true
+     },
+     "title": "EFFECTS"
+    },
+    {
+     "kind": "label",
+     "frame": {
+      "x": 110.0,
+      "y": 169.0,
+      "w": 20.0,
+      "h": 20.0
+     },
+     "z": 19,
+     "style": {},
+     "text": "[]"
+    },
+    {
+     "kind": "strip",
+     "frame": {
+      "x": 2005.0,
+      "y": 105.0,
+      "w": 161.0,
+      "h": 700.0
+     },
+     "z": 20,
+     "style": {
+      "bg": "#6178FFFF"
+     },
+     "binding": {
+      "instance": "band",
+      "anchor": {
+       "kind": "return",
+       "name": "B-Main repro #"
+      }
+     },
+     "strip_kind": "return",
+     "children": {
+      "pan": {
+       "x": 2020.0,
+       "y": 130.0,
+       "w": 131.0,
+       "h": 48.0
+      },
+      "fader": {
+       "x": 2020.0,
+       "y": 188.0,
+       "w": 131.0,
+       "h": 553.0
+      },
+      "meter": {
+       "x": 2006.0,
+       "y": 188.0,
+       "w": 10.0,
+       "h": 553.0
+      },
+      "mute": {
+       "x": 2020.0,
+       "y": 753.0,
+       "w": 131.0,
+       "h": 52.0
+      },
+      "label": {
+       "x": 2021.0,
+       "y": 758.0,
+       "w": 129.0,
+       "h": 42.0
+      },
+      "instance_label": {
+       "x": 2021.0,
+       "y": 256.0,
+       "w": 129.0,
+       "h": 20.0
+      },
+      "db": {
+       "x": 2020.0,
+       "y": 221.0,
+       "w": 131.0,
+       "h": 30.0
+      },
+      "status": {
+       "x": 2029.0,
+       "y": 193.0,
+       "w": 88.0,
+       "h": 20.0
+      }
+     },
+     "mute_guard": false
+    },
+    {
+     "kind": "strip",
+     "frame": {
+      "x": 2180.0,
+      "y": 105.0,
+      "w": 161.0,
+      "h": 700.0
+     },
+     "z": 21,
+     "style": {
+      "bg": "#F5FF14FF"
+     },
+     "binding": {
+      "instance": "band",
+      "anchor": {
+       "kind": "track",
+       "name": "Hand2 #"
+      }
+     },
+     "strip_kind": "solid",
+     "children": {
+      "pan": {
+       "x": 2195.0,
+       "y": 130.0,
+       "w": 131.0,
+       "h": 48.0
+      },
+      "fader": {
+       "x": 2195.0,
+       "y": 188.0,
+       "w": 131.0,
+       "h": 553.0
+      },
+      "meter": {
+       "x": 2181.0,
+       "y": 188.0,
+       "w": 10.0,
+       "h": 553.0
+      },
+      "mute": {
+       "x": 2195.0,
+       "y": 753.0,
+       "w": 131.0,
+       "h": 52.0
+      },
+      "label": {
+       "x": 2196.0,
+       "y": 758.0,
+       "w": 129.0,
+       "h": 42.0
+      },
+      "instance_label": {
+       "x": 2196.0,
+       "y": 256.0,
+       "w": 129.0,
+       "h": 20.0
+      },
+      "db": {
+       "x": 2195.0,
+       "y": 221.0,
+       "w": 131.0,
+       "h": 30.0
+      },
+      "status": {
+       "x": 2204.0,
+       "y": 193.0,
+       "w": 88.0,
+       "h": 20.0
+      }
+     },
+     "mute_guard": false
+    }
+   ],
+   "pager": {
+    "frame": {
+     "x": 229.0,
+     "y": 61.0,
+     "w": 1746.0,
+     "h": 773.0
+    },
+    "tabbar": {
+     "orientation": "left",
+     "bar_size": 65.0,
+     "default_page": 0
+    },
+    "pages": [
+     {
+      "id": "stage",
+      "title": "STAGE",
+      "tab": {
+       "color": "#BAFFA657",
+       "text_size": 36.0
+      },
+      "items": [
+       {
+        "kind": "area",
+        "frame": {
+         "x": 294.0,
+         "y": 61.0,
+         "w": 1681.0,
+         "h": 773.0
+        },
+        "z": 3,
+        "style": {
+         "bg": "#BAFFA657"
+        }
+       },
+       {
+        "kind": "area",
+        "frame": {
+         "x": 294.0,
+         "y": 61.0,
+         "w": 60.0,
+         "h": 700.0
+        },
+        "z": 4,
+        "style": {
+         "bg": "#BAFFA6FF",
+         "text": "STAGE",
+         "vertical": true
+        },
+        "title": "STAGE"
+       },
+       {
+        "kind": "strip",
+        "frame": {
+         "x": 389.0,
+         "y": 101.0,
+         "w": 136.0,
+         "h": 706.0
+        },
+        "z": 5,
+        "style": {},
+        "binding": {
+         "instance": "band",
+         "anchor": {
+          "kind": "track",
+          "name": "Vocal 1 repro#"
+         }
+        },
+        "strip_kind": "narrow",
+        "children": {
+         "pan": {
+          "x": 404.0,
+          "y": 126.0,
+          "w": 106.0,
+          "h": 48.0
+         },
+         "fader": {
+          "x": 404.0,
+          "y": 184.0,
+          "w": 106.0,
+          "h": 553.0
+         },
+         "meter": {
+          "x": 390.0,
+          "y": 184.0,
+          "w": 10.0,
+          "h": 553.0
+         },
+         "mute": {
+          "x": 404.0,
+          "y": 749.0,
+          "w": 106.0,
+          "h": 52.0
+         },
+         "label": {
+          "x": 405.0,
+          "y": 754.0,
+          "w": 104.0,
+          "h": 42.0
+         },
+         "instance_label": {
+          "x": 405.0,
+          "y": 252.0,
+          "w": 104.0,
+          "h": 20.0
+         },
+         "db": {
+          "x": 404.0,
+          "y": 217.0,
+          "w": 106.0,
+          "h": 30.0
+         },
+         "status": {
+          "x": 413.0,
+          "y": 189.0,
+          "w": 88.0,
+          "h": 20.0
+         }
+        },
+        "mute_guard": false
+       },
+       {
+        "kind": "strip",
+        "frame": {
+         "x": 537.0,
+         "y": 101.0,
+         "w": 136.0,
+         "h": 706.0
+        },
+        "z": 6,
+        "style": {},
+        "binding": {
+         "instance": "band",
+         "anchor": {
+          "kind": "track",
+          "name": "Keys 1"
+         }
+        },
+        "strip_kind": "narrow",
+        "children": {
+         "pan": {
+          "x": 552.0,
+          "y": 126.0,
+          "w": 106.0,
+          "h": 48.0
+         },
+         "fader": {
+          "x": 552.0,
+          "y": 184.0,
+          "w": 106.0,
+          "h": 553.0
+         },
+         "meter": {
+          "x": 538.0,
+          "y": 184.0,
+          "w": 10.0,
+          "h": 553.0
+         },
+         "mute": {
+          "x": 552.0,
+          "y": 749.0,
+          "w": 106.0,
+          "h": 52.0
+         },
+         "label": {
+          "x": 553.0,
+          "y": 754.0,
+          "w": 104.0,
+          "h": 42.0
+         },
+         "instance_label": {
+          "x": 553.0,
+          "y": 252.0,
+          "w": 104.0,
+          "h": 20.0
+         },
+         "db": {
+          "x": 552.0,
+          "y": 217.0,
+          "w": 106.0,
+          "h": 30.0
+         },
+         "status": {
+          "x": 561.0,
+          "y": 189.0,
+          "w": 88.0,
+          "h": 20.0
+         }
+        },
+        "mute_guard": false
+       }
+      ]
+     },
+     {
+      "id": "others",
+      "title": "OTHERS",
+      "tab": {
+       "color": "#FA00004A",
+       "text_size": 36.0
+      },
+      "items": [
+       {
+        "kind": "strip",
+        "frame": {
+         "x": 396.0,
+         "y": 95.0,
+         "w": 160.0,
+         "h": 710.0
+        },
+        "z": 7,
+        "style": {},
+        "binding": {
+         "instance": "master",
+         "anchor": {
+          "kind": "track",
+          "name": "Hand1 #"
+         }
+        },
+        "strip_kind": "standard",
+        "children": {
+         "pan": {
+          "x": 411.0,
+          "y": 120.0,
+          "w": 130.0,
+          "h": 48.0
+         },
+         "fader": {
+          "x": 411.0,
+          "y": 178.0,
+          "w": 130.0,
+          "h": 553.0
+         },
+         "meter": {
+          "x": 397.0,
+          "y": 178.0,
+          "w": 10.0,
+          "h": 553.0
+         },
+         "mute": {
+          "x": 411.0,
+          "y": 743.0,
+          "w": 130.0,
+          "h": 52.0
+         },
+         "label": {
+          "x": 412.0,
+          "y": 748.0,
+          "w": 128.0,
+          "h": 42.0
+         },
+         "instance_label": {
+          "x": 412.0,
+          "y": 246.0,
+          "w": 128.0,
+          "h": 20.0
+         },
+         "db": {
+          "x": 411.0,
+          "y": 211.0,
+          "w": 130.0,
+          "h": 30.0
+         },
+         "status": {
+          "x": 420.0,
+          "y": 183.0,
+          "w": 88.0,
+          "h": 20.0
+         }
+        },
+        "mute_guard": true
+       }
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "id": "conf",
+   "title": "Conf",
+   "tab": {
+    "color": "#404040FF",
+    "text_size": 33.0
+   },
+   "items": [
+    {
+     "kind": "label",
+     "frame": {
+      "x": 40.0,
+      "y": 99.0,
+      "w": 800.0,
+      "h": 400.0
+     },
+     "z": 22,
+     "style": {
+      "text_color": "#FFFFFFFF",
+      "text_size": 20.0
+     },
+     "text": "connection_band: 2\nconnection_master: 3\nunfold_band: 'Vocals Repro grp#'\nunfold_band: 'Old grp#'\ndouble_click_mute: 'master_Hand1 #'\ndouble_click_mute: 'band_Nothing'\n"
+    }
+   ]
+  }
+ ],
+ "overlay": [
+  {
+   "kind": "strip",
+   "frame": {
+    "x": 67.0,
+    "y": 1059.0,
+    "w": 124.0,
+    "h": 97.0
+   },
+   "z": 23,
+   "style": {},
+   "binding": {
+    "instance": "band",
+    "anchor": {
+     "kind": "track",
+     "name": "TechAlert #"
+    }
+   },
+   "strip_kind": "meter_mute_only",
+   "children": {
+    "meter": {
+     "x": 68.0,
+     "y": 1064.0,
+     "w": 10.0,
+     "h": 87.0
+    },
+    "status": {
+     "x": 87.0,
+     "y": 1064.0,
+     "w": 80.0,
+     "h": 15.0
+    },
+    "mute": {
+     "x": 82.0,
+     "y": 1109.0,
+     "w": 94.0,
+     "h": 40.0
+    },
+    "label": {
+     "x": 83.0,
+     "y": 1114.0,
+     "w": 92.0,
+     "h": 30.0
+    }
+   },
+   "mute_guard": false
+  },
+  {
+   "kind": "refresh",
+   "frame": {
+    "x": 21.0,
+    "y": 1300.0,
+    "w": 209.0,
+    "h": 54.0
+   },
+   "z": 24,
+   "style": {
+    "bg": "#808080FF"
+   },
+   "label": "REFRESH ALL"
+  },
+  {
+   "kind": "alert",
+   "frame": {
+    "x": 0.0,
+    "y": 80.0,
+    "w": 2360.0,
+    "h": 1553.0
+   },
+   "z": 25,
+   "style": {
+    "bg": "#FF00001F"
+   },
+   "binding": {
+    "instance": "band",
+    "anchor": {
+     "kind": "track",
+     "name": "TechAlert #"
+    }
+   },
+   "period_ms": 300
+  }
+ ],
+ "config": {
+  "unfold": [
+   {
+    "instance": "band",
+    "name": "Vocals Repro grp#"
+   },
+   {
+    "instance": "band",
+    "name": "Old grp#"
+   }
+  ]
+ },
+ "report": {
+  "source": "test.tosc",
+  "instances": [
+   "band",
+   "master"
+  ],
+  "dropped": [
+   {
+    "node": "root/pager1/Cue/group33/button",
+    "why": "former MIDI control CC28 ch14: no mapping in the set"
+   },
+   {
+    "node": "root/pager1/Cue/group35/button",
+    "why": "former MIDI control NOTE29 ch14: no mapping in the set"
+   },
+   {
+    "node": "root/pager1/WORSHIP/FOH ",
+    "why": "the pager's page-change message (X6)"
+   },
+   {
+    "node": "root/pager1/WORSHIP/group81/button43",
+    "why": "former MIDI control CC58 ch14: a partial range on Volume (0.000316228..1)"
+   },
+   {
+    "node": "root/pager1/WORSHIP/group82/button44",
+    "why": "former MIDI control CC67 ch14: a mapping on GroupTrack is not reproduced"
+   },
+   {
+    "node": "root/pager1/WORSHIP/master_Hand3 #",
+    "why": "off the canvas"
+   },
+   {
+    "node": "root/pager1/WORSHIP/hidden",
+    "why": "hidden"
+   },
+   {
+    "node": "root/battery",
+    "why": "the battery gauge (X5)"
+   }
+  ],
+  "midi": [
+   {
+    "control": "Vox 1 TU",
+    "message": "CC20 ch14",
+    "verdict": "clean",
+    "targets": 1
+   },
+   {
+    "control": "Gitara 2",
+    "message": "CC28 ch14",
+    "verdict": "dropped",
+    "targets": 0,
+    "why": "no mapping in the set"
+   },
+   {
+    "control": "ALERT LOOP",
+    "message": "NOTE29 ch14",
+    "verdict": "dropped",
+    "targets": 0,
+    "why": "no mapping in the set"
+   },
+   {
+    "control": "REVERB",
+    "message": "CC55 ch14",
+    "verdict": "clean",
+    "targets": 1
+   },
+   {
+    "control": "VOC MIC",
+    "message": "CC56 ch14",
+    "verdict": "clean",
+    "targets": 2
+   },
+   {
+    "control": "AUTOTUNE",
+    "message": "CC36 ch14",
+    "verdict": "clean",
+    "targets": 1
+   },
+   {
+    "control": "ZVUKAR",
+    "message": "CC30 ch14",
+    "verdict": "clean",
+    "targets": 1
+   },
+   {
+    "control": "REPRO",
+    "message": "CC31 ch14",
+    "verdict": "clean",
+    "targets": 1
+   },
+   {
+    "control": "HALF",
+    "message": "CC58 ch14",
+    "verdict": "dropped",
+    "targets": 0,
+    "why": "a partial range on Volume (0.000316228..1)"
+   },
+   {
+    "control": "SELECT",
+    "message": "CC67 ch14",
+    "verdict": "dropped",
+    "targets": 0,
+    "why": "a mapping on GroupTrack is not reproduced"
+   },
+   {
+    "control": "Podklady All",
+    "message": "CC57 ch14",
+    "verdict": "clean",
+    "targets": 2
+   }
+  ],
+  "stale_config": [
+   "unfold_band 'Old grp#': no such group track in the set",
+   "double_click_mute 'band_Nothing': matches no strip"
+  ],
+  "unresolved": [
+   "band track 'Keys 1': 2 tracks have this name (ambiguous)"
+  ],
+  "decoration": {
+   "labels of former MIDI controls": 3,
+   "mute script carriers": 10,
+   "second meter bars": 5,
+   "meter dBFS labels (D11)": 5,
+   "scale labels": 5,
+   "tick lines": 5
+  },
+  "macro_bus_links": 2,
+  "notes": [
+   "a track name with a leading letter and a hyphen (A-…) is bound as a return track",
+   "double_click_mute entries are matched as plain text, not Lua patterns",
+   "root/alert: clipped to the canvas"
+  ],
+  "scripts": {
+   "da590ff6d7": [
+    "strip group"
+   ],
+   "41b36bdee2": [
+    "backdrop (mute script)",
+    "mute"
+   ],
+   "da798968fb": [
+    "pan"
+   ],
+   "d6fe6cd55d": [
+    "fader"
+   ],
+   "65da53e73c": [
+    "meter",
+    "second meter bar"
+   ],
+   "735080db5f": [
+    "db",
+    "strip decoration",
+    "label"
+   ],
+   "38869d215f": [
+    "group",
+    "button"
+   ],
+   "03b8e1f21b": [
+    "group",
+    "button"
+   ],
+   "b7221e44c0": [
+    "button"
+   ],
+   "b0b4de7b26": [
+    "group"
+   ],
+   "4912ceeb81": [
+    "label"
+   ],
+   "6824b74cf6": [
+    "box"
+   ]
+  }
+ }
+}

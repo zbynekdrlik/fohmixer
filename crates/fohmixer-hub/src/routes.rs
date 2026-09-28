@@ -1,18 +1,26 @@
-//! HTTP routes: the version, client panic reports and the embedded UI
-//! (trimmed from iemmixer's `iem-server/src/routes.rs` @ 22372bc).
+//! HTTP routes (trimmed from iemmixer's `iem-server/src/routes.rs` @
+//! 22372bc): the version, client panic reports and the embedded UI (public);
+//! the engineer login; the layout, the status and the client WebSocket (a
+//! token). Every request must name this hub as its `Host` ([`check_host`]).
+
+use std::net::{Ipv4Addr, Ipv6Addr};
 
 use axum::{
     Json, Router,
     body::Body,
-    extract::{DefaultBodyLimit, Path},
-    http::{StatusCode, header},
+    extract::{DefaultBodyLimit, Path, Request, State},
+    http::{HeaderMap, StatusCode, header},
+    middleware::Next,
     response::Response,
     routing::{get, post},
 };
 use fohmixer_proto::VersionInfo;
+use fohmixer_proto::client::HubStatus;
+use fohmixer_proto::layout::LayoutResponse;
 use rust_embed::RustEmbed;
 
-use crate::Assets;
+use crate::auth::{Rejection, error_response};
+use crate::{Assets, Hub};
 
 /// `GET /api/version`: the build this hub runs (deploy verification, the UI's
 /// version label check).
@@ -59,8 +67,79 @@ async fn client_error(Json(report): Json<ClientErrorReport>) -> StatusCode {
     StatusCode::NO_CONTENT
 }
 
+/// `GET /api/layout` (a token): the served layout and its revision; 503 while
+/// none is served.
+async fn get_layout(
+    State(hub): State<Hub>,
+    headers: HeaderMap,
+) -> Result<Json<LayoutResponse>, Rejection> {
+    hub.auth.require(&headers)?;
+    match hub.layout.current() {
+        (rev, Some(layout)) => Ok(Json(LayoutResponse {
+            rev,
+            layout: (*layout).clone(),
+        })),
+        (_, None) => Err(Rejection::from(error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "NO_LAYOUT",
+            &hub.layout
+                .error()
+                .unwrap_or_else(|| "no layout yet".to_string()),
+        ))),
+    }
+}
+
+/// `GET /api/status` (a token): the instances, the layout, STAGE AUT.
+async fn get_status(
+    State(hub): State<Hub>,
+    headers: HeaderMap,
+) -> Result<Json<HubStatus>, Rejection> {
+    hub.auth.require(&headers)?;
+    Ok(Json(hub.status().await))
+}
+
+/// Whether a `Host` header value (a name or an address, an optional port)
+/// names this hub: an IP address, `localhost`, or one of `allowed` (the
+/// config's `allowed_hosts`). A request without one (not a browser) passes.
+pub fn host_allowed(host: Option<&str>, allowed: &[String]) -> bool {
+    let Some(host) = host else {
+        return true;
+    };
+    if let Some(rest) = host.strip_prefix('[') {
+        // An IPv6 address: `[::1]` or `[::1]:8480`.
+        return rest
+            .split_once(']')
+            .is_some_and(|(addr, _)| addr.parse::<Ipv6Addr>().is_ok());
+    }
+    let name = host.rsplit_once(':').map_or(host, |(name, _port)| name);
+    name.parse::<Ipv4Addr>().is_ok()
+        || name.eq_ignore_ascii_case("localhost")
+        || allowed.iter().any(|a| a.eq_ignore_ascii_case(name))
+}
+
+/// Refuses (421) a request whose `Host` is not this hub's: a page on any
+/// site a LAN browser visits could otherwise reach the hub from that browser
+/// by DNS rebinding — and try PINs from its address (spec D7: the login
+/// guard budgets per address).
+pub async fn check_host(State(hub): State<Hub>, request: Request, next: Next) -> Response {
+    let host = request
+        .headers()
+        .get(header::HOST)
+        .map(|h| h.to_str().unwrap_or(""));
+    if host_allowed(host, &hub.config.allowed_hosts) {
+        next.run(request).await
+    } else {
+        tracing::warn!(host = ?host, "a request for a foreign host name refused (DNS rebinding?)");
+        error_response(
+            StatusCode::MISDIRECTED_REQUEST,
+            "UNKNOWN_HOST",
+            "This hub does not serve that host name",
+        )
+    }
+}
+
 /// API routes.
-pub fn api_routes() -> Router {
+pub fn api_routes() -> Router<Hub> {
     Router::new()
         // Version endpoint (deploy verification, the UI's version label)
         .route("/api/version", get(get_version))
@@ -70,12 +149,16 @@ pub fn api_routes() -> Router {
             // no operator to mutate; pinned by the router tests below.
             post(client_error).layer(DefaultBodyLimit::max(10_240)),
         )
+        .route("/api/auth", post(crate::auth::login))
+        .route("/api/layout", get(get_layout))
+        .route("/api/status", get(get_status))
+        .route("/ws", get(crate::ws::ws_handler))
 }
 
 /// Static routes: the embedded UI (Trunk's `dist/`). A path without a file
 /// extension is a client route and gets `index.html` (deep links); a path
 /// with one is a file, served when it exists and 404 otherwise.
-pub fn static_routes() -> Router {
+pub fn static_routes() -> Router<Hub> {
     Router::new()
         .route("/", get(serve_index))
         .route("/{*path}", get(serve_spa_route))
@@ -137,7 +220,14 @@ mod tests {
     use tower::ServiceExt;
 
     async fn send(request: Request<Body>) -> Response {
-        crate::app_router().oneshot(request).await.unwrap()
+        let dir = tempfile::tempdir().unwrap();
+        let hub = crate::test_hub(dir.path());
+        let response = crate::app_router(hub.clone())
+            .oneshot(request)
+            .await
+            .unwrap();
+        hub.stop();
+        response
     }
 
     async fn get_path(path: &str) -> Response {
@@ -291,6 +381,120 @@ mod tests {
                 .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn the_layout_and_the_status_need_a_token() {
+        for path in ["/api/layout", "/api/status"] {
+            let response = get_path(path).await;
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{path}");
+            let body: serde_json::Value =
+                serde_json::from_slice(&body_bytes(response).await).unwrap();
+            assert_eq!(body["code"], "UNAUTHORIZED", "{path}");
+        }
+        let response = send(
+            Request::get("/api/status")
+                .header(header::AUTHORIZATION, "Bearer not.a.token")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    async fn get_with_token(hub: &crate::Hub, path: &str) -> Response {
+        let token = hub.auth.issue().unwrap();
+        crate::app_router(hub.clone())
+            .oneshot(
+                Request::get(path)
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn with_a_token_the_status_answers_and_a_missing_layout_is_503() {
+        let dir = tempfile::tempdir().unwrap();
+        let hub = crate::test_hub(dir.path());
+        let response = get_with_token(&hub, "/api/status").await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let status: fohmixer_proto::client::HubStatus =
+            serde_json::from_slice(&body_bytes(response).await).unwrap();
+        assert!(status.instances.is_empty());
+        assert_eq!(status.layout.rev, 0);
+        assert!(!status.stage_aut.on);
+        assert_eq!(status.clients, 0);
+        let response = get_with_token(&hub, "/api/layout").await;
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body: serde_json::Value = serde_json::from_slice(&body_bytes(response).await).unwrap();
+        assert_eq!(body["code"], "NO_LAYOUT");
+        hub.stop();
+    }
+
+    #[test]
+    fn a_host_is_an_ip_address_localhost_or_a_configured_name() {
+        let allowed = vec!["foh.local".to_string()];
+        for host in [
+            "192.168.1.20:8480",
+            "192.168.1.20",
+            "127.0.0.1:8480",
+            "localhost:8480",
+            "LocalHost",
+            "[::1]:8480",
+            "[fe80::1]",
+            "foh.local:8480",
+            "FOH.local",
+        ] {
+            assert!(host_allowed(Some(host), &allowed), "{host}");
+        }
+        for host in [
+            "evil.example",
+            "evil.example:8480",
+            "foh.local.evil.example",
+            "192.168.1.20.evil.example",
+            "[not-an-address]:8480",
+            "[::1",
+            "",
+        ] {
+            assert!(!host_allowed(Some(host), &allowed), "{host}");
+        }
+        assert!(!host_allowed(Some("foh.local"), &[]), "not configured");
+        assert!(host_allowed(None, &[]), "no Host: not a browser");
+    }
+
+    #[tokio::test]
+    async fn a_request_for_a_foreign_host_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = crate::config::Config::defaults(dir.path());
+        config.instances.clear();
+        config.allowed_hosts = vec!["foh.local".into()];
+        let hub = crate::Hub::start(config).unwrap();
+        for (host, code) in [
+            ("evil.example:8480", StatusCode::MISDIRECTED_REQUEST),
+            ("192.168.1.20:8480", StatusCode::OK),
+            ("foh.local:8480", StatusCode::OK),
+        ] {
+            let response = crate::app_router(hub.clone())
+                .oneshot(
+                    Request::get("/api/version")
+                        .header(header::HOST, host)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), code, "{host}");
+            assert_eq!(header_of(&response, "x-frame-options"), "DENY", "{host}");
+            if code == StatusCode::MISDIRECTED_REQUEST {
+                let body: serde_json::Value =
+                    serde_json::from_slice(&body_bytes(response).await).unwrap();
+                assert_eq!(body["code"], "UNKNOWN_HOST");
+            }
+        }
+        hub.stop();
     }
 
     #[test]

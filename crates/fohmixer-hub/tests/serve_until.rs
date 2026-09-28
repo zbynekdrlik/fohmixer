@@ -13,6 +13,7 @@ use std::net::{SocketAddr, TcpListener};
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
+use fohmixer_hub::config::Config;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::oneshot;
 
@@ -23,6 +24,13 @@ fn serial() -> MutexGuard<'static, ()> {
     SERIAL
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// A config on `dir` without Live instances (nothing to connect to here).
+fn config(dir: &std::path::Path) -> Config {
+    let mut config = Config::defaults(dir);
+    config.instances.clear();
+    config
 }
 
 /// `f` on a fresh current-thread runtime (the `SERIAL` guard stays outside
@@ -44,10 +52,12 @@ fn serve_until_answers_then_stops_within_six_seconds() {
 }
 
 async fn answers_then_stops() {
+    let dir = tempfile::tempdir().unwrap();
     let (ready_tx, ready_rx) = oneshot::channel();
     let (stop_tx, stop_rx) = oneshot::channel::<()>();
     let task = tokio::spawn(fohmixer_hub::serve_until(
         SocketAddr::from(([127, 0, 0, 1], 0)),
+        config(dir.path()),
         ready_tx,
         async move {
             let _ = stop_rx.await;
@@ -99,12 +109,13 @@ fn serve_until_reports_a_taken_port() {
 }
 
 async fn reports_a_taken_port() {
+    let dir = tempfile::tempdir().unwrap();
     let taken = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = taken.local_addr().unwrap();
     let (ready_tx, ready_rx) = oneshot::channel();
     let result = tokio::time::timeout(
         Duration::from_secs(5),
-        fohmixer_hub::serve_until(addr, ready_tx, std::future::pending()),
+        fohmixer_hub::serve_until(addr, config(dir.path()), ready_tx, std::future::pending()),
     )
     .await
     .expect("a bind failure returns at once");

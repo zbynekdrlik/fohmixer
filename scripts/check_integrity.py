@@ -35,8 +35,8 @@ FORCE_KILL = re.compile(
     r"|-(?:method)?name\s+['\"]?terminate\b|\bwmic\b.*\b(?:call\s+terminate|delete)\b"
     r"|(?:\bforeach-object|%)\s+(?:-membername\s+)?['\"]?kill\b")
 CODE_SUFFIXES = (".rs", ".ts", ".js", ".py", ".sh", ".ps1", ".psm1", ".psd1", ".cmd", ".bat", ".yml", ".yaml", ".toml")
-PYTHON_TREES = ("live-script", "sim", "scripts")
-CODE_TREES = ("crates", "e2e", "scripts", ".github", "live-script", "sim")
+PYTHON_TREES = ("live-script", "sim", "scripts", "tools")
+CODE_TREES = ("crates", "e2e", "scripts", ".github", "live-script", "sim", "tools")
 
 
 def files(root: Path, base: str, suffixes: tuple[str, ...]) -> list[Path]:

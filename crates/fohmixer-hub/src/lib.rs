@@ -1,26 +1,55 @@
-//! fohmixer-hub: the HTTP server on the Ableton PC.
+//! fohmixer-hub: the hub on the Ableton PC (spec §2.4).
 //!
-//! S0 serves the embedded UI (`crates/fohmixer-ui/dist`, built by Trunk),
-//! `GET /api/version` and `POST /api/client-error`, behind the security
-//! headers, and stops gracefully. The Live connections, the client protocol
-//! and auth arrive in S3 (spec §2.4). Trimmed from iemmixer's `iem-server`
-//! @ 22372bc (no TLS, auth, WebSocket or tunnel code yet).
+//! It keeps one reconnecting client per Live instance's FohMixer script,
+//! forwards client commands unchanged, deduplicates subscriptions (one Live
+//! listener per key, the latest value cached and fanned out, coalesced per
+//! client), resubscribes by the original path after every Live `connect`,
+//! reports busy instances, serves and validates the layout (the last good
+//! one stays), runs the one STAGE AUT rule and authenticates the engineer
+//! (PIN → JWT, from iemmixer). It also serves the embedded UI,
+//! `/api/version` and `/api/client-error`, behind the security headers, and
+//! stops gracefully (S0, trimmed from iemmixer's `iem-server` @ 22372bc).
 
+use std::collections::BTreeMap;
 use std::future::Future;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use anyhow::Context as _;
 use axum::Router;
+use axum::extract::FromRef;
 use axum::http::{HeaderName, HeaderValue};
-use tokio::sync::{Notify, oneshot};
+use fohmixer_proto::client::{HubStatus, InstanceStatus, LayoutStatus};
+use tokio::sync::{Notify, mpsc, oneshot};
+use tokio::task::JoinHandle;
 use tower_http::set_header::SetResponseHeaderLayer;
 
+pub mod auth;
+pub mod config;
+pub mod layout;
+pub mod live;
+pub mod login_guard;
+pub mod outbox;
+pub mod pepper;
+pub mod pin_hash;
+pub mod pin_store;
+pub mod provision;
+pub mod router;
 pub mod routes;
+pub mod rules;
+pub mod secrets;
+pub mod ws;
 
-/// The HTTP port when `PORT` is not set.
-pub const DEFAULT_PORT: u16 = 8480;
+use auth::Auth;
+use config::Config;
+use layout::LayoutStore;
+use live::client::{Events, LiveEvent, LiveHandle};
+use router::RouterMsg;
+
+/// The HTTP port when neither `PORT` nor the config sets one.
+pub const DEFAULT_PORT: u16 = config::DEFAULT_HTTP_PORT;
 
 /// How long a stop waits for open requests before the server returns anyway.
 pub const STOP_DRAIN: Duration = Duration::from_secs(5);
@@ -32,11 +61,213 @@ pub const STOP_DRAIN: Duration = Duration::from_secs(5);
 #[folder = "../fohmixer-ui/dist/"]
 pub struct Assets;
 
+/// Writes `data` to `path` atomically: a temporary file, then a rename (a
+/// crash never leaves half a file).
+pub fn atomic_write(path: &std::path::Path, data: &str) -> std::io::Result<()> {
+    let tmp_path = path.with_extension("tmp");
+    std::fs::write(&tmp_path, data)?;
+    std::fs::rename(&tmp_path, path)
+}
+
+/// The running hub: cheap to clone, shared by every request.
+#[derive(Clone)]
+pub struct Hub(Arc<HubInner>);
+
+/// What a [`Hub`] holds.
+pub struct HubInner {
+    pub config: Config,
+    pub auth: Arc<Auth>,
+    pub layout: Arc<LayoutStore>,
+    live: BTreeMap<String, LiveHandle>,
+    router: mpsc::UnboundedSender<RouterMsg>,
+    next_client: AtomicU64,
+    tasks: Mutex<Vec<JoinHandle<()>>>,
+}
+
+impl std::ops::Deref for Hub {
+    type Target = HubInner;
+
+    fn deref(&self) -> &HubInner {
+        &self.0
+    }
+}
+
+impl FromRef<Hub> for Arc<Auth> {
+    fn from_ref(hub: &Hub) -> Self {
+        Arc::clone(&hub.auth)
+    }
+}
+
+impl HubInner {
+    /// Closes every client and ends the hub's tasks (idempotent).
+    pub fn stop(&self) {
+        let _ = self.router.send(RouterMsg::Stop);
+        for task in self
+            .tasks
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .drain(..)
+        {
+            task.abort();
+        }
+    }
+
+    /// The handle of an instance.
+    pub fn live(&self, name: &str) -> Option<&LiveHandle> {
+        self.live.get(name)
+    }
+
+    /// Sends a message to the router.
+    pub fn route(&self, msg: RouterMsg) {
+        let _ = self.router.send(msg);
+    }
+
+    /// A new client connection id (1, 2, …; 0 is the router's own).
+    pub fn next_client(&self) -> u64 {
+        self.next_client.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// `GET /api/status`.
+    pub async fn status(&self) -> HubStatus {
+        let (reply, answer) = oneshot::channel();
+        self.route(RouterMsg::Status { reply });
+        let router = answer.await.unwrap_or_default();
+        let instances = self
+            .config
+            .instances
+            .iter()
+            .map(|cfg| {
+                let snap = self
+                    .live
+                    .get(&cfg.name)
+                    .map(LiveHandle::snapshot)
+                    .unwrap_or_default();
+                InstanceStatus {
+                    name: cfg.name.clone(),
+                    port: cfg.port,
+                    online: snap.online,
+                    busy: snap.busy,
+                    set_name: snap.info.set_name,
+                    live_version: snap.info.live_version,
+                    script_version: snap.info.script_version,
+                    main_tick_age_ms: snap.main_tick_age_ms,
+                    subscriptions: router.subscriptions.get(&cfg.name).copied().unwrap_or(0),
+                    listeners: router.listeners.get(&cfg.name).copied().unwrap_or(0),
+                    connect_failures: snap.connect_failures,
+                    last_error: snap.last_error,
+                }
+            })
+            .collect();
+        HubStatus {
+            instances,
+            layout: LayoutStatus {
+                rev: self.layout.current().0,
+                error: self.layout.error(),
+                unresolved: router.unresolved,
+            },
+            stage_aut: router.stage_aut,
+            clients: router.clients,
+        }
+    }
+}
+
+impl Hub {
+    /// Starts the hub of `config` (inside a tokio runtime): loads the
+    /// secrets (created on first use), starts one client per instance, the
+    /// router and the layout check. A corrupt secret, pepper or PIN store
+    /// is an error, never replaced.
+    pub fn start(config: Config) -> anyhow::Result<Self> {
+        std::fs::create_dir_all(&config.data_dir)
+            .with_context(|| format!("creating the data folder {}", config.data_dir.display()))?;
+        let auth = Arc::new(Auth::load(&config.data_dir).context("loading the secrets")?);
+        let (router_tx, router_rx) = mpsc::unbounded_channel();
+        let mut tasks = Vec::new();
+        let mut live = BTreeMap::new();
+        for instance in &config.instances {
+            let tx = router_tx.clone();
+            let events: Events = Arc::new(move |name: &str, event: LiveEvent| {
+                let _ = tx.send(RouterMsg::Live {
+                    instance: name.to_string(),
+                    event,
+                });
+            });
+            let (handle, task) = LiveHandle::spawn(instance, events);
+            live.insert(instance.name.clone(), handle);
+            tasks.push(task);
+        }
+        let names: Vec<String> = config.instances.iter().map(|i| i.name.clone()).collect();
+        let layout = Arc::new(layout::store_in(&config.data_dir, &config.layout, names));
+        let hub_state = rules::HubState::load(&config.data_dir);
+        tracing::info!(
+            instances = config.instances.len(),
+            layout = %config.layout_path().display(),
+            stage_aut = hub_state.stage_aut,
+            "hub started"
+        );
+        let router =
+            router::Router::new(live.clone(), hub_state.stage_aut, config.data_dir.clone());
+        tokio::spawn(router.run(router_rx));
+        tasks.push(tokio::spawn(poll_layout(
+            Arc::clone(&layout),
+            router_tx.clone(),
+            Duration::from_millis(config.layout_poll_ms),
+        )));
+        Ok(Self(Arc::new(HubInner {
+            config,
+            auth,
+            layout,
+            live,
+            router: router_tx,
+            next_client: AtomicU64::new(1),
+            tasks: Mutex::new(tasks),
+        })))
+    }
+}
+
+/// Checks the layout file every `period`; a new layout goes to the router.
+async fn poll_layout(
+    layout: Arc<LayoutStore>,
+    router: mpsc::UnboundedSender<RouterMsg>,
+    period: Duration,
+) {
+    let mut tick = tokio::time::interval(period);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tick.tick().await;
+        if let Some(rev) = layout.poll() {
+            let served = layout.current().1;
+            let stage = served.as_ref().and_then(|l| l.stage_aut_binding().cloned());
+            let targets = served
+                .as_deref()
+                .map(live::names::layout_targets)
+                .unwrap_or_default();
+            if router
+                .send(RouterMsg::Layout {
+                    rev,
+                    stage,
+                    targets,
+                })
+                .is_err()
+            {
+                return;
+            }
+        }
+    }
+}
+
+/// A hub on `dir` with no instances (tests).
+#[cfg(test)]
+pub(crate) fn test_hub(dir: &std::path::Path) -> Hub {
+    let mut config = Config::defaults(dir);
+    config.instances.clear();
+    Hub::start(config).expect("a test hub")
+}
+
 /// The HTTP application: API and static routes behind the security headers.
 /// No CORS layer: the UI is always loaded from this server, so its requests
 /// are same-origin; a foreign page gets no `Access-Control-Allow-Origin` and
 /// cannot read API responses.
-pub fn app_router() -> Router {
+pub fn app_router(hub: Hub) -> Router {
     let x_frame_options = SetResponseHeaderLayer::overriding(
         HeaderName::from_static("x-frame-options"),
         HeaderValue::from_static("DENY"),
@@ -50,7 +281,7 @@ pub fn app_router() -> Router {
         HeaderValue::from_static("strict-origin-when-cross-origin"),
     );
     // CSP allows WASM + inline scripts (Trunk's loader) and inline styles
-    // (Leptos); connections go to this server only (S3's WebSocket is
+    // (Leptos); connections go to this server only (the client WebSocket is
     // same-origin, which 'self' covers).
     let csp = SetResponseHeaderLayer::overriding(
         HeaderName::from_static("content-security-policy"),
@@ -59,13 +290,16 @@ pub fn app_router() -> Router {
         ),
     );
 
+    let check_host = axum::middleware::from_fn_with_state(hub.clone(), routes::check_host);
     Router::new()
         .merge(routes::api_routes())
         .merge(routes::static_routes())
+        .layer(check_host)
         .layer(x_frame_options)
         .layer(x_content_type_options)
         .layer(referrer_policy)
         .layer(csp)
+        .with_state(hub)
 }
 
 /// The log filter when `RUST_LOG` is not set (or empty).
@@ -83,24 +317,25 @@ pub fn log_filter(rust_log: Option<&str>) -> anyhow::Result<tracing_subscriber::
     }
 }
 
-/// The HTTP port from the `PORT` environment value: [`DEFAULT_PORT`] when it
-/// is not set, an error when it is not a port number.
-pub fn port_from(value: Option<&str>) -> anyhow::Result<u16> {
+/// The HTTP port from the `PORT` environment value: `default` (the
+/// config's) when it is not set, an error when it is not a port number.
+pub fn port_from(value: Option<&str>, default: u16) -> anyhow::Result<u16> {
     match value {
-        None => Ok(DEFAULT_PORT),
+        None => Ok(default),
         Some(text) => text
             .parse()
             .with_context(|| format!("PORT={text} is not a port number")),
     }
 }
 
-/// Serve [`app_router`] on `addr` until `stop` resolves (graceful stop, as in
-/// iemmixer): `ready` gets the bound address once the listener is up; at the
-/// stop the listener closes at once (the port is free), idle connections
-/// close, open requests get up to [`STOP_DRAIN`] to finish, and it returns
-/// `Ok`.
+/// Serve the hub of `config` on `addr` until `stop` resolves (graceful stop,
+/// as in iemmixer): `ready` gets the bound address once the listener is up
+/// and the hub started; at the stop the clients' WebSockets close, the
+/// listener closes at once (the port is free), idle connections close, open
+/// requests get up to [`STOP_DRAIN`] to finish, and it returns `Ok`.
 pub async fn serve_until<F>(
     addr: SocketAddr,
+    config: Config,
     ready: oneshot::Sender<SocketAddr>,
     stop: F,
 ) -> anyhow::Result<()>
@@ -111,6 +346,7 @@ where
         .await
         .with_context(|| format!("binding {addr}"))?;
     let local = listener.local_addr().context("reading the bound address")?;
+    let hub = Hub::start(config).context("starting the hub")?;
     tracing::info!(
         addr = %local,
         version = %fohmixer_proto::full_version(),
@@ -124,19 +360,24 @@ where
         tracing::debug!("nobody waits for the ready signal");
     }
 
-    // The stop closes the listener; open requests get STOP_DRAIN.
+    // The stop closes the clients and the listener; open requests get
+    // STOP_DRAIN.
     let stopping = Arc::new(Notify::new());
     let stop_seen = Arc::clone(&stopping);
-    let serve = axum::serve(listener, app_router().into_make_service()).with_graceful_shutdown(
-        async move {
-            stop.await;
-            tracing::info!(
-                drain_s = STOP_DRAIN.as_secs(),
-                "stop requested: the listener closes, open requests get the drain"
-            );
-            stop_seen.notify_one();
-        },
-    );
+    let hub_at_stop = hub.clone();
+    let serve = axum::serve(
+        listener,
+        app_router(hub.clone()).into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(async move {
+        stop.await;
+        tracing::info!(
+            drain_s = STOP_DRAIN.as_secs(),
+            "stop requested: the clients close, the listener closes, open requests get the drain"
+        );
+        hub_at_stop.stop();
+        stop_seen.notify_one();
+    });
     tokio::select! {
         result = serve => result.context("serving HTTP")?,
         () = async {
@@ -147,6 +388,7 @@ where
             "HTTP requests still open after the drain: stopping without them"
         ),
     }
+    hub.stop();
     tracing::info!("HTTP server stopped");
     Ok(())
 }
@@ -156,14 +398,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_port_defaults_to_8480() {
-        assert_eq!(port_from(None).unwrap(), 8480);
+    fn the_port_defaults_to_the_configured_one() {
+        assert_eq!(port_from(None, 8480).unwrap(), 8480);
+        assert_eq!(port_from(None, 9100).unwrap(), 9100);
+        assert_eq!(DEFAULT_PORT, 8480);
     }
 
     #[test]
     fn the_port_comes_from_the_environment_value() {
-        assert_eq!(port_from(Some("9000")).unwrap(), 9000);
-        assert_eq!(port_from(Some("0")).unwrap(), 0);
+        assert_eq!(port_from(Some("9000"), 8480).unwrap(), 9000);
+        assert_eq!(port_from(Some("0"), 8480).unwrap(), 0);
     }
 
     #[test]
@@ -200,11 +444,51 @@ mod tests {
     #[test]
     fn a_bad_port_is_an_error_naming_it() {
         for bad in ["", "http", "65536", "-1"] {
-            let error = port_from(Some(bad)).unwrap_err();
+            let error = port_from(Some(bad), 8480).unwrap_err();
             assert_eq!(
                 error.to_string(),
                 format!("PORT={bad} is not a port number")
             );
         }
+    }
+
+    #[test]
+    fn atomic_write_replaces_the_whole_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        atomic_write(&path, "first").unwrap();
+        atomic_write(&path, "second").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "second");
+        assert!(!dir.path().join("state.tmp").exists());
+    }
+
+    #[tokio::test]
+    async fn a_hub_hands_out_client_ids_and_stops_twice_quietly() {
+        let dir = tempfile::tempdir().unwrap();
+        let hub = test_hub(dir.path());
+        assert_eq!(hub.next_client(), 1);
+        assert_eq!(hub.next_client(), 2);
+        assert!(hub.live("band").is_none());
+        let status = hub.status().await;
+        assert!(status.instances.is_empty());
+        hub.stop();
+        hub.stop();
+        // After the stop the router is gone: the status still answers.
+        let status = hub.status().await;
+        assert_eq!(status.clients, 0);
+    }
+
+    #[tokio::test]
+    async fn a_hub_on_an_unusable_data_folder_does_not_start() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a-file");
+        std::fs::write(&file, b"x").unwrap();
+        let mut config = Config::defaults(&file);
+        config.instances.clear();
+        let error = Hub::start(config).err().expect("a file is no data folder");
+        assert!(
+            format!("{error:#}").starts_with("creating the data folder"),
+            "{error:#}"
+        );
     }
 }

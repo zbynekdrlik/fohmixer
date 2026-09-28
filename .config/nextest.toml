@@ -11,10 +11,19 @@
 # free" check.
 [test-groups]
 hub-ports = { max-threads = 1 }
+# The hub's host-backed tests (real sim/host.py processes, an in-process
+# hub, timing checks): two at a time, so a crowded runner does not turn a
+# latency check into a measure of the runner (`cargo test` runs them one at
+# a time per binary: `support::serial`).
+hub-hosts = { max-threads = 2 }
 
 [[profile.default.overrides]]
 filter = 'binary_id(fohmixer-hub::graceful_stop) | binary_id(fohmixer-hub::serve_until)'
 test-group = 'hub-ports'
+
+[[profile.default.overrides]]
+filter = 'binary_id(fohmixer-hub::live_client) | binary_id(fohmixer-hub::fanout) | binary_id(fohmixer-hub::stage_aut) | binary_id(fohmixer-hub::layout) | binary_id(fohmixer-hub::auth) | binary_id(fohmixer-hub::names)'
+test-group = 'hub-hosts'
 
 [profile.mutants]
 # A mutant is caught at its first failing test: stop there and end the tests
