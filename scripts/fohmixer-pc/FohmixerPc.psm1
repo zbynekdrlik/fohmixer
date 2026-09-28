@@ -678,7 +678,7 @@ function Send-FohCtrlBreak {
     if ($ProcessId -le 0) { throw "pid $ProcessId refused" }
     $type = 'FohmixerConsole' -as [type]
     if ($null -eq $type) {
-        Add-Type -TypeDefinition $script:ConsoleCode -Language CSharp
+        Add-Type -TypeDefinition $script:ConsoleCode -Language CSharp -IgnoreWarnings
         $type = 'FohmixerConsole' -as [type]
     }
     return [int]$type::Break([uint32]$ProcessId)
@@ -692,7 +692,7 @@ function Start-FohHubProcess {
           [Parameter(Mandatory)][string]$Out, [Parameter(Mandatory)][string]$Err)
     $type = 'FohmixerSpawn' -as [type]
     if ($null -eq $type) {
-        Add-Type -TypeDefinition $script:SpawnCode -Language CSharp
+        Add-Type -TypeDefinition $script:SpawnCode -Language CSharp -IgnoreWarnings
         $type = 'FohmixerSpawn' -as [type]
     }
     return $type::Start($Exe, $DataDir, $Out, $Err)
@@ -702,23 +702,29 @@ function Write-FohStopResult {
     # The stop script's result, <DataDir>\logs\hub-stop.result.json: code 0 = the
     # request reached every hub (or none ran), 1 = a request failed, 2 = the
     # script failed. Conhost does not pass an exit code on (Get-FohTaskCommand).
-    param([Parameter(Mandatory)][string]$DataDir, [Parameter(Mandatory)][int]$Code, [Parameter(Mandatory)][string]$Message)
-    $json = ConvertTo-Json -Compress -InputObject ([ordered]@{ code = $Code; message = $Message; time = (Get-Date).ToString('o') })
+    param([Parameter(Mandatory)][string]$DataDir, [Parameter(Mandatory)][int]$Code, [Parameter(Mandatory)][string]$Message,
+          [Parameter(Mandatory)][datetime]$Started)
+    $json = ConvertTo-Json -Compress -InputObject ([ordered]@{ code = $Code; message = $Message; started = $Started.ToString('o') })
     $null = Write-FohText -Path (Join-Path $DataDir 'logs\hub-stop.result.json') -Text $json
 }
 
 function Read-FohStopResult {
-    # Waits up to $TimeoutSeconds for the stop script's result file and returns it.
-    param([Parameter(Mandatory)][string]$DataDir, [int]$TimeoutSeconds = 30)
+    # Waits up to $TimeoutSeconds for a result of a stop script run that
+    # started at or after $Since (an earlier run's late result is not taken)
+    # and returns it.
+    param([Parameter(Mandatory)][string]$DataDir, [int]$TimeoutSeconds = 30, [datetime]$Since = [datetime]::MinValue)
     $path = Join-Path $DataDir 'logs\hub-stop.result.json'
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
-    while (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+    while ($true) {
+        if (Test-Path -LiteralPath $path -PathType Leaf) {
+            $r = [IO.File]::ReadAllText($path) | ConvertFrom-Json
+            if ([datetime]$r.started -ge $Since) { return $r }
+        }
         if ((Get-Date) -ge $deadline) {
             throw "the stop task wrote no result within $TimeoutSeconds s ($path); the hub user must be logged on for it to run"
         }
         Start-Sleep -Milliseconds 250
     }
-    return ([IO.File]::ReadAllText($path) | ConvertFrom-Json)
 }
 
 function Wait-FohHubExit {
@@ -774,8 +780,9 @@ function Stop-FohHub {
     }
     $resultPath = Join-Path $DataDir 'logs\hub-stop.result.json'
     if (Test-Path -LiteralPath $resultPath) { Remove-Item -LiteralPath $resultPath }
+    $since = (Get-Date).AddSeconds(-1)
     Start-ScheduledTask -TaskPath $TaskPath -TaskName $script:StopTask
-    $result = Read-FohStopResult -DataDir $DataDir -TimeoutSeconds $StopTaskSeconds
+    $result = Read-FohStopResult -DataDir $DataDir -TimeoutSeconds $StopTaskSeconds -Since $since
     if ([int]$result.code -ne 0) {
         throw "the stop task could not ask the hub (pid $pids) to stop: $($result.message) (code $($result.code)); the hub still runs"
     }
@@ -837,7 +844,7 @@ function Get-FohTaskCommand {
     # not pass the script's exit code on: the stop script reports through a
     # result file, the launcher through hub-launch.log.
     param([Parameter(Mandatory)][string]$Script, [Parameter(Mandatory)][string]$DataDir)
-    $system = [Environment]::GetFolderPath('System')
+    $system = Join-Path $env:SystemRoot 'System32'
     $ps = Join-Path $system 'WindowsPowerShell\v1.0\powershell.exe'
     return [pscustomobject]@{
         execute = (Join-Path $system 'conhost.exe')
@@ -1013,13 +1020,13 @@ function Invoke-FohInstall {
     New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
     $unpacked = Expand-FohBundle -BundleZip $BundleZip -DataDir $DataDir
     Write-Host "fohmixer install: bundle $($unpacked.version) checked against its SHA256SUMS"
-    $stoppedHub = $false
+    $hubWasRunning = $false
     try {
         if (-not $NoTask) {
             Set-FohDataDirAcl -Path $DataDir -User $BandUser
             # 1. the running hub
+            $hubWasRunning = @(Get-FohHubProcess -DataDir $DataDir).Count -gt 0
             $stop = Stop-FohHub -DataDir $DataDir -TaskPath $TaskPath
-            $stoppedHub = $stop.stopped
             Write-Host "fohmixer install: $($stop.text)"
         }
         # 2. app\<version>, current.txt
@@ -1053,19 +1060,25 @@ function Invoke-FohInstall {
             Write-Host "fohmixer install: tasks $TaskPath$($script:HubTask) and $TaskPath$($script:StopTask) registered and read back"
             $firewall = Set-FohFirewallRule -Port $HttpPort
             Write-Host "fohmixer install: firewall rule fohmixer-hub-http, TCP $HttpPort, Domain and Private (changed: $firewall)"
+            foreach ($n in @(Get-NetConnectionProfile | Where-Object { "$($_.NetworkCategory)" -eq 'Public' })) {
+                $publicNote = 'fohmixer install: the network on {0} is Public; the rule allows Domain and Private only, ' +
+                    'so clients there are refused until it is set to Private'
+                Write-Warning ($publicNote -f $n.InterfaceAlias)
+            }
         }
     } catch {
-        $failure = $_.Exception.Message
-        if (-not $stoppedHub) { throw }
-        # This install stopped the hub: start its task again, so that a failed
-        # install does not leave the hub down.
+        $failure = $_
+        # A hub that ran before this install and is down now (the stop above
+        # ended it): start its task again, so a failed install does not leave
+        # the hub down.
+        if (-not ($hubWasRunning -and @(Get-FohHubProcess -DataDir $DataDir).Count -eq 0)) { throw }
         try {
             Start-ScheduledTask -TaskPath $TaskPath -TaskName $script:HubTask
             $again = 'the hub task was started again'
         } catch {
             $again = "starting the hub task again failed too: $($_.Exception.Message)"
         }
-        throw "$failure ($again)"
+        throw ("{0} ({1})`n{2}" -f $failure.Exception.Message, $again, $failure.ScriptStackTrace)
     } finally {
         if (Test-Path -LiteralPath $unpacked.dir) { Remove-Item -LiteralPath $unpacked.dir -Recurse -Force }
     }

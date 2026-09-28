@@ -296,7 +296,7 @@ try {
 
     # ---- the tasks, registered for this user in a test folder (never started) ----
     Register-FohHubTasks -AppDir $appV1 -DataDir $data -User $me -TaskPath $taskFolder
-    $system = [Environment]::GetFolderPath('System')
+    $system = Join-Path $env:SystemRoot 'System32'
     $conhost = Join-Path $system 'conhost.exe'
     $ps = Join-Path $system 'WindowsPowerShell\v1.0\powershell.exe'
     foreach ($n in @('fohmixer-hub', 'fohmixer-hub-stop')) {
