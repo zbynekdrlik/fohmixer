@@ -365,6 +365,12 @@ try {
     $badToml = New-FohHubToml -HttpPort 18481 -BandPort 39181 -MasterPort 39182 -Remote (Get-FohRemoteToml -Name 'foh.example.org' -AcmeDirectory 'http://acme.example.org/directory')
     Assert ((ErrorOf { Test-FohHubToml -Exe $HubExe -Text $badToml -Dir $checkDir }) -like '*refused by the hub (exit 2)*an https URL*') 'hub-toml-check-refuses-with-the-hubs-reason'
     Assert (@(Get-ChildItem -LiteralPath $checkDir -Force).Count -eq 0) 'hub-toml-check-leaves-no-file'
+    # A layout is checked by the hub it is for, against the new config (#21).
+    $okLayout = Join-Path $repo 'crates\fohmixer-hub\tests\fixtures\layout-ok.json'
+    $badLayout = Join-Path $repo 'crates\fohmixer-hub\tests\fixtures\layout-bad.json'
+    Assert ((Test-FohHubLayout -Exe $HubExe -Layout $okLayout -Text $goodToml -Dir $checkDir) -like '*: OK*') 'hub-layout-check-accepts-the-fixture'
+    Assert ((ErrorOf { Test-FohHubLayout -Exe $HubExe -Layout $badLayout -Text $goodToml -Dir $checkDir }) -like '*refused by the new hub (exit 2)*sections*color*') 'hub-layout-check-refuses-with-the-hubs-reason'
+    Assert (@(Get-ChildItem -LiteralPath $checkDir -Force).Count -eq 0) 'hub-layout-check-leaves-no-file'
     # The installed toml's remote tables, as they were written.
     Assert ((Get-FohInstalledRemoteToml -Text ((New-FohHubToml -HttpPort 1 -BandPort 2 -MasterPort 3) + $gotRemote)) -ceq $gotRemote) 'installed-remote-tables-read-back-as-written'
     Assert ((Get-FohInstalledRemoteToml -Text (New-FohHubToml -HttpPort 1 -BandPort 2 -MasterPort 3)) -ceq '') 'installed-remote-tables-none-without-tls'

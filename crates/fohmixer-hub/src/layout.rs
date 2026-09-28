@@ -55,6 +55,26 @@ pub fn backup_name(file_name: &str, now: SystemTime) -> String {
     format!("{file_name}.{stamp}")
 }
 
+/// `fohmixer-hub layout check <layout> <config>` (#21): whether the hub
+/// configured by `config` would serve `layout` (it parses, validates and
+/// binds only the config's instances). The installer asks the new hub before
+/// it stops the running one, so a schema change never leaves the hub without
+/// a layout.
+pub fn check_files(layout: &Path, config: &Path) -> anyhow::Result<()> {
+    use anyhow::Context as _;
+    let text = std::fs::read_to_string(config)
+        .with_context(|| format!("reading config {}", config.display()))?;
+    let dir = config.parent().unwrap_or(Path::new("."));
+    let config = crate::config::Config::parse(&text, dir)
+        .with_context(|| format!("config {}", config.display()))?;
+    let names: Vec<String> = config.instances.iter().map(|i| i.name.clone()).collect();
+    let bytes =
+        std::fs::read(layout).with_context(|| format!("reading layout {}", layout.display()))?;
+    check(&bytes, &names)
+        .map(|_| ())
+        .map_err(|e| anyhow::anyhow!("layout {}: {e}", layout.display()))
+}
+
 /// Why a layout text cannot be served: it does not parse, does not validate,
 /// or binds an instance the hub does not have.
 pub fn check(text: &[u8], instances: &[String]) -> Result<Layout, String> {
