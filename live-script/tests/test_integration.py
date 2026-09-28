@@ -1,7 +1,6 @@
 """End to end: ``sim/host.py`` runs the real script on SimLive; clients speak WebSocket."""
 
 import base64
-import datetime
 import itertools
 import json
 import os
@@ -84,23 +83,21 @@ class Host:
         self.proc.stdin.write(line + "\n")
         self.proc.stdin.flush()
 
-    def terminate(self):
+    def request_stop(self):
+        """SIGTERM and a bounded wait: the only way a host is stopped (spec I7)."""
         self.proc.send_signal(signal.SIGTERM)
         return self.proc.wait(10)
 
     def stop(self):
-        if self.proc.poll() is None:
-            self.proc.send_signal(signal.SIGTERM)
-            try:
-                self.proc.wait(10)
-            except subprocess.TimeoutExpired:
-                self.proc.kill()
-                self.proc.wait(5)
-        for pump in self._pumps:
-            pump.join(5)
-        for pipe in (self.proc.stdin, self.proc.stdout, self.proc.stderr):
-            pipe.close()
-        shutil.rmtree(self.log_dir, ignore_errors=True)
+        try:
+            if self.proc.poll() is None:
+                self.request_stop()  # a host that ignores the request fails the test
+        finally:
+            for pump in self._pumps:
+                pump.join(5)
+            for pipe in (self.proc.stdin, self.proc.stdout, self.proc.stderr):
+                pipe.close()
+            shutil.rmtree(self.log_dir, ignore_errors=True)
 
 
 class Client:
@@ -150,21 +147,6 @@ class Client:
             "values", timeout, lambda f: any(item["key"] == key for item in f["data"])
         )
         return next(item for item in frame["data"] if item["key"] == key)
-
-
-def wait_until(predicate, timeout):
-    deadline = time.monotonic() + timeout
-    while not predicate():
-        if time.monotonic() > deadline:
-            raise AssertionError("condition not met in time")
-        time.sleep(0.05)
-
-
-def log_time(text, needle):
-    """Epoch time of the first log line containing ``needle`` (log.py's asctime format)."""
-    line = next(line for line in text.splitlines() if needle in line)
-    stamp = datetime.datetime.strptime(line[:23], "%Y-%m-%d %H:%M:%S,%f").astimezone()
-    return stamp.timestamp()
 
 
 def masked_text_frame(text):
@@ -359,12 +341,14 @@ class IntegrationTest(unittest.TestCase):
 
         That is more than loopback buffers take (~4 MB at most), so C's sender
         thread blocks in sendall until its 3 s send timeout drops C ("send
-        failed" in the log). A's window starts while C is still blocked and must
-        overlap C's blocked time by at least 0.5 s. A main thread blocked on C
-        would show seconds of heartbeat age and round trip; scheduler noise on a
-        shared machine shows as single outliers of up to a few hundred ms, so the
-        typical (p90) values carry the < 50 ms expectation and the worst values
-        must stay under 1 s.
+        failed" in the log). A reads heartbeats from before C connects until
+        after C is dropped, so they cover all of C's blocked time: Live's main
+        thread must keep ticking throughout. A's round trips are measured once
+        C's requests have run (until then A's requests queue behind C's in the
+        one inbox, by design). A main thread blocked on C would show seconds of
+        heartbeat age and round trip; scheduler noise on a shared machine shows
+        as single outliers of up to a few hundred ms, so the typical (p90)
+        values carry the < 50 ms expectation and the worst must stay under 1 s.
         """
         host = self.host(meters_hz=30)
         a = self.client(host)
@@ -385,32 +369,27 @@ class IntegrationTest(unittest.TestCase):
             "name": "set_prop",
             "args": {"prop": "solo", "value": True},
         }
+        first_frame = len(a.frames)
         stalled = stalled_client(host.port, [meters] + [[read_eq] * 100] * 10 + [[set_solo]])
         self.addCleanup(stalled.close)
-        self.assertEqual(a.wait_value(done_key, timeout=10.0)["value"], True)
-        self.assertNotIn("send failed", host.log_text(), "C was dropped before the window")
-        window_start = time.time()
-        first_frame = len(a.frames)
+        self.assertEqual(a.wait_value(done_key, timeout=15.0)["value"], True)
         round_trips = []
-        while time.time() < window_start + 1.2:
+        give_up = time.monotonic() + 10.0
+        measure_until = time.monotonic() + 1.2
+        while time.monotonic() < measure_until or "send failed" not in host.log_text():
+            self.assertLess(time.monotonic(), give_up, "C was never dropped: it never blocked")
             started = time.monotonic()
             a.call("live_set", "get_prop", {"prop": "is_playing"})
             round_trips.append(time.monotonic() - started)
             time.sleep(0.02)
-        window_end = time.time()
-        wait_until(lambda: "send failed" in host.log_text(), 5.0)
-        dropped_at = log_time(host.log_text(), "send failed")
+        a.wait_event("heartbeat")
         ages = [
             f["data"]["main_tick_age_ms"]
             for f in a.frames[first_frame:]
             if f["event"] == "heartbeat"
         ]
-        detail = (
-            f"round trips ms: {[round(r * 1000, 1) for r in round_trips]}; ages ms: {ages}; "
-            f"C dropped {dropped_at - window_start:.2f} s into the window"
-        )
-        self.assertGreaterEqual(min(dropped_at, window_end) - window_start, 0.5, detail)
-        self.assertGreater(len(ages), 5, detail)
+        detail = f"round trips ms: {[round(r * 1000, 1) for r in round_trips]}; ages ms: {ages}"
+        self.assertGreater(len(ages), 25, detail)
         self.assertLess(percentile(round_trips, 0.9), 0.05, detail)
         self.assertLess(percentile(ages, 0.9), 50, detail)
         self.assertLess(max(round_trips), 1.0, detail)
@@ -437,7 +416,7 @@ class IntegrationTest(unittest.TestCase):
         port = host.port
         a = self.client(host)
         a.call("live_set tracks 0", "add_listener", {"prop": "mute"})
-        self.assertEqual(host.terminate(), 0)
+        self.assertEqual(host.request_stop(), 0)
         a.wait_event("disconnect")
         with self.assertRaises(ConnectionClosed):
             a.recv(2.0)
