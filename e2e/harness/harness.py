@@ -3,6 +3,8 @@
     python3 e2e/harness/harness.py --data DIR --layout FILE [--hub BINARY]
         [--http-port 8480] [--control-port 39190] [--band-port 39101]
         [--master-port 39102] [--meters-hz 30] [--log-dir DIR]
+        [--public-name NAME --https-port PORT --tls-cert FILE --tls-key FILE]
+        [--access-team TEAM --access-aud AUD --access-key FILE]
 
 It starts ``sim/host.py`` for ``band`` and ``master`` (the real FohMixer script on
 SimLive), writes the hub's config and layout into the data folder, starts the hub
@@ -19,12 +21,20 @@ Playwright tests, which need what only the harness can do:
                                          so every token it issued is refused
     POST /hub/layout {"layout": {...}}   a new layout file (the hub picks it up)
     POST /hub/layout/reset               the original layout file back
+    GET  /cdn-cgi/access/certs           the test Access key set (``--access-key``)
+
+Remote access (#17): with ``--public-name`` the hub serves that name over HTTPS
+on ``--https-port`` with the test certificate (copied into its store
+``tls/``); with ``--access-team`` internet requests need an Access JWT signed by
+``--access-key`` (an RSA key made by ``openssl genrsa``), whose public half this
+harness serves as the team's key set.
 
 Every process is stopped with SIGTERM and a bounded wait (spec I7). Prints
 ``HARNESS READY`` once everything answers; SIGTERM or SIGINT stops it all.
 """
 
 import argparse
+import base64
 import json
 import os
 import queue
@@ -39,6 +49,10 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# The key id of the test Access key.
+ACCESS_KID = "e2e-kid"
+# The route of the test Access key set.
+CERTS_PATH = "/cdn-cgi/access/certs"
 HOST = os.path.join(REPO, "sim", "host.py")
 SITE = os.path.join(REPO, "sim", "fixtures", "test-site.json")
 READY_S = 20.0
@@ -48,9 +62,11 @@ ANSWER_S = 5.0
 ANSWERS = {"rename": "RENAMED", "listeners": "LISTENERS"}
 
 
-def hub_config(http_port, band_port, master_port):
-    """The hub's ``fohmixer-hub.toml`` for the two hosts (layout polled fast)."""
-    return (
+def hub_config(http_port, band_port, master_port, remote=None):
+    """The hub's ``fohmixer-hub.toml`` for the two hosts (layout polled fast), with
+    the remote-access tables of ``remote`` (``name``, ``https_port``, and
+    ``team``, ``aud``, ``jwks_url`` for ``[access]``) when given."""
+    text = (
         f"http_port = {http_port}\n"
         'layout = "layout.json"\n'
         "layout_poll_ms = 200\n"
@@ -61,6 +77,49 @@ def hub_config(http_port, band_port, master_port):
         'name = "master"\n'
         f"port = {master_port}\n"
     )
+    remote = remote or {}
+    if remote.get("name"):
+        text += f'[tls]\nname = "{remote["name"]}"\nport = {remote["https_port"]}\n'
+    if remote.get("team"):
+        text += (
+            f'[access]\nteam_domain = "{remote["team"]}"\naud = ["{remote["aud"]}"]\n'
+            f'jwks_url = "{remote["jwks_url"]}"\n'
+        )
+    return text
+
+
+def b64url(data):
+    """Unpadded base64url (JWK numbers)."""
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+
+def access_jwks(key_file):
+    """The Access key set of the RSA key in ``key_file``: its modulus and
+    exponent read by ``openssl rsa`` (the E2E job's keys come from ``openssl
+    genrsa``: exponent 65537)."""
+
+    def openssl(*args):
+        return subprocess.run(
+            ["openssl", "rsa", "-in", key_file, "-noout", *args],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+
+    modulus = openssl("-modulus").strip().split("=", 1)[1]
+    exponent = int(openssl("-text").split("publicExponent:", 1)[1].split()[0])
+    return {
+        "keys": [
+            {
+                "kid": ACCESS_KID,
+                "kty": "RSA",
+                "alg": "RS256",
+                "use": "sig",
+                "n": b64url(bytes.fromhex(modulus)),
+                "e": b64url(exponent.to_bytes((exponent.bit_length() + 7) // 8, "big")),
+            }
+        ]
+    }
 
 
 def expected_answer(line):
@@ -215,8 +274,25 @@ class Harness:
         self.hosts = {}
         self.hosts["band"] = Host("band", args.band_port, args.meters_hz, log_dir)
         self.hosts["master"] = Host("master", args.master_port, args.meters_hz, log_dir)
+        self.jwks = access_jwks(args.access_key) if args.access_key else None
+        remote = {
+            "name": args.public_name,
+            "https_port": args.https_port,
+            "team": args.access_team,
+            "aud": args.access_aud,
+            "jwks_url": f"http://127.0.0.1:{args.control_port}{CERTS_PATH}",
+        }
+        if args.public_name:
+            tls = os.path.join(self.data, "tls")
+            os.makedirs(tls, exist_ok=True)
+            shutil.copyfile(args.tls_cert, os.path.join(tls, "cert.pem"))
+            shutil.copyfile(args.tls_key, os.path.join(tls, "key.pem"))
         with open(os.path.join(self.data, "fohmixer-hub.toml"), "w", encoding="utf-8") as f:
-            f.write(hub_config(args.http_port, self.hosts["band"].port, self.hosts["master"].port))
+            f.write(
+                hub_config(
+                    args.http_port, self.hosts["band"].port, self.hosts["master"].port, remote
+                )
+            )
         self.reset_layout()
         self.hub = Hub(args.hub, self.data, args.http_port, log_dir) if args.hub else None
 
@@ -237,6 +313,8 @@ class Harness:
         parts = [p for p in path.split("/") if p]
         if method == "GET" and parts == ["health"]:
             return 200, {"ok": True}
+        if method == "GET" and "/" + "/".join(parts) == CERTS_PATH:
+            return (200, self.jwks) if self.jwks else (404, {"error": "no --access-key"})
         if method != "POST":
             return 405, {"error": f"{method} {path}"}
         if len(parts) == 3 and parts[0] == "host" and parts[1] in self.hosts:
@@ -303,6 +381,13 @@ def parse_args(argv):
     parser.add_argument("--master-port", type=int, default=39102)
     parser.add_argument("--meters-hz", type=float, default=30.0)
     parser.add_argument("--log-dir", default=None)
+    parser.add_argument("--public-name", default=None)
+    parser.add_argument("--https-port", type=int, default=8443)
+    parser.add_argument("--tls-cert", default=None)
+    parser.add_argument("--tls-key", default=None)
+    parser.add_argument("--access-team", default=None)
+    parser.add_argument("--access-aud", default=None)
+    parser.add_argument("--access-key", default=None)
     return parser.parse_args(argv)
 
 

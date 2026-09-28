@@ -172,8 +172,8 @@ jobs:
         run: mkdir -p crates/fohmixer-ui/dist && echo placeholder > crates/fohmixer-ui/dist/index.html
       - name: Clippy (hub, Windows-only code included)
         run: cargo clippy --locked -p fohmixer-hub --all-targets -- -D warnings
-      - name: PIN pepper tests (DPAPI)
-        run: cargo test --locked -p fohmixer-hub --lib "pepper::"
+      - name: Sealed-secret tests (DPAPI; the PIN pepper, the Cloudflare token)
+        run: cargo test --locked -p fohmixer-hub --lib -- "pepper::" "sealed::" "cf_token::"
       - name: Hub API tests on Windows (the layout, auth; no Live host needed)
         run: cargo test --locked -p fohmixer-hub --test layout --test auth
       - name: PC install self-test (Windows PowerShell 5.1 as on the PC; the debug hub started and stopped by Ctrl-Break)
@@ -297,11 +297,16 @@ jobs:
             exit 1
           fi
           grep -q 'rel="modulepreload"' crates/fohmixer-ui/dist/index.html
-          # Spec R5: v1 has no service worker.
-          if grep -q 'serviceWorker' crates/fohmixer-ui/dist/index.html; then
-            echo "::error::dist/index.html registers a service worker (spec R5: none in v1)"
+          # Spec R5 (#17): the service worker and the wake lock only on the
+          # https origin (the emergency plain-http path stays without them),
+          # and the worker never stores an answer (network-only).
+          grep -q "location.protocol !== 'https:'" crates/fohmixer-ui/dist/index.html
+          test -f crates/fohmixer-ui/dist/sw.js
+          if grep -qE 'caches\.|cache\.put' crates/fohmixer-ui/dist/sw.js; then
+            echo "::error::dist/sw.js uses the Cache Storage (spec R5: the service worker is network-only)"
             exit 1
           fi
+          grep -q 'crossorigin="use-credentials"' crates/fohmixer-ui/dist/index.html
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: wasm-dist
@@ -342,6 +347,28 @@ jobs:
           set -euo pipefail
           npm ci
           npx playwright install --with-deps chromium webkit
+      - name: Remote access (#17) - a per-run test CA and certificate for foh.e2e.test that both browsers trust, the name in /etc/hosts, the Access test key
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/e2e-remote"
+          mkdir -p "$dir"
+          openssl req -x509 -newkey rsa:2048 -nodes -keyout "$dir/ca.key" -out "$dir/ca.pem" -days 2 \
+            -subj "/CN=fohmixer E2E test CA" -addext "basicConstraints=critical,CA:TRUE" -addext "keyUsage=critical,keyCertSign,cRLSign"
+          openssl req -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -keyout "$dir/key.pem" -out "$dir/leaf.csr" -subj "/CN=foh.e2e.test"
+          printf 'subjectAltName=DNS:foh.e2e.test\nextendedKeyUsage=serverAuth\nbasicConstraints=CA:FALSE\nkeyUsage=critical,digitalSignature\n' > "$dir/leaf.ext"
+          openssl x509 -req -in "$dir/leaf.csr" -CA "$dir/ca.pem" -CAkey "$dir/ca.key" -CAcreateserial -days 2 -extfile "$dir/leaf.ext" -out "$dir/cert.pem"
+          # The name resolves to this runner, as the installer maps it on the Ableton PC.
+          echo "127.0.0.1 foh.e2e.test" | sudo tee -a /etc/hosts
+          # WebKit (GnuTLS) trusts the system store; Chromium the NSS database.
+          sudo cp "$dir/ca.pem" /usr/local/share/ca-certificates/fohmixer-e2e.crt
+          sudo update-ca-certificates
+          command -v certutil || sudo apt-get install -y --no-install-recommends libnss3-tools
+          mkdir -p "$HOME/.pki/nssdb"
+          if [ ! -f "$HOME/.pki/nssdb/cert9.db" ]; then certutil -d "sql:$HOME/.pki/nssdb" -N --empty-password; fi
+          certutil -d "sql:$HOME/.pki/nssdb" -A -t "C,," -n fohmixer-e2e -i "$dir/ca.pem"
+          # The key that signs the test Access assertions (the harness serves its public half).
+          openssl genrsa -out "$dir/access.pem" 2048
+          echo "E2E_REMOTE_DIR=$dir" >> "$GITHUB_ENV"
       - name: Engineer PIN (random per run, masked)
         run: |
           set -euo pipefail
@@ -365,10 +392,15 @@ jobs:
           nohup python3 e2e/harness/harness.py --hub ./target/release/fohmixer-hub \
             --data "$RUNNER_TEMP/hub-data" \
             --layout tools/import-tosc/fixtures/expected-layout.json \
+            --public-name foh.e2e.test --https-port 8443 \
+            --tls-cert "$E2E_REMOTE_DIR/cert.pem" --tls-key "$E2E_REMOTE_DIR/key.pem" \
+            --access-team fohmixer-e2e.cloudflareaccess.com --access-aud fohmixer-e2e-aud \
+            --access-key "$E2E_REMOTE_DIR/access.pem" \
             --log-dir "$RUNNER_TEMP/e2e-logs" > "$RUNNER_TEMP/e2e-logs/harness.log" 2>&1 &
           for i in $(seq 1 60); do
             if curl -sf http://127.0.0.1:39190/health > /dev/null \
-              && curl -sf http://127.0.0.1:8480/api/version > /dev/null; then
+              && curl -sf http://127.0.0.1:8480/api/version > /dev/null \
+              && curl -sf https://foh.e2e.test:8443/api/version > /dev/null; then
               echo "harness ready after ${i}s"
               exit 0
             fi
@@ -382,7 +414,10 @@ jobs:
           CI: "true"
           E2E_BASE_URL: http://127.0.0.1:8480
           E2E_HARNESS_URL: http://127.0.0.1:39190
-        run: npx playwright test --reporter=list,html
+          E2E_HTTPS_URL: https://foh.e2e.test:8443
+          E2E_ACCESS_TEAM: fohmixer-e2e.cloudflareaccess.com
+          E2E_ACCESS_AUD: fohmixer-e2e-aud
+        run: E2E_ACCESS_KEY="$E2E_REMOTE_DIR/access.pem" npx playwright test --reporter=list,html
       - name: Upload failure evidence
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
