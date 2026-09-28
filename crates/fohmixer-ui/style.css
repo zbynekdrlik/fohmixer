@@ -217,8 +217,35 @@ body {
     box-shadow: inset 0 -6px 0 var(--accent);
 }
 
+/* A tab with its own lit colour (tabColorOn) shows it as it is. */
+.tab.selected.own-lit {
+    filter: none;
+}
+
 .tabbar.vertical .tab.selected {
     box-shadow: inset -6px 0 0 var(--accent);
+}
+
+/* The title; its size is fitted to the tab in the page (dom::fit_text). A
+   vertical bar's titles run along it: upwards on the left, downwards on
+   the right. */
+.tab-title {
+    white-space: nowrap;
+    line-height: 1.15;
+}
+
+.tabbar.vertical .tab-title {
+    writing-mode: vertical-rl;
+}
+
+.tabbar.left .tab-title {
+    transform: rotate(180deg);
+}
+
+/* A page's or pager's own fill, under what it holds. */
+.fill {
+    position: absolute;
+    pointer-events: none;
 }
 
 .status-cluster {

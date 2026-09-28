@@ -2,7 +2,7 @@
 //! 2360×1640) scaled to the viewport and centred, every item placed from
 //! its canvas frame, and the tab bars of the pages and pagers.
 
-use fohmixer_proto::layout::{Canvas, Frame, Orientation, Style, TabBar};
+use fohmixer_proto::layout::{Canvas, Frame, Orientation, Page, Pager, Style, Tab, TabBar};
 
 /// How the canvas sits in the viewport: its scale and its top-left corner.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -110,6 +110,97 @@ pub fn tab_layout(area: Frame, bar: &TabBar, count: usize, reserve: f64) -> Opti
         tabs,
         vertical,
     })
+}
+
+/// The part of `area` its tab bar leaves to the pages (the area when the bar
+/// is hidden).
+pub fn content_frame(area: Frame, bar: &TabBar) -> Frame {
+    let s = bar.bar_size.max(0.0);
+    let (x, y, w, h) = (area.x, area.y, area.w, area.h);
+    let (shorter_w, shorter_h) = ((w - s).max(0.0), (h - s).max(0.0));
+    match bar.orientation {
+        Orientation::Top => frame_of(x, y + s, w, shorter_h),
+        Orientation::Bottom => frame_of(x, y, w, shorter_h),
+        Orientation::Left => frame_of(x + s, y, shorter_w, h),
+        Orientation::Right => frame_of(x, y, shorter_w, h),
+    }
+}
+
+/// The CSS of a pager's or page's fill: its box under everything it holds
+/// (the items' z start at 1).
+pub fn fill_style(frame: Frame, color: &str) -> String {
+    format!("{}z-index:0;background:{color};", box_style(frame))
+}
+
+/// The stage's fill (the root pager's background), or nothing.
+pub fn stage_fill(background: Option<&str>) -> String {
+    background.map_or_else(String::new, |c| format!("background:{c};"))
+}
+
+/// Where a nested pager sits among its page's items: the lowest z of the
+/// items on its pages (the import numbers them in node order, so the items
+/// before the pager are below it and the ones after above), 0 without items.
+pub fn pager_z(pager: &Pager) -> i64 {
+    fn lowest(page: &Page) -> Option<i64> {
+        let own = page.items.iter().map(|i| i.z).min();
+        let nested = page
+            .pager
+            .as_ref()
+            .and_then(|p| p.pages.iter().filter_map(lowest).min());
+        own.into_iter().chain(nested).min()
+    }
+    pager.pages.iter().filter_map(lowest).min().unwrap_or(0)
+}
+
+/// The classes of a tab bar: a vertical one says its side, which turns its
+/// titles to run along it (reading upwards on the left, downwards on the
+/// right).
+pub fn tabbar_class(orientation: Orientation) -> &'static str {
+    match orientation {
+        Orientation::Top | Orientation::Bottom => "tabbar",
+        Orientation::Left => "tabbar vertical left",
+        Orientation::Right => "tabbar vertical right",
+    }
+}
+
+/// A tab's classes: one with its own lit colour is not brightened by the
+/// stylesheet when lit (`own-lit`).
+pub fn tab_class(tab: &Tab) -> &'static str {
+    if tab.color_on.is_some() {
+        "tab own-lit"
+    } else {
+        "tab"
+    }
+}
+
+/// The stylesheet's tab text size, when the layout gives none.
+pub const TAB_FONT_PX: f64 = 30.0;
+
+/// A tab's colour: its lit colour while its page is shown (its colour when
+/// it has none).
+pub fn tab_background(tab: &Tab, lit: bool) -> Option<&str> {
+    let on = tab.color_on.as_deref().filter(|_| lit);
+    on.or(tab.color.as_deref())
+}
+
+/// A tab's text size before fitting: its lit size while its page is shown
+/// (its size when it has none).
+pub fn tab_font(tab: &Tab, lit: bool) -> f64 {
+    let on = tab.text_size_on.filter(|_| lit);
+    on.or(tab.text_size).unwrap_or(TAB_FONT_PX)
+}
+
+/// How much of its room a fitted text may take (rounding and hinting).
+pub const FIT_MARGIN: f64 = 0.96;
+
+/// The font size at which a text measured `text` (width, height) at `base`
+/// fits `room` (width, height), both in the same px: `base` when it fits
+/// with the margin, else scaled down, never up. A text or room of no size
+/// keeps `base`.
+pub fn fitted_font(base: f64, text: (f64, f64), room: (f64, f64)) -> f64 {
+    let ratio = |t: f64, r: f64| (r * FIT_MARGIN / t).min(1.0);
+    let scale = ratio(text.0, room.0).min(ratio(text.1, room.1));
+    if scale > 0.0 { base * scale } else { base }
 }
 
 #[cfg(test)]
@@ -268,5 +359,163 @@ mod tests {
         // A reserve longer than the bar leaves empty tabs, never negative.
         let t = tab_layout(area, &bar(Orientation::Top, 10.0), 2, 500.0).unwrap();
         assert_eq!(t.tabs[1], frame(0.0, 0.0, 0.0, 10.0));
+    }
+
+    #[test]
+    fn the_content_is_the_area_less_its_tab_bar() {
+        let area = frame(229.0, 61.0, 1746.0, 773.0);
+        assert_eq!(
+            content_frame(area, &bar(Orientation::Left, 65.0)),
+            frame(294.0, 61.0, 1681.0, 773.0)
+        );
+        assert_eq!(
+            content_frame(area, &bar(Orientation::Right, 65.0)),
+            frame(229.0, 61.0, 1681.0, 773.0)
+        );
+        assert_eq!(
+            content_frame(area, &bar(Orientation::Top, 59.0)),
+            frame(229.0, 120.0, 1746.0, 714.0)
+        );
+        assert_eq!(
+            content_frame(area, &bar(Orientation::Bottom, 59.0)),
+            frame(229.0, 61.0, 1746.0, 714.0)
+        );
+        assert_eq!(content_frame(area, &bar(Orientation::Top, 0.0)), area);
+        // A bar thicker than the area leaves nothing, never a negative size.
+        let small = frame(0.0, 0.0, 40.0, 30.0);
+        assert_eq!(
+            content_frame(small, &bar(Orientation::Left, 50.0)),
+            frame(50.0, 0.0, 0.0, 30.0)
+        );
+        assert_eq!(
+            content_frame(small, &bar(Orientation::Bottom, 50.0)),
+            frame(0.0, 0.0, 40.0, 0.0)
+        );
+        assert_eq!(
+            content_frame(small, &bar(Orientation::Top, -5.0)),
+            small,
+            "a negative bar is no bar"
+        );
+    }
+
+    #[test]
+    fn fills_are_boxes_under_the_items() {
+        assert_eq!(
+            fill_style(frame(1.0, 2.0, 3.0, 4.0), "#000000F9"),
+            "left:1px;top:2px;width:3px;height:4px;z-index:0;background:#000000F9;"
+        );
+        assert_eq!(stage_fill(Some("#9D9DA0FF")), "background:#9D9DA0FF;");
+        assert_eq!(stage_fill(None), "");
+    }
+
+    fn page_with(id: &str, zs: &[i64], pager: Option<Pager>) -> Page {
+        let items = zs
+            .iter()
+            .map(|z| {
+                serde_json::from_value(serde_json::json!({
+                    "kind": "label", "frame": {"x": 0, "y": 0, "w": 1, "h": 1}, "z": z, "text": "x"
+                }))
+                .unwrap()
+            })
+            .collect();
+        Page {
+            id: id.into(),
+            title: id.into(),
+            tab: Tab::default(),
+            background: None,
+            items,
+            pager,
+        }
+    }
+
+    fn pager_of(pages: Vec<Page>) -> Pager {
+        Pager {
+            frame: frame(0.0, 0.0, 10.0, 10.0),
+            background: None,
+            tabbar: bar(Orientation::Left, 5.0),
+            pages,
+        }
+    }
+
+    #[test]
+    fn a_pager_sits_at_its_lowest_item() {
+        let inner = pager_of(vec![page_with("deep", &[7, 3], None)]);
+        let pager = pager_of(vec![
+            page_with("a", &[12, 9], None),
+            page_with("b", &[11], Some(inner)),
+            page_with("empty", &[], None),
+        ]);
+        assert_eq!(pager_z(&pager), 3);
+        assert_eq!(pager_z(&pager_of(vec![page_with("a", &[12, 9], None)])), 9);
+        assert_eq!(pager_z(&pager_of(vec![page_with("a", &[], None)])), 0);
+        assert_eq!(pager_z(&pager_of(Vec::new())), 0);
+    }
+
+    #[test]
+    fn a_vertical_bar_says_its_side() {
+        assert_eq!(tabbar_class(Orientation::Top), "tabbar");
+        assert_eq!(tabbar_class(Orientation::Bottom), "tabbar");
+        assert_eq!(tabbar_class(Orientation::Left), "tabbar vertical left");
+        assert_eq!(tabbar_class(Orientation::Right), "tabbar vertical right");
+    }
+
+    #[test]
+    fn a_lit_tab_takes_its_lit_colour_and_size() {
+        let tab = Tab {
+            color: Some("#404040FF".into()),
+            color_on: Some("#BAFFA657".into()),
+            text_size: Some(36.0),
+            text_size_on: Some(51.0),
+        };
+        assert_eq!(tab_class(&tab), "tab own-lit");
+        assert_eq!(tab_class(&Tab::default()), "tab");
+        assert_eq!(tab_background(&tab, true), Some("#BAFFA657"));
+        assert_eq!(tab_background(&tab, false), Some("#404040FF"));
+        assert_eq!(tab_font(&tab, true), 51.0);
+        assert_eq!(tab_font(&tab, false), 36.0);
+        // Without lit values a lit tab keeps its own; without any, the
+        // stylesheet's size and no colour.
+        let plain = Tab {
+            color: Some("#404040FF".into()),
+            color_on: None,
+            text_size: Some(33.0),
+            text_size_on: None,
+        };
+        assert_eq!(tab_background(&plain, true), Some("#404040FF"));
+        assert_eq!(tab_font(&plain, true), 33.0);
+        assert_eq!(tab_background(&Tab::default(), true), None);
+        assert_eq!(tab_font(&Tab::default(), false), 30.0);
+        let only_on = Tab {
+            color: None,
+            color_on: Some("#FA00004A".into()),
+            text_size: None,
+            text_size_on: Some(20.0),
+        };
+        assert_eq!(tab_background(&only_on, false), None);
+        assert_eq!(tab_font(&only_on, false), 30.0);
+    }
+
+    fn close(got: f64, want: f64) {
+        assert!((got - want).abs() < 1e-9, "{got} is not {want}");
+    }
+
+    #[test]
+    fn a_text_is_scaled_down_to_fit_never_up() {
+        // Fits with the margin: the base size.
+        assert_eq!(fitted_font(22.0, (96.0, 20.0), (100.0, 30.0)), 22.0);
+        // The margin itself: 96 of 100 fits, 96.5 does not.
+        assert_eq!(fitted_font(20.0, (96.0, 10.0), (100.0, 30.0)), 20.0);
+        assert!(fitted_font(20.0, (96.5, 10.0), (100.0, 30.0)) < 20.0);
+        // Too wide: scaled so the text takes 96 % of the width.
+        close(fitted_font(15.0, (48.0, 18.0), (40.0, 25.0)), 12.0);
+        // Too tall: the height decides.
+        close(fitted_font(52.0, (300.0, 62.5), (600.0, 50.0)), 39.936);
+        // Both too large: the smaller scale wins.
+        close(fitted_font(10.0, (200.0, 50.0), (100.0, 50.0)), 4.8);
+        // Nothing measured (not laid out yet): the base size.
+        assert_eq!(fitted_font(24.0, (0.0, 0.0), (104.0, 42.0)), 24.0);
+        assert_eq!(fitted_font(24.0, (0.0, 0.0), (0.0, 0.0)), 24.0);
+        // A room of no size never gives a zero font.
+        assert_eq!(fitted_font(24.0, (50.0, 20.0), (0.0, 0.0)), 24.0);
     }
 }
