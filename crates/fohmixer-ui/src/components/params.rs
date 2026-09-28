@@ -2,7 +2,7 @@
 //! fader that write their target parameters directly through the LOM and
 //! show the targets' real state: all on, all off, or mixed.
 
-use fohmixer_proto::layout::{Frame, ParamTarget, Press, Style};
+use fohmixer_proto::layout::{ParamTarget, Press};
 use leptos::prelude::*;
 use serde_json::Value;
 
@@ -11,7 +11,6 @@ use super::{fail_flash, readiness, slot_of};
 use crate::behave::toggle::{ToggleCtl, ToggleState, Write, aggregate, is_on};
 use crate::binding::{SubSpec, param_subs};
 use crate::dom;
-use crate::stage;
 use crate::store::{LiveStore, Slot};
 
 /// One toggle target: its subscription (none when its path does not
@@ -53,12 +52,10 @@ pub fn state_name(state: ToggleState) -> &'static str {
 /// A former MIDI toggle.
 #[component]
 pub fn ParamToggleView(
-    frame: Frame,
-    z: i64,
-    style: Style,
     label: String,
     targets: Vec<ParamTarget>,
     press: Press,
+    color: Option<String>,
 ) -> impl IntoView {
     let store = expect_context::<LiveStore>();
     let targets: Vec<Target> = targets
@@ -134,9 +131,11 @@ pub fn ParamToggleView(
         Press::DoubleTapLatch => "double_tap_latch",
         Press::PulseAndDoubleTapLatch => "pulse_and_double_tap_latch",
     };
+    // The layout's colour of the toggle: its lit colour.
+    let look = color.map(|c| format!("--c:{c};")).unwrap_or_default();
     view! {
         <div
-            class="item button param-toggle"
+            class="btn param-toggle"
             class:failed=move || failed.get()
             data-testid="param-toggle"
             data-label=label_attr
@@ -144,7 +143,7 @@ pub fn ParamToggleView(
             data-state=move || state_name(state())
             data-binding=bound
             aria-disabled=disabled
-            style={stage::item_style(frame, z, &style)}
+            style=look
             on:pointerdown=on_down
             on:pointerup=on_up
             on:pointercancel=on_up
@@ -158,13 +157,7 @@ pub fn ParamToggleView(
 /// A former MIDI fader (spec F18, X10): writes every target by its own
 /// range and shows Live's display string of the first.
 #[component]
-pub fn ParamFaderView(
-    frame: Frame,
-    z: i64,
-    style: Style,
-    label: String,
-    targets: Vec<ParamTarget>,
-) -> impl IntoView {
+pub fn ParamFaderView(label: String, targets: Vec<ParamTarget>) -> impl IntoView {
     let store = expect_context::<LiveStore>();
     let targets: Vec<fader::Target> = param_subs(&targets, true)
         .into_iter()
@@ -185,24 +178,13 @@ pub fn ParamFaderView(
         .map_or_else(|| RwSignal::new(Slot::Pending), |t| t.slot);
     let display = move || slot.with(|s| s.display().unwrap_or_default().to_string());
     let label_attr = label.clone();
-    let inner = Frame {
-        x: 0.0,
-        y: 0.0,
-        w: frame.w,
-        h: frame.h,
-    };
     view! {
-        <div
-            class="item param-fader"
-            data-testid="param-fader"
-            data-label=label_attr
-            style={stage::item_style(frame, z, &style)}
-        >
-            <FaderView frame=inner targets=targets shaping=false />
-            <div class="param-fader-text">
-                <span class="param-fader-label">{label}</span>
-                <span class="param-fader-display" data-testid="param-display">{display}</span>
+        <div class="strip param-fader" data-testid="param-fader" data-label=label_attr>
+            <span class="param-fader-label">{label}</span>
+            <div class="strip-fz param-fz">
+                <FaderView targets=targets shaping=false />
             </div>
+            <span class="param-fader-display" data-testid="param-display">{display}</span>
         </div>
     }
 }

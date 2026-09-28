@@ -14,6 +14,7 @@ pub mod behave;
 pub mod binding;
 pub mod components;
 pub mod dom;
+pub mod flow;
 pub mod lifecycle;
 pub mod net;
 pub mod pages;

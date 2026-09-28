@@ -1,24 +1,21 @@
 //! The fader (spec F8–F10, I4, F18): Pointer Events with this fader's own
 //! pointer (several faders move at once), relative movement, the touch
 //! shaping, the double-tap glide, sends coalesced to one per animation frame
-//! and the final value on release. The cap moves only in the frame loop.
+//! and the final value on release. The frame loop writes the position as
+//! `--p` (the stylesheet places the cap and the fill from it). The travel
+//! is the track's whole height, 1:1 with the finger (TouchOSC's
+//! `responseFactor` 100; #21, parity audit #2).
 
-use fohmixer_proto::layout::Frame;
 use leptos::html;
 use leptos::prelude::*;
 use serde_json::json;
 
 use super::{fail_flash, readiness, readiness_now};
 use crate::behave::fader::{self as curve, FaderCtl, UNITY};
-use crate::behave::travel_px;
 use crate::binding::SubSpec;
 use crate::dom;
 use crate::raf;
-use crate::stage;
 use crate::store::{LiveStore, Readiness, Slot};
-
-/// The cap's height in canvas px; the cap travels the rest of the frame.
-pub const CAP: f64 = 36.0;
 
 /// How a fader maps its position to Live's value.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -100,7 +97,7 @@ pub struct Target {
 /// every target has Live's value and a law that can map it (I8), and is
 /// red while any target's binding does not resolve (I5).
 #[component]
-pub fn FaderView(frame: Frame, targets: Vec<Target>, shaping: bool) -> impl IntoView {
+pub fn FaderView(targets: Vec<Target>, shaping: bool) -> impl IntoView {
     let store = expect_context::<LiveStore>();
     let (slot, law) = targets.first().map_or_else(
         || {
@@ -160,7 +157,7 @@ pub fn FaderView(frame: Frame, targets: Vec<Target>, shaping: bool) -> impl Into
             return;
         };
         ev.prevent_default();
-        let travel = travel_px(el.get_bounding_client_rect().height(), frame.h, CAP);
+        let travel = el.get_bounding_client_rect().height().max(1.0);
         let id = ev.pointer_id();
         let y = f64::from(ev.client_y());
         let taken = ctl
@@ -190,9 +187,6 @@ pub fn FaderView(frame: Frame, targets: Vec<Target>, shaping: bool) -> impl Into
     };
 
     raf::animate(root, move |el| {
-        let cap = dom::child(&el, ".fader-cap");
-        let fill = dom::child(&el, ".fader-fill");
-        let travel = (frame.h - CAP).max(0.0);
         let mut shown: Option<f64> = None;
         Box::new(move |now: f64, _step: f64| {
             let Some(motion) = ctl.try_update_value(|c| c.frame(now, live())) else {
@@ -208,12 +202,7 @@ pub fn FaderView(frame: Frame, targets: Vec<Target>, shaping: bool) -> impl Into
                 return;
             }
             shown = Some(p);
-            if let Some(cap) = &cap {
-                dom::set_style(cap, "transform", &format!("translateY({}px)", -p * travel));
-            }
-            if let Some(fill) = &fill {
-                dom::set_style(fill, "transform", &format!("scaleY({p})"));
-            }
+            dom::set_style(&el, "--p", &format!("{p:.5}"));
             if let Some(v) = law.value(p) {
                 dom::set_attr(&el, "data-value", &format!("{v:.4}"));
             }
@@ -229,7 +218,6 @@ pub fn FaderView(frame: Frame, targets: Vec<Target>, shaping: bool) -> impl Into
             data-testid="fader"
             data-binding=binding
             aria-disabled=disabled
-            style={stage::box_style(frame)}
             node_ref=root
             on:pointerdown=on_down
             on:pointermove=on_move

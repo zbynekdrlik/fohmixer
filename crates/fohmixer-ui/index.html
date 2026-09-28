@@ -12,13 +12,16 @@
     <link data-trunk rel="copy-file" href="manifest.json" />
     <link data-trunk rel="copy-file" href="sw.js" />
     <link data-trunk rel="copy-dir" href="icons" />
+    <!-- The fonts ship with the app (the mixer works on the LAN without the
+         internet, D7): Barlow, Barlow Condensed, JetBrains Mono (OFL). -->
+    <link data-trunk rel="copy-dir" href="fonts" />
     <link rel="icon" type="image/png" href="/icons/icon-192.png" />
     <!-- use-credentials: behind Cloudflare Access (the tunnel, #17) the
          manifest's fetch must carry the Access cookie or it gets the login
          page instead. -->
     <link rel="manifest" href="/manifest.json" crossorigin="use-credentials" />
     <link rel="apple-touch-icon" href="/icons/icon-192.png" />
-    <meta name="theme-color" content="#000000" />
+    <meta name="theme-color" content="#07070c" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
