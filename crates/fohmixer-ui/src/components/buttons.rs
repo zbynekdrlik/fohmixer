@@ -158,8 +158,11 @@ pub fn SoloView(frame: Frame, z: i64, style: Style, binding: Binding) -> impl In
     }
 }
 
-/// The stage-mic button (spec F15): an inverted mute, lit while the stage
-/// mics are muted.
+/// The stage-mic button (spec F15): the mute of the stage-mic track, lit
+/// while Live reports the mics live (`mute` false), like TouchOSC's button
+/// (mute false -> x 1) and every strip's mute (F12, lit when audible). An
+/// unknown or unmapped state stays dark: a lit STAGE means "the stage is open"
+/// (#9, parity audit #21).
 #[component]
 pub fn StageMicsView(frame: Frame, z: i64, style: Style, binding: Binding) -> impl IntoView {
     let store = expect_context::<LiveStore>();
@@ -177,13 +180,14 @@ pub fn StageMicsView(frame: Frame, z: i64, style: Style, binding: Binding) -> im
         });
     };
     let muted = move || slot.with(Slot::flag) == Some(true);
+    let live = move || slot.with(Slot::flag) == Some(false);
     let state = Memo::new(move |_| readiness(&[slot]));
     let bound = move || state.get().name();
     let disabled = move || state.get().disabled();
     view! {
         <div
             class="item button stage-mics"
-            class:on=muted
+            class:on=live
             class:failed=move || failed.get()
             data-testid="stage-mics"
             data-muted=move || muted().to_string()

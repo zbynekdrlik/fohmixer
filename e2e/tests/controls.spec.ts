@@ -71,6 +71,10 @@ test.describe("Stage mics and STAGE AUT", () => {
     await ready(button);
     await expect(button).toHaveText("STAGE");
     await expect(button).toHaveAttribute("data-muted", "false");
+    // Lit while the mics are live, as TouchOSC's button (its script: mute
+    // false -> x 1) and every strip's mute (F12, lit when audible): the
+    // engineer reads a lit STAGE as "the stage is open" (#9, parity audit #21).
+    await expect(button).toHaveClass(/\bon\b/);
     try {
       if ((await aut.getAttribute("data-on")) === "true") await aut.click();
       await expect(aut).toHaveAttribute("data-on", "false");
@@ -79,21 +83,24 @@ test.describe("Stage mics and STAGE AUT", () => {
       await live.call("band", "live_set", "start_playing");
       await until(() => live.get("band", mics, "mute"), (v) => v === true, "muted while playing");
       await expect(button).toHaveAttribute("data-muted", "true");
+      await expect(button).not.toHaveClass(/\bon\b/);
       await live.call("band", "live_set", "stop_playing");
       await until(() => live.get("band", mics, "mute"), (v) => v === false, "live when stopped");
       await expect(button).toHaveAttribute("data-muted", "false");
+      await expect(button).toHaveClass(/\bon\b/);
     } finally {
       live.setHub("stage_aut", false);
       await live.call("band", "live_set", "stop_playing");
     }
     await expect(aut).toHaveAttribute("data-on", "false");
-    // The button itself mutes and unmutes them by hand (an inverted mute:
-    // lit while muted).
+    // The button itself mutes and unmutes them by hand: dark while muted,
+    // lit again once live.
     await button.click();
     await until(() => live.get("band", mics, "mute"), (v) => v === true, "muted by hand");
-    await expect(button).toHaveClass(/\bon\b/);
+    await expect(button).not.toHaveClass(/\bon\b/);
     await button.click();
     await until(() => live.get("band", mics, "mute"), (v) => v === false, "live by hand");
+    await expect(button).toHaveClass(/\bon\b/);
   });
 });
 
