@@ -14,6 +14,7 @@ use crate::config::AcmeCfg;
 use crate::http_client::HttpClient;
 use crate::https::Https;
 use crate::remote::{RemoteState, Stored};
+use crate::tls::test_certs::{TestCa, handshake};
 use crate::tls::{CertInfo, CertStore};
 
 const NAME: &str = "foh.example.org";
@@ -89,29 +90,53 @@ async fn a_certificate_comes_by_dns01_and_the_record_goes_again() {
         serde_json::json!(["mailto:owner@example.org"])
     );
     assert!(acme.account_path().is_file(), "the account is stored");
-    // A second certificate reuses the stored account.
+    // A second certificate reuses the stored account, and the CA reuses
+    // the account's valid authorization: no new record, no challenge.
     acme.issue().await.unwrap();
     assert_eq!(count(&ca, "POST /new-account"), 1);
     assert_eq!(count(&ca, "POST /new-order"), 2);
+    let posts = |cf_api: &CfApi| {
+        cf_api
+            .lock()
+            .unwrap()
+            .calls
+            .iter()
+            .filter(|c| *c == "POST /zones/zone-1/dns_records")
+            .count()
+    };
+    assert_eq!(posts(&cf_api), 1);
+    let challenges = ca
+        .lock()
+        .unwrap()
+        .requests
+        .iter()
+        .filter(|r| r.starts_with("POST /chall/"))
+        .count();
+    assert_eq!(challenges, 1);
 }
 
 #[tokio::test]
 async fn a_record_a_crashed_attempt_left_is_removed_first() {
     let dir = tempfile::tempdir().unwrap();
     let (acme, cf_api, _ca) = setup(dir.path(), true).await;
+    let fqdn = format!("_acme-challenge.{NAME}");
+    let ours = crate::cloudflare::TXT_COMMENT.to_string();
+    cf_api
+        .lock()
+        .unwrap()
+        .records
+        .insert("stale".into(), (fqdn.clone(), "old-value".into(), ours));
+    // A record another client (another ACME client) made is left alone.
     cf_api.lock().unwrap().records.insert(
-        "stale".into(),
-        (format!("_acme-challenge.{NAME}"), "old-value".into()),
+        "foreign".into(),
+        (fqdn.clone(), "theirs".into(), "certbot".into()),
     );
     acme.issue().await.unwrap();
-    assert!(cf_api.lock().unwrap().records.is_empty());
-    assert!(
-        cf_api
-            .lock()
-            .unwrap()
-            .calls
-            .contains(&"DELETE /zones/zone-1/dns_records/stale".to_string())
-    );
+    let records = cf_api.lock().unwrap().records.clone();
+    assert_eq!(records.keys().collect::<Vec<_>>(), vec!["foreign"]);
+    let calls = cf_api.lock().unwrap().calls.clone();
+    assert!(calls.contains(&"DELETE /zones/zone-1/dns_records/stale".to_string()));
+    assert!(!calls.contains(&"DELETE /zones/zone-1/dns_records/foreign".to_string()));
 }
 
 #[tokio::test]
@@ -252,24 +277,51 @@ async fn the_keeper_gets_stores_and_serves_a_certificate() {
 #[tokio::test]
 async fn a_failed_attempt_is_counted_and_keeps_the_served_certificate() {
     let dir = tempfile::tempdir().unwrap();
-    let (acme, _cf, _ca) = setup(dir.path(), false).await;
+    let (acme, _cf, ca) = setup(dir.path(), false).await;
     let https = Https::bind("127.0.0.1:0".parse().unwrap(), axum::Router::new()).unwrap();
     let state = RemoteState::default();
     let store = CertStore::new(dir.path());
-    assert_eq!(acme.renew(&store, &https, &state).await, Err(1));
-    assert_eq!(acme.renew(&store, &https, &state).await, Err(2));
+    // The old certificate, 10 days left, is served.
+    let old_ca = TestCa::new();
+    let now = crate::auth::now_secs() as i64;
+    let (chain, key) = old_ca.leaf(&[NAME], now - 80 * DAY, now + 10 * DAY);
+    https
+        .serve(crate::tls::server_config(&chain, &key).unwrap())
+        .unwrap();
+    // No token: retried every 5 minutes, the old certificate stays.
+    assert_eq!(
+        acme.renew(&store, &https, &state).await,
+        Err(NO_TOKEN_RETRY)
+    );
+    assert_eq!(
+        acme.renew(&store, &https, &state).await,
+        Err(NO_TOKEN_RETRY)
+    );
     let config =
         crate::config::Config::parse("[tls]\nname = \"foh.example.org\"\n", dir.path()).unwrap();
     let status = state.snapshot(&config, Some(&https), 0).https.unwrap();
     assert_eq!(status.acme_error.as_deref(), Some(NO_TOKEN));
     assert_eq!(status.acme_failures, 2);
-    assert!(!https.serving());
-    // With the token set, the next attempt succeeds and resets the count.
+    let served = handshake(https.addr(), NAME, &old_ca.pem).await.unwrap();
+    assert_eq!(served.not_after, now + 10 * DAY);
+    // With the token set, the next attempt succeeds, resets the count and
+    // serves the CA's certificate.
     crate::cf_token::run(dir.path(), format!("{}\n", cf_secret()).as_bytes()).unwrap();
     assert_eq!(acme.renew(&store, &https, &state).await, Ok(()));
-    assert!(https.serving());
     let status = state.snapshot(&config, Some(&https), 0).https.unwrap();
     assert_eq!(status.acme_failures, 0);
+    let ca_pem = ca.lock().unwrap().test_ca.pem.clone();
+    let served = handshake(https.addr(), NAME, &ca_pem).await.unwrap();
+    assert!(served.not_after > now + 30 * DAY, "{served:?}");
+    // A refused challenge (a new authorization: another account) is an
+    // error retried after a minute; the new certificate stays served.
+    std::fs::remove_file(acme.account_path()).unwrap();
+    ca.lock().unwrap().refuse_challenges = true;
+    assert_eq!(acme.renew(&store, &https, &state).await, Err(FIRST_RETRY));
+    assert_eq!(
+        handshake(https.addr(), NAME, &ca_pem).await.unwrap(),
+        served
+    );
     https.stop(Duration::from_millis(10));
     assert!(https.stopped(Duration::from_secs(5)).await);
 }
@@ -287,6 +339,36 @@ fn failed_attempts_are_retried_after_a_minute_doubling_to_six_hours() {
     assert_eq!(FIRST_RETRY, min(1));
     assert_eq!(MAX_RETRY, min(360));
     assert_eq!(CHECK_EVERY, min(720));
+}
+
+#[test]
+fn a_missing_token_is_looked_for_every_five_minutes_and_warned_of_once() {
+    assert_eq!(NO_TOKEN_RETRY, Duration::from_secs(300));
+    assert_eq!(next_attempt(NO_TOKEN, 1), NO_TOKEN_RETRY);
+    assert_eq!(next_attempt(NO_TOKEN, 12), NO_TOKEN_RETRY);
+    assert_eq!(next_attempt("HTTP 500", 1), FIRST_RETRY);
+    assert_eq!(next_attempt("HTTP 500", 12), MAX_RETRY);
+    assert!(warns(NO_TOKEN, false));
+    assert!(!warns(NO_TOKEN, true));
+    assert!(warns("HTTP 500", true));
+    assert!(warns("HTTP 500", false));
+}
+
+#[test]
+fn a_stored_account_counts_for_its_own_directory_only() {
+    let directory = "https://ca.example/directory";
+    let bytes = serde_json::to_vec(&serde_json::json!({
+        "directory": directory,
+        "credentials": {
+            "id": "https://ca.example/acct/1",
+            "key_pkcs8": "AAAA",
+            "directory": directory,
+        },
+    }))
+    .unwrap();
+    assert!(stored_account(&bytes, directory).is_some());
+    assert!(stored_account(&bytes, "https://other.example/directory").is_none());
+    assert!(stored_account(b"{not json", directory).is_none());
 }
 
 #[test]

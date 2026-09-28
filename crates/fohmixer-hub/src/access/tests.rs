@@ -70,7 +70,8 @@ fn a_forwarded_header_or_a_public_peer_is_the_internet() {
     let none = HeaderMap::new();
     assert_eq!(classify(peer("192.168.1.20"), &none), Origin::Local);
     assert_eq!(classify(peer("127.0.0.1"), &none), Origin::Local);
-    assert_eq!(classify(None, &none), Origin::Local);
+    // No peer address (a listener without ConnectInfo): fail closed.
+    assert_eq!(classify(None, &none), Origin::Internet);
     assert_eq!(classify(peer("203.0.113.7"), &none), Origin::Internet);
     for name in PROXY_HEADERS {
         let proxied = headers(&[(name, "203.0.113.7")]);
@@ -441,6 +442,26 @@ async fn a_failed_fetch_keeps_the_last_good_keys() {
 }
 
 #[tokio::test]
+async fn a_failing_key_endpoint_is_asked_at_most_once_a_minute() {
+    let server = KeyServer::start(jwks(&[key()])).await;
+    server.answer(500, "down");
+    let gate = gate(&server).await;
+    let token = sign(key(), &claims());
+    assert!(gate.verify(&token).await.is_err());
+    assert!(gate.verify(&token).await.is_err());
+    assert_eq!(
+        server.count(),
+        1,
+        "the failed attempt counts for the minute"
+    );
+    // The refresher is not held back by it.
+    server.answer(200, &jwks(&[key()]).to_string());
+    assert!(gate.refresh_keys(true).await);
+    assert!(gate.verify(&token).await.is_ok());
+    assert_eq!(server.count(), 2);
+}
+
+#[tokio::test]
 async fn the_refresher_warms_the_cache() {
     let server = KeyServer::start(jwks(&[key()])).await;
     let gate = gate(&server).await;
@@ -676,6 +697,27 @@ async fn without_access_every_internet_request_is_refused() {
     );
     let lan = through_router(&hub, request("/api/version", "10.0.0.9", &[])).await;
     assert_eq!(lan.status(), StatusCode::OK);
+    hub.stop();
+}
+
+#[tokio::test]
+async fn a_request_without_a_peer_address_is_refused() {
+    // Both listeners give every request its peer address; a router without
+    // one (a listener that lost ConnectInfo) must not let requests in.
+    let dir = tempfile::tempdir().unwrap();
+    let hub = access_hub(dir.path(), None);
+    let request = axum::http::Request::get("/api/version")
+        .header("host", "foh.example.org")
+        .body(Body::empty())
+        .unwrap();
+    let response = crate::app_router(hub.clone())
+        .oneshot(request)
+        .await
+        .unwrap();
+    assert_eq!(
+        code_of(response).await,
+        (StatusCode::FORBIDDEN, "ACCESS_DENIED".into())
+    );
     hub.stop();
 }
 

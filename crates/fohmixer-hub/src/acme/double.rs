@@ -261,10 +261,25 @@ async fn acme_post(
                 .as_str()
                 .unwrap_or("")
                 .to_string();
-            let authz = ca.id();
-            let token = format!("token{authz}");
-            ca.authzs
-                .insert(authz, (name.clone(), token, "pending", account));
+            // A valid authorization of this account for the name is reused,
+            // as Let's Encrypt does for 30 days: no new challenge.
+            let valid = ca
+                .authzs
+                .iter()
+                .find(|(_, (n, _, status, owner))| {
+                    *n == name && *status == "valid" && *owner == account
+                })
+                .map(|(id, _)| *id);
+            let authz = match valid {
+                Some(id) => id,
+                None => {
+                    let id = ca.id();
+                    let token = format!("token{id}");
+                    ca.authzs
+                        .insert(id, (name.clone(), token, "pending", account));
+                    id
+                }
+            };
             let order = ca.id();
             ca.orders.insert(order, (name, "pending", authz, None));
             let location = format!("{}/order/{order}", ca.base);
@@ -296,7 +311,7 @@ async fn acme_post(
                 .unwrap()
                 .records
                 .values()
-                .any(|(n, content)| *n == fqdn && *content == expected);
+                .any(|(n, content, _)| *n == fqdn && *content == expected);
             let status = if found && !ca.refuse_challenges {
                 "valid"
             } else {

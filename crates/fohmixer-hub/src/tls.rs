@@ -247,6 +247,42 @@ pub(crate) mod test_certs {
             Ok(cert.pem())
         }
     }
+
+    /// A TLS handshake with `addr` for `name` (SNI) that trusts only the CA
+    /// `ca_pem`: what the certificate the server presents covers and until
+    /// when, or why the handshake failed (a certificate of another CA, none).
+    pub async fn handshake(
+        addr: std::net::SocketAddr,
+        name: &str,
+        ca_pem: &str,
+    ) -> Result<super::CertInfo, String> {
+        use rustls::pki_types::pem::PemObject as _;
+        let mut roots = rustls::RootCertStore::empty();
+        roots
+            .add(rustls::pki_types::CertificateDer::from_pem_slice(ca_pem.as_bytes()).unwrap())
+            .unwrap();
+        let config = rustls::ClientConfig::builder_with_provider(std::sync::Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+        let tcp = tokio::net::TcpStream::connect(addr)
+            .await
+            .map_err(|e| e.to_string())?;
+        let server = rustls::pki_types::ServerName::try_from(name.to_string()).unwrap();
+        let stream = tokio_rustls::TlsConnector::from(std::sync::Arc::new(config))
+            .connect(server, tcp)
+            .await
+            .map_err(|e| e.to_string())?;
+        let leaf = stream.get_ref().1.peer_certificates().unwrap()[0].clone();
+        let pem = format!(
+            "-----BEGIN CERTIFICATE-----\n{}\n-----END CERTIFICATE-----\n",
+            base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &leaf)
+        );
+        super::cert_info(&pem)
+    }
 }
 
 #[cfg(test)]
@@ -341,9 +377,11 @@ mod tests {
             checked(chain, key, "other.example.org").unwrap_err(),
             "the certificate names [\"foh.example.org\"], not other.example.org"
         );
+        let shown = format!("{pem:?}");
+        assert!(!shown.contains("PRIVATE KEY"), "Debug never shows the key");
         assert!(
-            !format!("{pem:?}").contains("PRIVATE KEY"),
-            "Debug never shows the key"
+            shown.starts_with("Pem { info: CertInfo { names: [\"foh.example.org\"]"),
+            "Debug shows what the certificate covers: {shown}"
         );
     }
 

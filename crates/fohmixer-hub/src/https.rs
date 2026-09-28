@@ -1,9 +1,10 @@
 //! The HTTPS listener of the `[tls]` name (#17), iemmixer's axum-server
 //! rustls listener: bound at the start next to the plain-HTTP one (a taken
-//! port stops the start at once), serving from the first certificate on
-//! (the stored one at the start, else the first the ACME client gets), a
-//! renewed certificate swapped in without a restart, and stopped with the
-//! HTTP listener (graceful, open requests get the same drain).
+//! port costs HTTPS only: `lib.rs` `start_https` tries it again), serving
+//! from the first certificate on (the stored one at the start, else the
+//! first the ACME client gets), a renewed certificate swapped in without a
+//! restart, and stopped with the HTTP listener (graceful, open requests get
+//! the same drain).
 
 use std::io;
 use std::net::SocketAddr;
@@ -28,8 +29,7 @@ pub struct Https {
 }
 
 impl Https {
-    /// Binds `addr` (port 0: any): the socket for [`Https::new`], bound
-    /// before the hub starts so a taken port stops the start at once.
+    /// Binds `addr` (port 0: any): the socket for [`Https::new`].
     pub fn listen(addr: SocketAddr) -> io::Result<std::net::TcpListener> {
         let listener = std::net::TcpListener::bind(addr)?;
         listener.set_nonblocking(true)?;
@@ -119,4 +119,72 @@ impl Https {
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tls::test_certs::{TestCa, handshake};
+
+    fn serving() -> (Https, TestCa) {
+        let ca = TestCa::new();
+        let now = crate::auth::now_secs() as i64;
+        let (chain, key) = ca.leaf(&["foh.example.org"], now - 3600, now + 86_400);
+        let https = Https::bind("127.0.0.1:0".parse().unwrap(), Router::new()).unwrap();
+        https
+            .serve(crate::tls::server_config(&chain, &key).unwrap())
+            .unwrap();
+        (https, ca)
+    }
+
+    #[tokio::test]
+    async fn the_stop_waits_for_an_open_connection_up_to_its_drain() {
+        let (https, _) = serving();
+        assert!(https.serving());
+        // A client that connects and never finishes its handshake holds the
+        // server in its drain.
+        let _client = tokio::net::TcpStream::connect(https.addr()).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        https.stop(Duration::from_millis(1500));
+        assert!(
+            !https.stopped(Duration::from_millis(100)).await,
+            "still draining"
+        );
+        // The task was taken by the first wait: nothing left to wait for.
+        assert!(https.stopped(Duration::from_millis(100)).await);
+    }
+
+    #[tokio::test]
+    async fn an_idle_server_ends_at_once_and_a_second_certificate_is_swapped_in() {
+        let (https, first) = serving();
+        let name = "foh.example.org";
+        let served = handshake(https.addr(), name, &first.pem).await.unwrap();
+        assert_eq!(served.names, vec![name.to_string()]);
+        // A second certificate, of another CA, replaces the first one for
+        // the next connection.
+        let ca = TestCa::new();
+        let now = crate::auth::now_secs() as i64;
+        let (chain, key) = ca.leaf(&[name], now - 3600, now + 2 * 86_400);
+        https
+            .serve(crate::tls::server_config(&chain, &key).unwrap())
+            .unwrap();
+        assert!(https.serving());
+        let swapped = handshake(https.addr(), name, &ca.pem).await.unwrap();
+        assert_eq!(swapped.not_after, now + 2 * 86_400);
+        assert!(handshake(https.addr(), name, &first.pem).await.is_err());
+        https.stop(Duration::from_millis(100));
+        assert!(https.stopped(Duration::from_secs(5)).await);
+        // Stopped before it ever served: its socket is closed, it cannot start.
+        let unused = Https::bind("127.0.0.1:0".parse().unwrap(), Router::new()).unwrap();
+        unused.stop(Duration::from_millis(10));
+        assert!(
+            unused.stopped(Duration::from_millis(10)).await,
+            "never served"
+        );
+        let error = unused
+            .serve(crate::tls::server_config(&chain, &key).unwrap())
+            .unwrap_err();
+        assert_eq!(error.to_string(), "the HTTPS listener was stopped");
+        assert!(!unused.serving());
+    }
 }

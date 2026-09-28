@@ -371,7 +371,7 @@ fn router(hub: Hub, redirect: bool) -> Router {
     );
 
     let check_host = axum::middleware::from_fn_with_state(hub.clone(), routes::check_host);
-    let access = axum::middleware::from_fn_with_state(hub.clone(), access::middleware);
+    let access = axum::middleware::from_fn_with_state(hub.access.clone(), access::middleware);
     let mut app = Router::new()
         .merge(routes::api_routes())
         .merge(routes::static_routes())
@@ -434,9 +434,10 @@ pub fn port_from(value: Option<&str>, default: u16) -> anyhow::Result<u16> {
 /// requests get up to [`STOP_DRAIN`] to finish, and it returns `Ok`.
 ///
 /// With `[tls]` the HTTPS listener binds `addr`'s IP on its port next to
-/// it (a taken port is an error too), serves the stored certificate or
-/// waits for the ACME client's first one (`[acme]`), and stops with the
-/// HTTP listener; `/api/status` reports its port.
+/// it, serves the stored certificate or waits for the ACME client's first
+/// one (`[acme]`), and stops with the HTTP listener. A port it cannot bind
+/// never stops plain HTTP (the emergency path): the error is in
+/// `/api/status` and the bind is tried again every [`HTTPS_BIND_RETRY`].
 pub async fn serve_until<F>(
     addr: SocketAddr,
     config: Config,
@@ -450,19 +451,14 @@ where
         .await
         .with_context(|| format!("binding {addr}"))?;
     let local = listener.local_addr().context("reading the bound address")?;
-    let https_socket = match &config.tls {
-        Some(tls) => {
-            let at = SocketAddr::new(addr.ip(), tls.port);
-            let socket = Https::listen(at).with_context(|| format!("binding HTTPS {at}"))?;
-            Some((socket, tls.name.clone()))
-        }
-        None => None,
-    };
+    let https_at = config
+        .tls
+        .as_ref()
+        .map(|tls| (SocketAddr::new(addr.ip(), tls.port), tls.name.clone()));
     let hub = Hub::start(config).context("starting the hub")?;
-    let https = match https_socket {
-        Some((socket, name)) => Some(start_https(&hub, socket, &name)?),
-        None => None,
-    };
+    if let Some((at, name)) = https_at {
+        start_https(&hub, at, &name, HTTPS_BIND_RETRY);
+    }
     tracing::info!(
         addr = %local,
         version = %fohmixer_proto::full_version(),
@@ -481,7 +477,6 @@ where
     let stopping = Arc::new(Notify::new());
     let stop_seen = Arc::clone(&stopping);
     let hub_at_stop = hub.clone();
-    let https_at_stop = https.clone();
     let serve = axum::serve(
         listener,
         app_router(hub.clone()).into_make_service_with_connect_info::<SocketAddr>(),
@@ -493,7 +488,7 @@ where
             "stop requested: the clients close, the listener closes, open requests get the drain"
         );
         hub_at_stop.stop();
-        if let Some(https) = https_at_stop {
+        if let Some(https) = hub_at_stop.https.get() {
             https.stop(STOP_DRAIN);
         }
         stop_seen.notify_one();
@@ -510,35 +505,73 @@ where
     }
     hub.stop();
     tracing::info!("HTTP server stopped");
-    if let Some(https) = https {
+    if let Some(https) = hub.https.get() {
         // It took the stop with the HTTP server and ends its connections
         // STOP_DRAIN after it; this bound is only the backstop.
         https.stop(STOP_DRAIN);
-        if !https.stopped(STOP_DRAIN).await {
-            tracing::warn!("HTTPS requests still open after the drain: stopping without them");
+        if let Some(warning) = https_drain_warning(https.stopped(STOP_DRAIN).await) {
+            tracing::warn!("{warning}");
         }
     }
     Ok(())
 }
 
-/// The HTTPS listener of the hub on the bound `socket`: the stored
-/// certificate served when there is one, the ACME keeper started with
-/// `[acme]`.
-fn start_https(hub: &Hub, socket: std::net::TcpListener, name: &str) -> anyhow::Result<Arc<Https>> {
-    let https =
-        Arc::new(Https::new(socket, https_router(hub.clone())).context("the HTTPS listener")?);
+/// The warning when the HTTPS listener had not ended within the backstop
+/// after the stop (`ended`: whether it had).
+fn https_drain_warning(ended: bool) -> Option<&'static str> {
+    (!ended).then_some("HTTPS requests still open after the drain: stopping without them")
+}
+
+/// How often an HTTPS port that could not be bound is tried again.
+pub const HTTPS_BIND_RETRY: Duration = Duration::from_secs(60);
+
+/// The HTTPS listener of `name` on `at`: bound now when the port is free,
+/// else the bind error is recorded for `/api/status` and the bind is tried
+/// again every `retry` in the background, until it works or the hub stops.
+fn start_https(hub: &Hub, at: SocketAddr, name: &str, retry: Duration) {
+    if let Err(why) = bind_https(hub, at, name) {
+        tracing::error!(
+            name,
+            "{why}: plain HTTP serves; the bind is tried again every {} s",
+            retry.as_secs()
+        );
+        hub.remote.set_bind_error(Some(why));
+        let hub_again = hub.clone();
+        let name = name.to_string();
+        hub.add_task(tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(retry).await;
+                match bind_https(&hub_again, at, &name) {
+                    Ok(()) => return,
+                    Err(why) => hub_again.remote.set_bind_error(Some(why)),
+                }
+            }
+        }));
+    }
+}
+
+/// Binds the HTTPS listener on `at` and starts it: the stored certificate
+/// served when there is one, the ACME keeper started with `[acme]`.
+fn bind_https(hub: &Hub, at: SocketAddr, name: &str) -> Result<(), String> {
+    let socket = Https::listen(at).map_err(|e| format!("binding HTTPS {at}: {e}"))?;
+    let https = Arc::new(
+        Https::new(socket, https_router(hub.clone()))
+            .map_err(|e| format!("the HTTPS listener: {e}"))?,
+    );
     let _ = hub.https.set(Arc::clone(&https));
+    hub.remote.set_bind_error(None);
     tracing::info!(addr = %https.addr(), name, "HTTPS listener bound");
     remote::serve_stored(&https, &hub.remote, &hub.config.data_dir, name);
     if let Some(cfg) = &hub.config.acme {
-        let acme = acme::Acme::new(name, cfg, &hub.config.data_dir, remote_http()?);
+        let http = remote_http().map_err(|e| format!("the ACME client's HTTP client: {e:#}"))?;
+        let acme = acme::Acme::new(name, cfg, &hub.config.data_dir, http);
         hub.add_task(tokio::spawn(acme::keep(
             acme,
             Arc::clone(&https),
             Arc::clone(&hub.remote),
         )));
     }
-    Ok(https)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -608,6 +641,62 @@ mod tests {
         atomic_write(&path, "second").unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "second");
         assert!(!dir.path().join("state.tmp").exists());
+    }
+
+    #[tokio::test]
+    async fn a_taken_https_port_is_bound_again_once_it_is_free() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = Config::defaults(dir.path());
+        config.instances.clear();
+        config.tls = Some(config::TlsCfg {
+            name: "foh.example.org".into(),
+            port: 0,
+            redirect_http: true,
+        });
+        let hub = Hub::start(config.clone()).unwrap();
+        let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let at = taken.local_addr().unwrap();
+        start_https(&hub, at, "foh.example.org", Duration::from_millis(50));
+        assert!(hub.https.get().is_none());
+        let status = hub.remote.snapshot(&config, None, 0).https.unwrap();
+        let why = status.bind_error.unwrap();
+        assert!(why.starts_with(&format!("binding HTTPS {at}: ")), "{why}");
+        assert!(!status.bound);
+        drop(taken);
+        for _ in 0..200 {
+            if hub.https.get().is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        let https = hub.https.get().expect("bound once the port is free");
+        assert_eq!(https.addr(), at);
+        let status = hub.remote.snapshot(&config, Some(https), 0).https.unwrap();
+        assert_eq!((status.bound, status.bind_error), (true, None));
+        hub.stop();
+    }
+
+    #[test]
+    fn only_an_https_listener_still_draining_is_warned_about() {
+        assert_eq!(https_drain_warning(true), None);
+        assert!(https_drain_warning(false).unwrap().contains("still open"));
+    }
+
+    #[tokio::test]
+    async fn a_task_added_to_the_hub_ends_with_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let hub = test_hub(dir.path());
+        let (held, ended) = oneshot::channel::<()>();
+        hub.add_task(tokio::spawn(async move {
+            let _held = held;
+            std::future::pending::<()>().await;
+        }));
+        hub.stop();
+        // The task was aborted: it dropped its sender.
+        tokio::time::timeout(Duration::from_secs(5), ended)
+            .await
+            .expect("the hub's stop ends its tasks")
+            .unwrap_err();
     }
 
     #[tokio::test]

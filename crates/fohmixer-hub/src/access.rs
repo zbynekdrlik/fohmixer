@@ -43,7 +43,6 @@ use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header};
 use serde::Deserialize;
 use tokio::sync::{Mutex, RwLock};
 
-use crate::Hub;
 use crate::config::AccessCfg;
 use crate::http_client::HttpClient;
 
@@ -67,8 +66,9 @@ pub const JWT_COOKIE: &str = "CF_Authorization";
 /// How long a fetched key set is served before a refresh; a failed refresh
 /// keeps the last good set (a network blip never locks a remote user out).
 pub const JWKS_MAX_AGE: Duration = Duration::from_secs(6 * 60 * 60);
-/// The least time between two key fetches a request can trigger (an
-/// unknown `kid` from the internet must not make the hub hammer Cloudflare).
+/// The least time between two key fetch attempts a request can trigger (an
+/// unknown `kid` from the internet, or a key endpoint that fails, must not
+/// make the hub hammer Cloudflare nor queue one fetch per request).
 pub const JWKS_MIN_REFRESH: Duration = Duration::from_secs(60);
 
 /// Where a request came from.
@@ -108,12 +108,12 @@ pub fn has_proxy_header(headers: &HeaderMap) -> bool {
     PROXY_HEADERS.iter().any(|h| headers.contains_key(*h))
 }
 
-/// Classifies a request. `peer` is `None` only for tests that drive the
-/// router without a listener (a client cannot remove an extension the
-/// listener inserts): it counts as the PC itself; the header half of the
-/// rule applies either way.
+/// Classifies a request. Both listeners insert the peer address
+/// (`ConnectInfo`); a request without one counts as the internet (fail
+/// closed): a listener that lost it refuses every request instead of letting
+/// a port-forwarded peer in unchecked.
 pub fn classify(peer: Option<SocketAddr>, headers: &HeaderMap) -> Origin {
-    let public_peer = peer.is_some_and(|addr| !is_private_ip(addr.ip()));
+    let public_peer = peer.is_none_or(|addr| !is_private_ip(addr.ip()));
     if has_proxy_header(headers) || public_peer {
         Origin::Internet
     } else {
@@ -224,7 +224,8 @@ pub fn cache_fresh(age: Option<Duration>) -> bool {
 }
 
 /// Whether a key fetch may run now: always when `forced` (the refresher),
-/// else only [`JWKS_MIN_REFRESH`] after the last successful one.
+/// else only [`JWKS_MIN_REFRESH`] after the last attempt (`age`), failed or
+/// not.
 pub fn refresh_allowed(age: Option<Duration>, forced: bool) -> bool {
     forced || age.is_none_or(|age| age >= JWKS_MIN_REFRESH)
 }
@@ -254,7 +255,10 @@ impl AccessClaims {
 #[derive(Default)]
 struct KeyCache {
     keys: HashMap<String, DecodingKey>,
+    /// The last successful fetch (the cached set's age).
     fetched_at: Option<Instant>,
+    /// The last fetch attempt, failed or not (the rate limit).
+    attempted_at: Option<Instant>,
 }
 
 /// Verifies Access assertions against the team's cached key set.
@@ -282,19 +286,20 @@ impl AccessGate {
         })
     }
 
-    /// The age of the cached key set.
-    async fn age(&self) -> Option<Duration> {
-        self.cache.read().await.fetched_at.map(|at| at.elapsed())
+    /// The time since the last fetch attempt.
+    async fn since_attempt(&self) -> Option<Duration> {
+        self.cache.read().await.attempted_at.map(|at| at.elapsed())
     }
 
     /// Fetches the key set and replaces the cache on success (`true`); a
     /// failure keeps the last good set. Without `forced` it runs at most
-    /// once per [`JWKS_MIN_REFRESH`].
+    /// once per [`JWKS_MIN_REFRESH`], failed attempts included.
     pub async fn refresh_keys(&self, forced: bool) -> bool {
         let _one_at_a_time = self.fetching.lock().await;
-        if !refresh_allowed(self.age().await, forced) {
+        if !refresh_allowed(self.since_attempt().await, forced) {
             return false;
         }
+        self.cache.write().await.attempted_at = Some(Instant::now());
         match self.fetch().await {
             Ok(keys) => {
                 let count = keys.len();
@@ -461,24 +466,24 @@ pub fn forbidden(reason: &str) -> Response {
         StatusCode::FORBIDDEN,
         "ACCESS_DENIED",
         &format!(
-            "Refused ({reason}): open the mixer on the church network, or sign in through Cloudflare Access"
+            "Refused ({reason}): open it on the local network, or sign in through Cloudflare Access"
         ),
     )
 }
 
 /// The middleware in front of every route (the SPA's catch-all included).
-pub async fn middleware(State(hub): State<Hub>, request: Request, next: Next) -> Response {
+/// Its state is only the gate (`None`: internet requests are refused), so
+/// the module does not depend on the rest of the hub.
+pub async fn middleware(
+    State(gate): State<Option<Arc<AccessGate>>>,
+    request: Request,
+    next: Next,
+) -> Response {
     let peer = request
         .extensions()
         .get::<ConnectInfo<SocketAddr>>()
         .map(|info| info.0);
-    let decision = decide(
-        hub.access.as_deref(),
-        peer,
-        request.headers(),
-        request.method(),
-    )
-    .await;
+    let decision = decide(gate.as_deref(), peer, request.headers(), request.method()).await;
     match decision {
         Decision::Allow { identity } => {
             if let Some(who) = identity {

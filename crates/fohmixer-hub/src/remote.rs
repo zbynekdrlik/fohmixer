@@ -12,6 +12,7 @@ use crate::tls::{CertInfo, CertStore};
 
 #[derive(Debug, Default)]
 struct Inner {
+    bind_error: Option<String>,
     cert: Option<CertInfo>,
     cert_error: Option<String>,
     acme_error: Option<String>,
@@ -27,6 +28,11 @@ pub struct RemoteState(Mutex<Inner>);
 impl RemoteState {
     fn inner(&self) -> MutexGuard<'_, Inner> {
         self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Why the HTTPS port could not be bound (`None`: it is bound).
+    pub fn set_bind_error(&self, why: Option<String>) {
+        self.inner().bind_error = why;
     }
 
     /// The listener serves `cert`.
@@ -49,12 +55,14 @@ impl RemoteState {
         inner.last_issued = Some(now);
     }
 
-    /// An ACME attempt failed: how many in a row now.
-    pub fn acme_failed(&self, why: String) -> u32 {
+    /// An ACME attempt failed because of `why`: how many in a row now, and
+    /// whether the one before failed for the same reason.
+    pub fn acme_failed(&self, why: String) -> (u32, bool) {
         let mut inner = self.inner();
+        let repeated = inner.acme_error.as_ref() == Some(&why);
         inner.acme_error = Some(why);
         inner.acme_failures += 1;
-        inner.acme_failures
+        (inner.acme_failures, repeated)
     }
 
     /// The tunnel's latest check.
@@ -72,9 +80,11 @@ impl RemoteState {
         let inner = self.inner();
         RemoteStatus {
             name: config.tls.as_ref().map(|tls| tls.name.clone()),
-            https: https.map(|https| HttpsStatus {
-                port: https.addr().port(),
-                serving: https.serving(),
+            https: config.tls.as_ref().map(|tls| HttpsStatus {
+                port: https.map_or(tls.port, |https| https.addr().port()),
+                bound: https.is_some(),
+                bind_error: inner.bind_error.clone(),
+                serving: https.is_some_and(Https::serving),
                 cert_names: inner
                     .cert
                     .as_ref()
@@ -173,7 +183,22 @@ mod tests {
         let empty = state.snapshot(&full, None, 0);
         assert_eq!(empty.name.as_deref(), Some("foh.example.org"));
         assert!(empty.access);
-        assert_eq!(empty.https, None, "no listener");
+        let unbound = empty.https.clone().unwrap();
+        assert_eq!(
+            (unbound.port, unbound.bound, unbound.serving),
+            (443, false, false)
+        );
+        state.set_bind_error(Some("binding HTTPS 0.0.0.0:443: in use".into()));
+        assert_eq!(
+            state
+                .snapshot(&full, None, 0)
+                .https
+                .unwrap()
+                .bind_error
+                .as_deref(),
+            Some("binding HTTPS 0.0.0.0:443: in use")
+        );
+        state.set_bind_error(None);
         assert_eq!(empty.tunnel.unwrap().ready_connections, 3);
         // A tunnel check without [tunnel] is not reported.
         assert_eq!(state.snapshot(&none, None, 0).tunnel, None);
@@ -181,16 +206,19 @@ mod tests {
         let https = Https::bind("127.0.0.1:0".parse().unwrap(), axum::Router::new()).unwrap();
         let status = state.snapshot(&full, Some(&https), 0).https.unwrap();
         assert_eq!(status.port, https.addr().port());
+        assert!(status.bound);
+        assert_eq!(status.bind_error, None);
         assert!(!status.serving);
         assert!(status.acme);
         assert_eq!((status.not_after, status.days_left), (None, None));
         state.set_cert_error("no certificate yet".into());
-        assert_eq!(state.acme_failed("first".into()), 1);
-        assert_eq!(state.acme_failed("second".into()), 2);
+        assert_eq!(state.acme_failed("first".into()), (1, false));
+        assert_eq!(state.acme_failed("second".into()), (2, false));
+        assert_eq!(state.acme_failed("second".into()), (3, true));
         let status = state.snapshot(&full, Some(&https), 0).https.unwrap();
         assert_eq!(status.cert_error.as_deref(), Some("no certificate yet"));
         assert_eq!(status.acme_error.as_deref(), Some("second"));
-        assert_eq!(status.acme_failures, 2);
+        assert_eq!(status.acme_failures, 3);
         state.set_cert(CertInfo {
             names: vec!["foh.example.org".into()],
             not_after: 100 * DAY,
@@ -206,6 +234,8 @@ mod tests {
         );
         assert_eq!((status.acme_error, status.acme_failures), (None, 0));
         assert_eq!(status.last_issued, Some(7));
+        // After a success the same reason again is a first failure.
+        assert_eq!(state.acme_failed("second".into()), (1, false));
         let manual = config("[tls]\nname = \"foh.example.org\"\n");
         assert!(!state.snapshot(&manual, Some(&https), 0).https.unwrap().acme);
         assert!(!state.snapshot(&manual, Some(&https), 0).access);

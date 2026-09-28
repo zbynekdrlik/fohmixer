@@ -9,8 +9,9 @@
 //! record (always, also after a failure), stores the certificate and its
 //! key and swaps them into the HTTPS listener. A failed attempt is logged
 //! with its reason, shown in `/api/status`, and retried after
-//! [`retry_delay`] (1 min doubling to 6 h); the old certificate keeps being
-//! served meanwhile.
+//! [`next_attempt`] (1 min doubling to 6 h; every 5 min while no Cloudflare
+//! token is set, logged once); the old certificate keeps being served
+//! meanwhile.
 //!
 //! The ACME account's key is sealed for the hub's user in
 //! `secrets/acme_account.<dpapi|test>`; the Cloudflare token is
@@ -40,6 +41,9 @@ pub const CHECK_EVERY: Duration = Duration::from_secs(12 * 60 * 60);
 pub const FIRST_RETRY: Duration = Duration::from_secs(60);
 /// The longest wait between two failed attempts.
 pub const MAX_RETRY: Duration = Duration::from_secs(6 * 60 * 60);
+/// The wait while no Cloudflare token is set: the check is local (nothing
+/// is asked of anyone), so a token set later is used within minutes.
+pub const NO_TOKEN_RETRY: Duration = Duration::from_secs(5 * 60);
 /// The account file's name without its extension.
 pub const ACCOUNT_STEM: &str = "acme_account";
 /// Why nothing happens without a token.
@@ -51,6 +55,35 @@ pub const NO_TOKEN: &str = "no Cloudflare API token: run `fohmixer-hub cloudflar
 pub fn retry_delay(failures: u32) -> Duration {
     let doublings = failures.saturating_sub(1).min(16);
     FIRST_RETRY.saturating_mul(1 << doublings).min(MAX_RETRY)
+}
+
+/// The wait before the next attempt after `failures` failed ones in a row,
+/// the last because of `why`.
+pub fn next_attempt(why: &str, failures: u32) -> Duration {
+    if why == NO_TOKEN {
+        NO_TOKEN_RETRY
+    } else {
+        retry_delay(failures)
+    }
+}
+
+/// Whether a failure is logged as a warning: always, except the missing
+/// token again (every 5 min; the first one was a warning and `/api/status`
+/// keeps showing it).
+pub fn warns(why: &str, repeated: bool) -> bool {
+    !repeated || why != NO_TOKEN
+}
+
+/// The stored account when it belongs to `directory`. A file that does not
+/// parse is logged and replaced by a new account.
+fn stored_account(bytes: &[u8], directory: &str) -> Option<StoredAccount> {
+    match serde_json::from_slice::<StoredAccount>(bytes) {
+        Ok(account) => (account.directory == directory).then_some(account),
+        Err(e) => {
+            tracing::warn!("ACME: the stored account does not parse ({e}); making a new one");
+            None
+        }
+    }
 }
 
 /// What the keeper does with the stored certificate at `now`.
@@ -129,8 +162,7 @@ impl Acme {
         let path = self.account_path();
         let stored = crate::sealed::read(&path)
             .map_err(|e| format!("reading the ACME account {}: {e}", path.display()))?
-            .and_then(|bytes| serde_json::from_slice::<StoredAccount>(&bytes).ok())
-            .filter(|account| account.directory == self.cfg.directory);
+            .and_then(|bytes| stored_account(&bytes, &self.cfg.directory));
         if let Some(account) = stored {
             return self
                 .builder()?
@@ -262,14 +294,14 @@ impl Acme {
         Ok(pem)
     }
 
-    /// One attempt that stores and serves what it gets: `Err(failures in a
-    /// row)` when it fails.
+    /// One attempt that stores and serves what it gets: `Err(the wait
+    /// before the next one)` when it fails.
     async fn renew(
         &self,
         store: &CertStore,
         https: &Https,
         state: &RemoteState,
-    ) -> Result<(), u32> {
+    ) -> Result<(), Duration> {
         tracing::info!(name = %self.name, directory = %self.cfg.directory, "ACME: getting a certificate");
         match self.obtain(store, https, state).await {
             Ok(pem) => {
@@ -278,14 +310,19 @@ impl Acme {
                 Ok(())
             }
             Err(why) => {
-                let failures = state.acme_failed(why.clone());
-                tracing::warn!(
-                    name = %self.name,
-                    failures,
-                    retry_s = retry_delay(failures).as_secs(),
-                    "ACME: no certificate: {why}"
-                );
-                Err(failures)
+                let (failures, repeated) = state.acme_failed(why.clone());
+                let wait = next_attempt(&why, failures);
+                if warns(&why, repeated) {
+                    tracing::warn!(
+                        name = %self.name,
+                        failures,
+                        retry_s = wait.as_secs(),
+                        "ACME: no certificate: {why}"
+                    );
+                } else {
+                    tracing::debug!(failures, "ACME: still no certificate: {why}");
+                }
+                Err(wait)
             }
         }
     }
@@ -300,7 +337,7 @@ pub async fn keep(acme: Acme, https: Arc<Https>, state: Arc<RemoteState>) {
             Plan::Keep => CHECK_EVERY,
             Plan::Obtain => match acme.renew(&store, &https, &state).await {
                 Ok(()) => CHECK_EVERY,
-                Err(failures) => retry_delay(failures),
+                Err(wait) => wait,
             },
         };
         tokio::time::sleep(wait).await;

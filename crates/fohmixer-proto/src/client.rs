@@ -248,8 +248,13 @@ pub struct StageAutStatus {
 /// The HTTPS listener of the public name in `GET /api/status` (#17).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HttpsStatus {
-    /// The bound port.
+    /// The bound port (the configured one while it is not bound).
     pub port: u16,
+    /// Whether the port is bound; when not, why (it is tried again).
+    #[serde(default)]
+    pub bound: bool,
+    #[serde(default)]
+    pub bind_error: Option<String>,
     /// Whether it serves (it has a certificate).
     pub serving: bool,
     /// The served certificate's names and its end (Unix seconds).
@@ -552,6 +557,8 @@ mod tests {
                 name: Some("foh.example.org".into()),
                 https: Some(HttpsStatus {
                     port: 443,
+                    bound: true,
+                    bind_error: None,
                     serving: true,
                     cert_names: vec!["foh.example.org".into()],
                     not_after: Some(1_800_000_000),

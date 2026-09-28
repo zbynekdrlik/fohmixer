@@ -139,7 +139,9 @@ pub async fn check_host(State(hub): State<Hub>, request: Request, next: Next) ->
 }
 
 /// Where a plain-HTTP request is redirected (307, the method kept): to
-/// `https://<name>[:https_port]<path>` when it names the `[tls]` name, that
+/// `https://<name>[:https_port]<path>` when the HTTPS listener serves
+/// (`https_port`: its bound port; `None` while it has no certificate or no
+/// port: the request is then served here), the request names the `[tls]` name, that
 /// redirect is on, and no proxy handled it (the tunnel's requests arrive
 /// here as plain HTTP from cloudflared: redirecting them would loop). A
 /// request by IP address — the emergency path — or by another name is never
@@ -149,10 +151,11 @@ pub fn redirect_target(
     host: Option<&str>,
     proxied: bool,
     tls: Option<&crate::config::TlsCfg>,
-    https_port: u16,
+    https_port: Option<u16>,
     path_and_query: &str,
 ) -> Option<String> {
     let tls = tls.filter(|tls| tls.redirect_http && !proxied)?;
+    let https_port = https_port?;
     let name = host?.rsplit_once(':').map_or(host?, |(name, _port)| name);
     if !name.eq_ignore_ascii_case(&tls.name) {
         return None;
@@ -173,13 +176,12 @@ pub async fn https_redirect(State(hub): State<Hub>, request: Request, next: Next
         .and_then(|h| h.to_str().ok());
     let path = request.uri().path_and_query().map_or("/", |pq| pq.as_str());
     let proxied = crate::access::has_proxy_header(request.headers());
-    let tls = hub.config.tls.as_ref();
-    // The port the HTTPS listener is bound to (the configured one before).
-    let port = hub
+    let serving = hub
         .https
         .get()
-        .map_or(tls.map_or(443, |t| t.port), |https| https.addr().port());
-    match redirect_target(host, proxied, tls, port, path) {
+        .filter(|https| https.serving())
+        .map(|https| https.addr().port());
+    match redirect_target(host, proxied, hub.config.tls.as_ref(), serving, path) {
         Some(location) => axum::response::Redirect::temporary(&location).into_response(),
         None => next.run(request).await,
     }
@@ -266,10 +268,18 @@ mod tests {
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
+    /// The router as a LAN client reaches it (the listener's peer address;
+    /// without one the Access check takes the request for the internet).
+    fn lan(router: axum::Router) -> axum::Router {
+        router.layer(axum::extract::connect_info::MockConnectInfo(
+            std::net::SocketAddr::from(([10, 0, 0, 5], 40000)),
+        ))
+    }
+
     async fn send(request: Request<Body>) -> Response {
         let dir = tempfile::tempdir().unwrap();
         let hub = crate::test_hub(dir.path());
-        let response = crate::app_router(hub.clone())
+        let response = lan(crate::app_router(hub.clone()))
             .oneshot(request)
             .await
             .unwrap();
@@ -451,7 +461,7 @@ mod tests {
 
     async fn get_with_token(hub: &crate::Hub, path: &str) -> Response {
         let token = hub.auth.issue().unwrap();
-        crate::app_router(hub.clone())
+        lan(crate::app_router(hub.clone()))
             .oneshot(
                 Request::get(path)
                     .header(header::AUTHORIZATION, format!("Bearer {token}"))
@@ -524,7 +534,7 @@ mod tests {
             ("192.168.1.20:8480", StatusCode::OK),
             ("foh.local:8480", StatusCode::OK),
         ] {
-            let response = crate::app_router(hub.clone())
+            let response = lan(crate::app_router(hub.clone()))
                 .oneshot(
                     Request::get("/api/version")
                         .header(header::HOST, host)
@@ -557,15 +567,15 @@ mod tests {
         let on = tls(443, true);
         let t = Some(&on);
         assert_eq!(
-            redirect_target(Some("foh.example.org:8480"), false, t, 443, "/p?x=1").as_deref(),
+            redirect_target(Some("foh.example.org:8480"), false, t, Some(443), "/p?x=1").as_deref(),
             Some("https://foh.example.org/p?x=1")
         );
         assert_eq!(
-            redirect_target(Some("FOH.example.org"), false, t, 443, "/").as_deref(),
+            redirect_target(Some("FOH.example.org"), false, t, Some(443), "/").as_deref(),
             Some("https://foh.example.org/")
         );
         assert_eq!(
-            redirect_target(Some("foh.example.org:8480"), false, t, 8443, "/").as_deref(),
+            redirect_target(Some("foh.example.org:8480"), false, t, Some(8443), "/").as_deref(),
             Some("https://foh.example.org:8443/")
         );
         // Never by IP (the emergency path), another name, the tunnel, no
@@ -578,23 +588,28 @@ mod tests {
             "example.org",
         ] {
             assert_eq!(
-                redirect_target(Some(host), false, t, 443, "/"),
+                redirect_target(Some(host), false, t, Some(443), "/"),
                 None,
                 "{host}"
             );
         }
         assert_eq!(
-            redirect_target(Some("foh.example.org"), true, t, 443, "/"),
+            redirect_target(Some("foh.example.org"), true, t, Some(443), "/"),
             None
         );
-        assert_eq!(redirect_target(None, false, t, 443, "/"), None);
+        assert_eq!(redirect_target(None, false, t, Some(443), "/"), None);
+        // Not while the HTTPS listener does not serve (no certificate yet).
+        assert_eq!(
+            redirect_target(Some("foh.example.org"), false, t, None, "/"),
+            None
+        );
         let off = tls(443, false);
         assert_eq!(
-            redirect_target(Some("foh.example.org"), false, Some(&off), 443, "/"),
+            redirect_target(Some("foh.example.org"), false, Some(&off), Some(443), "/"),
             None
         );
         assert_eq!(
-            redirect_target(Some("foh.example.org"), false, None, 443, "/"),
+            redirect_target(Some("foh.example.org"), false, None, Some(443), "/"),
             None
         );
     }
@@ -606,6 +621,10 @@ mod tests {
         config.instances.clear();
         config.tls = Some(tls(443, true));
         let hub = crate::Hub::start(config).unwrap();
+        let https = std::sync::Arc::new(
+            crate::https::Https::bind("127.0.0.1:0".parse().unwrap(), axum::Router::new()).unwrap(),
+        );
+        let _ = hub.https.set(std::sync::Arc::clone(&https));
         let get = |host: &str, extra: Option<(&str, &str)>| {
             let mut request = Request::get("/api/version?a=b").header(header::HOST, host);
             if let Some((name, value)) = extra {
@@ -613,31 +632,47 @@ mod tests {
             }
             request.body(Body::empty()).unwrap()
         };
-        let redirected = crate::app_router(hub.clone())
+        // No certificate yet: the HTTPS listener does not serve, so the name
+        // is served here.
+        let not_yet = lan(crate::app_router(hub.clone()))
+            .oneshot(get("foh.example.org:8480", None))
+            .await
+            .unwrap();
+        assert_eq!(not_yet.status(), StatusCode::OK);
+        let ca = crate::tls::test_certs::TestCa::new();
+        let now = crate::auth::now_secs() as i64;
+        let (chain, key) = ca.leaf(&["foh.example.org"], now - 3600, now + 86_400);
+        https
+            .serve(crate::tls::server_config(&chain, &key).unwrap())
+            .unwrap();
+        let redirected = lan(crate::app_router(hub.clone()))
             .oneshot(get("foh.example.org:8480", None))
             .await
             .unwrap();
         assert_eq!(redirected.status(), StatusCode::TEMPORARY_REDIRECT);
         assert_eq!(
             header_of(&redirected, "location"),
-            "https://foh.example.org/api/version?a=b"
+            format!(
+                "https://foh.example.org:{}/api/version?a=b",
+                https.addr().port()
+            )
         );
         assert_eq!(header_of(&redirected, "x-frame-options"), "DENY");
         // The name is a trusted host; by IP it is served.
-        let by_ip = crate::app_router(hub.clone())
+        let by_ip = lan(crate::app_router(hub.clone()))
             .oneshot(get("10.0.0.5:8480", None))
             .await
             .unwrap();
         assert_eq!(by_ip.status(), StatusCode::OK);
         // The HTTPS listener's router never redirects.
-        let https = crate::https_router(hub.clone())
+        let https = lan(crate::https_router(hub.clone()))
             .oneshot(get("foh.example.org", None))
             .await
             .unwrap();
         assert_eq!(https.status(), StatusCode::OK);
         // A tunnel request is not redirected (it goes on to the Access
         // check: no [access], so it is refused).
-        let tunnel = crate::app_router(hub.clone())
+        let tunnel = lan(crate::app_router(hub.clone()))
             .oneshot(get(
                 "foh.example.org",
                 Some(("cf-connecting-ip", "203.0.113.7")),

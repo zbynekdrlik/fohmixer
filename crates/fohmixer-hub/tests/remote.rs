@@ -8,7 +8,6 @@
 
 mod support;
 
-use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -39,8 +38,8 @@ fn certificate() -> (CertificateDer<'static>, String, String) {
     (ca.der().clone(), leaf.pem(), key.serialize_pem())
 }
 
-/// A hub with `[tls]` NAME on an ephemeral port, and a stored certificate
-/// for it when `ca` is given.
+/// A hub with `[tls]` NAME on an ephemeral port, and the certificate
+/// `stored` (chain, key) in its store when given.
 async fn hub(dir: &std::path::Path, stored: Option<(&str, &str)>) -> TestHub {
     if let Some((chain, key)) = stored {
         std::fs::create_dir_all(dir.join("tls")).unwrap();
@@ -211,20 +210,25 @@ async fn without_a_certificate_https_waits_and_says_why() {
         why.starts_with("no certificate for foh.example.org yet"),
         "{why}"
     );
-    // Plain HTTP by IP serves meanwhile.
-    let (code, _, _) = get(
-        TcpStream::connect(hub.addr).await.unwrap(),
-        &hub.addr.to_string(),
-        "/api/version",
-        &[],
-    )
-    .await;
-    assert_eq!(code, 200);
+    // Plain HTTP serves meanwhile, by IP and by the name (no redirect to an
+    // HTTPS listener that cannot answer yet).
+    for host in [hub.addr.to_string(), format!("{NAME}:{}", hub.addr.port())] {
+        let (code, head, _) = get(
+            TcpStream::connect(hub.addr).await.unwrap(),
+            &host,
+            "/api/version",
+            &[],
+        )
+        .await;
+        assert_eq!(code, 200, "{host}: {head}");
+    }
     hub.stop().await;
 }
 
 #[tokio::test]
-async fn a_taken_https_port_stops_the_start() {
+async fn a_taken_https_port_leaves_plain_http_serving_and_says_why() {
+    // The emergency path never depends on :443: another program on the
+    // HTTPS port costs HTTPS only, and the status names the reason.
     let dir = tempfile::tempdir().unwrap();
     let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = taken.local_addr().unwrap().port();
@@ -235,18 +239,26 @@ async fn a_taken_https_port_stops_the_start() {
         port,
         redirect_http: true,
     });
-    let (ready, _) = tokio::sync::oneshot::channel();
-    let error = fohmixer_hub::serve_until(
-        SocketAddr::from(([127, 0, 0, 1], 0)),
-        config,
-        ready,
-        std::future::pending(),
-    )
-    .await
-    .unwrap_err();
+    let hub = TestHub::start_config(config).await;
+    let https = hub.status().await.remote.https.unwrap();
+    assert!(!https.bound && !https.serving, "{https:?}");
+    assert_eq!(https.port, port);
+    let why = https.bind_error.unwrap();
     assert!(
-        format!("{error:#}").starts_with("binding HTTPS 127.0.0.1:"),
-        "{error:#}"
+        why.starts_with(&format!("binding HTTPS 127.0.0.1:{port}: ")),
+        "{why}"
     );
+    let (code, _, body) = get(
+        TcpStream::connect(hub.addr).await.unwrap(),
+        &hub.addr.to_string(),
+        "/api/version",
+        &[],
+    )
+    .await;
+    assert_eq!(
+        (code, body["version"].as_str()),
+        (200, Some(fohmixer_proto::VERSION))
+    );
+    hub.stop().await;
     drop(taken);
 }

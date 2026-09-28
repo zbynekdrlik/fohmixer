@@ -83,7 +83,8 @@ impl<'a> Dns<'a> {
         ))
     }
 
-    /// The ids of the TXT records at `fqdn`.
+    /// The ids of this hub's TXT records at `fqdn` (their comment is
+    /// [`TXT_COMMENT`]; a record another client made is never touched).
     pub async fn txt_records(&self, zone: &str, fqdn: &str) -> Result<Vec<String>, String> {
         let records = self
             .call(
@@ -96,6 +97,7 @@ impl<'a> Dns<'a> {
             .as_array()
             .map(|all| {
                 all.iter()
+                    .filter(|r| r["comment"] == TXT_COMMENT)
                     .filter_map(|r| r["id"].as_str().map(str::to_string))
                     .collect()
             })
@@ -156,8 +158,8 @@ pub(crate) mod double {
     pub struct Api {
         /// Zone name → id.
         pub zones: BTreeMap<String, String>,
-        /// Record id → (name, content).
-        pub records: BTreeMap<String, (String, String)>,
+        /// Record id → (name, content, comment).
+        pub records: BTreeMap<String, (String, String, String)>,
         /// Every call: `METHOD path`.
         pub calls: Vec<String>,
         /// The token it accepts.
@@ -254,8 +256,10 @@ pub(crate) mod double {
             let found: Vec<Value> = api
                 .records
                 .iter()
-                .filter(|(_, (n, _))| *n == name)
-                .map(|(id, (n, c))| json!({"id": id, "type": "TXT", "name": n, "content": c}))
+                .filter(|(_, (n, _, _))| *n == name)
+                .map(|(id, (n, c, comment))| {
+                    json!({"id": id, "type": "TXT", "name": n, "content": c, "comment": comment})
+                })
                 .collect();
             return answer(true, json!(found), StatusCode::OK, "");
         }
@@ -266,7 +270,8 @@ pub(crate) mod double {
         let id = format!("rec{}", api.next_id);
         let name = body["name"].as_str().unwrap().to_string();
         let content = body["content"].as_str().unwrap().to_string();
-        api.records.insert(id.clone(), (name, content));
+        let comment = body["comment"].as_str().unwrap_or("").to_string();
+        api.records.insert(id.clone(), (name, content, comment));
         answer(true, json!({"id": id}), StatusCode::OK, "")
     }
 
@@ -358,6 +363,15 @@ mod tests {
         let first = dns.add_txt("zone-1", fqdn, "value-1").await.unwrap();
         let second = dns.add_txt("zone-1", fqdn, "value-2").await.unwrap();
         assert_ne!(first, second);
+        assert_eq!(
+            dns.txt_records("zone-1", fqdn).await.unwrap(),
+            vec![first.clone(), second.clone()]
+        );
+        // A record another client made at the same name is not ours.
+        api.lock().unwrap().records.insert(
+            "foreign".into(),
+            (fqdn.into(), "other".into(), "certbot".into()),
+        );
         assert_eq!(
             dns.txt_records("zone-1", fqdn).await.unwrap(),
             vec![first.clone(), second.clone()]
