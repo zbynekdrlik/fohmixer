@@ -6,9 +6,23 @@ import { openSurface } from "./support/live";
 // every animation frame from its first script on, with the moments the
 // surface appears and REFRESH ALL runs, and the test prints the timeline of
 // any long gap, so a stall says where it happens.
+//
+// Three bounds, measured on the CI runner (WebKit draws in software there;
+// Chromium stays near 60 fps throughout):
+// - the surface's first paint, one frame nobody can touch yet: ~870 ms in
+//   WebKit, bounded at 1500 ms so a doubling fails;
+// - every gap after it, through the automatic refresh: at most ~170 ms,
+//   bounded at 500 ms (the TechAlert wash blinks every 500 ms);
+// - the steady rate after the refresh with every meter moving: ~22 fps in
+//   WebKit, bounded at 10 fps (endless animations, blurred shadows and
+//   rounded clips had dropped it to 2.5 fps).
+
+const FIRST_PAINT_MS = 1500;
+const GAP_MS = 500;
+const STEADY_FPS = 10;
 
 test.describe("Frames while the surface loads", () => {
-  test("no frame gap over 700 ms from the load through the automatic refresh", async ({ page }) => {
+  test("the surface paints once, then keeps drawing through the automatic refresh", async ({ page }) => {
     await page.addInitScript(() => {
       const w = window as any;
       w.__frames = [];
@@ -32,70 +46,37 @@ test.describe("Frames while the surface loads", () => {
     });
     await openSurface(page);
     await page.waitForTimeout(3000);
-    const r = await page.evaluate(() => {
+    const { frames, marks } = await page.evaluate(() => {
       const w = window as any;
-      const frames: number[] = w.__frames;
-      const gaps = frames.slice(1).map((t, i) => [frames[i], t - frames[i]]);
-      const long = gaps.filter(([, g]) => g > 100).map(([at, g]) => `${Math.round(at)}+${Math.round(g)}`);
-      const max = gaps.reduce((m, [, g]) => Math.max(m, g), 0);
-      return { frames: frames.length, max: Math.round(max), long, marks: w.__marks.map(([t, m]: [number, string]) => `${Math.round(t)} ${m}`) };
+      return { frames: w.__frames as number[], marks: w.__marks as [number, string][] };
     });
-    console.log(`frames while loading: ${JSON.stringify(r)}`);
-    expect(r.frames).toBeGreaterThan(20);
-    expect(r.max, `long gaps (start+length ms): ${r.long.join(", ")}; marks: ${r.marks.join(", ")}`).toBeLessThan(700);
-  });
-});
+    const timeline = marks.map(([t, m]) => `${Math.round(t)} ${m}`).join(", ");
+    const at = (name: string) => {
+      const mark = marks.find(([, m]) => m === name);
+      expect(mark, `no "${name}" mark; marks: ${timeline}`).toBeTruthy();
+      return mark![0];
+    };
+    const stage = frames.indexOf(at("stage"));
+    const refreshed = at("refreshes=1");
+    expect(stage, `the stage frame is not in the frame log; marks: ${timeline}`).toBeGreaterThanOrEqual(0);
+    expect(frames.length, `frames after the stage appeared; marks: ${timeline}`).toBeGreaterThan(stage + 1);
 
-// A diagnosis of the WebKit frame rate (#21): the same surface with one
-// suspect of the stylesheet switched off at a time, frames counted for 2 s.
-// The minimum rate over the variants must stay above 1 fps (the run exists
-// to print the table; it is removed once the cause is fixed).
-test.describe("Frame rate by stylesheet suspect", () => {
-  test("frames per second with each suspect off", async ({ page }) => {
-    await openSurface(page);
-    const variants: [string, string][] = [
-      ["baseline", ""],
-      ["no :has rules", "has"],
-      ["no animations", "* { animation: none !important; }"],
-      ["no shadows", "* { box-shadow: none !important; }"],
-      ["no gradients", ".meter-zones, .fader-fill, .fader-cap, .param-toggle { background: #3a6 !important; }"],
-      ["no color-mix", ".btn, .btn.on, .mute.lit { background: #223 !important; border-color: #334 !important; }"],
-      ["no meters", ".meter { display: none !important; }"],
-      ["no strips", ".strip { visibility: hidden !important; }"],
-    ];
-    const table: string[] = [];
-    for (const [name, css] of variants) {
-      const fps = await page.evaluate(async ([name, css]) => {
-        document.getElementById("diag")?.remove();
-        if (css === "has") {
-          for (const sheet of Array.from(document.styleSheets)) {
-            const rules = Array.from(sheet.cssRules);
-            for (let i = rules.length - 1; i >= 0; i--) {
-              if ((rules[i] as CSSStyleRule).selectorText?.includes(":has(")) sheet.deleteRule(i);
-            }
-          }
-        } else if (css) {
-          const style = document.createElement("style");
-          style.id = "diag";
-          style.textContent = css;
-          document.head.appendChild(style);
-        }
-        await new Promise((r) => setTimeout(r, 300));
-        let n = 0;
-        const end = performance.now() + 2000;
-        await new Promise<void>((done) => {
-          const tick = () => {
-            n++;
-            if (performance.now() < end) requestAnimationFrame(tick);
-            else done();
-          };
-          requestAnimationFrame(tick);
-        });
-        return n / 2;
-      }, [name, css]);
-      table.push(`${name}: ${fps} fps`);
-    }
-    console.log(`frame rate by suspect: ${table.join(" | ")}`);
-    expect(table.length).toBe(variants.length);
+    const firstPaint = frames[stage + 1] - frames[stage];
+    const after = frames.slice(stage + 1);
+    const gaps = after.slice(1).map((t, i) => [after[i], t - after[i]]);
+    const long = gaps.filter(([, g]) => g > 100).map(([t, g]) => `${Math.round(t)}+${Math.round(g)}`);
+    const maxGap = gaps.reduce((m, [, g]) => Math.max(m, g), 0);
+    const settled = frames.filter((t) => t >= refreshed + 500);
+    const span = settled[settled.length - 1] - settled[0];
+    const fps = span > 0 ? ((settled.length - 1) * 1000) / span : 0;
+    console.log(
+      `frames while loading: first paint ${Math.round(firstPaint)} ms, max gap after it ${Math.round(maxGap)} ms, ` +
+        `steady ${fps.toFixed(1)} fps over ${Math.round(span)} ms; long gaps: ${long.join(", ")}; marks: ${timeline}`,
+    );
+
+    expect(firstPaint, `the surface's first paint (marks: ${timeline})`).toBeLessThan(FIRST_PAINT_MS);
+    expect(maxGap, `long gaps (start+length ms): ${long.join(", ")}; marks: ${timeline}`).toBeLessThan(GAP_MS);
+    expect(span, "the steady window after the refresh").toBeGreaterThan(1500);
+    expect(fps, `frames per second after the refresh (long gaps: ${long.join(", ")})`).toBeGreaterThan(STEADY_FPS);
   });
 });
