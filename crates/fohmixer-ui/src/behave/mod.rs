@@ -12,6 +12,7 @@ pub mod label;
 pub mod meter;
 pub mod mute;
 pub mod pan;
+pub mod peak;
 pub mod scale;
 pub mod solo;
 pub mod status;

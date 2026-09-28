@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { test, expect } from "./support/fixtures";
 import {
   LiveClient,
@@ -213,6 +215,48 @@ test.describe("A strip", () => {
     const meter = strip(page, "Hand2 #").getByTestId("meter");
     const first = await until(async () => Number(await meter.getAttribute("data-level")), (v) => v > 0, "a level");
     await until(async () => Number(await meter.getAttribute("data-level")), (v) => v !== first, "the level to move");
+  });
+
+  test("the meter holds its peak and lights the clip light at 0 dB until it is tapped", async ({ page }) => {
+    // #21: new with the redesign (TouchOSC had neither).
+    await openSurface(page);
+    const meter = strip(page, "Hand2 #").getByTestId("meter");
+    const clip = meter.getByTestId("clip");
+    await expect(clip).toHaveAttribute("data-on", "false");
+    await until(async () => Number(await meter.getAttribute("data-peak")), (v) => v > 0, "a peak");
+    try {
+      expect(await hostLine("band", 'meter "Hand2 #" 1.0')).toBe("METER 1");
+      await expect(clip).toHaveAttribute("data-on", "true");
+      await until(async () => Number(await meter.getAttribute("data-peak")), (v) => v > 0.99, "the peak at the top");
+      // The level falls; the light stays lit and the peak holds a while.
+      expect(await hostLine("band", 'meter "Hand2 #" 0.3')).toBe("METER 1");
+      await until(async () => Number(await meter.getAttribute("data-level")), (v) => v < 0.5, "the bar down");
+      expect(Number(await meter.getAttribute("data-peak"))).toBeGreaterThan(0.9);
+      await expect(clip).toHaveAttribute("data-on", "true");
+      // Then the peak falls back to the bar.
+      await until(async () => Number(await meter.getAttribute("data-peak")), (v) => v < 0.5, "the peak down", 5000);
+      // A tap turns the light off.
+      await clip.click();
+      await expect(clip).toHaveAttribute("data-on", "false");
+    } finally {
+      await hostLine("band", 'meter "Hand2 #" off');
+    }
+  });
+
+  test("with the stereo meter source a strip shows two bars", async ({ page }) => {
+    const LAYOUT = join(__dirname, "..", "..", "tools", "import-tosc", "fixtures", "expected-layout.json");
+    await openSurface(page);
+    const bars = strip(page, "Hand2 #").getByTestId("meter").locator(".meter-bar");
+    await expect(bars).toHaveCount(1);
+    const changed = JSON.parse(readFileSync(LAYOUT, "utf-8"));
+    changed.config.meter_source = "lr";
+    try {
+      await harness("/hub/layout", { layout: changed });
+      await expect(bars).toHaveCount(2, { timeout: 10_000 });
+    } finally {
+      await harness("/hub/layout/reset");
+    }
+    await expect(bars).toHaveCount(1, { timeout: 10_000 });
   });
 
   test("the status pill is red when unbound and not red when bound", async ({ page }) => {

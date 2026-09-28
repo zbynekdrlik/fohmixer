@@ -722,10 +722,54 @@ body {
 }
 
 .meter {
+    position: relative;
+}
+
+.meter-bars {
+    position: absolute;
+    inset: 0;
     display: grid;
     grid-auto-columns: 1fr;
     grid-auto-flow: column;
     gap: 1px;
+}
+
+/* The clip light over the bars (a larger tap area than its 4 px light). */
+.meter-clip {
+    position: absolute;
+    top: -9px;
+    left: -3px;
+    right: -3px;
+    height: 9px;
+    cursor: pointer;
+    touch-action: none;
+}
+
+.meter-clip::before {
+    content: "";
+    position: absolute;
+    top: 2px;
+    left: 3px;
+    right: 3px;
+    height: 4px;
+    border-radius: 2px;
+    background: #2a1016;
+}
+
+.meter-clip.on::before {
+    background: var(--m-red);
+    box-shadow: 0 0 6px var(--m-red);
+}
+
+.meter-peak {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 2px;
+    margin-bottom: -1px;
+    background: #ffffff;
+    opacity: 0;
 }
 
 .meter-bar {

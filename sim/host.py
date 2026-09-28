@@ -16,6 +16,10 @@ WebSocket server is bound. Control lines on stdin (never over the WebSocket):
                                 <prop> of the object at the LOM <path> (the
                                 hub tests prove one listener per key), or
                                 ``LISTENERS -1`` when the path does not resolve
+    meter "<name>" <level|off>  pin the meters of every track and return named
+                                <name> at <level> (the animation leaves them)
+                                until ``off``; prints ``METER <count>`` (the UI
+                                tests' clip light, #21)
 
 SIGTERM or SIGINT calls ``FohMixer.disconnect()`` on the main thread and exits 0.
 Used by the S2 integration tests and by the hub (S3) and UI (S4) tests.
@@ -54,8 +58,9 @@ def parse_args(argv):
 class MeterAnimation:
     """Moves every track's meters like music would, ``hz`` times a second (main thread)."""
 
-    def __init__(self, song, hz):
+    def __init__(self, song, hz, held):
         self._song = song
+        self._held = held
         self._step = 0
         self._timer = Live.Base.Timer(callback=self._tick, interval=1000.0 / hz, repeat=True)
 
@@ -69,6 +74,10 @@ class MeterAnimation:
         self._step += 1
         tracks = [*self._song.tracks, *self._song.return_tracks, self._song.master_track]
         for i, track in enumerate(tracks):
+            held = self._held.get(track.name)
+            if held is not None:
+                track._sim_set_meter(held)
+                continue
             phase = self._step / 7.0 + i
             left = 0.5 + 0.4 * math.sin(phase)
             track._sim_set_meter(left, 0.5 + 0.4 * math.sin(phase + 0.3))
@@ -89,6 +98,33 @@ def rename_tracks(song, old, new):
     return renamed
 
 
+def hold_meter(song, held, name, level):
+    """Pin the meters of every track and return named ``name`` at ``level``
+    (``None`` releases them; main thread); the count."""
+    count = 0
+    for track in [*song.tracks, *song.return_tracks]:
+        if track.name == name:
+            count += 1
+            if level is not None:
+                track._sim_set_meter(level)
+    if level is None:
+        held.pop(name, None)
+    else:
+        held[name] = level
+    return count
+
+
+def meter_level(text):
+    """A held meter level: ``off`` is None; a number 0..1; anything else is not one."""
+    if text == "off":
+        return None
+    try:
+        level = float(text)
+    except ValueError:
+        return False
+    return level if 0.0 <= level <= 1.0 else False
+
+
 def count_listeners(song, prop, text):
     """The listeners on ``prop`` of the object at ``text`` (main thread); -1 if unresolved."""
     from FohMixer.lom import path as lom_path
@@ -101,7 +137,7 @@ def count_listeners(song, prop, text):
     return obj._sim_listener_count(prop)
 
 
-def control(main_thread, song, line):
+def control(main_thread, song, line, held):
     """One control line: the answer to print, or None."""
     words = line.split(None, 2)
     if len(words) == 2 and words[0] == "stall" and words[1].isdigit():
@@ -115,6 +151,15 @@ def control(main_thread, song, line):
         if len(names) == 2:
             count = main_thread.call(lambda: rename_tracks(song, names[0], names[1]))
             return f"RENAMED {count}"
+    if words and words[0] == "meter":
+        try:
+            parts = shlex.split(line)[1:]
+        except ValueError:
+            parts = []
+        level = meter_level(parts[1]) if len(parts) == 2 else False
+        if level is not False:
+            count = main_thread.call(lambda: hold_meter(song, held, parts[0], level))
+            return f"METER {count}"
     if len(words) == 3 and words[0] == "listeners":
         prop, text = words[1], words[2].strip()
         return f"LISTENERS {main_thread.call(lambda: count_listeners(song, prop, text))}"
@@ -123,9 +168,9 @@ def control(main_thread, song, line):
     return None
 
 
-def read_controls(main_thread, song):
+def read_controls(main_thread, song, held):
     for line in sys.stdin:
-        answer = control(main_thread, song, line)
+        answer = control(main_thread, song, line, held)
         if answer is not None:
             print(answer, flush=True)
 
@@ -144,9 +189,10 @@ def main(argv=None):
     song = site_builder.build(args.site)
     main_thread = MainThread().install()
     surface = FohMixer.create_instance(CInstance(song))
+    held = {}
     animation = None
     if args.meters_hz > 0:
-        animation = MeterAnimation(song, args.meters_hz)
+        animation = MeterAnimation(song, args.meters_hz, held)
         animation.start()
 
     def on_stop():
@@ -157,7 +203,7 @@ def main(argv=None):
     signal.signal(signal.SIGTERM, lambda signum, frame: main_thread.request_stop())
     signal.signal(signal.SIGINT, lambda signum, frame: main_thread.request_stop())
     threading.Thread(target=announce_ready, args=(surface,), daemon=True).start()
-    threading.Thread(target=read_controls, args=(main_thread, song), daemon=True).start()
+    threading.Thread(target=read_controls, args=(main_thread, song, held), daemon=True).start()
     main_thread.run_forever(on_stop=on_stop)
     main_thread.uninstall()
     if main_thread.errors:
