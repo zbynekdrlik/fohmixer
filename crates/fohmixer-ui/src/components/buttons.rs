@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 
 use super::{fail_flash, readiness, slot_of};
 use crate::behave::colour::{css_color, text_on};
-use crate::behave::label::strip_label;
+use crate::behave::label::{label_chars, strip_label};
 use crate::behave::mute::{GUARD_MS, GuardAction, MuteGuard, lit};
 use crate::binding::{SubSpec, mute_sub, solo_sub};
 use crate::dom;
@@ -116,6 +116,7 @@ pub fn MuteView(
         None => "unknown",
     };
     let look = move || colour_style(color.and_then(|c| c.with(Slot::number)));
+    let length = format!("--n:{};", label_chars(&label));
     view! {
         <div
             class="mute"
@@ -129,7 +130,7 @@ pub fn MuteView(
             style=look
             on:pointerdown=on_down
         >
-            <span class="strip-label" data-testid="strip-label">{label}</span>
+            <span class="strip-label" data-testid="strip-label" style=length>{label}</span>
             <span class="mute-mark" aria-hidden="true">"MUTE"</span>
         </div>
     }
