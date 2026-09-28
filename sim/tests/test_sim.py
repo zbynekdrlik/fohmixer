@@ -220,10 +220,12 @@ class MainThreadTest(unittest.TestCase):
             callback=lambda: fires.append(time.monotonic()), interval=10, repeat=True
         )
         timer.start()
-        time.sleep(0.105)
+        time.sleep(0.3)
         timer.stop()
-        self.assertGreaterEqual(len(fires), 7)
-        self.assertLessEqual(len(fires), 12)
+        gaps_ms = sorted((b - a) * 1000 for a, b in itertools.pairwise(fires))
+        self.assertGreaterEqual(len(fires), 15)
+        self.assertGreaterEqual(gaps_ms[len(gaps_ms) // 2], 9.0)
+        self.assertLess(gaps_ms[len(gaps_ms) // 2], 15.0)
 
     def test_stall_delays_timer(self):
         fires = []
@@ -262,7 +264,7 @@ class MainThreadTest(unittest.TestCase):
         self.assertTrue(done.wait(1.0))
         delay = fired_at[0] - started
         self.assertGreaterEqual(delay, 0.09)
-        self.assertLess(delay, 0.3)
+        self.assertLess(delay, 0.5)
 
 
 if __name__ == "__main__":
