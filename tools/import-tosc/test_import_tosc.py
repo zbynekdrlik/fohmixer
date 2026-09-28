@@ -335,6 +335,12 @@ class ImportTest(unittest.TestCase):
         self.assertEqual(aut["style"]["bg"], "#000594FF")
         self.assertEqual(stage["style"]["text"], "STAGE")
 
+    def test_solo_buttons_take_their_inner_buttons_colour(self):
+        # #7: the same pattern on the solo buttons: a transparent group, the
+        # colour on btn_solo.
+        solos = by_kind(items(self.foh), "solo")
+        self.assertEqual([s["style"].get("bg") for s in solos], ["#3D61B8FF", "#3D61B8FF"])
+
     # --- config ---
 
     def test_the_config_text_is_read(self):

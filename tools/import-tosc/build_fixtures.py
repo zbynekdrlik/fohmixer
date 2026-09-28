@@ -64,6 +64,7 @@ CONFIG_TEXT = (
 WHITE = (1, 1, 1, 1)
 BLACK = (0, 0, 0, 1)
 GREY = (0.25, 0.25, 0.25, 1)
+SOLO_BLUE = (0.24, 0.38, 0.72, 1)
 
 # --- lexml ---------------------------------------------------------------------------
 
@@ -408,20 +409,44 @@ def project():
                 "Vocals Repro grp#",
                 (27, 219, 161, 65),
                 [
-                    N("BUTTON", "btn_solo", (0, 0, 161, 65), script=SOLO_SCRIPT, buttonType=2),
+                    # As in the real project: the group is transparent, the
+                    # colour is on the inner button (#7).
+                    N(
+                        "BUTTON",
+                        "btn_solo",
+                        (0, 0, 161, 65),
+                        script=SOLO_SCRIPT,
+                        buttonType=2,
+                        background=True,
+                        color=SOLO_BLUE,
+                    ),
                     label("label", (0, 30, 161, 30), "Vocals"),
                 ],
                 script=SOLO_SCRIPT,
+                background=True,
+                color=(0, 0, 0, 0),
             ),
             N(
                 "GROUP",
                 "Stems grp#",
                 (27, 274, 161, 65),
                 [
-                    N("BUTTON", "btn_solo", (0, 0, 161, 65), script=SOLO_SCRIPT, buttonType=2),
+                    # As in the real project: the group is transparent, the
+                    # colour is on the inner button (#7).
+                    N(
+                        "BUTTON",
+                        "btn_solo",
+                        (0, 0, 161, 65),
+                        script=SOLO_SCRIPT,
+                        buttonType=2,
+                        background=True,
+                        color=SOLO_BLUE,
+                    ),
                     label("label", (0, 30, 161, 30), "Stems"),
                 ],
                 script=SOLO_SCRIPT,
+                background=True,
+                color=(0, 0, 0, 0),
             ),
             midi_group(
                 "group3",
