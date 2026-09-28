@@ -64,7 +64,7 @@ fn the_status_lists_the_bindings_that_do_not_resolve() {
             "live_set tracks[name=Nobody #]",
             "not found: tracks[name=Nobody #]",
         );
-        hub.status_until(SECS_3, |s| s.layout.unresolved == vec![nobody.clone()])
+        hub.status_until(SECS_3, |s| s.layout.unresolved == [nobody.clone()])
             .await;
         // Two tracks named alike: ambiguous, found by the check of the next
         // accepted layout.
@@ -76,7 +76,7 @@ fn the_status_lists_the_bindings_that_do_not_resolve() {
             "ambiguous: tracks[name=Mics Stage #]",
         );
         hub.status_until(SECS_3, |s| {
-            s.layout.rev == 2 && s.layout.unresolved == vec![ambiguous.clone(), nobody.clone()]
+            s.layout.rev == 2 && s.layout.unresolved == [ambiguous.clone(), nobody.clone()]
         })
         .await;
         // Offline: no report for the band. A fresh set (the names as they
@@ -88,7 +88,7 @@ fn the_status_lists_the_bindings_that_do_not_resolve() {
         .await;
         let host = Host::start_with("band", port, 0.0);
         hub.status_until(SECS_3, |s| {
-            s.instances[0].online && s.layout.unresolved == vec![nobody.clone()]
+            s.instances[0].online && s.layout.unresolved == [nobody.clone()]
         })
         .await;
         hub.stop().await;

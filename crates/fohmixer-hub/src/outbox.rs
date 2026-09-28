@@ -285,8 +285,9 @@ mod tests {
                 result("after"),
                 ServerMsg::Values {
                     items: vec![
-                        ValueItem::value("band|live_set|tempo|false", json!(100), None),
+                        // Key order: `x` sorts before `|`.
                         ValueItem::value("bandx|live_set|tempo|false", json!(1), None),
+                        ValueItem::value("band|live_set|tempo|false", json!(100), None),
                         ValueItem::value("master|live_set|tempo|false", json!(90), None),
                     ]
                 },

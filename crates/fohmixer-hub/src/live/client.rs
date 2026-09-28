@@ -209,10 +209,9 @@ async fn refusing<T>(
         tokio::select! {
             out = &mut work => return Some(out),
             request = rx.recv() => {
-                // Refused: dropping the request tells its caller "offline".
-                if request.is_none() {
-                    return None;
-                }
+                // None: every handle is gone. A request is refused: dropping
+                // it tells its caller "offline".
+                request?;
             }
         }
     }
