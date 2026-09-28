@@ -136,6 +136,20 @@ class ImportTest(unittest.TestCase):
             layout["report"]["dropped"],
         )
 
+    def test_only_the_refresh_control_refreshes_and_backdrops_stay_inert(self):
+        # The sidebar backdrops carry the mute script, which mentions a
+        # refresh; only the control that asks for one is REFRESH ALL.
+        refresh = [i for i in all_items(self.layout) if i["kind"] == "refresh"]
+        self.assertEqual(
+            [(i["label"], i["frame"]) for i in refresh],
+            [("REFRESH ALL", {"x": 21.0, "y": 1300.0, "w": 209.0, "h": 54.0})],
+        )
+        backdrops = [
+            i for i in items(self.foh) if i["kind"] == "area" and i["style"] == {"bg": "#000000BD"}
+        ]
+        self.assertEqual(len(backdrops), 5, [i["kind"] for i in items(self.foh)])
+        self.assertEqual(backdrops[0]["frame"], {"x": 40.0, "y": 174.0, "w": 101.0, "h": 77.0})
+
     def test_frames_are_composed_into_canvas_coordinates(self):
         # A label at (10,10) in a group at (100,100) on a page at (0,59).
         marks = [i for i in items(self.foh) if i["kind"] == "label" and i["text"] == "[]"]

@@ -24,14 +24,22 @@ from xml.sax.saxutils import escape
 
 # --- scripts (the hash table is built from these, as from a real project) ---
 
-MUTE_SCRIPT = "-- mute_button\nfunction onValueChanged(k)\n  -- send mute\nend\n"
+# Like the real mute script, it mentions a refresh (in a comment).
+MUTE_SCRIPT = (
+    "-- mute_button\n-- Fixed: keep the state during a refresh\n"
+    "function onValueChanged(k)\n  -- send mute\nend\n"
+)
 METER_SCRIPT = "-- meter_script\nfunction onReceiveNotify(k, v)\nend"  # no trailing newline
 FADER_SCRIPT = "-- fader_script\nfunction onValueChanged(k)\nend\n"
 PAN_SCRIPT = "-- pan_control\nfunction onValueChanged(k)\nend\n"
 GROUP_SCRIPT = "-- group_init\nfunction refresh_tracks()\nend\n"
 DB_SCRIPT = "-- db_label\n"
 DOUBLE_TAP_SCRIPT = "-- latch on a double tap\nfunction onValueChanged(k)\nend\n"
-REFRESH_SCRIPT = "-- global_refresh_button\nfunction startRefreshSequence()\nend\n"
+# The REFRESH ALL control asks the document script to refresh every strip.
+REFRESH_SCRIPT = (
+    "-- Global Refresh Button Script\nfunction onValueChanged(key)\n"
+    '  if key == "x" then\n    root:notify("refresh_all_groups")\n  end\nend\n'
+)
 BATTERY_SCRIPT = "-- battery\nfunction update()\n  local b = getBatteryLevel()\nend\n"
 ALERT_SCRIPT = "-- TechAlert blink\nfunction update()\nend\n"
 SOLO_SCRIPT = "-- solo group\n"
@@ -163,6 +171,22 @@ def strip(name, x, y, w=160, h=710, background=False, color=GREY):
     )
 
 
+def backdrop(name, frame):
+    """A dark, non-interactive button behind a control, carrying the mute script."""
+    return N(
+        "BUTTON",
+        name,
+        frame,
+        script=MUTE_SCRIPT,
+        buttonType=1,
+        press=True,
+        release=True,
+        interactive=False,
+        background=True,
+        color=(0, 0, 0, 0.74),
+    )
+
+
 def alert_strip(name, x, y):
     """The TechAlert strip: meter, status, mute and label, no fader or pan."""
     parts = [
@@ -286,6 +310,18 @@ def project():
         (0, 59, 2360, 1581),
         [
             N("BOX", "box8", (27, 10, 198, 1240), color=(0, 0, 0, 0.5)),
+            # Dark backdrops behind the sidebar controls: they carry the
+            # mute script but are never notified (inert).
+            *[
+                backdrop(name, frame)
+                for name, frame in (
+                    ("button72", (40, 115, 101, 77)),
+                    ("button71", (40, 13, 101, 77)),
+                    ("button70", (51, 220, 137, 45)),
+                    ("button69", (52, 275, 136, 47)),
+                    ("button65", (78, 898, 110, 66)),
+                )
+            ],
             sub_pager,
             N(
                 "GROUP",
