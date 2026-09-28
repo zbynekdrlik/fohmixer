@@ -216,6 +216,22 @@ try {
     Assert ((Get-FohSid $me) -ceq $meSid -and (Get-FohSid (Get-FohLeafName $me)) -ceq $meSid) 'sid-of-an-account-with-or-without-its-computer'
     Assert ((Get-FohSid 'S-1-5-18') -ceq 'S-1-5-18' -and (Get-FohSid ('no-such-account-' + $id)) -ceq '') 'sid-taken-as-it-is-or-empty-for-an-unknown-account'
 
+    # ---- Live's Library.cfg (#9) ----
+    # Live uses the Library.cfg of its newest version (by number: 12.10 is
+    # newer than 12.2); the User Library is ProjectPath + ProjectName, none
+    # for <UserLibrary />.
+    $prefsPick = Join-Path $base 'prefs-pick'
+    New-FakeLiveCfg -Prefs $prefsPick -Version '12.2' -UserLibrary $bandLib
+    New-FakeLiveCfg -Prefs $prefsPick -Version '12.10' -UserLibrary $masterLib
+    New-FakeLiveCfg -Prefs $prefsPick -Version '9.7.7' -UserLibrary ''
+    New-Item -ItemType Directory -Force -Path (Join-Path $prefsPick 'Live 13 Beta\Preferences'), (Join-Path $prefsPick 'Live 14') | Out-Null
+    Assert ((Get-FohLivePrefsFile -Prefs $prefsPick) -eq (Join-Path $prefsPick 'Live 12.10\Preferences\Library.cfg')) 'live-prefs-of-the-newest-version-by-number'
+    Assert ((Get-FohLivePrefsFile -Prefs (Join-Path $base 'no-such-prefs')) -ceq '') 'live-prefs-none-without-the-folder'
+    Assert ((Get-FohLiveUserLibrary -Cfg (Join-Path $prefsPick 'Live 12.2\Preferences\Library.cfg')) -eq $bandLib) 'live-user-library-is-projectpath-and-projectname'
+    Assert ((Get-FohLiveUserLibrary -Cfg (Join-Path $prefsPick 'Live 9.7.7\Preferences\Library.cfg')) -ceq '') 'live-user-library-none-for-an-empty-userlibrary'
+    Assert ((ErrorOf { Test-FohLiveUserLibrary -User 'u' -Prefs $prefsPick -UserLibrary $bandLib -Switch 'Band' }) -like '*uses the User Library*-BandUserLibrary*') 'live-user-library-elsewhere-names-the-switch'
+    Assert ((ErrorOf { Test-FohLiveUserLibrary -User 'u' -Prefs $prefsPick -UserLibrary $masterLib -Switch 'Master' }) -ceq '') 'live-user-library-in-use-passes'
+
     # ---- an account named like the computer (#9) ----
     # On the PC an account's name equals the computer's. Windows looks a bare
     # name up as a domain name first, so there the bare name is the PC's

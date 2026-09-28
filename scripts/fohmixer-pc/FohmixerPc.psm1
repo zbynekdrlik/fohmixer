@@ -8,7 +8,8 @@
 #   reported, never ended. Its tasks may never be ended hard either.
 # - Live's preferences and a running Live are never touched: only the FohMixer
 #   folder in each user's User Library is written, and Live reads it at its
-#   next start.
+#   next start. The install reads each user's Library.cfg and refuses a User
+#   Library Live does not use (#9); the fix is made in Live, never here.
 # - No site value lives here (spec 5.2): user names, folders and ports come as
 #   parameters.
 Set-StrictMode -Version Latest
@@ -983,6 +984,81 @@ function Test-FohUserName {
     }
 }
 
+function Get-FohLivePrefsFile {
+    # The Library.cfg that Live uses among a user's Live preferences under
+    # $Prefs (<Prefs>\Live <version>\Preferences\Library.cfg, one folder per
+    # Live version): the newest version's, by version number (12.10 is newer
+    # than 12.2); a folder not named "Live <version>" is not Live's. '' when
+    # there is none.
+    param([Parameter(Mandatory)][string]$Prefs)
+    if (-not (Test-Path -LiteralPath $Prefs -PathType Container)) { return '' }
+    $best = ''
+    $bestVersion = $null
+    foreach ($d in @(Get-ChildItem -LiteralPath $Prefs -Directory -Force)) {
+        $m = [regex]::Match($d.Name, '^Live (\d+)(\.\d+){0,3}\z')
+        if (-not $m.Success) { continue }
+        $text = $d.Name.Substring(5)
+        if (-not $text.Contains('.')) { $text += '.0' }
+        $cfg = Join-Path $d.FullName 'Preferences\Library.cfg'
+        if (-not (Test-Path -LiteralPath $cfg -PathType Leaf)) { continue }
+        $version = [version]$text
+        if ($null -eq $bestVersion -or $version -gt $bestVersion) {
+            $best = $cfg
+            $bestVersion = $version
+        }
+    }
+    return $best
+}
+
+function Get-FohLiveUserLibrary {
+    # The User Library a Live Library.cfg sets: ProjectPath\ProjectName of
+    # ContentLibrary/UserLibrary/LibraryProject (Live writes ProjectPath with
+    # forward slashes). '' for <UserLibrary /> (no User Library set: Live then
+    # lists no Remote Scripts of one, #9).
+    param([Parameter(Mandatory)][string]$Cfg)
+    try {
+        $xml = [xml][IO.File]::ReadAllText($Cfg)
+    } catch {
+        throw "$Cfg is not a Library.cfg Live wrote: $($_.Exception.Message)"
+    }
+    $project = '/Ableton/ContentLibrary/UserLibrary/LibraryProject'
+    $path = $xml.SelectSingleNode("$project/ProjectPath/@Value")
+    $name = $xml.SelectSingleNode("$project/ProjectName/@Value")
+    if ($null -eq $path -or $null -eq $name -or -not $path.Value -or -not $name.Value) { return '' }
+    $folder = $path.Value.Replace('/', '\')
+    return [IO.Path]::GetFullPath([IO.Path]::Combine($folder, $name.Value)).TrimEnd('\')
+}
+
+function Test-FohLiveUserLibrary {
+    # The install's check, before anything changes, that Live uses the User
+    # Library FohMixer goes into (#9: the master user's Library.cfg had
+    # <UserLibrary />, so Live never listed FohMixer). Only reads Live's
+    # preferences; the fix is the owner's, in Live. $Switch names the
+    # install's parameters (Band or Master).
+    param(
+        [Parameter(Mandatory)][string]$User,
+        [Parameter(Mandatory)][string]$Prefs,
+        [Parameter(Mandatory)][string]$UserLibrary,
+        [Parameter(Mandatory)][string]$Switch
+    )
+    $cfg = Get-FohLivePrefsFile -Prefs $Prefs
+    if (-not $cfg) {
+        throw ("no Library.cfg of Live for $User under $Prefs (Live <version>\Preferences\Library.cfg): " +
+            "start Live once as $User, or pass the folder of its Live preferences with -${Switch}AbletonPrefs")
+    }
+    $used = Get-FohLiveUserLibrary -Cfg $cfg
+    $parent = Split-Path -Parent $UserLibrary
+    if (-not $used) {
+        throw ("Live of $User has no User Library set (${cfg}: UserLibrary is empty), so it would not list FohMixer: " +
+            "in Live as $User open Settings > Library, set the location of the User Library to $parent, " +
+            'restart Live, then run the install again')
+    }
+    if ($used -ne $UserLibrary.TrimEnd('\')) {
+        throw ("Live of $User uses the User Library $used (${cfg}), not ${UserLibrary}: pass -${Switch}UserLibrary " +
+            "`"$used`", or set $parent in Live's Settings > Library and restart Live")
+    }
+}
+
 function Invoke-FohInstall {
     # Design note section 3, in order. Every parameter is checked before
     # anything changes, and the bundle (against its SHA256SUMS, unpacked under
@@ -1001,6 +1077,8 @@ function Invoke-FohInstall {
         [string]$Layout = '',
         [string]$BandUserLibrary = '',
         [string]$MasterUserLibrary = '',
+        [string]$BandAbletonPrefs = '',
+        [string]$MasterAbletonPrefs = '',
         [switch]$NoTask,
         [string]$TaskPath = $script:TaskPath,
         [int]$ReadyTimeoutSeconds = 20
@@ -1026,6 +1104,11 @@ function Invoke-FohInstall {
             throw "Live's User Library not found: $lib (Live creates it at its first start; pass its folder with -BandUserLibrary or -MasterUserLibrary when Live keeps it elsewhere)"
         }
     }
+    if (-not $BandAbletonPrefs) { $BandAbletonPrefs = Join-Path $env:SystemDrive "Users\$BandUser\AppData\Roaming\Ableton" }
+    if (-not $MasterAbletonPrefs) { $MasterAbletonPrefs = Join-Path $env:SystemDrive "Users\$MasterUser\AppData\Roaming\Ableton" }
+    Test-FohLiveUserLibrary -User $BandUser -Prefs (Resolve-FohPath $BandAbletonPrefs) -UserLibrary $BandUserLibrary -Switch 'Band'
+    Test-FohLiveUserLibrary -User $MasterUser -Prefs (Resolve-FohPath $MasterAbletonPrefs) -UserLibrary $MasterUserLibrary -Switch 'Master'
+
     if ($Layout) {
         $Layout = Resolve-FohPath $Layout
         Test-FohLayoutFile -Path $Layout

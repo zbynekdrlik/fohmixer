@@ -205,7 +205,7 @@ jobs:
           $b = New-FohBundle -RepoRoot $PWD.Path -HubExe target/release/fohmixer-hub.exe -OutDir $env:RUNNER_TEMP -Sha $env:GITHUB_SHA
           Get-Content -LiteralPath (Join-Path $b.stage 'SHA256SUMS')
           [IO.File]::AppendAllText($env:GITHUB_OUTPUT, "name=$($b.name)`n")
-      - name: Install the zip once (-NoTask, a temp data folder, two fake User Libraries)
+      - name: Install the zip once (-NoTask, a temp data folder, two fake User Libraries and Live preferences)
         shell: powershell
         env:
           BUNDLE: ${{ steps.zip.outputs.name }}
@@ -214,10 +214,20 @@ jobs:
           $band = Join-Path $root 'band\User Library'
           $master = Join-Path $root 'master\User Library'
           New-Item -ItemType Directory -Force -Path $band, $master | Out-Null
+          # Each user's Live sets its User Library in Library.cfg (the install checks it, #9).
+          foreach ($u in @(@{ lib = $band; prefs = (Join-Path $root 'band\prefs') }, @{ lib = $master; prefs = (Join-Path $root 'master\prefs') })) {
+            $dir = Join-Path $u.prefs 'Live 12.2\Preferences'
+            New-Item -ItemType Directory -Force -Path $dir | Out-Null
+            $project = (Split-Path -Parent $u.lib).Replace('\', '/')
+            $cfg = "<?xml version=`"1.0`" encoding=`"UTF-8`"?><Ableton><ContentLibrary><UserLibrary><LibraryProject Id=`"0`">" +
+              "<ProjectName Value=`"User Library`" /><ProjectPath Value=`"$project`" /></LibraryProject></UserLibrary></ContentLibrary></Ableton>"
+            [IO.File]::WriteAllText((Join-Path $dir 'Library.cfg'), $cfg)
+          }
           $zip = Join-Path $env:RUNNER_TEMP "$env:BUNDLE.zip"
           $data = Join-Path $root 'data'
           powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $env:RUNNER_TEMP "$env:BUNDLE\Install-Fohmixer.ps1") -BundleZip $zip `
-            -BandUser band -MasterUser master -DataDir $data -BandUserLibrary $band -MasterUserLibrary $master -NoTask
+            -BandUser band -MasterUser master -DataDir $data -BandUserLibrary $band -MasterUserLibrary $master `
+            -BandAbletonPrefs (Join-Path $root 'band\prefs') -MasterAbletonPrefs (Join-Path $root 'master\prefs') -NoTask
           if ($LASTEXITCODE -ne 0) { throw "the install of $zip failed ($LASTEXITCODE)" }
           $version = (Get-Content -LiteralPath (Join-Path $env:RUNNER_TEMP "$env:BUNDLE\VERSION") -Raw).Trim()
           foreach ($f in @("app\$version\fohmixer-hub.exe", 'fohmixer-hub.toml')) {
