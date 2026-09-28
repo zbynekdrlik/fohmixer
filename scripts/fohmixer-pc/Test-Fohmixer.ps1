@@ -666,7 +666,9 @@ try {
         $newer = @(Get-ChangedFiles $watchR)
         Assert ($newer.Count -eq 0) "install-refused-$($r.what)-before-any-change ($($newer -join ', '))"
         $left = @(Get-ChildItem -LiteralPath (Join-Path $dataR 'app') -Force | Where-Object { $_.Name.StartsWith('.') })
-        Assert ($left.Count -eq 0) "install-refused-$($r.what)-leaves-no-unpacked-bundle-or-check-file ($($left.Name -join ', '))"
+        # (No .Name on the array: an empty one has none under Set-StrictMode.)
+        $leftNames = ($left | ForEach-Object { $_.Name }) -join ', '
+        Assert ($left.Count -eq 0) "install-refused-$($r.what)-leaves-no-unpacked-bundle-or-check-file ($leftNames)"
     }
 
     # ---- the tasks, registered for this user in a test folder (never started) ----
