@@ -1061,42 +1061,13 @@ function Invoke-FohInstall {
         $Layout = Resolve-FohPath $Layout
         Test-FohLayoutFile -Path $Layout
     }
-    # Remote access (#17): checked, and the tunnel token read, before any change.
-    $remote = $null
+    # Remote access (#17, FohmixerRemote.ps1): checked, the tunnel token read, before any change.
+    $remote = Resolve-FohRemote -PublicName $PublicName -HttpPort $HttpPort -BandPort $BandPort -MasterPort $MasterPort `
+        -HttpsPort $HttpsPort -AcmeEmail $AcmeEmail -AcmeDirectory $AcmeDirectory -AccessTeam $AccessTeam -AccessAud $AccessAud `
+        -SetTunnelToken:$SetTunnelToken -CloudflaredExe $CloudflaredExe -TunnelMetricsPort $TunnelMetricsPort -TunnelDir $TunnelDir `
+        -HostsFile $HostsFile -BandDesktop $BandDesktop -BandUser $BandUser
     $remoteToml = ''
-    if ($PublicName) {
-        Test-FohPublicName $PublicName
-        foreach ($p in @($HttpsPort, $TunnelMetricsPort)) { if ($p -lt 1 -or $p -gt 65535) { throw "port $p refused" } }
-        if (@($HttpPort, $BandPort, $MasterPort, $HttpsPort, $TunnelMetricsPort | Select-Object -Unique).Count -ne 5) {
-            throw "the ports must differ: http $HttpPort, band $BandPort, master $MasterPort, https $HttpsPort, tunnel metrics $TunnelMetricsPort"
-        }
-        $auds = @($AccessAud.Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
-        if ([bool]$AccessTeam -ne ($auds.Count -gt 0)) { throw 'give -AccessTeam and -AccessAud together (the Access application of the name)' }
-        if ($AccessTeam) { Test-FohPublicName $AccessTeam }
-        if (-not $TunnelDir) { $TunnelDir = Join-Path $env:ProgramData 'fohmixer-tunnel' }
-        $TunnelDir = Resolve-FohPath $TunnelDir
-        if (-not $CloudflaredExe) { $CloudflaredExe = Join-Path ${env:ProgramFiles(x86)} 'cloudflared\cloudflared.exe' }
-        $tokenFile = Join-Path $TunnelDir $script:TunnelTokenFile
-        $tunnel = $SetTunnelToken -or (Test-Path -LiteralPath $tokenFile -PathType Leaf)
-        if ($tunnel -and -not (Test-Path -LiteralPath $CloudflaredExe -PathType Leaf)) {
-            throw "cloudflared not found: $CloudflaredExe (install it, or pass -CloudflaredExe)"
-        }
-        if (-not $HostsFile) { $HostsFile = Join-Path $env:SystemRoot 'System32\drivers\etc\hosts' }
-        if (-not $BandDesktop) { $BandDesktop = Join-Path $env:SystemDrive "Users\$BandUser\Desktop" }
-        if (-not (Test-Path -LiteralPath $BandDesktop -PathType Container)) {
-            throw "the band user's desktop not found: $BandDesktop (pass -BandDesktop)"
-        }
-        $token = $null
-        if ($SetTunnelToken) { $token = Read-FohTunnelToken }
-        $remoteToml = Get-FohRemoteToml -Name $PublicName -HttpsPort $HttpsPort -AcmeEmail $AcmeEmail -AcmeDirectory $AcmeDirectory `
-            -AccessTeam $AccessTeam -AccessAud $auds -Tunnel:$tunnel -TunnelMetricsPort $TunnelMetricsPort
-        $remote = [pscustomobject]@{
-            name = $PublicName; url = (Get-FohPublicUrl -Name $PublicName -HttpsPort $HttpsPort); tunnel = [bool]$tunnel
-            token_file = $tokenFile; token = $token
-        }
-    } elseif ($SetTunnelToken -or $AccessTeam -or $AccessAud -or $AcmeEmail -or $AcmeDirectory) {
-        throw 'the remote-access parameters need -PublicName'
-    }
+    if ($remote) { $remoteToml = $remote.toml }
     if (-not $NoTask) {
         $me = New-Object Security.Principal.WindowsPrincipal ([Security.Principal.WindowsIdentity]::GetCurrent())
         if (-not $me.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
@@ -1145,34 +1116,14 @@ function Invoke-FohInstall {
         }
         # 5b. remote access (#17): the name on this PC, the shortcut, the tunnel token
         $remoteResult = $null
-        if ($remote) {
-            $hostsChanged = Set-FohHostsEntry -Path $HostsFile -Name $remote.name
-            $shortcutChanged = Set-FohDesktopShortcut -Desktop $BandDesktop -Url $remote.url
-            $tokenChanged = $false
-            if ($null -ne $remote.token) { $tokenChanged = Set-FohTunnelToken -TunnelDir $TunnelDir -Token $remote.token }
-            $note = 'fohmixer install: {0} -> 127.0.0.1 in the hosts file (changed: {1}), the desktop shortcut (changed: {2}), ' +
-                'the tunnel token (changed: {3})'
-            Write-Host ($note -f $remote.name, $hostsChanged, $shortcutChanged, $tokenChanged)
-            $remoteResult = [pscustomobject]@{
-                public_name = $remote.name; url = $remote.url; hosts_changed = $hostsChanged
-                shortcut_changed = $shortcutChanged; token_changed = $tokenChanged; tunnel = $remote.tunnel; tunnel_service = $null
-            }
-        }
+        if ($remote) { $remoteResult = Install-FohRemoteFiles -Remote $remote }
         # 6. the tasks and the firewall rule
         if (-not $NoTask) {
             Register-FohHubTasks -AppDir $app.dir -DataDir $DataDir -User $BandUser -TaskPath $TaskPath
             Write-Host "fohmixer install: tasks $TaskPath$($script:HubTask) and $TaskPath$($script:StopTask) registered and read back"
             $firewall = Set-FohFirewallRule -Port $HttpPort
             Write-Host "fohmixer install: firewall rule fohmixer-hub-http, TCP $HttpPort, Domain and Private (changed: $firewall)"
-            if ($remote) {
-                $httpsRule = Set-FohFirewallRule -Port $HttpsPort -Name 'fohmixer-hub-https'
-                Write-Host "fohmixer install: firewall rule fohmixer-hub-https, TCP $HttpsPort, Domain and Private (changed: $httpsRule)"
-                if ($remote.tunnel) {
-                    $bin = Get-FohTunnelCommand -Exe $CloudflaredExe -TokenFile $remote.token_file -MetricsPort $TunnelMetricsPort
-                    $remoteResult.tunnel_service = Set-FohTunnelService -BinPath $bin
-                    Write-Host "fohmixer install: the $($script:TunnelService) service runs cloudflared (changed: $($remoteResult.tunnel_service))"
-                }
-            }
+            if ($remote) { Install-FohRemoteServices -Remote $remote -Result $remoteResult }
             foreach ($n in @(Get-NetConnectionProfile | Where-Object { "$($_.NetworkCategory)" -eq 'Public' })) {
                 $publicNote = 'fohmixer install: the network on {0} is Public; the rule allows Domain and Private only, ' +
                     'so clients there are refused until it is set to Private'

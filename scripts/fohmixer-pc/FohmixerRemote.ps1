@@ -222,3 +222,82 @@ function Set-FohTunnelService {
     if ($after -cne $BinPath) { throw "the $Name service reads back as another command line" }
     return $changed
 }
+
+function Resolve-FohRemote {
+    # The remote-access part of an install (Invoke-FohInstall), checked before
+    # anything changes: $null without -PublicName (then no other remote-access
+    # parameter is allowed), else the name, its URL, the toml tables, the paths
+    # and, with -SetTunnelToken, the connector token read from stdin or a
+    # hidden prompt. The tunnel is set up with -SetTunnelToken or a token
+    # stored by an earlier run.
+    param([AllowEmptyString()][string]$PublicName, [int]$HttpPort, [int]$BandPort, [int]$MasterPort, [int]$HttpsPort,
+          [AllowEmptyString()][string]$AcmeEmail, [AllowEmptyString()][string]$AcmeDirectory, [AllowEmptyString()][string]$AccessTeam,
+          [AllowEmptyString()][string]$AccessAud, [switch]$SetTunnelToken, [AllowEmptyString()][string]$CloudflaredExe,
+          [int]$TunnelMetricsPort, [AllowEmptyString()][string]$TunnelDir, [AllowEmptyString()][string]$HostsFile,
+          [AllowEmptyString()][string]$BandDesktop, [Parameter(Mandatory)][string]$BandUser)
+    if (-not $PublicName) {
+        if ($SetTunnelToken -or $AccessTeam -or $AccessAud -or $AcmeEmail -or $AcmeDirectory) { throw 'the remote-access parameters need -PublicName' }
+        return $null
+    }
+    Test-FohPublicName $PublicName
+    foreach ($p in @($HttpsPort, $TunnelMetricsPort)) { if ($p -lt 1 -or $p -gt 65535) { throw "port $p refused" } }
+    if (@($HttpPort, $BandPort, $MasterPort, $HttpsPort, $TunnelMetricsPort | Select-Object -Unique).Count -ne 5) {
+        throw "the ports must differ: http $HttpPort, band $BandPort, master $MasterPort, https $HttpsPort, tunnel metrics $TunnelMetricsPort"
+    }
+    $auds = @($AccessAud.Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    if ([bool]$AccessTeam -ne ($auds.Count -gt 0)) { throw 'give -AccessTeam and -AccessAud together (the Access application of the name)' }
+    if ($AccessTeam) { Test-FohPublicName $AccessTeam }
+    if (-not $TunnelDir) { $TunnelDir = Join-Path $env:ProgramData 'fohmixer-tunnel' }
+    $TunnelDir = Resolve-FohPath $TunnelDir
+    if (-not $CloudflaredExe) { $CloudflaredExe = Join-Path ${env:ProgramFiles(x86)} 'cloudflared\cloudflared.exe' }
+    $tokenFile = Join-Path $TunnelDir $script:TunnelTokenFile
+    $tunnel = [bool]($SetTunnelToken -or (Test-Path -LiteralPath $tokenFile -PathType Leaf))
+    if ($tunnel -and -not (Test-Path -LiteralPath $CloudflaredExe -PathType Leaf)) {
+        throw "cloudflared not found: $CloudflaredExe (install it, or pass -CloudflaredExe)"
+    }
+    if (-not $HostsFile) { $HostsFile = Join-Path $env:SystemRoot 'System32\drivers\etc\hosts' }
+    if (-not $BandDesktop) { $BandDesktop = Join-Path $env:SystemDrive "Users\$BandUser\Desktop" }
+    if (-not (Test-Path -LiteralPath $BandDesktop -PathType Container)) {
+        throw "the band user's desktop not found: $BandDesktop (pass -BandDesktop)"
+    }
+    $token = $null
+    if ($SetTunnelToken) { $token = Read-FohTunnelToken }
+    return [pscustomobject]@{
+        name = $PublicName; url = (Get-FohPublicUrl -Name $PublicName -HttpsPort $HttpsPort); https_port = $HttpsPort
+        toml = (Get-FohRemoteToml -Name $PublicName -HttpsPort $HttpsPort -AcmeEmail $AcmeEmail -AcmeDirectory $AcmeDirectory `
+            -AccessTeam $AccessTeam -AccessAud $auds -Tunnel:$tunnel -TunnelMetricsPort $TunnelMetricsPort)
+        tunnel = $tunnel; tunnel_dir = $TunnelDir; token_file = $tokenFile; token = $token; cloudflared = $CloudflaredExe
+        metrics_port = $TunnelMetricsPort; hosts_file = $HostsFile; desktop = $BandDesktop
+    }
+}
+
+function Install-FohRemoteFiles {
+    # The install's step 5b (Resolve-FohRemote's plan): the hosts block, the
+    # desktop shortcut, the tunnel token when one was read. Returns what changed.
+    param([Parameter(Mandatory)]$Remote)
+    $hostsChanged = Set-FohHostsEntry -Path $Remote.hosts_file -Name $Remote.name
+    $shortcutChanged = Set-FohDesktopShortcut -Desktop $Remote.desktop -Url $Remote.url
+    $tokenChanged = $false
+    if ($null -ne $Remote.token) { $tokenChanged = Set-FohTunnelToken -TunnelDir $Remote.tunnel_dir -Token $Remote.token }
+    $note = 'fohmixer install: {0} -> 127.0.0.1 in the hosts file (changed: {1}), the desktop shortcut (changed: {2}), ' +
+        'the tunnel token (changed: {3})'
+    Write-Host ($note -f $Remote.name, $hostsChanged, $shortcutChanged, $tokenChanged)
+    return [pscustomobject]@{
+        public_name = $Remote.name; url = $Remote.url; hosts_changed = $hostsChanged
+        shortcut_changed = $shortcutChanged; token_changed = $tokenChanged; tunnel = $Remote.tunnel; tunnel_service = $null
+    }
+}
+
+function Install-FohRemoteServices {
+    # The install's step 6 for remote access (not in the -NoTask self-test):
+    # the firewall rule of the HTTPS port and the tunnel service; records the
+    # service's change in $Result.
+    param([Parameter(Mandatory)]$Remote, [Parameter(Mandatory)]$Result)
+    $httpsRule = Set-FohFirewallRule -Port $Remote.https_port -Name 'fohmixer-hub-https'
+    Write-Host "fohmixer install: firewall rule fohmixer-hub-https, TCP $($Remote.https_port), Domain and Private (changed: $httpsRule)"
+    if ($Remote.tunnel) {
+        $bin = Get-FohTunnelCommand -Exe $Remote.cloudflared -TokenFile $Remote.token_file -MetricsPort $Remote.metrics_port
+        $Result.tunnel_service = Set-FohTunnelService -BinPath $bin
+        Write-Host "fohmixer install: the $($script:TunnelService) service runs cloudflared (changed: $($Result.tunnel_service))"
+    }
+}

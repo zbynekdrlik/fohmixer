@@ -532,13 +532,16 @@ try {
     $argsR = Get-InstallArgs $remoteOver
     $noneR = Join-Path $base 'data-remote-refused'
     foreach ($r in @(
-            @{ over = @{ AccessAud = '' }; says = '*-AccessTeam and -AccessAud together*'; what = 'an-access-team-without-its-aud' },
+            # $null removes the argument (powershell.exe -File drops an empty one).
+            @{ over = @{ AccessAud = $null }; says = '*-AccessTeam and -AccessAud together*'; what = 'an-access-team-without-its-aud' },
             @{ over = @{ PublicName = 'foh' }; says = '*public name refused*'; what = 'a-bad-public-name' },
             @{ over = @{ HttpsPort = 18481 }; says = '*the ports must differ*'; what = 'https-on-the-http-port' },
             @{ over = @{ BandDesktop = (Join-Path $base 'no-desktop') }; says = "*desktop not found*"; what = 'a-missing-desktop' },
             @{ over = @{ CloudflaredExe = (Join-Path $base 'no-cloudflared.exe') }; says = '*cloudflared not found*'; what = 'a-missing-cloudflared' })) {
         $o = $remoteOver.Clone()
-        foreach ($k in $r.over.Keys) { $o[$k] = $r.over[$k] }
+        foreach ($k in @($r.over.Keys)) {
+            if ($null -eq $r.over[$k]) { $o.Remove($k) } else { $o[$k] = $r.over[$k] }
+        }
         $o['DataDir'] = $noneR
         $res = Invoke-PsInput $install ((Get-InstallArgs $o) + '-SetTunnelToken') $fakeToken
         Assert ($res.code -ne 0 -and $res.out -like $r.says) "install-refuses-$($r.what)"
