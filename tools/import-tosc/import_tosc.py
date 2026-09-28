@@ -599,6 +599,17 @@ class Importer:
             style["vertical"] = True
         return style
 
+    def control_style(self, node, button, text=None):
+        """The style of a control group; a transparent group shows the colour
+        of its inner ``button`` (the stage mics, STAGE AUT)."""
+        style = self.style(node, text)
+        inner = node.child(button)
+        drawn = style.get("bg") is not None and not style["bg"].endswith("00")
+        if inner is not None and "color" in inner.props and not drawn:
+            rest = {k: v for k, v in style.items() if k != "bg"}
+            style = {"bg": color_hex(inner.prop("color")), **rest}
+        return style
+
     def item(self, kind, frame, style=None, **fields):
         item = {"kind": kind, "frame": frame, "z": self.next_z(), "style": style or {}}
         item.update(fields)
@@ -734,7 +745,7 @@ class Importer:
                 self.item(
                     "stage",
                     frame,
-                    self.style(node, self.group_text(node)),
+                    self.control_style(node, "btn_mute", self.group_text(node)),
                     binding=self.binding(node.name),
                     aut=self.has(self.root, "btn_stage_aut"),
                 )
@@ -744,7 +755,7 @@ class Importer:
                 self.item(
                     "hub_toggle",
                     frame,
-                    self.style(node),
+                    self.control_style(node, "btn_stage_aut"),
                     key="stage_aut",
                     label=self.group_text(node) or "STAGE AUT",
                 )
