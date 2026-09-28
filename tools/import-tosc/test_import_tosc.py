@@ -117,6 +117,87 @@ class ImportTest(unittest.TestCase):
         self.assertEqual(alert["style"]["bg"], "#FF00001F")
         self.assertTrue(self.dropped("battery"), self.report["dropped"])
 
+    def test_the_battery_gauge_is_dropped_whole_and_reported_once(self):
+        # The battery script sits on the gauge's fader; the group, its box
+        # and its "100%" label go with it (no static fake gauge).
+        self.assertEqual(
+            [d for d in self.report["dropped"] if "battery" in d["node"] or "X5" in d["why"]],
+            [{"node": "root/battery", "why": "the battery gauge (X5)"}],
+        )
+        self.assertEqual([i["kind"] for i in self.layout["overlay"]], ["strip", "refresh", "alert"])
+
+    def test_an_alert_box_before_its_techalert_strip_is_kept(self):
+        # In the real project the hidden alert box is the root's second
+        # child, before REFRESH ALL, the battery and the TechAlert strip.
+        path = os.path.join(self.dir, "alert-first.tosc")
+        with open(path, "wb") as f:
+            f.write(build_fixtures.tosc_bytes(build_fixtures.alert_first(build_fixtures.project())))
+        layout = import_tosc.import_files(path, self.als)
+        overlay = layout["overlay"]
+        # Node order stays the z-order: the box blinks under the overlay.
+        self.assertEqual([i["kind"] for i in overlay], ["alert", "refresh", "strip"])
+        self.assertEqual([i["z"] for i in overlay], sorted(i["z"] for i in overlay))
+        self.assertEqual(overlay[0]["binding"], overlay[2]["binding"])
+        self.assertEqual(overlay[0]["frame"], {"x": 0.0, "y": 80.0, "w": 2360.0, "h": 1553.0})
+        self.assertEqual(overlay[0]["period_ms"], 300)
+        self.assertFalse(
+            [d for d in layout["report"]["dropped"] if "alert box" in d["why"]],
+            layout["report"]["dropped"],
+        )
+
+    def test_only_the_refresh_control_refreshes_and_backdrops_stay_inert(self):
+        # The sidebar backdrops carry the mute script, which mentions a
+        # refresh; only the control that asks for one is REFRESH ALL.
+        refresh = [i for i in all_items(self.layout) if i["kind"] == "refresh"]
+        self.assertEqual(
+            [(i["label"], i["frame"]) for i in refresh],
+            [("REFRESH ALL", {"x": 21.0, "y": 1300.0, "w": 209.0, "h": 54.0})],
+        )
+        backdrops = [
+            i for i in items(self.foh) if i["kind"] == "area" and i["style"] == {"bg": "#000000BD"}
+        ]
+        self.assertEqual(len(backdrops), 5, [i["kind"] for i in items(self.foh)])
+        self.assertEqual(backdrops[0]["frame"], {"x": 40.0, "y": 174.0, "w": 101.0, "h": 77.0})
+
+    def test_partly_visible_nodes_are_clipped_not_dropped(self):
+        # A return strip 28 px past the canvas's bottom edge (all its parts
+        # inside) is kept, clipped; its double-click guard matches it.
+        echo = self.strip_named("A-Echo")
+        self.assertEqual(echo["strip_kind"], "return")
+        self.assertEqual(echo["frame"], {"x": 2180.0, "y": 898.0, "w": 161.0, "h": 742.0})
+        self.assertEqual(len(echo["children"]), 8)
+        self.assertTrue(echo["mute_guard"])
+        self.assertNotIn(
+            "double_click_mute 'master_A-Echo': matches no strip", self.report["stale_config"]
+        )
+        # The bottom row's area and its vertical title, past the bottom edge.
+        areas = {a.get("title"): a for a in by_kind(items(self.foh), "area") if "title" in a}
+        self.assertEqual(areas[""]["frame"], {"x": 271.0, "y": 901.0, "w": 529.0, "h": 739.0})
+        self.assertEqual(areas["EFFECTS"]["frame"], {"x": 247.0, "y": 902.0, "w": 53.0, "h": 738.0})
+        # A nested page's backdrop larger than the pager: its part in the page.
+        backdrop = self.sub["STAGE"]["items"][0]
+        self.assertEqual(backdrop["style"]["bg"], "#9D9DA0FF")
+        self.assertEqual(backdrop["frame"], {"x": 294.0, "y": 61.0, "w": 1681.0, "h": 773.0})
+        # The TechAlert meter, taller than its group: its part in the group.
+        self.assertEqual(
+            self.strip_named("TechAlert #")["children"]["meter"],
+            {"x": 77.0, "y": 1144.0, "w": 10.0, "h": 12.0},
+        )
+        # A box starting above its page (under the root tab bar).
+        box9 = [a for a in by_kind(items(self.foh), "area") if a["frame"]["x"] == 37.0]
+        self.assertEqual(box9[0]["frame"], {"x": 37.0, "y": 59.0, "w": 178.0, "h": 1185.0})
+        # Each clipped node is reported.
+        for path in (
+            "root/pager1/WORSHIP/master_A-Echo",
+            "root/pager1/WORSHIP/effects_area",
+            "root/pager1/WORSHIP/effects",
+            "root/pager1/WORSHIP/FOH /STAGE/backdrop",
+            "root/band_TechAlert #/meter",
+            "root/pager1/WORSHIP/box9",
+            "root/alert",
+        ):
+            self.assertIn(path, self.report["clipped"])
+
     def test_frames_are_composed_into_canvas_coordinates(self):
         # A label at (10,10) in a group at (100,100) on a page at (0,59).
         marks = [i for i in items(self.foh) if i["kind"] == "label" and i["text"] == "[]"]
@@ -173,13 +254,14 @@ class ImportTest(unittest.TestCase):
 
     def test_decorative_script_carriers_are_dropped(self):
         decoration = self.report["decoration"]
-        # Five full strips on the canvas: two backdrop buttons with the mute
-        # script each (the off-canvas strip is dropped whole).
-        self.assertEqual(decoration["mute script carriers"], 10)
-        self.assertEqual(decoration["second meter bars"], 5)
-        self.assertEqual(decoration["scale labels"], 5)
-        self.assertEqual(decoration["tick lines"], 5)
-        self.assertEqual(decoration["meter dBFS labels (D11)"], 5)
+        # Six full strips on the canvas (one of them partly): two backdrop
+        # buttons with the mute script each (the off-canvas strip is
+        # dropped whole).
+        self.assertEqual(decoration["mute script carriers"], 12)
+        self.assertEqual(decoration["second meter bars"], 6)
+        self.assertEqual(decoration["scale labels"], 6)
+        self.assertEqual(decoration["tick lines"], 6)
+        self.assertEqual(decoration["meter dBFS labels (D11)"], 6)
         for item in all_items(self.layout):
             self.assertNotIn("button1", json.dumps(item))
 
@@ -208,6 +290,15 @@ class ImportTest(unittest.TestCase):
         aut = by_kind(items(self.foh), "hub_toggle")
         self.assertEqual(aut[0]["key"], "stage_aut")
         self.assertEqual(aut[0]["label"], "STAGE AUT")
+
+    def test_stage_buttons_take_their_inner_buttons_colour(self):
+        # The stage and STAGE AUT groups are transparent; their blue is on
+        # the inner buttons.
+        stage = by_kind(items(self.foh), "stage")[0]
+        aut = by_kind(items(self.foh), "hub_toggle")[0]
+        self.assertEqual(stage["style"]["bg"], "#000594FF")
+        self.assertEqual(aut["style"]["bg"], "#000594FF")
+        self.assertEqual(stage["style"]["text"], "STAGE")
 
     # --- config ---
 
@@ -312,6 +403,50 @@ class ImportTest(unittest.TestCase):
         repro = self.midi("REPRO")
         self.assertEqual(repro["targets"][0]["binding"]["path"], "mixer_device sends 1")
         self.assertEqual((repro["targets"][0]["on"], repro["targets"][0]["off"]), (1.0, 0.0))
+
+    def test_a_standalone_midi_button_keeps_its_place_and_its_sibling_label(self):
+        # REPRO is a button outside any group, at (75,909) on the page at
+        # (0,59): its frame is composed once, and the label drawn over it
+        # (a sibling node) names it.
+        repro = [
+            i for i in items(self.foh) if i["kind"] == "param_toggle" and i["label"] == "REPRO"
+        ]
+        self.assertEqual(len(repro), 1, [i.get("label") for i in items(self.foh)])
+        self.assertEqual(repro[0]["frame"], {"x": 75.0, "y": 968.0, "w": 102.0, "h": 60.0})
+        self.assertEqual(repro[0]["press"], "toggle")
+        self.assertEqual(
+            self.verdict("CC31 ch14"),
+            {"control": "REPRO", "message": "CC31 ch14", "verdict": "clean", "targets": 1},
+        )
+        # The label is the control's, not a second static text over it.
+        self.assertFalse([i for i in all_items(self.layout) if i.get("text") == "REPRO"])
+        self.assertFalse(
+            [d for d in self.report["dropped"] if "button42" in d["node"]], self.report["dropped"]
+        )
+
+    def test_former_midi_controls_are_named_by_their_visible_labels(self):
+        # Every label of a former MIDI control carries the restyle script;
+        # Podklady's name is two labels; its volume readout and the
+        # "ON/OFF" labels are not names.
+        self.assertEqual(
+            {m["message"]: m["control"] for m in self.report["midi"]},
+            {
+                "CC20 ch14": "Vox 1 TU",
+                "CC28 ch14": "Gitara 2",
+                "NOTE29 ch14": "ALERT LOOP",
+                "CC55 ch14": "REVERB",
+                "CC56 ch14": "VOC MIC",
+                "CC36 ch14": "AUTOTUNE",
+                "CC30 ch14": "ZVUKAR",
+                "CC31 ch14": "REPRO",
+                "CC58 ch14": "HALF",
+                "CC67 ch14": "SELECT",
+                "CC57 ch14": "Podklady All",
+            },
+        )
+        self.assertFalse(
+            [i for i in all_items(self.layout) if i.get("text") in ("REPRO", "- 0.0", "All")]
+        )
 
     def test_unmapped_partial_and_unsupported_controls_are_dropped(self):
         self.assertEqual(self.verdict("CC28 ch14")["why"], "no mapping in the set")

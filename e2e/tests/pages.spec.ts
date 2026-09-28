@@ -89,13 +89,14 @@ test.describe("Subscriptions follow the pages on screen", () => {
     await openSurface(page);
     await selectPage(page, "stage");
     const foh = await pageSubs(page);
-    expect(foh).toBe(28);
+    // 28 plus the master return strip on the main page (4 subscriptions).
+    expect(foh).toBe(32);
     await expectHubToHold(page, foh);
     await selectPage(page, "cue");
     await expectHubToHold(page, 3);
     await selectPage(page, "foh");
     await selectPage(page, "others");
-    await expectHubToHold(page, 25);
+    await expectHubToHold(page, 29);
     await selectPage(page, "stage");
     await expectHubToHold(page, foh);
   });
@@ -103,7 +104,7 @@ test.describe("Subscriptions follow the pages on screen", () => {
   test("a layout change while a page is open releases the old subscriptions", async ({ page }) => {
     await openSurface(page);
     await selectPage(page, "stage");
-    await expectHubToHold(page, 28);
+    await expectHubToHold(page, 32);
     const changed = layout();
     changed.pages[1].items = changed.pages[1].items.filter(
       (item: any) => !(item.kind === "strip" && item.binding.anchor.name === "Hand2 #"),
@@ -111,11 +112,11 @@ test.describe("Subscriptions follow the pages on screen", () => {
     try {
       await harness("/hub/layout", { layout: changed });
       await expect(strip(page, "Hand2 #")).toHaveCount(0, { timeout: 10_000 });
-      await expectHubToHold(page, 24);
+      await expectHubToHold(page, 28);
     } finally {
       await harness("/hub/layout/reset");
     }
     await expect(strip(page, "Hand2 #")).toBeVisible({ timeout: 10_000 });
-    await expectHubToHold(page, 28);
+    await expectHubToHold(page, 32);
   });
 });

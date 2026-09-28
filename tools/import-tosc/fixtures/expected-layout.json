@@ -71,6 +71,84 @@
      }
     },
     {
+     "kind": "area",
+     "frame": {
+      "x": 37.0,
+      "y": 59.0,
+      "w": 178.0,
+      "h": 1185.0
+     },
+     "z": 3,
+     "style": {
+      "bg": "#00000080"
+     }
+    },
+    {
+     "kind": "area",
+     "frame": {
+      "x": 40.0,
+      "y": 174.0,
+      "w": 101.0,
+      "h": 77.0
+     },
+     "z": 4,
+     "style": {
+      "bg": "#000000BD"
+     }
+    },
+    {
+     "kind": "area",
+     "frame": {
+      "x": 40.0,
+      "y": 72.0,
+      "w": 101.0,
+      "h": 77.0
+     },
+     "z": 5,
+     "style": {
+      "bg": "#000000BD"
+     }
+    },
+    {
+     "kind": "area",
+     "frame": {
+      "x": 51.0,
+      "y": 279.0,
+      "w": 137.0,
+      "h": 45.0
+     },
+     "z": 6,
+     "style": {
+      "bg": "#000000BD"
+     }
+    },
+    {
+     "kind": "area",
+     "frame": {
+      "x": 52.0,
+      "y": 334.0,
+      "w": 136.0,
+      "h": 47.0
+     },
+     "z": 7,
+     "style": {
+      "bg": "#000000BD"
+     }
+    },
+    {
+     "kind": "area",
+     "frame": {
+      "x": 78.0,
+      "y": 957.0,
+      "w": 110.0,
+      "h": 66.0
+     },
+     "z": 8,
+     "style": {
+      "bg": "#000000BD"
+     }
+    },
+    {
      "kind": "stage",
      "frame": {
       "x": 27.0,
@@ -78,7 +156,7 @@
       "w": 115.0,
       "h": 85.0
      },
-     "z": 8,
+     "z": 15,
      "style": {
       "bg": "#000594FF",
       "text": "STAGE"
@@ -100,7 +178,7 @@
       "w": 115.0,
       "h": 85.0
      },
-     "z": 9,
+     "z": 16,
      "style": {
       "bg": "#000594FF"
      },
@@ -115,7 +193,7 @@
       "w": 161.0,
       "h": 65.0
      },
-     "z": 10,
+     "z": 17,
      "style": {},
      "binding": {
       "instance": "band",
@@ -133,7 +211,7 @@
       "w": 161.0,
       "h": 65.0
      },
-     "z": 11,
+     "z": 18,
      "style": {},
      "binding": {
       "instance": "band",
@@ -151,7 +229,7 @@
       "w": 149.0,
       "h": 60.0
      },
-     "z": 12,
+     "z": 19,
      "style": {
       "bg": "#875700FF"
      },
@@ -180,7 +258,7 @@
       "w": 197.0,
       "h": 60.0
      },
-     "z": 13,
+     "z": 20,
      "style": {
       "bg": "#808080FF"
      },
@@ -221,7 +299,7 @@
       "w": 204.0,
       "h": 60.0
      },
-     "z": 14,
+     "z": 21,
      "style": {
       "bg": "#808080FF"
      },
@@ -251,7 +329,7 @@
       "w": 160.0,
       "h": 60.0
      },
-     "z": 15,
+     "z": 22,
      "style": {
       "bg": "#808080FF"
      },
@@ -275,14 +353,14 @@
     {
      "kind": "param_toggle",
      "frame": {
-      "x": 27.0,
-      "y": 957.0,
+      "x": 75.0,
+      "y": 968.0,
       "w": 102.0,
-      "h": 30.0
+      "h": 60.0
      },
-     "z": 16,
+     "z": 23,
      "style": {
-      "bg": "#808080FF"
+      "bg": "#875700FF"
      },
      "label": "REPRO",
      "targets": [
@@ -310,7 +388,7 @@
       "w": 101.0,
       "h": 399.0
      },
-     "z": 17,
+     "z": 24,
      "style": {
       "bg": "#808080FF"
      },
@@ -345,12 +423,27 @@
     {
      "kind": "area",
      "frame": {
+      "x": 271.0,
+      "y": 901.0,
+      "w": 529.0,
+      "h": 739.0
+     },
+     "z": 25,
+     "style": {
+      "bg": "#636363FF",
+      "vertical": true
+     },
+     "title": ""
+    },
+    {
+     "kind": "area",
+     "frame": {
       "x": 247.0,
       "y": 902.0,
-      "w": 24.0,
-      "h": 700.0
+      "w": 53.0,
+      "h": 738.0
      },
-     "z": 18,
+     "z": 26,
      "style": {
       "bg": "#636363FF",
       "text": "EFFECTS",
@@ -366,7 +459,7 @@
       "w": 20.0,
       "h": 20.0
      },
-     "z": 19,
+     "z": 27,
      "style": {},
      "text": "[]"
     },
@@ -378,7 +471,7 @@
       "w": 161.0,
       "h": 700.0
      },
-     "z": 20,
+     "z": 28,
      "style": {
       "bg": "#6178FFFF"
      },
@@ -450,7 +543,7 @@
       "w": 161.0,
       "h": 700.0
      },
-     "z": 21,
+     "z": 29,
      "style": {
       "bg": "#F5FF14FF"
      },
@@ -513,6 +606,78 @@
       }
      },
      "mute_guard": false
+    },
+    {
+     "kind": "strip",
+     "frame": {
+      "x": 2180.0,
+      "y": 898.0,
+      "w": 161.0,
+      "h": 742.0
+     },
+     "z": 30,
+     "style": {
+      "bg": "#F5FF14FF"
+     },
+     "binding": {
+      "instance": "master",
+      "anchor": {
+       "kind": "return",
+       "name": "A-Echo"
+      }
+     },
+     "strip_kind": "return",
+     "children": {
+      "pan": {
+       "x": 2195.0,
+       "y": 923.0,
+       "w": 131.0,
+       "h": 48.0
+      },
+      "fader": {
+       "x": 2195.0,
+       "y": 981.0,
+       "w": 131.0,
+       "h": 553.0
+      },
+      "meter": {
+       "x": 2181.0,
+       "y": 981.0,
+       "w": 10.0,
+       "h": 553.0
+      },
+      "mute": {
+       "x": 2195.0,
+       "y": 1546.0,
+       "w": 131.0,
+       "h": 52.0
+      },
+      "label": {
+       "x": 2196.0,
+       "y": 1551.0,
+       "w": 129.0,
+       "h": 42.0
+      },
+      "instance_label": {
+       "x": 2196.0,
+       "y": 1049.0,
+       "w": 129.0,
+       "h": 20.0
+      },
+      "db": {
+       "x": 2195.0,
+       "y": 1014.0,
+       "w": 131.0,
+       "h": 30.0
+      },
+      "status": {
+       "x": 2204.0,
+       "y": 986.0,
+       "w": 88.0,
+       "h": 20.0
+      }
+     },
+     "mute_guard": true
     }
    ],
    "pager": {
@@ -544,7 +709,22 @@
          "w": 1681.0,
          "h": 773.0
         },
-        "z": 3,
+        "z": 9,
+        "style": {
+         "bg": "#9D9DA0FF",
+         "vertical": true
+        },
+        "title": ""
+       },
+       {
+        "kind": "area",
+        "frame": {
+         "x": 294.0,
+         "y": 61.0,
+         "w": 1681.0,
+         "h": 773.0
+        },
+        "z": 10,
         "style": {
          "bg": "#BAFFA657"
         }
@@ -557,7 +737,7 @@
          "w": 60.0,
          "h": 700.0
         },
-        "z": 4,
+        "z": 11,
         "style": {
          "bg": "#BAFFA6FF",
          "text": "STAGE",
@@ -573,7 +753,7 @@
          "w": 136.0,
          "h": 706.0
         },
-        "z": 5,
+        "z": 12,
         "style": {},
         "binding": {
          "instance": "band",
@@ -643,7 +823,7 @@
          "w": 136.0,
          "h": 706.0
         },
-        "z": 6,
+        "z": 13,
         "style": {},
         "binding": {
          "instance": "band",
@@ -723,7 +903,7 @@
          "w": 160.0,
          "h": 710.0
         },
-        "z": 7,
+        "z": 14,
         "style": {},
         "binding": {
          "instance": "master",
@@ -806,12 +986,12 @@
       "w": 800.0,
       "h": 400.0
      },
-     "z": 22,
+     "z": 31,
      "style": {
       "text_color": "#FFFFFFFF",
       "text_size": 20.0
      },
-     "text": "connection_band: 2\nconnection_master: 3\nunfold_band: 'Vocals Repro grp#'\nunfold_band: 'Old grp#'\ndouble_click_mute: 'master_Hand1 #'\ndouble_click_mute: 'band_Nothing'\n"
+     "text": "connection_band: 2\nconnection_master: 3\nunfold_band: 'Vocals Repro grp#'\nunfold_band: 'Old grp#'\ndouble_click_mute: 'master_Hand1 #'\ndouble_click_mute: 'master_A-Echo'\ndouble_click_mute: 'band_Nothing'\n"
     }
    ]
   }
@@ -825,7 +1005,7 @@
     "w": 124.0,
     "h": 97.0
    },
-   "z": 23,
+   "z": 32,
    "style": {},
    "binding": {
     "instance": "band",
@@ -837,10 +1017,10 @@
    "strip_kind": "meter_mute_only",
    "children": {
     "meter": {
-     "x": 68.0,
-     "y": 1064.0,
+     "x": 77.0,
+     "y": 1144.0,
      "w": 10.0,
-     "h": 87.0
+     "h": 12.0
     },
     "status": {
      "x": 87.0,
@@ -871,7 +1051,7 @@
     "w": 209.0,
     "h": 54.0
    },
-   "z": 24,
+   "z": 33,
    "style": {
     "bg": "#808080FF"
    },
@@ -885,7 +1065,7 @@
     "w": 2360.0,
     "h": 1553.0
    },
-   "z": 25,
+   "z": 34,
    "style": {
     "bg": "#FF00001F"
    },
@@ -950,6 +1130,15 @@
     "node": "root/battery",
     "why": "the battery gauge (X5)"
    }
+  ],
+  "clipped": [
+   "root/pager1/WORSHIP/box9",
+   "root/pager1/WORSHIP/FOH /STAGE/backdrop",
+   "root/pager1/WORSHIP/effects_area",
+   "root/pager1/WORSHIP/effects",
+   "root/pager1/WORSHIP/master_A-Echo",
+   "root/band_TechAlert #/meter",
+   "root/alert"
   ],
   "midi": [
    {
@@ -1032,25 +1221,28 @@
   ],
   "decoration": {
    "labels of former MIDI controls": 3,
-   "mute script carriers": 10,
-   "second meter bars": 5,
-   "meter dBFS labels (D11)": 5,
-   "scale labels": 5,
-   "tick lines": 5
+   "mute script carriers": 12,
+   "second meter bars": 6,
+   "meter dBFS labels (D11)": 6,
+   "scale labels": 6,
+   "tick lines": 6
   },
   "macro_bus_links": 2,
   "notes": [
    "a track name with a leading letter and a hyphen (A-…) is bound as a return track",
-   "double_click_mute entries are matched as plain text, not Lua patterns",
-   "root/alert: clipped to the canvas"
+   "double_click_mute entries are matched as plain text, not Lua patterns"
   ],
   "scripts": {
-   "da590ff6d7": [
-    "strip group"
+   "793c3a9d79": [
+    "label"
    ],
-   "41b36bdee2": [
+   "156292b4d9": [
+    "button",
     "backdrop (mute script)",
     "mute"
+   ],
+   "da590ff6d7": [
+    "strip group"
    ],
    "da798968fb": [
     "pan"
@@ -1064,8 +1256,7 @@
    ],
    "735080db5f": [
     "db",
-    "strip decoration",
-    "label"
+    "strip decoration"
    ],
    "38869d215f": [
     "group",
@@ -1078,10 +1269,13 @@
    "b7221e44c0": [
     "button"
    ],
-   "b0b4de7b26": [
-    "group"
+   "29823f9f61": [
+    "label"
    ],
-   "4912ceeb81": [
+   "b0b4de7b26": [
+    "fader"
+   ],
+   "cba6964b1d": [
     "label"
    ],
    "6824b74cf6": [

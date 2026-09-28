@@ -24,18 +24,32 @@ from xml.sax.saxutils import escape
 
 # --- scripts (the hash table is built from these, as from a real project) ---
 
-MUTE_SCRIPT = "-- mute_button\nfunction onValueChanged(k)\n  -- send mute\nend\n"
+# Like the real mute script, it mentions a refresh (in a comment).
+MUTE_SCRIPT = (
+    "-- mute_button\n-- Fixed: keep the state during a refresh\n"
+    "function onValueChanged(k)\n  -- send mute\nend\n"
+)
 METER_SCRIPT = "-- meter_script\nfunction onReceiveNotify(k, v)\nend"  # no trailing newline
 FADER_SCRIPT = "-- fader_script\nfunction onValueChanged(k)\nend\n"
 PAN_SCRIPT = "-- pan_control\nfunction onValueChanged(k)\nend\n"
 GROUP_SCRIPT = "-- group_init\nfunction refresh_tracks()\nend\n"
 DB_SCRIPT = "-- db_label\n"
 DOUBLE_TAP_SCRIPT = "-- latch on a double tap\nfunction onValueChanged(k)\nend\n"
-REFRESH_SCRIPT = "-- global_refresh_button\nfunction startRefreshSequence()\nend\n"
+# The REFRESH ALL control asks the document script to refresh every strip.
+REFRESH_SCRIPT = (
+    "-- Global Refresh Button Script\nfunction onValueChanged(key)\n"
+    '  if key == "x" then\n    root:notify("refresh_all_groups")\n  end\nend\n'
+)
 BATTERY_SCRIPT = "-- battery\nfunction update()\n  local b = getBatteryLevel()\nend\n"
 ALERT_SCRIPT = "-- TechAlert blink\nfunction update()\nend\n"
 SOLO_SCRIPT = "-- solo group\n"
 STAGE_SCRIPT = "-- stage mics\n"
+# Every label of a former MIDI control carries it (restyle by incoming OSC).
+RESTYLE_SCRIPT = "-- restyle on receive\nfunction onReceiveOSC(message, connections)\nend\n"
+# The dead volume readout next to the Podklady fader.
+VOLUME_LABEL_SCRIPT = (
+    "-- volume label\nfunction onReceiveOSC(message)\n  self.values.text = '- 0.0'\nend\n"
+)
 
 CONFIG_TEXT = (
     "connection_band: 2\n"
@@ -43,6 +57,7 @@ CONFIG_TEXT = (
     "unfold_band: 'Vocals Repro grp#'\n"
     "unfold_band: 'Old grp#'\n"
     "double_click_mute: 'master_Hand1 #'\n"
+    "double_click_mute: 'master_A-Echo'\n"
     "double_click_mute: 'band_Nothing'\n"
 )
 
@@ -163,10 +178,28 @@ def strip(name, x, y, w=160, h=710, background=False, color=GREY):
     )
 
 
+def backdrop(name, frame):
+    """A dark, non-interactive button behind a control, carrying the mute script."""
+    return N(
+        "BUTTON",
+        name,
+        frame,
+        script=MUTE_SCRIPT,
+        buttonType=1,
+        press=True,
+        release=True,
+        interactive=False,
+        background=True,
+        color=(0, 0, 0, 0.74),
+    )
+
+
 def alert_strip(name, x, y):
     """The TechAlert strip: meter, status, mute and label, no fader or pan."""
     parts = [
-        N("FADER", "meter", (1, 5, 10, 87), script=METER_SCRIPT),
+        # Taller than its group, as in the real project: TouchOSC shows the
+        # 12 px inside the group.
+        N("FADER", "meter", (10, 85, 10, 552), script=METER_SCRIPT),
         N("BOX", "status_indicator", (20, 5, 80, 15)),
         N("BUTTON", "mute", (15, 50, 94, 40), script=MUTE_SCRIPT, buttonType=1),
         label("track_label", (16, 55, 92, 30), "TechAlert"),
@@ -175,9 +208,14 @@ def alert_strip(name, x, y):
 
 
 def midi_group(name, frame, button, text, state_label=True):
-    kids = [button, label("name", (0, 60, frame[2], 30), text, textColor=WHITE)]
+    """A former MIDI control's group: the button, its name label and the
+    "ON/OFF" label, both labels carrying the restyle script."""
+    kids = [
+        button,
+        label("name", (0, 60, frame[2], 30), text, textColor=WHITE, script=RESTYLE_SCRIPT),
+    ]
     if state_label:
-        kids.append(label("state", (0, 80, frame[2], 20), "ON/OFF"))
+        kids.append(label("state", (0, 80, frame[2], 20), "ON/OFF", script=RESTYLE_SCRIPT))
     return N("GROUP", name, frame, kids)
 
 
@@ -244,6 +282,17 @@ def project():
         "STAGE",
         (65, 0, 1681, 773),
         [
+            # A grey backdrop far larger than the pager: what shows is the
+            # part inside the page.
+            label(
+                "backdrop",
+                (-243, -80, 2512, 920),
+                "",
+                background=True,
+                orientation=3,
+                locked=True,
+                color=(0.616, 0.616, 0.627, 1),
+            ),
             N("BOX", "panel", (0, 0, 1681, 773), color=(0.73, 1, 0.65, 0.34)),
             label(
                 "title",
@@ -286,29 +335,59 @@ def project():
         (0, 59, 2360, 1581),
         [
             N("BOX", "box8", (27, 10, 198, 1240), color=(0, 0, 0, 0.5)),
+            # Starts above the page, under the root tab bar.
+            N("BOX", "box9", (37, -55, 178, 1240), color=(0, 0, 0, 0.5)),
+            # Dark backdrops behind the sidebar controls: they carry the
+            # mute script but are never notified (inert).
+            *[
+                backdrop(name, frame)
+                for name, frame in (
+                    ("button72", (40, 115, 101, 77)),
+                    ("button71", (40, 13, 101, 77)),
+                    ("button70", (51, 220, 137, 45)),
+                    ("button69", (52, 275, 136, 47)),
+                    ("button65", (78, 898, 110, 66)),
+                )
+            ],
             sub_pager,
             N(
                 "GROUP",
                 "Mics Stage #",
                 (27, 19, 115, 85),
+                # A transparent group: the blue is the inner button's.
                 [
-                    N("BUTTON", "btn_mute", (0, 0, 115, 85), script=STAGE_SCRIPT, buttonType=1),
+                    N(
+                        "BUTTON",
+                        "btn_mute",
+                        (5, 5, 99, 75),
+                        script=STAGE_SCRIPT,
+                        buttonType=1,
+                        background=True,
+                        color=(0, 0.02, 0.58, 1),
+                    ),
                     label("label", (0, 50, 115, 30), "STAGE"),
                 ],
                 script=STAGE_SCRIPT,
                 background=True,
-                color=(0, 0.02, 0.58, 1),
+                color=(0, 0, 0, 0),
             ),
             N(
                 "GROUP",
                 "group70",
                 (27, 121, 115, 85),
                 [
-                    N("BUTTON", "btn_stage_aut", (0, 0, 115, 85), buttonType=1),
+                    N(
+                        "BUTTON",
+                        "btn_stage_aut",
+                        (5, 5, 99, 75),
+                        buttonType=1,
+                        background=True,
+                        color=(0, 0.02, 0.58, 1),
+                    ),
                     label("label", (0, 50, 115, 30), "STAGE AUT"),
                 ],
                 background=True,
-                color=(0, 0.02, 0.58, 1),
+                color=(0, 0, 0, 0),
             ),
             N(
                 "GROUP",
@@ -397,21 +476,26 @@ def project():
                 "ZVUKAR",
                 state_label=False,
             ),
-            midi_group(
-                "group80",
-                (27, 898, 102, 60),
-                N(
-                    "BUTTON",
-                    "button42",
-                    (0, 0, 102, 30),
-                    [],
-                    [_midi("CONTROLCHANGE", 13, 31)],
-                    buttonType=1,
-                    press=True,
-                    release=True,
-                ),
+            # A former MIDI button outside any group (as on the real
+            # sidebar): its visible label is a sibling drawn over it.
+            N(
+                "BUTTON",
+                "button42",
+                (75, 909, 102, 60),
+                [],
+                [_midi("CONTROLCHANGE", 13, 31)],
+                buttonType=1,
+                press=True,
+                release=True,
+                color=(0.53, 0.34, 0, 1),
+            ),
+            label(
+                "label942",
+                (67, 898, 119, 84),
                 "REPRO",
-                state_label=False,
+                textColor=WHITE,
+                textSize=24,
+                script=RESTYLE_SCRIPT,
             ),
             midi_group(
                 "group81",
@@ -450,7 +534,6 @@ def project():
                 "group142",
                 (755, 1000, 116, 439),
                 [
-                    label("name", (0, 0, 116, 20), "Podklady All"),
                     N(
                         "FADER",
                         "fader42",
@@ -461,12 +544,25 @@ def project():
                         grid=True,
                         gridSteps=10,
                     ),
-                    label("fdr_label", (0, 420, 101, 19), "- 0.0", script=DB_SCRIPT),
+                    # The name is two labels ("All" drawn above "Podklady").
+                    label("label899", (7, 349, 104, 46), "Podklady"),
+                    label("label946", (8, 309, 104, 46), "All"),
+                    label("label950", (-43, 28, 205, 84), "- 0.0", script=VOLUME_LABEL_SCRIPT),
                 ],
+            ),
+            # The bottom row's area and its vertical title overhang the
+            # canvas's bottom edge, as in the real project.
+            label(
+                "effects_area",
+                (271, 842, 529, 754),
+                "",
+                background=True,
+                orientation=3,
+                color=(0.39, 0.39, 0.39, 1),
             ),
             label(
                 "effects",
-                (247, 843, 24, 700),
+                (247, 843, 53, 748),
                 "EFFECTS",
                 background=True,
                 orientation=3,
@@ -483,6 +579,17 @@ def project():
                 color=(0.38, 0.47, 1, 1),
             ),
             strip("Hand2 #", 2180, 46, w=161, h=700, background=True, color=(0.96, 1, 0.08, 1)),
+            # A return strip 28 px past the canvas's bottom edge; every part
+            # of it is inside.
+            strip(
+                "master_A-Echo",
+                2180,
+                839,
+                w=161,
+                h=770,
+                background=True,
+                color=(0.96, 1, 0.08, 1),
+            ),
             strip("master_Hand3 #", 1420, 1770),
             label("hidden", (1610, 834, 50, 20), "gone", visible=False),
         ],
@@ -526,12 +633,33 @@ def project():
         [
             pager,
             tech_alert,
+            # The battery gauge: a plain group whose fader carries the
+            # battery script, with a box and a "100%" label.
             N(
                 "GROUP",
                 "battery",
                 (66, 1152, 136, 80),
-                [N("FADER", "level", (0, 0, 136, 40)), label("pct", (0, 40, 136, 40), "80%")],
-                script=BATTERY_SCRIPT,
+                [
+                    N("BOX", "+", (104, 36, 24, 23), color=(0, 1, 0, 0.43)),
+                    N(
+                        "FADER",
+                        "main",
+                        (5, 25, 112, 45),
+                        script=BATTERY_SCRIPT,
+                        orientation=1,
+                        background=True,
+                        color=(0, 1, 0, 0.27),
+                    ),
+                    label(
+                        "label",
+                        (4, 26, 119, 44),
+                        "100%",
+                        background=True,
+                        color=(0, 1, 0, 0.27),
+                    ),
+                ],
+                background=True,
+                color=(0, 0, 0, 0),
             ),
             label(
                 "refresh",
@@ -556,8 +684,19 @@ def project():
     )
 
 
-def tosc_bytes():
-    xml = "<?xml version='1.0' encoding='UTF-8'?><lexml version='6'>" + project().xml() + "</lexml>"
+def alert_first(root):
+    """``root`` with its children in the real project's order: the hidden alert
+    box right after the pager, the TechAlert strip last."""
+    by_name = {c.props["name"]: c for c in root.children}
+    order = ("pager1", "alert", "refresh", "battery", "band_TechAlert #")
+    root.children = [by_name[name] for name in order]
+    return root
+
+
+def tosc_bytes(root=None):
+    """The zlib-compressed project file of ``root`` (default: ``project()``)."""
+    root = project() if root is None else root
+    xml = "<?xml version='1.0' encoding='UTF-8'?><lexml version='6'>" + root.xml() + "</lexml>"
     return zlib.compress(xml.encode("utf-8"), 9)
 
 
