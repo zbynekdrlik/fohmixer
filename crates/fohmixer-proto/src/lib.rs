@@ -1,10 +1,15 @@
 //! fohmixer protocol crate: the types shared by the hub and the UI.
 //!
-//! WASM-safe (no config, no I/O). S0 holds the build and version info only
-//! (copied from iemmixer's `iem-core` @ 22372bc); the hub ⇄ client protocol
-//! types arrive in S3 (spec §2.4).
+//! WASM-safe (no config, no I/O): the build and version info (copied from
+//! iemmixer's `iem-core` @ 22372bc), the hub ⇄ client protocol
+//! ([`client`], spec §2.4), the layout document ([`layout`], spec §2.5) and
+//! the LOM path grammar both use ([`path`], S2 design note §3.1).
 
 use serde::{Deserialize, Serialize};
+
+pub mod client;
+pub mod layout;
+pub mod path;
 
 /// Application version: the workspace's `[workspace.package].version`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
