@@ -88,8 +88,10 @@ test.describe("A reconnect", () => {
     await openSurface(page);
     const aut = page.getByTestId("stage-aut");
     await ready(aut);
-    // The socket drops (a Wi-Fi blip): the page reconnects.
-    await sockets[0].close({ code: 1001, reason: "gone" });
+    // The socket drops (a Wi-Fi blip): the page reconnects. (Playwright
+    // closes the hub's side with the same code, which a browser socket takes
+    // only as 1000 or 3000-4999; 4001 is the hub's reload code.)
+    await sockets[0].close({ code: 4000, reason: "gone" });
     await expect.poll(() => sockets.length, { timeout: 10_000 }).toBe(2);
     await expect(page.getByTestId("surface")).toHaveAttribute("data-connected", "true");
     // Connected again, but STAGE AUT has no value from this connection yet:

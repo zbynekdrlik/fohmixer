@@ -70,7 +70,7 @@ test.describe("A strip", () => {
     const fader = strip(page, "Hand2 #").getByTestId("fader");
     await ready(fader);
     await until(() => shown(fader), (v) => Math.abs(v - 0.5) < 0.001, "the fader at 0.5");
-    await doubleTap(page, fader);
+    await doubleTap(fader);
     await until(() => live.get("band", volume(HAND2), "value"), (v) => Math.abs(v - 0.85) < 1e-6, "0 dB", 6000);
     await expect(strip(page, "Hand2 #").getByTestId("db")).toHaveText("0.0 dB");
   });
@@ -88,7 +88,7 @@ test.describe("A strip", () => {
     await until(() => live.get("band", panning(HAND2), "value"), (v) => v > 0.05, "panning right");
     await expect(pan.locator(".pan-dot")).toHaveCSS("background-color", "rgb(52, 193, 220)");
     await page.waitForTimeout(400);
-    await doubleTap(page, pan);
+    await doubleTap(pan);
     await until(() => live.get("band", panning(HAND2), "value"), (v) => v === 0, "centred");
     await expect(pan.locator(".pan-dot")).toHaveCSS("background-color", "rgb(100, 100, 100)");
   });
@@ -120,7 +120,7 @@ test.describe("A strip", () => {
     await page.waitForTimeout(700);
     expect(await live.get("master", hand1, "mute")).toBe(false);
     await expect(mute).not.toHaveClass(/\barmed\b/);
-    await doubleTap(page, mute, 150);
+    await doubleTap(mute, 150);
     await until(() => live.get("master", hand1, "mute"), (v) => v === true, "muted after the confirming tap");
     // The band's track of the same name is another instance's (spec F2, X4).
     expect(await live.get("band", hand1, "mute")).toBe(false);

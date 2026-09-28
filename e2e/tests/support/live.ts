@@ -205,12 +205,40 @@ export async function centre(control: Locator): Promise<{ x: number; y: number }
   return { x: Math.round(box.x + box.width / 2), y: Math.round(box.y + box.height / 2) };
 }
 
-/** Two quick taps (a double tap) on a control. */
-export async function doubleTap(page: Page, control: Locator, gapMs = 100) {
+/**
+ * Two taps on a control, `gapMs` from the first release to the second press,
+ * timed inside the page: the fader's double tap wants its releases 50–250 ms
+ * apart, and one real click takes ~160 ms in WebKit on the CI runner, so two
+ * real clicks cannot hit that window in both engines. The taps are the same
+ * pointer events a finger sends (the WebKit multi-touch path sends them too).
+ */
+export async function doubleTap(control: Locator, gapMs = 100) {
   const { x, y } = await centre(control);
-  await page.mouse.click(x, y);
-  await page.waitForTimeout(gapMs);
-  await page.mouse.click(x, y);
+  await control.evaluate(
+    async (el, [clientX, clientY, gap]) => {
+      const fire = (type: string) =>
+        el.dispatchEvent(
+          new PointerEvent(type, {
+            pointerId: 21,
+            pointerType: "touch",
+            isPrimary: true,
+            clientX,
+            clientY,
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
+      const wait = (ms: number) => new Promise((done) => setTimeout(done, ms));
+      fire("pointerdown");
+      await wait(20);
+      fire("pointerup");
+      await wait(gap);
+      fire("pointerdown");
+      await wait(20);
+      fire("pointerup");
+    },
+    [x, y, gapMs],
+  );
 }
 
 /**
