@@ -63,7 +63,7 @@ class SiteTest(unittest.TestCase):
         params = {p.name: p for p in eq.parameters}
         self.assertIn("1 Gain A", params)
         self.assertIn("8 Frequency A", params)
-        self.assertEqual(str(params["1 Gain A"]), "0.0 dB")
+        self.assertEqual(str(params["1 Gain A"]), "0.00 dB")
         rack = by_name["Mics Stage #"].devices[0]
         self.assertTrue(rack.can_have_chains)
         self.assertEqual([c.name for c in rack.chains], ["Dry", "Wet"])
@@ -94,9 +94,9 @@ class DisplayTest(unittest.TestCase):
         return str(self.vol)
 
     def test_volume_display_law(self):
-        self.assertEqual(self._display(0.85), "0.0 dB")
+        self.assertEqual(self._display(0.85), "0.00 dB")
         self.assertEqual(self._display(0.0), "-inf dB")
-        self.assertEqual(self._display(1.0), "6.0 dB")
+        self.assertEqual(self._display(1.0), "6.00 dB")
         self.assertEqual(self._display(0.5), "-14.0 dB")
         self.assertEqual(self._display(0.4), "-18.0 dB")
         self.assertEqual(self._display(0.2), "-34.4 dB")

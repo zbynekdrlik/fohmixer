@@ -32,7 +32,7 @@ fn two_clients_share_one_live_listener_and_both_get_every_change() {
         let key = a.sub_key("band", VOLUME, "value", true).await;
         let first = a.value_of(&key, SECS_3).await;
         assert_eq!(first.value, Some(json!(0.85)));
-        assert_eq!(first.display.as_deref(), Some("0.0 dB"));
+        assert_eq!(first.display.as_deref(), Some("0.00 dB"));
         // The second subscriber gets the cached value at once, in `subbed`.
         match b.sub("band", VOLUME, "value", true).await {
             ServerMsg::Subbed {
@@ -43,7 +43,7 @@ fn two_clients_share_one_live_listener_and_both_get_every_change() {
             } => {
                 assert_eq!(sub, key);
                 assert_eq!(value, Some(json!(0.85)));
-                assert_eq!(display.as_deref(), Some("0.0 dB"));
+                assert_eq!(display.as_deref(), Some("0.00 dB"));
                 assert_eq!(error, None);
             }
             other => panic!("{other:?}"),
@@ -249,7 +249,7 @@ fn a_host_restart_goes_offline_online_and_resubscribes_once() {
             }
         };
         assert_eq!(fresh.value, Some(json!(0.85)));
-        assert_eq!(fresh.display.as_deref(), Some("0.0 dB"));
+        assert_eq!(fresh.display.as_deref(), Some("0.00 dB"));
         let status = hub
             .status_until(SECS_3, |s| {
                 s.instances[0].online && s.instances[0].listeners == 3

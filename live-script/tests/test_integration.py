@@ -319,7 +319,7 @@ class IntegrationTest(unittest.TestCase):
             {"prop": "value", "display": True},
         )
         self.assertEqual(out["value"], 0.8)
-        self.assertEqual(out["display"], "-2.0 dB")
+        self.assertEqual(out["display"], "-2.00 dB")
         self.assertTrue(out["key"].endswith(".value"))
 
     def test_push_after_a_set_from_another_client(self):

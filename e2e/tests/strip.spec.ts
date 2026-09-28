@@ -38,7 +38,7 @@ test.describe("A strip", () => {
     await openSurface(page);
     const db = strip(page, "Hand2 #").getByTestId("db");
     await expect(db).toHaveText(await live.display("band", volume(HAND2), 0.85));
-    await expect(db).toHaveText("0.0 dB");
+    await expect(db).toHaveText("0.00 dB");
     await live.set("band", volume(HAND2), "value", 0.7);
     await expect(db).toHaveText(await live.display("band", volume(HAND2), 0.7));
     await expect(strip(page, "Hand2 #").getByTestId("strip-label")).toHaveText("Hand2");
@@ -96,7 +96,7 @@ test.describe("A strip", () => {
     await until(() => shown(fader), (v) => Math.abs(v - 0.5) < 0.001, "the fader at 0.5");
     await doubleTap(fader);
     await until(() => live.get("band", volume(HAND2), "value"), (v) => Math.abs(v - 0.85) < 1e-6, "0 dB", 6000);
-    await expect(strip(page, "Hand2 #").getByTestId("db")).toHaveText("0.0 dB");
+    await expect(strip(page, "Hand2 #").getByTestId("db")).toHaveText("0.00 dB");
   });
 
   test("a pan drag moves Live's panning and a double tap centres it", async ({ page }) => {
