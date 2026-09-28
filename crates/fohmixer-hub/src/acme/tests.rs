@@ -372,7 +372,9 @@ fn a_stored_account_counts_for_its_own_directory_only() {
     // The key in a file of another shape never reaches the log.
     let quoted = "QUOTEDVALUE";
     let odd = format!(r#"{{"directory": "{directory}", "credentials": "{quoted}"}}"#);
-    let error = serde_json::from_str::<StoredAccount>(&odd).unwrap_err();
+    let error = serde_json::from_str::<StoredAccount>(&odd)
+        .err()
+        .expect("a string is no account");
     assert!(
         error.to_string().contains(quoted),
         "serde quotes it: {error}"
