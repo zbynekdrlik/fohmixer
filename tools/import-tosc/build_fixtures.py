@@ -146,7 +146,12 @@ def label(name, frame, text, **props):
     return N("LABEL", name, frame, values={"text": text}, **props)
 
 
-def strip(name, x, y, w=160, h=710, background=False, color=GREY):
+# The instance label of a narrow strip: 39 × 25 under the dB text, as in the real
+# project's narrow template (a standard strip's spans the strip).
+NARROW_CONNECTION_LABEL = (49, 160, 39, 25)
+
+
+def strip(name, x, y, w=160, h=710, background=False, color=GREY, connection=None):
     """A strip group with its parts (parent-relative frames) and its decoration."""
     parts = [
         # Backdrops that carry the mute script but do nothing (decoration).
@@ -160,7 +165,7 @@ def strip(name, x, y, w=160, h=710, background=False, color=GREY):
         N("FADER", "fader48", (5, 83, 10, 553), script=METER_SCRIPT),
         N("BUTTON", "mute", (15, 648, w - 30, 52), script=MUTE_SCRIPT, buttonType=1),
         label("track_label", (16, 653, w - 32, 42), "Old name"),
-        label("connection_label", (16, 151, w - 32, 20), "band"),
+        label("connection_label", connection or (16, 151, w - 32, 20), "band"),
         label("db", (15, 116, w - 30, 30), "-inf", script=DB_SCRIPT),
         label("db_meter_label", (15, 173, w - 30, 20), "-inf dBFS", script=DB_SCRIPT),
         N("BOX", "status_indicator", (24, 88, 88, 20)),
@@ -302,8 +307,8 @@ def project():
                 orientation=3,
                 color=(0.73, 1, 0.65, 1),
             ),
-            strip("band_Vocal 1 repro#", 95, 40, w=136, h=706),
-            strip("Keys 1", 243, 40, w=136, h=706),
+            strip("band_Vocal 1 repro#", 95, 40, w=136, h=706, connection=NARROW_CONNECTION_LABEL),
+            strip("Keys 1", 243, 40, w=136, h=706, connection=NARROW_CONNECTION_LABEL),
         ],
         tabLabel="STAGE",
         tabColorOff=(0.73, 1, 0.65, 0.34),
