@@ -13,7 +13,14 @@
 //!   listens to the list each name selects from and to the selected object's
 //!   `name`. A change there re-resolves every name binding of the instance
 //!   by its original path, so a renamed track gives its subscribers an error
-//!   (spec I5), never a stale value, and a rename back gives the value again.
+//!   (spec I5), never a stale value — not even one pushed in the same frame
+//!   as the rename — and a rename back gives the value again. A guard is an
+//!   entry of its own (its key ends in `|guard`), never shared with a
+//!   client's subscription, so a client may subscribe to exactly what a
+//!   guard watches (a track's name) without the guard losing its object.
+//! - A new subscriber of a name binding, or of a binding in error, resolves
+//!   it again (a UI refresh rebinds this way, even when another client holds
+//!   the binding): a renamed-back or newly ambiguous name is found then.
 //! - On `connect` (a Live start or set load) every entry is resolved again
 //!   by its original path: ids of the old session mean nothing.
 //! - A `remove_listener` is sent only while no `add_listener` of the same
@@ -74,14 +81,20 @@ pub struct SubReply {
 
 #[derive(Debug, Clone)]
 enum Tag {
-    Resolve { key: String, seq: u64 },
-    Release { live: String },
+    Resolve {
+        key: String,
+        seq: u64,
+    },
+    /// A `remove_listener` (its answer changes nothing: a failed removal
+    /// means the object is gone, and its listener with it).
+    Release,
 }
 
+/// A request in flight. A disconnect forgets its instance's requests, so an
+/// answer from an older session never arrives here.
 #[derive(Debug)]
 struct Batch {
     instance: String,
-    generation: u64,
     tags: Vec<Tag>,
 }
 
@@ -94,6 +107,8 @@ struct Entry {
     /// The target selects by name somewhere (it is re-resolved when a guard
     /// fires).
     named: bool,
+    /// A guard (it has dependents, never clients).
+    guard: bool,
     clients: BTreeSet<ClientId>,
     /// Entries this one guards (it listens to a name or a list they depend
     /// on).
@@ -103,15 +118,14 @@ struct Entry {
     /// The Live listener key, while resolved.
     live: Option<String>,
     cached: Option<Cached>,
-    /// The latest `add_listener` sent for this entry.
+    /// The latest `add_listener` sent for this entry (numbered across the
+    /// table: an entry dropped and made again never takes an older answer).
     seq: u64,
 }
 
 #[derive(Debug, Default)]
 struct Instance {
     online: bool,
-    /// Bumped on every `connect`: answers of an older session are ignored.
-    generation: u64,
     /// Entries to resolve at the next drain.
     dirty: BTreeSet<String>,
     /// Live keys no entry holds any more, to remove at a drain.
@@ -126,7 +140,14 @@ pub struct Subs {
     instances: BTreeMap<String, Instance>,
     inflight: HashMap<String, Batch>,
     next_uuid: u64,
+    next_seq: u64,
     deliveries: Vec<(ClientId, ValueItem)>,
+}
+
+/// The key of the guard entry watching `prop` of `target`: never a client's
+/// key (those end in `|true` or `|false`).
+fn guard_key(instance: &str, target: &str, prop: &str) -> String {
+    format!("{}|guard", hub_key(instance, target, prop, false))
 }
 
 /// A result slot of `add_listener`: the Live key and the state it gives.
@@ -200,13 +221,15 @@ impl Subs {
             return Err((key, format!("bad prop {prop:?}")));
         }
         let path = LomPath::parse(target).map_err(|e| (key.clone(), e.to_string()))?;
-        self.ensure(&key, instance, &path, prop, display);
+        let created = self.ensure(&key, instance, &path, prop, display, false);
         let entry = self.entries.get_mut(&key).expect("ensured above");
-        let first = entry.clients.is_empty();
         entry.clients.insert(client);
         let cached = entry.cached.clone();
-        if first {
+        let refresh = entry.named || matches!(entry.cached, Some(Cached::Error(_)));
+        if created {
             self.add_guards(&key, instance, &path);
+        } else if refresh && let Some(inst) = self.instances.get_mut(instance) {
+            inst.dirty.insert(key.clone());
         }
         Ok(SubReply { key, cached })
     }
@@ -248,7 +271,6 @@ impl Subs {
             return;
         };
         inst.online = true;
-        inst.generation += 1;
         inst.release.clear();
         inst.dirty.extend(keys);
     }
@@ -281,7 +303,16 @@ impl Subs {
         if !self.is_online(instance) {
             return;
         }
-        let mut guard_fired = false;
+        // A guard in the frame: the name bindings are resolved again, and
+        // their values of this frame may be the renamed object's.
+        let guard_fired = items.iter().any(|item| {
+            self.by_live
+                .get(&(instance.to_string(), item.key.clone()))
+                .is_some_and(|keys| {
+                    keys.iter()
+                        .any(|k| self.entries.get(k).is_some_and(|e| e.guard))
+                })
+        });
         for item in items {
             let id = (instance.to_string(), item.key.clone());
             let Some(keys) = self.by_live.get(&id).cloned() else {
@@ -295,12 +326,14 @@ impl Subs {
                 let Some(entry) = self.entries.get_mut(&key) else {
                     continue;
                 };
-                guard_fired |= !entry.dependents.is_empty();
+                if item.error.is_some() {
+                    entry.live = None;
+                }
+                if guard_fired && entry.named && !entry.guard {
+                    continue;
+                }
                 let cached = match &item.error {
-                    Some(error) => {
-                        entry.live = None;
-                        Cached::Error(error.clone())
-                    }
+                    Some(error) => Cached::Error(error.clone()),
                     None => Cached::Value {
                         value: item.value.clone(),
                         display: item.display.clone().filter(|_| entry.display),
@@ -320,8 +353,7 @@ impl Subs {
         let Some(batch) = self.inflight.remove(uuid) else {
             return false;
         };
-        let generation = self.instances.get(instance).map(|i| i.generation);
-        if batch.instance != instance || generation != Some(batch.generation) {
+        if batch.instance != instance {
             return true;
         }
         let missing = json!({"ok": false, "error": "no result"});
@@ -329,11 +361,7 @@ impl Subs {
             let slot = slots.get(i).unwrap_or(&missing);
             match tag {
                 Tag::Resolve { key, seq } => self.resolved(instance, key, *seq, slot),
-                Tag::Release { live } => {
-                    if slot.get("ok").and_then(Value::as_bool) != Some(true) {
-                        tracing::debug!(instance = %instance, live = %live, slot = %slot, "remove_listener failed");
-                    }
-                }
+                Tag::Release => {}
             }
         }
         true
@@ -358,7 +386,7 @@ impl Subs {
                     let (id, prop) = live.rsplit_once('.').unwrap_or((live.as_str(), ""));
                     commands.push((
                         json!({"target": {"$ref": id}, "name": "remove_listener", "args": {"prop": prop}}),
-                        Tag::Release { live: live.clone() },
+                        Tag::Release,
                     ));
                 }
             }
@@ -366,7 +394,8 @@ impl Subs {
                 let Some(entry) = self.entries.get_mut(&key) else {
                     continue;
                 };
-                entry.seq += 1;
+                self.next_seq += 1;
+                entry.seq = self.next_seq;
                 let mut args = json!({"prop": entry.prop});
                 if entry.display {
                     args["display"] = json!(true);
@@ -379,7 +408,6 @@ impl Subs {
                     },
                 ));
             }
-            let generation = inst.generation;
             let mut commands = commands.into_iter().peekable();
             while commands.peek().is_some() {
                 let (chunk, tags): (Vec<Value>, Vec<Tag>) =
@@ -390,7 +418,6 @@ impl Subs {
                     uuid.clone(),
                     Batch {
                         instance: name.clone(),
-                        generation,
                         tags,
                     },
                 );
@@ -429,10 +456,19 @@ impl Subs {
 
     // --- internals ---
 
-    /// Creates the entry `key` if it does not exist (to be resolved).
-    fn ensure(&mut self, key: &str, instance: &str, path: &LomPath, prop: &str, display: bool) {
+    /// Creates the entry `key` if it does not exist (to be resolved); true
+    /// when it did not.
+    fn ensure(
+        &mut self,
+        key: &str,
+        instance: &str,
+        path: &LomPath,
+        prop: &str,
+        display: bool,
+        guard: bool,
+    ) -> bool {
         if self.entries.contains_key(key) {
-            return;
+            return false;
         }
         self.entries.insert(
             key.to_string(),
@@ -442,6 +478,7 @@ impl Subs {
                 prop: prop.to_string(),
                 display,
                 named: path.steps.iter().any(|s| s.name.is_some()),
+                guard,
                 clients: BTreeSet::new(),
                 dependents: BTreeSet::new(),
                 guards: Vec::new(),
@@ -453,6 +490,7 @@ impl Subs {
         if let Some(inst) = self.instances.get_mut(instance) {
             inst.dirty.insert(key.to_string());
         }
+        true
     }
 
     /// Guards `key` (a client subscription) against renames and list
@@ -460,12 +498,9 @@ impl Subs {
     fn add_guards(&mut self, key: &str, instance: &str, path: &LomPath) {
         let mut guards: Vec<String> = Vec::new();
         for (target, prop) in guard_targets(path) {
-            let guard = hub_key(instance, &target, &prop, false);
-            if guard == key || guards.contains(&guard) {
-                continue;
-            }
+            let guard = guard_key(instance, &target, &prop);
             let guard_path = LomPath::parse(&target).expect("a prefix of a parsed path parses");
-            self.ensure(&guard, instance, &guard_path, &prop, false);
+            self.ensure(&guard, instance, &guard_path, &prop, false, true);
             if let Some(entry) = self.entries.get_mut(&guard) {
                 entry.dependents.insert(key.to_string());
             }
@@ -476,27 +511,23 @@ impl Subs {
         }
     }
 
-    /// Removes `key` when nothing needs it any more; an entry that lost its
-    /// last client but still guards others drops its own guards.
+    /// Removes `key` when nothing needs it any more (no client, guarding
+    /// nobody), and then its guards that guard nobody else.
     fn maybe_drop(&mut self, key: &str) {
-        let Some(entry) = self.entries.get_mut(key) else {
+        let Some(entry) = self.entries.get(key) else {
             return;
         };
-        if !entry.clients.is_empty() {
+        if !entry.clients.is_empty() || !entry.dependents.is_empty() {
             return;
         }
-        let guards = std::mem::take(&mut entry.guards);
-        let keep = !entry.dependents.is_empty();
-        if !keep {
-            let entry = self.entries.remove(key).expect("present above");
-            if let Some(inst) = self.instances.get_mut(&entry.instance) {
-                inst.dirty.remove(key);
-            }
-            if let Some(live) = entry.live {
-                self.unlink(&entry.instance, &live, key);
-            }
+        let entry = self.entries.remove(key).expect("present above");
+        if let Some(inst) = self.instances.get_mut(&entry.instance) {
+            inst.dirty.remove(key);
         }
-        for guard in guards {
+        if let Some(live) = &entry.live {
+            self.unlink(&entry.instance, live, key);
+        }
+        for guard in entry.guards {
             if let Some(g) = self.entries.get_mut(&guard) {
                 g.dependents.remove(key);
             }
@@ -553,7 +584,7 @@ impl Subs {
         let keys: Vec<String> = self
             .entries
             .iter()
-            .filter(|(_, e)| e.instance == instance && (e.named || !e.dependents.is_empty()))
+            .filter(|(_, e)| e.instance == instance && (e.named || e.guard))
             .map(|(k, _)| k.clone())
             .collect();
         if let Some(inst) = self.instances.get_mut(instance) {
@@ -578,7 +609,7 @@ impl Subs {
             return;
         };
         let wants_display = entry.display;
-        let guard_only = entry.clients.is_empty();
+        let guard = entry.guard;
         let old = entry.live.clone();
         match outcome {
             Ok((live, cached)) => {
@@ -601,7 +632,7 @@ impl Subs {
                 self.set_cached(key, cached);
             }
             Err(error) => {
-                if guard_only {
+                if guard {
                     // A guard keeps its object: a rename back fires it again.
                     return;
                 }

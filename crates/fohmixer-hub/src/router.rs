@@ -4,19 +4,22 @@
 //! Everything reaches it as a message, in order: the instances' events (a
 //! subscription's result stays ordered with the value pushes of the same
 //! connection), the clients' requests, layout changes. It never waits: it
-//! writes into outboxes and queues requests to the instances' tasks.
+//! writes into outboxes and queues requests to the instances' tasks. It also
+//! runs the layout's check for unresolved names (spec §2.5 D4) when a layout
+//! is accepted and when an instance connects.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use fohmixer_proto::client::{HUB_STAGE_AUT, ServerMsg, StageAutStatus, ValueItem};
+use fohmixer_proto::client::{HUB_STAGE_AUT, ServerMsg, StageAutStatus, Unresolved, ValueItem};
 use fohmixer_proto::layout::Binding;
 use serde_json::{Value, json};
 use tokio::sync::{mpsc, oneshot};
 
-use crate::live::client::{LiveEvent, LiveHandle};
-use crate::live::subs::{Cached, ClientId, Subs};
+use crate::live::client::{LiveError, LiveEvent, LiveHandle};
+use crate::live::names::NameCheck;
+use crate::live::subs::{Cached, ClientId, Outgoing, Subs};
 use crate::outbox::Outbox;
 use crate::rules::{HubState, StageAut};
 
@@ -55,10 +58,12 @@ pub enum RouterMsg {
     Detach {
         client: ClientId,
     },
-    /// A new layout is served: its revision and its STAGE AUT binding.
+    /// A new layout is served: its revision, its STAGE AUT binding and its
+    /// binding targets per instance (for the unresolved-names check).
     Layout {
         rev: u64,
         stage: Option<Binding>,
+        targets: BTreeMap<String, Vec<String>>,
     },
     /// The router's part of `/api/status`.
     Status {
@@ -75,6 +80,7 @@ pub struct RouterStatus {
     pub listeners: BTreeMap<String, usize>,
     pub stage_aut: StageAutStatus,
     pub clients: usize,
+    pub unresolved: Vec<Unresolved>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -96,6 +102,7 @@ struct StageTarget {
 /// The router task's state.
 pub struct Router {
     subs: Subs,
+    names: NameCheck,
     clients: HashMap<ClientId, Arc<Outbox>>,
     live: BTreeMap<String, LiveHandle>,
     states: BTreeMap<String, InstanceState>,
@@ -110,6 +117,7 @@ impl Router {
     pub fn new(live: BTreeMap<String, LiveHandle>, stage_aut: bool, data_dir: PathBuf) -> Self {
         Self {
             subs: Subs::new(live.keys().cloned()),
+            names: NameCheck::default(),
             clients: HashMap::new(),
             states: live
                 .keys()
@@ -144,7 +152,7 @@ impl Router {
             RouterMsg::Live { instance, event } => self.live_event(&instance, event),
             RouterMsg::Attach { client, outbox } => {
                 for name in self.states.keys() {
-                    outbox.instance(name, self.instance_msg(name));
+                    self.send_instance(&outbox, name);
                 }
                 outbox.hub(HUB_STAGE_AUT, json!(self.stage.is_on()));
                 if self.layout_rev > 0 {
@@ -181,12 +189,26 @@ impl Router {
                 self.subs.drop_client(client);
                 self.clients.remove(&client);
             }
-            RouterMsg::Layout { rev, stage } => {
+            RouterMsg::Layout {
+                rev,
+                stage,
+                targets,
+            } => {
                 self.layout_rev = rev;
                 for outbox in self.clients.values() {
                     outbox.layout(rev);
                 }
                 self.set_stage_binding(stage.as_ref());
+                self.names.set_targets(targets);
+                let online: Vec<String> = self
+                    .states
+                    .iter()
+                    .filter(|(_, state)| state.online)
+                    .map(|(name, _)| name.clone())
+                    .collect();
+                for name in online {
+                    self.names.start(&name);
+                }
             }
             RouterMsg::Status { reply } => {
                 let names = self.live.keys();
@@ -201,6 +223,7 @@ impl Router {
                         writes: self.stage.writes(),
                     },
                     clients: self.clients.len(),
+                    unresolved: self.names.unresolved(),
                 });
             }
             RouterMsg::Stop => return false,
@@ -219,6 +242,7 @@ impl Router {
                     };
                 }
                 self.subs.connected(instance);
+                self.names.start(instance);
                 self.broadcast_instance(instance);
             }
             LiveEvent::Disconnected => {
@@ -226,6 +250,7 @@ impl Router {
                     *state = InstanceState::default();
                 }
                 self.subs.disconnected(instance);
+                self.names.stop(instance);
                 if self
                     .stage_target
                     .as_ref()
@@ -243,27 +268,31 @@ impl Router {
             }
             LiveEvent::Result { uuid, data } => {
                 if !self.subs.on_result(instance, &uuid, &data) {
-                    tracing::debug!(instance, uuid = %uuid, "a result nobody waits for");
+                    self.names.on_result(instance, &uuid, &data);
                 }
             }
             LiveEvent::Values(items) => self.subs.on_values(instance, &items),
         }
     }
 
-    fn instance_msg(&self, name: &str) -> ServerMsg {
+    /// An instance's state for one client.
+    fn send_instance(&self, outbox: &Outbox, name: &str) {
         let state = self.states.get(name).cloned().unwrap_or_default();
-        ServerMsg::Instance {
-            name: name.to_string(),
-            online: state.online,
-            busy: state.busy,
-            set_name: state.set_name,
-        }
+        outbox.instance(
+            name,
+            state.online,
+            ServerMsg::Instance {
+                name: name.to_string(),
+                online: state.online,
+                busy: state.busy,
+                set_name: state.set_name,
+            },
+        );
     }
 
     fn broadcast_instance(&self, name: &str) {
-        let msg = self.instance_msg(name);
         for outbox in self.clients.values() {
-            outbox.instance(name, msg.clone());
+            self.send_instance(outbox, name);
         }
     }
 
@@ -359,19 +388,22 @@ impl Router {
         })]);
         let what = target.target.clone();
         tokio::spawn(async move {
-            match result.await {
-                Ok(slots) if slots.first().and_then(|s| s.get("ok")) == Some(&json!(true)) => {}
-                Ok(slots) => {
-                    tracing::warn!(target = %what, result = ?slots, "STAGE AUT write failed");
-                }
-                Err(e) => tracing::warn!(target = %what, error = %e, "STAGE AUT write failed"),
+            if let Some(problem) = write_failure(&result.await) {
+                tracing::warn!(target = %what, problem = %problem, "STAGE AUT write failed");
             }
         });
     }
 
-    /// Sends the table's requests and hands out its values.
+    /// Sends the table's and the name check's requests and hands out the
+    /// table's values.
     fn flush(&mut self) {
-        for out in self.subs.drain_outgoing() {
+        let requests: Vec<Outgoing> = self
+            .subs
+            .drain_outgoing()
+            .into_iter()
+            .chain(self.names.drain_outgoing())
+            .collect();
+        for out in requests {
             if let Some(live) = self.live.get(&out.instance) {
                 live.send(out.uuid, out.commands);
             }
@@ -385,6 +417,15 @@ impl Router {
                 outbox.value(item);
             }
         }
+    }
+}
+
+/// Why a STAGE AUT write did not happen, if it did not.
+fn write_failure(outcome: &Result<Vec<Value>, LiveError>) -> Option<String> {
+    match outcome {
+        Ok(slots) if slots.first().and_then(|s| s.get("ok")) == Some(&json!(true)) => None,
+        Ok(slots) => Some(Value::from(slots.clone()).to_string()),
+        Err(e) => Some(e.to_string()),
     }
 }
 

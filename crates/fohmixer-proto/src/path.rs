@@ -146,7 +146,7 @@ fn ident(chars: &[char], pos: usize) -> Option<(String, usize)> {
     if !starts {
         return None;
     }
-    let mut end = pos + 1;
+    let mut end = pos;
     while chars
         .get(end)
         .is_some_and(|c| c.is_ascii_alphanumeric() || *c == '_')

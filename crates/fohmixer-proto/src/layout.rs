@@ -4,6 +4,10 @@
 //! Every frame is in canvas coordinates (the TouchOSC canvas, 2360×1640);
 //! node order is z-order. The import tool writes it, the hub validates and
 //! serves it, the UI renders it.
+//!
+//! An unknown field is an error, not ignored: the file is edited by hand
+//! later (D4), and a mistyped field name must not pass silently. (`Item`
+//! itself cannot deny them — it flattens its kind — so each kind does.)
 
 use std::collections::HashSet;
 
@@ -22,6 +26,7 @@ const CANVAS_SLACK: f64 = 0.5;
 
 /// The layout document.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Layout {
     pub schema: u32,
     pub canvas: Canvas,
@@ -42,6 +47,7 @@ pub struct Layout {
 /// `GET /api/layout`: the served layout and its revision (the `layout`
 /// message's `rev`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LayoutResponse {
     pub rev: u64,
     pub layout: Layout,
@@ -49,6 +55,7 @@ pub struct LayoutResponse {
 
 /// The canvas size in px.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Canvas {
     pub w: f64,
     pub h: f64,
@@ -56,6 +63,7 @@ pub struct Canvas {
 
 /// A rectangle in canvas coordinates.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Frame {
     pub x: f64,
     pub y: f64,
@@ -76,6 +84,7 @@ pub enum Orientation {
 
 /// A tab bar: its side, its thickness (px) and the page shown first.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TabBar {
     #[serde(default)]
     pub orientation: Orientation,
@@ -87,6 +96,7 @@ pub struct TabBar {
 
 /// One page's tab.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Tab {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
@@ -96,6 +106,7 @@ pub struct Tab {
 
 /// A page (a tab of the root tab bar or of a nested pager).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Page {
     pub id: String,
     pub title: String,
@@ -110,6 +121,7 @@ pub struct Page {
 
 /// A nested pager: its frame, its tab bar and its pages.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Pager {
     pub frame: Frame,
     #[serde(default)]
@@ -119,6 +131,7 @@ pub struct Pager {
 
 /// Layout-wide settings (the TouchOSC `Conf` text and UI switches).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LayoutConfig {
     /// Group tracks unfolded on every refresh (spec F7).
     #[serde(default)]
@@ -131,6 +144,7 @@ pub struct LayoutConfig {
 
 /// A group track to unfold: its instance and exact name.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct UnfoldTarget {
     pub instance: String,
     pub name: String,
@@ -152,6 +166,7 @@ pub struct Item {
 
 /// Colours are `#RRGGBB` or `#RRGGBBAA`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Style {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bg: Option<String>,
@@ -170,7 +185,7 @@ pub struct Style {
 
 /// What an item is.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ItemKind {
     /// A background box, optionally with a title.
     Area {
@@ -214,6 +229,7 @@ pub enum ItemKind {
 
 /// A strip: its binding, kind and per-child geometry.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Strip {
     pub binding: Binding,
     pub strip_kind: StripKind,
@@ -238,6 +254,7 @@ pub enum StripKind {
 /// The frames of a strip's parts (canvas coordinates); a missing part is not
 /// drawn.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StripChildren {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fader: Option<Frame>,
@@ -279,6 +296,7 @@ impl StripChildren {
 /// One target of a former MIDI control: a binding, a property and either
 /// the values written for on/off (toggle) or the scaling (fader).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ParamTarget {
     pub binding: Binding,
     pub prop: String,
@@ -311,6 +329,7 @@ pub enum Scale {
 /// The general binding form (spec §2.5): an instance, an anchor, and a path
 /// relative to it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Binding {
     pub instance: String,
     pub anchor: Anchor,
@@ -320,7 +339,7 @@ pub struct Binding {
 
 /// What a binding starts from.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Anchor {
     /// A track by exact name.
     Track {

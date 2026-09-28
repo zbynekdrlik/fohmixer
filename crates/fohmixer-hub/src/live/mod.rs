@@ -1,12 +1,14 @@
 //! The hub's side of the FohMixer script (spec §2.3; S2 design note §3.10):
 //! the frames the script sends, one reconnecting client per Live instance
-//! ([`client`]) and the deduplicated subscription table ([`subs`]).
+//! ([`client`]), the deduplicated subscription table ([`subs`]) and the
+//! layout's check for unresolved names ([`names`]).
 
 use std::time::Duration;
 
 use serde_json::Value;
 
 pub mod client;
+pub mod names;
 pub mod subs;
 
 /// An instance is busy when Live's main-thread tick is older than this.

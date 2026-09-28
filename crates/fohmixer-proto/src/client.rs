@@ -204,14 +204,33 @@ pub struct InstanceStatus {
     /// Live listeners the hub holds on this instance (subscriptions and the
     /// name guards of name bindings, deduplicated).
     pub listeners: usize,
+    /// Failed connection attempts since the last connection (0 while
+    /// connected).
+    pub connect_failures: u64,
+    /// Why the last attempt failed (nothing listens, a timeout, the port
+    /// answers as another instance), until a connection succeeds.
+    pub last_error: Option<String>,
 }
 
-/// The layout in `GET /api/status`: the served revision (0: none) and why
-/// the file on disk is not served, if it is not.
+/// A layout binding that does not resolve on its instance (spec §2.5 D4,
+/// I5): its LOM target and the script's answer (a missing or an ambiguous
+/// name).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Unresolved {
+    pub instance: String,
+    pub target: String,
+    pub error: String,
+}
+
+/// The layout in `GET /api/status`: the served revision (0: none), why the
+/// file on disk is not served, if it is not, and the bindings that did not
+/// resolve at the last check of each connected instance (a check runs when
+/// a layout is accepted and when an instance connects).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LayoutStatus {
     pub rev: u64,
     pub error: Option<String>,
+    pub unresolved: Vec<Unresolved>,
 }
 
 /// STAGE AUT in `GET /api/status`: the flag and the mute writes it made.

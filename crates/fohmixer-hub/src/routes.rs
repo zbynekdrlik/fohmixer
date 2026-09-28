@@ -1,13 +1,16 @@
 //! HTTP routes (trimmed from iemmixer's `iem-server/src/routes.rs` @
 //! 22372bc): the version, client panic reports and the embedded UI (public);
 //! the engineer login; the layout, the status and the client WebSocket (a
-//! token).
+//! token). Every request must name this hub as its `Host` ([`check_host`]).
+
+use std::net::{Ipv4Addr, Ipv6Addr};
 
 use axum::{
     Json, Router,
     body::Body,
-    extract::{DefaultBodyLimit, Path, State},
+    extract::{DefaultBodyLimit, Path, Request, State},
     http::{HeaderMap, StatusCode, header},
+    middleware::Next,
     response::Response,
     routing::{get, post},
 };
@@ -93,6 +96,46 @@ async fn get_status(
 ) -> Result<Json<HubStatus>, Rejection> {
     hub.auth.require(&headers)?;
     Ok(Json(hub.status().await))
+}
+
+/// Whether a `Host` header value (a name or an address, an optional port)
+/// names this hub: an IP address, `localhost`, or one of `allowed` (the
+/// config's `allowed_hosts`). A request without one (not a browser) passes.
+pub fn host_allowed(host: Option<&str>, allowed: &[String]) -> bool {
+    let Some(host) = host else {
+        return true;
+    };
+    if let Some(rest) = host.strip_prefix('[') {
+        // An IPv6 address: `[::1]` or `[::1]:8480`.
+        return rest
+            .split_once(']')
+            .is_some_and(|(addr, _)| addr.parse::<Ipv6Addr>().is_ok());
+    }
+    let name = host.rsplit_once(':').map_or(host, |(name, _port)| name);
+    name.parse::<Ipv4Addr>().is_ok()
+        || name.eq_ignore_ascii_case("localhost")
+        || allowed.iter().any(|a| a.eq_ignore_ascii_case(name))
+}
+
+/// Refuses (421) a request whose `Host` is not this hub's: a page on any
+/// site a LAN browser visits could otherwise reach the hub from that browser
+/// by DNS rebinding — and try PINs from its address (spec D7: the login
+/// guard budgets per address).
+pub async fn check_host(State(hub): State<Hub>, request: Request, next: Next) -> Response {
+    let host = request
+        .headers()
+        .get(header::HOST)
+        .map(|h| h.to_str().unwrap_or(""));
+    if host_allowed(host, &hub.config.allowed_hosts) {
+        next.run(request).await
+    } else {
+        tracing::warn!(host = ?host, "a request for a foreign host name refused (DNS rebinding?)");
+        error_response(
+            StatusCode::MISDIRECTED_REQUEST,
+            "UNKNOWN_HOST",
+            "This hub does not serve that host name",
+        )
+    }
 }
 
 /// API routes.

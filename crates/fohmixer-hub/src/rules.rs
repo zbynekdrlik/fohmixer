@@ -103,9 +103,10 @@ impl HubState {
                 tracing::error!(path = %path.display(), error = %e, "unreadable hub state: STAGE AUT starts off");
                 Self::default()
             }),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Self::default(),
             Err(e) => {
-                tracing::error!(path = %path.display(), error = %e, "unreadable hub state: STAGE AUT starts off");
+                if let Some(problem) = read_problem(&e) {
+                    tracing::error!(path = %path.display(), error = %problem, "unreadable hub state: STAGE AUT starts off");
+                }
                 Self::default()
             }
         }
@@ -117,6 +118,12 @@ impl HubState {
         let json = serde_json::to_string_pretty(self).map_err(io::Error::other)?;
         crate::atomic_write(&path, &json)
     }
+}
+
+/// Why reading the hub state failed, when it is a problem: a missing file is
+/// just the defaults (a first start).
+fn read_problem(e: &io::Error) -> Option<String> {
+    (e.kind() != io::ErrorKind::NotFound).then(|| e.to_string())
 }
 
 /// Where the hub values live.

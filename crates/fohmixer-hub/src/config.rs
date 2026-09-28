@@ -3,6 +3,7 @@
 //! ```toml
 //! http_port = 8480
 //! layout = "layout.json"
+//! allowed_hosts = ["foh.local"]
 //! [[instances]]
 //! name = "band"
 //! port = 39101
@@ -11,7 +12,10 @@
 //! port = 39102
 //! ```
 //!
-//! Every key is optional; a missing file is the defaults. The data folder
+//! Every key is optional; a missing file is the defaults. `allowed_hosts`
+//! names the host names the clients may use besides an IP address and
+//! `localhost` (a request for any other name is refused: DNS rebinding). The
+//! data folder
 //! (`FOHMIXER_DATA`, default the working folder) also holds `secrets/`, the
 //! layout, its backups and `hub-state.json`. A file that does not parse or
 //! does not validate stops the start, naming the file.
@@ -80,6 +84,9 @@ pub struct Config {
     pub layout: PathBuf,
     #[serde(default = "default_layout_poll_ms")]
     pub layout_poll_ms: u64,
+    /// Host names the clients may use, besides IP addresses and `localhost`.
+    #[serde(default)]
+    pub allowed_hosts: Vec<String>,
     /// The data folder (where the file was read from).
     #[serde(skip)]
     pub data_dir: PathBuf,
@@ -93,6 +100,7 @@ impl Config {
             instances: default_instances(),
             layout: default_layout(),
             layout_poll_ms: DEFAULT_LAYOUT_POLL_MS,
+            allowed_hosts: Vec::new(),
             data_dir: data_dir.to_path_buf(),
         }
     }
@@ -123,6 +131,7 @@ impl Config {
 
     fn validate(&self) -> anyhow::Result<()> {
         let mut names = HashSet::new();
+        let mut ports = HashSet::new();
         for instance in &self.instances {
             let name = instance.name.as_str();
             if name.is_empty() || name.contains('|') || name.trim() != name {
@@ -133,6 +142,17 @@ impl Config {
             }
             if instance.port == 0 {
                 bail!("instance {name:?}: port 0");
+            }
+            if !ports.insert(instance.port) {
+                bail!(
+                    "instance {name:?}: port {} is another instance's",
+                    instance.port
+                );
+            }
+        }
+        for host in &self.allowed_hosts {
+            if host.is_empty() || host.contains(|c: char| c == ':' || c.is_whitespace()) {
+                bail!("allowed host {host:?}: a name without a port or spaces");
             }
         }
         if self.layout_poll_ms < MIN_LAYOUT_POLL_MS {

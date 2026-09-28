@@ -5,7 +5,10 @@
 //! configured instances. Otherwise the last good layout stays served (a bad
 //! edit never blanks the surface) and the error is reported in
 //! `/api/status`. Every accepted content is kept as a dated backup,
-//! `layout-backups/layout.json.<UTC time>`, the newest 30.
+//! `layout-backups/layout.json.<UTC time>`, the newest 30. A hub that starts
+//! while the file is bad (or gone) serves the newest backup that is still
+//! valid — the last good layout survives a restart — and reports the file's
+//! error until the file is fixed.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -28,6 +31,8 @@ struct State {
     error: Option<String>,
     /// The file's (modified time, length) at the last check.
     seen: Option<(SystemTime, u64)>,
+    /// The backups were tried once (nothing served, the file unusable).
+    fallback_tried: bool,
 }
 
 /// The layout store.
@@ -60,9 +65,14 @@ pub fn check(text: &[u8], instances: &[String]) -> Result<Layout, String> {
         .into_iter()
         .map(|e| e.to_string())
         .collect();
-    for binding in layout.bindings() {
-        if !instances.contains(&binding.instance) {
-            problems.push(format!("unknown instance {:?}", binding.instance));
+    let named = layout
+        .bindings()
+        .into_iter()
+        .map(|b| &b.instance)
+        .chain(layout.config.unfold.iter().map(|u| &u.instance));
+    for instance in named {
+        if !instances.contains(instance) {
+            problems.push(format!("unknown instance {instance:?}"));
         }
     }
     problems.dedup();
@@ -112,7 +122,7 @@ impl LayoutStore {
                     state.error = Some(message);
                 }
                 state.seen = None;
-                return None;
+                return self.fallback(&mut state);
             }
         };
         if self.lock().seen == Some(seen) {
@@ -123,7 +133,7 @@ impl LayoutStore {
             Err(e) => {
                 let mut state = self.lock();
                 state.error = Some(format!("{}: {e}", self.path.display()));
-                return None;
+                return self.fallback(&mut state);
             }
         };
         let mut state = self.lock();
@@ -145,19 +155,53 @@ impl LayoutStore {
             Err(error) => {
                 tracing::warn!(error = %error, rev = state.rev, "layout rejected: the last good one stays served");
                 state.error = Some(error);
-                None
+                self.fallback(&mut state)
             }
         }
+    }
+
+    /// Nothing served yet and the file unusable: serves the newest backup
+    /// that is still valid (tried once); `Some(rev)` when it does.
+    fn fallback(&self, state: &mut State) -> Option<u64> {
+        if state.layout.is_some() || state.fallback_tried {
+            return None;
+        }
+        state.fallback_tried = true;
+        let file_name = self.file_name();
+        for name in self.list_backups(&file_name).iter().rev() {
+            let Ok(text) = std::fs::read(self.backups.join(name)) else {
+                continue;
+            };
+            let Ok(layout) = check(&text, &self.instances) else {
+                tracing::warn!(backup = %name, "a layout backup no longer valid: skipped");
+                continue;
+            };
+            state.rev += 1;
+            state.layout = Some(Arc::new(layout));
+            state.accepted = Some(text);
+            tracing::warn!(
+                backup = %name,
+                rev = state.rev,
+                error = ?state.error,
+                "the layout file is not usable: serving its newest good backup"
+            );
+            return Some(state.rev);
+        }
+        None
+    }
+
+    /// The layout file's own name (the backups' prefix).
+    fn file_name(&self) -> String {
+        self.path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "layout.json".to_string())
     }
 
     /// Keeps `text` as a dated backup (unless the newest backup already
     /// holds it) and prunes the oldest beyond [`MAX_BACKUPS`].
     fn backup(&self, text: &[u8]) {
-        let file_name = self
-            .path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "layout.json".to_string());
+        let file_name = self.file_name();
         if let Err(e) = std::fs::create_dir_all(&self.backups) {
             tracing::error!(dir = %self.backups.display(), error = %e, "cannot create the layout backup folder");
             return;
@@ -200,12 +244,7 @@ impl LayoutStore {
 
     /// The backups kept now (tests, diagnostics).
     pub fn backups(&self) -> Vec<String> {
-        let file_name = self
-            .path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        self.list_backups(&file_name)
+        self.list_backups(&self.file_name())
     }
 }
 

@@ -2,7 +2,14 @@
 //! the WebSocket to the FohMixer script on `127.0.0.1:<port>`.
 //!
 //! - It reconnects with a backoff of 250 ms doubling to 2 s, and never gives
-//!   up. While offline, a request is refused at once (never queued).
+//!   up. A connection is a session only once the script's `connect` names
+//!   this instance: a port that answers as another instance (a swapped
+//!   `Config.py`) is refused, never used. Until then — offline, connecting,
+//!   waiting for `connect` — a request is refused at once (never queued):
+//!   its reply is dropped, which the caller reads as [`LiveError::Offline`].
+//! - Failed attempts are counted and the last reason kept for
+//!   `/api/status`; the first failure of an outage is a warning, the retries
+//!   are debug lines.
 //! - Frames go out in the order requests arrive; each result is matched by
 //!   its uuid: a caller's own request ([`LiveHandle::call`]) gets it back
 //!   directly, anything else (the subscription table's requests) goes to the
@@ -75,18 +82,12 @@ impl std::fmt::Display for LiveError {
 
 type Reply = oneshot::Sender<Result<Vec<Value>, LiveError>>;
 
+/// A request for the script. Dropping it unanswered (offline, or the
+/// connection ends) tells its caller [`LiveError::Offline`].
 struct Request {
     uuid: String,
     commands: Vec<Value>,
     reply: Option<Reply>,
-}
-
-impl Request {
-    fn refuse(self, error: LiveError) {
-        if let Some(reply) = self.reply {
-            let _ = reply.send(Err(error));
-        }
-    }
 }
 
 /// The instance as the hub last saw it.
@@ -96,6 +97,10 @@ pub struct Snapshot {
     pub busy: bool,
     pub info: ConnectInfo,
     pub main_tick_age_ms: Option<f64>,
+    /// Failed connection attempts since the last session.
+    pub connect_failures: u64,
+    /// Why the last attempt failed, until a session starts.
+    pub last_error: Option<String>,
 }
 
 /// The handle of one instance's task.
@@ -157,7 +162,7 @@ impl LiveHandle {
         &self,
         commands: Vec<Value>,
     ) -> impl std::future::Future<Output = Result<Vec<Value>, LiveError>> + Send + 'static {
-        let n = self.requests.fetch_add(1, Ordering::Relaxed) + 1;
+        let n = self.requests.fetch_add(1, Ordering::Relaxed);
         let (reply, result) = oneshot::channel();
         let queued = self
             .tx
@@ -184,10 +189,39 @@ type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 #[derive(Debug, PartialEq, Eq)]
 enum End {
-    /// The connection ended: reconnect.
+    /// A session ended: reconnect.
     Lost,
+    /// The connection never became a session: it closed before the script's
+    /// `connect`, or the port answers as another instance.
+    Failed(String),
     /// Every handle is gone: the task ends.
     Stop,
+}
+
+/// Waits for `work` while refusing every request (no session); `None` when
+/// every handle is gone.
+async fn refusing<T>(
+    rx: &mut mpsc::UnboundedReceiver<Request>,
+    work: impl std::future::Future<Output = T>,
+) -> Option<T> {
+    tokio::pin!(work);
+    loop {
+        tokio::select! {
+            out = &mut work => return Some(out),
+            request = rx.recv() => {
+                // Refused: dropping the request tells its caller "offline".
+                if request.is_none() {
+                    return None;
+                }
+            }
+        }
+    }
+}
+
+/// Whether a failed attempt is the first of an outage (a warning; the
+/// retries are debug lines).
+fn first_of_outage(failures: u64) -> bool {
+    failures == 1
 }
 
 async fn run(
@@ -200,60 +234,59 @@ async fn run(
     let mut backoff = Backoff::default();
     let mut failures: u64 = 0;
     loop {
-        let attempt = tokio::time::timeout(
+        let connect = tokio::time::timeout(
             CONNECT_TIMEOUT,
             tokio_tungstenite::connect_async(url.as_str()),
-        )
-        .await;
-        match attempt {
+        );
+        let Some(attempt) = refusing(&mut rx, connect).await else {
+            return;
+        };
+        let failure = match attempt {
             Ok(Ok((socket, _))) => {
-                backoff.reset();
-                failures = 0;
-                tracing::info!(instance = %cfg.name, port = cfg.port, "connected to the FohMixer script");
+                tracing::debug!(instance = %cfg.name, port = cfg.port, "WebSocket open: waiting for the script's connect");
                 let session = Session {
                     name: &cfg.name,
+                    port: cfg.port,
                     events: &events,
                     snapshot: &snapshot,
                 };
-                if session.run(socket, &mut rx).await == End::Stop {
-                    return;
+                match session.run(socket, &mut rx).await {
+                    End::Stop => return,
+                    End::Lost => {
+                        backoff.reset();
+                        failures = 0;
+                        None
+                    }
+                    End::Failed(why) => Some(why),
                 }
             }
-            Ok(Err(error)) => {
-                failures += 1;
-                log_failure(&cfg, failures, &error.to_string());
+            Ok(Err(error)) => Some(error.to_string()),
+            Err(_) => Some("connection attempt timed out".to_string()),
+        };
+        if let Some(why) = failure {
+            failures += 1;
+            {
+                let mut snap = lock(&snapshot);
+                snap.connect_failures = failures;
+                snap.last_error = Some(why.clone());
             }
-            Err(_) => {
-                failures += 1;
-                log_failure(&cfg, failures, "connection attempt timed out");
+            if first_of_outage(failures) {
+                tracing::warn!(instance = %cfg.name, port = cfg.port, error = %why, "no usable FohMixer script: retrying every 2 s at most");
+            } else {
+                tracing::debug!(instance = %cfg.name, port = cfg.port, failures, error = %why, "still no usable FohMixer script");
             }
         }
         let wait = tokio::time::sleep(backoff.next_delay());
-        tokio::pin!(wait);
-        loop {
-            tokio::select! {
-                () = &mut wait => break,
-                request = rx.recv() => match request {
-                    None => return,
-                    Some(request) => request.refuse(LiveError::Offline),
-                },
-            }
+        if refusing(&mut rx, wait).await.is_none() {
+            return;
         }
-    }
-}
-
-/// The first failure of an outage is a warning; the retries are debug lines.
-fn log_failure(cfg: &InstanceCfg, failures: u64, error: &str) {
-    if failures == 1 {
-        tracing::warn!(instance = %cfg.name, port = cfg.port, error, "cannot reach the FohMixer script: retrying every 2 s at most");
-    } else {
-        tracing::debug!(instance = %cfg.name, port = cfg.port, failures, error, "still no FohMixer script");
     }
 }
 
 /// One connection's state.
 struct Session<'a> {
     name: &'a str,
+    port: u16,
     events: &'a Events,
     snapshot: &'a Mutex<Snapshot>,
 }
@@ -311,6 +344,14 @@ impl Session<'_> {
                             tracing::info!(instance = self.name, "the script said disconnect (a set load or Live closing)");
                             break End::Lost;
                         }
+                        Ok(Frame::Connect(info)) if info.instance != self.name => {
+                            // A swapped port: commands and STAGE AUT writes
+                            // would go to the wrong Live.
+                            break End::Failed(format!(
+                                "port {} answers as instance {:?}, not {:?}",
+                                self.port, info.instance, self.name
+                            ));
+                        }
                         Ok(frame) => self.on_frame(frame, &mut health, &mut pending),
                         Err(error) => {
                             tracing::warn!(instance = self.name, error, "unreadable frame from the script");
@@ -319,9 +360,13 @@ impl Session<'_> {
                 }
                 request = rx.recv() => {
                     let Some(request) = request else { break End::Stop };
+                    if !health.connected {
+                        // No session yet (no `connect`): refused, as offline.
+                        continue;
+                    }
                     let text = json!({"uuid": request.uuid, "commands": request.commands}).to_string();
                     if sink.send(Message::Text(text.into())).await.is_err() {
-                        request.refuse(LiveError::Offline);
+                        // Dropped with the request: its caller reads "offline".
                         break End::Lost;
                     }
                     if let Some(reply) = request.reply {
@@ -335,14 +380,20 @@ impl Session<'_> {
                 }
             }
         };
-        if health.connected {
-            *lock(self.snapshot) = Snapshot::default();
-            tracing::info!(
-                instance = self.name,
-                "disconnected from the FohMixer script"
-            );
-            self.emit(LiveEvent::Disconnected);
+        if !health.connected {
+            return match end {
+                End::Lost => {
+                    End::Failed("the connection closed before the script's connect".into())
+                }
+                other => other,
+            };
         }
+        *lock(self.snapshot) = Snapshot::default();
+        tracing::info!(
+            instance = self.name,
+            "disconnected from the FohMixer script"
+        );
+        self.emit(LiveEvent::Disconnected);
         end
     }
 
@@ -361,9 +412,8 @@ impl Session<'_> {
                 health.last_heartbeat = Instant::now();
                 *lock(self.snapshot) = Snapshot {
                     online: true,
-                    busy: false,
                     info: info.clone(),
-                    main_tick_age_ms: None,
+                    ..Snapshot::default()
                 };
                 self.emit(LiveEvent::Connected(info));
             }

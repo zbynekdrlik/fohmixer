@@ -3,11 +3,15 @@
 //!
 //! Values keep only the latest item per subscription while a send is
 //! pending (a slow client costs memory bounded by its subscriptions, never
-//! a queue), and so do the instance states and hub values. Replies
-//! (`result`, `subbed`, `error`) keep their order; more than
-//! [`MAX_REPLIES`] waiting means the client stopped reading: the outbox
-//! closes and the connection ends (the client reconnects and resyncs).
-//! The router writes here under a short lock and never waits for a client.
+//! a queue), and so do the hub values. Replies (`result`, `subbed`,
+//! `error`) and instance states keep their order: a client sees an
+//! instance go offline and come back even when its writer was stuck across
+//! the reconnect, and a `subbed` of the new session never comes before the
+//! old session's `offline`. An instance going offline drops its pending
+//! values (they belong to the old session). More than [`MAX_REPLIES`]
+//! waiting means the client stopped reading: the outbox closes and the
+//! connection ends (the client reconnects and resyncs). The router writes
+//! here under a short lock and never waits for a client.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Mutex, MutexGuard, PoisonError};
@@ -22,7 +26,6 @@ pub const MAX_REPLIES: usize = 1024;
 #[derive(Debug, Default)]
 struct Inner {
     replies: VecDeque<ServerMsg>,
-    instances: BTreeMap<String, ServerMsg>,
     hub: BTreeMap<String, Value>,
     layout: Option<u64>,
     values: BTreeMap<String, ValueItem>,
@@ -30,9 +33,22 @@ struct Inner {
 }
 
 impl Inner {
+    /// Queues an ordered message; a client that let [`MAX_REPLIES`] pile up
+    /// is closed.
+    fn push_reply(&mut self, msg: ServerMsg) {
+        if self.replies.len() >= MAX_REPLIES {
+            tracing::warn!(
+                waiting = self.replies.len(),
+                "a client stopped reading: closing it"
+            );
+            self.closed = true;
+        } else {
+            self.replies.push_back(msg);
+        }
+    }
+
     fn is_empty(&self) -> bool {
         self.replies.is_empty()
-            && self.instances.is_empty()
             && self.hub.is_empty()
             && self.layout.is_none()
             && self.values.is_empty()
@@ -69,17 +85,7 @@ impl Outbox {
     /// A reply, in order; a client that let [`MAX_REPLIES`] pile up is
     /// closed.
     pub fn reply(&self, msg: ServerMsg) {
-        self.put(|inner| {
-            if inner.replies.len() >= MAX_REPLIES {
-                tracing::warn!(
-                    waiting = inner.replies.len(),
-                    "a client stopped reading its replies: closing it"
-                );
-                inner.closed = true;
-            } else {
-                inner.replies.push_back(msg);
-            }
-        });
+        self.put(|inner| inner.push_reply(msg));
     }
 
     /// The latest item of a subscription.
@@ -94,10 +100,15 @@ impl Outbox {
         self.lock().values.remove(sub);
     }
 
-    /// The latest state of an instance (an `instance` message).
-    pub fn instance(&self, name: &str, msg: ServerMsg) {
+    /// A state of an instance (an `instance` message), in order with the
+    /// replies; `online` false drops the instance's pending values.
+    pub fn instance(&self, name: &str, online: bool, msg: ServerMsg) {
         self.put(|inner| {
-            inner.instances.insert(name.to_string(), msg);
+            if !online {
+                let prefix = format!("{name}|");
+                inner.values.retain(|sub, _| !sub.starts_with(&prefix));
+            }
+            inner.push_reply(msg);
         });
     }
 
@@ -123,16 +134,15 @@ impl Outbox {
         self.lock().closed
     }
 
-    /// Everything waiting, in write order (replies, instance states, hub
-    /// values, the layout revision, then one `values` message); `None` once
-    /// closed.
+    /// Everything waiting, in write order (replies and instance states,
+    /// hub values, the layout revision, then one `values` message); `None`
+    /// once closed.
     pub fn take(&self) -> Option<Vec<ServerMsg>> {
         let mut inner = self.lock();
         if inner.closed {
             return None;
         }
         let mut out: Vec<ServerMsg> = inner.replies.drain(..).collect();
-        out.extend(std::mem::take(&mut inner.instances).into_values());
         out.extend(
             std::mem::take(&mut inner.hub)
                 .into_iter()

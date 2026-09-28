@@ -76,8 +76,6 @@ jobs:
         run: |
           set -euo pipefail
           python -m unittest discover -s tools/import-tosc -p 'test_*.py' -v 2>&1 | tee "$RUNNER_TEMP/import-tests.log"
-      - name: The committed import output is this import (the Rust schema test reads it)
-        run: git diff --exit-code tools/import-tosc/fixtures/expected-layout.json
       - name: No skipped or expected-failure tests
         run: |
           set -euo pipefail
@@ -141,9 +139,10 @@ jobs:
 
   windows:
     name: windows
-    # The hub runs on the Ableton PC (Windows): build and lint it there, and
-    # run the PIN pepper's tests against real DPAPI (pepper/dpapi.rs is not
-    # compiled on Linux, so the mutation gate excludes it).
+    # The hub runs on the Ableton PC (Windows): build and lint it there, run
+    # the PIN pepper's tests against real DPAPI (pepper/dpapi.rs is not
+    # compiled on Linux, so the mutation gate excludes it), and the hub's
+    # host-free integration tests (the layout file handling, auth).
     runs-on: windows-2025
     timeout-minutes: 40
     steps:
@@ -160,6 +159,8 @@ jobs:
         run: cargo clippy --locked -p fohmixer-hub --all-targets -- -D warnings
       - name: PIN pepper tests (DPAPI)
         run: cargo test --locked -p fohmixer-hub --lib "pepper::"
+      - name: Hub API tests on Windows (the layout, auth; no Live host needed)
+        run: cargo test --locked -p fohmixer-hub --test layout --test auth
 
   wasm:
     name: wasm

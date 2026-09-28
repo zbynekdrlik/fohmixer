@@ -153,6 +153,8 @@ impl HubInner {
                     main_tick_age_ms: snap.main_tick_age_ms,
                     subscriptions: router.subscriptions.get(&cfg.name).copied().unwrap_or(0),
                     listeners: router.listeners.get(&cfg.name).copied().unwrap_or(0),
+                    connect_failures: snap.connect_failures,
+                    last_error: snap.last_error,
                 }
             })
             .collect();
@@ -161,16 +163,11 @@ impl HubInner {
             layout: LayoutStatus {
                 rev: self.layout.current().0,
                 error: self.layout.error(),
+                unresolved: router.unresolved,
             },
             stage_aut: router.stage_aut,
             clients: router.clients,
         }
-    }
-}
-
-impl Drop for HubInner {
-    fn drop(&mut self) {
-        self.stop();
     }
 }
 
@@ -238,11 +235,20 @@ async fn poll_layout(
     loop {
         tick.tick().await;
         if let Some(rev) = layout.poll() {
-            let stage = layout
-                .current()
-                .1
-                .and_then(|l| l.stage_aut_binding().cloned());
-            if router.send(RouterMsg::Layout { rev, stage }).is_err() {
+            let served = layout.current().1;
+            let stage = served.as_ref().and_then(|l| l.stage_aut_binding().cloned());
+            let targets = served
+                .as_deref()
+                .map(live::names::layout_targets)
+                .unwrap_or_default();
+            if router
+                .send(RouterMsg::Layout {
+                    rev,
+                    stage,
+                    targets,
+                })
+                .is_err()
+            {
                 return;
             }
         }
@@ -284,9 +290,11 @@ pub fn app_router(hub: Hub) -> Router {
         ),
     );
 
+    let check_host = axum::middleware::from_fn_with_state(hub.clone(), routes::check_host);
     Router::new()
         .merge(routes::api_routes())
         .merge(routes::static_routes())
+        .layer(check_host)
         .layer(x_frame_options)
         .layer(x_content_type_options)
         .layer(referrer_policy)

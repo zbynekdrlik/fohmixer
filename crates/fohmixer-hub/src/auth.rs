@@ -126,6 +126,21 @@ pub fn bearer(headers: &HeaderMap) -> Option<&str> {
         .and_then(|v| v.strip_prefix("Bearer "))
 }
 
+/// The start-up warning about the PIN store: nobody can log in without an
+/// engineer PIN.
+fn pin_warning(has_pin: bool) -> Option<&'static str> {
+    (!has_pin).then_some(
+        "no engineer PIN yet: set one with `fohmixer-hub pin set-engineer` (nobody can log in)",
+    )
+}
+
+/// What a failed login changed that is worth a warning: the hub-wide
+/// budget running out (every later attempt is spaced).
+fn failure_note(effect: FailureEffect) -> Option<&'static str> {
+    (effect == FailureEffect::GlobalBudgetExhausted)
+        .then_some("login failures exhausted the hourly budget: attempts are now spaced")
+}
+
 /// The login state: the signing key, the hasher and the budgets.
 pub struct Auth {
     jwt_secret: String,
@@ -144,10 +159,8 @@ impl Auth {
         let secrets = crate::secrets::load_or_create(&secrets_dir)?;
         let pepper = crate::pepper::load_or_create(&secrets_dir)?;
         let store = PinStore::load(&secrets_dir)?;
-        if !store.has_hashes() {
-            tracing::warn!(
-                "no engineer PIN yet: set one with `fohmixer-hub pin set-engineer` (nobody can log in)"
-            );
+        if let Some(warning) = pin_warning(store.has_hashes()) {
+            tracing::warn!("{warning}");
         }
         Ok(Self::with(
             secrets.jwt_secret,
@@ -243,8 +256,8 @@ pub async fn login(
             expires_in: TOKEN_EXPIRY_SECS,
         }))
     } else {
-        if auth.guard.record_failure(peer.ip(), now) == FailureEffect::GlobalBudgetExhausted {
-            tracing::warn!("login failures exhausted the hourly budget: attempts are now spaced");
+        if let Some(note) = failure_note(auth.guard.record_failure(peer.ip(), now)) {
+            tracing::warn!("{note}");
         }
         tracing::info!(peer = %peer.ip(), "login failed: invalid PIN");
         Err(Rejection::from(error_response(
