@@ -526,6 +526,23 @@ async fn the_policy_in_its_order() {
         reason(decide(None, local, &tunnel(&[(JWT_HEADER, good.as_str())]), &get).await),
         "no_access"
     );
+    // No peer address: refused before the gate, even with a good token.
+    assert_eq!(
+        reason(
+            decide(
+                Some(&gate),
+                None,
+                &tunnel(&[(JWT_HEADER, good.as_str())]),
+                &get
+            )
+            .await
+        ),
+        "no_peer_address"
+    );
+    assert_eq!(
+        reason(decide(Some(&gate), None, &HeaderMap::new(), &get).await),
+        "no_peer_address"
+    );
     assert_eq!(
         reason(decide(Some(&gate), local, &tunnel(&[]), &get).await),
         "no_access_token"
@@ -714,15 +731,36 @@ async fn a_request_without_a_peer_address_is_refused() {
         .oneshot(request)
         .await
         .unwrap();
+    let (status, body) = body_of(response).await;
     assert_eq!(
-        code_of(response).await,
-        (StatusCode::FORBIDDEN, "ACCESS_DENIED".into())
+        (status, body["code"].as_str()),
+        (StatusCode::FORBIDDEN, Some("ACCESS_DENIED"))
+    );
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("Refused (no_peer_address)"),
+        "{body}"
     );
     hub.stop();
 }
 
-#[test]
-fn a_refusal_names_its_reason_and_the_way_in() {
-    let response = forbidden("no_access_token");
-    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+async fn body_of(response: Response) -> (StatusCode, serde_json::Value) {
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .unwrap();
+    (status, serde_json::from_slice(&bytes).unwrap())
+}
+
+#[tokio::test]
+async fn a_refusal_names_its_reason_and_the_way_in() {
+    let (status, body) = body_of(forbidden("no_access_token")).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body["code"], "ACCESS_DENIED");
+    assert_eq!(
+        body["message"],
+        "Refused (no_access_token): open it on the local network, or sign in through Cloudflare Access"
+    );
 }

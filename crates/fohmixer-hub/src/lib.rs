@@ -553,6 +553,14 @@ fn start_https(hub: &Hub, at: SocketAddr, name: &str, retry: Duration) {
 /// Binds the HTTPS listener on `at` and starts it: the stored certificate
 /// served when there is one, the ACME keeper started with `[acme]`.
 fn bind_https(hub: &Hub, at: SocketAddr, name: &str) -> Result<(), String> {
+    // The ACME client's HTTP client first: its failure leaves nothing bound.
+    let acme_http = hub
+        .config
+        .acme
+        .as_ref()
+        .map(|_| remote_http())
+        .transpose()
+        .map_err(|e| format!("the ACME client's HTTP client: {e:#}"))?;
     let socket = Https::listen(at).map_err(|e| format!("binding HTTPS {at}: {e}"))?;
     let https = Arc::new(
         Https::new(socket, https_router(hub.clone()))
@@ -562,8 +570,7 @@ fn bind_https(hub: &Hub, at: SocketAddr, name: &str) -> Result<(), String> {
     hub.remote.set_bind_error(None);
     tracing::info!(addr = %https.addr(), name, "HTTPS listener bound");
     remote::serve_stored(&https, &hub.remote, &hub.config.data_dir, name);
-    if let Some(cfg) = &hub.config.acme {
-        let http = remote_http().map_err(|e| format!("the ACME client's HTTP client: {e:#}"))?;
+    if let (Some(cfg), Some(http)) = (&hub.config.acme, acme_http) {
         let acme = acme::Acme::new(name, cfg, &hub.config.data_dir, http);
         hub.add_task(tokio::spawn(acme::keep(
             acme,

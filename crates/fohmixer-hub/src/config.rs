@@ -199,6 +199,19 @@ pub fn is_dns_name(name: &str) -> bool {
             .is_some_and(|tld| tld.chars().any(|c| c.is_ascii_alphabetic()))
 }
 
+/// Whether `value` is an e-mail address for the ACME account's contact:
+/// `local@domain`, the domain a DNS name, no space, quote, angle bracket or
+/// separator in the local part (the CA refuses the account otherwise).
+pub fn is_email(value: &str) -> bool {
+    value.split_once('@').is_some_and(|(local, domain)| {
+        !local.is_empty()
+            && is_dns_name(domain)
+            && !local
+                .chars()
+                .any(|c| c.is_whitespace() || "\"<>@\\,;".contains(c))
+    })
+}
+
 /// Whether a URL may be fetched by the hub: `https://…`, or `http://` to a
 /// loopback address (test doubles, cloudflared's readiness), never plain
 /// http across a network.
@@ -283,6 +296,17 @@ impl Config {
     }
 
     /// Parses and validates a config text for `data_dir`.
+    /// `fohmixer-hub config check <file>` (the installer runs it before it
+    /// stops the running hub): `file` read and validated as the config, its
+    /// folder as the data folder. The error names the file and the problem.
+    pub fn check_file(file: &Path) -> anyhow::Result<()> {
+        let text = std::fs::read_to_string(file)
+            .with_context(|| format!("reading config {}", file.display()))?;
+        let dir = file.parent().unwrap_or(Path::new("."));
+        Self::parse(&text, dir).with_context(|| format!("config {}", file.display()))?;
+        Ok(())
+    }
+
     pub fn parse(text: &str, data_dir: &Path) -> anyhow::Result<Self> {
         let mut config: Self = toml::from_str(text)?;
         config.data_dir = data_dir.to_path_buf();
@@ -341,6 +365,11 @@ impl Config {
             }
             if !url_allowed(&acme.directory) {
                 bail!("[acme] directory {:?}: an https URL", acme.directory);
+            }
+            if let Some(email) = &acme.email
+                && !is_email(email)
+            {
+                bail!("[acme] email {email:?}: an address like owner@example.org");
             }
             if acme.propagation_s > MAX_PROPAGATION_S {
                 bail!(
@@ -569,6 +598,10 @@ mod tests {
                 "above 600",
             ),
             (
+                "[tls]\nname = \"foh.example.org\"\n[acme]\nemail = \"owner example.org\"\n",
+                "an address like owner@example.org",
+            ),
+            (
                 "[access]\nteam_domain = \"team\"\naud = [\"a\"]\n",
                 "team.cloudflareaccess.com",
             ),
@@ -684,6 +717,55 @@ mod tests {
         let error = format!("{:#}", Config::load(dir.path()).unwrap_err());
         assert!(error.starts_with("config "), "{error}");
         assert!(error.contains(CONFIG_FILE), "{error}");
+    }
+
+    #[test]
+    fn an_acme_contact_is_an_address() {
+        for good in ["owner@example.org", "a.b-c+d@foh.example.org"] {
+            assert!(is_email(good), "{good}");
+        }
+        for bad in [
+            "",
+            "owner",
+            "owner.example.org",
+            "@example.org",
+            "owner@",
+            "owner@localhost",
+            "owner@10.0.0.5",
+            "own er@example.org",
+            "own\ter@example.org",
+            "\"owner\"@example.org",
+            "<owner>@example.org",
+            "a@b@example.org",
+            "a,b@example.org",
+            "a;b@example.org",
+            "a\\b@example.org",
+        ] {
+            assert!(!is_email(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_config_file_is_checked_as_the_hub_reads_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("new.toml");
+        assert!(
+            format!("{:#}", Config::check_file(&file).unwrap_err()).starts_with("reading config ")
+        );
+        std::fs::write(&file, "http_port = 8500\n").unwrap();
+        Config::check_file(&file).unwrap();
+        std::fs::write(
+            &file,
+            "http_port = 8480\n[tls]\nname = \"foh.example.org\"\nport = 8480\n",
+        )
+        .unwrap();
+        let error = format!("{:#}", Config::check_file(&file).unwrap_err());
+        assert!(error.starts_with("config "), "{error}");
+        assert!(error.contains("new.toml"), "{error}");
+        assert!(
+            error.ends_with("[tls] port 8480 is the HTTP port"),
+            "{error}"
+        );
     }
 
     #[test]

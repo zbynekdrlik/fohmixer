@@ -63,8 +63,8 @@ jobs:
           python -m pip install --quiet ruff==0.16.2
           ruff --version
           ruff check .
-      - name: ruff format (script, SimLive, import tool, E2E harness)
-        run: ruff format --check live-script sim tools e2e/harness
+      - name: ruff format (script, SimLive, import tool, E2E harness, Cloudflare script)
+        run: ruff format --check live-script sim tools e2e/harness scripts/cloudflare
       - name: Test dependencies (websockets test client only; the script itself is stdlib-only)
         run: python -m pip install --quiet -r requirements-dev.txt
       # Each test step runs after a failed one too (the job still fails): one

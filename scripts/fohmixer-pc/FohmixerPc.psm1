@@ -470,6 +470,25 @@ function New-FohHubToml {
     return (($lines -join "`r`n") + "`r`n" + $Remote)
 }
 
+function Test-FohHubToml {
+    # $Text checked as a config by the hub it is for ($Exe: `fohmixer-hub
+    # config check`, config.rs, the one set of rules), before the install
+    # stops the running hub: a config the new hub would refuse never reaches
+    # the data folder (the hub would not start, the emergency path included).
+    # Throws with the hub's reason.
+    param([Parameter(Mandatory)][string]$Exe, [Parameter(Mandatory)][string]$Text, [Parameter(Mandatory)][string]$Dir)
+    $file = Join-Path $Dir 'fohmixer-hub.toml.check'
+    [IO.File]::WriteAllText($file, $Text, $script:Utf8NoBom)
+    try {
+        $ErrorActionPreference = 'Continue'
+        $said = (& $Exe config check $file 2>&1 | ForEach-Object { "$_" }) -join ' '
+        $code = $LASTEXITCODE
+    } finally {
+        if (Test-Path -LiteralPath $file) { Remove-Item -LiteralPath $file }
+    }
+    if ($code -ne 0) { throw "the new config is refused by the hub (exit $code): $said" }
+}
+
 function Set-FohConfigText {
     # Config.py's text with INSTANCE and PORT set. Exactly one assignment of each
     # must exist; everything else is kept, line endings included.
@@ -1016,6 +1035,9 @@ function Invoke-FohInstall {
     Write-Host "fohmixer install: bundle $($unpacked.version) checked against its SHA256SUMS"
     $hubWasRunning = $false
     try {
+        # The new config, checked by the new hub before anything else changes.
+        $tomlText = New-FohHubToml -HttpPort $HttpPort -BandPort $BandPort -MasterPort $MasterPort -Remote $remoteToml
+        Test-FohHubToml -Exe (Join-Path $unpacked.dir $script:HubExe) -Text $tomlText -Dir $unpacked.dir
         if (-not $NoTask) {
             Set-FohDataDirAcl -Path $DataDir -User $BandUser
             # 1. the running hub
@@ -1026,8 +1048,7 @@ function Invoke-FohInstall {
         # 2. app\<version>, current.txt
         $app = Install-FohAppDir -Unpacked $unpacked -DataDir $DataDir
         Write-Host "fohmixer install: $($app.dir) (changed: $($app.changed))"
-        # 3. the config
-        $tomlText = New-FohHubToml -HttpPort $HttpPort -BandPort $BandPort -MasterPort $MasterPort -Remote $remoteToml
+        # 3. the config (checked above)
         $toml = Write-FohText -Path (Join-Path $DataDir 'fohmixer-hub.toml') -Text $tomlText
         Write-Host "fohmixer install: fohmixer-hub.toml (changed: $toml)"
         # 4. the layout

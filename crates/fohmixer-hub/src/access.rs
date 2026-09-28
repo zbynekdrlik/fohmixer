@@ -11,7 +11,7 @@
 //! Every request is classified [`Origin::Local`] or [`Origin::Internet`]:
 //! a request that carries any forwarded header ([`PROXY_HEADERS`]: the
 //! tunnel sets them) or comes from a public address is `Internet`, anything
-//! else (the church LAN, the PC itself, a private or CGNAT address) is
+//! else (the local network, the PC itself, a private or CGNAT address) is
 //! `Local`. Then, in this order:
 //!
 //! 1. **Origin guard** (both classes): a browser's cross-site POST or
@@ -74,7 +74,7 @@ pub const JWKS_MIN_REFRESH: Duration = Duration::from_secs(60);
 /// Where a request came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Origin {
-    /// The PC or the church network. Never authenticated.
+    /// The PC or the local network. Never authenticated.
     Local,
     /// Through the tunnel (a proxy) or from a public address.
     Internet,
@@ -439,6 +439,13 @@ pub async fn decide(
     // No network I/O on this path, ever.
     if origin == Origin::Local {
         return Decision::Allow { identity: None };
+    }
+    // Fail closed, and say so: a listener lost the peer address.
+    if peer.is_none() {
+        return deny(
+            "no_peer_address",
+            "the listener gave no peer address (ConnectInfo)".to_string(),
+        );
     }
     let Some(gate) = gate else {
         return deny(

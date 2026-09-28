@@ -356,17 +356,14 @@ try {
     Assert ([IO.File]::ReadAllText((Join-Path $tunnelTest 'tunnel-token')) -ceq $fakeToken) 'tunnel-token-stored-as-given'
     Assert (@(Test-FohTunnelDirAcl -Path $tunnelTest).Count -eq 0) 'tunnel-folder-for-system-and-administrators-only'
     Assert ((ErrorOf { Set-FohTunnelToken -TunnelDir $tunnelTest -Token 'short' }) -like '*tunnel token refused*') 'tunnel-token-refuses-a-bad-token'
-    # The values the toml carries as strings.
-    Assert ((ErrorOf { Test-FohRemoteValues -AcmeEmail 'owner@example.org' -AcmeDirectory $staging -AccessAud @('aud-1', 'a_B-2') }) -ceq '') 'remote-values-accepts-good-ones'
-    foreach ($c in @(
-            @{ e = 'owner"@example.org'; d = ''; a = @(); says = '*ACME e-mail refused*' },
-            @{ e = 'owner example.org'; d = ''; a = @(); says = '*ACME e-mail refused*' },
-            @{ e = ''; d = 'http://acme.example.org/directory'; a = @(); says = '*ACME directory refused*' },
-            @{ e = ''; d = 'https://acme.example.org/dir"x'; a = @(); says = '*ACME directory refused*' },
-            @{ e = ''; d = ''; a = @('aud"1'); says = '*Access AUD refused*' },
-            @{ e = ''; d = ''; a = @('aud 1'); says = '*Access AUD refused*' })) {
-        Assert ((ErrorOf { Test-FohRemoteValues -AcmeEmail $c.e -AcmeDirectory $c.d -AccessAud $c.a }) -like $c.says) "remote-values-refuses-[$($c.e)$($c.d)$($c.a -join ',')]"
-    }
+    # A config is checked by the hub it is for (fohmixer-hub config check).
+    $checkDir = Join-Path $base 'toml-check'
+    New-Item -ItemType Directory -Force -Path $checkDir | Out-Null
+    $goodToml = New-FohHubToml -HttpPort 18481 -BandPort 39181 -MasterPort 39182 -Remote $gotRemote
+    Assert ((ErrorOf { Test-FohHubToml -Exe $HubExe -Text $goodToml -Dir $checkDir }) -ceq '') 'hub-toml-check-accepts-the-install-toml'
+    $badToml = New-FohHubToml -HttpPort 18481 -BandPort 39181 -MasterPort 39182 -Remote (Get-FohRemoteToml -Name 'foh.example.org' -AcmeDirectory 'http://acme.example.org/directory')
+    Assert ((ErrorOf { Test-FohHubToml -Exe $HubExe -Text $badToml -Dir $checkDir }) -like '*refused by the hub (exit 2)*an https URL*') 'hub-toml-check-refuses-with-the-hubs-reason'
+    Assert (@(Get-ChildItem -LiteralPath $checkDir -Force).Count -eq 0) 'hub-toml-check-leaves-no-file'
     # The installed toml's remote tables, as they were written.
     Assert ((Get-FohInstalledRemoteToml -Text ((New-FohHubToml -HttpPort 1 -BandPort 2 -MasterPort 3) + $gotRemote)) -ceq $gotRemote) 'installed-remote-tables-read-back-as-written'
     Assert ((Get-FohInstalledRemoteToml -Text (New-FohHubToml -HttpPort 1 -BandPort 2 -MasterPort 3)) -ceq '') 'installed-remote-tables-none-without-tls'
@@ -597,11 +594,7 @@ try {
             @{ over = @{ HttpsPort = 18481 }; says = '*the ports must differ*'; what = 'https-on-the-http-port' },
             @{ over = @{ BandDesktop = (Join-Path $base 'no-desktop') }; says = "*desktop not found*"; what = 'a-missing-desktop' },
             @{ over = @{ CloudflaredExe = (Join-Path $base 'no-cloudflared.exe') }; says = '*cloudflared not found*'; what = 'a-missing-cloudflared' },
-            @{ over = @{ CloudflaredExe = $oldCloudflared }; says = '*too old*'; what = 'a-cloudflared-without-token-file' },
-            @{ over = @{ AcmeDirectory = 'http://acme.example.org/directory' }; says = '*ACME directory refused*'; what = 'a-plain-http-acme-directory' },
-            # No quote in these two: Windows PowerShell 5.1 passes one to powershell.exe unescaped (it is lost).
-            @{ over = @{ AcmeEmail = 'owner example.org' }; says = '*ACME e-mail refused*'; what = 'a-space-in-the-acme-email' },
-            @{ over = @{ AccessAud = 'aud-1, aud.2' }; says = '*Access AUD refused*'; what = 'a-dot-in-an-aud' })) {
+            @{ over = @{ CloudflaredExe = $oldCloudflared }; says = '*too old*'; what = 'a-cloudflared-without-token-file' })) {
         $o = $remoteOver.Clone()
         foreach ($k in @($r.over.Keys)) {
             if ($null -eq $r.over[$k]) { $o.Remove($k) } else { $o[$k] = $r.over[$k] }
@@ -622,8 +615,11 @@ try {
     } finally { $taken.Stop() }
     $res = Invoke-PsInput $install ($argsR + '-SetTunnelToken') 'not-a-token'
     Assert ($res.code -ne 0 -and $res.out -like '*tunnel token refused*' -and -not (Test-Path -LiteralPath $dataR)) 'install-refuses-a-bad-tunnel-token-before-any-change'
-    $res = Invoke-Ps $install (Get-InstallArgs @{ DataDir = $noneR; AccessTeam = 'team.cloudflareaccess.com' })
-    Assert ($res.code -ne 0 -and $res.out -like '*need -PublicName*') 'install-refuses-remote-parameters-without-a-public-name'
+    foreach ($o in @(@{ AccessTeam = 'team.cloudflareaccess.com' }, @{ HttpsPort = 8443 }, @{ HostsFile = $hostsR })) {
+        $o['DataDir'] = $noneR
+        $res = Invoke-Ps $install (Get-InstallArgs $o)
+        Assert ($res.code -ne 0 -and $res.out -like '*need -PublicName*' -and -not (Test-Path -LiteralPath $noneR)) "install-refuses-$(@($o.Keys | Where-Object { $_ -ne 'DataDir' })[0])-without-a-public-name"
+    }
 
     $r5 = Invoke-PsInput $install ($argsR + '-SetTunnelToken') $fakeToken
     Assert ($r5.code -eq 0) 'install-5-remote-exits-0'
@@ -631,7 +627,8 @@ try {
     $wantR = New-FohHubToml -HttpPort 18481 -BandPort 39181 -MasterPort 39182 -Remote (Get-FohRemoteToml -Name 'foh.example.org' `
         -HttpsPort 18443 -AcmeEmail 'owner@example.org' -AccessTeam 'team.cloudflareaccess.com' -AccessAud @('aud-1', 'aud-2') -Tunnel -TunnelMetricsPort 20299)
     Assert ([IO.File]::ReadAllText((Join-Path $dataR 'fohmixer-hub.toml')) -ceq $wantR) 'install-5-toml-has-the-remote-tables'
-    Assert ($wantR -like "*ready_url = `"http://127.0.0.1:20299/ready`"*" -and $wantR -like '*aud = ["aud-1", "aud-2"]*') 'install-5-toml-tunnel-and-audiences'
+    # Contains, not -like: '[' opens a wildcard character class.
+    Assert ($wantR.Contains('ready_url = "http://127.0.0.1:20299/ready"') -and $wantR.Contains('aud = ["aud-1", "aud-2"]')) 'install-5-toml-tunnel-and-audiences'
     Assert ([IO.File]::ReadAllText($hostsR) -ceq ("127.0.0.1 localhost`r`n" + $hostsBlock)) 'install-5-maps-the-name-to-this-pc'
     Assert ([IO.File]::ReadAllText((Join-Path $deskR 'fohmixer.url')) -ceq "[InternetShortcut]`r`nURL=https://foh.example.org:18443/`r`n") 'install-5-desktop-shortcut'
     Assert ([IO.File]::ReadAllText((Join-Path $tunnelR 'tunnel-token')) -ceq $fakeToken -and @(Test-FohTunnelDirAcl -Path $tunnelR).Count -eq 0) 'install-5-stores-the-token-for-system-and-administrators'
@@ -648,6 +645,24 @@ try {
     Assert ($r7.code -eq 0 -and $r7.out -like '*remote access kept as installed*') 'install-7-without-a-public-name-exits-0'
     $newer = @(Get-ChangedFiles $watchR)
     Assert ($newer.Count -eq 0) "install-7-keeps-the-remote-access ($($newer -join ', '))"
+    # A config the hub refuses stops the install before any change: checked
+    # by the new hub itself (the kept [tls] on the new HTTP port included).
+    foreach ($r in @(
+            # (No '[' in a -like pattern: it opens a character class.)
+            @{ remote = $false; over = @{ HttpPort = 18443 }; says = '*port 18443 is the HTTP port*'; what = 'the-kept-https-port-as-the-http-port' },
+            @{ remote = $true; over = @{ AcmeDirectory = 'http://acme.example.org/directory' }; says = '*an https URL*'; what = 'a-plain-http-acme-directory' },
+            # No quote here: Windows PowerShell 5.1 passes one to powershell.exe unescaped (it is lost).
+            @{ remote = $true; over = @{ AcmeEmail = 'owner example.org' }; says = '*an address like owner@example.org*'; what = 'an-acme-email-with-a-space' },
+            @{ remote = $true; over = @{ AcmeEmail = 'owner\x@example.org' }; says = '*refused by the hub*'; what = 'a-toml-breaking-acme-email' })) {
+        $o = @{}
+        if ($r.remote) { $o = $remoteOver.Clone() }
+        foreach ($k in @($r.over.Keys)) { $o[$k] = $r.over[$k] }
+        $o['DataDir'] = $dataR
+        $res = Invoke-Ps $install (Get-InstallArgs $o)
+        Assert ($res.code -ne 0 -and $res.out -like $r.says) "install-refuses-$($r.what)"
+        $newer = @(Get-ChangedFiles $watchR)
+        Assert ($newer.Count -eq 0) "install-refused-$($r.what)-before-any-change ($($newer -join ', '))"
+    }
 
     # ---- the tasks, registered for this user in a test folder (never started) ----
     Register-FohHubTasks -AppDir $appV1 -DataDir $data -User $me -TaskPath $taskFolder

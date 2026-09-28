@@ -4,9 +4,11 @@
 //!   fohmixer-hub pin set-engineer       read a PIN from stdin, store its hash as the engineer PIN
 //!   fohmixer-hub cloudflare set-token   read a Cloudflare API token from stdin, store it sealed
 //!                                       (the ACME client's DNS-01 records, #17)
+//!   fohmixer-hub config check <file>    check <file> as the hub's config (the installer, before
+//!                                       it stops the hub): exit 0, or 2 with why
 //!
-//! Both commands run as the hub's user: what they store is sealed (DPAPI)
-//! for that account.
+//! `pin` and `cloudflare` run as the hub's user: what they store is sealed
+//! (DPAPI) for that account.
 //! The data folder is `$FOHMIXER_DATA` (default: the working folder): the
 //! config `fohmixer-hub.toml`, `secrets/`, the layout, its backups and
 //! `hub-state.json`. Logging: `RUST_LOG` when set (e.g.
@@ -25,7 +27,7 @@ use fohmixer_hub::config::Config;
 use fohmixer_hub::provision::{self, ProvisionError};
 use tokio::sync::oneshot;
 
-const USAGE: &str = "usage: fohmixer-hub [pin set-engineer | cloudflare set-token]   (the PIN or the token is read from stdin)";
+const USAGE: &str = "usage: fohmixer-hub [pin set-engineer | cloudflare set-token | config check <file>]   (the PIN or the token is read from stdin)";
 
 fn data_dir() -> PathBuf {
     PathBuf::from(std::env::var("FOHMIXER_DATA").unwrap_or_else(|_| ".".to_string()))
@@ -45,6 +47,7 @@ fn main() -> ExitCode {
         },
         ["pin", "set-engineer"] => pin_command(),
         ["cloudflare", "set-token"] => token_command(),
+        ["config", "check", file] => config_command(file),
         _ => {
             eprintln!("{USAGE}");
             ExitCode::from(2)
@@ -87,6 +90,21 @@ fn token_command() -> ExitCode {
         Err(e) => {
             eprintln!("fohmixer-hub: {e}");
             ExitCode::FAILURE
+        }
+    }
+}
+
+/// `config check <file>`: exit 0 when the hub would start with `file` as its
+/// config, 2 (and why on stderr) when it would refuse it.
+fn config_command(file: &str) -> ExitCode {
+    match Config::check_file(std::path::Path::new(file)) {
+        Ok(()) => {
+            eprintln!("fohmixer-hub: config {file}: OK");
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("fohmixer-hub: {e:#}");
+            ExitCode::from(2)
         }
     }
 }

@@ -268,12 +268,15 @@ mod tests {
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
-    /// The router as a LAN client reaches it (the listener's peer address;
-    /// without one the Access check takes the request for the internet).
+    /// The router as a LAN client reaches it: the peer address the
+    /// listener inserts (`ConnectInfo`; without one the Access check takes
+    /// the request for the internet). `MockConnectInfo` would not do: only
+    /// the `ConnectInfo` extractor reads it, the Access middleware reads the
+    /// extension itself.
     fn lan(router: axum::Router) -> axum::Router {
-        router.layer(axum::extract::connect_info::MockConnectInfo(
+        router.layer(axum::Extension(axum::extract::ConnectInfo(
             std::net::SocketAddr::from(([10, 0, 0, 5], 40000)),
-        ))
+        )))
     }
 
     async fn send(request: Request<Body>) -> Response {

@@ -84,7 +84,8 @@ param(
     # Remote access (#17): the one public name (LAN and tunnel); nothing below is used without it
     # (FohmixerRemote.ps1 Resolve-FohRemote, which also holds the defaults).
     [string]$PublicName = '',
-    [int]$HttpsPort = 443,
+    # Default 443 (the defaults of these live in Resolve-FohRemote; only given ones are passed).
+    [int]$HttpsPort,
     # The ACME account's contact, and another ACME directory (e.g. Let's Encrypt's staging).
     [string]$AcmeEmail = '',
     [string]$AcmeDirectory = '',
@@ -94,7 +95,8 @@ param(
     # Read the cloudflared connector token from stdin (or a hidden prompt) and store it.
     [switch]$SetTunnelToken,
     [string]$CloudflaredExe = '',
-    [int]$TunnelMetricsPort = 20241,
+    # Default 20241.
+    [int]$TunnelMetricsPort,
     # Default <ProgramData>\fohmixer-tunnel; the hosts file and the band user's desktop default to Windows' own.
     [string]$TunnelDir = '',
     [string]$HostsFile = '',

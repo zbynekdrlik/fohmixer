@@ -75,15 +75,27 @@ pub fn warns(why: &str, repeated: bool) -> bool {
 }
 
 /// The stored account when it belongs to `directory`. A file that does not
-/// parse is logged and replaced by a new account.
+/// parse is logged ([`parse_problem`]) and replaced by a new account.
 fn stored_account(bytes: &[u8], directory: &str) -> Option<StoredAccount> {
     match serde_json::from_slice::<StoredAccount>(bytes) {
         Ok(account) => (account.directory == directory).then_some(account),
         Err(e) => {
-            tracing::warn!("ACME: the stored account does not parse ({e}); making a new one");
+            let problem = parse_problem(&e);
+            tracing::warn!("ACME: the stored account does not parse ({problem}); making a new one");
             None
         }
     }
+}
+
+/// What is logged of a stored account that does not parse: the kind and
+/// place of the error, never serde's text (it can quote a value: the key).
+fn parse_problem(e: &serde_json::Error) -> String {
+    format!(
+        "{:?} error at line {} column {}",
+        e.classify(),
+        e.line(),
+        e.column()
+    )
 }
 
 /// What the keeper does with the stored certificate at `now`.

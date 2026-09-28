@@ -60,7 +60,11 @@ class FakeCloudflare:
                 return ok([t for t in self.tunnels.values() if t["name"] == params["name"]])
             if len(parts) == 3 and method == "POST":
                 tid = self._id("tun")
-                self.tunnels[tid] = {"id": tid, "name": body["name"], "config_src": body["config_src"]}
+                self.tunnels[tid] = {
+                    "id": tid,
+                    "name": body["name"],
+                    "config_src": body["config_src"],
+                }
                 return ok(self.tunnels[tid])
             if parts[4] == "configurations" and method == "GET":
                 return ok({"config": self.configs.get(parts[3])})
@@ -110,7 +114,16 @@ class ScriptTest(unittest.TestCase):
         self.cf = FakeCloudflare()
 
     def run_main(self, *extra, apply=True, emails=("a@example.org", "b@example.org")):
-        argv = ["--account-id", ACCOUNT, "--zone", ZONE, "--name", NAME, "--api-token-file", self.token_file]
+        argv = [
+            "--account-id",
+            ACCOUNT,
+            "--zone",
+            ZONE,
+            "--name",
+            NAME,
+            "--api-token-file",
+            self.token_file,
+        ]
         for e in emails:
             argv += ["--email", e]
         if apply:
@@ -170,9 +183,17 @@ class ScriptTest(unittest.TestCase):
             (record["type"], record["name"], record["content"], record["proxied"]),
             ("CNAME", NAME, tid + ".cfargotunnel.com", True),
         )
-        kinds = [path.split("/")[3] if path.startswith("/accounts") else "dns" for _, path in self.cf.writes]
-        self.assertLess(kinds.index("access"), kinds.index("dns"), "Access exists before the name is public")
-        self.assertIn('[access]\nteam_domain = "team.cloudflareaccess.com"\naud = ["aud-' + app["id"] + '"]', out)
+        kinds = [
+            path.split("/")[3] if path.startswith("/accounts") else "dns"
+            for _, path in self.cf.writes
+        ]
+        self.assertLess(
+            kinds.index("access"), kinds.index("dns"), "Access exists before the name is public"
+        )
+        self.assertIn(
+            '[access]\nteam_domain = "team.cloudflareaccess.com"\naud = ["aud-' + app["id"] + '"]',
+            out,
+        )
         # The connector token: in the file, owner-only, never printed.
         self.assertEqual(Path(token_out).read_text(encoding="ascii"), CONNECTOR)
         self.assertEqual(stat.S_IMODE(os.stat(token_out).st_mode), 0o600)
@@ -223,7 +244,10 @@ class ScriptTest(unittest.TestCase):
         self.cf.fail = "/access/apps"
         code, _, err = self.run_main()
         self.assertEqual(code, 1)
-        self.assertIn("FAILED: GET /accounts/acc1/access/apps?per_page=1000: HTTP 403: Authentication error", err)
+        self.assertIn(
+            "FAILED: GET /accounts/acc1/access/apps?per_page=1000: HTTP 403: Authentication error",
+            err,
+        )
         self.assertEqual(self.cf.records, {}, "nothing published after a failed Access step")
         self.cf.fail = None
         self.cf.zones = {}

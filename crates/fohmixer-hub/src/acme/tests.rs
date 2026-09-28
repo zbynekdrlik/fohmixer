@@ -369,6 +369,20 @@ fn a_stored_account_counts_for_its_own_directory_only() {
     assert!(stored_account(&bytes, directory).is_some());
     assert!(stored_account(&bytes, "https://other.example/directory").is_none());
     assert!(stored_account(b"{not json", directory).is_none());
+    // The key in a file of another shape never reaches the log.
+    let quoted = "QUOTEDVALUE";
+    let odd = format!(r#"{{"directory": "{directory}", "credentials": "{quoted}"}}"#);
+    let error = serde_json::from_str::<StoredAccount>(&odd).unwrap_err();
+    assert!(
+        error.to_string().contains(quoted),
+        "serde quotes it: {error}"
+    );
+    let problem = parse_problem(&error);
+    assert!(!problem.contains(quoted), "{problem}");
+    assert!(
+        problem.starts_with("Data error at line 1 column "),
+        "{problem}"
+    );
 }
 
 #[test]

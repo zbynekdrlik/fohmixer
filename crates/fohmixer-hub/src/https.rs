@@ -97,12 +97,13 @@ impl Https {
     }
 
     /// Waits up to `bound` for the server to end after [`Https::stop`];
-    /// whether it ended (true when it never served).
+    /// whether it ended (true when it never served). A wait that timed out
+    /// can be repeated.
     pub async fn stopped(&self, bound: Duration) -> bool {
-        let Some(task) = lock(&self.task).take() else {
+        let Some(mut task) = lock(&self.task).take() else {
             return true;
         };
-        match tokio::time::timeout(bound, task).await {
+        match tokio::time::timeout(bound, &mut task).await {
             Ok(Ok(Ok(()))) => true,
             Ok(Ok(Err(e))) => {
                 tracing::error!(error = %e, "the HTTPS server failed");
@@ -112,7 +113,10 @@ impl Https {
                 tracing::error!(error = %e, "the HTTPS server task failed");
                 true
             }
-            Err(_) => false,
+            Err(_) => {
+                *lock(&self.task) = Some(task);
+                false
+            }
         }
     }
 }
@@ -142,16 +146,23 @@ mod tests {
         let (https, _) = serving();
         assert!(https.serving());
         // A client that connects and never finishes its handshake holds the
-        // server in its drain.
+        // server in its drain (once the server has accepted it).
         let _client = tokio::net::TcpStream::connect(https.addr()).await.unwrap();
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        for _ in 0..500 {
+            if https.handle.connection_count() > 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(https.handle.connection_count(), 1);
         https.stop(Duration::from_millis(1500));
         assert!(
             !https.stopped(Duration::from_millis(100)).await,
             "still draining"
         );
-        // The task was taken by the first wait: nothing left to wait for.
-        assert!(https.stopped(Duration::from_millis(100)).await);
+        // The wait can be repeated: the server ends with its drain.
+        assert!(https.stopped(Duration::from_secs(5)).await);
+        assert!(https.stopped(Duration::from_millis(1)).await, "ended");
     }
 
     #[tokio::test]

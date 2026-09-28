@@ -45,21 +45,6 @@ function Test-FohPublicName {
     if (-not $ok) { throw "public name refused: [$Name] (a DNS name like foh.example.org)" }
 }
 
-function Test-FohRemoteValues {
-    # The values that go into the toml as strings, checked before anything
-    # changes (a value the hub refuses would stop it after the install's stop):
-    # the ACME directory an https:// URL (config.rs), the e-mail and the AUD
-    # tags with no quote, backslash or space. Throws naming the value.
-    param([AllowEmptyString()][string]$AcmeEmail = '', [AllowEmptyString()][string]$AcmeDirectory = '', [string[]]$AccessAud = @())
-    if ($AcmeEmail -and $AcmeEmail -cnotmatch '^[^\s"\\@]+@[^\s"\\@]+\z') { throw "ACME e-mail refused: [$AcmeEmail]" }
-    if ($AcmeDirectory -and $AcmeDirectory -cnotmatch '^https://[^\s"\\]+\z') {
-        throw "ACME directory refused: [$AcmeDirectory] (an https:// URL)"
-    }
-    foreach ($a in $AccessAud) {
-        if ($a -cnotmatch '^[0-9A-Za-z_-]+\z') { throw "Access AUD refused: [$a] (the Access application's AUD tag)" }
-    }
-}
-
 function Get-FohInstalledRemoteToml {
     # The remote-access tables of an installed fohmixer-hub.toml's text: from
     # the line end before [tls] to the end (New-FohHubToml writes them last),
@@ -310,9 +295,10 @@ function Resolve-FohRemote {
     # mode 'set', the name, its URL, the toml tables, the paths and, with
     # -SetTunnelToken, the connector token read from stdin or a hidden prompt
     # (the tunnel is set up with -SetTunnelToken or a token stored by an
-    # earlier run). Without it (then no other remote-access parameter is
-    # allowed): mode 'keep' with the installed toml's remote tables when there
-    # are any, else $null.
+    # earlier run). Without it (then no other remote-access parameter may be
+    # given): mode 'keep' with the installed toml's remote tables when there
+    # are any, else $null. The values themselves are checked by the hub
+    # (Test-FohHubToml, `fohmixer-hub config check`), the one set of rules.
     param([Parameter(Mandatory)][string]$DataDir, [Parameter(Mandatory)][string]$BandUser,
           [Parameter(Mandatory)][int]$HttpPort, [Parameter(Mandatory)][int]$BandPort, [Parameter(Mandatory)][int]$MasterPort,
           [AllowEmptyString()][string]$PublicName = '', [int]$HttpsPort = 443,
@@ -323,7 +309,13 @@ function Resolve-FohRemote {
           [AllowEmptyString()][string]$BandDesktop = '')
     $DataDir = Resolve-FohPath $DataDir
     if (-not $PublicName) {
-        if ($SetTunnelToken -or $AccessTeam -or $AccessAud -or $AcmeEmail -or $AcmeDirectory) { throw 'the remote-access parameters need -PublicName' }
+        $bound = $PSBoundParameters
+        $given = @()
+        foreach ($k in @('HttpsPort', 'AcmeEmail', 'AcmeDirectory', 'AccessTeam', 'AccessAud', 'SetTunnelToken', 'CloudflaredExe',
+                'TunnelMetricsPort', 'TunnelDir', 'HostsFile', 'BandDesktop')) {
+            if ($bound.ContainsKey($k)) { $given += ('-' + $k) }
+        }
+        if ($given.Count -gt 0) { throw ('the remote-access parameters need -PublicName: ' + ($given -join ', ')) }
         $toml = Join-Path $DataDir 'fohmixer-hub.toml'
         if (-not (Test-Path -LiteralPath $toml -PathType Leaf)) { return $null }
         $installed = Get-FohInstalledRemoteToml -Text ([IO.File]::ReadAllText($toml))
@@ -338,7 +330,6 @@ function Resolve-FohRemote {
     $auds = @($AccessAud.Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
     if ([bool]$AccessTeam -ne ($auds.Count -gt 0)) { throw 'give -AccessTeam and -AccessAud together (the Access application of the name)' }
     if ($AccessTeam) { Test-FohPublicName $AccessTeam }
-    Test-FohRemoteValues -AcmeEmail $AcmeEmail -AcmeDirectory $AcmeDirectory -AccessAud $auds
     Test-FohPortFree -Port $HttpsPort -DataDir $DataDir
     if (-not $TunnelDir) { $TunnelDir = Join-Path $env:ProgramData 'fohmixer-tunnel' }
     $TunnelDir = Resolve-FohPath $TunnelDir

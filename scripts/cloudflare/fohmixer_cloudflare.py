@@ -83,7 +83,9 @@ class Api:
         if status in (200, 201) and answer.get("success"):
             return answer.get("result")
         errors = answer.get("errors") or [{}]
-        raise ApiError("%s %s: HTTP %s: %s" % (method, path, status, errors[0].get("message", answer)))
+        raise ApiError(
+            "%s %s: HTTP %s: %s" % (method, path, status, errors[0].get("message", answer))
+        )
 
 
 class ApiError(RuntimeError):
@@ -158,12 +160,16 @@ def reconcile_tunnel(api, plan, account, tunnel_name):
         return
     plan.note("create tunnel %s (remotely managed)" % tunnel_name)
     if plan.apply:
-        plan.tunnel_id = api.call("POST", base, {"name": tunnel_name, "config_src": "cloudflare"})["id"]
+        plan.tunnel_id = api.call("POST", base, {"name": tunnel_name, "config_src": "cloudflare"})[
+            "id"
+        ]
 
 
 def reconcile_access(api, plan, account, name, emails, session_duration):
     if not emails:
-        raise ApiError("no e-mail for the Access policy: an Access app without an allow-list is an open door")
+        raise ApiError(
+            "no e-mail for the Access policy: an Access app without an allow-list is an open door"
+        )
     base = "/accounts/%s/access" % account
     apps = api.call("GET", base + "/apps?per_page=1000") or []
     app = next((a for a in apps if norm(a.get("domain")) == norm(name)), None)
@@ -173,14 +179,20 @@ def reconcile_access(api, plan, account, name, emails, session_duration):
         if plan.apply:
             app = api.call("POST", base + "/apps", payload)
     else:
-        plan.note("update the Access app of %s (id %s, allow: %d e-mail(s))" % (name, app.get("id"), len(emails)))
+        plan.note(
+            "update the Access app of %s (id %s, allow: %d e-mail(s))"
+            % (name, app.get("id"), len(emails))
+        )
         if plan.apply:
             app = api.call("PUT", "%s/apps/%s" % (base, app["id"]), payload)
     plan.aud = (app or {}).get("aud")
     try:
         plan.team_domain = (api.call("GET", base + "/organizations") or {}).get("auth_domain")
     except ApiError as e:
-        plan.note("the team domain is not readable with this token (%s): Zero Trust > Settings shows it" % e)
+        plan.note(
+            "the team domain is not readable with this token (%s): Zero Trust > Settings shows it"
+            % e
+        )
 
 
 def reconcile_ingress(api, plan, account, name, service):
@@ -204,9 +216,19 @@ def reconcile_dns(api, plan, zone, name, replace):
         raise ApiError("no zone %s for this token" % zone)
     base = "/zones/%s/dns_records" % zones[0]["id"]
     target = "%s%s" % (plan.tunnel_id or "<new tunnel>", TUNNEL_SUFFIX)
-    record = {"type": "CNAME", "name": name, "content": target, "proxied": True, "comment": "fohmixer tunnel (#17)"}
+    record = {
+        "type": "CNAME",
+        "name": name,
+        "content": target,
+        "proxied": True,
+        "comment": "fohmixer tunnel (#17)",
+    }
     existing = api.call("GET", "%s?name=%s" % (base, name)) or []
-    ours = [r for r in existing if r.get("type") == "CNAME" and norm(r.get("content")).endswith(TUNNEL_SUFFIX)]
+    ours = [
+        r
+        for r in existing
+        if r.get("type") == "CNAME" and norm(r.get("content")).endswith(TUNNEL_SUFFIX)
+    ]
     foreign = [r for r in existing if r not in ours]
     if foreign and not replace:
         raise ApiError(
@@ -266,16 +288,24 @@ def hub_access_table(plan):
 
 
 def parse_args(argv):
-    p = argparse.ArgumentParser(description="fohmixer remote access on Cloudflare (#17); dry-run unless --apply")
+    p = argparse.ArgumentParser(
+        description="fohmixer remote access on Cloudflare (#17); dry-run unless --apply"
+    )
     p.add_argument("--account-id", required=True)
     p.add_argument("--zone", required=True, help="the DNS zone of the name")
     p.add_argument("--name", required=True, help="the public name, e.g. foh.example.org")
     p.add_argument("--tunnel-name", default="fohmixer")
-    p.add_argument("--email", action="append", default=[], help="an e-mail the Access policy allows (repeat)")
-    p.add_argument("--service", default="http://127.0.0.1:8480", help="the tunnel's origin on the PC")
+    p.add_argument(
+        "--email", action="append", default=[], help="an e-mail the Access policy allows (repeat)"
+    )
+    p.add_argument(
+        "--service", default="http://127.0.0.1:8480", help="the tunnel's origin on the PC"
+    )
     p.add_argument("--session-duration", default="720h")
     p.add_argument("--api-token-file", required=True)
-    p.add_argument("--token-out", default=None, help="write the tunnel's connector token here (with --apply)")
+    p.add_argument(
+        "--token-out", default=None, help="write the tunnel's connector token here (with --apply)"
+    )
     p.add_argument("--replace-dns", action="store_true")
     p.add_argument("--apply", action="store_true")
     return p.parse_args(argv)
