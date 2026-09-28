@@ -222,7 +222,7 @@ mod tests {
         assert_eq!(law.value(0.5), None);
         assert!(!law.ready());
         assert_eq!(law.glide_to(), None, "no double tap on a parameter fader");
-        range.set(Some((-15.0, 15.0)));
+        let _ = range.try_set(Some((-15.0, 15.0)));
         assert!(law.ready());
         assert_eq!(law.pos(0.0), Some(0.5));
         assert_eq!(law.value(0.25), Some(-7.5));
