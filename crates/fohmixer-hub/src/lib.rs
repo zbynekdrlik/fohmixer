@@ -9,6 +9,14 @@
 //! (PIN → JWT, from iemmixer). It also serves the embedded UI,
 //! `/api/version` and `/api/client-error`, behind the security headers, and
 //! stops gracefully (S0, trimmed from iemmixer's `iem-server` @ 22372bc).
+//!
+//! Remote access (#17): one public name for the LAN and the Cloudflare
+//! tunnel. The HTTPS listener of that name (`https.rs`, `tls.rs`) with its
+//! Let's Encrypt certificate (`acme.rs` by DNS-01 on Cloudflare,
+//! `cloudflare.rs`, `cf_token.rs`), the Access check of every internet
+//! request (`access.rs`), cloudflared's readiness (`tunnel.rs`), all in
+//! `/api/status` (`remote.rs`). The plain-HTTP listener always stays: it is
+//! the emergency path by IP and the tunnel's origin.
 
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -26,8 +34,16 @@ use tokio::sync::{Notify, mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tower_http::set_header::SetResponseHeaderLayer;
 
+pub mod access;
+pub mod acme;
 pub mod auth;
+pub mod cf_token;
+pub mod cloudflare;
 pub mod config;
+#[cfg(windows)]
+mod dpapi;
+pub mod http_client;
+pub mod https;
 pub mod layout;
 pub mod live;
 pub mod login_guard;
@@ -36,16 +52,25 @@ pub mod pepper;
 pub mod pin_hash;
 pub mod pin_store;
 pub mod provision;
+pub mod remote;
 pub mod router;
 pub mod routes;
 pub mod rules;
+pub mod sealed;
 pub mod secrets;
+#[cfg(test)]
+pub(crate) mod test_keys;
+pub mod tls;
+pub mod tunnel;
 pub mod ws;
 
+use access::AccessGate;
 use auth::Auth;
 use config::Config;
+use https::Https;
 use layout::LayoutStore;
 use live::client::{Events, LiveEvent, LiveHandle};
+use remote::RemoteState;
 use router::RouterMsg;
 
 /// The HTTP port when neither `PORT` nor the config sets one.
@@ -78,6 +103,15 @@ pub struct HubInner {
     pub config: Config,
     pub auth: Arc<Auth>,
     pub layout: Arc<LayoutStore>,
+    /// The Access check of internet requests (`[access]`); none: they are
+    /// refused.
+    pub access: Option<Arc<AccessGate>>,
+    /// Remote access's live state for `/api/status`.
+    pub remote: Arc<RemoteState>,
+    /// The host names a request may name besides addresses (`check_host`).
+    pub trusted_hosts: Vec<String>,
+    /// The HTTPS listener (`[tls]`), once `serve_until` made it.
+    pub https: std::sync::OnceLock<Arc<Https>>,
     live: BTreeMap<String, LiveHandle>,
     router: mpsc::UnboundedSender<RouterMsg>,
     next_client: AtomicU64,
@@ -127,6 +161,14 @@ impl HubInner {
         self.next_client.fetch_add(1, Ordering::Relaxed)
     }
 
+    /// A task that ends with the hub.
+    pub fn add_task(&self, task: JoinHandle<()>) {
+        self.tasks
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(task);
+    }
+
     /// `GET /api/status`.
     pub async fn status(&self) -> HubStatus {
         let (reply, answer) = oneshot::channel();
@@ -167,6 +209,11 @@ impl HubInner {
             },
             stage_aut: router.stage_aut,
             clients: router.clients,
+            remote: self.remote.snapshot(
+                &self.config,
+                self.https.get().map(Arc::as_ref),
+                auth::now_secs() as i64,
+            ),
         }
     }
 }
@@ -182,6 +229,22 @@ impl Hub {
         let auth = Arc::new(Auth::load(&config.data_dir).context("loading the secrets")?);
         let (router_tx, router_rx) = mpsc::unbounded_channel();
         let mut tasks = Vec::new();
+        let remote = Arc::new(RemoteState::default());
+        let access = match &config.access {
+            Some(cfg) => {
+                let gate = AccessGate::new(cfg, remote_http()?);
+                tasks.push(gate.spawn_refresher());
+                Some(gate)
+            }
+            None => None,
+        };
+        if let Some(cfg) = &config.tunnel {
+            tasks.push(tunnel::spawn(
+                remote_http()?,
+                cfg.ready_url.clone(),
+                Arc::clone(&remote),
+            ));
+        }
         let mut live = BTreeMap::new();
         for instance in &config.instances {
             let tx = router_tx.clone();
@@ -202,6 +265,8 @@ impl Hub {
             instances = config.instances.len(),
             layout = %config.layout_path().display(),
             stage_aut = hub_state.stage_aut,
+            public_name = config.tls.as_ref().map(|t| t.name.as_str()).unwrap_or("-"),
+            access = config.access.is_some(),
             "hub started"
         );
         let router =
@@ -212,16 +277,29 @@ impl Hub {
             router_tx.clone(),
             Duration::from_millis(config.layout_poll_ms),
         )));
+        let trusted_hosts = config.trusted_hosts();
         Ok(Self(Arc::new(HubInner {
             config,
             auth,
             layout,
+            access,
+            remote,
+            trusted_hosts,
+            https: std::sync::OnceLock::new(),
             live,
             router: router_tx,
             next_client: AtomicU64::new(1),
             tasks: Mutex::new(tasks),
         })))
     }
+}
+
+/// The HTTP client of the remote-access tasks, on rustls with ring.
+fn remote_http() -> anyhow::Result<http_client::HttpClient> {
+    // The crypto provider for the clients that take the process default
+    // (instant-acme's, the platform verifier); ignored when already set.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    http_client::HttpClient::new()
 }
 
 /// Checks the layout file every `period`; a new layout goes to the router.
@@ -263,11 +341,13 @@ pub(crate) fn test_hub(dir: &std::path::Path) -> Hub {
     Hub::start(config).expect("a test hub")
 }
 
-/// The HTTP application: API and static routes behind the security headers.
-/// No CORS layer: the UI is always loaded from this server, so its requests
-/// are same-origin; a foreign page gets no `Access-Control-Allow-Origin` and
-/// cannot read API responses.
-pub fn app_router(hub: Hub) -> Router {
+/// The HTTP application: API and static routes behind the security headers,
+/// the host check (DNS rebinding), the redirect to HTTPS (`redirect`, the
+/// plain-HTTP listener only) and the Access check (`access.rs`), in that
+/// order, in front of every route. No CORS layer: the UI is always loaded
+/// from this server, so its requests are same-origin; a foreign page gets
+/// no `Access-Control-Allow-Origin` and cannot read API responses.
+fn router(hub: Hub, redirect: bool) -> Router {
     let x_frame_options = SetResponseHeaderLayer::overriding(
         HeaderName::from_static("x-frame-options"),
         HeaderValue::from_static("DENY"),
@@ -291,15 +371,34 @@ pub fn app_router(hub: Hub) -> Router {
     );
 
     let check_host = axum::middleware::from_fn_with_state(hub.clone(), routes::check_host);
-    Router::new()
+    let access = axum::middleware::from_fn_with_state(hub.clone(), access::middleware);
+    let mut app = Router::new()
         .merge(routes::api_routes())
         .merge(routes::static_routes())
-        .layer(check_host)
+        .layer(access);
+    if redirect {
+        app = app.layer(axum::middleware::from_fn_with_state(
+            hub.clone(),
+            routes::https_redirect,
+        ));
+    }
+    app.layer(check_host)
         .layer(x_frame_options)
         .layer(x_content_type_options)
         .layer(referrer_policy)
         .layer(csp)
         .with_state(hub)
+}
+
+/// The plain-HTTP listener's application: [`router`] with the redirect of
+/// the public name to HTTPS (`[tls] redirect_http`).
+pub fn app_router(hub: Hub) -> Router {
+    router(hub, true)
+}
+
+/// The HTTPS listener's application: [`router`] without the redirect.
+pub fn https_router(hub: Hub) -> Router {
+    router(hub, false)
 }
 
 /// The log filter when `RUST_LOG` is not set (or empty).
@@ -333,6 +432,11 @@ pub fn port_from(value: Option<&str>, default: u16) -> anyhow::Result<u16> {
 /// and the hub started; at the stop the clients' WebSockets close, the
 /// listener closes at once (the port is free), idle connections close, open
 /// requests get up to [`STOP_DRAIN`] to finish, and it returns `Ok`.
+///
+/// With `[tls]` the HTTPS listener binds `addr`'s IP on its port next to
+/// it (a taken port is an error too), serves the stored certificate or
+/// waits for the ACME client's first one (`[acme]`), and stops with the
+/// HTTP listener; `/api/status` reports its port.
 pub async fn serve_until<F>(
     addr: SocketAddr,
     config: Config,
@@ -346,7 +450,19 @@ where
         .await
         .with_context(|| format!("binding {addr}"))?;
     let local = listener.local_addr().context("reading the bound address")?;
+    let https_socket = match &config.tls {
+        Some(tls) => {
+            let at = SocketAddr::new(addr.ip(), tls.port);
+            let socket = Https::listen(at).with_context(|| format!("binding HTTPS {at}"))?;
+            Some((socket, tls.name.clone()))
+        }
+        None => None,
+    };
     let hub = Hub::start(config).context("starting the hub")?;
+    let https = match https_socket {
+        Some((socket, name)) => Some(start_https(&hub, socket, &name)?),
+        None => None,
+    };
     tracing::info!(
         addr = %local,
         version = %fohmixer_proto::full_version(),
@@ -365,6 +481,7 @@ where
     let stopping = Arc::new(Notify::new());
     let stop_seen = Arc::clone(&stopping);
     let hub_at_stop = hub.clone();
+    let https_at_stop = https.clone();
     let serve = axum::serve(
         listener,
         app_router(hub.clone()).into_make_service_with_connect_info::<SocketAddr>(),
@@ -376,6 +493,9 @@ where
             "stop requested: the clients close, the listener closes, open requests get the drain"
         );
         hub_at_stop.stop();
+        if let Some(https) = https_at_stop {
+            https.stop(STOP_DRAIN);
+        }
         stop_seen.notify_one();
     });
     tokio::select! {
@@ -390,7 +510,35 @@ where
     }
     hub.stop();
     tracing::info!("HTTP server stopped");
+    if let Some(https) = https {
+        // It took the stop with the HTTP server and ends its connections
+        // STOP_DRAIN after it; this bound is only the backstop.
+        https.stop(STOP_DRAIN);
+        if !https.stopped(STOP_DRAIN).await {
+            tracing::warn!("HTTPS requests still open after the drain: stopping without them");
+        }
+    }
     Ok(())
+}
+
+/// The HTTPS listener of the hub on the bound `socket`: the stored
+/// certificate served when there is one, the ACME keeper started with
+/// `[acme]`.
+fn start_https(hub: &Hub, socket: std::net::TcpListener, name: &str) -> anyhow::Result<Arc<Https>> {
+    let https =
+        Arc::new(Https::new(socket, https_router(hub.clone())).context("the HTTPS listener")?);
+    let _ = hub.https.set(Arc::clone(&https));
+    tracing::info!(addr = %https.addr(), name, "HTTPS listener bound");
+    remote::serve_stored(&https, &hub.remote, &hub.config.data_dir, name);
+    if let Some(cfg) = &hub.config.acme {
+        let acme = acme::Acme::new(name, cfg, &hub.config.data_dir, remote_http()?);
+        hub.add_task(tokio::spawn(acme::keep(
+            acme,
+            Arc::clone(&https),
+            Arc::clone(&hub.remote),
+        )));
+    }
+    Ok(https)
 }
 
 #[cfg(test)]

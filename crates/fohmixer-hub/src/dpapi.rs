@@ -1,7 +1,9 @@
-//! DPAPI (current user) protection of the PIN pepper — Windows only
-//! (copied from iemmixer's `iem-server/src/pepper/dpapi.rs` @ 22372bc).
-//! Excluded from mutation testing (not compiled on Linux CI); the `windows`
-//! CI job runs the `pepper::` tests against it.
+//! DPAPI (current user) protection of the hub's secrets at rest (the PIN
+//! pepper, the Cloudflare API token, the ACME account; `sealed.rs`) —
+//! Windows only (copied from iemmixer's `iem-server/src/pepper/dpapi.rs` @
+//! 22372bc). Excluded from mutation testing (not compiled on Linux CI); the
+//! `windows` CI job runs the `pepper::`, `sealed::` and `cf_token::` tests
+//! against it.
 
 use std::io;
 
@@ -11,7 +13,7 @@ use windows::Win32::Security::Cryptography::{
 };
 use windows::core::PCWSTR;
 
-pub(super) fn protect(data: &[u8]) -> io::Result<Vec<u8>> {
+pub(crate) fn protect(data: &[u8]) -> io::Result<Vec<u8>> {
     let input = blob_for(data)?;
     let mut output = CRYPT_INTEGER_BLOB::default();
     // SAFETY: `input` points at `data` for the duration of the call; on success
@@ -31,7 +33,7 @@ pub(super) fn protect(data: &[u8]) -> io::Result<Vec<u8>> {
     Ok(take_output(output))
 }
 
-pub(super) fn unprotect(data: &[u8]) -> io::Result<Vec<u8>> {
+pub(crate) fn unprotect(data: &[u8]) -> io::Result<Vec<u8>> {
     let input = blob_for(data)?;
     let mut output = CRYPT_INTEGER_BLOB::default();
     // SAFETY: as in `protect`.

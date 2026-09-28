@@ -11,7 +11,7 @@ use axum::{
     extract::{DefaultBodyLimit, Path, Request, State},
     http::{HeaderMap, StatusCode, header},
     middleware::Next,
-    response::Response,
+    response::{IntoResponse, Response},
     routing::{get, post},
 };
 use fohmixer_proto::VersionInfo;
@@ -126,7 +126,7 @@ pub async fn check_host(State(hub): State<Hub>, request: Request, next: Next) ->
         .headers()
         .get(header::HOST)
         .map(|h| h.to_str().unwrap_or(""));
-    if host_allowed(host, &hub.config.allowed_hosts) {
+    if host_allowed(host, &hub.trusted_hosts) {
         next.run(request).await
     } else {
         tracing::warn!(host = ?host, "a request for a foreign host name refused (DNS rebinding?)");
@@ -135,6 +135,46 @@ pub async fn check_host(State(hub): State<Hub>, request: Request, next: Next) ->
             "UNKNOWN_HOST",
             "This hub does not serve that host name",
         )
+    }
+}
+
+/// Where a plain-HTTP request is redirected (307, the method kept): to
+/// `https://<name>[:port]<path>` when it names the `[tls]` name, that
+/// redirect is on, and no proxy handled it (the tunnel's requests arrive
+/// here as plain HTTP from cloudflared: redirecting them would loop). A
+/// request by IP address — the emergency path — or by another name is never
+/// redirected. A temporary redirect: browsers do not keep it, so taking the
+/// name off `[tls]` needs no clearing of caches.
+pub fn redirect_target(
+    host: Option<&str>,
+    proxied: bool,
+    tls: Option<&crate::config::TlsCfg>,
+    path_and_query: &str,
+) -> Option<String> {
+    let tls = tls.filter(|tls| tls.redirect_http && !proxied)?;
+    let name = host?.rsplit_once(':').map_or(host?, |(name, _port)| name);
+    if !name.eq_ignore_ascii_case(&tls.name) {
+        return None;
+    }
+    let port = if tls.port == 443 {
+        String::new()
+    } else {
+        format!(":{}", tls.port)
+    };
+    Some(format!("https://{}{port}{path_and_query}", tls.name))
+}
+
+/// The redirect of the public name to HTTPS (the plain-HTTP listener only).
+pub async fn https_redirect(State(hub): State<Hub>, request: Request, next: Next) -> Response {
+    let host = request
+        .headers()
+        .get(header::HOST)
+        .and_then(|h| h.to_str().ok());
+    let path = request.uri().path_and_query().map_or("/", |pq| pq.as_str());
+    let proxied = crate::access::has_proxy_header(request.headers());
+    match redirect_target(host, proxied, hub.config.tls.as_ref(), path) {
+        Some(location) => axum::response::Redirect::temporary(&location).into_response(),
+        None => next.run(request).await,
     }
 }
 
@@ -494,6 +534,104 @@ mod tests {
                 assert_eq!(body["code"], "UNKNOWN_HOST");
             }
         }
+        hub.stop();
+    }
+
+    fn tls(port: u16, redirect_http: bool) -> crate::config::TlsCfg {
+        crate::config::TlsCfg {
+            name: "foh.example.org".into(),
+            port,
+            redirect_http,
+        }
+    }
+
+    #[test]
+    fn only_the_public_name_is_redirected_to_https() {
+        let on = tls(443, true);
+        let t = Some(&on);
+        assert_eq!(
+            redirect_target(Some("foh.example.org:8480"), false, t, "/p?x=1").as_deref(),
+            Some("https://foh.example.org/p?x=1")
+        );
+        assert_eq!(
+            redirect_target(Some("FOH.example.org"), false, t, "/").as_deref(),
+            Some("https://foh.example.org/")
+        );
+        let other_port = tls(8443, true);
+        assert_eq!(
+            redirect_target(Some("foh.example.org:8480"), false, Some(&other_port), "/").as_deref(),
+            Some("https://foh.example.org:8443/")
+        );
+        // Never by IP (the emergency path), another name, the tunnel, no
+        // Host, redirect off, or no [tls].
+        for host in [
+            "10.0.0.5:8480",
+            "127.0.0.1",
+            "localhost:8480",
+            "foh.local",
+            "example.org",
+        ] {
+            assert_eq!(redirect_target(Some(host), false, t, "/"), None, "{host}");
+        }
+        assert_eq!(redirect_target(Some("foh.example.org"), true, t, "/"), None);
+        assert_eq!(redirect_target(None, false, t, "/"), None);
+        let off = tls(443, false);
+        assert_eq!(
+            redirect_target(Some("foh.example.org"), false, Some(&off), "/"),
+            None
+        );
+        assert_eq!(
+            redirect_target(Some("foh.example.org"), false, None, "/"),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn the_plain_http_listener_redirects_the_public_name_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = crate::config::Config::defaults(dir.path());
+        config.instances.clear();
+        config.tls = Some(tls(443, true));
+        let hub = crate::Hub::start(config).unwrap();
+        let get = |host: &str, extra: Option<(&str, &str)>| {
+            let mut request = Request::get("/api/version?a=b").header(header::HOST, host);
+            if let Some((name, value)) = extra {
+                request = request.header(name, value);
+            }
+            request.body(Body::empty()).unwrap()
+        };
+        let redirected = crate::app_router(hub.clone())
+            .oneshot(get("foh.example.org:8480", None))
+            .await
+            .unwrap();
+        assert_eq!(redirected.status(), StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(
+            header_of(&redirected, "location"),
+            "https://foh.example.org/api/version?a=b"
+        );
+        assert_eq!(header_of(&redirected, "x-frame-options"), "DENY");
+        // The name is a trusted host; by IP it is served.
+        let by_ip = crate::app_router(hub.clone())
+            .oneshot(get("10.0.0.5:8480", None))
+            .await
+            .unwrap();
+        assert_eq!(by_ip.status(), StatusCode::OK);
+        // The HTTPS listener's router never redirects.
+        let https = crate::https_router(hub.clone())
+            .oneshot(get("foh.example.org", None))
+            .await
+            .unwrap();
+        assert_eq!(https.status(), StatusCode::OK);
+        // A tunnel request is not redirected (it goes on to the Access
+        // check: no [access], so it is refused).
+        let tunnel = crate::app_router(hub.clone())
+            .oneshot(get(
+                "foh.example.org",
+                Some(("cf-connecting-ip", "203.0.113.7")),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(tunnel.status(), StatusCode::FORBIDDEN);
         hub.stop();
     }
 

@@ -1,8 +1,12 @@
 //! `fohmixer-hub`: the hub (the Ableton PC, CI E2E).
 //!
-//!   fohmixer-hub                   serve on 0.0.0.0:$PORT (default: the config's, 8480)
-//!   fohmixer-hub pin set-engineer  read a PIN from stdin, store its hash as the engineer PIN
+//!   fohmixer-hub                        serve on 0.0.0.0:$PORT (default: the config's, 8480)
+//!   fohmixer-hub pin set-engineer       read a PIN from stdin, store its hash as the engineer PIN
+//!   fohmixer-hub cloudflare set-token   read a Cloudflare API token from stdin, store it sealed
+//!                                       (the ACME client's DNS-01 records, #17)
 //!
+//! Both commands run as the hub's user: what they store is sealed (DPAPI)
+//! for that account.
 //! The data folder is `$FOHMIXER_DATA` (default: the working folder): the
 //! config `fohmixer-hub.toml`, `secrets/`, the layout, its backups and
 //! `hub-state.json`. Logging: `RUST_LOG` when set (e.g.
@@ -21,7 +25,7 @@ use fohmixer_hub::config::Config;
 use fohmixer_hub::provision::{self, ProvisionError};
 use tokio::sync::oneshot;
 
-const USAGE: &str = "usage: fohmixer-hub [pin set-engineer]   (the PIN is read from stdin)";
+const USAGE: &str = "usage: fohmixer-hub [pin set-engineer | cloudflare set-token]   (the PIN or the token is read from stdin)";
 
 fn data_dir() -> PathBuf {
     PathBuf::from(std::env::var("FOHMIXER_DATA").unwrap_or_else(|_| ".".to_string()))
@@ -40,6 +44,7 @@ fn main() -> ExitCode {
             }
         },
         ["pin", "set-engineer"] => pin_command(),
+        ["cloudflare", "set-token"] => token_command(),
         _ => {
             eprintln!("{USAGE}");
             ExitCode::from(2)
@@ -53,6 +58,26 @@ fn pin_command() -> ExitCode {
     match provision::run(&data_dir(), stdin.lock()) {
         Ok(()) => {
             eprintln!("fohmixer-hub: stored the engineer PIN hash");
+            ExitCode::SUCCESS
+        }
+        Err(e @ ProvisionError::Invalid(_)) => {
+            eprintln!("fohmixer-hub: {e}");
+            ExitCode::from(2)
+        }
+        Err(e) => {
+            eprintln!("fohmixer-hub: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// `cloudflare set-token`: exit 0 when stored, 2 for a bad token, 1 on an
+/// error. The token is never printed.
+fn token_command() -> ExitCode {
+    let stdin = std::io::stdin();
+    match fohmixer_hub::cf_token::run(&data_dir(), stdin.lock()) {
+        Ok(()) => {
+            eprintln!("fohmixer-hub: stored the Cloudflare API token (sealed)");
             ExitCode::SUCCESS
         }
         Err(e @ ProvisionError::Invalid(_)) => {

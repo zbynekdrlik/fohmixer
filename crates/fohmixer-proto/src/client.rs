@@ -245,6 +245,55 @@ pub struct StageAutStatus {
     pub writes: u64,
 }
 
+/// The HTTPS listener of the public name in `GET /api/status` (#17).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HttpsStatus {
+    /// The bound port.
+    pub port: u16,
+    /// Whether it serves (it has a certificate).
+    pub serving: bool,
+    /// The served certificate's names and its end (Unix seconds).
+    pub cert_names: Vec<String>,
+    pub not_after: Option<i64>,
+    /// Whole days the certificate has left.
+    pub days_left: Option<i64>,
+    /// Why the stored certificate is not served, when it is not.
+    pub cert_error: Option<String>,
+    /// Whether the ACME client keeps the certificate (`[acme]`).
+    pub acme: bool,
+    /// The last ACME attempt's error, until one succeeds, and how many
+    /// attempts in a row failed.
+    pub acme_error: Option<String>,
+    pub acme_failures: u32,
+    /// When the ACME client last got a certificate (Unix seconds).
+    pub last_issued: Option<i64>,
+}
+
+/// cloudflared's readiness in `GET /api/status` (#17).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TunnelStatus {
+    /// Ready connections to Cloudflare's edge (0: the tunnel is down).
+    pub ready_connections: u32,
+    /// Why the last check failed, when it did.
+    pub error: Option<String>,
+    /// When it was last checked (Unix seconds; none yet: `None`).
+    pub checked: Option<i64>,
+}
+
+/// Remote access in `GET /api/status` (#17): the public name, its HTTPS
+/// listener, whether internet requests are let in (with an Access JWT) and
+/// the tunnel.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteStatus {
+    /// The `[tls]` name.
+    pub name: Option<String>,
+    pub https: Option<HttpsStatus>,
+    /// `[access]` is configured: internet requests with a valid Access JWT
+    /// are served; without it every internet request is refused.
+    pub access: bool,
+    pub tunnel: Option<TunnelStatus>,
+}
+
 /// `GET /api/status`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HubStatus {
@@ -253,6 +302,9 @@ pub struct HubStatus {
     pub stage_aut: StageAutStatus,
     /// Connected client WebSockets.
     pub clients: usize,
+    /// Remote access (#17); absent in an older hub's answer.
+    #[serde(default)]
+    pub remote: RemoteStatus,
 }
 
 #[cfg(test)]
@@ -496,8 +548,39 @@ mod tests {
                 writes: 3,
             },
             clients: 1,
+            remote: RemoteStatus {
+                name: Some("foh.example.org".into()),
+                https: Some(HttpsStatus {
+                    port: 443,
+                    serving: true,
+                    cert_names: vec!["foh.example.org".into()],
+                    not_after: Some(1_800_000_000),
+                    days_left: Some(60),
+                    cert_error: None,
+                    acme: true,
+                    acme_error: Some("no Cloudflare API token".into()),
+                    acme_failures: 2,
+                    last_issued: Some(1_790_000_000),
+                }),
+                access: true,
+                tunnel: Some(TunnelStatus {
+                    ready_connections: 4,
+                    error: None,
+                    checked: Some(1_790_000_100),
+                }),
+            },
         };
         let json = serde_json::to_value(&status).unwrap();
+        assert_eq!(json["remote"]["https"]["days_left"], 60);
+        assert_eq!(json["remote"]["tunnel"]["ready_connections"], 4);
+        assert_eq!(json["remote"]["access"], json!(true));
+        // An older hub's answer has no `remote`: the default.
+        let mut older = json.clone();
+        older.as_object_mut().unwrap().remove("remote");
+        assert_eq!(
+            serde_json::from_value::<HubStatus>(older).unwrap().remote,
+            RemoteStatus::default()
+        );
         assert_eq!(json["instances"][0]["listeners"], 4);
         assert_eq!(json["stage_aut"]["writes"], 3);
         assert_eq!(json["instances"][0]["connect_failures"], 0);
