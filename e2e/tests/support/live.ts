@@ -252,6 +252,25 @@ export async function toggleDoubleTap(page: Page, control: Locator) {
 }
 
 /** The value a fader or pan shows (its `data-value`, Live's units). */
+/**
+ * Waits `n` animation frames in the page. The surface draws a control (its
+ * `data-value` too) in its animation frame, so a pointer move shows at the
+ * next frame: read a control after its last move only once this returns.
+ */
+export async function frames(page: Page, n = 2): Promise<void> {
+  await page.evaluate(
+    (count) =>
+      new Promise<void>((resolve) => {
+        const step = (left: number) => {
+          if (left === 0) resolve();
+          else requestAnimationFrame(() => step(left - 1));
+        };
+        step(count);
+      }),
+    n,
+  );
+}
+
 export async function shown(control: Locator): Promise<number> {
   return Number(await control.getAttribute("data-value"));
 }
