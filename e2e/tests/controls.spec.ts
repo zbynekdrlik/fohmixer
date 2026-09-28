@@ -115,13 +115,18 @@ test.describe("TechAlert", () => {
     try {
       await live.set("band", alert, "mute", false);
       await expect(overlay).toHaveAttribute("data-active", "true");
-      const seen = new Set<string>();
-      const deadline = Date.now() + 700;
-      while (Date.now() < deadline) {
-        seen.add((await overlay.getAttribute("data-visible")) ?? "");
-        await page.waitForTimeout(40);
-      }
-      expect([...seen].sort()).toEqual(["false", "true"]);
+      // Sampled inside the page every 15 ms for 900 ms (a Playwright read
+      // per sample takes long enough in WebKit to alias the 300 ms blink).
+      const seen = await overlay.evaluate(async (el) => {
+        const states = new Set<string>();
+        const end = performance.now() + 900;
+        while (performance.now() < end) {
+          states.add(el.getAttribute("data-visible") ?? "");
+          await new Promise((done) => setTimeout(done, 15));
+        }
+        return [...states].sort();
+      });
+      expect(seen).toEqual(["false", "true"]);
       // The overlay never takes a touch.
       await expect(overlay).toHaveCSS("pointer-events", "none");
     } finally {

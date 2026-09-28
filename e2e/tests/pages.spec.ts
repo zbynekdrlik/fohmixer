@@ -91,7 +91,10 @@ test.describe("Pages and tabs", () => {
     await selectPage(page, "cue");
     await expect(page.locator('[data-testid="param-toggle"][data-label="Vox 1 TU"]')).toBeVisible();
     await selectPage(page, "conf");
-    await expect(page.getByTestId("label").first()).toContainText("unfold_band: 'Vocals Repro grp#'");
+    // The Conf text, one line per control.
+    await expect(page.getByTestId("label").filter({ hasText: "unfold_band:" })).toHaveText(
+      "unfold_band: 'Vocals Repro grp#'",
+    );
     await selectPage(page, "foh");
   });
 });
