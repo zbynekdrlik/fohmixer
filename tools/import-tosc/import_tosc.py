@@ -62,6 +62,10 @@ FULL_RANGES = {
     "macro": ((0.0, 127.0), (0.0, 127.0)),
 }
 MACRO_BUS_CHANNEL = 16
+# REFRESH ALL asks the document script to refresh every strip (abl-touchosc's
+# global_refresh_button.lua); other scripts only mention a refresh.
+REFRESH_CALL = re.compile(r"""\bnotify\s*\(\s*["']refresh_all_groups["']""")
+LUA_COMMENT = re.compile(r"--\[(=*)\[.*?\]\1\]|--[^\n]*", re.DOTALL)
 
 
 class ImportError_(Exception):
@@ -379,6 +383,12 @@ def _midi_of(node):
     return next((m for m in node.midi if m.enabled and m.send), None)
 
 
+def _is_refresh(node):
+    """The REFRESH ALL control: a label or button whose code asks for the refresh."""
+    code = LUA_COMMENT.sub("", node.script)
+    return node.type in ("LABEL", "BUTTON") and REFRESH_CALL.search(code) is not None
+
+
 def _static_labels(nodes):
     """The labels among ``nodes`` that can name a former MIDI control."""
     return [
@@ -684,7 +694,7 @@ class Importer:
         elif node.type in ("BUTTON", "FADER") and _midi_of(node):
             label = labels[0].text.strip() if labels else node.name
             self.midi_control(node, ox, oy, label, out, where)
-        elif node.type in ("LABEL", "BUTTON") and "refresh" in node.script.lower():
+        elif _is_refresh(node):
             out.append(self.item("refresh", frame, self.style(node), label=node.text or node.name))
         elif node.type == "GROUP":
             if node.prop("background", False):
@@ -699,6 +709,10 @@ class Importer:
             out.append(self.item("area", frame, self.style(node, node.text), title=node.text))
         elif node.type in ("LABEL", "TEXT"):
             out.append(self.item("label", frame, self.style(node), text=node.text))
+        elif node.type == "BUTTON" and node.prop("background", False):
+            # A button with no function here (a backdrop carrying the inert
+            # mute script): only its fill is kept, as an inert area.
+            out.append(self.item("area", frame, self.style(node)))
         else:
             self.drop(path, f"a {node.type} without a function here")
 
