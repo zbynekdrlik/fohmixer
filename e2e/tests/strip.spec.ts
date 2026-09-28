@@ -101,6 +101,25 @@ test.describe("A strip", () => {
     await until(() => live.get("band", volume(HAND2), "value"), (v) => v < up - 0.05, "the volume to fall");
   });
 
+  test("a drag that starts on the scale or the meter moves the fader", async ({ page }) => {
+    // #21 review: the fader takes touches over the whole fader zone, so a
+    // narrow strip's fader is as easy to catch as a wide one's.
+    await live.set("band", volume(HAND2), "value", 0.5);
+    await openSurface(page);
+    const s = strip(page, "Hand2 #");
+    const fader = s.getByTestId("fader");
+    await ready(fader);
+    await until(() => shown(fader), (v) => Math.abs(v - 0.5) < 0.001, "the fader at 0.5");
+    const scale = (await s.getByTestId("scale").boundingBox())!;
+    const zone = await centre(fader);
+    const x = Math.round(scale.x + scale.width / 2);
+    await page.mouse.move(x, zone.y);
+    await page.mouse.down();
+    for (let i = 1; i <= 10; i++) await page.mouse.move(x, zone.y - 8 * i);
+    await page.mouse.up();
+    await until(() => live.get("band", volume(HAND2), "value"), (v) => v > 0.55, "the volume to rise");
+  });
+
   test("a double tap glides the fader to 0 dB", async ({ page }) => {
     await live.set("band", volume(HAND2), "value", 0.5);
     await openSurface(page);

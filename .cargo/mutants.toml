@@ -41,8 +41,9 @@ exclude_re = [
   # of them in Chromium and WebKit.
   # dom.rs: the clocks, style/attribute writes, the text measurement of
   # fit_text and the computed size it starts from (its decisions are the
-  # tested stage::fitted_font and px_value), the console, local storage.
-  "fohmixer-ui/src/dom\\.rs.*(replace|in) (now|wall_now|log|error|set_style|set_attr|fit_text|computed_px|viewport|current_element|child|storage|storage_get|storage_set|storage_remove)( |$)",
+  # tested stage::fitted_font and px_value), the console, local storage, the
+  # fonts' loading promise (#21).
+  "fohmixer-ui/src/dom\\.rs.*(replace|in) (now|wall_now|log|error|set_style|set_attr|fit_text|computed_px|viewport|current_element|child|storage|storage_get|storage_set|storage_remove|on_fonts_ready)( |$)",
   # net.rs: the fetch wrapper and the handshake reload (location.reload).
   "fohmixer-ui/src/net\\.rs.*(replace|in) (fetch_text|last_reload|reload)( |$)",
   # raf.rs: requestAnimationFrame scheduling around the tested Registry, and

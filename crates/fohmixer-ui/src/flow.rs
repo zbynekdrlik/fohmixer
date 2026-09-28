@@ -5,7 +5,7 @@
 //! row that does not fit at the narrowest strip scrolls inside itself; the
 //! page never scrolls.
 
-use fohmixer_proto::layout::{Control, Group, Row, Section};
+use fohmixer_proto::layout::{Control, Group, Pager, Row, Section};
 
 /// The stylesheet's measures the width depends on (px): keep them equal to
 /// `style.css` (`.row` gap, `.group` padding + border, `.group-body` gap).
@@ -104,8 +104,28 @@ fn wider(a: (Shape, usize), b: (Shape, usize)) -> (Shape, usize) {
     }
 }
 
-/// A row's shape. A pager counts as its widest sub-page, so switching its
-/// pages never moves the row's other groups.
+/// A pager's widest sub-page: its groups and their count.
+fn widest(pager: &Pager, m: &Metrics) -> (Shape, usize) {
+    pager
+        .pages
+        .iter()
+        .map(|sub| side_by_side(sub.sections.iter().flat_map(Section::groups), m))
+        .fold((Shape::default(), 0), wider)
+}
+
+/// The width a pager takes: its widest sub-page, groups and the gaps between
+/// them. The pager is that wide whichever sub-page it shows, so switching it
+/// never moves the row's other groups (a tap aimed at a bus strip stays on
+/// it).
+pub fn pager_shape(pager: &Pager, m: &Metrics) -> Shape {
+    let (shape, count) = widest(pager, m);
+    Shape {
+        units: shape.units,
+        fixed: shape.fixed + count.saturating_sub(1) as f64 * m.section_gap,
+    }
+}
+
+/// A row's shape. A pager counts as its widest sub-page (see [`pager_shape`]).
 pub fn row_shape(row: &Row, m: &Metrics) -> Shape {
     let (shape, count) =
         row.sections
@@ -113,11 +133,7 @@ pub fn row_shape(row: &Row, m: &Metrics) -> Shape {
             .fold((Shape::default(), 0usize), |(shape, count), section| {
                 let (s, n) = match section {
                     Section::Group(group) => (group_shape(group, m), 1),
-                    Section::Pager(pager) => pager
-                        .pages
-                        .iter()
-                        .map(|sub| side_by_side(sub.sections.iter().flat_map(Section::groups), m))
-                        .fold((Shape::default(), 0), wider),
+                    Section::Pager(pager) => widest(pager, m),
                 };
                 (shape.add(s), count + n)
             });
@@ -149,7 +165,7 @@ pub fn overflows(row: Shape, width: f64, avail: f64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fohmixer_proto::layout::{Binding, Pager, Press, Strip, StripKind, SubPage};
+    use fohmixer_proto::layout::{Binding, Press, Strip, StripKind, SubPage};
 
     fn strip(wide: bool) -> Control {
         Control::Strip(Box::new(Strip {
@@ -316,6 +332,37 @@ mod tests {
         assert_eq!(row_shape(&r4, &m), want);
         // An empty pager takes nothing.
         assert_eq!(row_shape(&row(vec![pager(vec![])]), &m), Shape::default());
+    }
+
+    #[test]
+    fn a_pager_is_as_wide_as_its_widest_sub_page_whichever_it_shows() {
+        let m = METRICS;
+        let narrow = vec![group(vec![strip(false)])];
+        let wide = vec![
+            group(vec![strip(false), strip(false)]),
+            group(vec![strip(true)]),
+        ];
+        let Section::Pager(p) = pager(vec![narrow, wide]) else {
+            panic!("a pager")
+        };
+        // 3.1 strips; groups of 14 and 10 px and one 10 px gap between them.
+        let shape = pager_shape(&p, &m);
+        assert_eq!(shape.units, 3.1);
+        assert_eq!(shape.fixed, 34.0);
+        let Section::Pager(one) = pager(vec![vec![group(vec![strip(false)])]]) else {
+            panic!("a pager")
+        };
+        assert_eq!(
+            pager_shape(&one, &m),
+            Shape {
+                units: 1.0,
+                fixed: 10.0
+            }
+        );
+        let Section::Pager(empty) = pager(vec![]) else {
+            panic!("a pager")
+        };
+        assert_eq!(pager_shape(&empty, &m), Shape::default());
     }
 
     #[test]

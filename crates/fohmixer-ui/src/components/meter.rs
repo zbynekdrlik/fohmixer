@@ -55,7 +55,7 @@ pub fn MeterView(levels: Vec<RwSignal<Slot>>) -> impl IntoView {
                     dom::set_style(cover, "transform", &format!("scaleY({})", 1.0 - pos));
                 }
                 if let Some(line) = &lines[i] {
-                    dom::set_style(line, "bottom", &format!("{:.3}%", peak * 100.0));
+                    dom::set_style(line, "--pk", &format!("{peak:.4}"));
                     dom::set_style(line, "opacity", if peak > 0.001 { "0.75" } else { "0" });
                 }
                 if i == 0 {

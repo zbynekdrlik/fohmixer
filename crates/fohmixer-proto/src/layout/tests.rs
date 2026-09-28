@@ -130,6 +130,23 @@ fn defaults_are_filled_and_omitted() {
         stage.get("aut").is_none() && stage.get("label").is_none(),
         "{stage}"
     );
+    // An alert without a guard; with one, it is written.
+    let mut v = sample();
+    let unguarded = serde_json::to_value(parse(v.clone())).unwrap();
+    assert!(unguarded["global"][0].get("mute_guard").is_none());
+    v["global"][0]["mute_guard"] = json!(true);
+    let guarded = parse(v);
+    assert!(matches!(
+        guarded.global[0],
+        Control::Alert {
+            mute_guard: true,
+            ..
+        }
+    ));
+    assert_eq!(
+        serde_json::to_value(&guarded).unwrap()["global"][0]["mute_guard"],
+        json!(true)
+    );
     // A weight other than 1 is written.
     let mut v = sample();
     v["pages"][1]["rows"][0]["weight"] = json!(2.0);

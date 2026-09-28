@@ -192,7 +192,8 @@ fn every_control_kind_subscribes_what_it_shows() {
         sub(&Control::Alert {
             binding: track("T", None),
             period_ms: 300,
-            label: None
+            label: None,
+            mute_guard: false
         }),
         vec![format!("band|{}|mute|false", t("T"))]
     );

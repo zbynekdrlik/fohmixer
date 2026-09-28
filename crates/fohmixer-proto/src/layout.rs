@@ -164,12 +164,15 @@ pub enum Control {
         targets: Vec<ParamTarget>,
     },
     /// TechAlert: the mute of its track, and the full-screen blink while it
-    /// is unmuted (spec F16).
+    /// is unmuted (spec F16). `mute_guard`: a change needs a second tap, as
+    /// a guarded strip's mute (spec F12).
     Alert {
         binding: Binding,
         period_ms: u32,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         label: Option<String>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        mute_guard: bool,
     },
     /// REFRESH ALL (spec F6).
     Refresh {

@@ -179,6 +179,52 @@ test.describe("The page is a rail and rows of sections", () => {
   });
 });
 
+test.describe("Nothing moves under a finger", () => {
+  test("switching the pager's sub-page never moves the fixed groups", async ({ page }) => {
+    // #21 review: a tap aimed at a bus strip must stay on it whichever
+    // sub-page shows beside it.
+    await openSurface(page);
+    const bus = strip(page, "B-Main repro #");
+    const onStage = (await bus.boundingBox())!;
+    await selectPage(page, "others");
+    const onOthers = (await bus.boundingBox())!;
+    expect(Math.abs(onOthers.x - onStage.x)).toBeLessThan(0.5);
+    expect(Math.abs(onOthers.width - onStage.width)).toBeLessThan(0.5);
+    await selectPage(page, "stage");
+  });
+
+  test("a long section title never widens its section", async ({ page }) => {
+    await openSurface(page);
+    const changed = layout();
+    const row = changed.pages[1].rows[1];
+    const section = row.sections.find((s: any) => s.kind === "group" && s.controls.length === 1);
+    section.title = "A VERY LONG SECTION TITLE FOR ONE STRIP";
+    try {
+      await harness("/hub/layout", { layout: changed });
+      const group = page.locator(`[data-testid="group"][data-group="${section.id}"]`);
+      await expect(group.getByTestId("group-title")).toHaveText(section.title, { timeout: 10_000 });
+      const body = (await group.locator(".group-body").boundingBox())!;
+      const one = (await group.locator(".group-body > *").first().boundingBox())!;
+      // The body is its one column and its padding and border (10 px), nothing more.
+      expect(Math.abs(body.width - (one.width + 10))).toBeLessThan(1);
+      const box = (await group.boundingBox())!;
+      expect(Math.abs(box.width - body.width)).toBeLessThan(1);
+    } finally {
+      await harness("/hub/layout/reset");
+    }
+  });
+
+  test("the Conf lines stack, one under the other", async ({ page }) => {
+    await openSurface(page);
+    await selectPage(page, "conf");
+    await expect(page.locator('[data-testid="group"].texts')).toHaveCount(1);
+    const boxes = await page.getByTestId("label").evaluateAll((els) => els.map((e) => e.getBoundingClientRect()).map((r) => ({ top: r.top, bottom: r.bottom })));
+    expect(boxes.length).toBeGreaterThan(2);
+    for (let i = 1; i < boxes.length; i++) expect(boxes[i].top).toBeGreaterThanOrEqual(boxes[i - 1].bottom - 0.5);
+    await selectPage(page, "foh");
+  });
+});
+
 test.describe("Subscriptions follow the controls on screen", () => {
   test("a page switch subscribes the new page and releases the old one", async ({ page }) => {
     await openSurface(page);

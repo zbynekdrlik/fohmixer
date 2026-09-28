@@ -408,13 +408,26 @@ body {
     gap: 6px;
     min-height: 0;
     padding: 10px 8px;
-    overflow-y: auto;
     background: var(--bar);
     border-right: 1px solid var(--line-soft);
 }
 
-.rail-gap {
+/* The page's controls scroll if they must; TechAlert and REFRESH ALL, at
+   its foot, never leave the screen. */
+.rail-main {
+    display: flex;
     flex: 1;
+    flex-direction: column;
+    gap: 6px;
+    min-height: 0;
+    overflow-y: auto;
+}
+
+.rail-foot {
+    display: flex;
+    flex: none;
+    flex-direction: column;
+    gap: 6px;
 }
 
 /* Rows: flow.rs METRICS.section_gap = the row gap; ROWS_PAD = both paddings. */
@@ -441,8 +454,18 @@ body {
     touch-action: pan-x;
 }
 
+/* A pager is as wide as its widest sub-page (flow.rs pager_shape, inline),
+   so switching it never moves the row's other groups. */
 .pager {
-    display: contents;
+    display: flex;
+    flex: none;
+    min-height: 0;
+}
+
+.pager-page {
+    display: flex;
+    gap: 10px;
+    min-height: 0;
 }
 
 .group {
@@ -454,6 +477,8 @@ body {
     min-height: 0;
 }
 
+/* A title never makes its group wider than its strips (flow.rs counts the
+   strips only): its width does not count toward the group's size. */
 .group-title {
     display: flex;
     align-items: center;
@@ -461,6 +486,8 @@ body {
     min-width: 0;
     margin: 0;
     overflow: hidden;
+    contain: inline-size;
+    text-overflow: ellipsis;
     color: var(--muted);
     font: 600 11px/18px var(--ui);
     letter-spacing: 1.4px;
@@ -507,6 +534,16 @@ body {
     font-size: 15px;
     text-align: center;
     padding-left: 8px;
+}
+
+/* A group of texts (the Conf page): one line each, as wide as the row. */
+.group.texts {
+    flex: 1 1 0;
+}
+
+.group.texts .group-body {
+    display: block;
+    overflow-y: auto;
 }
 
 /* --- rail buttons (stage, STAGE AUT, solos, the former MIDI toggles,
@@ -567,6 +604,13 @@ body {
 .solo { --c: var(--solo); }
 .param-toggle { --c: #ff9f43; }
 .alert-toggle { --c: var(--mute); }
+
+/* A guarded button's first tap (TechAlert): it arms and pulses. */
+.btn.armed {
+    outline: 2px solid var(--solo);
+    outline-offset: 1px;
+    animation: arm 0.5s ease-out infinite;
+}
 
 .refresh {
     padding-left: 8px;
@@ -650,6 +694,19 @@ body {
     white-space: nowrap;
 }
 
+.strip-tag {
+    max-width: 100%;
+    min-width: 0;
+    overflow: hidden;
+}
+
+.strip-tag-text {
+    display: block;
+    max-width: 100%;
+    overflow: hidden;
+    white-space: nowrap;
+}
+
 .strip-tag[data-instance="master"] {
     color: var(--master);
     background: rgba(139, 125, 255, 0.16);
@@ -695,13 +752,39 @@ body {
     background: #8a8aa0;
 }
 
-/* The fader zone: the dB scale, the meter, the fader, one height. */
+/* The fader zone: the dB scale, the meter, the fader, one height. The
+   fader covers the whole zone (its touch target is the strip's width, not
+   its column); its groove, fill and cap sit in the third column, centred at
+   50% + 17px (the scale's 17 px, the meter's 11, two 3 px gaps). */
 .strip-fz {
     display: grid;
     grid-template-columns: 17px 11px minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
     gap: 3px;
     min-height: 0;
     padding: 8px 0 4px;
+}
+
+.strip-fz .scale {
+    grid-area: 1 / 1;
+}
+
+.strip-fz .meter {
+    grid-area: 1 / 2;
+}
+
+.strip-fz .fader {
+    grid-area: 1 / 1 / 2 / 4;
+    --x: calc(50% + 17px);
+}
+
+.param-fz .fader {
+    grid-area: 1 / 1;
+    --x: 50%;
+}
+
+.meter-clip {
+    z-index: 2;
 }
 
 .scale {
@@ -761,6 +844,8 @@ body {
     box-shadow: 0 0 6px var(--m-red);
 }
 
+/* The peak line: `--pk` (0 at the bottom) moves it by a transform, never
+   by layout. */
 .meter-peak {
     position: absolute;
     bottom: 0;
@@ -770,10 +855,12 @@ body {
     margin-bottom: -1px;
     background: #ffffff;
     opacity: 0;
+    transform: translateY(calc(var(--pk, 0) * -100cqh));
 }
 
 .meter-bar {
     position: relative;
+    container-type: size;
     overflow: hidden;
     border-radius: 2px;
     background: #0e0e18;
@@ -811,7 +898,7 @@ body {
     content: "";
     position: absolute;
     top: 27.06%;
-    left: 2px;
+    left: calc(var(--x, 50%) - 16px);
     right: 2px;
     height: 1px;
     background: rgba(255, 255, 255, 0.28);
@@ -820,7 +907,7 @@ body {
 .fader-groove,
 .fader-fill {
     position: absolute;
-    left: 50%;
+    left: var(--x, 50%);
     width: 6px;
     margin-left: -3px;
     border-radius: 3px;
@@ -844,7 +931,7 @@ body {
 .fader-cap {
     position: absolute;
     top: 0;
-    left: 50%;
+    left: var(--x, 50%);
     z-index: 1;
     width: 32px;
     height: 22px;
@@ -924,8 +1011,10 @@ body {
     touch-action: none;
 }
 
+/* Until Live's colour arrives (or when it cannot), the accent: light, so the
+   dark text reads on it. */
 .mute.lit {
-    background: var(--tc, var(--gc, var(--accent)));
+    background: var(--tc, var(--accent));
     box-shadow: 0 0 10px color-mix(in srgb, var(--tc, var(--accent)) 35%, transparent);
     color: var(--tt, #10101a);
 }
@@ -1031,7 +1120,8 @@ body {
 @media (prefers-reduced-motion: reduce) {
     .solo-clear,
     .badge.online .badge-dot,
-    .mute.armed {
+    .mute.armed,
+    .btn.armed {
         animation: none;
     }
 }

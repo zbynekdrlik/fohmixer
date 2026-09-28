@@ -243,6 +243,22 @@ class ImportTest(unittest.TestCase):
         )
         self.assertEqual([c["kind"] for c in self.layout["global"]], ["alert", "refresh"])
 
+    def test_a_guarded_techalert_strip_keeps_its_guard_on_the_alert(self):
+        saved = build_fixtures.CONFIG_TEXT
+        try:
+            build_fixtures.CONFIG_TEXT = saved + "double_click_mute: 'band_TechAlert #'\n"
+            project = build_fixtures.project()
+        finally:
+            build_fixtures.CONFIG_TEXT = saved
+        path = os.path.join(self.dir, "guarded-alert.tosc")
+        with open(path, "wb") as f:
+            f.write(build_fixtures.tosc_bytes(project))
+        layout = import_tosc.import_files(path, self.als)
+        self.assertIs(layout["global"][0]["mute_guard"], True)
+        self.assertNotIn("double_click_mute 'band_TechAlert #'", json.dumps(layout["report"]))
+        # Unguarded (the fixture's own Conf text): no field.
+        self.assertNotIn("mute_guard", self.layout["global"][0])
+
     def test_an_alert_box_before_its_techalert_strip_is_kept(self):
         # In the real project the hidden alert box is the root's second
         # child, before REFRESH ALL, the battery and the TechAlert strip.

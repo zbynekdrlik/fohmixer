@@ -96,6 +96,28 @@ pub fn current_element(event: &web_sys::Event) -> Option<web_sys::HtmlElement> {
     event.current_target()?.dyn_into().ok()
 }
 
+/// Calls `f` once the document's fonts have loaded (`document.fonts.ready`,
+/// #21); never where the browser has no font loading API.
+pub fn on_fonts_ready(f: impl FnOnce() + 'static) {
+    let Some(document) = web_sys::window().and_then(|w| w.document()) else {
+        return;
+    };
+    let Ok(fonts) = js_sys::Reflect::get(&document, &"fonts".into()) else {
+        return;
+    };
+    let Ok(ready) = js_sys::Reflect::get(&fonts, &"ready".into()) else {
+        return;
+    };
+    let Ok(promise) = ready.dyn_into::<js_sys::Promise>() else {
+        return;
+    };
+    wasm_bindgen_futures::spawn_local(async move {
+        if wasm_bindgen_futures::JsFuture::from(promise).await.is_ok() {
+            f();
+        }
+    });
+}
+
 /// The first descendant of `root` matching `selector`, as an HTML element.
 pub fn child(root: &web_sys::Element, selector: &str) -> Option<web_sys::HtmlElement> {
     root.query_selector(selector).ok()??.dyn_into().ok()

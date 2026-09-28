@@ -33,6 +33,16 @@ pub struct Settings {
     pub meter_source: MeterSource,
 }
 
+/// When the fitted texts are measured again (a context of a page, #21): the
+/// strip width all rows share and the count of font loads. A text fitted
+/// once, at the first layout, would stay too small once the strips widen,
+/// or be cut once they narrow (a resize, a rotation, the fonts arriving).
+#[derive(Debug, Clone, Copy)]
+pub struct Refit {
+    pub width: Signal<f64>,
+    pub fonts: Signal<u64>,
+}
+
 /// How long a failed write shows on its control.
 pub const FAIL_FLASH_MS: u64 = 400;
 
@@ -113,7 +123,11 @@ pub fn ControlView(control: Control) -> impl IntoView {
             binding,
             period_ms,
             label,
-        } => view! { <AlertView binding=binding period_ms=period_ms label=label /> }.into_any(),
+            mute_guard,
+        } => view! {
+            <AlertView binding=binding period_ms=period_ms label=label guarded=mute_guard />
+        }
+        .into_any(),
         Control::Refresh { label } => view! { <RefreshView label=label /> }.into_any(),
         Control::Text { text } => {
             view! { <div class="text" data-testid="label">{text}</div> }.into_any()

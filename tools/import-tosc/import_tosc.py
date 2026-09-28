@@ -1355,6 +1355,10 @@ class Importer:
             alert = {"kind": "alert", "binding": strip["binding"], "period_ms": item["period_ms"]}
             if strip["label"]:
                 alert["label"] = strip["label"]
+            if strip["mute_guard"]:
+                # A TechAlert strip in double_click_mute keeps its guard on
+                # the one alert control (#21).
+                alert["mute_guard"] = True
             placed.append((strip["frame"], alert))
         for item in overlay:
             kind = item["kind"]

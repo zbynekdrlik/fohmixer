@@ -17,9 +17,9 @@ use serde_json::json;
 use crate::app::version_text;
 use crate::behave::solo::soloed;
 use crate::binding::{SubSpec, choose, page_solos, selected_path, solo_sub, visible_subs};
-use crate::components::{ControlView, Settings, fail_flash};
+use crate::components::{ControlView, Refit, Settings, fail_flash};
 use crate::dom;
-use crate::flow::{METRICS, Shape, overflows, row_shape, strip_width};
+use crate::flow::{METRICS, Shape, overflows, pager_shape, row_shape, strip_width};
 use crate::store::{Badge, LiveStore, Slot};
 
 /// Where the selected pages are remembered (a JSON map: `""` for the pages,
@@ -27,6 +27,10 @@ use crate::store::{Badge, LiveStore, Slot};
 const PAGES_KEY: &str = "fohmixer_pages";
 /// The rows' padding, both sides (`.rows` in the stylesheet).
 const ROWS_PAD: f64 = 20.0;
+
+/// How often the bundled fonts finished loading (a context of the surface).
+#[derive(Clone, Copy)]
+struct FontsLoaded(RwSignal<u64>);
 
 /// The page selection (a context of the surface).
 #[derive(Clone, Copy)]
@@ -87,6 +91,13 @@ pub fn Surface(token: String, session: RwSignal<Option<String>>) -> impl IntoVie
         let _ = viewport.try_set(dom::viewport());
     });
     on_cleanup(move || resize.remove());
+    // The bundled fonts load after the first layout: the fitted texts are
+    // measured again once they are here.
+    let fonts = RwSignal::new(0_u64);
+    dom::on_fonts_ready(move || {
+        let _ = fonts.try_update(|n| *n += 1);
+    });
+    provide_context(FontsLoaded(fonts));
 
     // A new layout: the remembered pages on it (or its defaults).
     Effect::new(move |_| {
@@ -242,6 +253,13 @@ fn PageView(page: Page, global: Vec<Control>, sub: Memo<Option<usize>>) -> impl 
     let shapes: Vec<Shape> = page.rows.iter().map(|r| row_shape(r, &METRICS)).collect();
     let width_shapes = shapes.clone();
     let width = Memo::new(move |_| strip_width(&width_shapes, avail.get(), &METRICS));
+    // A fitted text is measured again when the strips change width or the
+    // fonts arrive.
+    let fonts = expect_context::<FontsLoaded>().0;
+    provide_context(Refit {
+        width: width.into(),
+        fonts: fonts.into(),
+    });
     let rail = page
         .rail
         .into_iter()
@@ -264,6 +282,9 @@ fn PageView(page: Page, global: Vec<Control>, sub: Memo<Option<usize>>) -> impl 
                 .map(|section| match section {
                     Section::Group(group) => view! { <GroupView group=group /> }.into_any(),
                     Section::Pager(pager) => {
+                        // As wide as its widest sub-page, whichever it shows.
+                        let shape = pager_shape(&pager, &METRICS);
+                        let size = move || format!("width:{:.1}px;", shape.width(width.get()));
                         let shown = move || {
                             let page = sub.get().and_then(|i| pager.pages.get(i).cloned())?;
                             let groups = page
@@ -274,12 +295,12 @@ fn PageView(page: Page, global: Vec<Control>, sub: Memo<Option<usize>>) -> impl 
                                 .map(|group| view! { <GroupView group=group /> })
                                 .collect_view();
                             Some(view! {
-                                <div class="pager" data-testid="pager" data-page=page.id>
+                                <div class="pager-page" data-testid="pager" data-page=page.id>
                                     {groups}
                                 </div>
                             })
                         };
-                        shown.into_any()
+                        view! { <div class="pager" style=size>{shown}</div> }.into_any()
                     }
                 })
                 .collect_view();
@@ -298,9 +319,8 @@ fn PageView(page: Page, global: Vec<Control>, sub: Memo<Option<usize>>) -> impl 
     view! {
         <div class="body" data-testid="page" data-page=page.id>
             <nav class="rail" data-testid="rail">
-                {rail}
-                <div class="rail-gap"></div>
-                {global}
+                <div class="rail-main">{rail}</div>
+                <div class="rail-foot">{global}</div>
             </nav>
             <div class="rows" node_ref=rows_ref style=strip_width_style>
                 {rows}
@@ -314,7 +334,15 @@ fn PageView(page: Page, global: Vec<Control>, sub: Memo<Option<usize>>) -> impl 
 /// side (strips) or in a grid (buttons).
 #[component]
 fn GroupView(group: Group) -> impl IntoView {
-    let buttons = !group.controls.iter().any(crate::flow::is_column);
+    // Strips side by side; buttons in a grid; texts (the Conf page) one per
+    // line.
+    let columns = group.controls.iter().any(crate::flow::is_column);
+    let texts = !columns
+        && group
+            .controls
+            .iter()
+            .all(|c| matches!(c, Control::Text { .. }));
+    let buttons = !columns && !texts;
     let look = group
         .color
         .as_ref()
@@ -328,7 +356,14 @@ fn GroupView(group: Group) -> impl IntoView {
         .map(|control| view! { <ControlView control=control /> })
         .collect_view();
     view! {
-        <section class="group" class:buttons=buttons data-testid="group" data-group=id style=look>
+        <section
+            class="group"
+            class:buttons=buttons
+            class:texts=texts
+            data-testid="group"
+            data-group=id
+            style=look
+        >
             <h2 class="group-title">
                 <i class="group-mark"></i>
                 <span data-testid="group-title">{title}</span>

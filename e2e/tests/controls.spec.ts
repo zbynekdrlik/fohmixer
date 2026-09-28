@@ -1,5 +1,7 @@
 import { test, expect } from "./support/fixtures";
-import { LiveClient, centre, hostLine, openSurface, ready, strip, track, until } from "./support/live";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { LiveClient, centre, doubleTap, harness, hostLine, openSurface, ready, strip, track, until } from "./support/live";
 
 // Solo, the stage mics with STAGE AUT, TechAlert and REFRESH ALL (spec F6,
 // F7, F14–F16, I5).
@@ -159,6 +161,34 @@ test.describe("TechAlert", () => {
       await expect(overlay).toHaveAttribute("data-active", "false");
     } finally {
       await live.set("band", alert, "mute", true);
+    }
+  });
+});
+
+test.describe("A guarded TechAlert", () => {
+  test("needs a second tap within 500 ms, as a guarded mute", async ({ page }) => {
+    // #21 review: a TechAlert strip in double_click_mute keeps its guard.
+    const alert = track("TechAlert #");
+    await live.set("band", alert, "mute", true);
+    const LAYOUT = join(__dirname, "..", "..", "tools", "import-tosc", "fixtures", "expected-layout.json");
+    const changed = JSON.parse(readFileSync(LAYOUT, "utf-8"));
+    changed.global[0].mute_guard = true;
+    await openSurface(page);
+    try {
+      await harness("/hub/layout", { layout: changed });
+      const button = page.getByTestId("rail").getByTestId("alert-toggle");
+      await page.waitForTimeout(500);
+      await ready(button);
+      await button.click();
+      await expect(button).toHaveClass(/\barmed\b/);
+      await page.waitForTimeout(700);
+      expect(await live.get("band", alert, "mute")).toBe(true);
+      await expect(button).not.toHaveClass(/\barmed\b/);
+      await doubleTap(button, 150);
+      await until(() => live.get("band", alert, "mute"), (v) => v === false, "TechAlert on after the confirming tap");
+    } finally {
+      await live.set("band", alert, "mute", true);
+      await harness("/hub/layout/reset");
     }
   });
 });
