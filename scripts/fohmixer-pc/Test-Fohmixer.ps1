@@ -11,7 +11,9 @@
 # - the real hub started by the task's launcher (Start-FohmixerHub.ps1) on the
 #   installed toml and stopped by the stop task's script (Stop-FohmixerHub.ps1,
 #   Ctrl-Break), both run exactly as their tasks run them (conhost --headless):
-#   a graceful stop within 10 s, exit code 0;
+#   a graceful stop within 10 s, exit code 0, and the stop script itself exits
+#   0 (not ended by its own Ctrl-Break); a failed stop prints its diagnostics
+#   (the script's exit code, hub-stop.log, the result, the hubs, the hub logs);
 # - the two tasks registered for this user in a test task folder and read back;
 # - the firewall rule as a disabled test rule, and the data folder's DACL on a
 #   test folder.
@@ -90,6 +92,49 @@ function Start-AsTask([string]$Script) {
     $p = Start-Process -FilePath $cmd.execute -ArgumentList $cmd.arguments -WorkingDirectory $data -PassThru
     $null = $p.Handle
     return $p
+}
+
+function Get-ScriptProcess([string]$Script) {
+    # The powershell.exe that runs $Script (the task's conhost starts it), with
+    # its handle held, so its exit code stays readable after it exits: conhost
+    # does not pass it on.
+    $deadline = (Get-Date).AddSeconds(10)
+    while ($true) {
+        foreach ($c in @(Get-CimInstance -ClassName Win32_Process -Filter "Name = 'powershell.exe'")) {
+            if (([string]$c.CommandLine).Contains($Script)) {
+                $p = Get-Process -Id ([int]$c.ProcessId)
+                $null = $p.Handle
+                return $p
+            }
+        }
+        if ((Get-Date) -ge $deadline) { throw "no powershell.exe runs $Script within 10 s" }
+        Start-Sleep -Milliseconds 100
+    }
+}
+
+function Show-StopDiagnostics([string]$DataDir, $StopPs) {
+    # What a failed stop left behind: the stop script's exit, its log and
+    # result, the hubs still running, the hub's and the launcher's logs.
+    Write-Host '---- stop diagnostics ----'
+    if ($null -eq $StopPs) {
+        Write-Host 'stop script: its process was not found'
+    } elseif ($StopPs.HasExited) {
+        Write-Host ('stop script: pid {0} exited with {1} (0x{1:X8}; 0xC000013A = ended by a Ctrl event)' -f $StopPs.Id, $StopPs.ExitCode)
+    } else {
+        Write-Host "stop script: pid $($StopPs.Id) still runs"
+    }
+    foreach ($n in @('hub-stop.log', 'hub-stop.result.json')) {
+        $p = Join-Path $DataDir "logs\$n"
+        if (Test-Path -LiteralPath $p -PathType Leaf) {
+            Write-Host ('--- {0}' -f $n)
+            Write-Host ([IO.File]::ReadAllText($p))
+        } else {
+            Write-Host ('--- {0}: none' -f $n)
+        }
+    }
+    Write-Host ('hubs still running: [{0}]' -f ((@(Get-FohHubProcess -DataDir $DataDir) | ForEach-Object { $_.pid }) -join ', '))
+    Write-Host (Get-FohLogTail -DataDir $DataDir -Lines 20)
+    Write-Host '---- end of stop diagnostics ----'
 }
 
 function Assert-Copy([string]$Copy, [string]$Bundle, [string]$Instance, [int]$Port, [string]$What) {
@@ -234,12 +279,24 @@ try {
     $e = ErrorOf { Stop-FohHub -DataDir $data -TaskPath $taskFolder }
     Assert ($e -like '*fohmixer-hub-stop is missing*') "stop-without-the-stop-task-refuses ($e)"
     Assert (@(Get-FohHubProcess -DataDir $data).Count -eq 1) 'stop-without-the-stop-task-leaves-the-hub-running'
-    $stopper = Start-AsTask (Join-Path $appV1 'Stop-FohmixerHub.ps1')
-    $result = Read-FohStopResult -DataDir $data -TimeoutSeconds 60
-    Assert ([int]$result.code -eq 0 -and $result.message -like "Ctrl-Break sent to pid $($hubs[0].pid) *") "stop-script-in-its-own-console-reports-code-0 ($($result.message))"
-    Assert ($stopper.WaitForExit(30000)) 'stop-script-ends'
-    Assert (@(Wait-FohHubExit -DataDir $data -TimeoutSeconds 10).Count -eq 0) 'hub-exits-within-10-s-of-ctrl-break'
-    Assert ($launcher.WaitForExit(15000)) 'launcher-ends-with-the-hub'
+    $stopScript = Join-Path $appV1 'Stop-FohmixerHub.ps1'
+    $stopper = Start-AsTask $stopScript
+    $stopPs = $null
+    try {
+        $stopPs = Get-ScriptProcess $stopScript
+        Assert ($stopPs.WaitForExit(60000)) 'stop-script-ends'
+        # The script's own exit code (conhost drops it): 0xC000013A would be
+        # the stop script ended by its own Ctrl-Break before it wrote a result.
+        Assert ($stopPs.ExitCode -eq 0) ('stop-script-exits-0-it-is-not-a-target-of-its-own-ctrl-break (exit 0x{0:X8})' -f $stopPs.ExitCode)
+        $result = Read-FohStopResult -DataDir $data -TimeoutSeconds 1
+        Assert ([int]$result.code -eq 0 -and $result.message -like "Ctrl-Break sent to pid $($hubs[0].pid) *") "stop-script-in-its-own-console-reports-code-0 ($($result.message))"
+        Assert ($stopper.WaitForExit(30000)) 'stop-task-console-ends'
+        Assert (@(Wait-FohHubExit -DataDir $data -TimeoutSeconds 10).Count -eq 0) 'hub-exits-within-10-s-of-ctrl-break'
+        Assert ($launcher.WaitForExit(15000)) 'launcher-ends-with-the-hub'
+    } catch {
+        Show-StopDiagnostics -DataDir $data -StopPs $stopPs
+        throw
+    }
     $hubLog = [IO.File]::ReadAllText((Join-Path $data 'logs\hub.out.log'))
     Write-Host $hubLog
     Assert ($hubLog.Contains('Ctrl-Break: stopping') -and $hubLog.Contains('fohmixer-hub stopped')) 'hub-stopped-gracefully-on-ctrl-break'
