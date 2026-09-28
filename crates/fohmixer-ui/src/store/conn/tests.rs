@@ -214,12 +214,22 @@ fn an_instance_back_online_or_on_another_set_reads_its_ranges_again() {
     assert_eq!(
         same,
         InstanceChange::default(),
-        "a busy flip changes nothing"
+        "the same state changes nothing"
     );
     let back = instance_change(Some(&view(false, "Show")), &view(true, "Show"));
     assert!(back.ranges && !back.pending);
     let other_set = instance_change(Some(&view(true, "Show")), &view(true, "Rehearsal"));
     assert!(other_set.ranges && !other_set.pending);
+    let mut busy = view(true, "Show");
+    busy.busy = true;
+    let idle = instance_change(Some(&busy), &view(true, "Show"));
+    assert!(idle.ranges && !idle.pending, "a stall ended: read again");
+    let stalled = instance_change(Some(&view(true, "Show")), &busy);
+    assert_eq!(
+        stalled,
+        InstanceChange::default(),
+        "going busy changes nothing"
+    );
     let gone = instance_change(Some(&view(true, "Show")), &view(false, "Show"));
     assert_eq!(
         gone,
