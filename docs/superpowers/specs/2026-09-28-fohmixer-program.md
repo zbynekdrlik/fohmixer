@@ -62,6 +62,12 @@
 
 **Merače:** ukazujú stĺpec z Abletonu. Číselný údaj merača v dBFS vypadne (D11): Ableton pre merač nedáva text a ten v TouchOSC aj tak zamŕzal pod −23 dB.
 
+**Prístup zvonku (#17, D7):** mixér má jedno meno (`foh.<tvoja doména>`) pre kostolnú sieť aj internet.
+- V kostole router posiela to meno priamo na Ableton PC; mixér ide cez HTTPS s certifikátom Let's Encrypt, ktorý si hub sám obnovuje.
+- Mimo kostola (napr. iPad na mobilných dátach) ide to isté meno cez Cloudflare Tunnel; pustí len e-maily povolené v Cloudflare Access.
+- Bez internetu aj bez Wi-Fi mixér ide otvoriť na Ableton PC (ikona na ploche) a na každom PC na kábli cez núdzovú adresu `http://<IP PC>:8480`.
+- PIN zvukára ostáva všade.
+
 ---
 
 ## 1. Goal, scope, principles
@@ -70,7 +76,7 @@
 
 **v1 scope.** Parity with the TouchOSC surfaces in use today (§3). Same pages, strips and behaviours, faster and better looking.
 
-**Non-goals for v1:** sends, device parameters, graphic EQ, LUFS, AbleSet, lyrics, Resolume, lighting, VB-Matrix routing, a third Live on another PC, internet access. All of them stay possible later (§4).
+**Non-goals for v1:** sends, device parameters, graphic EQ, LUFS, AbleSet, lyrics, Resolume, lighting, VB-Matrix routing, a third Live on another PC. All of them stay possible later (§4). (Internet access was one until the owner's #17, D7.)
 
 **Principles**
 
@@ -105,10 +111,11 @@
 | Process | Where | Started by | Role | Restart effect |
 |---|---|---|---|---|
 | **FohMixer** remote script (Python, one copy per Live) | inside each Live, in a free control-surface slot | Live, when the set loads | LOM proxy on a localhost WebSocket | reloaded by Live on every set load; the hub reconnects and resubscribes |
-| **fohmixer-hub** (Rust, one binary) | Ableton PC | scheduled task at logon (iemmixer pattern) | Live connections, fan-out, app, auth, the STAGE AUT rule | clients reconnect and resync; Live is unaffected |
+| **fohmixer-hub** (Rust, one binary) | Ableton PC | scheduled task at logon (iemmixer pattern) | Live connections, fan-out, app, auth, the STAGE AUT rule; remote access (#17): HTTPS of the public name, its certificate, the Access check | clients reconnect and resync; Live is unaffected |
+| **cloudflared** (the `fohmixer-tunnel` service, #17) | Ableton PC | Windows service, automatic | the Cloudflare Tunnel of the public name → the hub's plain HTTP port | internet clients reconnect; the LAN is unaffected |
 | **fohmixer-ui** (Leptos/WASM PWA) | engineer iPad, other tablets, phones, PC | the user, from the Home Screen | touch surface | reload; state comes back from the hub |
 
-Data flow: clients ⇄ (LAN, WebSocket) ⇄ hub ⇄ (127.0.0.1, WebSocket) ⇄ the FohMixer script in each Live.
+Data flow: clients ⇄ (LAN, WebSocket) ⇄ hub ⇄ (127.0.0.1, WebSocket) ⇄ the FohMixer script in each Live. From the internet (#17): clients ⇄ Cloudflare (Access) ⇄ cloudflared on the PC ⇄ (127.0.0.1) hub.
 
 ### 2.2 FohMixer, the Live script
 
@@ -199,7 +206,13 @@ Everything is JSON text over WebSocket on localhost, with no compression, no chu
   - The latest value is cached and sent at once to a new subscriber.
 - **Fan-out.** Values go to subscribed clients. Per client, only the latest value per key is kept while a send is pending, so there is no unbounded queue.
 - **Resync.** On a Live `connect`, every subscription is re-resolved and fresh values are pushed. On `disconnect`, the instance shows offline.
-- **Auth.** The engineer PIN and JWT come from iemmixer (argon2id, DPAPI pepper, login guard). LAN only.
+- **Auth.** The engineer PIN and JWT come from iemmixer (argon2id, DPAPI pepper, login guard), on every path.
+- **Remote access (#17, D7).** One public name for the LAN and the internet (split-horizon DNS: the church router's static record → the PC; public DNS → a Cloudflare Tunnel).
+  - An HTTPS listener serves the name (`[tls]`, port 443) with a Let's Encrypt certificate the hub gets and renews itself (`[acme]`: DNS-01 through the Cloudflare DNS API, renewed under 30 days left, retried 1 min doubling to 6 h, the old certificate served meanwhile; the Cloudflare API token is set with `fohmixer-hub cloudflare set-token` and sealed with DPAPI).
+  - The plain-HTTP listener (8480) always stays: the emergency path by IP (no DNS, no certificate) and the tunnel's origin. Only a request for the public name is redirected to HTTPS; one by IP or through the tunnel never is.
+  - A request that came through a proxy (any forwarded header: the tunnel) or from a public address is an internet request and needs a valid Cloudflare Access JWT (RS256 against the team's keys, `exp`/`aud`/`iss` required; `[access]`). Without `[access]` every internet request is refused. LAN requests need no Access and the LAN path does no network I/O, so the mixer works with the internet down. A browser's cross-site POST or WebSocket upgrade is refused on every path (Origin guard), a foreign `Host` too (DNS rebinding).
+  - The Ableton PC resolves the name itself (a hosts entry to 127.0.0.1) and has a desktop shortcut to it, so it works with the router down.
+  - `/api/status` reports the HTTPS listener, the certificate (names, days left, the last ACME error) and cloudflared's ready connections (`[tunnel]`).
 - **Static app** (rust-embed), `/api/version` and `/api/client-error`, as in iemmixer.
 - **Layout.** The hub serves the layout document (§2.5) and validates it on load. On a validation failure it keeps serving the last good version and reports why.
 - **One rule: STAGE AUT (F15).** This is the single named exception to "the hub does not interpret the LOM".
@@ -470,8 +483,8 @@ Each one gets a short design note and a plan before code, as in iemmixer.
 - **R2** `Live.Base.Timer` is undocumented. AbleSet runs it here at 10 ms. The threaded v5 transport is new upstream and unproven on this PC (K1). The `schedule_message` fallback is kept.
 - **R3** `output_meter_left/right` add GUI load, per Live's docs. K2 measures it; the fallbacks are `output_meter_level` or on-screen strips only.
 - **R4** A mapping read from the saved set file can differ from the running set when the set has unsaved changes. The import is re-run after the set is saved, and the toggles show the live target state either way.
-- **R5** Secure context on the iPad.
-  - v1 works without a service worker or Wake Lock: the app is LAN-only and iPad Auto-Lock is set to Never.
+- **R5** Secure context on the iPad. **Resolved by #17:** the public name is served over HTTPS on the LAN and through the tunnel, so the iPad's Home Screen app has a secure context there: a network-only service worker (installable PWA, never a cached answer: the internet path sits behind Access) and a Screen Wake Lock taken while the page is visible, taken again when it comes back. The emergency plain-http path stays without either (iPad Auto-Lock set to Never remains the fallback).
+  - v1 worked without a service worker or Wake Lock: the app was LAN-only and iPad Auto-Lock is set to Never.
   - K4 confirms that the Home Screen app works over the chosen origin.
   - HTTPS with a real certificate is added if needed.
 - **R6** A Live update changes undocumented details. Pin the Live version per release; the script reports `live_version` on connect.
@@ -496,7 +509,7 @@ Each one gets a short design note and a plan before code, as in iemmixer.
 **Defaults chosen in this spec** (the owner may override them at review)
 
 - **D6** The v1 layout is imported from the TouchOSC projects and lives on the Ableton PC, not in the public repo (§2.5, §5.2).
-- **D7** v1 is LAN-only, with no internet exposure (R5).
+- **D7** ~~v1 is LAN-only, with no internet exposure (R5).~~ Changed by the owner on #17 (2026-09-28): one name for the LAN and a Cloudflare Tunnel behind Cloudflare Access (e-mail), LAN first by the router's DNS; the mixer must stay openable on the Ableton PC and on any wired PC with the internet and the Wi-Fi down (hosts entry, the always-on emergency `http://<PC IP>:8480`); the engineer PIN stays everywhere (§2.4 Remote access).
 - **D8** The fader touch shaping and post-release delay are kept in v1 behind a switch; the engineer decides during the parallel run (X3).
 - **D9** The hub runs as a scheduled task at logon on the Ableton PC (iemmixer pattern).
 - **D11** The meter dBFS number is dropped; the meter bar stays. The LOM has no display string for meters, and the TouchOSC number froze below −23 dB.
