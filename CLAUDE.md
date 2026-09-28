@@ -16,7 +16,9 @@ Two branches: `master` (production) and `dev`. Work on `dev`; open a PR `dev` �
 - Public-repo hygiene (what never enters this repo) → `.claude/rules/public-repo-hygiene.md` (auto-loads everywhere)
 - CI, toolchain, placeholder dist, coverage floor, mutation gate → `.claude/rules/ci.md` (auto-loads on workflows, `.cargo/mutants.toml`, `.config/nextest.toml`, crates)
 - Hub/proto code the mutation gate can judge, the hub test harness, subscription/outbox invariants → `.claude/rules/hub-rust.md` (auto-loads on `crates/fohmixer-hub/**`, `crates/fohmixer-proto/**`)
-- PC deploy (bundle, Install-Fohmixer.ps1, scheduled tasks, graceful stop, PIN as the band user) → `.claude/rules/deploy-pc.md` (auto-loads on `scripts/fohmixer-pc/**`)
+- PC deploy (bundle, Install-Fohmixer.ps1, scheduled tasks, graceful stop, PIN as the band user, Live's User Library check) → `.claude/rules/deploy-pc.md` (auto-loads on `scripts/fohmixer-pc/**`)
+- FohMixer script transport, heartbeat, SimLive's Live-like strings → `.claude/rules/live-script.md` (auto-loads on `live-script/**`, `sim/**`)
+- TouchOSC import tool and its synthetic fixtures → `.claude/rules/import-tosc.md` (auto-loads on `tools/import-tosc/**`)
 
 ## Always-apply rules
 

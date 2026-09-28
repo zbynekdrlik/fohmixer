@@ -587,8 +587,9 @@ class Importer:
 
     def style(self, node, text=None):
         style = {}
-        if node.prop("background", False) and "color" in node.props:
-            style["bg"] = color_hex(node.prop("color"))
+        bg = self.fill(node)
+        if bg:
+            style["bg"] = bg
         if text:
             style["text"] = text
         if "textColor" in node.props:
@@ -624,6 +625,7 @@ class Importer:
         # The root group is the canvas: it clips the pager and the overlay.
         shown = _intersect(pager.frame, self.canvas_rect)
         tabbar, pages = self.pager(pager, 0.0, 0.0, shown, "root")
+        background = self.fill(pager)
         overlay = []
         for child, labels in _with_labels(self.root.children):
             if child is not pager:
@@ -633,9 +635,13 @@ class Importer:
         self.resolve_alerts()
         self.check_config()
         self.check_bindings()
-        return {
+        layout = {
             "schema": SCHEMA,
             "canvas": {"w": float(self.canvas[0]), "h": float(self.canvas[1])},
+        }
+        if background:
+            layout["background"] = background
+        return layout | {
             "tabbar": tabbar,
             "pages": pages,
             "overlay": overlay,
@@ -673,7 +679,16 @@ class Importer:
         self.tab_text = float(node.prop("textSizeOff", 0))
         for page in pages:
             page["tab"]["text_size"] = self.tab_text
+            if "textSizeOn" in node.props:
+                page["tab"]["text_size_on"] = float(node.prop("textSizeOn"))
         return tabbar, pages
+
+    @staticmethod
+    def fill(node):
+        """A pager's or page's own fill (``background`` with its ``color``), or None."""
+        if node.prop("background", False) and "color" in node.props:
+            return color_hex(node.prop("color"))
+        return None
 
     def page(self, node, ox, oy, clip, where):
         x, y, w, h = node.frame
@@ -686,10 +701,18 @@ class Importer:
             n += 1
             page_id = f"{base}-{n}"
         self.page_ids.add(page_id)
+        # The real project keeps every tab grey when off and the page's own
+        # colour for its lit tab (#7, item 7).
         tab = {}
         if "tabColorOff" in node.props:
             tab["color"] = color_hex(node.prop("tabColorOff"))
-        page = {"id": page_id, "title": title, "tab": tab, "items": []}
+        if "tabColorOn" in node.props:
+            tab["color_on"] = color_hex(node.prop("tabColorOn"))
+        page = {"id": page_id, "title": title, "tab": tab}
+        background = self.fill(node)
+        if background:
+            page["background"] = background
+        page["items"] = []
         path = f"{where}/{node.name}"
         for child, labels in _with_labels(node.children):
             if child.type == "PAGER":
@@ -704,7 +727,11 @@ class Importer:
                 if sub is None:
                     continue
                 tabbar, pages = self.pager(child, ax, ay, sub, path)
-                page["pager"] = {"frame": self.frame(*sub), "tabbar": tabbar, "pages": pages}
+                page["pager"] = {"frame": self.frame(*sub)}
+                pager_fill = self.fill(child)
+                if pager_fill:
+                    page["pager"]["background"] = pager_fill
+                page["pager"] |= {"tabbar": tabbar, "pages": pages}
             else:
                 self.collect(child, ax, ay, shown, page["items"], path, labels)
         return page
@@ -739,7 +766,8 @@ class Importer:
         if _is_strip(node):
             out.append(self.strip(node, ax, ay, shown, path))
         elif node.type == "GROUP" and node.child("btn_solo"):
-            out.append(self.item("solo", frame, self.style(node), binding=self.binding(node.name)))
+            style = self.control_style(node, "btn_solo")
+            out.append(self.item("solo", frame, style, binding=self.binding(node.name)))
         elif node.type == "GROUP" and node.child("btn_mute"):
             out.append(
                 self.item(

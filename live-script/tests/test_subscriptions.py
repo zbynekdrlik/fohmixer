@@ -39,7 +39,7 @@ class SubscriptionsTest(unittest.TestCase):
     def test_add_returns_initial_value_and_display(self):
         key, item = self.subs.add(self.volume, "value", True, self.a, "live_set tracks 0 x volume")
         self.assertEqual(key, f"live_{self.volume._live_ptr}.value")
-        self.assertEqual(item, {"key": key, "value": 0.85, "display": "0.0 dB"})
+        self.assertEqual(item, {"key": key, "value": 0.85, "display": "0.00 dB"})
         key2, item2 = self.subs.add(self.track, "mute", False, self.a)
         self.assertEqual(item2, {"key": key2, "value": False})
 
@@ -160,7 +160,7 @@ class ListenerOpsTest(unittest.TestCase):
         out = self.run_cmd(target, "add_listener", {"prop": "value", "display": True})
         volume = self.song.tracks[2].mixer_device.volume
         self.assertEqual(
-            out, {"key": f"live_{volume._live_ptr}.value", "value": 0.75, "display": "-4.0 dB"}
+            out, {"key": f"live_{volume._live_ptr}.value", "value": 0.75, "display": "-4.00 dB"}
         )
         self.assertEqual(volume._sim_listener_count("value"), 1)
         self.assertIsNone(self.run_cmd(target, "remove_listener", {"prop": "value"}))

@@ -11,6 +11,7 @@ import unittest
 
 import _paths  # noqa: F401 - puts the script on sys.path
 from FohMixer.transport.server import Server
+from FohMixer.transport.websocket import OPCODE_TEXT, try_read_frame
 from websockets.exceptions import ConnectionClosed, InvalidStatus
 from websockets.sync.client import connect
 
@@ -56,6 +57,33 @@ def raw_client(port, rcvbuf=4096):
         response += sock.recv(1)
     assert response.startswith(b"HTTP/1.1 101"), response
     return sock
+
+
+def send_buffer_frames(frame_bytes):
+    """How many frames of ``frame_bytes`` the kernel's largest TCP send buffer
+    holds (Linux: the third field of ``tcp_wmem``), rounded up."""
+    with open("/proc/sys/net/ipv4/tcp_wmem", encoding="ascii") as f:
+        largest = int(f.read().split()[2])
+    return -(-largest // frame_bytes)
+
+
+def read_server_events(sock, count, timeout=10.0):
+    """The next ``count`` JSON messages the server sent on a raw client socket."""
+    sock.settimeout(timeout)
+    buffer = bytearray()
+    events = []
+    while len(events) < count:
+        frame = try_read_frame(buffer)
+        if frame is None:
+            data = sock.recv(1 << 20)
+            if not data:
+                raise AssertionError(f"closed after {len(events)} messages")
+            buffer.extend(data)
+            continue
+        opcode, _fin, payload = frame
+        if opcode == OPCODE_TEXT:
+            events.append(json.loads(bytes(payload).decode("utf-8")))
+    return events
 
 
 def server_side_time_wait(port):
@@ -209,6 +237,33 @@ class TransportTest(unittest.TestCase):
         self.assertTrue(good_conn.is_open)
         good_conn.push_value("still", {"key": "still", "value": "alive"})
         self.assertEqual(recv_json(good_ws)["data"], [{"key": "still", "value": "alive"}])
+
+    def test_a_heartbeat_goes_out_before_the_results_queued_ahead_of_it(self):
+        # The hub reads nothing for a while (4 KB receive window): the sender
+        # blocks on a large result, and 200 more wait in the queue. A heartbeat
+        # set now must follow the frame in flight, not every queued result: a
+        # heartbeat held behind them reaches the hub late and turns the
+        # instance "busy" while Live's main thread is fine (#9).
+        before = {c.id for c in self.server.connections()}
+        stalled = raw_client(self.port)
+        self.addCleanup(stalled.close)
+        conn = wait_for(lambda: [c for c in self.server.connections() if c.id not in before])[0]
+        # Twice as many 64 KB results as the kernel's largest send buffer
+        # holds, and 100 more: at least half of them are still queued when the
+        # heartbeat is set, whatever the runner's buffer sizes.
+        frame = 65536
+        count = 2 * send_buffer_frames(frame) + 100
+        payload = "x" * frame
+        for n in range(count):
+            conn.push_result(f"u{n}", [{"ok": True, "data": payload}])
+        time.sleep(0.2)
+        self.server.broadcast_heartbeat({"main_tick_age_ms": 1.0})
+        events = read_server_events(stalled, count + 2)
+        order = [e.get("uuid") or e["event"] for e in events]
+        self.assertEqual(order[0], "connect")
+        self.assertEqual(order.count("heartbeat"), 1)
+        self.assertLess(order.index("heartbeat"), count // 2, f"late heartbeat: {order[:8]}…")
+        self.assertEqual([u for u in order if u.startswith("u")], [f"u{n}" for n in range(count)])
 
     def test_shutdown_then_rebind_at_once_without_time_wait(self):
         ws, _conn, _ = self.client()

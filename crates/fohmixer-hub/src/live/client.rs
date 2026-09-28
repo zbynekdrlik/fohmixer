@@ -10,18 +10,24 @@
 //! - Failed attempts are counted and the last reason kept for
 //!   `/api/status`; the first failure of an outage is a warning, the retries
 //!   are debug lines.
-//! - Frames go out in the order requests arrive; each result is matched by
-//!   its uuid: a caller's own request ([`LiveHandle::call`]) gets it back
-//!   directly, anything else (the subscription table's requests) goes to the
-//!   event sink in frame order, with the value pushes.
+//! - Frames go out in the order requests arrive, written by a task of their
+//!   own: a write that waits (the script reads slowly) never stops the
+//!   session from reading the script's frames and stamping its heartbeats
+//!   (#9: a heartbeat read late made the instance busy while Live was
+//!   fine). Each result is matched by its uuid: a caller's own request
+//!   ([`LiveHandle::call`]) gets it back directly, anything else (the
+//!   subscription table's requests) goes to the event sink in frame order,
+//!   with the value pushes.
 //! - Busy: Live's main-thread tick older than 150 ms, or no heartbeat for
-//!   300 ms (checked every 50 ms), reported on change.
+//!   300 ms (checked every 50 ms), reported on change with its reason; a
+//!   heartbeat after an overdue gap is logged with where it was held.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
+use futures_util::stream::SplitSink;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use tokio::net::TcpStream;
@@ -30,7 +36,9 @@ use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
-use super::{Backoff, ConnectInfo, Frame, LiveValue, is_busy, parse_frame};
+use super::{
+    Backoff, ConnectInfo, Frame, LiveValue, busy_reason, late_heartbeat, parse_frame, wall_ms,
+};
 use crate::config::InstanceCfg;
 
 /// How long a caller waits for a result.
@@ -187,6 +195,19 @@ impl LiveHandle {
 
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
+/// Writes the session's requests to the script, in order, until a write
+/// fails or the session drops its sender.
+async fn write_requests(
+    mut sink: SplitSink<Socket, Message>,
+    mut texts: mpsc::UnboundedReceiver<String>,
+) {
+    while let Some(text) = texts.recv().await {
+        if sink.send(Message::Text(text.into())).await.is_err() {
+            return;
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum End {
     /// A session ended: reconnect.
@@ -303,9 +324,10 @@ impl Session<'_> {
         (self.events)(self.name, event);
     }
 
-    /// Reports a busy change.
+    /// Reports a busy change, with its reason.
     fn check_busy(&self, health: &mut Health) {
-        let busy = is_busy(health.age_ms, health.last_heartbeat.elapsed());
+        let reason = busy_reason(health.age_ms, health.last_heartbeat.elapsed());
+        let busy = reason.is_some();
         if busy != health.busy {
             health.busy = busy;
             lock(self.snapshot).busy = busy;
@@ -313,6 +335,9 @@ impl Session<'_> {
                 instance = self.name,
                 busy,
                 main_tick_age_ms = health.age_ms,
+                reason = reason
+                    .as_deref()
+                    .unwrap_or("heartbeats in time, Live's main thread ticking"),
                 "Live busy changed"
             );
             self.emit(LiveEvent::Busy { busy });
@@ -320,7 +345,11 @@ impl Session<'_> {
     }
 
     async fn run(&self, socket: Socket, rx: &mut mpsc::UnboundedReceiver<Request>) -> End {
-        let (mut sink, mut stream) = socket.split();
+        let (sink, mut stream) = socket.split();
+        // Requests go out through their own task, so this loop never waits
+        // for a write and keeps reading the script's frames.
+        let (out, texts) = mpsc::unbounded_channel::<String>();
+        let mut writer = tokio::spawn(write_requests(sink, texts));
         let mut pending: HashMap<String, Reply> = HashMap::new();
         let mut health = Health {
             connected: false,
@@ -364,14 +393,17 @@ impl Session<'_> {
                         continue;
                     }
                     let text = json!({"uuid": request.uuid, "commands": request.commands}).to_string();
-                    if sink.send(Message::Text(text.into())).await.is_err() {
-                        // Dropped with the request: its caller reads "offline".
+                    if out.send(text).is_err() {
+                        // The writer ended: dropped with the request, its
+                        // caller reads "offline".
                         break End::Lost;
                     }
                     if let Some(reply) = request.reply {
                         pending.insert(request.uuid, reply);
                     }
                 }
+                // A write failed: the connection is gone.
+                _ = &mut writer => break End::Lost,
                 _ = tick.tick() => {
                     if health.connected {
                         self.check_busy(&mut health);
@@ -379,6 +411,7 @@ impl Session<'_> {
                 }
             }
         };
+        writer.abort();
         if !health.connected {
             return match end {
                 End::Lost => {
@@ -421,7 +454,17 @@ impl Session<'_> {
                 };
                 self.emit(LiveEvent::Connected(info));
             }
-            Frame::Heartbeat { main_tick_age_ms } => {
+            Frame::Heartbeat {
+                main_tick_age_ms,
+                gap_ms,
+                sent_ms,
+            } => {
+                // A heartbeat only follows the script's connect.
+                if let Some(note) =
+                    late_heartbeat(health.last_heartbeat.elapsed(), gap_ms, sent_ms, wall_ms())
+                {
+                    tracing::warn!(instance = self.name, main_tick_age_ms, "{note}");
+                }
                 health.age_ms = main_tick_age_ms;
                 health.last_heartbeat = Instant::now();
                 lock(self.snapshot).main_tick_age_ms = Some(main_tick_age_ms);

@@ -64,6 +64,7 @@ CONFIG_TEXT = (
 WHITE = (1, 1, 1, 1)
 BLACK = (0, 0, 0, 1)
 GREY = (0.25, 0.25, 0.25, 1)
+SOLO_BLUE = (0.24, 0.38, 0.72, 1)
 
 # --- lexml ---------------------------------------------------------------------------
 
@@ -146,7 +147,12 @@ def label(name, frame, text, **props):
     return N("LABEL", name, frame, values={"text": text}, **props)
 
 
-def strip(name, x, y, w=160, h=710, background=False, color=GREY):
+# The instance label of a narrow strip: 39 × 25 under the dB text, as in the real
+# project's narrow template (a standard strip's spans the strip).
+NARROW_CONNECTION_LABEL = (49, 160, 39, 25)
+
+
+def strip(name, x, y, w=160, h=710, background=False, color=GREY, connection=None):
     """A strip group with its parts (parent-relative frames) and its decoration."""
     parts = [
         # Backdrops that carry the mute script but do nothing (decoration).
@@ -160,7 +166,7 @@ def strip(name, x, y, w=160, h=710, background=False, color=GREY):
         N("FADER", "fader48", (5, 83, 10, 553), script=METER_SCRIPT),
         N("BUTTON", "mute", (15, 648, w - 30, 52), script=MUTE_SCRIPT, buttonType=1),
         label("track_label", (16, 653, w - 32, 42), "Old name"),
-        label("connection_label", (16, 151, w - 32, 20), "band"),
+        label("connection_label", connection or (16, 151, w - 32, 20), "band"),
         label("db", (15, 116, w - 30, 30), "-inf", script=DB_SCRIPT),
         label("db_meter_label", (15, 173, w - 30, 20), "-inf dBFS", script=DB_SCRIPT),
         N("BOX", "status_indicator", (24, 88, 88, 20)),
@@ -302,11 +308,16 @@ def project():
                 orientation=3,
                 color=(0.73, 1, 0.65, 1),
             ),
-            strip("band_Vocal 1 repro#", 95, 40, w=136, h=706),
-            strip("Keys 1", 243, 40, w=136, h=706),
+            strip("band_Vocal 1 repro#", 95, 40, w=136, h=706, connection=NARROW_CONNECTION_LABEL),
+            strip("Keys 1", 243, 40, w=136, h=706, connection=NARROW_CONNECTION_LABEL),
         ],
         tabLabel="STAGE",
-        tabColorOff=(0.73, 1, 0.65, 0.34),
+        # As in the real project: every tab is grey when off, the page's own
+        # colour is its lit (on) colour; the page fills itself near-black.
+        tabColorOff=GREY,
+        tabColorOn=(0.73, 1, 0.65, 0.34),
+        background=True,
+        color=(0, 0, 0, 0.976),
     )
     others_page = N(
         "GROUP",
@@ -314,7 +325,8 @@ def project():
         (65, 0, 1681, 773),
         [strip("master_Hand1 #", 102, 34)],
         tabLabel="OTHERS",
-        tabColorOff=(0.98, 0, 0, 0.29),
+        tabColorOff=GREY,
+        tabColorOn=(0.98, 0, 0, 0.29),
     )
     sub_pager = N(
         "PAGER",
@@ -328,6 +340,9 @@ def project():
         tabbarSize=65,
         textSizeOff=36,
         textSizeOn=51,
+        # An opaque black pager behind its pages.
+        background=True,
+        color=BLACK,
     )
     foh = N(
         "GROUP",
@@ -394,20 +409,44 @@ def project():
                 "Vocals Repro grp#",
                 (27, 219, 161, 65),
                 [
-                    N("BUTTON", "btn_solo", (0, 0, 161, 65), script=SOLO_SCRIPT, buttonType=2),
+                    # As in the real project: the group is transparent, the
+                    # colour is on the inner button (#7).
+                    N(
+                        "BUTTON",
+                        "btn_solo",
+                        (0, 0, 161, 65),
+                        script=SOLO_SCRIPT,
+                        buttonType=2,
+                        background=True,
+                        color=SOLO_BLUE,
+                    ),
                     label("label", (0, 30, 161, 30), "Vocals"),
                 ],
                 script=SOLO_SCRIPT,
+                background=True,
+                color=(0, 0, 0, 0),
             ),
             N(
                 "GROUP",
                 "Stems grp#",
                 (27, 274, 161, 65),
                 [
-                    N("BUTTON", "btn_solo", (0, 0, 161, 65), script=SOLO_SCRIPT, buttonType=2),
+                    # As in the real project: the group is transparent, the
+                    # colour is on the inner button (#7).
+                    N(
+                        "BUTTON",
+                        "btn_solo",
+                        (0, 0, 161, 65),
+                        script=SOLO_SCRIPT,
+                        buttonType=2,
+                        background=True,
+                        color=SOLO_BLUE,
+                    ),
                     label("label", (0, 30, 161, 30), "Stems"),
                 ],
                 script=SOLO_SCRIPT,
+                background=True,
+                color=(0, 0, 0, 0),
             ),
             midi_group(
                 "group3",
@@ -595,6 +634,7 @@ def project():
         ],
         tabLabel="FOH",
         tabColorOff=(0.25, 0.25, 0.25, 1),
+        tabColorOn=(0.5, 0.5, 0.5, 1),
     )
     conf = N(
         "GROUP",
@@ -612,6 +652,7 @@ def project():
         ],
         tabLabel="Conf",
         tabColorOff=(0.25, 0.25, 0.25, 1),
+        tabColorOn=(0.5, 0.5, 0.5, 1),
     )
     pager = N(
         "PAGER",
@@ -624,6 +665,9 @@ def project():
         tabbarSize=59,
         textSizeOff=33,
         textSizeOn=52,
+        # The grey behind every page, the whole canvas.
+        background=True,
+        color=(0.616, 0.616, 0.627, 1),
     )
     tech_alert = alert_strip("band_TechAlert #", 67, 1059)
     return N(

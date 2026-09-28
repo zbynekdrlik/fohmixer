@@ -24,7 +24,8 @@ js-sys = "0.3"
 console_error_panic_hook = "0.1"
 
 # Web APIs: the panic hook's overlay and report, the hub socket and fetch,
-# pointer input, the animation loop's style writes, local storage
+# pointer input, the animation loop's style writes, local storage, the text
+# measurement that fits a text to its box (Range)
 web-sys = { version = "0.3", features = [
     "Window",
     "Document",
@@ -38,6 +39,8 @@ web-sys = { version = "0.3", features = [
     "Storage",
     "CssStyleDeclaration",
     "DomRect",
+    "Node",
+    "Range",
     "console",
     "Event",
     "EventTarget",

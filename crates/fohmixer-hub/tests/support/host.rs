@@ -1,6 +1,7 @@
 //! `sim/host.py` processes (Unix: stopped with `kill -s TERM`).
 
 use std::io::{BufRead, BufReader, Write};
+use std::path::Path;
 use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -28,6 +29,13 @@ impl Host {
     /// A host on `port` (0: the OS picks), its meters moving `meters_hz`
     /// times a second (0: still).
     pub fn start_with(instance: &str, port: u16, meters_hz: f64) -> Self {
+        let site = repo().join("sim").join("fixtures").join("test-site.json");
+        Self::start_site(instance, &site, port, meters_hz)
+    }
+
+    /// A host of the set `site` (a SimLive site fixture), otherwise as
+    /// [`Host::start_with`].
+    pub fn start_site(instance: &str, site: &Path, port: u16, meters_hz: f64) -> Self {
         let python = std::env::var("FOHMIXER_PYTHON").unwrap_or_else(|_| "python3".to_string());
         let logs = tempfile::tempdir().unwrap();
         let root = repo();
@@ -35,7 +43,7 @@ impl Host {
             .arg(root.join("sim").join("host.py"))
             .args(["--port", &port.to_string(), "--instance", instance])
             .arg("--site")
-            .arg(root.join("sim").join("fixtures").join("test-site.json"))
+            .arg(site)
             .args(["--meters-hz", &meters_hz.to_string()])
             .arg("--log-dir")
             .arg(logs.path())

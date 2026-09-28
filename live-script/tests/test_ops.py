@@ -43,7 +43,7 @@ class OpsTest(unittest.TestCase):
     def test_get_prop_value_with_display(self):
         self.assertEqual(
             self.run_cmd(VOLUME, "get_prop", {"prop": "value", "display": True}),
-            {"value": 0.85, "display": "0.0 dB"},
+            {"value": 0.85, "display": "0.00 dB"},
         )
 
     def test_get_prop_object_and_list_and_enum(self):

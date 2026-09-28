@@ -19,7 +19,10 @@
 #   test folder;
 # - an account named like the computer, as on the PC (#9): a temporary local
 #   user (never logged on, removed at the end) through the account check, the
-#   DACL, and the tasks' principal and logon trigger with their read-back.
+#   DACL, and the tasks' principal and logon trigger with their read-back;
+# - Live's own setting of each user's User Library (#9): fake Library.cfg
+#   files; an install into a User Library that Live does not use is refused
+#   before anything changes.
 # Only its own test objects are removed; nothing is ended by force (spec I7).
 param([Parameter(Mandatory)][string]$HubExe)
 Set-StrictMode -Version Latest
@@ -55,6 +58,7 @@ function Get-InstallArgs([hashtable]$Over = @{}) {
         BundleZip = $b1.zip; BandUser = 'band-user'; MasterUser = 'master-user'; DataDir = $data
         HttpPort = 18481; BandPort = 39181; MasterPort = 39182; Layout = $layout
         BandUserLibrary = $bandLib; MasterUserLibrary = $masterLib
+        BandAbletonPrefs = $bandPrefs; MasterAbletonPrefs = $masterPrefs
     }
     foreach ($k in $Over.Keys) { $a[$k] = $Over[$k] }
     $list = @()
@@ -153,6 +157,26 @@ function Assert-Copy([string]$Copy, [string]$Bundle, [string]$Instance, [int]$Po
     Assert ($other.Count -eq 0) "$What-copy-holds-the-bundle-files ($($other -join ', '))"
 }
 
+function New-FakeLiveCfg([string]$Prefs, [string]$Version, [string]$UserLibrary) {
+    # Live's Library.cfg of one Live version, shaped like the real file: the
+    # User Library is ProjectPath (forward slashes) + ProjectName; an empty
+    # $UserLibrary writes <UserLibrary /> (no User Library set, #9).
+    $dir = Join-Path $Prefs "Live $Version\Preferences"
+    New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    $lib = "`t`t<UserLibrary />"
+    if ($UserLibrary) {
+        $parent = (Split-Path -Parent $UserLibrary).Replace('\', '/')
+        $name = Split-Path -Leaf $UserLibrary
+        $lib = "`t`t<UserLibrary>`r`n`t`t`t<LibraryProject Id=`"0`">`r`n`t`t`t`t<ProjectLocation />`r`n" +
+            "`t`t`t`t<ProjectName Value=`"$name`" />`r`n`t`t`t`t<ProjectPath Value=`"$parent`" />`r`n" +
+            "`t`t`t</LibraryProject>`r`n`t`t</UserLibrary>"
+    }
+    $xml = "<?xml version=`"1.0`" encoding=`"UTF-8`"?>`r`n" +
+        "<Ableton MajorVersion=`"5`" MinorVersion=`"12.0_12203`" SchemaChangeCount=`"3`" Creator=`"Ableton Live $Version`" Revision=`"0`">`r`n" +
+        "`t<ContentLibrary>`r`n$lib`r`n`t`t<SliceInfoList />`r`n`t</ContentLibrary>`r`n</Ableton>`r`n"
+    [IO.File]::WriteAllText((Join-Path $dir 'Library.cfg'), $xml)
+}
+
 $HubExe = (Resolve-Path -LiteralPath $HubExe).ProviderPath
 $id = [guid]::NewGuid().ToString('N').Substring(0, 8)
 $tempRoot = [IO.Path]::GetTempPath()
@@ -164,6 +188,8 @@ $install = Join-Path $here 'Install-Fohmixer.ps1'
 $layout = Join-Path $repo 'crates\fohmixer-hub\tests\fixtures\layout-ok.json'
 $bandLib = Join-Path $base 'Users\band-user\Documents\Ableton\User Library'
 $masterLib = Join-Path $base 'Users\master-user\Documents\Ableton\User Library'
+$bandPrefs = Join-Path $base 'Users\band-user\AppData\Roaming\Ableton'
+$masterPrefs = Join-Path $base 'Users\master-user\AppData\Roaming\Ableton'
 $data = Join-Path $base 'data'
 $old = New-Object DateTime 2001, 1, 1, 0, 0, 0, ([DateTimeKind]::Utc)
 $oldApp = $old.AddDays(1)
@@ -172,6 +198,10 @@ $me = [Security.Principal.WindowsIdentity]::GetCurrent().Name
 $clashFolder = '\fohmixer-selftest-' + $id + '-clash\'
 $clashSid = $null
 New-Item -ItemType Directory -Force -Path $bandLib, $masterLib | Out-Null
+# Live uses the Library.cfg of its newest version; an older one says nothing.
+New-FakeLiveCfg -Prefs $bandPrefs -Version '11.3.35' -UserLibrary ''
+New-FakeLiveCfg -Prefs $bandPrefs -Version '12.2' -UserLibrary $bandLib
+New-FakeLiveCfg -Prefs $masterPrefs -Version '12.2' -UserLibrary $masterLib
 
 try {
     # ---- pure helpers ----
@@ -185,6 +215,26 @@ try {
     $meSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
     Assert ((Get-FohSid $me) -ceq $meSid -and (Get-FohSid (Get-FohLeafName $me)) -ceq $meSid) 'sid-of-an-account-with-or-without-its-computer'
     Assert ((Get-FohSid 'S-1-5-18') -ceq 'S-1-5-18' -and (Get-FohSid ('no-such-account-' + $id)) -ceq '') 'sid-taken-as-it-is-or-empty-for-an-unknown-account'
+
+    # ---- Live's Library.cfg (#9) ----
+    # Live uses the Library.cfg of its newest version (by number: 12.10 is
+    # newer than 12.2); the User Library is ProjectPath + ProjectName, none
+    # for <UserLibrary />.
+    $prefsPick = Join-Path $base 'prefs-pick'
+    New-FakeLiveCfg -Prefs $prefsPick -Version '12.2' -UserLibrary $bandLib
+    New-FakeLiveCfg -Prefs $prefsPick -Version '12.10' -UserLibrary $masterLib
+    New-FakeLiveCfg -Prefs $prefsPick -Version '9.7.7' -UserLibrary ''
+    New-Item -ItemType Directory -Force -Path (Join-Path $prefsPick 'Live 13 Beta\Preferences'), (Join-Path $prefsPick 'Live 14') | Out-Null
+    Assert ((Get-FohLivePrefsFile -Prefs $prefsPick) -eq (Join-Path $prefsPick 'Live 12.10\Preferences\Library.cfg')) 'live-prefs-of-the-newest-version-by-number'
+    Assert ((Get-FohLivePrefsFile -Prefs (Join-Path $base 'no-such-prefs')) -ceq '') 'live-prefs-none-without-the-folder'
+    # The owner can name the one in use: a "Live <version>" folder or the file.
+    $cfg122 = Join-Path $prefsPick 'Live 12.2\Preferences\Library.cfg'
+    Assert ((Get-FohLivePrefsFile -Prefs (Join-Path $prefsPick 'Live 12.2')) -eq $cfg122) 'live-prefs-of-a-named-version-folder'
+    Assert ((Get-FohLivePrefsFile -Prefs $cfg122) -eq $cfg122) 'live-prefs-given-as-the-file'
+    Assert ((Get-FohLiveUserLibrary -Cfg (Join-Path $prefsPick 'Live 12.2\Preferences\Library.cfg')) -eq $bandLib) 'live-user-library-is-projectpath-and-projectname'
+    Assert ((Get-FohLiveUserLibrary -Cfg (Join-Path $prefsPick 'Live 9.7.7\Preferences\Library.cfg')) -ceq '') 'live-user-library-none-for-an-empty-userlibrary'
+    Assert ((ErrorOf { Test-FohLiveUserLibrary -User 'u' -Prefs $prefsPick -UserLibrary $bandLib -Switch 'Band' }) -like '*uses the User Library*-BandUserLibrary*') 'live-user-library-elsewhere-names-the-switch'
+    Assert ((ErrorOf { Test-FohLiveUserLibrary -User 'u' -Prefs $prefsPick -UserLibrary $masterLib -Switch 'Master' }) -ceq '') 'live-user-library-in-use-passes'
 
     # ---- an account named like the computer (#9) ----
     # On the PC an account's name equals the computer's. Windows looks a bare
@@ -248,7 +298,7 @@ try {
     Assert ($b1.name -ceq "fohmixer-windows-$v1-$sha" -and (Test-Path -LiteralPath $b1.zip -PathType Leaf)) 'bundle-named-by-version-and-commit'
     $zip = [IO.Compression.ZipFile]::OpenRead($b1.zip)
     try { $entries = @($zip.Entries | ForEach-Object { $_.FullName }) } finally { $zip.Dispose() }
-    foreach ($n in @('VERSION', 'SHA256SUMS', 'fohmixer-hub.exe', 'Install-Fohmixer.ps1', 'FohmixerPc.psm1', 'Start-FohmixerHub.ps1',
+    foreach ($n in @('VERSION', 'SHA256SUMS', 'fohmixer-hub.exe', 'Install-Fohmixer.ps1', 'FohmixerPc.psm1', 'FohmixerLivePrefs.ps1', 'Start-FohmixerHub.ps1',
             'Stop-FohmixerHub.ps1', 'FohMixer/__init__.py', 'FohMixer/Config.py', 'FohMixer/version.py', 'FohMixer/transport/server.py')) {
         Assert ($entries -ccontains $n) "bundle-holds-$n"
     }
@@ -258,7 +308,19 @@ try {
 
     # ---- bad input changes nothing ----
     $none = Join-Path $base 'data-refused'
+    # Live does not see a User Library it is not set to (#9: the master user's
+    # Library.cfg had <UserLibrary />, so Live never listed FohMixer).
+    $noLibrary = Join-Path $base 'prefs-no-user-library'
+    New-FakeLiveCfg -Prefs $noLibrary -Version '11.3.35' -UserLibrary $masterLib
+    New-FakeLiveCfg -Prefs $noLibrary -Version '12.2' -UserLibrary ''
+    $elsewhere = Join-Path $base 'prefs-elsewhere'
+    New-FakeLiveCfg -Prefs $elsewhere -Version '12.2' -UserLibrary (Join-Path $base 'Users\band-user\OneDrive\Ableton\User Library')
+    $noPrefs = Join-Path $base 'prefs-none'
+    New-Item -ItemType Directory -Force -Path $noPrefs | Out-Null
     $refusals = @(
+        @{ over = @{ MasterAbletonPrefs = $noLibrary }; says = '*has no User Library set*Settings > Library*'; what = 'a-live-user-without-a-user-library' },
+        @{ over = @{ BandAbletonPrefs = $elsewhere }; says = '*uses the User Library*OneDrive*'; what = 'a-user-library-live-does-not-use' },
+        @{ over = @{ BandAbletonPrefs = $noPrefs }; says = '*no Library.cfg of Live*'; what = 'a-user-without-live-preferences' },
         @{ over = @{ BandUserLibrary = (Join-Path $base 'Users\nobody\Documents\Ableton\User Library') }; says = "*Live's User Library not found*"; what = 'a-missing-user-library' },
         @{ over = @{ MasterPort = 39181 }; says = '*the ports must differ*'; what = 'two-instances-on-one-port' },
         @{ over = @{ MasterUser = 'band-user' }; says = '*two accounts*'; what = 'one-user-for-both' },

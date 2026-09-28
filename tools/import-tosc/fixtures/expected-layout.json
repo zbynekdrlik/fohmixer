@@ -4,6 +4,7 @@
   "w": 2360.0,
   "h": 1640.0
  },
+ "background": "#9D9DA0FF",
  "tabbar": {
   "orientation": "top",
   "bar_size": 59.0,
@@ -15,7 +16,9 @@
    "title": "Cue",
    "tab": {
     "color": "#404040FF",
-    "text_size": 33.0
+    "color_on": "#808080FF",
+    "text_size": 33.0,
+    "text_size_on": 52.0
    },
    "items": [
     {
@@ -54,7 +57,9 @@
    "title": "FOH",
    "tab": {
     "color": "#404040FF",
-    "text_size": 33.0
+    "color_on": "#808080FF",
+    "text_size": 33.0,
+    "text_size_on": 52.0
    },
    "items": [
     {
@@ -194,7 +199,9 @@
       "h": 65.0
      },
      "z": 17,
-     "style": {},
+     "style": {
+      "bg": "#3D61B8FF"
+     },
      "binding": {
       "instance": "band",
       "anchor": {
@@ -212,7 +219,9 @@
       "h": 65.0
      },
      "z": 18,
-     "style": {},
+     "style": {
+      "bg": "#3D61B8FF"
+     },
      "binding": {
       "instance": "band",
       "anchor": {
@@ -687,6 +696,7 @@
      "w": 1746.0,
      "h": 773.0
     },
+    "background": "#000000FF",
     "tabbar": {
      "orientation": "left",
      "bar_size": 65.0,
@@ -697,9 +707,12 @@
       "id": "stage",
       "title": "STAGE",
       "tab": {
-       "color": "#BAFFA657",
-       "text_size": 36.0
+       "color": "#404040FF",
+       "color_on": "#BAFFA657",
+       "text_size": 36.0,
+       "text_size_on": 51.0
       },
+      "background": "#000000F9",
       "items": [
        {
         "kind": "area",
@@ -795,10 +808,10 @@
           "h": 42.0
          },
          "instance_label": {
-          "x": 405.0,
-          "y": 252.0,
-          "w": 104.0,
-          "h": 20.0
+          "x": 438.0,
+          "y": 261.0,
+          "w": 39.0,
+          "h": 25.0
          },
          "db": {
           "x": 404.0,
@@ -865,10 +878,10 @@
           "h": 42.0
          },
          "instance_label": {
-          "x": 553.0,
-          "y": 252.0,
-          "w": 104.0,
-          "h": 20.0
+          "x": 586.0,
+          "y": 261.0,
+          "w": 39.0,
+          "h": 25.0
          },
          "db": {
           "x": 552.0,
@@ -891,8 +904,10 @@
       "id": "others",
       "title": "OTHERS",
       "tab": {
-       "color": "#FA00004A",
-       "text_size": 36.0
+       "color": "#404040FF",
+       "color_on": "#FA00004A",
+       "text_size": 36.0,
+       "text_size_on": 51.0
       },
       "items": [
        {
@@ -975,7 +990,9 @@
    "title": "Conf",
    "tab": {
     "color": "#404040FF",
-    "text_size": 33.0
+    "color_on": "#808080FF",
+    "text_size": 33.0,
+    "text_size_on": 52.0
    },
    "items": [
     {

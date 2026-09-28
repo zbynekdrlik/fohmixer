@@ -1,13 +1,28 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test, expect } from "./support/fixtures";
-import { harness, hubSubscriptions, openSurface, selectPage, strip, until } from "./support/live";
+import { clipped, harness, hubSubscriptions, openSurface, selectPage, strip, textSize, until } from "./support/live";
 
 // Pages, pagers, the overlay and the layout (spec F1, F19; S4 design note §2,
 // §5): the imported synthetic layout, only the visible pages subscribed.
 
 const LAYOUT = join(__dirname, "..", "..", "tools", "import-tosc", "fixtures", "expected-layout.json");
 const layout = () => JSON.parse(readFileSync(LAYOUT, "utf-8"));
+
+/** `#RRGGBB[AA]` as [r, g, b, alpha rounded to 2 decimals]. */
+function hex(color: string): number[] {
+  const m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})?$/i.exec(color);
+  if (!m) throw new Error(`not a layout colour: ${color}`);
+  const alpha = m[4] === undefined ? 1 : parseInt(m[4], 16) / 255;
+  return [parseInt(m[1], 16), parseInt(m[2], 16), parseInt(m[3], 16), Math.round(alpha * 100) / 100];
+}
+
+/** An element's computed background colour as [r, g, b, alpha rounded to 2 decimals]. */
+async function background(el: import("@playwright/test").Locator): Promise<number[]> {
+  const css = await el.evaluate((node: Element) => getComputedStyle(node).backgroundColor);
+  const n = (css.match(/[\d.]+/g) || []).map(Number);
+  return [n[0], n[1], n[2], Math.round((n.length > 3 ? n[3] : 1) * 100) / 100];
+}
 
 /** The subscriptions the page holds (its `data-subs`). */
 async function pageSubs(page: import("@playwright/test").Page): Promise<number> {
@@ -30,6 +45,52 @@ test.describe("Pages and tabs", () => {
     const pager = page.locator('[data-testid="tabbar"][data-level="1"] [data-testid="tab"]');
     await expect(pager).toHaveText(["STAGE", "OTHERS"]);
     await expect(pager.nth(0)).toHaveAttribute("data-selected", "true");
+  });
+
+  test("every tab shows its whole title, along a vertical bar", async ({ page }) => {
+    // #9, finding 2: the nested pager's tabs (a 65 px bar on the left) cut
+    // their titles off and did not turn them.
+    await openSurface(page);
+    for (const level of ["0", "1"]) {
+      const tabs = page.locator(`[data-testid="tabbar"][data-level="${level}"] [data-testid="tab"]`);
+      const count = await tabs.count();
+      expect(count).toBeGreaterThan(1);
+      for (let i = 0; i < count; i++) {
+        const tab = tabs.nth(i);
+        expect(await clipped(tab), `level ${level} tab ${await tab.getAttribute("data-page")}`).toEqual([]);
+      }
+    }
+    const stage = page.locator('[data-testid="tabbar"][data-level="1"] [data-testid="tab"][data-page="stage"]');
+    const { w, h } = await textSize(stage);
+    expect(h, "the title runs along the vertical bar").toBeGreaterThan(w * 2);
+  });
+
+  test("a lit tab takes its page's colour and size; pagers and pages draw their backgrounds", async ({ page }) => {
+    // #7, items 7-8: the real project's tabs are grey when off and their
+    // page's colour when lit (tabColorOn, textSizeOn); the pagers and pages
+    // fill themselves (the grey canvas, the black nested pager, the
+    // near-black STAGE page).
+    const fixture = layout();
+    const foh = fixture.pages.find((p: any) => p.id === "foh");
+    const [stagePage, othersPage] = foh.pager.pages;
+    await openSurface(page);
+    const bar = '[data-testid="tabbar"][data-level="1"] [data-testid="tab"]';
+    const stageTab = page.locator(`${bar}[data-page="stage"]`);
+    const othersTab = page.locator(`${bar}[data-page="others"]`);
+    await expect(stageTab).toHaveAttribute("data-selected", "true");
+    expect(await background(stageTab)).toEqual(hex(stagePage.tab.color_on));
+    expect(await background(othersTab)).toEqual(hex(othersPage.tab.color));
+    await expect(stageTab).toHaveCSS("font-size", `${stagePage.tab.text_size_on}px`);
+    await expect(othersTab).toHaveCSS("font-size", `${othersPage.tab.text_size}px`);
+    expect(await background(page.getByTestId("stage"))).toEqual(hex(fixture.background));
+    expect(await background(page.getByTestId("pager-background"))).toEqual(hex(foh.pager.background));
+    const stageBackground = page.locator('[data-testid="page-background"][data-page="stage"]');
+    expect(await background(stageBackground)).toEqual(hex(stagePage.background));
+    await selectPage(page, "others");
+    expect(await background(othersTab)).toEqual(hex(othersPage.tab.color_on));
+    expect(await background(stageTab)).toEqual(hex(stagePage.tab.color));
+    await expect(page.locator('[data-testid="page-background"][data-page="others"]')).toHaveCount(0);
+    await selectPage(page, "stage");
   });
 
   test("the nested pager switches its pages and remembers them", async ({ page }) => {

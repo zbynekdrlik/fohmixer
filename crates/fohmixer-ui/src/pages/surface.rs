@@ -8,7 +8,8 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use fohmixer_proto::layout::{Frame, Layout, Page, Tab, TabBar};
+use fohmixer_proto::layout::{Frame, Layout, Orientation, Page, Tab, TabBar};
+use leptos::html;
 use leptos::prelude::*;
 
 use crate::app::version_text;
@@ -138,10 +139,11 @@ fn StageView(layout: Arc<Layout>, viewport: RwSignal<(f64, f64)>) -> impl IntoVi
         shaping: layout.config.fader_shaping.unwrap_or(true),
         meter_source: layout.config.meter_source.unwrap_or_default(),
     });
+    let fill = stage::stage_fill(layout.background.as_deref());
     let style = move || {
         let (w, h) = viewport.get();
         format!(
-            "width:{}px;height:{}px;transform:{};",
+            "width:{}px;height:{}px;transform:{};{fill}",
             canvas.w,
             canvas.h,
             stage::transform(stage::fit(w, h, canvas))
@@ -200,14 +202,18 @@ fn Pages(
         .iter()
         .map(|p| (p.id.clone(), p.title.clone(), p.tab.clone()))
         .collect();
-    let bar = stage::tab_layout(area, &tabbar, pages.len(), reserve).map(
-        |layout| view! { <TabBarView layout=layout tabs=tabs level=level selected=selected /> },
-    );
+    let orientation = tabbar.orientation;
+    let bar = stage::tab_layout(area, &tabbar, pages.len(), reserve).map(|layout| {
+        view! {
+            <TabBarView layout=layout orientation=orientation tabs=tabs level=level selected=selected />
+        }
+    });
+    let content = stage::content_frame(area, &tabbar);
     let page = move || {
         selected
             .get()
             .and_then(|i| pages.get(i).cloned())
-            .map(|page| view! { <PageView page=page level=level /> }.into_any())
+            .map(|page| view! { <PageView page=page level=level content=content /> }.into_any())
     };
     view! {
         {bar}
@@ -215,10 +221,24 @@ fn Pages(
     }
 }
 
-/// A page: its items and its nested pager.
+/// A page: its fill over `content` (its pager's area or the canvas below the
+/// tab bar), its items and its nested pager. The nested pager is a layer of
+/// its own at its place among the page's items (#7): its fill, tab bar and
+/// pages stack inside it.
 #[component]
-fn PageView(page: Page, level: usize) -> impl IntoView {
+fn PageView(page: Page, level: usize, content: Frame) -> impl IntoView {
     let id = page.id.clone();
+    let fill_page = page.id.clone();
+    let fill = page.background.clone().map(|color| {
+        view! {
+            <div
+                class="fill"
+                data-testid="page-background"
+                data-page=fill_page
+                style={stage::fill_style(content, &color)}
+            ></div>
+        }
+    });
     let conf = page
         .id
         .eq_ignore_ascii_case("conf")
@@ -230,19 +250,33 @@ fn PageView(page: Page, level: usize) -> impl IntoView {
         .collect_view();
     let deeper = level + 1;
     let pager = page.pager.map(|pager| {
+        let layer = format!("z-index:{};", stage::pager_z(&pager));
+        let pager_fill = pager.background.clone().map(|color| {
+            view! {
+                <div
+                    class="fill"
+                    data-testid="pager-background"
+                    style={stage::fill_style(pager.frame, &color)}
+                ></div>
+            }
+        });
         view! {
-            <Pages
-                pages={pager.pages}
-                tabbar={pager.tabbar}
-                area={pager.frame}
-                level=deeper
-                reserve=0.0
-            />
+            <div class="layer pager" style=layer>
+                {pager_fill}
+                <Pages
+                    pages={pager.pages}
+                    tabbar={pager.tabbar}
+                    area={pager.frame}
+                    level=deeper
+                    reserve=0.0
+                />
+            </div>
         }
         .into_any()
     });
     view! {
         <div class="layer page" data-testid="page" data-page=id>
+            {fill}
             {items}
             {pager}
             {conf}
@@ -250,10 +284,13 @@ fn PageView(page: Page, level: usize) -> impl IntoView {
     }
 }
 
-/// A tab bar: one tab per page, the selected one lit.
+/// A tab bar: one tab per page, the selected one lit (its lit colour and
+/// text size, #7). A vertical bar's titles run along it (#9). Every title is
+/// fitted to its tab.
 #[component]
 fn TabBarView(
     layout: TabLayout,
+    orientation: Orientation,
     tabs: Vec<(String, String, Tab)>,
     level: usize,
     selected: Memo<Option<usize>>,
@@ -266,36 +303,46 @@ fn TabBarView(
         .zip(tabs)
         .enumerate()
         .map(|(index, (frame, (id, title, tab)))| {
-            let mut css = stage::box_style(stage::relative(frame, bar));
-            if let Some(color) = &tab.color {
-                css.push_str(&format!("background:{color};"));
-            }
-            if let Some(size) = tab.text_size {
-                css.push_str(&format!("font-size:{size}px;"));
-            }
+            let css = stage::box_style(stage::relative(frame, bar));
             let lit = move || selected.get() == Some(index);
+            let class = stage::tab_class(&tab);
+            let node = NodeRef::<html::Div>::new();
+            // The colour and the fitted size follow the selection; the
+            // style attribute holds only the box, so nothing rewrites them.
+            Effect::new(move |_| {
+                let on = lit();
+                if let Some(el) = node.get() {
+                    dom::set_style(
+                        &el,
+                        "background",
+                        stage::tab_background(&tab, on).unwrap_or(""),
+                    );
+                    dom::fit_text(&el, stage::tab_font(&tab, on));
+                }
+            });
             view! {
                 <div
-                    class="tab"
+                    class=class
                     class:selected=lit
+                    node_ref=node
                     data-testid="tab"
                     data-page=id
                     data-selected=move || lit().to_string()
                     style=css
                     on:pointerdown=move |_| nav.select(level, index)
                 >
-                    {title}
+                    <span class="tab-title">{title}</span>
                 </div>
             }
         })
         .collect_view();
-    let class = if layout.vertical {
-        "tabbar vertical"
-    } else {
-        "tabbar"
-    };
     view! {
-        <div class=class data-testid="tabbar" data-level={level.to_string()} style={stage::box_style(bar)}>
+        <div
+            class={stage::tabbar_class(orientation)}
+            data-testid="tabbar"
+            data-level={level.to_string()}
+            style={stage::box_style(bar)}
+        >
             {buttons}
         </div>
     }

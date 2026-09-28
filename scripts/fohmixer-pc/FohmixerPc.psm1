@@ -8,7 +8,8 @@
 #   reported, never ended. Its tasks may never be ended hard either.
 # - Live's preferences and a running Live are never touched: only the FohMixer
 #   folder in each user's User Library is written, and Live reads it at its
-#   next start.
+#   next start. The install reads each user's Library.cfg and refuses a User
+#   Library Live does not use (#9); the fix is made in Live, never here.
 # - No site value lives here (spec 5.2): user names, folders and ports come as
 #   parameters.
 Set-StrictMode -Version Latest
@@ -21,11 +22,15 @@ $script:TaskPath = '\fohmixer\'
 $script:HubTask = 'fohmixer-hub'
 $script:StopTask = 'fohmixer-hub-stop'
 # What a bundle holds besides SHA256SUMS (design note section 2).
-$script:BundleFiles = @('VERSION', 'fohmixer-hub.exe', 'Install-Fohmixer.ps1', 'FohmixerPc.psm1',
+$script:BundleFiles = @('VERSION', 'fohmixer-hub.exe', 'Install-Fohmixer.ps1', 'FohmixerPc.psm1', 'FohmixerLivePrefs.ps1',
     'Start-FohmixerHub.ps1', 'Stop-FohmixerHub.ps1',
     'FohMixer/__init__.py', 'FohMixer/Config.py', 'FohMixer/version.py')
 # A SemVer version that is also a safe folder name (no trailing dot, no "..").
 $script:SemVer = '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?\z'
+
+# The check of Live's User Library setting (Get-FohLivePrefsFile,
+# Get-FohLiveUserLibrary, Test-FohLiveUserLibrary), in a file of its own.
+. (Join-Path $PSScriptRoot 'FohmixerLivePrefs.ps1')
 
 # Ctrl-Break through another process's console (the hub's graceful stop, as in
 # iemmixer's iem-win console.rs): detach from this process's console, attach to
@@ -1001,6 +1006,8 @@ function Invoke-FohInstall {
         [string]$Layout = '',
         [string]$BandUserLibrary = '',
         [string]$MasterUserLibrary = '',
+        [string]$BandAbletonPrefs = '',
+        [string]$MasterAbletonPrefs = '',
         [switch]$NoTask,
         [string]$TaskPath = $script:TaskPath,
         [int]$ReadyTimeoutSeconds = 20
@@ -1026,6 +1033,11 @@ function Invoke-FohInstall {
             throw "Live's User Library not found: $lib (Live creates it at its first start; pass its folder with -BandUserLibrary or -MasterUserLibrary when Live keeps it elsewhere)"
         }
     }
+    if (-not $BandAbletonPrefs) { $BandAbletonPrefs = Join-Path $env:SystemDrive "Users\$BandUser\AppData\Roaming\Ableton" }
+    if (-not $MasterAbletonPrefs) { $MasterAbletonPrefs = Join-Path $env:SystemDrive "Users\$MasterUser\AppData\Roaming\Ableton" }
+    Test-FohLiveUserLibrary -User $BandUser -Prefs (Resolve-FohPath $BandAbletonPrefs) -UserLibrary $BandUserLibrary -Switch 'Band'
+    Test-FohLiveUserLibrary -User $MasterUser -Prefs (Resolve-FohPath $MasterAbletonPrefs) -UserLibrary $MasterUserLibrary -Switch 'Master'
+
     if ($Layout) {
         $Layout = Resolve-FohPath $Layout
         Test-FohLayoutFile -Path $Layout

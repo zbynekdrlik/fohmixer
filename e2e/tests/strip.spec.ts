@@ -2,6 +2,7 @@ import { test, expect } from "./support/fixtures";
 import {
   LiveClient,
   centre,
+  clipped,
   doubleTap,
   hostLine,
   harness,
@@ -37,12 +38,35 @@ test.describe("A strip", () => {
     await openSurface(page);
     const db = strip(page, "Hand2 #").getByTestId("db");
     await expect(db).toHaveText(await live.display("band", volume(HAND2), 0.85));
-    await expect(db).toHaveText("0.0 dB");
+    await expect(db).toHaveText("0.00 dB");
     await live.set("band", volume(HAND2), "value", 0.7);
     await expect(db).toHaveText(await live.display("band", volume(HAND2), 0.7));
     await expect(strip(page, "Hand2 #").getByTestId("strip-label")).toHaveText("Hand2");
     await expect(strip(page, "B-Main repro #").getByTestId("strip-label")).toHaveText("Main");
     await expect(strip(page, "Hand2 #").getByTestId("strip-instance")).toHaveText("band");
+  });
+
+  test("its texts fit their boxes: the dB text, the name and the instance", async ({ page }) => {
+    // #9, findings 3-4: a narrow strip's 39 x 25 instance label showed "BANC"
+    // for BAND, and the dB text must show Live's whole string.
+    const VOCAL1 = track("Vocal 1 repro#");
+    const before = await live.get("band", volume(VOCAL1), "value");
+    try {
+      await live.set("band", volume(VOCAL1), "value", 0.829725);
+      await openSurface(page);
+      const narrow = strip(page, "Vocal 1 repro#");
+      await expect(narrow.getByTestId("db")).toHaveText(await live.display("band", volume(VOCAL1), 0.829725));
+      await expect(narrow.getByTestId("strip-instance")).toHaveText(/band/i);
+      for (const name of ["Vocal 1 repro#", "Hand2 #", "B-Main repro #"]) {
+        for (const part of ["db", "strip-label", "strip-instance"]) {
+          const el = strip(page, name).getByTestId(part);
+          await expect(el).not.toHaveText("");
+          expect(await clipped(el), `${name} ${part}`).toEqual([]);
+        }
+      }
+    } finally {
+      await live.set("band", volume(VOCAL1), "value", before);
+    }
   });
 
   test("a fader drag moves Live's volume the way of the finger", async ({ page }) => {
@@ -72,7 +96,7 @@ test.describe("A strip", () => {
     await until(() => shown(fader), (v) => Math.abs(v - 0.5) < 0.001, "the fader at 0.5");
     await doubleTap(fader);
     await until(() => live.get("band", volume(HAND2), "value"), (v) => Math.abs(v - 0.85) < 1e-6, "0 dB", 6000);
-    await expect(strip(page, "Hand2 #").getByTestId("db")).toHaveText("0.0 dB");
+    await expect(strip(page, "Hand2 #").getByTestId("db")).toHaveText("0.00 dB");
   });
 
   test("a pan drag moves Live's panning and a double tap centres it", async ({ page }) => {

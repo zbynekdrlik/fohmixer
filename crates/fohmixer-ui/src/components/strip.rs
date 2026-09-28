@@ -3,6 +3,7 @@
 //! imported layout put it.
 
 use fohmixer_proto::layout::{Frame, Strip, Style};
+use leptos::html;
 use leptos::prelude::*;
 
 use super::Settings;
@@ -12,8 +13,33 @@ use super::meter::{MeterView, StatusView};
 use super::pan::PanView;
 use crate::behave::label::strip_label;
 use crate::binding::strip_subs;
+use crate::dom;
 use crate::stage;
 use crate::store::{LiveStore, Slot};
+
+/// A text of the strip at its stylesheet size (`.strip-db`, `.strip-label`,
+/// `.strip-instance`), shrunk to fit its box (#9: a narrow strip's 39 × 25
+/// instance label showed "BANC" for BAND): an effect writes `text` and then
+/// fits it, so the fitting always measures the text shown.
+#[component]
+fn FittedText(
+    css_class: &'static str,
+    testid: &'static str,
+    frame: Frame,
+    text: Signal<String>,
+) -> impl IntoView {
+    let node = NodeRef::<html::Div>::new();
+    Effect::new(move |_| {
+        let shown = text.get();
+        if let Some(el) = node.get() {
+            el.set_text_content(Some(&shown));
+            dom::fit_text(&el, None);
+        }
+    });
+    view! {
+        <div class=css_class data-testid=testid node_ref=node style={stage::box_style(frame)}></div>
+    }
+}
 
 /// One strip.
 #[component]
@@ -71,6 +97,7 @@ pub fn StripView(
     let status = c.status.map(
         |f| view! { <StatusView frame={at(f)} slots={all.clone()} activity={activity.clone()} /> },
     );
+    // Live's display string exactly as it came (spec P2), fitted, never cut.
     let db = c.db.map(|f| {
         let text = move || {
             volume
@@ -78,23 +105,34 @@ pub fn StripView(
                 .unwrap_or_default()
         };
         view! {
-            <div class="strip-db" data-testid="db" style={stage::box_style(at(f))}>
-                {text}
-            </div>
+            <FittedText
+                css_class="strip-db"
+                testid="db"
+                frame={at(f)}
+                text={Signal::derive(text)}
+            />
         }
     });
     let label = c.label.map(|f| {
+        let text = strip_label(&name);
         view! {
-            <div class="strip-label" data-testid="strip-label" style={stage::box_style(at(f))}>
-                {strip_label(&name)}
-            </div>
+            <FittedText
+                css_class="strip-label"
+                testid="strip-label"
+                frame={at(f)}
+                text={Signal::stored(text)}
+            />
         }
     });
     let instance_label = c.instance_label.map(|f| {
+        let text = instance.clone();
         view! {
-            <div class="strip-instance" data-testid="strip-instance" style={stage::box_style(at(f))}>
-                {instance.clone()}
-            </div>
+            <FittedText
+                css_class="strip-instance"
+                testid="strip-instance"
+                frame={at(f)}
+                text={Signal::stored(text)}
+            />
         }
     });
     let kind = format!("{:?}", strip.strip_kind).to_lowercase();

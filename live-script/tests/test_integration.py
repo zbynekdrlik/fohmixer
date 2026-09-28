@@ -319,7 +319,7 @@ class IntegrationTest(unittest.TestCase):
             {"prop": "value", "display": True},
         )
         self.assertEqual(out["value"], 0.8)
-        self.assertEqual(out["display"], "-2.0 dB")
+        self.assertEqual(out["display"], "-2.00 dB")
         self.assertTrue(out["key"].endswith(".value"))
 
     def test_push_after_a_set_from_another_client(self):
@@ -437,6 +437,10 @@ class IntegrationTest(unittest.TestCase):
         host.control("stall 700")
         stall_seen = a.wait_event("heartbeat", 2.0, lambda f: f["data"]["main_tick_age_ms"] >= 400)
         self.assertLess(stall_seen["data"]["main_tick_age_ms"], 1500)
+        # The heartbeat thread itself kept its 100 ms beat (#9: gap_ms tells
+        # a stalled main thread from a heartbeat thread that did not run).
+        self.assertLess(stall_seen["data"]["gap_ms"], 400, stall_seen)
+        self.assertGreaterEqual(stall_seen["data"]["gap_ms"], 90, stall_seen)
         self.assertEqual(a.call("live_set", "get_prop", {"prop": "is_playing"}), False)
 
     def test_sigterm_disconnects_and_a_new_host_rebinds_the_port(self):

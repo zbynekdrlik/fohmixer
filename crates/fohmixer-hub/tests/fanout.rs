@@ -32,7 +32,7 @@ fn two_clients_share_one_live_listener_and_both_get_every_change() {
         let key = a.sub_key("band", VOLUME, "value", true).await;
         let first = a.value_of(&key, SECS_3).await;
         assert_eq!(first.value, Some(json!(0.85)));
-        assert_eq!(first.display.as_deref(), Some("0.0 dB"));
+        assert_eq!(first.display.as_deref(), Some("0.00 dB"));
         // The second subscriber gets the cached value at once, in `subbed`.
         match b.sub("band", VOLUME, "value", true).await {
             ServerMsg::Subbed {
@@ -43,7 +43,7 @@ fn two_clients_share_one_live_listener_and_both_get_every_change() {
             } => {
                 assert_eq!(sub, key);
                 assert_eq!(value, Some(json!(0.85)));
-                assert_eq!(display.as_deref(), Some("0.0 dB"));
+                assert_eq!(display.as_deref(), Some("0.00 dB"));
                 assert_eq!(error, None);
             }
             other => panic!("{other:?}"),
@@ -249,7 +249,7 @@ fn a_host_restart_goes_offline_online_and_resubscribes_once() {
             }
         };
         assert_eq!(fresh.value, Some(json!(0.85)));
-        assert_eq!(fresh.display.as_deref(), Some("0.0 dB"));
+        assert_eq!(fresh.display.as_deref(), Some("0.00 dB"));
         let status = hub
             .status_until(SECS_3, |s| {
                 s.instances[0].online && s.instances[0].listeners == 3
@@ -332,6 +332,107 @@ fn a_stall_shows_the_instance_busy_then_free() {
         host.stall(700);
         a.instance_state("band", true, Some(true), SECS_3).await;
         a.instance_state("band", true, Some(false), SECS_3).await;
+        hub.stop().await;
+        host.stop();
+    });
+}
+
+/// The volume of the load test's first strip.
+const VOLUME_1: &str = "live_set tracks[name=Strip 1 #] mixer_device volume";
+
+/// The subscriptions of one strip of the load test: volume with its
+/// display, pan, mute and both meters.
+fn load_strip_subs(n: usize) -> Vec<(String, &'static str, bool)> {
+    let track = format!("live_set tracks[name=Strip {n} #]");
+    vec![
+        (format!("{track} mixer_device volume"), "value", true),
+        (format!("{track} mixer_device panning"), "value", false),
+        (track.clone(), "mute", false),
+        (track.clone(), "output_meter_left", false),
+        (track, "output_meter_right", false),
+    ]
+}
+
+/// Reads both clients for `span`; the `busy: true` states they saw.
+async fn busy_states(clients: &mut [Client], span: Duration) -> Vec<String> {
+    let mut busy = Vec::new();
+    let deadline = Instant::now() + span;
+    while Instant::now() < deadline {
+        // Up to 200 messages from each in turn: both keep reading (the hub
+        // closes a client that takes no message for 5 s).
+        for client in clients.iter_mut() {
+            for _ in 0..200 {
+                let Some(msg) = client.next_message(Duration::from_millis(2)).await else {
+                    break;
+                };
+                if let ServerMsg::Instance {
+                    name, busy: true, ..
+                } = msg
+                {
+                    busy.push(format!(
+                        "{name}, {:?} before the end of a read",
+                        deadline.saturating_duration_since(Instant::now())
+                    ));
+                }
+            }
+        }
+    }
+    busy
+}
+
+#[test]
+fn many_metered_strips_and_two_refreshing_clients_never_show_busy() {
+    // #9: on the PC the busy badge flapped after every client connect while
+    // Live's main thread ticked every 31–47 ms. Here 60 strips move their
+    // meters 30 times a second, two clients subscribe to all of them and
+    // REFRESH three times (unsubscribe everything, subscribe again, as the
+    // UI does). SimLive's main thread is never late, so no instance state
+    // may say busy.
+    let _serial = serial();
+    runtime().block_on(async {
+        let dir = tempfile::tempdir().unwrap();
+        let site = dir.path().join("load-site.json");
+        let tracks: Vec<serde_json::Value> = (1..=60)
+            .map(|n| json!({"name": format!("Strip {n} #")}))
+            .collect();
+        std::fs::write(&site, json!({"name": "Load", "tracks": tracks}).to_string()).unwrap();
+        let host = Host::start_site("band", &site, 0, 30.0);
+        let hub = TestHub::start(vec![host.cfg()], &dir.path().join("hub")).await;
+        let mut clients = vec![hub.client().await, hub.client().await];
+        for client in &mut clients {
+            client
+                .instance_state("band", true, Some(false), SECS_3)
+                .await;
+        }
+        let subs: Vec<(String, &str, bool)> = (1..=60).flat_map(load_strip_subs).collect();
+        let mut busy = Vec::new();
+        for _round in 0..3 {
+            for client in &mut clients {
+                for (target, prop, display) in &subs {
+                    client
+                        .send(&ClientMsg::Sub {
+                            instance: "band".into(),
+                            target: target.clone(),
+                            prop: (*prop).to_string(),
+                            display: *display,
+                        })
+                        .await;
+                }
+            }
+            busy.extend(busy_states(&mut clients, Duration::from_millis(1500)).await);
+            for client in &mut clients {
+                for (target, prop, display) in &subs {
+                    let sub = fohmixer_proto::client::hub_key("band", target, prop, *display);
+                    client.send(&ClientMsg::Unsub { sub }).await;
+                }
+            }
+        }
+        busy.extend(busy_states(&mut clients, Duration::from_millis(500)).await);
+        assert!(busy.is_empty(), "busy while Live was fine: {busy:?}");
+        // Both clients were served the whole time (neither was closed).
+        for client in &mut clients {
+            client.sub("band", VOLUME_1, "value", true).await;
+        }
         hub.stop().await;
         host.stop();
     });
