@@ -31,16 +31,21 @@ def log_dir():
 
 
 def setup():
-    """Attach the rotating file handler once (the logging registry is process-wide)."""
+    """Attach the rotating file handler once per path (the logging registry is process-wide)."""
     logger = get_logger()
     logger.setLevel(logging.WARNING)
-    if any(getattr(h, _MARK, False) for h in logger.handlers):
-        return logger
     directory = log_dir()
+    path = os.path.join(directory, f"fohmixer-{Config.INSTANCE}.log")
+    for handler in list(logger.handlers):
+        if getattr(handler, _MARK, None) == path:
+            return logger
+        if getattr(handler, _MARK, None) is not None:
+            logger.removeHandler(handler)
+            handler.close()
     try:
         os.makedirs(directory, exist_ok=True)
         handler = RotatingFileHandler(
-            os.path.join(directory, f"fohmixer-{Config.INSTANCE}.log"),
+            path,
             maxBytes=MAX_BYTES,
             backupCount=BACKUP_COUNT,
             encoding="utf-8",
@@ -51,7 +56,7 @@ def setup():
         logger.warning("cannot write logs to %s (%s); logging to Live's Log.txt", directory, e)
         return logger
     handler.setFormatter(logging.Formatter(_FORMAT))
-    setattr(handler, _MARK, True)
+    setattr(handler, _MARK, path)
     logger.addHandler(handler)
     logger.propagate = False
     return logger
