@@ -17,21 +17,15 @@ use crate::dom;
 use crate::stage;
 use crate::store::{LiveStore, Slot};
 
-/// The stylesheet's sizes of a strip's texts (`.strip-db`, `.strip-label`,
-/// `.strip-instance`): each is shrunk to fit its box (#9: a narrow strip's
-/// 39 × 25 instance label showed "BANC" for BAND).
-const DB_FONT_PX: f64 = 22.0;
-const LABEL_FONT_PX: f64 = 24.0;
-const INSTANCE_FONT_PX: f64 = 15.0;
-
-/// A text of the strip, fitted to its box: an effect writes `text` and
-/// then fits it, so the fitting always measures the text shown.
+/// A text of the strip at its stylesheet size (`.strip-db`, `.strip-label`,
+/// `.strip-instance`), shrunk to fit its box (#9: a narrow strip's 39 × 25
+/// instance label showed "BANC" for BAND): an effect writes `text` and then
+/// fits it, so the fitting always measures the text shown.
 #[component]
 fn FittedText(
     css_class: &'static str,
     testid: &'static str,
     frame: Frame,
-    base_px: f64,
     text: Signal<String>,
 ) -> impl IntoView {
     let node = NodeRef::<html::Div>::new();
@@ -39,7 +33,7 @@ fn FittedText(
         let shown = text.get();
         if let Some(el) = node.get() {
             el.set_text_content(Some(&shown));
-            dom::fit_text(&el, base_px);
+            dom::fit_text(&el, None);
         }
     });
     view! {
@@ -115,7 +109,6 @@ pub fn StripView(
                 css_class="strip-db"
                 testid="db"
                 frame={at(f)}
-                base_px=DB_FONT_PX
                 text={Signal::derive(text)}
             />
         }
@@ -127,7 +120,6 @@ pub fn StripView(
                 css_class="strip-label"
                 testid="strip-label"
                 frame={at(f)}
-                base_px=LABEL_FONT_PX
                 text={Signal::stored(text)}
             />
         }
@@ -139,7 +131,6 @@ pub fn StripView(
                 css_class="strip-instance"
                 testid="strip-instance"
                 frame={at(f)}
-                base_px=INSTANCE_FONT_PX
                 text={Signal::stored(text)}
             />
         }

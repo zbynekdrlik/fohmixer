@@ -173,9 +173,6 @@ pub fn tab_class(tab: &Tab) -> &'static str {
     }
 }
 
-/// The stylesheet's tab text size, when the layout gives none.
-pub const TAB_FONT_PX: f64 = 30.0;
-
 /// A tab's colour: its lit colour while its page is shown (its colour when
 /// it has none).
 pub fn tab_background(tab: &Tab, lit: bool) -> Option<&str> {
@@ -184,10 +181,16 @@ pub fn tab_background(tab: &Tab, lit: bool) -> Option<&str> {
 }
 
 /// A tab's text size before fitting: its lit size while its page is shown
-/// (its size when it has none).
-pub fn tab_font(tab: &Tab, lit: bool) -> f64 {
+/// (its size when it has none); `None`: the stylesheet's.
+pub fn tab_font(tab: &Tab, lit: bool) -> Option<f64> {
     let on = tab.text_size_on.filter(|_| lit);
-    on.or(tab.text_size).unwrap_or(TAB_FONT_PX)
+    on.or(tab.text_size)
+}
+
+/// A CSS length in px (`"22px"`, a computed style), or `None` for another
+/// unit or no number.
+pub fn px_value(text: &str) -> Option<f64> {
+    text.trim().strip_suffix("px")?.trim().parse().ok()
 }
 
 /// How much of its room a fitted text may take (rounding and hinting).
@@ -471,10 +474,10 @@ mod tests {
         assert_eq!(tab_class(&Tab::default()), "tab");
         assert_eq!(tab_background(&tab, true), Some("#BAFFA657"));
         assert_eq!(tab_background(&tab, false), Some("#404040FF"));
-        assert_eq!(tab_font(&tab, true), 51.0);
-        assert_eq!(tab_font(&tab, false), 36.0);
-        // Without lit values a lit tab keeps its own; without any, the
-        // stylesheet's size and no colour.
+        assert_eq!(tab_font(&tab, true), Some(51.0));
+        assert_eq!(tab_font(&tab, false), Some(36.0));
+        // Without lit values a lit tab keeps its own; without any, no colour
+        // and the stylesheet's size (None).
         let plain = Tab {
             color: Some("#404040FF".into()),
             color_on: None,
@@ -482,9 +485,9 @@ mod tests {
             text_size_on: None,
         };
         assert_eq!(tab_background(&plain, true), Some("#404040FF"));
-        assert_eq!(tab_font(&plain, true), 33.0);
+        assert_eq!(tab_font(&plain, true), Some(33.0));
         assert_eq!(tab_background(&Tab::default(), true), None);
-        assert_eq!(tab_font(&Tab::default(), false), 30.0);
+        assert_eq!(tab_font(&Tab::default(), false), None);
         let only_on = Tab {
             color: None,
             color_on: Some("#FA00004A".into()),
@@ -492,11 +495,21 @@ mod tests {
             text_size_on: Some(20.0),
         };
         assert_eq!(tab_background(&only_on, false), None);
-        assert_eq!(tab_font(&only_on, false), 30.0);
+        assert_eq!(tab_font(&only_on, false), None);
+        assert_eq!(tab_font(&only_on, true), Some(20.0));
     }
 
     fn close(got: f64, want: f64) {
         assert!((got - want).abs() < 1e-9, "{got} is not {want}");
+    }
+
+    #[test]
+    fn a_css_length_in_px_is_read() {
+        assert_eq!(px_value("22px"), Some(22.0));
+        assert_eq!(px_value(" 15.5px "), Some(15.5));
+        assert_eq!(px_value("1.2em"), None);
+        assert_eq!(px_value("px"), None);
+        assert_eq!(px_value(""), None);
     }
 
     #[test]
