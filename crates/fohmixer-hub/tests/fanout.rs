@@ -1,7 +1,8 @@
 //! The hub between clients and real FohMixer scripts on SimLive
 //! (`sim/host.py`): pass-through, one Live listener per key, the fan-out to
-//! every subscriber, resync after a host restart, renamed bindings, busy,
-//! and a client that stops reading holds up nobody (S3 plan, Task 3).
+//! every subscriber, resync after a host restart (in order: offline, online,
+//! the fresh value), renamed bindings, busy, and a client that stops
+//! reading holds up nobody and is closed (S3 plan, Task 3).
 #![cfg(unix)]
 
 mod support;
@@ -9,9 +10,9 @@ mod support;
 use std::time::{Duration, Instant};
 
 use fohmixer_proto::client::{ClientMsg, ServerMsg, UI_PROTO};
-use futures_util::StreamExt;
+use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
-use support::{Host, TestHub, runtime, serial};
+use support::{Client, Host, TestHub, runtime, serial};
 use tokio_tungstenite::tungstenite::Message;
 
 const VOLUME: &str = "live_set tracks[name=Hand1 #] mixer_device volume";
@@ -50,8 +51,13 @@ fn two_clients_share_one_live_listener_and_both_get_every_change() {
         let status = hub.status().await;
         assert_eq!(status.instances[0].subscriptions, 1, "{status:?}");
         assert_eq!(status.clients, 2);
+        // One Live listener. (The hub sends one add_listener per key — its
+        // table's unit tests prove that; the script would also dedupe a
+        // second one of the same connection, so this probe shows the end
+        // result, not the hub's dedupe.)
         assert_eq!(host.listeners("value", VOLUME), 1, "one Live listener");
-        // A sets the volume; B sees it within 100 ms, with Live's display.
+        // A sets the volume; B sees it with Live's display (one sample,
+        // bounded at 500 ms; the typical time is the next test's median).
         let sent = Instant::now();
         a.set("band", VOLUME, "value", json!(0.5)).await;
         let seen = b
@@ -114,55 +120,80 @@ fn b_sees_a_change_from_a_within_a_hundred_milliseconds_typically() {
     });
 }
 
+/// The median delay (10 samples) from A's set to B's value; the values are
+/// `(i + first) / 64`, exact in binary and in their shortest text.
+async fn median_delay(a: &mut Client, b: &mut Client, key: &str, first: u32) -> Duration {
+    let mut delays = Vec::new();
+    for i in 0..10 {
+        let value = f64::from(i + first) / 64.0;
+        let sent = Instant::now();
+        a.set("band", VOLUME, "value", json!(value)).await;
+        b.value_until(key, SECS_3, |item| item.value == Some(json!(value)))
+            .await;
+        delays.push(sent.elapsed());
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    delays.sort();
+    delays[5]
+}
+
 #[test]
-fn a_client_that_never_reads_does_not_delay_the_others() {
+fn a_client_that_never_reads_delays_nobody_and_is_closed() {
     let _serial = serial();
     runtime().block_on(async {
-        // Meters move 30 times a second: the stuck client has plenty queued.
-        let host = Host::start_with("band", 0, 30.0);
+        let host = Host::start("band");
         let dir = tempfile::tempdir().unwrap();
         let hub = TestHub::start(vec![host.cfg()], dir.path()).await;
-        let mut stuck = hub.client().await;
-        for i in 0..15 {
-            stuck
-                .send(&ClientMsg::Sub {
-                    instance: "band".into(),
-                    target: format!("live_set tracks {i}"),
-                    prop: "output_meter_left".into(),
-                    display: false,
-                })
-                .await;
-        }
-        stuck
-            .send(&ClientMsg::Sub {
-                instance: "band".into(),
-                target: VOLUME.into(),
-                prop: "value".into(),
-                display: true,
-            })
-            .await;
-        let _never_read = stuck.into_socket();
         let mut a = hub.client().await;
         let mut b = hub.client().await;
         let key = b.sub_key("band", VOLUME, "value", true).await;
         b.value_of(&key, SECS_3).await;
-        let mut delays = Vec::new();
-        for i in 0..10 {
-            let value = f64::from(i + 3) / 16.0;
-            let sent = Instant::now();
-            a.set("band", VOLUME, "value", json!(value)).await;
-            b.value_until(&key, SECS_3, |item| item.value == Some(json!(value)))
-                .await;
-            delays.push(sent.elapsed());
-            tokio::time::sleep(Duration::from_millis(100)).await;
+        let baseline = median_delay(&mut a, &mut b, &key, 3).await;
+        // A client with a tiny receive window that never reads. Its replies
+        // are a few hundred kB each (the key and the error both name its bad
+        // prop): megabytes more than the kernel buffers hold, so the hub's
+        // writer for it blocks at once.
+        let socket = tokio::net::TcpSocket::new_v4().unwrap();
+        socket.set_recv_buffer_size(4096).unwrap();
+        let tcp = socket.connect(hub.addr).await.unwrap();
+        let (mut stuck, _) = tokio_tungstenite::client_async(hub.ws_url(), tcp)
+            .await
+            .unwrap();
+        let hello = tokio::time::timeout(SECS_3, stuck.next()).await.unwrap();
+        assert!(matches!(hello, Some(Ok(Message::Text(_)))), "{hello:?}");
+        hub.status_until(SECS_3, |s| s.clients == 3).await;
+        let bad = serde_json::to_string(&ClientMsg::Sub {
+            instance: "band".into(),
+            target: "live_set".into(),
+            prop: format!("_{}", "x".repeat(200_000)),
+            display: false,
+        })
+        .unwrap();
+        let burst = Instant::now();
+        for _ in 0..40 {
+            stuck.send(Message::Text(bad.clone().into())).await.unwrap();
         }
-        delays.sort();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        // The others: no more than 50 ms added (S3 design note §8).
+        let with_stuck = median_delay(&mut a, &mut b, &key, 20).await;
         assert!(
-            delays[5] < Duration::from_millis(150),
-            "median {:?} (all {delays:?})",
-            delays[5]
+            with_stuck < baseline + Duration::from_millis(50),
+            "median {with_stuck:?} with a stuck client, {baseline:?} before"
         );
-        assert!(delays[9] < Duration::from_secs(1), "{delays:?}");
+        // The stuck client is closed once one message waited SEND_TIMEOUT
+        // (5 s) for it — not earlier: its writer really blocked.
+        hub.status_until(Duration::from_secs(15), |s| s.clients == 2)
+            .await;
+        let closed_after = burst.elapsed();
+        assert!(
+            closed_after >= Duration::from_millis(4900),
+            "closed after {closed_after:?}"
+        );
+        // The others are still served.
+        a.set("band", VOLUME, "value", json!(0.75)).await;
+        b.value_until(&key, SECS_3, |i| i.value == Some(json!(0.75)))
+            .await;
+        drop(stuck);
         hub.stop().await;
         host.stop();
     });
@@ -184,7 +215,7 @@ fn a_host_restart_goes_offline_online_and_resubscribes_once() {
             .await;
         host.stop();
         a.instance_state("band", false, None, SECS_3).await;
-        // Only what comes after the restart counts from here.
+        // Only what comes after the offline state counts from here.
         a.clear();
         let offline = hub.status().await;
         assert!(!offline.instances[0].online);
@@ -198,11 +229,26 @@ fn a_host_restart_goes_offline_online_and_resubscribes_once() {
             Err("instance offline".to_string())
         );
         let mut host = Host::start_with("band", port, 0.0);
-        a.instance_state("band", true, None, SECS_3).await;
-        // A fresh session: the value is the new host's own, delivered again.
-        let fresh = a
-            .value_until(&key, SECS_3, |i| i.value == Some(json!(0.85)))
-            .await;
+        // In arrival order: online, then the fresh session's own value —
+        // never a value of the old session (0.5).
+        let mut online = false;
+        let deadline = Instant::now() + SECS_3;
+        let fresh = loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            match a.next_message(left).await.expect("online, then the value") {
+                ServerMsg::Instance {
+                    name, online: true, ..
+                } if name == "band" => online = true,
+                ServerMsg::Values { items } => {
+                    if let Some(item) = items.into_iter().find(|i| i.sub == key) {
+                        assert!(online, "a value before the online state: {item:?}");
+                        break item;
+                    }
+                }
+                _ => {}
+            }
+        };
+        assert_eq!(fresh.value, Some(json!(0.85)));
         assert_eq!(fresh.display.as_deref(), Some("0.0 dB"));
         let status = hub
             .status_until(SECS_3, |s| {

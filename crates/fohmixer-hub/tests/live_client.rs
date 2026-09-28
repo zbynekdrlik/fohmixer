@@ -5,6 +5,7 @@
 
 mod support;
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -187,24 +188,28 @@ fn a_sent_request_answers_as_an_event_in_order_with_the_pushes() {
     });
 }
 
-/// A fake script on a port of its own: it sends `connect`, then answers
-/// every request with `answer(request)` (frames to send back).
+/// A fake script of `band` on a port of its own: it sends `connect`, then
+/// answers every request with `answer(request)` (frames to send back).
 async fn fake_script<F>(answer: F) -> u16
+where
+    F: Fn(&Value) -> Vec<String> + Send + 'static,
+{
+    fake_script_as("band", answer).await
+}
+
+/// [`fake_script`] of another instance (its one connection only).
+async fn fake_script_as<F>(instance: &str, answer: F) -> u16
 where
     F: Fn(&Value) -> Vec<String> + Send + 'static,
 {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
+    let connect =
+        json!({"event": "connect", "data": {"instance": instance, "set_name": "Fake"}}).to_string();
     tokio::spawn(async move {
         let (tcp, _) = listener.accept().await.unwrap();
         let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
-        ws.send(Message::Text(
-            json!({"event": "connect", "data": {"instance": "band", "set_name": "Fake"}})
-                .to_string()
-                .into(),
-        ))
-        .await
-        .unwrap();
+        ws.send(Message::Text(connect.into())).await.unwrap();
         while let Some(Ok(Message::Text(text))) = ws.next().await {
             let request: Value = serde_json::from_str(text.as_str()).unwrap();
             for frame in answer(&request) {
@@ -308,5 +313,72 @@ fn a_silent_script_is_busy_after_300_ms_without_a_heartbeat() {
             connected.elapsed()
         );
         assert!(live.snapshot().busy);
+    });
+}
+
+#[test]
+fn a_port_that_answers_as_another_instance_is_never_used() {
+    let _serial = serial();
+    runtime().block_on(async {
+        // The script on this port says it is `master`: its Config.py and
+        // the hub's config disagree. No command may reach it.
+        let reached = Arc::new(AtomicUsize::new(0));
+        let count = Arc::clone(&reached);
+        let port = fake_script_as("master", move |_| {
+            count.fetch_add(1, Ordering::SeqCst);
+            Vec::new()
+        })
+        .await;
+        let seen = Seen::default();
+        let (live, _task) = LiveHandle::spawn(&cfg(port), seen.events());
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while live.snapshot().connect_failures == 0 {
+            assert!(Instant::now() < deadline, "{:?}", live.snapshot());
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let snap = live.snapshot();
+        assert!(!snap.online);
+        assert_eq!(
+            snap.last_error.as_deref(),
+            Some(format!("port {port} answers as instance \"master\", not \"band\"").as_str())
+        );
+        assert_eq!(live.call(get_name()).await, Err(LiveError::Offline));
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(
+            seen.0.lock().unwrap().is_empty(),
+            "no event: it never connected"
+        );
+        assert_eq!(reached.load(Ordering::SeqCst), 0, "no request reached it");
+    });
+}
+
+#[test]
+fn a_session_resets_the_failure_count() {
+    let _serial = serial();
+    runtime().block_on(async {
+        let host = Host::start("band");
+        let port = host.port;
+        let seen = Seen::default();
+        let (live, _task) = LiveHandle::spawn(&host.cfg(), seen.events());
+        seen.wait(Duration::from_secs(3), |e| {
+            matches!(e, LiveEvent::Connected(_)).then_some(())
+        })
+        .await;
+        host.stop();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while live.snapshot().connect_failures < 2 {
+            assert!(Instant::now() < deadline, "{:?}", live.snapshot());
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(live.snapshot().last_error.is_some());
+        let host = Host::start_with("band", port, 0.0);
+        seen.wait(Duration::from_secs(3), |e| {
+            matches!(e, LiveEvent::Connected(_)).then_some(())
+        })
+        .await;
+        let snap = live.snapshot();
+        assert_eq!(snap.connect_failures, 0);
+        assert_eq!(snap.last_error, None);
+        host.stop();
     });
 }

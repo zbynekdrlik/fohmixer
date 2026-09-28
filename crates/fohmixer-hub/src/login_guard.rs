@@ -519,6 +519,41 @@ mod tests {
     }
 
     #[test]
+    fn a_new_client_evicts_nobody_while_there_is_room() {
+        let guard = LoginGuard::new();
+        let t0 = Instant::now();
+        let a = lan(10);
+        for i in 0..4 {
+            guard.record_failure(a, t0 + Duration::from_millis(i));
+        }
+        guard.record_failure(lan(11), t0 + secs(1));
+        let inner = guard.inner.lock().unwrap();
+        assert!(inner.streaks.contains_key(&a), "A's streak stays");
+        assert!(inner.clients.contains_key(&a), "A's window stays");
+        assert_eq!(inner.streaks.len(), 2);
+        assert_eq!(inner.clients.len(), 2);
+        drop(inner);
+        assert!(guard.check(a, t0 + secs(1)).is_err(), "A is still delayed");
+    }
+
+    #[test]
+    fn a_known_client_evicts_nobody_when_the_table_is_full() {
+        let guard = LoginGuard::new();
+        let t0 = Instant::now();
+        let client = |i: u32| IpAddr::V4(Ipv4Addr::from(0x0a00_0000 + i));
+        for i in 0..(MAX_TRACKED as u32) {
+            guard.record_failure(client(i), t0 + Duration::from_millis(u64::from(i)));
+        }
+        let newest = client(MAX_TRACKED as u32 - 1);
+        guard.record_failure(newest, t0 + secs(10));
+        let inner = guard.inner.lock().unwrap();
+        assert_eq!(inner.streaks.len(), MAX_TRACKED);
+        assert_eq!(inner.clients.len(), MAX_TRACKED);
+        assert!(inner.streaks.contains_key(&client(0)), "the oldest stays");
+        assert!(inner.clients.contains_key(&client(0)), "the oldest stays");
+    }
+
+    #[test]
     fn tracked_clients_are_bounded() {
         let guard = LoginGuard::new();
         let t0 = Instant::now();

@@ -1,8 +1,7 @@
 //! Auth end to end (S3 plan, Task 6): the API and the WebSocket need a
 //! token; `POST /api/auth` with the provisioned engineer PIN gives one; a
 //! wrong PIN is answered 401 (the spacing after three is in `auth.rs`'s
-//! tests).
-#![cfg(unix)]
+//! tests). No Live host: this runs on Windows too.
 
 mod support;
 

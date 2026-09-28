@@ -1,8 +1,7 @@
 //! The served layout end to end (S3 plan, Task 4): `/api/layout` serves the
 //! file, a valid replacement bumps the revision, is pushed to the clients
 //! and backed up; an invalid one keeps the last good layout served and
-//! `/api/status` says why.
-#![cfg(unix)]
+//! `/api/status` says why. No Live host: these run on Windows too.
 
 mod support;
 
@@ -126,9 +125,20 @@ fn without_a_layout_file_nothing_is_served_and_the_status_says_why() {
             body["message"].as_str().unwrap().contains("layout.json"),
             "{body}"
         );
-        // An instance nothing listens for is simply offline.
+        // An instance nothing listens for is simply offline, and the status
+        // says why and how often it was tried.
         assert!(status.instances.iter().all(|i| !i.online));
         assert_eq!(status.instances[0].port, 1);
+        let tried = hub
+            .status_until(Duration::from_secs(10), |s| {
+                s.instances.iter().all(|i| i.connect_failures >= 1)
+            })
+            .await;
+        assert!(
+            tried.instances.iter().all(|i| i.last_error.is_some()),
+            "{tried:?}"
+        );
+        assert!(tried.layout.unresolved.is_empty(), "nothing to check");
         hub.stop().await;
     });
 }

@@ -187,6 +187,10 @@ mod tests {
         }
     }
 
+    fn put_instance(outbox: &Outbox, online: bool) {
+        outbox.instance("band", online, instance(online));
+    }
+
     #[test]
     fn values_keep_only_the_latest_per_subscription() {
         let outbox = Outbox::new();
@@ -207,23 +211,22 @@ mod tests {
     }
 
     #[test]
-    fn the_write_order_is_replies_states_hub_layout_values() {
+    fn the_write_order_is_replies_and_states_hub_layout_values() {
         let outbox = Outbox::new();
         outbox.value(ValueItem::value("a", json!(1), None));
         outbox.layout(1);
         outbox.layout(2);
         outbox.hub("stage_aut", json!(false));
         outbox.hub("stage_aut", json!(true));
-        outbox.instance("band", instance(false));
-        outbox.instance("band", instance(true));
         outbox.reply(result("1"));
+        put_instance(&outbox, true);
         outbox.reply(result("2"));
         assert_eq!(
             outbox.take().unwrap(),
             vec![
                 result("1"),
-                result("2"),
                 instance(true),
+                result("2"),
                 ServerMsg::Hub {
                     key: "stage_aut".into(),
                     value: json!(true)
@@ -234,6 +237,82 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn an_instance_going_offline_is_seen_and_drops_its_old_values() {
+        let outbox = Outbox::new();
+        outbox.value(ValueItem::value(
+            "band|live_set|tempo|false",
+            json!(120),
+            None,
+        ));
+        outbox.value(ValueItem::value(
+            "master|live_set|tempo|false",
+            json!(90),
+            None,
+        ));
+        outbox.value(ValueItem::value(
+            "bandx|live_set|tempo|false",
+            json!(1),
+            None,
+        ));
+        // Offline and back before the writer ran: both are written, in
+        // order, and the old session's values of `band` are gone.
+        put_instance(&outbox, false);
+        put_instance(&outbox, true);
+        outbox.reply(result("after"));
+        outbox.value(ValueItem::value(
+            "band|live_set|tempo|false",
+            json!(100),
+            None,
+        ));
+        assert_eq!(
+            outbox.take().unwrap(),
+            vec![
+                instance(false),
+                instance(true),
+                result("after"),
+                ServerMsg::Values {
+                    items: vec![
+                        ValueItem::value("band|live_set|tempo|false", json!(100), None),
+                        ValueItem::value("bandx|live_set|tempo|false", json!(1), None),
+                        ValueItem::value("master|live_set|tempo|false", json!(90), None),
+                    ]
+                },
+            ]
+        );
+        // Coming online keeps what waits.
+        outbox.value(ValueItem::value(
+            "band|live_set|tempo|false",
+            json!(101),
+            None,
+        ));
+        put_instance(&outbox, true);
+        assert_eq!(
+            outbox.take().unwrap(),
+            vec![
+                instance(true),
+                ServerMsg::Values {
+                    items: vec![ValueItem::value(
+                        "band|live_set|tempo|false",
+                        json!(101),
+                        None
+                    )]
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn too_many_states_close_the_outbox_too() {
+        let outbox = Outbox::new();
+        for i in 0..MAX_REPLIES {
+            put_instance(&outbox, i % 2 == 0);
+        }
+        assert!(!outbox.is_closed());
+        put_instance(&outbox, true);
+        assert!(outbox.is_closed());
     }
 
     #[test]

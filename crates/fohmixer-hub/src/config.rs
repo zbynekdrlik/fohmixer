@@ -189,6 +189,7 @@ mod tests {
     fn every_key_is_read() {
         let config = Config::parse(
             "http_port = 9000\nlayout = \"surface.json\"\nlayout_poll_ms = 100\n\
+             allowed_hosts = [\"foh.local\"]\n\
              [[instances]]\nname = \"band\"\nport = 40001\n",
             &data(),
         )
@@ -196,6 +197,7 @@ mod tests {
         assert_eq!(config.http_port, 9000);
         assert_eq!(config.layout_path(), PathBuf::from("/data/surface.json"));
         assert_eq!(config.layout_poll_ms, 100);
+        assert_eq!(config.allowed_hosts, vec!["foh.local".to_string()]);
         assert_eq!(config.instances.len(), 1);
         assert!(config.has_instance("band"));
         assert!(!config.has_instance("master"));
@@ -214,6 +216,13 @@ mod tests {
             ("[[instances]]\nname = \"a|b\"\nport = 1\n", "not empty"),
             ("[[instances]]\nname = \" a\"\nport = 1\n", "not empty"),
             ("[[instances]]\nname = \"a\"\nport = 0\n", "port 0"),
+            (
+                "[[instances]]\nname = \"a\"\nport = 1\n[[instances]]\nname = \"b\"\nport = 1\n",
+                "port 1 is another instance's",
+            ),
+            ("allowed_hosts = [\"\"]\n", "without a port"),
+            ("allowed_hosts = [\"foh:8480\"]\n", "without a port"),
+            ("allowed_hosts = [\"foh local\"]\n", "without a port"),
             ("layout_poll_ms = 49\n", "below 50"),
             ("http_port = \"x\"\n", "invalid type"),
             ("colour = 1\n", "unknown field"),
@@ -222,6 +231,13 @@ mod tests {
             assert!(error.contains(message), "{text}: {error}");
         }
         assert!(Config::parse("layout_poll_ms = 50\n", &data()).is_ok());
+        assert!(
+            Config::parse(
+                "[[instances]]\nname = \"a\"\nport = 1\n[[instances]]\nname = \"b\"\nport = 2\n",
+                &data()
+            )
+            .is_ok()
+        );
     }
 
     #[test]

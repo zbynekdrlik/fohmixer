@@ -411,6 +411,73 @@ fn subbed(key: &str, cached: Option<&Cached>) -> ServerMsg {
 mod tests {
     use super::*;
 
+    fn router(dir: &std::path::Path) -> Router {
+        Router::new(BTreeMap::new(), false, dir.to_path_buf())
+    }
+
+    fn attach(router: &mut Router, client: ClientId) -> Arc<Outbox> {
+        let outbox = Arc::new(Outbox::new());
+        router.handle(RouterMsg::Attach {
+            client,
+            outbox: Arc::clone(&outbox),
+        });
+        outbox
+    }
+
+    fn status(router: &mut Router) -> RouterStatus {
+        let (reply, mut answer) = oneshot::channel();
+        assert!(router.handle(RouterMsg::Status { reply }));
+        answer.try_recv().expect("answered at once")
+    }
+
+    #[test]
+    fn a_client_gets_the_layout_revision_only_once_one_is_served() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut router = router(dir.path());
+        let first = attach(&mut router, 1);
+        assert_eq!(
+            first.take().unwrap(),
+            vec![ServerMsg::Hub {
+                key: HUB_STAGE_AUT.into(),
+                value: json!(false)
+            }],
+            "no layout yet: no revision"
+        );
+        router.handle(RouterMsg::Layout {
+            rev: 1,
+            stage: None,
+            targets: BTreeMap::new(),
+        });
+        assert_eq!(first.take().unwrap(), vec![ServerMsg::Layout { rev: 1 }]);
+        let second = attach(&mut router, 2);
+        assert!(
+            second
+                .take()
+                .unwrap()
+                .contains(&ServerMsg::Layout { rev: 1 })
+        );
+        let now = status(&mut router);
+        assert_eq!(now.clients, 2);
+        assert!(now.unresolved.is_empty());
+        router.handle(RouterMsg::Detach { client: 1 });
+        assert_eq!(status(&mut router).clients, 1);
+        assert!(!router.handle(RouterMsg::Stop));
+    }
+
+    #[test]
+    fn a_stage_write_failure_says_why() {
+        assert_eq!(write_failure(&Ok(vec![json!({"ok": true})])), None);
+        assert_eq!(
+            write_failure(&Ok(vec![json!({"ok": false})])),
+            Some(r#"[{"ok":false}]"#.to_string())
+        );
+        assert_eq!(write_failure(&Ok(vec![])), Some("[]".to_string()));
+        assert_eq!(
+            write_failure(&Err(LiveError::Offline)),
+            Some("instance offline".to_string())
+        );
+    }
+
     #[test]
     fn subbed_carries_the_cached_state() {
         assert_eq!(

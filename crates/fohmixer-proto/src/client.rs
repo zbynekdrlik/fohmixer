@@ -453,10 +453,17 @@ mod tests {
                 main_tick_age_ms: Some(4.5),
                 subscriptions: 2,
                 listeners: 4,
+                connect_failures: 0,
+                last_error: None,
             }],
             layout: LayoutStatus {
                 rev: 1,
                 error: None,
+                unresolved: vec![Unresolved {
+                    instance: "band".into(),
+                    target: "live_set tracks[name=Nobody #]".into(),
+                    error: "not found: tracks[name=Nobody #]".into(),
+                }],
             },
             stage_aut: StageAutStatus {
                 on: true,
@@ -467,6 +474,12 @@ mod tests {
         let json = serde_json::to_value(&status).unwrap();
         assert_eq!(json["instances"][0]["listeners"], 4);
         assert_eq!(json["stage_aut"]["writes"], 3);
+        assert_eq!(json["instances"][0]["connect_failures"], 0);
+        assert_eq!(
+            json["layout"]["unresolved"][0],
+            json!({"instance": "band", "target": "live_set tracks[name=Nobody #]",
+                   "error": "not found: tracks[name=Nobody #]"})
+        );
         assert_eq!(serde_json::from_value::<HubStatus>(json).unwrap(), status);
         let auth = AuthResponse {
             token: "t".into(),

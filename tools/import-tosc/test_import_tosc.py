@@ -1,10 +1,10 @@
 """The TouchOSC import tool on its synthetic fixtures (S3 plan, Task 7).
 
 The fixtures are built into a temporary folder from ``build_fixtures.py``.
-One test writes ``fixtures/expected-layout.json`` (the import of the
-fixtures); CI checks that file is unchanged (``git diff --exit-code``) and
-the Rust test ``fohmixer-proto``'s ``imported_layout`` parses and validates
-it, so the layout the tool writes is the one the hub serves.
+One test compares ``fixtures/expected-layout.json`` with the import of the
+fixtures (``FOHMIXER_REGENERATE=1`` rewrites it after a deliberate change),
+and the Rust test ``fohmixer-proto``'s ``imported_layout`` parses and
+validates it, so the layout the tool writes is the one the hub serves.
 """
 
 import json
@@ -359,13 +359,15 @@ class ImportTest(unittest.TestCase):
     # --- output ---
 
     def test_the_expected_layout_file_is_this_import(self):
-        # Rewrites the committed file; CI fails on any difference
-        # (git diff --exit-code), and the Rust test validates the file.
+        # The committed file is today's import (the Rust schema test reads
+        # it). After a deliberate change to the import, regenerate it with
+        # FOHMIXER_REGENERATE=1 and commit the result.
         text = import_tosc.dumps(self.layout)
-        os.makedirs(os.path.dirname(EXPECTED), exist_ok=True)
-        with open(EXPECTED, "w", encoding="utf-8") as f:
-            f.write(text)
-        self.assertEqual(json.loads(text), self.layout)
+        if os.environ.get("FOHMIXER_REGENERATE") == "1":
+            with open(EXPECTED, "w", encoding="utf-8") as f:
+                f.write(text)
+        with open(EXPECTED, encoding="utf-8") as f:
+            self.assertEqual(f.read(), text)
 
     def test_every_frame_is_inside_the_canvas(self):
         def check(frame, where):

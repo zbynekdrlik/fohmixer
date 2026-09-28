@@ -258,6 +258,18 @@ pub async fn login(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn warnings_come_only_when_something_is_wrong() {
+        assert!(pin_warning(false).unwrap().contains("pin set-engineer"));
+        assert_eq!(pin_warning(true), None);
+        assert!(
+            failure_note(FailureEffect::GlobalBudgetExhausted)
+                .unwrap()
+                .contains("hourly budget")
+        );
+        assert_eq!(failure_note(FailureEffect::Counted), None);
+    }
     use crate::pin_hash::PEPPER_LEN;
     use axum::body::Body;
     use axum::extract::connect_info::MockConnectInfo;

@@ -405,6 +405,53 @@ mod tests {
     use super::*;
 
     #[test]
+    fn only_the_first_failure_of_an_outage_warns() {
+        assert!(first_of_outage(1));
+        assert!(!first_of_outage(0));
+        assert!(!first_of_outage(2));
+    }
+
+    #[tokio::test]
+    async fn a_request_while_connecting_is_refused_at_once() {
+        // A port that accepts TCP but never answers the WebSocket handshake:
+        // the task waits CONNECT_TIMEOUT for it.
+        let silent = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = silent.local_addr().unwrap().port();
+        let events: Events = Arc::new(|_: &str, _: LiveEvent| {});
+        let (handle, _task) = LiveHandle::spawn(
+            &InstanceCfg {
+                name: "band".into(),
+                port,
+            },
+            events,
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let started = Instant::now();
+        let refused = handle
+            .call(vec![
+                json!({"target": "live_set", "name": "get_prop", "args": {"prop": "tempo"}}),
+            ])
+            .await;
+        assert_eq!(refused, Err(LiveError::Offline));
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "refused at once, not queued for the next session: {:?}",
+            started.elapsed()
+        );
+        // The attempt times out and is counted with its reason.
+        let deadline = Instant::now() + CONNECT_TIMEOUT + Duration::from_secs(2);
+        while handle.snapshot().connect_failures == 0 {
+            assert!(Instant::now() < deadline, "{:?}", handle.snapshot());
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert_eq!(
+            handle.snapshot().last_error.as_deref(),
+            Some("connection attempt timed out")
+        );
+        drop(silent);
+    }
+
+    #[test]
     fn errors_read_well() {
         assert_eq!(LiveError::Offline.to_string(), "instance offline");
         assert_eq!(LiveError::Timeout.to_string(), "no result within 3 s");
@@ -444,7 +491,17 @@ mod tests {
             started.elapsed() < Duration::from_secs(1),
             "refused at once"
         );
-        assert_eq!(handle.snapshot(), Snapshot::default());
+        assert!(!handle.snapshot().online);
+        // Every refused attempt is counted, with its reason (250 ms, 500 ms…
+        // apart: a few within a second).
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while handle.snapshot().connect_failures < 2 {
+            assert!(Instant::now() < deadline, "{:?}", handle.snapshot());
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let snap = handle.snapshot();
+        assert!((2..=10).contains(&snap.connect_failures), "{snap:?}");
+        assert!(snap.last_error.is_some(), "{snap:?}");
         assert!(
             seen.lock().unwrap().is_empty(),
             "never connected: no events"

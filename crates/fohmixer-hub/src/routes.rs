@@ -392,6 +392,69 @@ mod tests {
     }
 
     #[test]
+    fn a_host_is_an_ip_address_localhost_or_a_configured_name() {
+        let allowed = vec!["foh.local".to_string()];
+        for host in [
+            "192.168.1.20:8480",
+            "192.168.1.20",
+            "127.0.0.1:8480",
+            "localhost:8480",
+            "LocalHost",
+            "[::1]:8480",
+            "[fe80::1]",
+            "foh.local:8480",
+            "FOH.local",
+        ] {
+            assert!(host_allowed(Some(host), &allowed), "{host}");
+        }
+        for host in [
+            "evil.example",
+            "evil.example:8480",
+            "foh.local.evil.example",
+            "192.168.1.20.evil.example",
+            "[not-an-address]:8480",
+            "[::1",
+            "",
+        ] {
+            assert!(!host_allowed(Some(host), &allowed), "{host}");
+        }
+        assert!(!host_allowed(Some("foh.local"), &[]), "not configured");
+        assert!(host_allowed(None, &[]), "no Host: not a browser");
+    }
+
+    #[tokio::test]
+    async fn a_request_for_a_foreign_host_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = crate::config::Config::defaults(dir.path());
+        config.instances.clear();
+        config.allowed_hosts = vec!["foh.local".into()];
+        let hub = crate::Hub::start(config).unwrap();
+        for (host, code) in [
+            ("evil.example:8480", StatusCode::MISDIRECTED_REQUEST),
+            ("192.168.1.20:8480", StatusCode::OK),
+            ("foh.local:8480", StatusCode::OK),
+        ] {
+            let response = crate::app_router(hub.clone())
+                .oneshot(
+                    Request::get("/api/version")
+                        .header(header::HOST, host)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), code, "{host}");
+            assert_eq!(header_of(&response, "x-frame-options"), "DENY", "{host}");
+            if code == StatusCode::MISDIRECTED_REQUEST {
+                let body: serde_json::Value =
+                    serde_json::from_slice(&body_bytes(response).await).unwrap();
+                assert_eq!(body["code"], "UNKNOWN_HOST");
+            }
+        }
+        hub.stop();
+    }
+
+    #[test]
     fn content_hash_detection_hashed_files() {
         assert!(has_content_hash("fohmixer-ui-2b1f3c4d5e6f7a8b.js"));
         assert!(has_content_hash("fohmixer-ui-2b1f3c4d5e6f7a8b_bg.wasm"));

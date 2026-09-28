@@ -129,6 +129,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn only_a_missing_state_file_is_no_problem() {
+        assert_eq!(
+            read_problem(&io::Error::from(io::ErrorKind::NotFound)),
+            None
+        );
+        assert_eq!(
+            read_problem(&io::Error::other("disk on fire")),
+            Some("disk on fire".to_string())
+        );
+    }
+
+    #[test]
     fn the_rule_mutes_while_playing_and_only_with_the_flag() {
         assert_eq!(stage_rule(true, true), Some(true));
         assert_eq!(stage_rule(true, false), Some(false));

@@ -351,6 +351,81 @@ mod tests {
         let error = check(&serde_json::to_vec(&v).unwrap(), &["band".into()]).unwrap_err();
         assert_eq!(error, "layout is invalid: schema: schema 9 is not 1");
         assert!(check(&layout_json("X", "band"), &["band".into()]).is_ok());
+        // A group to unfold on an instance the hub does not have.
+        let mut v: serde_json::Value = serde_json::from_slice(&layout_json("X", "band")).unwrap();
+        v["config"] = json!({"unfold": [{"instance": "drums", "name": "Kit grp#"}]});
+        let error = check(&serde_json::to_vec(&v).unwrap(), &["band".into()]).unwrap_err();
+        assert_eq!(error, r#"layout is invalid: unknown instance "drums""#);
+    }
+
+    fn backup_of(dir: &Path, stamp: &str, text: &[u8]) {
+        let backups = dir.join(BACKUP_DIR);
+        std::fs::create_dir_all(&backups).unwrap();
+        std::fs::write(backups.join(format!("layout.json.{stamp}")), text).unwrap();
+    }
+
+    #[test]
+    fn a_bad_file_at_start_serves_the_newest_good_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        backup_of(
+            dir.path(),
+            "20260101T000000.000Z",
+            &layout_json("Old", "band"),
+        );
+        backup_of(
+            dir.path(),
+            "20260102T000000.000Z",
+            &layout_json("New", "band"),
+        );
+        // The newest binds an instance this hub no longer has: skipped.
+        backup_of(
+            dir.path(),
+            "20260103T000000.000Z",
+            &layout_json("Drums", "drums"),
+        );
+        write(dir.path(), b"{\"schema\": 1, \"canvas\":");
+        let store = store(dir.path());
+        assert_eq!(store.poll(), Some(1));
+        assert_eq!(title(&store), "New");
+        let error = store.error().unwrap();
+        assert!(error.starts_with("layout does not parse: "), "{error}");
+        assert_eq!(store.poll(), None, "tried once");
+        // The file fixed: served as usual.
+        write(dir.path(), &layout_json("Fixed", "band"));
+        assert_eq!(store.poll(), Some(2));
+        assert_eq!(title(&store), "Fixed");
+        assert_eq!(store.error(), None);
+    }
+
+    #[test]
+    fn a_missing_file_at_start_serves_the_newest_good_backup_too() {
+        let dir = tempfile::tempdir().unwrap();
+        backup_of(
+            dir.path(),
+            "20260101T000000.000Z",
+            &layout_json("Kept", "band"),
+        );
+        let store = store(dir.path());
+        assert_eq!(store.poll(), Some(1));
+        assert_eq!(title(&store), "Kept");
+        assert!(store.error().unwrap().contains("layout.json"));
+        // The file back with that content: nothing new, the error goes.
+        write(dir.path(), &layout_json("Kept", "band"));
+        assert_eq!(store.poll(), None);
+        assert_eq!(store.error(), None);
+        assert_eq!(store.current().0, 1);
+        assert_eq!(store.backups().len(), 1);
+    }
+
+    #[test]
+    fn without_a_good_backup_nothing_is_served() {
+        let dir = tempfile::tempdir().unwrap();
+        backup_of(dir.path(), "20260101T000000.000Z", b"not json");
+        write(dir.path(), b"not json either");
+        let store = store(dir.path());
+        assert_eq!(store.poll(), None);
+        assert!(store.current().1.is_none());
+        assert!(store.error().is_some());
     }
 
     #[test]
@@ -367,10 +442,18 @@ mod tests {
             .unwrap();
         }
         std::fs::write(backups.join("other.txt"), b"not a backup").unwrap();
+        // Neither is a backup: a name without the time, a time-like name of
+        // another file.
+        std::fs::write(backups.join("layout.json.bak"), b"not a backup").unwrap();
+        std::fs::write(backups.join("zzZ"), b"not a backup").unwrap();
         write(dir.path(), &layout_json("FOH", "band"));
         assert_eq!(store.poll(), Some(1));
         let kept = store.backups();
         assert_eq!(kept.len(), MAX_BACKUPS);
+        assert!(!kept.contains(&"layout.json.bak".to_string()));
+        assert!(!kept.contains(&"zzZ".to_string()));
+        assert!(backups.join("layout.json.bak").exists());
+        assert!(backups.join("zzZ").exists());
         assert!(!kept.contains(&"layout.json.202001000T000000.000Z".to_string()));
         assert!(kept.contains(&"layout.json.202001001T000000.000Z".to_string()));
         assert!(kept.last().unwrap().starts_with("layout.json.20"));
