@@ -10,9 +10,13 @@
          are same-origin, so SRI adds nothing here. -->
     <link data-trunk rel="rust" href="Cargo.toml" data-wasm-opt="0" data-integrity="none" />
     <link data-trunk rel="copy-file" href="manifest.json" />
+    <link data-trunk rel="copy-file" href="sw.js" />
     <link data-trunk rel="copy-dir" href="icons" />
     <link rel="icon" type="image/png" href="/icons/icon-192.png" />
-    <link rel="manifest" href="/manifest.json" />
+    <!-- use-credentials: behind Cloudflare Access (the tunnel, #17) the
+         manifest's fetch must carry the Access cookie or it gets the login
+         page instead. -->
+    <link rel="manifest" href="/manifest.json" crossorigin="use-credentials" />
     <link rel="apple-touch-icon" href="/icons/icon-192.png" />
     <meta name="theme-color" content="#000000" />
     <meta name="mobile-web-app-capable" content="yes" />
@@ -62,7 +66,58 @@
         </div>
     </div>
     <script>
-    // No service worker (spec R5: v1 is LAN-only without one).
+    // Remote access (#17, spec R5): on the https origin (the public name, on
+    // the LAN or through the tunnel) the page is an installable PWA — a
+    // network-only service worker (sw.js: never a cached answer, everything
+    // sits behind Cloudflare Access on the internet path) — and holds a
+    // Screen Wake Lock while it is visible, taken again whenever the page
+    // comes back (the system drops it when the page is hidden). The
+    // emergency plain-http path (http://<PC>:8480) stays without either;
+    // http://127.0.0.1 is a secure context too, so the test is the scheme.
+    // data-pwa / data-wake-lock on <html> say what happened (E2E, support).
+    (function () {
+        var root = document.documentElement;
+        if (location.protocol !== 'https:') {
+            root.dataset.pwa = 'off';
+            return;
+        }
+        root.dataset.pwa = 'on';
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('/sw.js', { scope: '/' }).then(function () {
+                root.dataset.sw = 'registered';
+            }, function (error) {
+                root.dataset.sw = 'failed';
+                console.log('[pwa] service worker not registered: ' + error);
+            });
+        } else {
+            root.dataset.sw = 'unsupported';
+        }
+        var lock = null;
+        var asking = false;
+        function acquire() {
+            if (!('wakeLock' in navigator)) {
+                root.dataset.wakeLock = 'unsupported';
+                return;
+            }
+            if (document.visibilityState !== 'visible' || lock !== null || asking) return;
+            asking = true;
+            navigator.wakeLock.request('screen').then(function (sentinel) {
+                asking = false;
+                lock = sentinel;
+                root.dataset.wakeLock = 'held';
+                sentinel.addEventListener('release', function () {
+                    lock = null;
+                    root.dataset.wakeLock = 'released';
+                });
+            }, function (error) {
+                asking = false;
+                root.dataset.wakeLock = 'denied';
+                console.log('[pwa] wake lock not granted: ' + error);
+            });
+        }
+        document.addEventListener('visibilitychange', acquire);
+        acquire();
+    })();
     // The app's code did not arrive (the loader in Trunk.toml calls this: the
     // WiFi dropped, or the page was left while it loaded). The shell says so
     // and offers a reload instead of spinning forever; a log line, not an

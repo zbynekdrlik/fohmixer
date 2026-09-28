@@ -44,12 +44,37 @@ thiserror = "2.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+# Remote access (#17): the HTTPS listener (axum-server's rustls acceptor),
+# rustls on ring (no C toolchain for the PC build, as iemmixer), certificates
+# from Let's Encrypt by DNS-01 (instant-acme; rcgen makes the key and the
+# CSR), their expiry and names read back (x509-parser), and the hub's own
+# HTTPS client (the Access JWKS, the Cloudflare DNS API, cloudflared's
+# readiness) on the hyper stack instant-acme already brings.
+axum-server = { version = "0.8", default-features = false, features = ["tls-rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+instant-acme = { version = "0.8", default-features = false, features = ["hyper-rustls", "ring", "rcgen"] }
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["client-legacy", "http1", "tokio"] }
+hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "ring", "rustls-platform-verifier", "tls12", "logging"] }
+http-body-util = "0.1"
+bytes = "1"
+x509-parser = "0.18"
+
 # The PIN pepper is DPAPI-protected on the PC
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Cryptography"] }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
-http-body-util = "0.1"
+# Test doubles of #17: a test CA signs the ACME double's CSRs (rcgen); ring
+# checks the double's JWS signatures and key thumbprints and reads the
+# public half of the test RSA keys (made by `openssl genrsa`: the RSA crate
+# carries an unfixed advisory) that sign test Access JWTs
+rcgen = { version = "0.14", default-features = false, features = ["pem", "ring", "x509-parser"] }
+ring = "0.17"
+# The test certificates' validity (rcgen's time type) and a TLS client for
+# the HTTPS listener's tests (the name is sent as SNI; no DNS)
+time = "0.3"
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
 tokio = { version = "1", features = ["io-util", "process"] }
 tempfile = "3"

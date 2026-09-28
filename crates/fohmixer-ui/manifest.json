@@ -1,4 +1,5 @@
 {
+  "id": "/",
   "name": "fohmixer",
   "short_name": "fohmixer",
   "description": "Touch FOH mixer for the two Ableton Live instances",

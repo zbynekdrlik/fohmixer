@@ -1,9 +1,11 @@
 """The E2E harness against real ``sim/host.py`` processes (no hub: its binary is
 built only in the e2e job, where the Playwright suite drives the harness)."""
 
+import base64
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import threading
@@ -110,6 +112,108 @@ class HarnessTest(unittest.TestCase):
             '[[instances]]\nname = "band"\nport = 1\n'
             '[[instances]]\nname = "master"\nport = 2\n',
         )
+
+    def test_the_remote_tables_of_the_hub_config(self):
+        remote = {
+            "name": "foh.e2e.test",
+            "https_port": 8443,
+            "team": "team.example.com",
+            "aud": "aud-1",
+            "jwks_url": "http://127.0.0.1:39190/cdn-cgi/access/certs",
+        }
+        text = harness.hub_config(8480, 1, 2, remote)
+        self.assertTrue(text.startswith(harness.hub_config(8480, 1, 2)))
+        self.assertTrue(
+            text.endswith(
+                '[tls]\nname = "foh.e2e.test"\nport = 8443\n'
+                '[access]\nteam_domain = "team.example.com"\naud = ["aud-1"]\n'
+                'jwks_url = "http://127.0.0.1:39190/cdn-cgi/access/certs"\n'
+            ),
+            text,
+        )
+        only_tls = harness.hub_config(8480, 1, 2, dict(remote, team=None))
+        self.assertIn("[tls]", only_tls)
+        self.assertNotIn("[access]", only_tls)
+        self.assertEqual(
+            harness.hub_config(8480, 1, 2, {"name": None}), harness.hub_config(8480, 1, 2)
+        )
+
+    def test_the_access_key_set_is_the_keys_public_half(self):
+        key = os.path.join(self.data, "access.pem")
+        subprocess.run(["openssl", "genrsa", "-out", key, "2048"], check=True, capture_output=True)
+        jwks = harness.access_jwks(key)
+        (jwk,) = jwks["keys"]
+        self.assertEqual(
+            (jwk["kid"], jwk["kty"], jwk["alg"], jwk["e"]), ("e2e-kid", "RSA", "RS256", "AQAB")
+        )
+        modulus = base64.urlsafe_b64decode(jwk["n"] + "=" * (-len(jwk["n"]) % 4))
+        self.assertEqual(len(modulus), 256)
+        text = subprocess.run(
+            ["openssl", "rsa", "-in", key, "-noout", "-modulus"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        self.assertEqual(modulus.hex().upper(), text.strip().split("=")[1])
+        self.assertEqual(harness.b64url(b"\x01\x00\x01"), "AQAB")
+        # The harness serves it at the team's key-set path, else 404.
+        self.assertEqual(self.harness.handle("GET", harness.CERTS_PATH, {})[0], 404)
+        self.harness.jwks = jwks
+        try:
+            self.assertEqual(self.harness.handle("GET", harness.CERTS_PATH, {}), (200, jwks))
+        finally:
+            self.harness.jwks = None
+
+    def test_a_public_name_puts_the_certificate_into_the_hubs_store(self):
+        data = tempfile.mkdtemp(prefix="fohmixer-harness-remote-")
+        cert = os.path.join(data, "leaf.pem")
+        key = os.path.join(data, "leaf.key")
+        with open(cert, "w", encoding="utf-8") as f:
+            f.write("CERT")
+        with open(key, "w", encoding="utf-8") as f:
+            f.write("KEY")
+        args = harness.parse_args(
+            [
+                "--data",
+                os.path.join(data, "hub"),
+                "--layout",
+                LAYOUT,
+                "--band-port",
+                "0",
+                "--master-port",
+                "0",
+                "--meters-hz",
+                "0",
+                "--control-port",
+                "39999",
+                "--public-name",
+                "foh.e2e.test",
+                "--https-port",
+                "9443",
+                "--tls-cert",
+                cert,
+                "--tls-key",
+                key,
+                "--access-team",
+                "team.example.com",
+                "--access-aud",
+                "aud-1",
+            ]
+        )
+        remote = harness.Harness(args)
+        try:
+            tls = os.path.join(data, "hub", "tls")
+            with open(os.path.join(tls, "cert.pem"), encoding="utf-8") as f:
+                self.assertEqual(f.read(), "CERT")
+            with open(os.path.join(tls, "key.pem"), encoding="utf-8") as f:
+                self.assertEqual(f.read(), "KEY")
+            with open(os.path.join(data, "hub", "fohmixer-hub.toml"), encoding="utf-8") as f:
+                text = f.read()
+            self.assertIn('[tls]\nname = "foh.e2e.test"\nport = 9443\n', text)
+            self.assertIn('jwks_url = "http://127.0.0.1:39999/cdn-cgi/access/certs"\n', text)
+        finally:
+            remote.stop()
+            shutil.rmtree(data, ignore_errors=True)
 
     def test_which_lines_wait_for_an_answer(self):
         self.assertEqual(harness.expected_answer('rename "a" "b"'), "RENAMED")

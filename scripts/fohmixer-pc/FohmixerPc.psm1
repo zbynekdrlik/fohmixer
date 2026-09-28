@@ -23,7 +23,7 @@ $script:HubTask = 'fohmixer-hub'
 $script:StopTask = 'fohmixer-hub-stop'
 # What a bundle holds besides SHA256SUMS (design note section 2).
 $script:BundleFiles = @('VERSION', 'fohmixer-hub.exe', 'Install-Fohmixer.ps1', 'FohmixerPc.psm1', 'FohmixerLivePrefs.ps1',
-    'Start-FohmixerHub.ps1', 'Stop-FohmixerHub.ps1',
+    'FohmixerFirewall.ps1', 'FohmixerRemote.ps1', 'Start-FohmixerHub.ps1', 'Stop-FohmixerHub.ps1',
     'FohMixer/__init__.py', 'FohMixer/Config.py', 'FohMixer/version.py')
 # A SemVer version that is also a safe folder name (no trailing dot, no "..").
 $script:SemVer = '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?\z'
@@ -31,6 +31,12 @@ $script:SemVer = '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z
 # The check of Live's User Library setting (Get-FohLivePrefsFile,
 # Get-FohLiveUserLibrary, Test-FohLiveUserLibrary), in a file of its own.
 . (Join-Path $PSScriptRoot 'FohmixerLivePrefs.ps1')
+# The firewall rules (Get-FohFirewallRule, Test-FohFirewallRule,
+# Set-FohFirewallRule), in a file of their own.
+. (Join-Path $PSScriptRoot 'FohmixerFirewall.ps1')
+# Remote access (#17): the public name's toml tables, hosts entry, desktop
+# shortcut, and the tunnel's token and service, in a file of its own.
+. (Join-Path $PSScriptRoot 'FohmixerRemote.ps1')
 
 # Ctrl-Break through another process's console (the hub's graceful stop, as in
 # iemmixer's iem-win console.rs): detach from this process's console, attach to
@@ -444,9 +450,11 @@ function Install-FohAppDir {
 
 function New-FohHubToml {
     # <DataDir>\fohmixer-hub.toml as the hub's config.rs reads it: the HTTP
-    # port, the two instances and the layout file (relative to the data folder).
+    # port, the two instances and the layout file (relative to the data folder),
+    # then $Remote (Get-FohRemoteToml: the remote-access tables, #17).
     # There is no data_dir key: the hub's data folder is FOHMIXER_DATA.
-    param([Parameter(Mandatory)][int]$HttpPort, [Parameter(Mandatory)][int]$BandPort, [Parameter(Mandatory)][int]$MasterPort)
+    param([Parameter(Mandatory)][int]$HttpPort, [Parameter(Mandatory)][int]$BandPort, [Parameter(Mandatory)][int]$MasterPort,
+          [AllowEmptyString()][string]$Remote = '')
     $lines = @(
         '# fohmixer-hub configuration, written by Install-Fohmixer.ps1: run the install again to change it.',
         ('http_port = {0}' -f $HttpPort),
@@ -459,7 +467,32 @@ function New-FohHubToml {
         '[[instances]]',
         'name = "master"',
         ('port = {0}' -f $MasterPort))
-    return (($lines -join "`r`n") + "`r`n")
+    return (($lines -join "`r`n") + "`r`n" + $Remote)
+}
+
+function Test-FohHubToml {
+    # $Text checked as a config by the hub it is for ($Exe: `fohmixer-hub
+    # config check`, config.rs, the one set of rules), before the install
+    # stops the running hub: a config the new hub would refuse never reaches
+    # the data folder (the hub would not start, the emergency path included).
+    # The text goes to a file of its own in $Dir (never inside the bundle's
+    # tree, which becomes app\<version>). Returns the hub's answer; throws
+    # with its reason.
+    param([Parameter(Mandatory)][string]$Exe, [Parameter(Mandatory)][string]$Text, [Parameter(Mandatory)][string]$Dir)
+    $file = Join-Path $Dir ('.check-' + [guid]::NewGuid().ToString('N') + '.toml')
+    [IO.File]::WriteAllText($file, $Text, $script:Utf8NoBom)
+    try {
+        # Continue only around the native call: its stderr is its answer.
+        $said = & {
+            $ErrorActionPreference = 'Continue'
+            (& $Exe config check $file 2>&1 | ForEach-Object { "$_" }) -join ' '
+        }
+        $code = $LASTEXITCODE
+    } finally {
+        Remove-Item -LiteralPath $file
+    }
+    if ($code -ne 0) { throw "the new config is refused by the hub (exit $code): $said" }
+    return $said
 }
 
 function Set-FohConfigText {
@@ -624,58 +657,6 @@ function Test-FohDataDirAcl {
     }
     foreach ($sid in $want.Keys) { if (-not $seen.ContainsKey($sid)) { $bad += "no rule for $sid" } }
     return $bad
-}
-
-# ---- the firewall (spec D7: the LAN only) ----
-
-function Get-FohFirewallRule {
-    # A rule as plain values, or $null.
-    param([Parameter(Mandatory)][string]$Name)
-    $r = Get-NetFirewallRule -Name $Name -ErrorAction SilentlyContinue
-    if ($null -eq $r) { return $null }
-    $pf = $r | Get-NetFirewallPortFilter
-    return [pscustomobject]@{
-        direction = "$($r.Direction)"
-        action = "$($r.Action)"
-        profile = ((@("$($r.Profile)" -split ',\s*') | Sort-Object) -join ',')
-        enabled = "$($r.Enabled)"
-        protocol = "$($pf.Protocol)"
-        ports = ((@($pf.LocalPort) | ForEach-Object { "$_" } | Sort-Object) -join ',')
-    }
-}
-
-function Test-FohFirewallRule {
-    param($Rule, [Parameter(Mandatory)][int]$Port, [Parameter(Mandatory)][string]$Enabled)
-    if ($null -eq $Rule) { return $false }
-    return ($Rule.direction -eq 'Inbound' -and $Rule.action -eq 'Allow' -and $Rule.profile -eq 'Domain,Private' -and
-            $Rule.enabled -eq $Enabled -and $Rule.protocol -eq 'TCP' -and $Rule.ports -eq "$Port")
-}
-
-function Set-FohFirewallRule {
-    # The hub's one inbound rule (iemmixer's pattern): TCP <Port> on the private
-    # and domain profiles, whichever version's exe listens (each has its own
-    # path). Created or repaired, then read back. The readiness poll uses
-    # 127.0.0.1, which no rule blocks: without this the iPads may be refused
-    # while the install looks fine. -Disabled only for the self-test. Returns
-    # whether it changed anything.
-    param([Parameter(Mandatory)][int]$Port, [string]$Name = 'fohmixer-hub-http', [switch]$Disabled)
-    $enabled = 'True'
-    if ($Disabled) { $enabled = 'False' }
-    $before = Get-FohFirewallRule -Name $Name
-    $changed = $false
-    if ($null -eq $before) {
-        New-NetFirewallRule -Name $Name -DisplayName $Name -Description 'fohmixer: the hub on the LAN (Install-Fohmixer.ps1)' `
-            -Direction Inbound -Action Allow -Protocol TCP -LocalPort $Port -Profile Domain, Private -Enabled $enabled | Out-Null
-        $changed = $true
-    } elseif (-not (Test-FohFirewallRule -Rule $before -Port $Port -Enabled $enabled)) {
-        Set-NetFirewallRule -Name $Name -Direction Inbound -Action Allow -Protocol TCP -LocalPort $Port -Profile Domain, Private -Enabled $enabled
-        $changed = $true
-    }
-    $after = Get-FohFirewallRule -Name $Name
-    if (-not (Test-FohFirewallRule -Rule $after -Port $Port -Enabled $enabled)) {
-        throw ('firewall rule {0} reads back as {1}' -f $Name, (ConvertTo-Json -InputObject $after -Compress))
-    }
-    return $changed
 }
 
 # ---- the running hub: find, stop, wait (design note section 3 steps 1 and 7) ----
@@ -994,7 +975,8 @@ function Invoke-FohInstall {
     # <DataDir>\app) before the DACL, the stop and the install. When a step
     # after the stop fails, the hub task is started again. -NoTask (the
     # self-test) leaves out what needs the real accounts: the DACL, the stop,
-    # the tasks, the firewall rule, the start and the readiness poll.
+    # the tasks, the firewall rule, the start and the readiness poll. $Remote
+    # is Resolve-FohRemote's plan (#17), resolved and checked by the caller.
     param(
         [Parameter(Mandatory)][string]$BundleZip,
         [Parameter(Mandatory)][string]$BandUser,
@@ -1010,7 +992,8 @@ function Invoke-FohInstall {
         [string]$MasterAbletonPrefs = '',
         [switch]$NoTask,
         [string]$TaskPath = $script:TaskPath,
-        [int]$ReadyTimeoutSeconds = 20
+        [int]$ReadyTimeoutSeconds = 20,
+        $Remote = $null
     )
     # ---- checks ----
     $BundleZip = Resolve-FohPath $BundleZip
@@ -1042,6 +1025,8 @@ function Invoke-FohInstall {
         $Layout = Resolve-FohPath $Layout
         Test-FohLayoutFile -Path $Layout
     }
+    $remoteToml = ''
+    if ($Remote) { $remoteToml = $Remote.toml }
     if (-not $NoTask) {
         $me = New-Object Security.Principal.WindowsPrincipal ([Security.Principal.WindowsIdentity]::GetCurrent())
         if (-not $me.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
@@ -1056,6 +1041,10 @@ function Invoke-FohInstall {
     Write-Host "fohmixer install: bundle $($unpacked.version) checked against its SHA256SUMS"
     $hubWasRunning = $false
     try {
+        # The new config, checked by the new hub before anything else changes.
+        $tomlText = New-FohHubToml -HttpPort $HttpPort -BandPort $BandPort -MasterPort $MasterPort -Remote $remoteToml
+        $accepted = Test-FohHubToml -Exe (Join-Path $unpacked.dir $script:HubExe) -Text $tomlText -Dir (Split-Path -Parent $unpacked.dir)
+        Write-Host "fohmixer install: the new hub accepts the config ($accepted)"
         if (-not $NoTask) {
             Set-FohDataDirAcl -Path $DataDir -User $BandUser
             # 1. the running hub
@@ -1066,8 +1055,7 @@ function Invoke-FohInstall {
         # 2. app\<version>, current.txt
         $app = Install-FohAppDir -Unpacked $unpacked -DataDir $DataDir
         Write-Host "fohmixer install: $($app.dir) (changed: $($app.changed))"
-        # 3. the config
-        $tomlText = New-FohHubToml -HttpPort $HttpPort -BandPort $BandPort -MasterPort $MasterPort
+        # 3. the config (checked above)
         $toml = Write-FohText -Path (Join-Path $DataDir 'fohmixer-hub.toml') -Text $tomlText
         Write-Host "fohmixer install: fohmixer-hub.toml (changed: $toml)"
         # 4. the layout
@@ -1088,12 +1076,16 @@ function Invoke-FohInstall {
             Write-Host ("fohmixer install: the {0} user's FohMixer (replaced: {1}, Config.py written: {2})" -f $u.instance, $r.replaced, $r.config_written)
             $copies += [pscustomobject]@{ instance = $u.instance; replaced = $r.replaced; config_written = $r.config_written; removed = $r.removed }
         }
+        # 5b. remote access (#17): the name on this PC, the shortcut, the tunnel token
+        $remoteResult = $null
+        if ($Remote) { $remoteResult = Install-FohRemoteFiles -Remote $Remote }
         # 6. the tasks and the firewall rule
         if (-not $NoTask) {
             Register-FohHubTasks -AppDir $app.dir -DataDir $DataDir -User $BandUser -TaskPath $TaskPath
             Write-Host "fohmixer install: tasks $TaskPath$($script:HubTask) and $TaskPath$($script:StopTask) registered and read back"
             $firewall = Set-FohFirewallRule -Port $HttpPort
             Write-Host "fohmixer install: firewall rule fohmixer-hub-http, TCP $HttpPort, Domain and Private (changed: $firewall)"
+            if ($Remote) { Install-FohRemoteServices -Remote $Remote -Result $remoteResult }
             foreach ($n in @(Get-NetConnectionProfile | Where-Object { "$($_.NetworkCategory)" -eq 'Public' })) {
                 $publicNote = 'fohmixer install: the network on {0} is Public; the rule allows Domain and Private only, ' +
                     'so clients there are refused until it is set to Private'
@@ -1129,6 +1121,6 @@ function Invoke-FohInstall {
     }
     return [pscustomobject]@{
         version = $unpacked.version; app = $app.dir; app_changed = $app.changed; config_changed = $toml
-        layout_changed = $layoutChanged; copies = $copies; hub = $answer
+        layout_changed = $layoutChanged; copies = $copies; hub = $answer; remote = $remoteResult
     }
 }

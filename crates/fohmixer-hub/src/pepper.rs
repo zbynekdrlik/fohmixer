@@ -1,7 +1,8 @@
 //! The PIN pepper (copied from iemmixer's `iem-server/src/pepper.rs` @
 //! 22372bc): 32 random bytes created once per data directory.
-//! Windows: DPAPI-protected for the current user (`pepper.dpapi`).
-//! Other platforms are test-only: an owner-only plain file (`pepper.test`).
+//! Windows: DPAPI-protected for the current user (`pepper.dpapi`, sealed by
+//! `sealed.rs`). Other platforms are test-only: an owner-only plain file
+//! (`pepper.test`).
 //! A pepper file that exists but cannot be read is an error — never replaced,
 //! because a new pepper would silently invalidate every PIN hash. For the same
 //! reason a missing pepper is created only while no PIN hash exists (first
@@ -15,12 +16,7 @@ use rand_core::{OsRng, RngCore};
 use crate::pin_hash::PEPPER_LEN;
 use crate::pin_store::{PIN_HASHES_FILE, PinStore};
 
-#[cfg(windows)]
-mod dpapi;
-// Windows protects the pepper with DPAPI directly (no wrappers here: Linux
-// CI cannot build them, so their mutants could never be caught).
-#[cfg(windows)]
-use dpapi::{protect, unprotect};
+use crate::sealed::{seal, unseal};
 
 /// File name of the stored pepper.
 #[cfg(windows)]
@@ -35,7 +31,7 @@ pub fn load_or_create(dir: &Path) -> io::Result<[u8; PEPPER_LEN]> {
     let path = dir.join(PEPPER_FILE);
     match std::fs::read(&path) {
         Ok(stored) => {
-            let raw = unprotect(&stored)?;
+            let raw = unseal(&stored)?;
             <[u8; PEPPER_LEN]>::try_from(raw.as_slice()).map_err(|_| {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -67,25 +63,12 @@ pub fn load_or_create(dir: &Path) -> io::Result<[u8; PEPPER_LEN]> {
             let mut pepper = [0u8; PEPPER_LEN];
             OsRng.fill_bytes(&mut pepper);
             std::fs::create_dir_all(dir)?;
-            crate::secrets::write_new_private(&path, &protect(&pepper)?)?;
+            crate::secrets::write_new_private(&path, &seal(&pepper)?)?;
             tracing::info!(path = %path.display(), "created a new PIN pepper");
             Ok(pepper)
         }
         Err(e) => Err(e),
     }
-}
-
-#[cfg(not(windows))]
-fn protect(data: &[u8]) -> io::Result<Vec<u8>> {
-    tracing::warn!(
-        "PIN pepper stored unprotected: only Windows protects it (DPAPI); other platforms are test-only"
-    );
-    Ok(data.to_vec())
-}
-
-#[cfg(not(windows))]
-fn unprotect(data: &[u8]) -> io::Result<Vec<u8>> {
-    Ok(data.to_vec())
 }
 
 #[cfg(test)]

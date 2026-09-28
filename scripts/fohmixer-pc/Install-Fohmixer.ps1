@@ -30,6 +30,20 @@ to make in Live (it never edits Live's preferences). Then, in order:
      (TCP <HttpPort>, Domain and Private profiles);
   7. starts fohmixer-hub and polls http://127.0.0.1:<HttpPort>/api/version (up
      to 20 s) and prints it.
+Remote access (#17, FohmixerRemote.ps1), only with -PublicName: the toml gets
+[tls] (HTTPS on -HttpsPort), [acme] (Let's Encrypt by DNS-01; set the
+Cloudflare API token afterwards AS THE BAND USER: fohmixer-hub cloudflare
+set-token, token on stdin), [access] with -AccessTeam/-AccessAud, and [tunnel]
+when the tunnel is set up; the hosts file maps the name to 127.0.0.1 (a marked
+block); the band user's desktop gets a shortcut to https://<name>/; the
+firewall rule fohmixer-hub-https opens -HttpsPort. -SetTunnelToken reads the
+cloudflared connector token from stdin (pipe it in) or a hidden prompt, never
+from the command line, into <TunnelDir>\tunnel-token (SYSTEM and
+Administrators only), and the service fohmixer-tunnel runs cloudflared
+(--protocol http2, metrics on 127.0.0.1:<TunnelMetricsPort>) with it; a later
+run without -SetTunnelToken keeps the stored token. A run without -PublicName
+keeps the remote access an earlier run set up (its toml tables as installed;
+the hosts block, shortcut, firewall rule and service untouched).
 The data folder gets a protected DACL: SYSTEM, Administrators and the band user.
 When a step after the stop fails, the hub task is started again.
 -NoTask (the self-test) leaves out steps 1, 6, 7 and the DACL.
@@ -37,6 +51,9 @@ Errors: one "fohmixer install FAILED: ..." line on stderr, exit code 1.
 
 .EXAMPLE
 powershell -NoProfile -ExecutionPolicy Bypass -File <unzipped bundle>\Install-Fohmixer.ps1 -BundleZip <bundle zip> -BandUser <band account> -MasterUser <master account> -Layout <import folder>\layout.json
+
+.EXAMPLE
+Get-Content <token file> | powershell -NoProfile -ExecutionPolicy Bypass -File <unzipped bundle>\Install-Fohmixer.ps1 -BundleZip <bundle zip> -BandUser <band account> -MasterUser <master account> -PublicName <name> -AccessTeam <team>.cloudflareaccess.com -AccessAud <aud> -SetTunnelToken
 #>
 [CmdletBinding()]
 param(
@@ -63,16 +80,44 @@ param(
     [string]$BandAbletonPrefs = '',
     [string]$MasterAbletonPrefs = '',
     # The self-test: no stop, no DACL, no tasks, no start, no readiness poll.
-    [switch]$NoTask
+    [switch]$NoTask,
+    # Remote access (#17): the one public name (LAN and tunnel); nothing below is used without it
+    # (FohmixerRemote.ps1 Resolve-FohRemote, which also holds the defaults).
+    [string]$PublicName = '',
+    # Default 443 (the defaults of these live in Resolve-FohRemote; only given ones are passed).
+    [int]$HttpsPort,
+    # The ACME account's contact, and another ACME directory (e.g. Let's Encrypt's staging).
+    [string]$AcmeEmail = '',
+    [string]$AcmeDirectory = '',
+    # The Cloudflare Access application of the name: its team domain and AUD tag(s), comma separated.
+    [string]$AccessTeam = '',
+    [string]$AccessAud = '',
+    # Read the cloudflared connector token from stdin (or a hidden prompt) and store it.
+    [switch]$SetTunnelToken,
+    [string]$CloudflaredExe = '',
+    # Default 20241.
+    [int]$TunnelMetricsPort,
+    # Default <ProgramData>\fohmixer-tunnel; the hosts file and the band user's desktop default to Windows' own.
+    [string]$TunnelDir = '',
+    [string]$HostsFile = '',
+    [string]$BandDesktop = ''
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 try {
     Import-Module (Join-Path $PSScriptRoot 'FohmixerPc.psm1') -Force
+    # Remote access (#17): checked, the tunnel token read, before any change.
+    $remoteArgs = @{}
+    foreach ($k in @('PublicName', 'HttpsPort', 'AcmeEmail', 'AcmeDirectory', 'AccessTeam', 'AccessAud', 'SetTunnelToken',
+            'CloudflaredExe', 'TunnelMetricsPort', 'TunnelDir', 'HostsFile', 'BandDesktop')) {
+        if ($PSBoundParameters.ContainsKey($k)) { $remoteArgs[$k] = $PSBoundParameters[$k] }
+    }
+    $remote = Resolve-FohRemote -DataDir $DataDir -BandUser $BandUser -HttpPort $HttpPort -BandPort $BandPort `
+        -MasterPort $MasterPort @remoteArgs
     $result = Invoke-FohInstall -BundleZip $BundleZip -BandUser $BandUser -MasterUser $MasterUser -DataDir $DataDir `
         -HttpPort $HttpPort -BandPort $BandPort -MasterPort $MasterPort -Layout $Layout `
         -BandUserLibrary $BandUserLibrary -MasterUserLibrary $MasterUserLibrary `
-        -BandAbletonPrefs $BandAbletonPrefs -MasterAbletonPrefs $MasterAbletonPrefs -NoTask:$NoTask
+        -BandAbletonPrefs $BandAbletonPrefs -MasterAbletonPrefs $MasterAbletonPrefs -NoTask:$NoTask -Remote $remote
     ConvertTo-Json -InputObject $result -Depth 5
 } catch {
     # One unwrapped line (a 5.1 error record wraps at the console width), then where it failed.

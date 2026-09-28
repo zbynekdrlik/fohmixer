@@ -11,9 +11,9 @@ test_tool = "nextest"
 
 exclude_globs = [
   # Windows-only DPAPI calls (copied from iemmixer): not compiled on the
-  # Linux runners; the `windows` CI job builds them and runs the `pepper::`
-  # tests against them.
-  "crates/fohmixer-hub/src/pepper/dpapi.rs",
+  # Linux runners; the `windows` CI job builds them and runs the `pepper::`,
+  # `sealed::` and `cf_token::` tests against them.
+  "crates/fohmixer-hub/src/dpapi.rs",
 ]
 
 exclude_re = [

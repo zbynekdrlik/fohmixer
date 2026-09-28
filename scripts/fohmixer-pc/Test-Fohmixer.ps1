@@ -22,7 +22,14 @@
 #   DACL, and the tasks' principal and logon trigger with their read-back;
 # - Live's own setting of each user's User Library (#9): fake Library.cfg
 #   files; an install into a User Library that Live does not use is refused
-#   before anything changes.
+#   before anything changes;
+# - remote access (#17, FohmixerRemote.ps1): the public name's and the toml
+#   values' checks, the toml tables, the hosts block (temp files, their
+#   encodings kept), the desktop shortcut (temp folder), the port check, the
+#   cloudflared check (fake cloudflared.cmd), the tunnel command line and the
+#   token file with its protected DACL, the tunnel service under a test name
+#   (never started, removed after), a -NoTask install with the token on stdin,
+#   and an install without -PublicName that keeps it.
 # Only its own test objects are removed; nothing is ended by force (spec I7).
 param([Parameter(Mandatory)][string]$HubExe)
 Set-StrictMode -Version Latest
@@ -49,6 +56,15 @@ function Invoke-Ps([string]$File, [string[]]$ArgList) {
     $said = (& powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $File @ArgList 2>&1 | ForEach-Object { "$_" }) -join "`n"
     $code = $LASTEXITCODE
     Write-Host ("    [{0} exit {1}]`n    {2}" -f (Split-Path -Leaf $File), $code, ($said -replace "`n", "`n    "))
+    return [pscustomobject]@{ code = $code; out = $said }
+}
+
+function Invoke-PsInput([string]$File, [string[]]$ArgList, [string]$Text) {
+    # As Invoke-Ps, with $Text on the script's stdin (the tunnel token, #17).
+    $ErrorActionPreference = 'Continue'
+    $said = ($Text | & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $File @ArgList 2>&1 | ForEach-Object { "$_" }) -join "`n"
+    $code = $LASTEXITCODE
+    Write-Host ("    [{0} exit {1}, stdin given]`n    {2}" -f (Split-Path -Leaf $File), $code, ($said -replace "`n", "`n    "))
     return [pscustomobject]@{ code = $code; out = $said }
 }
 
@@ -194,6 +210,7 @@ $data = Join-Path $base 'data'
 $old = New-Object DateTime 2001, 1, 1, 0, 0, 0, ([DateTimeKind]::Utc)
 $oldApp = $old.AddDays(1)
 $fwName = 'fohmixer-selftest-' + $id
+$tunnelSvc = 'fohmixer-selftest-tunnel-' + $id
 $me = [Security.Principal.WindowsIdentity]::GetCurrent().Name
 $clashFolder = '\fohmixer-selftest-' + $id + '-clash\'
 $clashSid = $null
@@ -289,6 +306,110 @@ try {
         "[[instances]]`r`nname = `"master`"`r`nport = 39182`r`n"
     Assert ((New-FohHubToml -HttpPort 18481 -BandPort 39181 -MasterPort 39182) -ceq $wantToml) 'toml-is-the-hub-config'
 
+    # ---- remote access (#17): FohmixerRemote.ps1 ----
+    foreach ($n in @('foh.example.org', 'a-b.example.org', 'x.co', 'team.cloudflareaccess.com')) {
+        Assert ((ErrorOf { Test-FohPublicName $n }) -ceq '') "public-name-accepts-$n"
+    }
+    foreach ($n in @('', 'foh', 'foh.', '.foh.org', '-foh.org', 'foh-.org', 'f_h.org', '10.0.0.5', 'foh.example.org:443', 'foh.123')) {
+        Assert ((ErrorOf { Test-FohPublicName $n }) -like '*public name refused*') "public-name-refuses-[$n]"
+    }
+    Assert ((Get-FohPublicUrl -Name 'foh.example.org' -HttpsPort 443) -ceq 'https://foh.example.org/') 'public-url-without-the-default-port'
+    Assert ((Get-FohPublicUrl -Name 'foh.example.org' -HttpsPort 8443) -ceq 'https://foh.example.org:8443/') 'public-url-with-another-port'
+    $wantRemote = "`r`n[tls]`r`nname = `"foh.example.org`"`r`nport = 443`r`n`r`n[acme]`r`nemail = `"owner@example.org`"`r`n" +
+        "`r`n[access]`r`nteam_domain = `"team.cloudflareaccess.com`"`r`naud = [`"aud-1`", `"aud-2`"]`r`n" +
+        "`r`n[tunnel]`r`nready_url = `"http://127.0.0.1:20241/ready`"`r`n"
+    $gotRemote = Get-FohRemoteToml -Name 'foh.example.org' -HttpsPort 443 -AcmeEmail 'owner@example.org' `
+        -AccessTeam 'team.cloudflareaccess.com' -AccessAud @('aud-1', 'aud-2') -Tunnel -TunnelMetricsPort 20241
+    Assert ($gotRemote -ceq $wantRemote) 'remote-toml-has-tls-acme-access-and-tunnel'
+    Assert ((Get-FohRemoteToml -Name '') -ceq '') 'remote-toml-empty-without-a-name'
+    Assert ((Get-FohRemoteToml -Name 'foh.example.org' -AcmeEmail 'a\b"c@example.org') -like '*email = "a\\b\"c@example.org"*') 'remote-toml-escapes-backslash-and-quote'
+    $staging = 'https://acme-staging-v02.api.letsencrypt.org/directory'
+    Assert ((Get-FohRemoteToml -Name 'foh.example.org' -HttpsPort 8443 -AcmeDirectory $staging) -ceq
+        ("`r`n[tls]`r`nname = `"foh.example.org`"`r`nport = 8443`r`n`r`n[acme]`r`ndirectory = `"$staging`"`r`n")) 'remote-toml-without-access-or-tunnel'
+    $hostsBlock = "# BEGIN fohmixer (Install-Fohmixer.ps1, #17: the public name on this PC)`r`n127.0.0.1 foh.example.org`r`n# END fohmixer`r`n"
+    Assert ((Get-FohHostsText -Text '' -Name 'foh.example.org') -ceq $hostsBlock) 'hosts-block-into-an-empty-file'
+    $hostsOrig = "# Copyright (c) Microsoft`r`n127.0.0.1 localhost"
+    Assert ((Get-FohHostsText -Text $hostsOrig -Name 'foh.example.org') -ceq ($hostsOrig + "`r`n" + $hostsBlock)) 'hosts-block-added-after-the-last-line'
+    $hostsOld = $hostsOrig + "`r`n" + $hostsBlock.Replace('foh.example.org', 'old.example.org') + "10.0.0.1 other`r`n"
+    Assert ((Get-FohHostsText -Text $hostsOld -Name 'foh.example.org') -ceq ($hostsOrig + "`r`n" + $hostsBlock + "10.0.0.1 other`r`n")) 'hosts-block-replaced-in-place'
+    $hostsTest = Join-Path $base 'hosts-test'
+    [IO.File]::WriteAllText($hostsTest, $hostsOrig + "`n")
+    Assert (Set-FohHostsEntry -Path $hostsTest -Name 'foh.example.org') 'hosts-entry-written'
+    Assert (-not (Set-FohHostsEntry -Path $hostsTest -Name 'foh.example.org')) 'hosts-entry-second-run-writes-nothing'
+    Assert ([IO.File]::ReadAllText($hostsTest) -ceq ($hostsOrig + "`n" + $hostsBlock)) 'hosts-file-keeps-its-own-lines'
+    $deskTest = Join-Path $base 'desktop-test'
+    New-Item -ItemType Directory -Force -Path $deskTest | Out-Null
+    Assert (Set-FohDesktopShortcut -Desktop $deskTest -Url 'https://foh.example.org/') 'shortcut-written'
+    Assert (-not (Set-FohDesktopShortcut -Desktop $deskTest -Url 'https://foh.example.org/')) 'shortcut-second-run-writes-nothing'
+    Assert ([IO.File]::ReadAllText((Join-Path $deskTest 'fohmixer.url')) -ceq "[InternetShortcut]`r`nURL=https://foh.example.org/`r`n") 'shortcut-opens-the-public-url'
+    Assert ((ErrorOf { Set-FohDesktopShortcut -Desktop (Join-Path $base 'no-desktop') -Url 'x' }) -like '*desktop not found*') 'shortcut-refuses-a-missing-desktop'
+    Assert ((Get-FohTunnelCommand -Exe 'C:\cf\cloudflared.exe' -TokenFile 'C:\t\tunnel-token' -MetricsPort 20241) -ceq
+        '"C:\cf\cloudflared.exe" tunnel --no-autoupdate --protocol http2 --metrics 127.0.0.1:20241 run --token-file "C:\t\tunnel-token"') 'tunnel-command-http2-metrics-token-file'
+    # Low-entropy stand-ins: a realistic token would read as a leak to the secret scan.
+    $fakeToken = 'e' * 120
+    Assert (Test-FohTunnelToken -Token $fakeToken) 'tunnel-token-accepts-a-token-shaped-line'
+    foreach ($bad in @(('e' * 99), (('e' * 60) + ' ' + ('e' * 60)), '')) {
+        Assert (-not (Test-FohTunnelToken -Token $bad)) "tunnel-token-refuses-[$($bad.Length) characters]"
+    }
+    $tunnelTest = Join-Path $base 'tunnel-test'
+    Assert (Set-FohTunnelToken -TunnelDir $tunnelTest -Token $fakeToken) 'tunnel-token-written'
+    Assert (-not (Set-FohTunnelToken -TunnelDir $tunnelTest -Token $fakeToken)) 'tunnel-token-second-run-writes-nothing'
+    Assert ([IO.File]::ReadAllText((Join-Path $tunnelTest 'tunnel-token')) -ceq $fakeToken) 'tunnel-token-stored-as-given'
+    Assert (@(Test-FohTunnelDirAcl -Path $tunnelTest).Count -eq 0) 'tunnel-folder-for-system-and-administrators-only'
+    Assert ((ErrorOf { Set-FohTunnelToken -TunnelDir $tunnelTest -Token 'short' }) -like '*tunnel token refused*') 'tunnel-token-refuses-a-bad-token'
+    # A config is checked by the hub it is for (fohmixer-hub config check).
+    $checkDir = Join-Path $base 'toml-check'
+    New-Item -ItemType Directory -Force -Path $checkDir | Out-Null
+    $goodToml = New-FohHubToml -HttpPort 18481 -BandPort 39181 -MasterPort 39182 -Remote $gotRemote
+    Assert ((Test-FohHubToml -Exe $HubExe -Text $goodToml -Dir $checkDir) -like '*: OK*') 'hub-toml-check-accepts-the-install-toml'
+    $badToml = New-FohHubToml -HttpPort 18481 -BandPort 39181 -MasterPort 39182 -Remote (Get-FohRemoteToml -Name 'foh.example.org' -AcmeDirectory 'http://acme.example.org/directory')
+    Assert ((ErrorOf { Test-FohHubToml -Exe $HubExe -Text $badToml -Dir $checkDir }) -like '*refused by the hub (exit 2)*an https URL*') 'hub-toml-check-refuses-with-the-hubs-reason'
+    Assert (@(Get-ChildItem -LiteralPath $checkDir -Force).Count -eq 0) 'hub-toml-check-leaves-no-file'
+    # The installed toml's remote tables, as they were written.
+    Assert ((Get-FohInstalledRemoteToml -Text ((New-FohHubToml -HttpPort 1 -BandPort 2 -MasterPort 3) + $gotRemote)) -ceq $gotRemote) 'installed-remote-tables-read-back-as-written'
+    Assert ((Get-FohInstalledRemoteToml -Text (New-FohHubToml -HttpPort 1 -BandPort 2 -MasterPort 3)) -ceq '') 'installed-remote-tables-none-without-tls'
+    # The hosts file keeps its encoding: ANSI (a non-ASCII byte in a comment), UTF-8 with a byte order mark.
+    $ansiHosts = Join-Path $base 'hosts-ansi'
+    $ansiBytes = [byte[]](@(0x23, 0x20, 0xE9, 0x0D, 0x0A) + [Text.Encoding]::ASCII.GetBytes("127.0.0.1 localhost`r`n"))
+    [IO.File]::WriteAllBytes($ansiHosts, $ansiBytes)
+    Assert (Set-FohHostsEntry -Path $ansiHosts -Name 'foh.example.org') 'hosts-ansi-entry-written'
+    $after = [IO.File]::ReadAllBytes($ansiHosts)
+    Assert ((($after[0..($ansiBytes.Length - 1)]) -join ',') -ceq ($ansiBytes -join ',')) 'hosts-ansi-keeps-its-non-ascii-byte'
+    $bomHosts = Join-Path $base 'hosts-bom'
+    [IO.File]::WriteAllText($bomHosts, "127.0.0.1 localhost`r`n", (New-Object Text.UTF8Encoding $true))
+    Assert (Set-FohHostsEntry -Path $bomHosts -Name 'foh.example.org') 'hosts-bom-entry-written'
+    $after = [IO.File]::ReadAllBytes($bomHosts)
+    Assert ($after[0] -eq 0xEF -and $after[1] -eq 0xBB -and $after[2] -eq 0xBF -and $after[3] -eq 0x31) 'hosts-bom-keeps-one-byte-order-mark'
+    Assert (-not (Set-FohHostsEntry -Path $bomHosts -Name 'foh.example.org')) 'hosts-bom-second-run-writes-nothing'
+    # cloudflared: a release with --token-file, an older one without, none.
+    $cloudflared = Join-Path $base 'cloudflared.cmd'
+    [IO.File]::WriteAllText($cloudflared, "@echo off`r`necho    --token value        The Tunnel token.`r`necho    --token-file value   Filepath at which to read the tunnel token.`r`n")
+    $oldCloudflared = Join-Path $base 'cloudflared-old.cmd'
+    [IO.File]::WriteAllText($oldCloudflared, "@echo off`r`necho    --token value        The Tunnel token.`r`n")
+    Assert ((ErrorOf { Test-FohCloudflared -Exe $cloudflared }) -ceq '') 'cloudflared-with-token-file-accepted'
+    Assert ((ErrorOf { Test-FohCloudflared -Exe $oldCloudflared }) -like '*too old*') 'cloudflared-without-token-file-refused'
+    Assert ((ErrorOf { Test-FohCloudflared -Exe (Join-Path $base 'none.exe') }) -like '*cloudflared not found*') 'cloudflared-missing-refused'
+    # The HTTPS port: free, or taken by another program.
+    $taken = New-Object Net.Sockets.TcpListener ([Net.IPAddress]::Any, 0)
+    $taken.Start()
+    try {
+        $takenPort = ([Net.IPEndPoint]$taken.LocalEndpoint).Port
+        Assert ((ErrorOf { Test-FohPortFree -Port $takenPort -DataDir $data }) -like "*port $takenPort is in use by powershell*") 'https-port-taken-is-refused'
+    } finally { $taken.Stop() }
+    Assert ((ErrorOf { Test-FohPortFree -Port $takenPort -DataDir $data }) -ceq '') 'https-port-free-is-accepted'
+    # The tunnel service under a test name: created, never started, restarted
+    # on failure, its command line corrected, read back (removed at the end).
+    $svcBin = Get-FohTunnelCommand -Exe $cloudflared -TokenFile (Join-Path $tunnelTest 'tunnel-token') -MetricsPort 20241
+    Assert (Set-FohTunnelService -BinPath $svcBin -Name $tunnelSvc -NoStart) 'tunnel-service-created'
+    $svc = Get-CimInstance -ClassName Win32_Service -Filter ("Name = '{0}'" -f $tunnelSvc)
+    Assert ($svc.PathName -ceq $svcBin -and "$($svc.StartMode)" -eq 'Auto' -and "$($svc.State)" -eq 'Stopped' -and $svc.StartName -eq 'LocalSystem') 'tunnel-service-automatic-localsystem-not-started'
+    $failure = (& sc.exe qfailure $tunnelSvc | Out-String)
+    Assert (([regex]::Matches($failure, 'RESTART -- Delay = (20000|60000)')).Count -eq 3 -and $failure -match 'RESET_PERIOD \(in seconds\)\s*: 86400') "tunnel-service-restarts-after-a-failure ($failure)"
+    Assert (-not (Set-FohTunnelService -BinPath $svcBin -Name $tunnelSvc -NoStart)) 'tunnel-service-second-run-changes-nothing'
+    $svcBin2 = Get-FohTunnelCommand -Exe $cloudflared -TokenFile (Join-Path $tunnelTest 'tunnel-token') -MetricsPort 20242
+    Assert (Set-FohTunnelService -BinPath $svcBin2 -Name $tunnelSvc -NoStart) 'tunnel-service-command-line-corrected'
+    Assert ((Get-FohServicePath -Name $tunnelSvc) -ceq $svcBin2) 'tunnel-service-reads-back-the-new-command-line'
+
     # ---- the bundle ----
     $out = Join-Path $base 'out'
     New-Item -ItemType Directory -Force -Path $out | Out-Null
@@ -298,7 +419,7 @@ try {
     Assert ($b1.name -ceq "fohmixer-windows-$v1-$sha" -and (Test-Path -LiteralPath $b1.zip -PathType Leaf)) 'bundle-named-by-version-and-commit'
     $zip = [IO.Compression.ZipFile]::OpenRead($b1.zip)
     try { $entries = @($zip.Entries | ForEach-Object { $_.FullName }) } finally { $zip.Dispose() }
-    foreach ($n in @('VERSION', 'SHA256SUMS', 'fohmixer-hub.exe', 'Install-Fohmixer.ps1', 'FohmixerPc.psm1', 'FohmixerLivePrefs.ps1', 'Start-FohmixerHub.ps1',
+    foreach ($n in @('VERSION', 'SHA256SUMS', 'fohmixer-hub.exe', 'Install-Fohmixer.ps1', 'FohmixerPc.psm1', 'FohmixerLivePrefs.ps1', 'FohmixerFirewall.ps1', 'FohmixerRemote.ps1', 'Start-FohmixerHub.ps1',
             'Stop-FohmixerHub.ps1', 'FohMixer/__init__.py', 'FohMixer/Config.py', 'FohMixer/version.py', 'FohMixer/transport/server.py')) {
         Assert ($entries -ccontains $n) "bundle-holds-$n"
     }
@@ -451,6 +572,105 @@ try {
     Assert (-not (Test-Path -LiteralPath (Join-Path $bandCopy 'stale.py'))) 'install-4-removes-a-file-the-bundle-dropped'
     Assert ([IO.File]::ReadAllText((Join-Path $bandCopy 'logs\FohMixer.log')) -ceq "Live's log`n") 'install-4-keeps-lives-logs'
 
+    # ---- install 5: remote access (#17), -NoTask (no service in CI), the token on stdin ----
+    $dataR = Join-Path $base 'data-remote'
+    $hostsR = Join-Path $base 'hosts-remote'
+    [IO.File]::WriteAllText($hostsR, "127.0.0.1 localhost`r`n")
+    $deskR = Join-Path $base 'desktop-remote'
+    New-Item -ItemType Directory -Force -Path $deskR | Out-Null
+    $tunnelR = Join-Path $base 'tunnel-remote'
+    $remoteOver = @{
+        DataDir = $dataR; PublicName = 'foh.example.org'; HttpsPort = 18443; AcmeEmail = 'owner@example.org'
+        AccessTeam = 'team.cloudflareaccess.com'; AccessAud = 'aud-1, aud-2'; HostsFile = $hostsR; BandDesktop = $deskR
+        TunnelDir = $tunnelR; TunnelMetricsPort = 20299
+        # -NoTask registers no service: the fake answers the --token-file check.
+        CloudflaredExe = $cloudflared
+    }
+    $argsR = Get-InstallArgs $remoteOver
+    $noneR = Join-Path $base 'data-remote-refused'
+    foreach ($r in @(
+            # $null removes the argument (powershell.exe -File drops an empty one).
+            @{ over = @{ AccessAud = $null }; says = '*-AccessTeam and -AccessAud together*'; what = 'an-access-team-without-its-aud' },
+            @{ over = @{ PublicName = 'foh' }; says = '*public name refused*'; what = 'a-bad-public-name' },
+            @{ over = @{ HttpsPort = 18481 }; says = '*the ports must differ*'; what = 'https-on-the-http-port' },
+            @{ over = @{ BandDesktop = (Join-Path $base 'no-desktop') }; says = "*desktop not found*"; what = 'a-missing-desktop' },
+            @{ over = @{ CloudflaredExe = (Join-Path $base 'no-cloudflared.exe') }; says = '*cloudflared not found*'; what = 'a-missing-cloudflared' },
+            @{ over = @{ CloudflaredExe = $oldCloudflared }; says = '*too old*'; what = 'a-cloudflared-without-token-file' })) {
+        $o = $remoteOver.Clone()
+        foreach ($k in @($r.over.Keys)) {
+            if ($null -eq $r.over[$k]) { $o.Remove($k) } else { $o[$k] = $r.over[$k] }
+        }
+        $o['DataDir'] = $noneR
+        $res = Invoke-PsInput $install ((Get-InstallArgs $o) + '-SetTunnelToken') $fakeToken
+        Assert ($res.code -ne 0 -and $res.out -like $r.says) "install-refuses-$($r.what)"
+        Assert (-not (Test-Path -LiteralPath $noneR) -and -not (Test-Path -LiteralPath $tunnelR)) "install-refused-$($r.what)-before-any-change"
+    }
+    $taken = New-Object Net.Sockets.TcpListener ([Net.IPAddress]::Any, 0)
+    $taken.Start()
+    try {
+        $o = $remoteOver.Clone()
+        $o['DataDir'] = $noneR
+        $o['HttpsPort'] = ([Net.IPEndPoint]$taken.LocalEndpoint).Port
+        $res = Invoke-PsInput $install ((Get-InstallArgs $o) + '-SetTunnelToken') $fakeToken
+        Assert ($res.code -ne 0 -and $res.out -like '*is in use by*' -and -not (Test-Path -LiteralPath $noneR)) 'install-refuses-a-taken-https-port-before-any-change'
+    } finally { $taken.Stop() }
+    $res = Invoke-PsInput $install ($argsR + '-SetTunnelToken') 'not-a-token'
+    Assert ($res.code -ne 0 -and $res.out -like '*tunnel token refused*' -and -not (Test-Path -LiteralPath $dataR)) 'install-refuses-a-bad-tunnel-token-before-any-change'
+    foreach ($o in @(@{ AccessTeam = 'team.cloudflareaccess.com' }, @{ HttpsPort = 8443 }, @{ HostsFile = $hostsR })) {
+        $o['DataDir'] = $noneR
+        $res = Invoke-Ps $install (Get-InstallArgs $o)
+        Assert ($res.code -ne 0 -and $res.out -like '*need -PublicName*' -and -not (Test-Path -LiteralPath $noneR)) "install-refuses-$(@($o.Keys | Where-Object { $_ -ne 'DataDir' })[0])-without-a-public-name"
+    }
+
+    $r5 = Invoke-PsInput $install ($argsR + '-SetTunnelToken') $fakeToken
+    Assert ($r5.code -eq 0) 'install-5-remote-exits-0'
+    Assert (-not $r5.out.Contains($fakeToken)) 'install-5-never-prints-the-tunnel-token'
+    $wantR = New-FohHubToml -HttpPort 18481 -BandPort 39181 -MasterPort 39182 -Remote (Get-FohRemoteToml -Name 'foh.example.org' `
+        -HttpsPort 18443 -AcmeEmail 'owner@example.org' -AccessTeam 'team.cloudflareaccess.com' -AccessAud @('aud-1', 'aud-2') -Tunnel -TunnelMetricsPort 20299)
+    Assert ([IO.File]::ReadAllText((Join-Path $dataR 'fohmixer-hub.toml')) -ceq $wantR) 'install-5-toml-has-the-remote-tables'
+    # Contains, not -like: '[' opens a wildcard character class.
+    Assert ($wantR.Contains('ready_url = "http://127.0.0.1:20299/ready"') -and $wantR.Contains('aud = ["aud-1", "aud-2"]')) 'install-5-toml-tunnel-and-audiences'
+    Assert ([IO.File]::ReadAllText($hostsR) -ceq ("127.0.0.1 localhost`r`n" + $hostsBlock)) 'install-5-maps-the-name-to-this-pc'
+    Assert ([IO.File]::ReadAllText((Join-Path $deskR 'fohmixer.url')) -ceq "[InternetShortcut]`r`nURL=https://foh.example.org:18443/`r`n") 'install-5-desktop-shortcut'
+    Assert ([IO.File]::ReadAllText((Join-Path $tunnelR 'tunnel-token')) -ceq $fakeToken -and @(Test-FohTunnelDirAcl -Path $tunnelR).Count -eq 0) 'install-5-stores-the-token-for-system-and-administrators'
+    # Again without -SetTunnelToken: the stored token keeps the tunnel; nothing changes.
+    $watchR = @{}
+    foreach ($p in @((Join-Path $dataR 'fohmixer-hub.toml'), $hostsR, (Join-Path $deskR 'fohmixer.url'), (Join-Path $tunnelR 'tunnel-token'))) { $watchR[$p] = $old }
+    Set-Stamps $watchR
+    $r6 = Invoke-Ps $install $argsR
+    Assert ($r6.code -eq 0) 'install-6-remote-again-exits-0'
+    $newer = @(Get-ChangedFiles $watchR)
+    Assert ($newer.Count -eq 0) "install-6-remote-again-writes-nothing ($($newer -join ', '))"
+    # A routine update without -PublicName keeps the installed remote access.
+    $r7 = Invoke-Ps $install (Get-InstallArgs @{ DataDir = $dataR })
+    Assert ($r7.code -eq 0 -and $r7.out -like '*remote access kept as installed*') 'install-7-without-a-public-name-exits-0'
+    $newer = @(Get-ChangedFiles $watchR)
+    Assert ($newer.Count -eq 0) "install-7-keeps-the-remote-access ($($newer -join ', '))"
+    # A config the hub refuses stops the install before any change: checked
+    # by the new hub itself (the kept [tls] on the new HTTP port included).
+    foreach ($r in @(
+            # (No '[' in a -like pattern: it opens a character class.)
+            @{ remote = $false; over = @{ HttpPort = 18443 }; says = '*port 18443 is the HTTP port*'; what = 'the-kept-https-port-as-the-http-port' },
+            @{ remote = $true; over = @{ AcmeDirectory = 'http://acme.example.org/directory' }; says = '*an https URL*'; what = 'a-plain-http-acme-directory' },
+            # No quote here: Windows PowerShell 5.1 passes one to powershell.exe unescaped (it is lost).
+            @{ remote = $true; over = @{ AcmeEmail = 'owner example.org' }; says = '*an address like owner@example.org*'; what = 'an-acme-email-with-a-space' },
+            # A backslash reaches the hub as given (escaped in the toml), and the hub refuses it.
+            @{ remote = $true; over = @{ AcmeEmail = 'owner\x@example.org' }; says = '*an address like owner@example.org*'; what = 'an-acme-email-with-a-backslash' },
+            @{ remote = $true; over = @{ AccessAud = 'aud-1, aud.2' }; says = '*AUD tag*'; what = 'a-dot-in-an-aud' })) {
+        $o = @{}
+        if ($r.remote) { $o = $remoteOver.Clone() }
+        foreach ($k in @($r.over.Keys)) { $o[$k] = $r.over[$k] }
+        $o['DataDir'] = $dataR
+        $res = Invoke-Ps $install (Get-InstallArgs $o)
+        Assert ($res.code -ne 0 -and $res.out -like $r.says) "install-refuses-$($r.what)"
+        $newer = @(Get-ChangedFiles $watchR)
+        Assert ($newer.Count -eq 0) "install-refused-$($r.what)-before-any-change ($($newer -join ', '))"
+        $left = @(Get-ChildItem -LiteralPath (Join-Path $dataR 'app') -Force | Where-Object { $_.Name.StartsWith('.') })
+        # (No .Name on the array: an empty one has none under Set-StrictMode.)
+        $leftNames = ($left | ForEach-Object { $_.Name }) -join ', '
+        Assert ($left.Count -eq 0) "install-refused-$($r.what)-leaves-no-unpacked-bundle-or-check-file ($leftNames)"
+    }
+
     # ---- the tasks, registered for this user in a test folder (never started) ----
     Register-FohHubTasks -AppDir $appV1 -DataDir $data -User $me -TaskPath $taskFolder
     $system = Join-Path $env:SystemRoot 'System32'
@@ -537,6 +757,12 @@ try {
     try {
         if ($null -ne (Get-FohFirewallRule -Name $fwName)) { Remove-NetFirewallRule -Name $fwName }
     } catch { Write-Host "cleanup: firewall rule $fwName ($($_.Exception.Message))" }
+    try {
+        if ($null -ne (Get-FohServicePath -Name $tunnelSvc)) {
+            & sc.exe delete $tunnelSvc | Out-Null
+            if ($LASTEXITCODE -ne 0) { Write-Host "cleanup: sc.exe delete $tunnelSvc exited $LASTEXITCODE" }
+        }
+    } catch { Write-Host "cleanup: service $tunnelSvc ($($_.Exception.Message))" }
     try {
         if ($clashSid) { Remove-LocalUser -SID (New-Object Security.Principal.SecurityIdentifier $clashSid) }
     } catch { Write-Host "cleanup: the local user $clashSid ($($_.Exception.Message))" }
