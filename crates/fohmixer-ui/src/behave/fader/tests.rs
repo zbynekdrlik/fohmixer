@@ -172,6 +172,28 @@ fn a_first_move_that_its_scaling_leaves_short_of_one_tenth_db_is_forced() {
             0.7158122005909072,
         ],
     );
+    // The same at −6 dB, far from 0 dB: the change is the difference to the
+    // start's level (+0.106 dB raw, +0.096 dB scaled).
+    assert_trace(
+        0.5,
+        &[0.0037, 0.004, 0.004, 0.004],
+        &[
+            0.5034855318101449,
+            0.5065833095879226,
+            0.5097188651434782,
+            0.5128921984768116,
+        ],
+    );
+    assert_trace(
+        0.5,
+        &[-0.0037, -0.004, -0.004, -0.004],
+        &[
+            0.49654184077695207,
+            0.4928973963325076,
+            0.4892085074436187,
+            0.4854751741102854,
+        ],
+    );
 }
 
 #[test]

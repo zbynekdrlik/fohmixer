@@ -178,6 +178,9 @@ test.describe("A hub restart in the middle of a drag", () => {
     const restart = harness("/hub/restart", { rotate_secret: false });
     await expect(surface).toHaveAttribute("data-connected", "false");
     await restart;
+    // The test's own client went down with the hub too.
+    live.close();
+    live = await LiveClient.open();
     await expect(surface).toHaveAttribute("data-connected", "true", { timeout: 15_000 });
     await ready(fader);
     // The same layout again rebuilt nothing: the same element, still held.
@@ -191,5 +194,33 @@ test.describe("A hub restart in the middle of a drag", () => {
     );
     await page.mouse.up();
     await expect(fader).not.toHaveClass(/failed/, { timeout: 2000 });
+  });
+});
+
+test.describe("A lost pointer capture", () => {
+  test("ends the touch: what the finger moved is sent, later moves do nothing", async ({ page }) => {
+    await live.set("band", B.target, "value", 0.5);
+    await openSurface(page);
+    const fader = strip(page, B.name).getByTestId("fader");
+    await ready(fader);
+    await until(() => shown(fader), (v) => Math.abs(v - 0.5) < 0.001, "the fader at 0.5");
+    await fader.evaluate((el) =>
+      el.addEventListener("pointerdown", (e) => el.setAttribute("data-e2e-pointer", String(e.pointerId))),
+    );
+    const { x, y } = await centre(fader);
+    await page.mouse.move(x, y);
+    await page.mouse.down();
+    for (let i = 1; i <= 3; i++) await page.mouse.move(x, y - 8 * i);
+    // The capture goes away without a pointerup (another element took it).
+    await fader.evaluate((el) => el.releasePointerCapture(Number(el.getAttribute("data-e2e-pointer"))));
+    await page.mouse.move(x, y - 8 * 3 - 1);
+    await until(() => live.get("band", B.target, "value"), (v) => v > 0.5, "the finger's moves in Live");
+    await page.waitForTimeout(300);
+    const ended = await live.get("band", B.target, "value");
+    // The mouse is still down over the fader: its moves are no touch now.
+    for (let i = 4; i <= 9; i++) await page.mouse.move(x, y - 8 * i);
+    await page.waitForTimeout(300);
+    expect(await live.get("band", B.target, "value")).toBe(ended);
+    await page.mouse.up();
   });
 });

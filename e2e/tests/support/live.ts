@@ -58,6 +58,9 @@ export async function hubSubscriptions(): Promise<number> {
   return status.instances.reduce((n: number, i: any) => n + i.subscriptions, 0);
 }
 
+/** How long the test's client waits for a command's answer. */
+const CMD_TIMEOUT_MS = 10_000;
+
 /**
  * A second client of the hub (the test's own): reads and writes Live the way
  * the surface does, to set up a state and to check what the surface wrote.
@@ -78,6 +81,12 @@ export class LiveClient {
         this.waiting.delete(msg.id);
       }
     });
+    // A closed socket (a hub restart) answers every waiting command with an
+    // error instead of leaving it hanging.
+    ws.addEventListener("close", () => {
+      for (const [id, done] of this.waiting) done({ type: "error", id, message: "the test client's socket closed" });
+      this.waiting.clear();
+    });
   }
 
   static async open(): Promise<LiveClient> {
@@ -96,8 +105,18 @@ export class LiveClient {
 
   /** A command batch on an instance: the script's result slots. */
   async cmd(instance: string, commands: object[]): Promise<any[]> {
+    if (this.ws.readyState !== WebSocket.OPEN) throw new Error("the test client's socket is not open");
     const id = `e2e${++this.next}`;
-    const answer = new Promise<any>((resolve) => this.waiting.set(id, resolve));
+    const answer = new Promise<any>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.waiting.delete(id);
+        reject(new Error(`no answer to ${JSON.stringify(commands)} within ${CMD_TIMEOUT_MS} ms`));
+      }, CMD_TIMEOUT_MS);
+      this.waiting.set(id, (msg) => {
+        clearTimeout(timer);
+        resolve(msg);
+      });
+    });
     this.ws.send(JSON.stringify({ type: "cmd", id, instance, commands }));
     const msg = await answer;
     if (msg.type === "error") throw new Error(`cmd ${JSON.stringify(commands)}: ${msg.message}`);
@@ -192,6 +211,16 @@ export async function doubleTap(page: Page, control: Locator, gapMs = 100) {
   await page.mouse.click(x, y);
   await page.waitForTimeout(gapMs);
   await page.mouse.click(x, y);
+}
+
+/**
+ * A toggle's double tap (TouchOSC's 200 ms window between the two presses):
+ * the two presses as one double click. Two separate clicks with a pause can
+ * miss the window in WebKit, where one click takes ~160 ms on the CI runner.
+ */
+export async function toggleDoubleTap(page: Page, control: Locator) {
+  const { x, y } = await centre(control);
+  await page.mouse.dblclick(x, y);
 }
 
 /** The value a fader or pan shows (its `data-value`, Live's units). */

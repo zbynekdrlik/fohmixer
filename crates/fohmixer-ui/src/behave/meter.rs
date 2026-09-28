@@ -140,6 +140,8 @@ mod tests {
         assert!(close(level_to_pos(0.87995), 0.6145));
         assert!(close(level_to_pos(0.19725), 0.0135));
         assert!(close(level_to_pos(0.96), 0.8645));
+        // Not a number: no position (and no panic).
+        assert!(level_to_pos(f64::NAN).is_nan());
     }
 
     #[test]

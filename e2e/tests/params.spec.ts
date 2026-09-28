@@ -3,12 +3,12 @@ import {
   BASE,
   LiveClient,
   centre,
-  doubleTap,
   harness,
   hostLine,
   openSurface,
   ready,
   selectPage,
+  toggleDoubleTap,
   token,
   track,
   until,
@@ -83,12 +83,12 @@ test.describe("Former MIDI toggles", () => {
     await page.waitForTimeout(500);
     expect(await live.get("band", VOC1, "mute")).toBe(true);
     expect(await live.get("band", VOC2, "mute")).toBe(false);
-    await doubleTap(page, voc, 80);
+    await toggleDoubleTap(page, voc);
     await until(() => live.get("band", VOC1, "mute"), (v) => v === false, "Vocal 1 on");
     await until(() => live.get("band", VOC2, "mute"), (v) => v === false, "Vocal 2 on");
     await expect(voc).toHaveAttribute("data-state", "on");
     await page.waitForTimeout(300);
-    await doubleTap(page, voc, 80);
+    await toggleDoubleTap(page, voc);
     await until(() => live.get("band", VOC1, "mute"), (v) => v === true, "Vocal 1 off");
     await until(() => live.get("band", VOC2, "mute"), (v) => v === true, "Vocal 2 off");
     await expect(voc).toHaveAttribute("data-state", "off");
@@ -107,7 +107,7 @@ test.describe("Former MIDI toggles", () => {
     await page.mouse.up();
     await until(() => live.get("band", HAND4, "mute"), (v) => v === true, "off on release");
     await page.waitForTimeout(300);
-    await doubleTap(page, zvukar, 80);
+    await toggleDoubleTap(page, zvukar);
     await until(() => live.get("band", HAND4, "mute"), (v) => v === false, "latched on");
     await page.waitForTimeout(500);
     expect(await live.get("band", HAND4, "mute")).toBe(false);
@@ -199,12 +199,21 @@ test.describe("The former MIDI fader", () => {
     const fader = page.locator('[data-testid="param-fader"][data-label="Podklady All"]').getByTestId("fader");
     await ready(fader);
     await expect(fader).toHaveAttribute("data-binding", "ready");
+    const drums = volume(track("Drums #"));
+    const before = await live.get("band", drums, "value");
     try {
       // The second target goes: the fader must not write the first alone.
       expect(await hostLine("band", 'rename "Bass #" "Bass X"')).toBe("RENAMED 1");
       await expect(fader).toHaveAttribute("data-binding", "unresolved");
       await expect(fader).toHaveAttribute("aria-disabled", "true");
       await expect(fader).toHaveCSS("background-color", RED);
+      const { x, y } = await centre(fader);
+      await page.mouse.move(x, y);
+      await page.mouse.down();
+      for (let i = 1; i <= 6; i++) await page.mouse.move(x, y - 10 * i);
+      await page.mouse.up();
+      await page.waitForTimeout(300);
+      expect(await live.get("band", drums, "value")).toBe(before);
     } finally {
       await hostLine("band", 'rename "Bass X" "Bass #"');
     }

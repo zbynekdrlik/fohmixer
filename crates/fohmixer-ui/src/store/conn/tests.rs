@@ -47,7 +47,9 @@ fn a_socket_waits_for_its_hello_then_pings_until_it_falls_silent() {
     assert_eq!(c.tick(s, 11_000.0, true), Tick::Ping);
     // Silence is counted from the last message heard.
     c.heard(12_000.0);
-    assert_eq!(c.tick(s, 14_999.0, true), Tick::Ping);
+    for at in [12_000.0, 13_000.0, 14_000.0, 14_999.0] {
+        assert_eq!(c.tick(s, at, true), Tick::Ping, "{at}");
+    }
     assert_eq!(
         c.tick(s, 15_000.0, true),
         Tick::Silent,
@@ -59,7 +61,9 @@ fn a_socket_waits_for_its_hello_then_pings_until_it_falls_silent() {
 fn an_open_socket_without_a_hello_is_the_wrong_protocol_a_connecting_one_is_silent() {
     let mut c = Conn::default();
     let s = c.opened(1_000.0);
-    assert_eq!(c.tick(s, 3_999.0, true), Tick::Wait);
+    for at in [2_000.0, 3_000.0, 3_999.0] {
+        assert_eq!(c.tick(s, at, true), Tick::Wait, "{at}");
+    }
     assert_eq!(c.tick(s, 4_000.0, true), Tick::NoHello);
     assert_eq!(
         c.tick(s, 4_000.0, false),
@@ -67,10 +71,46 @@ fn an_open_socket_without_a_hello_is_the_wrong_protocol_a_connecting_one_is_sile
         "still connecting after 3 s: a dead network, not a wrong hub"
     );
     c.hello(4_100.0);
+    for at in [5_100.0, 6_100.0] {
+        assert_eq!(c.tick(s, at, true), Tick::Ping, "{at}");
+    }
     assert_eq!(
         c.tick(s, 7_100.0, true),
         Tick::Silent,
         "after its hello an open socket that falls silent is half-open"
+    );
+}
+
+#[test]
+fn a_late_tick_gives_the_socket_a_new_silence_window() {
+    let mut c = Conn::default();
+    let s = c.opened(0.0);
+    c.hello(0.0);
+    assert_eq!(c.tick(s, 1_000.0, true), Tick::Ping);
+    // The next tick fires a minute late (a throttled tab, a blocked main
+    // thread): that says nothing about the socket. A ping, and 3 s for its
+    // answer from now.
+    assert_eq!(c.tick(s, 61_000.0, true), Tick::Ping);
+    for at in [62_000.0, 63_000.0] {
+        assert_eq!(c.tick(s, at, true), Tick::Ping, "{at}");
+    }
+    assert_eq!(
+        c.tick(s, 64_000.0, true),
+        Tick::Silent,
+        "3 s after the late tick, still nothing heard"
+    );
+}
+
+#[test]
+fn a_tick_two_periods_after_the_last_is_on_time() {
+    let mut c = Conn::default();
+    let s = c.opened(0.0);
+    c.hello(0.0);
+    assert_eq!(c.tick(s, 1_000.0, true), Tick::Ping);
+    assert_eq!(
+        c.tick(s, 3_000.0, true),
+        Tick::Silent,
+        "2 s after the last tick is not late: nothing heard for 3 s"
     );
 }
 
