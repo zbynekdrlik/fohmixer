@@ -248,14 +248,14 @@ button:focus-visible, .fn:focus-visible { outline: 2px solid var(--accent); outl
   const rows = [
     [
       { title: "Vokály", c: col.teal, inst: B, strips: [["Vox 1", col.sky, 0, "", false, true], ["Vox 2", col.pink, -Infinity, "", false, true], ["Vox 3", col.blue, -0.8, "", false, true], ["Vox 4", col.violet, 0, "", false, true], ["Vox 5", col.pink, 0, "", false, true], ["Vox 6", col.orange, 0, "", false, true], ["Vox 7", col.lime, 0, "", false, true]] },
-      { title: "Nástroje", c: col.violet, inst: B, strips: [["Agitara", col.amber, 0], ["Klavír", col.amber, -6], ["Vocals", col.teal, 0, "grp"]] },
-      { title: "Podklady · Band", c: col.sky, inst: B, strips: [["Podklady", col.sky, -1.5, "", true], ["Band", col.blue, -1.2, "ret", true]] },
+      { title: "Nástroje", c: col.violet, inst: B, strips: [["Guitar", col.amber, 0], ["Klavír", col.amber, -6], ["Vocals", col.teal, 0, "grp"]] },
+      { title: "Stems · Band", c: col.sky, inst: B, strips: [["Stems", col.sky, -1.5, "", true], ["Band", col.blue, -1.2, "ret", true]] },
     ],
     [
       { title: "Efekty", c: col.amber, inst: B, strips: [["Claps", col.amber, -9.5], ["Reverb R", col.orange, 0], ["Reverb S", col.orange, 0]] },
-      { title: "Master A", c: col.violet, inst: M, strips: [["Boom", col.red, 0], ["NLBand", col.blue, 0], ["CGAbl", col.grey, -Infinity], ["CG", col.grey, -41.4]] },
+      { title: "Master A", c: col.violet, inst: M, strips: [["Mic A", col.red, 0], ["Band", col.blue, 0], ["Cue A", col.grey, -Infinity], ["Cue B", col.grey, -41.4]] },
       { title: "Hands", c: col.green, inst: M, strips: [["Hand1", col.green, -9], ["Hand2", col.green, -Infinity], ["Hand3", col.green, -Infinity], ["Hand4", col.green, -Infinity]] },
-      { title: "Repro M", c: col.violet, inst: M, strips: [["ReproM", col.violet, -7.8, "ret", true]] },
+      { title: "Main", c: col.violet, inst: M, strips: [["Main R", col.violet, -7.8, "ret", true]] },
     ],
   ];
   const strips = [];
@@ -267,9 +267,9 @@ button:focus-visible, .fn:focus-visible { outline: 2px solid var(--accent); outl
   const solos = [];
   const updateSoloPill = () => soloClear.classList.toggle("on", solos.some((b) => b.classList.contains("on")));
   const railItems = [
-    ["Stage", col.sky, true], ["Stage aut", col.blue, false], ["Solo vocals", col.amber, false, "solo"], ["Solo soloiem", col.amber, false, "solo"],
-    ["Solo podklady", col.amber, false, "solo"], ["Reverb", col.orange, true], ["Voc mic", col.orange, true], ["Autotune", col.orange, false],
-    ["Zvukár", col.orange, false], ["Repro", col.orange, false], ["TechAlert", col.red, false, "alert"],
+    ["Stage", col.sky, true], ["Stage aut", col.blue, false], ["Solo vocals", col.amber, false, "solo"], ["Solo IEM", col.amber, false, "solo"],
+    ["Solo stems", col.amber, false, "solo"], ["Reverb", col.orange, true], ["Voc mic", col.orange, true], ["Autotune", col.orange, false],
+    ["Engineer", col.orange, false], ["Repro", col.orange, false], ["TechAlert", col.red, false, "alert"],
   ];
   railItems.forEach(([label, c, on, kind]) => {
     const b = document.createElement("button");

@@ -89,7 +89,7 @@ The synthetic fixture (`fixtures/*.tosc`, `expected-layout.json`) is rebuilt in 
 - **dB readout:** Live's display value (X1) shown as TouchOSC did: one decimal, no unit, `−∞` for `-inf`, white when Live shows exactly 0 dB, light green otherwise (`behave/db_text.rs`, from Live's string, never from the UI's own maths).
 - **Name button (mute):** lit in the track's Live colour while the track is audible, dark with a red `MUTE` mark while muted (F12, TouchOSC semantics); `mute_guard` arms on the first tap with a pulse (`behave/mute.rs`). The colour is the track's `color` property (an int `0xRRGGBB`), subscribed for every strip; until it arrives the group colour stands in. The colour never gates the control (I8 gates on the mute value only).
 - **Rail buttons:** stage (lit while the mics are live, #9), STAGE AUT, solos (lit = soloed), param toggles (on / off / mixed states, `press` modes unchanged), alert (lit while TechAlert is unmuted; the full-screen red wash blinks every `period_ms`), refresh (0.5 s debounce, yellow 300 ms).
-- **SOLO ✕ pill:** shown while any solo control of the layout is on; a tap writes `solo=false` to each of them (owning instance only, X4); it is hidden again when Live reports them off.
+- **SOLO ✕ pill:** shown while any solo control of the page is on (the solos live in the FOH rail; only the page's controls are subscribed); a tap writes `solo=false` to each of them that Live reports on (owning instance only, X4); it is hidden again when Live reports them off.
 - **Param fader** (Podklady All): a strip without pan, meter and mute; its label is Live's display string of the first target (X10).
 - **Cue page:** its groups render param toggles as a grid of large buttons.
 
