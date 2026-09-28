@@ -13,6 +13,7 @@ import stat
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -131,8 +132,21 @@ class ScriptTest(unittest.TestCase):
 
     def test_apply_sets_it_all_up_access_before_the_name_is_published(self):
         token_out = os.path.join(self.dir, "tunnel-token")
-        code, out, err = self.run_main("--token-out", token_out)
+        # An earlier file readable by others is narrowed before the token is
+        # in it: the mode of the file as it is opened for the write.
+        Path(token_out).write_text("old", encoding="ascii")
+        os.chmod(token_out, 0o644)
+        modes = []
+        real_fdopen = os.fdopen
+
+        def fdopen(fd, *rest, **kw):
+            modes.append(stat.S_IMODE(os.fstat(fd).st_mode))
+            return real_fdopen(fd, *rest, **kw)
+
+        with mock.patch("os.fdopen", fdopen):
+            code, out, err = self.run_main("--token-out", token_out)
         self.assertEqual(code, 0, err)
+        self.assertEqual(modes, [0o600])
         (tid,) = self.cf.tunnels
         self.assertEqual(self.cf.tunnels[tid]["config_src"], "cloudflare")
         (app,) = self.cf.apps.values()

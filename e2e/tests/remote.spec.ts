@@ -146,7 +146,7 @@ test.describe("The public name over HTTPS (the LAN path)", () => {
     expect(await wakeLockRequests(page)).toEqual(["screen", "screen"]);
   });
 
-  test("the manifest is fetched with credentials (the Access cookie on the internet path)", async ({ page }) => {
+  test("the manifest link asks for credentials (the Access cookie on the internet path); manifest and worker are served", async ({ page }) => {
     await page.goto("/");
     const manifest = page.locator('link[rel="manifest"]');
     await expect(manifest).toHaveAttribute("crossorigin", "use-credentials");

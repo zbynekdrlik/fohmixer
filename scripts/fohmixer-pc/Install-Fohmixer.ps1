@@ -41,7 +41,9 @@ cloudflared connector token from stdin (pipe it in) or a hidden prompt, never
 from the command line, into <TunnelDir>\tunnel-token (SYSTEM and
 Administrators only), and the service fohmixer-tunnel runs cloudflared
 (--protocol http2, metrics on 127.0.0.1:<TunnelMetricsPort>) with it; a later
-run without -SetTunnelToken keeps the stored token.
+run without -SetTunnelToken keeps the stored token. A run without -PublicName
+keeps the remote access an earlier run set up (its toml tables as installed;
+the hosts block, shortcut, firewall rule and service untouched).
 The data folder gets a protected DACL: SYSTEM, Administrators and the band user.
 When a step after the stop fails, the hub task is started again.
 -NoTask (the self-test) leaves out steps 1, 6, 7 and the DACL.
@@ -79,7 +81,8 @@ param(
     [string]$MasterAbletonPrefs = '',
     # The self-test: no stop, no DACL, no tasks, no start, no readiness poll.
     [switch]$NoTask,
-    # Remote access (#17): the one public name (LAN and tunnel); nothing below is used without it.
+    # Remote access (#17): the one public name (LAN and tunnel); nothing below is used without it
+    # (FohmixerRemote.ps1 Resolve-FohRemote, which also holds the defaults).
     [string]$PublicName = '',
     [int]$HttpsPort = 443,
     # The ACME account's contact, and another ACME directory (e.g. Let's Encrypt's staging).
@@ -101,13 +104,18 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 try {
     Import-Module (Join-Path $PSScriptRoot 'FohmixerPc.psm1') -Force
+    # Remote access (#17): checked, the tunnel token read, before any change.
+    $remoteArgs = @{}
+    foreach ($k in @('PublicName', 'HttpsPort', 'AcmeEmail', 'AcmeDirectory', 'AccessTeam', 'AccessAud', 'SetTunnelToken',
+            'CloudflaredExe', 'TunnelMetricsPort', 'TunnelDir', 'HostsFile', 'BandDesktop')) {
+        if ($PSBoundParameters.ContainsKey($k)) { $remoteArgs[$k] = $PSBoundParameters[$k] }
+    }
+    $remote = Resolve-FohRemote -DataDir $DataDir -BandUser $BandUser -HttpPort $HttpPort -BandPort $BandPort `
+        -MasterPort $MasterPort @remoteArgs
     $result = Invoke-FohInstall -BundleZip $BundleZip -BandUser $BandUser -MasterUser $MasterUser -DataDir $DataDir `
         -HttpPort $HttpPort -BandPort $BandPort -MasterPort $MasterPort -Layout $Layout `
         -BandUserLibrary $BandUserLibrary -MasterUserLibrary $MasterUserLibrary `
-        -BandAbletonPrefs $BandAbletonPrefs -MasterAbletonPrefs $MasterAbletonPrefs -NoTask:$NoTask `
-        -PublicName $PublicName -HttpsPort $HttpsPort -AcmeEmail $AcmeEmail -AcmeDirectory $AcmeDirectory `
-        -AccessTeam $AccessTeam -AccessAud $AccessAud -SetTunnelToken:$SetTunnelToken -CloudflaredExe $CloudflaredExe `
-        -TunnelMetricsPort $TunnelMetricsPort -TunnelDir $TunnelDir -HostsFile $HostsFile -BandDesktop $BandDesktop
+        -BandAbletonPrefs $BandAbletonPrefs -MasterAbletonPrefs $MasterAbletonPrefs -NoTask:$NoTask -Remote $remote
     ConvertTo-Json -InputObject $result -Depth 5
 } catch {
     # One unwrapped line (a 5.1 error record wraps at the console width), then where it failed.

@@ -237,9 +237,11 @@ def write_token(api, plan, account, path):
         return
     token = api.call("GET", "/accounts/%s/cfd_tunnel/%s/token" % (account, plan.tunnel_id))
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    # An existing file keeps its mode through O_CREAT: narrow it before the
+    # token is in it.
+    os.fchmod(fd, 0o600)
     with os.fdopen(fd, "w", encoding="ascii") as f:
         f.write(token)
-    os.chmod(path, 0o600)
     plan.note("wrote the connector token to %s" % path)
 
 

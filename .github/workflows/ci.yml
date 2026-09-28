@@ -500,8 +500,10 @@ jobs:
       - name: Count the diff-scoped mutants (parsed, not compiled)
         id: count
         env:
-          # Mutants one shard tests within its 20-minute budget, setup included.
-          MUTANTS_PER_SHARD: "12"
+          # Mutants one shard tests within its 20-minute budget, setup included:
+          # a mutant costs ~150 s of build since #17's TLS/ACME dependencies,
+          # two at a time (12 per shard ran over the budget).
+          MUTANTS_PER_SHARD: "8"
           BASE_REF: ${{ github.base_ref }}
         run: |
           set -euo pipefail

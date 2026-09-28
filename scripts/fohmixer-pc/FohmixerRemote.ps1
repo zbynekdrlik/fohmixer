@@ -18,6 +18,10 @@
 #   install reads it from stdin or a hidden prompt. The tunnel's ingress
 #   (the name -> http://127.0.0.1:<HttpPort>) is Cloudflare's configuration
 #   (scripts/cloudflare/fohmixer_cloudflare.py).
+# An install without -PublicName keeps what an earlier one set up: the toml's
+# remote tables are carried over as installed, the hosts block, shortcut,
+# firewall rule and service are left alone (a routine update never strips
+# remote access; deploy-pc.md has the steps to switch it off).
 # No site value lives here (spec 5.2): the name, the team, the AUD and the
 # token come as parameters. Windows PowerShell 5.1, ASCII only.
 
@@ -26,6 +30,7 @@ $script:HostsEnd = '# END fohmixer'
 $script:TunnelService = 'fohmixer-tunnel'
 $script:TunnelTokenFile = 'tunnel-token'
 $script:ShortcutFile = 'fohmixer.url'
+$script:HttpsRule = 'fohmixer-hub-https'
 
 function Test-FohPublicName {
     # The public name as the hub takes it (config.rs is_dns_name): at least two
@@ -38,6 +43,31 @@ function Test-FohPublicName {
         if ($l -cnotmatch '^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\z') { $ok = $false }
     }
     if (-not $ok) { throw "public name refused: [$Name] (a DNS name like foh.example.org)" }
+}
+
+function Test-FohRemoteValues {
+    # The values that go into the toml as strings, checked before anything
+    # changes (a value the hub refuses would stop it after the install's stop):
+    # the ACME directory an https:// URL (config.rs), the e-mail and the AUD
+    # tags with no quote, backslash or space. Throws naming the value.
+    param([AllowEmptyString()][string]$AcmeEmail = '', [AllowEmptyString()][string]$AcmeDirectory = '', [string[]]$AccessAud = @())
+    if ($AcmeEmail -and $AcmeEmail -cnotmatch '^[^\s"\\@]+@[^\s"\\@]+\z') { throw "ACME e-mail refused: [$AcmeEmail]" }
+    if ($AcmeDirectory -and $AcmeDirectory -cnotmatch '^https://[^\s"\\]+\z') {
+        throw "ACME directory refused: [$AcmeDirectory] (an https:// URL)"
+    }
+    foreach ($a in $AccessAud) {
+        if ($a -cnotmatch '^[0-9A-Za-z_-]+\z') { throw "Access AUD refused: [$a] (the Access application's AUD tag)" }
+    }
+}
+
+function Get-FohInstalledRemoteToml {
+    # The remote-access tables of an installed fohmixer-hub.toml's text: from
+    # the line end before [tls] to the end (New-FohHubToml writes them last),
+    # exactly as Get-FohRemoteToml wrote them; '' when there is no [tls].
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Text)
+    $m = [regex]::Match($Text, '(?s)\r?\n\[tls\]\r?\n.*\z')
+    if ($m.Success) { return $m.Value }
+    return ''
 }
 
 function Get-FohPublicUrl {
@@ -68,6 +98,18 @@ function Get-FohRemoteToml {
     return (($lines -join "`r`n") + "`r`n")
 }
 
+function Get-FohTextEncoding {
+    # A text file's encoding by its byte order mark (UTF-8, UTF-16 LE), else
+    # the ANSI code page, as Windows keeps the hosts file: a rewrite keeps the
+    # bytes of every line it does not change (a non-ASCII comment included).
+    param([Parameter(Mandatory)][AllowEmptyCollection()][byte[]]$Bytes)
+    if ($Bytes.Length -ge 3 -and $Bytes[0] -eq 0xEF -and $Bytes[1] -eq 0xBB -and $Bytes[2] -eq 0xBF) {
+        return (New-Object Text.UTF8Encoding $true)
+    }
+    if ($Bytes.Length -ge 2 -and $Bytes[0] -eq 0xFF -and $Bytes[1] -eq 0xFE) { return [Text.Encoding]::Unicode }
+    return [Text.Encoding]::Default
+}
+
 function Get-FohHostsText {
     # The hosts file's text with the fohmixer block mapping $Name to 127.0.0.1:
     # an existing block is replaced in place, else it is added at the end;
@@ -84,14 +126,19 @@ function Get-FohHostsText {
 }
 
 function Set-FohHostsEntry {
-    # The fohmixer block in the hosts file at $Path (ASCII, as Windows keeps
-    # it); written only when it changes. Returns whether it changed.
+    # The fohmixer block in the hosts file at $Path, in the file's own
+    # encoding (Get-FohTextEncoding); written only when it changes. Returns
+    # whether it changed.
     param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string]$Name)
     $text = ''
-    if (Test-Path -LiteralPath $Path -PathType Leaf) { $text = [IO.File]::ReadAllText($Path, [Text.Encoding]::ASCII) }
+    $encoding = [Text.Encoding]::Default
+    if (Test-Path -LiteralPath $Path -PathType Leaf) {
+        $encoding = Get-FohTextEncoding -Bytes ([IO.File]::ReadAllBytes($Path))
+        $text = [IO.File]::ReadAllText($Path, $encoding)
+    }
     $new = Get-FohHostsText -Text $text -Name $Name
     if ($new -ceq $text) { return $false }
-    [IO.File]::WriteAllText($Path, $new, [Text.Encoding]::ASCII)
+    [IO.File]::WriteAllText($Path, $new, $encoding)
     return $true
 }
 
@@ -111,6 +158,33 @@ function Get-FohTunnelCommand {
     param([Parameter(Mandatory)][string]$Exe, [Parameter(Mandatory)][string]$TokenFile, [Parameter(Mandatory)][int]$MetricsPort)
     return ((Format-FohArg $Exe) + ' tunnel --no-autoupdate --protocol http2 --metrics 127.0.0.1:' + $MetricsPort +
         ' run --token-file ' + (Format-FohArg $TokenFile))
+}
+
+function Test-FohCloudflared {
+    # cloudflared at $Exe runs a tunnel from a token file: its `tunnel run
+    # --help` names --token-file (older releases take the token only on the
+    # command line, which the service must never carry). Throws otherwise.
+    param([Parameter(Mandatory)][string]$Exe)
+    if (-not (Test-Path -LiteralPath $Exe -PathType Leaf)) { throw "cloudflared not found: $Exe (install it, or pass -CloudflaredExe)" }
+    $ErrorActionPreference = 'Continue'
+    $help = (& $Exe tunnel run --help 2>&1 | ForEach-Object { "$_" }) -join "`n"
+    if ($help -notmatch '--token-file') {
+        throw "cloudflared at $Exe is too old: its 'tunnel run' has no --token-file (install a current release, or pass -CloudflaredExe)"
+    }
+}
+
+function Test-FohPortFree {
+    # Nothing but this data folder's hubs listens on TCP $Port (any address):
+    # the HTTPS listener binds it at the hub's start. Throws naming the program.
+    param([Parameter(Mandatory)][int]$Port, [Parameter(Mandatory)][string]$DataDir)
+    $hubs = @(Get-FohHubProcess -DataDir $DataDir | ForEach-Object { [int]$_.pid })
+    foreach ($c in @(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue)) {
+        $owner = [int]$c.OwningProcess
+        if ($hubs -contains $owner) { continue }
+        $name = (Get-Process -Id $owner -ErrorAction SilentlyContinue).ProcessName
+        throw ("port $Port is in use by $name (pid $owner; pid 4 is Windows' HTTP.sys, e.g. an IIS site): " +
+            'free it or pass another -HttpsPort')
+    }
 }
 
 function Test-FohTunnelToken {
@@ -200,8 +274,9 @@ function Set-FohTunnelService {
     # The fohmixer-tunnel service: created (automatic start, LocalSystem) or
     # its command line corrected, restarted after a failure (20 s, 20 s, 60 s;
     # the count resets after a day), then (re)started so it runs this command
-    # line. Read back. Returns whether it changed anything.
-    param([Parameter(Mandatory)][string]$BinPath, [string]$Name = $script:TunnelService)
+    # line (-NoStart: the self-test's test service). Read back. Returns
+    # whether it changed anything.
+    param([Parameter(Mandatory)][string]$BinPath, [string]$Name = $script:TunnelService, [switch]$NoStart)
     $changed = $false
     $current = Get-FohServicePath -Name $Name
     if ($null -eq $current) {
@@ -217,27 +292,43 @@ function Set-FohTunnelService {
     & sc.exe failure $Name reset= 86400 actions= restart/20000/restart/20000/restart/60000 | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "sc.exe failure $Name failed ($LASTEXITCODE)" }
     Set-Service -Name $Name -StartupType Automatic
-    if ($changed) { Restart-Service -Name $Name } else { Start-Service -Name $Name }
+    if ($NoStart) {
+        # the self-test: never started
+    } elseif ($changed) {
+        Restart-Service -Name $Name
+    } else {
+        Start-Service -Name $Name
+    }
     $after = Get-FohServicePath -Name $Name
     if ($after -cne $BinPath) { throw "the $Name service reads back as another command line" }
     return $changed
 }
 
 function Resolve-FohRemote {
-    # The remote-access part of an install (Invoke-FohInstall), checked before
-    # anything changes: $null without -PublicName (then no other remote-access
-    # parameter is allowed), else the name, its URL, the toml tables, the paths
-    # and, with -SetTunnelToken, the connector token read from stdin or a
-    # hidden prompt. The tunnel is set up with -SetTunnelToken or a token
-    # stored by an earlier run.
-    param([AllowEmptyString()][string]$PublicName, [int]$HttpPort, [int]$BandPort, [int]$MasterPort, [int]$HttpsPort,
-          [AllowEmptyString()][string]$AcmeEmail, [AllowEmptyString()][string]$AcmeDirectory, [AllowEmptyString()][string]$AccessTeam,
-          [AllowEmptyString()][string]$AccessAud, [switch]$SetTunnelToken, [AllowEmptyString()][string]$CloudflaredExe,
-          [int]$TunnelMetricsPort, [AllowEmptyString()][string]$TunnelDir, [AllowEmptyString()][string]$HostsFile,
-          [AllowEmptyString()][string]$BandDesktop, [Parameter(Mandatory)][string]$BandUser)
+    # The remote-access part of an install (Install-Fohmixer.ps1 passes it to
+    # Invoke-FohInstall), checked before anything changes. With -PublicName:
+    # mode 'set', the name, its URL, the toml tables, the paths and, with
+    # -SetTunnelToken, the connector token read from stdin or a hidden prompt
+    # (the tunnel is set up with -SetTunnelToken or a token stored by an
+    # earlier run). Without it (then no other remote-access parameter is
+    # allowed): mode 'keep' with the installed toml's remote tables when there
+    # are any, else $null.
+    param([Parameter(Mandatory)][string]$DataDir, [Parameter(Mandatory)][string]$BandUser,
+          [Parameter(Mandatory)][int]$HttpPort, [Parameter(Mandatory)][int]$BandPort, [Parameter(Mandatory)][int]$MasterPort,
+          [AllowEmptyString()][string]$PublicName = '', [int]$HttpsPort = 443,
+          [AllowEmptyString()][string]$AcmeEmail = '', [AllowEmptyString()][string]$AcmeDirectory = '',
+          [AllowEmptyString()][string]$AccessTeam = '', [AllowEmptyString()][string]$AccessAud = '', [switch]$SetTunnelToken,
+          [AllowEmptyString()][string]$CloudflaredExe = '', [int]$TunnelMetricsPort = 20241,
+          [AllowEmptyString()][string]$TunnelDir = '', [AllowEmptyString()][string]$HostsFile = '',
+          [AllowEmptyString()][string]$BandDesktop = '')
+    $DataDir = Resolve-FohPath $DataDir
     if (-not $PublicName) {
         if ($SetTunnelToken -or $AccessTeam -or $AccessAud -or $AcmeEmail -or $AcmeDirectory) { throw 'the remote-access parameters need -PublicName' }
-        return $null
+        $toml = Join-Path $DataDir 'fohmixer-hub.toml'
+        if (-not (Test-Path -LiteralPath $toml -PathType Leaf)) { return $null }
+        $installed = Get-FohInstalledRemoteToml -Text ([IO.File]::ReadAllText($toml))
+        if (-not $installed) { return $null }
+        return [pscustomobject]@{ mode = 'keep'; toml = $installed }
     }
     Test-FohPublicName $PublicName
     foreach ($p in @($HttpsPort, $TunnelMetricsPort)) { if ($p -lt 1 -or $p -gt 65535) { throw "port $p refused" } }
@@ -247,14 +338,14 @@ function Resolve-FohRemote {
     $auds = @($AccessAud.Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
     if ([bool]$AccessTeam -ne ($auds.Count -gt 0)) { throw 'give -AccessTeam and -AccessAud together (the Access application of the name)' }
     if ($AccessTeam) { Test-FohPublicName $AccessTeam }
+    Test-FohRemoteValues -AcmeEmail $AcmeEmail -AcmeDirectory $AcmeDirectory -AccessAud $auds
+    Test-FohPortFree -Port $HttpsPort -DataDir $DataDir
     if (-not $TunnelDir) { $TunnelDir = Join-Path $env:ProgramData 'fohmixer-tunnel' }
     $TunnelDir = Resolve-FohPath $TunnelDir
     if (-not $CloudflaredExe) { $CloudflaredExe = Join-Path ${env:ProgramFiles(x86)} 'cloudflared\cloudflared.exe' }
     $tokenFile = Join-Path $TunnelDir $script:TunnelTokenFile
     $tunnel = [bool]($SetTunnelToken -or (Test-Path -LiteralPath $tokenFile -PathType Leaf))
-    if ($tunnel -and -not (Test-Path -LiteralPath $CloudflaredExe -PathType Leaf)) {
-        throw "cloudflared not found: $CloudflaredExe (install it, or pass -CloudflaredExe)"
-    }
+    if ($tunnel) { Test-FohCloudflared -Exe $CloudflaredExe }
     if (-not $HostsFile) { $HostsFile = Join-Path $env:SystemRoot 'System32\drivers\etc\hosts' }
     if (-not $BandDesktop) { $BandDesktop = Join-Path $env:SystemDrive "Users\$BandUser\Desktop" }
     if (-not (Test-Path -LiteralPath $BandDesktop -PathType Container)) {
@@ -263,7 +354,7 @@ function Resolve-FohRemote {
     $token = $null
     if ($SetTunnelToken) { $token = Read-FohTunnelToken }
     return [pscustomobject]@{
-        name = $PublicName; url = (Get-FohPublicUrl -Name $PublicName -HttpsPort $HttpsPort); https_port = $HttpsPort
+        mode = 'set'; name = $PublicName; url = (Get-FohPublicUrl -Name $PublicName -HttpsPort $HttpsPort); https_port = $HttpsPort
         toml = (Get-FohRemoteToml -Name $PublicName -HttpsPort $HttpsPort -AcmeEmail $AcmeEmail -AcmeDirectory $AcmeDirectory `
             -AccessTeam $AccessTeam -AccessAud $auds -Tunnel:$tunnel -TunnelMetricsPort $TunnelMetricsPort)
         tunnel = $tunnel; tunnel_dir = $TunnelDir; token_file = $tokenFile; token = $token; cloudflared = $CloudflaredExe
@@ -273,8 +364,13 @@ function Resolve-FohRemote {
 
 function Install-FohRemoteFiles {
     # The install's step 5b (Resolve-FohRemote's plan): the hosts block, the
-    # desktop shortcut, the tunnel token when one was read. Returns what changed.
+    # desktop shortcut, the tunnel token when one was read; nothing in mode
+    # 'keep'. Returns what changed.
     param([Parameter(Mandatory)]$Remote)
+    if ($Remote.mode -eq 'keep') {
+        Write-Host 'fohmixer install: remote access kept as installed (no -PublicName)'
+        return [pscustomobject]@{ kept = $true }
+    }
     $hostsChanged = Set-FohHostsEntry -Path $Remote.hosts_file -Name $Remote.name
     $shortcutChanged = Set-FohDesktopShortcut -Desktop $Remote.desktop -Url $Remote.url
     $tokenChanged = $false
@@ -283,7 +379,7 @@ function Install-FohRemoteFiles {
         'the tunnel token (changed: {3})'
     Write-Host ($note -f $Remote.name, $hostsChanged, $shortcutChanged, $tokenChanged)
     return [pscustomobject]@{
-        public_name = $Remote.name; url = $Remote.url; hosts_changed = $hostsChanged
+        kept = $false; public_name = $Remote.name; url = $Remote.url; hosts_changed = $hostsChanged
         shortcut_changed = $shortcutChanged; token_changed = $tokenChanged; tunnel = $Remote.tunnel; tunnel_service = $null
     }
 }
@@ -293,8 +389,9 @@ function Install-FohRemoteServices {
     # the firewall rule of the HTTPS port and the tunnel service; records the
     # service's change in $Result.
     param([Parameter(Mandatory)]$Remote, [Parameter(Mandatory)]$Result)
-    $httpsRule = Set-FohFirewallRule -Port $Remote.https_port -Name 'fohmixer-hub-https'
-    Write-Host "fohmixer install: firewall rule fohmixer-hub-https, TCP $($Remote.https_port), Domain and Private (changed: $httpsRule)"
+    if ($Remote.mode -eq 'keep') { return }
+    $httpsRule = Set-FohFirewallRule -Port $Remote.https_port -Name $script:HttpsRule
+    Write-Host "fohmixer install: firewall rule $($script:HttpsRule), TCP $($Remote.https_port), Domain and Private (changed: $httpsRule)"
     if ($Remote.tunnel) {
         $bin = Get-FohTunnelCommand -Exe $Remote.cloudflared -TokenFile $Remote.token_file -MetricsPort $Remote.metrics_port
         $Result.tunnel_service = Set-FohTunnelService -BinPath $bin
