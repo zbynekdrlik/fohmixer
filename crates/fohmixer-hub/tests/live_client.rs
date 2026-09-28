@@ -316,6 +316,90 @@ fn a_silent_script_is_busy_after_300_ms_without_a_heartbeat() {
     });
 }
 
+/// A fake script of `band` that never reads what the hub sends (a 4 KB
+/// receive buffer, so the hub's writes stop once the buffers are full). It
+/// sends `connect`, then a heartbeat every 50 ms whose `main_tick_age_ms`
+/// counts them (1, 2, 3, …: always fresh, under 150); `sent` is the count.
+async fn deaf_script() -> (u16, Arc<AtomicUsize>) {
+    let socket = tokio::net::TcpSocket::new_v4().unwrap();
+    socket.set_recv_buffer_size(4096).unwrap();
+    socket.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+    let listener = socket.listen(1).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let sent = Arc::new(AtomicUsize::new(0));
+    let count = Arc::clone(&sent);
+    tokio::spawn(async move {
+        let (tcp, _) = listener.accept().await.unwrap();
+        let ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+        // The read half is kept, never polled: nothing is read.
+        let (mut tx, _rx) = ws.split();
+        let connect = json!({"event": "connect", "data": {"instance": "band", "set_name": "Deaf"}});
+        tx.send(Message::Text(connect.to_string().into()))
+            .await
+            .unwrap();
+        for n in 1..=100_u32 {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let heartbeat =
+                json!({"event": "heartbeat", "data": {"main_tick_age_ms": f64::from(n)}});
+            if tx
+                .send(Message::Text(heartbeat.to_string().into()))
+                .await
+                .is_err()
+            {
+                return;
+            }
+            count.store(n as usize, Ordering::SeqCst);
+        }
+    });
+    (port, sent)
+}
+
+#[test]
+fn heartbeats_are_read_while_a_request_write_waits() {
+    // #9: a heartbeat the hub reads late turns the instance busy although
+    // Live's main thread is fine. A request write that waits (the script
+    // reads slowly) must never stop the hub from reading the script's frames.
+    let _serial = serial();
+    runtime().block_on(async {
+        let (port, sent) = deaf_script().await;
+        let seen = Seen::default();
+        let (live, _task) = LiveHandle::spawn(&cfg(port), seen.events());
+        seen.wait(Duration::from_secs(3), |e| {
+            matches!(e, LiveEvent::Connected(_)).then_some(())
+        })
+        .await;
+        // 16 MB of requests the script never reads: the hub's write waits
+        // once its send buffer and the script's receive buffer are full.
+        let big = "x".repeat(64 * 1024);
+        for n in 0..256 {
+            live.send(
+                format!("big{n}"),
+                vec![json!({"target": "live_set", "name": "get_prop", "args": {"prop": big.clone()}})],
+            );
+        }
+        // Meanwhile the hub keeps reading the heartbeats: its snapshot
+        // follows the script's count, and the instance never turns busy.
+        let started = Instant::now();
+        while started.elapsed() < Duration::from_secs(2) {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let latest = sent.load(Ordering::SeqCst) as f64;
+            let read = live.snapshot().main_tick_age_ms.unwrap_or(0.0);
+            assert!(
+                read >= latest - 3.0,
+                "after {:?} the hub has read heartbeat {read} of {latest}",
+                started.elapsed()
+            );
+        }
+        let events = seen.0.lock().unwrap().clone();
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, LiveEvent::Busy { busy: true })),
+            "{events:?}"
+        );
+    });
+}
+
 #[test]
 fn a_port_that_answers_as_another_instance_is_never_used() {
     let _serial = serial();
