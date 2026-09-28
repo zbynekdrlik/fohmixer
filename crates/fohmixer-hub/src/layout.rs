@@ -261,10 +261,10 @@ mod tests {
 
     fn layout_json(title: &str, instance: &str) -> Vec<u8> {
         serde_json::to_vec(&json!({
-            "schema": 1,
-            "canvas": {"w": 2360, "h": 1640},
-            "pages": [{"id": "main", "title": title, "items": [
-                {"kind": "solo", "frame": {"x": 10, "y": 100, "w": 100, "h": 60},
+            "schema": 2,
+            "default_page": "main",
+            "pages": [{"id": "main", "title": title, "rail": [
+                {"kind": "solo",
                  "binding": {"instance": instance, "anchor": {"kind": "track", "name": "Stems grp#"}}}
             ]}]
         }))
@@ -348,7 +348,7 @@ mod tests {
         let store = store(dir.path());
         write(dir.path(), &layout_json("FOH", "band"));
         store.poll();
-        write(dir.path(), b"{\"schema\": 1, \"canvas\":");
+        write(dir.path(), b"{\"schema\": 2, \"pages\":");
         assert_eq!(store.poll(), None);
         assert_eq!(store.current().0, 1);
         assert_eq!(title(&store), "FOH");
@@ -388,7 +388,7 @@ mod tests {
         let mut v: serde_json::Value = serde_json::from_slice(&layout_json("X", "band")).unwrap();
         v["schema"] = json!(9);
         let error = check(&serde_json::to_vec(&v).unwrap(), &["band".into()]).unwrap_err();
-        assert_eq!(error, "layout is invalid: schema: schema 9 is not 1");
+        assert_eq!(error, "layout is invalid: schema: schema 9 is not 2");
         assert!(check(&layout_json("X", "band"), &["band".into()]).is_ok());
         // A group to unfold on an instance the hub does not have.
         let mut v: serde_json::Value = serde_json::from_slice(&layout_json("X", "band")).unwrap();
@@ -422,7 +422,7 @@ mod tests {
             "20260103T000000.000Z",
             &layout_json("Drums", "drums"),
         );
-        write(dir.path(), b"{\"schema\": 1, \"canvas\":");
+        write(dir.path(), b"{\"schema\": 2, \"pages\":");
         let store = store(dir.path());
         assert_eq!(store.poll(), Some(1));
         assert_eq!(title(&store), "New");

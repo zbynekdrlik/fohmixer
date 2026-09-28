@@ -84,7 +84,10 @@ fn the_layout_is_served_replaced_and_kept_through_a_bad_edit() {
         assert_eq!(status.layout.rev, 2);
         let error = status.layout.error.unwrap();
         assert!(error.starts_with("layout is invalid: "), "{error}");
-        assert!(error.contains("pages[0].items[3].frame"), "{error}");
+        assert!(
+            error.contains("pages[0].rows[0].sections[0].color"),
+            "{error}"
+        );
         let still = layout(&hub).await;
         assert_eq!(still.rev, 2);
         assert_eq!(still.layout.pages[0].title, "FOH 2");

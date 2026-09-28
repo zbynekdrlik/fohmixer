@@ -1,59 +1,54 @@
 use super::*;
 use serde_json::json;
 
-/// A small valid layout: one page with a strip and a nested pager, an
-/// overlay with the TechAlert box and REFRESH ALL.
+fn track(name: &str) -> Value {
+    json!({"instance": "band", "anchor": {"kind": "track", "name": name}})
+}
+
+/// A small valid layout: a cue page of toggles; the FOH page with a rail,
+/// a nested pager beside fixed strips and a second row; the Conf page's
+/// text; TechAlert and REFRESH ALL on every page.
 fn sample() -> Value {
     json!({
-        "schema": 1,
-        "canvas": {"w": 2360, "h": 1640},
-        "background": "#9D9DA0FF",
-        "tabbar": {"orientation": "top", "bar_size": 59, "default_page": 0},
-        "pages": [{
-            "id": "main",
-            "title": "FOH",
-            "tab": {"color": "#404040", "text_size": 33},
-            "items": [
-                {"kind": "area", "frame": {"x": 0, "y": 59, "w": 400, "h": 400},
-                 "style": {"bg": "#646464", "text": "EFFECTS", "vertical": true}, "title": "EFFECTS"},
-                {"kind": "strip", "id": "s1", "frame": {"x": 10, "y": 100, "w": 160, "h": 710}, "z": 2,
-                 "binding": {"instance": "band", "anchor": {"kind": "track", "name": "Klavir #"}},
-                 "strip_kind": "standard",
-                 "children": {"fader": {"x": 37, "y": 183, "w": 106, "h": 553},
-                              "mute": {"x": 37, "y": 748, "w": 106, "h": 52}},
-                 "mute_guard": true},
-                {"kind": "stage", "frame": {"x": 27, "y": 78, "w": 115, "h": 85},
-                 "binding": {"instance": "band", "anchor": {"kind": "track", "name": "Mics Stage #"}}, "aut": true},
-                {"kind": "hub_toggle", "frame": {"x": 27, "y": 180, "w": 115, "h": 85},
-                 "key": "stage_aut", "label": "STAGE AUT"},
-                {"kind": "param_toggle", "frame": {"x": 27, "y": 300, "w": 150, "h": 120},
-                 "label": "REVERB", "press": "toggle",
-                 "targets": [{"binding": {"instance": "band", "anchor": {"kind": "track", "name": "Rev #"}},
-                              "prop": "mute", "on": false, "off": true}]},
-                {"kind": "param_fader", "frame": {"x": 800, "y": 300, "w": 101, "h": 419},
-                 "label": "Podklady All",
-                 "targets": [{"binding": {"instance": "band", "anchor": {"kind": "track", "name": "Stems grp#"},
-                                          "path": "mixer_device volume"},
-                              "prop": "value", "scale": "cc_linear"}]},
-                {"kind": "solo", "frame": {"x": 27, "y": 450, "w": 161, "h": 65},
-                 "binding": {"instance": "band", "anchor": {"kind": "track", "name": "Vocals Repro grp#"}}}
-            ],
-            "pager": {
-                "frame": {"x": 229, "y": 61, "w": 1746, "h": 773},
-                "tabbar": {"orientation": "left", "bar_size": 65, "default_page": 0},
-                "background": "#000000FF",
-                "pages": [{"id": "stage", "title": "STAGE", "background": "#000000F9",
-                           "tab": {"color": "#404040FF", "color_on": "#BBFFA656", "text_size": 36, "text_size_on": 51},
-                           "items": []},
-                          {"id": "others", "title": "OTHERS", "items": [
-                             {"kind": "label", "frame": {"x": 300, "y": 100, "w": 50, "h": 20}, "text": "HANDS"}]}]
-            }
-        }, {"id": "conf", "title": "Conf", "items": []}],
-        "overlay": [
-            {"kind": "alert", "frame": {"x": 0, "y": 80, "w": 2360, "h": 1553},
-             "style": {"bg": "#FF00001F"},
-             "binding": {"instance": "band", "anchor": {"kind": "track", "name": "TechAlert #"}}, "period_ms": 300},
-            {"kind": "refresh", "frame": {"x": 21, "y": 1300, "w": 209, "h": 54}, "label": "REFRESH ALL"}
+        "schema": 2,
+        "default_page": "foh",
+        "pages": [
+            {"id": "cue", "title": "Cue", "rows": [{"sections": [
+                {"kind": "group", "id": "cue-1", "controls": [
+                    {"kind": "param_toggle", "label": "Vox 1 TU", "press": "toggle",
+                     "targets": [{"binding": track("Vox 1 stream"), "prop": "mute", "on": false, "off": true}]}]}]}]},
+            {"id": "foh", "title": "FOH",
+             "rail": [
+                {"kind": "stage", "binding": track("Mics Stage #"), "aut": true, "label": "STAGE"},
+                {"kind": "hub_toggle", "key": "stage_aut", "label": "STAGE AUT"},
+                {"kind": "solo", "binding": track("Vocals Repro grp#"), "label": "Vocals"},
+                {"kind": "param_toggle", "label": "REVERB", "press": "toggle", "color": "#F39420",
+                 "targets": [{"binding": track("Rev #"), "prop": "mute", "on": false, "off": true}]}],
+             "rows": [
+                {"sections": [
+                    {"kind": "pager", "id": "foh-pager", "default_page": "stage", "pages": [
+                        {"id": "stage", "title": "STAGE", "sections": [
+                            {"kind": "group", "id": "stage-1", "title": "STAGE", "color": "#1E3A1E", "controls": [
+                                {"kind": "strip", "binding": track("Klavir #"), "strip_kind": "standard", "mute_guard": true}]}]},
+                        {"id": "others", "title": "OTHERS", "sections": []}]},
+                    {"kind": "group", "id": "foh-2", "controls": [
+                        {"kind": "strip", "binding": track("Podklady #"), "strip_kind": "standard", "wide": true}]}]},
+                {"sections": [
+                    {"kind": "group", "id": "foh-3", "title": "EFFECTS", "color": "#636363", "controls": [
+                        {"kind": "strip",
+                         "binding": {"instance": "master", "anchor": {"kind": "return", "name": "A-Rev"}},
+                         "strip_kind": "return"},
+                        {"kind": "param_fader", "label": "Podklady All",
+                         "targets": [{"binding": {"instance": "band", "anchor": {"kind": "track", "name": "Stems grp#"},
+                                                  "path": "mixer_device volume"},
+                                      "prop": "value", "scale": "cc_linear"}]}]}],
+                 "weight": 0.8}]},
+            {"id": "conf", "title": "Conf", "rows": [{"sections": [
+                {"kind": "group", "id": "conf-1", "controls": [{"kind": "text", "text": "unfold_band: 'Vocals Repro grp#'"}]}]}]}
+        ],
+        "global": [
+            {"kind": "alert", "binding": track("TechAlert #"), "period_ms": 300, "label": "TechAlert"},
+            {"kind": "refresh", "label": "REFRESH ALL"}
         ],
         "config": {"unfold": [{"instance": "band", "name": "Vocals Repro grp#"}], "fader_shaping": true},
         "report": {"dropped": []}
@@ -72,319 +67,333 @@ fn errors(value: Value) -> Vec<String> {
         .collect()
 }
 
+fn foh_row(v: &mut Value, row: usize) -> &mut Value {
+    &mut v["pages"][1]["rows"][row]["sections"]
+}
+
 #[test]
 fn the_sample_parses_validates_and_round_trips() {
     let layout = parse(sample());
     assert_eq!(layout.validate(), vec![]);
-    assert_eq!(layout.pages.len(), 2);
-    assert_eq!(layout.pages[0].pager.as_ref().unwrap().pages.len(), 2);
-    assert_eq!(layout.overlay.len(), 2);
-    let ItemKind::Strip(strip) = &layout.pages[0].items[1].kind else {
+    assert_eq!(layout.default_page, "foh");
+    let foh = &layout.pages[1];
+    assert_eq!(foh.rail.len(), 4);
+    assert_eq!(foh.rows.len(), 2);
+    assert_eq!(foh.rows[0].weight, 1.0);
+    assert_eq!(foh.rows[1].weight, 0.8);
+    let pager = foh.pager().expect("the nested pager");
+    assert_eq!(pager.id, "foh-pager");
+    assert_eq!(pager.pages.len(), 2);
+    assert_eq!(layout.pages[0].pager(), None);
+    // Defaults are omitted, so the file reads back exactly as written.
+    assert_eq!(serde_json::to_value(&layout).unwrap(), sample());
+}
+
+#[test]
+fn defaults_are_filled_and_omitted() {
+    let layout = parse(json!({
+        "schema": 2, "default_page": "p",
+        "pages": [{"id": "p", "title": "P", "rows": [{"sections": [{"kind": "group", "controls": [
+            {"kind": "strip", "binding": track("A"), "strip_kind": "standard"},
+            {"kind": "stage", "binding": track("M")},
+            {"kind": "refresh"}]}]}]}]
+    }));
+    assert_eq!(layout.validate(), vec![]);
+    let page = &layout.pages[0];
+    assert!(page.rail.is_empty());
+    assert_eq!(page.rows[0].weight, 1.0);
+    let Section::Group(group) = &page.rows[0].sections[0] else {
+        panic!("a group")
+    };
+    assert_eq!(group.id, None);
+    let Control::Strip(strip) = &group.controls[0] else {
         panic!("a strip")
     };
-    assert_eq!(strip.strip_kind, StripKind::Standard);
-    assert!(strip.mute_guard);
-    assert_eq!(layout.pages[0].items[1].z, 2);
-    assert_eq!(layout.background.as_deref(), Some("#9D9DA0FF"));
-    let pager = layout.pages[0].pager.as_ref().unwrap();
-    assert_eq!(pager.background.as_deref(), Some("#000000FF"));
-    let stage = &pager.pages[0];
-    assert_eq!(stage.background.as_deref(), Some("#000000F9"));
-    assert_eq!(
-        stage.tab,
-        Tab {
-            color: Some("#404040FF".into()),
-            color_on: Some("#BBFFA656".into()),
-            text_size: Some(36.0),
-            text_size_on: Some(51.0),
-        }
-    );
-    assert_eq!(pager.pages[1].background, None);
-    assert_eq!(pager.pages[1].tab, Tab::default());
-    let again: Layout = serde_json::from_value(serde_json::to_value(&layout).unwrap()).unwrap();
-    assert_eq!(again, layout);
-    // Absent fields stay absent when written back.
-    let written = serde_json::to_value(&layout).unwrap();
+    assert!(!strip.wide);
+    assert!(!strip.mute_guard);
+    assert_eq!(layout.global, vec![]);
+    assert_eq!(layout.config, LayoutConfig::default());
+    let back = serde_json::to_value(&layout).unwrap();
+    assert!(back.get("global").is_none(), "{back}");
+    assert!(back["pages"][0].get("rail").is_none(), "{back}");
     assert!(
-        written["pages"][0]["pager"]["pages"][1]
-            .get("background")
-            .is_none()
+        back["pages"][0]["rows"][0].get("weight").is_none(),
+        "{back}"
     );
-    assert!(written["pages"][1]["tab"].get("color_on").is_none());
+    let strip = &back["pages"][0]["rows"][0]["sections"][0]["controls"][0];
+    assert!(
+        strip.get("wide").is_none() && strip.get("mute_guard").is_none(),
+        "{strip}"
+    );
+    let stage = &back["pages"][0]["rows"][0]["sections"][0]["controls"][1];
+    assert!(
+        stage.get("aut").is_none() && stage.get("label").is_none(),
+        "{stage}"
+    );
+    // A weight other than 1 is written.
+    let mut v = sample();
+    v["pages"][1]["rows"][0]["weight"] = json!(2.0);
+    let back = serde_json::to_value(parse(v)).unwrap();
+    assert_eq!(back["pages"][1]["rows"][0]["weight"], json!(2.0));
 }
 
 #[test]
 fn an_unknown_kind_does_not_parse() {
     let mut v = sample();
-    v["overlay"][1]["kind"] = json!("battery");
+    v["global"][1]["kind"] = json!("battery");
+    assert!(serde_json::from_value::<Layout>(v).is_err());
+    let mut v = sample();
+    foh_row(&mut v, 1)[0]["kind"] = json!("area");
+    assert!(serde_json::from_value::<Layout>(v).is_err());
+    let mut v = sample();
+    foh_row(&mut v, 1)[0]["controls"][0]["strip_kind"] = json!("narrow");
     assert!(serde_json::from_value::<Layout>(v).is_err());
 }
 
-#[test]
-fn a_duplicate_page_id_is_an_error() {
-    let mut v = sample();
-    v["pages"][1]["id"] = json!("stage");
-    assert_eq!(
-        errors(v),
-        vec![r#"pages[1]: duplicate page id "stage""#.to_string()]
-    );
-}
-
-#[test]
-fn a_duplicate_item_id_is_an_error() {
-    let mut v = sample();
-    v["overlay"][1]["id"] = json!("s1");
-    assert_eq!(
-        errors(v),
-        vec![r#"overlay[1]: duplicate item id "s1""#.to_string()]
-    );
-}
-
-#[test]
-fn a_frame_outside_the_canvas_is_an_error() {
-    let mut v = sample();
-    v["pages"][0]["items"][0]["frame"] = json!({"x": 2000, "y": 59, "w": 400, "h": 400});
-    assert_eq!(
-        errors(v),
-        vec![
-            "pages[0].items[0].frame: frame (2000, 59, 400×400) is not inside the 2360×1640 canvas"
-                .to_string()
-        ]
-    );
-    for frame in [
-        json!({"x": -1, "y": 0, "w": 10, "h": 10}),
-        json!({"x": 0, "y": -1, "w": 10, "h": 10}),
-        json!({"x": 0, "y": 1631, "w": 10, "h": 10}),
-        json!({"x": 0, "y": 0, "w": 0, "h": 10}),
-        json!({"x": 0, "y": 0, "w": 10, "h": 0}),
-    ] {
-        let mut v = sample();
-        v["overlay"][1]["frame"] = frame.clone();
-        assert_eq!(errors(v).len(), 1, "{frame}");
+/// Every object of the sample that denies unknown fields, by number.
+fn place(v: &mut Value, i: usize) -> &mut Value {
+    match i {
+        0 => v,
+        1 => &mut v["pages"][1],
+        2 => &mut v["pages"][1]["rows"][0],
+        3 => &mut v["pages"][1]["rows"][0]["sections"][0],
+        4 => &mut v["pages"][1]["rows"][0]["sections"][0]["pages"][0],
+        5 => &mut v["pages"][1]["rows"][0]["sections"][1],
+        6 => &mut v["pages"][1]["rows"][0]["sections"][1]["controls"][0],
+        7 => &mut v["pages"][1]["rail"][0],
+        8 => &mut v["pages"][1]["rail"][1],
+        9 => &mut v["pages"][1]["rail"][3],
+        10 => &mut v["global"][0],
+        11 => &mut v["global"][1],
+        _ => &mut v["pages"][2]["rows"][0]["sections"][0]["controls"][0],
     }
-    let mut v = sample();
-    v["overlay"][1]["frame"] = json!({"x": 2350.4, "y": 0, "w": 10, "h": 1640.4});
-    assert_eq!(errors(v), Vec::<String>::new(), "within the rounding slack");
 }
 
 #[test]
-fn a_non_finite_frame_is_an_error() {
-    let mut layout = parse(sample());
-    layout.overlay[1].frame.w = f64::NAN;
-    assert_eq!(layout.validate().len(), 1);
-    layout.overlay[1].frame.w = 10.0;
-    layout.overlay[1].frame.x = f64::INFINITY;
-    assert_eq!(layout.validate().len(), 1);
-    let mut layout = parse(sample());
-    layout.canvas.w = f64::INFINITY;
-    let found: Vec<String> = layout.validate().iter().map(|e| e.at.clone()).collect();
-    assert_eq!(
-        found,
-        vec!["canvas".to_string()],
-        "every frame fits an infinite canvas"
-    );
-    layout.canvas.w = 2360.0;
-    layout.canvas.h = f64::NAN;
-    assert!(layout.validate().iter().any(|e| e.at == "canvas"));
+fn unknown_fields_do_not_parse() {
+    for i in 0..=12 {
+        let mut v = sample();
+        place(&mut v, i)["frame"] = json!({"x": 0});
+        assert!(serde_json::from_value::<Layout>(v).is_err(), "place {i}");
+    }
 }
 
 #[test]
-fn strip_children_and_pagers_are_inside_the_canvas_too() {
+fn the_schema_pages_and_default_pages_are_checked() {
     let mut v = sample();
-    v["pages"][0]["items"][1]["children"]["mute"] = json!({"x": 37, "y": 1600, "w": 106, "h": 52});
-    v["pages"][0]["pager"]["frame"] = json!({"x": 1000, "y": 61, "w": 1746, "h": 773});
+    v["schema"] = json!(1);
+    v["default_page"] = json!("worship");
     assert_eq!(
         errors(v),
         vec![
-            "pages[0].items[1].children.mute: frame (37, 1600, 106×52) is not inside the 2360×1640 canvas"
-                .to_string(),
-            "pages[0].pager: frame (1000, 61, 1746×773) is not inside the 2360×1640 canvas"
-                .to_string(),
+            "schema: schema 1 is not 2".to_string(),
+            r#"default_page: "worship" is not a page"#.to_string(),
         ]
     );
+    let mut v = sample();
+    v["pages"] = json!([]);
+    assert_eq!(errors(v), vec!["pages: no pages".to_string()]);
+    let mut v = sample();
+    foh_row(&mut v, 0)[0]["default_page"] = json!("band-b");
+    assert_eq!(
+        errors(v),
+        vec![r#"pages[1].rows[0].sections[0]: default page "band-b" is not a page"#.to_string()]
+    );
+    let mut v = sample();
+    foh_row(&mut v, 0)[0]["pages"] = json!([]);
+    assert_eq!(
+        errors(v),
+        vec!["pages[1].rows[0].sections[0]: no pages".to_string()]
+    );
+}
+
+#[test]
+fn ids_are_unique_across_pages_sub_pages_and_sections() {
+    // A sub-page named like a top-level page.
+    let mut v = sample();
+    foh_row(&mut v, 0)[0]["pages"][1]["id"] = json!("conf");
+    assert_eq!(
+        errors(v),
+        vec![r#"pages[2]: duplicate id "conf""#.to_string()]
+    );
+    // Two groups, and a group named like the pager.
+    let mut v = sample();
+    foh_row(&mut v, 1)[0]["id"] = json!("foh-2");
+    foh_row(&mut v, 0)[1]["id"] = json!("foh-pager");
+    assert_eq!(
+        errors(v),
+        vec![r#"pages[1].rows[0].sections[1]: duplicate id "foh-pager""#.to_string()]
+    );
+    let mut v = sample();
+    foh_row(&mut v, 1)[0]["id"] = json!("foh-2");
+    assert_eq!(
+        errors(v),
+        vec![r#"pages[1].rows[1].sections[0]: duplicate id "foh-2""#.to_string()]
+    );
+    // An empty id is never allowed.
+    let mut v = sample();
+    v["pages"][0]["id"] = json!("");
+    v["default_page"] = json!("foh");
+    foh_row(&mut v, 0)[0]["id"] = json!("");
+    assert_eq!(
+        errors(v),
+        vec![
+            "pages[0]: empty id".to_string(),
+            "pages[1].rows[0].sections[0]: empty id".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn a_page_has_at_most_one_pager_and_a_pager_holds_none() {
+    let mut v = sample();
+    let mut second = foh_row(&mut v, 0)[0].clone();
+    second["id"] = json!("foh-pager-2");
+    second["pages"][0]["id"] = json!("stage-2");
+    second["pages"][1]["id"] = json!("others-2");
+    second["default_page"] = json!("stage-2");
+    second["pages"][0]["sections"] = json!([]);
+    foh_row(&mut v, 1)
+        .as_array_mut()
+        .unwrap()
+        .push(second.clone());
+    assert_eq!(
+        errors(v),
+        vec!["pages[1].rows[1].sections[1]: a second pager on the page".to_string()]
+    );
+    let mut v = sample();
+    foh_row(&mut v, 0)[0]["pages"][1]["sections"] = json!([second]);
+    assert_eq!(
+        errors(v),
+        vec![
+            "pages[1].rows[0].sections[0].pages[1].sections[0]: a pager inside a pager".to_string()
+        ]
+    );
+    // One pager on each of two pages is fine.
+    let mut v = sample();
+    v["pages"][0]["rows"][0]["sections"]
+        .as_array_mut()
+        .unwrap()
+        .push(second);
+    assert_eq!(errors(v), Vec::<String>::new());
+}
+
+#[test]
+fn a_row_weight_is_above_zero() {
+    for bad in [json!(0.0), json!(-1.0)] {
+        let mut v = sample();
+        v["pages"][1]["rows"][1]["weight"] = bad.clone();
+        assert_eq!(
+            errors(v),
+            vec![format!(
+                "pages[1].rows[1]: weight {} is not above 0",
+                bad.as_f64().unwrap()
+            )]
+        );
+    }
+    // Not writable in JSON, but a layout built in code is checked too.
+    let mut layout = parse(sample());
+    layout.pages[1].rows[1].weight = f64::NAN;
+    let errors: Vec<String> = layout.validate().iter().map(|e| e.to_string()).collect();
+    assert_eq!(errors, vec!["pages[1].rows[1]: weight NaN is not above 0"]);
+    let mut layout = parse(sample());
+    layout.pages[1].rows[1].weight = 0.001;
+    assert_eq!(layout.validate(), vec![]);
 }
 
 #[test]
 fn a_bad_path_is_an_error() {
     let mut v = sample();
-    v["pages"][0]["items"][5]["targets"][0]["binding"]["path"] =
+    foh_row(&mut v, 1)[0]["controls"][1]["targets"][0]["binding"]["path"] =
         json!("devices[name=Latencies parameters 1");
     assert_eq!(
         errors(v),
-        vec!["pages[0].items[5].targets[0]: path: syntax: unterminated [name=".to_string()]
+        vec![
+            "pages[1].rows[1].sections[0].controls[1].targets[0]: path: syntax: unterminated [name="
+                .to_string()
+        ]
     );
-}
-
-#[test]
-fn a_param_toggle_without_targets_is_an_error() {
-    let mut v = sample();
-    v["pages"][0]["items"][4]["targets"] = json!([]);
-    assert_eq!(errors(v), vec!["pages[0].items[4]: no targets".to_string()]);
 }
 
 #[test]
 fn param_targets_need_a_prop_and_their_values_or_scale() {
     let mut v = sample();
-    v["pages"][0]["items"][4]["targets"][0]["prop"] = json!("");
-    v["pages"][0]["items"][4]["targets"][0]
+    v["pages"][1]["rail"][3]["targets"][0]["prop"] = json!("");
+    v["pages"][1]["rail"][3]["targets"][0]
         .as_object_mut()
         .unwrap()
         .remove("off");
-    v["pages"][0]["items"][5]["targets"][0]
-        .as_object_mut()
-        .unwrap()
-        .remove("scale");
-    v["pages"][0]["items"][5]["targets"] = json!([]);
+    foh_row(&mut v, 1)[0]["controls"][1]["targets"] = json!([]);
     assert_eq!(
         errors(v),
         vec![
-            "pages[0].items[4].targets[0]: target without a prop".to_string(),
-            "pages[0].items[4].targets[0]: a toggle target needs on and off".to_string(),
-            "pages[0].items[5]: no targets".to_string(),
+            "pages[1].rail[3].targets[0]: target without a prop".to_string(),
+            "pages[1].rail[3].targets[0]: a toggle target needs on and off".to_string(),
+            "pages[1].rows[1].sections[0].controls[1]: no targets".to_string(),
         ]
     );
     let mut v = sample();
-    v["pages"][0]["items"][5]["targets"][0]
+    foh_row(&mut v, 1)[0]["controls"][1]["targets"][0]
         .as_object_mut()
         .unwrap()
         .remove("scale");
-    v["pages"][0]["items"][4]["targets"][0]
+    v["pages"][1]["rail"][3]["targets"][0]
         .as_object_mut()
         .unwrap()
         .remove("on");
     assert_eq!(
         errors(v),
         vec![
-            "pages[0].items[4].targets[0]: a toggle target needs on and off".to_string(),
-            "pages[0].items[5].targets[0]: a fader target needs a scale".to_string(),
+            "pages[1].rail[3].targets[0]: a toggle target needs on and off".to_string(),
+            "pages[1].rows[1].sections[0].controls[1].targets[0]: a fader target needs a scale"
+                .to_string(),
         ]
+    );
+    let mut v = sample();
+    v["pages"][0]["rows"][0]["sections"][0]["controls"][0]["targets"] = json!([]);
+    assert_eq!(
+        errors(v),
+        vec!["pages[0].rows[0].sections[0].controls[0]: no targets".to_string()]
     );
 }
 
 #[test]
 fn bindings_need_an_instance_and_a_name() {
     let mut v = sample();
-    v["pages"][0]["items"][6]["binding"]["instance"] = json!("");
-    v["overlay"][0]["binding"]["anchor"] = json!({"kind": "return", "name": ""});
-    v["pages"][0]["items"][2]["binding"]["anchor"] = json!({"kind": "track", "name": ""});
+    v["pages"][1]["rail"][2]["binding"]["instance"] = json!("");
+    v["global"][0]["binding"]["anchor"] = json!({"kind": "return", "name": ""});
+    v["pages"][1]["rail"][0]["binding"]["anchor"] = json!({"kind": "track", "name": ""});
+    foh_row(&mut v, 1)[0]["controls"][0]["binding"]["instance"] = json!("");
     assert_eq!(
         errors(v),
         vec![
-            "pages[0].items[2].binding: anchor without a name".to_string(),
-            "pages[0].items[6].binding: binding without an instance".to_string(),
-            "overlay[0].binding: anchor without a name".to_string(),
+            "pages[1].rail[0].binding: anchor without a name".to_string(),
+            "pages[1].rail[2].binding: binding without an instance".to_string(),
+            "pages[1].rows[1].sections[0].controls[0].binding: binding without an instance"
+                .to_string(),
+            "global[0].binding: anchor without a name".to_string(),
         ]
     );
 }
 
 #[test]
-fn schema_canvas_pages_and_misc_are_checked() {
+fn colors_alerts_hub_values_and_unfold_targets_are_checked() {
     let mut v = sample();
-    v["schema"] = json!(2);
-    v["overlay"][0]["period_ms"] = json!(0);
-    v["pages"][0]["items"][3]["key"] = json!("tempo");
-    v["pages"][0]["tab"]["color"] = json!("gray");
-    v["pages"][0]["tab"]["color_on"] = json!("#12345");
-    v["pages"][0]["background"] = json!("black");
-    v["pages"][0]["pager"]["background"] = json!("#00000G");
-    v["background"] = json!("#9D9DA0F");
-    v["overlay"][0]["style"]["bg"] = json!("#FF00001");
-    v["pages"][0]["pager"]["tabbar"]["default_page"] = json!(2);
-    v["pages"][1]["id"] = json!("");
-    v["config"]["unfold"][0]["name"] = json!("");
+    foh_row(&mut v, 1)[0]["color"] = json!("grey");
+    v["pages"][1]["rail"][3]["color"] = json!("#F3942");
+    v["global"][0]["period_ms"] = json!(0);
+    v["pages"][1]["rail"][1]["key"] = json!("battery");
+    v["config"]["unfold"] = json!([{"instance": "band", "name": ""}]);
     assert_eq!(
         errors(v),
         vec![
-            "schema: schema 2 is not 1".to_string(),
-            r##"background: "#9D9DA0F" is not #RRGGBB or #RRGGBBAA"##.to_string(),
-            r#"pages[0].tab.color: "gray" is not #RRGGBB or #RRGGBBAA"#.to_string(),
-            r##"pages[0].tab.color_on: "#12345" is not #RRGGBB or #RRGGBBAA"##.to_string(),
-            r#"pages[0].background: "black" is not #RRGGBB or #RRGGBBAA"#.to_string(),
-            r#"pages[0].items[3]: unknown hub value "tempo""#.to_string(),
-            r##"pages[0].pager.background: "#00000G" is not #RRGGBB or #RRGGBBAA"##.to_string(),
-            "pages[0].pager.pages: default page 2 of 2 pages".to_string(),
-            "pages[1]: empty page id".to_string(),
-            r##"overlay[0].style.bg: "#FF00001" is not #RRGGBB or #RRGGBBAA"##.to_string(),
-            "overlay[0]: alert period 0 ms".to_string(),
+            r#"pages[1].rail[1]: unknown hub value "battery""#.to_string(),
+            r##"pages[1].rail[3].color: "#F3942" is not #RRGGBB or #RRGGBBAA"##.to_string(),
+            r#"pages[1].rows[1].sections[0].color: "grey" is not #RRGGBB or #RRGGBBAA"#.to_string(),
+            "global[0]: alert period 0 ms".to_string(),
             "config.unfold[0]: needs an instance and a name".to_string(),
         ]
     );
-    let mut v = sample();
-    v["canvas"] = json!({"w": 0, "h": 1640});
-    v["pages"] = json!([]);
-    v["tabbar"]["bar_size"] = json!(-1);
-    let found = errors(v);
-    assert!(
-        found.contains(&"canvas: 0×1640 is not a canvas size".to_string()),
-        "{found:?}"
-    );
-    assert!(found.contains(&"pages: no pages".to_string()), "{found:?}");
-    assert!(
-        found.contains(&"pages: tab bar size -1".to_string()),
-        "{found:?}"
-    );
-    let mut v = sample();
-    v["tabbar"]["default_page"] = json!(5);
-    v["canvas"] = json!({"w": 2360, "h": -1});
-    let found = errors(v);
-    assert!(
-        found.contains(&"pages: default page 5 of 2 pages".to_string()),
-        "{found:?}"
-    );
-    assert!(
-        found.contains(&"canvas: 2360×-1 is not a canvas size".to_string()),
-        "{found:?}"
-    );
-    let mut v = sample();
-    v["canvas"] = json!({"w": 2360, "h": 0});
-    let found = errors(v);
-    assert!(
-        found.contains(&"canvas: 2360×0 is not a canvas size".to_string()),
-        "{found:?}"
-    );
-}
-
-/// A mistyped field in a hand edit (D4) is an error, never silently
-/// ignored: at the top, in a page, in an item of every shape (a struct kind,
-/// the boxed strip), in a binding, a frame, a style and the config.
-#[test]
-fn unknown_fields_do_not_parse() {
-    for place in [
-        "",
-        "/canvas",
-        "/tabbar",
-        "/pages/0",
-        "/pages/0/tab",
-        "/pages/0/items/0",
-        "/pages/0/items/0/frame",
-        "/pages/0/items/0/style",
-        "/pages/0/items/1",
-        "/pages/0/items/1/binding",
-        "/pages/0/items/1/children",
-        "/pages/0/items/4/targets/0",
-        "/config",
-    ] {
-        let mut v = sample();
-        v.pointer_mut(place).expect(place)["colour"] = json!("#FF0000");
-        let error = match serde_json::from_value::<Layout>(v) {
-            Ok(_) => panic!("an unknown field at {place:?} parsed"),
-            Err(e) => e.to_string(),
-        };
-        assert!(
-            error.contains("unknown field `colour`"),
-            "{place:?}: {error}"
-        );
-    }
-    // The pager, an overlay item and an unfold target too.
-    let mut v = sample();
-    v["pages"][0]["pager"]["colour"] = json!(1);
-    assert!(serde_json::from_value::<Layout>(v).is_err());
-    let mut v = sample();
-    v["overlay"][1]["colour"] = json!(1);
-    assert!(serde_json::from_value::<Layout>(v).is_err());
-    let mut v = sample();
-    v["config"]["unfold"][0]["colour"] = json!(1);
-    assert!(serde_json::from_value::<Layout>(v).is_err());
 }
 
 #[test]
@@ -463,42 +472,97 @@ fn bindings_are_listed_in_document_order() {
     assert_eq!(
         names,
         vec![
-            "live_set tracks[name=Klavir #]",
+            "live_set tracks[name=Vox 1 stream]",
             "live_set tracks[name=Mics Stage #]",
-            "live_set tracks[name=Rev #]",
-            "live_set tracks[name=Stems grp#] mixer_device volume",
             "live_set tracks[name=Vocals Repro grp#]",
+            "live_set tracks[name=Rev #]",
+            "live_set tracks[name=Klavir #]",
+            "live_set tracks[name=Podklady #]",
+            "live_set return_tracks[name=A-Rev]",
+            "live_set tracks[name=Stems grp#] mixer_device volume",
             "live_set tracks[name=TechAlert #]",
         ]
     );
+    // Every sub-page of the pager counts, not only the one shown first.
+    let mut v = sample();
+    foh_row(&mut v, 0)[0]["pages"][1]["sections"] = json!([{"kind": "group", "controls": [
+        {"kind": "strip", "binding": track("Hand1 #"), "strip_kind": "standard"}]}]);
+    let layout = parse(v);
+    let names: Vec<String> = layout
+        .bindings()
+        .iter()
+        .map(|b| b.target().unwrap())
+        .collect();
+    assert_eq!(names[5], "live_set tracks[name=Hand1 #]");
+    assert_eq!(layout.controls().len(), 13);
 }
 
 #[test]
-fn the_stage_aut_binding_is_the_first_stage_item_with_aut() {
+fn a_page_lists_its_controls_rail_first() {
+    let layout = parse(sample());
+    let kinds: Vec<&str> = layout.pages[1]
+        .controls()
+        .into_iter()
+        .map(|c| match c {
+            Control::Strip(_) => "strip",
+            Control::Solo { .. } => "solo",
+            Control::Stage { .. } => "stage",
+            Control::HubToggle { .. } => "hub_toggle",
+            Control::ParamToggle { .. } => "param_toggle",
+            Control::ParamFader { .. } => "param_fader",
+            Control::Alert { .. } => "alert",
+            Control::Refresh { .. } => "refresh",
+            Control::Text { .. } => "text",
+        })
+        .collect();
+    assert_eq!(
+        kinds,
+        vec![
+            "stage",
+            "hub_toggle",
+            "solo",
+            "param_toggle",
+            "strip",
+            "strip",
+            "strip",
+            "param_fader"
+        ]
+    );
+    let section = &layout.pages[1].rows[0].sections[0];
+    assert_eq!(section.groups().len(), 1);
+    assert_eq!(layout.pages[1].rows[0].sections[1].groups().len(), 1);
+    let refresh = &layout.global[1];
+    assert_eq!(refresh.bindings(), Vec::<&Binding>::new());
+    assert_eq!(layout.pages[2].controls().len(), 1);
+}
+
+#[test]
+fn the_stage_aut_binding_is_the_first_stage_control_with_aut() {
     let layout = parse(sample());
     assert_eq!(
         layout.stage_aut_binding().unwrap().target().unwrap(),
         "live_set tracks[name=Mics Stage #]"
     );
+    // A stage control without aut is skipped; one in a sub-page counts.
     let mut v = sample();
-    v["pages"][0]["items"][2]["aut"] = json!(false);
-    assert!(parse(v.clone()).stage_aut_binding().is_none());
-    // One in a nested pager page is found too, and one in the overlay.
-    v["pages"][0]["pager"]["pages"][1]["items"] = json!([
-        {"kind": "stage", "frame": {"x": 300, "y": 100, "w": 50, "h": 20}, "aut": true,
-         "binding": {"instance": "master", "anchor": {"kind": "track", "name": "Stage2"}}}]);
-    assert_eq!(
-        parse(v.clone()).stage_aut_binding().unwrap().instance,
-        "master"
-    );
-    v["pages"][0]["pager"]["pages"][1]["items"] = json!([]);
-    v["overlay"] = json!([
-        {"kind": "stage", "frame": {"x": 300, "y": 100, "w": 50, "h": 20}, "aut": true,
-         "binding": {"instance": "band", "anchor": {"kind": "track", "name": "Overlay stage"}}}]);
+    v["pages"][1]["rail"][0]["aut"] = json!(false);
+    foh_row(&mut v, 0)[0]["pages"][1]["sections"] = json!([{"kind": "group", "controls": [
+        {"kind": "stage", "binding": track("Sub stage"), "aut": true}]}]);
     assert_eq!(
         parse(v).stage_aut_binding().unwrap().target().unwrap(),
-        "live_set tracks[name=Overlay stage]"
+        "live_set tracks[name=Sub stage]"
     );
+    // Then the global controls.
+    let mut v = sample();
+    v["pages"][1]["rail"][0]["aut"] = json!(false);
+    v["global"] = json!([{"kind": "stage", "binding": track("Global stage"), "aut": true}]);
+    assert_eq!(
+        parse(v).stage_aut_binding().unwrap().target().unwrap(),
+        "live_set tracks[name=Global stage]"
+    );
+    let mut v = sample();
+    v["pages"][1]["rail"][0]["aut"] = json!(false);
+    assert_eq!(parse(v).stage_aut_binding(), None);
 }
 
 /// The TouchOSC import tool's output for its synthetic fixtures
@@ -515,24 +579,25 @@ fn imported_layout_parses_and_validates() {
     assert_eq!(layout.validate(), vec![]);
     let titles: Vec<&str> = layout.pages.iter().map(|p| p.title.as_str()).collect();
     assert_eq!(titles, vec!["Cue", "FOH", "Conf"]);
-    assert_eq!(layout.tabbar.orientation, Orientation::Top);
-    let pager = layout.pages[1].pager.as_ref().expect("the nested pager");
-    assert_eq!(pager.tabbar.orientation, Orientation::Left);
+    assert_eq!(layout.default_page, layout.pages[1].id);
+    let pager = layout.pages[1].pager().expect("the nested pager");
+    let sub: Vec<&str> = pager.pages.iter().map(|p| p.title.as_str()).collect();
+    assert_eq!(sub, vec!["STAGE", "OTHERS"]);
+    assert!(!layout.pages[1].rail.is_empty());
     assert_eq!(
         layout.stage_aut_binding().unwrap().target().unwrap(),
         "live_set tracks[name=Mics Stage #]"
     );
-    let kinds: Vec<&str> = layout
-        .overlay
+    let global: Vec<&str> = layout
+        .global
         .iter()
-        .map(|i| match i.kind {
-            ItemKind::Strip(_) => "strip",
-            ItemKind::Refresh { .. } => "refresh",
-            ItemKind::Alert { .. } => "alert",
+        .map(|c| match c {
+            Control::Alert { .. } => "alert",
+            Control::Refresh { .. } => "refresh",
             _ => "other",
         })
         .collect();
-    assert_eq!(kinds, vec!["strip", "refresh", "alert"]);
+    assert_eq!(global, vec!["alert", "refresh"]);
     let targets: Vec<String> = layout
         .bindings()
         .iter()
@@ -545,46 +610,6 @@ fn imported_layout_parses_and_validates() {
     // Re-serialised, it reads back the same.
     let again: Layout = serde_json::from_value(serde_json::to_value(&layout).unwrap()).unwrap();
     assert_eq!(again, layout);
-}
-
-#[test]
-fn strip_children_are_listed_by_name() {
-    let f = Frame {
-        x: 1.0,
-        y: 2.0,
-        w: 3.0,
-        h: 4.0,
-    };
-    let children = StripChildren {
-        meter: Some(f),
-        instance_label: Some(f),
-        ..StripChildren::default()
-    };
-    assert_eq!(children.frames(), vec![("meter", f), ("instance_label", f)]);
-    let all = StripChildren {
-        fader: Some(f),
-        pan: Some(f),
-        mute: Some(f),
-        meter: Some(f),
-        status: Some(f),
-        db: Some(f),
-        label: Some(f),
-        instance_label: Some(f),
-    };
-    let names: Vec<&str> = all.frames().into_iter().map(|(n, _)| n).collect();
-    assert_eq!(
-        names,
-        vec![
-            "fader",
-            "pan",
-            "mute",
-            "meter",
-            "status",
-            "db",
-            "label",
-            "instance_label"
-        ]
-    );
 }
 
 /// The meter source switch (spec X2, #5): absent is `level` (TouchOSC
