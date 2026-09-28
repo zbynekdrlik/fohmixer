@@ -16,7 +16,10 @@
 #   (the script's exit code, hub-stop.log, the result, the hubs, the hub logs);
 # - the two tasks registered for this user in a test task folder and read back;
 # - the firewall rule as a disabled test rule, and the data folder's DACL on a
-#   test folder.
+#   test folder;
+# - an account named like the computer, as on the PC (#9): a temporary local
+#   user (never logged on, removed at the end) through the account check, the
+#   DACL, and the tasks' principal and logon trigger with their read-back.
 # Only its own test objects are removed; nothing is ended by force (spec I7).
 param([Parameter(Mandatory)][string]$HubExe)
 Set-StrictMode -Version Latest
@@ -166,6 +169,8 @@ $old = New-Object DateTime 2001, 1, 1, 0, 0, 0, ([DateTimeKind]::Utc)
 $oldApp = $old.AddDays(1)
 $fwName = 'fohmixer-selftest-' + $id
 $me = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+$clashFolder = '\fohmixer-selftest-' + $id + '-clash\'
+$clashSid = $null
 New-Item -ItemType Directory -Force -Path $bandLib, $masterLib | Out-Null
 
 try {
@@ -180,6 +185,39 @@ try {
     $meSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
     Assert ((Get-FohSid $me) -ceq $meSid -and (Get-FohSid (Get-FohLeafName $me)) -ceq $meSid) 'sid-of-an-account-with-or-without-its-computer'
     Assert ((Get-FohSid 'S-1-5-18') -ceq 'S-1-5-18' -and (Get-FohSid ('no-such-account-' + $id)) -ceq '') 'sid-taken-as-it-is-or-empty-for-an-unknown-account'
+
+    # ---- an account named like the computer (#9) ----
+    # On the PC an account's name equals the computer's. Windows looks a bare
+    # name up as a domain name first, so there the bare name is the PC's
+    # account domain and does not translate to the account's SID, while
+    # <computer>\<name> does. The install must look its accounts up that way
+    # wherever it resolves or names one: the account check, the DACL, the
+    # tasks' principal and logon trigger, and the tasks' read-back. A local
+    # user of that name, created here with a random password and never logged
+    # on, reproduces it; it is removed at the end.
+    $clash = $env:COMPUTERNAME
+    $clashPassword = ConvertTo-SecureString ('Aa1!' + [guid]::NewGuid().ToString()) -AsPlainText -Force
+    $clashSid = (New-LocalUser -Name $clash -Password $clashPassword -AccountNeverExpires -Description 'fohmixer self-test, removed at its end').SID.Value
+    Write-Host "    [a local user named like the computer: $clashSid]"
+    Assert ((Get-FohSid $clash) -ceq $clashSid) 'sid-of-an-account-named-like-the-computer-by-its-bare-name'
+    Assert ((Get-FohSid ($env:COMPUTERNAME + '\' + $clash)) -ceq $clashSid) 'sid-of-an-account-named-like-the-computer-with-its-computer'
+    Assert ((Get-FohLocalAccountName $clash) -ceq ($env:COMPUTERNAME + '\' + $clash) -and
+        (Get-FohLocalAccountName 'PC\band') -ceq 'PC\band') 'local-account-name-qualifies-a-bare-name-only'
+    Assert ((Get-FohAccountSid $clash).Value -ceq $clashSid) 'install-account-check-finds-an-account-named-like-the-computer'
+    Assert ((ErrorOf { Get-FohAccountSid ('no-such-account-' + $id) }) -like "*no account no-such-account-$id on this PC*") 'install-account-check-refuses-an-unknown-account'
+    $clashAcl = Join-Path $base 'acl-clash'
+    New-Item -ItemType Directory -Force -Path $clashAcl | Out-Null
+    Set-FohDataDirAcl -Path $clashAcl -User $clash
+    Assert (@(Test-FohDataDirAcl -Path $clashAcl -User $clash).Count -eq 0) 'dacl-for-an-account-named-like-the-computer-reads-back'
+    $clashRules = @([IO.Directory]::GetAccessControl($clashAcl).GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]) |
+            ForEach-Object { $_.IdentityReference.Value })
+    Assert ($clashRules -ccontains $clashSid) 'dacl-names-the-account-named-like-the-computer'
+    Register-FohHubTasks -AppDir $here -DataDir (Join-Path $base 'data-clash') -User $clash -TaskPath $clashFolder
+    $ct = Get-ScheduledTask -TaskPath $clashFolder -TaskName 'fohmixer-hub'
+    Assert ((Get-FohSid ([string]$ct.Principal.UserId)) -ceq $clashSid -and (Get-FohSid ([string]$ct.Triggers[0].UserId)) -ceq $clashSid) `
+        "tasks-run-as-and-start-at-the-logon-of-the-account-named-like-the-computer (read back: $($ct.Principal.UserId) / $($ct.Triggers[0].UserId))"
+    $cs = Get-ScheduledTask -TaskPath $clashFolder -TaskName 'fohmixer-hub-stop'
+    Assert ((Get-FohSid ([string]$cs.Principal.UserId)) -ceq $clashSid) 'stop-task-runs-as-the-account-named-like-the-computer'
 
     $cargo = Join-Path $base 'Cargo.toml'
     [IO.File]::WriteAllText($cargo, "[package]`nversion = `"9.9.9`"`n[workspace.package]`nversion = `"1.2.3-dev.4`"`nedition = `"2024`"`n")
@@ -421,17 +459,25 @@ try {
             }
         }
     } catch { Write-Host "cleanup: hub ($($_.Exception.Message))" }
-    try {
-        foreach ($t in @(Get-ScheduledTask | Where-Object { $_.TaskPath -eq $taskFolder })) {
-            Unregister-ScheduledTask -TaskPath $taskFolder -TaskName $t.TaskName -Confirm:$false
-        }
-        $sch = New-Object -ComObject 'Schedule.Service'
-        $sch.Connect()
-        $sch.GetFolder('\').DeleteFolder($taskFolder.Trim('\'), 0)
-    } catch { Write-Host "cleanup: task folder $taskFolder ($($_.Exception.Message))" }
+    foreach ($tf in @($taskFolder, $clashFolder)) {
+        try {
+            $inFolder = @(Get-ScheduledTask | Where-Object { $_.TaskPath -eq $tf })
+            foreach ($t in $inFolder) {
+                Unregister-ScheduledTask -TaskPath $tf -TaskName $t.TaskName -Confirm:$false
+            }
+            if ($inFolder.Count -gt 0) {
+                $sch = New-Object -ComObject 'Schedule.Service'
+                $sch.Connect()
+                $sch.GetFolder('\').DeleteFolder($tf.Trim('\'), 0)
+            }
+        } catch { Write-Host "cleanup: task folder $tf ($($_.Exception.Message))" }
+    }
     try {
         if ($null -ne (Get-FohFirewallRule -Name $fwName)) { Remove-NetFirewallRule -Name $fwName }
     } catch { Write-Host "cleanup: firewall rule $fwName ($($_.Exception.Message))" }
+    try {
+        if ($clashSid) { Remove-LocalUser -SID (New-Object Security.Principal.SecurityIdentifier $clashSid) }
+    } catch { Write-Host "cleanup: the local user $clashSid ($($_.Exception.Message))" }
     try { Remove-Item -LiteralPath $base -Recurse -Force } catch { Write-Host "cleanup: $base ($($_.Exception.Message))" }
 }
 Write-Host 'Test-Fohmixer: all passed'
