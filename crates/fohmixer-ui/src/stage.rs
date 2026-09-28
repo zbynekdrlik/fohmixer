@@ -187,6 +187,17 @@ pub fn tab_font(tab: &Tab, lit: bool) -> Option<f64> {
     on.or(tab.text_size)
 }
 
+/// What a strip text's fitted size depends on (#9): the text with every digit
+/// as `0`. Digits are equally wide there (`tabular-nums`), so a dB value that
+/// moves within its form ("-6.00 dB" to "-5.98 dB", a fader drag) keeps its
+/// size and is not measured again: a measurement lays the page out, and one
+/// per value during a drag starved the animation frames.
+pub fn fit_key(text: &str) -> String {
+    text.chars()
+        .map(|c| if c.is_ascii_digit() { '0' } else { c })
+        .collect()
+}
+
 /// A CSS length in px (`"22px"`, a computed style), or `None` for another
 /// unit or no number.
 pub fn px_value(text: &str) -> Option<f64> {
@@ -501,6 +512,17 @@ mod tests {
 
     fn close(got: f64, want: f64) {
         assert!((got - want).abs() < 1e-9, "{got} is not {want}");
+    }
+
+    #[test]
+    fn a_text_keeps_its_fit_while_only_its_digits_change() {
+        assert_eq!(fit_key("-6.02 dB"), "-0.00 dB");
+        assert_eq!(fit_key("12.3 dB"), "00.0 dB");
+        assert_eq!(fit_key("-inf dB"), "-inf dB");
+        assert_eq!(fit_key(""), "");
+        assert_eq!(fit_key("-6.00 dB"), fit_key("-5.98 dB"));
+        assert_ne!(fit_key("-9.99 dB"), fit_key("-10.0 dB"));
+        assert_ne!(fit_key("-0.811 dB"), fit_key("-0.81 dB"));
     }
 
     #[test]

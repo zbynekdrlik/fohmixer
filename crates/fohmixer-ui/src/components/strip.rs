@@ -20,7 +20,8 @@ use crate::store::{LiveStore, Slot};
 /// A text of the strip at its stylesheet size (`.strip-db`, `.strip-label`,
 /// `.strip-instance`), shrunk to fit its box (#9: a narrow strip's 39 × 25
 /// instance label showed "BANC" for BAND): an effect writes `text` and then
-/// fits it, so the fitting always measures the text shown.
+/// fits it, so the fitting always measures the text shown; it measures again
+/// only when the text's shape changes (`stage::fit_key`), not on every value.
 #[component]
 fn FittedText(
     css_class: &'static str,
@@ -29,12 +30,15 @@ fn FittedText(
     text: Signal<String>,
 ) -> impl IntoView {
     let node = NodeRef::<html::Div>::new();
-    Effect::new(move |_| {
+    Effect::new(move |fitted: Option<Option<String>>| {
         let shown = text.get();
-        if let Some(el) = node.get() {
-            el.set_text_content(Some(&shown));
+        let el = node.get()?;
+        el.set_text_content(Some(&shown));
+        let key = stage::fit_key(&shown);
+        if fitted.flatten().as_deref() != Some(key.as_str()) {
             dom::fit_text(&el, None);
         }
+        Some(key)
     });
     view! {
         <div class=css_class data-testid=testid node_ref=node style={stage::box_style(frame)}></div>
