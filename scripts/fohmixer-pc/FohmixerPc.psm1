@@ -23,7 +23,7 @@ $script:HubTask = 'fohmixer-hub'
 $script:StopTask = 'fohmixer-hub-stop'
 # What a bundle holds besides SHA256SUMS (design note section 2).
 $script:BundleFiles = @('VERSION', 'fohmixer-hub.exe', 'Install-Fohmixer.ps1', 'FohmixerPc.psm1', 'FohmixerLivePrefs.ps1',
-    'Start-FohmixerHub.ps1', 'Stop-FohmixerHub.ps1',
+    'FohmixerRemote.ps1', 'Start-FohmixerHub.ps1', 'Stop-FohmixerHub.ps1',
     'FohMixer/__init__.py', 'FohMixer/Config.py', 'FohMixer/version.py')
 # A SemVer version that is also a safe folder name (no trailing dot, no "..").
 $script:SemVer = '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?\z'
@@ -31,6 +31,9 @@ $script:SemVer = '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z
 # The check of Live's User Library setting (Get-FohLivePrefsFile,
 # Get-FohLiveUserLibrary, Test-FohLiveUserLibrary), in a file of its own.
 . (Join-Path $PSScriptRoot 'FohmixerLivePrefs.ps1')
+# Remote access (#17): the public name's toml tables, hosts entry, desktop
+# shortcut, and the tunnel's token and service, in a file of its own.
+. (Join-Path $PSScriptRoot 'FohmixerRemote.ps1')
 
 # Ctrl-Break through another process's console (the hub's graceful stop, as in
 # iemmixer's iem-win console.rs): detach from this process's console, attach to
@@ -444,9 +447,11 @@ function Install-FohAppDir {
 
 function New-FohHubToml {
     # <DataDir>\fohmixer-hub.toml as the hub's config.rs reads it: the HTTP
-    # port, the two instances and the layout file (relative to the data folder).
+    # port, the two instances and the layout file (relative to the data folder),
+    # then $Remote (Get-FohRemoteToml: the remote-access tables, #17).
     # There is no data_dir key: the hub's data folder is FOHMIXER_DATA.
-    param([Parameter(Mandatory)][int]$HttpPort, [Parameter(Mandatory)][int]$BandPort, [Parameter(Mandatory)][int]$MasterPort)
+    param([Parameter(Mandatory)][int]$HttpPort, [Parameter(Mandatory)][int]$BandPort, [Parameter(Mandatory)][int]$MasterPort,
+          [AllowEmptyString()][string]$Remote = '')
     $lines = @(
         '# fohmixer-hub configuration, written by Install-Fohmixer.ps1: run the install again to change it.',
         ('http_port = {0}' -f $HttpPort),
@@ -459,7 +464,7 @@ function New-FohHubToml {
         '[[instances]]',
         'name = "master"',
         ('port = {0}' -f $MasterPort))
-    return (($lines -join "`r`n") + "`r`n")
+    return (($lines -join "`r`n") + "`r`n" + $Remote)
 }
 
 function Set-FohConfigText {
@@ -1010,7 +1015,21 @@ function Invoke-FohInstall {
         [string]$MasterAbletonPrefs = '',
         [switch]$NoTask,
         [string]$TaskPath = $script:TaskPath,
-        [int]$ReadyTimeoutSeconds = 20
+        [int]$ReadyTimeoutSeconds = 20,
+        # Remote access (#17, FohmixerRemote.ps1): all optional; without
+        # -PublicName nothing of it is done.
+        [string]$PublicName = '',
+        [int]$HttpsPort = 443,
+        [string]$AcmeEmail = '',
+        [string]$AcmeDirectory = '',
+        [string]$AccessTeam = '',
+        [string]$AccessAud = '',
+        [switch]$SetTunnelToken,
+        [string]$CloudflaredExe = '',
+        [int]$TunnelMetricsPort = 20241,
+        [string]$TunnelDir = '',
+        [string]$HostsFile = '',
+        [string]$BandDesktop = ''
     )
     # ---- checks ----
     $BundleZip = Resolve-FohPath $BundleZip
@@ -1042,6 +1061,42 @@ function Invoke-FohInstall {
         $Layout = Resolve-FohPath $Layout
         Test-FohLayoutFile -Path $Layout
     }
+    # Remote access (#17): checked, and the tunnel token read, before any change.
+    $remote = $null
+    $remoteToml = ''
+    if ($PublicName) {
+        Test-FohPublicName $PublicName
+        foreach ($p in @($HttpsPort, $TunnelMetricsPort)) { if ($p -lt 1 -or $p -gt 65535) { throw "port $p refused" } }
+        if (@($HttpPort, $BandPort, $MasterPort, $HttpsPort, $TunnelMetricsPort | Select-Object -Unique).Count -ne 5) {
+            throw "the ports must differ: http $HttpPort, band $BandPort, master $MasterPort, https $HttpsPort, tunnel metrics $TunnelMetricsPort"
+        }
+        $auds = @($AccessAud.Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+        if ([bool]$AccessTeam -ne ($auds.Count -gt 0)) { throw 'give -AccessTeam and -AccessAud together (the Access application of the name)' }
+        if ($AccessTeam) { Test-FohPublicName $AccessTeam }
+        if (-not $TunnelDir) { $TunnelDir = Join-Path $env:ProgramData 'fohmixer-tunnel' }
+        $TunnelDir = Resolve-FohPath $TunnelDir
+        if (-not $CloudflaredExe) { $CloudflaredExe = Join-Path ${env:ProgramFiles(x86)} 'cloudflared\cloudflared.exe' }
+        $tokenFile = Join-Path $TunnelDir $script:TunnelTokenFile
+        $tunnel = $SetTunnelToken -or (Test-Path -LiteralPath $tokenFile -PathType Leaf)
+        if ($tunnel -and -not (Test-Path -LiteralPath $CloudflaredExe -PathType Leaf)) {
+            throw "cloudflared not found: $CloudflaredExe (install it, or pass -CloudflaredExe)"
+        }
+        if (-not $HostsFile) { $HostsFile = Join-Path $env:SystemRoot 'System32\drivers\etc\hosts' }
+        if (-not $BandDesktop) { $BandDesktop = Join-Path $env:SystemDrive "Users\$BandUser\Desktop" }
+        if (-not (Test-Path -LiteralPath $BandDesktop -PathType Container)) {
+            throw "the band user's desktop not found: $BandDesktop (pass -BandDesktop)"
+        }
+        $token = $null
+        if ($SetTunnelToken) { $token = Read-FohTunnelToken }
+        $remoteToml = Get-FohRemoteToml -Name $PublicName -HttpsPort $HttpsPort -AcmeEmail $AcmeEmail -AcmeDirectory $AcmeDirectory `
+            -AccessTeam $AccessTeam -AccessAud $auds -Tunnel:$tunnel -TunnelMetricsPort $TunnelMetricsPort
+        $remote = [pscustomobject]@{
+            name = $PublicName; url = (Get-FohPublicUrl -Name $PublicName -HttpsPort $HttpsPort); tunnel = [bool]$tunnel
+            token_file = $tokenFile; token = $token
+        }
+    } elseif ($SetTunnelToken -or $AccessTeam -or $AccessAud -or $AcmeEmail -or $AcmeDirectory) {
+        throw 'the remote-access parameters need -PublicName'
+    }
     if (-not $NoTask) {
         $me = New-Object Security.Principal.WindowsPrincipal ([Security.Principal.WindowsIdentity]::GetCurrent())
         if (-not $me.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
@@ -1067,7 +1122,7 @@ function Invoke-FohInstall {
         $app = Install-FohAppDir -Unpacked $unpacked -DataDir $DataDir
         Write-Host "fohmixer install: $($app.dir) (changed: $($app.changed))"
         # 3. the config
-        $tomlText = New-FohHubToml -HttpPort $HttpPort -BandPort $BandPort -MasterPort $MasterPort
+        $tomlText = New-FohHubToml -HttpPort $HttpPort -BandPort $BandPort -MasterPort $MasterPort -Remote $remoteToml
         $toml = Write-FohText -Path (Join-Path $DataDir 'fohmixer-hub.toml') -Text $tomlText
         Write-Host "fohmixer install: fohmixer-hub.toml (changed: $toml)"
         # 4. the layout
@@ -1088,12 +1143,36 @@ function Invoke-FohInstall {
             Write-Host ("fohmixer install: the {0} user's FohMixer (replaced: {1}, Config.py written: {2})" -f $u.instance, $r.replaced, $r.config_written)
             $copies += [pscustomobject]@{ instance = $u.instance; replaced = $r.replaced; config_written = $r.config_written; removed = $r.removed }
         }
+        # 5b. remote access (#17): the name on this PC, the shortcut, the tunnel token
+        $remoteResult = $null
+        if ($remote) {
+            $hostsChanged = Set-FohHostsEntry -Path $HostsFile -Name $remote.name
+            $shortcutChanged = Set-FohDesktopShortcut -Desktop $BandDesktop -Url $remote.url
+            $tokenChanged = $false
+            if ($null -ne $remote.token) { $tokenChanged = Set-FohTunnelToken -TunnelDir $TunnelDir -Token $remote.token }
+            $note = 'fohmixer install: {0} -> 127.0.0.1 in the hosts file (changed: {1}), the desktop shortcut (changed: {2}), ' +
+                'the tunnel token (changed: {3})'
+            Write-Host ($note -f $remote.name, $hostsChanged, $shortcutChanged, $tokenChanged)
+            $remoteResult = [pscustomobject]@{
+                public_name = $remote.name; url = $remote.url; hosts_changed = $hostsChanged
+                shortcut_changed = $shortcutChanged; token_changed = $tokenChanged; tunnel = $remote.tunnel; tunnel_service = $null
+            }
+        }
         # 6. the tasks and the firewall rule
         if (-not $NoTask) {
             Register-FohHubTasks -AppDir $app.dir -DataDir $DataDir -User $BandUser -TaskPath $TaskPath
             Write-Host "fohmixer install: tasks $TaskPath$($script:HubTask) and $TaskPath$($script:StopTask) registered and read back"
             $firewall = Set-FohFirewallRule -Port $HttpPort
             Write-Host "fohmixer install: firewall rule fohmixer-hub-http, TCP $HttpPort, Domain and Private (changed: $firewall)"
+            if ($remote) {
+                $httpsRule = Set-FohFirewallRule -Port $HttpsPort -Name 'fohmixer-hub-https'
+                Write-Host "fohmixer install: firewall rule fohmixer-hub-https, TCP $HttpsPort, Domain and Private (changed: $httpsRule)"
+                if ($remote.tunnel) {
+                    $bin = Get-FohTunnelCommand -Exe $CloudflaredExe -TokenFile $remote.token_file -MetricsPort $TunnelMetricsPort
+                    $remoteResult.tunnel_service = Set-FohTunnelService -BinPath $bin
+                    Write-Host "fohmixer install: the $($script:TunnelService) service runs cloudflared (changed: $($remoteResult.tunnel_service))"
+                }
+            }
             foreach ($n in @(Get-NetConnectionProfile | Where-Object { "$($_.NetworkCategory)" -eq 'Public' })) {
                 $publicNote = 'fohmixer install: the network on {0} is Public; the rule allows Domain and Private only, ' +
                     'so clients there are refused until it is set to Private'
@@ -1129,6 +1208,6 @@ function Invoke-FohInstall {
     }
     return [pscustomobject]@{
         version = $unpacked.version; app = $app.dir; app_changed = $app.changed; config_changed = $toml
-        layout_changed = $layoutChanged; copies = $copies; hub = $answer
+        layout_changed = $layoutChanged; copies = $copies; hub = $answer; remote = $remoteResult
     }
 }
