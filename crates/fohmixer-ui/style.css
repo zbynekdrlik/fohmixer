@@ -694,17 +694,17 @@ body {
     white-space: nowrap;
 }
 
+/* The strip's texts are sized from the strip width (`--strip-w`), never
+   measured (#21: measuring each text forced a layout per text, and WebKit
+   stopped drawing frames while it ran): the tag's longest form "MASTER ·
+   RET" and a name's first word fit from the narrowest strip up; an
+   ellipsis is the last guard, never an overflow (#9). */
 .strip-tag {
     max-width: 100%;
     min-width: 0;
     overflow: hidden;
-}
-
-.strip-tag-text {
-    display: block;
-    max-width: 100%;
-    overflow: hidden;
-    white-space: nowrap;
+    font-size: clamp(7px, calc(var(--strip-w, 76px) / 9), 8.5px) !important;
+    text-overflow: ellipsis;
 }
 
 .strip-tag[data-instance="master"] {
@@ -1017,7 +1017,7 @@ body {
     background: #1f1f2e;
     box-shadow: inset 0 0 0 1px var(--mute-dim);
     color: var(--faint);
-    font: 700 15px/1 var(--display);
+    font: 700 clamp(11px, calc(var(--strip-w, 76px) * 0.2), 15px) / 1 var(--display);
     letter-spacing: 0.5px;
     text-transform: uppercase;
     cursor: pointer;
@@ -1043,9 +1043,11 @@ body {
 }
 
 .strip-label {
+    display: block;
     max-width: 100%;
     overflow: hidden;
     line-height: 1.3;
+    text-overflow: ellipsis;
     white-space: nowrap;
 }
 

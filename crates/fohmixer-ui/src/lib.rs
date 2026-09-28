@@ -19,7 +19,6 @@ pub mod lifecycle;
 pub mod net;
 pub mod pages;
 pub mod raf;
-pub mod stage;
 pub mod store;
 
 use wasm_bindgen::prelude::*;

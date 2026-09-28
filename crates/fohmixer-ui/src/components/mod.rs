@@ -33,16 +33,6 @@ pub struct Settings {
     pub meter_source: MeterSource,
 }
 
-/// When the fitted texts are measured again (a context of a page, #21): the
-/// strip width all rows share and the count of font loads. A text fitted
-/// once, at the first layout, would stay too small once the strips widen,
-/// or be cut once they narrow (a resize, a rotation, the fonts arriving).
-#[derive(Debug, Clone, Copy)]
-pub struct Refit {
-    pub width: Signal<f64>,
-    pub fonts: Signal<u64>,
-}
-
 /// How long a failed write shows on its control.
 pub const FAIL_FLASH_MS: u64 = 400;
 

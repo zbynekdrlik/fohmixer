@@ -4,47 +4,18 @@
 //! mute, lit in the track's Live colour while the track is audible.
 
 use fohmixer_proto::layout::{Strip, StripKind};
-use leptos::html;
 use leptos::prelude::*;
 
+use super::Settings;
 use super::buttons::{MuteView, anchor_name};
 use super::fader::{FaderView, Law, Target};
 use super::meter::{MeterView, StatusView};
 use super::pan::PanView;
-use super::{Refit, Settings};
 use crate::behave::db_text::db_text;
 use crate::behave::label::strip_label;
 use crate::behave::scale::{TICKS, tick_label, tick_pos};
 use crate::binding::strip_subs;
-use crate::dom;
-use crate::stage;
 use crate::store::{LiveStore, Slot};
-
-/// A text shrunk to fit its box (#9): an effect writes `text` and then fits
-/// it, so the fitting always measures the text shown; it measures again when
-/// the text's shape changes (`stage::fit_key`), not on every value, and when
-/// the page's `Refit` says the room or the font changed (#21).
-#[component]
-pub fn FittedText(
-    css_class: &'static str,
-    testid: &'static str,
-    text: Signal<String>,
-) -> impl IntoView {
-    let node = NodeRef::<html::Span>::new();
-    let refit = use_context::<Refit>();
-    Effect::new(move |fitted: Option<Option<String>>| {
-        let shown = text.get();
-        let room = refit.map(|r| (r.width.get(), r.fonts.get()));
-        let el = node.get()?;
-        el.set_text_content(Some(&shown));
-        let key = format!("{}|{room:?}", stage::fit_key(&shown));
-        if fitted.flatten().as_deref() != Some(key.as_str()) {
-            dom::fit_text(&el, None);
-        }
-        Some(key)
-    });
-    view! { <span class=css_class data-testid=testid node_ref=node></span> }
-}
 
 /// The dB scale beside a fader: TouchOSC's labels at the fader positions of
 /// their levels.
@@ -141,12 +112,8 @@ pub fn StripView(strip: Strip, settings: Settings) -> impl IntoView {
             data-kind=kind
         >
             {pan_view}
-            <span class="strip-tag" data-instance=tag_instance>
-                <FittedText
-                    css_class="strip-tag-text"
-                    testid="strip-instance"
-                    text={Signal::stored(tag)}
-                />
+            <span class="strip-tag" data-testid="strip-instance" data-instance=tag_instance>
+                {tag}
             </span>
             <div class="strip-fz">
                 <ScaleView />

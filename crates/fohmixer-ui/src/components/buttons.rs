@@ -8,7 +8,6 @@ use fohmixer_proto::layout::{Anchor, Binding};
 use leptos::prelude::*;
 use serde_json::{Value, json};
 
-use super::strip::FittedText;
 use super::{fail_flash, readiness, slot_of};
 use crate::behave::colour::{css_color, text_on};
 use crate::behave::label::strip_label;
@@ -130,7 +129,7 @@ pub fn MuteView(
             style=look
             on:pointerdown=on_down
         >
-            <FittedText css_class="strip-label" testid="strip-label" text={Signal::stored(label)} />
+            <span class="strip-label" data-testid="strip-label">{label}</span>
             <span class="mute-mark" aria-hidden="true">"MUTE"</span>
         </div>
     }

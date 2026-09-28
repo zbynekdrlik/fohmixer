@@ -35,15 +35,13 @@ exclude_re = [
   "fohmixer-ui/src/lifecycle\\.rs.*replace format_panic_message -> String with ",
   # S4 (#8): the UI's browser glue. web-sys calls panic off wasm, so a native
   # test cannot run these; each carries out decisions made by the tested pure
-  # modules (behave/*, binding, stage, net, raf's Registry, the store's Slot,
+  # modules (behave/*, binding, flow, net, raf's Registry, the store's Slot,
   # Readiness, Wanted, Badge, slot_failure, range_from, next_range and store/conn.rs's
   # Conn, replaces and instance_change), and the E2E suite drives every one
   # of them in Chromium and WebKit.
-  # dom.rs: the clocks, style/attribute writes, the text measurement of
-  # fit_text and the computed size it starts from (its decisions are the
-  # tested stage::fitted_font and px_value), the console, local storage, the
-  # fonts' loading promise (#21).
-  "fohmixer-ui/src/dom\\.rs.*(replace|in) (now|wall_now|log|error|set_style|set_attr|fit_text|computed_px|viewport|current_element|child|storage|storage_get|storage_set|storage_remove|on_fonts_ready)( |$)",
+  # dom.rs: the clocks, style/attribute writes, the viewport, the console,
+  # local storage.
+  "fohmixer-ui/src/dom\\.rs.*(replace|in) (now|wall_now|log|error|set_style|set_attr|viewport|current_element|child|storage|storage_get|storage_set|storage_remove)( |$)",
   # net.rs: the fetch wrapper and the handshake reload (location.reload).
   "fohmixer-ui/src/net\\.rs.*(replace|in) (fetch_text|last_reload|reload)( |$)",
   # raf.rs: requestAnimationFrame scheduling around the tested Registry, and
