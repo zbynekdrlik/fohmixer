@@ -63,22 +63,22 @@ pub fn slot_of(store: LiveStore, spec: Option<&SubSpec>) -> RwSignal<Slot> {
     )
 }
 
-/// The readiness of a control bound to `slots`, tracked (for the view).
+/// The readiness of a control bound to `slots`, tracked (for the view; a
+/// component keeps it in one `Memo` for its attributes).
 pub fn readiness(slots: &[RwSignal<Slot>]) -> Readiness {
-    let current: Vec<Slot> = slots
-        .iter()
-        .map(|s| s.try_get().unwrap_or(Slot::Pending))
-        .collect();
-    Readiness::of(&current)
+    Readiness::all(
+        slots
+            .iter()
+            .map(|s| s.try_with(Readiness::of_slot).unwrap_or(Readiness::Waiting)),
+    )
 }
 
 /// The same, untracked (in an event handler).
 pub fn readiness_now(slots: &[RwSignal<Slot>]) -> Readiness {
-    let current: Vec<Slot> = slots
-        .iter()
-        .map(|s| s.try_get_untracked().unwrap_or(Slot::Pending))
-        .collect();
-    Readiness::of(&current)
+    Readiness::all(slots.iter().map(|s| {
+        s.try_with_untracked(Readiness::of_slot)
+            .unwrap_or(Readiness::Waiting)
+    }))
 }
 
 /// One placed layout item.

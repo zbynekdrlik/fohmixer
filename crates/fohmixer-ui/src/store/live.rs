@@ -31,6 +31,11 @@ struct Socket {
 }
 
 impl Socket {
+    /// Whether the socket takes messages (not connecting, not closing).
+    fn open(&self) -> bool {
+        self.ws.ready_state() == web_sys::WebSocket::OPEN
+    }
+
     /// Detaches the handlers and closes the socket.
     fn close(self) {
         self.ws.set_onmessage(None);
@@ -250,11 +255,8 @@ impl LiveStore {
     fn watch(self, number: u64) {
         set_timeout(
             move || {
-                let Some(tick) = self.inner.try_with_value(|i| {
-                    let open = i
-                        .socket
-                        .as_ref()
-                        .is_some_and(|s| s.ws.ready_state() == web_sys::WebSocket::OPEN);
+                let Some(tick) = self.inner.try_update_value(|i| {
+                    let open = i.socket.as_ref().is_some_and(Socket::open);
                     i.conn.tick(number, dom::now(), open)
                 }) else {
                     return;
@@ -416,7 +418,8 @@ impl LiveStore {
     }
 
     /// An instance's new state: its slots wait while it is offline; its
-    /// parameter ranges are read again when it is back or on another set.
+    /// parameter ranges are read again when it is back, idle again or on
+    /// another set.
     fn on_instance(self, name: String, view: InstanceView) {
         let old = self
             .instances
@@ -497,7 +500,11 @@ impl LiveStore {
         };
         self.inner
             .try_with_value(|i| match &i.socket {
-                Some(socket) if i.conn.ready() => socket.ws.send_with_str(&text).is_ok(),
+                // Only an open socket: one the hub is closing would log
+                // "already in CLOSING or CLOSED state".
+                Some(socket) if i.conn.ready() && socket.open() => {
+                    socket.ws.send_with_str(&text).is_ok()
+                }
                 _ => false,
             })
             .unwrap_or(false)

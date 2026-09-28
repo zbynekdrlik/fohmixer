@@ -32,6 +32,13 @@ pub fn css(color: Rgb) -> String {
     format!("rgb({r}, {g}, {b})")
 }
 
+/// The screen px a knob (fader cap, pan dot) travels on a control drawn
+/// `screen` px long whose frame is `frame` canvas px long: the frame less the
+/// knob (at least one canvas px), scaled to the screen.
+pub fn travel_px(screen: f64, frame: f64, knob: f64) -> f64 {
+    screen * (frame - knob).max(1.0) / frame.max(1.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -41,5 +48,21 @@ mod tests {
         assert_eq!(css([255.0, 204.0, 0.0]), "rgb(255, 204, 0)");
         assert_eq!(css([127.5, 0.4, 300.0]), "rgb(128, 0, 255)");
         assert_eq!(css([-3.0, 12.6, 99.49]), "rgb(0, 13, 99)");
+    }
+
+    #[test]
+    fn a_knob_travels_its_frame_less_itself_scaled_to_the_screen() {
+        // A 400 px fader drawn 200 px tall with a 36 px cap: 364 px of
+        // travel on the canvas, 182 on the screen.
+        assert_eq!(travel_px(200.0, 400.0, 36.0), 182.0);
+        // A 101 px pan drawn at 1.5× with a 28 px dot.
+        assert_eq!(travel_px(151.5, 101.0, 28.0), 109.5);
+        // A knob as long as its frame still travels one canvas px.
+        assert_eq!(travel_px(50.0, 20.0, 36.0), 2.5);
+        assert_eq!(
+            travel_px(10.0, 0.0, 0.0),
+            10.0,
+            "a zero frame counts as one px"
+        );
     }
 }

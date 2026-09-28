@@ -72,7 +72,8 @@ pub fn ParamToggleView(
         })
         .collect();
     let slots: Vec<RwSignal<Slot>> = targets.iter().map(|t| t.slot).collect();
-    let bound = move || readiness(&slots).name();
+    let binding = Memo::new(move |_| readiness(&slots));
+    let bound = move || binding.get().name();
     let targets = StoredValue::new(targets);
     let ctl = StoredValue::new(ToggleCtl::default());
     let failed = RwSignal::new(false);

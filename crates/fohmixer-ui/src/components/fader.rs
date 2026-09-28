@@ -10,6 +10,7 @@ use serde_json::json;
 
 use super::{fail_flash, readiness, readiness_now};
 use crate::behave::fader::{self as curve, FaderCtl, UNITY};
+use crate::behave::travel_px;
 use crate::binding::SubSpec;
 use crate::dom;
 use crate::raf;
@@ -122,7 +123,7 @@ pub fn FaderView(frame: Frame, targets: Vec<Target>, shaping: bool) -> impl Into
 
     let state = {
         let (slots, laws) = (slots.clone(), laws.clone());
-        move || fader_readiness(readiness(&slots), laws.iter().all(|l| l.ready()))
+        Memo::new(move |_| fader_readiness(readiness(&slots), laws.iter().all(|l| l.ready())))
     };
     let takes_input = move || {
         fader_readiness(readiness_now(&slots), laws.iter().all(|l| l.can_map())) == Readiness::Ready
@@ -159,8 +160,7 @@ pub fn FaderView(frame: Frame, targets: Vec<Target>, shaping: bool) -> impl Into
             return;
         };
         ev.prevent_default();
-        let height = el.get_bounding_client_rect().height();
-        let travel = height * (frame.h - CAP).max(1.0) / frame.h.max(1.0);
+        let travel = travel_px(el.get_bounding_client_rect().height(), frame.h, CAP);
         let id = ev.pointer_id();
         let y = f64::from(ev.client_y());
         let taken = ctl
@@ -220,11 +220,8 @@ pub fn FaderView(frame: Frame, targets: Vec<Target>, shaping: bool) -> impl Into
         })
     });
 
-    let binding = {
-        let state = state.clone();
-        move || state().name()
-    };
-    let disabled = move || state().disabled();
+    let binding = move || state.get().name();
+    let disabled = move || state.get().disabled();
     view! {
         <div
             class="fader"

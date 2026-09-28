@@ -103,8 +103,9 @@ impl Slot {
     }
 }
 
-/// Whether a control's bindings let it take input (I5, I8).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Whether a control's bindings let it take input (I5, I8). Ordered: a
+/// control is as far from ready as its worst binding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Readiness {
     /// Every slot holds Live's value.
     Ready,
@@ -115,18 +116,24 @@ pub enum Readiness {
 }
 
 impl Readiness {
-    /// The readiness of a control bound to `slots` (an unresolved binding
-    /// outranks a missing value).
-    pub fn of<'a>(slots: impl IntoIterator<Item = &'a Slot>) -> Self {
-        let mut ready = true;
-        for slot in slots {
-            match slot {
-                Slot::Error(_) => return Self::Unresolved,
-                Slot::Pending => ready = false,
-                Slot::Value { .. } => {}
-            }
+    /// One slot's readiness.
+    pub fn of_slot(slot: &Slot) -> Self {
+        match slot {
+            Slot::Value { .. } => Self::Ready,
+            Slot::Pending => Self::Waiting,
+            Slot::Error(_) => Self::Unresolved,
         }
-        if ready { Self::Ready } else { Self::Waiting }
+    }
+
+    /// A control's readiness from its bindings' (the worst one counts; an
+    /// unresolved binding outranks a missing value).
+    pub fn all(each: impl IntoIterator<Item = Self>) -> Self {
+        each.into_iter().max().unwrap_or(Self::Ready)
+    }
+
+    /// The readiness of a control bound to `slots`.
+    pub fn of<'a>(slots: impl IntoIterator<Item = &'a Slot>) -> Self {
+        Self::all(slots.into_iter().map(Self::of_slot))
     }
 
     /// The control's `data-binding`.

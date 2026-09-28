@@ -210,6 +210,15 @@ fn a_control_is_ready_with_every_value_and_red_with_any_unresolved_binding() {
     );
     assert_eq!(Readiness::of([&value, &error]), Readiness::Unresolved);
     assert_eq!(
+        Readiness::of(Vec::<&Slot>::new()),
+        Readiness::Ready,
+        "nothing to wait for"
+    );
+    assert_eq!(
+        Readiness::all([Readiness::Waiting, Readiness::Ready]),
+        Readiness::Waiting
+    );
+    assert_eq!(
         [Readiness::Ready, Readiness::Waiting, Readiness::Unresolved].map(Readiness::name),
         ["ready", "waiting", "unresolved"]
     );

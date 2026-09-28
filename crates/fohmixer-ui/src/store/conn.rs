@@ -20,6 +20,9 @@ use crate::net;
 pub const PING_MS: u64 = 1000;
 /// A socket that heard nothing from the hub this long is replaced.
 pub const SILENCE_MS: f64 = 3000.0;
+/// A tick this long after the previous one fired late (a throttled
+/// background tab, a blocked main thread): it says nothing about the socket.
+const LATE_MS: f64 = 2.0 * PING_MS as f64;
 
 /// What the watchdog does on one of its ticks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,9 +54,9 @@ pub struct Hello {
 pub struct InstanceChange {
     /// It is offline: its slots wait for Live again (I8).
     pub pending: bool,
-    /// It came online or loaded another set: its parameter ranges are read
-    /// again (a range read while Live was away failed; another set may
-    /// have other ranges).
+    /// It came online, loaded another set or is no longer busy: its
+    /// parameter ranges are read again (a range read while Live was away or
+    /// stalled failed; another set may have other ranges).
     pub ranges: bool,
 }
 
@@ -77,6 +80,8 @@ pub struct Conn {
     socket: u64,
     /// When the current socket last heard from the hub (page clock, ms).
     heard: f64,
+    /// When the watchdog last ticked (page clock, ms).
+    ticked: f64,
 }
 
 impl Conn {
@@ -109,6 +114,7 @@ impl Conn {
         self.ready = false;
         self.hello_seen = false;
         self.heard = now;
+        self.ticked = now;
         self.socket
     }
 
@@ -140,11 +146,17 @@ impl Conn {
     }
 
     /// The watchdog tick of socket `socket` at `now`; `open` is whether
-    /// that socket is open.
-    pub fn tick(&self, socket: u64, now: f64, open: bool) -> Tick {
+    /// that socket is open. A tick that fired late starts a new silence
+    /// window (the page, not the socket, was away).
+    pub fn tick(&mut self, socket: u64, now: f64, open: bool) -> Tick {
         if self.stopped || socket != self.socket {
-            Tick::Done
-        } else if now - self.heard < SILENCE_MS {
+            return Tick::Done;
+        }
+        if now - self.ticked > LATE_MS {
+            self.heard = now;
+        }
+        self.ticked = now;
+        if now - self.heard < SILENCE_MS {
             if self.ready { Tick::Ping } else { Tick::Wait }
         } else if open && !self.hello_seen {
             Tick::NoHello
@@ -201,9 +213,10 @@ pub fn replaces(current: Option<&Layout>, served: &Layout) -> bool {
 }
 
 /// What an instance's new state `new` asks, after `old` (none before its
-/// first report).
+/// first report). A stalled (busy) Live lets a range read time out, so the
+/// ranges are read again once it is idle.
 pub fn instance_change(old: Option<&InstanceView>, new: &InstanceView) -> InstanceChange {
-    let back = old.is_none_or(|o| !o.online || o.set_name != new.set_name);
+    let back = old.is_none_or(|o| !o.online || o.busy || o.set_name != new.set_name);
     InstanceChange {
         pending: !new.online,
         ranges: new.online && back,

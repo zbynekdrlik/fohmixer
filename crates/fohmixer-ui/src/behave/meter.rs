@@ -36,10 +36,10 @@ const FRAME_MS: f64 = 1000.0 / 60.0;
 pub fn level_to_pos(level: f64) -> f64 {
     let level = level.clamp(0.0, 1.0);
     // The segment that holds the level: after the points below it (at a
-    // point both neighbouring segments give the point's own position).
-    // (At most the last point is not below: `above` never passes it.)
+    // point both neighbouring segments give the point's own position). NaN
+    // sorts above every point (total_cmp): the last segment, a NaN position.
     let above = CALIBRATION.partition_point(|&(x, _)| x.total_cmp(&level).is_lt());
-    let i = above.max(1);
+    let i = above.clamp(1, CALIBRATION.len() - 1);
     let ((x0, y0), (x1, y1)) = (CALIBRATION[i - 1], CALIBRATION[i]);
     y0 + (level - x0) / (x1 - x0) * (y1 - y0)
 }

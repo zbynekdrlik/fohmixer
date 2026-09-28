@@ -49,7 +49,7 @@ exclude_re = [
   # store/live.rs: the WebSocket, its handlers and the timers, the signals and
   # the fetches that carry out Conn's decisions, one function at a time.
   "fohmixer-ui/src/store/live\\.rs.*(replace|in) LiveStore::(new|start|stop|stopped|token|logout|connect|retry|show_layout|open_socket|watch|drop_socket|on_close|on_text|on_hello|on_instance|on_layout|apply|mark_pending|send|send_sub|slot|slot_signal|set_wanted|refresh|cmd|finish|set_prop|set_hub|range|fetch_ranges|fetch_range)( |$)",
-  "fohmixer-ui/src/store/live\\.rs.*(replace|in) (Socket::close|Inner::new)( |$)",
+  "fohmixer-ui/src/store/live\\.rs.*(replace|in) (Socket::open|Socket::close|Inner::new)( |$)",
   # auth.rs: local storage and the login request (login_outcome, login_body
   # and LoginError::message are the tested decisions).
   "fohmixer-ui/src/auth\\.rs.*(replace|in) (stored_token|login)( |$)",

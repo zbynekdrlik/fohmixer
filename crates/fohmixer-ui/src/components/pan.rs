@@ -9,6 +9,7 @@ use serde_json::json;
 
 use super::{fail_flash, readiness};
 use crate::behave::pan::{self, PanCtl};
+use crate::behave::travel_px;
 use crate::binding::SubSpec;
 use crate::dom;
 use crate::raf;
@@ -49,8 +50,7 @@ pub fn PanView(frame: Frame, state: RwSignal<Slot>, spec: SubSpec) -> impl IntoV
         };
         ev.prevent_default();
         // The dot's travel, in screen px: the width less the dot's own.
-        let width = el.get_bounding_client_rect().width();
-        let travel = width * (frame.w - DOT).max(1.0) / frame.w.max(1.0);
+        let travel = travel_px(el.get_bounding_client_rect().width(), frame.w, DOT);
         let id = ev.pointer_id();
         let x = f64::from(ev.client_x());
         let taken = ctl
@@ -104,8 +104,9 @@ pub fn PanView(frame: Frame, state: RwSignal<Slot>, spec: SubSpec) -> impl IntoV
         })
     });
 
-    let binding = move || readiness(&[slot]).name();
-    let disabled = move || readiness(&[slot]).disabled();
+    let state = Memo::new(move |_| readiness(&[slot]));
+    let binding = move || state.get().name();
+    let disabled = move || state.get().disabled();
     view! {
         <div
             class="pan"

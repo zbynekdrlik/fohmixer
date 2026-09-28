@@ -89,8 +89,9 @@ pub fn MuteView(
     };
     let muted = move || slot.with(Slot::flag);
     let is_lit = move || muted().is_some_and(lit);
-    let binding = move || readiness(&[slot]).name();
-    let disabled = move || readiness(&[slot]).disabled();
+    let state = Memo::new(move |_| readiness(&[slot]));
+    let binding = move || state.get().name();
+    let disabled = move || state.get().disabled();
     let muted_attr = move || match muted() {
         Some(true) => "true",
         Some(false) => "false",
@@ -136,8 +137,9 @@ pub fn SoloView(frame: Frame, z: i64, style: Style, binding: Binding) -> impl In
         let color = if on() { SOLO_ON } else { SOLO_OFF };
         format!("{css}background:{color};")
     };
-    let bound = move || readiness(&[slot]).name();
-    let disabled = move || readiness(&[slot]).disabled();
+    let state = Memo::new(move |_| readiness(&[slot]));
+    let bound = move || state.get().name();
+    let disabled = move || state.get().disabled();
     view! {
         <div
             class="item button solo"
@@ -175,8 +177,9 @@ pub fn StageMicsView(frame: Frame, z: i64, style: Style, binding: Binding) -> im
         });
     };
     let muted = move || slot.with(Slot::flag) == Some(true);
-    let bound = move || readiness(&[slot]).name();
-    let disabled = move || readiness(&[slot]).disabled();
+    let state = Memo::new(move |_| readiness(&[slot]));
+    let bound = move || state.get().name();
+    let disabled = move || state.get().disabled();
     view! {
         <div
             class="item button stage-mics"

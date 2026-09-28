@@ -45,7 +45,8 @@ pub fn AlertView(
             }
         })
     });
-    let bound = move || readiness(&[slot]).name();
+    let state = Memo::new(move |_| readiness(&[slot]));
+    let bound = move || state.get().name();
     view! {
         <div
             class="item alert"
