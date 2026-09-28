@@ -543,6 +543,31 @@ function Install-FohUserScript {
     return [pscustomobject]@{ path = $dest; replaced = $replace; config_written = $configWritten; removed = $removed }
 }
 
+# ---- the accounts ----
+
+function Get-FohLocalAccountName {
+    # An account of this PC as <computer>\<name>; a name with a domain or
+    # computer part stays as it is. Windows looks a bare name up as a domain
+    # name first: where an account is named like the computer (so on the PC,
+    # #9), the bare name is this PC's account domain, which does not translate
+    # to an account's SID, while <computer>\<name> is the account. Every
+    # lookup of an account and every task principal and trigger use this name.
+    param([Parameter(Mandatory)][string]$Name)
+    if ($Name.Contains('\')) { return $Name }
+    return ($env:COMPUTERNAME + '\' + $Name)
+}
+
+function Get-FohAccountSid {
+    # The SID of an account of this PC (by Get-FohLocalAccountName); throws
+    # "no account <name> on this PC" when it does not resolve.
+    param([Parameter(Mandatory)][string]$Name)
+    try {
+        return (New-Object Security.Principal.NTAccount (Get-FohLocalAccountName $Name)).Translate([Security.Principal.SecurityIdentifier])
+    } catch {
+        throw "no account $Name on this PC: $($_.Exception.Message)"
+    }
+}
+
 # ---- the data folder's DACL ----
 
 function Set-FohDataDirAcl {
@@ -551,7 +576,7 @@ function Set-FohDataDirAcl {
     # writes secrets\, the layout backups and its state there; no other user
     # reads its secrets). Read back; throws on a difference.
     param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string]$User)
-    $userSid = (New-Object Security.Principal.NTAccount $User).Translate([Security.Principal.SecurityIdentifier])
+    $userSid = Get-FohAccountSid $User
     $full = [Security.AccessControl.FileSystemRights]::FullControl
     $modify = [Security.AccessControl.FileSystemRights]::Modify
     $want = @(
@@ -573,7 +598,7 @@ function Set-FohDataDirAcl {
 function Test-FohDataDirAcl {
     # The data folder's DACL read back against Set-FohDataDirAcl; returns the differences.
     param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string]$User)
-    $userSid = (New-Object Security.Principal.NTAccount $User).Translate([Security.Principal.SecurityIdentifier]).Value
+    $userSid = (Get-FohAccountSid $User).Value
     $sync = [int][Security.AccessControl.FileSystemRights]::Synchronize
     $want = @{}
     $want['S-1-5-18'] = [int][Security.AccessControl.FileSystemRights]::FullControl
@@ -850,12 +875,15 @@ function Get-FohTaskCommand {
 }
 
 function Get-FohSid {
-    # An account's SID; a SID is taken as it is. An account that does not
-    # resolve gives '' (the caller reports it as a difference).
+    # An account's SID, looked up as Get-FohAccountSid does (a task reads its
+    # user back with or without the computer part: both give the same SID); a
+    # SID is taken as it is. An account that does not resolve gives '' (the
+    # caller reports it as a difference).
     param([AllowEmptyString()][string]$Account)
+    if (-not $Account) { return '' }
     if ($Account -cmatch '^S-1-[0-9-]+\z') { return $Account }
     try {
-        return (New-Object Security.Principal.NTAccount $Account).Translate([Security.Principal.SecurityIdentifier]).Value
+        return (Get-FohAccountSid $Account).Value
     } catch {
         return ''
     }
@@ -912,7 +940,8 @@ function Register-FohHubTasks {
     # so a hub that crashes stays down until the next logon or a task start.
     param([Parameter(Mandatory)][string]$AppDir, [Parameter(Mandatory)][string]$DataDir,
           [Parameter(Mandatory)][string]$User, [string]$TaskPath = $script:TaskPath)
-    $principal = New-ScheduledTaskPrincipal -UserId $User -LogonType Interactive -RunLevel Limited
+    $account = Get-FohLocalAccountName $User
+    $principal = New-ScheduledTaskPrincipal -UserId $account -LogonType Interactive -RunLevel Limited
     $common = @{
         ExecutionTimeLimit = [TimeSpan]::Zero; MultipleInstances = 'IgnoreNew'; AllowStartIfOnBatteries = $true
         DontStopIfGoingOnBatteries = $true; DontStopOnIdleEnd = $true; DisallowHardTerminate = $true; Priority = 4
@@ -932,7 +961,7 @@ function Register-FohHubTasks {
             TaskPath = $TaskPath; TaskName = $spec.name; Action = $action; Principal = $principal
             Settings = $spec.settings; Description = $spec.description; Force = $true
         }
-        if ($spec.hub) { $register['Trigger'] = New-ScheduledTaskTrigger -AtLogOn -User $User }
+        if ($spec.hub) { $register['Trigger'] = New-ScheduledTaskTrigger -AtLogOn -User $account }
         Register-ScheduledTask @register | Out-Null
         $task = Get-ScheduledTask -TaskPath $TaskPath -TaskName $spec.name
         foreach ($b in @(Get-FohTaskProblems -Task $task -User $User -Execute $cmd.execute -Arguments $cmd.arguments -WorkDir $DataDir -Hub:$spec.hub)) {
@@ -945,6 +974,9 @@ function Register-FohHubTasks {
 # ---- the install (design note section 3) ----
 
 function Test-FohUserName {
+    # A user name as the install takes it: an account of this PC without a
+    # domain or computer part (the install adds the computer part itself,
+    # Get-FohLocalAccountName).
     param([Parameter(Mandatory)][AllowEmptyString()][string]$Name)
     if ($Name -cnotmatch '^[^"/\\\[\]:;|=,+*?<>]+\z' -or $Name.Trim() -cne $Name -or $Name.EndsWith('.')) {
         throw "user name refused: [$Name] (an account name of this PC, without a domain part)"
@@ -1003,13 +1035,7 @@ function Invoke-FohInstall {
         if (-not $me.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
             throw 'run the install elevated: it registers the tasks for the band user and writes both users'' User Libraries'
         }
-        foreach ($u in @($BandUser, $MasterUser)) {
-            try {
-                $null = (New-Object Security.Principal.NTAccount $u).Translate([Security.Principal.SecurityIdentifier])
-            } catch {
-                throw "no account $u on this PC: $($_.Exception.Message)"
-            }
-        }
+        foreach ($u in @($BandUser, $MasterUser)) { $null = Get-FohAccountSid $u }
     }
 
     # ---- the bundle: unpacked and checked before anything else changes ----
