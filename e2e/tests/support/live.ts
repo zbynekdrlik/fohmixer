@@ -274,3 +274,38 @@ export async function frames(page: Page, n = 2): Promise<void> {
 export async function shown(control: Locator): Promise<number> {
   return Number(await control.getAttribute("data-value"));
 }
+
+/**
+ * How an element's text is cut off by its box ([] when the whole text fits):
+ * the box's scroll size against its client size, and the laid-out text's
+ * rectangle against the box's (both in the page, so the stage's scale and
+ * any rotation count).
+ */
+export async function clipped(el: Locator): Promise<string[]> {
+  return el.evaluate((node: Element) => {
+    const box = node as HTMLElement;
+    const out: string[] = [];
+    if (box.scrollWidth > box.clientWidth) out.push(`scrollWidth ${box.scrollWidth} > clientWidth ${box.clientWidth}`);
+    if (box.scrollHeight > box.clientHeight) out.push(`scrollHeight ${box.scrollHeight} > clientHeight ${box.clientHeight}`);
+    const range = document.createRange();
+    range.selectNodeContents(box);
+    const t = range.getBoundingClientRect();
+    const b = box.getBoundingClientRect();
+    const slack = 0.5;
+    if (t.left < b.left - slack || t.right > b.right + slack || t.top < b.top - slack || t.bottom > b.bottom + slack) {
+      const r = (x: DOMRect) => `(${x.left.toFixed(1)}, ${x.top.toFixed(1)}, ${x.width.toFixed(1)} x ${x.height.toFixed(1)})`;
+      out.push(`text ${r(t)} outside the box ${r(b)}`);
+    }
+    return out;
+  });
+}
+
+/** The laid-out text's width and height (page px). */
+export async function textSize(el: Locator): Promise<{ w: number; h: number }> {
+  return el.evaluate((node: Element) => {
+    const range = document.createRange();
+    range.selectNodeContents(node);
+    const t = range.getBoundingClientRect();
+    return { w: t.width, h: t.height };
+  });
+}

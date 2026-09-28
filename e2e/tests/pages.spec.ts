@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test, expect } from "./support/fixtures";
-import { harness, hubSubscriptions, openSurface, selectPage, strip, until } from "./support/live";
+import { clipped, harness, hubSubscriptions, openSurface, selectPage, strip, textSize, until } from "./support/live";
 
 // Pages, pagers, the overlay and the layout (spec F1, F19; S4 design note §2,
 // §5): the imported synthetic layout, only the visible pages subscribed.
@@ -30,6 +30,24 @@ test.describe("Pages and tabs", () => {
     const pager = page.locator('[data-testid="tabbar"][data-level="1"] [data-testid="tab"]');
     await expect(pager).toHaveText(["STAGE", "OTHERS"]);
     await expect(pager.nth(0)).toHaveAttribute("data-selected", "true");
+  });
+
+  test("every tab shows its whole title, along a vertical bar", async ({ page }) => {
+    // #9, finding 2: the nested pager's tabs (a 65 px bar on the left) cut
+    // their titles off and did not turn them.
+    await openSurface(page);
+    for (const level of ["0", "1"]) {
+      const tabs = page.locator(`[data-testid="tabbar"][data-level="${level}"] [data-testid="tab"]`);
+      const count = await tabs.count();
+      expect(count).toBeGreaterThan(1);
+      for (let i = 0; i < count; i++) {
+        const tab = tabs.nth(i);
+        expect(await clipped(tab), `level ${level} tab ${await tab.getAttribute("data-page")}`).toEqual([]);
+      }
+    }
+    const stage = page.locator('[data-testid="tabbar"][data-level="1"] [data-testid="tab"][data-page="stage"]');
+    const { w, h } = await textSize(stage);
+    expect(h, "the title runs along the vertical bar").toBeGreaterThan(w * 2);
   });
 
   test("the nested pager switches its pages and remembers them", async ({ page }) => {
