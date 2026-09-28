@@ -1,1 +1,1 @@
-"""SimLive's fake of Live's legacy `_Framework` control-surface package."""
+# ruff: noqa: N999 - Live's own package name
