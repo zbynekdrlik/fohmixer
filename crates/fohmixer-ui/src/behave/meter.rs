@@ -34,19 +34,14 @@ const FRAME_MS: f64 = 1000.0 / 60.0;
 
 /// The fader-scale position of Live's meter level `level` (0..1).
 pub fn level_to_pos(level: f64) -> f64 {
-    if level <= 0.0 {
-        return 0.0;
-    }
-    if level >= 1.0 {
-        return 1.0;
-    }
-    CALIBRATION
-        .windows(2)
-        .find(|pair| level <= pair[1].0)
-        .map_or(level, |pair| {
-            let ((x0, y0), (x1, y1)) = (pair[0], pair[1]);
-            y0 + (level - x0) / (x1 - x0) * (y1 - y0)
-        })
+    let level = level.clamp(0.0, 1.0);
+    // The segment that holds the level: after the points below it (at a
+    // point both neighbouring segments give the point's own position).
+    // (At most the last point is not below: `above` never passes it.)
+    let above = CALIBRATION.partition_point(|&(x, _)| x.total_cmp(&level).is_lt());
+    let i = above.max(1);
+    let ((x0, y0), (x1, y1)) = (CALIBRATION[i - 1], CALIBRATION[i]);
+    y0 + (level - x0) / (x1 - x0) * (y1 - y0)
 }
 
 /// The colour of a level in dB on the fader scale.
@@ -108,19 +103,16 @@ impl MeterBar {
     /// Advances `dt_ms`: the position and colour to show.
     pub fn step(&mut self, dt_ms: f64) -> (f64, Rgb) {
         self.elapsed += dt_ms;
-        let rising = self.to > self.from;
+        let gap = self.to - self.from;
+        let rising = gap.is_sign_positive();
         let duration = if rising { RISE_MS } else { FALL_MS };
-        self.shown = if self.elapsed >= duration {
-            self.to
+        let linear = (self.elapsed / duration).min(1.0);
+        let progress = if rising {
+            1.0 - (1.0 - linear).powi(2)
         } else {
-            let linear = self.elapsed / duration;
-            let progress = if rising {
-                1.0 - (1.0 - linear).powi(2)
-            } else {
-                linear
-            };
-            self.from + (self.to - self.from) * progress
+            linear
         };
+        self.shown = self.from + gap * progress;
         self.color = smooth(self.color, color_for_pos(self.shown), dt_ms);
         (self.shown, self.color)
     }
@@ -172,6 +164,12 @@ mod tests {
         let two = smooth(half, RED, FRAME_MS / 2.0);
         assert!(two.iter().zip(one).all(|(a, b)| close(*a, b)), "{two:?}");
         assert_eq!(smooth(RED, RED, 5.0), RED);
+        // Three 60 Hz frames in one 50 ms frame: 1 − 0.7³ of the way.
+        let three = smooth(GREEN, RED, 50.0);
+        assert!(
+            close(three[0], 167.535) && close(three[1], 69.972) && close(three[2], 0.0),
+            "{three:?}"
+        );
     }
 
     #[test]

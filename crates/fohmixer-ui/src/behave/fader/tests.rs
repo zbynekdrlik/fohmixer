@@ -55,6 +55,25 @@ fn value2db_is_the_touchosc_curve_in_each_range() {
 }
 
 #[test]
+fn the_bisection_splits_at_an_exact_hit_like_the_lua() {
+    // value2db(0.5) is exactly -14 dB: the first midpoint hits the target
+    // and the Lua moves `high` (its test is `mid_db < target`).
+    assert_close(audio_for_db_change(0.5, 0.0), 0.499969482421875);
+}
+
+#[test]
+fn the_shaping_thresholds_are_strict_where_the_lua_is() {
+    assert!(!is_emergency(0.03) && is_emergency(0.030000000000000002));
+    assert!(!is_calm(0.015) && is_calm(0.014999999999999998));
+    assert!(!short_of_step(0.1) && !short_of_step(-0.1));
+    assert!(short_of_step(0.09999999999999999) && short_of_step(-0.09999999999999999));
+    assert!(!writes_back(0.0001) && !writes_back(-0.0001));
+    assert!(writes_back(0.00010000000000000002) && writes_back(-0.00010000000000000002));
+    // A first move of exactly 3 % is shaped (0.9), not an emergency.
+    assert_eq!(shaped(true, 0.0, &[0.03]), vec![0.027]);
+}
+
+#[test]
 fn a_db_change_is_found_by_bisection() {
     assert_close(audio_for_db_change(0.85, 0.1), 0.852508544921875);
     assert_close(audio_for_db_change(0.85, -0.1), 0.847503662109375);
@@ -127,6 +146,32 @@ fn the_forced_first_step_is_one_tenth_db_and_the_reaction_scales_are_03_05_07() 
             i + 1
         );
     }
+}
+
+#[test]
+fn a_first_move_that_its_scaling_leaves_short_of_one_tenth_db_is_forced() {
+    // The raw first move is 0.105 dB, the 0.9-scaled one 0.095 dB: forced to
+    // 0.1 dB, with no reaction moves after it (the speed then grows 0.9→1.0).
+    assert_trace(
+        0.7294,
+        &[0.0044, 0.004, 0.004, 0.004],
+        &[
+            0.7335579835647315,
+            0.7366557613425092,
+            0.7397913168980648,
+            0.7429646502313981,
+        ],
+    );
+    assert_trace(
+        0.7294,
+        &[-0.0044, -0.004, -0.004, -0.004],
+        &[
+            0.7252188672575739,
+            0.7221210894797961,
+            0.7189855339242406,
+            0.7158122005909072,
+        ],
+    );
 }
 
 #[test]
@@ -304,6 +349,12 @@ fn a_tap_is_short_and_still() {
         "a 0.0099 move is"
     );
     let mut t = TapTracker::default();
+    t.down(0.0, 0.0);
+    assert!(
+        !t.up(0.01, 10.0) && t.last_tap.is_none(),
+        "exactly 0.01 is not"
+    );
+    let mut t = TapTracker::default();
     t.down(0.5, 0.0);
     assert!(
         !t.up(0.51, 10.0) && t.last_tap.is_none(),
@@ -351,6 +402,8 @@ fn the_glide_reaches_0_db_at_0_3_positions_per_second() {
     let (p, done) = glide.at(1000.0 + 2431.0);
     assert!(!done && (p - 0.7293).abs() < 1e-12, "{p}");
     assert_eq!(glide.at(1000.0 + 2432.0), (target, true));
+    // Arriving exactly on time counts as arrived.
+    assert_eq!(Glide::new(0.0, 0.3, 0.0).at(1000.0), (0.3, true));
     // Downwards, and a glide with nowhere to go.
     let (p, done) = Glide::new(1.0, target, 0.0).at(500.0);
     assert!(close(p, 0.85) && !done, "{p}");
@@ -473,6 +526,28 @@ fn a_double_tap_glides_to_0_db_sending_each_frame() {
     assert_eq!(f.frame(arrive + 99.0, Some(live)).send, None);
     assert_eq!(f.frame(arrive + 100.0, Some(target)).pos, Some(target));
     assert_eq!(f.frame(arrive + 101.0, Some(live)).pos, Some(live));
+}
+
+#[test]
+fn a_glide_stops_where_it_is_when_lives_value_goes() {
+    let mut f = FaderCtl::new(false, zero_db());
+    let live = 0.25;
+    assert!(f.down(1, 500.0, TRAVEL, 0.0, live));
+    assert_eq!(f.up(1, 20.0), None);
+    assert!(f.down(1, 500.0, TRAVEL, 60.0, live));
+    assert_eq!(f.up(1, 80.0), None);
+    let gliding = f.frame(1080.0, Some(live));
+    assert_close(gliding.send.unwrap(), live + 0.3);
+    // The instance went offline: no more sends, the fader holds.
+    let stopped = f.frame(1100.0, None);
+    assert_close(stopped.pos.unwrap(), live + 0.3);
+    assert_eq!(stopped.send, None);
+    let held = f.frame(1199.0, Some(live));
+    assert_close(held.pos.unwrap(), live + 0.3);
+    assert_eq!(held.send, None, "the glide does not resume");
+    let after = f.frame(1200.0, Some(live));
+    assert_eq!(after.pos, Some(live), "then Live's value shows");
+    assert_eq!(after.send, None);
 }
 
 #[test]

@@ -28,7 +28,12 @@ pub fn to_pos(v: f64) -> f64 {
 
 /// Whether position `p` shows as centred.
 pub fn is_centered(p: f64) -> bool {
-    (p - 0.5).abs() <= CENTER_TOLERANCE
+    near_centre(p - 0.5)
+}
+
+/// Whether an offset from the centre still counts as centred.
+fn near_centre(offset: f64) -> bool {
+    offset.abs() <= CENTER_TOLERANCE
 }
 
 /// The pan's colour at position `p`.
@@ -181,6 +186,9 @@ mod tests {
         assert!(is_centered(0.5 - 0.0078125));
         assert!(!is_centered(0.5 + 0.015625));
         assert!(!is_centered(0.5 - 0.015625));
+        // The tolerance itself is still centred.
+        assert!(near_centre(0.01) && near_centre(-0.01));
+        assert!(!near_centre(0.010000000000000002) && !near_centre(-0.010000000000000002));
     }
 
     fn touched(live: f64) -> PanCtl {

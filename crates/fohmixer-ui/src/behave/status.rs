@@ -15,15 +15,11 @@ const GREEN_MS: f64 = 500.0;
 /// The pill's colour: `bound` or not, `since_ms` after the last value.
 pub fn status_color(bound: bool, since_ms: f64) -> Rgb {
     if !bound {
-        RED
-    } else if since_ms < YELLOW_MS {
-        YELLOW
-    } else if since_ms < GREEN_MS {
-        let fade = (since_ms - YELLOW_MS) / (GREEN_MS - YELLOW_MS);
-        [255.0 * (1.0 - fade), 255.0, 0.0]
-    } else {
-        GREEN
+        return RED;
     }
+    // 0 until 150 ms (yellow), 1 from 500 ms (green), linear between.
+    let fade = ((since_ms - YELLOW_MS) / (GREEN_MS - YELLOW_MS)).clamp(0.0, 1.0);
+    [255.0 * (1.0 - fade), 255.0, 0.0]
 }
 
 #[cfg(test)]

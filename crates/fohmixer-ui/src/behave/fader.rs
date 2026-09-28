@@ -56,26 +56,15 @@ const STILL_MS: f64 = 100.0;
 const DOUBLE_MIN_MS: f64 = 50.0;
 const DOUBLE_MAX_MS: f64 = 250.0;
 
-/// The Live volume of fader position `p` (clamped to 0..1).
+/// The Live volume of fader position `p` (clamped to 0..1; the power keeps
+/// 0 and 1 where they are).
 pub fn to_live(p: f64) -> f64 {
-    if p <= 0.0 {
-        0.0
-    } else if p >= 1.0 {
-        1.0
-    } else {
-        p.powf(EXPONENT)
-    }
+    p.clamp(0.0, 1.0).powf(EXPONENT)
 }
 
 /// The fader position of Live volume `v` (clamped to 0..1).
 pub fn to_pos(v: f64) -> f64 {
-    if v <= 0.0 {
-        0.0
-    } else if v >= 1.0 {
-        1.0
-    } else {
-        v.powf(1.0 / EXPONENT)
-    }
+    v.clamp(0.0, 1.0).powf(1.0 / EXPONENT)
 }
 
 /// The position of `value` on a parameter's `(min, max)` range: the
@@ -93,17 +82,18 @@ pub fn linear_value(p: f64, (min, max): (f64, f64)) -> f64 {
 /// touch shaping and the meter colour use it; every dB text on screen is
 /// Live's own display string (spec X1).
 pub fn value2db(v: f64) -> f64 {
-    if (0.4..=1.0).contains(&v) {
+    // The Lua's ranges, tested from the top: above 1 (or no number) is 0 dB.
+    if v > 1.0 || v.is_nan() {
+        0.0
+    } else if v >= 0.4 {
         40.0 * v - 34.0
-    } else if (0.15..0.4).contains(&v) {
+    } else if v >= 0.15 {
         -((399.751894 * v - 201.871345).powi(2) + 12630.61132) / 799.503788
-    } else if v < 0.15 {
+    } else {
         // Spelled as the Lua computes it (gamma = 7504/5567, then 1/gamma).
         let gamma = 7504.0 / 5567.0;
         let db = 118.426374 * v.powf(1.0 / gamma) - 70.0;
         if db <= -70.0 { f64::NEG_INFINITY } else { db }
-    } else {
-        0.0
     }
 }
 
@@ -121,6 +111,27 @@ pub fn audio_for_db_change(start: f64, db_change: f64) -> f64 {
         }
     }
     (low + high) / 2.0
+}
+
+/// Whether a move (position units) is large enough to bypass the shaping.
+fn is_emergency(size: f64) -> bool {
+    size > EMERGENCY
+}
+
+/// Whether a move is small enough to end an emergency.
+fn is_calm(size: f64) -> bool {
+    size < EMERGENCY * 0.5
+}
+
+/// Whether a change (dB) falls short of the smallest first step.
+fn short_of_step(change_db: f64) -> bool {
+    change_db.abs() < MIN_DB_STEP
+}
+
+/// Whether TouchOSC writes a reshaped value back to the fader (a
+/// difference this large).
+fn writes_back(diff: f64) -> bool {
+    diff.abs() > WRITE_BACK
 }
 
 /// The TouchOSC touch shaping of one touch (spec F9, X3): a 0.1 dB first
@@ -177,7 +188,7 @@ impl Shaper {
             return raw;
         }
         let shaped = self.shape(raw);
-        self.x = if (shaped - raw).abs() > WRITE_BACK {
+        self.x = if writes_back(shaped - raw) {
             shaped
         } else {
             raw
@@ -185,10 +196,13 @@ impl Shaper {
         self.x
     }
 
-    /// A step `db` dB from where the touch started, in the move's direction.
-    fn forced(&self, up: bool) -> f64 {
-        let db = if up { MIN_DB_STEP } else { -MIN_DB_STEP };
-        to_pos(audio_for_db_change(self.start_audio, db))
+    /// The smallest step from where the touch started, in the direction of
+    /// `delta` (never 0 here).
+    fn forced(&self, delta: f64) -> f64 {
+        to_pos(audio_for_db_change(
+            self.start_audio,
+            MIN_DB_STEP.copysign(delta),
+        ))
     }
 
     /// `applyFirstMovementScaling` for one move to `raw`.
@@ -200,40 +214,42 @@ impl Shaper {
         }
         if !self.first_done {
             self.first_done = true;
-            if size > EMERGENCY {
+            if is_emergency(size) {
                 self.emergency = true;
                 self.last = raw;
                 return raw;
             }
             let start_db = value2db(self.start_audio);
-            if (value2db(to_live(raw)) - start_db).abs() < MIN_DB_STEP {
-                let forced = self.forced(delta > 0.0);
+            if short_of_step(value2db(to_live(raw)) - start_db) {
+                let forced = self.forced(delta);
                 self.reaction = true;
                 self.reaction_count = 0;
                 self.last = forced;
                 return forced;
             }
             let mut scaled = self.last + delta * INITIAL_SCALE;
-            if (value2db(to_live(scaled)) - start_db).abs() < MIN_DB_STEP {
-                scaled = self.forced(delta > 0.0);
+            if short_of_step(value2db(to_live(scaled)) - start_db) {
+                scaled = self.forced(delta);
             }
             self.last = scaled;
             self.processed = 1;
             return scaled;
         }
-        if size > EMERGENCY {
+        if is_emergency(size) {
             self.emergency = true;
             self.last = raw;
             return raw;
         }
-        if self.emergency && size < EMERGENCY * 0.5 {
+        if is_calm(size) {
             self.emergency = false;
         }
         if self.emergency {
             self.last = raw;
             return raw;
         }
-        if self.reaction && self.reaction_count < REACTION_MOVES {
+        // The reaction moves after a forced first step (the flag clears on
+        // the last of them).
+        if self.reaction {
             self.reaction_count += 1;
             let progress = f64::from(self.reaction_count - 1) / f64::from(REACTION_MOVES - 1);
             let scale = REACTION_SCALE + (REACTION_SCALE_LAST - REACTION_SCALE) * progress;
@@ -244,7 +260,7 @@ impl Shaper {
             self.last = next;
             return next;
         }
-        if self.processed <= SCALED_MOVES && !self.reaction {
+        if self.processed <= SCALED_MOVES {
             self.processed += 1;
             let progress = f64::from(self.processed - 1) / f64::from(SCALED_MOVES - 1);
             let base = INITIAL_SCALE + (FINAL_SCALE - INITIAL_SCALE) * progress;
@@ -450,6 +466,17 @@ impl FaderCtl {
     /// The frame at `now`, Live's value sitting at position `live`
     /// (`None`: no value yet).
     pub fn frame(&mut self, now: f64, live: Option<f64>) -> Motion {
+        if self.glide.is_some() && live.is_none() {
+            // Live's value is gone (its instance went offline, the hub
+            // connection dropped): the glide stops where it is and sends
+            // nothing more.
+            self.glide = None;
+            self.hold_until = now + self.hold;
+            return Motion {
+                pos: Some(self.pos),
+                send: None,
+            };
+        }
         if let Some(glide) = self.glide {
             let (pos, done) = glide.at(now);
             self.pos = pos;

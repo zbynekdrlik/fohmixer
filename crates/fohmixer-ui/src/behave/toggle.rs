@@ -40,9 +40,14 @@ pub enum Write {
 /// anything else exactly).
 pub fn is_on(value: &Value, on: &Value) -> bool {
     match (value.as_f64(), on.as_f64()) {
-        (Some(v), Some(o)) => (v - o).abs() < EPSILON,
+        (Some(v), Some(o)) => within_epsilon(v - o),
         _ => value == on,
     }
+}
+
+/// Whether a difference is small enough to be the same number.
+fn within_epsilon(diff: f64) -> bool {
+    diff.abs() < EPSILON
 }
 
 /// The state of a toggle whose targets are on (`Some(true)`), off
@@ -120,6 +125,8 @@ mod tests {
         assert!(!is_on(&json!(0.0), &json!(1.0)));
         assert!(!is_on(&Value::Null, &json!(1.0)));
         assert!(!is_on(&json!("on"), &json!(1.0)));
+        assert!(!within_epsilon(1e-6) && !within_epsilon(-1e-6));
+        assert!(within_epsilon(9.999999999999997e-7) && within_epsilon(-9.999999999999997e-7));
     }
 
     #[test]
