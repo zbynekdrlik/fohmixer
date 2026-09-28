@@ -44,6 +44,12 @@ BATTERY_SCRIPT = "-- battery\nfunction update()\n  local b = getBatteryLevel()\n
 ALERT_SCRIPT = "-- TechAlert blink\nfunction update()\nend\n"
 SOLO_SCRIPT = "-- solo group\n"
 STAGE_SCRIPT = "-- stage mics\n"
+# Every label of a former MIDI control carries it (restyle by incoming OSC).
+RESTYLE_SCRIPT = "-- restyle on receive\nfunction onReceiveOSC(message, connections)\nend\n"
+# The dead volume readout next to the Podklady fader.
+VOLUME_LABEL_SCRIPT = (
+    "-- volume label\nfunction onReceiveOSC(message)\n  self.values.text = '- 0.0'\nend\n"
+)
 
 CONFIG_TEXT = (
     "connection_band: 2\n"
@@ -202,9 +208,14 @@ def alert_strip(name, x, y):
 
 
 def midi_group(name, frame, button, text, state_label=True):
-    kids = [button, label("name", (0, 60, frame[2], 30), text, textColor=WHITE)]
+    """A former MIDI control's group: the button, its name label and the
+    "ON/OFF" label, both labels carrying the restyle script."""
+    kids = [
+        button,
+        label("name", (0, 60, frame[2], 30), text, textColor=WHITE, script=RESTYLE_SCRIPT),
+    ]
     if state_label:
-        kids.append(label("state", (0, 80, frame[2], 20), "ON/OFF"))
+        kids.append(label("state", (0, 80, frame[2], 20), "ON/OFF", script=RESTYLE_SCRIPT))
     return N("GROUP", name, frame, kids)
 
 
@@ -462,7 +473,14 @@ def project():
                 release=True,
                 color=(0.53, 0.34, 0, 1),
             ),
-            label("label942", (67, 898, 119, 84), "REPRO", textColor=WHITE, textSize=24),
+            label(
+                "label942",
+                (67, 898, 119, 84),
+                "REPRO",
+                textColor=WHITE,
+                textSize=24,
+                script=RESTYLE_SCRIPT,
+            ),
             midi_group(
                 "group81",
                 (27, 960, 102, 60),
@@ -500,7 +518,6 @@ def project():
                 "group142",
                 (755, 1000, 116, 439),
                 [
-                    label("name", (0, 0, 116, 20), "Podklady All"),
                     N(
                         "FADER",
                         "fader42",
@@ -511,7 +528,10 @@ def project():
                         grid=True,
                         gridSteps=10,
                     ),
-                    label("fdr_label", (0, 420, 101, 19), "- 0.0", script=DB_SCRIPT),
+                    # The name is two labels ("All" drawn above "Podklady").
+                    label("label899", (7, 349, 104, 46), "Podklady"),
+                    label("label946", (8, 309, 104, 46), "All"),
+                    label("label950", (-43, 28, 205, 84), "- 0.0", script=VOLUME_LABEL_SCRIPT),
                 ],
             ),
             # The bottom row's area and its vertical title overhang the

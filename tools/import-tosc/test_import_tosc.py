@@ -406,6 +406,30 @@ class ImportTest(unittest.TestCase):
             [d for d in self.report["dropped"] if "button42" in d["node"]], self.report["dropped"]
         )
 
+    def test_former_midi_controls_are_named_by_their_visible_labels(self):
+        # Every label of a former MIDI control carries the restyle script;
+        # Podklady's name is two labels; its volume readout and the
+        # "ON/OFF" labels are not names.
+        self.assertEqual(
+            {m["message"]: m["control"] for m in self.report["midi"]},
+            {
+                "CC20 ch14": "Vox 1 TU",
+                "CC28 ch14": "Gitara 2",
+                "NOTE29 ch14": "ALERT LOOP",
+                "CC55 ch14": "REVERB",
+                "CC56 ch14": "VOC MIC",
+                "CC36 ch14": "AUTOTUNE",
+                "CC30 ch14": "ZVUKAR",
+                "CC31 ch14": "REPRO",
+                "CC58 ch14": "HALF",
+                "CC67 ch14": "SELECT",
+                "CC57 ch14": "Podklady All",
+            },
+        )
+        self.assertFalse(
+            [i for i in all_items(self.layout) if i.get("text") in ("REPRO", "- 0.0", "All")]
+        )
+
     def test_unmapped_partial_and_unsupported_controls_are_dropped(self):
         self.assertEqual(self.verdict("CC28 ch14")["why"], "no mapping in the set")
         self.assertEqual(self.verdict("NOTE29 ch14")["why"], "no mapping in the set")
