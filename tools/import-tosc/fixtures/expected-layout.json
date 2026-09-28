@@ -1233,6 +1233,9 @@
    "double_click_mute entries are matched as plain text, not Lua patterns"
   ],
   "scripts": {
+   "793c3a9d79": [
+    "label"
+   ],
    "156292b4d9": [
     "button",
     "backdrop (mute script)",
@@ -1253,8 +1256,7 @@
    ],
    "735080db5f": [
     "db",
-    "strip decoration",
-    "label"
+    "strip decoration"
    ],
    "38869d215f": [
     "group",
@@ -1266,6 +1268,9 @@
    ],
    "b7221e44c0": [
     "button"
+   ],
+   "29823f9f61": [
+    "label"
    ],
    "b0b4de7b26": [
     "group"

@@ -54,6 +54,9 @@ STRIP_PARTS = {
 # A return track is named with a leading letter and a hyphen (`A-…`).
 RETURN_NAME = re.compile(r"^[A-Z]-")
 SCALE_LABEL = re.compile(r"^-?\d+$")
+# A label's stored text that is a value readout, not a name.
+VALUE_TEXT = re.compile(r"^[-+]?\s*(\d+([.,]\d+)?|inf|∞)\s*(%|db|dbfs)?$", re.IGNORECASE)
+LETTER = re.compile(r"[^\W\d_]")
 CONF_LINE = re.compile(r"^\s*([A-Za-z_]\w*)\s*:\s*(.*?)\s*$")
 MACRO = re.compile(r"^MacroControls\.(\d+)$")
 # The full MIDI-map ranges (the set's units) and the LOM range they map to.
@@ -402,16 +405,24 @@ def _is_refresh(node):
     return node.type in ("LABEL", "BUTTON") and REFRESH_CALL.search(code) is not None
 
 
-def _static_labels(nodes):
-    """The labels among ``nodes`` that can name a former MIDI control."""
+def _name_labels(nodes):
+    """The labels among ``nodes`` that name a former MIDI control: visible
+    words, whatever script they carry (the real ones restyle on incoming OSC);
+    not the "ON/OFF" state nor a value readout ("- 0.0", "-inf", "100%")."""
     return [
         n
         for n in nodes
         if n.type == "LABEL"
-        and not n.script.strip()
-        and n.text.strip()
+        and n.visible
+        and LETTER.search(n.text)
         and n.text.strip().upper() != "ON/OFF"
+        and not VALUE_TEXT.match(n.text.strip())
     ]
+
+
+def _label_text(labels):
+    """The name the labels spell together, in node order ("Podklady" "All")."""
+    return " ".join(" ".join(n.text.split()) for n in labels)
 
 
 def _covers(a, b):
@@ -425,10 +436,10 @@ def _with_labels(children):
     """Each child with the sibling labels drawn over it when it is a former MIDI
     control outside a group; those labels name the control and are skipped."""
     labels, taken = {}, set()
-    static = _static_labels(children)
+    names = _name_labels(children)
     for control in children:
         if control.type in ("BUTTON", "FADER") and _midi_of(control):
-            own = [n for n in static if id(n) not in taken and _covers(n.frame, control.frame)]
+            own = [n for n in names if id(n) not in taken and _covers(n.frame, control.frame)]
             labels[id(control)] = own
             taken.update(id(n) for n in own)
     return [(c, labels.get(id(c), [])) for c in children if id(c) not in taken]
@@ -697,7 +708,7 @@ class Importer:
                 self.drop(path, "hidden")
             return
         if node.type in ("BUTTON", "FADER") and _midi_of(node):
-            label = labels[0].text.strip() if labels else node.name
+            label = _label_text(labels) or node.name
             self.midi_control(node, ox, oy, clip, label, out, where)
             return
         shown = self.visible(rect, clip, path)
@@ -840,10 +851,11 @@ class Importer:
 
     def midi_group(self, node, ox, oy, shown, out, path):
         control = next(c for c in node.children if _midi_of(c))
-        static = _static_labels(node.children)
-        label = static[0].text.strip() if static else control.name
+        names = _name_labels(node.children)
+        label = _label_text(names) or control.name
+        used = {id(control)} | {id(n) for n in names}
         for child in node.children:
-            if child is control or (static and child is static[0]):
+            if id(child) in used:
                 continue
             if child.type == "LABEL":
                 self.count("labels of former MIDI controls")
