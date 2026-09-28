@@ -3,9 +3,12 @@
 
 - ``test.tosc``: a TouchOSC Mk2 project (lexml, zlib-compressed), shaped like
   the engineer's surface: a root pager (musician cue page, FOH, Conf) with a
-  nested vertical pager, strips of every kind with their decoration, solo
-  buttons, the stage mics and STAGE AUT, former MIDI controls, a root overlay
-  (TechAlert strip, REFRESH ALL, the battery gauge, the hidden alert box).
+  nested vertical pager next to fixed strips, strips of every kind with their
+  decoration, a left sidebar (solo buttons, the stage mics and STAGE AUT,
+  former MIDI controls), sections the importer groups (a box with a vertical
+  title beside it, a box with a label above it, strips in no box), a root
+  overlay (TechAlert strip, REFRESH ALL, the battery gauge, the hidden alert
+  box, a free label).
 - ``test.als``: a band set (gzip XML) with the MIDI mappings those controls hit.
 
 Every name is invented (the tracks of ``sim/fixtures/test-site.json``); the
@@ -590,7 +593,9 @@ def project():
                 ],
             ),
             # The bottom row's area and its vertical title overhang the
-            # canvas's bottom edge, as in the real project.
+            # canvas's bottom edge, as in the real project; the title is
+            # beside the box (overlapping its left edge), the box holds the
+            # section's strips.
             label(
                 "effects_area",
                 (271, 842, 529, 754),
@@ -607,6 +612,20 @@ def project():
                 orientation=3,
                 color=(0.39, 0.39, 0.39, 1),
             ),
+            strip("band_A-Reverb #", 290, 850, w=120),
+            strip("master_A-Reverb #", 420, 850, w=120),
+            # A section titled by a horizontal label just above its box
+            # (a 4 px gap).
+            label(
+                "hands",
+                (900, 830, 500, 34),
+                "HANDS",
+                background=True,
+                color=(0.21, 0.42, 0.26, 1),
+            ),
+            N("BOX", "hands_box", (900, 868, 500, 710), color=(0.21, 0.42, 0.26, 1)),
+            strip("master_Hand4 #", 930, 870, w=120, h=706),
+            strip("master_Hand2 #", 1060, 870, w=120, h=706),
             N("GROUP", "group100", (100, 100, 60, 40), [label("mark", (10, 10, 20, 20), "[]")]),
             strip(
                 "band_B-Main repro #",
@@ -705,6 +724,8 @@ def project():
                 background=True,
                 color=(0, 0, 0, 0),
             ),
+            # A free label over every page: no control, dropped and reported.
+            label("caption", (1000, 1605, 300, 30), "MAIN MIX"),
             label(
                 "refresh",
                 (21, 1300, 209, 54),
@@ -732,7 +753,7 @@ def alert_first(root):
     """``root`` with its children in the real project's order: the hidden alert
     box right after the pager, the TechAlert strip last."""
     by_name = {c.props["name"]: c for c in root.children}
-    order = ("pager1", "alert", "refresh", "battery", "band_TechAlert #")
+    order = ("pager1", "alert", "refresh", "battery", "caption", "band_TechAlert #")
     root.children = [by_name[name] for name in order]
     return root
 
