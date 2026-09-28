@@ -112,14 +112,17 @@ fn start_with(envs: &[(&str, &str)]) -> Server {
     }
 }
 
-/// The hub binary with `PORT=0`, no inherited `RUST_LOG` and the environment
+/// The hub binary with `PORT=0`, its data folder a temporary one with no
+/// Live instances configured, no inherited `RUST_LOG` and the environment
 /// `envs` on top, its output in the server's log; not waited for.
 fn spawn_hub(envs: &[(&str, &str)]) -> Server {
     let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("fohmixer-hub.toml"), "instances = []\n").unwrap();
     let log = std::fs::File::create(dir.path().join("hub.log")).unwrap();
     let mut command = Command::new(env!("CARGO_BIN_EXE_fohmixer-hub"));
     command
         .env("PORT", "0")
+        .env("FOHMIXER_DATA", dir.path())
         .env("NO_COLOR", "1")
         .env_remove("RUST_LOG");
     for (name, value) in envs {
@@ -250,8 +253,10 @@ fn an_unfinished_request_holds_the_stop_at_most_five_seconds() {
 #[test]
 fn a_bad_port_exits_1_naming_it() {
     let _serial = serial();
+    let dir = tempfile::tempdir().unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_fohmixer-hub"))
         .env("PORT", "not-a-port")
+        .env("FOHMIXER_DATA", dir.path())
         .env("NO_COLOR", "1")
         .env_remove("RUST_LOG")
         .stdin(Stdio::null())
@@ -263,6 +268,38 @@ fn a_bad_port_exits_1_naming_it() {
         stderr.contains("fohmixer-hub: PORT=not-a-port is not a port number"),
         "{stderr}"
     );
+}
+
+#[test]
+fn a_bad_config_exits_1_naming_it() {
+    let _serial = serial();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("fohmixer-hub.toml"), "http_port = \"x\"\n").unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_fohmixer-hub"))
+        .env("FOHMIXER_DATA", dir.path())
+        .env("NO_COLOR", "1")
+        .env_remove("RUST_LOG")
+        .env_remove("PORT")
+        .stdin(Stdio::null())
+        .output()
+        .expect("run fohmixer-hub");
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("fohmixer-hub: config "), "{stderr}");
+    assert!(stderr.contains("fohmixer-hub.toml"), "{stderr}");
+}
+
+#[test]
+fn an_unknown_command_prints_the_usage_with_exit_2() {
+    let _serial = serial();
+    let output = Command::new(env!("CARGO_BIN_EXE_fohmixer-hub"))
+        .arg("pin")
+        .env("NO_COLOR", "1")
+        .stdin(Stdio::null())
+        .output()
+        .expect("run fohmixer-hub");
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("usage: fohmixer-hub"));
 }
 
 #[test]

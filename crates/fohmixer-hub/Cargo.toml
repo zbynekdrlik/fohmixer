@@ -5,21 +5,34 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "fohmixer hub: serves the UI and (from S3) connects the Live instances"
+description = "fohmixer hub: connects the Live instances, fans them out to the clients, serves the UI and the layout"
 
 [dependencies]
 fohmixer-proto = { path = "../fohmixer-proto" }
 
-# Web framework
-axum = { version = "0.8", features = ["macros", "json"] }
+# Web framework (ws: the client WebSocket)
+axum = { version = "0.8", features = ["macros", "json", "ws"] }
 # Security headers
 tower-http = { version = "0.6", features = ["set-header"] }
 # Async runtime (signal: the binary's graceful stop)
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net", "sync", "time"] }
+# The WebSocket client of the FohMixer scripts (the version axum's ws uses)
+tokio-tungstenite = "0.28"
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+# The config file (no writer: the hub only reads it)
+toml = { version = "1", default-features = false, features = ["std", "serde", "parse"] }
+# Layout backup names (UTC time, no clock feature: the time comes from std)
+chrono = { version = "0.4", default-features = false, features = ["alloc"] }
+
+# Auth (from iemmixer): JWT, argon2id PIN hashes, random secrets
+jsonwebtoken = "9"
+argon2 = "0.5"
+rand_core = { version = "0.6", features = ["getrandom"] }
+base64 = "0.22"
 
 # The UI bundle, embedded at build time (crates/fohmixer-ui/dist)
 rust-embed = "8"
@@ -27,11 +40,16 @@ mime_guess = "2"
 
 # Errors and logging
 anyhow = "1.0"
+thiserror = "2.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# The PIN pepper is DPAPI-protected on the PC
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Cryptography"] }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
-tokio = { version = "1", features = ["io-util"] }
+tokio = { version = "1", features = ["io-util", "process"] }
 tempfile = "3"

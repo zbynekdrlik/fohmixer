@@ -1,0 +1,270 @@
+{
+ "schema": 1,
+ "canvas": {
+  "w": 2360,
+  "h": 1640
+ },
+ "tabbar": {
+  "orientation": "top",
+  "bar_size": 59,
+  "default_page": 0
+ },
+ "pages": [
+  {
+   "id": "foh",
+   "title": "FOH",
+   "tab": {
+    "color": "#404040FF",
+    "text_size": 33
+   },
+   "items": [
+    {
+     "kind": "stage",
+     "frame": {
+      "x": 27,
+      "y": 78,
+      "w": 115,
+      "h": 85
+     },
+     "style": {
+      "bg": "#000694FF",
+      "text": "STAGE"
+     },
+     "binding": {
+      "instance": "band",
+      "anchor": {
+       "kind": "track",
+       "name": "Mics Stage #"
+      }
+     },
+     "aut": true
+    },
+    {
+     "kind": "hub_toggle",
+     "frame": {
+      "x": 27,
+      "y": 180,
+      "w": 115,
+      "h": 85
+     },
+     "style": {
+      "bg": "#000694FF"
+     },
+     "key": "stage_aut",
+     "label": "STAGE AUT"
+    },
+    {
+     "kind": "solo",
+     "frame": {
+      "x": 27,
+      "y": 278,
+      "w": 161,
+      "h": 65
+     },
+     "binding": {
+      "instance": "band",
+      "anchor": {
+       "kind": "track",
+       "name": "Vocals Repro grp#"
+      }
+     }
+    },
+    {
+     "kind": "strip",
+     "frame": {
+      "x": 300,
+      "y": 120,
+      "w": 136,
+      "h": 706
+     },
+     "binding": {
+      "instance": "master",
+      "anchor": {
+       "kind": "track",
+       "name": "Hand1 #"
+      }
+     },
+     "strip_kind": "standard",
+     "children": {
+      "pan": {
+       "x": 315,
+       "y": 145,
+       "w": 106,
+       "h": 48
+      },
+      "fader": {
+       "x": 315,
+       "y": 203,
+       "w": 106,
+       "h": 553
+      },
+      "meter": {
+       "x": 301,
+       "y": 203,
+       "w": 10,
+       "h": 553
+      },
+      "status": {
+       "x": 324,
+       "y": 208,
+       "w": 88,
+       "h": 20
+      },
+      "db": {
+       "x": 315,
+       "y": 236,
+       "w": 106,
+       "h": 30
+      },
+      "mute": {
+       "x": 315,
+       "y": 768,
+       "w": 106,
+       "h": 52
+      },
+      "label": {
+       "x": 316,
+       "y": 773,
+       "w": 104,
+       "h": 42
+      },
+      "instance_label": {
+       "x": 316,
+       "y": 271,
+       "w": 104,
+       "h": 24
+      }
+     },
+     "mute_guard": false
+    },
+    {
+     "kind": "strip",
+     "frame": {
+      "x": 448,
+      "y": 120,
+      "w": 136,
+      "h": 706
+     },
+     "binding": {
+      "instance": "master",
+      "anchor": {
+       "kind": "track",
+       "name": "Hand2 #"
+      }
+     },
+     "strip_kind": "standard",
+     "children": {
+      "pan": {
+       "x": 463,
+       "y": 145,
+       "w": 106,
+       "h": 48
+      },
+      "fader": {
+       "x": 463,
+       "y": 203,
+       "w": 106,
+       "h": 553
+      },
+      "meter": {
+       "x": 449,
+       "y": 203,
+       "w": 10,
+       "h": 553
+      },
+      "status": {
+       "x": 472,
+       "y": 208,
+       "w": 88,
+       "h": 20
+      },
+      "db": {
+       "x": 463,
+       "y": 236,
+       "w": 106,
+       "h": 30
+      },
+      "mute": {
+       "x": 463,
+       "y": 768,
+       "w": 106,
+       "h": 52
+      },
+      "label": {
+       "x": 464,
+       "y": 773,
+       "w": 104,
+       "h": 42
+      },
+      "instance_label": {
+       "x": 464,
+       "y": 271,
+       "w": 104,
+       "h": 24
+      }
+     },
+     "mute_guard": false
+    }
+   ]
+  },
+  {
+   "id": "conf",
+   "title": "Conf",
+   "items": [
+    {
+     "kind": "label",
+     "frame": {
+      "x": 40,
+      "y": 100,
+      "w": 600,
+      "h": 300
+     },
+     "text": "unfold_band: 'Stems grp#'"
+    }
+   ]
+  }
+ ],
+ "overlay": [
+  {
+   "kind": "alert",
+   "frame": {
+    "x": 0,
+    "y": 80,
+    "w": 2360,
+    "h": 1553
+   },
+   "style": {
+    "bg": "#FF00001F"
+   },
+   "binding": {
+    "instance": "band",
+    "anchor": {
+     "kind": "track",
+     "name": "TechAlert #"
+    }
+   },
+   "period_ms": 300
+  },
+  {
+   "kind": "refresh",
+   "frame": {
+    "x": 21,
+    "y": 1300,
+    "w": 209,
+    "h": 54
+   },
+   "label": "REFRESH ALL"
+  }
+ ],
+ "config": {
+  "unfold": [
+   {
+    "instance": "band",
+    "name": "Stems grp#"
+   }
+  ]
+ },
+ "report": {
+  "dropped": []
+ }
+}

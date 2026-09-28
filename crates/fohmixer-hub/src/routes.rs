@@ -1,18 +1,23 @@
-//! HTTP routes: the version, client panic reports and the embedded UI
-//! (trimmed from iemmixer's `iem-server/src/routes.rs` @ 22372bc).
+//! HTTP routes (trimmed from iemmixer's `iem-server/src/routes.rs` @
+//! 22372bc): the version, client panic reports and the embedded UI (public);
+//! the engineer login; the layout, the status and the client WebSocket (a
+//! token).
 
 use axum::{
     Json, Router,
     body::Body,
-    extract::{DefaultBodyLimit, Path},
-    http::{StatusCode, header},
+    extract::{DefaultBodyLimit, Path, State},
+    http::{HeaderMap, StatusCode, header},
     response::Response,
     routing::{get, post},
 };
 use fohmixer_proto::VersionInfo;
+use fohmixer_proto::client::HubStatus;
+use fohmixer_proto::layout::LayoutResponse;
 use rust_embed::RustEmbed;
 
-use crate::Assets;
+use crate::auth::{Rejection, error_response};
+use crate::{Assets, Hub};
 
 /// `GET /api/version`: the build this hub runs (deploy verification, the UI's
 /// version label check).
@@ -59,8 +64,39 @@ async fn client_error(Json(report): Json<ClientErrorReport>) -> StatusCode {
     StatusCode::NO_CONTENT
 }
 
+/// `GET /api/layout` (a token): the served layout and its revision; 503 while
+/// none is served.
+async fn get_layout(
+    State(hub): State<Hub>,
+    headers: HeaderMap,
+) -> Result<Json<LayoutResponse>, Rejection> {
+    hub.auth.require(&headers)?;
+    match hub.layout.current() {
+        (rev, Some(layout)) => Ok(Json(LayoutResponse {
+            rev,
+            layout: (*layout).clone(),
+        })),
+        (_, None) => Err(Rejection::from(error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "NO_LAYOUT",
+            &hub.layout
+                .error()
+                .unwrap_or_else(|| "no layout yet".to_string()),
+        ))),
+    }
+}
+
+/// `GET /api/status` (a token): the instances, the layout, STAGE AUT.
+async fn get_status(
+    State(hub): State<Hub>,
+    headers: HeaderMap,
+) -> Result<Json<HubStatus>, Rejection> {
+    hub.auth.require(&headers)?;
+    Ok(Json(hub.status().await))
+}
+
 /// API routes.
-pub fn api_routes() -> Router {
+pub fn api_routes() -> Router<Hub> {
     Router::new()
         // Version endpoint (deploy verification, the UI's version label)
         .route("/api/version", get(get_version))
@@ -70,12 +106,16 @@ pub fn api_routes() -> Router {
             // no operator to mutate; pinned by the router tests below.
             post(client_error).layer(DefaultBodyLimit::max(10_240)),
         )
+        .route("/api/auth", post(crate::auth::login))
+        .route("/api/layout", get(get_layout))
+        .route("/api/status", get(get_status))
+        .route("/ws", get(crate::ws::ws_handler))
 }
 
 /// Static routes: the embedded UI (Trunk's `dist/`). A path without a file
 /// extension is a client route and gets `index.html` (deep links); a path
 /// with one is a file, served when it exists and 404 otherwise.
-pub fn static_routes() -> Router {
+pub fn static_routes() -> Router<Hub> {
     Router::new()
         .route("/", get(serve_index))
         .route("/{*path}", get(serve_spa_route))
@@ -137,7 +177,14 @@ mod tests {
     use tower::ServiceExt;
 
     async fn send(request: Request<Body>) -> Response {
-        crate::app_router().oneshot(request).await.unwrap()
+        let dir = tempfile::tempdir().unwrap();
+        let hub = crate::test_hub(dir.path());
+        let response = crate::app_router(hub.clone())
+            .oneshot(request)
+            .await
+            .unwrap();
+        hub.stop();
+        response
     }
 
     async fn get_path(path: &str) -> Response {
@@ -291,6 +338,57 @@ mod tests {
                 .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn the_layout_and_the_status_need_a_token() {
+        for path in ["/api/layout", "/api/status"] {
+            let response = get_path(path).await;
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{path}");
+            let body: serde_json::Value =
+                serde_json::from_slice(&body_bytes(response).await).unwrap();
+            assert_eq!(body["code"], "UNAUTHORIZED", "{path}");
+        }
+        let response = send(
+            Request::get("/api/status")
+                .header(header::AUTHORIZATION, "Bearer not.a.token")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    async fn get_with_token(hub: &crate::Hub, path: &str) -> Response {
+        let token = hub.auth.issue().unwrap();
+        crate::app_router(hub.clone())
+            .oneshot(
+                Request::get(path)
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn with_a_token_the_status_answers_and_a_missing_layout_is_503() {
+        let dir = tempfile::tempdir().unwrap();
+        let hub = crate::test_hub(dir.path());
+        let response = get_with_token(&hub, "/api/status").await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let status: fohmixer_proto::client::HubStatus =
+            serde_json::from_slice(&body_bytes(response).await).unwrap();
+        assert!(status.instances.is_empty());
+        assert_eq!(status.layout.rev, 0);
+        assert!(!status.stage_aut.on);
+        assert_eq!(status.clients, 0);
+        let response = get_with_token(&hub, "/api/layout").await;
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body: serde_json::Value = serde_json::from_slice(&body_bytes(response).await).unwrap();
+        assert_eq!(body["code"], "NO_LAYOUT");
+        hub.stop();
     }
 
     #[test]
