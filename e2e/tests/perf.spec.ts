@@ -46,9 +46,11 @@ test.describe("Frames while the surface loads", () => {
     });
     await openSurface(page);
     await page.waitForTimeout(3000);
-    const { frames, marks } = await page.evaluate(() => {
+    // The moment of the read counts as the end of the last gap, so a stall
+    // at the end of the window is not lost.
+    const { frames, marks, end } = await page.evaluate(() => {
       const w = window as any;
-      return { frames: w.__frames as number[], marks: w.__marks as [number, string][] };
+      return { frames: w.__frames as number[], marks: w.__marks as [number, string][], end: performance.now() };
     });
     const timeline = marks.map(([t, m]) => `${Math.round(t)} ${m}`).join(", ");
     const at = (name: string) => {
@@ -62,7 +64,7 @@ test.describe("Frames while the surface loads", () => {
     expect(frames.length, `frames after the stage appeared; marks: ${timeline}`).toBeGreaterThan(stage + 1);
 
     const firstPaint = frames[stage + 1] - frames[stage];
-    const after = frames.slice(stage + 1);
+    const after = [...frames.slice(stage + 1), end];
     const gaps = after.slice(1).map((t, i) => [after[i], t - after[i]]);
     const long = gaps.filter(([, g]) => g > 100).map(([t, g]) => `${Math.round(t)}+${Math.round(g)}`);
     const maxGap = gaps.reduce((m, [, g]) => Math.max(m, g), 0);

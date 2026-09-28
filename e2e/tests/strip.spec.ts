@@ -82,6 +82,70 @@ test.describe("A strip", () => {
     }
   });
 
+  test("at the narrowest strip width a long name fits, every part stays in its strip, no row scrolls up or down", async ({ page }) => {
+    // #21 second review: without a clip, a long name widened the strip's
+    // column over the next strip (a 9-letter name at 64 px: 17 px in
+    // WebKit), the fader's rail gave a scrolling row a vertical scroll
+    // range, and a name longer than about 6 letters ended in an ellipsis.
+    const LAYOUT = join(__dirname, "..", "..", "tools", "import-tosc", "fixtures", "expected-layout.json");
+    const BAND = ["TechAlert #", "Hand1 #", "Hand2 #", "Hand3 #", "Hand4 #", "Vocals Repro grp#", "Vocal 1 repro#", "Vocal 2 repro#", "Vocal 3 repro#", "Keys 1", "Stems grp#", "Drums #", "Bass #", "Mics Stage #"];
+    const MASTER = ["Hand1 #", "Hand2 #", "Hand3 #", "Hand4 #"];
+    const changed = JSON.parse(readFileSync(LAYOUT, "utf-8"));
+    const foh = changed.pages.find((p: any) => p.id === "foh");
+    const strips = [...BAND.map((name) => ["band", name]), ...MASTER.map((name) => ["master", name])].map(([instance, name]) => ({
+      kind: "strip",
+      binding: { instance, anchor: { kind: "track", name } },
+      strip_kind: "standard",
+    }));
+    // A master return: the longest instance tag, "master · ret".
+    strips.push({ kind: "strip", binding: { instance: "master", anchor: { kind: "return", name: "A-Reverb #" } }, strip_kind: "return" });
+    foh.rows.push({ sections: [{ kind: "group", id: "narrow", title: "Narrow", controls: strips }] });
+    await openSurface(page);
+    const group = page.locator('[data-testid="group"][data-group="narrow"]');
+    try {
+      await harness("/hub/layout", { layout: changed });
+      await expect(group.locator('[data-testid="strip"]')).toHaveCount(BAND.length + MASTER.length + 1, { timeout: 10_000 });
+      const alert = group.locator('[data-testid="strip"][data-track="TechAlert #"]');
+      await expect(alert.getByTestId("strip-label")).toHaveText("TechAlert");
+      await frames(page);
+      const width = await page.locator(".rows").evaluate((el) => parseFloat(getComputedStyle(el).getPropertyValue("--strip-w")));
+      expect(width, "the premise: the strips at their narrowest").toBe(64);
+      // Every part of every strip on the page inside its strip (the meter's
+      // moving layers are clipped by their bar, the cap's rail is a
+      // transparent layer that takes no touch: the bar and the cap count).
+      const outside = await page.locator('[data-testid="strip"]').evaluateAll((all) =>
+        all.flatMap((node) => {
+          const s = node.getBoundingClientRect();
+          const name = node.getAttribute("data-track");
+          return Array.from(node.querySelectorAll("*"))
+            .filter((el) => !el.closest(".meter-bar") || el.classList.contains("meter-bar"))
+            .filter((el) => !el.classList.contains("fader-rail"))
+            .flatMap((el) => {
+              const r = el.getBoundingClientRect();
+              if (r.width === 0 && r.height === 0) return [];
+              const slack = 0.5;
+              const out = r.left < s.left - slack || r.right > s.right + slack || r.top < s.top - slack || r.bottom > s.bottom + slack;
+              return out ? [`${name} .${el.className}: (${r.left.toFixed(1)}..${r.right.toFixed(1)}, ${r.top.toFixed(1)}..${r.bottom.toFixed(1)}) outside (${s.left.toFixed(1)}..${s.right.toFixed(1)}, ${s.top.toFixed(1)}..${s.bottom.toFixed(1)})`] : [];
+            });
+        }),
+      );
+      expect(outside).toEqual([]);
+      await expect(group.locator('[data-testid="strip"][data-track="A-Reverb #"]').getByTestId("strip-instance")).toHaveText(/master · ret/i);
+      for (const part of ["strip-label", "strip-instance"]) {
+        for (const text of await group.getByTestId(part).all()) {
+          expect(await clipped(text), `${part} ${await text.textContent()}`).toEqual([]);
+        }
+      }
+      const scrolls = await page.getByTestId("row").evaluateAll((rows) =>
+        rows.filter((r) => r.scrollHeight > r.clientHeight).map((r) => `${r.scrollHeight} > ${r.clientHeight}`),
+      );
+      expect(scrolls, "rows with a vertical scroll range").toEqual([]);
+    } finally {
+      await harness("/hub/layout/reset");
+    }
+    await expect(group).toHaveCount(0, { timeout: 10_000 });
+  });
+
   test("a fader drag moves Live's volume the way of the finger", async ({ page }) => {
     await live.set("band", volume(HAND2), "value", 0.5);
     await openSurface(page);
@@ -118,6 +182,30 @@ test.describe("A strip", () => {
     for (let i = 1; i <= 10; i++) await page.mouse.move(x, zone.y - 8 * i);
     await page.mouse.up();
     await until(() => live.get("band", volume(HAND2), "value"), (v) => v > 0.55, "the volume to rise");
+  });
+
+  test("a drag that starts on the cap where it stands out of the fader moves it", async ({ page }) => {
+    // #21 second review: the cap's rail takes no touch, and the cap had
+    // inherited that, so its half below the track at −∞ took nothing.
+    await live.set("band", volume(HAND2), "value", 0);
+    await openSurface(page);
+    const s = strip(page, "Hand2 #");
+    const fader = s.getByTestId("fader");
+    await ready(fader);
+    await until(() => shown(fader), (v) => v === 0, "the fader at −∞");
+    await frames(page);
+    const track = (await fader.boundingBox())!;
+    const cap = (await s.locator(".fader-cap").boundingBox())!;
+    const x = Math.round(cap.x + cap.width / 2);
+    const y = Math.round(cap.y + cap.height - 3);
+    expect(y, "the point is below the fader's box").toBeGreaterThan(track.y + track.height);
+    const hit = await page.evaluate(([px, py]) => document.elementFromPoint(px, py)?.closest('[data-testid="fader"]') !== null, [x, y]);
+    expect(hit, "the cap's lower edge belongs to the fader").toBe(true);
+    await page.mouse.move(x, y);
+    await page.mouse.down();
+    for (let i = 1; i <= 10; i++) await page.mouse.move(x, y - 8 * i);
+    await page.mouse.up();
+    await until(() => live.get("band", volume(HAND2), "value"), (v) => v > 0.05, "the volume to rise");
   });
 
   test("a double tap glides the fader to 0 dB", async ({ page }) => {
