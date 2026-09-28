@@ -177,8 +177,8 @@ pub enum ItemKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         title: Option<String>,
     },
-    /// A mixer strip.
-    Strip(Strip),
+    /// A mixer strip (boxed: by far the largest kind).
+    Strip(Box<Strip>),
     /// A group-track solo toggle (spec F14).
     Solo { binding: Binding },
     /// The stage-mic button: an inverted mute (spec F15). `aut`: the hub's

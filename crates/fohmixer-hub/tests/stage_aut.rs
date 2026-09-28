@@ -10,6 +10,7 @@ mod support;
 use std::path::Path;
 use std::time::Duration;
 
+use fohmixer_hub::config::InstanceCfg;
 use fohmixer_proto::client::{ClientMsg, ServerMsg};
 use serde_json::json;
 use support::{Client, Host, TestHub, runtime, serial};
@@ -23,6 +24,18 @@ fn with_layout(dir: &Path) {
         dir.join("layout.json"),
     )
     .unwrap();
+}
+
+/// The band host and a master nothing listens for (the layout binds both
+/// instances; STAGE AUT acts on the band only).
+fn instances(band: &Host) -> Vec<InstanceCfg> {
+    vec![
+        band.cfg(),
+        InstanceCfg {
+            name: "master".into(),
+            port: 1,
+        },
+    ]
 }
 
 async fn transport(client: &mut Client, verb: &str) {
@@ -58,7 +71,7 @@ fn with_the_flag_on_the_stage_mics_mute_while_playing() {
         let host = Host::start("band");
         let dir = tempfile::tempdir().unwrap();
         with_layout(dir.path());
-        let hub = TestHub::start(vec![host.cfg()], dir.path()).await;
+        let hub = TestHub::start(instances(&host), dir.path()).await;
         hub.status_until(SECS_3, |s| s.layout.rev == 1 && s.instances[0].online)
             .await;
         let mut a = hub.client().await;
@@ -103,7 +116,7 @@ fn the_flag_survives_a_hub_restart_and_a_host_restart_writes_once() {
         let port = host.port;
         let dir = tempfile::tempdir().unwrap();
         with_layout(dir.path());
-        let hub = TestHub::start(vec![host.cfg()], dir.path()).await;
+        let hub = TestHub::start(instances(&host), dir.path()).await;
         let mut a = hub.client().await;
         set_flag(&mut a, true).await;
         hub.status_until(SECS_3, |s| s.stage_aut.writes == 1).await;
@@ -111,7 +124,7 @@ fn the_flag_survives_a_hub_restart_and_a_host_restart_writes_once() {
         hub.stop().await;
         // A new hub on the same data folder: the flag is on, the rule writes
         // once for the transport state it finds.
-        let hub = TestHub::start(vec![host.cfg()], dir.path()).await;
+        let hub = TestHub::start(instances(&host), dir.path()).await;
         let mut a = hub.client().await;
         a.wait(SECS_3, |m| {
             matches!(m, ServerMsg::Hub { key, value } if key == "stage_aut" && *value == json!(true))
