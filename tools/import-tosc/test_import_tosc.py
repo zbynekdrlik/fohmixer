@@ -94,14 +94,49 @@ class ImportTest(unittest.TestCase):
             layout["tabbar"], {"orientation": "top", "bar_size": 59.0, "default_page": 1}
         )
         self.assertEqual(len({p["id"] for p in layout["pages"]}), 3)
-        self.assertEqual(self.foh["tab"], {"color": "#404040FF", "text_size": 33.0})
+        self.assertEqual(
+            self.foh["tab"],
+            {
+                "color": "#404040FF",
+                "color_on": "#808080FF",
+                "text_size": 33.0,
+                "text_size_on": 52.0,
+            },
+        )
         pager = self.foh["pager"]
         self.assertEqual(pager["frame"], {"x": 229.0, "y": 61.0, "w": 1746.0, "h": 773.0})
         self.assertEqual(
             pager["tabbar"], {"orientation": "left", "bar_size": 65.0, "default_page": 0}
         )
         self.assertEqual([p["title"] for p in pager["pages"]], ["STAGE", "OTHERS"])
-        self.assertEqual(pager["pages"][0]["tab"]["color"], "#BAFFA657")
+
+    def test_tabs_are_grey_when_off_and_their_pages_colour_when_lit(self):
+        # #7, item 7: the real project keeps every tab grey in tabColorOff and
+        # the page's colour in tabColorOn; the lit tab's text size is the
+        # pager's textSizeOn.
+        stage, others = self.foh["pager"]["pages"]
+        self.assertEqual(
+            stage["tab"],
+            {
+                "color": "#404040FF",
+                "color_on": "#BAFFA657",
+                "text_size": 36.0,
+                "text_size_on": 51.0,
+            },
+        )
+        self.assertEqual(others["tab"]["color"], "#404040FF")
+        self.assertEqual(others["tab"]["color_on"], "#FA00004A")
+        self.assertEqual(self.pages["Cue"]["tab"]["color_on"], "#808080FF")
+
+    def test_pagers_and_pages_keep_their_backgrounds(self):
+        # #7, item 8: the grey root pager over the whole canvas, the black
+        # nested pager, the near-black STAGE page; OTHERS draws none.
+        self.assertEqual(self.layout["background"], "#9D9DA0FF")
+        self.assertEqual(self.foh["pager"]["background"], "#000000FF")
+        stage, others = self.foh["pager"]["pages"]
+        self.assertEqual(stage["background"], "#000000F9")
+        self.assertNotIn("background", others)
+        self.assertNotIn("background", self.foh)
 
     def test_the_root_overlay_holds_the_alert_the_techalert_strip_and_refresh(self):
         overlay = self.layout["overlay"]

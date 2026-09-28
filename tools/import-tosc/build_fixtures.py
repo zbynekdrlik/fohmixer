@@ -311,7 +311,12 @@ def project():
             strip("Keys 1", 243, 40, w=136, h=706, connection=NARROW_CONNECTION_LABEL),
         ],
         tabLabel="STAGE",
-        tabColorOff=(0.73, 1, 0.65, 0.34),
+        # As in the real project: every tab is grey when off, the page's own
+        # colour is its lit (on) colour; the page fills itself near-black.
+        tabColorOff=GREY,
+        tabColorOn=(0.73, 1, 0.65, 0.34),
+        background=True,
+        color=(0, 0, 0, 0.976),
     )
     others_page = N(
         "GROUP",
@@ -319,7 +324,8 @@ def project():
         (65, 0, 1681, 773),
         [strip("master_Hand1 #", 102, 34)],
         tabLabel="OTHERS",
-        tabColorOff=(0.98, 0, 0, 0.29),
+        tabColorOff=GREY,
+        tabColorOn=(0.98, 0, 0, 0.29),
     )
     sub_pager = N(
         "PAGER",
@@ -333,6 +339,9 @@ def project():
         tabbarSize=65,
         textSizeOff=36,
         textSizeOn=51,
+        # An opaque black pager behind its pages.
+        background=True,
+        color=BLACK,
     )
     foh = N(
         "GROUP",
@@ -600,6 +609,7 @@ def project():
         ],
         tabLabel="FOH",
         tabColorOff=(0.25, 0.25, 0.25, 1),
+        tabColorOn=(0.5, 0.5, 0.5, 1),
     )
     conf = N(
         "GROUP",
@@ -617,6 +627,7 @@ def project():
         ],
         tabLabel="Conf",
         tabColorOff=(0.25, 0.25, 0.25, 1),
+        tabColorOn=(0.5, 0.5, 0.5, 1),
     )
     pager = N(
         "PAGER",
@@ -629,6 +640,9 @@ def project():
         tabbarSize=59,
         textSizeOff=33,
         textSizeOn=52,
+        # The grey behind every page, the whole canvas.
+        background=True,
+        color=(0.616, 0.616, 0.627, 1),
     )
     tech_alert = alert_strip("band_TechAlert #", 67, 1059)
     return N(
