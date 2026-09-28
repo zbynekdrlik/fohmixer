@@ -3,7 +3,9 @@
 # inside conhost --headless: asks every hub under <DataDir>\app to stop with
 # Ctrl-Break, its graceful stop, through the hub's own console, which only a
 # process in the hub's session can reach (the task runs in the hub user's
-# session). It never ends a process (spec I7): Install-Fohmixer.ps1 waits for
+# session), sent to the hub's process group only: this process is on that
+# console while it sends and is never a target itself. It never ends a
+# process (spec I7): Install-Fohmixer.ps1 waits for
 # the hub to exit. The result goes to <DataDir>\logs\hub-stop.result.json
 # (conhost passes no exit code on), with this run's start time: code 0 = the
 # request reached every hub (or none runs), 1 = a request failed, 2 = this

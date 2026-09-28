@@ -29,16 +29,19 @@ $script:SemVer = '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z
 
 # Ctrl-Break through another process's console (the hub's graceful stop, as in
 # iemmixer's iem-win console.rs): detach from this process's console, attach to
-# the hub's, ignore the event here, send it to every process on that console,
-# detach. A console is reachable only from a process in the same session.
+# the hub's, send the event to the hub's process group only, detach. A console
+# is reachable only from a process in the same session. Never group 0 (every
+# process on that console): the sender is on it too while it sends, and no
+# handler can keep it alive, because AttachConsole and FreeConsole reset its
+# handler table to the default handler, which ends the process
+# (SetConsoleCtrlHandler, Remarks). Group 0 ended the stop script itself
+# before it wrote its result (the #9 self-test failure).
 $script:ConsoleCode = @'
 using System;
 using System.Runtime.InteropServices;
 
 public static class FohmixerConsole
 {
-    public delegate bool CtrlHandler(uint ctrlType);
-
     [DllImport("kernel32.dll", SetLastError = true)]
     static extern bool FreeConsole();
 
@@ -46,46 +49,36 @@ public static class FohmixerConsole
     static extern bool AttachConsole(uint processId);
 
     [DllImport("kernel32.dll", SetLastError = true)]
-    static extern bool SetConsoleCtrlHandler(CtrlHandler handler, bool add);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
     static extern bool GenerateConsoleCtrlEvent(uint ctrlEvent, uint processGroupId);
 
     const uint CtrlBreakEvent = 1;
+    const int ErrorInvalidParameter = 87;
 
-    // Referenced for the life of the process: the event arrives on a thread of its own.
-    static readonly CtrlHandler Ignore = IgnoreEvent;
-    static bool ignoring;
-
-    static bool IgnoreEvent(uint ctrlType)
-    {
-        return true;
-    }
-
-    // Sends Ctrl-Break to every process on processId's console (this process
-    // ignores it) and detaches again: 0, or the Win32 error of the failed step.
+    // Sends Ctrl-Break to the process group processId (a process started with
+    // CREATE_NEW_PROCESS_GROUP, whose id is its group's id) on that process's
+    // console, and detaches again: 0, or the Win32 error of the failed step.
+    // 0 is refused: as a group it means every process on the console, this
+    // one included.
     public static int Break(uint processId)
     {
-        if (!ignoring)
-        {
-            if (!SetConsoleCtrlHandler(Ignore, true)) return Marshal.GetLastWin32Error();
-            ignoring = true;
-        }
+        if (processId == 0) return ErrorInvalidParameter;
         FreeConsole();
         if (!AttachConsole(processId)) return Marshal.GetLastWin32Error();
         int result = 0;
-        if (!GenerateConsoleCtrlEvent(CtrlBreakEvent, 0)) result = Marshal.GetLastWin32Error();
+        if (!GenerateConsoleCtrlEvent(CtrlBreakEvent, processId)) result = Marshal.GetLastWin32Error();
         FreeConsole();
         return result;
     }
 }
 '@
 
-# The hub's start (Start-FohmixerHub.ps1): CreateProcess with CREATE_NO_WINDOW,
-# as iemmixer's iem-win spawn does for its children. The hub gets a console of
-# its own that has no window (nothing on the desktop, no hand-off to Windows
-# Terminal as the default terminal, Ctrl-Break reaches it alone); its stdout
-# and stderr go straight to two files, so it does not depend on the launcher.
+# The hub's start (Start-FohmixerHub.ps1): CreateProcess with CREATE_NO_WINDOW
+# and CREATE_NEW_PROCESS_GROUP, as iemmixer's iem-win spawn does for its
+# children. The hub gets a console of its own that has no window (nothing on
+# the desktop, no hand-off to Windows Terminal as the default terminal) and a
+# process group of its own (its pid is the group id: the stop's Ctrl-Break goes
+# to that group and to nothing else, FohmixerConsole); its stdout and stderr go
+# straight to two files, so it does not depend on the launcher.
 $script:SpawnCode = @'
 using System;
 using System.ComponentModel;
@@ -162,12 +155,13 @@ public static class FohmixerSpawn
     static extern bool CloseHandle(IntPtr handle);
 
     const uint CreateNoWindow = 0x08000000;
+    const uint CreateNewProcessGroup = 0x00000200;
     const int UseStdHandles = 0x00000100;
     const uint HandleFlagInherit = 1;
 
     // Starts exe (no arguments) in dir with this process's environment, no
-    // console window, no stdin, stdout and stderr written to the two files
-    // (created or emptied; readable while it runs).
+    // console window, a process group of its own, no stdin, stdout and stderr
+    // written to the two files (created or emptied; readable while it runs).
     public static FohmixerChild Start(string exe, string dir, string outPath, string errPath)
     {
         using (FileStream outFile = new FileStream(outPath, FileMode.Create, FileAccess.Write, FileShare.ReadWrite))
@@ -182,7 +176,7 @@ public static class FohmixerSpawn
             si.hStdError = errFile.SafeFileHandle.DangerousGetHandle();
             ProcessInformation pi;
             StringBuilder commandLine = new StringBuilder("\"" + exe + "\"");
-            if (!CreateProcessW(exe, commandLine, IntPtr.Zero, IntPtr.Zero, true, CreateNoWindow, IntPtr.Zero, dir, ref si, out pi))
+            if (!CreateProcessW(exe, commandLine, IntPtr.Zero, IntPtr.Zero, true, CreateNoWindow | CreateNewProcessGroup, IntPtr.Zero, dir, ref si, out pi))
                 throw new Win32Exception(Marshal.GetLastWin32Error(), "CreateProcess " + exe);
             CloseHandle(pi.hThread);
             return new FohmixerChild(pi.hProcess, pi.dwProcessId);
@@ -671,8 +665,9 @@ function Get-FohHubProcess {
 }
 
 function Send-FohCtrlBreak {
-    # Ctrl-Break to a hub through its own console: the hub stops gracefully on
-    # it. This detaches the CALLING process from its console for good, so only a
+    # Ctrl-Break to a hub's process group through its own console: the hub
+    # stops gracefully on it (Start-FohHubProcess gives it that group). This
+    # detaches the CALLING process from its console for good, so only a
     # process of its own calls it (Stop-FohmixerHub.ps1). Returns 0 or the Win32 error.
     param([Parameter(Mandatory)][int]$ProcessId)
     if ($ProcessId -le 0) { throw "pid $ProcessId refused" }
@@ -686,8 +681,9 @@ function Send-FohCtrlBreak {
 
 function Start-FohHubProcess {
     # Starts the hub exe in the data folder with this process's environment, no
-    # console window, its output in the two files (FohmixerSpawn). Returns the
-    # child: Id, WaitForExit() (the exit code), Dispose().
+    # console window, a process group of its own (Send-FohCtrlBreak), its
+    # output in the two files (FohmixerSpawn). Returns the child: Id,
+    # WaitForExit() (the exit code), Dispose().
     param([Parameter(Mandatory)][string]$Exe, [Parameter(Mandatory)][string]$DataDir,
           [Parameter(Mandatory)][string]$Out, [Parameter(Mandatory)][string]$Err)
     $type = 'FohmixerSpawn' -as [type]

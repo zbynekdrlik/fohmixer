@@ -1,7 +1,8 @@
 #Requires -Version 5.1
 # The fohmixer-hub task's action (S5 design note section 3 step 6), run inside
 # conhost --headless: starts the hub next to this script in the data folder,
-# with no console window (a console of its own, so Ctrl-Break reaches it alone),
+# with no console window (a console and a process group of its own, so the
+# stop's Ctrl-Break reaches it alone),
 # its output in <DataDir>\logs\hub.out.log and hub.err.log (the previous run's
 # kept as *.prev), and waits for it, so the task runs exactly as long as the
 # hub and IgnoreNew keeps one. The hub reads its data folder from
