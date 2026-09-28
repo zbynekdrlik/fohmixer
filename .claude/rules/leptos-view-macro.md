@@ -12,3 +12,11 @@ The `view!` macro tokenizes `>` / `>=` / `<` as tag boundaries. An inline compar
 ## Signal writes after an await or in a JS callback use `try_*`
 
 `scripts/check_disposal_safety.py` (the `integrity` CI job) rejects `.set()` / `.update()` inside `spawn_local` blocks and `Closure::wrap` callbacks — the component may already be disposed. Use `try_set` / `try_update`.
+
+## Never name a component prop `slot`
+
+`<FaderView slot=… />` makes Leptos treat the attribute as a slot and fails with "slots cannot be used inside HTML elements" deep in the expansion (#8). The fohmixer controls call their slot prop `state` (`let slot = state;` inside).
+
+## A value used by a child and by an attribute: clone it first
+
+`view!` may move a value into a child expression before an attribute on the same element reads it (E0382 on `label`/`name`, #8). Bind the attribute's copy to its own variable before the macro (`let label_attr = label.clone();`, `data-label=label_attr`).
