@@ -1,0 +1,486 @@
+<title>Fohmixer Redizajn</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:wght@500;600;700&family=JetBrains+Mono:wght@500;600&display=swap">
+<style>
+/* Single deliberate dark world: a FOH console at night. Every colour is set here. */
+:root {
+  color-scheme: dark;
+  --ground: #07070c;
+  --bg: #0b0b12;
+  --bar: #11111b;
+  --surface: #151522;
+  --strip: #1a1a28;
+  --strip-hi: #20203a;
+  --track: #0a0a14;
+  --line: #2a2a44;
+  --line-soft: rgba(255, 255, 255, 0.06);
+  --accent: #4ecdc4;
+  --accent-dim: rgba(78, 205, 196, 0.28);
+  --accent-glow: rgba(78, 205, 196, 0.45);
+  --mute: #e63946;
+  --mute-dim: rgba(230, 57, 70, 0.22);
+  --solo: #f4d35e;
+  --solo-ghost: rgba(244, 211, 94, 0.13);
+  --warn: #ff9f43;
+  --text: #eaeaf0;
+  --text-2: #9a9ab4;
+  --text-3: #5c5c78;
+  --band: #4ecdc4;
+  --master: #8b7dff;
+  --m-green: #36d67a;
+  --m-yellow: #f5d547;
+  --m-orange: #ff9f43;
+  --m-red: #ff4757;
+  --display: "Barlow Condensed", "Arial Narrow", "Roboto Condensed", sans-serif;
+  --ui: "Barlow", "Segoe UI", system-ui, sans-serif;
+  --mono: "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+}
+*, *::before, *::after { box-sizing: border-box; }
+html, body { background: var(--ground); color: var(--text); }
+body { font-family: var(--ui); padding-inline: 16px; padding-block: 20px 40px; }
+.page { max-width: 1240px; margin: 0 auto; display: grid; gap: 22px; }
+.intro { display: grid; gap: 6px; }
+.intro h1 { margin: 0; font-family: var(--display); font-weight: 700; font-size: 30px; letter-spacing: 0.5px; text-wrap: balance; }
+.intro p.note { font-size: 12.5px; color: var(--text-3); }
+.intro p { margin: 0; color: var(--text-2); max-width: 70ch; line-height: 1.5; }
+
+/* The iPad Pro 11 landscape viewport (1194 x 834 CSS px), scaled to fit. */
+.device { width: 100%; overflow: hidden; }
+.device-inner { width: 1194px; height: 834px; transform-origin: 0 0; }
+.ipad { position: relative; width: 1194px; height: 834px; background: var(--bg); border-radius: 18px; overflow: hidden;
+  box-shadow: 0 0 0 1px #1d1d2c, 0 30px 80px rgba(0, 0, 0, 0.6); display: grid; grid-template-rows: 46px 1fr; grid-template-columns: minmax(0, 1fr); user-select: none; -webkit-user-select: none; touch-action: none; }
+
+/* Top bar */
+.topbar { display: flex; align-items: center; gap: 14px; padding: 0 12px; background: var(--bar); border-bottom: 1px solid var(--line-soft); }
+.seg { display: flex; background: var(--track); border: 1px solid var(--line); border-radius: 10px; padding: 3px; gap: 2px; }
+.seg button { font: 700 13px/1 var(--ui); letter-spacing: 1px; text-transform: uppercase; color: var(--text-2); background: none; border: 0; padding: 8px 14px; border-radius: 7px; cursor: pointer; }
+.seg button[aria-pressed="true"] { background: var(--strip-hi); color: var(--text); box-shadow: inset 0 -2px 0 var(--accent); }
+.seg.sub button[aria-pressed="true"] { box-shadow: inset 0 -2px 0 var(--solo); }
+.spacer { flex: 1; }
+.solo-clear { display: none; align-items: center; gap: 6px; font: 700 12px/1 var(--ui); letter-spacing: 1px; color: #1a1a28; background: var(--solo); border: 0; border-radius: 999px; padding: 8px 12px; cursor: pointer; animation: soloPulse 1.6s ease-in-out infinite; }
+.solo-clear.on { display: inline-flex; }
+@keyframes soloPulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(244, 211, 94, 0.55); } 50% { box-shadow: 0 0 0 7px rgba(244, 211, 94, 0); } }
+.conn { display: flex; gap: 12px; font: 600 11px/1 var(--ui); letter-spacing: 1px; text-transform: uppercase; color: var(--text-2); }
+.conn span { display: inline-flex; align-items: center; gap: 6px; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 6px var(--accent-glow); animation: beat 1s ease-out infinite; }
+.dot.m { background: var(--master); box-shadow: 0 0 6px rgba(139, 125, 255, 0.5); animation-delay: 0.3s; }
+@keyframes beat { 0% { transform: scale(1.35); } 40%, 100% { transform: scale(1); } }
+.ver { font: 500 10px/1.2 var(--mono); color: var(--text-3); text-align: right; }
+
+/* Body: function rail + two rows of sections */
+.body { display: grid; grid-template-columns: 112px minmax(0, 1fr); min-height: 0; }
+.rail { display: flex; flex-direction: column; gap: 6px; padding: 10px 8px; background: var(--bar); border-right: 1px solid var(--line-soft); }
+.fn { position: relative; display: grid; align-content: center; min-height: 44px; padding: 6px 8px 6px 20px; border-radius: 10px; border: 1px solid var(--line); background: var(--strip);
+  font: 700 11.5px/1.15 var(--ui); letter-spacing: 0.6px; text-transform: uppercase; color: var(--text-2); cursor: pointer; text-align: left; }
+.fn::before { content: ""; position: absolute; left: 8px; top: 50%; width: 6px; height: 6px; margin-top: -3px; border-radius: 50%; background: var(--text-3); }
+.fn.on { color: var(--text); border-color: color-mix(in srgb, var(--c) 55%, transparent); background: color-mix(in srgb, var(--c) 16%, var(--strip)); }
+.fn.on::before { background: var(--c); box-shadow: 0 0 8px var(--c); }
+.fn.alert.on { animation: alertBlink 0.6s steps(2, jump-none) infinite; }
+@keyframes alertBlink { 0% { background: color-mix(in srgb, var(--mute) 45%, var(--strip)); } 100% { background: var(--strip); } }
+.rail .gap { flex: 1; }
+.fn.refresh { padding-left: 8px; text-align: center; color: var(--accent); border-color: var(--accent-dim); }
+.fn.refresh::before { display: none; }
+
+.main { display: grid; grid-template-rows: 1fr 1fr; gap: 8px; padding: 8px 10px 10px; min-height: 0; }
+.row { display: flex; gap: 10px; min-height: 0; }
+.section { display: grid; grid-template-rows: 18px 1fr; gap: 4px; min-width: 0; }
+.section h2 { margin: 0; white-space: nowrap; display: flex; align-items: center; gap: 6px; font: 600 11px/18px var(--ui); letter-spacing: 1.4px; text-transform: uppercase; color: var(--text-2); }
+.section h2 i { width: 8px; height: 8px; border-radius: 2px; background: var(--c); }
+.section h2 small { font: 500 9.5px/1 var(--mono); letter-spacing: 0.5px; color: var(--text-3); text-transform: none; }
+.strips { display: flex; gap: 4px; padding: 4px; border-radius: 12px; background: var(--surface); border: 1px solid var(--line-soft); min-height: 0; }
+
+/* Channel strip */
+.strip { --tc: #888; position: relative; width: 76px; display: grid; grid-template-rows: auto auto 1fr auto auto; gap: 4px; padding: 6px 4px 5px; border-radius: 9px; background: var(--strip); border: 1px solid transparent; transition: border-color 0.15s, box-shadow 0.15s; overflow: hidden; }
+.strip.wide { width: 84px; }
+.strip::before { content: ""; position: absolute; inset: 0 0 auto 0; height: 3px; background: var(--tc); opacity: 0.9; }
+.strip.active { border-color: var(--accent); box-shadow: 0 0 14px var(--accent-dim); }
+.strip.muted::after { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--mute); }
+.strip.muted .fader-cap, .strip.muted .fill, .strip.muted .meter, .strip.muted .db { opacity: 0.4; }
+.meta { display: flex; justify-content: center; align-items: center; gap: 2px; }
+.tag { font: 700 8.5px/1 var(--ui); letter-spacing: 0.8px; padding: 2px 4px; border-radius: 4px; color: var(--inst); background: color-mix(in srgb, var(--inst) 14%, transparent); }
+.db { font: 600 12px/1 var(--mono); font-variant-numeric: tabular-nums; color: #9be7a8; }
+.strip.muted .db { color: var(--text-3); }
+.pan { position: relative; height: 16px; border-radius: 8px; background: var(--track); border: 1px solid var(--line); cursor: ew-resize; }
+.pan::before { content: ""; position: absolute; left: 50%; top: 3px; bottom: 3px; width: 1px; background: var(--text-3); }
+.pan-fill { position: absolute; top: 4px; bottom: 4px; background: var(--accent-dim); border-radius: 3px; }
+.pan-dot { position: absolute; top: 2px; width: 10px; height: 10px; margin-left: -5px; border-radius: 50%; background: var(--text); }
+.pan.centre .pan-dot { background: var(--accent); box-shadow: 0 0 6px var(--accent-glow); }
+
+.fz { position: relative; display: grid; grid-template-columns: 17px 11px 1fr; gap: 3px; min-height: 0; padding: 8px 0 4px; }
+.scale { position: relative; }
+.scale span { position: absolute; right: 0; transform: translateY(-50%); font: 500 8.5px/1 var(--mono); color: var(--text-3); }
+.scale span.u { color: var(--text-2); }
+.meter { position: relative; display: grid; grid-template-columns: 1fr 1fr; gap: 1px; }
+.mbar { position: relative; border-radius: 2px; overflow: hidden; background: #0e0e18; }
+.mbar .grad { position: absolute; inset: 0; background: var(--meter-grad); opacity: 0.95; }
+.mbar .cover { position: absolute; left: 0; right: 0; top: 0; background: #0e0e18; }
+.mbar .peak { position: absolute; left: 0; right: 0; height: 2px; background: #fff; opacity: 0.75; }
+.clip { position: absolute; left: 0; right: 0; top: -7px; height: 4px; border-radius: 2px; background: #2a1016; cursor: pointer; }
+.clip.on { background: var(--m-red); box-shadow: 0 0 6px var(--m-red); }
+.ftrack { position: relative; cursor: ns-resize; }
+.groove { position: absolute; left: 50%; top: 0; bottom: 0; width: 6px; margin-left: -3px; border-radius: 3px; background: var(--track); box-shadow: inset 0 0 0 1px var(--line); }
+.fill { position: absolute; left: 50%; bottom: 0; width: 6px; margin-left: -3px; border-radius: 3px; background: linear-gradient(to top, rgba(78, 205, 196, 0.25), var(--accent)); }
+.unity { position: absolute; left: 4px; right: 4px; height: 1px; background: rgba(255, 255, 255, 0.28); }
+.tick { position: absolute; left: 50%; width: 14px; margin-left: -7px; height: 1px; background: rgba(255, 255, 255, 0.07); }
+.fader-cap { position: absolute; left: 50%; width: 32px; height: 22px; margin: -11px 0 0 -16px; border-radius: 6px;
+  background: linear-gradient(#3a3a52, #262638); border: 1px solid #4a4a66; box-shadow: 0 3px 8px rgba(0, 0, 0, 0.55); }
+.fader-cap::before { content: ""; position: absolute; left: 6px; right: 6px; top: 50%; height: 2px; margin-top: -1px; border-radius: 1px; background: var(--text); }
+.strip.active .fader-cap { border-color: var(--accent); box-shadow: 0 0 12px var(--accent-glow), 0 3px 8px rgba(0, 0, 0, 0.55); }
+.strip.active .fader-cap::before { background: var(--accent); }
+.fader-cap.homing { border-color: var(--solo); }
+.nb { position: relative; height: 34px; border: 0; border-radius: 7px; cursor: pointer; padding: 0 4px; font: 700 15px/1 var(--display); letter-spacing: 0.5px; text-transform: uppercase; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  color: #10101a; background: var(--tc); box-shadow: 0 0 10px color-mix(in srgb, var(--tc) 35%, transparent); }
+.strip.muted .nb { color: var(--text-3); background: #1f1f2e; box-shadow: inset 0 0 0 1px var(--mute-dim); }
+.nb .mt { display: none; position: absolute; right: 3px; top: 2px; font: 800 7.5px/1 var(--ui); letter-spacing: 0.6px; color: var(--mute); }
+.strip.muted .nb .mt { display: block; }
+.nb.armed { animation: arm 0.5s ease-out; }
+@keyframes arm { 0% { outline: 2px solid var(--solo); outline-offset: 1px; } 100% { outline: 2px solid transparent; outline-offset: 5px; } }
+.led { width: 6px; height: 6px; border-radius: 50%; background: var(--m-green); box-shadow: 0 0 5px var(--m-green); transition: background 0.35s, box-shadow 0.35s; }
+.led.hot { background: var(--m-yellow); box-shadow: 0 0 6px var(--m-yellow); transition: none; }
+.dbrow { display: flex; align-items: center; justify-content: center; gap: 4px; }
+.db.zero { color: #fff; }
+.alertwash { position: absolute; inset: 0; z-index: 5; background: rgba(255, 45, 70, 0.12); pointer-events: none; opacity: 0; }
+.alertwash.on { animation: wash 0.6s steps(2, jump-none) infinite; }
+@keyframes wash { 0% { opacity: 1; } 100% { opacity: 0; } }
+
+.notes { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
+.card { background: var(--bar); border: 1px solid var(--line-soft); border-radius: 12px; padding: 14px 16px; }
+.card h3 { margin: 0 0 8px; font: 700 13px/1.2 var(--ui); letter-spacing: 1.2px; text-transform: uppercase; color: var(--accent); }
+.card ul { margin: 0; padding-left: 18px; display: grid; gap: 5px; color: var(--text-2); line-height: 1.45; font-size: 13.5px; }
+.card b { color: var(--text); font-weight: 600; }
+button:focus-visible, .fn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) { .dot, .solo-clear, .fn.alert.on, .alertwash.on, .nb.armed { animation: none; } }
+</style>
+
+<div class="page">
+  <header class="intro">
+    <h1>fohmixer · nový vzhľad (mockup STAGE)</h1>
+    <p class="note">Verejná verzia: mená spevákov sú nahradené „Vox 1–7" (verejné repo mená ľudí neobsahuje).</p>
+    <p>Stránka STAGE s rovnakými sekciami a poradím pásov ako v TouchOSC, v novom vizuáli podľa iemmixer. Ťahaj fader, dvakrát ťukni na fader alebo pan, ťukni na meno pásu (mute), zapni SOLO alebo TechAlert vľavo. Merače bežia na simulovanom signáli.</p>
+  </header>
+
+  <div class="device" id="device">
+    <div class="device-inner" id="deviceInner">
+      <div class="ipad" id="ipad">
+        <div class="alertwash" id="alertwash"></div>
+        <div class="topbar">
+          <div class="seg" role="group" aria-label="Stránky">
+            <button type="button" aria-pressed="false">Cue</button>
+            <button type="button" aria-pressed="true">FOH</button>
+            <button type="button" aria-pressed="false">Conf</button>
+          </div>
+          <div class="seg sub" role="group" aria-label="Pager FOH">
+            <button type="button" aria-pressed="true">Stage</button>
+            <button type="button" aria-pressed="false">Band B</button>
+            <button type="button" aria-pressed="false">Others</button>
+          </div>
+          <div class="spacer"></div>
+          <button type="button" class="solo-clear" id="soloClear">SOLO <span aria-hidden="true">✕</span></button>
+          <div class="conn"><span><i class="dot"></i>band</span><span><i class="dot m"></i>master</span></div>
+          <div class="ver">v0.2.0<br>mockup</div>
+        </div>
+        <div class="body">
+          <nav class="rail" id="rail" aria-label="Funkcie"></nav>
+          <div class="main">
+            <div class="row" id="row1"></div>
+            <div class="row" id="row2"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <section class="notes">
+    <div class="card">
+      <h3>Správanie ako v TouchOSC</h3>
+      <ul>
+        <li><b>Fader</b>: rovnaká krivka (0 dB na 73 % dráhy), ide s prstom, neskáče.</li>
+        <li><b>Double tap na fader</b>: plynulý návrat na 0 dB rovnakou rýchlosťou ako v TouchOSC, dotyk ho zastaví. Na pan: stred.</li>
+        <li><b>Meno pásu je mute</b>: svieti farbou tracku, keď pás znie. Vokály majú ochranu: dva ťuky do 500 ms.</li>
+        <li><b>STAGE</b> svieti, keď sú mikrofóny na pódiu živé. <b>TechAlert</b> bliká cez celú plochu.</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>Nové</h3>
+      <ul>
+        <li><b>dB stupnica</b> pri každom fadri (+6, 0, −6, −12, −18, −24, −40) a <b>stereo merač</b> so zelenou, žltou (−12) a červenou (−3) ako v TouchOSC, s peak hold a clip.</li>
+        <li><b>dB číslo</b>: jedno desatinné miesto, biele presne pri 0 dB, inak zelené. Svetielko vedľa blikne žlto pri novej hodnote z Abletonu.</li>
+        <li><b>Farba pásu z farby tracku v Abletone</b>, sekcie s nadpismi, SOLO ✕ hore zruší všetky solá.</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>Na posúdenie</h3>
+      <ul>
+        <li>Celkový smer: tmavé pásy, teal akcent, farby z Abletonu.</li>
+        <li>Merač vedľa fadra so stupnicou medzi nimi.</li>
+        <li>Meno pásu dole ako mute tlačidlo (ako v TouchOSC).</li>
+      </ul>
+    </div>
+  </section>
+</div>
+
+<script>
+(() => {
+  "use strict";
+  // TouchOSC's fader law (fader_script.lua): Live's volume value v = p^0.515 of the
+  // fader position p, so 0 dB sits at p 0.7294 and -6 dB at p 0.5. Live's own taper
+  // (v 0.85 = 0 dB, v 1 = +6 dB) is approximated below v 0.4.
+  const LAW = 0.515;
+  const vToDb = (v) => v <= 0.0001 ? -Infinity : v >= 0.4 ? (v - 0.85) * 40 : -18 + 45 * Math.log10(v / 0.4);
+  const dbToV = (db) => db === -Infinity ? 0 : db >= -18 ? 0.85 + db / 40 : 0.4 * Math.pow(10, (db + 18) / 45);
+  const toDb = (p) => vToDb(Math.pow(p, LAW));
+  const toP = (db) => Math.pow(dbToV(db), 1 / LAW);
+  const UNITY = toP(0);
+  // TouchOSC's readout: one decimal, no unit, -inf below -70; white exactly at 0 dB.
+  const fmt = (db) => db === -Infinity || db < -70 ? "−∞" : (db < -0.05 ? "−" : "") + Math.abs(db).toFixed(1);
+  const TICKS = [6, 0, -6, -12, -18, -24, -40];
+
+  const meterGrad = (() => {
+    const at = (db) => (toP(db) * 100).toFixed(1) + "%";
+    return `linear-gradient(to top, var(--m-green) 0%, var(--m-green) ${at(-12)}, var(--m-yellow) ${at(-12)}, var(--m-yellow) ${at(-3)}, var(--m-red) ${at(-3)}, var(--m-red) 100%)`;
+  })();
+  document.documentElement.style.setProperty("--meter-grad", meterGrad);
+
+  const B = "band", M = "master";
+  const col = { red: "#ff5f6d", orange: "#ff9f43", amber: "#f5c451", lime: "#9be15d", green: "#36d67a", teal: "#4ecdc4", sky: "#4fa3ff", blue: "#6d86ff", violet: "#9d8cff", pink: "#ff7ab8", grey: "#9a9ab4" };
+  // [name, track colour, level in dB, kind, wide, mute guard]
+  const rows = [
+    [
+      { title: "Vokály", c: col.teal, inst: B, strips: [["Vox 1", col.sky, 0, "", false, true], ["Vox 2", col.pink, -Infinity, "", false, true], ["Vox 3", col.blue, -0.8, "", false, true], ["Vox 4", col.violet, 0, "", false, true], ["Vox 5", col.pink, 0, "", false, true], ["Vox 6", col.orange, 0, "", false, true], ["Vox 7", col.lime, 0, "", false, true]] },
+      { title: "Nástroje", c: col.violet, inst: B, strips: [["Agitara", col.amber, 0], ["Klavír", col.amber, -6], ["Vocals", col.teal, 0, "grp"]] },
+      { title: "Podklady · Band", c: col.sky, inst: B, strips: [["Podklady", col.sky, -1.5, "", true], ["Band", col.blue, -1.2, "ret", true]] },
+    ],
+    [
+      { title: "Efekty", c: col.amber, inst: B, strips: [["Claps", col.amber, -9.5], ["Reverb R", col.orange, 0], ["Reverb S", col.orange, 0]] },
+      { title: "Master A", c: col.violet, inst: M, strips: [["Boom", col.red, 0], ["NLBand", col.blue, 0], ["CGAbl", col.grey, -Infinity], ["CG", col.grey, -41.4]] },
+      { title: "Hands", c: col.green, inst: M, strips: [["Hand1", col.green, -9], ["Hand2", col.green, -Infinity], ["Hand3", col.green, -Infinity], ["Hand4", col.green, -Infinity]] },
+      { title: "Repro M", c: col.violet, inst: M, strips: [["ReproM", col.violet, -7.8, "ret", true]] },
+    ],
+  ];
+  const strips = [];
+
+  // Function rail. STAGE is lit while the stage mics are live (as TouchOSC).
+  const rail = document.getElementById("rail");
+  const soloClear = document.getElementById("soloClear");
+  const wash = document.getElementById("alertwash");
+  const solos = [];
+  const updateSoloPill = () => soloClear.classList.toggle("on", solos.some((b) => b.classList.contains("on")));
+  const railItems = [
+    ["Stage", col.sky, true], ["Stage aut", col.blue, false], ["Solo vocals", col.amber, false, "solo"], ["Solo soloiem", col.amber, false, "solo"],
+    ["Solo podklady", col.amber, false, "solo"], ["Reverb", col.orange, true], ["Voc mic", col.orange, true], ["Autotune", col.orange, false],
+    ["Zvukár", col.orange, false], ["Repro", col.orange, false], ["TechAlert", col.red, false, "alert"],
+  ];
+  railItems.forEach(([label, c, on, kind]) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "fn" + (on ? " on" : "") + (kind ? " " + kind : "");
+    b.style.setProperty("--c", c);
+    b.textContent = label;
+    b.setAttribute("aria-pressed", String(on));
+    b.addEventListener("click", () => {
+      const now = !b.classList.contains("on");
+      b.classList.toggle("on", now);
+      b.setAttribute("aria-pressed", String(now));
+      if (kind === "solo") updateSoloPill();
+      if (kind === "alert") wash.classList.toggle("on", now);
+    });
+    if (kind === "solo") solos.push(b);
+    rail.appendChild(b);
+  });
+  rail.appendChild(Object.assign(document.createElement("div"), { className: "gap" }));
+  rail.appendChild(Object.assign(document.createElement("button"), { type: "button", className: "fn refresh", textContent: "Refresh all" }));
+  soloClear.addEventListener("click", () => {
+    solos.forEach((b) => { b.classList.remove("on"); b.setAttribute("aria-pressed", "false"); });
+    updateSoloPill();
+  });
+
+  function makeStrip(parent, [label, tc, db0, kind, wide, guard], inst, index) {
+    const el = document.createElement("div");
+    el.className = "strip" + (wide ? " wide" : "");
+    el.style.setProperty("--tc", tc);
+    el.style.setProperty("--inst", inst === B ? "var(--band)" : "var(--master)");
+    el.innerHTML = `
+      <div class="pan" title="Pan: double tap = stred"><div class="pan-fill"></div><div class="pan-dot"></div></div>
+      <div class="meta"><span class="tag">${inst === B ? "BAND" : "MASTER"}${kind === "grp" ? " · GRP" : kind === "ret" ? " · RET" : ""}</span></div>
+      <div class="fz">
+        <div class="scale"></div>
+        <div class="meter"><div class="clip" title="Clip: ťuk zhasne"></div><div class="mbar"><div class="grad"></div><div class="cover"></div><div class="peak"></div></div><div class="mbar"><div class="grad"></div><div class="cover"></div><div class="peak"></div></div></div>
+        <div class="ftrack"><div class="groove"></div><div class="fill"></div><div class="unity"></div><div class="fader-cap"></div></div>
+      </div>
+      <div class="dbrow"><i class="led"></i><span class="db"></span></div>
+      <button type="button" class="nb" title="${guard ? "Mute: dva ťuky do 500 ms (ochrana)" : "Mute: ťuk"}">${label}<span class="mt">MUTE</span></button>`;
+    // The dB row sits above the name button: move it into the grid's last row pair.
+    parent.appendChild(el);
+    const q = (s) => el.querySelector(s);
+    const scale = q(".scale"), track = q(".ftrack"), cap = q(".fader-cap"), fill = q(".fill"), db = q(".db"), led = q(".led");
+    TICKS.forEach((t) => {
+      const y = (1 - toP(t)) * 100 + "%";
+      const s = document.createElement("span");
+      s.textContent = t > 0 ? "+" + t : t === 0 ? "0" : "−" + -t;
+      if (t === 0) s.className = "u";
+      s.style.top = y;
+      scale.appendChild(s);
+      if (t !== 0) { const k = document.createElement("div"); k.className = "tick"; k.style.top = y; track.appendChild(k); }
+    });
+    q(".unity").style.top = (1 - UNITY) * 100 + "%";
+    const bars = [...el.querySelectorAll(".mbar")].map((m) => ({ cover: m.querySelector(".cover"), peak: m.querySelector(".peak"), level: -Infinity, hold: -Infinity, holdT: 0 }));
+    const clip = q(".clip");
+    clip.addEventListener("click", () => clip.classList.remove("on"));
+
+    let hotTimer = 0;
+    const st = {
+      p: toP(db0), pan: 0, mute: false, base: -14 - (index % 5) * 2.5, phase: index * 1.7, clip, bars, homing: null,
+      draw() {
+        cap.style.top = (1 - st.p) * 100 + "%";
+        fill.style.height = st.p * 100 + "%";
+        const d = toDb(st.p);
+        db.textContent = fmt(d);
+        db.classList.toggle("zero", Math.abs(d) < 0.05);
+        // Status light: yellow on a new value, back to green within 500 ms (TouchOSC).
+        led.classList.add("hot");
+        clearTimeout(hotTimer);
+        hotTimer = setTimeout(() => led.classList.remove("hot"), 150);
+      },
+    };
+    st.draw();
+
+    // Fader: relative drag; a double tap glides to 0 dB at TouchOSC's speed
+    // (0.005 of the travel per frame at 60 Hz, 0.3 per second; a touch stops it).
+    let lastTap = 0, lastY = 0, drag = null;
+    track.addEventListener("pointerdown", (e) => {
+      e.preventDefault();
+      const now = performance.now();
+      st.homing = null; cap.classList.remove("homing");
+      if (now - lastTap > 50 && now - lastTap < 250 && Math.abs(e.clientY - lastY) < 30) {
+        lastTap = 0;
+        st.homing = { last: now };
+        cap.classList.add("homing");
+        el.classList.add("active");
+        return;
+      }
+      lastTap = now; lastY = e.clientY;
+      track.setPointerCapture(e.pointerId);
+      drag = { id: e.pointerId, y: e.clientY, p: st.p, h: track.getBoundingClientRect().height };
+      el.classList.add("active");
+    });
+    track.addEventListener("pointermove", (e) => {
+      if (!drag || e.pointerId !== drag.id) return;
+      st.p = Math.min(1, Math.max(0, drag.p - (e.clientY - drag.y) / drag.h));
+      st.draw();
+    });
+    const end = (e) => { if (drag && e.pointerId === drag.id) { drag = null; if (!st.homing) el.classList.remove("active"); } };
+    track.addEventListener("pointerup", end);
+    track.addEventListener("pointercancel", end);
+    track.addEventListener("lostpointercapture", end);
+    st.stepHome = (now) => {
+      if (!st.homing) return;
+      const step = 0.3 * (now - st.homing.last) / 1000;
+      st.homing.last = now;
+      const d = UNITY - st.p;
+      st.p = Math.abs(d) <= step ? UNITY : st.p + Math.sign(d) * step;
+      st.draw();
+      if (st.p === UNITY) { st.homing = null; cap.classList.remove("homing"); el.classList.remove("active"); }
+    };
+
+    // Pan: relative drag; two taps within 300 ms centre it.
+    const pan = q(".pan"), panDot = q(".pan-dot"), panFill = q(".pan-fill");
+    const drawPan = () => {
+      const x = 50 + st.pan * 50;
+      panDot.style.left = x + "%";
+      panFill.style.left = Math.min(50, x) + "%";
+      panFill.style.width = Math.abs(x - 50) + "%";
+      pan.classList.toggle("centre", Math.abs(st.pan) < 0.005);
+    };
+    drawPan();
+    let panTap = 0, panDrag = null;
+    pan.addEventListener("pointerdown", (e) => {
+      e.preventDefault();
+      const now = performance.now();
+      if (now - panTap < 300) { panTap = 0; st.pan = 0; drawPan(); return; }
+      panTap = now;
+      pan.setPointerCapture(e.pointerId);
+      panDrag = { id: e.pointerId, x: e.clientX, p: st.pan, w: pan.getBoundingClientRect().width };
+    });
+    pan.addEventListener("pointermove", (e) => {
+      if (!panDrag || e.pointerId !== panDrag.id) return;
+      st.pan = Math.min(1, Math.max(-1, panDrag.p + (2 * (e.clientX - panDrag.x)) / panDrag.w));
+      drawPan();
+    });
+    const panEnd = () => { panDrag = null; };
+    pan.addEventListener("pointerup", panEnd);
+    pan.addEventListener("pointercancel", panEnd);
+
+    // The name button is the mute, lit while the track is audible (TouchOSC, F12).
+    // Guarded strips need a second tap within 500 ms; the first one arms (a pulse).
+    const nb = q(".nb");
+    let armedAt = 0;
+    nb.addEventListener("click", () => {
+      const now = performance.now();
+      if (guard && now - armedAt > 500) {
+        armedAt = now;
+        nb.classList.remove("armed"); void nb.offsetWidth; nb.classList.add("armed");
+        return;
+      }
+      armedAt = 0;
+      nb.classList.remove("armed");
+      st.mute = !st.mute;
+      el.classList.toggle("muted", st.mute);
+      nb.setAttribute("aria-pressed", String(!st.mute));
+    });
+    return st;
+  }
+
+  const buildRow = (host, sections) => {
+    let i = strips.length;
+    sections.forEach((sec) => {
+      const s = document.createElement("section");
+      s.className = "section";
+      s.style.setProperty("--c", sec.c);
+      s.innerHTML = `<h2><i></i>${sec.title}<small>${sec.inst}</small></h2><div class="strips"></div>`;
+      host.appendChild(s);
+      const box = s.querySelector(".strips");
+      sec.strips.forEach((d) => strips.push(makeStrip(box, d, sec.inst, i++)));
+    });
+  };
+  buildRow(document.getElementById("row1"), rows[0]);
+  buildRow(document.getElementById("row2"), rows[1]);
+
+  // One animation loop for every meter and glide, as the real app does.
+  const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  let last = performance.now();
+  function frame(now) {
+    const dt = Math.min(0.1, (now - last) / 1000);
+    last = now;
+    const t = now / 1000;
+    strips.forEach((s) => {
+      s.stepHome(now);
+      const fader = toDb(s.p);
+      s.bars.forEach((b, ch) => {
+        let sig = s.base + 7 * Math.sin(t * 1.3 + s.phase + ch * 0.4) + 5 * Math.pow(Math.max(0, Math.sin(t * 7.1 + s.phase)), 8) + (Math.random() - 0.5) * 3;
+        if (reduce) sig = s.base;
+        const target = s.mute || fader === -Infinity ? -Infinity : sig + fader;
+        // TouchOSC's meter: rise in about 300 ms, fall in about 200 ms (here: fast rise, 30 dB/s fall).
+        b.level = target >= b.level ? (b.level === -Infinity ? target : b.level + (target - b.level) * Math.min(1, dt * 12)) : Math.max(target, b.level - 30 * dt);
+        if (b.level > b.hold || now - b.holdT > 1500) { b.hold = b.level; b.holdT = now; }
+        b.cover.style.height = (1 - toP(Math.min(6, b.level))) * 100 + "%";
+        b.peak.style.top = (1 - toP(Math.min(6, b.hold))) * 100 + "%";
+        b.peak.style.opacity = b.hold === -Infinity ? "0" : "0.75";
+        if (b.level > 0) s.clip.classList.add("on");
+      });
+    });
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+
+  // Scale the 1194 x 834 iPad frame to the available width.
+  const device = document.getElementById("device"), inner = document.getElementById("deviceInner");
+  const fit = () => {
+    const k = Math.min(1, device.clientWidth / 1194);
+    inner.style.transform = `scale(${k})`;
+    device.style.height = 834 * k + "px";
+  };
+  new ResizeObserver(fit).observe(device);
+  fit();
+})();
+</script>
