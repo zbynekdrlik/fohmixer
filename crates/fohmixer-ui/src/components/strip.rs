@@ -7,7 +7,7 @@ use leptos::prelude::*;
 
 use super::Settings;
 use super::buttons::{MuteView, anchor_name};
-use super::fader::{FaderView, Law};
+use super::fader::{FaderView, Law, Target};
 use super::meter::{MeterView, StatusView};
 use super::pan::PanView;
 use crate::behave::label::strip_label;
@@ -46,14 +46,12 @@ pub fn StripView(
         .zip(volume)
         .zip(subs.volume.clone())
         .map(|((f, slot), spec)| {
-            view! {
-                <FaderView
-                    frame={at(f)}
-                    state=slot
-                    targets={vec![(spec, Law::Volume)]}
-                    shaping={settings.shaping}
-                />
-            }
+            let targets = vec![Target {
+                spec: Some(spec),
+                slot,
+                law: Law::Volume,
+            }];
+            view! { <FaderView frame={at(f)} targets=targets shaping={settings.shaping} /> }
         });
     let pan_view = c
         .pan

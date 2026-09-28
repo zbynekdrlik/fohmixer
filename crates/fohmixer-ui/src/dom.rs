@@ -1,4 +1,4 @@
-//! Thin browser helpers (web_sys): the page clock, style and attribute
+//! Thin browser helpers (web_sys): the page and wall clocks, style and attribute
 //! writes for the animation loop, the console log and local storage. Local
 //! storage can throw (a private window, blocked site data), so every access
 //! is a `Result` that is dropped: a failed read is "nothing stored".
@@ -11,6 +11,13 @@ pub fn now() -> f64 {
     web_sys::window()
         .and_then(|w| w.performance())
         .map_or_else(js_sys::Date::now, |p| p.now())
+}
+
+/// The wall clock in ms (`Date.now()`): unlike the page clock it goes on
+/// across page loads, so a time kept in local storage (the last handshake
+/// reload) is compared on it.
+pub fn wall_now() -> f64 {
+    js_sys::Date::now()
 }
 
 /// An informational console line (the E2E console guard fails on warnings

@@ -8,13 +8,13 @@ use leptos::html;
 use leptos::prelude::*;
 use serde_json::json;
 
-use super::fail_flash;
+use super::{fail_flash, readiness, readiness_now};
 use crate::behave::fader::{self as curve, FaderCtl, UNITY};
 use crate::binding::SubSpec;
 use crate::dom;
 use crate::raf;
 use crate::stage;
-use crate::store::{LiveStore, Slot};
+use crate::store::{LiveStore, Readiness, Slot};
 
 /// The cap's height in canvas px; the cap travels the rest of the frame.
 pub const CAP: f64 = 36.0;
@@ -66,27 +66,67 @@ impl Law {
             Self::Linear(range) => range.with(Option::is_some),
         }
     }
+
+    /// The same, untracked (in an event handler).
+    fn can_map(self) -> bool {
+        match self {
+            Self::Volume => true,
+            Self::Linear(range) => range.try_with_untracked(Option::is_some).unwrap_or(false),
+        }
+    }
 }
 
-/// A vertical fader showing `state` (by the first target's law) and
-/// writing every target, each by its own law.
+/// A fader's readiness: its slots', and waiting while a law has no range
+/// yet (I8: every target must be able to take the value).
+fn fader_readiness(slots: Readiness, mapped: bool) -> Readiness {
+    match slots {
+        Readiness::Ready if !mapped => Readiness::Waiting,
+        other => other,
+    }
+}
+
+/// One target a fader writes: its subscription (none when its path does
+/// not parse), its slot and its law.
+#[derive(Debug, Clone)]
+pub struct Target {
+    pub spec: Option<SubSpec>,
+    pub slot: RwSignal<Slot>,
+    pub law: Law,
+}
+
+/// A vertical fader showing its first target (by that target's law) and
+/// writing every target, each by its own law. It takes a touch only while
+/// every target has Live's value and a law that can map it (I8), and is
+/// red while any target's binding does not resolve (I5).
 #[component]
-pub fn FaderView(
-    frame: Frame,
-    state: RwSignal<Slot>,
-    targets: Vec<(SubSpec, Law)>,
-    shaping: bool,
-) -> impl IntoView {
+pub fn FaderView(frame: Frame, targets: Vec<Target>, shaping: bool) -> impl IntoView {
     let store = expect_context::<LiveStore>();
-    let slot = state;
-    let law = targets.first().map_or(Law::Volume, |(_, law)| *law);
+    let (slot, law) = targets.first().map_or_else(
+        || {
+            (
+                RwSignal::new(Slot::Error("a fader without a target".into())),
+                Law::Volume,
+            )
+        },
+        |t| (t.slot, t.law),
+    );
+    let mut slots: Vec<RwSignal<Slot>> = targets.iter().map(|t| t.slot).collect();
+    if slots.is_empty() {
+        slots.push(slot);
+    }
+    let laws: Vec<Law> = targets.iter().map(|t| t.law).collect();
     let targets = StoredValue::new(targets);
     let ctl = StoredValue::new(FaderCtl::new(shaping, law.glide_to()));
     let failed = RwSignal::new(false);
-    let frame_id = StoredValue::new(None::<usize>);
     let root = NodeRef::<html::Div>::new();
 
-    let ready = move || slot.with(Slot::is_ready) && law.ready();
+    let state = {
+        let (slots, laws) = (slots.clone(), laws.clone());
+        move || fader_readiness(readiness(&slots), laws.iter().all(|l| l.ready()))
+    };
+    let takes_input = move || {
+        fader_readiness(readiness_now(&slots), laws.iter().all(|l| l.can_map())) == Readiness::Ready
+    };
     let live = move || {
         slot.try_with_untracked(Slot::number)
             .flatten()
@@ -94,12 +134,12 @@ pub fn FaderView(
     };
     let send = move |p: f64| {
         let _ = targets.try_with_value(|all| {
-            for (t, target_law) in all {
-                if let Some(value) = target_law.value(p) {
+            for t in all {
+                if let (Some(spec), Some(value)) = (&t.spec, t.law.value(p)) {
                     store.set_prop(
-                        &t.instance,
-                        &t.target,
-                        &t.prop,
+                        &spec.instance,
+                        &spec.target,
+                        &spec.prop,
                         json!(value),
                         Some(fail_flash(failed)),
                     );
@@ -109,6 +149,9 @@ pub fn FaderView(
     };
 
     let on_down = move |ev: web_sys::PointerEvent| {
+        if !takes_input() {
+            return;
+        }
         let Some(at) = live() else {
             return;
         };
@@ -137,6 +180,8 @@ pub fn FaderView(
             send(p);
         }
     };
+    // A cancelled pointer, or one whose capture was lost without an up:
+    // the touch ends without a tap.
     let on_cancel = move |ev: web_sys::PointerEvent| {
         let id = ev.pointer_id();
         if let Some(Some(p)) = ctl.try_update_value(|c| c.cancel(id, dom::now())) {
@@ -144,12 +189,12 @@ pub fn FaderView(
         }
     };
 
-    root.on_load(move |el: web_sys::HtmlDivElement| {
+    raf::animate(root, move |el| {
         let cap = dom::child(&el, ".fader-cap");
         let fill = dom::child(&el, ".fader-fill");
         let travel = (frame.h - CAP).max(0.0);
         let mut shown: Option<f64> = None;
-        let id = raf::register(Box::new(move |now: f64, _step: f64| {
+        Box::new(move |now: f64, _step: f64| {
             let Some(motion) = ctl.try_update_value(|c| c.frame(now, live())) else {
                 return;
             };
@@ -172,21 +217,20 @@ pub fn FaderView(
             if let Some(v) = law.value(p) {
                 dom::set_attr(&el, "data-value", &format!("{v:.4}"));
             }
-        }));
-        frame_id.set_value(Some(id));
-    });
-    on_cleanup(move || {
-        if let Some(Some(id)) = frame_id.try_get_value() {
-            raf::unregister(id);
-        }
+        })
     });
 
-    let disabled = move || if ready() { "false" } else { "true" };
+    let binding = {
+        let state = state.clone();
+        move || state().name()
+    };
+    let disabled = move || state().disabled();
     view! {
         <div
             class="fader"
             class:failed=move || failed.get()
             data-testid="fader"
+            data-binding=binding
             aria-disabled=disabled
             style={stage::box_style(frame)}
             node_ref=root
@@ -194,6 +238,7 @@ pub fn FaderView(
             on:pointermove=on_move
             on:pointerup=on_up
             on:pointercancel=on_cancel
+            on:lostpointercapture=on_cancel
         >
             <div class="fader-groove"></div>
             <div class="fader-fill"></div>
@@ -213,6 +258,7 @@ mod tests {
         assert_eq!(law.value(0.5), Some(curve::to_live(0.5)));
         assert_eq!(law.glide_to(), Some(curve::to_pos(UNITY)));
         assert!(law.ready());
+        assert!(law.can_map());
     }
 
     #[test]
@@ -222,10 +268,30 @@ mod tests {
         assert_eq!(law.pos(0.5), None);
         assert_eq!(law.value(0.5), None);
         assert!(!law.ready());
+        assert!(!law.can_map());
         assert_eq!(law.glide_to(), None, "no double tap on a parameter fader");
         let _ = range.try_set(Some((-15.0, 15.0)));
         assert!(law.ready());
+        assert!(law.can_map());
         assert_eq!(law.pos(0.0), Some(0.5));
         assert_eq!(law.value(0.25), Some(-7.5));
+    }
+
+    #[test]
+    fn a_fader_waits_while_a_law_has_no_range_and_an_unresolved_target_stays_red() {
+        assert_eq!(fader_readiness(Readiness::Ready, true), Readiness::Ready);
+        assert_eq!(fader_readiness(Readiness::Ready, false), Readiness::Waiting);
+        assert_eq!(
+            fader_readiness(Readiness::Waiting, true),
+            Readiness::Waiting
+        );
+        assert_eq!(
+            fader_readiness(Readiness::Unresolved, false),
+            Readiness::Unresolved
+        );
+        assert_eq!(
+            fader_readiness(Readiness::Unresolved, true),
+            Readiness::Unresolved
+        );
     }
 }

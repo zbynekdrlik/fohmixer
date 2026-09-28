@@ -14,29 +14,12 @@ use crate::raf;
 use crate::stage;
 use crate::store::Slot;
 
-/// Registers a frame function once `root` is in the page, and removes it
-/// with the component.
-fn animate<F>(root: NodeRef<html::Div>, make: F)
-where
-    F: FnOnce(web_sys::HtmlDivElement) -> raf::FrameFn + 'static,
-{
-    let frame_id = StoredValue::new(None::<usize>);
-    root.on_load(move |el: web_sys::HtmlDivElement| {
-        frame_id.set_value(Some(raf::register(make(el))));
-    });
-    on_cleanup(move || {
-        if let Some(Some(id)) = frame_id.try_get_value() {
-            raf::unregister(id);
-        }
-    });
-}
-
 /// A meter: one bar per level slot (one for `level`, two for `lr`).
 #[component]
 pub fn MeterView(frame: Frame, levels: Vec<RwSignal<Slot>>) -> impl IntoView {
     let root = NodeRef::<html::Div>::new();
     let count = levels.len();
-    animate(root, move |el| {
+    raf::animate(root, move |el| {
         let fills: Vec<Option<web_sys::HtmlElement>> = (0..count)
             .map(|i| dom::child(&el, &format!(".meter-bar:nth-child({}) .meter-fill", i + 1)))
             .collect();
@@ -91,7 +74,7 @@ pub fn StatusView(
     activity: Vec<RwSignal<Slot>>,
 ) -> impl IntoView {
     let root = NodeRef::<html::Div>::new();
-    animate(root, move |el| {
+    raf::animate(root, move |el| {
         let mut drawn = (String::new(), None::<bool>);
         Box::new(move |now: f64, _step: f64| {
             let bound = slots

@@ -192,3 +192,29 @@ fn a_parameter_range_needs_two_numbers_in_order() {
     );
     assert_eq!(range_from(&Err("offline".into())), None);
 }
+
+#[test]
+fn a_control_is_ready_with_every_value_and_red_with_any_unresolved_binding() {
+    let value = Slot::Value {
+        value: json!(0.5),
+        display: None,
+        at: 0.0,
+    };
+    let error = Slot::Error("no track named Hand9".into());
+    assert_eq!(Readiness::of([&value, &value]), Readiness::Ready);
+    assert_eq!(Readiness::of([&value, &Slot::Pending]), Readiness::Waiting);
+    assert_eq!(
+        Readiness::of([&Slot::Pending, &error, &value]),
+        Readiness::Unresolved,
+        "an unresolved binding outranks a missing value"
+    );
+    assert_eq!(Readiness::of([&value, &error]), Readiness::Unresolved);
+    assert_eq!(
+        [Readiness::Ready, Readiness::Waiting, Readiness::Unresolved].map(Readiness::name),
+        ["ready", "waiting", "unresolved"]
+    );
+    assert_eq!(
+        [Readiness::Ready, Readiness::Waiting, Readiness::Unresolved].map(Readiness::disabled),
+        ["false", "true", "true"]
+    );
+}

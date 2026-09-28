@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 
 use fohmixer_proto::client::hub_key;
 use fohmixer_proto::layout::{
-    Anchor, Binding, Item, ItemKind, Layout, LayoutConfig, MeterSource, Page, Strip,
+    Anchor, Binding, Item, ItemKind, Layout, LayoutConfig, MeterSource, Page, ParamTarget, Strip,
 };
 
 /// One subscription: an instance, a LOM target, a property and whether
@@ -114,23 +114,43 @@ pub fn strip_subs(strip: &Strip, source: MeterSource) -> StripSubs {
     }
 }
 
-/// The subscriptions of one item.
+/// The subscription of a solo button: its group track's solo.
+pub fn solo_sub(binding: &Binding) -> Option<SubSpec> {
+    spec(binding, "", "solo", false)
+}
+
+/// The subscription of the stage-mic button and the TechAlert overlay: the
+/// track's mute.
+pub fn mute_sub(binding: &Binding) -> Option<SubSpec> {
+    spec(binding, "", "mute", false)
+}
+
+/// The subscriptions of a former MIDI control's targets, in target order
+/// (`None` where a path does not parse); a fader's first target brings
+/// Live's display string.
+pub fn param_subs(targets: &[ParamTarget], fader: bool) -> Vec<Option<SubSpec>> {
+    targets
+        .iter()
+        .enumerate()
+        .map(|(i, t)| spec(&t.binding, "", &t.prop, fader && i == 0))
+        .collect()
+}
+
+/// The subscriptions of one item: what its component subscribes (both use
+/// the functions above, so the two cannot drift apart).
 pub fn item_subs(item: &Item, source: MeterSource) -> Vec<SubSpec> {
     match &item.kind {
         ItemKind::Strip(strip) => strip_subs(strip, source).all(),
-        ItemKind::Solo { binding } => spec(binding, "", "solo", false).into_iter().collect(),
+        ItemKind::Solo { binding } => solo_sub(binding).into_iter().collect(),
         ItemKind::Stage { binding, .. } | ItemKind::Alert { binding, .. } => {
-            spec(binding, "", "mute", false).into_iter().collect()
+            mute_sub(binding).into_iter().collect()
         }
-        ItemKind::ParamToggle { targets, .. } => targets
-            .iter()
-            .filter_map(|t| spec(&t.binding, "", &t.prop, false))
-            .collect(),
-        ItemKind::ParamFader { targets, .. } => targets
-            .iter()
-            .enumerate()
-            .filter_map(|(i, t)| spec(&t.binding, "", &t.prop, i == 0))
-            .collect(),
+        ItemKind::ParamToggle { targets, .. } => {
+            param_subs(targets, false).into_iter().flatten().collect()
+        }
+        ItemKind::ParamFader { targets, .. } => {
+            param_subs(targets, true).into_iter().flatten().collect()
+        }
         ItemKind::Area { .. }
         | ItemKind::HubToggle { .. }
         | ItemKind::Refresh { .. }

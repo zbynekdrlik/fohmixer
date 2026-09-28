@@ -10,6 +10,8 @@
 
 use std::cell::{Cell, RefCell};
 
+use leptos::html;
+use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 
@@ -103,6 +105,25 @@ pub fn register(frame: FrameFn) -> usize {
         schedule();
     }
     id
+}
+
+/// A component's frame function: `make` builds it once `root` is in the
+/// page (it gets the element), and it is unregistered with the component.
+/// Every moving part (fader, pan, meter, status pill, TechAlert) animates
+/// through this.
+pub fn animate<F>(root: NodeRef<html::Div>, make: F)
+where
+    F: FnOnce(web_sys::HtmlDivElement) -> FrameFn + 'static,
+{
+    let frame_id = StoredValue::new(None::<usize>);
+    root.on_load(move |el: web_sys::HtmlDivElement| {
+        frame_id.set_value(Some(register(make(el))));
+    });
+    on_cleanup(move || {
+        if let Some(Some(id)) = frame_id.try_get_value() {
+            unregister(id);
+        }
+    });
 }
 
 /// Unregisters a frame function (the loop stops when none is left).

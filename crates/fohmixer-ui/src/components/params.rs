@@ -6,10 +6,10 @@ use fohmixer_proto::layout::{Frame, ParamTarget, Press, Style};
 use leptos::prelude::*;
 use serde_json::Value;
 
-use super::fader::{FaderView, Law};
-use super::fail_flash;
+use super::fader::{self, FaderView, Law};
+use super::{fail_flash, readiness, slot_of};
 use crate::behave::toggle::{ToggleCtl, ToggleState, Write, aggregate, is_on};
-use crate::binding::{SubSpec, target_of};
+use crate::binding::{SubSpec, param_subs};
 use crate::dom;
 use crate::stage;
 use crate::store::{LiveStore, Slot};
@@ -63,20 +63,16 @@ pub fn ParamToggleView(
     let store = expect_context::<LiveStore>();
     let targets: Vec<Target> = targets
         .iter()
-        .map(|t| {
-            let spec = target_of(&t.binding, "")
-                .map(|target| SubSpec::new(&t.binding.instance, target, &t.prop, false));
-            let slot = spec
-                .as_ref()
-                .map_or_else(|| RwSignal::new(Slot::Pending), |s| store.slot(s));
-            Target {
-                spec,
-                slot,
-                on: t.on.clone().unwrap_or(Value::Null),
-                off: t.off.clone().unwrap_or(Value::Null),
-            }
+        .zip(param_subs(&targets, false))
+        .map(|(t, spec)| Target {
+            slot: slot_of(store, spec.as_ref()),
+            spec,
+            on: t.on.clone().unwrap_or(Value::Null),
+            off: t.off.clone().unwrap_or(Value::Null),
         })
         .collect();
+    let slots: Vec<RwSignal<Slot>> = targets.iter().map(|t| t.slot).collect();
+    let bound = move || readiness(&slots).name();
     let targets = StoredValue::new(targets);
     let ctl = StoredValue::new(ToggleCtl::default());
     let failed = RwSignal::new(false);
@@ -145,11 +141,13 @@ pub fn ParamToggleView(
             data-label=label_attr
             data-press=press_name
             data-state=move || state_name(state())
+            data-binding=bound
             aria-disabled=disabled
             style={stage::item_style(frame, z, &style)}
             on:pointerdown=on_down
             on:pointerup=on_up
             on:pointercancel=on_up
+            on:lostpointercapture=on_up
         >
             {label}
         </div>
@@ -167,21 +165,23 @@ pub fn ParamFaderView(
     targets: Vec<ParamTarget>,
 ) -> impl IntoView {
     let store = expect_context::<LiveStore>();
-    let specs: Vec<(SubSpec, Law)> = targets
-        .iter()
-        .enumerate()
-        .filter_map(|(i, t)| {
-            let target = target_of(&t.binding, "")?;
-            let range = store.range(&t.binding.instance, &target);
-            Some((
-                SubSpec::new(&t.binding.instance, target, &t.prop, i == 0),
-                Law::Linear(range),
-            ))
+    let targets: Vec<fader::Target> = param_subs(&targets, true)
+        .into_iter()
+        .map(|spec| {
+            let range = spec.as_ref().map_or_else(
+                || RwSignal::new(None),
+                |s| store.range(&s.instance, &s.target),
+            );
+            fader::Target {
+                slot: slot_of(store, spec.as_ref()),
+                spec,
+                law: Law::Linear(range),
+            }
         })
         .collect();
-    let slot = specs
+    let slot = targets
         .first()
-        .map_or_else(|| RwSignal::new(Slot::Pending), |(s, _)| store.slot(s));
+        .map_or_else(|| RwSignal::new(Slot::Pending), |t| t.slot);
     let display = move || slot.with(|s| s.display().unwrap_or_default().to_string());
     let label_attr = label.clone();
     let inner = Frame {
@@ -197,7 +197,7 @@ pub fn ParamFaderView(
             data-label=label_attr
             style={stage::item_style(frame, z, &style)}
         >
-            <FaderView frame=inner state=slot targets=specs shaping=false />
+            <FaderView frame=inner targets=targets shaping=false />
             <div class="param-fader-text">
                 <span class="param-fader-label">{label}</span>
                 <span class="param-fader-display" data-testid="param-display">{display}</span>

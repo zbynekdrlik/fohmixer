@@ -8,10 +8,10 @@ use fohmixer_proto::layout::{Anchor, Binding, Frame, Style};
 use leptos::prelude::*;
 use serde_json::{Value, json};
 
-use super::fail_flash;
+use super::{fail_flash, readiness, slot_of};
 use crate::behave::label::strip_label;
 use crate::behave::mute::{GUARD_MS, GuardAction, MuteGuard, lit};
-use crate::binding::{SubSpec, target_of};
+use crate::binding::{SubSpec, mute_sub, solo_sub};
 use crate::dom;
 use crate::stage;
 use crate::store::{LiveStore, Slot};
@@ -27,11 +27,6 @@ pub fn anchor_name(binding: &Binding) -> String {
         Anchor::Master => "Master".to_string(),
         Anchor::Song => "Song".to_string(),
     }
-}
-
-/// `prop` of a binding's target, as a subscription.
-fn spec_of(binding: &Binding, prop: &str) -> Option<SubSpec> {
-    target_of(binding, "").map(|t| SubSpec::new(&binding.instance, t, prop, false))
 }
 
 /// Writes the inverse of a flag slot's value.
@@ -94,13 +89,8 @@ pub fn MuteView(
     };
     let muted = move || slot.with(Slot::flag);
     let is_lit = move || muted().is_some_and(lit);
-    let disabled = move || {
-        if slot.with(Slot::is_ready) {
-            "false"
-        } else {
-            "true"
-        }
-    };
+    let binding = move || readiness(&[slot]).name();
+    let disabled = move || readiness(&[slot]).disabled();
     let muted_attr = move || match muted() {
         Some(true) => "true",
         Some(false) => "false",
@@ -114,6 +104,7 @@ pub fn MuteView(
             class:failed=move || failed.get()
             data-testid="mute"
             data-muted=muted_attr
+            data-binding=binding
             aria-disabled=disabled
             style={stage::box_style(frame)}
             on:pointerdown=on_down
@@ -127,10 +118,8 @@ pub fn SoloView(frame: Frame, z: i64, style: Style, binding: Binding) -> impl In
     let store = expect_context::<LiveStore>();
     let label = format!("SOLO {}", strip_label(&anchor_name(&binding)));
     let track = anchor_name(&binding);
-    let spec = spec_of(&binding, "solo");
-    let slot = spec
-        .as_ref()
-        .map_or_else(|| RwSignal::new(Slot::Pending), |s| store.slot(s));
+    let spec = solo_sub(&binding);
+    let slot = slot_of(store, spec.as_ref());
     let spec = StoredValue::new(spec);
     let failed = RwSignal::new(false);
     let on_down = move |ev: web_sys::PointerEvent| {
@@ -147,13 +136,8 @@ pub fn SoloView(frame: Frame, z: i64, style: Style, binding: Binding) -> impl In
         let color = if on() { SOLO_ON } else { SOLO_OFF };
         format!("{css}background:{color};")
     };
-    let disabled = move || {
-        if slot.with(Slot::is_ready) {
-            "false"
-        } else {
-            "true"
-        }
-    };
+    let bound = move || readiness(&[slot]).name();
+    let disabled = move || readiness(&[slot]).disabled();
     view! {
         <div
             class="item button solo"
@@ -162,6 +146,7 @@ pub fn SoloView(frame: Frame, z: i64, style: Style, binding: Binding) -> impl In
             data-testid="solo"
             data-track=track
             data-on=move || on().to_string()
+            data-binding=bound
             aria-disabled=disabled
             style=look
             on:pointerdown=on_down
@@ -177,10 +162,8 @@ pub fn SoloView(frame: Frame, z: i64, style: Style, binding: Binding) -> impl In
 pub fn StageMicsView(frame: Frame, z: i64, style: Style, binding: Binding) -> impl IntoView {
     let store = expect_context::<LiveStore>();
     let label = style.text.clone().unwrap_or_else(|| "STAGE".to_string());
-    let spec = spec_of(&binding, "mute");
-    let slot = spec
-        .as_ref()
-        .map_or_else(|| RwSignal::new(Slot::Pending), |s| store.slot(s));
+    let spec = mute_sub(&binding);
+    let slot = slot_of(store, spec.as_ref());
     let spec = StoredValue::new(spec);
     let failed = RwSignal::new(false);
     let on_down = move |ev: web_sys::PointerEvent| {
@@ -192,13 +175,8 @@ pub fn StageMicsView(frame: Frame, z: i64, style: Style, binding: Binding) -> im
         });
     };
     let muted = move || slot.with(Slot::flag) == Some(true);
-    let disabled = move || {
-        if slot.with(Slot::is_ready) {
-            "false"
-        } else {
-            "true"
-        }
-    };
+    let bound = move || readiness(&[slot]).name();
+    let disabled = move || readiness(&[slot]).disabled();
     view! {
         <div
             class="item button stage-mics"
@@ -206,6 +184,7 @@ pub fn StageMicsView(frame: Frame, z: i64, style: Style, binding: Binding) -> im
             class:failed=move || failed.get()
             data-testid="stage-mics"
             data-muted=move || muted().to_string()
+            data-binding=bound
             aria-disabled=disabled
             style={stage::item_style(frame, z, &style)}
             on:pointerdown=on_down
@@ -304,7 +283,7 @@ mod tests {
             name: "Stems grp#".into(),
         });
         assert_eq!(
-            spec_of(&solo, "solo"),
+            solo_sub(&solo),
             Some(SubSpec::new(
                 "band",
                 "live_set tracks[name=Stems grp#]".into(),
@@ -312,10 +291,11 @@ mod tests {
                 false
             ))
         );
+        assert_eq!(mute_sub(&solo).map(|s| s.prop), Some("mute".to_string()));
         let broken = Binding {
             path: Some("devices[name=".into()),
             ..solo
         };
-        assert_eq!(spec_of(&broken, "mute"), None);
+        assert_eq!(mute_sub(&broken), None);
     }
 }

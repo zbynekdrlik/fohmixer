@@ -34,29 +34,31 @@ exclude_re = [
   # the tested format_panic_payload.
   "fohmixer-ui/src/lifecycle\\.rs.*replace format_panic_message -> String with ",
   # S4 (#8): the UI's browser glue. web-sys calls panic off wasm, so a native
-  # test cannot run these; each decides nothing itself - the decisions are
-  # the tested pure modules (behave/*, binding, stage, net, raf's Registry,
-  # the store's Slot, Wanted, Badge, slot_failure and range_from) - and the
-  # E2E suite drives every one of them in Chromium and WebKit.
-  # dom.rs: the clock, style/attribute writes, the console, local storage.
-  "fohmixer-ui/src/dom\\.rs.*(replace|in) (now|log|error|set_style|set_attr|viewport|current_element|child|storage|storage_get|storage_set|storage_remove)( |$)",
+  # test cannot run these; each carries out decisions made by the tested pure
+  # modules (behave/*, binding, stage, net, raf's Registry, the store's Slot,
+  # Readiness, Wanted, Badge, slot_failure, range_from and store/conn.rs's
+  # Conn, replaces and instance_change), and the E2E suite drives every one
+  # of them in Chromium and WebKit.
+  # dom.rs: the clocks, style/attribute writes, the console, local storage.
+  "fohmixer-ui/src/dom\\.rs.*(replace|in) (now|wall_now|log|error|set_style|set_attr|viewport|current_element|child|storage|storage_get|storage_set|storage_remove)( |$)",
   # net.rs: the fetch wrapper and the handshake reload (location.reload).
   "fohmixer-ui/src/net\\.rs.*(replace|in) (fetch_text|last_reload|reload)( |$)",
-  # raf.rs: requestAnimationFrame scheduling around the tested Registry.
-  "fohmixer-ui/src/raf\\.rs.*(replace|in) (register|unregister|schedule|tick)( |$)",
-  # store.rs: the WebSocket, timers and signals of LiveStore, its Socket and
-  # its Inner state (the pure Slot/Wanted/Badge/slot_failure/range_from stay).
-  "fohmixer-ui/src/store\\.rs.*(replace|in) (LiveStore|Socket|Inner)::",
+  # raf.rs: requestAnimationFrame scheduling around the tested Registry, and
+  # a component's registration of its frame function.
+  "fohmixer-ui/src/raf\\.rs.*(replace|in) (register|unregister|schedule|tick|animate)( |$)",
+  # store/live.rs: the WebSocket, its handlers and the timers, the signals and
+  # the fetches that carry out Conn's decisions, one function at a time.
+  "fohmixer-ui/src/store/live\\.rs.*(replace|in) LiveStore::(new|start|stop|stopped|token|logout|connect|retry|show_layout|open_socket|watch|drop_socket|on_close|on_text|on_hello|on_instance|on_layout|apply|mark_pending|send|send_sub|slot|slot_signal|set_wanted|refresh|cmd|finish|set_prop|set_hub|range|fetch_ranges|fetch_range)( |$)",
+  "fohmixer-ui/src/store/live\\.rs.*(replace|in) (Socket::close|Inner::new)( |$)",
   # auth.rs: local storage and the login request (login_outcome, login_body
   # and LoginError::message are the tested decisions).
   "fohmixer-ui/src/auth\\.rs.*(replace|in) (stored_token|login)( |$)",
   # app.rs: the address bar (history.replaceState); page_path is tested.
   "fohmixer-ui/src/app\\.rs.*(replace|in) show_path( |$)",
-  # components: the failure flash (a timer), a flag write through the store,
-  # the frame-loop registration of a mounted element.
+  # components: the failure flash (a timer) and a flag write through the
+  # store.
   "fohmixer-ui/src/components/mod\\.rs.*(replace|in) fail_flash( |$)",
   "fohmixer-ui/src/components/buttons\\.rs.*(replace|in) toggle_flag( |$)",
-  "fohmixer-ui/src/components/meter\\.rs.*(replace|in) animate( |$)",
   # pages/surface.rs: a tab press (store, local storage) and the remembered
   # pages' read; choose and selected_path are the tested decisions.
   "fohmixer-ui/src/pages/surface\\.rs.*(replace|in) (Nav::select|remembered_pages)( |$)",

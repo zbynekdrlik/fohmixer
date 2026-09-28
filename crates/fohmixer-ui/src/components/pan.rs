@@ -7,7 +7,7 @@ use leptos::html;
 use leptos::prelude::*;
 use serde_json::json;
 
-use super::fail_flash;
+use super::{fail_flash, readiness};
 use crate::behave::pan::{self, PanCtl};
 use crate::binding::SubSpec;
 use crate::dom;
@@ -26,7 +26,6 @@ pub fn PanView(frame: Frame, state: RwSignal<Slot>, spec: SubSpec) -> impl IntoV
     let spec = StoredValue::new(spec);
     let ctl = StoredValue::new(PanCtl::default());
     let failed = RwSignal::new(false);
-    let frame_id = StoredValue::new(None::<usize>);
     let root = NodeRef::<html::Div>::new();
 
     let live = move || slot.try_with_untracked(Slot::number).flatten();
@@ -49,11 +48,13 @@ pub fn PanView(frame: Frame, state: RwSignal<Slot>, spec: SubSpec) -> impl IntoV
             return;
         };
         ev.prevent_default();
+        // The dot's travel, in screen px: the width less the dot's own.
         let width = el.get_bounding_client_rect().width();
+        let travel = width * (frame.w - DOT).max(1.0) / frame.w.max(1.0);
         let id = ev.pointer_id();
         let x = f64::from(ev.client_x());
         let taken = ctl
-            .try_update_value(|c| c.down(id, x, width, dom::now(), at))
+            .try_update_value(|c| c.down(id, x, travel, dom::now(), at))
             .unwrap_or(false);
         if taken {
             let _ = el.set_pointer_capture(id);
@@ -69,6 +70,7 @@ pub fn PanView(frame: Frame, state: RwSignal<Slot>, spec: SubSpec) -> impl IntoV
             send(v);
         }
     };
+    // A cancelled pointer, or one whose capture was lost without an up.
     let on_cancel = move |ev: web_sys::PointerEvent| {
         let id = ev.pointer_id();
         if let Some(Some(v)) = ctl.try_update_value(|c| c.cancel(id, dom::now())) {
@@ -76,11 +78,11 @@ pub fn PanView(frame: Frame, state: RwSignal<Slot>, spec: SubSpec) -> impl IntoV
         }
     };
 
-    root.on_load(move |el: web_sys::HtmlDivElement| {
+    raf::animate(root, move |el| {
         let dot = dom::child(&el, ".pan-dot");
         let travel = (frame.w - DOT).max(0.0);
         let mut shown: Option<f64> = None;
-        let id = raf::register(Box::new(move |now: f64, _step: f64| {
+        Box::new(move |now: f64, _step: f64| {
             let Some(motion) = ctl.try_update_value(|c| c.frame(now, live())) else {
                 return;
             };
@@ -99,27 +101,17 @@ pub fn PanView(frame: Frame, state: RwSignal<Slot>, spec: SubSpec) -> impl IntoV
                 dom::set_style(dot, "background", pan::color(p));
             }
             dom::set_attr(&el, "data-value", &format!("{:.4}", pan::to_live(p)));
-        }));
-        frame_id.set_value(Some(id));
-    });
-    on_cleanup(move || {
-        if let Some(Some(id)) = frame_id.try_get_value() {
-            raf::unregister(id);
-        }
+        })
     });
 
-    let disabled = move || {
-        if slot.with(Slot::is_ready) {
-            "false"
-        } else {
-            "true"
-        }
-    };
+    let binding = move || readiness(&[slot]).name();
+    let disabled = move || readiness(&[slot]).disabled();
     view! {
         <div
             class="pan"
             class:failed=move || failed.get()
             data-testid="pan"
+            data-binding=binding
             aria-disabled=disabled
             style={stage::box_style(frame)}
             node_ref=root
@@ -127,6 +119,7 @@ pub fn PanView(frame: Frame, state: RwSignal<Slot>, spec: SubSpec) -> impl IntoV
             on:pointermove=on_move
             on:pointerup=on_up
             on:pointercancel=on_cancel
+            on:lostpointercapture=on_cancel
         >
             <div class="pan-track"></div>
             <div class="pan-dot"></div>

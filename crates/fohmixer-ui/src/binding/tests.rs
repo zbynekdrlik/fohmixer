@@ -222,6 +222,27 @@ fn every_item_kind_subscribes_what_it_shows() {
         "Podklady All: the first target's display string"
     );
     assert!(keys(12).is_empty(), "a label");
+    // A toggle's targets never bring a display string; a fader's first does.
+    let ItemKind::ParamToggle { targets, .. } = &foh.items[6].kind else {
+        panic!("VOC MIC is a param toggle");
+    };
+    assert!(
+        param_subs(targets, false)
+            .iter()
+            .all(|s| !s.as_ref().unwrap().display)
+    );
+    let fader: Vec<bool> = param_subs(targets, true)
+        .iter()
+        .map(|s| s.as_ref().unwrap().display)
+        .collect();
+    assert_eq!(fader, [true, false]);
+    // A target whose path does not parse keeps its place, as `None`.
+    let mut broken = targets.clone();
+    broken[0].binding.path = Some("devices[name=".into());
+    let subs = param_subs(&broken, false);
+    assert_eq!(subs.len(), 2);
+    assert_eq!(subs[0], None);
+    assert!(subs[1].is_some());
     let overlay: Vec<Vec<String>> = layout
         .overlay
         .iter()

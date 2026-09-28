@@ -11,8 +11,6 @@ use wasm_bindgen::JsCast;
 /// The first reconnect waits this long, doubling up to `RECONNECT_MAX_MS`.
 pub const RECONNECT_FIRST_MS: f64 = 500.0;
 pub const RECONNECT_MAX_MS: f64 = 2000.0;
-/// No hello this long after the socket opened: one reload.
-pub const HELLO_TIMEOUT_MS: f64 = 3000.0;
 /// At most one handshake reload per this interval.
 pub const RELOAD_GAP_MS: f64 = 60_000.0;
 /// Where the last handshake reload time is kept (per browser).
@@ -134,12 +132,13 @@ pub async fn fetch_text(
     Ok((status, text.as_string().unwrap_or_default()))
 }
 
-/// The last handshake reload time (local storage).
+/// The last handshake reload time (local storage; wall clock ms,
+/// `dom::wall_now`, so it compares across page loads).
 pub fn last_reload() -> Option<f64> {
     crate::dom::storage_get(RELOAD_KEY)?.parse().ok()
 }
 
-/// Records the reload time and reloads the page.
+/// Records the reload time (`now`, wall clock ms) and reloads the page.
 pub fn reload(now: f64, why: &str) {
     crate::dom::log(&format!("protocol handshake: {why}; reloading"));
     crate::dom::storage_set(RELOAD_KEY, &now.to_string());
