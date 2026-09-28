@@ -457,6 +457,7 @@ class Importer:
             "scripts": {},
         }
         self.bindings = []  # (instance, anchor) of strips, solos, stages
+        self.alerts = []  # (item, its layer, path): bound after the whole overlay
         self.page_ids = set()  # unique across every pager
         self._scripts(root, None)
         # A strip decoration carrying a part's script is named for it.
@@ -554,6 +555,7 @@ class Importer:
         for child, labels in _with_labels(self.root.children):
             if child is not pager:
                 self.collect(child, 0.0, 0.0, overlay, "root", labels, root_level=True)
+        self.resolve_alerts()
         self.check_config()
         self.check_bindings()
         return {
@@ -707,26 +709,38 @@ class Importer:
         return next((c.text for c in node.children if c.type == "LABEL" and c.text), "")
 
     def alert(self, node, ax, ay, out, path):
-        """The hidden full-screen box that blinks while TechAlert is unmuted."""
-        strips = [i for i in out if i["kind"] == "strip" and i["strip_kind"] == "meter_mute_only"]
-        if not strips:
-            self.drop(path, "an alert box without a TechAlert strip")
-            return
+        """The hidden full-screen box that blinks while TechAlert is unmuted.
+
+        It keeps its place (z) in node order; its TechAlert strip may come
+        later among the root's children, so ``resolve_alerts`` binds it once
+        the whole overlay is collected."""
         _, _, w, h = node.frame
         cw, ch = self.canvas
         x0, y0 = max(0.0, ax), max(0.0, ay)
         x1, y1 = min(cw, ax + w), min(ch, ay + h)
         if (x0, y0, x1, y1) != (ax, ay, ax + w, ay + h):
             self.report["notes"].append(f"{path}: clipped to the canvas")
-        out.append(
-            self.item(
-                "alert",
-                self.frame(x0, y0, x1 - x0, y1 - y0),
-                {"bg": color_hex(node.prop("color", (1, 0, 0, 0.12)))},
-                binding=strips[0]["binding"],
-                period_ms=ALERT_PERIOD_MS,
-            )
+        item = self.item(
+            "alert",
+            self.frame(x0, y0, x1 - x0, y1 - y0),
+            {"bg": color_hex(node.prop("color", (1, 0, 0, 0.12)))},
+            binding=None,
+            period_ms=ALERT_PERIOD_MS,
         )
+        out.append(item)
+        self.alerts.append((item, out, path))
+
+    def resolve_alerts(self):
+        """Binds each alert box to the TechAlert strip of its layer, or drops it."""
+        for item, out, path in self.alerts:
+            strips = [
+                i for i in out if i["kind"] == "strip" and i["strip_kind"] == "meter_mute_only"
+            ]
+            if strips:
+                item["binding"] = strips[0]["binding"]
+            else:
+                out.remove(item)
+                self.drop(path, "an alert box without a TechAlert strip")
 
     def strip(self, node, ax, ay, frame, path):
         mute_hashes = self._role_hash("mute")
