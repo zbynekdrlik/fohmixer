@@ -65,8 +65,8 @@ pub fn ScaleView() -> impl IntoView {
 /// Live's dB readout in TouchOSC's form (one decimal, no unit, white exactly
 /// at 0 dB).
 #[component]
-pub fn DbView(slot: RwSignal<Slot>) -> impl IntoView {
-    let text = Memo::new(move |_| slot.with(|s| s.display().and_then(db_text)));
+pub fn DbView(state: RwSignal<Slot>) -> impl IntoView {
+    let text = Memo::new(move |_| state.with(|s| s.display().and_then(db_text)));
     let shown = move || text.get().map(|t| t.text).unwrap_or_default();
     let unity = move || text.get().is_some_and(|t| t.unity);
     view! {
@@ -117,7 +117,7 @@ pub fn StripView(strip: Strip, settings: Settings) -> impl IntoView {
             />
         }
     });
-    let db = volume.map(|slot| view! { <DbView slot=slot /> });
+    let db = volume.map(|slot| view! { <DbView state=slot /> });
     let tag = match strip.strip_kind {
         StripKind::Return => format!("{instance} · ret"),
         StripKind::Standard => instance.clone(),
