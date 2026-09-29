@@ -691,6 +691,23 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_bracketed_name_is_neither_allowed_nor_redirected() {
+        // Brackets hold an IPv6 address only: the parser itself refuses a
+        // name in them, so the redirect does not depend on the check
+        // running first.
+        let on = tls(443, true);
+        let allowed = vec!["foh.example.org".to_string()];
+        for host in ["[foh.example.org]", "[foh.example.org]:8480"] {
+            assert!(!host_allowed(Some(host), &allowed), "{host}");
+            assert_eq!(
+                redirect_target(Some(host), false, Some(&on), Some(443), "/"),
+                None,
+                "{host}"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn the_plain_http_listener_redirects_the_public_name_only() {
         let dir = tempfile::tempdir().unwrap();
