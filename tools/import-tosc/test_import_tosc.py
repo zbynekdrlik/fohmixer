@@ -405,6 +405,24 @@ class ImportTest(unittest.TestCase):
         self.assertEqual([names(g) for g in mixer_out["sections"]], [["Keys 1"]])
         self.assertEqual([names(g) for g in cues_out["sections"]], [["Vocals"]])
 
+    def test_a_solo_whose_label_spells_no_word_shows_its_tracks_name(self):
+        # The real layout's solo labels were "[][][]..." placeholders that a
+        # TouchOSC script overwrote at run time (#21, the post-deploy check):
+        # a text without a letter names nothing, so the surface shows the
+        # track's name ("SOLO Stems"), as for a solo without a label.
+        page = page_node(
+            "Main",
+            [
+                strip("Keys 1", 400, 20),
+                solo_node("Stems grp#", (20, 20, 150, 60), "[][][][][][][][][][]"),
+                solo_node("Drums #", (20, 200, 150, 60), "Drums"),
+            ],
+        )
+        layout = self.import_root(root_node([page]), "placeholder-solo")
+        rail = layout["pages"][0]["rail"]
+        self.assertEqual([c["kind"] for c in rail], ["solo", "solo"])
+        self.assertEqual([c.get("label") for c in rail], [None, "Drums"])
+
     # --- groups ---
 
     def test_a_control_belongs_to_the_area_holding_its_centre(self):
