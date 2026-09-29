@@ -697,8 +697,9 @@ class OneTickTest(unittest.TestCase):
         self.addCleanup(setattr, transport, "MAX_HANDSHAKES", transport.MAX_HANDSHAKES)
         self.addCleanup(setattr, transport, "MAX_CONNECTIONS", transport.MAX_CONNECTIONS)
         transport.MAX_HANDSHAKES = 2
-        transport.MAX_CONNECTIONS = 1
-        # Clients that never finish their request: two wait, the rest are refused.
+        transport.MAX_CONNECTIONS = 3
+        # Clients that never finish their request: two wait (the handshake
+        # cap, under the connection cap), the rest are refused.
         silent = [socket.create_connection(("127.0.0.1", self.port)) for _ in range(4)]
         for sock in silent:
             self.addCleanup(sock.close)
@@ -710,6 +711,7 @@ class OneTickTest(unittest.TestCase):
             sock.close()
         self.tick()
         # The waiting ones left; one client connects, the next finds it taken.
+        transport.MAX_CONNECTIONS = 1
         member = self.client()
         self.tick()
         self.assertEqual(member.read_messages(1)[0]["event"], "connect")
