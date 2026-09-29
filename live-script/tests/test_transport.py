@@ -549,13 +549,13 @@ class OneTickTest(unittest.TestCase):
         self.assertEqual(self.server.connections(), [])
         self.assertEqual(self.server.inbox.get_nowait(), (conn, None))
 
-    def fill_socket(self, conn, now):
-        """Push a frame larger than the kernel's buffers and write at ``now``
-        until the socket takes no more (the client never reads)."""
+    def fill_socket(self, conn, write):
+        """Push a frame larger than the kernel's buffers and call ``write`` (a
+        tick's writes) until the socket takes no more (the client never reads)."""
         conn.push_result("big", [{"ok": True, "data": "x" * (2 * tcp_wmem_max() + (1 << 20))}])
         for _ in range(1000):
             unsent = conn.pending()[2]
-            conn.flush(now)
+            write()
             if 0 < conn.pending()[2] == unsent:
                 return
         raise AssertionError("the socket never filled")
@@ -567,7 +567,7 @@ class OneTickTest(unittest.TestCase):
         self.tick()
         conn = self.server.connections()[0]
         t0 = time.monotonic()
-        self.fill_socket(conn, t0)
+        self.fill_socket(conn, lambda: conn.flush(t0))
         conn.flush(t0 + transport.SEND_STALL_S - 0.01)
         self.assertTrue(conn.is_open)
         conn.flush(t0 + transport.SEND_STALL_S)
@@ -584,18 +584,11 @@ class OneTickTest(unittest.TestCase):
         self.client(rcvbuf=4096)
         self.tick()
         conn = self.server.connections()[0]
-        conn.push_result("big", [{"ok": True, "data": "x" * (2 * tcp_wmem_max() + (1 << 20))}])
         # No time given: the ticks that fill the socket write at the monotonic
         # clock, so its last byte went in between `start` and `end`.
         start = time.monotonic()
-        for _ in range(1000):
-            unsent = conn.pending()[2]
-            self.server.poll_out()
-            if 0 < conn.pending()[2] == unsent:
-                break
+        self.fill_socket(conn, self.server.poll_out)
         end = time.monotonic()
-        self.assertGreater(conn.pending()[2], 0, "the socket took the whole frame")
-        self.assertEqual(conn.pending()[2], unsent, "the socket still takes bytes")
         # Times given: open until SEND_STALL_S after that byte, closed at it.
         self.server.poll_out(start + transport.SEND_STALL_S - 0.01)
         self.assertTrue(conn.is_open)
