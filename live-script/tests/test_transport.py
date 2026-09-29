@@ -532,6 +532,35 @@ class OneTickTest(unittest.TestCase):
         self.server.poll_out()
         self.assertEqual(self.server.inbox.get_nowait(), (conn, None))
 
+    def test_a_tick_writes_at_the_time_it_is_given_else_at_the_monotonic_clock(self):
+        # `poll_out(now)`: the connections write at `now`, a test's clock, or
+        # at time.monotonic() when none is given (the surface gives none). The
+        # send stall is measured on that time: a test holds it off by holding
+        # the time (#5).
+        self.client(rcvbuf=4096)
+        self.tick()
+        conn = self.server.connections()[0]
+        conn.push_result("big", [{"ok": True, "data": "x" * (2 * tcp_wmem_max() + (1 << 20))}])
+        # No time given: the ticks that fill the socket write at the monotonic
+        # clock, so its last byte went in between `start` and `end`.
+        start = time.monotonic()
+        for _ in range(1000):
+            unsent = conn.pending()[2]
+            self.server.poll_out()
+            if 0 < conn.pending()[2] == unsent:
+                break
+        end = time.monotonic()
+        self.assertGreater(conn.pending()[2], 0, "the socket took the whole frame")
+        self.assertEqual(conn.pending()[2], unsent, "the socket still takes bytes")
+        # Times given: open until SEND_STALL_S after that byte, closed at it.
+        self.server.poll_out(start + transport.SEND_STALL_S - 0.01)
+        self.assertTrue(conn.is_open)
+        self.server.poll_out(end + transport.SEND_STALL_S)
+        self.assertTrue(conn.finished)
+        self.assertTrue(any("read nothing for" in m for m in self.log.messages), self.log.messages)
+        self.assertEqual(self.server.connections(), [])
+        self.assertEqual(self.server.inbox.get_nowait(), (conn, None))
+
     def test_a_close_the_client_never_answers_ends_after_the_close_handshake_timeout(self):
         client = self.client()
         self.tick()
