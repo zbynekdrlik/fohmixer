@@ -74,7 +74,8 @@
     // network-only service worker (sw.js: never a cached answer, everything
     // sits behind Cloudflare Access on the internet path) — and holds a
     // Screen Wake Lock while it is visible, taken again whenever the page
-    // comes back (the system drops it when the page is hidden). The
+    // comes back (the system drops it when the page is hidden) or a touch
+    // ends while none is held (iPadOS wants a touch, #5 K4). The
     // emergency plain-http path (http://<PC>:8480) stays without either;
     // http://127.0.0.1 is a secure context too, so the test is the scheme.
     // data-pwa / data-wake-lock on <html> say what happened (E2E, support).
@@ -97,9 +98,15 @@
         }
         var lock = null;
         var asking = false;
+        // Written only when it changes: the app reports every write of it
+        // to the hub (diag.rs), and a touch may ask again with the same
+        // answer (unsupported, denied).
+        function show(state) {
+            if (root.dataset.wakeLock !== state) root.dataset.wakeLock = state;
+        }
         function acquire() {
             if (!('wakeLock' in navigator)) {
-                root.dataset.wakeLock = 'unsupported';
+                show('unsupported');
                 return;
             }
             if (document.visibilityState !== 'visible' || lock !== null || asking) return;
@@ -107,18 +114,26 @@
             navigator.wakeLock.request('screen').then(function (sentinel) {
                 asking = false;
                 lock = sentinel;
-                root.dataset.wakeLock = 'held';
+                show('held');
                 sentinel.addEventListener('release', function () {
                     lock = null;
-                    root.dataset.wakeLock = 'released';
+                    show('released');
                 });
             }, function (error) {
                 asking = false;
-                root.dataset.wakeLock = 'denied';
+                show('denied');
                 console.log('[pwa] wake lock not granted: ' + error);
             });
         }
         document.addEventListener('visibilitychange', acquire);
+        // iPadOS grants the lock only with user activation, so it refuses
+        // the requests at load and on visibilitychange; for a finger the
+        // activation is the end of the touch, not its pointerdown (#5 K4).
+        // So the end of every touch asks again while no lock is held;
+        // every fader drag ends in one too.
+        document.addEventListener('pointerup', function () {
+            if (lock === null) acquire();
+        }, { capture: true, passive: true });
         acquire();
     })();
     // The app's code did not arrive (the loader in Trunk.toml calls this: the
