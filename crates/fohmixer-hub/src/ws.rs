@@ -9,13 +9,22 @@
 //! writer task drains the client's outbox, so a slow client never holds up
 //! anyone else; a client that takes longer than [`SEND_TIMEOUT`] to accept
 //! a message is closed (it reconnects and resyncs).
+//!
+//! A socket's connect and disconnect lines name who opened it (#9, an
+//! [`Opener`]): the peer, `lan` / `internet` as the Access check classifies
+//! the upgrade, and the host of the page's `Origin`. A tab that holds a
+//! token reconnects without a login line, and a bundle from before the
+//! client reports sends none, so these two lines are the one trace every
+//! client leaves in the hub log.
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
 use axum::{
     extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade},
-    extract::{Query, State},
+    extract::{ConnectInfo, Query, State},
+    http::{HeaderMap, header},
     response::{IntoResponse, Response},
 };
 use fohmixer_proto::client::{
@@ -25,6 +34,8 @@ use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
 
 use crate::Hub;
+use crate::access;
+use crate::client_report;
 use crate::live::subs::ClientId;
 use crate::outbox::Outbox;
 use crate::router::RouterMsg;
@@ -39,16 +50,70 @@ pub struct WsQuery {
     pub proto: Option<u32>,
 }
 
-/// `GET /ws`: 401 without a valid token, else the upgrade.
+/// Who opened a socket, as its connect and disconnect lines name it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Opener {
+    /// The peer's address: the client on the LAN, cloudflared on the PC
+    /// through the tunnel.
+    pub peer: String,
+    /// `lan` / `internet`: the Access check's class of the upgrade, named
+    /// as a client report names it ([`client_report::source`]).
+    pub source: &'static str,
+    /// The host (`host[:port]`) of the page's `Origin`: the name or address
+    /// the page was opened by; `-` without an `Origin` (not a browser).
+    pub origin: String,
+}
+
+/// The [`Opener`] of an upgrade from `peer` with `headers`: the Access
+/// check's own classification (no second classifier), and the `Origin`
+/// host [`client_report::clean`]ed like a report's field (control
+/// characters out, [`client_report::WORD_MAX_CHARS`]).
+pub fn opener(peer: SocketAddr, headers: &HeaderMap) -> Opener {
+    Opener {
+        peer: peer.ip().to_string(),
+        source: client_report::source(access::classify(Some(peer), headers)),
+        origin: origin_host(headers),
+    }
+}
+
+/// The host of the request's `Origin`; an `Origin` that is not
+/// `http(s)://…` as it came (the Origin guard refuses such an upgrade, but
+/// the line never hides a value); `-` without one.
+fn origin_host(headers: &HeaderMap) -> String {
+    let Some(value) = headers.get(header::ORIGIN) else {
+        return "-".to_string();
+    };
+    let value = String::from_utf8_lossy(value.as_bytes());
+    let host = access::origin_authority(&value).unwrap_or(&value);
+    client_report::clean(host, client_report::WORD_MAX_CHARS)
+}
+
+/// A socket's connect or disconnect line (`what`), with its [`Opener`].
+fn log_socket(what: &str, client: ClientId, opener: &Opener) {
+    tracing::info!(
+        client,
+        peer = %opener.peer,
+        source = %opener.source,
+        origin = %opener.origin,
+        "{what}"
+    );
+}
+
+/// `GET /ws`: 401 without a valid token, else the upgrade. Both listeners
+/// insert the peer (`ConnectInfo`), and the Access check refuses a request
+/// without one before it gets here.
 pub async fn ws_handler(
     ws: WebSocketUpgrade,
     State(hub): State<Hub>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Query(query): Query<WsQuery>,
 ) -> Response {
     if hub.auth.claims(query.token.as_deref()).is_none() {
         return crate::auth::unauthorized();
     }
-    ws.on_upgrade(move |socket| session(socket, hub, query.proto))
+    let who = opener(peer, &headers);
+    ws.on_upgrade(move |socket| session(socket, hub, query.proto, who))
         .into_response()
 }
 
@@ -65,7 +130,7 @@ async fn close_reload(mut socket: WebSocket) {
         .await;
 }
 
-async fn session(mut socket: WebSocket, hub: Hub, proto: Option<u32>) {
+async fn session(mut socket: WebSocket, hub: Hub, proto: Option<u32>, who: Opener) {
     let Some(proto) = proto else {
         tracing::info!("WebSocket without a protocol: asking the client to reload");
         close_reload(socket).await;
@@ -90,7 +155,7 @@ async fn session(mut socket: WebSocket, hub: Hub, proto: Option<u32>) {
         client,
         outbox: Arc::clone(&outbox),
     });
-    tracing::info!(client, "client connected");
+    log_socket("client connected", client, &who);
     let (mut sink, mut stream) = socket.split();
     let mut writer = {
         let outbox = Arc::clone(&outbox);
@@ -130,7 +195,7 @@ async fn session(mut socket: WebSocket, hub: Hub, proto: Option<u32>) {
     outbox.close();
     hub.route(RouterMsg::Detach { client });
     writer.abort();
-    tracing::info!(client, "client disconnected");
+    log_socket("client disconnected", client, &who);
 }
 
 fn handle_text(hub: &Hub, client: ClientId, outbox: &Arc<Outbox>, text: &str) {
