@@ -2,7 +2,7 @@ import { createPrivateKey, createSign, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import http from "node:http";
 import { test, expect } from "./support/fixtures";
-import { BASE, openSurface, token } from "./support/live";
+import { BASE, centre, frames, openSurface, token } from "./support/live";
 import { HTTPS, releaseWakeLocks, stubWakeLock, wakeLockRequests } from "./support/pwa";
 
 // Remote access (#17): one name for the LAN and the Cloudflare tunnel.
@@ -101,6 +101,33 @@ test.describe("The public name over HTTPS (the LAN path)", () => {
     await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
     await expect(root).toHaveAttribute("data-wake-lock", "held");
     expect(await wakeLockRequests(page)).toEqual(["screen", "screen"]);
+  });
+
+  test("a device that grants the wake lock only on a touch gets it at the end of the first touch", async ({
+    page,
+    hasTouch,
+  }) => {
+    // iPadOS refuses a wake lock asked for without user activation (the
+    // Home Screen app reported "denied", #5 K4), and a finger's pointerdown
+    // is no activation: the stub grants only as the device does.
+    await page.addInitScript(stubWakeLock, { activation: true });
+    await openSurface(page);
+    const root = page.locator("html");
+    // At load nobody has touched the page yet.
+    await expect(root).toHaveAttribute("data-wake-lock", "denied");
+    expect(await wakeLockRequests(page)).toEqual(["screen"]);
+    // A touch on the version label (it does nothing): a finger on the
+    // iPad, the mouse on the desktop.
+    const at = await centre(page.getByTestId("stage").getByTestId("version"));
+    const touch = () => (hasTouch ? page.touchscreen.tap(at.x, at.y) : page.mouse.click(at.x, at.y));
+    await touch();
+    await expect(root).toHaveAttribute("data-wake-lock", "held");
+    expect(await wakeLockRequests(page)).toEqual(["screen", "screen"]);
+    // While the lock is held a touch asks for nothing.
+    await touch();
+    await frames(page);
+    expect(await wakeLockRequests(page)).toEqual(["screen", "screen"]);
+    await expect(root).toHaveAttribute("data-wake-lock", "held");
   });
 
   test("the manifest link asks for credentials (the Access cookie on the internet path); manifest and worker are served", async ({ page }) => {
