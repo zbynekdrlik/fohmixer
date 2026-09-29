@@ -25,6 +25,10 @@ paths:
 - A constant built in a const expression (`FRAME_MS = 1000.0 / 60.0`) needs a test with a literal value (50 ms), not one that uses the constant on both sides.
 - Fader-shaping traces come from the original `fader_script.lua` 2.5.4 run under Lua 5.4 (lupa; `math.pow = function(a, b) return a ^ b end`). Pick start levels far from 0 dB: near 0 dB, `a - b` and `a + b` of dB levels agree and a mutant survives (#8: the forcing check at start 0.7294 ≈ 0 dB).
 
+## web-sys 0.3.91 gaps
+
+- `RequestInit` has no `set_keepalive`: set it on the init object with `js_sys::Reflect::set(&init, &"keepalive".into(), &true.into())` (`diag::post`). Check `~/.cargo/registry/src/*/web-sys-0.3.91/src/features/gen_<Type>.rs` for a setter before writing one, and add the `<Type>` feature to `crates/fohmixer-ui/Cargo.toml` (nothing compiles locally, so a missing feature costs a CI cycle).
+
 ## Trunk
 
 WebKit warns ("preloaded using link preload but not used within a few seconds") about Trunk's default `<link rel="preload">` of the WASM, which fails every iPad test on the console guard. `Trunk.toml` sets `pattern_preload` to a `modulepreload` of the JS only; the `wasm` CI job checks the built `index.html` has no WASM preload.
