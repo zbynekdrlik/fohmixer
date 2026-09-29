@@ -41,7 +41,10 @@ to the hub, for ``--seconds``:
 
 The probe writes nothing to Live but its reads. Exit 1 with one
 ``live-probe: ...`` line on stderr when it cannot measure (no connection, a
-refused handshake, the script gone). Python 3.11 standard library only: it is
+refused handshake, the script gone, a ``--raw`` path it cannot write, checked
+before connecting), and also when only the raw file failed after the run: the
+summary is then still printed, and written samples stay in ``<raw>.tmp``.
+Python 3.11 standard library only: it is
 copied to the Ableton PC as this single file and run with the PC's Python.
 """
 
@@ -59,6 +62,7 @@ import socket
 import statistics
 import struct
 import sys
+import tempfile
 import time
 
 HOST = "127.0.0.1"
@@ -547,16 +551,24 @@ def record(conn, seconds, probe_ms, max_pending=MAX_PENDING, result_wait_s=RESUL
 
 
 def _check_raw_path(raw_path):
-    """A raw file needs a writable folder, checked before the run so a bad path
-    never costs one; an earlier file of that name is left as it is."""
+    """Refuses, before the run, a raw path that is a folder or names one, or
+    whose folder cannot be written: a real file is written there and removed
+    (on Windows ``os.access`` reports every existing folder writable). An
+    earlier file of that name is left as it is."""
+    if raw_path.endswith(("/", os.sep)) or os.path.isdir(raw_path):
+        raise ProbeError(f"cannot write the raw file {raw_path}: it is a folder")
     folder = os.path.dirname(os.path.abspath(raw_path))
-    if not (os.path.isdir(folder) and os.access(folder, os.W_OK)):
-        raise ProbeError(f"cannot write the raw file {raw_path}: {folder} is not a writable folder")
+    try:
+        with tempfile.NamedTemporaryFile(dir=folder, prefix=".live-probe-check-"):
+            pass
+    except OSError as e:
+        raise ProbeError(f"cannot write the raw file {raw_path}: {e}") from e
 
 
 def _write_raw(raw_path, recorder):
     """Every sample to ``raw_path`` (a temporary file, then a replace); the
-    failure's message, or None."""
+    failure's message, or None. A temporary file written whole stays when only
+    the replace fails, and the message names it."""
     temporary = raw_path + ".tmp"
     samples = {
         "heartbeats": [beat._asdict() for beat in recorder.heartbeats],
@@ -565,15 +577,18 @@ def _write_raw(raw_path, recorder):
     try:
         with open(temporary, "w", encoding="utf-8") as f:
             json.dump(samples, f)
-        os.replace(temporary, raw_path)
     except OSError as e:
         message = f"cannot write the raw file {raw_path}: {e}"
         try:
-            if os.path.exists(temporary):
+            if os.path.isfile(temporary):
                 os.remove(temporary)
         except OSError as cleanup:
-            message += f" ({temporary} is left: {cleanup})"
+            message += f" (the partial {temporary} is left: {cleanup})"
         return message
+    try:
+        os.replace(temporary, raw_path)
+    except OSError as e:
+        return f"cannot write the raw file {raw_path}: {e}; the samples are in {temporary}"
     return None
 
 
