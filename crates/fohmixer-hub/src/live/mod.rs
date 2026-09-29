@@ -62,7 +62,7 @@ pub fn late_heartbeat(
         .zip(arrived_ms)
         .map(|(sent, arrived)| arrived - sent);
     Some(format!(
-        "a heartbeat {} ms after the previous one (or the connect): the script made it at its tick {} after its previous one, it spent {} on the way",
+        "a heartbeat {} ms after the previous one (or the connect): the script made it at its tick, {} after its previous one, it spent {} on the way",
         since_previous.as_millis(),
         known(gap_ms),
         known(transit)
