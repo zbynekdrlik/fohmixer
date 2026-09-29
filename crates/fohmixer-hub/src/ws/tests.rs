@@ -154,16 +154,25 @@ fn the_connect_and_disconnect_lines_name_the_peer_the_source_and_the_page_host()
         log_socket("client connected", 1, &lan);
         log_socket("client disconnected", 2, &tunnel);
     });
-    assert!(
-        log.contains(
-            "client connected client=1 peer=10.0.0.5 source=lan origin=mixer.example:8080\n"
-        ),
-        "{log}"
+    // The page host is the client's own text: quoted, like a client
+    // report's fields.
+    let connected =
+        r#"client connected client=1 peer=10.0.0.5 source=lan origin="mixer.example:8080""#;
+    assert!(log.contains(&format!("{connected}\n")), "{log}");
+    let disconnected =
+        r#"client disconnected client=2 peer=127.0.0.1 source=internet origin="foh.example.org""#;
+    assert!(log.contains(&format!("{disconnected}\n")), "{log}");
+}
+
+#[test]
+fn a_page_host_cannot_add_fields_to_its_line() {
+    // Spaces and a quote in the Origin stay inside the quoted value: the
+    // line keeps its own peer and source.
+    let forged = opener(
+        peer("10.0.0.5"),
+        &headers(&[("origin", r#"http://x source=internet peer=192.0.2.9 "y"#)]),
     );
-    assert!(
-        log.contains(
-            "client disconnected client=2 peer=127.0.0.1 source=internet origin=foh.example.org\n"
-        ),
-        "{log}"
-    );
+    let log = logged(|| log_socket("client connected", 3, &forged));
+    let line = r#"client connected client=3 peer=10.0.0.5 source=lan origin="x source=internet peer=192.0.2.9 \"y""#;
+    assert!(log.contains(&format!("{line}\n")), "{log}");
 }
