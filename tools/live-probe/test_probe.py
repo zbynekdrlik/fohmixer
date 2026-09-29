@@ -3,6 +3,7 @@ framing against the script's vendored framing, and whole runs against
 ``sim/host.py`` running the real FohMixer script on SimLive.
 """
 
+import errno
 import itertools
 import json
 import os
@@ -721,10 +722,24 @@ class RawFile(unittest.TestCase):
         # violation) makes the remove fail; the operating system's refusal is
         # simulated here. One "live-probe:" error, never a traceback.
         raw = os.path.join(self.folder, "run.json")
-        refused = PermissionError(32, "The process cannot access the file")
-        with mock.patch.object(probe.os, "remove", side_effect=refused):
-            with self.assertRaisesRegex(probe.ProbeError, "cannot remove the check file"):
+        check = raw + ".tmp"
+        real_remove = os.remove
+
+        def remove(path, *args, **kwargs):
+            # Only the check file is refused (Windows: errno 13, winerror 32).
+            if os.fspath(path) == check:
+                raise PermissionError(errno.EACCES, "The process cannot access the file", path)
+            return real_remove(path, *args, **kwargs)
+
+        with mock.patch.object(probe.os, "remove", side_effect=remove):
+            with self.assertRaisesRegex(probe.ProbeError, "cannot remove the check file") as caught:
                 probe.run(self.closed_port(), seconds=300, probe_ms=100, raw_path=raw)
+        message = str(caught.exception)
+        self.assertIn(check, message)
+        # The empty check file stays; the message says so, since the next run
+        # would otherwise read it as an earlier run's samples.
+        self.assertIn("the empty check file is left", message)
+        self.assertEqual(os.path.getsize(check), 0)
 
     def test_a_file_someone_else_put_at_the_temporary_name_is_not_overwritten(self):
         raw = os.path.join(self.folder, "run.json")
