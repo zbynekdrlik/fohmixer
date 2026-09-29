@@ -14,8 +14,8 @@
 //! [`Opener`]): the peer, `lan` / `internet` as the Access check classifies
 //! the upgrade, and the host of the page's `Origin`. A tab that holds a
 //! token reconnects without a login line, and a bundle from before the
-//! client reports sends none, so these two lines are the one trace every
-//! client leaves in the hub log.
+//! client reports sends none, so for every socket past the handshake these
+//! two lines are the one trace in the hub log that names its client.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -60,7 +60,8 @@ pub struct Opener {
     /// as a client report names it ([`client_report::source`]).
     pub source: &'static str,
     /// The host (`host[:port]`) of the page's `Origin`: the name or address
-    /// the page was opened by; `-` without an `Origin` (not a browser).
+    /// the page was opened by; `-` without an `Origin` (not a browser). The
+    /// client's own text, so the line quotes it.
     pub origin: String,
 }
 
@@ -77,8 +78,8 @@ pub fn opener(peer: SocketAddr, headers: &HeaderMap) -> Opener {
 }
 
 /// The host of the request's `Origin`; an `Origin` that is not
-/// `http(s)://…` as it came (the Origin guard refuses such an upgrade, but
-/// the line never hides a value); `-` without one.
+/// `http(s)://…` as it came (the Origin guard refuses such a visible-ASCII
+/// one, but one with other bytes passes it); `-` without one.
 fn origin_host(headers: &HeaderMap) -> String {
     let Some(value) = headers.get(header::ORIGIN) else {
         return "-".to_string();
@@ -88,13 +89,15 @@ fn origin_host(headers: &HeaderMap) -> String {
     client_report::clean(host, client_report::WORD_MAX_CHARS)
 }
 
-/// A socket's connect or disconnect line (`what`), with its [`Opener`].
+/// A socket's connect or disconnect line (`what`), with its [`Opener`]. The
+/// page host is Debug-quoted, like a client report's fields: spaces in it
+/// cannot add fields to the line.
 fn log_socket(what: &str, client: ClientId, opener: &Opener) {
     tracing::info!(
         client,
         peer = %opener.peer,
         source = %opener.source,
-        origin = %opener.origin,
+        origin = ?opener.origin,
         "{what}"
     );
 }
