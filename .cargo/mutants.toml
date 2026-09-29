@@ -79,4 +79,16 @@ exclude_re = [
   # disconnected, reconnect, visibility, error, rejection, sw, wake lock and
   # its trailing report).
   "fohmixer-ui/src/diag\\.rs.*(replace|in) (install|observe_attributes|connected|disconnected|report|report_error|send|arm_trailing|fire_trailing|post_report|read_env|rejection_text|post)( |$)",
+  # diag.rs, the perf report's glue (#5, K4), one browser call each:
+  # listen_pointers (the window's capture-phase pointerdown, pointerup and
+  # pointercancel listeners), pointer_down and pointer_up (a PointerEvent's
+  # id, type and primary flag read into the thread-local Perf), pause_perf
+  # (the visibilitychange listener's call into it) and frame (raf::tick's
+  # call with each frame's time and gap, the report sent when Perf says it
+  # is due). Their decisions are diag/perf.rs's tested Perf (frame, pause,
+  # down, up, report), window_full, fps, perf_due and PerfReport::fill;
+  # e2e/tests/client-report.spec.ts drives the glue (a perf report with its
+  # frame rate and longest frame; four dispatched touch pointers give
+  # touches_max 4).
+  "fohmixer-ui/src/diag\\.rs.*(replace|in) (listen_pointers|pointer_down|pointer_up|pause_perf|frame)( |$)",
 ]

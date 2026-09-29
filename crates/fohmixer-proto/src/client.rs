@@ -307,7 +307,7 @@ pub struct RemoteStatus {
 #[serde(default)]
 pub struct ReportFields {
     /// What happened: `load`, `connected`, `disconnected`, `reconnect`,
-    /// `visibility`, `sw`, `wake-lock` or `error`.
+    /// `visibility`, `sw`, `wake-lock`, `error` or `perf`.
     pub kind: Option<String>,
     /// `standalone` (a Home Screen app) or `browser` (a browser tab).
     pub display: Option<String>,
@@ -329,6 +329,18 @@ pub struct ReportFields {
     pub reconnects: Option<String>,
     /// The error's text (an `error` report).
     pub error: Option<String>,
+    /// A `perf` report (#5, K4): frames per second over the page's last
+    /// 10 s of frames, one decimal (`59.9`); none before the first window.
+    pub fps: Option<String>,
+    /// A `perf` report: the longest gap between two frames in that window,
+    /// whole ms.
+    pub long_frame_ms: Option<String>,
+    /// A `perf` report: the most pointers down at once since the page's
+    /// previous `perf` report.
+    pub touches_max: Option<String>,
+    /// A `perf` report: the latest pointer's type (`touch`, `mouse`,
+    /// `pen`).
+    pub pointer: Option<String>,
 }
 
 /// A page's report as the hub keeps it (`GET /api/status`
