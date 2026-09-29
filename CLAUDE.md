@@ -13,7 +13,7 @@ Two branches: `master` (production) and `dev`. Work on `dev`; open a PR `dev` �
 - Playwright E2E (console guard, Chromium + WebKit iPad projects, base URL) → `.claude/rules/e2e.md` (auto-loads on `e2e/**`)
 - Leptos `view!` gotchas and disposal safety → `.claude/rules/leptos-view-macro.md` (auto-loads on `crates/fohmixer-ui/**`)
 - UI architecture (pure decisions vs browser glue), mutation-proof patterns, Trunk preload → `.claude/rules/ui-rust.md` (auto-loads on `crates/fohmixer-ui/**`, `.cargo/mutants.toml`)
-- Public-repo hygiene (what never enters this repo) → `.claude/rules/public-repo-hygiene.md` (auto-loads everywhere)
+- Public-repo hygiene (what never enters this repo, the private denylist scan) → `.claude/rules/public-repo-hygiene.md` (auto-loads everywhere); the scan's internals → `.claude/rules/denylist-scan.md` (auto-loads on `scripts/denylist*`, `scripts/*denylist*`, `scripts/allowed-identities.txt`)
 - Remote access (#17: HTTPS of the public name, ACME DNS-01, the Access check, the tunnel, the PWA bits, the Cloudflare script; #26: the LAN DNS entry and its check) → `.claude/rules/remote-access.md` (auto-loads on those files)
 - CI, toolchain, placeholder dist, coverage floor, mutation gate → `.claude/rules/ci.md` (auto-loads on workflows, `.cargo/mutants.toml`, `.config/nextest.toml`, crates)
 - Hub/proto code the mutation gate can judge, the hub test harness, subscription/outbox invariants → `.claude/rules/hub-rust.md` (auto-loads on `crates/fohmixer-hub/**`, `crates/fohmixer-proto/**`)
