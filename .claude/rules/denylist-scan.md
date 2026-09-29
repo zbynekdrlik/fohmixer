@@ -4,6 +4,7 @@ paths:
   - "scripts/test_denylist_scan.py"
   - "scripts/denylist-boundary.txt"
   - "scripts/allowed-identities.txt"
+  - "scripts/denylist-accepted.txt"
 ---
 
 # The denylist scan's internals (#3)
@@ -14,7 +15,13 @@ How to use the scan and what a hit means: `.claude/rules/public-repo-hygiene.md`
 
 - A finding prints a location and an entry number only: never a term, a matched line, an email or git's own stderr (git failures become exit 2 with the subcommand and exit code, in `git()`).
 - A path component holding a term prints as `[redacted]`, the whole path when a term spans components or the printed form holds one; kept components have control characters escaped.
-- Each finding line starts with `tree` or a short SHA, never with a path: a path starting with `::` would be a GitHub workflow command in the CI log.
+- Each finding line starts with `tree`, a short SHA or `accepted`, never with a path: a path starting with `::` would be a GitHub workflow command in the CI log.
+
+## Accepted history (`--accepted`)
+
+- A commit-mode `Hit` carries `key = (full SHA, path)`, or `(full SHA, None)` for a metadata hit (the list's literal `commit metadata`, so a file of that name can never be accepted by mistake). Tree hits have `key=None`; `IdentityProblem` and `BoundaryProblem` are not hits. `apply_accepted` marks matching hits `accepted` and adds an `AcceptedProblem` for every entry whose commit is not in the scanned set; only unaccepted findings count toward exit 1.
+- The scanned set is the union of all `--commits` ranges after the boundary (a commit in two ranges is scanned once), so an entry for a legacy commit, a typo or an unreachable commit fails loudly instead of accepting something else.
+- The path in an entry is the real path (the decoded bytes the scan keys on), never the printed `[redacted]` form.
 - stdout is flushed before the stderr count, so a combined log never cuts a finding.
 
 ## git's output depends on config, attributes and the object: pin it

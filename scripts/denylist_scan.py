@@ -5,8 +5,8 @@
 The denylist (one term per line, `#` comments) is private: a mode-600 file
 outside the repo for local runs, the DENYLIST secret in CI. Output never
 contains a term, a matched line or an email address — only locations and the
-entry number, each finding line starting with `tree` or a commit's short SHA
-(never with a path). A path component that holds a term is printed as `[redacted]`
+entry number, each finding line starting with `tree`, a commit's short SHA or
+`accepted` (never with a path). A path component that holds a term is printed as `[redacted]`
 (the whole path when a term spans components), control characters escaped.
 
 Commit mode scans each commit's author/committer names and emails together
@@ -19,6 +19,12 @@ commits keep their original identity and history is never rewritten): their
 ancestors are left out of every commit scan. With `--identities`, a boundary
 that would hide a commit with any allowed identity is itself a finding, so the
 boundary cannot be moved forward over new commits.
+
+`--accepted FILE` lists published history that is never rewritten: a
+commit-mode finding in exactly a listed commit and path (`commit metadata` for
+the message, author or committer) is printed as accepted and does not fail the
+scan. Tree findings and identity problems are never accepted, and an entry whose
+commit the scan did not reach is a finding.
 
 Matching is case-insensitive. A term that starts (ends) with a letter or digit
 must not be preceded (followed) by one, where letters include diacritics and

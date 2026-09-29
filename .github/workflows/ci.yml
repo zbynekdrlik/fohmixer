@@ -534,7 +534,7 @@ jobs:
           printf '%s\n' "$DENYLIST" > "$RUNNER_TEMP/denylist.txt"
           python3 scripts/denylist_scan.py --denylist "$RUNNER_TEMP/denylist.txt" \
             --identities scripts/allowed-identities.txt --boundary scripts/denylist-boundary.txt \
-            --tree HEAD --commits "$SCAN_REV"
+            --accepted scripts/denylist-accepted.txt --tree HEAD --commits "$SCAN_REV"
 
   version:
     name: version
