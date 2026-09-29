@@ -1035,6 +1035,11 @@ class CompressedTests(ScanCase):
             self.assertIn("denylist entry 1", out)
             self.assertNotIn("unreadable", out)
 
+    def test_lines_split_as_git_counts_them(self) -> None:
+        for text, lines in (("", []), ("\n", [""]), ("a\n\n", ["a", ""]), ("a\r\nb", ["a", "b"]),
+                            ("a\rb\n", ["a\rb"]), ("a\r\r\n", ["a\r"])):
+            self.assertEqual(ds.text_lines(text), lines, repr(text))
+
     def test_a_published_unreadable_compressed_file_can_be_accepted(self) -> None:
         broken = self.commit({"bad.tosc": b"not zlib"})
         git(self.repo, "rm", "-q", "bad.tosc")
