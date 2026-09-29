@@ -169,7 +169,7 @@ Data flow: clients ⇄ (LAN, WebSocket) ⇄ hub ⇄ (127.0.0.1, WebSocket) ⇄ t
 
 **Health**
 - Every timer call writes a `last_main_tick` timestamp.
-- A background thread pushes `heartbeat{main_tick_age_ms}` every 100 ms. Because it runs off the main thread, the "Live busy" badge appears **during** a stall, not after it.
+- The main thread makes `heartbeat{main_tick_age_ms}` in its tick every 100 ms (#5; first a background thread, which K1 showed ran only around the tick anyway). During a stall none goes out, so the hub shows the "Live busy" badge **during** the stall once a heartbeat is 300 ms overdue; the first heartbeat after the stall reports its length.
 
 **Logging.** Rotating file at WARNING level, never per message. `connect`, `disconnect`, errors and stalls above 200 ms are logged.
 

@@ -19,7 +19,7 @@ A remote script that exposes Live's native LOM 1:1 over a localhost WebSocket, p
   - listener coalescing and the meter cap;
   - the work budget;
   - non-blocking send with a stalled client;
-  - heartbeat during a simulated main-thread stall;
+  - the heartbeat around a simulated main-thread stall (#5: none during it, the first one after it reports it);
   - reconnect after disconnect;
   - two instances on two ports.
 - `sim/host.py` runs as a process (`python3 sim/host.py --port N --site <fixture.json>`). S3's hub tests start it.
@@ -149,9 +149,10 @@ A read that raises (the object was deleted) sends `{"key", "error": "gone"}` and
 
 Changed on #5 (K1): this section first specified the reference's threads (an accept thread, a reader and a sender thread per connection). Measured in the real Live, those threads got Python only around the main thread's ~30 Hz tick: a connection sent about one frame per tick. The script now runs no threads; the main thread does the socket I/O in its tick, and never waits on a socket:
 
-- every socket is non-blocking; `poll_in` selects with timeout 0, accepts, reads handshakes and frames (bounded per tick) and puts requests into the inbound queue;
+- every socket is non-blocking; `poll_in` selects with timeout 0, accepts (at most 16 pending handshakes and 64 connections), reads handshakes and frames (each connection within a 5 ms budget per tick) and puts requests into the inbound queue;
+- one client's failure closes that client only; each step of the tick (reads, drain and flush, heartbeat, writes) is guarded on its own;
 - `Connection` has `results` (a bounded `collections.deque`; `RESULT_QUEUE_MAX` is a hard cap, on overflow the connection is closed and the hub resyncs), `values` (a dict `key → item`, the latest value only), the pending heartbeat, and a write buffer;
-- `poll_out` writes, per connection: the heartbeat, then all pending results in order, then one `values` frame from a swapped-out dict, as far as the socket takes them (bounded per tick; at most 64 KB encoded ahead of the socket); the rest waits for the next tick;
+- `poll_out` writes, per connection: the heartbeat, then all pending results in order, then one `values` frame from a swapped-out dict, as far as the socket takes them (within a 5 ms budget per tick; at most 64 KB encoded ahead of the socket); the rest waits for the next tick;
 - a socket that took no byte for 3 s while output waited closes its connection (the client stopped reading);
 - the 101 response and the `connect` frame are the first bytes of every connection.
 
@@ -159,7 +160,7 @@ The reference script's direct `sendall` path is removed.
 
 ### 3.8 Heartbeat
 
-The main thread makes `{"event":"heartbeat","data":{"main_tick_age_ms", "max_cmd_ms", "gap_ms"}}` in its tick for every connection, one per `HEARTBEAT_INTERVAL_MS` (#5; a daemon thread before). `main_tick_age_ms` is the gap before that tick; `gap_ms` the time since the previous heartbeat. During a stall none goes out, so the hub marks the instance busy once one is 300 ms overdue; the first one after the stall reports it.
+The main thread makes `{"event":"heartbeat","data":{"main_tick_age_ms", "max_cmd_ms", "gap_ms"}}` in its tick for every connection, one per `HEARTBEAT_INTERVAL_MS` (#5; a daemon thread before). `main_tick_age_ms` is the silence before it: the time since the previous tick reached the same point (after its work, before its writes), so a tick held by its own work counts too; `gap_ms` the time since the previous heartbeat. During a stall none goes out, so the hub marks the instance busy once one is 300 ms overdue; the first one after the stall reports it.
 
 ### 3.9 Lifecycle
 
@@ -199,7 +200,7 @@ The main thread makes `{"event":"heartbeat","data":{"main_tick_age_ms", "max_cmd
 - a listener push after a set from another client;
 - two clients each get the push;
 - a client that stops reading does not block the other client or the main thread (`main_tick_age_ms` stays low);
-- `host.stall(500)` makes the heartbeat show an age ≥ 400 during the stall;
+- `host.stall(700)`: no heartbeat during the stall, and the first one after it reports an age ≥ 400 and a gap ≥ 600 (#5; while the heartbeat was a thread it showed the age growing during the stall);
 - disconnect, reconnect and resubscribe;
 - two hosts on two ports.
 
