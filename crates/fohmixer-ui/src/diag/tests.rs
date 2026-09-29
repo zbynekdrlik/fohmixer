@@ -19,8 +19,16 @@ fn the_limits_are_these() {
     assert_eq!(REPORT_GAP_MS, 5000.0);
     assert_eq!(ERROR_MAX_CHARS, 300);
     assert_eq!(ERRORS_REMEMBERED, 32);
+    assert_eq!(ERRORS_WAITING, 8);
     assert_eq!(REPORT_URL, "/api/client-report");
 }
+
+/// A trailing report that fires without an error.
+const TRAILING: Fired = Fired {
+    send: true,
+    error: None,
+    again: None,
+};
 
 #[test]
 fn every_kind_has_the_name_the_hub_logs() {
@@ -43,38 +51,145 @@ fn every_kind_has_the_name_the_hub_logs() {
 #[test]
 fn a_kind_goes_at_most_once_per_five_seconds() {
     let t = 1_000_000.0;
-    let mut diag = Diag::default();
-    assert!(diag.allow(Kind::Visibility, t, None));
-    assert!(!diag.allow(Kind::Visibility, t, None), "not twice at once");
-    assert!(!diag.allow(Kind::Visibility, t + 4_999.999, None));
-    assert!(diag.allow(Kind::Visibility, t + 5_000.0, None));
-    // A refused report does not move the window: 5 s after the last sent.
-    assert!(!diag.allow(Kind::Visibility, t + 9_999.0, None));
-    assert!(diag.allow(Kind::Visibility, t + 10_000.0, None));
+    let sent_at_t = || {
+        let mut diag = Diag::default();
+        assert_eq!(diag.offer(Kind::Sw, t, None), Verdict::Now);
+        diag
+    };
+    assert_eq!(
+        sent_at_t().offer(Kind::Sw, t, None),
+        Verdict::Later(t + 5_000.0),
+        "not twice at once"
+    );
+    assert_eq!(
+        sent_at_t().offer(Kind::Sw, t + 4_999.999, None),
+        Verdict::Later(t + 5_000.0)
+    );
+    assert_eq!(sent_at_t().offer(Kind::Sw, t + 5_000.0, None), Verdict::Now);
     // A clock that went backwards does not block reports for ever.
-    assert!(diag.allow(Kind::Visibility, t, None));
+    assert_eq!(sent_at_t().offer(Kind::Sw, t - 1.0, None), Verdict::Now);
+}
+
+#[test]
+fn a_change_within_the_window_goes_once_when_it_ends() {
+    // The iPad app hidden and back within 5 s: the hub must not keep
+    // "hidden" as its last state.
+    let t = 1_000_000.0;
+    let mut diag = Diag::default();
+    assert_eq!(diag.offer(Kind::Visibility, t, None), Verdict::Now);
+    assert_eq!(
+        diag.offer(Kind::Visibility, t + 1_000.0, None),
+        Verdict::Later(t + 5_000.0)
+    );
+    // More changes meanwhile ride on the armed report.
+    assert_eq!(
+        diag.offer(Kind::Visibility, t + 2_000.0, None),
+        Verdict::Skip
+    );
+    assert_eq!(diag.fire(Kind::Visibility, t + 5_000.0), TRAILING);
+    // The trailing report opened a new window.
+    assert_eq!(
+        diag.offer(Kind::Visibility, t + 9_999.0, None),
+        Verdict::Later(t + 10_000.0)
+    );
+    assert_eq!(diag.fire(Kind::Visibility, t + 10_000.0), TRAILING);
+    assert_eq!(
+        diag.offer(Kind::Visibility, t + 15_000.0, None),
+        Verdict::Now
+    );
 }
 
 #[test]
 fn every_kind_has_its_own_window() {
     let mut diag = Diag::default();
     for kind in ALL {
-        assert!(diag.allow(kind, 0.0, None), "{kind:?}");
+        assert_eq!(diag.offer(kind, 0.0, None), Verdict::Now, "{kind:?}");
     }
     for kind in ALL {
-        assert!(!diag.allow(kind, 1.0, None), "{kind:?}");
+        let later = diag.offer(kind, 1.0, None);
+        assert_eq!(later, Verdict::Later(5_000.0), "{kind:?}");
+    }
+    for kind in ALL {
+        assert_eq!(diag.offer(kind, 2.0, None), Verdict::Skip, "{kind:?}");
     }
 }
 
 #[test]
 fn an_error_message_goes_once() {
     let mut diag = Diag::default();
-    assert!(diag.allow(Kind::Error, 0.0, Some("boom")));
-    assert!(!diag.allow(Kind::Error, 10_000.0, Some("boom")));
-    assert!(diag.allow(Kind::Error, 20_000.0, Some("bang")));
-    // Two different errors within 5 s: the second waits for the window.
-    assert!(!diag.allow(Kind::Error, 21_000.0, Some("crash")));
-    assert!(diag.allow(Kind::Error, 25_000.0, Some("crash")));
+    assert_eq!(diag.offer(Kind::Error, 0.0, Some("boom")), Verdict::Now);
+    assert_eq!(
+        diag.offer(Kind::Error, 10_000.0, Some("boom")),
+        Verdict::Skip
+    );
+    assert_eq!(
+        diag.offer(Kind::Error, 20_000.0, Some("bang")),
+        Verdict::Now
+    );
+    // Two more within the window wait their turn, one per 5 s.
+    assert_eq!(
+        diag.offer(Kind::Error, 21_000.0, Some("crash")),
+        Verdict::Later(25_000.0)
+    );
+    assert_eq!(
+        diag.offer(Kind::Error, 22_000.0, Some("oops")),
+        Verdict::Skip
+    );
+    assert_eq!(
+        diag.offer(Kind::Error, 23_000.0, Some("crash")),
+        Verdict::Skip
+    );
+    assert_eq!(
+        diag.fire(Kind::Error, 25_000.0),
+        Fired {
+            send: true,
+            error: Some("crash".into()),
+            again: Some(30_000.0),
+        }
+    );
+    assert_eq!(
+        diag.fire(Kind::Error, 30_000.0),
+        Fired {
+            send: true,
+            error: Some("oops".into()),
+            again: None,
+        }
+    );
+    // Sent: never again.
+    assert_eq!(
+        diag.offer(Kind::Error, 40_000.0, Some("oops")),
+        Verdict::Skip
+    );
+    // A timer with nothing waiting sends nothing.
+    assert_eq!(
+        Diag::default().fire(Kind::Error, 0.0),
+        Fired {
+            send: false,
+            error: None,
+            again: None,
+        }
+    );
+}
+
+#[test]
+fn at_most_eight_errors_wait() {
+    let mut diag = Diag::default();
+    assert_eq!(diag.offer(Kind::Error, 0.0, Some("first")), Verdict::Now);
+    for n in 0..ERRORS_WAITING + 2 {
+        let message = format!("w{n}");
+        diag.offer(Kind::Error, 1.0, Some(message.as_str()));
+    }
+    let mut sent = Vec::new();
+    let mut at = Some(5_000.0);
+    for _ in 0..ERRORS_WAITING + 5 {
+        let Some(time) = at else { break };
+        let fired = diag.fire(Kind::Error, time);
+        sent.extend(fired.error);
+        at = fired.again;
+    }
+    let expected: Vec<String> = (0..ERRORS_WAITING).map(|n| format!("w{n}")).collect();
+    assert_eq!(sent, expected);
+    assert_eq!(at, None);
 }
 
 #[test]
@@ -83,15 +198,13 @@ fn only_the_latest_error_messages_are_remembered() {
     let at = |n: usize| n as f64 * REPORT_GAP_MS;
     for n in 0..=ERRORS_REMEMBERED {
         let message = format!("e{n}");
-        assert!(
-            diag.allow(Kind::Error, at(n), Some(message.as_str())),
-            "{n}"
-        );
+        let verdict = diag.offer(Kind::Error, at(n), Some(message.as_str()));
+        assert_eq!(verdict, Verdict::Now, "{n}");
     }
     let later = at(ERRORS_REMEMBERED + 1);
     // e1 is still remembered; e0, the oldest, was forgotten.
-    assert!(!diag.allow(Kind::Error, later, Some("e1")));
-    assert!(diag.allow(Kind::Error, later, Some("e0")));
+    assert_eq!(diag.offer(Kind::Error, later, Some("e1")), Verdict::Skip);
+    assert_eq!(diag.offer(Kind::Error, later, Some("e0")), Verdict::Now);
 }
 
 #[test]

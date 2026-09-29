@@ -299,22 +299,19 @@ impl LiveStore {
 
     /// The socket closed (`code`) or was dropped (`None`).
     fn on_close(self, code: Option<u16>) {
-        let Some((was_ready, reconnect, pending)) = self.inner.try_update_value(|i| {
+        let Some((closed, pending)) = self.inner.try_update_value(|i| {
             i.socket = None;
-            let was_ready = i.conn.ready();
-            (was_ready, i.conn.closed(), std::mem::take(&mut i.pending))
+            (i.conn.closed(), std::mem::take(&mut i.pending))
         }) else {
             return;
         };
-        if !reconnect {
+        if !closed.reconnect {
             return;
         }
         dom::log(&format!(
             "the hub socket closed (code {code:?}): reconnecting"
         ));
-        // A socket that said hello went away (#26); a failed attempt while
-        // the hub is down is no news.
-        if was_ready {
+        if closed.lost {
             crate::diag::disconnected();
         }
         let _ = self.connected.try_set(false);

@@ -122,7 +122,7 @@ fn a_watchdog_ends_with_its_socket() {
     assert_ne!(first, second);
     assert_eq!(c.tick(first, 1.0, true), Tick::Done, "replaced");
     assert_eq!(c.tick(second, 1.0, true), Tick::Wait);
-    assert!(c.closed(), "an unstopped store reconnects");
+    assert!(c.closed().reconnect, "an unstopped store reconnects");
     assert_eq!(c.tick(second, 1.0, true), Tick::Done, "closed");
     let third = c.opened(0.0);
     assert_ne!(third, first);
@@ -132,7 +132,46 @@ fn a_watchdog_ends_with_its_socket() {
     c.stop();
     assert_eq!(c.tick(third, 1.0, true), Tick::Done, "stopped");
     assert!(c.stopped());
-    assert!(!c.closed(), "a stopped store does not reconnect");
+    assert!(!c.closed().reconnect, "a stopped store does not reconnect");
+}
+
+#[test]
+fn only_a_close_after_a_hello_is_a_lost_connection() {
+    let mut c = Conn::default();
+    // An attempt that never said hello (the hub down, a reload close).
+    c.opened(0.0);
+    let attempt = c.closed();
+    assert_eq!(
+        attempt,
+        Closed {
+            reconnect: true,
+            lost: false
+        }
+    );
+    // A connection that said hello, then closed.
+    c.opened(0.0);
+    c.hello(0.0);
+    let lost = c.closed();
+    assert_eq!(
+        lost,
+        Closed {
+            reconnect: true,
+            lost: true
+        }
+    );
+    // Its close counts once: a second close of the same socket is no news.
+    assert!(!c.closed().lost);
+    // After a stop nothing reconnects and nothing is lost.
+    c.opened(0.0);
+    c.hello(0.0);
+    c.stop();
+    assert_eq!(
+        c.closed(),
+        Closed {
+            reconnect: false,
+            lost: false
+        }
+    );
 }
 
 #[test]

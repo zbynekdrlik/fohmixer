@@ -8,8 +8,9 @@
 //! browser says ([`fields`], [`display_mode`], [`screen_text`],
 //! [`visibility`], [`error_event_text`]), which changed `<html>` attribute
 //! means which report ([`attribute_kind`]), and [`Diag`]: the throttle (at
-//! most one report per kind per [`REPORT_GAP_MS`], an error message only
-//! once) and the hellos (the first is `connected`, the later ones
+//! most one report per kind per [`REPORT_GAP_MS`], a change within the
+//! window sent once when it ends with the state of then, an error message
+//! only once) and the hellos (the first is `connected`, the later ones
 //! `reconnect`).
 //!
 //! The browser glue ([`install`], [`connected`], [`disconnected`] and the
@@ -19,8 +20,10 @@
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
+use std::time::Duration;
 
 use fohmixer_proto::client::ReportFields;
+use leptos::prelude::set_timeout;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 
@@ -34,6 +37,8 @@ pub const ERROR_MAX_CHARS: usize = 300;
 /// How many error messages are remembered as sent (older ones may be sent
 /// again).
 pub const ERRORS_REMEMBERED: usize = 32;
+/// How many errors wait for the error window at most (more are dropped).
+pub const ERRORS_WAITING: usize = 8;
 /// Where reports go.
 pub const REPORT_URL: &str = "/api/client-report";
 
@@ -98,36 +103,133 @@ fn gap_passed(now: f64, last: Option<f64>) -> bool {
     last.is_none_or(|t| now - t >= REPORT_GAP_MS || now < t)
 }
 
+/// What becomes of an offered report ([`Diag::offer`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Verdict {
+    /// Send it now.
+    Now,
+    /// Its kind went less than [`REPORT_GAP_MS`] ago: arm one timer for
+    /// this page time, when the kind's trailing report goes with the state
+    /// of that moment ([`Diag::fire`]), so the hub never keeps a stale last
+    /// state (hidden, the wake lock released) of a page that came back.
+    Later(f64),
+    /// Nothing to do: the error was sent already or waits its turn, or the
+    /// kind's trailing report is armed and will carry this change too.
+    Skip,
+}
+
+/// What an armed trailing report does when its timer fires.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Fired {
+    /// Whether the report goes.
+    pub send: bool,
+    /// The error it carries (an `error` report).
+    pub error: Option<String>,
+    /// Another error waits: arm the timer again for this page time.
+    pub again: Option<f64>,
+}
+
 /// The page's report state: the throttle and the hellos.
 #[derive(Debug, Default)]
 pub struct Diag {
-    /// When each kind was last sent (page clock, ms), by [`Kind::slot`].
+    /// When each kind last went (page clock, ms), by [`Kind::slot`].
     last: [Option<f64>; KINDS],
+    /// A trailing report of the kind is armed.
+    armed: [bool; KINDS],
     /// The error messages sent, the oldest first.
     errors: VecDeque<String>,
+    /// Errors waiting for the error window, the oldest first.
+    waiting: VecDeque<String>,
     /// Hub hellos since the page loaded.
     hellos: u32,
 }
 
 impl Diag {
-    /// Whether a report of `kind` (an error: with its `error` text) goes out
-    /// at `now`; one that goes is recorded. A kind goes at most once per
-    /// [`REPORT_GAP_MS`]; an error message already sent never again.
-    pub fn allow(&mut self, kind: Kind, now: f64, error: Option<&str>) -> bool {
-        if !gap_passed(now, self.last[kind.slot()]) {
-            return false;
+    /// A report of `kind` (an error: with its `error` text) at `now`. A kind
+    /// goes at most once per [`REPORT_GAP_MS`]: within the window it is
+    /// sent later, once, with the state of then (an error: each waiting
+    /// message in turn, at most [`ERRORS_WAITING`] of them). An error
+    /// message already sent or waiting is never sent again.
+    pub fn offer(&mut self, kind: Kind, now: f64, error: Option<&str>) -> Verdict {
+        let slot = kind.slot();
+        if let Some(message) = error
+            && self
+                .errors
+                .iter()
+                .chain(&self.waiting)
+                .any(|known| known == message)
+        {
+            return Verdict::Skip;
         }
-        if let Some(message) = error {
-            if self.errors.iter().any(|sent| sent == message) {
-                return false;
+        if self.armed[slot] {
+            self.wait(error);
+            return Verdict::Skip;
+        }
+        match self.last[slot] {
+            Some(last) if !gap_passed(now, Some(last)) => {
+                self.wait(error);
+                self.armed[slot] = true;
+                Verdict::Later(last + REPORT_GAP_MS)
             }
+            _ => {
+                self.went(slot, now, error);
+                Verdict::Now
+            }
+        }
+    }
+
+    /// The armed trailing report of `kind` fires at `now`.
+    pub fn fire(&mut self, kind: Kind, now: f64) -> Fired {
+        let slot = kind.slot();
+        self.armed[slot] = false;
+        if kind != Kind::Error {
+            self.went(slot, now, None);
+            return Fired {
+                send: true,
+                error: None,
+                again: None,
+            };
+        }
+        let Some(error) = self.waiting.pop_front() else {
+            return Fired {
+                send: false,
+                error: None,
+                again: None,
+            };
+        };
+        self.went(slot, now, Some(&error));
+        let again = if self.waiting.is_empty() {
+            None
+        } else {
+            self.armed[slot] = true;
+            Some(now + REPORT_GAP_MS)
+        };
+        Fired {
+            send: true,
+            error: Some(error),
+            again,
+        }
+    }
+
+    /// An error that waits for its window (dropped when
+    /// [`ERRORS_WAITING`] already wait).
+    fn wait(&mut self, error: Option<&str>) {
+        if let Some(message) = error
+            && self.waiting.len() < ERRORS_WAITING
+        {
+            self.waiting.push_back(message.to_string());
+        }
+    }
+
+    /// A report of the kind in `slot` went at `now`.
+    fn went(&mut self, slot: usize, now: f64, error: Option<&str>) {
+        self.last[slot] = Some(now);
+        if let Some(message) = error {
             self.errors.push_back(message.to_string());
             if self.errors.len() > ERRORS_REMEMBERED {
                 self.errors.pop_front();
             }
         }
-        self.last[kind.slot()] = Some(now);
-        true
     }
 
     /// A hub hello: what it reports (`Connected` the first time,
@@ -239,14 +341,20 @@ pub fn install() {
     let Some(window) = web_sys::window() else {
         return;
     };
-    let on_error = Closure::wrap(Box::new(|event: web_sys::ErrorEvent| {
-        report_error(error_event_text(
-            &event.message(),
-            &event.filename(),
-            event.lineno(),
-            event.colno(),
-        ));
-    }) as Box<dyn FnMut(web_sys::ErrorEvent)>);
+    // Any `error` event reaches this listener, not only an `ErrorEvent`
+    // (one dispatched as a plain `Event` has no message to read).
+    let on_error = Closure::wrap(Box::new(|event: web_sys::Event| {
+        let text = match event.dyn_ref::<web_sys::ErrorEvent>() {
+            Some(error) => error_event_text(
+                &error.message(),
+                &error.filename(),
+                error.lineno(),
+                error.colno(),
+            ),
+            None => format!("an {} event without a message", event.type_()),
+        };
+        report_error(text);
+    }) as Box<dyn FnMut(web_sys::Event)>);
     let _ = window.add_event_listener_with_callback("error", on_error.as_ref().unchecked_ref());
     on_error.forget();
     let on_rejection = Closure::wrap(Box::new(|event: web_sys::PromiseRejectionEvent| {
@@ -324,20 +432,51 @@ fn report_error(text: String) {
     send(Kind::Error, Some(text));
 }
 
-/// Sends a report of `kind` when the throttle lets it go.
+/// Offers a report of `kind` to the throttle: sent now, or its trailing
+/// report armed.
 fn send(kind: Kind, error: Option<String>) {
     let error = error.map(|text| truncate_for_display(&text, ERROR_MAX_CHARS));
-    let Ok(Some(reconnects)) = DIAG.try_with(|diag| {
-        let mut diag = diag.borrow_mut();
-        if diag.allow(kind, dom::now(), error.as_deref()) {
-            Some(diag.reconnects())
-        } else {
-            None
-        }
-    }) else {
+    let now = dom::now();
+    let Ok(verdict) = DIAG.try_with(|diag| diag.borrow_mut().offer(kind, now, error.as_deref()))
+    else {
         return;
     };
-    let body = fields(kind, &read_env(), reconnects, error.as_deref());
+    match verdict {
+        Verdict::Now => post_report(kind, error.as_deref()),
+        Verdict::Later(at) => arm_trailing(kind, at - now),
+        Verdict::Skip => {}
+    }
+}
+
+/// Fires `kind`'s trailing report after `wait_ms`.
+fn arm_trailing(kind: Kind, wait_ms: f64) {
+    set_timeout(
+        move || fire_trailing(kind),
+        Duration::from_millis(wait_ms.max(0.0) as u64),
+    );
+}
+
+/// `kind`'s trailing report: sent with the state of now, and armed again
+/// while errors wait.
+fn fire_trailing(kind: Kind) {
+    let now = dom::now();
+    let Ok(fired) = DIAG.try_with(|diag| diag.borrow_mut().fire(kind, now)) else {
+        return;
+    };
+    if fired.send {
+        post_report(kind, fired.error.as_deref());
+    }
+    if let Some(at) = fired.again {
+        arm_trailing(kind, at - now);
+    }
+}
+
+/// Posts a report of `kind` with the page's state of now.
+fn post_report(kind: Kind, error: Option<&str>) {
+    let Ok(reconnects) = DIAG.try_with(|diag| diag.borrow().reconnects()) else {
+        return;
+    };
+    let body = fields(kind, &read_env(), reconnects, error);
     if let Ok(text) = serde_json::to_string(&body) {
         post(&text);
     }
