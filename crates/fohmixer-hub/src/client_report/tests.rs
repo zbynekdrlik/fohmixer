@@ -51,7 +51,7 @@ fn the_limits_are_these() {
     assert_eq!(FIELD_MAX_CHARS, 300);
     assert_eq!(RING, 50);
     assert_eq!(RATE_WINDOW, Duration::from_secs(10));
-    assert_eq!(RATE_MAX, 30);
+    assert_eq!(RATE_MAX, 60);
     assert_eq!(MAX_PEERS, 256);
 }
 
@@ -190,19 +190,18 @@ fn a_report_over_the_budget_is_not_kept() {
     let reports = Reports::default();
     let t0 = Instant::now();
     for n in 1..=RATE_MAX {
-        assert_eq!(
-            reports.record(ip(1), t0, report("load")),
-            Admit::Keep,
-            "{n}"
-        );
+        let kept = reports.record(ip(1), t0, report(&format!("k{n}")));
+        assert_eq!(kept, Admit::Keep, "{n}");
     }
     assert_eq!(reports.record(ip(1), t0, report("over")), Admit::DropFirst);
     assert_eq!(reports.record(ip(1), t0, report("over")), Admit::Drop);
     let kept = reports.list();
-    assert_eq!(kept.len(), RATE_MAX as usize);
+    assert_eq!(kept.len(), RING);
+    let last = kept[RING - 1].fields.kind.clone();
+    assert_eq!(last, Some(format!("k{RATE_MAX}")));
     assert!(
         kept.iter()
-            .all(|r| r.fields.kind.as_deref() == Some("load"))
+            .all(|r| r.fields.kind.as_deref() != Some("over"))
     );
 }
 
@@ -339,9 +338,11 @@ async fn a_looping_page_fills_neither_the_log_nor_the_status() {
         let body = json!({"kind": "error", "error": format!("loop {n}")}).to_string();
         assert_eq!(post(&hub, body).await, StatusCode::NO_CONTENT, "{n}");
     }
+    // The ring holds the newest: the last kept is the budget's last, the
+    // report over the budget is not there.
     let kept = hub.status().await.client_reports;
-    assert_eq!(kept.len(), RATE_MAX as usize);
-    assert_eq!(kept[0].fields.error.as_deref(), Some("loop 0"));
-    assert_eq!(kept[29].fields.error.as_deref(), Some("loop 29"));
+    assert_eq!(kept.len(), RING);
+    let last = kept[RING - 1].fields.error.clone();
+    assert_eq!(last, Some(format!("loop {}", RATE_MAX - 1)));
     hub.stop();
 }

@@ -38,8 +38,11 @@ pub const RING: usize = 50;
 /// A peer's report budget: at most [`RATE_MAX`] per this window.
 pub const RATE_WINDOW: Duration = Duration::from_secs(10);
 /// Reports a peer may send per [`RATE_WINDOW`]. A page sends at most one
-/// per kind per 5 s (eight kinds), a quiet page a few a minute.
-pub const RATE_MAX: u32 = 30;
+/// per kind per 5 s (eight kinds: 16 per window), a quiet page a few a
+/// minute; the rest is room for a few pages behind one address (a tab and a
+/// Home Screen app on one tablet, every internet page behind cloudflared, the
+/// E2E suite's pages) — a flood gets 6 a second into the log.
+pub const RATE_MAX: u32 = 60;
 /// Peers whose budget is tracked at once (a memory bound under a flood).
 pub const MAX_PEERS: usize = 256;
 
