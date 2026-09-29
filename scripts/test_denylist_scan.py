@@ -364,6 +364,38 @@ class DenylistScanTests(ScanCase):
             self.assertEqual(code, 1, mode)
             self.assertEqual(out.count("denylist entry 1"), 1, mode)
 
+    def test_non_utf8_names_that_decode_alike_keep_their_own_lines(self) -> None:
+        # d\xe8 and d\xe9 both decode to "d�.txt": lines must stay with their own blob
+        self.commit({os.fsdecode(b"d\xe8.txt"): b"\0x", os.fsdecode(b"d\xe9.txt"): b"zyxname\n"})
+        self.assertEqual(self.scan("--tree", "HEAD")[0], 1)
+        self.assertEqual(self.scan("--commits", "HEAD")[0], 1)
+        self.commit({os.fsdecode(b"e\xe8.txt"): b"clean\n", os.fsdecode(b"e\xe9.txt"): b"\0zyxname\n"})
+        self.assertEqual(self.scan("--commits", "HEAD^!")[0], 0)
+
+    def test_a_graft_does_not_hide_content(self) -> None:
+        base = self.commit({"a.txt": "clean\n"})
+        head = self.commit({"a.txt": "zyxname\n"})
+        tree = git(self.repo, "rev-parse", f"{head}^{{tree}}")
+        same_tree = git(self.repo, "commit-tree", tree, "-p", base, "-m", "same tree")
+        (self.repo / ".git" / "info" / "grafts").write_text(f"{head} {same_tree}\n", encoding="utf-8")
+        code, out = self.scan("--commits", "HEAD^!")
+        self.assertEqual(code, 1)
+        self.assertIn(" a.txt: denylist entry 1", out)
+
+    def test_no_output_line_can_start_a_workflow_command(self) -> None:
+        self.commit({"::error title=x::fake/notes.md": "zyxname\n", " ::warning::y.md": "zyxname\n"})
+        code, out = self.scan("--tree", "HEAD", "--commits", "HEAD")
+        self.assertEqual(code, 1)
+        self.assertEqual([line for line in out.splitlines() if line.lstrip().startswith("::")], [])
+
+    def test_a_missing_blob_is_a_usage_error(self) -> None:
+        self.commit({"a.txt": "x\n"})
+        blob = git(self.repo, "rev-parse", "HEAD:a.txt")
+        (self.repo / ".git" / "objects" / blob[:2] / blob[2:]).unlink()
+        code, out = self.scan("--commits", "HEAD")
+        self.assertEqual(code, 2)
+        self.assertIn("missing from the repository", out)
+
     def test_a_changed_binary_file_stays_binary_in_commit_mode(self) -> None:
         self.commit({"bin.dat": b"\0head\nclean\n"})
         self.commit({"bin.dat": b"\0head\nzyxname\n"})
