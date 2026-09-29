@@ -7,7 +7,8 @@ the script runs no threads (#5, K1: in Live they got Python only around this
 tick). A call records ``last_main_tick``, reads the sockets (``poll_in``),
 runs queued commands within the work budget (``Drain``), flushes dirty
 subscriptions, makes the heartbeat when one is due (``Heartbeats``), and
-writes the sockets (``poll_out``).
+writes the sockets (``poll_out``); a step that fails is logged and the
+others still run.
 """
 
 import collections
@@ -47,12 +48,15 @@ class Heartbeats:
     """Which ticks make a heartbeat, and what it says (#5: made in the tick).
 
     One every ``interval_s`` on a fixed grid (with Live's ~33 ms ticks: every
-    100 ms on average, not every fourth tick). ``main_tick_age_ms`` is how long
-    the main thread was away before this tick: any gap of an interval or more
-    ends in a tick that makes a heartbeat, so a stall shows on the first one
-    after it; while it lasts none goes out, and the hub reports Live busy once
-    one is overdue. After a stall the grid restarts (no burst of the skipped
-    ones). Times are ``time.monotonic()`` seconds, passed in.
+    100 ms on average, not every fourth tick). Each tick passes ``silence_s``,
+    the time since the previous tick reached this point (after its work, just
+    before its writes): the time the hub heard nothing, whether the main
+    thread was away between ticks or held by a tick's own work. That is the
+    heartbeat's ``main_tick_age_ms``. Any silence of an interval or more ends
+    in a tick that makes a heartbeat, so a stall shows on the first one after
+    it; while it lasts none goes out, and the hub reports Live busy once one is
+    overdue. After a stall the grid restarts (no burst of the skipped ones).
+    Times are ``time.monotonic()`` seconds, passed in.
     """
 
     def __init__(self, interval_s, now):
@@ -60,11 +64,11 @@ class Heartbeats:
         self._previous = now
         self._due = now + interval_s
 
-    def on_tick(self, now, tick_gap_s, max_cmd_ms):
+    def on_tick(self, now, silence_s, max_cmd_ms):
         """The heartbeat's data when one is due at this tick, else None."""
         if now < self._due:
             return None
-        data = heartbeat_data(tick_gap_s * 1000.0, max_cmd_ms, now - self._previous)
+        data = heartbeat_data(silence_s * 1000.0, max_cmd_ms, now - self._previous)
         self._previous = now
         self._due += self._interval_s
         if self._due <= now:
@@ -172,6 +176,7 @@ class FohMixer(ControlSurface):
             Config.WINDOW_MS,
         )
         self._heartbeats = Heartbeats(Config.HEARTBEAT_INTERVAL_MS / 1000.0, self.last_main_tick)
+        self._last_write_point = self.last_main_tick
         self._server.start()
         self._timer = Live.Base.Timer(
             callback=self._on_timer, interval=Config.TIMER_INTERVAL_MS, repeat=True
@@ -226,20 +231,32 @@ class FohMixer(ControlSurface):
         self.last_main_tick = now
         if gap_s * 1000.0 > STALL_LOG_MS:
             self._log.warning("Live's main thread stalled for %d ms", gap_s * 1000.0)
+        # Each step on its own: one that fails must not stop the others (a
+        # heartbeat that stops makes the hub report Live busy for ever).
+        self._guarded("socket reads failed", self._server.poll_in)
+        self._guarded("timer work failed", self._work, now)
+        self._guarded("heartbeat failed", self._heartbeat)
+        self._guarded("socket writes failed", self._server.poll_out)
+
+    def _work(self, now):
+        self._drain.run()
+        self._subs.flush(now * 1000.0)
+
+    def _heartbeat(self):
+        """The heartbeat when one is due, timed after this tick's work: a tick
+        held by its own work (a slow command) is part of the silence it reports."""
+        point = time.monotonic()
+        silence_s = point - self._last_write_point
+        self._last_write_point = point
+        heartbeat = self._heartbeats.on_tick(point, silence_s, self._drain.max_cmd_ms)
+        if heartbeat is not None:
+            self._server.broadcast_heartbeat(heartbeat)
+
+    def _guarded(self, what, step, *args):
         try:
-            self._server.poll_in()
-            self._drain.run()
-            self._subs.flush(now * 1000.0)
-            heartbeat = self._heartbeats.on_tick(now, gap_s, self._drain.max_cmd_ms)
-            if heartbeat is not None:
-                self._server.broadcast_heartbeat(heartbeat)
+            step(*args)
         except Exception:  # noqa: BLE001 - logged (rate-limited); Live's timer must keep running
-            self._log_error("timer work failed")
-        # Written even when the work above failed: what it queued still goes out.
-        try:
-            self._server.poll_out()
-        except Exception:  # noqa: BLE001 - logged (rate-limited); Live's timer must keep running
-            self._log_error("socket writes failed")
+            self._log_error(what)
 
     def _tick(self):
         if not self.connected:

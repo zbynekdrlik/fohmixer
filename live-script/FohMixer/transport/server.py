@@ -24,6 +24,7 @@ pending, as far as its socket takes it). Every socket is non-blocking and
 """
 
 import collections
+import errno
 import itertools
 import json
 import logging
@@ -54,6 +55,10 @@ from .websocket import (
 
 BIND_RETRY_DELAYS_S = (0.25, 0.5, 1.0, 2.0, 5.0)
 LISTEN_BACKLOG = 16
+# Clients past these are refused at accept: every socket is in one `select`
+# per tick, and FD_SETSIZE is 512 on Windows. The hub is one connection.
+MAX_HANDSHAKES = 16
+MAX_CONNECTIONS = 64
 # A client that has not sent its whole upgrade request by then is dropped.
 HANDSHAKE_TIMEOUT_S = 3.0
 # A connection whose socket took no byte for this long while output waited is
@@ -64,12 +69,24 @@ CLOSE_HANDSHAKE_TIMEOUT_S = 1.0
 SHUTDOWN_POLL_S = 0.01
 MAX_MESSAGE_BYTES = 16 * 1024 * 1024
 RECV_SIZE = 65536
-# Per connection and tick: bounds on the main thread's socket work.
-READ_BYTES_PER_TICK = 1024 * 1024
-WRITE_BYTES_PER_TICK = 256 * 1024
+# Per connection and tick, reading and writing each go on while the socket
+# has data / takes bytes, until this much of the main thread's time is spent
+# (checked between steps: one recv and its frames, one message encoded and
+# sent). `perf_counter`: Windows' `monotonic` moves in 15.6 ms steps.
+IO_BUDGET_S = 0.005
 # Messages are encoded at most this far ahead of the socket, so a heartbeat
 # set now waits only behind these bytes, never behind the queued results.
 WRITE_AHEAD_BYTES = 65536
+# accept() errors that concern one client or a passing lack of resources,
+# not the listener: the listener stays.
+_ACCEPT_TRANSIENT = frozenset(
+    code
+    for code in (
+        getattr(errno, name, None)
+        for name in ("EMFILE", "ENFILE", "ENOBUFS", "ENOMEM", "WSAEMFILE", "WSAENOBUFS")
+    )
+    if code is not None
+)
 _LINGER_ABORT = struct.pack("HH" if os.name == "nt" else "ii", 1, 0)
 _BAD_REQUEST = b"HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
 _NO_UUID = object()
@@ -191,10 +208,10 @@ class Connection:
     # --- the main thread's tick ---
 
     def receive(self):
-        """Read what has arrived (up to ``READ_BYTES_PER_TICK``): requests go to
-        the inbox; the end of the stream or a read error resets the connection."""
-        received = 0
-        while self.reading and received < READ_BYTES_PER_TICK:
+        """Read what has arrived, within ``IO_BUDGET_S``: requests go to the
+        inbox; the end of the stream or a read error resets the connection."""
+        deadline = time.perf_counter() + IO_BUDGET_S
+        while self.reading:
             try:
                 data = self._sock.recv(RECV_SIZE)
             except (BlockingIOError, InterruptedError):
@@ -205,8 +222,9 @@ class Connection:
             if not data:
                 self.abort()
                 return
-            received += len(data)
             self.take(data)
+            if time.perf_counter() >= deadline:
+                return
 
     def take(self, data):
         """Bytes read from the client (also the ones behind its upgrade request)."""
@@ -222,18 +240,19 @@ class Connection:
             self._frame(*frame)
 
     def flush(self, now):
-        """Write pending output as far as the socket takes it (up to
-        ``WRITE_BYTES_PER_TICK``); the rest waits for the next tick."""
+        """Write pending output as far as the socket takes it, within
+        ``IO_BUDGET_S``; the rest waits for the next tick. ``now`` is
+        ``time.monotonic()`` (the send stall and the close timeout)."""
         if self._finished:
             return
+        deadline = time.perf_counter() + IO_BUDGET_S
         written = 0
-        while written < WRITE_BYTES_PER_TICK:
+        while True:
             self._fill()
             if not self._wbuf:
                 break
-            chunk = self._wbuf[: WRITE_BYTES_PER_TICK - written]
             try:
-                sent = self._sock.send(chunk)
+                sent = self._sock.send(self._wbuf)
             except (BlockingIOError, InterruptedError):
                 break
             except OSError as e:
@@ -243,7 +262,7 @@ class Connection:
                 return
             del self._wbuf[:sent]
             written += sent
-            if sent < len(chunk):
+            if self._wbuf or time.perf_counter() >= deadline:
                 break
         if written or not self._has_output():
             self._last_progress = now
@@ -347,7 +366,8 @@ class Connection:
             return
         try:
             message = json.loads(bytes(payload).decode("utf-8"))
-        except (UnicodeDecodeError, ValueError) as e:
+        except (UnicodeDecodeError, ValueError, RecursionError) as e:
+            # RecursionError: nested deeper than the decoder goes.
             self.send_error(None, f"invalid JSON: {e}")
             return
         uuid = message.get("uuid") if isinstance(message, dict) else None
@@ -456,19 +476,25 @@ class Server:
         readable, _, _ = select.select(list(owners), [], [], 0)
         for sock in readable:
             owner = owners[sock]
-            if owner is self:
-                self._accept(now)
-            elif isinstance(owner, _Handshake):
-                self._advance_handshake(owner, now)
-            else:
-                owner.receive()
+            try:
+                if owner is self:
+                    self._accept(now)
+                elif isinstance(owner, _Handshake):
+                    self._advance_handshake(owner, now)
+                else:
+                    owner.receive()
+            except Exception:  # noqa: BLE001 - one client's failure closes that client only
+                self._fail(owner, "reading")
         self._reap()
 
     def poll_out(self):
         """Every connection writes what is pending, as far as its socket takes it."""
         now = time.monotonic()
         for conn in self.connections():
-            conn.flush(now)
+            try:
+                conn.flush(now)
+            except Exception:  # noqa: BLE001 - one client's failure closes that client only
+                self._fail(conn, "writing")
         self._reap()
 
     def shutdown(self, grace_s=0.3):
@@ -489,7 +515,10 @@ class Server:
         while True:
             now = time.monotonic()
             for conn in conns:
-                conn.flush(now)
+                try:
+                    conn.flush(now)
+                except Exception:  # noqa: BLE001 - one client's failure closes that client only
+                    self._fail(conn, "writing")
             waiting = [conn for conn in conns if not conn.finished]
             if not waiting or now >= deadline:
                 break
@@ -500,7 +529,10 @@ class Server:
                 continue
             readable, _, _ = select.select(list(reading), [], [], wait_s)
             for sock in readable:
-                reading[sock].receive()
+                try:
+                    reading[sock].receive()
+                except Exception:  # noqa: BLE001 - one client's failure closes that client only
+                    self._fail(reading[sock], "reading")
         for conn in conns:
             conn.abort()
         self._reap()
@@ -553,26 +585,55 @@ class Server:
         listener.close()
 
     def _accept(self, now):
-        for _ in range(LISTEN_BACKLOG):
-            try:
-                sock, _addr = self._listener.accept()
-            except (BlockingIOError, InterruptedError):
-                return
-            except OSError as e:
-                self._log.warning("accept failed (%s), binding again", e)
-                self._close_listener()
-                self._next_bind_at = now
-                return
-            try:
-                sock.setblocking(False)
-                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-            except OSError as e:
-                self._log.warning("cannot configure a client socket (%s)", e)
-                sock.close()
-                continue
-            handshake = _Handshake(sock, now)
-            self._handshakes.append(handshake)
-            self._advance_handshake(handshake, now)
+        refused = 0
+        try:
+            for _ in range(LISTEN_BACKLOG):
+                try:
+                    sock, _addr = self._listener.accept()
+                except (BlockingIOError, InterruptedError):
+                    return
+                except ConnectionError as e:
+                    # That client left before its accept (Windows: WSAECONNRESET).
+                    self._log.debug("accept: %s", e)
+                    continue
+                except OSError as e:
+                    if e.errno in _ACCEPT_TRANSIENT:
+                        self._log.warning("accept failed (%s), trying again next tick", e)
+                        return
+                    self._log.warning("accept failed (%s), binding again", e)
+                    self._close_listener()
+                    self._next_bind_at = now
+                    return
+                if (
+                    len(self._handshakes) >= MAX_HANDSHAKES
+                    or len(self._connections) >= MAX_CONNECTIONS
+                ):
+                    refused += 1
+                    sock.close()
+                    continue
+                try:
+                    sock.setblocking(False)
+                    sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                except OSError as e:
+                    self._log.warning("cannot configure a client socket (%s)", e)
+                    sock.close()
+                    continue
+                handshake = _Handshake(sock, now)
+                self._handshakes.append(handshake)
+                try:
+                    self._advance_handshake(handshake, now)
+                except Exception:  # noqa: BLE001 - one client's failure closes that client only
+                    self._fail(handshake, "reading")
+        finally:
+            if refused:
+                self._log.warning(
+                    "refused %s clients: %s handshakes and %s connections open (limits %s, %s)",
+                    refused,
+                    len(self._handshakes),
+                    len(self._connections),
+                    MAX_HANDSHAKES,
+                    MAX_CONNECTIONS,
+                )
 
     def _advance_handshake(self, handshake, now):
         """Read the upgrade request; once whole, answer it: a connection, or a refusal."""
@@ -617,14 +678,32 @@ class Server:
         )
         self._connections.append(conn)
         self._log.warning("client connected (connection %s)", conn.id)
-        if leftover:
-            conn.take(leftover)
-        conn.receive()
+        try:
+            if leftover:
+                conn.take(leftover)
+            conn.receive()
+        except Exception:  # noqa: BLE001 - one client's failure closes that client only
+            self._fail(conn, "reading")
 
     def _drop_handshake(self, handshake):
         if handshake in self._handshakes:
             self._handshakes.remove(handshake)
         handshake.sock.close()
+
+    def _fail(self, owner, what):
+        """An unexpected error while serving one client (a bug): log it with its
+        traceback and close that client only, so the other clients, the drain
+        and the heartbeat go on."""
+        if owner is self:
+            self._log.exception("accepting clients failed, binding again")
+            self._close_listener()
+            self._next_bind_at = time.monotonic()
+        elif isinstance(owner, _Handshake):
+            self._log.exception("a client's handshake: %s failed, closing it", what)
+            self._drop_handshake(owner)
+        else:
+            self._log.exception("connection %s: %s failed, closing it", owner.id, what)
+            owner.abort()
 
     def _reap(self):
         """Finished connections leave the list; the drain hears of each once."""
