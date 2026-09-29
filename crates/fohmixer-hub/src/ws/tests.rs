@@ -144,7 +144,8 @@ fn logged(f: impl FnOnce()) -> String {
 }
 
 #[test]
-fn the_connect_and_disconnect_lines_name_the_peer_the_source_and_the_page_host() {
+fn the_connect_and_disconnect_lines_name_the_peer_the_forwarded_client_the_source_and_the_page_host()
+ {
     let lan = opener(
         peer("10.0.0.5"),
         &headers(&[("origin", "http://mixer.example:8080")]),

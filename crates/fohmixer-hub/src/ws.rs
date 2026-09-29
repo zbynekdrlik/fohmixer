@@ -60,8 +60,9 @@ pub struct Opener {
     pub peer: String,
     /// The client Cloudflare names (`cf-connecting-ip`) for an internet
     /// upgrade, read by [`client_report::forwarded_client`] as for a report;
-    /// `-` without one (a LAN client is its own peer). The client's own
-    /// text, so the line quotes it.
+    /// `-` without one: a LAN or port-forwarded client is its own peer, and
+    /// another proxy's headers are not read. The client's own text, so the
+    /// line quotes it.
     pub forwarded: String,
     /// `lan` / `internet`: the Access check's class of the upgrade, named
     /// as a client report names it ([`client_report::source`]).
