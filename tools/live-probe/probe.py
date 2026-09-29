@@ -159,12 +159,13 @@ def tick_gaps(timestamps):
     return [later - earlier for earlier, later in itertools.pairwise(starts)]
 
 
-def wall_clock_step_ms(clock=time.time, changes=5, limit_s=0.2, timer=time.perf_counter):
-    """The wall clock's smallest step over its next ``changes`` changes, in ms;
-    None when it did not move within ``limit_s``. The script's ``ts`` comes
-    from the same clock on the same PC, so this bounds every inbound/outbound
-    split (Windows: 15.625 ms by default, ~0.5 ms when an audio app raised
-    the timer resolution)."""
+def wall_clock_step_ms(clock=time.time, changes=9, limit_s=0.2, timer=time.perf_counter):
+    """The wall clock's typical step (the median of its next ``changes``
+    steps), in ms; None when it did not move within ``limit_s``. The median,
+    not the smallest: on the PC a 0.5 ms clock now and then splits one step in
+    two. The script's ``ts`` comes from the same clock on the same PC, so this
+    bounds every inbound/outbound split (Windows: 15.625 ms by default, ~0.5 ms
+    when an audio app raised the timer resolution)."""
     deadline = timer() + limit_s
     last = clock()
     steps = []
@@ -174,7 +175,7 @@ def wall_clock_step_ms(clock=time.time, changes=5, limit_s=0.2, timer=time.perf_
             steps.append(now - last)
             last = now
     # To the nanosecond: a fine clock (Linux) steps well below a microsecond.
-    return round(min(steps) * 1000.0, 6) if steps else None
+    return round(statistics.median(steps) * 1000.0, 6) if steps else None
 
 
 def summarize(
