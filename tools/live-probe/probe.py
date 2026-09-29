@@ -62,7 +62,6 @@ import socket
 import statistics
 import struct
 import sys
-import tempfile
 import time
 
 HOST = "127.0.0.1"
@@ -551,37 +550,50 @@ def record(conn, seconds, probe_ms, max_pending=MAX_PENDING, result_wait_s=RESUL
 
 
 def _check_raw_path(raw_path):
-    """Refuses, before the run, a raw path that is a folder or names one, or
-    whose folder cannot be written: a real file is written there and removed
-    (on Windows ``os.access`` reports every existing folder writable). An
-    earlier file of that name is left as it is."""
-    if raw_path.endswith(("/", os.sep)) or os.path.isdir(raw_path):
-        raise ProbeError(f"cannot write the raw file {raw_path}: it is a folder")
-    folder = os.path.dirname(os.path.abspath(raw_path))
+    """Refuses, before the run, a raw path the run could not write: a folder or
+    a folder path, an empty path, a name the folder cannot take, a folder that
+    cannot be written, or samples an earlier run left in ``<raw>.tmp``. One
+    exclusive create of the real ``<raw>.tmp``, then removed: never
+    ``tempfile``, which on Windows retries a denied create up to ``TMP_MAX``
+    (2**31 - 1) times because ``os.access`` calls every existing folder
+    writable there (#5). An earlier ``<raw>`` is left as it is."""
+    if not raw_path or raw_path.endswith(("/", os.sep)) or os.path.isdir(raw_path):
+        raise ProbeError(f"cannot write the raw file {raw_path!r}: not a file path")
+    temporary = raw_path + ".tmp"
     try:
-        with tempfile.NamedTemporaryFile(dir=folder, prefix=".live-probe-check-"):
-            pass
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
+    except FileExistsError:
+        raise ProbeError(
+            f"cannot write the raw file {raw_path}: {temporary} exists "
+            "(an earlier run's samples? move it away first)"
+        ) from None
     except OSError as e:
         raise ProbeError(f"cannot write the raw file {raw_path}: {e}") from e
+    os.close(fd)
+    os.remove(temporary)
 
 
 def _write_raw(raw_path, recorder):
-    """Every sample to ``raw_path`` (a temporary file, then a replace); the
-    failure's message, or None. A temporary file written whole stays when only
-    the replace fails, and the message names it."""
+    """Every sample to ``raw_path`` through ``<raw>.tmp`` (created exclusively,
+    then a replace); the failure's message, or None. A ``<raw>.tmp`` this run
+    did not create is never touched; one written whole stays when only the
+    replace fails, and the message names it."""
     temporary = raw_path + ".tmp"
     samples = {
         "heartbeats": [beat._asdict() for beat in recorder.heartbeats],
         "reads": [read._asdict() for read in recorder.reads],
     }
     try:
-        with open(temporary, "w", encoding="utf-8") as f:
+        f = open(temporary, "x", encoding="utf-8")
+    except OSError as e:
+        return f"cannot write the raw file {raw_path}: {e}"
+    try:
+        with f:
             json.dump(samples, f)
     except OSError as e:
         message = f"cannot write the raw file {raw_path}: {e}"
         try:
-            if os.path.isfile(temporary):
-                os.remove(temporary)
+            os.remove(temporary)
         except OSError as cleanup:
             message += f" (the partial {temporary} is left: {cleanup})"
         return message
