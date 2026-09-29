@@ -351,15 +351,23 @@ def scan_changes(scanner: Scanner, repo: Path, sha: str, prefix: str) -> list[Hi
     hits: list[Hit] = []
     for change in changes:
         hits += scanner.scan_path(change.path, prefix)
+        lines = added.pop(change.path, [])
         data = None if change.mode == GITLINK else contents[change.blob]
         text = None if data is None else blob_text(data)
         if text is None:
             continue
-        lines = text_lines(text) if data.startswith(UTF16_BOMS) else added.get(change.path, [])
-        where = f"{prefix}{scanner.shown(change.path)}"
-        for line in lines:
-            hits += scanner.scan_line(change.path, line, where)
+        if data.startswith(UTF16_BOMS):
+            lines = text_lines(text)
+        hits += scan_lines(scanner, change.path, lines, prefix)
+    # a patch path that matched no change (a header decoded differently) is scanned, never dropped
+    for path, lines in added.items():
+        hits += scan_lines(scanner, path, lines, prefix)
     return hits
+
+
+def scan_lines(scanner: Scanner, path: str, lines: list[str], prefix: str) -> list[Hit]:
+    where = f"{prefix}{scanner.shown(path)}"
+    return [hit for line in lines for hit in scanner.scan_line(path, line, where)]
 
 
 def scan_commit(scanner: Scanner, repo: Path, sha: str, identities: set[str] | None) -> list[Finding]:

@@ -292,6 +292,14 @@ class DenylistScanTests(ScanCase):
         self.assertNotIn("\\", out)
         self.assert_no_term(out)
 
+    def test_a_hit_under_a_quoted_or_spaced_path_keeps_its_label_in_commit_mode(self) -> None:
+        self.commit({'Mäso "q"\tx.txt': "zyxname\n", "my notes.txt": "zyxname\n"})
+        code, out = self.scan("--commits", "HEAD")
+        self.assertEqual(code, 1)
+        self.assertIn(' Mäso "q"\\x09x.txt: denylist entry 1', out)
+        self.assertIn(" my notes.txt: denylist entry 1", out)
+        self.assertEqual(out.count("denylist entry 1"), 2)
+
     def test_a_quoted_path_has_the_same_allow_key_in_both_modes(self) -> None:
         name = 'Mäso "q"\tx.txt'
         self.commit({name: "keep zyxname here\n"})
