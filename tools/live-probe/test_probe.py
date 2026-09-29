@@ -6,6 +6,7 @@ framing against the script's vendored framing, and whole runs against
 import itertools
 import json
 import os
+import platform
 import queue
 import shutil
 import signal
@@ -435,6 +436,11 @@ class AgainstSimLive(unittest.TestCase):
         self.assertEqual(summary["probe_ms"], 100)
         self.assertGreaterEqual(summary["heartbeats"], 3, summary)
         self.assertGreaterEqual(summary["round_trip_ms"]["count"], 3, summary)
+        # Which clock the split's wall_clock_step_ms belongs to: it is the
+        # script's `ts` clock only while both read the same one (Windows:
+        # GetSystemTimeAsFileTime before Python 3.13, as Live's 3.11).
+        self.assertEqual(summary["python"], platform.python_version())
+        self.assertEqual(summary["wall_clock"], time.get_clock_info("time").implementation)
 
     def test_the_raw_samples_go_to_a_file(self):
         raw = os.path.join(self.host.log_dir, "raw.json")
@@ -635,6 +641,57 @@ class Limits(unittest.TestCase):
         with self.assertRaisesRegex(probe.ProbeError, "cannot write the raw file"):
             probe.run(1, seconds=300, probe_ms=100, raw_path=missing)
         self.assertLess(time.monotonic() - started, 5.0)
+
+
+class RawFile(unittest.TestCase):
+    def setUp(self):
+        self.folder = tempfile.mkdtemp(prefix="live-probe-raw-")
+        self.addCleanup(shutil.rmtree, self.folder, True)
+
+    def test_a_failed_run_leaves_an_earlier_raw_file_as_it_was(self):
+        raw = os.path.join(self.folder, "run.json")
+        with open(raw, "w", encoding="utf-8") as f:
+            f.write("earlier run")
+        with socket.socket() as holder:
+            holder.bind(("127.0.0.1", 0))
+            port = holder.getsockname()[1]
+        with self.assertRaisesRegex(probe.ProbeError, "cannot connect"):
+            probe.run(port, seconds=1, probe_ms=100, raw_path=raw)
+        with open(raw, encoding="utf-8") as f:
+            self.assertEqual(f.read(), "earlier run")
+
+    def test_a_raw_write_that_fails_after_the_run_keeps_the_summary(self):
+        script = FakeScript([{"event": "connect", "data": CONNECT, "ts": 1000}])
+        self.addCleanup(script.close)
+        # A folder where the file should go: writable parent, the write fails.
+        with self.assertRaisesRegex(probe.RawWriteError, "cannot write the raw file") as caught:
+            probe.run(script.port, seconds=0.3, probe_ms=100, raw_path=self.folder)
+        self.assertEqual(caught.exception.summary["instance"], "band")
+        self.assertGreaterEqual(caught.exception.summary["round_trip_ms"]["count"], 1)
+        # The half-written temporary file is not left behind.
+        self.assertFalse(os.path.exists(self.folder + ".tmp"))
+
+    def test_the_cli_prints_the_summary_when_only_the_raw_file_failed(self):
+        script = FakeScript([{"event": "connect", "data": CONNECT, "ts": 1000}])
+        self.addCleanup(script.close)
+        done = subprocess.run(
+            [
+                sys.executable,
+                PROBE,
+                "--port",
+                str(script.port),
+                "--seconds",
+                "0.3",
+                "--raw",
+                self.folder,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        self.assertEqual(done.returncode, 1, done.stderr)
+        self.assertEqual(json.loads(done.stdout)["instance"], "band")
+        self.assertIn("live-probe: cannot write the raw file", done.stderr)
 
 
 if __name__ == "__main__":
