@@ -395,6 +395,47 @@ class DenylistScanTests(ScanCase):
         self.commit({os.fsdecode(b"d\xe8.txt"): b"\0x", os.fsdecode(b"d\xe9.txt"): b"zyxname\n"})
         self.assertEqual(self.scan("--commits", "HEAD")[0], 1)
 
+    def raw_commit(self, author: str, encoding: str, message: bytes) -> None:
+        """A commit object written as bytes (an `encoding` header that git would convert from)."""
+        head = git(self.repo, "rev-parse", "HEAD")
+        tree = git(self.repo, "rev-parse", "HEAD^{tree}")
+        body = (f"tree {tree}\nparent {head}\nauthor {author} <{ALLOWED}> 1700000000 +0000\n"
+                f"committer dev <{ALLOWED}> 1700000000 +0000\nencoding {encoding}\n\n").encode("utf-8") + message
+        done = subprocess.run(["git", "-C", str(self.repo), "hash-object", "-t", "commit", "-w", "--stdin"],
+                              input=body, check=True, capture_output=True)
+        git(self.repo, "update-ref", "refs/heads/main", done.stdout.decode("ascii").strip())
+
+    def test_a_mislabelled_encoding_does_not_hide_a_name(self) -> None:
+        self.commit({"a.txt": "x\n"})
+        self.raw_commit("Jan Klávor", "ISO-8859-2", b"clean\n")
+        code, out = self.scan("--commits", "HEAD^!")
+        self.assertEqual(code, 1)
+        self.assertIn("commit metadata: denylist entry 4", out)
+        self.assert_no_term(out)
+
+    def test_a_crafted_encoding_does_not_hide_a_message(self) -> None:
+        self.commit({"a.txt": "x\n"})
+        self.raw_commit("dev", "UCS-2", b"hello zyxname!\n")
+        code, out = self.scan("--commits", "HEAD^!")
+        self.assertEqual(code, 1)
+        self.assertIn("commit metadata: denylist entry 1", out)
+
+    def test_identities_are_read_as_stored(self) -> None:
+        self.commit({"a.txt": "x\n"})
+        self.raw_commit("dev", "UCS-2", b"clean\n")
+        ids = self.write("ids.txt", f"{ALLOWED}\n")
+        self.assertEqual(self.scan("--identities", ids, "--commits", "HEAD^!"), (0, "denylist: clean\n"))
+
+    def test_hash_mode_keys_a_non_utf8_path_as_the_scan_does(self) -> None:
+        name = os.fsdecode(b"caf\xe9.txt")
+        self.commit({name: "keep zyxname here\n"})
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = ds.main(["--repo", str(self.repo), "--hash", name, "1"])
+        self.assertEqual(code, 0)
+        allow = self.write("allow.txt", out.getvalue().strip() + "  reviewed\n")
+        self.assertEqual(self.scan("--allow", allow, "--tree", "HEAD", "--commits", "HEAD")[0], 0)
+
     def test_a_missing_blob_is_a_usage_error(self) -> None:
         self.commit({"a.txt": "x\n"})
         blob = git(self.repo, "rev-parse", "HEAD:a.txt")
