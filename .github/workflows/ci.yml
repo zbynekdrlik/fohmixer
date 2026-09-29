@@ -524,7 +524,7 @@ jobs:
           set -euo pipefail
           if [ -z "$DENYLIST" ]; then
             if [ "$EVENT" = "pull_request" ] && [ "$SAME_REPO" != "true" ]; then
-              echo "::error::Fork pull request: the private denylist is unavailable here; a maintainer runs the scan locally before merging (.claude/rules/public-repo-hygiene.md), and the merge push to dev runs it again."
+              echo "::error::Fork pull request: the private denylist is unavailable here; a maintainer runs the scan locally before merging (.claude/rules/public-repo-hygiene.md), and the merge push runs it again."
               exit 1
             fi
             echo "::error::The DENYLIST secret is missing."

@@ -23,11 +23,11 @@ What is public: the code, the import tool, and a **synthetic** `.tosc` fixture a
 
 ## The private denylist scan (#3)
 
-`scripts/denylist_scan.py` (ported from iemmixer) matches a private term list against the repo; it prints only a location and the entry number, never a term, a matched line or an email.
+`scripts/denylist_scan.py` (ported from iemmixer) matches a private term list against the repo; it prints only a location and the entry number, never a term, a matched line or an email. A path component that holds a term is printed as `[redacted]`; find it locally with `git ls-files | grep -i -F -f <private list>` (for history, `git log --name-only --format=%h <range>` piped the same way) and never paste that output anywhere.
 
 - **The list** (people's names from the real track names, the PC's host name, Windows user names, LAN and tailnet names and addresses) is compiled by the main session from the site data. It lives only as the `DENYLIST` repo secret and a mode-600 file outside any repo. Never copy it, name its contents, or paste a term into the repo, a ticket, a PR body, a commit message or a log.
 - **CI** (`secrets` job, after gitleaks): the whole tree at `HEAD`, and every commit after the kept legacy history up to the PR head (not the synthetic merge commit): paths, added lines, messages, author and committer names and emails. The job fails when the secret is missing, a fork PR included (a maintainer then runs the scan locally, and the merge push to `dev` runs it again).
-- **Legacy boundary:** `scripts/denylist-boundary.txt` pins the two last legacy commits (the S0 and S2 lines); their ancestors are exactly the 22 commits that keep their identity, and they are not scanned. It never changes: with `--identities` the scan fails if it would hide a commit whose author and committer are both allowed.
+- **Legacy boundary:** `scripts/denylist-boundary.txt` pins the two last legacy commits (the S0 and S2 lines); their ancestors are exactly the 22 commits that keep their identity, and their metadata (identity, message) is not scanned. Their content still is, through the tree and through the first-parent diffs of the two later merges that brought those lines in; a term in legacy content that was since removed would fail at those merges, so the main session's local run with the real list, before it sets the secret, is where that shows up. The boundary never changes: with `--identities` the scan fails if it would hide a commit with any allowed identity.
 - **Identities:** every scanned commit must be authored and committed by an email in `scripts/allowed-identities.txt` (the account's noreply address and GitHub's own `noreply@github.com` for merges). The legacy identity is never written into any file.
 - **A lane runs it before any push** (the wip backup included: every ref pushed to this public repo is readable), on its committed work, with the list path the main session gives it:
 
@@ -37,5 +37,5 @@ What is public: the code, the import tool, and a **synthetic** `.tosc` fixture a
     --tree HEAD --commits HEAD
   ```
 
-  Exit 0 = clean, 1 = findings, 2 = a usage error (an empty list, a missing file, a boundary commit not in a shallow clone).
+  Exit 0 = clean, 1 = findings, 2 = the scan could not run (an empty list, a missing or non-UTF-8 input file, a bad boundary line, a boundary commit missing from a shallow clone, a failing git command such as an unknown revision).
 - **A hit is fixed by removing the site data**, never by allowlisting a real name. A hit in the tree goes with a new commit; a hit in a commit's message, author or added lines stays in that commit, so an unpushed branch is rebuilt without it (the main session decides how). An allow file (`scripts/denylist-allow.txt`, a line key from `--hash <path> <line>` plus a reason that never hints at the term, passed with `--allow`) is only for a reviewed line of invented or ordinary text that equals a term; none exists today.
