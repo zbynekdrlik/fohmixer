@@ -4,7 +4,7 @@ Status: design approved by the owner on #21 (2026-09-28, the STAGE mockup `docs/
 
 ## 0. Zhrnutie pre vlastníka
 
-- Nový vzhľad podľa schváleného mockupu na všetkých stránkach (Petka, FOH so Stage / Band B / Others, Conf): tmavé pásy, pri každom fadri dB stupnica a merač, farba pásu z farby tracku v Abletone, meno pásu je mute, funkcie v stĺpci vľavo, sekcie s nadpismi v dvoch riadkoch.
+- Nový vzhľad podľa schváleného mockupu na všetkých stránkach (prvá stránka, FOH so Stage / Band B / Others, Conf): tmavé pásy, pri každom fadri dB stupnica a merač, farba pásu z farby tracku v Abletone, meno pásu je mute, funkcie v stĺpci vľavo, sekcie s nadpismi v dvoch riadkoch.
 - **Správanie ostáva 1:1 s TouchOSC** (krivka fadera, relatívny ťah, double tap → 0 dB rovnakou rýchlosťou, ochrana mute, pan, STAGE AUT, TechAlert, REFRESH ALL, …) — audit na #21.
 - **Pod kapotou:** layout už neopisuje TouchOSC súradnice, ale čo je na stránke: stĺpec funkcií, riadky, sekcie, pásy. Mixér si rozloženie spočíta sám a nový ovládač (plugin, EQ, LUFS) sa pridá jedným záznamom do sekcie — bez ťahania súradníc.
 - Import z TouchOSC ostáva (nič sa znovu nezadáva); na PC sa layout vyrobí nanovo a prenesú sa noví členovia kapely.
