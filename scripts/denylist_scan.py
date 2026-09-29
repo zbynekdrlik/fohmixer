@@ -5,8 +5,9 @@
 The denylist (one term per line, `#` comments) is private: a mode-600 file
 outside the repo for local runs, the DENYLIST secret in CI. Output never
 contains a term, a matched line or an email address — only locations and the
-entry number. A path component that holds a term is printed as `[redacted]`
-(the whole path when a term spans components).
+entry number, each line starting with `tree` or a commit's short SHA (never
+with a path). A path component that holds a term is printed as `[redacted]`
+(the whole path when a term spans components), control characters escaped.
 
 Commit mode scans each commit's author/committer names and emails together
 with its message, the paths it adds or changes and its added lines; with
@@ -58,8 +59,8 @@ UTF16_BOMS = (codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)
 DIFF = ["show", "--format=", "--no-show-signature", "--no-color", "--no-ext-diff", "--no-textconv", "--text",
         "--no-renames", "--no-relative", "--ignore-submodules=none", "--root", "-m", "--first-parent"]
 GITLINK = "160000"
-# a replace ref (refs/replace/*) must not swap the scanned commits or trees for others
-GIT_ENV = {**os.environ, "GIT_NO_REPLACE_OBJECTS": "1"}
+# a replace ref (refs/replace/*) or a graft (info/grafts) must not swap the scanned history for another
+GIT_ENV = {**os.environ, "GIT_NO_REPLACE_OBJECTS": "1", "GIT_GRAFT_FILE": os.devnull}
 
 
 class UsageError(Exception):
@@ -213,8 +214,11 @@ class Scanner:
 
 
 def git(repo: Path, *args: str, stdin: bytes | None = None) -> bytes:
-    return subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, input=stdin,
-                          env=GIT_ENV).stdout
+    done = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, input=stdin, env=GIT_ENV)
+    if done.returncode != 0:
+        # git's own message is left out: it can quote a path or a revision
+        raise UsageError(f"git {args[0]} failed (exit {done.returncode})")
+    return done.stdout
 
 
 def decode(data: bytes) -> str:
@@ -240,6 +244,8 @@ def emails_in(metadata: str) -> list[str]:
 
 
 def scan_tree(scanner: Scanner, repo: Path, rev: str) -> list[Hit]:
+    # every location starts with a fixed word, never with a path: a path starting with `::`
+    # would otherwise read as a GitHub workflow command in the CI log
     hits: list[Hit] = []
     for entry in git(repo, "ls-tree", "-r", "-z", "--full-tree", rev).split(b"\0"):
         if not entry:
@@ -247,7 +253,7 @@ def scan_tree(scanner: Scanner, repo: Path, rev: str) -> list[Hit]:
         meta, _, raw_path = entry.partition(b"\t")
         _mode, kind, obj = meta.split()
         path = decode(raw_path)
-        hits += scanner.scan_path(path, "")
+        hits += scanner.scan_path(path, "tree ")
         if kind != b"blob":
             continue
         text = blob_text(git(repo, "cat-file", "blob", decode(obj)))
@@ -255,53 +261,58 @@ def scan_tree(scanner: Scanner, repo: Path, rev: str) -> list[Hit]:
             continue
         shown = scanner.shown(path)
         for number, line in enumerate(text_lines(text), start=1):
-            hits += scanner.scan_line(path, line, f"{shown}:{number}")
+            hits += scanner.scan_line(path, line, f"tree {shown}:{number}")
     return hits
 
 
-def unquote_c(quoted: str) -> str:
-    """A path git wrote C-quoted (`"b/Kl\\303\\241vor"`) back to text."""
+def unquote_c(quoted: bytes) -> bytes:
+    """A path git wrote C-quoted (`"b/Kl\\303\\241vor"`) back to its exact bytes."""
     body, out, i = quoted[1:-1], bytearray(), 0
     while i < len(body):
-        if body[i] != "\\":
-            out += body[i].encode("utf-8")
+        if body[i:i + 1] != b"\\":
+            out += body[i:i + 1]
             i += 1
-        elif body[i + 1] in "01234567":
+        elif body[i + 1:i + 2] in (b"0", b"1", b"2", b"3", b"4", b"5", b"6", b"7"):
             out.append(int(body[i + 1:i + 4], 8))
             i += 4
         else:
-            out.append(C_ESCAPES[body[i + 1]])
+            out.append(C_ESCAPES[body[i + 1:i + 2].decode("ascii")])
             i += 2
-    return decode(bytes(out))
+    return bytes(out)
 
 
-def diff_path(label: str) -> str:
-    """The path of a `+++ ` header label: git adds a tab when the label has a space."""
-    label = label.removesuffix("\t")
-    if label.startswith('"'):
+def diff_path(label: bytes) -> bytes:
+    """The path bytes of a `+++ ` header label: git adds a tab when the label has a space."""
+    label = label.removesuffix(b"\t")
+    if label.startswith(b'"'):
         label = unquote_c(label)
-    return label.removeprefix("b/")
+    return label.removeprefix(b"b/")
 
 
-def added_lines(diff: str) -> Iterator[tuple[str, str]]:
-    """(path, line) for every added line; `---`/`+++` count as headers only before a file's first hunk."""
-    path, in_hunk = "", False
-    for line in text_lines(diff):
-        if line.startswith("diff --git "):
-            path, in_hunk = "", False
-        elif line.startswith("@@"):
+def added_lines(diff: bytes) -> Iterator[tuple[bytes, str]]:
+    """(path bytes, line) for every added line; `---`/`+++` count as headers only before a file's
+    first hunk. Lines split at `\\n` and lose one trailing `\\r`, as `text_lines` splits them."""
+    path, in_hunk = b"", False
+    for line in diff.split(b"\n"):
+        if line.startswith(b"diff --git "):
+            path, in_hunk = b"", False
+        elif line.startswith(b"@@"):
             in_hunk = True
-        elif in_hunk and line.startswith("+"):
-            yield path, line[1:]
-        elif not in_hunk and line.startswith("+++ "):
+        elif in_hunk and line.startswith(b"+"):
+            yield path, decode(line[1:]).removesuffix("\r")
+        elif not in_hunk and line.startswith(b"+++ "):
             path = diff_path(line[4:])
 
 
 @dataclass(frozen=True)
 class Change:
-    path: str
+    raw: bytes
     mode: str
     blob: str
+
+    @property
+    def path(self) -> str:
+        return decode(self.raw)
 
 
 def changes_of(repo: Path, sha: str) -> list[Change]:
@@ -312,7 +323,7 @@ def changes_of(repo: Path, sha: str) -> list[Change]:
     # records are ":<old mode> <new mode> <old id> <new id> <status>" NUL "<path>" NUL
     for meta, path in zip(fields[0:-1:2], fields[1::2], strict=True):
         _old_mode, new_mode, _old_id, new_id, _status = decode(meta).removeprefix(":").split()
-        changes.append(Change(decode(path), new_mode, new_id))
+        changes.append(Change(path, new_mode, new_id))
     return changes
 
 
@@ -334,9 +345,11 @@ def blob_data(repo: Path, ids: list[str]) -> dict[str, bytes]:
     return data
 
 
-def added_by_path(repo: Path, sha: str) -> dict[str, list[str]]:
-    patch = decode(git(repo, *DIFF, "--unified=0", "--src-prefix=a/", "--dst-prefix=b/", sha))
-    by_path: dict[str, list[str]] = {}
+def added_by_path(repo: Path, sha: str) -> dict[bytes, list[str]]:
+    """Added lines keyed by the path's exact bytes (two names that decode alike stay apart); a
+    label is raw bytes or C-quoted whatever core.quotePath says, and both give the exact bytes."""
+    patch = git(repo, *DIFF, "--unified=0", "--src-prefix=a/", "--dst-prefix=b/", sha)
+    by_path: dict[bytes, list[str]] = {}
     for path, line in added_lines(patch):
         by_path.setdefault(path, []).append(line)
     return by_path
@@ -351,7 +364,7 @@ def scan_changes(scanner: Scanner, repo: Path, sha: str, prefix: str) -> list[Hi
     hits: list[Hit] = []
     for change in changes:
         hits += scanner.scan_path(change.path, prefix)
-        lines = added.pop(change.path, [])
+        lines = added.pop(change.raw, [])
         data = None if change.mode == GITLINK else contents[change.blob]
         text = None if data is None else blob_text(data)
         if text is None:
@@ -360,8 +373,8 @@ def scan_changes(scanner: Scanner, repo: Path, sha: str, prefix: str) -> list[Hi
             lines = text_lines(text)
         hits += scan_lines(scanner, change.path, lines, prefix)
     # a patch path that matched no change (a header decoded differently) is scanned, never dropped
-    for path, lines in added.items():
-        hits += scan_lines(scanner, path, lines, prefix)
+    for raw, lines in added.items():
+        hits += scan_lines(scanner, decode(raw), lines, prefix)
     return hits
 
 
@@ -460,10 +473,6 @@ def main(argv: list[str] | None = None) -> int:
         hits = run(args)
     except UsageError as error:
         print(error, file=sys.stderr)
-        return EXIT_USAGE
-    except subprocess.CalledProcessError as error:
-        # git's own message is left out: it can quote a path or a revision
-        print(f"git {error.cmd[3]} failed (exit {error.returncode})", file=sys.stderr)
         return EXIT_USAGE
     for hit in hits:
         print(hit.render())
