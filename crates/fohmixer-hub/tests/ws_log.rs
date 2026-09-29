@@ -1,9 +1,10 @@
 //! The socket lines end to end (#9): a WebSocket opened on the hub's real
 //! listener leaves `client connected` and `client disconnected` lines that
-//! name its peer, the LAN and the page's host. They are read back from the
-//! hub's log through a global subscriber. This is the only test of this
-//! binary, and nextest runs every test in its own process. The internet
-//! path and the page host's cleaning and quoting are `ws.rs`'s unit tests.
+//! name its peer, nothing forwarded, the LAN and the page's host. They are
+//! read back from the hub's log through a global subscriber. This is the
+//! only test of this binary, and nextest runs every test in its own
+//! process. The internet path (the forwarded address) and the cleaning and
+//! quoting are `ws.rs`'s unit tests.
 //! No Live host.
 
 mod support;
@@ -80,7 +81,10 @@ fn a_socket_names_its_peer_the_lan_and_its_page_host_in_the_log() {
         let (mut ws, _) = tokio_tungstenite::connect_async(request)
             .await
             .expect("the WebSocket opens");
-        let fields = format!(r#" peer=127.0.0.1 source="lan" origin="{}""#, hub.addr);
+        let fields = format!(
+            r#" peer=127.0.0.1 forwarded="-" source="lan" origin="{}""#,
+            hub.addr
+        );
         let connected = captured
             .line(|l| l.contains("client connected client=") && l.ends_with(&fields))
             .await;
