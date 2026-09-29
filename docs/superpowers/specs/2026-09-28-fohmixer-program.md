@@ -238,7 +238,7 @@ Apart from that rule, the hub has no mixer model and does no dB maths.
 
 **Rendering.** One `requestAnimationFrame` loop draws faders and meters. Animations are time-based, so 60 Hz and 120 Hz behave the same.
 
-**Components** are generic: `Strip`, `Fader`, `Pan`, `Mute`, `Meter`, `DbLabel`, `SoloButton`, `ParamToggle`, `ParamFader`, `AreaBox`, `AlertOverlay`, `RefreshButton`. §3.1 gives their v1 behaviour.
+**Components** are generic: `Strip`, `Fader`, `Pan`, `Mute`, `Meter`, `DbLabel`, `SoloButton`, `ParamToggle`, `ParamFader`, `AlertOverlay`, `RefreshButton`. §3.1 gives their v1 behaviour. **The look is our own (D13, #21):** `docs/superpowers/specs/2026-09-28-ui-redesign-design.md` §4 (the top bar, the rail, rows of sections, the strip with its dB scale and meter, the name button in the track's Live colour).
 
 **General binding form**, for every component: `instance` + `anchor` + `path`.
 - **anchor**: a track or return by exact name, `master`, or `song`.
@@ -253,10 +253,9 @@ How it resolves:
 - An unresolved or ambiguous binding disables the component and shows it red (I5).
 - A strip is just this form with an empty path, so the same code serves v1 and every later control.
 
-**Layout document**
-- It describes pages (including nested pagers and their tab bars), a root overlay layer, areas and placed components.
-- Coordinates are canvas coordinates on the TouchOSC canvas (2360×1640), and node order gives z-order.
-- The UI scales the layout to the viewport.
+**Layout document** (schema 2 since #21; the redesign note §2)
+- It describes pages, each with a rail of function controls and rows of sections; a section is a group of controls or the page's one nested pager, whose sub-pages hold groups; global controls (TechAlert, REFRESH ALL) show on every page.
+- Nothing is placed: no canvas, frames or z. The UI computes the placement (one strip width shared by all rows).
 - It lives on the Ableton PC in the hub's data folder (§5.2).
 - **Editing it later** (D4): Claude edits the file on the PC through the MCP tools. The hub validates it on reload: schema, known components, and a report of unresolved names. A failed validation keeps the last good layout live, so a bad edit never blanks the surface. Every accepted change is kept as a dated backup.
 
@@ -273,12 +272,10 @@ This is a **one-shot tool**, `tools/import-tosc`, outside the hub. It is re-run 
 - **It classifies by role, not by script alone.** A node is live only when it has the expected name under a strip group (`fader`, `pan`, `mute`, `meter`, `db`, `status`, …).
   - Nodes that carry scripts but do nothing are decoration, redrawn natively or dropped: backdrop buttons carrying the mute script, the second meter bar, tick TEXT lines, the dead Podklady label.
   - The script hash table is built from the scripts inside the `.tosc` itself, with trailing newlines normalised.
-- **It emits:**
-  - pages;
-  - the nested pager with the tab-bar orientation, size and colours;
-  - a root overlay layer (TechAlert strip, REFRESH ALL, the alert box);
-  - area boxes and labels with their colours;
-  - strips of kind `standard`, `narrow`, `return`, `solid-background` or `meter-mute-only` (TechAlert), each with per-child geometry and background fill;
+- **It emits** (layout schema 2 since #21; it groups what it used to place, the redesign note §3):
+  - pages, the rail of each page with strips, rows of groups (containment by an area's frame, the title beside or above it, the area's fill as the group colour) and the nested pager as a section;
+  - the global controls (the TechAlert strip and alert box as one `alert`, REFRESH ALL);
+  - strips of kind `standard` or `return`, `wide` for the wider bus strips;
   - solo buttons, the stage-mic group and STAGE AUT;
   - MIDI controls, with type, channel, number, value/velocity scaling, press and release trigger flags, button type, send/receive flags, and fader response mode and grid;
   - the `Conf` text (`unfold_*`, `double_click_mute`).
@@ -314,7 +311,7 @@ Proof codes:
 
 | # | Feature | Parity detail (TouchOSC behaviour) | Proof |
 |---|---|---|---|
-| F1 | Pages and areas | Tabs: musician cue page, **FOH/WORSHIP** (default), **Conf**. FOH/WORSHIP has a vertical nested pager STAGE / BAND B / OTHERS, a left sidebar (stage mics, STAGE AUT, three solos, MIDI toggles), the EFFECTS, MASTER A and HANDS areas, and the two top-right strips. The TechAlert strip and REFRESH ALL are on every page (PAR-01) | E |
+| F1 | Pages and areas | Tabs: musician cue page, **FOH/WORSHIP** (default), **Conf**. FOH/WORSHIP has a nested pager STAGE / BAND B / OTHERS, a left sidebar (stage mics, STAGE AUT, three solos, MIDI toggles), the EFFECTS, MASTER A and HANDS areas, and the two top-right strips. TechAlert and REFRESH ALL are on every page (PAR-01). The same pages, sections and order; the placement is computed (D13, #21) | E |
 | F2 | Two instances | Strips route to band or master; a missing prefix means band (PAR-02, PAR-03) | S, E |
 | F3 | Strip binding | Exact name match on tracks, then return tracks. Red status and disabled controls when missing. Re-resolved on refresh and on every track-list or name change (PAR-03) | S, E |
 | F4 | Strip label | First word of the name, after dropping a leading `X-` return prefix. The instance label sits under it (PAR-04) | U |
@@ -324,15 +321,15 @@ Proof codes:
 | F8 | Fader law | Position *p* ↔ Live volume *v*: *v* = *p*^0.515. Relative touch with no jump on grab (PAR-08) | U, E |
 | F9 | Fader touch shaping | 0.1 dB minimum first step, reaction compensation, gradual 0.9→1.0 scaling, and bypass above 3 % per event (PAR-09). See X3 | U, E |
 | F10 | Fader double-tap | Two taps 50–250 ms apart glide to 0 dB (*v* = 0.85) at about 0.3 position/s, time-based. A touch cancels (PAR-10) | U, E |
-| F11 | Pan | *p* ↔ panning 2*p*−1. Double-tap within 300 ms centres. Grey when centred, cyan otherwise (PAR-12) | U, E |
+| F11 | Pan | *p* ↔ panning 2*p*−1. Double-tap within 300 ms centres. Grey when centred, cyan otherwise; a bar from the centre (PAR-12, #21) | U, E |
 | F12 | Mute + protection | Toggle, lit when audible. Strips in `double_click_mute` need a second tap within 500 ms (PAR-13, PAR-14) | U, E |
 | F13 | Volume dB text and meters | Volume dB text is Live's display string (X1). Meter bar: 300 ms rise, 200 ms fall, green/yellow/red. Scale per K2 (PAR-15, PAR-16, PAR-18). The meter dBFS label is dropped (D11) | U, E, L |
-| F14 | Solo buttons | Three group-track solo toggles, independent (no exclusivity), blue when on (PAR-19). Owning instance only (X4) | S, E |
+| F14 | Solo buttons | Three group-track solo toggles, independent (no exclusivity), lit when on (PAR-19). Owning instance only (X4). The SOLO ✕ pill turns off every solo of the page (#21) | S, E |
 | F15 | Stage mics + STAGE AUT | Inverted mute button. The STAGE AUT flag lives in the hub; while on, the stage mics are muted while playing and live when stopped (PAR-20, §2.4, X9) | S, E |
 | F16 | TechAlert | Full-screen red overlay blinking every 300 ms while the TechAlert track is unmuted (PAR-21) | E |
 | F17 | Musician cue page (**after the core**, D12) | Six presence toggles (CC20, 22–26), which are mapped mutes: included if their mapping is clean (§3.2). Two instrument toggles (CC28, CC65) and a momentary ALERT LOOP (note 29) have **no mapping in either set**: dropped unless K3 finds a working consumer (PAR-22) | S, L |
 | F18 | Main-page toggles and Podklady All (**after the core**, D12) | VOC MIC (double-tap latch), REVERB, AUTOTUNE, ZVUKAR (tap pulse, double-tap latch), REPRO, and the Podklady All fader: each included if its mapping is clean (§3.2) (PAR-23) | U, S, L |
-| F19 | Visual layout | Positions, sizes, colours, strip kinds and per-strip geometry from the import (PAR-26). Solid fills replace the TouchOSC workarounds | E |
+| F19 | Visual layout | Our own design (D13, #21): the pages, sections and order from the import, the placement computed, the look of the redesign note §4 (a dB scale and a zone meter with peak hold and clip beside every fader, the name button in the track's Live colour) | E |
 | F20 | Many clients | Any number of clients see the same state live. TouchOSC needed one script copy per tablet | S, E |
 | F21 | Second tablet | If K5 finds a second TouchOSC client (band port 12000, the cue-page project), its project is imported the same way and served by the same hub | S, L |
 | F22 | Current state on open | On app start, reconnect, Live reconnect or set load, every control shows Live's current value before it accepts input (I8). This is new: TouchOSC often failed to load the current state | S, E, L |
@@ -359,7 +356,7 @@ Proof codes:
 
 ### 3.3 Deviations (each has a reason)
 
-- **X1** Volume dB text is `str(param)` from Live, instead of the TouchOSC `value2db` approximation (P2).
+- **X1** Volume dB text is Live's value (`str(param)`), instead of the TouchOSC `value2db` approximation (P2), shown in TouchOSC's form: one decimal, no unit, white exactly at 0 dB (#21).
 - **X2** The meter source is `output_meter_left/right` if K2 shows the cost is acceptable, otherwise `output_meter_level`.
   - The bar's position on the fader scale uses a K2-measured scale. This is placement, not text.
   - The inert second meter bar is dropped.
@@ -392,7 +389,7 @@ The Live script and the protocol do not change (P4).
 - rack chains (mute, solo, volume, chain selector) and macros;
 - `fold_state`, `is_playing`, cue points and locator names;
 - automation state and `re_enable_automation`;
-- track colours;
+- track colours (in v1 since #21: the name button);
 - clip and scene launch.
 
 ### 4.3 What the LOM does not provide
@@ -505,6 +502,7 @@ Each one gets a short design note and a plan before code, as in iemmixer.
 
 - **D10** No MIDI: the former MIDI toggles write their target parameters directly through the LOM; the targets come from the set's MIDI mappings (2026-09-28).
 - **D12** Priority: first the OSC-equivalent core; former MIDI controls only where they work cleanly, and Claude triages them (2026-09-28).
+- **D13** TouchOSC's functionality, not its look: a modern surface of our own design (the approved mockup, `docs/mockups/redesign-stage-v1.html`); every TouchOSC behaviour kept (#21, 2026-09-28).
 
 **Defaults chosen in this spec** (the owner may override them at review)
 

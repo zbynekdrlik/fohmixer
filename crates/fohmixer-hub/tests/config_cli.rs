@@ -1,5 +1,7 @@
-//! `fohmixer-hub config check <file>` end to end (#17): the installer runs it
-//! on the config it is about to write, before it stops the running hub.
+//! `fohmixer-hub config check <file>` (#17) and `layout check <layout>
+//! <config>` (#21) end to end: the installer runs them on the config it is
+//! about to write and the layout the hub will serve, before it stops the
+//! running hub.
 
 use std::process::{Command, Output};
 
@@ -49,4 +51,74 @@ fn a_missing_file_or_argument_is_refused() {
         .unwrap();
     assert_eq!(out.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&out.stderr).contains("config check <file>"));
+}
+
+fn layout_check(layout: &std::path::Path, config: &std::path::Path) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_fohmixer-hub"))
+        .args(["layout", "check"])
+        .arg(layout)
+        .arg(config)
+        .output()
+        .expect("run fohmixer-hub")
+}
+
+#[test]
+fn a_layout_the_hub_would_serve_passes_and_another_is_exit_2_with_why() {
+    let dir = tempfile::tempdir().unwrap();
+    let fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    // The default instances: band and master.
+    let config = dir.path().join("fohmixer-hub.toml.check");
+    std::fs::write(&config, "http_port = 8480\n").unwrap();
+    let out = layout_check(&fixtures.join("layout-ok.json"), &config);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+    assert!(stderr.ends_with(": OK\n"), "{stderr}");
+    // It does not validate.
+    let out = layout_check(&fixtures.join("layout-bad.json"), &config);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(2), "{stderr}");
+    assert!(stderr.contains("layout-bad.json"), "{stderr}");
+    assert!(
+        stderr.contains("pages[0].rows[0].sections[0].color"),
+        "{stderr}"
+    );
+    // A schema 1 layout (the one before the redesign) does not parse.
+    let old = dir.path().join("old.json");
+    std::fs::write(
+        &old,
+        r#"{"schema": 1, "canvas": {"w": 2360, "h": 1640}, "pages": []}"#,
+    )
+    .unwrap();
+    let out = layout_check(&old, &config);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(2), "{stderr}");
+    assert!(stderr.contains("does not parse"), "{stderr}");
+    // It binds an instance the config does not have.
+    let band_only = dir.path().join("band-only.toml");
+    std::fs::write(
+        &band_only,
+        "http_port = 8480\n[[instances]]\nname = \"band\"\nport = 39101\n",
+    )
+    .unwrap();
+    let out = layout_check(&fixtures.join("layout-ok.json"), &band_only);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(2), "{stderr}");
+    assert!(stderr.contains(r#"unknown instance "master""#), "{stderr}");
+    // A config the hub refuses, or a missing file, is exit 2 too.
+    let out = layout_check(
+        &fixtures.join("layout-ok.json"),
+        &dir.path().join("none.toml"),
+    );
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("reading config "));
+    let out = layout_check(&dir.path().join("none.json"), &config);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("reading layout "));
+    let out = Command::new(env!("CARGO_BIN_EXE_fohmixer-hub"))
+        .args(["layout", "check"])
+        .arg(fixtures.join("layout-ok.json"))
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("layout check <layout> <config>"));
 }

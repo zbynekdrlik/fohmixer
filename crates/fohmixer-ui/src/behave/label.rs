@@ -12,6 +12,13 @@ pub fn strip_label(name: &str) -> String {
     rest.split_whitespace().next().unwrap_or("").to_string()
 }
 
+/// The length the stylesheet sizes a label's font by (`--n`, #21): its
+/// characters, not its bytes, and at least 1 (an empty label divides by
+/// nothing).
+pub fn label_chars(label: &str) -> usize {
+    label.chars().count().max(1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -24,6 +31,14 @@ mod tests {
         assert_eq!(strip_label("Hand1 #"), "Hand1");
         assert_eq!(strip_label("TechAlert #"), "TechAlert");
         assert_eq!(strip_label("  Keys 1"), "Keys");
+    }
+
+    #[test]
+    fn a_label_counts_its_characters_and_at_least_one() {
+        assert_eq!(label_chars("TechAlert"), 9);
+        assert_eq!(label_chars("Klavír"), 6);
+        assert_eq!(label_chars("B"), 1);
+        assert_eq!(label_chars(""), 1);
     }
 
     #[test]

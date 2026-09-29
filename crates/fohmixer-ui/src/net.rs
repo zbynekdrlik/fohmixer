@@ -205,7 +205,7 @@ mod tests {
     #[test]
     fn layout_answers_are_classified() {
         let body = json!({"rev": 3, "layout": {
-            "schema": 1, "canvas": {"w": 100, "h": 100},
+            "schema": 2, "default_page": "p",
             "pages": [{"id": "p", "title": "P"}]}})
         .to_string();
         let LayoutFetch::Layout(layout) = layout_fetch(200, &body) else {
@@ -220,9 +220,9 @@ mod tests {
         assert_eq!(
             layout_fetch(
                 503,
-                r#"{"code":"NO_LAYOUT","message":"layout.json: schema 2"}"#
+                r#"{"code":"NO_LAYOUT","message":"layout.json: schema 3"}"#
             ),
-            LayoutFetch::NoLayout("layout.json: schema 2".into())
+            LayoutFetch::NoLayout("layout.json: schema 3".into())
         );
         assert_eq!(
             layout_fetch(500, " oops \n"),

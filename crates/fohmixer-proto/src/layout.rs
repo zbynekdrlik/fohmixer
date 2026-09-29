@@ -1,13 +1,13 @@
-//! The layout document, `layout.json` schema 1 (S3 design note §5; spec
-//! §2.5): pages with nested pagers and tab bars, a root overlay, and placed
-//! items bound by the general binding form (`instance` + `anchor` + `path`).
-//! Every frame is in canvas coordinates (the TouchOSC canvas, 2360×1640);
-//! node order is z-order. The import tool writes it, the hub validates and
-//! serves it, the UI renders it.
+//! The layout document, `layout.json` schema 2 (the UI redesign, #21;
+//! `docs/superpowers/specs/2026-09-28-ui-redesign-design.md` §2): pages with a
+//! rail of function controls and rows of sections; a section is a group of
+//! controls or a nested pager whose sub-pages hold groups. Nothing is placed
+//! here: the UI computes the geometry. Controls bind by the general binding
+//! form (`instance` + `anchor` + `path`, spec §2.5). The import tool writes
+//! it, the hub validates and serves it, the UI renders it.
 //!
 //! An unknown field is an error, not ignored: the file is edited by hand
-//! later (D4), and a mistyped field name must not pass silently. (`Item`
-//! itself cannot deny them — it flattens its kind — so each kind does.)
+//! later (D4), and a mistyped field name must not pass silently.
 
 use std::collections::HashSet;
 
@@ -18,31 +18,24 @@ use crate::client::HUB_STAGE_AUT;
 use crate::path::{PathError, escape_name, parse_steps, steps_text};
 
 /// The schema version this build reads.
-pub const LAYOUT_SCHEMA: u32 = 1;
-
-/// How far (px) a frame may stick out of the canvas before it is an error
-/// (rounding in the import).
-const CANVAS_SLACK: f64 = 0.5;
+pub const LAYOUT_SCHEMA: u32 = 2;
 
 /// The layout document.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Layout {
     pub schema: u32,
-    pub canvas: Canvas,
-    /// The root pager's fill, under every page (the whole canvas).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub background: Option<String>,
-    /// The root tab bar (the top-level pages' tabs).
-    #[serde(default)]
-    pub tabbar: TabBar,
+    /// The id of the page shown first.
+    pub default_page: String,
     pub pages: Vec<Page>,
-    /// Items drawn over every page (TechAlert, REFRESH ALL, the alert box).
-    #[serde(default)]
-    pub overlay: Vec<Item>,
+    /// Controls shown on every page, in the rail's footer (TechAlert,
+    /// REFRESH ALL).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub global: Vec<Control>,
     #[serde(default)]
     pub config: LayoutConfig,
-    /// What the import dropped or could not reproduce (free-form).
+    /// What the import dropped, could not reproduce or had to guess
+    /// (free-form).
     #[serde(default)]
     pub report: Value,
 }
@@ -56,92 +49,219 @@ pub struct LayoutResponse {
     pub layout: Layout,
 }
 
-/// The canvas size in px.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Canvas {
-    pub w: f64,
-    pub h: f64,
-}
-
-/// A rectangle in canvas coordinates.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Frame {
-    pub x: f64,
-    pub y: f64,
-    pub w: f64,
-    pub h: f64,
-}
-
-/// Where a tab bar sits.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Orientation {
-    #[default]
-    Top,
-    Right,
-    Bottom,
-    Left,
-}
-
-/// A tab bar: its side, its thickness (px) and the page shown first.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct TabBar {
-    #[serde(default)]
-    pub orientation: Orientation,
-    #[serde(default)]
-    pub bar_size: f64,
-    #[serde(default)]
-    pub default_page: usize,
-}
-
-/// One page's tab: its colour and text size, and both while it is lit
-/// (its page shown; TouchOSC's tabColorOn / textSizeOn).
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Tab {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub color: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub color_on: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub text_size: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub text_size_on: Option<f64>,
-}
-
-/// A page (a tab of the root tab bar or of a nested pager).
+/// A top-level page (a tab of the top bar): its rail and its rows.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Page {
     pub id: String,
     pub title: String,
-    #[serde(default)]
-    pub tab: Tab,
-    /// The page's fill, under its items (the area of its pager or the
-    /// canvas below the tab bar).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub background: Option<String>,
-    #[serde(default)]
-    pub items: Vec<Item>,
-    /// A nested pager on this page.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pager: Option<Pager>,
+    /// The function controls down the left side (stage mics, STAGE AUT,
+    /// solos, the former MIDI toggles), top to bottom.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rail: Vec<Control>,
+    /// The rows of sections, top to bottom.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rows: Vec<Row>,
 }
 
-/// A nested pager: its frame, its tab bar and its pages.
+/// A row of sections, left to right, and its share of the height.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Row {
+    pub sections: Vec<Section>,
+    #[serde(default = "one", skip_serializing_if = "is_one")]
+    pub weight: f64,
+}
+
+fn one() -> f64 {
+    1.0
+}
+
+fn is_one(weight: &f64) -> bool {
+    weight.to_bits() == 1.0f64.to_bits()
+}
+
+/// What a row holds: a group of controls, or a nested pager (at most one per
+/// page) whose selected sub-page's groups show in its place.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Section {
+    Group(Group),
+    Pager(Pager),
+}
+
+/// A titled (or untitled) group of controls, left to right. `color` is an
+/// identity hint (the section's marker), not a fill.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Group {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+    #[serde(default)]
+    pub controls: Vec<Control>,
+}
+
+/// A nested pager: its sub-pages, the one shown first, and its tabs in the
+/// top bar.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Pager {
-    pub frame: Frame,
-    /// The pager's fill, under its tab bar and its pages.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub background: Option<String>,
+    pub id: String,
+    pub default_page: String,
+    pub pages: Vec<SubPage>,
+}
+
+/// A pager's sub-page: groups only (a pager holds no pager).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SubPage {
+    pub id: String,
+    pub title: String,
     #[serde(default)]
-    pub tabbar: TabBar,
-    pub pages: Vec<Page>,
+    pub sections: Vec<Section>,
+}
+
+/// What a control is.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Control {
+    /// A mixer strip (boxed: by far the largest kind).
+    Strip(Box<Strip>),
+    /// A group-track solo toggle (spec F14).
+    Solo {
+        binding: Binding,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+    },
+    /// The stage-mic button: the mute of the stage-mic track, lit while the
+    /// mics are live (spec F15, #9). `aut`: the hub's STAGE AUT rule drives
+    /// this binding's mute.
+    Stage {
+        binding: Binding,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        aut: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+    },
+    /// A toggle of a hub value (the STAGE AUT button).
+    HubToggle { key: String, label: String },
+    /// A former MIDI toggle writing its targets directly (spec F17, F18);
+    /// `color` is its lit colour.
+    ParamToggle {
+        label: String,
+        targets: Vec<ParamTarget>,
+        press: Press,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        color: Option<String>,
+    },
+    /// A former MIDI fader writing its targets directly (spec F18).
+    ParamFader {
+        label: String,
+        targets: Vec<ParamTarget>,
+    },
+    /// TechAlert: the mute of its track, and the full-screen blink while it
+    /// is unmuted (spec F16). `mute_guard`: a change needs a second tap, as
+    /// a guarded strip's mute (spec F12).
+    Alert {
+        binding: Binding,
+        period_ms: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        mute_guard: bool,
+    },
+    /// REFRESH ALL (spec F6).
+    Refresh {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+    },
+    /// A static text (the Conf page's configuration).
+    Text { text: String },
+}
+
+/// A strip: its binding, its kind, and how it is drawn and guarded.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Strip {
+    pub binding: Binding,
+    pub strip_kind: StripKind,
+    /// A bus strip drawn wider (the top-right strips, returns).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub wide: bool,
+    /// A mute change needs a second tap (spec F12).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub mute_guard: bool,
+}
+
+/// The strip kinds: a track, or a return track (its name carries the
+/// `X-` letter, which the label drops).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StripKind {
+    Standard,
+    Return,
+}
+
+impl Section {
+    /// The groups this section shows: itself, or every group of every
+    /// sub-page of the pager.
+    pub fn groups(&self) -> Vec<&Group> {
+        match self {
+            Section::Group(group) => vec![group],
+            Section::Pager(pager) => pager
+                .pages
+                .iter()
+                .flat_map(|sub| sub.sections.iter().flat_map(Section::groups))
+                .collect(),
+        }
+    }
+}
+
+impl Page {
+    /// Every control of the page in document order: the rail, then the rows
+    /// (a pager's sub-pages in order).
+    pub fn controls(&self) -> Vec<&Control> {
+        let mut out: Vec<&Control> = self.rail.iter().collect();
+        for row in &self.rows {
+            for section in &row.sections {
+                for group in section.groups() {
+                    out.extend(group.controls.iter());
+                }
+            }
+        }
+        out
+    }
+
+    /// The page's nested pager, if it has one.
+    pub fn pager(&self) -> Option<&Pager> {
+        self.rows
+            .iter()
+            .flat_map(|r| &r.sections)
+            .find_map(|s| match s {
+                Section::Pager(pager) => Some(pager),
+                Section::Group(_) => None,
+            })
+    }
+}
+
+impl Control {
+    /// The bindings this control reads or writes.
+    pub fn bindings(&self) -> Vec<&Binding> {
+        match self {
+            Control::Strip(strip) => vec![&strip.binding],
+            Control::Solo { binding, .. }
+            | Control::Stage { binding, .. }
+            | Control::Alert { binding, .. } => vec![binding],
+            Control::ParamToggle { targets, .. } | Control::ParamFader { targets, .. } => {
+                targets.iter().map(|t| &t.binding).collect()
+            }
+            Control::HubToggle { .. } | Control::Refresh { .. } | Control::Text { .. } => vec![],
+        }
+    }
 }
 
 /// Layout-wide settings (the TouchOSC `Conf` text and UI switches).
@@ -178,149 +298,6 @@ pub enum MeterSource {
 pub struct UnfoldTarget {
     pub instance: String,
     pub name: String,
-}
-
-/// A placed item: its frame, z-order, style and kind.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Item {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub id: Option<String>,
-    pub frame: Frame,
-    #[serde(default)]
-    pub z: i64,
-    #[serde(default)]
-    pub style: Style,
-    #[serde(flatten)]
-    pub kind: ItemKind,
-}
-
-/// Colours are `#RRGGBB` or `#RRGGBBAA`.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Style {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bg: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub color: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub text: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub text_color: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub text_size: Option<f64>,
-    /// Text drawn vertically (area titles).
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub vertical: bool,
-}
-
-/// What an item is.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum ItemKind {
-    /// A background box, optionally with a title.
-    Area {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        title: Option<String>,
-    },
-    /// A mixer strip (boxed: by far the largest kind).
-    Strip(Box<Strip>),
-    /// A group-track solo toggle (spec F14).
-    Solo { binding: Binding },
-    /// The stage-mic button: an inverted mute (spec F15). `aut`: the hub's
-    /// STAGE AUT rule drives this binding's mute.
-    Stage {
-        binding: Binding,
-        #[serde(default)]
-        aut: bool,
-    },
-    /// A toggle of a hub value (the STAGE AUT button).
-    HubToggle { key: String, label: String },
-    /// A former MIDI toggle writing its targets directly (spec F17, F18).
-    ParamToggle {
-        label: String,
-        targets: Vec<ParamTarget>,
-        press: Press,
-    },
-    /// A former MIDI fader writing its targets directly (spec F18).
-    ParamFader {
-        label: String,
-        targets: Vec<ParamTarget>,
-    },
-    /// The TechAlert overlay: blinks while its track is unmuted (spec F16).
-    Alert { binding: Binding, period_ms: u32 },
-    /// REFRESH ALL (spec F6).
-    Refresh {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        label: Option<String>,
-    },
-    /// A static text.
-    Label { text: String },
-}
-
-/// A strip: its binding, kind and per-child geometry.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Strip {
-    pub binding: Binding,
-    pub strip_kind: StripKind,
-    #[serde(default)]
-    pub children: StripChildren,
-    /// A mute change needs a second tap (spec F12).
-    #[serde(default)]
-    pub mute_guard: bool,
-}
-
-/// The strip kinds the import recognises (spec §2.6).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum StripKind {
-    Standard,
-    Narrow,
-    Return,
-    Solid,
-    MeterMuteOnly,
-}
-
-/// The frames of a strip's parts (canvas coordinates); a missing part is not
-/// drawn.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct StripChildren {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fader: Option<Frame>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pan: Option<Frame>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mute: Option<Frame>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub meter: Option<Frame>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub status: Option<Frame>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub db: Option<Frame>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub label: Option<Frame>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub instance_label: Option<Frame>,
-}
-
-impl StripChildren {
-    /// The present parts, named.
-    pub fn frames(&self) -> Vec<(&'static str, Frame)> {
-        [
-            ("fader", self.fader),
-            ("pan", self.pan),
-            ("mute", self.mute),
-            ("meter", self.meter),
-            ("status", self.status),
-            ("db", self.db),
-            ("label", self.label),
-            ("instance_label", self.instance_label),
-        ]
-        .into_iter()
-        .filter_map(|(name, frame)| frame.map(|f| (name, f)))
-        .collect()
-    }
 }
 
 /// One target of a former MIDI control: a binding, a property and either
@@ -428,10 +405,8 @@ impl Layout {
     /// Every problem of the document; empty when it may be served.
     pub fn validate(&self) -> Vec<LayoutError> {
         let mut v = Validator {
-            canvas: self.canvas,
             errors: Vec::new(),
-            page_ids: HashSet::new(),
-            item_ids: HashSet::new(),
+            ids: HashSet::new(),
         };
         if self.schema != LAYOUT_SCHEMA {
             v.error(
@@ -439,17 +414,19 @@ impl Layout {
                 format!("schema {} is not {LAYOUT_SCHEMA}", self.schema),
             );
         }
-        let (w, h) = (self.canvas.w, self.canvas.h);
-        let sized = w.is_finite() && h.is_finite() && w > 0.0 && h > 0.0;
-        if !sized {
-            v.error("canvas", format!("{w}×{h} is not a canvas size"));
+        if self.pages.is_empty() {
+            v.error("pages", "no pages".to_string());
+        } else if !self.pages.iter().any(|p| p.id == self.default_page) {
+            v.error(
+                "default_page",
+                format!("{:?} is not a page", self.default_page),
+            );
         }
-        if let Some(color) = &self.background {
-            v.color("background", color);
+        for (i, page) in self.pages.iter().enumerate() {
+            v.page(&format!("pages[{i}]"), page);
         }
-        v.pages("pages", &self.pages, &self.tabbar);
-        for (i, item) in self.overlay.iter().enumerate() {
-            v.item(&format!("overlay[{i}]"), item);
+        for (i, control) in self.global.iter().enumerate() {
+            v.control(&format!("global[{i}]"), control);
         }
         for (i, target) in self.config.unfold.iter().enumerate() {
             if target.instance.is_empty() || target.name.is_empty() {
@@ -462,74 +439,39 @@ impl Layout {
         v.errors
     }
 
-    /// Every binding in the document (pages, pagers, overlay; strips, solos,
-    /// stage buttons, alerts and former MIDI targets), in document order.
+    /// Every binding in the document (pages: rail, then rows with every
+    /// sub-page; then the global controls), in document order.
     pub fn bindings(&self) -> Vec<&Binding> {
-        let mut out = Vec::new();
-        for page in &self.pages {
-            page_bindings(page, &mut out);
-        }
-        for item in &self.overlay {
-            item_bindings(item, &mut out);
-        }
+        self.controls()
+            .into_iter()
+            .flat_map(Control::bindings)
+            .collect()
+    }
+
+    /// Every control in document order: each page's rail and rows, then the
+    /// global controls.
+    pub fn controls(&self) -> Vec<&Control> {
+        let mut out: Vec<&Control> = self.pages.iter().flat_map(Page::controls).collect();
+        out.extend(self.global.iter());
         out
     }
 
-    /// The binding the hub's STAGE AUT rule drives: the first `stage` item
-    /// with `aut` set, in document order.
+    /// The binding the hub's STAGE AUT rule drives: the first `stage`
+    /// control with `aut` set, in document order.
     pub fn stage_aut_binding(&self) -> Option<&Binding> {
-        fn in_items(items: &[Item]) -> Option<&Binding> {
-            items.iter().find_map(|item| match &item.kind {
-                ItemKind::Stage { binding, aut: true } => Some(binding),
-                _ => None,
-            })
-        }
-        fn in_page(page: &Page) -> Option<&Binding> {
-            in_items(&page.items).or_else(|| {
-                page.pager
-                    .as_ref()
-                    .and_then(|pager| pager.pages.iter().find_map(in_page))
-            })
-        }
-        self.pages
-            .iter()
-            .find_map(in_page)
-            .or_else(|| in_items(&self.overlay))
-    }
-}
-
-fn page_bindings<'a>(page: &'a Page, out: &mut Vec<&'a Binding>) {
-    for item in &page.items {
-        item_bindings(item, out);
-    }
-    if let Some(pager) = &page.pager {
-        for sub in &pager.pages {
-            page_bindings(sub, out);
-        }
-    }
-}
-
-fn item_bindings<'a>(item: &'a Item, out: &mut Vec<&'a Binding>) {
-    match &item.kind {
-        ItemKind::Strip(strip) => out.push(&strip.binding),
-        ItemKind::Solo { binding }
-        | ItemKind::Stage { binding, .. }
-        | ItemKind::Alert { binding, .. } => out.push(binding),
-        ItemKind::ParamToggle { targets, .. } | ItemKind::ParamFader { targets, .. } => {
-            out.extend(targets.iter().map(|t| &t.binding));
-        }
-        ItemKind::Area { .. }
-        | ItemKind::HubToggle { .. }
-        | ItemKind::Refresh { .. }
-        | ItemKind::Label { .. } => {}
+        self.controls().into_iter().find_map(|c| match c {
+            Control::Stage {
+                binding, aut: true, ..
+            } => Some(binding),
+            _ => None,
+        })
     }
 }
 
 struct Validator {
-    canvas: Canvas,
     errors: Vec<LayoutError>,
-    page_ids: HashSet<String>,
-    item_ids: HashSet<String>,
+    /// Page, sub-page, group and pager ids: one namespace.
+    ids: HashSet<String>,
 }
 
 impl Validator {
@@ -540,76 +482,82 @@ impl Validator {
         });
     }
 
-    fn pages(&mut self, at: &str, pages: &[Page], tabbar: &TabBar) {
-        if pages.is_empty() {
-            self.error(at, "no pages".to_string());
-        } else if tabbar.default_page >= pages.len() {
-            self.error(
-                at,
-                format!(
-                    "default page {} of {} pages",
-                    tabbar.default_page,
-                    pages.len()
-                ),
-            );
-        }
-        let bar = tabbar.bar_size.is_finite() && tabbar.bar_size >= 0.0;
-        if !bar {
-            self.error(at, format!("tab bar size {}", tabbar.bar_size));
-        }
-        for (i, page) in pages.iter().enumerate() {
-            self.page(&format!("{at}[{i}]"), page);
+    fn id(&mut self, at: &str, id: &str) {
+        if id.is_empty() {
+            self.error(at, "empty id".to_string());
+        } else if !self.ids.insert(id.to_string()) {
+            self.error(at, format!("duplicate id {id:?}"));
         }
     }
 
     fn page(&mut self, at: &str, page: &Page) {
-        if page.id.is_empty() {
-            self.error(at, "empty page id".to_string());
-        } else if !self.page_ids.insert(page.id.clone()) {
-            self.error(at, format!("duplicate page id {:?}", page.id));
+        self.id(at, &page.id);
+        for (i, control) in page.rail.iter().enumerate() {
+            self.control(&format!("{at}.rail[{i}]"), control);
         }
-        for (name, color) in [
-            ("tab.color", &page.tab.color),
-            ("tab.color_on", &page.tab.color_on),
-            ("background", &page.background),
-        ] {
-            if let Some(color) = color {
-                self.color(&format!("{at}.{name}"), color);
+        let mut pagers = 0;
+        for (r, row) in page.rows.iter().enumerate() {
+            let row_at = format!("{at}.rows[{r}]");
+            let weight = row.weight.is_finite() && row.weight > 0.0;
+            if !weight {
+                self.error(&row_at, format!("weight {} is not above 0", row.weight));
+            }
+            for (s, section) in row.sections.iter().enumerate() {
+                let section_at = format!("{row_at}.sections[{s}]");
+                match section {
+                    Section::Group(group) => self.group(&section_at, group),
+                    Section::Pager(pager) => {
+                        pagers += 1;
+                        if pagers > 1 {
+                            self.error(&section_at, "a second pager on the page".to_string());
+                        }
+                        self.pager(&section_at, pager);
+                    }
+                }
             }
         }
-        for (i, item) in page.items.iter().enumerate() {
-            self.item(&format!("{at}.items[{i}]"), item);
+    }
+
+    fn pager(&mut self, at: &str, pager: &Pager) {
+        self.id(at, &pager.id);
+        if pager.pages.is_empty() {
+            self.error(at, "no pages".to_string());
+        } else if !pager.pages.iter().any(|p| p.id == pager.default_page) {
+            self.error(
+                at,
+                format!("default page {:?} is not a page", pager.default_page),
+            );
         }
-        if let Some(pager) = &page.pager {
-            let pager_at = format!("{at}.pager");
-            self.frame(&pager_at, &pager.frame);
-            if let Some(color) = &pager.background {
-                self.color(&format!("{pager_at}.background"), color);
+        for (i, sub) in pager.pages.iter().enumerate() {
+            let sub_at = format!("{at}.pages[{i}]");
+            self.id(&sub_at, &sub.id);
+            for (s, section) in sub.sections.iter().enumerate() {
+                let section_at = format!("{sub_at}.sections[{s}]");
+                match section {
+                    Section::Group(group) => self.group(&section_at, group),
+                    Section::Pager(_) => {
+                        self.error(&section_at, "a pager inside a pager".to_string());
+                    }
+                }
             }
-            self.pages(&format!("{pager_at}.pages"), &pager.pages, &pager.tabbar);
+        }
+    }
+
+    fn group(&mut self, at: &str, group: &Group) {
+        if let Some(id) = &group.id {
+            self.id(at, id);
+        }
+        if let Some(color) = &group.color {
+            self.color(&format!("{at}.color"), color);
+        }
+        for (i, control) in group.controls.iter().enumerate() {
+            self.control(&format!("{at}.controls[{i}]"), control);
         }
     }
 
     fn color(&mut self, at: &str, color: &str) {
         if !is_color(color) {
             self.error(at, format!("{color:?} is not #RRGGBB or #RRGGBBAA"));
-        }
-    }
-
-    fn frame(&mut self, at: &str, f: &Frame) {
-        let finite = [f.x, f.y, f.w, f.h].iter().all(|n| n.is_finite());
-        let inside = f.x >= -CANVAS_SLACK
-            && f.y >= -CANVAS_SLACK
-            && f.x + f.w <= self.canvas.w + CANVAS_SLACK
-            && f.y + f.h <= self.canvas.h + CANVAS_SLACK;
-        if !finite || f.w <= 0.0 || f.h <= 0.0 || !inside {
-            self.error(
-                at,
-                format!(
-                    "frame ({}, {}, {}×{}) is not inside the {}×{} canvas",
-                    f.x, f.y, f.w, f.h, self.canvas.w, self.canvas.h
-                ),
-            );
         }
     }
 
@@ -628,46 +576,33 @@ impl Validator {
         }
     }
 
-    fn item(&mut self, at: &str, item: &Item) {
-        if let Some(id) = &item.id
-            && !self.item_ids.insert(id.clone())
-        {
-            self.error(at, format!("duplicate item id {id:?}"));
-        }
-        self.frame(&format!("{at}.frame"), &item.frame);
-        for (name, color) in [
-            ("bg", &item.style.bg),
-            ("color", &item.style.color),
-            ("text_color", &item.style.text_color),
-        ] {
-            if let Some(color) = color {
-                self.color(&format!("{at}.style.{name}"), color);
-            }
-        }
-        match &item.kind {
-            ItemKind::Strip(strip) => {
-                self.binding(&format!("{at}.binding"), &strip.binding);
-                for (name, frame) in strip.children.frames() {
-                    self.frame(&format!("{at}.children.{name}"), &frame);
-                }
-            }
-            ItemKind::Solo { binding } | ItemKind::Stage { binding, .. } => {
+    fn control(&mut self, at: &str, control: &Control) {
+        match control {
+            Control::Strip(strip) => self.binding(&format!("{at}.binding"), &strip.binding),
+            Control::Solo { binding, .. } | Control::Stage { binding, .. } => {
                 self.binding(&format!("{at}.binding"), binding);
             }
-            ItemKind::Alert { binding, period_ms } => {
+            Control::Alert {
+                binding, period_ms, ..
+            } => {
                 self.binding(&format!("{at}.binding"), binding);
                 if *period_ms == 0 {
                     self.error(at, "alert period 0 ms".to_string());
                 }
             }
-            ItemKind::HubToggle { key, .. } => {
+            Control::HubToggle { key, .. } => {
                 if key != HUB_STAGE_AUT {
                     self.error(at, format!("unknown hub value {key:?}"));
                 }
             }
-            ItemKind::ParamToggle { targets, .. } => self.targets(at, targets, true),
-            ItemKind::ParamFader { targets, .. } => self.targets(at, targets, false),
-            ItemKind::Area { .. } | ItemKind::Refresh { .. } | ItemKind::Label { .. } => {}
+            Control::ParamToggle { targets, color, .. } => {
+                if let Some(color) = color {
+                    self.color(&format!("{at}.color"), color);
+                }
+                self.targets(at, targets, true);
+            }
+            Control::ParamFader { targets, .. } => self.targets(at, targets, false),
+            Control::Refresh { .. } | Control::Text { .. } => {}
         }
     }
 

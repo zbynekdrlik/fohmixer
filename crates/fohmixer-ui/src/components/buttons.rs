@@ -4,21 +4,32 @@
 //! and takes a tap only once that value is here (I8).
 
 use fohmixer_proto::client::HUB_STAGE_AUT;
-use fohmixer_proto::layout::{Anchor, Binding, Frame, Style};
+use fohmixer_proto::layout::{Anchor, Binding};
 use leptos::prelude::*;
 use serde_json::{Value, json};
 
 use super::{fail_flash, readiness, slot_of};
-use crate::behave::label::strip_label;
+use crate::behave::colour::{css_color, text_on};
+use crate::behave::label::{label_chars, strip_label};
 use crate::behave::mute::{GUARD_MS, GuardAction, MuteGuard, lit};
 use crate::binding::{SubSpec, mute_sub, solo_sub};
 use crate::dom;
-use crate::stage;
 use crate::store::{LiveStore, Slot};
 
-/// The colours of a solo button (TouchOSC).
-const SOLO_ON: &str = "#3D61B8";
-const SOLO_OFF: &str = "#3C3C3C";
+/// The style of a button lit in Live's colour `value` (the track colour and
+/// the text colour that reads on it); nothing until the colour is known.
+fn colour_style(value: Option<f64>) -> String {
+    value
+        .and_then(|v| css_color(v).map(|css| format!("--tc:{css};--tt:{};", text_on(v))))
+        .unwrap_or_default()
+}
+
+/// A solo button's text: `SOLO` and its label, or the first word of its
+/// group track's name.
+fn solo_text(label: Option<&str>, binding: &Binding) -> String {
+    let name = label.map_or_else(|| strip_label(&anchor_name(binding)), str::to_string);
+    format!("SOLO {name}")
+}
 
 /// The name a binding's anchor shows.
 pub fn anchor_name(binding: &Binding) -> String {
@@ -30,7 +41,12 @@ pub fn anchor_name(binding: &Binding) -> String {
 }
 
 /// Writes the inverse of a flag slot's value.
-fn toggle_flag(store: LiveStore, spec: &SubSpec, slot: RwSignal<Slot>, failed: RwSignal<bool>) {
+pub(super) fn toggle_flag(
+    store: LiveStore,
+    spec: &SubSpec,
+    slot: RwSignal<Slot>,
+    failed: RwSignal<bool>,
+) {
     let Some(current) = slot.try_with_untracked(Slot::flag).flatten() else {
         return;
     };
@@ -43,14 +59,16 @@ fn toggle_flag(store: LiveStore, spec: &SubSpec, slot: RwSignal<Slot>, failed: R
     );
 }
 
-/// A strip's mute: lit while the track is audible; a guarded strip needs a
-/// second tap within 500 ms (the first arms and pulses).
+/// A strip's name button, its mute: lit in the track's Live colour while the
+/// track is audible; a guarded strip needs a second tap within 500 ms (the
+/// first arms and pulses).
 #[component]
 pub fn MuteView(
-    frame: Frame,
     state: RwSignal<Slot>,
     spec: SubSpec,
     guarded: bool,
+    label: String,
+    color: Option<RwSignal<Slot>>,
 ) -> impl IntoView {
     let store = expect_context::<LiveStore>();
     let slot = state;
@@ -97,6 +115,8 @@ pub fn MuteView(
         Some(false) => "false",
         None => "unknown",
     };
+    let look = move || colour_style(color.and_then(|c| c.with(Slot::number)));
+    let length = format!("--n:{};", label_chars(&label));
     view! {
         <div
             class="mute"
@@ -107,17 +127,20 @@ pub fn MuteView(
             data-muted=muted_attr
             data-binding=binding
             aria-disabled=disabled
-            style={stage::box_style(frame)}
+            style=look
             on:pointerdown=on_down
-        ></div>
+        >
+            <span class="strip-label" data-testid="strip-label" style=length>{label}</span>
+            <span class="mute-mark" aria-hidden="true">"MUTE"</span>
+        </div>
     }
 }
 
-/// A group-track solo (spec F14): independent, blue when on.
+/// A group-track solo (spec F14): independent, lit when on.
 #[component]
-pub fn SoloView(frame: Frame, z: i64, style: Style, binding: Binding) -> impl IntoView {
+pub fn SoloView(binding: Binding, label: Option<String>) -> impl IntoView {
     let store = expect_context::<LiveStore>();
-    let label = format!("SOLO {}", strip_label(&anchor_name(&binding)));
+    let label = solo_text(label.as_deref(), &binding);
     let track = anchor_name(&binding);
     let spec = solo_sub(&binding);
     let slot = slot_of(store, spec.as_ref());
@@ -132,17 +155,12 @@ pub fn SoloView(frame: Frame, z: i64, style: Style, binding: Binding) -> impl In
         });
     };
     let on = move || slot.with(Slot::flag) == Some(true);
-    let css = stage::item_style(frame, z, &style);
-    let look = move || {
-        let color = if on() { SOLO_ON } else { SOLO_OFF };
-        format!("{css}background:{color};")
-    };
     let state = Memo::new(move |_| readiness(&[slot]));
     let bound = move || state.get().name();
     let disabled = move || state.get().disabled();
     view! {
         <div
-            class="item button solo"
+            class="btn solo"
             class:on=on
             class:failed=move || failed.get()
             data-testid="solo"
@@ -150,7 +168,6 @@ pub fn SoloView(frame: Frame, z: i64, style: Style, binding: Binding) -> impl In
             data-on=move || on().to_string()
             data-binding=bound
             aria-disabled=disabled
-            style=look
             on:pointerdown=on_down
         >
             {label}
@@ -164,9 +181,9 @@ pub fn SoloView(frame: Frame, z: i64, style: Style, binding: Binding) -> impl In
 /// unknown or unmapped state stays dark: a lit STAGE means "the stage is open"
 /// (#9, parity audit #21).
 #[component]
-pub fn StageMicsView(frame: Frame, z: i64, style: Style, binding: Binding) -> impl IntoView {
+pub fn StageMicsView(binding: Binding, label: Option<String>) -> impl IntoView {
     let store = expect_context::<LiveStore>();
-    let label = style.text.clone().unwrap_or_else(|| "STAGE".to_string());
+    let label = label.unwrap_or_else(|| "STAGE".to_string());
     let spec = mute_sub(&binding);
     let slot = slot_of(store, spec.as_ref());
     let spec = StoredValue::new(spec);
@@ -186,14 +203,13 @@ pub fn StageMicsView(frame: Frame, z: i64, style: Style, binding: Binding) -> im
     let disabled = move || state.get().disabled();
     view! {
         <div
-            class="item button stage-mics"
+            class="btn stage-mics"
             class:on=live
             class:failed=move || failed.get()
             data-testid="stage-mics"
             data-muted=move || muted().to_string()
             data-binding=bound
             aria-disabled=disabled
-            style={stage::item_style(frame, z, &style)}
             on:pointerdown=on_down
         >
             {label}
@@ -203,13 +219,7 @@ pub fn StageMicsView(frame: Frame, z: i64, style: Style, binding: Binding) -> im
 
 /// A hub value's toggle: STAGE AUT (spec F15, X9: the rule runs in the hub).
 #[component]
-pub fn HubToggleView(
-    frame: Frame,
-    z: i64,
-    style: Style,
-    key: String,
-    label: String,
-) -> impl IntoView {
+pub fn HubToggleView(key: String, label: String) -> impl IntoView {
     let store = expect_context::<LiveStore>();
     let key = StoredValue::new(key);
     let value = move || {
@@ -241,12 +251,11 @@ pub fn HubToggleView(
     let disabled = move || if ready() { "false" } else { "true" };
     view! {
         <div
-            class="item button hub-toggle"
+            class="btn hub-toggle"
             class:on=on
             data-testid=testid
             data-on=move || on().to_string()
             aria-disabled=disabled
-            style={stage::item_style(frame, z, &style)}
             on:pointerdown=on_down
         >
             {label}
@@ -282,6 +291,29 @@ mod tests {
         );
         assert_eq!(anchor_name(&binding(Anchor::Master)), "Master");
         assert_eq!(anchor_name(&binding(Anchor::Song)), "Song");
+    }
+
+    #[test]
+    fn a_solo_says_solo_and_its_label_or_its_groups_first_word() {
+        let group = binding(Anchor::Track {
+            name: "Stems grp#".into(),
+        });
+        assert_eq!(solo_text(None, &group), "SOLO Stems");
+        assert_eq!(solo_text(Some("Podklady"), &group), "SOLO Podklady");
+    }
+
+    #[test]
+    fn a_name_button_takes_the_tracks_colour_once_known() {
+        assert_eq!(colour_style(None), "");
+        assert_eq!(colour_style(Some(12.5)), "");
+        assert_eq!(
+            colour_style(Some(f64::from(0xF5C451u32))),
+            "--tc:#F5C451;--tt:#10101a;"
+        );
+        assert_eq!(
+            colour_style(Some(f64::from(0x1E3A8Au32))),
+            "--tc:#1E3A8A;--tt:#f4f4fa;"
+        );
     }
 
     #[test]

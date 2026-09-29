@@ -22,12 +22,11 @@ fn layout_with_nobody() -> Value {
         std::fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/layout-ok.json"))
             .unwrap();
     let mut layout: Value = serde_json::from_slice(&text).unwrap();
-    layout["pages"][0]["items"]
+    layout["pages"][0]["rail"]
         .as_array_mut()
         .unwrap()
         .push(json!({
             "kind": "solo",
-            "frame": {"x": 1000, "y": 900, "w": 100, "h": 60},
             "binding": {"instance": "band", "anchor": {"kind": "track", "name": "Nobody #"}}
         }));
     layout

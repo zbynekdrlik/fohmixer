@@ -6,6 +6,9 @@
 //!                                       (the ACME client's DNS-01 records, #17)
 //!   fohmixer-hub config check <file>    check <file> as the hub's config (the installer, before
 //!                                       it stops the hub): exit 0, or 2 with why
+//!   fohmixer-hub layout check <layout> <config>
+//!                                       check <layout> as the layout the hub configured by <config>
+//!                                       would serve (the installer, #21): exit 0, or 2 with why
 //!
 //! `pin` and `cloudflare` run as the hub's user: what they store is sealed
 //! (DPAPI) for that account.
@@ -27,7 +30,7 @@ use fohmixer_hub::config::Config;
 use fohmixer_hub::provision::{self, ProvisionError};
 use tokio::sync::oneshot;
 
-const USAGE: &str = "usage: fohmixer-hub [pin set-engineer | cloudflare set-token | config check <file>]   (the PIN or the token is read from stdin)";
+const USAGE: &str = "usage: fohmixer-hub [pin set-engineer | cloudflare set-token | config check <file> | layout check <layout> <config>]   (the PIN or the token is read from stdin)";
 
 fn data_dir() -> PathBuf {
     PathBuf::from(std::env::var("FOHMIXER_DATA").unwrap_or_else(|_| ".".to_string()))
@@ -48,6 +51,7 @@ fn main() -> ExitCode {
         ["pin", "set-engineer"] => pin_command(),
         ["cloudflare", "set-token"] => token_command(),
         ["config", "check", file] => config_command(file),
+        ["layout", "check", layout, config] => layout_command(layout, config),
         _ => {
             eprintln!("{USAGE}");
             ExitCode::from(2)
@@ -100,6 +104,22 @@ fn config_command(file: &str) -> ExitCode {
     match Config::check_file(std::path::Path::new(file)) {
         Ok(()) => {
             eprintln!("fohmixer-hub: config {file}: OK");
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("fohmixer-hub: {e:#}");
+            ExitCode::from(2)
+        }
+    }
+}
+
+/// `layout check <layout> <config>`: exit 0 when the hub configured by
+/// `config` would serve `layout`, 2 (and why on stderr) when it would not.
+fn layout_command(layout: &str, config: &str) -> ExitCode {
+    let (layout_path, config_path) = (std::path::Path::new(layout), std::path::Path::new(config));
+    match fohmixer_hub::layout::check_files(layout_path, config_path) {
+        Ok(()) => {
+            eprintln!("fohmixer-hub: layout {layout}: OK");
             ExitCode::SUCCESS
         }
         Err(e) => {

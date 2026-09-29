@@ -218,6 +218,7 @@ class HarnessTest(unittest.TestCase):
     def test_which_lines_wait_for_an_answer(self):
         self.assertEqual(harness.expected_answer('rename "a" "b"'), "RENAMED")
         self.assertEqual(harness.expected_answer("listeners mute live_set"), "LISTENERS")
+        self.assertEqual(harness.expected_answer('meter "Hand1 #" 1.0'), "METER")
         self.assertIsNone(harness.expected_answer("stall 400"))
         self.assertIsNone(harness.expected_answer(""))
 

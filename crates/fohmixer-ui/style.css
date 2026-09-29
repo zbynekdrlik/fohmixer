@@ -1,20 +1,118 @@
-/* fohmixer UI (S4): the login and the scaled mixer stage. Positions, sizes
-   and the layout's colours come from the layout document (inline styles);
-   this sheet draws the controls. Moving parts (fader caps, fills, pan
-   dots, meter bars) are moved by the animation loop with transforms. */
+/* fohmixer UI (the redesign, #21; spec docs/superpowers/specs/2026-09-28-
+   ui-redesign-design.md §4): a dark FOH surface in the iemmixer design
+   language. The stylesheet lays the page out (rows by weight, sections left
+   to right); the strip width all rows share is `--strip-w` (computed by
+   `flow.rs`: keep its METRICS equal to the gaps and paddings here). Moving
+   parts are drawn from CSS variables the animation loop writes (`--p` on a
+   fader and a pan, a meter cover's transform). */
+
+@font-face {
+    font-family: "Barlow Condensed";
+    font-weight: 700;
+    font-display: block;
+    src: url("/fonts/barlow-condensed-latin-700-normal.woff2") format("woff2");
+    unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2212, U+221E;
+}
+@font-face {
+    font-family: "Barlow Condensed";
+    font-weight: 700;
+    font-display: block;
+    src: url("/fonts/barlow-condensed-latin-ext-700-normal.woff2") format("woff2");
+    unicode-range: U+0100-02AF, U+0304, U+0308, U+0329, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+    font-family: "Barlow";
+    font-weight: 600;
+    font-display: block;
+    src: url("/fonts/barlow-latin-600-normal.woff2") format("woff2");
+    unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2212, U+221E;
+}
+@font-face {
+    font-family: "Barlow";
+    font-weight: 600;
+    font-display: block;
+    src: url("/fonts/barlow-latin-ext-600-normal.woff2") format("woff2");
+    unicode-range: U+0100-02AF, U+0304, U+0308, U+0329, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+    font-family: "Barlow";
+    font-weight: 700;
+    font-display: block;
+    src: url("/fonts/barlow-latin-700-normal.woff2") format("woff2");
+    unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2212, U+221E;
+}
+@font-face {
+    font-family: "Barlow";
+    font-weight: 700;
+    font-display: block;
+    src: url("/fonts/barlow-latin-ext-700-normal.woff2") format("woff2");
+    unicode-range: U+0100-02AF, U+0304, U+0308, U+0329, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+    font-family: "JetBrains Mono";
+    font-weight: 500;
+    font-display: block;
+    src: url("/fonts/jetbrains-mono-latin-500-normal.woff2") format("woff2");
+    unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2212, U+221E;
+}
+@font-face {
+    font-family: "JetBrains Mono";
+    font-weight: 500;
+    font-display: block;
+    src: url("/fonts/jetbrains-mono-latin-ext-500-normal.woff2") format("woff2");
+    unicode-range: U+0100-02AF, U+0304, U+0308, U+0329, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+    font-family: "JetBrains Mono";
+    font-weight: 600;
+    font-display: block;
+    src: url("/fonts/jetbrains-mono-latin-600-normal.woff2") format("woff2");
+    unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2212, U+221E;
+}
+@font-face {
+    font-family: "JetBrains Mono";
+    font-weight: 600;
+    font-display: block;
+    src: url("/fonts/jetbrains-mono-latin-ext-600-normal.woff2") format("woff2");
+    unicode-range: U+0100-02AF, U+0304, U+0308, U+0329, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
 :root {
     color-scheme: dark;
-    --bg: #000000;
-    --stage: #0b0d10;
-    --panel: #15181d;
-    --text: #e6e8eb;
-    --muted: #8a9099;
-    --accent: #34c1dc;
-    --lit: #d8a31a;
-    --off: #2a2d33;
+    /* Surfaces, darkest first. */
+    --bg: #07070c;
+    --page: #0b0b12;
+    --bar: #11111b;
+    --section: #151522;
+    --panel: #1a1a28;
+    --panel-hi: #20203a;
+    --track: #0a0a14;
+    --line: #2a2a44;
+    --line-soft: rgba(255, 255, 255, 0.06);
+    /* One accent and its alphas; mute, solo, the instances. */
+    --accent: #4ecdc4;
+    --accent-dim: rgba(78, 205, 196, 0.28);
+    --accent-glow: rgba(78, 205, 196, 0.45);
+    --mute: #e63946;
+    --mute-dim: rgba(230, 57, 70, 0.22);
+    --solo: #f4d35e;
+    --band: #4ecdc4;
+    --master: #8b7dff;
+    /* Text. */
+    --text: #eaeaf0;
+    --muted: #9a9ab4;
+    --faint: #5c5c78;
+    /* The meter's zones (TouchOSC's colours) and the states. */
+    --m-green: #36d67a;
+    --m-yellow: #f5d547;
+    --m-red: #ff4757;
+    --off: #262636;
     --danger: #ff3b30;
-    --ok: #2ecc40;
+    --ok: #36d67a;
     --warn: #f5a623;
+    --display: "Barlow Condensed", "Arial Narrow", sans-serif;
+    --ui: "Barlow", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --mono: "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
 }
 
 * {
@@ -28,7 +126,7 @@ body {
     overflow: hidden;
     background: var(--bg);
     color: var(--text);
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-family: var(--ui);
     /* A touch surface: no text selection, no callouts, no zoom. */
     -webkit-user-select: none;
     user-select: none;
@@ -131,13 +229,13 @@ body {
     font-variant-numeric: tabular-nums;
 }
 
-/* --- surface and stage --- */
+/* --- surface --- */
 
 .surface {
     position: absolute;
     inset: 0;
     overflow: hidden;
-    background: var(--bg);
+    background: var(--page);
 }
 
 .surface-wait {
@@ -149,142 +247,121 @@ body {
     color: var(--muted);
 }
 
-.stage {
+.mixer {
     position: absolute;
-    left: 0;
-    top: 0;
-    transform-origin: 0 0;
-    background: var(--stage);
-    overflow: hidden;
+    inset: 0;
+    display: grid;
+    grid-template-rows: 46px minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr);
+    background: var(--page);
     touch-action: none;
 }
 
-.layer {
-    position: absolute;
-    left: 0;
-    top: 0;
-    width: 100%;
-    height: 100%;
-    pointer-events: none;
+/* --- the top bar --- */
+
+.topbar {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    min-width: 0;
+    padding: 0 12px;
+    background: var(--bar);
+    border-bottom: 1px solid var(--line-soft);
 }
 
-.item {
-    position: absolute;
-    pointer-events: auto;
-    overflow: hidden;
-}
-
-[aria-disabled="true"] {
-    opacity: 0.35;
-    cursor: not-allowed;
-}
-
-.failed {
-    box-shadow: inset 0 0 0 5px var(--danger);
-}
-
-/* A binding that does not resolve (I5): red, whatever the control. */
-[data-binding="unresolved"] {
-    opacity: 1;
-    background-color: var(--danger) !important;
-}
-
-/* tab bars */
-
-.tabbar {
-    position: absolute;
-    z-index: 900;
-    pointer-events: auto;
-    background: #050607;
+.seg {
+    display: flex;
+    flex: none;
+    gap: 2px;
+    padding: 3px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--track);
 }
 
 .tab {
-    position: absolute;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: #ffffff;
-    font-size: 30px;
-    border-right: 2px solid #000000;
-    border-bottom: 2px solid #000000;
-    cursor: pointer;
+    padding: 8px 14px;
+    border: 0;
+    border-radius: 7px;
+    background: none;
+    color: var(--muted);
+    font: 700 13px/1 var(--ui);
+    letter-spacing: 1px;
+    text-transform: uppercase;
     white-space: nowrap;
-    overflow: hidden;
+    cursor: pointer;
+    touch-action: manipulation;
 }
 
 .tab.selected {
-    filter: brightness(1.8);
-    box-shadow: inset 0 -6px 0 var(--accent);
+    background: var(--panel-hi);
+    color: var(--text);
+    box-shadow: inset 0 -2px 0 var(--accent);
 }
 
-/* A tab with its own lit colour (tabColorOn) shows it as it is. */
-.tab.selected.own-lit {
-    filter: none;
+.seg[data-level="1"] .tab.selected {
+    box-shadow: inset 0 -2px 0 var(--solo);
 }
 
-.tabbar.vertical .tab.selected {
-    box-shadow: inset -6px 0 0 var(--accent);
+.spacer {
+    flex: 1;
 }
 
-/* The title; its size is fitted to the tab in the page (dom::fit_text). A
-   vertical bar's titles run along it: upwards on the left, downwards on
-   the right. */
-.tab-title {
-    white-space: nowrap;
-    line-height: 1.15;
+.solo-clear {
+    display: none;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 12px;
+    border: 0;
+    border-radius: 999px;
+    background: var(--solo);
+    color: #1a1a28;
+    font: 700 12px/1 var(--ui);
+    letter-spacing: 1px;
+    cursor: pointer;
 }
 
-.tabbar.vertical .tab-title {
-    writing-mode: vertical-rl;
-}
-
-.tabbar.left .tab-title {
-    transform: rotate(180deg);
-}
-
-/* A page's or pager's own fill, under what it holds. */
-.fill {
-    position: absolute;
-    pointer-events: none;
+.solo-clear.on {
+    display: inline-flex;
 }
 
 .status-cluster {
-    position: absolute;
-    z-index: 950;
     display: flex;
+    flex: none;
     align-items: center;
-    justify-content: flex-end;
-    gap: 18px;
-    padding: 0 18px;
+    gap: 12px;
     color: var(--muted);
-    font-size: 24px;
-    pointer-events: none;
+    font: 600 11px/1 var(--ui);
+    letter-spacing: 1px;
+    text-transform: uppercase;
 }
 
 .hub-dot {
-    width: 14px;
-    height: 14px;
+    width: 8px;
+    height: 8px;
     border-radius: 50%;
     background: var(--danger);
 }
 
 .hub-dot.online {
-    background: var(--ok);
+    background: var(--accent);
 }
 
 .badge {
     display: inline-flex;
     align-items: center;
-    gap: 8px;
+    gap: 6px;
 }
 
 .badge-dot {
-    width: 16px;
-    height: 16px;
+    width: 8px;
+    height: 8px;
     border-radius: 50%;
-    background: var(--danger);
+    background: var(--faint);
 }
 
+/* Static: an endless animation repaints every frame (#21: the CI's WebKit
+   drew 2.5 fps with them, 15 without). */
 .badge.online .badge-dot {
     background: var(--ok);
 }
@@ -293,294 +370,781 @@ body {
     background: var(--warn);
 }
 
+.badge.offline .badge-dot {
+    background: var(--danger);
+}
+
 .version {
+    color: var(--faint);
+    font: 500 10px/1.2 var(--mono);
+    text-transform: none;
+    letter-spacing: 0;
     font-variant-numeric: tabular-nums;
 }
 
-/* areas and texts */
+/* --- the page: the rail and the rows --- */
 
-.area {
-    border-radius: 6px;
-    pointer-events: none;
+.body {
+    display: grid;
+    grid-template-columns: 112px minmax(0, 1fr);
+    min-height: 0;
 }
 
-.area-title {
-    position: absolute;
-    inset: 0;
+.rail {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-height: 0;
+    padding: 10px 8px;
+    background: var(--bar);
+    border-right: 1px solid var(--line-soft);
+}
+
+/* The page's controls scroll if they must; TechAlert and REFRESH ALL, at
+   its foot, never leave the screen. */
+.rail-main {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    gap: 6px;
+    min-height: 0;
+    overflow-y: auto;
+}
+
+.rail-foot {
+    display: flex;
+    flex: none;
+    flex-direction: column;
+    gap: 6px;
+}
+
+/* Rows: flow.rs METRICS.section_gap = the row gap; ROWS_PAD = both paddings. */
+.rows {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-width: 0;
+    min-height: 0;
+    padding: 8px 10px 10px;
+    overflow: hidden;
+}
+
+.row {
+    display: flex;
+    gap: 10px;
+    min-width: 0;
+    min-height: 0;
+}
+
+.row.scrolls {
+    overflow-x: auto;
+    touch-action: pan-x;
+}
+
+/* A pager is as wide as its widest sub-page (flow.rs pager_shape, inline),
+   so switching it never moves the row's other groups. */
+.pager {
+    display: flex;
+    flex: none;
+    min-height: 0;
+}
+
+.pager-page {
+    display: flex;
+    gap: 10px;
+    min-height: 0;
+}
+
+.group {
+    display: grid;
+    grid-template-rows: 18px minmax(0, 1fr);
+    gap: 4px;
+    flex: none;
+    min-width: 0;
+    min-height: 0;
+}
+
+/* A title never makes its group wider than its strips (flow.rs counts the
+   strips only): its width does not count toward the group's size. */
+.group-title {
     display: flex;
     align-items: center;
-    justify-content: center;
-    color: #ffffff;
-    font-size: 22px;
-    font-weight: 600;
-    letter-spacing: 0.08em;
-}
-
-.area.vertical .area-title {
-    writing-mode: vertical-rl;
-    transform: rotate(180deg);
-}
-
-.label {
-    pointer-events: none;
-    white-space: pre-wrap;
-    color: #d7dade;
-    font-size: 22px;
-    line-height: 1.35;
-}
-
-.conf-info {
-    position: absolute;
-    left: 40px;
-    bottom: 40px;
+    gap: 6px;
+    min-width: 0;
+    margin: 0;
+    overflow: hidden;
+    contain: inline-size;
+    text-overflow: ellipsis;
     color: var(--muted);
-    font-size: 26px;
-    font-variant-numeric: tabular-nums;
+    font: 600 11px/18px var(--ui);
+    letter-spacing: 1.4px;
+    text-transform: uppercase;
+    white-space: nowrap;
 }
 
-/* strips */
+.group-mark {
+    flex: none;
+    width: 8px;
+    height: 8px;
+    border-radius: 2px;
+    background: var(--gc, var(--accent));
+}
+
+/* flow.rs METRICS: section_pad = padding + border (both sides), strip_gap. */
+.group-body {
+    display: flex;
+    gap: 4px;
+    min-height: 0;
+    padding: 4px;
+    border: 1px solid var(--line-soft);
+    border-radius: 12px;
+    background: var(--section);
+}
+
+/* A group of buttons (the cue page): a grid filling the rest of the row
+   (METRICS.free_min + the padding). */
+.group.buttons {
+    flex: 1 1 0;
+    min-width: 190px;
+}
+
+.group.buttons .group-body {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    grid-auto-rows: 72px;
+    align-content: start;
+    gap: 6px;
+    padding: 8px;
+}
+
+.group.buttons .btn {
+    font-size: 15px;
+    text-align: center;
+    padding-left: 8px;
+}
+
+/* A group of texts (the Conf page): one line each, as wide as the row. */
+.group.texts {
+    flex: 1 1 0;
+}
+
+.group.texts .group-body {
+    display: block;
+    overflow-y: auto;
+}
+
+/* --- rail buttons (stage, STAGE AUT, solos, the former MIDI toggles,
+   TechAlert, REFRESH ALL) --- */
+
+.btn {
+    --c: var(--accent);
+    position: relative;
+    display: grid;
+    align-content: center;
+    min-height: 44px;
+    padding: 6px 8px 6px 20px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--panel);
+    color: var(--muted);
+    font: 700 11.5px/1.15 var(--ui);
+    letter-spacing: 0.6px;
+    text-transform: uppercase;
+    text-align: left;
+    overflow-wrap: anywhere;
+    cursor: pointer;
+    touch-action: none;
+}
+
+.btn::before {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 8px;
+    width: 6px;
+    height: 6px;
+    margin-top: -3px;
+    border-radius: 50%;
+    background: var(--faint);
+}
+
+.btn.on,
+.param-toggle[data-state="on"] {
+    border-color: color-mix(in srgb, var(--c) 55%, transparent);
+    background: color-mix(in srgb, var(--c) 18%, var(--panel));
+    color: var(--text);
+}
+
+.btn.on::before,
+.param-toggle[data-state="on"]::before {
+    background: var(--c);
+    box-shadow: 0 0 8px var(--c);
+}
+
+.param-toggle[data-state="mixed"] {
+    background: linear-gradient(135deg, color-mix(in srgb, var(--c) 18%, var(--panel)) 50%, var(--panel) 50%);
+    color: var(--text);
+}
+
+.stage-mics { --c: #4fa3ff; }
+.hub-toggle { --c: #6d86ff; }
+.solo { --c: var(--solo); }
+.param-toggle { --c: #ff9f43; }
+.alert-toggle { --c: var(--mute); }
+
+/* A guarded button's first tap (TechAlert): it arms and pulses. */
+.btn.armed {
+    outline: 2px solid var(--solo);
+    outline-offset: 1px;
+    animation: arm 0.5s ease-out infinite;
+}
+
+.refresh {
+    padding-left: 8px;
+    border-color: var(--accent-dim);
+    color: var(--accent);
+    text-align: center;
+}
+
+.refresh::before {
+    display: none;
+}
+
+.refresh.flash {
+    background: var(--m-yellow);
+    color: #10101a;
+}
+
+/* TechAlert: the red wash over the whole surface, blinking while unmuted. */
+.alert-wash {
+    position: fixed;
+    inset: 0;
+    z-index: 50;
+    background: rgba(255, 45, 70, 0.14);
+    pointer-events: none;
+}
+
+/* --- strips --- */
 
 .strip {
-    border-radius: 8px;
+    position: relative;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto minmax(0, 1fr) auto auto;
+    gap: 4px;
+    flex: none;
+    width: var(--strip-w, 76px);
+    min-height: 0;
+    padding: 6px 4px 5px;
+    border: 1px solid transparent;
+    border-radius: 9px;
     background: var(--panel);
 }
 
-.strip > *,
-.fader,
-.pan,
-.mute,
-.meter,
-.status {
-    position: absolute;
+.strip.wide {
+    width: calc(var(--strip-w, 76px) * 1.1);
 }
 
-.fader {
-    touch-action: none;
-    cursor: ns-resize;
-}
-
-.fader-groove {
-    position: absolute;
-    left: calc(50% - 3px);
-    top: 18px;
-    bottom: 18px;
-    width: 6px;
-    border-radius: 3px;
-    background: #2b3038;
-}
-
-.fader-fill {
-    position: absolute;
-    left: 30%;
-    right: 30%;
-    top: 18px;
-    bottom: 18px;
-    border-radius: 4px;
-    background: rgba(52, 193, 220, 0.35);
-    transform-origin: 50% 100%;
-    transform: scaleY(0);
-}
-
-.fader-cap {
-    position: absolute;
-    left: 6px;
-    right: 6px;
-    bottom: 0;
-    height: 36px;
-    border-radius: 5px;
-    background: linear-gradient(#e3e6ea, #9aa2ad);
-    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.6);
-}
-
-.fader-cap::after {
+/* No rounded clip on the strip (a clip is painted again with every change
+   inside it): its edge lines are borders of a layer as large as the strip,
+   so they follow its rounded corners, and take no touch. */
+.strip::before,
+.strip::after {
     content: "";
     position: absolute;
-    left: 8px;
-    right: 8px;
-    top: 16px;
-    height: 4px;
-    background: #20242a;
+    inset: 0;
+    border-radius: 8px;
+    pointer-events: none;
 }
 
+.strip::before {
+    border-top: 3px solid var(--gc, var(--accent));
+    opacity: 0.9;
+}
+
+/* A muted strip: a red edge, its fader, meter and dB dimmed. */
+.strip:has(.mute[data-muted="true"])::after {
+    border-left: 3px solid var(--mute);
+}
+
+.strip:has(.mute[data-muted="true"]) :is(.fader-cap, .fader-fill, .meter, .db) {
+    opacity: 0.4;
+}
+
+.strip-tag {
+    justify-self: center;
+    padding: 1px 3px;
+    border-radius: 4px;
+    color: var(--band);
+    background: rgba(78, 205, 196, 0.14);
+    /* The strip's texts are sized from the strip width (`--strip-w`), never
+       measured (#21: measuring each text forced a layout per text, and
+       WebKit stopped drawing frames while it ran): the tag's longest form
+       "MASTER · RET" fits from the narrowest strip up (the name: see
+       .strip-label); an ellipsis is the last guard, never an overflow (#9). */
+    font: 700 clamp(7px, calc((var(--strip-w, 76px) - 22px) / 7), 8.5px) / 1.3 var(--ui);
+    letter-spacing: 0.3px;
+    text-transform: uppercase;
+    white-space: nowrap;
+    max-width: 100%;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.strip-tag[data-instance="master"] {
+    color: var(--master);
+    background: rgba(139, 125, 255, 0.16);
+}
+
+/* The pan bar: a fill from the centre and a dot (`--p`, `--lo`, `--w`). */
 .pan {
-    touch-action: none;
+    position: relative;
+    height: 16px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--track);
     cursor: ew-resize;
+    touch-action: none;
 }
 
 .pan-track {
     position: absolute;
-    left: 14px;
-    right: 14px;
-    top: calc(50% - 2px);
-    height: 4px;
-    border-radius: 2px;
-    background: #2b3038;
+    top: 3px;
+    bottom: 3px;
+    left: 50%;
+    width: 1px;
+    background: var(--faint);
+}
+
+.pan-fill {
+    position: absolute;
+    top: 4px;
+    bottom: 4px;
+    left: calc(var(--lo, 0.5) * 100%);
+    width: calc(var(--w, 0) * 100%);
+    border-radius: 3px;
+    background: var(--accent-dim);
 }
 
 .pan-dot {
     position: absolute;
-    left: 0;
-    top: 0;
-    width: 28px;
-    height: 100%;
-    border-radius: 14px;
-    background: #646464;
+    top: 1px;
+    left: calc(var(--p, 0.5) * (100% - 12px));
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: #8a8aa0;
 }
 
-.mute {
-    border-radius: 6px;
-    background: var(--off);
-    cursor: pointer;
+/* The fader zone: the dB scale, the meter, the fader, one height. The
+   fader covers the whole zone (its touch target is the strip's width, not
+   its column); its groove, fill and cap sit in the third column, centred at
+   50% + 17px (the scale's 17 px, the meter's 11, two 3 px gaps). */
+.strip-fz {
+    display: grid;
+    grid-template-columns: 17px 11px minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
+    gap: 3px;
+    min-height: 0;
+    padding: 8px 0 4px;
 }
 
-.mute.lit {
-    background: var(--lit);
+.strip-fz .scale {
+    grid-area: 1 / 1;
 }
 
-.mute.armed {
-    animation: armed 0.25s ease-in-out infinite alternate;
+.strip-fz .meter {
+    grid-area: 1 / 2;
 }
 
-@keyframes armed {
-    from {
-        box-shadow: inset 0 0 0 0 #ffffff;
-    }
-    to {
-        box-shadow: inset 0 0 0 6px #ffffff;
-    }
+.strip-fz .fader {
+    grid-area: 1 / 1 / 2 / 4;
+    --x: calc(50% + 17px);
+}
+
+.param-fz .fader {
+    grid-area: 1 / 1;
+    --x: 50%;
+}
+
+.meter-clip {
+    z-index: 2;
+}
+
+.scale {
+    position: relative;
+}
+
+.tick {
+    position: absolute;
+    right: 0;
+    transform: translateY(-50%);
+    color: var(--faint);
+    font: 500 8.5px/1 var(--mono);
+    white-space: nowrap;
+}
+
+.tick.unity {
+    color: var(--muted);
 }
 
 .meter {
-    display: flex;
+    position: relative;
+}
+
+.meter-bars {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    grid-auto-columns: 1fr;
+    grid-auto-flow: column;
     gap: 1px;
-    pointer-events: none;
+}
+
+/* The clip light over the bars (a larger tap area than its 4 px light). */
+.meter-clip {
+    position: absolute;
+    top: -9px;
+    left: -3px;
+    right: -3px;
+    height: 9px;
+    cursor: pointer;
+    touch-action: none;
+}
+
+.meter-clip::before {
+    content: "";
+    position: absolute;
+    top: 2px;
+    left: 3px;
+    right: 3px;
+    height: 4px;
+    border-radius: 2px;
+    background: #2a1016;
+}
+
+.meter-clip.on::before {
+    background: var(--m-red);
+    box-shadow: 0 0 6px var(--m-red);
+}
+
+/* The peak line: a layer as tall as the bar, its line at the top edge,
+   moved by `--pk` (0 at the bottom) as a transform of its own height, so a
+   frame never lays anything out (no container units: WebKit resolved them
+   with a layout pass per frame, #21). */
+.meter-peak {
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+    transform: translateY(calc((1 - var(--pk, 0)) * 100%));
+    will-change: transform;
+}
+
+.meter-peak::before {
+    content: "";
+    position: absolute;
+    top: -1px;
+    left: 0;
+    right: 0;
+    height: 2px;
+    background: #ffffff;
 }
 
 .meter-bar {
     position: relative;
-    flex: 1;
-    background: #101215;
+    overflow: hidden;
+    background: #0e0e18;
 }
 
-.meter-fill {
+.meter-zones {
     position: absolute;
     inset: 0;
-    background: rgb(0, 204, 0);
-    transform-origin: 50% 100%;
-    transform: scaleY(0);
+    background: linear-gradient(
+        to top,
+        var(--m-green) 0 var(--yellow, 31%),
+        var(--m-yellow) var(--yellow, 31%) var(--red, 61%),
+        var(--m-red) var(--red, 61%) 100%
+    );
+}
+
+/* The moving parts on layers of their own: a meter frame composites, it
+   paints nothing around it. */
+.meter-cover {
+    position: absolute;
+    inset: 0;
+    background: #0e0e18;
+    transform-origin: top;
+    transform: scaleY(1);
+    will-change: transform;
+}
+
+/* The fader: the cap's centre runs the whole track (`--p`, 0 at the
+   bottom); the unity line sits at 0 dB (the fader law's 0.7294). */
+.fader {
+    position: relative;
+    cursor: ns-resize;
+    touch-action: none;
+}
+
+.fader::after {
+    content: "";
+    position: absolute;
+    top: 27.06%;
+    left: calc(var(--x, 50%) - 16px);
+    right: 2px;
+    height: 1px;
+    background: rgba(255, 255, 255, 0.28);
+}
+
+.fader-groove,
+.fader-fill {
+    position: absolute;
+    left: var(--x, 50%);
+    width: 6px;
+    margin-left: -3px;
+    border-radius: 3px;
+}
+
+.fader-groove {
+    top: 0;
+    bottom: 0;
+    background: var(--track);
+    box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.fader-fill {
+    bottom: 0;
+    height: 100%;
+    transform-origin: bottom;
+    transform: scaleY(var(--p, 0));
+    background: linear-gradient(to top, rgba(78, 205, 196, 0.25), var(--accent));
+}
+
+/* The cap rides the bottom of a layer as tall as the track, moved up by
+   `--p` as a transform of its own height (no container units, see
+   .meter-peak). Upward, so the layer never adds a scroll range to a
+   scrolling row. The layer takes no touch; the cap does, and passes it on
+   to the fader (its edges stand out of the fader's box at the ends). */
+.fader-rail {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    pointer-events: none;
+    transform: translateY(calc(var(--p, 0) * -100%));
+    will-change: transform;
+}
+
+/* 32 px wide, narrower on a strip under 70 px so it stays inside it (its
+   centre is 45 px from the fader's left edge at 64 px). */
+.fader-cap {
+    --cap-w: min(32px, calc(var(--strip-w, 76px) - 38px));
+    position: absolute;
+    top: 100%;
+    left: var(--x, 50%);
+    width: var(--cap-w);
+    height: 22px;
+    margin: -11px 0 0 calc(var(--cap-w) / -2);
+    border: 1px solid #4a4a66;
+    border-bottom-color: #15151f;
+    border-radius: 6px;
+    background: linear-gradient(#3a3a52, #262638);
+    pointer-events: auto;
+}
+
+.fader-cap::before {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 6px;
+    right: 6px;
+    height: 2px;
+    margin-top: -1px;
+    border-radius: 1px;
+    background: var(--text);
+}
+
+.fader:active .fader-cap {
+    border-color: var(--accent);
+}
+
+.strip-dbrow {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    min-height: 12px;
 }
 
 .status {
-    border-radius: 4px;
-    background: rgb(255, 0, 0);
-    pointer-events: none;
+    flex: none;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--danger);
 }
 
-.strip-db,
-.strip-label,
-.strip-instance {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    pointer-events: none;
-    white-space: nowrap;
-    overflow: hidden;
-}
-
-.strip-db {
-    color: #ffffff;
-    font-size: 22px;
+.db {
+    color: #9be7a8;
+    /* A line tall enough for the font's whole height (the text never
+       passes its box, #9). */
+    font: 600 12px/1.4 var(--mono);
     font-variant-numeric: tabular-nums;
-    text-shadow: 0 1px 3px #000000;
+    white-space: nowrap;
 }
 
-.strip-label {
+.db.unity {
     color: #ffffff;
-    font-size: 24px;
-    font-weight: 700;
-    text-shadow: 0 1px 3px #000000;
 }
 
-.strip-instance {
-    color: rgba(255, 255, 255, 0.7);
-    font-size: 15px;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-}
-
-/* buttons */
-
-.button {
+/* The name button is the mute: lit in the track's Live colour (`--tc`, the
+   text `--tt`) while the track is audible; dark with a red MUTE mark while
+   muted. */
+.mute {
+    position: relative;
     display: flex;
     align-items: center;
     justify-content: center;
-    padding: 4px;
-    border-radius: 8px;
-    background: #3c3c3c;
-    color: #ffffff;
-    font-size: 22px;
-    font-weight: 700;
-    text-align: center;
+    min-width: 0;
+    height: 34px;
+    padding: 0 4px;
+    border-radius: 7px;
+    background: #1f1f2e;
+    box-shadow: inset 0 0 0 1px var(--mute-dim);
+    color: var(--faint);
+    font: 700 clamp(11px, calc(var(--strip-w, 76px) * 0.2), 15px) / 1 var(--display);
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
     cursor: pointer;
+    touch-action: none;
 }
 
-.button.on {
-    filter: brightness(1.7);
-    box-shadow: inset 0 0 0 4px rgba(255, 255, 255, 0.85);
+/* Until Live's colour arrives (or when it cannot), the accent: light, so the
+   dark text reads on it. */
+.mute.lit {
+    background: var(--tc, var(--accent));
+    box-shadow: none;
+    color: var(--tt, #10101a);
 }
 
-.param-toggle[data-state="off"],
-.hub-toggle:not(.on),
-.stage-mics:not(.on) {
-    filter: brightness(0.6);
+.mute.armed {
+    outline: 2px solid var(--solo);
+    outline-offset: 1px;
+    animation: arm 0.5s ease-out infinite;
 }
 
-.param-toggle[data-state="on"] {
-    filter: brightness(1.7);
-    box-shadow: inset 0 0 0 4px rgba(255, 255, 255, 0.85);
+@keyframes arm {
+    to { outline-offset: 4px; outline-color: transparent; }
 }
 
-.param-toggle[data-state="mixed"] {
-    background-image: linear-gradient(135deg, rgba(255, 255, 255, 0.28) 50%, transparent 50%);
+/* The name's size comes from the strip width and the name's length `--n`
+   (its characters, written once by the component; nothing is measured):
+   at most 0.2 of the strip width, and small enough that `--n` capitals
+   of the display face (~0.46 em each, 0.5 em counted) and their 0.5 px
+   spacing fill the button's inner width (strip width - 18 px) at most. A
+   name of wide letters (W, M) can still end in an ellipsis. */
+.strip-label {
+    display: block;
+    max-width: 100%;
+    overflow: hidden;
+    font-size: clamp(
+        9px,
+        min(
+            calc(var(--strip-w, 76px) * 0.2),
+            calc((var(--strip-w, 76px) - 18px - var(--n, 5) * 0.5px) / (var(--n, 5) * 0.5))
+        ),
+        15px
+    );
+    line-height: 1.3;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
-.refresh.flash {
-    background: #ffff00 !important;
-    color: #000000;
-}
-
-.param-fader {
-    border-radius: 8px;
-}
-
-.param-fader-text {
+.mute-mark {
+    display: none;
     position: absolute;
-    left: 0;
-    right: 0;
-    top: 6px;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 2px;
-    pointer-events: none;
-    color: #ffffff;
-    font-size: 18px;
-    text-shadow: 0 1px 3px #000000;
+    top: 2px;
+    right: 3px;
+    color: var(--mute);
+    font: 800 7.5px/1 var(--ui);
+    letter-spacing: 0.6px;
+}
+
+.mute[data-muted="true"] .mute-mark {
+    display: block;
+}
+
+/* A former MIDI fader (Podklady All): a strip of its label, fader and
+   Live's display string of its first target. */
+.strip.param-fader {
+    grid-template-rows: auto minmax(0, 1fr) auto;
+}
+
+.param-fz {
+    grid-template-columns: minmax(0, 1fr);
+}
+
+.param-fader-label,
+.param-fader-display {
+    overflow: hidden;
+    color: var(--muted);
+    font: 600 10px/1.2 var(--ui);
+    text-align: center;
+    text-transform: uppercase;
+    white-space: nowrap;
 }
 
 .param-fader-display {
-    font-variant-numeric: tabular-nums;
+    color: #9be7a8;
+    font-family: var(--mono);
+    text-transform: none;
 }
 
-/* The TechAlert overlay never takes a touch. */
-.alert {
-    pointer-events: none !important;
+/* --- the Conf page --- */
+
+.text {
+    padding: 8px;
+    color: var(--muted);
+    font: 500 13px/1.5 var(--mono);
+    white-space: pre-wrap;
 }
 
-/* An unresolved TechAlert binding: a red frame (the overlay covers the
-   stage, so no fill), shown whatever the blink says. */
-.alert[data-binding="unresolved"] {
+.conf-info {
+    position: absolute;
+    right: 16px;
+    bottom: 12px;
+    color: var(--faint);
+    font: 500 12px/1.2 var(--mono);
+}
+
+/* --- states --- */
+
+[aria-disabled="true"] {
+    opacity: 0.35;
+    cursor: not-allowed;
+}
+
+.failed {
+    box-shadow: inset 0 0 0 3px var(--danger) !important;
+}
+
+/* A binding that does not resolve (I5): red, whatever the control. */
+[data-binding="unresolved"] {
+    opacity: 1;
+    background-color: var(--danger) !important;
+}
+
+/* An unresolved TechAlert binding: a red frame, never a red wash. */
+.alert-wash[data-binding="unresolved"] {
     visibility: visible !important;
-    background-color: transparent !important;
-    box-shadow: inset 0 0 0 4px var(--danger);
+    background: none !important;
+    box-shadow: inset 0 0 0 6px var(--danger);
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .mute.armed,
+    .btn.armed {
+        animation: none;
+    }
 }

@@ -41,47 +41,6 @@ pub fn set_attr(element: &web_sys::Element, name: &str, value: &str) {
     let _ = element.set_attribute(name, value);
 }
 
-/// Fits `el`'s text into `el`: sets `base_px` (or, for `None`, the
-/// stylesheet's size, an earlier fit dropped) as its font size, measures the
-/// laid-out text against the element's box (both in page px, so the stage's
-/// scale cancels out) and sets the size [`crate::stage::fitted_font`] gives.
-pub fn fit_text(el: &web_sys::HtmlElement, base_px: Option<f64>) {
-    let base = match base_px {
-        Some(px) => px,
-        None => {
-            let _ = el.style().remove_property("font-size");
-            let Some(px) = computed_px(el, "font-size") else {
-                return;
-            };
-            px
-        }
-    };
-    set_style(el, "font-size", &format!("{base}px"));
-    let Some(document) = web_sys::window().and_then(|w| w.document()) else {
-        return;
-    };
-    let Ok(range) = document.create_range() else {
-        return;
-    };
-    if range.select_node_contents(el).is_err() {
-        return;
-    }
-    let text = range.get_bounding_client_rect();
-    let room = el.get_bounding_client_rect();
-    let size = crate::stage::fitted_font(
-        base,
-        (text.width(), text.height()),
-        (room.width(), room.height()),
-    );
-    set_style(el, "font-size", &format!("{size}px"));
-}
-
-/// A computed CSS length of `el` in px (`getComputedStyle`).
-fn computed_px(el: &web_sys::HtmlElement, prop: &str) -> Option<f64> {
-    let style = web_sys::window()?.get_computed_style(el).ok()??;
-    crate::stage::px_value(&style.get_property_value(prop).ok()?)
-}
-
 /// The viewport's size in CSS px.
 pub fn viewport() -> (f64, f64) {
     let Some(window) = web_sys::window() else {

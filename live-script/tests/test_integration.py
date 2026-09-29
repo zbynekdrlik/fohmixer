@@ -254,6 +254,29 @@ class IntegrationTest(unittest.TestCase):
             self.assertLess(time.monotonic(), deadline, "".join(host.stderr))
             time.sleep(0.02)
 
+    def test_a_held_meter_stays_until_released(self):
+        # The UI tests' clip light (#21): the animation leaves a held track.
+        host = self.host(meters_hz=30)
+        a = self.client(host)
+        track = "live_set tracks[name=Hand1 #]"
+        self.assertEqual(self.answer(host, 'meter "Hand1 #" 0.95'), "METER 1")
+        for _ in range(3):
+            time.sleep(0.1)
+            self.assertEqual(a.call(track, "get_prop", {"prop": "output_meter_level"}), 0.95)
+            self.assertEqual(a.call(track, "get_prop", {"prop": "output_meter_left"}), 0.95)
+        self.assertEqual(self.answer(host, 'meter "Hand1 #" off'), "METER 1")
+        deadline = time.monotonic() + 2
+        while a.call(track, "get_prop", {"prop": "output_meter_level"}) == 0.95:
+            self.assertLess(time.monotonic(), deadline, "the animation moves it again")
+            time.sleep(0.05)
+        self.assertEqual(self.answer(host, 'meter "Nobody" 0.5'), "METER 0")
+        for line in ('meter "Hand1 #" 1.5', 'meter "Hand1 #" loud', 'meter "Hand1 #"', 'meter "x'):
+            host.control(line)
+        deadline = time.monotonic() + 2
+        while "".join(host.stderr).count("unknown control line") < 4:
+            self.assertLess(time.monotonic(), deadline, "".join(host.stderr))
+            time.sleep(0.02)
+
     def test_connect_event(self):
         a = self.client(self.host())
         self.assertEqual(

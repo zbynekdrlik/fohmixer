@@ -181,6 +181,20 @@ export async function openSurface(page: Page) {
   await expect(page.getByTestId("surface")).not.toHaveAttribute("data-refreshes", "0", { timeout: 5000 });
 }
 
+/**
+ * Live's display string in the strip readout's form (#21, TouchOSC's): one
+ * decimal rounded half away from zero, no unit, a real minus, "−∞" for
+ * silence.
+ */
+export function dbForm(display: string): string {
+  const n = display.trim().replace(/dB$/, "").trim();
+  if (/^-inf$/i.test(n)) return "−∞";
+  const x = Number(n);
+  const tenths = (Math.sign(x) * Math.round(Math.abs(x) * 10)) / 10;
+  if (tenths === 0) return "0.0";
+  return tenths < 0 ? `−${(-tenths).toFixed(1)}` : tenths.toFixed(1);
+}
+
 /** A strip by its track name and instance. */
 export function strip(page: Page, name: string, instance = "band"): Locator {
   return page.locator(`[data-testid="strip"][data-track="${name}"][data-instance="${instance}"]`);

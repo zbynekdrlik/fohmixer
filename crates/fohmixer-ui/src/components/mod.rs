@@ -1,10 +1,10 @@
-//! The surface's controls (spec §2.5): one generic component per layout
-//! item kind, each bound by the general binding form and placed from its
-//! canvas frame. Their behaviour lives in `crate::behave` (pure, tested);
-//! these components wire pointer events, the store and the animation loop
-//! to it. Moving parts are written by the shared frame loop only.
+//! The surface's controls (spec §2.5; schema 2, #21): one generic component
+//! per layout control kind, each bound by the general binding form; the
+//! stylesheet places them. Their behaviour lives in `crate::behave` (pure,
+//! tested); these components wire pointer events, the store and the
+//! animation loop to it. Moving parts are written by the shared frame loop
+//! only.
 
-pub mod area;
 pub mod buttons;
 pub mod fader;
 pub mod meter;
@@ -13,13 +13,12 @@ pub mod pan;
 pub mod params;
 pub mod strip;
 
-use fohmixer_proto::layout::{Item, ItemKind, MeterSource};
+use fohmixer_proto::layout::{Control, MeterSource};
 use leptos::prelude::*;
 
 use crate::binding::SubSpec;
 use crate::store::{LiveStore, Readiness, Slot};
 
-use area::{AreaView, LabelView};
 use buttons::{HubToggleView, SoloView, StageMicsView};
 use overlay::{AlertView, RefreshView};
 use params::{ParamFaderView, ParamToggleView};
@@ -81,52 +80,47 @@ pub fn readiness_now(slots: &[RwSignal<Slot>]) -> Readiness {
     }))
 }
 
-/// One placed layout item.
+/// One layout control.
 #[component]
-pub fn ItemView(item: Item) -> impl IntoView {
+pub fn ControlView(control: Control) -> impl IntoView {
     let settings = expect_context::<Settings>();
-    let frame = item.frame;
-    let z = item.z;
-    let style = item.style;
-    match item.kind {
-        ItemKind::Area { title } => {
-            view! { <AreaView frame=frame z=z style=style title=title /> }.into_any()
+    match control {
+        Control::Strip(strip) => {
+            view! { <StripView strip={*strip} settings=settings /> }.into_any()
         }
-        ItemKind::Label { text } => {
-            view! { <LabelView frame=frame z=z style=style text=text /> }.into_any()
+        Control::Solo { binding, label } => {
+            view! { <SoloView binding=binding label=label /> }.into_any()
         }
-        ItemKind::Strip(strip) => view! {
-            <StripView frame=frame z=z style=style strip={*strip} settings=settings />
+        Control::Stage { binding, label, .. } => {
+            view! { <StageMicsView binding=binding label=label /> }.into_any()
         }
-        .into_any(),
-        ItemKind::Solo { binding } => {
-            view! { <SoloView frame=frame z=z style=style binding=binding /> }.into_any()
+        Control::HubToggle { key, label } => {
+            view! { <HubToggleView key=key label=label /> }.into_any()
         }
-        ItemKind::Stage { binding, .. } => {
-            view! { <StageMicsView frame=frame z=z style=style binding=binding /> }.into_any()
-        }
-        ItemKind::HubToggle { key, label } => view! {
-            <HubToggleView frame=frame z=z style=style key=key label=label />
-        }
-        .into_any(),
-        ItemKind::ParamToggle {
+        Control::ParamToggle {
             label,
             targets,
             press,
+            color,
         } => view! {
-            <ParamToggleView frame=frame z=z style=style label=label targets=targets press=press />
+            <ParamToggleView label=label targets=targets press=press color=color />
         }
         .into_any(),
-        ItemKind::ParamFader { label, targets } => view! {
-            <ParamFaderView frame=frame z=z style=style label=label targets=targets />
+        Control::ParamFader { label, targets } => {
+            view! { <ParamFaderView label=label targets=targets /> }.into_any()
+        }
+        Control::Alert {
+            binding,
+            period_ms,
+            label,
+            mute_guard,
+        } => view! {
+            <AlertView binding=binding period_ms=period_ms label=label guarded=mute_guard />
         }
         .into_any(),
-        ItemKind::Alert { binding, period_ms } => view! {
-            <AlertView frame=frame z=z style=style binding=binding period_ms=period_ms />
-        }
-        .into_any(),
-        ItemKind::Refresh { label } => {
-            view! { <RefreshView frame=frame z=z style=style label=label /> }.into_any()
+        Control::Refresh { label } => view! { <RefreshView label=label /> }.into_any(),
+        Control::Text { text } => {
+            view! { <div class="text" data-testid="label">{text}</div> }.into_any()
         }
     }
 }

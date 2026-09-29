@@ -55,6 +55,26 @@ pub fn backup_name(file_name: &str, now: SystemTime) -> String {
     format!("{file_name}.{stamp}")
 }
 
+/// `fohmixer-hub layout check <layout> <config>` (#21): whether the hub
+/// configured by `config` would serve `layout` (it parses, validates and
+/// binds only the config's instances). The installer asks the new hub before
+/// it stops the running one, so a schema change never leaves the hub without
+/// a layout.
+pub fn check_files(layout: &Path, config: &Path) -> anyhow::Result<()> {
+    use anyhow::Context as _;
+    let text = std::fs::read_to_string(config)
+        .with_context(|| format!("reading config {}", config.display()))?;
+    let dir = config.parent().unwrap_or(Path::new("."));
+    let config = crate::config::Config::parse(&text, dir)
+        .with_context(|| format!("config {}", config.display()))?;
+    let names: Vec<String> = config.instances.iter().map(|i| i.name.clone()).collect();
+    let bytes =
+        std::fs::read(layout).with_context(|| format!("reading layout {}", layout.display()))?;
+    check(&bytes, &names)
+        .map(|_| ())
+        .map_err(|e| anyhow::anyhow!("layout {}: {e}", layout.display()))
+}
+
 /// Why a layout text cannot be served: it does not parse, does not validate,
 /// or binds an instance the hub does not have.
 pub fn check(text: &[u8], instances: &[String]) -> Result<Layout, String> {
@@ -261,10 +281,10 @@ mod tests {
 
     fn layout_json(title: &str, instance: &str) -> Vec<u8> {
         serde_json::to_vec(&json!({
-            "schema": 1,
-            "canvas": {"w": 2360, "h": 1640},
-            "pages": [{"id": "main", "title": title, "items": [
-                {"kind": "solo", "frame": {"x": 10, "y": 100, "w": 100, "h": 60},
+            "schema": 2,
+            "default_page": "main",
+            "pages": [{"id": "main", "title": title, "rail": [
+                {"kind": "solo",
                  "binding": {"instance": instance, "anchor": {"kind": "track", "name": "Stems grp#"}}}
             ]}]
         }))
@@ -348,7 +368,7 @@ mod tests {
         let store = store(dir.path());
         write(dir.path(), &layout_json("FOH", "band"));
         store.poll();
-        write(dir.path(), b"{\"schema\": 1, \"canvas\":");
+        write(dir.path(), b"{\"schema\": 2, \"pages\":");
         assert_eq!(store.poll(), None);
         assert_eq!(store.current().0, 1);
         assert_eq!(title(&store), "FOH");
@@ -388,7 +408,7 @@ mod tests {
         let mut v: serde_json::Value = serde_json::from_slice(&layout_json("X", "band")).unwrap();
         v["schema"] = json!(9);
         let error = check(&serde_json::to_vec(&v).unwrap(), &["band".into()]).unwrap_err();
-        assert_eq!(error, "layout is invalid: schema: schema 9 is not 1");
+        assert_eq!(error, "layout is invalid: schema: schema 9 is not 2");
         assert!(check(&layout_json("X", "band"), &["band".into()]).is_ok());
         // A group to unfold on an instance the hub does not have.
         let mut v: serde_json::Value = serde_json::from_slice(&layout_json("X", "band")).unwrap();
@@ -422,7 +442,7 @@ mod tests {
             "20260103T000000.000Z",
             &layout_json("Drums", "drums"),
         );
-        write(dir.path(), b"{\"schema\": 1, \"canvas\":");
+        write(dir.path(), b"{\"schema\": 2, \"pages\":");
         let store = store(dir.path());
         assert_eq!(store.poll(), Some(1));
         assert_eq!(title(&store), "New");

@@ -495,6 +495,30 @@ function Test-FohHubToml {
     return $said
 }
 
+function Test-FohHubLayout {
+    # $Layout checked by the hub it is for ($Exe: `fohmixer-hub layout check`,
+    # layout.rs, the one set of rules) against the new config $Text, before the
+    # install stops the running hub (#21): a layout the new hub cannot serve (a
+    # schema it does not read, an unknown instance) never meets it, so a schema
+    # change never leaves the surface without a layout. The config goes to a
+    # file of its own in $Dir. Returns the hub's answer; throws with its reason.
+    param([Parameter(Mandatory)][string]$Exe, [Parameter(Mandatory)][string]$Layout, [Parameter(Mandatory)][string]$Text, [Parameter(Mandatory)][string]$Dir)
+    $file = Join-Path $Dir ('.check-' + [guid]::NewGuid().ToString('N') + '.toml')
+    [IO.File]::WriteAllText($file, $Text, $script:Utf8NoBom)
+    try {
+        # Continue only around the native call: its stderr is its answer.
+        $said = & {
+            $ErrorActionPreference = 'Continue'
+            (& $Exe layout check $Layout $file 2>&1 | ForEach-Object { "$_" }) -join ' '
+        }
+        $code = $LASTEXITCODE
+    } finally {
+        Remove-Item -LiteralPath $file
+    }
+    if ($code -ne 0) { throw "the layout is refused by the new hub (exit $code): $said" }
+    return $said
+}
+
 function Set-FohConfigText {
     # Config.py's text with INSTANCE and PORT set. Exactly one assignment of each
     # must exist; everything else is kept, line endings included.
@@ -1045,6 +1069,14 @@ function Invoke-FohInstall {
         $tomlText = New-FohHubToml -HttpPort $HttpPort -BandPort $BandPort -MasterPort $MasterPort -Remote $remoteToml
         $accepted = Test-FohHubToml -Exe (Join-Path $unpacked.dir $script:HubExe) -Text $tomlText -Dir (Split-Path -Parent $unpacked.dir)
         Write-Host "fohmixer install: the new hub accepts the config ($accepted)"
+        # The layout it will serve (the new one, else the one in place), checked by
+        # the new hub too (#21).
+        $served = $Layout
+        if (-not $served) { $served = Join-Path $DataDir 'layout.json' }
+        if (Test-Path -LiteralPath $served -PathType Leaf) {
+            $null = Test-FohHubLayout -Exe (Join-Path $unpacked.dir $script:HubExe) -Layout $served -Text $tomlText -Dir (Split-Path -Parent $unpacked.dir)
+            Write-Host 'fohmixer install: the new hub accepts the layout'
+        }
         if (-not $NoTask) {
             Set-FohDataDirAcl -Path $DataDir -User $BandUser
             # 1. the running hub

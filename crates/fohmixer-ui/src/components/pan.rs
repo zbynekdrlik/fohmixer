@@ -1,27 +1,26 @@
 //! The pan control (spec F11): a horizontal relative drag with its own
 //! pointer, two releases within 300 ms centre it, grey when centred and
-//! cyan otherwise. The dot moves only in the frame loop.
+//! cyan otherwise. The frame loop writes the position as `--p` and the bar
+//! from the centre as `--lo` / `--w` (the stylesheet draws them; #21).
 
-use fohmixer_proto::layout::Frame;
 use leptos::html;
 use leptos::prelude::*;
 use serde_json::json;
 
 use super::{fail_flash, readiness};
 use crate::behave::pan::{self, PanCtl};
-use crate::behave::travel_px;
 use crate::binding::SubSpec;
 use crate::dom;
 use crate::raf;
-use crate::stage;
 use crate::store::{LiveStore, Slot};
 
-/// The dot's width in canvas px.
-const DOT: f64 = 28.0;
+/// The dot's width in px (`.pan-dot` in the stylesheet): it travels the
+/// bar's width less its own.
+const DOT: f64 = 12.0;
 
 /// A pan control showing and writing Live's panning.
 #[component]
-pub fn PanView(frame: Frame, state: RwSignal<Slot>, spec: SubSpec) -> impl IntoView {
+pub fn PanView(state: RwSignal<Slot>, spec: SubSpec) -> impl IntoView {
     let store = expect_context::<LiveStore>();
     let slot = state;
     let spec = StoredValue::new(spec);
@@ -50,7 +49,7 @@ pub fn PanView(frame: Frame, state: RwSignal<Slot>, spec: SubSpec) -> impl IntoV
         };
         ev.prevent_default();
         // The dot's travel, in screen px: the width less the dot's own.
-        let travel = travel_px(el.get_bounding_client_rect().width(), frame.w, DOT);
+        let travel = (el.get_bounding_client_rect().width() - DOT).max(1.0);
         let id = ev.pointer_id();
         let x = f64::from(ev.client_x());
         let taken = ctl
@@ -80,7 +79,6 @@ pub fn PanView(frame: Frame, state: RwSignal<Slot>, spec: SubSpec) -> impl IntoV
 
     raf::animate(root, move |el| {
         let dot = dom::child(&el, ".pan-dot");
-        let travel = (frame.w - DOT).max(0.0);
         let mut shown: Option<f64> = None;
         Box::new(move |now: f64, _step: f64| {
             let Some(motion) = ctl.try_update_value(|c| c.frame(now, live())) else {
@@ -96,8 +94,10 @@ pub fn PanView(frame: Frame, state: RwSignal<Slot>, spec: SubSpec) -> impl IntoV
                 return;
             }
             shown = Some(p);
+            dom::set_style(&el, "--p", &format!("{p:.5}"));
+            dom::set_style(&el, "--lo", &format!("{:.5}", p.min(0.5)));
+            dom::set_style(&el, "--w", &format!("{:.5}", (p - 0.5).abs()));
             if let Some(dot) = &dot {
-                dom::set_style(dot, "transform", &format!("translateX({}px)", p * travel));
                 dom::set_style(dot, "background", pan::color(p));
             }
             dom::set_attr(&el, "data-value", &format!("{:.4}", pan::to_live(p)));
@@ -114,7 +114,6 @@ pub fn PanView(frame: Frame, state: RwSignal<Slot>, spec: SubSpec) -> impl IntoV
             data-testid="pan"
             data-binding=binding
             aria-disabled=disabled
-            style={stage::box_style(frame)}
             node_ref=root
             on:pointerdown=on_down
             on:pointermove=on_move
@@ -123,6 +122,7 @@ pub fn PanView(frame: Frame, state: RwSignal<Slot>, spec: SubSpec) -> impl IntoV
             on:lostpointercapture=on_cancel
         >
             <div class="pan-track"></div>
+            <div class="pan-fill"></div>
             <div class="pan-dot"></div>
         </div>
     }

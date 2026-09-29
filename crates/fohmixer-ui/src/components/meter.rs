@@ -1,50 +1,68 @@
-//! The strip meter (spec F13, X2) and the status pill (spec F5, I5): both
+//! The strip meter (spec F13, X2) and the status light (spec F5, I5): both
 //! move only in the frame loop, reading their slots untracked, so Live's
-//! meter pushes never re-render the view.
+//! meter pushes never re-render the view. A bar is the zone gradient of the
+//! scale (green, yellow from −12 dB, red from −3 dB, as TouchOSC's colours)
+//! under a cover the loop shrinks to the level, with a peak line held 1.5 s;
+//! the clip light over the bars lights at 0 dB and stays lit until tapped
+//! (#21).
 
-use fohmixer_proto::layout::Frame;
 use leptos::html;
 use leptos::prelude::*;
 
 use crate::behave::css;
 use crate::behave::meter::{MeterBar, level_to_pos};
+use crate::behave::peak::{Peak, clips};
+use crate::behave::scale::zone_style;
 use crate::behave::status::status_color;
 use crate::dom;
 use crate::raf;
-use crate::stage;
 use crate::store::Slot;
 
 /// A meter: one bar per level slot (one for `level`, two for `lr`).
 #[component]
-pub fn MeterView(frame: Frame, levels: Vec<RwSignal<Slot>>) -> impl IntoView {
+pub fn MeterView(levels: Vec<RwSignal<Slot>>) -> impl IntoView {
     let root = NodeRef::<html::Div>::new();
     let count = levels.len();
+    let clip = RwSignal::new(false);
     raf::animate(root, move |el| {
-        let fills: Vec<Option<web_sys::HtmlElement>> = (0..count)
-            .map(|i| dom::child(&el, &format!(".meter-bar:nth-child({}) .meter-fill", i + 1)))
-            .collect();
+        let part = |i: usize, name: &str| {
+            dom::child(&el, &format!(".meter-bar:nth-child({}) .{name}", i + 1))
+        };
+        let covers: Vec<Option<web_sys::HtmlElement>> =
+            (0..count).map(|i| part(i, "meter-cover")).collect();
+        let lines: Vec<Option<web_sys::HtmlElement>> =
+            (0..count).map(|i| part(i, "meter-peak")).collect();
         let mut bars: Vec<MeterBar> = vec![MeterBar::default(); count];
-        let mut drawn: Vec<(f64, String)> = vec![(-1.0, String::new()); count];
-        Box::new(move |_now: f64, step: f64| {
+        let mut peaks: Vec<Peak> = vec![Peak::default(); count];
+        let mut drawn: Vec<(f64, f64)> = vec![(-1.0, -1.0); count];
+        Box::new(move |now: f64, step: f64| {
             for (i, slot) in levels.iter().enumerate() {
                 let level = slot
                     .try_with_untracked(Slot::number)
                     .flatten()
                     .unwrap_or(0.0);
+                if clips(level) && clip.try_get_untracked() == Some(false) {
+                    let _ = clip.try_set(true);
+                }
                 bars[i].target(level_to_pos(level));
-                let (pos, color) = bars[i].step(step);
-                let color = css(color);
-                if (pos - drawn[i].0).abs() < 1e-4 && color == drawn[i].1 {
+                let (pos, _color) = bars[i].step(step);
+                let peak = peaks[i].step(pos, now);
+                let (was, was_peak) = drawn[i];
+                if (pos - was).abs() < 1e-4 && (peak - was_peak).abs() < 1e-4 {
                     continue;
                 }
-                if let Some(fill) = &fills[i] {
-                    dom::set_style(fill, "transform", &format!("scaleY({pos})"));
-                    dom::set_style(fill, "background", &color);
+                if let Some(cover) = &covers[i] {
+                    dom::set_style(cover, "transform", &format!("scaleY({})", 1.0 - pos));
+                }
+                if let Some(line) = &lines[i] {
+                    dom::set_style(line, "--pk", &format!("{peak:.4}"));
+                    dom::set_style(line, "opacity", if peak > 0.001 { "0.75" } else { "0" });
                 }
                 if i == 0 {
                     dom::set_attr(&el, "data-level", &format!("{pos:.4}"));
+                    dom::set_attr(&el, "data-peak", &format!("{peak:.4}"));
                 }
-                drawn[i] = (pos, color);
+                drawn[i] = (pos, peak);
             }
         })
     });
@@ -52,27 +70,43 @@ pub fn MeterView(frame: Frame, levels: Vec<RwSignal<Slot>>) -> impl IntoView {
         .map(|_| {
             view! {
                 <div class="meter-bar">
-                    <div class="meter-fill"></div>
+                    <div class="meter-zones"></div>
+                    <div class="meter-cover"></div>
+                    <div class="meter-peak"></div>
                 </div>
             }
         })
         .collect_view();
+    let reset = move |ev: web_sys::PointerEvent| {
+        ev.prevent_default();
+        let _ = clip.try_set(false);
+    };
     view! {
-        <div class="meter" data-testid="meter" data-level="0" style={stage::box_style(frame)} node_ref=root>
-            {bars}
+        <div
+            class="meter"
+            data-testid="meter"
+            data-level="0"
+            data-peak="0"
+            style={zone_style()}
+            node_ref=root
+        >
+            <div
+                class="meter-clip"
+                class:on=move || clip.get()
+                data-testid="clip"
+                data-on=move || clip.get().to_string()
+                on:pointerdown=reset
+            ></div>
+            <div class="meter-bars">{bars}</div>
         </div>
     }
 }
 
-/// The status pill: red while the strip is not bound (a binding does not
+/// The status light: red while the strip is not bound (a binding does not
 /// resolve, or Live's values are not here), yellow after a value, fading to
 /// green.
 #[component]
-pub fn StatusView(
-    frame: Frame,
-    slots: Vec<RwSignal<Slot>>,
-    activity: Vec<RwSignal<Slot>>,
-) -> impl IntoView {
+pub fn StatusView(slots: Vec<RwSignal<Slot>>, activity: Vec<RwSignal<Slot>>) -> impl IntoView {
     let root = NodeRef::<html::Div>::new();
     raf::animate(root, move |el| {
         let mut drawn = (String::new(), None::<bool>);
@@ -101,7 +135,6 @@ pub fn StatusView(
             class="status"
             data-testid="status"
             data-state="unbound"
-            style={stage::box_style(frame)}
             node_ref=root
         ></div>
     }

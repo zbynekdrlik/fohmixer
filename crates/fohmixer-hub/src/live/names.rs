@@ -392,16 +392,16 @@ mod tests {
     #[test]
     fn layout_targets_are_distinct_per_instance() {
         let layout: Layout = serde_json::from_value(json!({
-            "schema": 1,
-            "canvas": {"w": 2360, "h": 1640},
-            "pages": [{"id": "main", "title": "FOH", "items": [
-                {"kind": "solo", "frame": {"x": 10, "y": 100, "w": 100, "h": 60},
+            "schema": 2,
+            "default_page": "main",
+            "pages": [{"id": "main", "title": "FOH", "rail": [
+                {"kind": "solo",
                  "binding": {"instance": "band", "anchor": {"kind": "track", "name": "B"}}},
-                {"kind": "solo", "frame": {"x": 10, "y": 200, "w": 100, "h": 60},
+                {"kind": "solo",
                  "binding": {"instance": "band", "anchor": {"kind": "track", "name": "A"}}},
-                {"kind": "solo", "frame": {"x": 10, "y": 300, "w": 100, "h": 60},
+                {"kind": "solo",
                  "binding": {"instance": "band", "anchor": {"kind": "track", "name": "B"}}},
-                {"kind": "solo", "frame": {"x": 10, "y": 400, "w": 100, "h": 60},
+                {"kind": "solo",
                  "binding": {"instance": "master", "anchor": {"kind": "master"}}}
             ]}]
         }))

@@ -2,8 +2,8 @@
 //! the hub serves (Trunk builds it to WASM).
 //!
 //! - `behave`: the TouchOSC-parity behaviour as pure state machines;
-//! - `binding`, `stage`, `net`: the pure rules of the subscriptions, the
-//!   stage geometry and the hub connection;
+//! - `binding`, `flow`, `net`: the pure rules of the subscriptions, the
+//!   strip width and the hub connection;
 //! - `store`: the hub connection and Live's state (`LiveStore`);
 //! - `components`, `pages`: the view; `raf`: the shared animation loop;
 //!   `dom`, `auth`: browser helpers.
@@ -14,11 +14,11 @@ pub mod behave;
 pub mod binding;
 pub mod components;
 pub mod dom;
+pub mod flow;
 pub mod lifecycle;
 pub mod net;
 pub mod pages;
 pub mod raf;
-pub mod stage;
 pub mod store;
 
 use wasm_bindgen::prelude::*;

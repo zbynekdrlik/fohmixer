@@ -1,5 +1,6 @@
 use super::*;
-use fohmixer_proto::layout::{Frame, StripChildren, StripKind};
+use fohmixer_proto::layout::StripKind;
+use serde_json::json;
 
 /// The layout the import tool makes from its synthetic fixture (the E2E
 /// suite serves the same file).
@@ -84,325 +85,315 @@ fn a_subscription_key_is_the_hubs() {
     assert_eq!(plain.key(), "master|live_set|is_playing|false");
 }
 
-fn frame() -> Option<Frame> {
-    Some(Frame {
-        x: 0.0,
-        y: 0.0,
-        w: 10.0,
-        h: 10.0,
-    })
+fn sample() -> Layout {
+    let tr = |name: &str| json!({"instance": "band", "anchor": {"kind": "track", "name": name}});
+    serde_json::from_value(json!({
+        "schema": 2,
+        "default_page": "foh",
+        "pages": [
+            {"id": "cue", "title": "Cue", "rows": [{"sections": [{"kind": "group", "controls": [
+                {"kind": "param_toggle", "label": "Vox 1 TU", "press": "toggle",
+                 "targets": [{"binding": tr("Vox 1 stream"), "prop": "mute", "on": false, "off": true}]}]}]}]},
+            {"id": "foh", "title": "FOH",
+             "rail": [
+                {"kind": "stage", "binding": tr("Mics #"), "aut": true},
+                {"kind": "solo", "binding": tr("Vocals grp")},
+                {"kind": "hub_toggle", "key": "stage_aut", "label": "STAGE AUT"}],
+             "rows": [
+                {"sections": [
+                    {"kind": "pager", "id": "foh-pager", "default_page": "others", "pages": [
+                        {"id": "stage", "title": "STAGE", "sections": [{"kind": "group", "controls": [
+                            {"kind": "strip", "binding": tr("A"), "strip_kind": "standard"}]}]},
+                        {"id": "others", "title": "OTHERS", "sections": [{"kind": "group", "controls": [
+                            {"kind": "strip", "binding": tr("B"), "strip_kind": "standard"}]}]}]},
+                    {"kind": "group", "controls": [
+                        {"kind": "strip", "binding": tr("C"), "strip_kind": "standard"},
+                        {"kind": "strip", "binding": tr("A"), "strip_kind": "standard"}]}]}]},
+            {"id": "conf", "title": "Conf", "rows": [{"sections": [{"kind": "group", "controls": [
+                {"kind": "text", "text": "unfold_band: 'Vocals grp'"}]}]}]}
+        ],
+        "global": [
+            {"kind": "alert", "binding": tr("TechAlert #"), "period_ms": 300},
+            {"kind": "refresh"}
+        ]
+    }))
+    .expect("the sample parses")
 }
 
-fn strip(children: StripChildren) -> Strip {
+fn strip(name: &str) -> Strip {
     Strip {
-        binding: track("Hand2 #", None),
+        binding: track(name, None),
         strip_kind: StripKind::Standard,
-        children,
+        wide: false,
         mute_guard: false,
     }
 }
 
+fn keys(specs: &[SubSpec]) -> Vec<String> {
+    specs.iter().map(SubSpec::key).collect()
+}
+
 #[test]
-fn a_strip_subscribes_its_present_parts() {
-    let full = strip(StripChildren {
-        fader: frame(),
-        pan: frame(),
-        mute: frame(),
-        meter: frame(),
-        status: frame(),
-        db: frame(),
-        label: frame(),
-        instance_label: frame(),
-    });
-    let subs = strip_subs(&full, MeterSource::Level);
+fn a_strip_subscribes_every_part_and_its_colour() {
+    let subs = strip_subs(&strip("Hand2 #"), MeterSource::Level);
     let t = "live_set tracks[name=Hand2 #]";
     assert_eq!(
-        subs.volume,
-        Some(SubSpec::new(
-            "band",
-            format!("{t} mixer_device volume"),
-            "value",
-            true
-        ))
-    );
-    assert_eq!(
-        subs.pan,
-        Some(SubSpec::new(
-            "band",
-            format!("{t} mixer_device panning"),
-            "value",
-            false
-        ))
-    );
-    assert_eq!(
-        subs.mute,
-        Some(SubSpec::new("band", t.into(), "mute", false))
-    );
-    assert_eq!(
-        subs.meters,
-        vec![SubSpec::new("band", t.into(), "output_meter_level", false)]
-    );
-    assert_eq!(subs.all().len(), 4);
-    let lr = strip_subs(&full, MeterSource::Lr);
-    assert_eq!(
-        lr.meters,
+        keys(&subs.all()),
         vec![
-            SubSpec::new("band", t.into(), "output_meter_left", false),
-            SubSpec::new("band", t.into(), "output_meter_right", false),
+            format!("band|{t} mixer_device volume|value|true"),
+            format!("band|{t} mixer_device panning|value|false"),
+            format!("band|{t}|mute|false"),
+            format!("band|{t}|output_meter_level|false"),
+            format!("band|{t}|color|false"),
         ]
     );
-    assert_eq!(lr.all().len(), 5);
+    assert_eq!(
+        subs.color.as_ref().map(SubSpec::key),
+        Some(format!("band|{t}|color|false"))
+    );
+    // Two bars with `lr`.
+    let lr = strip_subs(&strip("Hand2 #"), MeterSource::Lr);
+    assert_eq!(
+        keys(&lr.meters),
+        vec![
+            format!("band|{t}|output_meter_left|false"),
+            format!("band|{t}|output_meter_right|false"),
+        ]
+    );
+    assert_eq!(lr.all().len(), 6);
+    // A binding whose path does not parse subscribes nothing.
+    let mut bad = strip("X");
+    bad.binding.path = Some("devices[name=".into());
+    assert_eq!(strip_subs(&bad, MeterSource::Level).all(), vec![]);
+    assert_eq!(StripSubs::default().all(), vec![]);
 }
 
 #[test]
-fn missing_parts_subscribe_nothing_and_a_db_text_needs_the_volume() {
-    let meter_mute = strip(StripChildren {
-        mute: frame(),
-        meter: frame(),
-        status: frame(),
-        label: frame(),
-        ..StripChildren::default()
-    });
-    let subs = strip_subs(&meter_mute, MeterSource::Level);
-    assert_eq!((subs.volume, subs.pan), (None, None));
-    assert!(subs.mute.is_some() && subs.meters.len() == 1);
-    let db_only = strip(StripChildren {
-        db: frame(),
-        ..StripChildren::default()
-    });
-    let subs = strip_subs(&db_only, MeterSource::Level);
-    assert!(subs.volume.is_some());
-    assert_eq!(subs.all().len(), 1);
-    let fader_only = strip(StripChildren {
-        fader: frame(),
-        ..StripChildren::default()
-    });
-    assert_eq!(strip_subs(&fader_only, MeterSource::Lr).all().len(), 1);
-    assert!(
-        strip_subs(&strip(StripChildren::default()), MeterSource::Lr)
-            .all()
-            .is_empty()
+fn every_control_kind_subscribes_what_it_shows() {
+    let src = MeterSource::Level;
+    let sub = |c: &Control| keys(&control_subs(c, src));
+    let t = |name: &str| format!("live_set tracks[name={name}]");
+    assert_eq!(
+        sub(&Control::Solo {
+            binding: track("G", None),
+            label: None
+        }),
+        vec![format!("band|{}|solo|false", t("G"))]
     );
+    assert_eq!(
+        sub(&Control::Stage {
+            binding: track("M", None),
+            aut: true,
+            label: None
+        }),
+        vec![format!("band|{}|mute|false", t("M"))]
+    );
+    assert_eq!(
+        sub(&Control::Alert {
+            binding: track("T", None),
+            period_ms: 300,
+            label: None,
+            mute_guard: false
+        }),
+        vec![format!("band|{}|mute|false", t("T"))]
+    );
+    let target = |name: &str, path: Option<&str>, prop: &str| fohmixer_proto::layout::ParamTarget {
+        binding: track(name, path),
+        prop: prop.into(),
+        on: Some(json!(1)),
+        off: Some(json!(0)),
+        scale: None,
+    };
+    let targets = vec![
+        target("P", Some("mixer_device volume"), "value"),
+        target("Q", Some("devices["), "value"),
+        target("R", None, "mute"),
+    ];
+    assert_eq!(
+        sub(&Control::ParamToggle {
+            label: "x".into(),
+            targets: targets.clone(),
+            press: fohmixer_proto::layout::Press::Toggle,
+            color: None
+        }),
+        vec![
+            format!("band|{} mixer_device volume|value|false", t("P")),
+            format!("band|{}|mute|false", t("R")),
+        ]
+    );
+    assert_eq!(
+        sub(&Control::ParamFader {
+            label: "x".into(),
+            targets
+        }),
+        vec![
+            format!("band|{} mixer_device volume|value|true", t("P")),
+            format!("band|{}|mute|false", t("R")),
+        ]
+    );
+    assert_eq!(
+        sub(&Control::Strip(Box::new(strip("S")))).len(),
+        5,
+        "a strip: volume, pan, mute, one meter, colour"
+    );
+    for none in [
+        Control::HubToggle {
+            key: "stage_aut".into(),
+            label: "A".into(),
+        },
+        Control::Refresh { label: None },
+        Control::Text { text: "x".into() },
+    ] {
+        assert_eq!(sub(&none), Vec::<String>::new());
+    }
 }
 
-#[test]
-fn every_item_kind_subscribes_what_it_shows() {
-    let layout = imported();
-    let foh = &layout.pages[1];
-    let keys = |i: usize| -> Vec<String> {
-        item_subs(&foh.items[i], MeterSource::Level)
-            .iter()
-            .map(SubSpec::key)
-            .collect()
-    };
-    // The six inert sidebar backdrops (areas) come first, in node order.
-    assert!((0..7).all(|i| keys(i).is_empty()), "areas");
-    assert_eq!(
-        keys(7),
-        ["band|live_set tracks[name=Mics Stage #]|mute|false"]
-    );
-    assert!(keys(8).is_empty(), "the STAGE AUT hub toggle");
-    assert_eq!(
-        keys(9),
-        ["band|live_set tracks[name=Vocals Repro grp#]|solo|false"]
-    );
-    assert_eq!(
-        keys(12),
-        [
-            "band|live_set tracks[name=Vocal 1 repro#]|mute|false",
-            "band|live_set tracks[name=Vocal 2 repro#]|mute|false"
-        ],
-        "VOC MIC: every target"
-    );
-    assert_eq!(
-        keys(16),
-        [
-            "band|live_set tracks[name=Drums #] mixer_device volume|value|true",
-            "band|live_set tracks[name=Bass #] mixer_device volume|value|false"
-        ],
-        "Podklady All: the first target's display string"
-    );
-    assert!(keys(19).is_empty(), "a label");
-    // A toggle's targets never bring a display string; a fader's first does.
-    let ItemKind::ParamToggle { targets, .. } = &foh.items[12].kind else {
-        panic!("VOC MIC is a param toggle");
-    };
-    assert!(
-        param_subs(targets, false)
-            .iter()
-            .all(|s| !s.as_ref().unwrap().display)
-    );
-    let fader: Vec<bool> = param_subs(targets, true)
-        .iter()
-        .map(|s| s.as_ref().unwrap().display)
-        .collect();
-    assert_eq!(fader, [true, false]);
-    // A target whose path does not parse keeps its place, as `None`.
-    let mut broken = targets.clone();
-    broken[0].binding.path = Some("devices[name=".into());
-    let subs = param_subs(&broken, false);
-    assert_eq!(subs.len(), 2);
-    assert_eq!(subs[0], None);
-    assert!(subs[1].is_some());
-    let overlay: Vec<Vec<String>> = layout
-        .overlay
-        .iter()
-        .map(|i| {
-            item_subs(i, MeterSource::Level)
-                .iter()
-                .map(SubSpec::key)
-                .collect()
+/// The names of the strips and the kinds of the other controls on screen.
+fn shown(layout: &Layout, path: &[usize]) -> Vec<String> {
+    visible_controls(layout, path)
+        .into_iter()
+        .map(|c| match c {
+            Control::Strip(s) => match &s.binding.anchor {
+                Anchor::Track { name } => name.clone(),
+                _ => "strip".into(),
+            },
+            Control::Solo { .. } => "solo".into(),
+            Control::Stage { .. } => "stage".into(),
+            Control::HubToggle { .. } => "hub".into(),
+            Control::ParamToggle { label, .. } => label.clone(),
+            Control::ParamFader { .. } => "fader".into(),
+            Control::Alert { .. } => "alert".into(),
+            Control::Refresh { .. } => "refresh".into(),
+            Control::Text { .. } => "text".into(),
         })
-        .collect();
-    assert_eq!(overlay[1], Vec::<String>::new(), "REFRESH ALL");
-    assert_eq!(
-        overlay[2],
-        ["band|live_set tracks[name=TechAlert #]|mute|false"]
-    );
-}
-
-fn visible_keys(layout: &Layout, path: &[usize]) -> Vec<String> {
-    visible_subs(layout, path)
-        .iter()
-        .map(SubSpec::key)
         .collect()
 }
 
 #[test]
-fn only_the_visible_pages_and_the_overlay_are_subscribed() {
-    let layout = imported();
-    let stage = visible_keys(&layout, &[1, 0]);
-    // 28 plus the master return strip on the main page (4 keys).
-    assert_eq!(stage.len(), 32);
-    let sorted = {
-        let mut s = stage.clone();
-        s.sort();
-        s.dedup();
-        s
-    };
-    assert_eq!(sorted, stage, "each key once, sorted");
-    let tech = "band|live_set tracks[name=TechAlert #]|mute|false".to_string();
-    assert!(stage.contains(&tech), "the overlay");
-    assert!(stage.contains(&"band|live_set tracks[name=Keys 1]|mute|false".to_string()));
-    // The only master keys on STAGE are the main page's own return strip.
+fn the_controls_on_screen_are_the_rail_the_rows_with_the_sub_page_and_the_global_ones() {
+    let layout = sample();
+    assert_eq!(
+        shown(&layout, &[1, 0]),
+        vec!["stage", "solo", "hub", "A", "C", "A", "alert", "refresh"]
+    );
+    assert_eq!(
+        shown(&layout, &[1, 1]),
+        vec!["stage", "solo", "hub", "B", "C", "A", "alert", "refresh"]
+    );
+    // No sub-page chosen (or one that is gone): the pager shows nothing.
+    assert_eq!(
+        shown(&layout, &[1]),
+        vec!["stage", "solo", "hub", "C", "A", "alert", "refresh"]
+    );
+    assert_eq!(shown(&layout, &[1, 7]), shown(&layout, &[1]));
+    assert_eq!(shown(&layout, &[0]), vec!["Vox 1 TU", "alert", "refresh"]);
+    assert_eq!(shown(&layout, &[2]), vec!["text", "alert", "refresh"]);
+    // No page: the global controls only.
+    assert_eq!(shown(&layout, &[]), vec!["alert", "refresh"]);
+    assert_eq!(shown(&layout, &[9]), vec!["alert", "refresh"]);
+}
+
+#[test]
+fn a_row_shows_its_groups_and_its_pagers_selected_sub_page() {
+    let layout = sample();
+    let row = &layout.pages[1].rows[0];
+    assert_eq!(shown_groups(row, Some(0)).len(), 2);
+    assert_eq!(shown_groups(row, None).len(), 1);
+    assert_eq!(shown_groups(row, Some(2)).len(), 1);
+}
+
+#[test]
+fn every_key_on_screen_is_subscribed_once() {
+    let layout = sample();
+    let subs = visible_subs(&layout, &[1, 0]);
+    // stage + solo, strips A and C (A twice on screen), TechAlert.
+    assert_eq!(subs.len(), 2 + 5 + 5 + 1);
+    let unique: std::collections::BTreeSet<String> = subs.iter().map(SubSpec::key).collect();
+    assert_eq!(unique.len(), subs.len());
     assert!(
-        stage
-            .iter()
-            .filter(|k| k.starts_with("master|"))
-            .all(|k| k.contains("A-Echo"))
+        subs.iter()
+            .any(|s| s.target == "live_set tracks[name=C]" && s.prop == "color")
     );
-    let others = visible_keys(&layout, &[1, 1]);
-    assert_eq!(others.len(), 29);
-    assert!(others.contains(&"master|live_set tracks[name=Hand1 #]|mute|false".to_string()));
-    assert!(
-        !others.iter().any(|k| k.contains("Keys 1")),
-        "STAGE is hidden"
-    );
-    assert!(others.contains(&tech));
-    let cue = visible_keys(&layout, &[0]);
-    assert_eq!(
-        cue,
-        [
-            "band|live_set tracks[name=TechAlert #]|mute|false",
-            "band|live_set tracks[name=TechAlert #]|output_meter_level|false",
-            "band|live_set tracks[name=Vocal 3 repro#]|mute|false"
-        ]
-    );
-    assert_eq!(
-        visible_keys(&layout, &[2]).len(),
-        2,
-        "Conf: the overlay only"
-    );
-    assert_eq!(visible_keys(&layout, &[]).len(), 2);
-    assert_eq!(
-        visible_keys(&layout, &[7]).len(),
-        2,
-        "a stale index shows nothing"
-    );
+    assert!(!subs.iter().any(|s| s.target.contains("name=B]")));
+    // The other sub-page: B instead of A (A stays, the fixed group holds it).
+    let others = visible_subs(&layout, &[1, 1]);
+    assert_eq!(others.len(), 2 + 5 + 5 + 5 + 1);
+    // The cue page: its toggle's target and TechAlert.
+    assert_eq!(visible_subs(&layout, &[0]).len(), 2);
+}
+
+#[test]
+fn the_pills_solos_are_every_solo_of_the_page() {
+    let layout = sample();
+    let names: Vec<String> = page_solos(&layout.pages[1])
+        .iter()
+        .map(|b| b.target().unwrap())
+        .collect();
+    assert_eq!(names, vec!["live_set tracks[name=Vocals grp]"]);
+    assert_eq!(page_solos(&layout.pages[0]), Vec::<Binding>::new());
 }
 
 #[test]
 fn the_meter_source_switch_applies_to_every_strip() {
-    let mut layout = imported();
+    let mut layout = sample();
+    let level = visible_subs(&layout, &[1, 0]);
     layout.config.meter_source = Some(MeterSource::Lr);
-    let keys = visible_keys(&layout, &[0]);
-    assert!(
-        keys.contains(
-            &"band|live_set tracks[name=TechAlert #]|output_meter_left|false".to_string()
-        )
-    );
-    assert!(
-        keys.contains(
-            &"band|live_set tracks[name=TechAlert #]|output_meter_right|false".to_string()
-        )
-    );
-    assert_eq!(keys.len(), 4);
-    assert_eq!(meter_props(MeterSource::Level), ["output_meter_level"]);
-}
-
-fn remember(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
-    pairs
-        .iter()
-        .map(|(k, v)| (k.to_string(), v.to_string()))
-        .collect()
+    let lr = visible_subs(&layout, &[1, 0]);
+    assert_eq!(lr.len(), level.len() + 2, "one more bar per strip (A, C)");
+    assert!(lr.iter().any(|s| s.prop == "output_meter_right"));
+    assert!(!lr.iter().any(|s| s.prop == "output_meter_level"));
 }
 
 #[test]
 fn the_selected_pages_are_the_remembered_ones_or_the_defaults() {
-    let layout = imported();
-    assert_eq!(
-        selected_path(&layout, &remember(&[])),
-        [1, 0],
-        "FOH and its STAGE"
-    );
-    assert_eq!(selected_path(&layout, &remember(&[("", "cue")])), [0]);
-    assert_eq!(
-        selected_path(&layout, &remember(&[("foh", "others")])),
-        [1, 1],
-        "the pager keeps its page"
-    );
-    assert_eq!(
-        selected_path(&layout, &remember(&[("", "conf"), ("foh", "others")])),
-        [2]
-    );
-    assert_eq!(selected_path(&layout, &remember(&[("", "gone")])), [1, 0]);
-    assert_eq!(
-        selected_path(&layout, &remember(&[("foh", "gone")])),
-        [1, 0]
-    );
-    assert_eq!(
-        selected_path(&layout, &remember(&[("stage", "others")])),
-        [1, 0],
-        "keyed by the page holding the pager"
-    );
-    // A default beyond the pages picks the last one.
-    let mut layout = imported();
-    layout.tabbar.default_page = 5;
-    assert_eq!(selected_path(&layout, &remember(&[])), [2]);
-    layout.pages.clear();
-    assert_eq!(selected_path(&layout, &remember(&[])), Vec::<usize>::new());
+    let layout = sample();
+    let mut remembered = BTreeMap::new();
+    // The defaults: FOH and its pager's OTHERS.
+    assert_eq!(selected_path(&layout, &remembered), vec![1, 1]);
+    remembered.insert("foh".to_string(), "stage".to_string());
+    assert_eq!(selected_path(&layout, &remembered), vec![1, 0]);
+    remembered.insert(String::new(), "cue".to_string());
+    assert_eq!(selected_path(&layout, &remembered), vec![0]);
+    remembered.insert(String::new(), "conf".to_string());
+    assert_eq!(selected_path(&layout, &remembered), vec![2]);
+    // Remembered pages that are gone fall back to the defaults.
+    remembered.insert(String::new(), "worship".to_string());
+    remembered.insert("foh".to_string(), "band-b".to_string());
+    assert_eq!(selected_path(&layout, &remembered), vec![1, 1]);
+    // A default page that is not there: the first page.
+    let mut odd = sample();
+    odd.default_page = "gone".into();
+    assert_eq!(selected_path(&odd, &BTreeMap::new()), vec![0]);
+    // A pager default that is not there: its first sub-page.
+    let mut odd = sample();
+    if let Section::Pager(p) = &mut odd.pages[1].rows[0].sections[0] {
+        p.default_page = "gone".into();
+    }
+    assert_eq!(selected_path(&odd, &BTreeMap::new()), vec![1, 0]);
+    // A pager without sub-pages is no level; no pages, no path.
+    if let Section::Pager(p) = &mut odd.pages[1].rows[0].sections[0] {
+        p.pages.clear();
+    }
+    assert_eq!(selected_path(&odd, &BTreeMap::new()), vec![1]);
+    odd.pages.clear();
+    assert_eq!(selected_path(&odd, &BTreeMap::new()), Vec::<usize>::new());
 }
 
 #[test]
 fn choosing_a_tab_remembers_it_for_its_pager() {
-    let layout = imported();
+    let layout = sample();
     let mut remembered = BTreeMap::new();
-    choose(&layout, &mut remembered, &[1, 0], 1, 1);
-    assert_eq!(remembered, remember(&[("foh", "others")]));
-    let path = selected_path(&layout, &remembered);
-    assert_eq!(path, [1, 1]);
-    choose(&layout, &mut remembered, &path, 0, 0);
-    assert_eq!(remembered, remember(&[("", "cue"), ("foh", "others")]));
-    assert_eq!(selected_path(&layout, &remembered), [0]);
-    // Back on FOH, its pager still shows OTHERS.
-    choose(&layout, &mut remembered, &[0], 0, 1);
-    assert_eq!(selected_path(&layout, &remembered), [1, 1]);
-    // A tab that is not there, or a level without a pager, changes nothing.
+    choose(&layout, &mut remembered, &[1, 1], 0, 2);
+    assert_eq!(remembered.get(""), Some(&"conf".to_string()));
+    choose(&layout, &mut remembered, &[1, 1], 1, 0);
+    assert_eq!(remembered.get("foh"), Some(&"stage".to_string()));
+    assert_eq!(selected_path(&layout, &remembered), vec![2]);
+    // Out of range, or a page without a pager: nothing changes.
     let before = remembered.clone();
-    choose(&layout, &mut remembered, &[1, 1], 1, 5);
-    choose(&layout, &mut remembered, &[0], 1, 0);
-    choose(&layout, &mut remembered, &[1, 1], 2, 0);
     choose(&layout, &mut remembered, &[1, 1], 0, 9);
+    choose(&layout, &mut remembered, &[1, 1], 1, 9);
+    choose(&layout, &mut remembered, &[0], 1, 0);
+    choose(&layout, &mut remembered, &[], 1, 0);
     assert_eq!(remembered, before);
 }
 
