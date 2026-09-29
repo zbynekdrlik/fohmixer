@@ -62,7 +62,7 @@ pub fn late_heartbeat(
         .zip(arrived_ms)
         .map(|(sent, arrived)| arrived - sent);
     Some(format!(
-        "a heartbeat {} ms after the previous one (or the connect): the script's thread made it {} after its previous one, it spent {} on the way",
+        "a heartbeat {} ms after the previous one (or the connect): the script made it at its tick, {} after its previous one, it spent {} on the way",
         since_previous.as_millis(),
         known(gap_ms),
         known(transit)
@@ -288,13 +288,13 @@ mod tests {
             )
             .as_deref(),
             Some(
-                "a heartbeat 301 ms after the previous one (or the connect): the script's thread made it 1290 ms after its previous one, it spent 2 ms on the way"
+                "a heartbeat 301 ms after the previous one (or the connect): the script made it at its tick, 1290 ms after its previous one, it spent 2 ms on the way"
             )
         );
         assert_eq!(
             late_heartbeat(Duration::from_millis(1500), None, None, Some(1.0)).as_deref(),
             Some(
-                "a heartbeat 1500 ms after the previous one (or the connect): the script's thread made it unknown after its previous one, it spent unknown on the way"
+                "a heartbeat 1500 ms after the previous one (or the connect): the script made it at its tick, unknown after its previous one, it spent unknown on the way"
             )
         );
         assert!(

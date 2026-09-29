@@ -19,10 +19,10 @@ import unittest
 
 import _paths  # noqa: F401 - puts the script and SimLive on sys.path
 import Live
-from _rawclient import RawClient, masked_frame, request_frame, upgrade_request
+from _rawclient import CLOSE, RawClient, masked_frame, request_frame, upgrade_request
 from FohMixer.transport import server as transport
 from FohMixer.transport.server import Server
-from FohMixer.transport.websocket import OPCODE_CLOSE, OPCODE_TEXT
+from FohMixer.transport.websocket import OPCODE_TEXT
 from main_thread import MainThread
 from websockets.exceptions import ConnectionClosed, InvalidStatus
 from websockets.sync.client import connect
@@ -493,13 +493,13 @@ class OneTickTest(unittest.TestCase):
         self.tick()
         conn = self.server.connections()[0]
         conn.push_result("last", [])
-        client.sock.sendall(masked_frame(OPCODE_CLOSE))
+        client.sock.sendall(masked_frame(CLOSE))
         self.tick()
         self.settle(client)
         messages = client.messages()
         self.assertEqual(
             [m.get("uuid") or m.get("event") or m["opcode"] for m in messages],
-            ["connect", "last", OPCODE_CLOSE],
+            ["connect", "last", CLOSE],
         )
         self.assertTrue(conn.finished)
         self.assertEqual(self.server.connections(), [])
@@ -541,7 +541,7 @@ class OneTickTest(unittest.TestCase):
         conn.flush(t0)
         self.settle(client)
         self.assertEqual(
-            [m.get("event") or m["opcode"] for m in client.messages()], ["connect", OPCODE_CLOSE]
+            [m.get("event") or m["opcode"] for m in client.messages()], ["connect", CLOSE]
         )
         conn.flush(t0 + transport.CLOSE_HANDSHAKE_TIMEOUT_S - 0.01)
         self.assertFalse(conn.finished)
