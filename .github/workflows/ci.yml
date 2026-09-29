@@ -6,7 +6,8 @@ name: CI
 # coverage floor (the hub's tests run real sim/host.py processes), the
 # Windows build of the hub (the PC's platform: DPAPI), the Trunk build,
 # Playwright E2E in Chromium and WebKit (iPad) with the console guard,
-# cargo-deny, gitleaks, the version check and diff-scoped mutation testing.
+# cargo-deny, gitleaks and the private denylist scan, the version check and
+# diff-scoped mutation testing.
 
 on:
   push:
@@ -512,6 +513,28 @@ jobs:
           tar -xzf "$RUNNER_TEMP/gitleaks.tar.gz" -C "$RUNNER_TEMP" gitleaks
       - name: gitleaks (full history)
         run: '"$RUNNER_TEMP/gitleaks" git --no-banner --redact --exit-code 1 .'
+      - name: Private denylist and commit identities (tree and the commits after the kept legacy history)
+        env:
+          DENYLIST: ${{ secrets.DENYLIST }}
+          EVENT: ${{ github.event_name }}
+          SAME_REPO: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+          # On pull requests scan the PR head's history, not GitHub's synthetic merge commit
+          SCAN_REV: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          if [ -z "$DENYLIST" ]; then
+            if [ "$EVENT" = "pull_request" ] && [ "$SAME_REPO" != "true" ]; then
+              echo "::error::Fork pull request: the private denylist is unavailable here; a maintainer runs the scan locally before merging (.claude/rules/public-repo-hygiene.md), and the merge push to dev runs it again."
+              exit 1
+            fi
+            echo "::error::The DENYLIST secret is missing."
+            exit 1
+          fi
+          umask 077
+          printf '%s\n' "$DENYLIST" > "$RUNNER_TEMP/denylist.txt"
+          python3 scripts/denylist_scan.py --denylist "$RUNNER_TEMP/denylist.txt" \
+            --identities scripts/allowed-identities.txt --boundary scripts/denylist-boundary.txt \
+            --tree HEAD --commits "$SCAN_REV"
 
   version:
     name: version
