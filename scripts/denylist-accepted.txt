@@ -4,15 +4,15 @@
 # commit and path does not fail the scan ("commit metadata" names the message,
 # author or committer). Tree findings are never listed: they are fixed.
 #
-# An entry is added only by the main session, only for a commit already published,
-# and only after the content is gone from the tree. Its comment gives the reason
-# and never names or hints at the term.
+# An entry is added only on the main session's decision, only for a commit already
+# published, and only after the content is gone from the tree. Its comment gives a
+# neutral reason: never the term, and never a pointer to the commit that removed it.
 
-# The UI redesign spec as published; the tree was reworded in 8e6dac1.
+# Published before the scan existed; gone from the tree.
 61085ee2c40653f6984f8b08c7509e8a9019357d docs/superpowers/specs/2026-09-28-ui-redesign-design.md
-# The same spec brought to master by the merge of PR #23.
+# Published before the scan existed; gone from the tree.
 e92744288bc0430c555f7ebef42d28c1f82a3c17 docs/superpowers/specs/2026-09-28-ui-redesign-design.md
-# The STAGE mockup as first published; its content was made generic in a78513d.
+# Published before the scan existed; gone from the tree.
 1d4fcb238fe3ff057f29e64f96983189f41ef704 docs/mockups/redesign-stage-v1.html
-# A synthetic test fixture that was not invented; replaced in 2c9e3ae.
+# Published before the real-list check; gone from the tree.
 c0320b3d01d269e4da1b012c914e41de88dd6bf3 scripts/test_denylist_scan.py

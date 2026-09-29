@@ -40,7 +40,8 @@ goes past the cap is a finding of its own; any other blob holding a NUL is
 binary and skipped.
 
 Exit codes: 0 clean, 1 findings, 2 the scan could not run (a missing or
-unreadable input file, a bad boundary, a failing git command).
+unreadable input file, a bad boundary or accepted-list line, `--accepted`
+without `--commits`, a failing git command).
 """
 from __future__ import annotations
 

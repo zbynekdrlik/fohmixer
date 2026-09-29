@@ -33,9 +33,10 @@ How to use the scan and what a hit means: `.claude/rules/public-repo-hygiene.md`
 
 ## Compressed files (`.tosc`, `.als`)
 
-- `read_content` is the one place that decides how bytes are matched, for tree mode, commit mode and `--hash` alike, so line keys agree. A `.tosc` is a zlib stream, an `.als` a gzip file (every member is read); the extension check is case-insensitive. Both are matched whole, never through their (binary) diff.
-- `inflate` stops at `INFLATE_CAP` (64 MiB): past it, bad or truncated data, or bytes after a zlib stream give a `ContentProblem` (`unreadable compressed file` / `... inflates past the 64 MiB cap`, path only) that fails the scan. Never reject these files by extension: a synthetic `.tosc` fixture may be committed. An inflated file holding a NUL is binary like any other.
-- A commit-mode `ContentProblem` carries the same key as a hit, so a published one can be accepted.
+- `read_content` is the one place that decides how bytes are matched, for tree mode, commit mode and `--hash` alike, so line keys agree. A regular file (`100644`/`100755`) named `.tosc` is a zlib stream, `.als` a gzip file (every member, zero padding skipped as Python's gzip reader skips it); the extension check is case-insensitive. A symlink with such a name is plain text (its blob is the target path). Both are matched whole, never through their (binary) diff.
+- `inflate` feeds 64 KiB pieces (many gzip members stay linear) and stops at `INFLATE_CAP` (64 MiB): past it, empty, bad or truncated data, or bytes after a zlib stream give a `ContentProblem` (`unreadable compressed file` / `... inflates past the 64 MiB cap`, path only) that fails the scan. Never reject these files by extension: a synthetic `.tosc` fixture may be committed. An inflated file holding a NUL is binary like any other.
+- Cost: `Scanner.entries_in` first searches one case-insensitive alternation of all terms (every boundary-checked match also matches it), and `lines_to_match` splits a whole file lazily, only when the whole text holds a term. A clean 64 MiB inflated file takes about 1 s and 224 MiB; one that holds a term can take minutes, with the same memory, and fails anyway.
+- A commit-mode `ContentProblem` carries the same key as a hit, so a published one can be accepted. What did inflate is not matched, so look at the blob locally before listing it.
 
 ## Matching limit: joined words
 
@@ -43,7 +44,7 @@ How to use the scan and what a hit means: `.claude/rules/public-repo-hygiene.md`
 
 ## Tests
 
-- Every term, name and address in the tests is invented: words like `zyxname`, `Zorblax`, `klávor`; addresses only from the RFC 5737 documentation ranges (`192.0.2.`, `198.51.100.`, `203.0.113.`); domains under `example.org`/`.net`. Never a private-range address (`10.`, `172.16.`, `192.168.`, `100.64.`) or a common first name: a value that only looks invented can be a real site value, and an earlier fixture was one.
+- Every term, name and address in the tests is invented: words like `zyxname`, `Zorblax`, `klávor`; addresses only from the RFC 5737 documentation ranges (`192.0.2.`, `198.51.100.`, `203.0.113.`); domains under `example.org`/`.net`. Never a private-range address (`10.`, `172.16.`, `192.168.`, `100.64.`) or a common first name: a value that only looks invented can be a real site value.
 - `raw_commit` / `write_commit` build odd commit objects (`hash-object`, `--literally` for ones fsck refuses).
 - No mutation gate covers `scripts/`: after a change, run hand mutants of the changed lines against the suite on a scratch copy; a surviving mutant is a missing test (or a documented equivalent).
 - The boundary (`denylist-boundary.txt`) is the two legacy tips, `b3d26d6` (S0) and `aca52f2` (S2): one SHA alone leaves the other line's 6 commits scanned. It never changes.
