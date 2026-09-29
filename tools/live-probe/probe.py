@@ -22,8 +22,11 @@ to the hub, for ``--seconds``:
   clock; the heartbeat's ``ts`` gives its outbound delay the same way;
 - the gaps between the ticks that queued results are the main thread's tick
   interval when the reads come faster than the ticks (a short run with a
-  small ``--probe-ms``); the split's precision is the wall clock's own step,
-  measured at the start and reported as ``wall_clock_step_ms``;
+  small ``--probe-ms``); the split resolves about ``wall_clock_step_ms``
+  (the wall clock's step, measured at the start) plus 1 ms (the script's
+  ``ts`` is whole milliseconds), and only while the probe reads the script's
+  clock: the summary names the probe's ``python`` and ``wall_clock`` (on
+  Windows ``GetSystemTimeAsFileTime`` before Python 3.13, as Live's 3.11);
 - past ``MAX_PENDING`` unanswered reads it skips its read slots and counts
   them (``reads_skipped``): the script's sender sends about one frame per
   main-thread tick on the real Live, and a pile of reads would load it;
@@ -45,13 +48,13 @@ copied to the Ableton PC as this single file and run with the PC's Python.
 import argparse
 import base64
 import collections
-import contextlib
 import datetime
 import hashlib
 import itertools
 import json
 import math
 import os
+import platform
 import socket
 import statistics
 import struct
@@ -93,6 +96,14 @@ Read = collections.namedtuple(
 
 class ProbeError(Exception):
     """The probe cannot measure: no connection, a refused handshake, the script gone."""
+
+
+class RawWriteError(ProbeError):
+    """The run was recorded, but its raw file could not be written: ``summary``."""
+
+    def __init__(self, message, summary):
+        super().__init__(message)
+        self.summary = summary
 
 
 # --- the summary (pure) ---
@@ -163,9 +174,10 @@ def wall_clock_step_ms(clock=time.time, changes=9, limit_s=0.2, timer=time.perf_
     """The wall clock's typical step (the median of its next ``changes``
     steps), in ms; None when it did not move within ``limit_s``. The median,
     not the smallest: on the PC a 0.5 ms clock now and then splits one step in
-    two. The script's ``ts`` comes from the same clock on the same PC, so this
-    bounds every inbound/outbound split (Windows: 15.625 ms by default, ~0.5 ms
-    when an audio app raised the timer resolution)."""
+    two. While the probe reads the script's clock (the summary's
+    ``wall_clock``), an inbound/outbound split resolves about this plus 1 ms
+    (Windows: 15.625 ms by default, ~0.5 ms when an audio app raised the
+    timer resolution)."""
     deadline = timer() + limit_s
     last = clock()
     steps = []
@@ -534,14 +546,35 @@ def record(conn, seconds, probe_ms, max_pending=MAX_PENDING, result_wait_s=RESUL
     return recorder
 
 
-def _open_raw(raw_path):
-    """The raw file, opened before the run (a bad path must not cost a run)."""
-    if raw_path is None:
-        return contextlib.nullcontext()
+def _check_raw_path(raw_path):
+    """A raw file needs a writable folder, checked before the run so a bad path
+    never costs one; an earlier file of that name is left as it is."""
+    folder = os.path.dirname(os.path.abspath(raw_path))
+    if not (os.path.isdir(folder) and os.access(folder, os.W_OK)):
+        raise ProbeError(f"cannot write the raw file {raw_path}: {folder} is not a writable folder")
+
+
+def _write_raw(raw_path, recorder):
+    """Every sample to ``raw_path`` (a temporary file, then a replace); the
+    failure's message, or None."""
+    temporary = raw_path + ".tmp"
+    samples = {
+        "heartbeats": [beat._asdict() for beat in recorder.heartbeats],
+        "reads": [read._asdict() for read in recorder.reads],
+    }
     try:
-        return open(raw_path, "w", encoding="utf-8")
+        with open(temporary, "w", encoding="utf-8") as f:
+            json.dump(samples, f)
+        os.replace(temporary, raw_path)
     except OSError as e:
-        raise ProbeError(f"cannot write the raw file {raw_path}: {e}") from e
+        message = f"cannot write the raw file {raw_path}: {e}"
+        try:
+            if os.path.exists(temporary):
+                os.remove(temporary)
+        except OSError as cleanup:
+            message += f" ({temporary} is left: {cleanup})"
+        return message
+    return None
 
 
 def run(
@@ -553,24 +586,18 @@ def run(
     max_pending=MAX_PENDING,
     result_wait_s=RESULT_WAIT_S,
 ):
-    """Connect, record, close; the summary (and the raw samples to ``raw_path``)."""
-    with _open_raw(raw_path) as raw:
-        wall_step = wall_clock_step_ms()
-        conn = Connection(port, host)
-        try:
-            recorder = record(conn, seconds, probe_ms, max_pending, result_wait_s)
-        finally:
-            conn.close()
-        if raw is not None:
-            samples = {
-                "heartbeats": [beat._asdict() for beat in recorder.heartbeats],
-                "reads": [read._asdict() for read in recorder.reads],
-            }
-            try:
-                json.dump(samples, raw)
-            except OSError as e:
-                raise ProbeError(f"cannot write the raw file {raw_path}: {e}") from e
-    return summarize(
+    """Connect, record, close; the summary. With ``raw_path`` every sample goes
+    there too; a failure to write it after the run is a ``RawWriteError``
+    carrying the summary."""
+    if raw_path is not None:
+        _check_raw_path(raw_path)
+    wall_step = wall_clock_step_ms()
+    conn = Connection(port, host)
+    try:
+        recorder = record(conn, seconds, probe_ms, max_pending, result_wait_s)
+    finally:
+        conn.close()
+    summary = summarize(
         recorder.heartbeats,
         recorder.reads,
         lost=len(recorder.pending),
@@ -581,6 +608,11 @@ def run(
         skipped=recorder.skipped,
         wall_step_ms=wall_step,
     )
+    if raw_path is not None:
+        failure = _write_raw(raw_path, recorder)
+        if failure is not None:
+            raise RawWriteError(failure, summary)
+    return summary
 
 
 def parse_args(argv):
@@ -599,12 +631,23 @@ def parse_args(argv):
 def main(argv=None):
     args = parse_args(argv)
     started = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    about = {
+        "label": args.label,
+        "started_utc": started,
+        "python": platform.python_version(),
+        "wall_clock": time.get_clock_info("time").implementation,
+    }
     try:
         summary = run(args.port, args.seconds, args.probe_ms, raw_path=args.raw)
+    except RawWriteError as e:
+        # The run itself was recorded: its summary still goes out.
+        print(json.dumps({**about, **e.summary}, indent=2))
+        print(f"live-probe: {e}", file=sys.stderr)
+        return 1
     except ProbeError as e:
         print(f"live-probe: {e}", file=sys.stderr)
         return 1
-    print(json.dumps({"label": args.label, "started_utc": started, **summary}, indent=2))
+    print(json.dumps({**about, **summary}, indent=2))
     return 0
 
 
