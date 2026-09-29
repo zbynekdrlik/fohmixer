@@ -63,4 +63,15 @@ exclude_re = [
   # pages/surface.rs: a tab press (store, local storage) and the remembered
   # pages' read; choose and selected_path are the tested decisions.
   "fohmixer-ui/src/pages/surface\\.rs.*(replace|in) (Nav::select|remembered_pages)( |$)",
+  # diag.rs (#26), one browser call each: install (the window error,
+  # unhandledrejection and visibilitychange listeners), observe_attributes
+  # (the MutationObserver on data-sw / data-wake-lock), connected and
+  # disconnected (the store's hooks), report and report_error (the
+  # listeners' entry points), send (the thread-local state, the page clock),
+  # read_env (matchMedia, navigator.standalone, screen, the <html>
+  # attributes), rejection_text (a JS reason as text) and post (the
+  # keepalive fetch). Their decisions are the tested Diag (throttle, hellos),
+  # fields, display_mode, screen_text, visibility, error_event_text and
+  # attribute_kind; e2e/tests/client-report.spec.ts drives the glue.
+  "fohmixer-ui/src/diag\\.rs.*(replace|in) (install|observe_attributes|connected|disconnected|report|report_error|send|read_env|rejection_text|post)( |$)",
 ]

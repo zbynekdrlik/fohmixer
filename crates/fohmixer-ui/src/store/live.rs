@@ -299,9 +299,10 @@ impl LiveStore {
 
     /// The socket closed (`code`) or was dropped (`None`).
     fn on_close(self, code: Option<u16>) {
-        let Some((reconnect, pending)) = self.inner.try_update_value(|i| {
+        let Some((was_ready, reconnect, pending)) = self.inner.try_update_value(|i| {
             i.socket = None;
-            (i.conn.closed(), std::mem::take(&mut i.pending))
+            let was_ready = i.conn.ready();
+            (was_ready, i.conn.closed(), std::mem::take(&mut i.pending))
         }) else {
             return;
         };
@@ -311,6 +312,11 @@ impl LiveStore {
         dom::log(&format!(
             "the hub socket closed (code {code:?}): reconnecting"
         ));
+        // A socket that said hello went away (#26); a failed attempt while
+        // the hub is down is no news.
+        if was_ready {
+            crate::diag::disconnected();
+        }
         let _ = self.connected.try_set(false);
         let _ = self.hub.try_set(BTreeMap::new());
         let _ = self.instances.try_update(|all| {
@@ -410,6 +416,7 @@ impl LiveStore {
         };
         dom::log(&format!("connected to hub {build}"));
         let _ = self.connected.try_set(true);
+        crate::diag::connected();
         for spec in &hello.specs {
             self.send_sub(spec);
         }
