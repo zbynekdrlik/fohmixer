@@ -76,13 +76,21 @@ class UsageError(Exception):
     """The scan cannot run: exit 2, the message never quotes a term."""
 
 
+METADATA = "commit metadata"  # the accepted-list path of a message, author or committer finding
+ACCEPTED_ENTRY = re.compile(r"([0-9a-f]{40})[ \t]+(\S.*)")
+
+
 @dataclass(frozen=True)
 class Hit:
     where: str
     entry: int
+    # commit mode only: (full SHA, path, or None for the commit's metadata), what an accepted entry names
+    key: tuple[str, str | None] | None = None
+    accepted: bool = False
 
     def render(self) -> str:
-        return f"{self.where}: denylist entry {self.entry}"
+        suffix = " (accepted: published history)" if self.accepted else ""
+        return f"{self.where}: denylist entry {self.entry}{suffix}"
 
 
 @dataclass(frozen=True)
@@ -102,7 +110,52 @@ class BoundaryProblem:
         return f"{self.where}: hidden by the boundary, but it has an allowed identity"
 
 
-Finding = Hit | IdentityProblem | BoundaryProblem
+@dataclass(frozen=True)
+class AcceptedProblem:
+    line: int
+    commit: str
+
+    def render(self) -> str:
+        return f"accepted line {self.line}: commit {self.commit[:12]} is not in the scanned history"
+
+
+Finding = Hit | IdentityProblem | BoundaryProblem | AcceptedProblem
+
+
+@dataclass(frozen=True)
+class AcceptedEntry:
+    line: int
+    sha: str
+    path: str | None  # None: the commit's metadata
+
+
+def load_accepted(path: Path) -> list[AcceptedEntry]:
+    """`<full SHA> <path>` per line (`commit metadata` for the message, author or committer)."""
+    entries: list[AcceptedEntry] = []
+    for number, raw in enumerate(read_text(path, "accepted list").splitlines(), start=1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        match = ACCEPTED_ENTRY.fullmatch(line)
+        if not match:
+            # the line itself is never printed: a wrong file passed here could be the denylist
+            raise UsageError(f"accepted list {path}: line {number} is not `<full commit SHA> <path>`")
+        entries.append(AcceptedEntry(number, match.group(1), None if match.group(2) == METADATA else match.group(2)))
+    return entries
+
+
+def apply_accepted(hits: list[Finding], entries: list[AcceptedEntry], scanned: set[str]) -> list[Finding]:
+    """Commit-mode hits in exactly a listed commit and path become accepted; tree hits carry no key,
+    so they never match. An entry whose commit the scan did not reach is a finding of its own."""
+    keys = {(entry.sha, entry.path) for entry in entries}
+    marked: list[Finding] = [
+        Hit(hit.where, hit.entry, hit.key, accepted=True) if isinstance(hit, Hit) and hit.key in keys else hit
+        for hit in hits]
+    return marked + [AcceptedProblem(entry.line, entry.sha) for entry in entries if entry.sha not in scanned]
+
+
+def fails(finding: Finding) -> bool:
+    return not (isinstance(finding, Hit) and finding.accepted)
 
 
 def read_text(path: Path, what: str) -> str:
@@ -212,14 +265,14 @@ class Scanner:
         kept = "/".join(REDACTED if hit else printable(part) for part, hit in zip(parts, part_hits, strict=True))
         return REDACTED if self.entries_in(kept) else kept
 
-    def scan_path(self, path: str, prefix: str) -> list[Hit]:
-        return [Hit(f"{prefix}{self.shown(path)}: path", entry) for entry in self.entries_in(path)]
+    def scan_path(self, path: str, prefix: str, key: tuple[str, str | None] | None = None) -> list[Hit]:
+        return [Hit(f"{prefix}{self.shown(path)}: path", entry, key) for entry in self.entries_in(path)]
 
-    def scan_line(self, path: str, line: str, where: str) -> list[Hit]:
+    def scan_line(self, path: str, line: str, where: str, key: tuple[str, str | None] | None = None) -> list[Hit]:
         entries = self.entries_in(line)
         if not entries or line_key(path, line) in self.allow:
             return []
-        return [Hit(where, entry) for entry in entries]
+        return [Hit(where, entry, key) for entry in entries]
 
 
 def git(repo: Path, *args: str, stdin: bytes | None = None) -> bytes:
@@ -416,7 +469,8 @@ def scan_changes(scanner: Scanner, repo: Path, sha: str, prefix: str) -> list[Hi
     added = added_by_path(repo, sha)
     hits: list[Hit] = []
     for change in changes:
-        hits += scanner.scan_path(change.path, prefix)
+        key = (sha, change.path)
+        hits += scanner.scan_path(change.path, prefix, key)
         lines = added.pop(change.raw, [])
         data = None if change.mode == GITLINK else contents[change.blob]
         text = None if data is None else blob_text(data)
@@ -424,37 +478,33 @@ def scan_changes(scanner: Scanner, repo: Path, sha: str, prefix: str) -> list[Hi
             continue
         if data.startswith(UTF16_BOMS):
             lines = text_lines(text)
-        hits += scan_lines(scanner, change.path, lines, prefix)
+        hits += scan_lines(scanner, change.path, lines, prefix, key)
     # a patch path that matched no change (a label that unquotes differently) is scanned, never dropped
     for raw, lines in added.items():
-        hits += scan_lines(scanner, decode(raw), lines, prefix)
+        hits += scan_lines(scanner, decode(raw), lines, prefix, (sha, decode(raw)))
     return hits
 
 
-def scan_lines(scanner: Scanner, path: str, lines: list[str], prefix: str) -> list[Hit]:
+def scan_lines(scanner: Scanner, path: str, lines: list[str], prefix: str,
+               key: tuple[str, str | None]) -> list[Hit]:
     where = f"{prefix}{scanner.shown(path)}"
-    return [hit for line in lines for hit in scanner.scan_line(path, line, where)]
+    return [hit for line in lines for hit in scanner.scan_line(path, line, where, key)]
 
 
 def scan_commit(scanner: Scanner, repo: Path, sha: str, identities: set[str] | None) -> list[Finding]:
     short = sha[:12]
     metadata = metadata_of(repo, sha)
-    hits: list[Finding] = [Hit(f"{short} commit metadata", entry) for entry in scanner.entries_in(metadata.text)]
+    hits: list[Finding] = [Hit(f"{short} {METADATA}", entry, (sha, None))
+                           for entry in scanner.entries_in(metadata.text)]
     if identities is not None:
         hits += [IdentityProblem(short, role) for role in metadata.unallowed_roles(identities)]
     return hits + scan_changes(scanner, repo, sha, f"{short} ")
 
 
-def scan_commits(
-    scanner: Scanner, repo: Path, revlist_args: list[str], identities: set[str] | None = None,
-    boundary: list[str] | None = None,
-) -> list[Finding]:
+def commits_in(repo: Path, revlist_args: list[str], boundary: list[str]) -> list[str]:
     # the boundary goes first, so a `--not` inside the caller's range cannot flip it
-    excluded = [f"^{sha}" for sha in boundary or []]
-    hits: list[Finding] = []
-    for sha in decode(git(repo, "rev-list", *excluded, *revlist_args)).split():
-        hits += scan_commit(scanner, repo, sha, identities)
-    return hits
+    excluded = [f"^{sha}" for sha in boundary]
+    return decode(git(repo, "rev-list", *excluded, *revlist_args)).split()
 
 
 def scan_boundary(repo: Path, boundary: list[str], identities: set[str]) -> list[BoundaryProblem]:
@@ -488,19 +538,26 @@ def run(args: argparse.Namespace) -> list[Finding]:
         raise UsageError(f"identity list {args.identities} is empty")
     boundary = load_boundary(args.boundary)
     check_boundary_exists(args.repo, boundary)
+    if args.accepted is not None and not args.commits:
+        raise UsageError("--accepted names commits: it needs a --commits scan")
+    accepted = [] if args.accepted is None else load_accepted(args.accepted)
     scanner = Scanner(terms, load_allow(args.allow))
     hits: list[Finding] = []
     for rev in args.tree:
         hits += scan_tree(scanner, args.repo, rev)
+    scanned: set[str] = set()
     for spec in args.commits:
         try:
             revlist = shlex.split(spec)
         except ValueError:
             raise UsageError("--commits: the range has an unbalanced quote") from None
-        hits += scan_commits(scanner, args.repo, revlist, identities, boundary)
+        for sha in commits_in(args.repo, revlist, boundary):
+            if sha not in scanned:
+                scanned.add(sha)
+                hits += scan_commit(scanner, args.repo, sha, identities)
     if boundary and identities is not None:
         hits += scan_boundary(args.repo, boundary, identities)
-    return hits
+    return apply_accepted(hits, accepted, scanned) if args.accepted is not None else hits
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -509,6 +566,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--allow", type=Path, help="reviewed line keys (see --hash)")
     parser.add_argument("--identities", type=Path, help="allowed author/committer emails (commit mode)")
     parser.add_argument("--boundary", type=Path, help="tips of the kept legacy history, left out of commit scans")
+    parser.add_argument("--accepted", type=Path, help="published commit findings (SHA + path) that do not fail")
     parser.add_argument("--repo", type=Path, default=Path("."))
     parser.add_argument("--tree", action="append", default=[], metavar="REV")
     parser.add_argument("--commits", action="append", default=[], metavar="REVLIST")
@@ -530,10 +588,12 @@ def main(argv: list[str] | None = None) -> int:
         print(hit.render())
     # piped, stdout is block-buffered: flush it so the count never lands inside a finding's line
     sys.stdout.flush()
-    if hits:
-        print(f"{len(hits)} finding(s)", file=sys.stderr)
+    failing = sum(1 for hit in hits if fails(hit))
+    if failing:
+        print(f"{failing} finding(s)", file=sys.stderr)
         return EXIT_HIT
-    print("denylist: clean")
+    accepted = len(hits)
+    print(f"denylist: clean ({accepted} accepted)" if accepted else "denylist: clean")
     return EXIT_CLEAN
 
 
