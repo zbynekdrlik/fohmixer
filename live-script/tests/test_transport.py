@@ -13,7 +13,6 @@ import json
 import logging
 import select
 import socket
-import statistics
 import time
 import unittest
 
@@ -254,31 +253,26 @@ class TransportTest(unittest.TestCase):
         self.fill(conn)
 
         def pushes():
-            base = conn.pending()[0]
-            durations = []
+            base, _keys, unsent = conn.pending()
             for i in range(5000):
-                started = time.perf_counter()
                 conn.push_value(f"k{i}", {"key": f"k{i}", "value": i / 5000})
-                durations.append(time.perf_counter() - started)
             for i in range(900):
-                started = time.perf_counter()
                 self.assertTrue(conn.push_result(f"r{i}", [{"ok": True, "data": i}]))
-                durations.append(time.perf_counter() - started)
             still_open, pending = conn.is_open, conn.pending()
             accepted = 0
             while conn.push_result(f"extra{accepted}", []):
                 accepted += 1
                 if accepted > 200:
                     break
-            return base, durations, still_open, pending, accepted, conn.is_open
+            return base, unsent, still_open, pending, accepted, conn.is_open
 
-        base, durations, still_open, pending, accepted, open_after = self.call(pushes)
-        durations.sort()
-        self.assertLess(statistics.median(durations), 0.0001)
-        self.assertLess(durations[int(len(durations) * 0.99)], 0.001)
-        self.assertLess(durations[-1], 0.5)
+        # All in one call on the main thread, between two ticks: the pushes
+        # only queue. One that wrote to the full socket would wait for ever
+        # (the client reads nothing) and the call would time out; the bytes
+        # waiting for the socket do not change.
+        base, unsent, still_open, pending, accepted, open_after = self.call(pushes)
         self.assertTrue(still_open)
-        self.assertEqual(pending[:2], (base + 900, 5000))
+        self.assertEqual(pending, (base + 900, 5000, unsent))
         self.assertEqual(accepted, 1000 - base - 900)
         self.assertFalse(open_after)
         wait_for(lambda: conn.finished)
