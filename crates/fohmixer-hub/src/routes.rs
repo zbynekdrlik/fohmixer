@@ -105,15 +105,16 @@ fn is_port(port: &str) -> bool {
 }
 
 /// The one reading of a `Host` value (#9): a name or an address, then an
-/// optional `:<digits>` port and nothing else. Returns the name or address
-/// (an IPv6 one without its brackets) and whether it was bracketed, or
-/// `None` when anything else follows it (`[::1] x`, `127.0.0.1:1 x`, an
-/// empty or non-digit port).
+/// optional `:<digits>` port and nothing else; brackets hold an IPv6
+/// address only. Returns the name or address (an IPv6 one without its
+/// brackets) and whether it was bracketed, or `None` for anything else
+/// (`[::1] x`, `127.0.0.1:1 x`, an empty or non-digit port, a name in
+/// brackets).
 fn host_name(host: &str) -> Option<(&str, bool)> {
     if let Some(rest) = host.strip_prefix('[') {
         let (addr, after) = rest.split_once(']')?;
         let port_ok = after.is_empty() || after.strip_prefix(':').is_some_and(is_port);
-        return port_ok.then_some((addr, true));
+        return (port_ok && addr.parse::<Ipv6Addr>().is_ok()).then_some((addr, true));
     }
     match host.rsplit_once(':') {
         Some((name, port)) => is_port(port).then_some((name, false)),
@@ -132,7 +133,8 @@ pub fn host_allowed(host: Option<&str>, allowed: &[String]) -> bool {
     };
     match host_name(host) {
         None => false,
-        Some((addr, true)) => addr.parse::<Ipv6Addr>().is_ok(),
+        // An IPv6 address: `host_name` parsed it.
+        Some((_, true)) => true,
         Some((name, false)) => {
             name.parse::<Ipv4Addr>().is_ok()
                 || name.eq_ignore_ascii_case("localhost")
