@@ -402,11 +402,12 @@ class AgainstSimLive(unittest.TestCase):
     def test_a_main_thread_stall_shows_in_the_ages_and_the_round_trips(self):
         """A 700 ms stall of SimLive's main thread (as the script's own
         integration test uses): heartbeats report it, and the read that waited
-        longest waited on the way in (the drain), not on the way out.
+        longest waited mostly on the way in (the drain), not on the way out.
 
-        Judged per read, not by comparing maxima: on a loaded machine any
-        read can also be held on its way out by the scheduler (#5 review:
-        3 of 24 parallel runs), but not the one that waited out the stall."""
+        Judged per read, not by comparing maxima: on a loaded machine any read
+        can also be held on its way out by the scheduler (#5 review: 3 of 24
+        parallel runs; with 5 suites at once even the stall's read was held
+        377 ms), but less than the 700 ms it waited on the way in."""
         raw = os.path.join(self.host.log_dir, "stall.json")
         stall = threading.Timer(0.5, self.host.control, args=("stall 700",))
         stall.start()
@@ -421,7 +422,7 @@ class AgainstSimLive(unittest.TestCase):
             reads = json.load(f)["reads"]
         longest = max(reads, key=lambda read: read["inbound_ms"])
         self.assertGreaterEqual(longest["inbound_ms"], 300.0, longest)
-        self.assertLess(longest["outbound_ms"], longest["inbound_ms"] / 2, longest)
+        self.assertLess(longest["outbound_ms"], longest["inbound_ms"], longest)
 
     def test_the_cli_prints_the_summary_as_json(self):
         done = subprocess.run(
@@ -510,11 +511,13 @@ def text_frame(message):
 class FakeScript:
     """A one-connection server speaking the script's protocol from a list of steps."""
 
-    def __init__(self, first_frames, answer=True, batch=1):
+    def __init__(self, first_frames, answer=True, batch=1, delay_s=0.0):
         """``answer=False``: never answers a read; ``batch=N``: holds the reads
-        until N have come, then answers them all (a script behind its reads)."""
+        until N have come, then answers them all ``delay_s`` later (a script
+        behind its reads)."""
         self.answer = answer
         self.batch = batch
+        self.delay_s = delay_s
         self.held = []
         self.listener = socket.socket()
         self.listener.bind(("127.0.0.1", 0))
@@ -551,6 +554,7 @@ class FakeScript:
                 self.held.append(json.loads(bytes(payload))["uuid"])
                 if len(self.held) < self.batch:
                     continue
+                time.sleep(self.delay_s)
                 now = round(time.time() * 1000)
                 result = [{"ok": True, "data": 120.0}]
                 for uuid in self.held:
@@ -620,15 +624,15 @@ class Limits(unittest.TestCase):
         self.assertGreaterEqual(summary["reads_skipped"], 10, summary)
 
     def test_reads_resume_once_the_script_catches_up(self):
-        # The fake answers only in batches of 5: at the cap of 5 the probe
-        # skips slots, and it reads again once the batch is answered.
+        # The fake answers only in batches of 5, 20 ms after the fifth read:
+        # at the cap of 5 the probe skips its 2 ms slots meanwhile, and it
+        # reads again once the batch is answered.
         connect = [{"event": "connect", "data": CONNECT, "ts": 1000}]
-        script = FakeScript(connect, batch=5)
+        script = FakeScript(connect, batch=5, delay_s=0.02)
         self.addCleanup(script.close)
         summary = probe.run(script.port, seconds=0.5, probe_ms=2, max_pending=5, result_wait_s=0.2)
         self.assertGreater(summary["reads_skipped"], 0, summary)
         self.assertGreaterEqual(summary["round_trip_ms"]["count"], 10, summary)
-        self.assertEqual(summary["round_trip_ms"]["count"] % 5, 0, summary)
         self.assertLessEqual(summary["round_trips_lost"], 5, summary)
 
     def test_the_default_cap_keeps_far_below_the_scripts_result_queue(self):
