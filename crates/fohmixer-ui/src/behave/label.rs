@@ -19,6 +19,16 @@ pub fn label_chars(label: &str) -> usize {
     label.chars().count().max(1)
 }
 
+/// The length a rail button's font is sized by (`--n`, #21): the characters
+/// of its longest word (a word is never broken), at least 1.
+pub fn longest_word_chars(text: &str) -> usize {
+    text.split_whitespace()
+        .map(|word| word.chars().count())
+        .max()
+        .unwrap_or(0)
+        .max(1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -39,6 +49,16 @@ mod tests {
         assert_eq!(label_chars("Klavír"), 6);
         assert_eq!(label_chars("B"), 1);
         assert_eq!(label_chars(""), 1);
+    }
+
+    #[test]
+    fn a_rail_text_counts_its_longest_word() {
+        assert_eq!(longest_word_chars("TechAlert"), 9);
+        assert_eq!(longest_word_chars("REFRESH ALL"), 7);
+        assert_eq!(longest_word_chars("SOLO Podklady"), 8);
+        assert_eq!(longest_word_chars("Klavír x"), 6);
+        assert_eq!(longest_word_chars("  "), 1);
+        assert_eq!(longest_word_chars(""), 1);
     }
 
     #[test]

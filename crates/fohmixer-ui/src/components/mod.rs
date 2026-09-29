@@ -16,6 +16,7 @@ pub mod strip;
 use fohmixer_proto::layout::{Control, MeterSource};
 use leptos::prelude::*;
 
+use crate::behave::label::longest_word_chars;
 use crate::binding::SubSpec;
 use crate::store::{LiveStore, Readiness, Slot};
 
@@ -123,6 +124,14 @@ pub fn ControlView(control: Control) -> impl IntoView {
             view! { <div class="text" data-testid="label">{text}</div> }.into_any()
         }
     }
+}
+
+/// A button's text: in the rail its font follows its longest word (`--n`,
+/// the stylesheet's `.rail .btn-text`), so a word is never broken (#21).
+#[component]
+pub fn BtnText(text: String) -> impl IntoView {
+    let length = format!("--n:{};", longest_word_chars(&text));
+    view! { <span class="btn-text" style=length>{text}</span> }
 }
 
 #[cfg(test)]

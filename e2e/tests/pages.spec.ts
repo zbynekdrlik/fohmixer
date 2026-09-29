@@ -114,6 +114,39 @@ test.describe("The page is a rail and rows of sections", () => {
     await expect(page.getByTestId("solo").first()).toHaveText("SOLO Vocals");
   });
 
+  test("a rail button never breaks a word, and its words stay inside it", async ({ page }) => {
+    // #21 post-deploy check: "TECHALERT" broke as "TECHALER" / "T" in the
+    // rail's 112 px (overflow-wrap: anywhere was the only guard); a long
+    // word now shrinks the button's font instead.
+    await openSurface(page);
+    const broken = await page
+      .getByTestId("rail")
+      .locator(".btn")
+      .evaluateAll((buttons) =>
+        buttons.flatMap((button) => {
+          const out: string[] = [];
+          const box = button.getBoundingClientRect();
+          const walker = document.createTreeWalker(button, NodeFilter.SHOW_TEXT);
+          for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+            const text = node.textContent ?? "";
+            for (const m of text.matchAll(/\S+/g)) {
+              const range = document.createRange();
+              range.setStart(node, m.index!);
+              range.setEnd(node, m.index! + m[0].length);
+              const rects = Array.from(range.getClientRects()).filter((r) => r.width > 0);
+              const lines = new Set(rects.map((r) => Math.round(r.top)));
+              if (lines.size > 1) out.push(`"${m[0]}" on ${lines.size} lines`);
+              const r = range.getBoundingClientRect();
+              if (r.left < box.left - 0.5 || r.right > box.right + 0.5) out.push(`"${m[0]}" outside its button`);
+            }
+          }
+          return out;
+        }),
+      );
+    expect(broken).toEqual([]);
+    await expect(page.getByTestId("alert-toggle")).toHaveText("TechAlert");
+  });
+
   test("sections show in rows in the layout's order, with their titles and colours", async ({ page }) => {
     const fixture = layout();
     const foh = fixture.pages[1];

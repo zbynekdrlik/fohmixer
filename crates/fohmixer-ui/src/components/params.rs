@@ -7,7 +7,7 @@ use leptos::prelude::*;
 use serde_json::Value;
 
 use super::fader::{self, FaderView, Law};
-use super::{fail_flash, readiness, slot_of};
+use super::{BtnText, fail_flash, readiness, slot_of};
 use crate::behave::toggle::{ToggleCtl, ToggleState, Write, aggregate, is_on};
 use crate::binding::{SubSpec, param_subs};
 use crate::dom;
@@ -149,7 +149,7 @@ pub fn ParamToggleView(
             on:pointercancel=on_up
             on:lostpointercapture=on_up
         >
-            {label}
+            <BtnText text=label />
         </div>
     }
 }
