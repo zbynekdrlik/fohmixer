@@ -569,8 +569,14 @@ def _check_raw_path(raw_path):
         ) from None
     except OSError as e:
         raise ProbeError(f"cannot write the raw file {raw_path}: {e}") from e
-    os.close(fd)
-    os.remove(temporary)
+    try:
+        os.close(fd)
+        os.remove(temporary)
+    except OSError as e:
+        # Windows: an antivirus or indexer handle on the new file.
+        raise ProbeError(
+            f"cannot write the raw file {raw_path}: cannot remove the check file {temporary}: {e}"
+        ) from e
 
 
 def _write_raw(raw_path, recorder):
