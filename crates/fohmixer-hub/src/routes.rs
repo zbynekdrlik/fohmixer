@@ -104,31 +104,41 @@ fn is_port(port: &str) -> bool {
     !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit())
 }
 
-/// Whether a `Host` header value (a name or an address, an optional
-/// `:<digits>` port and nothing else) names this hub: an IP address,
-/// `localhost`, or one of `allowed` (the config's `allowed_hosts`). A
-/// request without one (not a browser) passes. Anything else after the
-/// address (`[::1] x`, `127.0.0.1:1 x`) is refused (#9): it would pass the
-/// Origin guard with a matching `Origin` and reach the log lines.
+/// The one reading of a `Host` value (#9): a name or an address, then an
+/// optional `:<digits>` port and nothing else. Returns the name or address
+/// (an IPv6 one without its brackets) and whether it was bracketed, or
+/// `None` when anything else follows it (`[::1] x`, `127.0.0.1:1 x`, an
+/// empty or non-digit port).
+fn host_name(host: &str) -> Option<(&str, bool)> {
+    if let Some(rest) = host.strip_prefix('[') {
+        let (addr, after) = rest.split_once(']')?;
+        let port_ok = after.is_empty() || after.strip_prefix(':').is_some_and(is_port);
+        return port_ok.then_some((addr, true));
+    }
+    match host.rsplit_once(':') {
+        Some((name, port)) => is_port(port).then_some((name, false)),
+        None => Some((host, false)),
+    }
+}
+
+/// Whether a `Host` header value (read by `host_name`) names this hub: an IP
+/// address (IPv6 in brackets), `localhost`, or one of `allowed` (the
+/// config's `allowed_hosts`). A request without one (not a browser) passes.
+/// A Host with anything after its address is refused (#9): it would pass
+/// the Origin guard with a matching `Origin` and reach the log lines.
 pub fn host_allowed(host: Option<&str>, allowed: &[String]) -> bool {
     let Some(host) = host else {
         return true;
     };
-    if let Some(rest) = host.strip_prefix('[') {
-        // An IPv6 address: `[::1]` or `[::1]:8480`.
-        return rest.split_once(']').is_some_and(|(addr, after)| {
-            addr.parse::<Ipv6Addr>().is_ok()
-                && (after.is_empty() || after.strip_prefix(':').is_some_and(is_port))
-        });
+    match host_name(host) {
+        None => false,
+        Some((addr, true)) => addr.parse::<Ipv6Addr>().is_ok(),
+        Some((name, false)) => {
+            name.parse::<Ipv4Addr>().is_ok()
+                || name.eq_ignore_ascii_case("localhost")
+                || allowed.iter().any(|a| a.eq_ignore_ascii_case(name))
+        }
     }
-    let (name, port_ok) = match host.rsplit_once(':') {
-        Some((name, port)) => (name, is_port(port)),
-        None => (host, true),
-    };
-    port_ok
-        && (name.parse::<Ipv4Addr>().is_ok()
-            || name.eq_ignore_ascii_case("localhost")
-            || allowed.iter().any(|a| a.eq_ignore_ascii_case(name)))
 }
 
 /// Refuses (421) a request whose `Host` is not this hub's: a page on any
@@ -170,7 +180,7 @@ pub fn redirect_target(
 ) -> Option<String> {
     let tls = tls.filter(|tls| tls.redirect_http && !proxied)?;
     let https_port = https_port?;
-    let name = host?.rsplit_once(':').map_or(host?, |(name, _port)| name);
+    let (name, _bracketed) = host_name(host?)?;
     if !name.eq_ignore_ascii_case(&tls.name) {
         return None;
     }
