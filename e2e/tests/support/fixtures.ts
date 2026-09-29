@@ -35,21 +35,27 @@ export type CrashWatch = {
  * until its own timeout. Closing the page ends every pending call on it.
  */
 export function watchCrash(page: Page, browserName: string): CrashWatch {
-  let error: Error | undefined;
+  let crashedPage = false;
+  let closeFailure: string | undefined;
+  const named = () =>
+    new Error(
+      pageCrashedMessage(browserName) +
+        (closeFailure === undefined ? "" : ` (closing the crashed page failed too: ${closeFailure})`),
+    );
   const crashed = new Promise<Error>((resolve) => {
     page.once("crash", () => {
-      const named = new Error(pageCrashedMessage(browserName));
-      error = named;
-      resolve(named);
+      crashedPage = true;
+      // A failed close is reported with the crash (check), never dropped.
       page.close().catch((closing: Error) => {
-        named.message += ` (closing the crashed page failed too: ${closing.message})`;
+        closeFailure = closing.message;
       });
+      resolve(named());
     });
   });
   return {
     crashed,
     check() {
-      if (error) throw error;
+      if (crashedPage) throw named();
     },
   };
 }
@@ -57,7 +63,8 @@ export function watchCrash(page: Page, browserName: string): CrashWatch {
 /**
  * Every test fails if the browser console shows an error, a warning or a page
  * error that it did not declare in `allowedConsole` (clean-console rule), and
- * with a named error if its page's browser process crashed.
+ * with a named error if the browser process of its page, or of any other page
+ * its context opens, crashed. Both are reported when both happened.
  */
 export const test = base.extend<ConsoleGuard>({
   allowedConsole: [[], { option: true }],
@@ -73,7 +80,9 @@ export const test = base.extend<ConsoleGuard>({
           "allowedConsole must be a RegExp[]: wrap two or more patterns as [[/a/, /b/], { scope: \"test\" }]",
         );
       }
-      const crash = watchCrash(page, browserName);
+      const crashes = [watchCrash(page, browserName)];
+      const watchOther = (other: Page) => crashes.push(watchCrash(other, browserName));
+      page.context().on("page", watchOther);
       const problems: string[] = [];
       page.on("console", (msg) => {
         if (msg.type() !== "error" && msg.type() !== "warning") return;
@@ -83,8 +92,10 @@ export const test = base.extend<ConsoleGuard>({
       });
       page.on("pageerror", (error) => problems.push(`[pageerror] ${error.message}`));
       await use();
-      crash.check();
-      expect(problems, "browser console must stay clean").toEqual([]);
+      page.context().off("page", watchOther);
+      // Soft, so a crash below does not hide what the console showed before it.
+      expect.soft(problems, "browser console must stay clean").toEqual([]);
+      for (const crash of crashes) crash.check();
     },
     { auto: true },
   ],
