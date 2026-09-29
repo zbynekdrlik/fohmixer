@@ -33,7 +33,9 @@ import probe  # noqa: E402
 from FohMixer.transport import websocket as vendored  # noqa: E402
 from FohMixer.version import VERSION  # noqa: E402
 
-READY_S = 10.0
+# The E2E harness's wait for sim/host.py (READY_S there): a host starting on a
+# box with the load average above 20 took over 10 s (#5 review).
+READY_S = 20.0
 STOP_S = 10.0
 
 
@@ -397,9 +399,12 @@ class AgainstSimLive(unittest.TestCase):
         # read every 2 ms lands in nearly every tick.
         summary = probe.run(self.host.port, seconds=1.0, probe_ms=2)
         gaps = summary["result_tick_gap_ms"]
-        self.assertGreaterEqual(gaps["count"], 10, summary)
+        # The gaps are ticks, not the 2 ms read spacing (at least 5 ms). How
+        # long a tick is belongs to the machine: SimLive's 10 ms timer ran at
+        # 40-78 ms with the load average above 20 (#5 review), so no upper
+        # bound; the gap arithmetic itself is pinned by TickGaps.
+        self.assertGreaterEqual(gaps["count"], 3, summary)
         self.assertGreaterEqual(gaps["p50"], 5.0, summary)
-        self.assertLessEqual(gaps["p50"], 30.0, summary)
 
     def test_a_main_thread_stall_shows_in_the_ages_and_the_round_trips(self):
         """A 700 ms stall of SimLive's main thread (as the script's own
@@ -636,9 +641,10 @@ class Limits(unittest.TestCase):
         connect = [{"event": "connect", "data": CONNECT, "ts": 1000}]
         script = FakeScript(connect, batch=5, delay_s=0.02)
         self.addCleanup(script.close)
-        summary = probe.run(script.port, seconds=0.5, probe_ms=2, max_pending=5, result_wait_s=0.2)
+        summary = probe.run(script.port, seconds=1.0, probe_ms=2, max_pending=5, result_wait_s=0.2)
         self.assertGreater(summary["reads_skipped"], 0, summary)
-        self.assertGreaterEqual(summary["round_trip_ms"]["count"], 10, summary)
+        # More reads answered than the cap allows at once: the probe resumed.
+        self.assertGreater(summary["round_trip_ms"]["count"], 5, summary)
         self.assertLessEqual(summary["round_trips_lost"], 5, summary)
 
     def test_the_default_cap_keeps_far_below_the_scripts_result_queue(self):
