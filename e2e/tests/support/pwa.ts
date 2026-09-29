@@ -90,6 +90,8 @@ export function removeWakeLock() {
  * Records every write of `data-wake-lock` on `<html>` (an init script:
  * `page.addInitScript(recordWakeLockWrites)`). The app reports each write to
  * the hub (diag.rs), so the page writes it only when the state changes.
+ * One entry per write, holding the attribute's value when the observer runs:
+ * the count is exact, but two writes in one batch both show the later value.
  */
 export function recordWakeLockWrites() {
   const writes: (string | null)[] = [];
