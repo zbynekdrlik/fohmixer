@@ -413,6 +413,16 @@ jobs:
           done
           cat "$RUNNER_TEMP/e2e-logs/harness.log"
           exit 1
+      - name: Core dumps off for the test browsers (#9) - a crashed page process is reported at once, not after its dump
+        run: |
+          set -euo pipefail
+          # The test browser's engine crashes now and then (#9). While a
+          # crashed page process writes its core dump (15-45 s) it looks like
+          # a page that stopped. A piped core_pattern (apport,
+          # systemd-coredump) ignores RLIMIT_CORE (core(5)), so a plain
+          # pattern first; the Playwright step then sets ulimit -c 0.
+          echo "runner core_pattern: $(cat /proc/sys/kernel/core_pattern)"
+          sudo sysctl -w kernel.core_pattern=core
       - name: Playwright (Chromium and WebKit iPad, clean console)
         working-directory: e2e
         env:
@@ -423,7 +433,40 @@ jobs:
           E2E_ACCESS_TEAM: fohmixer-e2e.cloudflareaccess.com
           E2E_ACCESS_AUD: fohmixer-e2e-aud
         # NODE_EXTRA_CA_CERTS: the tests' own requests (Node) trust the test CA too.
-        run: E2E_ACCESS_KEY="$E2E_REMOTE_DIR/access.pem" NODE_EXTRA_CA_CERTS="$E2E_REMOTE_DIR/ca.pem" npx playwright test --reporter=list,html
+        run: |
+          set -euo pipefail
+          ulimit -c 0
+          pattern="$(cat /proc/sys/kernel/core_pattern)"
+          echo "core dumps: core_pattern ${pattern}, ulimit -c $(ulimit -c)"
+          if [ "${pattern#|}" != "$pattern" ]; then
+            echo "::error::core_pattern pipes core dumps (${pattern}): a crashed test browser would hang in its dump"
+            exit 1
+          fi
+          E2E_ACCESS_KEY="$E2E_REMOTE_DIR/access.pem" NODE_EXTRA_CA_CERTS="$E2E_REMOTE_DIR/ca.pem" npx playwright test --reporter=list,html
+      - name: Kernel crash evidence (#9) - the core pattern, the kernel's segfault and trap lines, the core dumps
+        if: failure()
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/e2e-logs/kernel"
+          mkdir -p "$dir"
+          cat /proc/sys/kernel/core_pattern > "$dir/core_pattern.txt"
+          sudo dmesg --ctime | tee "$dir/dmesg.txt" > /dev/null
+          status=0
+          grep -i -E 'segfault|traps:|general protection' "$dir/dmesg.txt" > "$dir/crashes.txt" || status=$?
+          if [ "$status" -eq 1 ]; then
+            echo "(no segfault, trap or general protection line in the kernel log)" > "$dir/crashes.txt"
+          elif [ "$status" -ne 0 ]; then
+            exit "$status"
+          fi
+          if command -v coredumpctl > /dev/null; then
+            # Exit 1 is also "No coredumps found": the output says which.
+            status=0
+            sudo coredumpctl list --no-pager 2>&1 | tee "$dir/coredumpctl.txt" > /dev/null || status=$?
+            echo "(coredumpctl list exit ${status})" >> "$dir/coredumpctl.txt"
+          else
+            echo "(coredumpctl not installed)" > "$dir/coredumpctl.txt"
+          fi
+          cat "$dir/core_pattern.txt" "$dir/crashes.txt" "$dir/coredumpctl.txt"
       - name: Upload failure evidence
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
