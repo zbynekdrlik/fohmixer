@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -423,6 +424,92 @@ class Failures(unittest.TestCase):
         self.addCleanup(stop.cancel)
         with self.assertRaisesRegex(probe.ProbeError, "the script closed the connection"):
             probe.run(host.port, seconds=5, probe_ms=50)
+
+
+def text_frame(message):
+    return vendored.encode_text_frame(json.dumps(message).encode("utf-8"))
+
+
+class FakeScript:
+    """A one-connection server speaking the script's protocol from a list of steps."""
+
+    def __init__(self, first_frames):
+        self.listener = socket.socket()
+        self.listener.bind(("127.0.0.1", 0))
+        self.listener.listen(1)
+        self.listener.settimeout(5)
+        self.port = self.listener.getsockname()[1]
+        self._first = first_frames
+        self.thread = threading.Thread(target=self._serve, daemon=True)
+        self.thread.start()
+
+    def _serve(self):
+        conn, _ = self.listener.accept()
+        with conn:
+            conn.settimeout(5)
+            _method, _path, headers, _rest = vendored.read_http_request(conn)
+            vendored.complete_websocket_handshake(conn, headers)
+            for message in self._first:
+                conn.sendall(text_frame(message))
+            buffer = bytearray()
+            while True:
+                frame = vendored.try_read_frame(buffer)
+                if frame is None:
+                    data = conn.recv(65536)
+                    if not data:
+                        return
+                    buffer.extend(data)
+                    continue
+                opcode, _fin, payload = frame
+                if opcode == vendored.OPCODE_CLOSE:
+                    conn.sendall(vendored.encode_close_frame())
+                    return
+                uuid = json.loads(bytes(payload))["uuid"]
+                now = round(time.time() * 1000)
+                result = [{"ok": True, "data": 120.0}]
+                conn.sendall(
+                    text_frame({"event": "result", "uuid": uuid, "data": result, "ts": now})
+                )
+                conn.sendall(text_frame({"event": "heartbeat", "data": BEAT, "ts": now}))
+
+    def close(self):
+        self.thread.join(5)
+        self.listener.close()
+
+
+BEAT = {"main_tick_age_ms": 31.0, "max_cmd_ms": 1.0, "gap_ms": 100.0}
+CONNECT = {"instance": "band", "script_version": "x", "set_name": "S", "proto": 1}
+
+
+class ConnectFirst(unittest.TestCase):
+    def test_a_heartbeat_before_connect_is_skipped(self):
+        """Seen on the PC: the script lists a new connection for heartbeats
+        before its sender has sent the queued connect, and the pending
+        heartbeat goes first. The probe waits for connect and counts from it."""
+        script = FakeScript(
+            [
+                {"event": "heartbeat", "data": BEAT, "ts": 1000},
+                {"event": "connect", "data": CONNECT, "ts": 1001},
+            ]
+        )
+        self.addCleanup(script.close)
+        summary = probe.run(script.port, seconds=0.3, probe_ms=1000)
+        self.assertEqual(summary["instance"], "band")
+        self.assertEqual(summary["heartbeats"], 1, summary)
+        self.assertEqual(summary["round_trip_ms"]["count"], 1, summary)
+        self.assertEqual(summary["round_trips_lost"], 0)
+
+    def test_anything_else_before_connect_is_refused(self):
+        script = FakeScript([{"event": "values", "data": [], "ts": 1000}])
+        self.addCleanup(script.close)
+        with self.assertRaisesRegex(probe.ProbeError, "first message is not connect"):
+            probe.run(script.port, seconds=0.3, probe_ms=1000)
+
+    def test_a_message_that_is_not_an_object_is_refused(self):
+        script = FakeScript([["connect"]])
+        self.addCleanup(script.close)
+        with self.assertRaisesRegex(probe.ProbeError, "not a JSON object"):
+            probe.run(script.port, seconds=0.3, probe_ms=1000)
 
 
 if __name__ == "__main__":
