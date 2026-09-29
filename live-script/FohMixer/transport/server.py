@@ -517,9 +517,16 @@ class Server:
                 self._fail(owner, "reading")
         self._reap()
 
-    def poll_out(self):
-        """Every connection writes what is pending, as far as its socket takes it."""
-        now = time.monotonic()
+    def poll_out(self, now=None):
+        """Every connection writes what is pending, as far as its socket takes it.
+
+        ``now`` is the time the writes happen at (the send stall and the close
+        timeout are measured on it): ``time.monotonic()`` unless given. Live's
+        tick gives none; a test gives its own clock, to hold the send stall
+        off while a slow machine fills a socket (#5).
+        """
+        if now is None:
+            now = time.monotonic()
         for conn in self.connections():
             try:
                 conn.flush(now)

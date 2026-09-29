@@ -148,6 +148,28 @@ class Client:
         )
         return next(item for item in frame["data"] if item["key"] == key)
 
+    def read_until(self, condition, what, timeout):
+        """Keep reading frames until ``condition()`` holds; it is checked at
+        least every 0.1 s and may look at ``frames`` or at something else."""
+        deadline = time.monotonic() + timeout
+        while not condition():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise AssertionError(f"not {what} in {timeout} s")
+            try:
+                self.recv(min(remaining, 0.1))
+            except TimeoutError:
+                continue  # no frame in 0.1 s: check the condition again
+
+    def saw_value(self, key, value, since=0):
+        """Whether a ``values`` frame from ``frames[since:]`` set ``key`` to ``value``."""
+        return any(
+            item == {"key": key, "value": value}
+            for frame in self.frames[since:]
+            if frame["event"] == "values"
+            for item in frame["data"]
+        )
+
 
 def masked_text_frame(text):
     payload = text.encode("utf-8")
@@ -388,15 +410,18 @@ class IntegrationTest(unittest.TestCase):
         That is more than loopback buffers take (~4 MB at most), so C's socket
         stops taking data; the main thread keeps C's output (it never waits on
         a socket, #5) until C's socket took nothing for 3 s, then drops C ("read
-        nothing for" in the log). A reads heartbeats from before C connects
-        until after C is dropped, so they cover all of C's stuck time: Live's
-        main thread must keep ticking throughout. A's round trips are measured once
-        C's requests have run (until then A's requests queue behind C's in the
-        one inbox, by design). A main thread blocked on C would show seconds of
-        heartbeat age and round trip (C is stuck for 3 s), so the worst of
-        each must stay under 1 s. How fast the typical ones are belongs to the
-        machine (a p90 under 50 ms failed on a loaded runner, #5 review), so it
-        is not bounded here.
+        nothing for" in the log) and skips what C still asked. A reads
+        heartbeats from before C connects until after C is dropped, so they
+        cover all of C's stuck time: Live's main thread must keep ticking
+        throughout. A's round trips are measured once C's requests are out of
+        the way (until then A's requests queue behind C's in the one inbox, by
+        design): once C's last request ran, or once the script dropped C, on a
+        machine where C's requests take longer than the 3 s stall. The test
+        waits for that state and then for C's drop, not for a set time (#5).
+        A main thread blocked on C would show seconds of heartbeat age and
+        round trip (C is stuck for 3 s), so the worst of each must stay under
+        1 s. How fast the typical ones are belongs to the machine (a p90 under
+        50 ms failed on a loaded runner, #5 review), so it is not bounded here.
         """
         host = self.host(meters_hz=30)
         a = self.client(host)
@@ -420,16 +445,26 @@ class IntegrationTest(unittest.TestCase):
         first_frame = len(a.frames)
         stalled = stalled_client(host.port, [meters] + [[read_eq] * 100] * 10 + [[set_solo]])
         self.addCleanup(stalled.close)
-        self.assertEqual(a.wait_value(done_key, timeout=15.0)["value"], True)
+
+        def dropped():
+            return "read nothing for" in host.log_text()
+
+        a.read_until(
+            lambda: a.saw_value(done_key, True, first_frame) or dropped(),
+            "C's last request run nor C dropped",
+            timeout=15.0,
+        )
+        # A asks until the script has dropped C, and once more after.
         round_trips = []
         give_up = time.monotonic() + 10.0
-        measure_until = time.monotonic() + 1.2
-        while time.monotonic() < measure_until or "read nothing for" not in host.log_text():
-            self.assertLess(time.monotonic(), give_up, "C was never dropped: it never blocked")
+        while True:
+            gone = dropped()
             started = time.monotonic()
             a.call("live_set", "get_prop", {"prop": "is_playing"})
             round_trips.append(time.monotonic() - started)
-            time.sleep(0.02)
+            if gone:
+                break
+            self.assertLess(time.monotonic(), give_up, "C was never dropped: it never blocked")
         a.wait_event("heartbeat")
         ages = [
             f["data"]["main_tick_age_ms"]
