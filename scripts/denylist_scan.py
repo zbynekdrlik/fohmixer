@@ -476,6 +476,8 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_USAGE
     for hit in hits:
         print(hit.render())
+    # piped, stdout is block-buffered: flush it so the count never lands inside a finding's line
+    sys.stdout.flush()
     if hits:
         print(f"{len(hits)} finding(s)", file=sys.stderr)
         return EXIT_HIT
