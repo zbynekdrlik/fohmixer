@@ -661,6 +661,26 @@ mod tests {
         );
     }
 
+    #[test]
+    fn the_redirect_reads_the_host_as_the_host_check_does() {
+        // One Host parser (#9): a Host the check refuses is not a name to
+        // redirect either.
+        let on = tls(443, true);
+        let allowed = vec!["foh.example.org".to_string()];
+        for host in [
+            "foh.example.org:8480 x",
+            "foh.example.org:",
+            "foh.example.org:84a0",
+        ] {
+            assert!(!host_allowed(Some(host), &allowed), "{host}");
+            assert_eq!(
+                redirect_target(Some(host), false, Some(&on), Some(443), "/"),
+                None,
+                "{host}"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn the_plain_http_listener_redirects_the_public_name_only() {
         let dir = tempfile::tempdir().unwrap();
