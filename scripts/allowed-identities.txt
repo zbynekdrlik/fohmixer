@@ -1,0 +1,6 @@
+# Author and committer emails allowed in this repository's history after the
+# kept legacy commits (scripts/denylist-boundary.txt), checked by
+# scripts/denylist_scan.py --identities in CI and in a lane's local run.
+26905282+zbynekdrlik@users.noreply.github.com
+# GitHub itself: committer of merges made on github.com / by `gh pr merge`
+noreply@github.com

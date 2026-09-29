@@ -1,0 +1,10 @@
+# The kept legacy history (#3, owner decision 2026-09-29): the first 22 commits
+# keep the identity they were made with and history is never rewritten. They are
+# exactly the ancestors of these two commits, the last legacy commits of the S0
+# (#4) and S2 (#6) lines. scripts/denylist_scan.py --boundary leaves them out of
+# the commit scan; every later commit is scanned and must use an allowed identity
+# (scripts/allowed-identities.txt). With --identities the scan fails if this list
+# would hide a commit whose author and committer are both allowed, so it cannot
+# be moved forward over new commits. This list never changes.
+b3d26d64f6ee89df8619197142f478a10d2922fa
+aca52f28a4489197d90b9f324043b41cda25c1ac
