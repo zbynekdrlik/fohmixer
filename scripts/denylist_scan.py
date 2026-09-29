@@ -33,6 +33,12 @@ term ending in `.` such as `203.0.113.` hits `203.0.113.5`. Text is split into l
 at `\\n` only (a trailing `\\r` dropped), the same in tree and commit mode, so a
 line key (`--hash`) is the same in both.
 
+A file is matched by its whole blob, the same in tree mode, commit mode and
+`--hash`: UTF-16 with a BOM as text; a `.tosc` (zlib) or `.als` (gzip) inflated
+to at most 64 MiB and matched as text, where data that does not decompress or
+goes past the cap is a finding of its own; any other blob holding a NUL is
+binary and skipped.
+
 Exit codes: 0 clean, 1 findings, 2 the scan could not run (a missing or
 unreadable input file, a bad boundary, a failing git command).
 """
