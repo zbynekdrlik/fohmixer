@@ -533,6 +533,29 @@ mod tests {
         assert!(host_allowed(None, &[]), "no Host: not a browser");
     }
 
+    #[test]
+    fn after_the_host_only_a_port_may_follow() {
+        let allowed = vec!["foh.local".to_string()];
+        for host in ["[::1]", "[::1]:8443", "127.0.0.1:8480", "foh.local:443"] {
+            assert!(host_allowed(Some(host), &allowed), "{host}");
+        }
+        // Anything else after the address would pass the Origin guard with a
+        // matching Origin and reach a log line (#9): refused.
+        for host in [
+            "[::1] x",
+            "[::1]junk",
+            "[::1]:",
+            "[::1]:84a0",
+            "[::1]: 8443",
+            "127.0.0.1:1 x",
+            "127.0.0.1:",
+            "localhost:80x",
+            "foh.local:443 source=lan",
+        ] {
+            assert!(!host_allowed(Some(host), &allowed), "{host}");
+        }
+    }
+
     #[tokio::test]
     async fn a_request_for_a_foreign_host_is_refused() {
         let dir = tempfile::tempdir().unwrap();
