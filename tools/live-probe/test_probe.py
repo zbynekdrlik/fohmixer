@@ -216,15 +216,25 @@ class TickGaps(unittest.TestCase):
         self.assertEqual(probe.tick_gaps([1000, 1001]), [])
 
 
+def stepping(steps_s, start=1.0):
+    """A clock read twice per value, advancing by ``steps_s`` in a cycle."""
+    values = itertools.accumulate(itertools.cycle(steps_s), initial=start)
+    return itertools.chain.from_iterable((value, value) for value in values).__next__
+
+
 class WallClockStep(unittest.TestCase):
     def test_a_half_millisecond_clock(self):
-        ticks = iter([1.0, 1.0, 1.0005, 1.0005, 1.001, 1.0015, 1.002, 1.0025, 1.003])
-        self.assertEqual(probe.wall_clock_step_ms(clock=ticks.__next__), 0.5)
+        self.assertEqual(probe.wall_clock_step_ms(clock=stepping([0.0005])), 0.5)
 
     def test_a_coarse_clock_flags_itself(self):
         # Windows' GetSystemTimeAsFileTime at the default 15.625 ms.
-        ticks = iter([0.0, 0.0, 0.015625, 0.015625, 0.03125, 0.046875, 0.0625, 0.078125, 0.09375])
-        self.assertEqual(probe.wall_clock_step_ms(clock=ticks.__next__), 15.625)
+        self.assertEqual(probe.wall_clock_step_ms(clock=stepping([0.015625], 0.0)), 15.625)
+
+    def test_an_occasional_split_step_is_not_the_clocks_step(self):
+        # Seen on the PC: a 0.5 ms clock now and then splits one step in two
+        # (0.502 = 0.037 + 0.465); the smallest step read 0.025 ms on a run.
+        clock = stepping([0.0005, 0.0005, 0.00005, 0.00045])
+        self.assertEqual(probe.wall_clock_step_ms(clock=clock), 0.5)
 
     def test_a_clock_that_does_not_move(self):
         still = itertools.repeat(5.0)
