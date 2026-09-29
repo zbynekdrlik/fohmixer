@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import denylist_scan as ds  # noqa: E402
 
 SCRIPTS = Path(__file__).resolve().parent
-TERMS = ["zyxname", "10.9.", "ghost-host.example"]
+TERMS = ["zyxname", "10.9.", "ghost-host.example", "klávor"]
 ALLOWED = "dev@example.org"
 LEGACY = "someone.private@example.net"
 
@@ -183,6 +183,88 @@ class DenylistScanTests(ScanCase):
         ids = self.write("ids.txt", "# nobody\n")
         self.assertEqual(self.scan("--identities", ids, "--commits", "HEAD")[0], 2)
 
+    def test_a_missing_denylist_is_a_usage_error(self) -> None:
+        self.commit({"a.txt": "x\n"})
+        self.deny.unlink()
+        self.assertEqual(self.scan("--tree", "HEAD")[0], 2)
+
+    def test_a_denylist_that_is_not_utf8_is_a_usage_error(self) -> None:
+        self.commit({"a.txt": "x\n"})
+        self.deny.write_bytes(b"zyx\xe1name\n")
+        self.assertEqual(self.scan("--tree", "HEAD")[0], 2)
+
+    def test_a_missing_identity_list_is_a_usage_error(self) -> None:
+        self.commit({"a.txt": "x\n"})
+        self.assertEqual(self.scan("--identities", str(self.tmp / "absent.txt"), "--commits", "HEAD")[0], 2)
+
+    def test_a_missing_boundary_file_is_a_usage_error(self) -> None:
+        self.commit({"a.txt": "x\n"})
+        self.assertEqual(self.scan("--boundary", str(self.tmp / "absent.txt"), "--commits", "HEAD")[0], 2)
+
+    def test_an_unknown_revision_is_a_usage_error(self) -> None:
+        self.commit({"a.txt": "x\n"})
+        code, out = self.scan("--commits", "no-such-rev")
+        self.assertEqual(code, 2)
+        self.assertIn("git rev-list failed", out)
+
+    def test_a_term_in_a_path_is_redacted(self) -> None:
+        self.commit({"docs/zyxname-notes.md": "addr 10.9.1.1\n"})
+        code, out = self.scan("--tree", "HEAD")
+        self.assertEqual(code, 1)
+        self.assertIn("docs/[redacted]: path: denylist entry 1", out)
+        self.assertIn("docs/[redacted]:1: denylist entry 2", out)
+        self.assert_no_term(out)
+
+    def test_a_term_in_a_path_is_redacted_in_commit_mode(self) -> None:
+        self.commit({"logs/10.9.3.4.txt": "zyxname\n"})
+        (self.repo / "logs" / "10.9.3.4.txt").unlink()
+        git(self.repo, "commit", "-q", "-am", "remove")
+        code, out = self.scan("--commits", "HEAD")
+        self.assertEqual(code, 1)
+        self.assertIn(" logs/[redacted]: path: denylist entry 2", out)
+        self.assertIn(" logs/[redacted]: denylist entry 1", out)
+        self.assert_no_term(out)
+
+    def test_an_added_line_starting_with_plus_plus_is_content_not_a_header(self) -> None:
+        self.commit({"a.txt": "++ zyxname was here\nclean\n"})
+        code, out = self.scan("--commits", "HEAD")
+        self.assertEqual(code, 1)
+        self.assertIn(" a.txt: denylist entry 1", out)
+        self.assertNotIn("was here", out)
+        self.assert_no_term(out)
+
+    def test_a_vertical_tab_does_not_hide_a_term_in_history(self) -> None:
+        self.commit({"a.txt": "x\x0bzyxname\n"})
+        self.commit({"a.txt": "clean\n"})
+        code, out = self.scan("--commits", "HEAD")
+        self.assertEqual(code, 1)
+        self.assertIn(" a.txt: denylist entry 1", out)
+
+    def test_a_path_with_diacritics_is_scanned_in_commit_mode(self) -> None:
+        self.commit({"docs/Klávor.txt": "x\n"})
+        (self.repo / "docs" / "Klávor.txt").unlink()
+        git(self.repo, "commit", "-q", "-am", "remove")
+        self.assertEqual(self.scan("--tree", "HEAD")[0], 0)
+        code, out = self.scan("--commits", "HEAD")
+        self.assertEqual(code, 1)
+        self.assertIn("docs/[redacted]: path: denylist entry 4", out)
+        self.assert_no_term(out)
+
+    def test_the_path_of_a_binary_or_empty_file_is_scanned_in_commit_mode(self) -> None:
+        self.commit({"zyxname.bin": b"\0x", "ghost-host.example.txt": ""})
+        git(self.repo, "rm", "-q", "zyxname.bin", "ghost-host.example.txt")
+        git(self.repo, "commit", "-q", "-m", "remove")
+        code, out = self.scan("--commits", "HEAD")
+        self.assertEqual(code, 1)
+        self.assertIn("[redacted]: path: denylist entry 1", out)
+        self.assertIn("[redacted]: path: denylist entry 3", out)
+        self.assert_no_term(out)
+
+    def test_a_path_with_a_space_has_the_same_allow_key_in_both_modes(self) -> None:
+        self.commit({"my notes.txt": "keep zyxname here\n"})
+        allow = self.write("allow.txt", ds.line_key("my notes.txt", "keep zyxname here") + "  reviewed\n")
+        self.assertEqual(self.scan("--allow", allow, "--tree", "HEAD", "--commits", "HEAD")[0], 0)
+
     def test_hash_mode_prints_the_line_key(self) -> None:
         self.commit({"a.txt": "one\ntwo\n"})
         out = io.StringIO()
@@ -226,6 +308,16 @@ class SyntheticListTests(ScanCase):
         self.assertEqual(code, 1)
         self.assertIn("a.txt: denylist entry 1", out)
         self.assert_no_term(out)
+
+
+    def test_a_term_spanning_path_components_redacts_the_whole_path(self) -> None:
+        self.deny.write_text("quim/brel\n", encoding="utf-8")
+        self.commit({"quim/brel.txt": "x\n"})
+        code, out = self.scan("--tree", "HEAD")
+        self.assertEqual(code, 1)
+        self.assertIn("[redacted]: path: denylist entry 1", out)
+        self.assertNotIn("quim", out.lower())
+        self.assertNotIn("brel", out.lower())
 
 
 class BoundaryTests(ScanCase):
@@ -291,9 +383,29 @@ class BoundaryTests(ScanCase):
         moved = self.write("boundary.txt", f"{new}\n")
         code, out = self.scan_new(moved)
         self.assertEqual(code, 1)
-        self.assertIn(f"{new[:12]}: hidden by the boundary, but its author and committer are allowed identities",
-                      out)
+        self.assertIn(f"{new[:12]}: hidden by the boundary, but it has an allowed identity", out)
         self.assertNotIn(self.legacy[:12], out)
+
+    def test_a_boundary_over_a_commit_with_one_allowed_identity_is_a_finding(self) -> None:
+        # Legacy work re-committed (a cherry-pick) by the allowed identity is new history.
+        picked = self.commit({"b.txt": "picked\n"}, env={
+            "GIT_AUTHOR_NAME": "Legacy", "GIT_AUTHOR_EMAIL": LEGACY,
+            "GIT_COMMITTER_NAME": "dev", "GIT_COMMITTER_EMAIL": ALLOWED})
+        self.commit({"c.txt": "clean\n"}, env=identity("dev", ALLOWED))
+        code, out = self.scan_new(self.write("boundary.txt", f"{picked}\n"))
+        self.assertEqual(code, 1)
+        self.assertIn(f"{picked[:12]}: hidden by the boundary, but it has an allowed identity", out)
+        self.assertNotIn(LEGACY, out)
+
+    def test_a_not_in_the_callers_range_cannot_flip_the_boundary(self) -> None:
+        # rev-list reads `^tip` after a `--not` as `tip`: the boundary must come first.
+        new = self.commit({"b.txt": "clean\n"}, env=identity("dev", ALLOWED))
+        git(self.repo, "checkout", "-q", "--orphan", "other")
+        other = self.commit({"o.txt": "other\n"}, env=identity("dev", ALLOWED))
+        git(self.repo, "checkout", "-q", "main")
+        boundary = self.write("boundary.txt", f"{self.legacy}\n")
+        code, out = self.scan("--identities", self.ids, "--boundary", boundary, "--commits", f"{new} --not {other}")
+        self.assertEqual((code, out), (0, "denylist: clean\n"))
 
     def test_a_boundary_line_that_is_not_a_sha_is_a_usage_error_without_echoing_it(self) -> None:
         wrong = self.write("boundary.txt", "# a denylist passed by mistake\nZorblax\n")
