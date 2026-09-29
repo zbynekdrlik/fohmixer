@@ -459,7 +459,10 @@ impl Session<'_> {
                 gap_ms,
                 sent_ms,
             } => {
-                // A heartbeat only follows the script's connect.
+                // A heartbeat can come before the script's connect (the
+                // script lists a new connection for heartbeats before its
+                // sender has sent the queued connect, #5): it is recorded,
+                // and busy is checked only once connected.
                 if let Some(note) =
                     late_heartbeat(health.last_heartbeat.elapsed(), gap_ms, sent_ms, wall_ms())
                 {
