@@ -918,6 +918,11 @@ class AcceptedTests(ScanCase):
     def test_a_missing_accepted_file_is_a_usage_error(self) -> None:
         self.assertEqual(self.scan("--accepted", str(self.tmp / "absent.txt"), "--commits", "HEAD")[0], 2)
 
+    def test_a_commit_reached_by_two_ranges_is_scanned_once(self) -> None:
+        code, out = self.scan("--commits", "HEAD", "--commits", f"{self.leak}")
+        self.assertEqual(code, 1)
+        self.assertEqual(out.count(f"{self.leak[:12]} docs/x.md: denylist entry 1"), 1)
+
     def test_an_empty_accepted_list_accepts_nothing(self) -> None:
         self.assertEqual(self.scan("--accepted", self.accepted(), "--commits", "HEAD")[0], 1)
 
@@ -992,6 +997,43 @@ class CompressedTests(ScanCase):
         self.assertEqual(out.getvalue().strip(), ds.line_key("set.tosc", "keep zyxname here"))
         allow = self.write("allow.txt", out.getvalue().strip() + "  reviewed\n")
         self.assertEqual(self.scan("--allow", allow, "--tree", "HEAD", "--commits", "HEAD")[0], 0)
+
+    def test_two_zlib_streams_in_a_tosc_are_unreadable(self) -> None:
+        self.commit({"two.tosc": zlib.compress(b"clean\n") * 2})
+        for code, out in self.both_modes():
+            self.assertEqual(code, 1)
+            self.assertIn("two.tosc: unreadable compressed file", out)
+
+    def test_a_file_that_inflates_to_exactly_the_cap_is_read(self) -> None:
+        data = ds.inflate(zlib.compress(b"a" * ds.INFLATE_CAP), ds.COMPRESSED[".tosc"])
+        self.assertEqual(len(data), ds.INFLATE_CAP)
+
+    def test_streams_longer_than_a_read_chunk_are_inflated_whole(self) -> None:
+        noise = os.urandom(150_000).hex().encode("ascii")  # does not compress below 64 KiB
+        self.commit({"big.tosc": zlib.compress(noise + b"\nzyxname\n"),
+                     "many.als": gzip.compress(b"clean\n") * 5000 + gzip.compress(b"zyxname\n")})
+        code, out = self.scan("--tree", "HEAD")
+        self.assertEqual(code, 1)
+        self.assertIn("tree big.tosc:2: denylist entry 1", out)
+        self.assertIn("tree many.als:5001: denylist entry 1", out)
+
+    def test_zero_padding_after_a_gzip_member_is_read_as_gzip_reads_it(self) -> None:
+        self.commit({"live.als": gzip.compress(b"zyxname\n") + b"\0" * 32 + gzip.compress(b"clean\n")})
+        self.assertEqual(gzip.decompress(gzip.compress(b"x") + b"\0" * 32), b"x")
+        for code, out in self.both_modes():
+            self.assertEqual(code, 1)
+            self.assertIn("live.als", out)
+            self.assertNotIn("unreadable", out)
+
+    def test_a_symlink_named_like_a_layout_is_matched_as_its_target_text(self) -> None:
+        os.symlink("zyxname-target", self.repo / "link.tosc")
+        git(self.repo, "add", "link.tosc")
+        git(self.repo, "commit", "-q", "-m", "link")
+        for code, out in self.both_modes():
+            self.assertEqual(code, 1)
+            self.assertIn("link.tosc", out)
+            self.assertIn("denylist entry 1", out)
+            self.assertNotIn("unreadable", out)
 
     def test_a_published_unreadable_compressed_file_can_be_accepted(self) -> None:
         broken = self.commit({"bad.tosc": b"not zlib"})
