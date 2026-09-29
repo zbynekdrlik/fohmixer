@@ -11,11 +11,13 @@
 //! a message is closed (it reconnects and resyncs).
 //!
 //! A socket's connect and disconnect lines name who opened it (#9, an
-//! [`Opener`]): the peer, `lan` / `internet` as the Access check classifies
-//! the upgrade, and the host of the page's `Origin`. A tab that holds a
-//! token reconnects without a login line, and a bundle from before the
-//! client reports sends none, so for every socket that passes the protocol
-//! check these two lines are the only trace sure to name its client.
+//! [`Opener`]): the peer, the address Cloudflare forwarded (through the
+//! tunnel the peer is cloudflared), `lan` / `internet` as the Access check
+//! classifies the upgrade, and the host of the page's `Origin`. A tab that
+//! holds a token reconnects without a login line, and a bundle from before
+//! the client reports sends none, so for every socket that passes the
+//! protocol check these two lines are the only trace sure to name its
+//! client.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -56,6 +58,11 @@ pub struct Opener {
     /// The peer's address: the client on the LAN, cloudflared on the PC
     /// through the tunnel.
     pub peer: String,
+    /// The client Cloudflare names (`cf-connecting-ip`) for an internet
+    /// upgrade, read by [`client_report::forwarded_client`] as for a report;
+    /// `-` without one (a LAN client is its own peer). The client's own
+    /// text, so the line quotes it.
+    pub forwarded: String,
     /// `lan` / `internet`: the Access check's class of the upgrade, named
     /// as a client report names it ([`client_report::source`]).
     pub source: &'static str,
@@ -66,13 +73,17 @@ pub struct Opener {
 }
 
 /// The [`Opener`] of an upgrade from `peer` with `headers`: the Access
-/// check's own classification (no second classifier), and the `Origin`
-/// host [`client_report::clean`]ed like a report's field (control
-/// characters out, [`client_report::WORD_MAX_CHARS`]).
+/// check's own classification (no second classifier), the forwarded client
+/// as a client report reads it, and the `Origin` host
+/// [`client_report::clean`]ed like a report's field (control characters
+/// out, [`client_report::WORD_MAX_CHARS`]).
 pub fn opener(peer: SocketAddr, headers: &HeaderMap) -> Opener {
+    let class = access::classify(Some(peer), headers);
     Opener {
         peer: peer.ip().to_string(),
-        source: client_report::source(access::classify(Some(peer), headers)),
+        forwarded: client_report::forwarded_client(class, headers)
+            .unwrap_or_else(|| "-".to_string()),
+        source: client_report::source(class),
         origin: origin_host(headers),
     }
 }
@@ -90,13 +101,15 @@ fn origin_host(headers: &HeaderMap) -> String {
 }
 
 /// A socket's connect or disconnect line (`what`), with its [`Opener`]. The
-/// page host is Debug-quoted, like a client report's fields: spaces in it
-/// cannot add fields to the line. The source (a `&str`) is quoted too, as a
-/// client report's is: one grep finds both kinds of line.
+/// forwarded address and the page host are Debug-quoted, like a client
+/// report's fields: spaces in them cannot add fields to the line. The
+/// source (a `&str`) is quoted too, as a client report's is: one grep finds
+/// both kinds of line. `client` is the socket number, as on every `ws` line.
 fn log_socket(what: &str, client: ClientId, opener: &Opener) {
     tracing::info!(
         client,
         peer = %opener.peer,
+        forwarded = ?opener.forwarded,
         source = opener.source,
         origin = ?opener.origin,
         "{what}"
