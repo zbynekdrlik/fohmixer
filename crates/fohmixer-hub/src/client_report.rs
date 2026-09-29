@@ -2,8 +2,9 @@
 //!
 //! Every page (a browser tab or a Home Screen app, on the LAN or through
 //! the tunnel) reports its load, its hub socket's transitions, its
-//! visibility, its service worker and wake lock, and its errors
-//! (`fohmixer-ui` `diag.rs`). The hub logs each report at INFO as
+//! visibility, its service worker and wake lock, its errors, and (`perf`,
+//! #5 K4) its frame rate, its longest frame and the most pointers down at
+//! once (`fohmixer-ui` `diag.rs`, `diag/perf.rs`). The hub logs each report at INFO as
 //! `client report`, with the peer and the source (`lan` / `internet`, the
 //! Access check's classification), and keeps the last [`RING`] for
 //! `GET /api/status` (`client_reports`): what a tablet does is readable from
@@ -41,7 +42,7 @@ pub const RING: usize = 50;
 /// A peer's report budget: at most [`RATE_MAX`] per this window.
 pub const RATE_WINDOW: Duration = Duration::from_secs(10);
 /// Reports a peer may send per [`RATE_WINDOW`]. A page sends at most one
-/// per kind per 5 s (eight kinds: 16 per window), a quiet page a few a
+/// per kind per 5 s (nine kinds: 18 per window), a quiet page a few a
 /// minute; the rest is room for a few pages behind one address (a tab and a
 /// Home Screen app on one tablet, every internet page behind cloudflared, the
 /// E2E suite's pages) — a flood gets 6 a second into the log.
@@ -63,7 +64,8 @@ pub fn clean(value: &str, max: usize) -> String {
 }
 
 /// Every field of a report, [`clean`]ed: the user agent and the error to
-/// [`TEXT_MAX_CHARS`], the others to [`WORD_MAX_CHARS`].
+/// [`TEXT_MAX_CHARS`], the others (the `perf` numbers too: the page sends
+/// them as short words) to [`WORD_MAX_CHARS`].
 pub fn clean_fields(fields: ReportFields) -> ReportFields {
     let word = |value: Option<String>| value.map(|v| clean(&v, WORD_MAX_CHARS));
     let text = |value: Option<String>| value.map(|v| clean(&v, TEXT_MAX_CHARS));
@@ -79,6 +81,10 @@ pub fn clean_fields(fields: ReportFields) -> ReportFields {
         visibility: word(fields.visibility),
         reconnects: word(fields.reconnects),
         error: text(fields.error),
+        fps: word(fields.fps),
+        long_frame_ms: word(fields.long_frame_ms),
+        touches_max: word(fields.touches_max),
+        pointer: word(fields.pointer),
     }
 }
 
@@ -257,6 +263,10 @@ pub async fn client_report(
             wake_lock = shown(f.wake_lock.as_deref()),
             visibility = shown(f.visibility.as_deref()),
             reconnects = shown(f.reconnects.as_deref()),
+            fps = shown(f.fps.as_deref()),
+            long_frame_ms = shown(f.long_frame_ms.as_deref()),
+            touches_max = shown(f.touches_max.as_deref()),
+            pointer = shown(f.pointer.as_deref()),
             error = shown(f.error.as_deref()),
             ua = shown(f.ua.as_deref()),
             "client report",

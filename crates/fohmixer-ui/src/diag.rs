@@ -11,12 +11,18 @@
 //! most one report per kind per [`REPORT_GAP_MS`], a change within the
 //! window sent once when it ends with the state of then, an error message
 //! only once) and the hellos (the first is `connected`, the later ones
-//! `reconnect`).
+//! `reconnect`). The `perf` report's numbers (#5, K4: the frame rate, the
+//! longest frame, the most pointers at once and their type, and when a
+//! `perf` report is due) are [`perf`]'s.
 //!
-//! The browser glue ([`install`], [`connected`], [`disconnected`] and the
-//! helpers under them) reads the browser, asks [`Diag`] and posts to
-//! `/api/client-report` with `fetch` `keepalive` (a report sent while the
-//! page reloads still arrives); it decides nothing.
+//! The browser glue ([`install`], [`connected`], [`disconnected`],
+//! [`frame`] and the helpers under them) reads the browser, asks [`Diag`]
+//! and [`perf::Perf`] and posts to `/api/client-report` with `fetch`
+//! `keepalive` (a report sent while the page reloads still arrives); it
+//! decides nothing. The animation loop (`raf::tick`) hands [`frame`] every
+//! frame's gap, and capture-phase `pointerdown` / `pointerup` /
+//! `pointercancel` listeners on the window hand [`perf::Perf`] every
+//! pointer.
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -29,6 +35,10 @@ use wasm_bindgen::closure::Closure;
 
 use crate::dom;
 use crate::lifecycle::truncate_for_display;
+
+pub mod perf;
+
+use perf::Perf;
 
 /// At most one report of a kind per this interval (page clock, ms).
 pub const REPORT_GAP_MS: f64 = 5000.0;
@@ -61,10 +71,14 @@ pub enum Kind {
     WakeLock,
     /// A JavaScript error or an unhandled promise rejection.
     Error,
+    /// The frame rate and the pointers at once (#5, K4): a window of
+    /// frames closed a minute or more after the last `perf` report, or the
+    /// page saw more pointers at once than ever ([`perf`]).
+    Perf,
 }
 
 /// How many kinds there are (the throttle's slots).
-const KINDS: usize = 8;
+const KINDS: usize = 9;
 
 impl Kind {
     /// The name the hub logs.
@@ -78,6 +92,7 @@ impl Kind {
             Kind::Sw => "sw",
             Kind::WakeLock => "wake-lock",
             Kind::Error => "error",
+            Kind::Perf => "perf",
         }
     }
 
@@ -92,6 +107,7 @@ impl Kind {
             Kind::Sw => 5,
             Kind::WakeLock => 6,
             Kind::Error => 7,
+            Kind::Perf => 8,
         }
     }
 }
@@ -308,6 +324,7 @@ pub fn attribute_kind(name: &str) -> Option<Kind> {
 
 /// A report's fields: the event, the page's state, this bundle's build,
 /// the reconnects so far and the error's text (cut to [`ERROR_MAX_CHARS`]).
+/// A `perf` report's numbers are added by [`perf::PerfReport::fill`].
 pub fn fields(kind: Kind, env: &Env, reconnects: u32, error: Option<&str>) -> ReportFields {
     let (width, height, dpr) = env.screen;
     ReportFields {
@@ -322,6 +339,10 @@ pub fn fields(kind: Kind, env: &Env, reconnects: u32, error: Option<&str>) -> Re
         visibility: Some(visibility(env.hidden).to_string()),
         reconnects: Some(reconnects.to_string()),
         error: error.map(|text| truncate_for_display(text, ERROR_MAX_CHARS)),
+        fps: None,
+        long_frame_ms: None,
+        touches_max: None,
+        pointer: None,
     }
 }
 
@@ -332,11 +353,14 @@ pub fn fields(kind: Kind, env: &Env, reconnects: u32, error: Option<&str>) -> Re
 thread_local! {
     /// The page's one report state (WASM runs on one thread).
     static DIAG: RefCell<Diag> = RefCell::new(Diag::default());
+    /// The page's frame and pointer counts (#5, K4).
+    static PERF: RefCell<Perf> = RefCell::new(Perf::default());
 }
 
-/// Listens for errors, unhandled rejections, visibility changes and the
-/// service worker's and wake lock's attributes, then reports the load.
-/// Called once, from `main`; the listeners live as long as the page.
+/// Listens for errors, unhandled rejections, visibility changes, the
+/// service worker's and wake lock's attributes and the pointers, then
+/// reports the load. Called once, from `main`; the listeners live as long
+/// as the page.
 pub fn install() {
     let Some(window) = web_sys::window() else {
         return;
@@ -369,8 +393,10 @@ pub fn install() {
     );
     on_rejection.forget();
     if let Some(document) = window.document() {
-        let on_visibility =
-            Closure::wrap(Box::new(|| report(Kind::Visibility)) as Box<dyn FnMut()>);
+        let on_visibility = Closure::wrap(Box::new(|| {
+            pause_perf();
+            report(Kind::Visibility);
+        }) as Box<dyn FnMut()>);
         let _ = document.add_event_listener_with_callback(
             "visibilitychange",
             on_visibility.as_ref().unchecked_ref(),
@@ -380,7 +406,73 @@ pub fn install() {
             observe_attributes(&root);
         }
     }
+    listen_pointers(&window);
     report(Kind::Load);
+}
+
+/// Counts every pointer that goes down, up or is cancelled anywhere on the
+/// page: capture-phase listeners on the window see each one before any
+/// control does (and a control that stops its propagation cannot hide it).
+fn listen_pointers(window: &web_sys::Window) {
+    let on_down = Closure::wrap(Box::new(|event: web_sys::Event| {
+        if let Some(pointer) = event.dyn_ref::<web_sys::PointerEvent>() {
+            pointer_down(pointer);
+        }
+    }) as Box<dyn FnMut(web_sys::Event)>);
+    let _ = window.add_event_listener_with_callback_and_bool(
+        "pointerdown",
+        on_down.as_ref().unchecked_ref(),
+        true,
+    );
+    on_down.forget();
+    let on_up = Closure::wrap(Box::new(|event: web_sys::Event| {
+        if let Some(pointer) = event.dyn_ref::<web_sys::PointerEvent>() {
+            pointer_up(pointer);
+        }
+    }) as Box<dyn FnMut(web_sys::Event)>);
+    for name in ["pointerup", "pointercancel"] {
+        let _ = window.add_event_listener_with_callback_and_bool(
+            name,
+            on_up.as_ref().unchecked_ref(),
+            true,
+        );
+    }
+    on_up.forget();
+}
+
+/// A pointer went down: counted, and a `perf` report when the page never
+/// had as many at once.
+fn pointer_down(event: &web_sys::PointerEvent) {
+    let (id, pointer_type) = (event.pointer_id(), event.pointer_type());
+    let primary = event.is_primary();
+    let high = PERF.try_with(|perf| perf.borrow_mut().down(id, &pointer_type, primary));
+    if high.unwrap_or(false) {
+        report(Kind::Perf);
+    }
+}
+
+/// A pointer went up or was cancelled.
+fn pointer_up(event: &web_sys::PointerEvent) {
+    let id = event.pointer_id();
+    let _ = PERF.try_with(|perf| perf.borrow_mut().up(id));
+}
+
+/// The page was hidden or shown: the frame count pauses.
+fn pause_perf() {
+    let _ = PERF.try_with(|perf| perf.borrow_mut().pause());
+}
+
+/// A frame of the animation loop (`raf::tick`), `gap` ms after the one
+/// before: counted, and the periodic `perf` report when it is due. The
+/// report's minute is kept on the page clock the reports are stamped with
+/// (`dom::now`), not on the frame's own time, which is the frame's start
+/// and may lie before the last report's stamp.
+pub fn frame(gap: f64) {
+    let now = dom::now();
+    let due = PERF.try_with(|perf| perf.borrow_mut().frame(now, gap));
+    if due.unwrap_or(false) {
+        report(Kind::Perf);
+    }
 }
 
 /// Reports every change of `data-sw` / `data-wake-lock` on `root` (set by
@@ -471,12 +563,19 @@ fn fire_trailing(kind: Kind) {
     }
 }
 
-/// Posts a report of `kind` with the page's state of now.
+/// Posts a report of `kind` with the page's state of now (a `perf` report
+/// with its numbers, which then count again from now).
 fn post_report(kind: Kind, error: Option<&str>) {
     let Ok(reconnects) = DIAG.try_with(|diag| diag.borrow().reconnects()) else {
         return;
     };
-    let body = fields(kind, &read_env(), reconnects, error);
+    let mut body = fields(kind, &read_env(), reconnects, error);
+    if kind == Kind::Perf {
+        let now = dom::now();
+        if let Ok(numbers) = PERF.try_with(|perf| perf.borrow_mut().report(now)) {
+            numbers.fill(&mut body);
+        }
+    }
     if let Ok(text) = serde_json::to_string(&body) {
         post(&text);
     }
