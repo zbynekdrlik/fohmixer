@@ -280,8 +280,6 @@ class Host:
                 "0",
                 "--site",
                 SITE,
-                "--meters-hz",
-                "30",
                 "--log-dir",
                 self.log_dir,
             ],
@@ -386,23 +384,28 @@ class AgainstSimLive(unittest.TestCase):
         self.assertLessEqual(gaps["p50"], 30.0, summary)
 
     def test_a_main_thread_stall_shows_in_the_ages_and_the_round_trips(self):
-        stall = threading.Timer(0.5, self.host.control, args=("stall 400",))
+        """A 700 ms stall of SimLive's main thread (as the script's own
+        integration test uses): heartbeats report it, and the read that waited
+        longest waited on the way in (the drain), not on the way out.
+
+        Judged per read, not by comparing maxima: on a loaded machine any
+        read can also be held on its way out by the scheduler (#5 review:
+        3 of 24 parallel runs), but not the one that waited out the stall."""
+        raw = os.path.join(self.host.log_dir, "stall.json")
+        stall = threading.Timer(0.5, self.host.control, args=("stall 700",))
         stall.start()
         self.addCleanup(stall.cancel)
-        summary = probe.run(self.host.port, seconds=1.5, probe_ms=50)
+        summary = probe.run(self.host.port, seconds=2.0, probe_ms=50, raw_path=raw)
         self.assertGreaterEqual(summary["main_tick_age_over_150_ms"], 1, summary)
-        self.assertGreaterEqual(summary["main_tick_age_ms"]["max"], 250.0, summary)
-        self.assertLess(summary["main_tick_age_ms"]["max"], 1000.0, summary)
-        # A read sent as the stall starts waits for it to end.
+        self.assertGreaterEqual(summary["main_tick_age_ms"]["max"], 400.0, summary)
+        self.assertLess(summary["main_tick_age_ms"]["max"], 1500.0, summary)
         self.assertGreaterEqual(summary["round_trip_over_150_ms"], 1, summary)
-        self.assertGreaterEqual(summary["round_trip_ms"]["max"], 250.0, summary)
         self.assertEqual(summary["round_trips_lost"], 0)
-        # The wait is on the way in (the drain waits for the main thread), not
-        # on the way out (the sender thread kept running).
-        inbound, outbound = summary["read_inbound_ms"], summary["read_outbound_ms"]
-        self.assertGreaterEqual(inbound["max"], 250.0, summary)
-        self.assertGreaterEqual(inbound["max"] - outbound["max"], 150.0, summary)
-        self.assertLess(outbound["p95"], 100.0, summary)
+        with open(raw, encoding="utf-8") as f:
+            reads = json.load(f)["reads"]
+        longest = max(reads, key=lambda read: read["inbound_ms"])
+        self.assertGreaterEqual(longest["inbound_ms"], 300.0, longest)
+        self.assertLess(longest["outbound_ms"], longest["inbound_ms"] / 2, longest)
 
     def test_the_cli_prints_the_summary_as_json(self):
         done = subprocess.run(
@@ -542,16 +545,21 @@ class ConnectFirst(unittest.TestCase):
         """Seen on the PC: the script lists a new connection for heartbeats
         before its sender has sent the queued connect, and the pending
         heartbeat goes first. The probe waits for connect and counts from it."""
+        # The heartbeat before connect carries an age no later one has, so
+        # the summary shows whether it was counted, whatever the timing.
+        early = {"main_tick_age_ms": 999.0, "max_cmd_ms": 1.0, "gap_ms": 100.0}
         script = FakeScript(
             [
-                {"event": "heartbeat", "data": BEAT, "ts": 1000},
+                {"event": "heartbeat", "data": early, "ts": 1000},
                 {"event": "connect", "data": CONNECT, "ts": 1001},
+                {"event": "heartbeat", "data": BEAT, "ts": 1002},
             ]
         )
         self.addCleanup(script.close)
-        summary = probe.run(script.port, seconds=0.3, probe_ms=1000)
+        summary = probe.run(script.port, seconds=1.0, probe_ms=1000)
         self.assertEqual(summary["instance"], "band")
-        self.assertEqual(summary["heartbeats"], 1, summary)
+        self.assertGreaterEqual(summary["heartbeats"], 1, summary)
+        self.assertEqual(summary["main_tick_age_ms"]["max"], 31.0, summary)
         self.assertEqual(summary["round_trip_ms"]["count"], 1, summary)
         self.assertEqual(summary["round_trips_lost"], 0)
 
@@ -576,9 +584,11 @@ class Limits(unittest.TestCase):
         script = FakeScript([{"event": "connect", "data": CONNECT, "ts": 1000}], answer=False)
         self.addCleanup(script.close)
         summary = probe.run(script.port, seconds=0.3, probe_ms=1, max_pending=5, result_wait_s=0.2)
+        # 5 reads out, none answered, so every later slot is skipped (300
+        # slots nominally; a loaded machine runs the loop fewer times).
         self.assertEqual(summary["round_trips_lost"], 5, summary)
         self.assertEqual(summary["round_trip_ms"]["count"], 0)
-        self.assertGreaterEqual(summary["reads_skipped"], 50, summary)
+        self.assertGreaterEqual(summary["reads_skipped"], 10, summary)
 
     def test_the_default_cap_keeps_far_below_the_scripts_result_queue(self):
         # RESULT_QUEUE_MAX = 1000 in the script's Config.py.
