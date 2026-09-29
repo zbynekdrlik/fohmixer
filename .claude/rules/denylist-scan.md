@@ -26,7 +26,7 @@ How to use the scan and what a hit means: `.claude/rules/public-repo-hygiene.md`
 
 ## Tests
 
-- Every term, name and address in the tests is invented (`zyxname`, `Zorblax`, `klávor`, `10.9.`, `example.org`).
+- Every term, name and address in the tests is invented: words like `zyxname`, `Zorblax`, `klávor`; addresses only from the RFC 5737 documentation ranges (`192.0.2.`, `198.51.100.`, `203.0.113.`); domains under `example.org`/`.net`. Never a private-range address (`10.`, `172.16.`, `192.168.`, `100.64.`) or a common first name: a value that only looks invented can be a real site value, and an earlier fixture was one.
 - `raw_commit` / `write_commit` build odd commit objects (`hash-object`, `--literally` for ones fsck refuses).
 - No mutation gate covers `scripts/`: after a change, run hand mutants of the changed lines against the suite on a scratch copy; a surviving mutant is a missing test (or a documented equivalent).
 - The boundary (`denylist-boundary.txt`) is the two legacy tips, `b3d26d6` (S0) and `aca52f2` (S2): one SHA alone leaves the other line's 6 commits scanned. It never changes.

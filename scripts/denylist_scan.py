@@ -23,7 +23,7 @@ boundary cannot be moved forward over new commits.
 Matching is case-insensitive. A term that starts (ends) with a letter or digit
 must not be preceded (followed) by one, where letters include diacritics and
 `_` is a separator: `kit` does not hit `kitten`, `x_kit_y` is a hit, and a
-term ending in `.` such as `10.0.` hits `10.0.0.5`. Text is split into lines
+term ending in `.` such as `203.0.113.` hits `203.0.113.5`. Text is split into lines
 at `\\n` only (a trailing `\\r` dropped), the same in tree and commit mode, so a
 line key (`--hash`) is the same in both.
 

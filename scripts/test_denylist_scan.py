@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import denylist_scan as ds  # noqa: E402
 
 SCRIPTS = Path(__file__).resolve().parent
-TERMS = ["zyxname", "10.9.", "ghost-host.example", "klávor"]
+TERMS = ["zyxname", "198.51.100.", "ghost-host.example", "klávor"]
 ALLOWED = "dev@example.org"
 LEGACY = "someone.private@example.net"
 
@@ -108,11 +108,11 @@ class DenylistScanTests(ScanCase):
         self.assertEqual(self.scan("--tree", "HEAD")[0], 0)
 
     def test_term_ending_in_a_dot_matches_an_address(self) -> None:
-        self.commit({"a.txt": "addr 10.9.3.4\n"})
+        self.commit({"a.txt": "addr 198.51.100.4\n"})
         self.assertEqual(self.scan("--tree", "HEAD")[0], 1)
 
     def test_term_starting_with_a_digit_needs_a_left_boundary(self) -> None:
-        self.commit({"a.txt": "addr 110.9.3.4\n"})
+        self.commit({"a.txt": "addr 2198.51.100.4\n"})
         self.assertEqual(self.scan("--tree", "HEAD")[0], 0)
 
     def test_term_in_a_path_is_reported(self) -> None:
@@ -208,7 +208,7 @@ class DenylistScanTests(ScanCase):
         self.assertIn("git rev-list failed", out)
 
     def test_a_term_in_a_path_is_redacted(self) -> None:
-        self.commit({"docs/zyxname-notes.md": "addr 10.9.1.1\n"})
+        self.commit({"docs/zyxname-notes.md": "addr 198.51.100.1\n"})
         code, out = self.scan("--tree", "HEAD")
         self.assertEqual(code, 1)
         self.assertIn("docs/[redacted]: path: denylist entry 1", out)
@@ -216,8 +216,8 @@ class DenylistScanTests(ScanCase):
         self.assert_no_term(out)
 
     def test_a_term_in_a_path_is_redacted_in_commit_mode(self) -> None:
-        self.commit({"logs/10.9.3.4.txt": "zyxname\n"})
-        (self.repo / "logs" / "10.9.3.4.txt").unlink()
+        self.commit({"logs/198.51.100.4.txt": "zyxname\n"})
+        (self.repo / "logs" / "198.51.100.4.txt").unlink()
         git(self.repo, "commit", "-q", "-am", "remove")
         code, out = self.scan("--commits", "HEAD")
         self.assertEqual(code, 1)
@@ -408,7 +408,7 @@ class DenylistScanTests(ScanCase):
 
     def test_a_mislabelled_encoding_does_not_hide_a_name(self) -> None:
         self.commit({"a.txt": "x\n"})
-        self.raw_commit("Jan Klávor", "ISO-8859-2", b"clean\n")
+        self.raw_commit("Qorvin Klávor", "ISO-8859-2", b"clean\n")
         code, out = self.scan("--commits", "HEAD^!")
         self.assertEqual(code, 1)
         self.assertIn("commit metadata: denylist entry 4", out)
@@ -642,7 +642,7 @@ class DenylistScanTests(ScanCase):
 class SyntheticListTests(ScanCase):
     """An invented list planted in the tree, a commit message and an author."""
 
-    terms = ["Zorblax", "quimbrel-pc", "10.77."]
+    terms = ["Zorblax", "quimbrel-pc", "192.0.2."]
 
     def test_a_planted_term_in_the_tree_is_a_hit_without_revealing_it(self) -> None:
         self.commit({"docs/notes.md": "mixed by zorblax\n", "cfg.toml": 'host = "QUIMBREL-PC"\n'})
@@ -653,7 +653,7 @@ class SyntheticListTests(ScanCase):
         self.assert_no_term(out)
 
     def test_a_planted_term_in_a_commit_message_is_a_hit_without_revealing_it(self) -> None:
-        self.commit({"a.txt": "clean\n"}, message="log from 10.77.0.3")
+        self.commit({"a.txt": "clean\n"}, message="log from 192.0.2.3")
         code, out = self.scan("--commits", "HEAD")
         self.assertEqual(code, 1)
         self.assertIn("commit metadata: denylist entry 3", out)
