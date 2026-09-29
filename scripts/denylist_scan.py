@@ -5,8 +5,8 @@
 The denylist (one term per line, `#` comments) is private: a mode-600 file
 outside the repo for local runs, the DENYLIST secret in CI. Output never
 contains a term, a matched line or an email address — only locations and the
-entry number, each line starting with `tree` or a commit's short SHA (never
-with a path). A path component that holds a term is printed as `[redacted]`
+entry number, each finding line starting with `tree` or a commit's short SHA
+(never with a path). A path component that holds a term is printed as `[redacted]`
 (the whole path when a term spans components), control characters escaped.
 
 Commit mode scans each commit's author/committer names and emails together
