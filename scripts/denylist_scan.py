@@ -54,7 +54,7 @@ import subprocess
 import sys
 import unicodedata
 import zlib
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -78,8 +78,12 @@ C_ESCAPES = {"a": 7, "b": 8, "t": 9, "n": 10, "v": 11, "f": 12, "r": 13, '"': 34
 UTF16_BOMS = (codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)
 # A TouchOSC layout is zlib, an Ableton set gzip: both are matched as their inflated text, never
 # skipped as binary. The cap stops a small blob from inflating into the runner's whole memory.
-COMPRESSED = {".tosc": zlib.MAX_WBITS, ".als": 16 + zlib.MAX_WBITS}
+ZLIB_WBITS = zlib.MAX_WBITS
+GZIP_WBITS = 16 + zlib.MAX_WBITS
+COMPRESSED = {".tosc": ZLIB_WBITS, ".als": GZIP_WBITS}
 INFLATE_CAP = 64 * 1024 * 1024
+READ_CHUNK = 64 * 1024
+REGULAR_FILES = ("100644", "100755")  # a symlink's blob is its target path: never inflated
 UNREADABLE = "unreadable compressed file"
 OVER_CAP = f"compressed file inflates past the {INFLATE_CAP // 2**20} MiB cap"
 # A commit's diff against its first parent (the root commit's too) whose labels, colours, attributes
@@ -249,12 +253,20 @@ def load_allow(path: Path | None) -> set[str]:
     return {line.split()[0] for line in meaningful_lines(path, "allow file")}
 
 
+def iter_lines(text: str) -> Iterator[str]:
+    """Lines as git counts them: split at `\\n` only, one trailing `\\r` dropped, no empty line after a
+    final `\\n`. Lazy, so a huge inflated file is never held as a list of millions of strings."""
+    start, end = 0, len(text)
+    while start < end:
+        stop = text.find("\n", start)
+        if stop < 0:
+            stop = end
+        yield text[start:stop].removesuffix("\r")
+        start = stop + 1
+
+
 def text_lines(text: str) -> list[str]:
-    """Lines as git counts them: split at `\\n` only, one trailing `\\r` dropped."""
-    lines = text.split("\n")
-    if lines[-1] == "":
-        lines.pop()
-    return [line.removesuffix("\r") for line in lines]
+    return list(iter_lines(text))
 
 
 def blob_text(data: bytes) -> str | None:
@@ -272,24 +284,44 @@ class Unreadable(Exception):
 
 def inflate(data: bytes, wbits: int) -> bytes:
     """A zlib stream, or every member of a gzip file, inflated to at most INFLATE_CAP bytes.
-    Bad or truncated data, bytes after a zlib stream, and anything past the cap are Unreadable."""
+    Bad, empty or truncated data, bytes after a zlib stream, and anything past the cap are
+    Unreadable; zero padding between or after gzip members is skipped, as Python's gzip reader
+    skips it. Input goes in READ_CHUNK pieces, so what zlib copies between gzip members stays
+    small and many members are read in linear time."""
     out = bytearray()
-    rest = data
+    pos = 0
+    pending = b""  # input the current stream has not taken yet
+    stream = zlib.decompressobj(wbits)
+    between = False  # a gzip member ended; the next one (or only zero padding) follows
     while True:
-        stream = zlib.decompressobj(wbits)
+        if not pending:
+            if pos >= len(data):
+                break
+            pending = data[pos:pos + READ_CHUNK]
+            pos += len(pending)
+        if between:
+            pending = pending.lstrip(b"\0")
+            if not pending:
+                continue
+            between = False
+            stream = zlib.decompressobj(wbits)
         try:
-            out += stream.decompress(rest, INFLATE_CAP + 1 - len(out))
+            out += stream.decompress(pending, INFLATE_CAP + 1 - len(out))
         except zlib.error:
             raise Unreadable(UNREADABLE) from None
         if len(out) > INFLATE_CAP:
             raise Unreadable(OVER_CAP)
         if not stream.eof:
+            pending = stream.unconsumed_tail
+        elif wbits == GZIP_WBITS:
+            pending, between = stream.unused_data, True
+        elif stream.unused_data or pos < len(data):
             raise Unreadable(UNREADABLE)
-        rest = stream.unused_data
-        if not rest:
+        else:
             return bytes(out)
-        if wbits == COMPRESSED[".tosc"]:
-            raise Unreadable(UNREADABLE)
+    if between:
+        return bytes(out)
+    raise Unreadable(UNREADABLE)
 
 
 @dataclass(frozen=True)
@@ -299,10 +331,11 @@ class Content:
     problem: str | None = None
 
 
-def read_content(path: str, data: bytes) -> Content:
-    """What a file's bytes are matched as, the same in tree mode, commit mode and --hash."""
+def read_content(path: str, data: bytes, regular: bool = True) -> Content:
+    """What a file's bytes are matched as, the same in tree mode, commit mode and --hash. Only a
+    regular file is inflated by its extension (a symlink's blob is plain text)."""
     wbits = next((bits for suffix, bits in COMPRESSED.items() if path.lower().endswith(suffix)), None)
-    if wbits is None:
+    if wbits is None or not regular:
         return Content(blob_text(data), data.startswith(UTF16_BOMS))
     try:
         return Content(blob_text(inflate(data, wbits)), True)
@@ -324,10 +357,15 @@ def printable(text: str) -> str:
 class Scanner:
     def __init__(self, terms: list[str], allow: set[str]) -> None:
         self.patterns = [compile_term(nfc(term)) for term in terms]
+        # every term as a bare case-insensitive literal in one pattern: each boundary-checked match
+        # is also a match here, and one pass of this is ~100x faster than the per-term patterns
+        self.any_term = re.compile("|".join(re.escape(nfc(term)) for term in terms), re.IGNORECASE)
         self.allow = allow
 
     def entries_in(self, text: str) -> list[int]:
         text = nfc(text)
+        if not self.any_term.search(text):
+            return []
         return [number for number, pattern in enumerate(self.patterns, start=1) if pattern.search(text)]
 
     def shown(self, path: str) -> str:
@@ -341,6 +379,11 @@ class Scanner:
             return REDACTED
         kept = "/".join(REDACTED if hit else printable(part) for part, hit in zip(parts, part_hits, strict=True))
         return REDACTED if self.entries_in(kept) else kept
+
+    def lines_to_match(self, text: str) -> Iterator[str]:
+        """A whole file's lines, or none when the whole text holds no term: every line hit is also
+        a hit in the whole text, so a clean file (a large inflated one too) is never split."""
+        return iter_lines(text) if self.entries_in(text) else iter(())
 
     def scan_path(self, path: str, prefix: str, key: tuple[str, str | None] | None = None) -> list[Hit]:
         return [Hit(f"{prefix}{self.shown(path)}: path", entry, key) for entry in self.entries_in(path)]
@@ -434,18 +477,18 @@ def scan_tree(scanner: Scanner, repo: Path, rev: str) -> list[Hit | ContentProbl
         if not entry:
             continue
         meta, _, raw_path = entry.partition(b"\t")
-        _mode, kind, obj = meta.split()
+        mode, kind, obj = meta.split()
         path = decode(raw_path)
         hits += scanner.scan_path(path, "tree ")
         if kind != b"blob":
             continue
-        content = read_content(path, git(repo, "cat-file", "blob", decode(obj)))
+        content = read_content(path, git(repo, "cat-file", "blob", decode(obj)), decode(mode) in REGULAR_FILES)
         shown = scanner.shown(path)
         if content.problem:
             hits.append(ContentProblem(f"tree {shown}", content.problem))
         if content.text is None:
             continue
-        for number, line in enumerate(text_lines(content.text), start=1):
+        for number, line in enumerate(scanner.lines_to_match(content.text), start=1):
             hits += scanner.scan_line(path, line, f"tree {shown}:{number}")
     return hits
 
@@ -554,13 +597,13 @@ def scan_changes(scanner: Scanner, repo: Path, sha: str, prefix: str) -> list[Hi
         lines = added.pop(change.raw, [])
         if change.mode == GITLINK:
             continue
-        content = read_content(change.path, contents[change.blob])
+        content = read_content(change.path, contents[change.blob], change.mode in REGULAR_FILES)
         if content.problem:
             hits.append(ContentProblem(f"{prefix}{scanner.shown(change.path)}", content.problem, key))
         if content.text is None:
             continue
         if content.whole:
-            lines = text_lines(content.text)
+            lines = scanner.lines_to_match(content.text)
         hits += scan_lines(scanner, change.path, lines, prefix, key)
     # a patch path that matched no change (a label that unquotes differently) is scanned, never dropped
     for raw, lines in added.items():
@@ -568,7 +611,7 @@ def scan_changes(scanner: Scanner, repo: Path, sha: str, prefix: str) -> list[Hi
     return hits
 
 
-def scan_lines(scanner: Scanner, path: str, lines: list[str], prefix: str,
+def scan_lines(scanner: Scanner, path: str, lines: Iterable[str], prefix: str,
                key: tuple[str, str | None]) -> list[Hit]:
     where = f"{prefix}{scanner.shown(path)}"
     return [hit for line in lines for hit in scanner.scan_line(path, line, where, key)]
@@ -602,7 +645,7 @@ def scan_boundary(repo: Path, boundary: list[str], identities: set[str]) -> list
 def hash_line(repo: Path, path: str, number: str) -> str:
     """The allow key of a working-tree line, decoded and split exactly as the scan does."""
     try:
-        content = read_content(path, (repo / path).read_bytes())
+        content = read_content(path, (repo / path).read_bytes(), not (repo / path).is_symlink())
     except OSError as error:
         raise UsageError(f"--hash: the file cannot be read ({type(error).__name__})") from None
     if content.problem:
