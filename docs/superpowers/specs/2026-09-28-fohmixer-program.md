@@ -147,14 +147,14 @@ Data flow: clients ⇄ (LAN, WebSocket) ⇄ hub ⇄ (127.0.0.1, WebSocket) ⇄ t
 - Without this rule, setters such as `selected_track` or `select_device(device)` would need curated wrappers (reference issue), which P1 forbids.
 
 **Threading.**
-- Socket accept and reads run on daemon threads.
+- Socket accept, reads and writes run on Live's main thread too, non-blocking, in the same timer tick (#5: K1 showed the reference's daemon threads get Python only around that tick; the script runs no threads).
 - All LOM access runs on Live's main thread, drained from `Live.Base.Timer(interval=T, repeat=True)`, with the ~100 ms `schedule_message` tick as a fallback.
 - T is a tunable default: 10 ms, as AbleSet runs here. K1 sets the final value.
 
 **Our changes to the reference script**, each with its reason:
 1. **Non-blocking I/O.** The reference writes frames of 64 KB or less with a blocking `sendall` on the calling thread (Live's main thread, 3 s socket timeout), and its per-connection queue is unbounded.
    - In FohMixer, the main thread only updates a per-connection map of the latest value per key. Its size is bounded by the number of subscribed keys.
-   - A sender thread drains that map to the socket.
+   - The tick writes that map to the socket without waiting, keeping what the socket does not take for the next tick (#5; first a sender thread).
    - The result queue is bounded; on overflow the connection is dropped and the hub resyncs.
 2. **Listener coalescing.** A listener callback only marks `(object, property)` dirty; it does no LOM writes, because Live forbids changes from inside notifications. Once per timer call, the latest value of every dirty key goes out as one batched frame. The reference sends one frame per callback; on this PC meters fire at about 30 Hz per track.
 3. **Meter rate cap.** `output_meter_left/right/level` are flushed at most every 33 ms (tunable).
@@ -169,7 +169,7 @@ Data flow: clients ⇄ (LAN, WebSocket) ⇄ hub ⇄ (127.0.0.1, WebSocket) ⇄ t
 
 **Health**
 - Every timer call writes a `last_main_tick` timestamp.
-- A background thread pushes `heartbeat{main_tick_age_ms}` every 100 ms. Because it runs off the main thread, the "Live busy" badge appears **during** a stall, not after it.
+- The main thread makes `heartbeat{main_tick_age_ms}` in its tick every 100 ms (#5; first a background thread, which K1 showed ran only around the tick anyway). During a stall none goes out, so the hub shows the "Live busy" badge **during** the stall once a heartbeat is 300 ms overdue; the first heartbeat after the stall reports its length.
 
 **Logging.** Rotating file at WARNING level, never per message. `connect`, `disconnect`, errors and stalls above 200 ms are logged.
 
@@ -478,7 +478,7 @@ Each one gets a short design note and a plan before code, as in iemmixer.
 ## 7. Risks
 
 - **R1** Band Live main-thread hiccups (about 60 per service on 2026-09-27, mostly +100–200 ms) affect every LOM path. The UI stays responsive locally and shows "Live busy" during the stall. K1 measures them with FohMixer in place.
-- **R2** `Live.Base.Timer` is undocumented. AbleSet runs it here at 10 ms. The threaded v5 transport is new upstream and unproven on this PC (K1). The `schedule_message` fallback is kept.
+- **R2** `Live.Base.Timer` is undocumented. AbleSet runs it here at 10 ms. The threaded v5 transport is new upstream and unproven on this PC (K1). K1 showed its threads run only around the main thread's tick; since #5 the script's socket I/O runs in that tick, with no threads. The `schedule_message` fallback is kept.
 - **R3** `output_meter_left/right` add GUI load, per Live's docs. K2 measures it; the fallbacks are `output_meter_level` or on-screen strips only.
 - **R4** A mapping read from the saved set file can differ from the running set when the set has unsaved changes. The import is re-run after the set is saved, and the toggles show the live target state either way.
 - **R5** Secure context on the iPad. **Resolved by #17:** the public name is served over HTTPS on the LAN and through the tunnel, so the iPad's Home Screen app has a secure context there: a network-only service worker (installable PWA, never a cached answer: the internet path sits behind Access) and a Screen Wake Lock taken while the page is visible, taken again when it comes back. The emergency plain-http path stays without either (iPad Auto-Lock set to Never remains the fallback).

@@ -8,18 +8,19 @@ It connects to the script's WebSocket on 127.0.0.1:PORT (``PORT`` from the
 Live user's ``Remote Scripts/FohMixer/Config.py``) as one more client, next
 to the hub, for ``--seconds``:
 
-- it records every heartbeat (every 100 ms, from the script's own thread):
-  ``main_tick_age_ms`` (how long ago Live's main thread last ran the script's
-  timer), ``gap_ms`` (the heartbeat thread's own gap) and ``max_cmd_ms`` (the
-  longest single command since the script loaded);
+- it records every heartbeat (every 100 ms; made by a thread of the script
+  before #5, in its main-thread tick since): ``main_tick_age_ms`` (how long
+  ago Live's main thread last ran the script's timer; since #5 the gap before
+  the heartbeat's tick), ``gap_ms`` (the time since the previous heartbeat)
+  and ``max_cmd_ms`` (the longest single command since the script loaded);
 - every ``--probe-ms`` it sends one cheap read, ``get_prop tempo`` of the song
   (the hub's own request shape), and times its round trip: socket, drain
   queue, the next main-thread tick, the LOM read, the result queue, the wire;
 - it splits each round trip at the result's ``ts``, the script's wall clock
   (``time.time``) when Live's main thread queued the result: inbound (send to
-  queued: socket, reader thread, drain queue, the tick, the LOM read) and
-  outbound (queued to received: sender thread, wire), on the same PC's wall
-  clock; the heartbeat's ``ts`` gives its outbound delay the same way;
+  queued: socket, the script's read, drain queue, the tick, the LOM read) and
+  outbound (queued to received: the script's write, wire), on the same PC's
+  wall clock; the heartbeat's ``ts`` gives its outbound delay the same way;
 - the gaps between the ticks that queued results are the main thread's tick
   interval when the reads come faster than the ticks (a short run with a
   small ``--probe-ms``); the split resolves about ``wall_clock_step_ms``
@@ -28,7 +29,7 @@ to the hub, for ``--seconds``:
   clock: the summary names the probe's ``python`` and ``wall_clock`` (on
   Windows ``GetSystemTimeAsFileTime`` before Python 3.13, as Live's 3.11);
 - past ``MAX_PENDING`` unanswered reads it skips its read slots and counts
-  them (``reads_skipped``): the script's sender sends about one frame per
+  them (``reads_skipped``): the script before #5 sent about one frame per
   main-thread tick on the real Live, and a pile of reads would load it;
 - it prints a JSON summary: percentiles (nearest rank), the counts over the
   hub's busy threshold (150 ms) and the script's stall log (200 ms), the
@@ -496,9 +497,9 @@ def _heartbeat(message, arrival_s, arrival_wall_ms):
 
 
 def await_connect(conn):
-    """The script's ``connect`` data. A heartbeat may come first: the script
-    adds a new connection to the heartbeat broadcast before its sender has sent
-    the queued connect, and a pending heartbeat goes out first; it is skipped."""
+    """The script's ``connect`` data. A heartbeat may come first from a script
+    before #5 (it added a new connection to the heartbeat broadcast before its
+    sender had sent the queued connect); it is skipped."""
     deadline = time.perf_counter() + CONNECT_TIMEOUT_S
     while (remaining := deadline - time.perf_counter()) > 0:
         message = conn.receive(remaining)

@@ -1,17 +1,23 @@
-"""The surface in-process: the budgeted drain, the lifecycle and the log file."""
+"""The surface in-process: the budgeted drain, the lifecycle, the log file, and
+the tick that does all of the script's socket work (#5)."""
 
 import json
 import os
 import queue
 import shutil
 import tempfile
+import threading
+import time
 import unittest
 
 import _paths
 import FohMixer
+import Live
 import site_builder
+from _rawclient import RawClient, request_frame
 from c_instance import CInstance
-from FohMixer import Config
+from FohMixer import Config, surface
+from FohMixer.lom import ops
 from FohMixer.surface import Drain, heartbeat_data
 from main_thread import MainThread
 from websockets.sync.client import connect
@@ -226,12 +232,195 @@ class SurfaceLifecycleTest(unittest.TestCase):
 
 
 class HeartbeatDataTest(unittest.TestCase):
-    def test_heartbeat_data_rounds_ages_and_reports_the_threads_own_gap(self):
+    def test_heartbeat_data_rounds_the_age_and_reports_the_gap_since_the_previous_one(self):
         self.assertEqual(
             heartbeat_data(31.25, 0.12345, 0.10749),
             {"main_tick_age_ms": 31.2, "max_cmd_ms": 0.123, "gap_ms": 107.5},
         )
         self.assertEqual(heartbeat_data(0.0, 0.0, 1.5)["gap_ms"], 1500.0)
+
+
+class HeartbeatsTest(unittest.TestCase):
+    """Which ticks send a heartbeat and what it says (#5: made in the tick),
+    on explicit times."""
+
+    def test_one_heartbeat_per_interval_on_a_fixed_grid(self):
+        # Ticks every 33 ms (Live's ~30 Hz timer): a heartbeat every 100 ms on
+        # average, not every fourth tick (132 ms).
+        heartbeats = surface.Heartbeats(0.1, 10.0)
+        sent = []
+        for k in range(1, 32):
+            now = 10.0 + 0.033 * k
+            if heartbeats.on_tick(now, 0.033, 0.5) is not None:
+                sent.append(k)
+        self.assertEqual(sent, [4, 7, 10, 13, 16, 19, 22, 25, 28, 31])
+
+    def test_it_reports_the_gap_before_its_tick_and_the_time_since_the_previous_one(self):
+        heartbeats = surface.Heartbeats(0.1, 10.0)
+        self.assertIsNone(heartbeats.on_tick(10.05, 0.05, 0.2))
+        self.assertEqual(
+            heartbeats.on_tick(10.11, 0.06, 0.2),
+            {"main_tick_age_ms": 60.0, "max_cmd_ms": 0.2, "gap_ms": 110.0},
+        )
+        # A 700 ms stall: nothing goes out while it lasts (no tick runs); the
+        # first tick after it reports it.
+        self.assertEqual(
+            heartbeats.on_tick(10.81, 0.7, 0.2),
+            {"main_tick_age_ms": 700.0, "max_cmd_ms": 0.2, "gap_ms": 700.0},
+        )
+        # No burst of the heartbeats the stall skipped: the next is an interval later.
+        self.assertIsNone(heartbeats.on_tick(10.84, 0.03, 0.2))
+        self.assertIsNone(heartbeats.on_tick(10.90, 0.06, 0.2))
+        self.assertIsNotNone(heartbeats.on_tick(10.92, 0.02, 0.2))
+
+
+class HandTickedSurfaceTest(unittest.TestCase):
+    """The surface with no SimLive main thread: its timer is inert and the test
+    thread is Live's main thread, calling ``_on_timer`` by hand (#5)."""
+
+    def setUp(self):
+        self.log_dir = tempfile.mkdtemp(prefix="fohmixer-test-")
+        self.addCleanup(shutil.rmtree, self.log_dir, True)
+        saved = (Config.PORT, Config.LOG_DIR, Config.INSTANCE)
+        self.addCleanup(SurfaceLifecycleTest.restore_config, saved)
+        Config.PORT = 0
+        Config.LOG_DIR = self.log_dir
+        Config.INSTANCE = "ticked"
+        # These tests are about the tick's socket work, not the work budget
+        # (DrainTest pins that on its own clock): a budget no command reaches
+        # on a slow or busy machine keeps them free of its timing.
+        budgets = (Config.DRAIN_BUDGET_MS, Config.WINDOW_BUDGET_MS)
+        self.addCleanup(self.restore_budgets, budgets)
+        Config.DRAIN_BUDGET_MS = Config.WINDOW_BUDGET_MS = 10_000
+        self.assertIsNone(Live._sim_main_thread, "a SimLive main thread would tick the surface")
+        self.threads_before = set(threading.enumerate())
+        self.song = site_builder.build(_paths.FIXTURE)
+        self.surface = FohMixer.create_instance(CInstance(self.song))
+        self.addCleanup(self.disconnect_once)
+        self.assertTrue(self.surface.server.wait_bound(2.0))
+        self.port = self.surface.server.port
+
+    def disconnect_once(self):
+        if self.surface.connected:
+            self.surface.disconnect()
+
+    @staticmethod
+    def restore_budgets(budgets):
+        Config.DRAIN_BUDGET_MS, Config.WINDOW_BUDGET_MS = budgets
+
+    def client(self, extra=b""):
+        client = RawClient(self.port, extra=extra)
+        self.addCleanup(client.close)
+        return client
+
+    def tick_and_read(self, client):
+        self.surface._on_timer()
+        client.readable(0.2)
+        client.read_available()
+        return client.messages()
+
+    def test_the_script_runs_no_threads_of_its_own(self):
+        read_name = {"target": "live_set tracks 0", "name": "get_prop", "args": {"prop": "name"}}
+        client = self.client(extra=request_frame("u1", [read_name]))
+        messages = []
+        for _ in range(3):
+            messages += self.tick_and_read(client)
+        started = [t.name for t in threading.enumerate() if t not in self.threads_before]
+        self.assertEqual(started, [])
+        self.assertIn("u1", [m.get("uuid") for m in messages])
+
+    def test_nothing_moves_between_ticks_and_a_burst_is_answered_within_two(self):
+        read_name = {"target": "live_set tracks 0", "name": "get_prop", "args": {"prop": "name"}}
+        burst = b"".join(request_frame(f"u{n}", [read_name]) for n in range(20))
+        client = self.client(extra=burst)
+        self.assertFalse(client.readable(0.3), "the script answered without a tick")
+        messages = []
+        for _ in range(2):
+            messages += self.tick_and_read(client)
+            if sum(m["event"] == "result" for m in messages) == 20:
+                break
+        self.assertEqual(messages[0]["event"], "connect")
+        results = [m for m in messages if m["event"] == "result"]
+        self.assertEqual([r["uuid"] for r in results], [f"u{n}" for n in range(20)])
+        self.assertEqual(
+            {json.dumps(r["data"]) for r in results}, {'[{"ok": true, "data": "Hand1 #"}]'}
+        )
+
+    def test_the_heartbeat_is_made_in_the_tick_and_reports_the_gap_before_it(self):
+        client = self.client()
+        messages = []
+        for _ in range(3):
+            messages += self.tick_and_read(client)
+        self.assertEqual(messages[0]["event"], "connect", messages)
+        time.sleep(0.3)
+        self.assertFalse(client.readable(0.0), "a heartbeat went out without a tick")
+        beats = [m for m in self.tick_and_read(client) if m["event"] == "heartbeat"]
+        self.assertEqual(len(beats), 1, beats)
+        self.assertGreaterEqual(beats[0]["data"]["main_tick_age_ms"], 290.0, beats)
+        self.assertLess(beats[0]["data"]["main_tick_age_ms"], 2000.0, beats)
+        self.assertGreaterEqual(beats[0]["data"]["gap_ms"], 290.0, beats)
+
+    def test_a_tick_held_by_its_own_work_is_reported_by_the_heartbeat_it_makes(self):
+        # A slow command holds a tick 400 ms, and a heartbeat is due in that
+        # tick: it goes out after the silence, so it must report the silence
+        # (not the short gap before the tick), or the hub shows busy (overdue),
+        # free, busy, free within ~170 ms.
+        real = ops.execute
+
+        def execute(command, ctx):
+            if command.get("name") == "test_slow":
+                time.sleep(0.4)
+                return None
+            return real(command, ctx)
+
+        self.addCleanup(setattr, ops, "execute", real)
+        ops.execute = execute
+        client = self.client()
+        for _ in range(3):
+            self.tick_and_read(client)
+        time.sleep(0.12)
+        slow = {"target": "live_set", "name": "test_slow", "args": {}}
+        client.sock.sendall(request_frame("slow", [slow]))
+        messages = self.tick_and_read(client)
+        self.assertIn("slow", [m.get("uuid") for m in messages])
+        beats = [m for m in messages if m["event"] == "heartbeat"]
+        self.assertEqual(len(beats), 1, messages)
+        self.assertGreaterEqual(beats[0]["data"]["main_tick_age_ms"], 400.0, beats)
+
+    def test_a_failing_drain_does_not_stop_the_subscription_flush(self):
+        add = {"target": "live_set tracks 0", "name": "add_listener", "args": {"prop": "mute"}}
+        client = self.client(extra=request_frame("sub", [add]))
+        messages = []
+        for _ in range(3):
+            messages += self.tick_and_read(client)
+        sub = next(m for m in messages if m.get("uuid") == "sub")
+        key = sub["data"][0]["data"]["key"]
+
+        def broken():
+            raise RuntimeError("test: the drain fails")
+
+        self.surface._drain.run = broken
+        self.song.tracks[0]._sim_set("mute", True)
+        items = []
+        for _ in range(3):
+            frames = self.tick_and_read(client)
+            items += [item for f in frames if f["event"] == "values" for item in f["data"]]
+        self.assertIn({"key": key, "value": True}, items)
+
+    def test_heartbeats_go_on_while_the_subscription_flush_keeps_failing(self):
+        # A failing step must not stop the heartbeat: Live would show busy
+        # for ever while its main thread ticks.
+        def broken(_now_ms):
+            raise RuntimeError("test: the flush fails")
+
+        self.surface._subs.flush = broken
+        client = self.client()
+        messages = []
+        for _ in range(8):
+            messages += self.tick_and_read(client)
+            time.sleep(0.05)
+        self.assertEqual(messages[0]["event"], "connect", messages)
+        self.assertGreaterEqual(sum(m["event"] == "heartbeat" for m in messages), 2, messages)
 
 
 if __name__ == "__main__":

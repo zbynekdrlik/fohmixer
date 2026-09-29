@@ -19,7 +19,7 @@ A remote script that exposes Live's native LOM 1:1 over a localhost WebSocket, p
   - listener coalescing and the meter cap;
   - the work budget;
   - non-blocking send with a stalled client;
-  - heartbeat during a simulated main-thread stall;
+  - the heartbeat around a simulated main-thread stall (#5: none during it, the first one after it reports it);
   - reconnect after disconnect;
   - two instances on two ports.
 - `sim/host.py` runs as a process (`python3 sim/host.py --port N --site <fixture.json>`). S3's hub tests start it.
@@ -34,14 +34,14 @@ A remote script that exposes Live's native LOM 1:1 over a localhost WebSocket, p
 | `Config.py` | `INSTANCE = "band"`, `PORT = 39101`, `TIMER_INTERVAL_MS = 10`, `DRAIN_BUDGET_MS = 5`, `WINDOW_BUDGET_MS = 5`, `WINDOW_MS = 20`, `METER_MIN_INTERVAL_MS = 33`, `HEARTBEAT_INTERVAL_MS = 100`, `RESULT_QUEUE_MAX = 1000`. Each Windows user's copy edits `INSTANCE` and `PORT`. |
 | `version.py` | `VERSION` (kept equal to the workspace version by `check_version.py`) |
 | `log.py` | Logger `fohmixer.<INSTANCE>`: WARNING level, `RotatingFileHandler` (1 MB × 3) in the script folder `logs/`, never per message |
-| `transport/websocket.py` | Vendored `WebSocket.py` (RFC 6455 framing, handshake), unchanged apart from the header |
-| `transport/server.py` | Vendored and changed `Socket.py`: accept thread, one reader thread per connection, `Connection` with a **sender thread** (§4) |
+| `transport/websocket.py` | Vendored `WebSocket.py` (RFC 6455 framing, handshake); #5 added a bytes-in request parser and a bytes-out 101 response |
+| `transport/server.py` | Vendored and changed `Socket.py`: no threads since #5; Live's main thread polls it in the tick (`poll_in`, `poll_out`), `Connection` with a write buffer (§3.7) |
 | `lom/path.py` | Path parsing and resolution (§3.1) |
 | `lom/registry.py` | Object id registry, `(ptr, class)` checked on lookup |
 | `lom/codec.py` | Values out (`$ref`, `$enum`, vectors) and in (decoding) |
 | `lom/ops.py` | `get_prop`, `set_prop`, `add_listener`, `remove_listener`, `describe`, raw call |
 | `subscriptions.py` | Listener registry, dirty set, coalesced flush, meter cap |
-| `surface.py` | `FohMixer(ControlSurface)`: timer, tick fallback, drain with budget, heartbeat thread, lifecycle |
+| `surface.py` | `FohMixer(ControlSurface)`: timer, tick fallback, socket polls, drain with budget, heartbeat made in the tick, lifecycle |
 
 The package uses relative imports only, and module names never collide with AbleSet or AbletonOSC.
 
@@ -139,34 +139,35 @@ A read that raises (the object was deleted) sends `{"key", "error": "gone"}` and
 - The timer is `Live.Base.Timer(callback=self._on_timer, interval=TIMER_INTERVAL_MS, repeat=True)`. The fallback is `schedule_message(1, self._tick)`, which also checks lag.
 - `_on_timer`:
   1. Write `last_main_tick = monotonic()`.
-  2. Run commands from the inbound queue until `DRAIN_BUDGET_MS` has elapsed or the window budget (`WINDOW_BUDGET_MS` per `WINDOW_MS`) is used up. It is checked between commands.
-  3. Flush (§3.5).
+  2. Read the sockets (`Server.poll_in`, §3.7).
+  3. Run commands from the inbound queue until `DRAIN_BUDGET_MS` has elapsed or the window budget (`WINDOW_BUDGET_MS` per `WINDOW_MS`) is used up. It is checked between commands.
+  4. Flush (§3.5), and make the heartbeat when one is due (§3.8).
+  5. Write the sockets (`Server.poll_out`, §3.7).
 - The longest single command is tracked in `stats.max_cmd_ms`.
 
 ### 3.7 Connections: never block the main thread
 
-`Connection` has:
-- `results`: a bounded `collections.deque`. `RESULT_QUEUE_MAX` is a hard cap; on overflow the connection is closed and the hub resyncs.
-- `values`: a dict `key → item`, the latest value only.
-- `event`: a `threading.Condition`.
+Changed on #5 (K1): this section first specified the reference's threads (an accept thread, a reader and a sender thread per connection). Measured in the real Live, those threads got Python only around the main thread's ~30 Hz tick: a connection sent about one frame per tick. The script now runs no threads; the main thread does the socket I/O in its tick, and never waits on a socket:
 
-The main thread only appends or updates under a short lock and notifies. The sender thread:
-- waits;
-- builds frames: all pending results in order, then one `values` frame from a swapped-out dict;
-- writes them with `sendall`, with a 3 s timeout. A timeout or error closes the connection.
+- every socket is non-blocking; `poll_in` selects with timeout 0, accepts (at most 64 clients, of which 16 still in their handshake; every accepted socket the server closes is reset, so no TIME_WAIT keeps the port busy), reads handshakes and frames (each connection within a 5 ms budget per tick) and puts requests into the inbound queue;
+- one client's failure closes that client only; each step of the tick (reads, drain, subscription flush, heartbeat, writes) is guarded on its own;
+- `Connection` has `results` (a bounded `collections.deque`; `RESULT_QUEUE_MAX` is a hard cap, on overflow the connection is closed and the hub resyncs), `values` (a dict `key → item`, the latest value only), the pending heartbeat, and a write buffer;
+- `poll_out` writes, per connection: the heartbeat, then all pending results in order, then one `values` frame from a swapped-out dict, as far as the socket takes them (within a 5 ms budget per tick; at most 64 KB encoded ahead of the socket); the rest waits for the next tick;
+- a socket that took no byte for 3 s while output waited closes its connection (the client stopped reading);
+- the 101 response and the `connect` frame are the first bytes of every connection.
 
-The main thread never calls `sendall`. The reference script's direct-send path is removed.
+The reference script's direct `sendall` path is removed.
 
 ### 3.8 Heartbeat
 
-A daemon thread sends `{"event":"heartbeat","data":{"main_tick_age_ms", "max_cmd_ms"}}` to every connection every `HEARTBEAT_INTERVAL_MS`. It reads `last_main_tick` without the main thread, so a stall shows as a growing age.
+The main thread makes `{"event":"heartbeat","data":{"main_tick_age_ms", "max_cmd_ms", "gap_ms"}}` in its tick for every connection, one per `HEARTBEAT_INTERVAL_MS` (#5; a daemon thread before). `main_tick_age_ms` is the silence before it: the time since the previous tick reached the same point (after its work, before its writes), so a tick held by its own work counts too; `gap_ms` the time since the previous heartbeat. During a stall none goes out, so the hub marks the instance busy once one is 300 ms overdue; the first one after the stall reports it.
 
 ### 3.9 Lifecycle
 
-- **`__init__`:** start the server bound to `127.0.0.1:PORT` with `SO_EXCLUSIVEADDRUSE` on Windows (`SO_REUSEADDR` elsewhere), then the timer, the tick and the heartbeat. If the bind fails, retry every 5 s and log a WARNING once.
+- **`__init__`:** start the server bound to `127.0.0.1:PORT` with `SO_EXCLUSIVEADDRUSE` on Windows (`SO_REUSEADDR` elsewhere), then the timer and the tick. If the bind fails, the ticks retry it (0.25 s, 0.5 s, 1 s, 2 s, then every 5 s) and log a WARNING once per distinct error.
 - **On each new connection:** send `connect{instance, set_name: song.name if present else "", script_version, live_version: application.get_major_version()/minor/bugfix as "12.2.x", proto: 1}`.
 - **`disconnect()`:**
-  1. stop the timer and the heartbeat;
+  1. stop the timer (the heartbeat stops with it);
   2. broadcast `disconnect`;
   3. close every connection and the listening socket;
   4. remove every Live listener;
@@ -199,7 +200,7 @@ A daemon thread sends `{"event":"heartbeat","data":{"main_tick_age_ms", "max_cmd
 - a listener push after a set from another client;
 - two clients each get the push;
 - a client that stops reading does not block the other client or the main thread (`main_tick_age_ms` stays low);
-- `host.stall(500)` makes the heartbeat show an age ≥ 400 during the stall;
+- `host.stall(700)`: no heartbeat during the stall, and the first one after it reports an age ≥ 400 and a gap ≥ 600 (#5; while the heartbeat was a thread it showed the age growing during the stall);
 - disconnect, reconnect and resubscribe;
 - two hosts on two ports.
 
