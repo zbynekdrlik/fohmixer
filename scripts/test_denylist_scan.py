@@ -383,10 +383,17 @@ class DenylistScanTests(ScanCase):
         self.assertIn(" a.txt: denylist entry 1", out)
 
     def test_no_output_line_can_start_a_workflow_command(self) -> None:
-        self.commit({"::error title=x::fake/notes.md": "zyxname\n", " ::warning::y.md": "zyxname\n"})
+        self.commit({"::error title=x::fake/notes.md": "zyxname\n", " ::warning::y.md": "zyxname\n",
+                     "::notice x::/zyxname.md": "x\n"})
         code, out = self.scan("--tree", "HEAD", "--commits", "HEAD")
         self.assertEqual(code, 1)
+        self.assertIn("tree ::notice x::/[redacted]: path: denylist entry 1", out)
         self.assertEqual([line for line in out.splitlines() if line.lstrip().startswith("::")], [])
+
+    def test_non_utf8_names_keep_their_own_lines_with_quotepath_off(self) -> None:
+        git(self.repo, "config", "core.quotePath", "false")
+        self.commit({os.fsdecode(b"d\xe8.txt"): b"\0x", os.fsdecode(b"d\xe9.txt"): b"zyxname\n"})
+        self.assertEqual(self.scan("--commits", "HEAD")[0], 1)
 
     def test_a_missing_blob_is_a_usage_error(self) -> None:
         self.commit({"a.txt": "x\n"})
