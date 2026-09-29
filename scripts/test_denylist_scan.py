@@ -662,6 +662,9 @@ class BoundaryTests(ScanCase):
         self.assertEqual(hit.returncode, 1)
         self.assertIn("b.txt:1: denylist entry 1", hit.stdout)
         self.assert_no_term(hit.stdout + hit.stderr)
+        # one log, as in CI: the findings come whole, then the count (never cut into a finding's line)
+        log = subprocess.run(command, cwd=self.repo, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        self.assertEqual(log.stdout.splitlines()[-1], "2 finding(s)")
 
 
 class RepoFilesTests(unittest.TestCase):
