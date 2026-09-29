@@ -511,10 +511,12 @@ def text_frame(message):
 class FakeScript:
     """A one-connection server speaking the script's protocol from a list of steps."""
 
-    def __init__(self, first_frames, answer=True, batch=1, delay_s=0.0):
+    def __init__(self, first_frames, answer=True, batch=1, delay_s=0.0, on_connect=None):
         """``answer=False``: never answers a read; ``batch=N``: holds the reads
         until N have come, then answers them all ``delay_s`` later (a script
-        behind its reads)."""
+        behind its reads); ``on_connect``: called once the probe is connected
+        (after anything the probe checks before connecting)."""
+        self.on_connect = on_connect
         self.answer = answer
         self.batch = batch
         self.delay_s = delay_s
@@ -536,6 +538,8 @@ class FakeScript:
             vendored.complete_websocket_handshake(conn, headers)
             for message in self._first:
                 conn.sendall(text_frame(message))
+            if self.on_connect is not None:
+                self.on_connect()
             buffer = bytearray()
             while True:
                 frame = vendored.try_read_frame(buffer)
@@ -664,19 +668,52 @@ class RawFile(unittest.TestCase):
         with open(raw, encoding="utf-8") as f:
             self.assertEqual(f.read(), "earlier run")
 
-    def test_a_raw_write_that_fails_after_the_run_keeps_the_summary(self):
-        script = FakeScript([{"event": "connect", "data": CONNECT, "ts": 1000}])
+    def closed_port(self):
+        with socket.socket() as holder:
+            holder.bind(("127.0.0.1", 0))
+            return holder.getsockname()[1]
+
+    def test_a_folder_or_a_folder_path_as_the_raw_file_is_refused_before_the_run(self):
+        missing = os.path.join(self.folder, "missing") + os.sep
+        for raw in (self.folder, missing):
+            with self.assertRaisesRegex(probe.ProbeError, "cannot write the raw file"):
+                probe.run(self.closed_port(), seconds=300, probe_ms=100, raw_path=raw)
+
+    def test_an_unwritable_folder_is_refused_before_the_run(self):
+        # A real write in the folder, not os.access: on Windows os.access
+        # reports every existing folder writable.
+        locked = os.path.join(self.folder, "locked")
+        os.mkdir(locked, 0o500)
+        self.addCleanup(os.chmod, locked, 0o700)
+        with self.assertRaisesRegex(probe.ProbeError, "cannot write the raw file"):
+            probe.run(
+                self.closed_port(),
+                seconds=300,
+                probe_ms=100,
+                raw_path=os.path.join(locked, "run.json"),
+            )
+        self.assertEqual(os.listdir(locked), [])
+
+    def test_a_raw_write_that_fails_after_the_run_keeps_the_summary_and_the_samples(self):
+        raw = os.path.join(self.folder, "run.json")
+        # The target becomes a folder during the run: the replace fails.
+        script = FakeScript(
+            [{"event": "connect", "data": CONNECT, "ts": 1000}], on_connect=lambda: os.mkdir(raw)
+        )
         self.addCleanup(script.close)
-        # A folder where the file should go: writable parent, the write fails.
-        with self.assertRaisesRegex(probe.RawWriteError, "cannot write the raw file") as caught:
-            probe.run(script.port, seconds=0.3, probe_ms=100, raw_path=self.folder)
+        with self.assertRaisesRegex(probe.RawWriteError, "the samples are in") as caught:
+            probe.run(script.port, seconds=0.3, probe_ms=100, raw_path=raw)
         self.assertEqual(caught.exception.summary["instance"], "band")
         self.assertGreaterEqual(caught.exception.summary["round_trip_ms"]["count"], 1)
-        # The half-written temporary file is not left behind.
-        self.assertFalse(os.path.exists(self.folder + ".tmp"))
+        with open(raw + ".tmp", encoding="utf-8") as f:
+            samples = json.load(f)
+        self.assertEqual(len(samples["reads"]), caught.exception.summary["round_trip_ms"]["count"])
 
     def test_the_cli_prints_the_summary_when_only_the_raw_file_failed(self):
-        script = FakeScript([{"event": "connect", "data": CONNECT, "ts": 1000}])
+        raw = os.path.join(self.folder, "run.json")
+        script = FakeScript(
+            [{"event": "connect", "data": CONNECT, "ts": 1000}], on_connect=lambda: os.mkdir(raw)
+        )
         self.addCleanup(script.close)
         done = subprocess.run(
             [
@@ -686,16 +723,23 @@ class RawFile(unittest.TestCase):
                 str(script.port),
                 "--seconds",
                 "0.3",
+                "--label",
+                "raw-fails",
                 "--raw",
-                self.folder,
+                raw,
             ],
             capture_output=True,
             text=True,
             timeout=20,
         )
         self.assertEqual(done.returncode, 1, done.stderr)
-        self.assertEqual(json.loads(done.stdout)["instance"], "band")
+        summary = json.loads(done.stdout)
+        self.assertEqual(summary["instance"], "band")
+        self.assertEqual(summary["label"], "raw-fails")
+        self.assertEqual(summary["python"], platform.python_version())
+        self.assertEqual(summary["wall_clock"], time.get_clock_info("time").implementation)
         self.assertIn("live-probe: cannot write the raw file", done.stderr)
+        self.assertIn("the samples are in", done.stderr)
 
 
 if __name__ == "__main__":
