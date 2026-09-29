@@ -212,17 +212,21 @@ class SurfaceLifecycleTest(unittest.TestCase):
             client,
             [{"target": "live_set tracks 0", "name": "add_listener", "args": {"prop": "mute"}}],
         )
+        self.assertTrue(client.response.startswith(b"HTTP/1.1 101"), client.response)
         self.assertTrue(slots[0]["ok"], slots)
         self.assertEqual(track._sim_listener_count("mute"), 1)
         self.mt.call(self.surface.disconnect)
         self.assertEqual(track._sim_listener_count("mute"), 0)
         self.assertEqual(len(self.surface.registry), 0)
         self.assertEqual(self.mt._timers, {})
-        events = [m.get("event") or m["opcode"] for m in client.read_until_closed()]
+        frames = client.read_until_closed()
+        events = [m.get("event") or m["opcode"] for m in frames]
         self.assertIn("disconnect", events)
+        self.assertNotIn(OPCODE_CLOSE, events[: events.index("disconnect")], events)
         # A clean close (websockets' ConnectionClosedOK): the script's close
-        # frame came last, then the connection ended.
-        self.assertEqual(events[-1], OPCODE_CLOSE, events)
+        # frame came last, then the connection ended. Its empty payload is
+        # code 1005 ("no status"), one of websockets' OK codes.
+        self.assertEqual(frames[-1], {"opcode": OPCODE_CLOSE, "payload": b""}, events)
 
     def test_log_file_is_written_at_warning_level(self):
         self.mt.call(self.surface.disconnect)

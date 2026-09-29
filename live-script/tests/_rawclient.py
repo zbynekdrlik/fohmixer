@@ -81,7 +81,8 @@ class RawClient:
 
     def messages(self):
         """The messages complete in the buffer: text frames as JSON, others as
-        ``{"opcode": n}``. The HTTP response head is kept in ``response``."""
+        ``{"opcode": n, "payload": bytes}``. The HTTP response head is kept in
+        ``response``."""
         if self.response is None:
             end = self.buffer.find(b"\r\n\r\n")
             if end < 0:
@@ -94,7 +95,7 @@ class RawClient:
             if opcode == OPCODE_TEXT:
                 out.append(json.loads(bytes(payload).decode("utf-8")))
             else:
-                out.append({"opcode": opcode})
+                out.append({"opcode": opcode, "payload": bytes(payload)})
         return out
 
     def read_messages(self, count, timeout=10.0):

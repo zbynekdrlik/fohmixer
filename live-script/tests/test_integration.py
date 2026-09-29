@@ -472,18 +472,22 @@ class IntegrationTest(unittest.TestCase):
         add = {"target": "live_set tracks 0", "name": "add_listener", "args": {"prop": "mute"}}
         a.sock.sendall(request_frame("sub", [add]))
         deadline = time.monotonic() + 2.0
-        results = []
-        while not results:
-            messages = a.read_messages(1, deadline - time.monotonic())
-            results = [m for m in messages if m.get("uuid") == "sub"]
-        self.assertTrue(results[0]["data"][0]["ok"], results)
+        messages = []
+        while "sub" not in [m.get("uuid") for m in messages]:
+            messages += a.read_messages(1, deadline - time.monotonic())
+        self.assertTrue(a.response.startswith(b"HTTP/1.1 101"), a.response)
+        self.assertEqual(messages[0].get("event"), "connect", messages)
+        result = next(m for m in messages if m.get("uuid") == "sub")
+        self.assertTrue(result["data"][0]["ok"], result)
         self.assertEqual(host.request_stop(), 0)
         events = [m.get("event") or m["opcode"] for m in a.read_until_closed()]
         self.assertIn("disconnect", events)
-        # Nothing but the close frame after it, then the end (websockets'
+        goodbye = events.index("disconnect")
+        # No close frame before it (websockets drops what follows one), and
+        # nothing but the close frame after it, then the end (websockets'
         # ConnectionClosed on the next receive).
-        after = events[events.index("disconnect") + 1 :]
-        self.assertIn(after, ([], [OPCODE_CLOSE]), events)
+        self.assertNotIn(OPCODE_CLOSE, events[:goodbye], events)
+        self.assertIn(events[goodbye + 1 :], ([], [OPCODE_CLOSE]), events)
         started = time.monotonic()
         again = self.host(port=port)
         self.assertLess(time.monotonic() - started, 5.0)
