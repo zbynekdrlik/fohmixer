@@ -576,6 +576,7 @@ def _check_raw_path(raw_path):
         # Windows: an antivirus or indexer handle on the new file.
         raise ProbeError(
             f"cannot write the raw file {raw_path}: cannot remove the check file {temporary}: {e}"
+            " (the empty check file is left there; remove it before the next run)"
         ) from e
 
 
