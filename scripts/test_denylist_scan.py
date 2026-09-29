@@ -830,8 +830,105 @@ class BoundaryTests(ScanCase):
         self.assertEqual(log.stdout.splitlines()[-1], "2 finding(s)")
 
 
+class AcceptedTests(ScanCase):
+    """Published history: a commit-mode finding in exactly a listed commit and path does not fail."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.leak = self.commit({"docs/x.md": "zyxname\n"}, "notes")
+        self.fixed = self.commit({"docs/x.md": "clean\n"}, "reword")
+
+    def accepted(self, *entries: str) -> str:
+        return self.write("accepted.txt", "# published history\n" + "".join(f"{entry}\n" for entry in entries))
+
+    def test_an_accepted_commit_and_path_passes(self) -> None:
+        self.assertEqual(self.scan("--tree", "HEAD", "--commits", "HEAD")[0], 1)
+        code, out = self.scan("--accepted", self.accepted(f"{self.leak} docs/x.md"), "--tree", "HEAD",
+                              "--commits", "HEAD")
+        self.assertEqual(code, 0)
+        self.assertIn(f"{self.leak[:12]} docs/x.md: denylist entry 1 (accepted: published history)", out)
+        self.assertTrue(out.endswith("denylist: clean (1 accepted)\n"), out)
+        self.assert_no_term(out)
+
+    def test_an_entry_accepts_only_its_own_commit_and_path(self) -> None:
+        code, out = self.scan("--accepted", self.accepted(f"{self.leak} docs/y.md", f"{self.fixed} docs/x.md"),
+                              "--commits", "HEAD")
+        self.assertEqual(code, 1)
+        self.assertIn(f"{self.leak[:12]} docs/x.md: denylist entry 1\n", out)
+        self.assertNotIn("(accepted", out)
+
+    def test_a_metadata_hit_is_accepted_as_commit_metadata(self) -> None:
+        logged = self.commit({"a.txt": "x\n"}, "log from ghost-host.example")
+        entries = (f"{self.leak} docs/x.md", f"{logged} a.txt")
+        self.assertEqual(self.scan("--accepted", self.accepted(*entries), "--commits", "HEAD")[0], 1)
+        code, out = self.scan("--accepted", self.accepted(*entries, f"{logged} commit metadata"),
+                              "--commits", "HEAD")
+        self.assertEqual(code, 0)
+        self.assertIn(f"{logged[:12]} commit metadata: denylist entry 3 (accepted: published history)", out)
+
+    def test_a_tree_finding_is_never_accepted(self) -> None:
+        kept = self.commit({"docs/z.md": "zyxname\n"})
+        code, out = self.scan("--accepted", self.accepted(f"{self.leak} docs/x.md", f"{kept} docs/z.md"),
+                              "--tree", "HEAD", "--commits", "HEAD")
+        self.assertEqual(code, 1)
+        self.assertIn("tree docs/z.md:1: denylist entry 1\n", out)
+        self.assertIn(f"{kept[:12]} docs/z.md: denylist entry 1 (accepted: published history)", out)
+        self.assertTrue(out.endswith("1 finding(s)\n"), out)
+
+    def test_an_identity_problem_is_never_accepted(self) -> None:
+        stranger = self.commit({"a.txt": "x\n"}, env=identity("dev", LEGACY))
+        ids = self.write("ids.txt", "test@example.org\n")
+        code, out = self.scan("--identities", ids, "--accepted",
+                              self.accepted(f"{self.leak} docs/x.md", f"{stranger} commit metadata"),
+                              "--commits", "HEAD")
+        self.assertEqual(code, 1)
+        self.assertIn(f"{stranger[:12]}: author email is not an allowed identity", out)
+
+    def test_a_path_hit_and_its_lines_are_accepted_together(self) -> None:
+        named = self.commit({"logs/zyxname.txt": "zyxname\n"})
+        git(self.repo, "rm", "-q", "logs/zyxname.txt")
+        git(self.repo, "commit", "-q", "-m", "remove")
+        code, out = self.scan("--accepted", self.accepted(f"{self.leak} docs/x.md", f"{named} logs/zyxname.txt"),
+                              "--tree", "HEAD", "--commits", "HEAD")
+        self.assertEqual(code, 0)
+        self.assertIn(f"{named[:12]} logs/[redacted]: path: denylist entry 1 (accepted: published history)", out)
+        self.assertIn(f"{named[:12]} logs/[redacted]: denylist entry 1 (accepted: published history)", out)
+        self.assert_no_term(out)
+
+    def test_an_entry_outside_the_scanned_history_is_a_finding(self) -> None:
+        absent = "0123456789abcdef" * 2 + "01234567"  # a well-formed SHA of no commit
+        code, out = self.scan("--accepted", self.accepted(f"{self.leak} docs/x.md", f"{absent} docs/x.md"),
+                              "--commits", f"{self.leak}..HEAD")
+        self.assertEqual(code, 1)
+        self.assertIn(f"accepted line 2: commit {self.leak[:12]} is not in the scanned history", out)
+        self.assertIn(f"accepted line 3: commit {absent[:12]} is not in the scanned history", out)
+
+    def test_a_malformed_line_is_a_usage_error_without_echoing_it(self) -> None:
+        for line in ("zyxname docs/x.md", f"{self.leak[:12]} docs/x.md", f"{self.leak}"):
+            code, out = self.scan("--accepted", self.accepted(line), "--commits", "HEAD")
+            self.assertEqual(code, 2, line)
+            self.assertIn("line 2 is not", out)
+            self.assert_no_term(out)
+
+    def test_accepted_needs_a_commit_scan(self) -> None:
+        self.assertEqual(self.scan("--accepted", self.accepted(f"{self.leak} docs/x.md"), "--tree", "HEAD")[0], 2)
+
+    def test_a_missing_accepted_file_is_a_usage_error(self) -> None:
+        self.assertEqual(self.scan("--accepted", str(self.tmp / "absent.txt"), "--commits", "HEAD")[0], 2)
+
+    def test_an_empty_accepted_list_accepts_nothing(self) -> None:
+        self.assertEqual(self.scan("--accepted", self.accepted(), "--commits", "HEAD")[0], 1)
+
+
 class RepoFilesTests(unittest.TestCase):
     """The committed boundary and identity files parse (their commits are checked in the secrets job)."""
+
+    def test_the_accepted_list_names_the_four_published_findings(self) -> None:
+        self.assertEqual({(entry.sha, entry.path) for entry in ds.load_accepted(SCRIPTS / "denylist-accepted.txt")}, {
+            ("e92744288bc0430c555f7ebef42d28c1f82a3c17", "docs/superpowers/specs/2026-09-28-ui-redesign-design.md"),
+            ("61085ee2c40653f6984f8b08c7509e8a9019357d", "docs/superpowers/specs/2026-09-28-ui-redesign-design.md"),
+            ("1d4fcb238fe3ff057f29e64f96983189f41ef704", "docs/mockups/redesign-stage-v1.html"),
+            ("c0320b3d01d269e4da1b012c914e41de88dd6bf3", "scripts/test_denylist_scan.py")})
 
     def test_the_boundary_lists_the_two_legacy_tips(self) -> None:
         self.assertEqual(ds.load_boundary(SCRIPTS / "denylist-boundary.txt"), [
