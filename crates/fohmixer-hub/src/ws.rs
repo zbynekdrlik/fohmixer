@@ -14,8 +14,8 @@
 //! [`Opener`]): the peer, `lan` / `internet` as the Access check classifies
 //! the upgrade, and the host of the page's `Origin`. A tab that holds a
 //! token reconnects without a login line, and a bundle from before the
-//! client reports sends none, so for every socket past the handshake these
-//! two lines are the one trace in the hub log that names its client.
+//! client reports sends none, so for every socket that passes the protocol
+//! check these two lines are the only trace sure to name its client.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -91,12 +91,13 @@ fn origin_host(headers: &HeaderMap) -> String {
 
 /// A socket's connect or disconnect line (`what`), with its [`Opener`]. The
 /// page host is Debug-quoted, like a client report's fields: spaces in it
-/// cannot add fields to the line.
+/// cannot add fields to the line. The source (a `&str`) is quoted too, as a
+/// client report's is: one grep finds both kinds of line.
 fn log_socket(what: &str, client: ClientId, opener: &Opener) {
     tracing::info!(
         client,
         peer = %opener.peer,
-        source = %opener.source,
+        source = opener.source,
         origin = ?opener.origin,
         "{what}"
     );
