@@ -50,8 +50,15 @@ EXIT_HIT = 1
 EXIT_USAGE = 2
 
 FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
-# `author <name> <<email>> <time> <zone>` as stored in a commit object
-IDENTITY_LINE = re.compile(r"^(author|committer) .*<([^<>]*)> -?\d+ [+-]\d{4}$")
+# `author <name> <<email>> <time> <zone>` as stored in a commit object; every <…> on it counts
+IDENTITY_LINE = re.compile(r"^(author|committer) (.*) -?\d+ [+-]\d{4}$")
+ANGLED = re.compile(r"<([^<>]*)>")
+ROLES = ("author", "committer")
+# A signature in a commit header: its base64 and BEGIN/END markers are noise, not site data
+SIGNATURE_HEADERS = (b"gpgsig ", b"gpgsig-sha256 ")
+ARMOUR_MARKERS = {f"-----{edge} {kind}-----".encode("ascii") for edge in ("BEGIN", "END")
+                  for kind in ("PGP SIGNATURE", "SSH SIGNATURE", "SIGNED MESSAGE")}
+BASE64 = re.compile(rb"[A-Za-z0-9+/=]*")
 REDACTED = "[redacted]"
 # git's C-quoting of a path in a diff header (core.quotePath)
 C_ESCAPES = {"a": 7, "b": 8, "t": 9, "n": 10, "v": 11, "f": 12, "r": 13, '"': 34, "\\": 92}
@@ -238,30 +245,54 @@ def check_boundary_exists(repo: Path, boundary: list[str]) -> None:
 @dataclass(frozen=True)
 class Metadata:
     text: str
-    emails: tuple[str, str]
+    stored: dict[str, set[str]]
+    rendered: dict[str, str]
+
+    def emails(self, role: str) -> set[str]:
+        return self.stored[role] | {self.rendered[role]}
+
+    def unallowed_roles(self, identities: set[str]) -> list[str]:
+        """Roles with no stored email, or any stored or rendered email that is not allowed."""
+        return [role for role in ROLES if not self.stored[role] or not self.emails(role) <= identities]
+
+    def has_allowed(self, identities: set[str]) -> bool:
+        return any(email in identities for role in ROLES for email in self.emails(role))
+
+
+def header_lines(head: bytes) -> list[bytes]:
+    """A commit's header lines minus signature noise: a signature starts at a BEGIN marker on a
+    gpgsig header or a continuation line (a mergetag's) and ends at its END marker or the next
+    top-level header; inside it only base64 and the markers are left out (a Comment: stays)."""
+    kept: list[bytes] = []
+    armoured = False
+    for line in head.split(b"\n"):
+        if line.startswith(b" "):
+            body = line[1:]
+        else:
+            armoured = False
+            body = next((line[len(prefix):] for prefix in SIGNATURE_HEADERS if line.startswith(prefix)), line)
+        if body in ARMOUR_MARKERS:
+            armoured = body.startswith(b"-----BEGIN")
+        elif not (armoured and BASE64.fullmatch(body)):
+            kept.append(line)
+    return kept
 
 
 def metadata_of(repo: Path, sha: str) -> Metadata:
     """A commit's metadata as stored (`cat-file`: no conversion by its `encoding` header, which could
-    garble or hide text; signature armour left out) and as git renders it, so neither form hides a
-    term. The author and committer emails are read as stored."""
+    garble or hide text; signature noise left out) and as git renders it, so neither form hides a
+    term. Identities are every <email> on every stored author/committer line plus the rendered one."""
     head, _, message = git(repo, "cat-file", "commit", sha).partition(b"\n\n")
-    kept: list[str] = []
-    armoured = False
+    stored: dict[str, set[str]] = {role: set() for role in ROLES}
     for line in head.split(b"\n"):
-        armoured = armoured or b"-----BEGIN " in line
-        if not armoured:
-            kept.append(decode(line))
-        if b"-----END " in line:
-            armoured = False
-    emails: dict[str, str] = {}
-    for line in kept:
-        match = IDENTITY_LINE.match(line)
+        match = IDENTITY_LINE.match(decode(line))
         if match:
-            emails.setdefault(match.group(1), match.group(2).strip().lower())
+            stored[match.group(1)] |= {email.strip().lower() for email in ANGLED.findall(match.group(2))}
     shown = decode(git(repo, "show", "-s", "--no-show-signature", "--format=%an%n%ae%n%cn%n%ce%n%B", sha))
-    text = "\n".join(kept) + "\n" + decode(message) + "\n" + shown
-    return Metadata(text, (emails.get("author", ""), emails.get("committer", "")))
+    fields = shown.split("\n") + ["", "", "", ""]
+    rendered = {"author": fields[1].strip().lower(), "committer": fields[3].strip().lower()}
+    text = "\n".join(decode(line) for line in header_lines(head)) + "\n" + decode(message) + "\n" + shown
+    return Metadata(text, stored, rendered)
 
 
 def scan_tree(scanner: Scanner, repo: Path, rev: str) -> list[Hit]:
@@ -409,9 +440,7 @@ def scan_commit(scanner: Scanner, repo: Path, sha: str, identities: set[str] | N
     metadata = metadata_of(repo, sha)
     hits: list[Finding] = [Hit(f"{short} commit metadata", entry) for entry in scanner.entries_in(metadata.text)]
     if identities is not None:
-        for role, email in zip(("author", "committer"), metadata.emails, strict=True):
-            if email not in identities:
-                hits.append(IdentityProblem(short, role))
+        hits += [IdentityProblem(short, role) for role in metadata.unallowed_roles(identities)]
     return hits + scan_changes(scanner, repo, sha, f"{short} ")
 
 
@@ -431,7 +460,7 @@ def scan_boundary(repo: Path, boundary: list[str], identities: set[str]) -> list
     """Every commit the boundary hides must be legacy: neither of its identities allowed."""
     problems: list[BoundaryProblem] = []
     for sha in decode(git(repo, "rev-list", *boundary)).split():
-        if any(email in identities for email in metadata_of(repo, sha).emails):
+        if metadata_of(repo, sha).has_allowed(identities):
             problems.append(BoundaryProblem(sha[:12]))
     return problems
 
