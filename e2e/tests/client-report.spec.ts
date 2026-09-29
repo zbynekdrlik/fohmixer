@@ -1,6 +1,6 @@
-import type { Page } from "@playwright/test";
+import type { Page, WebSocketRoute } from "@playwright/test";
 import { test, expect } from "./support/fixtures";
-import { BASE, hubStatus, openSurface } from "./support/live";
+import { BASE, HUB_SOCKET, RELOAD_KEY, countLoads, hubStatus, openSurface } from "./support/live";
 import { HTTPS, releaseWakeLocks, stubWakeLock } from "./support/pwa";
 
 // The pages' diagnostic reports (#26): every page tells the hub what it is
@@ -11,12 +11,6 @@ import { HTTPS, releaseWakeLocks, stubWakeLock } from "./support/pwa";
 // Every spec shares one hub, so a test finds its own page's reports by the
 // page's user agent and screen (each describe below gives the page a screen
 // size no other test uses) and by the time the test started.
-
-/** The page's hub socket. */
-const HUB_SOCKET = /\/ws\?/;
-
-/** Where the page keeps its last handshake reload (wall clock ms). */
-const RELOAD_KEY = "fohmixer_proto_reload_at";
 
 /** Unix seconds now (the hub stamps its reports in the same clock). */
 const nowSecs = () => Math.floor(Date.now() / 1000);
@@ -47,13 +41,6 @@ async function reportOf(w: Who, since: number, match: (report: any) => boolean):
   return found;
 }
 
-/** Every page load of `page`, counted. */
-function countLoads(page: Page): () => number {
-  let loads = 0;
-  page.on("load", () => (loads += 1));
-  return () => loads;
-}
-
 test.describe("A browser tab", () => {
   test.use({ contextOptions: { screen: { width: 1111, height: 611 } } });
 
@@ -81,6 +68,29 @@ test.describe("A browser tab", () => {
     await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
     const visibility = await reportOf(w, since, (r) => r.kind === "visibility");
     expect(visibility.visibility).toBe("visible");
+  });
+});
+
+test.describe("A dropped connection", () => {
+  test.use({ contextOptions: { screen: { width: 1121, height: 621 } } });
+
+  test("is reported, and so is the reconnect with its count", async ({ page }) => {
+    const sockets: WebSocketRoute[] = [];
+    await page.routeWebSocket(HUB_SOCKET, (ws) => {
+      sockets.push(ws);
+      ws.connectToServer();
+    });
+    const since = nowSecs();
+    await openSurface(page);
+    const w = await who(page);
+    // The socket drops (a Wi-Fi blip); the page reconnects.
+    await sockets[0].close({ code: 4000, reason: "gone" });
+    await expect.poll(() => sockets.length, { timeout: 10_000 }).toBe(2);
+    await expect(page.getByTestId("surface")).toHaveAttribute("data-connected", "true");
+    const lost = await reportOf(w, since, (r) => r.kind === "disconnected");
+    expect(lost.reconnects).toBe("0");
+    const back = await reportOf(w, since, (r) => r.kind === "reconnect");
+    expect(back.reconnects).toBe("1");
   });
 });
 
@@ -160,6 +170,12 @@ test.describe("The PWA on the https origin", () => {
     await releaseWakeLocks(page);
     const released = await reportOf(w, since, (r) => r.kind === "wake-lock");
     expect(released.wake_lock).toBe("released");
+    // The page comes back and takes the lock again within 5 s: the kind's
+    // trailing report carries the new state, so the hub does not keep
+    // "released".
+    await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+    await expect(page.locator("html")).toHaveAttribute("data-wake-lock", "held");
+    await reportOf(w, since, (r) => r.kind === "wake-lock" && r.wake_lock === "held");
   });
 });
 

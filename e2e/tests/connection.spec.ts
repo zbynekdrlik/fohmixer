@@ -1,17 +1,11 @@
 import type { Page, WebSocketRoute } from "@playwright/test";
 import { test, expect } from "./support/fixtures";
-import { openSurface, ready, token } from "./support/live";
+import { HUB_SOCKET, RELOAD_KEY, countLoads, openSurface, ready, token } from "./support/live";
 
 // The hub connection (S4 design note §4, §6; #8 review): the handshake
 // reload is bounded across page loads, and a reconnect forgets the hub's
 // values until the hub sends them again. Playwright stands between the page
 // and the hub's socket (`routeWebSocket`).
-
-/** The page's hub socket. */
-const HUB_SOCKET = /\/ws\?/;
-
-/** Where the page keeps its last handshake reload (wall clock ms). */
-const RELOAD_KEY = "fohmixer_proto_reload_at";
 
 /**
  * Opens the surface logged in, without waiting for a connection; with
@@ -35,13 +29,6 @@ async function openLoggedIn(page: Page, reloadedAt?: number) {
   );
   await page.goto("/");
   await expect(page.getByTestId("stage")).toBeVisible();
-}
-
-/** Every page load of `page`, counted. */
-function countLoads(page: Page): () => number {
-  let loads = 0;
-  page.on("load", () => (loads += 1));
-  return () => loads;
 }
 
 test.describe("The protocol handshake", () => {
