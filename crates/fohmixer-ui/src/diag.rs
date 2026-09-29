@@ -20,8 +20,9 @@
 //! and [`perf::Perf`] and posts to `/api/client-report` with `fetch`
 //! `keepalive` (a report sent while the page reloads still arrives); it
 //! decides nothing. The animation loop (`raf::tick`) hands [`frame`] every
-//! frame's time, and capture-phase `pointerdown` / `pointerup` /
-//! `pointercancel` listeners on the window hand it every pointer.
+//! frame's gap, and capture-phase `pointerdown` / `pointerup` /
+//! `pointercancel` listeners on the window hand [`perf::Perf`] every
+//! pointer.
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -461,10 +462,14 @@ fn pause_perf() {
     let _ = PERF.try_with(|perf| perf.borrow_mut().pause());
 }
 
-/// A frame of the animation loop (`raf::tick`) at `time`, `gap` ms after
-/// the one before: counted, and the periodic `perf` report when it is due.
-pub fn frame(time: f64, gap: f64) {
-    let due = PERF.try_with(|perf| perf.borrow_mut().frame(time, gap));
+/// A frame of the animation loop (`raf::tick`), `gap` ms after the one
+/// before: counted, and the periodic `perf` report when it is due. The
+/// report's minute is kept on the page clock the reports are stamped with
+/// (`dom::now`), not on the frame's own time, which is the frame's start
+/// and may lie before the last report's stamp.
+pub fn frame(gap: f64) {
+    let now = dom::now();
+    let due = PERF.try_with(|perf| perf.borrow_mut().frame(now, gap));
     if due.unwrap_or(false) {
         report(Kind::Perf);
     }

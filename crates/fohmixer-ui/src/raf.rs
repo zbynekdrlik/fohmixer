@@ -8,11 +8,11 @@
 //! mounts or unmounts during a frame): the registry is taken out for the
 //! frame and merged back afterwards ([`Registry`], unit-tested).
 //!
-//! Every frame's time and its gap to the one before also go to the page's
-//! frame count (`diag::frame`, #5 K4: the `perf` report's frame rate and
-//! longest frame): one more reader of this loop, not a second loop. A loop
-//! that starts again counts its first gap from its start, not from the
-//! last frame before it went idle.
+//! Every frame's gap to the one before also goes to the page's frame count
+//! (`diag::frame`, #5 K4: the `perf` report's frame rate and longest
+//! frame): one more reader of this loop, not a second loop. A loop that
+//! starts again counts its first gap from its start, not from the last
+//! frame before it went idle.
 
 use std::cell::{Cell, RefCell};
 
@@ -155,7 +155,7 @@ fn tick(time: f64) {
     let gap = time - LAST.get();
     let step = gap.clamp(0.0, MAX_STEP_MS);
     LAST.set(time);
-    crate::diag::frame(time, gap);
+    crate::diag::frame(gap);
     let mut items = REGISTRY.with_borrow_mut(Registry::take);
     for (_, frame) in &mut items {
         frame(time, step);

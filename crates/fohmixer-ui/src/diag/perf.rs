@@ -3,8 +3,8 @@
 //! surface and how many fingers it saw at once, without anyone watching it.
 //!
 //! Pure, tested natively. [`Perf`] counts the frames of the one animation
-//! loop (`raf::tick` hands each frame's time and its gap to the previous
-//! one) over windows of [`WINDOW_MS`] of frames: a window gives the frame
+//! loop (`raf::tick` hands each frame's gap to the previous one, the glue
+//! adds the page clock's now) over windows of [`WINDOW_MS`] of frames: a window gives the frame
 //! rate ([`fps`]) and its longest gap. A visibility change pauses the count
 //! ([`Perf::pause`]): a hidden page draws no frames, and the gap the first
 //! frame after it carries is the time it was hidden. When a window closes a
@@ -175,7 +175,7 @@ impl Perf {
         if primary {
             self.down.retain(|&(_, kind)| kind != pointer);
         }
-        let known = self.down.iter().any(|&(known, _)| known == id);
+        let known = self.down.iter().any(|&(down_id, _)| down_id == id);
         if !known && self.down.len() < POINTERS_MAX {
             self.down.push((id, pointer));
         }
@@ -191,7 +191,7 @@ impl Perf {
 
     /// A pointer went up or was cancelled.
     pub fn up(&mut self, id: i32) {
-        self.down.retain(|&(known, _)| known != id);
+        self.down.retain(|&(down_id, _)| down_id != id);
     }
 
     /// A perf report goes at `now`: what it says. The most pointers at once
