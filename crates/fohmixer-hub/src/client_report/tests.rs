@@ -32,6 +32,10 @@ fn fields(value: &str) -> ReportFields {
         visibility: v(),
         reconnects: v(),
         error: v(),
+        fps: v(),
+        long_frame_ms: v(),
+        touches_max: v(),
+        pointer: v(),
     }
 }
 
@@ -317,10 +321,48 @@ async fn a_report_needs_no_token_and_is_listed_in_the_status() {
             "visibility": "visible",
             "reconnects": "0",
             "error": null,
+            "fps": null,
+            "long_frame_ms": null,
+            "touches_max": null,
+            "pointer": null,
         })
     );
     // The connected-socket count keeps its meaning next to the reports.
     assert_eq!(status["clients"], 0);
+    hub.stop();
+}
+
+#[tokio::test]
+async fn a_perf_report_keeps_its_numbers_as_short_words() {
+    // The page's frame rate and simultaneous touches (#5, K4): kept like
+    // every other field, cut to a word.
+    let dir = tempfile::tempdir().unwrap();
+    let hub = crate::test_hub(dir.path());
+    let body = json!({
+        "kind": "perf",
+        "screen": "1194x834@2",
+        "fps": "59.9",
+        "long_frame_ms": "34",
+        "touches_max": "4",
+        "pointer": format!("touch\n{}", "p".repeat(80)),
+    });
+    assert_eq!(post(&hub, body.to_string()).await, StatusCode::NO_CONTENT);
+    let kept = hub.status().await.client_reports;
+    assert_eq!(kept.len(), 1);
+    let f = &kept[0].fields;
+    assert_eq!(f.kind.as_deref(), Some("perf"));
+    assert_eq!(f.fps.as_deref(), Some("59.9"));
+    assert_eq!(f.long_frame_ms.as_deref(), Some("34"));
+    assert_eq!(f.touches_max.as_deref(), Some("4"));
+    let pointer = f.pointer.clone().unwrap();
+    assert_eq!(pointer, format!("touch{}…", "p".repeat(WORD_MAX_CHARS - 5)));
+    // In the status as text next to the page's other fields.
+    let status = status_json(&hub).await;
+    let listed = &status["client_reports"][0];
+    assert_eq!(listed["fps"], "59.9");
+    assert_eq!(listed["long_frame_ms"], "34");
+    assert_eq!(listed["touches_max"], "4");
+    assert_eq!(listed["ua"], Value::Null);
     hub.stop();
 }
 
@@ -330,6 +372,11 @@ async fn a_report_that_is_not_text_fields_is_refused() {
     let hub = crate::test_hub(dir.path());
     assert_eq!(
         post(&hub, json!({"kind": 5}).to_string()).await,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    // The page sends its numbers as text, never as JSON numbers.
+    assert_eq!(
+        post(&hub, json!({"kind": "perf", "fps": 59.9}).to_string()).await,
         StatusCode::UNPROCESSABLE_ENTITY
     );
     assert_eq!(
