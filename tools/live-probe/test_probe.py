@@ -715,6 +715,21 @@ class RawFile(unittest.TestCase):
         with open(raw + ".tmp", encoding="utf-8") as f:
             self.assertEqual(f.read(), "kept samples")
 
+    def test_a_file_someone_else_put_at_the_temporary_name_is_not_overwritten(self):
+        raw = os.path.join(self.folder, "run.json")
+
+        def foreign():
+            with open(raw + ".tmp", "w", encoding="utf-8") as f:
+                f.write("foreign")
+
+        script = FakeScript([{"event": "connect", "data": CONNECT, "ts": 1000}], on_connect=foreign)
+        self.addCleanup(script.close)
+        with self.assertRaisesRegex(probe.RawWriteError, "cannot write the raw file"):
+            probe.run(script.port, seconds=0.3, probe_ms=100, raw_path=raw)
+        with open(raw + ".tmp", encoding="utf-8") as f:
+            self.assertEqual(f.read(), "foreign")
+        self.assertFalse(os.path.exists(raw))
+
     def test_a_temporary_name_taken_during_the_run_is_left_alone(self):
         raw = os.path.join(self.folder, "run.json")
         # Something takes <raw>.tmp once the probe has connected.
@@ -734,7 +749,7 @@ class RawFile(unittest.TestCase):
         """A file-size limit of 64 bytes (the samples are larger): the dump
         fails, the partial temporary file is removed, the summary still
         prints. The limit is set in the probe's own process (not preexec_fn,
-        unsafe while the fake script's thread runs)."""
+        unsafe while the fake script's thread runs), which writes no bytecode."""
         raw = os.path.join(self.folder, "run.json")
         script = FakeScript([{"event": "connect", "data": CONNECT, "ts": 1000}])
         self.addCleanup(script.close)
@@ -745,7 +760,9 @@ class RawFile(unittest.TestCase):
             "runpy.run_path(sys.argv[0], run_name='__main__')"
         )
         done = subprocess.run(
-            [sys.executable, "-c", limited, PROBE, "--port", str(script.port)]
+            # -B: the limit would also cut the child's bytecode caches to 64
+            # bytes, breaking later imports for every user of that Python.
+            [sys.executable, "-B", "-c", limited, PROBE, "--port", str(script.port)]
             + ["--seconds", "0.3", "--raw", raw],
             capture_output=True,
             text=True,
