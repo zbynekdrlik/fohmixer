@@ -17,6 +17,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
@@ -714,6 +715,16 @@ class RawFile(unittest.TestCase):
             probe.run(self.closed_port(), seconds=300, probe_ms=100, raw_path=raw)
         with open(raw + ".tmp", encoding="utf-8") as f:
             self.assertEqual(f.read(), "kept samples")
+
+    def test_a_check_file_that_cannot_be_removed_is_a_probe_error(self):
+        # On Windows an antivirus or indexer handle on the new file (a sharing
+        # violation) makes the remove fail; the operating system's refusal is
+        # simulated here. One "live-probe:" error, never a traceback.
+        raw = os.path.join(self.folder, "run.json")
+        refused = PermissionError(32, "The process cannot access the file")
+        with mock.patch.object(probe.os, "remove", side_effect=refused):
+            with self.assertRaisesRegex(probe.ProbeError, "cannot remove the check file"):
+                probe.run(self.closed_port(), seconds=300, probe_ms=100, raw_path=raw)
 
     def test_a_file_someone_else_put_at_the_temporary_name_is_not_overwritten(self):
         raw = os.path.join(self.folder, "run.json")
