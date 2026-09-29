@@ -99,23 +99,36 @@ async fn get_status(
     Ok(Json(hub.status().await))
 }
 
-/// Whether a `Host` header value (a name or an address, an optional port)
-/// names this hub: an IP address, `localhost`, or one of `allowed` (the
-/// config's `allowed_hosts`). A request without one (not a browser) passes.
+/// Whether `port` is a port number's digits (one or more, nothing else).
+fn is_port(port: &str) -> bool {
+    !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// Whether a `Host` header value (a name or an address, an optional
+/// `:<digits>` port and nothing else) names this hub: an IP address,
+/// `localhost`, or one of `allowed` (the config's `allowed_hosts`). A
+/// request without one (not a browser) passes. Anything else after the
+/// address (`[::1] x`, `127.0.0.1:1 x`) is refused (#9): it would pass the
+/// Origin guard with a matching `Origin` and reach the log lines.
 pub fn host_allowed(host: Option<&str>, allowed: &[String]) -> bool {
     let Some(host) = host else {
         return true;
     };
     if let Some(rest) = host.strip_prefix('[') {
         // An IPv6 address: `[::1]` or `[::1]:8480`.
-        return rest
-            .split_once(']')
-            .is_some_and(|(addr, _)| addr.parse::<Ipv6Addr>().is_ok());
+        return rest.split_once(']').is_some_and(|(addr, after)| {
+            addr.parse::<Ipv6Addr>().is_ok()
+                && (after.is_empty() || after.strip_prefix(':').is_some_and(is_port))
+        });
     }
-    let name = host.rsplit_once(':').map_or(host, |(name, _port)| name);
-    name.parse::<Ipv4Addr>().is_ok()
-        || name.eq_ignore_ascii_case("localhost")
-        || allowed.iter().any(|a| a.eq_ignore_ascii_case(name))
+    let (name, port_ok) = match host.rsplit_once(':') {
+        Some((name, port)) => (name, is_port(port)),
+        None => (host, true),
+    };
+    port_ok
+        && (name.parse::<Ipv4Addr>().is_ok()
+            || name.eq_ignore_ascii_case("localhost")
+            || allowed.iter().any(|a| a.eq_ignore_ascii_case(name)))
 }
 
 /// Refuses (421) a request whose `Host` is not this hub's: a page on any
