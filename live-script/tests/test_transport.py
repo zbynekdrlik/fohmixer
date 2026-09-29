@@ -21,7 +21,7 @@ import Live
 from _rawclient import RawClient, masked_frame, request_frame, upgrade_request
 from FohMixer.transport import server as transport
 from FohMixer.transport.server import Server
-from FohMixer.transport.websocket import OPCODE_CLOSE
+from FohMixer.transport.websocket import OPCODE_CLOSE, OPCODE_TEXT
 from main_thread import MainThread
 from websockets.exceptions import ConnectionClosed, InvalidStatus
 from websockets.sync.client import connect
@@ -531,6 +531,180 @@ class OneTickTest(unittest.TestCase):
         self.assertFalse(conn.finished)
         conn.flush(t0 + transport.CLOSE_HANDSHAKE_TIMEOUT_S)
         self.assertTrue(conn.finished)
+
+    def test_one_large_message_goes_out_in_one_tick_when_the_socket_takes_it(self):
+        # A byte cap per tick would hold a large result (and every heartbeat
+        # set behind it) for several ticks although the socket takes it at once.
+        client = self.client()
+        self.tick()
+        conn = self.server.connections()[0]
+        big = "x" * (1 << 20)
+        conn.push_result("big", [{"ok": True, "data": big}])
+        self.server.poll_out()
+        self.assertEqual(conn.pending(), (0, 0, 0))
+        uuids = [m.get("uuid") or m["event"] for m in client.read_messages(2)]
+        self.assertEqual(uuids, ["connect", "big"])
+
+    def test_writing_stops_at_the_tick_budget_and_goes_on_at_the_next_tick(self):
+        self.addCleanup(setattr, transport, "IO_BUDGET_S", transport.IO_BUDGET_S)
+        transport.IO_BUDGET_S = 0.0
+        client = self.client()
+        self.tick()
+        conn = self.server.connections()[0]
+        for n in range(3):
+            conn.push_result(f"r{n}", [{"ok": True, "data": "x" * 100_000}])
+        queued = []
+        for _ in range(3):
+            self.server.poll_out()
+            queued.append(conn.pending()[0])
+        self.assertEqual(queued, [2, 1, 0])
+        uuids = [m.get("uuid") or m["event"] for m in client.read_messages(4)]
+        self.assertEqual(uuids, ["connect", "r0", "r1", "r2"])
+
+    def test_reading_stops_at_the_tick_budget_and_goes_on_at_the_next_tick(self):
+        self.addCleanup(setattr, transport, "IO_BUDGET_S", transport.IO_BUDGET_S)
+        transport.IO_BUDGET_S = 0.0
+        pad = "y" * 40_000
+        requests = b"".join(
+            masked_frame(
+                OPCODE_TEXT, json.dumps({"uuid": f"q{n}", "commands": [], "pad": pad}).encode()
+            )
+            for n in range(3)
+        )
+        client = self.client()
+        self.tick()
+        client.sock.sendall(requests)
+        time.sleep(0.05)
+        self.server.poll_in()
+        first = self.server.inbox.qsize()
+        self.assertGreaterEqual(first, 1)
+        self.assertLess(first, 3, "one tick read past its budget")
+        for _ in range(5):
+            self.server.poll_in()
+        uuids = [self.server.inbox.get_nowait()[1]["uuid"] for _ in range(3)]
+        self.assertEqual(uuids, ["q0", "q1", "q2"])
+
+    def test_a_request_too_deep_for_json_gets_an_error_and_the_next_one_still_runs(self):
+        deep = masked_frame(OPCODE_TEXT, b"[" * 200_000)
+        client = self.client(extra=deep + request_frame("after"))
+        messages = []
+        for _ in range(10):
+            self.tick()
+            self.settle(client)
+            messages += client.messages()
+            if len(messages) >= 3:
+                break
+        self.assertEqual([m["event"] for m in messages], ["connect", "error", "result"])
+        self.assertIn("invalid JSON", messages[1]["data"])
+        self.assertEqual(messages[2]["uuid"], "after")
+        self.assertTrue(self.server.connections()[0].is_open)
+
+    def test_a_connection_that_fails_while_reading_is_closed_and_the_others_are_served(self):
+        a, b = self.client(), self.client()
+        self.tick()
+        first, second = self.server.connections()
+
+        def broken(_data):
+            raise RuntimeError("test: a bug in one connection's read")
+
+        first.take = broken
+        a.sock.sendall(request_frame("a1"))
+        b.sock.sendall(request_frame("b1"))
+        time.sleep(0.05)
+        self.tick()
+        self.assertTrue(first.finished)
+        self.settle(b)
+        self.assertIn("b1", [m.get("uuid") for m in b.messages()])
+        self.assertTrue(
+            any("reading failed, closing it" in m for m in self.log.messages), self.log.messages
+        )
+        self.assertEqual(self.server.connections(), [second])
+
+    def test_a_connection_that_fails_while_writing_is_closed_and_the_others_are_served(self):
+        _a, b = self.client(), self.client()
+        self.tick()
+        first, second = self.server.connections()
+
+        def broken(_now):
+            raise RuntimeError("test: a bug in one connection's write")
+
+        first.flush = broken
+        first.push_result("a1", [])
+        second.push_result("b1", [])
+        self.server.poll_out()
+        self.assertTrue(first.finished)
+        self.settle(b)
+        self.assertIn("b1", [m.get("uuid") for m in b.messages()])
+        self.assertTrue(
+            any("writing failed, closing it" in m for m in self.log.messages), self.log.messages
+        )
+        self.assertEqual(self.server.connections(), [second])
+
+    def test_a_client_reset_before_its_accept_keeps_the_listener(self):
+        # Windows reports a client that reset before its accept as
+        # WSAECONNRESET from accept(); closing the listener for it would
+        # refuse every client until the port can be bound again.
+        class ResetOnce:
+            def __init__(self, sock):
+                self.sock = sock
+                self.reset = False
+
+            def fileno(self):
+                return self.sock.fileno()
+
+            def accept(self):
+                if not self.reset:
+                    self.reset = True
+                    raise ConnectionResetError("test: reset before accept")
+                return self.sock.accept()
+
+            def __getattr__(self, name):
+                return getattr(self.sock, name)
+
+        listener = ResetOnce(self.server._listener)
+        self.server._listener = listener
+        client = self.client()
+        for _ in range(3):
+            self.tick()
+        self.assertIs(self.server._listener, listener)
+        self.assertEqual(client.read_messages(1)[0]["event"], "connect")
+        self.assertFalse(any("binding again" in m for m in self.log.messages), self.log.messages)
+
+    def test_pending_handshakes_and_connections_are_capped(self):
+        self.addCleanup(setattr, transport, "MAX_HANDSHAKES", transport.MAX_HANDSHAKES)
+        self.addCleanup(setattr, transport, "MAX_CONNECTIONS", transport.MAX_CONNECTIONS)
+        transport.MAX_HANDSHAKES = 2
+        transport.MAX_CONNECTIONS = 1
+        # Clients that never finish their request: two wait, the rest are refused.
+        silent = [socket.create_connection(("127.0.0.1", self.port)) for _ in range(4)]
+        for sock in silent:
+            self.addCleanup(sock.close)
+        self.tick()
+        closed = [sock for sock in silent if self.closed_by_server(sock)]
+        self.assertEqual(len(closed), 2)
+        self.assertTrue(any("refused" in m for m in self.log.messages), self.log.messages)
+        for sock in silent:
+            sock.close()
+        self.tick()
+        # The waiting ones left; one client connects, the next finds it taken.
+        member = self.client()
+        self.tick()
+        self.assertEqual(member.read_messages(1)[0]["event"], "connect")
+        refused = self.client()
+        self.tick()
+        refused.readable(1.0)
+        refused.read_available()
+        self.assertTrue(refused.closed)
+        self.assertEqual(len(self.server.connections()), 1)
+
+    @staticmethod
+    def closed_by_server(sock):
+        if not select.select([sock], [], [], 0.5)[0]:
+            return False
+        try:
+            return sock.recv(1) == b""
+        except ConnectionResetError:
+            return True
 
     def test_a_handshake_that_arrives_in_pieces_completes_on_a_later_tick(self):
         sock = socket.create_connection(("127.0.0.1", self.port))

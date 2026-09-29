@@ -17,6 +17,7 @@ import site_builder
 from _rawclient import RawClient, request_frame
 from c_instance import CInstance
 from FohMixer import Config, surface
+from FohMixer.lom import ops
 from FohMixer.surface import Drain, heartbeat_data
 from main_thread import MainThread
 from websockets.sync.client import connect
@@ -358,6 +359,48 @@ class HandTickedSurfaceTest(unittest.TestCase):
         self.assertGreaterEqual(beats[0]["data"]["main_tick_age_ms"], 290.0, beats)
         self.assertLess(beats[0]["data"]["main_tick_age_ms"], 2000.0, beats)
         self.assertGreaterEqual(beats[0]["data"]["gap_ms"], 290.0, beats)
+
+    def test_a_tick_held_by_its_own_work_is_reported_by_the_heartbeat_it_makes(self):
+        # A slow command holds a tick 400 ms, and a heartbeat is due in that
+        # tick: it goes out after the silence, so it must report the silence
+        # (not the short gap before the tick), or the hub shows busy (overdue),
+        # free, busy, free within ~170 ms.
+        real = ops.execute
+
+        def execute(command, ctx):
+            if command.get("name") == "test_slow":
+                time.sleep(0.4)
+                return None
+            return real(command, ctx)
+
+        self.addCleanup(setattr, ops, "execute", real)
+        ops.execute = execute
+        client = self.client()
+        for _ in range(3):
+            self.tick_and_read(client)
+        time.sleep(0.12)
+        slow = {"target": "live_set", "name": "test_slow", "args": {}}
+        client.sock.sendall(request_frame("slow", [slow]))
+        messages = self.tick_and_read(client)
+        self.assertIn("slow", [m.get("uuid") for m in messages])
+        beats = [m for m in messages if m["event"] == "heartbeat"]
+        self.assertEqual(len(beats), 1, messages)
+        self.assertGreaterEqual(beats[0]["data"]["main_tick_age_ms"], 400.0, beats)
+
+    def test_heartbeats_go_on_while_the_subscription_flush_keeps_failing(self):
+        # A failing step must not stop the heartbeat: Live would show busy
+        # for ever while its main thread ticks.
+        def broken(_now_ms):
+            raise RuntimeError("test: the flush fails")
+
+        self.surface._subs.flush = broken
+        client = self.client()
+        messages = []
+        for _ in range(8):
+            messages += self.tick_and_read(client)
+            time.sleep(0.05)
+        self.assertEqual(messages[0]["event"], "connect", messages)
+        self.assertGreaterEqual(sum(m["event"] == "heartbeat" for m in messages), 2, messages)
 
 
 if __name__ == "__main__":
