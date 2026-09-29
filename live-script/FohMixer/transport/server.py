@@ -270,9 +270,12 @@ class Connection:
 class Server:
     """Accepts WebSocket clients on ``host:port`` and feeds ``inbox``.
 
-    ``connect_data`` is sent as the ``connect`` event, the first frame of every
-    connection. A failed bind is retried (0.25 s, 0.5 s, 1 s, 2 s, then every
-    5 s) and logged once per distinct error; ``bind_error`` holds the last one.
+    ``connect_data`` is queued as the ``connect`` event before anything else on
+    every connection; a heartbeat set before the sender first runs still goes
+    out ahead of it (``_take_next`` sends a pending heartbeat first; seen on
+    the Ableton PC, #5). A failed bind is retried (0.25 s, 0.5 s, 1 s, 2 s,
+    then every 5 s) and logged once per distinct error; ``bind_error`` holds
+    the last one.
     """
 
     def __init__(self, host, port, connect_data, result_queue_max=1000, logger=None):
