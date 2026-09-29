@@ -32,11 +32,13 @@ unreadable input file, a bad boundary, a failing git command).
 from __future__ import annotations
 
 import argparse
+import codecs
 import hashlib
 import re
 import shlex
 import subprocess
 import sys
+import unicodedata
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -49,9 +51,11 @@ FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
 REDACTED = "[redacted]"
 # git's C-quoting of a path in a diff header (core.quotePath)
 C_ESCAPES = {"a": 7, "b": 8, "t": 9, "n": 10, "v": 11, "f": 12, "r": 13, '"': 34, "\\": 92}
-# A diff whose labels, colours and merges do not depend on the user's git config
-DIFF = ["show", "--format=", "--no-show-signature", "--no-color", "--no-ext-diff", "--no-renames", "-m",
-        "--first-parent"]
+UTF16_BOMS = (codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)
+# A commit's diff against its first parent (the root commit's too) whose labels, colours, attributes
+# and paths depend neither on the user's git config nor on the repo's .gitattributes
+DIFF = ["show", "--format=", "--no-show-signature", "--no-color", "--no-ext-diff", "--no-textconv", "--text",
+        "--no-renames", "--no-relative", "--root", "-m", "--first-parent"]
 
 
 class UsageError(Exception):
@@ -89,7 +93,8 @@ Finding = Hit | IdentityProblem | BoundaryProblem
 
 def read_text(path: Path, what: str) -> str:
     try:
-        return path.read_text(encoding="utf-8")
+        # bytes, then UTF-8: no universal newlines, so a lone `\r` stays inside its line
+        return path.read_bytes().decode("utf-8")
     except (OSError, UnicodeDecodeError) as error:
         # the error text is left out: a decode error quotes the bytes around it
         raise UsageError(f"{what} {path} cannot be read ({type(error).__name__})") from None
@@ -146,22 +151,46 @@ def load_allow(path: Path | None) -> set[str]:
 
 def text_lines(text: str) -> list[str]:
     """Lines as git counts them: split at `\\n` only, one trailing `\\r` dropped."""
-    return [line.removesuffix("\r") for line in text.split("\n")]
+    lines = text.split("\n")
+    if lines[-1] == "":
+        lines.pop()
+    return [line.removesuffix("\r") for line in lines]
+
+
+def blob_text(data: bytes) -> str | None:
+    """A blob's text: UTF-16 with its BOM, else UTF-8; None when it holds a NUL (binary)."""
+    if data.startswith(UTF16_BOMS):
+        return data.decode("utf-16", errors="replace")
+    if b"\0" in data:
+        return None
+    return decode(data)
+
+
+def nfc(text: str) -> str:
+    """One form for letters with diacritics, so a decomposed `á` cannot hide a term."""
+    return unicodedata.normalize("NFC", text)
 
 
 class Scanner:
     def __init__(self, terms: list[str], allow: set[str]) -> None:
-        self.patterns = [compile_term(term) for term in terms]
+        self.patterns = [compile_term(nfc(term)) for term in terms]
         self.allow = allow
 
     def entries_in(self, text: str) -> list[int]:
+        text = nfc(text)
         return [number for number, pattern in enumerate(self.patterns, start=1) if pattern.search(text)]
 
     def shown(self, path: str) -> str:
-        """The path as printed: a component holding a term is redacted, or all of it."""
-        if not self.entries_in(path):
+        """The path as printed: each component holding a term is redacted; the whole path when
+        a term spans components (a term without `/` always matches inside one component)."""
+        whole = set(self.entries_in(path))
+        if not whole:
             return path
-        redacted = "/".join(REDACTED if self.entries_in(part) else part for part in path.split("/"))
+        parts = path.split("/")
+        part_hits = [set(self.entries_in(part)) for part in parts]
+        if not whole <= set().union(*part_hits):
+            return REDACTED
+        redacted = "/".join(REDACTED if hit else part for part, hit in zip(parts, part_hits, strict=True))
         return REDACTED if self.entries_in(redacted) else redacted
 
     def scan_path(self, path: str, prefix: str) -> list[Hit]:
@@ -190,9 +219,14 @@ def check_boundary_exists(repo: Path, boundary: list[str]) -> None:
             raise UsageError(f"boundary commit {sha} is not in {repo} (a shallow clone needs fetch-depth: 0)")
 
 
-def emails_of(repo: Path, sha: str) -> list[str]:
-    shown = decode(git(repo, "show", "-s", "--no-show-signature", "--format=%ae%n%ce", sha))
-    return [email.strip().lower() for email in shown.splitlines()]
+def metadata_of(repo: Path, sha: str) -> str:
+    return decode(git(repo, "show", "-s", "--no-show-signature", "--format=%an%n%ae%n%cn%n%ce%n%B", sha))
+
+
+def emails_in(metadata: str) -> list[str]:
+    """The author and committer emails: lines 2 and 4 of the metadata (git names hold no newline)."""
+    fields = metadata.split("\n")
+    return [fields[1].strip().lower(), fields[3].strip().lower()]
 
 
 def scan_tree(scanner: Scanner, repo: Path, rev: str) -> list[Hit]:
@@ -206,11 +240,11 @@ def scan_tree(scanner: Scanner, repo: Path, rev: str) -> list[Hit]:
         hits += scanner.scan_path(path, "")
         if kind != b"blob":
             continue
-        data = git(repo, "cat-file", "blob", decode(obj))
-        if b"\0" in data:
+        text = blob_text(git(repo, "cat-file", "blob", decode(obj)))
+        if text is None:
             continue
         shown = scanner.shown(path)
-        for number, line in enumerate(text_lines(decode(data)), start=1):
+        for number, line in enumerate(text_lines(text), start=1):
             hits += scanner.scan_line(path, line, f"{shown}:{number}")
     return hits
 
@@ -259,23 +293,34 @@ def changed_paths(repo: Path, sha: str) -> list[str]:
     return [decode(name) for name in names.split(b"\0") if name]
 
 
+def added_text(repo: Path, sha: str) -> dict[str, list[str]]:
+    """Each changed file's added lines. A file whose added lines hold a NUL is read whole from the
+    commit instead, as tree mode reads it: UTF-16 text is scanned, binary content skipped."""
+    patch = decode(git(repo, *DIFF, "--unified=0", "--src-prefix=a/", "--dst-prefix=b/", sha))
+    by_path: dict[str, list[str]] = {}
+    for path, line in added_lines(patch):
+        by_path.setdefault(path, []).append(line)
+    for path, lines in by_path.items():
+        if any("\0" in line for line in lines):
+            text = blob_text(git(repo, "cat-file", "blob", f"{sha}:{path}"))
+            by_path[path] = [] if text is None else text_lines(text)
+    return by_path
+
+
 def scan_commit(scanner: Scanner, repo: Path, sha: str, identities: set[str] | None) -> list[Finding]:
     short = sha[:12]
-    hits: list[Finding] = []
-    metadata = decode(git(repo, "show", "-s", "--no-show-signature", "--format=%an%n%ae%n%cn%n%ce%n%B", sha))
-    hits += [Hit(f"{short} commit metadata", entry) for entry in scanner.entries_in(metadata)]
+    metadata = metadata_of(repo, sha)
+    hits: list[Finding] = [Hit(f"{short} commit metadata", entry) for entry in scanner.entries_in(metadata)]
     if identities is not None:
-        for role, email in zip(("author", "committer"), emails_of(repo, sha), strict=True):
+        for role, email in zip(("author", "committer"), emails_in(metadata), strict=True):
             if email not in identities:
                 hits.append(IdentityProblem(short, role))
     for path in changed_paths(repo, sha):
         hits += scanner.scan_path(path, f"{short} ")
-    patch = decode(git(repo, *DIFF, "--unified=0", "--src-prefix=a/", "--dst-prefix=b/", sha))
-    labels: dict[str, str] = {}
-    for path, line in added_lines(patch):
-        if path not in labels:
-            labels[path] = f"{short} {scanner.shown(path)}"
-        hits += scanner.scan_line(path, line, labels[path])
+    for path, lines in added_text(repo, sha).items():
+        where = f"{short} {scanner.shown(path)}"
+        for line in lines:
+            hits += scanner.scan_line(path, line, where)
     return hits
 
 
@@ -295,9 +340,21 @@ def scan_boundary(repo: Path, boundary: list[str], identities: set[str]) -> list
     """Every commit the boundary hides must be legacy: neither of its identities allowed."""
     problems: list[BoundaryProblem] = []
     for sha in decode(git(repo, "rev-list", *boundary)).split():
-        if any(email in identities for email in emails_of(repo, sha)):
+        if any(email in identities for email in emails_in(metadata_of(repo, sha))):
             problems.append(BoundaryProblem(sha[:12]))
     return problems
+
+
+def hash_line(repo: Path, path: str, number: str) -> str:
+    """The allow key of a working-tree line, decoded and split exactly as the scan does."""
+    try:
+        text = blob_text((repo / path).read_bytes())
+    except OSError as error:
+        raise UsageError(f"--hash: the file cannot be read ({type(error).__name__})") from None
+    lines = [] if text is None else text_lines(text)
+    if not number.isdecimal() or not 1 <= int(number) <= len(lines):
+        raise UsageError("--hash: no such line in that file (a binary file, or a number out of range)")
+    return line_key(path, lines[int(number) - 1])
 
 
 def run(args: argparse.Namespace) -> list[Finding]:
@@ -332,15 +389,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--hash", nargs=2, metavar=("PATH", "LINE"))
     args = parser.parse_args(argv)
 
-    if args.hash:
-        path, number = args.hash
-        lines = text_lines((args.repo / path).read_text(encoding="utf-8"))
-        print(line_key(path, lines[int(number) - 1]))
-        return EXIT_CLEAN
-    if args.denylist is None or not (args.tree or args.commits):
+    if not args.hash and (args.denylist is None or not (args.tree or args.commits)):
         parser.error("--denylist and at least one --tree or --commits are required")
 
     try:
+        if args.hash:
+            print(hash_line(args.repo, *args.hash))
+            return EXIT_CLEAN
         hits = run(args)
     except UsageError as error:
         print(error, file=sys.stderr)
