@@ -34,6 +34,7 @@ from __future__ import annotations
 import argparse
 import codecs
 import hashlib
+import os
 import re
 import shlex
 import subprocess
@@ -55,7 +56,10 @@ UTF16_BOMS = (codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)
 # A commit's diff against its first parent (the root commit's too) whose labels, colours, attributes
 # and paths depend neither on the user's git config nor on the repo's .gitattributes
 DIFF = ["show", "--format=", "--no-show-signature", "--no-color", "--no-ext-diff", "--no-textconv", "--text",
-        "--no-renames", "--no-relative", "--root", "-m", "--first-parent"]
+        "--no-renames", "--no-relative", "--ignore-submodules=none", "--root", "-m", "--first-parent"]
+GITLINK = "160000"
+# a replace ref (refs/replace/*) must not swap the scanned commits or trees for others
+GIT_ENV = {**os.environ, "GIT_NO_REPLACE_OBJECTS": "1"}
 
 
 class UsageError(Exception):
@@ -171,6 +175,12 @@ def nfc(text: str) -> str:
     return unicodedata.normalize("NFC", text)
 
 
+def printable(text: str) -> str:
+    """Control characters escaped, so a path cannot inject lines (a CI `::error` command) into the log."""
+    return "".join(char if char.isprintable() else f"\\x{ord(char):02x}" if ord(char) < 0x100
+                   else f"\\u{ord(char):04x}" for char in text)
+
+
 class Scanner:
     def __init__(self, terms: list[str], allow: set[str]) -> None:
         self.patterns = [compile_term(nfc(term)) for term in terms]
@@ -181,17 +191,16 @@ class Scanner:
         return [number for number, pattern in enumerate(self.patterns, start=1) if pattern.search(text)]
 
     def shown(self, path: str) -> str:
-        """The path as printed: each component holding a term is redacted; the whole path when
-        a term spans components (a term without `/` always matches inside one component)."""
+        """The path as printed: each component holding a term is redacted, the others have their
+        control characters escaped; the whole path is redacted when a term spans components (a
+        term without `/` always matches inside one component) or the printed form holds one."""
         whole = set(self.entries_in(path))
-        if not whole:
-            return path
         parts = path.split("/")
-        part_hits = [set(self.entries_in(part)) for part in parts]
+        part_hits = [set(self.entries_in(part)) if whole else set() for part in parts]
         if not whole <= set().union(*part_hits):
             return REDACTED
-        redacted = "/".join(REDACTED if hit else part for part, hit in zip(parts, part_hits, strict=True))
-        return REDACTED if self.entries_in(redacted) else redacted
+        kept = "/".join(REDACTED if hit else printable(part) for part, hit in zip(parts, part_hits, strict=True))
+        return REDACTED if self.entries_in(kept) else kept
 
     def scan_path(self, path: str, prefix: str) -> list[Hit]:
         return [Hit(f"{prefix}{self.shown(path)}: path", entry) for entry in self.entries_in(path)]
@@ -203,8 +212,9 @@ class Scanner:
         return [Hit(where, entry) for entry in entries]
 
 
-def git(repo: Path, *args: str) -> bytes:
-    return subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True).stdout
+def git(repo: Path, *args: str, stdin: bytes | None = None) -> bytes:
+    return subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, input=stdin,
+                          env=GIT_ENV).stdout
 
 
 def decode(data: bytes) -> str:
@@ -214,7 +224,7 @@ def decode(data: bytes) -> str:
 def check_boundary_exists(repo: Path, boundary: list[str]) -> None:
     for sha in boundary:
         found = subprocess.run(["git", "-C", str(repo), "cat-file", "-e", f"{sha}^{{commit}}"],
-                               capture_output=True)
+                               capture_output=True, env=GIT_ENV)
         if found.returncode != 0:
             raise UsageError(f"boundary commit {sha} is not in {repo} (a shallow clone needs fetch-depth: 0)")
 
@@ -287,24 +297,69 @@ def added_lines(diff: str) -> Iterator[tuple[str, str]]:
             path = diff_path(line[4:])
 
 
-def changed_paths(repo: Path, sha: str) -> list[str]:
-    """Every path the commit adds or changes (binary and empty files too), raw bytes via -z."""
-    names = git(repo, *DIFF, "--name-only", "-z", "--diff-filter=d", sha)
-    return [decode(name) for name in names.split(b"\0") if name]
+@dataclass(frozen=True)
+class Change:
+    path: str
+    mode: str
+    blob: str
 
 
-def added_text(repo: Path, sha: str) -> dict[str, list[str]]:
-    """Each changed file's added lines. A file whose added lines hold a NUL is read whole from the
-    commit instead, as tree mode reads it: UTF-16 text is scanned, binary content skipped."""
+def changes_of(repo: Path, sha: str) -> list[Change]:
+    """The files a commit adds or changes against its first parent (binary, empty and gitlinks too),
+    with their new blob ids. `--raw -z` gives each path's raw bytes: no quoting, no lossy lookup."""
+    fields = git(repo, *DIFF, "--raw", "-z", "--no-abbrev", "--diff-filter=d", sha).split(b"\0")
+    changes: list[Change] = []
+    # records are ":<old mode> <new mode> <old id> <new id> <status>" NUL "<path>" NUL
+    for meta, path in zip(fields[0:-1:2], fields[1::2], strict=True):
+        _old_mode, new_mode, _old_id, new_id, _status = decode(meta).removeprefix(":").split()
+        changes.append(Change(decode(path), new_mode, new_id))
+    return changes
+
+
+def blob_data(repo: Path, ids: list[str]) -> dict[str, bytes]:
+    """Blob contents by id, all from one `git cat-file --batch`."""
+    if not ids:
+        return {}
+    out = git(repo, "cat-file", "--batch", stdin="".join(f"{blob}\n" for blob in ids).encode())
+    data: dict[str, bytes] = {}
+    position = 0
+    for blob in ids:
+        end = out.index(b"\n", position)
+        header = out[position:end].split()
+        if len(header) != 3:
+            raise UsageError(f"blob {blob} is missing from the repository")
+        size = int(header[2])
+        data[blob] = out[end + 1:end + 1 + size]
+        position = end + 1 + size + 1
+    return data
+
+
+def added_by_path(repo: Path, sha: str) -> dict[str, list[str]]:
     patch = decode(git(repo, *DIFF, "--unified=0", "--src-prefix=a/", "--dst-prefix=b/", sha))
     by_path: dict[str, list[str]] = {}
     for path, line in added_lines(patch):
         by_path.setdefault(path, []).append(line)
-    for path, lines in by_path.items():
-        if any("\0" in line for line in lines):
-            text = blob_text(git(repo, "cat-file", "blob", f"{sha}:{path}"))
-            by_path[path] = [] if text is None else text_lines(text)
     return by_path
+
+
+def scan_changes(scanner: Scanner, repo: Path, sha: str, prefix: str) -> list[Hit]:
+    """Paths and added lines. Each file is judged by its whole new blob, as tree mode judges it:
+    binary is skipped, UTF-16 is scanned whole (its diff is not text), anything else by added line."""
+    changes = changes_of(repo, sha)
+    contents = blob_data(repo, [change.blob for change in changes if change.mode != GITLINK])
+    added = added_by_path(repo, sha)
+    hits: list[Hit] = []
+    for change in changes:
+        hits += scanner.scan_path(change.path, prefix)
+        data = None if change.mode == GITLINK else contents[change.blob]
+        text = None if data is None else blob_text(data)
+        if text is None:
+            continue
+        lines = text_lines(text) if data.startswith(UTF16_BOMS) else added.get(change.path, [])
+        where = f"{prefix}{scanner.shown(change.path)}"
+        for line in lines:
+            hits += scanner.scan_line(change.path, line, where)
+    return hits
 
 
 def scan_commit(scanner: Scanner, repo: Path, sha: str, identities: set[str] | None) -> list[Finding]:
@@ -315,13 +370,7 @@ def scan_commit(scanner: Scanner, repo: Path, sha: str, identities: set[str] | N
         for role, email in zip(("author", "committer"), emails_in(metadata), strict=True):
             if email not in identities:
                 hits.append(IdentityProblem(short, role))
-    for path in changed_paths(repo, sha):
-        hits += scanner.scan_path(path, f"{short} ")
-    for path, lines in added_text(repo, sha).items():
-        where = f"{short} {scanner.shown(path)}"
-        for line in lines:
-            hits += scanner.scan_line(path, line, where)
-    return hits
+    return hits + scan_changes(scanner, repo, sha, f"{short} ")
 
 
 def scan_commits(
@@ -371,7 +420,11 @@ def run(args: argparse.Namespace) -> list[Finding]:
     for rev in args.tree:
         hits += scan_tree(scanner, args.repo, rev)
     for spec in args.commits:
-        hits += scan_commits(scanner, args.repo, shlex.split(spec), identities, boundary)
+        try:
+            revlist = shlex.split(spec)
+        except ValueError:
+            raise UsageError("--commits: the range has an unbalanced quote") from None
+        hits += scan_commits(scanner, args.repo, revlist, identities, boundary)
     if boundary and identities is not None:
         hits += scan_boundary(args.repo, boundary, identities)
     return hits
