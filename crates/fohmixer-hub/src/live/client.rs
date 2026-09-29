@@ -459,10 +459,12 @@ impl Session<'_> {
                 gap_ms,
                 sent_ms,
             } => {
-                // A heartbeat can come before the script's connect (the
-                // script lists a new connection for heartbeats before its
-                // sender has sent the queued connect, #5): it is recorded,
-                // and busy is checked only once connected.
+                // A heartbeat can come before the connect from a script
+                // older than the main-tick transport: it listed a new
+                // connection for heartbeats before its sender thread had
+                // sent the queued connect, and Live runs it until Live
+                // restarts (#5; the current script sends connect first).
+                // It is recorded, and busy is checked only once connected.
                 if let Some(note) =
                     late_heartbeat(health.last_heartbeat.elapsed(), gap_ms, sent_ms, wall_ms())
                 {
