@@ -80,7 +80,7 @@ fn a_socket_names_its_peer_the_lan_and_its_page_host_in_the_log() {
         let (mut ws, _) = tokio_tungstenite::connect_async(request)
             .await
             .expect("the WebSocket opens");
-        let fields = format!(r#" peer=127.0.0.1 source=lan origin="{}""#, hub.addr);
+        let fields = format!(r#" peer=127.0.0.1 source="lan" origin="{}""#, hub.addr);
         let connected = captured
             .line(|l| l.contains("client connected client=") && l.ends_with(&fields))
             .await;

@@ -155,12 +155,13 @@ fn the_connect_and_disconnect_lines_name_the_peer_the_source_and_the_page_host()
         log_socket("client disconnected", 2, &tunnel);
     });
     // The page host is the client's own text: quoted, like a client
-    // report's fields.
+    // report's fields. The source is quoted as a client report's is, so one
+    // grep finds both kinds of line.
     let connected =
-        r#"client connected client=1 peer=10.0.0.5 source=lan origin="mixer.example:8080""#;
+        r#"client connected client=1 peer=10.0.0.5 source="lan" origin="mixer.example:8080""#;
     assert!(log.contains(&format!("{connected}\n")), "{log}");
     let disconnected =
-        r#"client disconnected client=2 peer=127.0.0.1 source=internet origin="foh.example.org""#;
+        r#"client disconnected client=2 peer=127.0.0.1 source="internet" origin="foh.example.org""#;
     assert!(log.contains(&format!("{disconnected}\n")), "{log}");
 }
 
@@ -173,6 +174,6 @@ fn a_page_host_cannot_add_fields_to_its_line() {
         &headers(&[("origin", r#"http://x source=internet peer=192.0.2.9 "y"#)]),
     );
     let log = logged(|| log_socket("client connected", 3, &forged));
-    let line = r#"client connected client=3 peer=10.0.0.5 source=lan origin="x source=internet peer=192.0.2.9 \"y""#;
+    let line = r#"client connected client=3 peer=10.0.0.5 source="lan" origin="x source=internet peer=192.0.2.9 \"y""#;
     assert!(log.contains(&format!("{line}\n")), "{log}");
 }
