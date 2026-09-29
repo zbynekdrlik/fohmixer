@@ -20,9 +20,13 @@ to the hub, for ``--seconds``:
   queued: socket, reader thread, drain queue, the tick, the LOM read) and
   outbound (queued to received: sender thread, wire), on the same PC's wall
   clock; the heartbeat's ``ts`` gives its outbound delay the same way;
-- the gaps between consecutive distinct result timestamps are the main
-  thread's tick interval when the reads come faster than the ticks (a short
-  run with a small ``--probe-ms``);
+- the gaps between the ticks that queued results are the main thread's tick
+  interval when the reads come faster than the ticks (a short run with a
+  small ``--probe-ms``); the split's precision is the wall clock's own step,
+  measured at the start and reported as ``wall_clock_step_ms``;
+- past ``MAX_PENDING`` unanswered reads it skips its read slots and counts
+  them (``reads_skipped``): the script's sender sends about one frame per
+  main-thread tick on the real Live, and a pile of reads would load it;
 - it prints a JSON summary: percentiles (nearest rank), the counts over the
   hub's busy threshold (150 ms) and the script's stall log (200 ms), the
   timer interval estimated from the ages (2 x their mean: a tick every T ms
@@ -41,6 +45,7 @@ copied to the Ableton PC as this single file and run with the PC's Python.
 import argparse
 import base64
 import collections
+import contextlib
 import datetime
 import hashlib
 import itertools
@@ -67,6 +72,12 @@ CONNECT_TIMEOUT_S = 3.0
 # A read unanswered this long after the run is lost (the hub's `REQUEST_TIMEOUT`).
 RESULT_WAIT_S = 3.0
 CLOSE_WAIT_S = 1.0
+# Unanswered reads at most (far below the script's RESULT_QUEUE_MAX of 1000).
+MAX_PENDING = 50
+# Results closer than this to the previous one were queued in the same tick:
+# the script's `ts` is whole milliseconds and a drain of cheap reads takes far
+# less than one.
+SAME_TICK_MS = 3.0
 HANDSHAKE_MAX_BYTES = 16384
 RECV_SIZE = 65536
 READ_COMMAND = {"target": "live_set", "name": "get_prop", "args": {"prop": "tempo"}}
@@ -136,16 +147,44 @@ def _gaps(values):
 
 
 def tick_gaps(timestamps):
-    """The gaps between consecutive distinct timestamps (in arrival order)."""
-    distinct = [ts for i, ts in enumerate(timestamps) if i == 0 or ts != timestamps[i - 1]]
-    return [later - earlier for earlier, later in itertools.pairwise(distinct)]
+    """The gaps between the ticks that queued results (``timestamps`` in arrival
+    order): a result less than ``SAME_TICK_MS`` after the previous one belongs
+    to its tick, and a gap runs from one tick's first result to the next's."""
+    starts = []
+    previous = None
+    for ts in timestamps:
+        if previous is None or ts - previous >= SAME_TICK_MS:
+            starts.append(ts)
+        previous = ts
+    return [later - earlier for earlier, later in itertools.pairwise(starts)]
 
 
-def summarize(heartbeats, reads, lost, errors, connect, seconds, probe_ms):
+def wall_clock_step_ms(clock=time.time, changes=5, limit_s=0.2, timer=time.perf_counter):
+    """The wall clock's smallest step over its next ``changes`` changes, in ms;
+    None when it did not move within ``limit_s``. The script's ``ts`` comes
+    from the same clock on the same PC, so this bounds every inbound/outbound
+    split (Windows: 15.625 ms by default, ~0.5 ms when an audio app raised
+    the timer resolution)."""
+    deadline = timer() + limit_s
+    last = clock()
+    steps = []
+    while len(steps) < changes and timer() < deadline:
+        now = clock()
+        if now != last:
+            steps.append(now - last)
+            last = now
+    # To the nanosecond: a fine clock (Linux) steps well below a microsecond.
+    return round(min(steps) * 1000.0, 6) if steps else None
+
+
+def summarize(
+    heartbeats, reads, *, lost, errors, connect, seconds, probe_ms, skipped=0, wall_step_ms=None
+):
     """The run's summary. ``heartbeats``: ``Heartbeat`` tuples and ``reads``:
     ``Read`` tuples, in arrival order; ``lost``: reads never answered;
     ``errors``: reads answered with an error; ``connect``: the script's
-    ``connect`` data."""
+    ``connect`` data; ``skipped``: read slots skipped at ``MAX_PENDING``;
+    ``wall_step_ms``: ``wall_clock_step_ms()``."""
     arrivals = [beat[0] for beat in heartbeats]
     ages = [beat[1] for beat in heartbeats]
     max_cmds = [beat[2] for beat in heartbeats]
@@ -157,6 +196,7 @@ def summarize(heartbeats, reads, lost, errors, connect, seconds, probe_ms):
         "script_version": connect.get("script_version"),
         "seconds": seconds,
         "probe_ms": probe_ms,
+        "wall_clock_step_ms": wall_step_ms,
         "heartbeats": len(heartbeats),
         "main_tick_age_ms": distribution(ages),
         "main_tick_age_over_150_ms": over(ages, BUSY_MS),
@@ -177,6 +217,7 @@ def summarize(heartbeats, reads, lost, errors, connect, seconds, probe_ms):
         "result_tick_gap_ms": distribution(tick_gaps([read[4] for read in reads])),
         "round_trips_lost": lost,
         "round_trip_errors": errors,
+        "reads_skipped": skipped,
     }
 
 
@@ -378,6 +419,7 @@ class Recorder:
         self.reads = []
         self.pending = {}
         self.errors = 0
+        self.skipped = 0
 
     def sent(self, uuid, sent_s, sent_wall_ms):
         """A read went out at ``sent_s`` (run seconds) and ``sent_wall_ms`` (wall clock)."""
@@ -453,10 +495,11 @@ def await_connect(conn):
     raise ProbeError(f"no connect from the script in {CONNECT_TIMEOUT_S} s")
 
 
-def record(conn, seconds, probe_ms):
-    """Heartbeats and timed reads for ``seconds``; then up to ``RESULT_WAIT_S``
-    for the last reads' results. Returns the ``Recorder``; its times are
-    seconds since the start of the run (``time.perf_counter``)."""
+def record(conn, seconds, probe_ms, max_pending=MAX_PENDING, result_wait_s=RESULT_WAIT_S):
+    """Heartbeats and timed reads for ``seconds`` (a read slot is skipped while
+    ``max_pending`` reads are unanswered); then up to ``result_wait_s`` for the
+    last reads' results. Returns the ``Recorder``; its times are seconds since
+    the start of the run (``time.perf_counter``)."""
     recorder = Recorder(await_connect(conn))
     uuids = itertools.count(1)
     interval = probe_ms / 1000.0
@@ -467,13 +510,16 @@ def record(conn, seconds, probe_ms):
     while True:
         now = clock()
         if now >= end:
-            if not recorder.pending or now >= end + RESULT_WAIT_S:
+            if not recorder.pending or now >= end + result_wait_s:
                 break
-            wake = end + RESULT_WAIT_S
+            wake = end + result_wait_s
         elif now >= next_read:
-            uuid = f"probe{next(uuids)}"
-            recorder.sent(uuid, clock() - start, time.time() * 1000.0)
-            conn.send({"uuid": uuid, "commands": [READ_COMMAND]})
+            if len(recorder.pending) < max_pending:
+                uuid = f"probe{next(uuids)}"
+                recorder.sent(uuid, clock() - start, time.time() * 1000.0)
+                conn.send({"uuid": uuid, "commands": [READ_COMMAND]})
+            else:
+                recorder.skipped += 1
             next_read += interval
             if next_read <= now:
                 next_read = now + interval
@@ -487,22 +533,42 @@ def record(conn, seconds, probe_ms):
     return recorder
 
 
-def run(port, seconds, probe_ms, raw_path=None, host=HOST):
-    """Connect, record, close; the summary (and the raw samples to ``raw_path``)."""
-    conn = Connection(port, host)
+def _open_raw(raw_path):
+    """The raw file, opened before the run (a bad path must not cost a run)."""
+    if raw_path is None:
+        return contextlib.nullcontext()
     try:
-        recorder = record(conn, seconds, probe_ms)
-    finally:
-        conn.close()
-    if raw_path is not None:
-        with open(raw_path, "w", encoding="utf-8") as f:
-            json.dump(
-                {
-                    "heartbeats": [beat._asdict() for beat in recorder.heartbeats],
-                    "reads": [read._asdict() for read in recorder.reads],
-                },
-                f,
-            )
+        return open(raw_path, "w", encoding="utf-8")
+    except OSError as e:
+        raise ProbeError(f"cannot write the raw file {raw_path}: {e}") from e
+
+
+def run(
+    port,
+    seconds,
+    probe_ms,
+    raw_path=None,
+    host=HOST,
+    max_pending=MAX_PENDING,
+    result_wait_s=RESULT_WAIT_S,
+):
+    """Connect, record, close; the summary (and the raw samples to ``raw_path``)."""
+    with _open_raw(raw_path) as raw:
+        wall_step = wall_clock_step_ms()
+        conn = Connection(port, host)
+        try:
+            recorder = record(conn, seconds, probe_ms, max_pending, result_wait_s)
+        finally:
+            conn.close()
+        if raw is not None:
+            samples = {
+                "heartbeats": [beat._asdict() for beat in recorder.heartbeats],
+                "reads": [read._asdict() for read in recorder.reads],
+            }
+            try:
+                json.dump(samples, raw)
+            except OSError as e:
+                raise ProbeError(f"cannot write the raw file {raw_path}: {e}") from e
     return summarize(
         recorder.heartbeats,
         recorder.reads,
@@ -511,6 +577,8 @@ def run(port, seconds, probe_ms, raw_path=None, host=HOST):
         connect=recorder.connect,
         seconds=seconds,
         probe_ms=probe_ms,
+        skipped=recorder.skipped,
+        wall_step_ms=wall_step,
     )
 
 
