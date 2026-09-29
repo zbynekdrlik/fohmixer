@@ -8,6 +8,7 @@ main thread and ticks by hand, which pins what one tick does and that nothing
 moves between ticks.
 """
 
+import itertools
 import json
 import logging
 import select
@@ -573,14 +574,20 @@ class OneTickTest(unittest.TestCase):
         )
         client = self.client()
         self.tick()
+        conn = self.server.connections()[0]
         client.sock.sendall(requests)
-        time.sleep(0.05)
-        self.server.poll_in()
-        first = self.server.inbox.qsize()
-        self.assertGreaterEqual(first, 1)
-        self.assertLess(first, 3, "one tick read past its budget")
-        for _ in range(5):
+        # With no budget left each tick reads one chunk (RECV_SIZE, 64 KB),
+        # which completes at most two of these 40 KB requests: the inbox never
+        # jumps from none to all three in one tick, whatever has arrived.
+        counts = [0]
+        for _ in range(50):
+            select.select([conn.socket], [], [], 1.0)
             self.server.poll_in()
+            counts.append(self.server.inbox.qsize())
+            if counts[-1] == 3:
+                break
+        self.assertEqual(counts[-1], 3, counts)
+        self.assertLessEqual(max(b - a for a, b in itertools.pairwise(counts)), 2, counts)
         uuids = [self.server.inbox.get_nowait()[1]["uuid"] for _ in range(3)]
         self.assertEqual(uuids, ["q0", "q1", "q2"])
 
@@ -610,7 +617,8 @@ class OneTickTest(unittest.TestCase):
         first.take = broken
         a.sock.sendall(request_frame("a1"))
         b.sock.sendall(request_frame("b1"))
-        time.sleep(0.05)
+        for conn in (first, second):
+            self.assertTrue(select.select([conn.socket], [], [], 2.0)[0])
         self.tick()
         self.assertTrue(first.finished)
         self.settle(b)

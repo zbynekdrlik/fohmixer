@@ -181,11 +181,6 @@ def stalled_client(port, envelopes):
     return sock
 
 
-def percentile(values, fraction):
-    ordered = sorted(values)
-    return ordered[min(len(ordered) - 1, int(len(ordered) * fraction))]
-
-
 def free_port_pair():
     """Two consecutive free localhost ports (band on P, master on P+1)."""
     for _ in range(50):
@@ -398,9 +393,10 @@ class IntegrationTest(unittest.TestCase):
         main thread must keep ticking throughout. A's round trips are measured once
         C's requests have run (until then A's requests queue behind C's in the
         one inbox, by design). A main thread blocked on C would show seconds of
-        heartbeat age and round trip; scheduler noise on a shared machine shows
-        as single outliers of up to a few hundred ms, so the typical (p90)
-        values carry the < 50 ms expectation and the worst must stay under 1 s.
+        heartbeat age and round trip (C is stuck for 3 s), so the worst of
+        each must stay under 1 s. How fast the typical ones are belongs to the
+        machine (a p90 under 50 ms failed on a loaded runner, #5 review), so it
+        is not bounded here.
         """
         host = self.host(meters_hz=30)
         a = self.client(host)
@@ -442,8 +438,6 @@ class IntegrationTest(unittest.TestCase):
         ]
         detail = f"round trips ms: {[round(r * 1000, 1) for r in round_trips]}; ages ms: {ages}"
         self.assertGreater(len(ages), 25, detail)
-        self.assertLess(percentile(round_trips, 0.9), 0.05, detail)
-        self.assertLess(percentile(ages, 0.9), 50, detail)
         self.assertLess(max(round_trips), 1.0, detail)
         self.assertLess(max(ages), 1000, detail)
         self.assertEqual(a.call("live_set", "get_prop", {"prop": "is_playing"}), False)
