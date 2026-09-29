@@ -20,6 +20,7 @@ Two branches: `master` (production) and `dev`. Work on `dev`; open a PR `dev` �
 - PC deploy (bundle, Install-Fohmixer.ps1, scheduled tasks, graceful stop, PIN as the band user, Live's User Library check, the post-deploy LAN DNS and client-report checks) → `.claude/rules/deploy-pc.md` (auto-loads on `scripts/fohmixer-pc/**`)
 - FohMixer script transport, heartbeat, SimLive's Live-like strings → `.claude/rules/live-script.md` (auto-loads on `live-script/**`, `sim/**`)
 - TouchOSC import tool and its synthetic fixtures → `.claude/rules/import-tosc.md` (auto-loads on `tools/import-tosc/**`)
+- Live probe (K1/K2 timing of a FohMixer script on the Ableton PC, the PC's clocks, safe read rates) → `.claude/rules/live-probe.md` (auto-loads on `tools/live-probe/**`)
 
 ## Always-apply rules
 
