@@ -288,13 +288,13 @@ mod tests {
             )
             .as_deref(),
             Some(
-                "a heartbeat 301 ms after the previous one (or the connect): the script made it at its tick 1290 ms after its previous one, it spent 2 ms on the way"
+                "a heartbeat 301 ms after the previous one (or the connect): the script made it at its tick, 1290 ms after its previous one, it spent 2 ms on the way"
             )
         );
         assert_eq!(
             late_heartbeat(Duration::from_millis(1500), None, None, Some(1.0)).as_deref(),
             Some(
-                "a heartbeat 1500 ms after the previous one (or the connect): the script made it at its tick unknown after its previous one, it spent unknown on the way"
+                "a heartbeat 1500 ms after the previous one (or the connect): the script made it at its tick, unknown after its previous one, it spent unknown on the way"
             )
         );
         assert!(
