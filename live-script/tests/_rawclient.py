@@ -27,8 +27,10 @@ def masked_frame(opcode, payload=b""):
     masked = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
     if len(payload) < 126:
         header = struct.pack("!BB", 0x80 | opcode, 0x80 | len(payload))
-    else:
+    elif len(payload) < 65536:
         header = struct.pack("!BBH", 0x80 | opcode, 0x80 | 126, len(payload))
+    else:
+        header = struct.pack("!BBQ", 0x80 | opcode, 0x80 | 127, len(payload))
     return header + mask + masked
 
 

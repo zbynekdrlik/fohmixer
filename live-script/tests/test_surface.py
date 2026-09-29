@@ -285,6 +285,12 @@ class HandTickedSurfaceTest(unittest.TestCase):
         Config.PORT = 0
         Config.LOG_DIR = self.log_dir
         Config.INSTANCE = "ticked"
+        # These tests are about the tick's socket work, not the work budget
+        # (DrainTest pins that on its own clock): a budget no command reaches
+        # on a slow or busy machine keeps them free of its timing.
+        budgets = (Config.DRAIN_BUDGET_MS, Config.WINDOW_BUDGET_MS)
+        self.addCleanup(self.restore_budgets, budgets)
+        Config.DRAIN_BUDGET_MS = Config.WINDOW_BUDGET_MS = 10_000
         self.assertIsNone(Live._sim_main_thread, "a SimLive main thread would tick the surface")
         self.threads_before = set(threading.enumerate())
         self.song = site_builder.build(_paths.FIXTURE)
@@ -296,6 +302,10 @@ class HandTickedSurfaceTest(unittest.TestCase):
     def disconnect_once(self):
         if self.surface.connected:
             self.surface.disconnect()
+
+    @staticmethod
+    def restore_budgets(budgets):
+        Config.DRAIN_BUDGET_MS, Config.WINDOW_BUDGET_MS = budgets
 
     def client(self, extra=b""):
         client = RawClient(self.port, extra=extra)

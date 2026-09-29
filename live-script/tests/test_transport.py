@@ -325,9 +325,9 @@ class TransportTest(unittest.TestCase):
         good_ws, good_conn, _ = self.client()
         _stalled, conn = self.stalled_client()
         queued = self.fill(conn)
-        started = time.monotonic()
+        # When exactly is pinned on explicit times (OneTickTest); here, that it
+        # happens on the polled server and spares the other client.
         wait_for(lambda: conn.finished, timeout=3.0)
-        self.assertGreaterEqual(time.monotonic() - started, 0.1)
         self.assertLess(queued, 1000, "the queue bound closed it, not the stall")
         self.assertTrue(any("read nothing for" in m for m in self.log.messages), self.log.messages)
         wait_for(lambda: conn not in self.connections())
@@ -437,19 +437,27 @@ class OneTickTest(unittest.TestCase):
         self.assertEqual([m["event"] for m in client.read_messages(2)], ["connect", "heartbeat"])
 
     def test_a_partial_write_is_carried_to_the_next_tick(self):
-        # A frame larger than the kernel's send buffer (and than a tick's write
-        # budget): one tick writes part of it, the rest waits for the next.
-        client = self.client()
+        # A frame larger than the kernel's send buffer and the client's 4 KB
+        # window: the socket fills and takes no more while the client does not
+        # read; what it did not take waits in the write buffer for later ticks.
+        client = self.client(rcvbuf=4096)
         self.tick()
         conn = self.server.connections()[0]
         big = "x" * (2 * tcp_wmem_max() + (1 << 20))
         conn.push_result("big", [{"ok": True, "data": big}])
         conn.push_result("after", [])
-        started = time.perf_counter()
-        self.server.poll_out()
-        self.assertLess(time.perf_counter() - started, 0.5, "the write waited for the client")
-        self.assertGreater(conn.pending()[2], 0, "one tick wrote the whole frame")
-        # The client reads; each tick writes on from where the last one stopped.
+        # A write that waited for the client would never come back here (it
+        # does not read); how long encoding the frame takes is the machine's.
+        for _ in range(1000):
+            unsent = conn.pending()[2]
+            self.server.poll_out()
+            if 0 < conn.pending()[2] == unsent:
+                break
+        self.assertGreater(conn.pending()[2], 0, "the socket took the whole frame")
+        self.assertEqual(conn.pending()[2], unsent, "the socket still takes bytes")
+        # The client reads (a larger buffer now); each tick writes on from
+        # where the last one stopped.
+        client.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1 << 20)
         messages = []
         for _ in range(5000):
             client.read_available()
@@ -480,6 +488,49 @@ class OneTickTest(unittest.TestCase):
         self.assertTrue(conn.finished)
         self.assertEqual(self.server.connections(), [])
         self.assertEqual(self.server.inbox.get_nowait(), (conn, None))
+
+    def fill_socket(self, conn, now):
+        """Push a frame larger than the kernel's buffers and write at ``now``
+        until the socket takes no more (the client never reads)."""
+        conn.push_result("big", [{"ok": True, "data": "x" * (2 * tcp_wmem_max() + (1 << 20))}])
+        for _ in range(1000):
+            unsent = conn.pending()[2]
+            conn.flush(now)
+            if 0 < conn.pending()[2] == unsent:
+                return
+        raise AssertionError("the socket never filled")
+
+    def test_a_socket_that_takes_nothing_closes_its_connection_after_the_send_stall(self):
+        # On explicit times: still open just before SEND_STALL_S without a
+        # byte taken, closed at it (the hub resyncs), with the reason logged.
+        self.client(rcvbuf=4096)
+        self.tick()
+        conn = self.server.connections()[0]
+        t0 = time.monotonic()
+        self.fill_socket(conn, t0)
+        conn.flush(t0 + transport.SEND_STALL_S - 0.01)
+        self.assertTrue(conn.is_open)
+        conn.flush(t0 + transport.SEND_STALL_S)
+        self.assertTrue(conn.finished)
+        self.assertTrue(any("read nothing for" in m for m in self.log.messages), self.log.messages)
+        self.server.poll_out()
+        self.assertEqual(self.server.inbox.get_nowait(), (conn, None))
+
+    def test_a_close_the_client_never_answers_ends_after_the_close_handshake_timeout(self):
+        client = self.client()
+        self.tick()
+        conn = self.server.connections()[0]
+        conn.close()
+        t0 = time.monotonic()
+        conn.flush(t0)
+        self.settle(client)
+        self.assertEqual(
+            [m.get("event") or m["opcode"] for m in client.messages()], ["connect", OPCODE_CLOSE]
+        )
+        conn.flush(t0 + transport.CLOSE_HANDSHAKE_TIMEOUT_S - 0.01)
+        self.assertFalse(conn.finished)
+        conn.flush(t0 + transport.CLOSE_HANDSHAKE_TIMEOUT_S)
+        self.assertTrue(conn.finished)
 
     def test_a_handshake_that_arrives_in_pieces_completes_on_a_later_tick(self):
         sock = socket.create_connection(("127.0.0.1", self.port))
