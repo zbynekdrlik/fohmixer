@@ -14,12 +14,11 @@ import _paths
 import FohMixer
 import Live
 import site_builder
-from _rawclient import RawClient, request_frame
+from _rawclient import CLOSE, EMPTY_CLOSE_FRAME, RawClient, request_frame
 from c_instance import CInstance
 from FohMixer import Config, surface
 from FohMixer.lom import ops
 from FohMixer.surface import Drain, heartbeat_data
-from FohMixer.transport.websocket import OPCODE_CLOSE
 from main_thread import MainThread
 
 BUDGET_MS = 5.0
@@ -222,11 +221,13 @@ class SurfaceLifecycleTest(unittest.TestCase):
         frames = client.read_until_closed()
         events = [m.get("event") or m["opcode"] for m in frames]
         self.assertIn("disconnect", events)
-        self.assertNotIn(OPCODE_CLOSE, events[: events.index("disconnect")], events)
-        # A clean close (websockets' ConnectionClosedOK): the script's close
-        # frame came last, then the connection ended. Its empty payload is
-        # code 1005 ("no status"), one of websockets' OK codes.
-        self.assertEqual(frames[-1], {"opcode": OPCODE_CLOSE, "payload": b""}, events)
+        self.assertNotIn(CLOSE, events[: events.index("disconnect")], events)
+        # A clean close (websockets' ConnectionClosedOK): RFC 6455's close
+        # frame came last, then the connection ended. It has no body: code
+        # 1005 ("no status"), one of websockets' OK codes.
+        self.assertEqual(
+            frames[-1], {"opcode": CLOSE, "head": EMPTY_CLOSE_FRAME, "payload": b""}, events
+        )
 
     def test_log_file_is_written_at_warning_level(self):
         self.mt.call(self.surface.disconnect)

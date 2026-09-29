@@ -12,6 +12,12 @@ import time
 import _paths  # noqa: F401 - puts the script on sys.path
 from FohMixer.transport.websocket import OPCODE_TEXT, try_read_frame
 
+# RFC 6455's close opcode, and its close frame with no body (FIN, opcode 0x8,
+# unmasked, length 0), as a client must see them: pinned here, not taken
+# from the script under test.
+CLOSE = 0x8
+EMPTY_CLOSE_FRAME = b"\x88\x00"
+
 
 def upgrade_request(port):
     key = base64.b64encode(os.urandom(16)).decode("ascii")
@@ -81,8 +87,9 @@ class RawClient:
 
     def messages(self):
         """The messages complete in the buffer: text frames as JSON, others as
-        ``{"opcode": n, "payload": bytes}``. The HTTP response head is kept in
-        ``response``."""
+        ``{"opcode": n, "head": bytes, "payload": bytes}``, ``head`` being the
+        frame's first two bytes as sent (FIN, RSV, opcode, mask bit, length).
+        The HTTP response head is kept in ``response``."""
         if self.response is None:
             end = self.buffer.find(b"\r\n\r\n")
             if end < 0:
@@ -90,13 +97,16 @@ class RawClient:
             self.response = bytes(self.buffer[:end])
             del self.buffer[: end + 4]
         out = []
-        while (frame := try_read_frame(self.buffer)) is not None:
+        while True:
+            head = bytes(self.buffer[:2])
+            frame = try_read_frame(self.buffer)
+            if frame is None:
+                return out
             opcode, _fin, payload = frame
             if opcode == OPCODE_TEXT:
                 out.append(json.loads(bytes(payload).decode("utf-8")))
             else:
-                out.append({"opcode": opcode, "payload": bytes(payload)})
-        return out
+                out.append({"opcode": opcode, "head": head, "payload": bytes(payload)})
 
     def read_messages(self, count, timeout=10.0):
         """The next ``count`` messages, waiting for them."""

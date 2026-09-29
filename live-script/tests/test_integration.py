@@ -17,8 +17,7 @@ import time
 import unittest
 
 import _paths
-from _rawclient import RawClient, request_frame
-from FohMixer.transport.websocket import OPCODE_CLOSE
+from _rawclient import CLOSE, RawClient, request_frame
 from FohMixer.version import VERSION
 from websockets.sync.client import connect
 
@@ -486,8 +485,8 @@ class IntegrationTest(unittest.TestCase):
         # No close frame before it (websockets drops what follows one), and
         # nothing but the close frame after it, then the end (websockets'
         # ConnectionClosed on the next receive).
-        self.assertNotIn(OPCODE_CLOSE, events[:goodbye], events)
-        self.assertIn(events[goodbye + 1 :], ([], [OPCODE_CLOSE]), events)
+        self.assertNotIn(CLOSE, events[:goodbye], events)
+        self.assertIn(events[goodbye + 1 :], ([], [CLOSE]), events)
         started = time.monotonic()
         again = self.host(port=port)
         self.assertLess(time.monotonic() - started, 5.0)
