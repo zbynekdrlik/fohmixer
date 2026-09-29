@@ -78,9 +78,30 @@ fn the_layout_is_served_replaced_and_kept_through_a_bad_edit() {
             .unwrap()
             .count();
         assert_eq!(backups, 2);
+        // An edit saved in place truncates the file first, so a poll may read
+        // it empty. That read does not parse: the last good layout stays and
+        // the next poll reads the finished file (#5: taking this transient
+        // error for the edit's own was a race in this test).
+        std::fs::write(&path, b"").unwrap();
+        let status = hub
+            .status_until(SECS_3, |s| {
+                s.layout
+                    .error
+                    .as_deref()
+                    .is_some_and(|e| e.starts_with("layout does not parse: "))
+            })
+            .await;
+        assert_eq!(status.layout.rev, 2);
         // An invalid edit: the last good layout stays, the status says why.
         std::fs::write(&path, fixture("layout-bad.json")).unwrap();
-        let status = hub.status_until(SECS_3, |s| s.layout.error.is_some()).await;
+        let status = hub
+            .status_until(SECS_3, |s| {
+                s.layout
+                    .error
+                    .as_deref()
+                    .is_some_and(|e| e.starts_with("layout is invalid: "))
+            })
+            .await;
         assert_eq!(status.layout.rev, 2);
         let error = status.layout.error.unwrap();
         assert!(error.starts_with("layout is invalid: "), "{error}");
