@@ -10,11 +10,17 @@ Safari went straight (the owner's first iPad session). The fix is a CNAME
 to a local-only name; this check proves it after every deploy.
 
 It asks the LAN resolver for A, AAAA and HTTPS of the name (a stdlib DNS
-client over UDP) and fails, one line per problem, when an A or AAAA answer
-is a public address (anything the hub would not take for the local network:
-loopback, RFC 1918, CGNAT, link-local, IPv6 unique-local and link-local are
-local, as in `access::is_private_ip`) or an HTTPS answer carries ipv4hint or
-ipv6hint. A CNAME to a local name, local addresses and empty answers pass.
+client over UDP) and fails, one line per problem, when
+- the A answer has no address (the LAN does not resolve the name: a missing
+  entry, a CNAME to a name without an A, or a mistyped --name);
+- an A or AAAA answer is a public address (anything the hub would not take
+  for the local network: loopback, RFC 1918, CGNAT, link-local, IPv6
+  unique-local and link-local are local, as in `access::is_private_ip`);
+- the HTTPS answer has an HTTPS record at all: a CNAME to a local-only name
+  has none, and the upstream one carries ipv4hint / ipv6hint (the public
+  addresses), ech (a key the PC cannot use) and h3.
+A CNAME to a local name with a local A passes; so do an empty AAAA and an
+empty HTTPS answer.
 
     python3 scripts/check_lan_dns.py --name <public name> --resolver <LAN resolver>
 
@@ -45,9 +51,11 @@ RCODE_NOERROR = 0
 RCODE_NXDOMAIN = 3
 RCODE_NAMES = {1: "FORMERR", 2: "SERVFAIL", 4: "NOTIMP", 5: "REFUSED"}
 
-# SvcParamKeys (RFC 9460) that point a client at addresses.
+# SvcParamKeys (RFC 9460 and the ECH draft) by name; the hints point a
+# client at addresses.
 SVC_IPV4HINT = 4
 SVC_IPV6HINT = 6
+SVC_NAMES = {0: "mandatory", 1: "alpn", 2: "no-default-alpn", 3: "port", 5: "ech"}
 
 # The EDNS0 UDP payload offered (the DNS flag day's recommendation).
 EDNS_PAYLOAD = 1232
@@ -182,13 +190,14 @@ def address_of(data: bytes, record: Record) -> ipaddress.IPv4Address | ipaddress
     raise ValueError(f"an address record of {len(raw)} bytes")
 
 
-def svc_hints(data: bytes, record: Record) -> list[str]:
-    """The ipv4hint / ipv6hint addresses of an HTTPS record (`ipv4hint 192.0.2.1`)."""
+def svc_params(data: bytes, record: Record) -> list[str]:
+    """An HTTPS record's parameters in words: `ipv4hint 192.0.2.1` per
+    hinted address, else the key's name (`alpn`, `ech`, `key9`)."""
     end = record.start + record.length
     if record.length < 3:
         raise ValueError("an HTTPS record shorter than its priority and target")
     _, offset = read_name(data, record.start + 2)
-    hints = []
+    params = []
     while offset < end:
         if offset + 4 > end:
             raise ValueError("an HTTPS parameter header runs past the record")
@@ -197,11 +206,13 @@ def svc_hints(data: bytes, record: Record) -> list[str]:
         if offset + 4 + length > end:
             raise ValueError("an HTTPS parameter runs past the record")
         if key == SVC_IPV4HINT:
-            hints += [f"ipv4hint {ipaddress.IPv4Address(value[i : i + 4])}" for i in range(0, length, 4)]
+            params += [f"ipv4hint {ipaddress.IPv4Address(value[i : i + 4])}" for i in range(0, length, 4)]
         elif key == SVC_IPV6HINT:
-            hints += [f"ipv6hint {ipaddress.IPv6Address(value[i : i + 16])}" for i in range(0, length, 16)]
+            params += [f"ipv6hint {ipaddress.IPv6Address(value[i : i + 16])}" for i in range(0, length, 16)]
+        else:
+            params.append(SVC_NAMES.get(key, f"key{key}"))
         offset += 4 + length
-    return hints
+    return params
 
 
 def problems(qtype: int, data: bytes, answer: Answer) -> list[str]:
@@ -219,7 +230,11 @@ def problems(qtype: int, data: bytes, answer: Answer) -> list[str]:
                 name = TYPE_NAMES[record.rtype]
                 found.append(f"{kind}: {record.owner} {name} {address} is a public address")
         elif record.rtype == TYPE_HTTPS:
-            found += [f"{kind}: {record.owner} HTTPS carries {hint}" for hint in svc_hints(data, record)]
+            params = ", ".join(svc_params(data, record)) or "no parameters"
+            found.append(f"{kind}: {record.owner} has an HTTPS record ({params}); "
+                         "a CNAME to a local-only name has none")
+    if qtype == TYPE_A and not any(record.rtype == TYPE_A for record in answer.records):
+        found.append(f"{kind}: the LAN does not resolve the name to an address")
     return found
 
 

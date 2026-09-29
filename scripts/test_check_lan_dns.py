@@ -152,7 +152,7 @@ class Responses(unittest.TestCase):
         answer = dns.parse_response(data, 3)
         self.assertEqual(dns.describe(data, answer), f"CNAME {LOCAL_NAME}, A 10.0.0.5")
 
-    def test_local_addresses_and_empty_answers_pass(self) -> None:
+    def test_local_addresses_and_empty_aaaa_and_https_answers_pass(self) -> None:
         self.assertEqual(problems_of(response(1, dns.TYPE_A, [rr(AT_QNAME, 1, a("192.168.1.20"))]), 1), [])
         self.assertEqual(problems_of(response(1, dns.TYPE_AAAA, [rr(AT_QNAME, 28, aaaa("fd00::5"))]), 28), [])
         empty = response(1, dns.TYPE_AAAA, [])
@@ -160,6 +160,17 @@ class Responses(unittest.TestCase):
         self.assertEqual(dns.describe(empty, dns.parse_response(empty, 1)), "-")
         nxdomain = response(1, dns.TYPE_HTTPS, [], rcode=3)
         self.assertEqual(problems_of(nxdomain, dns.TYPE_HTTPS), [])
+
+    def test_a_name_the_lan_does_not_resolve_fails(self) -> None:
+        # No entry (a mistyped --name upstream: NXDOMAIN), no address, or a
+        # CNAME to a name without an A.
+        unresolved = ["A: the LAN does not resolve the name to an address"]
+        for data in [response(1, dns.TYPE_A, [], rcode=3), response(1, dns.TYPE_A, []),
+                     response(1, dns.TYPE_A, [rr(AT_QNAME, 5, dns.encode_name(LOCAL_NAME))])]:
+            self.assertEqual(problems_of(data, dns.TYPE_A), unresolved)
+        # An A answer with only an AAAA in it has no address either.
+        data = response(1, dns.TYPE_A, [rr(AT_QNAME, 28, aaaa("fd00::5"))])
+        self.assertEqual(problems_of(data, dns.TYPE_A), unresolved)
 
     def test_a_public_address_fails(self) -> None:
         data = response(1, dns.TYPE_A, [rr(AT_QNAME, 1, a("192.0.2.10")), rr(AT_QNAME, 1, a("10.0.0.5"))])
@@ -172,24 +183,31 @@ class Responses(unittest.TestCase):
         with self.assertRaises(ValueError):
             problems_of(data, dns.TYPE_A)
 
-    def test_an_https_record_with_address_hints_fails(self) -> None:
+    def test_an_https_record_fails_naming_its_hints(self) -> None:
         record = https(ALPN, svc_param(4, a("192.0.2.1") + a("192.0.2.2")), ECH,
                        svc_param(6, aaaa("2001:db8::1")))
         data = response(1, dns.TYPE_HTTPS, [rr(AT_QNAME, 65, record)])
         self.assertEqual(problems_of(data, dns.TYPE_HTTPS), [
-            f"HTTPS: {NAME} HTTPS carries ipv4hint 192.0.2.1",
-            f"HTTPS: {NAME} HTTPS carries ipv4hint 192.0.2.2",
-            f"HTTPS: {NAME} HTTPS carries ipv6hint 2001:db8::1",
+            f"HTTPS: {NAME} has an HTTPS record (alpn, ipv4hint 192.0.2.1, ipv4hint 192.0.2.2, ech, "
+            "ipv6hint 2001:db8::1); a CNAME to a local-only name has none",
         ])
-        # Even a local hint: the record is the upstream one, the LAN's has none.
-        data = response(1, dns.TYPE_HTTPS, [rr(AT_QNAME, 65, https(svc_param(4, a("10.0.0.5"))))])
-        self.assertEqual(problems_of(data, dns.TYPE_HTTPS), [f"HTTPS: {NAME} HTTPS carries ipv4hint 10.0.0.5"])
+        self.assertEqual(dns.describe(data, dns.parse_response(data, 1)), "HTTPS")
 
-    def test_an_https_record_without_hints_passes(self) -> None:
-        for record in [https(ALPN, ECH), https(priority=0, target=LOCAL_NAME), https()]:
+    def test_any_https_record_fails(self) -> None:
+        # A CNAME to a local-only name has no HTTPS record: one without hints
+        # (only ech or h3, an alias) still came from somewhere it should not.
+        for record, params in [
+            (https(svc_param(4, a("10.0.0.5"))), "ipv4hint 10.0.0.5"),
+            (https(ALPN, ECH), "alpn, ech"),
+            (https(svc_param(0, b"\x00\x01"), svc_param(3, b"\x01\xbb"), svc_param(9, b"x")), "mandatory, port, key9"),
+            (https(svc_param(2, b"")), "no-default-alpn"),
+            (https(priority=0, target=LOCAL_NAME), "no parameters"),
+            (https(), "no parameters"),
+        ]:
             data = response(1, dns.TYPE_HTTPS, [rr(AT_QNAME, 65, record)])
-            self.assertEqual(problems_of(data, dns.TYPE_HTTPS), [], record)
-            self.assertEqual(dns.describe(data, dns.parse_response(data, 1)), "HTTPS")
+            self.assertEqual(problems_of(data, dns.TYPE_HTTPS), [
+                f"HTTPS: {NAME} has an HTTPS record ({params}); a CNAME to a local-only name has none",
+            ], params)
 
     def test_a_malformed_https_record_is_an_error(self) -> None:
         for record in [b"\x00", https(b"\x00\x04\x00"), https(svc_param(4, b"\x0a\x00")),
@@ -282,7 +300,8 @@ class OverUdp(unittest.TestCase):
         prefix = f"check_lan_dns: FAIL {NAME} via 127.0.0.1: "
         self.assertEqual(err.splitlines(), [
             f"{prefix}AAAA: {NAME} AAAA 2001:db8::7 is a public address",
-            f"{prefix}HTTPS: {NAME} HTTPS carries ipv4hint 203.0.113.7",
+            f"{prefix}HTTPS: {NAME} has an HTTPS record (alpn, ipv4hint 203.0.113.7); "
+            "a CNAME to a local-only name has none",
         ])
 
     def test_a_silent_resolver_fails(self) -> None:
@@ -302,7 +321,8 @@ class OverUdp(unittest.TestCase):
         # names a public address: it must not count.
         def stray_then_answer(qid: int, qtype: int) -> list[bytes]:
             stray = response(qid ^ 0xFFFF, qtype, [rr(AT_QNAME, 1, a("192.0.2.10"))])
-            return [stray, response(qid, qtype, [])]
+            local = [rr(AT_QNAME, 1, a("10.0.0.5"))] if qtype == dns.TYPE_A else []
+            return [stray, response(qid, qtype, local)]
 
         resolver = FakeResolver(stray_then_answer)
         try:
@@ -310,7 +330,7 @@ class OverUdp(unittest.TestCase):
         finally:
             resolver.close()
         self.assertEqual((code, err), (0, ""))
-        self.assertEqual(out, f"check_lan_dns: OK {NAME} via 127.0.0.1: A: -; AAAA: -; HTTPS: -\n")
+        self.assertEqual(out, f"check_lan_dns: OK {NAME} via 127.0.0.1: A: A 10.0.0.5; AAAA: -; HTTPS: -\n")
 
     def test_bad_arguments_exit_2(self) -> None:
         for args in [["--name", NAME, "--resolver", "not-an-address"],
