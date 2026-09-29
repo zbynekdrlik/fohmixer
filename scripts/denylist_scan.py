@@ -50,6 +50,8 @@ EXIT_HIT = 1
 EXIT_USAGE = 2
 
 FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
+# `author <name> <<email>> <time> <zone>` as stored in a commit object
+IDENTITY_LINE = re.compile(r"^(author|committer) .*<([^<>]*)> -?\d+ [+-]\d{4}$")
 REDACTED = "[redacted]"
 # git's C-quoting of a path in a diff header (core.quotePath)
 C_ESCAPES = {"a": 7, "b": 8, "t": 9, "n": 10, "v": 11, "f": 12, "r": 13, '"': 34, "\\": 92}
@@ -233,14 +235,33 @@ def check_boundary_exists(repo: Path, boundary: list[str]) -> None:
             raise UsageError(f"boundary commit {sha} is not in {repo} (a shallow clone needs fetch-depth: 0)")
 
 
-def metadata_of(repo: Path, sha: str) -> str:
-    return decode(git(repo, "show", "-s", "--no-show-signature", "--format=%an%n%ae%n%cn%n%ce%n%B", sha))
+@dataclass(frozen=True)
+class Metadata:
+    text: str
+    emails: tuple[str, str]
 
 
-def emails_in(metadata: str) -> list[str]:
-    """The author and committer emails: lines 2 and 4 of the metadata (git names hold no newline)."""
-    fields = metadata.split("\n")
-    return [fields[1].strip().lower(), fields[3].strip().lower()]
+def metadata_of(repo: Path, sha: str) -> Metadata:
+    """A commit's metadata as stored (`cat-file`: no conversion by its `encoding` header, which could
+    garble or hide text; signature armour left out) and as git renders it, so neither form hides a
+    term. The author and committer emails are read as stored."""
+    head, _, message = git(repo, "cat-file", "commit", sha).partition(b"\n\n")
+    kept: list[str] = []
+    armoured = False
+    for line in head.split(b"\n"):
+        armoured = armoured or b"-----BEGIN " in line
+        if not armoured:
+            kept.append(decode(line))
+        if b"-----END " in line:
+            armoured = False
+    emails: dict[str, str] = {}
+    for line in kept:
+        match = IDENTITY_LINE.match(line)
+        if match:
+            emails.setdefault(match.group(1), match.group(2).strip().lower())
+    shown = decode(git(repo, "show", "-s", "--no-show-signature", "--format=%an%n%ae%n%cn%n%ce%n%B", sha))
+    text = "\n".join(kept) + "\n" + decode(message) + "\n" + shown
+    return Metadata(text, (emails.get("author", ""), emails.get("committer", "")))
 
 
 def scan_tree(scanner: Scanner, repo: Path, rev: str) -> list[Hit]:
@@ -372,7 +393,7 @@ def scan_changes(scanner: Scanner, repo: Path, sha: str, prefix: str) -> list[Hi
         if data.startswith(UTF16_BOMS):
             lines = text_lines(text)
         hits += scan_lines(scanner, change.path, lines, prefix)
-    # a patch path that matched no change (a header decoded differently) is scanned, never dropped
+    # a patch path that matched no change (a label that unquotes differently) is scanned, never dropped
     for raw, lines in added.items():
         hits += scan_lines(scanner, decode(raw), lines, prefix)
     return hits
@@ -386,9 +407,9 @@ def scan_lines(scanner: Scanner, path: str, lines: list[str], prefix: str) -> li
 def scan_commit(scanner: Scanner, repo: Path, sha: str, identities: set[str] | None) -> list[Finding]:
     short = sha[:12]
     metadata = metadata_of(repo, sha)
-    hits: list[Finding] = [Hit(f"{short} commit metadata", entry) for entry in scanner.entries_in(metadata)]
+    hits: list[Finding] = [Hit(f"{short} commit metadata", entry) for entry in scanner.entries_in(metadata.text)]
     if identities is not None:
-        for role, email in zip(("author", "committer"), emails_in(metadata), strict=True):
+        for role, email in zip(("author", "committer"), metadata.emails, strict=True):
             if email not in identities:
                 hits.append(IdentityProblem(short, role))
     return hits + scan_changes(scanner, repo, sha, f"{short} ")
@@ -410,7 +431,7 @@ def scan_boundary(repo: Path, boundary: list[str], identities: set[str]) -> list
     """Every commit the boundary hides must be legacy: neither of its identities allowed."""
     problems: list[BoundaryProblem] = []
     for sha in decode(git(repo, "rev-list", *boundary)).split():
-        if any(email in identities for email in emails_in(metadata_of(repo, sha))):
+        if any(email in identities for email in metadata_of(repo, sha).emails):
             problems.append(BoundaryProblem(sha[:12]))
     return problems
 
@@ -424,7 +445,8 @@ def hash_line(repo: Path, path: str, number: str) -> str:
     lines = [] if text is None else text_lines(text)
     if not number.isdecimal() or not 1 <= int(number) <= len(lines):
         raise UsageError("--hash: no such line in that file (a binary file, or a number out of range)")
-    return line_key(path, lines[int(number) - 1])
+    # the scan keys a path by its bytes decoded as UTF-8 (U+FFFD for an invalid byte)
+    return line_key(decode(os.fsencode(path)), lines[int(number) - 1])
 
 
 def run(args: argparse.Namespace) -> list[Finding]:
