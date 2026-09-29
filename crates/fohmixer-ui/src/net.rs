@@ -43,7 +43,13 @@ fn may_reload(now: f64, last: Option<f64>) -> bool {
 
 /// The decision on the hub's hello: reload (at most once a minute) when
 /// the hub does not serve this page's protocol.
-pub fn on_hello(server_proto: u32, min_client_proto: u32, now: f64, last: Option<f64>) -> Decision {
+pub fn on_hello(
+    server_proto: u32,
+    min_client_proto: u32,
+    _server_build: &str,
+    now: f64,
+    last: Option<f64>,
+) -> Decision {
     let served = (min_client_proto..=server_proto).contains(&UI_PROTO);
     if served || !may_reload(now, last) {
         Decision::Keep
@@ -173,20 +179,47 @@ mod tests {
         );
     }
 
+    /// This page's own build, as the hub names its build in the hello.
+    const SAME: &str = fohmixer_proto::VERSION;
+
     #[test]
     fn a_served_protocol_keeps_the_page() {
-        assert_eq!(on_hello(1, 1, 0.0, None), Decision::Keep);
-        assert_eq!(on_hello(2, 1, 0.0, None), Decision::Keep);
+        assert_eq!(on_hello(1, 1, SAME, 0.0, None), Decision::Keep);
+        assert_eq!(on_hello(2, 1, SAME, 0.0, None), Decision::Keep);
         // The hub no longer serves this page, or is older than it.
-        assert_eq!(on_hello(3, 2, 1e6, None), Decision::Reload);
-        assert_eq!(on_hello(0, 0, 1e6, None), Decision::Reload);
+        assert_eq!(on_hello(3, 2, SAME, 1e6, None), Decision::Reload);
+        assert_eq!(on_hello(0, 0, SAME, 1e6, None), Decision::Reload);
+    }
+
+    #[test]
+    fn a_hub_of_another_build_reloads_the_page_onto_its_bundle() {
+        // #26: a deploy with the same protocol still brings an open page
+        // (a Home Screen app) onto the new bundle by itself.
+        let t = 1_000_000.0;
+        assert_eq!(on_hello(1, 1, SAME, t, None), Decision::Keep);
+        assert_eq!(on_hello(1, 1, "0.0.0-other", t, None), Decision::Reload);
+        assert_eq!(on_hello(1, 1, "", t, None), Decision::Reload);
+        // The build is compared whole, not by prefix.
+        let longer = format!("{SAME}.1");
+        assert_eq!(on_hello(1, 1, &longer, t, None), Decision::Reload);
+        // Still at most once a minute: a page that just reloaded keeps
+        // itself (the hub may serve an older bundle than it names).
+        let other = "0.0.0-other";
+        assert_eq!(on_hello(1, 1, other, t, Some(t - 59_999.0)), Decision::Keep);
+        assert_eq!(
+            on_hello(1, 1, other, t, Some(t - 60_000.0)),
+            Decision::Reload
+        );
     }
 
     #[test]
     fn reloads_are_at_most_one_per_minute() {
         let t = 1_000_000.0;
-        assert_eq!(on_hello(3, 2, t, Some(t - 59_999.0)), Decision::Keep);
-        assert_eq!(on_hello(3, 2, t, Some(t - 60_000.0)), Decision::Reload);
+        assert_eq!(on_hello(3, 2, SAME, t, Some(t - 59_999.0)), Decision::Keep);
+        assert_eq!(
+            on_hello(3, 2, SAME, t, Some(t - 60_000.0)),
+            Decision::Reload
+        );
         assert_eq!(on_missing_hello(t, Some(t - 1_000.0)), Decision::Keep);
         assert_eq!(
             on_missing_hello(t, Some(t - RELOAD_GAP_MS)),

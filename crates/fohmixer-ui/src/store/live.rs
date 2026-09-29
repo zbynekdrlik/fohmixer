@@ -393,7 +393,9 @@ impl LiveStore {
 
     fn on_hello(self, proto: u32, build: &str, min_client_proto: u32) {
         let now = dom::wall_now();
-        if net::on_hello(proto, min_client_proto, now, net::last_reload()) == Decision::Reload {
+        if net::on_hello(proto, min_client_proto, build, now, net::last_reload())
+            == Decision::Reload
+        {
             net::reload(
                 now,
                 &format!("hub {build} serves UI protocol {min_client_proto}..={proto}"),
