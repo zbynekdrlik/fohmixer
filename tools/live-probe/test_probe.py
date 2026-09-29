@@ -182,7 +182,7 @@ class Framing(unittest.TestCase):
 
     def test_accept_key_of_rfc_6455(self):
         self.assertEqual(
-            probe.accept_key("dGhlIHNhbXBsZSBub25jZQ=="), "s3pPLMBiTxaQ9kYGzzo+pOm+C0o="
+            probe.accept_key("dGhlIHNhbXBsZSBub25jZQ=="), "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
         )
 
     def test_the_script_reads_the_probes_masked_frames(self):
