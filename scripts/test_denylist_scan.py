@@ -438,6 +438,52 @@ class DenylistScanTests(ScanCase):
         self.assertIn("author email is not an allowed identity", out)
         self.assertNotIn("AEA", out)
 
+    def write_commit(self, headers: str, literally: bool = False) -> None:
+        """A commit on HEAD with these headers after tree/parent, written as bytes; HEAD moves to it."""
+        head = git(self.repo, "rev-parse", "HEAD")
+        tree = git(self.repo, "rev-parse", "HEAD^{tree}")
+        body = f"tree {tree}\nparent {head}\n{headers}\nclean\n".encode("utf-8")
+        command = ["git", "-C", str(self.repo), "hash-object", "-t", "commit", "-w", "--stdin"]
+        done = subprocess.run([*command, "--literally"] if literally else command, input=body, check=True,
+                              capture_output=True)
+        git(self.repo, "update-ref", "refs/heads/main", done.stdout.decode("ascii").strip())
+
+    def test_a_signature_marker_in_a_name_does_not_hide_the_next_header(self) -> None:
+        self.commit({"a.txt": "x\n"})
+        self.write_commit(f"author -----BEGIN x <{ALLOWED}> 1700000000 +0000\n"
+                          f"committer Zyxname Q <{ALLOWED}> 1700000000 +0000\nencoding UCS-2\n")
+        code, out = self.scan("--commits", "HEAD^!")
+        self.assertEqual(code, 1)
+        self.assertIn("commit metadata: denylist entry 1", out)
+
+    def test_an_unterminated_signature_ends_at_the_next_header(self) -> None:
+        self.commit({"a.txt": "x\n"})
+        self.write_commit(f"author dev <{ALLOWED}> 1700000000 +0000\ncommitter dev <{ALLOWED}> 1700000000 +0000\n"
+                          "gpgsig -----BEGIN PGP SIGNATURE-----\n iQIz\nx-note zyxname\n", literally=True)
+        code, out = self.scan("--commits", "HEAD^!")
+        self.assertEqual(code, 1)
+        self.assertIn("commit metadata: denylist entry 1", out)
+
+    def test_free_text_in_a_signature_is_scanned(self) -> None:
+        self.commit({"a.txt": "x\n"})
+        self.write_commit(f"author dev <{ALLOWED}> 1700000000 +0000\ncommitter dev <{ALLOWED}> 1700000000 +0000\n"
+                          "gpgsig -----BEGIN PGP SIGNATURE-----\n Comment: zyxname key\n \n iQIz\n"
+                          " -----END PGP SIGNATURE-----\n")
+        code, out = self.scan("--commits", "HEAD^!")
+        self.assertEqual(code, 1)
+        self.assertIn("commit metadata: denylist entry 1", out)
+
+    def test_every_stored_identity_must_be_allowed(self) -> None:
+        ids = self.write("ids.txt", f"{ALLOWED}\n")
+        self.commit({"a.txt": "x\n"})
+        for author in (f"author dev <{ALLOWED}> 1700000000 +0000\nauthor x <{LEGACY}> 1700000000 +0000",
+                       f"author a <{LEGACY}> b <{ALLOWED}> 1700000000 +0000"):
+            self.write_commit(f"{author}\ncommitter dev <{ALLOWED}> 1700000000 +0000\n", literally=True)
+            code, out = self.scan("--identities", ids, "--commits", "HEAD^!")
+            self.assertEqual(code, 1, author)
+            self.assertIn("author email is not an allowed identity", out)
+            self.assertNotIn(LEGACY, out)
+
     def test_signature_armour_is_not_scanned(self) -> None:
         # a signature's base64 is noise, not site data: a short term can occur in it by chance
         self.commit({"a.txt": "x\n"})
@@ -673,6 +719,13 @@ class BoundaryTests(ScanCase):
         self.assertEqual(code, 1)
         self.assertIn(f"{new[:12]}: hidden by the boundary, but it has an allowed identity", out)
         self.assertNotIn(self.legacy[:12], out)
+
+    def test_a_signature_marker_in_a_name_cannot_pass_as_legacy(self) -> None:
+        marked = self.commit({"b.txt": "x\n"}, env=identity("-----BEGIN -----END dev", ALLOWED))
+        self.commit({"c.txt": "clean\n"}, env=identity("dev", ALLOWED))
+        code, out = self.scan_new(self.write("boundary.txt", f"{marked}\n"))
+        self.assertEqual(code, 1)
+        self.assertIn(f"{marked[:12]}: hidden by the boundary, but it has an allowed identity", out)
 
     def test_a_boundary_over_a_commit_with_one_allowed_identity_is_a_finding(self) -> None:
         # Legacy work re-committed (a cherry-pick) by the allowed identity is new history.
