@@ -47,8 +47,9 @@ import shlex
 import subprocess
 import sys
 import unicodedata
+import zlib
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 EXIT_CLEAN = 0
@@ -69,6 +70,12 @@ REDACTED = "[redacted]"
 # git's C-quoting of a path in a diff header (core.quotePath)
 C_ESCAPES = {"a": 7, "b": 8, "t": 9, "n": 10, "v": 11, "f": 12, "r": 13, '"': 34, "\\": 92}
 UTF16_BOMS = (codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)
+# A TouchOSC layout is zlib, an Ableton set gzip: both are matched as their inflated text, never
+# skipped as binary. The cap stops a small blob from inflating into the runner's whole memory.
+COMPRESSED = {".tosc": zlib.MAX_WBITS, ".als": 16 + zlib.MAX_WBITS}
+INFLATE_CAP = 64 * 1024 * 1024
+UNREADABLE = "unreadable compressed file"
+OVER_CAP = f"compressed file inflates past the {INFLATE_CAP // 2**20} MiB cap"
 # A commit's diff against its first parent (the root commit's too) whose labels, colours, attributes
 # and paths depend neither on the user's git config nor on the repo's .gitattributes
 DIFF = ["show", "--format=", "--no-show-signature", "--no-color", "--no-ext-diff", "--no-textconv", "--text",
@@ -117,6 +124,20 @@ class BoundaryProblem:
 
 
 @dataclass(frozen=True)
+class ContentProblem:
+    """A file whose content cannot be matched (an unreadable or oversized compressed file)."""
+
+    where: str
+    reason: str
+    key: tuple[str, str | None] | None = None
+    accepted: bool = False
+
+    def render(self) -> str:
+        suffix = " (accepted: published history)" if self.accepted else ""
+        return f"{self.where}: {self.reason}{suffix}"
+
+
+@dataclass(frozen=True)
 class AcceptedProblem:
     line: int
     commit: str
@@ -125,7 +146,8 @@ class AcceptedProblem:
         return f"accepted line {self.line}: commit {self.commit[:12]} is not in the scanned history"
 
 
-Finding = Hit | IdentityProblem | BoundaryProblem | AcceptedProblem
+Finding = Hit | ContentProblem | IdentityProblem | BoundaryProblem | AcceptedProblem
+ACCEPTABLE = (Hit, ContentProblem)
 
 
 @dataclass(frozen=True)
@@ -155,13 +177,12 @@ def apply_accepted(hits: list[Finding], entries: list[AcceptedEntry], scanned: s
     so they never match. An entry whose commit the scan did not reach is a finding of its own."""
     keys = {(entry.sha, entry.path) for entry in entries}
     marked: list[Finding] = [
-        Hit(hit.where, hit.entry, hit.key, accepted=True) if isinstance(hit, Hit) and hit.key in keys else hit
-        for hit in hits]
+        replace(hit, accepted=True) if isinstance(hit, ACCEPTABLE) and hit.key in keys else hit for hit in hits]
     return marked + [AcceptedProblem(entry.line, entry.sha) for entry in entries if entry.sha not in scanned]
 
 
 def fails(finding: Finding) -> bool:
-    return not (isinstance(finding, Hit) and finding.accepted)
+    return not (isinstance(finding, ACCEPTABLE) and finding.accepted)
 
 
 def read_text(path: Path, what: str) -> str:
@@ -237,6 +258,50 @@ def blob_text(data: bytes) -> str | None:
     if b"\0" in data:
         return None
     return decode(data)
+
+
+class Unreadable(Exception):
+    """A compressed file that cannot be matched; its message is the finding's reason."""
+
+
+def inflate(data: bytes, wbits: int) -> bytes:
+    """A zlib stream, or every member of a gzip file, inflated to at most INFLATE_CAP bytes.
+    Bad or truncated data, bytes after a zlib stream, and anything past the cap are Unreadable."""
+    out = bytearray()
+    rest = data
+    while True:
+        stream = zlib.decompressobj(wbits)
+        try:
+            out += stream.decompress(rest, INFLATE_CAP + 1 - len(out))
+        except zlib.error:
+            raise Unreadable(UNREADABLE) from None
+        if len(out) > INFLATE_CAP:
+            raise Unreadable(OVER_CAP)
+        if not stream.eof:
+            raise Unreadable(UNREADABLE)
+        rest = stream.unused_data
+        if not rest:
+            return bytes(out)
+        if wbits == COMPRESSED[".tosc"]:
+            raise Unreadable(UNREADABLE)
+
+
+@dataclass(frozen=True)
+class Content:
+    text: str | None  # None: binary, skipped
+    whole: bool  # every line is matched, not only a commit's added lines (its diff is not text)
+    problem: str | None = None
+
+
+def read_content(path: str, data: bytes) -> Content:
+    """What a file's bytes are matched as, the same in tree mode, commit mode and --hash."""
+    wbits = next((bits for suffix, bits in COMPRESSED.items() if path.lower().endswith(suffix)), None)
+    if wbits is None:
+        return Content(blob_text(data), data.startswith(UTF16_BOMS))
+    try:
+        return Content(blob_text(inflate(data, wbits)), True)
+    except Unreadable as problem:
+        return Content(None, True, str(problem))
 
 
 def nfc(text: str) -> str:
@@ -355,10 +420,10 @@ def metadata_of(repo: Path, sha: str) -> Metadata:
     return Metadata(text, stored, rendered)
 
 
-def scan_tree(scanner: Scanner, repo: Path, rev: str) -> list[Hit]:
+def scan_tree(scanner: Scanner, repo: Path, rev: str) -> list[Hit | ContentProblem]:
     # every location starts with a fixed word, never with a path: a path starting with `::`
     # would otherwise read as a GitHub workflow command in the CI log
-    hits: list[Hit] = []
+    hits: list[Hit | ContentProblem] = []
     for entry in git(repo, "ls-tree", "-r", "-z", "--full-tree", rev).split(b"\0"):
         if not entry:
             continue
@@ -368,11 +433,13 @@ def scan_tree(scanner: Scanner, repo: Path, rev: str) -> list[Hit]:
         hits += scanner.scan_path(path, "tree ")
         if kind != b"blob":
             continue
-        text = blob_text(git(repo, "cat-file", "blob", decode(obj)))
-        if text is None:
-            continue
+        content = read_content(path, git(repo, "cat-file", "blob", decode(obj)))
         shown = scanner.shown(path)
-        for number, line in enumerate(text_lines(text), start=1):
+        if content.problem:
+            hits.append(ContentProblem(f"tree {shown}", content.problem))
+        if content.text is None:
+            continue
+        for number, line in enumerate(text_lines(content.text), start=1):
             hits += scanner.scan_line(path, line, f"tree {shown}:{number}")
     return hits
 
@@ -467,23 +534,27 @@ def added_by_path(repo: Path, sha: str) -> dict[bytes, list[str]]:
     return by_path
 
 
-def scan_changes(scanner: Scanner, repo: Path, sha: str, prefix: str) -> list[Hit]:
+def scan_changes(scanner: Scanner, repo: Path, sha: str, prefix: str) -> list[Hit | ContentProblem]:
     """Paths and added lines. Each file is judged by its whole new blob, as tree mode judges it:
-    binary is skipped, UTF-16 is scanned whole (its diff is not text), anything else by added line."""
+    binary is skipped, UTF-16 and compressed files are matched whole (their diff is not text),
+    anything else by added line."""
     changes = changes_of(repo, sha)
     contents = blob_data(repo, [change.blob for change in changes if change.mode != GITLINK])
     added = added_by_path(repo, sha)
-    hits: list[Hit] = []
+    hits: list[Hit | ContentProblem] = []
     for change in changes:
         key = (sha, change.path)
         hits += scanner.scan_path(change.path, prefix, key)
         lines = added.pop(change.raw, [])
-        data = None if change.mode == GITLINK else contents[change.blob]
-        text = None if data is None else blob_text(data)
-        if text is None:
+        if change.mode == GITLINK:
             continue
-        if data.startswith(UTF16_BOMS):
-            lines = text_lines(text)
+        content = read_content(change.path, contents[change.blob])
+        if content.problem:
+            hits.append(ContentProblem(f"{prefix}{scanner.shown(change.path)}", content.problem, key))
+        if content.text is None:
+            continue
+        if content.whole:
+            lines = text_lines(content.text)
         hits += scan_lines(scanner, change.path, lines, prefix, key)
     # a patch path that matched no change (a label that unquotes differently) is scanned, never dropped
     for raw, lines in added.items():
@@ -525,10 +596,12 @@ def scan_boundary(repo: Path, boundary: list[str], identities: set[str]) -> list
 def hash_line(repo: Path, path: str, number: str) -> str:
     """The allow key of a working-tree line, decoded and split exactly as the scan does."""
     try:
-        text = blob_text((repo / path).read_bytes())
+        content = read_content(path, (repo / path).read_bytes())
     except OSError as error:
         raise UsageError(f"--hash: the file cannot be read ({type(error).__name__})") from None
-    lines = [] if text is None else text_lines(text)
+    if content.problem:
+        raise UsageError(f"--hash: {content.problem}")
+    lines = [] if content.text is None else text_lines(content.text)
     if not number.isdecimal() or not 1 <= int(number) <= len(lines):
         raise UsageError("--hash: no such line in that file (a binary file, or a number out of range)")
     # the scan keys a path by its bytes decoded as UTF-8 (U+FFFD for an invalid byte)
