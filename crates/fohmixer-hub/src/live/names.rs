@@ -1,9 +1,9 @@
 //! The layout's report of unresolved names (spec §2.5 D4, I5): the hub
 //! resolves every binding of the served layout on its instance, and every
-//! group track it unfolds (spec F7), and lists the ones that do not resolve —
-//! a missing or an ambiguous name — in `/api/status`, so an edit that names a
-//! track wrongly shows at once, not only as a red control or a group left
-//! folded.
+//! group track its `config.unfold` names (the UI unfolds them on every
+//! refresh, spec F7), and lists the ones that do not resolve — a missing or
+//! an ambiguous name — in `/api/status`, so an edit that names a track
+//! wrongly shows at once, not only as a red control or a group left folded.
 //!
 //! A pure state machine like the subscription table: a check of an
 //! instance runs when a layout is accepted (for every connected instance)

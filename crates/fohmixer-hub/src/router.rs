@@ -59,7 +59,8 @@ pub enum RouterMsg {
         client: ClientId,
     },
     /// A new layout is served: its revision, its STAGE AUT binding and its
-    /// binding targets per instance (for the unresolved-names check).
+    /// check targets per instance (for the unresolved-names check: the
+    /// bindings and the groups to unfold, `live::names::layout_targets`).
     Layout {
         rev: u64,
         stage: Option<Binding>,
