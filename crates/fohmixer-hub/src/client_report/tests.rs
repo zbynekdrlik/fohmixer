@@ -41,6 +41,7 @@ fn report(kind: &str) -> ClientReport {
     ClientReport {
         at: 1,
         peer: "192.0.2.1".into(),
+        client: None,
         source: "lan".into(),
         fields,
     }
@@ -48,7 +49,8 @@ fn report(kind: &str) -> ClientReport {
 
 #[test]
 fn the_limits_are_these() {
-    assert_eq!(FIELD_MAX_CHARS, 300);
+    assert_eq!(TEXT_MAX_CHARS, 300);
+    assert_eq!(WORD_MAX_CHARS, 64);
     assert_eq!(RING, 50);
     assert_eq!(RATE_WINDOW, Duration::from_secs(10));
     assert_eq!(RATE_MAX, 60);
@@ -57,35 +59,45 @@ fn the_limits_are_these() {
 
 #[test]
 fn a_value_loses_its_control_characters() {
-    assert_eq!(clean("load"), "load");
-    assert_eq!(clean("a\nb\r\tc\u{1b}[31md\u{7f}e\u{85}f"), "abc[31mdef");
+    assert_eq!(clean("load", 64), "load");
+    assert_eq!(
+        clean("a\nb\r\tc\u{1b}[31md\u{7f}e\u{85}f", 64),
+        "abc[31mdef"
+    );
     // A page cannot forge a second log line.
-    let forged = clean("iPad\nINFO fohmixer_hub::auth: engineer logged in");
+    let forged = clean("iPad\nINFO fohmixer_hub::auth: engineer logged in", 300);
     assert!(!forged.contains('\n'), "{forged}");
-    assert_eq!(clean(""), "");
+    assert_eq!(clean("", 64), "");
 }
 
 #[test]
 fn a_long_value_is_cut_with_an_ellipsis() {
-    let exact = "é".repeat(FIELD_MAX_CHARS);
-    assert_eq!(clean(&exact), exact);
+    let exact = "é".repeat(10);
+    assert_eq!(clean(&exact, 10), exact);
     let long = format!("{exact}z");
-    let cut = clean(&long);
+    let cut = clean(&long, 10);
     assert_eq!(cut, format!("{exact}…"));
-    assert_eq!(cut.chars().count(), 301);
+    assert_eq!(cut.chars().count(), 11);
     // Control characters do not count: they are gone before the cut.
-    let with_breaks = format!("{}\n\n", "x".repeat(FIELD_MAX_CHARS));
-    assert_eq!(clean(&with_breaks), "x".repeat(FIELD_MAX_CHARS));
+    let with_breaks = format!("{}\n\n", "x".repeat(10));
+    assert_eq!(clean(&with_breaks, 10), "x".repeat(10));
 }
 
 #[test]
-fn every_field_is_cleaned() {
+fn every_field_is_cleaned_the_free_texts_are_longer() {
     assert_eq!(clean_fields(fields("a\nb")), fields("ab"));
-    let long = "y".repeat(FIELD_MAX_CHARS + 5);
-    assert_eq!(
-        clean_fields(fields(&long)),
-        fields(&format!("{}…", "y".repeat(FIELD_MAX_CHARS)))
-    );
+    let long = "y".repeat(TEXT_MAX_CHARS + 5);
+    let word = format!("{}…", "y".repeat(WORD_MAX_CHARS));
+    let text = format!("{}…", "y".repeat(TEXT_MAX_CHARS));
+    let mut expected = fields(&word);
+    expected.ua = Some(text.clone());
+    expected.error = Some(text);
+    assert_eq!(clean_fields(fields(&long)), expected);
+    // Exactly at the limits: kept whole.
+    let mut exact = fields(&"w".repeat(WORD_MAX_CHARS));
+    exact.ua = Some("u".repeat(TEXT_MAX_CHARS));
+    exact.error = Some("e".repeat(TEXT_MAX_CHARS));
+    assert_eq!(clean_fields(exact.clone()), exact);
     assert_eq!(
         clean_fields(ReportFields::default()),
         ReportFields::default()
@@ -96,6 +108,24 @@ fn every_field_is_cleaned() {
 fn the_source_is_the_access_class() {
     assert_eq!(source(Origin::Local), "lan");
     assert_eq!(source(Origin::Internet), "internet");
+}
+
+#[test]
+fn an_internet_report_keeps_the_client_cloudflare_names() {
+    let mut through_tunnel = HeaderMap::new();
+    through_tunnel.insert("cf-connecting-ip", "203.0.113.7".parse().unwrap());
+    assert_eq!(
+        forwarded_client(Origin::Internet, &through_tunnel),
+        Some("203.0.113.7".to_string())
+    );
+    // On the LAN the peer is the client: nothing forwarded is taken.
+    assert_eq!(forwarded_client(Origin::Local, &through_tunnel), None);
+    assert_eq!(forwarded_client(Origin::Internet, &HeaderMap::new()), None);
+    // Cleaned like a field.
+    let mut long = HeaderMap::new();
+    long.insert("cf-connecting-ip", "9".repeat(80).parse().unwrap());
+    let kept = forwarded_client(Origin::Internet, &long).unwrap();
+    assert_eq!(kept, format!("{}…", "9".repeat(WORD_MAX_CHARS)));
 }
 
 #[test]
@@ -274,6 +304,7 @@ async fn a_report_needs_no_token_and_is_listed_in_the_status() {
         json!({
             "at": at,
             "peer": "10.0.0.5",
+            "client": null,
             "source": "lan",
             "kind": "load",
             "display": "standalone",
@@ -324,7 +355,7 @@ async fn a_report_over_10_kib_is_refused() {
     assert_eq!(kept.len(), 1);
     // The accepted one was cut to the field limit.
     let error = kept[0].fields.error.as_deref().unwrap();
-    assert_eq!(error.chars().count(), FIELD_MAX_CHARS + 1);
+    assert_eq!(error.chars().count(), TEXT_MAX_CHARS + 1);
     hub.stop();
 }
 

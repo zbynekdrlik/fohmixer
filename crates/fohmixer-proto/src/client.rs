@@ -339,6 +339,10 @@ pub struct ClientReport {
     pub at: u64,
     /// The address it came from (through the tunnel: cloudflared's).
     pub peer: String,
+    /// Through the tunnel: the client's address as Cloudflare names it
+    /// (`cf-connecting-ip`); none on the LAN (the peer is the client).
+    #[serde(default)]
+    pub client: Option<String>,
     /// `lan` or `internet`, as the Access check classifies the request.
     pub source: String,
     #[serde(flatten)]
@@ -628,8 +632,9 @@ mod tests {
             },
             client_reports: vec![ClientReport {
                 at: 1_790_000_200,
-                peer: "192.0.2.7".into(),
-                source: "lan".into(),
+                peer: "127.0.0.1".into(),
+                client: Some("203.0.113.7".into()),
+                source: "internet".into(),
                 fields: ReportFields {
                     kind: Some("load".into()),
                     display: Some("standalone".into()),
@@ -652,7 +657,8 @@ mod tests {
         // A report's fields sit next to when and where it came from.
         assert_eq!(
             json["client_reports"][0],
-            json!({"at": 1_790_000_200_u64, "peer": "192.0.2.7", "source": "lan",
+            json!({"at": 1_790_000_200_u64, "peer": "127.0.0.1", "client": "203.0.113.7",
+                   "source": "internet",
                    "kind": "load", "display": "standalone", "ua": "Mozilla/5.0 (iPad)",
                    "build": "0.1.0", "host": "foh.example.org", "screen": "1194x834@2",
                    "sw": "registered", "wake_lock": "held", "visibility": "visible",

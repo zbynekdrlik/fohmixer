@@ -12,10 +12,10 @@
 //! Public like `/api/client-error`: it must work before a login, and on the
 //! internet path the Access check guards every route anyway. So nothing a
 //! page sends is trusted: only the fields of [`ReportFields`] are kept
-//! (serde drops any other), each is cut to [`FIELD_MAX_CHARS`] and stripped
-//! of control characters (no forged log lines), and a peer gets at most
-//! [`RATE_MAX`] reports per [`RATE_WINDOW`] (a looping page cannot fill the
-//! log).
+//! (serde drops any other), each is stripped of control characters (no
+//! forged log lines) and cut ([`WORD_MAX_CHARS`], [`TEXT_MAX_CHARS`] for the
+//! user agent and the error), and a peer gets at most [`RATE_MAX`] reports
+//! per [`RATE_WINDOW`] (a looping page cannot fill the log).
 
 use std::collections::{HashMap, VecDeque};
 use std::net::{IpAddr, SocketAddr};
@@ -30,9 +30,12 @@ use fohmixer_proto::client::{ClientReport, ReportFields};
 use crate::Hub;
 use crate::access::{self, Origin};
 
-/// The longest value kept of a field, in characters (an iPad's user agent
-/// is about 150).
-pub const FIELD_MAX_CHARS: usize = 300;
+/// The longest value kept of the free-text fields (`ua`, `error`), in
+/// characters (an iPad's user agent is about 150).
+pub const TEXT_MAX_CHARS: usize = 300;
+/// The longest value kept of every other field (a word, a version, a host,
+/// a size, an address): a long one is not what the page sends.
+pub const WORD_MAX_CHARS: usize = 64;
 /// How many reports `/api/status` keeps (the newest).
 pub const RING: usize = 50;
 /// A peer's report budget: at most [`RATE_MAX`] per this window.
@@ -47,33 +50,35 @@ pub const RATE_MAX: u32 = 60;
 pub const MAX_PEERS: usize = 256;
 
 /// `value` fit for one log line: control characters (line breaks, escape
-/// sequences) dropped, then cut to [`FIELD_MAX_CHARS`] characters, a cut
-/// marked with an ellipsis.
-pub fn clean(value: &str) -> String {
+/// sequences) dropped, then cut to `max` characters, a cut marked with an
+/// ellipsis.
+pub fn clean(value: &str, max: usize) -> String {
     let kept: String = value.chars().filter(|c| !c.is_control()).collect();
-    if kept.chars().count() <= FIELD_MAX_CHARS {
+    if kept.chars().count() <= max {
         return kept;
     }
-    let mut cut: String = kept.chars().take(FIELD_MAX_CHARS).collect();
+    let mut cut: String = kept.chars().take(max).collect();
     cut.push('…');
     cut
 }
 
-/// Every field of a report, [`clean`]ed.
+/// Every field of a report, [`clean`]ed: the user agent and the error to
+/// [`TEXT_MAX_CHARS`], the others to [`WORD_MAX_CHARS`].
 pub fn clean_fields(fields: ReportFields) -> ReportFields {
-    let tidy = |value: Option<String>| value.map(|v| clean(&v));
+    let word = |value: Option<String>| value.map(|v| clean(&v, WORD_MAX_CHARS));
+    let text = |value: Option<String>| value.map(|v| clean(&v, TEXT_MAX_CHARS));
     ReportFields {
-        kind: tidy(fields.kind),
-        display: tidy(fields.display),
-        ua: tidy(fields.ua),
-        build: tidy(fields.build),
-        host: tidy(fields.host),
-        screen: tidy(fields.screen),
-        sw: tidy(fields.sw),
-        wake_lock: tidy(fields.wake_lock),
-        visibility: tidy(fields.visibility),
-        reconnects: tidy(fields.reconnects),
-        error: tidy(fields.error),
+        kind: word(fields.kind),
+        display: word(fields.display),
+        ua: text(fields.ua),
+        build: word(fields.build),
+        host: word(fields.host),
+        screen: word(fields.screen),
+        sw: word(fields.sw),
+        wake_lock: word(fields.wake_lock),
+        visibility: word(fields.visibility),
+        reconnects: word(fields.reconnects),
+        error: text(fields.error),
     }
 }
 
@@ -83,6 +88,18 @@ pub fn source(origin: Origin) -> &'static str {
         Origin::Local => "lan",
         Origin::Internet => "internet",
     }
+}
+
+/// The client address Cloudflare names (`cf-connecting-ip`) for an
+/// internet request, whose peer is cloudflared on the PC; none for a LAN
+/// one, whose peer is the client. Only an internet request that passed the
+/// Access check gets this far.
+pub fn forwarded_client(origin: Origin, headers: &HeaderMap) -> Option<String> {
+    if origin != Origin::Internet {
+        return None;
+    }
+    let value = headers.get("cf-connecting-ip")?.to_str().ok()?;
+    Some(clean(value, WORD_MAX_CHARS))
 }
 
 /// What becomes of a report.
@@ -214,10 +231,12 @@ pub async fn client_report(
     headers: HeaderMap,
     Json(fields): Json<ReportFields>,
 ) -> StatusCode {
-    let source = source(access::classify(Some(peer), &headers));
+    let origin = access::classify(Some(peer), &headers);
+    let source = source(origin);
     let report = ClientReport {
         at: crate::auth::now_secs(),
         peer: peer.ip().to_string(),
+        client: forwarded_client(origin, &headers),
         source: source.to_string(),
         fields: clean_fields(fields),
     };
@@ -227,6 +246,7 @@ pub async fn client_report(
         Admit::Keep => tracing::info!(
             target: "fohmixer_hub::client_report",
             peer = %report.peer,
+            client = shown(report.client.as_deref()),
             source,
             kind = shown(f.kind.as_deref()),
             display = shown(f.display.as_deref()),
