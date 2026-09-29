@@ -11,7 +11,7 @@ paths:
   - stage, STAGE AUT and solo groups are transparent; the colour is on the inner `btn_mute` / `btn_stage_aut` / `btn_solo`;
   - a narrow strip's instance label is 39 × 25 under its dB text;
   - for the schema 2 grouping (#21): a left sidebar (the rail) on dark backdrop buttons, a nested pager next to fixed strips, a box with a vertical title beside it (EFFECTS), a box with a label just above it (HANDS), strips and a param fader in no box.
-- Fixture strips bind track names of `sim/fixtures/test-site.json` (the E2E harness serves the fixture layout against SimLive); a new name there is an unresolved strip in E2E.
+- Fixture strips bind track names of `sim/fixtures/test-site.json` (the E2E harness serves the fixture layout against SimLive); a new name there is an unresolved strip in E2E, and since #9 a `config.unfold` group missing from it is an entry of the E2E hub's `/api/status` `layout.unresolved` (the fixture's `Old grp#` is one today; no spec asserts that list empty).
 - The output is layout schema 2 (the UI redesign note §2). After a deliberate change, regenerate `fixtures/expected-layout.json` with `FOHMIXER_REGENERATE=1 python3 -m unittest discover -s tools/import-tosc`, read it, and keep its schema-2 readers consistent: `fohmixer-proto` `imported_layout_parses_and_validates`, the UI's `binding/tests.rs` and `store/conn/tests.rs`, `e2e/tests/pages.spec.ts`, the E2E harness.
 - Grouping thresholds live at the top of `import_tosc.py` (`TITLE_TOUCH`, `RUN_GAP`, `WIDE_FROM`); each rule has a test that fails when it changes, and the report's `groups` / `guessed` are the eye check on the PC.
 - It is a one-shot tool, copied to the PC as the single file `import_tosc.py` and deleted at S6 (spec §2.6): keep it one file.
