@@ -265,6 +265,88 @@ class DenylistScanTests(ScanCase):
         allow = self.write("allow.txt", ds.line_key("my notes.txt", "keep zyxname here") + "  reviewed\n")
         self.assertEqual(self.scan("--allow", allow, "--tree", "HEAD", "--commits", "HEAD")[0], 0)
 
+    def test_a_diff_attribute_does_not_hide_history(self) -> None:
+        self.commit({".gitattributes": "*.txt -diff\n", "a.txt": "zyxname\n"})
+        self.commit({"a.txt": "clean\n"})
+        code, out = self.scan("--commits", "HEAD")
+        self.assertEqual(code, 1)
+        self.assertIn(" a.txt: denylist entry 1", out)
+
+    def test_the_root_commit_is_scanned_whatever_log_showroot_says(self) -> None:
+        git(self.repo, "config", "log.showRoot", "false")
+        self.commit({"a.txt": "zyxname\n"})
+        self.commit({"a.txt": "clean\n"})
+        code, out = self.scan("--commits", "HEAD")
+        self.assertEqual(code, 1)
+        self.assertIn(" a.txt: denylist entry 1", out)
+
+    def test_binary_content_is_skipped_in_commit_mode_too(self) -> None:
+        self.commit({"bin.dat": b"\0zyxname\n"})
+        self.assertEqual(self.scan("--commits", "HEAD")[0], 0)
+
+    def test_a_line_hit_under_a_quoted_path_prints_the_redacted_path(self) -> None:
+        self.commit({"docs/Klávor.txt": "zyxname\n"})
+        code, out = self.scan("--commits", "HEAD")
+        self.assertEqual(code, 1)
+        self.assertIn(" docs/[redacted]: denylist entry 1", out)
+        self.assertNotIn("\\", out)
+        self.assert_no_term(out)
+
+    def test_a_quoted_path_has_the_same_allow_key_in_both_modes(self) -> None:
+        name = 'Mäso "q"\tx.txt'
+        self.commit({name: "keep zyxname here\n"})
+        allow = self.write("allow.txt", ds.line_key(name, "keep zyxname here") + "  reviewed\n")
+        self.assertEqual(self.scan("--allow", allow, "--tree", "HEAD", "--commits", "HEAD")[0], 0)
+
+    def test_a_merge_is_scanned_against_its_first_parent(self) -> None:
+        self.commit({"a.txt": "base\n"})
+        git(self.repo, "checkout", "-q", "-b", "side")
+        self.commit({"s.txt": "zyxname\n"})
+        git(self.repo, "checkout", "-q", "main")
+        self.commit({"m.txt": "main\n"})
+        git(self.repo, "merge", "-q", "--no-ff", "-m", "merge side", "side")
+        code, out = self.scan("--commits", "HEAD^1..HEAD")
+        self.assertEqual(code, 1)
+        self.assertIn(" s.txt: denylist entry 1", out)
+
+    def test_a_renamed_files_lines_are_scanned_under_the_new_name(self) -> None:
+        self.commit({"a.txt": "zyxname\n" + "same\n" * 20})
+        git(self.repo, "mv", "a.txt", "b.txt")
+        git(self.repo, "commit", "-q", "-m", "rename")
+        code, out = self.scan("--commits", "HEAD^..HEAD")
+        self.assertEqual(code, 1)
+        self.assertIn(" b.txt: denylist entry 1", out)
+
+    def test_a_decomposed_letter_does_not_hide_a_term(self) -> None:
+        self.commit({"a.txt": "klávor\n"})
+        self.assertEqual(self.scan("--tree", "HEAD")[0], 1)
+
+    def test_a_utf16_file_is_scanned_in_both_modes(self) -> None:
+        self.commit({"cfg.xml": "<host>zyxname</host>\r\n".encode("utf-16")})
+        code, out = self.scan("--tree", "HEAD")
+        self.assertEqual(code, 1)
+        self.assertIn("cfg.xml:1: denylist entry 1", out)
+        git(self.repo, "rm", "-q", "cfg.xml")
+        git(self.repo, "commit", "-q", "-m", "remove")
+        code, out = self.scan("--commits", "HEAD")
+        self.assertEqual(code, 1)
+        self.assertIn(" cfg.xml: denylist entry 1", out)
+
+    def test_hash_mode_splits_lines_like_the_scan(self) -> None:
+        (self.repo / "a.txt").write_bytes(b"a\rzyxname\nb\n")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = ds.main(["--repo", str(self.repo), "--hash", "a.txt", "1"])
+        self.assertEqual((code, out.getvalue().strip()), (0, ds.line_key("a.txt", "a\rzyxname")))
+
+    def test_hash_mode_rejects_a_line_out_of_range(self) -> None:
+        (self.repo / "a.txt").write_text("one\ntwo\n", encoding="utf-8")
+        for number in ("0", "9", "x"):
+            err = io.StringIO()
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+                code = ds.main(["--repo", str(self.repo), "--hash", "a.txt", number])
+            self.assertEqual(code, 2, number)
+
     def test_hash_mode_prints_the_line_key(self) -> None:
         self.commit({"a.txt": "one\ntwo\n"})
         out = io.StringIO()
@@ -309,6 +391,16 @@ class SyntheticListTests(ScanCase):
         self.assertIn("a.txt: denylist entry 1", out)
         self.assert_no_term(out)
 
+
+    def test_a_spanning_term_beside_a_component_term_redacts_the_whole_path(self) -> None:
+        self.deny.write_text("quim/brel\nzorb\n", encoding="utf-8")
+        self.commit({"x/quim/brel-zorb.txt": "x\n"})
+        code, out = self.scan("--tree", "HEAD")
+        self.assertEqual(code, 1)
+        self.assertIn("[redacted]: path: denylist entry 1", out)
+        self.assertIn("[redacted]: path: denylist entry 2", out)
+        for fragment in ("quim", "brel", "zorb"):
+            self.assertNotIn(fragment, out.lower())
 
     def test_a_term_spanning_path_components_redacts_the_whole_path(self) -> None:
         self.deny.write_text("quim/brel\n", encoding="utf-8")
