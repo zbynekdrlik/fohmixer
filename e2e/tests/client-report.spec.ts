@@ -5,8 +5,10 @@ import { HTTPS, releaseWakeLocks, stubWakeLock } from "./support/pwa";
 
 // The pages' diagnostic reports (#26): every page tells the hub what it is
 // and what happens to it (`POST /api/client-report`), and the hub keeps the
-// newest in `/api/status` `client_reports`. And a hub of another build
-// reloads an open page onto its bundle (the update after a deploy).
+// newest in `/api/status` `client_reports`; its `perf` reports (#5, K4) say
+// how fast it draws and how many fingers it saw at once. And a hub of
+// another build reloads an open page onto its bundle (the update after a
+// deploy).
 //
 // Every spec shares one hub, so a test finds its own page's reports by the
 // page's user agent and screen (each describe below gives the page a screen
@@ -26,7 +28,7 @@ async function who(page: Page): Promise<Who> {
 }
 
 /** Waits until the hub keeps a report of page `w` since `since` that `match` accepts. */
-async function reportOf(w: Who, since: number, match: (report: any) => boolean): Promise<any> {
+async function reportOf(w: Who, since: number, match: (report: any) => boolean, timeout = 10_000): Promise<any> {
   let found: any;
   await expect
     .poll(
@@ -35,7 +37,7 @@ async function reportOf(w: Who, since: number, match: (report: any) => boolean):
         found = reports.find((r) => r.ua === w.ua && r.screen === w.screen && r.at >= since && match(r));
         return found !== undefined;
       },
-      { timeout: 10_000 },
+      { timeout },
     )
     .toBe(true);
   return found;
@@ -179,6 +181,64 @@ test.describe("The PWA on the https origin", () => {
     // It went when the kind's 5 s window ended, not at once (the hub
     // stamps whole seconds).
     expect(held.at - released.at).toBeGreaterThanOrEqual(4);
+  });
+});
+
+test.describe("The frame rate", () => {
+  test.use({ contextOptions: { screen: { width: 1123, height: 623 } } });
+
+  test("is reported with the longest frame once ten seconds of frames are counted", async ({ page }) => {
+    // The first window closes after 10 s of the surface's frames; the
+    // report goes then (later ones at most once a minute).
+    test.setTimeout(60_000);
+    const since = nowSecs();
+    await openSurface(page);
+    const w = await who(page);
+    const perf = await reportOf(w, since, (r) => r.kind === "perf" && r.fps !== null, 30_000);
+    // One decimal, whole milliseconds: numbers the hub log shows as words.
+    expect(perf.fps).toMatch(/^\d+\.\d$/);
+    expect(perf.long_frame_ms).toMatch(/^\d+$/);
+    const fps = Number(perf.fps);
+    expect(fps).toBeGreaterThan(0);
+    expect(fps).toBeLessThan(1000);
+    // The longest gap is at least the window's mean gap.
+    expect(Number(perf.long_frame_ms)).toBeGreaterThanOrEqual(Math.floor(1000 / fps));
+    // Nothing touched this page.
+    expect(perf.touches_max).toBe("0");
+    expect(perf.pointer).toBeNull();
+    expect(perf.visibility).toBe("visible");
+  });
+});
+
+test.describe("Four fingers at once", () => {
+  test.use({ contextOptions: { screen: { width: 1125, height: 625 } } });
+
+  test("are reported as the most pointers at once, with their type", async ({ page }) => {
+    const since = nowSecs();
+    await openSurface(page);
+    const w = await who(page);
+    // Four fingers down one after another, then lifted: pointer events with
+    // distinct ids, as a four-finger touch delivers them on the iPad
+    // (multitouch.spec.ts). The page counts them in the capture phase, so
+    // the element they land on does not matter.
+    await page.evaluate(() => {
+      const send = (type: string, id: number) =>
+        document.body.dispatchEvent(
+          new PointerEvent(type, {
+            pointerId: id,
+            pointerType: "touch",
+            isPrimary: id === 21,
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
+      for (const id of [21, 22, 23, 24]) send("pointerdown", id);
+      for (const id of [21, 22, 23, 24]) send("pointerup", id);
+    });
+    // Two at once already report; the four go with the kind's next report,
+    // at most 5 s later.
+    const four = await reportOf(w, since, (r) => r.kind === "perf" && r.touches_max === "4");
+    expect(four.pointer).toBe("touch");
   });
 });
 

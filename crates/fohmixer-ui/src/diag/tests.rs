@@ -3,7 +3,7 @@
 
 use super::*;
 
-const ALL: [Kind; 8] = [
+const ALL: [Kind; 9] = [
     Kind::Load,
     Kind::Connected,
     Kind::Disconnected,
@@ -12,6 +12,7 @@ const ALL: [Kind; 8] = [
     Kind::Sw,
     Kind::WakeLock,
     Kind::Error,
+    Kind::Perf,
 ];
 
 #[test]
@@ -43,7 +44,8 @@ fn every_kind_has_the_name_the_hub_logs() {
             "visibility",
             "sw",
             "wake-lock",
-            "error"
+            "error",
+            "perf"
         ]
     );
 }
@@ -280,6 +282,10 @@ fn a_report_carries_the_page_s_state() {
             visibility: Some("visible".into()),
             reconnects: Some("3".into()),
             error: None,
+            fps: None,
+            long_frame_ms: None,
+            touches_max: None,
+            pointer: None,
         }
     );
     // Off https: no service worker, no wake lock; a hidden browser tab.
@@ -308,4 +314,28 @@ fn an_error_report_carries_its_text_cut_short() {
         .error
         .unwrap();
     assert_eq!(cut, format!("{}…", "e".repeat(ERROR_MAX_CHARS)));
+}
+
+#[test]
+fn a_perf_report_is_a_report_of_the_page_with_its_numbers() {
+    // `fields` gives the page's state; `PerfReport::fill` adds the frame
+    // rate and the touches (`perf.rs`).
+    let mut report = fields(Kind::Perf, &ipad(), 0, None);
+    assert_eq!(report.kind.as_deref(), Some("perf"));
+    assert_eq!(report.visibility.as_deref(), Some("visible"));
+    assert_eq!(report.fps, None);
+    perf::PerfReport {
+        window: Some(perf::Window {
+            fps: 120.0,
+            long_ms: 16.0,
+        }),
+        touches_max: 4,
+        pointer: Some(perf::Pointer::Touch),
+    }
+    .fill(&mut report);
+    assert_eq!(report.fps.as_deref(), Some("120.0"));
+    assert_eq!(report.long_frame_ms.as_deref(), Some("16"));
+    assert_eq!(report.touches_max.as_deref(), Some("4"));
+    assert_eq!(report.pointer.as_deref(), Some("touch"));
+    assert_eq!(report.screen.as_deref(), Some("1194x834@2"));
 }

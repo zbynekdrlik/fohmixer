@@ -30,6 +30,8 @@ use wasm_bindgen::closure::Closure;
 use crate::dom;
 use crate::lifecycle::truncate_for_display;
 
+pub mod perf;
+
 /// At most one report of a kind per this interval (page clock, ms).
 pub const REPORT_GAP_MS: f64 = 5000.0;
 /// The longest error text a report carries, in characters.

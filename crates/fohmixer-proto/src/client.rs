@@ -647,6 +647,10 @@ mod tests {
                     visibility: Some("visible".into()),
                     reconnects: Some("0".into()),
                     error: None,
+                    fps: None,
+                    long_frame_ms: None,
+                    touches_max: None,
+                    pointer: None,
                 },
             }],
         };
@@ -662,7 +666,8 @@ mod tests {
                    "kind": "load", "display": "standalone", "ua": "Mozilla/5.0 (iPad)",
                    "build": "0.1.0", "host": "foh.example.org", "screen": "1194x834@2",
                    "sw": "registered", "wake_lock": "held", "visibility": "visible",
-                   "reconnects": "0", "error": null})
+                   "reconnects": "0", "error": null,
+                   "fps": null, "long_frame_ms": null, "touches_max": null, "pointer": null})
         );
         // An older hub's answer has no `remote` and no `client_reports`: the
         // defaults.
@@ -717,6 +722,24 @@ mod tests {
                 visibility: None,
                 reconnects: None,
                 error: Some("boom".into()),
+                fps: None,
+                long_frame_ms: None,
+                touches_max: None,
+                pointer: None,
+            }
+        );
+        // A perf report's numbers (#5, K4) are fields of their own.
+        let perf = json!({"kind": "perf", "fps": "59.9", "long_frame_ms": "34",
+                          "touches_max": "4", "pointer": "touch"});
+        assert_eq!(
+            serde_json::from_value::<ReportFields>(perf).unwrap(),
+            ReportFields {
+                kind: Some("perf".into()),
+                fps: Some("59.9".into()),
+                long_frame_ms: Some("34".into()),
+                touches_max: Some("4".into()),
+                pointer: Some("touch".into()),
+                ..ReportFields::default()
             }
         );
         assert_eq!(
