@@ -518,6 +518,21 @@ class DenylistScanTests(ScanCase):
         self.assertEqual(code, 1)
         self.assertIn("author email is not an allowed identity", out)
 
+    def test_a_pgp_message_signature_is_noise_too(self) -> None:
+        # git takes `-----BEGIN PGP MESSAGE-----` as an OpenPGP signature as well
+        self.commit({"a.txt": "x\n"})
+        self.write_commit(f"author dev <{ALLOWED}> 1700000000 +0000\ncommitter dev <{ALLOWED}> 1700000000 +0000\n"
+                          "gpgsig -----BEGIN PGP MESSAGE-----\n \n iQIz+zyxname/AbC\n -----END PGP MESSAGE-----\n")
+        self.assertEqual(self.scan("--commits", "HEAD^!"), (0, "denylist: clean\n"))
+
+    def test_a_bare_marker_line_does_not_open_a_signature(self) -> None:
+        self.commit({"a.txt": "x\n"})
+        self.write_commit(f"author dev <{ALLOWED}> 1700000000 +0000\ncommitter dev <{ALLOWED}> 1700000000 +0000\n"
+                          "-----BEGIN PGP SIGNATURE-----\n zyxname\n", literally=True)
+        code, out = self.scan("--commits", "HEAD^!")
+        self.assertEqual(code, 1)
+        self.assertIn("commit metadata: denylist entry 1", out)
+
     def test_signature_armour_is_not_scanned(self) -> None:
         # a signature's base64 is noise, not site data: a short term can occur in it by chance
         self.commit({"a.txt": "x\n"})
