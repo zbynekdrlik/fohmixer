@@ -1,8 +1,9 @@
 //! The layout's report of unresolved names (spec §2.5 D4, I5): the hub
-//! resolves every binding of the served layout on its instance and lists the
-//! ones that do not resolve — a missing or an ambiguous name — in
-//! `/api/status`, so an edit that names a track wrongly shows at once, not
-//! only as a red control.
+//! resolves every binding of the served layout on its instance, and every
+//! group track it unfolds (spec F7), and lists the ones that do not resolve —
+//! a missing or an ambiguous name — in `/api/status`, so an edit that names a
+//! track wrongly shows at once, not only as a red control or a group left
+//! folded.
 //!
 //! A pure state machine like the subscription table: a check of an
 //! instance runs when a layout is accepted (for every connected instance)
@@ -14,15 +15,30 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use fohmixer_proto::client::Unresolved;
-use fohmixer_proto::layout::Layout;
+use fohmixer_proto::layout::{Anchor, Binding, Layout};
 use serde_json::{Value, json};
 
 use super::subs::{BATCH_MAX, Outgoing};
 
-/// The distinct binding targets of a layout, per instance, sorted.
+/// The distinct targets of a layout's check, per instance, sorted: every
+/// binding's, and every group to unfold (`config.unfold`) as the target a
+/// track binding of its name has — a renamed group is then unresolved like
+/// a renamed control's track (#9).
 pub fn layout_targets(layout: &Layout) -> BTreeMap<String, Vec<String>> {
+    let unfold: Vec<Binding> = layout
+        .config
+        .unfold
+        .iter()
+        .map(|group| Binding {
+            instance: group.instance.clone(),
+            anchor: Anchor::Track {
+                name: group.name.clone(),
+            },
+            path: None,
+        })
+        .collect();
     let mut targets: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    for binding in layout.bindings() {
+    for binding in layout.bindings().into_iter().chain(&unfold) {
         if let Ok(target) = binding.target() {
             targets
                 .entry(binding.instance.clone())
