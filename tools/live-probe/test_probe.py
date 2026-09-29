@@ -586,9 +586,11 @@ CONNECT = {"instance": "band", "script_version": "x", "set_name": "S", "proto": 
 
 class ConnectFirst(unittest.TestCase):
     def test_a_heartbeat_before_connect_is_skipped(self):
-        """Seen on the PC: the script lists a new connection for heartbeats
-        before its sender has sent the queued connect, and the pending
-        heartbeat goes first. The probe waits for connect and counts from it."""
+        """Seen on the PC with a script older than the main-tick transport: it
+        listed a new connection for heartbeats before its sender thread had
+        sent the queued connect, so the pending heartbeat went first (Live
+        runs that script until Live restarts; the current script sends
+        connect first). The probe waits for connect and counts from it."""
         # The heartbeat before connect carries an age no later one has, so
         # the summary shows whether it was counted, whatever the timing.
         early = {"main_tick_age_ms": 999.0, "max_cmd_ms": 1.0, "gap_ms": 100.0}

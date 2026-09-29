@@ -17,8 +17,8 @@ import time
 import unittest
 
 import _paths
+from _rawclient import CLOSE, RawClient, request_frame
 from FohMixer.version import VERSION
-from websockets.exceptions import ConnectionClosed
 from websockets.sync.client import connect
 
 READY_TIMEOUT_S = 10.0
@@ -463,12 +463,30 @@ class IntegrationTest(unittest.TestCase):
     def test_sigterm_disconnects_and_a_new_host_rebinds_the_port(self):
         host = self.host()
         port = host.port
-        a = self.client(host)
-        a.call("live_set tracks 0", "add_listener", {"prop": "mute"})
+        # The raw client, which keeps what the host sent before resetting the
+        # socket: `websockets`' client dropped the goodbye when a heartbeat held
+        # it past the script's 0.3 s close grace (#5).
+        a = RawClient(port)
+        self.addCleanup(a.close)
+        add = {"target": "live_set tracks 0", "name": "add_listener", "args": {"prop": "mute"}}
+        a.sock.sendall(request_frame("sub", [add]))
+        deadline = time.monotonic() + 2.0
+        messages = []
+        while "sub" not in [m.get("uuid") for m in messages]:
+            messages += a.read_messages(1, deadline - time.monotonic())
+        self.assertTrue(a.response.startswith(b"HTTP/1.1 101"), a.response)
+        self.assertEqual(messages[0].get("event"), "connect", messages)
+        result = next(m for m in messages if m.get("uuid") == "sub")
+        self.assertTrue(result["data"][0]["ok"], result)
         self.assertEqual(host.request_stop(), 0)
-        a.wait_event("disconnect")
-        with self.assertRaises(ConnectionClosed):
-            a.recv(2.0)
+        events = [m.get("event") or m["opcode"] for m in a.read_until_closed()]
+        self.assertIn("disconnect", events)
+        goodbye = events.index("disconnect")
+        # No close frame before it (websockets drops what follows one), and
+        # nothing but the close frame after it, then the end (websockets'
+        # ConnectionClosed on the next receive).
+        self.assertNotIn(CLOSE, events[:goodbye], events)
+        self.assertIn(events[goodbye + 1 :], ([], [CLOSE]), events)
         started = time.monotonic()
         again = self.host(port=port)
         self.assertLess(time.monotonic() - started, 5.0)
