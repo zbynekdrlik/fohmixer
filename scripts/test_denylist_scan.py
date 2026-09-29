@@ -395,12 +395,13 @@ class DenylistScanTests(ScanCase):
         self.commit({os.fsdecode(b"d\xe8.txt"): b"\0x", os.fsdecode(b"d\xe9.txt"): b"zyxname\n"})
         self.assertEqual(self.scan("--commits", "HEAD")[0], 1)
 
-    def raw_commit(self, author: str, encoding: str, message: bytes) -> None:
+    def raw_commit(self, author: str, encoding: str, message: bytes, email: str = ALLOWED,
+                   extra: str = "", zone: str = "+0000") -> None:
         """A commit object written as bytes (an `encoding` header that git would convert from)."""
         head = git(self.repo, "rev-parse", "HEAD")
         tree = git(self.repo, "rev-parse", "HEAD^{tree}")
-        body = (f"tree {tree}\nparent {head}\nauthor {author} <{ALLOWED}> 1700000000 +0000\n"
-                f"committer dev <{ALLOWED}> 1700000000 +0000\nencoding {encoding}\n\n").encode("utf-8") + message
+        body = (f"tree {tree}\nparent {head}\nauthor {author} <{email}> 1700000000 {zone}\n"
+                f"committer dev <{email}> 1700000000 {zone}\nencoding {encoding}\n{extra}\n").encode("utf-8") + message
         done = subprocess.run(["git", "-C", str(self.repo), "hash-object", "-t", "commit", "-w", "--stdin"],
                               input=body, check=True, capture_output=True)
         git(self.repo, "update-ref", "refs/heads/main", done.stdout.decode("ascii").strip())
@@ -425,6 +426,25 @@ class DenylistScanTests(ScanCase):
         self.raw_commit("dev", "UCS-2", b"clean\n")
         ids = self.write("ids.txt", f"{ALLOWED}\n")
         self.assertEqual(self.scan("--identities", ids, "--commits", "HEAD^!"), (0, "denylist: clean\n"))
+
+    def test_an_encoding_cannot_turn_a_stored_email_into_an_allowed_one(self) -> None:
+        # UTF-7 renders the stored `dev+AEA-example.org` as the allowed `dev@example.org` (a `+0000`
+        # zone would break the conversion: in UTF-7 a `+` opens a base64 run)
+        self.commit({"a.txt": "x\n"})
+        self.raw_commit("dev", "UTF-7", b"clean\n", email="dev+AEA-example.org", zone="-0100")
+        ids = self.write("ids.txt", f"{ALLOWED}\n")
+        code, out = self.scan("--identities", ids, "--commits", "HEAD^!")
+        self.assertEqual(code, 1)
+        self.assertIn("author email is not an allowed identity", out)
+        self.assertNotIn("AEA", out)
+
+    def test_signature_armour_is_not_scanned(self) -> None:
+        # a signature's base64 is noise, not site data: a short term can occur in it by chance
+        self.commit({"a.txt": "x\n"})
+        armour = ("gpgsig -----BEGIN PGP SIGNATURE-----\n \n iQIz+zyxname/AbC\n"
+                  " -----END PGP SIGNATURE-----\n")
+        self.raw_commit("dev", "UTF-8", b"clean\n", extra=armour)
+        self.assertEqual(self.scan("--commits", "HEAD^!"), (0, "denylist: clean\n"))
 
     def test_hash_mode_keys_a_non_utf8_path_as_the_scan_does(self) -> None:
         name = os.fsdecode(b"caf\xe9.txt")
