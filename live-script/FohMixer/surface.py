@@ -234,13 +234,10 @@ class FohMixer(ControlSurface):
         # Each step on its own: one that fails must not stop the others (a
         # heartbeat that stops makes the hub report Live busy for ever).
         self._guarded("socket reads failed", self._server.poll_in)
-        self._guarded("timer work failed", self._work, now)
+        self._guarded("commands failed", self._drain.run)
+        self._guarded("subscription flush failed", self._subs.flush, now * 1000.0)
         self._guarded("heartbeat failed", self._heartbeat)
         self._guarded("socket writes failed", self._server.poll_out)
-
-    def _work(self, now):
-        self._drain.run()
-        self._subs.flush(now * 1000.0)
 
     def _heartbeat(self):
         """The heartbeat when one is due, timed after this tick's work: a tick

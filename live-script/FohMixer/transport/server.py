@@ -57,8 +57,12 @@ BIND_RETRY_DELAYS_S = (0.25, 0.5, 1.0, 2.0, 5.0)
 LISTEN_BACKLOG = 16
 # Clients past these are refused at accept: every socket is in one `select`
 # per tick, and FD_SETSIZE is 512 on Windows. The hub is one connection.
+# MAX_CONNECTIONS counts the pending handshakes too (they complete later).
 MAX_HANDSHAKES = 16
 MAX_CONNECTIONS = 64
+# A warning that could repeat every tick (accept failing, clients refused)
+# is logged at most once per this, with how many were left out.
+WARNING_INTERVAL_S = 60.0
 # A client that has not sent its whole upgrade request by then is dropped.
 HANDSHAKE_TIMEOUT_S = 3.0
 # A connection whose socket took no byte for this long while output waited is
@@ -77,16 +81,27 @@ IO_BUDGET_S = 0.005
 # Messages are encoded at most this far ahead of the socket, so a heartbeat
 # set now waits only behind these bytes, never behind the queued results.
 WRITE_AHEAD_BYTES = 65536
-# accept() errors that concern one client or a passing lack of resources,
-# not the listener: the listener stays.
-_ACCEPT_TRANSIENT = frozenset(
-    code
-    for code in (
-        getattr(errno, name, None)
-        for name in ("EMFILE", "ENFILE", "ENOBUFS", "ENOMEM", "WSAEMFILE", "WSAENOBUFS")
-    )
-    if code is not None
+
+
+def _errnos(*names):
+    return frozenset(getattr(errno, name) for name in names if hasattr(errno, name))
+
+
+# accept() errors that are not the listener's own (the listener stays):
+# the network's or the pending client's, which accept(2) says to treat like
+# EAGAIN (the next pending client is taken; Windows' WSAECONNRESET is a
+# ConnectionError), and a passing lack of resources (tried again next tick).
+_ACCEPT_SKIP = _errnos(
+    "ENETDOWN",
+    "EPROTO",
+    "ENOPROTOOPT",
+    "EHOSTDOWN",
+    "ENONET",
+    "EHOSTUNREACH",
+    "EOPNOTSUPP",
+    "ENETUNREACH",
 )
+_ACCEPT_LATER = _errnos("EMFILE", "ENFILE", "ENOBUFS", "ENOMEM", "WSAEMFILE", "WSAENOBUFS")
 _LINGER_ABORT = struct.pack("HH" if os.name == "nt" else "ii", 1, 0)
 _BAD_REQUEST = b"HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
 _NO_UUID = object()
@@ -103,6 +118,20 @@ def now_ms():
 def encode_message(message):
     text = json.dumps(message, ensure_ascii=False, separators=(",", ":"), default=str)
     return encode_text_frame(text.encode("utf-8"))
+
+
+def reset_close(sock, log):
+    """Close an accepted socket with a reset, not a FIN: no TIME_WAIT on the
+    port (Windows keeps an SO_EXCLUSIVEADDRUSE port busy while connections
+    accepted on it are still closing, so the script could not bind it again)."""
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, _LINGER_ABORT)
+    except OSError as e:
+        log.debug("linger: %s", e)
+    try:
+        sock.close()
+    except OSError as e:
+        log.debug("close: %s", e)
 
 
 class Connection:
@@ -430,6 +459,7 @@ class Server:
         self._bound = threading.Event()
         self._bind_attempts = 0
         self._next_bind_at = 0.0
+        self._warnings = {}
 
     @property
     def port(self):
@@ -592,13 +622,14 @@ class Server:
                     sock, _addr = self._listener.accept()
                 except (BlockingIOError, InterruptedError):
                     return
-                except ConnectionError as e:
-                    # That client left before its accept (Windows: WSAECONNRESET).
-                    self._log.debug("accept: %s", e)
-                    continue
                 except OSError as e:
-                    if e.errno in _ACCEPT_TRANSIENT:
-                        self._log.warning("accept failed (%s), trying again next tick", e)
+                    if isinstance(e, ConnectionError) or e.errno in _ACCEPT_SKIP:
+                        # That client or the network, not the listener
+                        # (Windows: WSAECONNRESET for a client that left).
+                        self._log.debug("accept: %s", e)
+                        continue
+                    if e.errno in _ACCEPT_LATER:
+                        self._warn("accept", "accept failed (%s), trying again next tick", e)
                         return
                     self._log.warning("accept failed (%s), binding again", e)
                     self._close_listener()
@@ -606,17 +637,17 @@ class Server:
                     return
                 if (
                     len(self._handshakes) >= MAX_HANDSHAKES
-                    or len(self._connections) >= MAX_CONNECTIONS
+                    or len(self._handshakes) + len(self._connections) >= MAX_CONNECTIONS
                 ):
                     refused += 1
-                    sock.close()
+                    reset_close(sock, self._log)
                     continue
                 try:
                     sock.setblocking(False)
                     sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
                 except OSError as e:
                     self._log.warning("cannot configure a client socket (%s)", e)
-                    sock.close()
+                    reset_close(sock, self._log)
                     continue
                 handshake = _Handshake(sock, now)
                 self._handshakes.append(handshake)
@@ -626,7 +657,8 @@ class Server:
                     self._fail(handshake, "reading")
         finally:
             if refused:
-                self._log.warning(
+                self._warn(
+                    "refused",
                     "refused %s clients: %s handshakes and %s connections open (limits %s, %s)",
                     refused,
                     len(self._handshakes),
@@ -652,10 +684,9 @@ class Server:
             if len(handshake.request) > HANDSHAKE_MAX_BYTES:
                 self._drop_handshake(handshake)
                 return
-        self._handshakes.remove(handshake)
         parsed = parse_http_request(handshake.request)
         if parsed is None:
-            handshake.sock.close()
+            self._drop_handshake(handshake)
             return
         _method, _path, headers, leftover = parsed
         # A browser always sends Origin; the hub never does. Refusing it keeps
@@ -665,8 +696,9 @@ class Server:
                 handshake.sock.send(_BAD_REQUEST)
             except OSError as e:
                 self._log.debug("refused request: %s", e)
-            handshake.sock.close()
+            self._drop_handshake(handshake)
             return
+        self._handshakes.remove(handshake)
         hello = encode_message({"event": "connect", "data": self.connect_data, "ts": now_ms()})
         conn = Connection(
             handshake.sock,
@@ -676,9 +708,10 @@ class Server:
             self.inbox,
             now,
         )
-        self._connections.append(conn)
-        self._log.warning("client connected (connection %s)", conn.id)
+        # From here the socket is the connection's: a failure closes the connection.
         try:
+            self._connections.append(conn)
+            self._log.warning("client connected (connection %s)", conn.id)
             if leftover:
                 conn.take(leftover)
             conn.receive()
@@ -688,7 +721,20 @@ class Server:
     def _drop_handshake(self, handshake):
         if handshake in self._handshakes:
             self._handshakes.remove(handshake)
-        handshake.sock.close()
+        reset_close(handshake.sock, self._log)
+
+    def _warn(self, kind, message, *args):
+        """A warning that could repeat every tick: logged at most once per
+        ``WARNING_INTERVAL_S`` for its ``kind``, with how many were left out."""
+        now = time.monotonic()
+        last, left_out = self._warnings.get(kind, (None, 0))
+        if last is not None and now - last < WARNING_INTERVAL_S:
+            self._warnings[kind] = (last, left_out + 1)
+            return
+        if left_out:
+            message = f"{message} ({left_out} more since the last one)"
+        self._log.warning(message, *args)
+        self._warnings[kind] = (now, 0)
 
     def _fail(self, owner, what):
         """An unexpected error while serving one client (a bug): log it with its
