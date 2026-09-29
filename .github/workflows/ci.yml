@@ -1,8 +1,8 @@
 name: CI
 
 # The iemmixer CI baseline (copied from iemmixer @ 22372bc and adapted, spec
-# §5.4): integrity, the Python job for the Live script on SimLive and the
-# TouchOSC import tool, fmt and clippy (native and wasm32), tests with a
+# §5.4): integrity, the Python job for the Live script on SimLive, the
+# TouchOSC import tool and the live probe, fmt and clippy (native and wasm32), tests with a
 # coverage floor (the hub's tests run real sim/host.py processes), the
 # Windows build of the hub (the PC's platform: DPAPI), the Trunk build,
 # Playwright E2E in Chromium and WebKit (iPad) with the console guard,
@@ -85,6 +85,11 @@ jobs:
         run: |
           set -euo pipefail
           python -m unittest discover -s tools/import-tosc -p 'test_*.py' -v 2>&1 | tee "$RUNNER_TEMP/import-tests.log"
+      - name: Live probe tests (summary math + runs against sim/host.py)
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          python -m unittest discover -s tools/live-probe -p 'test_*.py' -v 2>&1 | tee "$RUNNER_TEMP/probe-tests.log"
       - name: E2E harness tests (against real sim/host.py processes)
         if: ${{ !cancelled() }}
         run: |
@@ -96,7 +101,7 @@ jobs:
           set -euo pipefail
           # unittest marks a skip as "... skipped 'reason'" and counts it as "(skipped=N)";
           # a test NAME may contain the word, so match the markers only.
-          if grep -E "\.\.\. (skipped|expected failure|unexpected success)|skipped=|expected failures=" "$RUNNER_TEMP/sim-tests.log" "$RUNNER_TEMP/script-tests.log" "$RUNNER_TEMP/import-tests.log" "$RUNNER_TEMP/harness-tests.log"; then
+          if grep -E "\.\.\. (skipped|expected failure|unexpected success)|skipped=|expected failures=" "$RUNNER_TEMP/sim-tests.log" "$RUNNER_TEMP/script-tests.log" "$RUNNER_TEMP/import-tests.log" "$RUNNER_TEMP/probe-tests.log" "$RUNNER_TEMP/harness-tests.log"; then
             echo "::error::a Python test was skipped"; exit 1
           fi
 
