@@ -99,23 +99,48 @@ async fn get_status(
     Ok(Json(hub.status().await))
 }
 
-/// Whether a `Host` header value (a name or an address, an optional port)
-/// names this hub: an IP address, `localhost`, or one of `allowed` (the
+/// Whether `port` is a port number's digits (one or more, nothing else).
+fn is_port(port: &str) -> bool {
+    !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// The one reading of a `Host` value (#9): a name or an address, then an
+/// optional `:<digits>` port and nothing else; brackets hold an IPv6
+/// address only. Returns the name or address (an IPv6 one without its
+/// brackets) and whether it was bracketed, or `None` for anything else
+/// (`[::1] x`, `127.0.0.1:1 x`, an empty or non-digit port, a name in
+/// brackets).
+fn host_name(host: &str) -> Option<(&str, bool)> {
+    if let Some(rest) = host.strip_prefix('[') {
+        let (addr, after) = rest.split_once(']')?;
+        let port_ok = after.is_empty() || after.strip_prefix(':').is_some_and(is_port);
+        return (port_ok && addr.parse::<Ipv6Addr>().is_ok()).then_some((addr, true));
+    }
+    match host.rsplit_once(':') {
+        Some((name, port)) => is_port(port).then_some((name, false)),
+        None => Some((host, false)),
+    }
+}
+
+/// Whether a `Host` header value (read by `host_name`) names this hub: an IP
+/// address (IPv6 in brackets), `localhost`, or one of `allowed` (the
 /// config's `allowed_hosts`). A request without one (not a browser) passes.
+/// A Host with anything after its address is refused (#9): it would pass
+/// the Origin guard with a matching `Origin` and reach the log lines.
 pub fn host_allowed(host: Option<&str>, allowed: &[String]) -> bool {
     let Some(host) = host else {
         return true;
     };
-    if let Some(rest) = host.strip_prefix('[') {
-        // An IPv6 address: `[::1]` or `[::1]:8480`.
-        return rest
-            .split_once(']')
-            .is_some_and(|(addr, _)| addr.parse::<Ipv6Addr>().is_ok());
+    match host_name(host) {
+        None => false,
+        // An IPv6 address: `host_name` parsed it.
+        Some((_, true)) => true,
+        Some((name, false)) => {
+            name.parse::<Ipv4Addr>().is_ok()
+                || name.eq_ignore_ascii_case("localhost")
+                || allowed.iter().any(|a| a.eq_ignore_ascii_case(name))
+        }
     }
-    let name = host.rsplit_once(':').map_or(host, |(name, _port)| name);
-    name.parse::<Ipv4Addr>().is_ok()
-        || name.eq_ignore_ascii_case("localhost")
-        || allowed.iter().any(|a| a.eq_ignore_ascii_case(name))
 }
 
 /// Refuses (421) a request whose `Host` is not this hub's: a page on any
@@ -157,7 +182,7 @@ pub fn redirect_target(
 ) -> Option<String> {
     let tls = tls.filter(|tls| tls.redirect_http && !proxied)?;
     let https_port = https_port?;
-    let name = host?.rsplit_once(':').map_or(host?, |(name, _port)| name);
+    let (name, _bracketed) = host_name(host?)?;
     if !name.eq_ignore_ascii_case(&tls.name) {
         return None;
     }
@@ -533,6 +558,29 @@ mod tests {
         assert!(host_allowed(None, &[]), "no Host: not a browser");
     }
 
+    #[test]
+    fn after_the_host_only_a_port_may_follow() {
+        let allowed = vec!["foh.local".to_string()];
+        for host in ["[::1]", "[::1]:8443", "127.0.0.1:8480", "foh.local:443"] {
+            assert!(host_allowed(Some(host), &allowed), "{host}");
+        }
+        // Anything else after the address would pass the Origin guard with a
+        // matching Origin and reach a log line (#9): refused.
+        for host in [
+            "[::1] x",
+            "[::1]junk",
+            "[::1]:",
+            "[::1]:84a0",
+            "[::1]: 8443",
+            "127.0.0.1:1 x",
+            "127.0.0.1:",
+            "localhost:80x",
+            "foh.local:443 source=lan",
+        ] {
+            assert!(!host_allowed(Some(host), &allowed), "{host}");
+        }
+    }
+
     #[tokio::test]
     async fn a_request_for_a_foreign_host_is_refused() {
         let dir = tempfile::tempdir().unwrap();
@@ -623,6 +671,43 @@ mod tests {
             redirect_target(Some("foh.example.org"), false, None, Some(443), "/"),
             None
         );
+    }
+
+    #[test]
+    fn the_redirect_reads_the_host_as_the_host_check_does() {
+        // One Host parser (#9): a Host the check refuses is not a name to
+        // redirect either.
+        let on = tls(443, true);
+        let allowed = vec!["foh.example.org".to_string()];
+        for host in [
+            "foh.example.org:8480 x",
+            "foh.example.org:",
+            "foh.example.org:84a0",
+        ] {
+            assert!(!host_allowed(Some(host), &allowed), "{host}");
+            assert_eq!(
+                redirect_target(Some(host), false, Some(&on), Some(443), "/"),
+                None,
+                "{host}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_bracketed_name_is_neither_allowed_nor_redirected() {
+        // Brackets hold an IPv6 address only: the parser itself refuses a
+        // name in them, so the redirect does not depend on the check
+        // running first.
+        let on = tls(443, true);
+        let allowed = vec!["foh.example.org".to_string()];
+        for host in ["[foh.example.org]", "[foh.example.org]:8480"] {
+            assert!(!host_allowed(Some(host), &allowed), "{host}");
+            assert_eq!(
+                redirect_target(Some(host), false, Some(&on), Some(443), "/"),
+                None,
+                "{host}"
+            );
+        }
     }
 
     #[tokio::test]

@@ -140,8 +140,9 @@ fn is_websocket_upgrade(headers: &HeaderMap) -> bool {
         .is_some_and(|v| v.eq_ignore_ascii_case("websocket"))
 }
 
-/// `host[:port]` of an `Origin` value (`http(s)://host[:port]`).
-fn origin_authority(origin: &str) -> Option<&str> {
+/// `host[:port]` of an `Origin` value (`http(s)://host[:port]`); also the
+/// page host a socket's connect line names (`ws::opener`).
+pub fn origin_authority(origin: &str) -> Option<&str> {
     origin
         .strip_prefix("https://")
         .or_else(|| origin.strip_prefix("http://"))
