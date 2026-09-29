@@ -557,6 +557,16 @@ body {
     touch-action: none;
 }
 
+/* A rail button's words never break (#21: "TECHALER" / "T"): its font
+   follows its longest word `--n` (written once by the component) so the
+   word fits the rail button's 66 px text width (112 - 16 - 2 - 28): the
+   face's capitals take ~0.62 em each (0.65 counted) and 0.6 px spacing;
+   at most 11.5 px. The break anywhere stays the last guard for a word of
+   wide letters (W, M). */
+.rail .btn-text {
+    font-size: min(11.5px, calc((66px - var(--n, 5) * 0.6px) / (var(--n, 5) * 0.65)));
+}
+
 .btn::before {
     content: "";
     position: absolute;

@@ -7,7 +7,7 @@ use leptos::html;
 use leptos::prelude::*;
 
 use super::buttons::toggle_flag;
-use super::{readiness, slot_of};
+use super::{BtnText, readiness, slot_of};
 use crate::behave::mute::{GUARD_MS, GuardAction, MuteGuard};
 use crate::behave::timing::{Debounce, REFRESH_FLASH_MS, blink_on};
 use crate::binding::mute_sub;
@@ -104,7 +104,7 @@ pub fn AlertView(
             aria-disabled=disabled
             on:pointerdown=on_down
         >
-            {text}
+            <BtnText text=text />
         </div>
         <div
             class="alert-wash"
@@ -152,7 +152,7 @@ pub fn RefreshView(label: Option<String>) -> impl IntoView {
             data-flash=move || flash.get().to_string()
             on:pointerdown=on_down
         >
-            {text}
+            <BtnText text=text />
         </div>
     }
 }

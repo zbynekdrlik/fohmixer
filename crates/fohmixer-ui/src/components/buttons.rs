@@ -8,7 +8,7 @@ use fohmixer_proto::layout::{Anchor, Binding};
 use leptos::prelude::*;
 use serde_json::{Value, json};
 
-use super::{fail_flash, readiness, slot_of};
+use super::{BtnText, fail_flash, readiness, slot_of};
 use crate::behave::colour::{css_color, text_on};
 use crate::behave::label::{label_chars, strip_label};
 use crate::behave::mute::{GUARD_MS, GuardAction, MuteGuard, lit};
@@ -170,7 +170,7 @@ pub fn SoloView(binding: Binding, label: Option<String>) -> impl IntoView {
             aria-disabled=disabled
             on:pointerdown=on_down
         >
-            {label}
+            <BtnText text=label />
         </div>
     }
 }
@@ -212,7 +212,7 @@ pub fn StageMicsView(binding: Binding, label: Option<String>) -> impl IntoView {
             aria-disabled=disabled
             on:pointerdown=on_down
         >
-            {label}
+            <BtnText text=label />
         </div>
     }
 }
@@ -258,7 +258,7 @@ pub fn HubToggleView(key: String, label: String) -> impl IntoView {
             aria-disabled=disabled
             on:pointerdown=on_down
         >
-            {label}
+            <BtnText text=label />
         </div>
     }
 }

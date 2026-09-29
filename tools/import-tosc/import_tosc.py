@@ -956,7 +956,13 @@ class Importer:
         return node.name == name or any(self.has(c, name) for c in node.children)
 
     def group_text(self, node):
-        return next((_words(c.text) for c in node.children if c.type == "LABEL" and c.text), "")
+        """The group's first label that spells a word: a text without a
+        letter (TouchOSC's "[][][]..." placeholder a script overwrites at run
+        time) names nothing (#21)."""
+        return next(
+            (_words(c.text) for c in node.children if c.type == "LABEL" and LETTER.search(c.text)),
+            "",
+        )
 
     def alert(self, node, rect, clip, out, path):
         """The hidden full-screen box that blinks while TechAlert is unmuted.
