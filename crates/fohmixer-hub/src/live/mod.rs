@@ -14,7 +14,8 @@ pub mod subs;
 /// An instance is busy when Live's main-thread tick is older than this.
 pub const BUSY_TICK_AGE_MS: f64 = 150.0;
 /// An instance is busy when no heartbeat came for this long (the script
-/// sends one every 100 ms from its own thread).
+/// makes one every 100 ms in Live's main-thread tick since #5, so none
+/// comes while Live's main thread stalls).
 pub const HEARTBEAT_OVERDUE: Duration = Duration::from_millis(300);
 /// The first reconnect delay; it doubles up to [`RECONNECT_MAX`].
 pub const RECONNECT_FIRST: Duration = Duration::from_millis(250);
@@ -39,12 +40,13 @@ pub fn busy_reason(main_tick_age_ms: f64, since_heartbeat: Duration) -> Option<S
 }
 
 /// What a heartbeat that came after an overdue gap says about where it was
-/// held (#9), or `None` for one in time. `gap_ms` is the script's heartbeat
-/// thread's time since its previous heartbeat (long: the thread did not
-/// run). `sent_ms` is the script's stamp of the heartbeat and `arrived_ms`
-/// the hub's clock at its arrival, both ms since the Unix epoch on the one
-/// PC: a long difference means it waited on the way (the script's sender or
-/// the socket).
+/// held (#9), or `None` for one in time. `gap_ms` is the script's time
+/// since it made its previous heartbeat (long: the script did not make it;
+/// since #5 it is made in Live's main-thread tick, so a stall stops it).
+/// `sent_ms` is the script's stamp of the heartbeat and `arrived_ms` the
+/// hub's clock at its arrival, both ms since the Unix epoch on the one PC:
+/// a long difference means it waited on the way (the script's write or the
+/// socket).
 pub fn late_heartbeat(
     since_previous: Duration,
     gap_ms: Option<f64>,
@@ -131,7 +133,7 @@ pub enum Frame {
     Disconnect,
     Heartbeat {
         main_tick_age_ms: f64,
-        /// The heartbeat thread's time since its previous heartbeat.
+        /// The script's time since it made its previous heartbeat.
         gap_ms: Option<f64>,
         /// When the script set it (its `ts`, ms since the Unix epoch).
         sent_ms: Option<f64>,

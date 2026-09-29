@@ -1,6 +1,11 @@
 # Vendored from leolabs/ableton-js v5.0.3 @69de331, midi-script/WebSocket.py.
 # Copyright (c) 2022 Leo Bernard. MIT License, see LICENSE-ableton-js.
-# Unchanged apart from this header (`fmt: off` keeps the formatter away).
+# Changed (#5): the request is parsed from bytes already read
+# (`parse_http_request`) and the 101 response is built as bytes
+# (`handshake_response`), for the server that reads and writes non-blocking
+# on Live's main thread; `read_http_request` and
+# `complete_websocket_handshake` keep their blocking form on top of them.
+# Otherwise unchanged (`fmt: off` keeps the formatter away).
 # fmt: off
 
 import base64
@@ -80,6 +85,19 @@ def read_http_request(conn):
         if len(data) > HANDSHAKE_MAX_BYTES:
             return None
 
+    return parse_http_request(data)
+
+
+def parse_http_request(data):
+    """Parse one HTTP request from bytes holding its whole header block.
+
+    Returns (method, path, headers, leftover) or None on failure.
+    leftover is any bytes after the header block.
+    """
+    data = to_bytes(data)
+    if b"\r\n\r\n" not in data:
+        return None
+
     header_blob, leftover = data.split(b"\r\n\r\n", 1)
     try:
         header_text = to_text(header_blob)
@@ -107,8 +125,8 @@ def is_websocket_upgrade(headers):
     return "websocket" in upgrade and bool(headers.get("sec-websocket-key"))
 
 
-def complete_websocket_handshake(conn, headers):
-    """Send the 101 Switching Protocols response. Returns True on success.
+def handshake_response(headers):
+    """The 101 Switching Protocols response, as bytes.
 
     Caller must have already verified is_websocket_upgrade(headers).
     """
@@ -123,9 +141,16 @@ def complete_websocket_handshake(conn, headers):
         "Connection: Upgrade\r\n"
         f"Sec-WebSocket-Accept: {accept}\r\n\r\n"
     )
+    return to_bytes(response)
 
+
+def complete_websocket_handshake(conn, headers):
+    """Send the 101 Switching Protocols response. Returns True on success.
+
+    Caller must have already verified is_websocket_upgrade(headers).
+    """
     try:
-        conn.sendall(to_bytes(response))
+        conn.sendall(handshake_response(headers))
     except OSError:
         return False
 

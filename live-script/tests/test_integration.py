@@ -181,11 +181,6 @@ def stalled_client(port, envelopes):
     return sock
 
 
-def percentile(values, fraction):
-    ordered = sorted(values)
-    return ordered[min(len(ordered) - 1, int(len(ordered) * fraction))]
-
-
 def free_port_pair():
     """Two consecutive free localhost ports (band on P, master on P+1)."""
     for _ in range(50):
@@ -390,16 +385,18 @@ class IntegrationTest(unittest.TestCase):
     def test_a_client_that_stops_reading_blocks_nobody(self):
         """Client C subscribes 20 meters, asks for ~6 MB of results and never reads.
 
-        That is more than loopback buffers take (~4 MB at most), so C's sender
-        thread blocks in sendall until its 3 s send timeout drops C ("send
-        failed" in the log). A reads heartbeats from before C connects until
-        after C is dropped, so they cover all of C's blocked time: Live's main
-        thread must keep ticking throughout. A's round trips are measured once
+        That is more than loopback buffers take (~4 MB at most), so C's socket
+        stops taking data; the main thread keeps C's output (it never waits on
+        a socket, #5) until C's socket took nothing for 3 s, then drops C ("read
+        nothing for" in the log). A reads heartbeats from before C connects
+        until after C is dropped, so they cover all of C's stuck time: Live's
+        main thread must keep ticking throughout. A's round trips are measured once
         C's requests have run (until then A's requests queue behind C's in the
         one inbox, by design). A main thread blocked on C would show seconds of
-        heartbeat age and round trip; scheduler noise on a shared machine shows
-        as single outliers of up to a few hundred ms, so the typical (p90)
-        values carry the < 50 ms expectation and the worst must stay under 1 s.
+        heartbeat age and round trip (C is stuck for 3 s), so the worst of
+        each must stay under 1 s. How fast the typical ones are belongs to the
+        machine (a p90 under 50 ms failed on a loaded runner, #5 review), so it
+        is not bounded here.
         """
         host = self.host(meters_hz=30)
         a = self.client(host)
@@ -427,7 +424,7 @@ class IntegrationTest(unittest.TestCase):
         round_trips = []
         give_up = time.monotonic() + 10.0
         measure_until = time.monotonic() + 1.2
-        while time.monotonic() < measure_until or "send failed" not in host.log_text():
+        while time.monotonic() < measure_until or "read nothing for" not in host.log_text():
             self.assertLess(time.monotonic(), give_up, "C was never dropped: it never blocked")
             started = time.monotonic()
             a.call("live_set", "get_prop", {"prop": "is_playing"})
@@ -441,29 +438,26 @@ class IntegrationTest(unittest.TestCase):
         ]
         detail = f"round trips ms: {[round(r * 1000, 1) for r in round_trips]}; ages ms: {ages}"
         self.assertGreater(len(ages), 25, detail)
-        self.assertLess(percentile(round_trips, 0.9), 0.05, detail)
-        self.assertLess(percentile(ages, 0.9), 50, detail)
         self.assertLess(max(round_trips), 1.0, detail)
         self.assertLess(max(ages), 1000, detail)
         self.assertEqual(a.call("live_set", "get_prop", {"prop": "is_playing"}), False)
 
-    def test_heartbeat_shows_a_main_thread_stall_while_it_lasts(self):
-        """A 700 ms stall: heartbeats (every 100 ms) report ages of 400 ms and more.
-
-        The age resets once the main thread runs again, so a heartbeat with an
-        age >= 400 ms was sent during the stall. 700 ms leaves three heartbeat
-        slots at >= 400 ms (500 ms would leave one, which jitter can miss).
+    def test_a_stall_stops_the_heartbeats_and_the_next_one_reports_it(self):
+        """A 700 ms stall of the main thread. The heartbeat is made in the
+        main thread's tick (#5), so none goes out while the stall lasts (the
+        hub marks the instance busy once one is 300 ms overdue), and the first
+        one after it reports the stall: its tick age is the time the main
+        thread was away, its gap the time since the heartbeat before the stall.
         """
         host = self.host()
         a = self.client(host)
         a.wait_event("heartbeat")
         host.control("stall 700")
         stall_seen = a.wait_event("heartbeat", 2.0, lambda f: f["data"]["main_tick_age_ms"] >= 400)
-        self.assertLess(stall_seen["data"]["main_tick_age_ms"], 1500)
-        # The heartbeat thread itself kept its 100 ms beat (#9: gap_ms tells
-        # a stalled main thread from a heartbeat thread that did not run).
-        self.assertLess(stall_seen["data"]["gap_ms"], 400, stall_seen)
-        self.assertGreaterEqual(stall_seen["data"]["gap_ms"], 90, stall_seen)
+        self.assertLess(stall_seen["data"]["main_tick_age_ms"], 1500, stall_seen)
+        self.assertGreaterEqual(stall_seen["data"]["gap_ms"], 600, stall_seen)
+        self.assertLess(stall_seen["data"]["gap_ms"], 1500, stall_seen)
+        self.assertIn("main thread stalled", host.log_text())
         self.assertEqual(a.call("live_set", "get_prop", {"prop": "is_playing"}), False)
 
     def test_sigterm_disconnects_and_a_new_host_rebinds_the_port(self):
