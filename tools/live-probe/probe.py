@@ -341,9 +341,12 @@ class Connection:
             # The script sends whole text frames only (`encode_text_frame`).
             raise ProbeError(f"unexpected frame from the script: opcode {opcode}, fin {fin}")
         try:
-            return json.loads(payload.decode("utf-8"))
+            message = json.loads(payload.decode("utf-8"))
         except (UnicodeDecodeError, ValueError) as e:
             raise ProbeError(f"unreadable message from the script: {e}") from e
+        if not isinstance(message, dict):
+            raise ProbeError(f"a message from the script is not a JSON object: {message!r}")
+        return message
 
     def close(self):
         """Our close frame, the script's (up to ``CLOSE_WAIT_S``), then the socket."""
@@ -434,14 +437,27 @@ def _heartbeat(message, arrival_s, arrival_wall_ms):
         raise ProbeError(f"unreadable heartbeat {message!r}: {e}") from e
 
 
+def await_connect(conn):
+    """The script's ``connect`` data. A heartbeat may come first: the script
+    adds a new connection to the heartbeat broadcast before its sender has sent
+    the queued connect, and a pending heartbeat goes out first; it is skipped."""
+    deadline = time.perf_counter() + CONNECT_TIMEOUT_S
+    while (remaining := deadline - time.perf_counter()) > 0:
+        message = conn.receive(remaining)
+        if message is None:
+            break
+        if message.get("event") == "connect":
+            return message.get("data") or {}
+        if message.get("event") != "heartbeat":
+            raise ProbeError(f"the script's first message is not connect: {message!r}")
+    raise ProbeError(f"no connect from the script in {CONNECT_TIMEOUT_S} s")
+
+
 def record(conn, seconds, probe_ms):
     """Heartbeats and timed reads for ``seconds``; then up to ``RESULT_WAIT_S``
     for the last reads' results. Returns the ``Recorder``; its times are
     seconds since the start of the run (``time.perf_counter``)."""
-    hello = conn.receive(CONNECT_TIMEOUT_S)
-    if not isinstance(hello, dict) or hello.get("event") != "connect":
-        raise ProbeError(f"the script's first message is not connect: {hello!r}")
-    recorder = Recorder(hello.get("data") or {})
+    recorder = Recorder(await_connect(conn))
     uuids = itertools.count(1)
     interval = probe_ms / 1000.0
     clock = time.perf_counter
