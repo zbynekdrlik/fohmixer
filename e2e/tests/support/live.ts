@@ -323,3 +323,16 @@ export async function textSize(el: Locator): Promise<{ w: number; h: number }> {
     return { w: t.width, h: t.height };
   });
 }
+
+/** The page's hub socket (`page.routeWebSocket(HUB_SOCKET, …)`). */
+export const HUB_SOCKET = /\/ws\?/;
+
+/** Where the page keeps its last handshake reload (wall clock ms). */
+export const RELOAD_KEY = "fohmixer_proto_reload_at";
+
+/** Every page load of `page`, counted. */
+export function countLoads(page: Page): () => number {
+  let loads = 0;
+  page.on("load", () => (loads += 1));
+  return () => loads;
+}

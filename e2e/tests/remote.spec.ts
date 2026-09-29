@@ -1,8 +1,9 @@
 import { createPrivateKey, createSign, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import http from "node:http";
-import { test, expect, type Page } from "./support/fixtures";
+import { test, expect } from "./support/fixtures";
 import { BASE, openSurface, token } from "./support/live";
+import { HTTPS, releaseWakeLocks, stubWakeLock, wakeLockRequests } from "./support/pwa";
 
 // Remote access (#17): one name for the LAN and the Cloudflare tunnel.
 //
@@ -17,7 +18,6 @@ import { BASE, openSurface, token } from "./support/live";
 // (`cf-connecting-ip`): cloudflared connects from the PC itself, so the header,
 // not the address, is what makes it an internet request.
 
-const HTTPS = process.env.E2E_HTTPS_URL || "https://foh.e2e.test:8443";
 const PUBLIC = new URL(HTTPS);
 const KEY_FILE = process.env.E2E_ACCESS_KEY || "";
 const TEAM = process.env.E2E_ACCESS_TEAM || "fohmixer-e2e.cloudflareaccess.com";
@@ -78,49 +78,6 @@ function upgrade(headers: Record<string, string>): Promise<number> {
   });
 }
 
-/**
- * Replaces the browser's Screen Wake Lock with a recording one: headless
- * browsers hold no real wake lock, and what is tested is the page's logic
- * (take it on the https origin, take it again when the page comes back).
- */
-function stubWakeLock() {
-  const requests: string[] = [];
-  const held: (EventTarget & { release(): Promise<void> })[] = [];
-  (window as any).__wakeLock = {
-    requests,
-    releaseAll() {
-      for (const sentinel of held.splice(0)) sentinel.release();
-    },
-  };
-  Object.defineProperty(Navigator.prototype, "wakeLock", {
-    configurable: true,
-    get() {
-      return {
-        request(type: string) {
-          requests.push(type);
-          const sentinel = Object.assign(new EventTarget(), {
-            released: false,
-            type,
-            release() {
-              if (!sentinel.released) {
-                sentinel.released = true;
-                sentinel.dispatchEvent(new Event("release"));
-              }
-              return Promise.resolve();
-            },
-          });
-          held.push(sentinel);
-          return Promise.resolve(sentinel);
-        },
-      };
-    },
-  });
-}
-
-async function wakeLockRequests(page: Page): Promise<string[]> {
-  return page.evaluate(() => (window as any).__wakeLock.requests);
-}
-
 test.describe("The public name over HTTPS (the LAN path)", () => {
   test.use({ baseURL: HTTPS });
 
@@ -139,7 +96,7 @@ test.describe("The public name over HTTPS (the LAN path)", () => {
     // after the system released it.
     await expect(root).toHaveAttribute("data-wake-lock", "held");
     expect(await wakeLockRequests(page)).toEqual(["screen"]);
-    await page.evaluate(() => (window as any).__wakeLock.releaseAll());
+    await releaseWakeLocks(page);
     await expect(root).toHaveAttribute("data-wake-lock", "released");
     await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
     await expect(root).toHaveAttribute("data-wake-lock", "held");

@@ -1,5 +1,6 @@
 //! HTTP routes (trimmed from iemmixer's `iem-server/src/routes.rs` @
-//! 22372bc): the version, client panic reports and the embedded UI (public);
+//! 22372bc): the version, client panic reports, the pages' diagnostic
+//! reports (#26, `client_report.rs`) and the embedded UI (public);
 //! the engineer login; the layout, the status and the client WebSocket (a
 //! token). Every request must name this hub as its `Host` ([`check_host`]).
 
@@ -197,6 +198,12 @@ pub fn api_routes() -> Router<Hub> {
             // 10_240 bytes = 10 KiB, written as a literal so cargo-mutants has
             // no operator to mutate; pinned by the router tests below.
             post(client_error).layer(DefaultBodyLimit::max(10_240)),
+        )
+        .route(
+            "/api/client-report",
+            // The same 10 KiB, a literal for the same reason; pinned by
+            // `client_report`'s tests.
+            post(crate::client_report::client_report).layer(DefaultBodyLimit::max(10_240)),
         )
         .route("/api/auth", post(crate::auth::login))
         .route("/api/layout", get(get_layout))
@@ -487,6 +494,7 @@ mod tests {
         assert_eq!(status.layout.rev, 0);
         assert!(!status.stage_aut.on);
         assert_eq!(status.clients, 0);
+        assert!(status.client_reports.is_empty());
         let response = get_with_token(&hub, "/api/layout").await;
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
         let body: serde_json::Value = serde_json::from_slice(&body_bytes(response).await).unwrap();
