@@ -421,7 +421,7 @@ class DenylistScanTests(ScanCase):
         self.assertEqual(code, 1)
         self.assertIn("commit metadata: denylist entry 1", out)
 
-    def test_identities_are_read_as_stored(self) -> None:
+    def test_a_ucs2_header_keeps_the_identities_readable(self) -> None:
         self.commit({"a.txt": "x\n"})
         self.raw_commit("dev", "UCS-2", b"clean\n")
         ids = self.write("ids.txt", f"{ALLOWED}\n")
@@ -483,6 +483,40 @@ class DenylistScanTests(ScanCase):
             self.assertEqual(code, 1, author)
             self.assertIn("author email is not an allowed identity", out)
             self.assertNotIn(LEGACY, out)
+
+    def test_the_rendered_email_must_be_allowed_too(self) -> None:
+        # the stored `dev+AEA-example.org` is on the list, but UTF-7 renders it as `dev@example.org`
+        self.commit({"a.txt": "x\n"})
+        self.raw_commit("dev", "UTF-7", b"clean\n", email="dev+AEA-example.org", zone="-0100")
+        ids = self.write("ids.txt", "dev+AEA-example.org\n")
+        code, out = self.scan("--identities", ids, "--commits", "HEAD^!")
+        self.assertEqual(code, 1)
+        self.assertIn("author email is not an allowed identity", out)
+
+    def test_a_signature_ends_at_a_top_level_line_even_one_that_looks_like_base64(self) -> None:
+        self.commit({"a.txt": "x\n"})
+        self.write_commit(f"author dev <{ALLOWED}> 1700000000 +0000\ncommitter dev <{ALLOWED}> 1700000000 +0000\n"
+                          "gpgsig -----BEGIN PGP SIGNATURE-----\n iQIz\nzyxname\n", literally=True)
+        code, out = self.scan("--commits", "HEAD^!")
+        self.assertEqual(code, 1)
+        self.assertIn("commit metadata: denylist entry 1", out)
+
+    def test_only_an_exact_marker_opens_a_signature(self) -> None:
+        # the rendering does not show an extra header: only the stored scan can see this one
+        self.commit({"a.txt": "x\n"})
+        self.write_commit(f"author dev <{ALLOWED}> 1700000000 +0000\ncommitter dev <{ALLOWED}> 1700000000 +0000\n"
+                          "x-note -----BEGIN zyxname\n", literally=True)
+        code, out = self.scan("--commits", "HEAD^!")
+        self.assertEqual(code, 1)
+        self.assertIn("commit metadata: denylist entry 1", out)
+
+    def test_a_commit_without_a_readable_stored_identity_is_rejected(self) -> None:
+        ids = self.write("ids.txt", f"{ALLOWED}\n")
+        self.commit({"a.txt": "x\n"})
+        self.write_commit(f"author dev <{ALLOWED}>\ncommitter dev <{ALLOWED}> 1700000000 +0000\n", literally=True)
+        code, out = self.scan("--identities", ids, "--commits", "HEAD^!")
+        self.assertEqual(code, 1)
+        self.assertIn("author email is not an allowed identity", out)
 
     def test_signature_armour_is_not_scanned(self) -> None:
         # a signature's base64 is noise, not site data: a short term can occur in it by chance
