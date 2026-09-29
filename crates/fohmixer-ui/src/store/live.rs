@@ -396,9 +396,12 @@ impl LiveStore {
         if net::on_hello(proto, min_client_proto, build, now, net::last_reload())
             == Decision::Reload
         {
+            let page = fohmixer_proto::VERSION;
             net::reload(
                 now,
-                &format!("hub {build} serves UI protocol {min_client_proto}..={proto}"),
+                &format!(
+                    "hub {build} (this page {page}) serves UI protocol {min_client_proto}..={proto}"
+                ),
             );
             return;
         }

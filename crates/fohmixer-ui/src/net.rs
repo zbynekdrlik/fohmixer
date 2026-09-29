@@ -1,6 +1,7 @@
 //! The hub connection's rules (S4 design note §4, §6): the reconnect
 //! schedule (under 2 s, never giving up), the protocol handshake (iemmixer's
-//! `handshake.rs` @ 22372bc: a bounded reload on a protocol mismatch), the
+//! `handshake.rs` @ 22372bc: a bounded reload on a protocol mismatch, and
+//! since #26 on a hub of another build), the
 //! WebSocket URL, and what an HTTP answer of the hub means. The browser
 //! calls (`fetch_text`, `reload`, `last_reload`) are thin wrappers.
 
@@ -42,16 +43,22 @@ fn may_reload(now: f64, last: Option<f64>) -> bool {
 }
 
 /// The decision on the hub's hello: reload (at most once a minute) when
-/// the hub does not serve this page's protocol.
+/// the hub does not serve this page's protocol, or runs another build than
+/// the page's own (`server_build`, the hub's `fohmixer_proto::VERSION`).
+/// The build check (#26) brings an open page, a Home Screen app included,
+/// onto the new bundle after every deploy: the hub restarts, the socket
+/// reconnects, the hello names the new build. `sw.js` is network-only, so
+/// the reload fetches the new bundle.
 pub fn on_hello(
     server_proto: u32,
     min_client_proto: u32,
-    _server_build: &str,
+    server_build: &str,
     now: f64,
     last: Option<f64>,
 ) -> Decision {
     let served = (min_client_proto..=server_proto).contains(&UI_PROTO);
-    if served || !may_reload(now, last) {
+    let current = server_build == fohmixer_proto::VERSION;
+    if (served && current) || !may_reload(now, last) {
         Decision::Keep
     } else {
         Decision::Reload
