@@ -210,35 +210,76 @@ test.describe("The frame rate", () => {
   });
 });
 
-test.describe("Four fingers at once", () => {
+test.describe("Fingers at once", () => {
   test.use({ contextOptions: { screen: { width: 1125, height: 625 } } });
 
-  test("are reported as the most pointers at once, with their type", async ({ page }) => {
+  test("are reported at once when the page sees more than ever, lifted and cancelled ones not counted", async ({
+    page,
+  }) => {
+    // The first periodic report (about 10 s of frames), then two trailing
+    // touch reports (at most 5 s each).
+    test.setTimeout(90_000);
     const since = nowSecs();
     await openSurface(page);
     const w = await who(page);
-    // Four fingers down one after another, then lifted: pointer events with
-    // distinct ids, as a four-finger touch delivers them on the iPad
-    // (multitouch.spec.ts). The page counts them in the capture phase, so
-    // the element they land on does not matter.
-    await page.evaluate(() => {
-      const send = (type: string, id: number) =>
-        document.body.dispatchEvent(
-          new PointerEvent(type, {
-            pointerId: id,
-            pointerType: "touch",
-            isPrimary: id === 21,
-            bubbles: true,
-            cancelable: true,
-          }),
-        );
-      for (const id of [21, 22, 23, 24]) send("pointerdown", id);
-      for (const id of [21, 22, 23, 24]) send("pointerup", id);
-    });
-    // Two at once already report; the four go with the kind's next report,
-    // at most 5 s later.
+    // The first periodic report: the next periodic one is a minute away,
+    // so a report within the next seconds comes from the fingers alone.
+    await reportOf(w, since, (r) => r.kind === "perf" && r.fps !== null, 30_000);
+    // Pointer events with distinct ids, as a multi-finger touch delivers
+    // them on the iPad (multitouch.spec.ts). The page counts them in the
+    // capture phase, so the element they land on does not matter.
+    const touch = (steps: [string, number][]) =>
+      page.evaluate((list) => {
+        for (const [type, id] of list) {
+          document.body.dispatchEvent(
+            new PointerEvent(type, {
+              pointerId: id,
+              pointerType: "touch",
+              isPrimary: id === 21 || id === 31,
+              bubbles: true,
+              cancelable: true,
+            }),
+          );
+        }
+      }, steps);
+    // Shown again: the frame window starts over, so a touch report now has
+    // no frame rate yet.
+    await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+    // Never more than three at once: one cancelled, one lifted while the
+    // others stay. A cancel or an up the page missed would count four.
+    await touch([
+      ["pointerdown", 21],
+      ["pointerdown", 22],
+      ["pointercancel", 22],
+      ["pointerdown", 23],
+      ["pointerdown", 24],
+      ["pointerup", 21],
+      ["pointerdown", 25],
+      ["pointerup", 23],
+      ["pointerup", 24],
+      ["pointerup", 25],
+    ]);
+    const three = await reportOf(
+      w,
+      since,
+      (r) => r.kind === "perf" && r.fps === null && (r.touches_max === "3" || r.touches_max === "4"),
+    );
+    expect(three.touches_max).toBe("3");
+    expect(three.pointer).toBe("touch");
+    // Four at once: more than ever, reported with the kind's next report.
+    await touch([
+      ["pointerdown", 31],
+      ["pointerdown", 32],
+      ["pointerdown", 33],
+      ["pointerdown", 34],
+      ["pointerup", 31],
+      ["pointerup", 32],
+      ["pointerup", 33],
+      ["pointerup", 34],
+    ]);
     const four = await reportOf(w, since, (r) => r.kind === "perf" && r.touches_max === "4");
     expect(four.pointer).toBe("touch");
+    expect(four.at).toBeGreaterThanOrEqual(three.at);
   });
 });
 
