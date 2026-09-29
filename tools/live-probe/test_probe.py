@@ -112,20 +112,41 @@ class TimerEstimate(unittest.TestCase):
         self.assertEqual(probe.timer_estimate([]), {"interval_ms": None, "jitter_ms": None})
 
 
+def dist(count, low, p50, p95, p99, high, mean, distinct):
+    return {
+        "count": count,
+        "min": low,
+        "p50": p50,
+        "p95": p95,
+        "p99": p99,
+        "max": high,
+        "mean": mean,
+        "distinct": distinct,
+    }
+
+
 class Summary(unittest.TestCase):
     def test_a_whole_run(self):
         heartbeats = [
-            # (arrival s, main_tick_age_ms, max_cmd_ms, gap_ms)
-            (10.0, 4.0, 1.5, 100.2),
-            (10.1, 8.0, 1.5, 99.8),
-            (10.2, 160.0, 1.5, 100.0),
-            (10.45, 2.0, 2.25, 250.0),
-            (10.55, 6.0, 2.25, 100.1),
+            # (arrival s, main_tick_age_ms, max_cmd_ms, gap_ms, outbound_ms)
+            (10.0, 4.0, 1.5, 100.2, 0.5),
+            (10.1, 8.0, 1.5, 99.8, 0.5),
+            (10.2, 160.0, 1.5, 100.0, 1.0),
+            (10.45, 2.0, 2.25, 250.0, 40.0),
+            (10.55, 6.0, 2.25, 100.1, 2.0),
         ]
-        round_trips = [3.0, 5.0, 210.0, 4.0]
+        reads = [
+            # (sent s, round_trip_ms, inbound_ms, outbound_ms, script_ts_ms), in
+            # arrival order; the third waited out a stall and came back in the
+            # same tick as the fourth.
+            (0.0, 3.0, 2.0, 1.0, 1002.0),
+            (0.15, 5.0, 3.0, 2.0, 1154.0),
+            (0.30, 210.0, 200.0, 10.0, 1500.0),
+            (0.45, 4.0, 3.0, 1.0, 1500.0),
+        ]
         connect = {"instance": "band", "script_version": "9.9.9", "set_name": "S", "proto": 1}
         summary = probe.summarize(
-            heartbeats, round_trips, lost=1, errors=0, connect=connect, seconds=0.6, probe_ms=150
+            heartbeats, reads, lost=1, errors=0, connect=connect, seconds=0.6, probe_ms=150
         )
         self.assertEqual(
             summary,
@@ -135,45 +156,34 @@ class Summary(unittest.TestCase):
                 "seconds": 0.6,
                 "probe_ms": 150,
                 "heartbeats": 5,
-                "main_tick_age_ms": {
-                    "count": 5,
-                    "min": 2.0,
-                    "p50": 6.0,
-                    "p95": 160.0,
-                    "p99": 160.0,
-                    "max": 160.0,
-                    "mean": 36.0,
-                    "distinct": 5,
-                },
+                "main_tick_age_ms": dist(5, 2.0, 6.0, 160.0, 160.0, 160.0, 36.0, 5),
                 "main_tick_age_over_150_ms": 1,
                 "main_tick_age_over_200_ms": 0,
                 "timer_estimate": {"interval_ms": 72.0, "jitter_ms": 88.0},
                 "heartbeat_gap_ms": {"max": 250.0, "over_150_ms": 1},
                 "arrival_gap_ms": {"max": 250.0, "over_150_ms": 1},
+                "heartbeat_outbound_ms": dist(5, 0.5, 1.0, 40.0, 40.0, 40.0, 8.8, 4),
                 "max_cmd_ms": {"start": 1.5, "end": 2.25},
-                "round_trip_ms": {
-                    "count": 4,
-                    "min": 3.0,
-                    "p50": 4.0,
-                    "p95": 210.0,
-                    "p99": 210.0,
-                    "max": 210.0,
-                    "mean": 55.5,
-                    "distinct": 4,
-                },
+                "round_trip_ms": dist(4, 3.0, 4.0, 210.0, 210.0, 210.0, 55.5, 4),
                 "round_trip_over_150_ms": 1,
                 "round_trip_over_200_ms": 1,
+                "read_inbound_ms": dist(4, 2.0, 3.0, 200.0, 200.0, 200.0, 52.0, 3),
+                "read_outbound_ms": dist(4, 1.0, 1.0, 10.0, 10.0, 10.0, 3.5, 3),
+                # Distinct result timestamps 1002, 1154, 1500: gaps 152 and 346.
+                "result_tick_gap_ms": dist(2, 152.0, 152.0, 346.0, 346.0, 346.0, 249.0, 2),
                 "round_trips_lost": 1,
                 "round_trip_errors": 0,
             },
         )
 
-    def test_no_heartbeats(self):
+    def test_no_samples(self):
         summary = probe.summarize([], [], lost=0, errors=0, connect={}, seconds=1, probe_ms=100)
         self.assertEqual(summary["heartbeats"], 0)
         self.assertEqual(summary["max_cmd_ms"], {"start": None, "end": None})
         self.assertEqual(summary["arrival_gap_ms"], {"max": None, "over_150_ms": 0})
         self.assertEqual(summary["heartbeat_gap_ms"], {"max": None, "over_150_ms": 0})
+        self.assertEqual(summary["result_tick_gap_ms"]["count"], 0)
+        self.assertEqual(summary["read_inbound_ms"]["count"], 0)
         self.assertIsNone(summary["instance"])
 
 
@@ -293,6 +303,35 @@ class AgainstSimLive(unittest.TestCase):
         self.assertEqual(summary["round_trip_errors"], 0)
         self.assertGreaterEqual(summary["max_cmd_ms"]["end"], summary["max_cmd_ms"]["start"])
         self.assertGreater(summary["heartbeat_gap_ms"]["max"], 50.0)
+        self.assertEqual(summary["read_inbound_ms"]["count"], summary["round_trip_ms"]["count"])
+        self.assertEqual(summary["heartbeat_outbound_ms"]["count"], summary["heartbeats"])
+        # The script's `ts` is whole milliseconds: a split may be half a
+        # millisecond under zero.
+        self.assertGreater(summary["read_inbound_ms"]["min"], -1.0, summary)
+        self.assertGreater(summary["read_outbound_ms"]["min"], -1.0, summary)
+        self.assertGreater(summary["heartbeat_outbound_ms"]["min"], -1.0, summary)
+
+    def test_inbound_plus_outbound_is_the_round_trip(self):
+        raw = os.path.join(self.host.log_dir, "split.json")
+        probe.run(self.host.port, seconds=1.0, probe_ms=50, raw_path=raw)
+        with open(raw, encoding="utf-8") as f:
+            reads = json.load(f)["reads"]
+        self.assertGreaterEqual(len(reads), 15)
+        for read in reads:
+            # Two clocks (the wall clock for the split, a performance counter
+            # for the round trip) and the script's whole-millisecond `ts`.
+            self.assertAlmostEqual(
+                read["inbound_ms"] + read["outbound_ms"], read["round_trip_ms"], delta=2.0
+            )
+
+    def test_reads_faster_than_the_ticks_show_the_tick_interval(self):
+        # SimLive runs the script's timer every TIMER_INTERVAL_MS (10 ms); a
+        # read every 2 ms lands in nearly every tick.
+        summary = probe.run(self.host.port, seconds=1.0, probe_ms=2)
+        gaps = summary["result_tick_gap_ms"]
+        self.assertGreaterEqual(gaps["count"], 30, summary)
+        self.assertGreaterEqual(gaps["p50"], 5.0, summary)
+        self.assertLessEqual(gaps["p50"], 30.0, summary)
 
     def test_a_main_thread_stall_shows_in_the_ages_and_the_round_trips(self):
         stall = threading.Timer(0.5, self.host.control, args=("stall 400",))
@@ -306,6 +345,10 @@ class AgainstSimLive(unittest.TestCase):
         self.assertGreaterEqual(summary["round_trip_over_150_ms"], 1, summary)
         self.assertGreaterEqual(summary["round_trip_ms"]["max"], 250.0, summary)
         self.assertEqual(summary["round_trips_lost"], 0)
+        # The wait is on the way in (the drain waits for the main thread), not
+        # on the way out (the sender thread kept running).
+        self.assertGreaterEqual(summary["read_inbound_ms"]["max"], 250.0, summary)
+        self.assertLess(summary["read_outbound_ms"]["max"], 150.0, summary)
 
     def test_the_cli_prints_the_summary_as_json(self):
         done = subprocess.run(
@@ -326,13 +369,17 @@ class AgainstSimLive(unittest.TestCase):
         probe.run(self.host.port, seconds=0.5, probe_ms=50, raw_path=raw)
         with open(raw, encoding="utf-8") as f:
             samples = json.load(f)
-        self.assertEqual(sorted(samples), ["heartbeats", "round_trip_ms"])
+        self.assertEqual(sorted(samples), ["heartbeats", "reads"])
         self.assertGreaterEqual(len(samples["heartbeats"]), 2)
         self.assertEqual(
             sorted(samples["heartbeats"][0]),
-            ["arrival_s", "gap_ms", "main_tick_age_ms", "max_cmd_ms"],
+            ["arrival_s", "gap_ms", "main_tick_age_ms", "max_cmd_ms", "outbound_ms"],
         )
-        self.assertGreaterEqual(len(samples["round_trip_ms"]), 5)
+        self.assertGreaterEqual(len(samples["reads"]), 5)
+        self.assertEqual(
+            sorted(samples["reads"][0]),
+            ["inbound_ms", "outbound_ms", "round_trip_ms", "script_ts_ms", "sent_s"],
+        )
 
 
 class Failures(unittest.TestCase):
