@@ -15,12 +15,22 @@ to the hub, for ``--seconds``:
 - every ``--probe-ms`` it sends one cheap read, ``get_prop tempo`` of the song
   (the hub's own request shape), and times its round trip: socket, drain
   queue, the next main-thread tick, the LOM read, the result queue, the wire;
+- it splits each round trip at the result's ``ts``, the script's wall clock
+  (``time.time``) when Live's main thread queued the result: inbound (send to
+  queued: socket, reader thread, drain queue, the tick, the LOM read) and
+  outbound (queued to received: sender thread, wire), on the same PC's wall
+  clock; the heartbeat's ``ts`` gives its outbound delay the same way;
+- the gaps between consecutive distinct result timestamps are the main
+  thread's tick interval when the reads come faster than the ticks (a short
+  run with a small ``--probe-ms``);
 - it prints a JSON summary: percentiles (nearest rank), the counts over the
   hub's busy threshold (150 ms) and the script's stall log (200 ms), the
   timer interval estimated from the ages (2 x their mean: a tick every T ms
   sampled at unrelated moments is on average T/2 old) and the jitter (how far
-  the 99th percentile runs past that interval). ``--raw`` also writes every
-  sample to a JSON file.
+  the 99th percentile runs past that interval). On Windows the ages come in
+  15.6 ms steps (``time.monotonic`` is ``GetTickCount64``) and the heartbeat
+  does not sample at unrelated moments, so there the result tick gaps are the
+  interval (#5). ``--raw`` also writes every sample to a JSON file.
 
 The probe writes nothing to Live but its reads. Exit 1 with one
 ``live-probe: ...`` line on stderr when it cannot measure (no connection, a
@@ -63,7 +73,10 @@ READ_COMMAND = {"target": "live_set", "name": "get_prop", "args": {"prop": "temp
 DIGITS = 3
 
 Heartbeat = collections.namedtuple(
-    "Heartbeat", ("arrival_s", "main_tick_age_ms", "max_cmd_ms", "gap_ms")
+    "Heartbeat", ("arrival_s", "main_tick_age_ms", "max_cmd_ms", "gap_ms", "outbound_ms")
+)
+Read = collections.namedtuple(
+    "Read", ("sent_s", "round_trip_ms", "inbound_ms", "outbound_ms", "script_ts_ms")
 )
 
 
@@ -122,16 +135,23 @@ def _gaps(values):
     return {"max": _rounded(max(values)) if values else None, "over_150_ms": over(values, BUSY_MS)}
 
 
-def summarize(heartbeats, round_trips, lost, errors, connect, seconds, probe_ms):
-    """The run's summary. ``heartbeats``: ``(arrival_s, main_tick_age_ms,
-    max_cmd_ms, gap_ms)`` in arrival order; ``round_trips``: milliseconds;
-    ``lost``: reads never answered; ``errors``: reads answered with an error;
-    ``connect``: the script's ``connect`` data."""
+def tick_gaps(timestamps):
+    """The gaps between consecutive distinct timestamps (in arrival order)."""
+    distinct = [ts for i, ts in enumerate(timestamps) if i == 0 or ts != timestamps[i - 1]]
+    return [later - earlier for earlier, later in itertools.pairwise(distinct)]
+
+
+def summarize(heartbeats, reads, lost, errors, connect, seconds, probe_ms):
+    """The run's summary. ``heartbeats``: ``Heartbeat`` tuples and ``reads``:
+    ``Read`` tuples, in arrival order; ``lost``: reads never answered;
+    ``errors``: reads answered with an error; ``connect``: the script's
+    ``connect`` data."""
     arrivals = [beat[0] for beat in heartbeats]
     ages = [beat[1] for beat in heartbeats]
     max_cmds = [beat[2] for beat in heartbeats]
     gaps = [beat[3] for beat in heartbeats]
     arrival_gaps = [(later - earlier) * 1000.0 for earlier, later in itertools.pairwise(arrivals)]
+    round_trips = [read[1] for read in reads]
     return {
         "instance": connect.get("instance"),
         "script_version": connect.get("script_version"),
@@ -144,6 +164,7 @@ def summarize(heartbeats, round_trips, lost, errors, connect, seconds, probe_ms)
         "timer_estimate": timer_estimate(ages),
         "heartbeat_gap_ms": _gaps(gaps),
         "arrival_gap_ms": _gaps(arrival_gaps),
+        "heartbeat_outbound_ms": distribution([beat[4] for beat in heartbeats]),
         "max_cmd_ms": {
             "start": max_cmds[0] if max_cmds else None,
             "end": max_cmds[-1] if max_cmds else None,
@@ -151,6 +172,9 @@ def summarize(heartbeats, round_trips, lost, errors, connect, seconds, probe_ms)
         "round_trip_ms": distribution(round_trips),
         "round_trip_over_150_ms": over(round_trips, BUSY_MS),
         "round_trip_over_200_ms": over(round_trips, STALL_MS),
+        "read_inbound_ms": distribution([read[2] for read in reads]),
+        "read_outbound_ms": distribution([read[3] for read in reads]),
+        "result_tick_gap_ms": distribution(tick_gaps([read[4] for read in reads])),
         "round_trips_lost": lost,
         "round_trip_errors": errors,
     }
@@ -348,23 +372,36 @@ class Recorder:
     def __init__(self, connect):
         self.connect = connect
         self.heartbeats = []
-        self.round_trips = []
+        self.reads = []
         self.pending = {}
         self.errors = 0
 
-    def sent(self, uuid, when):
-        self.pending[uuid] = when
+    def sent(self, uuid, sent_s, sent_wall_ms):
+        """A read went out at ``sent_s`` (run seconds) and ``sent_wall_ms`` (wall clock)."""
+        self.pending[uuid] = (sent_s, sent_wall_ms)
 
-    def take(self, message, arrival_s, in_window):
+    def take(self, message, arrival_s, arrival_wall_ms, in_window):
+        """One message from the script, received at ``arrival_s`` (run seconds)
+        and ``arrival_wall_ms`` (wall clock); heartbeats count only ``in_window``."""
         event = message.get("event")
         if event == "heartbeat":
             if in_window:
-                self.heartbeats.append(_heartbeat(message, arrival_s))
+                self.heartbeats.append(_heartbeat(message, arrival_s, arrival_wall_ms))
         elif event == "result":
-            started = self.pending.pop(message.get("uuid"), None)
-            if started is None:
+            sent = self.pending.pop(message.get("uuid"), None)
+            if sent is None:
                 raise ProbeError(f"a result for no read of this probe: {message!r}")
-            self.round_trips.append((arrival_s - started) * 1000.0)
+            sent_s, sent_wall_ms = sent
+            ts = _ts(message)
+            self.reads.append(
+                Read(
+                    sent_s,
+                    (arrival_s - sent_s) * 1000.0,
+                    ts - sent_wall_ms,
+                    arrival_wall_ms - ts,
+                    ts,
+                )
+            )
             slots = message.get("data")
             if not (isinstance(slots, list) and slots and slots[0].get("ok") is True):
                 self.errors += 1
@@ -375,7 +412,15 @@ class Recorder:
             raise ProbeError("the script closed the connection (Live unloads it)")
 
 
-def _heartbeat(message, arrival_s):
+def _ts(message):
+    """The script's wall clock (ms) when it queued ``message``."""
+    try:
+        return float(message["ts"])
+    except (KeyError, TypeError, ValueError) as e:
+        raise ProbeError(f"a message without its ts {message!r}: {e}") from e
+
+
+def _heartbeat(message, arrival_s, arrival_wall_ms):
     try:
         data = message["data"]
         return Heartbeat(
@@ -383,6 +428,7 @@ def _heartbeat(message, arrival_s):
             float(data["main_tick_age_ms"]),
             float(data["max_cmd_ms"]),
             float(data["gap_ms"]),
+            arrival_wall_ms - _ts(message),
         )
     except (KeyError, TypeError, ValueError) as e:
         raise ProbeError(f"unreadable heartbeat {message!r}: {e}") from e
@@ -410,7 +456,7 @@ def record(conn, seconds, probe_ms):
             wake = end + RESULT_WAIT_S
         elif now >= next_read:
             uuid = f"probe{next(uuids)}"
-            recorder.sent(uuid, clock() - start)
+            recorder.sent(uuid, clock() - start, time.time() * 1000.0)
             conn.send({"uuid": uuid, "commands": [READ_COMMAND]})
             next_read += interval
             if next_read <= now:
@@ -421,7 +467,7 @@ def record(conn, seconds, probe_ms):
         message = conn.receive(wake - now)
         if message is not None:
             arrival = clock()
-            recorder.take(message, arrival - start, arrival < end)
+            recorder.take(message, arrival - start, time.time() * 1000.0, arrival < end)
     return recorder
 
 
@@ -437,13 +483,13 @@ def run(port, seconds, probe_ms, raw_path=None, host=HOST):
             json.dump(
                 {
                     "heartbeats": [beat._asdict() for beat in recorder.heartbeats],
-                    "round_trip_ms": recorder.round_trips,
+                    "reads": [read._asdict() for read in recorder.reads],
                 },
                 f,
             )
     return summarize(
         recorder.heartbeats,
-        recorder.round_trips,
+        recorder.reads,
         lost=len(recorder.pending),
         errors=recorder.errors,
         connect=recorder.connect,
