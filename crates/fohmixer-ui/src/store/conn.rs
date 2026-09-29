@@ -49,6 +49,18 @@ pub struct Hello {
     pub auto_refresh: bool,
 }
 
+/// What a socket's close means.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Closed {
+    /// The store reconnects (it was not stopped).
+    pub reconnect: bool,
+    /// The socket had said hello: a connection was lost, which the page
+    /// reports to the hub (#26, `diag::disconnected`). A socket that never
+    /// said hello (an attempt while the hub is down, a reload close) is no
+    /// news.
+    pub lost: bool,
+}
+
 /// What an instance's new state asks of the store.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct InstanceChange {
@@ -138,11 +150,16 @@ impl Conn {
     }
 
     /// The socket closed (or was dropped): whether the store reconnects
-    /// (not after `stop`). Its watchdog's next tick is `Done`.
-    pub fn closed(&mut self) -> bool {
+    /// (not after `stop`) and whether a connection was lost. Its watchdog's
+    /// next tick is `Done`.
+    pub fn closed(&mut self) -> Closed {
+        let lost = self.ready;
         self.ready = false;
         self.socket += 1;
-        !self.stopped
+        Closed {
+            reconnect: !self.stopped,
+            lost,
+        }
     }
 
     /// The watchdog tick of socket `socket` at `now`; `open` is whether

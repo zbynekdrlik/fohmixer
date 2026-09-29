@@ -165,7 +165,7 @@ fn format_panic_message(info: &std::panic::PanicHookInfo<'_>) -> String {
     format_panic_payload(info.payload())
 }
 
-fn truncate_for_display(s: &str, max: usize) -> String {
+pub(crate) fn truncate_for_display(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         s.to_string()
     } else {

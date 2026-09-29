@@ -6,13 +6,15 @@
 //!   strip width and the hub connection;
 //! - `store`: the hub connection and Live's state (`LiveStore`);
 //! - `components`, `pages`: the view; `raf`: the shared animation loop;
-//!   `dom`, `auth`: browser helpers.
+//!   `dom`, `auth`: browser helpers;
+//! - `diag`: the page's diagnostic reports to the hub (#26).
 
 pub mod app;
 pub mod auth;
 pub mod behave;
 pub mod binding;
 pub mod components;
+pub mod diag;
 pub mod dom;
 pub mod flow;
 pub mod lifecycle;
@@ -39,4 +41,8 @@ pub fn main() {
     {
         shell.remove();
     }
+
+    // The page reports itself to the hub (#26): the load now, then its
+    // socket, visibility, service worker, wake lock and errors.
+    diag::install();
 }

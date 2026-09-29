@@ -299,6 +299,56 @@ pub struct RemoteStatus {
     pub tunnel: Option<TunnelStatus>,
 }
 
+/// What a page reports about itself (#26, `POST /api/client-report`): the
+/// event and the page's state, every field optional text. The hub keeps
+/// these fields only (serde drops any other), each cut short and stripped of
+/// control characters.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ReportFields {
+    /// What happened: `load`, `connected`, `disconnected`, `reconnect`,
+    /// `visibility`, `sw`, `wake-lock` or `error`.
+    pub kind: Option<String>,
+    /// `standalone` (a Home Screen app) or `browser` (a browser tab).
+    pub display: Option<String>,
+    /// The browser's user agent.
+    pub ua: Option<String>,
+    /// The page's build (its bundle's `VERSION`).
+    pub build: Option<String>,
+    /// The host the page was loaded from (`location.host`).
+    pub host: Option<String>,
+    /// The screen: `<width>x<height>@<device pixel ratio>`.
+    pub screen: Option<String>,
+    /// The service worker (`data-sw`); none off the https origin.
+    pub sw: Option<String>,
+    /// The Screen Wake Lock (`data-wake-lock`); none off the https origin.
+    pub wake_lock: Option<String>,
+    /// `visible` or `hidden`.
+    pub visibility: Option<String>,
+    /// The hub socket's reconnects since the page loaded.
+    pub reconnects: Option<String>,
+    /// The error's text (an `error` report).
+    pub error: Option<String>,
+}
+
+/// A page's report as the hub keeps it (`GET /api/status`
+/// `client_reports`, #26).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClientReport {
+    /// When the hub got it (Unix seconds).
+    pub at: u64,
+    /// The address it came from (through the tunnel: cloudflared's).
+    pub peer: String,
+    /// Through the tunnel: the client's address as Cloudflare names it
+    /// (`cf-connecting-ip`); none on the LAN (the peer is the client).
+    #[serde(default)]
+    pub client: Option<String>,
+    /// `lan` or `internet`, as the Access check classifies the request.
+    pub source: String,
+    #[serde(flatten)]
+    pub fields: ReportFields,
+}
+
 /// `GET /api/status`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HubStatus {
@@ -310,6 +360,10 @@ pub struct HubStatus {
     /// Remote access (#17); absent in an older hub's answer.
     #[serde(default)]
     pub remote: RemoteStatus,
+    /// The pages' latest reports, oldest first (#26); absent in an older
+    /// hub's answer.
+    #[serde(default)]
+    pub client_reports: Vec<ClientReport>,
 }
 
 #[cfg(test)]
@@ -576,18 +630,48 @@ mod tests {
                     checked: Some(1_790_000_100),
                 }),
             },
+            client_reports: vec![ClientReport {
+                at: 1_790_000_200,
+                peer: "127.0.0.1".into(),
+                client: Some("203.0.113.7".into()),
+                source: "internet".into(),
+                fields: ReportFields {
+                    kind: Some("load".into()),
+                    display: Some("standalone".into()),
+                    ua: Some("Mozilla/5.0 (iPad)".into()),
+                    build: Some("0.1.0".into()),
+                    host: Some("foh.example.org".into()),
+                    screen: Some("1194x834@2".into()),
+                    sw: Some("registered".into()),
+                    wake_lock: Some("held".into()),
+                    visibility: Some("visible".into()),
+                    reconnects: Some("0".into()),
+                    error: None,
+                },
+            }],
         };
         let json = serde_json::to_value(&status).unwrap();
         assert_eq!(json["remote"]["https"]["days_left"], 60);
         assert_eq!(json["remote"]["tunnel"]["ready_connections"], 4);
         assert_eq!(json["remote"]["access"], json!(true));
-        // An older hub's answer has no `remote`: the default.
+        // A report's fields sit next to when and where it came from.
+        assert_eq!(
+            json["client_reports"][0],
+            json!({"at": 1_790_000_200_u64, "peer": "127.0.0.1", "client": "203.0.113.7",
+                   "source": "internet",
+                   "kind": "load", "display": "standalone", "ua": "Mozilla/5.0 (iPad)",
+                   "build": "0.1.0", "host": "foh.example.org", "screen": "1194x834@2",
+                   "sw": "registered", "wake_lock": "held", "visibility": "visible",
+                   "reconnects": "0", "error": null})
+        );
+        // An older hub's answer has no `remote` and no `client_reports`: the
+        // defaults.
         let mut older = json.clone();
         older.as_object_mut().unwrap().remove("remote");
-        assert_eq!(
-            serde_json::from_value::<HubStatus>(older).unwrap().remote,
-            RemoteStatus::default()
-        );
+        older.as_object_mut().unwrap().remove("client_reports");
+        let older = serde_json::from_value::<HubStatus>(older).unwrap();
+        assert_eq!(older.remote, RemoteStatus::default());
+        assert!(older.client_reports.is_empty());
         assert_eq!(json["instances"][0]["listeners"], 4);
         assert_eq!(json["stage_aut"]["writes"], 3);
         assert_eq!(json["instances"][0]["connect_failures"], 0);
@@ -612,6 +696,32 @@ mod tests {
         assert_eq!(
             serde_json::to_value(ApiError::new("INVALID_PIN", "Invalid PIN")).unwrap(),
             json!({"code": "INVALID_PIN", "message": "Invalid PIN"})
+        );
+    }
+
+    #[test]
+    fn a_report_body_keeps_its_known_fields_only() {
+        // Missing fields are none; a field the hub does not know is dropped.
+        let body = json!({"kind": "error", "error": "boom", "cookie": "secret", "ua": null});
+        assert_eq!(
+            serde_json::from_value::<ReportFields>(body).unwrap(),
+            ReportFields {
+                kind: Some("error".into()),
+                display: None,
+                ua: None,
+                build: None,
+                host: None,
+                screen: None,
+                sw: None,
+                wake_lock: None,
+                visibility: None,
+                reconnects: None,
+                error: Some("boom".into()),
+            }
+        );
+        assert_eq!(
+            serde_json::from_value::<ReportFields>(json!({})).unwrap(),
+            ReportFields::default()
         );
     }
 }

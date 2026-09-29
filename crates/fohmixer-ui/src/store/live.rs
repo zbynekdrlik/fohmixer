@@ -299,18 +299,21 @@ impl LiveStore {
 
     /// The socket closed (`code`) or was dropped (`None`).
     fn on_close(self, code: Option<u16>) {
-        let Some((reconnect, pending)) = self.inner.try_update_value(|i| {
+        let Some((closed, pending)) = self.inner.try_update_value(|i| {
             i.socket = None;
             (i.conn.closed(), std::mem::take(&mut i.pending))
         }) else {
             return;
         };
-        if !reconnect {
+        if !closed.reconnect {
             return;
         }
         dom::log(&format!(
             "the hub socket closed (code {code:?}): reconnecting"
         ));
+        if closed.lost {
+            crate::diag::disconnected();
+        }
         let _ = self.connected.try_set(false);
         let _ = self.hub.try_set(BTreeMap::new());
         let _ = self.instances.try_update(|all| {
@@ -393,10 +396,15 @@ impl LiveStore {
 
     fn on_hello(self, proto: u32, build: &str, min_client_proto: u32) {
         let now = dom::wall_now();
-        if net::on_hello(proto, min_client_proto, now, net::last_reload()) == Decision::Reload {
+        if net::on_hello(proto, min_client_proto, build, now, net::last_reload())
+            == Decision::Reload
+        {
+            let page = fohmixer_proto::VERSION;
             net::reload(
                 now,
-                &format!("hub {build} serves UI protocol {min_client_proto}..={proto}"),
+                &format!(
+                    "hub {build} (this page {page}) serves UI protocol {min_client_proto}..={proto}"
+                ),
             );
             return;
         }
@@ -405,6 +413,7 @@ impl LiveStore {
         };
         dom::log(&format!("connected to hub {build}"));
         let _ = self.connected.try_set(true);
+        crate::diag::connected();
         for spec in &hello.specs {
             self.send_sub(spec);
         }

@@ -9,6 +9,8 @@
 //! (PIN → JWT, from iemmixer). It also serves the embedded UI,
 //! `/api/version` and `/api/client-error`, behind the security headers, and
 //! stops gracefully (S0, trimmed from iemmixer's `iem-server` @ 22372bc).
+//! The pages' diagnostic reports (#26, `client_report.rs`) go to the log
+//! and `/api/status`.
 //!
 //! Remote access (#17): one public name for the LAN and the Cloudflare
 //! tunnel. The HTTPS listener of that name (`https.rs`, `tls.rs`) with its
@@ -38,6 +40,7 @@ pub mod access;
 pub mod acme;
 pub mod auth;
 pub mod cf_token;
+pub mod client_report;
 pub mod cloudflare;
 pub mod config;
 #[cfg(windows)]
@@ -112,6 +115,8 @@ pub struct HubInner {
     pub trusted_hosts: Vec<String>,
     /// The HTTPS listener (`[tls]`), once `serve_until` made it.
     pub https: std::sync::OnceLock<Arc<Https>>,
+    /// The pages' diagnostic reports (#26, `POST /api/client-report`).
+    pub reports: client_report::Reports,
     live: BTreeMap<String, LiveHandle>,
     router: mpsc::UnboundedSender<RouterMsg>,
     next_client: AtomicU64,
@@ -209,6 +214,7 @@ impl HubInner {
             },
             stage_aut: router.stage_aut,
             clients: router.clients,
+            client_reports: self.reports.list(),
             remote: self.remote.snapshot(
                 &self.config,
                 self.https.get().map(Arc::as_ref),
@@ -286,6 +292,7 @@ impl Hub {
             remote,
             trusted_hosts,
             https: std::sync::OnceLock::new(),
+            reports: client_report::Reports::default(),
             live,
             router: router_tx,
             next_client: AtomicU64::new(1),
