@@ -111,3 +111,16 @@ class RawClient:
             self.readable(min(remaining, 0.05))
             self.read_available()
         return out
+
+    def read_until_closed(self, timeout=2.0):
+        """The messages still to come until the server ends the connection. The
+        ones it sent before resetting the socket are all kept: `websockets`'
+        sync client drops those when its close reply fails on the reset (#5)."""
+        deadline = time.monotonic() + timeout
+        while not self.closed:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise AssertionError(f"not closed in {timeout} s: {self.messages()}")
+            self.readable(remaining)
+            self.read_available()
+        return self.messages()

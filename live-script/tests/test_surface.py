@@ -19,8 +19,8 @@ from c_instance import CInstance
 from FohMixer import Config, surface
 from FohMixer.lom import ops
 from FohMixer.surface import Drain, heartbeat_data
+from FohMixer.transport.websocket import OPCODE_CLOSE
 from main_thread import MainThread
-from websockets.sync.client import connect
 
 BUDGET_MS = 5.0
 WINDOW_BUDGET_MS = 5.0
@@ -192,20 +192,25 @@ class SurfaceLifecycleTest(unittest.TestCase):
     def restore_config(saved):
         Config.PORT, Config.LOG_DIR, Config.INSTANCE = saved
 
-    def request(self, ws, commands):
-        ws.send(json.dumps({"uuid": "r1", "commands": commands}))
+    @staticmethod
+    def request(client, commands, timeout=2.0):
+        client.sock.sendall(request_frame("r1", commands))
+        deadline = time.monotonic() + timeout
         while True:
-            frame = json.loads(ws.recv(timeout=2.0))
-            if frame["event"] == "result":
-                return frame["data"]
+            for message in client.read_messages(1, deadline - time.monotonic()):
+                if message.get("event") == "result":
+                    return message["data"]
 
     def test_disconnect_releases_listeners_ids_timer_and_socket(self):
-        port = self.surface.server.port
-        ws = connect(f"ws://127.0.0.1:{port}", open_timeout=2, close_timeout=1)
-        self.addCleanup(ws.close)
+        # The raw client, which keeps what the script sent before resetting the
+        # socket: `websockets`' client dropped the goodbye when a heartbeat held
+        # it past the script's 0.3 s close grace (#5).
+        client = RawClient(self.surface.server.port)
+        self.addCleanup(client.close)
         track = self.song.tracks[0]
         slots = self.request(
-            ws, [{"target": "live_set tracks 0", "name": "add_listener", "args": {"prop": "mute"}}]
+            client,
+            [{"target": "live_set tracks 0", "name": "add_listener", "args": {"prop": "mute"}}],
         )
         self.assertTrue(slots[0]["ok"], slots)
         self.assertEqual(track._sim_listener_count("mute"), 1)
@@ -213,14 +218,11 @@ class SurfaceLifecycleTest(unittest.TestCase):
         self.assertEqual(track._sim_listener_count("mute"), 0)
         self.assertEqual(len(self.surface.registry), 0)
         self.assertEqual(self.mt._timers, {})
-        events = []
-        try:
-            while True:
-                events.append(json.loads(ws.recv(timeout=2.0))["event"])
-        except Exception as e:  # noqa: BLE001 - the loop ends when the socket closes
-            closed = type(e).__name__
+        events = [m.get("event") or m["opcode"] for m in client.read_until_closed()]
         self.assertIn("disconnect", events)
-        self.assertEqual(closed, "ConnectionClosedOK")
+        # A clean close (websockets' ConnectionClosedOK): the script's close
+        # frame came last, then the connection ended.
+        self.assertEqual(events[-1], OPCODE_CLOSE, events)
 
     def test_log_file_is_written_at_warning_level(self):
         self.mt.call(self.surface.disconnect)

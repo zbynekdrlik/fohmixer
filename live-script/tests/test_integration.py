@@ -17,8 +17,9 @@ import time
 import unittest
 
 import _paths
+from _rawclient import RawClient, request_frame
+from FohMixer.transport.websocket import OPCODE_CLOSE
 from FohMixer.version import VERSION
-from websockets.exceptions import ConnectionClosed
 from websockets.sync.client import connect
 
 READY_TIMEOUT_S = 10.0
@@ -463,12 +464,26 @@ class IntegrationTest(unittest.TestCase):
     def test_sigterm_disconnects_and_a_new_host_rebinds_the_port(self):
         host = self.host()
         port = host.port
-        a = self.client(host)
-        a.call("live_set tracks 0", "add_listener", {"prop": "mute"})
+        # The raw client, which keeps what the host sent before resetting the
+        # socket: `websockets`' client dropped the goodbye when a heartbeat held
+        # it past the script's 0.3 s close grace (#5).
+        a = RawClient(port)
+        self.addCleanup(a.close)
+        add = {"target": "live_set tracks 0", "name": "add_listener", "args": {"prop": "mute"}}
+        a.sock.sendall(request_frame("sub", [add]))
+        deadline = time.monotonic() + 2.0
+        results = []
+        while not results:
+            messages = a.read_messages(1, deadline - time.monotonic())
+            results = [m for m in messages if m.get("uuid") == "sub"]
+        self.assertTrue(results[0]["data"][0]["ok"], results)
         self.assertEqual(host.request_stop(), 0)
-        a.wait_event("disconnect")
-        with self.assertRaises(ConnectionClosed):
-            a.recv(2.0)
+        events = [m.get("event") or m["opcode"] for m in a.read_until_closed()]
+        self.assertIn("disconnect", events)
+        # Nothing but the close frame after it, then the end (websockets'
+        # ConnectionClosed on the next receive).
+        after = events[events.index("disconnect") + 1 :]
+        self.assertIn(after, ([], [OPCODE_CLOSE]), events)
         started = time.monotonic()
         again = self.host(port=port)
         self.assertLess(time.monotonic() - started, 5.0)
