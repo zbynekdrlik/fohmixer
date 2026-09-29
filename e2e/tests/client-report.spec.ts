@@ -175,7 +175,10 @@ test.describe("The PWA on the https origin", () => {
     // "released".
     await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
     await expect(page.locator("html")).toHaveAttribute("data-wake-lock", "held");
-    await reportOf(w, since, (r) => r.kind === "wake-lock" && r.wake_lock === "held");
+    const held = await reportOf(w, since, (r) => r.kind === "wake-lock" && r.wake_lock === "held");
+    // It went when the kind's 5 s window ended, not at once (the hub
+    // stamps whole seconds).
+    expect(held.at - released.at).toBeGreaterThanOrEqual(4);
   });
 });
 

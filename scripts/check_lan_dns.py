@@ -239,7 +239,7 @@ def problems(qtype: int, data: bytes, answer: Answer) -> list[str]:
 
 
 def describe(data: bytes, answer: Answer) -> str:
-    """The answer in one short phrase (`CNAME foh-pc.lan, A 10.0.0.5`, or `-`)."""
+    """The answer in one short phrase (`CNAME mixer-pc.home.arpa, A 10.0.0.5`, or `-`)."""
     parts = []
     for record in answer.records:
         if record.rtype == TYPE_CNAME:
