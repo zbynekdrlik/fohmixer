@@ -215,6 +215,11 @@ class TickGaps(unittest.TestCase):
         self.assertEqual(probe.tick_gaps([]), [])
         self.assertEqual(probe.tick_gaps([1000, 1001]), [])
 
+    def test_the_same_tick_limit_is_three_milliseconds(self):
+        self.assertEqual(probe.SAME_TICK_MS, 3.0)
+        self.assertEqual(probe.tick_gaps([1000, 1003]), [3])
+        self.assertEqual(probe.tick_gaps([1000, 1002.9]), [])
+
 
 def stepping(steps_s, start=1.0):
     """A clock read twice per value, advancing by ``steps_s`` in a cycle."""
@@ -376,9 +381,9 @@ class AgainstSimLive(unittest.TestCase):
             reads = json.load(f)["reads"]
         self.assertGreaterEqual(len(reads), 5)
         # Two clocks (the wall clock for the split, a performance counter for
-        # the round trip) read one after the other, and the script's
-        # whole-millisecond `ts`: nine reads in ten agree within 2 ms (a
-        # preempted probe between its two clock reads may miss once).
+        # the round trip) read one after the other (the script's `ts` cancels
+        # out of the sum): nine reads in ten agree within 2 ms (a probe
+        # preempted between its two clock reads may miss once).
         misses = sorted(
             abs(read["inbound_ms"] + read["outbound_ms"] - read["round_trip_ms"]) for read in reads
         )
@@ -499,8 +504,12 @@ def text_frame(message):
 class FakeScript:
     """A one-connection server speaking the script's protocol from a list of steps."""
 
-    def __init__(self, first_frames, answer=True):
+    def __init__(self, first_frames, answer=True, batch=1):
+        """``answer=False``: never answers a read; ``batch=N``: holds the reads
+        until N have come, then answers them all (a script behind its reads)."""
         self.answer = answer
+        self.batch = batch
+        self.held = []
         self.listener = socket.socket()
         self.listener.bind(("127.0.0.1", 0))
         self.listener.listen(1)
@@ -533,12 +542,16 @@ class FakeScript:
                     return
                 if not self.answer:
                     continue
-                uuid = json.loads(bytes(payload))["uuid"]
+                self.held.append(json.loads(bytes(payload))["uuid"])
+                if len(self.held) < self.batch:
+                    continue
                 now = round(time.time() * 1000)
                 result = [{"ok": True, "data": 120.0}]
-                conn.sendall(
-                    text_frame({"event": "result", "uuid": uuid, "data": result, "ts": now})
-                )
+                for uuid in self.held:
+                    conn.sendall(
+                        text_frame({"event": "result", "uuid": uuid, "data": result, "ts": now})
+                    )
+                self.held = []
                 conn.sendall(text_frame({"event": "heartbeat", "data": BEAT, "ts": now}))
 
     def close(self):
@@ -599,6 +612,18 @@ class Limits(unittest.TestCase):
         self.assertEqual(summary["round_trips_lost"], 5, summary)
         self.assertEqual(summary["round_trip_ms"]["count"], 0)
         self.assertGreaterEqual(summary["reads_skipped"], 10, summary)
+
+    def test_reads_resume_once_the_script_catches_up(self):
+        # The fake answers only in batches of 5: at the cap of 5 the probe
+        # skips slots, and it reads again once the batch is answered.
+        connect = [{"event": "connect", "data": CONNECT, "ts": 1000}]
+        script = FakeScript(connect, batch=5)
+        self.addCleanup(script.close)
+        summary = probe.run(script.port, seconds=0.5, probe_ms=2, max_pending=5, result_wait_s=0.2)
+        self.assertGreater(summary["reads_skipped"], 0, summary)
+        self.assertGreaterEqual(summary["round_trip_ms"]["count"], 10, summary)
+        self.assertEqual(summary["round_trip_ms"]["count"] % 5, 0, summary)
+        self.assertLessEqual(summary["round_trips_lost"], 5, summary)
 
     def test_the_default_cap_keeps_far_below_the_scripts_result_queue(self):
         # RESULT_QUEUE_MAX = 1000 in the script's Config.py.
