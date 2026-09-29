@@ -342,11 +342,90 @@ class DenylistScanTests(ScanCase):
 
     def test_hash_mode_rejects_a_line_out_of_range(self) -> None:
         (self.repo / "a.txt").write_text("one\ntwo\n", encoding="utf-8")
-        for number in ("0", "9", "x"):
+        for number in ("0", "3", "9", "x"):
             err = io.StringIO()
             with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
                 code = ds.main(["--repo", str(self.repo), "--hash", "a.txt", number])
             self.assertEqual(code, 2, number)
+
+    def test_a_non_utf8_path_is_read_by_its_blob(self) -> None:
+        self.commit({os.fsdecode(b"docs/caf\xe9.xml"): "<h>zyxname</h>\n".encode("utf-16"),
+                     os.fsdecode(b"docs/caf\xe9.bin"): b"\0x"})
+        for mode in ("--tree", "--commits"):
+            code, out = self.scan(mode, "HEAD")
+            self.assertEqual(code, 1, mode)
+            self.assertEqual(out.count("denylist entry 1"), 1, mode)
+
+    def test_a_changed_binary_file_stays_binary_in_commit_mode(self) -> None:
+        self.commit({"bin.dat": b"\0head\nclean\n"})
+        self.commit({"bin.dat": b"\0head\nzyxname\n"})
+        self.assertEqual(self.scan("--tree", "HEAD")[0], 0)
+        self.assertEqual(self.scan("--commits", "HEAD")[0], 0)
+
+    def test_a_textconv_driver_does_not_hide_history(self) -> None:
+        git(self.repo, "config", "diff.hide.textconv", "true")
+        self.commit({".gitattributes": "*.txt diff=hide\n", "a.txt": "zyxname\n"})
+        self.commit({"a.txt": "clean\n"})
+        self.assertEqual(self.scan("--commits", "HEAD")[0], 1)
+
+    def test_diff_relative_does_not_narrow_the_commit_scan(self) -> None:
+        git(self.repo, "config", "diff.relative", "true")
+        self.commit({"a.txt": "zyxname\n", "sub/x.txt": "x\n"})
+        self.commit({"a.txt": "clean\n"})
+        code, out = self.scan("--repo", str(self.repo / "sub"), "--commits", "HEAD")
+        self.assertEqual(code, 1)
+        self.assertIn(" a.txt: denylist entry 1", out)
+
+    def test_a_decomposed_term_hits_composed_text(self) -> None:
+        self.deny.write_text("klávor\n", encoding="utf-8")
+        self.commit({"a.txt": "klávor\n"})
+        self.assertEqual(self.scan("--tree", "HEAD")[0], 1)
+
+    def test_an_unbalanced_quote_in_a_range_is_a_usage_error(self) -> None:
+        self.commit({"a.txt": "x\n"})
+        self.assertEqual(self.scan("--commits", "HEAD 'x")[0], 2)
+
+    def test_control_characters_in_a_path_are_escaped(self) -> None:
+        self.commit({"a\n::error::b.txt": "zyxname\n"})
+        code, out = self.scan("--tree", "HEAD", "--commits", "HEAD")
+        self.assertEqual(code, 1)
+        self.assertNotIn("\n::error", out)
+        self.assertIn("a\\x0a::error::b.txt:1: denylist entry 1", out)
+
+    def test_a_replace_ref_does_not_hide_content(self) -> None:
+        base = self.commit({"a.txt": "clean\n"})
+        head = self.commit({"a.txt": "zyxname\n"})
+        tree = git(self.repo, "rev-parse", f"{base}^{{tree}}")
+        fake = git(self.repo, "commit-tree", tree, "-p", base, "-m", "fake")
+        git(self.repo, "replace", head, fake)
+        code, out = self.scan("--tree", "HEAD", "--commits", "HEAD")
+        self.assertEqual(code, 1)
+        self.assertIn("a.txt:1: denylist entry 1", out)
+
+    def test_a_submodule_path_is_scanned_whatever_diff_ignore_submodules_says(self) -> None:
+        git(self.repo, "config", "diff.ignoreSubmodules", "all")
+        base = self.commit({"a.txt": "x\n"})
+        git(self.repo, "update-index", "--add", "--cacheinfo", f"160000,{base},zyxname-mod")
+        git(self.repo, "commit", "-q", "-m", "add a submodule")
+        git(self.repo, "rm", "-q", "--cached", "zyxname-mod")
+        git(self.repo, "commit", "-q", "-m", "drop it")
+        code, out = self.scan("--commits", "HEAD")
+        self.assertEqual(code, 1)
+        self.assertIn("[redacted]: path: denylist entry 1", out)
+
+    def test_a_crlf_line_has_the_lf_allow_key_in_both_modes_and_in_hash(self) -> None:
+        self.commit({"a.txt": "keep zyxname here\r\nx\r\n"})
+        key = ds.line_key("a.txt", "keep zyxname here")
+        allow = self.write("allow.txt", key + "  reviewed\n")
+        self.assertEqual(self.scan("--allow", allow, "--tree", "HEAD", "--commits", "HEAD")[0], 0)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            ds.main(["--repo", str(self.repo), "--hash", "a.txt", "1"])
+        self.assertEqual(out.getvalue().strip(), key)
+
+    def test_an_odd_length_utf16_file_is_still_scanned(self) -> None:
+        self.commit({"a.xml": "zyxname\n".encode("utf-16") + b"x"})
+        self.assertEqual(self.scan("--tree", "HEAD", "--commits", "HEAD")[0], 1)
 
     def test_hash_mode_prints_the_line_key(self) -> None:
         self.commit({"a.txt": "one\ntwo\n"})
@@ -402,6 +481,14 @@ class SyntheticListTests(ScanCase):
         self.assertIn("[redacted]: path: denylist entry 2", out)
         for fragment in ("quim", "brel", "zorb"):
             self.assertNotIn(fragment, out.lower())
+
+    def test_a_path_that_forms_a_term_once_redacted_is_redacted_whole(self) -> None:
+        self.deny.write_text("zorb\n]/notes\n", encoding="utf-8")
+        self.commit({"zorb/notes.md": "x\n"})
+        code, out = self.scan("--tree", "HEAD")
+        self.assertEqual(code, 1)
+        self.assertIn("[redacted]: path: denylist entry 1", out)
+        self.assertNotIn("notes", out)
 
     def test_a_term_spanning_path_components_redacts_the_whole_path(self) -> None:
         self.deny.write_text("quim/brel\n", encoding="utf-8")
