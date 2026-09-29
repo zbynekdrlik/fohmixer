@@ -149,8 +149,8 @@ A read that raises (the object was deleted) sends `{"key", "error": "gone"}` and
 
 Changed on #5 (K1): this section first specified the reference's threads (an accept thread, a reader and a sender thread per connection). Measured in the real Live, those threads got Python only around the main thread's ~30 Hz tick: a connection sent about one frame per tick. The script now runs no threads; the main thread does the socket I/O in its tick, and never waits on a socket:
 
-- every socket is non-blocking; `poll_in` selects with timeout 0, accepts (at most 16 pending handshakes and 64 connections), reads handshakes and frames (each connection within a 5 ms budget per tick) and puts requests into the inbound queue;
-- one client's failure closes that client only; each step of the tick (reads, drain and flush, heartbeat, writes) is guarded on its own;
+- every socket is non-blocking; `poll_in` selects with timeout 0, accepts (at most 64 clients, of which 16 still in their handshake; every accepted socket the server closes is reset, so no TIME_WAIT keeps the port busy), reads handshakes and frames (each connection within a 5 ms budget per tick) and puts requests into the inbound queue;
+- one client's failure closes that client only; each step of the tick (reads, drain, subscription flush, heartbeat, writes) is guarded on its own;
 - `Connection` has `results` (a bounded `collections.deque`; `RESULT_QUEUE_MAX` is a hard cap, on overflow the connection is closed and the hub resyncs), `values` (a dict `key → item`, the latest value only), the pending heartbeat, and a write buffer;
 - `poll_out` writes, per connection: the heartbeat, then all pending results in order, then one `values` frame from a swapped-out dict, as far as the socket takes them (within a 5 ms budget per tick; at most 64 KB encoded ahead of the socket); the rest waits for the next tick;
 - a socket that took no byte for 3 s while output waited closes its connection (the client stopped reading);
