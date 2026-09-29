@@ -3,6 +3,7 @@ framing against the script's vendored framing, and whole runs against
 ``sim/host.py`` running the real FohMixer script on SimLive.
 """
 
+import itertools
 import json
 import os
 import queue
@@ -147,7 +148,15 @@ class Summary(unittest.TestCase):
         ]
         connect = {"instance": "band", "script_version": "9.9.9", "set_name": "S", "proto": 1}
         summary = probe.summarize(
-            heartbeats, reads, lost=1, errors=0, connect=connect, seconds=0.6, probe_ms=150
+            heartbeats,
+            reads,
+            lost=1,
+            errors=0,
+            connect=connect,
+            seconds=0.6,
+            probe_ms=150,
+            skipped=2,
+            wall_step_ms=0.5,
         )
         self.assertEqual(
             summary,
@@ -156,6 +165,7 @@ class Summary(unittest.TestCase):
                 "script_version": "9.9.9",
                 "seconds": 0.6,
                 "probe_ms": 150,
+                "wall_clock_step_ms": 0.5,
                 "heartbeats": 5,
                 "main_tick_age_ms": dist(5, 2.0, 6.0, 160.0, 160.0, 160.0, 36.0, 5),
                 "main_tick_age_over_150_ms": 1,
@@ -174,6 +184,7 @@ class Summary(unittest.TestCase):
                 "result_tick_gap_ms": dist(2, 152.0, 152.0, 346.0, 346.0, 346.0, 249.0, 2),
                 "round_trips_lost": 1,
                 "round_trip_errors": 0,
+                "reads_skipped": 2,
             },
         )
 
@@ -183,9 +194,44 @@ class Summary(unittest.TestCase):
         self.assertEqual(summary["max_cmd_ms"], {"start": None, "end": None})
         self.assertEqual(summary["arrival_gap_ms"], {"max": None, "over_150_ms": 0})
         self.assertEqual(summary["heartbeat_gap_ms"], {"max": None, "over_150_ms": 0})
+        self.assertEqual(summary["reads_skipped"], 0)
+        self.assertIsNone(summary["wall_clock_step_ms"])
         self.assertEqual(summary["result_tick_gap_ms"]["count"], 0)
         self.assertEqual(summary["read_inbound_ms"]["count"], 0)
         self.assertIsNone(summary["instance"])
+
+
+class TickGaps(unittest.TestCase):
+    def test_results_of_one_tick_split_by_a_millisecond_are_one_tick(self):
+        # The script's `ts` is whole milliseconds: one drain's results can
+        # land on both sides of a millisecond boundary (#5 review).
+        self.assertEqual(probe.tick_gaps([1000, 1001, 1010, 1020, 1021]), [10, 10])
+        self.assertEqual(probe.tick_gaps([1000, 1000, 1034, 1035, 1068]), [34, 34])
+
+    def test_the_gap_is_measured_between_the_ticks_first_results(self):
+        self.assertEqual(probe.tick_gaps([1000, 1002, 1034, 1036, 1037, 1068]), [34, 34])
+
+    def test_few_timestamps(self):
+        self.assertEqual(probe.tick_gaps([]), [])
+        self.assertEqual(probe.tick_gaps([1000, 1001]), [])
+
+
+class WallClockStep(unittest.TestCase):
+    def test_a_half_millisecond_clock(self):
+        ticks = iter([1.0, 1.0, 1.0005, 1.0005, 1.001, 1.0015, 1.002, 1.0025, 1.003])
+        self.assertEqual(probe.wall_clock_step_ms(clock=ticks.__next__), 0.5)
+
+    def test_a_coarse_clock_flags_itself(self):
+        # Windows' GetSystemTimeAsFileTime at the default 15.625 ms.
+        ticks = iter([0.0, 0.0, 0.015625, 0.015625, 0.03125, 0.046875, 0.0625, 0.078125, 0.09375])
+        self.assertEqual(probe.wall_clock_step_ms(clock=ticks.__next__), 15.625)
+
+    def test_a_clock_that_does_not_move(self):
+        still = itertools.repeat(5.0)
+        steady = itertools.count(0.0, 0.001)
+        self.assertIsNone(
+            probe.wall_clock_step_ms(clock=still.__next__, limit_s=0.01, timer=steady.__next__)
+        )
 
 
 class Framing(unittest.TestCase):
@@ -303,6 +349,8 @@ class AgainstSimLive(unittest.TestCase):
         self.assertGreater(summary["round_trip_ms"]["min"], 0.0)
         self.assertEqual(summary["round_trips_lost"], 0)
         self.assertEqual(summary["round_trip_errors"], 0)
+        self.assertEqual(summary["reads_skipped"], 0)
+        self.assertGreater(summary["wall_clock_step_ms"], 0.0)
         self.assertGreaterEqual(summary["max_cmd_ms"]["end"], summary["max_cmd_ms"]["start"])
         self.assertGreater(summary["heartbeat_gap_ms"]["max"], 50.0)
         self.assertEqual(summary["read_inbound_ms"]["count"], summary["round_trip_ms"]["count"])
@@ -438,7 +486,8 @@ def text_frame(message):
 class FakeScript:
     """A one-connection server speaking the script's protocol from a list of steps."""
 
-    def __init__(self, first_frames):
+    def __init__(self, first_frames, answer=True):
+        self.answer = answer
         self.listener = socket.socket()
         self.listener.bind(("127.0.0.1", 0))
         self.listener.listen(1)
@@ -469,6 +518,8 @@ class FakeScript:
                 if opcode == vendored.OPCODE_CLOSE:
                     conn.sendall(vendored.encode_close_frame())
                     return
+                if not self.answer:
+                    continue
                 uuid = json.loads(bytes(payload))["uuid"]
                 now = round(time.time() * 1000)
                 result = [{"ok": True, "data": 120.0}]
@@ -515,6 +566,30 @@ class ConnectFirst(unittest.TestCase):
         self.addCleanup(script.close)
         with self.assertRaisesRegex(probe.ProbeError, "not a JSON object"):
             probe.run(script.port, seconds=0.3, probe_ms=1000)
+
+
+class Limits(unittest.TestCase):
+    def test_unanswered_reads_are_capped_and_the_skipped_slots_counted(self):
+        """A script that stops answering (or answers slower than the reads
+        come) must not pile reads onto a production Live: past ``max_pending``
+        unanswered reads the probe skips its read slots and counts them."""
+        script = FakeScript([{"event": "connect", "data": CONNECT, "ts": 1000}], answer=False)
+        self.addCleanup(script.close)
+        summary = probe.run(script.port, seconds=0.3, probe_ms=1, max_pending=5, result_wait_s=0.2)
+        self.assertEqual(summary["round_trips_lost"], 5, summary)
+        self.assertEqual(summary["round_trip_ms"]["count"], 0)
+        self.assertGreaterEqual(summary["reads_skipped"], 50, summary)
+
+    def test_the_default_cap_keeps_far_below_the_scripts_result_queue(self):
+        # RESULT_QUEUE_MAX = 1000 in the script's Config.py.
+        self.assertEqual(probe.MAX_PENDING, 50)
+
+    def test_an_unwritable_raw_file_fails_before_the_run(self):
+        missing = os.path.join(tempfile.gettempdir(), "no-such-dir-live-probe", "raw.json")
+        started = time.monotonic()
+        with self.assertRaisesRegex(probe.ProbeError, "cannot write the raw file"):
+            probe.run(1, seconds=300, probe_ms=100, raw_path=missing)
+        self.assertLess(time.monotonic() - started, 5.0)
 
 
 if __name__ == "__main__":
