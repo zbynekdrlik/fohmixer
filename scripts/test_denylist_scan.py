@@ -4,6 +4,7 @@ invented; a real denylist term never enters this repo."""
 from __future__ import annotations
 
 import contextlib
+import gzip
 import io
 import os
 import shutil
@@ -11,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import zlib
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -918,6 +920,87 @@ class AcceptedTests(ScanCase):
 
     def test_an_empty_accepted_list_accepts_nothing(self) -> None:
         self.assertEqual(self.scan("--accepted", self.accepted(), "--commits", "HEAD")[0], 1)
+
+
+class CompressedTests(ScanCase):
+    """A `.tosc` (zlib) and an `.als` (gzip) are inflated and matched like any text file."""
+
+    LAYOUT = b"<node>\n<name>zyxname</name>\n</node>\n"
+
+    def both_modes(self) -> tuple[tuple[int, str], tuple[int, str]]:
+        return self.scan("--tree", "HEAD"), self.scan("--commits", "HEAD")
+
+    def test_a_tosc_is_inflated_in_both_modes(self) -> None:
+        self.commit({"layouts/set.tosc": zlib.compress(self.LAYOUT)})
+        (tree_code, tree_out), (commits_code, commits_out) = self.both_modes()
+        self.assertEqual((tree_code, commits_code), (1, 1))
+        self.assertIn("tree layouts/set.tosc:2: denylist entry 1", tree_out)
+        self.assertIn(" layouts/set.tosc: denylist entry 1", commits_out)
+        self.assert_no_term(tree_out + commits_out)
+
+    def test_an_als_is_gunzipped_in_both_modes(self) -> None:
+        self.commit({"sets/live.als": gzip.compress(self.LAYOUT)})
+        (tree_code, tree_out), (commits_code, commits_out) = self.both_modes()
+        self.assertEqual((tree_code, commits_code), (1, 1))
+        self.assertIn("tree sets/live.als:2: denylist entry 1", tree_out)
+        self.assertIn(" sets/live.als: denylist entry 1", commits_out)
+        self.assert_no_term(tree_out + commits_out)
+
+    def test_a_multi_member_als_is_read_whole(self) -> None:
+        self.commit({"live.als": gzip.compress(b"clean\n") + gzip.compress(b"zyxname\n")})
+        code, out = self.scan("--tree", "HEAD")
+        self.assertEqual(code, 1)
+        self.assertIn("tree live.als:2: denylist entry 1", out)
+
+    def test_the_extension_is_case_insensitive(self) -> None:
+        self.commit({"Set.TOSC": zlib.compress(self.LAYOUT), "Live.Als": gzip.compress(self.LAYOUT)})
+        code, out = self.scan("--tree", "HEAD")
+        self.assertEqual(code, 1)
+        self.assertEqual(out.count("denylist entry 1"), 2)
+
+    def test_clean_compressed_files_pass(self) -> None:
+        self.commit({"set.tosc": zlib.compress(b"<name>Vox 1</name>\n"), "live.als": gzip.compress(b"<a/>\n")})
+        self.assertEqual(self.both_modes(), ((0, "denylist: clean\n"), (0, "denylist: clean\n")))
+
+    def test_an_unreadable_compressed_file_is_a_finding(self) -> None:
+        self.commit({"bad.tosc": b"zyxname, not zlib", "cut.als": gzip.compress(b"zyxname\n" * 50)[:-12],
+                     "tail.tosc": zlib.compress(b"clean\n") + b"zyxname"})
+        for code, out in self.both_modes():
+            self.assertEqual(code, 1)
+            for name in ("bad.tosc", "cut.als", "tail.tosc"):
+                self.assertIn(f"{name}: unreadable compressed file", out)
+            self.assertNotIn("denylist entry", out)
+            self.assert_no_term(out)
+
+    def test_a_compressed_file_past_the_cap_is_a_finding(self) -> None:
+        bomb = b"a" * (64 * 1024 * 1024 + 1)
+        self.commit({"bomb.tosc": zlib.compress(bomb), "bomb.als": gzip.compress(bomb)})
+        for code, out in self.both_modes():
+            self.assertEqual(code, 1)
+            for name in ("bomb.tosc", "bomb.als"):
+                self.assertIn(f"{name}: compressed file inflates past the 64 MiB cap", out)
+
+    def test_a_decompressed_file_holding_a_nul_is_binary(self) -> None:
+        self.commit({"set.tosc": zlib.compress(b"\0zyxname\n")})
+        self.assertEqual(self.both_modes(), ((0, "denylist: clean\n"), (0, "denylist: clean\n")))
+
+    def test_a_compressed_line_has_the_same_key_in_both_modes_and_in_hash(self) -> None:
+        self.commit({"set.tosc": zlib.compress(b"keep zyxname here\n")})
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(ds.main(["--repo", str(self.repo), "--hash", "set.tosc", "1"]), 0)
+        self.assertEqual(out.getvalue().strip(), ds.line_key("set.tosc", "keep zyxname here"))
+        allow = self.write("allow.txt", out.getvalue().strip() + "  reviewed\n")
+        self.assertEqual(self.scan("--allow", allow, "--tree", "HEAD", "--commits", "HEAD")[0], 0)
+
+    def test_a_published_unreadable_compressed_file_can_be_accepted(self) -> None:
+        broken = self.commit({"bad.tosc": b"not zlib"})
+        git(self.repo, "rm", "-q", "bad.tosc")
+        git(self.repo, "commit", "-q", "-m", "remove")
+        accepted = self.write("accepted.txt", f"{broken} bad.tosc\n")
+        code, out = self.scan("--accepted", accepted, "--tree", "HEAD", "--commits", "HEAD")
+        self.assertEqual(code, 0)
+        self.assertIn(f"{broken[:12]} bad.tosc: unreadable compressed file (accepted: published history)", out)
 
 
 class RepoFilesTests(unittest.TestCase):
