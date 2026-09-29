@@ -423,4 +423,45 @@ mod tests {
             ])
         );
     }
+
+    #[test]
+    fn layout_targets_include_the_groups_to_unfold() {
+        // A renamed group to unfold is checked like a control's track (#9):
+        // its target is the one a track binding of that name has (escaped
+        // alike), shared with a control of the same track, and an instance
+        // with only groups to unfold is checked too.
+        let layout: Layout = serde_json::from_value(json!({
+            "schema": 2,
+            "default_page": "main",
+            "pages": [{"id": "main", "title": "FOH", "rail": [
+                {"kind": "solo",
+                 "binding": {"instance": "band", "anchor": {"kind": "track", "name": "Vox grp#"}}},
+                {"kind": "solo",
+                 "binding": {"instance": "band", "anchor": {"kind": "track", "name": "A"}}}
+            ]}],
+            "config": {"unfold": [
+                {"instance": "band", "name": "Vox grp#"},
+                {"instance": "band", "name": "Keys] grp#"},
+                {"instance": "master", "name": "Stems grp#"}
+            ]}
+        }))
+        .unwrap();
+        assert_eq!(
+            layout_targets(&layout),
+            BTreeMap::from([
+                (
+                    "band".to_string(),
+                    vec![
+                        "live_set tracks[name=A]".to_string(),
+                        r"live_set tracks[name=Keys\] grp#]".to_string(),
+                        "live_set tracks[name=Vox grp#]".to_string()
+                    ]
+                ),
+                (
+                    "master".to_string(),
+                    vec!["live_set tracks[name=Stems grp#]".to_string()]
+                ),
+            ])
+        );
+    }
 }
