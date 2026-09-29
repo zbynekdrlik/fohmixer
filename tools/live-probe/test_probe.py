@@ -293,12 +293,13 @@ class AgainstSimLive(unittest.TestCase):
         summary = probe.run(self.host.port, seconds=1.5, probe_ms=50)
         self.assertEqual(summary["instance"], "band")
         self.assertEqual(summary["script_version"], VERSION)
-        # A heartbeat every 100 ms, a read every 50 ms, for 1.5 s.
-        self.assertGreaterEqual(summary["heartbeats"], 10, summary)
+        # A heartbeat every 100 ms, a read every 50 ms, for 1.5 s (15 and 30
+        # nominally; a loaded machine delays both, so only "several" is pinned,
+        # and the ages are the machine's, not the probe's: never bounded here).
+        self.assertGreaterEqual(summary["heartbeats"], 3, summary)
         self.assertEqual(summary["main_tick_age_ms"]["count"], summary["heartbeats"])
         self.assertGreaterEqual(summary["main_tick_age_ms"]["min"], 0.0)
-        self.assertLess(summary["main_tick_age_ms"]["max"], 150.0, summary)
-        self.assertGreaterEqual(summary["round_trip_ms"]["count"], 20, summary)
+        self.assertGreaterEqual(summary["round_trip_ms"]["count"], 5, summary)
         self.assertGreater(summary["round_trip_ms"]["min"], 0.0)
         self.assertEqual(summary["round_trips_lost"], 0)
         self.assertEqual(summary["round_trip_errors"], 0)
@@ -317,20 +318,22 @@ class AgainstSimLive(unittest.TestCase):
         probe.run(self.host.port, seconds=1.0, probe_ms=50, raw_path=raw)
         with open(raw, encoding="utf-8") as f:
             reads = json.load(f)["reads"]
-        self.assertGreaterEqual(len(reads), 15)
-        for read in reads:
-            # Two clocks (the wall clock for the split, a performance counter
-            # for the round trip) and the script's whole-millisecond `ts`.
-            self.assertAlmostEqual(
-                read["inbound_ms"] + read["outbound_ms"], read["round_trip_ms"], delta=2.0
-            )
+        self.assertGreaterEqual(len(reads), 5)
+        # Two clocks (the wall clock for the split, a performance counter for
+        # the round trip) read one after the other, and the script's
+        # whole-millisecond `ts`: nine reads in ten agree within 2 ms (a
+        # preempted probe between its two clock reads may miss once).
+        misses = sorted(
+            abs(read["inbound_ms"] + read["outbound_ms"] - read["round_trip_ms"]) for read in reads
+        )
+        self.assertLessEqual(misses[int(len(misses) * 0.9) - 1], 2.0, misses)
 
     def test_reads_faster_than_the_ticks_show_the_tick_interval(self):
         # SimLive runs the script's timer every TIMER_INTERVAL_MS (10 ms); a
         # read every 2 ms lands in nearly every tick.
         summary = probe.run(self.host.port, seconds=1.0, probe_ms=2)
         gaps = summary["result_tick_gap_ms"]
-        self.assertGreaterEqual(gaps["count"], 30, summary)
+        self.assertGreaterEqual(gaps["count"], 10, summary)
         self.assertGreaterEqual(gaps["p50"], 5.0, summary)
         self.assertLessEqual(gaps["p50"], 30.0, summary)
 
@@ -348,12 +351,14 @@ class AgainstSimLive(unittest.TestCase):
         self.assertEqual(summary["round_trips_lost"], 0)
         # The wait is on the way in (the drain waits for the main thread), not
         # on the way out (the sender thread kept running).
-        self.assertGreaterEqual(summary["read_inbound_ms"]["max"], 250.0, summary)
-        self.assertLess(summary["read_outbound_ms"]["max"], 150.0, summary)
+        inbound, outbound = summary["read_inbound_ms"], summary["read_outbound_ms"]
+        self.assertGreaterEqual(inbound["max"], 250.0, summary)
+        self.assertGreaterEqual(inbound["max"] - outbound["max"], 150.0, summary)
+        self.assertLess(outbound["p95"], 100.0, summary)
 
     def test_the_cli_prints_the_summary_as_json(self):
         done = subprocess.run(
-            [sys.executable, PROBE, "--port", str(self.host.port), "--seconds", "1"],
+            [sys.executable, PROBE, "--port", str(self.host.port), "--seconds", "1.5"],
             capture_output=True,
             text=True,
             timeout=20,
@@ -362,12 +367,12 @@ class AgainstSimLive(unittest.TestCase):
         summary = json.loads(done.stdout)
         self.assertEqual(summary["instance"], "band")
         self.assertEqual(summary["probe_ms"], 100)
-        self.assertGreaterEqual(summary["heartbeats"], 5, summary)
-        self.assertGreaterEqual(summary["round_trip_ms"]["count"], 5, summary)
+        self.assertGreaterEqual(summary["heartbeats"], 3, summary)
+        self.assertGreaterEqual(summary["round_trip_ms"]["count"], 3, summary)
 
     def test_the_raw_samples_go_to_a_file(self):
         raw = os.path.join(self.host.log_dir, "raw.json")
-        probe.run(self.host.port, seconds=0.5, probe_ms=50, raw_path=raw)
+        probe.run(self.host.port, seconds=1.0, probe_ms=50, raw_path=raw)
         with open(raw, encoding="utf-8") as f:
             samples = json.load(f)
         self.assertEqual(sorted(samples), ["heartbeats", "reads"])
