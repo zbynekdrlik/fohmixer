@@ -693,6 +693,69 @@ class RawFile(unittest.TestCase):
                 raw_path=os.path.join(locked, "run.json"),
             )
 
+    def test_the_check_leaves_nothing_behind(self):
+        raw = os.path.join(self.folder, "run.json")
+        with self.assertRaisesRegex(probe.ProbeError, "cannot connect"):
+            probe.run(self.closed_port(), seconds=300, probe_ms=100, raw_path=raw)
+        self.assertEqual(os.listdir(self.folder), [])
+
+    def test_a_name_the_folder_cannot_take_is_refused_before_the_run(self):
+        # The real file name is tried, not only its folder (Linux: over 255
+        # bytes; Windows: <>:"|?* or a path over 260 characters).
+        for raw in (os.path.join(self.folder, "x" * 300 + ".json"), ""):
+            with self.assertRaisesRegex(probe.ProbeError, "cannot write the raw file"):
+                probe.run(self.closed_port(), seconds=300, probe_ms=100, raw_path=raw)
+
+    def test_samples_kept_from_an_earlier_run_are_never_overwritten(self):
+        raw = os.path.join(self.folder, "run.json")
+        with open(raw + ".tmp", "w", encoding="utf-8") as f:
+            f.write("kept samples")
+        with self.assertRaisesRegex(probe.ProbeError, "earlier run"):
+            probe.run(self.closed_port(), seconds=300, probe_ms=100, raw_path=raw)
+        with open(raw + ".tmp", encoding="utf-8") as f:
+            self.assertEqual(f.read(), "kept samples")
+
+    def test_a_temporary_name_taken_during_the_run_is_left_alone(self):
+        raw = os.path.join(self.folder, "run.json")
+        # Something takes <raw>.tmp once the probe has connected.
+        script = FakeScript(
+            [{"event": "connect", "data": CONNECT, "ts": 1000}],
+            on_connect=lambda: os.mkdir(raw + ".tmp"),
+        )
+        self.addCleanup(script.close)
+        with self.assertRaisesRegex(probe.RawWriteError, "cannot write the raw file") as caught:
+            probe.run(script.port, seconds=0.3, probe_ms=100, raw_path=raw)
+        self.assertNotIn("is left", str(caught.exception))
+        self.assertEqual(caught.exception.summary["instance"], "band")
+        self.assertTrue(os.path.isdir(raw + ".tmp"))
+        self.assertFalse(os.path.exists(raw))
+
+    def test_a_write_that_fails_midway_removes_the_partial_file(self):
+        """A file-size limit of 64 bytes (the samples are larger): the dump
+        fails, the partial temporary file is removed, the summary still
+        prints. The limit is set in the probe's own process (not preexec_fn,
+        unsafe while the fake script's thread runs)."""
+        raw = os.path.join(self.folder, "run.json")
+        script = FakeScript([{"event": "connect", "data": CONNECT, "ts": 1000}])
+        self.addCleanup(script.close)
+        limited = (
+            "import resource, runpy, sys; "
+            "resource.setrlimit(resource.RLIMIT_FSIZE, (64, 64)); "
+            "sys.argv = sys.argv[1:]; "
+            "runpy.run_path(sys.argv[0], run_name='__main__')"
+        )
+        done = subprocess.run(
+            [sys.executable, "-c", limited, PROBE, "--port", str(script.port)]
+            + ["--seconds", "0.3", "--raw", raw],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        self.assertEqual(done.returncode, 1, done.stderr)
+        self.assertEqual(json.loads(done.stdout)["instance"], "band")
+        self.assertIn("live-probe: cannot write the raw file", done.stderr)
+        self.assertEqual(os.listdir(self.folder), [])
+
     def test_a_raw_write_that_fails_after_the_run_keeps_the_summary_and_the_samples(self):
         raw = os.path.join(self.folder, "run.json")
         # The target becomes a folder during the run: the replace fails.
