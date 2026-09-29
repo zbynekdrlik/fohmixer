@@ -57,7 +57,7 @@ ROLES = ("author", "committer")
 # A signature in a commit header: its base64 and BEGIN/END markers are noise, not site data
 SIGNATURE_HEADERS = (b"gpgsig ", b"gpgsig-sha256 ")
 ARMOUR_MARKERS = {f"-----{edge} {kind}-----".encode("ascii") for edge in ("BEGIN", "END")
-                  for kind in ("PGP SIGNATURE", "SSH SIGNATURE", "SIGNED MESSAGE")}
+                  for kind in ("PGP SIGNATURE", "PGP MESSAGE", "SSH SIGNATURE", "SIGNED MESSAGE")}
 BASE64 = re.compile(rb"[A-Za-z0-9+/=]*")
 REDACTED = "[redacted]"
 # git's C-quoting of a path in a diff header (core.quotePath)
@@ -270,7 +270,8 @@ def header_lines(head: bytes) -> list[bytes]:
             body = line[1:]
         else:
             armoured = False
-            body = next((line[len(prefix):] for prefix in SIGNATURE_HEADERS if line.startswith(prefix)), line)
+            # only a gpgsig header can open a signature at the top level
+            body = next((line[len(prefix):] for prefix in SIGNATURE_HEADERS if line.startswith(prefix)), b"")
         if body in ARMOUR_MARKERS:
             armoured = body.startswith(b"-----BEGIN")
         elif not (armoured and BASE64.fullmatch(body)):
