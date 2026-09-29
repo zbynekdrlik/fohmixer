@@ -3,7 +3,15 @@ import { readFileSync } from "node:fs";
 import http from "node:http";
 import { test, expect } from "./support/fixtures";
 import { BASE, centre, frames, openSurface, token } from "./support/live";
-import { HTTPS, releaseWakeLocks, stubWakeLock, wakeLockRequests } from "./support/pwa";
+import {
+  HTTPS,
+  recordWakeLockWrites,
+  releaseWakeLocks,
+  removeWakeLock,
+  stubWakeLock,
+  wakeLockRequests,
+  wakeLockWrites,
+} from "./support/pwa";
 
 // Remote access (#17): one name for the LAN and the Cloudflare tunnel.
 //
@@ -128,6 +136,26 @@ test.describe("The public name over HTTPS (the LAN path)", () => {
     await frames(page);
     expect(await wakeLockRequests(page)).toEqual(["screen", "screen"]);
     await expect(root).toHaveAttribute("data-wake-lock", "held");
+  });
+
+  test("a browser without the Wake Lock API is marked unsupported once, however often it is touched", async ({
+    page,
+    hasTouch,
+  }) => {
+    // Every touch asks again while no lock is held, and the app reports
+    // each write of data-wake-lock to the hub: an unchanged state must not
+    // be written again.
+    await page.addInitScript(removeWakeLock);
+    await page.addInitScript(recordWakeLockWrites);
+    await openSurface(page);
+    await expect(page.locator("html")).toHaveAttribute("data-wake-lock", "unsupported");
+    const at = await centre(page.getByTestId("stage").getByTestId("version"));
+    for (let i = 0; i < 2; i++) {
+      if (hasTouch) await page.touchscreen.tap(at.x, at.y);
+      else await page.mouse.click(at.x, at.y);
+    }
+    await frames(page);
+    expect(await wakeLockWrites(page)).toEqual(["unsupported"]);
   });
 
   test("the manifest link asks for credentials (the Access cookie on the internet path); manifest and worker are served", async ({ page }) => {

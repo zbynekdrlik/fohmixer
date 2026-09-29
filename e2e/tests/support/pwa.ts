@@ -16,12 +16,13 @@ export const HTTPS = process.env.E2E_HTTPS_URL || "https://foh.e2e.test:8443";
  * (`page.addInitScript(stubWakeLock, { activation: true })`) the stub grants
  * a request only with user activation, as iPadOS does (WebKit's
  * `WakeLock::request`, #5 K4), and rejects any other with a
- * `NotAllowedError`. Activation is the HTML standard's: a trusted mouse
- * `pointerdown`, a trusted `pointerup` of a finger or pen, or a trusted
- * `touchend` — so a finger's `pointerdown` is none — and it lasts 5 s (both
- * engines' transient activation). The stub models it with its own listeners
- * because Playwright activates the page itself (`page.evaluate`, locator
- * actions), whatever a real device would do.
+ * `NotAllowedError`. Activation is the pointer and touch part of the HTML
+ * standard's activation-triggering events (not keydown / mousedown): a
+ * trusted mouse `pointerdown`, a trusted `pointerup` of a finger or pen, or a
+ * trusted `touchend` — so a finger's `pointerdown` is none — and it lasts
+ * 5 s (both engines' transient activation). The stub models it with its
+ * own listeners because Playwright activates the page itself
+ * (`page.evaluate`, locator actions), whatever a real device would do.
  */
 export function stubWakeLock(options?: { activation?: boolean }) {
   const requests: string[] = [];
@@ -78,6 +79,29 @@ export function stubWakeLock(options?: { activation?: boolean }) {
       };
     },
   });
+}
+
+/** Takes the Screen Wake Lock API away, as on a browser without it (an init script). */
+export function removeWakeLock() {
+  delete (Navigator.prototype as any).wakeLock;
+}
+
+/**
+ * Records every write of `data-wake-lock` on `<html>` (an init script:
+ * `page.addInitScript(recordWakeLockWrites)`). The app reports each write to
+ * the hub (diag.rs), so the page writes it only when the state changes.
+ */
+export function recordWakeLockWrites() {
+  const writes: (string | null)[] = [];
+  (window as any).__wakeLockWrites = writes;
+  new MutationObserver((records) => {
+    for (const record of records) writes.push((record.target as Element).getAttribute("data-wake-lock"));
+  }).observe(document, { subtree: true, attributes: true, attributeFilter: ["data-wake-lock"] });
+}
+
+/** The writes of `data-wake-lock` so far (`recordWakeLockWrites`). */
+export async function wakeLockWrites(page: Page): Promise<(string | null)[]> {
+  return page.evaluate(() => (window as any).__wakeLockWrites);
 }
 
 /** The wake lock requests the page made (`stubWakeLock`), granted or refused. */
