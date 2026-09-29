@@ -3,7 +3,8 @@
 The server runs no threads (#5): Live's main thread polls it in its timer tick
 (``poll_in``, then the work, then ``poll_out``). ``TransportTest`` gives it a
 SimLive ``MainThread`` whose 10 ms timer polls it, and pushes through
-``call``, as the surface does; ``OneTickTest`` makes the test thread Live's
+``call``, as the surface does; its ticks write at the real time unless a test
+holds their clock (``write_at``). ``OneTickTest`` makes the test thread Live's
 main thread and ticks by hand, which pins what one tick does and that nothing
 moves between ticks.
 """
@@ -12,6 +13,7 @@ import errno
 import itertools
 import json
 import logging
+import math
 import select
 import socket
 import time
@@ -107,6 +109,10 @@ class TransportTest(unittest.TestCase):
 
     def setUp(self):
         self.logger, self.log = recording_logger(self.id())
+        # The time the ticks write at: the real one while None (`write_at`
+        # sets it); and how many ticks are done.
+        self.write_time = None
+        self.ticks = 0
         self.mt = MainThread().start()
         self.addCleanup(self.mt.stop)
         self.server = self.start_server(0)
@@ -124,11 +130,38 @@ class TransportTest(unittest.TestCase):
 
     def tick(self):
         self.server.poll_in()
-        self.server.poll_out()
+        self.server.poll_out(self.write_time)
+        self.ticks += 1
 
     def call(self, fn):
         """Run ``fn`` on the main thread, between two ticks."""
         return self.mt.call(fn)
+
+    def write_at(self, when=None):
+        """From the next tick on, the ticks write at ``when`` (the time now,
+        if not given) until it is set again: the send stall then moves only
+        when the test moves this clock. Returns that time and the ticks done."""
+
+        def hold():
+            self.write_time = time.monotonic() if when is None else when
+            return self.write_time, self.ticks
+
+        return self.call(hold)
+
+    def wait_tick(self, ticks):
+        """Until a tick after the first ``ticks`` is done."""
+        wait_for(lambda: self.ticks > ticks)
+
+    def wait_stuck(self, conn):
+        """Until a whole tick wrote nothing to ``conn``'s socket while bytes
+        waited for it: the client's window is full."""
+
+        def stuck():
+            unsent, ticks = self.call(lambda: (conn.pending()[2], self.ticks))
+            self.wait_tick(ticks)
+            return 0 < self.call(lambda: conn.pending()[2]) == unsent
+
+        wait_for(stuck)
 
     def start_server(self, port, result_queue_max=1000):
         server = Server("127.0.0.1", port, {"instance": "test"}, result_queue_max, self.logger)
@@ -269,6 +302,10 @@ class TransportTest(unittest.TestCase):
             self.assertEqual({r["data"][0]["data"] for r in results}, {conn.id})
 
     def test_non_reading_client_never_blocks_and_overflow_closes_only_it(self):
+        # The queue bound alone: the send stall cannot fire during this test,
+        # however slowly this machine fills the socket (#5).
+        self.addCleanup(setattr, transport, "SEND_STALL_S", transport.SEND_STALL_S)
+        transport.SEND_STALL_S = math.inf
         good_ws, good_conn, _ = self.client()
         _stalled, conn = self.stalled_client()
         self.fill(conn)
@@ -335,15 +372,22 @@ class TransportTest(unittest.TestCase):
         # The result queue alone would keep a stuck reader's output for ever
         # when it is values or a few large results; a socket that took no byte
         # for SEND_STALL_S while output waited closes the connection (the hub
-        # resyncs), as the 3 s `sendall` timeout did before #5.
-        self.addCleanup(setattr, transport, "SEND_STALL_S", transport.SEND_STALL_S)
-        transport.SEND_STALL_S = 0.3
+        # resyncs), as the 3 s `sendall` timeout did before #5. The ticks
+        # write at a held time while the socket fills, so the stall cannot
+        # close it first however slowly this machine fills it (#5); then that
+        # time moves on to just before, and to exactly, SEND_STALL_S. When
+        # exactly is pinned on explicit times (OneTickTest); here, that it
+        # happens on the polled server and spares the other client.
         good_ws, good_conn, _ = self.client()
         _stalled, conn = self.stalled_client()
+        t0, _ticks = self.write_at()
         queued = self.fill(conn)
-        # When exactly is pinned on explicit times (OneTickTest); here, that it
-        # happens on the polled server and spares the other client.
-        wait_for(lambda: conn.finished, timeout=3.0)
+        self.wait_stuck(conn)
+        _t, ticks = self.write_at(t0 + transport.SEND_STALL_S - 0.01)
+        self.wait_tick(ticks)
+        self.assertTrue(conn.is_open)
+        self.write_at(t0 + transport.SEND_STALL_S)
+        wait_for(lambda: conn.finished)
         self.assertLess(queued, 1000, "the queue bound closed it, not the stall")
         self.assertTrue(any("read nothing for" in m for m in self.log.messages), self.log.messages)
         wait_for(lambda: conn not in self.connections())
