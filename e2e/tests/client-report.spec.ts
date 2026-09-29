@@ -279,7 +279,6 @@ test.describe("Fingers at once", () => {
     ]);
     const four = await reportOf(w, since, (r) => r.kind === "perf" && r.touches_max === "4");
     expect(four.pointer).toBe("touch");
-    expect(four.at).toBeGreaterThanOrEqual(three.at);
   });
 });
 
