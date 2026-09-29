@@ -8,6 +8,7 @@ main thread and ticks by hand, which pins what one tick does and that nothing
 moves between ticks.
 """
 
+import errno
 import itertools
 import json
 import logging
@@ -39,6 +40,26 @@ class RecordingHandler(logging.Handler):
 
     def emit(self, record):
         self.messages.append(record.getMessage())
+
+
+class FakeListener:
+    """The server's listening socket, whose accept() raises ``errors`` first
+    (one per call) and then accepts: accept failures a test cannot cause."""
+
+    def __init__(self, sock, errors):
+        self.sock = sock
+        self.errors = list(errors)
+
+    def fileno(self):
+        return self.sock.fileno()
+
+    def accept(self):
+        if self.errors:
+            raise self.errors.pop(0)
+        return self.sock.accept()
+
+    def __getattr__(self, name):
+        return getattr(self.sock, name)
 
 
 def recording_logger(name):
@@ -707,6 +728,83 @@ class OneTickTest(unittest.TestCase):
             return sock.recv(1) == b""
         except ConnectionResetError:
             return True
+
+    def test_clients_the_server_closes_leave_no_time_wait_on_the_port(self):
+        # Windows keeps an SO_EXCLUSIVEADDRUSE port busy while connections
+        # accepted on it are still closing: every accepted socket the server
+        # closes itself is reset, as a finished connection is (#5 review).
+        self.addCleanup(setattr, transport, "MAX_CONNECTIONS", transport.MAX_CONNECTIONS)
+        self.addCleanup(setattr, transport, "HANDSHAKE_TIMEOUT_S", transport.HANDSHAKE_TIMEOUT_S)
+        transport.HANDSHAKE_TIMEOUT_S = 0.2
+        # A request that is not an upgrade: 400, then closed.
+        bad = socket.create_connection(("127.0.0.1", self.port))
+        bad.sendall(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+        self.tick()
+        bad.settimeout(2.0)
+        self.assertTrue(bad.recv(4096).startswith(b"HTTP/1.1 400"))
+        # A request that never completes: dropped after the handshake timeout.
+        slow = socket.create_connection(("127.0.0.1", self.port))
+        slow.sendall(b"GET / HTTP/1.1\r\n")
+        self.tick()
+        time.sleep(0.3)
+        self.tick()
+        self.assertTrue(self.closed_by_server(slow))
+        # A client past the cap: refused at accept.
+        transport.MAX_CONNECTIONS = 1
+        self.client()
+        self.tick()
+        refused = socket.create_connection(("127.0.0.1", self.port))
+        self.tick()
+        self.assertTrue(self.closed_by_server(refused))
+        for sock in (bad, slow, refused):
+            sock.close()
+        time.sleep(0.1)
+        self.assertEqual(server_side_time_wait(self.port), [])
+
+    def test_pending_handshakes_count_toward_the_connection_cap(self):
+        # Handshakes accepted under the cap complete later: counted at accept,
+        # the connections never pass MAX_CONNECTIONS.
+        self.addCleanup(setattr, transport, "MAX_CONNECTIONS", transport.MAX_CONNECTIONS)
+        transport.MAX_CONNECTIONS = 1
+        silent = [socket.create_connection(("127.0.0.1", self.port)) for _ in range(2)]
+        for sock in silent:
+            self.addCleanup(sock.close)
+        self.tick()
+        self.assertEqual(sum(self.closed_by_server(sock) for sock in silent), 1)
+
+    def test_a_network_error_on_accept_keeps_the_listener(self):
+        # accept(2): errors of the network or of the pending client are to be
+        # treated like EAGAIN; only errors of the listener itself rebind it.
+        listener = FakeListener(self.server._listener, [OSError(errno.EPROTO, "test: EPROTO")])
+        self.server._listener = listener
+        client = self.client()
+        for _ in range(3):
+            self.tick()
+        self.assertIs(self.server._listener, listener)
+        self.assertEqual(client.read_messages(1)[0]["event"], "connect")
+        self.assertFalse(any("binding again" in m for m in self.log.messages), self.log.messages)
+
+    def test_accept_failures_and_refusals_that_go_on_are_logged_once_a_while(self):
+        # The listener stays readable while accept fails (EMFILE) and a client
+        # may retry against the caps every tick: one warning, not ~30 a second.
+        self.addCleanup(setattr, transport, "MAX_HANDSHAKES", transport.MAX_HANDSHAKES)
+        transport.MAX_HANDSHAKES = 1
+        exhausted = [OSError(errno.EMFILE, "test: too many open files")] * 5
+        self.server._listener = FakeListener(self.server._listener, exhausted)
+        first = socket.create_connection(("127.0.0.1", self.port))
+        self.addCleanup(first.close)
+        for _ in range(5):
+            self.tick()
+        failures = [m for m in self.log.messages if "accept failed" in m]
+        self.assertEqual(len(failures), 1, self.log.messages)
+        self.tick()  # the fake listener accepts again: `first` is the one handshake
+        for _ in range(3):
+            extra = socket.create_connection(("127.0.0.1", self.port))
+            self.addCleanup(extra.close)
+            self.tick()
+            self.assertTrue(self.closed_by_server(extra))
+        refusals = [m for m in self.log.messages if "refused" in m]
+        self.assertEqual(len(refusals), 1, self.log.messages)
 
     def test_a_handshake_that_arrives_in_pieces_completes_on_a_later_tick(self):
         sock = socket.create_connection(("127.0.0.1", self.port))

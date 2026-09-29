@@ -387,6 +387,26 @@ class HandTickedSurfaceTest(unittest.TestCase):
         self.assertEqual(len(beats), 1, messages)
         self.assertGreaterEqual(beats[0]["data"]["main_tick_age_ms"], 400.0, beats)
 
+    def test_a_failing_drain_does_not_stop_the_subscription_flush(self):
+        add = {"target": "live_set tracks 0", "name": "add_listener", "args": {"prop": "mute"}}
+        client = self.client(extra=request_frame("sub", [add]))
+        messages = []
+        for _ in range(3):
+            messages += self.tick_and_read(client)
+        sub = next(m for m in messages if m.get("uuid") == "sub")
+        key = sub["data"][0]["data"]["key"]
+
+        def broken():
+            raise RuntimeError("test: the drain fails")
+
+        self.surface._drain.run = broken
+        self.song.tracks[0]._sim_set("mute", True)
+        items = []
+        for _ in range(3):
+            frames = self.tick_and_read(client)
+            items += [item for f in frames if f["event"] == "values" for item in f["data"]]
+        self.assertIn({"key": key, "value": True}, items)
+
     def test_heartbeats_go_on_while_the_subscription_flush_keeps_failing(self):
         # A failing step must not stop the heartbeat: Live would show busy
         # for ever while its main thread ticks.
