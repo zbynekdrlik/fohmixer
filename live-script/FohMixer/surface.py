@@ -2,16 +2,16 @@
 
 Live's main thread runs ``_on_timer`` every ``TIMER_INTERVAL_MS`` from
 ``Live.Base.Timer`` (and ``_tick`` from ``schedule_message`` as a ~100 ms
-fallback). Each call records ``last_main_tick``, runs queued commands within
-the work budget (``Drain``), then flushes dirty subscriptions. Sockets live on
-the transport's threads; a heartbeat thread reports ``main_tick_age_ms``
-without the main thread, so a stall shows while it lasts, and ``gap_ms``, the
-time since its own previous heartbeat.
+fallback). Each call does all of the script's work, its socket I/O included:
+the script runs no threads (#5, K1: in Live they got Python only around this
+tick). A call records ``last_main_tick``, reads the sockets (``poll_in``),
+runs queued commands within the work budget (``Drain``), flushes dirty
+subscriptions, makes the heartbeat when one is due (``Heartbeats``), and
+writes the sockets (``poll_out``).
 """
 
 import collections
 import queue
-import threading
 import time
 
 import Live
@@ -33,14 +33,43 @@ ERROR_LOG_INTERVAL_S = 60.0
 
 
 def heartbeat_data(age_ms, max_cmd_ms, gap_s):
-    """A heartbeat's data. ``gap_ms`` is the time since this thread's previous
-    heartbeat (nominally ``HEARTBEAT_INTERVAL_MS``): far longer means the thread
-    itself did not run, not that a sent heartbeat was held up (#9)."""
+    """A heartbeat's data. ``gap_ms`` is the time since the previous heartbeat
+    was made (nominally ``HEARTBEAT_INTERVAL_MS``): far longer means the main
+    thread did not tick, not that a sent heartbeat was held up (#9)."""
     return {
         "main_tick_age_ms": round(age_ms, 1),
         "max_cmd_ms": round(max_cmd_ms, 3),
         "gap_ms": round(gap_s * 1000.0, 1),
     }
+
+
+class Heartbeats:
+    """Which ticks make a heartbeat, and what it says (#5: made in the tick).
+
+    One every ``interval_s`` on a fixed grid (with Live's ~33 ms ticks: every
+    100 ms on average, not every fourth tick). ``main_tick_age_ms`` is how long
+    the main thread was away before this tick: any gap of an interval or more
+    ends in a tick that makes a heartbeat, so a stall shows on the first one
+    after it; while it lasts none goes out, and the hub reports Live busy once
+    one is overdue. After a stall the grid restarts (no burst of the skipped
+    ones). Times are ``time.monotonic()`` seconds, passed in.
+    """
+
+    def __init__(self, interval_s, now):
+        self._interval_s = interval_s
+        self._previous = now
+        self._due = now + interval_s
+
+    def on_tick(self, now, tick_gap_s, max_cmd_ms):
+        """The heartbeat's data when one is due at this tick, else None."""
+        if now < self._due:
+            return None
+        data = heartbeat_data(tick_gap_s * 1000.0, max_cmd_ms, now - self._previous)
+        self._previous = now
+        self._due += self._interval_s
+        if self._due <= now:
+            self._due = now + self._interval_s
+        return data
 
 
 class Drain:
@@ -142,16 +171,13 @@ class FohMixer(ControlSurface):
             Config.WINDOW_BUDGET_MS,
             Config.WINDOW_MS,
         )
+        self._heartbeats = Heartbeats(Config.HEARTBEAT_INTERVAL_MS / 1000.0, self.last_main_tick)
         self._server.start()
         self._timer = Live.Base.Timer(
             callback=self._on_timer, interval=Config.TIMER_INTERVAL_MS, repeat=True
         )
         self._timer.start()
         self.schedule_message(1, self._tick)
-        self._heartbeat_stop = threading.Event()
-        threading.Thread(
-            target=self._heartbeat_loop, name="fohmixer-heartbeat", daemon=True
-        ).start()
         self._log.warning(
             "FohMixer %s started: instance %s on %s:%s",
             VERSION,
@@ -196,15 +222,24 @@ class FohMixer(ControlSurface):
         if not self.connected:
             return
         now = time.monotonic()
-        gap_ms = (now - self.last_main_tick) * 1000.0
+        gap_s = now - self.last_main_tick
         self.last_main_tick = now
-        if gap_ms > STALL_LOG_MS:
-            self._log.warning("Live's main thread stalled for %d ms", gap_ms)
+        if gap_s * 1000.0 > STALL_LOG_MS:
+            self._log.warning("Live's main thread stalled for %d ms", gap_s * 1000.0)
         try:
+            self._server.poll_in()
             self._drain.run()
             self._subs.flush(now * 1000.0)
+            heartbeat = self._heartbeats.on_tick(now, gap_s, self._drain.max_cmd_ms)
+            if heartbeat is not None:
+                self._server.broadcast_heartbeat(heartbeat)
         except Exception:  # noqa: BLE001 - logged (rate-limited); Live's timer must keep running
             self._log_error("timer work failed")
+        # Written even when the work above failed: what it queued still goes out.
+        try:
+            self._server.poll_out()
+        except Exception:  # noqa: BLE001 - logged (rate-limited); Live's timer must keep running
+            self._log_error("socket writes failed")
 
     def _tick(self):
         if not self.connected:
@@ -237,26 +272,12 @@ class FohMixer(ControlSurface):
             self._last_error_log[what] = now
             self._log.exception(what)
 
-    # --- heartbeat thread ---
-
-    def _heartbeat_loop(self):
-        interval_s = Config.HEARTBEAT_INTERVAL_MS / 1000.0
-        previous = time.monotonic()
-        while not self._heartbeat_stop.wait(interval_s):
-            now = time.monotonic()
-            age_ms = (now - self.last_main_tick) * 1000.0
-            self._server.broadcast_heartbeat(
-                heartbeat_data(age_ms, self._drain.max_cmd_ms, now - previous)
-            )
-            previous = now
-
     # --- lifecycle ---
 
     def disconnect(self):
         """Live unloads the script (set load/close): stop, say goodbye, release everything."""
         self.connected = False
         self._timer.stop()
-        self._heartbeat_stop.set()
         self._server.broadcast("disconnect")
         self._server.shutdown(SHUTDOWN_GRACE_S)
         self._subs.clear()

@@ -1,56 +1,75 @@
 # Derived from leolabs/ableton-js v5.0.3 @69de331, midi-script/Socket.py.
 # Copyright (c) 2022 Leo Bernard. MIT License, see LICENSE-ableton-js.
-# Kept: the accept thread, one reader thread per connection, the frame loop.
-# Changed (design §3.7, §3.9): the main thread never sends (a sender thread per
-# connection drains a bounded result queue and a latest-value map, one frame at
-# a time, a pending heartbeat first), no static
-# server, no auth, no port files, SO_EXCLUSIVEADDRUSE on Windows, and a close
-# that finishes the WebSocket close handshake and then resets the connection so
+# Kept: the frame loop (control frames, fragments, the envelope check).
+# Changed (#5, K1): no threads. Upstream accepts, reads and sends on threads;
+# inside Live those got Python only around the main thread's ~30 Hz timer
+# tick, so a connection sent about one frame per tick and a result waited
+# whole ticks. Here Live's main thread polls non-blocking sockets in its tick
+# (`poll_in`, `poll_out`); a connection keeps a bounded result queue and a
+# latest-value map, sends a pending heartbeat first, and keeps what its socket
+# does not take for the next tick. Also (design §3.7, §3.9): no static server,
+# no auth, no port files, SO_EXCLUSIVEADDRUSE on Windows, and a close that
+# finishes the WebSocket close handshake and then resets the connection so
 # the port can be bound again at once (Windows keeps an exclusive port busy
 # while accepted connections are still closing).
-"""Threaded localhost WebSocket server with a non-blocking send path.
+"""Single-threaded localhost WebSocket server, polled by Live's main thread.
 
-Threads (all daemon): one accept thread; per connection one reader thread
-(handshake, frames, JSON, envelope check) and one sender thread. Well-formed
-requests go to ``inbox`` as ``(connection, payload)``; ``(connection, None)``
-tells the main thread a connection is gone. The main thread only calls the
-``push_*`` / ``send_*`` methods, which append under a short lock and notify.
+Each tick calls ``poll_in`` (accept, handshakes, frames: well-formed requests
+go to ``inbox`` as ``(connection, payload)``, and ``(connection, None)`` once
+a connection is gone), then the script's work (which calls the ``push_*`` /
+``send_*`` methods), then ``poll_out`` (every connection writes what is
+pending, as far as its socket takes it). Every socket is non-blocking and
+``select`` never waits, so a tick never waits for a client; only
+``shutdown`` (the script unloading) waits, up to its grace.
 """
 
 import collections
-import contextlib
 import itertools
 import json
 import logging
 import os
 import queue
+import select
 import socket
 import struct
 import threading
 import time
 
 from .websocket import (
+    HANDSHAKE_MAX_BYTES,
+    HANDSHAKE_RECV_SIZE,
     OPCODE_CLOSE,
     OPCODE_CONTINUATION,
     OPCODE_PING,
     OPCODE_PONG,
     OPCODE_TEXT,
-    complete_websocket_handshake,
     encode_close_frame,
     encode_pong_frame,
     encode_text_frame,
+    handshake_response,
     is_websocket_upgrade,
-    read_http_request,
-    to_bytes,
+    parse_http_request,
     try_read_frame,
 )
 
-SOCKET_TIMEOUT_S = 3.0
-CLOSE_HANDSHAKE_TIMEOUT_S = 1.0
-ACCEPT_POLL_S = 0.5
 BIND_RETRY_DELAYS_S = (0.25, 0.5, 1.0, 2.0, 5.0)
+LISTEN_BACKLOG = 16
+# A client that has not sent its whole upgrade request by then is dropped.
+HANDSHAKE_TIMEOUT_S = 3.0
+# A connection whose socket took no byte for this long while output waited is
+# closed (the hub resyncs): the client stopped reading.
+SEND_STALL_S = 3.0
+# After our close frame, how long the peer's close frame is awaited.
+CLOSE_HANDSHAKE_TIMEOUT_S = 1.0
+SHUTDOWN_POLL_S = 0.01
 MAX_MESSAGE_BYTES = 16 * 1024 * 1024
 RECV_SIZE = 65536
+# Per connection and tick: bounds on the main thread's socket work.
+READ_BYTES_PER_TICK = 1024 * 1024
+WRITE_BYTES_PER_TICK = 256 * 1024
+# Messages are encoded at most this far ahead of the socket, so a heartbeat
+# set now waits only behind these bytes, never behind the queued results.
+WRITE_AHEAD_BYTES = 65536
 _LINGER_ABORT = struct.pack("HH" if os.name == "nt" else "ii", 1, 0)
 _BAD_REQUEST = b"HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
 _NO_UUID = object()
@@ -70,46 +89,62 @@ def encode_message(message):
 
 
 class Connection:
-    """One WebSocket client. ``push_*``/``send_*`` never block; a sender thread writes.
+    """One WebSocket client. ``push_*``/``send_*`` only queue; the tick writes.
 
-    - ``results``: a bounded queue of result/event messages, in order; going past
-      ``result_queue_max`` closes the connection (the hub resyncs);
-    - ``values``: the latest item per key, sent as one ``values`` frame;
-    - ``heartbeat``: the latest heartbeat only, sent before anything else.
+    Output, by priority (``_take_next``): the pending heartbeat (the latest
+    only), then results and events in order (bounded: going past
+    ``result_queue_max`` closes the connection, the hub resyncs), then every
+    pending value as one ``values`` message (the latest item per key), and
+    last, when closing, the close frame. ``first_bytes`` (the 101 response and
+    the ``connect`` frame) go before all of it.
     """
 
     _ids = itertools.count(1)
 
-    def __init__(self, sock, result_queue_max, logger):
+    def __init__(self, sock, first_bytes, result_queue_max, logger, inbox, now):
         self.id = next(Connection._ids)
         self._sock = sock
         self._max = result_queue_max
         self._log = logger
-        self._cond = threading.Condition(threading.RLock())
+        self._inbox = inbox
         self._out = collections.deque()
         self._values = {}
         self._heartbeat = None
+        self._wbuf = bytearray(first_bytes)
+        self._rbuf = bytearray()
+        self._fragments = bytearray()
+        self._fragment_opcode = None
         self._state = OPEN
-        self._batch_depth = 0
-        self._close_wait = threading.Event()
-        self.finished = threading.Event()
-        self._sender = threading.Thread(
-            target=self._send_loop, name=f"fohmixer-send-{self.id}", daemon=True
-        )
+        self._close_queued = False
+        self._close_sent_at = None
+        self._peer_closed = False
+        self._last_progress = now
+        self._finished = False
 
-    def start(self):
-        self._sender.start()
+    @property
+    def socket(self):
+        return self._sock
 
     @property
     def is_open(self):
         return self._state == OPEN
 
-    def pending(self):
-        """``(queued results/events, pending value keys)``, for diagnostics and tests."""
-        with self._cond:
-            return len(self._out), len(self._values)
+    @property
+    def finished(self):
+        """The connection is over and its socket closed."""
+        return self._finished
 
-    # --- called from any thread (the main thread included): never blocks on I/O ---
+    @property
+    def reading(self):
+        """Whether the tick still reads this socket (not after the peer's close)."""
+        return not (self._finished or self._peer_closed)
+
+    def pending(self):
+        """``(queued results/events, pending value keys, unsent bytes)``, for
+        diagnostics and tests."""
+        return len(self._out), len(self._values), len(self._wbuf)
+
+    # --- queueing: never touches the socket ---
 
     def push_result(self, uuid, data):
         return self._enqueue({"event": "result", "uuid": uuid, "data": data, "ts": now_ms()})
@@ -127,89 +162,144 @@ class Connection:
         return self._enqueue(frame)
 
     def push_value(self, key, item):
-        with self._cond:
-            if self._state != OPEN:
-                return False
-            self._values[key] = item
-            self._wake()
+        if self._state != OPEN:
+            return False
+        self._values[key] = item
         return True
 
     def push_values(self, items):
-        with self._cond:
-            if self._state != OPEN:
-                return False
-            self._values.update(items)
-            self._wake()
+        if self._state != OPEN:
+            return False
+        self._values.update(items)
         return True
 
     def set_heartbeat(self, data):
-        with self._cond:
-            if self._state != OPEN:
-                return False
-            self._heartbeat = {"event": "heartbeat", "data": data, "ts": now_ms()}
-            self._wake()
+        if self._state != OPEN:
+            return False
+        self._heartbeat = {"event": "heartbeat", "data": data, "ts": now_ms()}
         return True
-
-    @contextlib.contextmanager
-    def batch(self):
-        """Group several pushes so the sender wakes once, after the last one."""
-        with self._cond:
-            self._batch_depth += 1
-            try:
-                yield self
-            finally:
-                self._batch_depth -= 1
-                self._wake()
 
     def close(self):
         """Graceful: send what is queued, a close frame, then close."""
-        with self._cond:
-            if self._state == OPEN:
-                self._state = CLOSING
-                self._cond.notify()
+        if self._state == OPEN:
+            self._state = CLOSING
 
     def abort(self):
         """At once: drop what is queued and reset the connection."""
-        with self._cond:
-            if self._state == CLOSED:
-                return
-            self._state = CLOSED
-            self._cond.notify()
-        self._close_wait.set()
-        self._shutdown_socket()
+        self._finish()
 
-    def peer_closed(self):
-        """The reader saw the peer's close frame or end of stream."""
-        self._close_wait.set()
+    # --- the main thread's tick ---
+
+    def receive(self):
+        """Read what has arrived (up to ``READ_BYTES_PER_TICK``): requests go to
+        the inbox; the end of the stream or a read error resets the connection."""
+        received = 0
+        while self.reading and received < READ_BYTES_PER_TICK:
+            try:
+                data = self._sock.recv(RECV_SIZE)
+            except (BlockingIOError, InterruptedError):
+                return
+            except OSError:
+                self.abort()
+                return
+            if not data:
+                self.abort()
+                return
+            received += len(data)
+            self.take(data)
+
+    def take(self, data):
+        """Bytes read from the client (also the ones behind its upgrade request)."""
+        self._rbuf.extend(data)
+        if len(self._rbuf) + len(self._fragments) > MAX_MESSAGE_BYTES:
+            self._log.warning("connection %s: message too large, closing it", self.id)
+            self.abort()
+            return
+        while self.reading:
+            frame = try_read_frame(self._rbuf)
+            if frame is None:
+                return
+            self._frame(*frame)
+
+    def flush(self, now):
+        """Write pending output as far as the socket takes it (up to
+        ``WRITE_BYTES_PER_TICK``); the rest waits for the next tick."""
+        if self._finished:
+            return
+        written = 0
+        while written < WRITE_BYTES_PER_TICK:
+            self._fill()
+            if not self._wbuf:
+                break
+            chunk = self._wbuf[: WRITE_BYTES_PER_TICK - written]
+            try:
+                sent = self._sock.send(chunk)
+            except (BlockingIOError, InterruptedError):
+                break
+            except OSError as e:
+                if self._state == OPEN:
+                    self._log.warning("connection %s: send failed (%s), closing it", self.id, e)
+                self.abort()
+                return
+            del self._wbuf[:sent]
+            written += sent
+            if sent < len(chunk):
+                break
+        if written or not self._has_output():
+            self._last_progress = now
+        elif now - self._last_progress >= SEND_STALL_S:
+            self._log.warning(
+                "connection %s: the client read nothing for %.1f s, closing it",
+                self.id,
+                SEND_STALL_S,
+            )
+            self.abort()
+            return
+        if self._close_queued and not self._wbuf:
+            if self._close_sent_at is None:
+                self._close_sent_at = now
+            if self._peer_closed or now - self._close_sent_at >= CLOSE_HANDSHAKE_TIMEOUT_S:
+                self._finish()
 
     # --- internals ---
 
-    def _wake(self):
-        if self._batch_depth == 0:
-            self._cond.notify()
-
     def _enqueue(self, message):
-        with self._cond:
-            if self._state != OPEN:
-                return False
-            if len(self._out) < self._max:
-                self._out.append(message)
-                self._wake()
-                return True
+        if self._state != OPEN:
+            return False
+        if len(self._out) < self._max:
+            self._out.append(message)
+            return True
         self._log.warning(
             "connection %s: result queue full (%s messages), closing it", self.id, self._max
         )
         self.abort()
         return False
 
-    def _take_next(self):
-        """The next message to send (the lock held), by priority: the pending
-        heartbeat, then the results and events in order, then every pending
-        value as one ``values`` message; ``None`` when nothing waits.
+    def _has_output(self):
+        return bool(
+            self._wbuf
+            or self._heartbeat is not None
+            or self._out
+            or self._values
+            or (self._state == CLOSING and not self._close_queued)
+        )
 
-        One message at a time, so a heartbeat set while a frame is being sent
-        goes out right after it, never behind results queued meanwhile: a late
-        heartbeat makes the hub report Live busy (#9).
+    def _fill(self):
+        """Encode pending messages into the write buffer, up to ``WRITE_AHEAD_BYTES``."""
+        while len(self._wbuf) < WRITE_AHEAD_BYTES:
+            message = self._take_next()
+            if message is None:
+                return
+            self._wbuf += message if isinstance(message, bytes) else encode_message(message)
+
+    def _take_next(self):
+        """The next message by priority: the pending heartbeat, then the results
+        and events in order, then every pending value as one ``values`` message,
+        then (closing) the close frame; ``None`` when nothing waits.
+
+        A heartbeat set now goes out behind at most the write buffer, never
+        behind the results queued meanwhile: a late heartbeat makes the hub
+        report Live busy (#9).
         """
         if self._heartbeat is not None:
             heartbeat, self._heartbeat = self._heartbeat, None
@@ -219,63 +309,90 @@ class Connection:
         if self._values:
             values, self._values = self._values, {}
             return {"event": "values", "data": list(values.values()), "ts": now_ms()}
+        if self._state == CLOSING and not self._close_queued:
+            self._close_queued = True
+            return encode_close_frame()
         return None
 
-    def _send_loop(self):
-        try:
-            while True:
-                with self._cond:
-                    while self._state == OPEN and not (
-                        self._out or self._values or self._heartbeat
-                    ):
-                        self._cond.wait()
-                    if self._state == CLOSED:
-                        return
-                    message = self._take_next()
-                if message is not None:
-                    frame = message if isinstance(message, bytes) else encode_message(message)
-                    self._sock.sendall(frame)
-                    continue
-                # Nothing left and closing: the close handshake.
-                self._sock.sendall(encode_close_frame())
-                self._close_wait.wait(CLOSE_HANDSHAKE_TIMEOUT_S)
+    def _frame(self, opcode, fin, payload):
+        if opcode == OPCODE_CLOSE:
+            self._peer_closed = True
+            self.close()
+            return
+        if self._state != OPEN:
+            return
+        if opcode == OPCODE_PING:
+            self.send_frame(encode_pong_frame(payload))
+            return
+        if opcode == OPCODE_PONG:
+            return
+        if opcode == OPCODE_CONTINUATION:
+            if self._fragment_opcode is None:
                 return
-        except OSError as e:
-            if self._state == OPEN:
-                self._log.warning("connection %s: send failed (%s), closing it", self.id, e)
-        except Exception:  # noqa: BLE001 - logged with its traceback, then the connection closes
-            self._log.exception("connection %s: sender error, closing it", self.id)
-        finally:
-            self._finish()
+            self._fragments.extend(payload)
+            if fin:
+                self._payload(self._fragment_opcode, self._fragments)
+                self._fragments = bytearray()
+                self._fragment_opcode = None
+            return
+        if not fin:
+            self._fragment_opcode = opcode
+            self._fragments = bytearray(payload)
+            return
+        self._payload(opcode, payload)
+
+    def _payload(self, opcode, payload):
+        if opcode != OPCODE_TEXT:
+            self.send_error(None, "binary frames are not supported")
+            return
+        try:
+            message = json.loads(bytes(payload).decode("utf-8"))
+        except (UnicodeDecodeError, ValueError) as e:
+            self.send_error(None, f"invalid JSON: {e}")
+            return
+        uuid = message.get("uuid") if isinstance(message, dict) else None
+        if not isinstance(message, dict) or not isinstance(message.get("commands"), list):
+            self.send_error(uuid, "missing or invalid commands array")
+            return
+        self._inbox.put((self, message))
 
     def _finish(self):
-        with self._cond:
-            self._state = CLOSED
-        self._shutdown_socket()
-        try:
-            self._sock.close()
-        except OSError as e:
-            self._log.debug("connection %s: close: %s", self.id, e)
-        self.finished.set()
-
-    def _shutdown_socket(self):
-        """Reset instead of lingering in TIME_WAIT, and wake blocked recv/send calls."""
+        """Reset instead of lingering in TIME_WAIT, close, and drop the output."""
+        if self._finished:
+            return
+        self._finished = True
+        self._state = CLOSED
+        self._out.clear()
+        self._values = {}
+        self._heartbeat = None
+        self._wbuf = bytearray()
         try:
             self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, _LINGER_ABORT)
             self._sock.shutdown(socket.SHUT_RDWR)
         except OSError as e:
             self._log.debug("connection %s: shutdown: %s", self.id, e)
+        try:
+            self._sock.close()
+        except OSError as e:
+            self._log.debug("connection %s: close: %s", self.id, e)
+
+
+class _Handshake:
+    """A client whose upgrade request is still coming in."""
+
+    def __init__(self, sock, now):
+        self.sock = sock
+        self.started = now
+        self.request = bytearray()
 
 
 class Server:
-    """Accepts WebSocket clients on ``host:port`` and feeds ``inbox``.
+    """Accepts WebSocket clients on ``host:port`` and feeds ``inbox``, when polled.
 
-    ``connect_data`` is queued as the ``connect`` event before anything else on
-    every connection; a heartbeat set before the sender first runs still goes
-    out ahead of it (``_take_next`` sends a pending heartbeat first; seen on
-    the Ableton PC, #5). A failed bind is retried (0.25 s, 0.5 s, 1 s, 2 s,
-    then every 5 s) and logged once per distinct error; ``bind_error`` holds
-    the last one.
+    Every connection's first frame is ``connect`` with ``connect_data``: it is
+    written with the 101 response, before anything a tick queues. A failed
+    bind is retried by ``poll_in`` (after 0.25 s, 0.5 s, 1 s, 2 s, then every
+    5 s) and logged once per distinct error; ``bind_error`` holds the last one.
     """
 
     def __init__(self, host, port, connect_data, result_queue_max=1000, logger=None):
@@ -286,29 +403,29 @@ class Server:
         self._port = int(port)
         self._max = result_queue_max
         self._log = logger or logging.getLogger("fohmixer")
-        self._lock = threading.Lock()
         self._connections = []
+        self._handshakes = []
         self._listener = None
         self._running = False
-        self._stop = threading.Event()
         self._bound = threading.Event()
-        self._thread = None
+        self._bind_attempts = 0
+        self._next_bind_at = 0.0
 
     @property
     def port(self):
         return self._port
 
     def start(self):
+        """Bind now; a failed bind is retried by later ticks."""
         self._running = True
-        self._thread = threading.Thread(target=self._serve, name="fohmixer-accept", daemon=True)
-        self._thread.start()
+        self._try_bind(time.monotonic())
 
     def wait_bound(self, timeout=None):
+        """Wait until the port is bound (another thread may wait: sim/host.py)."""
         return self._bound.wait(timeout)
 
     def connections(self):
-        with self._lock:
-            return list(self._connections)
+        return list(self._connections)
 
     def broadcast(self, event, data=None):
         for conn in self.connections():
@@ -318,52 +435,94 @@ class Server:
         for conn in self.connections():
             conn.set_heartbeat(data)
 
+    # --- the main thread's tick ---
+
+    def poll_in(self):
+        """Accept, advance the handshakes, and read every connection that has
+        data; never waits."""
+        if not self._running:
+            return
+        now = time.monotonic()
+        if self._listener is None and now >= self._next_bind_at:
+            self._try_bind(now)
+        for handshake in [h for h in self._handshakes if now - h.started >= HANDSHAKE_TIMEOUT_S]:
+            self._drop_handshake(handshake)
+        owners = {handshake.sock: handshake for handshake in self._handshakes}
+        owners.update({conn.socket: conn for conn in self._connections if conn.reading})
+        if self._listener is not None:
+            owners[self._listener] = self
+        if not owners:
+            return
+        readable, _, _ = select.select(list(owners), [], [], 0)
+        for sock in readable:
+            owner = owners[sock]
+            if owner is self:
+                self._accept(now)
+            elif isinstance(owner, _Handshake):
+                self._advance_handshake(owner, now)
+            else:
+                owner.receive()
+        self._reap()
+
+    def poll_out(self):
+        """Every connection writes what is pending, as far as its socket takes it."""
+        now = time.monotonic()
+        for conn in self.connections():
+            conn.flush(now)
+        self._reap()
+
     def shutdown(self, grace_s=0.3):
         """Stop listening, close every connection (graceful up to ``grace_s``, then reset).
 
-        Returns once the listening socket is closed and every connection is
-        finished or reset, so a new server can bind the same port at once.
+        The one call that waits (Live unloads the script): it polls the closing
+        connections until each has finished its close handshake or the grace is
+        over, then resets the rest, so a new server can bind the same port at once.
         """
         self._running = False
-        self._stop.set()
         self._close_listener()
-        if self._thread is not None and self._thread is not threading.current_thread():
-            self._thread.join(ACCEPT_POLL_S + 0.5)
+        for handshake in list(self._handshakes):
+            self._drop_handshake(handshake)
         conns = self.connections()
         for conn in conns:
             conn.close()
         deadline = time.monotonic() + grace_s
-        for conn in conns:
-            conn.finished.wait(max(0.0, deadline - time.monotonic()))
-        stragglers = [conn for conn in conns if not conn.finished.is_set()]
-        for conn in stragglers:
-            conn.abort()
-        deadline = time.monotonic() + grace_s
-        for conn in stragglers:
-            conn.finished.wait(max(0.0, deadline - time.monotonic()))
-
-    # --- accept thread ---
-
-    def _serve(self):
-        attempt = 0
-        while self._running:
-            try:
-                listener = self._bind()
-            except OSError as e:
-                message = f"cannot bind {self.host}:{self._port}: {e}"
-                if message != self.bind_error:
-                    self._log.warning("%s; retrying", message)
-                self.bind_error = message
-                delay = BIND_RETRY_DELAYS_S[min(attempt, len(BIND_RETRY_DELAYS_S) - 1)]
-                attempt += 1
-                if self._stop.wait(delay):
-                    return
+        while True:
+            now = time.monotonic()
+            for conn in conns:
+                conn.flush(now)
+            waiting = [conn for conn in conns if not conn.finished]
+            if not waiting or now >= deadline:
+                break
+            reading = {conn.socket: conn for conn in waiting if conn.reading}
+            wait_s = min(SHUTDOWN_POLL_S, deadline - now)
+            if not reading:
+                time.sleep(wait_s)
                 continue
-            if self.bind_error is not None:
-                self._log.warning("bound %s:%s after retrying", self.host, self._port)
-            self.bind_error = None
-            attempt = 0
-            self._accept_loop(listener)
+            readable, _, _ = select.select(list(reading), [], [], wait_s)
+            for sock in readable:
+                reading[sock].receive()
+        for conn in conns:
+            conn.abort()
+        self._reap()
+
+    # --- internals ---
+
+    def _try_bind(self, now):
+        try:
+            self._bind()
+        except OSError as e:
+            message = f"cannot bind {self.host}:{self._port}: {e}"
+            if message != self.bind_error:
+                self._log.warning("%s; retrying", message)
+            self.bind_error = message
+            delay = BIND_RETRY_DELAYS_S[min(self._bind_attempts, len(BIND_RETRY_DELAYS_S) - 1)]
+            self._bind_attempts += 1
+            self._next_bind_at = now + delay
+            return
+        if self.bind_error is not None:
+            self._log.warning("bound %s:%s after retrying", self.host, self._port)
+        self.bind_error = None
+        self._bind_attempts = 0
 
     def _bind(self):
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -374,42 +533,17 @@ class Server:
             else:
                 sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             sock.bind((self.host, self._port))
-            sock.listen(16)
-            sock.settimeout(ACCEPT_POLL_S)
+            sock.listen(LISTEN_BACKLOG)
+            sock.setblocking(False)
         except OSError:
             sock.close()
             raise
         self._port = sock.getsockname()[1]
-        with self._lock:
-            self._listener = sock
+        self._listener = sock
         self._bound.set()
-        return sock
-
-    def _accept_loop(self, listener):
-        while self._running:
-            try:
-                sock, _addr = listener.accept()
-            except TimeoutError:
-                continue
-            except OSError as e:
-                if self._running:
-                    self._log.warning("accept failed (%s), binding again", e)
-                    self._close_listener()
-                return
-            try:
-                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-                sock.settimeout(SOCKET_TIMEOUT_S)
-            except OSError as e:
-                self._log.warning("cannot configure a client socket (%s)", e)
-                sock.close()
-                continue
-            threading.Thread(
-                target=self._handle, args=(sock,), name="fohmixer-read", daemon=True
-            ).start()
 
     def _close_listener(self):
-        with self._lock:
-            listener, self._listener = self._listener, None
+        listener, self._listener = self._listener, None
         if listener is None:
             return
         try:
@@ -418,113 +552,83 @@ class Server:
             self._log.debug("listener shutdown: %s", e)
         listener.close()
 
-    # --- reader thread (one per connection) ---
+    def _accept(self, now):
+        for _ in range(LISTEN_BACKLOG):
+            try:
+                sock, _addr = self._listener.accept()
+            except (BlockingIOError, InterruptedError):
+                return
+            except OSError as e:
+                self._log.warning("accept failed (%s), binding again", e)
+                self._close_listener()
+                self._next_bind_at = now
+                return
+            try:
+                sock.setblocking(False)
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            except OSError as e:
+                self._log.warning("cannot configure a client socket (%s)", e)
+                sock.close()
+                continue
+            handshake = _Handshake(sock, now)
+            self._handshakes.append(handshake)
+            self._advance_handshake(handshake, now)
 
-    def _handle(self, sock):
-        parsed = read_http_request(sock)
+    def _advance_handshake(self, handshake, now):
+        """Read the upgrade request; once whole, answer it: a connection, or a refusal."""
+        while b"\r\n\r\n" not in handshake.request:
+            try:
+                data = handshake.sock.recv(HANDSHAKE_RECV_SIZE)
+            except (BlockingIOError, InterruptedError):
+                return
+            except OSError:
+                self._drop_handshake(handshake)
+                return
+            if not data:
+                self._drop_handshake(handshake)
+                return
+            handshake.request.extend(data)
+            if len(handshake.request) > HANDSHAKE_MAX_BYTES:
+                self._drop_handshake(handshake)
+                return
+        self._handshakes.remove(handshake)
+        parsed = parse_http_request(handshake.request)
         if parsed is None:
-            sock.close()
+            handshake.sock.close()
             return
         _method, _path, headers, leftover = parsed
         # A browser always sends Origin; the hub never does. Refusing it keeps
         # web pages open on this PC from driving Live through localhost.
         if not is_websocket_upgrade(headers) or "origin" in headers:
             try:
-                sock.sendall(_BAD_REQUEST)
+                handshake.sock.send(_BAD_REQUEST)
             except OSError as e:
                 self._log.debug("refused request: %s", e)
-            sock.close()
+            handshake.sock.close()
             return
-        if not complete_websocket_handshake(sock, headers):
-            sock.close()
-            return
-        conn = Connection(sock, self._max, self._log)
-        conn.send_event("connect", self.connect_data)
-        with self._lock:
-            accepted = self._running
-            if accepted:
-                self._connections.append(conn)
-        conn.start()
-        if not accepted:
-            conn.abort()
-            return
+        hello = encode_message({"event": "connect", "data": self.connect_data, "ts": now_ms()})
+        conn = Connection(
+            handshake.sock,
+            handshake_response(headers) + hello,
+            self._max,
+            self._log,
+            self.inbox,
+            now,
+        )
+        self._connections.append(conn)
         self._log.warning("client connected (connection %s)", conn.id)
-        try:
-            self._read_loop(conn, sock, leftover)
-        except Exception:  # noqa: BLE001 - logged with its traceback, then the connection closes
-            self._log.exception("connection %s: reader error", conn.id)
-            conn.abort()
-        finally:
-            with self._lock:
-                if conn in self._connections:
-                    self._connections.remove(conn)
+        if leftover:
+            conn.take(leftover)
+        conn.receive()
+
+    def _drop_handshake(self, handshake):
+        if handshake in self._handshakes:
+            self._handshakes.remove(handshake)
+        handshake.sock.close()
+
+    def _reap(self):
+        """Finished connections leave the list; the drain hears of each once."""
+        for conn in [c for c in self._connections if c.finished]:
+            self._connections.remove(conn)
             self.inbox.put((conn, None))
             self._log.warning("client disconnected (connection %s)", conn.id)
-
-    def _read_loop(self, conn, sock, leftover):
-        buffer = bytearray(to_bytes(leftover))
-        fragments = bytearray()
-        fragment_opcode = None
-        while True:
-            try:
-                data = sock.recv(RECV_SIZE)
-            except TimeoutError:
-                if conn.finished.is_set():
-                    return
-                continue
-            except OSError:
-                conn.peer_closed()
-                conn.abort()
-                return
-            if not data:
-                conn.peer_closed()
-                conn.abort()
-                return
-            buffer.extend(data)
-            if len(buffer) + len(fragments) > MAX_MESSAGE_BYTES:
-                self._log.warning("connection %s: message too large, closing it", conn.id)
-                conn.abort()
-                return
-            while True:
-                frame = try_read_frame(buffer)
-                if frame is None:
-                    break
-                opcode, fin, payload = frame
-                if opcode == OPCODE_CLOSE:
-                    conn.close()
-                    conn.peer_closed()
-                    return
-                if opcode == OPCODE_PING:
-                    conn.send_frame(encode_pong_frame(payload))
-                    continue
-                if opcode == OPCODE_PONG:
-                    continue
-                if opcode == OPCODE_CONTINUATION:
-                    if fragment_opcode is None:
-                        continue
-                    fragments.extend(payload)
-                    if fin:
-                        self._handle_payload(fragment_opcode, fragments, conn)
-                        fragments = bytearray()
-                        fragment_opcode = None
-                    continue
-                if not fin:
-                    fragment_opcode = opcode
-                    fragments = bytearray(payload)
-                    continue
-                self._handle_payload(opcode, payload, conn)
-
-    def _handle_payload(self, opcode, payload, conn):
-        if opcode != OPCODE_TEXT:
-            conn.send_error(None, "binary frames are not supported")
-            return
-        try:
-            message = json.loads(bytes(payload).decode("utf-8"))
-        except (UnicodeDecodeError, ValueError) as e:
-            conn.send_error(None, f"invalid JSON: {e}")
-            return
-        uuid = message.get("uuid") if isinstance(message, dict) else None
-        if not isinstance(message, dict) or not isinstance(message.get("commands"), list):
-            conn.send_error(uuid, "missing or invalid commands array")
-            return
-        self.inbox.put((conn, message))
