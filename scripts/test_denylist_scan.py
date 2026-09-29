@@ -305,7 +305,8 @@ class DenylistScanTests(ScanCase):
         git(self.repo, "checkout", "-q", "main")
         self.commit({"m.txt": "main\n"})
         git(self.repo, "merge", "-q", "--no-ff", "-m", "merge side", "side")
-        code, out = self.scan("--commits", "HEAD^1..HEAD")
+        # the merge alone: its side commit would hit on its own
+        code, out = self.scan("--commits", "HEAD ^HEAD^1 ^HEAD^2")
         self.assertEqual(code, 1)
         self.assertIn(" s.txt: denylist entry 1", out)
 
