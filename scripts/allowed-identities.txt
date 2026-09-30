@@ -4,3 +4,5 @@
 26905282+zbynekdrlik@users.noreply.github.com
 # GitHub itself: committer of merges made on github.com / by `gh pr merge`
 noreply@github.com
+# The project account's GitHub App: author of merges made with `gh pr merge` from the fohmixer account (#37 cutover, 2026-09-30).
+335892526+newlevel-project-accounts[bot]@users.noreply.github.com
