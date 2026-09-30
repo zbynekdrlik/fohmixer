@@ -5,7 +5,8 @@
 # self-test (Test-Fohmixer.ps1) share. Windows PowerShell 5.1.
 # - Nothing is ended by force (spec I7): the hub is asked to stop with
 #   Ctrl-Break, its graceful stop, and waited for; a hub that does not stop is
-#   reported, never ended. Its tasks may never be ended hard either.
+#   reported, never ended. Its tasks may never be ended hard either. The tray
+#   (#39) likewise: asked to exit by a second start with --exit, waited for.
 # - Live's preferences and a running Live are never touched: only the FohMixer
 #   folder in each user's User Library is written, and Live reads it at its
 #   next start. The install reads each user's Library.cfg and refuses a User
@@ -22,8 +23,9 @@ $script:TaskPath = '\fohmixer\'
 $script:HubTask = 'fohmixer-hub'
 $script:StopTask = 'fohmixer-hub-stop'
 # What a bundle holds besides SHA256SUMS (design note section 2).
-$script:BundleFiles = @('VERSION', 'fohmixer-hub.exe', 'Install-Fohmixer.ps1', 'FohmixerPc.psm1', 'FohmixerLivePrefs.ps1',
-    'FohmixerFirewall.ps1', 'FohmixerRemote.ps1', 'Start-FohmixerHub.ps1', 'Stop-FohmixerHub.ps1',
+$script:BundleFiles = @('VERSION', 'fohmixer-hub.exe', 'fohmixer-tray.exe', 'Install-Fohmixer.ps1', 'FohmixerPc.psm1',
+    'FohmixerLivePrefs.ps1', 'FohmixerFirewall.ps1', 'FohmixerRemote.ps1', 'FohmixerTray.ps1', 'FohmixerHubProcess.ps1',
+    'FohmixerTasks.ps1', 'Start-FohmixerHub.ps1', 'Stop-FohmixerHub.ps1',
     'FohMixer/__init__.py', 'FohMixer/Config.py', 'FohMixer/version.py')
 # A SemVer version that is also a safe folder name (no trailing dot, no "..").
 $script:SemVer = '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?\z'
@@ -37,170 +39,14 @@ $script:SemVer = '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z
 # Remote access (#17): the public name's toml tables, hosts entry, desktop
 # shortcut, and the tunnel's token and service, in a file of its own.
 . (Join-Path $PSScriptRoot 'FohmixerRemote.ps1')
+# The tray (#39): its two tasks, its graceful stop (a second start with
+# --exit) and its start, in a file of its own.
+. (Join-Path $PSScriptRoot 'FohmixerTray.ps1')
 
-# Ctrl-Break through another process's console (the hub's graceful stop, as in
-# iemmixer's iem-win console.rs): detach from this process's console, attach to
-# the hub's, send the event to the hub's process group only, detach. A console
-# is reachable only from a process in the same session. Never group 0 (every
-# process on that console): the sender is on it too while it sends, and no
-# handler can keep it alive, because AttachConsole and FreeConsole reset its
-# handler table to the default handler, which ends the process
-# (SetConsoleCtrlHandler, Remarks). Group 0 ended the stop script itself
-# before it wrote its result (the #9 self-test failure).
-$script:ConsoleCode = @'
-using System;
-using System.Runtime.InteropServices;
-
-public static class FohmixerConsole
-{
-    [DllImport("kernel32.dll", SetLastError = true)]
-    static extern bool FreeConsole();
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    static extern bool AttachConsole(uint processId);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    static extern bool GenerateConsoleCtrlEvent(uint ctrlEvent, uint processGroupId);
-
-    const uint CtrlBreakEvent = 1;
-    const int ErrorInvalidParameter = 87;
-
-    // Sends Ctrl-Break to the process group processId (a process started with
-    // CREATE_NEW_PROCESS_GROUP, whose id is its group's id) on that process's
-    // console, and detaches again: 0, or the Win32 error of the failed step.
-    // 0 is refused: as a group it means every process on the console, this
-    // one included.
-    public static int Break(uint processId)
-    {
-        if (processId == 0) return ErrorInvalidParameter;
-        FreeConsole();
-        if (!AttachConsole(processId)) return Marshal.GetLastWin32Error();
-        int result = 0;
-        if (!GenerateConsoleCtrlEvent(CtrlBreakEvent, processId)) result = Marshal.GetLastWin32Error();
-        FreeConsole();
-        return result;
-    }
-}
-'@
-
-# The hub's start (Start-FohmixerHub.ps1): CreateProcess with CREATE_NO_WINDOW
-# and CREATE_NEW_PROCESS_GROUP, as iemmixer's iem-win spawn does for its
-# children. The hub gets a console of its own that has no window (nothing on
-# the desktop, no hand-off to Windows Terminal as the default terminal) and a
-# process group of its own (its pid is the group id: the stop's Ctrl-Break goes
-# to that group and to nothing else, FohmixerConsole); its stdout and stderr go
-# straight to two files, so it does not depend on the launcher.
-$script:SpawnCode = @'
-using System;
-using System.ComponentModel;
-using System.IO;
-using System.Runtime.InteropServices;
-using System.Text;
-using Microsoft.Win32.SafeHandles;
-
-public sealed class FohmixerChild : IDisposable
-{
-    [DllImport("kernel32.dll", SetLastError = true)]
-    static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    static extern bool GetExitCodeProcess(IntPtr process, out uint exitCode);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    static extern bool CloseHandle(IntPtr handle);
-
-    IntPtr process;
-    public readonly int Id;
-
-    internal FohmixerChild(IntPtr process, int id)
-    {
-        this.process = process;
-        Id = id;
-    }
-
-    // Waits for the process to exit and returns its exit code.
-    public int WaitForExit()
-    {
-        if (WaitForSingleObject(process, 0xFFFFFFFF) != 0) throw new Win32Exception(Marshal.GetLastWin32Error(), "WaitForSingleObject");
-        uint code;
-        if (!GetExitCodeProcess(process, out code)) throw new Win32Exception(Marshal.GetLastWin32Error(), "GetExitCodeProcess");
-        return unchecked((int)code);
-    }
-
-    public void Dispose()
-    {
-        if (process != IntPtr.Zero) { CloseHandle(process); process = IntPtr.Zero; }
-    }
-}
-
-public static class FohmixerSpawn
-{
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-    struct StartupInfo
-    {
-        public int cb;
-        public string lpReserved;
-        public string lpDesktop;
-        public string lpTitle;
-        public int dwX, dwY, dwXSize, dwYSize, dwXCountChars, dwYCountChars, dwFillAttribute, dwFlags;
-        public short wShowWindow, cbReserved2;
-        public IntPtr lpReserved2, hStdInput, hStdOutput, hStdError;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    struct ProcessInformation
-    {
-        public IntPtr hProcess, hThread;
-        public int dwProcessId, dwThreadId;
-    }
-
-    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
-    static extern bool CreateProcessW(string applicationName, StringBuilder commandLine, IntPtr processAttributes,
-        IntPtr threadAttributes, bool inheritHandles, uint creationFlags, IntPtr environment, string currentDirectory,
-        ref StartupInfo startupInfo, out ProcessInformation processInformation);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    static extern bool SetHandleInformation(SafeFileHandle handle, uint mask, uint flags);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    static extern bool CloseHandle(IntPtr handle);
-
-    const uint CreateNoWindow = 0x08000000;
-    const uint CreateNewProcessGroup = 0x00000200;
-    const int UseStdHandles = 0x00000100;
-    const uint HandleFlagInherit = 1;
-
-    // Starts exe (no arguments) in dir with this process's environment, no
-    // console window, a process group of its own, no stdin, stdout and stderr
-    // written to the two files (created or emptied; readable while it runs).
-    public static FohmixerChild Start(string exe, string dir, string outPath, string errPath)
-    {
-        using (FileStream outFile = new FileStream(outPath, FileMode.Create, FileAccess.Write, FileShare.ReadWrite))
-        using (FileStream errFile = new FileStream(errPath, FileMode.Create, FileAccess.Write, FileShare.ReadWrite))
-        {
-            Inheritable(outFile.SafeFileHandle);
-            Inheritable(errFile.SafeFileHandle);
-            StartupInfo si = new StartupInfo();
-            si.cb = Marshal.SizeOf(typeof(StartupInfo));
-            si.dwFlags = UseStdHandles;
-            si.hStdOutput = outFile.SafeFileHandle.DangerousGetHandle();
-            si.hStdError = errFile.SafeFileHandle.DangerousGetHandle();
-            ProcessInformation pi;
-            StringBuilder commandLine = new StringBuilder("\"" + exe + "\"");
-            if (!CreateProcessW(exe, commandLine, IntPtr.Zero, IntPtr.Zero, true, CreateNoWindow | CreateNewProcessGroup, IntPtr.Zero, dir, ref si, out pi))
-                throw new Win32Exception(Marshal.GetLastWin32Error(), "CreateProcess " + exe);
-            CloseHandle(pi.hThread);
-            return new FohmixerChild(pi.hProcess, pi.dwProcessId);
-        }
-    }
-
-    static void Inheritable(SafeFileHandle handle)
-    {
-        if (!SetHandleInformation(handle, HandleFlagInherit, HandleFlagInherit))
-            throw new Win32Exception(Marshal.GetLastWin32Error(), "SetHandleInformation");
-    }
-}
-'@
+# The running hub (find, start, Ctrl-Break, wait) and our scheduled tasks,
+# in files of their own.
+. (Join-Path $PSScriptRoot 'FohmixerHubProcess.ps1')
+. (Join-Path $PSScriptRoot 'FohmixerTasks.ps1')
 
 # ---- small helpers ----
 
@@ -319,17 +165,20 @@ function New-FohBundleZip {
 }
 
 function New-FohBundle {
-    # The Windows release bundle from a repo checkout and a built hub:
-    # fohmixer-hub.exe, FohMixer\ (without logs, caches or compiled files), the
-    # PC scripts, VERSION (the workspace version) and SHA256SUMS, zipped to
+    # The Windows release bundle from a repo checkout, a built hub and a built
+    # tray: fohmixer-hub.exe, fohmixer-tray.exe, FohMixer\ (without logs,
+    # caches or compiled files), the PC scripts, VERSION (the workspace
+    # version) and SHA256SUMS, zipped to
     # <OutDir>\fohmixer-windows-<version>-<Sha>.zip. Returns name, version, stage and zip.
     param([Parameter(Mandatory)][string]$RepoRoot, [Parameter(Mandatory)][string]$HubExe,
-          [Parameter(Mandatory)][string]$OutDir, [Parameter(Mandatory)][string]$Sha)
+          [Parameter(Mandatory)][string]$TrayExe, [Parameter(Mandatory)][string]$OutDir, [Parameter(Mandatory)][string]$Sha)
     if ($Sha -cnotmatch '^[0-9a-f]{7,40}\z') { throw "commit refused: $Sha" }
     $RepoRoot = Resolve-FohPath $RepoRoot
     $HubExe = Resolve-FohPath $HubExe
+    $TrayExe = Resolve-FohPath $TrayExe
     $OutDir = Resolve-FohPath $OutDir
     if (-not (Test-Path -LiteralPath $HubExe -PathType Leaf)) { throw "the hub $HubExe does not exist (build it first)" }
+    if (-not (Test-Path -LiteralPath $TrayExe -PathType Leaf)) { throw "the tray $TrayExe does not exist (build it first)" }
     $version = Get-FohWorkspaceVersion -CargoToml (Join-Path $RepoRoot 'Cargo.toml')
     $scriptDir = Join-Path $RepoRoot 'live-script\FohMixer'
     $scriptVersion = Get-FohScriptVersion -Path (Join-Path $scriptDir 'version.py')
@@ -339,6 +188,7 @@ function New-FohBundle {
     if (Test-Path -LiteralPath $stage) { throw "the stage folder $stage exists already" }
     New-Item -ItemType Directory -Force -Path $stage | Out-Null
     Copy-Item -LiteralPath $HubExe -Destination (Join-Path $stage $script:HubExe)
+    Copy-Item -LiteralPath $TrayExe -Destination (Join-Path $stage $script:TrayExe)
     foreach ($f in @(Get-FohRelativeFiles -Root $scriptDir)) {
         if (Test-FohSkipped $f.rel) { continue }
         $target = Join-Path (Join-Path $stage $script:ScriptName) $f.rel.Replace('/', '\')
@@ -683,304 +533,6 @@ function Test-FohDataDirAcl {
     return $bad
 }
 
-# ---- the running hub: find, stop, wait (design note section 3 steps 1 and 7) ----
-
-function Get-FohHubProcess {
-    # The running hubs installed under <DataDir>\app (any version): pid and exe path.
-    param([Parameter(Mandatory)][string]$DataDir)
-    $prefix = (Join-Path $DataDir 'app') + '\'
-    $out = @()
-    foreach ($p in @(Get-CimInstance -ClassName Win32_Process -Filter "Name = 'fohmixer-hub.exe'")) {
-        $path = [string]$p.ExecutablePath
-        if ($path -and $path.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
-            $out += [pscustomobject]@{ pid = [int]$p.ProcessId; path = $path }
-        }
-    }
-    return $out
-}
-
-function Send-FohCtrlBreak {
-    # Ctrl-Break to a hub's process group through its own console: the hub
-    # stops gracefully on it (Start-FohHubProcess gives it that group). This
-    # detaches the CALLING process from its console for good, so only a
-    # process of its own calls it (Stop-FohmixerHub.ps1). Returns 0 or the Win32 error.
-    param([Parameter(Mandatory)][int]$ProcessId)
-    if ($ProcessId -le 0) { throw "pid $ProcessId refused" }
-    $type = 'FohmixerConsole' -as [type]
-    if ($null -eq $type) {
-        Add-Type -TypeDefinition $script:ConsoleCode -Language CSharp -IgnoreWarnings
-        $type = 'FohmixerConsole' -as [type]
-    }
-    return [int]$type::Break([uint32]$ProcessId)
-}
-
-function Start-FohHubProcess {
-    # Starts the hub exe in the data folder with this process's environment, no
-    # console window, a process group of its own (Send-FohCtrlBreak), its
-    # output in the two files (FohmixerSpawn). Returns the child: Id,
-    # WaitForExit() (the exit code), Dispose().
-    param([Parameter(Mandatory)][string]$Exe, [Parameter(Mandatory)][string]$DataDir,
-          [Parameter(Mandatory)][string]$Out, [Parameter(Mandatory)][string]$Err)
-    $type = 'FohmixerSpawn' -as [type]
-    if ($null -eq $type) {
-        Add-Type -TypeDefinition $script:SpawnCode -Language CSharp -IgnoreWarnings
-        $type = 'FohmixerSpawn' -as [type]
-    }
-    return $type::Start($Exe, $DataDir, $Out, $Err)
-}
-
-function Write-FohStopResult {
-    # The stop script's result, <DataDir>\logs\hub-stop.result.json: code 0 = the
-    # request reached every hub (or none ran), 1 = a request failed, 2 = the
-    # script failed. Conhost does not pass an exit code on (Get-FohTaskCommand).
-    param([Parameter(Mandatory)][string]$DataDir, [Parameter(Mandatory)][int]$Code, [Parameter(Mandatory)][string]$Message,
-          [Parameter(Mandatory)][datetime]$Started)
-    $json = ConvertTo-Json -Compress -InputObject ([ordered]@{ code = $Code; message = $Message; started = $Started.ToString('o') })
-    $null = Write-FohText -Path (Join-Path $DataDir 'logs\hub-stop.result.json') -Text $json
-}
-
-function Read-FohStopResult {
-    # Waits up to $TimeoutSeconds for a result of a stop script run that
-    # started at or after $Since (an earlier run's late result is not taken)
-    # and returns it.
-    param([Parameter(Mandatory)][string]$DataDir, [int]$TimeoutSeconds = 30, [datetime]$Since = [datetime]::MinValue)
-    $path = Join-Path $DataDir 'logs\hub-stop.result.json'
-    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
-    while ($true) {
-        if (Test-Path -LiteralPath $path -PathType Leaf) {
-            $r = [IO.File]::ReadAllText($path) | ConvertFrom-Json
-            if ([datetime]$r.started -ge $Since) { return $r }
-        }
-        if ((Get-Date) -ge $deadline) {
-            throw "the stop task wrote no result within $TimeoutSeconds s ($path); the hub user must be logged on for it to run"
-        }
-        Start-Sleep -Milliseconds 250
-    }
-}
-
-function Wait-FohHubExit {
-    # Waits up to $TimeoutSeconds for every hub under <DataDir>\app to exit;
-    # returns the ones still running. It never ends one (spec I7).
-    param([Parameter(Mandatory)][string]$DataDir, [int]$TimeoutSeconds = 10)
-    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
-    while ($true) {
-        $left = @(Get-FohHubProcess -DataDir $DataDir)
-        if ($left.Count -eq 0 -or (Get-Date) -ge $deadline) { return $left }
-        Start-Sleep -Milliseconds 250
-    }
-}
-
-function Get-FohTask {
-    # One of our tasks, or $null. Listed, not asked for by name: a missing task
-    # folder is then no error.
-    param([Parameter(Mandatory)][string]$Name, [string]$TaskPath = $script:TaskPath)
-    return (@(Get-ScheduledTask) | Where-Object { $_.TaskPath -eq $TaskPath -and $_.TaskName -eq $Name } | Select-Object -First 1)
-}
-
-function Wait-FohTaskIdle {
-    # Waits until the task no longer runs (its action exited), so that a start
-    # is not ignored (IgnoreNew); throws after $TimeoutSeconds.
-    param([Parameter(Mandatory)][string]$Name, [string]$TaskPath = $script:TaskPath, [int]$TimeoutSeconds = 5)
-    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
-    while ($true) {
-        $t = Get-FohTask -Name $Name -TaskPath $TaskPath
-        if ($null -eq $t -or "$($t.State)" -ne 'Running') { return }
-        if ((Get-Date) -ge $deadline) { throw "the task $TaskPath$Name still runs $TimeoutSeconds s after its hub stopped" }
-        Start-Sleep -Milliseconds 250
-    }
-}
-
-function Stop-FohHub {
-    # Design note section 3 step 1: asks every hub under <DataDir>\app to stop
-    # and waits. The request is Ctrl-Break, the hub's graceful stop, sent by the
-    # stop task from the hub user's own session (a console is reachable only
-    # from there); its result file is waited for first (up to
-    # $StopTaskSeconds, a failed request fails at once), then the hub's exit (up
-    # to $TimeoutSeconds). Task Scheduler's End is not used: for a process
-    # without a window it has no graceful request, only a hard end, which our
-    # tasks forbid (spec I7). A hub still running after the wait is reported,
-    # never ended. Returns what it did and whether a hub was stopped.
-    param([Parameter(Mandatory)][string]$DataDir, [int]$TimeoutSeconds = 10, [int]$StopTaskSeconds = 30,
-          [string]$TaskPath = $script:TaskPath)
-    $running = @(Get-FohHubProcess -DataDir $DataDir)
-    if ($running.Count -eq 0) { return [pscustomobject]@{ stopped = $false; text = 'no hub was running' } }
-    $pids = ($running | ForEach-Object { $_.pid }) -join ', '
-    if ($null -eq (Get-FohTask -Name $script:StopTask -TaskPath $TaskPath)) {
-        throw ("a hub runs (pid $pids) but the task $TaskPath$($script:StopTask) is missing: stop the hub with " +
-            'Ctrl-Break or Ctrl-C in its console, then run the install again')
-    }
-    $resultPath = Join-Path $DataDir 'logs\hub-stop.result.json'
-    if (Test-Path -LiteralPath $resultPath) { Remove-Item -LiteralPath $resultPath }
-    $since = (Get-Date).AddSeconds(-1)
-    Start-ScheduledTask -TaskPath $TaskPath -TaskName $script:StopTask
-    $result = Read-FohStopResult -DataDir $DataDir -TimeoutSeconds $StopTaskSeconds -Since $since
-    if ([int]$result.code -ne 0) {
-        throw "the stop task could not ask the hub (pid $pids) to stop: $($result.message) (code $($result.code)); the hub still runs"
-    }
-    $left = @(Wait-FohHubExit -DataDir $DataDir -TimeoutSeconds $TimeoutSeconds)
-    if ($left.Count -gt 0) {
-        $still = ($left | ForEach-Object { $_.pid }) -join ', '
-        throw ("the hub (pid $still) did not stop within $TimeoutSeconds s of Ctrl-Break (see $DataDir\logs\hub.out.log). " +
-            'It is not ended by force (spec I7): stop it in its session, then run the install again')
-    }
-    Wait-FohTaskIdle -Name $script:HubTask -TaskPath $TaskPath
-    return [pscustomobject]@{ stopped = $true; text = "stopped the hub (pid $pids)" }
-}
-
-function Get-FohLogTail {
-    # The last lines of the hub's logs, for an error message.
-    param([Parameter(Mandatory)][string]$DataDir, [int]$Lines = 8)
-    $out = @()
-    foreach ($n in @('hub.err.log', 'hub.out.log', 'hub-launch.log')) {
-        $p = Join-Path $DataDir "logs\$n"
-        if (Test-Path -LiteralPath $p -PathType Leaf) {
-            $out += "--- $n"
-            $out += @(Get-Content -LiteralPath $p -Tail $Lines)
-        }
-    }
-    return ($out -join "`n")
-}
-
-function Wait-FohHubReady {
-    # Design note section 3 step 7: polls http://127.0.0.1:<HttpPort>/api/version
-    # until the hub answers, up to $TimeoutSeconds, and returns the answer. An
-    # answer with another version (an old hub still serving) fails at once.
-    param([Parameter(Mandatory)][int]$HttpPort, [Parameter(Mandatory)][string]$Version, [int]$TimeoutSeconds = 20)
-    $uri = 'http://127.0.0.1:{0}/api/version' -f $HttpPort
-    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
-    $last = 'no attempt'
-    while ((Get-Date) -lt $deadline) {
-        $answer = $null
-        try {
-            $answer = (Invoke-WebRequest -Uri $uri -UseBasicParsing -TimeoutSec 2).Content | ConvertFrom-Json
-        } catch {
-            $last = $_.Exception.Message
-        }
-        if ($null -ne $answer) {
-            if ([string]$answer.version -cne $Version) { throw "$uri answers version $($answer.version), not $Version" }
-            return $answer
-        }
-        Start-Sleep -Milliseconds 500
-    }
-    throw "the hub did not answer $uri within $TimeoutSeconds s (last error: $last)"
-}
-
-# ---- the scheduled tasks (design note section 3 step 6; spec D9) ----
-
-function Get-FohTaskCommand {
-    # How a task runs one of the bundle's scripts: Windows PowerShell 5.1 inside
-    # conhost --headless, a console without a window. A console program a task
-    # starts shows a window otherwise, one of Windows Terminal where Terminal is
-    # the default terminal, which -WindowStyle Hidden cannot hide. Conhost does
-    # not pass the script's exit code on: the stop script reports through a
-    # result file, the launcher through hub-launch.log.
-    param([Parameter(Mandatory)][string]$Script, [Parameter(Mandatory)][string]$DataDir)
-    $system = Join-Path $env:SystemRoot 'System32'
-    $ps = Join-Path $system 'WindowsPowerShell\v1.0\powershell.exe'
-    return [pscustomobject]@{
-        execute = (Join-Path $system 'conhost.exe')
-        arguments = ('--headless ' + (Format-FohArg $ps) + ' -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File ' +
-            (Format-FohArg $Script) + ' -DataDir ' + (Format-FohArg $DataDir))
-    }
-}
-
-function Get-FohSid {
-    # An account's SID, looked up as Get-FohAccountSid does (a task reads its
-    # user back with or without the computer part: both give the same SID); a
-    # SID is taken as it is. An account that does not resolve gives '' (the
-    # caller reports it as a difference).
-    param([AllowEmptyString()][string]$Account)
-    if (-not $Account) { return '' }
-    if ($Account -cmatch '^S-1-[0-9-]+\z') { return $Account }
-    try {
-        return (Get-FohAccountSid $Account).Value
-    } catch {
-        return ''
-    }
-}
-
-function Get-FohTaskProblems {
-    # What one of our tasks must read back as (Interactive for the user,
-    # Limited, no time limit, IgnoreNew, no battery or idle stop, never ended
-    # hard, normal priority; the hub task starts at the user's logon and may be
-    # restarted 3 x 1 min when it fails to start); returns the differences.
-    param([Parameter(Mandatory)]$Task, [Parameter(Mandatory)][string]$User, [Parameter(Mandatory)][string]$Execute,
-          [Parameter(Mandatory)][string]$Arguments, [Parameter(Mandatory)][string]$WorkDir, [switch]$Hub)
-    $bad = @()
-    $p = $Task.Principal
-    $s = $Task.Settings
-    $userSid = Get-FohSid $User
-    if ("$($p.LogonType)" -ne 'Interactive') { $bad += "logon type $($p.LogonType)" }
-    if ("$($p.RunLevel)" -ne 'Limited') { $bad += "run level $($p.RunLevel)" }
-    if (-not $userSid -or (Get-FohSid ([string]$p.UserId)) -ne $userSid) { $bad += "user $($p.UserId)" }
-    if ($s.ExecutionTimeLimit -ne 'PT0S') { $bad += "time limit $($s.ExecutionTimeLimit)" }
-    if ("$($s.MultipleInstances)" -ne 'IgnoreNew') { $bad += "instances $($s.MultipleInstances)" }
-    if ($s.DisallowStartIfOnBatteries -or $s.StopIfGoingOnBatteries) { $bad += 'stops on batteries' }
-    if ($s.IdleSettings.StopOnIdleEnd) { $bad += 'stops at idle end' }
-    if ($s.AllowHardTerminate) { $bad += 'may be ended hard' }
-    if ($s.Priority -ne 4) { $bad += "priority $($s.Priority)" }
-    $restart = '{0}x{1}' -f $s.RestartCount, $s.RestartInterval
-    $wantRestart = '0x'
-    if ($Hub) { $wantRestart = '3xPT1M' }
-    if ($restart -ne $wantRestart) { $bad += "restart $restart" }
-    $actions = @($Task.Actions)
-    if ($actions.Count -ne 1 -or $actions[0].Execute -ne $Execute -or $actions[0].Arguments -ne $Arguments -or
-        $actions[0].WorkingDirectory -ne $WorkDir) {
-        $bad += ('action ' + (($actions | ForEach-Object { "$($_.Execute) $($_.Arguments) in $($_.WorkingDirectory)" }) -join ' | '))
-    }
-    $triggers = @($Task.Triggers | Where-Object { $null -ne $_ })
-    if ($Hub) {
-        if ($triggers.Count -ne 1 -or $triggers[0].CimClass.CimClassName -ne 'MSFT_TaskLogonTrigger' -or
-            (Get-FohSid ([string]$triggers[0].UserId)) -ne $userSid) {
-            $bad += "triggers: not one logon trigger for $User"
-        }
-    } elseif ($triggers.Count -ne 0) {
-        $bad += "$($triggers.Count) triggers"
-    }
-    return $bad
-}
-
-function Register-FohHubTasks {
-    # Registers (or updates) our two tasks for the hub's user and reads them
-    # back: fohmixer-hub runs this bundle's Start-FohmixerHub.ps1 at the user's
-    # logon; fohmixer-hub-stop (no trigger) runs its Stop-FohmixerHub.ps1 on
-    # demand, in the user's session. Neither is started here. Throws on a
-    # read-back difference. The hub task's restart setting (3 x 1 min) covers a
-    # failed start only: Task Scheduler does not restart a program that exits,
-    # so a hub that crashes stays down until the next logon or a task start.
-    param([Parameter(Mandatory)][string]$AppDir, [Parameter(Mandatory)][string]$DataDir,
-          [Parameter(Mandatory)][string]$User, [string]$TaskPath = $script:TaskPath)
-    $account = Get-FohLocalAccountName $User
-    $principal = New-ScheduledTaskPrincipal -UserId $account -LogonType Interactive -RunLevel Limited
-    $common = @{
-        ExecutionTimeLimit = [TimeSpan]::Zero; MultipleInstances = 'IgnoreNew'; AllowStartIfOnBatteries = $true
-        DontStopIfGoingOnBatteries = $true; DontStopOnIdleEnd = $true; DisallowHardTerminate = $true; Priority = 4
-    }
-    $hubSettings = New-ScheduledTaskSettingsSet @common -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
-    $stopSettings = New-ScheduledTaskSettingsSet @common
-    $specs = @(
-        @{ name = $script:HubTask; script = (Join-Path $AppDir 'Start-FohmixerHub.ps1'); settings = $hubSettings; hub = $true
-           description = 'fohmixer: the hub (S5). Stop it only through fohmixer-hub-stop (Ctrl-Break).' },
-        @{ name = $script:StopTask; script = (Join-Path $AppDir 'Stop-FohmixerHub.ps1'); settings = $stopSettings; hub = $false
-           description = 'fohmixer: asks the running hub to stop (Ctrl-Break in its session).' })
-    $problems = @()
-    foreach ($spec in $specs) {
-        $cmd = Get-FohTaskCommand -Script $spec.script -DataDir $DataDir
-        $action = New-ScheduledTaskAction -Execute $cmd.execute -Argument $cmd.arguments -WorkingDirectory $DataDir
-        $register = @{
-            TaskPath = $TaskPath; TaskName = $spec.name; Action = $action; Principal = $principal
-            Settings = $spec.settings; Description = $spec.description; Force = $true
-        }
-        if ($spec.hub) { $register['Trigger'] = New-ScheduledTaskTrigger -AtLogOn -User $account }
-        Register-ScheduledTask @register | Out-Null
-        $task = Get-ScheduledTask -TaskPath $TaskPath -TaskName $spec.name
-        foreach ($b in @(Get-FohTaskProblems -Task $task -User $User -Execute $cmd.execute -Arguments $cmd.arguments -WorkDir $DataDir -Hub:$spec.hub)) {
-            $problems += ('{0}: {1}' -f $spec.name, $b)
-        }
-    }
-    if ($problems.Count -gt 0) { throw ('task read-back: ' + ($problems -join '; ')) }
-}
-
 # ---- the install (design note section 3) ----
 
 function Test-FohUserName {
@@ -997,7 +549,7 @@ function Invoke-FohInstall {
     # Design note section 3, in order. Every parameter is checked before
     # anything changes, and the bundle (against its SHA256SUMS, unpacked under
     # <DataDir>\app) before the DACL, the stop and the install. When a step
-    # after the stop fails, the hub task is started again. -NoTask (the
+    # after the stop fails, the hub and tray tasks that ran are started again. -NoTask (the
     # self-test) leaves out what needs the real accounts: the DACL, the stop,
     # the tasks, the firewall rule, the start and the readiness poll. $Remote
     # is Resolve-FohRemote's plan (#17), resolved and checked by the caller.
@@ -1064,6 +616,7 @@ function Invoke-FohInstall {
     $unpacked = Expand-FohBundle -BundleZip $BundleZip -DataDir $DataDir
     Write-Host "fohmixer install: bundle $($unpacked.version) checked against its SHA256SUMS"
     $hubWasRunning = $false
+    $trayWasRunning = $false
     try {
         # The new config, checked by the new hub before anything else changes.
         $tomlText = New-FohHubToml -HttpPort $HttpPort -BandPort $BandPort -MasterPort $MasterPort -Remote $remoteToml
@@ -1079,7 +632,10 @@ function Invoke-FohInstall {
         }
         if (-not $NoTask) {
             Set-FohDataDirAcl -Path $DataDir -User $BandUser
-            # 1. the running hub
+            # 1. the running tray (#39: it runs from app\<version>), then the running hub
+            $trayWasRunning = @(Get-FohTrayProcess -DataDir $DataDir).Count -gt 0
+            $trayStop = Stop-FohTray -DataDir $DataDir -TaskPath $TaskPath
+            Write-Host "fohmixer install: $($trayStop.text)"
             $hubWasRunning = @(Get-FohHubProcess -DataDir $DataDir).Count -gt 0
             $stop = Stop-FohHub -DataDir $DataDir -TaskPath $TaskPath
             Write-Host "fohmixer install: $($stop.text)"
@@ -1115,6 +671,8 @@ function Invoke-FohInstall {
         if (-not $NoTask) {
             Register-FohHubTasks -AppDir $app.dir -DataDir $DataDir -User $BandUser -TaskPath $TaskPath
             Write-Host "fohmixer install: tasks $TaskPath$($script:HubTask) and $TaskPath$($script:StopTask) registered and read back"
+            Register-FohTrayTasks -AppDir $app.dir -DataDir $DataDir -User $BandUser -TaskPath $TaskPath
+            Write-Host "fohmixer install: tasks $TaskPath$($script:TrayTask) and $TaskPath$($script:TrayStopTask) registered and read back"
             $firewall = Set-FohFirewallRule -Port $HttpPort
             Write-Host "fohmixer install: firewall rule fohmixer-hub-http, TCP $HttpPort, Domain and Private (changed: $firewall)"
             if ($Remote) { Install-FohRemoteServices -Remote $Remote -Result $remoteResult }
@@ -1126,22 +684,33 @@ function Invoke-FohInstall {
         }
     } catch {
         $failure = $_
-        # A hub that ran before this install and is down now (the stop above
-        # ended it): start its task again, so a failed install does not leave
-        # the hub down.
-        if (-not ($hubWasRunning -and @(Get-FohHubProcess -DataDir $DataDir).Count -eq 0)) { throw }
-        try {
-            Start-ScheduledTask -TaskPath $TaskPath -TaskName $script:HubTask
-            $again = 'the hub task was started again'
-        } catch {
-            $again = "starting the hub task again failed too: $($_.Exception.Message)"
+        # A hub or a tray that ran before this install and is down now (the
+        # stops above ended them): start its task again, so a failed install
+        # does not leave either down.
+        $restart = @()
+        if ($hubWasRunning -and @(Get-FohHubProcess -DataDir $DataDir).Count -eq 0) {
+            $restart += [pscustomobject]@{ task = $script:HubTask; what = 'hub' }
         }
-        throw ("{0} ({1})`n{2}" -f $failure.Exception.Message, $again, $failure.ScriptStackTrace)
+        if ($trayWasRunning -and @(Get-FohTrayProcess -DataDir $DataDir).Count -eq 0) {
+            $restart += [pscustomobject]@{ task = $script:TrayTask; what = 'tray' }
+        }
+        if ($restart.Count -eq 0) { throw }
+        $again = @()
+        foreach ($r in $restart) {
+            try {
+                Start-ScheduledTask -TaskPath $TaskPath -TaskName $r.task
+                $again += "the $($r.what) task was started again"
+            } catch {
+                $again += "starting the $($r.what) task again failed too: $($_.Exception.Message)"
+            }
+        }
+        throw ("{0} ({1})`n{2}" -f $failure.Exception.Message, ($again -join '; '), $failure.ScriptStackTrace)
     } finally {
         if (Test-Path -LiteralPath $unpacked.dir) { Remove-Item -LiteralPath $unpacked.dir -Recurse -Force }
     }
     # 7. the start and the readiness
     $answer = $null
+    $trayPid = $null
     if (-not $NoTask) {
         Start-ScheduledTask -TaskPath $TaskPath -TaskName $script:HubTask
         try {
@@ -1150,9 +719,12 @@ function Invoke-FohInstall {
             throw ($_.Exception.Message + "`n" + (Get-FohLogTail -DataDir $DataDir))
         }
         Write-Host "fohmixer install: the hub answers version $($answer.version) ($($answer.git_hash))"
+        # 7b. the tray (#39), after the hub: its first poll finds the hub up
+        $trayPid = Start-FohTray -AppDir $app.dir -DataDir $DataDir -TaskPath $TaskPath
+        Write-Host "fohmixer install: the tray runs (pid $trayPid)"
     }
     return [pscustomobject]@{
         version = $unpacked.version; app = $app.dir; app_changed = $app.changed; config_changed = $toml
-        layout_changed = $layoutChanged; copies = $copies; hub = $answer; remote = $remoteResult
+        layout_changed = $layoutChanged; copies = $copies; hub = $answer; tray = $trayPid; remote = $remoteResult
     }
 }

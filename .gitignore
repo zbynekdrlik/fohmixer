@@ -13,6 +13,8 @@ venv/
 # Rust build output and the UI bundle (Trunk writes it; CI builds it)
 target/
 crates/fohmixer-ui/dist/
+# tauri-build's generated capability schemas (the tray, #39; iemmixer ignores its own)
+crates/fohmixer-tray/gen/
 # Playwright
 e2e/node_modules/
 e2e/playwright-report/

@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/fohmixer-proto", "crates/fohmixer-hub", "crates/fohmixer-ui"]
+members = ["crates/fohmixer-proto", "crates/fohmixer-hub", "crates/fohmixer-ui", "crates/fohmixer-tray"]
 resolver = "2"
 
 [workspace.package]

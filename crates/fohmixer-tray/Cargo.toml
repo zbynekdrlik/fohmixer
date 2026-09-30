@@ -1,0 +1,47 @@
+[package]
+name = "fohmixer-tray"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "fohmixer tray on the Ableton PC (Tauri 2): the hub's state, Open fohmixer, Copy URL; no server (#39)"
+default-run = "fohmixer-tray"
+
+# The decisions (arguments, the hub's links from its config, the version
+# poll, the tooltip and the menu) build and are tested on every platform;
+# the Tauri glue is Windows-only (src/tray.rs), as iemmixer's iem-tray.
+[dependencies]
+# The version the tray itself runs, and the hub's /api/version answer.
+fohmixer-proto = { path = "../fohmixer-proto" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+# The hub's config (read only; the same toml crate and features as the hub).
+toml = { version = "1", default-features = false, features = ["std", "serde", "parse"] }
+# GET http://127.0.0.1:<http_port>/api/version (plain HTTP on the PC: no TLS).
+ureq = { version = "3", default-features = false }
+
+[target.'cfg(windows)'.dependencies]
+tracing = "0.1"
+tauri = { version = "2.12", features = ["tray-icon"] }
+# A second start hands its arguments to the running tray: `--exit` ends it
+# (the install's graceful stop, spec I7), anything else is ignored.
+tauri-plugin-single-instance = "2.4"
+# Open fohmixer: the hub's local URL in the default browser.
+tauri-plugin-opener = "2"
+# Copy URL: the public URL to the clipboard.
+tauri-plugin-clipboard-manager = "2"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tracing-appender = "0.2"
+# %LOCALAPPDATA% for the log folder.
+dirs = "6.0"
+
+[target.'cfg(windows)'.build-dependencies]
+tauri-build = { version = "2.7", features = [] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[[bin]]
+name = "fohmixer-tray"
+path = "src/main.rs"

@@ -35,7 +35,7 @@ jobs:
         with:
           tool: cargo-mutants@27.1.0,cargo-nextest@0.9.146
       - name: Warm target (copied into each cargo-mutants build directory)
-        run: cargo nextest run --locked --cargo-profile mutants --no-run -p fohmixer-proto -p fohmixer-hub -p fohmixer-ui --all-features --all-targets
+        run: cargo nextest run --locked --cargo-profile mutants --no-run -p fohmixer-proto -p fohmixer-hub -p fohmixer-ui -p fohmixer-tray --all-features --all-targets
       - name: Full-tree mutants (survivors are reported, then filed as test-quality issues)
         env:
           # .config/nextest.toml: stop at the first failing test (fail fast on hangs).
@@ -44,7 +44,7 @@ jobs:
           SHARDS: ${{ strategy.job-total }}
         run: |
           set -uo pipefail
-          packages=(--package fohmixer-proto --package fohmixer-hub --package fohmixer-ui)
+          packages=(--package fohmixer-proto --package fohmixer-hub --package fohmixer-ui --package fohmixer-tray)
           cargo mutants --baseline=skip --timeout 60 --jobs 2 --copy-target=true --shard "${SHARD}/${SHARDS}" \
             "${packages[@]}" --all-features -- --all-targets
           code=$?
