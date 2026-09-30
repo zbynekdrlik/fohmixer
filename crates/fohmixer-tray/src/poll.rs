@@ -123,8 +123,8 @@ mod tests {
                 }
             }
             stream.write_all(response.as_bytes()).unwrap();
-            tx.send(String::from_utf8_lossy(&request).into_owned())
-                .unwrap();
+            // A test that does not read the request has dropped its end.
+            let _ = tx.send(String::from_utf8_lossy(&request).into_owned());
         });
         (format!("http://127.0.0.1:{port}"), rx)
     }
