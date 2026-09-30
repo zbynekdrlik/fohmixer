@@ -29,9 +29,15 @@
 #   cloudflared check (fake cloudflared.cmd), the tunnel command line and the
 #   token file with its protected DACL, the tunnel service under a test name
 #   (never started, removed after), a -NoTask install with the token on stdin,
-#   and an install without -PublicName that keeps it.
+#   and an install without -PublicName that keeps it;
+# - the tray (#39, FohmixerTray.ps1, -TrayExe the job's debug build): in the
+#   bundle, its two tasks registered and read back, the installed tray started
+#   exactly as its task starts it (it reads the installed toml and polls the
+#   hub, its log says so), a stop without the stop task refused with the tray
+#   left running, and --exit (the stop task's command) ending it gracefully;
+#   --exit with no tray running exits at once.
 # Only its own test objects are removed; nothing is ended by force (spec I7).
-param([Parameter(Mandatory)][string]$HubExe)
+param([Parameter(Mandatory)][string]$HubExe, [Parameter(Mandatory)][string]$TrayExe)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $here = $PSScriptRoot
@@ -135,6 +141,34 @@ function Get-ScriptProcess([string]$Script) {
     }
 }
 
+function Get-TrayLogText {
+    # This user's tray logs (%LOCALAPPDATA%\fohmixer\logs\fohmixer-tray.log.<date>),
+    # oldest first, read while a running tray still holds them open for writing.
+    $dir = Join-Path $env:LOCALAPPDATA 'fohmixer\logs'
+    if (-not (Test-Path -LiteralPath $dir -PathType Container)) { return '' }
+    $text = ''
+    foreach ($f in @(Get-ChildItem -LiteralPath $dir -File | Where-Object { $_.Name -like 'fohmixer-tray.log*' } | Sort-Object -Property Name)) {
+        $fs = New-Object IO.FileStream($f.FullName, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]'ReadWrite, Delete')
+        try { $text += (New-Object IO.StreamReader($fs)).ReadToEnd() } finally { $fs.Dispose() }
+    }
+    return $text
+}
+
+function Wait-TrayLog([string]$Text, [int]$Since, [int]$TimeoutSeconds = 20) {
+    # Whether $Text shows up in the tray logs after their first $Since
+    # characters within $TimeoutSeconds (the tray writes its log on a thread).
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ($true) {
+        $log = Get-TrayLogText
+        if ($log.Length -gt $Since -and $log.Substring($Since).Contains($Text)) { return $true }
+        if ((Get-Date) -ge $deadline) {
+            Write-Host ("---- no [{0}] in the tray log (this run) ----`n{1}" -f $Text, $log.Substring([Math]::Min($Since, $log.Length)))
+            return $false
+        }
+        Start-Sleep -Milliseconds 250
+    }
+}
+
 function Show-StopDiagnostics([string]$DataDir, $StopPs) {
     # What a failed stop left behind: the stop script's exit, its log and
     # result, the hubs still running, the hub's and the launcher's logs.
@@ -194,6 +228,7 @@ function New-FakeLiveCfg([string]$Prefs, [string]$Version, [string]$UserLibrary)
 }
 
 $HubExe = (Resolve-Path -LiteralPath $HubExe).ProviderPath
+$TrayExe = (Resolve-Path -LiteralPath $TrayExe).ProviderPath
 $id = [guid]::NewGuid().ToString('N').Substring(0, 8)
 $tempRoot = [IO.Path]::GetTempPath()
 if ($env:RUNNER_TEMP) { $tempRoot = $env:RUNNER_TEMP }
@@ -285,6 +320,10 @@ try {
         "tasks-run-as-and-start-at-the-logon-of-the-account-named-like-the-computer (read back: $($ct.Principal.UserId) / $($ct.Triggers[0].UserId))"
     $cs = Get-ScheduledTask -TaskPath $clashFolder -TaskName 'fohmixer-hub-stop'
     Assert ((Get-FohSid ([string]$cs.Principal.UserId)) -ceq $clashSid) 'stop-task-runs-as-the-account-named-like-the-computer'
+    Register-FohTrayTasks -AppDir $here -DataDir (Join-Path $base 'data-clash') -User $clash -TaskPath $clashFolder
+    $ctt = Get-ScheduledTask -TaskPath $clashFolder -TaskName 'fohmixer-tray'
+    Assert ((Get-FohSid ([string]$ctt.Principal.UserId)) -ceq $clashSid -and (Get-FohSid ([string]$ctt.Triggers[0].UserId)) -ceq $clashSid) `
+        'tray-task-runs-as-and-starts-at-the-logon-of-the-account-named-like-the-computer'
 
     $cargo = Join-Path $base 'Cargo.toml'
     [IO.File]::WriteAllText($cargo, "[package]`nversion = `"9.9.9`"`n[workspace.package]`nversion = `"1.2.3-dev.4`"`nedition = `"2024`"`n")
@@ -419,14 +458,18 @@ try {
     # ---- the bundle ----
     $out = Join-Path $base 'out'
     New-Item -ItemType Directory -Force -Path $out | Out-Null
-    $b1 = New-FohBundle -RepoRoot $repo -HubExe $HubExe -OutDir $out -Sha $sha
+    $e = ErrorOf { New-FohBundle -RepoRoot $repo -HubExe $HubExe -TrayExe (Join-Path $base 'no-tray.exe') -OutDir $out -Sha $sha }
+    Assert ($e -like '*the tray*does not exist*') "bundle-refuses-a-missing-tray ($e)"
+    $b1 = New-FohBundle -RepoRoot $repo -HubExe $HubExe -TrayExe $TrayExe -OutDir $out -Sha $sha
+    Assert ((Get-FohSha256 (Join-Path $b1.stage 'fohmixer-tray.exe')) -ceq (Get-FohSha256 $TrayExe)) 'bundle-holds-the-built-tray'
     $v1 = $b1.version
     Assert ($v1 -ceq (Get-FohScriptVersion -Path (Join-Path $repo 'live-script\FohMixer\version.py'))) 'bundle-version-is-the-workspace-version'
     Assert ($b1.name -ceq "fohmixer-windows-$v1-$sha" -and (Test-Path -LiteralPath $b1.zip -PathType Leaf)) 'bundle-named-by-version-and-commit'
     $zip = [IO.Compression.ZipFile]::OpenRead($b1.zip)
     try { $entries = @($zip.Entries | ForEach-Object { $_.FullName }) } finally { $zip.Dispose() }
     foreach ($n in @('VERSION', 'SHA256SUMS', 'fohmixer-hub.exe', 'Install-Fohmixer.ps1', 'FohmixerPc.psm1', 'FohmixerLivePrefs.ps1', 'FohmixerFirewall.ps1', 'FohmixerRemote.ps1', 'Start-FohmixerHub.ps1',
-            'Stop-FohmixerHub.ps1', 'FohMixer/__init__.py', 'FohMixer/Config.py', 'FohMixer/version.py', 'FohMixer/transport/server.py')) {
+            'Stop-FohmixerHub.ps1', 'FohMixer/__init__.py', 'FohMixer/Config.py', 'FohMixer/version.py', 'FohMixer/transport/server.py',
+            'fohmixer-tray.exe', 'FohmixerTray.ps1', 'FohmixerHubProcess.ps1', 'FohmixerTasks.ps1')) {
         Assert ($entries -ccontains $n) "bundle-holds-$n"
     }
     Assert (@($entries | Where-Object { $_ -match '(^|/)(__pycache__|logs|tests)/|\.pyc$' }).Count -eq 0) 'bundle-without-tests-caches-or-logs'
@@ -530,6 +573,50 @@ try {
     Assert (-not $hubLog.Contains([string][char]27)) 'hub-log-without-colour-codes'
     Assert ([IO.File]::ReadAllText((Join-Path $data 'logs\hub-stop.log')) -like "*Ctrl-Break sent to pid $($hubs[0].pid)*") 'stop-log-names-the-pid'
     Assert ([IO.File]::ReadAllText((Join-Path $data 'logs\hub-launch.log')) -like "*pid $($hubs[0].pid) exited with 0*") 'hub-exit-code-0-in-the-launch-log'
+
+    # ---- the tray (#39), started and ended exactly as its tasks do it ----
+    $idleTray = Stop-FohTray -DataDir $data -TaskPath $taskFolder
+    Assert (-not $idleTray.stopped -and $idleTray.text -ceq 'no tray was running') 'tray-stop-with-no-tray-running-does-nothing'
+    $trayRun = Get-FohTrayCommand -AppDir $appV1 -DataDir $data
+    $trayExit = Get-FohTrayCommand -AppDir $appV1 -DataDir $data -Stop
+    Assert ($trayRun.execute -eq (Join-Path $appV1 'fohmixer-tray.exe') -and $trayRun.arguments -ceq ('--data "' + $data + '"')) "tray-command-runs-the-version-folders-tray-on-the-data-folder ($($trayRun.arguments))"
+    Assert ($trayExit.execute -eq $trayRun.execute -and $trayExit.arguments -ceq '--exit') 'tray-stop-command-is-a-second-start-with-exit'
+    # --exit with no tray running: it has nobody to hand over to and exits at once.
+    $mark = (Get-TrayLogText).Length
+    $lone = Start-Process -FilePath $trayExit.execute -ArgumentList $trayExit.arguments -WorkingDirectory $data -WindowStyle Hidden -PassThru
+    $null = $lone.Handle
+    Assert ($lone.WaitForExit(60000)) 'tray-exit-with-no-tray-running-ends'
+    Assert ($lone.ExitCode -eq 0) "tray-exit-with-no-tray-running-exits-0 ($($lone.ExitCode))"
+    Assert (Wait-TrayLog -Text 'no tray was running; nothing to end' -Since $mark) 'tray-exit-with-no-tray-running-logs-it'
+    Assert (@(Get-FohTrayProcess -DataDir $data).Count -eq 0) 'tray-exit-with-no-tray-running-leaves-no-tray'
+    # The installed tray on the installed toml (port 18481; the hub is down now).
+    $mark = (Get-TrayLogText).Length
+    $trayPs = Start-Process -FilePath $trayRun.execute -ArgumentList $trayRun.arguments -WorkingDirectory $data -WindowStyle Hidden -PassThru
+    $null = $trayPs.Handle
+    try {
+        $deadline = (Get-Date).AddSeconds(30)
+        while (@(Get-FohTrayProcess -DataDir $data).Count -eq 0 -and -not $trayPs.HasExited -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 250 }
+        $trays = @(Get-FohTrayProcess -DataDir $data)
+        Assert ($trays.Count -eq 1 -and $trays[0].path -eq $trayRun.execute -and $trays[0].pid -eq $trayPs.Id) 'tray-runs-from-the-version-folder'
+        Assert (Wait-TrayLog -Text 'version_url=http://127.0.0.1:18481/api/version' -Since $mark) 'tray-reads-the-installed-toml'
+        Assert (Wait-TrayLog -Text 'the hub does not answer' -Since $mark) 'tray-polls-the-hub-and-logs-it-down'
+        $e = ErrorOf { Stop-FohTray -DataDir $data -TaskPath $taskFolder }
+        Assert ($e -like '*fohmixer-tray-stop is missing*') "tray-stop-without-the-stop-task-refuses ($e)"
+        Assert (@(Get-FohTrayProcess -DataDir $data).Count -eq 1) 'tray-stop-without-the-stop-task-leaves-the-tray-running'
+        # The stop task's command: a second start with --exit hands it over.
+        $second = Start-Process -FilePath $trayExit.execute -ArgumentList $trayExit.arguments -WorkingDirectory $data -WindowStyle Hidden -PassThru
+        $null = $second.Handle
+        Assert ($second.WaitForExit(60000)) 'tray-second-start-with-exit-ends'
+        Assert ($second.ExitCode -eq 0) "tray-second-start-with-exit-exits-0 ($($second.ExitCode))"
+        Assert (@(Wait-FohTrayExit -DataDir $data -TimeoutSeconds 10).Count -eq 0) 'tray-exits-within-10-s-of-exit'
+        Assert ($trayPs.WaitForExit(5000)) 'tray-process-ends'
+        Assert ($trayPs.ExitCode -eq 0) "tray-exits-0-on-exit ($($trayPs.ExitCode))"
+        Assert (Wait-TrayLog -Text 'asks this tray to exit' -Since $mark) 'tray-log-names-the-exit-request'
+        Assert (Wait-TrayLog -Text 'the tray exits' -Since $mark) 'tray-log-says-it-exits'
+    } catch {
+        Write-Host "---- tray log (this run) ----`n$((Get-TrayLogText).Substring($mark))"
+        throw
+    }
 
     # ---- install 2: the same bundle and parameters write nothing ----
     New-Item -ItemType Directory -Force -Path (Join-Path $bandCopy 'logs') | Out-Null
@@ -702,10 +789,33 @@ try {
     Assert ($st.Actions[0].Arguments -ceq ($wantArgs -f $ps, (Join-Path $appV1 'Stop-FohmixerHub.ps1'), $data)) 'task-stop-runs-the-stop-script'
     Assert ($null -eq $st.Triggers -or @($st.Triggers).Count -eq 0) 'task-stop-has-no-trigger'
     Assert ($st.Settings.RestartCount -eq 0) 'task-stop-never-restarts'
+    # The tray's two tasks (#39): the same settings, the tray exe itself as the action.
+    Register-FohTrayTasks -AppDir $appV1 -DataDir $data -User $me -TaskPath $taskFolder
+    foreach ($n in @('fohmixer-tray', 'fohmixer-tray-stop')) {
+        $t = Get-ScheduledTask -TaskPath $taskFolder -TaskName $n
+        $st = $t.Settings
+        Assert ("$($t.Principal.LogonType)" -eq 'Interactive' -and "$($t.Principal.RunLevel)" -eq 'Limited') "task-$n-interactive-limited"
+        Assert ($st.ExecutionTimeLimit -eq 'PT0S' -and "$($st.MultipleInstances)" -eq 'IgnoreNew') "task-$n-no-time-limit-ignorenew"
+        Assert (-not $st.AllowHardTerminate) "task-$n-never-ended-hard"
+        Assert ($t.Actions[0].Execute -eq (Join-Path $appV1 'fohmixer-tray.exe') -and $t.Actions[0].WorkingDirectory -eq $data) "task-$n-runs-the-tray-in-the-data-folder"
+        Assert ("$($t.State)" -ne 'Running') "task-$n-not-started"
+    }
+    $tt = Get-ScheduledTask -TaskPath $taskFolder -TaskName 'fohmixer-tray'
+    Assert ($tt.Actions[0].Arguments -ceq ('--data "' + $data + '"')) "task-tray-names-the-data-folder ($($tt.Actions[0].Arguments))"
+    Assert (@($tt.Triggers).Count -eq 1 -and $tt.Triggers[0].CimClass.CimClassName -eq 'MSFT_TaskLogonTrigger' -and
+        (Get-FohSid ([string]$tt.Triggers[0].UserId)) -ceq $meSid) 'task-tray-starts-at-the-users-logon'
+    Assert ($tt.Settings.RestartCount -eq 3 -and $tt.Settings.RestartInterval -eq 'PT1M') 'task-tray-restarts-after-a-failed-start-3x1min'
+    $ts = Get-ScheduledTask -TaskPath $taskFolder -TaskName 'fohmixer-tray-stop'
+    Assert ($ts.Actions[0].Arguments -ceq '--exit') 'task-tray-stop-is-a-second-start-with-exit'
+    Assert ($null -eq $ts.Triggers -or @($ts.Triggers).Count -eq 0) 'task-tray-stop-has-no-trigger'
+    Assert ($ts.Settings.RestartCount -eq 0) 'task-tray-stop-never-restarts'
     Register-FohHubTasks -AppDir $appV2 -DataDir $data -User $me -TaskPath $taskFolder
-    Assert (@(Get-ScheduledTask -TaskPath $taskFolder).Count -eq 2) 'tasks-updated-in-place-by-the-next-install'
+    Register-FohTrayTasks -AppDir $appV2 -DataDir $data -User $me -TaskPath $taskFolder
+    Assert (@(Get-ScheduledTask -TaskPath $taskFolder).Count -eq 4) 'tasks-updated-in-place-by-the-next-install'
     $h = Get-ScheduledTask -TaskPath $taskFolder -TaskName 'fohmixer-hub'
     Assert ($h.Actions[0].Arguments -ceq ($wantArgs -f $ps, (Join-Path $appV2 'Start-FohmixerHub.ps1'), $data)) 'task-hub-runs-the-new-version'
+    $tt = Get-ScheduledTask -TaskPath $taskFolder -TaskName 'fohmixer-tray'
+    Assert ($tt.Actions[0].Execute -eq (Join-Path $appV2 'fohmixer-tray.exe')) 'task-tray-runs-the-new-version'
 
     # ---- the firewall rule, as a disabled test rule ----
     Assert (Set-FohFirewallRule -Port 18481 -Name $fwName -Disabled) 'firewall-rule-created'
@@ -747,6 +857,17 @@ try {
             }
         }
     } catch { Write-Host "cleanup: hub ($($_.Exception.Message))" }
+    # A tray still running after a failure above is asked to exit once more (--exit), never ended.
+    try {
+        if (Test-Path -LiteralPath $data) {
+            foreach ($t in @(Get-FohTrayProcess -DataDir $data)) {
+                $bye = Start-Process -FilePath $t.path -ArgumentList '--exit' -WindowStyle Hidden -PassThru
+                $null = $bye.WaitForExit(30000)
+            }
+            $left = @(Wait-FohTrayExit -DataDir $data -TimeoutSeconds 10)
+            if ($left.Count -gt 0) { Write-Host "cleanup: a tray still runs (pid $($left[0].pid)); not ended by force" }
+        }
+    } catch { Write-Host "cleanup: tray ($($_.Exception.Message))" }
     foreach ($tf in @($taskFolder, $clashFolder)) {
         try {
             $inFolder = @(Get-ScheduledTask | Where-Object { $_.TaskPath -eq $tf })
