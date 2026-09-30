@@ -1064,9 +1064,12 @@ class RepoFilesTests(unittest.TestCase):
         self.assertEqual(ds.load_boundary(SCRIPTS / "denylist-boundary.txt"), [
             "b3d26d64f6ee89df8619197142f478a10d2922fa", "aca52f28a4489197d90b9f324043b41cda25c1ac"])
 
-    def test_the_identities_are_the_noreply_account_and_github(self) -> None:
+    def test_the_identities_are_the_noreply_account_github_and_the_project_app(self) -> None:
+        # The project account's GitHub App authors the merges made with
+        # `gh pr merge` since the cutover to the project account (#37).
         self.assertEqual(ds.load_identities(SCRIPTS / "allowed-identities.txt"), {
-            "26905282+zbynekdrlik@users.noreply.github.com", "noreply@github.com"})
+            "26905282+zbynekdrlik@users.noreply.github.com", "noreply@github.com",
+            "335892526+newlevel-project-accounts[bot]@users.noreply.github.com"})
 
 
 if __name__ == "__main__":
