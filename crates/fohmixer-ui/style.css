@@ -980,50 +980,6 @@ body {
     border-color: var(--accent);
 }
 
-/* A write the hub has not confirmed (#43, design note §4.3): the cap keeps
-   the engineer's value; an unconfirmed release (1 s without an ack) is
-   outlined amber, a release too old to send again after a reconnect red,
-   and both show a thin ghost line at Live's value (`--g`, a layer moved up
-   like the rail). No text: space on the tablet is scarce. */
-.fader[data-intent="unconfirmed"] .fader-cap {
-    outline: 2px solid var(--warn);
-    outline-offset: 1px;
-}
-
-.fader[data-intent="not_sent"] .fader-cap {
-    outline: 2px solid var(--danger);
-    outline-offset: 1px;
-}
-
-.fader-ghost {
-    display: none;
-    position: absolute;
-    inset: 0;
-    pointer-events: none;
-    transform: translateY(calc(var(--g, 0) * -100%));
-    will-change: transform;
-}
-
-.fader-ghost::after {
-    content: "";
-    position: absolute;
-    top: 100%;
-    left: calc(var(--x, 50%) - 14px);
-    width: 28px;
-    height: 2px;
-    margin-top: -1px;
-    background: var(--warn);
-}
-
-.fader[data-intent="unconfirmed"] .fader-ghost,
-.fader[data-intent="not_sent"] .fader-ghost {
-    display: block;
-}
-
-.fader[data-intent="not_sent"] .fader-ghost::after {
-    background: var(--danger);
-}
-
 .strip-dbrow {
     display: flex;
     align-items: center;
