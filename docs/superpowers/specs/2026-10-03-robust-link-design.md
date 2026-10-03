@@ -209,9 +209,9 @@ The E2E harness gets a TCP proxy between the browser and the hub (`e2e/harness/i
 
 - `POST /link/stall {"ms"}`: hold both directions;
 - `POST /link/drop`: close every proxied socket with a reset;
-- `POST /link/block {"on"}`: refuse and hold new connections.
+- `POST /link/block {"on"}`: hold new connections (accepted, not passed on to the hub, until the block is lifted; a refused connection would be a console error in the browser, a held one is not).
 
-The Playwright projects open the surface through it. Deterministic stalls make the tests reproducible; random `tc netem` stays out of CI.
+The Playwright projects open the surface through it (`E2E_LINK_URL`); the tests' own client of the hub stays on the hub's port. Deterministic stalls make the tests reproducible; random `tc netem` stays out of CI.
 
 ### 6.2 Tests
 
