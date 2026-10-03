@@ -12,6 +12,10 @@
 //! The pages' diagnostic reports (#26, `client_report.rs`) go to the log
 //! and `/api/status`.
 //!
+//! The clients' writes (#43, protocol 2): `set` / `ack` through one setter
+//! per instance (`setter.rs`, latest-wins, one batch in flight), and every
+//! hop of a move in the dated event log (`events.rs`, `<data>/logs/`).
+//!
 //! Remote access (#17): one public name for the LAN and the Cloudflare
 //! tunnel. The HTTPS listener of that name (`https.rs`, `tls.rs`) with its
 //! Let's Encrypt certificate (`acme.rs` by DNS-01 on Cloudflare,
@@ -41,10 +45,12 @@ pub mod acme;
 pub mod auth;
 pub mod cf_token;
 pub mod client_report;
+pub mod clock;
 pub mod cloudflare;
 pub mod config;
 #[cfg(windows)]
 mod dpapi;
+pub mod events;
 pub mod http_client;
 pub mod https;
 pub mod layout;
@@ -61,6 +67,7 @@ pub mod routes;
 pub mod rules;
 pub mod sealed;
 pub mod secrets;
+pub mod setter;
 #[cfg(test)]
 pub(crate) mod test_keys;
 pub mod tls;
@@ -70,6 +77,7 @@ pub mod ws;
 use access::AccessGate;
 use auth::Auth;
 use config::Config;
+use events::EventLog;
 use https::Https;
 use layout::LayoutStore;
 use live::client::{Events, LiveEvent, LiveHandle};
@@ -117,6 +125,8 @@ pub struct HubInner {
     pub https: std::sync::OnceLock<Arc<Https>>,
     /// The pages' diagnostic reports (#26, `POST /api/client-report`).
     pub reports: client_report::Reports,
+    /// The event log (#43, `<data>/logs/events-YYYY-MM-DD.jsonl`).
+    pub events: EventLog,
     live: BTreeMap<String, LiveHandle>,
     router: mpsc::UnboundedSender<RouterMsg>,
     next_client: AtomicU64,
@@ -233,6 +243,8 @@ impl Hub {
         std::fs::create_dir_all(&config.data_dir)
             .with_context(|| format!("creating the data folder {}", config.data_dir.display()))?;
         let auth = Arc::new(Auth::load(&config.data_dir).context("loading the secrets")?);
+        let events =
+            EventLog::start(config.data_dir.join("logs")).context("starting the event log")?;
         let (router_tx, router_rx) = mpsc::unbounded_channel();
         let mut tasks = Vec::new();
         let remote = Arc::new(RemoteState::default());
@@ -275,8 +287,15 @@ impl Hub {
             access = config.access.is_some(),
             "hub started"
         );
-        let router =
-            router::Router::new(live.clone(), hub_state.stage_aut, config.data_dir.clone());
+        let router = router::Router::new(
+            live.clone(),
+            hub_state.stage_aut,
+            config.data_dir.clone(),
+            router::RouterIo {
+                tx: router_tx.clone(),
+                events: events.clone(),
+            },
+        );
         tokio::spawn(router.run(router_rx));
         tasks.push(tokio::spawn(poll_layout(
             Arc::clone(&layout),
@@ -293,6 +312,7 @@ impl Hub {
             trusted_hosts,
             https: std::sync::OnceLock::new(),
             reports: client_report::Reports::default(),
+            events,
             live,
             router: router_tx,
             next_client: AtomicU64::new(1),

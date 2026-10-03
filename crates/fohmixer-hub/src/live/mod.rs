@@ -21,6 +21,9 @@ pub const HEARTBEAT_OVERDUE: Duration = Duration::from_millis(300);
 pub const RECONNECT_FIRST: Duration = Duration::from_millis(250);
 /// The longest reconnect delay.
 pub const RECONNECT_MAX: Duration = Duration::from_secs(2);
+/// While an instance is busy its health goes to the clients this often at
+/// most (#43, `link`: 4 times a second).
+pub const LINK_EVERY: Duration = Duration::from_millis(250);
 
 /// Why an instance is busy (spec §2.4), or `None` when it is not: its
 /// main-thread tick is older than 150 ms, or its heartbeat is overdue.
@@ -37,6 +40,19 @@ pub fn busy_reason(main_tick_age_ms: f64, since_heartbeat: Duration) -> Option<S
     } else {
         None
     }
+}
+
+/// The age of Live's last main-thread tick as the hub knows it now (#43,
+/// `link`): the last heartbeat's `main_tick_age_ms` plus the time since that
+/// heartbeat came. It grows while Live stalls (no heartbeat comes then).
+pub fn tick_age_now(main_tick_age_ms: f64, since_heartbeat: Duration) -> f64 {
+    main_tick_age_ms + since_heartbeat.as_secs_f64() * 1000.0
+}
+
+/// Whether the instance's health goes to the clients now: on every busy
+/// change, and every [`LINK_EVERY`] while busy.
+pub fn link_due(changed: bool, busy: bool, since_link: Duration) -> bool {
+    changed || (busy && since_link >= LINK_EVERY)
 }
 
 /// What a heartbeat that came after an overdue gap says about where it was
@@ -266,6 +282,25 @@ mod tests {
                 .unwrap()
                 .starts_with("Live's main thread")
         );
+    }
+
+    #[test]
+    fn the_tick_age_grows_with_the_time_since_the_heartbeat() {
+        assert_eq!(tick_age_now(12.5, Duration::ZERO), 12.5);
+        assert_eq!(tick_age_now(12.5, Duration::from_millis(300)), 312.5);
+        assert_eq!(tick_age_now(0.0, Duration::from_micros(1500)), 1.5);
+    }
+
+    #[test]
+    fn a_link_goes_out_on_a_change_and_four_times_a_second_while_busy() {
+        assert_eq!(LINK_EVERY, Duration::from_millis(250));
+        let soon = Duration::from_millis(249);
+        let due = Duration::from_millis(250);
+        assert!(link_due(true, false, Duration::ZERO));
+        assert!(link_due(true, true, Duration::ZERO));
+        assert!(!link_due(false, true, soon));
+        assert!(link_due(false, true, due));
+        assert!(!link_due(false, false, Duration::from_secs(10)));
     }
 
     #[test]

@@ -1,11 +1,14 @@
-//! `/ws?token=<jwt>&proto=1` — a client's WebSocket (S3 design note §3; the
+//! `/ws?token=<jwt>&proto=2` — a client's WebSocket (S3 design note §3; the
 //! session shape of iemmixer's `mixer_ws.rs` @ 22372bc).
 //!
 //! The first message is `hello`; a client without a protocol, or with one
 //! this hub does not serve, is closed with code 4001 and reloads. Then:
 //! commands go straight to their instance (in order) and their results
-//! come back as `result`; `sub`/`unsub`/`set_hub` go to the router; `ping`
-//! is answered `pong` (the client's watchdog). A
+//! come back as `result`; `sub`/`unsub`/`set_hub` and the writes (`set`,
+//! #43) go to the router; `ping` is answered `pong` with the hub's clock
+//! (the client's watchdog and round trip). The socket's open and close and
+//! every ping are event-log records (#43; a ping's carries the page's clock
+//! offset, `clock.rs`). A
 //! writer task drains the client's outbox, so a slow client never holds up
 //! anyone else; a client that takes longer than [`SEND_TIMEOUT`] to accept
 //! a message is closed (it reconnects and resyncs).
@@ -33,11 +36,12 @@ use fohmixer_proto::client::{
     CLOSE_RELOAD, ClientMsg, LiveCommand, MIN_CLIENT_PROTO, ServerMsg, UI_PROTO, proto_ok,
 };
 use futures_util::{SinkExt, StreamExt};
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use crate::Hub;
 use crate::access;
 use crate::client_report;
+use crate::clock::ClockSync;
 use crate::live::subs::ClientId;
 use crate::outbox::Outbox;
 use crate::router::RouterMsg;
@@ -172,8 +176,11 @@ async fn session(mut socket: WebSocket, hub: Hub, proto: Option<u32>, who: Opene
     hub.route(RouterMsg::Attach {
         client,
         outbox: Arc::clone(&outbox),
+        peer: who.peer.clone(),
     });
     log_socket("client connected", client, &who);
+    hub.events
+        .record("sock", sock_fields("open", client, &who, None));
     let (mut sink, mut stream) = socket.split();
     let mut writer = {
         let outbox = Arc::clone(&outbox);
@@ -184,7 +191,7 @@ async fn session(mut socket: WebSocket, hub: Hub, proto: Option<u32>, who: Opene
                         Ok(Ok(())) => {}
                         Ok(Err(_)) => {
                             outbox.close();
-                            return;
+                            return "a write to the client failed";
                         }
                         Err(_) => {
                             tracing::warn!(
@@ -192,31 +199,93 @@ async fn session(mut socket: WebSocket, hub: Hub, proto: Option<u32>, who: Opene
                                 "a client took over 5 s to take a message: closing it"
                             );
                             outbox.close();
-                            return;
+                            return "the client took over 5 s to take a message";
                         }
                     }
                 }
             }
             let _ = sink.close().await;
+            "the hub closed it (a stop, or the client stopped reading)"
         })
     };
-    loop {
+    let mut conn = Conn {
+        client,
+        outbox: Arc::clone(&outbox),
+        who: who.clone(),
+        clock: ClockSync::default(),
+        offset: None,
+    };
+    let reason = loop {
         tokio::select! {
             msg = stream.next() => match msg {
-                Some(Ok(Message::Text(t))) => handle_text(&hub, client, &outbox, t.as_str()),
-                Some(Ok(Message::Close(_)) | Err(_)) | None => break,
+                Some(Ok(Message::Text(t))) => handle_text(&hub, &mut conn, t.as_str()),
+                Some(Ok(Message::Close(_))) => break "the client closed it",
+                Some(Err(_)) => break "a read from the client failed",
+                None => break "the connection ended",
                 Some(Ok(_)) => {}
             },
-            _ = &mut writer => break,
+            ended = &mut writer => break ended.unwrap_or("the writer ended"),
         }
-    }
+    };
     outbox.close();
     hub.route(RouterMsg::Detach { client });
     writer.abort();
     log_socket("client disconnected", client, &who);
+    hub.events
+        .record("sock", sock_fields("close", client, &who, Some(reason)));
 }
 
-fn handle_text(hub: &Hub, client: ClientId, outbox: &Arc<Outbox>, text: &str) {
+/// The event-log fields of a socket's open or close (`what`), with why it
+/// closed.
+pub fn sock_fields(what: &str, client: ClientId, who: &Opener, reason: Option<&str>) -> Value {
+    json!({
+        "what": what,
+        "client": client,
+        "peer": who.peer,
+        "forwarded": who.forwarded,
+        "source": who.source,
+        "origin": who.origin,
+        "reason": reason,
+    })
+}
+
+/// One socket as its messages see it: its client, outbox and opener, and
+/// the page's clock against the hub's.
+struct Conn {
+    client: ClientId,
+    outbox: Arc<Outbox>,
+    who: Opener,
+    clock: ClockSync,
+    /// The page clock's offset (hub − page, ms) as of the last ping.
+    offset: Option<f64>,
+}
+
+/// A ping (`n`, page time `t`, the previous round trip `rtt`) that reached
+/// the hub at `arrival` (hub UTC ms): its `pong`, and its event-log fields
+/// with the page clock's offset (kept for the socket's sets).
+fn pong(conn: &mut Conn, n: u32, t: f64, rtt: Option<f64>, arrival: f64) -> (ServerMsg, Value) {
+    conn.offset = conn.clock.on_ping(arrival, t, rtt);
+    let fields = json!({
+        "client": conn.client,
+        "peer": conn.who.peer,
+        "n": n,
+        "t": t,
+        "hub_ms": arrival,
+        "rtt": rtt,
+        "offset_ms": conn.offset,
+    });
+    (ServerMsg::Pong { n, t, h: arrival }, fields)
+}
+
+/// The event-log fields of a page's `trace` (#43): its events as sent.
+pub fn trace_fields(client: ClientId, peer: &str, events: &[Value]) -> Value {
+    json!({"client": client, "peer": peer, "events": events})
+}
+
+fn handle_text(hub: &Hub, conn: &mut Conn, text: &str) {
+    let client = conn.client;
+    let outbox = Arc::clone(&conn.outbox);
+    let outbox = &outbox;
     match serde_json::from_str::<ClientMsg>(text) {
         Ok(ClientMsg::Cmd {
             id,
@@ -237,9 +306,37 @@ fn handle_text(hub: &Hub, client: ClientId, outbox: &Arc<Outbox>, text: &str) {
         }),
         Ok(ClientMsg::Unsub { sub }) => hub.route(RouterMsg::Unsub { client, sub }),
         Ok(ClientMsg::SetHub { key, value }) => hub.route(RouterMsg::SetHub { client, key, value }),
+        Ok(ClientMsg::Set {
+            instance,
+            target,
+            prop,
+            value,
+            seq,
+            t,
+            is_final,
+        }) => hub.route(RouterMsg::Set {
+            client,
+            instance,
+            target,
+            prop,
+            value,
+            seq,
+            t,
+            is_final,
+            hub_ms: crate::live::wall_ms().unwrap_or(0.0),
+            offset_ms: conn.offset,
+        }),
+        Ok(ClientMsg::Trace { events }) => hub
+            .events
+            .record("trace", trace_fields(client, &conn.who.peer, &events)),
         // Through the outbox like every answer: a pong proves the writer
         // still reaches the client.
-        Ok(ClientMsg::Ping) => outbox.reply(ServerMsg::Pong),
+        Ok(ClientMsg::Ping { n, t, rtt }) => {
+            let arrival = crate::live::wall_ms().unwrap_or(0.0);
+            let (answer, fields) = pong(conn, n, t, rtt, arrival);
+            outbox.reply(answer);
+            hub.events.record("ping", fields);
+        }
         Err(e) => {
             tracing::warn!(client, error = %e, "unreadable client message");
             outbox.reply(ServerMsg::Error {

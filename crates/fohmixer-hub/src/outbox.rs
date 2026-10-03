@@ -12,11 +12,16 @@
 //! waiting means the client stopped reading: the outbox closes and the
 //! connection ends (the client reconnects and resyncs). The router writes
 //! here under a short lock and never waits for a client.
+//!
+//! The acks of a client's writes (#43) are coalesced like the values: the
+//! latest item per write key, sent after the values (a page then sees
+//! Live's new value before the ack that closes its intent). So is each
+//! instance's `link` (Live's health): only the latest one waits.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use fohmixer_proto::client::{ServerMsg, ValueItem};
+use fohmixer_proto::client::{AckItem, ServerMsg, ValueItem};
 use serde_json::Value;
 use tokio::sync::Notify;
 
@@ -28,7 +33,9 @@ struct Inner {
     replies: VecDeque<ServerMsg>,
     hub: BTreeMap<String, Value>,
     layout: Option<u64>,
+    links: BTreeMap<String, ServerMsg>,
     values: BTreeMap<String, ValueItem>,
+    acks: BTreeMap<String, AckItem>,
     closed: bool,
 }
 
@@ -51,7 +58,9 @@ impl Inner {
         self.replies.is_empty()
             && self.hub.is_empty()
             && self.layout.is_none()
+            && self.links.is_empty()
             && self.values.is_empty()
+            && self.acks.is_empty()
     }
 }
 
@@ -95,6 +104,25 @@ impl Outbox {
         });
     }
 
+    /// The latest `link` of an instance (#43); any other message is
+    /// ignored.
+    pub fn link(&self, msg: ServerMsg) {
+        let ServerMsg::Link { instance, .. } = &msg else {
+            return;
+        };
+        let instance = instance.clone();
+        self.put(|inner| {
+            inner.links.insert(instance, msg);
+        });
+    }
+
+    /// The latest outcome of one of the client's writes (#43).
+    pub fn ack(&self, item: AckItem) {
+        self.put(|inner| {
+            inner.acks.insert(item.key.clone(), item);
+        });
+    }
+
     /// Drops a pending item of a subscription the client left.
     pub fn forget(&self, sub: &str) {
         self.lock().values.remove(sub);
@@ -135,8 +163,8 @@ impl Outbox {
     }
 
     /// Everything waiting, in write order (replies and instance states,
-    /// hub values, the layout revision, then one `values` message); `None`
-    /// once closed.
+    /// hub values, the layout revision, the instances' links, one `values`
+    /// message, then one `ack` message); `None` once closed.
     pub fn take(&self) -> Option<Vec<ServerMsg>> {
         let mut inner = self.lock();
         if inner.closed {
@@ -151,9 +179,15 @@ impl Outbox {
         if let Some(rev) = inner.layout.take() {
             out.push(ServerMsg::Layout { rev });
         }
+        out.extend(std::mem::take(&mut inner.links).into_values());
         if !inner.values.is_empty() {
             out.push(ServerMsg::Values {
                 items: std::mem::take(&mut inner.values).into_values().collect(),
+            });
+        }
+        if !inner.acks.is_empty() {
+            out.push(ServerMsg::Ack {
+                items: std::mem::take(&mut inner.acks).into_values().collect(),
             });
         }
         Some(out)
@@ -324,6 +358,85 @@ mod tests {
         assert!(!outbox.is_closed());
         put_instance(&outbox, true);
         assert!(outbox.is_closed());
+    }
+
+    #[test]
+    fn acks_keep_only_the_latest_per_key_and_come_after_the_values() {
+        let outbox = Outbox::new();
+        outbox.ack(AckItem::applied("band|live_set|tempo", 1, None));
+        outbox.ack(AckItem::failed(
+            "band|live_set|tempo",
+            2,
+            "instance offline",
+        ));
+        outbox.ack(AckItem::superseded("band|live_set|metronome", 4));
+        outbox.value(ValueItem::value("a", json!(1), None));
+        put_instance(&outbox, false);
+        assert_eq!(
+            outbox.take().unwrap(),
+            vec![
+                instance(false),
+                ServerMsg::Values {
+                    items: vec![ValueItem::value("a", json!(1), None)]
+                },
+                ServerMsg::Ack {
+                    items: vec![
+                        AckItem::superseded("band|live_set|metronome", 4),
+                        AckItem::failed("band|live_set|tempo", 2, "instance offline"),
+                    ]
+                },
+            ],
+            "an instance going offline keeps the acks"
+        );
+        assert_eq!(outbox.take().unwrap(), vec![], "taken once");
+        // An ack alone wakes the writer.
+        outbox.ack(AckItem::applied("k", 9, None));
+        assert!(!outbox.lock().is_empty());
+        assert_eq!(
+            outbox.take().unwrap(),
+            vec![ServerMsg::Ack {
+                items: vec![AckItem::applied("k", 9, None)]
+            }]
+        );
+        assert!(outbox.lock().is_empty());
+    }
+
+    fn link(instance: &str, tick_age_ms: f64) -> ServerMsg {
+        ServerMsg::Link {
+            instance: instance.into(),
+            tick_age_ms,
+            busy: true,
+        }
+    }
+
+    #[test]
+    fn links_keep_only_the_latest_per_instance() {
+        let outbox = Outbox::new();
+        outbox.link(link("master", 300.0));
+        outbox.link(link("band", 250.0));
+        outbox.link(link("band", 500.0));
+        // Only a link is taken as one.
+        outbox.link(ServerMsg::Layout { rev: 9 });
+        assert!(!outbox.lock().is_empty());
+        outbox.value(ValueItem::value("a", json!(1), None));
+        outbox.layout(2);
+        assert_eq!(
+            outbox.take().unwrap(),
+            vec![
+                ServerMsg::Layout { rev: 2 },
+                link("band", 500.0),
+                link("master", 300.0),
+                ServerMsg::Values {
+                    items: vec![ValueItem::value("a", json!(1), None)]
+                },
+            ]
+        );
+        outbox.link(ServerMsg::Pong {
+            n: 1,
+            t: 2.0,
+            h: 3.0,
+        });
+        assert!(outbox.lock().is_empty(), "nothing else is a link");
     }
 
     #[test]

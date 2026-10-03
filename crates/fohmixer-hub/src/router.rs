@@ -1,5 +1,5 @@
 //! The hub's router: one task that owns the subscription table, the client
-//! outboxes and the STAGE AUT rule (S3 design note §3, §4, §6).
+//! outboxes, the setters and the STAGE AUT rule (S3 design note §3, §4, §6).
 //!
 //! Everything reaches it as a message, in order: the instances' events (a
 //! subscription's result stays ordered with the value pushes of the same
@@ -7,6 +7,11 @@
 //! writes into outboxes and queues requests to the instances' tasks. It also
 //! runs the layout's check for unresolved names (spec §2.5 D4) when a layout
 //! is accepted and when an instance connects.
+//!
+//! The clients' writes (#43, `set`) go through one setter per instance
+//! (`setter.rs`, driven by `writes.rs`): one batch in flight, the latest
+//! want per key, acks per client. Every hop is an event-log record
+//! (`events.rs`); Live's health goes to every client as `link`.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
@@ -17,11 +22,16 @@ use fohmixer_proto::layout::Binding;
 use serde_json::{Value, json};
 use tokio::sync::{mpsc, oneshot};
 
+use crate::events::EventLog;
 use crate::live::client::{LiveError, LiveEvent, LiveHandle};
 use crate::live::names::NameCheck;
 use crate::live::subs::{Cached, ClientId, Outgoing, Subs};
 use crate::outbox::Outbox;
 use crate::rules::{HubState, StageAut};
+use crate::setter::Setter;
+
+#[path = "router/writes.rs"]
+mod writes;
 
 /// The router's own subscriber: the STAGE AUT rule (clients start at 1).
 pub const STAGE_CLIENT: ClientId = 0;
@@ -33,10 +43,11 @@ pub enum RouterMsg {
         instance: String,
         event: LiveEvent,
     },
-    /// A client connected: its outbox.
+    /// A client connected: its outbox and its peer's address.
     Attach {
         client: ClientId,
         outbox: Arc<Outbox>,
+        peer: String,
     },
     Sub {
         client: ClientId,
@@ -53,6 +64,27 @@ pub enum RouterMsg {
         client: ClientId,
         key: String,
         value: Value,
+    },
+    /// A client's write (#43, `set`), with when it reached the hub (hub UTC
+    /// ms) and the page clock's offset as of its socket's last ping.
+    Set {
+        client: ClientId,
+        instance: String,
+        target: String,
+        prop: String,
+        value: Value,
+        seq: u64,
+        t: f64,
+        is_final: bool,
+        hub_ms: f64,
+        offset_ms: Option<f64>,
+    },
+    /// The result of an instance's batch of writes (`Err`: why it has
+    /// none: offline, a timeout, refused).
+    Applied {
+        instance: String,
+        batch: u64,
+        outcome: Result<Vec<Value>, String>,
     },
     /// A client's connection ended.
     Detach {
@@ -100,35 +132,60 @@ struct StageTarget {
     sub: String,
 }
 
+/// What the router needs besides its instances: its own sender (a batch's
+/// result comes back as a message) and the event log.
+pub struct RouterIo {
+    pub tx: mpsc::UnboundedSender<RouterMsg>,
+    pub events: EventLog,
+}
+
 /// The router task's state.
 pub struct Router {
     subs: Subs,
     names: NameCheck,
     clients: HashMap<ClientId, Arc<Outbox>>,
+    /// Each client's peer address (event-log records).
+    peers: HashMap<ClientId, String>,
     live: BTreeMap<String, LiveHandle>,
     states: BTreeMap<String, InstanceState>,
+    setters: BTreeMap<String, Setter>,
     stage: StageAut,
     stage_target: Option<StageTarget>,
     layout_rev: u64,
     data_dir: PathBuf,
+    io: RouterIo,
+    /// The setters' clock (monotonic, ms since the router started).
+    started: std::time::Instant,
 }
 
 impl Router {
     /// A router over these instances, STAGE AUT persisted as `stage_aut`.
-    pub fn new(live: BTreeMap<String, LiveHandle>, stage_aut: bool, data_dir: PathBuf) -> Self {
+    pub fn new(
+        live: BTreeMap<String, LiveHandle>,
+        stage_aut: bool,
+        data_dir: PathBuf,
+        io: RouterIo,
+    ) -> Self {
         Self {
             subs: Subs::new(live.keys().cloned()),
             names: NameCheck::default(),
             clients: HashMap::new(),
+            peers: HashMap::new(),
             states: live
                 .keys()
                 .map(|k| (k.clone(), InstanceState::default()))
+                .collect(),
+            setters: live
+                .keys()
+                .map(|k| (k.clone(), Setter::default()))
                 .collect(),
             live,
             stage: StageAut::new(stage_aut),
             stage_target: None,
             layout_rev: 0,
             data_dir,
+            io,
+            started: std::time::Instant::now(),
         }
     }
 
@@ -151,7 +208,11 @@ impl Router {
     fn handle(&mut self, msg: RouterMsg) -> bool {
         match msg {
             RouterMsg::Live { instance, event } => self.live_event(&instance, event),
-            RouterMsg::Attach { client, outbox } => {
+            RouterMsg::Attach {
+                client,
+                outbox,
+                peer,
+            } => {
                 for name in self.states.keys() {
                     self.send_instance(&outbox, name);
                 }
@@ -160,6 +221,7 @@ impl Router {
                     outbox.layout(self.layout_rev);
                 }
                 self.clients.insert(client, outbox);
+                self.peers.insert(client, peer);
             }
             RouterMsg::Sub {
                 client,
@@ -186,9 +248,41 @@ impl Router {
                 }
             }
             RouterMsg::SetHub { client, key, value } => self.set_hub(client, &key, &value),
+            RouterMsg::Set {
+                client,
+                instance,
+                target,
+                prop,
+                value,
+                seq,
+                t,
+                is_final,
+                hub_ms,
+                offset_ms,
+            } => self.on_set(writes::SetMsg {
+                client,
+                instance,
+                target,
+                prop,
+                value,
+                seq,
+                t,
+                is_final,
+                hub_ms,
+                offset_ms,
+            }),
+            RouterMsg::Applied {
+                instance,
+                batch,
+                outcome,
+            } => self.on_applied(&instance, batch, &outcome),
             RouterMsg::Detach { client } => {
                 self.subs.drop_client(client);
                 self.clients.remove(&client);
+                self.peers.remove(&client);
+                for setter in self.setters.values_mut() {
+                    setter.drop_client(client);
+                }
             }
             RouterMsg::Layout {
                 rev,
@@ -250,6 +344,9 @@ impl Router {
                 if let Some(state) = self.states.get_mut(instance) {
                     *state = InstanceState::default();
                 }
+                if let Some(setter) = self.setters.get_mut(instance) {
+                    setter.on_disconnect();
+                }
                 self.subs.disconnected(instance);
                 self.names.stop(instance);
                 if self
@@ -261,11 +358,30 @@ impl Router {
                 }
                 self.broadcast_instance(instance);
             }
-            LiveEvent::Busy { busy } => {
-                if let Some(state) = self.states.get_mut(instance) {
-                    state.busy = busy;
+            LiveEvent::Busy {
+                busy,
+                changed,
+                tick_age_ms,
+                reason,
+            } => {
+                if changed {
+                    if let Some(state) = self.states.get_mut(instance) {
+                        state.busy = busy;
+                    }
+                    self.broadcast_instance(instance);
+                    self.io.events.record(
+                        "link",
+                        json!({"instance": instance, "busy": busy,
+                               "tick_age_ms": tick_age_ms, "reason": reason}),
+                    );
                 }
-                self.broadcast_instance(instance);
+                for outbox in self.clients.values() {
+                    outbox.link(ServerMsg::Link {
+                        instance: instance.to_string(),
+                        tick_age_ms,
+                        busy,
+                    });
+                }
             }
             LiveEvent::Result { uuid, data } => {
                 if !self.subs.on_result(instance, &uuid, &data) {
@@ -452,9 +568,50 @@ fn subbed(key: &str, cached: Option<&Cached>) -> ServerMsg {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fohmixer_proto::client::AckItem;
 
     fn router(dir: &std::path::Path) -> Router {
-        Router::new(BTreeMap::new(), false, dir.to_path_buf())
+        let (tx, _) = mpsc::unbounded_channel();
+        Router::new(
+            BTreeMap::new(),
+            false,
+            dir.to_path_buf(),
+            RouterIo {
+                tx,
+                events: EventLog::off(),
+            },
+        )
+    }
+
+    /// A router over `band` on a port nothing listens on (the instance stays
+    /// offline: a write is answered "instance offline" at once), its own
+    /// messages and the event-log records.
+    fn offline_router(
+        dir: &std::path::Path,
+    ) -> (
+        Router,
+        mpsc::UnboundedReceiver<RouterMsg>,
+        std::sync::mpsc::Receiver<Value>,
+    ) {
+        let free = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = free.local_addr().unwrap().port();
+        drop(free);
+        let (live, _task) = LiveHandle::spawn(
+            &crate::config::InstanceCfg {
+                name: "band".into(),
+                port,
+            },
+            Arc::new(|_: &str, _: LiveEvent| {}),
+        );
+        let (tx, rx) = mpsc::unbounded_channel();
+        let (events, records) = EventLog::channel(1024);
+        let router = Router::new(
+            BTreeMap::from([("band".to_string(), live)]),
+            false,
+            dir.to_path_buf(),
+            RouterIo { tx, events },
+        );
+        (router, rx, records)
     }
 
     fn attach(router: &mut Router, client: ClientId) -> Arc<Outbox> {
@@ -462,8 +619,247 @@ mod tests {
         router.handle(RouterMsg::Attach {
             client,
             outbox: Arc::clone(&outbox),
+            peer: format!("10.0.0.{client}"),
         });
         outbox
+    }
+
+    fn set_msg(client: ClientId, instance: &str, seq: u64, value: f64) -> RouterMsg {
+        RouterMsg::Set {
+            client,
+            instance: instance.into(),
+            target: "live_set  tracks 0 mixer_device volume".into(),
+            prop: "value".into(),
+            value: json!(value),
+            seq,
+            t: 1_000.5,
+            is_final: true,
+            hub_ms: 1_250.5,
+            offset_ms: Some(200.0),
+        }
+    }
+
+    /// Every record waiting, by `ev`.
+    fn records(rx: &std::sync::mpsc::Receiver<Value>) -> Vec<Value> {
+        rx.try_iter().collect()
+    }
+
+    fn evs(records: &[Value]) -> Vec<&str> {
+        records.iter().map(|r| r["ev"].as_str().unwrap()).collect()
+    }
+
+    const VOLUME: &str = "band|live_set tracks 0 mixer_device volume|value";
+
+    #[test]
+    fn a_write_to_an_unknown_instance_is_acked_with_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let (events, rx) = EventLog::channel(64);
+        let (tx, _) = mpsc::unbounded_channel();
+        let mut router = Router::new(
+            BTreeMap::new(),
+            false,
+            dir.path().to_path_buf(),
+            RouterIo { tx, events },
+        );
+        let outbox = attach(&mut router, 3);
+        outbox.take();
+        assert!(router.handle(set_msg(3, "drums", 9, 0.5)));
+        let key = "drums|live_set tracks 0 mixer_device volume|value";
+        assert_eq!(
+            outbox.take().unwrap(),
+            vec![ServerMsg::Ack {
+                items: vec![AckItem::failed(key, 9, "unknown instance \"drums\"")]
+            }]
+        );
+        let written = records(&rx);
+        assert_eq!(evs(&written), vec!["set", "ack"]);
+        assert_eq!(written[0]["unknown"], json!(true));
+        assert_eq!(written[0]["peer"], "10.0.0.3");
+        assert_eq!(written[0]["seq"], 9);
+        assert_eq!(written[0]["t"], 1_000.5);
+        assert_eq!(written[0]["final"], json!(true));
+        // Sent at page 1000.5, here at hub 1250.5, the page 200 ms behind:
+        // 50 ms on the way.
+        assert_eq!(written[0]["hub_ms"], 1_250.5);
+        assert_eq!(written[0]["offset_ms"], 200.0);
+        assert_eq!(written[0]["delay_ms"], 50.0);
+        assert_eq!(written[0]["gap_ms"], Value::Null);
+        assert_eq!(written[0]["dropped_old"], json!(false));
+        assert_eq!(written[1]["error"], "unknown instance \"drums\"");
+        assert_eq!(written[1]["client"], 3);
+        assert_eq!(written[1]["batch"], Value::Null, "no batch answered it");
+        assert_eq!(writes::unknown_instance("x"), "unknown instance \"x\"");
+    }
+
+    #[tokio::test]
+    async fn a_write_to_an_offline_instance_goes_round_and_is_acked_with_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut router, mut rx, records_rx) = offline_router(dir.path());
+        let outbox = attach(&mut router, 1);
+        outbox.take();
+        router.handle(set_msg(1, "band", 1, 0.5));
+        // Batch 1 is in flight: a newer set waits.
+        router.handle(set_msg(1, "band", 2, 0.6));
+        router.handle(set_msg(1, "band", 2, 0.7));
+        let applied = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .expect("the batch's result comes back")
+            .unwrap();
+        let RouterMsg::Applied {
+            ref instance,
+            batch,
+            ref outcome,
+        } = applied
+        else {
+            panic!("an applied message")
+        };
+        assert_eq!((instance.as_str(), batch), ("band", 1));
+        assert_eq!(outcome, &Err("instance offline".to_string()));
+        // The result is taken 30 ms after the write: Live's round trip on
+        // the router's own clock.
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        router.handle(applied);
+        assert_eq!(
+            outbox.take().unwrap(),
+            vec![ServerMsg::Ack {
+                items: vec![AckItem::failed(VOLUME, 1, "instance offline")]
+            }]
+        );
+        // The newer want went out as batch 2.
+        let next = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(next, RouterMsg::Applied { batch: 2, .. }));
+        router.handle(next);
+        assert_eq!(
+            outbox.take().unwrap(),
+            vec![ServerMsg::Ack {
+                items: vec![AckItem::failed(VOLUME, 2, "instance offline")]
+            }]
+        );
+        let written = records(&records_rx);
+        assert_eq!(
+            evs(&written),
+            vec![
+                "set", "batch", "set", "set", "applied", "ack", "batch", "applied", "ack"
+            ]
+        );
+        assert_eq!(written[0]["key"], VOLUME);
+        assert_eq!(written[0]["gap_ms"], Value::Null);
+        assert_eq!(written[0]["dropped_old"], json!(false));
+        assert_eq!(written[0]["unknown"], json!(false));
+        assert_eq!(written[0]["delay_ms"], 50.0);
+        assert_eq!(written[1]["batch"], 1);
+        assert_eq!(written[1]["n"], 1);
+        assert_eq!(
+            written[1]["sent"],
+            json!([{"key": VOLUME, "client": 1, "seq": 1, "value": 0.5}])
+        );
+        let gap = written[2]["gap_ms"].as_f64().unwrap();
+        assert!((0.0..1_000.0).contains(&gap), "{gap}");
+        assert_eq!(written[3]["dropped_old"], json!(true), "seq 2 twice");
+        assert_eq!(written[4]["errors"], 1);
+        assert_eq!(written[4]["n"], 1);
+        assert_eq!(written[4]["batch"], 1);
+        assert_eq!(
+            written[4]["sent"],
+            json!([{"key": VOLUME, "client": 1, "seq": 1}])
+        );
+        let rtt = written[4]["rtt_ms"].as_f64().unwrap();
+        assert!((30.0..5_000.0).contains(&rtt), "{rtt}");
+        assert_eq!(written[5]["seq"], 1);
+        assert_eq!(written[5]["error"], "instance offline");
+        assert_eq!(written[5]["peer"], "10.0.0.1");
+        assert_eq!(written[5]["batch"], 1);
+        assert_eq!(written[5]["rtt_ms"], rtt);
+        assert_eq!(written[6]["sent"][0]["value"], 0.6);
+        // A result for a batch no longer in flight changes nothing.
+        router.handle(RouterMsg::Applied {
+            instance: "band".into(),
+            batch: 7,
+            outcome: Ok(vec![]),
+        });
+        assert_eq!(outbox.take().unwrap(), vec![]);
+        assert!(records(&records_rx).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_disconnect_forgets_the_writes_and_a_detach_the_clients_numbers() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut router, mut rx, _records) = offline_router(dir.path());
+        attach(&mut router, 1);
+        router.handle(set_msg(1, "band", 4, 0.5));
+        router.handle(set_msg(1, "band", 5, 0.6));
+        assert!(router.setters["band"].in_flight().is_some());
+        assert_eq!(router.setters["band"].pending().len(), 1);
+        router.handle(RouterMsg::Live {
+            instance: "band".into(),
+            event: LiveEvent::Disconnected,
+        });
+        assert!(router.setters["band"].in_flight().is_none());
+        assert!(router.setters["band"].pending().is_empty());
+        // The old batch's answer acks nothing.
+        let late = rx.recv().await.unwrap();
+        router.handle(late);
+        assert_eq!(router.setters["band"].tracked(), 1);
+        router.handle(RouterMsg::Detach { client: 1 });
+        assert_eq!(router.setters["band"].tracked(), 0);
+        assert!(!router.peers.contains_key(&1));
+    }
+
+    #[test]
+    fn live_health_goes_to_every_client_and_a_change_to_the_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let (events, rx) = EventLog::channel(64);
+        let (tx, _) = mpsc::unbounded_channel();
+        let mut router = Router::new(
+            BTreeMap::new(),
+            false,
+            dir.path().to_path_buf(),
+            RouterIo { tx, events },
+        );
+        router
+            .states
+            .insert("band".into(), InstanceState::default());
+        let a = attach(&mut router, 1);
+        let b = attach(&mut router, 2);
+        a.take();
+        b.take();
+        let busy = |changed: bool, tick_age_ms: f64| RouterMsg::Live {
+            instance: "band".into(),
+            event: LiveEvent::Busy {
+                busy: true,
+                changed,
+                tick_age_ms,
+                reason: changed.then(|| "no heartbeat for 301 ms".to_string()),
+            },
+        };
+        router.handle(busy(true, 301.0));
+        let link = |tick_age_ms: f64| ServerMsg::Link {
+            instance: "band".into(),
+            tick_age_ms,
+            busy: true,
+        };
+        let state = ServerMsg::Instance {
+            name: "band".into(),
+            online: false,
+            busy: true,
+            set_name: String::new(),
+        };
+        for outbox in [&a, &b] {
+            assert_eq!(outbox.take().unwrap(), vec![state.clone(), link(301.0)]);
+        }
+        assert!(router.states["band"].busy);
+        let written = records(&rx);
+        assert_eq!(evs(&written), vec!["link"]);
+        assert_eq!(written[0]["busy"], json!(true));
+        assert_eq!(written[0]["tick_age_ms"], 301.0);
+        assert_eq!(written[0]["reason"], "no heartbeat for 301 ms");
+        // While busy: a link only, no state change, no record.
+        router.handle(busy(false, 560.0));
+        assert_eq!(a.take().unwrap(), vec![link(560.0)]);
+        assert!(records(&rx).is_empty());
     }
 
     fn status(router: &mut Router) -> RouterStatus {

@@ -1,9 +1,15 @@
 //! The client protocol, hub ⇄ UI (S3 design note §3): JSON text frames on
-//! `/ws?token=<jwt>&proto=1`, plus the JSON bodies of the hub's API.
+//! `/ws?token=<jwt>&proto=2`, plus the JSON bodies of the hub's API.
 //!
 //! The hub never reinterprets Live's values: a `cmd` is the FohMixer script's
 //! own envelope (S2 design note §3.10) with the instance added, and values
 //! and display strings are Live's, as the script reported them.
+//!
+//! Protocol 2 (#43, `docs/superpowers/specs/2026-10-03-robust-link-design.md`
+//! §2): a control's write is a `set` with the page's sequence number and
+//! clock, answered by a coalesced `ack`; `ping` / `pong` carry the times of
+//! the exchange; `link` reports Live's main-thread health. `cmd` stays for
+//! reads and multi-command batches.
 
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
@@ -11,9 +17,10 @@ use serde_json::Value;
 use crate::path::canonical_target;
 
 /// The client protocol this build speaks.
-pub const UI_PROTO: u32 = 1;
-/// The oldest client protocol this build serves.
-pub const MIN_CLIENT_PROTO: u32 = 1;
+pub const UI_PROTO: u32 = 2;
+/// The oldest client protocol this build serves (a page of protocol 1
+/// reloads through the handshake).
+pub const MIN_CLIENT_PROTO: u32 = 2;
 /// WebSocket close code telling a client with another protocol to reload.
 pub const CLOSE_RELOAD: u16 = 4001;
 /// The hub value of the STAGE AUT flag (spec §2.4, F15).
@@ -63,9 +70,89 @@ pub enum ClientMsg {
     Unsub { sub: String },
     /// Set a hub value (only `stage_aut`).
     SetHub { key: String, value: Value },
+    /// A control's write (#43): the latest value the engineer set on one
+    /// property, answered by an `ack` item of its key. `seq` is the page's,
+    /// strictly increasing over all its sets; `t` is the page's clock
+    /// (`performance.timeOrigin + performance.now()`, ms); `final` marks a
+    /// release, a toggle or a tap.
+    Set {
+        instance: String,
+        target: String,
+        prop: String,
+        value: Value,
+        seq: u64,
+        t: f64,
+        #[serde(rename = "final")]
+        is_final: bool,
+    },
     /// A liveness probe, answered by `pong` (the client's watchdog: a
-    /// socket that stays silent is half-open and is replaced).
-    Ping,
+    /// socket that stays silent is half-open and is replaced): its number,
+    /// the page's clock and the round trip of the previous pong, ms.
+    Ping {
+        n: u32,
+        t: f64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rtt: Option<f64>,
+    },
+    /// The page's own events for the hub's event log (#43), as it recorded
+    /// them (PR A: each finished dropout, `{"ev": "dropout", "t", "ms",
+    /// "socket_lost", "rtts"}`).
+    Trace { events: Vec<Value> },
+}
+
+/// One write's outcome (#43, an `ack` item): Live ran it (`value`: what
+/// Live reported, when the result has one), Live refused it (`error`), or
+/// another client's newer set replaced it before it was written
+/// (`superseded`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AckItem {
+    /// The write's key ([`set_key`]).
+    pub key: String,
+    /// The page's sequence number of the `set` it answers.
+    pub seq: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub superseded: bool,
+}
+
+impl AckItem {
+    /// Live ran set `seq` of `key`; `value` is what its result reported.
+    pub fn applied(key: &str, seq: u64, value: Option<Value>) -> Self {
+        Self {
+            key: key.to_string(),
+            seq,
+            value,
+            error: None,
+            superseded: false,
+        }
+    }
+
+    /// Set `seq` of `key` failed: Live refused it, it timed out, or the
+    /// instance is offline.
+    pub fn failed(key: &str, seq: u64, error: &str) -> Self {
+        Self {
+            key: key.to_string(),
+            seq,
+            value: None,
+            error: Some(error.to_string()),
+            superseded: false,
+        }
+    }
+
+    /// Set `seq` of `key` was replaced by another client's newer set before
+    /// it was written.
+    pub fn superseded(key: &str, seq: u64) -> Self {
+        Self {
+            key: key.to_string(),
+            seq,
+            value: None,
+            error: None,
+            superseded: true,
+        }
+    }
 }
 
 /// The state of one subscription: Live's value (and display string), or why
@@ -146,8 +233,20 @@ pub enum ServerMsg {
     Hub { key: String, value: Value },
     /// The layout changed: GET `/api/layout` for revision `rev`.
     Layout { rev: u64 },
-    /// The answer to `ping`.
-    Pong,
+    /// The outcome of this client's writes (#43), coalesced per client: the
+    /// latest item per key.
+    Ack { items: Vec<AckItem> },
+    /// The answer to `ping`: its number and page time echoed, and the hub's
+    /// clock when it answered (`h`, UTC ms).
+    Pong { n: u32, t: f64, h: f64 },
+    /// Live's main-thread health on an instance (#43): on every busy change
+    /// and at most 4 times a second while busy. `tick_age_ms` is the age of
+    /// Live's last main-thread tick as the hub knows it.
+    Link {
+        instance: String,
+        tick_age_ms: f64,
+        busy: bool,
+    },
     /// A request the hub could not serve (`id` of the `cmd`, if any).
     Error {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -161,6 +260,12 @@ pub enum ServerMsg {
 /// kept as they are).
 pub fn hub_key(instance: &str, target: &str, prop: &str, display: bool) -> String {
     format!("{instance}|{}|{prop}|{display}", canonical_target(target))
+}
+
+/// The key of a write (#43, `set` / `ack`): `instance|target|prop`, the hub
+/// key without `display`, the target in canonical form.
+pub fn set_key(instance: &str, target: &str, prop: &str) -> String {
+    format!("{instance}|{}|{prop}", canonical_target(target))
 }
 
 /// `POST /api/auth` body.
@@ -429,7 +534,96 @@ mod tests {
             },
             json!({"type": "set_hub", "key": "stage_aut", "value": true}),
         );
-        round_trip_client(ClientMsg::Ping, json!({"type": "ping"}));
+        round_trip_client(
+            ClientMsg::Set {
+                instance: "band".into(),
+                target: "live_set tracks 0 mixer_device volume".into(),
+                prop: "value".into(),
+                value: json!(0.85),
+                seq: 41,
+                t: 1_790_000_000_123.5,
+                is_final: true,
+            },
+            json!({"type": "set", "instance": "band", "target": "live_set tracks 0 mixer_device volume",
+                   "prop": "value", "value": 0.85, "seq": 41, "t": 1_790_000_000_123.5, "final": true}),
+        );
+        round_trip_client(
+            ClientMsg::Ping {
+                n: 7,
+                t: 1_790_000_000_000.25,
+                rtt: Some(12.5),
+            },
+            json!({"type": "ping", "n": 7, "t": 1_790_000_000_000.25, "rtt": 12.5}),
+        );
+        round_trip_client(
+            ClientMsg::Trace {
+                events: vec![json!({"ev": "dropout", "t": 5_000.5, "ms": 420.0,
+                                    "socket_lost": false, "rtts": [12.0, 14.5]})],
+            },
+            json!({"type": "trace", "events": [{"ev": "dropout", "t": 5_000.5, "ms": 420.0,
+                                                "socket_lost": false, "rtts": [12.0, 14.5]}]}),
+        );
+        // The first ping has no round trip yet: no `rtt` on the wire.
+        round_trip_client(
+            ClientMsg::Ping {
+                n: 0,
+                t: 5.0,
+                rtt: None,
+            },
+            json!({"type": "ping", "n": 0, "t": 5.0}),
+        );
+    }
+
+    #[test]
+    fn a_set_needs_its_sequence_clock_and_final_flag() {
+        let full = json!({"type": "set", "instance": "band", "target": "live_set", "prop": "tempo",
+                          "value": 120, "seq": 1, "t": 2.0, "final": false});
+        assert!(serde_json::from_value::<ClientMsg>(full.clone()).is_ok());
+        for missing in ["seq", "t", "final", "value"] {
+            let mut wire = full.clone();
+            wire.as_object_mut().unwrap().remove(missing);
+            assert!(
+                serde_json::from_value::<ClientMsg>(wire).is_err(),
+                "a set without {missing}"
+            );
+        }
+        // A protocol 1 ping (no number, no time) is not protocol 2.
+        assert!(serde_json::from_value::<ClientMsg>(json!({"type": "ping"})).is_err());
+    }
+
+    #[test]
+    fn ack_items_carry_one_outcome_each() {
+        assert_eq!(
+            serde_json::to_value(AckItem::applied(
+                "band|live_set|tempo",
+                3,
+                Some(json!(120.0))
+            ))
+            .unwrap(),
+            json!({"key": "band|live_set|tempo", "seq": 3, "value": 120.0})
+        );
+        assert_eq!(
+            serde_json::to_value(AckItem::applied("k", 4, None)).unwrap(),
+            json!({"key": "k", "seq": 4})
+        );
+        assert_eq!(
+            serde_json::to_value(AckItem::failed("k", 5, "no result within 3 s")).unwrap(),
+            json!({"key": "k", "seq": 5, "error": "no result within 3 s"})
+        );
+        assert_eq!(
+            serde_json::to_value(AckItem::superseded("k", 6)).unwrap(),
+            json!({"key": "k", "seq": 6, "superseded": true})
+        );
+        // Missing fields read as none / not superseded.
+        assert_eq!(
+            serde_json::from_value::<AckItem>(json!({"key": "k", "seq": 4})).unwrap(),
+            AckItem::applied("k", 4, None)
+        );
+        assert_eq!(
+            serde_json::from_value::<AckItem>(json!({"key": "k", "seq": 6, "superseded": true}))
+                .unwrap(),
+            AckItem::superseded("k", 6)
+        );
     }
 
     #[test]
@@ -459,7 +653,7 @@ mod tests {
                 build: "0.1.0".into(),
                 min_client_proto: MIN_CLIENT_PROTO,
             },
-            json!({"type": "hello", "proto": 1, "build": "0.1.0", "min_client_proto": 1}),
+            json!({"type": "hello", "proto": 2, "build": "0.1.0", "min_client_proto": 2}),
         );
         round_trip_server(
             ServerMsg::Result {
@@ -516,7 +710,35 @@ mod tests {
             ServerMsg::Layout { rev: 3 },
             json!({"type": "layout", "rev": 3}),
         );
-        round_trip_server(ServerMsg::Pong, json!({"type": "pong"}));
+        round_trip_server(
+            ServerMsg::Pong {
+                n: 7,
+                t: 1_790_000_000_000.25,
+                h: 1_790_000_000_004.0,
+            },
+            json!({"type": "pong", "n": 7, "t": 1_790_000_000_000.25, "h": 1_790_000_000_004.0}),
+        );
+        round_trip_server(
+            ServerMsg::Ack {
+                items: vec![
+                    AckItem::applied("band|live_set tracks 0 mixer_device volume|value", 41, None),
+                    AckItem::failed("band|live_set|tempo", 9, "instance offline"),
+                    AckItem::superseded("master|live_set tracks 1 mute|value", 2),
+                ],
+            },
+            json!({"type": "ack", "items": [
+                {"key": "band|live_set tracks 0 mixer_device volume|value", "seq": 41},
+                {"key": "band|live_set|tempo", "seq": 9, "error": "instance offline"},
+                {"key": "master|live_set tracks 1 mute|value", "seq": 2, "superseded": true}]}),
+        );
+        round_trip_server(
+            ServerMsg::Link {
+                instance: "band".into(),
+                tick_age_ms: 412.5,
+                busy: true,
+            },
+            json!({"type": "link", "instance": "band", "tick_age_ms": 412.5, "busy": true}),
+        );
         round_trip_server(
             ServerMsg::Error {
                 id: Some("c1".into()),
@@ -582,10 +804,28 @@ mod tests {
     }
 
     #[test]
+    fn set_keys_are_hub_keys_without_display() {
+        assert_eq!(
+            set_key("band", "live_set   tracks 0  mixer_device volume", "value"),
+            "band|live_set tracks 0 mixer_device volume|value"
+        );
+        assert_eq!(
+            set_key("master", " live_set tracks[name=Hand1 #] mute", "value"),
+            "master|live_set tracks[name=Hand1 #] mute|value"
+        );
+        assert_ne!(
+            set_key("band", "live_set tracks 0", "mute"),
+            set_key("band", "live_set tracks 0", "solo")
+        );
+    }
+
+    #[test]
     fn the_served_protocol_range() {
-        assert!(proto_ok(1));
-        assert!(!proto_ok(0));
-        assert!(!proto_ok(2));
+        // Protocol 2 only (#43): a protocol 1 page reloads.
+        assert_eq!((UI_PROTO, MIN_CLIENT_PROTO), (2, 2));
+        assert!(proto_ok(2));
+        assert!(!proto_ok(1));
+        assert!(!proto_ok(3));
     }
 
     #[test]

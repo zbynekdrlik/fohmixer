@@ -130,7 +130,16 @@ fn a_main_thread_stall_is_busy_while_it_lasts() {
         .await;
         host.stall(700);
         seen.wait(Duration::from_secs(1), |e| {
-            matches!(e, LiveEvent::Busy { busy: true }).then_some(())
+            matches!(
+                e,
+                LiveEvent::Busy {
+                    busy: true,
+                    changed: true,
+                    reason: Some(_),
+                    ..
+                }
+            )
+            .then_some(())
         })
         .await;
         assert!(live.snapshot().busy);
@@ -145,7 +154,16 @@ fn a_main_thread_stall_is_busy_while_it_lasts() {
             "the heartbeat showed the stall: {oldest} ms"
         );
         seen.wait(Duration::from_secs(3), |e| {
-            matches!(e, LiveEvent::Busy { busy: false }).then_some(())
+            matches!(
+                e,
+                LiveEvent::Busy {
+                    busy: false,
+                    changed: true,
+                    reason: Some(_),
+                    ..
+                }
+            )
+            .then_some(())
         })
         .await;
         assert!(!live.snapshot().busy);
@@ -303,16 +321,52 @@ fn a_silent_script_is_busy_after_300_ms_without_a_heartbeat() {
         .await;
         let connected = Instant::now();
         assert!(!live.snapshot().busy);
-        seen.wait(Duration::from_secs(2), |e| {
-            matches!(e, LiveEvent::Busy { busy: true }).then_some(())
-        })
-        .await;
+        let (first_age, why) = seen
+            .wait(Duration::from_secs(2), |e| match e {
+                LiveEvent::Busy {
+                    busy: true,
+                    changed: true,
+                    tick_age_ms,
+                    reason: Some(why),
+                } => Some((*tick_age_ms, why.clone())),
+                _ => None,
+            })
+            .await;
+        let busy_at = Instant::now();
         assert!(
             connected.elapsed() >= Duration::from_millis(280),
             "{:?}",
             connected.elapsed()
         );
         assert!(live.snapshot().busy);
+        assert!(why.starts_with("no heartbeat for "), "{why}");
+        // No heartbeat since the connect: the tick's age is the time since.
+        assert!(first_age >= 300.0, "{first_age}");
+        // While busy, the state comes again every 250 ms (#43, `link`) with
+        // the tick's age grown, never more often.
+        let mut ages = vec![first_age];
+        for _ in 0..3 {
+            let age = seen
+                .wait(Duration::from_secs(1), |e| match e {
+                    LiveEvent::Busy {
+                        busy: true,
+                        changed: false,
+                        tick_age_ms,
+                        reason: None,
+                    } => Some(*tick_age_ms),
+                    _ => None,
+                })
+                .await;
+            ages.push(age);
+        }
+        let took = busy_at.elapsed();
+        assert!(
+            took >= Duration::from_millis(700),
+            "three repeats within {took:?}: more than 4 a second"
+        );
+        for pair in ages.windows(2) {
+            assert!(pair[1] - pair[0] >= 240.0, "{ages:?}");
+        }
     });
 }
 
@@ -394,7 +448,7 @@ fn heartbeats_are_read_while_a_request_write_waits() {
         assert!(
             !events
                 .iter()
-                .any(|e| matches!(e, LiveEvent::Busy { busy: true })),
+                .any(|e| matches!(e, LiveEvent::Busy { busy: true, .. })),
             "{events:?}"
         );
     });

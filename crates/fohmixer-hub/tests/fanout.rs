@@ -331,7 +331,34 @@ fn a_stall_shows_the_instance_busy_then_free() {
         a.instance_state("band", true, Some(false), SECS_3).await;
         host.stall(700);
         a.instance_state("band", true, Some(true), SECS_3).await;
+        // Live's health goes out as `link` while busy (#43), the tick's age
+        // growing.
+        let age = a
+            .wait(SECS_3, |m| match m {
+                ServerMsg::Link {
+                    instance,
+                    tick_age_ms,
+                    busy: true,
+                } if instance == "band" && *tick_age_ms >= 300.0 => Some(*tick_age_ms),
+                _ => None,
+            })
+            .await;
+        assert!(age < 5_000.0, "{age}");
         a.instance_state("band", true, Some(false), SECS_3).await;
+        // Both changes are in the event log with their reason.
+        let records = hub
+            .events_until(SECS_3, |r| {
+                r.iter()
+                    .filter(|x| x["ev"] == "link" && x["instance"] == "band")
+                    .count()
+                    >= 2
+            })
+            .await;
+        let links: Vec<&serde_json::Value> = records.iter().filter(|x| x["ev"] == "link").collect();
+        assert_eq!(links[0]["busy"], json!(true));
+        assert!(links[0]["tick_age_ms"].as_f64().unwrap() > 0.0);
+        assert!(links[0]["reason"].is_string());
+        assert_eq!(links[1]["busy"], json!(false));
         hub.stop().await;
         host.stop();
     });
@@ -566,7 +593,7 @@ fn the_handshake_is_hello_and_a_protocol_mismatch_closes_with_4001() {
             } => {
                 assert_eq!(*proto, UI_PROTO);
                 assert_eq!(build, fohmixer_proto::VERSION);
-                assert_eq!(*min_client_proto, 1);
+                assert_eq!(*min_client_proto, 2);
             }
             other => panic!("{other:?}"),
         }
@@ -577,7 +604,9 @@ fn the_handshake_is_hello_and_a_protocol_mismatch_closes_with_4001() {
                 .then_some(())
         })
         .await;
-        for (query, hello) in [("proto=2", true), ("", false)] {
+        // Protocol 1 (before #43) and a future 3 are not served: a hello,
+        // then the reload code.
+        for (query, hello) in [("proto=1", true), ("proto=3", true), ("", false)] {
             let url = format!("ws://{}/ws?token={}&{query}", hub.addr, hub.token);
             let (mut ws, _) = tokio_tungstenite::connect_async(url.as_str()).await.unwrap();
             let mut got_hello = false;
@@ -596,7 +625,7 @@ fn the_handshake_is_hello_and_a_protocol_mismatch_closes_with_4001() {
         }
         // Without a valid token there is no WebSocket.
         for token in ["", "not.a.token"] {
-            let url = format!("ws://{}/ws?token={token}&proto=1", hub.addr);
+            let url = format!("ws://{}/ws?token={token}&proto=2", hub.addr);
             match tokio_tungstenite::connect_async(url.as_str()).await {
                 Err(tokio_tungstenite::tungstenite::Error::Http(response)) => {
                     assert_eq!(response.status(), 401);

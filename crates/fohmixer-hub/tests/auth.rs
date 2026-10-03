@@ -59,7 +59,7 @@ fn the_api_needs_a_token_and_the_engineer_pin_gives_one() {
         assert_eq!(login.expires_in, 7 * 24 * 60 * 60);
         // The token opens the WebSocket and the API.
         let client = Client::connect(&format!(
-            "ws://{}/ws?token={}&proto=1",
+            "ws://{}/ws?token={}&proto=2",
             hub.addr, login.token
         ))
         .await;
