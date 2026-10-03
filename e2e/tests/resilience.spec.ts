@@ -250,6 +250,30 @@ test.describe("The control link's resilience (L1-L4)", () => {
     await until(liveValue, (v) => Math.abs(v - next) < SAME, "Live at the new touch's value", 3000);
   });
 
+  test("a page left while connected, or across a reconnect, comes back waiting, never with an old value", async ({ page }) => {
+    await surfaceAtStart(page);
+    const fader = () => strip(page, "Hand2 #").getByTestId("fader");
+    // Left while connected: nothing keeps its values current any more.
+    await selectPage(page, "cue");
+    await live.set("band", TARGET, "value", 0.7);
+    await linkDown(page);
+    await selectPage(page, "foh");
+    await expect(fader(), "back during an outage: no old value to touch (I8)").toHaveAttribute("aria-disabled", "true");
+    await impair.block(false);
+    await ready(fader());
+    await until(() => shown(fader()), (v) => Math.abs(v - 0.7) < SAME, "the fader at Live's 0.7");
+    // Left during an outage (it keeps its value then, L2), but the link
+    // returns, Live moves, and a second outage starts before the page is back.
+    await linkDown(page);
+    await selectPage(page, "cue");
+    await impair.block(false);
+    await expect(page.getByTestId("surface")).toHaveAttribute("data-connected", "true");
+    await live.set("band", TARGET, "value", 0.6);
+    await linkDown(page);
+    await selectPage(page, "foh");
+    await expect(fader(), "the first outage's value is too old to touch").toHaveAttribute("aria-disabled", "true");
+  });
+
   test("a not-sent release that Live already holds is confirmed by Live's value", async ({ page }) => {
     const fader = await surfaceAtStart(page);
     await linkDown(page);
