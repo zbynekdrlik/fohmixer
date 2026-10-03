@@ -39,13 +39,6 @@ fn toggle_state(targets: &[Target], tracked: bool) -> ToggleState {
     aggregate(&states)
 }
 
-/// A target's on/off for a tap (#43): its write still on its way when there
-/// is one (two taps while the link is down leave Live as it was), else
-/// Live's value.
-fn tap_on(pending: Option<&Value>, live: Option<&Value>, on: &Value) -> Option<bool> {
-    pending.or(live).map(|v| is_on(v, on))
-}
-
 /// The `data-state` of a toggle state.
 pub fn state_name(state: ToggleState) -> &'static str {
     match state {
@@ -108,31 +101,12 @@ pub fn ParamToggleView(
         });
     };
     let on_down = move |ev: web_sys::PointerEvent| {
-        // It takes a tap once Live's values are here (I8); the tap reads
-        // each target's write still on its way first (#43).
-        let live_state = targets
+        let now_state = targets
             .try_with_value(|all| toggle_state(all, false))
             .unwrap_or(ToggleState::Unknown);
-        if live_state == ToggleState::Unknown {
+        if now_state == ToggleState::Unknown {
             return;
         }
-        let now_state = targets
-            .try_with_value(|all| {
-                let each: Vec<Option<bool>> = all
-                    .iter()
-                    .map(|t| {
-                        let pending = t
-                            .spec
-                            .as_ref()
-                            .and_then(|s| store.pending_value(&s.instance, &s.target, &s.prop));
-                        t.slot
-                            .try_with_untracked(|s| tap_on(pending.as_ref(), s.value(), &t.on))
-                            .flatten()
-                    })
-                    .collect();
-                aggregate(&each)
-            })
-            .unwrap_or(live_state);
         ev.prevent_default();
         if let Some(el) = dom::current_element(&ev) {
             let _ = el.set_pointer_capture(ev.pointer_id());
@@ -262,19 +236,6 @@ mod tests {
                 ToggleState::On
             );
         }
-    }
-
-    #[test]
-    fn a_tap_reads_the_write_on_its_way_else_lives_value() {
-        let on = json!(127.0);
-        assert_eq!(tap_on(None, Some(&json!(127.0)), &on), Some(true));
-        assert_eq!(tap_on(None, Some(&json!(0.0)), &on), Some(false));
-        assert_eq!(
-            tap_on(Some(&json!(127.0)), Some(&json!(0.0)), &on),
-            Some(true)
-        );
-        assert_eq!(tap_on(Some(&json!(0.0)), None, &on), Some(false));
-        assert_eq!(tap_on(None, None, &on), None);
     }
 
     #[test]

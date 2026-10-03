@@ -467,20 +467,3 @@ fn a_not_sent_write_live_already_holds_is_closed_by_its_value() {
     intents.live_value(&mute, &json!(true));
     assert_eq!(intents.state(&mute, 2_000.0), State::Confirmed);
 }
-
-#[test]
-fn a_write_still_on_its_way_is_pending_a_not_sent_one_is_not() {
-    let mut intents = Intents::<&str>::default();
-    assert_eq!(intents.pending(&key()), None, "nothing open");
-    let (key, _) = intents.set(AT, json!(true), 0.0, true, None);
-    assert_eq!(intents.pending(&key), Some(&json!(true)));
-    intents.resend("band", 1_000.0);
-    assert_eq!(intents.pending(&key), Some(&json!(true)), "sent again");
-    intents.resend("band", 2_000.0);
-    assert_eq!(intents.state(&key, 2_000.0), State::NotSent);
-    assert_eq!(intents.pending(&key), None, "it never reached Live");
-    intents.set(AT, json!(false), 2_100.0, true, None);
-    assert_eq!(intents.pending(&key), Some(&json!(false)));
-    intents.ack(&AckItem::applied(&key, 3, None));
-    assert_eq!(intents.pending(&key), None, "acked");
-}

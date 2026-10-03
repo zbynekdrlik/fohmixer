@@ -117,7 +117,7 @@ Rules:
 - **When an instance is back.** The store resends that instance's intents per L4: right after each hello (the hub reports every instance then, and a socket loss marked them offline on the page) and when an instance comes back online on the same socket (the hub's setter dropped its pending wants). Each goes as a new `set` (the page's next seq, `t` = the time it goes). Sends are rate-capped per key at one per animation frame (as today).
 - **Release and touch.** A release with no final write (the frames already sent the last move, or a glide ended) records its time; a control taken away under a finger counts as released then. A touch on a control with a write still on its way holds that write again (no release time until the touch's own release); a touch on a `not_sent` one drops it.
 - **Live already holds it.** A `not_sent` write whose value Live's fresh value equals (float32) is closed: the hub applied it before the link went, its ack was lost. Any other value leaves it (another writer's included): the red outline and the ghost show the difference until the next touch.
-- **Toggles.** A tap inverts the toggle's write still on its way when there is one (two taps while the link is down leave Live as it was), else Live's value; a toggle keeps showing Live's value.
+- **Toggles.** A toggle keeps showing Live's value (P2) and a tap inverts what it shows: nothing on a toggle shows a write still on its way, so a second tap during an outage means "it did not take", not "undo".
 - **Errors.** An ack with `error` marks the key failed: the red flash as today, and the fader then shows Live's value.
 
 ### 4.2 Values and touches

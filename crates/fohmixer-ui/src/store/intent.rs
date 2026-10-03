@@ -253,16 +253,6 @@ impl<F> Intents<F> {
         }
     }
 
-    /// The value `key`'s write still on its way will leave (a toggle's tap
-    /// inverts it, #43): none when nothing is open or the write is
-    /// `not_sent` (it never reached Live).
-    pub fn pending(&self, key: &str) -> Option<&Value> {
-        self.open
-            .get(key)
-            .filter(|open| !open.not_sent)
-            .map(|open| &open.intent.value)
-    }
-
     /// The state of `key`'s write at page time `now`.
     pub fn state(&self, key: &str, now: f64) -> State {
         let Some(open) = self.open.get(key) else {

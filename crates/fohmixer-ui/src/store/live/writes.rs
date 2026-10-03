@@ -1,9 +1,9 @@
 //! The controls' writes (#43): the glue between the controls, the intent
 //! store (`store/intent.rs`, where every decision is made and tested) and
 //! the socket — a write, its ack, its release and touch, the resend when an
-//! instance is back, and what a control reads of its open write.
+//! instance is back, and what a fader reads of its open write.
 
-use fohmixer_proto::client::{AckItem, set_key};
+use fohmixer_proto::client::AckItem;
 use leptos::prelude::{UpdateValue, WithValue};
 use serde_json::Value;
 
@@ -113,15 +113,6 @@ impl LiveStore {
                 (state, value)
             })
             .unwrap_or((State::Confirmed, None))
-    }
-
-    /// The value the write of `prop` of `target` on `instance` still on its
-    /// way will leave (a toggle's tap inverts it); none for a not-sent one.
-    pub fn pending_value(self, instance: &str, target: &str, prop: &str) -> Option<Value> {
-        let key = set_key(instance, target, prop);
-        self.inner
-            .try_with_value(|i| i.intents.pending(&key).cloned())
-            .flatten()
     }
 
     /// Live's fresh `value` of the subscription `sub_key` arrived: a not-sent

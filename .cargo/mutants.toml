@@ -72,13 +72,13 @@ exclude_re = [
   # through Intents::ack to the control's failure flash), resend
   # (Intents::resend's sets onto the socket, on conn::back_online), set,
   # release and touch (Intents::set, release and touch with the page clock),
-  # intent_view and pending_value (Intents::state, open and pending), and
+  # intent_view (Intents::state and open), and
   # live_value (Intents::live_value on store::write_key of a subscription);
   # link.spec.ts and resilience.spec.ts drive them (acked sets; a release
   # kept across a dropped link, a touch while it reconnects, a release inside
   # a stall, a release too old to send again, a fader rebuilt with its write
   # open).
-  "fohmixer-ui/src/store/live/writes\\.rs.*(replace|in) LiveStore::(on_ack|resend|set|release|touch|intent_view|pending_value|live_value)( |$)",
+  "fohmixer-ui/src/store/live/writes\\.rs.*(replace|in) LiveStore::(on_ack|resend|set|release|touch|intent_view|live_value)( |$)",
   "fohmixer-ui/src/store/live\\.rs.*(replace|in) (Socket::open|Socket::close|Inner::new)( |$)",
   # auth.rs: local storage and the login request (login_outcome, login_body
   # and LoginError::message are the tested decisions).

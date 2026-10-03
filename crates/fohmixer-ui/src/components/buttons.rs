@@ -40,33 +40,24 @@ pub fn anchor_name(binding: &Binding) -> String {
     }
 }
 
-/// The value a tap writes (#43): the inverse of the control's write still
-/// on its way when there is one (two taps while the link is down leave Live
-/// as it was), else of Live's value.
-pub(super) fn toggle_target(pending: Option<bool>, live: Option<bool>) -> Option<bool> {
-    pending.or(live).map(|v| !v)
-}
-
-/// Writes the inverse of a flag slot's value, or of its write still on its
-/// way (a tap: a final `set`, #43).
+/// Writes the inverse of a flag slot's value (a tap: a final `set`, #43).
+/// A tap inverts what the button shows, Live's value (P2), also while a
+/// write is still on its way: nothing on the button shows that write, so a
+/// second tap means "it did not take", not "undo".
 pub(super) fn toggle_flag(
     store: LiveStore,
     spec: &SubSpec,
     slot: RwSignal<Slot>,
     failed: RwSignal<bool>,
 ) {
-    let pending = store
-        .pending_value(&spec.instance, &spec.target, &spec.prop)
-        .and_then(|v| v.as_bool());
-    let live = slot.try_with_untracked(Slot::flag).flatten();
-    let Some(value) = toggle_target(pending, live) else {
+    let Some(current) = slot.try_with_untracked(Slot::flag).flatten() else {
         return;
     };
     store.set(
         &spec.instance,
         &spec.target,
         &spec.prop,
-        json!(value),
+        json!(!current),
         true,
         Some(fail_flash(failed)),
     );
@@ -286,19 +277,6 @@ mod tests {
             anchor,
             path: None,
         }
-    }
-
-    #[test]
-    fn a_tap_inverts_the_write_on_its_way_else_lives_value() {
-        assert_eq!(toggle_target(None, Some(false)), Some(true));
-        assert_eq!(toggle_target(None, Some(true)), Some(false));
-        assert_eq!(
-            toggle_target(Some(true), Some(false)),
-            Some(false),
-            "the second tap"
-        );
-        assert_eq!(toggle_target(Some(false), None), Some(true));
-        assert_eq!(toggle_target(None, None), None, "no value: no tap");
     }
 
     #[test]
