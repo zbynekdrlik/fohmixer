@@ -282,6 +282,17 @@ fn an_instance_back_online_or_on_another_set_reads_its_ranges_again() {
 }
 
 #[test]
+fn the_connection_says_which_keys_a_page_wants() {
+    let mut c = Conn::default();
+    let mute = spec("Hand1 #", "mute");
+    assert!(!c.wants(&mute.key()));
+    c.want(vec![mute.clone()]);
+    assert!(c.wants(&mute.key()));
+    c.want(Vec::new());
+    assert!(!c.wants(&mute.key()));
+}
+
+#[test]
 fn an_instance_back_online_gets_its_writes_again() {
     let (on, off) = (view(true, "Show"), view(false, "Show"));
     assert!(

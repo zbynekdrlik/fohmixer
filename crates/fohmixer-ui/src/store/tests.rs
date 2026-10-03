@@ -132,18 +132,19 @@ fn a_lost_connection_keeps_a_slots_value_as_stale() {
 }
 
 #[test]
-fn a_page_switch_keeps_a_known_value_stale_unless_a_fresh_one_comes() {
+fn a_page_switch_waits_while_connected_and_keeps_a_known_value_during_an_outage() {
     let fresh = Slot::Value {
         value: json!(0.7),
         display: Some("-6.0 dB".into()),
         at: 5.0,
     };
     let stale = fresh.clone().into_stale();
-    // Subscribed now (the hub is connected): I8 waits for the fresh value.
+    // The hub connected: a key subscribed now waits for its fresh value
+    // (I8), one unsubscribed has nothing to keep it current.
     for slot in [fresh.clone(), stale.clone(), Slot::Error("gone".into())] {
         assert_eq!(slot.rewanted(true), Slot::Pending);
     }
-    // Unsubscribed, or wanted while the hub is not connected: kept (L2).
+    // During an outage, added or removed: a known value is kept (L2).
     assert_eq!(fresh.clone().rewanted(false), stale);
     assert_eq!(stale.clone().rewanted(false), stale);
     assert!(fresh.rewanted(false).is_ready(), "it still takes touches");
@@ -204,6 +205,18 @@ fn the_wanted_set_subscribes_each_key_once_and_releases_the_rest() {
         [mute.key(), spec("master", "C", "mute").key()]
     );
     assert!(change.added.is_empty() && wanted.is_empty());
+}
+
+#[test]
+fn a_key_is_wanted_until_its_page_goes() {
+    let mut wanted = Wanted::default();
+    let mute = spec("band", "A", "mute");
+    assert!(!wanted.contains(&mute.key()), "nothing wanted yet");
+    wanted.replace(vec![mute.clone()]);
+    assert!(wanted.contains(&mute.key()));
+    assert!(!wanted.contains(&spec("band", "B", "mute").key()));
+    wanted.replace(vec![spec("band", "B", "mute")]);
+    assert!(!wanted.contains(&mute.key()), "its page went");
 }
 
 #[test]

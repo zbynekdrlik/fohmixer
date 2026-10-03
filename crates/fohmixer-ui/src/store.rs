@@ -241,6 +241,12 @@ impl Wanted {
         self.specs.values().cloned().collect()
     }
 
+    /// Whether `key` is wanted (#43: a value for a key no page wants is not
+    /// kept: nothing would keep it current).
+    pub fn contains(&self, _key: &str) -> bool {
+        true
+    }
+
     /// The wanted keys of `instance` (every key for `None`).
     pub fn keys_of(&self, instance: Option<&str>) -> Vec<String> {
         self.specs

@@ -255,6 +255,13 @@ impl Conn {
         self.wanted.keys_of(instance)
     }
 
+    /// Whether a page wants `key` now (a value for any other key is dropped,
+    /// #43).
+    #[allow(dead_code)] // RED: the store uses it with the fix
+    pub fn wants(&self, key: &str) -> bool {
+        self.wanted.contains(key)
+    }
+
     /// REFRESH ALL: every wanted subscription, when the socket takes
     /// messages.
     pub fn refresh(&self) -> Option<Vec<SubSpec>> {

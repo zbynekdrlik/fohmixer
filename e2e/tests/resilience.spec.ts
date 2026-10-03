@@ -235,6 +235,22 @@ test.describe("The control link's resilience (L1-L4)", () => {
     await expect(fader(), "the first outage's value is too old to touch").toHaveAttribute("aria-disabled", "true");
   });
 
+  test("a value that arrives after its page went is not kept for a later outage", async ({ page }) => {
+    await surfaceAtStart(page);
+    const fader = () => strip(page, "Hand2 #").getByTestId("fader");
+    // A stall holds Live's new value on its way while the page is left: it
+    // arrives after the page's unsubscription.
+    await impair.stall(2000);
+    await live.set("band", TARGET, "value", 0.7);
+    await page.waitForTimeout(300);
+    await selectPage(page, "cue");
+    await page.waitForTimeout(2200);
+    await live.set("band", TARGET, "value", 0.6);
+    await linkDown(page);
+    await selectPage(page, "foh");
+    await expect(fader(), "the late 0.7 is no value to touch in the next outage").toHaveAttribute("aria-disabled", "true");
+  });
+
   test("a not-sent release that Live already holds is confirmed by Live's value", async ({ page }) => {
     const fader = await surfaceAtStart(page);
     await linkDown(page);
