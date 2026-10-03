@@ -1,21 +1,24 @@
-# Robust control link, link-quality indicator and audit trail (#43)
+# Robust control link, dropout counter and audit trail (#43)
 
-Status: direction approved by the owner on #43 (2026-10-03), with the added requirement of a link-quality indicator. This note turns the direction into a buildable design for phases 1–3; phase 0's evidence is on #43.
+Status: direction approved by the owner on #43 (2026-10-03), with the added requirement of a link-quality indicator, which the owner then replaced by a dropout counter (ROZHODNUTÉ on #43, 2026-10-03). This note turns the direction into a buildable design for phases 1–3; phase 0's evidence is on #43.
 
 ## 0. Zhrnutie pre vlastníka
 
 - **Žiadny pohyb sa nestratí.** Každý ovládač si pamätá posledný zámer zvukára. Kým ho Live nepotvrdí, mixér ho drží a po výpadku spojenia ho pošle znova. Výnimkou je pustenie fadra staršie než 2 s: to sa nepošle naslepo, fader ukáže „neodoslané“ a čaká na dotyk.
 - **Ovládanie nikdy nezamrzne.** Výpadok spojenia nevypne fadre. Nové dotyky fungujú ďalej a fader po pustení neskočí späť na starú hodnotu.
 - **Hub neposiela do Live staré hodnoty.** Pre každý ovládač drží len najnovšiu hodnotu. Do Live ide vždy jedna dávka naraz, takže pri zaseknutom Live sa nehromadí fronta.
-- **Ukazovateľ kvality spojenia** je stále viditeľný v hornej lište. Povie, či je všetko v poriadku, či fadre reagujú s oneskorením (a o koľko ms), alebo či je spojenie preč. Uvedie aj príčinu: sieť, alebo zaťažený Live. Ťuknutím ukáže čísla.
-- **Čierna skrinka.** Hub zapisuje každý pohyb na celej ceste: odoslanie z iPadu, príchod do hubu a potvrdenie z Live. Zapisuje aj odozvu siete, zaseknutia Live a zmeny ukazovateľa. Záznamy sú v denných súboroch a uchovávajú sa 60 dní. Nástroj z nich vykreslí časovú os ľubovoľného úseku služby.
+- **Počítadlo výpadkov** namiesto slov o kvalite: malé číslo v hornej lište, ktoré pri každom výpadku spojenia stúpne o jedna. Zvukár tak pod rukami vidí, že výpadky pribúdajú. Kým výpadok trvá, číslo je červené. Ťuknutím sa vynuluje. Bez zvuku a bez blikania.
+- **Výpadok** je chvíľa, keď iPad aspoň 300 ms nič nepočuje od hubu, hoci čaká na odpoveď (iPad sa hubu ozýva každých 100 ms), alebo keď je spojenie prerušené. Zaseknutý Live sa zapíše, ale nezapočíta: počítadlo meria spojenie.
+- **Čierna skrinka.** Hub zapisuje každý pohyb na celej ceste: odoslanie z iPadu, príchod do hubu a potvrdenie z Live. Zapisuje aj každú odozvu siete (10-krát za sekundu), každý výpadok s jeho dĺžkou a vynulovania počítadla. Záznamy sú v denných súboroch a uchovávajú sa 60 dní. Nástroj z nich vykreslí časovú os ľubovoľného úseku služby.
 - **Rýchlejší prenos** (WebTransport, funguje ako UDP) príde v ďalšej etape. Najprv ho overím meraním na skutočnom iPade.
 
 ## 1. Evidence and goals
 
-Phase 0 (#43, 2026-10-03):
-- At the second service the FOH iPad's page ran at 57–60 fps with one socket for the whole service.
-- The band Live's main thread stalled 150–470 ms many times early in the service, and 5.7 s twice before it.
+Phase 0 (#43, 2026-10-03; corrected on #43 the same day):
+- At the second service the FOH iPad's page kept one socket for the whole service. That does **not** show a stable link: the page tears a socket down only after 3 s of silence, so today's logs cannot see a stall shorter than that. The network question is open.
+- The owner's observation stands: on the same Wi-Fi TouchOSC (UDP) stayed usable and fohmixer did not. That points at how fohmixer carries moves over a lossy link (TCP stalls delivering moves late and in a burst, every move a request with its own result, a release during a stall snapping back to Live's stale value), and the next version's logs must prove or refute it.
+- The page's `perf` report covers only the last 10 s window of each minute, so whether the page itself stuttered is not established either.
+- The band Live's main-thread stalls in that log cluster around opening the set: known Live behaviour when a set opens or saves, outside our control, and not the cause the owner reported.
 - The first service's log was lost to the per-start rotation.
 - Nothing recorded per-move latency or the Wi-Fi link.
 
@@ -36,7 +39,7 @@ The code review on #43 found further defects:
   
   An older unconfirmed release is shown as *not sent* (§4.3) and is dropped when the engineer touches that control again.
 - **L5 — latest-wins, bounded.** Every queue between the finger and Live holds at most one value per control.
-- **L6 — every hop is recorded** in the event log (§5) with the clock of the hop.
+- **L6 — every hop is recorded** in the event log (§5) with the clock of the hop. The next deploy logs enough to analyse a stutter report (owner, #43): per move the page's send time, the hub's arrival (so per-move delay and the gaps between moves show a stall) and Live's confirmation; the page's ping round trips every 100 ms; every dropout with its length.
 
 ## 2. Protocol 2 (hub ⇄ page)
 
@@ -47,8 +50,8 @@ The code review on #43 found further defects:
 | Message | Shape |
 |---|---|
 | Set | `{"type":"set","instance","target","prop","value","seq":<u64>,"t":<page ms>,"final":<bool>}` |
-| Ping | `{"type":"ping","n":<u32>,"t":<page ms>,"rtt":<ms of the previous pong>?}` |
-| Trace | `{"type":"trace","events":[…]}`: a batch of the flight recorder (§5.2) |
+| Ping | `{"type":"ping","n":<u32>,"t":<page ms>,"rtt":<ms of the previous pong>?}`, every 100 ms while the page is visible (every second while hidden) |
+| Trace | `{"type":"trace","events":[…]}`: a batch of the flight recorder (§5.2); since PR A each finished dropout, `{"ev":"dropout","t":<start, page ms>,"ms":<length>,"socket_lost":<bool>,"rtts":[the last ≤ 5 round trips before it]}` |
 
 - `seq` is per page session and strictly increasing over all sets of that page.
 - `t` is `performance.timeOrigin + performance.now()`, in ms.
@@ -89,8 +92,8 @@ The code review on #43 found further defects:
 
 ### 3.2 Ping, link
 
-- The hub answers a ping with `pong` at once (through the outbox's ordered replies, as today).
-- The hub forwards each instance's `busy` and `main_tick_age_ms` as `link` to every client.
+- The hub answers a ping with `pong` at once (through the outbox's ordered replies, as today) and logs every ping (§5.1).
+- The hub forwards each instance's `busy` and the age of Live's last main-thread tick as `link` to every client (the last heartbeat's `main_tick_age_ms` plus the time since that heartbeat, so it grows during a stall); a client's outbox keeps the latest `link` per instance.
 
 ### 3.3 Logs
 
@@ -131,37 +134,27 @@ Rules:
 | `unconfirmed` | the cap outlined in amber; a thin ghost line at Live's value |
 | `not_sent` | the cap outlined in red, a ghost at Live's value, the label `neodoslané`; the next touch starts from the cap |
 
-### 4.4 The link-quality indicator
+### 4.4 The dropout counter
 
-**Where.** The `hub-dot` in the top bar's status cluster becomes the link badge: a dot + a short word, always visible. A tap opens a small panel with the numbers.
+The owner ruled out status words on the surface (ROZHODNUTÉ on #43, 2026-10-03): space on the tablet is scarce. Instead the surface shows how often the link drops out.
 
-**Inputs** (rolling 10 s window, recomputed 4×/s):
+**What a dropout is.**
 
-- **Network.**
-  - RTT of pings, sent every 250 ms while visible: p50 and max.
-  - The current stall: time since the last message from the hub while a pong is due.
-  - Socket state.
-- **Live.** `busy` and `tick_age_ms` from `link`.
-- **End to end.**
-  - The confirmation latency of sets: send → ack at the page, p95 over the window.
-  - The age of the oldest unconfirmed intent.
+- The page pings the hub every 100 ms while visible (every second while hidden).
+- A **dropout** is one continuous interval in which the page hears nothing from the hub for ≥ 300 ms although a pong is due, or the socket is down. The silence counts from the later of the last message heard and the oldest unanswered ping, so a hidden page that pinged rarely raises no false dropout.
+- Each interval counts once, however long it lasts, and a silence that turns into a lost socket stays one dropout until the next hello.
+- A Live-side delay (Live busy, the network fine) is logged (`link`) but not counted: the counter measures the link.
 
-**Levels.** First match wins; each level names its cause.
+**What the surface shows (PR C).**
 
-| Level | When | Word | Panel text (Slovak, what it means for mixing) |
-|---|---|---|---|
-| `offline` | socket down | `OFFLINE` | `Spojenie s mixérom je preč {s} s. Pohyby sa ukladajú a pošlú sa po obnovení (do 2 s po pustení).` |
-| `bad` | stall ≥ 1000 ms, or confirmation p95 ≥ 250 ms, or an unconfirmed intent ≥ 1 s | `ZLÉ` | `Fadre reagujú o ~{p95} ms neskôr a môžu skákať. Príčina: {sieť / Live je zaťažený}.` |
-| `slow` | stall ≥ 250 ms, or p95 ≥ 80 ms, or RTT max ≥ 150 ms, or Live busy | `POMALÉ` | `Fadre reagujú o ~{p95} ms neskôr. Príčina: {sieť / Live je zaťažený}.` |
-| `ok` | otherwise | `OK` | `Fadre reagujú do ~{p95} ms.` |
+- A small number in the top bar's status cluster that grows by one with every dropout, so the engineer sees it rising under the hands.
+- While a dropout lasts the number is red; otherwise it is neutral.
+- A tap resets it to 0.
+- No words, no sound, no blinking: live mixing must not be disturbed.
 
-- **Cause.** The cause is Live when Live is busy or the confirmation latency minus RTT p50 exceeds 60 ms; otherwise it is the network.
-- **Hysteresis.** A level goes up at once and goes down only after 3 s at the lower level, so the badge does not flicker.
-- **Colours.** green / amber / red / red with a dark background.
-- **No sound or blinking.** Live mixing must not be disturbed.
-- **Event log.** Every level change is sent to the event log (§5).
+**Event log.** Each dropout, when it ends, goes to the hub's event log as a `trace` event (start, length, whether the socket was lost, the last ≤ 5 round trips before it), and so does every reset of the counter (PR C).
 
-The thresholds are constants in `behave/link.rs`, pinned by tests. They are adjusted from real data once the event log has a service, decided on #43.
+The detection is a pure state machine (`behave/link.rs`, `DropoutWatch`, since PR A); its constants (100 ms, 300 ms) are pinned by tests and adjusted from real data once the event log has a service, decided on #43.
 
 ## 5. Audit trail
 
@@ -174,16 +167,15 @@ The thresholds are constants in `behave/link.rs`, pinned by tests. They are adju
 | `ev` | Fields |
 |---|---|
 | `sock` | `open` / `close`, reason |
-| `set` | `value`, `final`, the gap since this client's previous set of that key, `dropped_old` (seq not newer) |
-| `batch` | `instance`, `n`, `sent` |
-| `applied` | `instance`, `n`, `rtt_ms`, errors |
-| `ack` | per item |
-| `ping` | `n`, `t`, the page's `rtt` of the previous pong, `offset_ms` |
-| `trace` | the page's flight-recorder events, as sent |
+| `set` | `value`, `final`, `t`, `hub_ms` (its arrival), `offset_ms` and `delay_ms` (`hub_ms − (t + offset)`, its one-way delay), the gap since this client's previous set of that key, `dropped_old` (seq not newer) |
+| `batch` | `instance`, the batch number, `n`, `sent` (key, client, seq, value of each) |
+| `applied` | `instance`, the batch number, `n`, `rtt_ms` (Live's round trip), errors, `sent` (key, client, seq) |
+| `ack` | per item; an ack of a batch with its number and `rtt_ms` |
+| `ping` | every ping (10 a second while the page is visible): `n`, `t`, `hub_ms` (its arrival), the page's `rtt` of the previous pong, `offset_ms` |
+| `trace` | the page's events, as sent: since PR A its dropouts (§4.4); the flight recorder (§5.2) and the counter's resets in PR C |
 | `link` | busy changes with `tick_age_ms`, heartbeat gaps |
-| `level` | the page's indicator level changes, with the inputs |
 
-- **Clocks.** Page times (`t`) map to hub time through the ping exchange: `offset = hub arrival − (t + rtt/2)`, from the lowest-RTT ping of the last minute (Cristian). Each `ping` record carries it as `offset_ms`.
+- **Clocks.** Page times (`t`) map to hub time through the ping exchange: `offset = hub arrival − (t + rtt/2)`, from the lowest-RTT ping of the last minute (Cristian). Each `ping` record carries it as `offset_ms`, and each `set` record the offset of its socket's last ping with the one-way delay it gives: a stall on the way shows as a gap and a delay spike on the moves after it.
 
 ### 5.2 Page flight recorder (`diag/trace.rs`)
 
@@ -194,7 +186,7 @@ The thresholds are constants in `behave/link.rs`, pinned by tests. They are adju
   - socket transitions with reasons;
   - frames longer than 50 ms;
   - visibility;
-  - indicator level changes.
+  - dropouts and the counter's resets.
 - **Size.** At most 20 000 events and 2 MB.
 - **Upload.** Sent as `trace` batches every 2 s while connected. After a reconnect the backlog goes first, so an outage is recorded from the page's side.
 - **Reload.** A reload loses an unsent backlog. The page keeps nothing in browser storage, because L1–L4 live in memory too.
@@ -204,7 +196,7 @@ The thresholds are constants in `behave/link.rs`, pinned by tests. They are adju
 - **Input and output.** Stdlib Python, run on the PC or on a copied log: `timeline.py --events <dir> --from <local time> --to <local time> [--key …] --out report.html`.
 - **What the report shows.**
   - Per control: three lines — the page's sends, the hub's arrivals and Live's applied values — with gaps over 100 ms marked.
-  - The page's RTT and stalls, Live's busy episodes, the indicator's levels and the socket transitions.
+  - The page's RTT and stalls, Live's busy episodes, the dropouts and the socket transitions.
   - A summary table: worst confirmation latency, longest stall, jumps over 3 dB between two applied values with their cause.
 - **Hygiene.** It never writes names or addresses into the report header beyond what the log holds. The report stays on the PC or goes to the owner through `share`, never into the repo.
 
@@ -232,12 +224,15 @@ RED first, against today's code:
    - a stalled instance (SimLive `stall 1000`) receiving 60 sets for one key gets ≤ 2 batches, and its final value is the last set;
    - two clients: the newer `t_hub` wins;
    - an old seq is dropped.
-6. The indicator (pure tests on `behave/link.rs`), every level boundary, hysteresis and cause. In E2E: a 400 ms stall shows `POMALÉ`, a dropped link `OFFLINE`, both back to `OK`.
+6. The dropout counter:
+   - pure tests on `behave/link.rs` (PR A): a silence of 299 ms is no dropout, 300 ms is one; a long silence counts once; a silence that becomes a lost socket is one dropout until the next hello; a lost socket counts even when short; nothing counts before the first hello; the round trips a report carries;
+   - in E2E (PR A): the hub's messages held 800 ms give one reported dropout (socket kept), a dropped socket another (socket lost), both in the event log;
+   - PR C: the number rises by one per dropout, is red while one lasts, a tap resets it to 0, each reset in the event log.
 7. The event log:
    - a test drags a fader through a stall;
-   - it reads the day file: `set` → `batch` → `applied` → `ack` for the last seq, a `trace` with the touch, the `level` changes;
+   - it reads the day file: `set` → `batch` → `applied` → `ack` for the last seq, a `trace` with the touch and the dropouts;
    - `timeline.py` renders that window with the stall marked.
-8. Mutation (the existing gate) covers the setter, the intent store and the level function.
+8. Mutation (the existing gate) covers the setter, the intent store and the dropout watch.
 
 All Playwright tests keep the zero-console-error assertion, on Chromium and WebKit.
 
@@ -245,14 +240,14 @@ All Playwright tests keep the zero-console-error assertion, on Chromium and WebK
 
 1. **PR A — protocol 2 and hub.**
    - `set` / `ack` / `pong` / `link`, the setter, the hub event log with retention, the log rotation in the launcher;
-   - the page sends sets through a minimal intent store (L5, L6);
-   - tests 5, 7 (hub part).
+   - the page sends sets through a minimal intent store (L5, L6), pings every 100 ms while visible, and reports each dropout (§4.4) to the event log;
+   - tests 5, 6 (the detection), 7 (hub part).
 2. **PR B — the page's resilience.**
    - L1–L4, the stale slots, the touch rules, the fader states, the impair proxy;
    - tests 1–4.
-3. **PR C — indicator and audit.**
-   - the link badge and panel, the flight recorder, `timeline.py`;
-   - tests 6, 7.
+3. **PR C — counter and audit.**
+   - the dropout counter on the surface, the flight recorder, `timeline.py`;
+   - tests 6 (the counter), 7.
 4. **Phase 2 (own design note) — datagram transport.** A spike measured on the FOH iPad (Safari 26.6.1: WebTransport datagrams vs a WebRTC data channel), then the datagram path for `set`, with the WebSocket as fallback and the same seq rules.
 5. **Phase 3 — verification.** A degraded-link check on the PC with the real iPad, then a service, read through `timeline.py`.
 
