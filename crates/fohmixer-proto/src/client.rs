@@ -1,9 +1,15 @@
 //! The client protocol, hub ⇄ UI (S3 design note §3): JSON text frames on
-//! `/ws?token=<jwt>&proto=1`, plus the JSON bodies of the hub's API.
+//! `/ws?token=<jwt>&proto=2`, plus the JSON bodies of the hub's API.
 //!
 //! The hub never reinterprets Live's values: a `cmd` is the FohMixer script's
 //! own envelope (S2 design note §3.10) with the instance added, and values
 //! and display strings are Live's, as the script reported them.
+//!
+//! Protocol 2 (#43, `docs/superpowers/specs/2026-10-03-robust-link-design.md`
+//! §2): a control's write is a `set` with the page's sequence number and
+//! clock, answered by a coalesced `ack`; `ping` / `pong` carry the times of
+//! the exchange; `link` reports Live's main-thread health. `cmd` stays for
+//! reads and multi-command batches.
 
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
@@ -11,9 +17,10 @@ use serde_json::Value;
 use crate::path::canonical_target;
 
 /// The client protocol this build speaks.
-pub const UI_PROTO: u32 = 1;
-/// The oldest client protocol this build serves.
-pub const MIN_CLIENT_PROTO: u32 = 1;
+pub const UI_PROTO: u32 = 2;
+/// The oldest client protocol this build serves (a page of protocol 1
+/// reloads through the handshake).
+pub const MIN_CLIENT_PROTO: u32 = 2;
 /// WebSocket close code telling a client with another protocol to reload.
 pub const CLOSE_RELOAD: u16 = 4001;
 /// The hub value of the STAGE AUT flag (spec §2.4, F15).
@@ -63,9 +70,94 @@ pub enum ClientMsg {
     Unsub { sub: String },
     /// Set a hub value (only `stage_aut`).
     SetHub { key: String, value: Value },
+    /// A control's write (#43): the latest value the engineer set on one
+    /// property, answered by an `ack` item of its key. `seq` is the page's,
+    /// strictly increasing over all its sets; `t` is the page's clock
+    /// (`performance.timeOrigin + performance.now()`, ms); `final` marks a
+    /// release, a toggle or a tap.
+    Set {
+        instance: String,
+        target: String,
+        prop: String,
+        value: Value,
+        seq: u64,
+        t: f64,
+        #[serde(rename = "final")]
+        is_final: bool,
+    },
     /// A liveness probe, answered by `pong` (the client's watchdog: a
-    /// socket that stays silent is half-open and is replaced).
-    Ping,
+    /// socket that stays silent is half-open and is replaced): its number,
+    /// the page's clock, and the round trip (ms) of the latest pong on this
+    /// socket with the number of the ping it measured (`rtt_n`), so the hub
+    /// pairs it with that ping's own time and arrival; none before the
+    /// socket's first pong.
+    Ping {
+        n: u32,
+        t: f64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rtt: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rtt_n: Option<u32>,
+    },
+    /// The page's own events for the hub's event log (#43), as it recorded
+    /// them (PR A: each finished dropout, `{"ev": "dropout", "t", "ms",
+    /// "socket_lost", "rtts"}`).
+    Trace { events: Vec<Value> },
+}
+
+/// One write's outcome (#43, an `ack` item): Live ran it (`value`: what
+/// Live reported, when the result has one), Live refused it (`error`), or
+/// another client's newer set replaced it before it was written
+/// (`superseded`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AckItem {
+    /// The write's key ([`set_key`]).
+    pub key: String,
+    /// The page's sequence number of the `set` it answers.
+    pub seq: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub superseded: bool,
+}
+
+impl AckItem {
+    /// Live ran set `seq` of `key`; `value` is what its result reported.
+    pub fn applied(key: &str, seq: u64, value: Option<Value>) -> Self {
+        Self {
+            key: key.to_string(),
+            seq,
+            value,
+            error: None,
+            superseded: false,
+        }
+    }
+
+    /// Set `seq` of `key` failed: Live refused it, it timed out, or the
+    /// instance is offline.
+    pub fn failed(key: &str, seq: u64, error: &str) -> Self {
+        Self {
+            key: key.to_string(),
+            seq,
+            value: None,
+            error: Some(error.to_string()),
+            superseded: false,
+        }
+    }
+
+    /// Set `seq` of `key` was replaced by another client's newer set before
+    /// it was written.
+    pub fn superseded(key: &str, seq: u64) -> Self {
+        Self {
+            key: key.to_string(),
+            seq,
+            value: None,
+            error: None,
+            superseded: true,
+        }
+    }
 }
 
 /// The state of one subscription: Live's value (and display string), or why
@@ -146,8 +238,20 @@ pub enum ServerMsg {
     Hub { key: String, value: Value },
     /// The layout changed: GET `/api/layout` for revision `rev`.
     Layout { rev: u64 },
-    /// The answer to `ping`.
-    Pong,
+    /// The outcome of this client's writes (#43), coalesced per client: per
+    /// key the item of the highest `seq`.
+    Ack { items: Vec<AckItem> },
+    /// The answer to `ping`: its number and page time echoed, and the hub's
+    /// clock when it answered (`h`, UTC ms).
+    Pong { n: u32, t: f64, h: f64 },
+    /// Live's main-thread health on an instance (#43): on every busy change
+    /// and at most 4 times a second while busy. `tick_age_ms` is the age of
+    /// Live's last main-thread tick as the hub knows it.
+    Link {
+        instance: String,
+        tick_age_ms: f64,
+        busy: bool,
+    },
     /// A request the hub could not serve (`id` of the `cmd`, if any).
     Error {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -161,6 +265,12 @@ pub enum ServerMsg {
 /// kept as they are).
 pub fn hub_key(instance: &str, target: &str, prop: &str, display: bool) -> String {
     format!("{instance}|{}|{prop}|{display}", canonical_target(target))
+}
+
+/// The key of a write (#43, `set` / `ack`): `instance|target|prop`, the hub
+/// key without `display`, the target in canonical form.
+pub fn set_key(instance: &str, target: &str, prop: &str) -> String {
+    format!("{instance}|{}|{prop}", canonical_target(target))
 }
 
 /// `POST /api/auth` body.
@@ -379,384 +489,4 @@ pub struct HubStatus {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    fn round_trip_client(msg: ClientMsg, wire: Value) {
-        assert_eq!(serde_json::to_value(&msg).unwrap(), wire);
-        assert_eq!(serde_json::from_value::<ClientMsg>(wire).unwrap(), msg);
-    }
-
-    fn round_trip_server(msg: ServerMsg, wire: Value) {
-        assert_eq!(serde_json::to_value(&msg).unwrap(), wire);
-        assert_eq!(serde_json::from_value::<ServerMsg>(wire).unwrap(), msg);
-    }
-
-    #[test]
-    fn client_messages_round_trip() {
-        round_trip_client(
-            ClientMsg::Cmd {
-                id: "c1".into(),
-                instance: "band".into(),
-                commands: vec![LiveCommand {
-                    target: json!("live_set tracks 0"),
-                    name: "get_prop".into(),
-                    args: json!({"prop": "name"}),
-                }],
-            },
-            json!({"type": "cmd", "id": "c1", "instance": "band",
-                   "commands": [{"target": "live_set tracks 0", "name": "get_prop", "args": {"prop": "name"}}]}),
-        );
-        round_trip_client(
-            ClientMsg::Sub {
-                instance: "band".into(),
-                target: "live_set tracks 0 mixer_device volume".into(),
-                prop: "value".into(),
-                display: true,
-            },
-            json!({"type": "sub", "instance": "band", "target": "live_set tracks 0 mixer_device volume",
-                   "prop": "value", "display": true}),
-        );
-        round_trip_client(
-            ClientMsg::Unsub { sub: "k".into() },
-            json!({"type": "unsub", "sub": "k"}),
-        );
-        round_trip_client(
-            ClientMsg::SetHub {
-                key: HUB_STAGE_AUT.into(),
-                value: json!(true),
-            },
-            json!({"type": "set_hub", "key": "stage_aut", "value": true}),
-        );
-        round_trip_client(ClientMsg::Ping, json!({"type": "ping"}));
-    }
-
-    #[test]
-    fn optional_client_fields_have_defaults() {
-        let sub: ClientMsg = serde_json::from_value(
-            json!({"type": "sub", "instance": "band", "target": "live_set", "prop": "is_playing"}),
-        )
-        .unwrap();
-        assert!(matches!(sub, ClientMsg::Sub { display: false, .. }));
-        let cmd: ClientMsg =
-            serde_json::from_value(json!({"type": "cmd", "id": "x", "instance": "band",
-            "commands": [{"target": {"$ref": "live_1"}, "name": "start_playing"}]}))
-            .unwrap();
-        let ClientMsg::Cmd { commands, .. } = cmd else {
-            panic!("a cmd")
-        };
-        assert_eq!(commands[0].args, Value::Null);
-        assert_eq!(commands[0].target, json!({"$ref": "live_1"}));
-        assert!(serde_json::from_value::<ClientMsg>(json!({"type": "nope"})).is_err());
-    }
-
-    #[test]
-    fn server_messages_round_trip() {
-        round_trip_server(
-            ServerMsg::Hello {
-                proto: UI_PROTO,
-                build: "0.1.0".into(),
-                min_client_proto: MIN_CLIENT_PROTO,
-            },
-            json!({"type": "hello", "proto": 1, "build": "0.1.0", "min_client_proto": 1}),
-        );
-        round_trip_server(
-            ServerMsg::Result {
-                id: "c1".into(),
-                data: vec![json!({"ok": true, "data": "Hand1 #"})],
-            },
-            json!({"type": "result", "id": "c1", "data": [{"ok": true, "data": "Hand1 #"}]}),
-        );
-        round_trip_server(
-            ServerMsg::Subbed {
-                sub: "k".into(),
-                value: Some(json!(0.85)),
-                display: Some("0.0 dB".into()),
-                error: None,
-            },
-            json!({"type": "subbed", "sub": "k", "value": 0.85, "display": "0.0 dB"}),
-        );
-        round_trip_server(
-            ServerMsg::Subbed {
-                sub: "k".into(),
-                value: None,
-                display: None,
-                error: None,
-            },
-            json!({"type": "subbed", "sub": "k"}),
-        );
-        round_trip_server(
-            ServerMsg::Values {
-                items: vec![
-                    ValueItem::value("a", json!(true), None),
-                    ValueItem::error("b", "not found: tracks[name=X]"),
-                ],
-            },
-            json!({"type": "values", "items": [{"sub": "a", "value": true},
-                                                {"sub": "b", "error": "not found: tracks[name=X]"}]}),
-        );
-        round_trip_server(
-            ServerMsg::Instance {
-                name: "band".into(),
-                online: true,
-                busy: false,
-                set_name: "Test Site".into(),
-            },
-            json!({"type": "instance", "name": "band", "online": true, "busy": false, "set_name": "Test Site"}),
-        );
-        round_trip_server(
-            ServerMsg::Hub {
-                key: HUB_STAGE_AUT.into(),
-                value: json!(false),
-            },
-            json!({"type": "hub", "key": "stage_aut", "value": false}),
-        );
-        round_trip_server(
-            ServerMsg::Layout { rev: 3 },
-            json!({"type": "layout", "rev": 3}),
-        );
-        round_trip_server(ServerMsg::Pong, json!({"type": "pong"}));
-        round_trip_server(
-            ServerMsg::Error {
-                id: Some("c1".into()),
-                message: "instance offline".into(),
-            },
-            json!({"type": "error", "id": "c1", "message": "instance offline"}),
-        );
-        round_trip_server(
-            ServerMsg::Error {
-                id: None,
-                message: "unreadable".into(),
-            },
-            json!({"type": "error", "message": "unreadable"}),
-        );
-    }
-
-    #[test]
-    fn a_null_value_is_a_value_not_a_missing_one() {
-        let wire = json!({"type": "values", "items": [{"sub": "g", "value": null}]});
-        let msg: ServerMsg = serde_json::from_value(wire.clone()).unwrap();
-        assert_eq!(
-            msg,
-            ServerMsg::Values {
-                items: vec![ValueItem::value("g", Value::Null, None)]
-            }
-        );
-        assert_eq!(serde_json::to_value(&msg).unwrap(), wire);
-        let subbed: ServerMsg =
-            serde_json::from_value(json!({"type": "subbed", "sub": "g", "value": null})).unwrap();
-        assert!(matches!(
-            subbed,
-            ServerMsg::Subbed {
-                value: Some(Value::Null),
-                ..
-            }
-        ));
-    }
-
-    #[test]
-    fn hub_key_collapses_whitespace_between_steps() {
-        assert_eq!(
-            hub_key(
-                "band",
-                "live_set   tracks 0  mixer_device volume",
-                "value",
-                true
-            ),
-            "band|live_set tracks 0 mixer_device volume|value|true"
-        );
-        assert_eq!(
-            hub_key(
-                "master",
-                " live_set  tracks[name=Hand1 #] mute",
-                "value",
-                false
-            ),
-            "master|live_set tracks[name=Hand1 #] mute|value|false"
-        );
-        assert_ne!(
-            hub_key("band", "live_set tracks 0", "mute", false),
-            hub_key("band", "live_set tracks 0", "mute", true)
-        );
-    }
-
-    #[test]
-    fn the_served_protocol_range() {
-        assert!(proto_ok(1));
-        assert!(!proto_ok(0));
-        assert!(!proto_ok(2));
-    }
-
-    #[test]
-    fn api_bodies_round_trip() {
-        let status = HubStatus {
-            instances: vec![InstanceStatus {
-                name: "band".into(),
-                port: 39101,
-                online: true,
-                busy: false,
-                set_name: "Test Site".into(),
-                live_version: "12.2.5".into(),
-                script_version: "0.1.0".into(),
-                main_tick_age_ms: Some(4.5),
-                subscriptions: 2,
-                listeners: 4,
-                connect_failures: 0,
-                last_error: None,
-            }],
-            layout: LayoutStatus {
-                rev: 1,
-                error: None,
-                unresolved: vec![Unresolved {
-                    instance: "band".into(),
-                    target: "live_set tracks[name=Nobody #]".into(),
-                    error: "not found: tracks[name=Nobody #]".into(),
-                }],
-            },
-            stage_aut: StageAutStatus {
-                on: true,
-                writes: 3,
-            },
-            clients: 1,
-            remote: RemoteStatus {
-                name: Some("foh.example.org".into()),
-                https: Some(HttpsStatus {
-                    port: 443,
-                    bound: true,
-                    bind_error: None,
-                    serving: true,
-                    cert_names: vec!["foh.example.org".into()],
-                    not_after: Some(1_800_000_000),
-                    days_left: Some(60),
-                    cert_error: None,
-                    acme: true,
-                    acme_error: Some("no Cloudflare API token".into()),
-                    acme_failures: 2,
-                    last_issued: Some(1_790_000_000),
-                }),
-                access: true,
-                tunnel: Some(TunnelStatus {
-                    ready_connections: 4,
-                    error: None,
-                    checked: Some(1_790_000_100),
-                }),
-            },
-            client_reports: vec![ClientReport {
-                at: 1_790_000_200,
-                peer: "127.0.0.1".into(),
-                client: Some("203.0.113.7".into()),
-                source: "internet".into(),
-                fields: ReportFields {
-                    kind: Some("load".into()),
-                    display: Some("standalone".into()),
-                    ua: Some("Mozilla/5.0 (iPad)".into()),
-                    build: Some("0.1.0".into()),
-                    host: Some("foh.example.org".into()),
-                    screen: Some("1194x834@2".into()),
-                    sw: Some("registered".into()),
-                    wake_lock: Some("held".into()),
-                    visibility: Some("visible".into()),
-                    reconnects: Some("0".into()),
-                    error: None,
-                    fps: None,
-                    long_frame_ms: None,
-                    touches_max: None,
-                    pointer: None,
-                },
-            }],
-        };
-        let json = serde_json::to_value(&status).unwrap();
-        assert_eq!(json["remote"]["https"]["days_left"], 60);
-        assert_eq!(json["remote"]["tunnel"]["ready_connections"], 4);
-        assert_eq!(json["remote"]["access"], json!(true));
-        // A report's fields sit next to when and where it came from.
-        assert_eq!(
-            json["client_reports"][0],
-            json!({"at": 1_790_000_200_u64, "peer": "127.0.0.1", "client": "203.0.113.7",
-                   "source": "internet",
-                   "kind": "load", "display": "standalone", "ua": "Mozilla/5.0 (iPad)",
-                   "build": "0.1.0", "host": "foh.example.org", "screen": "1194x834@2",
-                   "sw": "registered", "wake_lock": "held", "visibility": "visible",
-                   "reconnects": "0", "error": null,
-                   "fps": null, "long_frame_ms": null, "touches_max": null, "pointer": null})
-        );
-        // An older hub's answer has no `remote` and no `client_reports`: the
-        // defaults.
-        let mut older = json.clone();
-        older.as_object_mut().unwrap().remove("remote");
-        older.as_object_mut().unwrap().remove("client_reports");
-        let older = serde_json::from_value::<HubStatus>(older).unwrap();
-        assert_eq!(older.remote, RemoteStatus::default());
-        assert!(older.client_reports.is_empty());
-        assert_eq!(json["instances"][0]["listeners"], 4);
-        assert_eq!(json["stage_aut"]["writes"], 3);
-        assert_eq!(json["instances"][0]["connect_failures"], 0);
-        assert_eq!(
-            json["layout"]["unresolved"][0],
-            json!({"instance": "band", "target": "live_set tracks[name=Nobody #]",
-                   "error": "not found: tracks[name=Nobody #]"})
-        );
-        assert_eq!(serde_json::from_value::<HubStatus>(json).unwrap(), status);
-        let auth = AuthResponse {
-            token: "t".into(),
-            expires_in: 60,
-        };
-        assert_eq!(
-            serde_json::to_value(&auth).unwrap(),
-            json!({"token": "t", "expires_in": 60})
-        );
-        assert_eq!(
-            serde_json::from_value::<AuthRequest>(json!({"pin": "2468"})).unwrap(),
-            AuthRequest { pin: "2468".into() }
-        );
-        assert_eq!(
-            serde_json::to_value(ApiError::new("INVALID_PIN", "Invalid PIN")).unwrap(),
-            json!({"code": "INVALID_PIN", "message": "Invalid PIN"})
-        );
-    }
-
-    #[test]
-    fn a_report_body_keeps_its_known_fields_only() {
-        // Missing fields are none; a field the hub does not know is dropped.
-        let body = json!({"kind": "error", "error": "boom", "cookie": "secret", "ua": null});
-        assert_eq!(
-            serde_json::from_value::<ReportFields>(body).unwrap(),
-            ReportFields {
-                kind: Some("error".into()),
-                display: None,
-                ua: None,
-                build: None,
-                host: None,
-                screen: None,
-                sw: None,
-                wake_lock: None,
-                visibility: None,
-                reconnects: None,
-                error: Some("boom".into()),
-                fps: None,
-                long_frame_ms: None,
-                touches_max: None,
-                pointer: None,
-            }
-        );
-        // A perf report's numbers (#5, K4) are fields of their own.
-        let perf = json!({"kind": "perf", "fps": "59.9", "long_frame_ms": "34",
-                          "touches_max": "4", "pointer": "touch"});
-        assert_eq!(
-            serde_json::from_value::<ReportFields>(perf).unwrap(),
-            ReportFields {
-                kind: Some("perf".into()),
-                fps: Some("59.9".into()),
-                long_frame_ms: Some("34".into()),
-                touches_max: Some("4".into()),
-                pointer: Some("touch".into()),
-                ..ReportFields::default()
-            }
-        );
-        assert_eq!(
-            serde_json::from_value::<ReportFields>(json!({})).unwrap(),
-            ReportFields::default()
-        );
-    }
-}
+mod tests;

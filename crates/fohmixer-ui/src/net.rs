@@ -178,11 +178,11 @@ mod tests {
     fn the_socket_url_carries_the_token_and_the_protocol() {
         assert_eq!(
             ws_url("http:", "10.0.0.5:8480", "t.k.n"),
-            "ws://10.0.0.5:8480/ws?token=t.k.n&proto=1"
+            "ws://10.0.0.5:8480/ws?token=t.k.n&proto=2"
         );
         assert_eq!(
             ws_url("https:", "foh.local", "x"),
-            "wss://foh.local/ws?token=x&proto=1"
+            "wss://foh.local/ws?token=x&proto=2"
         );
     }
 
@@ -191,10 +191,13 @@ mod tests {
 
     #[test]
     fn a_served_protocol_keeps_the_page() {
-        assert_eq!(on_hello(1, 1, SAME, 0.0, None), Decision::Keep);
+        // This page speaks protocol 2 (#43).
+        assert_eq!(on_hello(2, 2, SAME, 0.0, None), Decision::Keep);
+        assert_eq!(on_hello(3, 2, SAME, 0.0, None), Decision::Keep);
         assert_eq!(on_hello(2, 1, SAME, 0.0, None), Decision::Keep);
         // The hub no longer serves this page, or is older than it.
-        assert_eq!(on_hello(3, 2, SAME, 1e6, None), Decision::Reload);
+        assert_eq!(on_hello(4, 3, SAME, 1e6, None), Decision::Reload);
+        assert_eq!(on_hello(1, 1, SAME, 1e6, None), Decision::Reload);
         assert_eq!(on_hello(0, 0, SAME, 1e6, None), Decision::Reload);
     }
 
@@ -203,18 +206,18 @@ mod tests {
         // #26: a deploy with the same protocol still brings an open page
         // (a Home Screen app) onto the new bundle by itself.
         let t = 1_000_000.0;
-        assert_eq!(on_hello(1, 1, SAME, t, None), Decision::Keep);
-        assert_eq!(on_hello(1, 1, "0.0.0-other", t, None), Decision::Reload);
-        assert_eq!(on_hello(1, 1, "", t, None), Decision::Reload);
+        assert_eq!(on_hello(2, 2, SAME, t, None), Decision::Keep);
+        assert_eq!(on_hello(2, 2, "0.0.0-other", t, None), Decision::Reload);
+        assert_eq!(on_hello(2, 2, "", t, None), Decision::Reload);
         // The build is compared whole, not by prefix.
         let longer = format!("{SAME}.1");
-        assert_eq!(on_hello(1, 1, &longer, t, None), Decision::Reload);
+        assert_eq!(on_hello(2, 2, &longer, t, None), Decision::Reload);
         // Still at most once a minute: a page that just reloaded keeps
         // itself (the hub may serve an older bundle than it names).
         let other = "0.0.0-other";
-        assert_eq!(on_hello(1, 1, other, t, Some(t - 59_999.0)), Decision::Keep);
+        assert_eq!(on_hello(2, 2, other, t, Some(t - 59_999.0)), Decision::Keep);
         assert_eq!(
-            on_hello(1, 1, other, t, Some(t - 60_000.0)),
+            on_hello(2, 2, other, t, Some(t - 60_000.0)),
             Decision::Reload
         );
     }
@@ -222,9 +225,9 @@ mod tests {
     #[test]
     fn reloads_are_at_most_one_per_minute() {
         let t = 1_000_000.0;
-        assert_eq!(on_hello(3, 2, SAME, t, Some(t - 59_999.0)), Decision::Keep);
+        assert_eq!(on_hello(4, 3, SAME, t, Some(t - 59_999.0)), Decision::Keep);
         assert_eq!(
-            on_hello(3, 2, SAME, t, Some(t - 60_000.0)),
+            on_hello(4, 3, SAME, t, Some(t - 60_000.0)),
             Decision::Reload
         );
         assert_eq!(on_missing_hello(t, Some(t - 1_000.0)), Decision::Keep);

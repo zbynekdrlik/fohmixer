@@ -21,6 +21,8 @@
 //! - Busy: Live's main-thread tick older than 150 ms, or no heartbeat for
 //!   300 ms (checked every 50 ms), reported on change with its reason; a
 //!   heartbeat after an overdue gap is logged with where it was held.
+//!   While busy the state is reported again every 250 ms with the age of
+//!   Live's last main-thread tick (#43: the clients' `link`).
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -37,7 +39,8 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 use super::{
-    Backoff, ConnectInfo, Frame, LiveValue, busy_reason, late_heartbeat, parse_frame, wall_ms,
+    Backoff, ConnectInfo, Frame, LiveValue, busy_reason, late_heartbeat, link_due, parse_frame,
+    tick_age_now, wall_ms,
 };
 use crate::config::InstanceCfg;
 
@@ -53,8 +56,14 @@ pub const BUSY_CHECK: Duration = Duration::from_millis(50);
 pub enum LiveEvent {
     Connected(ConnectInfo),
     Disconnected,
+    /// Live's main-thread health: on every busy change (`changed`, with its
+    /// `reason`) and every `LINK_EVERY` while busy. `tick_age_ms` is the age
+    /// of Live's last main-thread tick as the hub knows it.
     Busy {
         busy: bool,
+        changed: bool,
+        tick_age_ms: f64,
+        reason: Option<String>,
     },
     /// The result of a request sent with [`LiveHandle::send`].
     Result {
@@ -317,6 +326,8 @@ struct Health {
     busy: bool,
     age_ms: f64,
     last_heartbeat: Instant,
+    /// When the state last went to the router.
+    last_link: Instant,
 }
 
 impl Session<'_> {
@@ -324,23 +335,36 @@ impl Session<'_> {
         (self.events)(self.name, event);
     }
 
-    /// Reports a busy change, with its reason.
-    fn check_busy(&self, health: &mut Health) {
-        let reason = busy_reason(health.age_ms, health.last_heartbeat.elapsed());
+    /// Reports a busy change, with its reason (`late`: what the heartbeat
+    /// that ended a stall says), and the state every `LINK_EVERY` while
+    /// busy.
+    fn check_busy(&self, health: &mut Health, late: Option<&str>) {
+        let since = health.last_heartbeat.elapsed();
+        let reason = busy_reason(health.age_ms, since);
         let busy = reason.is_some();
-        if busy != health.busy {
+        let changed = busy != health.busy;
+        let why = reason
+            .or_else(|| late.map(str::to_string))
+            .unwrap_or_else(|| "heartbeats in time, Live's main thread ticking".to_string());
+        if changed {
             health.busy = busy;
             lock(self.snapshot).busy = busy;
             tracing::info!(
                 instance = self.name,
                 busy,
                 main_tick_age_ms = health.age_ms,
-                reason = reason
-                    .as_deref()
-                    .unwrap_or("heartbeats in time, Live's main thread ticking"),
+                reason = why.as_str(),
                 "Live busy changed"
             );
-            self.emit(LiveEvent::Busy { busy });
+        }
+        if link_due(changed, busy, health.last_link.elapsed()) {
+            health.last_link = Instant::now();
+            self.emit(LiveEvent::Busy {
+                busy,
+                changed,
+                tick_age_ms: tick_age_now(health.age_ms, since),
+                reason: changed.then_some(why),
+            });
         }
     }
 
@@ -356,6 +380,7 @@ impl Session<'_> {
             busy: false,
             age_ms: 0.0,
             last_heartbeat: Instant::now(),
+            last_link: Instant::now(),
         };
         let mut tick = tokio::time::interval(BUSY_CHECK);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -406,7 +431,7 @@ impl Session<'_> {
                 _ = &mut writer => break End::Lost,
                 _ = tick.tick() => {
                     if health.connected {
-                        self.check_busy(&mut health);
+                        self.check_busy(&mut health, None);
                     }
                 }
             }
@@ -465,16 +490,16 @@ impl Session<'_> {
                 // sent the queued connect, and Live runs it until Live
                 // restarts (#5; the current script sends connect first).
                 // It is recorded, and busy is checked only once connected.
-                if let Some(note) =
-                    late_heartbeat(health.last_heartbeat.elapsed(), gap_ms, sent_ms, wall_ms())
-                {
+                let late =
+                    late_heartbeat(health.last_heartbeat.elapsed(), gap_ms, sent_ms, wall_ms());
+                if let Some(note) = &late {
                     tracing::warn!(instance = self.name, main_tick_age_ms, "{note}");
                 }
                 health.age_ms = main_tick_age_ms;
                 health.last_heartbeat = Instant::now();
                 lock(self.snapshot).main_tick_age_ms = Some(main_tick_age_ms);
                 if health.connected {
-                    self.check_busy(health);
+                    self.check_busy(health, late.as_deref());
                 }
             }
             Frame::Result { uuid, data } => match pending.remove(&uuid) {

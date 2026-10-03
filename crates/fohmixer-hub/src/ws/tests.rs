@@ -196,3 +196,25 @@ fn a_forwarded_address_cannot_add_fields_to_its_line() {
     let line = r#"client connected client=4 peer=127.0.0.1 forwarded="203.0.113.7 source=lan" source="internet" origin="-""#;
     assert!(log.contains(&format!("{line}\n")), "{log}");
 }
+
+#[test]
+fn a_page_time_reaches_the_pong_and_the_event_log_to_the_bit() {
+    // #43: serde_json's `float_roundtrip`. A page time has 17 significant
+    // digits; serde_json's default parser reads these three one bit off, so a
+    // pong would not echo its ping's own time and the event log would not
+    // hold the page's (the first E2E run of `link.spec.ts` caught it).
+    for text in [
+        "1791045199487.8555",
+        "1791045199790.3975",
+        "1791045199943.1965",
+    ] {
+        let msg: ClientMsg =
+            serde_json::from_str(&format!(r#"{{"type":"ping","n":1,"t":{text}}}"#)).unwrap();
+        let ClientMsg::Ping { t, .. } = msg else {
+            panic!("a ping")
+        };
+        assert_eq!(t, text.parse::<f64>().unwrap(), "{text}");
+        let pong = serde_json::to_string(&ServerMsg::Pong { n: 1, t, h: 0.0 }).unwrap();
+        assert!(pong.contains(&format!("\"t\":{text}")), "{pong}");
+    }
+}

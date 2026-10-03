@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use fohmixer_hub::config::{Config, InstanceCfg};
-use fohmixer_proto::client::{ClientMsg, HubStatus, LiveCommand, ServerMsg, ValueItem};
+use fohmixer_proto::client::{AckItem, ClientMsg, HubStatus, LiveCommand, ServerMsg, ValueItem};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -91,9 +91,57 @@ impl TestHub {
         }
     }
 
-    /// The client WebSocket URL with the token and protocol 1.
+    /// The client WebSocket URL with the token and protocol 2.
     pub fn ws_url(&self) -> String {
-        format!("ws://{}/ws?token={}&proto=1", self.addr, self.token)
+        format!("ws://{}/ws?token={}&proto=2", self.addr, self.token)
+    }
+
+    /// Every event-log record written so far (#43), oldest day first.
+    pub fn events(&self) -> Vec<Value> {
+        let logs = self.dir.join("logs");
+        let mut days: Vec<PathBuf> = std::fs::read_dir(&logs)
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .map(|e| e.path())
+                    .filter(|p| {
+                        p.file_name()
+                            .and_then(|n| n.to_str())
+                            .is_some_and(|n| n.starts_with("events-"))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        days.sort();
+        days.iter()
+            .flat_map(|day| {
+                std::fs::read_to_string(day)
+                    .unwrap_or_default()
+                    .lines()
+                    .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
+    /// Waits up to `limit` for the event log to satisfy `check`; the records.
+    pub async fn events_until(
+        &self,
+        limit: Duration,
+        check: impl Fn(&[Value]) -> bool,
+    ) -> Vec<Value> {
+        let deadline = Instant::now() + limit;
+        loop {
+            let records = self.events();
+            if check(&records) {
+                return records;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the event log never matched: {records:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
     }
 
     /// A connected client (past its hello).
@@ -393,6 +441,40 @@ impl Client {
             .await
             .unwrap();
         assert_eq!(slots[0]["ok"], json!(true), "{slots:?}");
+    }
+
+    /// A write (`set`, #43) of `prop` on `target`, sequence `seq`.
+    pub async fn write(
+        &mut self,
+        instance: &str,
+        target: &str,
+        prop: &str,
+        value: Value,
+        seq: u64,
+        is_final: bool,
+    ) {
+        self.send(&ClientMsg::Set {
+            instance: instance.into(),
+            target: target.into(),
+            prop: prop.into(),
+            value,
+            seq,
+            t: 1_000.0 + seq as f64,
+            is_final,
+        })
+        .await;
+    }
+
+    /// The ack item of write `seq` of `key`, within `limit`.
+    pub async fn ack_of(&mut self, key: &str, seq: u64, limit: Duration) -> AckItem {
+        let key = key.to_string();
+        self.wait(limit, move |m| match m {
+            ServerMsg::Ack { items } => {
+                items.iter().find(|i| i.key == key && i.seq == seq).cloned()
+            }
+            _ => None,
+        })
+        .await
     }
 
     /// `get_prop` through a command.

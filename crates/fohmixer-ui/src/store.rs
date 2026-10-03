@@ -13,11 +13,13 @@
 //!
 //! The pure parts are unit-tested natively: here `Slot`, `Readiness`,
 //! `Wanted`, `Badge`, `slot_failure`, `range_from` and `next_range`, in `conn` the
-//! connection's decisions (reconnect, hello, the watchdog, the layout and
-//! instance changes). `LiveStore` (`live`) is the browser glue that carries
-//! them out.
+//! connection's decisions (reconnect, hello, the watchdog and its pings, the
+//! layout and instance changes), in `intent` the controls' writes waiting
+//! for their ack (#43). `LiveStore` (`live`) is the browser glue that
+//! carries them out.
 
 mod conn;
+pub mod intent;
 mod live;
 
 use std::collections::BTreeMap;

@@ -1,7 +1,8 @@
 //! The fader (spec F8–F10, I4, F18): Pointer Events with this fader's own
 //! pointer (several faders move at once), relative movement, the touch
 //! shaping, the double-tap glide, sends coalesced to one per animation frame
-//! and the final value on release. The frame loop writes the position as
+//! and the final value on release, each a `set` through the store's intents
+//! (#43; the release's is `final`). The frame loop writes the position as
 //! `--p` (the stylesheet places the cap and the fill from it). The travel
 //! is the track's whole height, 1:1 with the finger (TouchOSC's
 //! `responseFactor` 100; #21, parity audit #2).
@@ -130,15 +131,16 @@ pub fn FaderView(targets: Vec<Target>, shaping: bool) -> impl IntoView {
             .flatten()
             .and_then(|v| law.pos(v))
     };
-    let send = move |p: f64| {
+    let send = move |p: f64, is_final: bool| {
         let _ = targets.try_with_value(|all| {
             for t in all {
                 if let (Some(spec), Some(value)) = (&t.spec, t.law.value(p)) {
-                    store.set_prop(
+                    store.set(
                         &spec.instance,
                         &spec.target,
                         &spec.prop,
                         json!(value),
+                        is_final,
                         Some(fail_flash(failed)),
                     );
                 }
@@ -174,7 +176,7 @@ pub fn FaderView(targets: Vec<Target>, shaping: bool) -> impl IntoView {
     let on_up = move |ev: web_sys::PointerEvent| {
         let id = ev.pointer_id();
         if let Some(Some(p)) = ctl.try_update_value(|c| c.up(id, dom::now())) {
-            send(p);
+            send(p, true);
         }
     };
     // A cancelled pointer, or one whose capture was lost without an up:
@@ -182,7 +184,7 @@ pub fn FaderView(targets: Vec<Target>, shaping: bool) -> impl IntoView {
     let on_cancel = move |ev: web_sys::PointerEvent| {
         let id = ev.pointer_id();
         if let Some(Some(p)) = ctl.try_update_value(|c| c.cancel(id, dom::now())) {
-            send(p);
+            send(p, true);
         }
     };
 
@@ -193,7 +195,7 @@ pub fn FaderView(targets: Vec<Target>, shaping: bool) -> impl IntoView {
                 return;
             };
             if let Some(p) = motion.send {
-                send(p);
+                send(p, false);
             }
             let Some(p) = motion.pos else {
                 return;

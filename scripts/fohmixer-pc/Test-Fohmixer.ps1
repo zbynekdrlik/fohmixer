@@ -268,6 +268,43 @@ try {
     Assert ((Get-FohSid $me) -ceq $meSid -and (Get-FohSid (Get-FohLeafName $me)) -ceq $meSid) 'sid-of-an-account-with-or-without-its-computer'
     Assert ((Get-FohSid 'S-1-5-18') -ceq 'S-1-5-18' -and (Get-FohSid ('no-such-account-' + $id)) -ceq '') 'sid-taken-as-it-is-or-empty-for-an-unknown-account'
 
+    # ---- the hub logs' rotation (#43): the last 20 starts, by UTC stamp ----
+    $utc = [DateTimeKind]::Utc
+    Assert ((Get-FohLogStamp -Time (New-Object DateTime 2026, 10, 3, 12, 0, 0, 123, $utc)) -ceq '20261003-120000-123') 'log-stamp-is-the-utc-time-to-the-millisecond'
+    $rot = Join-Path $base 'log-rotation'
+    New-Item -ItemType Directory -Force -Path $rot | Out-Null
+    foreach ($d in 1..21) {
+        [IO.File]::WriteAllText((Join-Path $rot ('hub.out.202601{0:D2}-000000-000.log' -f $d)), "run $d`n")
+    }
+    $current = Join-Path $rot 'hub.out.log'
+    [IO.File]::WriteAllText($current, "the last run`n")
+    [IO.File]::SetLastWriteTimeUtc($current, (New-Object DateTime 2026, 10, 3, 12, 0, 0, 123, $utc))
+    $prev = Join-Path $rot 'hub.out.log.prev'
+    [IO.File]::WriteAllText($prev, "an older launcher's previous run`n")
+    [IO.File]::SetLastWriteTimeUtc($prev, (New-Object DateTime 2026, 10, 2, 8, 0, 0, 0, $utc))
+    [IO.File]::WriteAllText((Join-Path $rot 'hub.err.log'), "errors`n")
+    [IO.File]::WriteAllText((Join-Path $rot 'hub-launch.log'), "launch`n")
+    $kept = @(Move-FohHubLog -Logs $rot -Name 'hub.out' -Keep 20)
+    Assert ($kept.Count -eq 20) "rotation-keeps-20-starts ($($kept.Count))"
+    Assert ($kept[19] -ceq 'hub.out.20261003-120000-123.log' -and $kept[18] -ceq 'hub.out.20261002-080000-000.log') "rotation-names-the-run-by-its-last-write ($($kept[18]), $($kept[19]))"
+    Assert ([IO.File]::ReadAllText((Join-Path $rot 'hub.out.20261003-120000-123.log')) -ceq "the last run`n") 'rotation-moves-the-last-run-whole'
+    Assert (-not (Test-Path -LiteralPath $current) -and -not (Test-Path -LiteralPath $prev)) 'rotation-leaves-no-current-and-no-prev'
+    foreach ($d in 1..3) {
+        Assert (-not (Test-Path -LiteralPath (Join-Path $rot ('hub.out.202601{0:D2}-000000-000.log' -f $d)))) "rotation-deletes-the-oldest-$d"
+    }
+    Assert (Test-Path -LiteralPath (Join-Path $rot 'hub.out.20260104-000000-000.log')) 'rotation-keeps-the-oldest-of-the-20'
+    Assert ((Test-Path -LiteralPath (Join-Path $rot 'hub.err.log')) -and (Test-Path -LiteralPath (Join-Path $rot 'hub-launch.log'))) 'rotation-of-hub-out-leaves-the-other-logs'
+    # A run ending in the same millisecond as a kept one gets a suffix.
+    [IO.File]::WriteAllText($current, "a twin`n")
+    [IO.File]::SetLastWriteTimeUtc($current, (New-Object DateTime 2026, 10, 3, 12, 0, 0, 123, $utc))
+    $kept = @(Move-FohHubLog -Logs $rot -Name 'hub.out' -Keep 20)
+    Assert ([IO.File]::ReadAllText((Join-Path $rot 'hub.out.20261003-120000-123-1.log')) -ceq "a twin`n") 'rotation-suffixes-a-twin-stamp'
+    Assert ($kept.Count -eq 20 -and -not (Test-Path -LiteralPath (Join-Path $rot 'hub.out.20260104-000000-000.log'))) 'rotation-still-keeps-20'
+    $errKept = @(Move-FohHubLog -Logs $rot -Name 'hub.err' -Keep 20)
+    Assert ($errKept.Count -eq 1 -and $errKept[0] -like 'hub.err.*.log' -and -not (Test-Path -LiteralPath (Join-Path $rot 'hub.err.log'))) "rotation-of-hub-err ($($errKept -join ', '))"
+    $none = @(Move-FohHubLog -Logs $rot -Name 'hub.none' -Keep 20)
+    Assert ($none.Count -eq 0) 'rotation-with-nothing-to-rotate-keeps-nothing'
+
     # ---- Live's Library.cfg (#9) ----
     # Live uses the Library.cfg of its newest version (by number: 12.10 is
     # newer than 12.2); the User Library is ProjectPath + ProjectName, none

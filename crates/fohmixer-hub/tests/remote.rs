@@ -135,7 +135,7 @@ async fn the_public_name_is_served_over_https_next_to_plain_http() {
     );
 
     // The client WebSocket over TLS (wss://).
-    let url = format!("wss://{NAME}:{}/ws?token={}&proto=1", https.port, hub.token);
+    let url = format!("wss://{NAME}:{}/ws?token={}&proto=2", https.port, hub.token);
     let (mut ws, _) = tokio_tungstenite::client_async(url, tls(https.port, &ca).await)
         .await
         .expect("a wss upgrade");

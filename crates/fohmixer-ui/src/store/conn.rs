@@ -4,25 +4,35 @@
 //! the timers and the signals.
 //!
 //! A socket that stays silent is half-open (a Wi-Fi roam, an iPad that
-//! slept): once the hub said hello the store pings it every `PING_MS`, and
-//! a socket that heard nothing for `SILENCE_MS` (no hello, no pong, no
-//! value) is dropped and replaced. A socket that is open but never said
-//! hello talks to a hub that does not speak this protocol: one bounded
-//! reload (`net::on_missing_hello`), else it is replaced too.
+//! slept): once the hub said hello the store pings it every `PING_MS` while
+//! the page is visible (every `PING_HIDDEN_MS` while hidden), and a socket
+//! that heard nothing for `SILENCE_MS` (no hello, no pong, no value) is
+//! dropped and replaced. A socket that is open but never said hello talks
+//! to a hub that does not speak this protocol: one bounded reload
+//! (`net::on_missing_hello`), else it is replaced too.
+//!
+//! A ping (#43) carries its number, the page's clock and the round trip of
+//! the latest pong on this socket with the number of the ping it measured:
+//! the hub pairs the round trip with that ping's own time and arrival, and
+//! logs every ping, so its event log resolves a stall of a few hundred ms.
 
+use fohmixer_proto::client::ClientMsg;
 use fohmixer_proto::layout::Layout;
 
 use super::{Change, InstanceView, Wanted};
 use crate::binding::SubSpec;
 use crate::net;
 
-/// The watchdog's period: a ping (after the hello) and a silence check.
-pub const PING_MS: u64 = 1000;
+/// The watchdog's period: a ping (after the hello, while the page is
+/// visible) and a silence check.
+pub const PING_MS: u64 = 100;
+/// While the page is hidden it pings this often.
+pub const PING_HIDDEN_MS: f64 = 1000.0;
 /// A socket that heard nothing from the hub this long is replaced.
 pub const SILENCE_MS: f64 = 3000.0;
 /// A tick this long after the previous one fired late (a throttled
 /// background tab, a blocked main thread): it says nothing about the socket.
-const LATE_MS: f64 = 2.0 * PING_MS as f64;
+const LATE_MS: f64 = 2000.0;
 
 /// What the watchdog does on one of its ticks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,6 +104,14 @@ pub struct Conn {
     heard: f64,
     /// When the watchdog last ticked (page clock, ms).
     ticked: f64,
+    /// The page is hidden (it pings less often).
+    hidden: bool,
+    /// The next ping's number.
+    next_ping: u32,
+    /// When the last ping went (page clock, ms).
+    pinged: f64,
+    /// The last pong on this socket: its ping's number and round trip (ms).
+    rtt: Option<(u32, f64)>,
 }
 
 impl Conn {
@@ -127,6 +145,7 @@ impl Conn {
         self.hello_seen = false;
         self.heard = now;
         self.ticked = now;
+        self.rtt = None;
         self.socket
     }
 
@@ -174,12 +193,50 @@ impl Conn {
         }
         self.ticked = now;
         if now - self.heard < SILENCE_MS {
-            if self.ready { Tick::Ping } else { Tick::Wait }
+            if self.ready && self.ping_due(now) {
+                Tick::Ping
+            } else {
+                Tick::Wait
+            }
         } else if open && !self.hello_seen {
             Tick::NoHello
         } else {
             Tick::Silent
         }
+    }
+
+    /// Whether a ping is due at `now`: every tick while visible, every
+    /// `PING_HIDDEN_MS` while hidden.
+    fn ping_due(&self, now: f64) -> bool {
+        !self.hidden || now - self.pinged >= PING_HIDDEN_MS
+    }
+
+    /// The page was hidden or shown.
+    pub fn set_hidden(&mut self, hidden: bool) {
+        self.hidden = hidden;
+    }
+
+    /// The ping to send at `now` (page clock) and page time `t` (the epoch
+    /// clock of `set`): its number, `t`, and the latest pong's round trip on
+    /// this socket with the number of the ping it measured.
+    pub fn ping(&mut self, now: f64, t: f64) -> ClientMsg {
+        let n = self.next_ping;
+        self.next_ping = self.next_ping.wrapping_add(1);
+        self.pinged = now;
+        ClientMsg::Ping {
+            n,
+            t,
+            rtt: self.rtt.map(|(_, rtt)| rtt),
+            rtt_n: self.rtt.map(|(of, _)| of),
+        }
+    }
+
+    /// The pong of ping `n`, sent at page time `sent`, arrived at page time
+    /// `now`: its round trip, kept for the next ping.
+    pub fn pong(&mut self, n: u32, sent: f64, now: f64) -> f64 {
+        let rtt = now - sent;
+        self.rtt = Some((n, rtt));
+        rtt
     }
 
     /// A new wanted set: what to unsubscribe and subscribe, and whether the

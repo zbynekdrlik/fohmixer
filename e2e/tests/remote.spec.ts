@@ -64,7 +64,7 @@ function upgrade(headers: Record<string, string>): Promise<number> {
     const request = http.request({
       host: url.hostname,
       port: url.port,
-      path: `/ws?token=${await token()}&proto=1`,
+      path: `/ws?token=${await token()}&proto=2`,
       headers: {
         Connection: "Upgrade",
         Upgrade: "websocket",

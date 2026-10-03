@@ -87,11 +87,13 @@ pub fn ParamToggleView(
                         Write::On => t.on.clone(),
                         Write::Off => t.off.clone(),
                     };
-                    store.set_prop(
+                    // A press or release: a final `set` (#43).
+                    store.set(
                         &spec.instance,
                         &spec.target,
                         &spec.prop,
                         value,
+                        true,
                         Some(fail_flash(failed)),
                     );
                 }

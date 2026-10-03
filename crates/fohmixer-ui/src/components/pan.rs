@@ -29,13 +29,16 @@ pub fn PanView(state: RwSignal<Slot>, spec: SubSpec) -> impl IntoView {
     let root = NodeRef::<html::Div>::new();
 
     let live = move || slot.try_with_untracked(Slot::number).flatten();
-    let send = move |panning: f64| {
+    // Each write a `set` through the store's intents (#43); the release's
+    // is `final`.
+    let send = move |panning: f64, is_final: bool| {
         let _ = spec.try_with_value(|s| {
-            store.set_prop(
+            store.set(
                 &s.instance,
                 &s.target,
                 &s.prop,
                 json!(panning),
+                is_final,
                 Some(fail_flash(failed)),
             );
         });
@@ -66,14 +69,14 @@ pub fn PanView(state: RwSignal<Slot>, spec: SubSpec) -> impl IntoView {
     let on_up = move |ev: web_sys::PointerEvent| {
         let id = ev.pointer_id();
         if let Some(Some(v)) = ctl.try_update_value(|c| c.up(id, dom::now())) {
-            send(v);
+            send(v, true);
         }
     };
     // A cancelled pointer, or one whose capture was lost without an up.
     let on_cancel = move |ev: web_sys::PointerEvent| {
         let id = ev.pointer_id();
         if let Some(Some(v)) = ctl.try_update_value(|c| c.cancel(id, dom::now())) {
-            send(v);
+            send(v, true);
         }
     };
 
@@ -85,7 +88,7 @@ pub fn PanView(state: RwSignal<Slot>, spec: SubSpec) -> impl IntoView {
                 return;
             };
             if let Some(v) = motion.send {
-                send(v);
+                send(v, false);
             }
             let Some(p) = motion.pos else {
                 return;

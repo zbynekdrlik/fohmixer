@@ -56,6 +56,27 @@ class HarnessTest(unittest.TestCase):
         self.assertEqual(self.post("/hub/restart")[0], 404, "no hub in this test")
         self.assertEqual(self.post("/nothing")[0], 404)
 
+    def test_the_event_log_is_read_day_by_day(self):
+        logs = os.path.join(self.data, "logs")
+        os.makedirs(logs, exist_ok=True)
+        with open(os.path.join(logs, "events-2026-10-04.jsonl"), "w", encoding="utf-8") as f:
+            f.write('{"ev": "set", "seq": 2}\n{"ev": "ack", "seq": 2}\n{"ev": "ba')
+        with open(os.path.join(logs, "events-2026-10-03.jsonl"), "w", encoding="utf-8") as f:
+            f.write('{"ev": "set", "seq": 1}\n')
+        with open(os.path.join(logs, "hub.out.log"), "w", encoding="utf-8") as f:
+            f.write("not an event\n")
+        try:
+            status, answer = self.harness.handle("GET", "/hub/events", {})
+            self.assertEqual(status, 200)
+            self.assertEqual(
+                [(r["ev"], r["seq"]) for r in answer["events"]],
+                [("set", 1), ("set", 2), ("ack", 2)],
+                "oldest day first; a half-written line is left out",
+            )
+        finally:
+            shutil.rmtree(logs)
+        self.assertEqual(harness.event_records(self.data), [], "no logs folder: none")
+
     def test_a_control_line_reaches_the_host_and_brings_its_answer(self):
         status, answer = self.post("/host/band/line", {"line": "listeners mute live_set tracks 0"})
         self.assertEqual((status, answer), (200, {"answer": "LISTENERS 0"}))

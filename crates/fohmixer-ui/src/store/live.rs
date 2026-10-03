@@ -1,5 +1,6 @@
 //! The browser side of the store: the socket, the timers and the signals
-//! that carry out the decisions of `Conn` (`conn.rs`), `net` and the pure
+//! that carry out the decisions of `Conn` (`conn.rs`), `net`, the intent
+//! store (`intent.rs`), the dropout watch (`behave::link`) and the pure
 //! store types. Everything here is web glue (web_sys, JS closures, Leptos
 //! signals and timers), driven by the E2E suite in Chromium and WebKit.
 
@@ -7,7 +8,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::Duration;
 
-use fohmixer_proto::client::{CLOSE_RELOAD, ClientMsg, LiveCommand, ServerMsg};
+use fohmixer_proto::client::{AckItem, CLOSE_RELOAD, ClientMsg, LiveCommand, ServerMsg};
 use fohmixer_proto::layout::Layout;
 use leptos::prelude::*;
 use serde_json::{Value, json};
@@ -15,13 +16,18 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 
 use super::conn::{self, Conn, Tick};
+use super::intent::{Acked, Intents};
 use super::{InstanceView, ResultFn, Slot, TOKEN_KEY, next_range, slot_failure};
+use crate::behave::link::{self, DropoutWatch};
 use crate::binding::{SubSpec, unfold_targets};
 use crate::dom;
 use crate::net::{self, Decision, LayoutFetch};
 
 /// A parameter's range (`min`, `max`) as Live reports it.
 type Range = ArcRwSignal<Option<(f64, f64)>>;
+
+/// What hears why a control's write failed.
+type FailFn = Box<dyn FnOnce(String)>;
 
 /// The open socket and the handlers it calls (kept alive with it).
 struct Socket {
@@ -51,6 +57,11 @@ struct Inner {
     ranges: HashMap<(String, String), Range>,
     socket: Option<Socket>,
     pending: HashMap<String, ResultFn>,
+    /// The controls' writes waiting for their ack, with what hears each
+    /// one's failure (#43).
+    intents: Intents<FailFn>,
+    /// The link's dropouts (#43).
+    watch: DropoutWatch,
 }
 
 impl Inner {
@@ -64,6 +75,8 @@ impl Inner {
             ranges: HashMap::new(),
             socket: None,
             pending: HashMap::new(),
+            intents: Intents::default(),
+            watch: DropoutWatch::default(),
         }
     }
 }
@@ -108,9 +121,29 @@ impl LiveStore {
     }
 
     /// Connects: fetches the layout (checking the token), then opens the
-    /// socket.
+    /// socket; and starts the dropout watch's own tick (`tick_link`), which
+    /// runs until the store stops.
     pub fn start(self) {
         self.connect();
+        self.tick_link();
+    }
+
+    /// The dropout watch's own tick (#43), every `PING_MS` until the store
+    /// stops, whatever the socket does: it keeps ticking while the page
+    /// reconnects, so a lost socket counts from the page's next on-time tick.
+    fn tick_link(self) {
+        set_timeout(
+            move || {
+                if self.stopped() {
+                    return;
+                }
+                let _ = self
+                    .inner
+                    .try_update_value(|i| i.watch.tick(dom::epoch_now()));
+                self.tick_link();
+            },
+            Duration::from_millis(conn::PING_MS),
+        );
     }
 
     /// Ends the store (the surface unmounts): closes the socket, stops
@@ -251,13 +284,20 @@ impl LiveStore {
     }
 
     /// The watchdog of socket `number` (`Conn::tick`): every `PING_MS`
-    /// until that socket is gone.
+    /// until that socket is gone. It tells the dropout watch of each ping.
     fn watch(self, number: u64) {
         set_timeout(
             move || {
-                let Some(tick) = self.inner.try_update_value(|i| {
+                let Some((tick, ping)) = self.inner.try_update_value(|i| {
                     let open = i.socket.as_ref().is_some_and(Socket::open);
-                    i.conn.tick(number, dom::now(), open)
+                    let (now, epoch) = (dom::now(), dom::epoch_now());
+                    i.conn.set_hidden(dom::hidden());
+                    let tick = i.conn.tick(number, now, open);
+                    let ping = (tick == Tick::Ping).then(|| i.conn.ping(now, epoch));
+                    if let Some(ClientMsg::Ping { n, .. }) = &ping {
+                        i.watch.ping(*n, epoch);
+                    }
+                    (tick, ping)
                 }) else {
                     return;
                 };
@@ -265,7 +305,9 @@ impl LiveStore {
                     Tick::Done => return,
                     Tick::Wait => {}
                     Tick::Ping => {
-                        self.send(&ClientMsg::Ping);
+                        if let Some(ping) = &ping {
+                            self.send(ping);
+                        }
                     }
                     Tick::NoHello => {
                         let now = dom::wall_now();
@@ -301,6 +343,8 @@ impl LiveStore {
     fn on_close(self, code: Option<u16>) {
         let Some((closed, pending)) = self.inner.try_update_value(|i| {
             i.socket = None;
+            // A socket that said hello: a dropout until the next hello.
+            i.watch.lost(dom::epoch_now());
             (i.conn.closed(), std::mem::take(&mut i.pending))
         }) else {
             return;
@@ -337,8 +381,12 @@ impl LiveStore {
     }
 
     fn on_text(self, text: &str) {
-        let now = dom::now();
-        let _ = self.inner.try_update_value(|i| i.conn.heard(now));
+        let (now, epoch) = (dom::now(), dom::epoch_now());
+        let _ = self.inner.try_update_value(|i| {
+            i.conn.heard(now);
+            i.watch.heard(epoch);
+        });
+        self.send_reports();
         let msg = match serde_json::from_str::<ServerMsg>(text) {
             Ok(msg) => msg,
             Err(e) => {
@@ -390,7 +438,57 @@ impl LiveStore {
             ServerMsg::Error { id: None, message } => {
                 dom::log(&format!("the hub refused a request: {message}"));
             }
-            ServerMsg::Pong => {}
+            ServerMsg::Pong { n, t, .. } => {
+                let _ = self.inner.try_update_value(|i| {
+                    let rtt = i.conn.pong(n, t, epoch);
+                    i.watch.pong(n, rtt);
+                });
+            }
+            ServerMsg::Ack { items } => self.on_ack(&items),
+            // Live's health: the link counter's input (PR C).
+            ServerMsg::Link { .. } => {}
+        }
+    }
+
+    /// Sends the finished dropouts to the hub's event log (#43, a
+    /// `trace`); kept for the next try when the socket cannot take them.
+    fn send_reports(self) {
+        let reports = self
+            .inner
+            .try_update_value(|i| i.watch.take_reports())
+            .unwrap_or_default();
+        let Some(trace) = link::trace(&reports) else {
+            return;
+        };
+        for report in &reports {
+            dom::log(&format!(
+                "the hub link dropped out for {:.0} ms{}",
+                report.ms,
+                if report.socket_lost {
+                    " (the socket was lost)"
+                } else {
+                    ""
+                }
+            ));
+        }
+        if !self.send(&trace) {
+            let _ = self.inner.try_update_value(|i| i.watch.requeue(reports));
+        }
+    }
+
+    /// The hub's acks of the controls' writes: a failed write shows on its
+    /// control (spec I6: shown, never retried).
+    fn on_ack(self, items: &[AckItem]) {
+        for item in items {
+            let Some(acked) = self.inner.try_update_value(|i| i.intents.ack(item)) else {
+                return;
+            };
+            if let Acked::Failed(why, failed) = acked {
+                dom::log(&format!("set {} failed: {why}", item.key));
+                if let Some(failed) = failed {
+                    failed(why);
+                }
+            }
         }
     }
 
@@ -408,12 +506,16 @@ impl LiveStore {
             );
             return;
         }
-        let Some(hello) = self.inner.try_update_value(|i| i.conn.hello(dom::now())) else {
+        let Some(hello) = self.inner.try_update_value(|i| {
+            i.watch.hello(dom::epoch_now());
+            i.conn.hello(dom::now())
+        }) else {
             return;
         };
         dom::log(&format!("connected to hub {build}"));
         let _ = self.connected.try_set(true);
         crate::diag::connected();
+        self.send_reports();
         for spec in &hello.specs {
             self.send_sub(spec);
         }
@@ -623,9 +725,41 @@ impl LiveStore {
         }
     }
 
-    /// `set_prop` of one property; `failed` hears why it failed (spec I6:
-    /// shown, never retried).
-    pub fn set_prop(
+    /// A control's write (#43): `value` to `prop` of `target` on
+    /// `instance`, through the intent store as a `set` (`is_final`: a
+    /// release, a toggle or a tap); `failed` hears why it failed (spec I6:
+    /// shown, never retried). The intent stays open until its ack.
+    pub fn set(
+        self,
+        instance: &str,
+        target: &str,
+        prop: &str,
+        value: Value,
+        is_final: bool,
+        failed: Option<FailFn>,
+    ) {
+        let t = dom::epoch_now();
+        let Some((key, msg)) = self.inner.try_update_value(|i| {
+            i.intents
+                .set((instance, target, prop), value, t, is_final, failed)
+        }) else {
+            return;
+        };
+        if !self.send(&msg) {
+            dom::log(&format!("set {key} not sent: not connected to the hub"));
+            let failed = self
+                .inner
+                .try_update_value(|i| i.intents.unsent(&key))
+                .flatten();
+            if let Some(failed) = failed {
+                failed("not connected to the hub".to_string());
+            }
+        }
+    }
+
+    /// `set_prop` of one property through a `cmd` (REFRESH ALL's unfold);
+    /// `failed` hears why it failed (spec I6: shown, never retried).
+    fn set_prop(
         self,
         instance: &str,
         target: &str,
