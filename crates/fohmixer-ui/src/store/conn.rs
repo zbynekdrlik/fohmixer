@@ -297,5 +297,16 @@ pub fn instance_change(old: Option<&InstanceView>, new: &InstanceView) -> Instan
     }
 }
 
+/// Whether `new` brings its instance back online after `old` (none before
+/// its first report): the store sends that instance's open writes again
+/// (#43, L4). The hub forgets an instance's pending writes when it goes
+/// away, and after a reconnect's hello it reports every instance again,
+/// which a lost connection had marked offline. A busy instance getting idle
+/// or one that loaded another set is not back: its writes were not dropped.
+#[allow(dead_code)] // wired into LiveStore::on_instance by the green commit
+pub fn back_online(_old: Option<&InstanceView>, _new: &InstanceView) -> bool {
+    false
+}
+
 #[cfg(test)]
 mod tests;

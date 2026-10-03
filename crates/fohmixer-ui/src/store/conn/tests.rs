@@ -282,6 +282,30 @@ fn an_instance_back_online_or_on_another_set_reads_its_ranges_again() {
 }
 
 #[test]
+fn an_instance_back_online_gets_its_writes_again() {
+    let (on, off) = (view(true, "Show"), view(false, "Show"));
+    assert!(
+        back_online(Some(&off), &on),
+        "after a reconnect or a restart"
+    );
+    assert!(back_online(None, &on), "its first report");
+    assert!(!back_online(Some(&on), &on), "the same state");
+    assert!(!back_online(Some(&on), &off), "gone");
+    assert!(!back_online(Some(&off), &off), "still away");
+    assert!(!back_online(None, &off), "never there");
+    assert!(
+        !back_online(Some(&on), &view(true, "Rehearsal")),
+        "another set: the old writes are not its own"
+    );
+    let mut busy = view(true, "Show");
+    busy.busy = true;
+    assert!(
+        !back_online(Some(&busy), &on),
+        "a stall ended: nothing was dropped"
+    );
+}
+
+#[test]
 fn pings_carry_their_number_the_page_time_and_the_latest_round_trip() {
     // #43: the hub logs every ping; 100 ms apart they resolve a short stall.
     assert_eq!(PING_MS, 100);

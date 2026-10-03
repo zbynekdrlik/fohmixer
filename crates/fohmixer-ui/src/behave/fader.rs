@@ -397,6 +397,20 @@ impl FaderCtl {
         self.pointer.is_some() || self.glide.is_some() || now < self.hold_until
     }
 
+    /// The store's word on this fader's write at `now` (#43, L3): while its
+    /// intent is open (sending, unconfirmed or not sent) the fader shows its
+    /// own position and Live's value only moves the ghost, and a touch starts
+    /// from the cap; when the intent closes (an ack at least as new, or
+    /// another client's newer write) the post-release hold runs again from
+    /// then, so Live's echo of the write lands before Live's value shows.
+    pub fn intent(&mut self, _open: bool, _now: f64) {}
+
+    /// Whether a glide ended (arrived, or stopped because Live's value went)
+    /// since the last call: the store then marks its last write released.
+    pub fn take_ended(&mut self) -> bool {
+        false
+    }
+
     /// Pointer `id` pressed at `y` (px) on a fader `travel` px long, while
     /// Live's value sits at position `live`: whether this pointer now drives
     /// the fader.

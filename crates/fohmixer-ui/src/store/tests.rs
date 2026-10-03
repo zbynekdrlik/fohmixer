@@ -76,6 +76,62 @@ fn a_slot_reads_as_a_number_a_flag_or_a_display_string() {
 }
 
 #[test]
+fn a_lost_connection_keeps_a_slots_value_as_stale() {
+    let fresh = Slot::Value {
+        value: json!(0.7),
+        display: Some("-6.0 dB".into()),
+        at: 5.0,
+    };
+    let stale = fresh.clone().into_stale();
+    assert_eq!(
+        stale,
+        Slot::Stale {
+            value: json!(0.7),
+            display: Some("-6.0 dB".into()),
+            at: 5.0
+        }
+    );
+    // Shown and touched as before (L2)...
+    assert!(stale.is_ready() && !stale.is_error());
+    assert_eq!(Readiness::of_slot(&stale), Readiness::Ready);
+    assert_eq!(
+        (stale.number(), stale.display(), stale.at(), stale.value()),
+        (Some(0.7), Some("-6.0 dB"), Some(5.0), Some(&json!(0.7)))
+    );
+    assert_eq!(
+        Slot::Value {
+            value: json!(true),
+            display: None,
+            at: 1.0
+        }
+        .into_stale()
+        .flag(),
+        Some(true)
+    );
+    // ...but not fresh: a meter and the status light take only a fresh one.
+    assert!(fresh.is_fresh() && !stale.is_fresh());
+    assert_eq!(fresh.fresh_number(), Some(0.7));
+    assert_eq!(stale.fresh_number(), None);
+    assert_eq!(stale.clone().into_stale(), stale, "stale stays stale");
+    // Without a value there is nothing to keep.
+    for other in [Slot::Pending, Slot::Error("gone".into())] {
+        assert_eq!(other.clone().into_stale(), other);
+        assert!(!other.is_fresh());
+        assert_eq!(other.fresh_number(), None);
+    }
+    assert_eq!(
+        Slot::Value {
+            value: json!("text"),
+            display: None,
+            at: 1.0
+        }
+        .fresh_number(),
+        None,
+        "a fresh value that is no number"
+    );
+}
+
+#[test]
 fn the_wanted_set_subscribes_each_key_once_and_releases_the_rest() {
     let mut wanted = Wanted::default();
     assert!(wanted.is_empty());

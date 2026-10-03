@@ -640,3 +640,87 @@ fn a_zero_travel_counts_as_one_pixel() {
     f.moved(1, 9.9, 1.0);
     assert_close(f.frame(2.0, None).pos.unwrap(), 0.1);
 }
+
+#[test]
+fn while_its_write_is_open_the_fader_shows_its_own_position_not_lives() {
+    // L3: released inside a stall, its write not yet acked.
+    let mut f = touched(0.25);
+    f.intent(true, 5.0);
+    f.moved(1, 450.0, 10.0);
+    let finger = f.frame(16.0, Some(0.25)).pos.unwrap();
+    assert_close(finger, 0.75);
+    assert_eq!(f.up(1, 20.0), None);
+    // The plain hold (100 ms) is long over, but the write is open.
+    assert_eq!(f.frame(500.0, Some(0.25)).pos, Some(finger));
+    f.intent(true, 1_000.0);
+    let late = f.frame(5_000.0, Some(0.1));
+    assert_eq!(late.pos, Some(finger), "Live's value only moves the ghost");
+    assert_eq!(late.send, None);
+    // The ack closes it: the hold runs again from then.
+    f.intent(false, 6_000.0);
+    assert_eq!(f.frame(6_099.0, Some(0.1)).pos, Some(finger));
+    assert_eq!(
+        f.frame(6_100.0, Some(0.75)).pos,
+        Some(0.75),
+        "then Live's value"
+    );
+    // A write that was never open starts no hold when it is not.
+    f.intent(false, 7_000.0);
+    assert_eq!(f.frame(7_001.0, Some(0.3)).pos, Some(0.3));
+    // With shaping, the hold after the close is a second.
+    let mut f = FaderCtl::new(true, zero_db());
+    assert!(f.down(1, 500.0, TRAVEL, 0.0, 0.25));
+    f.intent(true, 1.0);
+    f.up(1, 10.0);
+    f.intent(false, 3_000.0);
+    assert_eq!(f.frame(3_999.0, Some(0.1)).pos, Some(0.25));
+    assert_eq!(f.frame(4_000.0, Some(0.1)).pos, Some(0.1));
+}
+
+#[test]
+fn a_touch_while_its_write_is_open_starts_from_the_cap() {
+    let mut f = touched(0.25);
+    f.moved(1, 450.0, 10.0);
+    let cap = f.frame(16.0, Some(0.25)).pos.unwrap();
+    f.up(1, 20.0);
+    // Its release was not sent (L4): long after the hold the cap stays.
+    f.intent(true, 30.0);
+    assert!(f.down(1, 500.0, TRAVEL, 5_000.0, 0.25));
+    assert_eq!(f.frame(5_001.0, Some(0.25)).pos, Some(cap));
+    f.moved(1, 490.0, 5_010.0);
+    assert_close(f.frame(5_016.0, Some(0.25)).pos.unwrap(), cap + 0.1);
+}
+
+#[test]
+fn the_end_of_a_glide_is_told_once() {
+    let live = 0.25;
+    let double_tapped = || {
+        let mut f = FaderCtl::new(false, zero_db());
+        f.down(1, 500.0, TRAVEL, 0.0, live);
+        f.up(1, 20.0);
+        f.down(1, 500.0, TRAVEL, 60.0, live);
+        f.up(1, 80.0);
+        f
+    };
+    let mut f = double_tapped();
+    assert!(!f.take_ended(), "a release is told by the control itself");
+    f.frame(1080.0, Some(live));
+    assert!(!f.take_ended(), "still gliding");
+    let arrive = 80.0 + (to_pos(UNITY) - live) / GLIDE_SPEED * 1000.0 + 1.0;
+    assert_eq!(f.frame(arrive, Some(live)).send, Some(to_pos(UNITY)));
+    assert!(f.take_ended(), "arrived");
+    assert!(!f.take_ended(), "once");
+    f.frame(arrive + 10.0, Some(live));
+    assert!(!f.take_ended());
+    // Stopped because Live's value went: ended too.
+    let mut f = double_tapped();
+    f.frame(1080.0, Some(live));
+    f.frame(1100.0, None);
+    assert!(f.take_ended());
+    // Stopped by a touch: the touch's own release tells.
+    let mut f = double_tapped();
+    f.frame(1080.0, Some(live));
+    assert!(f.down(2, 300.0, TRAVEL, 1090.0, live));
+    f.frame(1100.0, Some(live));
+    assert!(!f.take_ended());
+}

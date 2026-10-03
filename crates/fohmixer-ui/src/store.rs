@@ -5,9 +5,11 @@
 //! instances' states and the hub values.
 //!
 //! I8: every subscription starts `Pending` and goes back to `Pending` when
-//! the hub connection drops, its instance goes offline, or REFRESH ALL
-//! resubscribes; a control accepts input only while its slots hold Live's
-//! values. I5: a binding that does not resolve is an `Error` slot; every
+//! its instance goes offline or REFRESH ALL resubscribes; a control accepts
+//! input only while its slots hold Live's values. A lost hub connection
+//! keeps each slot's value, marked `Stale` (#43, L2): the control still
+//! shows it and takes touches, and the next value from the hub makes it
+//! fresh. I5: a binding that does not resolve is an `Error` slot; every
 //! control bound to one is shown red (`data-binding="unresolved"`) and
 //! disabled (`Readiness`).
 //!
@@ -41,6 +43,14 @@ pub enum Slot {
         display: Option<String>,
         at: f64,
     },
+    /// Live's last value from a hub connection that was lost (#43, §4.2):
+    /// shown and touchable (L2), but not fresh (a meter or the status light
+    /// does not take it).
+    Stale {
+        value: Value,
+        display: Option<String>,
+        at: f64,
+    },
     /// The binding does not resolve (a missing or ambiguous name): red and
     /// disabled (I5).
     Error(String),
@@ -62,8 +72,20 @@ impl Slot {
         }
     }
 
-    /// Whether Live's value is here (the control may take input).
+    /// The slot after the hub connection was lost: a value is kept, marked
+    /// stale; anything else stays as it is.
+    pub fn into_stale(self) -> Self {
+        Self::Pending
+    }
+
+    /// Whether Live's value is here, fresh or stale (the control may take
+    /// input, L2).
     pub fn is_ready(&self) -> bool {
+        matches!(self, Self::Value { .. } | Self::Stale { .. })
+    }
+
+    /// Whether Live's value is here and fresh (from the current connection).
+    pub fn is_fresh(&self) -> bool {
         matches!(self, Self::Value { .. })
     }
 
@@ -73,7 +95,7 @@ impl Slot {
 
     pub fn value(&self) -> Option<&Value> {
         match self {
-            Self::Value { value, .. } => Some(value),
+            Self::Value { value, .. } | Self::Stale { value, .. } => Some(value),
             _ => None,
         }
     }
@@ -81,6 +103,15 @@ impl Slot {
     /// Live's value as a number.
     pub fn number(&self) -> Option<f64> {
         self.value().and_then(Value::as_f64)
+    }
+
+    /// Live's value as a number, only while it is fresh (a meter never
+    /// freezes at a stale level).
+    pub fn fresh_number(&self) -> Option<f64> {
+        match self {
+            Self::Value { value, .. } => value.as_f64(),
+            _ => None,
+        }
     }
 
     /// Live's value as a flag (`mute`, `solo`).
@@ -91,7 +122,7 @@ impl Slot {
     /// Live's display string.
     pub fn display(&self) -> Option<&str> {
         match self {
-            Self::Value { display, .. } => display.as_deref(),
+            Self::Value { display, .. } | Self::Stale { display, .. } => display.as_deref(),
             _ => None,
         }
     }
@@ -99,7 +130,7 @@ impl Slot {
     /// When the value arrived.
     pub fn at(&self) -> Option<f64> {
         match self {
-            Self::Value { at, .. } => Some(*at),
+            Self::Value { at, .. } | Self::Stale { at, .. } => Some(*at),
             _ => None,
         }
     }
@@ -121,7 +152,7 @@ impl Readiness {
     /// One slot's readiness.
     pub fn of_slot(slot: &Slot) -> Self {
         match slot {
-            Slot::Value { .. } => Self::Ready,
+            Slot::Value { .. } | Slot::Stale { .. } => Self::Ready,
             Slot::Pending => Self::Waiting,
             Slot::Error(_) => Self::Unresolved,
         }
