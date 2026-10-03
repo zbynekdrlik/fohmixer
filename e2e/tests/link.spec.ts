@@ -213,7 +213,7 @@ test.describe("The control link", () => {
     );
   });
 
-  test("a socket lost while the page stalls is one dropout from the page's next tick", async ({ page }) => {
+  test("a socket lost while the page stalls is one dropout, starting after the stall", async ({ page }) => {
     const link = await recordLink(page);
     await openSurface(page);
     await page.waitForTimeout(500);
@@ -221,7 +221,7 @@ test.describe("The control link", () => {
     // The page's main thread stalls 600 ms and the socket closes meanwhile:
     // after the stall the close and the late timers run in either order. The
     // dropout watch's own tick goes on without a socket, so the loss counts
-    // from the page's next on-time tick even when no tick saw the close.
+    // even when no tick saw the close (then from the next on-time tick).
     const stall = page.evaluate(() => {
       const end = performance.now() + 600;
       while (performance.now() < end) {
@@ -236,7 +236,7 @@ test.describe("The control link", () => {
     await expect(page.getByTestId("surface")).toHaveAttribute("data-connected", "true");
     await expect.poll(() => dropouts(link).filter((d: any) => d.socket_lost).length, { timeout: 5000 }).toBe(1);
     const lost = dropouts(link).find((d: any) => d.socket_lost);
-    expect(lost.t, "it starts after the stall, at the page's next tick").toBeGreaterThanOrEqual(stallEnd);
+    expect(lost.t, "it starts at or after the stall's end").toBeGreaterThanOrEqual(stallEnd);
     expect(lost.ms, "from the next tick to the hello, the reconnect's wait included").toBeGreaterThanOrEqual(300);
     await until(
       hubEvents,
