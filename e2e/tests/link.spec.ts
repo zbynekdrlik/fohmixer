@@ -227,14 +227,16 @@ test.describe("The control link", () => {
       while (performance.now() < end) {
         // The page is busy: no timer, socket or frame runs.
       }
+      return performance.timeOrigin + performance.now();
     });
     await page.waitForTimeout(100);
     await link.sockets[sockets - 1].close({ code: 4000, reason: "gone" });
-    await stall;
+    const stallEnd = await stall;
     await expect.poll(() => link.sockets.length, { timeout: 10_000 }).toBe(sockets + 1);
     await expect(page.getByTestId("surface")).toHaveAttribute("data-connected", "true");
     await expect.poll(() => dropouts(link).filter((d: any) => d.socket_lost).length, { timeout: 5000 }).toBe(1);
     const lost = dropouts(link).find((d: any) => d.socket_lost);
+    expect(lost.t, "it starts after the stall, at the page's next tick").toBeGreaterThanOrEqual(stallEnd);
     expect(lost.ms, "from the next tick to the hello, the reconnect's wait included").toBeGreaterThanOrEqual(300);
     await until(
       hubEvents,

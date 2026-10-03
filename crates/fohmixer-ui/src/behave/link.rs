@@ -184,10 +184,11 @@ impl DropoutWatch {
         self.rtts.push_back(rtt);
     }
 
-    /// The page tick at `now` (every 100 ms, whatever the socket does): a silence that reached a dropout opens
-    /// one (the counter goes up while it lasts). A late tick (the page was
-    /// frozen or hidden) starts the silence over, and a socket that is down
-    /// while the page ticks is a dropout from this tick.
+    /// The page tick at `now` (every 100 ms, whatever the socket does): a
+    /// silence that reached a dropout opens one (the counter goes up while
+    /// it lasts). A late tick (the page was frozen or hidden) starts the
+    /// silence over, and a socket that is down while the page ticks is a
+    /// dropout from this tick.
     pub fn tick(&mut self, now: f64) {
         let late = !self.ticking(now);
         self.ticked = now;
