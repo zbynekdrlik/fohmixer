@@ -29,6 +29,13 @@ export async function harness(path: string, body: object = {}): Promise<any> {
   return answer;
 }
 
+/** Every record of the hub's event log (#43), oldest first. */
+export async function hubEvents(): Promise<any[]> {
+  const response = await fetch(`${HARNESS}/hub/events`);
+  if (!response.ok) throw new Error(`harness /hub/events: ${response.status}`);
+  return (await response.json()).events;
+}
+
 /** A control line on a host's stdin (`stall <ms>`, `rename "<a>" "<b>"`): its answer. */
 export async function hostLine(instance: string, line: string): Promise<string | null> {
   return (await harness(`/host/${instance}/line`, { line })).answer;
@@ -90,7 +97,7 @@ export class LiveClient {
   }
 
   static async open(): Promise<LiveClient> {
-    const ws = new WebSocket(`${BASE.replace(/^http/, "ws")}/ws?token=${await token()}&proto=1`);
+    const ws = new WebSocket(`${BASE.replace(/^http/, "ws")}/ws?token=${await token()}&proto=2`);
     const client = new LiveClient(ws);
     await new Promise<void>((resolve, reject) => {
       ws.addEventListener("message", () => resolve(), { once: true });

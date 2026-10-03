@@ -21,6 +21,9 @@ Playwright tests, which need what only the harness can do:
                                          so every token it issued is refused
     POST /hub/layout {"layout": {...}}   a new layout file (the hub picks it up)
     POST /hub/layout/reset               the original layout file back
+    GET  /hub/events                     {"events": [...]}: every record of the
+                                         hub's event log (#43, ``logs/events-*.jsonl``
+                                         in the data folder), oldest day first
     GET  /cdn-cgi/access/certs           the test Access key set (``--access-key``)
 
 Remote access (#17): with ``--public-name`` the hub serves that name over HTTPS
@@ -120,6 +123,25 @@ def access_jwks(key_file):
             }
         ]
     }
+
+
+def event_records(data):
+    """Every record of the hub's event log in the data folder ``data``: the day
+    files ``logs/events-YYYY-MM-DD.jsonl`` in date order, each line one JSON
+    object (a line cut short by a write in progress is left out)."""
+    logs = os.path.join(data, "logs")
+    if not os.path.isdir(logs):
+        return []
+    days = sorted(n for n in os.listdir(logs) if n.startswith("events-") and n.endswith(".jsonl"))
+    records = []
+    for name in days:
+        with open(os.path.join(logs, name), encoding="utf-8") as f:
+            for line in f:
+                try:
+                    records.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+    return records
 
 
 def expected_answer(line):
@@ -313,6 +335,8 @@ class Harness:
         parts = [p for p in path.split("/") if p]
         if method == "GET" and parts == ["health"]:
             return 200, {"ok": True}
+        if method == "GET" and parts == ["hub", "events"]:
+            return 200, {"events": event_records(self.data)}
         if method == "GET" and "/" + "/".join(parts) == CERTS_PATH:
             return (200, self.jwks) if self.jwks else (404, {"error": "no --access-key"})
         if method != "POST":

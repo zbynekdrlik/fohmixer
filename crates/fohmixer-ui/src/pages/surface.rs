@@ -384,11 +384,13 @@ fn SoloClear(bindings: Vec<Binding>) -> impl IntoView {
                 .collect();
             for i in soloed(&states) {
                 let (spec, _) = &all[i];
-                store.set_prop(
+                // A tap: a final `set` per solo (#43).
+                store.set(
                     &spec.instance,
                     &spec.target,
                     &spec.prop,
                     json!(false),
+                    true,
                     Some(fail_flash(failed)),
                 );
             }

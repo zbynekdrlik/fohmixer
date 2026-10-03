@@ -9,6 +9,7 @@ pub mod colour;
 pub mod db_text;
 pub mod fader;
 pub mod label;
+pub mod link;
 pub mod meter;
 pub mod mute;
 pub mod pan;

@@ -280,3 +280,67 @@ fn an_instance_back_online_or_on_another_set_reads_its_ranges_again() {
     let never = instance_change(None, &view(false, ""));
     assert!(never.pending && !never.ranges);
 }
+
+#[test]
+fn pings_carry_their_number_the_page_time_and_the_last_round_trip() {
+    // #43: the hub logs every ping; 100 ms apart they resolve a short stall.
+    assert_eq!(PING_MS, 100);
+    let mut c = Conn::default();
+    assert_eq!(
+        c.ping(10.0, 1_000_010.0),
+        ClientMsg::Ping {
+            n: 0,
+            t: 1_000_010.0,
+            rtt: None
+        }
+    );
+    assert_eq!(c.pong(1_000_010.0, 1_000_034.5), 24.5);
+    assert_eq!(
+        c.ping(110.0, 1_000_110.0),
+        ClientMsg::Ping {
+            n: 1,
+            t: 1_000_110.0,
+            rtt: Some(24.5)
+        }
+    );
+    // The number wraps instead of overflowing.
+    c.next_ping = u32::MAX;
+    assert!(matches!(
+        c.ping(0.0, 0.0),
+        ClientMsg::Ping { n: u32::MAX, .. }
+    ));
+    assert!(matches!(c.ping(0.0, 0.0), ClientMsg::Ping { n: 0, .. }));
+}
+
+#[test]
+fn a_hidden_page_pings_once_a_second() {
+    assert_eq!(PING_HIDDEN_MS, 1000.0);
+    let mut c = Conn::default();
+    let s = c.opened(0.0);
+    c.hello(0.0);
+    assert_eq!(c.tick(s, 100.0, true), Tick::Ping, "visible: every tick");
+    c.ping(100.0, 100.0);
+    assert_eq!(c.tick(s, 200.0, true), Tick::Ping);
+    c.ping(200.0, 200.0);
+    c.set_hidden(true);
+    c.heard(300.0);
+    for at in [300.0, 700.0, 1_199.0] {
+        assert_eq!(c.tick(s, at, true), Tick::Wait, "{at}");
+    }
+    assert_eq!(
+        c.tick(s, 1_200.0, true),
+        Tick::Ping,
+        "1 s after the last ping"
+    );
+    c.ping(1_200.0, 1_200.0);
+    assert_eq!(c.tick(s, 1_300.0, true), Tick::Wait);
+    c.set_hidden(false);
+    assert_eq!(
+        c.tick(s, 1_400.0, true),
+        Tick::Ping,
+        "shown again: every tick"
+    );
+    // Hidden or not, the silence still drops the socket.
+    c.set_hidden(true);
+    assert_eq!(c.tick(s, 3_300.0, true), Tick::Silent);
+}

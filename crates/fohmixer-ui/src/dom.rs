@@ -13,6 +13,22 @@ pub fn now() -> f64 {
         .map_or_else(js_sys::Date::now, |p| p.now())
 }
 
+/// The page clock on the epoch (`performance.timeOrigin +
+/// performance.now()`, ms): the time a `set` or a `ping` carries (#43), so
+/// the hub can map it onto its own clock.
+pub fn epoch_now() -> f64 {
+    web_sys::window()
+        .and_then(|w| w.performance())
+        .map_or_else(js_sys::Date::now, |p| p.time_origin() + p.now())
+}
+
+/// Whether the page is hidden (`document.hidden`).
+pub fn hidden() -> bool {
+    web_sys::window()
+        .and_then(|w| w.document())
+        .is_some_and(|d| d.hidden())
+}
+
 /// The wall clock in ms (`Date.now()`): unlike the page clock it goes on
 /// across page loads, so a time kept in local storage (the last handshake
 /// reload) is compared on it.

@@ -49,15 +49,19 @@ exclude_re = [
   # of them in Chromium and WebKit.
   # dom.rs: the clocks, style/attribute writes, the viewport, the console,
   # local storage.
-  "fohmixer-ui/src/dom\\.rs.*(replace|in) (now|wall_now|log|error|set_style|set_attr|viewport|current_element|child|storage|storage_get|storage_set|storage_remove)( |$)",
+  "fohmixer-ui/src/dom\\.rs.*(replace|in) (now|epoch_now|hidden|wall_now|log|error|set_style|set_attr|viewport|current_element|child|storage|storage_get|storage_set|storage_remove)( |$)",
   # net.rs: the fetch wrapper and the handshake reload (location.reload).
   "fohmixer-ui/src/net\\.rs.*(replace|in) (fetch_text|last_reload|reload)( |$)",
   # raf.rs: requestAnimationFrame scheduling around the tested Registry, and
   # a component's registration of its frame function.
   "fohmixer-ui/src/raf\\.rs.*(replace|in) (register|unregister|schedule|tick|animate)( |$)",
   # store/live.rs: the WebSocket, its handlers and the timers, the signals and
-  # the fetches that carry out Conn's decisions, one function at a time.
-  "fohmixer-ui/src/store/live\\.rs.*(replace|in) LiveStore::(new|start|stop|stopped|token|logout|connect|retry|show_layout|open_socket|watch|drop_socket|on_close|on_text|on_hello|on_instance|on_layout|apply|mark_pending|send|send_sub|slot|slot_signal|set_wanted|refresh|cmd|finish|set_prop|set_hub|range|fetch_ranges|fetch_range)( |$)",
+  # the fetches that carry out Conn's decisions, one function at a time. #43
+  # added set (a control's write through the tested Intents), on_ack (an ack
+  # through Intents::ack to the control's failure flash) and send_reports
+  # (the dropout watch's reports as a trace, behave::link::trace); the E2E
+  # suite drives them (link.spec.ts: a fader drag's sets and acks).
+  "fohmixer-ui/src/store/live\\.rs.*(replace|in) LiveStore::(new|start|stop|stopped|token|logout|connect|retry|show_layout|open_socket|watch|drop_socket|on_close|on_text|on_hello|on_instance|on_layout|apply|mark_pending|send|send_sub|slot|slot_signal|set_wanted|refresh|cmd|finish|set|set_prop|set_hub|on_ack|send_reports|range|fetch_ranges|fetch_range)( |$)",
   "fohmixer-ui/src/store/live\\.rs.*(replace|in) (Socket::open|Socket::close|Inner::new)( |$)",
   # auth.rs: local storage and the login request (login_outcome, login_body
   # and LoginError::message are the tested decisions).

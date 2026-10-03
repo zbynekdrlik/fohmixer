@@ -40,7 +40,7 @@ pub fn anchor_name(binding: &Binding) -> String {
     }
 }
 
-/// Writes the inverse of a flag slot's value.
+/// Writes the inverse of a flag slot's value (a tap: a final `set`, #43).
 pub(super) fn toggle_flag(
     store: LiveStore,
     spec: &SubSpec,
@@ -50,11 +50,12 @@ pub(super) fn toggle_flag(
     let Some(current) = slot.try_with_untracked(Slot::flag).flatten() else {
         return;
     };
-    store.set_prop(
+    store.set(
         &spec.instance,
         &spec.target,
         &spec.prop,
         json!(!current),
+        true,
         Some(fail_flash(failed)),
     );
 }
