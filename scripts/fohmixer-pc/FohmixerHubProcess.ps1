@@ -292,6 +292,41 @@ function Stop-FohHub {
     return [pscustomobject]@{ stopped = $true; text = "stopped the hub (pid $pids)" }
 }
 
+function Get-FohLogStamp {
+    # The rotation stamp of a hub log (#43): its last write time in UTC,
+    # yyyyMMdd-HHmmss-fff (the names sort by time).
+    param([Parameter(Mandatory)][datetime]$Time)
+    return $Time.ToUniversalTime().ToString('yyyyMMdd-HHmmss-fff', [Globalization.CultureInfo]::InvariantCulture)
+}
+
+function Move-FohHubLog {
+    # Keeps the last $Keep starts of one hub log (#43, design note section
+    # 3.3; $Name: hub.out or hub.err) in the folder $Logs, run by the launcher
+    # before each start: the run that ended, <name>.log, becomes
+    # <name>.<stamp of its last write>.log, a <name>.log.prev of an older
+    # launcher joins them the same way, and the oldest past $Keep are
+    # deleted. Returns the names kept, oldest first.
+    param([Parameter(Mandatory)][string]$Logs, [Parameter(Mandatory)][string]$Name, [int]$Keep = 20)
+    foreach ($f in @((Join-Path $Logs ($Name + '.log')), (Join-Path $Logs ($Name + '.log.prev')))) {
+        if (-not (Test-Path -LiteralPath $f -PathType Leaf)) { continue }
+        $stamp = Get-FohLogStamp -Time (Get-Item -LiteralPath $f).LastWriteTimeUtc
+        $target = Join-Path $Logs ('{0}.{1}.log' -f $Name, $stamp)
+        $n = 0
+        while (Test-Path -LiteralPath $target) {
+            $n++
+            $target = Join-Path $Logs ('{0}.{1}-{2}.log' -f $Name, $stamp, $n)
+        }
+        Move-Item -LiteralPath $f -Destination $target
+    }
+    $pattern = '^' + [regex]::Escape($Name) + '\.\d{8}-\d{6}-\d{3}(-\d+)?\.log$'
+    $rotated = @(Get-ChildItem -LiteralPath $Logs -File | Where-Object { $_.Name -match $pattern } | Sort-Object Name)
+    $excess = $rotated.Count - $Keep
+    if ($excess -gt 0) {
+        $rotated | Select-Object -First $excess | ForEach-Object { Remove-Item -LiteralPath $_.FullName }
+    }
+    return @($rotated | Select-Object -Skip ([Math]::Max($excess, 0)) | ForEach-Object { $_.Name })
+}
+
 function Get-FohLogTail {
     # The last lines of the hub's logs, for an error message.
     param([Parameter(Mandatory)][string]$DataDir, [int]$Lines = 8)

@@ -3,8 +3,9 @@
 # conhost --headless: starts the hub next to this script in the data folder,
 # with no console window (a console and a process group of its own, so the
 # stop's Ctrl-Break reaches it alone),
-# its output in <DataDir>\logs\hub.out.log and hub.err.log (the previous run's
-# kept as *.prev), and waits for it, so the task runs exactly as long as the
+# its output in <DataDir>\logs\hub.out.log and hub.err.log (the last 20 runs
+# kept as hub.out.<UTC stamp>.log and hub.err.<UTC stamp>.log, #43:
+# Move-FohHubLog), and waits for it, so the task runs exactly as long as the
 # hub and IgnoreNew keeps one. The hub reads its data folder from
 # FOHMIXER_DATA, which a task action cannot set: this script does, and drops an
 # inherited PORT (it would override the toml's http_port; RUST_LOG is kept as
@@ -26,8 +27,8 @@ try {
     $exe = Join-Path $PSScriptRoot 'fohmixer-hub.exe'
     $out = Join-Path $logs 'hub.out.log'
     $err = Join-Path $logs 'hub.err.log'
-    foreach ($f in @($out, $err)) {
-        if (Test-Path -LiteralPath $f) { Move-Item -LiteralPath $f -Destination ($f + '.prev') -Force }
+    foreach ($n in @('hub.out', 'hub.err')) {
+        $null = Move-FohHubLog -Logs $logs -Name $n -Keep 20
     }
     $env:FOHMIXER_DATA = $DataDir
     if (Test-Path -LiteralPath 'Env:PORT') { Remove-Item -LiteralPath 'Env:PORT' }
