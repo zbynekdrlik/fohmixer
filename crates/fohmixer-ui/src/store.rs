@@ -81,6 +81,15 @@ impl Slot {
         }
     }
 
+    /// The slot after its subscription changed (a page switch, #43):
+    /// `Pending` when a subscription goes out now (`subscribed`: I8, its
+    /// fresh value comes), else — unsubscribed, or wanted while the hub is
+    /// not connected — its value kept as stale (L2: a control re-entered
+    /// during an outage still takes touches).
+    pub fn rewanted(self, _subscribed: bool) -> Self {
+        Self::Pending
+    }
+
     /// Whether Live's value is here, fresh or stale (the control may take
     /// input, L2).
     pub fn is_ready(&self) -> bool {

@@ -7,6 +7,7 @@ import {
   hostLine,
   impair,
   openSurface,
+  panning,
   ready,
   selectPage,
   shown,
@@ -66,6 +67,35 @@ async function dragUp(page: Page, fader: Locator, steps: number, hold = false): 
   if (!hold) await page.mouse.up();
   await frames(page);
   return shown(fader);
+}
+
+/**
+ * A finger on `control` as dispatched pointer events (id 51), moved up by
+ * `dy` px and, unless `hold`, lifted: timed inside the page, and able to
+ * stay down while the real mouse does something else.
+ */
+async function touchUp(control: Locator, dy: number, hold = false) {
+  const { x, y } = await centre(control);
+  await control.evaluate(
+    (el, [clientX, clientY, up, keep]) => {
+      const fire = (type: string, at: number) =>
+        el.dispatchEvent(
+          new PointerEvent(type, {
+            pointerId: 51,
+            pointerType: "touch",
+            isPrimary: true,
+            clientX,
+            clientY: at,
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
+      fire("pointerdown", clientY);
+      fire("pointermove", clientY - up);
+      if (!keep) fire("pointerup", clientY - up);
+    },
+    [x, y, dy, hold ? 1 : 0],
+  );
 }
 
 test.describe("The control link's resilience (L1-L4)", () => {
@@ -168,6 +198,9 @@ test.describe("The control link's resilience (L1-L4)", () => {
       },
       [x, y],
     );
+    // The stall runs on 1.5 s from the release (a running stall is
+    // extended): the ack is held well past the 1 s that makes it unconfirmed.
+    await impair.stall(1500);
     await frames(page);
     const released = await shown(fader);
     expect(released, "the release moved the fader").toBeGreaterThan(START + 0.02);
@@ -197,28 +230,94 @@ test.describe("The control link's resilience (L1-L4)", () => {
     expect(lastGhost).toBe("none");
   });
 
-  test("a fader rebuilt while its write is open shows the write, and the next touch goes on from it", async ({ page }) => {
+  test("a fader rebuilt while the link is down shows its write, takes the next touch and goes on from the cap", async ({ page }) => {
     const fader = await surfaceAtStart(page);
     await linkDown(page);
     const released = await dragUp(page, fader, 5);
-    const releasedAt = Date.now();
     expect(released, "the fader moved while the link was down").toBeGreaterThan(START + 0.02);
-    // A page switch rebuilds the strip while the write waits.
+    // A page switch rebuilds the strip while the link is down and the write waits.
     await selectPage(page, "cue");
     await selectPage(page, "foh");
     const rebuilt = strip(page, "Hand2 #").getByTestId("fader");
     await frames(page);
     expect(Math.abs((await shown(rebuilt)) - released), "the rebuilt cap shows the write, not 0").toBeLessThan(SAME);
-    // The link returns after the release is 2 s old: not sent, the cap stays.
-    await page.waitForTimeout(Math.max(0, 2500 - (Date.now() - releasedAt)));
-    await impair.block(false);
-    await expect(rebuilt).toHaveAttribute("data-intent", "not_sent");
-    await ready(rebuilt);
-    expect(Math.abs((await shown(rebuilt)) - released)).toBeLessThan(SAME);
-    // The next touch goes on from the cap, and its write reaches Live.
+    // Still down: the rebuilt fader keeps Live's last value (stale) and takes
+    // the next touch (L2), which goes on from the cap.
+    await expect(rebuilt).toHaveAttribute("aria-disabled", "false");
     const next = await dragUp(page, rebuilt, 2);
     expect(next, "moved on from the cap").toBeGreaterThan(released);
-    await until(liveValue, (v) => Math.abs(v - next) < SAME, "Live at the new touch's value");
+    await impair.block(false);
+    await until(liveValue, (v) => Math.abs(v - next) < SAME, "Live at the new touch's value", 3000);
+  });
+
+  test("a not-sent release that Live already holds is confirmed by Live's value", async ({ page }) => {
+    const fader = await surfaceAtStart(page);
+    await linkDown(page);
+    // A drag past the top: the release is exactly 1.0, Live's top.
+    await touchUp(fader, 4000);
+    await frames(page);
+    expect(await shown(fader)).toBe(1);
+    const releasedAt = Date.now();
+    // Live gets that value without this page (as when the hub applied the
+    // release and its ack was lost with the socket).
+    await live.set("band", TARGET, "value", 1.0);
+    await page.waitForTimeout(Math.max(0, 2500 - (Date.now() - releasedAt)));
+    await impair.block(false);
+    await expect(page.getByTestId("surface")).toHaveAttribute("data-connected", "true");
+    // Too old to send again, but Live's fresh value is the release: confirmed, not red.
+    await expect(fader).toHaveAttribute("data-intent", "confirmed");
+  });
+
+  test("a fader taken away under a finger counts as released: its old write is not sent after the link returns", async ({ page }) => {
+    const fader = await surfaceAtStart(page);
+    await linkDown(page);
+    // A finger holds the fader up (never lifted) while the mouse switches the page.
+    await touchUp(fader, 40, true);
+    await frames(page);
+    expect(await shown(fader), "the held fader moved").toBeGreaterThan(START + 0.02);
+    await selectPage(page, "cue");
+    const goneAt = Date.now();
+    // Back after 2.5 s: a released write that old is not sent (L4); a held one would be.
+    await page.waitForTimeout(Math.max(0, 2500 - (Date.now() - goneAt)));
+    await impair.block(false);
+    await expect(page.getByTestId("surface")).toHaveAttribute("data-connected", "true");
+    await page.waitForTimeout(1500);
+    expect(await liveValue(), "the taken-away fader's write never reached Live").toBe(START);
+    await selectPage(page, "foh");
+    await expect(strip(page, "Hand2 #").getByTestId("fader")).toHaveAttribute("data-intent", "not_sent");
+  });
+
+  test("a pan touched again while its write waits is held: its value goes when the link returns", async ({ page }) => {
+    const PAN = panning(track("Hand2 #"));
+    const before = await live.get("band", PAN, "value");
+    await live.set("band", PAN, "value", 0);
+    try {
+      await openSurface(page);
+      const pan = strip(page, "Hand2 #").getByTestId("pan");
+      await ready(pan);
+      await until(() => shown(pan), (v) => Math.abs(v) < SAME, "the pan centred");
+      await linkDown(page);
+      const { x, y } = await centre(pan);
+      await page.mouse.move(x, y);
+      await page.mouse.down();
+      for (let i = 1; i <= 4; i++) await page.mouse.move(x + 6 * i, y);
+      await page.mouse.up();
+      await frames(page);
+      const moved = await shown(pan);
+      expect(moved, "the pan moved while the link was down").toBeGreaterThan(0.05);
+      // Touched again and held still for 2.5 s: its write is held again, so
+      // its first release no longer counts (L4).
+      await page.mouse.down();
+      try {
+        await page.waitForTimeout(2500);
+        await impair.block(false);
+        await until(() => live.get("band", PAN, "value"), (v) => Math.abs(v - moved) < SAME, "Live at the held pan's value", 3000);
+      } finally {
+        await page.mouse.up();
+      }
+    } finally {
+      await live.set("band", PAN, "value", before);
+    }
   });
 
   test("a release dropped for 5 s is not applied after the link returns: drawn not sent, and the next touch starts from the cap (L4)", async ({ page }) => {

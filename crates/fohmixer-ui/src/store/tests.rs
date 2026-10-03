@@ -132,6 +132,33 @@ fn a_lost_connection_keeps_a_slots_value_as_stale() {
 }
 
 #[test]
+fn a_page_switch_keeps_a_known_value_stale_unless_a_fresh_one_comes() {
+    let fresh = Slot::Value {
+        value: json!(0.7),
+        display: Some("-6.0 dB".into()),
+        at: 5.0,
+    };
+    let stale = fresh.clone().into_stale();
+    // Subscribed now (the hub is connected): I8 waits for the fresh value.
+    for slot in [fresh.clone(), stale.clone(), Slot::Error("gone".into())] {
+        assert_eq!(slot.rewanted(true), Slot::Pending);
+    }
+    // Unsubscribed, or wanted while the hub is not connected: kept (L2).
+    assert_eq!(fresh.clone().rewanted(false), stale);
+    assert_eq!(stale.clone().rewanted(false), stale);
+    assert!(fresh.rewanted(false).is_ready(), "it still takes touches");
+    assert_eq!(
+        Slot::Pending.rewanted(false),
+        Slot::Pending,
+        "nothing known"
+    );
+    assert_eq!(
+        Slot::Error("gone".into()).rewanted(false),
+        Slot::Error("gone".into())
+    );
+}
+
+#[test]
 fn a_subscriptions_write_key_drops_its_display_flag() {
     let volume = SubSpec::new(
         "band",
