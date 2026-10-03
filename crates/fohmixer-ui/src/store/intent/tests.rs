@@ -428,10 +428,10 @@ fn a_number_is_the_same_value_within_one_millionth() {
     assert!(same_number(0.6, 0.6000000238418579));
     assert!(!same_number(0.6, 0.6001));
     // Relative above 1: a frequency of 2000 Hz within 2 mHz.
-    assert!(same_number(2_000.0, 2_000.0015));
-    assert!(same_number(-2_000.0, -2_000.0015));
-    assert!(!same_number(2_000.0, 2_000.0025));
-    assert!(!same_number(-2_000.0, -2_000.0025));
+    assert!(same_number(2000.0, 2000.0015));
+    assert!(same_number(-2000.0, -2000.0015));
+    assert!(!same_number(2000.0, 2000.0025));
+    assert!(!same_number(-2000.0, -2000.0025));
     assert!(!same_number(1.0, -1.0));
 }
 
