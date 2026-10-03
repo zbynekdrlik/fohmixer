@@ -122,7 +122,7 @@ Rules:
 
 ### 4.2 Values and touches
 
-- **Keeping the value.** A socket loss no longer turns a known slot into `Pending`: the slot keeps its last value, marked stale, and so does a page switch while the hub is not connected (a page re-entered during an outage still takes touches). I8's "enabled only after the first value" holds for the first load, after an instance reports offline, and for a key subscribed again while the hub is connected (its fresh value is on its way).
+- **Keeping the value.** A socket loss no longer turns a known slot into `Pending`: the slot keeps its last value, marked stale, and so does a page switch while the hub is not connected (a page left and re-entered during one outage still takes touches; a page left while connected, or before a reconnect, comes back waiting for Live's value). I8's "enabled only after the first value" holds for the first load, after an instance reports offline, and for a key subscribed again while the hub is connected (its fresh value is on its way).
 - **Taking touches.** `on_down` takes the touch when the slot has a value, stale or not (L2).
 - **What a fader shows** (`FaderCtl::frame`):
   - while the key has an open intent (`sending`, `unconfirmed`, `not_sent`), the cap shows the intent and Live's value only moves the ghost (L3); a fader built while its write is open (a page switch) shows the write, and the next touch starts from it;

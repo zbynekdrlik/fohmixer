@@ -233,7 +233,11 @@ class ImpairTest(unittest.TestCase):
         ended = {}
 
         def run():
-            ended["code"] = impair.main(["--upstream", upstream], stdin, stdout)
+            try:
+                ended["code"] = impair.main(["--upstream", upstream], stdin, stdout)
+            finally:
+                # A failing tool ends the test's readline instead of hanging it.
+                stdout.close()
 
         tool = threading.Thread(target=run, daemon=True)
         tool.start()
@@ -253,7 +257,6 @@ class ImpairTest(unittest.TestCase):
         finally:
             feed.close()
             tool.join(COME_S)
-            stdout.close()
             answers.close()
             stdin.close()
         self.assertEqual(ended, {"code": 0}, "the end of stdin stops it")

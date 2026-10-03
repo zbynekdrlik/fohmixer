@@ -502,6 +502,7 @@ impl LiveStore {
         dom::log(&format!("connected to hub {build}"));
         let _ = self.connected.try_set(true);
         crate::diag::connected();
+        self.forget_unwanted();
         self.send_reports();
         for spec in &hello.specs {
             self.send_sub(spec);
@@ -675,9 +676,8 @@ impl LiveStore {
                 self.send(&ClientMsg::Unsub { sub: key.clone() });
             }
         }
-        // A key subscribed now waits for its fresh value (I8); one wanted
-        // while the hub is not connected, or no longer wanted, keeps its
-        // value, stale (#43, L2: a page re-entered during an outage).
+        // Slot::rewanted: Pending while the hub is connected, a known value
+        // kept stale during an outage (#43, L2).
         for spec in &change.added {
             let _ = self
                 .slot_signal(&spec.key())
@@ -689,7 +689,28 @@ impl LiveStore {
         for key in &change.removed {
             let _ = self
                 .slot_signal(key)
-                .try_update(|slot| *slot = std::mem::replace(slot, Slot::Pending).rewanted(false));
+                .try_update(|slot| *slot = std::mem::replace(slot, Slot::Pending).rewanted(ready));
+        }
+    }
+
+    /// The hub is connected again: a slot no page wants now (left during the
+    /// outage, kept stale then) has nothing to keep it current, so it waits
+    /// for a fresh value when it is wanted again (`Slot::rewanted`, #43).
+    fn forget_unwanted(self) {
+        let signals: Vec<ArcRwSignal<Slot>> = self
+            .inner
+            .try_with_value(|i| {
+                let wanted = i.conn.keys_of(None);
+                i.slots
+                    .iter()
+                    .filter(|(key, _)| !wanted.contains(*key))
+                    .map(|(_, slot)| slot.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        for signal in signals {
+            let _ = signal
+                .try_update(|slot| *slot = std::mem::replace(slot, Slot::Pending).rewanted(true));
         }
     }
 

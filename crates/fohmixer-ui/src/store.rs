@@ -82,13 +82,15 @@ impl Slot {
         }
     }
 
-    /// The slot after its subscription changed (a page switch, #43):
-    /// `Pending` when a subscription goes out now (`subscribed`: I8, its
-    /// fresh value comes), else — unsubscribed, or wanted while the hub is
-    /// not connected — its value kept as stale (L2: a control re-entered
-    /// during an outage still takes touches).
-    pub fn rewanted(self, subscribed: bool) -> Self {
-        if subscribed {
+    /// The slot after a page switch (or a reconnect) changed whether its key
+    /// is subscribed (#43). With the hub `connected` it is `Pending`: a key
+    /// subscribed now waits for its fresh value (I8), and one no longer
+    /// subscribed has nothing to keep it current, so it never comes back
+    /// later with an old value. During an outage a known value is kept,
+    /// stale (L2): a page left and re-entered in the same outage still takes
+    /// touches.
+    pub fn rewanted(self, connected: bool) -> Self {
+        if connected {
             Self::Pending
         } else {
             self.into_stale()
