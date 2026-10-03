@@ -568,6 +568,16 @@ impl LiveStore {
         display: Option<String>,
         error: Option<String>,
     ) {
+        // A value the hub sent before it read the page's unsub: nothing
+        // keeps that slot current any more, so it is not kept (#43, I8).
+        if !self
+            .inner
+            .try_with_value(|i| i.conn.wants(key))
+            .unwrap_or(false)
+        {
+            dom::log(&format!("a value for {key}, no longer wanted: dropped"));
+            return;
+        }
         let Some(slot) = Slot::from_item(value, display, error, dom::now()) else {
             return;
         };
@@ -700,17 +710,15 @@ impl LiveStore {
         let signals: Vec<ArcRwSignal<Slot>> = self
             .inner
             .try_with_value(|i| {
-                let wanted = i.conn.keys_of(None);
                 i.slots
                     .iter()
-                    .filter(|(key, _)| !wanted.contains(*key))
+                    .filter(|(key, _)| !i.conn.wants(key))
                     .map(|(_, slot)| slot.clone())
                     .collect()
             })
             .unwrap_or_default();
         for signal in signals {
-            let _ = signal
-                .try_update(|slot| *slot = std::mem::replace(slot, Slot::Pending).rewanted(true));
+            let _ = signal.try_set(Slot::Pending);
         }
     }
 

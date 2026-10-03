@@ -65,11 +65,13 @@ exclude_re = [
   # socket reported as dropouts, and a socket lost during a page stall,
   # which only the timer going on between sockets counts). PR B added
   # mark_stale (each wanted slot through the tested Slot::into_stale),
-  # set_wanted and forget_unwanted (a hello's unwanted slots) through the
-  # tested Slot::rewanted (resilience.spec.ts: a page switched during an
-  # outage keeps its values; one left while connected or across a reconnect
-  # comes back waiting), and moved the write glue to store/live/writes.rs
-  # (below).
+  # set_wanted through the tested Slot::rewanted, forget_unwanted (a
+  # hello's unwanted slots back to Pending) and apply's drop of a late value
+  # for a key no page wants, both through the tested Conn::wants
+  # (resilience.spec.ts: a page switched during an outage keeps its values;
+  # one left while connected or across a reconnect comes back waiting, and
+  # so does one whose late value arrived after it went), and moved the
+  # write glue to store/live/writes.rs (below).
   "fohmixer-ui/src/store/live\\.rs.*(replace|in) LiveStore::(new|start|stop|stopped|token|logout|connect|retry|show_layout|open_socket|watch|tick_link|drop_socket|on_close|on_text|on_hello|on_instance|on_layout|apply|mark_pending|mark_stale|forget_unwanted|send|send_sub|slot|slot_signal|set_wanted|refresh|cmd|finish|set_prop|set_hub|send_reports|range|fetch_ranges|fetch_range)( |$)",
   # store/live/writes.rs (#43): the controls' writes between the controls,
   # the tested Intents and the socket, one function at a time: on_ack (an ack

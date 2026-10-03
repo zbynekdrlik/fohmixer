@@ -5,10 +5,12 @@
 //! instances' states and the hub values.
 //!
 //! I8: every subscription starts `Pending` and goes back to `Pending` when
-//! its instance goes offline, REFRESH ALL resubscribes or a page switch
-//! subscribes it again while the hub is connected; a control accepts
-//! input only while its slots hold Live's values. A lost hub connection
-//! keeps each slot's value, marked `Stale` (#43, L2): the control still
+//! its instance goes offline, REFRESH ALL resubscribes, a page switch
+//! subscribes or unsubscribes it while the hub is connected, or a hello
+//! finds no page wanting it; a value for a key no page wants is dropped
+//! (one the hub sent before it read the unsub); a control accepts input
+//! only while its slots hold Live's values. A lost hub connection keeps
+//! each wanted slot's value, marked `Stale` (#43, L2): the control still
 //! shows it and takes touches, and the next value from the hub makes it
 //! fresh. I5: a binding that does not resolve is an `Error` slot; every
 //! control bound to one is shown red (`data-binding="unresolved"`) and
@@ -243,8 +245,8 @@ impl Wanted {
 
     /// Whether `key` is wanted (#43: a value for a key no page wants is not
     /// kept: nothing would keep it current).
-    pub fn contains(&self, _key: &str) -> bool {
-        true
+    pub fn contains(&self, key: &str) -> bool {
+        self.specs.contains_key(key)
     }
 
     /// The wanted keys of `instance` (every key for `None`).
