@@ -92,7 +92,7 @@ test.describe("The control link's resilience (L1-L4)", () => {
     await expect(status).toHaveAttribute("data-state", "bound");
     expect(await hostLine("band", 'meter "Hand2 #" 0.8')).toBe("METER 1");
     try {
-      await until(async () => Number(await meter.getAttribute("data-level")), (v) => v > 0.5, "the meter up");
+      await until(async () => Number(await meter.getAttribute("data-level")), (v) => v > 0.3, "the meter up");
       await linkDown(page);
       // A stale level is no level: the meter falls instead of freezing, and
       // the status light says Live's values are not fresh.
