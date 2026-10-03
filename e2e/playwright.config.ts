@@ -11,7 +11,10 @@ export default defineConfig({
   workers: 1,
   reporter: [["html", { open: "never" }], ["list"]],
   use: {
-    baseURL: process.env.E2E_BASE_URL || "http://127.0.0.1:8480",
+    // The pages open the surface through the harness's impair proxy (#43,
+    // E2E_LINK_URL), so a test can stall, drop or block their link to the hub;
+    // without it, the hub itself.
+    baseURL: process.env.E2E_LINK_URL || process.env.E2E_BASE_URL || "http://127.0.0.1:8480",
     trace: "retain-on-failure",
   },
   projects: [

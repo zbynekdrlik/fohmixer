@@ -255,6 +255,12 @@ impl Conn {
         self.wanted.keys_of(instance)
     }
 
+    /// Whether a page wants `key` now (a value for any other key is dropped,
+    /// #43).
+    pub fn wants(&self, key: &str) -> bool {
+        self.wanted.contains(key)
+    }
+
     /// REFRESH ALL: every wanted subscription, when the socket takes
     /// messages.
     pub fn refresh(&self) -> Option<Vec<SubSpec>> {
@@ -295,6 +301,16 @@ pub fn instance_change(old: Option<&InstanceView>, new: &InstanceView) -> Instan
         pending: !new.online,
         ranges: new.online && back,
     }
+}
+
+/// Whether `new` brings its instance back online after `old` (none before
+/// its first report): the store sends that instance's open writes again
+/// (#43, L4). The hub forgets an instance's pending writes when it goes
+/// away, and after a reconnect's hello it reports every instance again,
+/// which a lost connection had marked offline. A busy instance getting idle
+/// or one that loaded another set is not back: its writes were not dropped.
+pub fn back_online(old: Option<&InstanceView>, new: &InstanceView) -> bool {
+    new.online && old.is_none_or(|o| !o.online)
 }
 
 #[cfg(test)]

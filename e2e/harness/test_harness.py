@@ -5,10 +5,12 @@ import base64
 import json
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -235,6 +237,67 @@ class HarnessTest(unittest.TestCase):
         finally:
             remote.stop()
             shutil.rmtree(data, ignore_errors=True)
+
+    def test_the_link_routes_stall_block_and_drop_the_proxy(self):
+        status, state = self.harness.handle("GET", "/link", {})
+        self.assertEqual(status, 200)
+        self.assertEqual(state["port"], self.harness.link.port)
+        self.assertGreater(state["port"], 0, "a free port was taken")
+        self.assertEqual(
+            (state["connections"], state["held"], state["blocked"], state["stall_ms"]),
+            (0, 0, False, 0.0),
+        )
+        status, answer = self.post("/link/stall", {"ms": 400})
+        self.assertEqual(status, 200)
+        self.assertGreater(answer["stall_ms"], 300)
+        self.assertEqual(self.post("/link/block", {"on": True})[1]["blocked"], True)
+        held = socket.create_connection(("127.0.0.1", state["port"]), timeout=5)
+        try:
+            deadline = time.monotonic() + 5
+            while self.harness.handle("GET", "/link", {})[1]["held"] != 1:
+                self.assertLess(time.monotonic(), deadline, "the connection is held")
+                time.sleep(0.01)
+            self.assertEqual(self.post("/link/drop"), (200, {"dropped": 1}))
+            with self.assertRaises(ConnectionResetError):
+                held.recv(1)
+        finally:
+            held.close()
+        self.assertEqual(self.post("/link/block", {"on": False})[1]["blocked"], False)
+
+    def test_a_link_request_without_its_value_is_refused(self):
+        for bad in (
+            {},
+            {"ms": -1},
+            {"ms": "300"},
+            {"ms": True},
+            {"ms": float("nan")},
+            {"ms": float("inf")},
+        ):
+            with self.assertRaises(harness.BadRequest, msg=repr(bad)):
+                self.post("/link/stall", bad)
+        for bad in ({}, {"on": 1}, {"on": "true"}):
+            with self.assertRaises(harness.BadRequest, msg=repr(bad)):
+                self.post("/link/block", bad)
+        self.assertEqual(harness.stall_ms({"ms": 0}), 0)
+        self.assertEqual(harness.stall_ms({"ms": 1500.5}), 1500.5)
+        self.assertIs(harness.block_on({"on": False}), False)
+        # Over HTTP a bad body is a 400 with the reason.
+        server = ThreadingHTTPServer(("127.0.0.1", 0), harness.handler_for(self.harness))
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{server.server_address[1]}/link/block",
+                data=b'{"on": "yes"}',
+                method="POST",
+            )
+            with self.assertRaises(urllib.error.HTTPError) as raised:
+                urllib.request.urlopen(request, timeout=5)
+            self.assertEqual(raised.exception.code, 400)
+            self.assertIn("/link/block wants", json.load(raised.exception)["error"])
+            raised.exception.close()
+        finally:
+            server.shutdown()
+            server.server_close()
 
     def test_which_lines_wait_for_an_answer(self):
         self.assertEqual(harness.expected_answer('rename "a" "b"'), "RENAMED")

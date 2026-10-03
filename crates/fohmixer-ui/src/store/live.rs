@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::Duration;
 
-use fohmixer_proto::client::{AckItem, CLOSE_RELOAD, ClientMsg, LiveCommand, ServerMsg};
+use fohmixer_proto::client::{CLOSE_RELOAD, ClientMsg, LiveCommand, ServerMsg};
 use fohmixer_proto::layout::Layout;
 use leptos::prelude::*;
 use serde_json::{Value, json};
@@ -16,12 +16,14 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 
 use super::conn::{self, Conn, Tick};
-use super::intent::{Acked, Intents};
+use super::intent::Intents;
 use super::{InstanceView, ResultFn, Slot, TOKEN_KEY, next_range, slot_failure};
 use crate::behave::link::{self, DropoutWatch};
 use crate::binding::{SubSpec, unfold_targets};
 use crate::dom;
 use crate::net::{self, Decision, LayoutFetch};
+
+mod writes;
 
 /// A parameter's range (`min`, `max`) as Live reports it.
 type Range = ArcRwSignal<Option<(f64, f64)>>;
@@ -366,7 +368,8 @@ impl LiveStore {
                 view.busy = false;
             }
         });
-        self.mark_pending(None);
+        // The controls keep Live's last values, stale, and take touches (L2).
+        self.mark_stale();
         for done in pending.into_values() {
             done(Err("the hub connection closed".to_string()));
         }
@@ -405,10 +408,26 @@ impl LiveStore {
                 value,
                 display,
                 error,
-            } => self.apply(&sub, value, display, error),
+            } => {
+                if !self.apply(&sub, value, display, error) {
+                    dom::log(&format!("a value for {sub}, no page wants it: dropped"));
+                }
+            }
             ServerMsg::Values { items } => {
+                // One line per message: leaving a page with meters drops
+                // every meter value still on its way.
+                let mut dropped = 0usize;
+                let mut first = None;
                 for item in items {
-                    self.apply(&item.sub, item.value, item.display, item.error);
+                    if !self.apply(&item.sub, item.value, item.display, item.error) {
+                        dropped += 1;
+                        first.get_or_insert(item.sub);
+                    }
+                }
+                if let Some(first) = first {
+                    dom::log(&format!(
+                        "{dropped} values for keys no page wants dropped, e.g. {first}"
+                    ));
                 }
             }
             ServerMsg::Instance {
@@ -476,22 +495,6 @@ impl LiveStore {
         }
     }
 
-    /// The hub's acks of the controls' writes: a failed write shows on its
-    /// control (spec I6: shown, never retried).
-    fn on_ack(self, items: &[AckItem]) {
-        for item in items {
-            let Some(acked) = self.inner.try_update_value(|i| i.intents.ack(item)) else {
-                return;
-            };
-            if let Acked::Failed(why, failed) = acked {
-                dom::log(&format!("set {} failed: {why}", item.key));
-                if let Some(failed) = failed {
-                    failed(why);
-                }
-            }
-        }
-    }
-
     fn on_hello(self, proto: u32, build: &str, min_client_proto: u32) {
         let now = dom::wall_now();
         if net::on_hello(proto, min_client_proto, build, now, net::last_reload())
@@ -515,6 +518,7 @@ impl LiveStore {
         dom::log(&format!("connected to hub {build}"));
         let _ = self.connected.try_set(true);
         crate::diag::connected();
+        self.forget_unwanted();
         self.send_reports();
         for spec in &hello.specs {
             self.send_sub(spec);
@@ -537,6 +541,7 @@ impl LiveStore {
             .try_with_untracked(|all| all.get(&name).cloned())
             .flatten();
         let change = conn::instance_change(old.as_ref(), &view);
+        let back = conn::back_online(old.as_ref(), &view);
         if change.pending {
             self.mark_pending(Some(name.as_str()));
         }
@@ -545,6 +550,9 @@ impl LiveStore {
         });
         if change.ranges {
             self.fetch_ranges(Some(name.as_str()));
+        }
+        if back {
+            self.resend(&name);
         }
     }
 
@@ -568,17 +576,29 @@ impl LiveStore {
         });
     }
 
-    /// A subscription's new state from the hub.
+    /// A subscription's new state from the hub; false when no page wants its
+    /// key: the hub sent it before it read the page's unsub, and nothing
+    /// keeps that slot current any more, so it is not kept (#43, I8).
     fn apply(
         self,
         key: &str,
         value: Option<Value>,
         display: Option<String>,
         error: Option<String>,
-    ) {
+    ) -> bool {
+        if !self
+            .inner
+            .try_with_value(|i| i.conn.wants(key))
+            .unwrap_or(false)
+        {
+            return false;
+        }
         let Some(slot) = Slot::from_item(value, display, error, dom::now()) else {
-            return;
+            return true;
         };
+        if let Some(value) = slot.value() {
+            self.live_value(key, value);
+        }
         let signal = self
             .inner
             .try_with_value(|i| i.slots.get(key).cloned())
@@ -586,6 +606,7 @@ impl LiveStore {
         if let Some(signal) = signal {
             let _ = signal.try_set(slot);
         }
+        true
     }
 
     /// Every wanted slot (of one instance) back to `Pending` (I8).
@@ -602,6 +623,26 @@ impl LiveStore {
             .unwrap_or_default();
         for signal in signals {
             let _ = signal.try_set(Slot::Pending);
+        }
+    }
+
+    /// Every wanted slot keeps its value, marked stale (#43, §4.2): the hub
+    /// connection was lost, not Live.
+    fn mark_stale(self) {
+        let signals: Vec<ArcRwSignal<Slot>> = self
+            .inner
+            .try_with_value(|i| {
+                i.conn
+                    .keys_of(None)
+                    .iter()
+                    .filter_map(|k| i.slots.get(k).cloned())
+                    .collect()
+            })
+            .unwrap_or_default();
+        for signal in signals {
+            let _ = signal.try_update(|slot| {
+                *slot = std::mem::replace(slot, Slot::Pending).into_stale();
+            });
         }
     }
 
@@ -661,14 +702,39 @@ impl LiveStore {
                 self.send(&ClientMsg::Unsub { sub: key.clone() });
             }
         }
+        // Slot::rewanted: Pending while the hub is connected, a known value
+        // kept stale during an outage (#43, L2).
         for spec in &change.added {
-            let _ = self.slot_signal(&spec.key()).try_set(Slot::Pending);
+            let _ = self
+                .slot_signal(&spec.key())
+                .try_update(|slot| *slot = std::mem::replace(slot, Slot::Pending).rewanted(ready));
             if ready {
                 self.send_sub(spec);
             }
         }
         for key in &change.removed {
-            let _ = self.slot_signal(key).try_set(Slot::Pending);
+            let _ = self
+                .slot_signal(key)
+                .try_update(|slot| *slot = std::mem::replace(slot, Slot::Pending).rewanted(ready));
+        }
+    }
+
+    /// The hub is connected again: a slot no page wants now (left during the
+    /// outage, kept stale then) has nothing to keep it current, so it waits
+    /// for a fresh value when it is wanted again (`Conn::wants`, #43).
+    fn forget_unwanted(self) {
+        let signals: Vec<ArcRwSignal<Slot>> = self
+            .inner
+            .try_with_value(|i| {
+                i.slots
+                    .iter()
+                    .filter(|(key, _)| !i.conn.wants(key))
+                    .map(|(_, slot)| slot.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        for signal in signals {
+            let _ = signal.try_set(Slot::Pending);
         }
     }
 
@@ -722,38 +788,6 @@ impl LiveStore {
             .flatten();
         if let Some(done) = done {
             done(outcome);
-        }
-    }
-
-    /// A control's write (#43): `value` to `prop` of `target` on
-    /// `instance`, through the intent store as a `set` (`is_final`: a
-    /// release, a toggle or a tap); `failed` hears why it failed (spec I6:
-    /// shown, never retried). The intent stays open until its ack.
-    pub fn set(
-        self,
-        instance: &str,
-        target: &str,
-        prop: &str,
-        value: Value,
-        is_final: bool,
-        failed: Option<FailFn>,
-    ) {
-        let t = dom::epoch_now();
-        let Some((key, msg)) = self.inner.try_update_value(|i| {
-            i.intents
-                .set((instance, target, prop), value, t, is_final, failed)
-        }) else {
-            return;
-        };
-        if !self.send(&msg) {
-            dom::log(&format!("set {key} not sent: not connected to the hub"));
-            let failed = self
-                .inner
-                .try_update_value(|i| i.intents.unsent(&key))
-                .flatten();
-            if let Some(failed) = failed {
-                failed("not connected to the hub".to_string());
-            }
         }
     }
 

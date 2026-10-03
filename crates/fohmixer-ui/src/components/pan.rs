@@ -1,14 +1,18 @@
 //! The pan control (spec F11): a horizontal relative drag with its own
 //! pointer, two releases within 300 ms centre it, grey when centred and
 //! cyan otherwise. The frame loop writes the position as `--p` and the bar
-//! from the centre as `--lo` / `--w` (the stylesheet draws them; #21).
+//! from the centre as `--lo` / `--w` (the stylesheet draws them; #21). Its
+//! writes go through the store's intents like a fader's (#43): a release
+//! with nothing unsent tells the store the release time (L4).
 
+use fohmixer_proto::client::set_key;
 use leptos::html;
 use leptos::prelude::*;
 use serde_json::json;
 
 use super::{fail_flash, readiness};
 use crate::behave::pan::{self, PanCtl};
+use crate::behave::{TouchEnd, touch_end};
 use crate::binding::SubSpec;
 use crate::dom;
 use crate::raf;
@@ -23,6 +27,14 @@ const DOT: f64 = 12.0;
 pub fn PanView(state: RwSignal<Slot>, spec: SubSpec) -> impl IntoView {
     let store = expect_context::<LiveStore>();
     let slot = state;
+    let keys = vec![set_key(&spec.instance, &spec.target, &spec.prop)];
+    // A pan taken away under a finger gets no pointerup: its write counts as
+    // released then (L4).
+    {
+        let keys = keys.clone();
+        on_cleanup(move || store.release(&keys));
+    }
+    let key = StoredValue::new(keys);
     let spec = StoredValue::new(spec);
     let ctl = StoredValue::new(PanCtl::default());
     let failed = RwSignal::new(false);
@@ -60,24 +72,30 @@ pub fn PanView(state: RwSignal<Slot>, spec: SubSpec) -> impl IntoView {
             .unwrap_or(false);
         if taken {
             let _ = el.set_pointer_capture(id);
+            let _ = key.try_with_value(|k| store.touch(k));
         }
     };
     let on_move = move |ev: web_sys::PointerEvent| {
         let (id, x) = (ev.pointer_id(), f64::from(ev.client_x()));
         let _ = ctl.try_update_value(|c| c.moved(id, x));
     };
+    // The end of a touch (`behave::touch_end`): the unsent move as a final
+    // `set`, or the release time of the write already sent (L4).
+    let ended = move |end: Option<TouchEnd>| match end {
+        Some(TouchEnd::Send(v)) => send(v, true),
+        Some(TouchEnd::Released) => {
+            let _ = key.try_with_value(|k| store.release(k));
+        }
+        Some(TouchEnd::NotMine) | None => {}
+    };
     let on_up = move |ev: web_sys::PointerEvent| {
         let id = ev.pointer_id();
-        if let Some(Some(v)) = ctl.try_update_value(|c| c.up(id, dom::now())) {
-            send(v, true);
-        }
+        ended(ctl.try_update_value(|c| touch_end(c.drives(id), c.up(id, dom::now()))));
     };
     // A cancelled pointer, or one whose capture was lost without an up.
     let on_cancel = move |ev: web_sys::PointerEvent| {
         let id = ev.pointer_id();
-        if let Some(Some(v)) = ctl.try_update_value(|c| c.cancel(id, dom::now())) {
-            send(v, true);
-        }
+        ended(ctl.try_update_value(|c| touch_end(c.drives(id), c.cancel(id, dom::now()))));
     };
 
     raf::animate(root, move |el| {

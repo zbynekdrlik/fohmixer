@@ -264,13 +264,22 @@ pub enum ServerMsg {
 /// target in canonical form (whitespace between steps collapsed; names are
 /// kept as they are).
 pub fn hub_key(instance: &str, target: &str, prop: &str, display: bool) -> String {
-    format!("{instance}|{}|{prop}|{display}", canonical_target(target))
+    format!("{}|{display}", set_key(instance, target, prop))
 }
 
 /// The key of a write (#43, `set` / `ack`): `instance|target|prop`, the hub
 /// key without `display`, the target in canonical form.
 pub fn set_key(instance: &str, target: &str, prop: &str) -> String {
     format!("{instance}|{}|{prop}", canonical_target(target))
+}
+
+/// The write key ([`set_key`]) of a hub key ([`hub_key`]): the hub key
+/// without its `display` field (#43: a page closes a write by its
+/// subscription's value).
+pub fn write_key_of(hub_key: &str) -> &str {
+    hub_key
+        .rsplit_once('|')
+        .map_or(hub_key, |(key, _display)| key)
 }
 
 /// `POST /api/auth` body.

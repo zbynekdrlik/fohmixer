@@ -41,6 +41,9 @@ pub fn anchor_name(binding: &Binding) -> String {
 }
 
 /// Writes the inverse of a flag slot's value (a tap: a final `set`, #43).
+/// A tap inverts what the button shows, Live's value (P2), also while a
+/// write is still on its way: nothing on the button shows that write, so a
+/// second tap means "it did not take", not "undo".
 pub(super) fn toggle_flag(
     store: LiveStore,
     spec: &SubSpec,

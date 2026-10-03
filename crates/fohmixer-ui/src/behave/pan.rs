@@ -88,6 +88,11 @@ impl PanCtl {
         true
     }
 
+    /// Whether pointer `id` drives this pan (its release is this pan's).
+    pub fn drives(&self, id: i32) -> bool {
+        self.pointer == Some(id)
+    }
+
     /// Pointer `id` moved to `x`: whether it moved this pan.
     pub fn moved(&mut self, id: i32, x: f64) -> bool {
         if self.pointer != Some(id) {
@@ -265,6 +270,21 @@ mod tests {
         );
         assert_eq!(p.frame(600.0, None).pos, None, "no value from Live");
         assert_eq!(p.frame(600.0, Some(-1.0)).pos, Some(0.0));
+    }
+
+    #[test]
+    fn the_pan_says_which_pointer_drives_it() {
+        let mut p = PanCtl::default();
+        assert!(!p.drives(1), "untouched");
+        assert!(p.down(1, 100.0, 200.0, 0.0, 0.0));
+        assert!(p.drives(1) && !p.drives(2));
+        assert_eq!(p.up(2, 5.0), None);
+        assert!(p.drives(1), "another pointer's release is not its");
+        assert_eq!(p.up(1, 10.0), None, "nothing unsent");
+        assert!(!p.drives(1), "released");
+        assert!(p.down(3, 100.0, 200.0, 500.0, 0.0));
+        p.cancel(3, 510.0);
+        assert!(!p.drives(3), "cancelled");
     }
 
     #[test]

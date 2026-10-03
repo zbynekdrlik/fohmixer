@@ -2,14 +2,17 @@
 
     python3 e2e/harness/harness.py --data DIR --layout FILE [--hub BINARY]
         [--http-port 8480] [--control-port 39190] [--band-port 39101]
-        [--master-port 39102] [--meters-hz 30] [--log-dir DIR]
+        [--master-port 39102] [--meters-hz 30] [--log-dir DIR] [--link-port 0]
         [--public-name NAME --https-port PORT --tls-cert FILE --tls-key FILE]
         [--access-team TEAM --access-aud AUD --access-key FILE]
 
 It starts ``sim/host.py`` for ``band`` and ``master`` (the real FohMixer script on
 SimLive), writes the hub's config and layout into the data folder, starts the hub
-(when ``--hub`` is given) and serves a small control API on 127.0.0.1 for the
-Playwright tests, which need what only the harness can do:
+(when ``--hub`` is given), starts the impair proxy (#43, ``impair.py``) on
+``--link-port`` in front of the hub's HTTP port (the Playwright projects open
+the surface through it, so a test can stall, drop or block the page's link) and
+serves a small control API on 127.0.0.1 for the Playwright tests, which need
+what only the harness can do:
 
     GET  /health                         {"ok": true}
     POST /host/<name>/line {"line": ...} a control line on the host's stdin
@@ -24,6 +27,15 @@ Playwright tests, which need what only the harness can do:
     GET  /hub/events                     {"events": [...]}: every record of the
                                          hub's event log (#43, ``logs/events-*.jsonl``
                                          in the data folder), oldest day first
+    GET  /link                           the impair proxy's state: ``port``,
+                                         ``connections``, ``held``, ``blocked``,
+                                         ``stall_ms``
+    POST /link/stall {"ms": <ms>}        both directions of every connection
+                                         held for ``ms`` (a running stall is
+                                         extended, never shortened)
+    POST /link/drop                      every connection reset: {"dropped": n}
+    POST /link/block {"on": <bool>}      new connections held (accepted, not
+                                         passed on) until ``on`` is false
     GET  /cdn-cgi/access/certs           the test Access key set (``--access-key``)
 
 Remote access (#17): with ``--public-name`` the hub serves that name over HTTPS
@@ -39,6 +51,7 @@ Every process is stopped with SIGTERM and a bounded wait (spec I7). Prints
 import argparse
 import base64
 import json
+import math
 import os
 import queue
 import shutil
@@ -50,6 +63,8 @@ import time
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+import impair
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # The key id of the test Access key.
@@ -142,6 +157,28 @@ def event_records(data):
                 except json.JSONDecodeError:
                     continue
     return records
+
+
+class BadRequest(Exception):
+    """A control request whose body does not say what to do (answered 400)."""
+
+
+def stall_ms(body):
+    """The ``ms`` of a ``/link/stall`` body: a finite number of milliseconds, 0
+    or more (JSON's ``Infinity`` would hold the proxy for every later test)."""
+    ms = body.get("ms")
+    finite = isinstance(ms, (int, float)) and not isinstance(ms, bool) and math.isfinite(ms)
+    if not finite or ms < 0:
+        raise BadRequest(f'/link/stall wants {{"ms": <0 or more>}}, not {body!r}')
+    return ms
+
+
+def block_on(body):
+    """The ``on`` of a ``/link/block`` body: true or false."""
+    on = body.get("on")
+    if not isinstance(on, bool):
+        raise BadRequest(f'/link/block wants {{"on": true|false}}, not {body!r}')
+    return on
 
 
 def expected_answer(line):
@@ -316,6 +353,9 @@ class Harness:
                 )
             )
         self.reset_layout()
+        # The proxy needs no hub to listen; it is up before the hub starts.
+        self.link = impair.Impair(args.link_port, args.http_port)
+        self.link.start()
         self.hub = Hub(args.hub, self.data, args.http_port, log_dir) if args.hub else None
 
     def write_layout(self, layout):
@@ -337,6 +377,8 @@ class Harness:
             return 200, {"ok": True}
         if method == "GET" and parts == ["hub", "events"]:
             return 200, {"events": event_records(self.data)}
+        if method == "GET" and parts == ["link"]:
+            return 200, dict(self.link.state(), port=self.link.port)
         if method == "GET" and "/" + "/".join(parts) == CERTS_PATH:
             return (200, self.jwks) if self.jwks else (404, {"error": "no --access-key"})
         if method != "POST":
@@ -357,9 +399,16 @@ class Harness:
         if parts == ["hub", "layout", "reset"]:
             self.reset_layout()
             return 200, {"ok": True}
+        if parts == ["link", "stall"]:
+            return 200, self.link.stall(stall_ms(body))
+        if parts == ["link", "drop"]:
+            return 200, self.link.drop()
+        if parts == ["link", "block"]:
+            return 200, self.link.block(block_on(body))
         return 404, {"error": f"no {method} {path}"}
 
     def stop(self):
+        self.link.stop()
         if self.hub is not None:
             self.hub.stop()
         for host in self.hosts.values():
@@ -373,6 +422,8 @@ def handler_for(harness):
             try:
                 body = json.loads(self.rfile.read(length) or b"{}")
                 status, answer = harness.handle(method, self.path, body)
+            except BadRequest as e:
+                status, answer = 400, {"error": str(e)}
             except Exception as e:  # the test sees why, the harness keeps serving
                 status, answer = 500, {"error": f"{type(e).__name__}: {e}"}
             data = json.dumps(answer).encode()
@@ -405,6 +456,8 @@ def parse_args(argv):
     parser.add_argument("--master-port", type=int, default=39102)
     parser.add_argument("--meters-hz", type=float, default=30.0)
     parser.add_argument("--log-dir", default=None)
+    # The impair proxy's port (#43); 0 takes any free one (the harness's own tests).
+    parser.add_argument("--link-port", type=int, default=0)
     parser.add_argument("--public-name", default=None)
     parser.add_argument("--https-port", type=int, default=8443)
     parser.add_argument("--tls-cert", default=None)

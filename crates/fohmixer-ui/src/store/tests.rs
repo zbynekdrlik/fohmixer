@@ -76,6 +76,109 @@ fn a_slot_reads_as_a_number_a_flag_or_a_display_string() {
 }
 
 #[test]
+fn a_lost_connection_keeps_a_slots_value_as_stale() {
+    let fresh = Slot::Value {
+        value: json!(0.7),
+        display: Some("-6.0 dB".into()),
+        at: 5.0,
+    };
+    let stale = fresh.clone().into_stale();
+    assert_eq!(
+        stale,
+        Slot::Stale {
+            value: json!(0.7),
+            display: Some("-6.0 dB".into()),
+            at: 5.0
+        }
+    );
+    // Shown and touched as before (L2)...
+    assert!(stale.is_ready() && !stale.is_error());
+    assert_eq!(Readiness::of_slot(&stale), Readiness::Ready);
+    assert_eq!(
+        (stale.number(), stale.display(), stale.at(), stale.value()),
+        (Some(0.7), Some("-6.0 dB"), Some(5.0), Some(&json!(0.7)))
+    );
+    assert_eq!(
+        Slot::Value {
+            value: json!(true),
+            display: None,
+            at: 1.0
+        }
+        .into_stale()
+        .flag(),
+        Some(true)
+    );
+    // ...but not fresh: a meter and the status light take only a fresh one.
+    assert!(fresh.is_fresh() && !stale.is_fresh());
+    assert_eq!(fresh.fresh_number(), Some(0.7));
+    assert_eq!(stale.fresh_number(), None);
+    assert_eq!(stale.clone().into_stale(), stale, "stale stays stale");
+    // Without a value there is nothing to keep.
+    for other in [Slot::Pending, Slot::Error("gone".into())] {
+        assert_eq!(other.clone().into_stale(), other);
+        assert!(!other.is_fresh());
+        assert_eq!(other.fresh_number(), None);
+    }
+    assert_eq!(
+        Slot::Value {
+            value: json!("text"),
+            display: None,
+            at: 1.0
+        }
+        .fresh_number(),
+        None,
+        "a fresh value that is no number"
+    );
+}
+
+#[test]
+fn a_page_switch_waits_while_connected_and_keeps_a_known_value_during_an_outage() {
+    let fresh = Slot::Value {
+        value: json!(0.7),
+        display: Some("-6.0 dB".into()),
+        at: 5.0,
+    };
+    let stale = fresh.clone().into_stale();
+    // The hub connected: a key subscribed now waits for its fresh value
+    // (I8), one unsubscribed has nothing to keep it current.
+    for slot in [fresh.clone(), stale.clone(), Slot::Error("gone".into())] {
+        assert_eq!(slot.rewanted(true), Slot::Pending);
+    }
+    // During an outage, added or removed: a known value is kept (L2).
+    assert_eq!(fresh.clone().rewanted(false), stale);
+    assert_eq!(stale.clone().rewanted(false), stale);
+    assert!(fresh.rewanted(false).is_ready(), "it still takes touches");
+    assert_eq!(
+        Slot::Pending.rewanted(false),
+        Slot::Pending,
+        "nothing known"
+    );
+    assert_eq!(
+        Slot::Error("gone".into()).rewanted(false),
+        Slot::Error("gone".into())
+    );
+}
+
+#[test]
+fn a_subscriptions_write_key_drops_its_display_flag() {
+    let volume = SubSpec::new(
+        "band",
+        "live_set  tracks[name=Hand1 #] mixer_device volume".into(),
+        "value",
+        true,
+    );
+    assert_eq!(
+        write_key(&volume.key()),
+        fohmixer_proto::client::set_key(&volume.instance, &volume.target, &volume.prop)
+    );
+    assert_eq!(
+        write_key("band|live_set tracks 1|mute|false"),
+        "band|live_set tracks 1|mute"
+    );
+    assert_eq!(write_key("no-bar"), "no-bar");
+}
+
+#[test]
 fn the_wanted_set_subscribes_each_key_once_and_releases_the_rest() {
     let mut wanted = Wanted::default();
     assert!(wanted.is_empty());
@@ -102,6 +205,18 @@ fn the_wanted_set_subscribes_each_key_once_and_releases_the_rest() {
         [mute.key(), spec("master", "C", "mute").key()]
     );
     assert!(change.added.is_empty() && wanted.is_empty());
+}
+
+#[test]
+fn a_key_is_wanted_until_its_page_goes() {
+    let mut wanted = Wanted::default();
+    let mute = spec("band", "A", "mute");
+    assert!(!wanted.contains(&mute.key()), "nothing wanted yet");
+    wanted.replace(vec![mute.clone()]);
+    assert!(wanted.contains(&mute.key()));
+    assert!(!wanted.contains(&spec("band", "B", "mute").key()));
+    wanted.replace(vec![spec("band", "B", "mute")]);
+    assert!(!wanted.contains(&mute.key()), "its page went");
 }
 
 #[test]

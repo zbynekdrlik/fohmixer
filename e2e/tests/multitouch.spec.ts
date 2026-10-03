@@ -174,6 +174,9 @@ test.describe("A host restart in the middle of a drag", () => {
     await frames(page);
     const finger = await shown(fader);
     expect(finger).toBeGreaterThan(0.55);
+    // Live confirmed the finger's value before it restarts: an unconfirmed
+    // write of a held fader would be sent again once Live is back (#43, L4).
+    await until(() => live.get("band", B.target, "value"), (v) => Math.abs(v - finger) < 0.001, "Live at the finger's value");
     const restart = harness("/host/band/restart");
     // While Live is away the fader keeps the finger's value.
     await expect(fader).toHaveAttribute("aria-disabled", "true");
