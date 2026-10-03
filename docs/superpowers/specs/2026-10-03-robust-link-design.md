@@ -104,17 +104,20 @@ The code review on #43 found further defects:
 
 ### 4.1 The intent store (`store/intent.rs`, pure)
 
-Per key it holds `{value, seq, t, final, released_at, acked_seq, state}`. The state is one of:
+Per key it holds the open intent `{value, seq, t, final, released_at, not_sent}` (a closed one is dropped). The state is one of:
 
 - `sending`
-- `confirmed`
+- `confirmed` (no open intent)
 - `unconfirmed` (released, no ack for 1 s)
-- `not_sent` (L4 expired)
+- `not_sent` (L4 expired at a resend)
 
 Rules:
 
 - **Sending.** A control's send goes to the store, never straight to the socket. The store sends it when the socket is ready and keeps it until an ack with `seq ≥` its seq.
-- **On hello.** The store resends per L4. Sends are rate-capped per key at one per animation frame (as today).
+- **When an instance is back.** The store resends that instance's intents per L4: right after each hello (the hub reports every instance then, and a socket loss marked them offline on the page) and when an instance comes back online on the same socket (the hub's setter dropped its pending wants). Each goes as a new `set` (the page's next seq, `t` = the time it goes). Sends are rate-capped per key at one per animation frame (as today).
+- **Release and touch.** A release with no final write (the frames already sent the last move, or a glide ended) records its time; a control taken away under a finger counts as released then. A touch on a control with a write still on its way holds that write again (no release time until the touch's own release); a touch on a `not_sent` one drops it.
+- **Live already holds it.** A `not_sent` write whose value Live's fresh value equals (float32) is closed: the hub applied it before the link went, its ack was lost. Any other value leaves it (another writer's included): the red outline and the ghost show the difference until the next touch.
+- **Toggles.** A tap inverts the toggle's write still on its way when there is one (two taps while the link is down leave Live as it was), else Live's value; a toggle keeps showing Live's value.
 - **Errors.** An ack with `error` marks the key failed: the red flash as today, and the fader then shows Live's value.
 
 ### 4.2 Values and touches
@@ -122,9 +125,9 @@ Rules:
 - **Keeping the value.** A socket loss no longer turns a known slot into `Pending`: the slot keeps its last value, marked stale. I8's "enabled only after the first value" holds for the first load, and after an instance reports offline.
 - **Taking touches.** `on_down` takes the touch when the slot has a value, stale or not (L2).
 - **What a fader shows** (`FaderCtl::frame`):
-  - while the key has an open intent (`sending`, `unconfirmed`, `not_sent`), the cap shows the intent and Live's value only moves the ghost (L3);
+  - while the key has an open intent (`sending`, `unconfirmed`, `not_sent`), the cap shows the intent and Live's value only moves the ghost (L3); a fader built while its write is open (a page switch) shows the write, and the next touch starts from it;
   - the intent closes on an ack whose seq is at least the intent's, or on a `superseded` ack;
-  - after that the cap shows Live's value again, after today's post-release hold.
+  - after that the cap shows Live's value again, after today's post-release hold, which runs again from the close.
 
 ### 4.3 How states look
 

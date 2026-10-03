@@ -330,6 +330,8 @@ pub fn next_range(
 /// (`instance|target|prop|display`).
 pub fn write_key(sub_key: &str) -> &str {
     sub_key
+        .rsplit_once('|')
+        .map_or(sub_key, |(key, _display)| key)
 }
 
 /// The key under which the engineer's token is stored.

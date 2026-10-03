@@ -27,7 +27,14 @@ const DOT: f64 = 12.0;
 pub fn PanView(state: RwSignal<Slot>, spec: SubSpec) -> impl IntoView {
     let store = expect_context::<LiveStore>();
     let slot = state;
-    let key = StoredValue::new(vec![set_key(&spec.instance, &spec.target, &spec.prop)]);
+    let keys = vec![set_key(&spec.instance, &spec.target, &spec.prop)];
+    // A pan taken away under a finger gets no pointerup: its write counts as
+    // released then (L4).
+    {
+        let keys = keys.clone();
+        on_cleanup(move || store.release(&keys));
+    }
+    let key = StoredValue::new(keys);
     let spec = StoredValue::new(spec);
     let ctl = StoredValue::new(PanCtl::default());
     let failed = RwSignal::new(false);
@@ -65,6 +72,7 @@ pub fn PanView(state: RwSignal<Slot>, spec: SubSpec) -> impl IntoView {
             .unwrap_or(false);
         if taken {
             let _ = el.set_pointer_capture(id);
+            let _ = key.try_with_value(|k| store.touch(k));
         }
     };
     let on_move = move |ev: web_sys::PointerEvent| {

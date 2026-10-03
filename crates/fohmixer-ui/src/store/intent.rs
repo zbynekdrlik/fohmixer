@@ -132,10 +132,22 @@ fn is_unconfirmed(age: f64) -> bool {
     age >= UNCONFIRMED_MS
 }
 
+/// Two numbers this close (relative above 1, absolute below) are one value:
+/// Live keeps a value as float32.
+const SAME_VALUE: f64 = 1e-6;
+
 /// Whether Live's number `live` is the write's `wrote`.
-#[allow(dead_code)] // used by live_value in the green commit
-fn same_number(_wrote: f64, _live: f64) -> bool {
-    false
+fn same_number(wrote: f64, live: f64) -> bool {
+    (wrote - live).abs() <= SAME_VALUE * wrote.abs().max(1.0)
+}
+
+/// Whether Live's `live` is the write's `wrote` (numbers as `same_number`,
+/// anything else exactly).
+fn same_value(wrote: &Value, live: &Value) -> bool {
+    match (wrote.as_f64(), live.as_f64()) {
+        (Some(w), Some(l)) => same_number(w, l),
+        _ => wrote == live,
+    }
 }
 
 /// Whether a release `age` ms old is sent again after a reconnect (L4).
@@ -211,23 +223,44 @@ impl<F> Intents<F> {
     }
 
     /// The control of `key` was touched again: a `not_sent` intent is dropped
-    /// (L4); one still on its way stays.
+    /// with its handler (L4); one still on its way is held again (no release
+    /// time until the touch's own release, so a reconnect meanwhile sends it
+    /// as a held control's value).
     pub fn touch(&mut self, key: &str) {
-        if self.open.get(key).is_some_and(|open| open.not_sent) {
+        let Some(open) = self.open.get_mut(key) else {
+            return;
+        };
+        if open.not_sent {
             self.open.remove(key);
+            self.fails.remove(key);
+        } else {
+            open.released_at = None;
+            open.intent.is_final = false;
         }
     }
 
     /// Live's fresh `value` of `key` arrived (#43): a `not_sent` write it
     /// equals is closed (Live holds it already: the hub applied it before
     /// the link went, and its ack was lost with the socket).
-    pub fn live_value(&mut self, _key: &str, _value: &Value) {}
+    pub fn live_value(&mut self, key: &str, value: &Value) {
+        if self
+            .open
+            .get(key)
+            .is_some_and(|open| open.not_sent && same_value(&open.intent.value, value))
+        {
+            self.open.remove(key);
+            self.fails.remove(key);
+        }
+    }
 
     /// The value `key`'s write still on its way will leave (a toggle's tap
     /// inverts it, #43): none when nothing is open or the write is
     /// `not_sent` (it never reached Live).
-    pub fn pending(&self, _key: &str) -> Option<&Value> {
-        None
+    pub fn pending(&self, key: &str) -> Option<&Value> {
+        self.open
+            .get(key)
+            .filter(|open| !open.not_sent)
+            .map(|open| &open.intent.value)
     }
 
     /// The state of `key`'s write at page time `now`.

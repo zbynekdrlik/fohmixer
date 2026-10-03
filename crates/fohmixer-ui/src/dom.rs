@@ -57,6 +57,11 @@ pub fn set_attr(element: &web_sys::Element, name: &str, value: &str) {
     let _ = element.set_attribute(name, value);
 }
 
+/// Removes an attribute (failures ignored, like `set_attr`).
+pub fn remove_attr(element: &web_sys::Element, name: &str) {
+    let _ = element.remove_attribute(name);
+}
+
 /// The viewport's size in CSS px.
 pub fn viewport() -> (f64, f64) {
     let Some(window) = web_sys::window() else {

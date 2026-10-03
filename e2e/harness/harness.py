@@ -51,6 +51,7 @@ Every process is stopped with SIGTERM and a bounded wait (spec I7). Prints
 import argparse
 import base64
 import json
+import math
 import os
 import queue
 import shutil
@@ -163,9 +164,11 @@ class BadRequest(Exception):
 
 
 def stall_ms(body):
-    """The ``ms`` of a ``/link/stall`` body: a number of milliseconds, 0 or more."""
+    """The ``ms`` of a ``/link/stall`` body: a finite number of milliseconds, 0
+    or more (JSON's ``Infinity`` would hold the proxy for every later test)."""
     ms = body.get("ms")
-    if isinstance(ms, bool) or not isinstance(ms, (int, float)) or not ms >= 0:
+    finite = isinstance(ms, (int, float)) and not isinstance(ms, bool) and math.isfinite(ms)
+    if not finite or ms < 0:
         raise BadRequest(f'/link/stall wants {{"ms": <0 or more>}}, not {body!r}')
     return ms
 

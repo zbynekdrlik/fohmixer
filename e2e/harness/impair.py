@@ -25,13 +25,25 @@ so the page and the hub talk HTTP and WebSocket through it unchanged: the page's
   is lifted, then goes on as any other. Nothing is refused: a refused request or
   socket is a console error in the browser, a held one is not.
 
-Every control call and every failure is printed (``impair: …``) to the
-harness's log.
+Every control call and every failure is printed (``impair: …``) on stderr,
+the harness's log.
+
+On its own (a degraded-link check of a deployed hub, from another machine):
+
+    python3 impair.py --upstream <hub host>:<port> [--listen-port 0]
+
+prints ``IMPAIR <port>`` once it listens on 127.0.0.1 and then takes one
+control line per stdin line — ``stall <ms>``, ``drop``, ``block on|off``,
+``state`` — answering each with one JSON line; the end of stdin stops it.
 """
 
+import argparse
 import asyncio
+import json
+import math
 import socket
 import struct
+import sys
 import threading
 
 # How long a control call waits for the proxy's loop.
@@ -45,7 +57,8 @@ RESET = struct.pack("ii", 1, 0)
 
 
 def log(message):
-    print(f"impair: {message}", flush=True)
+    """A line on stderr (the harness's log; the tool's stdout stays its answers)."""
+    print(f"impair: {message}", file=sys.stderr, flush=True)
 
 
 def reset(writer):
@@ -136,8 +149,12 @@ class Impair:
     # The control calls (any thread).
 
     def stall(self, ms):
-        """Holds both directions of every connection for ``ms`` from now."""
-        answer = self._call(self._stall, float(ms))
+        """Holds both directions of every connection for ``ms`` from now (a
+        finite number, 0 or more: an endless stall would never end)."""
+        ms = float(ms)
+        if not math.isfinite(ms) or ms < 0:
+            raise ValueError(f"a stall is a finite number of ms, 0 or more, not {ms!r}")
+        answer = self._call(self._stall, ms)
         log(f"stall {ms} ms: {answer}")
         return answer
 
@@ -254,3 +271,55 @@ class Impair:
         while left > 0:
             await asyncio.sleep(left)
             left = self.stall_until - self.loop.time()
+
+
+def command(proxy, line):
+    """One control line of the command-line tool: its answer, a dict (an
+    ``error`` for a line it does not know or a value it refuses)."""
+    words = line.split()
+    try:
+        if len(words) == 2 and words[0] == "stall":
+            return proxy.stall(float(words[1]))
+        if words == ["drop"]:
+            return proxy.drop()
+        if len(words) == 2 and words[0] == "block" and words[1] in ("on", "off"):
+            return proxy.block(words[1] == "on")
+        if words == ["state"]:
+            return proxy.state()
+    except ValueError as e:
+        log(f"refused {line.strip()!r}: {e}")
+        return {"error": str(e)}
+    log(f"unknown line {line.strip()!r}")
+    return {"error": f"unknown line {line.strip()!r}: stall <ms> | drop | block on|off | state"}
+
+
+def parse_args(argv):
+    parser = argparse.ArgumentParser(description="the impair proxy in front of a hub")
+    parser.add_argument("--upstream", required=True, help="<host>:<port> of the hub")
+    parser.add_argument("--listen-port", type=int, default=0)
+    args = parser.parse_args(argv)
+    host, _, port = args.upstream.rpartition(":")
+    if not host or not port.isdigit():
+        parser.error(f"--upstream wants <host>:<port>, not {args.upstream!r}")
+    args.upstream_host, args.upstream_port = host, int(port)
+    return args
+
+
+def main(argv=None, stdin=None, stdout=None):
+    args = parse_args(argv)
+    stdin = stdin or sys.stdin
+    stdout = stdout or sys.stdout
+    proxy = Impair(args.listen_port, args.upstream_port, upstream_host=args.upstream_host)
+    proxy.start()
+    print(f"IMPAIR {proxy.port}", file=stdout, flush=True)
+    try:
+        for line in stdin:
+            if line.strip():
+                print(json.dumps(command(proxy, line)), file=stdout, flush=True)
+    finally:
+        proxy.stop()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

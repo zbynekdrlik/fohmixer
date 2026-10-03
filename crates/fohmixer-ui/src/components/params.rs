@@ -42,9 +42,8 @@ fn toggle_state(targets: &[Target], tracked: bool) -> ToggleState {
 /// A target's on/off for a tap (#43): its write still on its way when there
 /// is one (two taps while the link is down leave Live as it was), else
 /// Live's value.
-#[allow(dead_code)] // used by the tap in the green commit
-fn tap_on(_pending: Option<&Value>, live: Option<&Value>, on: &Value) -> Option<bool> {
-    live.map(|v| is_on(v, on))
+fn tap_on(pending: Option<&Value>, live: Option<&Value>, on: &Value) -> Option<bool> {
+    pending.or(live).map(|v| is_on(v, on))
 }
 
 /// The `data-state` of a toggle state.
@@ -109,12 +108,31 @@ pub fn ParamToggleView(
         });
     };
     let on_down = move |ev: web_sys::PointerEvent| {
-        let now_state = targets
+        // It takes a tap once Live's values are here (I8); the tap reads
+        // each target's write still on its way first (#43).
+        let live_state = targets
             .try_with_value(|all| toggle_state(all, false))
             .unwrap_or(ToggleState::Unknown);
-        if now_state == ToggleState::Unknown {
+        if live_state == ToggleState::Unknown {
             return;
         }
+        let now_state = targets
+            .try_with_value(|all| {
+                let each: Vec<Option<bool>> = all
+                    .iter()
+                    .map(|t| {
+                        let pending = t
+                            .spec
+                            .as_ref()
+                            .and_then(|s| store.pending_value(&s.instance, &s.target, &s.prop));
+                        t.slot
+                            .try_with_untracked(|s| tap_on(pending.as_ref(), s.value(), &t.on))
+                            .flatten()
+                    })
+                    .collect();
+                aggregate(&each)
+            })
+            .unwrap_or(live_state);
         ev.prevent_default();
         if let Some(el) = dom::current_element(&ev) {
             let _ = el.set_pointer_capture(ev.pointer_id());

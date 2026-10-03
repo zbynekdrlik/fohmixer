@@ -49,7 +49,7 @@ exclude_re = [
   # of them in Chromium and WebKit.
   # dom.rs: the clocks, style/attribute writes, the viewport, the console,
   # local storage.
-  "fohmixer-ui/src/dom\\.rs.*(replace|in) (now|epoch_now|hidden|wall_now|log|error|set_style|set_attr|viewport|current_element|child|storage|storage_get|storage_set|storage_remove)( |$)",
+  "fohmixer-ui/src/dom\\.rs.*(replace|in) (now|epoch_now|hidden|wall_now|log|error|set_style|set_attr|remove_attr|viewport|current_element|child|storage|storage_get|storage_set|storage_remove)( |$)",
   # net.rs: the fetch wrapper and the handshake reload (location.reload).
   "fohmixer-ui/src/net\\.rs.*(replace|in) (fetch_text|last_reload|reload)( |$)",
   # raf.rs: requestAnimationFrame scheduling around the tested Registry, and
@@ -64,13 +64,21 @@ exclude_re = [
   # (link.spec.ts: a fader drag's sets and acks, a held link and a lost
   # socket reported as dropouts, and a socket lost during a page stall,
   # which only the timer going on between sockets counts). PR B added
-  # mark_stale (each wanted slot through the tested Slot::into_stale), resend
-  # (Intents::resend's sets onto the socket, on conn::back_online), release,
-  # touch and intent_state (Intents::release, touch and state with the page
-  # clock); resilience.spec.ts drives them through the impair proxy (a
-  # release kept across a dropped link, a touch while it reconnects, a
-  # release inside a stall, a release too old to send again).
-  "fohmixer-ui/src/store/live\\.rs.*(replace|in) LiveStore::(new|start|stop|stopped|token|logout|connect|retry|show_layout|open_socket|watch|tick_link|drop_socket|on_close|on_text|on_hello|on_instance|resend|on_layout|apply|mark_pending|mark_stale|send|send_sub|slot|slot_signal|set_wanted|refresh|cmd|finish|set|release|touch|intent_state|set_prop|set_hub|on_ack|send_reports|range|fetch_ranges|fetch_range)( |$)",
+  # mark_stale (each wanted slot through the tested Slot::into_stale) and
+  # moved the write glue to store/live/writes.rs (below).
+  "fohmixer-ui/src/store/live\\.rs.*(replace|in) LiveStore::(new|start|stop|stopped|token|logout|connect|retry|show_layout|open_socket|watch|tick_link|drop_socket|on_close|on_text|on_hello|on_instance|on_layout|apply|mark_pending|mark_stale|send|send_sub|slot|slot_signal|set_wanted|refresh|cmd|finish|set_prop|set_hub|send_reports|range|fetch_ranges|fetch_range)( |$)",
+  # store/live/writes.rs (#43): the controls' writes between the controls,
+  # the tested Intents and the socket, one function at a time: on_ack (an ack
+  # through Intents::ack to the control's failure flash), resend
+  # (Intents::resend's sets onto the socket, on conn::back_online), set,
+  # release and touch (Intents::set, release and touch with the page clock),
+  # intent_view and pending_value (Intents::state, open and pending), and
+  # live_value (Intents::live_value on store::write_key of a subscription);
+  # link.spec.ts and resilience.spec.ts drive them (acked sets; a release
+  # kept across a dropped link, a touch while it reconnects, a release inside
+  # a stall, a release too old to send again, a fader rebuilt with its write
+  # open).
+  "fohmixer-ui/src/store/live/writes\\.rs.*(replace|in) LiveStore::(on_ack|resend|set|release|touch|intent_view|pending_value|live_value)( |$)",
   "fohmixer-ui/src/store/live\\.rs.*(replace|in) (Socket::open|Socket::close|Inner::new)( |$)",
   # auth.rs: local storage and the login request (login_outcome, login_body
   # and LoginError::message are the tested decisions).

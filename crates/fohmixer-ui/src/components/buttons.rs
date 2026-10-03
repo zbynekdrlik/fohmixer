@@ -43,26 +43,30 @@ pub fn anchor_name(binding: &Binding) -> String {
 /// The value a tap writes (#43): the inverse of the control's write still
 /// on its way when there is one (two taps while the link is down leave Live
 /// as it was), else of Live's value.
-#[allow(dead_code)] // used by the tap in the green commit
-pub(super) fn toggle_target(_pending: Option<bool>, live: Option<bool>) -> Option<bool> {
-    live.map(|v| !v)
+pub(super) fn toggle_target(pending: Option<bool>, live: Option<bool>) -> Option<bool> {
+    pending.or(live).map(|v| !v)
 }
 
-/// Writes the inverse of a flag slot's value (a tap: a final `set`, #43).
+/// Writes the inverse of a flag slot's value, or of its write still on its
+/// way (a tap: a final `set`, #43).
 pub(super) fn toggle_flag(
     store: LiveStore,
     spec: &SubSpec,
     slot: RwSignal<Slot>,
     failed: RwSignal<bool>,
 ) {
-    let Some(current) = slot.try_with_untracked(Slot::flag).flatten() else {
+    let pending = store
+        .pending_value(&spec.instance, &spec.target, &spec.prop)
+        .and_then(|v| v.as_bool());
+    let live = slot.try_with_untracked(Slot::flag).flatten();
+    let Some(value) = toggle_target(pending, live) else {
         return;
     };
     store.set(
         &spec.instance,
         &spec.target,
         &spec.prop,
-        json!(!current),
+        json!(value),
         true,
         Some(fail_flash(failed)),
     );

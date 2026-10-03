@@ -2,6 +2,9 @@
 bytes pass both ways, a stall holds them, a drop resets, a block holds new
 connections until it is lifted."""
 
+import contextlib
+import io
+import json
 import os
 import socket
 import socketserver
@@ -199,6 +202,45 @@ class ImpairTest(unittest.TestCase):
             proxy.stop()
             echo.shutdown()
             echo.server_close()
+
+    def test_a_stall_is_a_finite_number_of_ms(self):
+        for bad in (float("inf"), float("nan"), -1, "x"):
+            with self.assertRaises(ValueError, msg=repr(bad)):
+                self.proxy.stall(bad)
+        self.assertEqual(self.proxy.state()["stall_ms"], 0.0, "nothing held")
+        self.assertEqual(self.proxy.stall(0)["stall_ms"], 0.0)
+
+    def test_the_tools_control_lines(self):
+        client = self.connect()
+        client.sendall(b"up")
+        self.assertEqual(read_exactly(client, 2), b"up")
+        self.assertGreater(impair.command(self.proxy, "stall 300\n")["stall_ms"], 200)
+        self.assertEqual(impair.command(self.proxy, "block on")["blocked"], True)
+        self.assertEqual(impair.command(self.proxy, "state")["connections"], 1)
+        self.assertEqual(impair.command(self.proxy, "block off")["blocked"], False)
+        self.assertEqual(impair.command(self.proxy, "drop"), {"dropped": 1})
+        for bad in ("stall inf", "stall -5", "stall soon", "block maybe", "drop all", "nap"):
+            self.assertIn("error", impair.command(self.proxy, bad), bad)
+        self.assertIn("finite", impair.command(self.proxy, "stall inf")["error"])
+        self.assertIn("unknown line", impair.command(self.proxy, "nap")["error"])
+
+    def test_the_tool_forwards_and_answers_its_stdin(self):
+        stdin = io.StringIO("state\n\nblock on\n")
+        stdout = io.StringIO()
+        upstream = f"127.0.0.1:{self.echo.server_address[1]}"
+        self.assertEqual(impair.main(["--upstream", upstream], stdin, stdout), 0)
+        lines = stdout.getvalue().splitlines()
+        self.assertRegex(lines[0], r"^IMPAIR [0-9]+$")
+        self.assertEqual(json.loads(lines[1])["connections"], 0)
+        self.assertEqual(json.loads(lines[2])["blocked"], True)
+        self.assertEqual(len(lines), 3, "an empty line is no command")
+        args = impair.parse_args(["--upstream", "192.0.2.10:8480", "--listen-port", "9"])
+        self.assertEqual(
+            (args.upstream_host, args.upstream_port, args.listen_port), ("192.0.2.10", 8480, 9)
+        )
+        for bad in ("192.0.2.10", ":8480", "host:port"):
+            with self.assertRaises(SystemExit, msg=bad), contextlib.redirect_stderr(io.StringIO()):
+                impair.parse_args(["--upstream", bad])
 
     def test_a_dead_upstream_resets_the_client(self):
         dead = socket.socket()

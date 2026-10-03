@@ -135,6 +135,12 @@ pub fn FaderView(targets: Vec<Target>, shaping: bool) -> impl IntoView {
         .first()
         .and_then(|t| t.spec.as_ref())
         .map(|s| set_key(&s.instance, &s.target, &s.prop));
+    // A fader taken away under a finger (a page switch) gets no pointerup:
+    // its write counts as released then, never held forever (L4).
+    {
+        let keys = keys.clone();
+        on_cleanup(move || store.release(&keys));
+    }
     let keys = StoredValue::new(keys);
     let targets = StoredValue::new(targets);
     let ctl = StoredValue::new(FaderCtl::new(shaping, law.glide_to()));
@@ -221,12 +227,19 @@ pub fn FaderView(targets: Vec<Target>, shaping: bool) -> impl IntoView {
         let mut look: Option<State> = None;
         let mut ghost: Option<f64> = None;
         Box::new(move |now: f64, _step: f64| {
-            let intent = shown_key
+            let (intent, written) = shown_key
                 .as_deref()
-                .map_or(State::Confirmed, |k| store.intent_state(k));
+                .map_or((State::Confirmed, None), |k| store.intent_view(k));
+            // The open write's position: the cap shows it (§4.2).
+            let written = written
+                .filter(|_| intent.is_open())
+                .and_then(|v| law.pos(v));
             let at = live();
             let Some((motion, glide_ended)) = ctl.try_update_value(|c| {
                 c.intent(intent.is_open(), now);
+                if let Some(p) = written {
+                    c.write_at(p);
+                }
                 (c.frame(now, at), c.take_ended())
             }) else {
                 return;
@@ -243,11 +256,12 @@ pub fn FaderView(targets: Vec<Target>, shaping: bool) -> impl IntoView {
             }
             let g = at.filter(|_| intent.shows_ghost());
             if g != ghost {
-                if let Some(g) = g {
-                    dom::set_style(&el, "--g", &format!("{g:.5}"));
-                    if let Some(v) = law.value(g) {
+                match g.and_then(|g| law.value(g).map(|v| (g, v))) {
+                    Some((g, v)) => {
+                        dom::set_style(&el, "--g", &format!("{g:.5}"));
                         dom::set_attr(&el, "data-ghost", &format!("{v:.4}"));
                     }
+                    None => dom::remove_attr(&el, "data-ghost"),
                 }
                 ghost = g;
             }
