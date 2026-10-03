@@ -37,8 +37,10 @@ pub fn MeterView(levels: Vec<RwSignal<Slot>>) -> impl IntoView {
         let mut drawn: Vec<(f64, f64)> = vec![(-1.0, -1.0); count];
         Box::new(move |now: f64, step: f64| {
             for (i, slot) in levels.iter().enumerate() {
+                // A stale level (the hub connection was lost) is no level:
+                // the meter falls instead of freezing (#43).
                 let level = slot
-                    .try_with_untracked(Slot::number)
+                    .try_with_untracked(Slot::fresh_number)
                     .flatten()
                     .unwrap_or(0.0);
                 if clips(level) && clip.try_get_untracked() == Some(false) {
@@ -103,8 +105,8 @@ pub fn MeterView(levels: Vec<RwSignal<Slot>>) -> impl IntoView {
 }
 
 /// The status light: red while the strip is not bound (a binding does not
-/// resolve, or Live's values are not here), yellow after a value, fading to
-/// green.
+/// resolve, or Live's values are not here or only stale ones are, #43),
+/// yellow after a value, fading to green.
 #[component]
 pub fn StatusView(slots: Vec<RwSignal<Slot>>, activity: Vec<RwSignal<Slot>>) -> impl IntoView {
     let root = NodeRef::<html::Div>::new();
@@ -113,7 +115,7 @@ pub fn StatusView(slots: Vec<RwSignal<Slot>>, activity: Vec<RwSignal<Slot>>) -> 
         Box::new(move |now: f64, _step: f64| {
             let bound = slots
                 .iter()
-                .all(|s| s.try_with_untracked(Slot::is_ready).unwrap_or(false));
+                .all(|s| s.try_with_untracked(Slot::is_fresh).unwrap_or(false));
             let last = activity
                 .iter()
                 .filter_map(|s| s.try_with_untracked(Slot::at).flatten())

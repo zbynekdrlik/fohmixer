@@ -354,9 +354,10 @@ pub fn hold_ms(shaping: bool) -> f64 {
 
 /// One fader's input state, in positions (0..1; the component maps them to
 /// Live's values by its law): one pointer at a time (other pointers move
-/// other faders), the shaping, the double tap and its glide, and the
+/// other faders), the shaping, the double tap and its glide, the
 /// post-release hold (spec I4: a touched fader shows the finger, then snaps
-/// to Live's value).
+/// to Live's value) and, since #43 (L3), its write's intent: while the store
+/// holds it open the fader shows its own position, never Live's.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FaderCtl {
     shaper: Shaper,
@@ -370,6 +371,10 @@ pub struct FaderCtl {
     unsent: bool,
     hold: f64,
     hold_until: f64,
+    /// The store holds this fader's write open (#43).
+    open: bool,
+    /// A glide ended since the store last heard of it.
+    ended: bool,
 }
 
 impl FaderCtl {
@@ -388,13 +393,15 @@ impl FaderCtl {
             unsent: false,
             hold: hold_ms(shaping),
             hold_until: f64::NEG_INFINITY,
+            open: false,
+            ended: false,
         }
     }
 
-    /// Whether the fader shows its own position (touched, gliding or
-    /// holding after a release) at `now`.
+    /// Whether the fader shows its own position (touched, gliding, its write
+    /// open, or holding after a release) at `now`.
     fn local(&self, now: f64) -> bool {
-        self.pointer.is_some() || self.glide.is_some() || now < self.hold_until
+        self.pointer.is_some() || self.glide.is_some() || self.open || now < self.hold_until
     }
 
     /// The store's word on this fader's write at `now` (#43, L3): while its
@@ -403,12 +410,17 @@ impl FaderCtl {
     /// from the cap; when the intent closes (an ack at least as new, or
     /// another client's newer write) the post-release hold runs again from
     /// then, so Live's echo of the write lands before Live's value shows.
-    pub fn intent(&mut self, _open: bool, _now: f64) {}
+    pub fn intent(&mut self, open: bool, now: f64) {
+        if self.open && !open {
+            self.hold_until = now + self.hold;
+        }
+        self.open = open;
+    }
 
     /// Whether a glide ended (arrived, or stopped because Live's value went)
     /// since the last call: the store then marks its last write released.
     pub fn take_ended(&mut self) -> bool {
-        false
+        std::mem::take(&mut self.ended)
     }
 
     /// Pointer `id` pressed at `y` (px) on a fader `travel` px long, while
@@ -428,6 +440,11 @@ impl FaderCtl {
         self.shaper.start(self.pos);
         self.taps.down(self.pos, now);
         true
+    }
+
+    /// Whether pointer `id` drives this fader (its release is this fader's).
+    pub fn drives(&self, id: i32) -> bool {
+        self.pointer == Some(id)
     }
 
     /// Pointer `id` moved to `y`: whether it moved this fader.
@@ -481,10 +498,11 @@ impl FaderCtl {
     /// (`None`: no value yet).
     pub fn frame(&mut self, now: f64, live: Option<f64>) -> Motion {
         if self.glide.is_some() && live.is_none() {
-            // Live's value is gone (its instance went offline, the hub
-            // connection dropped): the glide stops where it is and sends
-            // nothing more.
+            // Live's value is gone (its instance went offline; a lost hub
+            // connection keeps it, stale, since #43): the glide stops where
+            // it is and sends nothing more.
             self.glide = None;
+            self.ended = true;
             self.hold_until = now + self.hold;
             return Motion {
                 pos: Some(self.pos),
@@ -496,6 +514,7 @@ impl FaderCtl {
             self.pos = pos;
             if done {
                 self.glide = None;
+                self.ended = true;
                 self.hold_until = now + self.hold;
             }
             return Motion {

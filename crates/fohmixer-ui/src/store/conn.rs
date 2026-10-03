@@ -303,9 +303,8 @@ pub fn instance_change(old: Option<&InstanceView>, new: &InstanceView) -> Instan
 /// away, and after a reconnect's hello it reports every instance again,
 /// which a lost connection had marked offline. A busy instance getting idle
 /// or one that loaded another set is not back: its writes were not dropped.
-#[allow(dead_code)] // wired into LiveStore::on_instance by the green commit
-pub fn back_online(_old: Option<&InstanceView>, _new: &InstanceView) -> bool {
-    false
+pub fn back_online(old: Option<&InstanceView>, new: &InstanceView) -> bool {
+    new.online && old.is_none_or(|o| !o.online)
 }
 
 #[cfg(test)]

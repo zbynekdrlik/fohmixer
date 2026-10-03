@@ -89,8 +89,8 @@ impl PanCtl {
     }
 
     /// Whether pointer `id` drives this pan (its release is this pan's).
-    pub fn drives(&self, _id: i32) -> bool {
-        false
+    pub fn drives(&self, id: i32) -> bool {
+        self.pointer == Some(id)
     }
 
     /// Pointer `id` moved to `x`: whether it moved this pan.

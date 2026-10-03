@@ -63,8 +63,14 @@ exclude_re = [
   # tick_link (the dropout watch's timer); the E2E suite drives them
   # (link.spec.ts: a fader drag's sets and acks, a held link and a lost
   # socket reported as dropouts, and a socket lost during a page stall,
-  # which only the timer going on between sockets counts).
-  "fohmixer-ui/src/store/live\\.rs.*(replace|in) LiveStore::(new|start|stop|stopped|token|logout|connect|retry|show_layout|open_socket|watch|tick_link|drop_socket|on_close|on_text|on_hello|on_instance|on_layout|apply|mark_pending|send|send_sub|slot|slot_signal|set_wanted|refresh|cmd|finish|set|set_prop|set_hub|on_ack|send_reports|range|fetch_ranges|fetch_range)( |$)",
+  # which only the timer going on between sockets counts). PR B added
+  # mark_stale (each wanted slot through the tested Slot::into_stale), resend
+  # (Intents::resend's sets onto the socket, on conn::back_online), release,
+  # touch and intent_state (Intents::release, touch and state with the page
+  # clock); resilience.spec.ts drives them through the impair proxy (a
+  # release kept across a dropped link, a touch while it reconnects, a
+  # release inside a stall, a release too old to send again).
+  "fohmixer-ui/src/store/live\\.rs.*(replace|in) LiveStore::(new|start|stop|stopped|token|logout|connect|retry|show_layout|open_socket|watch|tick_link|drop_socket|on_close|on_text|on_hello|on_instance|resend|on_layout|apply|mark_pending|mark_stale|send|send_sub|slot|slot_signal|set_wanted|refresh|cmd|finish|set|release|touch|intent_state|set_prop|set_hub|on_ack|send_reports|range|fetch_ranges|fetch_range)( |$)",
   "fohmixer-ui/src/store/live\\.rs.*(replace|in) (Socket::open|Socket::close|Inner::new)( |$)",
   # auth.rs: local storage and the login request (login_outcome, login_body
   # and LoginError::message are the tested decisions).

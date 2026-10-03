@@ -75,7 +75,10 @@ impl Slot {
     /// The slot after the hub connection was lost: a value is kept, marked
     /// stale; anything else stays as it is.
     pub fn into_stale(self) -> Self {
-        Self::Pending
+        match self {
+            Self::Value { value, display, at } => Self::Stale { value, display, at },
+            other => other,
+        }
     }
 
     /// Whether Live's value is here, fresh or stale (the control may take

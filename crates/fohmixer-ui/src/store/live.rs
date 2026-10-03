@@ -16,7 +16,7 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 
 use super::conn::{self, Conn, Tick};
-use super::intent::{Acked, Intents};
+use super::intent::{Acked, Intents, RESEND_MAX_AGE_MS, State};
 use super::{InstanceView, ResultFn, Slot, TOKEN_KEY, next_range, slot_failure};
 use crate::behave::link::{self, DropoutWatch};
 use crate::binding::{SubSpec, unfold_targets};
@@ -366,7 +366,8 @@ impl LiveStore {
                 view.busy = false;
             }
         });
-        self.mark_pending(None);
+        // The controls keep Live's last values, stale, and take touches (L2).
+        self.mark_stale();
         for done in pending.into_values() {
             done(Err("the hub connection closed".to_string()));
         }
@@ -537,6 +538,7 @@ impl LiveStore {
             .try_with_untracked(|all| all.get(&name).cloned())
             .flatten();
         let change = conn::instance_change(old.as_ref(), &view);
+        let back = conn::back_online(old.as_ref(), &view);
         if change.pending {
             self.mark_pending(Some(name.as_str()));
         }
@@ -545,6 +547,33 @@ impl LiveStore {
         });
         if change.ranges {
             self.fetch_ranges(Some(name.as_str()));
+        }
+        if back {
+            self.resend(&name);
+        }
+    }
+
+    /// `instance` is back (#43, L4): its open writes go again, as new
+    /// `set`s; a release too old to send blindly is `not_sent` now.
+    fn resend(self, instance: &str) {
+        let Some(resend) = self
+            .inner
+            .try_update_value(|i| i.intents.resend(instance, dom::epoch_now()))
+        else {
+            return;
+        };
+        for key in &resend.not_sent {
+            dom::log(&format!(
+                "set {key} not sent again: released {RESEND_MAX_AGE_MS} ms ago or more"
+            ));
+        }
+        let taken = resend.sets.iter().filter(|msg| self.send(msg)).count();
+        if !resend.sets.is_empty() || !resend.not_sent.is_empty() {
+            dom::log(&format!(
+                "instance {instance} is back: {} writes sent again ({taken} taken), {} not sent",
+                resend.sets.len(),
+                resend.not_sent.len()
+            ));
         }
     }
 
@@ -602,6 +631,26 @@ impl LiveStore {
             .unwrap_or_default();
         for signal in signals {
             let _ = signal.try_set(Slot::Pending);
+        }
+    }
+
+    /// Every wanted slot keeps its value, marked stale (#43, §4.2): the hub
+    /// connection was lost, not Live.
+    fn mark_stale(self) {
+        let signals: Vec<ArcRwSignal<Slot>> = self
+            .inner
+            .try_with_value(|i| {
+                i.conn
+                    .keys_of(None)
+                    .iter()
+                    .filter_map(|k| i.slots.get(k).cloned())
+                    .collect()
+            })
+            .unwrap_or_default();
+        for signal in signals {
+            let _ = signal.try_update(|slot| {
+                *slot = std::mem::replace(slot, Slot::Pending).into_stale();
+            });
         }
     }
 
@@ -727,8 +776,10 @@ impl LiveStore {
 
     /// A control's write (#43): `value` to `prop` of `target` on
     /// `instance`, through the intent store as a `set` (`is_final`: a
-    /// release, a toggle or a tap); `failed` hears why it failed (spec I6:
-    /// shown, never retried). The intent stays open until its ack.
+    /// release, a toggle or a tap); `failed` hears why the hub refused it
+    /// (spec I6: shown, never retried). The intent stays open until its ack;
+    /// one the socket cannot take now is kept and sent when its instance is
+    /// back (L1, `resend`).
     pub fn set(
         self,
         instance: &str,
@@ -746,15 +797,38 @@ impl LiveStore {
             return;
         };
         if !self.send(&msg) {
-            dom::log(&format!("set {key} not sent: not connected to the hub"));
-            let failed = self
-                .inner
-                .try_update_value(|i| i.intents.unsent(&key))
-                .flatten();
-            if let Some(failed) = failed {
-                failed("not connected to the hub".to_string());
-            }
+            dom::log(&format!(
+                "set {key} kept: not connected to the hub, sent when it is back"
+            ));
         }
+    }
+
+    /// The controls of `keys` were let go without a final write (#43, L4:
+    /// the release time of their open writes).
+    pub fn release(self, keys: &[String]) {
+        let t = dom::epoch_now();
+        let _ = self.inner.try_update_value(|i| {
+            for key in keys {
+                i.intents.release(key, t);
+            }
+        });
+    }
+
+    /// The controls of `keys` were touched again: a write not sent after a
+    /// reconnect is dropped (L4).
+    pub fn touch(self, keys: &[String]) {
+        let _ = self.inner.try_update_value(|i| {
+            for key in keys {
+                i.intents.touch(key);
+            }
+        });
+    }
+
+    /// The state of `key`'s write now (a fader's look, §4.3).
+    pub fn intent_state(self, key: &str) -> State {
+        self.inner
+            .try_with_value(|i| i.intents.state(key, dom::epoch_now()))
+            .unwrap_or(State::Confirmed)
     }
 
     /// `set_prop` of one property through a `cmd` (REFRESH ALL's unfold);

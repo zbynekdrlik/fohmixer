@@ -127,6 +127,16 @@ impl Open {
     }
 }
 
+/// Whether a release `age` ms old without its ack is `unconfirmed`.
+fn is_unconfirmed(age: f64) -> bool {
+    age >= UNCONFIRMED_MS
+}
+
+/// Whether a release `age` ms old is sent again after a reconnect (L4).
+fn may_resend(age: f64) -> bool {
+    age < RESEND_MAX_AGE_MS
+}
+
 /// The page's open intents.
 #[derive(Debug)]
 pub struct Intents<F> {
@@ -185,32 +195,58 @@ impl<F> Intents<F> {
     /// write (its last move had gone out in a frame, or a glide ended): its
     /// open intent counts as released from then. A second release keeps the
     /// first time.
-    pub fn release(&mut self, _key: &str, _t: f64) {}
+    pub fn release(&mut self, key: &str, t: f64) {
+        if let Some(open) = self.open.get_mut(key)
+            && open.released_at.is_none()
+        {
+            open.released_at = Some(t);
+            open.intent.is_final = true;
+        }
+    }
 
     /// The control of `key` was touched again: a `not_sent` intent is dropped
     /// (L4); one still on its way stays.
-    pub fn touch(&mut self, _key: &str) {}
+    pub fn touch(&mut self, key: &str) {
+        if self.open.get(key).is_some_and(|open| open.not_sent) {
+            self.open.remove(key);
+        }
+    }
 
     /// The state of `key`'s write at page time `now`.
-    pub fn state(&self, key: &str, _now: f64) -> State {
-        if self.open.contains_key(key) {
-            State::Sending
-        } else {
-            State::Confirmed
+    pub fn state(&self, key: &str, now: f64) -> State {
+        let Some(open) = self.open.get(key) else {
+            return State::Confirmed;
+        };
+        if open.not_sent {
+            return State::NotSent;
+        }
+        match open.released_at {
+            Some(at) if is_unconfirmed(now - at) => State::Unconfirmed,
+            _ => State::Sending,
         }
     }
 
     /// `instance` is back (a reconnect's hello, or online again) at page
     /// time `now`: its intents as new `set`s (L4: a held control's, a release
     /// younger than `RESEND_MAX_AGE_MS`); an older release is `not_sent`.
-    pub fn resend(&mut self, _instance: &str, _now: f64) -> Resend {
-        Resend::default()
-    }
-
-    /// The latest write of `key` could not be sent: what hears its failure
-    /// (the intent stays open).
-    pub fn unsent(&mut self, key: &str) -> Option<F> {
-        self.fails.remove(key)
+    pub fn resend(&mut self, instance: &str, now: f64) -> Resend {
+        let Self { last_seq, open, .. } = self;
+        let mut out = Resend::default();
+        let back = open
+            .iter_mut()
+            .filter(|(_, o)| o.instance == instance && !o.not_sent);
+        for (key, o) in back {
+            if o.released_at.is_some_and(|at| !may_resend(now - at)) {
+                o.not_sent = true;
+                out.not_sent.push(key.clone());
+            } else {
+                *last_seq += 1;
+                o.intent.seq = *last_seq;
+                o.intent.t = now;
+                out.sets.push(o.set_msg());
+            }
+        }
+        out
     }
 
     /// An ack item from the hub.

@@ -724,3 +724,18 @@ fn the_end_of_a_glide_is_told_once() {
     f.frame(1100.0, Some(live));
     assert!(!f.take_ended());
 }
+
+#[test]
+fn the_fader_says_which_pointer_drives_it() {
+    let mut f = FaderCtl::new(false, None);
+    assert!(!f.drives(1), "untouched");
+    assert!(f.down(1, 500.0, TRAVEL, 0.0, 0.5));
+    assert!(f.drives(1) && !f.drives(2));
+    assert_eq!(f.up(2, 5.0), None);
+    assert!(f.drives(1), "another pointer's release is not its");
+    assert_eq!(f.up(1, 10.0), None, "nothing unsent");
+    assert!(!f.drives(1), "released");
+    assert!(f.down(3, 500.0, TRAVEL, 500.0, 0.5));
+    f.cancel(3, 510.0);
+    assert!(!f.drives(3), "cancelled");
+}

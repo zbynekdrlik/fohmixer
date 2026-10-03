@@ -29,6 +29,29 @@ pub struct Motion {
     pub send: Option<f64>,
 }
 
+/// What the end of a pointer's touch means for a continuous control's write
+/// (#43, L4).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TouchEnd {
+    /// The pointer drove another control (or none): nothing.
+    NotMine,
+    /// The last move was still unsent: it goes as a final `set`.
+    Send(f64),
+    /// The frames already sent the last move: the store records the
+    /// release time of that write.
+    Released,
+}
+
+/// The end of a touch from whether the pointer drove this control (`mine`)
+/// and the value its release left unsent (`last`).
+pub fn touch_end(mine: bool, last: Option<f64>) -> TouchEnd {
+    match (mine, last) {
+        (_, Some(value)) => TouchEnd::Send(value),
+        (true, None) => TouchEnd::Released,
+        (false, None) => TouchEnd::NotMine,
+    }
+}
+
 /// A colour as 0–255 channels (fractional while it fades).
 pub type Rgb = [f64; 3];
 
@@ -41,6 +64,14 @@ pub fn css(color: Rgb) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_touch_ends_with_a_send_a_release_or_nothing() {
+        assert_eq!(touch_end(true, Some(0.4)), TouchEnd::Send(0.4));
+        assert_eq!(touch_end(false, Some(-0.5)), TouchEnd::Send(-0.5));
+        assert_eq!(touch_end(true, None), TouchEnd::Released);
+        assert_eq!(touch_end(false, None), TouchEnd::NotMine);
+    }
 
     #[test]
     fn css_rounds_and_clamps_the_channels() {

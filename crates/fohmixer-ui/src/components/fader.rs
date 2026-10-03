@@ -6,16 +6,27 @@
 //! `--p` (the stylesheet places the cap and the fill from it). The travel
 //! is the track's whole height, 1:1 with the finger (TouchOSC's
 //! `responseFactor` 100; #21, parity audit #2).
+//!
+//! Its write's intent (#43, PR B): while the store holds the first target's
+//! write open the cap shows it (L3); the frame loop writes the state as
+//! `data-intent` and, while it is `unconfirmed` or `not_sent`, Live's value
+//! as the ghost (`--g`, `data-ghost`): the stylesheet outlines the cap amber
+//! or red and draws the ghost line, no text (§4.3). A release with nothing
+//! unsent and a glide's end tell the store the release time (L4); a touch
+//! drops a `not_sent` write.
 
+use fohmixer_proto::client::set_key;
 use leptos::html;
 use leptos::prelude::*;
 use serde_json::json;
 
 use super::{fail_flash, readiness, readiness_now};
 use crate::behave::fader::{self as curve, FaderCtl, UNITY};
+use crate::behave::{TouchEnd, touch_end};
 use crate::binding::SubSpec;
 use crate::dom;
 use crate::raf;
+use crate::store::intent::State;
 use crate::store::{LiveStore, Readiness, Slot};
 
 /// How a fader maps its position to Live's value.
@@ -114,6 +125,17 @@ pub fn FaderView(targets: Vec<Target>, shaping: bool) -> impl IntoView {
         slots.push(slot);
     }
     let laws: Vec<Law> = targets.iter().map(|t| t.law).collect();
+    // The write keys of the targets (#43); the first is the one shown.
+    let keys: Vec<String> = targets
+        .iter()
+        .filter_map(|t| t.spec.as_ref())
+        .map(|s| set_key(&s.instance, &s.target, &s.prop))
+        .collect();
+    let shown_key = targets
+        .first()
+        .and_then(|t| t.spec.as_ref())
+        .map(|s| set_key(&s.instance, &s.target, &s.prop));
+    let keys = StoredValue::new(keys);
     let targets = StoredValue::new(targets);
     let ctl = StoredValue::new(FaderCtl::new(shaping, law.glide_to()));
     let failed = RwSignal::new(false);
@@ -167,35 +189,67 @@ pub fn FaderView(targets: Vec<Target>, shaping: bool) -> impl IntoView {
             .unwrap_or(false);
         if taken {
             let _ = el.set_pointer_capture(id);
+            let _ = keys.try_with_value(|k| store.touch(k));
         }
     };
     let on_move = move |ev: web_sys::PointerEvent| {
         let (id, y) = (ev.pointer_id(), f64::from(ev.client_y()));
         let _ = ctl.try_update_value(|c| c.moved(id, y, dom::now()));
     };
+    // The end of a touch (`behave::touch_end`): the unsent move as a final
+    // `set`, or the release time of the write already sent (L4).
+    let ended = move |end: Option<TouchEnd>| match end {
+        Some(TouchEnd::Send(p)) => send(p, true),
+        Some(TouchEnd::Released) => {
+            let _ = keys.try_with_value(|k| store.release(k));
+        }
+        Some(TouchEnd::NotMine) | None => {}
+    };
     let on_up = move |ev: web_sys::PointerEvent| {
         let id = ev.pointer_id();
-        if let Some(Some(p)) = ctl.try_update_value(|c| c.up(id, dom::now())) {
-            send(p, true);
-        }
+        ended(ctl.try_update_value(|c| touch_end(c.drives(id), c.up(id, dom::now()))));
     };
     // A cancelled pointer, or one whose capture was lost without an up:
     // the touch ends without a tap.
     let on_cancel = move |ev: web_sys::PointerEvent| {
         let id = ev.pointer_id();
-        if let Some(Some(p)) = ctl.try_update_value(|c| c.cancel(id, dom::now())) {
-            send(p, true);
-        }
+        ended(ctl.try_update_value(|c| touch_end(c.drives(id), c.cancel(id, dom::now()))));
     };
 
     raf::animate(root, move |el| {
         let mut shown: Option<f64> = None;
+        let mut look: Option<State> = None;
+        let mut ghost: Option<f64> = None;
         Box::new(move |now: f64, _step: f64| {
-            let Some(motion) = ctl.try_update_value(|c| c.frame(now, live())) else {
+            let intent = shown_key
+                .as_deref()
+                .map_or(State::Confirmed, |k| store.intent_state(k));
+            let at = live();
+            let Some((motion, glide_ended)) = ctl.try_update_value(|c| {
+                c.intent(intent.is_open(), now);
+                (c.frame(now, at), c.take_ended())
+            }) else {
                 return;
             };
             if let Some(p) = motion.send {
                 send(p, false);
+            }
+            if glide_ended {
+                let _ = keys.try_with_value(|k| store.release(k));
+            }
+            if look != Some(intent) {
+                dom::set_attr(&el, "data-intent", intent.name());
+                look = Some(intent);
+            }
+            let g = at.filter(|_| intent.shows_ghost());
+            if g != ghost {
+                if let Some(g) = g {
+                    dom::set_style(&el, "--g", &format!("{g:.5}"));
+                    if let Some(v) = law.value(g) {
+                        dom::set_attr(&el, "data-ghost", &format!("{v:.4}"));
+                    }
+                }
+                ghost = g;
             }
             let Some(p) = motion.pos else {
                 return;
@@ -229,6 +283,7 @@ pub fn FaderView(targets: Vec<Target>, shaping: bool) -> impl IntoView {
         >
             <div class="fader-groove"></div>
             <div class="fader-fill"></div>
+            <div class="fader-ghost"></div>
             <div class="fader-rail">
                 <div class="fader-cap"></div>
             </div>
