@@ -225,20 +225,48 @@ class ImpairTest(unittest.TestCase):
         self.assertIn("unknown line", impair.command(self.proxy, "nap")["error"])
 
     def test_the_tool_forwards_and_answers_its_stdin(self):
-        stdin = io.StringIO("state\n\nblock on\n")
-        stdout = io.StringIO()
+        r_in, w_in = os.pipe()
+        r_out, w_out = os.pipe()
+        stdin, feed = os.fdopen(r_in, "r"), os.fdopen(w_in, "w")
+        stdout, answers = os.fdopen(w_out, "w"), os.fdopen(r_out, "r")
         upstream = f"127.0.0.1:{self.echo.server_address[1]}"
-        self.assertEqual(impair.main(["--upstream", upstream], stdin, stdout), 0)
-        lines = stdout.getvalue().splitlines()
-        self.assertRegex(lines[0], r"^IMPAIR [0-9]+$")
-        self.assertEqual(json.loads(lines[1])["connections"], 0)
-        self.assertEqual(json.loads(lines[2])["blocked"], True)
-        self.assertEqual(len(lines), 3, "an empty line is no command")
+        ended = {}
+
+        def run():
+            ended["code"] = impair.main(["--upstream", upstream], stdin, stdout)
+
+        tool = threading.Thread(target=run, daemon=True)
+        tool.start()
+        try:
+            first = answers.readline()
+            self.assertRegex(first, r"^IMPAIR [0-9]+\n$")
+            client = socket.create_connection(("127.0.0.1", int(first.split()[1])), timeout=COME_S)
+            self.clients.append(client)
+            client.sendall(b"through")
+            self.assertEqual(read_exactly(client, 7), b"through", "bytes pass the tool's proxy")
+            feed.write("state\n\nblock on\n")
+            feed.flush()
+            self.assertEqual(json.loads(answers.readline())["connections"], 1)
+            self.assertEqual(
+                json.loads(answers.readline())["blocked"], True, "no answer to a blank line"
+            )
+        finally:
+            feed.close()
+            tool.join(COME_S)
+            stdout.close()
+            answers.close()
+            stdin.close()
+        self.assertEqual(ended, {"code": 0}, "the end of stdin stops it")
+
+    def test_the_tools_arguments(self):
         args = impair.parse_args(["--upstream", "192.0.2.10:8480", "--listen-port", "9"])
         self.assertEqual(
-            (args.upstream_host, args.upstream_port, args.listen_port), ("192.0.2.10", 8480, 9)
+            (args.upstream_host, args.upstream_port, args.listen_port, args.listen_host),
+            ("192.0.2.10", 8480, 9, "127.0.0.1"),
         )
-        for bad in ("192.0.2.10", ":8480", "host:port"):
+        args = impair.parse_args(["--upstream", "hub.example.org:80", "--listen-host", "0.0.0.0"])
+        self.assertEqual((args.upstream_host, args.listen_host), ("hub.example.org", "0.0.0.0"))
+        for bad in ("192.0.2.10", ":8480", "host:port", "[::1]:8480", "::1:8480"):
             with self.assertRaises(SystemExit, msg=bad), contextlib.redirect_stderr(io.StringIO()):
                 impair.parse_args(["--upstream", bad])
 

@@ -335,6 +335,31 @@ fn set_keys_are_hub_keys_without_display() {
 }
 
 #[test]
+fn a_hub_keys_write_key_drops_its_display_flag() {
+    for display in [true, false] {
+        let key = hub_key(
+            "band",
+            "live_set  tracks[name=Hand1 #] mixer_device volume",
+            "value",
+            display,
+        );
+        assert_eq!(
+            write_key_of(&key),
+            set_key(
+                "band",
+                "live_set tracks[name=Hand1 #] mixer_device volume",
+                "value"
+            )
+        );
+    }
+    assert_eq!(
+        write_key_of("band|live_set tracks 0|mute|false"),
+        "band|live_set tracks 0|mute"
+    );
+    assert_eq!(write_key_of("no-bar"), "no-bar");
+}
+
+#[test]
 fn the_served_protocol_range() {
     // Protocol 2 only (#43): a protocol 1 page reloads.
     assert_eq!((UI_PROTO, MIN_CLIENT_PROTO), (2, 2));

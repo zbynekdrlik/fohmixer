@@ -64,8 +64,10 @@ exclude_re = [
   # (link.spec.ts: a fader drag's sets and acks, a held link and a lost
   # socket reported as dropouts, and a socket lost during a page stall,
   # which only the timer going on between sockets counts). PR B added
-  # mark_stale (each wanted slot through the tested Slot::into_stale) and
-  # moved the write glue to store/live/writes.rs (below).
+  # mark_stale (each wanted slot through the tested Slot::into_stale),
+  # set_wanted now keeps a known value through the tested Slot::rewanted (a
+  # page switch while the link is down, resilience.spec.ts), and moved the
+  # write glue to store/live/writes.rs (below).
   "fohmixer-ui/src/store/live\\.rs.*(replace|in) LiveStore::(new|start|stop|stopped|token|logout|connect|retry|show_layout|open_socket|watch|tick_link|drop_socket|on_close|on_text|on_hello|on_instance|on_layout|apply|mark_pending|mark_stale|send|send_sub|slot|slot_signal|set_wanted|refresh|cmd|finish|set_prop|set_hub|send_reports|range|fetch_ranges|fetch_range)( |$)",
   # store/live/writes.rs (#43): the controls' writes between the controls,
   # the tested Intents and the socket, one function at a time: on_ack (an ack
@@ -77,7 +79,9 @@ exclude_re = [
   # link.spec.ts and resilience.spec.ts drive them (acked sets; a release
   # kept across a dropped link, a touch while it reconnects, a release inside
   # a stall, a release too old to send again, a fader rebuilt with its write
-  # open).
+  # open; live_value: a not-sent release Live already holds is confirmed;
+  # release: a fader taken away under a finger; touch: a pan touched again
+  # while its write waits).
   "fohmixer-ui/src/store/live/writes\\.rs.*(replace|in) LiveStore::(on_ack|resend|set|release|touch|intent_view|live_value)( |$)",
   "fohmixer-ui/src/store/live\\.rs.*(replace|in) (Socket::open|Socket::close|Inner::new)( |$)",
   # auth.rs: local storage and the login request (login_outcome, login_body

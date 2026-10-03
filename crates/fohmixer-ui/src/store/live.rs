@@ -675,14 +675,21 @@ impl LiveStore {
                 self.send(&ClientMsg::Unsub { sub: key.clone() });
             }
         }
+        // A key subscribed now waits for its fresh value (I8); one wanted
+        // while the hub is not connected, or no longer wanted, keeps its
+        // value, stale (#43, L2: a page re-entered during an outage).
         for spec in &change.added {
-            let _ = self.slot_signal(&spec.key()).try_set(Slot::Pending);
+            let _ = self
+                .slot_signal(&spec.key())
+                .try_update(|slot| *slot = std::mem::replace(slot, Slot::Pending).rewanted(ready));
             if ready {
                 self.send_sub(spec);
             }
         }
         for key in &change.removed {
-            let _ = self.slot_signal(key).try_set(Slot::Pending);
+            let _ = self
+                .slot_signal(key)
+                .try_update(|slot| *slot = std::mem::replace(slot, Slot::Pending).rewanted(false));
         }
     }
 

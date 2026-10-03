@@ -5,7 +5,8 @@
 //! instances' states and the hub values.
 //!
 //! I8: every subscription starts `Pending` and goes back to `Pending` when
-//! its instance goes offline or REFRESH ALL resubscribes; a control accepts
+//! its instance goes offline, REFRESH ALL resubscribes or a page switch
+//! subscribes it again while the hub is connected; a control accepts
 //! input only while its slots hold Live's values. A lost hub connection
 //! keeps each slot's value, marked `Stale` (#43, L2): the control still
 //! shows it and takes touches, and the next value from the hub makes it
@@ -86,8 +87,12 @@ impl Slot {
     /// fresh value comes), else — unsubscribed, or wanted while the hub is
     /// not connected — its value kept as stale (L2: a control re-entered
     /// during an outage still takes touches).
-    pub fn rewanted(self, _subscribed: bool) -> Self {
-        Self::Pending
+    pub fn rewanted(self, subscribed: bool) -> Self {
+        if subscribed {
+            Self::Pending
+        } else {
+            self.into_stale()
+        }
     }
 
     /// Whether Live's value is here, fresh or stale (the control may take
@@ -336,12 +341,8 @@ pub fn next_range(
 }
 
 /// The write key (`instance|target|prop`, #43) of a subscription's key
-/// (`instance|target|prop|display`).
-pub fn write_key(sub_key: &str) -> &str {
-    sub_key
-        .rsplit_once('|')
-        .map_or(sub_key, |(key, _display)| key)
-}
+/// (`instance|target|prop|display`): the protocol's own inverse of its key.
+pub use fohmixer_proto::client::write_key_of as write_key;
 
 /// The key under which the engineer's token is stored.
 pub const TOKEN_KEY: &str = "fohmixer_token";

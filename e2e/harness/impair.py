@@ -31,9 +31,11 @@ the harness's log.
 On its own (a degraded-link check of a deployed hub, from another machine):
 
     python3 impair.py --upstream <hub host>:<port> [--listen-port 0]
+        [--listen-host 127.0.0.1]
 
-prints ``IMPAIR <port>`` once it listens on 127.0.0.1 and then takes one
-control line per stdin line — ``stall <ms>``, ``drop``, ``block on|off``,
+prints ``IMPAIR <port>`` once it listens (on 127.0.0.1 unless
+``--listen-host`` names another address, e.g. a LAN one for a real tablet)
+and then takes one control line per stdin line — ``stall <ms>``, ``drop``, ``block on|off``,
 ``state`` — answering each with one JSON line; the end of stdin stops it.
 """
 
@@ -295,12 +297,13 @@ def command(proxy, line):
 
 def parse_args(argv):
     parser = argparse.ArgumentParser(description="the impair proxy in front of a hub")
-    parser.add_argument("--upstream", required=True, help="<host>:<port> of the hub")
+    parser.add_argument("--upstream", required=True, help="<IPv4 or name>:<port> of the hub")
     parser.add_argument("--listen-port", type=int, default=0)
+    parser.add_argument("--listen-host", default="127.0.0.1")
     args = parser.parse_args(argv)
     host, _, port = args.upstream.rpartition(":")
-    if not host or not port.isdigit():
-        parser.error(f"--upstream wants <host>:<port>, not {args.upstream!r}")
+    if not host or not port.isdigit() or any(c in host for c in "[]:"):
+        parser.error(f"--upstream wants <IPv4 address or name>:<port>, not {args.upstream!r}")
     args.upstream_host, args.upstream_port = host, int(port)
     return args
 
@@ -309,7 +312,12 @@ def main(argv=None, stdin=None, stdout=None):
     args = parse_args(argv)
     stdin = stdin or sys.stdin
     stdout = stdout or sys.stdout
-    proxy = Impair(args.listen_port, args.upstream_port, upstream_host=args.upstream_host)
+    proxy = Impair(
+        args.listen_port,
+        args.upstream_port,
+        host=args.listen_host,
+        upstream_host=args.upstream_host,
+    )
     proxy.start()
     print(f"IMPAIR {proxy.port}", file=stdout, flush=True)
     try:
