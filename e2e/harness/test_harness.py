@@ -265,7 +265,14 @@ class HarnessTest(unittest.TestCase):
         self.assertEqual(self.post("/link/block", {"on": False})[1]["blocked"], False)
 
     def test_a_link_request_without_its_value_is_refused(self):
-        for bad in ({}, {"ms": -1}, {"ms": "300"}, {"ms": True}, {"ms": float("nan")}):
+        for bad in (
+            {},
+            {"ms": -1},
+            {"ms": "300"},
+            {"ms": True},
+            {"ms": float("nan")},
+            {"ms": float("inf")},
+        ):
             with self.assertRaises(harness.BadRequest, msg=repr(bad)):
                 self.post("/link/stall", bad)
         for bad in ({}, {"on": 1}, {"on": "true"}):

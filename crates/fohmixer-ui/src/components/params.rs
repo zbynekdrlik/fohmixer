@@ -39,6 +39,14 @@ fn toggle_state(targets: &[Target], tracked: bool) -> ToggleState {
     aggregate(&states)
 }
 
+/// A target's on/off for a tap (#43): its write still on its way when there
+/// is one (two taps while the link is down leave Live as it was), else
+/// Live's value.
+#[allow(dead_code)] // used by the tap in the green commit
+fn tap_on(_pending: Option<&Value>, live: Option<&Value>, on: &Value) -> Option<bool> {
+    live.map(|v| is_on(v, on))
+}
+
 /// The `data-state` of a toggle state.
 pub fn state_name(state: ToggleState) -> &'static str {
     match state {
@@ -236,6 +244,19 @@ mod tests {
                 ToggleState::On
             );
         }
+    }
+
+    #[test]
+    fn a_tap_reads_the_write_on_its_way_else_lives_value() {
+        let on = json!(127.0);
+        assert_eq!(tap_on(None, Some(&json!(127.0)), &on), Some(true));
+        assert_eq!(tap_on(None, Some(&json!(0.0)), &on), Some(false));
+        assert_eq!(
+            tap_on(Some(&json!(127.0)), Some(&json!(0.0)), &on),
+            Some(true)
+        );
+        assert_eq!(tap_on(Some(&json!(0.0)), None, &on), Some(false));
+        assert_eq!(tap_on(None, None, &on), None);
     }
 
     #[test]

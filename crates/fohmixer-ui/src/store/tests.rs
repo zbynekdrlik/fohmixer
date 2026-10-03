@@ -132,6 +132,25 @@ fn a_lost_connection_keeps_a_slots_value_as_stale() {
 }
 
 #[test]
+fn a_subscriptions_write_key_drops_its_display_flag() {
+    let volume = SubSpec::new(
+        "band",
+        "live_set  tracks[name=Hand1 #] mixer_device volume".into(),
+        "value",
+        true,
+    );
+    assert_eq!(
+        write_key(&volume.key()),
+        fohmixer_proto::client::set_key(&volume.instance, &volume.target, &volume.prop)
+    );
+    assert_eq!(
+        write_key("band|live_set tracks 1|mute|false"),
+        "band|live_set tracks 1|mute"
+    );
+    assert_eq!(write_key("no-bar"), "no-bar");
+}
+
+#[test]
 fn the_wanted_set_subscribes_each_key_once_and_releases_the_rest() {
     let mut wanted = Wanted::default();
     assert!(wanted.is_empty());

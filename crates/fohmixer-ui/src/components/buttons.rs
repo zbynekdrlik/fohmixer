@@ -40,6 +40,14 @@ pub fn anchor_name(binding: &Binding) -> String {
     }
 }
 
+/// The value a tap writes (#43): the inverse of the control's write still
+/// on its way when there is one (two taps while the link is down leave Live
+/// as it was), else of Live's value.
+#[allow(dead_code)] // used by the tap in the green commit
+pub(super) fn toggle_target(_pending: Option<bool>, live: Option<bool>) -> Option<bool> {
+    live.map(|v| !v)
+}
+
 /// Writes the inverse of a flag slot's value (a tap: a final `set`, #43).
 pub(super) fn toggle_flag(
     store: LiveStore,
@@ -274,6 +282,19 @@ mod tests {
             anchor,
             path: None,
         }
+    }
+
+    #[test]
+    fn a_tap_inverts_the_write_on_its_way_else_lives_value() {
+        assert_eq!(toggle_target(None, Some(false)), Some(true));
+        assert_eq!(toggle_target(None, Some(true)), Some(false));
+        assert_eq!(
+            toggle_target(Some(true), Some(false)),
+            Some(false),
+            "the second tap"
+        );
+        assert_eq!(toggle_target(Some(false), None), Some(true));
+        assert_eq!(toggle_target(None, None), None, "no value: no tap");
     }
 
     #[test]

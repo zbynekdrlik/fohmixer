@@ -417,6 +417,12 @@ impl FaderCtl {
         self.open = open;
     }
 
+    /// The open write's position (#43, §4.2: the cap shows the write): the
+    /// fader takes it when no finger and no glide drive it, so a fader built
+    /// while its write is open (a page switch) shows the write, not 0, and a
+    /// touch starts from it. The frame loop calls it while the intent is open.
+    pub fn write_at(&mut self, _pos: f64) {}
+
     /// Whether a glide ended (arrived, or stopped because Live's value went)
     /// since the last call: the store then marks its last write released.
     pub fn take_ended(&mut self) -> bool {

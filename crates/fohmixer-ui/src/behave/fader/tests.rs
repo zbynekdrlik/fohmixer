@@ -739,3 +739,27 @@ fn the_fader_says_which_pointer_drives_it() {
     f.cancel(3, 510.0);
     assert!(!f.drives(3), "cancelled");
 }
+
+#[test]
+fn a_fader_built_while_its_write_is_open_shows_the_write_and_a_touch_starts_there() {
+    // A page switch rebuilt it (position 0) while its write waits.
+    let mut f = FaderCtl::new(false, zero_db());
+    f.intent(true, 0.0);
+    f.write_at(0.7);
+    assert_eq!(f.frame(1.0, Some(0.25)).pos, Some(0.7), "the write, not 0");
+    assert!(f.down(1, 500.0, TRAVEL, 10.0, 0.25));
+    // Under a finger the fader follows the finger, not the write.
+    f.write_at(0.2);
+    assert_eq!(f.frame(11.0, Some(0.25)).pos, Some(0.7));
+    f.moved(1, 490.0, 20.0);
+    assert_close(f.frame(30.0, Some(0.25)).pos.unwrap(), 0.8);
+    f.up(1, 40.0);
+    // Gliding, the glide drives it.
+    let mut f = FaderCtl::new(false, zero_db());
+    f.down(1, 500.0, TRAVEL, 0.0, 0.25);
+    f.up(1, 20.0);
+    f.down(1, 500.0, TRAVEL, 60.0, 0.25);
+    f.up(1, 80.0);
+    f.write_at(0.9);
+    assert_close(f.frame(1080.0, Some(0.25)).pos.unwrap(), 0.55);
+}

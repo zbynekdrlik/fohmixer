@@ -1,6 +1,20 @@
 import type { Locator, Page } from "@playwright/test";
 import { test, expect } from "./support/fixtures";
-import { LiveClient, centre, frames, impair, openSurface, ready, shown, strip, track, until, volume } from "./support/live";
+import {
+  LiveClient,
+  centre,
+  frames,
+  hostLine,
+  impair,
+  openSurface,
+  ready,
+  selectPage,
+  shown,
+  strip,
+  track,
+  until,
+  volume,
+} from "./support/live";
 
 // The page's resilience on a bad link (#43, PR B; design note §1 L1-L4, §4,
 // §6.2 tests 1-4). The pages reach the hub through the harness's impair proxy
@@ -73,7 +87,20 @@ test.describe("The control link's resilience (L1-L4)", () => {
 
   test("a fader touched while the socket reconnects moves, and its held value reaches Live (L2)", async ({ page }) => {
     const fader = await surfaceAtStart(page);
-    await linkDown(page);
+    const meter = strip(page, "Hand2 #").getByTestId("meter");
+    const status = strip(page, "Hand2 #").getByTestId("status");
+    await expect(status).toHaveAttribute("data-state", "bound");
+    expect(await hostLine("band", 'meter "Hand2 #" 0.8')).toBe("METER 1");
+    try {
+      await until(async () => Number(await meter.getAttribute("data-level")), (v) => v > 0.5, "the meter up");
+      await linkDown(page);
+      // A stale level is no level: the meter falls instead of freezing, and
+      // the status light says Live's values are not fresh.
+      await until(async () => Number(await meter.getAttribute("data-level")), (v) => v < 0.01, "the meter down", 5000);
+      await expect(status).toHaveAttribute("data-state", "unbound");
+    } finally {
+      await hostLine("band", 'meter "Hand2 #" off');
+    }
     // The fader keeps Live's last value (stale) and takes the touch.
     await expect(fader).toHaveAttribute("aria-disabled", "false");
     const held = await dragUp(page, fader, 5, true);
@@ -95,10 +122,18 @@ test.describe("The control link's resilience (L1-L4)", () => {
     // Every frame from here on: the fader's value and intent state.
     await fader.evaluate((el) => {
       const w = window as any;
+      const cap = el.querySelector(".fader-cap") as Element;
+      const ghost = el.querySelector(".fader-ghost");
       w.__samples = [];
       w.__sampling = true;
       const step = () => {
-        w.__samples.push([performance.now(), el.getAttribute("data-value"), el.getAttribute("data-intent")]);
+        w.__samples.push([
+          performance.now(),
+          el.getAttribute("data-value"),
+          el.getAttribute("data-intent"),
+          getComputedStyle(cap).outlineColor,
+          ghost ? getComputedStyle(ghost).display : "none",
+        ]);
         if (w.__sampling) requestAnimationFrame(step);
       };
       requestAnimationFrame(step);
@@ -140,7 +175,7 @@ test.describe("The control link's resilience (L1-L4)", () => {
     // (1 s with touch shaping) runs out.
     await until(liveValue, (v) => Math.abs(v - released) < SAME, "Live at the released value", 5000);
     await page.waitForTimeout(1500);
-    const samples: [number, string | null, string | null][] = await page.evaluate(() => {
+    const samples: [number, string | null, string | null, string, string][] = await page.evaluate(() => {
       const w = window as any;
       w.__sampling = false;
       return w.__samples;
@@ -149,10 +184,41 @@ test.describe("The control link's resilience (L1-L4)", () => {
     expect(after.length, "frames drawn through the stall and the hold").toBeGreaterThan(20);
     const off = after.filter(([, value]) => Math.abs(Number(value) - released) > SAME);
     expect(off, "every frame after the release shows the released value, never Live's 0.5 from before the stall").toEqual([]);
-    expect(
-      after.some(([, , state]) => state === "unconfirmed"),
-      "unconfirmed (amber) while the stall held the ack past 1 s",
-    ).toBe(true);
+    // Unconfirmed while the stall held the ack past 1 s: the cap outlined
+    // amber (--warn) and the ghost line shown; neither once it is confirmed.
+    const amber = after.filter(([, , state]) => state === "unconfirmed");
+    expect(amber.length, "unconfirmed while the stall held the ack past 1 s").toBeGreaterThan(0);
+    for (const [, , , outline, ghost] of amber) {
+      expect(outline).toBe("rgb(245, 166, 35)");
+      expect(ghost).toBe("block");
+    }
+    const [, , lastState, , lastGhost] = after[after.length - 1];
+    expect(lastState).toBe("confirmed");
+    expect(lastGhost).toBe("none");
+  });
+
+  test("a fader rebuilt while its write is open shows the write, and the next touch goes on from it", async ({ page }) => {
+    const fader = await surfaceAtStart(page);
+    await linkDown(page);
+    const released = await dragUp(page, fader, 5);
+    const releasedAt = Date.now();
+    expect(released, "the fader moved while the link was down").toBeGreaterThan(START + 0.02);
+    // A page switch rebuilds the strip while the write waits.
+    await selectPage(page, "cue");
+    await selectPage(page, "foh");
+    const rebuilt = strip(page, "Hand2 #").getByTestId("fader");
+    await frames(page);
+    expect(Math.abs((await shown(rebuilt)) - released), "the rebuilt cap shows the write, not 0").toBeLessThan(SAME);
+    // The link returns after the release is 2 s old: not sent, the cap stays.
+    await page.waitForTimeout(Math.max(0, 2500 - (Date.now() - releasedAt)));
+    await impair.block(false);
+    await expect(rebuilt).toHaveAttribute("data-intent", "not_sent");
+    await ready(rebuilt);
+    expect(Math.abs((await shown(rebuilt)) - released)).toBeLessThan(SAME);
+    // The next touch goes on from the cap, and its write reaches Live.
+    const next = await dragUp(page, rebuilt, 2);
+    expect(next, "moved on from the cap").toBeGreaterThan(released);
+    await until(liveValue, (v) => Math.abs(v - next) < SAME, "Live at the new touch's value");
   });
 
   test("a release dropped for 5 s is not applied after the link returns: drawn not sent, and the next touch starts from the cap (L4)", async ({ page }) => {

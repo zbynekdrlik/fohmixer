@@ -132,6 +132,12 @@ fn is_unconfirmed(age: f64) -> bool {
     age >= UNCONFIRMED_MS
 }
 
+/// Whether Live's number `live` is the write's `wrote`.
+#[allow(dead_code)] // used by live_value in the green commit
+fn same_number(_wrote: f64, _live: f64) -> bool {
+    false
+}
+
 /// Whether a release `age` ms old is sent again after a reconnect (L4).
 fn may_resend(age: f64) -> bool {
     age < RESEND_MAX_AGE_MS
@@ -210,6 +216,18 @@ impl<F> Intents<F> {
         if self.open.get(key).is_some_and(|open| open.not_sent) {
             self.open.remove(key);
         }
+    }
+
+    /// Live's fresh `value` of `key` arrived (#43): a `not_sent` write it
+    /// equals is closed (Live holds it already: the hub applied it before
+    /// the link went, and its ack was lost with the socket).
+    pub fn live_value(&mut self, _key: &str, _value: &Value) {}
+
+    /// The value `key`'s write still on its way will leave (a toggle's tap
+    /// inverts it, #43): none when nothing is open or the write is
+    /// `not_sent` (it never reached Live).
+    pub fn pending(&self, _key: &str) -> Option<&Value> {
+        None
     }
 
     /// The state of `key`'s write at page time `now`.
@@ -623,7 +641,17 @@ mod tests {
         );
         // A later reconnect neither sends it nor counts it again.
         assert_eq!(intents.resend("band", 2_100.0), Resend::default());
-        // A touch on another key, or on a write still on its way, drops nothing.
+        // A touch on a held write (another instance's, under a finger)
+        // changes nothing.
+        let (held, _) = intents.set(
+            ("master", TARGET, "value"),
+            json!(0.1),
+            2_150.0,
+            false,
+            None,
+        );
+        intents.touch(&held);
+        assert_eq!(intents.state(&held, 9_000.0), State::Sending);
         let (mute, _) = intents.set(
             ("band", "live_set tracks 1", "mute"),
             json!(true),
@@ -631,20 +659,18 @@ mod tests {
             true,
             None,
         );
-        intents.touch(&mute);
-        assert_eq!(intents.state(&mute, 2_300.0), State::Sending);
-        assert_eq!(intents.len(), 2);
+        assert_eq!(intents.len(), 3);
         // A touch on the not-sent control drops it: confirmed (nothing open).
         intents.touch(&key);
         assert_eq!(intents.state(&key, 2_300.0), State::Confirmed);
-        assert_eq!(intents.len(), 1);
+        assert_eq!(intents.len(), 2);
         // A release just younger than 2000 ms still goes.
         let resend = intents.resend("band", 4_200.0_f64.next_down());
         assert!(resend.not_sent.is_empty());
         assert!(matches!(
             resend.sets.as_slice(),
             [ClientMsg::Set {
-                seq: 3,
+                seq: 4,
                 is_final: true,
                 ..
             }]
@@ -664,5 +690,107 @@ mod tests {
             None,
         );
         assert_eq!(intents.state(&mute, 5_000.0), State::Sending);
+    }
+
+    #[test]
+    fn a_touch_holds_an_open_write_again_and_drops_a_not_sent_one_with_its_handler() {
+        let mut intents = Intents::<&str>::default();
+        // Released at 0, unconfirmed, touched again at 1500 and held still.
+        let (key, _) = intents.set(AT, json!(0.6), 0.0, true, Some("flash"));
+        assert_eq!(intents.state(&key, 1_500.0), State::Unconfirmed);
+        intents.touch(&key);
+        assert_eq!(intents.state(&key, 1_500.0), State::Sending, "held again");
+        assert_eq!(intents.open(&key).map(|i| i.is_final), Some(false));
+        // Back after 5 s with the finger still on it: a held control's
+        // value goes (L4), whatever the age of the first release.
+        let resend = intents.resend("band", 5_000.0);
+        assert!(resend.not_sent.is_empty());
+        assert!(matches!(
+            resend.sets.as_slice(),
+            [ClientMsg::Set {
+                seq: 2,
+                is_final: false,
+                ..
+            }]
+        ));
+        // Its release counts from the new one.
+        intents.release(&key, 6_000.0);
+        assert_eq!(intents.state(&key, 6_999.0), State::Sending);
+        assert_eq!(intents.state(&key, 7_000.0), State::Unconfirmed);
+        // A not-sent write is dropped by a touch, with its handler.
+        let resend = intents.resend("band", 8_000.0);
+        assert_eq!(resend.not_sent, vec![key.clone()]);
+        assert_eq!(intents.handler(&key), Some(&"flash"));
+        intents.touch(&key);
+        assert_eq!(intents.state(&key, 8_000.0), State::Confirmed);
+        assert_eq!(intents.handler(&key), None, "its handler goes with it");
+        intents.touch(&key);
+        assert!(intents.is_empty(), "nothing open: nothing to touch");
+    }
+
+    #[test]
+    fn a_number_is_the_same_value_within_one_millionth() {
+        assert!(same_number(0.0, 0.0));
+        assert!(same_number(0.0, 1e-6) && same_number(1e-6, 0.0));
+        assert!(!same_number(0.0, 1e-6_f64.next_up()));
+        // Live's float32 of a volume.
+        assert!(same_number(0.6, 0.6000000238418579));
+        assert!(!same_number(0.6, 0.6001));
+        // Relative above 1: a frequency of 2000 Hz within 2 mHz.
+        assert!(same_number(2_000.0, 2_000.0015));
+        assert!(same_number(-2_000.0, -2_000.0015));
+        assert!(!same_number(2_000.0, 2_000.0025));
+        assert!(!same_number(-2_000.0, -2_000.0025));
+        assert!(!same_number(1.0, -1.0));
+    }
+
+    #[test]
+    fn a_not_sent_write_live_already_holds_is_closed_by_its_value() {
+        let mut intents = Intents::<&str>::default();
+        let (key, _) = intents.set(AT, json!(0.6), 0.0, true, Some("flash"));
+        // While it is on its way only its ack closes it.
+        intents.live_value(&key, &json!(0.6));
+        assert_eq!(intents.state(&key, 10.0), State::Sending);
+        intents.resend("band", 2_000.0);
+        assert_eq!(intents.state(&key, 2_000.0), State::NotSent);
+        // Another value: the release never reached Live.
+        intents.live_value(&key, &json!(0.5));
+        intents.live_value("band|live_set tracks 1|mute", &json!(0.6));
+        assert_eq!(intents.state(&key, 2_000.0), State::NotSent);
+        // Live's float32 of it: the hub applied it before the link went.
+        intents.live_value(&key, &json!(0.6000000238418579));
+        assert_eq!(intents.state(&key, 2_000.0), State::Confirmed);
+        assert_eq!(intents.handler(&key), None);
+        // A flag is the same value only exactly.
+        let (mute, _) = intents.set(
+            ("band", "live_set tracks 1", "mute"),
+            json!(true),
+            0.0,
+            true,
+            None,
+        );
+        intents.resend("band", 2_000.0);
+        intents.live_value(&mute, &json!(false));
+        intents.live_value(&mute, &json!(1));
+        assert_eq!(intents.state(&mute, 2_000.0), State::NotSent);
+        intents.live_value(&mute, &json!(true));
+        assert_eq!(intents.state(&mute, 2_000.0), State::Confirmed);
+    }
+
+    #[test]
+    fn a_write_still_on_its_way_is_pending_a_not_sent_one_is_not() {
+        let mut intents = Intents::<&str>::default();
+        assert_eq!(intents.pending(&key()), None, "nothing open");
+        let (key, _) = intents.set(AT, json!(true), 0.0, true, None);
+        assert_eq!(intents.pending(&key), Some(&json!(true)));
+        intents.resend("band", 1_000.0);
+        assert_eq!(intents.pending(&key), Some(&json!(true)), "sent again");
+        intents.resend("band", 2_000.0);
+        assert_eq!(intents.state(&key, 2_000.0), State::NotSent);
+        assert_eq!(intents.pending(&key), None, "it never reached Live");
+        intents.set(AT, json!(false), 2_100.0, true, None);
+        assert_eq!(intents.pending(&key), Some(&json!(false)));
+        intents.ack(&AckItem::applied(&key, 3, None));
+        assert_eq!(intents.pending(&key), None, "acked");
     }
 }

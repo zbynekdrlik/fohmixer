@@ -326,6 +326,12 @@ pub fn next_range(
     }
 }
 
+/// The write key (`instance|target|prop`, #43) of a subscription's key
+/// (`instance|target|prop|display`).
+pub fn write_key(sub_key: &str) -> &str {
+    sub_key
+}
+
 /// The key under which the engineer's token is stored.
 pub const TOKEN_KEY: &str = "fohmixer_token";
 
