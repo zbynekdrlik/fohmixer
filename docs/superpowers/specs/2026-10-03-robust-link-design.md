@@ -4,7 +4,7 @@ Status: direction approved by the owner on #43 (2026-10-03), with the added requ
 
 ## 0. Zhrnutie pre vlastníka
 
-- **Žiadny pohyb sa nestratí.** Každý ovládač si pamätá posledný zámer zvukára. Kým ho Live nepotvrdí, mixér ho drží a po výpadku spojenia ho pošle znova. Výnimkou je pustenie fadra staršie než 2 s: to sa nepošle naslepo, fader ukáže „neodoslané“ a čaká na dotyk.
+- **Žiadny pohyb sa nestratí.** Každý ovládač si pamätá posledný zámer zvukára. Kým ho Live nepotvrdí, mixér ho drží a po výpadku spojenia ho pošle znova. Výnimkou je pustenie fadra staršie než 2 s: to sa nepošle naslepo, fader to ukáže červeným obrysom (bez textu, miesto na tablete je vzácne) a čaká na dotyk.
 - **Ovládanie nikdy nezamrzne.** Výpadok spojenia nevypne fadre. Nové dotyky fungujú ďalej a fader po pustení neskočí späť na starú hodnotu.
 - **Hub neposiela do Live staré hodnoty.** Pre každý ovládač drží len najnovšiu hodnotu. Do Live ide vždy jedna dávka naraz, takže pri zaseknutom Live sa nehromadí fronta.
 - **Počítadlo výpadkov** namiesto slov o kvalite: malé číslo v hornej lište, ktoré pri každom výpadku spojenia stúpne o jedna. Zvukár tak pod rukami vidí, že výpadky pribúdajú. Kým výpadok trvá, číslo je červené. Ťuknutím sa vynuluje. Bez zvuku a bez blikania.
@@ -132,7 +132,7 @@ Rules:
 |---|---|
 | `sending` / `confirmed` | as today |
 | `unconfirmed` | the cap outlined in amber; a thin ghost line at Live's value |
-| `not_sent` | the cap outlined in red, a ghost at Live's value, the label `neodoslané`; the next touch starts from the cap |
+| `not_sent` | the cap outlined in red and a ghost at Live's value, no text (owner, #43: space on the tablet is scarce); the next touch starts from the cap |
 
 ### 4.4 The dropout counter
 
@@ -220,7 +220,7 @@ RED first, against today's code:
 1. A fader released while the link is dropped reaches SimLive after the link returns (within 2 s): **fails today** (L1).
 2. A fader touched while the socket reconnects moves: **fails today** (L2).
 3. During a 1.5 s stall with a release inside it, the fader never shows SimLive's pre-stall value after the release: **fails today** (L3).
-4. A release dropped for 5 s is not applied after the link returns; the fader shows `neodoslané`.
+4. A release dropped for 5 s is not applied after the link returns; the fader is drawn `not_sent` (red outline + ghost).
 5. The hub setter (native tests):
    - a stalled instance (SimLive `stall 1000`) receiving 60 sets for one key gets ≤ 2 batches, and its final value is the last set;
    - two clients: the newer `t_hub` wins;
