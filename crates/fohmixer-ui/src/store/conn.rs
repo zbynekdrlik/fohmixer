@@ -12,10 +12,9 @@
 //! (`net::on_missing_hello`), else it is replaced too.
 //!
 //! A ping (#43) carries its number, the page's clock and the round trip of
-//! the ping just before it on this socket (none when that pong had not come
-//! back): the hub pairs the round trip with that ping's own time and
-//! arrival, and logs every ping, so its event log resolves a stall of a few
-//! hundred ms.
+//! the latest pong on this socket with the number of the ping it measured:
+//! the hub pairs the round trip with that ping's own time and arrival, and
+//! logs every ping, so its event log resolves a stall of a few hundred ms.
 
 use fohmixer_proto::client::ClientMsg;
 use fohmixer_proto::layout::Layout;
@@ -218,17 +217,18 @@ impl Conn {
     }
 
     /// The ping to send at `now` (page clock) and page time `t` (the epoch
-    /// clock of `set`): its number, `t` and the round trip of the ping just
-    /// before it, when that one's pong came back.
+    /// clock of `set`): its number, `t`, and the latest pong's round trip on
+    /// this socket with the number of the ping it measured.
     pub fn ping(&mut self, now: f64, t: f64) -> ClientMsg {
         let n = self.next_ping;
         self.next_ping = self.next_ping.wrapping_add(1);
         self.pinged = now;
-        let rtt = self
-            .rtt
-            .filter(|&(of, _)| of == n.wrapping_sub(1))
-            .map(|(_, rtt)| rtt);
-        ClientMsg::Ping { n, t, rtt }
+        ClientMsg::Ping {
+            n,
+            t,
+            rtt: self.rtt.map(|(_, rtt)| rtt),
+            rtt_n: self.rtt.map(|(of, _)| of),
+        }
     }
 
     /// The pong of ping `n`, sent at page time `sent`, arrived at page time

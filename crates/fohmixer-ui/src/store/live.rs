@@ -124,6 +124,25 @@ impl LiveStore {
     /// socket.
     pub fn start(self) {
         self.connect();
+        self.tick_link();
+    }
+
+    /// The dropout watch's own tick (#43), every `PING_MS` until the store
+    /// stops, whatever the socket does: it keeps ticking while the page
+    /// reconnects, so a lost socket counts from the page's next on-time tick.
+    fn tick_link(self) {
+        set_timeout(
+            move || {
+                if self.stopped() {
+                    return;
+                }
+                let _ = self
+                    .inner
+                    .try_update_value(|i| i.watch.tick(dom::epoch_now()));
+                self.tick_link();
+            },
+            Duration::from_millis(conn::PING_MS),
+        );
     }
 
     /// Ends the store (the surface unmounts): closes the socket, stops
@@ -264,8 +283,7 @@ impl LiveStore {
     }
 
     /// The watchdog of socket `number` (`Conn::tick`): every `PING_MS`
-    /// until that socket is gone. It also ticks the dropout watch, and
-    /// numbers each ping for it.
+    /// until that socket is gone. It tells the dropout watch of each ping.
     fn watch(self, number: u64) {
         set_timeout(
             move || {
@@ -274,7 +292,6 @@ impl LiveStore {
                     let (now, epoch) = (dom::now(), dom::epoch_now());
                     i.conn.set_hidden(dom::hidden());
                     let tick = i.conn.tick(number, now, open);
-                    i.watch.tick(epoch);
                     let ping = (tick == Tick::Ping).then(|| i.conn.ping(now, epoch));
                     if let Some(ClientMsg::Ping { n, .. }) = &ping {
                         i.watch.ping(*n, epoch);

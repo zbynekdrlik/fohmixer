@@ -50,7 +50,7 @@ The code review on #43 found further defects:
 | Message | Shape |
 |---|---|
 | Set | `{"type":"set","instance","target","prop","value","seq":<u64>,"t":<page ms>,"final":<bool>}` |
-| Ping | `{"type":"ping","n":<u32>,"t":<page ms>,"rtt":<round trip of ping n − 1>?}`, every 100 ms while the page is visible (every second while hidden); no `rtt` when ping n − 1's pong had not come back, or on a socket's first ping |
+| Ping | `{"type":"ping","n":<u32>,"t":<page ms>,"rtt":<latest pong's round trip>?,"rtt_n":<the ping it measured>?}`, every 100 ms while the page is visible (every second while hidden); no `rtt` before a socket's first pong |
 | Trace | `{"type":"trace","events":[…]}`: a batch of the flight recorder (§5.2); since PR A each finished dropout, `{"ev":"dropout","t":<start, page ms>,"ms":<length>,"socket_lost":<bool>,"rtts":[the last ≤ 5 round trips before it]}` |
 
 - `seq` is per page session and strictly increasing over all sets of that page.
@@ -62,7 +62,7 @@ The code review on #43 found further defects:
 
 | Message | Shape |
 |---|---|
-| Ack | `{"type":"ack","items":[{"key","seq","value"?,"error"?,"superseded"?}]}`, coalesced per client, latest per key |
+| Ack | `{"type":"ack","items":[{"key","seq","value"?,"error"?,"superseded"?}]}`, coalesced per client, per key the highest `seq` |
 | Pong | `{"type":"pong","n","t","h":<hub ms>}`: echoes the ping |
 | Link | `{"type":"link","instance","tick_age_ms","busy"}`: on every busy change and at most 4/s while busy |
 
@@ -143,7 +143,7 @@ The owner ruled out status words on the surface (ROZHODNUTÉ on #43, 2026-10-03)
 - The page pings the hub every 100 ms while visible (every second while hidden).
 - A **dropout** is one continuous interval in which the page hears nothing from the hub for ≥ 300 ms although a pong is due, or the socket is down. The silence counts from the later of the last message heard and the oldest unanswered ping, so a hidden page that pinged rarely raises no false dropout.
 - Each interval counts once, however long it lasts, and a silence that turns into a lost socket stays one dropout until the next hello.
-- A silence counts only while the page's own watchdog keeps ticking: a page that was frozen or hidden (its timers late by 300 ms or more) cannot tell the link's silence from its own, so the silence starts over at its next tick; a socket lost meanwhile is a dropout from the page's next tick.
+- A silence counts only while the page's own watchdog keeps ticking: a page that was frozen or hidden (300 ms or more since its watchdog's last tick) cannot tell the link's silence from its own, so the silence starts over at its next tick; a socket lost meanwhile is a dropout from the page's next tick.
 - A Live-side delay (Live busy, the network fine) is logged (`link`) but not counted: the counter measures the link.
 
 **What the surface shows (PR C).**
@@ -172,11 +172,11 @@ The detection is a pure state machine (`behave/link.rs`, `DropoutWatch`, since P
 | `batch` | `instance`, the batch number, `n`, `sent` (key, client, seq, value of each) |
 | `applied` | `instance`, the batch number, `n`, `rtt_ms` (Live's round trip), errors, `sent` (key, client, seq) |
 | `ack` | per item; an ack of a batch with its number and `rtt_ms` |
-| `ping` | every ping (10 a second while the page is visible): `n`, `t`, `hub_ms` (its arrival), the page's `rtt` of the previous pong, `offset_ms` |
+| `ping` | every ping (10 a second while the page is visible): `n`, `t`, `hub_ms` (its arrival), the page's latest `rtt` and `rtt_n`, `offset_ms` |
 | `trace` | the page's events, as sent: since PR A its dropouts (§4.4); the flight recorder (§5.2) and the counter's resets in PR C |
 | `link` | busy changes with `tick_age_ms`, heartbeat gaps |
 
-- **Clocks.** Page times (`t`) map to hub time through the ping exchange (Cristian): ping n carries the round trip of ping n − 1, and `offset = arrival of ping n − 1 − (its t + rtt/2)`, so a round trip is paired with the exchange it measured, never with a later ping that may itself have been held up; the lowest-RTT exchange of the last minute wins. Each `ping` record carries it as `offset_ms`, and each `set` record the offset of its socket's last ping with the one-way delay it gives: a stall on the way shows as a gap and a delay spike on the moves after it.
+- **Clocks.** Page times (`t`) map to hub time through the ping exchange (Cristian): a ping carries the latest pong's round trip and the number `m` of the ping it measured, and `offset = arrival of ping m − (its t + rtt/2)` from the hub's ring of the last 64 pings, so a round trip is paired with the exchange it measured (ping n − 2 or older on a slow link), never with the carrying ping that may itself have been held up; the lowest-RTT exchange of the last minute wins. Each `ping` record carries it as `offset_ms`, and each `set` record the offset of its socket's last ping with the one-way delay it gives: a stall on the way shows as a gap and a delay spike on the moves after it.
 
 ### 5.2 Page flight recorder (`diag/trace.rs`)
 

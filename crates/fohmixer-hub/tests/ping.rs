@@ -30,7 +30,8 @@ fn every_ping_is_answered_pong_and_recorded_with_the_page_clock() {
         for n in 0..3_u32 {
             let t = page_start + f64::from(n) * 100.0;
             let rtt = (n > 0).then_some(20.0);
-            client.send(&ClientMsg::Ping { n, t, rtt }).await;
+            let rtt_n = n.checked_sub(1);
+            client.send(&ClientMsg::Ping { n, t, rtt, rtt_n }).await;
             let (got_t, h) = client
                 .wait(SECS_3, |m| match m {
                     ServerMsg::Pong { n: got, t, h } if *got == n => Some((*t, *h)),
@@ -58,6 +59,7 @@ fn every_ping_is_answered_pong_and_recorded_with_the_page_clock() {
             "{offset} {hub_ms}"
         );
         assert_eq!(pings[2]["rtt"], 20.0);
+        assert_eq!(pings[2]["rtt_n"], 1);
         // The socket's open is recorded with who opened it.
         let open = of(&records, "sock");
         assert_eq!(open[0]["what"], "open");
@@ -106,8 +108,15 @@ fn a_trace_and_a_write_to_an_unknown_instance_land_in_the_event_log() {
         );
         // Once a ping with a round trip came, a write carries the page
         // clock's offset and its one-way delay.
-        for (n, rtt) in [(0, None), (1, Some(4.0))] {
-            client.send(&ClientMsg::Ping { n, t: 1_000.0, rtt }).await;
+        for (n, rtt, rtt_n) in [(0, None, None), (1, Some(4.0), Some(0))] {
+            client
+                .send(&ClientMsg::Ping {
+                    n,
+                    t: 1_000.0,
+                    rtt,
+                    rtt_n,
+                })
+                .await;
             client
                 .wait(SECS_3, |m| {
                     matches!(m, ServerMsg::Pong { n: got, .. } if *got == n).then_some(())

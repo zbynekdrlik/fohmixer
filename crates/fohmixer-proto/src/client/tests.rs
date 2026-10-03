@@ -65,8 +65,9 @@ fn client_messages_round_trip() {
             n: 7,
             t: 1_790_000_000_000.25,
             rtt: Some(12.5),
+            rtt_n: Some(5),
         },
-        json!({"type": "ping", "n": 7, "t": 1_790_000_000_000.25, "rtt": 12.5}),
+        json!({"type": "ping", "n": 7, "t": 1_790_000_000_000.25, "rtt": 12.5, "rtt_n": 5}),
     );
     round_trip_client(
         ClientMsg::Trace {
@@ -82,6 +83,7 @@ fn client_messages_round_trip() {
             n: 0,
             t: 5.0,
             rtt: None,
+            rtt_n: None,
         },
         json!({"type": "ping", "n": 0, "t": 5.0}),
     );

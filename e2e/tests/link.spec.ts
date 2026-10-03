@@ -108,8 +108,11 @@ test.describe("The control link", () => {
       const client = withSet.filter(mine).pop().client;
       const events = await until(
         hubEvents,
-        (ev) => ev.some((e) => e.ev === "ack" && e.client === client && e.key === KEY && e.seq === last.seq),
-        "its ack in the event log",
+        (ev) => {
+          const i = ev.findLastIndex(mine);
+          return i >= 0 && ev.some((e, j) => j > i && e.ev === "ack" && e.client === client && e.key === KEY && e.seq === last.seq);
+        },
+        "its ack after it in the event log",
       );
       const iSet = events.findLastIndex(mine);
       expect(iSet, "the set").toBeGreaterThanOrEqual(0);
@@ -148,11 +151,14 @@ test.describe("The control link", () => {
       expect(recent[i].n).toBe(recent[i - 1].n + 1);
       expect(recent[i].t).toBeGreaterThan(recent[i - 1].t);
     }
-    // A ping carries ping n − 1's round trip when that pong came back in
-    // time: on a quiet link, most do.
-    const timed = recent.filter((p) => typeof p.rtt === "number");
-    expect(timed.length, "pings with the previous ping's round trip").toBeGreaterThanOrEqual(recent.length / 2);
+    // A ping carries the latest pong's round trip and the number of the ping
+    // it measured: past the socket's first pong, every one does.
     const pongs = link.received.filter((f) => f.msg.type === "pong").map((f) => f.msg);
+    for (const p of recent) {
+      expect(typeof p.rtt, `ping ${p.n} carries a round trip`).toBe("number");
+      expect(p.rtt_n, `ping ${p.n} names an earlier ping`).toBeLessThan(p.n);
+      expect(pongs.some((q) => q.n === p.rtt_n)).toBe(true);
+    }
     expect(pongs.some((p) => p.n === recent[0].n && p.t === recent[0].t)).toBe(true);
     const events = await until(
       hubEvents,
@@ -178,8 +184,8 @@ test.describe("The control link", () => {
     const heldMs = Date.now() - heldAt;
     await expect.poll(() => dropouts(link).length, { timeout: 5000 }).toBeGreaterThan(before);
     // One dropout of the hold: at least 300 ms, at most the hold and the
-    // flush (a page frame late by 300 ms starts the page's count over, so
-    // its length is not pinned tighter).
+    // flush (a page tick 300 ms or more after the one before starts the
+    // page's count over, so its length is not pinned tighter).
     const held = dropouts(link)
       .slice(before)
       .find((d: any) => !d.socket_lost);

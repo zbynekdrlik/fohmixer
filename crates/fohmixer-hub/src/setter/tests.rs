@@ -222,7 +222,8 @@ fn a_failed_batch_acks_its_error_and_newer_wants_stay() {
     // The newer want is written next.
     let next = setter.next_batch(3_000.0).unwrap();
     assert_eq!(next.items[0].1.seq, 2);
-    // Offline answers the same way; the hub log heard of this run already.
+    // Offline answers the same way; its error is new, so the hub log hears
+    // of it (the same error again would not be news).
     let offline = setter
         .on_result(next.id, &Err("instance offline".into()), 3_001.0)
         .unwrap();
@@ -230,8 +231,11 @@ fn a_failed_batch_acks_its_error_and_newer_wants_stay() {
         offline.acks,
         vec![(1, AckItem::failed(KEY, 2, "instance offline"))]
     );
-    assert!(!offline.first_failure);
-    assert_eq!(batch_problem(&offline), None);
+    assert!(offline.first_failure);
+    assert_eq!(
+        batch_problem(&offline).as_deref(),
+        Some("1 of 1 writes of batch 2 failed: instance offline")
+    );
 }
 
 #[test]
@@ -255,6 +259,20 @@ fn the_hub_log_hears_once_per_run_of_failed_batches() {
     assert_eq!(
         batch_problem(&again).as_deref(),
         Some("1 of 1 writes of batch 4 failed: instance offline")
+    );
+    // Another error is news within a run.
+    let refused = Ok(vec![json!({"ok": false, "error": "not found: tracks 1"})]);
+    assert!(round(5, refused.clone()).first_failure);
+    assert!(!round(6, refused.clone()).first_failure);
+    // A reconnect starts a new run.
+    setter.on_disconnect();
+    setter.on_set(KEY, want(1, 7, 0.5, 7.0));
+    let batch = setter.next_batch(7.0).unwrap();
+    assert!(
+        setter
+            .on_result(batch.id, &refused, 8.0)
+            .unwrap()
+            .first_failure
     );
 }
 

@@ -13,10 +13,12 @@
 //! connection ends (the client reconnects and resyncs). The router writes
 //! here under a short lock and never waits for a client.
 //!
-//! The acks of a client's writes (#43) are coalesced like the values: the
-//! latest item per write key, sent after the values (a page then sees
-//! Live's new value before the ack that closes its intent). So is each
-//! instance's `link` (Live's health): only the latest one waits.
+//! The acks of a client's writes (#43) are coalesced like the values: per
+//! write key the ack of the highest `seq` waits (a late result of an older
+//! write never hides that a newer one was superseded), sent after the
+//! values (a page then sees Live's new value before the ack that closes its
+//! intent). Each instance's `link` (Live's health) is coalesced too: only
+//! the latest one waits.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Mutex, MutexGuard, PoisonError};

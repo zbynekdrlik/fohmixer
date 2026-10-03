@@ -260,11 +260,18 @@ struct Conn {
     offset: Option<f64>,
 }
 
-/// A ping (`n`, page time `t`, the previous round trip `rtt`) that reached
-/// the hub at `arrival` (hub UTC ms): its `pong`, and its event-log fields
-/// with the page clock's offset (kept for the socket's sets).
-fn pong(conn: &mut Conn, n: u32, t: f64, rtt: Option<f64>, arrival: f64) -> (ServerMsg, Value) {
-    conn.offset = conn.clock.on_ping(n, arrival, t, rtt);
+/// A ping (`n`, page time `t`, the latest round trip `rtt` and the ping
+/// `rtt_n` it measured) that reached the hub at `arrival` (hub UTC ms): its
+/// `pong`, and its event-log fields with the page clock's offset (kept for
+/// the socket's sets).
+fn pong(
+    conn: &mut Conn,
+    (n, t): (u32, f64),
+    rtt: Option<f64>,
+    rtt_n: Option<u32>,
+    arrival: f64,
+) -> (ServerMsg, Value) {
+    conn.offset = conn.clock.on_ping(n, arrival, t, rtt_n.zip(rtt));
     let fields = json!({
         "client": conn.client,
         "peer": conn.who.peer,
@@ -272,6 +279,7 @@ fn pong(conn: &mut Conn, n: u32, t: f64, rtt: Option<f64>, arrival: f64) -> (Ser
         "t": t,
         "hub_ms": arrival,
         "rtt": rtt,
+        "rtt_n": rtt_n,
         "offset_ms": conn.offset,
     });
     (ServerMsg::Pong { n, t, h: arrival }, fields)
@@ -331,9 +339,9 @@ fn handle_text(hub: &Hub, conn: &mut Conn, text: &str) {
             .record("trace", trace_fields(client, &conn.who.peer, &events)),
         // Through the outbox like every answer: a pong proves the writer
         // still reaches the client.
-        Ok(ClientMsg::Ping { n, t, rtt }) => {
+        Ok(ClientMsg::Ping { n, t, rtt, rtt_n }) => {
             let arrival = crate::live::wall_ms().unwrap_or(0.0);
-            let (answer, fields) = pong(conn, n, t, rtt, arrival);
+            let (answer, fields) = pong(conn, (n, t), rtt, rtt_n, arrival);
             outbox.reply(answer);
             hub.events.record("ping", fields);
         }

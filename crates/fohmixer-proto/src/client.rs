@@ -87,13 +87,17 @@ pub enum ClientMsg {
     },
     /// A liveness probe, answered by `pong` (the client's watchdog: a
     /// socket that stays silent is half-open and is replaced): its number,
-    /// the page's clock and the round trip of ping `n − 1` on this socket,
-    /// ms (none when that pong had not come back).
+    /// the page's clock, and the round trip (ms) of the latest pong on this
+    /// socket with the number of the ping it measured (`rtt_n`), so the hub
+    /// pairs it with that ping's own time and arrival; none before the
+    /// socket's first pong.
     Ping {
         n: u32,
         t: f64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         rtt: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rtt_n: Option<u32>,
     },
     /// The page's own events for the hub's event log (#43), as it recorded
     /// them (PR A: each finished dropout, `{"ev": "dropout", "t", "ms",
@@ -234,8 +238,8 @@ pub enum ServerMsg {
     Hub { key: String, value: Value },
     /// The layout changed: GET `/api/layout` for revision `rev`.
     Layout { rev: u64 },
-    /// The outcome of this client's writes (#43), coalesced per client: the
-    /// latest item per key.
+    /// The outcome of this client's writes (#43), coalesced per client: per
+    /// key the item of the highest `seq`.
     Ack { items: Vec<AckItem> },
     /// The answer to `ping`: its number and page time echoed, and the hub's
     /// clock when it answered (`h`, UTC ms).

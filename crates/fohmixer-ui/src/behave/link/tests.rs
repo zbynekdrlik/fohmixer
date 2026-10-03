@@ -31,16 +31,18 @@ fn the_threshold_is_300_ms() {
 #[test]
 fn a_pong_after_299_ms_is_no_dropout_after_300_it_is_one() {
     let mut w = up(&[]);
-    ticks(&mut w, 100.0, 1_200.0);
+    ticks(&mut w, 100.0, 1_000.0);
     w.ping(0, 1_000.0);
+    ticks(&mut w, 1_100.0, 1_200.0);
     w.heard(1_299.0);
     w.pong(0, 299.0);
     assert_eq!(w.count(), 0);
     assert!(w.take_reports().is_empty());
     // The next ping waits exactly 300 ms: one dropout, seen only at its end
     // (no tick saw it).
-    ticks(&mut w, 1_300.0, 2_200.0);
+    ticks(&mut w, 1_300.0, 2_000.0);
     w.ping(1, 2_000.0);
+    ticks(&mut w, 2_100.0, 2_200.0);
     w.heard(2_300.0);
     w.pong(1, 300.0);
     assert_eq!(w.count(), 1);
@@ -99,8 +101,9 @@ fn a_long_silence_counts_once_and_is_red_while_it_lasts() {
 #[test]
 fn a_message_heard_restarts_the_silence() {
     let mut w = up(&[]);
-    ticks(&mut w, 100.0, 1_100.0);
+    ticks(&mut w, 100.0, 1_000.0);
     w.ping(0, 1_000.0);
+    w.tick(1_100.0);
     // A value push at 1200 shows the link alive: the silence counts from it.
     w.heard(1_200.0);
     w.tick(1_200.0);
@@ -118,8 +121,9 @@ fn a_message_heard_restarts_the_silence() {
     idle.heard(10_000.0);
     assert_eq!(idle.count(), 0);
     // A ping sent long after the last message: the silence starts at it.
-    ticks(&mut idle, 10_100.0, 20_200.0);
+    ticks(&mut idle, 10_100.0, 20_000.0);
     idle.ping(0, 20_000.0);
+    ticks(&mut idle, 20_100.0, 20_200.0);
     idle.tick(20_250.0);
     idle.heard(20_260.0);
     idle.pong(0, 260.0);
@@ -192,10 +196,12 @@ fn a_lost_socket_is_one_dropout_until_the_next_hello() {
     );
     // A socket that closes with nothing due: the dropout starts at the
     // close, however short.
-    ticks(&mut w, 5_100.0, 6_100.0);
+    ticks(&mut w, 5_100.0, 6_000.0);
     w.heard(6_000.0);
+    w.tick(6_100.0);
     w.lost(6_100.0);
     assert_eq!(w.count(), 2);
+    ticks(&mut w, 6_200.0, 6_400.0);
     w.hello(6_400.0);
     let report = &w.take_reports()[0];
     assert_eq!(
@@ -205,6 +211,7 @@ fn a_lost_socket_is_one_dropout_until_the_next_hello() {
     // A close with a ping due, not yet 300 ms: from that ping.
     ticks(&mut w, 6_500.0, 7_000.0);
     w.ping(5, 7_000.0);
+    w.tick(7_100.0);
     w.lost(7_100.0);
     w.hello(7_600.0);
     assert_eq!(w.take_reports()[0].t, 7_000.0);
@@ -240,14 +247,43 @@ fn a_socket_lost_while_the_page_is_away_counts_from_its_next_tick() {
 }
 
 #[test]
+fn a_socket_lost_during_a_page_stall_counts_from_the_next_tick() {
+    // The page's main thread stalls; the socket closes meanwhile (its close
+    // runs before the late tick). The watch's own tick goes on without the
+    // socket, so the dropout starts at the first on-time tick after the stall
+    // and lasts until the next socket's hello.
+    let mut w = up(&[]);
+    ticks(&mut w, 100.0, 1_000.0);
+    w.lost(1_450.0);
+    assert!(!w.active(), "no tick lived through the close");
+    w.tick(1_455.0);
+    assert!(!w.active(), "the late tick starts over");
+    ticks(&mut w, 1_555.0, 1_955.0);
+    assert!(w.active());
+    w.hello(2_000.0);
+    assert!(!w.active());
+    assert_eq!(w.count(), 1);
+    assert_eq!(
+        w.take_reports(),
+        vec![Dropout {
+            t: 1_555.0,
+            ms: 445.0,
+            socket_lost: true,
+            rtts: vec![],
+        }]
+    );
+}
+
+#[test]
 fn nothing_counts_before_the_first_hello() {
     let mut w = DropoutWatch::default();
     ticks(&mut w, 0.0, 1_000.0);
     w.ping(0, 1_000.0);
     ticks(&mut w, 1_100.0, 5_000.0);
     w.heard(5_000.0);
+    ticks(&mut w, 5_100.0, 6_000.0);
     w.lost(6_000.0);
-    ticks(&mut w, 5_100.0, 6_900.0);
+    ticks(&mut w, 6_100.0, 6_900.0);
     assert_eq!(w.count(), 0);
     assert!(!w.active());
     w.hello(7_000.0);
@@ -257,9 +293,11 @@ fn nothing_counts_before_the_first_hello() {
 #[test]
 fn a_pong_answers_every_ping_up_to_it() {
     let mut w = up(&[]);
-    ticks(&mut w, 100.0, 1_200.0);
+    ticks(&mut w, 100.0, 1_000.0);
     w.ping(1, 1_000.0);
+    w.tick(1_100.0);
     w.ping(2, 1_100.0);
+    w.tick(1_200.0);
     w.ping(3, 1_200.0);
     w.heard(1_250.0);
     w.pong(2, 250.0);
@@ -289,8 +327,9 @@ fn reports_keep_the_last_five_round_trips_and_at_most_64_wait() {
     let mut w = up(&[]);
     for i in 0..65_u32 {
         let at = 10_000.0 * f64::from(i + 1);
-        ticks(&mut w, at - 1_000.0, at + 300.0);
+        ticks(&mut w, at - 1_000.0, at);
         w.ping(i, at);
+        ticks(&mut w, at + 100.0, at + 300.0);
         w.heard(at + 400.0);
         w.pong(i, 400.0);
     }
@@ -304,19 +343,22 @@ fn reports_keep_the_last_five_round_trips_and_at_most_64_wait() {
 #[test]
 fn reports_that_could_not_be_sent_go_back_first() {
     let mut w = up(&[]);
+    let mut unsent = Vec::new();
     for (n, at) in [(0_u32, 1_000.0), (1, 2_000.0), (2, 3_000.0)] {
-        ticks(&mut w, at - 500.0, at + 400.0);
+        ticks(&mut w, at - 500.0, at);
         w.ping(n, at);
+        ticks(&mut w, at + 100.0, at + 400.0);
         w.heard(at + 500.0);
         w.pong(n, 500.0);
         if n == 1 {
-            let unsent = w.take_reports();
+            // Taken for a send that failed; a newer dropout ends meanwhile.
+            unsent = w.take_reports();
             assert_eq!(unsent.len(), 2);
-            w.requeue(unsent);
         }
     }
+    w.requeue(unsent);
     let all: Vec<f64> = w.take_reports().iter().map(|r| r.t).collect();
-    assert_eq!(all, vec![1_000.0, 2_000.0, 3_000.0]);
+    assert_eq!(all, vec![1_000.0, 2_000.0, 3_000.0], "the older ones first");
     // A full queue takes back what fits, newest of them first.
     let mut full = DropoutWatch::default();
     let one = |t: f64| Dropout {

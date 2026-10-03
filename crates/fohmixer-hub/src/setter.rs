@@ -95,8 +95,8 @@ pub struct Applied {
     pub acks: Vec<(ClientId, AckItem)>,
     /// How many of those acks carry an error.
     pub errors: usize,
-    /// It is the first batch with an error after one without (the hub log
-    /// warns once per run of failures; the event log has every one).
+    /// It is the first failed batch of a run with this error (the hub log
+    /// warns once per run and per new error; the event log has every one).
     pub first_failure: bool,
 }
 
@@ -110,8 +110,8 @@ pub struct Setter {
     last: HashMap<(ClientId, String), (u64, f64)>,
     /// The last batch number.
     batches: u64,
-    /// The last batch's result carried an error.
-    failing: bool,
+    /// The first error of the last batch, while batches fail.
+    failing: Option<String>,
 }
 
 /// What a batch's failed acks say, for the hub log: only for the first
@@ -225,9 +225,9 @@ impl Setter {
             })
             .collect();
         let errors = acks.iter().filter(|(_, a)| a.error.is_some()).count();
-        let failed = errors > 0;
-        let first_failure = failed && !self.failing;
-        self.failing = failed;
+        let first_error = acks.iter().find_map(|(_, a)| a.error.clone());
+        let first_failure = first_error.is_some() && first_error != self.failing;
+        self.failing = first_error;
         Some(Applied {
             batch: batch.id,
             n: batch.items.len(),
@@ -243,6 +243,7 @@ impl Setter {
     pub fn on_disconnect(&mut self) {
         self.in_flight = None;
         self.pending.clear();
+        self.failing = None;
     }
 
     /// A client left: its sequence numbers are forgotten (its pending wants
