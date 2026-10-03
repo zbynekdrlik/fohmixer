@@ -301,9 +301,12 @@ test.describe("The control link's resilience (L1-L4)", () => {
       await page.mouse.move(x, y);
       await page.mouse.down();
       for (let i = 1; i <= 4; i++) await page.mouse.move(x + 6 * i, y);
-      await page.mouse.up();
+      // Read under the finger: 100 ms after a release the pan shows Live's
+      // (stale) value again (L3's rule is the fader's; a slow WebKit frame
+      // read after the release saw 0).
       await frames(page);
       const moved = await shown(pan);
+      await page.mouse.up();
       expect(moved, "the pan moved while the link was down").toBeGreaterThan(0.05);
       // Touched again and held still for 2.5 s: its write is held again, so
       // its first release no longer counts (L4).
