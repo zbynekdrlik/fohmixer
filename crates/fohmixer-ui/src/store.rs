@@ -84,8 +84,8 @@ impl Slot {
         }
     }
 
-    /// The slot after a page switch (or a reconnect) changed whether its key
-    /// is subscribed (#43). With the hub `connected` it is `Pending`: a key
+    /// The slot after a page switch changed whether its key is subscribed
+    /// (#43). With the hub `connected` it is `Pending`: a key
     /// subscribed now waits for its fresh value (I8), and one no longer
     /// subscribed has nothing to keep it current, so it never comes back
     /// later with an old value. During an outage a known value is kept,

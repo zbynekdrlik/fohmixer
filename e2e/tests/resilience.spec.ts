@@ -244,7 +244,10 @@ test.describe("The control link's resilience (L1-L4)", () => {
     await live.set("band", TARGET, "value", 0.7);
     await page.waitForTimeout(300);
     await selectPage(page, "cue");
-    await page.waitForTimeout(2200);
+    // The cue toggle's first value is the hub's answer to the page's sub,
+    // which the hub reads only when the stall ends: the socket is ordered,
+    // so the 0.7 sent during the stall reached the page before it.
+    await ready(page.locator('[data-testid="param-toggle"][data-label="Vox 1 TU"]'));
     await live.set("band", TARGET, "value", 0.6);
     await linkDown(page);
     await selectPage(page, "foh");

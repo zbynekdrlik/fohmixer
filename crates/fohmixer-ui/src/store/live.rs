@@ -408,10 +408,26 @@ impl LiveStore {
                 value,
                 display,
                 error,
-            } => self.apply(&sub, value, display, error),
+            } => {
+                if !self.apply(&sub, value, display, error) {
+                    dom::log(&format!("a value for {sub}, no page wants it: dropped"));
+                }
+            }
             ServerMsg::Values { items } => {
+                // One line per message: leaving a page with meters drops
+                // every meter value still on its way.
+                let mut dropped = 0usize;
+                let mut first = None;
                 for item in items {
-                    self.apply(&item.sub, item.value, item.display, item.error);
+                    if !self.apply(&item.sub, item.value, item.display, item.error) {
+                        dropped += 1;
+                        first.get_or_insert(item.sub);
+                    }
+                }
+                if let Some(first) = first {
+                    dom::log(&format!(
+                        "{dropped} values for keys no page wants dropped, e.g. {first}"
+                    ));
                 }
             }
             ServerMsg::Instance {
@@ -560,26 +576,25 @@ impl LiveStore {
         });
     }
 
-    /// A subscription's new state from the hub.
+    /// A subscription's new state from the hub; false when no page wants its
+    /// key: the hub sent it before it read the page's unsub, and nothing
+    /// keeps that slot current any more, so it is not kept (#43, I8).
     fn apply(
         self,
         key: &str,
         value: Option<Value>,
         display: Option<String>,
         error: Option<String>,
-    ) {
-        // A value the hub sent before it read the page's unsub: nothing
-        // keeps that slot current any more, so it is not kept (#43, I8).
+    ) -> bool {
         if !self
             .inner
             .try_with_value(|i| i.conn.wants(key))
             .unwrap_or(false)
         {
-            dom::log(&format!("a value for {key}, no longer wanted: dropped"));
-            return;
+            return false;
         }
         let Some(slot) = Slot::from_item(value, display, error, dom::now()) else {
-            return;
+            return true;
         };
         if let Some(value) = slot.value() {
             self.live_value(key, value);
@@ -591,6 +606,7 @@ impl LiveStore {
         if let Some(signal) = signal {
             let _ = signal.try_set(slot);
         }
+        true
     }
 
     /// Every wanted slot (of one instance) back to `Pending` (I8).
@@ -705,7 +721,7 @@ impl LiveStore {
 
     /// The hub is connected again: a slot no page wants now (left during the
     /// outage, kept stale then) has nothing to keep it current, so it waits
-    /// for a fresh value when it is wanted again (`Slot::rewanted`, #43).
+    /// for a fresh value when it is wanted again (`Conn::wants`, #43).
     fn forget_unwanted(self) {
         let signals: Vec<ArcRwSignal<Slot>> = self
             .inner
