@@ -264,7 +264,7 @@ struct Conn {
 /// the hub at `arrival` (hub UTC ms): its `pong`, and its event-log fields
 /// with the page clock's offset (kept for the socket's sets).
 fn pong(conn: &mut Conn, n: u32, t: f64, rtt: Option<f64>, arrival: f64) -> (ServerMsg, Value) {
-    conn.offset = conn.clock.on_ping(arrival, t, rtt);
+    conn.offset = conn.clock.on_ping(n, arrival, t, rtt);
     let fields = json!({
         "client": conn.client,
         "peer": conn.who.peer,

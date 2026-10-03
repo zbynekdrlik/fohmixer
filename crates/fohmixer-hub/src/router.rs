@@ -189,8 +189,9 @@ impl Router {
         }
     }
 
-    /// Serves messages until [`RouterMsg::Stop`] (or every sender is gone),
-    /// then closes every client.
+    /// Serves messages until [`RouterMsg::Stop`], then closes every client
+    /// (it holds a sender of its own for its batches' results, so the
+    /// channel never ends by itself: the hub's stop sends `Stop`).
     pub async fn run(mut self, mut rx: mpsc::UnboundedReceiver<RouterMsg>) {
         while let Some(msg) = rx.recv().await {
             let go_on = self.handle(msg);

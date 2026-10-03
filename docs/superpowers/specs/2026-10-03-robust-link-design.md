@@ -50,12 +50,12 @@ The code review on #43 found further defects:
 | Message | Shape |
 |---|---|
 | Set | `{"type":"set","instance","target","prop","value","seq":<u64>,"t":<page ms>,"final":<bool>}` |
-| Ping | `{"type":"ping","n":<u32>,"t":<page ms>,"rtt":<ms of the previous pong>?}`, every 100 ms while the page is visible (every second while hidden) |
+| Ping | `{"type":"ping","n":<u32>,"t":<page ms>,"rtt":<round trip of ping n − 1>?}`, every 100 ms while the page is visible (every second while hidden); no `rtt` when ping n − 1's pong had not come back, or on a socket's first ping |
 | Trace | `{"type":"trace","events":[…]}`: a batch of the flight recorder (§5.2); since PR A each finished dropout, `{"ev":"dropout","t":<start, page ms>,"ms":<length>,"socket_lost":<bool>,"rtts":[the last ≤ 5 round trips before it]}` |
 
 - `seq` is per page session and strictly increasing over all sets of that page.
 - `t` is `performance.timeOrigin + performance.now()`, in ms.
-- `final` marks a release, a toggle or a tap. Faders, pans, parameter faders and toggles all use `set`.
+- `final` marks a release, a toggle or a tap. Faders, pans, parameter faders and toggles all use `set`. In PR A a fader's or pan's release sends a `set` only when a move is still unsent (the last frame's send carried the rest); the release time itself is the intent store's in PR B (L4).
 - `cmd` stays for reads and multi-command batches (REFRESH ALL, ranges).
 
 **Hub → client (new or changed)**
@@ -87,7 +87,7 @@ The code review on #43 found further defects:
   
   Live therefore receives at most one batch per result, which is naturally one per Live tick when Live is healthy. During a stall nothing piles up, only the newest want per key (L5).
 - **Errors.** A timeout (`REQUEST_TIMEOUT`, 3 s) or offline acks `error` to the senders and leaves newer wants pending.
-- **Disconnect.** An instance disconnect clears `in_flight` without acks (the clients resend per L4).
+- **Disconnect.** An instance disconnect clears `in_flight` and the pending wants without acks: they belong to the old Live session (the clients resend per L4).
 - **Pure core.** The setter is a pure state machine (`crates/fohmixer-hub/src/setter.rs`), driven by the router task; it is tested natively without Live.
 
 ### 3.2 Ping, link
@@ -143,6 +143,7 @@ The owner ruled out status words on the surface (ROZHODNUTÉ on #43, 2026-10-03)
 - The page pings the hub every 100 ms while visible (every second while hidden).
 - A **dropout** is one continuous interval in which the page hears nothing from the hub for ≥ 300 ms although a pong is due, or the socket is down. The silence counts from the later of the last message heard and the oldest unanswered ping, so a hidden page that pinged rarely raises no false dropout.
 - Each interval counts once, however long it lasts, and a silence that turns into a lost socket stays one dropout until the next hello.
+- A silence counts only while the page's own watchdog keeps ticking: a page that was frozen or hidden (its timers late by 300 ms or more) cannot tell the link's silence from its own, so the silence starts over at its next tick; a socket lost meanwhile is a dropout from the page's next tick.
 - A Live-side delay (Live busy, the network fine) is logged (`link`) but not counted: the counter measures the link.
 
 **What the surface shows (PR C).**
@@ -175,7 +176,7 @@ The detection is a pure state machine (`behave/link.rs`, `DropoutWatch`, since P
 | `trace` | the page's events, as sent: since PR A its dropouts (§4.4); the flight recorder (§5.2) and the counter's resets in PR C |
 | `link` | busy changes with `tick_age_ms`, heartbeat gaps |
 
-- **Clocks.** Page times (`t`) map to hub time through the ping exchange: `offset = hub arrival − (t + rtt/2)`, from the lowest-RTT ping of the last minute (Cristian). Each `ping` record carries it as `offset_ms`, and each `set` record the offset of its socket's last ping with the one-way delay it gives: a stall on the way shows as a gap and a delay spike on the moves after it.
+- **Clocks.** Page times (`t`) map to hub time through the ping exchange (Cristian): ping n carries the round trip of ping n − 1, and `offset = arrival of ping n − 1 − (its t + rtt/2)`, so a round trip is paired with the exchange it measured, never with a later ping that may itself have been held up; the lowest-RTT exchange of the last minute wins. Each `ping` record carries it as `offset_ms`, and each `set` record the offset of its socket's last ping with the one-way delay it gives: a stall on the way shows as a gap and a delay spike on the moves after it.
 
 ### 5.2 Page flight recorder (`diag/trace.rs`)
 

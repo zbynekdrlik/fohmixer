@@ -100,27 +100,35 @@ test.describe("The control link", () => {
       expect(typeof last.t).toBe("number");
       // Live followed: its volume is the last set's value.
       await until(() => live.get("band", volume(HAND2), "value"), (v) => Math.abs(v - last.value) < 1e-9, "Live at the last value");
-      // The hub's event log has the move's every hop, in order.
+      // The hub's event log has the move's every hop, in order. Sequence
+      // numbers are per page (an earlier test's page used the same ones):
+      // the set is this page's by its time, its socket by its client.
+      const mine = (e: any) => e.ev === "set" && e.key === KEY && e.seq === last.seq && e.t === last.t;
+      const withSet = await until(hubEvents, (ev) => ev.some(mine), "the last set in the event log");
+      const client = withSet.filter(mine).pop().client;
       const events = await until(
         hubEvents,
-        (ev) => ev.some((e) => e.ev === "ack" && e.key === KEY && e.seq === last.seq),
-        "the last ack in the event log",
+        (ev) => ev.some((e) => e.ev === "ack" && e.client === client && e.key === KEY && e.seq === last.seq),
+        "its ack in the event log",
       );
-      const iSet = events.findIndex((e) => e.ev === "set" && e.key === KEY && e.seq === last.seq);
+      const iSet = events.findLastIndex(mine);
       expect(iSet, "the set").toBeGreaterThanOrEqual(0);
-      expect(events[iSet].t).toBe(last.t);
+      expect(events[iSet].client).toBe(client);
       expect(typeof events[iSet].hub_ms).toBe("number");
       expect(typeof events[iSet].delay_ms, "the page pinged before it: the delay is known").toBe("number");
-      const client = events[iSet].client;
       const iBatch = events.findIndex(
-        (e, i) => i > iSet && e.ev === "batch" && e.instance === "band" && e.sent.some((s: any) => s.key === KEY && s.seq === last.seq),
+        (e, i) =>
+          i > iSet &&
+          e.ev === "batch" &&
+          e.instance === "band" &&
+          e.sent.some((s: any) => s.key === KEY && s.client === client && s.seq === last.seq),
       );
       expect(iBatch, "its batch after the set").toBeGreaterThan(iSet);
       const batch = events[iBatch].batch;
       const iApplied = events.findIndex((e, i) => i > iBatch && e.ev === "applied" && e.instance === "band" && e.batch === batch);
       expect(iApplied, "the batch's result after it").toBeGreaterThan(iBatch);
       expect(events[iApplied].errors).toBe(0);
-      const iAck = events.findIndex((e, i) => i > iApplied && e.ev === "ack" && e.key === KEY && e.seq === last.seq);
+      const iAck = events.findIndex((e, i) => i > iApplied && e.ev === "ack" && e.client === client && e.key === KEY && e.seq === last.seq);
       expect(iAck, "the ack after the result").toBeGreaterThan(iApplied);
       expect(events[iAck].client).toBe(client);
       expect(events[iAck].batch).toBe(batch);
@@ -139,8 +147,11 @@ test.describe("The control link", () => {
     for (let i = 1; i < recent.length; i++) {
       expect(recent[i].n).toBe(recent[i - 1].n + 1);
       expect(recent[i].t).toBeGreaterThan(recent[i - 1].t);
-      expect(typeof recent[i].rtt, "the previous pong's round trip").toBe("number");
     }
+    // A ping carries ping n − 1's round trip when that pong came back in
+    // time: on a quiet link, most do.
+    const timed = recent.filter((p) => typeof p.rtt === "number");
+    expect(timed.length, "pings with the previous ping's round trip").toBeGreaterThanOrEqual(recent.length / 2);
     const pongs = link.received.filter((f) => f.msg.type === "pong").map((f) => f.msg);
     expect(pongs.some((p) => p.n === recent[0].n && p.t === recent[0].t)).toBe(true);
     const events = await until(
@@ -158,18 +169,23 @@ test.describe("The control link", () => {
     await openSurface(page);
     await page.waitForTimeout(500);
     const before = dropouts(link).length;
-    // The hub's messages are held 800 ms (a Wi-Fi stall): the pongs due
-    // stop, then arrive at once.
+    // The hub's messages are held 1 s (a Wi-Fi stall): the pongs due stop,
+    // then arrive at once.
+    const heldAt = Date.now();
     link.hold = true;
-    await page.waitForTimeout(800);
+    await page.waitForTimeout(1000);
     link.release();
+    const heldMs = Date.now() - heldAt;
     await expect.poll(() => dropouts(link).length, { timeout: 5000 }).toBeGreaterThan(before);
+    // One dropout of the hold: at least 300 ms, at most the hold and the
+    // flush (a page frame late by 300 ms starts the page's count over, so
+    // its length is not pinned tighter).
     const held = dropouts(link)
       .slice(before)
-      .find((d: any) => d.ms >= 600);
+      .find((d: any) => !d.socket_lost);
     expect(held, `a dropout of the hold among ${JSON.stringify(dropouts(link))}`).toBeTruthy();
-    expect(held.socket_lost).toBe(false);
-    expect(held.ms).toBeLessThan(3000);
+    expect(held.ms).toBeGreaterThanOrEqual(300);
+    expect(held.ms).toBeLessThanOrEqual(heldMs + 500);
     expect(held.rtts.length).toBeGreaterThan(0);
     await until(
       hubEvents,

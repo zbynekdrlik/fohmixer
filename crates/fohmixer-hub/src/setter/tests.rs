@@ -111,6 +111,7 @@ fn a_batch_carries_every_pending_key_once_in_key_order() {
                 (2, AckItem::failed(mute, 1, "not found: tracks 1")),
             ],
             errors: 1,
+            first_failure: true,
         }
     );
     assert_eq!(setter.in_flight(), None);
@@ -221,13 +222,39 @@ fn a_failed_batch_acks_its_error_and_newer_wants_stay() {
     // The newer want is written next.
     let next = setter.next_batch(3_000.0).unwrap();
     assert_eq!(next.items[0].1.seq, 2);
-    // Offline answers the same way.
+    // Offline answers the same way; the hub log heard of this run already.
     let offline = setter
         .on_result(next.id, &Err("instance offline".into()), 3_001.0)
         .unwrap();
     assert_eq!(
         offline.acks,
         vec![(1, AckItem::failed(KEY, 2, "instance offline"))]
+    );
+    assert!(!offline.first_failure);
+    assert_eq!(batch_problem(&offline), None);
+}
+
+#[test]
+fn the_hub_log_hears_once_per_run_of_failed_batches() {
+    let mut setter = Setter::default();
+    let mut round = |seq: u64, outcome: Result<Vec<Value>, String>| {
+        setter.on_set(KEY, want(1, seq, 0.5, seq as f64));
+        let batch = setter.next_batch(seq as f64).unwrap();
+        setter
+            .on_result(batch.id, &outcome, seq as f64 + 1.0)
+            .unwrap()
+    };
+    let down = || Err::<Vec<Value>, String>("instance offline".into());
+    assert!(round(1, down()).first_failure);
+    assert!(!round(2, down()).first_failure);
+    let back = round(3, ok_slots(1));
+    assert!(!back.first_failure);
+    assert_eq!(batch_problem(&back), None);
+    let again = round(4, down());
+    assert!(again.first_failure);
+    assert_eq!(
+        batch_problem(&again).as_deref(),
+        Some("1 of 1 writes of batch 4 failed: instance offline")
     );
 }
 

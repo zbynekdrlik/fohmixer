@@ -282,10 +282,11 @@ fn an_instance_back_online_or_on_another_set_reads_its_ranges_again() {
 }
 
 #[test]
-fn pings_carry_their_number_the_page_time_and_the_last_round_trip() {
+fn pings_carry_their_number_the_page_time_and_the_previous_pings_round_trip() {
     // #43: the hub logs every ping; 100 ms apart they resolve a short stall.
     assert_eq!(PING_MS, 100);
     let mut c = Conn::default();
+    c.opened(0.0);
     assert_eq!(
         c.ping(10.0, 1_000_010.0),
         ClientMsg::Ping {
@@ -294,7 +295,7 @@ fn pings_carry_their_number_the_page_time_and_the_last_round_trip() {
             rtt: None
         }
     );
-    assert_eq!(c.pong(1_000_010.0, 1_000_034.5), 24.5);
+    assert_eq!(c.pong(0, 1_000_010.0, 1_000_034.5), 24.5);
     assert_eq!(
         c.ping(110.0, 1_000_110.0),
         ClientMsg::Ping {
@@ -303,13 +304,51 @@ fn pings_carry_their_number_the_page_time_and_the_last_round_trip() {
             rtt: Some(24.5)
         }
     );
-    // The number wraps instead of overflowing.
+    // Ping 1's pong is late: ping 2 carries no round trip (ping 0's is not
+    // its predecessor's).
+    assert!(matches!(
+        c.ping(210.0, 1_000_210.0),
+        ClientMsg::Ping {
+            n: 2,
+            rtt: None,
+            ..
+        }
+    ));
+    assert_eq!(c.pong(2, 1_000_210.0, 1_000_215.0), 5.0);
+    assert!(matches!(
+        c.ping(310.0, 1_000_310.0),
+        ClientMsg::Ping {
+            n: 3,
+            rtt: Some(5.0),
+            ..
+        }
+    ));
+    // A new socket starts without a round trip.
+    c.pong(3, 1_000_310.0, 1_000_312.0);
+    c.opened(400.0);
+    assert!(matches!(
+        c.ping(400.0, 1_000_400.0),
+        ClientMsg::Ping {
+            n: 4,
+            rtt: None,
+            ..
+        }
+    ));
+    // The number wraps instead of overflowing, and so does the pairing.
     c.next_ping = u32::MAX;
     assert!(matches!(
         c.ping(0.0, 0.0),
         ClientMsg::Ping { n: u32::MAX, .. }
     ));
-    assert!(matches!(c.ping(0.0, 0.0), ClientMsg::Ping { n: 0, .. }));
+    c.pong(u32::MAX, 0.0, 7.0);
+    assert!(matches!(
+        c.ping(0.0, 0.0),
+        ClientMsg::Ping {
+            n: 0,
+            rtt: Some(7.0),
+            ..
+        }
+    ));
 }
 
 #[test]

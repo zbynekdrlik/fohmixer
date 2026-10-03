@@ -95,6 +95,9 @@ pub struct Applied {
     pub acks: Vec<(ClientId, AckItem)>,
     /// How many of those acks carry an error.
     pub errors: usize,
+    /// It is the first batch with an error after one without (the hub log
+    /// warns once per run of failures; the event log has every one).
+    pub first_failure: bool,
 }
 
 /// The setter of one instance.
@@ -107,11 +110,17 @@ pub struct Setter {
     last: HashMap<(ClientId, String), (u64, f64)>,
     /// The last batch number.
     batches: u64,
+    /// The last batch's result carried an error.
+    failing: bool,
 }
 
-/// What a batch's failed acks say, for the hub log (`None` when every want
-/// was applied).
+/// What a batch's failed acks say, for the hub log: only for the first
+/// failed batch of a run (`None` when every want was applied, or the batch
+/// before failed too).
 pub fn batch_problem(applied: &Applied) -> Option<String> {
+    if !applied.first_failure {
+        return None;
+    }
     let first = applied
         .acks
         .iter()
@@ -216,12 +225,16 @@ impl Setter {
             })
             .collect();
         let errors = acks.iter().filter(|(_, a)| a.error.is_some()).count();
+        let failed = errors > 0;
+        let first_failure = failed && !self.failing;
+        self.failing = failed;
         Some(Applied {
             batch: batch.id,
             n: batch.items.len(),
             rtt_ms: now - batch.sent_at,
             acks,
             errors,
+            first_failure,
         })
     }
 

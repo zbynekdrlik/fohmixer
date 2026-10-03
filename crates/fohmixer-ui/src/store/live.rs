@@ -57,10 +57,9 @@ struct Inner {
     ranges: HashMap<(String, String), Range>,
     socket: Option<Socket>,
     pending: HashMap<String, ResultFn>,
-    /// The controls' writes waiting for their ack (#43).
-    intents: Intents,
-    /// What hears a write's failure, per write key.
-    fails: HashMap<String, FailFn>,
+    /// The controls' writes waiting for their ack, with what hears each
+    /// one's failure (#43).
+    intents: Intents<FailFn>,
     /// The link's dropouts (#43).
     watch: DropoutWatch,
 }
@@ -77,7 +76,6 @@ impl Inner {
             socket: None,
             pending: HashMap::new(),
             intents: Intents::default(),
-            fails: HashMap::new(),
             watch: DropoutWatch::default(),
         }
     }
@@ -136,7 +134,6 @@ impl LiveStore {
             .try_update_value(|i| {
                 i.conn.stop();
                 i.pending.clear();
-                i.fails.clear();
                 i.socket.take()
             })
             .flatten();
@@ -425,7 +422,7 @@ impl LiveStore {
             }
             ServerMsg::Pong { n, t, .. } => {
                 let _ = self.inner.try_update_value(|i| {
-                    let rtt = i.conn.pong(t, epoch);
+                    let rtt = i.conn.pong(n, t, epoch);
                     i.watch.pong(n, rtt);
                 });
             }
@@ -465,18 +462,10 @@ impl LiveStore {
     /// control (spec I6: shown, never retried).
     fn on_ack(self, items: &[AckItem]) {
         for item in items {
-            let Some((acked, failed)) = self.inner.try_update_value(|i| {
-                let acked = i.intents.ack(item);
-                let failed = if acked == Acked::Stale {
-                    None
-                } else {
-                    i.fails.remove(&item.key)
-                };
-                (acked, failed)
-            }) else {
+            let Some(acked) = self.inner.try_update_value(|i| i.intents.ack(item)) else {
                 return;
             };
-            if let Acked::Failed(why) = acked {
+            if let Acked::Failed(why, failed) = acked {
                 dom::log(&format!("set {} failed: {why}", item.key));
                 if let Some(failed) = failed {
                     failed(why);
@@ -732,18 +721,18 @@ impl LiveStore {
         failed: Option<FailFn>,
     ) {
         let t = dom::epoch_now();
-        let Some((key, msg)) = self
-            .inner
-            .try_update_value(|i| i.intents.set(instance, target, prop, value, t, is_final))
-        else {
+        let Some((key, msg)) = self.inner.try_update_value(|i| {
+            i.intents
+                .set((instance, target, prop), value, t, is_final, failed)
+        }) else {
             return;
         };
-        if self.send(&msg) {
-            if let Some(failed) = failed {
-                let _ = self.inner.try_update_value(|i| i.fails.insert(key, failed));
-            }
-        } else {
+        if !self.send(&msg) {
             dom::log(&format!("set {key} not sent: not connected to the hub"));
+            let failed = self
+                .inner
+                .try_update_value(|i| i.intents.unsent(&key))
+                .flatten();
             if let Some(failed) = failed {
                 failed("not connected to the hub".to_string());
             }

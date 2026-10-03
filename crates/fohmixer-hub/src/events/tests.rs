@@ -93,7 +93,7 @@ fn a_file_expires_after_sixty_days() {
 
 #[test]
 fn warn_class_records_are_socket_link_cap_dropped_and_errors() {
-    for ev in ["sock", "link", "cap", "dropped"] {
+    for ev in ["sock", "link", "trace", "cap", "dropped"] {
         assert!(is_warn(&json!({"ev": ev})), "{ev}");
     }
     for ev in ["set", "batch", "ping", "ack", "applied"] {

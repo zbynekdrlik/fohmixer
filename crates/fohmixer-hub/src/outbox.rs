@@ -116,10 +116,18 @@ impl Outbox {
         });
     }
 
-    /// The latest outcome of one of the client's writes (#43).
+    /// The outcome of one of the client's writes (#43): per key the one of
+    /// the newest write waits (a late result of an older write never hides
+    /// that a newer one was superseded).
     pub fn ack(&self, item: AckItem) {
         self.put(|inner| {
-            inner.acks.insert(item.key.clone(), item);
+            if inner
+                .acks
+                .get(&item.key)
+                .is_none_or(|held| held.seq <= item.seq)
+            {
+                inner.acks.insert(item.key.clone(), item);
+            }
         });
     }
 
@@ -389,6 +397,18 @@ mod tests {
             "an instance going offline keeps the acks"
         );
         assert_eq!(outbox.take().unwrap(), vec![], "taken once");
+        // A late result of an older write does not hide a newer write's
+        // outcome; the same write's later outcome replaces it.
+        outbox.ack(AckItem::superseded("k", 7));
+        outbox.ack(AckItem::applied("k", 5, None));
+        outbox.ack(AckItem::failed("j", 3, "late"));
+        outbox.ack(AckItem::applied("j", 3, None));
+        assert_eq!(
+            outbox.take().unwrap(),
+            vec![ServerMsg::Ack {
+                items: vec![AckItem::applied("j", 3, None), AckItem::superseded("k", 7)]
+            }]
+        );
         // An ack alone wakes the writer.
         outbox.ack(AckItem::applied("k", 9, None));
         assert!(!outbox.lock().is_empty());

@@ -5,6 +5,10 @@
 //! or the socket is down. Each interval counts once, however long it lasts
 //! and whether or not its socket was lost on the way.
 //!
+//! A silence counts only while the page's own watchdog keeps ticking: a
+//! page that was frozen or hidden (its timers late) cannot tell the link's
+//! silence from its own.
+//!
 //! When a dropout ends (a message from the hub, or the next socket's hello)
 //! it becomes a report for the hub's event log: when it started (page
 //! clock), how long it lasted, whether the socket was lost, and the last
@@ -73,8 +77,12 @@ pub fn is_dropout(gap: f64) -> bool {
 pub struct DropoutWatch {
     /// A socket said hello and has not closed since.
     up: bool,
+    /// A socket that said hello closed, and no hello came since.
+    down: bool,
     /// When the page last heard the hub.
     heard: f64,
+    /// When the page's watchdog last ticked.
+    ticked: f64,
     /// Pings not answered yet: number, when sent.
     pings: VecDeque<(u32, f64)>,
     /// The latest round trips.
@@ -88,6 +96,14 @@ pub struct DropoutWatch {
 }
 
 impl DropoutWatch {
+    /// Whether the page's own watchdog kept ticking up to `now` (its last
+    /// tick is under [`DROPOUT_MS`] old). A page that was frozen or hidden
+    /// (its timers late) cannot tell the link's silence from its own, so
+    /// only a silence it lived through counts.
+    fn ticking(&self, now: f64) -> bool {
+        !is_dropout(now - self.ticked)
+    }
+
     /// The start of the current silence while a pong is due: the last
     /// message heard, or the oldest unanswered ping when it is later.
     fn silence_start(&self) -> Option<f64> {
@@ -129,6 +145,7 @@ impl DropoutWatch {
     pub fn hello(&mut self, now: f64) {
         self.finish(now);
         self.up = true;
+        self.down = false;
         self.heard = now;
         self.pings.clear();
     }
@@ -141,13 +158,16 @@ impl DropoutWatch {
     }
 
     /// A message from the hub arrived at `now`: a silence that reached a
-    /// dropout ends (it counts even when no tick saw it).
+    /// dropout while the page kept ticking ends (it counts even when no tick
+    /// saw it).
     pub fn heard(&mut self, now: f64) {
         if !self.up {
             self.heard = now;
             return;
         }
-        if let Some(start) = self.silent(now) {
+        if self.ticking(now)
+            && let Some(start) = self.silent(now)
+        {
             self.begin(start, false);
         }
         self.finish(now);
@@ -163,26 +183,39 @@ impl DropoutWatch {
         self.rtts.push_back(rtt);
     }
 
-    /// The watchdog's tick at `now`: a silence that reached a dropout
-    /// opens one (the counter goes up while it lasts).
+    /// The watchdog's tick at `now`: a silence that reached a dropout opens
+    /// one (the counter goes up while it lasts). A late tick (the page was
+    /// frozen or hidden) starts the silence over, and a socket that is down
+    /// while the page ticks is a dropout from this tick.
     pub fn tick(&mut self, now: f64) {
-        if !self.up {
-            return;
+        let late = !self.ticking(now);
+        self.ticked = now;
+        if late && self.open.is_none() {
+            self.heard = now;
         }
-        if let Some(start) = self.silent(now) {
+        if self.down && !late {
+            self.begin(now, true);
+        }
+        if self.up
+            && let Some(start) = self.silent(now)
+        {
             self.begin(start, false);
         }
     }
 
     /// The socket that said hello closed at `now`: a dropout until the next
-    /// hello, from the start of the silence that led to it, if any.
+    /// hello, from the start of the silence that led to it, if any. While the
+    /// page is not ticking (frozen, hidden) it starts at the page's next tick.
     pub fn lost(&mut self, now: f64) {
         if !self.up {
             return;
         }
-        let start = self.silence_start().unwrap_or(now);
-        self.begin(start, true);
+        if self.open.is_some() || self.ticking(now) {
+            let start = self.silence_start().unwrap_or(now);
+            self.begin(start, true);
+        }
         self.up = false;
+        self.down = true;
         self.pings.clear();
     }
 

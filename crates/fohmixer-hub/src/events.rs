@@ -14,8 +14,9 @@
 //! - A day file is capped at [`DAY_CAP`]: past it the writer writes one
 //!   `cap` record, then only warn-class records ([`is_warn`]).
 //!
-//! PR A records `sock`, `set`, `batch`, `applied`, `ack`, `ping` and `link`
-//! (the page's `trace` and `level` come with PR C).
+//! Records: `sock`, `set`, `batch`, `applied`, `ack`, `ping`, `link` and the
+//! page's `trace` (its dropouts since PR A; the flight recorder and the
+//! counter's resets with PR C).
 
 use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Write};
@@ -160,8 +161,8 @@ pub fn expired(file: NaiveDate, today: NaiveDate, keep_days: i64) -> bool {
 }
 
 /// Whether a record is still written past a day file's cap: a socket or a
-/// link change, the cap and dropped notes, and anything that carries an
-/// error.
+/// link change, a page's `trace` (its dropouts, the owner's priority on
+/// #43), the cap and dropped notes, and anything that carries an error.
 pub fn is_warn(record: &Value) -> bool {
     let ev = record.get("ev").and_then(Value::as_str).unwrap_or("");
     let failed = record.get("error").is_some_and(|e| !e.is_null())
@@ -169,7 +170,7 @@ pub fn is_warn(record: &Value) -> bool {
             .get("errors")
             .and_then(Value::as_u64)
             .is_some_and(|n| n > 0);
-    failed || matches!(ev, "sock" | "link" | "cap" | "dropped")
+    failed || matches!(ev, "sock" | "link" | "trace" | "cap" | "dropped")
 }
 
 /// Whether a line of `len` bytes takes a day file of `size` bytes past
@@ -247,8 +248,8 @@ impl Writer {
         let line = format!("{record}\n");
         if !day.capped && over_cap(day.size, line.len() as u64, cap) {
             let note = format!("{}\n", stamp("cap", ts, json!({"cap_bytes": cap})));
+            // Past the cap the size is never compared again.
             day.out.write_all(note.as_bytes())?;
-            day.size += note.len() as u64;
             day.capped = true;
         }
         if day.capped && !is_warn(record) {

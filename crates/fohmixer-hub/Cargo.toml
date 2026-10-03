@@ -20,9 +20,11 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net
 tokio-tungstenite = "0.28"
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 
-# Serialization
+# Serialization (float_roundtrip, #43: a page's times reach the event log and
+# its pong exactly as the page sent them; the default parser may miss the
+# last bit of a 13-digit ms time)
 serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
+serde_json = { version = "1.0", features = ["float_roundtrip"] }
 # The config file (no writer: the hub only reads it)
 toml = { version = "1", default-features = false, features = ["std", "serde", "parse"] }
 # Layout backup names (UTC time, no clock feature: the time comes from std)

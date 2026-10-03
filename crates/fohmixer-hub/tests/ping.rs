@@ -48,12 +48,13 @@ fn every_ping_is_answered_pong_and_recorded_with_the_page_clock() {
         assert_eq!(pings[0]["rtt"], Value::Null);
         assert_eq!(pings[0]["offset_ms"], Value::Null, "no round trip yet");
         assert_eq!(pings[0]["peer"], "127.0.0.1");
-        // From the second ping on, the page clock's offset (Cristian): the
-        // hub's arrival less the page time and half the round trip.
-        let hub_ms = pings[1]["hub_ms"].as_f64().unwrap();
+        // From the second ping on, the page clock's offset (Cristian): ping 1
+        // carries ping 0's round trip, so it is ping 0's arrival less ping
+        // 0's page time and half that round trip.
+        let hub_ms = pings[0]["hub_ms"].as_f64().unwrap();
         let offset = pings[1]["offset_ms"].as_f64().unwrap();
         assert!(
-            (offset - (hub_ms - (page_start + 100.0 + 10.0))).abs() < 1e-6,
+            (offset - (hub_ms - (page_start + 10.0))).abs() < 1e-6,
             "{offset} {hub_ms}"
         );
         assert_eq!(pings[2]["rtt"], 20.0);

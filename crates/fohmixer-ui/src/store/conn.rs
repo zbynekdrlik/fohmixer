@@ -12,8 +12,10 @@
 //! (`net::on_missing_hello`), else it is replaced too.
 //!
 //! A ping (#43) carries its number, the page's clock and the round trip of
-//! the previous pong: the hub logs every one, so its event log resolves a
-//! stall of a few hundred ms.
+//! the ping just before it on this socket (none when that pong had not come
+//! back): the hub pairs the round trip with that ping's own time and
+//! arrival, and logs every ping, so its event log resolves a stall of a few
+//! hundred ms.
 
 use fohmixer_proto::client::ClientMsg;
 use fohmixer_proto::layout::Layout;
@@ -109,8 +111,8 @@ pub struct Conn {
     next_ping: u32,
     /// When the last ping went (page clock, ms).
     pinged: f64,
-    /// The round trip of the last pong (ms).
-    rtt: Option<f64>,
+    /// The last pong on this socket: its ping's number and round trip (ms).
+    rtt: Option<(u32, f64)>,
 }
 
 impl Conn {
@@ -144,6 +146,7 @@ impl Conn {
         self.hello_seen = false;
         self.heard = now;
         self.ticked = now;
+        self.rtt = None;
         self.socket
     }
 
@@ -215,23 +218,24 @@ impl Conn {
     }
 
     /// The ping to send at `now` (page clock) and page time `t` (the epoch
-    /// clock of `set`): its number, `t` and the previous round trip.
+    /// clock of `set`): its number, `t` and the round trip of the ping just
+    /// before it, when that one's pong came back.
     pub fn ping(&mut self, now: f64, t: f64) -> ClientMsg {
         let n = self.next_ping;
         self.next_ping = self.next_ping.wrapping_add(1);
         self.pinged = now;
-        ClientMsg::Ping {
-            n,
-            t,
-            rtt: self.rtt,
-        }
+        let rtt = self
+            .rtt
+            .filter(|&(of, _)| of == n.wrapping_sub(1))
+            .map(|(_, rtt)| rtt);
+        ClientMsg::Ping { n, t, rtt }
     }
 
-    /// A pong of the ping sent at page time `sent` arrived at page time
+    /// The pong of ping `n`, sent at page time `sent`, arrived at page time
     /// `now`: its round trip, kept for the next ping.
-    pub fn pong(&mut self, sent: f64, now: f64) -> f64 {
+    pub fn pong(&mut self, n: u32, sent: f64, now: f64) -> f64 {
         let rtt = now - sent;
-        self.rtt = Some(rtt);
+        self.rtt = Some((n, rtt));
         rtt
     }
 
