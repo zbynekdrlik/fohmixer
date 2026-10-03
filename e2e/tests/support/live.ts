@@ -8,6 +8,9 @@ import { expect, type Locator, type Page } from "@playwright/test";
 
 export const BASE = process.env.E2E_BASE_URL || "http://127.0.0.1:8480";
 export const HARNESS = process.env.E2E_HARNESS_URL || "http://127.0.0.1:39190";
+// The pages' way to the hub (#43): the harness's impair proxy, which a test can
+// stall, drop and block (`impair`). The test's own `LiveClient` and API calls
+// use BASE, the hub itself, so they never lose their link.
 export const PIN = process.env.E2E_PIN || "";
 
 /** The LOM target of a track by name (the layout's binding form). */
@@ -28,6 +31,17 @@ export async function harness(path: string, body: object = {}): Promise<any> {
   if (!response.ok) throw new Error(`harness ${path}: ${response.status} ${JSON.stringify(answer)}`);
   return answer;
 }
+
+/**
+ * The impair proxy between the pages and the hub (#43, `e2e/harness/impair.py`):
+ * `stall` holds both directions for `ms`, `drop` resets every connection,
+ * `block` holds new connections until it is lifted.
+ */
+export const impair = {
+  stall: (ms: number) => harness("/link/stall", { ms }),
+  drop: () => harness("/link/drop"),
+  block: (on: boolean) => harness("/link/block", { on }),
+};
 
 /** Every record of the hub's event log (#43), oldest first. */
 export async function hubEvents(): Promise<any[]> {

@@ -392,11 +392,13 @@ jobs:
         run: |
           set -euo pipefail
           # band and master (the real FohMixer script on SimLive, meters at
-          # 30 Hz), the hub on the import tool's synthetic layout, and the
-          # harness's control API for the tests (127.0.0.1:39190).
+          # 30 Hz), the hub on the import tool's synthetic layout, the impair
+          # proxy in front of the hub (#43, 127.0.0.1:8481: the surface opens
+          # through it) and the harness's control API for the tests
+          # (127.0.0.1:39190).
           mkdir -p "$RUNNER_TEMP/e2e-logs"
           nohup python3 e2e/harness/harness.py --hub ./target/release/fohmixer-hub \
-            --data "$RUNNER_TEMP/hub-data" \
+            --data "$RUNNER_TEMP/hub-data" --link-port 8481 \
             --layout tools/import-tosc/fixtures/expected-layout.json \
             --public-name foh.e2e.test --https-port 8443 \
             --tls-cert "$E2E_REMOTE_DIR/cert.pem" --tls-key "$E2E_REMOTE_DIR/key.pem" \
@@ -406,6 +408,7 @@ jobs:
           for i in $(seq 1 60); do
             if curl -sf http://127.0.0.1:39190/health > /dev/null \
               && curl -sf http://127.0.0.1:8480/api/version > /dev/null \
+              && curl -sf http://127.0.0.1:8481/api/version > /dev/null \
               && curl -sf https://foh.e2e.test:8443/api/version > /dev/null; then
               echo "harness ready after ${i}s"
               exit 0
@@ -429,6 +432,8 @@ jobs:
         env:
           CI: "true"
           E2E_BASE_URL: http://127.0.0.1:8480
+          # The impair proxy (#43): the Playwright projects' base URL.
+          E2E_LINK_URL: http://127.0.0.1:8481
           E2E_HARNESS_URL: http://127.0.0.1:39190
           E2E_HTTPS_URL: https://foh.e2e.test:8443
           E2E_ACCESS_TEAM: fohmixer-e2e.cloudflareaccess.com
