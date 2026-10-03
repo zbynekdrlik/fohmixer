@@ -240,40 +240,60 @@ export async function centre(control: Locator): Promise<{ x: number; y: number }
   return { x: Math.round(box.x + box.width / 2), y: Math.round(box.y + box.height / 2) };
 }
 
+/** One step of `dispatchPointer`: a pointer event `dy` px above the control's centre, or a wait. */
+export type PointerStep = { type: "pointerdown" | "pointermove" | "pointerup"; dy?: number } | { wait: number };
+
 /**
- * Two taps on a control, `gapMs` from the first release to the second press,
- * timed inside the page: the fader's double tap wants its releases 50–250 ms
- * apart, and one real click takes ~160 ms in WebKit on the CI runner, so two
- * real clicks cannot hit that window in both engines. The taps are the same
- * pointer events a finger sends (the WebKit multi-touch path sends them too).
+ * Pointer events of one finger (a touch, `pointerId`) dispatched on `control`
+ * inside the page, at its centre or `dy` px above it, with the waits timed in
+ * the page: exact timing in both engines (one real click takes ~160 ms in
+ * WebKit on the CI runner), and a finger that can stay down while the real
+ * mouse does something else. The page clock (`performance.now()`) after the
+ * last step.
  */
-export async function doubleTap(control: Locator, gapMs = 100) {
+export async function dispatchPointer(control: Locator, steps: PointerStep[], pointerId = 21): Promise<number> {
   const { x, y } = await centre(control);
-  await control.evaluate(
-    async (el, [clientX, clientY, gap]) => {
-      const fire = (type: string) =>
+  return control.evaluate(
+    async (el, { clientX, clientY, list, id }) => {
+      for (const step of list) {
+        if ("wait" in step) {
+          await new Promise((done) => setTimeout(done, step.wait));
+          continue;
+        }
         el.dispatchEvent(
-          new PointerEvent(type, {
-            pointerId: 21,
+          new PointerEvent(step.type, {
+            pointerId: id,
             pointerType: "touch",
             isPrimary: true,
             clientX,
-            clientY,
+            clientY: clientY - (step.dy ?? 0),
             bubbles: true,
             cancelable: true,
           }),
         );
-      const wait = (ms: number) => new Promise((done) => setTimeout(done, ms));
-      fire("pointerdown");
-      await wait(20);
-      fire("pointerup");
-      await wait(gap);
-      fire("pointerdown");
-      await wait(20);
-      fire("pointerup");
+      }
+      return performance.now();
     },
-    [x, y, gapMs],
+    { clientX: x, clientY: y, list: steps, id: pointerId },
   );
+}
+
+/**
+ * Two taps on a control, `gapMs` from the first release to the second press,
+ * timed inside the page: the fader's double tap wants its releases 50–250 ms
+ * apart, which two real clicks cannot hit in both engines. The taps are the
+ * same pointer events a finger sends (the WebKit multi-touch path sends them too).
+ */
+export async function doubleTap(control: Locator, gapMs = 100) {
+  await dispatchPointer(control, [
+    { type: "pointerdown" },
+    { wait: 20 },
+    { type: "pointerup" },
+    { wait: gapMs },
+    { type: "pointerdown" },
+    { wait: 20 },
+    { type: "pointerup" },
+  ]);
 }
 
 /**

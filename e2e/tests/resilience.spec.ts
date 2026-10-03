@@ -2,7 +2,9 @@ import type { Locator, Page } from "@playwright/test";
 import { test, expect } from "./support/fixtures";
 import {
   LiveClient,
+  type PointerStep,
   centre,
+  dispatchPointer,
   frames,
   hostLine,
   impair,
@@ -70,32 +72,14 @@ async function dragUp(page: Page, fader: Locator, steps: number, hold = false): 
 }
 
 /**
- * A finger on `control` as dispatched pointer events (id 51), moved up by
- * `dy` px and, unless `hold`, lifted: timed inside the page, and able to
- * stay down while the real mouse does something else.
+ * A finger on `control` (dispatched pointer events, id 51) moved up by `dy`
+ * px and, unless `hold`, lifted: it can stay down while the real mouse does
+ * something else.
  */
 async function touchUp(control: Locator, dy: number, hold = false) {
-  const { x, y } = await centre(control);
-  await control.evaluate(
-    (el, [clientX, clientY, up, keep]) => {
-      const fire = (type: string, at: number) =>
-        el.dispatchEvent(
-          new PointerEvent(type, {
-            pointerId: 51,
-            pointerType: "touch",
-            isPrimary: true,
-            clientX,
-            clientY: at,
-            bubbles: true,
-            cancelable: true,
-          }),
-        );
-      fire("pointerdown", clientY);
-      fire("pointermove", clientY - up);
-      if (!keep) fire("pointerup", clientY - up);
-    },
-    [x, y, dy, hold ? 1 : 0],
-  );
+  const steps: PointerStep[] = [{ type: "pointerdown" }, { type: "pointermove", dy }];
+  if (!hold) steps.push({ type: "pointerup", dy });
+  await dispatchPointer(control, steps, 51);
 }
 
 test.describe("The control link's resilience (L1-L4)", () => {
@@ -171,33 +155,10 @@ test.describe("The control link's resilience (L1-L4)", () => {
     await impair.stall(1500);
     // A quick drag and release inside the stall (its pointer events timed in
     // the page: real mouse moves would eat into the stall).
-    const { x, y } = await centre(fader);
-    const releasedAt = await fader.evaluate(
-      async (el, [clientX, clientY]) => {
-        const fire = (type: string, dy: number) =>
-          el.dispatchEvent(
-            new PointerEvent(type, {
-              pointerId: 31,
-              pointerType: "touch",
-              isPrimary: true,
-              clientX,
-              clientY: clientY - dy,
-              bubbles: true,
-              cancelable: true,
-            }),
-          );
-        const wait = (ms: number) => new Promise((done) => setTimeout(done, ms));
-        fire("pointerdown", 0);
-        for (let i = 1; i <= 5; i++) {
-          await wait(16);
-          fire("pointermove", 12 * i);
-        }
-        await wait(16);
-        fire("pointerup", 60);
-        return performance.now();
-      },
-      [x, y],
-    );
+    const drag: PointerStep[] = [{ type: "pointerdown" }];
+    for (let i = 1; i <= 5; i++) drag.push({ wait: 16 }, { type: "pointermove", dy: 12 * i });
+    drag.push({ wait: 16 }, { type: "pointerup", dy: 60 });
+    const releasedAt = await dispatchPointer(fader, drag, 31);
     // The stall runs on 1.5 s from the release (a running stall is
     // extended): the ack is held well past the 1 s that makes it unconfirmed.
     await impair.stall(1500);
