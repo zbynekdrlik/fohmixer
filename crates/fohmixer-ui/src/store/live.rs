@@ -121,7 +121,8 @@ impl LiveStore {
     }
 
     /// Connects: fetches the layout (checking the token), then opens the
-    /// socket.
+    /// socket; and starts the dropout watch's own tick (`tick_link`), which
+    /// runs until the store stops.
     pub fn start(self) {
         self.connect();
         self.tick_link();

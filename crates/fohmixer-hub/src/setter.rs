@@ -116,7 +116,7 @@ pub struct Setter {
 
 /// What a batch's failed acks say, for the hub log: only for the first
 /// failed batch of a run (`None` when every want was applied, or the batch
-/// before failed too).
+/// before failed with the same first error since Live's last reconnect).
 pub fn batch_problem(applied: &Applied) -> Option<String> {
     if !applied.first_failure {
         return None;

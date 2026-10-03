@@ -143,7 +143,7 @@ The owner ruled out status words on the surface (ROZHODNUTÉ on #43, 2026-10-03)
 - The page pings the hub every 100 ms while visible (every second while hidden).
 - A **dropout** is one continuous interval in which the page hears nothing from the hub for ≥ 300 ms although a pong is due, or the socket is down. The silence counts from the later of the last message heard and the oldest unanswered ping, so a hidden page that pinged rarely raises no false dropout.
 - Each interval counts once, however long it lasts, and a silence that turns into a lost socket stays one dropout until the next hello.
-- A silence counts only while the page's own watchdog keeps ticking: a page that was frozen or hidden (300 ms or more since its watchdog's last tick) cannot tell the link's silence from its own, so the silence starts over at its next tick; a socket lost meanwhile is a dropout from the page's next tick.
+- A silence counts only while the dropout watch's own page tick keeps coming (every 100 ms, independent of any socket, so it goes on between a close and the next hello): a page that was frozen or hidden (300 ms or more since the last tick) cannot tell the link's silence from its own, so the silence starts over at its next tick; a socket lost meanwhile is a dropout from the page's next on-time tick.
 - A Live-side delay (Live busy, the network fine) is logged (`link`) but not counted: the counter measures the link.
 
 **What the surface shows (PR C).**

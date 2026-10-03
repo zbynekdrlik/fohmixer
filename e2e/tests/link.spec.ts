@@ -212,4 +212,34 @@ test.describe("The control link", () => {
       "the lost socket in the event log",
     );
   });
+
+  test("a socket lost while the page stalls is one dropout from the page's next tick", async ({ page }) => {
+    const link = await recordLink(page);
+    await openSurface(page);
+    await page.waitForTimeout(500);
+    const sockets = link.sockets.length;
+    // The page's main thread stalls 600 ms and the socket closes meanwhile:
+    // after the stall the close and the late timers run in either order. The
+    // dropout watch's own tick goes on without a socket, so the loss counts
+    // from the page's next on-time tick even when no tick saw the close.
+    const stall = page.evaluate(() => {
+      const end = performance.now() + 600;
+      while (performance.now() < end) {
+        // The page is busy: no timer, socket or frame runs.
+      }
+    });
+    await page.waitForTimeout(100);
+    await link.sockets[sockets - 1].close({ code: 4000, reason: "gone" });
+    await stall;
+    await expect.poll(() => link.sockets.length, { timeout: 10_000 }).toBe(sockets + 1);
+    await expect(page.getByTestId("surface")).toHaveAttribute("data-connected", "true");
+    await expect.poll(() => dropouts(link).filter((d: any) => d.socket_lost).length, { timeout: 5000 }).toBe(1);
+    const lost = dropouts(link).find((d: any) => d.socket_lost);
+    expect(lost.ms, "from the next tick to the hello, the reconnect's wait included").toBeGreaterThanOrEqual(300);
+    await until(
+      hubEvents,
+      (ev) => ev.some((e) => e.ev === "trace" && e.events.some((d: any) => d.socket_lost && d.t === lost.t)),
+      "the stalled page's lost socket in the event log",
+    );
+  });
 });

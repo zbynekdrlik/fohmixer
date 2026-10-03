@@ -5,8 +5,9 @@
 //! or the socket is down. Each interval counts once, however long it lasts
 //! and whether or not its socket was lost on the way.
 //!
-//! A silence counts only while the page's own watchdog keeps ticking: a
-//! page that was frozen or hidden (its timers late) cannot tell the link's
+//! A silence counts only while the watch's own page tick (every 100 ms,
+//! `LiveStore::tick_link`, independent of any socket) keeps coming: a page
+//! that was frozen or hidden (its timers late) cannot tell the link's
 //! silence from its own.
 //!
 //! When a dropout ends (a message from the hub, or the next socket's hello)
@@ -81,7 +82,7 @@ pub struct DropoutWatch {
     down: bool,
     /// When the page last heard the hub.
     heard: f64,
-    /// When the page's watchdog last ticked.
+    /// When the watch's page tick last came.
     ticked: f64,
     /// Pings not answered yet: number, when sent.
     pings: VecDeque<(u32, f64)>,
@@ -96,7 +97,7 @@ pub struct DropoutWatch {
 }
 
 impl DropoutWatch {
-    /// Whether the page's own watchdog kept ticking up to `now` (its last
+    /// Whether the watch's page tick kept coming up to `now` (its last
     /// tick is under [`DROPOUT_MS`] old). A page that was frozen or hidden
     /// (its timers late) cannot tell the link's silence from its own, so
     /// only a silence it lived through counts.
@@ -183,7 +184,7 @@ impl DropoutWatch {
         self.rtts.push_back(rtt);
     }
 
-    /// The watchdog's tick at `now`: a silence that reached a dropout opens
+    /// The page tick at `now` (every 100 ms, whatever the socket does): a silence that reached a dropout opens
     /// one (the counter goes up while it lasts). A late tick (the page was
     /// frozen or hidden) starts the silence over, and a socket that is down
     /// while the page ticks is a dropout from this tick.

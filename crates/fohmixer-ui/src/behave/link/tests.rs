@@ -10,7 +10,7 @@ fn up(rtts: &[f64]) -> DropoutWatch {
     w
 }
 
-/// The page's watchdog ticking every 100 ms from `from` to `to`.
+/// The watch's page tick every 100 ms from `from` to `to`.
 fn ticks(w: &mut DropoutWatch, from: f64, to: f64) {
     let steps = ((to - from) / 100.0).round() as u32;
     for k in 0..=steps {
@@ -248,10 +248,12 @@ fn a_socket_lost_while_the_page_is_away_counts_from_its_next_tick() {
 
 #[test]
 fn a_socket_lost_during_a_page_stall_counts_from_the_next_tick() {
-    // The page's main thread stalls; the socket closes meanwhile (its close
-    // runs before the late tick). The watch's own tick goes on without the
-    // socket, so the dropout starts at the first on-time tick after the stall
-    // and lasts until the next socket's hello.
+    // The watch's rule for a stall (the glue's part, that the tick goes on
+    // between sockets, is `link.spec.ts`'s stall test): the page's main
+    // thread stalls and the socket closes meanwhile (its close runs before
+    // the late tick). The ticks go on without a socket, so the dropout
+    // starts at the first on-time tick after the stall and lasts until the
+    // next socket's hello.
     let mut w = up(&[]);
     ticks(&mut w, 100.0, 1_000.0);
     w.lost(1_450.0);
