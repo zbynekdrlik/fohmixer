@@ -235,6 +235,12 @@ impl<F> Intents<F> {
         self.open.get(key).map(|open| &open.intent)
     }
 
+    /// What hears `key`'s failure (the tests' view of the handlers).
+    #[cfg(test)]
+    fn handler(&self, key: &str) -> Option<&F> {
+        self.fails.get(key)
+    }
+
     /// How many intents wait for their ack.
     pub fn len(&self) -> usize {
         self.open.len()
@@ -327,7 +333,7 @@ mod tests {
         );
         assert!(intents.is_empty());
         assert_eq!(
-            intents.unsent(&key()),
+            intents.handler(&key()),
             None,
             "a confirmed write's handler goes"
         );
@@ -382,7 +388,7 @@ mod tests {
         );
         assert!(intents.is_empty());
         assert_eq!(
-            intents.unsent(&key()),
+            intents.handler(&key()),
             None,
             "a superseded write's handler goes"
         );
