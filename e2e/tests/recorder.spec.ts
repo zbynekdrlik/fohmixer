@@ -57,11 +57,13 @@ async function twoDrags(page: Page, fader: Locator, pointer: number): Promise<{ 
   return { from, between, to: await pageNow(page) };
 }
 
-/** The hub's arrival (`hub_ms`) of the first and last of the fader's sets the page sent from `from` to `to` (a drag sends dozens). */
-function arrivals(events: any[], from: number, to: number): [number, number] {
-  const sets = events.filter((e) => e.ev === "set" && e.key === KEY && e.t >= from && e.t <= to).map((e) => e.hub_ms);
+/** The fader's sets the page sent from `from` to `to` (a drag sends dozens): the first and last one's arrival (`hub_ms`) and page time (`t`). */
+function dragSets(events: any[], from: number, to: number): { first: number; last: number; t0: number; t1: number } {
+  const sets = events.filter((e) => e.ev === "set" && e.key === KEY && e.t >= from && e.t <= to);
   expect(sets.length, "the drag's sets").toBeGreaterThan(10);
-  return [Math.min(...sets), Math.max(...sets)];
+  const arrived = sets.map((e) => e.hub_ms);
+  const sent = sets.map((e) => e.t);
+  return { first: Math.min(...arrived), last: Math.max(...arrived), t0: Math.min(...sent), t1: Math.max(...sent) };
 }
 
 /** The bytes of the page events (each once) that the hub's trace records hold with a page time from `from` to `to`. */
@@ -144,15 +146,16 @@ test("on a slow link the recorder never delays a drag's sets and its newest even
   // one task stamps both in arrival order; `ts` is whole ms, `hub_ms` finer:
   // 5 ms either side). A tick lets one through only after a page frame over
   // 100 ms without a set (WebKit on the runner draws ~22 frames a second).
-  // The check can fail: the drag's own events fill at least 4 batches of
-  // 1 000 bytes, so without the gate at least 3 would go inside it.
+  // The check can fail: the page events recorded between the drag's first
+  // and last set fill at least 4 batches of 1 000 bytes, so without the
+  // gate at least 3 would go inside it.
   const events = await hubEvents();
   for (const [a, b] of [
     [on.from, on.between],
     [on.between, on.to],
   ]) {
-    const [first, last] = arrivals(events, a, b);
-    expect(eventBytes(events, a, b), "the drag's own page events (bytes)").toBeGreaterThanOrEqual(4000);
+    const { first, last, t0, t1 } = dragSets(events, a, b);
+    expect(eventBytes(events, t0, t1), "the page events between the drag's first and last set (bytes)").toBeGreaterThanOrEqual(4000);
     const inside = events.filter((e) => e.ev === "trace" && e.ts > first + 5 && e.ts < last - 5);
     expect(inside.length, `trace records inside a drag of ${Math.round(last - first)} ms: ${JSON.stringify(inside.map((e) => e.ts - first))}`).toBeLessThanOrEqual(2);
   }
