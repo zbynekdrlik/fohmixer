@@ -459,13 +459,34 @@ class Causes(ReportCase):
         resume = sends[-1][0] + 316
         sends += [(resume + 16 * i, round(0.676 + 0.004 * i, 6)) for i in range(20)]
         events = log.drag(VOX, 7, sends)
-        events.append({"ev": "frame", "t": sends[19][0] + 8, "ms": 300.0})
+        # The page stamps a long frame when the frame that ends it comes
+        # (`diag::frame`: its own time, the gap since the frame before).
+        events.append({"ev": "frame", "t": resume, "ms": 300.0})
         log.trace(BASE + 3000, 7, events)
         summary, page, _ = self.report(log, BASE, BASE + 5000)
         self.assertEqual(self.jumps(page), [("page", digest(VOX))])
         (frame,) = page.of_class("frame")
-        self.assertAlmostEqual(float(frame["data-start"]), sends[19][0] + 8 + OFFSET, delta=0.05)
+        self.assertAlmostEqual(float(frame["data-start"]), resume - 300 + OFFSET, delta=0.05)
         self.assertEqual(summary["gap_send_max_ms"], "316.0", "no touch: 10 s gestures")
+
+    def test_a_long_frame_is_the_stall_before_its_own_time(self):
+        # Every send 16 ms apart but one 80 ms gap (not over 100 ms: no page
+        # gap); the page's main thread stalled those 80 ms, and its long
+        # frame says so at the frame that ended the stall. The jumps whose
+        # interval meets the stall are the page's, the ones after it moves.
+        log = Log()
+        log.pings(7, BASE, BASE + 3000)
+        p0 = BASE + 1000 - OFFSET
+        times = [p0, p0 + 16, p0 + 32, p0 + 112, p0 + 128, p0 + 144]
+        sends = [(t, round(0.45 + 0.1 * i, 6)) for i, t in enumerate(times)]
+        events = log.drag(VOX, 7, sends)
+        events.append({"ev": "frame", "t": p0 + 112, "ms": 80.0})
+        log.trace(BASE + 3000, 7, events)
+        _, page, _ = self.report(log, BASE, BASE + 5000)
+        causes = [cause for cause, _ in self.jumps(page)]
+        self.assertEqual(causes, ["move", "page", "page", "move", "move"])
+        (frame,) = page.of_class("frame")
+        self.assertAlmostEqual(float(frame["data-start"]), p0 + 32 + OFFSET, delta=0.05)
 
     def test_a_jump_where_the_recorder_dropped_the_long_frames_is_no_data(self):
         # The fast move below, but the page's recorder dropped its long
@@ -483,6 +504,21 @@ class Causes(ReportCase):
         causes = [cause for cause, _ in self.jumps(page)]
         self.assertIn("no data", causes)
         self.assertEqual(set(causes), {"move", "no data"}, "only the jumps over the span")
+
+    def test_dropped_moves_or_round_trips_say_nothing_of_a_jumps_cause(self):
+        # The same fast move with spans of dropped moves and round-trip
+        # summaries over it: only dropped long frames hide a page stall.
+        log = Log()
+        log.pings(7, BASE, BASE + 3000)
+        p0 = BASE + 1000 - OFFSET
+        sends = [(p0 + 16 * i, round(0.45 + 0.1 * i, 6)) for i in range(6)]
+        events = log.drag(VOX, 7, sends)
+        for kind in ("mv", "rtt"):
+            note = {"ev": "overflow", "t": p0 + 900, "n": 2, "kinds": {kind: 2}}
+            events.append(dict(note, **{"from": p0, "to": p0 + 90}))
+        log.trace(BASE + 3000, 7, events)
+        _, page, _ = self.report(log, BASE, BASE + 5000)
+        self.assertEqual(self.jumps(page), [("move", digest(VOX))] * 5)
 
     def test_a_fast_move_with_every_gap_small_is_move(self):
         log = Log()
