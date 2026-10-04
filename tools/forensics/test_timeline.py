@@ -33,6 +33,7 @@ OFFSET = 250.5
 VOX = "band|live_set tracks[name=Vox 1] mixer_device volume|value"
 HAND = "band|live_set tracks[name=Hand2 #] mixer_device volume|value"
 KLAVIR_PAN = "band|live_set tracks[name=Klavir #] mixer_device panning|value"
+VOX_MUTE = "band|live_set tracks[name=Vox 1]|mute"
 PEER = "192.0.2.10:50000"
 
 
@@ -404,8 +405,15 @@ class Helpers(unittest.TestCase):
         self.assertIsNone(model.gestures(touches, HAND, 99999), "no touch names it")
         untouched = model.row_gaps([0, 50, 2050, 14050], None)
         self.assertEqual(untouched, [(50, 2050, 2000)], "12 s apart: two gestures")
-        open_ended = model.gestures([touch(1000, "down", pointer=4)], VOX, 9000)
-        self.assertEqual(open_ended, [(1000, 10000.0)], "no lift: to the window's end")
+        held = model.gestures([touch(1000, "down", pointer=4)], VOX, 9000)
+        self.assertEqual(held, [(1000, 9000)], "no lift in the window: to its end")
+        # No lift before the next down naming the key: until that down, so a
+        # lift of the first pointer after it does not count.
+        downs = [touch(1000, "down"), touch(3000, "down", pointer=2), touch(3500, "up")]
+        self.assertEqual(model.gestures(downs, VOX, 9000), [(1000, 3000), (3000, 9000)])
+        # A toggle's tap (no lift follows) lasts the tail only.
+        taps = [touch(1000, "tap"), touch(6000, "tap", pointer=2)]
+        self.assertEqual(model.gestures(taps, VOX, 9000), [(1000, 2000.0), (6000, 7000.0)])
 
     def test_busy_episodes_merge_both_sources(self):
         changes = [
@@ -515,7 +523,7 @@ class Stall(ReportCase):
         self.assertEqual(summary["dropouts"], "1")
         self.assertEqual(summary["longest_dropout_ms"], "590.0")
         self.assertEqual(summary["longest_dropout_at"], read.local_text(dropout["t"] + OFFSET))
-        self.assertEqual(summary["pages"], "1", "client 8 only pinged")
+        self.assertEqual(summary["sockets"], "1", "client 8 only pinged")
         # The worst confirmation is the first set the stall held (sent at
         # 1512 ms, applied at 2110 ms); the sets the setter left out have none.
         self.assertEqual(summary["worst_confirmation_key"], f"key#{digest(VOX)}")
@@ -541,12 +549,11 @@ class Stall(ReportCase):
             list(summary),
             [
                 "records",
-                "pages",
+                "sockets",
                 "confirmation_n",
                 "confirmation_p50_ms",
                 "confirmation_p90_ms",
                 "confirmation_p99_ms",
-                "confirmation_max_ms",
                 "worst_confirmation_ms",
                 "worst_confirmation_at",
                 "worst_confirmation_key",
@@ -669,11 +676,10 @@ class Confirmations(ReportCase):
         self.assertEqual(summary["confirmation_p50_ms"], "25.0")
         self.assertEqual(summary["confirmation_p90_ms"], "45.0")
         self.assertEqual(summary["confirmation_p99_ms"], "300.0")
-        self.assertEqual(summary["confirmation_max_ms"], "300.0")
         self.assertEqual(summary["worst_confirmation_ms"], "300.0")
         self.assertEqual(summary["worst_confirmation_at"], read.local_text(BASE + 10005))
         self.assertEqual(summary["worst_confirmation_key"], f"key#{digest(HAND)}")
-        self.assertEqual(summary["pages"], "1")
+        self.assertEqual(summary["sockets"], "1")
 
     def test_the_key_filter_keeps_only_matching_controls(self):
         log = Log()
@@ -685,6 +691,42 @@ class Confirmations(ReportCase):
         self.assertEqual(summary["confirmation_n"], "2")
         self.assertNotIn("Hand2", page.text)
         self.assertEqual(summary["records"], str(len(log.records)), "the count stays whole")
+
+
+class Toggles(ReportCase):
+    def test_two_taps_of_a_toggle_are_two_gestures(self):
+        # Mute, solo and stage record a tap (no lift follows): the time between
+        # two taps is no gap.
+        log = Log()
+        log.pings(7, BASE, BASE + 7000)
+        p0 = BASE + 1000 - OFFSET
+        sends = log.drag(VOX_MUTE, 7, [(p0, 1), (p0 + 5000, 0)])
+        taps = [
+            {"ev": "touch", "t": t, "what": "tap", "keys": [VOX_MUTE], "pointer": pointer}
+            for t, pointer in ((p0 - 20, 1), (p0 + 4980, 2))
+        ]
+        log.trace(BASE + 6500, 7, [*taps, *sends])
+        summary, page, _ = self.report(log, BASE, BASE + 7000)
+        self.assertEqual([a["data-key-hash"] for a in page.of_class("control")], [digest(VOX_MUTE)])
+        self.assertEqual(page.of_class("gap"), [])
+        for row in ("send", "arrival", "applied"):
+            self.assertEqual(summary[f"gap_{row}_max_ms"], "0", row)
+        self.assertEqual(summary["jumps"], "0", "a toggle has no dB jumps")
+
+    def test_a_fader_held_past_the_windows_end_keeps_its_gaps(self):
+        log = Log()
+        log.pings(7, BASE, BASE + 5000)
+        p0 = BASE + 1000 - OFFSET
+        sends = [(p0 + 16 * i, round(0.5 + 0.004 * i, 6)) for i in range(20)]
+        # The finger rests 2 s, moves once more, and lifts after the window.
+        sends.append((sends[-1][0] + 2000, 0.58))
+        events = log.drag(HAND, 7, sends)
+        down = {"ev": "touch", "t": p0 - 20, "what": "down", "keys": [HAND], "pointer": 1}
+        log.trace(BASE + 4000, 7, [down, *events])
+        end = sends[-1][0] + OFFSET + 500
+        summary, _, _ = self.report(log, BASE, end)
+        self.assertEqual(summary["gap_send_max_ms"], "2000.0")
+        self.assertEqual(summary["gap_arrival_max_ms"], "2000.0")
 
 
 class PageEvents(ReportCase):
@@ -725,6 +767,7 @@ class PageEvents(ReportCase):
             [
                 *sends,
                 unsent,
+                # The page records pongs only (no ping events): its RTT line.
                 {"ev": "pong", "t": p0 + 100, "n": 4, "rtt": 30.0},
                 {"ev": "pong", "t": p0 + 200, "n": 5, "rtt": 50.0},
                 {"ev": "sock", "t": p0 + 1500, "what": "close", "code": 1006, "reason": "lost"},
@@ -740,7 +783,8 @@ class PageEvents(ReportCase):
         self.assertEqual(len(page.of_class("frame")), 1)
         self.assertEqual(len(page.of_class("visibility")), 1)
         self.assertEqual(len(page.of_class("unsent")), 1, "the unsent send is drawn hollow")
-        self.assertEqual(len(page.of_class("rtt-page")), 1)
+        (rtt_page,) = page.of_class("rtt-page")
+        self.assertEqual(len(rtt_page["points"].split()), 2, "one point per pong")
         self.assertEqual(len(page.of_class("rtt-hub")), 1)
         self.assertEqual((summary["rtt_page_p50_ms"], summary["rtt_page_max_ms"]), ("30.0", "50.0"))
         self.assertEqual((summary["rtt_hub_p50_ms"], summary["rtt_hub_max_ms"]), ("20.0", "20.0"))
@@ -829,7 +873,7 @@ class Window(ReportCase):
             f.write('{"ev":"ba')
         summary, page, _ = self.report(Log(), start, end)
         self.assertEqual(summary["records"], "2")
-        self.assertEqual(summary["pages"], "1")
+        self.assertEqual(summary["sockets"], "1")
         self.assertEqual(summary["resets"], "1")
         self.assertEqual(summary["skipped_lines"], "2", "only lines that could be in range")
         self.assertIn("events-2026-10-03.jsonl", page.text)

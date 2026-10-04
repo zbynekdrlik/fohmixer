@@ -23,6 +23,7 @@ from http.server import ThreadingHTTPServer
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import harness  # noqa: E402
+import timeline_read  # noqa: E402  (on sys.path through the harness)
 
 LAYOUT = os.path.join(harness.REPO, "tools", "import-tosc", "fixtures", "expected-layout.json")
 # A synthetic window of the event log: 2026-10-03 16:20:00 UTC on the hub's clock.
@@ -68,7 +69,7 @@ class ForensicsTimeline(unittest.TestCase):
         self.assertEqual((answer["exit"], answer["stderr"]), (0, ""))
         summary = dict(line.split("=", 1) for line in answer["stdout"].splitlines())
         self.assertEqual((summary["records"], summary["confirmation_n"]), ("3", "1"))
-        self.assertEqual(summary["confirmation_max_ms"], "16.0", "applied 16 ms after the send")
+        self.assertEqual(summary["worst_confirmation_ms"], "16.0", "applied 16 ms after the send")
         self.assertNotIn("Vox 1", answer["stdout"])
         self.assertIn('class="control"', answer["html"])
         self.assertIn("Vox 1", answer["html"])
@@ -100,16 +101,17 @@ class ForensicsTimeline(unittest.TestCase):
         )
 
     def test_the_local_time_is_what_the_tool_reads(self):
+        self.assertIs(harness.local_text, timeline_read.local_text, "the tool's own function")
         ms = BASE + 123
         moment = datetime.datetime.fromtimestamp(ms / 1000)
-        self.assertEqual(harness.local_time(ms), moment.strftime("%Y-%m-%d %H:%M:%S") + ".123")
+        self.assertEqual(harness.local_text(ms), moment.strftime("%Y-%m-%d %H:%M:%S") + ".123")
         self.assertEqual(
-            time.mktime(time.strptime(harness.local_time(BASE)[:19], "%Y-%m-%d %H:%M:%S")),
+            time.mktime(time.strptime(harness.local_text(BASE)[:19], "%Y-%m-%d %H:%M:%S")),
             BASE / 1000,
         )
         # The runner is on UTC: a machine 5:45 east of it (a POSIX TZ, no time
         # zone database needed) proves the time is local, not UTC.
-        code = f"import harness; print(harness.local_time({ms}))"
+        code = f"import harness; print(harness.local_text({ms}))"
         shifted = subprocess.run(
             [sys.executable, "-c", code],
             cwd=os.path.dirname(os.path.abspath(__file__)),

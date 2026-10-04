@@ -178,7 +178,7 @@ The detection is a pure state machine (`behave/link.rs`, `DropoutWatch`, since P
 | `applied` | `instance`, the batch number, `n`, `rtt_ms` (Live's round trip), errors, `sent` (key, client, seq) |
 | `ack` | per item; an ack of a batch with its number and `rtt_ms` |
 | `ping` | every ping (10 a second while the page is visible): `n`, `t`, `hub_ms` (its arrival), the page's latest `rtt` and `rtt_n`, `offset_ms` |
-| `trace` | `client`, `peer`, `events`: a batch of the page's flight recorder as it sent it (§5.2: its touches, sends, acks, pings and pongs, socket transitions, long frames, visibility, dropouts and the counter's resets) |
+| `trace` | `client`, `peer`, `events`: a batch of the page's flight recorder as it sent it (§5.2: its touches, sends, acks, pongs, socket transitions, long frames, visibility, dropouts and the counter's resets) |
 | `link` | busy changes with `tick_age_ms`, heartbeat gaps |
 
 - **Clocks.** Page times (`t`) map to hub time through the ping exchange (Cristian): a ping carries the latest pong's round trip and the number `m` of the ping it measured, and `offset = arrival of ping m − (its t + rtt/2)` from the hub's ring of the last 64 pings, so a round trip is paired with the exchange it measured (ping n − 2 or older on a slow link), never with the carrying ping that may itself have been held up; the lowest-RTT exchange of the last minute wins. Each `ping` record carries it as `offset_ms`, and each `set` record the offset of its socket's last ping with the one-way delay it gives: a stall on the way shows as a gap and a delay spike on the moves after it.
@@ -186,15 +186,15 @@ The detection is a pure state machine (`behave/link.rs`, `DropoutWatch`, since P
 ### 5.2 Page flight recorder (`diag/trace.rs`)
 
 - **Contents.** A ring of the page's own events, each with `ev` and the page's `t`:
-  - `touch` (`what` down / up / cancel, the control's `keys`, the `pointer`);
+  - `touch` (`what` down / up / cancel, or `tap` for a mute, solo or stage button, the control's `keys`, the `pointer`);
   - each `send` (`key`, `seq`, `value`, `final`, whether the socket took it) and `ack` (`key`, `seq`, an `error` or `superseded` when so);
-  - `ping` (`n`) and `pong` (`n`, `rtt`);
+  - `pong` (`n`, `rtt`): the ping's own send time is the pong's minus the round trip, and the hub logs every ping that reaches it, so a page event per ping would only double the volume;
   - socket transitions, `sock` (`what` open / hello / close / drop / fail, the socket number, the close code or the reason);
   - `frame`: frames longer than 50 ms (not the gap after a visibility change, which is the time hidden);
   - `visibility` (`hidden`);
   - dropouts and the counter's resets; `overflow` (`n`: events the full ring dropped).
 - **Size.** At most 20 000 events and 2 MB of their JSON; past either the oldest unsent event goes, counted in the next batch's `overflow`.
-- **Upload.** One `trace` batch of at most 32 KB of events every 2 s while connected, and at the link's next 100 ms tick after a hello, a dropout or a reset, oldest first: after a reconnect the backlog goes first, so an outage is recorded from the page's side. A batch goes only from that tick and only while the socket holds nothing unsent (`bufferedAmount` 0), so it never queues in front of the moves on a slow link (16 KB/s is above a busy page's ~10 KB/s of events).
+- **Upload.** One `trace` batch of at most 32 KB of events every 2 s while connected (every 500 ms while a batch left events behind: two fingers moving make ~25 KB/s), and at the link's next 100 ms tick after a hello, a dropout or a reset, oldest first: after a reconnect the backlog goes first, so an outage is recorded from the page's side. A batch goes only from that tick and only while the socket holds nothing unsent (`bufferedAmount` 0), so it never queues in front of the moves on a slow link.
 - **Delivery.** A batch stays in the ring until the pong of a ping sent after it: the hub reads a socket's messages in order, so that pong proves the hub logged the batch. A socket lost first sends it again after the next hello; the log may then hold an exact duplicate, which the timeline drops.
 - **Reload.** A reload loses what was not proved. The page keeps nothing in browser storage, because L1–L4 live in memory too.
 

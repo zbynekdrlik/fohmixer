@@ -4,9 +4,12 @@
 //! reached it).
 //!
 //! Its events, each with `ev` and the page clock `t` (ms since the epoch, the
-//! clock of `set` and `ping`): a [`touch`] (down, up, cancel) with the
-//! control's keys, each [`send`] (whether the socket took it) and [`ack`],
-//! each [`ping`] and [`pong`] with its round trip, the socket's transitions
+//! clock of `set` and `ping`): a [`touch`] (down, up, cancel; a toggle's
+//! tap) with the control's keys, each [`send`] (whether the socket took it) and [`ack`],
+//! each [`pong`] with its ping's number and round trip (the ping's own send
+//! time is the pong's minus the round trip; the hub logs every ping that
+//! reaches it, so a page event per ping would only double the volume), the
+//! socket's transitions
 //! ([`sock`]), a frame longer than [`LONG_FRAME_MS`] (the page's main thread
 //! stalled, [`Recorder::frame`]), a visibility change
 //! ([`Recorder::visibility`]), and the dropout watch's `dropout` and `reset`
@@ -15,9 +18,10 @@
 //! the next batch says how many went (an `overflow` event).
 //!
 //! Upload ([`Recorder::upload`]): one batch of at most [`BATCH_BYTES`] every
-//! [`UPLOAD_MS`] while the socket said hello, and at once after a hello, a
-//! dropout or a reset ([`Recorder::soon`]), oldest first, so after a
-//! reconnect the backlog goes first. Only while the socket holds nothing
+//! [`UPLOAD_MS`] while the socket said hello, every [`BACKLOG_MS`] while a
+//! batch left events behind (a backlog drains at up to 64 KB/s), and at once
+//! after a hello, a dropout or a reset ([`Recorder::soon`]), oldest first, so
+//! after a reconnect the backlog goes first. Only while the socket holds nothing
 //! unsent: the recorder never queues in front of the moves on a slow link. A
 //! batch stays in the ring until the pong of a ping sent after it: the hub
 //! reads a socket's messages in order, so that pong proves the batch reached
@@ -40,6 +44,10 @@ pub const MAX_EVENTS: usize = 20_000;
 pub const MAX_BYTES: usize = 2 * 1024 * 1024;
 /// A batch goes at most this often (ms), unless one is due at once.
 pub const UPLOAD_MS: f64 = 2000.0;
+/// While the last batch left events behind, the next one goes this soon
+/// (ms): two fingers moving make ~25 KB/s of events, more than one batch
+/// every 2 s carries.
+pub const BACKLOG_MS: f64 = 500.0;
 /// A batch carries at most this many bytes of event JSON (at least one
 /// event): about 0.13 s of a 2 Mbit/s link, so it never holds the moves up
 /// for long.
@@ -53,8 +61,8 @@ pub fn is_long_frame(gap: f64) -> bool {
     gap > LONG_FRAME_MS
 }
 
-/// A touch's event: `what` (`down`, `up`, `cancel`) on the control writing
-/// `keys`, by pointer `pointer`.
+/// A touch's event: `what` (`down`, `up`, `cancel`; `tap` for a toggle,
+/// which no up follows) on the control writing `keys`, by pointer `pointer`.
 pub fn touch(t: f64, what: &str, keys: &[String], pointer: i32) -> Value {
     json!({"ev": "touch", "t": t, "what": what, "keys": keys, "pointer": pointer})
 }
@@ -97,11 +105,6 @@ pub fn ack(t: f64, item: &AckItem) -> Value {
         event["superseded"] = json!(true);
     }
     event
-}
-
-/// Ping `n` went at `t`.
-pub fn ping(t: f64, n: u32) -> Value {
-    json!({"ev": "ping", "t": t, "n": n})
 }
 
 /// The pong of ping `n` came at `t`, `rtt` ms after the ping.
@@ -154,6 +157,9 @@ pub struct Recorder {
     uploaded: Option<f64>,
     /// A batch goes at once (a hello, a dropout, a reset).
     soon: bool,
+    /// The last batch left events behind: the next one goes after
+    /// [`BACKLOG_MS`].
+    backlog: bool,
     /// The next frame's gap follows a visibility change: it is the time the
     /// page was hidden, not a stall.
     after_visibility: bool,
@@ -196,10 +202,12 @@ impl Recorder {
 
     /// Whether a batch goes at `now`: the socket said hello (`ready`) and
     /// holds nothing unsent (`buffered` bytes), something waits, and it is
-    /// due ([`UPLOAD_MS`] since the last one, or at once).
+    /// due ([`UPLOAD_MS`] since the last one, [`BACKLOG_MS`] while a backlog
+    /// drains, or at once).
     fn due(&self, now: f64, ready: bool, buffered: u32) -> bool {
         let waiting = self.events.len() > self.sent || self.overflow > 0;
-        let time = self.soon || self.uploaded.is_none_or(|at| now - at >= UPLOAD_MS);
+        let every = if self.backlog { BACKLOG_MS } else { UPLOAD_MS };
+        let time = self.soon || self.uploaded.is_none_or(|at| now - at >= every);
         ready && buffered == 0 && waiting && time
     }
 
@@ -246,6 +254,7 @@ impl Recorder {
         self.flights.push_back((proof, count));
         self.uploaded = Some(now);
         self.soon = false;
+        self.backlog = self.events.len() > self.sent;
         Some(text)
     }
 

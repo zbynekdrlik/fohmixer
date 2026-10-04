@@ -35,6 +35,7 @@ fn the_bounds_are_these() {
     assert_eq!(MAX_EVENTS, 20_000);
     assert_eq!(MAX_BYTES, 2_097_152);
     assert_eq!(UPLOAD_MS, 2000.0);
+    assert_eq!(BACKLOG_MS, 500.0);
     assert_eq!(BATCH_BYTES, 32_768);
     assert_eq!(LONG_FRAME_MS, 50.0);
     assert!(!is_long_frame(50.0));
@@ -49,10 +50,6 @@ fn each_event_carries_its_kind_its_page_time_and_its_facts() {
     assert_eq!(
         touch(1_000.5, "down", &keys, 7),
         json!({"ev": "touch", "t": 1_000.5, "what": "down", "keys": keys, "pointer": 7})
-    );
-    assert_eq!(
-        ping(2_000.25, 41),
-        json!({"ev": "ping", "t": 2_000.25, "n": 41})
     );
     assert_eq!(
         pong(2_003.0, 41, 2.75),
@@ -166,6 +163,34 @@ fn the_first_batch_goes_at_once_then_every_2_s_or_at_once_when_asked() {
 }
 
 #[test]
+fn a_backlog_drains_a_batch_every_500_ms_then_every_2_s_again() {
+    let mut r = Recorder::default();
+    r.push(&sized(20_000));
+    r.push(&sized(20_000));
+    r.push(&sized(20_000));
+    assert_eq!(
+        events_of(&r.upload(0.0, true, 0, 1).expect("a batch")).len(),
+        1
+    );
+    assert!(r.backlog, "two events wait");
+    assert_eq!(r.upload(500.0_f64.next_down(), true, 0, 2), None);
+    assert_eq!(
+        events_of(&r.upload(500.0, true, 0, 2).expect("500 ms on")).len(),
+        1
+    );
+    assert_eq!(r.upload(999.0, true, 7, 3), None, "the socket still sends");
+    assert_eq!(
+        events_of(&r.upload(1_000.0, true, 0, 3).expect("the last")).len(),
+        1
+    );
+    assert!(!r.backlog, "nothing left behind");
+    r.push(&event(4));
+    assert_eq!(r.upload(1_500.0, true, 0, 4), None, "no backlog: 2 s again");
+    assert_eq!(r.upload(3_000.0_f64.next_down(), true, 0, 4), None);
+    assert_eq!(ts(&r.upload(3_000.0, true, 0, 4).expect("2 s on")), [4]);
+}
+
+#[test]
 fn a_batch_leaves_the_ring_on_the_pong_of_the_ping_after_it() {
     let mut r = Recorder::default();
     for i in 1..=3 {
@@ -182,6 +207,7 @@ fn a_batch_leaves_the_ring_on_the_pong_of_the_ping_after_it() {
     assert_eq!(r.len(), 4, "a pong of an earlier ping proves nothing");
     r.proved(10);
     assert_eq!(r.len(), 1, "the first batch is logged");
+    assert!(!r.is_empty());
     assert_eq!(r.bytes, event(4).to_string().len());
     r.proved(12);
     assert!(r.is_empty());
@@ -306,8 +332,17 @@ fn the_ring_keeps_2_mb_and_never_drops_a_batch_on_its_way() {
         "the note left with its batch"
     );
     // Only the drops are waiting: they still go.
-    let mut r = Recorder::default();
-    r.overflow = 3;
+    let mut r = Recorder {
+        events: VecDeque::new(),
+        bytes: 0,
+        sent: 0,
+        flights: VecDeque::new(),
+        overflow: 3,
+        uploaded: None,
+        soon: false,
+        backlog: false,
+        after_visibility: false,
+    };
     let note = r.upload(2.0, true, 0, 1).expect("the drops");
     assert_eq!(
         events_of(&note),

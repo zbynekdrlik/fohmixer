@@ -317,9 +317,6 @@ impl LiveStore {
                     Tick::Wait => {}
                     Tick::Ping => {
                         if let Some(ping) = &ping {
-                            if let ClientMsg::Ping { n, t, .. } = ping {
-                                diag::record(&trace::ping(*t, *n));
-                            }
                             self.send(ping);
                         }
                     }

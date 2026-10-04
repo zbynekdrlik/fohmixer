@@ -91,28 +91,44 @@ def overlaps(start, end, low, high):
     return start <= high and end > low
 
 
+def _names(touch, key):
+    keys = touch.data.get("keys")
+    return isinstance(keys, list) and key in keys
+
+
 def gestures(touches, key, end):
-    """The gestures of ``key`` (on the hub's clock): from a touch ``down``
-    whose ``keys`` hold it to the next ``up`` or ``cancel`` of its pointer (the
-    window's ``end`` without one), extended by ``GESTURE_TAIL_MS``. None when
-    no touch names the key: then two points ``UNTOUCHED_GESTURE_MS`` apart at
-    most are one gesture."""
+    """The gestures of ``key`` (on the hub's clock) from the touches naming
+    it. A ``tap`` (mute, solo and stage: no lift follows) lasts
+    ``GESTURE_TAIL_MS``. A ``down`` lasts until the ``up`` or ``cancel`` of its
+    pointer plus ``GESTURE_TAIL_MS``; with no lift before the next down naming
+    the key, until that down, and with none before the window's ``end``, until
+    the end (a fader held past the window). None when no touch names the key:
+    then two points ``UNTOUCHED_GESTURE_MS`` apart at most are one gesture."""
     named = False
     spans = []
     for index, touch in enumerate(touches):
-        keys = touch.data.get("keys")
-        if not isinstance(keys, list) or key not in keys:
+        if not _names(touch, key):
             continue
         named = True
-        if touch.data.get("what") != "down":
+        what = touch.data.get("what")
+        if what == "tap":
+            spans.append((touch.hub, touch.hub + GESTURE_TAIL_MS))
+            continue
+        if what != "down":
             continue
         pointer = touch.data.get("pointer")
         finish = end
         for later in touches[index + 1 :]:
-            if later.data.get("pointer") == pointer and later.data.get("what") in ("up", "cancel"):
+            if later.hub > end:
+                break
+            lift = later.data.get("what") in ("up", "cancel")
+            if lift and later.data.get("pointer") == pointer:
+                finish = later.hub + GESTURE_TAIL_MS
+                break
+            if later.data.get("what") == "down" and _names(later, key):
                 finish = later.hub
                 break
-        spans.append((touch.hub, finish + GESTURE_TAIL_MS))
+        spans.append((touch.hub, finish))
     return spans if named else None
 
 
@@ -252,7 +268,8 @@ class Timeline:
                 kinds[record.get("ev")].append(record)
         in_window = [r for group in kinds.values() for r in group if start <= r["ts"] <= end]
         self.records = len(in_window)
-        self.pages = len(
+        # Distinct socket numbers: a tablet that reconnects counts twice.
+        self.sockets = len(
             {
                 r.get("client")
                 for r in in_window
@@ -530,12 +547,11 @@ def summary(timeline):
 
     return [
         ("records", str(timeline.records)),
-        ("pages", str(timeline.pages)),
+        ("sockets", str(timeline.sockets)),
         ("confirmation_n", str(len(latencies))),
         ("confirmation_p50_ms", ms_text(percentile(latencies, 0.50))),
         ("confirmation_p90_ms", ms_text(percentile(latencies, 0.90))),
         ("confirmation_p99_ms", ms_text(percentile(latencies, 0.99))),
-        ("confirmation_max_ms", ms_text(worst and worst[0])),
         ("worst_confirmation_ms", ms_text(worst and worst[0])),
         ("worst_confirmation_at", local_text(worst[1]) if worst else "n/a"),
         ("worst_confirmation_key", f"key#{key_hash(worst[2])}" if worst else "n/a"),

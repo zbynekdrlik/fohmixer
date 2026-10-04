@@ -62,8 +62,9 @@ pub fn key_of(spec: &SubSpec) -> String {
     set_key(&spec.instance, &spec.target, &spec.prop)
 }
 
-/// Records a touch (`down`, `up`, `cancel`) on the control writing `keys`,
-/// by pointer `pointer`, in the page's flight recorder (#43, PR C).
+/// Records a touch (`down`, `up`, `cancel`, or a toggle's `tap`) on the
+/// control writing `keys`, by pointer `pointer`, in the page's flight
+/// recorder (#43, PR C).
 pub fn trace_touch(what: &str, keys: &[String], pointer: i32) {
     crate::diag::record(&crate::diag::trace::touch(
         dom::epoch_now(),

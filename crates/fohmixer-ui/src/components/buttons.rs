@@ -93,7 +93,7 @@ pub fn MuteView(
             return;
         }
         ev.prevent_default();
-        let _ = keys.try_with_value(|k| trace_touch("down", k, ev.pointer_id()));
+        let _ = keys.try_with_value(|k| trace_touch("tap", k, ev.pointer_id()));
         let action = guard
             .try_update_value(|g| g.on_tap(guarded, dom::now()))
             .unwrap_or(GuardAction::Arm);
@@ -166,7 +166,7 @@ pub fn SoloView(binding: Binding, label: Option<String>) -> impl IntoView {
     let failed = RwSignal::new(false);
     let on_down = move |ev: web_sys::PointerEvent| {
         ev.prevent_default();
-        let _ = keys.try_with_value(|k| trace_touch("down", k, ev.pointer_id()));
+        let _ = keys.try_with_value(|k| trace_touch("tap", k, ev.pointer_id()));
         let _ = spec.try_with_value(|s| {
             if let Some(s) = s {
                 toggle_flag(store, s, slot, failed);
@@ -214,7 +214,7 @@ pub fn StageMicsView(binding: Binding, label: Option<String>) -> impl IntoView {
     let failed = RwSignal::new(false);
     let on_down = move |ev: web_sys::PointerEvent| {
         ev.prevent_default();
-        let _ = keys.try_with_value(|k| trace_touch("down", k, ev.pointer_id()));
+        let _ = keys.try_with_value(|k| trace_touch("tap", k, ev.pointer_id()));
         let _ = spec.try_with_value(|s| {
             if let Some(s) = s {
                 toggle_flag(store, s, slot, failed);

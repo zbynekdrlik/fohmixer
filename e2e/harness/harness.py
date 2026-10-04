@@ -58,7 +58,6 @@ Every process is stopped with SIGTERM and a bounded wait (spec I7). Prints
 
 import argparse
 import base64
-import datetime
 import json
 import math
 import os
@@ -77,6 +76,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import impair
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# The forensics tool's own local time text (#43): the window the harness asks
+# for is the one the tool reads, so the two cannot drift apart.
+sys.path.insert(0, os.path.join(REPO, "tools", "forensics"))
+from timeline_read import local_text  # noqa: E402
+
 # The key id of the test Access key.
 ACCESS_KID = "e2e-kid"
 # The route of the test Access key set.
@@ -194,12 +198,6 @@ def block_on(body):
     return on
 
 
-def local_time(ms):
-    """``YYYY-MM-DD HH:MM:SS.fff`` of epoch ms in local time (timeline's ``--from``)."""
-    moment = datetime.datetime.fromtimestamp(ms / 1000)
-    return moment.strftime("%Y-%m-%d %H:%M:%S.") + f"{moment.microsecond // 1000:03d}"
-
-
 def timeline_window(body):
     """The ``from_ms``, ``to_ms`` and ``key`` of a ``/forensics/timeline``
     body: finite epoch ms, and a text or nothing."""
@@ -228,7 +226,7 @@ def forensics_timeline(data, body):
     with tempfile.TemporaryDirectory(prefix="fohmixer-timeline-") as folder:
         out = os.path.join(folder, "report.html")
         command = [sys.executable, TIMELINE, "--events", os.path.join(data, "logs")]
-        command += ["--from", local_time(start), "--to", local_time(end)]
+        command += ["--from", local_text(start), "--to", local_text(end)]
         if key is not None:
             command += ["--key", key]
         command += ["--out", out]
