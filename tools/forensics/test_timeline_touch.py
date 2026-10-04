@@ -175,27 +175,29 @@ class FirstTouch(ReportCase):
 
 
 class Stutter(ReportCase):
-    def drag(self, log, steps, moves=None):
+    def drag(self, log, steps, gaps=None):
+        """A drag of Vox 1 from 0.5: ``steps`` as in ``frames``, a frame every
+        16 ms except before the frames ``gaps`` names (frame -> ms)."""
         log.pings(7, BASE, BASE + 4000)
         p0 = BASE + 1000 - OFFSET
         records, sends = frames(VOX, 4, p0 + 50, 0.5, steps)
-        for record, events in zip(records, moves or [], strict=False):
-            record["e"] = events
+        t = p0 + 50
+        for i, record in enumerate(records):
+            t += (gaps or {}).get(i, 16.0) if i else 0.0
+            record["t"] = t
+        sends = [(r["t"] + 0.5, value_at(r["s"])) for r in records]
         log.drag(VOX, 7, sends)
         first_set(log, VOX)["live_before"] = value_at(0.5)
-        events = [down(p0, VOX, 4, start=0.5, live=0.5), *records, lift(p0 + 2000, VOX, 4)]
-        log.trace(BASE + 3000, 7, events)
-        return records
+        events = [down(p0, VOX, 4, start=0.5, live=0.5), *records, lift(t + 20, VOX, 4)]
+        log.trace(BASE + 3500, 7, events)
 
     def test_a_gap_between_moves_while_the_finger_travelled_is_a_move_gap(self):
+        # The moves stop for 180 ms while the finger goes on 30 px (a
+        # stutter), and later for 300 ms while it goes 1 px (a rest).
         log = Log()
-        steps = [(i, round(0.5 + i / 300.0, 5)) for i in range(1, 31)]
-        moves = [[[-3.0, 500.0 - px]] for px, _ in steps]
-        # Frame 10's move came 180 ms after frame 9's, 30 px further; frame
-        # 20's 300 ms after frame 19's, but only 1 px further (a rest).
-        moves[10] = [[-3.0 + 180.0 - 16.0, 500.0 - 40.0]]
-        moves[20] = [[-3.0 + 300.0 - 16.0, 500.0 - 21.0]]
-        self.drag(log, steps, moves)
+        px = [i + 1 for i in range(10)] + [40 + i for i in range(10)] + [50 + i for i in range(10)]
+        steps = [(p, round(0.5 + p / 300.0, 5)) for p in px]
+        self.drag(log, steps, gaps={10: 180.0, 20: 300.0})
         summary, page, _ = self.report(log, BASE, BASE + 5000)
         self.assertEqual(summary["move_gaps"], "1")
         self.assertEqual(summary["move_gap_max_ms"], "180.0")
@@ -231,7 +233,7 @@ class NewRecords(ReportCase):
         log.drag(VOX, 7, sends)
         kept = {
             "ev": "send",
-            "t": p0 + 300,
+            "t": p0 + 760,
             "seq": 99,
             "key": VOX,
             "value": 0.51,
@@ -251,7 +253,7 @@ class NewRecords(ReportCase):
         self.assertEqual(summary["rtt_page_p50_ms"], "5.0")
         self.assertEqual(summary["rtt_page_max_ms"], "40.0")
         (gap,) = self.gaps(page, "send", VOX)
-        self.assertEqual(gap["data-ms"], "416.0", "the hub's sets are the page's sends")
+        self.assertEqual(gap["data-ms"], "400.0", "the hub's sets are the page's sends")
         self.assertEqual(len(page.of_class("unsent")), 1, "the write the socket did not take")
 
 

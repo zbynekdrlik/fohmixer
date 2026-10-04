@@ -10,7 +10,7 @@ mod support;
 
 use std::time::Duration;
 
-use fohmixer_proto::client::{AckItem, ClientMsg, ServerMsg, ValueItem, set_key};
+use fohmixer_proto::client::{AckItem, ClientMsg, ValueItem, set_key};
 use serde_json::{Value, json};
 use support::{Client, Host, TestHub, runtime, serial};
 
@@ -247,13 +247,9 @@ fn a_touchs_first_set_records_lives_value_before_it() {
         // Live at 0.5, the value the hub pushes to pages (subscribed with its
         // display string, as a strip's volume).
         a.set("band", VOLUME, "value", json!(0.5)).await;
-        let sub = match a.sub("band", VOLUME, "value", true).await {
-            ServerMsg::Subbed { sub, value, .. } => {
-                assert_eq!(value, Some(json!(0.5)));
-                sub
-            }
-            other => panic!("not subbed: {other:?}"),
-        };
+        // The first subscriber's value comes after its `subbed`.
+        let sub = a.sub_key("band", VOLUME, "value", true).await;
+        a.value_until(&sub, SECS_5, value_is(0.5)).await;
         // A touch: its first set and one 100 ms later.
         write_at(&mut a, VOLUME, 0.6, 1, 10_000.0, false).await;
         write_at(&mut a, VOLUME, 0.62, 2, 10_100.0, false).await;
