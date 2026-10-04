@@ -28,8 +28,11 @@ lines whose ``"ts"`` is in range. Records from 60 s before ``--from``
 (offsets, busy episodes that started before) to ``--to`` count, a page's
 ``trace`` up to 30 min after ``--to`` too: a batch uploaded after the window
 brings events from inside it (the page's recorder drains a full backlog in
-~95 s, and waits for the next socket while the link is down). A line that
-does not parse (a write in progress) is skipped and counted.
+~95 s, and waits for the next socket while the link is down). So do the
+``ping``s of those 30 min, for the page clocks only (a trace on the next
+socket has only that socket's pings); no other line there is parsed. A
+line that does not parse (a write in progress) is skipped and counted; a
+day file only those 30 min reach is not noted when it is missing.
 
 Page time maps to hub time as ``t + offset``: the ``offset_ms`` of the ping of
 the trace's own client nearest in time to the trace record, else the nearest

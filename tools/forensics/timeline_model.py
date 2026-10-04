@@ -13,7 +13,7 @@ import json
 import math
 
 import timeline_touch
-from timeline_read import is_volume, key_hash, local_text, number, value2db
+from timeline_read import TAIL_KINDS, is_volume, key_hash, local_text, number, value2db
 
 # A gap between two points of a control's row that is marked, and the bound
 # of every measured cause (ms).
@@ -31,7 +31,8 @@ LEAD_MS = 60000
 # inside the window (ms). The page's recorder holds a drag's events until the
 # fingers rest and drains its full 768 KB backlog in ~95 s (#43 PR E); while
 # the link is down they wait for the next socket, and a hidden page uploads
-# once a second. Only lines whose ts is in range are parsed.
+# once a second. Pings count that long too (the next socket's clock); they
+# are read for the offsets only. Only traces and pings are parsed there.
 TRACE_TAIL_MS = 30 * 60 * 1000
 # A change between two applied volumes past this is a jump (dB).
 JUMP_DB = 3.0
@@ -326,7 +327,7 @@ class Timeline:
             )
         kinds = collections.defaultdict(list)
         for record in sorted(records, key=lambda r: r["ts"]):
-            last = end + TRACE_TAIL_MS if record.get("ev") == "trace" else end
+            last = end + TRACE_TAIL_MS if record.get("ev") in TAIL_KINDS else end
             if lead <= record["ts"] <= last:
                 kinds[record.get("ev")].append(record)
         in_window = [r for group in kinds.values() for r in group if start <= r["ts"] <= end]
@@ -770,15 +771,22 @@ def no_data_text(span):
     kind, n, start, to = span.info
     offset = span.end - to
     if kind == "frame":
+        first, last = local_text(start + offset), local_text(to + offset)
+        stamped = f"at {first}" if first == last else f"from {first} to {last}"
         return (
-            f"the page flight recorder dropped {n} long frames stamped from "
-            f"{local_text(start + offset)} to {local_text(to + offset)}: no data of page "
-            f"stalls from {local_text(span.start)} to {local_text(span.end)}"
+            f"the page flight recorder dropped {counted(n, 'long frame')} stamped "
+            f"{stamped}: no data of page stalls from {local_text(span.start)} to "
+            f"{local_text(span.end)}"
         )
     return (
-        f"the page flight recorder dropped {n} {kind} events from "
+        f"the page flight recorder dropped {counted(n, kind + ' event')} from "
         f"{local_text(span.start)} to {local_text(span.end)}: no data of that kind there"
     )
+
+
+def counted(n, noun):
+    """``n`` and ``noun``, plural unless ``n`` is 1."""
+    return f"{n} {noun}" if n == 1 else f"{n} {noun}s"
 
 
 def intent_count(timeline, state):
