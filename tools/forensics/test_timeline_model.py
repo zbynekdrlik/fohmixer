@@ -3,6 +3,7 @@ jumps, percentiles, gestures and gaps, busy episodes."""
 
 import math
 import os
+import re
 import sys
 import unittest
 
@@ -307,6 +308,24 @@ class TouchSets(unittest.TestCase):
         self.assertFalse(model.names_set(frames, {"seq": 9, "t": 1_016.0}), "another seq")
         self.assertFalse(model.names_set(frames, {"seq": 8}), "no time")
         self.assertFalse(model.names_set([{"q": 8}], {"seq": 8, "t": 1_016.0}), "a frame without t")
+
+
+class PageRecorder(unittest.TestCase):
+    """The page's recorder constants the timeline relies on (#43 PR E): read
+    from ``crates/fohmixer-ui/src/diag/trace.rs`` so the two cannot drift."""
+
+    def test_the_long_frame_threshold_and_the_backlog_drain_match_the_page(self):
+        path = os.path.join(HERE, "..", "..", "crates", "fohmixer-ui", "src", "diag", "trace.rs")
+        with open(path, encoding="utf-8") as f:
+            source = f.read()
+        long_frame = re.search(r"pub const LONG_FRAME_MS: f64 = ([0-9.]+);", source)
+        backlog = re.search(r"pub const BACKLOG_BYTES: usize = (\d+) \* 1024;", source)
+        rate = re.search(r"pub const RATE_BYTES_PER_S: f64 = ([0-9_.]+);", source)
+        self.assertIsNotNone(long_frame and backlog and rate, "the constants are where they were")
+        self.assertEqual(float(long_frame.group(1)), model.LONG_FRAME_MS)
+        self.assertEqual(model.INSIDE_STALL_MS, model.LONG_FRAME_MS / 2)
+        drain_ms = int(backlog.group(1)) * 1024 / float(rate.group(1).replace("_", "")) * 1000
+        self.assertLess(drain_ms, model.TRACE_TAIL_MS, "a full backlog drains inside the tail")
 
 
 if __name__ == "__main__":

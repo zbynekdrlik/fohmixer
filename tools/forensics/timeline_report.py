@@ -8,7 +8,7 @@ import html
 import json
 import math
 
-from timeline_model import ROWS, Span, ms_text
+from timeline_model import ROWS, Span, ms_text, no_data_text
 from timeline_read import key_hash, key_scale, local_text, number, to_live, utc_text, value2db
 
 # The report's geometry (px).
@@ -200,10 +200,7 @@ def _link_lane(t, axis, y):
         parts.append(_band(axis, f, y + LINK_H - 12, 12, "frame", tip, data_start=num(f.start)))
     for d in t.no_data:
         kind, n = d.info[0], d.info[1]
-        tip = (
-            f"no data: the page's recorder dropped {n} {kind} events from "
-            f"{local_text(d.start)} to {local_text(d.end)}"
-        )
+        tip = f"no data: {no_data_text(d)}"
         parts.append(
             _band(
                 axis,

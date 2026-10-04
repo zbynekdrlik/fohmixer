@@ -29,8 +29,10 @@ UNTOUCHED_GESTURE_MS = 10000.0
 LEAD_MS = 60000
 # Trace records up to this long after --to count: their page events can fall
 # inside the window (ms). The page's recorder holds a drag's events until the
-# fingers rest and drains its full 768 KB backlog in ~95 s (#43 PR E).
-TRACE_TAIL_MS = 120000
+# fingers rest and drains its full 768 KB backlog in ~95 s (#43 PR E); while
+# the link is down they wait for the next socket, and a hidden page uploads
+# once a second. Only lines whose ts is in range are parsed.
+TRACE_TAIL_MS = 30 * 60 * 1000
 # A change between two applied volumes past this is a jump (dB).
 JUMP_DB = 3.0
 # The page records a frame longer than this (ms, ``diag/trace.rs``
@@ -459,11 +461,7 @@ class Timeline:
                     continue
                 self.no_data.append(span)
                 self.recorder_dropped += int(n)
-                self.notes.append(
-                    f"the page flight recorder dropped {int(n)} {kind} events from "
-                    f"{local_text(span.start)} to {local_text(span.end)}: no data of that "
-                    "kind there"
-                )
+                self.notes.append(no_data_text(span))
             elif self.in_window(e.hub):
                 self.recorder_dropped += int(n)
                 self.notes.append(
@@ -763,6 +761,24 @@ class Timeline:
 def ms_text(value):
     """Milliseconds with one decimal, ``n/a`` for none."""
     return "n/a" if value is None else f"{value:.1f}"
+
+
+def no_data_text(span):
+    """What a dropped span (``NoData``) means, for the notes and the band's
+    tooltip: for long frames the stamps the page dropped and the stalls they
+    can stand for (from ``LONG_FRAME_MS`` before the first stamp)."""
+    kind, n, start, to = span.info
+    offset = span.end - to
+    if kind == "frame":
+        return (
+            f"the page flight recorder dropped {n} long frames stamped from "
+            f"{local_text(start + offset)} to {local_text(to + offset)}: no data of page "
+            f"stalls from {local_text(span.start)} to {local_text(span.end)}"
+        )
+    return (
+        f"the page flight recorder dropped {n} {kind} events from "
+        f"{local_text(span.start)} to {local_text(span.end)}: no data of that kind there"
+    )
 
 
 def intent_count(timeline, state):

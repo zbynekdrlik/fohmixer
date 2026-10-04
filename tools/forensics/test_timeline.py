@@ -568,6 +568,8 @@ class Causes(ReportCase):
         # before its stamp.
         (band,) = page.of_class("nodata")
         self.assertEqual(band["data-kind"], "frame")
+        self.assertIn("dropped 1 long frames stamped from", page.text)
+        self.assertIn("no data of page stalls from", page.text)
         self.assertAlmostEqual(float(band["data-start"]), p0 + 112 - 50 + OFFSET, delta=0.05)
 
     def test_a_window_ending_before_the_drop_note_still_reads_its_span(self):
