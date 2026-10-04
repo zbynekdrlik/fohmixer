@@ -1,5 +1,5 @@
-/* fohmixer: the look of a fader's open write (#43, design note §4.3), kept
-   apart from style.css (over its size budget). Loaded after it. */
+/* fohmixer: the look of a fader's open write (#43, design note §4.3),
+   linked last. */
 
 /* A write the hub has not confirmed (#43, design note §4.3): the cap keeps
    the engineer's value; an unconfirmed release (1 s without an ack) is

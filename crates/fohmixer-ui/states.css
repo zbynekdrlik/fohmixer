@@ -1,0 +1,33 @@
+/* fohmixer: the states every control shares (split from style.css, #43;
+   linked after the controls' stylesheets, so a state wins over a look). */
+
+/* --- states --- */
+
+[aria-disabled="true"] {
+    opacity: 0.35;
+    cursor: not-allowed;
+}
+
+.failed {
+    box-shadow: inset 0 0 0 3px var(--danger) !important;
+}
+
+/* A binding that does not resolve (I5): red, whatever the control. */
+[data-binding="unresolved"] {
+    opacity: 1;
+    background-color: var(--danger) !important;
+}
+
+/* An unresolved TechAlert binding: a red frame, never a red wash. */
+.alert-wash[data-binding="unresolved"] {
+    visibility: visible !important;
+    background: none !important;
+    box-shadow: inset 0 0 0 6px var(--danger);
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .mute.armed,
+    .btn.armed {
+        animation: none;
+    }
+}

@@ -1,0 +1,104 @@
+/* fohmixer: the rail buttons and TechAlert's wash (split from style.css,
+   #43; linked after it). */
+
+/* --- rail buttons (stage, STAGE AUT, solos, the former MIDI toggles,
+   TechAlert, REFRESH ALL) --- */
+
+.btn {
+    --c: var(--accent);
+    position: relative;
+    display: grid;
+    align-content: center;
+    min-height: 44px;
+    padding: 6px 8px 6px 20px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--panel);
+    color: var(--muted);
+    font: 700 11.5px/1.15 var(--ui);
+    letter-spacing: 0.6px;
+    text-transform: uppercase;
+    text-align: left;
+    overflow-wrap: anywhere;
+    cursor: pointer;
+    touch-action: none;
+}
+
+/* A rail button's words never break (#21: "TECHALER" / "T"): its font
+   follows its longest word `--n` (written once by the component) so the
+   word fits the rail button's 65 px text width (112 - 1 - 16 - 2 - 28: the
+   rail's border and padding, the button's border and padding): the
+   face's capitals take ~0.62 em each (0.65 counted) and 0.6 px spacing;
+   at most 11.5 px. The break anywhere stays the last guard for a word of
+   wide letters (W, M). */
+.rail .btn-text {
+    font-size: min(11.5px, calc((65px - var(--n, 5) * 0.6px) / (var(--n, 5) * 0.65)));
+}
+
+.btn::before {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 8px;
+    width: 6px;
+    height: 6px;
+    margin-top: -3px;
+    border-radius: 50%;
+    background: var(--faint);
+}
+
+.btn.on,
+.param-toggle[data-state="on"] {
+    border-color: color-mix(in srgb, var(--c) 55%, transparent);
+    background: color-mix(in srgb, var(--c) 18%, var(--panel));
+    color: var(--text);
+}
+
+.btn.on::before,
+.param-toggle[data-state="on"]::before {
+    background: var(--c);
+    box-shadow: 0 0 8px var(--c);
+}
+
+.param-toggle[data-state="mixed"] {
+    background: linear-gradient(135deg, color-mix(in srgb, var(--c) 18%, var(--panel)) 50%, var(--panel) 50%);
+    color: var(--text);
+}
+
+.stage-mics { --c: #4fa3ff; }
+.hub-toggle { --c: #6d86ff; }
+.solo { --c: var(--solo); }
+.param-toggle { --c: #ff9f43; }
+.alert-toggle { --c: var(--mute); }
+
+/* A guarded button's first tap (TechAlert): it arms and pulses. */
+.btn.armed {
+    outline: 2px solid var(--solo);
+    outline-offset: 1px;
+    animation: arm 0.5s ease-out infinite;
+}
+
+.refresh {
+    padding-left: 8px;
+    border-color: var(--accent-dim);
+    color: var(--accent);
+    text-align: center;
+}
+
+.refresh::before {
+    display: none;
+}
+
+.refresh.flash {
+    background: var(--m-yellow);
+    color: #10101a;
+}
+
+/* TechAlert: the red wash over the whole surface, blinking while unmuted. */
+.alert-wash {
+    position: fixed;
+    inset: 0;
+    z-index: 50;
+    background: rgba(255, 45, 70, 0.14);
+    pointer-events: none;
+}
