@@ -199,7 +199,7 @@ The detection is a pure state machine (`behave/link.rs`, `DropoutWatch`, since P
   - no set went onto the socket since the previous tick: while a finger moves a fader the recorder waits, and its events go when the fingers rest, so a batch never sits in front of the next frame's set;
   - the socket holds at most 1 KB unsent (a ping or two still leaving never holds it, a backed-up socket does);
   - the rate allows it: each batch waits for the previous one's bytes at 10 KB/s (a full batch 97.7 ms: the next tick, with a margin for a coarse clock), a hard cap far below a slow Wi-Fi link;
-  - something waits and it is due: a full batch (events that fill a message) as soon as the cap lets it, smaller amounts every 2 s, and the first batch after a hello, a dropout or a reset as soon as the cap lets it.
+  - something waits and it is due: a full batch (events that fill a message with their commas and the envelope) as soon as the cap lets it, smaller amounts every 2 s, and the first batch after a hello, a dropout or a reset as soon as the cap lets it.
   
   Oldest first: after a reconnect the backlog goes first, so an outage is recorded from the page's side.
 - **Bounds.** Past 48 KB of unsent events (about 5 s at the cap) the oldest non-essential unsent events go, counted per kind in the next batch's `overflow`, so the newest event reaches the hub within seconds of the fingers resting. Essential, never dropped by that bound: touches, dropouts, resets, socket transitions, visibility, long frames, the `overflow` notes, a write the socket did not take, and a touch's first 8 `mv` (what the first-touch diagnosis needs). The ring's hard bounds stay as the last guard: 20 000 events and 2 MB of their JSON; past either the oldest unsent event goes, whatever it is.
@@ -257,7 +257,7 @@ RED first, against today's code:
 9. PR D, the touch diagnosis and the recorder's load:
    - pure tests: the recorder's events, its gate (a ping in the buffer never holds a batch; a set since the last tick does), 1 000-byte batches, the 10 KB/s cap, the 48 KB backlog dropping the oldest non-essential events per kind, the round-trip summaries; a touch's start and a frame's moves (`moves.rs`); `FaderCtl::press` / `PanCtl::press`;
    - hub: the setter's touch starts (`starts_touch`, 500 ms of the page's clock), `Subs::live_value`, `set_fields`' `live_before`, and on SimLive a touch's first set recording Live's value before it (`tests/setter.rs`);
-   - E2E, `recorder.spec.ts`: through the impair proxy's rate limit (24 KB/s, a slow link) two drags back to back with the recorder's frames dropped and then kept: the sets' one-way delay with the recorder is that of without it (median + 20 ms, p90 + 30 ms), and the second drag's lift reaches the event log within 6 s;
+   - E2E, `recorder.spec.ts`: through the impair proxy's rate limit (24 KB/s, a slow link) two drags back to back with the recorder's frames dropped and then kept: the sets' one-way delay with the recorder is that of without it (median + 20 ms, p90 + 30 ms), at most 2 `trace` records reach the hub between a drag's first and last set (the drag's own events fill at least 4 KB, so without the gate at least 3 batches would go inside it), and the second drag's lift reaches the event log within 6 s;
    - E2E, `forensics.spec.ts`: the touch start, the moves and `live_before` in the event log, and a touch made while the link stalled and Live moved meanwhile is a `stale` first-touch jump in the timeline;
    - the timeline's unit tests on synthetic logs (`test_timeline_touch.py`).
 
