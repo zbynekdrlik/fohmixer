@@ -580,16 +580,80 @@ class Causes(ReportCase):
         self.assertEqual(causes, ["move", "move", "no data", "move", "move"])
         self.assertEqual(summary["no_data_spans"], "1")
 
-    def test_a_trace_uploaded_up_to_two_minutes_after_the_window_counts(self):
+    def test_a_trace_uploaded_up_to_30_minutes_after_the_window_counts(self):
         # A full recorder backlog drains in about 95 s once the fingers rest
-        # (design note §5.2): a long frame inside the window can reach the
-        # event log 90 s after its end.
+        # (design note §5.2), but while the link is down the page's events
+        # wait for the next socket, and a hidden page uploads once a second:
+        # a long frame inside the window can reach the event log minutes
+        # after its end.
         log = Log()
         log.pings(7, BASE, BASE + 3000)
         p0 = BASE + 1000 - OFFSET
-        log.trace(BASE + 5000 + 90000, 7, [{"ev": "frame", "t": p0 + 500, "ms": 120.0}])
+        log.trace(BASE + 5000 + 300000, 7, [{"ev": "frame", "t": p0 + 500, "ms": 120.0}])
         _, page, _ = self.report(log, BASE, BASE + 5000)
         self.assertEqual(len(page.of_class("frame")), 1)
+
+    def alternating_drag(self, log, times, latency=3.0, lost_set=None):
+        """The page's sends at ``times`` (page clock), the value jumping
+        between 0.3 and 0.9 every send (every step a jump), each set
+        ``latency`` ms on the way; ``lost_set``: a seq the log lost."""
+        log.pings(7, BASE, BASE + 3000)
+        sends = [(t, 0.3 if i % 2 == 0 else 0.9) for i, t in enumerate(times)]
+        events = log.drag(VOX, 7, sends, arrive=lambda sent: sent + latency)
+        if lost_set is not None:
+            log.records = [
+                r for r in log.records if not (r["ev"] == "set" and r["seq"] == lost_set)
+            ]
+        return events
+
+    def dropped_frames(self, p0, first, last, n):
+        return dict(
+            {"ev": "overflow", "t": p0 + 900, "n": n, "kinds": {"frame": n}},
+            **{"from": p0 + first, "to": p0 + last},
+        )
+
+    def test_dropped_long_frames_cover_every_jump_from_their_first_stall_to_their_last(self):
+        # Two dropped long frames, stamped at +112 and +224, each the end of
+        # a stall with no send in it: every jump from the one into the first
+        # stamp to the one into the last is no data.
+        log = Log()
+        p0 = BASE + 1000 - OFFSET
+        times = [p0 + d for d in (0, 16, 32, 112, 128, 144, 224, 240)]
+        events = self.alternating_drag(log, times)
+        events.append(self.dropped_frames(p0, 112, 224, 2))
+        log.trace(BASE + 3000, 7, events)
+        _, page, _ = self.report(log, BASE, BASE + 5000)
+        causes = [cause for cause, _ in self.jumps(page)]
+        expected = ["move", "move"] + ["no data"] * 4 + ["move"]
+        self.assertEqual(causes, expected)
+
+    def test_a_dropped_long_frame_is_matched_inside_its_shortest_stall(self):
+        # A 60 ms stall (the gap from the send at +52 to +112): the dropped
+        # frame stamped at +112 is the jump into that send, not the one
+        # before the stall.
+        log = Log()
+        p0 = BASE + 1000 - OFFSET
+        events = self.alternating_drag(log, [p0 + d for d in (0, 16, 32, 52, 112, 128)])
+        events.append(self.dropped_frames(p0, 112, 112, 1))
+        log.trace(BASE + 3000, 7, events)
+        _, page, _ = self.report(log, BASE, BASE + 5000)
+        causes = [cause for cause, _ in self.jumps(page)]
+        self.assertEqual(causes, ["move", "move", "move", "no data", "move"])
+
+    def test_without_its_sets_a_dropped_long_frame_covers_its_whole_possible_stall(self):
+        # The set at +32 was lost and each set took 30 ms: Live applied the
+        # value of +16 at +56, the lost one at +72. A dropped long frame
+        # stamped at +112 was a stall of at least 50 ms, from +62 on: the
+        # jumps into and out of the lost set meet it on Live's applied times.
+        log = Log()
+        p0 = BASE + 1000 - OFFSET
+        times = [p0 + d for d in (0, 16, 32, 112, 128, 144)]
+        events = self.alternating_drag(log, times, latency=30.0, lost_set=3)
+        events.append(self.dropped_frames(p0, 112, 112, 1))
+        log.trace(BASE + 3000, 7, events)
+        _, page, _ = self.report(log, BASE, BASE + 5000)
+        causes = [cause for cause, _ in self.jumps(page)]
+        self.assertEqual(causes, ["move", "no data", "no data", "move", "move"])
 
     def test_dropped_moves_or_round_trips_say_nothing_of_a_jumps_cause(self):
         # The same fast move with spans of dropped moves and round-trip
