@@ -47,13 +47,20 @@ function drag(fader: Locator, pointerId: number, px: number): Promise<number> {
   return dispatchPointer(fader, steps, pointerId);
 }
 
-/** Two drags back to back (the second starts 50 ms after the first one's lift): the page clock before and after. */
-async function twoDrags(page: Page, fader: Locator, pointer: number): Promise<{ from: number; to: number }> {
+/** Two drags back to back (the second starts 50 ms after the first one's lift): the page clock before, between and after. */
+async function twoDrags(page: Page, fader: Locator, pointer: number): Promise<{ from: number; between: number; to: number }> {
   const from = await pageNow(page);
   await drag(fader, pointer, 75);
+  const between = await pageNow(page);
   await page.waitForTimeout(50);
   await drag(fader, pointer + 1, -75);
-  return { from, to: await pageNow(page) };
+  return { from, between, to: await pageNow(page) };
+}
+
+/** The hub's arrival (`hub_ms`) of the first and last of the fader's sets the page sent from `from` to `to`. */
+function arrivals(events: any[], from: number, to: number): [number, number] {
+  const sets = events.filter((e) => e.ev === "set" && e.key === KEY && e.t >= from && e.t <= to).map((e) => e.hub_ms);
+  return [Math.min(...sets), Math.max(...sets)];
 }
 
 /** The one-way delay (ms) of each of the fader's sets the page sent from `from` to `to` (page clock), on the runner's one clock. */
@@ -122,9 +129,24 @@ test("on a slow link the recorder never delays a drag's sets and its newest even
   );
   expect(lift!.ts - lift!.e.t, "the recorder's lag behind the page (ms)").toBeLessThan(6000);
 
-  // Every set of both phases reached the hub; the recorder on delays none of
-  // them beyond what the link itself does with the recorder off.
+  // With the recorder on, no batch goes while a drag's sets do: between a
+  // drag's first and last set (50 ms either side for the two tasks that
+  // stamp the records) at most 2 `trace` records arrive. A tick lets one
+  // through only after a page frame over 100 ms without a set (WebKit on the
+  // runner draws ~22 frames a second); without the gate a 1 KB batch would
+  // go at nearly every tick of the 1.5 s drag (about a dozen).
   const events = await hubEvents();
+  for (const [a, b] of [
+    [on.from, on.between],
+    [on.between, on.to],
+  ]) {
+    const [first, last] = arrivals(events, a, b);
+    const inside = events.filter((e) => e.ev === "trace" && e.ts > first + 50 && e.ts < last - 50);
+    expect(inside.length, `trace records inside a drag of ${Math.round(last - first)} ms: ${JSON.stringify(inside.map((e) => e.ts - first))}`).toBeLessThanOrEqual(2);
+  }
+
+  // The recorder on delays the sets no more than the link itself does with
+  // the recorder off (both phases' sets as the hub logged them).
   const offDelays = delays(events, off.from, off.to);
   const onDelays = delays(events, on.from, on.to);
   expect(offDelays.length, "the drags' sets with the recorder off").toBeGreaterThan(20);
