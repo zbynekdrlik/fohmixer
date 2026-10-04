@@ -261,6 +261,24 @@ def page_events(traces, offsets):
     return events, unaligned, bad
 
 
+# A frame's record and the set it names are this close on the page's clock
+# (ms): the set's ``t`` and the record's are taken in the same frame.
+SAME_FRAME_MS = 50.0
+
+
+def names_set(frames, record):
+    """Whether one of a touch's ``mv`` records (data) names the hub's set
+    ``record``: its ``q`` is the set's ``seq`` and its ``t`` within
+    ``SAME_FRAME_MS`` of the set's."""
+    seq, t = number(record.get("seq")), number(record.get("t"))
+    if seq is None or t is None:
+        return False
+    return any(
+        number(f.get("q")) == seq and abs((number(f.get("t")) or math.inf) - t) <= SAME_FRAME_MS
+        for f in frames
+    )
+
+
 def arrival_of(record):
     """A set's arrival at the hub (``hub_ms``, else its ``ts``)."""
     hub_ms = number(record.get("hub_ms"))
@@ -595,8 +613,11 @@ class Timeline:
         """The touches of single volume faders whose down says where it
         started (PR D), in time order (``timeline_touch``). A touch naming
         several keys (a fader writing several tracks) is left out. Its records
-        are matched on the page's clock: its ``mv`` records of that pointer
-        and key and the hub's sets of the key from the down to its lift."""
+        are matched on the page's clock, from its down to its lift (else to
+        the key's next down, else the window's end): its pointer's ``mv``
+        records of the key and the hub's sets of the key from the socket
+        those records name (their ``q``); its first applied value is Live's
+        result of the first of those sets Live applied."""
         touches = self._page("touch")
         frames = self._page("mv")
         rows = []
@@ -609,30 +630,44 @@ class Timeline:
             if not self.in_window(down.hub):
                 continue
             key, pointer = keys[0], down.data.get("pointer")
-            lifted = lift_of(touches[index + 1 :], key, pointer)
+            later = touches[index + 1 :]
+            lifted = lift_of(later, key, pointer)
+            if lifted is None:
+                lifted = next((t for t in later if _starts(t, key)), None)
             begin = number(down.data.get("t"))
             end = number(lifted.data.get("t")) if lifted is not None else math.inf
+
+            def within(t, begin=begin, end=end):
+                return t is not None and begin <= t <= end
+
             mine = [
                 f.data
                 for f in frames
                 if f.data.get("key") == key
                 and f.data.get("p") == pointer
-                and begin <= (number(f.data.get("t")) or -math.inf) <= end
+                and within(number(f.data.get("t")))
             ]
             sets = sorted(
-                (
-                    r
-                    for r in self.key_sets.get(key, [])
-                    if begin <= (number(r.get("t")) or -math.inf) <= end
-                ),
+                (r for r in self.key_sets.get(key, []) if within(number(r.get("t")))),
                 key=lambda r: r["t"],
             )
+            # The touch's own page: the socket whose sets the frames name, by
+            # seq and time (another tablet may write the key meanwhile, and
+            # each page counts its seq from 1).
+            clients = {r.get("client") for r in sets if names_set(mine, r)}
+            if clients:
+                sets = [r for r in sets if r.get("client") in clients]
             first = sets[0] if sets else None
-            applied = None
-            if first is not None:
-                arrived = arrival_of(first)
-                lane = self.lanes.get(key, {}).get("applied", [])
-                applied = next((p.value for p in lane if p.time >= arrived), None)
+            own = {identity_of(r.get("instance"), r): r for r in sets}
+            lane = self.lanes.get(key, {}).get("applied", [])
+            applied = next(
+                (
+                    (p.value, own[p.info["identity"]].get("seq"))
+                    for p in lane
+                    if p.info and p.info.get("identity") in own
+                ),
+                None,
+            )
             rows.append(timeline_touch.analyse(down, key, mine, first, applied))
         return rows
 

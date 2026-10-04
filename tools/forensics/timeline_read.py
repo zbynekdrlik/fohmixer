@@ -57,6 +57,12 @@ def to_live(p):
     return min(max(p, 0.0), 1.0) ** 0.515
 
 
+def to_pos(v):
+    """The fader position of Live's volume ``v`` (``to_pos``, ``v`` clamped
+    to 0..1)."""
+    return min(max(v, 0.0), 1.0) ** (1.0 / 0.515)
+
+
 def number(value):
     """``value`` as a finite float, or None (a bool is no number)."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):

@@ -11,14 +11,16 @@ that sent from the finger an ``mv`` (``e``: ``[dt, c]`` of each pointer move,
 ``r``: the 1:1 finger position, ``s``: the position sent, ``q``: its set's
 seq). A volume's Live value at position p is p^0.515.
 
-- **First-touch jump:** the first applied value of the touch is more than
-  ``FIRST_JUMP_DB`` from ``live_before`` (Live's value before the touch's
-  first set, as the hub knew it), and more than ``FIRST_JUMP_DB`` of that is
-  not the finger's: the dB the finger alone moved, from ``from`` to the first
-  frame's ``r``. Its why: ``stale`` (the touch started from the page's value
-  of Live, which differed from the hub's by over ``FIRST_JUMP_DB``),
-  ``local`` (it started from the fader's own position: a hold, an open
-  write), else ``other``.
+- **First-touch jump:** the touch's first applied value (Live's result of
+  the first of its own sets that Live applied) is more than ``FIRST_JUMP_DB``
+  from ``live_before`` (Live's value before the touch's first set, as the hub
+  knew it), and more than ``FIRST_JUMP_DB`` from where the finger alone
+  would have taken Live: ``live_before``'s position moved by the finger's own
+  travel up to that set's frame (its ``r`` minus ``from``), so a fader that
+  went up while the finger went down counts too. Its why: ``stale`` (the
+  page's value of Live, ``live``, was more than ``FIRST_JUMP_DB`` from
+  ``live_before``), ``local`` (the touch started from the fader's own
+  position: a hold, an open write), else ``other``.
 - **Down to first move / first send:** on the page's clock, from the down's
   own pointer event to the first move's (to the first set's ``t``).
 - **Stutter:** a move gap is two consecutive pointer moves over
@@ -33,7 +35,7 @@ import collections
 import itertools
 import math
 
-from timeline_read import number, to_live, value2db
+from timeline_read import number, to_live, to_pos, value2db
 
 # A first applied value further than this from Live's before (dB), with more
 # than this of it not the finger's, is a first-touch jump.
@@ -61,6 +63,7 @@ Touch = collections.namedtuple(
         "first_applied",
         "jump_db",
         "finger_db",
+        "off_db",
         "first_jump",
         "why",
         "first_move_ms",
@@ -86,21 +89,30 @@ def pos_db(p):
     return value2db(to_live(p))
 
 
-def first_touch(start, live, local, live_before, first_applied, first_raw):
-    """(jump dB, finger dB, whether it is a first-touch jump, why) of a touch
-    that started at position ``start`` (the page's Live position ``live``,
-    ``local``), when Live held ``live_before``, the first applied value was
-    ``first_applied`` and the finger's first frame was at ``first_raw``. The
-    dB are None, and it is no jump, when a value is missing."""
-    if None in (start, live_before, first_applied, first_raw):
-        return None, None, False, None
-    jump = db_apart(value2db(first_applied), value2db(live_before))
-    finger = db_apart(pos_db(first_raw), pos_db(start))
-    if not (jump > FIRST_JUMP_DB and jump - finger > FIRST_JUMP_DB):
-        return jump, finger, False, None
-    if db_apart(pos_db(start), value2db(live_before)) <= FIRST_JUMP_DB:
-        return jump, finger, True, "other"
-    return jump, finger, True, "local" if local else "stale"
+def first_touch(start, live, local, live_before, first_applied, raw):
+    """A touch that started at position ``start`` (the page's Live position
+    ``live``, ``local``) when Live held ``live_before``, whose first applied
+    value was ``first_applied`` while the finger was at ``raw`` (the 1:1
+    position of the frame that sent it): (its jump from Live's value in dB,
+    the finger's own move in dB, how far it landed from where the finger
+    alone would have taken Live in dB, whether it is a first-touch jump,
+    why). The dB are None, and it is no jump, when a value is missing."""
+    if None in (start, live_before, first_applied, raw):
+        return None, None, None, False, None
+    applied_db = value2db(first_applied)
+    jump = db_apart(applied_db, value2db(live_before))
+    finger = db_apart(pos_db(raw), pos_db(start))
+    expected = to_live(to_pos(live_before) + raw - start)
+    off = db_apart(applied_db, value2db(expected))
+    if not (jump > FIRST_JUMP_DB and off > FIRST_JUMP_DB):
+        return jump, finger, off, False, None
+    if local:
+        why = "local"
+    elif live is not None and db_apart(pos_db(live), value2db(live_before)) > FIRST_JUMP_DB:
+        why = "stale"
+    else:
+        why = "other"
+    return jump, finger, off, True, why
 
 
 def moves_of(frames):
@@ -166,22 +178,21 @@ def is_start(data):
     return data.get("what") == "down" and number(data.get("from")) is not None
 
 
-def analyse(down, key, frames, first_set, first_applied):
+def analyse(down, key, frames, first_set, applied):
     """The ``Touch`` of one down (a PageEvent of a single volume key, with its
     start): ``frames`` its ``mv`` records' data in order, ``first_set`` the
-    hub's first set of the touch (None when none), ``first_applied`` the
-    first value Live applied for it (None when none)."""
+    hub's first set of the touch (None when none), ``applied`` the first value
+    Live applied of the touch's own sets as (value, the seq of its set), or
+    None. The finger is read at the frame that sent that set (its ``q``), else
+    at the last frame before it, else at the first frame."""
     data = down.data
     start = number(data.get("from"))
+    live = number(data.get("live"))
     live_before = number(first_set.get("live_before")) if first_set else None
-    first_raw = number(frames[0].get("r")) if frames else None
-    jump, finger, flagged, why = first_touch(
-        start,
-        number(data.get("live")),
-        data.get("local") is True,
-        live_before,
-        number(first_applied),
-        first_raw,
+    value, seq = applied if applied is not None else (None, None)
+    raw = finger_at(frames, seq)
+    jump, finger, off, flagged, why = first_touch(
+        start, live, data.get("local") is True, live_before, number(value), raw
     )
     pressed = event_time(data)
     moves = moves_of(frames)
@@ -193,12 +204,13 @@ def analyse(down, key, frames, first_set, first_applied):
         key,
         data.get("pointer"),
         start,
-        number(data.get("live")),
+        live,
         data.get("local") is True,
         live_before,
-        number(first_applied),
+        number(value),
         jump,
         finger,
+        off,
         flagged,
         why,
         first_move,
@@ -207,3 +219,16 @@ def analyse(down, key, frames, first_set, first_applied):
         held_runs(frames),
         len(frames),
     )
+
+
+def finger_at(frames, seq):
+    """The 1:1 finger position of the frame that sent set ``seq`` (its ``q``),
+    else of the last frame before it, else of the first frame; None without a
+    frame."""
+    if not frames:
+        return None
+    if seq is not None:
+        before = [f for f in frames if (number(f.get("q")) or -1) <= seq]
+        if before:
+            return number(before[-1].get("r"))
+    return number(frames[0].get("r"))

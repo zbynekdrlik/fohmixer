@@ -401,10 +401,12 @@ TOUCH_LEGEND = (
     "the fader's position at the down (local: its own, after a release or with a "
     "write open; else the page's value of Live); Live before: Live's value when "
     "the touch's first set reached the hub; first applied: the first value Live "
-    "took. A first-touch jump: the first applied value is more than 1 dB from "
-    "Live's before, and more than 1 dB of that is not the finger's move (finger). "
-    "Why: stale (the page's value of Live differed from the hub's), local (the "
-    "fader started from its own position), other. Down to first move and to "
+    "took of the touch's own sets. Jump: first applied against Live before; "
+    "finger: the finger's own move up to that set; off: first applied against "
+    "where the finger alone would have taken Live from Live before. A "
+    "first-touch jump: jump and off both over 1 dB. Why: stale (the page's value "
+    "of Live differed from the hub's), local (the fader started from its own "
+    "position), other. Down to first move and to "
     "first send on the page's clock. Move gaps: two moves over 50 ms apart while "
     "the finger went on over 3 px; held: 3 or more frames in a row sending the "
     "value of the frame before while the finger moved."
@@ -428,6 +430,7 @@ def _touches_table(t):
             "first applied",
             "jump",
             "finger",
+            "off",
             "first-touch jump",
             "down to first move",
             "down to first send",
@@ -452,6 +455,7 @@ def _touches_table(t):
             level(touch.first_applied),
             f"{_db_or_na(touch.jump_db)} dB",
             f"{_db_or_na(touch.finger_db)} dB",
+            f"{_db_or_na(touch.off_db)} dB",
             f"yes ({touch.why})" if touch.first_jump else "no",
             f"{ms_text(touch.first_move_ms)} ms",
             f"{ms_text(touch.first_send_ms)} ms",
@@ -469,6 +473,7 @@ def _touches_table(t):
                 data_why=touch.why,
                 data_jump_db=_db_or_na(touch.jump_db),
                 data_finger_db=_db_or_na(touch.finger_db),
+                data_off_db=_db_or_na(touch.off_db),
                 data_first_move_ms=ms_text(touch.first_move_ms),
                 data_first_send_ms=ms_text(touch.first_send_ms),
                 data_move_gaps=len(touch.move_gaps),
