@@ -343,6 +343,29 @@ body {
     text-transform: uppercase;
 }
 
+/* The dropout counter (#43, design note §4.4): a small number, red while a
+   dropout lasts, neutral otherwise; a tap resets it. No words, no
+   animation: live mixing must not be disturbed. */
+.dropouts {
+    min-width: 24px;
+    padding: 4px 6px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--track);
+    color: var(--muted);
+    font: 600 12px/1 var(--mono);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0;
+    text-align: center;
+    cursor: pointer;
+    touch-action: manipulation;
+}
+
+.dropouts.active {
+    border-color: var(--danger);
+    color: var(--danger);
+}
+
 .hub-dot {
     width: 8px;
     height: 8px;

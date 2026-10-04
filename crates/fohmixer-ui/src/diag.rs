@@ -23,6 +23,11 @@
 //! frame's gap, and capture-phase `pointerdown` / `pointerup` /
 //! `pointercancel` listeners on the window hand [`perf::Perf`] every
 //! pointer.
+//!
+//! The page's flight recorder (#43, [`trace`]) lives here too: one per page
+//! ([`record`], [`with_trace`]); the frame loop's long frames and the
+//! visibility changes go into it from here, the store's and the controls'
+//! events from there, and the store uploads it.
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -37,8 +42,10 @@ use crate::dom;
 use crate::lifecycle::truncate_for_display;
 
 pub mod perf;
+pub mod trace;
 
 use perf::Perf;
+use trace::Recorder;
 
 /// At most one report of a kind per this interval (page clock, ms).
 pub const REPORT_GAP_MS: f64 = 5000.0;
@@ -355,6 +362,18 @@ thread_local! {
     static DIAG: RefCell<Diag> = RefCell::new(Diag::default());
     /// The page's frame and pointer counts (#5, K4).
     static PERF: RefCell<Perf> = RefCell::new(Perf::default());
+    /// The page's flight recorder (#43).
+    static TRACE: RefCell<Recorder> = RefCell::new(Recorder::default());
+}
+
+/// Records `event` in the page's flight recorder (#43, [`trace`]).
+pub fn record(event: &serde_json::Value) {
+    let _ = TRACE.try_with(|r| r.borrow_mut().push(event));
+}
+
+/// Runs `f` on the page's flight recorder (the store's uploads).
+pub fn with_trace<T>(f: impl FnOnce(&mut Recorder) -> T) -> Option<T> {
+    TRACE.try_with(|r| f(&mut r.borrow_mut())).ok()
 }
 
 /// Listens for errors, unhandled rejections, visibility changes, the
@@ -395,6 +414,7 @@ pub fn install() {
     if let Some(document) = window.document() {
         let on_visibility = Closure::wrap(Box::new(|| {
             pause_perf();
+            trace_visibility();
             report(Kind::Visibility);
         }) as Box<dyn FnMut()>);
         let _ = document.add_event_listener_with_callback(
@@ -462,13 +482,23 @@ fn pause_perf() {
     let _ = PERF.try_with(|perf| perf.borrow_mut().pause());
 }
 
+/// The page was hidden or shown: the flight recorder's event (the next
+/// frame's gap is the time hidden, not a stall).
+fn trace_visibility() {
+    let (t, hidden) = (dom::epoch_now(), dom::hidden());
+    let _ = TRACE.try_with(|r| r.borrow_mut().visibility(t, hidden));
+}
+
 /// A frame of the animation loop (`raf::tick`), `gap` ms after the one
-/// before: counted, and the periodic `perf` report when it is due. The
-/// report's minute is kept on the page clock the reports are stamped with
-/// (`dom::now`), not on the frame's own time, which is the frame's start
-/// and may lie before the last report's stamp.
+/// before: counted, recorded when long (#43, the flight recorder), and the
+/// periodic `perf` report when it is due. The report's minute is kept on
+/// the page clock the reports are stamped with (`dom::now`), not on the
+/// frame's own time, which is the frame's start and may lie before the last
+/// report's stamp.
 pub fn frame(gap: f64) {
     let now = dom::now();
+    let t = dom::epoch_now();
+    let _ = TRACE.try_with(|r| r.borrow_mut().frame(t, gap));
     let due = PERF.try_with(|perf| perf.borrow_mut().frame(now, gap));
     if due.unwrap_or(false) {
         report(Kind::Perf);

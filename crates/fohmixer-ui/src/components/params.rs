@@ -1,13 +1,19 @@
 //! The former MIDI controls (spec F17, F18, D10, X10, X11): toggles and a
 //! fader that write their target parameters directly through the LOM and
-//! show the targets' real state: all on, all off, or mixed.
+//! show the targets' real state: all on, all off, or mixed. A toggle's
+//! writes Live has not confirmed outline it (the most urgent of its
+//! targets', `data-intent`, #43 PR C), and its presses go to the page's
+//! flight recorder.
 
 use fohmixer_proto::layout::{ParamTarget, Press};
+use leptos::html;
 use leptos::prelude::*;
 use serde_json::Value;
 
 use super::fader::{self, FaderView, Law};
-use super::{BtnText, fail_flash, readiness, slot_of};
+use super::{
+    BtnText, fail_flash, intent_look, key_of, readiness, slot_of, touch_end_name, trace_touch,
+};
 use crate::behave::toggle::{ToggleCtl, ToggleState, Write, aggregate, is_on};
 use crate::binding::{SubSpec, param_subs};
 use crate::dom;
@@ -71,6 +77,14 @@ pub fn ParamToggleView(
     let slots: Vec<RwSignal<Slot>> = targets.iter().map(|t| t.slot).collect();
     let binding = Memo::new(move |_| readiness(&slots));
     let bound = move || binding.get().name();
+    let keys: Vec<String> = targets
+        .iter()
+        .filter_map(|t| t.spec.as_ref())
+        .map(key_of)
+        .collect();
+    let root = NodeRef::<html::Div>::new();
+    intent_look(root, store, keys.clone());
+    let keys = StoredValue::new(keys);
     let targets = StoredValue::new(targets);
     let ctl = StoredValue::new(ToggleCtl::default());
     let failed = RwSignal::new(false);
@@ -111,11 +125,15 @@ pub fn ParamToggleView(
         if let Some(el) = dom::current_element(&ev) {
             let _ = el.set_pointer_capture(ev.pointer_id());
         }
+        let _ = keys.try_with_value(|k| trace_touch("down", k, ev.pointer_id()));
         if let Some(Some(w)) = ctl.try_update_value(|c| c.down(press, now_state, dom::now())) {
             write(w);
         }
     };
-    let on_up = move |_ev: web_sys::PointerEvent| {
+    let on_up = move |ev: web_sys::PointerEvent| {
+        if let Some(what) = touch_end_name(&ev.type_()) {
+            let _ = keys.try_with_value(|k| trace_touch(what, k, ev.pointer_id()));
+        }
         if let Some(Some(w)) = ctl.try_update_value(ToggleCtl::up) {
             write(w);
         }
@@ -138,6 +156,7 @@ pub fn ParamToggleView(
     view! {
         <div
             class="btn param-toggle"
+            node_ref=root
             class:failed=move || failed.get()
             data-testid="param-toggle"
             data-label=label_attr

@@ -1,13 +1,15 @@
 //! The controls' writes (#43): the glue between the controls, the intent
 //! store (`store/intent.rs`, where every decision is made and tested) and
 //! the socket — a write, its ack, its release and touch, the resend when an
-//! instance is back, and what a fader reads of its open write.
+//! instance is back, and what a fader reads of its open write. Each send and
+//! ack is also an event of the page's flight recorder (`diag::trace`).
 
 use fohmixer_proto::client::AckItem;
 use leptos::prelude::{UpdateValue, WithValue};
 use serde_json::Value;
 
 use super::{FailFn, LiveStore};
+use crate::diag::{self, trace};
 use crate::dom;
 use crate::store::intent::{Acked, RESEND_MAX_AGE_MS, State};
 use crate::store::write_key;
@@ -16,7 +18,9 @@ impl LiveStore {
     /// The hub's acks of the controls' writes: a failed write shows on its
     /// control (spec I6: shown, never retried).
     pub(super) fn on_ack(self, items: &[AckItem]) {
+        let t = dom::epoch_now();
         for item in items {
+            diag::record(&trace::ack(t, item));
             let Some(acked) = self.inner.try_update_value(|i| i.intents.ack(item)) else {
                 return;
             };
@@ -43,7 +47,14 @@ impl LiveStore {
                 "set {key} not sent again: released {RESEND_MAX_AGE_MS} ms ago or more"
             ));
         }
-        let taken = resend.sets.iter().filter(|msg| self.send(msg)).count();
+        let mut taken = 0;
+        for msg in &resend.sets {
+            let sent = self.send(msg);
+            taken += usize::from(sent);
+            if let Some(event) = trace::send(msg, sent) {
+                diag::record(&event);
+            }
+        }
         if !resend.sets.is_empty() || !resend.not_sent.is_empty() {
             dom::log(&format!(
                 "instance {instance} is back: {} writes sent again ({taken} taken), {} not sent",
@@ -75,7 +86,11 @@ impl LiveStore {
         }) else {
             return;
         };
-        if !self.send(&msg) {
+        let sent = self.send(&msg);
+        if let Some(event) = trace::send(&msg, sent) {
+            diag::record(&event);
+        }
+        if !sent {
             dom::log(&format!(
                 "set {key} kept: not connected to the hub, sent when it is back"
             ));
@@ -101,6 +116,14 @@ impl LiveStore {
                 i.intents.touch(key);
             }
         });
+    }
+
+    /// The state of `key`'s write now (the look of a pan or a toggle, #43
+    /// PR C).
+    pub fn intent_state(self, key: &str) -> State {
+        self.inner
+            .try_with_value(|i| i.intents.state(key, dom::epoch_now()))
+            .unwrap_or(State::Confirmed)
     }
 
     /// The state of `key`'s write now and, while one is open, its value as

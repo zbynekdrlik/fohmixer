@@ -322,6 +322,7 @@ fn pings_carry_their_number_the_page_time_and_the_latest_round_trip() {
     assert_eq!(PING_MS, 100);
     let mut c = Conn::default();
     c.opened(0.0);
+    assert_eq!(c.next_ping(), 0);
     assert_eq!(
         c.ping(10.0, 1_000_010.0),
         ClientMsg::Ping {
@@ -332,6 +333,7 @@ fn pings_carry_their_number_the_page_time_and_the_latest_round_trip() {
         }
     );
     assert_eq!(c.pong(0, 1_000_010.0, 1_000_034.5), 24.5);
+    assert_eq!(c.next_ping(), 1, "the next ping's number");
     assert_eq!(
         c.ping(110.0, 1_000_110.0),
         ClientMsg::Ping {

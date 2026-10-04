@@ -177,6 +177,18 @@ fn each_state_has_its_name_its_openness_and_its_ghost() {
 }
 
 #[test]
+fn a_control_of_several_keys_shows_its_most_urgent_state() {
+    use State::*;
+    assert_eq!(most_urgent([]), Confirmed);
+    assert_eq!(most_urgent([Confirmed, Confirmed]), Confirmed);
+    assert_eq!(most_urgent([Confirmed, Sending]), Sending);
+    assert_eq!(most_urgent([Sending, Unconfirmed, Confirmed]), Unconfirmed);
+    assert_eq!(most_urgent([Unconfirmed, NotSent, Sending]), NotSent);
+    assert_eq!(most_urgent([NotSent, Confirmed]), NotSent);
+    assert_eq!(most_urgent([Unconfirmed]), Unconfirmed);
+}
+
+#[test]
 fn the_bounds_are_one_and_two_seconds() {
     assert_eq!(UNCONFIRMED_MS, 1000.0);
     assert_eq!(RESEND_MAX_AGE_MS, 2000.0);

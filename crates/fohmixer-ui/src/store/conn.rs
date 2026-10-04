@@ -231,6 +231,13 @@ impl Conn {
         }
     }
 
+    /// The number the next ping carries: the pong of that ping proves that
+    /// everything sent before it reached the hub (#43, PR C: the flight
+    /// recorder's batches).
+    pub fn next_ping(&self) -> u32 {
+        self.next_ping
+    }
+
     /// The pong of ping `n`, sent at page time `sent`, arrived at page time
     /// `now`: its round trip, kept for the next ping.
     pub fn pong(&mut self, n: u32, sent: f64, now: f64) -> f64 {

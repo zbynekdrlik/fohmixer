@@ -93,10 +93,10 @@ fn a_file_expires_after_sixty_days() {
 
 #[test]
 fn warn_class_records_are_socket_link_cap_dropped_and_errors() {
-    for ev in ["sock", "link", "trace", "cap", "dropped"] {
+    for ev in ["sock", "link", "cap", "dropped"] {
         assert!(is_warn(&json!({"ev": ev})), "{ev}");
     }
-    for ev in ["set", "batch", "ping", "ack", "applied"] {
+    for ev in ["set", "batch", "ping", "ack", "applied", "trace"] {
         assert!(!is_warn(&json!({"ev": ev})), "{ev}");
     }
     assert!(is_warn(&json!({"ev": "ack", "error": "instance offline"})));
@@ -104,6 +104,33 @@ fn warn_class_records_are_socket_link_cap_dropped_and_errors() {
     assert!(is_warn(&json!({"ev": "applied", "errors": 1})));
     assert!(!is_warn(&json!({"ev": "applied", "errors": 0})));
     assert!(!is_warn(&json!({})));
+}
+
+#[test]
+fn a_trace_is_warn_class_only_with_a_dropout_or_a_counter_reset() {
+    let trace = |events: Value| json!({"ev": "trace", "client": 3, "events": events});
+    assert!(is_warn(&trace(json!([
+        {"ev": "ping", "t": 1.0, "n": 4},
+        {"ev": "dropout", "t": 2.0, "ms": 420.0, "socket_lost": false, "rtts": []}
+    ]))));
+    assert!(is_warn(&trace(json!([
+        {"ev": "reset", "t": 3.0, "count": 2, "active": false}
+    ]))));
+    assert!(!is_warn(&trace(json!([
+        {"ev": "ping", "t": 1.0, "n": 4},
+        {"ev": "pong", "t": 1.5, "n": 4, "rtt": 0.5},
+        {"ev": "touch", "t": 2.0, "what": "down", "keys": ["a|b|c"], "pointer": 1}
+    ]))));
+    assert!(!is_warn(&trace(json!([]))));
+    assert!(!is_warn(&json!({"ev": "trace"})), "no events");
+    assert!(
+        !is_warn(&json!({"ev": "trace", "events": {"ev": "dropout"}})),
+        "not a list"
+    );
+    // Another record holding a dropout-shaped list is not a trace.
+    assert!(!is_warn(
+        &json!({"ev": "set", "events": [{"ev": "dropout"}]})
+    ));
 }
 
 #[test]

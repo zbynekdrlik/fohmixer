@@ -11,10 +11,16 @@
 //! silence from its own.
 //!
 //! When a dropout ends (a message from the hub, or the next socket's hello)
-//! it becomes a report for the hub's event log: when it started (page
-//! clock), how long it lasted, whether the socket was lost, and the last
-//! round trips before it. The counter on the surface (a number, red while
-//! a dropout lasts, reset by a tap) is PR C; this is its measure.
+//! it becomes a report for the hub's event log, through the page's flight
+//! recorder (`diag/trace.rs`): when it started (page clock), how long it
+//! lasted, whether the socket was lost, and the last round trips before it.
+//!
+//! The counter on the surface (PR C, owner's ruling of 2026-10-03: a
+//! number in the top bar, no words) is [`DropoutWatch::counter`]: the
+//! dropouts since the last tap, red while one lasts. A tap
+//! ([`DropoutWatch::reset`]) puts it back to 0 and gives the reset's event
+//! for the event log. A dropout that lasts through a tap was counted when it
+//! began: the counter then shows 0, red until it ends.
 //!
 //! All times are the page's clock in ms since the epoch
 //! (`performance.timeOrigin + performance.now()`, the clock of `set` and
@@ -22,7 +28,6 @@
 
 use std::collections::VecDeque;
 
-use fohmixer_proto::client::ClientMsg;
 use serde_json::{Value, json};
 
 /// Silence this long with a pong due is a dropout.
@@ -32,7 +37,8 @@ pub const RTTS_KEPT: usize = 5;
 /// Unanswered pings kept (6.4 s at 100 ms: past the 3 s silence that drops
 /// the socket); a ping beyond them is not tracked, the oldest stays.
 pub const PINGS_KEPT: usize = 64;
-/// Finished reports kept while they cannot be sent.
+/// Finished reports kept until the store takes them (it takes them as soon
+/// as they end; the bound is a guard).
 pub const REPORTS_KEPT: usize = 64;
 
 /// One finished dropout.
@@ -61,11 +67,13 @@ impl Dropout {
     }
 }
 
-/// The `trace` that carries `reports` to the hub; none for no report.
-pub fn trace(reports: &[Dropout]) -> Option<ClientMsg> {
-    (!reports.is_empty()).then(|| ClientMsg::Trace {
-        events: reports.iter().map(Dropout::event).collect(),
-    })
+/// What the surface's counter shows (#43, §4.4).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Counter {
+    /// The dropouts since the last tap.
+    pub count: u64,
+    /// A dropout lasts now: the number is red.
+    pub active: bool,
 }
 
 /// Whether a silence of `gap` ms is a dropout.
@@ -92,7 +100,9 @@ pub struct DropoutWatch {
     open: Option<(f64, bool)>,
     /// Dropouts counted since the page loaded.
     count: u64,
-    /// Finished dropouts not sent yet.
+    /// `count` at the counter's last tap.
+    reset_at: u64,
+    /// Finished dropouts not taken yet.
     reports: VecDeque<Dropout>,
 }
 
@@ -231,19 +241,32 @@ impl DropoutWatch {
         self.count
     }
 
-    /// The finished dropouts not sent yet, taken.
+    /// The finished dropouts not taken yet, taken.
     pub fn take_reports(&mut self) -> Vec<Dropout> {
         self.reports.drain(..).collect()
     }
 
-    /// Reports that could not be sent go back, ahead of newer ones.
-    pub fn requeue(&mut self, reports: Vec<Dropout>) {
-        for report in reports.into_iter().rev() {
-            if self.reports.len() >= REPORTS_KEPT {
-                return;
-            }
-            self.reports.push_front(report);
+    /// What the counter shows: the dropouts since the last tap, and
+    /// whether one lasts now (red).
+    pub fn counter(&self) -> Counter {
+        Counter {
+            count: self.count - self.reset_at,
+            active: self.active(),
         }
+    }
+
+    /// The counter was tapped at `now`: it shows 0 from here (a dropout that
+    /// lasts stays red: it was counted when it began). The reset's event for
+    /// the event log: what the counter showed, and whether a dropout lasted.
+    pub fn reset(&mut self, now: f64) -> Value {
+        let shown = self.counter();
+        self.reset_at = self.count;
+        json!({
+            "ev": "reset",
+            "t": now,
+            "count": shown.count,
+            "active": shown.active,
+        })
     }
 }
 

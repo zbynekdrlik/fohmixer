@@ -15,8 +15,9 @@
 //!   `cap` record, then only warn-class records ([`is_warn`]).
 //!
 //! Records: `sock`, `set`, `batch`, `applied`, `ack`, `ping`, `link` and the
-//! page's `trace` (its dropouts since PR A; the flight recorder and the
-//! counter's resets with PR C).
+//! page's `trace`: a batch of its flight recorder (PR C: touches, sends and
+//! acks, pings and pongs, socket transitions, long frames, visibility, the
+//! dropouts and the counter's resets), written as the page sent it.
 
 use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Write};
@@ -161,8 +162,11 @@ pub fn expired(file: NaiveDate, today: NaiveDate, keep_days: i64) -> bool {
 }
 
 /// Whether a record is still written past a day file's cap: a socket or a
-/// link change, a page's `trace` (its dropouts, the owner's priority on
-/// #43), the cap and dropped notes, and anything that carries an error.
+/// link change, a page's `trace` that holds a dropout or a counter reset
+/// (the owner's priority on #43), the cap and dropped notes, and anything
+/// that carries an error. The flight recorder's other batches stop at the
+/// cap like the pings and the writes: a page left open for a day would
+/// otherwise write past it without bound (PR C).
 pub fn is_warn(record: &Value) -> bool {
     let ev = record.get("ev").and_then(Value::as_str).unwrap_or("");
     let failed = record.get("error").is_some_and(|e| !e.is_null())
@@ -170,7 +174,24 @@ pub fn is_warn(record: &Value) -> bool {
             .get("errors")
             .and_then(Value::as_u64)
             .is_some_and(|n| n > 0);
-    failed || matches!(ev, "sock" | "link" | "trace" | "cap" | "dropped")
+    failed
+        || matches!(ev, "sock" | "link" | "cap" | "dropped")
+        || (ev == "trace" && holds_dropout(record))
+}
+
+/// Whether a page's `trace` holds a dropout or a reset of its counter.
+fn holds_dropout(record: &Value) -> bool {
+    record
+        .get("events")
+        .and_then(Value::as_array)
+        .is_some_and(|events| {
+            events.iter().any(|e| {
+                matches!(
+                    e.get("ev").and_then(Value::as_str),
+                    Some("dropout" | "reset")
+                )
+            })
+        })
 }
 
 /// Whether a line of `len` bytes takes a day file of `size` bytes past
