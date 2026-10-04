@@ -93,8 +93,10 @@ pub const RATE_BYTES_PER_S: f64 = 10_240.0;
 /// goes while a finger moves a fader, so a drag waits here whole: a 30 s
 /// drag of two faders at 60 Hz is ~610 KB of move records with real-length
 /// keys (PR E; PR D's 48 KB lost the moves of any drag over ~4 s). Once the
-/// fingers rest it drains at [`RATE_BYTES_PER_S`]: a short drag in about
-/// its own length, that 30 s drag in ~75 s, the full bound in about 90 s.
+/// fingers rest it drains at [`RATE_BYTES_PER_S`]: a short drag in its own
+/// length plus up to [`UPLOAD_MS`] (the last, partial batch waits that; a
+/// 2 s drag of one fader ~4.5 s), that 30 s drag in ~75 s, the full bound in
+/// ~95 s.
 pub const BACKLOG_BYTES: usize = 768 * 1024;
 /// A socket that holds more unsent bytes than this is backed up: no batch
 /// goes. A ping or two still leaving is less.

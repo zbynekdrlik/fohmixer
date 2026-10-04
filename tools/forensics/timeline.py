@@ -41,8 +41,9 @@ round trips, dropouts, the counter's resets, socket transitions, long frames,
 visibility), the Live lane (busy episodes, late heartbeats) and one lane per
 control with three rows (the page's sends, the hub's arrivals, Live's applied
 values), gaps over 100 ms inside one gesture marked; then the volume jumps
-over 3 dB with their measured cause (``link``, ``live``, ``page`` or
-``move``); then the touches of single volume faders (#43 PR D, from the
+over 3 dB with their measured cause (``link``, ``live``, ``page``, ``no
+data`` (#43 PR E: the page's recorder dropped the long frames of that time)
+or ``move``); then the touches of single volume faders (#43 PR D, from the
 page's touch starts and move records and the hub's ``live_before``): where
 each started against Live's value before it, first-touch jumps with their
 why, the time from the down to the first move and the first send, move gaps
