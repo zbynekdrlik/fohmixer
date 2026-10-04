@@ -29,6 +29,13 @@ seq). A volume's Live value at position p is p^0.515.
   moves on by little); a held run is ``HELD_FRAMES`` or more frames in a row
   that each sent the previous frame's value while the finger's position
   changed, not at the travel's ends.
+- **No data (PR E):** past its backlog's bound the page's recorder drops
+  moves, oldest first, and says so with the page time of the oldest and the
+  newest it dropped (an ``overflow`` marker of kind ``mv``). Such a span is
+  a hole in the record, not in the drag: a move gap or two frames of a held
+  run across it do not count, and the touch reports the span's length and
+  the hub's sets of the touch inside it (they reached the hub; only the
+  finger's moves are missing).
 """
 
 import collections
@@ -71,6 +78,9 @@ Touch = collections.namedtuple(
         "move_gaps",
         "held_runs",
         "frames",
+        "no_data",
+        "no_data_ms",
+        "no_data_sets",
     ),
 )
 Gap = collections.namedtuple("Gap", ("start", "end", "ms", "px"))
@@ -155,11 +165,18 @@ def moves_of(frames):
     return sorted(moves)
 
 
-def move_gaps(moves):
-    """The move gaps of a touch's ``moves`` ((time, coordinate) in order)."""
+def across(t1, t2, holes):
+    """Whether page times ``t1`` to ``t2`` reach into one of ``holes`` ((from,
+    to) of moves the recorder dropped, page clock): no data between them."""
+    return any(t1 <= to and t2 >= start for start, to in holes)
+
+
+def move_gaps(moves, holes=()):
+    """The move gaps of a touch's ``moves`` ((time, coordinate) in order); a
+    gap across one of ``holes`` is no data, not a gap."""
     gaps = []
     for (t1, c1), (t2, c2) in itertools.pairwise(moves):
-        if is_move_gap(t2 - t1, abs(c2 - c1)):
+        if is_move_gap(t2 - t1, abs(c2 - c1)) and not across(t1, t2, holes):
             gaps.append(Gap(t1, t2, t2 - t1, abs(c2 - c1)))
     return gaps
 
@@ -174,17 +191,30 @@ def holds(previous, frame):
     return s1 == s2 and inside_travel(s2) and finger_moved(r2 - r1)
 
 
-def held_runs(frames):
-    """How many held runs a touch's ``frames`` hold."""
+def held_runs(frames, holes=()):
+    """How many held runs a touch's ``frames`` hold; two frames across one
+    of ``holes`` are not in a row (frames between them went)."""
     runs = 0
     length = 0
     for previous, frame in itertools.pairwise(frames):
-        if holds(previous, frame):
+        t1, t2 = number(previous.get("t")), number(frame.get("t"))
+        broken = None not in (t1, t2) and across(t1, t2, holes)
+        if holds(previous, frame) and not broken:
             length += 1
             runs += length == HELD_FRAMES
         else:
             length = 0
     return runs
+
+
+def no_data(holes, begin, end):
+    """The ``holes`` ((from, to), page clock) that reach into a touch from
+    ``begin`` to ``end``, cut to it, in time order."""
+    return sorted(
+        (max(start, begin), min(to, end))
+        for start, to in holes
+        if across(begin, end, [(start, to)])
+    )
 
 
 def event_time(data):
@@ -220,13 +250,15 @@ def is_start(data):
     return data.get("what") == "down" and number(data.get("from")) is not None
 
 
-def analyse(down, key, frames, first_set, applied):
+def analyse(down, key, frames, first_set, applied, holes=(), hole_sets=0):
     """The ``Touch`` of one down (a PageEvent of a single volume key, with its
     start): ``frames`` its ``mv`` records' data in order, ``first_set`` the
     hub's first set of the touch (None when none), ``applied`` the first value
     Live applied of the touch's own sets as (value, the seq of its set), or
-    None. The finger is read at the frame that sent that set (its ``q``), else
-    at the last frame before it, else at the first frame."""
+    None; ``holes`` the spans of moves the recorder dropped inside the touch
+    (page clock, ``no_data``) and ``hole_sets`` the touch's own sets inside
+    them. The finger is read at the frame that sent that set (its ``q``),
+    else at the last frame before it, else at the first frame."""
     data = down.data
     start = number(data.get("from"))
     live = number(data.get("live"))
@@ -257,9 +289,12 @@ def analyse(down, key, frames, first_set, applied):
         why,
         first_move,
         first_send,
-        move_gaps(moves),
-        held_runs(frames),
+        move_gaps(moves, holes),
+        held_runs(frames, holes),
         len(frames),
+        len(holes),
+        sum(to - start for start, to in holes),
+        hole_sets,
     )
 
 

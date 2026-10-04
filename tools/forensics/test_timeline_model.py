@@ -243,6 +243,20 @@ class Thresholds(unittest.TestCase):
         self.assertEqual(rule[3:], (True, "other"))
         self.assertAlmostEqual(touches.pos_db(live_exactly), -1.0, places=9)
 
+    def test_a_span_reaches_a_hole_the_recorder_left_from_its_first_to_its_last_ms(self):
+        # PR E: page times 1 to 2 reach into a hole from 2 to 3 (both ends
+        # count), not into one from the next float after 2, nor one before 1.
+        self.assertTrue(touches.across(1.0, 2.0, [(2.0, 3.0)]))
+        self.assertFalse(touches.across(1.0, 2.0, [(math.nextafter(2.0, 3.0), 3.0)]))
+        self.assertTrue(touches.across(3.0, 4.0, [(2.0, 3.0)]))
+        self.assertFalse(touches.across(math.nextafter(3.0, 4.0), 4.0, [(2.0, 3.0)]))
+        self.assertTrue(touches.across(1.0, 9.0, [(5.0, 6.0)]), "a hole inside")
+        self.assertFalse(touches.across(1.0, 9.0, []))
+        # A touch's holes are cut to it, in time order; one outside is none.
+        holes = [(50.0, 80.0), (5.0, 15.0), (200.0, 300.0)]
+        self.assertEqual(touches.no_data(holes, 10.0, 60.0), [(10.0, 15.0), (50.0, 60.0)])
+        self.assertEqual(touches.no_data(holes, 100.0, 150.0), [])
+
     def test_a_held_run_is_3_holds_in_a_row(self):
         self.assertEqual(touches.HELD_FRAMES, 3)
 

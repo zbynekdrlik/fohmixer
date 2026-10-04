@@ -69,6 +69,9 @@ svg .dropout { fill: rgba(220, 30, 30, 0.25); stroke: #c00; }
 svg .busy { fill: rgba(255, 150, 0, 0.45); stroke: #e08000; }
 svg .gap { fill: rgba(255, 200, 0, 0.45); }
 svg .frame { fill: rgba(130, 60, 200, 0.45); }
+svg .nodata { fill: rgba(120, 120, 120, 0.22); stroke: #777; stroke-dasharray: 2 2; }
+svg .intent.unconfirmed { fill: #e08000; }
+svg .intent.not_sent { fill: #c00; }
 svg .reset { fill: #06c; }
 svg .sock { stroke: #444; stroke-width: 1; }
 svg .visibility { stroke: #888; stroke-dasharray: 3 3; }
@@ -149,7 +152,7 @@ def _band(axis, span, y, height, class_, tip, **data):
     )
 
 
-def _mark(axis, ms, y, height, class_, tip, width=3.0):
+def _mark(axis, ms, y, height, class_, tip, width=3.0, **data):
     return tag(
         "rect",
         title(tip),
@@ -158,6 +161,7 @@ def _mark(axis, ms, y, height, class_, tip, width=3.0):
         y=num(y),
         width=num(width),
         height=num(height),
+        **data,
     )
 
 
@@ -194,6 +198,26 @@ def _link_lane(t, axis, y):
     for f in t.frames:
         tip = f"long frame {f.ms:.1f} ms at {local_text(f.start)}"
         parts.append(_band(axis, f, y + LINK_H - 12, 12, "frame", tip, data_start=num(f.start)))
+    for d in t.no_data:
+        kind, n = d.info[0], d.info[1]
+        tip = (
+            f"no data: the page's recorder dropped {n} {kind} events from "
+            f"{local_text(d.start)} to {local_text(d.end)}"
+        )
+        parts.append(
+            _band(
+                axis,
+                d,
+                y,
+                LINK_H,
+                "nodata",
+                tip,
+                data_kind=kind,
+                data_n=n,
+                data_start=num(d.start),
+                data_end=num(d.end),
+            )
+        )
 
     def y_of(rtt):
         return y + LINK_H - 4 - min(rtt, top) / top * (LINK_H - 8)
@@ -302,6 +326,23 @@ def _key_lane(t, axis, key, y):
     y += KEY_TITLE_H
     for row in ROWS:
         parts.append(_row(axis, key, row, lane[row], lane["gaps"][row], scale, y))
+        if row == "send":
+            for e in t.intents.get(key, []):
+                state = e.data.get("state")
+                tip = f"the write (seq {e.data.get('seq')}) turned {state} at {local_text(e.hub)}"
+                parts.append(
+                    _mark(
+                        axis,
+                        e.hub,
+                        y,
+                        ROW_H,
+                        f"intent {state}",
+                        tip,
+                        width=4.0,
+                        data_state=state,
+                        data_key_hash=key_hash(key),
+                    )
+                )
         if row == "applied":
             for jump in (j for j in t.jumps if j.key == key):
                 tip = f"jump {db_text(jump.db_from)} -> {db_text(jump.db_to)}: {jump.cause}"
@@ -409,12 +450,24 @@ TOUCH_LEGEND = (
     "position), other. Down to first move and to "
     "first send on the page's clock. Move gaps: two moves over 50 ms apart while "
     "the finger went on over 3 px; held: 3 or more frames in a row sending the "
-    "value of the frame before while the finger moved."
+    "value of the frame before while the finger moved. No data: spans whose "
+    "moves the page's recorder dropped (its backlog was full); no move gap or "
+    "held run is counted across them, and the hub's sets in them still arrived."
 )
 
 
 def _db_or_na(db):
     return "n/a" if db is None else f"{db:.1f}"
+
+
+def _no_data_text(touch):
+    """A touch's no-data spans (moves the recorder dropped), or none."""
+    if not touch.no_data:
+        return "none"
+    return (
+        f"{touch.no_data} ({ms_text(touch.no_data_ms)} ms; the hub got "
+        f"{touch.no_data_sets} sets in it)"
+    )
 
 
 def _touches_table(t):
@@ -436,6 +489,7 @@ def _touches_table(t):
             "down to first send",
             "move gaps",
             "held",
+            "no data",
         )
     )
     rows = []
@@ -461,6 +515,7 @@ def _touches_table(t):
             f"{ms_text(touch.first_send_ms)} ms",
             f"{len(touch.move_gaps)} (longest {ms_text(worst)} ms)",
             str(touch.held_runs),
+            _no_data_text(touch),
         )
         content = "".join(f"<td>{esc(c)}</td>" for c in cells)
         rows.append(
@@ -478,6 +533,9 @@ def _touches_table(t):
                 data_first_send_ms=ms_text(touch.first_send_ms),
                 data_move_gaps=len(touch.move_gaps),
                 data_held=touch.held_runs,
+                data_no_data=touch.no_data,
+                data_no_data_ms=ms_text(touch.no_data_ms),
+                data_no_data_sets=touch.no_data_sets,
             )
         )
     table = f'<table class="touches"><tr>{head}</tr>{"".join(rows)}</table>'

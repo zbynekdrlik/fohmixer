@@ -37,6 +37,9 @@ ROWS = ("send", "arrival", "applied")
 
 Point = collections.namedtuple("Point", ("time", "value", "hollow", "info"))
 PageEvent = collections.namedtuple("PageEvent", ("hub", "ev", "data"))
+# What the page's recorder dropped of one kind (PR E): on the hub's clock,
+# ``info`` = (kind, count, page from, page to).
+NoData = collections.namedtuple("NoData", ("start", "end", "ms", "info"))
 Span = collections.namedtuple("Span", ("start", "end", "ms", "info"))
 Jump = collections.namedtuple(
     "Jump",
@@ -400,12 +403,7 @@ class Timeline:
             if e.hub <= self.end and e.hub + ms >= self.start:
                 self.frames.append(Span(e.hub, e.hub + ms, ms, None))
         self.visibility = [e for e in self._page("visibility") if self.in_window(e.hub)]
-        for e in self._page("overflow"):
-            if self.in_window(e.hub):
-                self.notes.append(
-                    f"the page flight recorder dropped {e.data.get('n')} events "
-                    f"before {local_text(e.hub)} (its ring was full)"
-                )
+        self._dropped()
         socks = []
         for r in kinds["sock"]:
             if self.in_window(r["ts"]):
@@ -425,6 +423,37 @@ class Timeline:
                     title += ": " + ", ".join(details)
                 socks.append((e.hub, title))
         self.socks = sorted(socks, key=lambda sock: sock[0])
+
+    def _dropped(self):
+        """The page recorder's drop notes: since PR E one per kind with the
+        page time of the oldest and newest event it dropped, a span of no
+        data of that kind (on the hub's clock with the note's own offset);
+        an older page's note says only how many went."""
+        self.no_data = []
+        self.recorder_dropped = 0
+        for e in self._page("overflow"):
+            n = number(e.data.get("n")) or 0.0
+            kinds = e.data.get("kinds")
+            start, to = number(e.data.get("from")), number(e.data.get("to"))
+            if isinstance(kinds, dict) and len(kinds) == 1 and None not in (start, to):
+                (kind,) = kinds
+                offset = e.hub - number(e.data.get("t"))
+                span = NoData(start + offset, to + offset, to - start, (kind, int(n), start, to))
+                if span.start > self.end or span.end < self.start:
+                    continue
+                self.no_data.append(span)
+                self.recorder_dropped += int(n)
+                self.notes.append(
+                    f"the page flight recorder dropped {int(n)} {kind} events from "
+                    f"{local_text(span.start)} to {local_text(span.end)}: no data of that "
+                    "kind there"
+                )
+            elif self.in_window(e.hub):
+                self.recorder_dropped += int(n)
+                self.notes.append(
+                    f"the page flight recorder dropped {e.data.get('n')} events "
+                    f"before {local_text(e.hub)} (its ring was full)"
+                )
 
     def _live(self, kinds, marks):
         changes = [
@@ -497,17 +526,24 @@ class Timeline:
             for r in sets:
                 if (key, number(r.get("t"))) not in recorded:
                     rows[key]["send"].append(Point(sent_of(r), r.get("value"), False, None))
+        # A write's turn to unconfirmed or not_sent (PR E): marks on its
+        # control's send row.
+        self.intents = collections.defaultdict(list)
+        for e in self._page("intent"):
+            key = e.data.get("key")
+            if self.wanted(key) and self.in_window(e.hub):
+                self.intents[key].append(e)
         touches = self._page("touch")
         continuous = self._continuous()
         self.lanes = {}
-        for key in sorted(rows):
+        for key in sorted(set(rows) | set(self.intents)):
             lane = {
                 row: sorted(
                     (p for p in rows[key][row] if self.in_window(p.time)), key=lambda p: p.time
                 )
                 for row in ROWS
             }
-            if not any(lane.values()):
+            if not any(lane.values()) and key not in self.intents:
                 continue
             if key in continuous:
                 spans = gestures(touches, key, self.end)
@@ -652,6 +688,18 @@ class Timeline:
             clients = {r.get("client") for r in sets if names_set(mine, r)}
             if clients:
                 sets = [r for r in sets if r.get("client") in clients]
+            # Moves the recorder dropped inside the touch (PR E): no data,
+            # and the touch's sets no kept frame names that fall in it.
+            holes = timeline_touch.no_data(self._dropped_moves(), begin, end)
+            hole_sets = sum(
+                1
+                for r in sets
+                if not names_set(mine, r)
+                and any(
+                    timeline_touch.within(r.get("t"), a - SAME_FRAME_MS, b + SAME_FRAME_MS)
+                    for a, b in holes
+                )
+            )
             first = sets[0] if sets else None
             own = {identity_of(r.get("instance"), r): r for r in sets}
             lane = self.lanes.get(key, {}).get("applied", [])
@@ -663,8 +711,12 @@ class Timeline:
                 ),
                 None,
             )
-            rows.append(timeline_touch.analyse(down, key, mine, first, applied))
+            rows.append(timeline_touch.analyse(down, key, mine, first, applied, holes, hole_sets))
         return rows
+
+    def _dropped_moves(self):
+        """The page-clock spans of the moves the recorder dropped."""
+        return [(s.info[2], s.info[3]) for s in self.no_data if s.info[0] == "mv"]
 
 
 # --- the summary ---
@@ -673,6 +725,12 @@ class Timeline:
 def ms_text(value):
     """Milliseconds with one decimal, ``n/a`` for none."""
     return "n/a" if value is None else f"{value:.1f}"
+
+
+def intent_count(timeline, state):
+    """How many of the window's writes turned ``state`` (PR E's ``intent``
+    records)."""
+    return sum(e.data.get("state") == state for es in timeline.intents.values() for e in es)
 
 
 def summary(timeline):
@@ -726,6 +784,10 @@ def summary(timeline):
         ("move_gaps", str(len(move_gaps))),
         ("move_gap_max_ms", f"{max(move_gaps):.1f}" if move_gaps else "0"),
         ("held_runs", str(sum(t.held_runs for t in touches))),
+        ("no_data_spans", str(len(timeline.no_data))),
+        ("recorder_dropped", str(timeline.recorder_dropped)),
+        ("unconfirmed", str(intent_count(timeline, "unconfirmed"))),
+        ("not_sent", str(intent_count(timeline, "not_sent"))),
         ("skipped_lines", str(timeline.skipped)),
         ("notes", str(len(timeline.notes))),
     ]
