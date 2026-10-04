@@ -47,8 +47,8 @@ function drag(fader: Locator, pointerId: number, px: number): Promise<number> {
   return dispatchPointer(fader, steps, pointerId);
 }
 
-/** The moves of a long drag (#43 PR E): 900 moves of 1 px every 20 ms, 18 s. */
-const LONG_MOVES = 900;
+/** The moves of a long drag (#43 PR E): 1 200 moves of 1 px every 20 ms, 24 s (WebKit on the runner draws ~14 frames a second here: its moves must still pass PR D's 48 KB). */
+const LONG_MOVES = 1200;
 /** How far a long drag goes either way (px): a triangle wave around the fader's start. */
 const LONG_AMPLITUDE = 60;
 
@@ -194,14 +194,19 @@ test("on a slow link the recorder never delays a drag's sets and its newest even
 
   // It drains without a stall once the fingers rest: from the second drag's
   // last set to the lift's batch the hub logs a trace record at least every
-  // 500 ms (a batch per tick, five ticks of slack for late timers).
+  // 500 ms (a full batch per tick, five ticks of slack for late timers).
+  // The drain's last batch holds what no longer fills one, and that waits
+  // its 2 s since the batch before (design note §5.2: smaller amounts every
+  // 2 s; a 2 005 ms last gap failed the 500 ms bound once, #43 PR E).
   const lastSet = dragSets(events, on.between, on.to).last;
   const drained = events
     .filter((e) => e.ev === "trace" && e.ts >= lastSet && e.ts <= lift!.ts)
     .map((e) => e.ts)
     .sort((a, b) => a - b);
   const stalls = [lastSet, ...drained].slice(1).map((ts, i) => ts - [lastSet, ...drained][i]);
-  expect(Math.max(...stalls), `the gaps between trace records while it drains (ms): ${JSON.stringify(stalls)}`).toBeLessThanOrEqual(500);
+  const gaps = `the gaps between trace records while it drains (ms): ${JSON.stringify(stalls)}`;
+  expect(Math.max(...stalls.slice(0, -1)), gaps).toBeLessThanOrEqual(500);
+  expect(stalls[stalls.length - 1], gaps).toBeLessThanOrEqual(2500);
 
   // The recorder on delays the sets no more than the link itself does with
   // the recorder off (both phases' sets as the hub logged them).
@@ -218,7 +223,7 @@ test("a long drag on a slow link keeps every move, and the recorder still never 
   // #43 PR E: a drag longer than the old 48 KB backlog (about 4 s of one
   // fader at 60 Hz) lost its oldest moves; the page records no `send` or
   // `ack` any more, and its backlog holds a 30 s drag of two faders.
-  test.setTimeout(240_000);
+  test.setTimeout(300_000);
   await page.addInitScript(() => {
     const send = WebSocket.prototype.send;
     WebSocket.prototype.send = function (data: string | ArrayBufferLike | Blob | ArrayBufferView) {
@@ -240,7 +245,7 @@ test("a long drag on a slow link keeps every move, and the recorder still never 
   const offFrom = await pageNow(page);
   await longDrag(fader, 91, LONG_MOVES);
   const offTo = await pageNow(page);
-  await page.waitForTimeout(25_000);
+  await page.waitForTimeout(30_000);
 
   // The recorder on: the same long drag.
   await dropTraces(page, false);
@@ -248,7 +253,8 @@ test("a long drag on a slow link keeps every move, and the recorder still never 
   await longDrag(fader, 92, LONG_MOVES);
   const onTo = await pageNow(page);
 
-  // Its lift reaches the event log once the backlog before it drained.
+  // Its lift reaches the event log once the backlog before it drained
+  // (Chromium's ~200 KB at the 10 KB/s cap: about 20 s).
   await until(
     async () => traceEvents(await hubEvents()).find(({ e }) => e.ev === "touch" && e.what === "up" && e.pointer === 92 && e.t >= onFrom),
     (found) => found !== undefined,

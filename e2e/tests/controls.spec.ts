@@ -213,9 +213,14 @@ test.describe("SOLO clear", () => {
       await until(() => live.get("band", vocals, "solo"), (v) => v === false, "Vocals unsoloed");
       expect(await live.get("band", stems, "solo")).toBe(false);
       await expect(pill).toBeHidden();
-      // Both on: both off.
+      // Both on: both off. The pill clears the solos the page knows of, and
+      // it shows as soon as one is on: wait until the page shows both (a
+      // click before Stems' solo reached the page cleared only Vocals, #43
+      // PR E's red run).
       await live.set("band", vocals, "solo", true);
       await live.set("band", stems, "solo", true);
+      await expect(page.locator('[data-testid="solo"][data-track="Stems grp#"]')).toHaveAttribute("data-on", "true");
+      await expect(page.locator('[data-testid="solo"][data-track="Vocals Repro grp#"]')).toHaveAttribute("data-on", "true");
       await expect(pill).toBeVisible();
       await pill.click();
       await until(() => live.get("band", stems, "solo"), (v) => v === false, "Stems unsoloed");
