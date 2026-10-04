@@ -486,8 +486,9 @@ impl LiveStore {
                     i.watch.pong(n, rtt);
                     rtt
                 });
+                // One summary a second of the round trips (#43 PR D).
                 if let Some(rtt) = rtt {
-                    diag::record(&trace::pong(epoch, n, rtt));
+                    let _ = diag::with_trace(|r| r.pong(epoch, rtt));
                 }
                 // Everything sent before ping n reached the hub's event log.
                 let _ = diag::with_trace(|r| r.proved(n));

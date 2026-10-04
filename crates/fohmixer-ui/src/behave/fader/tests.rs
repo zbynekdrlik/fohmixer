@@ -763,3 +763,51 @@ fn a_fader_built_while_its_write_is_open_shows_the_write_and_a_touch_starts_ther
     f.write_at(0.9);
     assert_close(f.frame(1080.0, Some(0.25)).pos.unwrap(), 0.55);
 }
+
+#[test]
+fn a_press_says_where_the_touch_started() {
+    let mut f = FaderCtl::new(false, zero_db());
+    let _ = f.frame(0.0, Some(0.25));
+    // Not local: the touch starts from Live's position, whatever the fader
+    // showed.
+    let start = |shown, live, local, from| {
+        Some(Start {
+            shown,
+            live,
+            local,
+            from,
+        })
+    };
+    assert_eq!(
+        f.press(1, 500.0, TRAVEL, 10.0, 0.5),
+        start(0.25, 0.5, false, 0.5)
+    );
+    assert_eq!(
+        f.press(2, 400.0, TRAVEL, 11.0, 0.5),
+        None,
+        "another pointer"
+    );
+    assert!(f.moved(1, 487.5, 12.0));
+    assert_eq!(f.frame(16.0, Some(0.5)).send, Some(0.625));
+    assert_eq!(f.up(1, 20.0), None);
+    // Within the hold the touch starts from the fader's own position.
+    assert_eq!(
+        f.press(1, 500.0, TRAVEL, 119.0, 0.5),
+        start(0.625, 0.5, true, 0.625)
+    );
+    assert_eq!(f.cancel(1, 130.0), None);
+    // After the hold, from Live's again.
+    let _ = f.frame(231.0, Some(0.375));
+    assert_eq!(
+        f.press(1, 500.0, TRAVEL, 232.0, 0.25),
+        start(0.375, 0.25, false, 0.25)
+    );
+    assert_eq!(f.cancel(1, 240.0), None);
+    // An open write keeps it local (L3).
+    let _ = f.frame(400.0, Some(0.25));
+    f.intent(true, 401.0);
+    assert_eq!(
+        f.press(1, 500.0, TRAVEL, 402.0, 0.75),
+        start(0.25, 0.75, true, 0.25)
+    );
+}

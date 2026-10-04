@@ -8,7 +8,7 @@
 //! reference traces in the tests were produced by running that script's own
 //! `applyFirstMovementScaling` under Lua 5.4.
 
-use super::Motion;
+use super::{Motion, Start};
 
 /// Position ↔ Live volume exponent: `v = p^0.515` (−6 dB at half travel).
 pub const EXPONENT: f64 = 0.515;
@@ -437,10 +437,20 @@ impl FaderCtl {
     /// Live's value sits at position `live`: whether this pointer now drives
     /// the fader.
     pub fn down(&mut self, id: i32, y: f64, travel: f64, now: f64, live: f64) -> bool {
+        self.press(id, y, travel, now, live).is_some()
+    }
+
+    /// [`FaderCtl::down`], with where the touch started when this pointer
+    /// now drives the fader (#43 PR D): the position it showed, Live's,
+    /// whether it showed its own (a finger, a glide, an open write, the
+    /// hold) and the position the touch starts from.
+    pub fn press(&mut self, id: i32, y: f64, travel: f64, now: f64, live: f64) -> Option<Start> {
         if self.pointer.is_some() {
-            return false;
+            return None;
         }
-        if !self.local(now) {
+        let shown = self.pos;
+        let local = self.local(now);
+        if !local {
             self.pos = live;
         }
         self.glide = None;
@@ -449,7 +459,12 @@ impl FaderCtl {
         self.travel = travel.max(1.0);
         self.shaper.start(self.pos);
         self.taps.down(self.pos, now);
-        true
+        Some(Start {
+            shown,
+            live,
+            local,
+            from: self.pos,
+        })
     }
 
     /// Whether pointer `id` drives this fader (its release is this fader's).

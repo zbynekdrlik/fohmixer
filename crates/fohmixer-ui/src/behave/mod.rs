@@ -29,6 +29,20 @@ pub struct Motion {
     pub send: Option<f64>,
 }
 
+/// Where a touch of a continuous control (fader, pan) started, in positions
+/// (#43 PR D, the flight recorder's `touch` down): the position the control
+/// showed, Live's value as the position the control used, whether the
+/// control showed its own position (a finger, a glide, an open write or the
+/// post-release hold), and the position the touch starts from (`shown` when
+/// local, else `live`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Start {
+    pub shown: f64,
+    pub live: f64,
+    pub local: bool,
+    pub from: f64,
+}
+
 /// What the end of a pointer's touch means for a continuous control's write
 /// (#43, L4).
 #[derive(Debug, Clone, Copy, PartialEq)]

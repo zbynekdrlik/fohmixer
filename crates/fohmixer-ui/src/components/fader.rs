@@ -14,17 +14,20 @@
 //! or red and draws the ghost line, no text (§4.3). A release with nothing
 //! unsent and a glide's end tell the store the release time (L4); a touch
 //! drops a `not_sent` write. Each touch's down, up and cancel goes to the
-//! page's flight recorder (#43, PR C).
+//! page's flight recorder (#43, PR C): the down with where the touch started
+//! (`FaderCtl::press`), and each frame that sends from the finger with the
+//! pointer moves it carried (`diag::trace::moves::Trail`, PR D).
 
 use fohmixer_proto::client::set_key;
 use leptos::html;
 use leptos::prelude::*;
 use serde_json::json;
 
-use super::{fail_flash, readiness, readiness_now, trace_touch};
+use super::{fail_flash, readiness, readiness_now, trace_move, trace_start, trace_touch};
 use crate::behave::fader::{self as curve, FaderCtl, UNITY};
 use crate::behave::{TouchEnd, touch_end};
 use crate::binding::SubSpec;
+use crate::diag::trace::moves::{Axis, Press, Trail};
 use crate::dom;
 use crate::raf;
 use crate::store::intent::State;
@@ -143,8 +146,11 @@ pub fn FaderView(targets: Vec<Target>, shaping: bool) -> impl IntoView {
         on_cleanup(move || store.release(&keys));
     }
     let keys = StoredValue::new(keys);
+    let shown_key = StoredValue::new(shown_key);
     let targets = StoredValue::new(targets);
     let ctl = StoredValue::new(FaderCtl::new(shaping, law.glide_to()));
+    // The finger's moves between frames, for the flight recorder (#43 PR D).
+    let trail = StoredValue::new(Trail::default());
     let failed = RwSignal::new(false);
     let root = NodeRef::<html::Div>::new();
 
@@ -160,19 +166,34 @@ pub fn FaderView(targets: Vec<Target>, shaping: bool) -> impl IntoView {
             .flatten()
             .and_then(|v| law.pos(v))
     };
-    let send = move |p: f64, is_final: bool| {
-        let _ = targets.try_with_value(|all| {
-            for t in all {
-                if let (Some(spec), Some(value)) = (&t.spec, t.law.value(p)) {
-                    store.set(
-                        &spec.instance,
-                        &spec.target,
-                        &spec.prop,
-                        json!(value),
-                        is_final,
-                        Some(fail_flash(failed)),
-                    );
+    // Every target's write of position `p`: the first target's sequence
+    // number (the flight recorder's move record names it).
+    let send = move |p: f64, is_final: bool| -> Option<u64> {
+        targets
+            .try_with_value(|all| {
+                let mut first = None;
+                for t in all {
+                    if let (Some(spec), Some(value)) = (&t.spec, t.law.value(p)) {
+                        let seq = store.set(
+                            &spec.instance,
+                            &spec.target,
+                            &spec.prop,
+                            json!(value),
+                            is_final,
+                            Some(fail_flash(failed)),
+                        );
+                        first = first.or(seq);
+                    }
                 }
+                first
+            })
+            .flatten()
+    };
+    // A send from the finger: its moves since the last one, to the recorder.
+    let sent_moves = move |p: f64, seq: Option<u64>| {
+        let _ = shown_key.try_with_value(|k| {
+            if let Some(key) = k {
+                trace_move(trail, key, p, seq);
             }
         });
     };
@@ -192,33 +213,46 @@ pub fn FaderView(targets: Vec<Target>, shaping: bool) -> impl IntoView {
         let id = ev.pointer_id();
         let y = f64::from(ev.client_y());
         let taken = ctl
-            .try_update_value(|c| c.down(id, y, travel, dom::now(), at))
-            .unwrap_or(false);
-        if taken {
+            .try_update_value(|c| c.press(id, y, travel, dom::now(), at))
+            .flatten();
+        if let Some(start) = taken {
             let _ = el.set_pointer_capture(id);
+            let press = Press {
+                at: dom::event_epoch(&ev),
+                c: y,
+                travel,
+            };
+            let _ = trail.try_update_value(|t| t.start(id, Axis::Up, press, start.from));
             let _ = keys.try_with_value(|k| {
                 store.touch(k);
-                trace_touch("down", k, id);
+                trace_start(k, id, press, start);
             });
         }
     };
     let on_move = move |ev: web_sys::PointerEvent| {
         let (id, y) = (ev.pointer_id(), f64::from(ev.client_y()));
-        let _ = ctl.try_update_value(|c| c.moved(id, y, dom::now()));
+        let moved = ctl
+            .try_update_value(|c| c.moved(id, y, dom::now()))
+            .unwrap_or(false);
+        if moved {
+            let at = dom::event_epoch(&ev);
+            let _ = trail.try_update_value(|t| t.moved(id, at, y));
+        }
     };
     // The end of a touch (`behave::touch_end`): the unsent move as a final
     // `set`, or the release time of the write already sent (L4).
     // The flight recorder hears the end of this fader's own touches.
     let ended = move |end: Option<TouchEnd>, what: &str, id: i32| {
-        if end.is_some_and(TouchEnd::ends_touch) {
-            let _ = keys.try_with_value(|k| trace_touch(what, k, id));
-        }
         match end {
-            Some(TouchEnd::Send(p)) => send(p, true),
+            Some(TouchEnd::Send(p)) => sent_moves(p, send(p, true)),
             Some(TouchEnd::Released) => {
                 let _ = keys.try_with_value(|k| store.release(k));
             }
             Some(TouchEnd::NotMine) | None => {}
+        }
+        if end.is_some_and(TouchEnd::ends_touch) {
+            let _ = keys.try_with_value(|k| trace_touch(what, k, id));
+            let _ = trail.try_update_value(|t| t.end(id));
         }
     };
     let on_up = move |ev: web_sys::PointerEvent| {
@@ -240,8 +274,9 @@ pub fn FaderView(targets: Vec<Target>, shaping: bool) -> impl IntoView {
         let mut ghost: Option<f64> = None;
         Box::new(move |now: f64, _step: f64| {
             let (intent, written) = shown_key
-                .as_deref()
-                .map_or((State::Confirmed, None), |k| store.intent_view(k));
+                .try_with_value(|k| k.as_deref().map(|k| store.intent_view(k)))
+                .flatten()
+                .unwrap_or((State::Confirmed, None));
             // The open write's position: the cap shows it (§4.2).
             let written = written
                 .filter(|_| intent.is_open())
@@ -257,7 +292,7 @@ pub fn FaderView(targets: Vec<Target>, shaping: bool) -> impl IntoView {
                 return;
             };
             if let Some(p) = motion.send {
-                send(p, false);
+                sent_moves(p, send(p, false));
             }
             if glide_ended {
                 let _ = keys.try_with_value(|k| store.release(k));

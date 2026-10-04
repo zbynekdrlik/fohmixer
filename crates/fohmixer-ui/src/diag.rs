@@ -371,6 +371,12 @@ pub fn record(event: &serde_json::Value) {
     let _ = TRACE.try_with(|r| r.borrow_mut().push(event));
 }
 
+/// Records `event` as essential (#43 PR D: a touch's first moves stay when
+/// the recorder's backlog is over its bound).
+pub fn record_essential(event: &serde_json::Value) {
+    let _ = TRACE.try_with(|r| r.borrow_mut().push_essential(event));
+}
+
 /// Runs `f` on the page's flight recorder (the store's uploads).
 pub fn with_trace<T>(f: impl FnOnce(&mut Recorder) -> T) -> Option<T> {
     TRACE.try_with(|r| f(&mut r.borrow_mut())).ok()

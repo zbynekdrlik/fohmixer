@@ -22,6 +22,16 @@ pub fn epoch_now() -> f64 {
         .map_or_else(js_sys::Date::now, |p| p.time_origin() + p.now())
 }
 
+/// When a browser event happened on the page clock of [`epoch_now`] (ms
+/// since the epoch): its `timeStamp` (ms since the page's time origin) plus
+/// that origin (#43 PR D: a pointer move's own time, not its handler's).
+pub fn event_epoch(event: &web_sys::Event) -> f64 {
+    let origin = web_sys::window()
+        .and_then(|w| w.performance())
+        .map_or(0.0, |p| p.time_origin());
+    origin + event.time_stamp()
+}
+
 /// Whether the page is hidden (`document.hidden`).
 pub fn hidden() -> bool {
     web_sys::window()

@@ -1,15 +1,18 @@
 //! The controls' writes (#43): the glue between the controls, the intent
 //! store (`store/intent.rs`, where every decision is made and tested) and
 //! the socket — a write, its ack, its release and touch, the resend when an
-//! instance is back, and what a fader reads of its open write. Each send and
-//! ack is also an event of the page's flight recorder (`diag::trace`).
+//! instance is back, and what a fader reads of its open write. A send the
+//! socket did not take and each ack's arrival are also events of the page's
+//! flight recorder (`diag::trace`); a send the socket took tells the
+//! recorder to wait (`Recorder::set_went`, #43 PR D: no batch in front of
+//! the next frame's set).
 
-use fohmixer_proto::client::AckItem;
+use fohmixer_proto::client::{AckItem, ClientMsg};
 use leptos::prelude::{UpdateValue, WithValue};
 use serde_json::Value;
 
 use super::{FailFn, LiveStore};
-use crate::diag::{self, trace};
+use crate::diag::{self, trace, trace::Recorder};
 use crate::dom;
 use crate::store::intent::{Acked, RESEND_MAX_AGE_MS, State};
 use crate::store::write_key;
@@ -49,11 +52,8 @@ impl LiveStore {
         }
         let mut taken = 0;
         for msg in &resend.sets {
-            let sent = self.send(msg);
+            let sent = self.sent_set(msg);
             taken += usize::from(sent);
-            if let Some(event) = trace::send(msg, sent) {
-                diag::record(&event);
-            }
         }
         if !resend.sets.is_empty() || !resend.not_sent.is_empty() {
             dom::log(&format!(
@@ -69,7 +69,8 @@ impl LiveStore {
     /// release, a toggle or a tap); `failed` hears why the hub refused it
     /// (spec I6: shown, never retried). The intent stays open until its ack;
     /// one the socket cannot take now is kept and sent when its instance is
-    /// back (L1, `resend`).
+    /// back (L1, `resend`). Its sequence number (a fader's move record names
+    /// it, #43 PR D).
     pub fn set(
         self,
         instance: &str,
@@ -78,23 +79,32 @@ impl LiveStore {
         value: Value,
         is_final: bool,
         failed: Option<FailFn>,
-    ) {
+    ) -> Option<u64> {
         let t = dom::epoch_now();
-        let Some((key, msg)) = self.inner.try_update_value(|i| {
+        let (key, msg) = self.inner.try_update_value(|i| {
             i.intents
                 .set((instance, target, prop), value, t, is_final, failed)
-        }) else {
-            return;
-        };
-        let sent = self.send(&msg);
-        if let Some(event) = trace::send(&msg, sent) {
-            diag::record(&event);
-        }
-        if !sent {
+        })?;
+        if !self.sent_set(&msg) {
             dom::log(&format!(
                 "set {key} kept: not connected to the hub, sent when it is back"
             ));
         }
+        trace::seq_of(&msg)
+    }
+
+    /// Sends a `set`: whether the socket took it. One it took holds the
+    /// flight recorder's next batch (#43 PR D); one it did not take is an
+    /// event of the recorder (the hub never sees it).
+    fn sent_set(self, msg: &ClientMsg) -> bool {
+        let sent = self.send(msg);
+        if sent {
+            let _ = diag::with_trace(Recorder::set_went);
+        }
+        if let Some(event) = trace::send(msg, sent) {
+            diag::record(&event);
+        }
+        sent
     }
 
     /// The controls of `keys` were let go without a final write (#43, L4:
