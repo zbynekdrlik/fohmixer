@@ -164,10 +164,11 @@ test("on a slow link the recorder never delays a drag's sets and its newest even
   );
   const lag = lift!.ts - lift!.e.t;
   test.info().annotations.push({ type: "lag-ms", description: String(Math.round(lag)) });
-  // The bound (design note §5.2): at most 48 KB wait, drained one batch of
-  // at most 1 000 bytes per 100 ms tick once the fingers rest, about 5 s;
-  // the page's timers run late on a loaded runner (a 6.1 s lag for ~32 KB,
-  // #43), so twice that. PR C's gate starved it for minutes.
+  // The bound (design note §5.2): the two drags' events (~25 KB, about 2.5 s
+  // at one batch of at most 1 000 bytes per 100 ms tick once the fingers
+  // rest) were about 5 s by PR D's 48 KB bound; the page's timers run late
+  // on a loaded runner (a 6.1 s lag for ~32 KB, #43), so twice that. PR C's
+  // gate starved it for minutes.
   expect(lag, "the recorder's lag behind the page (ms)").toBeLessThan(10_000);
 
   // With the recorder on, no batch goes while a drag's sets do: between a
