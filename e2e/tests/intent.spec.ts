@@ -112,13 +112,20 @@ test.describe("The look of an open write on the pan and the toggles", () => {
       // The page also recorded when each write turned unconfirmed (its
       // release 1 s old without an ack) and when it was not sent again:
       // only the page knows when it drew them (#43 PR E).
+      // A batch resent after a lost socket can be logged twice: each
+      // record once, as the timeline reads them. One reconnect: a second
+      // resend would give a write a new seq.
       const intents = await until(
         async () =>
-          (await hubEvents())
-            .filter((r) => r.ev === "trace")
-            .flatMap((r) => r.events)
-            .filter((e: any) => e.ev === "intent" && e.t >= cutAt)
-            .sort((a: any, b: any) => a.t - b.t),
+          [
+            ...new Map(
+              (await hubEvents())
+                .filter((r) => r.ev === "trace")
+                .flatMap((r) => r.events)
+                .filter((e: any) => e.ev === "intent" && e.t >= cutAt)
+                .map((e: any) => [JSON.stringify(e), e]),
+            ).values(),
+          ].sort((a: any, b: any) => a.t - b.t),
         (all) => [panKey, muteKey].every((key) => all.some((e: any) => e.key === key && e.state === "not_sent")),
         "the writes' states in the event log",
         10_000,
