@@ -240,7 +240,7 @@ fn a_lost_socket_sends_the_unproved_batches_again_first() {
 }
 
 #[test]
-fn a_batch_holds_32_kb_of_events_joined_by_commas_at_least_one() {
+fn a_batch_holds_8_kb_of_events_joined_by_commas_at_least_one() {
     // 4 000 + 1 + 4 191 = 8 192: one batch.
     let mut r = Recorder::default();
     r.push(&sized(4_000));

@@ -106,6 +106,7 @@ test.describe("The look of an open write on the pan and the toggles", () => {
         "the mute's tap in the event log",
         10_000,
       );
+      expect(touches.filter((e: any) => e.keys.includes(muteKey)).every((e: any) => e.what === "tap"), "a mute's touch is a tap only").toBe(true);
       expect(touches.some((e: any) => e.what === "down" && e.keys.includes(panKey))).toBe(true);
       expect(touches.some((e: any) => e.what === "up" && e.keys.includes(panKey))).toBe(true);
     } finally {
