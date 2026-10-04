@@ -338,7 +338,9 @@ class Timeline:
             )
         if bad:
             self.notes.append(f"{bad} page events without ev or t were left out")
-        self.page = [e for e in events if e.hub <= end]
+        # A long frame is stamped at the stall's end: one past the window's
+        # end can still lie inside it.
+        self.page = [e for e in events if e.hub <= end or e.ev == "frame"]
         self._link(kinds)
         self._live(kinds, marks)
         self._controls(kinds)
@@ -622,16 +624,28 @@ class Timeline:
             if s2 is not None and a2.info["batch_ts"] is not None:
                 wait = a2.info["batch_ts"] - arrival_of(s2)
             rtt = a2.info["rtt_ms"]
+            # A dropout or a busy Live shows when Live applies: the applied
+            # interval. A page stall shows in the page's sends: the long frame
+            # whose stamp (the stall's end) falls after S1's send and by S2's,
+            # or dropped long frames whose stamps meet that interval; without
+            # both sets, the applied interval.
             hits = [
                 name
-                for name, spans in (
-                    ("dropout", self.dropouts),
-                    ("busy", self.busy),
-                    ("frame", self.frames),
-                    ("nodata", [s for s in self.no_data if s.info[0] == "frame"]),
-                )
+                for name, spans in (("dropout", self.dropouts), ("busy", self.busy))
                 if any(overlaps(s.start, s.end, a1.time, a2.time) for s in spans)
             ]
+            holes = [d for d in self.no_data if d.info[0] == "frame"]
+            if s1 is not None and s2 is not None:
+                low, high = sent_of(s1), sent_of(s2)
+                stalled = any(low < f.end <= high for f in self.frames)
+                unknown = any(overlaps(d.start, d.end, low, high) for d in holes)
+            else:
+                stalled = any(overlaps(f.start, f.end, a1.time, a2.time) for f in self.frames)
+                unknown = any(overlaps(d.start, d.end, a1.time, a2.time) for d in holes)
+            if stalled:
+                hits.append("frame")
+            if unknown:
+                hits.append("nodata")
             if "dropout" in hits or (
                 arrival_gap is not None
                 and arrival_gap > GAP_MS
