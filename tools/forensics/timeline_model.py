@@ -397,11 +397,13 @@ class Timeline:
                 lost = e.data.get("socket_lost") is True
                 self.dropouts.append(Span(e.hub, e.hub + ms, ms, lost))
         self.resets = [e for e in self._page("reset") if self.in_window(e.hub)]
+        # A long frame is stamped when the frame that ends it comes
+        # (`diag::frame`): the stall is the ``ms`` before its time.
         self.frames = []
         for e in self._page("frame"):
             ms = number(e.data.get("ms")) or 0.0
-            if e.hub <= self.end and e.hub + ms >= self.start:
-                self.frames.append(Span(e.hub, e.hub + ms, ms, None))
+            if e.hub - ms <= self.end and e.hub >= self.start:
+                self.frames.append(Span(e.hub - ms, e.hub, ms, None))
         self.visibility = [e for e in self._page("visibility") if self.in_window(e.hub)]
         self._dropped()
         socks = []
