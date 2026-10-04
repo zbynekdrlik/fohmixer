@@ -87,6 +87,25 @@ class Helpers(unittest.TestCase):
         # No lift: to the start of the next touch naming the key.
         unlifted = [touch(1000, "down"), touch(4000, "tap", pointer=2)]
         self.assertEqual(model.gestures(unlifted, VOX, 9000), [(1000, 4000), (4000, 5000.0)])
+
+    def test_a_lift_ends_only_its_own_touch_of_that_control(self):
+        # A lift names its control: another tablet's pointer 2 lifting on
+        # Hand2 does not end a hold of Vox 1 by pointer 2.
+        tablets = [
+            touch(1000, "down", pointer=2),
+            touch(1500, "down", pointer=2, keys=(HAND,)),
+            touch(2000, "up", pointer=2, keys=(HAND,)),
+            touch(10000, "up", pointer=2),
+        ]
+        self.assertEqual(model.gestures(tablets, VOX, 12000), [(1000, 11000.0)])
+        self.assertEqual(model.gestures(tablets, HAND, 12000), [(1500, 3000.0)])
+        # A lost lift: the lift is searched only up to the pointer's next down
+        # on the control, so the first touch ends at that down.
+        lost = [touch(1000, "down"), touch(6000, "down"), touch(7000, "up")]
+        self.assertEqual(model.gestures(lost, VOX, 9000), [(1000, 6000), (6000, 8000.0)])
+        # Another control's down after the lift does not cut the tail.
+        other = [touch(1000, "down"), touch(2000, "up"), touch(2500, "down", 3, keys=(HAND,))]
+        self.assertEqual(model.gestures(other, VOX, 9000), [(1000, 3000.0)])
         # A toggle's tap (no lift follows) lasts the tail only.
         taps = [touch(1000, "tap"), touch(6000, "tap", pointer=2)]
         self.assertEqual(model.gestures(taps, VOX, 9000), [(1000, 2000.0), (6000, 7000.0)])
