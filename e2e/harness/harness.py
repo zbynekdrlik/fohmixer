@@ -27,6 +27,14 @@ what only the harness can do:
     GET  /hub/events                     {"events": [...]}: every record of the
                                          hub's event log (#43, ``logs/events-*.jsonl``
                                          in the data folder), oldest day first
+    POST /forensics/timeline {"from_ms", "to_ms", "key"}
+                                         ``tools/forensics/timeline.py`` over the
+                                         data folder's ``logs`` from ``from_ms`` to
+                                         ``to_ms`` (epoch ms; ``key`` optional, its
+                                         ``--key``), the report written to a
+                                         temporary folder outside the repo:
+                                         {"exit", "stdout", "stderr", "html": <the
+                                         report, or null when none was written>}
     GET  /link                           the impair proxy's state: ``port``,
                                          ``connections``, ``held``, ``blocked``,
                                          ``stall_ms``
@@ -50,6 +58,7 @@ Every process is stopped with SIGTERM and a bounded wait (spec I7). Prints
 
 import argparse
 import base64
+import datetime
 import json
 import math
 import os
@@ -58,6 +67,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
@@ -73,6 +83,9 @@ ACCESS_KID = "e2e-kid"
 CERTS_PATH = "/cdn-cgi/access/certs"
 HOST = os.path.join(REPO, "sim", "host.py")
 SITE = os.path.join(REPO, "sim", "fixtures", "test-site.json")
+TIMELINE = os.path.join(REPO, "tools", "forensics", "timeline.py")
+# The longest a timeline run may take (it reads the window's day files only).
+TIMELINE_S = 120
 READY_S = 20.0
 STOP_S = 10.0
 ANSWER_S = 5.0
@@ -179,6 +192,62 @@ def block_on(body):
     if not isinstance(on, bool):
         raise BadRequest(f'/link/block wants {{"on": true|false}}, not {body!r}')
     return on
+
+
+def local_time(ms):
+    """``YYYY-MM-DD HH:MM:SS.fff`` of epoch ms in local time (timeline's ``--from``)."""
+    moment = datetime.datetime.fromtimestamp(ms / 1000)
+    return moment.strftime("%Y-%m-%d %H:%M:%S.") + f"{moment.microsecond // 1000:03d}"
+
+
+def timeline_window(body):
+    """The ``from_ms``, ``to_ms`` and ``key`` of a ``/forensics/timeline``
+    body: finite epoch ms, and a text or nothing."""
+    want = '/forensics/timeline wants {"from_ms": <ms>, "to_ms": <ms>, "key": <text, optional>}'
+    if not isinstance(body, dict):
+        raise BadRequest(f"{want}, not {body!r}")
+    window = []
+    for name in ("from_ms", "to_ms"):
+        ms = body.get(name)
+        if isinstance(ms, bool) or not isinstance(ms, (int, float)) or not math.isfinite(ms):
+            raise BadRequest(f"{want}, not {body!r}")
+        window.append(ms)
+    key = body.get("key")
+    if key is not None and not isinstance(key, str):
+        raise BadRequest(f"{want}, not {body!r}")
+    return window[0], window[1], key
+
+
+def forensics_timeline(data, body):
+    """Runs ``tools/forensics/timeline.py`` over the event log of the data
+    folder ``data`` for the window of ``body`` (``timeline_window``); the
+    report goes to a temporary folder outside the repo (the tool refuses a
+    git checkout) and is read back. Its exit code, stdout, stderr and the
+    report (None when it wrote none)."""
+    start, end, key = timeline_window(body)
+    with tempfile.TemporaryDirectory(prefix="fohmixer-timeline-") as folder:
+        out = os.path.join(folder, "report.html")
+        command = [sys.executable, TIMELINE, "--events", os.path.join(data, "logs")]
+        command += ["--from", local_time(start), "--to", local_time(end)]
+        if key is not None:
+            command += ["--key", key]
+        command += ["--out", out]
+        done = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=TIMELINE_S,
+            check=False,
+        )
+        report = None
+        if os.path.exists(out):
+            with open(out, encoding="utf-8") as f:
+                report = f.read()
+    # The tool's stdout and stderr never hold a key; the report does.
+    print(f"harness: timeline exit {done.returncode} {done.stderr.strip()}".rstrip(), flush=True)
+    return {"exit": done.returncode, "stdout": done.stdout, "stderr": done.stderr, "html": report}
 
 
 def expected_answer(line):
@@ -399,6 +468,8 @@ class Harness:
         if parts == ["hub", "layout", "reset"]:
             self.reset_layout()
             return 200, {"ok": True}
+        if parts == ["forensics", "timeline"]:
+            return 200, forensics_timeline(self.data, body)
         if parts == ["link", "stall"]:
             return 200, self.link.stall(stall_ms(body))
         if parts == ["link", "drop"]:
