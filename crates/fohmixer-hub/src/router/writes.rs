@@ -134,7 +134,11 @@ impl Router {
             return;
         };
         let outcome = setter.on_set(&key, want);
-        let live = self.subs.live_value(&key);
+        // Live's value is read only for a touch's first set.
+        let live = outcome
+            .touch_start
+            .then(|| self.subs.live_value(&key))
+            .flatten();
         let fields = set_fields(&set, &key, self.peer(set.client), Some(&outcome), live);
         self.io.events.record("set", fields);
         if let Some((client, ack)) = outcome.superseded {
