@@ -23,7 +23,8 @@
 //!   hub's `set` record). A release that sends the last move adds a last one.
 //!
 //! Numbers are rounded to keep the records small: ms and px to 0.1,
-//! positions to 5 decimals.
+//! positions to 5 decimals; a record's own `t` is kept whole (the forensics
+//! timeline matches it against the touch's lift).
 
 use serde_json::{Value, json};
 
@@ -161,7 +162,7 @@ impl Trail {
         self.frames += 1;
         let record = json!({
             "ev": "mv",
-            "t": round1(t),
+            "t": t,
             "key": key,
             "p": pointer,
             "e": moves,

@@ -60,6 +60,8 @@ fn the_bounds_are_these() {
     assert_eq!(MAX_BYTES, 2_097_152);
     assert_eq!(UPLOAD_MS, 2000.0);
     assert_eq!(BATCH_BYTES, 1_024);
+    assert_eq!(ENVELOPE, 28);
+    assert_eq!(batch_text(&[]).len(), ENVELOPE);
     assert_eq!(RATE_BYTES_PER_S, 10_240.0);
     assert_eq!(BACKLOG_BYTES, 49_152);
     assert_eq!(BUFFERED_MAX, 1_024);

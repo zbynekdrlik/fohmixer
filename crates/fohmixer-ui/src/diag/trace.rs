@@ -73,17 +73,21 @@ pub const MAX_EVENTS: usize = 20_000;
 pub const MAX_BYTES: usize = 2 * 1024 * 1024;
 /// Smaller amounts go at most this often (ms), unless a batch is due at once.
 pub const UPLOAD_MS: f64 = 2000.0;
-/// A batch carries at most this many bytes of event JSON (at least one
-/// event): one WebSocket frame, and a set sent right after it waits for it,
-/// so it is small (about one TCP segment).
+/// A batch's message is at most this many bytes, its events joined plus
+/// the `trace` envelope (at least one event, however large): one WebSocket
+/// frame, and a set sent right after it waits for it, so it is small (about
+/// one TCP segment). At [`RATE_BYTES_PER_S`] a full batch waits 100 ms, the
+/// link's tick.
 pub const BATCH_BYTES: usize = 1024;
+/// The bytes of a `trace` message around its events ([`batch_text`]).
+pub const ENVELOPE: usize = 28;
 /// The recorder's upload never exceeds this many bytes a second (each batch
 /// waits for the previous one's bytes at this rate): far below a slow
 /// Wi-Fi link, and it sends nothing while a finger moves a fader.
 pub const RATE_BYTES_PER_S: f64 = 10_240.0;
 /// Past this many bytes of unsent events the oldest non-essential ones go,
 /// so the newest event reaches the hub within about 5 s of the fingers
-/// resting.
+/// resting (48 KB at [`RATE_BYTES_PER_S`]).
 pub const BACKLOG_BYTES: usize = 48 * 1024;
 /// A socket that holds more unsent bytes than this is backed up: no batch
 /// goes. A ping or two still leaving is less.
@@ -296,7 +300,11 @@ impl Recorder {
     /// unsent ones go until the backlog is within it again.
     fn bound_backlog(&mut self) {
         let mut excess = self.unsent.saturating_sub(BACKLOG_BYTES);
-        if excess == 0 || self.optional == 0 {
+        if excess == 0 {
+            return;
+        }
+        // Nothing to drop: every unsent event is essential.
+        if self.optional == 0 {
             return;
         }
         let sent = self.sent;
@@ -352,9 +360,9 @@ impl Recorder {
     }
 
     /// How many unsent events the next batch takes: as many as fit
-    /// [`BATCH_BYTES`] of JSON joined by commas, at least one.
+    /// [`BATCH_BYTES`] joined by commas inside the envelope, at least one.
     fn batch_count(&self) -> usize {
-        let mut size = 0;
+        let mut size = ENVELOPE;
         let mut count = 0;
         for event in self.events.iter().skip(self.sent) {
             let joined = size + event.text.len() + usize::from(count > 0);
