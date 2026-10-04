@@ -129,7 +129,11 @@ test.describe("The dropout counter", () => {
     const closed = events.find(({ e }) => e.ev === "sock" && e.what === "close" && e.t >= droppedAt && e.t <= unblockedAt);
     expect(closed, "the socket's close, seen by the page while its link was down").toBeTruthy();
     expect(closed!.ts, "sent up after the reconnect").toBeGreaterThanOrEqual(Math.floor(unblockedAt) - 50);
-    // The recorder's pings and pongs are there too.
-    expect(events.some(({ e }) => e.ev === "pong" && typeof e.rtt === "number" && e.t >= stallFrom)).toBe(true);
+    // The recorder's round trips are there too: one summary a second of
+    // its pongs (#43 PR D; no event per pong).
+    expect(
+      events.some(({ e }) => e.ev === "rtt" && e.n >= 1 && typeof e.med === "number" && e.max >= e.min && e.t >= stallFrom - 1000),
+    ).toBe(true);
+    expect(events.some(({ e }) => e.ev === "pong"), "no event per pong").toBe(false);
   });
 });

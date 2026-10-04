@@ -1,6 +1,7 @@
 """The forensics timeline's pure analysis helpers (#43, ``timeline_model``):
 jumps, percentiles, gestures and gaps, busy episodes."""
 
+import math
 import os
 import sys
 import unittest
@@ -10,6 +11,8 @@ if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
 import timeline_model as model  # noqa: E402
+import timeline_read as read  # noqa: E402
+import timeline_touch as touches  # noqa: E402
 
 VOX = "band|live_set tracks[name=Vox 1] mixer_device volume|value"
 HAND = "band|live_set tracks[name=Hand2 #] mixer_device volume|value"
@@ -133,6 +136,163 @@ class Helpers(unittest.TestCase):
                 (("band", True), 5000.0, 6000, 1000.0),
             ],
         )
+
+
+class FirstTouchRule(unittest.TestCase):
+    """``timeline_touch.first_touch``: the first applied value against Live's
+    before and against where the finger alone would have taken Live."""
+
+    def test_a_stale_start_is_a_jump_whichever_way_the_finger_went(self):
+        # The page showed 0 dB while Live sat at -4 dB; the finger pulled the
+        # fader 2 dB down and Live went UP to -2 dB.
+        start = read.to_pos(0.85)
+        raw = read.to_pos(0.8)
+        jump, finger, off, flagged, why = touches.first_touch(start, start, False, 0.75, 0.8, raw)
+        self.assertAlmostEqual(jump, 2.0, places=6)
+        self.assertAlmostEqual(finger, 2.0, places=6)
+        self.assertGreater(off, 4.0, "the finger alone would have taken Live to about -6 dB")
+        self.assertEqual((flagged, why), (True, "stale"))
+
+    def test_a_fast_first_move_is_the_fingers(self):
+        start = read.to_pos(0.7)
+        raw = start + 0.1
+        jump, _, off, flagged, why = touches.first_touch(
+            start, start, False, 0.7, read.to_live(raw), raw
+        )
+        self.assertGreater(jump, 1.0)
+        self.assertLess(off, 1e-9)
+        self.assertEqual((flagged, why), (False, None))
+
+    def test_the_why_local_stale_or_other(self):
+        start = read.to_pos(0.5)
+        raw = start + 0.003
+        # From the fader's own position (a hold), Live elsewhere.
+        self.assertEqual(touches.first_touch(start, 0.6, True, 0.85, 0.5, raw)[3:], (True, "local"))
+        # The page's value of Live was Live's; the first applied value came
+        # from elsewhere.
+        self.assertEqual(
+            touches.first_touch(start, start, False, 0.5, 0.6, raw)[3:], (True, "other")
+        )
+        # Without the page's Live value, not stale.
+        self.assertEqual(
+            touches.first_touch(start, None, False, 0.85, 0.5, raw)[3:], (True, "other")
+        )
+
+    def test_both_differences_must_be_over_1_db(self):
+        self.assertEqual(touches.FIRST_JUMP_DB, 1.0)
+        start = read.to_pos(0.8)
+        # -2 dB to exactly -1 dB with the finger still: jump and off both 1.0.
+        jump, _, off, flagged, _ = touches.first_touch(start, start, False, 0.8, 0.825, start)
+        self.assertEqual((jump, off, flagged), (1.0, 1.0, False))
+        self.assertTrue(touches.first_touch(start, start, False, 0.8, 0.8250001, start)[3])
+        # A missing value is no jump.
+        self.assertEqual(
+            touches.first_touch(None, None, False, 0.8, 0.9, 0.5), (None, None, None, False, None)
+        )
+        self.assertEqual(touches.first_touch(0.5, 0.5, False, None, 0.9, 0.5)[3], False)
+
+    def test_db_apart_of_silence(self):
+        inf = float("-inf")
+        self.assertEqual(touches.db_apart(inf, inf), 0.0)
+        self.assertEqual(touches.db_apart(inf, -60.0), float("inf"))
+        self.assertEqual(touches.db_apart(-3.0, -1.5), 1.5)
+
+    def test_the_finger_at_the_frame_that_sent_the_applied_set(self):
+        frames = [{"q": 4, "r": 0.5}, {"q": 5, "r": 0.52}, {"q": 7, "r": 0.6}]
+        self.assertEqual(touches.finger_at(frames, 5), 0.52)
+        self.assertEqual(touches.finger_at(frames, 6), 0.52, "the last frame before it")
+        self.assertEqual(touches.finger_at(frames, 3), 0.5, "none before: the first")
+        self.assertEqual(touches.finger_at(frames, None), 0.5)
+        self.assertEqual(touches.finger_at([], 5), None)
+
+
+class Thresholds(unittest.TestCase):
+    """Each threshold of a touch's rules at its exact boundary and the next
+    float."""
+
+    def test_a_first_touch_jump_needs_over_1_db(self):
+        self.assertFalse(touches.over_jump(1.0))
+        self.assertTrue(touches.over_jump(math.nextafter(1.0, 2.0)))
+
+    def test_a_move_gap_needs_over_50_ms_and_over_3_px(self):
+        self.assertEqual(touches.MOVE_GAP_MS, 50.0)
+        self.assertEqual(touches.MOVE_GAP_PX, 3.0)
+        after, more = math.nextafter(50.0, 60.0), math.nextafter(3.0, 4.0)
+        self.assertFalse(touches.is_move_gap(50.0, 30.0))
+        self.assertTrue(touches.is_move_gap(after, 30.0))
+        self.assertFalse(touches.is_move_gap(180.0, 3.0))
+        self.assertTrue(touches.is_move_gap(180.0, more))
+
+    def test_a_finger_move_is_over_1e_4_and_a_held_value_inside_the_travel(self):
+        self.assertFalse(touches.finger_moved(1e-4))
+        self.assertFalse(touches.finger_moved(-1e-4))
+        self.assertTrue(touches.finger_moved(math.nextafter(1e-4, 1.0)))
+        self.assertTrue(touches.finger_moved(-math.nextafter(1e-4, 1.0)))
+        self.assertFalse(touches.inside_travel(0.0))
+        self.assertFalse(touches.inside_travel(1.0))
+        self.assertTrue(touches.inside_travel(math.nextafter(0.0, 1.0)))
+        self.assertTrue(touches.inside_travel(math.nextafter(1.0, 0.0)))
+
+    def test_a_stale_page_value_is_over_1_db_from_lives(self):
+        # Live at -2 dB (0.8); the page's own value of Live 1 dB away (as near
+        # as a position gives) is not stale; over_jump pins the boundary.
+        start = read.to_pos(0.5)
+        raw = start + 0.003
+        live_exactly = read.to_pos(0.825)
+        rule = touches.first_touch(start, live_exactly, False, 0.8, 0.5, raw)
+        self.assertEqual(rule[3:], (True, "other"))
+        self.assertAlmostEqual(touches.pos_db(live_exactly), -1.0, places=9)
+
+    def test_a_held_run_is_3_holds_in_a_row(self):
+        self.assertEqual(touches.HELD_FRAMES, 3)
+
+        def run(n):
+            return [{"r": round(0.5 + 0.01 * i, 5), "s": 0.6} for i in range(n)]
+
+        self.assertEqual(touches.held_runs(run(4)), 1, "4 frames, 3 holds")
+        self.assertEqual(touches.held_runs(run(3)), 0, "3 frames, 2 holds")
+
+    def test_each_condition_of_the_rules_counts(self):
+        # Live's value did not move (no jump) although the finger alone would
+        # have moved it 1.25 dB: no first-touch jump.
+        start = 0.5
+        rule = touches.first_touch(start, start, False, 0.8, 0.8, start + 0.05)
+        self.assertEqual(rule[3], False)
+        self.assertEqual(rule[0], 0.0)
+        self.assertGreater(rule[2], touches.FIRST_JUMP_DB)
+        # The same value sent while the finger rests is no hold.
+        self.assertFalse(touches.holds({"r": 0.5, "s": 0.6}, {"r": 0.5, "s": 0.6}))
+        self.assertTrue(touches.holds({"r": 0.5, "s": 0.6}, {"r": 0.51, "s": 0.6}))
+
+
+class TouchRecords(unittest.TestCase):
+    def test_a_touchs_frames_are_its_pointers_on_its_key_both_ends_included_in_page_order(self):
+        frames = [
+            {"key": VOX, "p": 4, "t": 1_016.0},
+            {"key": VOX, "p": 4, "t": 1_000.0},
+            {"key": VOX, "p": 5, "t": 1_010.0},
+            {"key": HAND, "p": 4, "t": 1_012.0},
+            {"key": VOX, "p": 4, "t": 1_032.0},
+            {"key": VOX, "p": 4, "t": 999.0},
+            {"key": VOX, "p": 4},
+        ]
+        mine = touches.own_frames(frames, VOX, 4, 1_000.0, 1_032.0)
+        self.assertEqual([f["t"] for f in mine], [1_000.0, 1_016.0, 1_032.0])
+        self.assertFalse(touches.within(None, 0.0, 1.0))
+        self.assertTrue(touches.within(0.0, 0.0, 1.0))
+        self.assertTrue(touches.within(1.0, 0.0, 1.0))
+        self.assertFalse(touches.within(math.nextafter(1.0, 2.0), 0.0, 1.0))
+
+
+class TouchSets(unittest.TestCase):
+    def test_a_frame_names_its_set_by_seq_and_time(self):
+        frames = [{"t": 1_000.0, "q": 7}, {"t": 1_016.0, "q": 8}]
+        self.assertTrue(model.names_set(frames, {"seq": 8, "t": 1_015.8}))
+        self.assertTrue(model.names_set(frames, {"seq": 7, "t": 1_050.0}), "50 ms")
+        self.assertFalse(model.names_set(frames, {"seq": 7, "t": 1_050.1}))
+        self.assertFalse(model.names_set(frames, {"seq": 9, "t": 1_016.0}), "another seq")
+        self.assertFalse(model.names_set(frames, {"seq": 8}), "no time")
+        self.assertFalse(model.names_set([{"q": 8}], {"seq": 8, "t": 1_016.0}), "a frame without t")
 
 
 if __name__ == "__main__":

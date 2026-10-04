@@ -133,6 +133,7 @@ fn an_old_sequence_number_is_dropped() {
         SetOutcome {
             dropped_old: false,
             gap_ms: None,
+            touch_start: true,
             superseded: None
         }
     );
@@ -142,6 +143,7 @@ fn an_old_sequence_number_is_dropped() {
             SetOutcome {
                 dropped_old: true,
                 gap_ms: None,
+                touch_start: false,
                 superseded: None
             },
             "seq {old}"
@@ -387,4 +389,70 @@ fn a_fully_applied_batch_is_no_problem() {
     let applied = setter.on_result(1, &ok_slots(1), 1.0).unwrap();
     assert_eq!(applied.errors, 0);
     assert_eq!(batch_problem(&applied), None);
+}
+
+/// A set of client 1 at page time `t_page` (final or not).
+fn at_page(seq: u64, t_page: f64, is_final: bool) -> Want {
+    Want {
+        client: 1,
+        target: TARGET.into(),
+        prop: "value".into(),
+        value: json!(0.5),
+        seq,
+        t_page,
+        t_hub: 10.0 * seq as f64,
+        is_final,
+    }
+}
+
+#[test]
+fn a_touch_starts_without_a_set_before_after_a_final_one_or_500_ms_later() {
+    assert_eq!(TOUCH_GAP_MS, 500.0);
+    assert!(!starts_touch(500.0));
+    assert!(starts_touch(500.0_f64.next_up()));
+    assert!(
+        !starts_touch(-3.0),
+        "a page clock that went back is the same touch"
+    );
+    let mut setter = Setter::default();
+    let starts = |setter: &mut Setter, want: Want| setter.on_set(KEY, want).touch_start;
+    assert!(
+        starts(&mut setter, at_page(1, 1_000.0, false)),
+        "the first set"
+    );
+    assert!(!starts(&mut setter, at_page(2, 1_016.0, false)));
+    assert!(
+        !starts(&mut setter, at_page(3, 1_516.0, false)),
+        "500 ms later"
+    );
+    assert!(
+        starts(&mut setter, at_page(4, 2_016.0_f64.next_up(), false)),
+        "over 500 ms later"
+    );
+    assert!(!starts(&mut setter, at_page(5, 2_030.0, true)), "a release");
+    assert!(
+        starts(&mut setter, at_page(6, 2_031.0, false)),
+        "after a final set"
+    );
+    assert!(
+        !setter.on_set(KEY, at_page(6, 9_000.0, true)).touch_start,
+        "dropped"
+    );
+    assert!(
+        !starts(&mut setter, at_page(7, 2_040.0, false)),
+        "the dropped set left no mark"
+    );
+    // Per client and key.
+    let mut other = at_page(1, 2_041.0, false);
+    other.client = 2;
+    assert!(starts(&mut setter, other), "another client's first set");
+    assert!(
+        setter
+            .on_set(
+                "band|live_set tracks 0 mixer_device panning|value",
+                at_page(8, 2_042.0, false)
+            )
+            .touch_start,
+        "another key's first set"
+    );
 }

@@ -441,6 +441,20 @@ impl Subs {
         self.entries.get(key).and_then(|e| e.cached.as_ref())
     }
 
+    /// Live's value of a write key (`instance|target|prop`, #43 PR D) as
+    /// the hub knows it: the cached value it pushes to pages, of the
+    /// subscription with the display string (a strip's) or else without;
+    /// none while no subscription holds a value (none subscribed, not
+    /// resolved yet, or in error).
+    pub fn live_value(&self, write_key: &str) -> Option<&Value> {
+        [true, false].into_iter().find_map(|display| {
+            match self.cached(&format!("{write_key}|{display}")) {
+                Some(Cached::Value { value, .. }) => Some(value),
+                _ => None,
+            }
+        })
+    }
+
     /// Client subscriptions (hub keys with a subscriber) of `instance`.
     pub fn subscriptions(&self, instance: &str) -> usize {
         self.entries

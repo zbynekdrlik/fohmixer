@@ -1,6 +1,6 @@
 """The impair proxy (#43, ``impair.py``) between a client and an echo server:
 bytes pass both ways, a stall holds them, a drop resets, a block holds new
-connections until it is lifted."""
+connections until it is lifted, a rate paces the client's bytes."""
 
 import contextlib
 import io
@@ -203,6 +203,43 @@ class ImpairTest(unittest.TestCase):
             echo.shutdown()
             echo.server_close()
 
+    def test_a_rate_paces_the_clients_bytes_first_in_first_out(self):
+        client = self.connect()
+        client.sendall(b"warm")
+        self.assertEqual(read_exactly(client, 4), b"warm")
+        self.assertEqual(self.proxy.rate(20_000)["rate"], 20_000.0)
+        # 10 000 bytes at 20 000 a second take half a second.
+        payload = bytes(range(250)) * 40
+        start = time.monotonic()
+        client.sendall(payload)
+        self.assertEqual(read_exactly(client, len(payload)), payload, "in order, unchanged")
+        took = time.monotonic() - start
+        self.assertGreaterEqual(took, 0.45, "paced")
+        self.assertLess(took, 2.0)
+        # A second connection shares the one link: its bytes wait behind the
+        # first one's.
+        other = self.connect()
+        other.sendall(b"go")
+        self.assertEqual(read_exactly(other, 2), b"go")
+        start = time.monotonic()
+        client.sendall(payload)
+        other.sendall(b"late")
+        self.assertEqual(read_exactly(other, 4), b"late")
+        self.assertGreaterEqual(time.monotonic() - start, 0.4, "behind the first one's bytes")
+        self.assertEqual(read_exactly(client, len(payload)), payload)
+        # The echo's way back is not limited, and 0 lifts the limit.
+        self.assertEqual(self.proxy.rate(0)["rate"], 0.0)
+        start = time.monotonic()
+        client.sendall(payload)
+        self.assertEqual(read_exactly(client, len(payload)), payload)
+        self.assertLess(time.monotonic() - start, 0.3)
+
+    def test_a_rate_is_a_finite_number_of_bytes_a_second(self):
+        for bad in (float("inf"), float("nan"), -1, "x"):
+            with self.assertRaises(ValueError, msg=repr(bad)):
+                self.proxy.rate(bad)
+        self.assertEqual(self.proxy.state()["rate"], 0.0, "no limit")
+
     def test_a_stall_is_a_finite_number_of_ms(self):
         for bad in (float("inf"), float("nan"), -1, "x"):
             with self.assertRaises(ValueError, msg=repr(bad)):
@@ -218,8 +255,19 @@ class ImpairTest(unittest.TestCase):
         self.assertEqual(impair.command(self.proxy, "block on")["blocked"], True)
         self.assertEqual(impair.command(self.proxy, "state")["connections"], 1)
         self.assertEqual(impair.command(self.proxy, "block off")["blocked"], False)
+        self.assertEqual(impair.command(self.proxy, "rate 4096")["rate"], 4096.0)
+        self.assertEqual(impair.command(self.proxy, "rate 0")["rate"], 0.0)
         self.assertEqual(impair.command(self.proxy, "drop"), {"dropped": 1})
-        for bad in ("stall inf", "stall -5", "stall soon", "block maybe", "drop all", "nap"):
+        for bad in (
+            "stall inf",
+            "stall -5",
+            "stall soon",
+            "block maybe",
+            "drop all",
+            "rate -1",
+            "rate fast",
+            "nap",
+        ):
             self.assertIn("error", impair.command(self.proxy, bad), bad)
         self.assertIn("finite", impair.command(self.proxy, "stall inf")["error"])
         self.assertIn("unknown line", impair.command(self.proxy, "nap")["error"])

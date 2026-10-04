@@ -173,28 +173,36 @@ The detection is a pure state machine (`behave/link.rs`, `DropoutWatch`, since P
 | `ev` | Fields |
 |---|---|
 | `sock` | `open` / `close`, reason |
-| `set` | `value`, `final`, `t`, `hub_ms` (its arrival), `offset_ms` and `delay_ms` (`hub_ms − (t + offset)`, its one-way delay), the gap since this client's previous set of that key, `dropped_old` (seq not newer) |
+| `set` | `value`, `final`, `t`, `hub_ms` (its arrival), `offset_ms` and `delay_ms` (`hub_ms − (t + offset)`, its one-way delay), the gap since this client's previous set of that key, `dropped_old` (seq not newer); on the first set of a client's touch of a key (no set of the key from that client before, the previous one `final`, or its page `t` more than 500 ms after the previous one's: the page's clock, so a stalled link does not cut a drag in two) `live_before`: Live's value of the key as the hub knew it then (its subscription cache, what it pushes to pages; null when it held none, PR D). It is the cache, not Live: a re-grab right after a release whose value Live has not pushed back yet (Live stalled) reads the old value, and the timeline then calls the touch `local` |
 | `batch` | `instance`, the batch number, `n`, `sent` (key, client, seq, value of each) |
 | `applied` | `instance`, the batch number, `n`, `rtt_ms` (Live's round trip), errors, `sent` (key, client, seq) |
 | `ack` | per item; an ack of a batch with its number and `rtt_ms` |
 | `ping` | every ping (10 a second while the page is visible): `n`, `t`, `hub_ms` (its arrival), the page's latest `rtt` and `rtt_n`, `offset_ms` |
-| `trace` | `client`, `peer`, `events`: a batch of the page's flight recorder as it sent it (§5.2: its touches, sends, acks, pongs, socket transitions, long frames, visibility, dropouts and the counter's resets) |
+| `trace` | `client`, `peer`, `events`: a batch of the page's flight recorder as it sent it (§5.2: its touches with their starts, the moves of each frame, the writes its socket did not take, ack arrivals, round-trip summaries, socket transitions, long frames, visibility, dropouts, the counter's resets and what its full backlog dropped) |
 | `link` | busy changes with `tick_age_ms`, heartbeat gaps |
 
 - **Clocks.** Page times (`t`) map to hub time through the ping exchange (Cristian): a ping carries the latest pong's round trip and the number `m` of the ping it measured, and `offset = arrival of ping m − (its t + rtt/2)` from the hub's ring of the last 64 pings, so a round trip is paired with the exchange it measured (ping n − 2 or older on a slow link), never with the carrying ping that may itself have been held up; the lowest-RTT exchange of the last minute wins. Each `ping` record carries it as `offset_ms`, and each `set` record the offset of its socket's last ping with the one-way delay it gives: a stall on the way shows as a gap and a delay spike on the moves after it.
 
 ### 5.2 Page flight recorder (`diag/trace.rs`)
 
-- **Contents.** A ring of the page's own events, each with `ev` and the page's `t`:
-  - `touch` (`what` down / up / cancel, or `tap` for a mute, solo or stage button, the control's `keys`, the `pointer`);
-  - each `send` (`key`, `seq`, `value`, `final`, whether the socket took it) and `ack` (`key`, `seq`, an `error` or `superseded` when so);
-  - `pong` (`n`, `rtt`): the ping's own send time is the pong's minus the round trip, and the hub logs every ping that reaches it, so a page event per ping would only double the volume;
+- **Contents.** A ring of the page's own events, each with `ev` and the page's `t` (no event field is named `ts`: the timeline reads a record's hub `ts` as the first `"ts":` of its line, and a `trace` line's `events` come first):
+  - `touch` (`what` down / up / cancel, or `tap` for a mute, solo or stage button, the control's `keys`, the `pointer`); a fader's or pan's taken `down` also says where the touch started (PR D, `diag/trace/moves.rs`): `dt` (the pointer event's own time minus `t`), `c` (its `clientY`; a pan's `clientX`), `travel` (px), `pos` (the position the control showed), `live` (Live's value as the position the control used), `local` (it showed its own position: a finger, a glide, an open write or the post-release hold) and `from` (where the touch starts: `pos` when local, else `live`); positions are 0..1 of the travel (a volume's Live value is p^0.515, a pan's 2p − 1);
+  - `mv` (PR D), one per frame that sends from a finger on a fader or pan: `key` (the shown key), `p` (the pointer), `e` (`[dt, c]` of each pointer move merged into the frame, `dt` = the move's own `timeStamp` minus `t`), `r` (the 1:1 finger position: `from` plus the finger's travel since the down, before the touch shaping), `s` (the position the frame sends) and `q` (its set's `seq`); a release that sends the last move adds a last one;
+  - `send` only when the socket did not take the write (`key`, `seq`, `value`, `final`, `sent: false`): a set the socket took is the hub's own `set` record (the same `t` and `seq`; PR D);
+  - `ack` (`t`, `seq`): its arrival on the page, the one part the hub's `ack` record cannot show (PR D);
+  - `rtt` (PR D): one summary a second of the pongs' round trips (`t` its first pong, `n`, `min`, `med` the upper middle, `max`); no event per pong (204 812 of them at the service of 2026-10-04, most of the recorder's volume), and none per ping: the hub logs every ping that reaches it with the page's latest round trip;
   - socket transitions, `sock` (`what` open / hello / close / drop / fail, the socket number, the close code or the reason);
   - `frame`: frames longer than 50 ms (not the gap after a visibility change, which is the time hidden);
   - `visibility` (`hidden`);
-  - dropouts and the counter's resets; `overflow` (`n`: events the full ring dropped).
-- **Size.** At most 20 000 events and 2 MB of their JSON; past either the oldest unsent event goes, counted in the next batch's `overflow`.
-- **Upload.** One `trace` batch of at most 8 KB of events (one WebSocket frame: every move behind it waits for it) every 2 s while connected (every 200 ms while a batch left events behind, up to 40 KB/s: a dragged fader makes ~13 KB/s of events, two fingers ~25 KB/s), and at the link's next 100 ms tick after a hello, a dropout or a reset, oldest first: after a reconnect the backlog goes first, so an outage is recorded from the page's side. A batch goes only from that tick and only while the socket holds nothing unsent (`bufferedAmount` 0), so it never queues in front of the moves on a slow link.
+  - dropouts and the counter's resets; `overflow` (`n` and `kinds`: the events dropped since the last batch, per kind).
+- **Upload** (PR D; the service of 2026-10-04 showed the PR C recorder up to 30 minutes behind the link: its uploads waited for `bufferedAmount == 0`, and the iPad's WebKit reported a ping's bytes there at every 100 ms tick for up to 9 minutes while the page pinged on and sent no set). From the link's 100 ms tick, one `trace` batch of at most 1 000 bytes, its envelope included (one small WebSocket frame: a set sent after it waits for it), goes only when:
+  - no set went onto the socket since the previous tick: while a finger moves a fader the recorder waits, and its events go when the fingers rest, so a batch never sits in front of the next frame's set;
+  - the socket holds at most 1 KB unsent (a ping or two still leaving never holds it, a backed-up socket does);
+  - the rate allows it: each batch waits for the previous one's bytes at 10 KB/s (a full batch 97.7 ms: the next tick, with a margin for a coarse clock), a hard cap far below a slow Wi-Fi link;
+  - something waits and it is due: a full batch (events that fill a message with their commas and the envelope) as soon as the cap lets it, smaller amounts every 2 s, and the first batch after a hello, a dropout or a reset as soon as the cap lets it.
+  
+  Oldest first: after a reconnect the backlog goes first, so an outage is recorded from the page's side.
+- **Bounds.** Past 48 KB of unsent events (about 5 s at the cap) the oldest non-essential unsent events go, counted per kind in the next batch's `overflow`, so the newest event reaches the hub within seconds of the fingers resting. Essential, never dropped by that bound: touches, dropouts, resets, socket transitions, visibility, long frames, the `overflow` notes, a write the socket did not take, and a touch's first 8 `mv` (what the first-touch diagnosis needs). The ring's hard bounds stay as the last guard: 20 000 events and 2 MB of their JSON; past either the oldest unsent event goes, whatever it is.
 - **Delivery.** A batch stays in the ring until the pong of a ping sent after it: the hub reads a socket's messages in order, so that pong proves the hub logged the batch. A socket lost first sends it again after the next hello; the log may then hold an exact duplicate, which the timeline drops.
 - **Reload.** A reload loses what was not proved. The page keeps nothing in browser storage, because L1–L4 live in memory too.
 
@@ -205,6 +213,11 @@ The detection is a pure state machine (`behave/link.rs`, `DropoutWatch`, since P
   - Per control: three lines — the page's sends, the hub's arrivals and Live's applied values — with gaps over 100 ms marked inside one touch of a continuous control (a control with a non-final send; a toggle's row has none), each touch its own span (`.claude/rules/forensics.md` has the exact rule; without the page's touches, points up to 10 s apart count as one).
   - The page's RTT and the hub's ping RTT, Live's busy episodes and late heartbeats, the dropouts, the counter's resets, the socket transitions, long frames and visibility.
   - A summary table: the confirmation latency (Live's `applied` minus the page's send on the hub clock: count, p50, p90, p99, worst), the longest dropout, the longest gaps, and jumps over 3 dB between two applied volume values (TouchOSC's `value2db`) with their measured cause: `link` (the arrivals paused while the page kept sending, or a dropout), `live` (the batch's Live round trip or its wait over 100 ms, or Live busy), `page` (the page sent nothing for over 100 ms, or a long frame), else `move`.
+  - The touches of single volume faders (PR D; a touch naming several keys, the imported MIDI-mapped faders, is left out): where each started (`from`, the page's `live`, `local`) against its first set's `live_before`, its first applied value, the time from the down's own pointer event to the first move and to the first set on the page's clock, and:
+    - a **first-touch jump**: the touch's first applied value (Live's result of the first of its own sets Live applied) is more than 1 dB from `live_before`, and more than 1 dB from where the finger alone would have taken Live (`live_before`'s position moved by the finger's travel up to that set's frame, `r` − `from`: a fader that went up while the finger went down counts too); its why: `local` (it started from the fader's own position: a hold, an open write), `stale` (the page's value of Live, `live`, was more than 1 dB from `live_before`), else `other`;
+    - **stutter**: a move gap (two consecutive pointer moves over 50 ms apart whose coordinate changed more than 3 px across it: the finger went on while no move came) and a held run (3 or more frames in a row each sending the previous frame's value while the finger's position changed, not at the travel's ends).
+  - A touch's records are matched on the page's clock from its down to its lift (else to the key's next down, else the window's end): its pointer's `mv` records of the key, and the key's sets of the socket those records name (a set's `seq` equal to a record's `q`, their `t` within 50 ms).
+  - A control's send row is its `send` events (old pages; since PR D only writes the socket did not take, drawn hollow) and the hub's sets at their page `t` (+ offset).
   - stdout repeats the summary as `name=value` lines, a control only as a hash of its key (the numbers can go on a public ticket).
 - **Hygiene.** It never writes names or addresses into the report header beyond what the log holds. The report stays on the PC or goes to the owner through `share`, never into the repo.
 
@@ -241,6 +254,12 @@ RED first, against today's code:
    - it reads the day file: `set` → `batch` → `applied` → `ack` for the last seq, a `trace` with the touch and the dropouts;
    - `timeline.py` renders that window with the stall marked (`forensics.spec.ts`, the harness's `POST /forensics/timeline`); its own unit tests run on synthetic logs.
 8. Mutation (the existing gate) covers the setter, the intent store and the dropout watch.
+9. PR D, the touch diagnosis and the recorder's load:
+   - pure tests: the recorder's events, its gate (a ping in the buffer never holds a batch; a set since the last tick does), 1 000-byte batches, the 10 KB/s cap, the 48 KB backlog dropping the oldest non-essential events per kind, the round-trip summaries; a touch's start and a frame's moves (`moves.rs`); `FaderCtl::press` / `PanCtl::press`;
+   - hub: the setter's touch starts (`starts_touch`, 500 ms of the page's clock), `Subs::live_value`, `set_fields`' `live_before`, and on SimLive a touch's first set recording Live's value before it (`tests/setter.rs`);
+   - E2E, `recorder.spec.ts`: through the impair proxy's rate limit (24 KB/s, a slow link) two drags back to back with the recorder's frames dropped and then kept: the sets' one-way delay with the recorder is that of without it (median + 20 ms, p90 + 30 ms), at most 2 `trace` records reach the hub between a drag's first and last set (the page events recorded between them fill at least 4 000 bytes, 4 batches of 1 000, so without the gate at least 3 would go inside it), and the second drag's lift reaches the event log within 6 s;
+   - E2E, `forensics.spec.ts`: the touch start, the moves and `live_before` in the event log, and a touch made while the link stalled and Live moved meanwhile is a `stale` first-touch jump in the timeline;
+   - the timeline's unit tests on synthetic logs (`test_timeline_touch.py`).
 
 All Playwright tests keep the zero-console-error assertion, on Chromium and WebKit.
 
@@ -256,8 +275,11 @@ All Playwright tests keep the zero-console-error assertion, on Chromium and WebK
 3. **PR C — counter and audit.**
    - the dropout counter on the surface, the flight recorder, `timeline.py`;
    - tests 6 (the counter), 7.
-4. **Phase 2 (own design note) — datagram transport.** A spike measured on the FOH iPad (Safari 26.6.1: WebTransport datagrams vs a WebRTC data channel), then the datagram path for `set`, with the WebSocket as fallback and the same seq rules.
-5. **Phase 3 — verification.** A degraded-link check on the PC with the real iPad, then a service, read through `timeline.py`.
+4. **PR D — the touch diagnosis and the recorder's load** (after the service of 2026-10-04: "jerky movement at the first touch", and a recorder up to 30 minutes behind).
+   - the touch start and the per-frame moves on the page, `live_before` on the hub, the recorder's round-trip summaries, compact sends and acks, its gate, cap and backlog bound (§5.2), the timeline's touches (§5.3), the impair proxy's rate limit;
+   - test 9. The faders' behaviour is unchanged: the owner placed the jumps on ordinary single-track faders (#43, 2026-10-04), which these records now diagnose; the imported MIDI-mapped faders writing several tracks are outside PR D (the owner's call on #43).
+5. **Phase 2 (own design note) — datagram transport.** A spike measured on the FOH iPad (Safari 26.6.1: WebTransport datagrams vs a WebRTC data channel), then the datagram path for `set`, with the WebSocket as fallback and the same seq rules.
+6. **Phase 3 — verification.** A degraded-link check on the PC with the real iPad, then a service, read through `timeline.py`.
 
 Each PR is deployed and verified on the PC per `deploy-pc.md` before the next starts.
 

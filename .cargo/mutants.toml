@@ -49,7 +49,9 @@ exclude_re = [
   # of them in Chromium and WebKit.
   # dom.rs: the clocks, style/attribute writes, the viewport, the console,
   # local storage.
-  "fohmixer-ui/src/dom\\.rs.*(replace|in) (now|epoch_now|hidden|wall_now|log|error|set_style|set_attr|remove_attr|viewport|current_element|child|storage|storage_get|storage_set|storage_remove)( |$)",
+  # #43 PR D added event_epoch (a browser event's timeStamp on the page
+  # clock: performance.timeOrigin plus Event.timeStamp).
+  "fohmixer-ui/src/dom\\.rs.*(replace|in) (now|epoch_now|event_epoch|hidden|wall_now|log|error|set_style|set_attr|remove_attr|viewport|current_element|child|storage|storage_get|storage_set|storage_remove)( |$)",
   # net.rs: the fetch wrapper and the handshake reload (location.reload).
   "fohmixer-ui/src/net\\.rs.*(replace|in) (fetch_text|last_reload|reload)( |$)",
   # raf.rs: requestAnimationFrame scheduling around the tested Registry, and
@@ -104,7 +106,14 @@ exclude_re = [
   # PR C added intent_state (Intents::state for a pan's or a toggle's look;
   # intent.spec.ts reads the outlines) and the recorder's send and ack
   # events (trace::send / trace::ack, tested).
-  "fohmixer-ui/src/store/live/writes\\.rs.*(replace|in) LiveStore::(on_ack|resend|set|release|touch|intent_state|intent_view|live_value)( |$)",
+  # PR D added sent_set (a set onto the socket: Recorder::set_went when the
+  # socket took it, the tested trace::send event when it did not) and set's
+  # sequence number (trace::seq_of, tested); recorder.spec.ts counts the
+  # recorder's batches that reach the hub while a drag's sets do (at most 2;
+  # the page events between its first and last set, asserted at least 4
+  # batches' worth, would send at least 3 without the gate) and compares the
+  # sets' delay with and without the recorder.
+  "fohmixer-ui/src/store/live/writes\\.rs.*(replace|in) LiveStore::(on_ack|resend|set|sent_set|release|touch|intent_state|intent_view|live_value)( |$)",
   "fohmixer-ui/src/store/live\\.rs.*(replace|in) (Socket::open|Socket::buffered|Socket::close|Inner::new)( |$)",
   # auth.rs: local storage and the login request (login_outcome, login_body
   # and LoginError::message are the tested decisions).
@@ -118,7 +127,12 @@ exclude_re = [
   # recorder with the page clock; trace::touch is tested) and intent_look
   # (a toggle's frame function writing data-intent; most_urgent and
   # State::name are tested); intent.spec.ts and counter.spec.ts drive them.
-  "fohmixer-ui/src/components/mod\\.rs.*(replace|in) (trace_touch|intent_look)( |$)",
+  # PR D added trace_start (a fader's or pan's taken down with where it
+  # started, moves::touch_start, tested, with the page clock) and trace_move
+  # (a frame's moves, the tested Trail::take, into the recorder, a touch's
+  # first ones essential); forensics.spec.ts reads both back from the event
+  # log.
+  "fohmixer-ui/src/components/mod\\.rs.*(replace|in) (trace_touch|trace_start|trace_move|intent_look)( |$)",
   "fohmixer-ui/src/components/buttons\\.rs.*(replace|in) toggle_flag( |$)",
   # pages/surface.rs: a tab press (store, local storage) and the remembered
   # pages' read; choose and selected_path are the tested decisions.
@@ -157,5 +171,7 @@ exclude_re = [
   # visibilitychange listener's call with the page clock and
   # document.hidden). The decisions are diag/trace.rs's tested Recorder;
   # counter.spec.ts reads the page's events back from the hub's event log.
-  "fohmixer-ui/src/diag\\.rs.*(replace|in) (record|with_trace|trace_visibility)( |$)",
+  # PR D added record_essential (an event pushed as essential into the same
+  # thread-local Recorder; push_essential is tested).
+  "fohmixer-ui/src/diag\\.rs.*(replace|in) (record|record_essential|with_trace|trace_visibility)( |$)",
 ]

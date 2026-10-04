@@ -18,8 +18,10 @@ use fohmixer_proto::layout::{Control, MeterSource};
 use leptos::html;
 use leptos::prelude::*;
 
+use crate::behave::Start;
 use crate::behave::label::longest_word_chars;
 use crate::binding::SubSpec;
+use crate::diag::trace::moves::{self, Press, Trail};
 use crate::dom;
 use crate::raf;
 use crate::store::intent::{State, most_urgent};
@@ -72,6 +74,37 @@ pub fn trace_touch(what: &str, keys: &[String], pointer: i32) {
         keys,
         pointer,
     ));
+}
+
+/// Records a fader's or pan's taken down with where its touch started (#43
+/// PR D, `diag::trace::moves::touch_start`).
+pub fn trace_start(keys: &[String], pointer: i32, press: Press, start: Start) {
+    crate::diag::record(&moves::touch_start(
+        dom::epoch_now(),
+        keys,
+        pointer,
+        press,
+        start,
+    ));
+}
+
+/// Records the frame that sent position `p` (the set `seq`) of the control
+/// writing `key`: the finger's moves since the last one (#43 PR D,
+/// `Trail::take`; nothing without a move), a touch's first ones as
+/// essential.
+pub fn trace_move(trail: StoredValue<Trail>, key: &str, p: f64, seq: Option<u64>) {
+    let t = dom::epoch_now();
+    let Some((record, essential)) = trail
+        .try_update_value(|tr| tr.take(t, key, p, seq))
+        .flatten()
+    else {
+        return;
+    };
+    if essential {
+        crate::diag::record_essential(&record);
+    } else {
+        crate::diag::record(&record);
+    }
 }
 
 /// The flight recorder's name of the event that ends a touch: `up` for a

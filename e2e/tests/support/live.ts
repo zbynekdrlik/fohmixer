@@ -35,12 +35,14 @@ export async function harness(path: string, body: object = {}): Promise<any> {
 /**
  * The impair proxy between the pages and the hub (#43, `e2e/harness/impair.py`):
  * `stall` holds both directions for `ms`, `drop` resets every connection,
- * `block` holds new connections until it is lifted.
+ * `block` holds new connections until it is lifted, `rate` lets the pages'
+ * bytes to the hub through at most `bytesPerS` a second (a slow link; 0 lifts it).
  */
 export const impair = {
   stall: (ms: number) => harness("/link/stall", { ms }),
   drop: () => harness("/link/drop"),
   block: (on: boolean) => harness("/link/block", { on }),
+  rate: (bytesPerS: number) => harness("/link/rate", { bytes_per_s: bytesPerS }),
 };
 
 /** Every record of the hub's event log (#43), oldest first. */

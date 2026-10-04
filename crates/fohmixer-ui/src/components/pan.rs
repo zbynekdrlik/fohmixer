@@ -6,18 +6,21 @@
 //! with nothing unsent tells the store the release time (L4). It shows
 //! Live's value after its hold (PR B's decision 7) and, like a fader's cap,
 //! its dot is outlined while its write is `unconfirmed` or `not_sent`
-//! (`data-intent`, `intent.css`, #43 PR C); each touch's down, up and cancel
-//! goes to the page's flight recorder.
+//! (`data-intent`, `intent.css`, #43 PR C); each touch's down (with where
+//! it started, `PanCtl::press`), up and cancel goes to the page's flight
+//! recorder, and each frame that sends from the finger with the pointer moves
+//! it carried (`diag::trace::moves::Trail`, PR D).
 
 use fohmixer_proto::client::set_key;
 use leptos::html;
 use leptos::prelude::*;
 use serde_json::json;
 
-use super::{fail_flash, readiness, trace_touch};
+use super::{fail_flash, readiness, trace_move, trace_start, trace_touch};
 use crate::behave::pan::{self, PanCtl};
 use crate::behave::{TouchEnd, touch_end};
 use crate::binding::SubSpec;
+use crate::diag::trace::moves::{Axis, Press, Trail};
 use crate::dom;
 use crate::raf;
 use crate::store::intent::State;
@@ -41,25 +44,32 @@ pub fn PanView(state: RwSignal<Slot>, spec: SubSpec) -> impl IntoView {
         on_cleanup(move || store.release(&keys));
     }
     let key = StoredValue::new(keys);
+    let shown_key = StoredValue::new(shown_key);
     let spec = StoredValue::new(spec);
     let ctl = StoredValue::new(PanCtl::default());
+    // The finger's moves between frames, for the flight recorder (#43 PR D).
+    let trail = StoredValue::new(Trail::default());
     let failed = RwSignal::new(false);
     let root = NodeRef::<html::Div>::new();
 
     let live = move || slot.try_with_untracked(Slot::number).flatten();
     // Each write a `set` through the store's intents (#43); the release's
-    // is `final`.
+    // is `final`. The finger's moves since the last send go to the recorder
+    // with it (the move record holds positions: Live's panning is 2p − 1).
     let send = move |panning: f64, is_final: bool| {
-        let _ = spec.try_with_value(|s| {
-            store.set(
-                &s.instance,
-                &s.target,
-                &s.prop,
-                json!(panning),
-                is_final,
-                Some(fail_flash(failed)),
-            );
-        });
+        let seq = spec
+            .try_with_value(|s| {
+                store.set(
+                    &s.instance,
+                    &s.target,
+                    &s.prop,
+                    json!(panning),
+                    is_final,
+                    Some(fail_flash(failed)),
+                )
+            })
+            .flatten();
+        let _ = shown_key.try_with_value(|k| trace_move(trail, k, pan::to_pos(panning), seq));
     };
     let on_down = move |ev: web_sys::PointerEvent| {
         let Some(at) = live() else {
@@ -74,33 +84,44 @@ pub fn PanView(state: RwSignal<Slot>, spec: SubSpec) -> impl IntoView {
         let id = ev.pointer_id();
         let x = f64::from(ev.client_x());
         let taken = ctl
-            .try_update_value(|c| c.down(id, x, travel, dom::now(), at))
-            .unwrap_or(false);
-        if taken {
+            .try_update_value(|c| c.press(id, x, travel, dom::now(), at))
+            .flatten();
+        if let Some(start) = taken {
             let _ = el.set_pointer_capture(id);
+            let press = Press {
+                at: dom::event_epoch(&ev),
+                c: x,
+                travel,
+            };
+            let _ = trail.try_update_value(|t| t.start(id, Axis::Right, press, start.from));
             let _ = key.try_with_value(|k| {
                 store.touch(k);
-                trace_touch("down", k, id);
+                trace_start(k, id, press, start);
             });
         }
     };
     let on_move = move |ev: web_sys::PointerEvent| {
         let (id, x) = (ev.pointer_id(), f64::from(ev.client_x()));
-        let _ = ctl.try_update_value(|c| c.moved(id, x));
+        let moved = ctl.try_update_value(|c| c.moved(id, x)).unwrap_or(false);
+        if moved {
+            let at = dom::event_epoch(&ev);
+            let _ = trail.try_update_value(|t| t.moved(id, at, x));
+        }
     };
     // The end of a touch (`behave::touch_end`): the unsent move as a final
     // `set`, or the release time of the write already sent (L4).
     // The flight recorder hears the end of this pan's own touches.
     let ended = move |end: Option<TouchEnd>, what: &str, id: i32| {
-        if end.is_some_and(TouchEnd::ends_touch) {
-            let _ = key.try_with_value(|k| trace_touch(what, k, id));
-        }
         match end {
             Some(TouchEnd::Send(v)) => send(v, true),
             Some(TouchEnd::Released) => {
                 let _ = key.try_with_value(|k| store.release(k));
             }
             Some(TouchEnd::NotMine) | None => {}
+        }
+        if end.is_some_and(TouchEnd::ends_touch) {
+            let _ = key.try_with_value(|k| trace_touch(what, k, id));
+            let _ = trail.try_update_value(|t| t.end(id));
         }
     };
     let on_up = move |ev: web_sys::PointerEvent| {
@@ -122,7 +143,9 @@ pub fn PanView(state: RwSignal<Slot>, spec: SubSpec) -> impl IntoView {
         Box::new(move |now: f64, _step: f64| {
             // Its write's state (#43, PR C): the outline only, the dot shows
             // Live's value after the hold.
-            let intent = store.intent_state(&shown_key);
+            let intent = shown_key
+                .try_with_value(|k| store.intent_state(k))
+                .unwrap_or(State::Confirmed);
             if look != Some(intent) {
                 dom::set_attr(&el, "data-intent", intent.name());
                 look = Some(intent);

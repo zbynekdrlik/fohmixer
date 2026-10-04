@@ -364,6 +364,13 @@ class HarnessTest(unittest.TestCase):
             held.close()
         self.assertEqual(self.post("/link/block", {"on": False})[1]["blocked"], False)
 
+    def test_the_link_rate_route_sets_and_lifts_the_slow_link(self):
+        self.assertEqual(self.harness.handle("GET", "/link", {})[1]["rate"], 0.0)
+        status, state = self.post("/link/rate", {"bytes_per_s": 24576})
+        self.assertEqual((status, state["rate"]), (200, 24576.0))
+        self.assertEqual(self.harness.handle("GET", "/link", {})[1]["rate"], 24576.0)
+        self.assertEqual(self.post("/link/rate", {"bytes_per_s": 0})[1]["rate"], 0.0)
+
     def test_a_link_request_without_its_value_is_refused(self):
         for bad in (
             {},
@@ -378,6 +385,17 @@ class HarnessTest(unittest.TestCase):
         for bad in ({}, {"on": 1}, {"on": "true"}):
             with self.assertRaises(harness.BadRequest, msg=repr(bad)):
                 self.post("/link/block", bad)
+        for bad in (
+            {},
+            {"bytes_per_s": -1},
+            {"bytes_per_s": "1000"},
+            {"bytes_per_s": True},
+            {"bytes_per_s": float("inf")},
+        ):
+            with self.assertRaises(harness.BadRequest, msg=repr(bad)):
+                self.post("/link/rate", bad)
+        self.assertEqual(harness.rate_of({"bytes_per_s": 0}), 0)
+        self.assertEqual(harness.rate_of({"bytes_per_s": 24576}), 24576)
         self.assertEqual(harness.stall_ms({"ms": 0}), 0)
         self.assertEqual(harness.stall_ms({"ms": 1500.5}), 1500.5)
         self.assertIs(harness.block_on({"on": False}), False)

@@ -2,7 +2,7 @@
 //! `p` ↔ Live panning `2p − 1`, relative drag, two releases within 300 ms
 //! centre it, grey when centred and cyan otherwise.
 
-use super::Motion;
+use super::{Motion, Start};
 
 /// The colour of a centred pan and of an off-centre one.
 pub const CENTERED: &str = "#646464";
@@ -76,16 +76,31 @@ impl PanCtl {
     /// Pointer `id` pressed at `x` (px) on a pan `travel` px wide, Live's
     /// panning being `live`: whether this pointer now drives the pan.
     pub fn down(&mut self, id: i32, x: f64, travel: f64, now: f64, live: f64) -> bool {
+        self.press(id, x, travel, now, live).is_some()
+    }
+
+    /// [`PanCtl::down`], with where the touch started when this pointer now
+    /// drives the pan (#43 PR D), in positions: the one it showed, Live's
+    /// panning's, whether it showed its own (a finger, the hold) and the one
+    /// the touch starts from.
+    pub fn press(&mut self, id: i32, x: f64, travel: f64, now: f64, live: f64) -> Option<Start> {
         if self.pointer.is_some() {
-            return false;
+            return None;
         }
-        if !self.local(now) {
+        let shown = self.pos;
+        let local = self.local(now);
+        if !local {
             self.pos = to_pos(live);
         }
         self.pointer = Some(id);
         self.last_x = x;
         self.travel = travel.max(1.0);
-        true
+        Some(Start {
+            shown,
+            live: to_pos(live),
+            local,
+            from: self.pos,
+        })
     }
 
     /// Whether pointer `id` drives this pan (its release is this pan's).
@@ -232,6 +247,39 @@ mod tests {
         assert_eq!(p.up(1, 510.0), None);
         assert!(p.down(1, 100.0, 200.0, 700.0, 0.0));
         assert_eq!(p.up(1, 810.0), None, "300 ms apart");
+    }
+
+    #[test]
+    fn a_press_says_where_the_touch_started() {
+        let mut p = PanCtl::default();
+        let _ = p.frame(0.0, Some(0.0));
+        let start = |shown, live, local, from| {
+            Some(Start {
+                shown,
+                live,
+                local,
+                from,
+            })
+        };
+        assert_eq!(
+            p.press(1, 100.0, 200.0, 10.0, 0.5),
+            start(0.5, 0.75, false, 0.75),
+            "from Live's panning, as a position"
+        );
+        assert_eq!(p.press(2, 0.0, 200.0, 11.0, 0.5), None);
+        assert!(p.moved(1, 125.0));
+        assert_eq!(p.up(1, 20.0), Some(to_live(0.875)));
+        assert_eq!(
+            p.press(1, 100.0, 200.0, 119.0, 0.0),
+            start(0.875, 0.5, true, 0.875),
+            "within the hold"
+        );
+        assert_eq!(p.cancel(1, 150.0), None);
+        let _ = p.frame(251.0, Some(-0.5));
+        assert_eq!(
+            p.press(1, 100.0, 200.0, 252.0, 1.0),
+            start(0.25, 1.0, false, 1.0)
+        );
     }
 
     #[test]

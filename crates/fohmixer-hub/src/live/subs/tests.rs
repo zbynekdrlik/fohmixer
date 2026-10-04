@@ -1,5 +1,7 @@
 use super::*;
 
+mod live_value;
+
 const VOLUME: &str = "live_set tracks[name=Hand1 #] mixer_device volume";
 const VOLUME_KEY: &str = "band|live_set tracks[name=Hand1 #] mixer_device volume|value|true";
 const NAME_GUARD: &str = "band|live_set tracks[name=Hand1 #]|name|false|guard";
