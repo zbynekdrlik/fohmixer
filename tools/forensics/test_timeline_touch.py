@@ -145,6 +145,43 @@ class FirstTouch(ReportCase):
         (row,) = touch_rows(page)
         self.assertEqual(row["data-why"], "local")
 
+    def test_a_fader_that_went_up_while_the_finger_went_down_is_a_jump(self):
+        # Live at -4 dB (0.75), the page still at 0 dB (0.85); the finger
+        # pulls 24 px down (to about -2 dB), so Live goes UP by 2 dB.
+        log = Log()
+        start = round(0.85 ** (1 / EXPONENT), 5)
+        self.drag_from(log, start=start, live=start, live_before=0.75, first_px=-24.3)
+        summary, page, _ = self.report(log, BASE, BASE + 5000)
+        self.assertEqual(summary["first_touch_jumps"], "1")
+        (row,) = touch_rows(page)
+        self.assertEqual((row["data-first-jump"], row["data-why"]), ("true", "stale"))
+        self.assertGreater(float(row["data-off-db"]), 3.0)
+
+    def test_the_first_applied_value_is_the_touchs_own(self):
+        # Another tablet (its own seq 1, its own page clock) writes the key
+        # inside this touch; its write is applied just after this touch's
+        # first set reached the hub: it is not this touch's.
+        log = Log()
+        self.drag_from(log, start=0.5, live=0.5, live_before=value_at(0.5))
+        first = first_set(log, VOX)
+        other = dict(
+            client=9,
+            instance="band",
+            key=VOX,
+            seq=1,
+            value=0.95,
+            final=True,
+            t=first["t"] - 100,
+            hub_ms=first["hub_ms"] - 1,
+            offset_ms=OFFSET,
+        )
+        log.add("set", first["hub_ms"] - 1, **other)
+        log.write_batch("band", VOX, 9, 1, 0.95, first["hub_ms"] - 1, 2.0)
+        summary, page, _ = self.report(log, BASE, BASE + 5000)
+        self.assertEqual(summary["first_touch_jumps"], "0")
+        (row,) = touch_rows(page)
+        self.assertLess(float(row["data-jump-db"]), 0.2)
+
     def test_down_to_first_move_and_first_send_on_the_pages_clock(self):
         log = Log()
         self.drag_from(log, start=0.5, live=0.5, live_before=value_at(0.5))
@@ -203,6 +240,32 @@ class Stutter(ReportCase):
         self.assertEqual(summary["move_gap_max_ms"], "180.0")
         (row,) = touch_rows(page)
         self.assertEqual((row["data-move-gaps"], row["data-held"]), ("1", "0"))
+
+    def test_a_touch_without_its_lift_ends_at_the_keys_next_down(self):
+        # The first touch's lift was lost; the second touch's frames (with a
+        # stalled move) are not the first one's.
+        log = Log()
+        log.pings(7, BASE, BASE + 6000)
+        p0 = BASE + 1000 - OFFSET
+        steps = [(i + 1, round(0.5 + (i + 1) / 300.0, 5)) for i in range(10)]
+        first, sends = frames(VOX, 4, p0 + 50, 0.5, steps)
+        p1 = p0 + 1500
+        second, more = frames(VOX, 4, p1 + 50, 0.5, steps)
+        second[5]["e"] = [[-3.0 + 180.0, 470.0]]
+        log.drag(VOX, 7, sends + more)
+        first_set(log, VOX)["live_before"] = value_at(0.5)
+        events = [
+            down(p0, VOX, 4, start=0.5, live=0.5),
+            *first,
+            down(p1, VOX, 4, start=0.5, live=0.5),
+            *second,
+            lift(p1 + 400, VOX, 4),
+        ]
+        log.trace(BASE + 4000, 7, events)
+        summary, page, _ = self.report(log, BASE, BASE + 6000)
+        self.assertEqual(summary["touches"], "2")
+        rows = touch_rows(page)
+        self.assertEqual([r["data-move-gaps"] for r in rows], ["0", "1"])
 
     def test_a_value_held_while_the_finger_moved_is_a_held_run(self):
         log = Log()

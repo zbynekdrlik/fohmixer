@@ -10,6 +10,8 @@ if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
 import timeline_model as model  # noqa: E402
+import timeline_read as read  # noqa: E402
+import timeline_touch as touches  # noqa: E402
 
 VOX = "band|live_set tracks[name=Vox 1] mixer_device volume|value"
 HAND = "band|live_set tracks[name=Hand2 #] mixer_device volume|value"
@@ -137,3 +139,82 @@ class Helpers(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FirstTouchRule(unittest.TestCase):
+    """``timeline_touches.first_touch``: the first applied value against Live's
+    before and against where the finger alone would have taken Live."""
+
+    def test_a_stale_start_is_a_jump_whichever_way_the_finger_went(self):
+        # The page showed 0 dB while Live sat at -4 dB; the finger pulled the
+        # fader 2 dB down and Live went UP to -2 dB.
+        start = read.to_pos(0.85)
+        raw = read.to_pos(0.8)
+        jump, finger, off, flagged, why = touches.first_touch(start, start, False, 0.75, 0.8, raw)
+        self.assertAlmostEqual(jump, 2.0, places=6)
+        self.assertAlmostEqual(finger, 2.0, places=6)
+        self.assertGreater(off, 4.0, "the finger alone would have taken Live to about -6 dB")
+        self.assertEqual((flagged, why), (True, "stale"))
+
+    def test_a_fast_first_move_is_the_fingers(self):
+        start = read.to_pos(0.7)
+        raw = start + 0.1
+        jump, _, off, flagged, why = touches.first_touch(
+            start, start, False, 0.7, read.to_live(raw), raw
+        )
+        self.assertGreater(jump, 1.0)
+        self.assertLess(off, 1e-9)
+        self.assertEqual((flagged, why), (False, None))
+
+    def test_the_why_local_stale_or_other(self):
+        start = read.to_pos(0.5)
+        raw = start + 0.003
+        # From the fader's own position (a hold), Live elsewhere.
+        self.assertEqual(touches.first_touch(start, 0.6, True, 0.85, 0.5, raw)[3:], (True, "local"))
+        # The page's value of Live was Live's; the first applied value came
+        # from elsewhere.
+        self.assertEqual(
+            touches.first_touch(start, start, False, 0.5, 0.6, raw)[3:], (True, "other")
+        )
+        # Without the page's Live value, not stale.
+        self.assertEqual(
+            touches.first_touch(start, None, False, 0.85, 0.5, raw)[3:], (True, "other")
+        )
+
+    def test_both_differences_must_be_over_1_db(self):
+        self.assertEqual(touches.FIRST_JUMP_DB, 1.0)
+        start = read.to_pos(0.8)
+        # -2 dB to exactly -1 dB with the finger still: jump and off both 1.0.
+        jump, _, off, flagged, _ = touches.first_touch(start, start, False, 0.8, 0.825, start)
+        self.assertEqual((jump, off, flagged), (1.0, 1.0, False))
+        self.assertTrue(touches.first_touch(start, start, False, 0.8, 0.8250001, start)[3])
+        # A missing value is no jump.
+        self.assertEqual(
+            touches.first_touch(None, None, False, 0.8, 0.9, 0.5), (None, None, None, False, None)
+        )
+        self.assertEqual(touches.first_touch(0.5, 0.5, False, None, 0.9, 0.5)[3], False)
+
+    def test_db_apart_of_silence(self):
+        inf = float("-inf")
+        self.assertEqual(touches.db_apart(inf, inf), 0.0)
+        self.assertEqual(touches.db_apart(inf, -60.0), float("inf"))
+        self.assertEqual(touches.db_apart(-3.0, -1.5), 1.5)
+
+    def test_the_finger_at_the_frame_that_sent_the_applied_set(self):
+        frames = [{"q": 4, "r": 0.5}, {"q": 5, "r": 0.52}, {"q": 7, "r": 0.6}]
+        self.assertEqual(touches.finger_at(frames, 5), 0.52)
+        self.assertEqual(touches.finger_at(frames, 6), 0.52, "the last frame before it")
+        self.assertEqual(touches.finger_at(frames, 3), 0.5, "none before: the first")
+        self.assertEqual(touches.finger_at(frames, None), 0.5)
+        self.assertEqual(touches.finger_at([], 5), None)
+
+
+class TouchSets(unittest.TestCase):
+    def test_a_frame_names_its_set_by_seq_and_time(self):
+        frames = [{"t": 1_000.0, "q": 7}, {"t": 1_016.0, "q": 8}]
+        self.assertTrue(model.names_set(frames, {"seq": 8, "t": 1_015.8}))
+        self.assertTrue(model.names_set(frames, {"seq": 7, "t": 1_050.0}), "50 ms")
+        self.assertFalse(model.names_set(frames, {"seq": 7, "t": 1_050.1}))
+        self.assertFalse(model.names_set(frames, {"seq": 9, "t": 1_016.0}), "another seq")
+        self.assertFalse(model.names_set(frames, {"seq": 8}), "no time")
+        self.assertFalse(model.names_set([{"q": 8}], {"seq": 8, "t": 1_016.0}), "a frame without t")
