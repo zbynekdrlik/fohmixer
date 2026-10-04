@@ -32,6 +32,11 @@ LEAD_MS = 60000
 TRACE_TAIL_MS = 60000
 # A change between two applied volumes past this is a jump (dB).
 JUMP_DB = 3.0
+# The page records a frame longer than this (ms, ``diag/trace.rs``
+# ``LONG_FRAME_MS``). A long frame is stamped at the stall's end, in the tick
+# that sends the next set; this far before its stamp lies inside any stall
+# (no send there), whatever the few ms the two clock offsets differ.
+INSIDE_STALL_MS = 50.0 / 2
 
 ROWS = ("send", "arrival", "applied")
 
@@ -338,9 +343,9 @@ class Timeline:
             )
         if bad:
             self.notes.append(f"{bad} page events without ev or t were left out")
-        # A long frame is stamped at the stall's end: one past the window's
-        # end can still lie inside it.
-        self.page = [e for e in events if e.hub <= end or e.ev == "frame"]
+        # A long frame is stamped at the stall's end, a drop note when its
+        # batch goes: one past the window's end can still cover it.
+        self.page = [e for e in events if e.hub <= end or e.ev in ("frame", "overflow")]
         self._link(kinds)
         self._live(kinds, marks)
         self._controls(kinds)
@@ -626,9 +631,10 @@ class Timeline:
             rtt = a2.info["rtt_ms"]
             # A dropout or a busy Live shows when Live applies: the applied
             # interval. A page stall shows in the page's sends: the long frame
-            # whose stamp (the stall's end) falls after S1's send and by S2's,
-            # or dropped long frames whose stamps meet that interval; without
-            # both sets, the applied interval.
+            # whose stall (``INSIDE_STALL_MS`` before its stamp) falls after
+            # S1's send and by S2's, or dropped long frames whose stamps,
+            # moved so, meet that interval; without both sets, the applied
+            # interval.
             hits = [
                 name
                 for name, spans in (("dropout", self.dropouts), ("busy", self.busy))
@@ -637,8 +643,9 @@ class Timeline:
             holes = [d for d in self.no_data if d.info[0] == "frame"]
             if s1 is not None and s2 is not None:
                 low, high = sent_of(s1), sent_of(s2)
-                stalled = any(low < f.end <= high for f in self.frames)
-                unknown = any(overlaps(d.start, d.end, low, high) for d in holes)
+                inside = INSIDE_STALL_MS
+                stalled = any(low < f.end - inside <= high for f in self.frames)
+                unknown = any(overlaps(d.start - inside, d.end - inside, low, high) for d in holes)
             else:
                 stalled = any(overlaps(f.start, f.end, a1.time, a2.time) for f in self.frames)
                 unknown = any(overlaps(d.start, d.end, a1.time, a2.time) for d in holes)

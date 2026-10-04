@@ -389,13 +389,13 @@ JUMP_LEGEND = (
     "Cause: link (the hub's arrivals of the control stopped for over 100 ms while "
     "the page kept sending, or a dropout), live (Live's round trip of the batch or "
     "the wait at the hub over 100 ms, or Live busy), page (the page stopped sending "
-    "for over 100 ms after S1, or a long frame ended between S1's send and S2's), "
-    "no data (none of these, but the "
-    "page's recorder dropped the long frames of that time), move (none of these). "
-    "Arrival gap "
-    "and send gap: the largest gaps from the arrival (send) before S1 to S2; page "
-    "gap: the largest send gap after S1. S1 and S2 are the sets behind the two "
-    "applied values."
+    "for over 100 ms after S1, or a long frame stalled it between S1's send and "
+    "S2's), no data (none of these, but the page's recorder dropped the long frames "
+    "of that time), move (none of these). Arrival gap and send gap: the largest "
+    "gaps from the arrival (send) before S1 to S2; page gap: the largest send gap "
+    "after S1. Overlaps: a dropout or Live busy over the interval of the two "
+    "applied values, a long frame (frame) or dropped long frames (nodata) between "
+    "S1's send and S2's. S1 and S2 are the sets behind the two applied values."
 )
 
 
