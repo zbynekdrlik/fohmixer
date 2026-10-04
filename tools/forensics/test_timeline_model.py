@@ -106,6 +106,10 @@ class Helpers(unittest.TestCase):
         # Another control's down after the lift does not cut the tail.
         other = [touch(1000, "down"), touch(2000, "up"), touch(2500, "down", 3, keys=(HAND,))]
         self.assertEqual(model.gestures(other, VOX, 9000), [(1000, 3000.0)])
+        # A touch of the control that begins exactly at the lift cuts the tail
+        # there (at or after the lift, not only after it).
+        regrab = [touch(1000, "down"), touch(2000, "up"), touch(2000, "down", pointer=2)]
+        self.assertEqual(model.gestures(regrab, VOX, 9000), [(1000, 2000), (2000, 9000)])
         # A toggle's tap (no lift follows) lasts the tail only.
         taps = [touch(1000, "tap"), touch(6000, "tap", pointer=2)]
         self.assertEqual(model.gestures(taps, VOX, 9000), [(1000, 2000.0), (6000, 7000.0)])
