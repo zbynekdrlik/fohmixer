@@ -201,12 +201,14 @@ class Causes(ReportCase):
         log.pings(7, BASE, BASE + 3000)
         log.pings(9, BASE, BASE + 4000, offset=OFFSET + 400)
         back = end + 5 * 60000
-        log.pings(8, back - 1000, back)
+        # Its round trips were slow: the tail's pings give the clock only.
+        log.pings(8, back - 1000, back, rtt=900.0)
         p0 = BASE + 1000 - OFFSET
         log.trace(back, 8, [{"ev": "frame", "t": p0 + 500, "ms": 120.0}])
-        _, page, _ = self.report(log, BASE, end)
+        summary, page, _ = self.report(log, BASE, end)
         (frame,) = page.of_class("frame")
         self.assertAlmostEqual(float(frame["data-start"]), p0 + 380 + OFFSET, delta=0.05)
+        self.assertEqual(summary["rtt_hub_max_ms"], "12.0", "the window's pings only")
 
     def test_a_trace_29_minutes_after_a_window_ending_before_midnight_counts(self):
         # The tail reaches into the next UTC date's day file.

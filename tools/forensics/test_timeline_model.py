@@ -310,6 +310,55 @@ class TouchSets(unittest.TestCase):
         self.assertFalse(model.names_set([{"q": 8}], {"seq": 8, "t": 1_016.0}), "a frame without t")
 
 
+class NoDataText(unittest.TestCase):
+    """A dropped span's note and tooltip (PR E): how many records of which
+    kind, their page stamps on the hub clock (one stamp said once), and for
+    long frames the stalls they can stand for."""
+
+    OFFSET = 250.5
+
+    def span(self, kind, n, start, to):
+        lead = model.LONG_FRAME_MS if kind == "frame" else 0.0
+        first, last = start - lead + self.OFFSET, to + self.OFFSET
+        return model.NoData(first, last, last - first, (kind, n, start, to))
+
+    def at(self, page_t):
+        return read.local_text(page_t + self.OFFSET)
+
+    def test_one_long_frame_is_one_stamp_and_its_stall(self):
+        t = 1791044401000.0
+        self.assertEqual(
+            model.no_data_text(self.span("frame", 1, t, t)),
+            f"the page flight recorder dropped 1 long frame stamped at {self.at(t)}: "
+            f"no data of page stalls from {self.at(t - 50)} to {self.at(t)}",
+        )
+
+    def test_long_frames_are_their_first_and_last_stamps_and_the_stalls_between(self):
+        t = 1791044401000.0
+        self.assertEqual(
+            model.no_data_text(self.span("frame", 2, t, t + 112)),
+            f"the page flight recorder dropped 2 long frames stamped from {self.at(t)} to "
+            f"{self.at(t + 112)}: no data of page stalls from {self.at(t - 50)} to "
+            f"{self.at(t + 112)}",
+        )
+
+    def test_one_dropped_record_of_another_kind_is_its_one_time(self):
+        t = 1791044401000.0
+        self.assertEqual(
+            model.no_data_text(self.span("mv", 1, t, t)),
+            f"the page flight recorder dropped 1 mv event at {self.at(t)}: "
+            "no data of that kind there",
+        )
+
+    def test_dropped_records_of_another_kind_are_their_span(self):
+        t = 1791044401000.0
+        self.assertEqual(
+            model.no_data_text(self.span("rtt", 3, t, t + 2000)),
+            f"the page flight recorder dropped 3 rtt events from {self.at(t)} to "
+            f"{self.at(t + 2000)}: no data of that kind there",
+        )
+
+
 class PageRecorder(unittest.TestCase):
     """The page's recorder constants the timeline relies on (#43 PR E): read
     from ``crates/fohmixer-ui/src/diag/trace.rs`` so the two cannot drift."""

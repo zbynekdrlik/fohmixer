@@ -163,7 +163,9 @@ class Log:
         days = {}
         for record in sorted(self.records, key=lambda r: r["ts"]):
             day = datetime.datetime.fromtimestamp(record["ts"] / 1000.0, datetime.UTC).date()
-            days.setdefault(day, []).append(json.dumps(record, separators=(",", ":")))
+            # As the hub writes them: compact, keys sorted (serde_json's map).
+            line = json.dumps(record, separators=(",", ":"), sort_keys=True)
+            days.setdefault(day, []).append(line)
         for day, lines in days.items():
             path = os.path.join(folder, f"events-{day.isoformat()}.jsonl")
             with open(path, "a", encoding="utf-8") as f:
@@ -614,6 +616,8 @@ class Window(ReportCase):
         log.add("set", BASE + 15000, client=7, instance="band", key=VOX, seq=2, value=0.5)
         log.add("ping", BASE + 15000, client=7, n=1, t=BASE + 15000 - OFFSET, offset_ms=OFFSET)
         log.add("set", BASE + 25000, client=4, instance="band", key=VOX, seq=3, value=0.5)
+        # A record stamped exactly at --to is in the window.
+        log.add("set", end, client=7, instance="band", key=VOX, seq=4, value=0.5)
         reset = {"ev": "reset", "t": BASE + 19000 - OFFSET, "active": False}
         # A batch uploaded after the window still brings its events; one past
         # the 30 minutes after it does not.
@@ -627,14 +631,13 @@ class Window(ReportCase):
         with open(day, "a", encoding="utf-8") as f:
             f.write("\n")
             f.write(f'{{"ev":"set","ts":{BASE + 15001},"key":"band|li\n')
-            # In the trace tail only traces and pings are read: a set there
-            # is never parsed, so a write in progress past the window never
-            # counts.
+            # In the trace tail only traces and pings are read: a set line
+            # there, even a broken one whose ts is readable, is never parsed.
             f.write(f'{{"ev":"set","ts":{end + 10 * 60000},"key":"band|li\n')
             f.write(f'{{"ev":"set","ts":{end + 31 * 60000},"key":"band|li\n')
             f.write('{"ev":"ba')
         summary, page, _ = self.report(Log(), start, end)
-        self.assertEqual(summary["records"], "2")
+        self.assertEqual(summary["records"], "3")
         self.assertEqual(summary["sockets"], "1")
         self.assertEqual(summary["resets"], "1")
         self.assertEqual(summary["skipped_lines"], "2", "only lines that could be in range")
@@ -659,6 +662,15 @@ class Window(ReportCase):
         summary, page, _ = self.report(log, end - 5000, end)
         self.assertNotIn("events-2026-10-04.jsonl", page.text)
         self.assertNotIn("no event file", page.text)
+
+    def test_a_missing_day_file_the_lead_reaches_is_noted(self):
+        # A window starting 30 s after UTC midnight: its 60 s lead (offsets,
+        # busy episodes that started before) reaches the previous date.
+        start = calendar.timegm((2026, 10, 4, 0, 0, 30)) * 1000
+        log = Log()
+        log.add("set", start + 1000, client=7, instance="band", key=VOX, seq=1, value=0.5)
+        _, page, _ = self.report(log, start, start + 5000)
+        self.assertIn("no event file events-2026-10-03.jsonl", page.text)
 
     def test_the_writers_notes_are_counted(self):
         log = Log()
