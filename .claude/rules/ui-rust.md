@@ -26,6 +26,7 @@ paths:
 ## Mutation-proof by design (cargo-mutants 27 mutates every comparison, `!`, arithmetic, match guard, and constants in const expressions)
 
 - A threshold is a one-line helper (`is_emergency`, `short_of_step`, `near_centre`, `within_epsilon`) tested at the exact float boundary and the next float (`0.03` vs `0.030000000000000002`), so `<`/`<=` cannot survive.
+- **A recorder test's first `upload` takes every event that fits a batch (#43 PR D):** push the events a check is about AFTER that first upload, or the first batch swallows them (the comma test of c951403 pushed 100 + 500 + 471 bytes first, its first batch took 100 + 500, and its full-batch case never ran: CI red, and the RED had failed for that reason, not the missing commas). Nothing compiles locally, so walk `batch_count` by hand for each upload in a new test.
 - Prefer forms without equivalent mutants: `clamp`, `min`/`max`, `total_cmp`, `is_sign_positive`, `copysign` instead of hand-written comparisons that give the same result at the boundary.
 - A constant built in a const expression (`FRAME_MS = 1000.0 / 60.0`) needs a test with a literal value (50 ms), not one that uses the constant on both sides.
 - A window closed by a running sum of float steps (`diag/perf.rs`, 10 s of frame gaps): test with whole-ms gaps that reach the boundary exactly (625 × 16.0, 599 × 16.0 + 416.0 = 10 000), never 1000/60-ms steps whose float sum lands a hair under it and spills the next window's frames into this one; the boundary itself is tested on `window_full` with `10_000.0_f64.next_down()`.
