@@ -8,6 +8,7 @@ import {
   hubEvents,
   impair,
   openSurface,
+  pageEvents,
   ready,
   shown,
   strip,
@@ -41,12 +42,9 @@ function rects(html: string, cls: string): Record<string, string>[] {
     .map((tag) => Object.fromEntries([...tag.matchAll(/data-([a-z-]+)="([^"]*)"/g)].map((a) => [a[1], a[2]])));
 }
 
-/** The page events in the hub's event log (every `trace` record's), from page time `from` on. */
-async function pageEvents(from: number): Promise<any[]> {
-  return (await hubEvents())
-    .filter((r) => r.ev === "trace")
-    .flatMap((r) => r.events)
-    .filter((e: any) => e.t >= from - 1000);
+/** The page events in the hub's event log (every `trace` record's, each once), from page time `from` on. */
+async function pageEventsFrom(from: number): Promise<any[]> {
+  return pageEvents(await hubEvents()).filter((e: any) => e.t >= from - 1000);
 }
 
 let live: LiveClient;
@@ -82,7 +80,7 @@ test("a fader dragged through a stall: every hop and the page's record in the ev
   // The page's record: its touch (down with where it started, and up), the
   // moves of each frame that sent, the dropout of the stall.
   const record = await until(
-    () => pageEvents(dragFrom),
+    () => pageEventsFrom(dragFrom),
     (all) => all.some((e: any) => e.ev === "touch" && e.what === "up" && e.keys.includes(KEY)),
     "the page's touch in the event log",
     10_000,
@@ -184,7 +182,7 @@ test("a touch that starts from a value Live no longer holds is a first-touch jum
   const first = events.find((e) => e.ev === "set" && e.key === KEY && e.t >= from && "live_before" in e);
   expect(first.live_before).toBeCloseTo(0.85, 6);
   await until(
-    () => pageEvents(from),
+    () => pageEventsFrom(from),
     (all) => all.some((e: any) => e.ev === "touch" && e.what === "up" && e.pointer === 62),
     "the page's touch in the event log",
     10_000,

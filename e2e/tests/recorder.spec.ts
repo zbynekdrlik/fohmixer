@@ -173,18 +173,18 @@ test("on a slow link the recorder never delays a drag's sets and its newest even
   );
   const lag = lift!.ts - lift!.e.t;
   test.info().annotations.push({ type: "lag-ms", description: String(Math.round(lag)) });
-  // The bound (design note §5.2): the two drags' events (~25 KB, about 2.5 s
-  // at one batch of at most 1 000 bytes per 100 ms tick once the fingers
-  // rest) were about 5 s by PR D's 48 KB bound; the page's timers run late
-  // on a loaded runner (a 6.1 s lag for ~32 KB, #43), so twice that. PR C's
-  // gate starved it for minutes.
+  // The bound (design note §5.2): the two drags' events (~33 KB, at one
+  // batch of at most 1 000 bytes per 100 ms tick once the fingers rest about
+  // 3.5 s, and the last, partial batch waits its 2 s) are about what PR D's
+  // two drags left (~32 KB); the page's timers run late on a loaded runner (a
+  // 6.1 s lag for ~32 KB, #43), so 10 s. PR C's gate starved it for minutes.
   expect(lag, "the recorder's lag behind the page (ms)").toBeLessThan(10_000);
 
   // With the recorder on, no batch goes while a drag's sets do: between a
   // drag's first and last set at most 2 `trace` records arrive (the socket's
   // one task stamps both in arrival order; `ts` is whole ms, `hub_ms` finer:
   // 5 ms either side). A tick lets one through only after a page frame over
-  // 100 ms without a set (WebKit on the runner draws ~22 frames a second).
+  // 100 ms without a set (WebKit on the runner draws 14 to 22 frames a second).
   // The check can fail: the page events recorded between the drag's first
   // and last set fill at least 4 batches of 1 000 bytes, so without the
   // gate at least 3 would go inside it.
