@@ -1,8 +1,11 @@
 //! The browser side of the store: the socket, the timers and the signals
 //! that carry out the decisions of `Conn` (`conn.rs`), `net`, the intent
-//! store (`intent.rs`), the dropout watch (`behave::link`) and the pure
-//! store types. Everything here is web glue (web_sys, JS closures, Leptos
-//! signals and timers), driven by the E2E suite in Chromium and WebKit.
+//! store (`intent.rs`), the dropout watch (`behave::link`), the flight
+//! recorder (`diag::trace`) and the pure store types. Everything here is web
+//! glue (web_sys, JS closures, Leptos signals and timers), driven by the E2E
+//! suite in Chromium and WebKit. The writes' glue is `live/writes.rs`, the
+//! link's (the dropout watch's tick, the counter, the recorder's uploads)
+//! `live/link.rs`.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -18,11 +21,13 @@ use wasm_bindgen::closure::Closure;
 use super::conn::{self, Conn, Tick};
 use super::intent::Intents;
 use super::{InstanceView, ResultFn, Slot, TOKEN_KEY, next_range, slot_failure};
-use crate::behave::link::{self, DropoutWatch};
+use crate::behave::link::{Counter, DropoutWatch};
 use crate::binding::{SubSpec, unfold_targets};
+use crate::diag::{self, trace};
 use crate::dom;
 use crate::net::{self, Decision, LayoutFetch};
 
+mod link;
 mod writes;
 
 /// A parameter's range (`min`, `max`) as Live reports it.
@@ -42,6 +47,11 @@ impl Socket {
     /// Whether the socket takes messages (not connecting, not closing).
     fn open(&self) -> bool {
         self.ws.ready_state() == web_sys::WebSocket::OPEN
+    }
+
+    /// The bytes sent on the socket that have not left it yet.
+    fn buffered(&self) -> u32 {
+        self.ws.buffered_amount()
     }
 
     /// Detaches the handlers and closes the socket.
@@ -104,6 +114,8 @@ pub struct LiveStore {
     pub subscribed: RwSignal<usize>,
     /// How many times REFRESH ALL (or the automatic refresh) ran.
     pub refreshes: RwSignal<u32>,
+    /// The dropout counter on the surface (#43, §4.4).
+    pub dropouts: RwSignal<Counter>,
 }
 
 impl LiveStore {
@@ -119,6 +131,7 @@ impl LiveStore {
             connected: RwSignal::new(false),
             subscribed: RwSignal::new(0),
             refreshes: RwSignal::new(0),
+            dropouts: RwSignal::new(Counter::default()),
         }
     }
 
@@ -128,24 +141,6 @@ impl LiveStore {
     pub fn start(self) {
         self.connect();
         self.tick_link();
-    }
-
-    /// The dropout watch's own tick (#43), every `PING_MS` until the store
-    /// stops, whatever the socket does: it keeps ticking while the page
-    /// reconnects, so a lost socket counts from the page's next on-time tick.
-    fn tick_link(self) {
-        set_timeout(
-            move || {
-                if self.stopped() {
-                    return;
-                }
-                let _ = self
-                    .inner
-                    .try_update_value(|i| i.watch.tick(dom::epoch_now()));
-                self.tick_link();
-            },
-            Duration::from_millis(conn::PING_MS),
-        );
     }
 
     /// Ends the store (the surface unmounts): closes the socket, stops
@@ -204,6 +199,13 @@ impl LiveStore {
                 }
                 Ok(LayoutFetch::Failed(why)) | Err(why) => {
                     dom::log(&format!("the hub did not answer: {why}"));
+                    diag::record(&trace::sock(
+                        dom::epoch_now(),
+                        "fail",
+                        None,
+                        None,
+                        Some(&why),
+                    ));
                     self.retry();
                 }
             }
@@ -282,6 +284,13 @@ impl LiveStore {
         if let Some(old) = old {
             old.close();
         }
+        diag::record(&trace::sock(
+            dom::epoch_now(),
+            "open",
+            Some(number),
+            None,
+            None,
+        ));
         self.watch(number);
     }
 
@@ -334,6 +343,13 @@ impl LiveStore {
     /// Drops a socket that went silent (half-open): as if it had closed.
     fn drop_socket(self, why: &str) {
         dom::log(&format!("dropping the hub socket: {why}"));
+        diag::record(&trace::sock(
+            dom::epoch_now(),
+            "drop",
+            None,
+            None,
+            Some(why),
+        ));
         let socket = self.inner.try_update_value(|i| i.socket.take()).flatten();
         if let Some(socket) = socket {
             socket.close();
@@ -343,14 +359,20 @@ impl LiveStore {
 
     /// The socket closed (`code`) or was dropped (`None`).
     fn on_close(self, code: Option<u16>) {
+        let now = dom::epoch_now();
         let Some((closed, pending)) = self.inner.try_update_value(|i| {
             i.socket = None;
             // A socket that said hello: a dropout until the next hello.
-            i.watch.lost(dom::epoch_now());
+            i.watch.lost(now);
             (i.conn.closed(), std::mem::take(&mut i.pending))
         }) else {
             return;
         };
+        // The flight recorder's batches not proved go again after the next
+        // hello (#43).
+        diag::record(&trace::sock(now, "close", None, code, None));
+        let _ = diag::with_trace(trace::Recorder::requeue);
+        self.show_counter();
         if !closed.reconnect {
             return;
         }
@@ -358,7 +380,7 @@ impl LiveStore {
             "the hub socket closed (code {code:?}): reconnecting"
         ));
         if closed.lost {
-            crate::diag::disconnected();
+            diag::disconnected();
         }
         let _ = self.connected.try_set(false);
         let _ = self.hub.try_set(BTreeMap::new());
@@ -389,7 +411,8 @@ impl LiveStore {
             i.conn.heard(now);
             i.watch.heard(epoch);
         });
-        self.send_reports();
+        self.collect_dropouts();
+        self.show_counter();
         let msg = match serde_json::from_str::<ServerMsg>(text) {
             Ok(msg) => msg,
             Err(e) => {
@@ -458,40 +481,22 @@ impl LiveStore {
                 dom::log(&format!("the hub refused a request: {message}"));
             }
             ServerMsg::Pong { n, t, .. } => {
-                let _ = self.inner.try_update_value(|i| {
+                let rtt = self.inner.try_update_value(|i| {
                     let rtt = i.conn.pong(n, t, epoch);
                     i.watch.pong(n, rtt);
+                    rtt
                 });
+                if let Some(rtt) = rtt {
+                    diag::record(&trace::pong(epoch, n, rtt));
+                }
+                // Everything sent before ping n reached the hub's event log.
+                let _ = diag::with_trace(|r| r.proved(n));
             }
             ServerMsg::Ack { items } => self.on_ack(&items),
-            // Live's health: the link counter's input (PR C).
+            // Live's health: the hub logs it (`link` records); the counter
+            // measures the link only (§4.4), so a Live-side delay is not
+            // counted.
             ServerMsg::Link { .. } => {}
-        }
-    }
-
-    /// Sends the finished dropouts to the hub's event log (#43, a
-    /// `trace`); kept for the next try when the socket cannot take them.
-    fn send_reports(self) {
-        let reports = self
-            .inner
-            .try_update_value(|i| i.watch.take_reports())
-            .unwrap_or_default();
-        let Some(trace) = link::trace(&reports) else {
-            return;
-        };
-        for report in &reports {
-            dom::log(&format!(
-                "the hub link dropped out for {:.0} ms{}",
-                report.ms,
-                if report.socket_lost {
-                    " (the socket was lost)"
-                } else {
-                    ""
-                }
-            ));
-        }
-        if !self.send(&trace) {
-            let _ = self.inner.try_update_value(|i| i.watch.requeue(reports));
         }
     }
 
@@ -509,17 +514,24 @@ impl LiveStore {
             );
             return;
         }
+        let epoch = dom::epoch_now();
         let Some(hello) = self.inner.try_update_value(|i| {
-            i.watch.hello(dom::epoch_now());
+            i.watch.hello(epoch);
             i.conn.hello(dom::now())
         }) else {
             return;
         };
         dom::log(&format!("connected to hub {build}"));
         let _ = self.connected.try_set(true);
-        crate::diag::connected();
+        diag::connected();
         self.forget_unwanted();
-        self.send_reports();
+        // The flight recorder's backlog goes at the next tick, oldest first,
+        // after the subscriptions and the writes this hello sets off (#43,
+        // §5.2).
+        diag::record(&trace::sock(epoch, "hello", None, None, None));
+        let _ = diag::with_trace(trace::Recorder::soon);
+        self.collect_dropouts();
+        self.show_counter();
         for spec in &hello.specs {
             self.send_sub(spec);
         }
@@ -650,12 +662,16 @@ impl LiveStore {
         let Ok(text) = serde_json::to_string(msg) else {
             return false;
         };
+        self.send_text(&text)
+    }
+
+    /// Sends a message's text, only on a socket that said hello and is open:
+    /// one the hub is closing would log "already in CLOSING or CLOSED state".
+    fn send_text(self, text: &str) -> bool {
         self.inner
             .try_with_value(|i| match &i.socket {
-                // Only an open socket: one the hub is closing would log
-                // "already in CLOSING or CLOSED state".
                 Some(socket) if i.conn.ready() && socket.open() => {
-                    socket.ws.send_with_str(&text).is_ok()
+                    socket.ws.send_with_str(text).is_ok()
                 }
                 _ => false,
             })

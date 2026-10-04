@@ -1,5 +1,7 @@
-/* fohmixer: the look of a fader's open write (#43, design note §4.3), kept
-   apart from style.css (over its size budget). Loaded after it. */
+/* fohmixer: the look of a write Live has not confirmed (#43, design note
+   §4.3), linked last. A fader's cap shows the write and a ghost line Live's
+   value; the pan's dot and a toggle show Live's value (PR B's decision 7)
+   and only get the outline (PR C). */
 
 /* A write the hub has not confirmed (#43, design note §4.3): the cap keeps
    the engineer's value; an unconfirmed release (1 s without an ack) is
@@ -43,4 +45,21 @@
 
 .fader[data-intent="not_sent"] .fader-ghost::after {
     background: var(--danger);
+}
+
+/* The pan and the toggles (#43, PR C): the same outlines, no ghost and no
+   text. A toggle with several targets shows its most urgent state
+   (`store::intent::most_urgent`). */
+.pan[data-intent="unconfirmed"] .pan-dot,
+.mute[data-intent="unconfirmed"],
+.btn[data-intent="unconfirmed"] {
+    outline: 2px solid var(--warn);
+    outline-offset: 1px;
+}
+
+.pan[data-intent="not_sent"] .pan-dot,
+.mute[data-intent="not_sent"],
+.btn[data-intent="not_sent"] {
+    outline: 2px solid var(--danger);
+    outline-offset: 1px;
 }

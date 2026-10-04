@@ -51,7 +51,7 @@ The code review on #43 found further defects:
 |---|---|
 | Set | `{"type":"set","instance","target","prop","value","seq":<u64>,"t":<page ms>,"final":<bool>}` |
 | Ping | `{"type":"ping","n":<u32>,"t":<page ms>,"rtt":<latest pong's round trip>?,"rtt_n":<the ping it measured>?}`, every 100 ms while the page is visible (every second while hidden); no `rtt` before a socket's first pong |
-| Trace | `{"type":"trace","events":[…]}`: a batch of the flight recorder (§5.2); since PR A each finished dropout, `{"ev":"dropout","t":<start, page ms>,"ms":<length>,"socket_lost":<bool>,"rtts":[the last ≤ 5 round trips before it]}` |
+| Trace | `{"type":"trace","events":[…]}`: a batch of the flight recorder (§5.2), each event with `ev` and the page's `t`; a dropout is `{"ev":"dropout","t":<start, page ms>,"ms":<length>,"socket_lost":<bool>,"rtts":[the last ≤ 5 round trips before it]}` |
 
 - `seq` is per page session and strictly increasing over all sets of that page.
 - `t` is `performance.timeOrigin + performance.now()`, in ms.
@@ -137,6 +137,8 @@ Rules:
 | `unconfirmed` | the cap outlined in amber; a thin ghost line at Live's value |
 | `not_sent` | the cap outlined in red and a ghost at Live's value, no text (owner, #43: space on the tablet is scarce); the next touch starts from the cap |
 
+The pan and the toggles (mute, solo, stage, the former MIDI toggles) keep showing Live's value (P2) and get the same outlines on their dot or button, no ghost (PR C); a toggle with several targets shows its most urgent state (`not_sent`, then `unconfirmed`, then `sending`).
+
 ### 4.4 The dropout counter
 
 The owner ruled out status words on the surface (ROZHODNUTÉ on #43, 2026-10-03): space on the tablet is scarce. Instead the surface shows how often the link drops out.
@@ -151,12 +153,12 @@ The owner ruled out status words on the surface (ROZHODNUTÉ on #43, 2026-10-03)
 
 **What the surface shows (PR C).**
 
-- A small number in the top bar's status cluster that grows by one with every dropout, so the engineer sees it rising under the hands.
+- A small number in the top bar's status cluster (first in it) that grows by one with every dropout, so the engineer sees it rising under the hands: the dropouts since the last tap (`DropoutWatch::counter`).
 - While a dropout lasts the number is red; otherwise it is neutral.
-- A tap resets it to 0.
+- A tap (`pointerdown`) resets it to 0. A dropout that lasts through the tap was counted when it began: the counter shows 0, red until it ends.
 - No words, no sound, no blinking: live mixing must not be disturbed.
 
-**Event log.** Each dropout, when it ends, goes to the hub's event log as a `trace` event (start, length, whether the socket was lost, the last ≤ 5 round trips before it), and so does every reset of the counter (PR C).
+**Event log.** Each dropout, when it ends, goes to the hub's event log as a `trace` event (start, length, whether the socket was lost, the last ≤ 5 round trips before it), and so does every reset of the counter (`{"ev":"reset","t","count":<what it showed>,"active":<a dropout lasted>}`), both through the flight recorder (§5.2).
 
 The detection is a pure state machine (`behave/link.rs`, `DropoutWatch`, since PR A); its constants (100 ms, 300 ms) are pinned by tests and adjusted from real data once the event log has a service, decided on #43.
 
@@ -165,7 +167,7 @@ The detection is a pure state machine (`behave/link.rs`, `DropoutWatch`, since P
 ### 5.1 Hub event log
 
 - **Files.** `logs\events-YYYY-MM-DD.jsonl` (UTC date), one JSON object per line, written by one task through a bounded channel. When the channel is full, the event is counted, never blocking: a `dropped` count is logged at the next write.
-- **Retention.** Files older than 60 days are deleted at start and daily. A day file is capped at 256 MB (past it: `cap` once, then only `warn`-class events).
+- **Retention.** Files older than 60 days are deleted at start and daily. A day file is capped at 256 MB (past it: `cap` once, then only `warn`-class events: `sock`, `link`, the notes, anything with an error, and a `trace` that holds a dropout or a counter reset; the flight recorder's other batches stop at the cap like `ping` and `set`, PR C).
 - **Records** (`ev` field). Every record carries `ts` (hub UTC ms) and, where it applies, `client`, `peer`, `instance`, `key`, `seq`, `t` (page ms).
 
 | `ev` | Fields |
@@ -176,32 +178,34 @@ The detection is a pure state machine (`behave/link.rs`, `DropoutWatch`, since P
 | `applied` | `instance`, the batch number, `n`, `rtt_ms` (Live's round trip), errors, `sent` (key, client, seq) |
 | `ack` | per item; an ack of a batch with its number and `rtt_ms` |
 | `ping` | every ping (10 a second while the page is visible): `n`, `t`, `hub_ms` (its arrival), the page's latest `rtt` and `rtt_n`, `offset_ms` |
-| `trace` | the page's events, as sent: since PR A its dropouts (§4.4); the flight recorder (§5.2) and the counter's resets in PR C |
+| `trace` | `client`, `peer`, `events`: a batch of the page's flight recorder as it sent it (§5.2: its touches, sends, acks, pongs, socket transitions, long frames, visibility, dropouts and the counter's resets) |
 | `link` | busy changes with `tick_age_ms`, heartbeat gaps |
 
 - **Clocks.** Page times (`t`) map to hub time through the ping exchange (Cristian): a ping carries the latest pong's round trip and the number `m` of the ping it measured, and `offset = arrival of ping m − (its t + rtt/2)` from the hub's ring of the last 64 pings, so a round trip is paired with the exchange it measured (ping n − 2 or older on a slow link), never with the carrying ping that may itself have been held up; the lowest-RTT exchange of the last minute wins. Each `ping` record carries it as `offset_ms`, and each `set` record the offset of its socket's last ping with the one-way delay it gives: a stall on the way shows as a gap and a delay spike on the moves after it.
 
 ### 5.2 Page flight recorder (`diag/trace.rs`)
 
-- **Contents.** A ring of the page's own events:
-  - touch down / up / cancel with the key;
-  - each send (`seq`) and ack;
-  - pings and pongs with RTT;
-  - socket transitions with reasons;
-  - frames longer than 50 ms;
-  - visibility;
-  - dropouts and the counter's resets.
-- **Size.** At most 20 000 events and 2 MB.
-- **Upload.** Sent as `trace` batches every 2 s while connected. After a reconnect the backlog goes first, so an outage is recorded from the page's side.
-- **Reload.** A reload loses an unsent backlog. The page keeps nothing in browser storage, because L1–L4 live in memory too.
+- **Contents.** A ring of the page's own events, each with `ev` and the page's `t`:
+  - `touch` (`what` down / up / cancel, or `tap` for a mute, solo or stage button, the control's `keys`, the `pointer`);
+  - each `send` (`key`, `seq`, `value`, `final`, whether the socket took it) and `ack` (`key`, `seq`, an `error` or `superseded` when so);
+  - `pong` (`n`, `rtt`): the ping's own send time is the pong's minus the round trip, and the hub logs every ping that reaches it, so a page event per ping would only double the volume;
+  - socket transitions, `sock` (`what` open / hello / close / drop / fail, the socket number, the close code or the reason);
+  - `frame`: frames longer than 50 ms (not the gap after a visibility change, which is the time hidden);
+  - `visibility` (`hidden`);
+  - dropouts and the counter's resets; `overflow` (`n`: events the full ring dropped).
+- **Size.** At most 20 000 events and 2 MB of their JSON; past either the oldest unsent event goes, counted in the next batch's `overflow`.
+- **Upload.** One `trace` batch of at most 8 KB of events (one WebSocket frame: every move behind it waits for it) every 2 s while connected (every 200 ms while a batch left events behind, up to 40 KB/s: a dragged fader makes ~13 KB/s of events, two fingers ~25 KB/s), and at the link's next 100 ms tick after a hello, a dropout or a reset, oldest first: after a reconnect the backlog goes first, so an outage is recorded from the page's side. A batch goes only from that tick and only while the socket holds nothing unsent (`bufferedAmount` 0), so it never queues in front of the moves on a slow link.
+- **Delivery.** A batch stays in the ring until the pong of a ping sent after it: the hub reads a socket's messages in order, so that pong proves the hub logged the batch. A socket lost first sends it again after the next hello; the log may then hold an exact duplicate, which the timeline drops.
+- **Reload.** A reload loses what was not proved. The page keeps nothing in browser storage, because L1–L4 live in memory too.
 
 ### 5.3 Forensics timeline (`tools/forensics/timeline.py`)
 
-- **Input and output.** Stdlib Python, run on the PC or on a copied log: `timeline.py --events <dir> --from <local time> --to <local time> [--key …] --out report.html`.
-- **What the report shows.**
-  - Per control: three lines — the page's sends, the hub's arrivals and Live's applied values — with gaps over 100 ms marked.
-  - The page's RTT and stalls, Live's busy episodes, the dropouts and the socket transitions.
-  - A summary table: worst confirmation latency, longest stall, jumps over 3 dB between two applied values with their cause.
+- **Input and output.** Stdlib Python, run on the PC or on a copied log: `timeline.py --events <logs dir> --from <local time> --to <local time> [--key …] --out report.html`. It reads the day files that can hold the window and the `hub.out*.log` files beside them (Live busy changes, late heartbeats); an `--out` inside a git checkout is refused. Page times map to the hub's clock with the uploading socket's ping offset.
+- **What the report shows** (one self-contained HTML file, inline SVG).
+  - Per control: three lines — the page's sends, the hub's arrivals and Live's applied values — with gaps over 100 ms marked inside one touch of a continuous control (a control with a non-final send; a toggle's row has none), each touch its own span (`.claude/rules/forensics.md` has the exact rule; without the page's touches, points up to 10 s apart count as one).
+  - The page's RTT and the hub's ping RTT, Live's busy episodes and late heartbeats, the dropouts, the counter's resets, the socket transitions, long frames and visibility.
+  - A summary table: the confirmation latency (Live's `applied` minus the page's send on the hub clock: count, p50, p90, p99, worst), the longest dropout, the longest gaps, and jumps over 3 dB between two applied volume values (TouchOSC's `value2db`) with their measured cause: `link` (the arrivals paused while the page kept sending, or a dropout), `live` (the batch's Live round trip or its wait over 100 ms, or Live busy), `page` (the page sent nothing for over 100 ms, or a long frame), else `move`.
+  - stdout repeats the summary as `name=value` lines, a control only as a hash of its key (the numbers can go on a public ticket).
 - **Hygiene.** It never writes names or addresses into the report header beyond what the log holds. The report stays on the PC or goes to the owner through `share`, never into the repo.
 
 ## 6. Proof
@@ -231,11 +235,11 @@ RED first, against today's code:
 6. The dropout counter:
    - pure tests on `behave/link.rs` (PR A): a silence of 299 ms is no dropout, 300 ms is one; a long silence counts once; a silence that becomes a lost socket is one dropout until the next hello; a lost socket counts even when short; nothing counts before the first hello; the round trips a report carries;
    - in E2E (PR A): the hub's messages held 800 ms give one reported dropout (socket kept), a dropped socket another (socket lost), both in the event log;
-   - PR C: the number rises by one per dropout, is red while one lasts, a tap resets it to 0, each reset in the event log.
+   - PR C: pure tests of `DropoutWatch::counter` / `reset`; in E2E (`counter.spec.ts`, through the impair proxy) an 800 ms stall makes it 1 and red during the stall (a `requestAnimationFrame` sampler; a 400 ms stall is a dropout too, but whether a 100 ms tick sees it lasting depends on the ping's phase), a cut link 2 and red until the reconnect, a tap 0, and the event log then holds the page's records: both dropouts, the reset, and the socket's close the page saw while its link was down, sent up after the reconnect.
 7. The event log:
    - a test drags a fader through a stall;
    - it reads the day file: `set` → `batch` → `applied` → `ack` for the last seq, a `trace` with the touch and the dropouts;
-   - `timeline.py` renders that window with the stall marked.
+   - `timeline.py` renders that window with the stall marked (`forensics.spec.ts`, the harness's `POST /forensics/timeline`); its own unit tests run on synthetic logs.
 8. Mutation (the existing gate) covers the setter, the intent store and the dropout watch.
 
 All Playwright tests keep the zero-console-error assertion, on Chromium and WebKit.

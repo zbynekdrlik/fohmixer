@@ -42,6 +42,14 @@ pub enum TouchEnd {
     Released,
 }
 
+impl TouchEnd {
+    /// Whether it ends a touch of this control (the flight recorder's `up`
+    /// or `cancel`, #43 PR C): not when the pointer drove another one.
+    pub fn ends_touch(self) -> bool {
+        self != Self::NotMine
+    }
+}
+
 /// The end of a touch from whether the pointer drove this control (`mine`)
 /// and the value its release left unsent (`last`).
 pub fn touch_end(mine: bool, last: Option<f64>) -> TouchEnd {
@@ -71,6 +79,13 @@ mod tests {
         assert_eq!(touch_end(false, Some(-0.5)), TouchEnd::Send(-0.5));
         assert_eq!(touch_end(true, None), TouchEnd::Released);
         assert_eq!(touch_end(false, None), TouchEnd::NotMine);
+    }
+
+    #[test]
+    fn a_send_or_a_release_ends_a_touch_another_controls_pointer_does_not() {
+        assert!(TouchEnd::Send(0.4).ends_touch());
+        assert!(TouchEnd::Released.ends_touch());
+        assert!(!TouchEnd::NotMine.ends_touch());
     }
 
     #[test]

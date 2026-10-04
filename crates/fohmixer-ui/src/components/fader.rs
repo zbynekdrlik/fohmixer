@@ -13,14 +13,15 @@
 //! as the ghost (`--g`, `data-ghost`): the stylesheet outlines the cap amber
 //! or red and draws the ghost line, no text (§4.3). A release with nothing
 //! unsent and a glide's end tell the store the release time (L4); a touch
-//! drops a `not_sent` write.
+//! drops a `not_sent` write. Each touch's down, up and cancel goes to the
+//! page's flight recorder (#43, PR C).
 
 use fohmixer_proto::client::set_key;
 use leptos::html;
 use leptos::prelude::*;
 use serde_json::json;
 
-use super::{fail_flash, readiness, readiness_now};
+use super::{fail_flash, readiness, readiness_now, trace_touch};
 use crate::behave::fader::{self as curve, FaderCtl, UNITY};
 use crate::behave::{TouchEnd, touch_end};
 use crate::binding::SubSpec;
@@ -195,7 +196,10 @@ pub fn FaderView(targets: Vec<Target>, shaping: bool) -> impl IntoView {
             .unwrap_or(false);
         if taken {
             let _ = el.set_pointer_capture(id);
-            let _ = keys.try_with_value(|k| store.touch(k));
+            let _ = keys.try_with_value(|k| {
+                store.touch(k);
+                trace_touch("down", k, id);
+            });
         }
     };
     let on_move = move |ev: web_sys::PointerEvent| {
@@ -204,22 +208,30 @@ pub fn FaderView(targets: Vec<Target>, shaping: bool) -> impl IntoView {
     };
     // The end of a touch (`behave::touch_end`): the unsent move as a final
     // `set`, or the release time of the write already sent (L4).
-    let ended = move |end: Option<TouchEnd>| match end {
-        Some(TouchEnd::Send(p)) => send(p, true),
-        Some(TouchEnd::Released) => {
-            let _ = keys.try_with_value(|k| store.release(k));
+    // The flight recorder hears the end of this fader's own touches.
+    let ended = move |end: Option<TouchEnd>, what: &str, id: i32| {
+        if end.is_some_and(TouchEnd::ends_touch) {
+            let _ = keys.try_with_value(|k| trace_touch(what, k, id));
         }
-        Some(TouchEnd::NotMine) | None => {}
+        match end {
+            Some(TouchEnd::Send(p)) => send(p, true),
+            Some(TouchEnd::Released) => {
+                let _ = keys.try_with_value(|k| store.release(k));
+            }
+            Some(TouchEnd::NotMine) | None => {}
+        }
     };
     let on_up = move |ev: web_sys::PointerEvent| {
         let id = ev.pointer_id();
-        ended(ctl.try_update_value(|c| touch_end(c.drives(id), c.up(id, dom::now()))));
+        let end = ctl.try_update_value(|c| touch_end(c.drives(id), c.up(id, dom::now())));
+        ended(end, "up", id);
     };
     // A cancelled pointer, or one whose capture was lost without an up:
     // the touch ends without a tap.
     let on_cancel = move |ev: web_sys::PointerEvent| {
         let id = ev.pointer_id();
-        ended(ctl.try_update_value(|c| touch_end(c.drives(id), c.cancel(id, dom::now()))));
+        let end = ctl.try_update_value(|c| touch_end(c.drives(id), c.cancel(id, dom::now())));
+        ended(end, "cancel", id);
     };
 
     raf::animate(root, move |el| {

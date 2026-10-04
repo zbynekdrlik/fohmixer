@@ -1,14 +1,18 @@
 //! The toggle buttons (spec F12, F14, F15): the strip mute with its
 //! protection, the group solos, the stage-mic button and STAGE AUT. Every
 //! button shows Live's (or the hub's) value, never a local memory (spec P2),
-//! and takes a tap only once that value is here (I8).
+//! and takes a tap only once that value is here (I8). A write that Live has
+//! not confirmed outlines the button (`data-intent`, #43 PR C:
+//! `components::intent_look`), and each tap goes to the page's flight
+//! recorder.
 
 use fohmixer_proto::client::HUB_STAGE_AUT;
 use fohmixer_proto::layout::{Anchor, Binding};
+use leptos::html;
 use leptos::prelude::*;
 use serde_json::{Value, json};
 
-use super::{BtnText, fail_flash, readiness, slot_of};
+use super::{BtnText, fail_flash, intent_look, key_of, readiness, slot_of, trace_touch};
 use crate::behave::colour::{css_color, text_on};
 use crate::behave::label::{label_chars, strip_label};
 use crate::behave::mute::{GUARD_MS, GuardAction, MuteGuard, lit};
@@ -76,6 +80,10 @@ pub fn MuteView(
 ) -> impl IntoView {
     let store = expect_context::<LiveStore>();
     let slot = state;
+    let keys = vec![key_of(&spec)];
+    let root = NodeRef::<html::Div>::new();
+    intent_look(root, store, keys.clone());
+    let keys = StoredValue::new(keys);
     let spec = StoredValue::new(spec);
     let guard = StoredValue::new(MuteGuard::default());
     let armed = RwSignal::new(false);
@@ -85,6 +93,7 @@ pub fn MuteView(
             return;
         }
         ev.prevent_default();
+        let _ = keys.try_with_value(|k| trace_touch("tap", k, ev.pointer_id()));
         let action = guard
             .try_update_value(|g| g.on_tap(guarded, dom::now()))
             .unwrap_or(GuardAction::Arm);
@@ -124,6 +133,7 @@ pub fn MuteView(
     view! {
         <div
             class="mute"
+            node_ref=root
             class:lit=is_lit
             class:armed=move || armed.get()
             class:failed=move || failed.get()
@@ -148,10 +158,15 @@ pub fn SoloView(binding: Binding, label: Option<String>) -> impl IntoView {
     let track = anchor_name(&binding);
     let spec = solo_sub(&binding);
     let slot = slot_of(store, spec.as_ref());
+    let keys: Vec<String> = spec.iter().map(key_of).collect();
+    let root = NodeRef::<html::Div>::new();
+    intent_look(root, store, keys.clone());
+    let keys = StoredValue::new(keys);
     let spec = StoredValue::new(spec);
     let failed = RwSignal::new(false);
     let on_down = move |ev: web_sys::PointerEvent| {
         ev.prevent_default();
+        let _ = keys.try_with_value(|k| trace_touch("tap", k, ev.pointer_id()));
         let _ = spec.try_with_value(|s| {
             if let Some(s) = s {
                 toggle_flag(store, s, slot, failed);
@@ -165,6 +180,7 @@ pub fn SoloView(binding: Binding, label: Option<String>) -> impl IntoView {
     view! {
         <div
             class="btn solo"
+            node_ref=root
             class:on=on
             class:failed=move || failed.get()
             data-testid="solo"
@@ -190,10 +206,15 @@ pub fn StageMicsView(binding: Binding, label: Option<String>) -> impl IntoView {
     let label = label.unwrap_or_else(|| "STAGE".to_string());
     let spec = mute_sub(&binding);
     let slot = slot_of(store, spec.as_ref());
+    let keys: Vec<String> = spec.iter().map(key_of).collect();
+    let root = NodeRef::<html::Div>::new();
+    intent_look(root, store, keys.clone());
+    let keys = StoredValue::new(keys);
     let spec = StoredValue::new(spec);
     let failed = RwSignal::new(false);
     let on_down = move |ev: web_sys::PointerEvent| {
         ev.prevent_default();
+        let _ = keys.try_with_value(|k| trace_touch("tap", k, ev.pointer_id()));
         let _ = spec.try_with_value(|s| {
             if let Some(s) = s {
                 toggle_flag(store, s, slot, failed);
@@ -208,6 +229,7 @@ pub fn StageMicsView(binding: Binding, label: Option<String>) -> impl IntoView {
     view! {
         <div
             class="btn stage-mics"
+            node_ref=root
             class:on=live
             class:failed=move || failed.get()
             data-testid="stage-mics"

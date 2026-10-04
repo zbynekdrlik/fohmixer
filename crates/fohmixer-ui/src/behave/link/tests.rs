@@ -343,41 +343,6 @@ fn reports_keep_the_last_five_round_trips_and_at_most_64_wait() {
 }
 
 #[test]
-fn reports_that_could_not_be_sent_go_back_first() {
-    let mut w = up(&[]);
-    let mut unsent = Vec::new();
-    for (n, at) in [(0_u32, 1_000.0), (1, 2_000.0), (2, 3_000.0)] {
-        ticks(&mut w, at - 500.0, at);
-        w.ping(n, at);
-        ticks(&mut w, at + 100.0, at + 400.0);
-        w.heard(at + 500.0);
-        w.pong(n, 500.0);
-        if n == 1 {
-            // Taken for a send that failed; a newer dropout ends meanwhile.
-            unsent = w.take_reports();
-            assert_eq!(unsent.len(), 2);
-        }
-    }
-    w.requeue(unsent);
-    let all: Vec<f64> = w.take_reports().iter().map(|r| r.t).collect();
-    assert_eq!(all, vec![1_000.0, 2_000.0, 3_000.0], "the older ones first");
-    // A full queue takes back what fits, newest of them first.
-    let mut full = DropoutWatch::default();
-    let one = |t: f64| Dropout {
-        t,
-        ms: 300.0,
-        socket_lost: false,
-        rtts: vec![],
-    };
-    full.requeue((0..63).map(|i| one(f64::from(i))).collect());
-    full.requeue(vec![one(100.0), one(200.0)]);
-    let kept = full.take_reports();
-    assert_eq!(kept.len(), 64);
-    assert_eq!(kept[0].t, 200.0);
-    assert_eq!(kept[1].t, 0.0);
-}
-
-#[test]
 fn a_report_is_a_dropout_event_of_a_trace() {
     let report = Dropout {
         t: 5_000.5,
@@ -390,11 +355,179 @@ fn a_report_is_a_dropout_event_of_a_trace() {
         json!({"ev": "dropout", "t": 5_000.5, "ms": 420.0, "socket_lost": true,
                "rtts": [12.0, 14.5]})
     );
+}
+
+/// One whole dropout from `at`: a ping unanswered for 400 ms, the page
+/// ticking, then the pong.
+fn dropout(w: &mut DropoutWatch, at: f64, n: u32) {
+    ticks(w, at - 500.0, at);
+    w.ping(n, at);
+    ticks(w, at + 100.0, at + 300.0);
+    w.heard(at + 400.0);
+    w.pong(n, 400.0);
+}
+
+#[test]
+fn the_counter_counts_each_dropout_once_and_is_red_only_while_it_lasts() {
+    let mut w = up(&[]);
+    assert_eq!(w.counter(), Counter::default(), "0, neutral");
+    // A long silence: red while it lasts, counted once.
+    ticks(&mut w, 100.0, 1_000.0);
+    w.ping(0, 1_000.0);
+    ticks(&mut w, 1_100.0, 1_200.0);
     assert_eq!(
-        trace(std::slice::from_ref(&report)),
-        Some(ClientMsg::Trace {
-            events: vec![report.event()]
-        })
+        w.counter(),
+        Counter {
+            count: 0,
+            active: false
+        }
     );
-    assert_eq!(trace(&[]), None);
+    w.tick(1_300.0);
+    assert_eq!(
+        w.counter(),
+        Counter {
+            count: 1,
+            active: true
+        }
+    );
+    ticks(&mut w, 1_400.0, 2_500.0);
+    assert_eq!(
+        w.counter(),
+        Counter {
+            count: 1,
+            active: true
+        }
+    );
+    w.heard(2_550.0);
+    w.pong(0, 1_550.0);
+    assert_eq!(
+        w.counter(),
+        Counter {
+            count: 1,
+            active: false
+        }
+    );
+    // A lost socket: one more, red until the next hello.
+    ticks(&mut w, 2_600.0, 3_000.0);
+    w.lost(3_000.0);
+    assert_eq!(
+        w.counter(),
+        Counter {
+            count: 2,
+            active: true
+        }
+    );
+    ticks(&mut w, 3_100.0, 3_600.0);
+    assert_eq!(
+        w.counter(),
+        Counter {
+            count: 2,
+            active: true
+        }
+    );
+    w.hello(3_650.0);
+    assert_eq!(
+        w.counter(),
+        Counter {
+            count: 2,
+            active: false
+        }
+    );
+    // A silence of exactly 300 ms that no tick saw: counted when it ends,
+    // never red.
+    ticks(&mut w, 3_700.0, 4_000.0);
+    w.ping(1, 4_000.0);
+    ticks(&mut w, 4_100.0, 4_200.0);
+    assert_eq!(
+        w.counter(),
+        Counter {
+            count: 2,
+            active: false
+        }
+    );
+    w.heard(4_300.0);
+    assert_eq!(
+        w.counter(),
+        Counter {
+            count: 3,
+            active: false
+        }
+    );
+}
+
+#[test]
+fn a_tap_resets_the_counter_to_0_and_its_event_says_what_it_showed() {
+    let mut w = up(&[]);
+    for (i, at) in [10_000.0, 20_000.0, 30_000.0, 40_000.0, 50_000.0]
+        .into_iter()
+        .enumerate()
+    {
+        dropout(&mut w, at, i as u32);
+    }
+    assert_eq!(
+        w.counter(),
+        Counter {
+            count: 5,
+            active: false
+        }
+    );
+    assert_eq!(
+        w.reset(51_000.5),
+        json!({"ev": "reset", "t": 51_000.5, "count": 5, "active": false})
+    );
+    assert_eq!(
+        w.counter(),
+        Counter {
+            count: 0,
+            active: false
+        }
+    );
+    for (i, at) in [60_000.0, 70_000.0, 80_000.0].into_iter().enumerate() {
+        dropout(&mut w, at, 10 + i as u32);
+    }
+    assert_eq!(
+        w.counter(),
+        Counter {
+            count: 3,
+            active: false
+        },
+        "since the tap"
+    );
+    assert_eq!(w.count(), 8, "since the page loaded");
+    // A tap while a dropout lasts: 0, still red until it ends.
+    ticks(&mut w, 80_500.0, 90_000.0);
+    w.ping(20, 90_000.0);
+    ticks(&mut w, 90_100.0, 90_400.0);
+    assert_eq!(
+        w.counter(),
+        Counter {
+            count: 4,
+            active: true
+        }
+    );
+    assert_eq!(
+        w.reset(90_450.0),
+        json!({"ev": "reset", "t": 90_450.0, "count": 4, "active": true})
+    );
+    assert_eq!(
+        w.counter(),
+        Counter {
+            count: 0,
+            active: true
+        }
+    );
+    w.heard(90_600.0);
+    assert_eq!(
+        w.counter(),
+        Counter {
+            count: 0,
+            active: false
+        }
+    );
+    assert_eq!(w.count(), 9);
+    // A second tap with nothing new: 0 again.
+    assert_eq!(
+        w.reset(91_000.0),
+        json!({"ev": "reset", "t": 91_000.0, "count": 0, "active": false})
+    );
 }

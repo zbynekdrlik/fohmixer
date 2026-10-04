@@ -1,6 +1,7 @@
 //! The mixer surface (the redesign, #21; spec §4.2): the top bar (the pages'
-//! tabs, the page pager's tabs, the SOLO ✕ pill, the connection badges and
-//! the version), the page's rail with the global controls at its foot, and
+//! tabs, the page pager's tabs, the SOLO ✕ pill, the dropout counter (#43),
+//! the connection badges and the version), the page's rail with the global
+//! controls at its foot, and
 //! the page's rows of sections. Only the controls on screen are mounted, so
 //! only their bindings are subscribed; the selected page and sub-page are
 //! remembered on the device. The one number the stylesheet cannot decide,
@@ -411,8 +412,35 @@ fn SoloClear(bindings: Vec<Binding>) -> impl IntoView {
     }
 }
 
-/// The connection badges (per instance: online, busy, offline) and the
-/// version, at the right end of the top bar.
+/// The dropout counter (#43, §4.4; the owner's ruling of 2026-10-03): a
+/// small number, the link's dropouts since the last tap, red while one
+/// lasts; a tap resets it to 0. No words, no sound, no blinking: space on
+/// the tablet is scarce and live mixing must not be disturbed.
+#[component]
+fn DropoutCounter() -> impl IntoView {
+    let store = expect_context::<LiveStore>();
+    let counter = store.dropouts;
+    let on_down = move |ev: web_sys::PointerEvent| {
+        ev.prevent_default();
+        store.reset_dropouts();
+    };
+    let active = move || counter.get().active;
+    view! {
+        <button
+            type="button"
+            class="dropouts"
+            class:active=active
+            data-testid="dropouts"
+            data-active=move || active().to_string()
+            on:pointerdown=on_down
+        >
+            {move || counter.get().count.to_string()}
+        </button>
+    }
+}
+
+/// The dropout counter, the connection badges (per instance: online, busy,
+/// offline) and the version, at the right end of the top bar.
 #[component]
 fn StatusCluster() -> impl IntoView {
     let store = expect_context::<LiveStore>();
@@ -440,6 +468,7 @@ fn StatusCluster() -> impl IntoView {
     };
     view! {
         <div class="status-cluster">
+            <DropoutCounter />
             <span class="hub-dot" class:online=move || store.connected.get()></span>
             {badges}
             <span class="version" data-testid="version">{version_text()}</span>

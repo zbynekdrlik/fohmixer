@@ -2,6 +2,10 @@
 built only in the e2e job, where the Playwright suite drives the harness)."""
 
 import base64
+import calendar
+import contextlib
+import datetime
+import io
 import json
 import os
 import shutil
@@ -19,8 +23,104 @@ from http.server import ThreadingHTTPServer
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import harness  # noqa: E402
+import timeline_read  # noqa: E402  (on sys.path through the harness)
 
 LAYOUT = os.path.join(harness.REPO, "tools", "import-tosc", "fixtures", "expected-layout.json")
+# A synthetic window of the event log: 2026-10-03 16:20:00 UTC on the hub's clock.
+BASE = calendar.timegm((2026, 10, 3, 16, 20, 0)) * 1000
+VOX = "band|live_set tracks[name=Vox 1] mixer_device volume|value"
+
+
+def write_window(data):
+    """One write of Vox 1 through the hub into ``data``'s event log: its
+    ``set``, ``batch`` and ``applied`` records."""
+    logs = os.path.join(data, "logs")
+    os.makedirs(logs, exist_ok=True)
+    item = {"key": VOX, "client": 3, "seq": 1}
+    sent = dict(item, value=0.7)
+    records = [
+        dict(sent, ev="set", ts=BASE + 1003, instance="band", t=BASE + 1000.0, offset_ms=0.0),
+        {"ev": "batch", "ts": BASE + 1004, "instance": "band", "batch": 1, "sent": [sent]},
+        dict(ev="applied", ts=BASE + 1016, instance="band", batch=1, rtt_ms=12.0, sent=[item]),
+    ]
+    with open(os.path.join(logs, "events-2026-10-03.jsonl"), "w", encoding="utf-8") as f:
+        f.write("".join(json.dumps(r) + "\n" for r in records))
+    return logs
+
+
+def quietly(call, *args):
+    """``call(*args)`` with the harness's own log line kept out of the test output."""
+    with contextlib.redirect_stdout(io.StringIO()):
+        return call(*args)
+
+
+class ForensicsTimeline(unittest.TestCase):
+    """The ``/forensics/timeline`` route's function, no host needed."""
+
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory(prefix="fohmixer-harness-forensics-")
+        self.addCleanup(folder.cleanup)
+        self.data = folder.name
+
+    def test_the_tool_renders_the_window_of_the_data_folders_log(self):
+        write_window(self.data)
+        body = {"from_ms": BASE, "to_ms": BASE + 5000}
+        answer = quietly(harness.forensics_timeline, self.data, body)
+        self.assertEqual((answer["exit"], answer["stderr"]), (0, ""))
+        summary = dict(line.split("=", 1) for line in answer["stdout"].splitlines())
+        self.assertEqual((summary["records"], summary["confirmation_n"]), ("3", "1"))
+        self.assertEqual(summary["worst_confirmation_ms"], "16.0", "applied 16 ms after the send")
+        self.assertNotIn("Vox 1", answer["stdout"])
+        self.assertIn('class="control"', answer["html"])
+        self.assertIn("Vox 1", answer["html"])
+        filtered = quietly(harness.forensics_timeline, self.data, dict(body, key="Hand2"))
+        self.assertEqual(filtered["exit"], 0)
+        self.assertNotIn('class="control"', filtered["html"], "--key Hand2 leaves no lane")
+        self.assertIn("confirmation_n=0\n", filtered["stdout"])
+
+    def test_a_refusal_of_the_tool_comes_back_without_a_report(self):
+        answer = quietly(harness.forensics_timeline, self.data, {"from_ms": BASE, "to_ms": BASE})
+        self.assertEqual((answer["exit"], answer["html"], answer["stdout"]), (1, None, ""))
+        self.assertTrue(answer["stderr"].startswith("timeline: --to"), answer["stderr"])
+
+    def test_a_bad_body_is_refused(self):
+        for bad in (
+            {},
+            {"from_ms": BASE},
+            {"from_ms": str(BASE), "to_ms": BASE + 1},
+            {"from_ms": BASE, "to_ms": True},
+            {"from_ms": BASE, "to_ms": float("nan")},
+            {"from_ms": BASE, "to_ms": float("inf")},
+            {"from_ms": BASE, "to_ms": BASE + 1, "key": 3},
+            [BASE, BASE + 1],
+        ):
+            with self.assertRaises(harness.BadRequest, msg=repr(bad)):
+                harness.forensics_timeline(self.data, bad)
+        self.assertEqual(
+            harness.timeline_window({"from_ms": 1.5, "to_ms": 2, "key": "Vox"}), (1.5, 2, "Vox")
+        )
+
+    def test_the_local_time_is_what_the_tool_reads(self):
+        self.assertIs(harness.local_text, timeline_read.local_text, "the tool's own function")
+        ms = BASE + 123
+        moment = datetime.datetime.fromtimestamp(ms / 1000)
+        self.assertEqual(harness.local_text(ms), moment.strftime("%Y-%m-%d %H:%M:%S") + ".123")
+        self.assertEqual(
+            time.mktime(time.strptime(harness.local_text(BASE)[:19], "%Y-%m-%d %H:%M:%S")),
+            BASE / 1000,
+        )
+        # The runner is on UTC: a machine 5:45 east of it (a POSIX TZ, no time
+        # zone database needed) proves the time is local, not UTC.
+        code = f"import harness; print(harness.local_text({ms}))"
+        shifted = subprocess.run(
+            [sys.executable, "-c", code],
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+            env=dict(os.environ, TZ="XYZ-05:45"),
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        self.assertEqual(shifted.stdout, "2026-10-03 22:05:00.123\n")
 
 
 class HarnessTest(unittest.TestCase):
@@ -294,6 +394,36 @@ class HarnessTest(unittest.TestCase):
                 urllib.request.urlopen(request, timeout=5)
             self.assertEqual(raised.exception.code, 400)
             self.assertIn("/link/block wants", json.load(raised.exception)["error"])
+            raised.exception.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_the_forensics_route_runs_the_timeline_over_the_data_folder(self):
+        logs = write_window(self.data)
+        try:
+            body = {"from_ms": BASE, "to_ms": BASE + 5000}
+            status, answer = quietly(self.post, "/forensics/timeline", body)
+            self.assertEqual((status, answer["exit"]), (200, 0), answer["stderr"])
+            self.assertIn("records=3\n", answer["stdout"])
+            self.assertIn("<svg", answer["html"])
+        finally:
+            shutil.rmtree(logs)
+        with self.assertRaises(harness.BadRequest):
+            self.post("/forensics/timeline", {"from_ms": BASE})
+        # Over HTTP a bad body is a 400 with the reason.
+        server = ThreadingHTTPServer(("127.0.0.1", 0), harness.handler_for(self.harness))
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{server.server_address[1]}/forensics/timeline",
+                data=b'{"from_ms": "today"}',
+                method="POST",
+            )
+            with self.assertRaises(urllib.error.HTTPError) as raised:
+                urllib.request.urlopen(request, timeout=5)
+            self.assertEqual(raised.exception.code, 400)
+            self.assertIn("/forensics/timeline wants", json.load(raised.exception)["error"])
             raised.exception.close()
         finally:
             server.shutdown()

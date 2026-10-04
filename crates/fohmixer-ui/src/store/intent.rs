@@ -29,8 +29,9 @@ pub const UNCONFIRMED_MS: f64 = 1000.0;
 /// (ms); an older one is `not_sent` (L4).
 pub const RESEND_MAX_AGE_MS: f64 = 2000.0;
 
-/// What a key's write is waiting for (§4.1).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// What a key's write is waiting for (§4.1). The variants are declared from
+/// the least to the most urgent ([`most_urgent`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum State {
     /// No open intent: the last write was acked (or there was none).
     Confirmed,
@@ -63,6 +64,13 @@ impl State {
             Self::NotSent => "not_sent",
         }
     }
+}
+
+/// The state a control writing several keys shows (#43, PR C: a toggle with
+/// several targets): the most urgent of its keys' states, `not_sent`, then
+/// `unconfirmed`, then `sending`; `confirmed` when none is open.
+pub fn most_urgent(states: impl IntoIterator<Item = State>) -> State {
+    states.into_iter().max().unwrap_or(State::Confirmed)
 }
 
 /// What a resend does (`Intents::resend`).
