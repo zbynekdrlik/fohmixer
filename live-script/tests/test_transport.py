@@ -375,7 +375,8 @@ class TransportTest(unittest.TestCase):
         # resyncs), as the 3 s `sendall` timeout did before #5. The ticks
         # write at a held time while the socket fills, so the stall cannot
         # close it first however slowly this machine fills it (#5); then that
-        # time moves on to just before, and to exactly, SEND_STALL_S. When
+        # time moves on to just before SEND_STALL_S (still open), and from
+        # SEND_STALL_S on by SEND_STALL_S until the stall closes it. When
         # exactly is pinned on explicit times (OneTickTest); here, that it
         # happens on the polled server and spares the other client.
         good_ws, good_conn, _ = self.client()
@@ -392,13 +393,18 @@ class TransportTest(unittest.TestCase):
         # than SEND_STALL_S after the last progress (CI run 37221318449, #43):
         # the clock moves on by SEND_STALL_S until the stall closes it.
         when = t0 + transport.SEND_STALL_S
+        unsent = []
         for _ in range(20):
             _t, ticks = self.write_at(when)
             self.wait_tick(ticks)
             if self.call(lambda: conn.finished):
                 break
+            unsent.append(self.call(lambda: conn.pending()[2]))
             when += transport.SEND_STALL_S
-        wait_for(lambda: conn.finished)
+        try:
+            wait_for(lambda: conn.finished)
+        except AssertionError:
+            self.fail(f"the stall never closed it; unsent bytes after each step: {unsent}")
         self.assertLess(queued, 1000, "the queue bound closed it, not the stall")
         self.assertTrue(any("read nothing for" in m for m in self.log.messages), self.log.messages)
         wait_for(lambda: conn not in self.connections())
