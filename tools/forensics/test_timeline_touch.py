@@ -25,6 +25,7 @@ from test_timeline import (  # noqa: E402
     ReportCase,
     digest,
 )
+import timeline_read as read  # noqa: E402
 
 # A volume's Live value at fader position p (``behave/fader.rs`` ``to_live``).
 EXPONENT = 0.515
@@ -459,6 +460,13 @@ class NoData(ReportCase):
         self.assertEqual((band["data-kind"], band["data-n"]), ("mv", "10"))
         self.assertEqual(float(band["data-start"]), records[10]["t"] + OFFSET)
         self.assertEqual(float(band["data-end"]), records[19]["t"] + OFFSET)
+        note = (
+            "the page flight recorder dropped 10 mv events from "
+            f"{read.local_text(records[10]['t'] + OFFSET)} to "
+            f"{read.local_text(records[19]['t'] + OFFSET)}: no data of that kind there"
+        )
+        self.assertIn(f"<li>{note}</li>", page.text)
+        self.assertIn(f"<title>no data: {note}</title>", page.text)
         self.assertIn("no data", page.text)
         self.assertNotIn("Vox 1", stdout)
 

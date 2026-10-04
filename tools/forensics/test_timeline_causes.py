@@ -3,6 +3,7 @@ link, Live, page and no-data causes, and the page's long frames and the
 recorder's dropped spans they rest on. The synthetic logs and the report
 reader come from ``test_timeline.py``."""
 
+import calendar
 import os
 import sys
 import unittest
@@ -20,6 +21,7 @@ from test_timeline import (  # noqa: E402
     ReportCase,
     digest,
 )
+import timeline_read as read  # noqa: E402
 
 
 class Causes(ReportCase):
@@ -155,9 +157,16 @@ class Causes(ReportCase):
         # before its stamp.
         (band,) = page.of_class("nodata")
         self.assertEqual(band["data-kind"], "frame")
-        self.assertIn("dropped 1 long frames stamped from", page.text)
-        self.assertIn("no data of page stalls from", page.text)
         self.assertAlmostEqual(float(band["data-start"]), p0 + 112 - 50 + OFFSET, delta=0.05)
+        # The note and the band's tooltip say the same: the dropped stamp
+        # and the stall it can stand for (p0 + OFFSET is BASE + 1000).
+        at = read.local_text(BASE + 1112)
+        note = (
+            f"the page flight recorder dropped 1 long frame stamped at {at}: "
+            f"no data of page stalls from {read.local_text(BASE + 1062)} to {at}"
+        )
+        self.assertIn(f"<li>{note}</li>", page.text)
+        self.assertIn(f"<title>no data: {note}</title>", page.text)
 
     def test_a_window_ending_before_the_drop_note_still_reads_its_span(self):
         # The note goes up with its batch, after the drag: a window ending
@@ -181,6 +190,35 @@ class Causes(ReportCase):
         log.trace(BASE + 5000 + 300000, 7, [{"ev": "frame", "t": p0 + 500, "ms": 120.0}])
         _, page, _ = self.report(log, BASE, BASE + 5000)
         self.assertEqual(len(page.of_class("frame")), 1)
+
+    def test_a_trace_from_the_next_socket_after_the_window_takes_its_own_clock(self):
+        # Tablet 7's link went down inside the window; its events go up on
+        # the next socket (client 8) 5 min after the window, whose own pings
+        # are then the only ones of that page's clock. Tablet 9, its clock
+        # 400 ms apart, pinged last before the window's end.
+        log = Log()
+        end = BASE + 5000
+        log.pings(7, BASE, BASE + 3000)
+        log.pings(9, BASE, BASE + 4000, offset=OFFSET + 400)
+        back = end + 5 * 60000
+        log.pings(8, back - 1000, back)
+        p0 = BASE + 1000 - OFFSET
+        log.trace(back, 8, [{"ev": "frame", "t": p0 + 500, "ms": 120.0}])
+        _, page, _ = self.report(log, BASE, end)
+        (frame,) = page.of_class("frame")
+        self.assertAlmostEqual(float(frame["data-start"]), p0 + 380 + OFFSET, delta=0.05)
+
+    def test_a_trace_29_minutes_after_a_window_ending_before_midnight_counts(self):
+        # The tail reaches into the next UTC date's day file.
+        end = calendar.timegm((2026, 10, 3, 23, 50, 0)) * 1000
+        start = end - 5000
+        log = Log()
+        log.pings(7, start, start + 3000)
+        p0 = start + 1000 - OFFSET
+        log.trace(end + 29 * 60000, 7, [{"ev": "frame", "t": p0 + 500, "ms": 120.0}])
+        _, page, _ = self.report(log, start, end)
+        (frame,) = page.of_class("frame")
+        self.assertAlmostEqual(float(frame["data-start"]), p0 + 380 + OFFSET, delta=0.05)
 
     def alternating_drag(self, log, times, latency=3.0, lost_set=None):
         """The page's sends at ``times`` (page clock), the value jumping
@@ -215,6 +253,14 @@ class Causes(ReportCase):
         causes = [cause for cause, _ in self.jumps(page)]
         expected = ["move", "move"] + ["no data"] * 4 + ["move"]
         self.assertEqual(causes, expected)
+        last = read.local_text(BASE + 1224)
+        note = (
+            "the page flight recorder dropped 2 long frames stamped from "
+            f"{read.local_text(BASE + 1112)} to {last}: "
+            f"no data of page stalls from {read.local_text(BASE + 1062)} to {last}"
+        )
+        self.assertIn(f"<li>{note}</li>", page.text)
+        self.assertIn(f"<title>no data: {note}</title>", page.text)
 
     def test_a_dropped_long_frame_is_matched_inside_its_shortest_stall(self):
         # A 60 ms stall (the gap from the send at +52 to +112): the dropped

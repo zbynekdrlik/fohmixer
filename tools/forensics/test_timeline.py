@@ -627,6 +627,10 @@ class Window(ReportCase):
         with open(day, "a", encoding="utf-8") as f:
             f.write("\n")
             f.write(f'{{"ev":"set","ts":{BASE + 15001},"key":"band|li\n')
+            # In the trace tail only traces and pings are read: a set there
+            # is never parsed, so a write in progress past the window never
+            # counts.
+            f.write(f'{{"ev":"set","ts":{end + 10 * 60000},"key":"band|li\n')
             f.write(f'{{"ev":"set","ts":{end + 31 * 60000},"key":"band|li\n')
             f.write('{"ev":"ba')
         summary, page, _ = self.report(Log(), start, end)
@@ -645,6 +649,16 @@ class Window(ReportCase):
         self.assertIn("The window holds no records.", page.text)
         self.assertIn("no event file events-2026-10-03.jsonl", page.text)
         self.assertEqual(summary["notes"], "2", "no day file, no hub log")
+
+    def test_a_missing_day_file_only_the_trace_tail_reaches_is_no_note(self):
+        # A window ending 10 min before UTC midnight: the next date's file
+        # may hold the tail's traces, but none was written yet.
+        end = calendar.timegm((2026, 10, 3, 23, 50, 0)) * 1000
+        log = Log()
+        log.add("set", end - 1000, client=7, instance="band", key=VOX, seq=1, value=0.5)
+        summary, page, _ = self.report(log, end - 5000, end)
+        self.assertNotIn("events-2026-10-04.jsonl", page.text)
+        self.assertNotIn("no event file", page.text)
 
     def test_the_writers_notes_are_counted(self):
         log = Log()

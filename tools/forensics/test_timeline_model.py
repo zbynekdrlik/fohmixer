@@ -324,6 +324,7 @@ class PageRecorder(unittest.TestCase):
         self.assertIsNotNone(long_frame and backlog and rate, "the constants are where they were")
         self.assertEqual(float(long_frame.group(1)), model.LONG_FRAME_MS)
         self.assertEqual(model.INSIDE_STALL_MS, model.LONG_FRAME_MS / 2)
+        self.assertEqual(int(backlog.group(1)), 768, "the timeline's comments name 768 KB")
         drain_ms = int(backlog.group(1)) * 1024 / float(rate.group(1).replace("_", "")) * 1000
         self.assertLess(drain_ms, model.TRACE_TAIL_MS, "a full backlog drains inside the tail")
 
