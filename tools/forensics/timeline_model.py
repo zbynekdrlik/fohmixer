@@ -626,6 +626,7 @@ class Timeline:
                     ("dropout", self.dropouts),
                     ("busy", self.busy),
                     ("frame", self.frames),
+                    ("nodata", [s for s in self.no_data if s.info[0] == "frame"]),
                 )
                 if any(overlaps(s.start, s.end, a1.time, a2.time) for s in spans)
             ]
@@ -640,6 +641,10 @@ class Timeline:
                 cause = "live"
             elif (gaps["page"] or 0.0) > GAP_MS or "frame" in hits:
                 cause = "page"
+            elif "nodata" in hits:
+                # The recorder dropped the long frames of that time (PR E):
+                # a page stall cannot be ruled out.
+                cause = "no data"
             else:
                 cause = "move"
             jumps.append(Jump(a2.time, key, db1, db2, cause, gaps, rtt, wait, hits))
