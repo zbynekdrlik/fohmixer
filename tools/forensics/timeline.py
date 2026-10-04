@@ -41,7 +41,12 @@ round trips, dropouts, the counter's resets, socket transitions, long frames,
 visibility), the Live lane (busy episodes, late heartbeats) and one lane per
 control with three rows (the page's sends, the hub's arrivals, Live's applied
 values), gaps over 100 ms inside one gesture marked; then the volume jumps
-over 3 dB with their measured cause (``link``, ``live``, ``page`` or ``move``).
+over 3 dB with their measured cause (``link``, ``live``, ``page`` or
+``move``); then the touches of single volume faders (#43 PR D, from the
+page's touch starts and move records and the hub's ``live_before``): where
+each started against Live's value before it, first-touch jumps with their
+why, the time from the down to the first move and the first send, move gaps
+and held values.
 
 stdout: the summary, one ``name=value`` per line, the names of the report's
 summary table. It never prints a key: a control is ``key#<the first 10 hex of
@@ -50,11 +55,12 @@ also when the window holds nothing; exit 1 with one ``timeline: ...`` line on
 stderr on a usage or input error.
 
 This file is the command; beside it ``timeline_read.py`` (values, times, the
-logs read), ``timeline_model.py`` (the analysis and the summary) and
+logs read), ``timeline_model.py`` (the analysis and the summary),
+``timeline_touch.py`` (the touches of single volume faders) and
 ``timeline_report.py`` (the HTML). Python 3.11 standard library only: the
-four files are copied to the Ableton PC into one folder and this one is run
+five files are copied to the Ableton PC into one folder and this one is run
 with the PC's Python (its folder is on ``sys.path`` then, so it finds the
-other three).
+other four).
 """
 
 import argparse

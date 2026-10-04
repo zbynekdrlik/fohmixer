@@ -1,8 +1,9 @@
 """The forensics timeline's analysis (#43): page time on the hub's clock,
-gestures and gaps, busy episodes, the control lanes, confirmations and the
-volume jumps with their cause, and the summary. Pure: it reads nothing. One
-of the four files of ``timeline.py`` (see its docstring), copied to the
-Ableton PC together with it.
+gestures and gaps, busy episodes, the control lanes, confirmations, the
+volume jumps with their cause, the touches of single volume faders
+(``timeline_touch.py``, PR D) and the summary. Pure: it reads nothing. One of
+the five files of ``timeline.py`` (see its docstring), copied to the Ableton
+PC together with it.
 """
 
 import bisect
@@ -11,6 +12,7 @@ import itertools
 import json
 import math
 
+import timeline_touch
 from timeline_read import is_volume, key_hash, local_text, number, value2db
 
 # A gap between two points of a control's row that is marked, and the bound
@@ -101,17 +103,17 @@ def _starts(touch, key):
     return touch.data.get("what") in ("down", "tap") and _names(touch, key)
 
 
-def _lift(later, key, pointer):
-    """The time of the lift of a ``down`` of ``key`` by ``pointer``, among the
-    touches ``later`` than it: the first ``up`` or ``cancel`` of that pointer
-    naming the key, searched only up to that pointer's next ``down`` naming
-    the key (a lift lost on the way); None when there is none."""
+def lift_of(later, key, pointer):
+    """The lift of a ``down`` of ``key`` by ``pointer``, among the touches
+    ``later`` than it: the first ``up`` or ``cancel`` of that pointer naming
+    the key, searched only up to that pointer's next ``down`` naming the key
+    (a lift lost on the way); None when there is none."""
     for t in later:
         if t.data.get("pointer") != pointer or not _names(t, key):
             continue
         what = t.data.get("what")
         if what in ("up", "cancel"):
-            return t.hub
+            return t
         if what == "down":
             return None
     return None
@@ -151,7 +153,8 @@ def gestures(touches, key, end):
         if what != "down":
             continue
         later = touches[index + 1 :]
-        lift = _lift(later, key, touch.data.get("pointer"))
+        lifted = lift_of(later, key, touch.data.get("pointer"))
+        lift = None if lifted is None else lifted.hub
         if lift is None:
             finish = next((t.hub for t in later if _starts(t, key)), end)
         else:
@@ -319,6 +322,7 @@ class Timeline:
         self._live(kinds, marks)
         self._controls(kinds)
         self.jumps = [jump for key in self.keys for jump in self._jumps(key)]
+        self.touches = self._touches()
 
     # The window's parts.
 
@@ -344,10 +348,21 @@ class Timeline:
         return [e for e in self.page if e.ev == ev]
 
     def _link(self, kinds):
-        self.rtt_page = [
+        # The page's round trips: a page before PR D recorded every pong
+        # (``rtt``), since PR D one ``rtt`` summary a second (``med``, ``max``).
+        pongs = [
             (e.hub, number(e.data.get("rtt")))
             for e in self._page("pong")
             if self.in_window(e.hub) and number(e.data.get("rtt")) is not None
+        ]
+        seconds = [
+            (e.hub, number(e.data.get("med")), number(e.data.get("max")))
+            for e in self._page("rtt")
+            if self.in_window(e.hub) and number(e.data.get("med")) is not None
+        ]
+        self.rtt_page = sorted(pongs + [(hub, med) for hub, med, _ in seconds])
+        self.rtt_page_peaks = [rtt for _, rtt in pongs] + [
+            peak if peak is not None else med for _, med, peak in seconds
         ]
         self.rtt_hub = [
             (arrival_of(r), number(r.get("rtt")))
@@ -455,6 +470,15 @@ class Timeline:
                 self.page_sends[e.data["key"]].append(e)
                 hollow = e.data.get("sent") is False
                 rows[e.data["key"]]["send"].append(Point(e.hub, e.data.get("value"), hollow, None))
+        # Since PR D the page records a send only when its socket did not
+        # take it: a set the hub received is the page's send at its own ``t``.
+        recorded = {
+            (key, number(e.data.get("t"))) for key, sends in self.page_sends.items() for e in sends
+        }
+        for key, sets in self.key_sets.items():
+            for r in sets:
+                if (key, number(r.get("t"))) not in recorded:
+                    rows[key]["send"].append(Point(sent_of(r), r.get("value"), False, None))
         touches = self._page("touch")
         continuous = self._continuous()
         self.lanes = {}
@@ -508,14 +532,11 @@ class Timeline:
         return found
 
     def _send_times(self, key):
-        """The page's send times of ``key`` (page clock): its ``send`` events,
-        or the sets' own ``t`` when the window has none."""
-        sends = self.page_sends.get(key)
-        if sends:
-            times = [number(e.data.get("t")) for e in sends]
-        else:
-            times = [number(r.get("t")) for r in self.key_sets[key]]
-        return [t for t in times if t is not None]
+        """The page's send times of ``key`` (page clock): its ``send`` events
+        and the sets' own ``t``, each time once."""
+        times = [number(e.data.get("t")) for e in self.page_sends.get(key, [])]
+        times += [number(r.get("t")) for r in self.key_sets[key]]
+        return sorted({t for t in times if t is not None})
 
     def _jumps(self, key):
         """The volume jumps of ``key`` with their measured cause. The link's
@@ -570,6 +591,51 @@ class Timeline:
             jumps.append(Jump(a2.time, key, db1, db2, cause, gaps, rtt, wait, hits))
         return jumps
 
+    def _touches(self):
+        """The touches of single volume faders whose down says where it
+        started (PR D), in time order (``timeline_touch``). A touch naming
+        several keys (a fader writing several tracks) is left out. Its records
+        are matched on the page's clock: its ``mv`` records of that pointer
+        and key and the hub's sets of the key from the down to its lift."""
+        touches = self._page("touch")
+        frames = self._page("mv")
+        rows = []
+        for index, down in enumerate(touches):
+            keys = down.data.get("keys")
+            if not timeline_touch.is_start(down.data) or not isinstance(keys, list):
+                continue
+            if len(keys) != 1 or not is_volume(keys[0]) or not self.wanted(keys[0]):
+                continue
+            if not self.in_window(down.hub):
+                continue
+            key, pointer = keys[0], down.data.get("pointer")
+            lifted = lift_of(touches[index + 1 :], key, pointer)
+            begin = number(down.data.get("t"))
+            end = number(lifted.data.get("t")) if lifted is not None else math.inf
+            mine = [
+                f.data
+                for f in frames
+                if f.data.get("key") == key
+                and f.data.get("p") == pointer
+                and begin <= (number(f.data.get("t")) or -math.inf) <= end
+            ]
+            sets = sorted(
+                (
+                    r
+                    for r in self.key_sets.get(key, [])
+                    if begin <= (number(r.get("t")) or -math.inf) <= end
+                ),
+                key=lambda r: r["t"],
+            )
+            first = sets[0] if sets else None
+            applied = None
+            if first is not None:
+                arrived = arrival_of(first)
+                lane = self.lanes.get(key, {}).get("applied", [])
+                applied = next((p.value for p in lane if p.time >= arrived), None)
+            rows.append(timeline_touch.analyse(down, key, mine, first, applied))
+        return rows
+
 
 # --- the summary ---
 
@@ -587,6 +653,10 @@ def summary(timeline):
     longest = max(timeline.dropouts, key=lambda d: d.ms, default=None)
     page_rtts = [rtt for _, rtt in timeline.rtt_page]
     hub_rtts = [rtt for _, rtt in timeline.rtt_hub]
+    touches = timeline.touches
+    first_moves = [t.first_move_ms for t in touches if t.first_move_ms is not None]
+    first_sends = [t.first_send_ms for t in touches if t.first_send_ms is not None]
+    move_gaps = [g.ms for t in touches for g in t.move_gaps]
 
     def gap_max(row):
         gaps = [g[2] for lane in timeline.lanes.values() for g in lane["gaps"][row]]
@@ -607,7 +677,7 @@ def summary(timeline):
         ("longest_dropout_at", local_text(longest.start) if longest else "n/a"),
         ("resets", str(len(timeline.resets))),
         ("rtt_page_p50_ms", ms_text(percentile(page_rtts, 0.50))),
-        ("rtt_page_max_ms", ms_text(max(page_rtts, default=None))),
+        ("rtt_page_max_ms", ms_text(max(timeline.rtt_page_peaks, default=None))),
         ("rtt_hub_p50_ms", ms_text(percentile(hub_rtts, 0.50))),
         ("rtt_hub_max_ms", ms_text(max(hub_rtts, default=None))),
         ("gap_send_max_ms", gap_max("send")),
@@ -617,6 +687,15 @@ def summary(timeline):
         ("busy_longest_ms", ms_text(max((b.ms for b in timeline.busy), default=None))),
         ("late_heartbeats", str(len(timeline.late))),
         ("jumps", str(len(timeline.jumps))),
+        ("touches", str(len(touches))),
+        ("first_touch_jumps", str(sum(t.first_jump for t in touches))),
+        ("first_move_p50_ms", ms_text(percentile(first_moves, 0.50))),
+        ("first_move_max_ms", ms_text(max(first_moves, default=None))),
+        ("first_send_p50_ms", ms_text(percentile(first_sends, 0.50))),
+        ("first_send_max_ms", ms_text(max(first_sends, default=None))),
+        ("move_gaps", str(len(move_gaps))),
+        ("move_gap_max_ms", f"{max(move_gaps):.1f}" if move_gaps else "0"),
+        ("held_runs", str(sum(t.held_runs for t in touches))),
         ("skipped_lines", str(timeline.skipped)),
         ("notes", str(len(timeline.notes))),
     ]

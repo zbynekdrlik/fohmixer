@@ -1,7 +1,7 @@
 """The forensics timeline's values, times and reading (#43): TouchOSC's dB
 curve, local and UTC time texts, key hashes, and the reading of the hub's
 event log (the window's day files) and text logs (busy changes, late
-heartbeats). One of the four files of ``timeline.py`` (see its docstring),
+heartbeats). One of the five files of ``timeline.py`` (see its docstring),
 copied to the Ableton PC together with it.
 """
 
@@ -49,6 +49,12 @@ def value2db(v):
     gamma = 7504.0 / 5567.0
     db = 118.426374 * v ** (1.0 / gamma) - 70.0
     return float("-inf") if db <= -70.0 else db
+
+
+def to_live(p):
+    """Live's volume at fader position ``p`` (``behave/fader.rs`` ``to_live``:
+    ``p^0.515``, ``p`` clamped to 0..1)."""
+    return min(max(p, 0.0), 1.0) ** 0.515
 
 
 def number(value):

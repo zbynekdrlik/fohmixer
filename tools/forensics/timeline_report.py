@@ -1,5 +1,5 @@
 """The forensics timeline's report (#43): one self-contained HTML file,
-inline CSS and SVG, no script. One of the four files of ``timeline.py`` (see
+inline CSS and SVG, no script. One of the five files of ``timeline.py`` (see
 its docstring), copied to the Ableton PC together with it.
 """
 
@@ -9,7 +9,7 @@ import json
 import math
 
 from timeline_model import ROWS, Span, ms_text
-from timeline_read import key_hash, key_scale, local_text, number, utc_text
+from timeline_read import key_hash, key_scale, local_text, number, to_live, utc_text, value2db
 
 # The report's geometry (px).
 WIDTH = 1600
@@ -395,6 +395,90 @@ def _jumps_table(t):
     return f"<p>{esc(JUMP_LEGEND)}</p>{table}"
 
 
+# What the touch table's columns measure.
+TOUCH_LEGEND = (
+    "Touches of a single volume fader that say where they started (PR D). Start: "
+    "the fader's position at the down (local: its own, after a release or with a "
+    "write open; else the page's value of Live); Live before: Live's value when "
+    "the touch's first set reached the hub; first applied: the first value Live "
+    "took. A first-touch jump: the first applied value is more than 1 dB from "
+    "Live's before, and more than 1 dB of that is not the finger's move (finger). "
+    "Why: stale (the page's value of Live differed from the hub's), local (the "
+    "fader started from its own position), other. Down to first move and to "
+    "first send on the page's clock. Move gaps: two moves over 50 ms apart while "
+    "the finger went on over 3 px; held: 3 or more frames in a row sending the "
+    "value of the frame before while the finger moved."
+)
+
+
+def _db_or_na(db):
+    return "n/a" if db is None else f"{db:.1f}"
+
+
+def _touches_table(t):
+    if not t.touches:
+        return "<p>No touch of a single volume fader with its start in the window.</p>"
+    head = "".join(
+        f"<th>{h}</th>"
+        for h in (
+            "time (local)",
+            "control",
+            "start",
+            "Live before",
+            "first applied",
+            "jump",
+            "finger",
+            "first-touch jump",
+            "down to first move",
+            "down to first send",
+            "move gaps",
+            "held",
+        )
+    )
+    rows = []
+    for touch in t.touches:
+
+        def level(value):
+            return "n/a" if value is None else db_text(value2db(value))
+
+        start = "n/a" if touch.start is None else db_text(value2db(to_live(touch.start)))
+        start += " (local)" if touch.local else ""
+        worst = max((g.ms for g in touch.move_gaps), default=None)
+        cells = (
+            local_text(touch.time),
+            touch.key,
+            start,
+            level(touch.live_before),
+            level(touch.first_applied),
+            f"{_db_or_na(touch.jump_db)} dB",
+            f"{_db_or_na(touch.finger_db)} dB",
+            f"yes ({touch.why})" if touch.first_jump else "no",
+            f"{ms_text(touch.first_move_ms)} ms",
+            f"{ms_text(touch.first_send_ms)} ms",
+            f"{len(touch.move_gaps)} (longest {ms_text(worst)} ms)",
+            str(touch.held_runs),
+        )
+        content = "".join(f"<td>{esc(c)}</td>" for c in cells)
+        rows.append(
+            tag(
+                "tr",
+                content,
+                class_="touch",
+                data_key_hash=key_hash(touch.key),
+                data_first_jump="true" if touch.first_jump else "false",
+                data_why=touch.why,
+                data_jump_db=_db_or_na(touch.jump_db),
+                data_finger_db=_db_or_na(touch.finger_db),
+                data_first_move_ms=ms_text(touch.first_move_ms),
+                data_first_send_ms=ms_text(touch.first_send_ms),
+                data_move_gaps=len(touch.move_gaps),
+                data_held=touch.held_runs,
+            )
+        )
+    table = f'<table class="touches"><tr>{head}</tr>{"".join(rows)}</table>'
+    return f"<p>{esc(TOUCH_LEGEND)}</p>{table}"
+
+
 def render(t, pairs, files):
     """The whole report: the window, ``files`` (the names read), the notes,
     the summary ``pairs``, the lanes and the jumps."""
@@ -423,5 +507,6 @@ def render(t, pairs, files):
         f'<h2>Summary</h2><table class="summary">{table}</table>'
         f"<h2>Timeline</h2>{svg(t)}"
         f"<h2>Volume jumps over 3 dB</h2>{_jumps_table(t)}"
+        f"<h2>Touches of single volume faders</h2>{_touches_table(t)}"
         "</body></html>\n"
     )
