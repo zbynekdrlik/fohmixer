@@ -86,6 +86,9 @@ impl LiveStore {
         is_final: bool,
         failed: Option<FailFn>,
     ) -> Option<u64> {
+        // A new write replaces the key's open one: the recorder hears that
+        // one's turn first.
+        self.note_intents();
         let t = dom::epoch_now();
         let (key, msg) = self.inner.try_update_value(|i| {
             i.intents
@@ -113,8 +116,8 @@ impl LiveStore {
 
     /// The writes that turned `unconfirmed` or `not_sent` since the last
     /// call go into the flight recorder (#43 PR E, `Intents::changes`): only
-    /// the page knows when it drew them. From the link's tick, after a
-    /// resend and before acks close writes.
+    /// the page knows when they turned. From the link's tick, after a
+    /// resend, and before acks, a set or a touch close or reset a write.
     pub(super) fn note_intents(self) {
         let now = dom::epoch_now();
         let changes = self
@@ -145,6 +148,9 @@ impl LiveStore {
     /// The controls of `keys` were touched again: a write not sent after a
     /// reconnect is dropped, one on its way is held again (L4).
     pub fn touch(self, keys: &[String]) {
+        // A touch drops a not-sent write or holds one again (its turn is
+        // told anew after the next release): the recorder hears it first.
+        self.note_intents();
         let _ = self.inner.try_update_value(|i| {
             for key in keys {
                 i.intents.touch(key);

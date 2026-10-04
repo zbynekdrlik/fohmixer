@@ -115,9 +115,12 @@ exclude_re = [
   # sets' delay with and without the recorder.
   # PR E dropped the send and ack events (the hub's records hold them) and
   # added note_intents (Intents::changes, tested, into the tested
-  # trace::intent event with the page clock, from the link's tick);
-  # intent.spec.ts reads the pan's and the mute's unconfirmed and not_sent
-  # records back from the event log.
+  # trace::intent event with the page clock), run from the link's tick, at
+  # the end of resend and at the start of on_ack, set and touch, so a turn
+  # is recorded before a write closes or resets; intent.spec.ts reads the
+  # pan's and the mute's unconfirmed and not_sent records back from the
+  # event log, resilience.spec.ts a not_sent write Live's replayed value
+  # closes within milliseconds.
   "fohmixer-ui/src/store/live/writes\\.rs.*(replace|in) LiveStore::(on_ack|resend|set|sent_set|release|touch|intent_state|intent_view|live_value|note_intents)( |$)",
   "fohmixer-ui/src/store/live\\.rs.*(replace|in) (Socket::open|Socket::buffered|Socket::close|Inner::new)( |$)",
   # auth.rs: local storage and the login request (login_outcome, login_body
