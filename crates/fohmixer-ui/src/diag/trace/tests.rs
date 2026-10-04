@@ -371,3 +371,34 @@ fn a_long_frame_is_recorded_unless_it_follows_a_visibility_change() {
         "the gap of the time hidden is no stall"
     );
 }
+
+#[test]
+fn a_ping_still_leaving_the_socket_never_holds_a_batch() {
+    // The service of 2026-10-04 (#43): the iPad's WebKit reported a ping's
+    // bytes in `bufferedAmount` at every link tick for up to 9 minutes, and
+    // no batch went while the page pinged on.
+    let mut r = Recorder::default();
+    r.push(&event(1));
+    let batch = r
+        .upload(10.0, true, 120, 1)
+        .expect("a ping in the buffer holds nothing");
+    assert_eq!(ts(&batch), [1]);
+    // A socket that holds more than 1 KB unsent is backed up: the batch waits.
+    let mut r = Recorder::default();
+    r.push(&event(1));
+    assert_eq!(r.upload(10.0, true, 1_025, 1), None);
+    assert_eq!(
+        ts(&r.upload(10.0, true, 1_024, 1).expect("1 KB passes")),
+        [1]
+    );
+}
+
+#[test]
+fn a_batch_holds_at_most_1_kb_so_a_set_never_waits_behind_more() {
+    // One WebSocket frame of the recorder is all a set can wait behind.
+    let mut r = Recorder::default();
+    r.push(&sized(600));
+    r.push(&sized(600));
+    let first = r.upload(0.0, true, 0, 1).expect("a batch");
+    assert_eq!(events_of(&first), vec![sized(600)]);
+}
