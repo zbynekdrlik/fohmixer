@@ -19,7 +19,7 @@
 //!
 //! Upload ([`Recorder::upload`]): one batch of at most [`BATCH_BYTES`] every
 //! [`UPLOAD_MS`] while the socket said hello, every [`BACKLOG_MS`] while a
-//! batch left events behind (a backlog drains at up to 64 KB/s), and at once
+//! batch left events behind (a backlog drains at up to 40 KB/s), and at once
 //! after a hello, a dropout or a reset ([`Recorder::soon`]), oldest first, so
 //! after a reconnect the backlog goes first. Only while the socket holds nothing
 //! unsent: the recorder never queues in front of the moves on a slow link. A
@@ -45,13 +45,14 @@ pub const MAX_BYTES: usize = 2 * 1024 * 1024;
 /// A batch goes at most this often (ms), unless one is due at once.
 pub const UPLOAD_MS: f64 = 2000.0;
 /// While the last batch left events behind, the next one goes this soon
-/// (ms): two fingers moving make ~25 KB/s of events, more than one batch
-/// every 2 s carries.
-pub const BACKLOG_MS: f64 = 500.0;
+/// (ms): a dragged fader makes ~13 KB/s of events and two fingers ~25 KB/s
+/// (estimated from the events' sizes), far more than one batch every 2 s
+/// carries; a batch every 200 ms carries 40 KB/s.
+pub const BACKLOG_MS: f64 = 200.0;
 /// A batch carries at most this many bytes of event JSON (at least one
-/// event): about 0.13 s of a 2 Mbit/s link, so it never holds the moves up
-/// for long.
-pub const BATCH_BYTES: usize = 32 * 1024;
+/// event): one WebSocket frame, and every move behind it waits for it, so
+/// it is small, about 33 ms of a 2 Mbit/s link.
+pub const BATCH_BYTES: usize = 8 * 1024;
 /// A frame longer than this (ms) is recorded: the page's main thread
 /// stalled.
 pub const LONG_FRAME_MS: f64 = 50.0;

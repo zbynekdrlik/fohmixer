@@ -1,6 +1,6 @@
 import type { Page } from "@playwright/test";
 import { test, expect } from "./support/fixtures";
-import { LiveClient, centre, frames, impair, openSurface, panning, ready, shown, strip, track, until } from "./support/live";
+import { LiveClient, centre, frames, hubEvents, impair, openSurface, panning, ready, shown, strip, track, until } from "./support/live";
 
 // The look of a pan's and a toggle's write Live has not confirmed (#43, PR C,
 // following PR B's fader look, design note §4.3): they keep showing Live's
@@ -55,6 +55,7 @@ test.describe("The look of an open write on the pan and the toggles", () => {
       await expect(mute).toHaveAttribute("data-intent", "confirmed");
       const label = (await mute.textContent())?.trim();
 
+      const cutAt = await page.evaluate(() => performance.timeOrigin + performance.now());
       await linkDown(page);
       // The pan dragged right and let go, the mute tapped: both writes kept.
       const { x, y } = await centre(pan);
@@ -90,6 +91,23 @@ test.describe("The look of an open write on the pan and the toggles", () => {
       expect(await live.get("band", PAN, "value"), "the pan's old release never reached Live").toBe(0);
       expect(await live.get("band", HAND2, "mute"), "the mute's old tap never reached Live").toBe(false);
       await expect(mute).toHaveAttribute("data-muted", "false");
+      // The page's flight recorder sent the mute's tap (a `tap`: no up
+      // follows) and the pan's touch up to the event log after the
+      // reconnect (the contract the forensics timeline reads).
+      const muteKey = `band|${HAND2}|mute`;
+      const panKey = `band|${PAN}|value`;
+      const touches = await until(
+        async () =>
+          (await hubEvents())
+            .filter((r) => r.ev === "trace")
+            .flatMap((r) => r.events)
+            .filter((e: any) => e.ev === "touch" && e.t >= cutAt),
+        (all) => all.some((e: any) => e.what === "tap" && e.keys.includes(muteKey)),
+        "the mute's tap in the event log",
+        10_000,
+      );
+      expect(touches.some((e: any) => e.what === "down" && e.keys.includes(panKey))).toBe(true);
+      expect(touches.some((e: any) => e.what === "up" && e.keys.includes(panKey))).toBe(true);
     } finally {
       await live.set("band", PAN, "value", panBefore);
       await live.set("band", HAND2, "mute", muteBefore);

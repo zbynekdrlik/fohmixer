@@ -16,7 +16,7 @@
 //!
 //! Records: `sock`, `set`, `batch`, `applied`, `ack`, `ping`, `link` and the
 //! page's `trace`: a batch of its flight recorder (PR C: touches, sends and
-//! acks, pings and pongs, socket transitions, long frames, visibility, the
+//! acks, pongs, socket transitions, long frames, visibility, the
 //! dropouts and the counter's resets), written as the page sent it.
 
 use std::fs::{File, OpenOptions};

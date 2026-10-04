@@ -35,8 +35,8 @@ fn the_bounds_are_these() {
     assert_eq!(MAX_EVENTS, 20_000);
     assert_eq!(MAX_BYTES, 2_097_152);
     assert_eq!(UPLOAD_MS, 2000.0);
-    assert_eq!(BACKLOG_MS, 500.0);
-    assert_eq!(BATCH_BYTES, 32_768);
+    assert_eq!(BACKLOG_MS, 200.0);
+    assert_eq!(BATCH_BYTES, 8_192);
     assert_eq!(LONG_FRAME_MS, 50.0);
     assert!(!is_long_frame(50.0));
     assert!(is_long_frame(50.0_f64.next_up()));
@@ -163,31 +163,31 @@ fn the_first_batch_goes_at_once_then_every_2_s_or_at_once_when_asked() {
 }
 
 #[test]
-fn a_backlog_drains_a_batch_every_500_ms_then_every_2_s_again() {
+fn a_backlog_drains_a_batch_every_200_ms_then_every_2_s_again() {
     let mut r = Recorder::default();
-    r.push(&sized(20_000));
-    r.push(&sized(20_000));
-    r.push(&sized(20_000));
+    r.push(&sized(9_000));
+    r.push(&sized(9_000));
+    r.push(&sized(9_000));
     assert_eq!(
         events_of(&r.upload(0.0, true, 0, 1).expect("a batch")).len(),
         1
     );
     assert!(r.backlog, "two events wait");
-    assert_eq!(r.upload(500.0_f64.next_down(), true, 0, 2), None);
+    assert_eq!(r.upload(200.0_f64.next_down(), true, 0, 2), None);
     assert_eq!(
-        events_of(&r.upload(500.0, true, 0, 2).expect("500 ms on")).len(),
+        events_of(&r.upload(200.0, true, 0, 2).expect("200 ms on")).len(),
         1
     );
-    assert_eq!(r.upload(999.0, true, 7, 3), None, "the socket still sends");
+    assert_eq!(r.upload(399.0, true, 7, 3), None, "the socket still sends");
     assert_eq!(
-        events_of(&r.upload(1_000.0, true, 0, 3).expect("the last")).len(),
+        events_of(&r.upload(400.0, true, 0, 3).expect("the last")).len(),
         1
     );
     assert!(!r.backlog, "nothing left behind");
     r.push(&event(4));
-    assert_eq!(r.upload(1_500.0, true, 0, 4), None, "no backlog: 2 s again");
-    assert_eq!(r.upload(3_000.0_f64.next_down(), true, 0, 4), None);
-    assert_eq!(ts(&r.upload(3_000.0, true, 0, 4).expect("2 s on")), [4]);
+    assert_eq!(r.upload(600.0, true, 0, 4), None, "no backlog: 2 s again");
+    assert_eq!(r.upload(2_400.0_f64.next_down(), true, 0, 4), None);
+    assert_eq!(ts(&r.upload(2_400.0, true, 0, 4).expect("2 s on")), [4]);
 }
 
 #[test]
@@ -241,27 +241,27 @@ fn a_lost_socket_sends_the_unproved_batches_again_first() {
 
 #[test]
 fn a_batch_holds_32_kb_of_events_joined_by_commas_at_least_one() {
-    // 16 000 + 1 + 16 767 = 32 768: one batch.
+    // 4 000 + 1 + 4 191 = 8 192: one batch.
     let mut r = Recorder::default();
-    r.push(&sized(16_000));
-    r.push(&sized(16_767));
+    r.push(&sized(4_000));
+    r.push(&sized(4_191));
     let both = r.upload(0.0, true, 0, 1).expect("a batch");
     assert_eq!(events_of(&both).len(), 2);
     // One byte more: two batches.
     let mut r = Recorder::default();
-    r.push(&sized(16_000));
-    r.push(&sized(16_768));
+    r.push(&sized(4_000));
+    r.push(&sized(4_192));
     let one = r.upload(0.0, true, 0, 1).expect("a batch");
-    assert_eq!(events_of(&one), vec![sized(16_000)]);
+    assert_eq!(events_of(&one), vec![sized(4_000)]);
     r.soon();
     let two = r.upload(1.0, true, 0, 2).expect("a batch");
-    assert_eq!(events_of(&two), vec![sized(16_768)]);
+    assert_eq!(events_of(&two), vec![sized(4_192)]);
     // An event over the bound goes alone.
     let mut r = Recorder::default();
-    r.push(&sized(40_000));
+    r.push(&sized(10_000));
     r.push(&event(1));
     let big = r.upload(0.0, true, 0, 1).expect("a batch");
-    assert_eq!(events_of(&big), vec![sized(40_000)]);
+    assert_eq!(events_of(&big), vec![sized(10_000)]);
     // Many small events: as many as fit.
     let mut r = Recorder::default();
     let len = event(0).to_string().len();
@@ -305,30 +305,30 @@ fn the_ring_keeps_2_mb_and_never_drops_a_batch_on_its_way() {
         (2_048, MAX_BYTES, 0),
         "exactly full"
     );
-    // A batch goes (31 events of 1 024 bytes and their commas fit 32 KB).
+    // A batch goes (7 events of 1 024 bytes and their commas fit 8 KB).
     let batch = r.upload(0.0, true, 0, 5).expect("a batch");
     let on_its_way = events_of(&batch).len();
-    assert_eq!(on_its_way, 31);
+    assert_eq!(on_its_way, 7);
     r.push(&sized(1_024));
     assert_eq!((r.len(), r.overflow), (2_048, 1), "one unsent went");
     assert_eq!(r.bytes, MAX_BYTES);
     // The batch on its way stays until it is proved; the next batch says
     // what went.
     r.proved(5);
-    assert_eq!(r.len(), 2_048 - 31);
-    assert_eq!(r.bytes, (2_048 - 31) * 1_024);
+    assert_eq!(r.len(), 2_048 - 7);
+    assert_eq!(r.bytes, (2_048 - 7) * 1_024);
     r.soon();
     let next = r.upload(1.0, true, 0, 6).expect("a batch");
     assert_eq!(
         events_of(&next)[0],
         json!({"ev": "overflow", "t": 1.0, "n": 1})
     );
-    assert_eq!(events_of(&next).len(), 32, "the note and 31 events");
+    assert_eq!(events_of(&next).len(), 8, "the note and 7 events");
     r.proved(6);
-    assert_eq!(r.len(), 2_048 - 31 - 31);
+    assert_eq!(r.len(), 2_048 - 7 - 7);
     assert_eq!(
         r.bytes,
-        (2_048 - 31 - 31) * 1_024,
+        (2_048 - 7 - 7) * 1_024,
         "the note left with its batch"
     );
     // Only the drops are waiting: they still go.
