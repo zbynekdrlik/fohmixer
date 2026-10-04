@@ -94,7 +94,7 @@ pub const RATE_BYTES_PER_S: f64 = 10_240.0;
 /// drag of two faders at 60 Hz is ~610 KB of move records with real-length
 /// keys (PR E; PR D's 48 KB lost the moves of any drag over ~4 s). Once the
 /// fingers rest it drains at [`RATE_BYTES_PER_S`]: a short drag in about
-/// its own length, the full bound in about 90 s.
+/// its own length, that 30 s drag in ~75 s, the full bound in about 90 s.
 pub const BACKLOG_BYTES: usize = 768 * 1024;
 /// A socket that holds more unsent bytes than this is backed up: no batch
 /// goes. A ping or two still leaving is less.
@@ -337,22 +337,23 @@ impl Recorder {
     }
 
     /// The oldest unsent events of `rank` go until `excess` bytes went (or
-    /// none of that rank is left).
+    /// none of that rank is left). One by one from the front of the unsent
+    /// events, where they sit: no pass that moves the whole ring (it holds
+    /// thousands of moves during a long drag, and this runs on every push
+    /// over the bound).
     fn drop_oldest(&mut self, rank: u8, mut excess: usize) {
-        let sent = self.sent;
-        let mut gone = Vec::new();
-        let mut index = 0;
-        self.events.retain(|e| {
-            let keep = index < sent || e.rank != Some(rank) || excess == 0;
-            index += 1;
-            if !keep {
-                excess = excess.saturating_sub(e.text.len());
-                gone.push(e.clone());
-            }
-            keep
-        });
-        for entry in &gone {
-            self.forget(entry);
+        let mut from = self.sent;
+        while excess > 0 {
+            let Some(at) = (from..self.events.len()).find(|&i| self.events[i].rank == Some(rank))
+            else {
+                return;
+            };
+            let Some(gone) = self.events.remove(at) else {
+                return;
+            };
+            excess = excess.saturating_sub(gone.text.len());
+            self.forget(&gone);
+            from = at;
         }
     }
 

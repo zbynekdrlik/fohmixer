@@ -176,8 +176,9 @@ fn a_30_s_drag_of_two_faders_at_60_hz_keeps_every_move_at_the_real_cap() {
         "every frame's move, in order"
     );
     assert!(link.r.is_empty(), "all of it logged");
-    // About 5 records of ~170 bytes fill a 1 000-byte batch, one a tick:
-    // 3 600 records drain in about 72 s once the fingers rest.
+    // About 5 records of ~170 bytes fill a 1 000-byte batch, one a tick,
+    // with the round-trip summaries: 3 600 records drain in about 75 s once
+    // the fingers rest.
     let (last, _) = link.batches.last().expect("batches");
     assert!(
         last - lift < 80_000.0,
