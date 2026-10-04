@@ -21,6 +21,7 @@ Two branches: `master` (production) and `dev`. Work on `dev`; open a PR `dev` �
 - FohMixer script transport, heartbeat, SimLive's Live-like strings → `.claude/rules/live-script.md` (auto-loads on `live-script/**`, `sim/**`)
 - TouchOSC import tool and its synthetic fixtures → `.claude/rules/import-tosc.md` (auto-loads on `tools/import-tosc/**`)
 - Live probe (K1/K2 timing of a FohMixer script on the Ableton PC, the PC's clocks, safe read rates) → `.claude/rules/live-probe.md` (auto-loads on `tools/live-probe/**`)
+- Forensics timeline (#43: reading the event log and the page's flight recorder back for a time window, its CLI, its summary, running it on the Ableton PC) → `.claude/rules/forensics.md` (auto-loads on `tools/forensics/**`)
 
 ## Always-apply rules
 
