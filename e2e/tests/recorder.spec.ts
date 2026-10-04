@@ -7,6 +7,7 @@ import {
   hubEvents,
   impair,
   openSurface,
+  pageEvents,
   ready,
   shown,
   strip,
@@ -28,6 +29,14 @@ const KEY = `band|${volume(HAND2)}|value`;
 const START = 0.5;
 /** The slow link: 24 KB/s from the page to the hub (one dragged fader's sets are ~9 KB/s). */
 const LINK_BYTES_PER_S = 24 * 1024;
+
+/**
+ * One drag's length (px, a 1 px move every 20 ms: 2 s). Its page events must
+ * fill 4 batches (the gate check below can fail only then); WebKit on the
+ * runner draws ~14 frames a second and, since PR E records no acks, a 75 px
+ * drag left it 3 881 bytes.
+ */
+const DRAG_PX = 100;
 
 /** The page's clock (`performance.timeOrigin + performance.now()`, the `t` of its sets and events). */
 const pageNow = (page: Page) => page.evaluate(() => performance.timeOrigin + performance.now());
@@ -73,10 +82,10 @@ function traceEvents(events: any[]): { ts: number; e: any }[] {
 /** Two drags back to back (the second starts 50 ms after the first one's lift): the page clock before, between and after. */
 async function twoDrags(page: Page, fader: Locator, pointer: number): Promise<{ from: number; between: number; to: number }> {
   const from = await pageNow(page);
-  await drag(fader, pointer, 75);
+  await drag(fader, pointer, DRAG_PX);
   const between = await pageNow(page);
   await page.waitForTimeout(50);
-  await drag(fader, pointer + 1, -75);
+  await drag(fader, pointer + 1, -DRAG_PX);
   return { from, between, to: await pageNow(page) };
 }
 
@@ -262,25 +271,25 @@ test("a long drag on a slow link keeps every move, and the recorder still never 
     90_000,
   );
   const events = await hubEvents();
-  const pageEvents = traceEvents(events).map(({ e }) => e);
+  const logged = pageEvents(events);
 
   // Every frame that sent a set recorded its move: each of the drag's sets
   // (the hub's records) has the `mv` that names its seq.
   const sets = events.filter((e) => e.ev === "set" && e.key === KEY && e.t >= onFrom && e.t <= onTo);
   expect(sets.length, "the long drag's sets").toBeGreaterThan(200);
-  const moves = pageEvents.filter((e) => e.ev === "mv" && e.p === 92 && e.t >= onFrom && e.t <= onTo);
+  const moves = logged.filter((e) => e.ev === "mv" && e.p === 92 && e.t >= onFrom && e.t <= onTo);
   const named = new Set(moves.map((e) => e.q));
   const missing = sets.filter((e) => !named.has(e.seq)).map((e) => e.seq);
   expect(missing, `sets whose move record is missing (of ${sets.length})`).toEqual([]);
   // Nothing was dropped, and the drag's moves reaching the hub are more than
   // the old 48 KB bound held (the check can fail).
-  const notes = pageEvents.filter((e) => e.ev === "overflow" && e.t >= offFrom);
+  const notes = logged.filter((e) => e.ev === "overflow" && e.t >= offFrom);
   expect(notes, "the recorder's drop notes").toEqual([]);
   const bytes = eventBytes(events, onFrom, onTo);
   test.info().annotations.push({ type: "drag-bytes", description: String(bytes) });
   expect(bytes, "the long drag's page events (bytes)").toBeGreaterThan(48 * 1024);
   // No `send` (every set was taken) and no `ack` record: the hub has both.
-  const hubs = pageEvents.filter((e) => (e.ev === "send" || e.ev === "ack") && e.t >= offFrom);
+  const hubs = logged.filter((e) => (e.ev === "send" || e.ev === "ack") && e.t >= offFrom);
   expect(hubs.length, "send and ack records").toBe(0);
 
   // The recorder on delays the long drag's sets no more than with it off.
