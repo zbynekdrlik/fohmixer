@@ -6,9 +6,10 @@
 //! a timer and a signal.
 //!
 //! A batch goes only from the tick, never from a message's handler: a
-//! hello, a dropout or a reset asks for one at the next tick (within
-//! `PING_MS`), so the writes and subscriptions that a hello or an instance
-//! back sets off are on the socket before it.
+//! hello, a dropout or a reset asks for one as soon as the recorder's cap
+//! lets it (#43 PR D), so the writes and subscriptions that a hello or an
+//! instance back sets off are on the socket before it; and no batch goes in
+//! a tick after a set went (`Recorder::set_went`).
 
 use std::time::Duration;
 
@@ -68,8 +69,10 @@ impl LiveStore {
     }
 
     /// Sends the flight recorder's next batch when one is due (§5.2): on a
-    /// socket that said hello and holds nothing unsent; the pong of the next
-    /// ping proves it logged. A batch the socket did not take goes again.
+    /// socket that said hello and holds at most 1 KB unsent, with no set
+    /// since the previous tick, within the recorder's cap; the pong of the
+    /// next ping proves it logged. A batch the socket did not take goes
+    /// again.
     fn upload(self) {
         let now = dom::epoch_now();
         let batch = self

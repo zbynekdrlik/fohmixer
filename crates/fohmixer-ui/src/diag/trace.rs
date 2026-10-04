@@ -20,9 +20,10 @@
 //! `"ts":` of its line, and a `trace` line's `events` come before it.
 //!
 //! **Upload** ([`Recorder::upload`], from the link's 100 ms tick): one batch
-//! of at most [`BATCH_BYTES`] (one small WebSocket frame: every set behind it
-//! waits for it) and at most [`RATE_BYTES_PER_S`] (each batch waits for the
-//! previous one's bytes at that rate), only when
+//! of at most [`BATCH_BYTES`] with its envelope (one small WebSocket frame:
+//! every set behind it waits for it) and at most [`RATE_BYTES_PER_S`] (each
+//! batch waits for the previous one's bytes at that rate, a full one less
+//! than a tick), only when
 //!
 //! - no set went onto the socket since the previous tick
 //!   ([`Recorder::set_went`]): while a finger moves a fader the recorder
@@ -76,9 +77,9 @@ pub const UPLOAD_MS: f64 = 2000.0;
 /// A batch's message is at most this many bytes, its events joined plus
 /// the `trace` envelope (at least one event, however large): one WebSocket
 /// frame, and a set sent right after it waits for it, so it is small (about
-/// one TCP segment). At [`RATE_BYTES_PER_S`] a full batch waits 100 ms, the
-/// link's tick.
-pub const BATCH_BYTES: usize = 1024;
+/// one TCP segment). At [`RATE_BYTES_PER_S`] a full batch waits 97.7 ms, so
+/// it goes at the next 100 ms tick with a margin for a coarse clock.
+pub const BATCH_BYTES: usize = 1000;
 /// The bytes of a `trace` message around its events ([`batch_text`]).
 pub const ENVELOPE: usize = 28;
 /// The recorder's upload never exceeds this many bytes a second (each batch
@@ -354,7 +355,8 @@ impl Recorder {
     /// passed since the last one.
     fn due(&self, now: f64) -> bool {
         let paced = self.paced_until.is_none_or(|at| now >= at);
-        let full = self.unsent >= BATCH_BYTES;
+        // The unsent events fill a message with the envelope.
+        let full = self.unsent + ENVELOPE >= BATCH_BYTES;
         let time = self.soon || full || self.uploaded.is_none_or(|at| now - at >= UPLOAD_MS);
         paced && time
     }
