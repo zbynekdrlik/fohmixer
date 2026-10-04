@@ -272,7 +272,8 @@ class Stutter(ReportCase):
 
     def test_a_touch_whose_sets_never_reached_the_hub_takes_none_of_the_next_ones(self):
         # The first touch was lifted but none of its sets reached the hub
-        # (an outage); the next touch's sets are its own, never the first's.
+        # (lost on the way); the next touch's sets are its own, never the
+        # first's.
         log = Log()
         log.pings(7, BASE, BASE + 6000)
         p0 = BASE + 1000 - OFFSET

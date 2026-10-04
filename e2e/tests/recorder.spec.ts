@@ -155,7 +155,9 @@ test("on a slow link the recorder never delays a drag's sets and its newest even
     [on.between, on.to],
   ]) {
     const { first, last, t0, t1 } = dragSets(events, a, b);
-    expect(eventBytes(events, t0, t1), "the page events between the drag's first and last set (bytes)").toBeGreaterThanOrEqual(4000);
+    const bytes = eventBytes(events, t0, t1);
+    test.info().annotations.push({ type: "drag-bytes", description: String(bytes) });
+    expect(bytes, "the page events between the drag's first and last set (bytes)").toBeGreaterThanOrEqual(4000);
     const inside = events.filter((e) => e.ev === "trace" && e.ts > first + 5 && e.ts < last - 5);
     expect(inside.length, `trace records inside a drag of ${Math.round(last - first)} ms: ${JSON.stringify(inside.map((e) => e.ts - first))}`).toBeLessThanOrEqual(2);
   }
