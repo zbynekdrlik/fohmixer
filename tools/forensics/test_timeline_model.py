@@ -1,6 +1,7 @@
 """The forensics timeline's pure analysis helpers (#43, ``timeline_model``):
 jumps, percentiles, gestures and gaps, busy episodes."""
 
+import math
 import os
 import sys
 import unittest
@@ -137,12 +138,8 @@ class Helpers(unittest.TestCase):
         )
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class FirstTouchRule(unittest.TestCase):
-    """``timeline_touches.first_touch``: the first applied value against Live's
+    """``timeline_touch.first_touch``: the first applied value against Live's
     before and against where the finger alone would have taken Live."""
 
     def test_a_stale_start_is_a_jump_whichever_way_the_finger_went(self):
@@ -209,6 +206,63 @@ class FirstTouchRule(unittest.TestCase):
         self.assertEqual(touches.finger_at([], 5), None)
 
 
+class Thresholds(unittest.TestCase):
+    """Each threshold of a touch's rules at its exact boundary and the next
+    float."""
+
+    def test_a_first_touch_jump_needs_over_1_db(self):
+        self.assertFalse(touches.over_jump(1.0))
+        self.assertTrue(touches.over_jump(math.nextafter(1.0, 2.0)))
+
+    def test_a_move_gap_needs_over_50_ms_and_over_3_px(self):
+        self.assertEqual(touches.MOVE_GAP_MS, 50.0)
+        self.assertEqual(touches.MOVE_GAP_PX, 3.0)
+        after, more = math.nextafter(50.0, 60.0), math.nextafter(3.0, 4.0)
+        self.assertFalse(touches.is_move_gap(50.0, 30.0))
+        self.assertTrue(touches.is_move_gap(after, 30.0))
+        self.assertFalse(touches.is_move_gap(180.0, 3.0))
+        self.assertTrue(touches.is_move_gap(180.0, more))
+
+    def test_a_finger_move_is_over_1e_4_and_a_held_value_inside_the_travel(self):
+        self.assertFalse(touches.finger_moved(1e-4))
+        self.assertFalse(touches.finger_moved(-1e-4))
+        self.assertTrue(touches.finger_moved(math.nextafter(1e-4, 1.0)))
+        self.assertTrue(touches.finger_moved(-math.nextafter(1e-4, 1.0)))
+        self.assertFalse(touches.inside_travel(0.0))
+        self.assertFalse(touches.inside_travel(1.0))
+        self.assertTrue(touches.inside_travel(math.nextafter(0.0, 1.0)))
+        self.assertTrue(touches.inside_travel(math.nextafter(1.0, 0.0)))
+
+    def test_a_stale_page_value_is_over_1_db_from_lives(self):
+        # Live at -2 dB (0.8); the page's own value of Live 1 dB away (as near
+        # as a position gives) is not stale; over_jump pins the boundary.
+        start = read.to_pos(0.5)
+        raw = start + 0.003
+        live_exactly = read.to_pos(0.825)
+        rule = touches.first_touch(start, live_exactly, False, 0.8, 0.5, raw)
+        self.assertEqual(rule[3:], (True, "other"))
+        self.assertAlmostEqual(touches.pos_db(live_exactly), -1.0, places=9)
+
+
+class TouchRecords(unittest.TestCase):
+    def test_a_touchs_frames_are_its_pointers_on_its_key_both_ends_included_in_page_order(self):
+        frames = [
+            {"key": VOX, "p": 4, "t": 1_016.0},
+            {"key": VOX, "p": 4, "t": 1_000.0},
+            {"key": VOX, "p": 5, "t": 1_010.0},
+            {"key": HAND, "p": 4, "t": 1_012.0},
+            {"key": VOX, "p": 4, "t": 1_032.0},
+            {"key": VOX, "p": 4, "t": 999.0},
+            {"key": VOX, "p": 4},
+        ]
+        mine = touches.own_frames(frames, VOX, 4, 1_000.0, 1_032.0)
+        self.assertEqual([f["t"] for f in mine], [1_000.0, 1_016.0, 1_032.0])
+        self.assertFalse(touches.within(None, 0.0, 1.0))
+        self.assertTrue(touches.within(0.0, 0.0, 1.0))
+        self.assertTrue(touches.within(1.0, 0.0, 1.0))
+        self.assertFalse(touches.within(math.nextafter(1.0, 2.0), 0.0, 1.0))
+
+
 class TouchSets(unittest.TestCase):
     def test_a_frame_names_its_set_by_seq_and_time(self):
         frames = [{"t": 1_000.0, "q": 7}, {"t": 1_016.0, "q": 8}]
@@ -218,3 +272,7 @@ class TouchSets(unittest.TestCase):
         self.assertFalse(model.names_set(frames, {"seq": 9, "t": 1_016.0}), "another seq")
         self.assertFalse(model.names_set(frames, {"seq": 8}), "no time")
         self.assertFalse(model.names_set([{"q": 8}], {"seq": 8, "t": 1_016.0}), "a frame without t")
+
+
+if __name__ == "__main__":
+    unittest.main()

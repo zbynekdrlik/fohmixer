@@ -320,5 +320,32 @@ class NewRecords(ReportCase):
         self.assertEqual(len(page.of_class("unsent")), 1, "the write the socket did not take")
 
 
+class SendTimes(ReportCase):
+    def test_a_write_the_socket_did_not_take_counts_among_the_pages_sends(self):
+        # The page sent every 16 ms, then nothing reached the hub for 180 ms
+        # but one write the socket did not take, half way; the next set is
+        # 4 dB further. The page did send (its unsent write), the hub heard
+        # nothing: the link's.
+        log = Log()
+        log.pings(7, BASE, BASE + 4000)
+        p0 = BASE + 1000 - OFFSET
+        sends = [(p0 + 16 * i, round(0.5 + 0.002 * i, 6)) for i in range(10)]
+        resume = sends[-1][0] + 180
+        sends += [(resume + 16 * i, round(0.618 + 0.002 * i, 6)) for i in range(10)]
+        log.drag(VOX, 7, sends)
+        kept = {
+            "ev": "send",
+            "t": sends[9][0] + 90,
+            "seq": 99,
+            "key": VOX,
+            "value": 0.56,
+            "final": False,
+            "sent": False,
+        }
+        log.trace(BASE + 3000, 7, [kept])
+        _, page, _ = self.report(log, BASE, BASE + 5000)
+        self.assertEqual(self.jumps(page), [("link", digest(VOX))])
+
+
 if __name__ == "__main__":
     unittest.main()
