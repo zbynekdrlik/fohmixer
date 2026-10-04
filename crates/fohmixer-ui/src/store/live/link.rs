@@ -24,8 +24,9 @@ impl LiveStore {
     /// The dropout watch's own tick (#43), every `PING_MS` until the store
     /// stops, whatever the socket does: it keeps ticking while the page
     /// reconnects, so a lost socket counts from the page's next on-time tick.
-    /// Each tick also shows the counter and sends the flight recorder's next
-    /// batch when one is due.
+    /// Each tick also shows the counter, tells the flight recorder the
+    /// writes that turned `unconfirmed` or `not_sent` (#43 PR E) and sends
+    /// its next batch when one is due.
     pub(super) fn tick_link(self) {
         set_timeout(
             move || {
@@ -36,6 +37,7 @@ impl LiveStore {
                     .inner
                     .try_update_value(|i| i.watch.tick(dom::epoch_now()));
                 self.show_counter();
+                self.note_intents();
                 self.upload();
                 self.tick_link();
             },

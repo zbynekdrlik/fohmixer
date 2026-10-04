@@ -25,6 +25,7 @@ from test_timeline import (  # noqa: E402
     ReportCase,
     digest,
 )
+import timeline_read as read  # noqa: E402
 
 # A volume's Live value at fader position p (``behave/fader.rs`` ``to_live``).
 EXPONENT = 0.515
@@ -396,6 +397,153 @@ class SendTimes(ReportCase):
         log.trace(BASE + 3000, 7, [kept])
         _, page, _ = self.report(log, BASE, BASE + 5000)
         self.assertEqual(self.jumps(page), [("link", digest(VOX))])
+
+
+def dropped_moves(records, t):
+    """The page's marker of ``records`` its recorder dropped (PR E): the
+    batch at page time ``t`` says how many ``mv`` records went and the page
+    time of the oldest and the newest."""
+    return {
+        "ev": "overflow",
+        "t": t,
+        "n": len(records),
+        "kinds": {"mv": len(records)},
+        "from": records[0]["t"],
+        "to": records[-1]["t"],
+    }
+
+
+class NoData(ReportCase):
+    """PR E: past its backlog's bound the page's recorder drops a long
+    drag's oldest moves and says so with their span; the timeline reads the
+    span as no data, never as a move gap or a held run."""
+
+    def drag(self, log, steps, hole, gaps=None):
+        """A drag of Vox 1 from 0.5 (``steps`` as in ``frames``, a frame every
+        16 ms except before the frames ``gaps`` names) whose frames
+        ``hole[0]`` to ``hole[1] - 1`` the recorder dropped. The hub has
+        every set. Returns the frames' records."""
+        log.pings(7, BASE, BASE + 6000)
+        p0 = BASE + 1000 - OFFSET
+        records, _ = frames(VOX, 4, p0 + 50, 0.5, steps)
+        t = p0 + 50
+        for i, record in enumerate(records):
+            t += (gaps or {}).get(i, 16.0) if i else 0.0
+            record["t"] = t
+        log.drag(VOX, 7, [(r["t"] + 0.5, value_at(r["s"])) for r in records])
+        first_set(log, VOX)["live_before"] = value_at(0.5)
+        lo, hi = hole
+        log.trace(BASE + 2000, 7, [down(p0, VOX, 4, start=0.5, live=0.5), *records[:lo]])
+        marker = dropped_moves(records[lo:hi], records[-1]["t"] + 300)
+        later = [marker, *records[hi:], lift(records[-1]["t"] + 20, VOX, 4)]
+        log.trace(BASE + 4000, 7, later)
+        return records
+
+    def test_moves_the_recorder_dropped_are_no_data_not_a_move_gap(self):
+        # 30 frames of 1 px; frames 10 to 19 went: the kept moves around them
+        # are 176 ms and 11 px apart, which would read as a move gap.
+        log = Log()
+        records = self.drag(
+            log, [(i + 1, round(0.5 + (i + 1) / 300.0, 5)) for i in range(30)], (10, 20)
+        )
+        summary, page, stdout = self.report(log, BASE, BASE + 6000)
+        self.assertEqual(summary["move_gaps"], "0", "the hole is the recorder's, not the finger's")
+        self.assertEqual(summary["no_data_spans"], "1")
+        self.assertEqual(summary["recorder_dropped"], "10")
+        (row,) = touch_rows(page)
+        self.assertEqual((row["data-move-gaps"], row["data-held"]), ("0", "0"))
+        self.assertEqual(row["data-no-data-ms"], "144.0", "the dropped frames' first to last")
+        # The hub's sets of those frames (by key and page time, none named by
+        # a kept frame): the fader kept sending through the hole.
+        self.assertEqual(row["data-no-data-sets"], "10")
+        (band,) = page.of_class("nodata")
+        self.assertEqual((band["data-kind"], band["data-n"]), ("mv", "10"))
+        self.assertEqual(float(band["data-start"]), records[10]["t"] + OFFSET)
+        self.assertEqual(float(band["data-end"]), records[19]["t"] + OFFSET)
+        note = (
+            "the page flight recorder dropped 10 mv events from "
+            f"{read.local_text(records[10]['t'] + OFFSET)} to "
+            f"{read.local_text(records[19]['t'] + OFFSET)}: no data of that kind there"
+        )
+        self.assertIn(f"<li>{note}</li>", page.text)
+        self.assertIn(f"<title>no data: {note}</title>", page.text)
+        self.assertIn("no data", page.text)
+        self.assertNotIn("Vox 1", stdout)
+
+    def test_a_window_ending_before_the_drop_note_still_reads_its_span(self):
+        # The note goes up with the next batch, after the drag; a window
+        # ending at the lift does not reach it, but its span is in it.
+        log = Log()
+        steps = [(i + 1, round(0.5 + (i + 1) / 300.0, 5)) for i in range(30)]
+        records = self.drag(log, steps, (10, 20))
+        end = records[-1]["t"] + OFFSET + 100
+        summary, page, _ = self.report(log, BASE, end)
+        self.assertEqual(summary["move_gaps"], "0")
+        self.assertEqual(summary["no_data_spans"], "1")
+        (row,) = touch_rows(page)
+        self.assertEqual(row["data-no-data-ms"], "144.0")
+
+    def test_a_move_gap_outside_the_dropped_span_still_counts(self):
+        # The same hole, and later a real stutter: 180 ms with 31 px.
+        log = Log()
+        px = [i + 1 for i in range(30)] + [61 + i for i in range(10)]
+        steps = [(p, round(0.5 + p / 300.0, 5)) for p in px]
+        self.drag(log, steps, (10, 20), gaps={30: 180.0})
+        summary, page, _ = self.report(log, BASE, BASE + 6000)
+        self.assertEqual(summary["move_gaps"], "1")
+        self.assertEqual(summary["move_gap_max_ms"], "180.0")
+        (row,) = touch_rows(page)
+        self.assertEqual(row["data-move-gaps"], "1")
+
+    def test_a_held_run_never_spans_the_dropped_frames(self):
+        # Frames 8, 9, 20 and 21 send frame 7's value while the finger moves
+        # on; frames 10 to 19 went. Read across the hole that would be four
+        # frames in a row holding a value (a held run); with the hole it is
+        # two and one.
+        log = Log()
+        steps = [(i + 1, round(0.5 + (i + 1) / 300.0, 5)) for i in range(25)]
+        for i in (8, 9, 20, 21):
+            steps[i] = (steps[i][0], steps[7][1])
+        self.drag(log, steps, (10, 20))
+        summary, page, _ = self.report(log, BASE, BASE + 6000)
+        self.assertEqual(summary["held_runs"], "0")
+        (row,) = touch_rows(page)
+        self.assertEqual(row["data-held"], "0")
+
+    def test_an_older_pages_note_without_a_span_stays_a_note(self):
+        log = Log()
+        log.pings(7, BASE, BASE + 4000)
+        p0 = BASE + 1000 - OFFSET
+        log.trace(BASE + 3000, 7, [{"ev": "overflow", "t": p0, "n": 3, "kinds": {"ack": 3}}])
+        summary, page, _ = self.report(log, BASE, BASE + 5000)
+        self.assertIn("the page flight recorder dropped 3 events", page.text)
+        self.assertEqual((summary["recorder_dropped"], summary["no_data_spans"]), ("3", "0"))
+        self.assertEqual(page.of_class("nodata"), [])
+
+
+class Intents(ReportCase):
+    def test_a_writes_unconfirmed_and_not_sent_states_are_marked_on_its_send_row(self):
+        # PR E: the page records when a write turned unconfirmed (its release
+        # 1 s old without an ack) and not_sent (too old to send again after
+        # a reconnect): only the page knows when it drew them.
+        log = Log()
+        log.pings(7, BASE, BASE + 4000)
+        p0 = BASE + 1000 - OFFSET
+        log.drag(VOX, 7, [(p0, 0.5), (p0 + 16, 0.52)])
+        log.trace(
+            BASE + 3000,
+            7,
+            [
+                {"ev": "intent", "t": p0 + 1016, "key": VOX, "seq": 2, "state": "unconfirmed"},
+                {"ev": "intent", "t": p0 + 2100, "key": VOX, "seq": 2, "state": "not_sent"},
+            ],
+        )
+        summary, page, stdout = self.report(log, BASE, BASE + 5000)
+        self.assertEqual((summary["unconfirmed"], summary["not_sent"]), ("1", "1"))
+        marks = page.of_class("intent")
+        self.assertEqual([m["data-state"] for m in marks], ["unconfirmed", "not_sent"])
+        self.assertEqual({m["data-key-hash"] for m in marks}, {digest(VOX)})
+        self.assertNotIn("Vox 1", stdout)
 
 
 if __name__ == "__main__":

@@ -43,8 +43,8 @@ async function sampleCounter(counter: Locator) {
 
 const samples = (page: Page) => page.evaluate(() => (window as unknown as { counterSamples: Sample[] }).counterSamples);
 
-/** The page's events in the hub's event log (every `trace` record's events), with the record. */
-async function pageEvents(): Promise<{ ts: number; e: any }[]> {
+/** The page's events in the hub's event log (every `trace` record's events), each with its record's `ts`. */
+async function tracedEvents(): Promise<{ ts: number; e: any }[]> {
   return (await hubEvents()).filter((r) => r.ev === "trace").flatMap((r) => r.events.map((e: any) => ({ ts: r.ts, e })));
 }
 
@@ -114,7 +114,7 @@ test.describe("The dropout counter", () => {
     // lost socket's, the reset, and what the page saw while its link was
     // down (its socket's close), sent up after the reconnect.
     const events = await until(
-      pageEvents,
+      tracedEvents,
       (all) => all.some(({ e }) => e.ev === "reset" && e.t >= tappedFrom),
       "the reset in the event log",
       10_000,

@@ -3,6 +3,7 @@ jumps, percentiles, gestures and gaps, busy episodes."""
 
 import math
 import os
+import re
 import sys
 import unittest
 
@@ -243,6 +244,20 @@ class Thresholds(unittest.TestCase):
         self.assertEqual(rule[3:], (True, "other"))
         self.assertAlmostEqual(touches.pos_db(live_exactly), -1.0, places=9)
 
+    def test_a_span_reaches_a_hole_the_recorder_left_from_its_first_to_its_last_ms(self):
+        # PR E: page times 1 to 2 reach into a hole from 2 to 3 (both ends
+        # count), not into one from the next float after 2, nor one before 1.
+        self.assertTrue(touches.across(1.0, 2.0, [(2.0, 3.0)]))
+        self.assertFalse(touches.across(1.0, 2.0, [(math.nextafter(2.0, 3.0), 3.0)]))
+        self.assertTrue(touches.across(3.0, 4.0, [(2.0, 3.0)]))
+        self.assertFalse(touches.across(math.nextafter(3.0, 4.0), 4.0, [(2.0, 3.0)]))
+        self.assertTrue(touches.across(1.0, 9.0, [(5.0, 6.0)]), "a hole inside")
+        self.assertFalse(touches.across(1.0, 9.0, []))
+        # A touch's holes are cut to it, in time order; one outside is none.
+        holes = [(50.0, 80.0), (5.0, 15.0), (200.0, 300.0)]
+        self.assertEqual(touches.no_data(holes, 10.0, 60.0), [(10.0, 15.0), (50.0, 60.0)])
+        self.assertEqual(touches.no_data(holes, 100.0, 150.0), [])
+
     def test_a_held_run_is_3_holds_in_a_row(self):
         self.assertEqual(touches.HELD_FRAMES, 3)
 
@@ -293,6 +308,74 @@ class TouchSets(unittest.TestCase):
         self.assertFalse(model.names_set(frames, {"seq": 9, "t": 1_016.0}), "another seq")
         self.assertFalse(model.names_set(frames, {"seq": 8}), "no time")
         self.assertFalse(model.names_set([{"q": 8}], {"seq": 8, "t": 1_016.0}), "a frame without t")
+
+
+class NoDataText(unittest.TestCase):
+    """A dropped span's note and tooltip (PR E): how many records of which
+    kind, their page stamps on the hub clock (one stamp said once), and for
+    long frames the stalls they can stand for."""
+
+    OFFSET = 250.5
+
+    def span(self, kind, n, start, to):
+        lead = model.LONG_FRAME_MS if kind == "frame" else 0.0
+        first, last = start - lead + self.OFFSET, to + self.OFFSET
+        return model.NoData(first, last, last - first, (kind, n, start, to))
+
+    def at(self, page_t):
+        return read.local_text(page_t + self.OFFSET)
+
+    def test_one_long_frame_is_one_stamp_and_its_stall(self):
+        t = 1791044401000.0
+        self.assertEqual(
+            model.no_data_text(self.span("frame", 1, t, t)),
+            f"the page flight recorder dropped 1 long frame stamped at {self.at(t)}: "
+            f"no data of page stalls from {self.at(t - 50)} to {self.at(t)}",
+        )
+
+    def test_long_frames_are_their_first_and_last_stamps_and_the_stalls_between(self):
+        t = 1791044401000.0
+        self.assertEqual(
+            model.no_data_text(self.span("frame", 2, t, t + 112)),
+            f"the page flight recorder dropped 2 long frames stamped from {self.at(t)} to "
+            f"{self.at(t + 112)}: no data of page stalls from {self.at(t - 50)} to "
+            f"{self.at(t + 112)}",
+        )
+
+    def test_one_dropped_record_of_another_kind_is_its_one_time(self):
+        t = 1791044401000.0
+        self.assertEqual(
+            model.no_data_text(self.span("mv", 1, t, t)),
+            f"the page flight recorder dropped 1 mv event at {self.at(t)}: "
+            "no data of that kind there",
+        )
+
+    def test_dropped_records_of_another_kind_are_their_span(self):
+        t = 1791044401000.0
+        self.assertEqual(
+            model.no_data_text(self.span("rtt", 3, t, t + 2000)),
+            f"the page flight recorder dropped 3 rtt events from {self.at(t)} to "
+            f"{self.at(t + 2000)}: no data of that kind there",
+        )
+
+
+class PageRecorder(unittest.TestCase):
+    """The page's recorder constants the timeline relies on (#43 PR E): read
+    from ``crates/fohmixer-ui/src/diag/trace.rs`` so the two cannot drift."""
+
+    def test_the_long_frame_threshold_and_the_backlog_drain_match_the_page(self):
+        path = os.path.join(HERE, "..", "..", "crates", "fohmixer-ui", "src", "diag", "trace.rs")
+        with open(path, encoding="utf-8") as f:
+            source = f.read()
+        long_frame = re.search(r"pub const LONG_FRAME_MS: f64 = ([0-9.]+);", source)
+        backlog = re.search(r"pub const BACKLOG_BYTES: usize = (\d+) \* 1024;", source)
+        rate = re.search(r"pub const RATE_BYTES_PER_S: f64 = ([0-9_.]+);", source)
+        self.assertIsNotNone(long_frame and backlog and rate, "the constants are where they were")
+        self.assertEqual(float(long_frame.group(1)), model.LONG_FRAME_MS)
+        self.assertEqual(model.INSIDE_STALL_MS, model.LONG_FRAME_MS / 2)
+        self.assertEqual(int(backlog.group(1)), 768, "the timeline's comments name 768 KB")
+        drain_ms = int(backlog.group(1)) * 1024 / float(rate.group(1).replace("_", "")) * 1000
+        self.assertLess(drain_ms, model.TRACE_TAIL_MS, "a full backlog drains inside the tail")
 
 
 if __name__ == "__main__":

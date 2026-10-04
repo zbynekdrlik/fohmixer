@@ -13,7 +13,7 @@ import json
 import math
 
 import timeline_touch
-from timeline_read import is_volume, key_hash, local_text, number, value2db
+from timeline_read import TAIL_KINDS, is_volume, key_hash, local_text, number, value2db
 
 # A gap between two points of a control's row that is marked, and the bound
 # of every measured cause (ms).
@@ -28,15 +28,29 @@ UNTOUCHED_GESTURE_MS = 10000.0
 # started before the window (ms).
 LEAD_MS = 60000
 # Trace records up to this long after --to count: their page events can fall
-# inside the window (ms).
-TRACE_TAIL_MS = 60000
+# inside the window (ms). The page's recorder holds a drag's events until the
+# fingers rest and drains its full 768 KB backlog in ~95 s (#43 PR E); while
+# the link is down they wait for the next socket, and a hidden page uploads
+# once a second. Pings count that long too (the next socket's clock); they
+# are read for the offsets only. Only traces and pings are parsed there.
+TRACE_TAIL_MS = 30 * 60 * 1000
 # A change between two applied volumes past this is a jump (dB).
 JUMP_DB = 3.0
+# The page records a frame longer than this (ms, ``diag/trace.rs``
+# ``LONG_FRAME_MS``): a dropped long frame was a stall at least this long.
+LONG_FRAME_MS = 50.0
+# A long frame is stamped at the stall's end, in the tick that then sends the
+# next set; this far before its stamp lies inside the gap between the two
+# ticks' sends, whatever the few ms the two clock offsets differ.
+INSIDE_STALL_MS = LONG_FRAME_MS / 2
 
 ROWS = ("send", "arrival", "applied")
 
 Point = collections.namedtuple("Point", ("time", "value", "hollow", "info"))
 PageEvent = collections.namedtuple("PageEvent", ("hub", "ev", "data"))
+# What the page's recorder dropped of one kind (PR E): on the hub's clock,
+# ``info`` = (kind, count, page from, page to).
+NoData = collections.namedtuple("NoData", ("start", "end", "ms", "info"))
 Span = collections.namedtuple("Span", ("start", "end", "ms", "info"))
 Jump = collections.namedtuple(
     "Jump",
@@ -313,7 +327,7 @@ class Timeline:
             )
         kinds = collections.defaultdict(list)
         for record in sorted(records, key=lambda r: r["ts"]):
-            last = end + TRACE_TAIL_MS if record.get("ev") == "trace" else end
+            last = end + TRACE_TAIL_MS if record.get("ev") in TAIL_KINDS else end
             if lead <= record["ts"] <= last:
                 kinds[record.get("ev")].append(record)
         in_window = [r for group in kinds.values() for r in group if start <= r["ts"] <= end]
@@ -335,7 +349,9 @@ class Timeline:
             )
         if bad:
             self.notes.append(f"{bad} page events without ev or t were left out")
-        self.page = [e for e in events if e.hub <= end]
+        # A long frame is stamped at the stall's end, a drop note when its
+        # batch goes: one past the window's end can still cover it.
+        self.page = [e for e in events if e.hub <= end or e.ev in ("frame", "overflow")]
         self._link(kinds)
         self._live(kinds, marks)
         self._controls(kinds)
@@ -394,18 +410,15 @@ class Timeline:
                 lost = e.data.get("socket_lost") is True
                 self.dropouts.append(Span(e.hub, e.hub + ms, ms, lost))
         self.resets = [e for e in self._page("reset") if self.in_window(e.hub)]
+        # A long frame is stamped when the frame that ends it comes
+        # (`diag::frame`): the stall is the ``ms`` before its time.
         self.frames = []
         for e in self._page("frame"):
             ms = number(e.data.get("ms")) or 0.0
-            if e.hub <= self.end and e.hub + ms >= self.start:
-                self.frames.append(Span(e.hub, e.hub + ms, ms, None))
+            if e.hub - ms <= self.end and e.hub >= self.start:
+                self.frames.append(Span(e.hub - ms, e.hub, ms, None))
         self.visibility = [e for e in self._page("visibility") if self.in_window(e.hub)]
-        for e in self._page("overflow"):
-            if self.in_window(e.hub):
-                self.notes.append(
-                    f"the page flight recorder dropped {e.data.get('n')} events "
-                    f"before {local_text(e.hub)} (its ring was full)"
-                )
+        self._dropped()
         socks = []
         for r in kinds["sock"]:
             if self.in_window(r["ts"]):
@@ -425,6 +438,37 @@ class Timeline:
                     title += ": " + ", ".join(details)
                 socks.append((e.hub, title))
         self.socks = sorted(socks, key=lambda sock: sock[0])
+
+    def _dropped(self):
+        """The page recorder's drop notes: since PR E one per kind with the
+        page time of the oldest and newest event it dropped, a span of no
+        data of that kind (on the hub's clock with the note's own offset);
+        an older page's note says only how many went."""
+        self.no_data = []
+        self.recorder_dropped = 0
+        for e in self._page("overflow"):
+            n = number(e.data.get("n")) or 0.0
+            kinds = e.data.get("kinds")
+            start, to = number(e.data.get("from")), number(e.data.get("to"))
+            if isinstance(kinds, dict) and len(kinds) == 1 and None not in (start, to):
+                (kind,) = kinds
+                offset = e.hub - number(e.data.get("t"))
+                # A dropped long frame was a stall of at least LONG_FRAME_MS
+                # before its stamp: drawn and matched as that.
+                lead = LONG_FRAME_MS if kind == "frame" else 0.0
+                first, last = start - lead + offset, to + offset
+                span = NoData(first, last, last - first, (kind, int(n), start, to))
+                if span.start > self.end or span.end < self.start:
+                    continue
+                self.no_data.append(span)
+                self.recorder_dropped += int(n)
+                self.notes.append(no_data_text(span))
+            elif self.in_window(e.hub):
+                self.recorder_dropped += int(n)
+                self.notes.append(
+                    f"the page flight recorder dropped {e.data.get('n')} events "
+                    f"before {local_text(e.hub)} (its ring was full)"
+                )
 
     def _live(self, kinds, marks):
         changes = [
@@ -497,17 +541,24 @@ class Timeline:
             for r in sets:
                 if (key, number(r.get("t"))) not in recorded:
                     rows[key]["send"].append(Point(sent_of(r), r.get("value"), False, None))
+        # A write's turn to unconfirmed or not_sent (PR E): marks on its
+        # control's send row.
+        self.intents = collections.defaultdict(list)
+        for e in self._page("intent"):
+            key = e.data.get("key")
+            if self.wanted(key) and self.in_window(e.hub):
+                self.intents[key].append(e)
         touches = self._page("touch")
         continuous = self._continuous()
         self.lanes = {}
-        for key in sorted(rows):
+        for key in sorted(set(rows) | set(self.intents)):
             lane = {
                 row: sorted(
                     (p for p in rows[key][row] if self.in_window(p.time)), key=lambda p: p.time
                 )
                 for row in ROWS
             }
-            if not any(lane.values()):
+            if not any(lane.values()) and key not in self.intents:
                 continue
             if key in continuous:
                 spans = gestures(touches, key, self.end)
@@ -584,15 +635,33 @@ class Timeline:
             if s2 is not None and a2.info["batch_ts"] is not None:
                 wait = a2.info["batch_ts"] - arrival_of(s2)
             rtt = a2.info["rtt_ms"]
+            # A dropout or a busy Live shows when Live applies: the applied
+            # interval. A page stall shows in the page's sends: the long frame
+            # whose stall (``INSIDE_STALL_MS`` before its stamp) falls after
+            # S1's send and by S2's, or dropped long frames whose stamps,
+            # moved so, meet that interval; without both sets, the applied
+            # interval.
             hits = [
                 name
-                for name, spans in (
-                    ("dropout", self.dropouts),
-                    ("busy", self.busy),
-                    ("frame", self.frames),
-                )
+                for name, spans in (("dropout", self.dropouts), ("busy", self.busy))
                 if any(overlaps(s.start, s.end, a1.time, a2.time) for s in spans)
             ]
+            holes = [d for d in self.no_data if d.info[0] == "frame"]
+            if s1 is not None and s2 is not None:
+                low, high = sent_of(s1), sent_of(s2)
+                inside = INSIDE_STALL_MS
+                stalled = any(low < f.end - inside <= high for f in self.frames)
+                unknown = any(
+                    overlaps(d.start + LONG_FRAME_MS - inside, d.end - inside, low, high)
+                    for d in holes
+                )
+            else:
+                stalled = any(overlaps(f.start, f.end, a1.time, a2.time) for f in self.frames)
+                unknown = any(overlaps(d.start, d.end, a1.time, a2.time) for d in holes)
+            if stalled:
+                hits.append("frame")
+            if unknown:
+                hits.append("nodata")
             if "dropout" in hits or (
                 arrival_gap is not None
                 and arrival_gap > GAP_MS
@@ -604,6 +673,10 @@ class Timeline:
                 cause = "live"
             elif (gaps["page"] or 0.0) > GAP_MS or "frame" in hits:
                 cause = "page"
+            elif "nodata" in hits:
+                # The recorder dropped the long frames of that time (PR E):
+                # a page stall cannot be ruled out.
+                cause = "no data"
             else:
                 cause = "move"
             jumps.append(Jump(a2.time, key, db1, db2, cause, gaps, rtt, wait, hits))
@@ -652,6 +725,18 @@ class Timeline:
             clients = {r.get("client") for r in sets if names_set(mine, r)}
             if clients:
                 sets = [r for r in sets if r.get("client") in clients]
+            # Moves the recorder dropped inside the touch (PR E): no data,
+            # and the touch's sets no kept frame names that fall in it.
+            holes = timeline_touch.no_data(self._dropped_moves(), begin, end)
+            hole_sets = sum(
+                1
+                for r in sets
+                if not names_set(mine, r)
+                and any(
+                    timeline_touch.within(r.get("t"), a - SAME_FRAME_MS, b + SAME_FRAME_MS)
+                    for a, b in holes
+                )
+            )
             first = sets[0] if sets else None
             own = {identity_of(r.get("instance"), r): r for r in sets}
             lane = self.lanes.get(key, {}).get("applied", [])
@@ -663,8 +748,12 @@ class Timeline:
                 ),
                 None,
             )
-            rows.append(timeline_touch.analyse(down, key, mine, first, applied))
+            rows.append(timeline_touch.analyse(down, key, mine, first, applied, holes, hole_sets))
         return rows
+
+    def _dropped_moves(self):
+        """The page-clock spans of the moves the recorder dropped."""
+        return [(s.info[2], s.info[3]) for s in self.no_data if s.info[0] == "mv"]
 
 
 # --- the summary ---
@@ -673,6 +762,37 @@ class Timeline:
 def ms_text(value):
     """Milliseconds with one decimal, ``n/a`` for none."""
     return "n/a" if value is None else f"{value:.1f}"
+
+
+def no_data_text(span):
+    """What a dropped span (``NoData``) means, for the notes and the band's
+    tooltip: for long frames the stamps the page dropped and the stalls they
+    can stand for (from ``LONG_FRAME_MS`` before the first stamp)."""
+    kind, n, start, to = span.info
+    offset = span.end - to
+    first, last = local_text(start + offset), local_text(to + offset)
+    stamps = f"at {first}" if first == last else f"from {first} to {last}"
+    if kind == "frame":
+        return (
+            f"the page flight recorder dropped {counted(n, 'long frame')} stamped "
+            f"{stamps}: no data of page stalls from {local_text(span.start)} to "
+            f"{local_text(span.end)}"
+        )
+    return (
+        f"the page flight recorder dropped {counted(n, kind + ' event')} {stamps}: "
+        "no data of that kind there"
+    )
+
+
+def counted(n, noun):
+    """``n`` and ``noun``, plural unless ``n`` is 1."""
+    return f"{n} {noun}" if n == 1 else f"{n} {noun}s"
+
+
+def intent_count(timeline, state):
+    """How many of the window's writes turned ``state`` (PR E's ``intent``
+    records)."""
+    return sum(e.data.get("state") == state for es in timeline.intents.values() for e in es)
 
 
 def summary(timeline):
@@ -726,6 +846,10 @@ def summary(timeline):
         ("move_gaps", str(len(move_gaps))),
         ("move_gap_max_ms", f"{max(move_gaps):.1f}" if move_gaps else "0"),
         ("held_runs", str(sum(t.held_runs for t in touches))),
+        ("no_data_spans", str(len(timeline.no_data))),
+        ("recorder_dropped", str(timeline.recorder_dropped)),
+        ("unconfirmed", str(intent_count(timeline, "unconfirmed"))),
+        ("not_sent", str(intent_count(timeline, "not_sent"))),
         ("skipped_lines", str(timeline.skipped)),
         ("notes", str(len(timeline.notes))),
     ]

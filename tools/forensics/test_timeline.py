@@ -163,7 +163,9 @@ class Log:
         days = {}
         for record in sorted(self.records, key=lambda r: r["ts"]):
             day = datetime.datetime.fromtimestamp(record["ts"] / 1000.0, datetime.UTC).date()
-            days.setdefault(day, []).append(json.dumps(record, separators=(",", ":")))
+            # As the hub writes them: compact, keys sorted (serde_json's map).
+            line = json.dumps(record, separators=(",", ":"), sort_keys=True)
+            days.setdefault(day, []).append(line)
         for day, lines in days.items():
             path = os.path.join(folder, f"events-{day.isoformat()}.jsonl")
             with open(path, "a", encoding="utf-8") as f:
@@ -423,73 +425,16 @@ class Stall(ReportCase):
                 "move_gaps",
                 "move_gap_max_ms",
                 "held_runs",
+                "no_data_spans",
+                "recorder_dropped",
+                "unconfirmed",
+                "not_sent",
                 "skipped_lines",
                 "notes",
             ],
         )
         self.assertEqual(summary["rtt_hub_p50_ms"], "12.0")
         self.assertEqual(summary["notes"], "1", "no hub log: one note")
-
-
-class Causes(ReportCase):
-    def test_a_slow_live_round_trip_is_live(self):
-        log = Log()
-        log.pings(7, BASE, BASE + 3000)
-        p0 = BASE + 1000 - OFFSET
-        sends = [(p0 + 16 * i, round(0.5 + 0.004 * i, 6)) for i in range(100)]
-        log.trace(BASE + 3000, 7, log.drag(VOX, 7, sends, rtt_ms=400.0))
-        summary, page, _ = self.report(log, BASE, BASE + 5000)
-        causes = self.jumps(page)
-        self.assertGreaterEqual(len(causes), 2)
-        self.assertEqual({cause for cause, _ in causes}, {"live"})
-        self.assertEqual(summary["jumps"], str(len(causes)))
-        self.assertEqual(self.gaps(page, "arrival", VOX), [], "the link was even")
-
-    def test_a_page_that_stopped_sending_is_page(self):
-        log = Log()
-        log.pings(7, BASE, BASE + 3000)
-        p0 = BASE + 1000 - OFFSET
-        sends = [(p0 + 16 * i, round(0.5 + 0.004 * i, 6)) for i in range(20)]
-        # 300 ms without a send (a frame of the page's main thread), then the
-        # finger's value, 0.1 (4 dB) further.
-        resume = sends[-1][0] + 316
-        sends += [(resume + 16 * i, round(0.676 + 0.004 * i, 6)) for i in range(20)]
-        events = log.drag(VOX, 7, sends)
-        events.append({"ev": "frame", "t": sends[19][0] + 8, "ms": 300.0})
-        log.trace(BASE + 3000, 7, events)
-        summary, page, _ = self.report(log, BASE, BASE + 5000)
-        self.assertEqual(self.jumps(page), [("page", digest(VOX))])
-        (frame,) = page.of_class("frame")
-        self.assertAlmostEqual(float(frame["data-start"]), sends[19][0] + 8 + OFFSET, delta=0.05)
-        self.assertEqual(summary["gap_send_max_ms"], "316.0", "no touch: 10 s gestures")
-
-    def test_a_fast_move_with_every_gap_small_is_move(self):
-        log = Log()
-        log.pings(7, BASE, BASE + 3000)
-        p0 = BASE + 1000 - OFFSET
-        sends = [(p0 + 16 * i, round(0.45 + 0.1 * i, 6)) for i in range(6)]
-        log.trace(BASE + 3000, 7, log.drag(VOX, 7, sends))
-        summary, page, _ = self.report(log, BASE, BASE + 5000)
-        self.assertEqual(self.jumps(page), [("move", digest(VOX))] * 5)
-        self.assertEqual((summary["gap_send_max_ms"], summary["gap_arrival_max_ms"]), ("0", "0"))
-
-    def test_a_busy_live_is_live_and_a_pan_has_no_jumps(self):
-        log = Log()
-        log.pings(7, BASE, BASE + 3000)
-        p0 = BASE + 1000 - OFFSET
-        sends = [(p0 + 16 * i, round(0.45 + 0.1 * i, 6)) for i in range(3)]
-        log.drag(VOX, 7, sends)
-        log.add("link", BASE + 1010, instance="band", busy=True, tick_age_ms=470, reason="slow")
-        log.add("link", BASE + 1600, instance="band", busy=False, tick_age_ms=10, reason="ok")
-        pans = [(p0 + 16 * i, round(-0.9 + 0.6 * i, 6)) for i in range(4)]
-        log.drag(KLAVIR_PAN, 7, pans)
-        summary, page, _ = self.report(log, BASE, BASE + 5000)
-        self.assertEqual(self.jumps(page), [("live", digest(VOX))] * 2)
-        lanes = [a["data-key-hash"] for a in page.of_class("control")]
-        self.assertEqual(sorted(lanes), sorted([digest(VOX), digest(KLAVIR_PAN)]))
-        pan_line = [a for a in page.of_class("value") if "arrival" in a["class"].split()]
-        self.assertEqual(len(pan_line), 2, "a polyline of each key's arrivals")
-        self.assertEqual(summary["busy"], "1")
 
 
 class Confirmations(ReportCase):
@@ -671,11 +616,13 @@ class Window(ReportCase):
         log.add("set", BASE + 15000, client=7, instance="band", key=VOX, seq=2, value=0.5)
         log.add("ping", BASE + 15000, client=7, n=1, t=BASE + 15000 - OFFSET, offset_ms=OFFSET)
         log.add("set", BASE + 25000, client=4, instance="band", key=VOX, seq=3, value=0.5)
+        # A record stamped exactly at --to is in the window.
+        log.add("set", end, client=7, instance="band", key=VOX, seq=4, value=0.5)
         reset = {"ev": "reset", "t": BASE + 19000 - OFFSET, "active": False}
         # A batch uploaded after the window still brings its events; one past
-        # the minute after it does not.
+        # the 30 minutes after it does not.
         log.trace(BASE + 25000, 7, [dict(reset, count=1)])
-        log.trace(BASE + 90000, 7, [dict(reset, count=2)])
+        log.trace(end + 31 * 60000, 7, [dict(reset, count=2)])
         log.write(self.logs)
         far_day = os.path.join(self.logs, "events-2026-10-01.jsonl")
         with open(far_day, "w", encoding="utf-8") as f:
@@ -684,10 +631,13 @@ class Window(ReportCase):
         with open(day, "a", encoding="utf-8") as f:
             f.write("\n")
             f.write(f'{{"ev":"set","ts":{BASE + 15001},"key":"band|li\n')
-            f.write(f'{{"ev":"set","ts":{BASE + 100000},"key":"band|li\n')
+            # In the trace tail only traces and pings are read: a set line
+            # there, even a broken one whose ts is readable, is never parsed.
+            f.write(f'{{"ev":"set","ts":{end + 10 * 60000},"key":"band|li\n')
+            f.write(f'{{"ev":"set","ts":{end + 31 * 60000},"key":"band|li\n')
             f.write('{"ev":"ba')
         summary, page, _ = self.report(Log(), start, end)
-        self.assertEqual(summary["records"], "2")
+        self.assertEqual(summary["records"], "3")
         self.assertEqual(summary["sockets"], "1")
         self.assertEqual(summary["resets"], "1")
         self.assertEqual(summary["skipped_lines"], "2", "only lines that could be in range")
@@ -702,6 +652,25 @@ class Window(ReportCase):
         self.assertIn("The window holds no records.", page.text)
         self.assertIn("no event file events-2026-10-03.jsonl", page.text)
         self.assertEqual(summary["notes"], "2", "no day file, no hub log")
+
+    def test_a_missing_day_file_only_the_trace_tail_reaches_is_no_note(self):
+        # A window ending 10 min before UTC midnight: the next date's file
+        # may hold the tail's traces, but none was written yet.
+        end = calendar.timegm((2026, 10, 3, 23, 50, 0)) * 1000
+        log = Log()
+        log.add("set", end - 1000, client=7, instance="band", key=VOX, seq=1, value=0.5)
+        summary, page, _ = self.report(log, end - 5000, end)
+        self.assertNotIn("events-2026-10-04.jsonl", page.text)
+        self.assertNotIn("no event file", page.text)
+
+    def test_a_missing_day_file_the_lead_reaches_is_noted(self):
+        # A window starting 30 s after UTC midnight: its 60 s lead (offsets,
+        # busy episodes that started before) reaches the previous date.
+        start = calendar.timegm((2026, 10, 4, 0, 0, 30)) * 1000
+        log = Log()
+        log.add("set", start + 1000, client=7, instance="band", key=VOX, seq=1, value=0.5)
+        _, page, _ = self.report(log, start, start + 5000)
+        self.assertIn("no event file events-2026-10-03.jsonl", page.text)
 
     def test_the_writers_notes_are_counted(self):
         log = Log()

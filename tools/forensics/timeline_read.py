@@ -15,6 +15,12 @@ import os
 import re
 
 TS = re.compile(rb'"ts":\s*(-?\d+)')
+# The records read past the window's end, up to its trace tail: a page's
+# ``trace`` (its events can fall inside the window) and the ``ping``s that
+# give that page's clock (a trace on the next socket after an outage has
+# only its own socket's pings, all after the window).
+TAIL_KINDS = ("trace", "ping")
+TAIL_EV = re.compile(rb'"ev":\s*"(?:' + b"|".join(k.encode() for k in TAIL_KINDS) + rb')"')
 TIME = re.compile(
     r"(?:(?P<date>\d{4}-\d{2}-\d{2})[ T])?(?P<h>\d{1,2}):(?P<m>\d{2})"
     r"(?::(?P<s>\d{2})(?:\.(?P<f>\d{1,6}))?)?"
@@ -151,14 +157,17 @@ def day_files(start_ms, end_ms):
 
 def read_events(folder, start_ms, end_ms, trace_end_ms):
     """The records of the window's day files in ``folder``: ``ts`` from
-    ``start_ms`` to ``end_ms`` (a ``trace`` to ``trace_end_ms``), in ``ts``
+    ``start_ms`` to ``end_ms`` (``TAIL_KINDS`` to ``trace_end_ms``), in ``ts``
     order. Returns (records, files read, files missing, lines skipped). A line
-    whose ``ts`` is out of range is never parsed."""
+    whose ``ts`` is out of range, or past ``end_ms`` and of no tail kind, is
+    never parsed; a missing file only the tail reaches is not reported."""
     records, read, missing, skipped = [], [], [], 0
+    window = day_files(start_ms, end_ms)
     for name in day_files(start_ms, trace_end_ms):
         path = os.path.join(folder, name)
         if not os.path.isfile(path):
-            missing.append(name)
+            if name in window:
+                missing.append(name)
             continue
         try:
             with open(path, "rb") as f:
@@ -167,7 +176,10 @@ def read_events(folder, start_ms, end_ms, trace_end_ms):
                     if found is None:
                         skipped += bool(line.strip())
                         continue
-                    if not start_ms <= int(found[1]) <= trace_end_ms:
+                    ts = int(found[1])
+                    if not start_ms <= ts <= trace_end_ms:
+                        continue
+                    if ts > end_ms and TAIL_EV.search(line) is None:
                         continue
                     try:
                         record = json.loads(line)
@@ -178,7 +190,7 @@ def read_events(folder, start_ms, end_ms, trace_end_ms):
                     if isinstance(ts, bool) or not isinstance(ts, int):
                         skipped += 1
                         continue
-                    last = trace_end_ms if record.get("ev") == "trace" else end_ms
+                    last = trace_end_ms if record.get("ev") in TAIL_KINDS else end_ms
                     if start_ms <= ts <= last:
                         records.append(record)
         except OSError as e:

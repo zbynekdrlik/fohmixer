@@ -17,6 +17,10 @@
 //! still held (no release) is never `unconfirmed` and is always sent again.
 //! When an instance is back (after a reconnect's hello, or online again) the
 //! store sends its intents again (`resend`), each as a new `set`.
+//!
+//! The page's flight recorder hears when a write turns `unconfirmed` or
+//! `not_sent` (`changes`, #43 PR E): only the page knows when it drew the
+//! amber or red outline.
 
 use std::collections::BTreeMap;
 
@@ -73,6 +77,16 @@ pub fn most_urgent(states: impl IntoIterator<Item = State>) -> State {
     states.into_iter().max().unwrap_or(State::Confirmed)
 }
 
+/// A write's turn to `unconfirmed` or `not_sent` (`Intents::changes`): its
+/// key, its latest sequence, when (page ms) and the state.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Change {
+    pub key: String,
+    pub seq: u64,
+    pub at: f64,
+    pub state: State,
+}
+
 /// What a resend does (`Intents::resend`).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Resend {
@@ -116,8 +130,11 @@ struct Open {
     prop: String,
     /// When the control was let go (page ms); `None` while it is held.
     released_at: Option<f64>,
-    /// Not sent again after a reconnect: its release was too old (L4).
-    not_sent: bool,
+    /// When it was not sent again after a reconnect (page ms): its release
+    /// was too old (L4).
+    not_sent: Option<f64>,
+    /// The state the flight recorder last heard of (`Intents::changes`).
+    told: Option<State>,
 }
 
 impl Open {
@@ -132,6 +149,17 @@ impl Open {
             t: self.intent.t,
             is_final: self.intent.is_final,
         }
+    }
+
+    /// Whether it shows a ghost at page time `now`, and since when:
+    /// `not_sent` since the resend that kept it back, `unconfirmed` since
+    /// its release + `UNCONFIRMED_MS`.
+    fn ghost(&self, now: f64) -> Option<(State, f64)> {
+        if let Some(at) = self.not_sent {
+            return Some((State::NotSent, at));
+        }
+        let released = self.released_at?;
+        is_unconfirmed(now - released).then_some((State::Unconfirmed, released + UNCONFIRMED_MS))
     }
 }
 
@@ -206,7 +234,8 @@ impl<F> Intents<F> {
             target: target.to_string(),
             prop: prop.to_string(),
             released_at: is_final.then_some(t),
-            not_sent: false,
+            not_sent: None,
+            told: None,
         };
         let msg = open.set_msg();
         self.open.insert(key.clone(), open);
@@ -238,12 +267,13 @@ impl<F> Intents<F> {
         let Some(open) = self.open.get_mut(key) else {
             return;
         };
-        if open.not_sent {
+        if open.not_sent.is_some() {
             self.open.remove(key);
             self.fails.remove(key);
         } else {
             open.released_at = None;
             open.intent.is_final = false;
+            open.told = None;
         }
     }
 
@@ -254,7 +284,7 @@ impl<F> Intents<F> {
         if self
             .open
             .get(key)
-            .is_some_and(|open| open.not_sent && same_value(&open.intent.value, value))
+            .is_some_and(|open| open.not_sent.is_some() && same_value(&open.intent.value, value))
         {
             self.open.remove(key);
             self.fails.remove(key);
@@ -266,13 +296,32 @@ impl<F> Intents<F> {
         let Some(open) = self.open.get(key) else {
             return State::Confirmed;
         };
-        if open.not_sent {
-            return State::NotSent;
+        open.ghost(now).map_or(State::Sending, |(state, _)| state)
+    }
+
+    /// The writes that turned `unconfirmed` or `not_sent` by page time `now`
+    /// since the last call (#43 PR E, the flight recorder's `intent`
+    /// records), each once per state: `unconfirmed` at its release +
+    /// `UNCONFIRMED_MS`, `not_sent` at the resend that kept it back. A touch
+    /// that holds the write again starts over.
+    pub fn changes(&mut self, now: f64) -> Vec<Change> {
+        let mut out = Vec::new();
+        for (key, open) in &mut self.open {
+            let Some((state, at)) = open.ghost(now) else {
+                continue;
+            };
+            if open.told == Some(state) {
+                continue;
+            }
+            open.told = Some(state);
+            out.push(Change {
+                key: key.clone(),
+                seq: open.intent.seq,
+                at,
+                state,
+            });
         }
-        match open.released_at {
-            Some(at) if is_unconfirmed(now - at) => State::Unconfirmed,
-            _ => State::Sending,
-        }
+        out
     }
 
     /// `instance` is back (a reconnect's hello, or online again) at page
@@ -283,10 +332,10 @@ impl<F> Intents<F> {
         let mut out = Resend::default();
         let back = open
             .iter_mut()
-            .filter(|(_, o)| o.instance == instance && !o.not_sent);
+            .filter(|(_, o)| o.instance == instance && o.not_sent.is_none());
         for (key, o) in back {
             if o.released_at.is_some_and(|at| !may_resend(now - at)) {
-                o.not_sent = true;
+                o.not_sent = Some(now);
                 out.not_sent.push(key.clone());
             } else {
                 *last_seq += 1;

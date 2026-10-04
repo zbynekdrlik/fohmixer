@@ -52,6 +52,27 @@ export async function hubEvents(): Promise<any[]> {
   return (await response.json()).events;
 }
 
+/**
+ * The page events of the hub's `trace` records, each once, in record order:
+ * a batch resent after a lost socket can be logged twice, and the forensics
+ * timeline reads it once too (#43 PR E).
+ */
+export function pageEvents(records: any[]): any[] {
+  const seen = new Set<string>();
+  const events: any[] = [];
+  for (const r of records) {
+    if (r.ev !== "trace") continue;
+    for (const e of r.events) {
+      const id = JSON.stringify(e);
+      if (!seen.has(id)) {
+        seen.add(id);
+        events.push(e);
+      }
+    }
+  }
+  return events;
+}
+
 /** A control line on a host's stdin (`stall <ms>`, `rename "<a>" "<b>"`): its answer. */
 export async function hostLine(instance: string, line: string): Promise<string | null> {
   return (await harness(`/host/${instance}/line`, { line })).answer;
