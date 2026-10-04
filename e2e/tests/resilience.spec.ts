@@ -284,6 +284,7 @@ test.describe("The control link's resilience (L1-L4)", () => {
       10_000,
     );
     expect(turns.map((e: any) => e.state)).toEqual(["unconfirmed", "not_sent"]);
+    expect(turns[0].seq, "both turns are the one release's").toBe(turns[1].seq);
   });
 
   test("a fader taken away under a finger counts as released: its old write is not sent after the link returns", async ({ page }) => {
