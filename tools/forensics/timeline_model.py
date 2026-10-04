@@ -96,14 +96,29 @@ def _names(touch, key):
     return isinstance(keys, list) and key in keys
 
 
+def _starts(touch, key):
+    """Whether ``touch`` begins a touch of ``key`` (a ``down`` or a ``tap``)."""
+    return touch.data.get("what") in ("down", "tap") and _names(touch, key)
+
+
 def gestures(touches, key, end):
-    """The gestures of ``key`` (on the hub's clock) from the touches naming
-    it. A ``tap`` (mute, solo and stage: no lift follows) lasts
-    ``GESTURE_TAIL_MS``. A ``down`` lasts until the ``up`` or ``cancel`` of its
-    pointer plus ``GESTURE_TAIL_MS``; with no lift before the next down naming
-    the key, until that down, and with none before the window's ``end``, until
-    the end (a fader held past the window). None when no touch names the key:
-    then two points ``UNTOUCHED_GESTURE_MS`` apart at most are one gesture."""
+    """One span per touch of ``key`` (on the hub's clock), never merged:
+    ``touches`` are the window's page touches in time order, up to ``end``.
+
+    - A ``tap`` (mute, solo and stage: no lift follows) spans
+      ``GESTURE_TAIL_MS``.
+    - A ``down`` spans to its lift (the first ``up`` or ``cancel`` of its
+      pointer after it) plus ``GESTURE_TAIL_MS``, cut at the start of the
+      next touch of the key that begins after the lift (a fader let go and
+      grabbed again within the tail: the time the finger was off is no gap).
+    - A ``down`` with no lift spans to the start of the next touch of the
+      key, else to ``end`` (a fader held past the window).
+
+    A lift is matched by its pointer alone, so one uploaded on another socket
+    after a reconnect still ends its touch (two tablets touching one control
+    with the same pointer id at once are taken as one finger). None when no
+    touch names the key: then two points ``UNTOUCHED_GESTURE_MS`` apart at
+    most are one gesture."""
     named = False
     spans = []
     for index, touch in enumerate(touches):
@@ -116,18 +131,21 @@ def gestures(touches, key, end):
             continue
         if what != "down":
             continue
+        later = touches[index + 1 :]
         pointer = touch.data.get("pointer")
-        finish = end
-        for later in touches[index + 1 :]:
-            if later.hub > end:
-                break
-            lift = later.data.get("what") in ("up", "cancel")
-            if lift and later.data.get("pointer") == pointer:
-                finish = later.hub + GESTURE_TAIL_MS
-                break
-            if later.data.get("what") == "down" and _names(later, key):
-                finish = later.hub
-                break
+        lift = next(
+            (
+                t.hub
+                for t in later
+                if t.data.get("what") in ("up", "cancel") and t.data.get("pointer") == pointer
+            ),
+            None,
+        )
+        if lift is None:
+            finish = next((t.hub for t in later if _starts(t, key)), end)
+        else:
+            cut = next((t.hub for t in later if t.hub >= lift and _starts(t, key)), None)
+            finish = lift + GESTURE_TAIL_MS if cut is None else min(lift + GESTURE_TAIL_MS, cut)
         spans.append((touch.hub, finish))
     return spans if named else None
 
@@ -427,6 +445,7 @@ class Timeline:
                 hollow = e.data.get("sent") is False
                 rows[e.data["key"]]["send"].append(Point(e.hub, e.data.get("value"), hollow, None))
         touches = self._page("touch")
+        continuous = self._continuous()
         self.lanes = {}
         for key in sorted(rows):
             lane = {
@@ -437,8 +456,12 @@ class Timeline:
             }
             if not any(lane.values()):
                 continue
-            spans = gestures(touches, key, self.end)
-            lane["gaps"] = {row: row_gaps([p.time for p in lane[row]], spans) for row in ROWS}
+            if key in continuous:
+                spans = gestures(touches, key, self.end)
+                lane["gaps"] = {row: row_gaps([p.time for p in lane[row]], spans) for row in ROWS}
+            else:
+                # Only final sends (a toggle's press and release): no row gaps.
+                lane["gaps"] = {row: [] for row in ROWS}
             self.lanes[key] = lane
         self.keys = list(self.lanes)
         self.confirmations = []
@@ -450,6 +473,19 @@ class Timeline:
                 i = bisect.bisect_left(times, r["ts"])
                 if i < len(times):
                     self.confirmations.append((times[i] - sent_of(r), sent_of(r), key))
+
+    def _continuous(self):
+        """The keys with a non-final send in the window (a page ``send`` or a
+        hub ``set`` whose ``final`` is exactly false): the continuous controls,
+        the only ones whose rows get gaps."""
+        keys = set()
+        for key, sends in self.page_sends.items():
+            if any(e.data.get("final") is False and self.in_window(e.hub) for e in sends):
+                keys.add(key)
+        for key, sets in self.key_sets.items():
+            if any(r.get("final") is False and self.in_window(r["ts"]) for r in sets):
+                keys.add(key)
+        return keys
 
     def set_for(self, identity, at):
         """The set record of ``identity`` that an applied value at ``at`` came
