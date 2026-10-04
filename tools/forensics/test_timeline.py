@@ -1,7 +1,7 @@
-"""The forensics timeline (#43): its value and time math (``timeline_read``),
-its gestures, gaps and busy episodes (``timeline_model``), and whole reports
-of synthetic event logs written into temporary folders through the command
-(``timeline``), invented track names only, the synthetic fixture's."""
+"""The forensics timeline (#43) through its command (``timeline``): whole
+reports of synthetic event logs written into temporary folders, invented
+track names only, the synthetic fixture's. The pure helpers' tests are in
+``test_timeline_read.py`` and ``test_timeline_model.py``."""
 
 import calendar
 import contextlib
@@ -10,12 +10,10 @@ import hashlib
 import html.parser
 import io
 import json
-import math
 import os
 import subprocess
 import sys
 import tempfile
-import time
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -23,7 +21,6 @@ if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
 import timeline  # noqa: E402
-import timeline_model as model  # noqa: E402
 import timeline_read as read  # noqa: E402
 
 # The hub's clock at the start of every scenario: 2026-10-03 16:20:00 UTC.
@@ -34,6 +31,7 @@ VOX = "band|live_set tracks[name=Vox 1] mixer_device volume|value"
 HAND = "band|live_set tracks[name=Hand2 #] mixer_device volume|value"
 KLAVIR_PAN = "band|live_set tracks[name=Klavir #] mixer_device panning|value"
 VOX_MUTE = "band|live_set tracks[name=Vox 1]|mute"
+KLAVIR_PARAM = "band|live_set tracks[name=Klavir #] devices 0 parameters 1|value"
 PEER = "192.0.2.10:50000"
 
 
@@ -78,11 +76,12 @@ class Log:
     def trace(self, ts, client, events):
         self.add("trace", ts, client=client, peer=PEER, events=events)
 
-    def drag(self, key, client, sends, *, rtt_ms=10.0, offset=OFFSET, arrive=None):
+    def drag(self, key, client, sends, *, rtt_ms=10.0, offset=OFFSET, arrive=None, final=False):
         """The hub's records of a page's ``sends`` ((page t, value), in send
         order): each reaches the hub at ``arrive(its send on the hub clock)``
         (3 ms later by default); the setter writes the newest set whenever no
         batch is in flight, and Live answers each batch ``rtt_ms`` later.
+        ``final``: every send is final (a toggle's), else none is (a drag's).
         Returns the page's ``send`` events for its trace."""
         instance = key.split("|")[0]
         arrive = arrive or (lambda sent: sent + 3.0)
@@ -100,7 +99,7 @@ class Log:
                 key=key,
                 seq=seq,
                 value=value,
-                final=False,
+                final=final,
                 t=t,
                 hub_ms=hub_ms,
                 offset_ms=offset,
@@ -122,7 +121,7 @@ class Log:
             free = begin + rtt_ms
             i = j + 1
         return [
-            {"ev": "send", "t": t, "key": key, "seq": seq, "value": v, "final": False, "sent": True}
+            {"ev": "send", "t": t, "key": key, "seq": seq, "value": v, "final": final, "sent": True}
             for seq, (t, v) in enumerate(sends, start=1)
         ]
 
@@ -270,86 +269,10 @@ class ReportCase(unittest.TestCase):
         ]
 
 
-# --- the math ---
+# --- the command ---
 
 
-class ValueToDb(unittest.TestCase):
-    def test_the_touchosc_curve_in_each_range(self):
-        # The table of `value2db_is_the_touchosc_curve_in_each_range` (fader/tests.rs).
-        for v, db in (
-            (1.0, 6.0),
-            (0.85, 0.0),
-            (0.4, -18.0),
-            (0.39999, -18.001762236950533),
-            (0.2, -34.39049787108893),
-            (0.15, -40.986236048588935),
-            (0.14999, -41.01368891610561),
-            (0.1, -48.54258355581338),
-            (1e-6, -69.995809918992),
-            (1.5, 0.0),
-        ):
-            self.assertAlmostEqual(read.value2db(v), db, places=9, msg=str(v))
-        self.assertEqual(read.value2db(0.0), float("-inf"))
-        self.assertEqual(read.value2db(float("nan")), 0.0)
-        self.assertTrue(math.isnan(read.value2db(-0.1)), "Rust's powf of a negative: NaN")
-
-    def test_a_jump_is_over_3_db_or_silence_against_sound(self):
-        self.assertTrue(model.is_jump(-18.0, -14.9))
-        self.assertFalse(model.is_jump(-18.0, -15.0))
-        self.assertTrue(model.is_jump(float("-inf"), -60.0))
-        self.assertTrue(model.is_jump(-60.0, float("-inf")))
-        self.assertFalse(model.is_jump(float("-inf"), float("-inf")))
-        self.assertFalse(model.is_jump(float("nan"), 0.0))
-
-
-class Times(unittest.TestCase):
-    def test_every_form_reads_the_same_local_time(self):
-        minute = read.parse_local("2026-10-03 18:21")
-        expected = time.mktime((2026, 10, 3, 18, 21, 0, 0, 0, -1)) * 1000
-        self.assertEqual(minute, round(expected), "this machine's local time")
-        for text in ("2026-10-03T18:21", "2026-10-03 18:21:00", "2026-10-03T18:21:00.000"):
-            self.assertEqual(read.parse_local(text), minute, text)
-        self.assertEqual(read.parse_local("2026-10-03 18:21:05.5") - minute, 5500)
-        self.assertEqual(read.parse_local("2026-10-03 18:21:05.125") - minute, 5125)
-        self.assertEqual(
-            read.parse_local(" 2026-10-03 9:05 "), read.parse_local("2026-10-03 09:05")
-        )
-
-    def test_a_time_alone_is_today(self):
-        day = datetime.date(2026, 10, 3)
-        self.assertEqual(
-            read.parse_local("18:21:05.125", today=day),
-            read.parse_local("2026-10-03 18:21:05.125"),
-        )
-        self.assertEqual(read.parse_local("18:21", today=day), read.parse_local("2026-10-03 18:21"))
-        now = datetime.datetime.now()
-        self.assertEqual(
-            read.parse_local("00:00"),
-            read.parse_local(now.strftime("%Y-%m-%d") + " 00:00"),
-            "today by default",
-        )
-
-    def test_local_text_round_trips_and_is_the_local_clock(self):
-        for ms in (BASE, BASE + 123, BASE + 86_399_999, BASE + 7):
-            self.assertEqual(read.parse_local(read.local_text(ms)), ms)
-        seconds = (BASE + 123) // 1000
-        expected = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(seconds)) + ".123"
-        self.assertEqual(read.local_text(BASE + 123), expected)
-        self.assertEqual(read.utc_text(BASE + 45), "2026-10-03 16:20:00.045Z")
-
-    def test_a_bad_time_is_refused(self):
-        for text in (
-            "18",
-            "25:00",
-            "2026-13-01 10:00",
-            "2026-10-03 18:21:61",
-            "yesterday",
-            "18:21:05.1234567",
-            "2026-10-03  18:21",
-        ):
-            with self.assertRaises(read.TimelineError, msg=text):
-                read.parse_local(text)
-
+class Command(unittest.TestCase):
     def test_a_bad_command_line_exits_1_with_one_line(self):
         with tempfile.TemporaryDirectory() as folder:
             out = os.path.join(folder, "r.html")
@@ -371,95 +294,6 @@ class Times(unittest.TestCase):
                 self.assertIn(why, stderr)
                 self.assertEqual(stderr.count("\n"), 1, "one line")
             self.assertFalse(os.path.exists(out), "nothing was written")
-
-
-class Helpers(unittest.TestCase):
-    def test_nearest_rank_percentiles(self):
-        values = [45, 5, 300, 10, 15, 20, 25, 30, 35, 40]
-        self.assertEqual(model.percentile(values, 0.50), 25)
-        self.assertEqual(model.percentile(values, 0.90), 45)
-        self.assertEqual(model.percentile(values, 0.99), 300)
-        self.assertEqual(model.percentile([5, 1, 4, 2, 3], 0.50), 3, "rank 2.5 is 3")
-        self.assertEqual(model.percentile([7, 6, 5, 4, 3, 2, 1], 0.90), 7, "rank 6.3 is 7")
-        self.assertIsNone(model.percentile([], 0.5))
-
-    def test_gaps_count_only_inside_one_gesture(self):
-        def touch(hub, what, pointer=1, keys=(VOX,)):
-            data = {"ev": "touch", "t": hub, "what": what, "keys": list(keys), "pointer": pointer}
-            return model.PageEvent(hub, "touch", data)
-
-        touches = [
-            touch(1000, "down"),
-            touch(2000, "up"),
-            touch(5000, "down"),
-            touch(5100, "cancel"),
-        ]
-        spans = model.gestures(touches, VOX, 99999)
-        self.assertEqual(spans, [(1000, 3000.0), (5000, 6100.0)])
-        times = [1100, 1150, 1400, 2900, 4000, 5050, 5600]
-        self.assertEqual(
-            model.row_gaps(times, spans),
-            [(1150, 1400, 250), (1400, 2900, 1500), (5050, 5600, 550)],
-            "the gap from one gesture into the next is no gap",
-        )
-        self.assertIsNone(model.gestures(touches, HAND, 99999), "no touch names it")
-        untouched = model.row_gaps([0, 50, 2050, 14050], None)
-        self.assertEqual(untouched, [(50, 2050, 2000)], "12 s apart: two gestures")
-        held = model.gestures([touch(1000, "down", pointer=4)], VOX, 9000)
-        self.assertEqual(held, [(1000, 9000)], "no lift in the window: to its end")
-        # No lift before the next down naming the key: until that down, so a
-        # lift of the first pointer after it does not count.
-        downs = [touch(1000, "down"), touch(3000, "down", pointer=2), touch(3500, "up")]
-        self.assertEqual(model.gestures(downs, VOX, 9000), [(1000, 3000), (3000, 9000)])
-        # A toggle's tap (no lift follows) lasts the tail only.
-        taps = [touch(1000, "tap"), touch(6000, "tap", pointer=2)]
-        self.assertEqual(model.gestures(taps, VOX, 9000), [(1000, 2000.0), (6000, 7000.0)])
-
-    def test_busy_episodes_merge_both_sources(self):
-        changes = [
-            (1500.4, "band", False),
-            (1000.0, "band", True),
-            (1000.4, "band", True),
-            (1500.0, "band", False),
-            (3000.0, "master", True),
-            (4000.0, "master", False),
-            (5000.0, "band", True),
-        ]
-        episodes = model.busy_episodes(changes, 6000)
-        self.assertEqual(
-            [(e.info, e.start, e.end, e.ms) for e in episodes],
-            [
-                (("band", False), 1000.0, 1500.0, 500.0),
-                (("master", False), 3000.0, 4000.0, 1000.0),
-                (("band", True), 5000.0, 6000, 1000.0),
-            ],
-        )
-
-    def test_hub_log_lines(self):
-        ansi = (
-            f"\x1b[2m{utc_stamp(BASE + 1000.25)}\x1b[0m \x1b[32m INFO\x1b[0m "
-            "\x1b[2mfohmixer_hub::live::client\x1b[0m\x1b[2m:\x1b[0m Live busy changed "
-            '\x1b[3minstance\x1b[0m\x1b[2m=\x1b[0m"band" \x1b[3mbusy\x1b[0m\x1b[2m=\x1b[0mtrue'
-        )
-        self.assertEqual(read.hub_log_mark(ansi), ("busy", BASE + 1000.25, "band", True))
-        late_reason = (
-            f"{utc_stamp(BASE)}  INFO fohmixer_hub::live::client: Live busy changed "
-            'instance="master" busy=false main_tick_age_ms=12 reason="a heartbeat 600 ms after '
-            'the previous one (or the connect): the script made it at its tick"'
-        )
-        self.assertEqual(read.hub_log_mark(late_reason), ("busy", BASE, "master", False))
-        late = (
-            f"{utc_stamp(BASE + 2)}  WARN fohmixer_hub::live::client: a heartbeat 470 ms after "
-            "the previous one (or the connect): the script made it at its tick, 455 ms after "
-            'its previous one, it spent 2 ms on the way instance="band" main_tick_age_ms=12'
-        )
-        self.assertEqual(read.hub_log_mark(late), ("late", BASE + 2, "band", 470.0))
-        for other in (
-            f"{utc_stamp(BASE)}  INFO fohmixer_hub: Starting fohmixer-hub v0.1.0",
-            "Live busy changed busy=true",
-            "",
-        ):
-            self.assertIsNone(read.hub_log_mark(other), other)
 
 
 # --- whole reports ---
@@ -693,14 +527,97 @@ class Confirmations(ReportCase):
         self.assertEqual(summary["records"], str(len(log.records)), "the count stays whole")
 
 
-class Toggles(ReportCase):
+def touch(t, what, key, pointer=1):
+    return {"ev": "touch", "t": t, "what": what, "keys": [key], "pointer": pointer}
+
+
+def strokes(start, count, value, step=0.002):
+    """``count`` sends every 16 ms from page time ``start``, the value rising
+    ``step`` a send from ``value``; the next value too."""
+    sends = [(start + 16 * i, round(value + step * i, 6)) for i in range(count)]
+    return sends, round(value + step * count, 6)
+
+
+class Gestures(ReportCase):
+    """Gaps are marked only inside one touch's span, and only for continuous
+    controls (a key with a non-final send in the window)."""
+
+    def assertNoGap(self, summary, page):
+        self.assertEqual(page.of_class("gap"), [])
+        for row in ("send", "arrival", "applied"):
+            self.assertEqual(summary[f"gap_{row}_max_ms"], "0", row)
+
+    def test_two_mute_taps_400_ms_apart_mark_no_gap(self):
+        log = Log()
+        log.pings(7, BASE, BASE + 3000)
+        p0 = BASE + 1000 - OFFSET
+        sends = log.drag(VOX_MUTE, 7, [(p0, 1), (p0 + 400, 0)], final=True)
+        taps = [touch(p0 - 10, "tap", VOX_MUTE), touch(p0 + 390, "tap", VOX_MUTE, pointer=2)]
+        log.trace(BASE + 2500, 7, [*taps, *sends])
+        summary, page, _ = self.report(log, BASE, BASE + 3000)
+        self.assertEqual([a["data-key-hash"] for a in page.of_class("control")], [digest(VOX_MUTE)])
+        self.assertNoGap(summary, page)
+
+    def test_a_held_pulse_param_toggle_marks_no_gap(self):
+        # A pulse toggle: final On at the press, held 2 s, final Off at the release.
+        log = Log()
+        log.pings(7, BASE, BASE + 4000)
+        p0 = BASE + 1000 - OFFSET
+        sends = log.drag(KLAVIR_PARAM, 7, [(p0, 1.0), (p0 + 2005, 0.0)], final=True)
+        press = [touch(p0 - 5, "down", KLAVIR_PARAM), touch(p0 + 2000, "up", KLAVIR_PARAM)]
+        log.trace(BASE + 3500, 7, [*press, *sends])
+        summary, page, _ = self.report(log, BASE, BASE + 4000)
+        self.assertEqual(len(page.of_class("control")), 1)
+        self.assertNoGap(summary, page)
+
+    def test_a_fader_let_go_and_grabbed_again_within_1_s_marks_no_gap(self):
+        # Lifted at 2000, grabbed again at 2500: the time the finger was off
+        # is no gap (the first touch's tail is cut at the second's start).
+        log = Log()
+        log.pings(7, BASE, BASE + 5000)
+        p0 = BASE - OFFSET
+        first, value = strokes(p0 + 1000, 63, 0.5)
+        second, _ = strokes(p0 + 2516, 62, value)
+        events = log.drag(HAND, 7, first + second)
+        touches = [
+            touch(p0 + 1000, "down", HAND),
+            touch(p0 + 2000, "up", HAND),
+            touch(p0 + 2500, "down", HAND, pointer=2),
+            touch(p0 + 3500, "up", HAND, pointer=2),
+        ]
+        log.trace(BASE + 4500, 7, [*touches, *events])
+        summary, page, _ = self.report(log, BASE, BASE + 5000)
+        self.assertEqual(summary["jumps"], "0")
+        self.assertNoGap(summary, page)
+
+    def test_another_tablets_touch_does_not_cut_a_gesture(self):
+        # Tablet 1 holds the fader from 1000 to 6000 and pauses its moves from
+        # 2000 to 5000; tablet 2 (its own clock) touches the same fader from
+        # 3000 to 4000 without moving it. The 3 s pause is still a gap.
+        log = Log()
+        log.pings(7, BASE, BASE + 7000)
+        log.pings(9, BASE, BASE + 7000, offset=1250.0)
+        p0 = BASE - OFFSET
+        before, value = strokes(p0 + 1000, 63, 0.5)
+        after, _ = strokes(p0 + 5000, 63, value)
+        events = log.drag(HAND, 7, before + after)
+        held = [touch(p0 + 1000, "down", HAND), touch(p0 + 6000, "up", HAND)]
+        log.trace(BASE + 6500, 7, [*held, *events])
+        q0 = BASE - 1250.0
+        rest = [touch(q0 + 3000, "down", HAND, pointer=2), touch(q0 + 4000, "up", HAND, pointer=2)]
+        log.trace(BASE + 6600, 9, rest)
+        summary, page, _ = self.report(log, BASE, BASE + 7000)
+        self.assertEqual([g["data-ms"] for g in self.gaps(page, "send", HAND)], ["3008.0"])
+        self.assertEqual(summary["gap_send_max_ms"], "3008.0")
+        self.assertEqual(summary["gap_arrival_max_ms"], "3008.0")
+
     def test_two_taps_of_a_toggle_are_two_gestures(self):
         # Mute, solo and stage record a tap (no lift follows): the time between
         # two taps is no gap.
         log = Log()
         log.pings(7, BASE, BASE + 7000)
         p0 = BASE + 1000 - OFFSET
-        sends = log.drag(VOX_MUTE, 7, [(p0, 1), (p0 + 5000, 0)])
+        sends = log.drag(VOX_MUTE, 7, [(p0, 1), (p0 + 5000, 0)], final=True)
         taps = [
             {"ev": "touch", "t": t, "what": "tap", "keys": [VOX_MUTE], "pointer": pointer}
             for t, pointer in ((p0 - 20, 1), (p0 + 4980, 2))
