@@ -770,17 +770,17 @@ def no_data_text(span):
     can stand for (from ``LONG_FRAME_MS`` before the first stamp)."""
     kind, n, start, to = span.info
     offset = span.end - to
+    first, last = local_text(start + offset), local_text(to + offset)
+    stamps = f"at {first}" if first == last else f"from {first} to {last}"
     if kind == "frame":
-        first, last = local_text(start + offset), local_text(to + offset)
-        stamped = f"at {first}" if first == last else f"from {first} to {last}"
         return (
             f"the page flight recorder dropped {counted(n, 'long frame')} stamped "
-            f"{stamped}: no data of page stalls from {local_text(span.start)} to "
+            f"{stamps}: no data of page stalls from {local_text(span.start)} to "
             f"{local_text(span.end)}"
         )
     return (
-        f"the page flight recorder dropped {counted(n, kind + ' event')} from "
-        f"{local_text(span.start)} to {local_text(span.end)}: no data of that kind there"
+        f"the page flight recorder dropped {counted(n, kind + ' event')} {stamps}: "
+        "no data of that kind there"
     )
 
 
