@@ -11,6 +11,11 @@
 //!   client that sent it (Live's error, or the value Live reported), and the
 //!   next batch takes what piled up meanwhile, one want per key. During a
 //!   Live stall nothing queues but the newest want per key (L5).
+//! - A set starts a client's touch of a key (#43 PR D, [`SetOutcome::touch_start`])
+//!   when that client sent no set of the key before, its previous one was
+//!   final, or its page time is more than [`TOUCH_GAP_MS`] after the previous
+//!   one's (the page's clock: a link that held the sets back does not cut a
+//!   drag in two). The router records Live's value before such a set.
 //! - A batch that fails as a whole (timeout, offline) acks `error` to its
 //!   senders; newer wants stay pending. An instance disconnect forgets the
 //!   batch in flight and the pending wants without acks: they belong to the
@@ -25,6 +30,16 @@ use fohmixer_proto::client::AckItem;
 use serde_json::{Value, json};
 
 use crate::live::subs::ClientId;
+
+/// A set more than this long after the client's previous set of the key
+/// (page clock, ms) starts a new touch (#43 PR D).
+pub const TOUCH_GAP_MS: f64 = 500.0;
+
+/// Whether a set `gap` ms (page clock) after the client's previous set of
+/// the key starts a new touch.
+pub fn starts_touch(gap: f64) -> bool {
+    gap > TOUCH_GAP_MS
+}
 
 /// One client's latest write of one key.
 #[derive(Debug, Clone, PartialEq)]
@@ -79,6 +94,10 @@ pub struct SetOutcome {
     /// The time since this client's previous set of this key reached the
     /// hub (ms), when there was one.
     pub gap_ms: Option<f64>,
+    /// It starts this client's touch of the key (#43 PR D): no set of the
+    /// key before, the previous one final, or more than [`TOUCH_GAP_MS`] of
+    /// the page's clock since it. Never for a dropped set.
+    pub touch_start: bool,
     /// A client whose want lost the slot to a newer one, and its ack.
     pub superseded: Option<(ClientId, AckItem)>,
 }
@@ -100,14 +119,24 @@ pub struct Applied {
     pub first_failure: bool,
 }
 
+/// The last set taken from a client for a key.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Taken {
+    seq: u64,
+    /// When it arrived (hub ms).
+    t_hub: f64,
+    /// When the page sent it (page ms).
+    t_page: f64,
+    is_final: bool,
+}
+
 /// The setter of one instance.
 #[derive(Debug, Default)]
 pub struct Setter {
     pending: BTreeMap<String, Want>,
     in_flight: Option<Batch>,
-    /// The last `seq` taken from each client for each key, and when it
-    /// arrived (hub ms).
-    last: HashMap<(ClientId, String), (u64, f64)>,
+    /// The last set taken from each client for each key.
+    last: HashMap<(ClientId, String), Taken>,
     /// The last batch number.
     batches: u64,
     /// The first error of the last batch, while batches fail.
@@ -154,15 +183,26 @@ impl Setter {
     pub fn on_set(&mut self, key: &str, want: Want) -> SetOutcome {
         let id = (want.client, key.to_string());
         let previous = self.last.get(&id).copied();
-        if previous.is_some_and(|(seq, _)| want.seq <= seq) {
+        if previous.is_some_and(|p| want.seq <= p.seq) {
             return SetOutcome {
                 dropped_old: true,
                 gap_ms: None,
+                touch_start: false,
                 superseded: None,
             };
         }
-        let gap_ms = previous.map(|(_, at)| want.t_hub - at);
-        self.last.insert(id, (want.seq, want.t_hub));
+        let gap_ms = previous.map(|p| want.t_hub - p.t_hub);
+        let touch_start =
+            previous.is_none_or(|p| p.is_final || starts_touch(want.t_page - p.t_page));
+        self.last.insert(
+            id,
+            Taken {
+                seq: want.seq,
+                t_hub: want.t_hub,
+                t_page: want.t_page,
+                is_final: want.is_final,
+            },
+        );
         let superseded = match self.pending.get(key) {
             Some(held) if held.client != want.client && held.t_hub > want.t_hub => {
                 // The slot's want arrived later: this one lost before it was
@@ -170,6 +210,7 @@ impl Setter {
                 return SetOutcome {
                     dropped_old: false,
                     gap_ms,
+                    touch_start,
                     superseded: Some((want.client, AckItem::superseded(key, want.seq))),
                 };
             }
@@ -182,6 +223,7 @@ impl Setter {
         SetOutcome {
             dropped_old: false,
             gap_ms,
+            touch_start,
             superseded,
         }
     }

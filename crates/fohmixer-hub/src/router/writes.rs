@@ -7,9 +7,13 @@
 //! A `set` record carries the page's send time (`t`), the hub's arrival
 //! (`hub_ms`), the page clock's offset and the one-way delay they give, and
 //! the gap since that client's previous set of the key: a stall on the way
-//! shows as a gap and a delay spike on the moves after it. `applied` and a
-//! batch's `ack`s carry the batch number, its sequence numbers and Live's
-//! round trip.
+//! shows as a gap and a delay spike on the moves after it. The first set of
+//! a client's touch of a key (`SetOutcome::touch_start`) also carries
+//! `live_before`, Live's value of the key as the hub knew it then (the
+//! subscription cache, what the hub pushes to pages; null when it held none,
+//! #43 PR D): a touch that starts away from Live's value shows as its first
+//! applied value against it. `applied` and a batch's `ack`s carry the batch
+//! number, its sequence numbers and Live's round trip.
 
 use fohmixer_proto::client::{AckItem, set_key};
 use serde_json::{Value, json};
@@ -37,14 +41,17 @@ pub(super) struct SetMsg {
 }
 
 /// The event-log fields of a `set` (`outcome`: what the setter did with
-/// it; none for an unknown instance).
+/// it; none for an unknown instance). A set that starts a touch carries
+/// `live_before`: `live`, Live's value of the key as the hub knew it (null
+/// when none); the field is absent on every other set.
 pub(super) fn set_fields(
     set: &SetMsg,
     key: &str,
     peer: Option<&str>,
     outcome: Option<&SetOutcome>,
+    live: Option<&Value>,
 ) -> Value {
-    json!({
+    let mut fields = json!({
         "client": set.client,
         "peer": peer,
         "instance": set.instance,
@@ -59,7 +66,11 @@ pub(super) fn set_fields(
         "gap_ms": outcome.and_then(|o| o.gap_ms),
         "dropped_old": outcome.is_some_and(|o| o.dropped_old),
         "unknown": outcome.is_none(),
-    })
+    });
+    if outcome.is_some_and(|o| o.touch_start) {
+        fields["live_before"] = live.cloned().unwrap_or(Value::Null);
+    }
+    fields
 }
 
 /// The error of a write to an instance the hub does not have.
@@ -117,13 +128,14 @@ impl Router {
         };
         let Some(setter) = self.setters.get_mut(&set.instance) else {
             let ack = AckItem::failed(&key, set.seq, &unknown_instance(&set.instance));
-            let fields = set_fields(&set, &key, self.peer(set.client), None);
+            let fields = set_fields(&set, &key, self.peer(set.client), None, None);
             self.io.events.record("set", fields);
             self.send_ack(&set.instance, set.client, ack, None);
             return;
         };
         let outcome = setter.on_set(&key, want);
-        let fields = set_fields(&set, &key, self.peer(set.client), Some(&outcome));
+        let live = self.subs.live_value(&key);
+        let fields = set_fields(&set, &key, self.peer(set.client), Some(&outcome), live);
         self.io.events.record("set", fields);
         if let Some((client, ack)) = outcome.superseded {
             self.send_ack(&set.instance, client, ack, None);
@@ -218,5 +230,61 @@ impl Router {
         if let Some(outbox) = self.clients.get(&client) {
             outbox.ack(ack);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn set() -> SetMsg {
+        SetMsg {
+            client: 3,
+            instance: "band".into(),
+            target: "live_set tracks 0 mixer_device volume".into(),
+            prop: "value".into(),
+            value: json!(0.6),
+            seq: 7,
+            t: 1_000.5,
+            is_final: false,
+            hub_ms: 1_250.0,
+            offset_ms: Some(240.0),
+        }
+    }
+
+    fn outcome(touch_start: bool) -> SetOutcome {
+        SetOutcome {
+            dropped_old: false,
+            gap_ms: Some(16.0),
+            touch_start,
+            superseded: None,
+        }
+    }
+
+    #[test]
+    fn a_touchs_first_set_carries_lives_value_before_it_and_no_other_does() {
+        let key = "band|live_set tracks 0 mixer_device volume|value";
+        let live = json!(0.85);
+        let first = set_fields(
+            &set(),
+            key,
+            Some("10.0.0.5"),
+            Some(&outcome(true)),
+            Some(&live),
+        );
+        assert_eq!(first["live_before"], json!(0.85));
+        assert_eq!(first["seq"], json!(7));
+        assert_eq!(first["delay_ms"], json!(9.5));
+        let unknown = set_fields(&set(), key, None, Some(&outcome(true)), None);
+        assert_eq!(
+            unknown.get("live_before"),
+            Some(&Value::Null),
+            "the hub held no value"
+        );
+        let later = set_fields(&set(), key, None, Some(&outcome(false)), Some(&live));
+        assert_eq!(later.get("live_before"), None);
+        let no_instance = set_fields(&set(), key, None, None, Some(&live));
+        assert_eq!(no_instance.get("live_before"), None);
+        assert_eq!(no_instance["unknown"], json!(true));
     }
 }
