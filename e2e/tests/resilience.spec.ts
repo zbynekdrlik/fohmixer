@@ -284,6 +284,7 @@ test.describe("The control link's resilience (L1-L4)", () => {
       10_000,
     );
     expect(turns.map((e: any) => e.state)).toEqual(["unconfirmed", "not_sent"]);
+    expect(typeof turns[0].seq, "a turn names its write's seq").toBe("number");
     expect(turns[0].seq, "both turns are the one release's").toBe(turns[1].seq);
   });
 
