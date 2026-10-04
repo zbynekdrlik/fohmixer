@@ -479,3 +479,75 @@ fn a_not_sent_write_live_already_holds_is_closed_by_its_value() {
     intents.live_value(&mute, &json!(true));
     assert_eq!(intents.state(&mute, 2_000.0), State::Confirmed);
 }
+
+#[test]
+fn the_recorder_hears_a_release_turn_unconfirmed_once_at_its_release_plus_1000_ms() {
+    let mut intents = Intents::<&str>::default();
+    let (key, _) = intents.set(AT, json!(0.5), 1_000.0, true, None);
+    let (held, _) = intents.set(
+        ("band", TARGET, "panning"),
+        json!(0.2),
+        1_000.0,
+        false,
+        None,
+    );
+    assert_eq!(intents.changes(1_999.0), Vec::<Change>::new(), "not yet");
+    assert_eq!(
+        intents.changes(2_000.0_f64.next_down()),
+        Vec::<Change>::new()
+    );
+    let turned = |at: f64| Change {
+        key: key.clone(),
+        seq: 1,
+        at,
+        state: State::Unconfirmed,
+    };
+    assert_eq!(
+        intents.changes(2_000.0),
+        vec![turned(2_000.0)],
+        "at its release + 1 s"
+    );
+    assert_eq!(intents.changes(2_100.0), Vec::<Change>::new(), "once");
+    assert_eq!(
+        intents.state(&held, 60_000.0),
+        State::Sending,
+        "a held write never turns unconfirmed"
+    );
+    // A touch holds it again; its next release turns unconfirmed again.
+    intents.touch(&key);
+    assert_eq!(intents.changes(9_000.0), Vec::<Change>::new(), "held");
+    intents.release(&key, 9_000.0);
+    assert_eq!(intents.changes(9_500.0), Vec::<Change>::new());
+    assert_eq!(
+        intents.changes(10_050.0),
+        vec![turned(10_000.0)],
+        "read at the tick after it, timed at the turn"
+    );
+}
+
+#[test]
+fn the_recorder_hears_a_write_not_sent_again_at_the_resend_that_kept_it() {
+    let mut intents = Intents::<&str>::default();
+    let (key, _) = intents.set(AT, json!(0.5), 1_000.0, true, None);
+    assert_eq!(intents.changes(2_500.0).len(), 1, "unconfirmed first");
+    let resend = intents.resend("band", 3_500.0);
+    assert_eq!(resend.not_sent, vec![key.clone()]);
+    assert_eq!(
+        intents.changes(3_600.0),
+        vec![Change {
+            key: key.clone(),
+            seq: 1,
+            at: 3_500.0,
+            state: State::NotSent,
+        }]
+    );
+    assert_eq!(intents.changes(9_000.0), Vec::<Change>::new(), "once");
+    // A write sent again (younger than 2 s) is no change; its ack closes it.
+    let mut intents = Intents::<&str>::default();
+    let (key, _) = intents.set(AT, json!(0.5), 1_000.0, true, None);
+    let resend = intents.resend("band", 1_500.0);
+    assert_eq!(resend.sets.len(), 1);
+    assert_eq!(intents.changes(1_600.0), Vec::<Change>::new());
+    let _ = intents.ack(&AckItem::applied(&key, 2, Some(json!(0.5))));
+    assert_eq!(intents.changes(5_000.0), Vec::<Change>::new(), "closed");
+}

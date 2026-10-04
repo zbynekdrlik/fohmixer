@@ -2,10 +2,11 @@
 //! store (`store/intent.rs`, where every decision is made and tested) and
 //! the socket — a write, its ack, its release and touch, the resend when an
 //! instance is back, and what a fader reads of its open write. A send the
-//! socket did not take and each ack's arrival are also events of the page's
-//! flight recorder (`diag::trace`); a send the socket took tells the
-//! recorder to wait (`Recorder::set_went`, #43 PR D: no batch in front of
-//! the next frame's set).
+//! socket took tells the page's flight recorder (`diag::trace`) to wait
+//! (`Recorder::set_went`, #43 PR D: no batch in front of the next frame's
+//! set); a write's turn to `unconfirmed` or `not_sent` is an event of the
+//! recorder (`note_intents`, #43 PR E). Sends and acks are not: the hub's
+//! own `set` and `ack` records hold them (PR E).
 
 use fohmixer_proto::client::{AckItem, ClientMsg};
 use leptos::prelude::{UpdateValue, WithValue};
@@ -21,9 +22,7 @@ impl LiveStore {
     /// The hub's acks of the controls' writes: a failed write shows on its
     /// control (spec I6: shown, never retried).
     pub(super) fn on_ack(self, items: &[AckItem]) {
-        let t = dom::epoch_now();
         for item in items {
-            diag::record(&trace::ack(t, item));
             let Some(acked) = self.inner.try_update_value(|i| i.intents.ack(item)) else {
                 return;
             };
@@ -94,17 +93,34 @@ impl LiveStore {
     }
 
     /// Sends a `set`: whether the socket took it. One it took holds the
-    /// flight recorder's next batch (#43 PR D); one it did not take is an
-    /// event of the recorder (the hub never sees it).
+    /// flight recorder's next batch (#43 PR D); one it did not take stays
+    /// open in the intent store, its frame's move record names it, and the
+    /// recorder hears if it is not sent again (`note_intents`).
     fn sent_set(self, msg: &ClientMsg) -> bool {
         let sent = self.send(msg);
         if sent {
             let _ = diag::with_trace(Recorder::set_went);
         }
-        if let Some(event) = trace::send(msg, sent) {
-            diag::record(&event);
-        }
         sent
+    }
+
+    /// The writes that turned `unconfirmed` or `not_sent` since the last
+    /// tick go into the flight recorder (#43 PR E, `Intents::changes`): only
+    /// the page knows when it drew them. From the link's tick.
+    pub(super) fn note_intents(self) {
+        let now = dom::epoch_now();
+        let changes = self
+            .inner
+            .try_update_value(|i| i.intents.changes(now))
+            .unwrap_or_default();
+        for change in &changes {
+            diag::record(&trace::intent(
+                change.at,
+                &change.key,
+                change.seq,
+                change.state.name(),
+            ));
+        }
     }
 
     /// The controls of `keys` were let go without a final write (#43, L4:

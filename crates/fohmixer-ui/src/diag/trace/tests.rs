@@ -122,37 +122,21 @@ fn each_event_carries_its_kind_its_page_time_and_its_facts() {
 }
 
 #[test]
-fn a_send_is_recorded_only_when_the_socket_did_not_take_it() {
-    let set = set_msg();
-    assert_eq!(
-        send(&set, false),
-        Some(json!({
-            "ev": "send",
-            "t": 5_000.125,
-            "key": "band|live_set tracks[name=Vox 1] mixer_device volume|value",
-            "seq": 12,
-            "value": 0.75,
-            "final": true,
-            "sent": false,
-        }))
-    );
-    assert_eq!(send(&set, true), None, "the hub's set record has it");
-    assert_eq!(send(&ClientMsg::Unsub { sub: "x".into() }, false), None);
-    assert_eq!(seq_of(&set), Some(12));
+fn a_sets_sequence_names_its_frames_move_record() {
+    assert_eq!(seq_of(&set_msg()), Some(12));
     assert_eq!(seq_of(&ClientMsg::Unsub { sub: "x".into() }), None);
 }
 
 #[test]
-fn an_ack_is_its_arrival_and_its_sequence() {
+fn an_intent_change_is_its_time_key_sequence_and_state() {
     let key = "band|live_set tracks[name=Vox 1] mixer_device volume|value";
     assert_eq!(
-        ack(6_000.04, &AckItem::applied(key, 3, Some(json!(0.5)))),
-        json!({"ev": "ack", "t": 6_000.0, "seq": 3})
+        intent(7_000.5, key, 31, "unconfirmed"),
+        json!({"ev": "intent", "t": 7_000.5, "key": key, "seq": 31, "state": "unconfirmed"})
     );
     assert_eq!(
-        ack(6_001.06, &AckItem::failed(key, 4, "no result within 3 s")),
-        json!({"ev": "ack", "t": 6_001.1, "seq": 4}),
-        "the hub's ack record holds the error"
+        intent(9_100.25, key, 31, "not_sent")["state"],
+        json!("not_sent")
     );
 }
 

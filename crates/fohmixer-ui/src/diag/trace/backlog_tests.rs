@@ -261,3 +261,46 @@ fn a_moves_span_is_its_oldest_and_newest_dropped_move_and_a_touchs_first_moves_s
         json!({"ev": "overflow", "t": 2_000.0, "n": 1, "kinds": {"mv": 1}, "from": 40.0, "to": 40.0})
     );
 }
+
+#[test]
+fn moves_go_last_round_trips_long_frames_and_other_kinds_first() {
+    for ev in [
+        "touch",
+        "dropout",
+        "reset",
+        "sock",
+        "visibility",
+        "overflow",
+        "intent",
+    ] {
+        assert_eq!(drop_rank(ev), None, "{ev}");
+    }
+    assert_eq!(drop_rank("mv"), Some(1));
+    for ev in ["rtt", "frame", "x", ""] {
+        assert_eq!(drop_rank(ev), Some(0), "{ev}");
+    }
+}
+
+#[test]
+fn a_span_covers_a_requeued_move_older_than_the_one_that_went_before_it() {
+    // A move went up; a newer one went for the bound; then a lost socket
+    // put the older one back and it went too: the span runs from the older
+    // to the newer, whatever order they went in.
+    let mut r = Recorder::default();
+    r.push(&sized("mv", 10.0, 1_000));
+    let _ = r.upload(0.0, true, 0, 1).expect("a batch");
+    r.push(&sized("mv", 20.0, 1_000));
+    fill_essential(&mut r, 30.0, BACKLOG_BYTES - 1_000);
+    r.push(&sized("touch", 40.0, 1_000));
+    r.requeue();
+    let left: Vec<(String, f64)> = held(&r)
+        .into_iter()
+        .filter(|(kind, _)| kind == "mv")
+        .collect();
+    assert_eq!(left, Vec::<(String, f64)>::new(), "both went");
+    let batch = r.upload(500.0, true, 0, 2).expect("a batch");
+    assert_eq!(
+        events_of(&batch)[0],
+        json!({"ev": "overflow", "t": 500.0, "n": 2, "kinds": {"mv": 2}, "from": 10.0, "to": 20.0})
+    );
+}

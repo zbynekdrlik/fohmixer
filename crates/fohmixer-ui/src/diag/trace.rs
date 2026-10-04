@@ -6,17 +6,18 @@
 //! Its events, each with `ev` and the page clock `t` (ms since the epoch, the
 //! clock of `set` and `ping`): a [`touch`] (down, up, cancel; a toggle's
 //! tap) with the control's keys, and for a finger on a fader or a pan where
-//! its touch started and each frame's moves ([`moves`], PR D); a [`send`]
-//! only when the socket did not take it (a set the socket took is the hub's
-//! own `set` record, same `t` and `seq`); each [`ack`] as its arrival (`t`,
-//! `seq`: the hub's `ack` record has the rest); a per-second summary of the
-//! pongs' round trips ([`rtt`]: the hub logs every ping, so a page event per
-//! pong only doubled the volume, 204 812 of them at the service of
-//! 2026-10-04); the socket's transitions ([`sock`]), a frame longer than
-//! [`LONG_FRAME_MS`] (the page's main thread stalled, [`Recorder::frame`]), a
-//! visibility change ([`Recorder::visibility`]), and the dropout watch's
-//! `dropout` and `reset` (`behave::link`). No page event has a field named
-//! `ts`: the forensics timeline reads a record's hub `ts` as the first
+//! its touch started and each frame's moves ([`moves`], PR D); a write's
+//! turn to `unconfirmed` or `not_sent` ([`intent`], PR E: only the page
+//! knows when it drew them); a per-second summary of the pongs' round trips
+//! ([`rtt`]: the hub logs every ping, so a page event per pong only doubled
+//! the volume, 204 812 of them at the service of 2026-10-04); the socket's
+//! transitions ([`sock`]), a frame longer than [`LONG_FRAME_MS`] (the page's
+//! main thread stalled, [`Recorder::frame`]), a visibility change
+//! ([`Recorder::visibility`]), and the dropout watch's `dropout` and `reset`
+//! (`behave::link`). No `send` and no `ack` (PR E): the hub's own `set`
+//! record holds each write with the page's `t` and `seq`, and the hub
+//! writes each ack; a frame's `mv` names its set. No page event has a field
+//! named `ts`: the forensics timeline reads a record's hub `ts` as the first
 //! `"ts":` of its line, and a `trace` line's `events` come before it.
 //!
 //! **Upload** ([`Recorder::upload`], from the link's 100 ms tick): one batch
@@ -45,28 +46,29 @@
 //! duplicate, which the forensics timeline drops. A reload loses what was not
 //! proved (§5.2: the page keeps nothing in browser storage).
 //!
-//! **Bounds:** past [`BACKLOG_BYTES`] of unsent events the oldest
-//! non-essential unsent events go (so the newest reaches the hub within
-//! seconds: [`BACKLOG_BYTES`] at [`RATE_BYTES_PER_S`]); the essential ones
-//! ([`is_essential`]: touches, dropouts, resets, socket transitions,
-//! visibility, long frames, an unsent write, and a touch's first
-//! [`moves::FIRST_MOVES`] frames, [`Recorder::push_essential`]) stay. Past the
-//! ring's hard bounds ([`MAX_EVENTS`], [`MAX_BYTES`]) the oldest unsent event
-//! goes whatever it is. The next batch says what went, per kind (an
-//! `overflow` event).
+//! **Bounds:** past [`BACKLOG_BYTES`] of unsent events (a 30 s drag of two
+//! faders at 60 Hz fits, PR E) unsent events go by [`drop_rank`]: first the
+//! round-trip summaries, long frames and any other kind, oldest first, then
+//! the moves, oldest first; the essential ones ([`is_essential`]: touches,
+//! dropouts, resets, socket transitions, visibility, the drop notes, the
+//! intent changes, and a touch's first [`moves::FIRST_MOVES`] frames,
+//! [`Recorder::push_essential`]) never. Past the ring's hard bounds
+//! ([`MAX_EVENTS`], [`MAX_BYTES`]) the oldest unsent event goes whatever it
+//! is. The next batch says what went: one `overflow` event per kind, with
+//! how many and the page time of the oldest and the newest (`from`, `to`),
+//! so the forensics read that span as no data of that kind.
 //!
 //! Pure, tested natively: `diag.rs` keeps the page's one recorder, the store
 //! (`store/live/link.rs`) uploads it.
 
 use std::collections::{BTreeMap, VecDeque};
 
-use fohmixer_proto::client::{AckItem, ClientMsg, set_key};
-use serde_json::{Value, json};
+use fohmixer_proto::client::ClientMsg;
+use serde_json::{Map, Value, json};
 
 pub mod moves;
 pub mod rtt;
 
-use moves::round1;
 use rtt::RttWindow;
 
 /// The most events the ring keeps.
@@ -87,10 +89,13 @@ pub const ENVELOPE: usize = 28;
 /// waits for the previous one's bytes at this rate): far below a slow
 /// Wi-Fi link, and it sends nothing while a finger moves a fader.
 pub const RATE_BYTES_PER_S: f64 = 10_240.0;
-/// Past this many bytes of unsent events the oldest non-essential ones go,
-/// so the newest event reaches the hub within about 5 s of the fingers
-/// resting (48 KB at [`RATE_BYTES_PER_S`]).
-pub const BACKLOG_BYTES: usize = 48 * 1024;
+/// Past this many bytes of unsent events some go ([`drop_rank`]). No batch
+/// goes while a finger moves a fader, so a drag waits here whole: a 30 s
+/// drag of two faders at 60 Hz is ~610 KB of move records with real-length
+/// keys (PR E; PR D's 48 KB lost the moves of any drag over ~4 s). Once the
+/// fingers rest it drains at [`RATE_BYTES_PER_S`]: a short drag in about
+/// its own length, the full bound in about 90 s.
+pub const BACKLOG_BYTES: usize = 768 * 1024;
 /// A socket that holds more unsent bytes than this is backed up: no batch
 /// goes. A ping or two still leaving is less.
 pub const BUFFERED_MAX: u32 = 1024;
@@ -108,17 +113,25 @@ pub fn takes_batch(buffered: u32) -> bool {
     buffered <= BUFFERED_MAX
 }
 
-/// Whether an event of kind `ev` stays when the backlog is over its bound:
-/// what the forensics need of every touch and outage (touches, dropouts,
-/// resets, socket transitions, visibility, long frames, the notes of what
-/// went, and a write the socket did not take). Moves, acks and round trips
-/// go first; a touch's first moves are pushed as essential
-/// ([`Recorder::push_essential`]).
+/// When the backlog's bound drops an event of kind `ev` (#43 PR E): none
+/// for an essential one, what the forensics need of every touch and outage
+/// (touches, dropouts, resets, socket transitions, visibility, the notes of
+/// what went, a write's intent changes); rank 0, first, for the round-trip
+/// summaries, long frames and any other kind; rank 1, last, for the moves
+/// (the only per-frame data of a drag the hub cannot see). A touch's first
+/// moves are pushed as essential ([`Recorder::push_essential`]).
+pub fn drop_rank(ev: &str) -> Option<u8> {
+    match ev {
+        "touch" | "dropout" | "reset" | "sock" | "visibility" | "overflow" | "intent" => None,
+        "mv" => Some(1),
+        _ => Some(0),
+    }
+}
+
+/// Whether an event of kind `ev` never goes for the backlog's bound
+/// ([`drop_rank`]).
 pub fn is_essential(ev: &str) -> bool {
-    matches!(
-        ev,
-        "touch" | "dropout" | "reset" | "sock" | "visibility" | "frame" | "overflow" | "send"
-    )
+    drop_rank(ev).is_none()
 }
 
 /// A touch's event: `what` (`down`, `up`, `cancel`; `tap` for a toggle,
@@ -128,35 +141,11 @@ pub fn touch(t: f64, what: &str, keys: &[String], pointer: i32) -> Value {
     json!({"ev": "touch", "t": t, "what": what, "keys": keys, "pointer": pointer})
 }
 
-/// A write's event, only when the socket did not take it (`sent` false: it
-/// is kept and sent again later as a new `set`, and the hub never saw it):
-/// its key, sequence, value and whether it was final. A taken write is the
-/// hub's `set` record (the same `t` and `seq`); nothing for another message.
-pub fn send(msg: &ClientMsg, sent: bool) -> Option<Value> {
-    let ClientMsg::Set {
-        instance,
-        target,
-        prop,
-        value,
-        seq,
-        t,
-        is_final,
-    } = msg
-    else {
-        return None;
-    };
-    if sent {
-        return None;
-    }
-    Some(json!({
-        "ev": "send",
-        "t": t,
-        "key": set_key(instance, target, prop),
-        "seq": seq,
-        "value": value,
-        "final": is_final,
-        "sent": false,
-    }))
+/// A write's turn to `state` (`unconfirmed`, `not_sent`) at `t` (#43 PR E,
+/// `store::intent::Intents::changes`): its key and its latest sequence (the
+/// hub's `set` record of it, if it got there).
+pub fn intent(t: f64, key: &str, seq: u64, state: &str) -> Value {
+    json!({"ev": "intent", "t": t, "key": key, "seq": seq, "state": state})
 }
 
 /// The sequence number of a `set`; none for another message.
@@ -165,12 +154,6 @@ pub fn seq_of(msg: &ClientMsg) -> Option<u64> {
         ClientMsg::Set { seq, .. } => Some(*seq),
         _ => None,
     }
-}
-
-/// An ack item's arrival at `t`: its sequence only (per page, it names the
-/// write; the hub's `ack` record holds its key, error and superseded).
-pub fn ack(t: f64, item: &AckItem) -> Value {
-    json!({"ev": "ack", "t": round1(t), "seq": item.seq})
 }
 
 /// A socket transition at `t`: `what` (`open`, `hello`, `close`, `drop`,
@@ -200,13 +183,46 @@ pub fn batch_text(events: &[&str]) -> String {
     format!(r#"{{"type":"trace","events":[{}]}}"#, events.join(","))
 }
 
-/// One event in the ring: its JSON, its kind and whether it stays when the
-/// backlog is over its bound.
+/// One event in the ring: its JSON, its kind, when the backlog's bound
+/// drops it ([`drop_rank`]; none: never) and its page time.
 #[derive(Debug, Clone, PartialEq)]
 struct Entry {
     text: String,
     kind: String,
-    essential: bool,
+    rank: Option<u8>,
+    t: Option<f64>,
+}
+
+/// What went of one kind since the last batch: how many, and the page time
+/// of the oldest and the newest (none when none had a time).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+struct Dropped {
+    n: u64,
+    from: Option<f64>,
+    to: Option<f64>,
+}
+
+impl Dropped {
+    /// One more went, at page time `t`.
+    fn add(&mut self, t: Option<f64>) {
+        self.n += 1;
+        if let Some(t) = t {
+            self.from = Some(self.from.map_or(t, |from| from.min(t)));
+            self.to = Some(self.to.map_or(t, |to| to.max(t)));
+        }
+    }
+
+    /// The `overflow` event of what went of `kind`, said at `t`.
+    fn note(&self, t: f64, kind: &str) -> Value {
+        let mut kinds = Map::new();
+        kinds.insert(kind.to_string(), json!(self.n));
+        let mut note = json!({"ev": "overflow", "t": t, "n": self.n, "kinds": kinds});
+        if let (Some(from), Some(to)) = (self.from, self.to) {
+            note["from"] = json!(from);
+            note["to"] = json!(to);
+        }
+        note
+    }
 }
 
 /// The page's flight recorder.
@@ -218,8 +234,8 @@ pub struct Recorder {
     bytes: usize,
     /// The size of the unsent ones' JSON (after the first `sent`).
     unsent: usize,
-    /// How many of the unsent ones are not essential (the backlog's bound
-    /// has nothing to drop without one).
+    /// How many of the unsent ones the backlog's bound may drop (it has
+    /// nothing to drop without one).
     optional: usize,
     /// The first `sent` events went in batches not proved yet.
     sent: usize,
@@ -227,7 +243,7 @@ pub struct Recorder {
     /// number of events.
     flights: VecDeque<(u32, usize)>,
     /// Unsent events dropped since the last batch, per kind.
-    overflow: BTreeMap<String, u64>,
+    overflow: BTreeMap<String, Dropped>,
     /// When the last batch went (page ms); none yet.
     uploaded: Option<f64>,
     /// The rate cap: no batch before this (page ms).
@@ -244,28 +260,30 @@ pub struct Recorder {
 }
 
 impl Recorder {
-    /// Records `event`, essential by its kind ([`is_essential`]).
+    /// Records `event`, dropped by the bound as its kind says
+    /// ([`drop_rank`]).
     pub fn push(&mut self, event: &Value) {
-        let essential = is_essential(event["ev"].as_str().unwrap_or_default());
-        self.add(event, essential);
+        let rank = drop_rank(event["ev"].as_str().unwrap_or_default());
+        self.add(event, rank);
     }
 
     /// Records `event` as essential whatever its kind (a touch's first
     /// moves).
     pub fn push_essential(&mut self, event: &Value) {
-        self.add(event, true);
+        self.add(event, None);
     }
 
-    fn add(&mut self, event: &Value, essential: bool) {
+    fn add(&mut self, event: &Value, rank: Option<u8>) {
         let text = event.to_string();
         self.make_room(text.len());
         self.bytes += text.len();
         self.unsent += text.len();
-        self.optional += usize::from(!essential);
+        self.optional += usize::from(rank.is_some());
         self.events.push_back(Entry {
             kind: event["ev"].as_str().unwrap_or_default().to_string(),
             text,
-            essential,
+            rank,
+            t: event["t"].as_f64(),
         });
         self.bound_backlog();
     }
@@ -290,30 +308,42 @@ impl Recorder {
         }
     }
 
-    /// An unsent event went: its bytes leave, its kind is counted.
+    /// An unsent event went: its bytes leave, its kind and time are noted.
     fn forget(&mut self, gone: &Entry) {
         self.bytes -= gone.text.len();
         self.unsent -= gone.text.len();
-        self.optional -= usize::from(!gone.essential);
-        *self.overflow.entry(gone.kind.clone()).or_default() += 1;
+        self.optional -= usize::from(gone.rank.is_some());
+        self.overflow
+            .entry(gone.kind.clone())
+            .or_default()
+            .add(gone.t);
     }
 
-    /// Past [`BACKLOG_BYTES`] of unsent events, the oldest non-essential
-    /// unsent ones go until the backlog is within it again.
+    /// Past [`BACKLOG_BYTES`] of unsent events, unsent ones go until the
+    /// backlog is within it again: the oldest of rank 0, then the oldest of
+    /// rank 1 ([`drop_rank`]); an essential one never.
     fn bound_backlog(&mut self) {
-        let mut excess = self.unsent.saturating_sub(BACKLOG_BYTES);
-        if excess == 0 {
-            return;
+        for rank in [0, 1] {
+            let excess = self.unsent.saturating_sub(BACKLOG_BYTES);
+            if excess == 0 {
+                return;
+            }
+            // Nothing to drop: every unsent event is essential.
+            if self.optional == 0 {
+                return;
+            }
+            self.drop_oldest(rank, excess);
         }
-        // Nothing to drop: every unsent event is essential.
-        if self.optional == 0 {
-            return;
-        }
+    }
+
+    /// The oldest unsent events of `rank` go until `excess` bytes went (or
+    /// none of that rank is left).
+    fn drop_oldest(&mut self, rank: u8, mut excess: usize) {
         let sent = self.sent;
         let mut gone = Vec::new();
         let mut index = 0;
         self.events.retain(|e| {
-            let keep = index < sent || e.essential || excess == 0;
+            let keep = index < sent || e.rank != Some(rank) || excess == 0;
             index += 1;
             if !keep {
                 excess = excess.saturating_sub(e.text.len());
@@ -386,7 +416,8 @@ impl Recorder {
     /// waits and it is due ([`Recorder::due`]). `proof` is the number of the
     /// next ping, whose pong proves the batch was logged. Each tick calls it
     /// once: it closes a second of round trips that is over, and forgets the
-    /// sets of the tick. What went is said first, as an `overflow` event.
+    /// sets of the tick. What went is said first, one `overflow` event per
+    /// kind with its span.
     pub fn upload(&mut self, now: f64, ready: bool, buffered: u32, proof: u32) -> Option<String> {
         if let Some(summary) = self.rtt.close(now) {
             self.push(&summary);
@@ -395,25 +426,25 @@ impl Recorder {
         if !(ready && quiet && takes_batch(buffered) && self.waiting() && self.due(now)) {
             return None;
         }
-        if !self.overflow.is_empty() {
-            let kinds = std::mem::take(&mut self.overflow);
-            let n: u64 = kinds.values().sum();
-            let text = json!({"ev": "overflow", "t": now, "n": n, "kinds": kinds}).to_string();
+        let dropped = std::mem::take(&mut self.overflow);
+        for (at, (kind, gone)) in dropped.iter().enumerate() {
+            let text = gone.note(now, kind).to_string();
             self.bytes += text.len();
             self.unsent += text.len();
             self.events.insert(
-                self.sent,
+                self.sent + at,
                 Entry {
                     text,
                     kind: "overflow".to_string(),
-                    essential: true,
+                    rank: None,
+                    t: Some(now),
                 },
             );
         }
         let count = self.batch_count();
         let batch: Vec<&Entry> = self.events.iter().skip(self.sent).take(count).collect();
         let size: usize = batch.iter().map(|e| e.text.len()).sum();
-        let optional = batch.iter().filter(|e| !e.essential).count();
+        let optional = batch.iter().filter(|e| e.rank.is_some()).count();
         let events: Vec<&str> = batch.iter().map(|e| e.text.as_str()).collect();
         let text = batch_text(&events);
         self.sent += count;
@@ -449,7 +480,7 @@ impl Recorder {
     pub fn requeue(&mut self) {
         let unproved = self.events.iter().take(self.sent);
         self.unsent += unproved.clone().map(|e| e.text.len()).sum::<usize>();
-        self.optional += unproved.filter(|e| !e.essential).count();
+        self.optional += unproved.filter(|e| e.rank.is_some()).count();
         self.sent = 0;
         self.flights.clear();
         self.soon = true;
