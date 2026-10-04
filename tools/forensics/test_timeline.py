@@ -469,17 +469,19 @@ class Causes(ReportCase):
         self.assertAlmostEqual(float(frame["data-start"]), resume - 300 + OFFSET, delta=0.05)
         self.assertEqual(summary["gap_send_max_ms"], "316.0", "no touch: 10 s gestures")
 
-    def stalled_drag(self, log, latency):
+    def stalled_drag(self, log, latency, set_offset=OFFSET, stamp=0.0):
         """Sends 16 ms apart but one 80 ms gap (not over 100 ms: no page
         gap), each value 0.1 up (every step a jump), each set ``latency`` ms
-        on the way; the page's main thread stalled those 80 ms, and its long
-        frame says so at the frame that ended the stall. Returns p0."""
+        on the way with its own ``set_offset``; the page's main thread
+        stalled those 80 ms, and its long frame says so at the frame that
+        ended the stall, ``stamp`` ms after the send of that frame. Returns
+        p0."""
         log.pings(7, BASE, BASE + 3000)
         p0 = BASE + 1000 - OFFSET
         times = [p0, p0 + 16, p0 + 32, p0 + 112, p0 + 128, p0 + 144]
         sends = [(t, round(0.45 + 0.1 * i, 6)) for i, t in enumerate(times)]
-        events = log.drag(VOX, 7, sends, arrive=lambda sent: sent + latency)
-        events.append({"ev": "frame", "t": p0 + 112, "ms": 80.0})
+        events = log.drag(VOX, 7, sends, offset=set_offset, arrive=lambda sent: sent + latency)
+        events.append({"ev": "frame", "t": p0 + 112 + stamp, "ms": 80.0})
         log.trace(BASE + 3000, 7, events)
         return p0
 
@@ -503,11 +505,40 @@ class Causes(ReportCase):
         causes = [cause for cause, _ in self.jumps(page)]
         self.assertEqual(causes, ["move", "move", "page", "move", "move"])
 
+    def test_a_stall_is_matched_whatever_the_two_offsets_by_a_few_ms(self):
+        # The frame is stamped just before the first send after the stall
+        # (the same tick), and the set's own offset reads 1 ms below the
+        # trace's: on the hub clock the stamp lands just after that send.
+        # The stall still explains the jump into that send.
+        log = Log()
+        self.stalled_drag(log, 3.0, set_offset=OFFSET - 1.0, stamp=-0.3)
+        _, page, _ = self.report(log, BASE, BASE + 5000)
+        causes = [cause for cause, _ in self.jumps(page)]
+        self.assertEqual(causes, ["move", "move", "page", "move", "move"])
+
+    def test_without_its_sets_a_jump_is_matched_on_lives_applied_times(self):
+        # The event log lost the first set (its line never came): the jump
+        # out of it has no send to match, so a stall over Live's applied
+        # interval is the page's.
+        log = Log()
+        log.pings(7, BASE, BASE + 3000)
+        p0 = BASE + 1000 - OFFSET
+        sends = [(p0 + 16 * i, round(0.45 + 0.1 * i, 6)) for i in range(6)]
+        events = log.drag(VOX, 7, sends)
+        log.records = [r for r in log.records if not (r["ev"] == "set" and r["seq"] == 1)]
+        events.append({"ev": "frame", "t": p0 + 20, "ms": 60.0})
+        log.trace(BASE + 3000, 7, events)
+        _, page, _ = self.report(log, BASE, BASE + 5000)
+        causes = [cause for cause, _ in self.jumps(page)]
+        self.assertEqual(causes, ["page", "move", "move", "move", "move"])
+
     def test_a_stall_running_past_the_windows_end_is_drawn(self):
         # The window ends inside the stall: its frame, stamped after the
-        # end, is still drawn up to the window's edge.
+        # end, is still drawn up to the window's edge; one wholly after the
+        # end is not.
         log = Log()
-        self.stalled_drag(log, 3.0)
+        p0 = self.stalled_drag(log, 3.0)
+        log.trace(BASE + 3100, 7, [{"ev": "frame", "t": p0 + 400, "ms": 60.0}])
         _, page, _ = self.report(log, BASE, BASE + 1080)
         self.assertEqual(len(page.of_class("frame")), 1)
 
@@ -525,8 +556,20 @@ class Causes(ReportCase):
         log.trace(BASE + 3000, 7, events)
         _, page, _ = self.report(log, BASE, BASE + 5000)
         causes = [cause for cause, _ in self.jumps(page)]
-        self.assertIn("no data", causes)
-        self.assertEqual(set(causes), {"move", "no data"}, "only the jumps over the span")
+        # The dropped frames' stamps (their stalls' ends) fall between the
+        # first sends; a stall of at least 50 ms lies 25 ms before its stamp.
+        self.assertEqual(causes, ["no data", "no data", "move", "move", "move"])
+        # A window ending before the drop note was uploaded still reads it.
+        log = Log()
+        log.pings(7, BASE, BASE + 3000)
+        events = log.drag(VOX, 7, sends)
+        events.append(dict(dropped, **{"from": p0 + 30, "to": p0 + 50}))
+        log.trace(BASE + 3000, 7, events)
+        self.setUp()
+        summary, page, _ = self.report(log, BASE, BASE + 1200)
+        causes = [cause for cause, _ in self.jumps(page)]
+        self.assertEqual(causes, ["no data", "no data", "move", "move", "move"])
+        self.assertEqual(summary["no_data_spans"], "1")
 
     def test_dropped_moves_or_round_trips_say_nothing_of_a_jumps_cause(self):
         # The same fast move with spans of dropped moves and round-trip

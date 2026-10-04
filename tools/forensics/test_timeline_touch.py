@@ -462,6 +462,19 @@ class NoData(ReportCase):
         self.assertIn("no data", page.text)
         self.assertNotIn("Vox 1", stdout)
 
+    def test_a_window_ending_before_the_drop_note_still_reads_its_span(self):
+        # The note goes up with the next batch, after the drag; a window
+        # ending at the lift does not reach it, but its span is in it.
+        log = Log()
+        steps = [(i + 1, round(0.5 + (i + 1) / 300.0, 5)) for i in range(30)]
+        records = self.drag(log, steps, (10, 20))
+        end = records[-1]["t"] + OFFSET + 100
+        summary, page, _ = self.report(log, BASE, end)
+        self.assertEqual(summary["move_gaps"], "0")
+        self.assertEqual(summary["no_data_spans"], "1")
+        (row,) = touch_rows(page)
+        self.assertEqual(row["data-no-data-ms"], "144.0")
+
     def test_a_move_gap_outside_the_dropped_span_still_counts(self):
         # The same hole, and later a real stutter: 180 ms with 31 px.
         log = Log()
