@@ -880,9 +880,9 @@ class Window(ReportCase):
         log.add("set", BASE + 25000, client=4, instance="band", key=VOX, seq=3, value=0.5)
         reset = {"ev": "reset", "t": BASE + 19000 - OFFSET, "active": False}
         # A batch uploaded after the window still brings its events; one past
-        # the two minutes after it does not.
+        # the 30 minutes after it does not.
         log.trace(BASE + 25000, 7, [dict(reset, count=1)])
-        log.trace(BASE + 150000, 7, [dict(reset, count=2)])
+        log.trace(end + 31 * 60000, 7, [dict(reset, count=2)])
         log.write(self.logs)
         far_day = os.path.join(self.logs, "events-2026-10-01.jsonl")
         with open(far_day, "w", encoding="utf-8") as f:
@@ -891,7 +891,7 @@ class Window(ReportCase):
         with open(day, "a", encoding="utf-8") as f:
             f.write("\n")
             f.write(f'{{"ev":"set","ts":{BASE + 15001},"key":"band|li\n')
-            f.write(f'{{"ev":"set","ts":{BASE + 150000},"key":"band|li\n')
+            f.write(f'{{"ev":"set","ts":{end + 31 * 60000},"key":"band|li\n')
             f.write('{"ev":"ba')
         summary, page, _ = self.report(Log(), start, end)
         self.assertEqual(summary["records"], "2")
