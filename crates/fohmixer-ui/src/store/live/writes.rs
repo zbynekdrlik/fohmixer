@@ -22,6 +22,9 @@ impl LiveStore {
     /// The hub's acks of the controls' writes: a failed write shows on its
     /// control (spec I6: shown, never retried).
     pub(super) fn on_ack(self, items: &[AckItem]) {
+        // A write these acks close may have turned unconfirmed since the
+        // last tick: the recorder hears it before it closes.
+        self.note_intents();
         for item in items {
             let Some(acked) = self.inner.try_update_value(|i| i.intents.ack(item)) else {
                 return;
@@ -49,6 +52,10 @@ impl LiveStore {
                 "set {key} not sent again: released {RESEND_MAX_AGE_MS} ms ago or more"
             ));
         }
+        // Each write kept back is `not_sent` now: the recorder hears it at
+        // once (Live's value replayed after the hello can close it within
+        // milliseconds, before the next tick).
+        self.note_intents();
         let mut taken = 0;
         for msg in &resend.sets {
             let sent = self.sent_set(msg);
@@ -105,8 +112,9 @@ impl LiveStore {
     }
 
     /// The writes that turned `unconfirmed` or `not_sent` since the last
-    /// tick go into the flight recorder (#43 PR E, `Intents::changes`): only
-    /// the page knows when it drew them. From the link's tick.
+    /// call go into the flight recorder (#43 PR E, `Intents::changes`): only
+    /// the page knows when it drew them. From the link's tick, after a
+    /// resend and before acks close writes.
     pub(super) fn note_intents(self) {
         let now = dom::epoch_now();
         let changes = self
