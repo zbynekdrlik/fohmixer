@@ -324,22 +324,23 @@ fn a_lost_socket_sends_the_unproved_batches_again_first() {
 }
 
 #[test]
-fn a_batch_holds_1_kb_of_events_joined_by_commas_at_least_one() {
-    // 500 + 1 + 523 = 1 024: one batch.
+fn a_batch_is_at_most_1_kb_with_its_envelope_at_least_one_event() {
+    // 28 + 500 + 1 + 495 = 1 024: one batch.
     let mut r = Recorder::default();
     r.push(&sized(500));
-    r.push(&sized(523));
+    r.push(&sized(495));
     let both = r.upload(0.0, true, 0, 1).expect("a batch");
     assert_eq!(events_of(&both).len(), 2);
+    assert_eq!(both.len(), 1_024);
     // One byte more: two batches.
     let mut r = Recorder::default();
     r.push(&sized(500));
-    r.push(&sized(524));
+    r.push(&sized(496));
     let one = r.upload(0.0, true, 0, 1).expect("a batch");
     assert_eq!(events_of(&one), vec![sized(500)]);
     r.soon();
     let two = r.upload(1_000.0, true, 0, 2).expect("a batch");
-    assert_eq!(events_of(&two), vec![sized(524)]);
+    assert_eq!(events_of(&two), vec![sized(496)]);
     // An event over the bound goes alone.
     let mut r = Recorder::default();
     r.push(&sized(3_000));
@@ -353,7 +354,12 @@ fn a_batch_holds_1_kb_of_events_joined_by_commas_at_least_one() {
         r.push(&event(0));
     }
     let fit = r.upload(0.0, true, 0, 1).expect("a batch");
-    assert_eq!(events_of(&fit).len(), (BATCH_BYTES + 1) / (len + 1));
+    let envelope = batch_text(&[]).len();
+    assert_eq!(
+        events_of(&fit).len(),
+        (BATCH_BYTES - envelope + 1) / (len + 1)
+    );
+    assert!(fit.len() <= BATCH_BYTES);
 }
 
 #[test]
@@ -431,7 +437,12 @@ fn a_requeued_batch_counts_toward_the_backlog_again() {
     assert_eq!(r.backlog(), 49_000, "past the bound the oldest went");
     assert_eq!(r.len(), 49);
     assert_eq!(r.optional, 49);
-    let next = r.upload(200.0, true, 0, 2).expect("again");
+    let note = r.upload(200.0, true, 0, 2).expect("again");
+    assert_eq!(
+        events_of(&note),
+        vec![json!({"ev": "overflow", "t": 200.0, "n": 1, "kinds": {"x": 1}})]
+    );
+    let next = r.upload(300.0, true, 0, 3).expect("the backlog");
     assert_eq!(ts(&next), [1], "event 0, the requeued one, went first");
 }
 
@@ -503,6 +514,14 @@ fn the_ring_keeps_2_mb_and_never_drops_a_batch_on_its_way() {
         events_of(&note),
         vec![json!({"ev": "overflow", "t": 2.0, "n": 3, "kinds": {"mv": 3}})]
     );
+    assert_eq!(
+        r.bytes,
+        note.len() - batch_text(&[]).len(),
+        "the note's bytes count"
+    );
+    r.proved(1);
+    assert!(r.is_empty());
+    assert_eq!((r.bytes, r.backlog()), (0, 0));
 }
 
 #[test]

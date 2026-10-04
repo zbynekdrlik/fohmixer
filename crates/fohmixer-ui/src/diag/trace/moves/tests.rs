@@ -18,7 +18,7 @@ fn numbers_are_rounded_to_keep_records_small() {
     assert_eq!(FIRST_MOVES, 8);
     assert_eq!(round1(412.46), 412.5);
     assert_eq!(round1(-3.04), -3.0);
-    assert_eq!(round1(1_791_072_079_811.8237), 1_791_072_079_811.8);
+    assert_eq!(round1(1_791_072_079_811.823_7), 1_791_072_079_811.8);
     assert_eq!(round5(0.512_345_6), 0.512_35);
     assert_eq!(round5(0.299_994), 0.299_99);
 }
