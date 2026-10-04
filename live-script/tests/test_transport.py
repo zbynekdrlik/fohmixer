@@ -386,7 +386,18 @@ class TransportTest(unittest.TestCase):
         _t, ticks = self.write_at(t0 + transport.SEND_STALL_S - 0.01)
         self.wait_tick(ticks)
         self.assertTrue(conn.is_open)
-        self.write_at(t0 + transport.SEND_STALL_S)
+        # While the clock is held the kernel can still take a trickle of
+        # bytes (its send buffer grows by autotuning), each one progress at
+        # that tick's time, so one step to t0 + SEND_STALL_S may land less
+        # than SEND_STALL_S after the last progress (CI run 37221318449, #43):
+        # the clock moves on by SEND_STALL_S until the stall closes it.
+        when = t0 + transport.SEND_STALL_S
+        for _ in range(20):
+            _t, ticks = self.write_at(when)
+            self.wait_tick(ticks)
+            if self.call(lambda: conn.finished):
+                break
+            when += transport.SEND_STALL_S
         wait_for(lambda: conn.finished)
         self.assertLess(queued, 1000, "the queue bound closed it, not the stall")
         self.assertTrue(any("read nothing for" in m for m in self.log.messages), self.log.messages)
