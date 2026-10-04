@@ -101,23 +101,42 @@ def _starts(touch, key):
     return touch.data.get("what") in ("down", "tap") and _names(touch, key)
 
 
+def _lift(later, key, pointer):
+    """The time of the lift of a ``down`` of ``key`` by ``pointer``, among the
+    touches ``later`` than it: the first ``up`` or ``cancel`` of that pointer
+    naming the key, searched only up to that pointer's next ``down`` naming
+    the key (a lift lost on the way); None when there is none."""
+    for t in later:
+        if t.data.get("pointer") != pointer or not _names(t, key):
+            continue
+        what = t.data.get("what")
+        if what in ("up", "cancel"):
+            return t.hub
+        if what == "down":
+            return None
+    return None
+
+
 def gestures(touches, key, end):
     """One span per touch of ``key`` (on the hub's clock), never merged:
     ``touches`` are the window's page touches in time order, up to ``end``.
 
     - A ``tap`` (mute, solo and stage: no lift follows) spans
       ``GESTURE_TAIL_MS``.
-    - A ``down`` spans to its lift (the first ``up`` or ``cancel`` of its
-      pointer after it) plus ``GESTURE_TAIL_MS``, cut at the start of the
-      next touch of the key that begins after the lift (a fader let go and
-      grabbed again within the tail: the time the finger was off is no gap).
+    - A ``down`` spans to its lift plus ``GESTURE_TAIL_MS``, cut at the start
+      of the next touch (``down`` or ``tap``) of the key that begins at or
+      after the lift (a fader let go and grabbed again within the tail: the
+      time the finger was off is no gap). Its lift is the first ``up`` or
+      ``cancel`` with the same pointer whose keys name the key, searched only
+      up to that pointer's next ``down`` of the key.
     - A ``down`` with no lift spans to the start of the next touch of the
-      key, else to ``end`` (a fader held past the window).
+      key (another finger's or tablet's too), else to ``end`` (a fader held
+      past the window).
 
-    A lift is matched by its pointer alone, so one uploaded on another socket
-    after a reconnect still ends its touch (two tablets touching one control
-    with the same pointer id at once are taken as one finger). None when no
-    touch names the key: then two points ``UNTOUCHED_GESTURE_MS`` apart at
+    Lifts match by pointer id and key, not by socket, so a lift uploaded on
+    another socket after a reconnect still ends its touch; two tablets touching
+    one control at once with the same pointer id read as one finger. None when
+    no touch names the key: then two points ``UNTOUCHED_GESTURE_MS`` apart at
     most are one gesture."""
     named = False
     spans = []
@@ -132,15 +151,7 @@ def gestures(touches, key, end):
         if what != "down":
             continue
         later = touches[index + 1 :]
-        pointer = touch.data.get("pointer")
-        lift = next(
-            (
-                t.hub
-                for t in later
-                if t.data.get("what") in ("up", "cancel") and t.data.get("pointer") == pointer
-            ),
-            None,
-        )
+        lift = _lift(later, key, touch.data.get("pointer"))
         if lift is None:
             finish = next((t.hub for t in later if _starts(t, key)), end)
         else:
