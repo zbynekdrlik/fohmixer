@@ -23,11 +23,11 @@ jumped at 19:40" is answered from the logs alone.
   names and never lands in a repository. Nothing else is written.
 
 It reads only the day files of the window (the UTC dates from 1 min before
-``--from`` to 1 min after ``--to``), line by line, and parses only the lines
+``--from`` to 2 min after ``--to``), line by line, and parses only the lines
 whose ``"ts"`` is in range. Records from 60 s before ``--from`` (offsets, busy
-episodes that started before) to ``--to`` count, a page's ``trace`` up to 60 s
-after ``--to`` too (a batch uploaded after the window brings events from
-inside it). A line that does not parse (a write in progress) is skipped and
+episodes that started before) to ``--to`` count, a page's ``trace`` up to
+120 s after ``--to`` too (a batch uploaded after the window brings events
+from inside it: the page's recorder drains a full backlog in ~95 s). A line that does not parse (a write in progress) is skipped and
 counted.
 
 Page time maps to hub time as ``t + offset``: the ``offset_ms`` of the ping of

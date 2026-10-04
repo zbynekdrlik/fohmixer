@@ -395,7 +395,8 @@ JUMP_LEGEND = (
     "gaps from the arrival (send) before S1 to S2; page gap: the largest send gap "
     "after S1. Overlaps: a dropout or Live busy over the interval of the two "
     "applied values, a long frame (frame) or dropped long frames (nodata) between "
-    "S1's send and S2's. S1 and S2 are the sets behind the two applied values."
+    "S1's send and S2's (over the applied interval when S1 or S2 is not in the "
+    "log). S1 and S2 are the sets behind the two applied values."
 )
 
 

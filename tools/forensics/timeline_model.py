@@ -28,15 +28,18 @@ UNTOUCHED_GESTURE_MS = 10000.0
 # started before the window (ms).
 LEAD_MS = 60000
 # Trace records up to this long after --to count: their page events can fall
-# inside the window (ms).
-TRACE_TAIL_MS = 60000
+# inside the window (ms). The page's recorder holds a drag's events until the
+# fingers rest and drains its full 768 KB backlog in ~95 s (#43 PR E).
+TRACE_TAIL_MS = 120000
 # A change between two applied volumes past this is a jump (dB).
 JUMP_DB = 3.0
 # The page records a frame longer than this (ms, ``diag/trace.rs``
-# ``LONG_FRAME_MS``). A long frame is stamped at the stall's end, in the tick
-# that sends the next set; this far before its stamp lies inside any stall
-# (no send there), whatever the few ms the two clock offsets differ.
-INSIDE_STALL_MS = 50.0 / 2
+# ``LONG_FRAME_MS``): a dropped long frame was a stall at least this long.
+LONG_FRAME_MS = 50.0
+# A long frame is stamped at the stall's end, in the tick that then sends the
+# next set; this far before its stamp lies inside the gap between the two
+# ticks' sends, whatever the few ms the two clock offsets differ.
+INSIDE_STALL_MS = LONG_FRAME_MS / 2
 
 ROWS = ("send", "arrival", "applied")
 
@@ -447,7 +450,11 @@ class Timeline:
             if isinstance(kinds, dict) and len(kinds) == 1 and None not in (start, to):
                 (kind,) = kinds
                 offset = e.hub - number(e.data.get("t"))
-                span = NoData(start + offset, to + offset, to - start, (kind, int(n), start, to))
+                # A dropped long frame was a stall of at least LONG_FRAME_MS
+                # before its stamp: drawn and matched as that.
+                lead = LONG_FRAME_MS if kind == "frame" else 0.0
+                first, last = start - lead + offset, to + offset
+                span = NoData(first, last, last - first, (kind, int(n), start, to))
                 if span.start > self.end or span.end < self.start:
                     continue
                 self.no_data.append(span)
@@ -645,7 +652,10 @@ class Timeline:
                 low, high = sent_of(s1), sent_of(s2)
                 inside = INSIDE_STALL_MS
                 stalled = any(low < f.end - inside <= high for f in self.frames)
-                unknown = any(overlaps(d.start - inside, d.end - inside, low, high) for d in holes)
+                unknown = any(
+                    overlaps(d.start + LONG_FRAME_MS - inside, d.end - inside, low, high)
+                    for d in holes
+                )
             else:
                 stalled = any(overlaps(f.start, f.end, a1.time, a2.time) for f in self.frames)
                 unknown = any(overlaps(d.start, d.end, a1.time, a2.time) for d in holes)
