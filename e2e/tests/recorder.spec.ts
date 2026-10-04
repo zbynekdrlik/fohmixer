@@ -139,7 +139,13 @@ test("on a slow link the recorder never delays a drag's sets and its newest even
     "the second drag's lift in the event log",
     20_000,
   );
-  expect(lift!.ts - lift!.e.t, "the recorder's lag behind the page (ms)").toBeLessThan(6000);
+  const lag = lift!.ts - lift!.e.t;
+  test.info().annotations.push({ type: "lag-ms", description: String(Math.round(lag)) });
+  // The bound (design note §5.2): at most 48 KB wait, drained one batch of
+  // at most 1 000 bytes per 100 ms tick once the fingers rest, about 5 s;
+  // the page's timers run late on a loaded runner (a 6.1 s lag for ~32 KB,
+  // #43), so twice that. PR C's gate starved it for minutes.
+  expect(lag, "the recorder's lag behind the page (ms)").toBeLessThan(10_000);
 
   // With the recorder on, no batch goes while a drag's sets do: between a
   // drag's first and last set at most 2 `trace` records arrive (the socket's
@@ -161,6 +167,17 @@ test("on a slow link the recorder never delays a drag's sets and its newest even
     const inside = events.filter((e) => e.ev === "trace" && e.ts > first + 5 && e.ts < last - 5);
     expect(inside.length, `trace records inside a drag of ${Math.round(last - first)} ms: ${JSON.stringify(inside.map((e) => e.ts - first))}`).toBeLessThanOrEqual(2);
   }
+
+  // It drains without a stall once the fingers rest: from the second drag's
+  // last set to the lift's batch the hub logs a trace record at least every
+  // 500 ms (a batch per tick, five ticks of slack for late timers).
+  const lastSet = dragSets(events, on.between, on.to).last;
+  const drained = events
+    .filter((e) => e.ev === "trace" && e.ts >= lastSet && e.ts <= lift!.ts)
+    .map((e) => e.ts)
+    .sort((a, b) => a - b);
+  const stalls = [lastSet, ...drained].slice(1).map((ts, i) => ts - [lastSet, ...drained][i]);
+  expect(Math.max(...stalls), `the gaps between trace records while it drains (ms): ${JSON.stringify(stalls)}`).toBeLessThanOrEqual(500);
 
   // The recorder on delays the sets no more than the link itself does with
   // the recorder off (both phases' sets as the hub logged them).
