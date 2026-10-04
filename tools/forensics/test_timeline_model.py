@@ -243,6 +243,27 @@ class Thresholds(unittest.TestCase):
         self.assertEqual(rule[3:], (True, "other"))
         self.assertAlmostEqual(touches.pos_db(live_exactly), -1.0, places=9)
 
+    def test_a_held_run_is_3_holds_in_a_row(self):
+        self.assertEqual(touches.HELD_FRAMES, 3)
+
+        def run(n):
+            return [{"r": round(0.5 + 0.01 * i, 5), "s": 0.6} for i in range(n)]
+
+        self.assertEqual(touches.held_runs(run(4)), 1, "4 frames, 3 holds")
+        self.assertEqual(touches.held_runs(run(3)), 0, "3 frames, 2 holds")
+
+    def test_each_condition_of_the_rules_counts(self):
+        # Live's value did not move (no jump) although the finger alone would
+        # have moved it 1.25 dB: no first-touch jump.
+        start = 0.5
+        rule = touches.first_touch(start, start, False, 0.8, 0.8, start + 0.05)
+        self.assertEqual(rule[3], False)
+        self.assertEqual(rule[0], 0.0)
+        self.assertGreater(rule[2], touches.FIRST_JUMP_DB)
+        # The same value sent while the finger rests is no hold.
+        self.assertFalse(touches.holds({"r": 0.5, "s": 0.6}, {"r": 0.5, "s": 0.6}))
+        self.assertTrue(touches.holds({"r": 0.5, "s": 0.6}, {"r": 0.51, "s": 0.6}))
+
 
 class TouchRecords(unittest.TestCase):
     def test_a_touchs_frames_are_its_pointers_on_its_key_both_ends_included_in_page_order(self):

@@ -266,6 +266,9 @@ class Stutter(ReportCase):
         self.assertEqual(summary["touches"], "2")
         rows = touch_rows(page)
         self.assertEqual([r["data-move-gaps"] for r in rows], ["0", "1"])
+        # Each touch's first send is its own (the sets of the key from that
+        # page inside the touch's time only).
+        self.assertEqual([r["data-first-send-ms"] for r in rows], ["54.5", "54.5"])
 
     def test_a_value_held_while_the_finger_moved_is_a_held_run(self):
         log = Log()
@@ -281,6 +284,27 @@ class Stutter(ReportCase):
         (row,) = touch_rows(page)
         self.assertEqual(row["data-held"], "1")
         self.assertEqual(summary["move_gaps"], "0")
+
+    def test_frames_uploaded_out_of_page_order_are_read_in_page_order(self):
+        # The held run of the test above; its later frames went up on a new
+        # socket (a reconnect) whose clock offset reads 100 ms less, so on
+        # the hub's clock they interleave with the earlier frames.
+        log = Log()
+        log.pings(7, BASE, BASE + 4000)
+        log.pings(8, BASE, BASE + 4000, offset=OFFSET - 100)
+        p0 = BASE + 1000 - OFFSET
+        steps = [(i, round(0.5 + i / 300.0, 5)) for i in range(1, 11)]
+        for i in range(3, 7):
+            steps[i] = (steps[i][0], steps[2][1])
+        records, sends = frames(VOX, 4, p0 + 50, 0.5, steps)
+        log.drag(VOX, 7, sends)
+        first_set(log, VOX)["live_before"] = value_at(0.5)
+        log.trace(BASE + 2000, 7, [down(p0, VOX, 4, start=0.5, live=0.5), *records[:4]])
+        log.trace(BASE + 3000, 8, [*records[4:], lift(records[-1]["t"] + 20, VOX, 4)])
+        summary, page, _ = self.report(log, BASE, BASE + 5000)
+        self.assertEqual(summary["held_runs"], "1")
+        (row,) = touch_rows(page)
+        self.assertEqual(row["data-held"], "1")
 
 
 class NewRecords(ReportCase):
