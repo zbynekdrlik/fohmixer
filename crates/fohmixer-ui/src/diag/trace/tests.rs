@@ -285,21 +285,22 @@ fn a_full_batch_goes_as_soon_as_the_cap_lets_it_smaller_amounts_every_2_s() {
 
 #[test]
 fn the_commas_between_events_count_toward_a_full_batch() {
-    // 28 + 500 + 1 + 471 = 1 000: the two events fill a message.
+    // After a first batch (its 128 bytes pace 12.5 ms), 28 + 500 + 1 + 471
+    // = 1 000: the two events fill a message.
     let mut r = Recorder::default();
     r.push(&sized(100));
+    let _ = r.upload(0.0, true, 0, 1).expect("a batch");
     r.push(&sized(500));
     r.push(&sized(471));
-    let _ = r.upload(0.0, true, 0, 1).expect("a batch");
     let full = r.upload(98.0, true, 0, 2).expect("a full batch");
     assert_eq!(full.len(), 1_000);
     assert_eq!(events_of(&full).len(), 2);
     // One byte less: 999, not full, waits its 2 s.
     let mut r = Recorder::default();
     r.push(&sized(100));
+    let _ = r.upload(0.0, true, 0, 1).expect("a batch");
     r.push(&sized(500));
     r.push(&sized(470));
-    let _ = r.upload(0.0, true, 0, 1).expect("a batch");
     assert_eq!(r.upload(98.0, true, 0, 2), None, "not full: 2 s");
 }
 
