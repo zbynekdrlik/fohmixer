@@ -90,9 +90,15 @@ fn a_frame_takes_the_moves_since_the_last_one_with_the_raw_and_sent_position() {
     assert!(first);
     assert_eq!(trail.take(1_040.0, KEY, 0.52, Some(13)), None, "taken");
     trail.moved(7, 1_041.0, 464.0);
-    let (record, _) = trail.take(1_042.0, KEY, 0.6, None).expect("a frame");
+    let (record, _) = trail.take(1_042.06, KEY, 0.6, None).expect("a frame");
     assert_eq!(record["r"], json!(0.62), "from 0.5, 36 px up of 300");
     assert_eq!(record["q"], Value::Null, "no set");
+    assert_eq!(
+        record["t"],
+        json!(1_042.06),
+        "its own time whole (the timeline matches it against the lift)"
+    );
+    assert_eq!(record["e"], json!([[-1.1, 464.0]]));
 }
 
 #[test]

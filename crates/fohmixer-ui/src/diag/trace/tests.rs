@@ -59,7 +59,7 @@ fn the_bounds_are_these() {
     assert_eq!(MAX_EVENTS, 20_000);
     assert_eq!(MAX_BYTES, 2_097_152);
     assert_eq!(UPLOAD_MS, 2000.0);
-    assert_eq!(BATCH_BYTES, 1_024);
+    assert_eq!(BATCH_BYTES, 1_000);
     assert_eq!(ENVELOPE, 28);
     assert_eq!(batch_text(&[]).len(), ENVELOPE);
     assert_eq!(RATE_BYTES_PER_S, 10_240.0);
@@ -218,16 +218,20 @@ fn no_batch_goes_in_a_tick_after_a_set_went() {
 
 #[test]
 fn each_batch_waits_for_the_previous_ones_bytes_at_10_kb_a_second() {
-    // 996 bytes of event in 28 of message: 1 024 bytes, 100 ms at 10 240
-    // bytes a second.
+    // 972 bytes of event in 28 of envelope: 1 000 bytes, 97.65625 ms at
+    // 10 240 bytes a second, inside the link's 100 ms tick.
     let mut r = Recorder::default();
-    r.push(&sized(996));
+    r.push(&sized(972));
     let first = r.upload(0.0, true, 0, 1).expect("a batch");
-    assert_eq!(first.len(), 1_024);
-    r.push(&sized(996));
+    assert_eq!(first.len(), 1_000);
+    r.push(&sized(972));
     r.soon();
-    assert_eq!(r.upload(100.0_f64.next_down(), true, 0, 2), None, "the cap");
-    assert_eq!(ts(&r.upload(100.0, true, 0, 2).expect("paid")), [0]);
+    assert_eq!(
+        r.upload(97.656_25_f64.next_down(), true, 0, 2),
+        None,
+        "the cap"
+    );
+    assert_eq!(ts(&r.upload(97.656_25, true, 0, 2).expect("paid")), [0]);
 }
 
 #[test]
@@ -261,16 +265,22 @@ fn a_full_batch_goes_as_soon_as_the_cap_lets_it_smaller_amounts_every_2_s() {
     assert_eq!(r.upload(2_062.0_f64.next_down(), true, 0, 3), None);
     assert!(r.upload(2_062.0, true, 0, 3).is_some());
     assert_eq!(r.backlog(), 0);
-    // Exactly 1 KB waiting is a full batch.
+    // Events that fill a 1 000-byte message with the envelope are a full
+    // batch (972 bytes); one byte less waits its 2 s.
     let mut r = Recorder::default();
     r.push(&sized(100));
-    r.push(&sized(1_024));
+    r.push(&sized(972));
     let _ = r.upload(0.0, true, 0, 1).expect("a batch");
-    assert_eq!(r.backlog(), 1_024);
+    assert_eq!(r.backlog(), 972);
     assert_eq!(
-        events_of(&r.upload(100.0, true, 0, 2).expect("a full batch")).len(),
+        events_of(&r.upload(98.0, true, 0, 2).expect("a full batch")).len(),
         1
     );
+    let mut r = Recorder::default();
+    r.push(&sized(100));
+    r.push(&sized(971));
+    let _ = r.upload(0.0, true, 0, 1).expect("a batch");
+    assert_eq!(r.upload(98.0, true, 0, 2), None, "not full: 2 s");
 }
 
 #[test]
@@ -326,23 +336,23 @@ fn a_lost_socket_sends_the_unproved_batches_again_first() {
 }
 
 #[test]
-fn a_batch_is_at_most_1_kb_with_its_envelope_at_least_one_event() {
-    // 28 + 500 + 1 + 495 = 1 024: one batch.
+fn a_batch_is_at_most_1000_bytes_with_its_envelope_at_least_one_event() {
+    // 28 + 500 + 1 + 471 = 1 000: one batch.
     let mut r = Recorder::default();
     r.push(&sized(500));
-    r.push(&sized(495));
+    r.push(&sized(471));
     let both = r.upload(0.0, true, 0, 1).expect("a batch");
     assert_eq!(events_of(&both).len(), 2);
-    assert_eq!(both.len(), 1_024);
+    assert_eq!(both.len(), 1_000);
     // One byte more: two batches.
     let mut r = Recorder::default();
     r.push(&sized(500));
-    r.push(&sized(496));
+    r.push(&sized(472));
     let one = r.upload(0.0, true, 0, 1).expect("a batch");
     assert_eq!(events_of(&one), vec![sized(500)]);
     r.soon();
     let two = r.upload(1_000.0, true, 0, 2).expect("a batch");
-    assert_eq!(events_of(&two), vec![sized(496)]);
+    assert_eq!(events_of(&two), vec![sized(472)]);
     // An event over the bound goes alone.
     let mut r = Recorder::default();
     r.push(&sized(3_000));
