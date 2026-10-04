@@ -467,6 +467,23 @@ class Causes(ReportCase):
         self.assertAlmostEqual(float(frame["data-start"]), sends[19][0] + 8 + OFFSET, delta=0.05)
         self.assertEqual(summary["gap_send_max_ms"], "316.0", "no touch: 10 s gestures")
 
+    def test_a_jump_where_the_recorder_dropped_the_long_frames_is_no_data(self):
+        # The fast move below, but the page's recorder dropped its long
+        # frames over that time (PR E): a page stall can no longer be ruled
+        # out, so the jump is no data, not the finger's move.
+        log = Log()
+        log.pings(7, BASE, BASE + 3000)
+        p0 = BASE + 1000 - OFFSET
+        sends = [(p0 + 16 * i, round(0.45 + 0.1 * i, 6)) for i in range(6)]
+        events = log.drag(VOX, 7, sends)
+        dropped = {"ev": "overflow", "t": p0 + 900, "n": 2, "kinds": {"frame": 2}}
+        events.append(dict(dropped, **{"from": p0 + 30, "to": p0 + 50}))
+        log.trace(BASE + 3000, 7, events)
+        _, page, _ = self.report(log, BASE, BASE + 5000)
+        causes = [cause for cause, _ in self.jumps(page)]
+        self.assertIn("no data", causes)
+        self.assertEqual(set(causes), {"move", "no data"}, "only the jumps over the span")
+
     def test_a_fast_move_with_every_gap_small_is_move(self):
         log = Log()
         log.pings(7, BASE, BASE + 3000)
