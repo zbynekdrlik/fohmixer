@@ -32,9 +32,10 @@
 //!   never holds it (at the service the iPad's WebKit reported a ping's bytes
 //!   in `bufferedAmount` at every tick for minutes, and a gate on 0 sent
 //!   nothing for up to 9 minutes), a backed-up socket does;
-//! - something waits and it is due: a full batch as soon as the rate lets it,
-//!   smaller amounts every [`UPLOAD_MS`], and the first batch after a hello,
-//!   a dropout or a reset ([`Recorder::soon`]) as soon as the rate lets it.
+//! - something waits and it is due: a full batch (events that fill a
+//!   message) as soon as the rate lets it, smaller amounts every
+//!   [`UPLOAD_MS`], and the first batch after a hello, a dropout or a reset
+//!   ([`Recorder::soon`]) as soon as the rate lets it.
 //!
 //! Oldest first, so after a reconnect the backlog goes first. A batch stays
 //! in the ring until the pong of a ping sent after it: the hub reads a
@@ -355,8 +356,10 @@ impl Recorder {
     /// passed since the last one.
     fn due(&self, now: f64) -> bool {
         let paced = self.paced_until.is_none_or(|at| now >= at);
-        // The unsent events fill a message with the envelope.
-        let full = self.unsent + ENVELOPE >= BATCH_BYTES;
+        // The unsent events fill a message: their JSON, the commas between
+        // them and the envelope.
+        let commas = (self.events.len() - self.sent).saturating_sub(1);
+        let full = self.unsent + commas + ENVELOPE >= BATCH_BYTES;
         let time = self.soon || full || self.uploaded.is_none_or(|at| now - at >= UPLOAD_MS);
         paced && time
     }
