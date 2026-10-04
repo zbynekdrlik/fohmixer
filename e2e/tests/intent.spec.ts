@@ -109,6 +109,25 @@ test.describe("The look of an open write on the pan and the toggles", () => {
       expect(touches.filter((e: any) => e.keys.includes(muteKey)).every((e: any) => e.what === "tap"), "a mute's touch is a tap only").toBe(true);
       expect(touches.some((e: any) => e.what === "down" && e.keys.includes(panKey))).toBe(true);
       expect(touches.some((e: any) => e.what === "up" && e.keys.includes(panKey))).toBe(true);
+      // The page also recorded when each write turned unconfirmed (its
+      // release 1 s old without an ack) and when it was not sent again:
+      // only the page knows when it drew them (#43 PR E).
+      const intents = await until(
+        async () =>
+          (await hubEvents())
+            .filter((r) => r.ev === "trace")
+            .flatMap((r) => r.events)
+            .filter((e: any) => e.ev === "intent" && e.t >= cutAt)
+            .sort((a: any, b: any) => a.t - b.t),
+        (all) => [panKey, muteKey].every((key) => all.some((e: any) => e.key === key && e.state === "not_sent")),
+        "the writes' states in the event log",
+        10_000,
+      );
+      for (const key of [panKey, muteKey]) {
+        const mine = intents.filter((e: any) => e.key === key);
+        expect(mine.map((e: any) => e.state), key).toEqual(["unconfirmed", "not_sent"]);
+        expect(mine[0].seq, key).toBe(mine[1].seq);
+      }
     } finally {
       await live.set("band", PAN, "value", panBefore);
       await live.set("band", HAND2, "mute", muteBefore);

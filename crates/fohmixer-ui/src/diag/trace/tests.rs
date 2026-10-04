@@ -63,7 +63,7 @@ fn the_bounds_are_these() {
     assert_eq!(ENVELOPE, 28);
     assert_eq!(batch_text(&[]).len(), ENVELOPE);
     assert_eq!(RATE_BYTES_PER_S, 10_240.0);
-    assert_eq!(BACKLOG_BYTES, 49_152);
+    assert_eq!(BACKLOG_BYTES, 786_432);
     assert_eq!(BUFFERED_MAX, 1_024);
     assert_eq!(LONG_FRAME_MS, 50.0);
     assert!(!is_long_frame(50.0));
@@ -76,20 +76,19 @@ fn the_bounds_are_these() {
 }
 
 #[test]
-fn what_a_touch_and_an_outage_need_is_essential_moves_and_round_trips_are_not() {
+fn what_a_touch_and_an_outage_need_is_essential_moves_round_trips_and_long_frames_are_not() {
     for ev in [
         "touch",
         "dropout",
         "reset",
         "sock",
         "visibility",
-        "frame",
         "overflow",
-        "send",
+        "intent",
     ] {
         assert!(is_essential(ev), "{ev}");
     }
-    for ev in ["mv", "ack", "rtt", "x", ""] {
+    for ev in ["mv", "rtt", "frame", "x", ""] {
         assert!(!is_essential(ev), "{ev}");
     }
 }
@@ -396,7 +395,7 @@ fn a_batch_is_at_most_1000_bytes_with_its_envelope_at_least_one_event() {
 }
 
 #[test]
-fn past_48_kb_unsent_the_oldest_non_essential_events_go_and_are_counted() {
+fn past_the_bound_the_oldest_droppable_events_go_and_are_counted() {
     let mut r = Recorder::default();
     // A batch on its way (unproved) never goes.
     r.push(&sized(1_000));
@@ -405,75 +404,98 @@ fn past_48_kb_unsent_the_oldest_non_essential_events_go_and_are_counted() {
     r.push(&sized_kind("touch", 1_000));
     r.push(&sized_kind("mv", 1_000));
     r.push_essential(&sized_kind("mv", 1_000));
-    r.push(&sized_kind("ack", 1_000));
-    for _ in 0..45 {
+    r.push(&sized_kind("frame", 1_000));
+    let rtts = (BACKLOG_BYTES - 4_000) / 1_000;
+    for _ in 0..rtts {
         r.push(&sized_kind("rtt", 1_000));
     }
-    assert_eq!(r.backlog(), 49_000, "within 48 KB");
-    assert_eq!(r.len(), 50);
-    assert_eq!(r.optional, 47, "the unsent mv, ack and round trips");
+    let within = 4_000 + rtts * 1_000;
+    assert!(BACKLOG_BYTES - within < 1_000);
+    assert_eq!(r.backlog(), within, "within the bound");
+    assert_eq!(r.len(), rtts + 5);
+    assert_eq!(
+        r.optional,
+        rtts + 2,
+        "the unsent mv, long frame and round trips"
+    );
     r.push(&sized_kind("rtt", 1_000));
     assert_eq!(
         r.backlog(),
-        49_000,
-        "the oldest non-essential one went: the mv"
+        within,
+        "the oldest event of the lowest rank went: the long frame"
     );
-    r.push(&sized_kind("rtt", 1_500));
+    r.push(&sized_kind("rtt", 2_000));
     assert_eq!(
         r.backlog(),
-        48_500,
-        "then the ack, then the first round trip"
+        within,
+        "then the two oldest round trips; the move stays"
     );
-    assert_eq!(r.len(), 49);
-    assert_eq!(r.bytes, 49_500);
-    assert_eq!(r.optional, 46);
-    // The next batch says what went, per kind, first.
-    r.soon();
+    assert_eq!(r.len(), rtts + 4);
+    assert_eq!(r.bytes, within + 1_000);
+    assert_eq!(r.optional, rtts + 1);
+    // The next batch says what went, per kind and when, first.
     let batch = r.upload(500.0, true, 0, 2).expect("a batch");
-    let events = events_of(&batch);
     assert_eq!(
-        events[0],
-        json!({"ev": "overflow", "t": 500.0, "n": 3, "kinds": {"ack": 1, "mv": 1, "rtt": 1}})
+        events_of(&batch),
+        vec![
+            json!({"ev": "overflow", "t": 500.0, "n": 1, "kinds": {"frame": 1}, "from": 0.0, "to": 0.0}),
+            json!({"ev": "overflow", "t": 500.0, "n": 2, "kinds": {"rtt": 2}, "from": 0.0, "to": 0.0}),
+        ],
+        "the notes fill the batch"
     );
-    assert_eq!(events.len(), 1, "the note fills the batch");
     let next = events_of(&r.upload(1_000.0, true, 0, 3).expect("a batch"));
     assert_eq!(next[0]["ev"], json!("touch"), "the essential ones stayed");
     let next = events_of(&r.upload(1_200.0, true, 0, 4).expect("a batch"));
     assert_eq!(
         next[0]["ev"],
         json!("mv"),
+        "the move stayed: moves go after round trips and long frames"
+    );
+    assert_eq!(r.optional, rtts, "a batch takes its droppable events along");
+    let next = events_of(&r.upload(1_400.0, true, 0, 5).expect("a batch"));
+    assert_eq!(
+        next[0]["ev"],
+        json!("mv"),
         "the first move pushed as essential"
     );
-    assert_eq!(r.optional, 46, "the batches held essential events only");
-    let next = events_of(&r.upload(1_400.0, true, 0, 5).expect("a batch"));
-    assert_eq!(next[0]["ev"], json!("rtt"));
-    assert_eq!(r.optional, 45, "a batch takes its optional events along");
+    assert_eq!(r.optional, rtts, "an essential one changes no count");
     // The proved batch on its way leaves on its pong.
     r.proved(1);
-    assert_eq!(r.len(), 49);
+    assert_eq!(r.len(), rtts + 5);
 }
 
 #[test]
 fn a_requeued_batch_counts_toward_the_backlog_again() {
+    let n = BACKLOG_BYTES / 1_000 - 1;
     let mut r = Recorder::default();
-    for i in 0..48 {
+    for i in 0..n {
         r.push(&sized_at(i % 10, 1_000));
     }
     let _ = r.upload(0.0, true, 0, 1).expect("a batch");
-    assert_eq!(r.optional, 47);
+    assert_eq!(r.optional, n - 1);
     r.push(&sized_at(8, 1_000));
-    assert_eq!(r.backlog(), 48_000);
+    assert_eq!(r.backlog(), n * 1_000);
     r.requeue();
-    assert_eq!(r.backlog(), 49_000, "the batch on its way is unsent again");
-    assert_eq!(r.optional, 49);
+    assert_eq!(
+        r.backlog(),
+        (n + 1) * 1_000,
+        "the batch on its way is unsent again"
+    );
+    assert_eq!(r.optional, n + 1);
     r.push(&sized_at(9, 1_000));
-    assert_eq!(r.backlog(), 49_000, "past the bound the oldest went");
-    assert_eq!(r.len(), 49);
-    assert_eq!(r.optional, 49);
+    assert_eq!(
+        r.backlog(),
+        (n + 1) * 1_000,
+        "past the bound the oldest went"
+    );
+    assert_eq!(r.len(), n + 1);
+    assert_eq!(r.optional, n + 1);
     let note = r.upload(200.0, true, 0, 2).expect("again");
     assert_eq!(
         events_of(&note),
-        vec![json!({"ev": "overflow", "t": 200.0, "n": 1, "kinds": {"x": 1}})]
+        vec![
+            json!({"ev": "overflow", "t": 200.0, "n": 1, "kinds": {"x": 1}, "from": 0.0, "to": 0.0})
+        ]
     );
     let next = r.upload(300.0, true, 0, 3).expect("the backlog");
     assert_eq!(ts(&next), [1], "event 0, the requeued one, went first");
@@ -495,8 +517,8 @@ fn the_ring_keeps_20_000_essential_events_and_drops_the_oldest_unsent() {
     let events = events_of(&batch);
     assert_eq!(
         events[0],
-        json!({"ev": "overflow", "t": 0.0, "n": 2, "kinds": {"touch": 2}}),
-        "the drops are said first"
+        json!({"ev": "overflow", "t": 0.0, "n": 2, "kinds": {"touch": 2}, "from": 0.0, "to": 1.0}),
+        "the drops are said first, with their span"
     );
     assert_eq!(events[1]["t"], json!(2), "events 0 and 1 went");
     assert!(r.overflow.is_empty());
@@ -524,28 +546,21 @@ fn the_ring_keeps_2_mb_and_never_drops_a_batch_on_its_way() {
     let next = r.upload(1_000.0, true, 0, 6).expect("a batch");
     assert_eq!(
         events_of(&next),
-        vec![json!({"ev": "overflow", "t": 1_000.0, "n": 1, "kinds": {"touch": 1}})]
+        vec![
+            json!({"ev": "overflow", "t": 1_000.0, "n": 1, "kinds": {"touch": 1}, "from": 0.0, "to": 0.0})
+        ]
     );
-    // Only the drops are waiting: they still go.
-    let mut r = Recorder {
-        events: VecDeque::new(),
-        bytes: 0,
-        unsent: 0,
-        optional: 0,
-        sent: 0,
-        flights: VecDeque::new(),
-        overflow: BTreeMap::from([("mv".to_string(), 3)]),
-        uploaded: None,
-        paced_until: None,
-        soon: false,
-        set_went: false,
-        after_visibility: false,
-        rtt: RttWindow::default(),
-    };
+    // Only the drops are waiting: they still go. An event over the bound by
+    // itself goes at once.
+    let mut r = Recorder::default();
+    r.push(&sized(BACKLOG_BYTES + 1));
+    assert_eq!((r.len(), r.backlog()), (0, 0), "it went at once");
     let note = r.upload(2.0, true, 0, 1).expect("the drops");
     assert_eq!(
         events_of(&note),
-        vec![json!({"ev": "overflow", "t": 2.0, "n": 3, "kinds": {"mv": 3}})]
+        vec![
+            json!({"ev": "overflow", "t": 2.0, "n": 1, "kinds": {"x": 1}, "from": 0.0, "to": 0.0})
+        ]
     );
     assert_eq!(
         r.bytes,

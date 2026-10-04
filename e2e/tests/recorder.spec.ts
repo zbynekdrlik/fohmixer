@@ -47,6 +47,29 @@ function drag(fader: Locator, pointerId: number, px: number): Promise<number> {
   return dispatchPointer(fader, steps, pointerId);
 }
 
+/** The moves of a long drag (#43 PR E): 900 moves of 1 px every 20 ms, 18 s. */
+const LONG_MOVES = 900;
+/** How far a long drag goes either way (px): a triangle wave around the fader's start. */
+const LONG_AMPLITUDE = 60;
+
+/** A finger dragging `fader` `moves` 1 px moves every 20 ms, up and down in a triangle wave of ±`LONG_AMPLITUDE` px. */
+function longDrag(fader: Locator, pointerId: number, moves: number): Promise<number> {
+  const a = LONG_AMPLITUDE;
+  const steps: PointerStep[] = [{ type: "pointerdown" }];
+  let dy = 0;
+  for (let i = 1; i <= moves; i++) {
+    dy = a - Math.abs(((i + a) % (4 * a)) - 2 * a);
+    steps.push({ wait: 20 }, { type: "pointermove", dy });
+  }
+  steps.push({ type: "pointerup", dy });
+  return dispatchPointer(fader, steps, pointerId);
+}
+
+/** The page events of the hub's trace records, each with its record's `ts`. */
+function traceEvents(events: any[]): { ts: number; e: any }[] {
+  return events.filter((r) => r.ev === "trace").flatMap((r) => r.events.map((e: any) => ({ ts: r.ts, e })));
+}
+
 /** Two drags back to back (the second starts 50 ms after the first one's lift): the page clock before, between and after. */
 async function twoDrags(page: Page, fader: Locator, pointer: number): Promise<{ from: number; between: number; to: number }> {
   const from = await pageNow(page);
@@ -186,6 +209,78 @@ test("on a slow link the recorder never delays a drag's sets and its newest even
   expect(offDelays.length, "the drags' sets with the recorder off").toBeGreaterThan(20);
   expect(onDelays.length, "the drags' sets with the recorder on").toBeGreaterThan(20);
   const summary = `off: ${JSON.stringify(offDelays.map(Math.round))}; on: ${JSON.stringify(onDelays.map(Math.round))}`;
+  expect(percentile(onDelays, 0.5), `median, ${summary}`).toBeLessThanOrEqual(percentile(offDelays, 0.5) + 20);
+  expect(percentile(onDelays, 0.9), `p90, ${summary}`).toBeLessThanOrEqual(percentile(offDelays, 0.9) + 30);
+});
+
+test("a long drag on a slow link keeps every move, and the recorder still never delays its sets", async ({ page }) => {
+  // #43 PR E: a drag longer than the old 48 KB backlog (about 4 s of one
+  // fader at 60 Hz) lost its oldest moves; the page records no `send` or
+  // `ack` any more, and its backlog holds a 30 s drag of two faders.
+  test.setTimeout(240_000);
+  await page.addInitScript(() => {
+    const send = WebSocket.prototype.send;
+    WebSocket.prototype.send = function (data: string | ArrayBufferLike | Blob | ArrayBufferView) {
+      const drop = (window as unknown as { dropTraces?: boolean }).dropTraces === true;
+      if (drop && typeof data === "string" && data.startsWith('{"type":"trace"')) return;
+      return send.call(this, data);
+    };
+  });
+  await openSurface(page);
+  const fader = strip(page, "Hand2 #").getByTestId("fader");
+  await ready(fader);
+  await until(() => shown(fader), (v) => Math.abs(v - START) < 1e-3, "the fader at 0.5");
+  await impair.rate(LINK_BYTES_PER_S);
+  await page.waitForTimeout(3000);
+
+  // The recorder off: a long drag; its events drain (dropped on the way)
+  // before the next one.
+  await dropTraces(page, true);
+  const offFrom = await pageNow(page);
+  await longDrag(fader, 91, LONG_MOVES);
+  const offTo = await pageNow(page);
+  await page.waitForTimeout(25_000);
+
+  // The recorder on: the same long drag.
+  await dropTraces(page, false);
+  const onFrom = await pageNow(page);
+  await longDrag(fader, 92, LONG_MOVES);
+  const onTo = await pageNow(page);
+
+  // Its lift reaches the event log once the backlog before it drained.
+  await until(
+    async () => traceEvents(await hubEvents()).find(({ e }) => e.ev === "touch" && e.what === "up" && e.pointer === 92 && e.t >= onFrom),
+    (found) => found !== undefined,
+    "the long drag's lift in the event log",
+    90_000,
+  );
+  const events = await hubEvents();
+  const pageEvents = traceEvents(events).map(({ e }) => e);
+
+  // Every frame that sent a set recorded its move: each of the drag's sets
+  // (the hub's records) has the `mv` that names its seq.
+  const sets = events.filter((e) => e.ev === "set" && e.key === KEY && e.t >= onFrom && e.t <= onTo);
+  expect(sets.length, "the long drag's sets").toBeGreaterThan(200);
+  const moves = pageEvents.filter((e) => e.ev === "mv" && e.p === 92 && e.t >= onFrom && e.t <= onTo);
+  const named = new Set(moves.map((e) => e.q));
+  const missing = sets.filter((e) => !named.has(e.seq)).map((e) => e.seq);
+  expect(missing, `sets whose move record is missing (of ${sets.length})`).toEqual([]);
+  // Nothing was dropped, and the drag's moves reaching the hub are more than
+  // the old 48 KB bound held (the check can fail).
+  const notes = pageEvents.filter((e) => e.ev === "overflow" && e.t >= offFrom);
+  expect(notes, "the recorder's drop notes").toEqual([]);
+  const bytes = eventBytes(events, onFrom, onTo);
+  test.info().annotations.push({ type: "drag-bytes", description: String(bytes) });
+  expect(bytes, "the long drag's page events (bytes)").toBeGreaterThan(48 * 1024);
+  // No `send` (every set was taken) and no `ack` record: the hub has both.
+  const hubs = pageEvents.filter((e) => (e.ev === "send" || e.ev === "ack") && e.t >= offFrom);
+  expect(hubs.length, "send and ack records").toBe(0);
+
+  // The recorder on delays the long drag's sets no more than with it off.
+  const offDelays = delays(events, offFrom, offTo);
+  const onDelays = delays(events, onFrom, onTo);
+  expect(offDelays.length, "the long drag's sets with the recorder off").toBeGreaterThan(200);
+  const summary = `off: p50 ${percentile(offDelays, 0.5)}, p90 ${percentile(offDelays, 0.9)}; on: p50 ${percentile(onDelays, 0.5)}, p90 ${percentile(onDelays, 0.9)}`;
   expect(percentile(onDelays, 0.5), `median, ${summary}`).toBeLessThanOrEqual(percentile(offDelays, 0.5) + 20);
   expect(percentile(onDelays, 0.9), `p90, ${summary}`).toBeLessThanOrEqual(percentile(offDelays, 0.9) + 30);
 });
