@@ -637,18 +637,13 @@ class Timeline:
             begin = number(down.data.get("t"))
             end = number(lifted.data.get("t")) if lifted is not None else math.inf
 
-            def within(t, begin=begin, end=end):
-                return t is not None and begin <= t <= end
-
-            mine = [
-                f.data
-                for f in frames
-                if f.data.get("key") == key
-                and f.data.get("p") == pointer
-                and within(number(f.data.get("t")))
-            ]
+            mine = timeline_touch.own_frames([f.data for f in frames], key, pointer, begin, end)
             sets = sorted(
-                (r for r in self.key_sets.get(key, []) if within(number(r.get("t")))),
+                (
+                    r
+                    for r in self.key_sets.get(key, [])
+                    if timeline_touch.within(r.get("t"), begin, end)
+                ),
                 key=lambda r: r["t"],
             )
             # The touch's own page: the socket whose sets the frames name, by

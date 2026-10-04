@@ -89,6 +89,29 @@ def pos_db(p):
     return value2db(to_live(p))
 
 
+def over_jump(db):
+    """Whether a difference of ``db`` is more than ``FIRST_JUMP_DB``."""
+    return db > FIRST_JUMP_DB
+
+
+def is_move_gap(ms, px):
+    """Whether two consecutive moves ``ms`` apart and ``px`` apart are a move
+    gap: over ``MOVE_GAP_MS`` and over ``MOVE_GAP_PX``."""
+    return ms > MOVE_GAP_MS and px > MOVE_GAP_PX
+
+
+def finger_moved(dr):
+    """Whether a change ``dr`` of the finger's position is a move (over
+    ``RAW_STEP``)."""
+    return abs(dr) > RAW_STEP
+
+
+def inside_travel(s):
+    """Whether a sent position ``s`` lies strictly inside 0..1 (at an end the
+    value stays put by design)."""
+    return 0.0 < s < 1.0
+
+
 def first_touch(start, live, local, live_before, first_applied, raw):
     """A touch that started at position ``start`` (the page's Live position
     ``live``, ``local``) when Live held ``live_before``, whose first applied
@@ -104,11 +127,11 @@ def first_touch(start, live, local, live_before, first_applied, raw):
     finger = db_apart(pos_db(raw), pos_db(start))
     expected = to_live(to_pos(live_before) + raw - start)
     off = db_apart(applied_db, value2db(expected))
-    if not (jump > FIRST_JUMP_DB and off > FIRST_JUMP_DB):
+    if not (over_jump(jump) and over_jump(off)):
         return jump, finger, off, False, None
     if local:
         why = "local"
-    elif live is not None and db_apart(pos_db(live), value2db(live_before)) > FIRST_JUMP_DB:
+    elif live is not None and over_jump(db_apart(pos_db(live), value2db(live_before))):
         why = "stale"
     else:
         why = "other"
@@ -136,7 +159,7 @@ def move_gaps(moves):
     """The move gaps of a touch's ``moves`` ((time, coordinate) in order)."""
     gaps = []
     for (t1, c1), (t2, c2) in itertools.pairwise(moves):
-        if t2 - t1 > MOVE_GAP_MS and abs(c2 - c1) > MOVE_GAP_PX:
+        if is_move_gap(t2 - t1, abs(c2 - c1)):
             gaps.append(Gap(t1, t2, t2 - t1, abs(c2 - c1)))
     return gaps
 
@@ -148,7 +171,7 @@ def holds(previous, frame):
     s1, s2 = number(previous.get("s")), number(frame.get("s"))
     if None in (r1, r2, s1, s2):
         return False
-    return s1 == s2 and 0.0 < s2 < 1.0 and abs(r2 - r1) > RAW_STEP
+    return s1 == s2 and inside_travel(s2) and finger_moved(r2 - r1)
 
 
 def held_runs(frames):
@@ -171,6 +194,25 @@ def event_time(data):
     if t is None:
         return None
     return t + (number(data.get("dt")) or 0.0)
+
+
+def own_frames(frames, key, pointer, begin, end):
+    """The ``mv`` records (data) of a touch of ``key`` by ``pointer`` from
+    page time ``begin`` to ``end`` (both included), in page-time order (the
+    order they were taken: records uploaded on two sockets can come back in
+    another hub order)."""
+    mine = [
+        f
+        for f in frames
+        if f.get("key") == key and f.get("p") == pointer and within(f.get("t"), begin, end)
+    ]
+    return sorted(mine, key=lambda f: number(f.get("t")))
+
+
+def within(t, begin, end):
+    """Whether page time ``t`` lies from ``begin`` to ``end``, both included."""
+    t = number(t)
+    return t is not None and begin <= t <= end
 
 
 def is_start(data):
