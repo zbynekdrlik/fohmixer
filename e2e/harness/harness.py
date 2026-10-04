@@ -37,13 +37,16 @@ what only the harness can do:
                                          report, or null when none was written>}
     GET  /link                           the impair proxy's state: ``port``,
                                          ``connections``, ``held``, ``blocked``,
-                                         ``stall_ms``
+                                         ``stall_ms``, ``rate``
     POST /link/stall {"ms": <ms>}        both directions of every connection
                                          held for ``ms`` (a running stall is
                                          extended, never shortened)
     POST /link/drop                      every connection reset: {"dropped": n}
     POST /link/block {"on": <bool>}      new connections held (accepted, not
                                          passed on) until ``on`` is false
+    POST /link/rate {"bytes_per_s": <n>} the pages' bytes to the hub at most
+                                         ``n`` a second, first in first out (a
+                                         slow link, #43 PR D; 0 lifts it)
     GET  /cdn-cgi/access/certs           the test Access key set (``--access-key``)
 
 Remote access (#17): with ``--public-name`` the hub serves that name over HTTPS
@@ -196,6 +199,16 @@ def block_on(body):
     if not isinstance(on, bool):
         raise BadRequest(f'/link/block wants {{"on": true|false}}, not {body!r}')
     return on
+
+
+def rate_of(body):
+    """The ``bytes_per_s`` of a ``/link/rate`` body: a finite number, 0 or more
+    (0 lifts the limit)."""
+    rate = body.get("bytes_per_s")
+    finite = isinstance(rate, (int, float)) and not isinstance(rate, bool) and math.isfinite(rate)
+    if not finite or rate < 0:
+        raise BadRequest(f'/link/rate wants {{"bytes_per_s": <0 or more>}}, not {body!r}')
+    return rate
 
 
 def timeline_window(body):
@@ -474,6 +487,8 @@ class Harness:
             return 200, self.link.drop()
         if parts == ["link", "block"]:
             return 200, self.link.block(block_on(body))
+        if parts == ["link", "rate"]:
+            return 200, self.link.rate(rate_of(body))
         return 404, {"error": f"no {method} {path}"}
 
     def stop(self):
