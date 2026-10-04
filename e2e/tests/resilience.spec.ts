@@ -7,8 +7,10 @@ import {
   dispatchPointer,
   frames,
   hostLine,
+  hubEvents,
   impair,
   openSurface,
+  pageEvents,
   panning,
   ready,
   selectPage,
@@ -270,6 +272,18 @@ test.describe("The control link's resilience (L1-L4)", () => {
     await expect(page.getByTestId("surface")).toHaveAttribute("data-connected", "true");
     // Too old to send again, but Live's fresh value is the release: confirmed, not red.
     await expect(fader).toHaveAttribute("data-intent", "confirmed");
+    // The page's flight recorder still has the write's turns (#43 PR E):
+    // unconfirmed while the link was down, and not_sent at the resend,
+    // although Live's replayed value closed it within milliseconds, before
+    // the link's next 100 ms tick.
+    const key = `band|${TARGET}|value`;
+    const turns = await until(
+      async () => pageEvents(await hubEvents()).filter((e: any) => e.ev === "intent" && e.key === key && e.t >= releasedAt - 1000),
+      (all) => all.some((e: any) => e.state === "not_sent"),
+      "the write's not_sent record in the event log",
+      10_000,
+    );
+    expect(turns.map((e: any) => e.state)).toEqual(["unconfirmed", "not_sent"]);
   });
 
   test("a fader taken away under a finger counts as released: its old write is not sent after the link returns", async ({ page }) => {
