@@ -469,24 +469,47 @@ class Causes(ReportCase):
         self.assertAlmostEqual(float(frame["data-start"]), resume - 300 + OFFSET, delta=0.05)
         self.assertEqual(summary["gap_send_max_ms"], "316.0", "no touch: 10 s gestures")
 
-    def test_a_long_frame_is_the_stall_before_its_own_time(self):
-        # Every send 16 ms apart but one 80 ms gap (not over 100 ms: no page
-        # gap); the page's main thread stalled those 80 ms, and its long
-        # frame says so at the frame that ended the stall. The jumps whose
-        # interval meets the stall are the page's, the ones after it moves.
-        log = Log()
+    def stalled_drag(self, log, latency):
+        """Sends 16 ms apart but one 80 ms gap (not over 100 ms: no page
+        gap), each value 0.1 up (every step a jump), each set ``latency`` ms
+        on the way; the page's main thread stalled those 80 ms, and its long
+        frame says so at the frame that ended the stall. Returns p0."""
         log.pings(7, BASE, BASE + 3000)
         p0 = BASE + 1000 - OFFSET
         times = [p0, p0 + 16, p0 + 32, p0 + 112, p0 + 128, p0 + 144]
         sends = [(t, round(0.45 + 0.1 * i, 6)) for i, t in enumerate(times)]
-        events = log.drag(VOX, 7, sends)
+        events = log.drag(VOX, 7, sends, arrive=lambda sent: sent + latency)
         events.append({"ev": "frame", "t": p0 + 112, "ms": 80.0})
         log.trace(BASE + 3000, 7, events)
+        return p0
+
+    def test_a_long_frame_is_the_stall_before_its_own_time(self):
+        # Only the jump between the last send before the stall and the first
+        # after it is the page's; the band is the 80 ms before the stamp.
+        log = Log()
+        p0 = self.stalled_drag(log, 3.0)
         _, page, _ = self.report(log, BASE, BASE + 5000)
         causes = [cause for cause, _ in self.jumps(page)]
-        self.assertEqual(causes, ["move", "page", "page", "move", "move"])
+        self.assertEqual(causes, ["move", "move", "page", "move", "move"])
         (frame,) = page.of_class("frame")
         self.assertAlmostEqual(float(frame["data-start"]), p0 + 32 + OFFSET, delta=0.05)
+
+    def test_a_stall_is_matched_to_the_pages_sends_whatever_the_links_latency(self):
+        # The same stall with each set 30 ms on the way: Live applies every
+        # value later, but the stall still lies between the same two sends.
+        log = Log()
+        self.stalled_drag(log, 30.0)
+        _, page, _ = self.report(log, BASE, BASE + 5000)
+        causes = [cause for cause, _ in self.jumps(page)]
+        self.assertEqual(causes, ["move", "move", "page", "move", "move"])
+
+    def test_a_stall_running_past_the_windows_end_is_drawn(self):
+        # The window ends inside the stall: its frame, stamped after the
+        # end, is still drawn up to the window's edge.
+        log = Log()
+        self.stalled_drag(log, 3.0)
+        _, page, _ = self.report(log, BASE, BASE + 1080)
+        self.assertEqual(len(page.of_class("frame")), 1)
 
     def test_a_jump_where_the_recorder_dropped_the_long_frames_is_no_data(self):
         # The fast move below, but the page's recorder dropped its long
