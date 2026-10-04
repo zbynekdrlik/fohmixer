@@ -270,6 +270,32 @@ class Stutter(ReportCase):
         # page inside the touch's time only).
         self.assertEqual([r["data-first-send-ms"] for r in rows], ["54.5", "54.5"])
 
+    def test_a_touch_whose_sets_never_reached_the_hub_takes_none_of_the_next_ones(self):
+        # The first touch was lifted but none of its sets reached the hub
+        # (an outage); the next touch's sets are its own, never the first's.
+        log = Log()
+        log.pings(7, BASE, BASE + 6000)
+        p0 = BASE + 1000 - OFFSET
+        steps = [(i + 1, round(0.5 + (i + 1) / 300.0, 5)) for i in range(10)]
+        first, _ = frames(VOX, 4, p0 + 50, 0.5, steps)
+        p1 = p0 + 1500
+        second, sends = frames(VOX, 4, p1 + 50, 0.5, steps)
+        log.drag(VOX, 7, sends)
+        first_set(log, VOX)["live_before"] = value_at(0.5)
+        events = [
+            down(p0, VOX, 4, start=0.5, live=0.5),
+            *first,
+            lift(p0 + 400, VOX, 4),
+            down(p1, VOX, 4, start=0.5, live=0.5),
+            *second,
+            lift(p1 + 400, VOX, 4),
+        ]
+        log.trace(BASE + 4000, 7, events)
+        summary, page, _ = self.report(log, BASE, BASE + 6000)
+        self.assertEqual(summary["touches"], "2")
+        rows = touch_rows(page)
+        self.assertEqual([r["data-first-send-ms"] for r in rows], ["n/a", "54.5"])
+
     def test_a_value_held_while_the_finger_moved_is_a_held_run(self):
         log = Log()
         steps = [(i, round(0.5 + i / 300.0, 5)) for i in range(1, 11)]
