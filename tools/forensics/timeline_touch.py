@@ -188,10 +188,11 @@ def finger_raw(down, frames, seq, start, how):
     if how != "anchored":
         return finger_at(frames, seq)
     first = moves_of(frames[:1])
-    picked = frame_at(frames, seq)
-    last = moves_of([picked]) if picked is not None else []
     travel = number(down.get("travel"))
-    if not first or not last or travel is None:
+    if not first or travel is None:
+        return None
+    last = moves_of([frame_at(frames, seq)])
+    if not last:
         return None
     return start + (first[0][1] - last[-1][1]) / max(travel, 1.0)
 
