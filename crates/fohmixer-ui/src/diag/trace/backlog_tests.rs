@@ -131,9 +131,9 @@ fn a_30_s_drag_of_two_faders_at_60_hz_keeps_every_move_at_the_real_cap() {
         link.run_to(t);
         for (f, trail) in trails.iter_mut().enumerate() {
             let c = 600.0 - 0.1 * f64::from(i);
-            trail.moved(pointers[f], t - 6.3, c);
-            seq += 1;
             let sent = trail.raw(c);
+            trail.moved(pointers[f], t - 6.3, c, sent);
+            seq += 1;
             let (record, essential) = trail
                 .take(t, KEYS[f], sent, Some(seq))
                 .expect("a frame that sent");

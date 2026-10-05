@@ -21,6 +21,11 @@
 //!   `from` plus the finger's travel since the down, before the touch shaping),
 //!   `s` (the position the frame sends) and `q` (the sequence of its set, the
 //!   hub's `set` record). A release that sends the last move adds a last one.
+//!   The touch's first `mv` also has `a` (#43 PR F): the position the touch's
+//!   first pointer move left the control at, read from the control right
+//!   after that move. A touch's first move only anchors the drag, so `a`
+//!   equals `from`; the forensics timeline reports a touch whose `a` differs
+//!   as one whose first move moved the control.
 //!
 //! Numbers are rounded to keep the records small: ms and px to 0.1,
 //! positions to 5 decimals; a record's own `t` is kept whole (the forensics
@@ -110,6 +115,8 @@ pub struct Trail {
     moves: Vec<(f64, f64)>,
     /// Frames taken in this touch.
     frames: u32,
+    /// Where the touch's first pointer move left the control (a position).
+    anchor: Option<f64>,
 }
 
 impl Trail {
@@ -124,13 +131,16 @@ impl Trail {
             from,
             moves: Vec::new(),
             frames: 0,
+            anchor: None,
         };
     }
 
-    /// `pointer` moved to `c` at `at` (another pointer's move is not this
-    /// touch's).
-    pub fn moved(&mut self, pointer: i32, at: f64, c: f64) {
+    /// `pointer` moved to `c` at `at`, which left the control at position
+    /// `pos` (another pointer's move is not this touch's). The touch's first
+    /// move's `pos` goes into its first record as `a` (#43 PR F).
+    pub fn moved(&mut self, pointer: i32, at: f64, c: f64, pos: f64) {
         if self.pointer == Some(pointer) {
+            self.anchor.get_or_insert(pos);
             self.moves.push((at, c));
         }
     }
@@ -142,9 +152,10 @@ impl Trail {
     }
 
     /// The `mv` record of the frame at `t` that sent position `sent` as the
-    /// set `seq`, for the control's `key`: the moves since the last one, and
-    /// whether it is one of the touch's first [`FIRST_MOVES`] (essential).
-    /// None without a move (a glide, a frame of another finger).
+    /// set `seq`, for the control's `key`: the moves since the last one (the
+    /// touch's first record also where its first move left the control,
+    /// `a`), and whether it is one of the touch's first [`FIRST_MOVES`]
+    /// (essential). None without a move (a glide, a frame of another finger).
     pub fn take(
         &mut self,
         t: f64,
@@ -160,7 +171,7 @@ impl Trail {
             .map(|(at, c)| [round1(at - t), round1(c)])
             .collect();
         self.frames += 1;
-        let record = json!({
+        let mut record = json!({
             "ev": "mv",
             "t": t,
             "key": key,
@@ -170,6 +181,11 @@ impl Trail {
             "s": round5(sent),
             "q": seq,
         });
+        if self.frames == 1
+            && let Some(a) = self.anchor
+        {
+            record["a"] = json!(round5(a));
+        }
         Some((record, self.frames <= FIRST_MOVES))
     }
 

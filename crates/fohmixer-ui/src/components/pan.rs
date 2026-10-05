@@ -102,10 +102,14 @@ pub fn PanView(state: RwSignal<Slot>, spec: SubSpec) -> impl IntoView {
     };
     let on_move = move |ev: web_sys::PointerEvent| {
         let (id, x) = (ev.pointer_id(), f64::from(ev.client_x()));
-        let moved = ctl.try_update_value(|c| c.moved(id, x)).unwrap_or(false);
-        if moved {
+        // A move this pan took, with where it left the pan (the touch's
+        // first one only anchors it: the recorder's `a`, #43 PR F).
+        let moved = ctl
+            .try_update_value(|c| c.moved(id, x).then(|| c.pos()))
+            .flatten();
+        if let Some(pos) = moved {
             let at = dom::event_epoch(&ev);
-            let _ = trail.try_update_value(|t| t.moved(id, at, x));
+            let _ = trail.try_update_value(|t| t.moved(id, at, x, pos));
         }
     };
     // The end of a touch (`behave::touch_end`): the unsent move as a final

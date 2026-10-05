@@ -190,3 +190,14 @@ fn a_fader_that_keeps_touchoscs_first_move_takes_it_whole() {
     assert!(f.moved(1, 490.0, 83.0));
     assert_eq!(f.frame(90.0, Some(0.5)).send, None);
 }
+
+#[test]
+fn the_fader_says_where_a_move_left_it() {
+    // The flight recorder's `a` (#43 PR F): read right after the move.
+    let mut f = touched(IPAD, 0.5);
+    assert_eq!(f.pos(), 0.5, "the touch's start");
+    assert!(f.moved(1, 490.0, 83.0));
+    assert_eq!(f.pos(), 0.5, "the anchor moved nothing");
+    assert!(f.moved(1, 488.0, 100.0));
+    assert_close(f.pos(), 0.5 + 0.9 * 2.0 / IPAD);
+}

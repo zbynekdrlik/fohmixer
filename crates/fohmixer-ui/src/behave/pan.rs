@@ -113,6 +113,12 @@ impl PanCtl {
         self.pointer == Some(id)
     }
 
+    /// The position the pan holds now (the flight recorder's `a` after a
+    /// touch's first move, #43 PR F).
+    pub fn pos(&self) -> f64 {
+        self.pos
+    }
+
     /// Pointer `id` moved to `x`: whether it drives this pan. The touch's
     /// first move only anchors the drag there (#43 PR F, as a fader's: the
     /// iPad's first event of a touch comes late and several px from the
@@ -393,6 +399,18 @@ mod tests {
         assert_eq!(p.frame(520.0, Some(0.25)).pos, Some(0.625));
         assert!(p.moved(2, 84.0));
         assert_eq!(p.frame(540.0, Some(0.25)).send, Some(0.0));
+    }
+
+    #[test]
+    fn the_pan_says_where_a_move_left_it() {
+        // The flight recorder's `a` (#43 PR F): read right after the move.
+        let mut p = PanCtl::default();
+        assert!(p.down(1, 100.0, 64.0, 0.0, -0.5));
+        assert_eq!(p.pos(), 0.25, "the touch's start");
+        assert!(p.moved(1, 106.0));
+        assert_eq!(p.pos(), 0.25, "the anchor moved nothing");
+        assert!(p.moved(1, 122.0));
+        assert_eq!(p.pos(), 0.5);
     }
 
     #[test]

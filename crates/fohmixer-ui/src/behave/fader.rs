@@ -447,6 +447,13 @@ impl FaderCtl {
         self
     }
 
+    /// The position the fader holds now: the finger's, a glide's, a write's
+    /// or Live's last (the flight recorder's `a` after a touch's first move,
+    /// #43 PR F).
+    pub fn pos(&self) -> f64 {
+        self.pos
+    }
+
     /// Whether the fader shows its own position (touched, gliding, its write
     /// open, or holding after a release) at `now`.
     fn local(&self, now: f64) -> bool {

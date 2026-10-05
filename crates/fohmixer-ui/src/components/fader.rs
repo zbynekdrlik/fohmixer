@@ -241,12 +241,14 @@ pub fn FaderView(targets: Vec<Target>, shaping: bool) -> impl IntoView {
     };
     let on_move = move |ev: web_sys::PointerEvent| {
         let (id, y) = (ev.pointer_id(), f64::from(ev.client_y()));
+        // A move this fader took, with where it left the fader (the touch's
+        // first one only anchors it: the recorder's `a`, #43 PR F).
         let moved = ctl
-            .try_update_value(|c| c.moved(id, y, dom::now()))
-            .unwrap_or(false);
-        if moved {
+            .try_update_value(|c| c.moved(id, y, dom::now()).then(|| c.pos()))
+            .flatten();
+        if let Some(pos) = moved {
             let at = dom::event_epoch(&ev);
-            let _ = trail.try_update_value(|t| t.moved(id, at, y));
+            let _ = trail.try_update_value(|t| t.moved(id, at, y, pos));
         }
     };
     // The end of a touch (`behave::touch_end`): the unsent move as a final
