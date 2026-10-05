@@ -212,6 +212,267 @@ class FirstTouch(ReportCase):
         self.assertEqual(touch_rows(page), [])
 
 
+def first_moves(key, pointer, t0, start, *, slop, steps, anchor, c0=500.0, every=16.0):
+    """The ``mv`` records of a drag whose touch's first pointer move came
+    ``slop`` px up (#43 PR F): the first frame carries that move (20 ms
+    before it) and the next one, and ``a``, the position the first move left
+    the fader at (``anchor``; None: an older page's record, without it).
+    Each step (finger px after the first move, the position sent) is one
+    frame with one move 3 ms before it; ``r`` is the finger's 1:1 position
+    since the down. Returns (records, the page's sends as (t, Live value))."""
+    records, sends = [], []
+    for i, (px, sent) in enumerate(steps):
+        t = t0 + every * i
+        moves = [[-3.0, c0 - slop - px]]
+        if i == 0:
+            moves.insert(0, [-20.0, c0 - slop])
+        record = {
+            "ev": "mv",
+            "t": t,
+            "key": key,
+            "p": pointer,
+            "e": moves,
+            "r": round(start + (slop + px) / 300.0, 5),
+            "s": sent,
+            "q": 1 + i,
+        }
+        if i == 0 and anchor is not None:
+            record["a"] = anchor
+        records.append(record)
+        sends.append((t + 0.5, value_at(sent)))
+    return records, sends
+
+
+class FirstMove(ReportCase):
+    """#43 PR F: a touch's first pointer move only anchors the drag. The
+    page's first ``mv`` of a touch says where that move left the fader
+    (``a``), so the timeline shows whether it moved it."""
+
+    def touch(self, log, *, slop, steps, anchor, start=0.5, held=0):
+        """One touch of Vox 1 (``first_moves``) in a fresh logs folder: a
+        test with several scenarios gives each its own (the log's writes
+        append, and two scenarios' downs are the same event). ``held``: the
+        first ``held`` sets reach the hub together with the next one (a slow
+        link), so the setter writes only that one and Live first applies set
+        ``held + 1``."""
+        self.setUp()
+        log.pings(7, BASE, BASE + 4000)
+        p0 = BASE + 1000 - OFFSET
+        records, sends = first_moves(VOX, 4, p0 + 100, start, slop=slop, steps=steps, anchor=anchor)
+        together = sends[held][0] + OFFSET + 3.0
+
+        def arrive(sent):
+            return max(sent + 3.0, together)
+
+        log.drag(VOX, 7, sends, arrive=arrive)
+        first_set(log, VOX)["live_before"] = value_at(start)
+        events = [
+            down(p0, VOX, 4, start=start, live=start),
+            *records,
+            lift(records[-1]["t"] + 10, VOX, 4),
+        ]
+        log.trace(BASE + 3000, 7, events)
+
+    def test_a_first_move_that_only_anchored_is_reported_anchored(self):
+        # 6 px up first (left the fader at 0.5), then 2 px a frame.
+        log = Log()
+        steps = [(2 * (i + 1), round(0.5 + 0.9 * 2 * (i + 1) / 300.0, 5)) for i in range(10)]
+        self.touch(log, slop=6.0, steps=steps, anchor=0.5)
+        summary, page, _ = self.report(log, BASE, BASE + 5000)
+        self.assertEqual(summary["touches"], "1")
+        self.assertEqual(
+            (summary["first_moves_anchored"], summary["first_moves_applied"]), ("1", "0")
+        )
+        self.assertEqual(summary["first_touch_jumps"], "0")
+        (row,) = touch_rows(page)
+        self.assertEqual(row["data-first-move"], "anchored")
+
+    def test_a_first_move_the_fader_took_is_reported_applied(self):
+        # The first move left the fader 6 px up (an older build's jump).
+        log = Log()
+        steps = [(2 * (i + 1), round(0.52 + 2 * (i + 1) / 300.0, 5)) for i in range(10)]
+        self.touch(log, slop=6.0, steps=steps, anchor=0.52)
+        summary, page, _ = self.report(log, BASE, BASE + 5000)
+        self.assertEqual(
+            (summary["first_moves_anchored"], summary["first_moves_applied"]), ("0", "1")
+        )
+        (row,) = touch_rows(page)
+        self.assertEqual(row["data-first-move"], "applied")
+
+    def test_a_change_under_the_finger_step_is_still_anchored(self):
+        # `a` is rounded to 5 decimals like `from`; a difference of at most
+        # 1e-4 (RAW_STEP) is no move.
+        for anchor, said in ((0.5001, "anchored"), (0.50011, "applied"), (0.49989, "applied")):
+            log = Log()
+            steps = [(2.0, 0.506)]
+            self.touch(log, slop=6.0, steps=steps, anchor=anchor)
+            summary, page, _ = self.report(log, BASE, BASE + 5000)
+            (row,) = touch_rows(page)
+            self.assertEqual(row["data-first-move"], said, anchor)
+
+    def test_an_older_pages_touch_says_nothing_of_its_first_move(self):
+        log = Log()
+        steps = [(2 * (i + 1), round(0.52 + 2 * (i + 1) / 300.0, 5)) for i in range(10)]
+        self.touch(log, slop=6.0, steps=steps, anchor=None)
+        summary, page, _ = self.report(log, BASE, BASE + 5000)
+        self.assertEqual(
+            (summary["first_moves_anchored"], summary["first_moves_applied"]), ("0", "0")
+        )
+        (row,) = touch_rows(page)
+        self.assertNotIn("data-first-move", row)
+
+    def test_the_finger_before_an_anchored_first_move_is_not_the_faders_jump(self):
+        # The first event 15 px up (anchored), the next 30 px further in the
+        # same frame: Live goes 30 px' worth (2.8 dB). Where the finger alone
+        # would have taken Live counts from the anchor: no first-touch jump.
+        log = Log()
+        self.touch(log, slop=15.0, steps=[(30.0, 0.6)], anchor=0.5)
+        summary, page, _ = self.report(log, BASE, BASE + 5000)
+        self.assertEqual(summary["first_touch_jumps"], "0")
+        (row,) = touch_rows(page)
+        self.assertGreater(float(row["data-jump-db"]), 2.0)
+        self.assertEqual(row["data-off-db"], "0.0")
+        # The finger's 30 px from where the drag started: 0.5 to 0.6.
+        self.assertEqual(row["data-finger-db"], "2.8")
+        # The same frames from an older page (no `a`): the finger counts from
+        # the down, and the 15 px Live never got make it a jump.
+        log = Log()
+        self.touch(log, slop=15.0, steps=[(30.0, 0.6)], anchor=None)
+        summary, page, _ = self.report(log, BASE, BASE + 5000)
+        self.assertEqual(summary["first_touch_jumps"], "1")
+        (row,) = touch_rows(page)
+        self.assertEqual((row["data-first-jump"], row["data-why"]), ("true", "other"))
+
+    def test_a_drag_past_the_top_counts_the_finger_from_the_anchor(self):
+        # Near the top the finger's first event went 15 px up, past the
+        # travel's end (the page's `r`, from the down, is clamped to 1.0).
+        # The drag is relative: the finger then went 3 px further, and the
+        # fader followed it from where the touch started (0.98 to 0.99).
+        log = Log()
+        self.touch(log, slop=15.0, steps=[(3.0, 0.99)], anchor=0.98, start=0.98)
+        frame = next(
+            e for r in log.records if r["ev"] == "trace" for e in r["events"] if e["ev"] == "mv"
+        )
+        frame["r"] = 1.0
+        summary, page, _ = self.report(log, BASE, BASE + 5000)
+        (row,) = touch_rows(page)
+        self.assertEqual(row["data-first-move"], "anchored")
+        # The finger's 3 px are the drag's 0.2 dB; nothing is off.
+        self.assertEqual(row["data-finger-db"], "0.2")
+        self.assertEqual(row["data-off-db"], "0.0")
+
+    def test_a_pull_back_after_an_anchor_past_the_top_is_no_jump(self):
+        # At the top the first event went 15 px up (past the end), then the
+        # finger came 20 px down in the first set's frame and the fader
+        # followed it (1.0 to 0.93333, 1.4 dB). The finger's 1:1 position from
+        # the down moved only 5 px of that (0.3 dB): read from it, the
+        # timeline saw a fader that left the finger behind.
+        log = Log()
+        self.touch(log, slop=15.0, steps=[(-20.0, 0.93333)], anchor=1.0, start=1.0)
+        summary, page, _ = self.report(log, BASE, BASE + 5000)
+        self.assertEqual(summary["first_touch_jumps"], "0")
+        (row,) = touch_rows(page)
+        self.assertEqual(row["data-first-move"], "anchored")
+        self.assertEqual(row["data-finger-db"], "1.4")
+        self.assertEqual(row["data-off-db"], "0.0")
+
+    def test_an_anchored_finger_is_read_at_the_frame_of_the_applied_set(self):
+        # Three frames, 30, 60 and 90 px from the anchor. Sets 1 and 2 reach
+        # the hub together, so Live first applies set 2 (0.7). The finger
+        # counts from the touch's first move to set 2's frame (60 px, 5.3 dB):
+        # not to the first frame (2.8 dB, a jump), nor to the touch's last
+        # move (7.7 dB), nor from the picked frame's own first move (0.0).
+        log = Log()
+        steps = [(30.0, 0.6), (60.0, 0.7), (90.0, 0.8)]
+        self.touch(log, slop=15.0, steps=steps, anchor=0.5, held=1)
+        summary, page, _ = self.report(log, BASE, BASE + 5000)
+        self.assertEqual(summary["first_touch_jumps"], "0")
+        (row,) = touch_rows(page)
+        self.assertEqual((row["data-finger-db"], row["data-off-db"]), ("5.3", "0.0"))
+
+    def test_an_anchored_finger_is_not_cut_at_the_end(self):
+        # The touch started from the fader's own 0.98 while Live held 0.95;
+        # the first event anchored, then the finger went 15 px (0.05) and the
+        # fader to the top. Where the finger alone would have taken Live:
+        # 0.95 + 0.05, the top, so nothing is off. Cut at the end (0.98 +
+        # 0.02), the finger would read short of it (0.6 dB off).
+        log = Log()
+        self.touch(log, slop=15.0, steps=[(15.0, 1.0)], anchor=0.98, start=0.98)
+        first_set(log, VOX)["live_before"] = value_at(0.95)
+        frame = next(
+            e for r in log.records if r["ev"] == "trace" for e in r["events"] if e["ev"] == "mv"
+        )
+        frame["r"] = 1.0
+        summary, page, _ = self.report(log, BASE, BASE + 5000)
+        (row,) = touch_rows(page)
+        self.assertEqual(row["data-first-move"], "anchored")
+        self.assertEqual(row["data-off-db"], "0.0")
+
+    def test_an_anchored_touch_without_its_coordinates_reads_no_finger(self):
+        # A malformed record: the anchored first frame without its moves
+        # (`e`), or a down without its travel. Its `r` counts from the down,
+        # through the first move the drag never applied, so the finger is
+        # unknown: n/a and no first-touch jump (read from `r`, finger 4.0 dB,
+        # off 1.3 dB: a jump).
+        for broken in ("e", "travel"):
+            log = Log()
+            self.touch(log, slop=15.0, steps=[(30.0, 0.6)], anchor=0.5)
+            kind = "mv" if broken == "e" else "touch"
+            for r in log.records:
+                for e in r["events"] if r["ev"] == "trace" else []:
+                    if e["ev"] == kind:
+                        e.pop(broken, None)
+            summary, page, _ = self.report(log, BASE, BASE + 5000)
+            self.assertEqual(summary["first_touch_jumps"], "0", broken)
+            (row,) = touch_rows(page)
+            self.assertEqual(row["data-first-move"], "anchored", broken)
+            self.assertEqual((row["data-finger-db"], row["data-off-db"]), ("n/a", "n/a"), broken)
+
+    def test_an_anchored_first_frame_without_its_moves_reads_no_finger(self):
+        # The first frame (the one that carries `a`) lost its moves, the
+        # later frame of the applied set kept its own: the touch's first move
+        # is unknown, so the finger is too. Counted from that later frame's
+        # own first move it read 0.0 dB and a jump.
+        log = Log()
+        steps = [(30.0, 0.6), (60.0, 0.7), (90.0, 0.8)]
+        self.touch(log, slop=15.0, steps=steps, anchor=0.5, held=1)
+        mv = [e for r in log.records if r["ev"] == "trace" for e in r["events"] if e["ev"] == "mv"]
+        del mv[0]["e"]
+        summary, page, _ = self.report(log, BASE, BASE + 5000)
+        self.assertEqual(summary["first_touch_jumps"], "0")
+        (row,) = touch_rows(page)
+        self.assertEqual((row["data-finger-db"], row["data-off-db"]), ("n/a", "n/a"))
+
+    def test_an_anchored_picked_frame_without_its_moves_reads_no_finger(self):
+        # The mirror: the first frame kept its moves, the applied set's later
+        # frame lost its own. Where the finger stood at that set is unknown.
+        log = Log()
+        steps = [(30.0, 0.6), (60.0, 0.7), (90.0, 0.8)]
+        self.touch(log, slop=15.0, steps=steps, anchor=0.5, held=1)
+        mv = [e for r in log.records if r["ev"] == "trace" for e in r["events"] if e["ev"] == "mv"]
+        del mv[1]["e"]
+        summary, page, _ = self.report(log, BASE, BASE + 5000)
+        self.assertEqual(summary["first_touch_jumps"], "0")
+        (row,) = touch_rows(page)
+        self.assertEqual((row["data-finger-db"], row["data-off-db"]), ("n/a", "n/a"))
+
+    def test_an_anchored_finger_on_a_zero_travel_counts_one_px_as_the_page(self):
+        # A down whose travel is 0 (a fader with no height): the page counts
+        # at least 1 px, so a 0.2 px move from the anchor is 0.2 of the
+        # travel (0.5 to 0.7, 5.3 dB), and the fader followed it. A floor of
+        # 2 px or 0.5 px would read a jump.
+        log = Log()
+        self.touch(log, slop=15.0, steps=[(0.2, 0.7)], anchor=0.5)
+        for r in log.records:
+            for e in r["events"] if r["ev"] == "trace" else []:
+                if e["ev"] == "touch" and "travel" in e:
+                    e["travel"] = 0.0
+        summary, page, _ = self.report(log, BASE, BASE + 5000)
+        self.assertEqual(summary["first_touch_jumps"], "0")
+        (row,) = touch_rows(page)
+        self.assertEqual((row["data-finger-db"], row["data-off-db"]), ("5.3", "0.0"))
+
+
 class Stutter(ReportCase):
     def drag(self, log, steps, gaps=None):
         """A drag of Vox 1 from 0.5: ``steps`` as in ``frames``, a frame every

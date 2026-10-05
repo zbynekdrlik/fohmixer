@@ -73,6 +73,16 @@ impl Law {
         }
     }
 
+    /// Whether a touch's first pointer move only anchors the drag (#43 PR
+    /// F): a strip's volume fader's does; the imported multi-target
+    /// parameter faders keep TouchOSC's first move (the owner's call on #43).
+    fn anchors(self) -> bool {
+        match self {
+            Self::Volume => true,
+            Self::Linear(_) => false,
+        }
+    }
+
     /// Whether the law can map (reactive: a parameter's range arrived).
     fn ready(self) -> bool {
         match self {
@@ -148,7 +158,7 @@ pub fn FaderView(targets: Vec<Target>, shaping: bool) -> impl IntoView {
     let keys = StoredValue::new(keys);
     let shown_key = StoredValue::new(shown_key);
     let targets = StoredValue::new(targets);
-    let ctl = StoredValue::new(FaderCtl::new(shaping, law.glide_to()));
+    let ctl = StoredValue::new(FaderCtl::new(shaping, law.glide_to()).anchoring(law.anchors()));
     // The finger's moves between frames, for the flight recorder (#43 PR D).
     let trail = StoredValue::new(Trail::default());
     let failed = RwSignal::new(false);
@@ -231,12 +241,14 @@ pub fn FaderView(targets: Vec<Target>, shaping: bool) -> impl IntoView {
     };
     let on_move = move |ev: web_sys::PointerEvent| {
         let (id, y) = (ev.pointer_id(), f64::from(ev.client_y()));
+        // A move this fader took, with where it left the fader (the touch's
+        // first one only anchors it: the recorder's `a`, #43 PR F).
         let moved = ctl
-            .try_update_value(|c| c.moved(id, y, dom::now()))
-            .unwrap_or(false);
-        if moved {
+            .try_update_value(|c| c.moved(id, y, dom::now()).then(|| c.pos()))
+            .flatten();
+        if let Some(pos) = moved {
             let at = dom::event_epoch(&ev);
-            let _ = trail.try_update_value(|t| t.moved(id, at, y));
+            let _ = trail.try_update_value(|t| t.moved(id, at, y, pos));
         }
     };
     // The end of a touch (`behave::touch_end`): the unsent move as a final
@@ -362,6 +374,10 @@ mod tests {
         assert_eq!(law.pos(0.85), Some(curve::to_pos(0.85)));
         assert_eq!(law.value(0.5), Some(curve::to_live(0.5)));
         assert_eq!(law.glide_to(), Some(curve::to_pos(UNITY)));
+        assert!(
+            law.anchors(),
+            "a touch's first move only anchors (#43 PR F)"
+        );
         assert!(law.ready());
         assert!(law.can_map());
     }
@@ -375,6 +391,7 @@ mod tests {
         assert!(!law.ready());
         assert!(!law.can_map());
         assert_eq!(law.glide_to(), None, "no double tap on a parameter fader");
+        assert!(!law.anchors(), "TouchOSC's first move (#43 PR F)");
         let _ = range.try_set(Some((-15.0, 15.0)));
         assert!(law.ready());
         assert!(law.can_map());

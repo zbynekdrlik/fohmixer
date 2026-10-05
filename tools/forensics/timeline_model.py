@@ -839,6 +839,8 @@ def summary(timeline):
         ("jumps", str(len(timeline.jumps))),
         ("touches", str(len(touches))),
         ("first_touch_jumps", str(sum(t.first_jump for t in touches))),
+        ("first_moves_anchored", str(sum(t.first_move == "anchored" for t in touches))),
+        ("first_moves_applied", str(sum(t.first_move == "applied" for t in touches))),
         ("first_move_p50_ms", ms_text(percentile(first_moves, 0.50))),
         ("first_move_max_ms", ms_text(max(first_moves, default=None))),
         ("first_send_p50_ms", ms_text(percentile(first_sends, 0.50))),

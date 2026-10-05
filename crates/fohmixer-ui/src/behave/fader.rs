@@ -7,6 +7,12 @@
 //! the fader's current value, and the script then reshapes that value. The
 //! reference traces in the tests were produced by running that script's own
 //! `applyFirstMovementScaling` under Lua 5.4.
+//!
+//! A touch's start (#43 PR F): the iPad's first pointer event of a touch
+//! comes late and several px away from the down (median 83 ms and 6 px, up
+//! to 15 px, on the FOH iPad), so it only anchors the drag; and the
+//! shaping's size thresholds are TouchOSC's finger distances on that iPad
+//! ([`REFERENCE_TRAVEL`]), not fractions of our shorter travel.
 
 use super::{Motion, Start};
 
@@ -24,8 +30,14 @@ pub const HOLD_PLAIN_MS: f64 = 100.0;
 
 /// The smallest first step of a touch, in dB.
 const MIN_DB_STEP: f64 = 0.1;
-/// A move larger than this (position units) bypasses all shaping.
+/// A move larger than this (a fraction of [`REFERENCE_TRAVEL`]) bypasses
+/// all shaping.
 const EMERGENCY: f64 = 0.03;
+/// The imported TouchOSC strips' travel on the FOH iPad, in px (710 of the
+/// layout's 1640 canvas units; #43 PR F). The shaping's size thresholds are
+/// fractions of it, so they are the same finger distance on a fader of any
+/// travel: a shorter fader does not bypass the fine first step sooner.
+pub const REFERENCE_TRAVEL: f64 = 355.0;
 /// Moves after a forced first step, and the first one's scale.
 const REACTION_MOVES: u32 = 3;
 const REACTION_SCALE: f64 = 0.3;
@@ -113,7 +125,16 @@ pub fn audio_for_db_change(start: f64, db_change: f64) -> f64 {
     (low + high) / 2.0
 }
 
-/// Whether a move (position units) is large enough to bypass the shaping.
+/// The size of a move of `delta` positions on a fader `travel` px long, as a
+/// fraction of [`REFERENCE_TRAVEL`]: the same finger distance as on
+/// TouchOSC's strip (#43 PR F). The ratio first, so a travel of exactly
+/// [`REFERENCE_TRAVEL`] leaves the size as it is.
+fn finger_size(delta: f64, travel: f64) -> f64 {
+    delta.abs() * (travel / REFERENCE_TRAVEL)
+}
+
+/// Whether a move (a fraction of [`REFERENCE_TRAVEL`]) is large enough to
+/// bypass the shaping.
 fn is_emergency(size: f64) -> bool {
     size > EMERGENCY
 }
@@ -136,12 +157,15 @@ fn writes_back(diff: f64) -> bool {
 
 /// The TouchOSC touch shaping of one touch (spec F9, X3): a 0.1 dB first
 /// step, reaction compensation after it, a gradual 0.9 → 1.0 speed over the
-/// first moves (× 0.85 in the linear range), and a bypass for large moves.
-/// It holds the fader's value as TouchOSC does (`x`) and the script's own
-/// last position.
+/// first moves (× 0.85 in the linear range), and a bypass for large moves
+/// (measured as the finger distance on TouchOSC's strip, #43 PR F). It holds
+/// the fader's value as TouchOSC does (`x`) and the script's own last
+/// position.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Shaper {
     enabled: bool,
+    /// The fader's travel (px): [`REFERENCE_TRAVEL`] until told.
+    travel: f64,
     x: f64,
     last: f64,
     start_audio: f64,
@@ -156,6 +180,7 @@ impl Shaper {
     pub fn new(enabled: bool) -> Self {
         Self {
             enabled,
+            travel: REFERENCE_TRAVEL,
             x: 0.0,
             last: 0.0,
             start_audio: 0.0,
@@ -165,6 +190,12 @@ impl Shaper {
             emergency: false,
             processed: 0,
         }
+    }
+
+    /// The fader's travel in px (at least 1, `FaderCtl`'s): the size
+    /// thresholds are the finger distances of TouchOSC's strip on it.
+    pub fn set_travel(&mut self, travel: f64) {
+        self.travel = travel;
     }
 
     /// A touch starts at position `p0`.
@@ -208,7 +239,7 @@ impl Shaper {
     /// `applyFirstMovementScaling` for one move to `raw`.
     fn shape(&mut self, raw: f64) -> f64 {
         let delta = raw - self.last;
-        let size = delta.abs();
+        let size = finger_size(delta, self.travel);
         if size == 0.0 {
             return raw;
         }
@@ -357,7 +388,9 @@ pub fn hold_ms(shaping: bool) -> f64 {
 /// other faders), the shaping, the double tap and its glide, the
 /// post-release hold (spec I4: a touched fader shows the finger, then snaps
 /// to Live's value) and, since #43 (L3), its write's intent: while the store
-/// holds it open the fader shows its own position, never Live's.
+/// holds it open the fader shows its own position, never Live's. A touch's
+/// first pointer move only anchors the drag (#43 PR F), unless the fader
+/// keeps TouchOSC's first move ([`FaderCtl::anchoring`]).
 #[derive(Debug, Clone, PartialEq)]
 pub struct FaderCtl {
     shaper: Shaper,
@@ -375,6 +408,14 @@ pub struct FaderCtl {
     open: bool,
     /// A glide ended since the store last heard of it.
     ended: bool,
+    /// A touch's first pointer move only anchors the drag (#43 PR F).
+    anchors: bool,
+    /// The touch's next pointer move is its first.
+    first_move: bool,
+    /// The finger's travel the touch's anchored first move did not apply
+    /// (positions), cut at the travel's ends as that move would have been:
+    /// the tap check still counts it.
+    slip: f64,
 }
 
 impl FaderCtl {
@@ -395,7 +436,27 @@ impl FaderCtl {
             hold_until: f64::NEG_INFINITY,
             open: false,
             ended: false,
+            anchors: true,
+            first_move: false,
+            slip: 0.0,
         }
+    }
+
+    /// Whether a touch's first pointer move only anchors the drag (#43 PR F,
+    /// on by default): the iPad's first event of a touch comes late and
+    /// several px from the down, and taken as a move it jumped the cap. The
+    /// imported multi-target parameter faders keep TouchOSC's first move
+    /// (the owner's call on #43).
+    pub fn anchoring(mut self, on: bool) -> Self {
+        self.anchors = on;
+        self
+    }
+
+    /// The position the fader holds now: the finger's, a glide's, a write's
+    /// or Live's last (the flight recorder's `a` after a touch's first move,
+    /// #43 PR F).
+    pub fn pos(&self) -> f64 {
+        self.pos
     }
 
     /// Whether the fader shows its own position (touched, gliding, its write
@@ -457,6 +518,9 @@ impl FaderCtl {
         self.pointer = Some(id);
         self.last_y = y;
         self.travel = travel.max(1.0);
+        self.first_move = self.anchors;
+        self.slip = 0.0;
+        self.shaper.set_travel(self.travel);
         self.shaper.start(self.pos);
         self.taps.down(self.pos, now);
         Some(Start {
@@ -472,24 +536,42 @@ impl FaderCtl {
         self.pointer == Some(id)
     }
 
-    /// Pointer `id` moved to `y`: whether it moved this fader.
+    /// Pointer `id` moved to `y`: whether it drives this fader. The touch's
+    /// first move only anchors the drag there (#43 PR F): nothing moves and
+    /// nothing is left to send.
     pub fn moved(&mut self, id: i32, y: f64, now: f64) -> bool {
         if self.pointer != Some(id) {
             return false;
         }
         let delta = (self.last_y - y) / self.travel;
         self.last_y = y;
-        self.pos = self.shaper.move_by(delta);
-        self.taps.moved(self.pos, now);
-        self.unsent = true;
+        if std::mem::take(&mut self.first_move) {
+            // Cut where the move would have stopped: a slide past an end
+            // that the next moves come back from is no tap.
+            self.slip = (self.pos + delta).clamp(0.0, 1.0) - self.pos;
+        } else {
+            self.pos = self.shaper.move_by(delta);
+            self.unsent = true;
+        }
+        self.taps.moved(self.tap_pos(), now);
         true
+    }
+
+    /// Where the tap check sees the fader: its position plus the slide the
+    /// touch's anchored first move did not apply (`slip`, cut at the ends
+    /// when it came), within the travel as TouchOSC's value is. The
+    /// finger's travel counts against a tap, as the fader's own move did
+    /// before #43 PR F, so a quick nudge whose one event slid the finger is
+    /// no tap (two of them would glide the fader to 0 dB).
+    fn tap_pos(&self) -> f64 {
+        (self.pos + self.slip).clamp(0.0, 1.0)
     }
 
     /// Pointer `id` lifted: the position still to send, if any. A double
     /// tap starts the glide.
     pub fn up(&mut self, id: i32, now: f64) -> Option<f64> {
         let last = self.release(id, now)?;
-        if self.taps.up(self.pos, now)
+        if self.taps.up(self.tap_pos(), now)
             && let Some(to) = self.glide_to
         {
             self.glide = Some(Glide::new(self.pos, to, now));
@@ -575,3 +657,6 @@ impl FaderCtl {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod touch_start_tests;

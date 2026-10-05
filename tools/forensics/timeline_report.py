@@ -448,7 +448,10 @@ TOUCH_LEGEND = (
     "where the finger alone would have taken Live from Live before. A "
     "first-touch jump: jump and off both over 1 dB. Why: stale (the page's value "
     "of Live differed from the hub's), local (the fader started from its own "
-    "position), other. Down to first move and to "
+    "position), other. First move (PR F): anchored when the touch's first "
+    "pointer move left the fader where the touch started (the drag counts "
+    "from it, and so do finger and off), applied when it moved it, n/a for an "
+    "older page or a touch that sent nothing. Down to first move and to "
     "first send on the page's clock. Move gaps: two moves over 50 ms apart while "
     "the finger went on over 3 px; held: 3 or more frames in a row sending the "
     "value of the frame before while the finger moved. No data: spans whose "
@@ -486,6 +489,7 @@ def _touches_table(t):
             "finger",
             "off",
             "first-touch jump",
+            "first move",
             "down to first move",
             "down to first send",
             "move gaps",
@@ -512,6 +516,7 @@ def _touches_table(t):
             f"{_db_or_na(touch.finger_db)} dB",
             f"{_db_or_na(touch.off_db)} dB",
             f"yes ({touch.why})" if touch.first_jump else "no",
+            touch.first_move or "n/a",
             f"{ms_text(touch.first_move_ms)} ms",
             f"{ms_text(touch.first_send_ms)} ms",
             f"{len(touch.move_gaps)} (longest {ms_text(worst)} ms)",
@@ -527,6 +532,7 @@ def _touches_table(t):
                 data_key_hash=key_hash(touch.key),
                 data_first_jump="true" if touch.first_jump else "false",
                 data_why=touch.why,
+                data_first_move=touch.first_move,
                 data_jump_db=_db_or_na(touch.jump_db),
                 data_finger_db=_db_or_na(touch.finger_db),
                 data_off_db=_db_or_na(touch.off_db),

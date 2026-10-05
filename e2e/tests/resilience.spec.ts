@@ -76,10 +76,11 @@ async function dragUp(page: Page, fader: Locator, steps: number, hold = false): 
 /**
  * A finger on `control` (dispatched pointer events, id 51) moved up by `dy`
  * px and, unless `hold`, lifted: it can stay down while the real mouse does
- * something else.
+ * something else. Its first move, at the down, only anchors the drag (#43
+ * PR F).
  */
 async function touchUp(control: Locator, dy: number, hold = false) {
-  const steps: PointerStep[] = [{ type: "pointerdown" }, { type: "pointermove", dy }];
+  const steps: PointerStep[] = [{ type: "pointerdown" }, { type: "pointermove", dy: 0 }, { type: "pointermove", dy }];
   if (!hold) steps.push({ type: "pointerup", dy });
   await dispatchPointer(control, steps, 51);
 }

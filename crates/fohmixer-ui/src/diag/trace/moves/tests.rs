@@ -67,9 +67,9 @@ fn a_frame_takes_the_moves_since_the_last_one_with_the_raw_and_sent_position() {
     let mut trail = Trail::default();
     trail.start(7, Axis::Up, press(1_000.0, 500.0), 0.5);
     assert_eq!(trail.take(1_010.0, KEY, 0.5, Some(1)), None, "no move yet");
-    trail.moved(7, 1_012.0, 497.0);
-    trail.moved(8, 1_013.0, 100.0);
-    trail.moved(7, 1_020.0, 494.0);
+    trail.moved(7, 1_012.0, 497.0, 0.5);
+    trail.moved(8, 1_013.0, 100.0, 0.9);
+    trail.moved(7, 1_020.0, 494.0, 0.509);
     let (record, first) = trail
         .take(1_024.0, KEY, 0.519_8, Some(12))
         .expect("a frame");
@@ -84,13 +84,15 @@ fn a_frame_takes_the_moves_since_the_last_one_with_the_raw_and_sent_position() {
             "r": 0.52,
             "s": 0.5198,
             "q": 12,
+            "a": 0.5,
         }),
         "another pointer's move is not this touch's"
     );
     assert!(first);
     assert_eq!(trail.take(1_040.0, KEY, 0.52, Some(13)), None, "taken");
-    trail.moved(7, 1_041.0, 464.0);
+    trail.moved(7, 1_041.0, 464.0, 0.6);
     let (record, _) = trail.take(1_042.06, KEY, 0.6, None).expect("a frame");
+    assert_eq!(record.get("a"), None, "only the touch's first record");
     assert_eq!(record["r"], json!(0.62), "from 0.5, 36 px up of 300");
     assert_eq!(record["q"], Value::Null, "no set");
     assert_eq!(
@@ -118,7 +120,7 @@ fn a_touchs_first_eight_frames_are_essential() {
     trail.start(3, Axis::Up, press(0.0, 500.0), 0.5);
     let mut firsts = Vec::new();
     for i in 1..=10 {
-        trail.moved(3, f64::from(i), 500.0 - f64::from(i));
+        trail.moved(3, f64::from(i), 500.0 - f64::from(i), 0.5);
         firsts.push(trail.take(f64::from(i), KEY, 0.5, None).expect("a frame").1);
     }
     assert_eq!(
@@ -127,7 +129,7 @@ fn a_touchs_first_eight_frames_are_essential() {
     );
     // A new touch counts again.
     trail.start(3, Axis::Up, press(20.0, 500.0), 0.5);
-    trail.moved(3, 21.0, 499.0);
+    trail.moved(3, 21.0, 499.0, 0.5);
     assert!(trail.take(21.0, KEY, 0.5, None).expect("a frame").1);
 }
 
@@ -135,15 +137,40 @@ fn a_touchs_first_eight_frames_are_essential() {
 fn a_touchs_end_drops_its_moves_another_pointers_end_does_not() {
     let mut trail = Trail::default();
     trail.start(3, Axis::Up, press(0.0, 500.0), 0.5);
-    trail.moved(3, 1.0, 499.0);
+    trail.moved(3, 1.0, 499.0, 0.5);
     trail.end(4);
     assert!(
         trail.take(2.0, KEY, 0.5, None).is_some(),
         "another finger's lift"
     );
-    trail.moved(3, 3.0, 498.0);
+    trail.moved(3, 3.0, 498.0, 0.5);
     trail.end(3);
     assert_eq!(trail.take(4.0, KEY, 0.5, None), None);
-    trail.moved(3, 5.0, 497.0);
+    trail.moved(3, 5.0, 497.0, 0.5);
     assert_eq!(trail.take(6.0, KEY, 0.5, None), None, "no finger drives it");
+}
+
+#[test]
+fn a_touchs_first_record_says_where_its_first_move_left_the_control() {
+    // #43 PR F: the first move only anchors the drag, so `a` is the touch's
+    // start; a build whose first move moved the control shows it there.
+    let mut trail = Trail::default();
+    trail.start(7, Axis::Up, press(1_000.0, 500.0), 0.512_345_6);
+    trail.moved(8, 1_005.0, 300.0, 0.9);
+    trail.moved(7, 1_083.0, 490.0, 0.512_345_6);
+    trail.moved(7, 1_090.0, 488.0, 0.52);
+    let (record, _) = trail.take(1_095.0, KEY, 0.52, Some(1)).expect("a frame");
+    assert_eq!(
+        record["a"],
+        json!(0.51235),
+        "the first move's, not another pointer's or a later one's"
+    );
+    trail.moved(7, 1_100.0, 480.0, 0.55);
+    let (record, _) = trail.take(1_110.0, KEY, 0.55, Some(2)).expect("a frame");
+    assert_eq!(record.get("a"), None);
+    // A new touch says it again: its own first move.
+    trail.start(7, Axis::Up, press(2_000.0, 500.0), 0.3);
+    trail.moved(7, 2_050.0, 494.0, 0.32);
+    let (record, _) = trail.take(2_060.0, KEY, 0.32, Some(3)).expect("a frame");
+    assert_eq!(record["a"], json!(0.32));
 }
