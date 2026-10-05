@@ -575,3 +575,6 @@ impl FaderCtl {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod touch_start_tests;

@@ -336,6 +336,51 @@ mod tests {
     }
 
     #[test]
+    fn a_touchs_first_move_only_anchors_the_pan() {
+        // #43 PR F: the iPad's first pointer event of a touch comes late and
+        // several px away from the down; it moves nothing and sends nothing,
+        // and the drag goes on from it.
+        let mut p = PanCtl::default();
+        assert!(p.down(1, 100.0, 64.0, 0.0, 0.0));
+        assert!(p.moved(1, 106.0));
+        assert_eq!(
+            p.frame(80.0, Some(0.0)),
+            Motion {
+                pos: Some(0.5),
+                send: None
+            },
+            "no jump on the first move's frame"
+        );
+        assert!(p.moved(1, 114.0));
+        assert_eq!(
+            p.frame(100.0, Some(0.0)),
+            Motion {
+                pos: Some(0.625),
+                send: Some(0.25)
+            },
+            "8 px of 64 from the anchor"
+        );
+        // Another pointer's move is not the touch's first; each touch anchors
+        // its own first move.
+        assert_eq!(p.up(1, 120.0), None);
+        assert!(p.down(2, 100.0, 64.0, 500.0, 0.25));
+        assert!(!p.moved(3, 140.0));
+        assert!(p.moved(2, 92.0));
+        assert_eq!(p.frame(520.0, Some(0.25)).pos, Some(0.625));
+        assert!(p.moved(2, 84.0));
+        assert_eq!(p.frame(540.0, Some(0.25)).send, Some(0.0));
+    }
+
+    #[test]
+    fn a_pan_touch_whose_finger_only_anchored_sends_nothing() {
+        let mut p = PanCtl::default();
+        assert!(p.down(1, 100.0, 64.0, 0.0, 0.0));
+        assert!(p.moved(1, 94.0));
+        assert_eq!(p.up(1, 50.0), None, "nothing unsent");
+        assert_eq!(p.frame(60.0, Some(0.0)).pos, Some(0.5));
+    }
+
+    #[test]
     fn a_zero_width_counts_as_one_pixel() {
         let mut p = PanCtl::default();
         p.down(1, 0.0, 0.0, 0.0, -1.0);

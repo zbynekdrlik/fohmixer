@@ -418,6 +418,8 @@ class Stall(ReportCase):
                 "jumps",
                 "touches",
                 "first_touch_jumps",
+                "first_moves_anchored",
+                "first_moves_applied",
                 "first_move_p50_ms",
                 "first_move_max_ms",
                 "first_send_p50_ms",

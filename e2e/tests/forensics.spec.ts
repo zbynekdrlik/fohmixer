@@ -98,6 +98,12 @@ test("a fader dragged through a stall: every hop and the page's record in the ev
     for (const [dt, c] of m.e) expect([typeof dt, typeof c]).toEqual(["number", "number"]);
     expect([typeof m.r, typeof m.s, typeof m.q]).toEqual(["number", "number", "number"]);
   }
+  // The touch's first move only anchored the drag (#43 PR F): the first
+  // frame's record says where that move left the fader (`a`), at the
+  // touch's start; no later record carries it.
+  const ordered = [...moves].sort((a: any, b: any) => a.t - b.t);
+  expect(ordered[0].a, "where the first move left the fader").toBe(down.from);
+  expect(ordered.slice(1).filter((m: any) => "a" in m), "only the touch's first record").toEqual([]);
   // The finger went up 1 px every 20 ms: its moves' coordinates fall.
   const ys = moves.flatMap((m: any) => m.e.map((e: number[]) => e[1]));
   expect(ys[ys.length - 1], "the finger's last coordinate").toBeLessThan(ys[0]);
@@ -151,6 +157,8 @@ test("a fader dragged through a stall: every hop and the page's record in the ev
   // The touch started at Live's value: no first-touch jump.
   expect(report.stdout).toMatch(/^touches=1$/m);
   expect(report.stdout).toMatch(/^first_touch_jumps=0$/m);
+  expect(report.stdout).toMatch(/^first_moves_anchored=1$/m);
+  expect(report.stdout).toMatch(/^first_moves_applied=0$/m);
   expect(report.stdout).toMatch(/^first_move_max_ms=\d/m);
   expect(report.stdout).not.toContain("Hand2");
 });
