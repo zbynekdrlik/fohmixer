@@ -249,6 +249,10 @@ class FirstMove(ReportCase):
     (``a``), so the timeline shows whether it moved it."""
 
     def touch(self, log, *, slop, steps, anchor, start=0.5):
+        """One touch of Vox 1 (``first_moves``) in a fresh logs folder: a
+        test with several scenarios gives each its own (the log's writes
+        append, and two scenarios' downs are the same event)."""
+        self.setUp()
         log.pings(7, BASE, BASE + 4000)
         p0 = BASE + 1000 - OFFSET
         records, sends = first_moves(VOX, 4, p0 + 100, start, slop=slop, steps=steps, anchor=anchor)
