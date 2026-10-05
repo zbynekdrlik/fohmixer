@@ -173,25 +173,27 @@ def first_move_of(frames, start):
     return "applied" if finger_moved(anchor - start) else "anchored"
 
 
-def finger_raw(down, frames, moves, seq, start, how):
+def finger_raw(down, frames, seq, start, how):
     """The 1:1 position the finger alone took the fader to by the frame
     ``frame_at`` picks for set ``seq``, counted from ``start``: that frame's
     ``r`` (the page's, from the down). For an anchored first move (``how``,
     PR F) ``start`` plus the finger's travel from that first move (the first
-    of ``moves``, the touch's moves in time order) to the frame's last move
-    (up the screen, of the down's ``travel``, at least 1 px as the page
-    counts it), unclamped: the drag runs relatively from where the touch
-    started, so the fader follows the finger even where ``r`` (clamped to
-    0..1) is past an end. None without a frame, and for an anchored touch
-    whose coordinates or travel are missing (its ``r`` would count the first
-    move the drag never applied)."""
+    move of the touch's first frame, the one that carries ``a``) to the picked
+    frame's last move (up the screen, of the down's ``travel``, at least 1 px
+    as the page counts it), unclamped: the drag runs relatively from where the
+    touch started, so the fader follows the finger even where ``r`` (clamped
+    to 0..1) is past an end. None without a frame, and for an anchored touch
+    whose first frame or picked frame has no moves, or whose down has no
+    travel (its ``r`` would count the first move the drag never applied)."""
     if how != "anchored":
         return finger_at(frames, seq)
-    last = moves_of([frame_at(frames, seq)]) if frames else []
+    first = moves_of(frames[:1])
+    picked = frame_at(frames, seq)
+    last = moves_of([picked]) if picked is not None else []
     travel = number(down.get("travel"))
-    if not moves or not last or travel is None:
+    if not first or not last or travel is None:
         return None
-    return start + (moves[0][1] - last[-1][1]) / max(travel, 1.0)
+    return start + (first[0][1] - last[-1][1]) / max(travel, 1.0)
 
 
 def moves_of(frames):
@@ -318,7 +320,7 @@ def analyse(down, key, frames, first_set, applied, holes=(), hole_sets=0):
         data.get("local") is True,
         live_before,
         number(value),
-        finger_raw(data, frames, moves, seq, start, how),
+        finger_raw(data, frames, seq, start, how),
     )
     pressed = event_time(data)
     first_move = moves[0][0] - pressed if moves and pressed is not None else None
