@@ -217,9 +217,17 @@ mod tests {
         p
     }
 
+    /// The touch's first pointer move, at the down's own coordinate: it only
+    /// anchors the drag (#43 PR F), so the moves after it are the drag.
+    #[track_caller]
+    fn anchor(p: &mut PanCtl, id: i32, x: f64) {
+        assert!(p.moved(id, x), "pointer {id} drives the pan");
+    }
+
     #[test]
     fn a_drag_moves_the_pan_relative_to_where_it_was() {
         let mut p = touched(0.0);
+        anchor(&mut p, 1, 100.0);
         assert!(p.moved(1, 150.0));
         let frame = p.frame(10.0, Some(0.0));
         assert_eq!(frame.pos, Some(0.75));
@@ -237,6 +245,7 @@ mod tests {
     #[test]
     fn two_releases_within_300_ms_centre_it() {
         let mut p = touched(0.5);
+        anchor(&mut p, 1, 100.0);
         p.moved(1, 120.0);
         assert_eq!(p.up(1, 10.0), Some(to_live(to_pos(0.5) + 0.1)));
         assert!(p.down(1, 100.0, 200.0, 200.0, 0.5));
@@ -267,6 +276,7 @@ mod tests {
             "from Live's panning, as a position"
         );
         assert_eq!(p.press(2, 0.0, 200.0, 11.0, 0.5), None);
+        anchor(&mut p, 1, 100.0);
         assert!(p.moved(1, 125.0));
         assert_eq!(p.up(1, 20.0), Some(to_live(0.875)));
         assert_eq!(
@@ -291,6 +301,7 @@ mod tests {
         assert!(p.down(1, 100.0, 200.0, 70.0, 0.5));
         assert_eq!(p.up(1, 80.0), None, "the cancel forgot the first release");
         assert!(p.down(1, 100.0, 200.0, 90.0, 0.5));
+        anchor(&mut p, 1, 100.0);
         p.moved(1, 110.0);
         assert!(p.cancel(1, 95.0).is_some(), "a cancel sends the last move");
     }
@@ -298,6 +309,7 @@ mod tests {
     #[test]
     fn after_a_release_the_pan_holds_100_ms_then_shows_live() {
         let mut p = touched(0.0);
+        anchor(&mut p, 1, 100.0);
         p.moved(1, 140.0);
         p.frame(5.0, Some(0.0));
         assert_eq!(p.up(1, 10.0), None);
@@ -384,6 +396,7 @@ mod tests {
     fn a_zero_width_counts_as_one_pixel() {
         let mut p = PanCtl::default();
         p.down(1, 0.0, 0.0, 0.0, -1.0);
+        anchor(&mut p, 1, 0.0);
         p.moved(1, 0.25);
         assert_eq!(p.frame(1.0, None).pos, Some(0.25));
     }

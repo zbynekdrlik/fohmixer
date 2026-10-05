@@ -453,6 +453,13 @@ fn touched(live: f64) -> FaderCtl {
     f
 }
 
+/// The touch's first pointer move, at the down's own coordinate: it only
+/// anchors the drag (#43 PR F), so the moves after it are the drag.
+#[track_caller]
+fn anchor(f: &mut FaderCtl, id: i32, y: f64, now: f64) {
+    assert!(f.moved(id, y, now), "pointer {id} drives the fader");
+}
+
 #[test]
 fn a_fader_moves_with_its_finger_and_sends_once_per_frame() {
     let start = to_pos(UNITY);
@@ -465,6 +472,7 @@ fn a_fader_moves_with_its_finger_and_sends_once_per_frame() {
         },
         "nothing moved yet"
     );
+    anchor(&mut f, 1, 500.0, 5.0);
     assert!(f.moved(1, 490.0, 10.0));
     assert!(f.moved(1, 480.0, 12.0));
     let frame = f.frame(16.0, Some(start));
@@ -481,6 +489,7 @@ fn a_touched_fader_shows_the_finger_then_live_after_the_hold() {
     // Spec I4: while touched, Live's echo is not shown.
     let mut f = FaderCtl::new(true, zero_db());
     assert!(f.down(1, 500.0, TRAVEL, 0.0, 0.25));
+    anchor(&mut f, 1, 500.0, 5.0);
     assert!(f.moved(1, 450.0, 10.0));
     let finger = f.frame(16.0, Some(0.1)).pos.unwrap();
     assert_close(finger, 0.75);
@@ -492,6 +501,7 @@ fn a_touched_fader_shows_the_finger_then_live_after_the_hold() {
     );
     assert_eq!(f.frame(1100.0, Some(0.1)).pos, Some(0.1));
     let mut f = touched(0.25);
+    anchor(&mut f, 1, 500.0, 5.0);
     f.moved(1, 450.0, 10.0);
     let finger = f.frame(16.0, Some(0.1)).pos.unwrap();
     assert!(f.up(1, 100.0).is_none());
@@ -502,11 +512,13 @@ fn a_touched_fader_shows_the_finger_then_live_after_the_hold() {
 #[test]
 fn the_release_sends_what_no_frame_sent() {
     let mut f = touched(0.5);
+    anchor(&mut f, 1, 500.0, 5.0);
     f.moved(1, 480.0, 10.0);
     let sent = f.up(1, 20.0).expect("an unsent move");
     assert_close(sent, 0.7);
     assert_eq!(f.frame(30.0, Some(0.5)).send, None);
     let mut f = touched(0.5);
+    anchor(&mut f, 1, 500.0, 5.0);
     f.moved(1, 450.0, 10.0);
     assert_eq!(f.cancel(1, 20.0), Some(1.0), "a cancel sends it too");
 }
@@ -520,6 +532,7 @@ fn a_second_pointer_does_not_move_a_held_fader() {
     assert_eq!(f.cancel(2, 20.0), None);
     assert_eq!(f.frame(30.0, Some(0.5)).pos, Some(0.5));
     // Pointer 1 still drives it.
+    anchor(&mut f, 1, 500.0, 35.0);
     assert!(f.moved(1, 490.0, 40.0));
     assert_close(f.frame(50.0, Some(0.5)).pos.unwrap(), 0.6);
     // Once released, another pointer may take it.
@@ -594,6 +607,7 @@ fn a_touch_stops_the_glide_where_it_is_and_a_cancel_never_taps() {
     assert_close(gliding, 0.15);
     assert!(f.down(3, 200.0, TRAVEL, 590.0, 0.0));
     assert_eq!(f.frame(600.0, Some(0.0)).pos, Some(gliding), "no jump");
+    anchor(&mut f, 3, 200.0, 605.0);
     assert!(f.moved(3, 190.0, 610.0));
     assert_close(f.frame(620.0, Some(0.0)).pos.unwrap(), gliding + 0.1);
     // Two cancelled taps start no glide.
@@ -608,6 +622,7 @@ fn a_touch_stops_the_glide_where_it_is_and_a_cancel_never_taps() {
 #[test]
 fn a_touch_during_the_hold_starts_from_the_shown_position() {
     let mut f = touched(0.25);
+    anchor(&mut f, 1, 500.0, 5.0);
     f.moved(1, 400.0, 10.0);
     f.up(1, 20.0);
     let shown = f.frame(30.0, Some(0.1)).pos.unwrap();
@@ -637,6 +652,7 @@ fn without_a_value_from_live_nothing_is_shown() {
 fn a_zero_travel_counts_as_one_pixel() {
     let mut f = FaderCtl::new(false, None);
     f.down(1, 10.0, 0.0, 0.0, 0.0);
+    anchor(&mut f, 1, 10.0, 0.5);
     f.moved(1, 9.9, 1.0);
     assert_close(f.frame(2.0, None).pos.unwrap(), 0.1);
 }
@@ -646,6 +662,7 @@ fn while_its_write_is_open_the_fader_shows_its_own_position_not_lives() {
     // L3: released inside a stall, its write not yet acked.
     let mut f = touched(0.25);
     f.intent(true, 5.0);
+    anchor(&mut f, 1, 500.0, 7.0);
     f.moved(1, 450.0, 10.0);
     let finger = f.frame(16.0, Some(0.25)).pos.unwrap();
     assert_close(finger, 0.75);
@@ -680,6 +697,7 @@ fn while_its_write_is_open_the_fader_shows_its_own_position_not_lives() {
 #[test]
 fn a_touch_while_its_write_is_open_starts_from_the_cap() {
     let mut f = touched(0.25);
+    anchor(&mut f, 1, 500.0, 5.0);
     f.moved(1, 450.0, 10.0);
     let cap = f.frame(16.0, Some(0.25)).pos.unwrap();
     f.up(1, 20.0);
@@ -687,6 +705,7 @@ fn a_touch_while_its_write_is_open_starts_from_the_cap() {
     f.intent(true, 30.0);
     assert!(f.down(1, 500.0, TRAVEL, 5_000.0, 0.25));
     assert_eq!(f.frame(5_001.0, Some(0.25)).pos, Some(cap));
+    anchor(&mut f, 1, 500.0, 5_005.0);
     f.moved(1, 490.0, 5_010.0);
     assert_close(f.frame(5_016.0, Some(0.25)).pos.unwrap(), cap + 0.1);
 }
@@ -751,6 +770,7 @@ fn a_fader_built_while_its_write_is_open_shows_the_write_and_a_touch_starts_ther
     // Under a finger the fader follows the finger, not the write.
     f.write_at(0.2);
     assert_eq!(f.frame(11.0, Some(0.25)).pos, Some(0.7));
+    anchor(&mut f, 1, 500.0, 15.0);
     f.moved(1, 490.0, 20.0);
     assert_close(f.frame(30.0, Some(0.25)).pos.unwrap(), 0.8);
     f.up(1, 40.0);
@@ -787,6 +807,7 @@ fn a_press_says_where_the_touch_started() {
         None,
         "another pointer"
     );
+    anchor(&mut f, 1, 500.0, 11.5);
     assert!(f.moved(1, 487.5, 12.0));
     assert_eq!(f.frame(16.0, Some(0.5)).send, Some(0.625));
     assert_eq!(f.up(1, 20.0), None);
