@@ -164,3 +164,29 @@ fn an_emergency_ends_at_touchoscs_calm_finger_distance() {
     assert_close(after_an_emergency(TOUCHOSC, 5.3), 0.9 * 5.3 / TOUCHOSC);
     assert_close(after_an_emergency(TOUCHOSC, 5.4), 5.4 / TOUCHOSC);
 }
+
+#[test]
+fn a_move_is_measured_as_the_finger_distance_on_touchoscs_strip() {
+    // TouchOSC's own travel leaves the size as it is (3 % stays 0.03).
+    assert_eq!(finger_size(0.03, TOUCHOSC), 0.03);
+    // 5 % of 207 px is 10.35 px: 2.9 % of 355 px. Direction does not count.
+    assert_close(finger_size(-0.05, IPAD), 0.029_154_929_577_464_79);
+    assert_close(finger_size(0.1, 710.0), 0.2);
+    assert_eq!(finger_size(0.0, IPAD), 0.0);
+}
+
+#[test]
+fn a_fader_that_keeps_touchoscs_first_move_takes_it_whole() {
+    // The imported parameter faders (shaping off): their first move moves.
+    let mut f = FaderCtl::new(false, None).anchoring(false);
+    assert!(f.down(1, 500.0, IPAD, 0.0, 0.5));
+    assert!(f.moved(1, 490.0, 83.0));
+    let frame = f.frame(90.0, Some(0.5));
+    assert_close(frame.pos.unwrap(), 0.5 + 10.0 / IPAD);
+    assert_close(frame.send.unwrap(), 0.5 + 10.0 / IPAD);
+    // And anchoring on is the default's.
+    let mut f = FaderCtl::new(false, None).anchoring(true);
+    assert!(f.down(1, 500.0, IPAD, 0.0, 0.5));
+    assert!(f.moved(1, 490.0, 83.0));
+    assert_eq!(f.frame(90.0, Some(0.5)).send, None);
+}

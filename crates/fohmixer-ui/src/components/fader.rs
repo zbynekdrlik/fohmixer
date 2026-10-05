@@ -372,6 +372,10 @@ mod tests {
         assert_eq!(law.pos(0.85), Some(curve::to_pos(0.85)));
         assert_eq!(law.value(0.5), Some(curve::to_live(0.5)));
         assert_eq!(law.glide_to(), Some(curve::to_pos(UNITY)));
+        assert!(
+            law.anchors(),
+            "a touch's first move only anchors (#43 PR F)"
+        );
         assert!(law.ready());
         assert!(law.can_map());
     }
@@ -385,6 +389,7 @@ mod tests {
         assert!(!law.ready());
         assert!(!law.can_map());
         assert_eq!(law.glide_to(), None, "no double tap on a parameter fader");
+        assert!(!law.anchors(), "TouchOSC's first move (#43 PR F)");
         let _ = range.try_set(Some((-15.0, 15.0)));
         assert!(law.ready());
         assert!(law.can_map());
