@@ -324,7 +324,8 @@ class FirstMove(ReportCase):
         (row,) = touch_rows(page)
         self.assertGreater(float(row["data-jump-db"]), 2.0)
         self.assertEqual(row["data-off-db"], "0.0")
-        self.assertAlmostEqual(float(row["data-finger-db"]), 2.6, delta=0.1)
+        # The finger's 30 px from where the drag started: 0.5 to 0.6.
+        self.assertEqual(row["data-finger-db"], "2.8")
         # The same frames from an older page (no `a`): the finger counts from
         # the down, and the 15 px Live never got make it a jump.
         log = Log()
@@ -334,10 +335,11 @@ class FirstMove(ReportCase):
         (row,) = touch_rows(page)
         self.assertEqual((row["data-first-jump"], row["data-why"]), ("true", "other"))
 
-    def test_an_anchor_past_the_top_counts_from_the_top(self):
+    def test_a_drag_past_the_top_counts_the_finger_from_the_anchor(self):
         # Near the top the finger's first event went 15 px up, past the
-        # travel's end: the page's `r` is clamped to 1.0, and so is the
-        # anchor's 1:1 position. The drag then went 3 px (Live 0.2 dB up).
+        # travel's end (the page's `r`, from the down, is clamped to 1.0).
+        # The drag is relative: the finger then went 3 px further, and the
+        # fader followed it from where the touch started (0.98 to 0.99).
         log = Log()
         self.touch(log, slop=15.0, steps=[(3.0, 0.99)], anchor=0.98, start=0.98)
         frame = next(
@@ -347,11 +349,24 @@ class FirstMove(ReportCase):
         summary, page, _ = self.report(log, BASE, BASE + 5000)
         (row,) = touch_rows(page)
         self.assertEqual(row["data-first-move"], "anchored")
-        # From the top the finger alone moved Live nowhere: the drag's 0.2 dB
-        # is all off (unclamped, the anchor would sit 0.05 past the top and
-        # read 0.8 dB).
-        self.assertEqual(row["data-off-db"], "0.2")
-        self.assertEqual(row["data-finger-db"], "0.0")
+        # The finger's 3 px are the drag's 0.2 dB; nothing is off.
+        self.assertEqual(row["data-finger-db"], "0.2")
+        self.assertEqual(row["data-off-db"], "0.0")
+
+    def test_a_pull_back_after_an_anchor_past_the_top_is_no_jump(self):
+        # At the top the first event went 15 px up (past the end), then the
+        # finger came 20 px down in the first set's frame and the fader
+        # followed it (1.0 to 0.93333, 1.4 dB). The finger's 1:1 position from
+        # the down moved only 5 px of that (0.3 dB): read from it, the
+        # timeline saw a fader that left the finger behind.
+        log = Log()
+        self.touch(log, slop=15.0, steps=[(-20.0, 0.93333)], anchor=1.0, start=1.0)
+        summary, page, _ = self.report(log, BASE, BASE + 5000)
+        self.assertEqual(summary["first_touch_jumps"], "0")
+        (row,) = touch_rows(page)
+        self.assertEqual(row["data-first-move"], "anchored")
+        self.assertEqual(row["data-finger-db"], "1.4")
+        self.assertEqual(row["data-off-db"], "0.0")
 
 
 class Stutter(ReportCase):
