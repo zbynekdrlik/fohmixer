@@ -443,19 +443,34 @@ class FirstMove(ReportCase):
         (row,) = touch_rows(page)
         self.assertEqual((row["data-finger-db"], row["data-off-db"]), ("n/a", "n/a"))
 
+    def test_an_anchored_picked_frame_without_its_moves_reads_no_finger(self):
+        # The mirror: the first frame kept its moves, the applied set's later
+        # frame lost its own. Where the finger stood at that set is unknown.
+        log = Log()
+        steps = [(30.0, 0.6), (60.0, 0.7), (90.0, 0.8)]
+        self.touch(log, slop=15.0, steps=steps, anchor=0.5, held=1)
+        mv = [e for r in log.records if r["ev"] == "trace" for e in r["events"] if e["ev"] == "mv"]
+        del mv[1]["e"]
+        summary, page, _ = self.report(log, BASE, BASE + 5000)
+        self.assertEqual(summary["first_touch_jumps"], "0")
+        (row,) = touch_rows(page)
+        self.assertEqual((row["data-finger-db"], row["data-off-db"]), ("n/a", "n/a"))
+
     def test_an_anchored_finger_on_a_zero_travel_counts_one_px_as_the_page(self):
         # A down whose travel is 0 (a fader with no height): the page counts
-        # at least 1 px, so 30 px from the anchor are past the top: the
-        # finger reads 0.5 to the top (12.0 dB).
+        # at least 1 px, so a 0.2 px move from the anchor is 0.2 of the
+        # travel (0.5 to 0.7, 5.3 dB), and the fader followed it. A floor of
+        # 2 px or 0.5 px would read a jump.
         log = Log()
-        self.touch(log, slop=15.0, steps=[(30.0, 0.6)], anchor=0.5)
+        self.touch(log, slop=15.0, steps=[(0.2, 0.7)], anchor=0.5)
         for r in log.records:
             for e in r["events"] if r["ev"] == "trace" else []:
                 if e["ev"] == "touch" and "travel" in e:
                     e["travel"] = 0.0
         summary, page, _ = self.report(log, BASE, BASE + 5000)
+        self.assertEqual(summary["first_touch_jumps"], "0")
         (row,) = touch_rows(page)
-        self.assertEqual(row["data-finger-db"], "12.0")
+        self.assertEqual((row["data-finger-db"], row["data-off-db"]), ("5.3", "0.0"))
 
 
 class Stutter(ReportCase):
