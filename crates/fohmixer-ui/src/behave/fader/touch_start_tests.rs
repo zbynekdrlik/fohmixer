@@ -101,20 +101,33 @@ fn another_pointers_move_is_not_the_touchs_first() {
     assert_eq!(f.frame(90.0, Some(0.5)).pos, Some(0.5));
 }
 
-#[test]
-fn a_tap_whose_finger_slid_at_the_start_still_counts_toward_a_double_tap() {
-    // Two taps whose fingers' first events came 6 px off: the fader never
-    // moved, so they are taps, and the second glides to 0 dB.
+/// Two taps of a plain fader at position `live`, each pointer's only move
+/// `px` px up: whether the second glides to 0 dB (what it sends 1 s later).
+fn two_taps_sliding(live: f64, px: f64) -> Option<f64> {
     let mut f = FaderCtl::new(false, Some(to_pos(UNITY)));
-    assert!(f.down(1, 500.0, IPAD, 0.0, 0.25));
-    assert!(f.moved(1, 494.0, 30.0));
-    assert_eq!(f.up(1, 60.0), None);
-    assert!(f.down(1, 500.0, IPAD, 160.0, 0.25));
-    assert!(f.moved(1, 506.0, 190.0));
+    assert!(f.down(1, 500.0, IPAD, 0.0, live));
+    assert!(f.moved(1, 500.0 - px, 30.0));
+    assert_eq!(f.up(1, 60.0), None, "the anchor left nothing to send");
+    assert!(f.down(1, 500.0, IPAD, 160.0, live));
+    assert!(f.moved(1, 500.0 - px, 190.0));
     assert_eq!(f.up(1, 220.0), None);
-    let frame = f.frame(1_220.0, Some(0.25));
-    let sent = frame.send.expect("the double tap's glide sends");
+    f.frame(1_220.0, Some(live)).send
+}
+
+#[test]
+fn a_first_move_the_drag_did_not_apply_still_counts_against_a_tap() {
+    // The tap check sees the finger's whole travel, the anchored first
+    // move's too, as it saw the fader's own move before PR F: two quick
+    // nudges whose only event slid the finger 6 px (or a 40 px flick) are
+    // no double tap, so they never glide the fader to 0 dB.
+    assert_eq!(two_taps_sliding(0.25, 6.0), None, "6 px slides");
+    assert_eq!(two_taps_sliding(0.25, 40.0), None, "40 px flicks");
+    // A finger that slid 1 px (under TouchOSC's tap move) still taps.
+    let sent = two_taps_sliding(0.25, 1.0).expect("the double tap's glide");
     assert_close(sent, 0.25 + GLIDE_SPEED);
+    // At the top a slide further up leaves the fader there (clamped, as
+    // TouchOSC's value), so those are still taps.
+    assert_eq!(two_taps_sliding(1.0, 6.0), Some(to_pos(UNITY)));
 }
 
 /// A shaped touch on `travel` px from position `start`: its first move
