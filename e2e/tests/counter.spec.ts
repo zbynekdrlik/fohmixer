@@ -75,7 +75,20 @@ test.describe("The dropout counter", () => {
     const stallFrom = await pageNow(page);
     await impair.stall(800);
     await expect.poll(async () => (await samples(page)).some((s) => s.active === "true"), { timeout: 3000 }).toBe(true);
-    await expect(counter).toHaveAttribute("data-active", "false", { timeout: 3000 });
+    // Wait for the sampler, not only the DOM, to see the dropout end: it
+    // records on the next animation frame, and WebKit draws ~22 frames a
+    // second on the runner, so samples read right after the DOM turned
+    // neutral could still end on the red one (dev run 37300751198).
+    await expect
+      .poll(
+        async () => {
+          const seen = await samples(page);
+          return seen[seen.length - 1].active;
+        },
+        { timeout: 3000 },
+      )
+      .toBe("false");
+    await expect(counter).toHaveAttribute("data-active", "false");
     await expect(counter).toHaveText("1");
     const stallTo = await pageNow(page);
     const stalled = await samples(page);
