@@ -412,6 +412,9 @@ pub struct FaderCtl {
     anchors: bool,
     /// The touch's next pointer move is its first.
     first_move: bool,
+    /// The finger's travel the touch's anchored first move did not apply
+    /// (positions): the tap check still counts it.
+    slip: f64,
 }
 
 impl FaderCtl {
@@ -434,6 +437,7 @@ impl FaderCtl {
             ended: false,
             anchors: true,
             first_move: false,
+            slip: 0.0,
         }
     }
 
@@ -514,6 +518,7 @@ impl FaderCtl {
         self.last_y = y;
         self.travel = travel.max(1.0);
         self.first_move = self.anchors;
+        self.slip = 0.0;
         self.shaper.set_travel(self.travel);
         self.shaper.start(self.pos);
         self.taps.down(self.pos, now);
@@ -537,23 +542,33 @@ impl FaderCtl {
         if self.pointer != Some(id) {
             return false;
         }
-        if std::mem::take(&mut self.first_move) {
-            self.last_y = y;
-            return true;
-        }
         let delta = (self.last_y - y) / self.travel;
         self.last_y = y;
-        self.pos = self.shaper.move_by(delta);
-        self.taps.moved(self.pos, now);
-        self.unsent = true;
+        if std::mem::take(&mut self.first_move) {
+            self.slip = delta;
+        } else {
+            self.pos = self.shaper.move_by(delta);
+            self.unsent = true;
+        }
+        self.taps.moved(self.tap_pos(), now);
         true
+    }
+
+    /// Where the tap check sees the fader: its position as if the touch's
+    /// anchored first move had moved it too (clamped to the travel, as
+    /// TouchOSC's value is). The finger's whole travel counts against a
+    /// tap, as the fader's own move did before #43 PR F, so a quick nudge
+    /// whose one event slid the finger is no tap (two of them would glide
+    /// the fader to 0 dB).
+    fn tap_pos(&self) -> f64 {
+        (self.pos + self.slip).clamp(0.0, 1.0)
     }
 
     /// Pointer `id` lifted: the position still to send, if any. A double
     /// tap starts the glide.
     pub fn up(&mut self, id: i32, now: f64) -> Option<f64> {
         let last = self.release(id, now)?;
-        if self.taps.up(self.pos, now)
+        if self.taps.up(self.tap_pos(), now)
             && let Some(to) = self.glide_to
         {
             self.glide = Some(Glide::new(self.pos, to, now));
