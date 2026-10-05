@@ -368,6 +368,56 @@ class FirstMove(ReportCase):
         self.assertEqual(row["data-finger-db"], "1.4")
         self.assertEqual(row["data-off-db"], "0.0")
 
+    def test_an_anchored_finger_is_read_at_the_frame_of_the_applied_set(self):
+        # Two frames: the first set (30 px from the anchor, 0.6) is the one
+        # Live applied first, and the finger went 60 px further in the next
+        # frame. The finger counts up to the first set's frame, not to the
+        # touch's last move.
+        log = Log()
+        self.touch(log, slop=15.0, steps=[(30.0, 0.6), (90.0, 0.8)], anchor=0.5)
+        summary, page, _ = self.report(log, BASE, BASE + 5000)
+        self.assertEqual(summary["first_touch_jumps"], "0")
+        (row,) = touch_rows(page)
+        self.assertEqual((row["data-finger-db"], row["data-off-db"]), ("2.8", "0.0"))
+
+    def test_an_anchored_finger_is_not_cut_at_the_end(self):
+        # The touch started from the fader's own 0.98 while Live held 0.95;
+        # the first event anchored, then the finger went 15 px (0.05) and the
+        # fader to the top. Where the finger alone would have taken Live:
+        # 0.95 + 0.05, the top, so nothing is off. Cut at the end (0.98 +
+        # 0.02), the finger would read short of it (0.6 dB off).
+        log = Log()
+        self.touch(log, slop=15.0, steps=[(15.0, 1.0)], anchor=0.98, start=0.98)
+        first_set(log, VOX)["live_before"] = value_at(0.95)
+        frame = next(
+            e for r in log.records if r["ev"] == "trace" for e in r["events"] if e["ev"] == "mv"
+        )
+        frame["r"] = 1.0
+        summary, page, _ = self.report(log, BASE, BASE + 5000)
+        (row,) = touch_rows(page)
+        self.assertEqual(row["data-first-move"], "anchored")
+        self.assertEqual(row["data-off-db"], "0.0")
+
+    def test_an_anchored_touch_without_its_coordinates_reads_no_finger(self):
+        # A malformed record: the anchored first frame without its moves
+        # (`e`), or a down without its travel. Its `r` counts from the down,
+        # through the first move the drag never applied, so the finger is
+        # unknown: n/a and no first-touch jump (read from `r`, finger 4.0 dB,
+        # off 1.3 dB: a jump).
+        for broken in ("e", "travel"):
+            log = Log()
+            self.touch(log, slop=15.0, steps=[(30.0, 0.6)], anchor=0.5)
+            kind = "mv" if broken == "e" else "touch"
+            for r in log.records:
+                for e in r["events"] if r["ev"] == "trace" else []:
+                    if e["ev"] == kind:
+                        e.pop(broken, None)
+            summary, page, _ = self.report(log, BASE, BASE + 5000)
+            self.assertEqual(summary["first_touch_jumps"], "0", broken)
+            (row,) = touch_rows(page)
+            self.assertEqual(row["data-first-move"], "anchored", broken)
+            self.assertEqual((row["data-finger-db"], row["data-off-db"]), ("n/a", "n/a"), broken)
+
 
 class Stutter(ReportCase):
     def drag(self, log, steps, gaps=None):
