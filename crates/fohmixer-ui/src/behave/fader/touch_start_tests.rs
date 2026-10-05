@@ -178,17 +178,18 @@ fn a_slide_the_fader_could_only_partly_follow_counts_up_to_the_end() {
     // 0.007 below the top, the first event 2 px up (0.0097: the fader could
     // go 0.007 of it), then 1 px more: the fader would have stopped at the
     // top, 0.007 from its start, under TouchOSC's tap move. A tap, so the
-    // still tap after it glides to 0 dB.
+    // still tap after it glides to 0 dB (that tap comes after the first
+    // touch's 100 ms hold, so it starts from Live's value).
     let mut f = plain_fader();
     assert!(touch_of(&mut f, 0.993, 0.0, &[(2.0, 30.0), (3.0, 40.0)], 60.0).is_some());
-    assert_eq!(touch_of(&mut f, 0.993, 160.0, &[], 180.0), None);
-    assert_eq!(f.frame(1_180.0, Some(0.993)).send, Some(to_pos(UNITY)));
+    assert_eq!(touch_of(&mut f, 0.993, 170.0, &[], 190.0), None);
+    assert_eq!(f.frame(1_190.0, Some(0.993)).send, Some(to_pos(UNITY)));
     // The bottom mirrors it.
     let mut f = plain_fader();
     assert!(touch_of(&mut f, 0.007, 0.0, &[(-2.0, 30.0), (-3.0, 40.0)], 60.0).is_some());
-    assert_eq!(touch_of(&mut f, 0.007, 160.0, &[], 180.0), None);
+    assert_eq!(touch_of(&mut f, 0.007, 170.0, &[], 190.0), None);
     let sent = f
-        .frame(1_180.0, Some(0.007))
+        .frame(1_190.0, Some(0.007))
         .send
         .expect("the double tap's glide");
     assert_close(sent, 0.007 + GLIDE_SPEED);
