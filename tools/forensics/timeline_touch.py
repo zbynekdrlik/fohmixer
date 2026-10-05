@@ -29,6 +29,14 @@ seq). A volume's Live value at position p is p^0.515.
   moves on by little); a held run is ``HELD_FRAMES`` or more frames in a row
   that each sent the previous frame's value while the finger's position
   changed, not at the travel's ends.
+- **First move (PR F):** a touch's first pointer move only anchors the drag
+  (the iPad's first event of a touch comes late and several px away); the
+  touch's first ``mv`` says where that move left the fader (``a``).
+  ``anchored``: ``a`` is the touch's start (``from``, within ``RAW_STEP``);
+  ``applied``: it moved the fader; none for an older page. For an anchored
+  touch, where the finger alone would have taken Live counts from the
+  finger's position at that first move, not from the down: the drag never
+  applied the way before it.
 - **No data (PR E):** past its backlog's bound the page's recorder drops
   moves, oldest first, and says so with the page time of the oldest and the
   newest it dropped (an ``overflow`` marker of kind ``mv``). Such a span is
@@ -81,6 +89,7 @@ Touch = collections.namedtuple(
         "no_data",
         "no_data_ms",
         "no_data_sets",
+        "first_move",
     ),
 )
 Gap = collections.namedtuple("Gap", ("start", "end", "ms", "px"))
@@ -122,20 +131,23 @@ def inside_travel(s):
     return 0.0 < s < 1.0
 
 
-def first_touch(start, live, local, live_before, first_applied, raw):
+def first_touch(start, live, local, live_before, first_applied, raw, base=None):
     """A touch that started at position ``start`` (the page's Live position
     ``live``, ``local``) when Live held ``live_before``, whose first applied
     value was ``first_applied`` while the finger was at ``raw`` (the 1:1
     position of the frame that sent it): (its jump from Live's value in dB,
     the finger's own move in dB, how far it landed from where the finger
     alone would have taken Live in dB, whether it is a first-touch jump,
-    why). The dB are None, and it is no jump, when a value is missing."""
+    why). The finger's move counts from ``base``, the 1:1 position the drag
+    counts from (``start``, or an anchored first move's, PR F). The dB are
+    None, and it is no jump, when a value is missing."""
     if None in (start, live_before, first_applied, raw):
         return None, None, None, False, None
+    base = start if base is None else base
     applied_db = value2db(first_applied)
     jump = db_apart(applied_db, value2db(live_before))
-    finger = db_apart(pos_db(raw), pos_db(start))
-    expected = to_live(to_pos(live_before) + raw - start)
+    finger = db_apart(pos_db(raw), pos_db(base))
+    expected = to_live(to_pos(live_before) + raw - base)
     off = db_apart(applied_db, value2db(expected))
     if not (over_jump(jump) and over_jump(off)):
         return jump, finger, off, False, None
@@ -146,6 +158,30 @@ def first_touch(start, live, local, live_before, first_applied, raw):
     else:
         why = "other"
     return jump, finger, off, True, why
+
+
+def first_move_of(frames, start):
+    """Whether a touch's first pointer move moved the fader (PR F), from its
+    first ``mv`` record's ``a`` (where that move left the fader) against the
+    touch's ``start``: ``anchored`` (no move over ``RAW_STEP``), ``applied``,
+    or None (an older page's record, no frame or no start)."""
+    if not frames or start is None:
+        return None
+    anchor = number(frames[0].get("a"))
+    if anchor is None:
+        return None
+    return "applied" if finger_moved(anchor - start) else "anchored"
+
+
+def drag_base(down, moves, start, how):
+    """The 1:1 finger position a touch's drag counts from: ``start``, or for
+    an anchored first move (``how``, PR F) ``start`` plus the finger's
+    travel from the down's coordinate to that first move (up the screen, of
+    the down's ``travel``, at least 1 px as the page counts it)."""
+    c0, travel = number(down.get("c")), number(down.get("travel"))
+    if how != "anchored" or not moves or None in (c0, travel):
+        return start
+    return start + (c0 - moves[0][1]) / max(travel, 1.0)
 
 
 def moves_of(frames):
@@ -265,11 +301,18 @@ def analyse(down, key, frames, first_set, applied, holes=(), hole_sets=0):
     live_before = number(first_set.get("live_before")) if first_set else None
     value, seq = applied if applied is not None else (None, None)
     raw = finger_at(frames, seq)
+    moves = moves_of(frames)
+    how = first_move_of(frames, start)
     jump, finger, off, flagged, why = first_touch(
-        start, live, data.get("local") is True, live_before, number(value), raw
+        start,
+        live,
+        data.get("local") is True,
+        live_before,
+        number(value),
+        raw,
+        drag_base(data, moves, start, how),
     )
     pressed = event_time(data)
-    moves = moves_of(frames)
     first_move = moves[0][0] - pressed if moves and pressed is not None else None
     sent = number(first_set.get("t")) if first_set else None
     first_send = sent - pressed if sent is not None and pressed is not None else None
@@ -295,6 +338,7 @@ def analyse(down, key, frames, first_set, applied, holes=(), hole_sets=0):
         len(holes),
         sum(to - start for start, to in holes),
         hole_sets,
+        how,
     )
 
 
