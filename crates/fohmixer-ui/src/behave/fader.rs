@@ -413,7 +413,8 @@ pub struct FaderCtl {
     /// The touch's next pointer move is its first.
     first_move: bool,
     /// The finger's travel the touch's anchored first move did not apply
-    /// (positions): the tap check still counts it.
+    /// (positions), cut at the travel's ends as that move would have been:
+    /// the tap check still counts it.
     slip: f64,
 }
 
@@ -545,7 +546,9 @@ impl FaderCtl {
         let delta = (self.last_y - y) / self.travel;
         self.last_y = y;
         if std::mem::take(&mut self.first_move) {
-            self.slip = delta;
+            // Cut where the move would have stopped: a slide past an end
+            // that the next moves come back from is no tap.
+            self.slip = (self.pos + delta).clamp(0.0, 1.0) - self.pos;
         } else {
             self.pos = self.shaper.move_by(delta);
             self.unsent = true;
@@ -554,12 +557,12 @@ impl FaderCtl {
         true
     }
 
-    /// Where the tap check sees the fader: its position as if the touch's
-    /// anchored first move had moved it too (clamped to the travel, as
-    /// TouchOSC's value is). The finger's whole travel counts against a
-    /// tap, as the fader's own move did before #43 PR F, so a quick nudge
-    /// whose one event slid the finger is no tap (two of them would glide
-    /// the fader to 0 dB).
+    /// Where the tap check sees the fader: its position plus the slide the
+    /// touch's anchored first move did not apply (`slip`, cut at the ends
+    /// when it came), within the travel as TouchOSC's value is. The
+    /// finger's travel counts against a tap, as the fader's own move did
+    /// before #43 PR F, so a quick nudge whose one event slid the finger is
+    /// no tap (two of them would glide the fader to 0 dB).
     fn tap_pos(&self) -> f64 {
         (self.pos + self.slip).clamp(0.0, 1.0)
     }
