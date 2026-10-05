@@ -248,15 +248,23 @@ class FirstMove(ReportCase):
     page's first ``mv`` of a touch says where that move left the fader
     (``a``), so the timeline shows whether it moved it."""
 
-    def touch(self, log, *, slop, steps, anchor, start=0.5):
+    def touch(self, log, *, slop, steps, anchor, start=0.5, held=0):
         """One touch of Vox 1 (``first_moves``) in a fresh logs folder: a
         test with several scenarios gives each its own (the log's writes
-        append, and two scenarios' downs are the same event)."""
+        append, and two scenarios' downs are the same event). ``held``: the
+        first ``held`` sets reach the hub together with the next one (a slow
+        link), so the setter writes only that one and Live first applies set
+        ``held + 1``."""
         self.setUp()
         log.pings(7, BASE, BASE + 4000)
         p0 = BASE + 1000 - OFFSET
         records, sends = first_moves(VOX, 4, p0 + 100, start, slop=slop, steps=steps, anchor=anchor)
-        log.drag(VOX, 7, sends)
+        together = sends[held][0] + OFFSET + 3.0
+
+        def arrive(sent):
+            return max(sent + 3.0, together)
+
+        log.drag(VOX, 7, sends, arrive=arrive)
         first_set(log, VOX)["live_before"] = value_at(start)
         events = [
             down(p0, VOX, 4, start=start, live=start),
@@ -369,16 +377,18 @@ class FirstMove(ReportCase):
         self.assertEqual(row["data-off-db"], "0.0")
 
     def test_an_anchored_finger_is_read_at_the_frame_of_the_applied_set(self):
-        # Two frames: the first set (30 px from the anchor, 0.6) is the one
-        # Live applied first, and the finger went 60 px further in the next
-        # frame. The finger counts up to the first set's frame, not to the
-        # touch's last move.
+        # Three frames, 30, 60 and 90 px from the anchor. Sets 1 and 2 reach
+        # the hub together, so Live first applies set 2 (0.7). The finger
+        # counts from the touch's first move to set 2's frame (60 px, 5.3 dB):
+        # not to the first frame (2.8 dB, a jump), nor to the touch's last
+        # move (7.7 dB), nor from the picked frame's own first move (0.0).
         log = Log()
-        self.touch(log, slop=15.0, steps=[(30.0, 0.6), (90.0, 0.8)], anchor=0.5)
+        steps = [(30.0, 0.6), (60.0, 0.7), (90.0, 0.8)]
+        self.touch(log, slop=15.0, steps=steps, anchor=0.5, held=1)
         summary, page, _ = self.report(log, BASE, BASE + 5000)
         self.assertEqual(summary["first_touch_jumps"], "0")
         (row,) = touch_rows(page)
-        self.assertEqual((row["data-finger-db"], row["data-off-db"]), ("2.8", "0.0"))
+        self.assertEqual((row["data-finger-db"], row["data-off-db"]), ("5.3", "0.0"))
 
     def test_an_anchored_finger_is_not_cut_at_the_end(self):
         # The touch started from the fader's own 0.98 while Live held 0.95;
@@ -417,6 +427,35 @@ class FirstMove(ReportCase):
             (row,) = touch_rows(page)
             self.assertEqual(row["data-first-move"], "anchored", broken)
             self.assertEqual((row["data-finger-db"], row["data-off-db"]), ("n/a", "n/a"), broken)
+
+    def test_an_anchored_first_frame_without_its_moves_reads_no_finger(self):
+        # The first frame (the one that carries `a`) lost its moves, the
+        # later frame of the applied set kept its own: the touch's first move
+        # is unknown, so the finger is too. Counted from that later frame's
+        # own first move it read 0.0 dB and a jump.
+        log = Log()
+        steps = [(30.0, 0.6), (60.0, 0.7), (90.0, 0.8)]
+        self.touch(log, slop=15.0, steps=steps, anchor=0.5, held=1)
+        mv = [e for r in log.records if r["ev"] == "trace" for e in r["events"] if e["ev"] == "mv"]
+        del mv[0]["e"]
+        summary, page, _ = self.report(log, BASE, BASE + 5000)
+        self.assertEqual(summary["first_touch_jumps"], "0")
+        (row,) = touch_rows(page)
+        self.assertEqual((row["data-finger-db"], row["data-off-db"]), ("n/a", "n/a"))
+
+    def test_an_anchored_finger_on_a_zero_travel_counts_one_px_as_the_page(self):
+        # A down whose travel is 0 (a fader with no height): the page counts
+        # at least 1 px, so 30 px from the anchor are past the top: the
+        # finger reads 0.5 to the top (12.0 dB).
+        log = Log()
+        self.touch(log, slop=15.0, steps=[(30.0, 0.6)], anchor=0.5)
+        for r in log.records:
+            for e in r["events"] if r["ev"] == "trace" else []:
+                if e["ev"] == "touch" and "travel" in e:
+                    e["travel"] = 0.0
+        summary, page, _ = self.report(log, BASE, BASE + 5000)
+        (row,) = touch_rows(page)
+        self.assertEqual(row["data-finger-db"], "12.0")
 
 
 class Stutter(ReportCase):
