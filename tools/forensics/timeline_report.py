@@ -451,7 +451,7 @@ TOUCH_LEGEND = (
     "position), other. First move (PR F): anchored when the touch's first "
     "pointer move left the fader where the touch started (the drag counts "
     "from it, and so do finger and off), applied when it moved it, n/a for an "
-    "older page. Down to first move and to "
+    "older page or a touch that sent nothing. Down to first move and to "
     "first send on the page's clock. Move gaps: two moves over 50 ms apart while "
     "the finger went on over 3 px; held: 3 or more frames in a row sending the "
     "value of the frame before while the finger moved. No data: spans whose "

@@ -177,11 +177,12 @@ def drag_base(down, moves, start, how):
     """The 1:1 finger position a touch's drag counts from: ``start``, or for
     an anchored first move (``how``, PR F) ``start`` plus the finger's
     travel from the down's coordinate to that first move (up the screen, of
-    the down's ``travel``, at least 1 px as the page counts it)."""
+    the down's ``travel``, at least 1 px as the page counts it), within 0..1
+    as the page's ``r`` (``Trail::raw``)."""
     c0, travel = number(down.get("c")), number(down.get("travel"))
     if how != "anchored" or not moves or None in (c0, travel):
         return start
-    return start + (c0 - moves[0][1]) / max(travel, 1.0)
+    return min(max(start + (c0 - moves[0][1]) / max(travel, 1.0), 0.0), 1.0)
 
 
 def moves_of(frames):
