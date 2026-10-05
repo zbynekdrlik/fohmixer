@@ -41,11 +41,14 @@ pub fn color(p: f64) -> &'static str {
     if is_centered(p) { CENTERED } else { OFF_CENTER }
 }
 
-/// One pan's input state: one pointer, the relative drag, the double tap
-/// to the centre and the post-release hold.
+/// One pan's input state: one pointer, the relative drag (a touch's first
+/// pointer move only anchors it, #43 PR F), the double tap to the centre and
+/// the post-release hold.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PanCtl {
     pointer: Option<i32>,
+    /// The touch's next pointer move is its first.
+    first_move: bool,
     last_x: f64,
     travel: f64,
     pos: f64,
@@ -58,6 +61,7 @@ impl Default for PanCtl {
     fn default() -> Self {
         Self {
             pointer: None,
+            first_move: false,
             last_x: 0.0,
             travel: 1.0,
             pos: 0.5,
@@ -93,6 +97,7 @@ impl PanCtl {
             self.pos = to_pos(live);
         }
         self.pointer = Some(id);
+        self.first_move = true;
         self.last_x = x;
         self.travel = travel.max(1.0);
         Some(Start {
@@ -108,10 +113,17 @@ impl PanCtl {
         self.pointer == Some(id)
     }
 
-    /// Pointer `id` moved to `x`: whether it moved this pan.
+    /// Pointer `id` moved to `x`: whether it drives this pan. The touch's
+    /// first move only anchors the drag there (#43 PR F, as a fader's: the
+    /// iPad's first event of a touch comes late and several px from the
+    /// down): nothing moves and nothing is left to send.
     pub fn moved(&mut self, id: i32, x: f64) -> bool {
         if self.pointer != Some(id) {
             return false;
+        }
+        if std::mem::take(&mut self.first_move) {
+            self.last_x = x;
+            return true;
         }
         self.pos = (self.pos + (x - self.last_x) / self.travel).clamp(0.0, 1.0);
         self.last_x = x;

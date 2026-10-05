@@ -73,6 +73,16 @@ impl Law {
         }
     }
 
+    /// Whether a touch's first pointer move only anchors the drag (#43 PR
+    /// F): a strip's volume fader's does; the imported multi-target
+    /// parameter faders keep TouchOSC's first move (the owner's call on #43).
+    fn anchors(self) -> bool {
+        match self {
+            Self::Volume => true,
+            Self::Linear(_) => false,
+        }
+    }
+
     /// Whether the law can map (reactive: a parameter's range arrived).
     fn ready(self) -> bool {
         match self {
@@ -148,7 +158,7 @@ pub fn FaderView(targets: Vec<Target>, shaping: bool) -> impl IntoView {
     let keys = StoredValue::new(keys);
     let shown_key = StoredValue::new(shown_key);
     let targets = StoredValue::new(targets);
-    let ctl = StoredValue::new(FaderCtl::new(shaping, law.glide_to()));
+    let ctl = StoredValue::new(FaderCtl::new(shaping, law.glide_to()).anchoring(law.anchors()));
     // The finger's moves between frames, for the flight recorder (#43 PR D).
     let trail = StoredValue::new(Trail::default());
     let failed = RwSignal::new(false);
