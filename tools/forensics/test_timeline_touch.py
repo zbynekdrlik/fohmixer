@@ -334,6 +334,25 @@ class FirstMove(ReportCase):
         (row,) = touch_rows(page)
         self.assertEqual((row["data-first-jump"], row["data-why"]), ("true", "other"))
 
+    def test_an_anchor_past_the_top_counts_from_the_top(self):
+        # Near the top the finger's first event went 15 px up, past the
+        # travel's end: the page's `r` is clamped to 1.0, and so is the
+        # anchor's 1:1 position. The drag then went 3 px (Live 0.2 dB up).
+        log = Log()
+        self.touch(log, slop=15.0, steps=[(3.0, 0.99)], anchor=0.98, start=0.98)
+        frame = next(
+            e for r in log.records if r["ev"] == "trace" for e in r["events"] if e["ev"] == "mv"
+        )
+        frame["r"] = 1.0
+        summary, page, _ = self.report(log, BASE, BASE + 5000)
+        (row,) = touch_rows(page)
+        self.assertEqual(row["data-first-move"], "anchored")
+        # From the top the finger alone moved Live nowhere: the drag's 0.2 dB
+        # is all off (unclamped, the anchor would sit 0.05 past the top and
+        # read 0.8 dB).
+        self.assertEqual(row["data-off-db"], "0.2")
+        self.assertEqual(row["data-finger-db"], "0.0")
+
 
 class Stutter(ReportCase):
     def drag(self, log, steps, gaps=None):
