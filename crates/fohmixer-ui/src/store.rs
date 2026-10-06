@@ -20,10 +20,12 @@
 //! `Wanted`, `Badge`, `slot_failure`, `range_from` and `next_range`, in `conn` the
 //! connection's decisions (reconnect, hello, the watchdog and its pings, the
 //! layout and instance changes), in `intent` the controls' writes waiting
-//! for their ack (#43). `LiveStore` (`live`) is the browser glue that
+//! for their ack (#43), in `deck` the Stream Deck's (#52: the key size, the
+//! presses waiting for their ack). `LiveStore` (`live`) is the browser glue that
 //! carries them out.
 
 mod conn;
+pub mod deck;
 pub mod intent;
 mod live;
 
