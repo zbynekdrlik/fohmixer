@@ -175,7 +175,7 @@ impl Perf {
         if primary {
             self.down.retain(|&(_, kind)| kind != pointer);
         }
-        let known = self.down.iter().any(|&(down_id, _)| down_id == id);
+        let known = self.is_down(id);
         if !known && self.down.len() < POINTERS_MAX {
             self.down.push((id, pointer));
         }
