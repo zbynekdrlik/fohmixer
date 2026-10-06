@@ -479,9 +479,14 @@ test.describe("The Stream Deck tab", () => {
     await openDeck(page);
     await watchFlashes(page);
     const since = Date.now();
-    // Key 2 is held when Companion goes away.
+    // Key 2 is held when Companion goes away, its down answered first: the
+    // fake records a press 3 ms before its OK, and a down whose OK the
+    // outage swallows is answered offline and flashes (spec §4). The
+    // pressed look comes after the OK, and the hub acks the page before it
+    // sends the key's state.
     await dispatchPointer(deckKey(page, 2), [{ type: "pointerdown" }]);
     await until(() => pressesOf(2, since), (p) => p.join() === "true", "key 2 down");
+    await expect(deckKey(page, 2)).toHaveAttribute("data-pressed", "true");
     await companion.down();
     await expect(page.getByTestId("deck-tab")).toHaveAttribute("data-offline", "true");
     await expect(page.getByTestId("deck-dot")).toBeVisible();
