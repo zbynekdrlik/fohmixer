@@ -23,7 +23,11 @@
 //! The Stream Deck's keys (#52) are coalesced too, the latest state per key,
 //! and written last, after the acks: a viewer's key images never hold up a
 //! fader's ack, and only a client viewing the tab gets them (the router
-//! decides; a closed tab drops what waits, `forget_deck`).
+//! decides; a closed tab drops what waits, `forget_deck`). They go at most
+//! [`DECK_KEYS_PER_TAKE`] per batch, round the key numbers from the one
+//! after the last written, the rest left for the next batch: a page of key
+//! images (25–200 KB) never holds a pong, an ack or a value behind it on a
+//! slow link, and a key that keeps changing never holds the others back.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Mutex, MutexGuard, PoisonError};
@@ -34,6 +38,8 @@ use tokio::sync::Notify;
 
 /// Replies waiting for one client before it counts as stuck.
 pub const MAX_REPLIES: usize = 1024;
+/// The Stream Deck keys one batch carries at most (#52).
+pub const DECK_KEYS_PER_TAKE: usize = 4;
 
 #[derive(Debug, Default)]
 struct Inner {
@@ -44,6 +50,9 @@ struct Inner {
     values: BTreeMap<String, ValueItem>,
     acks: BTreeMap<String, AckItem>,
     deck: BTreeMap<u32, DeckKey>,
+    /// The key the next batch's deck keys start from (the one after the
+    /// last written; the round wraps to the lowest).
+    deck_next: u32,
     closed: bool,
 }
 
@@ -60,6 +69,26 @@ impl Inner {
         } else {
             self.replies.push_back(msg);
         }
+    }
+
+    /// The next deck keys to write: at most [`DECK_KEYS_PER_TAKE`], from
+    /// `deck_next` on, round to the lowest; the rest stay for the next
+    /// batch.
+    fn take_deck(&mut self) -> Vec<DeckKey> {
+        let from = self.deck_next;
+        let keys: Vec<u32> = self
+            .deck
+            .range(from..)
+            .chain(self.deck.range(..from))
+            .map(|(key, _)| *key)
+            .take(DECK_KEYS_PER_TAKE)
+            .collect();
+        if let Some(last) = keys.last() {
+            self.deck_next = last.saturating_add(1);
+        }
+        keys.iter()
+            .filter_map(|key| self.deck.remove(key))
+            .collect()
     }
 
     fn is_empty(&self) -> bool {
@@ -193,8 +222,9 @@ impl Outbox {
 
     /// Everything waiting, in write order (replies and instance states,
     /// hub values, the layout revision, the instances' links, one `values`
-    /// message, one `ack` message, then one `deck_keys` message); `None` once
-    /// closed.
+    /// message, one `ack` message, then one `deck_keys` message of at most
+    /// [`DECK_KEYS_PER_TAKE`] keys, the others left for the next take);
+    /// `None` once closed.
     pub fn take(&self) -> Option<Vec<ServerMsg>> {
         let mut inner = self.lock();
         if inner.closed {
@@ -220,15 +250,16 @@ impl Outbox {
                 items: std::mem::take(&mut inner.acks).into_values().collect(),
             });
         }
-        if !inner.deck.is_empty() {
-            out.push(ServerMsg::DeckKeys {
-                items: std::mem::take(&mut inner.deck).into_values().collect(),
-            });
+        let keys = inner.take_deck();
+        if !keys.is_empty() {
+            out.push(ServerMsg::DeckKeys { items: keys });
         }
         Some(out)
     }
 
-    /// Waits until something is waiting (or the outbox closed) and takes it.
+    /// Waits until something is waiting (or the outbox closed) and takes it;
+    /// deck keys left by the last take are something waiting, so the writer
+    /// takes them at once, after what came meanwhile.
     pub async fn next_batch(&self) -> Option<Vec<ServerMsg>> {
         loop {
             {
