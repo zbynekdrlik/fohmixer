@@ -531,7 +531,10 @@ class FakeCompanionRoutes(unittest.TestCase):
         handle = self.harness.handle
         self.assertEqual(
             handle("GET", "/companion", {}),
-            (200, {"connections": 0, "presses": [], "down": False, "failing": False}),
+            (
+                200,
+                {"connections": 0, "devices": [], "presses": [], "down": False, "failing": False},
+            ),
         )
         self.assertEqual(handle("POST", "/companion/down", {})[1]["down"], True)
         self.assertEqual(handle("POST", "/companion/up", {})[1]["down"], False)
@@ -540,6 +543,42 @@ class FakeCompanionRoutes(unittest.TestCase):
         self.assertEqual(handle("POST", "/companion/clear", {})[1]["presses"], [])
         with self.assertRaises(harness.BadRequest):
             handle("POST", "/companion/fail", {})
+
+    def test_reset_restores_the_fake_and_the_hubs_companion_table(self):
+        handle = self.harness.handle
+        handle("POST", "/companion/down", {})
+        handle("POST", "/companion/fail", {"on": True})
+        self.assertEqual(self.harness.set_companion(False), False)
+        self.assertNotIn("[companion]", self.config())
+        status, answer = handle("POST", "/companion/reset", {})
+        self.assertEqual(status, 200)
+        self.assertEqual((answer["down"], answer["failing"]), (False, False))
+        self.assertIn("[companion]", self.config(), "the table is back")
+
+    def test_on_answers_the_truth_without_an_endpoint(self):
+        with tempfile.TemporaryDirectory() as data:
+            args = harness.parse_args(
+                ["--data", data, "--layout", LAYOUT, "--band-port", "0", "--master-port", "0"]
+            )
+            bare = harness.Harness(args)
+            try:
+                self.assertEqual(bare.set_companion(True), False)
+                self.assertNotIn(
+                    "[companion]", open(os.path.join(data, "fohmixer-hub.toml")).read()
+                )
+            finally:
+                bare.stop()
+
+    def config(self):
+        with open(os.path.join(self.data, "fohmixer-hub.toml"), encoding="utf-8") as f:
+            return f.read()
+
+    def test_the_fake_and_a_real_companion_are_exclusive(self):
+        args = harness.parse_args(
+            ["--data", "d", "--layout", "l", "--fake-companion-port", "0", "--companion", "h:1"]
+        )
+        with self.assertRaises(SystemExit):
+            harness.companion_of(args, None)
 
     def test_a_real_companion_is_named_by_host_and_port(self):
         args = harness.parse_args(

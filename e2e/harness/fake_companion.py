@@ -8,15 +8,23 @@ faults the tests turn on:
     fake.down()                      # every connection closed, new ones closed at once
     fake.up()
     fake.fail(True)                  # KEY-PRESS answered ERROR
-    fake.clear()                     # forget the presses
-    fake.state()                     # connections, presses, down, failing
+    fake.clear()                     # forget the presses and the held keys
+    fake.reset()                     # up, not failing, nothing recorded or held
+    fake.state()                     # connections, devices, presses, down, failing
     fake.stop()
 
 Each key is a small solid PNG (stdlib ``zlib``), coloured by its number and
-brighter while pressed; a press is answered ``KEY-PRESS OK`` (or ERROR) and
-then the key's new state, as Companion does; a key held when its surface goes away stays held
-(shown pressed to the next one); a socket silent for 5 s is closed. Every line ends with a space
-before its ``\\n``, as Companion writes them. Stdlib only, one asyncio loop
+brighter while pressed (the bitmaps are PNG, not the real Companion's webp: the hub
+and the page treat the data URL as opaque, and the real Companion 5.0.7 job
+covers real webp images in both browsers). A press is answered ``KEY-PRESS OK``
+(or ERROR) and then the key's new state, as Companion does; a press for a device
+that is not registered on the connection, or with a key that is not a digit
+string below ``KEYS_TOTAL``, is refused as Companion refuses it (``Device not
+found``, ``Invalid KEY``), recorded nowhere. A key held when its surface goes
+away stays held, per key (a control's state, whatever device id the next
+connection brings) and is shown pressed to the next surface until a release.
+A socket silent for 5 s is closed. Every line ends with a space before its
+``\\n``, as Companion writes them. Stdlib only, one asyncio loop
 in a thread of its own; every control call and failure is printed on stderr
 (``fake_companion: …``, the harness's log). Nothing is ever force-ended: a
 connection is closed, the loop stopped.
@@ -64,6 +72,13 @@ def params(line):
             value, _, rest = after.partition(" ")
         found[name] = value
     return found
+
+
+def digits(text):
+    """A non-negative integer from ASCII digits only, else None."""
+    if text.isascii() and text.isdigit():
+        return int(text)
+    return None
 
 
 def png(rgb, side=8):
@@ -117,8 +132,12 @@ class FakeCompanion:
         # Loop state: only touched on the loop.
         self.writers = set()
         self.presses = []
-        # The keys held (device, key): a key stays held when its surface goes away.
+        # The keys held: a key stays held when its surface goes away, whatever
+        # device id the next connection brings.
         self.held = set()
+        # The ADD-DEVICE parameters of each registered connection, by writer.
+        self.devices = {}
+        self.tasks = set()
         self.is_down = False
         self.failing = False
 
@@ -149,7 +168,10 @@ class FakeCompanion:
 
     def _call(self, fn, *args):
         async def call():
-            return fn(*args)
+            answer = fn(*args)
+            if asyncio.iscoroutine(answer):
+                answer = await answer
+            return answer
 
         return asyncio.run_coroutine_threadsafe(call(), self.loop).result(CALL_S)
 
@@ -172,12 +194,19 @@ class FakeCompanion:
         log(f"fail {bool(on)}: {answer}")
         return answer
 
+    def reset(self):
+        """Up, not failing, the presses and the held keys forgotten."""
+        answer = self._call(self._reset)
+        log(f"reset: {answer}")
+        return answer
+
     def clear(self):
         """Forgets the presses and the held keys."""
         return self._call(self._clear)
 
     def state(self):
-        """``connections``, ``presses`` (``key``, ``pressed``, ``at``: epoch ms),
+        """``connections``, ``devices`` (the ADD-DEVICE parameters of each
+        registered connection), ``presses`` (``key``, ``pressed``, ``at``: epoch ms),
         ``down``, ``failing``."""
         return self._call(self._state)
 
@@ -187,9 +216,13 @@ class FakeCompanion:
             return
 
         async def close():
-            self._down()
+            await self._down()
             self.server.close()
             await self.server.wait_closed()
+            tasks = list(self.tasks)
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
 
         asyncio.run_coroutine_threadsafe(close(), self.loop).result(CALL_S)
         self.loop.call_soon_threadsafe(self.loop.stop)
@@ -198,10 +231,25 @@ class FakeCompanion:
 
     # On the loop.
 
-    def _down(self):
+    async def _down(self):
         self.is_down = True
-        for writer in list(self.writers):
+        writers = list(self.writers)
+        for writer in writers:
             writer.close()
+        for writer in writers:
+            try:
+                await writer.wait_closed()
+            except (ConnectionError, OSError):
+                pass
+        self.writers.clear()
+        self.devices.clear()
+        return self._state()
+
+    def _reset(self):
+        self.is_down = False
+        self.failing = False
+        self.presses = []
+        self.held = set()
         return self._state()
 
     def _up(self):
@@ -220,6 +268,7 @@ class FakeCompanion:
     def _state(self):
         return {
             "connections": len(self.writers),
+            "devices": [dict(d) for d in self.devices.values()],
             "presses": [dict(p) for p in self.presses],
             "down": self.is_down,
             "failing": self.failing,
@@ -230,12 +279,15 @@ class FakeCompanion:
             writer.close()
             return
         self.writers.add(writer)
+        self.tasks.add(asyncio.current_task())
         try:
             await self._serve(reader, writer)
         except (ConnectionError, OSError) as e:
             log(f"a connection ended: {e!r}")
         finally:
             self.writers.discard(writer)
+            self.devices.pop(writer, None)
+            self.tasks.discard(asyncio.current_task())
             writer.close()
 
     async def _serve(self, reader, writer):
@@ -245,7 +297,7 @@ class FakeCompanion:
         send(f'BEGIN CompanionVersion="{VERSION}" ApiVersion="{API}" ')
         send('CAPS SUBSCRIPTIONS=0 NONSQUARE=1 BITMAP_FORMATS="rgb,png,webp" ')
         await writer.drain()
-        device, columns = "", 8
+        device, columns, total = None, 8, 0
         while True:
             try:
                 raw = await asyncio.wait_for(reader.readline(), self.idle_s)
@@ -260,26 +312,40 @@ class FakeCompanion:
             if cmd == "PING":
                 send("PONG " + line[5:].strip() + " ")
             elif cmd == "ADD-DEVICE":
-                device = found.get("DEVICEID", "")
-                total = int(found.get("KEYS_TOTAL", "0"))
-                columns = int(found.get("KEYS_PER_ROW", "8"))
-                send(f'ADD-DEVICE OK DEVICEID="{device}" ')
-                send(f'BRIGHTNESS DEVICEID="{device}" VALUE=100 ')
-                for key in range(total):
-                    send(key_state(device, key, columns, (device, key) in self.held))
-            elif cmd == "KEY-PRESS":
-                key = int(found.get("KEY", "-1"))
-                pressed = found.get("PRESSED") in ("1", "true")
-                self.presses.append({"key": key, "pressed": pressed, "at": time.time() * 1000.0})
-                await asyncio.sleep(PRESS_ANSWER_S)
-                if self.failing:
-                    send(f'KEY-PRESS ERROR DEVICEID="{device}" MESSAGE="test refusal" ')
+                new_total = digits(found.get("KEYS_TOTAL", "0"))
+                new_columns = digits(found.get("KEYS_PER_ROW", "8"))
+                if new_total is None or new_columns is None or new_columns < 1:
+                    send('ERROR MESSAGE="Invalid KEYS_TOTAL or KEYS_PER_ROW" ')
                 else:
-                    (self.held.add if pressed else self.held.discard)((device, key))
-                    send(f'KEY-PRESS OK DEVICEID="{device}" ')
-                    send(key_state(device, key, columns, pressed))
+                    device, total, columns = found.get("DEVICEID", ""), new_total, new_columns
+                    self.devices[writer] = dict(found)
+                    send(f'ADD-DEVICE OK DEVICEID="{device}" ')
+                    send(f'BRIGHTNESS DEVICEID="{device}" VALUE=100 ')
+                    for key in range(total):
+                        send(key_state(device, key, columns, key in self.held))
+            elif cmd == "KEY-PRESS":
+                asked = found.get("DEVICEID", "")
+                key = digits(found.get("KEY", ""))
+                if device is None or asked != device:
+                    send(f'KEY-PRESS ERROR DEVICEID="{asked}" MESSAGE="Device not found" ')
+                elif key is None or key >= total:
+                    send(f'KEY-PRESS ERROR DEVICEID="{asked}" MESSAGE="Invalid KEY" ')
+                else:
+                    pressed = found.get("PRESSED") in ("1", "true")
+                    self.presses.append(
+                        {"key": key, "pressed": pressed, "at": time.time() * 1000.0}
+                    )
+                    await asyncio.sleep(PRESS_ANSWER_S)
+                    if self.failing:
+                        send(f'KEY-PRESS ERROR DEVICEID="{device}" MESSAGE="test refusal" ')
+                    else:
+                        (self.held.add if pressed else self.held.discard)(key)
+                        send(f'KEY-PRESS OK DEVICEID="{device}" ')
+                        send(key_state(device, key, columns, pressed))
             elif cmd == "REMOVE-DEVICE":
-                send(f'REMOVE-DEVICE OK DEVICEID="{device}" ')
+                send(f'REMOVE-DEVICE OK DEVICEID="{device or ""}" ')
+                self.devices.pop(writer, None)
+                device = None
             else:
                 send(f'ERROR MESSAGE="Unknown command: {cmd}" ')
             await writer.drain()

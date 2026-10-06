@@ -56,9 +56,15 @@ what only the harness can do:
                                          at once (Companion away)
     POST /companion/up                   new connections served again
     POST /companion/fail {"on": <bool>}  presses answered ERROR, or OK again
+    POST /companion/reset                up, not failing, presses and held keys
+                                         forgotten, and the hub's ``[companion]``
+                                         put back (the hub restarted) if
+                                         ``/hub/companion`` removed it
     POST /companion/clear                the recorded presses forgotten
     POST /hub/companion {"on": <bool>}   the hub's config with or without
-                                         ``[companion]``, and the hub restarted
+                                         ``[companion]``, and the hub restarted;
+                                         {"companion": what it now holds}: false
+                                         when no endpoint is configured
     GET  /cdn-cgi/access/certs           the test Access key set (``--access-key``)
 
 Remote access (#17): with ``--public-name`` the hub serves that name over HTTPS
@@ -121,8 +127,8 @@ ANSWERS = {"rename": "RENAMED", "listeners": "LISTENERS", "meter": "METER"}
 def hub_config(http_port, band_port, master_port, remote=None, companion=None):
     """The hub's ``fohmixer-hub.toml`` for the two hosts (layout polled fast), with
     the Stream Deck's ``[companion]`` on ``companion`` (host, port) when given
-    (#52), before the remote tables, the remote-access tables of ``remote`` (``name``, ``https_port``, and
-    ``team``, ``aud``, ``jwks_url`` for ``[access]``) when given."""
+    (#52), then the remote-access tables of ``remote`` (``name``, ``https_port``,
+    and ``team``, ``aud``, ``jwks_url`` for ``[access]``) when given."""
     text = (
         f"http_port = {http_port}\n"
         'layout = "layout.json"\n'
@@ -311,6 +317,8 @@ def on_of(body, route):
 def companion_of(args, fake):
     """The hub's ``[companion]`` endpoint (#52): ``--companion HOST:PORT`` (a
     real Companion), else the fake's port on 127.0.0.1, else none."""
+    if args.companion and args.fake_companion_port is not None:
+        raise SystemExit("--companion and --fake-companion-port are exclusive")
     if args.companion:
         host, _, port = args.companion.rpartition(":")
         if not host or not port.isdigit():
@@ -476,6 +484,7 @@ class Harness:
             self.fake = FakeCompanion(args.fake_companion_port)
             self.fake.start()
         self.companion = companion_of(args, self.fake)
+        self.companion_on = self.companion is not None
         self.write_config(self.companion)
         self.reset_layout()
         # The proxy needs no hub to listen; it is up before the hub starts.
@@ -495,6 +504,16 @@ class Harness:
                     companion,
                 )
             )
+
+    def set_companion(self, on):
+        """The hub's config with or without ``[companion]``; answers what it now
+        holds (never on without an endpoint), the hub restarted when there is one."""
+        actual = bool(on) and self.companion is not None
+        self.write_config(self.companion if actual else None)
+        self.companion_on = actual
+        if self.hub is not None:
+            self.hub.restart(False)
+        return actual
 
     def write_layout(self, layout):
         """Replaces the layout file whole (the hub never reads half a file)."""
@@ -540,10 +559,7 @@ class Harness:
             self.reset_layout()
             return 200, {"ok": True}
         if parts == ["hub", "companion"] and self.hub is not None:
-            on = on_of(body, "/hub/companion")
-            self.write_config(self.companion if on else None)
-            self.hub.restart(False)
-            return 200, {"companion": on}
+            return 200, {"companion": self.set_companion(on_of(body, "/hub/companion"))}
         if parts and parts[0] == "companion":
             if self.fake is None:
                 return 404, {"error": "no fake Companion"}
@@ -551,6 +567,11 @@ class Harness:
                 return 200, self.fake.down()
             if parts == ["companion", "up"]:
                 return 200, self.fake.up()
+            if parts == ["companion", "reset"]:
+                answer = self.fake.reset()
+                if not self.companion_on:
+                    self.set_companion(True)
+                return 200, answer
             if parts == ["companion", "clear"]:
                 return 200, self.fake.clear()
             if parts == ["companion", "fail"]:
@@ -569,10 +590,11 @@ class Harness:
 
     def stop(self):
         self.link.stop()
-        if self.fake is not None:
-            self.fake.stop()
+        # The hub first: its graceful REMOVE-DEVICE then reaches the fake.
         if self.hub is not None:
             self.hub.stop()
+        if self.fake is not None:
+            self.fake.stop()
         for host in self.hosts.values():
             host.stop()
 

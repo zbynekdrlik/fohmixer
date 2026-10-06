@@ -10,6 +10,7 @@ import os
 import socket
 import struct
 import sys
+import time
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -128,33 +129,142 @@ class FakeCompanionTest(unittest.TestCase):
         self.assertEqual(struct.unpack(">II", image[16:24]), (4, 4))
         self.assertEqual(fake_companion.params('X A=1 B="x y" C'), {"A": "1", "B": "x y"})
 
-    def test_a_silent_client_is_closed_and_a_held_key_stays_held(self):
+    def add(self, conn, device):
+        """Registers ``device`` on ``conn`` and reads its states back, parsed."""
+        conn.send(ADD.replace("fohmixer-1", device))
+        conn.read()
+        conn.read()
+        return [fake_companion.params(conn.read().rstrip("\n")) for _ in range(32)]
+
+    def test_a_silent_client_is_closed_and_a_key_held_stays_held_for_any_device(self):
         fake = fake_companion.FakeCompanion(0, idle_s=0.4)
         fake.start()
         self.addCleanup(fake.stop)
-        conn = Conn(fake.port)
-        self.addCleanup(conn.close)
-        conn.read()
-        conn.read()
-        conn.send(ADD)
-        for _ in range(34):
+
+        def open_conn():
+            conn = Conn(fake.port)
+            self.addCleanup(conn.close)
             conn.read()
+            conn.read()
+            return conn
+
+        conn = open_conn()
+        self.add(conn, "fohmixer-1")
         conn.send('KEY-PRESS DEVICEID="fohmixer-1" KEY=5 PRESSED=1')
         conn.read()
         conn.read()
-        conn.send("PING a")
-        self.assertEqual(conn.read(), "PONG a \n", "a byte from the client keeps it open")
+        for n in range(3):
+            time.sleep(0.3)
+            conn.send(f"PING {n}")
+            self.assertEqual(conn.read(), f"PONG {n} \n", "a byte from the client keeps it open")
         self.assertIsNone(conn.read(), "closed after the idle time without a byte")
-        again = Conn(fake.port)
-        self.addCleanup(again.close)
-        again.read()
-        again.read()
-        again.send(ADD)
-        again.read()
-        again.read()
-        states = [fake_companion.params(again.read().rstrip("\n")) for _ in range(32)]
+        # The hub's device id changes with every connection: the key is held per key.
+        again = open_conn()
+        states = self.add(again, "fohmixer-2")
         self.assertEqual([s["PRESSED"] for s in states if s["KEY"] == "5"], ["1"])
         self.assertEqual(sum(s["PRESSED"] == "1" for s in states), 1)
+        again.send('KEY-PRESS DEVICEID="fohmixer-2" KEY=5 PRESSED=0')
+        again.read()
+        again.read()
+        again.close()
+        third = open_conn()
+        states = self.add(third, "fohmixer-3")
+        self.assertEqual(sum(s["PRESSED"] == "1" for s in states), 0, "released by the new device")
+
+    def test_a_press_companion_refuses_is_refused(self):
+        conn = self.connect()
+        conn.read()
+        conn.read()
+        conn.send('KEY-PRESS DEVICEID="fohmixer-1" KEY=3 PRESSED=1')
+        self.assertEqual(
+            conn.read(), 'KEY-PRESS ERROR DEVICEID="fohmixer-1" MESSAGE="Device not found" \n'
+        )
+        conn.send("KEY-PRESS KEY=3 PRESSED=1")
+        self.assertEqual(conn.read(), 'KEY-PRESS ERROR DEVICEID="" MESSAGE="Device not found" \n')
+        self.add(conn, "fohmixer-1")
+        conn.send('KEY-PRESS DEVICEID="other" KEY=3 PRESSED=1')
+        self.assertEqual(
+            conn.read(), 'KEY-PRESS ERROR DEVICEID="other" MESSAGE="Device not found" \n'
+        )
+        for key in ("32", "-1", "x", "", "3.5", "\u0663"):
+            conn.send(f'KEY-PRESS DEVICEID="fohmixer-1" KEY={key} PRESSED=1')
+            self.assertEqual(
+                conn.read(), 'KEY-PRESS ERROR DEVICEID="fohmixer-1" MESSAGE="Invalid KEY" \n', key
+            )
+        conn.send('KEY-PRESS DEVICEID="fohmixer-1" PRESSED=1')
+        self.assertEqual(
+            conn.read(), 'KEY-PRESS ERROR DEVICEID="fohmixer-1" MESSAGE="Invalid KEY" \n'
+        )
+        conn.send('KEY-PRESS DEVICEID="fohmixer-1" KEY=31 PRESSED=1')
+        self.assertEqual(conn.read(), 'KEY-PRESS OK DEVICEID="fohmixer-1" \n')
+        self.assertEqual(
+            [(p["key"], p["pressed"]) for p in self.fake.state()["presses"]], [(31, True)]
+        )
+
+    def test_garbage_in_add_device_is_an_error_line_not_a_closed_socket(self):
+        conn = self.connect()
+        conn.read()
+        conn.read()
+        for bad in ("KEYS_TOTAL=x", "KEYS_TOTAL=32 KEYS_PER_ROW=0", "KEYS_TOTAL=32 KEYS_PER_ROW=y"):
+            conn.send(f'ADD-DEVICE DEVICEID="fohmixer-1" {bad}')
+            self.assertTrue(conn.read().startswith("ERROR MESSAGE="), bad)
+        conn.send("PING 1")
+        self.assertEqual(conn.read(), "PONG 1 \n")
+        self.assertEqual(self.fake.state()["devices"], [])
+
+    def test_the_add_device_parameters_are_in_the_state(self):
+        conn = self.registered()
+        devices = self.fake.state()["devices"]
+        self.assertEqual(len(devices), 1)
+        self.assertEqual(
+            {k: devices[0][k] for k in ("DEVICEID", "SERIAL", "KEYS_TOTAL", "KEYS_PER_ROW")},
+            {
+                "DEVICEID": "fohmixer-1",
+                "SERIAL": "fohmixer",
+                "KEYS_TOTAL": "32",
+                "KEYS_PER_ROW": "8",
+            },
+        )
+        self.assertEqual((devices[0]["BITMAP_FORMAT"], devices[0]["COLORS"]), ("webp", "hex"))
+        conn.close()
+        for _ in range(50):
+            if not self.fake.state()["devices"]:
+                break
+            time.sleep(0.05)
+        self.assertEqual(self.fake.state()["devices"], [], "gone with its connection")
+
+    def test_down_answers_with_no_connections_left(self):
+        for _ in range(3):
+            self.registered()
+        self.assertEqual(self.fake.state()["connections"], 3)
+        self.assertEqual(self.fake.down()["connections"], 0)
+
+    def test_reset_puts_everything_back(self):
+        conn = self.registered()
+        conn.send('KEY-PRESS DEVICEID="fohmixer-1" KEY=3 PRESSED=1')
+        conn.read()
+        conn.read()
+        self.fake.fail(True)
+        self.fake.down()
+        answer = self.fake.reset()
+        self.assertEqual((answer["down"], answer["failing"], answer["presses"]), (False, False, []))
+        again = self.add(self.connect_past_handshake(), "fohmixer-2")
+        self.assertEqual(sum(s["PRESSED"] == "1" for s in again), 0, "held keys forgotten")
+
+    def connect_past_handshake(self):
+        conn = self.connect()
+        conn.read()
+        conn.read()
+        return conn
+
+    def test_stop_ends_with_a_client_still_connected(self):
+        fake = fake_companion.FakeCompanion(0)
+        fake.start()
+        conn = Conn(fake.port)
+        self.addCleanup(conn.close)
+        conn.read()
+        fake.stop()
+        self.assertFalse(fake.thread.is_alive())
 
 
 if __name__ == "__main__":
