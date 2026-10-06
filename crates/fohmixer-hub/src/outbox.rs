@@ -485,6 +485,106 @@ mod tests {
         assert_eq!(outbox.take().unwrap(), vec![], "taken once");
     }
 
+    /// The keys of a batch's `deck_keys` message, and the batch's other
+    /// messages before it.
+    fn deck_part(batch: Vec<ServerMsg>) -> (Vec<ServerMsg>, Vec<u32>) {
+        let mut others = Vec::new();
+        let mut keys = Vec::new();
+        for msg in batch {
+            match msg {
+                ServerMsg::DeckKeys { items } => keys.extend(items.iter().map(|k| k.key)),
+                other => others.push(other),
+            }
+        }
+        (others, keys)
+    }
+
+    #[test]
+    fn deck_keys_go_four_at_a_time_and_a_reply_goes_between() {
+        assert_eq!(DECK_KEYS_PER_TAKE, 4);
+        let outbox = Outbox::new();
+        for key in 0..32 {
+            outbox.deck_key(deck_key(key, "data:a"));
+        }
+        let mut sent = Vec::new();
+        for round in 0..8_u32 {
+            // A pong queued after the last take goes before the next keys.
+            outbox.reply(result(&format!("pong {round}")));
+            let batch = outbox.take().unwrap();
+            assert_eq!(
+                batch
+                    .last()
+                    .map(|m| matches!(m, ServerMsg::DeckKeys { .. })),
+                Some(true),
+                "the keys go last"
+            );
+            let (others, keys) = deck_part(batch);
+            assert_eq!(others, vec![result(&format!("pong {round}"))]);
+            assert_eq!(keys.len(), 4, "round {round}: {keys:?}");
+            sent.extend(keys);
+            assert_eq!(
+                outbox.lock().is_empty(),
+                round == 7,
+                "keys left wake the writer at once"
+            );
+        }
+        assert_eq!(sent, (0..32).collect::<Vec<u32>>(), "in order, each once");
+        assert_eq!(outbox.take().unwrap(), vec![]);
+    }
+
+    #[test]
+    fn keys_left_for_later_go_round_the_keys_at_their_latest() {
+        let outbox = Outbox::new();
+        for key in 0..8 {
+            outbox.deck_key(deck_key(key, "data:a"));
+        }
+        assert_eq!(deck_part(outbox.take().unwrap()).1, vec![0, 1, 2, 3]);
+        // Keys just written change again, and one waiting changes: the
+        // round goes on from key 4, each key at its latest.
+        outbox.deck_key(deck_key(3, "data:b"));
+        outbox.deck_key(deck_key(1, "data:b"));
+        outbox.deck_key(deck_key(6, "data:b"));
+        assert_eq!(
+            outbox.take().unwrap(),
+            vec![ServerMsg::DeckKeys {
+                items: vec![
+                    deck_key(4, "data:a"),
+                    deck_key(5, "data:a"),
+                    deck_key(6, "data:b"),
+                    deck_key(7, "data:a")
+                ]
+            }]
+        );
+        assert_eq!(
+            outbox.take().unwrap(),
+            vec![ServerMsg::DeckKeys {
+                items: vec![deck_key(1, "data:b"), deck_key(3, "data:b")]
+            }]
+        );
+        assert_eq!(outbox.take().unwrap(), vec![]);
+        // A key after the last one written goes first, then the round
+        // starts over from the lowest.
+        for key in [0, 2, 9] {
+            outbox.deck_key(deck_key(key, "data:c"));
+        }
+        assert_eq!(deck_part(outbox.take().unwrap()).1, vec![9, 0, 2]);
+    }
+
+    #[tokio::test]
+    async fn the_writer_takes_the_keys_left_at_once() {
+        let outbox = Outbox::new();
+        for key in 0..6 {
+            outbox.deck_key(deck_key(key, "data:a"));
+        }
+        let first = outbox.next_batch().await.unwrap();
+        assert_eq!(deck_part(first).1, vec![0, 1, 2, 3]);
+        let second = tokio::time::timeout(Duration::from_millis(500), outbox.next_batch())
+            .await
+            .expect("keys left: no wait for a wake-up")
+            .unwrap();
+        assert_eq!(deck_part(second).1, vec![4, 5]);
+    }
+
     #[test]
     fn a_waiting_deck_key_wakes_the_writer_and_a_closed_tab_drops_them() {
         let outbox = Outbox::new();
