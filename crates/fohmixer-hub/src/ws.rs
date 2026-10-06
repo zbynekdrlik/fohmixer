@@ -274,7 +274,7 @@ fn pong(
     arrival: f64,
 ) -> (ServerMsg, Value) {
     conn.offset = conn.clock.on_ping(n, arrival, t, rtt_n.zip(rtt));
-    let fields = json!({
+    let mut fields = json!({
         "client": conn.client,
         "peer": conn.who.peer,
         "n": n,
@@ -284,6 +284,18 @@ fn pong(
         "rtt_n": rtt_n,
         "offset_ms": conn.offset,
     });
+    // A clock step (#52): the page's or the hub's clock jumped, and the
+    // offset starts over from this exchange. Once per step, on the ping
+    // record too (the delays of the sets and presses around it change).
+    if let Some(step_ms) = conn.clock.take_step() {
+        tracing::warn!(
+            client = conn.client,
+            step_ms,
+            offset_ms = ?conn.offset,
+            "a page's clock stepped against the hub's: its offset starts over"
+        );
+        fields["clock_step_ms"] = json!(step_ms);
+    }
     (ServerMsg::Pong { n, t, h: arrival }, fields)
 }
 

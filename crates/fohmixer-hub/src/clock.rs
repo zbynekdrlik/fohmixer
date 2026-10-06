@@ -11,6 +11,14 @@
 //! and a link slower than the ping period still pairs. The estimate with the
 //! lowest round trip of the last minute is the least disturbed by the
 //! network, and that is the one reported.
+//!
+//! A clock step (the hub's wall clock synced, or the page's clock paused
+//! over a sleep) would keep the old estimate for up to that minute, and
+//! every delay off by the step: past a forward step a Stream Deck down
+//! would read late and be refused, past a backward one never (#52). So an
+//! exchange whose offset lies over [`STEP_MS`] from the estimate, beyond
+//! what the two round trips can explain ([`step`]), starts the window over
+//! from itself, and the step is reported once ([`ClockSync::take_step`]).
 
 use std::collections::VecDeque;
 
@@ -22,6 +30,9 @@ pub const MAX_SAMPLES: usize = 256;
 /// The recent pings a round trip can still be paired with (6.4 s at the
 /// page's 100 ms).
 pub const RING: usize = 64;
+/// An exchange whose offset is further than this (ms) from the estimate,
+/// beyond its round trips, is a clock step.
+pub const STEP_MS: f64 = 500.0;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Sample {
@@ -39,19 +50,33 @@ pub fn one_way_delay(hub_ms: f64, t: f64, offset: Option<f64>) -> Option<f64> {
     offset.map(|o| hub_ms - (t + o))
 }
 
+/// The step (ms, the new offset less the estimate's) when an exchange of
+/// offset `offset` and round trip `rtt` is a clock step against the best
+/// exchange of the window, `best` (its offset and round trip): the two
+/// differ by over [`STEP_MS`] beyond half of each round trip (an
+/// exchange's offset is off by at most half its round trip, when all of it
+/// was spent one way). None without a best exchange.
+pub fn step(best: Option<(f64, f64)>, offset: f64, rtt: f64) -> Option<f64> {
+    let (best_offset, best_rtt) = best?;
+    let jump = offset - best_offset;
+    (jump.abs() - (rtt + best_rtt) / 2.0 > STEP_MS).then_some(jump)
+}
+
 /// One socket's pings of the last minute.
 #[derive(Debug, Default)]
 pub struct ClockSync {
     /// Recent pings not paired yet: number, page time, arrival (hub ms).
     ring: VecDeque<(u32, f64, f64)>,
     samples: VecDeque<Sample>,
+    /// The step the window last started over at, not reported yet.
+    stepped: Option<f64>,
 }
 
 impl ClockSync {
     /// Ping `n`, sent at page time `t`, reached the hub at `arrival` (hub
     /// ms) with `rtt`: the round trip of ping `m` as `(m, ms)`. The offset
-    /// (hub − page, ms) of the lowest-RTT exchange of the last minute; `None`
-    /// while there is none.
+    /// (hub − page, ms) of the lowest-RTT exchange of the last minute (since
+    /// the last clock step); `None` while there is none.
     pub fn on_ping(
         &mut self,
         n: u32,
@@ -59,28 +84,42 @@ impl ClockSync {
         t: f64,
         rtt: Option<(u32, f64)>,
     ) -> Option<f64> {
+        self.samples.retain(|s| arrival - s.at <= WINDOW_MS);
         if let Some((m, rtt)) = rtt
             && let Some(i) = self.ring.iter().position(|&(k, _, _)| k == m)
             && let Some((_, t_m, at_m)) = self.ring.remove(i)
         {
-            self.samples.push_back(Sample {
+            let sample = Sample {
                 at: at_m,
                 rtt,
                 offset: at_m - (t_m + rtt / 2.0),
-            });
+            };
+            let best = self.best().map(|s| (s.offset, s.rtt));
+            if let Some(jump) = step(best, sample.offset, sample.rtt) {
+                self.samples.clear();
+                self.stepped = Some(jump);
+            }
+            self.samples.push_back(sample);
         }
         self.ring.push_back((n, t, arrival));
         if self.ring.len() > RING {
             self.ring.pop_front();
         }
-        self.samples.retain(|s| arrival - s.at <= WINDOW_MS);
         if self.samples.len() > MAX_SAMPLES {
             self.samples.pop_front();
         }
-        self.samples
-            .iter()
-            .min_by(|a, b| a.rtt.total_cmp(&b.rtt))
-            .map(|s| s.offset)
+        self.best().map(|s| s.offset)
+    }
+
+    /// The lowest-RTT exchange kept.
+    fn best(&self) -> Option<&Sample> {
+        self.samples.iter().min_by(|a, b| a.rtt.total_cmp(&b.rtt))
+    }
+
+    /// The clock step (ms) the window last started over at, once (for the
+    /// log); none since the last call.
+    pub fn take_step(&mut self) -> Option<f64> {
+        self.stepped.take()
     }
 
     /// How many exchanges are kept.
