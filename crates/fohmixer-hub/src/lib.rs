@@ -218,7 +218,10 @@ impl HubInner {
                 .await
                 .is_err()
         {
-            tracing::warn!("the Companion task did not end within 1 s of the stop: ending it");
+            tracing::warn!(
+                wait_ms = COMPANION_STOP_WAIT.as_millis() as u64,
+                "the Companion task did not end within the stop's wait: ending it"
+            );
             task.abort();
         }
     }

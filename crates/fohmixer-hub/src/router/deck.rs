@@ -5,14 +5,17 @@
 //! set to the Companion task, acks each press to its page (at once, or with
 //! Companion's answer), and makes the releases no page can: a closed socket
 //! (`detach`), a holding page silent for 2 s (`silent`), the keys held when
-//! Companion was lost (`reconnect`, released after the next `ADD-DEVICE OK`:
-//! Companion keeps a held key held when its surface goes away) and the stop
-//! (`stop`, before the task's `REMOVE-DEVICE`). A key held when Companion
-//! was lost and still not released at the stop (the hub stops before the
-//! link is back) cannot be released: it is logged as `lost`, warn class, and
-//! nothing is sent for it. Every hop is an event-log record (`deck_link`,
-//! `deck_press`, `deck_ok`, `deck_release`, `deck_key`, `deck_keys`,
-//! `deck_view`). The decisions are `crate::deck`'s.
+//! Companion was lost and the releases the link lost (an up answered
+//! `offline`, which Companion may never have read), both released after the
+//! next `ADD-DEVICE OK` (`reconnect`: Companion keeps a held key held when
+//! its surface goes away), and the stop (`stop`, before the task's
+//! `REMOVE-DEVICE`). Such a key still not released at the stop (the hub
+//! stops before the link is back) cannot be released: it is logged as
+//! `lost`, warn class, and nothing is sent for it. The stop's own releases
+//! are answered after the router ended: they get no `deck_ok`. Every hop
+//! is an event-log record (`deck_link`, `deck_press`, `deck_ok`,
+//! `deck_release`, `deck_key`, `deck_keys`, `deck_view`). The decisions
+//! are `crate::deck`'s.
 
 use fohmixer_proto::client::{DeckKey, ServerMsg};
 
@@ -288,6 +291,14 @@ impl Router {
                 self.deck_fan_out(&keys);
             }
             CompanionEvent::Answered(answer) => {
+                // A release the link lost: Companion may still hold the key,
+                // so it is released once the link is back.
+                if io.state.answered(&answer) {
+                    tracing::info!(
+                        key = answer.press.key,
+                        "a Stream Deck release the link lost: the key is released after the reconnect"
+                    );
+                }
                 self.io.events.record("deck_ok", ok_fields(&answer));
                 if let Some((client, seq)) = answer.press.from {
                     self.deck_ack(client, seq, answer.ok, answer.error, answer.rtt_ms);
@@ -323,8 +334,9 @@ impl Router {
 
     /// The hub stops: every held key released, then the task told to stop
     /// (its `REMOVE-DEVICE` goes after the releases: one channel, in order).
-    /// A key held when Companion was lost, with the link still down, cannot
-    /// be released: it is logged `lost` and nothing is sent for it.
+    /// A key held when Companion was lost (or whose release the link lost),
+    /// with the link still down, cannot be released: it is logged `lost` and
+    /// nothing is sent for it.
     pub(super) fn deck_stop(&mut self) {
         let Some(io) = self.deck.as_mut() else {
             return;

@@ -2,11 +2,12 @@
 //! Companion's link is up, Companion's keys as the pages get them, the
 //! clients viewing the tab, who holds which key ([`holders`]), when each
 //! client was last heard (a holding client silent for 2 s is released), the
-//! keys held when the link went (released once it is back: Companion keeps
-//! a held key held when its surface goes away), and when a key's change is
-//! worth a `deck_key` record (its pressed flag; 10 s after a press on it;
-//! once a second while viewed; a `deck_keys` summary every minute). The
-//! router (`router/deck.rs`) carries the decisions out. Times are the
+//! keys held when the link went and the releases the link lost (released
+//! once it is back: Companion keeps a held key held when its surface goes
+//! away, and a release it never read leaves the key held), and when a key's
+//! change is worth a `deck_key` record (its pressed flag; 10 s after a press
+//! on it; once a second while viewed; a `deck_keys` summary every minute).
+//! The router (`router/deck.rs`) carries the decisions out. Times are the
 //! router's clock (ms).
 
 pub mod holders;
@@ -20,7 +21,7 @@ use serde_json::{Value, json};
 pub use holders::{Hold, Holders};
 
 use crate::clock::one_way_delay;
-use crate::companion::{Answer, KeyUpdate};
+use crate::companion::{Answer, KeyUpdate, OFFLINE};
 use crate::live::subs::ClientId;
 
 /// A holding client silent this long (ms) is released.
@@ -121,6 +122,14 @@ impl PressOutcome {
     }
 }
 
+/// Whether Companion's answer is a release the link lost: an up (a page's or
+/// the hub's own) answered `offline`, so Companion may still hold its key.
+/// A down answered `offline` is not (its key is still in the holder set),
+/// nor is an up Companion answered, even with its own error.
+pub fn release_lost(answer: &Answer) -> bool {
+    !answer.press.down && !answer.ok && answer.error.as_deref() == Some(OFFLINE)
+}
+
 /// A key's log state: its last press, its last record, the changes since
 /// that record and since the last summary.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -136,7 +145,8 @@ struct KeyLog {
 pub struct StopKeys {
     /// Held now, with Companion reachable: released by the stop.
     pub release: Vec<u32>,
-    /// Held when the link went down and never released: lost.
+    /// Held when the link went down, or a release the link lost, and never
+    /// released: lost.
     pub lost: Vec<u32>,
 }
 
@@ -257,15 +267,28 @@ impl Deck {
         self.down_at.clear();
     }
 
-    /// The link is up: online; the keys held when it went down, to release
-    /// now.
+    /// Companion's answer to a forwarded press: a release the link lost
+    /// ([`release_lost`]) joins the keys released once the link is back
+    /// (the link-loss answers come before the link's `Down`; a release of a
+    /// key Companion does not hold does nothing). Whether it joined them.
+    pub fn answered(&mut self, answer: &Answer) -> bool {
+        let lost = release_lost(answer);
+        if lost {
+            self.stale.insert(answer.press.key);
+        }
+        lost
+    }
+
+    /// The link is up: online; the keys held when it went down and the
+    /// releases it lost, to release now.
     pub fn link_up(&mut self) -> Vec<u32> {
         self.online = true;
         std::mem::take(&mut self.stale).into_iter().collect()
     }
 
     /// The hub stops: the keys held now (to release) and the keys held when
-    /// the link went down and never released (lost), each in key order.
+    /// the link went down or whose release it lost, never released since
+    /// (lost), each in key order.
     pub fn stop(&mut self) -> StopKeys {
         StopKeys {
             release: self.holders.clear(),
