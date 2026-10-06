@@ -2,7 +2,7 @@ import type { Locator, Page } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test, expect } from "./support/fixtures";
-import { harness, hubEvents, openSurface, pageEvents, ready, strip, track, until, volume } from "./support/live";
+import { centre, frames, harness, hubEvents, openSurface, pageEvents, ready, strip, track, until, volume } from "./support/live";
 
 // The controls own their touches (#43 PR G, design comment 6011117148). The
 // owner's retest of PR F on the FOH iPad saw, now and then, a magnifier
@@ -84,8 +84,10 @@ test("every control owns its touches: its touchstart is prevented, nothing on it
   await ready(strip(page, "Hand2 #").getByTestId("fader"));
   for (const [name, el] of controls(page)) {
     expect(await prevented(el, "touchstart"), `a touchstart on the ${name}`).toBe(true);
+    // Not selectable is not checked here: both engines compute
+    // `-webkit-user-select: none` for any child of the body's, before PR G
+    // too, so only the drag tells the stylesheet apart.
     expect(await style(el, "-webkit-user-drag"), `the ${name} cannot be dragged`).toBe("none");
-    expect(await style(el, "-webkit-user-select"), `the ${name} cannot be selected`).toBe("none");
   }
   // Outside the controls a touch stays the browser's: a strip's instance tag
   // and dB scale, a group's title, the rail, a row, the version label.
@@ -158,6 +160,20 @@ test("a context menu, a selection and a drag never start on the surface, and the
   await ready(fader);
   const from = await pageNow(page);
 
+  // A real finger's tap on the fader's cap (WebKit's touchscreen; Chromium's
+  // through the DevTools protocol) reaches the fader as Pointer Events,
+  // although its touchstart is prevented, and leaves no system gesture: its
+  // capture is lost only after the lift.
+  const cap = await centre(fader.locator(".fader-cap"));
+  const cdp = browserName === "chromium" ? await page.context().newCDPSession(page) : null;
+  if (cdp) {
+    await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ ...cap, id: 1 }] });
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  } else {
+    await page.touchscreen.tap(cap.x, cap.y);
+  }
+
   // On a control: prevented, recorded with the control's kind and keys.
   for (const type of ["contextmenu", "selectstart", "dragstart"]) {
     expect(await prevented(fader, type), `a ${type} on the fader`).toBe(true);
@@ -175,22 +191,31 @@ test("a context menu, a selection and a drag never start on the surface, and the
   await pointer(tag, "lostpointercapture", 82);
   await pointer(tag, "pointerup", 82);
   await pointer(tag, "lostpointercapture", 82);
-  if (browserName === "chromium") {
-    // A zoom (WebKit's Playwright cannot pinch): to 2 and back to 1.
-    const cdp = await page.context().newCDPSession(page);
+  if (cdp) {
+    // A zoom (WebKit's Playwright cannot pinch): to 2 and back to 1. The
+    // visual viewport's resize fires once per frame with the scale of then,
+    // so each scale is held for a few frames before the next.
     await cdp.send("Emulation.setPageScaleFactor", { pageScaleFactor: 2 });
     await until(() => page.evaluate(() => visualViewport!.scale), (s) => s === 2, "the page zoomed");
+    await frames(page, 3);
     await cdp.send("Emulation.setPageScaleFactor", { pageScaleFactor: 1 });
     await until(() => page.evaluate(() => visualViewport!.scale), (s) => s === 1, "the page back at 1");
+    await frames(page, 3);
   }
   const zooms = browserName === "chromium" ? 2 : 0;
 
+  const lifted = (e: any) => e.ev === "touch" && e.what === "up" && e.keys.includes(FADER_KEY);
   const events = await until(
-    async () => pageEvents(await hubEvents()).filter((e: any) => e.t >= from && (e.ev === "sys" || e.ev === "zoom")),
-    (all) => all.filter((e: any) => e.ev === "sys").length >= 8 && all.filter((e: any) => e.ev === "zoom").length >= zooms,
-    "the page's system-gesture records in the event log",
+    async () => pageEvents(await hubEvents()).filter((e: any) => e.t >= from && ["sys", "zoom", "touch"].includes(e.ev)),
+    (all) =>
+      all.filter((e: any) => e.ev === "sys").length >= 8 &&
+      all.filter((e: any) => e.ev === "zoom").length >= zooms &&
+      all.some(lifted),
+    "the page's tap and system-gesture records in the event log",
     10_000,
   );
+  const taps = events.filter((e: any) => e.ev === "touch" && e.keys.includes(FADER_KEY)).map((e: any) => e.what);
+  expect(taps, "the tap reached the fader: its down and its lift").toEqual(["down", "up"]);
   const sys = events.filter((e: any) => e.ev === "sys");
   const on = (what: string, where: string) => sys.filter((e: any) => e.what === what && e.on === where);
   for (const type of ["contextmenu", "selectstart", "dragstart"]) {
