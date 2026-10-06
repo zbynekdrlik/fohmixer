@@ -125,6 +125,17 @@ fn classify_reads_companion_5_0_7_lines() {
             pressed: None,
         })
     );
+    // A COLOR that is not `#rrggbb` is dropped: it goes into the key's style
+    // on the page, where a `;` would add declarations of its own.
+    assert_eq!(
+        classify("KEY-STATE DEVICEID=\"x\" KEY=3 COLOR=\"#ff0000;background:red\""),
+        Inbound::KeyState(KeyUpdate {
+            key: 3,
+            img: None,
+            color: None,
+            pressed: None,
+        })
+    );
     // A raw rgb bitmap is no image the page can show.
     assert_eq!(
         classify("KEY-STATE DEVICEID=\"x\" KEY=1 BITMAP=\"AAAAAA==\" PRESSED=true"),
@@ -187,6 +198,21 @@ fn every_inbound_kind_has_its_command_name() {
     ] {
         assert_eq!(inbound.name(), name);
     }
+}
+
+#[test]
+fn a_colour_is_a_hash_and_six_hex_digits() {
+    assert!(hex_colour("#00aa00"));
+    assert!(hex_colour("#FFFFFF"));
+    assert!(hex_colour("#0a1B2c"));
+    assert!(!hex_colour("#00aa0"), "five digits");
+    assert!(!hex_colour("#00aa000"), "seven digits");
+    assert!(!hex_colour("00aa00"), "no hash");
+    assert!(!hex_colour("#00aa0g"), "not hex");
+    assert!(!hex_colour("#abc"), "short form");
+    assert!(!hex_colour("#ff0000;x"));
+    assert!(!hex_colour("#ffééff"), "not ascii");
+    assert!(!hex_colour(""));
 }
 
 #[test]
