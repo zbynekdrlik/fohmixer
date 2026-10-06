@@ -4,7 +4,7 @@ focused tests (Rust, Playwright, Python), no continue-on-error, self-hosted
 runners or pull_request_target, every action pinned to a full commit SHA with
 its version comment, no force-kill verb anywhere, comments included
 (spec I7: nothing is force-killed on the Ableton PC), and every tap target
-of the surface owns its touches and none uses a click (#43 PR G)."""
+of the surface owns its touches and none takes a mouse event (#43 PR G)."""
 from __future__ import annotations
 
 import re
@@ -42,9 +42,10 @@ FORCE_KILL = re.compile(
 TAP_TREES = ("crates/fohmixer-ui/src/components", "crates/fohmixer-ui/src/pages")
 TAP_EXEMPT = {"crates/fohmixer-ui/src/pages/login.rs"}
 TAP = re.compile(r"\bon:pointerdown\b")
-# Nor does one use `click`: an owned ancestor's prevented touchstart swallows
-# the synthetic click on the iPad.
-CLICK = re.compile(r"\bon:click\b")
+# Nor does one take a mouse event: an owned ancestor's prevented touchstart
+# swallows every compatibility mouse event of a touch on the iPad (the click
+# too); Pointer Events are the input path.
+MOUSE = re.compile(r"\bon:((?:dbl)?click|mouse(?:down|up|move|over|out|enter|leave))\b")
 TAG_START = re.compile(r"<[a-z][a-z0-9-]*\b")
 # A start tag's end: a `>` that is no closure's `=>` and no `->`.
 TAG_END = re.compile(r"(?<![=-])>")
@@ -91,9 +92,9 @@ def violations(root: Path) -> list[str]:
             text = path.read_text(encoding="utf-8", errors="replace")
             found += [f"{rel}:{n}: tap target without use:owns_touches (#43)" for n in unowned_taps(text)]
             found += [
-                f"{rel}:{n}: on:click on the surface: a prevented touchstart swallows it (#43)"
+                f"{rel}:{n}: on:{event.group(1)} on the surface: a prevented touchstart swallows it (#43)"
                 for n, line in lines(path)
-                if CLICK.search(line)
+                for event in MOUSE.finditer(line)
             ]
     for path in files(root, "e2e", (".ts",)):
         rel = path.relative_to(root).as_posix()
