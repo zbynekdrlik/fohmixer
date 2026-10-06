@@ -205,7 +205,8 @@ async fn a_companion_that_never_answers_the_stop_holds_it_500_ms_at_most() {
     // A Companion that registers the surface, then answers nothing and
     // never closes: the hub's last line and its FIN come at once, the hub
     // keeps reading until the bound, and the press Companion never
-    // answered is answered offline then, once.
+    // answered is answered offline then, once; a press behind the stop is
+    // answered offline at once, before the wait.
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     let (events, seen) = sink();
@@ -223,6 +224,13 @@ async fn a_companion_that_never_answers_the_stop_holds_it_500_ms_at_most() {
     );
     let stopped = Instant::now();
     handle.stop();
+    // Behind the stop (both queued before the task runs: one thread).
+    let behind = Press {
+        key: 8,
+        down: true,
+        from: Some((5, 2)),
+    };
+    handle.press(behind);
     assert_eq!(
         next_line(&mut companion).await.as_deref(),
         Some("REMOVE-DEVICE DEVICEID=\"fohmixer-1\"")
@@ -231,6 +239,10 @@ async fn a_companion_that_never_answers_the_stop_holds_it_500_ms_at_most() {
     // the bound.
     assert_eq!(next_line(&mut companion).await, None);
     assert!(stopped.elapsed() < STOP_BOUND, "{:?}", stopped.elapsed());
+    // By order, not by a clock: the press behind the stop was answered
+    // before REMOVE-DEVICE went out, while the waiting one has no answer
+    // until the wait is over.
+    assert_eq!(answers_of(&seen, behind), vec![Answer::offline(behind)]);
     assert!(answers_of(&seen, pending).is_empty(), "no answer yet");
     tokio::time::timeout(Duration::from_secs(2), task)
         .await
@@ -242,6 +254,7 @@ async fn a_companion_that_never_answers_the_stop_holds_it_500_ms_at_most() {
         "{took:?}"
     );
     assert_eq!(answers_of(&seen, pending), vec![Answer::offline(pending)]);
+    assert_eq!(answers_of(&seen, behind), vec![Answer::offline(behind)]);
     drop(companion);
 }
 

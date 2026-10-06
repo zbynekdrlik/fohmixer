@@ -7,7 +7,7 @@
 //! when it came, and how each connection ended ([`Ended`]). Host-free: these
 //! tests also run on Windows.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -75,6 +75,9 @@ pub struct FakeCompanion {
     current: Arc<Mutex<Option<mpsc::UnboundedSender<Option<String>>>>>,
     /// New connections closed at once (Companion away).
     refusing: Arc<AtomicBool>,
+    /// The first this many connections closed at once, decided by the
+    /// accept loop itself (no race with a test that waits for them).
+    refuse_first: Arc<AtomicUsize>,
 }
 
 impl FakeCompanion {
@@ -90,13 +93,20 @@ impl FakeCompanion {
             accepted: Arc::default(),
             current: Arc::default(),
             refusing: Arc::new(AtomicBool::new(false)),
+            refuse_first: Arc::new(AtomicUsize::new(0)),
         };
         let accepting = fake.clone();
         tokio::spawn(async move {
             let mut n = 0;
             while let Ok((stream, _)) = listener.accept().await {
-                accepting.accepted.lock().unwrap().push(Instant::now());
-                if accepting.refusing.load(Ordering::SeqCst) {
+                let count = {
+                    let mut accepted = accepting.accepted.lock().unwrap();
+                    accepted.push(Instant::now());
+                    accepted.len()
+                };
+                if accepting.refusing.load(Ordering::SeqCst)
+                    || count <= accepting.refuse_first.load(Ordering::SeqCst)
+                {
                     drop(stream);
                     continue;
                 }
@@ -116,6 +126,12 @@ impl FakeCompanion {
     /// for it).
     pub fn delay_remove(&self, delay: Duration) {
         *self.remove_delay.lock().unwrap() = delay;
+    }
+
+    /// The first `n` connections (counted from the start, refused ones too)
+    /// closed at once, the next ones served: set before the hub connects.
+    pub fn refuse_first(&self, n: usize) {
+        self.refuse_first.store(n, Ordering::SeqCst);
     }
 
     /// Companion away (`on`): the open connection closed, new ones closed at

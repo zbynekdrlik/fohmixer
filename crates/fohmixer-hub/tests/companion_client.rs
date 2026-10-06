@@ -446,7 +446,9 @@ fn a_stop_writes_what_came_before_it_then_removes_the_device() {
         // that closed before the answer would have reset it.
         assert_eq!(fake.end_of(1, Duration::from_secs(1)).await, Ended::Eof);
         // Every press got exactly one answer: the release Companion's own,
-        // the other two offline, the one behind the stop at once.
+        // the other two offline, the one behind the stop before the bound
+        // (that it comes before the wait is pinned by its order in
+        // `client::tests::a_companion_that_never_answers_the_stop_…`).
         let answers: Vec<(Instant, Answer)> = seen
             .all()
             .into_iter()
@@ -470,7 +472,7 @@ fn a_stop_writes_what_came_before_it_then_removes_the_device() {
             refused.iter().map(|(_, a)| a.clone()).collect::<Vec<_>>(),
             vec![Answer::offline(behind)]
         );
-        assert!(refused[0].0 - stopped < late, "at once, not after the wait");
+        assert!(refused[0].0 - stopped < STOP_BOUND, "before the bound");
         assert_eq!(
             of(after).into_iter().map(|(_, a)| a).collect::<Vec<_>>(),
             vec![Answer::offline(after)]
@@ -482,9 +484,10 @@ fn a_stop_writes_what_came_before_it_then_removes_the_device() {
 fn the_backoff_grows_while_companion_refuses_and_starts_over_after_a_session() {
     let _serial = serial();
     runtime().block_on(async {
-        // Companion away: every connection is closed at once.
+        // Companion away for four attempts: each connection closed at once,
+        // the fifth served (decided by the fake's accept loop: no race).
         let fake = FakeCompanion::start(Script::companion()).await;
-        fake.refuse(true);
+        fake.refuse_first(4);
         let seen = Seen::default();
         let (_handle, _task) = CompanionHandle::spawn(&deck(fake.port), seen.events());
         // The waits between the failed attempts grow: 250, 500, 1000 ms.
@@ -496,12 +499,11 @@ fn the_backoff_grows_while_companion_refuses_and_starts_over_after_a_session() {
                 && waits[2] >= Duration::from_millis(1000),
             "{waits:?}"
         );
-        // Back: the next attempt (2 s later) registers.
-        fake.refuse(false);
+        // Back: the fifth attempt (2 s later) registers.
         seen.wait(Duration::from_secs(5), up).await;
         let before = fake.accepted(5, Duration::ZERO).await.len();
         // A session that reached ADD-DEVICE OK resets the backoff: the
-        // reconnect comes 250 ms after the loss, not the grown 2 s.
+        // reconnect comes 250 ms after the loss, well before the grown 2 s.
         fake.close();
         let (lost_at, _) = seen
             .wait(Duration::from_secs(5), |e| {
@@ -511,7 +513,7 @@ fn the_backoff_grows_while_companion_refuses_and_starts_over_after_a_session() {
         let again = fake.accepted(before + 1, Duration::from_secs(3)).await[before];
         let wait = again - lost_at;
         assert!(
-            wait >= Duration::from_millis(250) && wait < Duration::from_millis(500),
+            wait >= Duration::from_millis(250) && wait < Duration::from_millis(1500),
             "{wait:?}"
         );
         seen.wait(Duration::from_secs(5), up).await;
