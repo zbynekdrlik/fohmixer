@@ -5,13 +5,15 @@
 //! this hub does not serve, is closed with code 4001 and reloads. Then:
 //! commands go straight to their instance (in order) and their results
 //! come back as `result`; `sub`/`unsub`/`set_hub` and the writes (`set`,
-//! #43) go to the router; `ping` is answered `pong` with the hub's clock
-//! (the client's watchdog and round trip). The socket's open and close and
-//! every ping are event-log records (#43; a ping's carries the page's clock
-//! offset, `clock.rs`). A
-//! writer task drains the client's outbox, so a slow client never holds up
-//! anyone else; a client that takes longer than [`SEND_TIMEOUT`] to accept
-//! a message is closed (it reconnects and resyncs).
+//! #43) go to the router; the Stream Deck's `deck_view` and `deck_press`
+//! (#52) too, and with `[companion]` every message tells the router the page
+//! was heard (a holding page silent for 2 s is released); `ping` is
+//! answered `pong` with the hub's clock (the client's watchdog and round
+//! trip). The socket's open and close and every ping are event-log records
+//! (#43; a ping's carries the page's clock offset, `clock.rs`). A writer
+//! task drains the client's outbox, so a slow client never holds up anyone
+//! else; a client that takes longer than [`SEND_TIMEOUT`] to accept a
+//! message is closed (it reconnects and resyncs).
 //!
 //! A socket's connect and disconnect lines name who opened it (#9, an
 //! [`Opener`]): the peer, the address Cloudflare forwarded (through the
@@ -294,6 +296,11 @@ fn handle_text(hub: &Hub, conn: &mut Conn, text: &str) {
     let client = conn.client;
     let outbox = Arc::clone(&conn.outbox);
     let outbox = &outbox;
+    // A holding page's silence releases its Stream Deck keys (#52): every
+    // message it sends counts.
+    if hub.config.companion.is_some() {
+        hub.route(RouterMsg::Heard { client });
+    }
     match serde_json::from_str::<ClientMsg>(text) {
         Ok(ClientMsg::Cmd {
             id,
@@ -337,6 +344,25 @@ fn handle_text(hub: &Hub, conn: &mut Conn, text: &str) {
         Ok(ClientMsg::Trace { events }) => hub
             .events
             .record("trace", trace_fields(client, &conn.who.peer, &events)),
+        Ok(ClientMsg::DeckView { on }) => hub.route(RouterMsg::DeckView { client, on }),
+        Ok(ClientMsg::DeckPress {
+            key,
+            down,
+            seq,
+            t,
+            hold_ms,
+            why,
+        }) => hub.route(RouterMsg::DeckPress {
+            client,
+            key,
+            down,
+            seq,
+            t,
+            hold_ms,
+            why,
+            hub_ms: crate::live::wall_ms().unwrap_or(0.0),
+            offset_ms: conn.offset,
+        }),
         // Through the outbox like every answer: a pong proves the writer
         // still reaches the client.
         Ok(ClientMsg::Ping { n, t, rtt, rtt_n }) => {

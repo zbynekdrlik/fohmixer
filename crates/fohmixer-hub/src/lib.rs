@@ -23,6 +23,12 @@
 //! request (`access.rs`), cloudflared's readiness (`tunnel.rs`), all in
 //! `/api/status` (`remote.rs`). The plain-HTTP listener always stays: it is
 //! the emergency path by IP and the tunnel's origin.
+//!
+//! The Stream Deck tab (#52, `[companion]`): one more Stream Deck on Bitfocus
+//! Companion's Satellite API (`companion.rs`), its state in the router
+//! (`deck.rs`, `router/deck.rs`), its link in `/api/status`. The stop
+//! releases the held keys and waits (bounded) for the Companion task's
+//! `REMOVE-DEVICE`.
 
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -78,6 +84,7 @@ pub mod ws;
 
 use access::AccessGate;
 use auth::Auth;
+use companion::CompanionHandle;
 use config::Config;
 use events::EventLog;
 use https::Https;
@@ -91,6 +98,10 @@ pub const DEFAULT_PORT: u16 = config::DEFAULT_HTTP_PORT;
 
 /// How long a stop waits for open requests before the server returns anyway.
 pub const STOP_DRAIN: Duration = Duration::from_secs(5);
+
+/// How long the stop waits for the Companion task's `REMOVE-DEVICE` (#52; the
+/// task bounds its own wait for Companion at 500 ms) before it ends the task.
+pub const COMPANION_STOP_WAIT: Duration = Duration::from_secs(1);
 
 /// The UI bundle (Trunk's `dist/`), embedded at build time. CI builds the
 /// real bundle for the release binary; native lint and test jobs create a
@@ -129,6 +140,10 @@ pub struct HubInner {
     pub reports: client_report::Reports,
     /// The event log (#43, `<data>/logs/events-YYYY-MM-DD.jsonl`).
     pub events: EventLog,
+    /// The Stream Deck's Companion task (#52, `[companion]`).
+    pub(crate) companion: Option<CompanionHandle>,
+    /// Its task, awaited after the stop so its `REMOVE-DEVICE` goes out.
+    companion_task: Mutex<Option<JoinHandle<()>>>,
     live: BTreeMap<String, LiveHandle>,
     router: mpsc::UnboundedSender<RouterMsg>,
     next_client: AtomicU64,
@@ -150,7 +165,10 @@ impl FromRef<Hub> for Arc<Auth> {
 }
 
 impl HubInner {
-    /// Closes every client and ends the hub's tasks (idempotent).
+    /// Closes every client and ends the hub's tasks (idempotent). The
+    /// router first releases the Stream Deck's held keys and tells the
+    /// Companion task to stop (#52); [`HubInner::companion_stopped`] waits
+    /// for it.
     pub fn stop(&self) {
         let _ = self.router.send(RouterMsg::Stop);
         for task in self
@@ -184,6 +202,25 @@ impl HubInner {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .push(task);
+    }
+
+    /// Waits up to [`COMPANION_STOP_WAIT`] for the Companion task to end
+    /// after a stop (the router tells it to, after its releases), then ends
+    /// it.
+    pub async fn companion_stopped(&self) {
+        let task = self
+            .companion_task
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        if let Some(mut task) = task
+            && tokio::time::timeout(COMPANION_STOP_WAIT, &mut task)
+                .await
+                .is_err()
+        {
+            tracing::warn!("the Companion task did not end within 1 s of the stop: ending it");
+            task.abort();
+        }
     }
 
     /// `GET /api/status`.
@@ -232,6 +269,7 @@ impl HubInner {
                 self.https.get().map(Arc::as_ref),
                 auth::now_secs() as i64,
             ),
+            companion: self.companion.as_ref().map(CompanionHandle::status),
         }
     }
 }
@@ -278,6 +316,17 @@ impl Hub {
             live.insert(instance.name.clone(), handle);
             tasks.push(task);
         }
+        // The Stream Deck (#52): its Companion task and the router's tick.
+        let companion = config.companion.as_ref().map(|cfg| {
+            let tx = router_tx.clone();
+            let events: companion::Events = Arc::new(move |event: companion::CompanionEvent| {
+                let _ = tx.send(RouterMsg::Deck { event });
+            });
+            CompanionHandle::spawn(cfg, events)
+        });
+        if config.companion.is_some() {
+            tasks.push(tokio::spawn(deck_ticks(router_tx.clone(), deck::TICK)));
+        }
         let names: Vec<String> = config.instances.iter().map(|i| i.name.clone()).collect();
         let layout = Arc::new(layout::store_in(&config.data_dir, &config.layout, names));
         let hub_state = rules::HubState::load(&config.data_dir);
@@ -287,9 +336,10 @@ impl Hub {
             stage_aut = hub_state.stage_aut,
             public_name = config.tls.as_ref().map(|t| t.name.as_str()).unwrap_or("-"),
             access = config.access.is_some(),
+            companion = config.companion.is_some(),
             "hub started"
         );
-        let router = router::Router::new(
+        let mut router = router::Router::new(
             live.clone(),
             hub_state.stage_aut,
             config.data_dir.clone(),
@@ -298,6 +348,9 @@ impl Hub {
                 events: events.clone(),
             },
         );
+        if let (Some(cfg), Some((handle, _))) = (&config.companion, &companion) {
+            router = router.with_deck(cfg.clone(), handle.clone());
+        }
         tokio::spawn(router.run(router_rx));
         tasks.push(tokio::spawn(poll_layout(
             Arc::clone(&layout),
@@ -305,6 +358,7 @@ impl Hub {
             Duration::from_millis(config.layout_poll_ms),
         )));
         let trusted_hosts = config.trusted_hosts();
+        let (companion, companion_task) = companion.unzip();
         Ok(Self(Arc::new(HubInner {
             config,
             auth,
@@ -315,6 +369,8 @@ impl Hub {
             https: std::sync::OnceLock::new(),
             reports: client_report::Reports::default(),
             events,
+            companion,
+            companion_task: Mutex::new(companion_task),
             live,
             router: router_tx,
             next_client: AtomicU64::new(1),
@@ -358,6 +414,18 @@ async fn poll_layout(
             {
                 return;
             }
+        }
+    }
+}
+
+/// The Stream Deck's clock (#52): a tick to the router every `period`.
+async fn deck_ticks(router: mpsc::UnboundedSender<RouterMsg>, period: Duration) {
+    let mut tick = tokio::time::interval(period);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tick.tick().await;
+        if router.send(RouterMsg::Tick).is_err() {
+            return;
         }
     }
 }
@@ -460,7 +528,9 @@ pub fn port_from(value: Option<&str>, default: u16) -> anyhow::Result<u16> {
 /// as in iemmixer): `ready` gets the bound address once the listener is up
 /// and the hub started; at the stop the clients' WebSockets close, the
 /// listener closes at once (the port is free), idle connections close, open
-/// requests get up to [`STOP_DRAIN`] to finish, and it returns `Ok`.
+/// requests get up to [`STOP_DRAIN`] to finish, the Stream Deck's Companion
+/// task gets up to [`COMPANION_STOP_WAIT`] to remove the device (#52), and it
+/// returns `Ok`.
 ///
 /// With `[tls]` the HTTPS listener binds `addr`'s IP on its port next to
 /// it, serves the stored certificate or waits for the ACME client's first
@@ -534,6 +604,7 @@ where
     }
     hub.stop();
     tracing::info!("HTTP server stopped");
+    hub.companion_stopped().await;
     if let Some(https) = hub.https.get() {
         // It took the stop with the HTTP server and ends its connections
         // STOP_DRAIN after it; this bound is only the backstop.
