@@ -9,16 +9,19 @@
 //! own time, so the hub refuses one that waited (`late`). The page tells the
 //! hub it views the tab (only a viewer gets the keys' images) and lifts
 //! every held key when the tab is left (`tab`) or the page goes hidden
-//! (`hidden`); a closed socket forgets the holds (the hub releases them); a
-//! primary pointer's down first lifts the holds whose end the browser never
-//! delivered. Every key owns its touches (`use:owns_touches`): no loupe,
-//! callout or drag on a hold.
+//! (`hidden`) or the grid changes its shape; a closed socket forgets the
+//! holds (the hub releases them); a primary pointer's down anywhere on the
+//! page (a capture-phase listener on its root) first lifts the holds whose
+//! end the browser never delivered. Every key owns its touches
+//! (`use:owns_touches`): no loupe, callout or drag on a hold.
 
 use std::collections::BTreeSet;
 
 use fohmixer_proto::layout::Control;
 use leptos::html;
 use leptos::prelude::*;
+use wasm_bindgen::JsCast;
+use wasm_bindgen::closure::Closure;
 
 use crate::behave::deck::{Action, Presses, Why, can_press};
 use crate::components::{ControlView, fail_flash, owns_touches};
@@ -130,6 +133,32 @@ fn leave_keys(
     show_held(presses, held);
 }
 
+/// A pointer's down at page time `t` (`primary`: the browser's
+/// `isPrimary`): the holds whose end never came go up first (`lost`), so a
+/// missed end never leaves a key stuck in Companion; then the outline.
+fn lift_missed(
+    store: LiveStore,
+    presses: StoredValue<Presses>,
+    held: RwSignal<BTreeSet<u32>>,
+    primary: bool,
+    t: f64,
+) {
+    let missed = presses
+        .try_update_value(|p| p.missed_ups(primary, t))
+        .unwrap_or_default();
+    for action in missed {
+        carry(store, presses, action, None, t);
+    }
+    show_held(presses, held);
+}
+
+/// The page root's capture-phase `pointerdown` listener and its element,
+/// kept to remove it in the cleanup.
+type RootListener = (
+    web_sys::HtmlDivElement,
+    Closure<dyn FnMut(web_sys::PointerEvent)>,
+);
+
 /// The Stream Deck tab's page: the rail with the layout's global controls,
 /// then the key grid.
 #[component]
@@ -139,6 +168,8 @@ pub fn DeckView(global: Vec<Control>, viewport: RwSignal<(f64, f64)>) -> impl In
     let held = RwSignal::new(BTreeSet::<u32>::new());
     let area_ref = NodeRef::<html::Div>::new();
     let area = RwSignal::new((0.0_f64, 0.0_f64));
+    let root_ref = NodeRef::<html::Div>::new();
+    let root_listener = StoredValue::new_local(None::<RootListener>);
     store.deck_view(true);
     diag::record(&trace::deck_view(dom::epoch_now(), true));
     // `visibilitychange` bubbles from the document to the window.
@@ -147,10 +178,31 @@ pub fn DeckView(global: Vec<Control>, viewport: RwSignal<(f64, f64)>) -> impl In
             leave_keys(store, presses, held, Why::Hidden);
         }
     });
+    // A primary down anywhere on the page (a key, the rail, the gaps between
+    // the keys) first lifts the holds whose end never came: a capture-phase
+    // listener on the page's root runs before every handler inside it.
+    root_ref.on_load(move |root| {
+        let listener = Closure::wrap(Box::new(move |ev: web_sys::PointerEvent| {
+            lift_missed(store, presses, held, ev.is_primary(), dom::event_epoch(&ev));
+        }) as Box<dyn FnMut(web_sys::PointerEvent)>);
+        let _ = root.add_event_listener_with_callback_and_bool(
+            "pointerdown",
+            listener.as_ref().unchecked_ref(),
+            true,
+        );
+        let _ = root_listener.try_set_value(Some((root, listener)));
+    });
     // The page's own signals stay untouched here (`lift_keys`, no outline):
     // its keys' render effects outlive this cleanup by a microtask.
     on_cleanup(move || {
         hidden.remove();
+        if let Some(Some((root, listener))) = root_listener.try_update_value(Option::take) {
+            let _ = root.remove_event_listener_with_callback_and_bool(
+                "pointerdown",
+                listener.as_ref().unchecked_ref(),
+                true,
+            );
+        }
         lift_keys(store, presses, Why::Tab);
         store.deck_view(false);
         diag::record(&trace::deck_view(dom::epoch_now(), false));
@@ -170,6 +222,16 @@ pub fn DeckView(global: Vec<Control>, viewport: RwSignal<(f64, f64)>) -> impl In
         }
     });
     let shape = Memo::new(move |_| store.deck.with(|d| d.as_ref().map(|d| (d.columns, d.rows))));
+    // A new shape (the hub restarted with other columns or rows) lifts every
+    // hold as leaving the tab does: a key the new grid lacks is gone with
+    // its element, and the end of its touch with it.
+    Effect::new(move |before: Option<Option<(u32, u32)>>| {
+        let now = shape.get();
+        if before.is_some_and(|before| before != now) {
+            leave_keys(store, presses, held, Why::Tab);
+        }
+        now
+    });
     let grid_style = move || grid_vars(shape.get(), area.get());
     let keys = move || {
         let (columns, rows) = shape.get().unwrap_or((0, 0));
@@ -182,7 +244,7 @@ pub fn DeckView(global: Vec<Control>, viewport: RwSignal<(f64, f64)>) -> impl In
         .map(|control| view! { <ControlView control=control /> })
         .collect_view();
     view! {
-        <div class="body deck-page" data-testid="deck">
+        <div class="body deck-page" data-testid="deck" node_ref=root_ref>
             <nav class="rail" data-testid="rail">
                 <div class="rail-main"></div>
                 <div class="rail-foot">{global}</div>
@@ -220,13 +282,9 @@ fn DeckKeyView(
         // late at the hub.
         let t = dom::event_epoch(&ev);
         // A primary pointer's down: the holds whose end never came go up
-        // first (`lost`), so a missed end never leaves a key stuck.
-        let missed = presses
-            .try_update_value(|p| p.missed_ups(ev.is_primary(), t))
-            .unwrap_or_default();
-        for action in missed {
-            carry(store, presses, action, None, t);
-        }
+        // first (`lost`), so a missed end never leaves a key stuck (the
+        // page's root listener did so already: this finds none left).
+        lift_missed(store, presses, held, ev.is_primary(), t);
         // A press can go now: the socket ready, Companion online, the link
         // not dropping out (a press would wait in a stalled socket).
         let connected = can_press(

@@ -181,13 +181,14 @@ exclude_re = [
   # Presses::held_keys, written only on a change), lift_keys
   # (Presses::leave_all's ups when the tab is left, the outline untouched:
   # the cleanup must not write the page's own signal) and leave_keys (the
-  # same when the page is hidden, then the outline); a key's down sends the
-  # tested Presses::missed_ups first through carry.
+  # same when the page is hidden, then the outline) and lift_missed (the
+  # tested Presses::missed_ups' ups through carry, then the outline: from
+  # the page root's capture-phase pointerdown listener and a key's down).
   # deck.spec.ts drives them in Chromium and WebKit (down and up on
   # pointerup, pointercancel and leaving the tab, with the page's deck
   # events and their whys in the event log; the outline; the red flash with
   # no later send). grid_vars (the grid's size) is tested.
-  "fohmixer-ui/src/pages/deck\\.rs.*(replace|in) (carry|show_held|lift_keys|leave_keys)( |$)",
+  "fohmixer-ui/src/pages/deck\\.rs.*(replace|in) (carry|show_held|lift_keys|leave_keys|lift_missed)( |$)",
   # diag.rs (#26), one browser call each: install (the window error,
   # unhandledrejection and visibilitychange listeners), observe_attributes
   # (the MutationObserver on data-sw / data-wake-lock), connected and
