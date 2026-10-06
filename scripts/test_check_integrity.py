@@ -158,7 +158,7 @@ class IntegrityTests(unittest.TestCase):
         self.put(rel, "view! { <div on:pointerdown=move |e| match e { _ => go() } class=\"x\" use:owns_touches=k></div> }\n")
         self.assertEqual(ci.violations(self.root), [])
 
-    def test_no_surface_element_uses_click(self) -> None:
+    def test_no_surface_element_takes_a_mouse_event(self) -> None:
         # #43 PR G: a prevented touchstart (an owned ancestor's) swallows the
         # synthetic click on the iPad, and neither Playwright project would
         # notice (mouse clicks still fire): the surface takes pointerdown only.
