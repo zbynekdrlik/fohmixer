@@ -158,6 +158,21 @@ class IntegrityTests(unittest.TestCase):
         self.put(rel, "view! { <div on:pointerdown=move |e| match e { _ => go() } class=\"x\" use:owns_touches=k></div> }\n")
         self.assertEqual(ci.violations(self.root), [])
 
+    def test_no_surface_element_uses_click(self) -> None:
+        # #43 PR G: a prevented touchstart (an owned ancestor's) swallows the
+        # synthetic click on the iPad, and neither Playwright project would
+        # notice (mouse clicks still fire): the surface takes pointerdown only.
+        rel = "crates/fohmixer-ui/src/pages/surface.rs"
+        self.put(rel, "view! {\n    <button use:owns_touches=k on:click=move |_| go()>\"x\"</button>\n}\n")
+        self.assertEqual(ci.violations(self.root),
+                         [f"{rel}:2: on:click on the surface: a prevented touchstart swallows it (#43)"])
+        for rel in ("crates/fohmixer-ui/src/pages/login.rs", "crates/fohmixer-ui/src/app.rs"):
+            with tempfile.TemporaryDirectory() as d:
+                root = Path(d)
+                (root / rel).parent.mkdir(parents=True)
+                (root / rel).write_text("view! { <button on:click=move |_| go()>\"x\"</button> }\n", encoding="utf-8")
+                self.assertEqual(ci.violations(root), [], rel)
+
     def test_the_login_page_and_other_crates_keep_their_touches(self) -> None:
         tap = "view! { <div on:pointerdown=a></div> }\n"
         for rel in ("crates/fohmixer-ui/src/pages/login.rs", "crates/fohmixer-hub/src/a.rs",
