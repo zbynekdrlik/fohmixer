@@ -802,6 +802,11 @@ def intent_count(timeline, state):
     return sum(e.data.get("state") == state for es in timeline.intents.values() for e in es)
 
 
+def system_count(timeline, what):
+    """How many of the window's system gestures (PR G) are of kind ``what``."""
+    return str(sum(e.what == what for e in timeline.system))
+
+
 def summary(timeline):
     """The summary as (name, text) pairs: stdout's lines and the report's
     table. No key and no name: a control is ``key#<hash>``."""
@@ -860,8 +865,11 @@ def summary(timeline):
         ("unconfirmed", str(intent_count(timeline, "unconfirmed"))),
         ("not_sent", str(intent_count(timeline, "not_sent"))),
         ("system_events", str(sum(e.what != "zoom" for e in timeline.system))),
-        ("system_not_prevented", str(sum(e.prevented is False for e in timeline.system))),
-        ("zooms", str(sum(e.what == "zoom" for e in timeline.system))),
+        ("system_escaped", str(sum(timeline_touch.escaped(e) for e in timeline.system))),
+        ("gesturestarts", system_count(timeline, "gesturestart")),
+        ("pointer_cancels", system_count(timeline, "pointercancel")),
+        ("lost_captures", system_count(timeline, "lostpointercapture")),
+        ("zooms", system_count(timeline, "zoom")),
         ("skipped_lines", str(timeline.skipped)),
         ("notes", str(len(timeline.notes))),
     ]

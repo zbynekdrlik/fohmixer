@@ -569,8 +569,11 @@ def _touches_table(t):
 SYSTEM_LEGEND = (
     "What the browser or the system did with a touch (PR G), recorded by the "
     "page: a context menu, a selection or a drag that started (the surface "
-    "prevents them), a pinch's start, a cancelled pointer, a pointer capture "
-    "lost while the finger was still down (the system took the touch), and "
+    "prevents them: one not prevented escaped), a pinch's start (any two "
+    "fingers down, two faders at once too), a cancelled pointer (the browser "
+    "or the system took the touch, e.g. a row panned from its background), a "
+    "pointer capture lost while the finger was still down (the system took "
+    "the touch, or the control went away under the finger: on none), and "
     "each change of the page's zoom. On: the control's kind (its keys in the "
     "next column) or the element's. Prevented: whether the page stopped the "
     "browser's own action (a cancelled pointer or a lost capture cannot be)."

@@ -47,7 +47,11 @@ seq). A volume's Live value at position p is p^0.515.
   control's or element's kind, ``keys`` the control's, ``pointer``,
   ``prevented``) and ``zoom`` events (the visual viewport's ``scale`` when
   it changed). ``system_event`` reads one; a malformed field reads as
-  missing.
+  missing. Only a context menu, a selection or a drag that nothing
+  prevented ``escaped``; a pinch's start comes with any two fingers down
+  (two faders at once), a cancel with a row panned from its background,
+  and a capture is lost when the system takes the touch or the control
+  goes away under the finger (``on`` none), so each kind counts apart.
 - **No data (PR E):** past its backlog's bound the page's recorder drops
   moves, oldest first, and says so with the page time of the oldest and the
   newest it dropped (an ``overflow`` marker of kind ``mv``). Such a span is
@@ -111,6 +115,8 @@ Gap = collections.namedtuple("Gap", ("start", "end", "ms", "px"))
 SystemEvent = collections.namedtuple(
     "SystemEvent", ("time", "what", "on", "keys", "pointer", "prevented", "scale")
 )
+# The gestures the surface prevents: one that was not prevented escaped.
+ESCAPABLE = ("contextmenu", "selectstart", "dragstart")
 
 
 def db_apart(a, b):
@@ -406,3 +412,9 @@ def system_event(hub, data):
         data.get("prevented") is True,
         None,
     )
+
+
+def escaped(event):
+    """Whether a ``SystemEvent`` is a context menu, a selection or a drag that
+    nothing prevented (the browser's own action ran)."""
+    return event.what in ESCAPABLE and event.prevented is False
