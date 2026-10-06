@@ -329,7 +329,7 @@ function Get-FohCompanionToml {
     # hub's defaults; the hub checks the table (config check).
     param([AllowEmptyString()][string]$Endpoint = '')
     if (-not $Endpoint) { return '' }
-    $m = [regex]::Match($Endpoint, '\A(?<host>[^\s:"]+)(:(?<port>\d{1,5}))?\z')
+    $m = [regex]::Match($Endpoint, '\A(?<host>[^\s:"\\]+)(:(?<port>[0-9]{1,5}))?\z')
     $port = 16622
     if ($m.Success -and $m.Groups['port'].Success) { $port = [int]$m.Groups['port'].Value }
     if (-not $m.Success -or $port -lt 1 -or $port -gt 65535) {

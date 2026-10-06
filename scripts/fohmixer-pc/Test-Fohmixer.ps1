@@ -455,11 +455,11 @@ try {
     Assert ((Get-FohCompanionToml -Endpoint 'companion.example.org') -ceq $wantCompanion) 'companion-toml-default-port'
     Assert ((Get-FohCompanionToml -Endpoint '10.0.0.7:16700') -ceq "`r`n[companion]`r`nhost = `"10.0.0.7`"`r`nport = 16700`r`n") 'companion-toml-with-a-port'
     Assert ((Get-FohCompanionToml -Endpoint '') -ceq '') 'companion-toml-empty-without-an-endpoint'
-    foreach ($bad in @('a b', 'host:', 'host:0', 'host:70000', 'h"st', ':16622', 'host:16622:1')) {
+    foreach ($bad in @('a b', 'host:', 'host:0', 'host:70000', 'h"st', ':16622', 'host:16622:1', 'a\b')) {
         Assert ((ErrorOf { Get-FohCompanionToml -Endpoint $bad }) -like '*Companion endpoint refused*') "companion-toml-refuses-[$bad]"
     }
     $withBoth = New-FohHubToml -HttpPort 1 -BandPort 2 -MasterPort 3 -Companion $wantCompanion -Remote $gotRemote
-    Assert ($withBoth.IndexOf('[companion]') -lt $withBoth.IndexOf('[tls]')) 'companion-table-before-the-remote-tables'
+    Assert (($withBoth.IndexOf('[companion]') -ge 0) -and ($withBoth.IndexOf('[companion]') -lt $withBoth.IndexOf('[tls]'))) 'companion-table-before-the-remote-tables'
     Assert ((Get-FohInstalledCompanionToml -Text $withBoth) -ceq $wantCompanion) 'installed-companion-table-read-back-before-tls'
     Assert ((Get-FohInstalledRemoteToml -Text $withBoth) -ceq $gotRemote) 'installed-remote-tables-unchanged-by-companion'
     Assert ((Get-FohInstalledCompanionToml -Text ((New-FohHubToml -HttpPort 1 -BandPort 2 -MasterPort 3) + $wantCompanion)) -ceq $wantCompanion) 'installed-companion-table-read-back-at-the-end'
