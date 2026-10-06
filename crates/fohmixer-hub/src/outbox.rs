@@ -19,11 +19,16 @@
 //! values (a page then sees Live's new value before the ack that closes its
 //! intent). Each instance's `link` (Live's health) is coalesced too: only
 //! the latest one waits.
+//!
+//! The Stream Deck's keys (#52) are coalesced too, the latest state per key,
+//! and written last, after the acks: a viewer's key images never hold up a
+//! fader's ack, and only a client viewing the tab gets them (the router
+//! decides; a closed tab drops what waits, `forget_deck`).
 
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use fohmixer_proto::client::{AckItem, ServerMsg, ValueItem};
+use fohmixer_proto::client::{AckItem, DeckKey, ServerMsg, ValueItem};
 use serde_json::Value;
 use tokio::sync::Notify;
 
@@ -38,6 +43,7 @@ struct Inner {
     links: BTreeMap<String, ServerMsg>,
     values: BTreeMap<String, ValueItem>,
     acks: BTreeMap<String, AckItem>,
+    deck: BTreeMap<u32, DeckKey>,
     closed: bool,
 }
 
@@ -63,6 +69,7 @@ impl Inner {
             && self.links.is_empty()
             && self.values.is_empty()
             && self.acks.is_empty()
+            && self.deck.is_empty()
     }
 }
 
@@ -133,6 +140,18 @@ impl Outbox {
         });
     }
 
+    /// A Stream Deck key's latest state (#52), written after everything else.
+    pub fn deck_key(&self, key: DeckKey) {
+        self.put(|inner| {
+            inner.deck.insert(key.key, key);
+        });
+    }
+
+    /// The client closed the tab: the keys waiting for it are dropped.
+    pub fn forget_deck(&self) {
+        self.lock().deck.clear();
+    }
+
     /// Drops a pending item of a subscription the client left.
     pub fn forget(&self, sub: &str) {
         self.lock().values.remove(sub);
@@ -174,7 +193,8 @@ impl Outbox {
 
     /// Everything waiting, in write order (replies and instance states,
     /// hub values, the layout revision, the instances' links, one `values`
-    /// message, then one `ack` message); `None` once closed.
+    /// message, one `ack` message, then one `deck_keys` message); `None` once
+    /// closed.
     pub fn take(&self) -> Option<Vec<ServerMsg>> {
         let mut inner = self.lock();
         if inner.closed {
@@ -200,6 +220,11 @@ impl Outbox {
                 items: std::mem::take(&mut inner.acks).into_values().collect(),
             });
         }
+        if !inner.deck.is_empty() {
+            out.push(ServerMsg::DeckKeys {
+                items: std::mem::take(&mut inner.deck).into_values().collect(),
+            });
+        }
         Some(out)
     }
 
@@ -221,6 +246,7 @@ impl Outbox {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fohmixer_proto::client::DeckKey;
     use serde_json::json;
     use std::sync::Arc;
     use std::time::Duration;
@@ -421,6 +447,78 @@ mod tests {
             }]
         );
         assert!(outbox.lock().is_empty());
+    }
+
+    fn deck_key(key: u32, img: &str) -> DeckKey {
+        DeckKey {
+            key,
+            img: Some(img.to_string()),
+            color: None,
+            pressed: false,
+        }
+    }
+
+    #[test]
+    fn deck_keys_keep_the_latest_per_key_and_go_last() {
+        let outbox = Outbox::new();
+        outbox.deck_key(deck_key(5, "data:a"));
+        outbox.deck_key(deck_key(1, "data:b"));
+        outbox.deck_key(deck_key(5, "data:c"));
+        outbox.ack(AckItem::applied("band|x|value", 3, None));
+        outbox.value(ValueItem::value("a", json!(1), None));
+        outbox.reply(result("1"));
+        assert_eq!(
+            outbox.take().unwrap(),
+            vec![
+                result("1"),
+                ServerMsg::Values {
+                    items: vec![ValueItem::value("a", json!(1), None)]
+                },
+                ServerMsg::Ack {
+                    items: vec![AckItem::applied("band|x|value", 3, None)]
+                },
+                ServerMsg::DeckKeys {
+                    items: vec![deck_key(1, "data:b"), deck_key(5, "data:c")]
+                },
+            ]
+        );
+        assert_eq!(outbox.take().unwrap(), vec![], "taken once");
+    }
+
+    #[test]
+    fn a_waiting_deck_key_wakes_the_writer_and_a_closed_tab_drops_them() {
+        let outbox = Outbox::new();
+        outbox.deck_key(deck_key(2, "data:a"));
+        assert!(
+            !outbox.lock().is_empty(),
+            "a deck key is something to write"
+        );
+        outbox.forget_deck();
+        assert!(outbox.lock().is_empty());
+        assert_eq!(outbox.take().unwrap(), vec![]);
+        outbox.close();
+        outbox.deck_key(deck_key(2, "data:b"));
+        assert_eq!(outbox.take(), None);
+    }
+
+    #[tokio::test]
+    async fn the_writer_wakes_for_a_deck_key() {
+        let outbox = Arc::new(Outbox::new());
+        let writer = Arc::clone(&outbox);
+        let batch = tokio::spawn(async move { writer.next_batch().await });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        outbox.deck_key(deck_key(7, "data:a"));
+        let batch = tokio::time::timeout(Duration::from_secs(2), batch)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            batch,
+            vec![ServerMsg::DeckKeys {
+                items: vec![deck_key(7, "data:a")]
+            }]
+        );
     }
 
     fn link(instance: &str, tick_age_ms: f64) -> ServerMsg {
