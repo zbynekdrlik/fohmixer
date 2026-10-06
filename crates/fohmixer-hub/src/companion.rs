@@ -6,7 +6,7 @@
 //! the version gate ([`api_ok`]), the lines the hub writes ([`add_device`],
 //! [`key_press`], [`remove_device`], [`ping`], [`pong`]), the session's
 //! deadlines ([`overdue`]) and the first-in-first-out matching of the
-//! `KEY-PRESS` answers ([`Fifo`]).
+//! `KEY-PRESS` answers ([`Fifo`]). [`client`] is the task.
 //!
 //! Companion 5.0.7 as probed (#52 plan, "Companion 5.0.7 facts"): every
 //! line it writes ends with a space before its `\n`; a quoted value is
@@ -20,8 +20,12 @@
 //! key held when its surface goes away stays held until a release comes from
 //! any surface.
 
+pub mod client;
+
 use std::collections::{BTreeMap, VecDeque};
 use std::time::{Duration, Instant};
+
+pub use client::{CompanionHandle, Events, Snapshot};
 
 use crate::config::CompanionCfg;
 use crate::live::subs::ClientId;

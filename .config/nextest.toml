@@ -22,7 +22,8 @@ filter = 'binary_id(fohmixer-hub::graceful_stop) | binary_id(fohmixer-hub::serve
 test-group = 'hub-ports'
 
 [[profile.default.overrides]]
-filter = 'binary_id(fohmixer-hub::live_client) | binary_id(fohmixer-hub::fanout) | binary_id(fohmixer-hub::stage_aut) | binary_id(fohmixer-hub::layout) | binary_id(fohmixer-hub::auth) | binary_id(fohmixer-hub::names) | binary_id(fohmixer-hub::ping) | binary_id(fohmixer-hub::setter)'
+# companion_client and deck (#52): no host, but timing checks
+filter = 'binary_id(fohmixer-hub::live_client) | binary_id(fohmixer-hub::fanout) | binary_id(fohmixer-hub::stage_aut) | binary_id(fohmixer-hub::layout) | binary_id(fohmixer-hub::auth) | binary_id(fohmixer-hub::names) | binary_id(fohmixer-hub::ping) | binary_id(fohmixer-hub::setter) | binary_id(fohmixer-hub::companion_client)'
 test-group = 'hub-hosts'
 
 [profile.mutants]
