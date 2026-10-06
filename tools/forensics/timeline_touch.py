@@ -53,11 +53,15 @@ seq). A volume's Live value at position p is p^0.515.
   and a capture is lost when the system takes the touch or the control
   goes away under the finger (``on`` none), so each kind counts apart.
 - **The Stream Deck (#52):** the hub's ``deck_press`` records with Companion's
-  round trip (``deck_presses``: the ``deck_ok`` of the same client and seq),
-  its own releases (``deck_release``; ``lost`` is the one that never reached
-  Companion), Companion's link outages (``deck_outages``: a down or refused
-  to the next up) and the red flashes (``deck_unsent``: a page's down it did
-  not send, a down the hub refused, offline or late).
+  answer (``deck_presses``: the ``deck_ok`` of the same client and seq, its
+  round trip, ``ok`` and ``error``), its own releases with theirs
+  (``deck_releases``: a ``deck_ok`` without a client, by key and order;
+  ``lost`` is the one that never reached Companion), Companion's link
+  outages (``deck_outages``: a down or refused to the next up), the red
+  flashes (``deck_unsent``: a page's down it did not send, a down the hub
+  refused, offline or late, and a forwarded down Companion's answer
+  refused, its error or ``offline``) and Companion's key changes within a
+  press's 10 s (``deck_key_changes``: did Companion react).
 - **No data (PR E):** past its backlog's bound the page's recorder drops
   moves, oldest first, and says so with the page time of the oldest and the
   newest it dropped (an ``overflow`` marker of kind ``mv``). Such a span is
@@ -443,34 +447,63 @@ DeckPress = collections.namedtuple(
         "forwarded",
         "reason",
         "why",
+        "ok",
+        "error",
     ),
 )
 DeckRelease = collections.namedtuple(
-    "DeckRelease", ("time", "client", "key", "reason", "hub_hold_ms")
+    "DeckRelease", ("time", "client", "key", "reason", "hub_hold_ms", "ok", "error")
 )
 DeckOutage = collections.namedtuple("DeckOutage", ("start", "end", "ms", "error"))
-DeckUnsent = collections.namedtuple("DeckUnsent", ("time", "key", "where"))
+# ``why``: none for the page, the hub's reason, Companion's answer's error.
+DeckUnsent = collections.namedtuple("DeckUnsent", ("time", "key", "where", "why"))
+# A ``deck_key`` record within a press's window: ``img_changed`` whether its
+# image differs from the key's previous record (None: none read before),
+# ``since_press_ms`` from the latest press of the key that reached Companion.
+DeckKeyChange = collections.namedtuple(
+    "DeckKeyChange",
+    ("time", "key", "pressed", "color", "img_hash", "img_changed", "since_press_ms"),
+)
+
+# Companion's "answer" to a press the link lost (the hub's ``OFFLINE``).
+OFFLINE = "offline"
+# The hub's own releases that never get a ``deck_ok``: a ``lost`` one was
+# never sent, and the stop's are answered after the router ended.
+UNANSWERED_RELEASES = ("lost", "stop")
+# A key's changes are recorded this long after a press on it (ms; the hub's
+# ``PRESS_WINDOW_MS``, inclusive).
+PRESS_WINDOW_MS = 10_000.0
+
+
+def answer_fields(answer):
+    """``ok`` (True or False; None without an answer, or a malformed one) and
+    ``error`` of a ``deck_ok`` record."""
+    if answer is None:
+        return None, None
+    ok = answer.get("ok")
+    return (ok if isinstance(ok, bool) else None), answer.get("error")
 
 
 def deck_presses(presses, answers):
     """The hub's ``deck_press`` records as ``DeckPress``es, each forwarded one
-    with Companion's round trip: the ``rtt_ms`` of the first ``deck_ok`` of the
-    same client and seq at or after it (a page's seq repeats across pages and
-    after a reload)."""
+    with Companion's answer: the first ``deck_ok`` of the same client and seq
+    at or after it (a page's seq repeats across pages and after a reload),
+    its round trip, ``ok`` and ``error``."""
     out = []
     for record in presses:
         client, seq = record.get("client"), record.get("seq")
         forwarded = record.get("forwarded") is True
-        rtt = None
+        answer = None
         if forwarded:
-            rtt = next(
+            answer = next(
                 (
-                    number(a.get("rtt_ms"))
+                    a
                     for a in answers
                     if a.get("client") == client and a.get("seq") == seq and a["ts"] >= record["ts"]
                 ),
                 None,
             )
+        ok, error = answer_fields(answer)
         out.append(
             DeckPress(
                 record["ts"],
@@ -479,26 +512,95 @@ def deck_presses(presses, answers):
                 record.get("key"),
                 record.get("down") is True,
                 number(record.get("delay_ms")),
-                rtt,
+                None if answer is None else number(answer.get("rtt_ms")),
                 number(record.get("hold_ms")),
                 number(record.get("hub_hold_ms")),
                 forwarded,
                 record.get("reason"),
                 record.get("why"),
+                ok,
+                error,
             )
         )
     return out
 
 
-def deck_release(record):
-    """A hub ``deck_release`` record (a release the hub made itself)."""
-    return DeckRelease(
-        record["ts"],
-        record.get("client"),
-        record.get("key"),
-        record.get("reason"),
-        number(record.get("hub_hold_ms")),
-    )
+def deck_releases(releases, answers):
+    """The hub's ``deck_release`` records (time order) as ``DeckRelease``es,
+    each with Companion's answer: the hub's own releases are answered by a
+    ``deck_ok`` of an up without a client, matched by key in order
+    (Companion answers in order: each release takes the first unused such
+    answer of its key at or after it; an older one belonged to a release not
+    read). ``lost`` and ``stop`` releases take none
+    (``UNANSWERED_RELEASES``). Pass every record read, the lead's too, and
+    keep the window's afterwards: a release just before the window owns the
+    answer that follows it."""
+    waiting = collections.defaultdict(collections.deque)
+    for a in answers:
+        if a.get("client") is None and a.get("down") is False:
+            waiting[a.get("key")].append(a)
+    out = []
+    for record in releases:
+        answer = None
+        reason = record.get("reason")
+        if reason not in UNANSWERED_RELEASES:
+            queue = waiting[record.get("key")]
+            while queue and queue[0]["ts"] < record["ts"]:
+                queue.popleft()
+            answer = queue.popleft() if queue else None
+        ok, error = answer_fields(answer)
+        out.append(
+            DeckRelease(
+                record["ts"],
+                record.get("client"),
+                record.get("key"),
+                reason,
+                number(record.get("hub_hold_ms")),
+                ok,
+                error,
+            )
+        )
+    return out
+
+
+def in_press_window(since_ms):
+    """Whether a key change ``since_ms`` after a press of the key is in the
+    press's window (the hub's ``in_press_window``: 0 to 10 000 ms)."""
+    return 0.0 <= since_ms <= PRESS_WINDOW_MS
+
+
+def deck_key_changes(records, presses, start, end):
+    """Companion's key changes in ``start``..``end`` that fall within
+    ``PRESS_WINDOW_MS`` after a press of the same key that reached Companion
+    (``presses``: ``(time, key)`` pairs, the lead's too), as
+    ``DeckKeyChange``es in time order: whether Companion reacted. ``records``
+    are every ``deck_key`` read, in time order: a change's image is compared
+    with the key's previous record, one before the window too."""
+    last_hash = {}
+    out = []
+    for record in records:
+        key = record.get("key")
+        img = record.get("img_hash")
+        changed = (img != last_hash[key]) if key in last_hash else None
+        last_hash[key] = img
+        if not start <= record["ts"] <= end:
+            continue
+        since = [record["ts"] - at for at, k in presses if k == key and at <= record["ts"]]
+        if not since or not in_press_window(min(since)):
+            continue
+        pressed = record.get("pressed")
+        out.append(
+            DeckKeyChange(
+                record["ts"],
+                key,
+                pressed if isinstance(pressed, bool) else None,
+                record.get("color"),
+                img,
+                changed,
+                min(since),
+            )
+        )
+    return out
 
 
 def deck_outages(links, start, end):
@@ -531,14 +633,24 @@ HUB_REFUSALS = ("offline", "late")
 
 def deck_unsent(events, presses):
     """The red flashes, in time order: a page's ``deck`` down it did not send
-    (``where`` page) and a down the hub refused, Companion offline or the
-    down late (hub)."""
+    (``where`` page), a down the hub refused, Companion offline or the down
+    late (hub, ``why`` the reason), and a forwarded down whose answer was
+    not ok: Companion refused it, or the link was lost with it on the way
+    (companion, ``why`` the answer's error). An up's refusal never
+    flashes."""
     flashes = [
-        DeckUnsent(e.hub, e.data.get("k"), "page")
+        DeckUnsent(e.hub, e.data.get("k"), "page", None)
         for e in events
         if e.data.get("d") == 1 and e.data.get("sent") is False
     ]
     flashes += [
-        DeckUnsent(p.time, p.key, "hub") for p in presses if p.down and p.reason in HUB_REFUSALS
+        DeckUnsent(p.time, p.key, "hub", p.reason)
+        for p in presses
+        if p.down and p.reason in HUB_REFUSALS
+    ]
+    flashes += [
+        DeckUnsent(p.time, p.key, "companion", p.error)
+        for p in presses
+        if p.down and p.forwarded and p.ok is False
     ]
     return sorted(flashes, key=lambda f: f.time)

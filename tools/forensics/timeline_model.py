@@ -364,14 +364,21 @@ class Timeline:
             for e in self.page
             if e.ev in ("sys", "zoom") and self.in_window(e.hub)
         ]
-        # The Stream Deck (#52): presses with Companion's round trips, the
-        # hub's own releases, the red flashes, Companion's link outages.
+        # The Stream Deck (#52): presses with Companion's answers, the hub's
+        # own releases with theirs, the red flashes, Companion's link
+        # outages, and Companion's key changes after a press.
         self.deck_presses = timeline_touch.deck_presses(
             self._within(kinds["deck_press"]), kinds["deck_ok"]
         )
         self.deck_releases = [
-            timeline_touch.deck_release(r) for r in self._within(kinds["deck_release"])
+            r
+            for r in timeline_touch.deck_releases(kinds["deck_release"], kinds["deck_ok"])
+            if self.in_window(r.time)
         ]
+        reached = [
+            (r["ts"], r.get("key")) for r in kinds["deck_press"] if r.get("forwarded") is True
+        ] + [(r["ts"], r.get("key")) for r in kinds["deck_release"] if r.get("reason") != "lost"]
+        self.deck_keys = timeline_touch.deck_key_changes(kinds["deck_key"], reached, start, end)
         self.deck_outages = timeline_touch.deck_outages(kinds["deck_link"], start, end)
         self.deck_unsent = timeline_touch.deck_unsent(
             [e for e in self.page if e.ev == "deck" and self.in_window(e.hub)],

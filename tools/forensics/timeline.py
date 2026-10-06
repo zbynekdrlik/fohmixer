@@ -57,9 +57,11 @@ prevented them), pinch starts, cancelled pointers, captures lost while the
 finger was down, and zooms, each with the control's kind and keys or the
 element's kind; then the Stream Deck (#52, the hub's ``deck_*`` records and
 the page's ``deck`` events): each press with the hub's delay, Companion's
-round trip and the holds (page and hub), the releases the hub made itself
-(a ``lost`` one never reached Companion), the red flashes and Companion's
-link outages.
+round trip and answer (ok, refused with its error, offline) and the holds
+(page and hub), the releases the hub made itself with Companion's answer (a
+``lost`` one never reached Companion), the red flashes (a down not sent,
+refused by the hub offline or late, or answered not ok), Companion's key
+changes within 10 s of a press and Companion's link outages.
 
 stdout: the summary, one ``name=value`` per line, the names of the report's
 summary table (the deck's: ``deck_presses``, ``deck_unsent``,

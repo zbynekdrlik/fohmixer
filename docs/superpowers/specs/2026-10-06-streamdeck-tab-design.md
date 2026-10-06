@@ -250,12 +250,13 @@ Images are never logged; only their hash and size are. Blinking feedback therefo
 - `deck_view`: on/off.
 
 **`tools/forensics/timeline.py`:** a deck section for the window:
-- presses, with the hub delay, Companion's round trip, and the hold as the page measured it vs as forwarded;
-- red flashes (unsent presses: not sent by the page, refused by the hub offline or late);
-- forced releases;
+- presses, with the hub delay, Companion's round trip and answer (ok, refused with its error, offline), and the hold as the page measured it vs as forwarded;
+- red flashes (downs that did nothing: not sent by the page, refused by the hub offline or late, or answered not ok by Companion or the lost link);
+- forced releases, each with Companion's answer (a `deck_ok` without a client, matched by key and order), so a release lost again shows;
+- Companion's key changes (`deck_key`) within 10 s of a press of the key: whether Companion reacted;
 - Companion link outages with their lengths.
 
-Summary fields: `deck_presses`, `deck_unsent`, `deck_forced_releases`, `deck_link_outages`, `deck_rtt_p50/p99`. Stdout stays numbers-only: key indexes, no names.
+Summary fields: `deck_presses`, `deck_unsent` (every red flash: page, hub and Companion's not-ok answers to downs), `deck_forced_releases`, `deck_link_outages`, `deck_rtt_p50/p99`. Stdout stays numbers-only: key indexes, no names.
 
 ## 9. Proof
 

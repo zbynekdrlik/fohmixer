@@ -1,9 +1,11 @@
 """The forensics timeline's Stream Deck section (#52): the hub's
-``deck_press`` records with Companion's round trip from their ``deck_ok``
-(matched by client and seq), its ``deck_release`` and ``deck_link`` records,
-and the page's ``deck`` events (``diag/trace.rs``), listed in the report and
-counted on stdout, numbers only. The synthetic logs and the report reader
-come from ``test_timeline.py``."""
+``deck_press`` records with Companion's answer from their ``deck_ok``
+(matched by client and seq: round trip, ok, error), its ``deck_release``
+records with theirs (a ``deck_ok`` without a client, by key and order), its
+``deck_link`` and ``deck_key`` records, and the page's ``deck`` events
+(``diag/trace.rs``), listed in the report and counted on stdout, numbers
+only. The synthetic logs and the report reader come from
+``test_timeline.py``."""
 
 import os
 import sys
@@ -14,7 +16,13 @@ if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
 from test_timeline import BASE, OFFSET, Log, ReportCase  # noqa: E402
-from timeline_touch import DeckOutage, deck_outages, deck_presses  # noqa: E402
+from timeline_touch import (  # noqa: E402
+    DeckOutage,
+    deck_outages,
+    deck_presses,
+    deck_releases,
+    in_press_window,
+)
 
 PEER = "192.0.2.10"
 
@@ -56,6 +64,41 @@ def ok(log, ts, client, key, down, seq, rtt_ms):
         error=None,
         rtt_ms=rtt_ms,
     )
+
+
+def answer(log, ts, client, key, down, seq, *, ok=True, error=None, rtt_ms=5.0):
+    """Companion's answer as a hub ``deck_ok`` record (``client`` and ``seq``
+    None for the hub's own release)."""
+    log.add(
+        "deck_ok",
+        ts,
+        client=client,
+        seq=seq,
+        key=key,
+        down=down,
+        ok=ok,
+        error=error,
+        rtt_ms=rtt_ms,
+    )
+
+
+def key_state(log, ts, key, *, pressed, img, color="#00aa00"):
+    """A hub ``deck_key`` record (the image as its hash only)."""
+    log.add(
+        "deck_key",
+        ts,
+        key=key,
+        pressed=pressed,
+        color=color,
+        img_hash=img,
+        img_bytes=700,
+        changes=1,
+    )
+
+
+def release(log, ts, key, reason, client=None):
+    """A hub ``deck_release`` record."""
+    log.add("deck_release", ts, client=client, key=key, reason=reason, hub_hold_ms=None)
 
 
 def link(log, ts, state, **fields):
@@ -199,6 +242,124 @@ class DeckSection(ReportCase):
         )
         self.assertEqual(page.of_class("deck-press")[0]["data-reason"], "late")
 
+    def test_companions_answer_shows_on_each_press_and_a_refused_down_flashes(self):
+        log = Log()
+        log.pings(7, BASE, BASE + 6000)
+        # Companion refuses a down; the link goes with a down and its up on
+        # the way (both answered offline); a down answered ok; a down whose
+        # answer was not read.
+        press(log, BASE + 1000, 7, 3, True, 1)
+        answer(log, BASE + 1004, 7, 3, True, 1, ok=False, error="Invalid KEY", rtt_ms=4.0)
+        press(log, BASE + 2000, 7, 4, True, 2)
+        press(log, BASE + 2100, 7, 4, False, 3, why="up", hold=100.0)
+        answer(log, BASE + 2500, 7, 4, True, 2, ok=False, error="offline", rtt_ms=None)
+        answer(log, BASE + 2501, 7, 4, False, 3, ok=False, error="offline", rtt_ms=None)
+        press(log, BASE + 3000, 7, 5, True, 4)
+        answer(log, BASE + 3003, 7, 5, True, 4)
+        press(log, BASE + 4000, 7, 6, True, 5)
+        summary, page, stdout = self.report(log, BASE, BASE + 6000)
+        self.assertEqual((summary["deck_presses"], summary["deck_unsent"]), ("4", "2"))
+        presses = page.of_class("deck-press")
+        self.assertEqual(
+            [
+                (a["data-key"], a["data-down"], a.get("data-ok"), a.get("data-error"))
+                for a in presses
+            ],
+            [
+                ("3", "true", "false", "Invalid KEY"),
+                ("4", "true", "false", "offline"),
+                ("4", "false", "false", "offline"),
+                ("5", "true", "true", None),
+                ("6", "true", None, None),
+            ],
+        )
+        for text in ("refused: Invalid KEY", "no answer read"):
+            self.assertIn(text, page.text)
+        # Only the downs answered not ok flash; the up's refusal never does.
+        self.assertEqual(
+            [
+                (a["data-key"], a["data-where"], a.get("data-why"))
+                for a in page.of_class("deck-unsent")
+            ],
+            [("3", "companion", "Invalid KEY"), ("4", "companion", "offline")],
+        )
+        self.assertNotIn("Invalid KEY", stdout)
+
+    def test_each_hub_release_shows_whether_companion_got_it(self):
+        log = Log()
+        log.pings(7, BASE - 1000, BASE + 9000)
+        # A release just before the window owns the answer after it.
+        release(log, BASE - 100, 5, "silent", client=7)
+        answer(log, BASE + 500, None, 5, False, None)
+        release(log, BASE + 1000, 5, "detach", client=7)
+        # A page's own up of the key is answered too: not the hub's.
+        answer(log, BASE + 1001, 7, 5, False, 9, ok=False, error="Invalid KEY")
+        answer(log, BASE + 1003, None, 5, False, None)
+        release(log, BASE + 5000, 5, "reconnect")
+        answer(log, BASE + 5100, None, 5, False, None, ok=False, error="offline", rtt_ms=None)
+        release(log, BASE + 6000, 8, "stop")
+        release(log, BASE + 6000, 9, "lost")
+        # A later answer of key 8 is not the stop's (it gets none).
+        release(log, BASE + 7000, 8, "reconnect")
+        answer(log, BASE + 7002, None, 8, False, None)
+        summary, page, _ = self.report(log, BASE, BASE + 9000)
+        self.assertEqual(summary["deck_forced_releases"], "5")
+        self.assertEqual(
+            [
+                (a["data-key"], a["data-reason"], a.get("data-ok"), a.get("data-error"))
+                for a in page.of_class("deck-release")
+            ],
+            [
+                ("5", "detach", "true", None),
+                ("5", "reconnect", "false", "offline"),
+                ("8", "stop", None, None),
+                ("9", "lost", None, None),
+                ("8", "reconnect", "true", None),
+            ],
+        )
+        for text in ("detach: ok", "reconnect: offline", "lost: never released"):
+            self.assertIn(text, page.text)
+
+    def test_companions_key_changes_within_ten_seconds_of_a_press_are_listed(self):
+        log = Log()
+        log.pings(7, BASE, BASE + 12000)
+        key_state(log, BASE + 500, 3, pressed=False, img="aaaa")
+        press(log, BASE + 1000, 7, 3, True, 1)
+        key_state(log, BASE + 1010, 3, pressed=True, img="bbbb")
+        key_state(log, BASE + 1500, 3, pressed=True, img="bbbb", color="#ff0000")
+        # A key nobody pressed, and one whose press was not forwarded.
+        key_state(log, BASE + 1600, 4, pressed=False, img="cccc")
+        press(log, BASE + 2000, 7, 7, True, 2, forwarded=False, reason="held")
+        key_state(log, BASE + 2010, 7, pressed=True, img="dddd")
+        # The hub's own release reached Companion too.
+        release(log, BASE + 3000, 9, "reconnect")
+        key_state(log, BASE + 3020, 9, pressed=False, img="eeee")
+        # 10 s after the press: still listed; a millisecond later: not.
+        key_state(log, BASE + 11000, 3, pressed=False, img="aaaa")
+        key_state(log, BASE + 11001, 3, pressed=False, img="aaaa")
+        _, page, stdout = self.report(log, BASE, BASE + 12000)
+        keys = page.of_class("deck-key")
+        self.assertEqual(
+            [
+                (
+                    a["data-key"],
+                    a.get("data-pressed"),
+                    a.get("data-img-changed"),
+                    float(a["data-since-press"]),
+                )
+                for a in keys
+            ],
+            [
+                ("3", "true", "true", 10.0),
+                ("3", "true", "false", 500.0),
+                ("9", "false", None, 20.0),
+                ("3", "false", "true", 10000.0),
+            ],
+        )
+        self.assertEqual(keys[1]["data-color"], "#ff0000")
+        self.assertIn("pressed, #00aa00, image changed", page.text)
+        self.assertNotIn("#00aa00", stdout)
+
     def test_a_window_without_the_deck_says_so(self):
         log = Log()
         log.pings(7, BASE, BASE + 1000)
@@ -289,6 +450,36 @@ class DeckHelpers(unittest.TestCase):
         got = deck_presses(presses, answers)
         self.assertEqual([p.rtt_ms for p in got], [6.0, None])
         self.assertEqual([p.reason for p in got], [None, "held"])
+        self.assertEqual([(p.ok, p.error) for p in got], [(None, None), (None, None)])
+
+    def test_a_hub_release_takes_its_keys_next_answer_in_order(self):
+        def rel(ts, key, reason="detach"):
+            return {"ts": ts, "key": key, "reason": reason, "client": 7}
+
+        def ans(ts, key, ok=True, client=None, down=False):
+            return {"ts": ts, "key": key, "ok": ok, "client": client, "down": down}
+
+        # Both answers after both releases: the first answer is the first's.
+        got = deck_releases([rel(10, 2), rel(20, 2)], [ans(30, 2, ok=False), ans(31, 2, ok=True)])
+        self.assertEqual([r.ok for r in got], [False, True])
+        # A page's answer, a down's answer and another key's are not taken.
+        got = deck_releases(
+            [rel(10, 2)],
+            [ans(11, 2, client=7), ans(12, 2, down=True), ans(13, 3), ans(14, 2, ok=False)],
+        )
+        self.assertEqual([r.ok for r in got], [False])
+        # An answer exactly at the release counts; one before it does not.
+        self.assertEqual([r.ok for r in deck_releases([rel(10, 2)], [ans(10, 2)])], [True])
+        self.assertEqual([r.ok for r in deck_releases([rel(10, 2)], [ans(9, 2)])], [None])
+        # Lost and stop releases take none.
+        got = deck_releases([rel(10, 2, "lost"), rel(11, 2, "stop")], [ans(12, 2)])
+        self.assertEqual([r.ok for r in got], [None, None])
+
+    def test_a_key_change_counts_up_to_ten_seconds_after_a_press(self):
+        self.assertTrue(in_press_window(0.0))
+        self.assertTrue(in_press_window(10_000.0))
+        self.assertFalse(in_press_window(10_000.001))
+        self.assertFalse(in_press_window(-0.001))
 
 
 if __name__ == "__main__":
