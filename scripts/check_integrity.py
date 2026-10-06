@@ -49,7 +49,7 @@ MOUSE = re.compile(r"\bon:((?:dbl)?click|mouse(?:down|up|move|over|out|enter|lea
 TAG_START = re.compile(r"<[a-z][a-z0-9-]*\b")
 # A start tag's end: a `>` that is no closure's `=>` and no `->`.
 TAG_END = re.compile(r"(?<![=-])>")
-CODE_SUFFIXES = (".rs", ".ts", ".js", ".py", ".sh", ".ps1", ".psm1", ".psd1", ".cmd", ".bat", ".yml", ".yaml", ".toml")
+CODE_SUFFIXES = (".rs", ".ts", ".js", ".mjs", ".cjs", ".py", ".sh", ".ps1", ".psm1", ".psd1", ".cmd", ".bat", ".yml", ".yaml", ".toml")
 PYTHON_TREES = ("live-script", "sim", "scripts", "tools")
 CODE_TREES = ("crates", "e2e", "scripts", ".github", "live-script", "sim", "tools")
 

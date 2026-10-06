@@ -134,6 +134,15 @@ class IntegrityTests(unittest.TestCase):
             self.put("crates/a/src/lib.rs", f"fn f() {{ {body}; }}\n")
             self.assertEqual(ci.violations(self.root), [], body)
 
+    def test_force_kill_in_our_node_scripts_is_refused(self) -> None:
+        # Our own ES-module and CommonJS scripts (the Companion seed, #52) are code too.
+        for rel in ("e2e/companion/seed.mjs", "e2e/tools/a.cjs"):
+            with tempfile.TemporaryDirectory() as d:
+                root = Path(d)
+                (root / rel).parent.mkdir(parents=True)
+                (root / rel).write_text("const p = spawn('x');\np.kill();\n", encoding="utf-8")
+                self.assertEqual(ci.violations(root), [f"{rel}:2: force-kill command (spec {KILL})"], rel)
+
     def test_node_modules_are_not_scanned(self) -> None:
         self.put("e2e/node_modules/pkg/index.js", "child.kill()\n")
         self.put("e2e/node_modules/pkg/a.spec.ts", f'test{ONLY}("x", async () => {{}});\n')
