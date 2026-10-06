@@ -49,6 +49,7 @@ pub mod clock;
 pub mod cloudflare;
 pub mod companion;
 pub mod config;
+pub mod deck;
 #[cfg(windows)]
 mod dpapi;
 pub mod events;
