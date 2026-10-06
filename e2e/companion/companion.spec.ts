@@ -9,7 +9,9 @@ import { HUB_SOCKET, deckKey, dispatchPointer, hubEvents, openDeck, openSurface,
 // "Hold C" sets hold_c down and up), the hub registered on its Satellite
 // API. Companion's own state is read through its HTTP API, never through
 // the hub. Both projects run against one Companion, so each test starts from
-// a state its check changes and puts back what it can (scene_1 ends long).
+// a state its check changes, and the `afterEach` puts back every variable a
+// test remembered, also after a failure: one project's failure never spends
+// the other's starting state.
 
 const COMPANION = process.env.COMPANION_URL || "http://127.0.0.1:8000";
 /** Every key image Companion sends the hub, which asks `BITMAP_FORMAT=webp`. */
@@ -20,6 +22,25 @@ async function variable(name: string): Promise<string> {
   const response = await fetch(`${COMPANION}/api/custom-variable/${name}/value`);
   if (!response.ok) throw new Error(`Companion's ${name}: ${response.status}`);
   return (await response.text()).trim();
+}
+
+/** Sets a custom variable of Companion through its HTTP API, and reads it back. */
+async function setVariable(name: string, value: string) {
+  const response = await fetch(`${COMPANION}/api/custom-variable/${name}/value?value=${encodeURIComponent(value)}`, {
+    method: "POST",
+  });
+  if (!response.ok) throw new Error(`setting Companion's ${name}: ${response.status}`);
+  await until(() => variable(name), (v) => v === value, `Companion's ${name} put back to ${value}`, 2000);
+}
+
+/** The variables the running test changes, with their values before it. */
+const changed = new Map<string, string>();
+
+/** Companion's `name` now, remembered so the `afterEach` puts it back. */
+async function remember(name: string): Promise<string> {
+  const value = await variable(name);
+  if (!changed.has(name)) changed.set(name, value);
+  return value;
 }
 
 /** A tap of `key`: down, 100 ms, up (dispatched pointer events of one finger). */
@@ -41,6 +62,14 @@ const look = (key: Locator, src: string) =>
   );
 
 test.describe("The Stream Deck tab against Companion 5.0.7", () => {
+  test.afterEach(async () => {
+    const remembered = [...changed];
+    changed.clear();
+    for (const [name, value] of remembered) {
+      if ((await variable(name)) !== value) await setVariable(name, value);
+    }
+  });
+
   test("shows Companion's 32 keys, each a webp image that renders", async ({ page }) => {
     await openSurface(page);
     await openDeck(page);
@@ -74,7 +103,7 @@ test.describe("The Stream Deck tab against Companion 5.0.7", () => {
     await openDeck(page);
     const key = deckKey(page, 0);
     await expect(key).toHaveAttribute("data-pressed", "false");
-    const before = await variable("light_a");
+    const before = await remember("light_a");
     const toggled = before === "on" ? "off" : "on";
     const src = (await key.locator("img").getAttribute("src")) ?? "";
     expect(src.startsWith(WEBP)).toBe(true);
@@ -97,14 +126,12 @@ test.describe("The Stream Deck tab against Companion 5.0.7", () => {
   test("a 1.5 s hold runs Scene 1's duration action and a short tap does not", async ({ page }) => {
     await openSurface(page);
     await openDeck(page);
-    // idle at first, long after this test: never short, so the short tap's
-    // result is a change.
-    expect(await variable("scene_1")).not.toBe("short");
+    // idle (put back after every test): never short, so the short tap's
+    // result is a change. Companion runs either the release group or the 1 s
+    // group on a release, so short also says the 1 s group did not run.
+    expect(await remember("scene_1")).not.toBe("short");
     await tap(page, 1);
     await until(() => variable("scene_1"), (v) => v === "short", "the release action of a short tap");
-    // Companion runs either the release group or the 1 s group, on the release.
-    await page.waitForTimeout(500);
-    expect(await variable("scene_1")).toBe("short");
     await dispatchPointer(deckKey(page, 1), [{ type: "pointerdown" }, { wait: 1500 }, { type: "pointerup" }]);
     await until(() => variable("scene_1"), (v) => v === "long", "the 1 s duration action of a 1.5 s hold");
   });
@@ -117,7 +144,7 @@ test.describe("The Stream Deck tab against Companion 5.0.7", () => {
     });
     await openSurface(page);
     await openDeck(page);
-    expect(await variable("hold_c")).toBe("up");
+    expect(await remember("hold_c")).toBe("up");
     const since = Date.now();
     await dispatchPointer(deckKey(page, 2), [{ type: "pointerdown" }]);
     await until(() => variable("hold_c"), (v) => v === "down", "Hold C held in Companion");

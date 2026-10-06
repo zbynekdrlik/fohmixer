@@ -7,11 +7,14 @@
 // The page uploads the file over its tRPC socket, so the file is set only
 // once the socket is up (the sidebar's version comes over it). A fresh
 // Companion shows its welcome wizard and What's New over the page, which
-// leave the page behind them aria-hidden: CSS locators, and the visible
-// closers clicked. "Import Preserving Unselected" keeps Companion's settings
-// (the Satellite API stays on). Exit 0 once the test variables exist.
-// With SEED_TRACE=<file.zip> a failed seed leaves its Playwright trace there
-// (the job's failure evidence).
+// leave the page behind them aria-hidden: CSS locators. They can open late
+// on a slow runner, so the import is clicked in a bounded loop: a click that
+// a modal blocks gives up after a moment, the visible closers are clicked,
+// and the click is tried again. "Import Preserving Unselected" keeps
+// Companion's settings (the Satellite API stays on). Exit 0 once the test
+// variables exist. With SEED_TRACE=<file.zip> a failed seed leaves its
+// Playwright trace there (the job's failure evidence); a failure to write it
+// is logged and never hides the seed's own error.
 import { chromium } from "@playwright/test";
 
 const base = process.env.COMPANION_URL ?? "http://127.0.0.1:8000";
@@ -20,9 +23,20 @@ const file = process.argv[2];
 if (!file) {
   throw new Error("usage: node companion/seed.mjs <export file>");
 }
-// The most modals a fresh Companion opens over the page (the welcome wizard,
-// What's New): more rounds than that means a closer that does not close.
-const CLOSE_ROUNDS = 10;
+// How long one try of the import click waits for a modal to go, and how
+// long the tries may take in all.
+const CLICK_TRY_MS = 2_000;
+const CLICK_ALL_MS = 60_000;
+
+/** Runs `step` (closing the trace or the browser); its failure is logged, never thrown. */
+async function quietly(what, step) {
+  try {
+    await step();
+  } catch (e) {
+    console.error(`seed: ${what} failed: ${e}`);
+  }
+}
+
 const launch = process.env.CHROME ? { executablePath: process.env.CHROME } : {};
 const browser = await chromium.launch(launch);
 let seeded = false;
@@ -37,15 +51,33 @@ try {
     const importButton = page.locator("button", { hasText: "Import Preserving Unselected" });
     await importButton.waitFor({ timeout: 30_000 });
     const closers = page.locator('[aria-label="Close modal"]').filter({ visible: true });
+    const deadline = Date.now() + CLICK_ALL_MS;
     let closed = 0;
-    while ((await closers.count()) > 0) {
-      if (closed === CLOSE_ROUNDS) throw new Error(`a modal still open after ${CLOSE_ROUNDS} closes`);
-      await closers.first().click();
-      closed += 1;
-      await page.waitForTimeout(500);
+    let blocked = "no try yet";
+    for (;;) {
+      if (Date.now() > deadline) throw new Error(`the Import button took no click within ${CLICK_ALL_MS} ms: ${blocked}`);
+      if ((await importButton.count()) === 0) throw new Error("the import dialog closed before its Import button took a click");
+      if ((await closers.count()) > 0) {
+        // A modal over the page (the welcome wizard, What's New): close it
+        // and let it go before looking again.
+        try {
+          await closers.first().click({ timeout: CLICK_TRY_MS });
+          closed += 1;
+        } catch (e) {
+          blocked = `a modal's closer took no click: ${e}`;
+        }
+        await page.waitForTimeout(500);
+        continue;
+      }
+      try {
+        await importButton.click({ timeout: CLICK_TRY_MS });
+        break;
+      } catch (e) {
+        // A modal that opened meanwhile takes the pointer: the next round closes it.
+        blocked = `${e}`;
+      }
     }
     console.log(`modals closed: ${closed}`);
-    await importButton.click();
     await importButton.waitFor({ state: "detached", timeout: 30_000 });
     const values = {};
     for (const name of ["light_a", "scene_1", "hold_c"]) {
@@ -58,8 +90,8 @@ try {
     }
     seeded = true;
   } finally {
-    if (trace) await context.tracing.stop(seeded ? {} : { path: trace });
+    if (trace) await quietly("writing the trace", () => context.tracing.stop(seeded ? {} : { path: trace }));
   }
 } finally {
-  await browser.close();
+  await quietly("closing the browser", () => browser.close());
 }

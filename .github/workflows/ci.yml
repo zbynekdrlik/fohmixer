@@ -626,6 +626,30 @@ jobs:
             exit 1
           fi
           npx playwright test --config playwright.companion.config.ts --reporter=list,html
+      - name: Kernel crash evidence (#9) - the core pattern, the kernel's segfault and trap lines, the core dumps
+        if: failure()
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/e2e-logs/kernel"
+          mkdir -p "$dir"
+          cat /proc/sys/kernel/core_pattern > "$dir/core_pattern.txt"
+          sudo dmesg --ctime | tee "$dir/dmesg.txt" > /dev/null
+          status=0
+          grep -i -E 'segfault|traps:|general protection' "$dir/dmesg.txt" > "$dir/crashes.txt" || status=$?
+          if [ "$status" -eq 1 ]; then
+            echo "(no segfault, trap or general protection line in the kernel log)" > "$dir/crashes.txt"
+          elif [ "$status" -ne 0 ]; then
+            exit "$status"
+          fi
+          if command -v coredumpctl > /dev/null; then
+            # Exit 1 is also "No coredumps found": the output says which.
+            status=0
+            sudo coredumpctl list --no-pager 2>&1 | tee "$dir/coredumpctl.txt" > /dev/null || status=$?
+            echo "(coredumpctl list exit ${status})" >> "$dir/coredumpctl.txt"
+          else
+            echo "(coredumpctl not installed)" > "$dir/coredumpctl.txt"
+          fi
+          cat "$dir/core_pattern.txt" "$dir/crashes.txt" "$dir/coredumpctl.txt"
       - name: Companion's log
         if: failure()
         run: |
