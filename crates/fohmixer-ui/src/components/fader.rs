@@ -23,7 +23,9 @@ use leptos::html;
 use leptos::prelude::*;
 use serde_json::json;
 
-use super::{fail_flash, readiness, readiness_now, trace_move, trace_start, trace_touch};
+use super::{
+    fail_flash, owns_touches, readiness, readiness_now, trace_move, trace_start, trace_touch,
+};
 use crate::behave::fader::{self as curve, FaderCtl, UNITY};
 use crate::behave::{TouchEnd, touch_end};
 use crate::binding::SubSpec;
@@ -155,6 +157,8 @@ pub fn FaderView(targets: Vec<Target>, shaping: bool) -> impl IntoView {
         let keys = keys.clone();
         on_cleanup(move || store.release(&keys));
     }
+    // The root owns its touches (#43 PR G) and names its keys.
+    let touch_keys = keys.clone();
     let keys = StoredValue::new(keys);
     let shown_key = StoredValue::new(shown_key);
     let targets = StoredValue::new(targets);
@@ -348,6 +352,7 @@ pub fn FaderView(targets: Vec<Target>, shaping: bool) -> impl IntoView {
             data-binding=binding
             aria-disabled=disabled
             node_ref=root
+            use:owns_touches=touch_keys
             on:pointerdown=on_down
             on:pointermove=on_move
             on:pointerup=on_up

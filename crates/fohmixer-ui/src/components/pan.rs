@@ -16,7 +16,7 @@ use leptos::html;
 use leptos::prelude::*;
 use serde_json::json;
 
-use super::{fail_flash, readiness, trace_move, trace_start, trace_touch};
+use super::{fail_flash, owns_touches, readiness, trace_move, trace_start, trace_touch};
 use crate::behave::pan::{self, PanCtl};
 use crate::behave::{TouchEnd, touch_end};
 use crate::binding::SubSpec;
@@ -43,6 +43,8 @@ pub fn PanView(state: RwSignal<Slot>, spec: SubSpec) -> impl IntoView {
         let keys = keys.clone();
         on_cleanup(move || store.release(&keys));
     }
+    // The root owns its touches (#43 PR G) and names its key.
+    let touch_keys = keys.clone();
     let key = StoredValue::new(keys);
     let shown_key = StoredValue::new(shown_key);
     let spec = StoredValue::new(spec);
@@ -188,6 +190,7 @@ pub fn PanView(state: RwSignal<Slot>, spec: SubSpec) -> impl IntoView {
             data-binding=binding
             aria-disabled=disabled
             node_ref=root
+            use:owns_touches=touch_keys
             on:pointerdown=on_down
             on:pointermove=on_move
             on:pointerup=on_up

@@ -50,8 +50,13 @@ exclude_re = [
   # dom.rs: the clocks, style/attribute writes, the viewport, the console,
   # local storage.
   # #43 PR D added event_epoch (a browser event's timeStamp on the page
-  # clock: performance.timeOrigin plus Event.timeStamp).
-  "fohmixer-ui/src/dom\\.rs.*(replace|in) (now|epoch_now|event_epoch|hidden|wall_now|log|error|set_style|set_attr|remove_attr|viewport|current_element|child|storage|storage_get|storage_set|storage_remove)( |$)",
+  # clock: performance.timeOrigin plus Event.timeStamp). #43 PR G added
+  # prevent_on (the one shared preventDefault listener, added with
+  # passive: false) and event_element (an event's target, or a text node's
+  # parent element); touch-guard.spec.ts drives both (a dispatched
+  # touchstart, contextmenu, selectstart and dragstart read back as
+  # defaultPrevented, and the page's records of them).
+  "fohmixer-ui/src/dom\\.rs.*(replace|in) (now|epoch_now|event_epoch|hidden|wall_now|log|error|set_style|set_attr|remove_attr|viewport|current_element|child|storage|storage_get|storage_set|storage_remove|prevent_on|event_element)( |$)",
   # net.rs: the fetch wrapper and the handshake reload (location.reload).
   "fohmixer-ui/src/net\\.rs.*(replace|in) (fetch_text|last_reload|reload)( |$)",
   # raf.rs: requestAnimationFrame scheduling around the tested Registry, and
@@ -141,6 +146,12 @@ exclude_re = [
   # first ones essential); forensics.spec.ts reads both back from the event
   # log.
   "fohmixer-ui/src/components/mod\\.rs.*(replace|in) (trace_touch|trace_start|trace_move|intent_look)( |$)",
+  # components (#43 PR G): the directives owns_touches (a control's root:
+  # dom::prevent_on with the tested sys::CONTROL_PREVENTS, and its keys as
+  # the tested sys::keys_text in sys::KEYS_ATTR) and owns_surface (the
+  # surface's root: dom::prevent_on with sys::SURFACE_PREVENTS);
+  # touch-guard.spec.ts drives them on every tap target of the surface.
+  "fohmixer-ui/src/components/mod\\.rs.*(replace|in) (owns_touches|owns_surface)( |$)",
   "fohmixer-ui/src/components/buttons\\.rs.*(replace|in) toggle_flag( |$)",
   # pages/surface.rs: a tab press (store, local storage) and the remembered
   # pages' read; choose and selected_path are the tested decisions.
@@ -182,4 +193,15 @@ exclude_re = [
   # PR D added record_essential (an event pushed as essential into the same
   # thread-local Recorder; push_essential is tested).
   "fohmixer-ui/src/diag\\.rs.*(replace|in) (record|record_essential|with_trace|trace_visibility)( |$)",
+  # diag.rs, the system gestures' glue (#43 PR G), one browser call each:
+  # listen_gestures (the window's bubble-phase listeners for
+  # sys::RECORDED and the visual viewport's resize), gesture (an event's
+  # type, pointer id, defaultPrevented and element into the tested
+  # Gestures::records and sys::sys), control_of (Element.closest for the
+  # control's root and the nearest data-testid, into the tested sys::kind
+  # and sys::keys_of) and zoomed (visualViewport.scale into the tested
+  # Gestures::zoom and sys::zoom). touch-guard.spec.ts reads the page's
+  # sys and zoom records back from the event log (a capture lost after its
+  # lift left out, a zoom to 2 and back in Chromium).
+  "fohmixer-ui/src/diag\\.rs.*(replace|in) (listen_gestures|gesture|control_of|zoomed)( |$)",
 ]

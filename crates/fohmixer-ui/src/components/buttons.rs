@@ -12,7 +12,9 @@ use leptos::html;
 use leptos::prelude::*;
 use serde_json::{Value, json};
 
-use super::{BtnText, fail_flash, intent_look, key_of, readiness, slot_of, trace_touch};
+use super::{
+    BtnText, fail_flash, intent_look, key_of, owns_touches, readiness, slot_of, trace_touch,
+};
 use crate::behave::colour::{css_color, text_on};
 use crate::behave::label::{label_chars, strip_label};
 use crate::behave::mute::{GUARD_MS, GuardAction, MuteGuard, lit};
@@ -83,6 +85,8 @@ pub fn MuteView(
     let keys = vec![key_of(&spec)];
     let root = NodeRef::<html::Div>::new();
     intent_look(root, store, keys.clone());
+    // The root owns its touches (#43 PR G) and names its keys.
+    let touch_keys = keys.clone();
     let keys = StoredValue::new(keys);
     let spec = StoredValue::new(spec);
     let guard = StoredValue::new(MuteGuard::default());
@@ -134,6 +138,7 @@ pub fn MuteView(
         <div
             class="mute"
             node_ref=root
+            use:owns_touches=touch_keys
             class:lit=is_lit
             class:armed=move || armed.get()
             class:failed=move || failed.get()
@@ -161,6 +166,8 @@ pub fn SoloView(binding: Binding, label: Option<String>) -> impl IntoView {
     let keys: Vec<String> = spec.iter().map(key_of).collect();
     let root = NodeRef::<html::Div>::new();
     intent_look(root, store, keys.clone());
+    // The root owns its touches (#43 PR G) and names its keys.
+    let touch_keys = keys.clone();
     let keys = StoredValue::new(keys);
     let spec = StoredValue::new(spec);
     let failed = RwSignal::new(false);
@@ -181,6 +188,7 @@ pub fn SoloView(binding: Binding, label: Option<String>) -> impl IntoView {
         <div
             class="btn solo"
             node_ref=root
+            use:owns_touches=touch_keys
             class:on=on
             class:failed=move || failed.get()
             data-testid="solo"
@@ -209,6 +217,8 @@ pub fn StageMicsView(binding: Binding, label: Option<String>) -> impl IntoView {
     let keys: Vec<String> = spec.iter().map(key_of).collect();
     let root = NodeRef::<html::Div>::new();
     intent_look(root, store, keys.clone());
+    // The root owns its touches (#43 PR G) and names its keys.
+    let touch_keys = keys.clone();
     let keys = StoredValue::new(keys);
     let spec = StoredValue::new(spec);
     let failed = RwSignal::new(false);
@@ -230,6 +240,7 @@ pub fn StageMicsView(binding: Binding, label: Option<String>) -> impl IntoView {
         <div
             class="btn stage-mics"
             node_ref=root
+            use:owns_touches=touch_keys
             class:on=live
             class:failed=move || failed.get()
             data-testid="stage-mics"
@@ -275,9 +286,12 @@ pub fn HubToggleView(key: String, label: String) -> impl IntoView {
         "hub-toggle"
     };
     let disabled = move || if ready() { "false" } else { "true" };
+    // It owns its touches (#43 PR G); a hub value has no write key.
+    let no_keys: Vec<String> = Vec::new();
     view! {
         <div
             class="btn hub-toggle"
+            use:owns_touches=no_keys
             class:on=on
             data-testid=testid
             data-on=move || on().to_string()

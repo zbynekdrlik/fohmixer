@@ -39,6 +39,15 @@ seq). A volume's Live value at position p is p^0.515.
   down (the drag never applied the way before it), and from the coordinates,
   unclamped: the drag is relative, so the fader follows the finger even
   where its 1:1 position from the down (``r``) is past an end.
+- **System gestures (PR G):** what the browser or the system did with a
+  touch, which no control's own record shows: the page's ``sys`` events
+  (``what`` the event's type: ``contextmenu``, ``selectstart``,
+  ``dragstart``, ``gesturestart``, ``pointercancel``, a
+  ``lostpointercapture`` while its pointer was still down; ``on`` the
+  control's or element's kind, ``keys`` the control's, ``pointer``,
+  ``prevented``) and ``zoom`` events (the visual viewport's ``scale`` when
+  it changed). ``system_event`` reads one; a malformed field reads as
+  missing.
 - **No data (PR E):** past its backlog's bound the page's recorder drops
   moves, oldest first, and says so with the page time of the oldest and the
   newest it dropped (an ``overflow`` marker of kind ``mv``). Such a span is
@@ -95,6 +104,13 @@ Touch = collections.namedtuple(
     ),
 )
 Gap = collections.namedtuple("Gap", ("start", "end", "ms", "px"))
+# A system gesture (PR G) on the hub's clock: ``what`` the event's type
+# (``zoom`` for a zoom), ``on`` the control's or element's kind, ``keys`` the
+# control's (a tuple), ``pointer``, ``prevented`` (None for a zoom) and
+# ``scale`` (a zoom's only).
+SystemEvent = collections.namedtuple(
+    "SystemEvent", ("time", "what", "on", "keys", "pointer", "prevented", "scale")
+)
 
 
 def db_apart(a, b):
@@ -370,3 +386,23 @@ def finger_at(frames, seq):
     ``seq``; None without a frame."""
     frame = frame_at(frames, seq)
     return None if frame is None else number(frame.get("r"))
+
+
+def system_event(hub, data):
+    """The ``SystemEvent`` of a page ``sys`` or ``zoom`` event (``data``) at
+    hub time ``hub``. A field of the wrong type reads as missing: ``what``
+    as ``?``, ``on`` and ``pointer`` as None, a key that is no text is left
+    out, and ``prevented`` is true only when it is exactly true."""
+    if data.get("ev") == "zoom":
+        return SystemEvent(hub, "zoom", None, (), None, None, number(data.get("scale")))
+    what, on, keys = data.get("what"), data.get("on"), data.get("keys")
+    pointer = data.get("pointer")
+    return SystemEvent(
+        hub,
+        what if isinstance(what, str) else "?",
+        on if isinstance(on, str) else None,
+        tuple(k for k in keys if isinstance(k, str)) if isinstance(keys, list) else (),
+        pointer if isinstance(pointer, int) and not isinstance(pointer, bool) else None,
+        data.get("prevented") is True,
+        None,
+    )

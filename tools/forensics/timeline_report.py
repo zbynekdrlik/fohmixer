@@ -76,6 +76,7 @@ svg .reset { fill: #06c; }
 svg .sock { stroke: #444; stroke-width: 1; }
 svg .visibility { stroke: #888; stroke-dasharray: 3 3; }
 svg .late-heartbeat { fill: #b35900; }
+svg .gesture { fill: #a0a; }
 svg .jump { fill: #c00; }
 svg .rtt-page { fill: none; stroke: #06c; stroke-width: 1.2; }
 svg .rtt-hub { fill: none; stroke: #2a2; stroke-width: 1.2; }
@@ -231,7 +232,22 @@ def _link_lane(t, axis, y):
         x = num(axis.x(e.hub))
         tip = "page hidden" if e.data.get("hidden") else "page visible"
         parts.append(tag("line", title(tip), class_="visibility", x1=x, y1=y, x2=x, y2=y + LINK_H))
+    for e in t.system:
+        tip = f"{system_text(e)} at {local_text(e.time)}"
+        parts.append(_mark(axis, e.time, y + 14, 10, "gesture", tip, data_what=e.what))
     return "".join(parts), y + LINK_H + LANE_GAP
+
+
+def system_text(e):
+    """A system gesture (``SystemEvent``) in words, for a mark's tooltip."""
+    if e.what == "zoom":
+        return f"zoom to {_scale_text(e.scale)}"
+    done = "prevented" if e.prevented else "not prevented"
+    return f"{e.what} on {e.on or 'n/a'} ({done})"
+
+
+def _scale_text(scale):
+    return "n/a" if scale is None else f"{scale:g}"
 
 
 def _live_lane(t, axis, y):
@@ -549,6 +565,56 @@ def _touches_table(t):
     return f"<p>{esc(TOUCH_LEGEND)}</p>{table}"
 
 
+# What the system gestures' table lists.
+SYSTEM_LEGEND = (
+    "What the browser or the system did with a touch (PR G), recorded by the "
+    "page: a context menu, a selection or a drag that started (the surface "
+    "prevents them), a pinch's start, a cancelled pointer, a pointer capture "
+    "lost while the finger was still down (the system took the touch), and "
+    "each change of the page's zoom. On: the control's kind (its keys in the "
+    "next column) or the element's. Prevented: whether the page stopped the "
+    "browser's own action (a cancelled pointer or a lost capture cannot be)."
+)
+
+
+def _system_table(t):
+    if not t.system:
+        return "<p>No system gesture and no zoom in the window.</p>"
+    head = "".join(
+        f"<th>{h}</th>"
+        for h in ("time (local)", "event", "on", "control", "prevented", "pointer", "scale")
+    )
+    rows = []
+    for e in t.system:
+        prevented = None if e.prevented is None else ("true" if e.prevented else "false")
+        cells = (
+            local_text(e.time),
+            e.what,
+            e.on or "n/a",
+            ", ".join(e.keys) or "none",
+            {"true": "yes", "false": "no"}.get(prevented, "n/a"),
+            "n/a" if e.pointer is None else str(e.pointer),
+            _scale_text(e.scale),
+        )
+        content = "".join(f"<td>{esc(c)}</td>" for c in cells)
+        rows.append(
+            tag(
+                "tr",
+                content,
+                class_="sys",
+                data_time=num(e.time),
+                data_what=e.what,
+                data_on=e.on,
+                data_key_hash=key_hash(e.keys[0]) if e.keys else None,
+                data_prevented=prevented,
+                data_pointer=None if e.pointer is None else str(e.pointer),
+                data_scale=None if e.scale is None else _scale_text(e.scale),
+            )
+        )
+    table = f'<table class="system"><tr>{head}</tr>{"".join(rows)}</table>'
+    return f"<p>{esc(SYSTEM_LEGEND)}</p>{table}"
+
+
 def render(t, pairs, files):
     """The whole report: the window, ``files`` (the names read), the notes,
     the summary ``pairs``, the lanes and the jumps."""
@@ -578,5 +644,6 @@ def render(t, pairs, files):
         f"<h2>Timeline</h2>{svg(t)}"
         f"<h2>Volume jumps over 3 dB</h2>{_jumps_table(t)}"
         f"<h2>Touches of single volume faders</h2>{_touches_table(t)}"
+        f"<h2>System gestures</h2>{_system_table(t)}"
         "</body></html>\n"
     )

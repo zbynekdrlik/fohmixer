@@ -12,7 +12,8 @@ use serde_json::Value;
 
 use super::fader::{self, FaderView, Law};
 use super::{
-    BtnText, fail_flash, intent_look, key_of, readiness, slot_of, touch_end_name, trace_touch,
+    BtnText, fail_flash, intent_look, key_of, owns_touches, readiness, slot_of, touch_end_name,
+    trace_touch,
 };
 use crate::behave::toggle::{ToggleCtl, ToggleState, Write, aggregate, is_on};
 use crate::binding::{SubSpec, param_subs};
@@ -84,6 +85,8 @@ pub fn ParamToggleView(
         .collect();
     let root = NodeRef::<html::Div>::new();
     intent_look(root, store, keys.clone());
+    // The root owns its touches (#43 PR G) and names its keys.
+    let touch_keys = keys.clone();
     let keys = StoredValue::new(keys);
     let targets = StoredValue::new(targets);
     let ctl = StoredValue::new(ToggleCtl::default());
@@ -157,6 +160,7 @@ pub fn ParamToggleView(
         <div
             class="btn param-toggle"
             node_ref=root
+            use:owns_touches=touch_keys
             class:failed=move || failed.get()
             data-testid="param-toggle"
             data-label=label_attr

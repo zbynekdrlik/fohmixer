@@ -26,7 +26,9 @@ console_error_panic_hook = "0.1"
 # Web APIs: the panic hook's overlay and report, the hub socket and fetch,
 # pointer input, the animation loop's style writes, local storage, the text
 # measurement that fits a text to its box (Range); the diagnostic reports
-# (#26): display mode, screen, errors, the PWA attributes' changes
+# (#26): display mode, screen, errors, the PWA attributes' changes; the
+# controls' active touchstart listener and the visual viewport's zoom (#43
+# PR G)
 web-sys = { version = "0.3", features = [
     "Window",
     "Document",
@@ -63,6 +65,8 @@ web-sys = { version = "0.3", features = [
     "MutationObserver",
     "MutationObserverInit",
     "MutationRecord",
+    "AddEventListenerOptions",
+    "VisualViewport",
 ] }
 
 # Serialization (the hub protocol, the panic report, the remembered pages)

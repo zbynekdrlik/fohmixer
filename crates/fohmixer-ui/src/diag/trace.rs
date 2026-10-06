@@ -14,7 +14,10 @@
 //! transitions ([`sock`]), a frame longer than [`LONG_FRAME_MS`] (the page's
 //! main thread stalled, [`Recorder::frame`]), a visibility change
 //! ([`Recorder::visibility`]), and the dropout watch's `dropout` and `reset`
-//! (`behave::link`). No `send` and no `ack` (PR E): the hub's own `set`
+//! (`behave::link`); the system's gestures ([`sys`], PR G: a context menu, a
+//! selection, a drag, a pinch's start, a cancelled pointer, a capture lost
+//! while the finger is down, and the visual viewport's zoom). No `send` and
+//! no `ack` (PR E): the hub's own `set`
 //! record holds each write with the page's `t` and `seq`, and the hub
 //! writes each ack; a frame's `mv` names its set. No page event has a field
 //! named `ts`: the forensics timeline reads a record's hub `ts` as the first
@@ -51,7 +54,8 @@
 //! round-trip summaries, long frames and any other kind, oldest first, then
 //! the moves, oldest first; the essential ones ([`is_essential`]: touches,
 //! dropouts, resets, socket transitions, visibility, the drop notes, the
-//! intent changes, and a touch's first [`moves::FIRST_MOVES`] frames,
+//! intent changes, the system's gestures and zooms (PR G: rare, and what a
+//! loupe or a drag lift leaves), and a touch's first [`moves::FIRST_MOVES`] frames,
 //! [`Recorder::push_essential`]) never. Past the ring's hard bounds
 //! ([`MAX_EVENTS`], [`MAX_BYTES`]) the oldest unsent event goes whatever it
 //! is. The next batch says what went: one `overflow` event per kind, with
@@ -68,6 +72,7 @@ use serde_json::{Map, Value, json};
 
 pub mod moves;
 pub mod rtt;
+pub mod sys;
 
 use rtt::RttWindow;
 
@@ -118,13 +123,15 @@ pub fn takes_batch(buffered: u32) -> bool {
 /// When the backlog's bound drops an event of kind `ev` (#43 PR E): none
 /// for an essential one, what the forensics need of every touch and outage
 /// (touches, dropouts, resets, socket transitions, visibility, the notes of
-/// what went, a write's intent changes); rank 0, first, for the round-trip
+/// what went, a write's intent changes, PR G's system gestures and zooms);
+/// rank 0, first, for the round-trip
 /// summaries, long frames and any other kind; rank 1, last, for the moves
 /// (the only per-frame data of a drag the hub cannot see). A touch's first
 /// moves are pushed as essential ([`Recorder::push_essential`]).
 pub fn drop_rank(ev: &str) -> Option<u8> {
     match ev {
-        "touch" | "dropout" | "reset" | "sock" | "visibility" | "overflow" | "intent" => None,
+        "touch" | "dropout" | "reset" | "sock" | "visibility" | "overflow" | "intent" | "sys"
+        | "zoom" => None,
         "mv" => Some(1),
         _ => Some(0),
     }

@@ -141,6 +141,19 @@ body {
     touch-action: none;
 }
 
+/* Nothing on the surface can be selected, called out or dragged (#43 PR G):
+   `user-select` on the body alone left each element's own `auto`, and no
+   element had `-webkit-user-drag: none`, so a long press could still lift
+   one. The loupe of a tap followed by a hold needs more than CSS: each
+   control's root prevents its `touchstart` (components::owns_touches). */
+.surface,
+.surface * {
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+    -webkit-user-drag: none;
+}
+
 .app {
     position: fixed;
     inset: 0;

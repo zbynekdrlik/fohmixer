@@ -7,7 +7,7 @@ use leptos::html;
 use leptos::prelude::*;
 
 use super::buttons::toggle_flag;
-use super::{BtnText, readiness, slot_of};
+use super::{BtnText, key_of, owns_touches, readiness, slot_of};
 use crate::behave::mute::{GUARD_MS, GuardAction, MuteGuard};
 use crate::behave::timing::{Debounce, REFRESH_FLASH_MS, blink_on};
 use crate::binding::mute_sub;
@@ -29,6 +29,8 @@ pub fn AlertView(
     let store = expect_context::<LiveStore>();
     let spec = mute_sub(&binding);
     let slot = slot_of(store, spec.as_ref());
+    // The button owns its touches (#43 PR G) and names its key.
+    let touch_keys: Vec<String> = spec.iter().map(key_of).collect();
     let spec = StoredValue::new(spec);
     let failed = RwSignal::new(false);
     let guard = StoredValue::new(MuteGuard::default());
@@ -95,6 +97,7 @@ pub fn AlertView(
     view! {
         <div
             class="btn alert-toggle"
+            use:owns_touches=touch_keys
             class:on=active
             class:armed=move || armed.get()
             class:failed=move || failed.get()
@@ -144,9 +147,12 @@ pub fn RefreshView(label: Option<String>) -> impl IntoView {
         store.refresh();
     };
     let text = label.unwrap_or_else(|| "REFRESH ALL".to_string());
+    // It owns its touches (#43 PR G); it writes no key.
+    let no_keys: Vec<String> = Vec::new();
     view! {
         <div
             class="btn refresh"
+            use:owns_touches=no_keys
             class:flash=move || flash.get()
             data-testid="refresh"
             data-flash=move || flash.get().to_string()

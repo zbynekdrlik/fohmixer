@@ -9,6 +9,7 @@
 use leptos::html;
 use leptos::prelude::*;
 
+use super::owns_touches;
 use crate::behave::css;
 use crate::behave::meter::{MeterBar, level_to_pos};
 use crate::behave::peak::{Peak, clips};
@@ -83,6 +84,8 @@ pub fn MeterView(levels: Vec<RwSignal<Slot>>) -> impl IntoView {
         ev.prevent_default();
         let _ = clip.try_set(false);
     };
+    // The clip light is a tap target: it owns its touches (#43 PR G).
+    let no_keys: Vec<String> = Vec::new();
     view! {
         <div
             class="meter"
@@ -97,6 +100,7 @@ pub fn MeterView(levels: Vec<RwSignal<Slot>>) -> impl IntoView {
                 class:on=move || clip.get()
                 data-testid="clip"
                 data-on=move || clip.get().to_string()
+                use:owns_touches=no_keys
                 on:pointerdown=reset
             ></div>
             <div class="meter-bars">{bars}</div>

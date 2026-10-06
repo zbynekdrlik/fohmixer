@@ -1,9 +1,48 @@
 //! Thin browser helpers (web_sys): the page and wall clocks, style and attribute
-//! writes for the animation loop, the console log and local storage. Local
+//! writes for the animation loop, the console log, local storage, and the
+//! one listener that prevents an event's default action (#43 PR G). Local
 //! storage can throw (a private window, blocked site data), so every access
 //! is a `Result` that is dropped: a failed read is "nothing stored".
 
 use wasm_bindgen::JsCast;
+use wasm_bindgen::closure::Closure;
+
+thread_local! {
+    /// The one listener that prevents an event's default action (#43 PR G),
+    /// shared by every element that prevents one: no closure per element,
+    /// and adding it again for the same event (a directive run again) is a
+    /// no-op.
+    static PREVENT: Closure<dyn FnMut(web_sys::Event)> = Closure::wrap(
+        Box::new(|event: web_sys::Event| event.prevent_default()) as Box<dyn FnMut(web_sys::Event)>,
+    );
+}
+
+/// Prevents the default action of each of `names` on `target` and inside it
+/// (#43 PR G), with an active listener (`passive: false`): a passive one
+/// cannot, and Chromium makes a `touchstart` listener on the window passive
+/// by default, so it goes on the element itself.
+pub fn prevent_on(target: &web_sys::EventTarget, names: &[&str]) {
+    let options = web_sys::AddEventListenerOptions::new();
+    options.set_passive(false);
+    let _ = PREVENT.try_with(|listener| {
+        for name in names {
+            let _ = target.add_event_listener_with_callback_and_add_event_listener_options(
+                name,
+                listener.as_ref().unchecked_ref(),
+                &options,
+            );
+        }
+    });
+}
+
+/// The element an event came from: its target, or the target's parent
+/// element when that is a text node (a selection can start in one).
+pub fn event_element(event: &web_sys::Event) -> Option<web_sys::Element> {
+    match event.target()?.dyn_into::<web_sys::Element>() {
+        Ok(element) => Some(element),
+        Err(other) => other.dyn_into::<web_sys::Node>().ok()?.parent_element(),
+    }
+}
 
 /// The page clock in ms (`performance.now()`, the clock of the
 /// `requestAnimationFrame` timestamps and of the events).
