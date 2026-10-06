@@ -18,7 +18,9 @@
 //! page's `trace`: a batch of its flight recorder (PR C: touches, sends and
 //! acks, pongs, socket transitions, long frames, visibility, the full ring's
 //! `overflow` notes, the dropouts and the counter's resets), written as the
-//! page sent it.
+//! page sent it. The Stream Deck's (#52): `deck_link`, `deck_press`,
+//! `deck_ok`, `deck_release`, `deck_key`, `deck_keys`, `deck_view` (an image
+//! only as its hash and size).
 
 use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Write};
@@ -163,7 +165,8 @@ pub fn expired(file: NaiveDate, today: NaiveDate, keep_days: i64) -> bool {
 }
 
 /// Whether a record is still written past a day file's cap: a socket or a
-/// link change, a page's `trace` that holds a dropout or a counter reset
+/// link change, the Stream Deck's link changes and the releases the hub made
+/// itself (#52), a page's `trace` that holds a dropout or a counter reset
 /// (the owner's priority on #43), the cap and dropped notes, and anything
 /// that carries an error. The flight recorder's other batches stop at the
 /// cap like the pings and the writes: a page left open for a day would
@@ -176,7 +179,10 @@ pub fn is_warn(record: &Value) -> bool {
             .and_then(Value::as_u64)
             .is_some_and(|n| n > 0);
     failed
-        || matches!(ev, "sock" | "link" | "cap" | "dropped")
+        || matches!(
+            ev,
+            "sock" | "link" | "cap" | "dropped" | "deck_link" | "deck_release"
+        )
         || (ev == "trace" && holds_dropout(record))
 }
 

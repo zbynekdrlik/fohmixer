@@ -93,14 +93,40 @@ fn a_file_expires_after_sixty_days() {
 
 #[test]
 fn warn_class_records_are_socket_link_cap_dropped_and_errors() {
-    for ev in ["sock", "link", "cap", "dropped"] {
+    for ev in [
+        "sock",
+        "link",
+        "cap",
+        "dropped",
+        "deck_link",
+        "deck_release",
+    ] {
         assert!(is_warn(&json!({"ev": ev})), "{ev}");
     }
-    for ev in ["set", "batch", "ping", "ack", "applied", "trace"] {
+    for ev in [
+        "set",
+        "batch",
+        "ping",
+        "ack",
+        "applied",
+        "trace",
+        "deck_press",
+        "deck_ok",
+        "deck_key",
+        "deck_keys",
+        "deck_view",
+    ] {
         assert!(!is_warn(&json!({"ev": ev})), "{ev}");
     }
     assert!(is_warn(&json!({"ev": "ack", "error": "instance offline"})));
     assert!(!is_warn(&json!({"ev": "ack", "error": null})));
+    // Companion refusing a press is an error record (#52).
+    assert!(is_warn(
+        &json!({"ev": "deck_ok", "ok": false, "error": "Invalid KEY"})
+    ));
+    assert!(!is_warn(
+        &json!({"ev": "deck_ok", "ok": true, "error": null})
+    ));
     assert!(is_warn(&json!({"ev": "applied", "errors": 1})));
     assert!(!is_warn(&json!({"ev": "applied", "errors": 0})));
     assert!(!is_warn(&json!({})));
