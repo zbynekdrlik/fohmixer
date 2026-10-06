@@ -56,6 +56,7 @@ CSS = """
 body { font: 13px/1.4 system-ui, sans-serif; margin: 16px; color: #222; background: #fff; }
 h1 { font-size: 18px; margin: 0 0 8px; }
 table { border-collapse: collapse; margin: 8px 0 16px; }
+tr.deck-unsent td, tr.deck-release td { color: #a00; }
 th, td { border: 1px solid #ccc; padding: 2px 8px; text-align: left; vertical-align: top; }
 td { font-variant-numeric: tabular-nums; }
 .notes li { color: #8a4b00; }
@@ -618,6 +619,116 @@ def _system_table(t):
     return f"<p>{esc(SYSTEM_LEGEND)}</p>{table}"
 
 
+DECK_LEGEND = (
+    "Stream Deck (#52): each press with the hub's delay (the page's send to the hub), "
+    "Companion's round trip, and the hold as the page measured it and as the hub forwarded "
+    "it; then the releases the hub made itself, the red flashes (downs never sent) and "
+    "Companion's link outages. Keys are their index."
+)
+
+
+def _deck_table(t):
+    if not (t.deck_presses or t.deck_releases or t.deck_unsent or t.deck_outages):
+        return "<p>No Stream Deck activity in the window.</p>"
+    head = "".join(
+        f"<th>{h}</th>"
+        for h in (
+            "time (local)",
+            "key",
+            "press",
+            "delay",
+            "Companion",
+            "hold (page)",
+            "hold (hub)",
+            "outcome",
+        )
+    )
+    rows = []
+    for p in t.deck_presses:
+        cells = (
+            local_text(p.time),
+            str(p.key),
+            "down" if p.down else f"up ({p.why or 'n/a'})",
+            ms_text(p.delay_ms),
+            ms_text(p.rtt_ms),
+            ms_text(p.hold_ms),
+            ms_text(p.hub_hold_ms),
+            "forwarded" if p.forwarded else (p.reason or "n/a"),
+        )
+        rows.append(
+            tag(
+                "tr",
+                "".join(f"<td>{esc(c)}</td>" for c in cells),
+                class_="deck-press",
+                data_time=num(p.time),
+                data_key=str(p.key),
+                data_down="true" if p.down else "false",
+                data_forwarded="true" if p.forwarded else "false",
+                data_reason=p.reason,
+                data_why=p.why,
+                data_rtt=None if p.rtt_ms is None else num(p.rtt_ms),
+            )
+        )
+    for r in t.deck_releases:
+        lost = r.reason == "lost"
+        cells = (
+            local_text(r.time),
+            str(r.key),
+            "up (the hub's)",
+            "",
+            "",
+            "",
+            ms_text(r.hub_hold_ms),
+            "lost: never released" if lost else (r.reason or "n/a"),
+        )
+        rows.append(
+            tag(
+                "tr",
+                "".join(f"<td>{esc(c)}</td>" for c in cells),
+                class_="deck-release",
+                data_time=num(r.time),
+                data_key=str(r.key),
+                data_reason=r.reason,
+                data_released="false" if lost else "true",
+            )
+        )
+    for u in t.deck_unsent:
+        cells = (
+            local_text(u.time),
+            str(u.key),
+            "down (red flash)",
+            "",
+            "",
+            "",
+            "",
+            f"not sent ({u.where})",
+        )
+        rows.append(
+            tag(
+                "tr",
+                "".join(f"<td>{esc(c)}</td>" for c in cells),
+                class_="deck-unsent",
+                data_time=num(u.time),
+                data_key=str(u.key),
+                data_where=u.where,
+            )
+        )
+    table = f'<table class="deck"><tr>{head}</tr>{"".join(rows)}</table>'
+    outages = "".join(
+        tag(
+            "li",
+            esc(
+                f"{local_text(o.start)} to {local_text(o.end)}: {ms_text(o.ms)} ms ({o.error or 'n/a'})"
+            ),
+            class_="deck-outage",
+            data_ms=num(o.ms),
+        )
+        for o in t.deck_outages
+    )
+    outage_list = f"<p>Companion link outages:</p><ul>{outages}</ul>" if outages else ""
+    return f"<p>{esc(DECK_LEGEND)}</p>{table}{outage_list}"
+
+
 def render(t, pairs, files):
     """The whole report: the window, ``files`` (the names read), the notes,
     the summary ``pairs``, the lanes and the jumps."""
@@ -648,5 +759,6 @@ def render(t, pairs, files):
         f"<h2>Volume jumps over 3 dB</h2>{_jumps_table(t)}"
         f"<h2>Touches of single volume faders</h2>{_touches_table(t)}"
         f"<h2>System gestures</h2>{_system_table(t)}"
+        f"<h2>Stream Deck</h2>{_deck_table(t)}"
         "</body></html>\n"
     )

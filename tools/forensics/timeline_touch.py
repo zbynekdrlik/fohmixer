@@ -52,6 +52,12 @@ seq). A volume's Live value at position p is p^0.515.
   (two faders at once), a cancel with a row panned from its background,
   and a capture is lost when the system takes the touch or the control
   goes away under the finger (``on`` none), so each kind counts apart.
+- **The Stream Deck (#52):** the hub's ``deck_press`` records with Companion's
+  round trip (``deck_presses``: the ``deck_ok`` of the same client and seq),
+  its own releases (``deck_release``; ``lost`` is the one that never reached
+  Companion), Companion's link outages (``deck_outages``: a down or refused
+  to the next up) and the red flashes (``deck_unsent``: a page's down it did
+  not send, a down the hub refused offline).
 - **No data (PR E):** past its backlog's bound the page's recorder drops
   moves, oldest first, and says so with the page time of the oldest and the
   newest it dropped (an ``overflow`` marker of kind ``mv``). Such a span is
@@ -418,3 +424,110 @@ def escaped(event):
     """Whether a ``SystemEvent`` is a context menu, a selection or a drag that
     nothing prevented (the browser's own action ran)."""
     return event.what in ESCAPABLE and event.prevented is False
+
+
+# --- the Stream Deck (#52) ---
+
+DeckPress = collections.namedtuple(
+    "DeckPress",
+    (
+        "time",
+        "client",
+        "seq",
+        "key",
+        "down",
+        "delay_ms",
+        "rtt_ms",
+        "hold_ms",
+        "hub_hold_ms",
+        "forwarded",
+        "reason",
+        "why",
+    ),
+)
+DeckRelease = collections.namedtuple(
+    "DeckRelease", ("time", "client", "key", "reason", "hub_hold_ms")
+)
+DeckOutage = collections.namedtuple("DeckOutage", ("start", "end", "ms", "error"))
+DeckUnsent = collections.namedtuple("DeckUnsent", ("time", "key", "where"))
+
+
+def deck_presses(presses, answers):
+    """The hub's ``deck_press`` records as ``DeckPress``es, each forwarded one
+    with Companion's round trip: the ``rtt_ms`` of the first ``deck_ok`` of the
+    same client and seq at or after it (a page's seq repeats across pages and
+    after a reload)."""
+    out = []
+    for record in presses:
+        client, seq = record.get("client"), record.get("seq")
+        forwarded = record.get("forwarded") is True
+        rtt = None
+        if forwarded:
+            rtt = next(
+                (
+                    number(a.get("rtt_ms"))
+                    for a in answers
+                    if a.get("client") == client and a.get("seq") == seq and a["ts"] >= record["ts"]
+                ),
+                None,
+            )
+        out.append(
+            DeckPress(
+                record["ts"],
+                client,
+                seq,
+                record.get("key"),
+                record.get("down") is True,
+                number(record.get("delay_ms")),
+                rtt,
+                number(record.get("hold_ms")),
+                number(record.get("hub_hold_ms")),
+                forwarded,
+                record.get("reason"),
+                record.get("why"),
+            )
+        )
+    return out
+
+
+def deck_release(record):
+    """A hub ``deck_release`` record (a release the hub made itself)."""
+    return DeckRelease(
+        record["ts"],
+        record.get("client"),
+        record.get("key"),
+        record.get("reason"),
+        number(record.get("hub_hold_ms")),
+    )
+
+
+def deck_outages(links, start, end):
+    """Companion's link outages that overlap ``start``..``end``: from the
+    first ``deck_link`` down or refused to the next up, else to ``end``
+    (``links`` in time order)."""
+    outages = []
+    down_at, error = None, None
+    for record in links:
+        state = record.get("state")
+        if state in ("down", "refused") and down_at is None:
+            down_at, error = record["ts"], record.get("error")
+        elif state == "up" and down_at is not None:
+            outages.append(DeckOutage(down_at, record["ts"], record["ts"] - down_at, error))
+            down_at = None
+    if down_at is not None:
+        outages.append(DeckOutage(down_at, end, end - down_at, error))
+    return [o for o in outages if o.end >= start and o.start <= end]
+
+
+def deck_unsent(events, presses):
+    """The red flashes, in time order: a page's ``deck`` down it did not send
+    (``where`` page) and a down the hub refused, Companion offline (hub)."""
+    flashes = [
+        DeckUnsent(e.hub, e.data.get("k"), "page")
+        for e in events
+        if e.data.get("d") == 1 and e.data.get("sent") is False
+    ]
+    flashes += [
+        DeckUnsent(p.time, p.key, "hub") for p in presses if p.down and p.reason == "offline"
+    ]
+    return sorted(flashes, key=lambda f: f.time)

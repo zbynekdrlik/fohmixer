@@ -1,7 +1,7 @@
 """The forensics timeline's analysis (#43): page time on the hub's clock,
 gestures and gaps, busy episodes, the control lanes, confirmations, the
 volume jumps with their cause, the touches of single volume faders
-(``timeline_touch.py``, PR D), the system's gestures (PR G) and the summary. Pure: it reads nothing. One of
+(``timeline_touch.py``, PR D), the system's gestures (PR G), the Stream Deck's presses (#52) and the summary. Pure: it reads nothing. One of
 the five files of ``timeline.py`` (see its docstring), copied to the Ableton
 PC together with it.
 """
@@ -364,11 +364,28 @@ class Timeline:
             for e in self.page
             if e.ev in ("sys", "zoom") and self.in_window(e.hub)
         ]
+        # The Stream Deck (#52): presses with Companion's round trips, the
+        # hub's own releases, the red flashes, Companion's link outages.
+        self.deck_presses = timeline_touch.deck_presses(
+            self._within(kinds["deck_press"]), kinds["deck_ok"]
+        )
+        self.deck_releases = [
+            timeline_touch.deck_release(r) for r in self._within(kinds["deck_release"])
+        ]
+        self.deck_outages = timeline_touch.deck_outages(kinds["deck_link"], start, end)
+        self.deck_unsent = timeline_touch.deck_unsent(
+            [e for e in self.page if e.ev == "deck" and self.in_window(e.hub)],
+            self.deck_presses,
+        )
 
     # The window's parts.
 
     def in_window(self, ms):
         return self.start <= ms <= self.end
+
+    def _within(self, records):
+        """``records`` of the window itself (not its lead)."""
+        return [r for r in records if self.in_window(r["ts"])]
 
     def wanted(self, key):
         return isinstance(key, str) and (not self.filters or any(f in key for f in self.filters))
@@ -810,6 +827,7 @@ def system_count(timeline, what):
 def summary(timeline):
     """The summary as (name, text) pairs: stdout's lines and the report's
     table. No key and no name: a control is ``key#<hash>``."""
+    deck_rtts = [p.rtt_ms for p in timeline.deck_presses if p.rtt_ms is not None]
     latencies = [c[0] for c in timeline.confirmations]
     worst = max(timeline.confirmations, key=lambda c: c[0], default=None)
     longest = max(timeline.dropouts, key=lambda d: d.ms, default=None)
@@ -870,6 +888,12 @@ def summary(timeline):
         ("pointer_cancels", system_count(timeline, "pointercancel")),
         ("lost_captures", system_count(timeline, "lostpointercapture")),
         ("zooms", system_count(timeline, "zoom")),
+        ("deck_presses", str(sum(p.down for p in timeline.deck_presses))),
+        ("deck_unsent", str(len(timeline.deck_unsent))),
+        ("deck_forced_releases", str(len(timeline.deck_releases))),
+        ("deck_link_outages", str(len(timeline.deck_outages))),
+        ("deck_rtt_p50_ms", ms_text(percentile(deck_rtts, 0.50))),
+        ("deck_rtt_p99_ms", ms_text(percentile(deck_rtts, 0.99))),
         ("skipped_lines", str(timeline.skipped)),
         ("notes", str(len(timeline.notes))),
     ]
