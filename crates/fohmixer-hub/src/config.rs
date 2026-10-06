@@ -968,6 +968,10 @@ mod tests {
                 "[companion]\nhost = \"a b\"\n".to_string(),
                 "[companion] host \"a b\"",
             ),
+            (
+                "[companion]\nhost = \"a\\\"b\"\n".to_string(),
+                "[companion] host \"a\\\"b\"",
+            ),
             (table("port = 0\n"), "[companion] port 0"),
             (table("columns = 0\n"), "[companion] columns 0: 1..=16"),
             (table("columns = 17\n"), "[companion] columns 17: 1..=16"),
