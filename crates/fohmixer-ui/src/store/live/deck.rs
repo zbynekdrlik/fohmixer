@@ -1,0 +1,118 @@
+//! The Stream Deck's glue in the store (#52): the hub's `deck`, `deck_keys`
+//! and `deck_ack` into the signals and the waiting presses
+//! (`store/deck.rs`, tested), the page's `deck_view` (sent again after every
+//! hello while the tab is open: the hub forgets a viewer whose socket
+//! closed) and `deck_press` (sent at once or not at all: never queued, never
+//! sent again after a reconnect, #52 §6). A socket close leaves the keys as
+//! they were, dimmed (`online` false), and forgets the waiting presses (the
+//! hub's `Detach` releases what this page held); the tab and the keys stay
+//! through the reconnect until the hub's next `deck` and `deck_keys`.
+
+use fohmixer_proto::client::{ClientMsg, DeckKey};
+use leptos::prelude::*;
+
+use super::{FailFn, LiveStore, Socket};
+use crate::dom;
+use crate::store::deck::DeckInfo;
+
+impl LiveStore {
+    /// The hub's `deck`.
+    pub(super) fn on_deck(self, info: DeckInfo) {
+        let _ = self.deck.try_set(Some(info));
+    }
+
+    /// Keys' new states (this page views the tab).
+    pub(super) fn on_deck_keys(self, items: Vec<DeckKey>) {
+        let _ = self.deck_keys.try_update(|keys| {
+            for item in items {
+                keys.insert(item.key, item);
+            }
+        });
+    }
+
+    /// A press's answer: a failed down flashes its key; nothing is retried.
+    pub(super) fn on_deck_ack(self, seq: u64, ok: bool, error: Option<String>) {
+        if let Some(Some(flash)) = self.inner.try_update_value(|i| i.deck.ack(seq, ok)) {
+            let why = error.unwrap_or_default();
+            dom::log(&format!("Stream Deck press {seq} failed: {why}"));
+            flash(why);
+        }
+    }
+
+    /// The tab opened (`on`) or closed: only a page viewing it gets the keys.
+    pub fn deck_view(self, on: bool) {
+        let _ = self.inner.try_update_value(|i| i.deck_viewing = on);
+        self.send(&ClientMsg::DeckView { on });
+    }
+
+    /// After a hello: the open tab tells the hub again. The deck info stays
+    /// as it was (offline since the close) until the hub's `deck` after the
+    /// hello updates it, so a reconnect neither flickers the tab nor takes
+    /// the open deck page down; a hub restarted without `[companion]` (same
+    /// build) leaves the tab until a reload (a new build reloads the page).
+    pub(super) fn deck_hello(self) {
+        if self.inner.try_with_value(|i| i.deck_viewing) == Some(true) {
+            self.send(&ClientMsg::DeckView { on: true });
+        }
+    }
+
+    /// The socket closed: Companion's state unknown until the hub's next
+    /// `deck`.
+    pub(super) fn deck_closed(self) {
+        let _ = self.inner.try_update_value(|i| i.deck.clear());
+        let _ = self.deck.try_update(|deck| {
+            if let Some(deck) = deck {
+                deck.online = false;
+            }
+        });
+    }
+
+    /// Whether a press can go now: the socket open and past its hello.
+    pub fn can_send(self) -> bool {
+        self.inner
+            .try_with_value(|i| i.conn.ready() && i.socket.as_ref().is_some_and(Socket::open))
+            .unwrap_or(false)
+    }
+
+    /// Whether the link drops out now (the dropout counter's `active`, #43):
+    /// a press would wait in a stalled socket and reach Companion late.
+    pub fn dropping_out(self) -> bool {
+        self.inner
+            .try_with_value(|i| i.watch.counter().active)
+            .unwrap_or(false)
+    }
+
+    /// A Stream Deck press (`down`, at page time `t`: its pointer event's own
+    /// time, so a press a frozen page delayed counts as late at the hub; an
+    /// up's measured hold and why): onto the socket at once with the page's
+    /// own number, or not at all (`Err` hands `on_fail` back to flash the
+    /// key).
+    pub fn deck_press(
+        self,
+        key: u32,
+        down: bool,
+        t: f64,
+        hold_ms: Option<f64>,
+        why: Option<&str>,
+        on_fail: FailFn,
+    ) -> Result<u64, FailFn> {
+        let Some(seq) = self.inner.try_update_value(|i| i.deck.next_seq()) else {
+            return Err(on_fail);
+        };
+        let msg = ClientMsg::DeckPress {
+            key,
+            down,
+            seq,
+            t,
+            hold_ms,
+            why: why.map(str::to_string),
+        };
+        if !self.send(&msg) {
+            return Err(on_fail);
+        }
+        let _ = self
+            .inner
+            .try_update_value(|i| i.deck.sent(seq, down, on_fail));
+        Ok(seq)
+    }
+}

@@ -11,6 +11,14 @@
 //! and a link slower than the ping period still pairs. The estimate with the
 //! lowest round trip of the last minute is the least disturbed by the
 //! network, and that is the one reported.
+//!
+//! A clock step (the hub's wall clock synced, or the page's clock paused
+//! over a sleep) would keep the old estimate for up to that minute, and
+//! every delay off by the step: past a forward step a Stream Deck down
+//! would read late and be refused, past a backward one never (#52). So an
+//! exchange whose offset lies over [`STEP_MS`] from the estimate, beyond
+//! what the two round trips can explain ([`step`]), starts the window over
+//! from itself, and the step is reported once ([`ClockSync::take_step`]).
 
 use std::collections::VecDeque;
 
@@ -22,6 +30,9 @@ pub const MAX_SAMPLES: usize = 256;
 /// The recent pings a round trip can still be paired with (6.4 s at the
 /// page's 100 ms).
 pub const RING: usize = 64;
+/// An exchange whose offset is further than this (ms) from the estimate,
+/// beyond its round trips, is a clock step.
+pub const STEP_MS: f64 = 500.0;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Sample {
@@ -39,19 +50,33 @@ pub fn one_way_delay(hub_ms: f64, t: f64, offset: Option<f64>) -> Option<f64> {
     offset.map(|o| hub_ms - (t + o))
 }
 
+/// The step (ms, the new offset less the estimate's) when an exchange of
+/// offset `offset` and round trip `rtt` is a clock step against the best
+/// exchange of the window, `best` (its offset and round trip): the two
+/// differ by over [`STEP_MS`] beyond half of each round trip (an
+/// exchange's offset is off by at most half its round trip, when all of it
+/// was spent one way). None without a best exchange.
+pub fn step(best: Option<(f64, f64)>, offset: f64, rtt: f64) -> Option<f64> {
+    let (best_offset, best_rtt) = best?;
+    let jump = offset - best_offset;
+    (jump.abs() - (rtt + best_rtt) / 2.0 > STEP_MS).then_some(jump)
+}
+
 /// One socket's pings of the last minute.
 #[derive(Debug, Default)]
 pub struct ClockSync {
     /// Recent pings not paired yet: number, page time, arrival (hub ms).
     ring: VecDeque<(u32, f64, f64)>,
     samples: VecDeque<Sample>,
+    /// The step the window last started over at, not reported yet.
+    stepped: Option<f64>,
 }
 
 impl ClockSync {
     /// Ping `n`, sent at page time `t`, reached the hub at `arrival` (hub
     /// ms) with `rtt`: the round trip of ping `m` as `(m, ms)`. The offset
-    /// (hub − page, ms) of the lowest-RTT exchange of the last minute; `None`
-    /// while there is none.
+    /// (hub − page, ms) of the lowest-RTT exchange of the last minute (since
+    /// the last clock step); `None` while there is none.
     pub fn on_ping(
         &mut self,
         n: u32,
@@ -59,28 +84,42 @@ impl ClockSync {
         t: f64,
         rtt: Option<(u32, f64)>,
     ) -> Option<f64> {
+        self.samples.retain(|s| arrival - s.at <= WINDOW_MS);
         if let Some((m, rtt)) = rtt
             && let Some(i) = self.ring.iter().position(|&(k, _, _)| k == m)
             && let Some((_, t_m, at_m)) = self.ring.remove(i)
         {
-            self.samples.push_back(Sample {
+            let sample = Sample {
                 at: at_m,
                 rtt,
                 offset: at_m - (t_m + rtt / 2.0),
-            });
+            };
+            let best = self.best().map(|s| (s.offset, s.rtt));
+            if let Some(jump) = step(best, sample.offset, sample.rtt) {
+                self.samples.clear();
+                self.stepped = Some(jump);
+            }
+            self.samples.push_back(sample);
         }
         self.ring.push_back((n, t, arrival));
         if self.ring.len() > RING {
             self.ring.pop_front();
         }
-        self.samples.retain(|s| arrival - s.at <= WINDOW_MS);
         if self.samples.len() > MAX_SAMPLES {
             self.samples.pop_front();
         }
-        self.samples
-            .iter()
-            .min_by(|a, b| a.rtt.total_cmp(&b.rtt))
-            .map(|s| s.offset)
+        self.best().map(|s| s.offset)
+    }
+
+    /// The lowest-RTT exchange kept.
+    fn best(&self) -> Option<&Sample> {
+        self.samples.iter().min_by(|a, b| a.rtt.total_cmp(&b.rtt))
+    }
+
+    /// The clock step (ms) the window last started over at, once (for the
+    /// log); none since the last call.
+    pub fn take_step(&mut self) -> Option<f64> {
+        self.stepped.take()
     }
 
     /// How many exchanges are kept.
@@ -171,21 +210,26 @@ mod tests {
 
     #[test]
     fn exchanges_older_than_a_minute_stop_counting() {
+        // The page's clock runs with the hub's (a page whose clock stood
+        // still while the hub's ran 1 s would be a clock step).
         let mut clock = ClockSync::default();
         clock.on_ping(0, 0.0, 0.0, None);
-        clock.on_ping(1, 1_000.0, 0.0, Some((0, 2.0)));
+        clock.on_ping(1, 1_000.0, 960.0, Some((0, 2.0)));
         // Ping 0's exchange (hub 0, offset −1) is the best.
-        assert_eq!(clock.on_ping(2, 1_100.0, 0.0, Some((1, 100.0))), Some(-1.0));
-        // Exactly a minute after ping 0 reached the hub: it still counts.
         assert_eq!(
-            clock.on_ping(3, 60_000.0, 0.0, Some((2, 300.0))),
+            clock.on_ping(2, 1_100.0, 1_060.0, Some((1, 100.0))),
             Some(-1.0)
         );
-        // A moment later it is gone; ping 1's (hub 1000, rtt 100: 950) is
-        // the best left.
+        // Exactly a minute after ping 0 reached the hub: it still counts.
         assert_eq!(
-            clock.on_ping(4, 60_000.5, 0.0, Some((3, 300.0))),
-            Some(950.0)
+            clock.on_ping(3, 60_000.0, 59_860.0, Some((2, 300.0))),
+            Some(-1.0)
+        );
+        // A moment later it is gone; ping 1's (hub 1000, page 960, rtt 100:
+        // −10) is the best left.
+        assert_eq!(
+            clock.on_ping(4, 60_000.5, 59_860.5, Some((3, 300.0))),
+            Some(-10.0)
         );
         assert_eq!(clock.len(), 3);
         // Two minutes on, only a new exchange counts.
@@ -208,6 +252,97 @@ mod tests {
             Some(256.0 - 743.0 / 2.0)
         );
         assert_eq!(WINDOW_MS, 60_000.0);
+    }
+
+    #[test]
+    fn a_clock_step_is_over_half_a_second_beyond_the_round_trips() {
+        assert_eq!(STEP_MS, 500.0);
+        assert_eq!(step(None, 9_999.0, 0.0), None, "nothing to step from");
+        // Round trips of 0: the bound itself, forward and backward.
+        assert_eq!(step(Some((0.0, 0.0)), 500.0, 0.0), None);
+        assert_eq!(
+            step(Some((0.0, 0.0)), 500.0_f64.next_up(), 0.0),
+            Some(500.0_f64.next_up())
+        );
+        assert_eq!(step(Some((0.0, 0.0)), -500.0, 0.0), None);
+        assert_eq!(step(Some((0.0, 0.0)), -500.001, 0.0), Some(-500.001));
+        // Each exchange's offset can be off by half its round trip (all of
+        // it on one way): 10 and 30 ms allow 20 ms more.
+        assert_eq!(step(Some((1_000.0, 10.0)), 1_520.0, 30.0), None);
+        assert_eq!(
+            step(Some((1_000.0, 10.0)), 1_520.001, 30.0),
+            Some(1_520.001 - 1_000.0)
+        );
+        assert_eq!(step(Some((1_000.0, 10.0)), 480.0, 30.0), None);
+        assert_eq!(
+            step(Some((1_000.0, 10.0)), 479.999, 30.0),
+            Some(479.999 - 1_000.0)
+        );
+    }
+
+    /// Pings every 100 ms from a page 1000 ms behind the hub, 1 ms on the
+    /// way out; from ping 3 on, the hub's clock reads `step_ms` more. Each
+    /// ping carries the previous one's round trip (`rtts[n − 1]`). The
+    /// estimates after each ping.
+    fn stepped(step_ms: f64, rtts: &[f64]) -> (ClockSync, Vec<Option<f64>>) {
+        let mut clock = ClockSync::default();
+        let mut got = Vec::new();
+        for n in 0..=rtts.len() as u32 {
+            let t = 100.0 * f64::from(n);
+            let stepped = if n >= 3 { step_ms } else { 0.0 };
+            let arrival = t + 1_001.0 + stepped;
+            let rtt = n.checked_sub(1).map(|m| (m, rtts[m as usize]));
+            got.push(clock.on_ping(n, arrival, t, rtt));
+        }
+        (clock, got)
+    }
+
+    #[test]
+    fn a_forward_clock_step_starts_the_window_over_at_once() {
+        // Ping 3's exchange (the first after the step, 10 ms round trip,
+        // offset 3301 − 305) is worse than the old ones, yet the estimate
+        // follows it at once, then the better ping 4's.
+        let (mut clock, got) = stepped(2_000.0, &[2.0, 2.0, 2.0, 10.0, 2.0]);
+        assert_eq!(
+            got,
+            vec![
+                None,
+                Some(1_000.0),
+                Some(1_000.0),
+                Some(1_000.0),
+                Some(2_996.0),
+                Some(3_000.0)
+            ]
+        );
+        assert_eq!(clock.take_step(), Some(1_996.0), "the step, once");
+        assert_eq!(clock.take_step(), None);
+        assert_eq!(clock.len(), 2, "the old exchanges are gone");
+    }
+
+    #[test]
+    fn a_backward_clock_step_starts_the_window_over_too() {
+        let (mut clock, got) = stepped(-2_000.0, &[2.0, 2.0, 2.0, 10.0, 2.0]);
+        assert_eq!(got[3..], [Some(1_000.0), Some(-1_004.0), Some(-1_000.0)]);
+        assert_eq!(clock.take_step(), Some(-2_004.0));
+        assert_eq!(clock.len(), 2);
+    }
+
+    #[test]
+    fn a_held_exchange_is_no_step() {
+        // No step: ping 3 waits 1.5 s on its way out (its round trip 1501
+        // ms), so its offset reads 749.5 ms off: within half its round trip
+        // and the best's (751.5 ms), however far past the 500 ms.
+        let mut clock = ClockSync::default();
+        clock.on_ping(0, 1_001.0, 0.0, None);
+        clock.on_ping(1, 1_101.0, 100.0, Some((0, 2.0)));
+        clock.on_ping(2, 1_201.0, 200.0, Some((1, 2.0)));
+        clock.on_ping(3, 2_800.0, 300.0, Some((2, 2.0)));
+        assert_eq!(
+            clock.on_ping(4, 2_802.0, 1_801.0, Some((3, 1_501.0))),
+            Some(1_000.0)
+        );
+        assert_eq!(clock.take_step(), None);
+        assert_eq!(clock.len(), 4);
     }
 
     #[test]

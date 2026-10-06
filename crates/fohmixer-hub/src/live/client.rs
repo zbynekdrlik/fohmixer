@@ -249,7 +249,7 @@ async fn refusing<T>(
 
 /// Whether a failed attempt is the first of an outage (a warning; the
 /// retries are debug lines).
-fn first_of_outage(failures: u64) -> bool {
+pub(crate) fn first_of_outage(failures: u64) -> bool {
     failures == 1
 }
 

@@ -628,3 +628,37 @@ fn a_batch_holds_at_most_1_kb_so_a_set_never_waits_behind_more() {
     let first = r.upload(0.0, true, 0, 1).expect("a batch");
     assert_eq!(events_of(&first), vec![sized(600)]);
 }
+
+#[test]
+fn a_stream_deck_press_and_the_tab_are_page_events() {
+    assert_eq!(
+        deck(1_000.5, 3, true, None, None, true, Some(7)),
+        json!({"ev": "deck", "t": 1_000.5, "k": 3, "d": 1, "sent": true, "q": 7})
+    );
+    assert_eq!(
+        deck(
+            1_150.5,
+            3,
+            false,
+            Some(149.6),
+            Some("cancel"),
+            true,
+            Some(8)
+        ),
+        json!({"ev": "deck", "t": 1_150.5, "k": 3, "d": 0, "h": 150.0, "why": "cancel",
+               "sent": true, "q": 8})
+    );
+    // A down that could not go: no seq.
+    assert_eq!(
+        deck(2_000.0, 6, true, None, None, false, None),
+        json!({"ev": "deck", "t": 2_000.0, "k": 6, "d": 1, "sent": false})
+    );
+    assert_eq!(
+        deck_view(5.0, true),
+        json!({"ev": "deck_view", "t": 5.0, "on": true})
+    );
+    assert_eq!(
+        deck_view(6.0, false),
+        json!({"ev": "deck_view", "t": 6.0, "on": false})
+    );
+}

@@ -12,6 +12,10 @@
 //! (`setter.rs`, driven by `writes.rs`): one batch in flight, the latest
 //! want per key, acks per client. Every hop is an event-log record
 //! (`events.rs`); Live's health goes to every client as `link`.
+//!
+//! The Stream Deck (#52, `deck.rs`): the router owns its state too; the
+//! Companion task's events come as messages, and `router/deck.rs` carries
+//! the decisions out.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
@@ -32,6 +36,9 @@ use crate::setter::Setter;
 
 #[path = "router/writes.rs"]
 mod writes;
+
+#[path = "router/deck.rs"]
+mod deck;
 
 /// The router's own subscriber: the STAGE AUT rule (clients start at 1).
 pub const STAGE_CLIENT: ClientId = 0;
@@ -102,7 +109,38 @@ pub enum RouterMsg {
     Status {
         reply: oneshot::Sender<RouterStatus>,
     },
-    /// The hub stops: close every client.
+    /// A page opened or closed the Stream Deck tab (#52).
+    DeckView {
+        client: ClientId,
+        on: bool,
+    },
+    /// A page's Stream Deck press (#52), with its arrival (hub UTC ms) and
+    /// the page clock's offset as of its socket's last ping.
+    DeckPress {
+        client: ClientId,
+        key: u32,
+        down: bool,
+        seq: u64,
+        t: f64,
+        hold_ms: Option<f64>,
+        why: Option<String>,
+        hub_ms: f64,
+        offset_ms: Option<f64>,
+    },
+    /// Something came from a client (#52: a holding page silent for 2 s is
+    /// released).
+    Heard {
+        client: ClientId,
+    },
+    /// An event of the Companion task (#52).
+    Deck {
+        event: crate::companion::CompanionEvent,
+    },
+    /// The Stream Deck's clock (#52, every `crate::deck::TICK` with
+    /// `[companion]`).
+    Tick,
+    /// The hub stops: the Stream Deck's held keys released and its task
+    /// told to stop (#52), then every client closed.
     Stop,
 }
 
@@ -156,6 +194,8 @@ pub struct Router {
     io: RouterIo,
     /// The setters' clock (monotonic, ms since the router started).
     started: std::time::Instant,
+    /// The Stream Deck (#52); none without `[companion]`.
+    deck: Option<deck::DeckIo>,
 }
 
 impl Router {
@@ -186,11 +226,13 @@ impl Router {
             data_dir,
             io,
             started: std::time::Instant::now(),
+            deck: None,
         }
     }
 
-    /// Serves messages until [`RouterMsg::Stop`], then closes every client
-    /// (it holds a sender of its own for its batches' results, so the
+    /// Serves messages until [`RouterMsg::Stop`], then releases the Stream
+    /// Deck's held keys and tells its task to stop (#52), and closes every
+    /// client (it holds a sender of its own for its batches' results, so the
     /// channel never ends by itself: the hub's stop sends `Stop`).
     pub async fn run(mut self, mut rx: mpsc::UnboundedReceiver<RouterMsg>) {
         while let Some(msg) = rx.recv().await {
@@ -200,6 +242,7 @@ impl Router {
                 break;
             }
         }
+        self.deck_stop();
         for outbox in self.clients.values() {
             outbox.close();
         }
@@ -221,6 +264,7 @@ impl Router {
                 if self.layout_rev > 0 {
                     outbox.layout(self.layout_rev);
                 }
+                self.deck_attach(client, &outbox);
                 self.clients.insert(client, outbox);
                 self.peers.insert(client, peer);
             }
@@ -278,6 +322,7 @@ impl Router {
                 outcome,
             } => self.on_applied(&instance, batch, &outcome),
             RouterMsg::Detach { client } => {
+                self.deck_detach(client);
                 self.subs.drop_client(client);
                 self.clients.remove(&client);
                 self.peers.remove(&client);
@@ -322,6 +367,31 @@ impl Router {
                     unresolved: self.names.unresolved(),
                 });
             }
+            RouterMsg::DeckView { client, on } => self.deck_view(client, on),
+            RouterMsg::DeckPress {
+                client,
+                key,
+                down,
+                seq,
+                t,
+                hold_ms,
+                why,
+                hub_ms,
+                offset_ms,
+            } => self.deck_press(deck::PressMsg {
+                client,
+                key,
+                down,
+                seq,
+                t,
+                hold_ms,
+                why,
+                hub_ms,
+                offset_ms,
+            }),
+            RouterMsg::Heard { client } => self.deck_heard(client),
+            RouterMsg::Deck { event } => self.deck_event(event),
+            RouterMsg::Tick => self.deck_tick(),
             RouterMsg::Stop => return false,
         }
         true

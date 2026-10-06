@@ -10,6 +10,7 @@ import math
 
 from timeline_model import ROWS, Span, ms_text, no_data_text
 from timeline_read import key_hash, key_scale, local_text, number, to_live, utc_text, value2db
+from timeline_touch import OFFLINE
 
 # The report's geometry (px).
 WIDTH = 1600
@@ -56,6 +57,7 @@ CSS = """
 body { font: 13px/1.4 system-ui, sans-serif; margin: 16px; color: #222; background: #fff; }
 h1 { font-size: 18px; margin: 0 0 8px; }
 table { border-collapse: collapse; margin: 8px 0 16px; }
+tr.deck-unsent td, tr.deck-release td { color: #a00; }
 th, td { border: 1px solid #ccc; padding: 2px 8px; text-align: left; vertical-align: top; }
 td { font-variant-numeric: tabular-nums; }
 .notes li { color: #8a4b00; }
@@ -618,6 +620,196 @@ def _system_table(t):
     return f"<p>{esc(SYSTEM_LEGEND)}</p>{table}"
 
 
+DECK_LEGEND = (
+    "Stream Deck (#52): each press with the hub's delay (the page's send to the hub), "
+    "Companion's round trip, the hold as the page measured it and as the hub forwarded "
+    "it, and what became of it (forwarded and answered ok, refused by Companion with its "
+    "error, offline: the link was lost with it on the way, or the hub's reason for not "
+    "forwarding it); then the releases the hub made itself with Companion's answer, the red "
+    "flashes (downs that did nothing: not sent by the page, refused by the hub offline or "
+    "late, or answered not ok), Companion's key changes within 10 s of a press of the key "
+    "(did Companion react: pressed, colour, image changed) and Companion's link outages. "
+    "Keys are their index."
+)
+
+
+def _answer_text(ok, error):
+    """What Companion's answer to a forwarded press or release says."""
+    if ok is None:
+        return "no answer read"
+    if ok:
+        return "ok"
+    return "offline" if error == OFFLINE else f"refused: {error or 'n/a'}"
+
+
+def _press_outcome(p):
+    """A press row's outcome: the hub's reason, or Companion's answer."""
+    if not p.forwarded:
+        return p.reason or "n/a"
+    return "forwarded" if p.ok else _answer_text(p.ok, p.error)
+
+
+def _release_outcome(r):
+    """A release row's outcome: lost, or its reason and Companion's answer."""
+    if r.reason == "lost":
+        return "lost: never released"
+    if r.reason == "stop":
+        return "stop (answered after the hub's router ended: no record)"
+    return f"{r.reason or 'n/a'}: {_answer_text(r.ok, r.error)}"
+
+
+def _unsent_outcome(u):
+    """A red flash's outcome: where it stopped, and why."""
+    if u.where == "page":
+        return "not sent (page)"
+    if u.where == "hub":
+        return f"refused by the hub: {u.why or 'n/a'}"
+    return _answer_text(False, u.why)
+
+
+def _flag(value):
+    """``true``/``false`` for an attribute, None (left out) when unknown."""
+    return None if value is None else ("true" if value else "false")
+
+
+def _key_change_text(k):
+    """A key change's cells: pressed, colour, image."""
+    pressed = {True: "pressed", False: "released"}.get(k.pressed, "n/a")
+    image = {True: "image changed", False: "same image"}.get(k.img_changed, "image n/a")
+    return f"{pressed}, {k.color or 'no colour'}, {image}"
+
+
+def _deck_table(t):
+    if not (t.deck_presses or t.deck_releases or t.deck_unsent or t.deck_outages or t.deck_keys):
+        return "<p>No Stream Deck activity in the window.</p>"
+    head = "".join(
+        f"<th>{h}</th>"
+        for h in (
+            "time (local)",
+            "key",
+            "press",
+            "delay",
+            "Companion",
+            "hold (page)",
+            "hold (hub)",
+            "outcome",
+        )
+    )
+    rows = []
+    for p in t.deck_presses:
+        cells = (
+            local_text(p.time),
+            str(p.key),
+            "down" if p.down else f"up ({p.why or 'n/a'})",
+            ms_text(p.delay_ms),
+            ms_text(p.rtt_ms),
+            ms_text(p.hold_ms),
+            ms_text(p.hub_hold_ms),
+            _press_outcome(p),
+        )
+        rows.append(
+            tag(
+                "tr",
+                "".join(f"<td>{esc(c)}</td>" for c in cells),
+                class_="deck-press",
+                data_time=num(p.time),
+                data_key=str(p.key),
+                data_down="true" if p.down else "false",
+                data_forwarded="true" if p.forwarded else "false",
+                data_reason=p.reason,
+                data_why=p.why,
+                data_rtt=None if p.rtt_ms is None else num(p.rtt_ms),
+                data_ok=_flag(p.ok),
+                data_error=p.error,
+            )
+        )
+    for r in t.deck_releases:
+        lost = r.reason == "lost"
+        cells = (
+            local_text(r.time),
+            str(r.key),
+            "up (the hub's)",
+            "",
+            "",
+            "",
+            ms_text(r.hub_hold_ms),
+            _release_outcome(r),
+        )
+        rows.append(
+            tag(
+                "tr",
+                "".join(f"<td>{esc(c)}</td>" for c in cells),
+                class_="deck-release",
+                data_time=num(r.time),
+                data_key=str(r.key),
+                data_reason=r.reason,
+                data_released="false" if lost else "true",
+                data_ok=_flag(r.ok),
+                data_error=r.error,
+            )
+        )
+    for u in t.deck_unsent:
+        cells = (
+            local_text(u.time),
+            str(u.key),
+            "down (red flash)",
+            "",
+            "",
+            "",
+            "",
+            _unsent_outcome(u),
+        )
+        rows.append(
+            tag(
+                "tr",
+                "".join(f"<td>{esc(c)}</td>" for c in cells),
+                class_="deck-unsent",
+                data_time=num(u.time),
+                data_key=str(u.key),
+                data_where=u.where,
+                data_why=u.why,
+            )
+        )
+    for k in t.deck_keys:
+        cells = (
+            local_text(k.time),
+            str(k.key),
+            "Companion's key",
+            "",
+            f"+{ms_text(k.since_press_ms)} ms",
+            "",
+            "",
+            _key_change_text(k),
+        )
+        rows.append(
+            tag(
+                "tr",
+                "".join(f"<td>{esc(c)}</td>" for c in cells),
+                class_="deck-key",
+                data_time=num(k.time),
+                data_key=str(k.key),
+                data_pressed=_flag(k.pressed),
+                data_color=k.color,
+                data_img_changed=_flag(k.img_changed),
+                data_since_press=num(k.since_press_ms),
+            )
+        )
+    table = f'<table class="deck"><tr>{head}</tr>{"".join(rows)}</table>'
+    outages = "".join(
+        tag(
+            "li",
+            esc(
+                f"{local_text(o.start)} to {local_text(o.end)}: {ms_text(o.ms)} ms ({o.error or 'n/a'})"
+            ),
+            class_="deck-outage",
+            data_ms=num(o.ms),
+        )
+        for o in t.deck_outages
+    )
+    outage_list = f"<p>Companion link outages:</p><ul>{outages}</ul>" if outages else ""
+    return f"<p>{esc(DECK_LEGEND)}</p>{table}{outage_list}"
+
+
 def render(t, pairs, files):
     """The whole report: the window, ``files`` (the names read), the notes,
     the summary ``pairs``, the lanes and the jumps."""
@@ -648,5 +840,6 @@ def render(t, pairs, files):
         f"<h2>Volume jumps over 3 dB</h2>{_jumps_table(t)}"
         f"<h2>Touches of single volume faders</h2>{_touches_table(t)}"
         f"<h2>System gestures</h2>{_system_table(t)}"
+        f"<h2>Stream Deck</h2>{_deck_table(t)}"
         "</body></html>\n"
     )

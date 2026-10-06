@@ -25,6 +25,15 @@
 //! aud = ["<the app's AUD tag>"]
 //! [tunnel]               # cloudflared's readiness, reported in /api/status
 //! ready_url = "http://127.0.0.1:20241/ready"
+//!
+//! # The Stream Deck tab (#52), optional: Bitfocus Companion's Satellite API
+//! [companion]
+//! host = "companion.example.org"
+//! port = 16622           # the default
+//! columns = 8            # 1..=16
+//! rows = 4               # 1..=8
+//! bitmap_px = 144        # 32..=288, the keys' image size
+//! title = "Stream Deck"  # 1..=24 characters, the tab's title
 //! ```
 //!
 //! Every key is optional; a missing file is the defaults. `allowed_hosts`
@@ -65,6 +74,16 @@ pub const DEFAULT_PROPAGATION_S: u64 = 20;
 pub const MAX_PROPAGATION_S: u64 = 600;
 /// cloudflared's readiness endpoint (its `--metrics 127.0.0.1:20241`).
 pub const DEFAULT_TUNNEL_READY_URL: &str = "http://127.0.0.1:20241/ready";
+/// Companion's Satellite API port when `[companion]` does not set one.
+pub const DEFAULT_COMPANION_PORT: u16 = 16622;
+/// The Stream Deck's grid when `[companion]` does not set it: Companion's
+/// standard page (a Stream Deck XL).
+pub const DEFAULT_DECK_COLUMNS: u32 = 8;
+pub const DEFAULT_DECK_ROWS: u32 = 4;
+/// The size Companion draws each key's image at (px, square).
+pub const DEFAULT_DECK_BITMAP_PX: u32 = 144;
+/// The tab's title.
+pub const DEFAULT_DECK_TITLE: &str = "Stream Deck";
 
 /// One Live instance: its name (the `instance` of every command and
 /// binding) and the localhost port of its FohMixer script.
@@ -118,6 +137,26 @@ fn default_propagation_s() -> u64 {
 
 fn default_tunnel_ready_url() -> String {
     DEFAULT_TUNNEL_READY_URL.to_string()
+}
+
+fn default_companion_port() -> u16 {
+    DEFAULT_COMPANION_PORT
+}
+
+fn default_deck_columns() -> u32 {
+    DEFAULT_DECK_COLUMNS
+}
+
+fn default_deck_rows() -> u32 {
+    DEFAULT_DECK_ROWS
+}
+
+fn default_deck_bitmap_px() -> u32 {
+    DEFAULT_DECK_BITMAP_PX
+}
+
+fn default_deck_title() -> String {
+    DEFAULT_DECK_TITLE.to_string()
 }
 
 /// `[tls]`: the HTTPS listener for the one public name (LAN by the router's
@@ -178,6 +217,34 @@ impl AccessCfg {
 pub struct TunnelCfg {
     #[serde(default = "default_tunnel_ready_url")]
     pub ready_url: String,
+}
+
+/// `[companion]` (#52): the Stream Deck tab. The hub registers with
+/// Bitfocus Companion's Satellite API at `host:port` as one Stream Deck of
+/// `columns` x `rows` keys whose images Companion draws `bitmap_px` square;
+/// the page's tab is titled `title`. The host is site data: the installer
+/// writes it (`-CompanionHost`), never this repository.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CompanionCfg {
+    pub host: String,
+    #[serde(default = "default_companion_port")]
+    pub port: u16,
+    #[serde(default = "default_deck_columns")]
+    pub columns: u32,
+    #[serde(default = "default_deck_rows")]
+    pub rows: u32,
+    #[serde(default = "default_deck_bitmap_px")]
+    pub bitmap_px: u32,
+    #[serde(default = "default_deck_title")]
+    pub title: String,
+}
+
+impl CompanionCfg {
+    /// The surface's keys: `columns` x `rows` (Companion's `KEYS_TOTAL`).
+    pub fn keys(&self) -> u32 {
+        self.columns * self.rows
+    }
 }
 
 /// Whether `name` is a DNS name with at least two labels (a public name,
@@ -266,6 +333,9 @@ pub struct Config {
     pub access: Option<AccessCfg>,
     #[serde(default)]
     pub tunnel: Option<TunnelCfg>,
+    /// The Stream Deck tab (#52); none: no tab.
+    #[serde(default)]
+    pub companion: Option<CompanionCfg>,
     /// The data folder (where the file was read from).
     #[serde(skip)]
     pub data_dir: PathBuf,
@@ -284,6 +354,7 @@ impl Config {
             acme: None,
             access: None,
             tunnel: None,
+            companion: None,
             data_dir: data_dir.to_path_buf(),
         }
     }
@@ -355,7 +426,38 @@ impl Config {
                 self.layout_poll_ms
             );
         }
+        self.validate_companion()?;
         self.validate_remote()
+    }
+
+    /// `[companion]` (#52): a host without spaces or quotes, a port, the
+    /// grid's and the image's bounds, a title of 1..=24 characters.
+    fn validate_companion(&self) -> anyhow::Result<()> {
+        let Some(deck) = &self.companion else {
+            return Ok(());
+        };
+        if deck.host.is_empty() || deck.host.contains(|c: char| c.is_whitespace() || c == '"') {
+            bail!(
+                "[companion] host {:?}: a name or address without spaces",
+                deck.host
+            );
+        }
+        if deck.port == 0 {
+            bail!("[companion] port 0");
+        }
+        if !(1..=16).contains(&deck.columns) {
+            bail!("[companion] columns {}: 1..=16", deck.columns);
+        }
+        if !(1..=8).contains(&deck.rows) {
+            bail!("[companion] rows {}: 1..=8", deck.rows);
+        }
+        if !(32..=288).contains(&deck.bitmap_px) {
+            bail!("[companion] bitmap_px {}: 32..=288", deck.bitmap_px);
+        }
+        if !(1..=24).contains(&deck.title.chars().count()) {
+            bail!("[companion] title {:?}: 1..=24 characters", deck.title);
+        }
+        Ok(())
     }
 
     /// The remote-access tables (#17).
@@ -809,5 +911,100 @@ mod tests {
         std::fs::create_dir(dir.path().join(CONFIG_FILE)).unwrap();
         let error = format!("{:#}", Config::load(dir.path()).unwrap_err());
         assert!(error.starts_with("reading config "), "{error}");
+    }
+
+    #[test]
+    fn the_companion_table_is_read_with_its_defaults() {
+        let config = Config::parse("[companion]\nhost = \"10.0.0.7\"\n", &data()).unwrap();
+        let deck = config.companion.unwrap();
+        assert_eq!(
+            deck,
+            CompanionCfg {
+                host: "10.0.0.7".into(),
+                port: 16622,
+                columns: 8,
+                rows: 4,
+                bitmap_px: 144,
+                title: "Stream Deck".into(),
+            }
+        );
+        assert_eq!(deck.keys(), 32);
+        let full = Config::parse(
+            "[companion]\nhost = \"companion.example.org\"\nport = 16700\ncolumns = 5\nrows = 3\n\
+             bitmap_px = 72\ntitle = \"Deck\"\n",
+            &data(),
+        )
+        .unwrap()
+        .companion
+        .unwrap();
+        assert_eq!(
+            (
+                full.host.as_str(),
+                full.port,
+                full.columns,
+                full.rows,
+                full.bitmap_px,
+                full.title.as_str()
+            ),
+            ("companion.example.org", 16700, 5, 3, 72, "Deck")
+        );
+        assert_eq!(full.keys(), 15);
+        assert_eq!(Config::parse("", &data()).unwrap().companion, None);
+    }
+
+    #[test]
+    fn a_bad_companion_table_is_refused_at_its_bounds() {
+        let table = |extra: &str| format!("[companion]\nhost = \"10.0.0.7\"\n{extra}");
+        for (text, message) in [
+            (
+                "[companion]\nport = 1\n".to_string(),
+                "missing field `host`",
+            ),
+            (
+                "[companion]\nhost = \"\"\n".to_string(),
+                "[companion] host \"\"",
+            ),
+            (
+                "[companion]\nhost = \"a b\"\n".to_string(),
+                "[companion] host \"a b\"",
+            ),
+            (
+                "[companion]\nhost = \"a\\\"b\"\n".to_string(),
+                "[companion] host \"a\\\"b\"",
+            ),
+            (table("port = 0\n"), "[companion] port 0"),
+            (table("columns = 0\n"), "[companion] columns 0: 1..=16"),
+            (table("columns = 17\n"), "[companion] columns 17: 1..=16"),
+            (table("rows = 0\n"), "[companion] rows 0: 1..=8"),
+            (table("rows = 9\n"), "[companion] rows 9: 1..=8"),
+            (
+                table("bitmap_px = 31\n"),
+                "[companion] bitmap_px 31: 32..=288",
+            ),
+            (
+                table("bitmap_px = 289\n"),
+                "[companion] bitmap_px 289: 32..=288",
+            ),
+            (
+                table("title = \"\"\n"),
+                "[companion] title \"\": 1..=24 characters",
+            ),
+            (
+                table("title = \"Stream Deck of the FOH 12\"\n"),
+                "1..=24 characters",
+            ),
+            (table("colour = 1\n"), "unknown field"),
+        ] {
+            let error = format!("{:#}", Config::parse(&text, &data()).unwrap_err());
+            assert!(error.contains(message), "{text}: {error}");
+        }
+        for ok in [
+            "columns = 1\nrows = 1\nbitmap_px = 32\n",
+            "columns = 16\nrows = 8\nbitmap_px = 288\n",
+            // 24 characters, one of them not ASCII: characters, not bytes.
+            "title = \"Stream Deck of the FOH Ž\"\n",
+        ] {
+            assert!(Config::parse(&table(ok), &data()).is_ok(), "{ok}");
+        }
     }
 }

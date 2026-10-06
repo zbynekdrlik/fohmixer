@@ -127,6 +127,20 @@ exclude_re = [
   # event log, resilience.spec.ts a not_sent write Live's replayed value
   # closes within milliseconds.
   "fohmixer-ui/src/store/live/writes\\.rs.*(replace|in) LiveStore::(on_ack|resend|set|sent_set|release|touch|intent_state|intent_view|live_value|note_intents)( |$)",
+  # store/live/deck.rs (#52): the Stream Deck's glue, one function at a time:
+  # on_deck, on_deck_keys and on_deck_ack (the hub's messages into the
+  # signals and the tested DeckWaiting), deck_view and deck_hello (the tab's
+  # deck_view, again after a hello; the deck info stays through a reconnect,
+  # so the tab never flickers), deck_closed (a closed socket: offline,
+  # DeckWaiting::clear), can_send (the socket's readiness), dropping_out
+  # (the tested DropoutWatch's counter, read for the tested can_press) and
+  # deck_press (DeckWaiting::next_seq and sent around the socket, with the
+  # pointer event's time). deck.spec.ts drives
+  # them (the grid with its keys, the presses at the fake Companion, the
+  # offline dot and the red flash for Companion down and for the page's own
+  # socket down, a refused press's flash, a down during a dropout flashed
+  # and never sent, the tab and the page kept through a reconnect).
+  "fohmixer-ui/src/store/live/deck\\.rs.*(replace|in) LiveStore::(on_deck|on_deck_keys|on_deck_ack|deck_view|deck_hello|deck_closed|can_send|dropping_out|deck_press)( |$)",
   "fohmixer-ui/src/store/live\\.rs.*(replace|in) (Socket::open|Socket::buffered|Socket::close|Inner::new)( |$)",
   # auth.rs: local storage and the login request (login_outcome, login_body
   # and LoginError::message are the tested decisions).
@@ -153,9 +167,28 @@ exclude_re = [
   # touch-guard.spec.ts drives them on every tap target of the surface.
   "fohmixer-ui/src/components/mod\\.rs.*(replace|in) (owns_touches|owns_surface)( |$)",
   "fohmixer-ui/src/components/buttons\\.rs.*(replace|in) toggle_flag( |$)",
-  # pages/surface.rs: a tab press (store, local storage) and the remembered
-  # pages' read; choose and selected_path are the tested decisions.
-  "fohmixer-ui/src/pages/surface\\.rs.*(replace|in) (Nav::select|remembered_pages)( |$)",
+  # pages/surface.rs: a tab press (store, local storage), the Stream Deck
+  # tab's press (#52: Nav::show_deck sets the tab's signal, Nav::select
+  # clears it, each only on a change; deck.spec.ts opens it and checks a
+  # reload never restores it) and the remembered pages' read; choose and
+  # selected_path are the tested decisions.
+  "fohmixer-ui/src/pages/surface\\.rs.*(replace|in) (Nav::select|Nav::show_deck|remembered_pages)( |$)",
+  # pages/deck.rs (#52): the Stream Deck page's glue, one function at a
+  # time: carry (a press decision of the tested behave::deck::Presses onto
+  # the socket through LiveStore::deck_press, into the recorder through the
+  # tested trace::deck, a refused down flashed with fail_flash and its up
+  # dropped with Presses::unsent), show_held (the outline's signal from
+  # Presses::held_keys, written only on a change), lift_keys
+  # (Presses::leave_all's ups when the tab is left, the outline untouched:
+  # the cleanup must not write the page's own signal) and leave_keys (the
+  # same when the page is hidden, then the outline) and lift_missed (the
+  # tested Presses::missed_ups' ups through carry, then the outline: from
+  # the page root's capture-phase pointerdown listener and a key's down).
+  # deck.spec.ts drives them in Chromium and WebKit (down and up on
+  # pointerup, pointercancel and leaving the tab, with the page's deck
+  # events and their whys in the event log; the outline; the red flash with
+  # no later send). grid_vars (the grid's size) is tested.
+  "fohmixer-ui/src/pages/deck\\.rs.*(replace|in) (carry|show_held|lift_keys|leave_keys|lift_missed)( |$)",
   # diag.rs (#26), one browser call each: install (the window error,
   # unhandledrejection and visibilitychange listeners), observe_attributes
   # (the MutationObserver on data-sw / data-wake-lock), connected and

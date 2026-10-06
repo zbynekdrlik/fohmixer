@@ -1,0 +1,637 @@
+{
+ "version": 12,
+ "type": "full",
+ "companionBuild": "5.0.7+9763-stable-cec2f88e6f",
+ "pages": {
+  "1": {
+   "id": "fohmixerTestPage0001",
+   "name": "TEST",
+   "controls": {
+    "0": {
+     "0": {
+      "type": "button-layered",
+      "style": {
+       "layers": [
+        {
+         "id": "canvas",
+         "name": "Canvas",
+         "usage": "auto",
+         "type": "canvas",
+         "decoration": {
+          "value": "default",
+          "isExpression": false
+         },
+         "showStatusIcons": {
+          "value": "default",
+          "isExpression": false
+         }
+        },
+        {
+         "id": "box0",
+         "name": "Background",
+         "usage": "auto",
+         "type": "box",
+         "enabled": {
+          "value": true,
+          "isExpression": false
+         },
+         "opacity": {
+          "value": 100,
+          "isExpression": false
+         },
+         "x": {
+          "value": 0,
+          "isExpression": false
+         },
+         "y": {
+          "value": 0,
+          "isExpression": false
+         },
+         "width": {
+          "value": 100,
+          "isExpression": false
+         },
+         "height": {
+          "value": 100,
+          "isExpression": false
+         },
+         "rotation": {
+          "value": 0,
+          "isExpression": false
+         },
+         "color": {
+          "value": "$(custom:light_a) == 'on' ? 43520 : 0",
+          "isExpression": true
+         },
+         "borderWidth": {
+          "value": 0,
+          "isExpression": false
+         },
+         "borderColor": {
+          "value": 0,
+          "isExpression": false
+         },
+         "borderPosition": {
+          "value": "inside",
+          "isExpression": false
+         }
+        },
+        {
+         "id": "text0",
+         "name": "Text",
+         "usage": "auto",
+         "type": "text",
+         "enabled": {
+          "value": true,
+          "isExpression": false
+         },
+         "opacity": {
+          "value": 100,
+          "isExpression": false
+         },
+         "x": {
+          "value": 0,
+          "isExpression": false
+         },
+         "y": {
+          "value": 0,
+          "isExpression": false
+         },
+         "width": {
+          "value": 100,
+          "isExpression": false
+         },
+         "height": {
+          "value": 100,
+          "isExpression": false
+         },
+         "rotation": {
+          "value": 0,
+          "isExpression": false
+         },
+         "text": {
+          "value": "Light A\n$(custom:light_a)",
+          "isExpression": false
+         },
+         "color": {
+          "value": 16777215,
+          "isExpression": false
+         },
+         "halign": {
+          "value": "center",
+          "isExpression": false
+         },
+         "valign": {
+          "value": "center",
+          "isExpression": false
+         },
+         "fontsize": {
+          "value": 100,
+          "isExpression": false
+         },
+         "fontsizeAllowShrink": {
+          "value": true,
+          "isExpression": false
+         },
+         "font": {
+          "value": "companion-sans",
+          "isExpression": false
+         },
+         "outlineColor": {
+          "value": 4278190080,
+          "isExpression": false
+         }
+        }
+       ]
+      },
+      "options": {
+       "stepProgression": "auto",
+       "stepExpression": "",
+       "rotaryActions": false,
+       "canModifyStyleInApis": false,
+       "notes": ""
+      },
+      "feedbacks": [],
+      "steps": {
+       "0": {
+        "action_sets": {
+         "down": [
+          {
+           "id": "lightA0toggle0000001",
+           "definitionId": "custom_variable_set_value",
+           "connectionId": "internal",
+           "options": {
+            "name": {
+             "value": "light_a",
+             "isExpression": false
+            },
+            "create": {
+             "value": false,
+             "isExpression": false
+            },
+            "value": {
+             "value": "$(this:current) == 'on' ? 'off' : 'on'",
+             "isExpression": true
+            }
+           },
+           "type": "action",
+           "children": {}
+          }
+         ],
+         "up": []
+        },
+        "options": {
+         "runWhileHeld": []
+        }
+       }
+      },
+      "localVariables": []
+     },
+     "1": {
+      "type": "button-layered",
+      "style": {
+       "layers": [
+        {
+         "id": "canvas",
+         "name": "Canvas",
+         "usage": "auto",
+         "type": "canvas",
+         "decoration": {
+          "value": "default",
+          "isExpression": false
+         },
+         "showStatusIcons": {
+          "value": "default",
+          "isExpression": false
+         }
+        },
+        {
+         "id": "box0",
+         "name": "Background",
+         "usage": "auto",
+         "type": "box",
+         "enabled": {
+          "value": true,
+          "isExpression": false
+         },
+         "opacity": {
+          "value": 100,
+          "isExpression": false
+         },
+         "x": {
+          "value": 0,
+          "isExpression": false
+         },
+         "y": {
+          "value": 0,
+          "isExpression": false
+         },
+         "width": {
+          "value": 100,
+          "isExpression": false
+         },
+         "height": {
+          "value": 100,
+          "isExpression": false
+         },
+         "rotation": {
+          "value": 0,
+          "isExpression": false
+         },
+         "color": {
+          "value": 0,
+          "isExpression": false
+         },
+         "borderWidth": {
+          "value": 0,
+          "isExpression": false
+         },
+         "borderColor": {
+          "value": 0,
+          "isExpression": false
+         },
+         "borderPosition": {
+          "value": "inside",
+          "isExpression": false
+         }
+        },
+        {
+         "id": "text0",
+         "name": "Text",
+         "usage": "auto",
+         "type": "text",
+         "enabled": {
+          "value": true,
+          "isExpression": false
+         },
+         "opacity": {
+          "value": 100,
+          "isExpression": false
+         },
+         "x": {
+          "value": 0,
+          "isExpression": false
+         },
+         "y": {
+          "value": 0,
+          "isExpression": false
+         },
+         "width": {
+          "value": 100,
+          "isExpression": false
+         },
+         "height": {
+          "value": 100,
+          "isExpression": false
+         },
+         "rotation": {
+          "value": 0,
+          "isExpression": false
+         },
+         "text": {
+          "value": "Scene 1\n$(custom:scene_1)",
+          "isExpression": false
+         },
+         "color": {
+          "value": 16777215,
+          "isExpression": false
+         },
+         "halign": {
+          "value": "center",
+          "isExpression": false
+         },
+         "valign": {
+          "value": "center",
+          "isExpression": false
+         },
+         "fontsize": {
+          "value": 100,
+          "isExpression": false
+         },
+         "fontsizeAllowShrink": {
+          "value": true,
+          "isExpression": false
+         },
+         "font": {
+          "value": "companion-sans",
+          "isExpression": false
+         },
+         "outlineColor": {
+          "value": 4278190080,
+          "isExpression": false
+         }
+        }
+       ]
+      },
+      "options": {
+       "stepProgression": "auto",
+       "stepExpression": "",
+       "rotaryActions": false,
+       "canModifyStyleInApis": false,
+       "notes": ""
+      },
+      "feedbacks": [],
+      "steps": {
+       "0": {
+        "action_sets": {
+         "down": [],
+         "up": [
+          {
+           "id": "scene1short000000001",
+           "definitionId": "custom_variable_set_value",
+           "connectionId": "internal",
+           "options": {
+            "name": {
+             "value": "scene_1",
+             "isExpression": false
+            },
+            "create": {
+             "value": false,
+             "isExpression": false
+            },
+            "value": {
+             "value": "short",
+             "isExpression": false
+            }
+           },
+           "type": "action",
+           "children": {}
+          }
+         ],
+         "1000": [
+          {
+           "id": "scene1long0000000001",
+           "definitionId": "custom_variable_set_value",
+           "connectionId": "internal",
+           "options": {
+            "name": {
+             "value": "scene_1",
+             "isExpression": false
+            },
+            "create": {
+             "value": false,
+             "isExpression": false
+            },
+            "value": {
+             "value": "long",
+             "isExpression": false
+            }
+           },
+           "type": "action",
+           "children": {}
+          }
+         ]
+        },
+        "options": {
+         "runWhileHeld": []
+        }
+       }
+      },
+      "localVariables": []
+     },
+     "2": {
+      "type": "button-layered",
+      "style": {
+       "layers": [
+        {
+         "id": "canvas",
+         "name": "Canvas",
+         "usage": "auto",
+         "type": "canvas",
+         "decoration": {
+          "value": "default",
+          "isExpression": false
+         },
+         "showStatusIcons": {
+          "value": "default",
+          "isExpression": false
+         }
+        },
+        {
+         "id": "box0",
+         "name": "Background",
+         "usage": "auto",
+         "type": "box",
+         "enabled": {
+          "value": true,
+          "isExpression": false
+         },
+         "opacity": {
+          "value": 100,
+          "isExpression": false
+         },
+         "x": {
+          "value": 0,
+          "isExpression": false
+         },
+         "y": {
+          "value": 0,
+          "isExpression": false
+         },
+         "width": {
+          "value": 100,
+          "isExpression": false
+         },
+         "height": {
+          "value": 100,
+          "isExpression": false
+         },
+         "rotation": {
+          "value": 0,
+          "isExpression": false
+         },
+         "color": {
+          "value": "$(custom:hold_c) == 'down' ? 16753920 : 0",
+          "isExpression": true
+         },
+         "borderWidth": {
+          "value": 0,
+          "isExpression": false
+         },
+         "borderColor": {
+          "value": 0,
+          "isExpression": false
+         },
+         "borderPosition": {
+          "value": "inside",
+          "isExpression": false
+         }
+        },
+        {
+         "id": "text0",
+         "name": "Text",
+         "usage": "auto",
+         "type": "text",
+         "enabled": {
+          "value": true,
+          "isExpression": false
+         },
+         "opacity": {
+          "value": 100,
+          "isExpression": false
+         },
+         "x": {
+          "value": 0,
+          "isExpression": false
+         },
+         "y": {
+          "value": 0,
+          "isExpression": false
+         },
+         "width": {
+          "value": 100,
+          "isExpression": false
+         },
+         "height": {
+          "value": 100,
+          "isExpression": false
+         },
+         "rotation": {
+          "value": 0,
+          "isExpression": false
+         },
+         "text": {
+          "value": "Hold C\n$(custom:hold_c)",
+          "isExpression": false
+         },
+         "color": {
+          "value": 16777215,
+          "isExpression": false
+         },
+         "halign": {
+          "value": "center",
+          "isExpression": false
+         },
+         "valign": {
+          "value": "center",
+          "isExpression": false
+         },
+         "fontsize": {
+          "value": 100,
+          "isExpression": false
+         },
+         "fontsizeAllowShrink": {
+          "value": true,
+          "isExpression": false
+         },
+         "font": {
+          "value": "companion-sans",
+          "isExpression": false
+         },
+         "outlineColor": {
+          "value": 4278190080,
+          "isExpression": false
+         }
+        }
+       ]
+      },
+      "options": {
+       "stepProgression": "auto",
+       "stepExpression": "",
+       "rotaryActions": false,
+       "canModifyStyleInApis": false,
+       "notes": ""
+      },
+      "feedbacks": [],
+      "steps": {
+       "0": {
+        "action_sets": {
+         "down": [
+          {
+           "id": "holdC0down0000000001",
+           "definitionId": "custom_variable_set_value",
+           "connectionId": "internal",
+           "options": {
+            "name": {
+             "value": "hold_c",
+             "isExpression": false
+            },
+            "create": {
+             "value": false,
+             "isExpression": false
+            },
+            "value": {
+             "value": "down",
+             "isExpression": false
+            }
+           },
+           "type": "action",
+           "children": {}
+          }
+         ],
+         "up": [
+          {
+           "id": "holdC0up000000000001",
+           "definitionId": "custom_variable_set_value",
+           "connectionId": "internal",
+           "options": {
+            "name": {
+             "value": "hold_c",
+             "isExpression": false
+            },
+            "create": {
+             "value": false,
+             "isExpression": false
+            },
+            "value": {
+             "value": "up",
+             "isExpression": false
+            }
+           },
+           "type": "action",
+           "children": {}
+          }
+         ]
+        },
+        "options": {
+         "runWhileHeld": []
+        }
+       }
+      },
+      "localVariables": []
+     }
+    }
+   },
+   "gridSize": {
+    "minColumn": 0,
+    "maxColumn": 7,
+    "minRow": 0,
+    "maxRow": 3
+   }
+  }
+ },
+ "triggers": {},
+ "triggerCollections": [],
+ "custom_variables": {
+  "light_a": {
+   "description": "Light A (synthetic test)",
+   "defaultValue": "off",
+   "persistCurrentValue": false,
+   "sortOrder": 0
+  },
+  "scene_1": {
+   "description": "Scene 1's last release (synthetic test)",
+   "defaultValue": "idle",
+   "persistCurrentValue": false,
+   "sortOrder": 1
+  },
+  "hold_c": {
+   "description": "Hold C (synthetic test)",
+   "defaultValue": "up",
+   "persistCurrentValue": false,
+   "sortOrder": 2
+  }
+ },
+ "customVariablesCollections": [],
+ "expressionVariables": {},
+ "expressionVariablesCollections": [],
+ "instances": {},
+ "connectionCollections": [],
+ "surfaces": {},
+ "surfaceGroups": {},
+ "surfacesRemote": {},
+ "surfaceInstances": {},
+ "surfaceInstanceCollections": [],
+ "imageLibrary": [],
+ "imageLibraryCollections": []
+}

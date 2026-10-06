@@ -14,8 +14,8 @@ fohmixer-proto = { path = "../fohmixer-proto" }
 axum = { version = "0.8", features = ["macros", "json", "ws"] }
 # Security headers
 tower-http = { version = "0.6", features = ["set-header"] }
-# Async runtime (signal: the binary's graceful stop)
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net", "sync", "time"] }
+# Async runtime (signal: the binary's graceful stop; io-util: Companion's line reads, #52)
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net", "sync", "time", "io-util"] }
 # The WebSocket client of the FohMixer scripts (the version axum's ws uses)
 tokio-tungstenite = "0.28"
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }

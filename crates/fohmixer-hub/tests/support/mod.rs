@@ -27,6 +27,7 @@ mod host;
 #[cfg(unix)]
 #[allow(unused_imports)] // the host-free test binaries do not use it
 pub use host::Host;
+pub mod companion;
 
 /// One host-backed test at a time within a test binary (`cargo test` runs
 /// a binary's tests on parallel threads; nextest runs them in the
@@ -51,6 +52,35 @@ pub struct TestHub {
     pub token: String,
     stop: Option<oneshot::Sender<()>>,
     task: Option<JoinHandle<anyhow::Result<()>>>,
+}
+
+/// Every event-log record in the data folder `dir` (#43), oldest day first
+/// (a stopped hub's too).
+pub fn events_in(dir: &Path) -> Vec<Value> {
+    let logs = dir.join("logs");
+    let mut days: Vec<PathBuf> = std::fs::read_dir(&logs)
+        .map(|entries| {
+            entries
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| {
+                    p.file_name()
+                        .and_then(|n| n.to_str())
+                        .is_some_and(|n| n.starts_with("events-"))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    days.sort();
+    days.iter()
+        .flat_map(|day| {
+            std::fs::read_to_string(day)
+                .unwrap_or_default()
+                .lines()
+                .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+                .collect::<Vec<_>>()
+        })
+        .collect()
 }
 
 impl TestHub {
@@ -98,30 +128,7 @@ impl TestHub {
 
     /// Every event-log record written so far (#43), oldest day first.
     pub fn events(&self) -> Vec<Value> {
-        let logs = self.dir.join("logs");
-        let mut days: Vec<PathBuf> = std::fs::read_dir(&logs)
-            .map(|entries| {
-                entries
-                    .flatten()
-                    .map(|e| e.path())
-                    .filter(|p| {
-                        p.file_name()
-                            .and_then(|n| n.to_str())
-                            .is_some_and(|n| n.starts_with("events-"))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        days.sort();
-        days.iter()
-            .flat_map(|day| {
-                std::fs::read_to_string(day)
-                    .unwrap_or_default()
-                    .lines()
-                    .filter_map(|l| serde_json::from_str::<Value>(l).ok())
-                    .collect::<Vec<_>>()
-            })
-            .collect()
+        events_in(&self.dir)
     }
 
     /// Waits up to `limit` for the event log to satisfy `check`; the records.

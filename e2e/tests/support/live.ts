@@ -45,6 +45,58 @@ export const impair = {
   rate: (bytesPerS: number) => harness("/link/rate", { bytes_per_s: bytesPerS }),
 };
 
+/** The fake Companion's state (#52): `connections`, `devices`, `presses`, `down`, `failing`. */
+async function companionState(): Promise<any> {
+  const response = await fetch(`${HARNESS}/companion`);
+  if (!response.ok) throw new Error(`harness /companion: ${response.status}`);
+  return response.json();
+}
+
+/**
+ * The harness's fake Companion (#52, `e2e/harness/fake_companion.py`): its
+ * presses as it got them (`key`, `pressed`, `at` epoch ms), and its faults:
+ * `down` (every connection closed, new ones closed at once), `up`, `fail`
+ * (presses answered ERROR), `clear` (the presses forgotten). `reset` puts it
+ * all back (up, not failing, nothing recorded or held, and the hub's
+ * `[companion]` if a test took it away) and resolves once the hub's Stream
+ * Deck is registered at the fake again: the hub reconnects with a backoff of
+ * at most 2 s.
+ */
+export const companion = {
+  state: companionState,
+  down: () => harness("/companion/down"),
+  up: () => harness("/companion/up"),
+  fail: (on: boolean) => harness("/companion/fail", { on }),
+  clear: () => harness("/companion/clear"),
+  reset: async () => {
+    await harness("/companion/reset");
+    await until(
+      async () => (await companionState()).devices.length,
+      (n) => n >= 1,
+      "the hub's Stream Deck registered at the fake Companion again",
+      10_000,
+    );
+  },
+};
+
+/** A Stream Deck key of the page by its number (#52). */
+export function deckKey(page: Page, key: number): Locator {
+  return page.locator(`[data-testid="deck-key"][data-key="${key}"]`);
+}
+
+/**
+ * Opens the Stream Deck tab and waits for its `keys` keys, each with
+ * Companion's image, and for Companion online (a press then goes) (#52).
+ */
+export async function openDeck(page: Page, keys = 32) {
+  const tab = page.getByTestId("deck-tab");
+  await tab.click();
+  await expect(tab).toHaveAttribute("data-selected", "true");
+  await expect(page.getByTestId("deck-key")).toHaveCount(keys);
+  await expect(page.locator('[data-testid="deck-key"] img')).toHaveCount(keys);
+  await expect(tab).toHaveAttribute("data-offline", "false");
+}
+
 /** Every record of the hub's event log (#43), oldest first. */
 export async function hubEvents(): Promise<any[]> {
   const response = await fetch(`${HARNESS}/hub/events`);
@@ -264,7 +316,9 @@ export async function centre(control: Locator): Promise<{ x: number; y: number }
 }
 
 /** One step of `dispatchPointer`: a pointer event `dy` px above the control's centre, or a wait. */
-export type PointerStep = { type: "pointerdown" | "pointermove" | "pointerup"; dy?: number } | { wait: number };
+export type PointerStep =
+  | { type: "pointerdown" | "pointermove" | "pointerup" | "pointercancel"; dy?: number }
+  | { wait: number };
 
 /**
  * Pointer events of one finger (a touch, `pointerId`) dispatched on `control`
@@ -272,12 +326,14 @@ export type PointerStep = { type: "pointerdown" | "pointermove" | "pointerup"; d
  * the page: exact timing in both engines (one real click takes ~160 ms in
  * WebKit on the CI runner), and a finger that can stay down while the real
  * mouse does something else. The page clock (`performance.now()`) after the
- * last step.
+ * last step. `primary`: the finger is the first one down (`isPrimary`, as a
+ * browser marks a touch while no other is down); a second finger passes
+ * false (a dispatched event's own default is false).
  */
-export async function dispatchPointer(control: Locator, steps: PointerStep[], pointerId = 21): Promise<number> {
+export async function dispatchPointer(control: Locator, steps: PointerStep[], pointerId = 21, primary = true): Promise<number> {
   const { x, y } = await centre(control);
   return control.evaluate(
-    async (el, { clientX, clientY, list, id }) => {
+    async (el, { clientX, clientY, list, id, isPrimary }) => {
       for (const step of list) {
         if ("wait" in step) {
           await new Promise((done) => setTimeout(done, step.wait));
@@ -287,7 +343,7 @@ export async function dispatchPointer(control: Locator, steps: PointerStep[], po
           new PointerEvent(step.type, {
             pointerId: id,
             pointerType: "touch",
-            isPrimary: true,
+            isPrimary,
             clientX,
             clientY: clientY - (step.dy ?? 0),
             bubbles: true,
@@ -297,7 +353,7 @@ export async function dispatchPointer(control: Locator, steps: PointerStep[], po
       }
       return performance.now();
     },
-    { clientX: x, clientY: y, list: steps, id: pointerId },
+    { clientX: x, clientY: y, list: steps, id: pointerId, isPrimary: primary },
   );
 }
 

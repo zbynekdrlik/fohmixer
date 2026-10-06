@@ -103,6 +103,24 @@ pub enum ClientMsg {
     /// them (PR A: each finished dropout, `{"ev": "dropout", "t", "ms",
     /// "socket_lost", "rtts"}`).
     Trace { events: Vec<Value> },
+    /// The page opened (`on`) or closed the Stream Deck tab (#52): only a
+    /// client viewing it gets the keys' images (`deck_keys`).
+    DeckView { on: bool },
+    /// A Stream Deck key's press (#52): `down` at the touch, up at the
+    /// release. `seq` is the page's own counter of presses (not `set`'s);
+    /// `t` the page's clock as for `set`; an up carries the hold the page
+    /// measured and why it came (`up`, `cancel`, `lost`, `hidden`, `tab`).
+    /// Answered by `deck_ack`; never queued, never resent.
+    DeckPress {
+        key: u32,
+        down: bool,
+        seq: u64,
+        t: f64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        hold_ms: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        why: Option<String>,
+    },
 }
 
 /// One write's outcome (#43, an `ack` item): Live ran it (`value`: what
@@ -199,6 +217,19 @@ impl ValueItem {
     }
 }
 
+/// One Stream Deck key as Companion drew it (#52): its image (a `data:`
+/// URL), its colour (`#rrggbb`) and whether Companion shows it pressed. A
+/// key Companion has not drawn yet has neither image nor colour.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeckKey {
+    pub key: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub img: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+    pub pressed: bool,
+}
+
 /// Hub → client.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -257,6 +288,30 @@ pub enum ServerMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         id: Option<String>,
         message: String,
+    },
+    /// The Stream Deck (#52): sent on attach and whenever Companion's link
+    /// goes up or down, only by a hub with a `[companion]` table (a page
+    /// without it shows no tab).
+    Deck {
+        online: bool,
+        columns: u32,
+        rows: u32,
+        title: String,
+    },
+    /// Keys' new states (#52), coalesced per key, only to a client viewing
+    /// the tab.
+    DeckKeys { items: Vec<DeckKey> },
+    /// The answer to a `deck_press` (#52): Companion's OK (`rtt_ms`: its
+    /// round trip from the hub) or why it was not done (`offline`, Companion's
+    /// own error); a press the hub took without forwarding it (the key already
+    /// held, or an up from a page that does not hold it) is `ok` at once.
+    DeckAck {
+        seq: u64,
+        ok: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rtt_ms: Option<f64>,
     },
 }
 
@@ -480,6 +535,21 @@ pub struct ClientReport {
     pub fields: ReportFields,
 }
 
+/// The Stream Deck's Companion link in `GET /api/status` (#52), from the
+/// Companion task's snapshot: online, why the last attempt failed (until a
+/// session starts), the failed attempts since the last session, Companion's
+/// and its Satellite API's versions, and how many keys Companion drew this
+/// session.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompanionStatus {
+    pub online: bool,
+    pub last_error: Option<String>,
+    pub connect_failures: u64,
+    pub companion_version: Option<String>,
+    pub api_version: Option<String>,
+    pub keys: u32,
+}
+
 /// `GET /api/status`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HubStatus {
@@ -495,6 +565,10 @@ pub struct HubStatus {
     /// hub's answer.
     #[serde(default)]
     pub client_reports: Vec<ClientReport>,
+    /// The Stream Deck's Companion link (#52); none without `[companion]`
+    /// (and in an older hub's answer).
+    #[serde(default)]
+    pub companion: Option<CompanionStatus>,
 }
 
 #[cfg(test)]

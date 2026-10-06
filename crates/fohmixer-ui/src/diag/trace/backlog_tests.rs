@@ -273,11 +273,12 @@ fn moves_go_last_round_trips_long_frames_and_other_kinds_first() {
         "visibility",
         "overflow",
         "intent",
+        "deck",
     ] {
         assert_eq!(drop_rank(ev), None, "{ev}");
     }
     assert_eq!(drop_rank("mv"), Some(1));
-    for ev in ["rtt", "frame", "x", ""] {
+    for ev in ["rtt", "frame", "deck_view", "x", ""] {
         assert_eq!(drop_rank(ev), Some(0), "{ev}");
     }
 }

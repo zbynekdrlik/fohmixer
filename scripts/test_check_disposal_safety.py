@@ -504,6 +504,99 @@ fn f() {
 
 
 # ---------------------------------------------------------------------------
+# Cleanups (#52): an on_cleanup must not touch the component's own signals
+# ---------------------------------------------------------------------------
+
+
+def test_cleanup_passing_its_own_signal_to_a_helper_is_flagged() -> None:
+    # The deck page's bug: the helper wrote the signal, and the dying view's
+    # render effects read it disposed a microtask later.
+    src = """
+fn DeckView() -> impl IntoView {
+    let held = RwSignal::new(BTreeSet::new());
+    on_cleanup(move || {
+        hidden.remove();
+        leave_keys(store, presses, held, Why::Tab);
+    });
+}
+"""
+    assert_violation_at("cleanup passing its own signal is flagged", src, 6)
+
+
+def test_cleanup_writing_its_own_signal_on_one_line_is_flagged() -> None:
+    src = """
+fn View() -> impl IntoView {
+    let shown = RwSignal::new(false);
+    on_cleanup(move || {
+        let _ = shown.try_set(false);
+    });
+    on_cleanup(move || shown.try_set(true));
+}
+"""
+    vs = [ln for ln, _ in scan_src(src)]
+    check("cleanup writing its own signal is flagged", vs == [5, 7], f"got {vs}")
+
+
+def test_cleanup_without_its_own_signals_is_not_flagged() -> None:
+    # The store's signals live on; StoredValues notify nothing; the signal
+    # used outside the cleanup is fine.
+    src = """
+fn View() -> impl IntoView {
+    let failed = RwSignal::new(false);
+    let presses = StoredValue::new(Presses::default());
+    on_cleanup(move || store.stop());
+    on_cleanup(move || {
+        lift_keys(store, presses, Why::Tab);
+        store.deck_view(false);
+    });
+    let flash = move || failed.get();
+}
+"""
+    assert_no_violations("cleanup without its own signals is not flagged", src)
+
+
+def test_a_struct_field_signal_in_a_cleanup_is_not_flagged() -> None:
+    src = """
+fn new() -> Store {
+    Store {
+        deck: RwSignal::new(None),
+    }
+}
+fn View() -> impl IntoView {
+    on_cleanup(move || {
+        let _ = store.deck.try_set(None);
+    });
+}
+"""
+    assert_no_violations("a store's field signal in a cleanup is not flagged", src)
+
+
+def test_cleanup_ends_at_its_closing_parenthesis() -> None:
+    src = """
+fn View() -> impl IntoView {
+    let held = RwSignal::new(0);
+    on_cleanup(move || {
+        store.stop();
+    });
+    let _ = held.try_set(1);
+}
+"""
+    assert_no_violations("the code after a cleanup is outside it", src)
+
+
+def test_cleanup_escape_hatch_is_honoured() -> None:
+    src = """
+fn View() -> impl IntoView {
+    let held = RwSignal::new(0);
+    on_cleanup(move || {
+        read_only(held); // disposal-safe: reads it once, writes nothing
+    });
+}
+"""
+    assert_no_violations("escape hatch on a cleanup line", src)
+
+
+# ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
 

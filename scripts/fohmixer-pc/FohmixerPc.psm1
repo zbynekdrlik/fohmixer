@@ -301,10 +301,12 @@ function Install-FohAppDir {
 function New-FohHubToml {
     # <DataDir>\fohmixer-hub.toml as the hub's config.rs reads it: the HTTP
     # port, the two instances and the layout file (relative to the data folder),
-    # then $Remote (Get-FohRemoteToml: the remote-access tables, #17).
+    # then $Companion (Get-FohCompanionToml: the Stream Deck tab, #52), then
+    # $Remote (Get-FohRemoteToml: the remote-access tables, #17, always last:
+    # Get-FohInstalledRemoteToml reads from [tls] to the end).
     # There is no data_dir key: the hub's data folder is FOHMIXER_DATA.
     param([Parameter(Mandatory)][int]$HttpPort, [Parameter(Mandatory)][int]$BandPort, [Parameter(Mandatory)][int]$MasterPort,
-          [AllowEmptyString()][string]$Remote = '')
+          [AllowEmptyString()][string]$Companion = '', [AllowEmptyString()][string]$Remote = '')
     $lines = @(
         '# fohmixer-hub configuration, written by Install-Fohmixer.ps1: run the install again to change it.',
         ('http_port = {0}' -f $HttpPort),
@@ -317,7 +319,45 @@ function New-FohHubToml {
         '[[instances]]',
         'name = "master"',
         ('port = {0}' -f $MasterPort))
-    return (($lines -join "`r`n") + "`r`n" + $Remote)
+    return (($lines -join "`r`n") + "`r`n" + $Companion + $Remote)
+}
+
+function Get-FohCompanionToml {
+    # The [companion] table of fohmixer-hub.toml (#52, CRLF lines, '' without
+    # -Endpoint): Bitfocus Companion's Satellite API as host or host:port
+    # (default port 16622). The grid, the image size and the title keep the
+    # hub's defaults; the hub checks the table (config check).
+    param([AllowEmptyString()][string]$Endpoint = '')
+    if (-not $Endpoint) { return '' }
+    $m = [regex]::Match($Endpoint, '\A(?<host>[^\s:"\\]+)(:(?<port>[0-9]{1,5}))?\z')
+    $port = 16622
+    if ($m.Success -and $m.Groups['port'].Success) { $port = [int]$m.Groups['port'].Value }
+    if (-not $m.Success -or $port -lt 1 -or $port -gt 65535) {
+        throw "Companion endpoint refused: [$Endpoint] (host or host:port, port 1-65535)"
+    }
+    $lines = @('', '[companion]', ('host = "{0}"' -f $m.Groups['host'].Value), ('port = {0}' -f $port))
+    return (($lines -join "`r`n") + "`r`n")
+}
+
+function Get-FohInstalledCompanionToml {
+    # The [companion] table of an installed fohmixer-hub.toml's text (#52), from
+    # the line end before it to the next table or the end, exactly as
+    # Get-FohCompanionToml wrote it; '' without one.
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Text)
+    $m = [regex]::Match($Text, '(?s)\r?\n\[companion\]\r?\n.*?(?=\r?\n\[|\z)')
+    if ($m.Success) { return $m.Value }
+    return ''
+}
+
+function Resolve-FohCompanion {
+    # The [companion] table of an install (#52), checked before any change:
+    # from -CompanionHost when given, else the installed toml's as it is (a
+    # routine update keeps the Stream Deck tab), else ''.
+    param([Parameter(Mandatory)][string]$DataDir, [AllowEmptyString()][string]$CompanionHost = '')
+    if ($CompanionHost) { return (Get-FohCompanionToml -Endpoint $CompanionHost) }
+    $toml = Join-Path (Resolve-FohPath $DataDir) 'fohmixer-hub.toml'
+    if (-not (Test-Path -LiteralPath $toml -PathType Leaf)) { return '' }
+    return (Get-FohInstalledCompanionToml -Text ([IO.File]::ReadAllText($toml)))
 }
 
 function Test-FohHubToml {
@@ -552,7 +592,8 @@ function Invoke-FohInstall {
     # after the stop fails, the hub and tray tasks that ran are started again. -NoTask (the
     # self-test) leaves out what needs the real accounts: the DACL, the stop,
     # the tasks, the firewall rule, the start and the readiness poll. $Remote
-    # is Resolve-FohRemote's plan (#17), resolved and checked by the caller.
+    # is Resolve-FohRemote's plan (#17), resolved and checked by the caller;
+    # $Companion is the [companion] table (#52, Resolve-FohCompanion).
     param(
         [Parameter(Mandatory)][string]$BundleZip,
         [Parameter(Mandatory)][string]$BandUser,
@@ -569,6 +610,7 @@ function Invoke-FohInstall {
         [switch]$NoTask,
         [string]$TaskPath = $script:TaskPath,
         [int]$ReadyTimeoutSeconds = 20,
+        [AllowEmptyString()][string]$Companion = '',
         $Remote = $null
     )
     # ---- checks ----
@@ -619,7 +661,7 @@ function Invoke-FohInstall {
     $trayWasRunning = $false
     try {
         # The new config, checked by the new hub before anything else changes.
-        $tomlText = New-FohHubToml -HttpPort $HttpPort -BandPort $BandPort -MasterPort $MasterPort -Remote $remoteToml
+        $tomlText = New-FohHubToml -HttpPort $HttpPort -BandPort $BandPort -MasterPort $MasterPort -Companion $Companion -Remote $remoteToml
         $accepted = Test-FohHubToml -Exe (Join-Path $unpacked.dir $script:HubExe) -Text $tomlText -Dir (Split-Path -Parent $unpacked.dir)
         Write-Host "fohmixer install: the new hub accepts the config ($accepted)"
         # The layout it will serve (the new one, else the one in place), checked by
@@ -725,6 +767,6 @@ function Invoke-FohInstall {
     }
     return [pscustomobject]@{
         version = $unpacked.version; app = $app.dir; app_changed = $app.changed; config_changed = $toml
-        layout_changed = $layoutChanged; copies = $copies; hub = $answer; tray = $trayPid; remote = $remoteResult
+        layout_changed = $layoutChanged; copies = $copies; hub = $answer; tray = $trayPid; remote = $remoteResult; companion = [bool]$Companion
     }
 }

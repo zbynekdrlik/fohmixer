@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::Duration;
 
-use fohmixer_proto::client::{CLOSE_RELOAD, ClientMsg, LiveCommand, ServerMsg};
+use fohmixer_proto::client::{CLOSE_RELOAD, ClientMsg, DeckKey, LiveCommand, ServerMsg};
 use fohmixer_proto::layout::Layout;
 use leptos::prelude::*;
 use serde_json::{Value, json};
@@ -19,6 +19,7 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 
 use super::conn::{self, Conn, Tick};
+use super::deck::{DeckInfo, DeckWaiting};
 use super::intent::Intents;
 use super::{InstanceView, ResultFn, Slot, TOKEN_KEY, next_range, slot_failure};
 use crate::behave::link::{Counter, DropoutWatch};
@@ -27,6 +28,7 @@ use crate::diag::{self, trace};
 use crate::dom;
 use crate::net::{self, Decision, LayoutFetch};
 
+mod deck;
 mod link;
 mod writes;
 
@@ -74,6 +76,10 @@ struct Inner {
     intents: Intents<FailFn>,
     /// The link's dropouts (#43).
     watch: DropoutWatch,
+    /// The Stream Deck's presses waiting for their ack (#52).
+    deck: DeckWaiting<FailFn>,
+    /// The Stream Deck tab is open (#52): told again after each hello.
+    deck_viewing: bool,
 }
 
 impl Inner {
@@ -89,6 +95,8 @@ impl Inner {
             pending: HashMap::new(),
             intents: Intents::default(),
             watch: DropoutWatch::default(),
+            deck: DeckWaiting::default(),
+            deck_viewing: false,
         }
     }
 }
@@ -116,6 +124,10 @@ pub struct LiveStore {
     pub refreshes: RwSignal<u32>,
     /// The dropout counter on the surface (#43, §4.4).
     pub dropouts: RwSignal<Counter>,
+    /// The Stream Deck (#52): none from a hub without one (no tab).
+    pub deck: RwSignal<Option<DeckInfo>>,
+    /// Its keys as Companion drew them (only while this page views the tab).
+    pub deck_keys: RwSignal<BTreeMap<u32, DeckKey>>,
 }
 
 impl LiveStore {
@@ -132,6 +144,8 @@ impl LiveStore {
             subscribed: RwSignal::new(0),
             refreshes: RwSignal::new(0),
             dropouts: RwSignal::new(Counter::default()),
+            deck: RwSignal::new(None),
+            deck_keys: RwSignal::new(BTreeMap::new()),
         }
     }
 
@@ -390,6 +404,7 @@ impl LiveStore {
                 view.busy = false;
             }
         });
+        self.deck_closed();
         // The controls keep Live's last values, stale, and take touches (L2).
         self.mark_stale();
         for done in pending.into_values() {
@@ -497,6 +512,19 @@ impl LiveStore {
             // Live's health: the hub logs it (`link` records); the counter
             // measures the link only (§4.4), so a Live-side delay is not
             // counted.
+            ServerMsg::Deck {
+                online,
+                columns,
+                rows,
+                title,
+            } => self.on_deck(DeckInfo {
+                online,
+                columns,
+                rows,
+                title,
+            }),
+            ServerMsg::DeckKeys { items } => self.on_deck_keys(items),
+            ServerMsg::DeckAck { seq, ok, error, .. } => self.on_deck_ack(seq, ok, error),
             ServerMsg::Link { .. } => {}
         }
     }
@@ -536,6 +564,7 @@ impl LiveStore {
         for spec in &hello.specs {
             self.send_sub(spec);
         }
+        self.deck_hello();
         if hello.auto_refresh {
             // Spec F6: the automatic refresh a second after the load.
             set_timeout(

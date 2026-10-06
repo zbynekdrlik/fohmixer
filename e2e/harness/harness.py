@@ -5,6 +5,7 @@
         [--master-port 39102] [--meters-hz 30] [--log-dir DIR] [--link-port 0]
         [--public-name NAME --https-port PORT --tls-cert FILE --tls-key FILE]
         [--access-team TEAM --access-aud AUD --access-key FILE]
+        [--fake-companion-port N | --companion HOST:PORT]
 
 It starts ``sim/host.py`` for ``band`` and ``master`` (the real FohMixer script on
 SimLive), writes the hub's config and layout into the data folder, starts the hub
@@ -47,6 +48,23 @@ what only the harness can do:
     POST /link/rate {"bytes_per_s": <n>} the pages' bytes to the hub at most
                                          ``n`` a second, first in first out (a
                                          slow link, #43 PR D; 0 lifts it)
+    GET  /companion                      the fake Companion's state (#52,
+                                         ``--fake-companion-port``): ``connections``,
+                                         ``presses`` [{key, pressed, at}], ``down``,
+                                         ``failing``; 404 without the fake
+    POST /companion/down                 every connection closed, new ones closed
+                                         at once (Companion away)
+    POST /companion/up                   new connections served again
+    POST /companion/fail {"on": <bool>}  presses answered ERROR, or OK again
+    POST /companion/reset                up, not failing, presses and held keys
+                                         forgotten, and the hub's ``[companion]``
+                                         put back (the hub restarted) if
+                                         ``/hub/companion`` removed it
+    POST /companion/clear                the recorded presses forgotten
+    POST /hub/companion {"on": <bool>}   the hub's config with or without
+                                         ``[companion]``, and the hub restarted;
+                                         {"companion": what it now holds}: false
+                                         when no endpoint is configured
     GET  /cdn-cgi/access/certs           the test Access key set (``--access-key``)
 
 Remote access (#17): with ``--public-name`` the hub serves that name over HTTPS
@@ -54,6 +72,11 @@ on ``--https-port`` with the test certificate (copied into its store
 ``tls/``); with ``--access-team`` internet requests need an Access JWT signed by
 ``--access-key`` (an RSA key made by ``openssl genrsa``), whose public half this
 harness serves as the team's key set.
+
+The Stream Deck (#52): with ``--fake-companion-port`` the harness starts
+``fake_companion.py`` there (0: any free port) and the hub's config gets
+``[companion]`` on it; with ``--companion HOST:PORT`` it names a real Companion
+(the ``companion`` CI job) and starts no fake.
 
 Every process is stopped with SIGTERM and a bounded wait (spec I7). Prints
 ``HARNESS READY`` once everything answers; SIGTERM or SIGINT stops it all.
@@ -77,6 +100,7 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import impair
+from fake_companion import FakeCompanion
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # The forensics tool's own local time text (#43): the window the harness asks
@@ -100,10 +124,11 @@ ANSWER_S = 5.0
 ANSWERS = {"rename": "RENAMED", "listeners": "LISTENERS", "meter": "METER"}
 
 
-def hub_config(http_port, band_port, master_port, remote=None):
+def hub_config(http_port, band_port, master_port, remote=None, companion=None):
     """The hub's ``fohmixer-hub.toml`` for the two hosts (layout polled fast), with
-    the remote-access tables of ``remote`` (``name``, ``https_port``, and
-    ``team``, ``aud``, ``jwks_url`` for ``[access]``) when given."""
+    the Stream Deck's ``[companion]`` on ``companion`` (host, port) when given
+    (#52), then the remote-access tables of ``remote`` (``name``, ``https_port``,
+    and ``team``, ``aud``, ``jwks_url`` for ``[access]``) when given."""
     text = (
         f"http_port = {http_port}\n"
         'layout = "layout.json"\n'
@@ -115,6 +140,9 @@ def hub_config(http_port, band_port, master_port, remote=None):
         'name = "master"\n'
         f"port = {master_port}\n"
     )
+    if companion:
+        host, port = companion
+        text += f'[companion]\nhost = "{host}"\nport = {port}\n'
     remote = remote or {}
     if remote.get("name"):
         text += f'[tls]\nname = "{remote["name"]}"\nport = {remote["https_port"]}\n'
@@ -278,6 +306,29 @@ def stop_process(proc, what):
         raise RuntimeError(f"{what} did not stop within {STOP_S} s") from None
 
 
+def on_of(body, route):
+    """The ``on`` of a body: true or false."""
+    on = body.get("on")
+    if not isinstance(on, bool):
+        raise BadRequest(f'{route} wants {{"on": true|false}}, not {body!r}')
+    return on
+
+
+def companion_of(args, fake):
+    """The hub's ``[companion]`` endpoint (#52): ``--companion HOST:PORT`` (a
+    real Companion), else the fake's port on 127.0.0.1, else none."""
+    if args.companion and args.fake_companion_port is not None:
+        raise SystemExit("--companion and --fake-companion-port are exclusive")
+    if args.companion:
+        host, _, port = args.companion.rpartition(":")
+        if not host or not port.isdigit():
+            raise SystemExit(f"--companion {args.companion!r}: HOST:PORT")
+        return host, int(port)
+    if fake is not None:
+        return "127.0.0.1", fake.port
+    return None
+
+
 class Host:
     """One ``sim/host.py`` process with its stdin and stdout lines."""
 
@@ -426,17 +477,43 @@ class Harness:
             os.makedirs(tls, exist_ok=True)
             shutil.copyfile(args.tls_cert, os.path.join(tls, "cert.pem"))
             shutil.copyfile(args.tls_key, os.path.join(tls, "key.pem"))
-        with open(os.path.join(self.data, "fohmixer-hub.toml"), "w", encoding="utf-8") as f:
-            f.write(
-                hub_config(
-                    args.http_port, self.hosts["band"].port, self.hosts["master"].port, remote
-                )
-            )
+        self.remote = remote
+        self.http_port = args.http_port
+        self.fake = None
+        if args.fake_companion_port is not None:
+            self.fake = FakeCompanion(args.fake_companion_port)
+            self.fake.start()
+        self.companion = companion_of(args, self.fake)
+        self.companion_on = self.companion is not None
+        self.write_config(self.companion)
         self.reset_layout()
         # The proxy needs no hub to listen; it is up before the hub starts.
         self.link = impair.Impair(args.link_port, args.http_port)
         self.link.start()
         self.hub = Hub(args.hub, self.data, args.http_port, log_dir) if args.hub else None
+
+    def write_config(self, companion):
+        """The hub's config, with ``[companion]`` on ``companion`` or without."""
+        with open(os.path.join(self.data, "fohmixer-hub.toml"), "w", encoding="utf-8") as f:
+            f.write(
+                hub_config(
+                    self.http_port,
+                    self.hosts["band"].port,
+                    self.hosts["master"].port,
+                    self.remote,
+                    companion,
+                )
+            )
+
+    def set_companion(self, on):
+        """The hub's config with or without ``[companion]``; answers what it now
+        holds (never on without an endpoint), the hub restarted when there is one."""
+        actual = bool(on) and self.companion is not None
+        self.write_config(self.companion if actual else None)
+        self.companion_on = actual
+        if self.hub is not None:
+            self.hub.restart(False)
+        return actual
 
     def write_layout(self, layout):
         """Replaces the layout file whole (the hub never reads half a file)."""
@@ -459,6 +536,8 @@ class Harness:
             return 200, {"events": event_records(self.data)}
         if method == "GET" and parts == ["link"]:
             return 200, dict(self.link.state(), port=self.link.port)
+        if method == "GET" and parts == ["companion"]:
+            return (200, self.fake.state()) if self.fake else (404, {"error": "no fake Companion"})
         if method == "GET" and "/" + "/".join(parts) == CERTS_PATH:
             return (200, self.jwks) if self.jwks else (404, {"error": "no --access-key"})
         if method != "POST":
@@ -479,6 +558,24 @@ class Harness:
         if parts == ["hub", "layout", "reset"]:
             self.reset_layout()
             return 200, {"ok": True}
+        if parts == ["hub", "companion"] and self.hub is not None:
+            return 200, {"companion": self.set_companion(on_of(body, "/hub/companion"))}
+        if parts and parts[0] == "companion":
+            if self.fake is None:
+                return 404, {"error": "no fake Companion"}
+            if parts == ["companion", "down"]:
+                return 200, self.fake.down()
+            if parts == ["companion", "up"]:
+                return 200, self.fake.up()
+            if parts == ["companion", "reset"]:
+                answer = self.fake.reset()
+                if not self.companion_on:
+                    self.set_companion(True)
+                return 200, answer
+            if parts == ["companion", "clear"]:
+                return 200, self.fake.clear()
+            if parts == ["companion", "fail"]:
+                return 200, self.fake.fail(on_of(body, "/companion/fail"))
         if parts == ["forensics", "timeline"]:
             return 200, forensics_timeline(self.data, body)
         if parts == ["link", "stall"]:
@@ -493,8 +590,11 @@ class Harness:
 
     def stop(self):
         self.link.stop()
+        # The hub first: its graceful REMOVE-DEVICE then reaches the fake.
         if self.hub is not None:
             self.hub.stop()
+        if self.fake is not None:
+            self.fake.stop()
         for host in self.hosts.values():
             host.stop()
 
@@ -549,6 +649,9 @@ def parse_args(argv):
     parser.add_argument("--access-team", default=None)
     parser.add_argument("--access-aud", default=None)
     parser.add_argument("--access-key", default=None)
+    # The Stream Deck (#52): a fake Companion on this port (0: any), or a real one.
+    parser.add_argument("--fake-companion-port", type=int, default=None)
+    parser.add_argument("--companion", default=None)
     return parser.parse_args(argv)
 
 

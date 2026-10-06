@@ -93,14 +93,48 @@ fn a_file_expires_after_sixty_days() {
 
 #[test]
 fn warn_class_records_are_socket_link_cap_dropped_and_errors() {
-    for ev in ["sock", "link", "cap", "dropped"] {
+    for ev in [
+        "sock",
+        "link",
+        "cap",
+        "dropped",
+        "deck_link",
+        "deck_release",
+        "deck_press",
+        "deck_ok",
+        "deck_view",
+    ] {
         assert!(is_warn(&json!({"ev": ev})), "{ev}");
     }
-    for ev in ["set", "batch", "ping", "ack", "applied", "trace"] {
+    for ev in [
+        "set",
+        "batch",
+        "ping",
+        "ack",
+        "applied",
+        "trace",
+        "deck_key",
+        "deck_keys",
+    ] {
         assert!(!is_warn(&json!({"ev": ev})), "{ev}");
     }
     assert!(is_warn(&json!({"ev": "ack", "error": "instance offline"})));
     assert!(!is_warn(&json!({"ev": "ack", "error": null})));
+    // A press and Companion's answer outlive the cap, refused or not (#52):
+    // the incident logs need every press.
+    assert!(is_warn(
+        &json!({"ev": "deck_ok", "ok": false, "error": "Invalid KEY"})
+    ));
+    assert!(is_warn(
+        &json!({"ev": "deck_ok", "ok": true, "error": null})
+    ));
+    assert!(is_warn(
+        &json!({"ev": "deck_press", "forwarded": true, "reason": null})
+    ));
+    // A key's image change stays bulk, with or without a colour.
+    assert!(!is_warn(
+        &json!({"ev": "deck_key", "key": 3, "pressed": true, "color": "#00aa00"})
+    ));
     assert!(is_warn(&json!({"ev": "applied", "errors": 1})));
     assert!(!is_warn(&json!({"ev": "applied", "errors": 0})));
     assert!(!is_warn(&json!({})));
@@ -228,11 +262,21 @@ fn past_the_cap_only_warn_class_records_are_written() {
         ),
         &dropped,
     );
+    // A Stream Deck press still goes in past the cap, a key's image does
+    // not (#52).
+    writer.take(
+        &stamp("deck_key", noon(day), json!({"key": 3, "pressed": true})),
+        &dropped,
+    );
+    writer.take(
+        &stamp("deck_press", noon(day), json!({"key": 3, "down": true})),
+        &dropped,
+    );
     writer.flush();
     let written = lines(dir.path(), day);
     assert_eq!(
         evs(&written),
-        vec!["set", "set", "cap", "sock", "ack"],
+        vec!["set", "set", "cap", "sock", "ack", "deck_press"],
         "{written:?}"
     );
     assert_eq!(written[2]["cap_bytes"], 200);
