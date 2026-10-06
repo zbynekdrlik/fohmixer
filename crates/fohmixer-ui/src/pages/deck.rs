@@ -104,13 +104,11 @@ fn show_held(presses: StoredValue<Presses>, held: RwSignal<BTreeSet<u32>>) {
 }
 
 /// Every held key up (`why`: the tab left, the page hidden): each up goes
-/// out through `LiveStore::deck_press` like a lift's.
-fn leave_keys(
-    store: LiveStore,
-    presses: StoredValue<Presses>,
-    held: RwSignal<BTreeSet<u32>>,
-    why: Why,
-) {
+/// out through `LiveStore::deck_press` like a lift's. The outline is left
+/// alone: the tab's cleanup calls this while the keys' view still exists,
+/// and a write of `held` there would wake their outline effects after the
+/// page's owner disposed the signal (a panic, checkpoint C of #52).
+fn lift_keys(store: LiveStore, presses: StoredValue<Presses>, why: Why) {
     let t = dom::epoch_now();
     let actions = presses
         .try_update_value(|p| p.leave_all(t, why))
@@ -118,6 +116,17 @@ fn leave_keys(
     for action in actions {
         carry(store, presses, action, None, t);
     }
+}
+
+/// Every held key up while the page stays (`why`: the page hidden), and
+/// the outline then.
+fn leave_keys(
+    store: LiveStore,
+    presses: StoredValue<Presses>,
+    held: RwSignal<BTreeSet<u32>>,
+    why: Why,
+) {
+    lift_keys(store, presses, why);
     show_held(presses, held);
 }
 
@@ -138,9 +147,11 @@ pub fn DeckView(global: Vec<Control>, viewport: RwSignal<(f64, f64)>) -> impl In
             leave_keys(store, presses, held, Why::Hidden);
         }
     });
+    // The page's own signals stay untouched here (`lift_keys`, no outline):
+    // its keys' render effects outlive this cleanup by a microtask.
     on_cleanup(move || {
         hidden.remove();
-        leave_keys(store, presses, held, Why::Tab);
+        lift_keys(store, presses, Why::Tab);
         store.deck_view(false);
         diag::record(&trace::deck_view(dom::epoch_now(), false));
     });
