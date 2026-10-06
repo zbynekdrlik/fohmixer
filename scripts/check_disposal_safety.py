@@ -205,6 +205,20 @@ MULTILINE_METHOD_HEAD = re.compile(
     r"^\.\s*\b(?:set|update)(?:_untracked)?\b\s*\("
 )
 
+# Cleanup check (#52, the Stream Deck page's tab leave, checkpoint C):
+# a component's `on_cleanup` must not touch a signal the component bound
+# itself (`let <name> = RwSignal::new(...)`). The cleanup runs while the
+# component's view still exists: a reactive child's view is dropped only
+# when its render effect's task is next polled, a microtask later, so a
+# write there wakes the dying view's render effects, which then read the
+# signal after its owner disposed it ("Tried to access a reactive value
+# that has already been disposed", a panic at `With::with`). Passing the
+# signal to a helper is flagged too: the helper may write it (the deck
+# page's `leave_keys(store, presses, held, Why::Tab)` did, through
+# `show_held`). Struct-field signals (a store's) live on and are not
+# tracked here.
+CLEANUP_START = re.compile(r"\bon_cleanup\s*\(")
+
 ESCAPE_HATCH = "// disposal-safe:"
 
 
@@ -262,6 +276,27 @@ def _collect_rwsignal_names(lines: list[str]) -> set[str]:
     return names
 
 
+def _collect_local_signal_names(lines: list[str]) -> set[str]:
+    """The identifiers bound by `let <name> = RwSignal::new(...)` (no struct
+    fields): the signals a component owns itself."""
+    names: set[str] = set()
+    for line in lines:
+        if line.strip().startswith("//"):
+            continue
+        m = RWSIGNAL_BINDING.match(_strip_strings(line))
+        if m:
+            names.add(m.group(1))
+    return names
+
+
+def _build_mention_regex(names: set[str]) -> re.Pattern[str] | None:
+    """A regex matching any of `names` as a whole word; None without names."""
+    if not names:
+        return None
+    alt = "|".join(sorted(re.escape(n) for n in names))
+    return re.compile(r"\b(?:" + alt + r")\b")
+
+
 def _build_tracked_name_regex(names: set[str]) -> re.Pattern[str] | None:
     r"""Build a single regex that flags `.set(` / `.update(` calls on
     any of the tracked identifiers.
@@ -300,6 +335,12 @@ def scan_file(path: pathlib.Path) -> list[tuple[int, str]]:
     # RwSignal. Second pass will flag writes on these names.
     tracked_names = _collect_rwsignal_names(lines)
     tracked_re = _build_tracked_name_regex(tracked_names)
+    local_re = _build_mention_regex(_collect_local_signal_names(lines))
+    # Parenthesis depth (strings stripped) and the depths at which open
+    # `on_cleanup(` calls began: inside one while the stack is non-empty.
+    paren_depth = 0
+    cleanup_stack: list[int] = []
+
 
     # Brace-depth stack for danger zones (read-side rule only).
     #
@@ -394,6 +435,26 @@ def scan_file(path: pathlib.Path) -> list[tuple[int, str]]:
         ):
             violations.append((lineno, line.rstrip()))
 
+        # Cleanup check: an `on_cleanup(` call that names a signal the file
+        # bound itself with `let ... = RwSignal::new(...)`.
+        cleanup_from = None
+        for m in CLEANUP_START.finditer(stripped_code):
+            opened = (
+                paren_depth
+                + stripped_code[: m.end()].count("(")
+                - stripped_code[: m.end()].count(")")
+            )
+            cleanup_stack.append(opened - 1)
+            if cleanup_from is None:
+                cleanup_from = m.end()
+        if cleanup_stack and local_re is not None and ESCAPE_HATCH not in line:
+            inside = stripped_code if cleanup_from is None else stripped_code[cleanup_from:]
+            if local_re.search(inside) and (lineno, line.rstrip()) not in violations:
+                violations.append((lineno, line.rstrip()))
+        paren_depth += stripped_code.count("(") - stripped_code.count(")")
+        while cleanup_stack and paren_depth <= cleanup_stack[-1]:
+            cleanup_stack.pop()
+
         # Update brace_depth for this line. Count raw `{` and `}` in
         # the string-stripped code. Line-comment tails are NOT stripped
         # here, but that's acceptable — braces inside trailing
@@ -436,6 +497,12 @@ def main() -> int:
         print("        `.try_with_untracked(...)` / `.try_read_untracked()`,")
         print("        then handle the `None` case (usually `return;` or a")
         print("        safe default).")
+        print()
+        print("Cleanups: an `on_cleanup(...)` must not touch a signal the")
+        print("        component bound itself (`let x = RwSignal::new(..)`),")
+        print("        not even by passing it to a helper: the dying view's")
+        print("        render effects re-run a microtask later and read it")
+        print("        disposed. Leave the view's own state alone there.")
         print()
         print("Rules:")
         print("  * Writes: context-free — any `set_*.set(...)` anywhere is a")
