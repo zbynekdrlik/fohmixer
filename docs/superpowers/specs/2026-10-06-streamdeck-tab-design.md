@@ -12,7 +12,7 @@ Status: approach and all three design sections approved by the owner on #52 (202
 **Istoty**
 - **Fadre majú vždy prednosť.** Obrázky tlačidiel dostane iba zariadenie, ktoré má otvorenú záložku Stream Deck. Kým si na mixe, cez spojenie neide nič navyše.
 - **Každé „stlačené“ má svoje „pustené“.** Pošle ho tablet pri pustení, prerušení dotyku, odchode zo záložky alebo z aplikácie. Hub ho pošle za tablet, ak tabletu spojenie vypadne alebo sa tablet 2 s neozve. Ak počas držania vypadne spojenie hubu s Companionom, hub tlačidlo pustí hneď po jeho obnovení. Tlačidlo v Companione tak nikdy neostane „visieť“.
-- **Nič sa neodošle neskoro.** Stlačenie, ktoré sa nedá doručiť hneď, sa zahodí a tlačidlo blikne načerveno. Svetlo ani zásuvka sa neprepnú prekvapivo o pár sekúnd.
+- **Nič sa neodošle neskoro.** Stlačenie, ktoré sa nedá doručiť hneď, sa zahodí a tlačidlo blikne načerveno. Stlačenie, ktoré je na ceste k hubu dlhšie ako 0,5 s (napríklad keď sa Wi-Fi na chvíľu zasekne), hub odmietne a tlačidlo blikne načerveno. Kým tablet nepočuje hub (červené počítadlo výpadkov), stlačenie ani neodíde. Svetlo ani zásuvka sa neprepnú prekvapivo o pár sekúnd.
 - **Keď Companion nie je dostupný**, tlačidlá stmavnú a záložka má malú červenú bodku. Bez textu.
 
 **Logy, testy, nasadenie**
@@ -135,6 +135,7 @@ iPad page ──WSS (protocol 2 + deck messages)──▶ hub router ──mpsc�
   - `PONG` only refreshes liveness. `PING x` is answered `PONG x`.
   - Any other command is ignored, counted per command name and logged once per name per session. That covers `BRIGHTNESS`, `LOCKED-STATE`, `VARIABLE-VALUE` and future additions.
 - **Outbound presses.** `KEY-PRESS DEVICEID="fohmixer-<n>" KEY=<n> PRESSED=1|0`, written by the writer task at once. Each forwarded press records its send time, so the matched OK gives the Companion round trip.
+- **Nothing late.** A down that took more than 0.5 s from the page to the hub (`DECK_LATE_MS`, §5) is never written to Companion: a press that waited in a stalled page link must not switch a light or a socket seconds later.
 - **Disconnect.**
   - The cache is kept and marked offline.
   - Keys held when the link went down stay held in Companion (§1). Right after the next `ADD-DEVICE OK` the hub releases each of them (`deck_release reason=reconnect`) and clears the holder set. The release of a key Companion no longer holds does nothing. A finger still down at that moment loses its hold, and its later up is acknowledged as `not held`.
@@ -164,12 +165,14 @@ DeckPress { key: u32, down: bool, seq: u64, t: f64, hold_ms: Option<f64>, why: O
 - **Outbox.**
   - `DeckKeys` items are coalesced to the latest per key, in a new `BTreeMap` in `Inner`, written last by `take()` (after `ack`). `is_empty()` accounts for them.
   - `Deck` and `DeckAck` are ordered replies.
-- **The page's `seq`.** `DeckPress.seq` is its own counter, separate from `set`'s (one counter per kind of id). `t` is the page clock, as for `set`.
+- **The page's `seq`.** `DeckPress.seq` is its own counter, separate from `set`'s (one counter per kind of id). `t` is the page clock, as for `set`: the pointer event's own time, so a press a frozen page held back counts its wait too.
+- **Late downs** (`deck::late`, the C1 review of #52). The hub computes each press's one-way delay as a `set`'s: hub ms − `t` − the socket's clock offset (§8). A down whose delay is over 0.5 s (`DECK_LATE_MS`; 500 ms is not late, 500.001 ms is) is not forwarded and not added to the holder set; it is recorded with `reason: "late"` and acknowledged `ok: false, error: "late"`, so the page flashes the key. An up is never refused for its delay: a release is always wanted, and its holder bookkeeping is unchanged (the up of a late down is `not held`). A down with no offset yet (no paired ping on a fresh socket; pings go every 100 ms) is forwarded.
 - **Holder set** (`deck/holders.rs`, pure): `key → set of client ids`.
   - **Down:** the client joins the key's set. If the set was empty, the press is forwarded; otherwise it is acknowledged `ok` without forwarding (Companion already holds the key).
   - **Up:** the client leaves the set. If the set is now empty, the release is forwarded; otherwise it is acknowledged `ok`.
     - An up from a client that does not hold the key is acknowledged `ok`, not forwarded, and logged as `not held`.
   - **Companion offline:** the press is not forwarded, not added to the set, and acknowledged `ok: false, error: "offline"`.
+  - **A late down:** as offline, with `error: "late"` (above).
   - **`Detach`:** for every key the client holds, it leaves the set, and the release is forwarded when the set empties (`deck_release reason=detach`). This sits next to the setters' `drop_client`.
   - **Silence.** A client that holds a deck key and sends nothing for 2 s has every key it holds released as on `Detach` (`deck_release reason=silent`).
     - The page pings every 100 ms while visible, and #43's measurements found uplink gaps far below 2 s in use.
@@ -193,6 +196,7 @@ DeckPress { key: u32, down: bool, seq: u64, t: f64, hold_ms: Option<f64>, why: O
   - Classes: `pressed` (Companion's flag), `held` (local outline), `failed` (the red flash), `offline` (dim).
 - **Press state machine** (`behave/deck.rs`, pure, native tests). The page holds `key → set of pointer ids`.
   - **`down(key, pointer, t, connected)`:**
+    - `connected` is `can_press`: the socket open and past its hello, Companion online, and the link not dropping out (the dropout counter red: nothing from the hub for 300 ms). A down into a stalled link would wait there and arrive late.
     - The first pointer on a key gives `Send(down)` when connected, otherwise `Flash`.
     - Later pointers on the same key give `Nothing`.
   - **`up(key, pointer, t, why)`:** the last pointer leaving a key whose down was sent gives `Send(up, hold_ms)`. A key whose down was never sent gives `Nothing`.
@@ -232,7 +236,7 @@ title = "Stream Deck"  # 1..=24 characters
 | `ev` | when | fields |
 |---|---|---|
 | `deck_link` (warn class) | up, down, refused | `state`, `companion`, `api`, `error`, `down_ms` (on up: how long it was down), `attempts` |
-| `deck_press` | every `DeckPress` | `client`, `key`, `down`, `seq`, `t`, `delay_ms`/`gap_ms`/`offset_ms` (as `set`), `hold_ms` (page), `hub_hold_ms` (between the forwarded down and up), `forwarded`, `reason` (`offline`, `held`, `not held`), `holders`, `peer`, `why` |
+| `deck_press` | every `DeckPress` | `client`, `key`, `down`, `seq`, `t`, `delay_ms`/`gap_ms`/`offset_ms` (as `set`), `hold_ms` (page), `hub_hold_ms` (between the forwarded down and up), `forwarded`, `reason` (`offline`, `late`, `held`, `not held`), `holders`, `peer`, `why` |
 | `deck_ok` | Companion's answer to a forwarded press | `client`, `seq`, `key`, `down`, `ok`, `error`, `rtt_ms` |
 | `deck_release` (warn class) | a release the hub made itself | `client`, `key`, `reason` (`detach`, `silent`, `reconnect`, `stop`, `lost`) |
 | `deck_key` | a key's state change, when its pressed flag changes; for 10 s after a press on that key; at most 1/s per key, with a change count, while a client views the tab | `key`, `pressed`, `color`, `img_hash`, `img_bytes`, `changes` |
@@ -247,7 +251,7 @@ Images are never logged; only their hash and size are. Blinking feedback therefo
 
 **`tools/forensics/timeline.py`:** a deck section for the window:
 - presses, with the hub delay, Companion's round trip, and the hold as the page measured it vs as forwarded;
-- red flashes (unsent presses);
+- red flashes (unsent presses: not sent by the page, refused by the hub offline or late);
 - forced releases;
 - Companion link outages with their lengths.
 
@@ -295,6 +299,7 @@ Summary fields: `deck_presses`, `deck_unsent`, `deck_forced_releases`, `deck_lin
   - the grid's geometry;
   - down/up on `pointerup`, `pointercancel` and on leaving the tab;
   - offline dimming, the red dot and the red flash, with no later send;
+  - a down into a 2 s stall of the page's link flashes and never reaches Companion (`late` at the hub), a down while the dropout counter is red flashes at once and is never sent, and the outline shows at once under a 300 ms stall;
   - the deck tab not restored after a reload;
   - a `touchstart` on a key is `defaultPrevented` (WebKit);
   - zero console errors.

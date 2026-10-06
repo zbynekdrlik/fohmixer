@@ -74,13 +74,24 @@ impl LiveStore {
             .unwrap_or(false)
     }
 
-    /// A Stream Deck press (`down`; an up's measured hold and why): onto the
-    /// socket at once with the page's own number, or not at all (`Err` hands
-    /// `on_fail` back to flash the key).
+    /// Whether the link drops out now (the dropout counter's `active`, #43):
+    /// a press would wait in a stalled socket and reach Companion late.
+    pub fn dropping_out(self) -> bool {
+        self.inner
+            .try_with_value(|i| i.watch.counter().active)
+            .unwrap_or(false)
+    }
+
+    /// A Stream Deck press (`down`, at page time `t`: its pointer event's own
+    /// time, so a press a frozen page delayed counts as late at the hub; an
+    /// up's measured hold and why): onto the socket at once with the page's
+    /// own number, or not at all (`Err` hands `on_fail` back to flash the
+    /// key).
     pub fn deck_press(
         self,
         key: u32,
         down: bool,
+        t: f64,
         hold_ms: Option<f64>,
         why: Option<&str>,
         on_fail: FailFn,
@@ -92,7 +103,7 @@ impl LiveStore {
             key,
             down,
             seq,
-            t: dom::epoch_now(),
+            t,
             hold_ms,
             why: why.map(str::to_string),
         };

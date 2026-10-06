@@ -2,7 +2,9 @@
 //! client the `deck` message (on attach and on Companion's link changes),
 //! the keys only to the clients viewing the tab (through their outboxes,
 //! after everything else), forwards the pages' presses through the holder
-//! set to the Companion task, acks each press to its page (at once, or with
+//! set to the Companion task (a down that took over 0.5 s from the page is
+//! refused, `late`: it waited in a stalled link and must not switch
+//! anything late), acks each press to its page (at once, or with
 //! Companion's answer), and makes the releases no page can: a closed socket
 //! (`detach`), a holding page silent for 2 s (`silent`), the keys held when
 //! Companion was lost and the releases the link lost (an up answered
@@ -20,6 +22,7 @@
 use fohmixer_proto::client::{DeckKey, ServerMsg};
 
 use super::Router;
+use crate::clock::one_way_delay;
 use crate::companion::{CompanionEvent, CompanionHandle, Press};
 use crate::config::CompanionCfg;
 use crate::deck::{
@@ -110,15 +113,17 @@ impl Router {
         self.io.events.record("deck_view", view_fields(client, on));
     }
 
-    /// A page's press: through the holder set to Companion, recorded, acked
-    /// at once unless forwarded (then Companion's answer acks it).
+    /// A page's press: through the holder set to Companion (a late down
+    /// refused), recorded, acked at once unless forwarded (then Companion's
+    /// answer acks it).
     pub(super) fn deck_press(&mut self, p: PressMsg) {
         let now = self.now_ms();
+        let delay_ms = one_way_delay(p.hub_ms, p.t, p.offset_ms);
         let (outcome, gap_ms, hub_hold_ms, holders) = match self.deck.as_mut() {
             None => (PressOutcome::NoDeck, None, None, 0),
             Some(io) => {
                 let gap_ms = io.state.gap(p.client, p.key, p.hub_ms);
-                let outcome = io.state.press(p.client, p.key, p.down);
+                let outcome = io.state.press(p.client, p.key, p.down, delay_ms);
                 let mut hub_hold_ms = None;
                 if outcome == PressOutcome::Forwarded {
                     hub_hold_ms = io.state.forwarded(p.key, p.down, now);

@@ -6,8 +6,10 @@
 //! not sent either. Leaving the tab or the page going hidden lifts every
 //! held key; a closed socket forgets them (the hub releases them). A
 //! primary pointer's down first lifts the holds whose end the browser never
-//! delivered (`missed_ups`, as `diag/perf.rs` forgets a missed up). The
-//! component (`pages/deck.rs`) carries the actions out.
+//! delivered (`missed_ups`, as `diag/perf.rs` forgets a missed up). A down
+//! goes only when it can reach Companion at once ([`can_press`]): never
+//! into a link that drops out, where it would wait and switch something
+//! late. The component (`pages/deck.rs`) carries the actions out.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -47,6 +49,14 @@ impl Why {
             _ => None,
         }
     }
+}
+
+/// Whether a down can go now: the page's socket is open and past its hello,
+/// Companion is online, and the link is not dropping out (the dropout
+/// counter is red: nothing from the hub for 300 ms, so the press would wait
+/// in a stalled socket and reach Companion late; #52 spec §0).
+pub fn can_press(socket_ready: bool, companion_online: bool, dropping_out: bool) -> bool {
+    socket_ready && companion_online && !dropping_out
 }
 
 /// What the page does about a pointer event.

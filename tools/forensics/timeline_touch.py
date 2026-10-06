@@ -57,7 +57,7 @@ seq). A volume's Live value at position p is p^0.515.
   its own releases (``deck_release``; ``lost`` is the one that never reached
   Companion), Companion's link outages (``deck_outages``: a down or refused
   to the next up) and the red flashes (``deck_unsent``: a page's down it did
-  not send, a down the hub refused offline).
+  not send, a down the hub refused, offline or late).
 - **No data (PR E):** past its backlog's bound the page's recorder drops
   moves, oldest first, and says so with the page time of the oldest and the
   newest it dropped (an ``overflow`` marker of kind ``mv``). Such a span is
@@ -524,15 +524,21 @@ def deck_outages(links, start, end):
     return [o for o in outages if o.end >= start and o.start <= end]
 
 
+# The hub's refusals of a down that flash the key red: Companion offline, or
+# a down that waited over 0.5 s on the way (``late``).
+HUB_REFUSALS = ("offline", "late")
+
+
 def deck_unsent(events, presses):
     """The red flashes, in time order: a page's ``deck`` down it did not send
-    (``where`` page) and a down the hub refused, Companion offline (hub)."""
+    (``where`` page) and a down the hub refused, Companion offline or the
+    down late (hub)."""
     flashes = [
         DeckUnsent(e.hub, e.data.get("k"), "page")
         for e in events
         if e.data.get("d") == 1 and e.data.get("sent") is False
     ]
     flashes += [
-        DeckUnsent(p.time, p.key, "hub") for p in presses if p.down and p.reason == "offline"
+        DeckUnsent(p.time, p.key, "hub") for p in presses if p.down and p.reason in HUB_REFUSALS
     ]
     return sorted(flashes, key=lambda f: f.time)

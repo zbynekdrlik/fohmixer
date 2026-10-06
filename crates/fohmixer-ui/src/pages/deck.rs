@@ -4,12 +4,15 @@
 //! release (`behave::deck::Presses` decides; this file carries it out): a
 //! down that cannot go now flashes red and is never sent later; a finger on
 //! a key shows a local outline at once (Companion's pressed look needs a
-//! round trip). The page tells the hub it views the tab (only a viewer gets
-//! the keys' images) and lifts every held key when the tab is left (`tab`)
-//! or the page goes hidden (`hidden`); a closed socket forgets the holds
-//! (the hub releases them); a primary pointer's down first lifts the holds
-//! whose end the browser never delivered. Every key owns its touches
-//! (`use:owns_touches`): no loupe, callout or drag on a hold.
+//! round trip). A down goes only while the link is not dropping out
+//! (`behave::deck::can_press`), and every press carries its pointer event's
+//! own time, so the hub refuses one that waited (`late`). The page tells the
+//! hub it views the tab (only a viewer gets the keys' images) and lifts
+//! every held key when the tab is left (`tab`) or the page goes hidden
+//! (`hidden`); a closed socket forgets the holds (the hub releases them); a
+//! primary pointer's down first lifts the holds whose end the browser never
+//! delivered. Every key owns its touches (`use:owns_touches`): no loupe,
+//! callout or drag on a hold.
 
 use std::collections::BTreeSet;
 
@@ -17,7 +20,7 @@ use fohmixer_proto::layout::Control;
 use leptos::html;
 use leptos::prelude::*;
 
-use crate::behave::deck::{Action, Presses, Why};
+use crate::behave::deck::{Action, Presses, Why, can_press};
 use crate::components::{ControlView, fail_flash, owns_touches};
 use crate::diag::{self, trace};
 use crate::dom;
@@ -45,16 +48,16 @@ fn grid_vars(shape: Option<(u32, u32)>, area: (f64, f64)) -> String {
     format!("--cols:{columns};--rows:{rows};--key:{side:.0}px;")
 }
 
-/// Carries a press decision out: onto the socket and into the flight
-/// recorder; a down that could not go flashes `failed` (when given) and its
-/// up is not sent either (`Presses::unsent`, at once).
+/// Carries a press decision made at page time `t` out: onto the socket and
+/// into the flight recorder; a down that could not go flashes `failed`
+/// (when given) and its up is not sent either (`Presses::unsent`, at once).
 fn carry(
     store: LiveStore,
     presses: StoredValue<Presses>,
     action: Action,
     failed: Option<RwSignal<bool>>,
+    t: f64,
 ) {
-    let t = dom::epoch_now();
     match action {
         Action::Nothing => {}
         Action::Flash { key } => {
@@ -74,7 +77,7 @@ fn carry(
                 Some(failed) => fail_flash(failed),
                 None => Box::new(|_: String| {}),
             };
-            match store.deck_press(key, down, hold_ms, why, on_fail) {
+            match store.deck_press(key, down, t, hold_ms, why, on_fail) {
                 Ok(seq) => diag::record(&trace::deck(t, key, down, hold_ms, why, true, Some(seq))),
                 Err(flash) => {
                     if down {
@@ -108,11 +111,12 @@ fn leave_keys(
     held: RwSignal<BTreeSet<u32>>,
     why: Why,
 ) {
+    let t = dom::epoch_now();
     let actions = presses
-        .try_update_value(|p| p.leave_all(dom::epoch_now(), why))
+        .try_update_value(|p| p.leave_all(t, why))
         .unwrap_or_default();
     for action in actions {
-        carry(store, presses, action, None);
+        carry(store, presses, action, None, t);
     }
     show_held(presses, held);
 }
@@ -201,20 +205,27 @@ fn DeckKeyView(
         if let Some(el) = dom::current_element(&ev) {
             let _ = el.set_pointer_capture(ev.pointer_id());
         }
-        let t = dom::epoch_now();
+        // The pointer event's own time: a down a frozen page delayed is
+        // late at the hub.
+        let t = dom::event_epoch(&ev);
         // A primary pointer's down: the holds whose end never came go up
         // first (`lost`), so a missed end never leaves a key stuck.
         let missed = presses
             .try_update_value(|p| p.missed_ups(ev.is_primary(), t))
             .unwrap_or_default();
         for action in missed {
-            carry(store, presses, action, None);
+            carry(store, presses, action, None, t);
         }
-        // A press can go now: the socket ready and Companion online.
-        let connected = store.can_send() && online.try_get_untracked().unwrap_or(false);
+        // A press can go now: the socket ready, Companion online, the link
+        // not dropping out (a press would wait in a stalled socket).
+        let connected = can_press(
+            store.can_send(),
+            online.try_get_untracked().unwrap_or(false),
+            store.dropping_out(),
+        );
         let action = presses.try_update_value(|p| p.down(key, ev.pointer_id(), t, connected));
         if let Some(action) = action {
-            carry(store, presses, action, Some(failed));
+            carry(store, presses, action, Some(failed), t);
         }
         show_held(presses, held);
     };
@@ -222,10 +233,10 @@ fn DeckKeyView(
         let Some(why) = Why::of_event(&ev.type_()) else {
             return;
         };
-        let action =
-            presses.try_update_value(|p| p.up(key, ev.pointer_id(), dom::epoch_now(), why));
+        let t = dom::event_epoch(&ev);
+        let action = presses.try_update_value(|p| p.up(key, ev.pointer_id(), t, why));
         if let Some(action) = action {
-            carry(store, presses, action, Some(failed));
+            carry(store, presses, action, Some(failed), t);
         }
         show_held(presses, held);
     };

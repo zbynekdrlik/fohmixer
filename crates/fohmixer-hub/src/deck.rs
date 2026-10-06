@@ -6,8 +6,10 @@
 //! once it is back: Companion keeps a held key held when its surface goes
 //! away, and a release it never read leaves the key held), and when a key's
 //! change is worth a `deck_key` record (its pressed flag; 10 s after a press
-//! on it; once a second while viewed; a `deck_keys` summary every minute).
-//! The router (`router/deck.rs`) carries the decisions out. Times are the
+//! on it; once a second while viewed; a `deck_keys` summary every minute),
+//! and whether a down came too late to be forwarded ([`late`]: a press that
+//! waited in a stalled page link must never switch a light late). The
+//! router (`router/deck.rs`) carries the decisions out. Times are the
 //! router's clock (ms).
 
 pub mod holders;
@@ -35,14 +37,27 @@ pub const KEY_LOG_EVERY_MS: f64 = 1000.0;
 pub const SUMMARY_EVERY_MS: f64 = 60_000.0;
 /// The router's Stream Deck tick (the silence, the summary).
 pub const TICK: Duration = Duration::from_millis(100);
+/// A down that took longer than this (ms) from the page to the hub is
+/// refused (spec §0: nothing is sent late): it waited in a stalled link.
+pub const DECK_LATE_MS: f64 = 500.0;
 /// The answer to a press on a hub without `[companion]`.
 pub const NO_DECK: &str = "no Stream Deck";
+/// The answer to a down that came too late.
+pub const LATE: &str = "late";
 /// A cleared key's colour.
 pub const BLACK: &str = "#000000";
 
 /// Whether a holding client heard nothing for `since_ms` is silent.
 pub fn silent(since_ms: f64) -> bool {
     since_ms >= SILENT_MS
+}
+
+/// Whether a press that took `delay_ms` from the page to the hub (its
+/// one-way delay, as a `set`'s: hub ms − the page's `t` − the page clock's
+/// offset) came too late to be forwarded: over [`DECK_LATE_MS`]. A press
+/// with no delay yet (no paired ping on a fresh socket) is not late.
+pub fn late(delay_ms: Option<f64>) -> bool {
+    delay_ms.is_some_and(|ms| ms > DECK_LATE_MS)
 }
 
 /// Whether a key pressed `since_ms` ago is still in its press window.
@@ -96,6 +111,9 @@ pub enum PressOutcome {
     NotHeld,
     /// The hub has no `[companion]`.
     NoDeck,
+    /// A down that took over [`DECK_LATE_MS`] to reach the hub: refused,
+    /// never sent later.
+    Late,
 }
 
 impl PressOutcome {
@@ -107,6 +125,7 @@ impl PressOutcome {
             Self::Held => Some("held"),
             Self::NotHeld => Some("not held"),
             Self::NoDeck => Some(NO_DECK),
+            Self::Late => Some(LATE),
         }
     }
 
@@ -118,6 +137,7 @@ impl PressOutcome {
             Self::Held | Self::NotHeld => Some((true, None)),
             Self::Offline => Some((false, Some("offline"))),
             Self::NoDeck => Some((false, Some(NO_DECK))),
+            Self::Late => Some((false, Some(LATE))),
         }
     }
 }
@@ -193,10 +213,21 @@ impl Deck {
         self.viewers.iter().copied().collect()
     }
 
-    /// A press of `client`: not forwarded (and not held) while offline.
-    pub fn press(&mut self, client: ClientId, key: u32, down: bool) -> PressOutcome {
+    /// A press of `client` that took `delay_ms` from the page: not forwarded
+    /// (and not held) while offline, nor a down that came late ([`late`]).
+    /// An up is never refused for its delay: a release is always wanted.
+    pub fn press(
+        &mut self,
+        client: ClientId,
+        key: u32,
+        down: bool,
+        delay_ms: Option<f64>,
+    ) -> PressOutcome {
         if !self.online {
             return PressOutcome::Offline;
+        }
+        if down && late(delay_ms) {
+            return PressOutcome::Late;
         }
         let hold = if down {
             self.holders.down(key, client)

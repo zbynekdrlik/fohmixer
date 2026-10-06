@@ -132,13 +132,15 @@ exclude_re = [
   # signals and the tested DeckWaiting), deck_view and deck_hello (the tab's
   # deck_view, again after a hello; the deck info stays through a reconnect,
   # so the tab never flickers), deck_closed (a closed socket: offline,
-  # DeckWaiting::clear), can_send (the socket's readiness) and deck_press
-  # (DeckWaiting::next_seq and sent around the socket). deck.spec.ts drives
+  # DeckWaiting::clear), can_send (the socket's readiness), dropping_out
+  # (the tested DropoutWatch's counter, read for the tested can_press) and
+  # deck_press (DeckWaiting::next_seq and sent around the socket, with the
+  # pointer event's time). deck.spec.ts drives
   # them (the grid with its keys, the presses at the fake Companion, the
   # offline dot and the red flash for Companion down and for the page's own
-  # socket down, a refused press's flash, the tab and the page kept through
-  # a reconnect).
-  "fohmixer-ui/src/store/live/deck\\.rs.*(replace|in) LiveStore::(on_deck|on_deck_keys|on_deck_ack|deck_view|deck_hello|deck_closed|can_send|deck_press)( |$)",
+  # socket down, a refused press's flash, a down during a dropout flashed
+  # and never sent, the tab and the page kept through a reconnect).
+  "fohmixer-ui/src/store/live/deck\\.rs.*(replace|in) LiveStore::(on_deck|on_deck_keys|on_deck_ack|deck_view|deck_hello|deck_closed|can_send|dropping_out|deck_press)( |$)",
   "fohmixer-ui/src/store/live\\.rs.*(replace|in) (Socket::open|Socket::buffered|Socket::close|Inner::new)( |$)",
   # auth.rs: local storage and the login request (login_outcome, login_body
   # and LoginError::message are the tested decisions).
