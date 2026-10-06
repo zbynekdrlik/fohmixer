@@ -399,11 +399,13 @@ jobs:
           # band and master (the real FohMixer script on SimLive, meters at
           # 30 Hz), the hub on the import tool's synthetic layout, the impair
           # proxy in front of the hub (#43, 127.0.0.1:8481: the surface opens
-          # through it) and the harness's control API for the tests
+          # through it), the fake Companion (#52, 127.0.0.1:39192: the hub's
+          # Stream Deck tab) and the harness's control API for the tests
           # (127.0.0.1:39190).
           mkdir -p "$RUNNER_TEMP/e2e-logs"
           nohup python3 e2e/harness/harness.py --hub ./target/release/fohmixer-hub \
             --data "$RUNNER_TEMP/hub-data" --link-port 8481 \
+            --fake-companion-port 39192 \
             --layout tools/import-tosc/fixtures/expected-layout.json \
             --public-name foh.e2e.test --https-port 8443 \
             --tls-cert "$E2E_REMOTE_DIR/cert.pem" --tls-key "$E2E_REMOTE_DIR/key.pem" \
