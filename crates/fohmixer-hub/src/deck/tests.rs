@@ -96,14 +96,14 @@ fn an_image_is_logged_as_its_fnv_1a_hash() {
 fn a_press_is_forwarded_held_not_held_or_refused_offline() {
     let mut deck = Deck::default();
     assert!(!deck.online());
-    assert_eq!(deck.press(1, 3, true), PressOutcome::Offline);
+    assert_eq!(deck.press(1, 3, true, None), PressOutcome::Offline);
     assert_eq!(deck.holders_of(3), 0, "an offline down is not held");
     let mut deck = online();
-    assert_eq!(deck.press(1, 3, true), PressOutcome::Forwarded);
-    assert_eq!(deck.press(2, 3, true), PressOutcome::Held);
-    assert_eq!(deck.press(1, 3, false), PressOutcome::Held);
-    assert_eq!(deck.press(9, 3, false), PressOutcome::NotHeld);
-    assert_eq!(deck.press(2, 3, false), PressOutcome::Forwarded);
+    assert_eq!(deck.press(1, 3, true, None), PressOutcome::Forwarded);
+    assert_eq!(deck.press(2, 3, true, None), PressOutcome::Held);
+    assert_eq!(deck.press(1, 3, false, None), PressOutcome::Held);
+    assert_eq!(deck.press(9, 3, false, None), PressOutcome::NotHeld);
+    assert_eq!(deck.press(2, 3, false, None), PressOutcome::Forwarded);
     for (outcome, reason, ack) in [
         (PressOutcome::Forwarded, None, None),
         (PressOutcome::Held, Some("held"), Some((true, None))),
@@ -118,6 +118,11 @@ fn a_press_is_forwarded_held_not_held_or_refused_offline() {
             Some("no Stream Deck"),
             Some((false, Some("no Stream Deck"))),
         ),
+        (
+            PressOutcome::Late,
+            Some("late"),
+            Some((false, Some("late"))),
+        ),
     ] {
         assert_eq!(
             (outcome.reason(), outcome.ack()),
@@ -125,6 +130,42 @@ fn a_press_is_forwarded_held_not_held_or_refused_offline() {
             "{outcome:?}"
         );
     }
+}
+
+#[test]
+fn a_press_is_late_past_half_a_second_on_the_way() {
+    assert_eq!(DECK_LATE_MS, 500.0);
+    assert!(!late(Some(500.0)));
+    assert!(late(Some(500.001)));
+    assert!(late(Some(500.0_f64.next_up())));
+    assert!(!late(Some(0.0)));
+    // No offset yet (no paired ping on a fresh socket): not late.
+    assert!(!late(None));
+}
+
+#[test]
+fn a_late_down_is_refused_and_never_held_a_late_up_still_goes() {
+    let mut deck = online();
+    // A down 500 ms on the way goes; one a hair later does not, and is
+    // not held: its up is a stranger's.
+    assert_eq!(deck.press(1, 3, true, Some(500.001)), PressOutcome::Late);
+    assert_eq!(deck.holders_of(3), 0, "a late down is not held");
+    assert_eq!(deck.press(1, 3, false, Some(1.0)), PressOutcome::NotHeld);
+    assert_eq!(deck.press(1, 3, true, Some(500.0)), PressOutcome::Forwarded);
+    // A release is always wanted: an up is never refused for its delay.
+    assert_eq!(
+        deck.press(1, 3, false, Some(10_000.0)),
+        PressOutcome::Forwarded
+    );
+    assert_eq!(deck.holders_of(3), 0);
+    // A down with no offset yet goes.
+    assert_eq!(deck.press(2, 4, true, None), PressOutcome::Forwarded);
+    // A late down on a key another page holds: not held either.
+    assert_eq!(deck.press(5, 4, true, Some(600.0)), PressOutcome::Late);
+    assert_eq!(deck.holders_of(4), 1);
+    // Offline first: Companion away says more than the delay.
+    deck.link_down();
+    assert_eq!(deck.press(1, 6, true, Some(900.0)), PressOutcome::Offline);
 }
 
 #[test]
@@ -148,9 +189,9 @@ fn a_detach_forgets_the_client_and_names_the_keys_to_release() {
     let mut deck = online();
     deck.heard(7, 0.0);
     deck.view(7, true);
-    deck.press(7, 2, true);
-    deck.press(7, 3, true);
-    deck.press(8, 3, true);
+    deck.press(7, 2, true, None);
+    deck.press(7, 3, true, None);
+    deck.press(8, 3, true, None);
     deck.gap(7, 2, 10.0);
     assert_eq!(deck.detach(7), vec![2]);
     assert_eq!(deck.viewers(), Vec::<ClientId>::new());
@@ -164,8 +205,8 @@ fn a_holding_client_is_released_after_two_silent_seconds() {
     deck.heard(7, 1000.0);
     deck.heard(8, 1000.0);
     deck.heard(9, 0.0);
-    deck.press(7, 2, true);
-    deck.press(8, 4, true);
+    deck.press(7, 2, true, None);
+    deck.press(8, 4, true, None);
     deck.heard(8, 2500.0);
     // 9 is silent but holds nothing.
     assert_eq!(deck.silent_clients(2999.0), vec![]);
@@ -173,21 +214,21 @@ fn a_holding_client_is_released_after_two_silent_seconds() {
     assert_eq!(deck.holders_of(2), 0);
     assert_eq!(deck.silent_clients(4500.0), vec![(8, vec![4])]);
     // A holder never heard (it cannot happen through ws.rs) counts as silent.
-    deck.press(5, 6, true);
+    deck.press(5, 6, true, None);
     assert_eq!(deck.silent_clients(4500.0), vec![(5, vec![6])]);
 }
 
 #[test]
 fn a_lost_link_keeps_the_held_keys_for_a_release_once_it_is_back() {
     let mut deck = online();
-    deck.press(1, 2, true);
-    deck.press(2, 2, true);
-    deck.press(1, 5, true);
+    deck.press(1, 2, true, None);
+    deck.press(2, 2, true, None);
+    deck.press(1, 5, true, None);
     deck.forwarded(2, true, 10.0);
     deck.link_down();
     assert!(!deck.online());
     assert_eq!(deck.holders_of(2), 0);
-    assert_eq!(deck.press(1, 2, false), PressOutcome::Offline);
+    assert_eq!(deck.press(1, 2, false, None), PressOutcome::Offline);
     assert_eq!(deck.link_up(), vec![2, 5]);
     assert!(deck.online());
     assert_eq!(deck.link_up(), Vec::<u32>::new(), "released once");
@@ -236,7 +277,7 @@ fn a_release_the_link_lost_is_released_once_it_is_back() {
     assert!(deck.answered(&answer(3, false, false, Some(OFFLINE))));
     assert!(deck.answered(&hubs));
     // The page's up left the holder set: only the lost releases wait.
-    deck.press(9, 6, true);
+    deck.press(9, 6, true, None);
     deck.link_down();
     assert_eq!(deck.link_up(), vec![3, 4, 6]);
     assert_eq!(deck.link_up(), Vec::<u32>::new(), "released once");
@@ -254,9 +295,9 @@ fn a_release_the_link_lost_is_released_once_it_is_back() {
 #[test]
 fn the_stop_names_the_keys_to_release_and_the_keys_lost() {
     let mut deck = online();
-    deck.press(1, 9, true);
-    deck.press(2, 9, true);
-    deck.press(2, 1, true);
+    deck.press(1, 9, true, None);
+    deck.press(2, 9, true, None);
+    deck.press(2, 1, true, None);
     assert_eq!(
         deck.stop(),
         StopKeys {
@@ -273,8 +314,8 @@ fn the_stop_names_the_keys_to_release_and_the_keys_lost() {
     );
     // Held, then the link goes: the key cannot be released any more.
     let mut deck = online();
-    deck.press(1, 4, true);
-    deck.press(1, 2, true);
+    deck.press(1, 4, true, None);
+    deck.press(1, 2, true, None);
     deck.link_down();
     assert_eq!(
         deck.stop(),

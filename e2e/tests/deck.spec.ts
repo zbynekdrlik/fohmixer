@@ -77,6 +77,51 @@ const tap = (page: Page, key: number, pointerId = 21, primary = true) =>
   dispatchPointer(deckKey(page, key), [{ type: "pointerdown" }, { wait: 100 }, { type: "pointerup" }], pointerId, primary);
 
 /**
+ * A finger's down on `key` dispatched in the page (`pointerId`, `primary`),
+ * after the dropout counter turned red when `afterDropout` (waited for in
+ * the page, frame by frame), then its state once the page's effects ran,
+ * all without a round trip: `data-held`, `data-pressed`, `data-failed`, the
+ * counter's `data-active` and the page clock at the read.
+ */
+async function downAndRead(key: Locator, pointerId: number, primary: boolean, afterDropout = false) {
+  const { x, y } = await centre(key);
+  return key.evaluate(
+    async (el, { clientX, clientY, id, isPrimary, waitDropout }) => {
+      const frame = () => new Promise((done) => requestAnimationFrame(done));
+      const counter = document.querySelector('[data-testid="dropouts"]');
+      if (!counter) throw new Error("no dropout counter");
+      const deadline = performance.now() + 3000;
+      while (waitDropout && counter.getAttribute("data-active") !== "true") {
+        if (performance.now() > deadline) throw new Error("the dropout counter did not turn red within 3 s");
+        await frame();
+      }
+      el.dispatchEvent(
+        new PointerEvent("pointerdown", {
+          pointerId: id,
+          pointerType: "touch",
+          isPrimary,
+          clientX,
+          clientY,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      // Leptos' effects run in microtasks: a macrotask later the page has
+      // drawn what the down did, long before any answer can come.
+      await new Promise((done) => setTimeout(done, 0));
+      return {
+        held: el.getAttribute("data-held"),
+        pressed: el.getAttribute("data-pressed"),
+        failed: el.getAttribute("data-failed"),
+        dropout: counter.getAttribute("data-active"),
+        at: performance.timeOrigin + performance.now(),
+      };
+    },
+    { clientX: x, clientY: y, id: pointerId, isPrimary: primary, waitDropout: afterDropout },
+  );
+}
+
+/**
  * The page hidden (`document.hidden`, `visibilityState`) or shown again, with
  * the `visibilitychange` a browser fires: it bubbles to the window, where the
  * deck listens.
@@ -278,44 +323,81 @@ test.describe("The Stream Deck tab", () => {
     await openDeck(page);
     const key = deckKey(page, 10);
     const since = Date.now();
-    // The page's link held 1.5 s: no answer can come meanwhile. The down and
-    // the read two frames later run in the page, without a round trip.
-    await impair.stall(1500);
-    const { x, y } = await centre(key);
-    const seen = await key.evaluate(
-      async (el, { clientX, clientY }) => {
-        el.dispatchEvent(
-          new PointerEvent("pointerdown", {
-            pointerId: 21,
-            pointerType: "touch",
-            isPrimary: true,
-            clientX,
-            clientY,
-            bubbles: true,
-            cancelable: true,
-          }),
-        );
-        await new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)));
-        return {
-          held: el.getAttribute("data-held"),
-          pressed: el.getAttribute("data-pressed"),
-          at: performance.timeOrigin + performance.now(),
-        };
-      },
-      { clientX: x, clientY: y },
-    );
+    // The page's link held 300 ms, under the 0.5 s a down may take to the
+    // hub: no answer can come meanwhile, and the down still goes. The down
+    // and the read right after it run in the page, without a round trip.
+    await impair.stall(300);
+    const seen = await downAndRead(key, 21, true);
     // The outline is the page's own, at once; Companion's pressed look waits
     // for its answer.
-    expect([seen.held, seen.pressed]).toEqual(["true", "false"]);
+    expect([seen.held, seen.pressed, seen.failed]).toEqual(["true", "false", "false"]);
     await expect(key).toHaveAttribute("data-pressed", "true");
     await expect(key).toHaveAttribute("data-held", "true");
-    // The read came before the hub even had the down.
+    // The read came before the hub even had the down, and the hub forwarded it.
     const records = await hubRecords("deck_press", since, (r) => r.some((x) => x.key === 10 && x.down === true), "key 10's down in the event log");
     const down = records.find((x) => x.key === 10 && x.down === true);
     expect(down.ts, "the hub got the down after the page showed its outline").toBeGreaterThan(seen.at);
+    expect([down.forwarded, down.reason]).toEqual([true, null]);
+    expect(down.delay_ms).toBeLessThanOrEqual(500);
     await dispatchPointer(key, [{ type: "pointerup" }]);
     await expect(key).toHaveAttribute("data-held", "false");
     await expect(key).toHaveAttribute("data-pressed", "false");
+  });
+
+  test("a down that would reach Companion late is refused: it flashes red and is never sent", async ({ page }) => {
+    await openSurface(page);
+    await openDeck(page);
+    await watchFlashes(page);
+    const since = Date.now();
+    // The page's link held 2 s (under the page's 3 s of silence that closes
+    // its socket): a down at once waits in the socket the whole time.
+    await impair.stall(2000);
+    const first = await downAndRead(deckKey(page, 10), 21, true);
+    // Outlined at once; the red flash comes with the hub's answer.
+    expect(first.held).toBe("true");
+    // Once the dropout counter is red (nothing from the hub for 300 ms), a
+    // second finger's down flashes at once and the page sends nothing.
+    const second = await downAndRead(deckKey(page, 12), 22, false, true);
+    expect([second.held, second.failed, second.dropout]).toEqual(["true", "true", "true"]);
+    await dispatchPointer(deckKey(page, 12), [{ type: "pointerup" }], 22, false);
+    // Key 10 flashes when the hub's answer comes (the hub refused the down,
+    // late), or flashed at once had the page already seen the dropout.
+    await expect.poll(() => flashedKeys(page), { timeout: 10_000 }).toEqual([10, 12]);
+    await dispatchPointer(deckKey(page, 10), [{ type: "pointerup" }]);
+    await expect(deckKey(page, 10)).toHaveAttribute("data-held", "false");
+    // The link carries presses again once the dropout is over: a tap
+    // reaches Companion, after where the two refused downs would have been.
+    await expect(page.getByTestId("dropouts")).toHaveAttribute("data-active", "false", { timeout: 10_000 });
+    await tap(page, 11, 23);
+    await until(() => pressesOf(11, since), (p) => p.join() === "true,false", "key 11 down and up after the stall");
+    const events = await deckEvents(since, (e) => e.some((x) => x.k === 11 && x.d === 0), "the page's deck events up to key 11's up");
+    expect(events.filter((e) => e.k === 12).map((e) => [e.d, e.sent])).toEqual([[1, false]]);
+    const presses = (await hubEvents()).filter((r: any) => r.ev === "deck_press" && r.ts >= since);
+    expect(presses.filter((r: any) => r.key === 12)).toEqual([]);
+    const down10 = events.find((e) => e.k === 10 && e.d === 1);
+    const hub10 = presses.filter((r: any) => r.key === 10);
+    if (down10.sent) {
+      // The page sent it into the stalled link: the hub refused it, late,
+      // and the finger's up after it is not held.
+      expect(hub10.map((r: any) => [r.down, r.forwarded, r.reason])).toEqual([
+        [true, false, "late"],
+        [false, false, "not held"],
+      ]);
+      expect(hub10[0].delay_ms).toBeGreaterThan(500);
+    } else {
+      expect(hub10).toEqual([]);
+    }
+    // Nothing of keys 10 and 12 ever reaches Companion.
+    await page.waitForTimeout(1000);
+    expect(await pressesOf(10, since)).toEqual([]);
+    expect(await pressesOf(12, since)).toEqual([]);
+    expect(await flashedKeys(page)).toEqual([10, 12]);
+    // The forensics timeline counts both red flashes.
+    const report = await harness("/forensics/timeline", { from_ms: since, to_ms: Date.now() });
+    expect(report.exit).toBe(0);
+    const summary = new Map<string, string>(report.stdout.trim().split("\n").map((l: string) => l.split("=", 2) as [string, string]));
+    // The hub's downs: key 11's, and key 10's when the page sent it.
+    expect([summary.get("deck_presses"), summary.get("deck_unsent")]).toEqual([down10.sent ? "2" : "1", "2"]);
   });
 
   test("a re-tap of the open tab keeps a held key held; the page going hidden lifts it", async ({ page }) => {

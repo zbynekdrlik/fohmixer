@@ -184,6 +184,21 @@ class DeckSection(ReportCase):
         self.assertNotIn(PEER, stdout)
         self.assertNotIn(PEER, page.text)
 
+    def test_a_down_the_hub_refused_as_late_is_a_red_flash(self):
+        log = Log()
+        log.pings(7, BASE, BASE + 3000)
+        # A down that waited in a stalled link (the hub refused it, late),
+        # then its up (not held).
+        press(log, BASE + 1000, 7, 9, True, 1, forwarded=False, reason="late")
+        press(log, BASE + 1200, 7, 9, False, 2, forwarded=False, reason="not held", why="up")
+        summary, page, _ = self.report(log, BASE, BASE + 3000)
+        self.assertEqual((summary["deck_presses"], summary["deck_unsent"]), ("1", "1"))
+        self.assertEqual(
+            [(a["data-key"], a["data-where"]) for a in page.of_class("deck-unsent")],
+            [("9", "hub")],
+        )
+        self.assertEqual(page.of_class("deck-press")[0]["data-reason"], "late")
+
     def test_a_window_without_the_deck_says_so(self):
         log = Log()
         log.pings(7, BASE, BASE + 1000)

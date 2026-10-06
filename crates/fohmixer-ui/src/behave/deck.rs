@@ -324,6 +324,18 @@ mod tests {
     }
 
     #[test]
+    fn a_down_goes_only_on_a_ready_socket_to_companion_online_with_no_dropout() {
+        assert!(can_press(true, true, false));
+        assert!(!can_press(false, true, false), "the socket not ready");
+        assert!(!can_press(true, false, false), "Companion offline");
+        assert!(
+            !can_press(true, true, true),
+            "the link drops out: the press would wait in a stalled socket"
+        );
+        assert!(!can_press(false, false, true));
+    }
+
+    #[test]
     fn the_why_of_an_up() {
         assert_eq!(Why::of_event("pointerup"), Some(Why::Up));
         assert_eq!(Why::of_event("pointercancel"), Some(Why::Cancel));

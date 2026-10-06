@@ -5,9 +5,10 @@
 //! for 2 s, a key held when Companion was lost, a release the link lost,
 //! the stop), a key held when Companion was lost and the hub stopped before
 //! the link came back (logged `lost`, never sent), a press waiting when the
-//! link goes, presses while Companion is away, and a hub without
-//! `[companion]`. Against the scripted fake Companion
-//! (`support/companion.rs`); host-free: it also runs in the `windows` job.
+//! link goes, presses while Companion is away, a down that reaches the hub
+//! late, and a hub without `[companion]`. Against the scripted fake
+//! Companion (`support/companion.rs`); host-free: it also runs in the
+//! `windows` job.
 
 mod support;
 
@@ -321,6 +322,109 @@ fn a_press_goes_to_companion_and_its_ack_carries_the_round_trip() {
             ]
         );
         assert!(oks.iter().all(|r| r["rtt_ms"].as_f64().is_some()));
+        hub.stop().await;
+    });
+}
+
+/// A press of `key` sent at page time `t` (an up with a 150 ms hold).
+async fn press_at(client: &mut Client, key: u32, down: bool, seq: u64, t: f64) {
+    client
+        .send(&ClientMsg::DeckPress {
+            key,
+            down,
+            seq,
+            t,
+            hold_ms: (!down).then_some(150.0),
+            why: (!down).then(|| "up".to_string()),
+        })
+        .await;
+}
+
+#[test]
+fn a_down_that_reaches_the_hub_late_is_refused_and_never_sent() {
+    let _serial = serial();
+    runtime().block_on(async {
+        let fake = FakeCompanion::start(Script::companion()).await;
+        let dir = tempfile::tempdir().unwrap();
+        let hub = TestHub::start_config(deck_config(dir.path(), fake.port)).await;
+        let mut a = hub.client().await;
+        deck_online(&mut a, true).await;
+        // The page's clock: 5 s at the first ping, then real time. Ping 1
+        // carries ping 0's round trip, so the socket has its offset and
+        // every press its one-way delay (about 0 ms at the page's now).
+        let page_start = Instant::now();
+        let page_now = || 5_000.0 + page_start.elapsed().as_secs_f64() * 1000.0;
+        for (n, rtt, rtt_n) in [(0, None, None), (1, Some(2.0), Some(0))] {
+            a.send(&ClientMsg::Ping {
+                n,
+                t: page_now(),
+                rtt,
+                rtt_n,
+            })
+            .await;
+            a.wait(WAIT, |m| {
+                matches!(m, ServerMsg::Pong { n: got, .. } if *got == n).then_some(())
+            })
+            .await;
+        }
+        // A down sent a second ago (it waited in a stalled link): refused,
+        // never held, flashed on the page.
+        press_at(&mut a, 14, true, 1, page_now() - 1_000.0).await;
+        assert_eq!(
+            ack(&mut a, 1).await,
+            (false, Some("late".to_string()), None)
+        );
+        // Its up then: not held, not forwarded.
+        press_at(&mut a, 14, false, 2, page_now()).await;
+        assert_eq!(ack(&mut a, 2).await, (true, None, None));
+        // A down on time goes, and its up goes however late it comes: a
+        // release is always wanted.
+        press_at(&mut a, 15, true, 3, page_now()).await;
+        assert!(
+            ack(&mut a, 3).await.2.is_some(),
+            "forwarded: Companion's round trip"
+        );
+        press_at(&mut a, 15, false, 4, page_now() - 1_000.0).await;
+        assert!(
+            ack(&mut a, 4).await.2.is_some(),
+            "forwarded: Companion's round trip"
+        );
+        let got = fake.got();
+        assert_eq!(presses_in(&got, 15), vec![(1, true), (1, false)]);
+        assert_eq!(
+            presses_in(&got, 14),
+            Vec::<(usize, bool)>::new(),
+            "the late down never reached Companion"
+        );
+        let records = hub
+            .events_until(WAIT, |r| {
+                r.iter().filter(|e| e["ev"] == "deck_press").count() == 4
+            })
+            .await;
+        let presses = of(&records, "deck_press");
+        assert_eq!(
+            presses
+                .iter()
+                .map(|r| (
+                    r["key"].clone(),
+                    r["down"].clone(),
+                    r["forwarded"].clone(),
+                    r["reason"].clone()
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                (json!(14), json!(true), json!(false), json!("late")),
+                (json!(14), json!(false), json!(false), json!("not held")),
+                (json!(15), json!(true), json!(true), Value::Null),
+                (json!(15), json!(false), json!(true), Value::Null),
+            ]
+        );
+        for (i, late) in [(0, true), (1, false), (2, false), (3, true)] {
+            let delay = presses[i]["delay_ms"]
+                .as_f64()
+                .expect("a delay: the offset is known");
+            assert_eq!(delay > 500.0, late, "press {i}: {delay} ms");
+        }
         hub.stop().await;
     });
 }
