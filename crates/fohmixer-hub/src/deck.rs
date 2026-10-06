@@ -300,8 +300,9 @@ impl Deck {
 
     /// Companion's answer to a forwarded press: a release the link lost
     /// ([`release_lost`]) joins the keys released once the link is back
-    /// (the link-loss answers come before the link's `Down`; a release of a
-    /// key Companion does not hold does nothing). Whether it joined them.
+    /// (every `offline` answer reaches the router before the next `Up`, so
+    /// that `Up` releases it; a release of a key Companion does not hold
+    /// does nothing). Whether it joined them.
     pub fn answered(&mut self, answer: &Answer) -> bool {
         let lost = release_lost(answer);
         if lost {
