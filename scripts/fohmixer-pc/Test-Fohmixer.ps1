@@ -450,6 +450,25 @@ try {
     # The installed toml's remote tables, as they were written.
     Assert ((Get-FohInstalledRemoteToml -Text ((New-FohHubToml -HttpPort 1 -BandPort 2 -MasterPort 3) + $gotRemote)) -ceq $gotRemote) 'installed-remote-tables-read-back-as-written'
     Assert ((Get-FohInstalledRemoteToml -Text (New-FohHubToml -HttpPort 1 -BandPort 2 -MasterPort 3)) -ceq '') 'installed-remote-tables-none-without-tls'
+    # ---- the Stream Deck tab (#52): the [companion] table ----
+    $wantCompanion = "`r`n[companion]`r`nhost = `"companion.example.org`"`r`nport = 16622`r`n"
+    Assert ((Get-FohCompanionToml -Endpoint 'companion.example.org') -ceq $wantCompanion) 'companion-toml-default-port'
+    Assert ((Get-FohCompanionToml -Endpoint '10.0.0.7:16700') -ceq "`r`n[companion]`r`nhost = `"10.0.0.7`"`r`nport = 16700`r`n") 'companion-toml-with-a-port'
+    Assert ((Get-FohCompanionToml -Endpoint '') -ceq '') 'companion-toml-empty-without-an-endpoint'
+    foreach ($bad in @('a b', 'host:', 'host:0', 'host:70000', 'h"st', ':16622', 'host:16622:1')) {
+        Assert ((ErrorOf { Get-FohCompanionToml -Endpoint $bad }) -like '*Companion endpoint refused*') "companion-toml-refuses-[$bad]"
+    }
+    $withBoth = New-FohHubToml -HttpPort 1 -BandPort 2 -MasterPort 3 -Companion $wantCompanion -Remote $gotRemote
+    Assert ($withBoth.IndexOf('[companion]') -lt $withBoth.IndexOf('[tls]')) 'companion-table-before-the-remote-tables'
+    Assert ((Get-FohInstalledCompanionToml -Text $withBoth) -ceq $wantCompanion) 'installed-companion-table-read-back-before-tls'
+    Assert ((Get-FohInstalledRemoteToml -Text $withBoth) -ceq $gotRemote) 'installed-remote-tables-unchanged-by-companion'
+    Assert ((Get-FohInstalledCompanionToml -Text ((New-FohHubToml -HttpPort 1 -BandPort 2 -MasterPort 3) + $wantCompanion)) -ceq $wantCompanion) 'installed-companion-table-read-back-at-the-end'
+    Assert ((Get-FohInstalledCompanionToml -Text (New-FohHubToml -HttpPort 1 -BandPort 2 -MasterPort 3)) -ceq '') 'installed-companion-none-without-the-table'
+    $deckToml = New-FohHubToml -HttpPort 18481 -BandPort 39181 -MasterPort 39182 -Companion $wantCompanion -Remote $gotRemote
+    Assert ((Test-FohHubToml -Exe $HubExe -Text $deckToml -Dir $checkDir) -like '*: OK*') 'hub-toml-check-accepts-the-companion-table'
+    $badDeck = New-FohHubToml -HttpPort 18481 -BandPort 39181 -MasterPort 39182 -Companion ($wantCompanion + "columns = 17`r`n")
+    Assert ((ErrorOf { Test-FohHubToml -Exe $HubExe -Text $badDeck -Dir $checkDir }) -like '*refused by the hub (exit 2)*columns 17*') 'hub-toml-check-refuses-a-bad-companion-table'
+    Assert (@(Get-ChildItem -LiteralPath $checkDir -Force).Count -eq 0) 'hub-toml-check-of-the-companion-table-leaves-no-file'
     # The hosts file keeps its encoding: ANSI (a non-ASCII byte in a comment), UTF-8 with a byte order mark.
     $ansiHosts = Join-Path $base 'hosts-ansi'
     $ansiBytes = [byte[]](@(0x23, 0x20, 0xE9, 0x0D, 0x0A) + [Text.Encoding]::ASCII.GetBytes("127.0.0.1 localhost`r`n"))
@@ -776,6 +795,18 @@ try {
     Assert ($r7.code -eq 0 -and $r7.out -like '*remote access kept as installed*') 'install-7-without-a-public-name-exits-0'
     $newer = @(Get-ChangedFiles $watchR)
     Assert ($newer.Count -eq 0) "install-7-keeps-the-remote-access ($($newer -join ', '))"
+    # ---- install 8: the Stream Deck tab (#52): -CompanionHost writes [companion], an update keeps it ----
+    $dataC = Join-Path $base 'data-companion'
+    $r8 = Invoke-Ps $install (Get-InstallArgs @{ DataDir = $dataC; CompanionHost = '10.0.0.7:16700' })
+    Assert ($r8.code -eq 0) "install-8-companion-exits-0 ($($r8.out))"
+    $wantC = New-FohHubToml -HttpPort 18481 -BandPort 39181 -MasterPort 39182 -Companion (Get-FohCompanionToml -Endpoint '10.0.0.7:16700')
+    Assert ([IO.File]::ReadAllText((Join-Path $dataC 'fohmixer-hub.toml')) -ceq $wantC) 'install-8-toml-has-the-companion-table'
+    $r9 = Invoke-Ps $install (Get-InstallArgs @{ DataDir = $dataC })
+    Assert ($r9.code -eq 0) 'install-9-without-companion-host-exits-0'
+    Assert ([IO.File]::ReadAllText((Join-Path $dataC 'fohmixer-hub.toml')) -ceq $wantC) 'install-9-without-companion-host-keeps-the-table'
+    $noneC = Join-Path $base 'data-companion-refused'
+    $res = Invoke-Ps $install (Get-InstallArgs @{ DataDir = $noneC; CompanionHost = 'host:0' })
+    Assert ($res.code -ne 0 -and $res.out -like '*Companion endpoint refused*' -and -not (Test-Path -LiteralPath $noneC)) 'install-refuses-a-bad-companion-host-before-any-change'
     # A config the hub refuses stops the install before any change: checked
     # by the new hub itself (the kept [tls] on the new HTTP port included).
     foreach ($r in @(

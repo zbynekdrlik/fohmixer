@@ -48,6 +48,10 @@ Administrators only), and the service fohmixer-tunnel runs cloudflared
 run without -SetTunnelToken keeps the stored token. A run without -PublicName
 keeps the remote access an earlier run set up (its toml tables as installed;
 the hosts block, shortcut, firewall rule and service untouched).
+The Stream Deck tab (#52), only with -CompanionHost: the toml gets [companion]
+(Bitfocus Companion's Satellite API as host or host:port, default port 16622);
+the hub registers there as one more Stream Deck ("fohmixer"). A run without
+-CompanionHost keeps an installed [companion] table as it is.
 The data folder gets a protected DACL: SYSTEM, Administrators and the band user.
 When a step after the stop fails, the hub and tray tasks that ran are started again.
 -NoTask (the self-test) leaves out steps 1, 6, 7 and the DACL.
@@ -104,7 +108,10 @@ param(
     # Default <ProgramData>\fohmixer-tunnel; the hosts file and the band user's desktop default to Windows' own.
     [string]$TunnelDir = '',
     [string]$HostsFile = '',
-    [string]$BandDesktop = ''
+    [string]$BandDesktop = '',
+    # The Stream Deck tab (#52): Bitfocus Companion's Satellite API as host or host:port
+    # (default port 16622). Without it an installed [companion] table is kept.
+    [string]$CompanionHost = ''
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -118,10 +125,12 @@ try {
     }
     $remote = Resolve-FohRemote -DataDir $DataDir -BandUser $BandUser -HttpPort $HttpPort -BandPort $BandPort `
         -MasterPort $MasterPort @remoteArgs
+    # The Stream Deck tab (#52): checked before any change, kept when not given.
+    $companion = Resolve-FohCompanion -DataDir $DataDir -CompanionHost $CompanionHost
     $result = Invoke-FohInstall -BundleZip $BundleZip -BandUser $BandUser -MasterUser $MasterUser -DataDir $DataDir `
         -HttpPort $HttpPort -BandPort $BandPort -MasterPort $MasterPort -Layout $Layout `
         -BandUserLibrary $BandUserLibrary -MasterUserLibrary $MasterUserLibrary `
-        -BandAbletonPrefs $BandAbletonPrefs -MasterAbletonPrefs $MasterAbletonPrefs -NoTask:$NoTask -Remote $remote
+        -BandAbletonPrefs $BandAbletonPrefs -MasterAbletonPrefs $MasterAbletonPrefs -NoTask:$NoTask -Companion $companion -Remote $remote
     ConvertTo-Json -InputObject $result -Depth 5
 } catch {
     # One unwrapped line (a 5.1 error record wraps at the console width), then where it failed.
