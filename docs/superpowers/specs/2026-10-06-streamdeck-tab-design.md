@@ -236,14 +236,14 @@ title = "Stream Deck"  # 1..=24 characters
 | `ev` | when | fields |
 |---|---|---|
 | `deck_link` (warn class) | up, down, refused | `state`, `companion`, `api`, `error`, `down_ms` (on up: how long it was down), `attempts` |
-| `deck_press` | every `DeckPress` | `client`, `key`, `down`, `seq`, `t`, `delay_ms`/`gap_ms`/`offset_ms` (as `set`), `hold_ms` (page), `hub_hold_ms` (between the forwarded down and up), `forwarded`, `reason` (`offline`, `late`, `held`, `not held`), `holders`, `peer`, `why` |
-| `deck_ok` | Companion's answer to a forwarded press | `client`, `seq`, `key`, `down`, `ok`, `error`, `rtt_ms` |
+| `deck_press` (warn class) | every `DeckPress` | `client`, `key`, `down`, `seq`, `t`, `delay_ms`/`gap_ms`/`offset_ms` (as `set`), `hold_ms` (page), `hub_hold_ms` (between the forwarded down and up), `forwarded`, `reason` (`offline`, `late`, `held`, `not held`), `holders`, `peer`, `why` |
+| `deck_ok` (warn class) | Companion's answer to a forwarded press | `client`, `seq`, `key`, `down`, `ok`, `error`, `rtt_ms` |
 | `deck_release` (warn class) | a release the hub made itself | `client`, `key`, `reason` (`detach`, `silent`, `reconnect`, `stop`, `lost`) |
 | `deck_key` | a key's state change, when its pressed flag changes; for 10 s after a press on that key; at most 1/s per key, with a change count, while a client views the tab | `key`, `pressed`, `color`, `img_hash`, `img_bytes`, `changes` |
 | `deck_keys` | every 60 s while the link is up | change count per key since the last summary |
-| `deck_view` | a client opens or closes the tab | `client`, `on` |
+| `deck_view` (warn class) | a client opens or closes the tab | `client`, `on` |
 
-Images are never logged; only their hash and size are. Blinking feedback therefore stays within the 256 MB daily cap.
+Images are never logged; only their hash and size are. Blinking feedback therefore stays within the 256 MB daily cap. Past a day's cap only warn-class records are written (`events.rs` `is_warn`): the presses, Companion's answers and the tab's views are rare, tiny and the most consequential deck records, so they are warn class with the link changes and the hub's releases; `deck_key` and `deck_keys` stop at the cap like the pings and the writes.
 
 **Page flight recorder** (`diag/trace.rs`):
 - `deck` (essential rank, never dropped first): `k`, `d` (1 down / 0 up), `h` (hold, on up), `why`, `sent`, `q` (seq).

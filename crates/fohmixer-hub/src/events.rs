@@ -165,12 +165,15 @@ pub fn expired(file: NaiveDate, today: NaiveDate, keep_days: i64) -> bool {
 }
 
 /// Whether a record is still written past a day file's cap: a socket or a
-/// link change, the Stream Deck's link changes and the releases the hub made
-/// itself (#52), a page's `trace` that holds a dropout or a counter reset
-/// (the owner's priority on #43), the cap and dropped notes, and anything
-/// that carries an error. The flight recorder's other batches stop at the
-/// cap like the pings and the writes: a page left open for a day would
-/// otherwise write past it without bound (PR C).
+/// link change, the Stream Deck's link changes, its presses with
+/// Companion's answers, its tab opened or closed and the releases the hub
+/// made itself (#52: rare, tiny, and the most consequential deck records),
+/// a page's `trace` that holds a dropout or a counter reset (the owner's
+/// priority on #43), the cap and dropped notes, and anything that carries
+/// an error. The flight recorder's other batches stop at the cap like the
+/// pings, the writes and the deck's key images (`deck_key`, `deck_keys`):
+/// a page left open for a day would otherwise write past it without bound
+/// (PR C).
 pub fn is_warn(record: &Value) -> bool {
     let ev = record.get("ev").and_then(Value::as_str).unwrap_or("");
     let failed = record.get("error").is_some_and(|e| !e.is_null())
@@ -181,7 +184,15 @@ pub fn is_warn(record: &Value) -> bool {
     failed
         || matches!(
             ev,
-            "sock" | "link" | "cap" | "dropped" | "deck_link" | "deck_release"
+            "sock"
+                | "link"
+                | "cap"
+                | "dropped"
+                | "deck_link"
+                | "deck_release"
+                | "deck_press"
+                | "deck_ok"
+                | "deck_view"
         )
         || (ev == "trace" && holds_dropout(record))
 }

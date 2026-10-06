@@ -100,6 +100,9 @@ fn warn_class_records_are_socket_link_cap_dropped_and_errors() {
         "dropped",
         "deck_link",
         "deck_release",
+        "deck_press",
+        "deck_ok",
+        "deck_view",
     ] {
         assert!(is_warn(&json!({"ev": ev})), "{ev}");
     }
@@ -110,22 +113,27 @@ fn warn_class_records_are_socket_link_cap_dropped_and_errors() {
         "ack",
         "applied",
         "trace",
-        "deck_press",
-        "deck_ok",
         "deck_key",
         "deck_keys",
-        "deck_view",
     ] {
         assert!(!is_warn(&json!({"ev": ev})), "{ev}");
     }
     assert!(is_warn(&json!({"ev": "ack", "error": "instance offline"})));
     assert!(!is_warn(&json!({"ev": "ack", "error": null})));
-    // Companion refusing a press is an error record (#52).
+    // A press and Companion's answer outlive the cap, refused or not (#52):
+    // the incident logs need every press.
     assert!(is_warn(
         &json!({"ev": "deck_ok", "ok": false, "error": "Invalid KEY"})
     ));
-    assert!(!is_warn(
+    assert!(is_warn(
         &json!({"ev": "deck_ok", "ok": true, "error": null})
+    ));
+    assert!(is_warn(
+        &json!({"ev": "deck_press", "forwarded": true, "reason": null})
+    ));
+    // A key's image change stays bulk, with or without a colour.
+    assert!(!is_warn(
+        &json!({"ev": "deck_key", "key": 3, "pressed": true, "color": "#00aa00"})
     ));
     assert!(is_warn(&json!({"ev": "applied", "errors": 1})));
     assert!(!is_warn(&json!({"ev": "applied", "errors": 0})));
@@ -254,11 +262,21 @@ fn past_the_cap_only_warn_class_records_are_written() {
         ),
         &dropped,
     );
+    // A Stream Deck press still goes in past the cap, a key's image does
+    // not (#52).
+    writer.take(
+        &stamp("deck_key", noon(day), json!({"key": 3, "pressed": true})),
+        &dropped,
+    );
+    writer.take(
+        &stamp("deck_press", noon(day), json!({"key": 3, "down": true})),
+        &dropped,
+    );
     writer.flush();
     let written = lines(dir.path(), day);
     assert_eq!(
         evs(&written),
-        vec!["set", "set", "cap", "sock", "ack"],
+        vec!["set", "set", "cap", "sock", "ack", "deck_press"],
         "{written:?}"
     );
     assert_eq!(written[2]["cap_bytes"], 200);
