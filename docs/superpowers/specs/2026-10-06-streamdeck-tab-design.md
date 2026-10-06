@@ -11,7 +11,7 @@ Status: approach and all three design sections approved by the owner on #52 (202
 
 **Istoty**
 - **Fadre majú vždy prednosť.** Obrázky tlačidiel dostane iba zariadenie, ktoré má otvorenú záložku Stream Deck. Kým si na mixe, cez spojenie neide nič navyše.
-- **Každé „stlačené“ má svoje „pustené“.** Pošle ho tablet pri pustení, prerušení dotyku, odchode zo záložky alebo z aplikácie. Hub ho pošle za tablet, ak tabletu spojenie vypadne alebo sa tablet 2 s neozve. Tlačidlo v Companione tak nikdy neostane „visieť“.
+- **Každé „stlačené“ má svoje „pustené“.** Pošle ho tablet pri pustení, prerušení dotyku, odchode zo záložky alebo z aplikácie. Hub ho pošle za tablet, ak tabletu spojenie vypadne alebo sa tablet 2 s neozve. Ak počas držania vypadne spojenie hubu s Companionom, hub tlačidlo pustí hneď po jeho obnovení. Tlačidlo v Companione tak nikdy neostane „visieť“.
 - **Nič sa neodošle neskoro.** Stlačenie, ktoré sa nedá doručiť hneď, sa zahodí a tlačidlo blikne načerveno. Svetlo ani zásuvka sa neprepnú prekvapivo o pár sekúnd.
 - **Keď Companion nie je dostupný**, tlačidlá stmavnú a záložka má malú červenú bodku. Bez textu.
 
@@ -42,7 +42,8 @@ Status: approach and all three design sections approved by the owner on #52 (202
 - **Lines.** Each line is `CMD KEY=VALUE KEY="quoted value"`. Booleans are sent as `1`/`0`.
 - **Replies.**
   - `ADD-DEVICE`, `KEY-PRESS` and `REMOVE-DEVICE` answer `<CMD> OK DEVICEID="…"` or `<CMD> ERROR DEVICEID="…" MESSAGE="…"`. Lines are handled in order, so OKs come back in the order sent.
-  - `PING x` is answered `PONG x`. Companion tracks no ping timeout itself; it relies on the TCP close.
+  - `PING x` is answered `PONG x`. Companion 5.0.7 closes a Satellite socket after 5 s without any byte from the client (probed), so the surface must ping.
+  - A key held when its surface goes away stays held in Companion: its release actions do not run. A release from a new surface (another `DEVICEID`) runs them. A release of a key Companion does not hold does nothing. A second down on a held key is ignored (probed on 5.0.7).
 - **Devices.**
   - `ADD-DEVICE` for a `DEVICEID` still registered on another socket fails with "Device exists elsewhere".
   - Companion keys a surface's configuration on its `SERIAL`, which defaults to the `DEVICEID`.
@@ -128,7 +129,7 @@ iPad page ──WSS (protocol 2 + deck messages)──▶ hub router ──mpsc�
   - Reconnect uses `Backoff` (250 ms doubling to 2 s). The backoff is reset only after a session that reached `ADD-DEVICE OK`.
   - Only the first failure of an outage logs a warning (`first_of_outage`).
 - **Inbound.**
-  - `KEY-STATE DEVICEID=… KEY=<n> TYPE=… BITMAP=<data URL> COLOR=<hex> PRESSED=<0|1>` updates the cache entry of key `n`: `img`, `color`, `pressed`, `type`. A missing field keeps its old value.
+  - `KEY-STATE DEVICEID=… KEY=<n> TYPE=… BITMAP=<data URL> COLOR=<hex> PRESSED=<0|1>` updates the cache entry of key `n`: `img`, `color`, `pressed` (nothing reads `TYPE`, so it is not cached). A missing field keeps its old value.
   - `KEYS-CLEAR` resets every entry to black and released.
   - `KEY-PRESS OK|ERROR` is matched to the oldest forwarded press, first in first out.
   - `PONG` only refreshes liveness. `PING x` is answered `PONG x`.
@@ -136,9 +137,9 @@ iPad page ──WSS (protocol 2 + deck messages)──▶ hub router ──mpsc�
 - **Outbound presses.** `KEY-PRESS DEVICEID="fohmixer-<n>" KEY=<n> PRESSED=1|0`, written by the writer task at once. Each forwarded press records its send time, so the matched OK gives the Companion round trip.
 - **Disconnect.**
   - The cache is kept and marked offline.
-  - The holder set is cleared, because the next session's surface starts released (`deck_release reason=reconnect` per held key).
+  - Keys held when the link went down stay held in Companion (§1). Right after the next `ADD-DEVICE OK` the hub releases each of them (`deck_release reason=reconnect`) and clears the holder set. The release of a key Companion no longer holds does nothing. A finger still down at that moment loses its hold, and its later up is acknowledged as `not held`.
   - Every press still waiting for an OK is answered to its page as `error: "offline"`.
-- **Graceful stop.** `REMOVE-DEVICE DEVICEID=…`, best effort with a 500 ms bound, then close.
+- **Graceful stop.** Every held key is released first (`deck_release reason=stop`), because Companion would keep it held after the surface goes away. Then `REMOVE-DEVICE DEVICEID=…`, best effort with a 500 ms bound, then close.
 
 ## 5. Hub ⇄ page
 
@@ -154,7 +155,7 @@ DeckView { on: bool },
 DeckPress { key: u32, down: bool, seq: u64, t: f64, hold_ms: Option<f64>, why: Option<String> },
 ```
 
-- `Deck` is sent on `Attach` and whenever `online` changes. Without a `[companion]` table the hub never sends `Deck`, and the page shows no tab.
+- `Deck` is sent on `Attach` and whenever `online` changes. Without a `[companion]` table the hub never sends `Deck`, and the page shows no tab. A `DeckPress` to such a hub is answered `ok: false, error: "no Stream Deck"`.
 - **Viewers.** `DeckView { on }` adds the client to, or removes it from, the router's viewers.
   - `DeckKeys` items go only to viewers. On the mixer tabs, no deck bytes share the socket with fader `set`/`ack`.
   - A new viewer gets the whole cache at once.
@@ -198,7 +199,7 @@ DeckPress { key: u32, down: bool, seq: u64, t: f64, hold_ms: Option<f64>, why: O
   - **The `why` of an up:** `up` (`pointerup`), `cancel` (`pointercancel`), `lost` (`lostpointercapture` without `pointerup`), `hidden`, `tab`.
   - **An error `DeckAck` for a down** flashes the key. Nothing is retried.
 - **Nothing queued.** A deck press is never put in the intent store and never resent after a reconnect. This is deliberately unlike a fader (#43 L1).
-- **The tab's red dot** is `!online`, from the latest `Deck`. The store resets the deck state on socket close, as it does for `instances`.
+- **The tab's red dot** is `!online`, from the latest `Deck`. On a socket close the store sets the deck offline and keeps the keys (dimmed) and the tab (with its red dot), as §2 describes.
 
 ## 7. Configuration and installer
 
@@ -230,8 +231,8 @@ title = "Stream Deck"  # 1..=24 characters
 | `ev` | when | fields |
 |---|---|---|
 | `deck_link` (warn class) | up, down, refused | `state`, `companion`, `api`, `error`, `down_ms` (on up: how long it was down), `attempts` |
-| `deck_press` | every `DeckPress` | `client`, `key`, `down`, `seq`, `t`, `delay_ms`/`gap_ms`/`offset_ms` (as `set`), `hold_ms` (page), `hub_hold_ms` (between the forwarded down and up), `forwarded`, `reason` (`offline`, `held`, `not held`), `holders` |
-| `deck_ok` | Companion's answer to a forwarded press | `seq`, `key`, `down`, `ok`, `error`, `rtt_ms` |
+| `deck_press` | every `DeckPress` | `client`, `key`, `down`, `seq`, `t`, `delay_ms`/`gap_ms`/`offset_ms` (as `set`), `hold_ms` (page), `hub_hold_ms` (between the forwarded down and up), `forwarded`, `reason` (`offline`, `held`, `not held`), `holders`, `peer`, `why` |
+| `deck_ok` | Companion's answer to a forwarded press | `client`, `seq`, `key`, `down`, `ok`, `error`, `rtt_ms` |
 | `deck_release` (warn class) | a release the hub made itself | `client`, `key`, `reason` (`detach`, `silent`, `reconnect`, `stop`) |
 | `deck_key` | a key's state change, when its pressed flag changes; for 10 s after a press on that key; at most 1/s per key, with a change count, while a client views the tab | `key`, `pressed`, `color`, `img_hash`, `img_bytes`, `changes` |
 | `deck_keys` | every 60 s while the link is up | change count per key since the last summary |
@@ -284,7 +285,7 @@ Summary fields: `deck_presses`, `deck_unsent`, `deck_forced_releases`, `deck_lin
 
   **Seeding the configuration.**
   - Companion's HTTP API can only restyle or press existing buttons; it cannot create actions. So the job's setup imports a committed synthetic export, `e2e/companion/test.companionconfig`, through Companion's own web UI import page. Playwright drives it, against the pinned v5.0.7.
-  - The export is made once from a scratch Companion 5.0.7 container and holds only the synthetic buttons above.
+  - The export is generated in Companion's export schema by `e2e/harness/companion_config.py`, and a test pins the committed file to the generator. A raw export would carry machine data. It holds only the synthetic buttons above; the test reads Companion's state through its HTTP API (custom variables).
 
 **UI:**
 - `behave/deck.rs` native tests: multi-pointer, every `why`, unsent downs, `leave_all`.
