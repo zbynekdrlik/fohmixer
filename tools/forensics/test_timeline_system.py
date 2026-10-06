@@ -17,7 +17,7 @@ if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
 from test_timeline import BASE, OFFSET, VOX, VOX_MUTE, Log, ReportCase, digest  # noqa: E402
-from timeline_touch import SystemEvent, system_event  # noqa: E402
+from timeline_touch import SystemEvent, escaped, system_event  # noqa: E402
 
 
 def sys_event(t, what, on, *, keys=None, pointer=None, prevented=False):
@@ -51,6 +51,9 @@ class SystemGestures(ReportCase):
                 sys_event(p0 + 400, "lostpointercapture", "fader", keys=[VOX], pointer=6),
                 {"ev": "zoom", "t": p0 + 500, "scale": 1.5},
                 {"ev": "zoom", "t": p0 + 600, "scale": 1.0},
+                # A drag that escaped (nothing prevented it: a page before
+                # PR G, or an element outside the surface).
+                sys_event(p0 + 700, "dragstart", "none"),
             ],
         )
 
@@ -58,9 +61,30 @@ class SystemGestures(ReportCase):
         log = Log()
         self.gestures(log)
         summary, page, stdout = self.report(log, BASE, BASE + 5000)
-        self.assertEqual(summary["system_events"], "5")
-        self.assertEqual(summary["system_not_prevented"], "3")
-        self.assertEqual(summary["zooms"], "2")
+        # Each kind apart: a pinch's start comes with any two fingers, a
+        # cancel with a row panned from its background; only a context
+        # menu, a selection or a drag the page did not prevent escaped.
+        self.assertEqual(
+            {
+                name: summary[name]
+                for name in (
+                    "system_events",
+                    "system_escaped",
+                    "gesturestarts",
+                    "pointer_cancels",
+                    "lost_captures",
+                    "zooms",
+                )
+            },
+            {
+                "system_events": "6",
+                "system_escaped": "1",
+                "gesturestarts": "1",
+                "pointer_cancels": "1",
+                "lost_captures": "1",
+                "zooms": "2",
+            },
+        )
         rows = listed(page)
         self.assertEqual(
             [(r["data-what"], r.get("data-on")) for r in rows],
@@ -72,18 +96,19 @@ class SystemGestures(ReportCase):
                 ("lostpointercapture", "fader"),
                 ("zoom", None),
                 ("zoom", None),
+                ("dragstart", "none"),
             ],
             "in time order",
         )
         self.assertEqual(
             [r.get("data-prevented") for r in rows],
-            ["true", "true", "false", "false", "false", None, None],
+            ["true", "true", "false", "false", "false", None, None, "false"],
         )
         self.assertEqual([r.get("data-pointer") for r in rows][3:5], ["5", "6"])
         self.assertEqual(rows[0]["data-key-hash"], digest(VOX))
         self.assertEqual(rows[3]["data-key-hash"], digest(VOX_MUTE))
         self.assertNotIn("data-key-hash", rows[1], "a row has no keys")
-        self.assertEqual([r.get("data-scale") for r in rows][5:], ["1.5", "1"])
+        self.assertEqual([r.get("data-scale") for r in rows][5:7], ["1.5", "1"])
         # Each on the hub's clock: the page time plus the socket's offset.
         self.assertEqual(rows[0]["data-time"], f"{BASE + 1000:.1f}")
         # The table names the control (the report stays on the PC); stdout
@@ -91,7 +116,7 @@ class SystemGestures(ReportCase):
         self.assertIn("Vox 1", page.text)
         self.assertNotIn("Vox 1", stdout)
         marks = page.of_class("gesture")
-        self.assertEqual(len(marks), 7, "one mark each in the link lane")
+        self.assertEqual(len(marks), 8, "one mark each in the link lane")
         self.assertEqual(marks[0]["data-what"], "contextmenu")
 
     def test_gestures_outside_the_window_are_left_out(self):
@@ -100,7 +125,7 @@ class SystemGestures(ReportCase):
         # The window ends between the second and the third gesture.
         summary, page, _ = self.report(log, BASE, BASE + 1150)
         self.assertEqual(
-            (summary["system_events"], summary["system_not_prevented"], summary["zooms"]),
+            (summary["system_events"], summary["gesturestarts"], summary["zooms"]),
             ("2", "0", "0"),
         )
         self.assertEqual([r["data-what"] for r in listed(page)], ["contextmenu", "selectstart"])
@@ -110,14 +135,33 @@ class SystemGestures(ReportCase):
         log.pings(7, BASE, BASE + 2000)
         summary, page, _ = self.report(log, BASE, BASE + 5000)
         self.assertEqual(
-            (summary["system_events"], summary["system_not_prevented"], summary["zooms"]),
-            ("0", "0", "0"),
+            [
+                summary[name]
+                for name in (
+                    "system_events",
+                    "system_escaped",
+                    "gesturestarts",
+                    "pointer_cancels",
+                    "lost_captures",
+                    "zooms",
+                )
+            ],
+            ["0"] * 6,
         )
         self.assertEqual(listed(page), [])
         self.assertIn("No system gesture", page.text)
 
 
 class SystemEventOf(unittest.TestCase):
+    def test_only_a_context_menu_a_selection_or_a_drag_not_prevented_escaped(self):
+        for what in ("contextmenu", "selectstart", "dragstart"):
+            self.assertTrue(escaped(system_event(0.0, sys_event(0.0, what, "row"))), what)
+            done = sys_event(0.0, what, "row", prevented=True)
+            self.assertFalse(escaped(system_event(0.0, done)), f"{what} prevented")
+        for what in ("gesturestart", "pointercancel", "lostpointercapture"):
+            self.assertFalse(escaped(system_event(0.0, sys_event(0.0, what, "row"))), what)
+        self.assertFalse(escaped(system_event(0.0, {"ev": "zoom", "t": 0.0, "scale": 2.0})))
+
     def test_a_sys_record_reads_its_fields(self):
         data = sys_event(5.0, "dragstart", "pan", keys=[VOX], pointer=3, prevented=True)
         self.assertEqual(

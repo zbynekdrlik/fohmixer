@@ -214,8 +214,14 @@ test("a context menu, a selection and a drag never start on the surface, and the
   const to = (await pageNow(page)) + 1000;
   const report = await harness("/forensics/timeline", { from_ms: from - 1000, to_ms: to });
   expect(report.exit, report.stderr).toBe(0);
+  // Each kind apart: nothing escaped (the surface prevented the context
+  // menu, the selection and the drag), one pinch's start, one cancel, one
+  // capture lost while the finger was down.
   expect(report.stdout).toMatch(/^system_events=8$/m);
-  expect(report.stdout).toMatch(/^system_not_prevented=3$/m);
+  expect(report.stdout).toMatch(/^system_escaped=0$/m);
+  expect(report.stdout).toMatch(/^gesturestarts=1$/m);
+  expect(report.stdout).toMatch(/^pointer_cancels=1$/m);
+  expect(report.stdout).toMatch(/^lost_captures=1$/m);
   expect(report.stdout).toMatch(new RegExp(`^zooms=${zooms}$`, "m"));
   expect(report.stdout).not.toContain("Hand2");
   const listed = rows(report.html, "sys");
