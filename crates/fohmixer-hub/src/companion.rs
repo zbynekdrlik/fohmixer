@@ -2,7 +2,8 @@
 //! `docs/superpowers/specs/2026-10-06-streamdeck-tab-design.md` §4): the hub
 //! registers as one Stream Deck surface over TCP and forwards the pages'
 //! presses. This file is the pure protocol, tested natively: the line parser
-//! ([`parse_line`], [`classify`]), the bounded line read ([`read_outcome`]),
+//! ([`parse_line`], [`classify`]; a key's `COLOR` only as `#rrggbb`,
+//! [`hex_colour`]), the bounded line read ([`read_outcome`]),
 //! the version gate ([`api_ok`]), the lines the hub writes ([`add_device`],
 //! [`key_press`], [`remove_device`], [`ping`], [`pong`]), the session's
 //! deadlines ([`overdue`]), the end of the stop's wait ([`stop_over`]) and
@@ -189,6 +190,14 @@ pub struct KeyUpdate {
     pub pressed: Option<bool>,
 }
 
+/// Whether `text` is a `#rrggbb` colour (Companion's `COLORS=hex`): only
+/// such a value goes into a key's style on the page; anything else (a `;`
+/// would add declarations of its own) is taken as no colour.
+pub fn hex_colour(text: &str) -> bool {
+    text.strip_prefix('#')
+        .is_some_and(|hex| hex.len() == 6 && hex.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
 fn key_update(line: &Line) -> Option<KeyUpdate> {
     let key = line.get("KEY")?.parse().ok()?;
     Some(KeyUpdate {
@@ -197,7 +206,10 @@ fn key_update(line: &Line) -> Option<KeyUpdate> {
             .get("BITMAP")
             .filter(|b| b.starts_with("data:"))
             .map(str::to_string),
-        color: line.get("COLOR").map(str::to_string),
+        color: line
+            .get("COLOR")
+            .filter(|c| hex_colour(c))
+            .map(str::to_string),
         pressed: line.get("PRESSED").map(flag),
     })
 }
