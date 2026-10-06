@@ -60,6 +60,8 @@ Probed on the dev box with a rootless Docker daemon (the account is not in the `
 
 ## Spec gaps settled by the probe (for the main session)
 
+All eight are folded into the spec at 5536e29; they stay here as the record of why.
+
 - **G1 (§4 Disconnect, §0 "každé stlačené má svoje pustené"):** "the next session's surface starts released" is false for 5.0.7 (see the facts). The plan keeps the guarantee: keys held when the link went down are released right after the next `ADD-DEVICE OK`, logged `deck_release reason=reconnect` when the release goes out; safe because a release of a key Companion does not hold is a no-op.
 - **G2 (§1 "Companion tracks no ping timeout"):** 5.0.7 closes a silent Satellite socket after 5 s. The 2 s ping is therefore required; nothing else changes.
 - **G3 (§4 Graceful stop):** because of G1, the stop releases every held key first (`deck_release reason=stop`, a reason the spec already lists), then `REMOVE-DEVICE`; the router sends both to the task in that order.

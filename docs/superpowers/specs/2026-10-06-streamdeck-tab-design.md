@@ -139,7 +139,7 @@ iPad page ──WSS (protocol 2 + deck messages)──▶ hub router ──mpsc�
   - The cache is kept and marked offline.
   - Keys held when the link went down stay held in Companion (§1). Right after the next `ADD-DEVICE OK` the hub releases each of them (`deck_release reason=reconnect`) and clears the holder set. The release of a key Companion no longer holds does nothing. A finger still down at that moment loses its hold, and its later up is acknowledged as `not held`.
   - Every press still waiting for an OK is answered to its page as `error: "offline"`.
-- **Graceful stop.** Every held key is released first (`deck_release reason=stop`), because Companion would keep it held after the surface goes away. Then `REMOVE-DEVICE DEVICEID=…`, best effort with a 500 ms bound, then close.
+- **Graceful stop.** Every held key is released first (`deck_release reason=stop`), because Companion would keep it held after the surface goes away. One double fault is accepted: if the hub stops while Companion is unreachable, the keys held at the link loss cannot be released; each is logged as `deck_release reason=lost` (warn class). Such a key stays held in Companion until its next press, whose release then runs the key's release actions with the long hold. Then `REMOVE-DEVICE DEVICEID=…`, best effort with a 500 ms bound, then close.
 
 ## 5. Hub ⇄ page
 
@@ -233,7 +233,7 @@ title = "Stream Deck"  # 1..=24 characters
 | `deck_link` (warn class) | up, down, refused | `state`, `companion`, `api`, `error`, `down_ms` (on up: how long it was down), `attempts` |
 | `deck_press` | every `DeckPress` | `client`, `key`, `down`, `seq`, `t`, `delay_ms`/`gap_ms`/`offset_ms` (as `set`), `hold_ms` (page), `hub_hold_ms` (between the forwarded down and up), `forwarded`, `reason` (`offline`, `held`, `not held`), `holders`, `peer`, `why` |
 | `deck_ok` | Companion's answer to a forwarded press | `client`, `seq`, `key`, `down`, `ok`, `error`, `rtt_ms` |
-| `deck_release` (warn class) | a release the hub made itself | `client`, `key`, `reason` (`detach`, `silent`, `reconnect`, `stop`) |
+| `deck_release` (warn class) | a release the hub made itself | `client`, `key`, `reason` (`detach`, `silent`, `reconnect`, `stop`, `lost`) |
 | `deck_key` | a key's state change, when its pressed flag changes; for 10 s after a press on that key; at most 1/s per key, with a change count, while a client views the tab | `key`, `pressed`, `color`, `img_hash`, `img_bytes`, `changes` |
 | `deck_keys` | every 60 s while the link is up | change count per key since the last summary |
 | `deck_view` | a client opens or closes the tab | `client`, `on` |
