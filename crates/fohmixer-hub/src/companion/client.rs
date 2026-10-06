@@ -6,7 +6,12 @@
 //! session's `select!` never awaits a socket; it pings every 2 s and gives
 //! the link up after 5 s without a line. A session is one connection that
 //! reached `ADD-DEVICE OK`; each connection registers a fresh device id
-//! (`fohmixer-<n>`) under the one serial `fohmixer`.
+//! (`fohmixer-<n>`) under the one serial `fohmixer`. The stop closes the
+//! link gracefully: its last lines (the releases, then `REMOVE-DEVICE`) and
+//! the hub's FIN go out, the reader reads on until Companion's answer or
+//! close, at most [`STOP_BOUND`](super::STOP_BOUND) after the stop, and only
+//! then is the socket dropped, so Companion never meets a reset before it
+//! has read them.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -20,9 +25,9 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use super::{
-    Answer, CompanionEvent, Fifo, Inbound, MAX_LINE, PING_EVERY, Phase, Press, Read, STOP_BOUND,
+    Answer, CompanionEvent, Fifo, Inbound, Left, MAX_LINE, PING_EVERY, Phase, Press, Read,
     add_device, api_ok, classify, device_id, first_seen, key_press, ms_between, overdue, ping,
-    pong, read_outcome, remove_device,
+    pong, read_outcome, remove_device, stop_over,
 };
 use crate::config::CompanionCfg;
 use crate::live::Backoff;
@@ -32,6 +37,8 @@ use crate::live::client::{CONNECT_TIMEOUT, first_of_outage};
 const CHECK_EVERY: Duration = Duration::from_millis(100);
 /// Lines read ahead of the session.
 const INBOUND_QUEUE: usize = 256;
+/// How often the stop's wait checks the clock against the bound.
+const STOP_CHECK: Duration = Duration::from_millis(10);
 
 /// Where the task's events go, called from the task in order.
 pub type Events = Arc<dyn Fn(CompanionEvent) + Send + Sync>;
@@ -81,8 +88,9 @@ impl CompanionHandle {
         let _ = self.tx.send(Request::Press(press));
     }
 
-    /// Ends the task after every press sent before: `REMOVE-DEVICE`, bounded
-    /// by [`STOP_BOUND`], then the close.
+    /// Ends the task after every press sent before: `REMOVE-DEVICE` and the
+    /// hub's FIN, then Companion's answer or close, at most
+    /// [`STOP_BOUND`](super::STOP_BOUND) after the stop; then the close.
     pub fn stop(&self) {
         let _ = self.tx.send(Request::Stop);
     }
@@ -258,6 +266,25 @@ async fn write_lines(mut half: OwnedWriteHalf, mut lines: mpsc::UnboundedReceive
     let _ = half.shutdown().await;
 }
 
+/// The stop's wait after its last lines: Companion's lines are read and
+/// dropped until [`stop_over`] says the wait is over (its answer to
+/// `REMOVE-DEVICE`, its close, or the bound), the clock checked every
+/// [`STOP_CHECK`].
+async fn leave(inbound: &mut mpsc::Receiver<Read>, began: Instant) -> Left {
+    let mut clock = tokio::time::interval(STOP_CHECK);
+    clock.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        let read = tokio::select! {
+            // None: the reader is gone, as after a close.
+            read = inbound.recv() => Some(read.unwrap_or(Read::Closed)),
+            _ = clock.tick() => None,
+        };
+        if let Some(left) = stop_over(read.as_ref(), began.elapsed()) {
+            return left;
+        }
+    }
+}
+
 /// One connection.
 struct Session<'a> {
     deck: &'a CompanionCfg,
@@ -353,17 +380,19 @@ impl Session<'_> {
                 request = rx.recv() => match request {
                     Some(Request::Press(press)) => self.on_press(&mut state, &out, press),
                     Some(Request::Stop) | None => {
+                        let began = Instant::now();
                         if state.phase == Phase::Up {
                             let _ = out.send(remove_device(self.device));
                         }
-                        // The writer writes what waits, then closes.
+                        // The writer writes what waits, then shuts its half
+                        // down (the FIN); the reader reads on until the wait
+                        // is over, and only then is the socket dropped.
                         drop(out);
-                        if tokio::time::timeout(STOP_BOUND, &mut writer).await.is_err() {
-                            tracing::warn!(device = self.device, "REMOVE-DEVICE did not go out within 500 ms");
-                            writer.abort();
-                        }
+                        let left = leave(&mut inbound, began).await;
+                        let written = writer.is_finished();
+                        writer.abort();
                         reader.abort();
-                        tracing::info!(device = self.device, "the Stream Deck left Companion: the hub stops");
+                        tracing::info!(device = self.device, left = ?left, written, "the Stream Deck left Companion: the hub stops");
                         return End::Stop;
                     }
                 },

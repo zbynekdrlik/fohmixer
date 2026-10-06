@@ -283,6 +283,42 @@ fn a_session_is_overdue_at_its_deadlines() {
 }
 
 #[test]
+fn the_stop_waits_for_the_remove_device_answer_a_close_or_500_ms() {
+    let ms = Duration::from_millis;
+    let line = |text: &str| Read::Line(text.to_string());
+    // Companion's answer ends the wait at once, OK or ERROR (as 5.0.7
+    // writes it, a space before the line end).
+    assert_eq!(
+        stop_over(
+            Some(&line("REMOVE-DEVICE OK DEVICEID=\"fohmixer-1\" ")),
+            ms(0)
+        ),
+        Some(Left::Answered(Ok(())))
+    );
+    assert_eq!(
+        stop_over(
+            Some(&line(
+                "REMOVE-DEVICE ERROR DEVICEID=\"fohmixer-1\" MESSAGE=\"Device not found\" "
+            )),
+            ms(0)
+        ),
+        Some(Left::Answered(Err("Device not found".into())))
+    );
+    // So does its close, or a line too long (the reader ends there).
+    assert_eq!(stop_over(Some(&Read::Closed), ms(0)), Some(Left::Closed));
+    assert_eq!(stop_over(Some(&Read::TooLong), ms(0)), Some(Left::Closed));
+    // Any other line is dropped: the wait goes on to the bound.
+    let other = line("KEY-PRESS OK DEVICEID=\"fohmixer-1\" ");
+    assert_eq!(stop_over(Some(&other), ms(500)), None);
+    assert_eq!(stop_over(Some(&other), ms(501)), Some(Left::Bound));
+    assert_eq!(stop_over(Some(&line("")), ms(0)), None);
+    // The clock alone: 500 ms is not over, 501 ms is.
+    assert_eq!(stop_over(None, ms(0)), None);
+    assert_eq!(stop_over(None, ms(500)), None);
+    assert_eq!(stop_over(None, ms(501)), Some(Left::Bound));
+}
+
+#[test]
 fn an_ignored_command_is_logged_once_per_session() {
     let mut counts = BTreeMap::new();
     assert!(first_seen(&mut counts, "BRIGHTNESS"));

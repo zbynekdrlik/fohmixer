@@ -3,7 +3,8 @@
 //! Companion's key states, the pings, a press's round trip and its error, a
 //! refused API and a refused `ADD-DEVICE`, 5 s of silence and the reconnect
 //! with the next device id, a line over 256 KiB, and the stop's
-//! `REMOVE-DEVICE`. Host-free: it also runs in the `windows` job.
+//! `REMOVE-DEVICE`, whose late answer the hub reads before it closes (no
+//! reset). Host-free: it also runs in the `windows` job.
 
 mod support;
 
@@ -12,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use fohmixer_hub::companion::{Answer, CompanionEvent, CompanionHandle, Events, Press};
 use fohmixer_hub::config::CompanionCfg;
-use support::companion::{FakeCompanion, Script, image};
+use support::companion::{Ended, FakeCompanion, Script, image};
 use support::{runtime, serial};
 
 /// The task's events with when they came.
@@ -385,7 +386,10 @@ fn a_line_over_256_kib_ends_the_link() {
 fn a_stop_writes_what_came_before_it_then_removes_the_device() {
     let _serial = serial();
     runtime().block_on(async {
+        // Companion answers REMOVE-DEVICE 200 ms late: the stop waits for it.
+        let late = Duration::from_millis(200);
         let fake = FakeCompanion::start(Script::companion()).await;
+        fake.delay_remove(late);
         let seen = Seen::default();
         let (handle, task) = CompanionHandle::spawn(&deck(fake.port), seen.events());
         seen.wait(Duration::from_secs(5), up).await;
@@ -394,11 +398,19 @@ fn a_stop_writes_what_came_before_it_then_removes_the_device() {
             down: false,
             from: None,
         });
+        let stopped = Instant::now();
         handle.stop();
         tokio::time::timeout(Duration::from_secs(1), task)
             .await
             .expect("the task ends within the stop's bound")
             .unwrap();
+        // The hub held the socket until it read the answer, and no longer:
+        // not to the 500 ms bound.
+        let took = stopped.elapsed();
+        assert!(
+            took >= late && took < Duration::from_millis(450),
+            "{took:?}"
+        );
         let lines = fake
             .until(Duration::from_secs(2), "REMOVE-DEVICE", |g| {
                 g.iter().any(|l| l.line.starts_with("REMOVE-DEVICE"))
@@ -418,5 +430,8 @@ fn a_stop_writes_what_came_before_it_then_removes_the_device() {
                 "REMOVE-DEVICE DEVICEID=\"fohmixer-1\"",
             ]
         );
+        // The fake answered, then read the hub's FIN: a clean end. A hub
+        // that closed before the answer would have reset it.
+        assert_eq!(fake.end_of(1, Duration::from_secs(1)).await, Ended::Eof);
     });
 }

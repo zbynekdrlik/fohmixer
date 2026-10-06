@@ -5,8 +5,9 @@
 //! ([`parse_line`], [`classify`]), the bounded line read ([`read_outcome`]),
 //! the version gate ([`api_ok`]), the lines the hub writes ([`add_device`],
 //! [`key_press`], [`remove_device`], [`ping`], [`pong`]), the session's
-//! deadlines ([`overdue`]) and the first-in-first-out matching of the
-//! `KEY-PRESS` answers ([`Fifo`]). [`client`] is the task.
+//! deadlines ([`overdue`]), the end of the stop's wait ([`stop_over`]) and
+//! the first-in-first-out matching of the `KEY-PRESS` answers ([`Fifo`]).
+//! [`client`] is the task.
 //!
 //! Companion 5.0.7 as probed (#52 plan, "Companion 5.0.7 facts"): every
 //! line it writes ends with a space before its `\n`; a quoted value is
@@ -44,7 +45,8 @@ pub const PING_EVERY: Duration = Duration::from_secs(2);
 pub const LINK_SILENCE: Duration = Duration::from_secs(5);
 /// How long `BEGIN` and the `ADD-DEVICE` answer may each take.
 pub const ADD_TIMEOUT: Duration = Duration::from_secs(3);
-/// How long the graceful stop's `REMOVE-DEVICE` may take.
+/// How long the graceful stop waits, from the stop, for Companion's answer
+/// to `REMOVE-DEVICE` (or its close) before the hub closes the socket.
 pub const STOP_BOUND: Duration = Duration::from_millis(500);
 /// The oldest Satellite API minor version of major 1 this hub speaks (1.12:
 /// `BITMAP_FORMAT`).
@@ -333,6 +335,36 @@ pub fn overdue(phase: Phase, in_phase: Duration, since_heard: Duration) -> Optio
         Phase::Adding => (in_phase > ADD_TIMEOUT).then_some("no ADD-DEVICE answer within 3 s"),
         Phase::Up => link_silent(since_heard).then_some("nothing from Companion for 5 s"),
     }
+}
+
+/// How the stop's wait for Companion ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Left {
+    /// Companion answered `REMOVE-DEVICE`: `OK`, else its `MESSAGE`.
+    Answered(Result<(), String>),
+    /// Companion closed the connection (or sent a line over [`MAX_LINE`]:
+    /// the reader ends there).
+    Closed,
+    /// Neither within [`STOP_BOUND`].
+    Bound,
+}
+
+/// Whether the stop's wait is over, from what came in (`read`; none when
+/// only the clock is checked) and the time `waited` since the stop began:
+/// Companion's answer to `REMOVE-DEVICE` (`OK` or `ERROR`) or its close end
+/// it, every other line is dropped, and after more than [`STOP_BOUND`]
+/// (500 ms is not over, 501 ms is) it ends anyway. Until then the hub keeps
+/// the socket open: Companion reads the stop's lines and the hub's FIN, and
+/// its answers never meet a closed socket (a reset).
+pub fn stop_over(read: Option<&Read>, waited: Duration) -> Option<Left> {
+    let left = match read {
+        Some(Read::Line(text)) => parse_line(text)
+            .filter(|line| line.cmd == "REMOVE-DEVICE")
+            .map(|line| Left::Answered(reply(&line))),
+        Some(Read::TooLong | Read::Closed) => Some(Left::Closed),
+        None => None,
+    };
+    left.or_else(|| (waited > STOP_BOUND).then_some(Left::Bound))
 }
 
 /// Counts a line of `cmd` the hub ignores; whether it is the session's first

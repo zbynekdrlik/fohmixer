@@ -4,7 +4,8 @@
 //! `\n`, `ADD-DEVICE OK` followed by `BRIGHTNESS` and 32 `KEY-STATE`s, a
 //! press answered `OK` and then the key's new state). Connections are
 //! numbered from 1; every line the hub sends is kept with its connection and
-//! when it came. Host-free: these tests also run on Windows.
+//! when it came, and how each connection ended ([`Ended`]). Host-free: these
+//! tests also run on Windows.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -45,12 +46,29 @@ pub struct Got {
     pub line: String,
 }
 
+/// How a connection ended for the fake.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Ended {
+    /// The hub's FIN read, and no reset came before it (the socket holds no
+    /// error): the hub closed only after it had read what the fake wrote.
+    Eof,
+    /// A read failed, or the socket held an error at the FIN: the hub's
+    /// close met a line it had not read (a reset).
+    Reset(String),
+    /// The test closed it (`close`, `refuse`).
+    Closed,
+}
+
 /// The fake: its port, what it got, how it answers.
 #[derive(Clone)]
 pub struct FakeCompanion {
     pub port: u16,
     got: Arc<Mutex<Vec<Got>>>,
     script: Arc<Mutex<Script>>,
+    /// How long it waits before it answers `REMOVE-DEVICE` (none at first).
+    remove_delay: Arc<Mutex<Duration>>,
+    /// Each connection's end, with its number.
+    ended: Arc<Mutex<Vec<(usize, Ended)>>>,
     /// The latest connection's way out: a line, or `None` to close it.
     current: Arc<Mutex<Option<mpsc::UnboundedSender<Option<String>>>>>,
     /// New connections closed at once (Companion away).
@@ -65,6 +83,8 @@ impl FakeCompanion {
             port: listener.local_addr().unwrap().port(),
             got: Arc::default(),
             script: Arc::new(Mutex::new(script)),
+            remove_delay: Arc::default(),
+            ended: Arc::default(),
             current: Arc::default(),
             refusing: Arc::new(AtomicBool::new(false)),
         };
@@ -86,6 +106,12 @@ impl FakeCompanion {
     /// How the next connections answer.
     pub fn set_script(&self, script: Script) {
         *self.script.lock().unwrap() = script;
+    }
+
+    /// `REMOVE-DEVICE` answered only after `delay` (the hub's stop must wait
+    /// for it).
+    pub fn delay_remove(&self, delay: Duration) {
+        *self.remove_delay.lock().unwrap() = delay;
     }
 
     /// Companion away (`on`): the open connection closed, new ones closed at
@@ -146,7 +172,26 @@ impl FakeCompanion {
         }
     }
 
+    /// How connection `conn` ended, waiting up to `limit` for its end.
+    pub async fn end_of(&self, conn: usize, limit: Duration) -> Ended {
+        let deadline = Instant::now() + limit;
+        loop {
+            let ended = self.ended.lock().unwrap().clone();
+            if let Some((_, end)) = ended.into_iter().find(|(n, _)| *n == conn) {
+                return end;
+            }
+            assert!(Instant::now() < deadline, "connection {conn} never ended");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
     async fn serve(self, n: usize, stream: TcpStream) {
+        let end = self.converse(n, stream).await;
+        self.ended.lock().unwrap().push((n, end));
+    }
+
+    /// Connection `n` until it ends; how it ended.
+    async fn converse(&self, n: usize, stream: TcpStream) -> Ended {
         let (read, mut write) = stream.into_split();
         let (tx, mut rx) = mpsc::unbounded_channel::<Option<String>>();
         *self.current.lock().unwrap() = Some(tx);
@@ -156,28 +201,41 @@ impl FakeCompanion {
              CAPS SUBSCRIPTIONS=0 NONSQUARE=1 BITMAP_FORMATS=\"rgb,png,webp\" \n",
             script.api
         );
-        if write.write_all(hello.as_bytes()).await.is_err() {
-            return;
+        if let Err(error) = write.write_all(hello.as_bytes()).await {
+            return Ended::Reset(error.to_string());
         }
         let mut lines = BufReader::new(read).lines();
-        // A failed write never ends the reading: the hub's stop writes its
-        // last lines and closes at once, so the answer to its release can
-        // meet the closed socket (a reset) while its REMOVE-DEVICE still
-        // waits to be read. The fake reads on until the connection's end.
+        // A failed write never ends the reading: every line the hub sent is
+        // kept, and a reset shows in how the connection ended.
         loop {
             tokio::select! {
-                line = lines.next_line() => {
-                    let Ok(Some(line)) = line else { return };
-                    self.got.lock().unwrap().push(Got { conn: n, at: Instant::now(), line: line.clone() });
-                    for reply in answer(&script, &line) {
-                        let _ = write.write_all(reply.as_bytes()).await;
+                line = lines.next_line() => match line {
+                    Ok(Some(line)) => {
+                        self.got.lock().unwrap().push(Got { conn: n, at: Instant::now(), line: line.clone() });
+                        if line.starts_with("REMOVE-DEVICE ") {
+                            let delay = *self.remove_delay.lock().unwrap();
+                            tokio::time::sleep(delay).await;
+                        }
+                        for reply in answer(&script, &line) {
+                            let _ = write.write_all(reply.as_bytes()).await;
+                        }
                     }
-                }
+                    // The hub's FIN: clean unless a reset came first (the
+                    // socket's pending error).
+                    Ok(None) => {
+                        let stream: &TcpStream = write.as_ref();
+                        return match stream.take_error() {
+                            Ok(None) => Ended::Eof,
+                            Ok(Some(error)) | Err(error) => Ended::Reset(error.to_string()),
+                        };
+                    }
+                    Err(error) => return Ended::Reset(error.to_string()),
+                },
                 out = rx.recv() => match out {
                     Some(Some(text)) => {
                         let _ = write.write_all(text.as_bytes()).await;
                     }
-                    Some(None) | None => return,
+                    Some(None) | None => return Ended::Closed,
                 },
             }
         }

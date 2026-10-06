@@ -3,6 +3,7 @@ use std::time::Duration;
 use tokio::io::AsyncReadExt;
 
 use super::*;
+use crate::companion::STOP_BOUND;
 
 fn deck(port: u16) -> CompanionCfg {
     CompanionCfg {
@@ -122,4 +123,69 @@ async fn the_reader_passes_a_line_and_the_close_on_then_ends() {
         .await
         .expect("the reader ended")
         .unwrap();
+}
+
+#[tokio::test]
+async fn a_companion_that_never_answers_the_stop_holds_it_500_ms_at_most() {
+    // A Companion that registers the surface, then neither answers the
+    // stop nor closes: the hub's REMOVE-DEVICE and its FIN come at once,
+    // the hub keeps reading until the bound, then the task ends.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (events, _seen) = sink();
+    let (handle, task) = CompanionHandle::spawn(&deck(port), events);
+    let (socket, _) = listener.accept().await.unwrap();
+    let (read_half, mut write_half) = socket.into_split();
+    let mut lines = BufReader::new(read_half).lines();
+    let wait = Duration::from_secs(1);
+    write_half
+        .write_all(b"BEGIN CompanionVersion=\"5.0.7\" ApiVersion=\"1.12.0\" \n")
+        .await
+        .unwrap();
+    let add = tokio::time::timeout(wait, lines.next_line())
+        .await
+        .expect("ADD-DEVICE at once")
+        .unwrap()
+        .unwrap();
+    assert!(
+        add.starts_with("ADD-DEVICE DEVICEID=\"fohmixer-1\" "),
+        "{add}"
+    );
+    write_half
+        .write_all(b"ADD-DEVICE OK DEVICEID=\"fohmixer-1\" \n")
+        .await
+        .unwrap();
+    let deadline = Instant::now() + wait;
+    while !handle.snapshot().online {
+        assert!(Instant::now() < deadline, "never registered");
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    let stopped = Instant::now();
+    handle.stop();
+    let last = tokio::time::timeout(wait, lines.next_line())
+        .await
+        .expect("REMOVE-DEVICE at once")
+        .unwrap();
+    assert_eq!(
+        last.as_deref(),
+        Some("REMOVE-DEVICE DEVICEID=\"fohmixer-1\"")
+    );
+    // The hub's FIN right after it: its write half shut down, long before
+    // the bound.
+    let fin = tokio::time::timeout(wait, lines.next_line())
+        .await
+        .expect("the FIN at once")
+        .unwrap();
+    assert_eq!(fin, None);
+    assert!(stopped.elapsed() < STOP_BOUND, "{:?}", stopped.elapsed());
+    tokio::time::timeout(Duration::from_secs(2), task)
+        .await
+        .expect("the bound ends the stop")
+        .unwrap();
+    let took = stopped.elapsed();
+    assert!(
+        took > STOP_BOUND && took < Duration::from_secs(1),
+        "{took:?}"
+    );
+    drop(write_half);
 }
