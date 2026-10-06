@@ -329,10 +329,10 @@ class ImpairTest(unittest.TestCase):
         proxy = impair.Impair(0, port)
         proxy.start()
         try:
-            client = socket.create_connection(("127.0.0.1", proxy.port), timeout=COME_S)
-            self.clients.append(client)
-            client.settimeout(COME_S)
             with self.assertRaises(ConnectionResetError):
+                client = socket.create_connection(("127.0.0.1", proxy.port), timeout=COME_S)
+                self.clients.append(client)
+                client.settimeout(COME_S)
                 client.recv(1)
         finally:
             proxy.stop()
