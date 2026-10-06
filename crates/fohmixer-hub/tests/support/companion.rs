@@ -160,22 +160,22 @@ impl FakeCompanion {
             return;
         }
         let mut lines = BufReader::new(read).lines();
+        // A failed write never ends the reading: the hub's stop writes its
+        // last lines and closes at once, so the answer to its release can
+        // meet the closed socket (a reset) while its REMOVE-DEVICE still
+        // waits to be read. The fake reads on until the connection's end.
         loop {
             tokio::select! {
                 line = lines.next_line() => {
                     let Ok(Some(line)) = line else { return };
                     self.got.lock().unwrap().push(Got { conn: n, at: Instant::now(), line: line.clone() });
                     for reply in answer(&script, &line) {
-                        if write.write_all(reply.as_bytes()).await.is_err() {
-                            return;
-                        }
+                        let _ = write.write_all(reply.as_bytes()).await;
                     }
                 }
                 out = rx.recv() => match out {
                     Some(Some(text)) => {
-                        if write.write_all(text.as_bytes()).await.is_err() {
-                            return;
-                        }
+                        let _ = write.write_all(text.as_bytes()).await;
                     }
                     Some(None) | None => return,
                 },

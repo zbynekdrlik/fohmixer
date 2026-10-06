@@ -97,3 +97,29 @@ async fn a_press_without_a_session_is_answered_offline_at_once() {
         .expect("a stop ends the task")
         .unwrap();
 }
+
+#[tokio::test]
+async fn the_reader_passes_a_line_and_the_close_on_then_ends() {
+    // Companion writes one line and closes: the reader hands on the line,
+    // then the close, and ends (its sender gone), reading nothing more.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let hub = TcpStream::connect(listener.local_addr().unwrap())
+        .await
+        .unwrap();
+    let (mut companion, _) = listener.accept().await.unwrap();
+    companion.write_all(b"PONG 1 \n").await.unwrap();
+    drop(companion);
+    let (read_half, _write_half) = hub.into_split();
+    let (lines, mut inbound) = mpsc::channel(INBOUND_QUEUE);
+    let reader = tokio::spawn(read_lines(BufReader::new(read_half), lines));
+    for want in [Some(Read::Line("PONG 1 ".into())), Some(Read::Closed), None] {
+        let got = tokio::time::timeout(Duration::from_secs(1), inbound.recv())
+            .await
+            .expect("the reader hands on at once");
+        assert_eq!(got, want);
+    }
+    tokio::time::timeout(Duration::from_secs(1), reader)
+        .await
+        .expect("the reader ended")
+        .unwrap();
+}
