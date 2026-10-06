@@ -1,4 +1,6 @@
-//! The app's two pages: the PIN login and the mixer surface.
+//! The app's pages: the PIN login, the mixer surface and its Stream Deck
+//! tab (#52).
 
+pub mod deck;
 pub mod login;
 pub mod surface;

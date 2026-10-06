@@ -1,11 +1,12 @@
 //! The mixer surface (the redesign, #21; spec §4.2): the top bar (the pages'
-//! tabs, the page pager's tabs, the SOLO ✕ pill, the dropout counter (#43),
-//! the connection badges and the version), the page's rail with the global
-//! controls at its foot, and
-//! the page's rows of sections. Only the controls on screen are mounted, so
-//! only their bindings are subscribed; the selected page and sub-page are
-//! remembered on the device. The one number the stylesheet cannot decide,
-//! the strip width all rows share, comes from `flow`.
+//! tabs, the Stream Deck tab (#52, last, only from a hub with one), the page
+//! pager's tabs, the SOLO ✕ pill, the dropout counter (#43), the connection
+//! badges and the version), the page's rail with the global controls at its
+//! foot, and the page's rows of sections (or the Stream Deck's keys,
+//! `pages::deck`). Only the controls on screen are mounted, so only their
+//! bindings are subscribed; the selected page and sub-page are remembered on
+//! the device, the Stream Deck tab never is. The one number the stylesheet
+//! cannot decide, the strip width all rows share, comes from `flow`.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -21,6 +22,7 @@ use crate::binding::{SubSpec, choose, page_solos, selected_path, solo_sub, visib
 use crate::components::{ControlView, Settings, fail_flash, key_of, owns_surface, owns_touches};
 use crate::dom;
 use crate::flow::{METRICS, Shape, overflows, pager_shape, row_shape, strip_width};
+use crate::pages::deck::DeckView;
 use crate::store::{Badge, LiveStore, Slot};
 
 /// Where the selected pages are remembered (a JSON map: `""` for the pages,
@@ -37,11 +39,23 @@ struct Nav {
     path: RwSignal<Vec<usize>>,
     remembered: RwSignal<BTreeMap<String, String>>,
     viewport: RwSignal<(f64, f64)>,
+    /// The Stream Deck tab is shown (#52); never remembered: a reload opens
+    /// the last mixer page. Written only on a change: a `try_set` notifies
+    /// even with the same value.
+    deck: RwSignal<bool>,
+    /// `deck` as every reader reads it (one memo): a pager tap rebuilds no
+    /// page, and a tap on the open deck tab does not mount its page again
+    /// (which would lift the held keys).
+    deck_shown: Memo<bool>,
 }
 
 impl Nav {
     /// The page `index` of level `level` was tapped.
     fn select(self, level: usize, index: usize) {
+        // A layout tab leaves the deck; the page shown is selected as before.
+        if self.deck.try_get_untracked() == Some(true) {
+            let _ = self.deck.try_set(false);
+        }
         let Some(Some(layout)) = self.store.layout.try_get_untracked() else {
             return;
         };
@@ -59,6 +73,13 @@ impl Nav {
         }
         let _ = self.path.try_set(selected_path(&layout, &remembered));
     }
+
+    /// The Stream Deck tab was tapped (#52).
+    fn show_deck(self) {
+        if self.deck.try_get_untracked() == Some(false) {
+            let _ = self.deck.try_set(true);
+        }
+    }
 }
 
 /// The remembered page selection (nothing when none is stored or readable).
@@ -74,11 +95,14 @@ pub fn Surface(token: String, session: RwSignal<Option<String>>) -> impl IntoVie
     let store = LiveStore::new(token, session);
     provide_context(store);
     let viewport = RwSignal::new(dom::viewport());
+    let deck = RwSignal::new(false);
     let nav = Nav {
         store,
         path: RwSignal::new(Vec::new()),
         remembered: RwSignal::new(remembered_pages()),
         viewport,
+        deck,
+        deck_shown: Memo::new(move |_| deck.get()),
     };
     provide_context(nav);
     on_cleanup(move || store.stop());
@@ -156,6 +180,9 @@ fn Shell(layout: Arc<Layout>) -> impl IntoView {
     let for_pager = layout.clone();
     let pager_tabs = move || {
         let index = page.get()?;
+        if nav.deck_shown.get() {
+            return None;
+        }
         let pager = for_pager.pages.get(index)?.pager()?;
         let tabs: Vec<(String, String)> = pager
             .pages
@@ -174,11 +201,16 @@ fn Shell(layout: Arc<Layout>) -> impl IntoView {
         view! { <SoloClear bindings=solos /> }
     };
     let for_page = layout.clone();
+    let viewport = nav.viewport;
     let body = move || {
+        if nav.deck_shown.get() {
+            let global = for_page.global.clone();
+            return Some(view! { <DeckView global=global viewport=viewport /> }.into_any());
+        }
         let index = page.get()?;
         let shown = for_page.pages.get(index)?.clone();
         let global = for_page.global.clone();
-        Some(view! { <PageView page=shown global=global sub=sub /> })
+        Some(view! { <PageView page=shown global=global sub=sub /> }.into_any())
     };
     view! {
         <div class="mixer" data-testid="stage">
@@ -206,7 +238,8 @@ fn TabBar(
         .into_iter()
         .enumerate()
         .map(|(index, (id, title))| {
-            let lit = move || selected.get() == Some(index);
+            let lit =
+                move || selected.get() == Some(index) && !(level == 0 && nav.deck_shown.get());
             // A tab owns its touches (#43 PR G); it writes no key.
             let no_keys: Vec<String> = Vec::new();
             view! {
@@ -225,10 +258,50 @@ fn TabBar(
             }
         })
         .collect_view();
+    // The Stream Deck's tab ends the pages' bar, from a hub with one (#52).
+    let deck_tab = (level == 0).then(|| {
+        let has_deck = move || nav.store.deck.with(Option::is_some);
+        view! { <Show when=has_deck><DeckTab /></Show> }
+    });
     view! {
         <div class="seg" data-testid="tabbar" data-level={level.to_string()}>
             {buttons}
+            {deck_tab}
         </div>
+    }
+}
+
+/// The Stream Deck's tab (#52): its title from the hub; a small red dot
+/// while Companion (or the hub) is unreachable, no words.
+#[component]
+fn DeckTab() -> impl IntoView {
+    let nav = expect_context::<Nav>();
+    let store = nav.store;
+    let title = move || {
+        store
+            .deck
+            .with(|d| d.as_ref().map(|d| d.title.clone()).unwrap_or_default())
+    };
+    let offline = move || store.deck.with(|d| d.as_ref().is_some_and(|d| !d.online));
+    let lit = move || nav.deck_shown.get();
+    // A tab owns its touches (#43 PR G); it writes no key.
+    let no_keys: Vec<String> = Vec::new();
+    view! {
+        <button
+            type="button"
+            class="tab deck-tab"
+            use:owns_touches=no_keys
+            class:selected=lit
+            data-testid="deck-tab"
+            data-selected=move || lit().to_string()
+            data-offline=move || offline().to_string()
+            on:pointerdown=move |_| nav.show_deck()
+        >
+            {title}
+            <Show when=offline>
+                <i class="deck-dot" data-testid="deck-dot"></i>
+            </Show>
+        </button>
     }
 }
 

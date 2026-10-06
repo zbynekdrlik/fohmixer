@@ -165,9 +165,24 @@ exclude_re = [
   # touch-guard.spec.ts drives them on every tap target of the surface.
   "fohmixer-ui/src/components/mod\\.rs.*(replace|in) (owns_touches|owns_surface)( |$)",
   "fohmixer-ui/src/components/buttons\\.rs.*(replace|in) toggle_flag( |$)",
-  # pages/surface.rs: a tab press (store, local storage) and the remembered
-  # pages' read; choose and selected_path are the tested decisions.
-  "fohmixer-ui/src/pages/surface\\.rs.*(replace|in) (Nav::select|remembered_pages)( |$)",
+  # pages/surface.rs: a tab press (store, local storage), the Stream Deck
+  # tab's press (#52: Nav::show_deck sets the tab's signal, Nav::select
+  # clears it, each only on a change; deck.spec.ts opens it and checks a
+  # reload never restores it) and the remembered pages' read; choose and
+  # selected_path are the tested decisions.
+  "fohmixer-ui/src/pages/surface\\.rs.*(replace|in) (Nav::select|Nav::show_deck|remembered_pages)( |$)",
+  # pages/deck.rs (#52): the Stream Deck page's glue, one function at a
+  # time: carry (a press decision of the tested behave::deck::Presses onto
+  # the socket through LiveStore::deck_press, into the recorder through the
+  # tested trace::deck, a refused down flashed with fail_flash and its up
+  # dropped with Presses::unsent), show_held (the outline's signal from
+  # Presses::held_keys) and leave_keys (Presses::leave_all's ups when the
+  # tab is left or the page hidden). deck.spec.ts drives them in Chromium
+  # and WebKit (down and up on pointerup, pointercancel and leaving the
+  # tab, with the page's deck events and their whys in the event log; the
+  # outline; the red flash with no later send). grid_vars (the grid's size)
+  # is tested.
+  "fohmixer-ui/src/pages/deck\\.rs.*(replace|in) (carry|show_held|leave_keys)( |$)",
   # diag.rs (#26), one browser call each: install (the window error,
   # unhandledrejection and visibilitychange listeners), observe_attributes
   # (the MutationObserver on data-sw / data-wake-lock), connected and
