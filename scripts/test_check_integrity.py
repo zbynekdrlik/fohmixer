@@ -162,10 +162,17 @@ class IntegrityTests(unittest.TestCase):
         # #43 PR G: a prevented touchstart (an owned ancestor's) swallows the
         # synthetic click on the iPad, and neither Playwright project would
         # notice (mouse clicks still fire): the surface takes pointerdown only.
+        # The same holds for every mouse event a touch would also send.
         rel = "crates/fohmixer-ui/src/pages/surface.rs"
-        self.put(rel, "view! {\n    <button use:owns_touches=k on:click=move |_| go()>\"x\"</button>\n}\n")
-        self.assertEqual(ci.violations(self.root),
-                         [f"{rel}:2: on:click on the surface: a prevented touchstart swallows it (#43)"])
+        for event in ("click", "dblclick", "mousedown", "mouseup", "mousemove", "mouseover", "mouseout",
+                      "mouseenter", "mouseleave"):
+            self.put(rel, f"view! {{\n    <button use:owns_touches=k on:{event}=move |_| go()>\"x\"</button>\n}}\n")
+            self.assertEqual(ci.violations(self.root),
+                             [f"{rel}:2: on:{event} on the surface: a prevented touchstart swallows it (#43)"], event)
+        # Pointer events are no mouse events: they stay the input path.
+        for event in ("pointerdown", "pointerup", "pointermove", "lostpointercapture"):
+            self.put(rel, f"view! {{ <div use:owns_touches=k on:{event}=f></div> }}\n")
+            self.assertEqual(ci.violations(self.root), [], event)
         for rel in ("crates/fohmixer-ui/src/pages/login.rs", "crates/fohmixer-ui/src/app.rs"):
             with tempfile.TemporaryDirectory() as d:
                 root = Path(d)
