@@ -7,8 +7,9 @@
 //! round trip). The page tells the hub it views the tab (only a viewer gets
 //! the keys' images) and lifts every held key when the tab is left (`tab`)
 //! or the page goes hidden (`hidden`); a closed socket forgets the holds
-//! (the hub releases them). Every key owns its touches (`use:owns_touches`):
-//! no loupe, callout or drag on a hold.
+//! (the hub releases them); a primary pointer's down first lifts the holds
+//! whose end the browser never delivered. Every key owns its touches
+//! (`use:owns_touches`): no loupe, callout or drag on a hold.
 
 use std::collections::BTreeSet;
 
@@ -87,9 +88,14 @@ fn carry(
     }
 }
 
-/// The held keys' outline follows the state machine.
+/// The held keys' outline follows the state machine, written only on a
+/// change: a `try_set` notifies even with the same value, and every key's
+/// outline reads `held`.
 fn show_held(presses: StoredValue<Presses>, held: RwSignal<BTreeSet<u32>>) {
-    if let Some(keys) = presses.try_with_value(Presses::held_keys) {
+    let Some(keys) = presses.try_with_value(Presses::held_keys) else {
+        return;
+    };
+    if held.try_with_untracked(|shown| *shown != keys) == Some(true) {
         let _ = held.try_set(keys);
     }
 }
@@ -195,10 +201,18 @@ fn DeckKeyView(
         if let Some(el) = dom::current_element(&ev) {
             let _ = el.set_pointer_capture(ev.pointer_id());
         }
+        let t = dom::epoch_now();
+        // A primary pointer's down: the holds whose end never came go up
+        // first (`lost`), so a missed end never leaves a key stuck.
+        let missed = presses
+            .try_update_value(|p| p.missed_ups(ev.is_primary(), t))
+            .unwrap_or_default();
+        for action in missed {
+            carry(store, presses, action, None);
+        }
         // A press can go now: the socket ready and Companion online.
         let connected = store.can_send() && online.try_get_untracked().unwrap_or(false);
-        let action =
-            presses.try_update_value(|p| p.down(key, ev.pointer_id(), dom::epoch_now(), connected));
+        let action = presses.try_update_value(|p| p.down(key, ev.pointer_id(), t, connected));
         if let Some(action) = action {
             carry(store, presses, action, Some(failed));
         }

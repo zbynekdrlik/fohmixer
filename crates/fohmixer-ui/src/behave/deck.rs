@@ -4,7 +4,9 @@
 //! Companion's long-press and duration actions see the real hold; a down
 //! that cannot go now flashes the key and is never sent later, and its up is
 //! not sent either. Leaving the tab or the page going hidden lifts every
-//! held key; a closed socket forgets them (the hub releases them). The
+//! held key; a closed socket forgets them (the hub releases them). A
+//! primary pointer's down first lifts the holds whose end the browser never
+//! delivered (`missed_ups`, as `diag/perf.rs` forgets a missed up). The
 //! component (`pages/deck.rs`) carries the actions out.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -134,6 +136,19 @@ impl Presses {
                 why: Some(why),
             },
             _ => Action::Nothing,
+        }
+    }
+
+    /// A pointer comes down (`primary`: the browser's `isPrimary`, so no
+    /// other pointer is down): every hold still recorded then lost its end
+    /// (the browser never delivered it), and goes up now (`lost`, with its
+    /// hold) before the new down, so a missed end never leaves a key stuck
+    /// in Companion. A second finger's down releases nothing.
+    pub fn missed_ups(&mut self, primary: bool, t: f64) -> Vec<Action> {
+        if primary {
+            self.leave_all(t, Why::Lost)
+        } else {
+            Vec::new()
         }
     }
 

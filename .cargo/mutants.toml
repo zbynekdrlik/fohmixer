@@ -176,12 +176,13 @@ exclude_re = [
   # the socket through LiveStore::deck_press, into the recorder through the
   # tested trace::deck, a refused down flashed with fail_flash and its up
   # dropped with Presses::unsent), show_held (the outline's signal from
-  # Presses::held_keys) and leave_keys (Presses::leave_all's ups when the
-  # tab is left or the page hidden). deck.spec.ts drives them in Chromium
-  # and WebKit (down and up on pointerup, pointercancel and leaving the
-  # tab, with the page's deck events and their whys in the event log; the
-  # outline; the red flash with no later send). grid_vars (the grid's size)
-  # is tested.
+  # Presses::held_keys, written only on a change) and leave_keys
+  # (Presses::leave_all's ups when the tab is left or the page hidden); a
+  # key's down sends the tested Presses::missed_ups first through carry.
+  # deck.spec.ts drives them in Chromium and WebKit (down and up on
+  # pointerup, pointercancel and leaving the tab, with the page's deck
+  # events and their whys in the event log; the outline; the red flash with
+  # no later send). grid_vars (the grid's size) is tested.
   "fohmixer-ui/src/pages/deck\\.rs.*(replace|in) (carry|show_held|leave_keys)( |$)",
   # diag.rs (#26), one browser call each: install (the window error,
   # unhandledrejection and visibilitychange listeners), observe_attributes
