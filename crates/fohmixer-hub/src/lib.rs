@@ -47,6 +47,7 @@ pub mod cf_token;
 pub mod client_report;
 pub mod clock;
 pub mod cloudflare;
+pub mod companion;
 pub mod config;
 #[cfg(windows)]
 mod dpapi;
