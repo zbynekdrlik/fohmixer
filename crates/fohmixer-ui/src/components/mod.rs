@@ -22,6 +22,7 @@ use crate::behave::Start;
 use crate::behave::label::longest_word_chars;
 use crate::binding::SubSpec;
 use crate::diag::trace::moves::{self, Press, Trail};
+use crate::diag::trace::sys;
 use crate::dom;
 use crate::raf;
 use crate::store::intent::{State, most_urgent};
@@ -62,6 +63,27 @@ pub fn fail_flash(failed: RwSignal<bool>) -> Box<dyn FnOnce(String)> {
 /// #43).
 pub fn key_of(spec: &SubSpec) -> String {
     set_key(&spec.instance, &spec.target, &spec.prop)
+}
+
+/// The directive on every control's root (#43 PR G, design comment
+/// 6011117148): `use:owns_touches=keys`. The control owns its touches: its
+/// `touchstart` is prevented by an active listener (WebKit's loupe of a tap
+/// followed by a hold, and the system's long-press gestures, start from a
+/// touch the page did not take; CSS cannot stop the loupe, WebKit bug
+/// 231161), so a touch on it never selects, magnifies or lifts it. Pointer
+/// Events stay the input path, and no control uses `click` (a prevented
+/// `touchstart` suppresses it). Its write `keys` go on the root
+/// ([`sys::KEYS_ATTR`]), so the flight recorder's gestures name the control.
+pub fn owns_touches(el: web_sys::Element, keys: Vec<String>) {
+    dom::prevent_on(&el, &sys::CONTROL_PREVENTS);
+    dom::set_attr(&el, sys::KEYS_ATTR, &sys::keys_text(&keys));
+}
+
+/// The directive on the surface's root (#43 PR G): `use:owns_surface`. No
+/// context menu, selection or drag starts anywhere on the surface
+/// ([`sys::SURFACE_PREVENTS`]).
+pub fn owns_surface(el: web_sys::Element) {
+    dom::prevent_on(&el, &sys::SURFACE_PREVENTS);
 }
 
 /// Records a touch (`down`, `up`, `cancel`, or a toggle's `tap`) on the

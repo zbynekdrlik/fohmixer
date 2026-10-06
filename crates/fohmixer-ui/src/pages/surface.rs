@@ -18,7 +18,7 @@ use serde_json::json;
 use crate::app::version_text;
 use crate::behave::solo::soloed;
 use crate::binding::{SubSpec, choose, page_solos, selected_path, solo_sub, visible_subs};
-use crate::components::{ControlView, Settings, fail_flash};
+use crate::components::{ControlView, Settings, fail_flash, key_of, owns_surface, owns_touches};
 use crate::dom;
 use crate::flow::{METRICS, Shape, overflows, pager_shape, row_shape, strip_width};
 use crate::store::{Badge, LiveStore, Slot};
@@ -123,9 +123,11 @@ pub fn Surface(token: String, session: RwSignal<Option<String>>) -> impl IntoVie
             .into_any()
         }
     };
+    // No context menu, selection or drag starts on the surface (#43 PR G).
     view! {
         <div
             class="surface"
+            use:owns_surface
             data-testid="surface"
             data-subs=move || store.subscribed.get().to_string()
             data-connected=move || store.connected.get().to_string()
@@ -205,10 +207,13 @@ fn TabBar(
         .enumerate()
         .map(|(index, (id, title))| {
             let lit = move || selected.get() == Some(index);
+            // A tab owns its touches (#43 PR G); it writes no key.
+            let no_keys: Vec<String> = Vec::new();
             view! {
                 <button
                     type="button"
                     class="tab"
+                    use:owns_touches=no_keys
                     class:selected=lit
                     data-testid="tab"
                     data-page=id
@@ -370,6 +375,8 @@ fn SoloClear(bindings: Vec<Binding>) -> impl IntoView {
         })
         .collect();
     let slots: Vec<RwSignal<Slot>> = solos.iter().map(|(_, s)| *s).collect();
+    // The pill owns its touches (#43 PR G) and names the solos it clears.
+    let touch_keys: Vec<String> = solos.iter().map(|(spec, _)| key_of(spec)).collect();
     let any = Memo::new(move |_| {
         let states: Vec<Option<bool>> = slots.iter().map(|s| s.with(Slot::flag)).collect();
         !soloed(&states).is_empty()
@@ -401,6 +408,7 @@ fn SoloClear(bindings: Vec<Binding>) -> impl IntoView {
         <button
             type="button"
             class="solo-clear"
+            use:owns_touches=touch_keys
             class:on=move || any.get()
             class:failed=move || failed.get()
             data-testid="solo-clear"
@@ -425,10 +433,13 @@ fn DropoutCounter() -> impl IntoView {
         store.reset_dropouts();
     };
     let active = move || counter.get().active;
+    // The counter is a tap target: it owns its touches (#43 PR G).
+    let no_keys: Vec<String> = Vec::new();
     view! {
         <button
             type="button"
             class="dropouts"
+            use:owns_touches=no_keys
             class:active=active
             data-testid="dropouts"
             data-active=move || active().to_string()

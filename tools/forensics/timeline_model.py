@@ -1,7 +1,7 @@
 """The forensics timeline's analysis (#43): page time on the hub's clock,
 gestures and gaps, busy episodes, the control lanes, confirmations, the
 volume jumps with their cause, the touches of single volume faders
-(``timeline_touch.py``, PR D) and the summary. Pure: it reads nothing. One of
+(``timeline_touch.py``, PR D), the system's gestures (PR G) and the summary. Pure: it reads nothing. One of
 the five files of ``timeline.py`` (see its docstring), copied to the Ableton
 PC together with it.
 """
@@ -357,6 +357,13 @@ class Timeline:
         self._controls(kinds)
         self.jumps = [jump for key in self.keys for jump in self._jumps(key)]
         self.touches = self._touches()
+        # The system's gestures (PR G): the page's, whatever the key filter
+        # (like the link lane, they belong to the page, not to one control).
+        self.system = [
+            timeline_touch.system_event(e.hub, e.data)
+            for e in self.page
+            if e.ev in ("sys", "zoom") and self.in_window(e.hub)
+        ]
 
     # The window's parts.
 
@@ -795,6 +802,11 @@ def intent_count(timeline, state):
     return sum(e.data.get("state") == state for es in timeline.intents.values() for e in es)
 
 
+def system_count(timeline, what):
+    """How many of the window's system gestures (PR G) are of kind ``what``."""
+    return str(sum(e.what == what for e in timeline.system))
+
+
 def summary(timeline):
     """The summary as (name, text) pairs: stdout's lines and the report's
     table. No key and no name: a control is ``key#<hash>``."""
@@ -852,6 +864,12 @@ def summary(timeline):
         ("recorder_dropped", str(timeline.recorder_dropped)),
         ("unconfirmed", str(intent_count(timeline, "unconfirmed"))),
         ("not_sent", str(intent_count(timeline, "not_sent"))),
+        ("system_events", str(sum(e.what != "zoom" for e in timeline.system))),
+        ("system_escaped", str(sum(timeline_touch.escaped(e) for e in timeline.system))),
+        ("gesturestarts", system_count(timeline, "gesturestart")),
+        ("pointer_cancels", system_count(timeline, "pointercancel")),
+        ("lost_captures", system_count(timeline, "lostpointercapture")),
+        ("zooms", system_count(timeline, "zoom")),
         ("skipped_lines", str(timeline.skipped)),
         ("notes", str(len(timeline.notes))),
     ]

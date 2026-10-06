@@ -139,6 +139,60 @@ class IntegrityTests(unittest.TestCase):
         self.put("e2e/node_modules/pkg/a.spec.ts", f'test{ONLY}("x", async () => {{}});\n')
         self.assertEqual(ci.violations(self.root), [])
 
+    def test_a_tap_target_on_the_surface_owns_its_touches(self) -> None:
+        # #43 PR G: an element of a fohmixer-ui component or page that takes a
+        # pointerdown carries `use:owns_touches` (before or after it).
+        rel = "crates/fohmixer-ui/src/components/a.rs"
+        bare = "view! {\n    <div\n        class=\"x\"\n        on:pointerdown=on_down\n    >\n        <span>\"x\"</span>\n    </div>\n}\n"
+        self.put(rel, bare)
+        self.assertEqual(ci.violations(self.root), [f"{rel}:4: tap target without use:owns_touches (#43)"])
+        for owned in (bare.replace("class=\"x\"", "use:owns_touches=keys\n        class=\"x\""),
+                      bare.replace("on_down\n", "on_down\n        use:owns_touches=no_keys\n"),
+                      "view! { <button type=\"button\" use:owns_touches=no_keys on:pointerdown=move |_| go(1, 2)>\"t\"</button> }\n"):
+            self.put(rel, owned)
+            self.assertEqual(ci.violations(self.root), [], owned)
+        # Each element on its own: a guarded sibling does not cover it.
+        self.put(rel, "view! { <div use:owns_touches=k on:pointerdown=a></div> <div on:pointerdown=b></div> }\n")
+        self.assertEqual(ci.violations(self.root), [f"{rel}:1: tap target without use:owns_touches (#43)"])
+        # A closure's `=>` or `->` inside the tag does not end it early.
+        self.put(rel, "view! { <div on:pointerdown=move |e| match e { _ => go() } class=\"x\" use:owns_touches=k></div> }\n")
+        self.assertEqual(ci.violations(self.root), [])
+
+    def test_no_surface_element_takes_a_mouse_event(self) -> None:
+        # #43 PR G: a prevented touchstart (an owned ancestor's) swallows the
+        # synthetic click on the iPad, and neither Playwright project would
+        # notice (mouse clicks still fire): the surface takes pointerdown only.
+        # The same holds for every mouse event a touch would also send.
+        rel = "crates/fohmixer-ui/src/pages/surface.rs"
+        for event in ("click", "dblclick", "mousedown", "mouseup", "mousemove", "mouseover", "mouseout",
+                      "mouseenter", "mouseleave"):
+            self.put(rel, f"view! {{\n    <button use:owns_touches=k on:{event}=move |_| go()>\"x\"</button>\n}}\n")
+            self.assertEqual(ci.violations(self.root),
+                             [f"{rel}:2: on:{event} on the surface: a prevented touchstart swallows it (#43)"], event)
+        # Pointer events are no mouse events: they stay the input path.
+        for event in ("pointerdown", "pointerup", "pointermove", "lostpointercapture"):
+            self.put(rel, f"view! {{ <div use:owns_touches=k on:{event}=f></div> }}\n")
+            self.assertEqual(ci.violations(self.root), [], event)
+        for rel in ("crates/fohmixer-ui/src/pages/login.rs", "crates/fohmixer-ui/src/app.rs"):
+            with tempfile.TemporaryDirectory() as d:
+                root = Path(d)
+                (root / rel).parent.mkdir(parents=True)
+                (root / rel).write_text("view! { <button on:click=move |_| go()>\"x\"</button> }\n", encoding="utf-8")
+                self.assertEqual(ci.violations(root), [], rel)
+
+    def test_the_login_page_and_other_crates_keep_their_touches(self) -> None:
+        tap = "view! { <div on:pointerdown=a></div> }\n"
+        for rel in ("crates/fohmixer-ui/src/pages/login.rs", "crates/fohmixer-hub/src/a.rs",
+                    "crates/fohmixer-ui/src/behave/a.rs"):
+            with tempfile.TemporaryDirectory() as d:
+                root = Path(d)
+                (root / rel).parent.mkdir(parents=True)
+                (root / rel).write_text(tap, encoding="utf-8")
+                self.assertEqual(ci.violations(root), [], rel)
+        self.put("crates/fohmixer-ui/src/pages/surface.rs", tap)
+        self.assertEqual(ci.violations(self.root),
+                         ["crates/fohmixer-ui/src/pages/surface.rs:1: tap target without use:owns_touches (#43)"])
+
     def test_the_scan_reports_in_path_order(self) -> None:
         self.put("crates/b/src/lib.rs", "#[test]\n" + IGNORE + "\nfn skipped() {}\n")
         self.put("scripts/stop.cmd", "taskkill /im fohmixer-hub.exe\n")

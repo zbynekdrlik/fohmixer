@@ -17,7 +17,7 @@ jumped at 19:40" is answered from the logs alone.
   hour that a clock change repeats is read as its first pass.
 - ``--key``: only the controls whose key holds TEXT (repeatable: any of them).
   It narrows the control lanes, gaps, jumps and confirmations; the link and
-  Live lanes and the record count stay whole.
+  Live lanes, the system gestures and the record count stay whole.
 - ``--out``: the report. Its folder must exist and must not be inside a git
   checkout (a ``.git`` entry in it or above it): the report holds real track
   names and never lands in a repository. Nothing else is written.
@@ -42,7 +42,7 @@ A ``set`` carries its own offset.
 The report: the window, the files read, the record count and the notes; the
 summary table; one time axis with the link lane (the page's and the hub's
 round trips, dropouts, the counter's resets, socket transitions, long frames,
-visibility), the Live lane (busy episodes, late heartbeats) and one lane per
+visibility, the system gestures' marks), the Live lane (busy episodes, late heartbeats) and one lane per
 control with three rows (the page's sends, the hub's arrivals, Live's applied
 values), gaps over 100 ms inside one gesture marked; then the volume jumps
 over 3 dB with their measured cause (``link``, ``live``, ``page``, ``no
@@ -51,7 +51,11 @@ or ``move``); then the touches of single volume faders (#43 PR D, from the
 page's touch starts and move records and the hub's ``live_before``): where
 each started against Live's value before it, first-touch jumps with their
 why, the time from the down to the first move and the first send, move gaps
-and held values.
+and held values; then the system gestures (#43 PR G, the page's ``sys`` and
+``zoom`` records): context menus, selections and drags (escaped when nothing
+prevented them), pinch starts, cancelled pointers, captures lost while the
+finger was down, and zooms, each with the control's kind and keys or the
+element's kind.
 
 stdout: the summary, one ``name=value`` per line, the names of the report's
 summary table. It never prints a key: a control is ``key#<the first 10 hex of
@@ -61,7 +65,8 @@ stderr on a usage or input error.
 
 This file is the command; beside it ``timeline_read.py`` (values, times, the
 logs read), ``timeline_model.py`` (the analysis and the summary),
-``timeline_touch.py`` (the touches of single volume faders) and
+``timeline_touch.py`` (the touches of single volume faders and the system
+gestures) and
 ``timeline_report.py`` (the HTML). Python 3.11 standard library only: the
 five files are copied to the Ableton PC into one folder and this one is run
 with the PC's Python (its folder is on ``sys.path`` then, so it finds the

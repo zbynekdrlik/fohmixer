@@ -175,7 +175,7 @@ impl Perf {
         if primary {
             self.down.retain(|&(_, kind)| kind != pointer);
         }
-        let known = self.down.iter().any(|&(down_id, _)| down_id == id);
+        let known = self.is_down(id);
         if !known && self.down.len() < POINTERS_MAX {
             self.down.push((id, pointer));
         }
@@ -192,6 +192,14 @@ impl Perf {
     /// A pointer went up or was cancelled.
     pub fn up(&mut self, id: i32) {
         self.down.retain(|&(down_id, _)| down_id != id);
+    }
+
+    /// Whether pointer `id` is down (#43 PR G: a capture it loses now is no
+    /// lift's, `diag::trace::sys::records`). One whose up the page missed
+    /// goes when a primary pointer of its type comes, or the page is hidden
+    /// or shown.
+    pub fn is_down(&self, id: i32) -> bool {
+        self.down.iter().any(|&(down_id, _)| down_id == id)
     }
 
     /// A perf report goes at `now`: what it says. The most pointers at once
