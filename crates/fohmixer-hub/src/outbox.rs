@@ -25,9 +25,13 @@
 //! fader's ack, and only a client viewing the tab gets them (the router
 //! decides; a closed tab drops what waits, `forget_deck`). They go at most
 //! [`DECK_KEYS_PER_TAKE`] per batch, round the key numbers from the one
-//! after the last written, the rest left for the next batch: a page of key
-//! images (25–200 KB) never holds a pong, an ack or a value behind it on a
-//! slow link, and a key that keeps changing never holds the others back.
+//! after the last written, the rest left for the next batch: the keys come
+//! last in each batch, so a pong, an ack or a value queued meanwhile is not
+//! kept behind a whole page of key images (25–200 KB). The writer's send
+//! returns once a frame is in the TCP send buffer, so on a slow link a pong
+//! can still wait behind about one send buffer (~64 KB) of key frames, far
+//! less than a page; and a key that keeps changing never holds the others
+//! back.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Mutex, MutexGuard, PoisonError};
@@ -178,7 +182,10 @@ impl Outbox {
 
     /// The client closed the tab: the keys waiting for it are dropped.
     pub fn forget_deck(&self) {
-        self.lock().deck.clear();
+        let mut inner = self.lock();
+        inner.deck.clear();
+        // A reopened tab starts its round from the lowest key (#54).
+        inner.deck_next = 0;
     }
 
     /// Drops a pending item of a subscription the client left.
@@ -630,6 +637,23 @@ mod tests {
         outbox.close();
         outbox.deck_key(deck_key(2, "data:b"));
         assert_eq!(outbox.take(), None);
+    }
+
+    #[test]
+    fn a_reopened_tab_starts_its_first_batch_at_the_lowest_key() {
+        let outbox = Outbox::new();
+        for key in 0..6 {
+            outbox.deck_key(deck_key(key, "data:a"));
+        }
+        let first = outbox.take().unwrap();
+        assert_eq!(deck_part(first).1, vec![0, 1, 2, 3]);
+        // The tab closes and opens again: the round starts over.
+        outbox.forget_deck();
+        for key in 0..6 {
+            outbox.deck_key(deck_key(key, "data:b"));
+        }
+        let again = outbox.take().unwrap();
+        assert_eq!(deck_part(again).1, vec![0, 1, 2, 3]);
     }
 
     #[tokio::test]
