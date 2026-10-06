@@ -138,8 +138,9 @@ iPad page ──WSS (protocol 2 + deck messages)──▶ hub router ──mpsc�
 - **Disconnect.**
   - The cache is kept and marked offline.
   - Keys held when the link went down stay held in Companion (§1). Right after the next `ADD-DEVICE OK` the hub releases each of them (`deck_release reason=reconnect`) and clears the holder set. The release of a key Companion no longer holds does nothing. A finger still down at that moment loses its hold, and its later up is acknowledged as `not held`.
+  - A release forwarded while the link was already dead (a page's up or the hub's own release, sent before the 5 s of silence end the link) is answered `offline` and may never have reached Companion. Its key joins the keys released after the next `ADD-DEVICE OK` (`deck_release reason=reconnect`).
   - Every press still waiting for an OK is answered to its page as `error: "offline"`.
-- **Graceful stop.** Every held key is released first (`deck_release reason=stop`), because Companion would keep it held after the surface goes away. One double fault is accepted: if the hub stops while Companion is unreachable, the keys held at the link loss cannot be released; each is logged as `deck_release reason=lost` (warn class). Such a key stays held in Companion until its next press, whose release then runs the key's release actions with the long hold. Then `REMOVE-DEVICE DEVICEID=…`, best effort with a 500 ms bound, then close.
+- **Graceful stop.** Every held key is released first (`deck_release reason=stop`), because Companion would keep it held after the surface goes away. One double fault is accepted: if the hub stops while Companion is unreachable, the keys held at the link loss (and the releases it lost) cannot be released; each is logged as `deck_release reason=lost` (warn class). Such a key stays held in Companion until its next press, whose release then runs the key's release actions with the long hold. Then `REMOVE-DEVICE DEVICEID=…`, best effort with a 500 ms bound, then close.
 
 ## 5. Hub ⇄ page
 
