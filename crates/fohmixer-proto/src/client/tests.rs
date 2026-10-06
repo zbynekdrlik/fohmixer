@@ -369,6 +369,86 @@ fn the_served_protocol_range() {
 }
 
 #[test]
+fn deck_messages_round_trip() {
+    round_trip_client(
+        ClientMsg::DeckView { on: true },
+        json!({"type": "deck_view", "on": true}),
+    );
+    // A down has no hold and no why: neither is on the wire.
+    round_trip_client(
+        ClientMsg::DeckPress {
+            key: 3,
+            down: true,
+            seq: 7,
+            t: 1_790_000_000_123.5,
+            hold_ms: None,
+            why: None,
+        },
+        json!({"type": "deck_press", "key": 3, "down": true, "seq": 7, "t": 1_790_000_000_123.5}),
+    );
+    round_trip_client(
+        ClientMsg::DeckPress {
+            key: 3,
+            down: false,
+            seq: 8,
+            t: 1_790_000_000_323.5,
+            hold_ms: Some(200.0),
+            why: Some("cancel".into()),
+        },
+        json!({"type": "deck_press", "key": 3, "down": false, "seq": 8,
+               "t": 1_790_000_000_323.5, "hold_ms": 200.0, "why": "cancel"}),
+    );
+    round_trip_server(
+        ServerMsg::Deck {
+            online: false,
+            columns: 8,
+            rows: 4,
+            title: "Stream Deck".into(),
+        },
+        json!({"type": "deck", "online": false, "columns": 8, "rows": 4, "title": "Stream Deck"}),
+    );
+    round_trip_server(
+        ServerMsg::DeckKeys {
+            items: vec![
+                DeckKey {
+                    key: 0,
+                    img: Some("data:image/webp;base64,UklGRg+/=".into()),
+                    color: Some("#00aa00".into()),
+                    pressed: true,
+                },
+                DeckKey {
+                    key: 31,
+                    img: None,
+                    color: None,
+                    pressed: false,
+                },
+            ],
+        },
+        json!({"type": "deck_keys", "items": [
+            {"key": 0, "img": "data:image/webp;base64,UklGRg+/=", "color": "#00aa00", "pressed": true},
+            {"key": 31, "pressed": false}]}),
+    );
+    round_trip_server(
+        ServerMsg::DeckAck {
+            seq: 7,
+            ok: true,
+            error: None,
+            rtt_ms: Some(3.5),
+        },
+        json!({"type": "deck_ack", "seq": 7, "ok": true, "rtt_ms": 3.5}),
+    );
+    round_trip_server(
+        ServerMsg::DeckAck {
+            seq: 9,
+            ok: false,
+            error: Some("offline".into()),
+            rtt_ms: None,
+        },
+        json!({"type": "deck_ack", "seq": 9, "ok": false, "error": "offline"}),
+    );
+}
+
+#[test]
 fn api_bodies_round_trip() {
     let status = HubStatus {
         instances: vec![InstanceStatus {
@@ -445,6 +525,14 @@ fn api_bodies_round_trip() {
                 pointer: None,
             },
         }],
+        companion: Some(CompanionStatus {
+            online: true,
+            last_error: None,
+            connect_failures: 0,
+            companion_version: Some("5.0.7+9763-stable-cec2f88e6f".into()),
+            api_version: Some("1.12.0".into()),
+            keys: 32,
+        }),
     };
     let json = serde_json::to_value(&status).unwrap();
     assert_eq!(json["remote"]["https"]["days_left"], 60);
@@ -466,9 +554,16 @@ fn api_bodies_round_trip() {
     let mut older = json.clone();
     older.as_object_mut().unwrap().remove("remote");
     older.as_object_mut().unwrap().remove("client_reports");
+    older.as_object_mut().unwrap().remove("companion");
     let older = serde_json::from_value::<HubStatus>(older).unwrap();
     assert_eq!(older.remote, RemoteStatus::default());
     assert!(older.client_reports.is_empty());
+    assert_eq!(
+        older.companion, None,
+        "an older hub's answer has no Stream Deck"
+    );
+    assert_eq!(json["companion"]["keys"], 32);
+    assert_eq!(json["companion"]["api_version"], "1.12.0");
     assert_eq!(json["instances"][0]["listeners"], 4);
     assert_eq!(json["stage_aut"]["writes"], 3);
     assert_eq!(json["instances"][0]["connect_failures"], 0);
