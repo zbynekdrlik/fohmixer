@@ -218,3 +218,20 @@ fn a_page_time_reaches_the_pong_and_the_event_log_to_the_bit() {
         assert!(pong.contains(&format!("\"t\":{text}")), "{pong}");
     }
 }
+
+#[test]
+fn a_clock_step_warning_is_logged_at_most_once_per_ten_seconds() {
+    // #54: a page with a bad clock must not fill the log with one warn
+    // line per ping; the ping record keeps its `clock_step_ms` anyway.
+    assert!(step_warn_due(None, 5_000.0), "the first one is logged");
+    assert!(
+        !step_warn_due(Some(1_000.0), 10_999.0),
+        "9 999 ms: held back"
+    );
+    assert!(step_warn_due(Some(1_000.0), 11_000.0), "10 000 ms: logged");
+    assert!(step_warn_due(Some(1_000.0), 11_001.0));
+    assert!(!step_warn_due(Some(1_000.0), 1_000.0), "the same instant");
+    // The hub's own clock stepped back: never held back for longer than
+    // the interval.
+    assert!(step_warn_due(Some(20_000.0), 5_000.0));
+}

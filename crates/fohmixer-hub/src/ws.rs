@@ -216,6 +216,7 @@ async fn session(mut socket: WebSocket, hub: Hub, proto: Option<u32>, who: Opene
         who: who.clone(),
         clock: ClockSync::default(),
         offset: None,
+        last_step_warn: None,
     };
     let reason = loop {
         tokio::select! {
@@ -260,6 +261,22 @@ struct Conn {
     clock: ClockSync,
     /// The page clock's offset (hub − page, ms) as of the last ping.
     offset: Option<f64>,
+    /// The hub time (UTC ms) of the last clock-step warn line (#54).
+    last_step_warn: Option<f64>,
+}
+
+/// The least time between two clock-step warn lines of one client (#54).
+const STEP_WARN_GAP_MS: f64 = 10_000.0;
+
+/// Whether a clock-step warn line is due at hub time `now` (ms), the last
+/// one having been logged at `last`: the first one, one a full
+/// [`STEP_WARN_GAP_MS`] later, or any after the hub's own clock stepped
+/// back (a negative gap).
+fn step_warn_due(last: Option<f64>, now: f64) -> bool {
+    last.is_none_or(|at| {
+        let gap = now - at;
+        !(0.0..STEP_WARN_GAP_MS).contains(&gap)
+    })
 }
 
 /// A ping (`n`, page time `t`, the latest round trip `rtt` and the ping
@@ -288,12 +305,15 @@ fn pong(
     // offset starts over from this exchange. Once per step, on the ping
     // record too (the delays of the sets and presses around it change).
     if let Some(step_ms) = conn.clock.take_step() {
-        tracing::warn!(
-            client = conn.client,
-            step_ms,
-            offset_ms = ?conn.offset,
-            "a page's clock stepped against the hub's: its offset starts over"
-        );
+        if step_warn_due(conn.last_step_warn, arrival) {
+            conn.last_step_warn = Some(arrival);
+            tracing::warn!(
+                client = conn.client,
+                step_ms,
+                offset_ms = ?conn.offset,
+                "a page's clock stepped against the hub's: its offset starts over"
+            );
+        }
         fields["clock_step_ms"] = json!(step_ms);
     }
     (ServerMsg::Pong { n, t, h: arrival }, fields)
