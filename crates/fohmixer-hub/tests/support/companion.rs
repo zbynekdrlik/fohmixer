@@ -69,6 +69,8 @@ pub struct FakeCompanion {
     remove_delay: Arc<Mutex<Duration>>,
     /// Each connection's end, with its number.
     ended: Arc<Mutex<Vec<(usize, Ended)>>>,
+    /// When each connection was accepted, refused ones too.
+    accepted: Arc<Mutex<Vec<Instant>>>,
     /// The latest connection's way out: a line, or `None` to close it.
     current: Arc<Mutex<Option<mpsc::UnboundedSender<Option<String>>>>>,
     /// New connections closed at once (Companion away).
@@ -85,6 +87,7 @@ impl FakeCompanion {
             script: Arc::new(Mutex::new(script)),
             remove_delay: Arc::default(),
             ended: Arc::default(),
+            accepted: Arc::default(),
             current: Arc::default(),
             refusing: Arc::new(AtomicBool::new(false)),
         };
@@ -92,6 +95,7 @@ impl FakeCompanion {
         tokio::spawn(async move {
             let mut n = 0;
             while let Ok((stream, _)) = listener.accept().await {
+                accepting.accepted.lock().unwrap().push(Instant::now());
                 if accepting.refusing.load(Ordering::SeqCst) {
                     drop(stream);
                     continue;
@@ -172,6 +176,24 @@ impl FakeCompanion {
         }
     }
 
+    /// When each connection was accepted (refused ones too), waiting up to
+    /// `limit` until there are `n`.
+    pub async fn accepted(&self, n: usize, limit: Duration) -> Vec<Instant> {
+        let deadline = Instant::now() + limit;
+        loop {
+            let accepted = self.accepted.lock().unwrap().clone();
+            if accepted.len() >= n {
+                return accepted;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "{} connections, never {n}",
+                accepted.len()
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }
+
     /// How connection `conn` ended, waiting up to `limit` for its end.
     pub async fn end_of(&self, conn: usize, limit: Duration) -> Ended {
         let deadline = Instant::now() + limit;
@@ -235,7 +257,17 @@ impl FakeCompanion {
                     Some(Some(text)) => {
                         let _ = write.write_all(text.as_bytes()).await;
                     }
-                    Some(None) | None => return Ended::Closed,
+                    Some(None) | None => {
+                        // Closed as a peer that closes well: its FIN, then
+                        // the hub's lines until the hub closes too, so no
+                        // unread line turns the close into a reset (the hub
+                        // reads a clean end, "Companion closed ...").
+                        let _ = write.shutdown().await;
+                        while let Ok(Some(line)) = lines.next_line().await {
+                            self.got.lock().unwrap().push(Got { conn: n, at: Instant::now(), line });
+                        }
+                        return Ended::Closed;
+                    }
                 },
             }
         }

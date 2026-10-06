@@ -304,9 +304,14 @@ fn the_stop_waits_for_the_remove_device_answer_a_close_or_500_ms() {
         ),
         Some(Left::Answered(Err("Device not found".into())))
     );
-    // So does its close, or a line too long (the reader ends there).
+    // So does its close, a failed read or a line too long (the reader ends
+    // there).
     assert_eq!(stop_over(Some(&Read::Closed), ms(0)), Some(Left::Closed));
     assert_eq!(stop_over(Some(&Read::TooLong), ms(0)), Some(Left::Closed));
+    assert_eq!(
+        stop_over(Some(&Read::Failed("reset".into())), ms(0)),
+        Some(Left::Closed)
+    );
     // Any other line is dropped: the wait goes on to the bound.
     let other = line("KEY-PRESS OK DEVICEID=\"fohmixer-1\" ");
     assert_eq!(stop_over(Some(&other), ms(500)), None);

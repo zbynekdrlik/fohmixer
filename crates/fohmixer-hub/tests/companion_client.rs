@@ -11,7 +11,7 @@ mod support;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use fohmixer_hub::companion::{Answer, CompanionEvent, CompanionHandle, Events, Press};
+use fohmixer_hub::companion::{Answer, CompanionEvent, CompanionHandle, Events, Press, STOP_BOUND};
 use fohmixer_hub::config::CompanionCfg;
 use support::companion::{Ended, FakeCompanion, Script, image};
 use support::{runtime, serial};
@@ -386,31 +386,43 @@ fn a_line_over_256_kib_ends_the_link() {
 fn a_stop_writes_what_came_before_it_then_removes_the_device() {
     let _serial = serial();
     runtime().block_on(async {
-        // Companion answers REMOVE-DEVICE 200 ms late: the stop waits for it.
-        let late = Duration::from_millis(200);
+        // Companion answers REMOVE-DEVICE 100 ms late: the stop waits for it.
+        let late = Duration::from_millis(100);
         let fake = FakeCompanion::start(Script::companion()).await;
         fake.delay_remove(late);
         let seen = Seen::default();
         let (handle, task) = CompanionHandle::spawn(&deck(fake.port), seen.events());
         seen.wait(Duration::from_secs(5), up).await;
-        handle.press(Press {
+        let release = Press {
             key: 4,
             down: false,
             from: None,
-        });
+        };
+        handle.press(release);
         let stopped = Instant::now();
         handle.stop();
+        // A press behind the stop: offline at once, never written.
+        let behind = Press {
+            key: 5,
+            down: true,
+            from: Some((7, 1)),
+        };
+        handle.press(behind);
         tokio::time::timeout(Duration::from_secs(1), task)
             .await
             .expect("the task ends within the stop's bound")
             .unwrap();
         // The hub held the socket until it read the answer, and no longer:
-        // not to the 500 ms bound.
+        // a hub that waits out the bound takes over 500 ms.
         let took = stopped.elapsed();
-        assert!(
-            took >= late && took < Duration::from_millis(450),
-            "{took:?}"
-        );
+        assert!(took >= late && took < STOP_BOUND, "{took:?}");
+        // A press after the task ended: offline from the handle.
+        let after = Press {
+            key: 6,
+            down: true,
+            from: Some((7, 2)),
+        };
+        handle.press(after);
         let lines = fake
             .until(Duration::from_secs(2), "REMOVE-DEVICE", |g| {
                 g.iter().any(|l| l.line.starts_with("REMOVE-DEVICE"))
@@ -433,5 +445,75 @@ fn a_stop_writes_what_came_before_it_then_removes_the_device() {
         // The fake answered, then read the hub's FIN: a clean end. A hub
         // that closed before the answer would have reset it.
         assert_eq!(fake.end_of(1, Duration::from_secs(1)).await, Ended::Eof);
+        // Every press got exactly one answer: the release Companion's own,
+        // the other two offline, the one behind the stop at once.
+        let answers: Vec<(Instant, Answer)> = seen
+            .all()
+            .into_iter()
+            .filter_map(|(at, e)| answered(&e).map(|answer| (at, answer)))
+            .collect();
+        let of = |press: Press| -> Vec<(Instant, Answer)> {
+            answers
+                .iter()
+                .filter(|(_, answer)| answer.press == press)
+                .cloned()
+                .collect()
+        };
+        let released = of(release);
+        assert_eq!(released.len(), 1, "{answers:?}");
+        assert!(
+            released[0].1.ok && released[0].1.rtt_ms.is_some(),
+            "{released:?}"
+        );
+        let refused = of(behind);
+        assert_eq!(
+            refused.iter().map(|(_, a)| a.clone()).collect::<Vec<_>>(),
+            vec![Answer::offline(behind)]
+        );
+        assert!(refused[0].0 - stopped < late, "at once, not after the wait");
+        assert_eq!(
+            of(after).into_iter().map(|(_, a)| a).collect::<Vec<_>>(),
+            vec![Answer::offline(after)]
+        );
+    });
+}
+
+#[test]
+fn the_backoff_grows_while_companion_refuses_and_starts_over_after_a_session() {
+    let _serial = serial();
+    runtime().block_on(async {
+        // Companion away: every connection is closed at once.
+        let fake = FakeCompanion::start(Script::companion()).await;
+        fake.refuse(true);
+        let seen = Seen::default();
+        let (_handle, _task) = CompanionHandle::spawn(&deck(fake.port), seen.events());
+        // The waits between the failed attempts grow: 250, 500, 1000 ms.
+        let refused = fake.accepted(4, Duration::from_secs(5)).await;
+        let waits: Vec<Duration> = refused.windows(2).map(|w| w[1] - w[0]).collect();
+        assert!(
+            waits[0] >= Duration::from_millis(250)
+                && waits[1] >= Duration::from_millis(500)
+                && waits[2] >= Duration::from_millis(1000),
+            "{waits:?}"
+        );
+        // Back: the next attempt (2 s later) registers.
+        fake.refuse(false);
+        seen.wait(Duration::from_secs(5), up).await;
+        let before = fake.accepted(5, Duration::ZERO).await.len();
+        // A session that reached ADD-DEVICE OK resets the backoff: the
+        // reconnect comes 250 ms after the loss, not the grown 2 s.
+        fake.close();
+        let (lost_at, _) = seen
+            .wait(Duration::from_secs(5), |e| {
+                matches!(e, CompanionEvent::Down { .. }).then_some(())
+            })
+            .await;
+        let again = fake.accepted(before + 1, Duration::from_secs(3)).await[before];
+        let wait = again - lost_at;
+        assert!(
+            wait >= Duration::from_millis(250) && wait < Duration::from_millis(500),
+            "{wait:?}"
+        );
+        seen.wait(Duration::from_secs(5), up).await;
     });
 }

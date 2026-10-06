@@ -36,6 +36,60 @@ async fn answered_at_once(seen: &Mutex<Vec<CompanionEvent>>, event: &CompanionEv
     }
 }
 
+/// Every answer `press` got so far.
+fn answers_of(seen: &Mutex<Vec<CompanionEvent>>, press: Press) -> Vec<Answer> {
+    seen.lock()
+        .unwrap()
+        .iter()
+        .filter_map(|e| match e {
+            CompanionEvent::Answered(answer) if answer.press == press => Some(answer.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Companion's side of the hub's connection on `listener`, past the
+/// handshake (`BEGIN`, the hub's `ADD-DEVICE`, `ADD-DEVICE OK`), once the
+/// handle reports the session.
+async fn registered(
+    listener: &tokio::net::TcpListener,
+    handle: &CompanionHandle,
+) -> BufReader<TcpStream> {
+    let (socket, _) = listener.accept().await.unwrap();
+    let mut companion = BufReader::new(socket);
+    companion
+        .get_mut()
+        .write_all(b"BEGIN CompanionVersion=\"5.0.7\" ApiVersion=\"1.12.0\" \n")
+        .await
+        .unwrap();
+    let add = next_line(&mut companion).await.expect("ADD-DEVICE");
+    assert!(
+        add.starts_with("ADD-DEVICE DEVICEID=\"fohmixer-1\" "),
+        "{add}"
+    );
+    companion
+        .get_mut()
+        .write_all(b"ADD-DEVICE OK DEVICEID=\"fohmixer-1\" \n")
+        .await
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while !handle.snapshot().online {
+        assert!(Instant::now() < deadline, "never registered");
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    companion
+}
+
+/// The hub's next line within 1 s, its line end removed; `None` at its FIN.
+async fn next_line(companion: &mut BufReader<TcpStream>) -> Option<String> {
+    let mut line = String::new();
+    let read = tokio::time::timeout(Duration::from_secs(1), companion.read_line(&mut line))
+        .await
+        .expect("a line, or the FIN, within 1 s")
+        .unwrap();
+    (read > 0).then(|| line.trim_end_matches('\n').to_string())
+}
+
 #[tokio::test]
 async fn a_press_before_add_device_ok_is_answered_offline_and_never_written() {
     // A Companion that accepts and says nothing: the session waits for BEGIN.
@@ -92,11 +146,32 @@ async fn a_press_without_a_session_is_answered_offline_at_once() {
         }
     )));
     assert!(!handle.status().online);
+    // A press behind the stop: offline at once; a press after the task
+    // ended: offline from the handle. Each press gets one answer.
     handle.stop();
+    let behind = Press {
+        key: 2,
+        down: true,
+        from: Some((3, 10)),
+    };
+    handle.press(behind);
     tokio::time::timeout(Duration::from_secs(2), task)
         .await
         .expect("a stop ends the task")
         .unwrap();
+    let after = Press {
+        key: 3,
+        down: false,
+        from: Some((3, 11)),
+    };
+    handle.press(after);
+    for press in [press, behind, after] {
+        assert_eq!(
+            answers_of(&seen, press),
+            vec![Answer::offline(press)],
+            "{press:?}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -127,57 +202,36 @@ async fn the_reader_passes_a_line_and_the_close_on_then_ends() {
 
 #[tokio::test]
 async fn a_companion_that_never_answers_the_stop_holds_it_500_ms_at_most() {
-    // A Companion that registers the surface, then neither answers the
-    // stop nor closes: the hub's REMOVE-DEVICE and its FIN come at once,
-    // the hub keeps reading until the bound, then the task ends.
+    // A Companion that registers the surface, then answers nothing and
+    // never closes: the hub's last line and its FIN come at once, the hub
+    // keeps reading until the bound, and the press Companion never
+    // answered is answered offline then, once.
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
-    let (events, _seen) = sink();
+    let (events, seen) = sink();
     let (handle, task) = CompanionHandle::spawn(&deck(port), events);
-    let (socket, _) = listener.accept().await.unwrap();
-    let (read_half, mut write_half) = socket.into_split();
-    let mut lines = BufReader::new(read_half).lines();
-    let wait = Duration::from_secs(1);
-    write_half
-        .write_all(b"BEGIN CompanionVersion=\"5.0.7\" ApiVersion=\"1.12.0\" \n")
-        .await
-        .unwrap();
-    let add = tokio::time::timeout(wait, lines.next_line())
-        .await
-        .expect("ADD-DEVICE at once")
-        .unwrap()
-        .unwrap();
-    assert!(
-        add.starts_with("ADD-DEVICE DEVICEID=\"fohmixer-1\" "),
-        "{add}"
+    let mut companion = registered(&listener, &handle).await;
+    let pending = Press {
+        key: 7,
+        down: true,
+        from: Some((5, 1)),
+    };
+    handle.press(pending);
+    assert_eq!(
+        next_line(&mut companion).await.as_deref(),
+        Some("KEY-PRESS DEVICEID=\"fohmixer-1\" KEY=7 PRESSED=1")
     );
-    write_half
-        .write_all(b"ADD-DEVICE OK DEVICEID=\"fohmixer-1\" \n")
-        .await
-        .unwrap();
-    let deadline = Instant::now() + wait;
-    while !handle.snapshot().online {
-        assert!(Instant::now() < deadline, "never registered");
-        tokio::time::sleep(Duration::from_millis(5)).await;
-    }
     let stopped = Instant::now();
     handle.stop();
-    let last = tokio::time::timeout(wait, lines.next_line())
-        .await
-        .expect("REMOVE-DEVICE at once")
-        .unwrap();
     assert_eq!(
-        last.as_deref(),
+        next_line(&mut companion).await.as_deref(),
         Some("REMOVE-DEVICE DEVICEID=\"fohmixer-1\"")
     );
     // The hub's FIN right after it: its write half shut down, long before
     // the bound.
-    let fin = tokio::time::timeout(wait, lines.next_line())
-        .await
-        .expect("the FIN at once")
-        .unwrap();
-    assert_eq!(fin, None);
+    assert_eq!(next_line(&mut companion).await, None);
     assert!(stopped.elapsed() < STOP_BOUND, "{:?}", stopped.elapsed());
+    assert!(answers_of(&seen, pending).is_empty(), "no answer yet");
     tokio::time::timeout(Duration::from_secs(2), task)
         .await
         .expect("the bound ends the stop")
@@ -187,5 +241,75 @@ async fn a_companion_that_never_answers_the_stop_holds_it_500_ms_at_most() {
         took > STOP_BOUND && took < Duration::from_secs(1),
         "{took:?}"
     );
-    drop(write_half);
+    assert_eq!(answers_of(&seen, pending), vec![Answer::offline(pending)]);
+    drop(companion);
+}
+
+#[tokio::test]
+async fn a_reset_ends_the_link_with_the_reads_error() {
+    // Companion registers the surface, then resets the connection (an
+    // abortive close): the link is lost with the read's own error.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (events, seen) = sink();
+    let (handle, task) = CompanionHandle::spawn(&deck(port), events);
+    let socket = registered(&listener, &handle).await.into_inner();
+    socket.set_zero_linger().unwrap();
+    drop(socket);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let error = loop {
+        let down = seen.lock().unwrap().iter().find_map(|e| match e {
+            CompanionEvent::Down { error } => Some(error.clone()),
+            _ => None,
+        });
+        if let Some(error) = down {
+            break error;
+        }
+        assert!(Instant::now() < deadline, "the link was never lost");
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    };
+    let cause = error
+        .strip_prefix("reading from Companion failed: ")
+        .unwrap_or_else(|| panic!("not the read's error: {error}"));
+    assert!(!cause.is_empty(), "{error}");
+    assert_eq!(handle.snapshot().last_error, Some(error.clone()));
+    handle.stop();
+    tokio::time::timeout(Duration::from_secs(2), task)
+        .await
+        .expect("a stop ends the task")
+        .unwrap();
+}
+
+#[tokio::test]
+async fn the_writers_end_is_told_with_its_error() {
+    assert_eq!(writer_outcome(Ok(Ok(()))), Ok(()));
+    assert_eq!(
+        writer_outcome(Ok(Err(std::io::Error::other("test reset")))),
+        Err("test reset".to_string())
+    );
+    let task = tokio::spawn(std::future::pending::<std::io::Result<()>>());
+    task.abort();
+    let cancelled = writer_outcome(task.await);
+    assert!(
+        cancelled
+            .as_ref()
+            .is_err_and(|error| error.contains("cancelled")),
+        "{cancelled:?}"
+    );
+    // A session that loses its writer names the failed write's error.
+    assert_eq!(
+        write_end(&Err("test reset".into())),
+        "a write to Companion failed: test reset"
+    );
+    assert_eq!(write_end(&Ok(())), "the writer to Companion ended");
+    // The stop's note: everything written, a failed write, still writing.
+    assert_eq!(
+        writer_note(Some(&Ok(()))),
+        "every line written, then the FIN"
+    );
+    assert_eq!(
+        writer_note(Some(&Err("test reset".into()))),
+        "a write failed: test reset"
+    );
+    assert_eq!(writer_note(None), "still writing when the wait ended");
 }

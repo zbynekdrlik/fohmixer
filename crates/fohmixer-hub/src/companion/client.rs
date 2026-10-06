@@ -11,7 +11,8 @@
 //! the hub's FIN go out, the reader reads on until Companion's answer or
 //! close, at most [`STOP_BOUND`](super::STOP_BOUND) after the stop, and only
 //! then is the socket dropped, so Companion never meets a reset before it
-//! has read them.
+//! has read them. Every press gets exactly one answer: Companion's, or
+//! `offline` (no session, the link lost, the stop, or after the task ended).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -22,7 +23,7 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::mpsc;
-use tokio::task::JoinHandle;
+use tokio::task::{JoinError, JoinHandle};
 
 use super::{
     Answer, CompanionEvent, Fifo, Inbound, Left, MAX_LINE, PING_EVERY, Phase, Press, Read,
@@ -40,7 +41,8 @@ const INBOUND_QUEUE: usize = 256;
 /// How often the stop's wait checks the clock against the bound.
 const STOP_CHECK: Duration = Duration::from_millis(10);
 
-/// Where the task's events go, called from the task in order.
+/// Where the task's events go, called from the task in order (and by the
+/// handle for a press that comes after the task ended).
 pub type Events = Arc<dyn Fn(CompanionEvent) + Send + Sync>;
 
 /// A request for the task.
@@ -70,6 +72,8 @@ fn lock(m: &Mutex<Snapshot>) -> std::sync::MutexGuard<'_, Snapshot> {
 pub struct CompanionHandle {
     tx: mpsc::UnboundedSender<Request>,
     snapshot: Arc<Mutex<Snapshot>>,
+    /// The task's events: a press after the task ended is answered here.
+    events: Events,
 }
 
 impl CompanionHandle {
@@ -78,19 +82,37 @@ impl CompanionHandle {
     pub fn spawn(deck: &CompanionCfg, events: Events) -> (Self, JoinHandle<()>) {
         let (tx, rx) = mpsc::unbounded_channel();
         let snapshot = Arc::new(Mutex::new(Snapshot::default()));
-        let task = tokio::spawn(run(deck.clone(), rx, events, Arc::clone(&snapshot)));
-        (Self { tx, snapshot }, task)
+        let task = tokio::spawn(run(
+            deck.clone(),
+            rx,
+            Arc::clone(&events),
+            Arc::clone(&snapshot),
+        ));
+        (
+            Self {
+                tx,
+                snapshot,
+                events,
+            },
+            task,
+        )
     }
 
     /// Writes a press at once; without a session it is answered `offline`
-    /// at once (never queued).
+    /// at once (never queued), and so after the stop. Every press gets
+    /// exactly one answer.
     pub fn press(&self, press: Press) {
-        let _ = self.tx.send(Request::Press(press));
+        if self.tx.send(Request::Press(press)).is_err() {
+            // The task ended (its channel is closed): offline.
+            (self.events)(CompanionEvent::Answered(Answer::offline(press)));
+        }
     }
 
     /// Ends the task after every press sent before: `REMOVE-DEVICE` and the
     /// hub's FIN, then Companion's answer or close, at most
-    /// [`STOP_BOUND`](super::STOP_BOUND) after the stop; then the close.
+    /// [`STOP_BOUND`](super::STOP_BOUND) after the stop; then the close. A
+    /// press still waiting gets Companion's answer meanwhile, else `offline`;
+    /// a press after the stop is answered `offline` at once.
     pub fn stop(&self) {
         let _ = self.tx.send(Request::Stop);
     }
@@ -170,6 +192,31 @@ async fn run(
     events: Events,
     snapshot: Arc<Mutex<Snapshot>>,
 ) {
+    reconnect(&deck, &mut rx, &events, &snapshot).await;
+    refuse_after_stop(&mut rx, &events).await;
+}
+
+/// The stop (or every handle gone): the channel is closed, so a later press
+/// is answered by the handle, and every press already behind the stop (or
+/// being sent as it closed) is answered `offline` at once.
+async fn refuse_after_stop(rx: &mut mpsc::UnboundedReceiver<Request>, events: &Events) {
+    rx.close();
+    // After the close `recv` hands out what was sent before it, then `None`.
+    while let Some(request) = rx.recv().await {
+        if let Request::Press(press) = request {
+            events(CompanionEvent::Answered(Answer::offline(press)));
+        }
+    }
+}
+
+/// Connects, and reconnects with [`Backoff`] (reset only after a session
+/// that reached `ADD-DEVICE OK`), until the stop.
+async fn reconnect(
+    deck: &CompanionCfg,
+    rx: &mut mpsc::UnboundedReceiver<Request>,
+    events: &Events,
+    snapshot: &Mutex<Snapshot>,
+) {
     let mut backoff = Backoff::default();
     // One counter per kind of id: the device ids count attempts.
     let mut attempts: u64 = 0;
@@ -182,18 +229,18 @@ async fn run(
             CONNECT_TIMEOUT,
             TcpStream::connect((deck.host.as_str(), deck.port)),
         );
-        let Some(attempt) = refusing(&mut rx, &events, connect).await else {
+        let Some(attempt) = refusing(rx, events, connect).await else {
             return;
         };
         let failure = match attempt {
             Ok(Ok(stream)) => {
                 let session = Session {
-                    deck: &deck,
+                    deck,
                     device: &device,
-                    events: &events,
-                    snapshot: &snapshot,
+                    events,
+                    snapshot,
                 };
-                match session.run(stream, &mut rx, failures + 1, down_since).await {
+                match session.run(stream, rx, failures + 1, down_since).await {
                     End::Stop => return,
                     End::Lost(why) => {
                         tracing::info!(device = %device, error = %why, "the Companion link was lost");
@@ -212,7 +259,7 @@ async fn run(
         if let Some(failure) = failure {
             failures += 1;
             {
-                let mut snap = lock(&snapshot);
+                let mut snap = lock(snapshot);
                 snap.connect_failures = failures;
                 snap.last_error = Some(failure.error.clone());
             }
@@ -230,7 +277,7 @@ async fn run(
             }
         }
         let wait = tokio::time::sleep(backoff.next_delay());
-        if refusing(&mut rx, &events, wait).await.is_none() {
+        if refusing(rx, events, wait).await.is_none() {
             return;
         }
     }
@@ -245,9 +292,12 @@ async fn read_lines(mut reader: BufReader<OwnedReadHalf>, lines: mpsc::Sender<Re
         let read = (&mut reader)
             .take(MAX_LINE as u64 + 1)
             .read_until(b'\n', &mut buf)
-            .await
-            .unwrap_or(0);
-        let outcome = read_outcome(read, &buf);
+            .await;
+        let outcome = match read {
+            Ok(read) => read_outcome(read, &buf),
+            // A reset: its error goes into the log.
+            Err(error) => Read::Failed(error.to_string()),
+        };
         let last = !matches!(outcome, Read::Line(_));
         if lines.send(outcome).await.is_err() || last {
             return;
@@ -255,33 +305,45 @@ async fn read_lines(mut reader: BufReader<OwnedReadHalf>, lines: mpsc::Sender<Re
     }
 }
 
-/// Writes the session's lines in order until a write fails or the session
-/// drops its sender; then closes the connection's write side.
-async fn write_lines(mut half: OwnedWriteHalf, mut lines: mpsc::UnboundedReceiver<String>) {
+/// Writes the session's lines in order until the session drops its sender,
+/// then shuts the write side down (the FIN): `Ok` when every line went out,
+/// else the error of the write that failed (it ends the writer).
+async fn write_lines(
+    mut half: OwnedWriteHalf,
+    mut lines: mpsc::UnboundedReceiver<String>,
+) -> std::io::Result<()> {
     while let Some(line) = lines.recv().await {
-        if half.write_all(line.as_bytes()).await.is_err() {
-            return;
-        }
+        half.write_all(line.as_bytes()).await?;
     }
-    let _ = half.shutdown().await;
+    half.shutdown().await
 }
 
-/// The stop's wait after its last lines: Companion's lines are read and
-/// dropped until [`stop_over`] says the wait is over (its answer to
-/// `REMOVE-DEVICE`, its close, or the bound), the clock checked every
-/// [`STOP_CHECK`].
-async fn leave(inbound: &mut mpsc::Receiver<Read>, began: Instant) -> Left {
-    let mut clock = tokio::time::interval(STOP_CHECK);
-    clock.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    loop {
-        let read = tokio::select! {
-            // None: the reader is gone, as after a close.
-            read = inbound.recv() => Some(read.unwrap_or(Read::Closed)),
-            _ = clock.tick() => None,
-        };
-        if let Some(left) = stop_over(read.as_ref(), began.elapsed()) {
-            return left;
-        }
+/// The writer task's outcome: `Ok` when it wrote every line and shut its
+/// half down, else the failed write's error (or why its task ended).
+fn writer_outcome(joined: Result<std::io::Result<()>, JoinError>) -> Result<(), String> {
+    match joined {
+        Ok(written) => written.map_err(|error| error.to_string()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+/// Why a session ends when its writer ended first (while the session holds
+/// its sender, only a failed write ends it): that write's error.
+fn write_end(written: &Result<(), String>) -> String {
+    match written {
+        Err(error) => format!("a write to Companion failed: {error}"),
+        Ok(()) => "the writer to Companion ended".to_string(),
+    }
+}
+
+/// The stop's log note on its writer: every line written and the FIN sent,
+/// the write that failed, or still writing when the wait ended (it is then
+/// ended).
+fn writer_note(written: Option<&Result<(), String>>) -> String {
+    match written {
+        Some(Ok(())) => "every line written, then the FIN".to_string(),
+        Some(Err(error)) => format!("a write failed: {error}"),
+        None => "still writing when the wait ended".to_string(),
     }
 }
 
@@ -344,6 +406,37 @@ impl Session<'_> {
         (self.events)(event);
     }
 
+    /// The stop's wait after its last lines: Companion's lines are read
+    /// until [`stop_over`] says the wait is over (its answer to
+    /// `REMOVE-DEVICE`, its close, or the bound), the clock checked every
+    /// [`STOP_CHECK`]. A `KEY-PRESS` answer still answers its press; every
+    /// other line is dropped.
+    async fn leave(
+        &self,
+        state: &mut State,
+        inbound: &mut mpsc::Receiver<Read>,
+        began: Instant,
+    ) -> Left {
+        let mut clock = tokio::time::interval(STOP_CHECK);
+        clock.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            let read = tokio::select! {
+                // None: the reader is gone, as after a close.
+                read = inbound.recv() => Some(read.unwrap_or(Read::Closed)),
+                _ = clock.tick() => None,
+            };
+            if let Some(Read::Line(text)) = &read
+                && let Inbound::Pressed(result) = classify(text)
+                && let Some(answer) = state.fifo.answer(result, Instant::now())
+            {
+                self.emit(CompanionEvent::Answered(answer));
+            }
+            if let Some(left) = stop_over(read.as_ref(), began.elapsed()) {
+                return left;
+            }
+        }
+    }
+
     async fn run(
         &self,
         stream: TcpStream,
@@ -374,6 +467,7 @@ impl Session<'_> {
                             }
                         }
                         Some(Read::TooLong) => break state.end(format!("a line over {} KiB", MAX_LINE / 1024)),
+                        Some(Read::Failed(error)) => break state.end(format!("reading from Companion failed: {error}")),
                         Some(Read::Closed) | None => break state.end("Companion closed the connection".to_string()),
                     }
                 }
@@ -381,6 +475,7 @@ impl Session<'_> {
                     Some(Request::Press(press)) => self.on_press(&mut state, &out, press),
                     Some(Request::Stop) | None => {
                         let began = Instant::now();
+                        refuse_after_stop(rx, self.events).await;
                         if state.phase == Phase::Up {
                             let _ = out.send(remove_device(self.device));
                         }
@@ -388,15 +483,19 @@ impl Session<'_> {
                         // down (the FIN); the reader reads on until the wait
                         // is over, and only then is the socket dropped.
                         drop(out);
-                        let left = leave(&mut inbound, began).await;
-                        let written = writer.is_finished();
-                        writer.abort();
-                        reader.abort();
-                        tracing::info!(device = self.device, left = ?left, written, "the Stream Deck left Companion: the hub stops");
-                        return End::Stop;
+                        let left = self.leave(&mut state, &mut inbound, began).await;
+                        let written = if writer.is_finished() {
+                            Some(writer_outcome((&mut writer).await))
+                        } else {
+                            None
+                        };
+                        tracing::info!(device = self.device, left = ?left, writer = %writer_note(written.as_ref()), "the Stream Deck left Companion: the hub stops");
+                        // The presses still waiting are answered offline
+                        // below, with the writer and the reader ended.
+                        break End::Stop;
                     }
                 },
-                _ = &mut writer => break state.end("a write to Companion failed".to_string()),
+                joined = &mut writer => break state.end(write_end(&writer_outcome(joined))),
                 _ = pinger.tick() => {
                     state.pings += 1;
                     let _ = out.send(ping(state.pings));
