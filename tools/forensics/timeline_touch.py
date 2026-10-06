@@ -504,7 +504,8 @@ def deck_release(record):
 def deck_outages(links, start, end):
     """Companion's link outages that overlap ``start``..``end``: from the
     first ``deck_link`` down or refused to the next up, else to ``end``
-    (``links`` in time order)."""
+    (``links`` in time order). An up whose down was not read (before the
+    lead) gives its outage's start by its own ``down_ms``."""
     outages = []
     down_at, error = None, None
     for record in links:
@@ -514,6 +515,10 @@ def deck_outages(links, start, end):
         elif state == "up" and down_at is not None:
             outages.append(DeckOutage(down_at, record["ts"], record["ts"] - down_at, error))
             down_at = None
+        elif state == "up" and number(record.get("down_ms")):
+            # Its down record lies before what was read: the up says how long.
+            ms = number(record["down_ms"])
+            outages.append(DeckOutage(record["ts"] - ms, record["ts"], ms, None))
     if down_at is not None:
         outages.append(DeckOutage(down_at, end, end - down_at, error))
     return [o for o in outages if o.end >= start and o.start <= end]

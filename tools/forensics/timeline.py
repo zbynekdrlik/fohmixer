@@ -64,10 +64,10 @@ link outages.
 stdout: the summary, one ``name=value`` per line, the names of the report's
 summary table (the deck's: ``deck_presses``, ``deck_unsent``,
 ``deck_forced_releases``, ``deck_link_outages``, ``deck_rtt_p50_ms``,
-``deck_rtt_p99_ms``). It never prints a key: a control is ``key#<the first 10 hex of
-its SHA-256>``, so the numbers can go on a public ticket. Exit 0 with a report
-also when the window holds nothing; exit 1 with one ``timeline: ...`` line on
-stderr on a usage or input error.
+``deck_rtt_p99_ms``). It never prints a key: a control is ``key#<the first
+10 hex of its SHA-256>``, so the numbers can go on a public ticket. Exit 0
+with a report also when the window holds nothing; exit 1 with one
+``timeline: ...`` line on stderr on a usage or input error.
 
 This file is the command; beside it ``timeline_read.py`` (values, times, the
 logs read), ``timeline_model.py`` (the analysis and the summary),

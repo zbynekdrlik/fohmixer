@@ -18,8 +18,9 @@ TS = re.compile(rb'"ts":\s*(-?\d+)')
 # The records read past the window's end, up to its trace tail: a page's
 # ``trace`` (its events can fall inside the window) and the ``ping``s that
 # give that page's clock (a trace on the next socket after an outage has
-# only its own socket's pings, all after the window).
-TAIL_KINDS = ("trace", "ping")
+# only its own socket's pings, all after the window) and a Stream Deck
+# press's ``deck_ok`` (Companion's answer, just after the window's end).
+TAIL_KINDS = ("trace", "ping", "deck_ok")
 TAIL_EV = re.compile(rb'"ev":\s*"(?:' + b"|".join(k.encode() for k in TAIL_KINDS) + rb')"')
 TIME = re.compile(
     r"(?:(?P<date>\d{4}-\d{2}-\d{2})[ T])?(?P<h>\d{1,2}):(?P<m>\d{2})"

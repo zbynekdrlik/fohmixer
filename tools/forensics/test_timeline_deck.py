@@ -194,6 +194,33 @@ class DeckSection(ReportCase):
         )
         self.assertIn("No Stream Deck activity in the window.", page.text)
 
+    def test_an_answer_just_after_the_window_still_gives_the_round_trip(self):
+        log = Log()
+        log.pings(7, BASE, BASE + 3000)
+        press(log, BASE + 990, 7, 3, True, 1)
+        ok(log, BASE + 1010, 7, 3, True, 1, 20.0)
+        summary, page, _ = self.report(log, BASE, BASE + 1000)
+        self.assertEqual(summary["deck_rtt_p50_ms"], "20.0")
+        self.assertEqual(float(page.of_class("deck-press")[0]["data-rtt"]), 20.0)
+
+    def test_an_outage_from_before_the_lead_is_rebuilt_from_the_up_records_down_ms(self):
+        log = Log()
+        log.pings(7, BASE, BASE + 9000)
+        # The down record is far before the window; only the up is read.
+        link(
+            log,
+            BASE + 4000,
+            "up",
+            companion="5.0.7",
+            api="1.12.0",
+            error=None,
+            down_ms=500000.0,
+            attempts=3,
+        )
+        summary, page, _ = self.report(log, BASE, BASE + 9000)
+        self.assertEqual(summary["deck_link_outages"], "1")
+        self.assertEqual(float(page.of_class("deck-outage")[0]["data-ms"]), 500000.0)
+
 
 class DeckHelpers(unittest.TestCase):
     def test_an_outage_runs_from_the_first_down_to_the_next_up(self):
@@ -212,6 +239,12 @@ class DeckHelpers(unittest.TestCase):
         # Still down at the window's end.
         self.assertEqual(deck_outages([at(10, "down")], 0, 50), [DeckOutage(10, 50, 40, "e10")])
         self.assertEqual(deck_outages([at(5, "up")], 0, 50), [])
+        # An up whose down was not read: its down_ms gives the start.
+        self.assertEqual(
+            deck_outages([{"ts": 40, "state": "up", "down_ms": 25.0}], 0, 100),
+            [DeckOutage(15, 40, 25.0, None)],
+        )
+        self.assertEqual(deck_outages([{"ts": 40, "state": "up", "down_ms": None}], 0, 100), [])
         # Before the window: left out; across its start: kept.
         self.assertEqual(deck_outages([at(10, "down"), at(20, "up")], 30, 100), [])
         self.assertEqual(
