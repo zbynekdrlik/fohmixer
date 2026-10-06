@@ -16,7 +16,9 @@
 //! ([`Recorder::visibility`]), and the dropout watch's `dropout` and `reset`
 //! (`behave::link`); the system's gestures ([`sys`], PR G: a context menu, a
 //! selection, a drag, a pinch's start, a cancelled pointer, a capture lost
-//! while the finger is down, and the visual viewport's zoom). No `send` and
+//! while the finger is down, and the visual viewport's zoom); a Stream Deck
+//! press ([`deck`], #52, essential) and the tab's opening and closing
+//! ([`deck_view`]). No `send` and
 //! no `ack` (PR E): the hub's own `set`
 //! record holds each write with the page's `t` and `seq`, and the hub
 //! writes each ack; a frame's `mv` names its set. No page event has a field
@@ -123,15 +125,14 @@ pub fn takes_batch(buffered: u32) -> bool {
 /// When the backlog's bound drops an event of kind `ev` (#43 PR E): none
 /// for an essential one, what the forensics need of every touch and outage
 /// (touches, dropouts, resets, socket transitions, visibility, the notes of
-/// what went, a write's intent changes, PR G's system gestures and zooms);
-/// rank 0, first, for the round-trip
-/// summaries, long frames and any other kind; rank 1, last, for the moves
+/// what went, a write's intent changes, PR G's system gestures and zooms, #52's Stream Deck
+/// presses); rank 0, first, for the round-trip summaries, long frames and any other kind; rank 1, last, for the moves
 /// (the only per-frame data of a drag the hub cannot see). A touch's first
 /// moves are pushed as essential ([`Recorder::push_essential`]).
 pub fn drop_rank(ev: &str) -> Option<u8> {
     match ev {
         "touch" | "dropout" | "reset" | "sock" | "visibility" | "overflow" | "intent" | "sys"
-        | "zoom" => None,
+        | "zoom" | "deck" => None,
         "mv" => Some(1),
         _ => Some(0),
     }
@@ -155,6 +156,38 @@ pub fn touch(t: f64, what: &str, keys: &[String], pointer: i32) -> Value {
 /// hub's `set` record of it, if it got there).
 pub fn intent(t: f64, key: &str, seq: u64, state: &str) -> Value {
     json!({"ev": "intent", "t": t, "key": key, "seq": seq, "state": state})
+}
+
+/// A Stream Deck key's press on the page (#52): `k` the key, `d` 1 down / 0
+/// up, `h` the hold the page measured (an up; whole ms), `why` the up's cause
+/// (`up`, `cancel`, `lost`, `hidden`, `tab`), `sent` whether the socket took
+/// it, `q` its seq (when it went). Essential: what the forensics read of
+/// every press and every red flash.
+pub fn deck(
+    t: f64,
+    key: u32,
+    down: bool,
+    hold_ms: Option<f64>,
+    why: Option<&str>,
+    sent: bool,
+    seq: Option<u64>,
+) -> Value {
+    let mut event = json!({"ev": "deck", "t": t, "k": key, "d": u8::from(down), "sent": sent});
+    if let Some(hold) = hold_ms {
+        event["h"] = json!(hold.round());
+    }
+    if let Some(why) = why {
+        event["why"] = json!(why);
+    }
+    if let Some(seq) = seq {
+        event["q"] = json!(seq);
+    }
+    event
+}
+
+/// The Stream Deck tab opened (`on`) or closed (#52).
+pub fn deck_view(t: f64, on: bool) -> Value {
+    json!({"ev": "deck_view", "t": t, "on": on})
 }
 
 /// The sequence number of a `set`; none for another message.
