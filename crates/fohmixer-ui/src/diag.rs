@@ -31,8 +31,8 @@
 //! (#43 PR G, [`trace::sys`]): bubble-phase listeners on the window hear a
 //! context menu, a selection, a drag, a pinch's start, a cancelled pointer
 //! and a lost capture after the surface's own listeners ran, and the visual
-//! viewport's `resize` its zoom; the capture-phase pointer listeners tell
-//! [`trace::sys::Gestures`] which pointers are down.
+//! viewport's `resize` its zoom; [`perf::Perf`] says which pointers are
+//! down (a capture lost after a lift is no news, [`trace::sys::records`]).
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -51,7 +51,7 @@ pub mod trace;
 
 use perf::Perf;
 use trace::Recorder;
-use trace::sys::{self, Gestures};
+use trace::sys::{self, ZoomWatch};
 
 /// At most one report of a kind per this interval (page clock, ms).
 pub const REPORT_GAP_MS: f64 = 5000.0;
@@ -370,8 +370,8 @@ thread_local! {
     static PERF: RefCell<Perf> = RefCell::new(Perf::default());
     /// The page's flight recorder (#43).
     static TRACE: RefCell<Recorder> = RefCell::new(Recorder::default());
-    /// The pointers down and the last zoom recorded (#43 PR G).
-    static GESTURES: RefCell<Gestures> = RefCell::new(Gestures::default());
+    /// The last zoom recorded (#43 PR G).
+    static ZOOM: RefCell<ZoomWatch> = RefCell::new(ZoomWatch::default());
 }
 
 /// Records `event` in the page's flight recorder (#43, [`trace`]).
@@ -467,19 +467,22 @@ fn listen_gestures(window: &web_sys::Window) {
 }
 
 /// A system gesture reached the window: a `sys` event with the page clock,
-/// unless [`Gestures::records`] leaves it out (a capture lost after its
-/// pointer's lift).
+/// unless [`sys::records`] leaves it out (a capture lost after its
+/// pointer's lift: [`perf::Perf`] no longer has it down, the capture-phase
+/// `pointerup` / `pointercancel` ran first).
 fn gesture(event: &web_sys::Event) {
     let what = event.type_();
     let pointer = event
         .dyn_ref::<web_sys::PointerEvent>()
         .map(web_sys::PointerEvent::pointer_id);
-    let recorded = GESTURES.try_with(|g| g.borrow_mut().records(&what, pointer));
-    if !recorded.unwrap_or(false) {
+    let held = pointer.is_some_and(|id| {
+        PERF.try_with(|perf| perf.borrow().is_down(id))
+            .unwrap_or(false)
+    });
+    if !sys::records(&what, held) {
         return;
     }
-    let (on, keys) = dom::event_element(event)
-        .map_or_else(|| ("none".to_string(), Vec::new()), |el| control_of(&el));
+    let (on, keys) = control_of(dom::event_element(event).as_ref());
     let prevented = event.default_prevented();
     record(&sys::sys(
         dom::epoch_now(),
@@ -493,13 +496,11 @@ fn gesture(event: &web_sys::Event) {
 
 /// What a gesture's record calls `element` ([`sys::kind`]) and the keys of
 /// the control it lies in (its root's [`sys::KEYS_ATTR`]; none outside a
-/// control).
-fn control_of(element: &web_sys::Element) -> (String, Vec<String>) {
-    let root = element
-        .closest(&format!("[{}]", sys::KEYS_ATTR))
-        .ok()
-        .flatten();
-    let nearest = element.closest("[data-testid]").ok().flatten();
+/// control or without an element).
+fn control_of(element: Option<&web_sys::Element>) -> (String, Vec<String>) {
+    let closest = |selector: &str| element.and_then(|e| e.closest(selector).ok().flatten());
+    let root = closest(&format!("[{}]", sys::KEYS_ATTR));
+    let nearest = closest("[data-testid]");
     let testid = |e: Option<&web_sys::Element>| e.and_then(|e| e.get_attribute("data-testid"));
     let keys = root
         .as_ref()
@@ -509,13 +510,13 @@ fn control_of(element: &web_sys::Element) -> (String, Vec<String>) {
     let on = sys::kind(
         testid(root.as_ref()).as_deref(),
         testid(nearest.as_ref()).as_deref(),
-        &element.tag_name(),
+        element.map(web_sys::Element::tag_name).as_deref(),
     );
     (on, keys)
 }
 
 /// The visual viewport's scale now: a `zoom` event when
-/// [`Gestures::zoom`] says it changed.
+/// [`ZoomWatch::zoom`] says it changed.
 fn zoomed() {
     let Some(scale) = web_sys::window()
         .and_then(|w| w.visual_viewport())
@@ -523,7 +524,7 @@ fn zoomed() {
     else {
         return;
     };
-    let changed = GESTURES.try_with(|g| g.borrow_mut().zoom(scale));
+    let changed = ZOOM.try_with(|z| z.borrow_mut().zoom(scale));
     if let Ok(Some(scale)) = changed {
         record(&sys::zoom(dom::epoch_now(), scale));
     }
@@ -559,23 +560,21 @@ fn listen_pointers(window: &web_sys::Window) {
     on_up.forget();
 }
 
-/// A pointer went down: counted, a `perf` report when the page never had
-/// as many at once, and held for the gestures (#43 PR G).
+/// A pointer went down: counted, and a `perf` report when the page never
+/// had as many at once.
 fn pointer_down(event: &web_sys::PointerEvent) {
     let (id, pointer_type) = (event.pointer_id(), event.pointer_type());
     let primary = event.is_primary();
-    let _ = GESTURES.try_with(|g| g.borrow_mut().down(id));
     let high = PERF.try_with(|perf| perf.borrow_mut().down(id, &pointer_type, primary));
     if high.unwrap_or(false) {
         report(Kind::Perf);
     }
 }
 
-/// A pointer went up or was cancelled: no longer counted or held.
+/// A pointer went up or was cancelled.
 fn pointer_up(event: &web_sys::PointerEvent) {
     let id = event.pointer_id();
     let _ = PERF.try_with(|perf| perf.borrow_mut().up(id));
-    let _ = GESTURES.try_with(|g| g.borrow_mut().up(id));
 }
 
 /// The page was hidden or shown: the frame count pauses.

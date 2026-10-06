@@ -142,10 +142,11 @@ body {
 }
 
 /* Nothing on the surface can be selected, called out or dragged (#43 PR G):
-   `user-select` on the body alone left each element's own `auto`, and no
-   element had `-webkit-user-drag: none`, so a long press could still lift
-   one. The loupe of a tap followed by a hold needs more than CSS: each
-   control's root prevents its `touchstart` (components::owns_touches). */
+   no element had `-webkit-user-drag: none`, so a long press could still
+   lift one for a drag; the selection and callout rules repeat the body's
+   on every element so no element's own style undoes them. The loupe of a
+   tap followed by a hold needs more than CSS: each control's root prevents
+   its `touchstart` (components::owns_touches). */
 .surface,
 .surface * {
     -webkit-user-select: none;

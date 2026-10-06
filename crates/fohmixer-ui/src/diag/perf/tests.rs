@@ -361,3 +361,23 @@ fn a_perf_report_s_fields_are_short_words() {
     assert_eq!(fields.touches_max.as_deref(), Some("11"));
     assert_eq!(fields.pointer.as_deref(), Some("pen"));
 }
+
+#[test]
+fn a_pointer_is_down_from_its_down_to_its_up_a_primary_one_or_a_pause() {
+    let mut perf = Perf::default();
+    assert!(!perf.is_down(4), "never down");
+    perf.down(4, "touch", true);
+    perf.down(5, "touch", false);
+    assert!(perf.is_down(4));
+    assert!(perf.is_down(5));
+    assert!(!perf.is_down(6), "another pointer");
+    perf.up(4);
+    assert!(!perf.is_down(4), "lifted or cancelled");
+    assert!(perf.is_down(5), "the other finger stays");
+    // A new primary touch: the old finger's up was missed.
+    perf.down(7, "touch", true);
+    assert!(!perf.is_down(5));
+    assert!(perf.is_down(7));
+    perf.pause();
+    assert!(!perf.is_down(7), "hidden or shown: none down");
+}

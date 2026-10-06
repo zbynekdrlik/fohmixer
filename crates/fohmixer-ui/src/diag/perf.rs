@@ -194,6 +194,14 @@ impl Perf {
         self.down.retain(|&(down_id, _)| down_id != id);
     }
 
+    /// Whether pointer `id` is down (#43 PR G: a capture it loses now is no
+    /// lift's, `diag::trace::sys::records`). One whose up the page missed
+    /// goes when a primary pointer of its type comes, or the page is hidden
+    /// or shown.
+    pub fn is_down(&self, id: i32) -> bool {
+        self.down.iter().any(|&(down_id, _)| down_id == id)
+    }
+
     /// A perf report goes at `now`: what it says. The most pointers at once
     /// starts again from those down now.
     pub fn report(&mut self, now: f64) -> PerfReport {

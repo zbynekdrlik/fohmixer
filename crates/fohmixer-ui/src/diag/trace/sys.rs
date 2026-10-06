@@ -12,14 +12,13 @@
 //!   surface's listeners ran, as a [`sys`] event: the control's kind and keys
 //!   (or the element's kind, [`kind`]), the pointer, and whether something
 //!   prevented it; a `lostpointercapture` only while its pointer is still
-//!   down ([`Gestures::records`]: every captured touch ends with one after
-//!   its lift, which is no news); and the visual viewport's scale as a
-//!   [`zoom`] event when it changes ([`Gestures::zoom`]).
+//!   down ([`records`]: every captured touch ends with one after its lift,
+//!   which is no news; which pointers are down is `diag::perf::Perf`'s); and
+//!   the visual viewport's scale as a [`zoom`] event when it changes
+//!   ([`ZoomWatch`]).
 //!
 //! Pure, tested natively; `diag.rs` and `dom.rs` hold the listeners and
 //! `components` the controls' directive.
-
-use std::collections::VecDeque;
 
 use serde_json::{Value, json};
 
@@ -47,10 +46,6 @@ pub const RECORDED: [&str; 6] = [
 /// The attribute a control's root carries its write keys in (a JSON array),
 /// so a record names the control.
 pub const KEYS_ATTR: &str = "data-keys";
-
-/// The most pointers [`Gestures`] remembers as down: a pointer whose up the
-/// page missed must not stay forever (the iPad numbers each touch anew).
-pub const HELD_MAX: usize = 16;
 
 /// A system gesture at page time `t`: `what` (the event's type) on `on`
 /// (the control's or element's kind), the control's `keys` (left out when
@@ -81,11 +76,23 @@ pub fn zoom(t: f64, scale: f64) -> Value {
 
 /// What a record calls the element an event came from: the control's kind
 /// (the `data-testid` of the control's root it lies in), else the nearest
-/// `data-testid`, else its tag name in lower case.
-pub fn kind(control: Option<&str>, nearest: Option<&str>, tag: &str) -> String {
-    control
-        .or(nearest)
-        .map_or_else(|| tag.to_ascii_lowercase(), str::to_string)
+/// `data-testid`, else its `tag` name in lower case; `none` without an
+/// element (an event at the document: a capture lost by a control taken
+/// away under the finger).
+pub fn kind(control: Option<&str>, nearest: Option<&str>, tag: Option<&str>) -> String {
+    match control.or(nearest) {
+        Some(testid) => testid.to_string(),
+        None => tag.map_or_else(|| "none".to_string(), str::to_ascii_lowercase),
+    }
+}
+
+/// Whether a gesture `what` is recorded, `held` saying whether its pointer
+/// is still down: every one, but a `lostpointercapture` only while its
+/// pointer is (a capture lost after the lift ends every captured touch; one
+/// lost while the finger is on the glass is the system taking the touch, or
+/// the control going away under it).
+pub fn records(what: &str, held: bool) -> bool {
+    what != "lostpointercapture" || held
 }
 
 /// A control's keys as its [`KEYS_ATTR`] holds them.
@@ -104,56 +111,19 @@ pub fn rounded(scale: f64) -> f64 {
     (scale * 100.0).round() / 100.0
 }
 
-/// Which pointers are down, and the scale last recorded.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Gestures {
-    /// The pointers down, the oldest first (at most [`HELD_MAX`]).
-    held: VecDeque<i32>,
-    /// The visual viewport's scale last recorded (1 at load).
+/// The visual viewport's scale last recorded (1 at load).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ZoomWatch {
     scale: f64,
 }
 
-impl Default for Gestures {
+impl Default for ZoomWatch {
     fn default() -> Self {
-        Self {
-            held: VecDeque::new(),
-            scale: 1.0,
-        }
+        Self { scale: 1.0 }
     }
 }
 
-impl Gestures {
-    /// Pointer `pointer` went down (the window's capture phase, before any
-    /// control).
-    pub fn down(&mut self, pointer: i32) {
-        self.up(pointer);
-        self.held.push_back(pointer);
-        if self.held.len() > HELD_MAX {
-            self.held.pop_front();
-        }
-    }
-
-    /// Pointer `pointer` went up or was cancelled.
-    pub fn up(&mut self, pointer: i32) {
-        self.held.retain(|&p| p != pointer);
-    }
-
-    /// Whether an event `what` of `pointer` is recorded: every one, but a
-    /// `lostpointercapture` only while its pointer is still down (a capture
-    /// lost after the lift ends every captured touch; one lost while the
-    /// finger is on the glass is the system taking the touch). A
-    /// `pointercancel` ends its pointer.
-    pub fn records(&mut self, what: &str, pointer: Option<i32>) -> bool {
-        match (what, pointer) {
-            ("lostpointercapture", Some(p)) => self.held.contains(&p),
-            ("pointercancel", Some(p)) => {
-                self.up(p);
-                true
-            }
-            _ => true,
-        }
-    }
-
+impl ZoomWatch {
     /// The visual viewport's scale is `scale`: the scale to record (two
     /// decimals) when that differs from the last recorded.
     pub fn zoom(&mut self, scale: f64) -> Option<f64> {
@@ -207,10 +177,15 @@ mod tests {
     }
 
     #[test]
-    fn the_kind_is_the_controls_else_the_nearest_test_id_else_the_tag() {
-        assert_eq!(kind(Some("mute"), Some("strip-label"), "SPAN"), "mute");
-        assert_eq!(kind(None, Some("row"), "DIV"), "row");
-        assert_eq!(kind(None, None, "BODY"), "body");
+    fn the_kind_is_the_controls_else_the_nearest_test_id_else_the_tag_else_none() {
+        assert_eq!(
+            kind(Some("mute"), Some("strip-label"), Some("SPAN")),
+            "mute"
+        );
+        assert_eq!(kind(None, Some("row"), Some("DIV")), "row");
+        assert_eq!(kind(None, None, Some("BODY")), "body");
+        assert_eq!(kind(None, None, None), "none", "no element");
+        assert_eq!(kind(Some("fader"), None, None), "fader");
     }
 
     #[test]
@@ -255,76 +230,27 @@ mod tests {
     }
 
     #[test]
-    fn a_lost_capture_is_recorded_only_while_its_pointer_is_down() {
-        let mut g = Gestures::default();
-        assert!(!g.records("lostpointercapture", Some(4)), "never down");
-        g.down(4);
-        assert!(g.records("lostpointercapture", Some(4)), "still down");
-        assert!(!g.records("lostpointercapture", Some(5)), "another pointer");
-        g.up(4);
+    fn a_lost_capture_is_recorded_only_while_its_pointer_is_down_every_other_gesture_always() {
+        assert!(records("lostpointercapture", true), "still down");
         assert!(
-            !g.records("lostpointercapture", Some(4)),
+            !records("lostpointercapture", false),
             "the lift's own lost capture"
         );
-    }
-
-    #[test]
-    fn a_cancelled_pointer_is_recorded_and_ends_its_pointer() {
-        let mut g = Gestures::default();
-        g.down(7);
-        g.down(8);
-        assert!(g.records("pointercancel", Some(7)));
-        assert!(
-            !g.records("lostpointercapture", Some(7)),
-            "the cancel's echo"
-        );
-        assert!(
-            g.records("lostpointercapture", Some(8)),
-            "the other is still down"
-        );
-        assert!(g.records("pointercancel", Some(9)), "a cancel never down");
-    }
-
-    #[test]
-    fn every_other_event_is_recorded() {
-        let mut g = Gestures::default();
-        for what in ["contextmenu", "selectstart", "dragstart", "gesturestart"] {
-            assert!(g.records(what, None), "{what}");
-            assert!(g.records(what, Some(1)), "{what} of a pointer");
+        for what in [
+            "contextmenu",
+            "selectstart",
+            "dragstart",
+            "gesturestart",
+            "pointercancel",
+        ] {
+            assert!(records(what, false), "{what}");
+            assert!(records(what, true), "{what} of a pointer down");
         }
-        assert!(
-            g.records("lostpointercapture", None),
-            "a lost capture without a pointer"
-        );
-    }
-
-    #[test]
-    fn a_pointer_down_again_counts_once_and_a_missed_up_is_forgotten_past_the_bound() {
-        let mut g = Gestures::default();
-        g.down(1);
-        g.down(1);
-        g.up(1);
-        assert!(!g.records("lostpointercapture", Some(1)), "one up ends it");
-        for p in 100..100 + HELD_MAX as i32 {
-            g.down(p);
-        }
-        assert!(
-            g.records("lostpointercapture", Some(100)),
-            "the bound keeps 16"
-        );
-        g.down(200);
-        assert!(
-            !g.records("lostpointercapture", Some(100)),
-            "the oldest went"
-        );
-        assert!(g.records("lostpointercapture", Some(101)));
-        assert!(g.records("lostpointercapture", Some(200)));
-        assert_eq!(HELD_MAX, 16);
     }
 
     #[test]
     fn a_zoom_is_recorded_when_its_two_decimals_change_away_from_1_and_back() {
-        let mut g = Gestures::default();
+        let mut g = ZoomWatch::default();
         assert_eq!(g.zoom(1.0), None, "1 at load");
         assert_eq!(g.zoom(1.004), None, "rounds to 1");
         assert_eq!(g.zoom(1.006), Some(1.01));
