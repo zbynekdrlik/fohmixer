@@ -198,6 +198,59 @@ fn a_lost_link_keeps_the_held_keys_for_a_release_once_it_is_back() {
     );
 }
 
+fn answer(key: u32, down: bool, ok: bool, error: Option<&str>) -> Answer {
+    Answer {
+        press: Press {
+            key,
+            down,
+            from: Some((1, 7)),
+        },
+        ok,
+        error: error.map(str::to_string),
+        rtt_ms: None,
+    }
+}
+
+#[test]
+fn a_release_the_link_lost_is_released_once_it_is_back() {
+    // Only an up answered offline is a release the link lost.
+    assert!(release_lost(&answer(3, false, false, Some(OFFLINE))));
+    assert!(!release_lost(&answer(3, false, true, None)));
+    assert!(!release_lost(&answer(3, true, false, Some(OFFLINE))));
+    assert!(!release_lost(&answer(3, false, false, Some("no such key"))));
+    assert!(!release_lost(&answer(3, false, false, None)));
+    // The hub's own release (no client) too.
+    let mut hubs = answer(4, false, false, Some(OFFLINE));
+    hubs.press.from = None;
+    assert!(release_lost(&hubs));
+    let mut deck = online();
+    assert!(!deck.answered(&answer(1, false, true, None)), "an ok up");
+    assert!(
+        !deck.answered(&answer(2, true, false, Some(OFFLINE))),
+        "a down"
+    );
+    assert!(
+        !deck.answered(&answer(5, false, false, Some("no such key"))),
+        "Companion's own error"
+    );
+    assert!(deck.answered(&answer(3, false, false, Some(OFFLINE))));
+    assert!(deck.answered(&hubs));
+    // The page's up left the holder set: only the lost releases wait.
+    deck.press(9, 6, true);
+    deck.link_down();
+    assert_eq!(deck.link_up(), vec![3, 4, 6]);
+    assert_eq!(deck.link_up(), Vec::<u32>::new(), "released once");
+    // Still lost at the stop: lost, never released.
+    assert!(deck.answered(&answer(8, false, false, Some(OFFLINE))));
+    assert_eq!(
+        deck.stop(),
+        StopKeys {
+            release: vec![],
+            lost: vec![8]
+        }
+    );
+}
+
 #[test]
 fn the_stop_names_the_keys_to_release_and_the_keys_lost() {
     let mut deck = online();

@@ -2,12 +2,12 @@
 //! attach and on Companion's link changes, the keys only to viewers,
 //! KEYS-CLEAR, a press's round trip and its records, two fingers on one
 //! key, the hub's own releases (a closed page socket, a holding page silent
-//! for 2 s, a key held when Companion was lost, the stop), a key held when
-//! Companion was lost and the hub stopped before the link came back (logged
-//! `lost`, never sent), a press waiting when the link goes, presses while
-//! Companion is away, and a hub without `[companion]`. Against the scripted
-//! fake Companion (`support/companion.rs`); host-free: it also runs in the
-//! `windows` job.
+//! for 2 s, a key held when Companion was lost, a release the link lost,
+//! the stop), a key held when Companion was lost and the hub stopped before
+//! the link came back (logged `lost`, never sent), a press waiting when the
+//! link goes, presses while Companion is away, and a hub without
+//! `[companion]`. Against the scripted fake Companion
+//! (`support/companion.rs`); host-free: it also runs in the `windows` job.
 
 mod support;
 
@@ -172,7 +172,12 @@ fn the_deck_comes_on_attach_and_only_viewers_get_the_keys() {
             "a client not viewing the tab gets no key"
         );
         fake.send("KEYS-CLEAR DEVICEID=\"fohmixer-1\"");
-        let keys = keys_until(&mut viewer, |k| k.get(&5).is_some_and(|k| k.img.is_none())).await;
+        // The whole clear (its keys may come in more than one message), so
+        // none of it is left to arrive after the tab closes.
+        let keys = keys_until(&mut viewer, |k| {
+            k.len() == 32 && k.values().all(|k| k.img.is_none())
+        })
+        .await;
         assert_eq!(
             keys[&5],
             DeckKey {
@@ -510,6 +515,72 @@ fn a_key_held_when_companion_was_lost_is_released_after_the_reconnect() {
                 release["reason"].clone()
             ),
             (Value::Null, json!(2), json!("reconnect"))
+        );
+        hub.stop().await;
+    });
+}
+
+#[test]
+fn a_release_the_link_lost_is_sent_again_after_the_reconnect() {
+    let _serial = serial();
+    runtime().block_on(async {
+        // A Companion that reads but never answers: the press and its
+        // release wait for an answer when the link goes.
+        let fake = FakeCompanion::start(Script {
+            api: "1.12.0".into(),
+            refuse_add: None,
+            answers: false,
+        })
+        .await;
+        let dir = tempfile::tempdir().unwrap();
+        let hub = TestHub::start_config(deck_config(dir.path(), fake.port)).await;
+        let mut a = hub.client().await;
+        deck_online(&mut a, true).await;
+        press(&mut a, 12, true, 1).await;
+        press(&mut a, 12, false, 2).await;
+        // Both forwarded: the page's up left the holder set.
+        fake.until(Duration::from_secs(2), "the press and its release", |g| {
+            presses_in(g, 12) == vec![(1, true), (1, false)]
+        })
+        .await;
+        a.clear();
+        fake.close();
+        assert_eq!(
+            ack(&mut a, 1).await,
+            (false, Some("offline".to_string()), None)
+        );
+        assert_eq!(
+            ack(&mut a, 2).await,
+            (false, Some("offline".to_string()), None),
+            "the release was answered offline: Companion may still hold the key"
+        );
+        deck_online(&mut a, false).await;
+        deck_online(&mut a, true).await;
+        fake.until(
+            Duration::from_secs(2),
+            "the release on the new surface",
+            |g| presses_in(g, 12) == vec![(1, true), (1, false), (2, false)],
+        )
+        .await;
+        let records = hub
+            .events_until(WAIT, |r| r.iter().any(|e| e["ev"] == "deck_release"))
+            .await;
+        let release = of(&records, "deck_release")[0];
+        assert_eq!(
+            (
+                release["client"].clone(),
+                release["key"].clone(),
+                release["reason"].clone()
+            ),
+            (Value::Null, json!(12), json!("reconnect"))
+        );
+        let lost = of(&records, "deck_ok")
+            .into_iter()
+            .find(|r| r["key"] == 12 && r["down"] == false)
+            .expect("the release's offline answer is recorded");
+        assert_eq!(
+            (lost["ok"].clone(), lost["error"].clone()),
+            (json!(false), json!("offline"))
         );
         hub.stop().await;
     });
