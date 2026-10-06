@@ -211,7 +211,9 @@ fn a_colour_is_a_hash_and_six_hex_digits() {
     assert!(!hex_colour("#00aa0g"), "not hex");
     assert!(!hex_colour("#abc"), "short form");
     assert!(!hex_colour("#ff0000;x"));
-    assert!(!hex_colour("#ffééff"), "not ascii");
+    // Seven bytes, as `#rrggbb`, so only the hex check can refuse it.
+    assert_eq!("#ffé0f".len(), 7);
+    assert!(!hex_colour("#ffé0f"), "not ascii");
     assert!(!hex_colour(""));
 }
 
