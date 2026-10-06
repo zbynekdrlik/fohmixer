@@ -196,8 +196,12 @@ test.describe("The Stream Deck tab", () => {
     await expect(page.getByTestId("deck-tab")).toHaveAttribute("data-offline", "false");
     await expect(page.getByTestId("deck-dot")).toHaveCount(0);
     // The layout's tabs are not lit while the deck is shown, and the pages'
-    // tab bar still lists only them.
-    await expect(page.locator('[data-testid="tabbar"][data-level="0"] [data-testid="tab"][data-selected="true"]')).toHaveCount(0);
+    // tab bar still lists only them as `tab`s: the deck's tab ends the bar
+    // under its own test id.
+    const bar = page.locator('[data-testid="tabbar"][data-level="0"]');
+    await expect(bar.locator('[data-testid="tab"][data-selected="true"]')).toHaveCount(0);
+    await expect(bar.getByTestId("tab")).toHaveText(["Cue", "FOH", "Conf"]);
+    await expect(bar.getByTestId("deck-tab")).toHaveCount(1);
   });
 
   test("the top bar keeps the version on screen beside the deck tab", async ({ page }) => {
@@ -230,33 +234,36 @@ test.describe("The Stream Deck tab", () => {
     await expect(page.getByTestId("deck")).toHaveCount(0);
     await until(() => pressesOf(5, since), (p) => p.join() === "true,false", "key 5 up on leaving the tab");
     // The hub's records say why each up came; so does the page's flight recorder.
-    const ups = await until(
-      async () => (await hubEvents()).filter((r: any) => r.ev === "deck_press" && r.ts >= since && r.down === false),
-      (r) => r.length >= 3,
-      "the hub's deck_press records",
+    const presses = await hubRecords(
+      "deck_press",
+      since,
+      (r) => r.filter((x) => x.down === false).length >= 3,
+      "the hub's ups of keys 3, 4 and 5",
     );
-    expect(new Map(ups.map((r: any) => [r.key, r.why]))).toEqual(new Map([[3, "up"], [4, "cancel"], [5, "tab"]]));
-    expect(ups.every((r: any) => r.forwarded === true && r.hold_ms > 0)).toBe(true);
+    const ups = presses.filter((r) => r.down === false);
+    expect(new Map(ups.map((r) => [r.key, r.why]))).toEqual(new Map([[3, "up"], [4, "cancel"], [5, "tab"]]));
+    expect(ups.every((r) => r.forwarded === true && r.hold_ms > 0)).toBe(true);
     // Companion's answer to key 3's down: the deck_ok of the same client and
-    // seq after it, with its round trip (logged before key 5's up came).
-    const records = await hubEvents();
-    const at = records.findIndex((r: any) => r.ev === "deck_press" && r.ts >= since && r.key === 3 && r.down === true);
-    expect(at, "key 3's down in the event log").toBeGreaterThanOrEqual(0);
-    const press = records[at];
+    // seq, at or after it, with its round trip.
+    const press = presses.find((r) => r.key === 3 && r.down === true);
+    expect(press, "key 3's down in the event log").toBeTruthy();
     expect([press.forwarded, press.reason, press.why]).toEqual([true, null, null]);
-    const answer = records.slice(at + 1).find((r: any) => r.ev === "deck_ok" && r.client === press.client && r.seq === press.seq);
-    expect(answer, "Companion's answer to key 3's down").toBeTruthy();
+    const answers = await hubRecords(
+      "deck_ok",
+      since,
+      (r) => r.some((x) => x.client === press.client && x.seq === press.seq),
+      "Companion's answer to key 3's down",
+    );
+    const answer = answers.find((r) => r.client === press.client && r.seq === press.seq);
     expect([answer.key, answer.down, answer.ok, answer.error]).toEqual([3, true, true, null]);
+    expect(answer.ts).toBeGreaterThanOrEqual(press.ts);
     expect(typeof answer.rtt_ms).toBe("number");
     expect(answer.rtt_ms).toBeGreaterThanOrEqual(0);
-    const deckUps = await until(
-      async () => pageEvents(await hubEvents()).filter((e: any) => e.ev === "deck" && e.t >= since && e.d === 0),
-      (e) => e.length >= 3,
-      "the page's deck events",
-      15000,
-    );
-    expect(new Map(deckUps.map((e: any) => [e.k, e.why]))).toEqual(new Map([[3, "up"], [4, "cancel"], [5, "tab"]]));
-    expect(deckUps.every((e: any) => e.sent === true && typeof e.q === "number")).toBe(true);
+    const deckUps = (
+      await deckEvents(since, (e) => e.filter((x) => x.d === 0).length >= 3, "the page's deck ups of keys 3, 4 and 5")
+    ).filter((e) => e.d === 0);
+    expect(new Map(deckUps.map((e) => [e.k, e.why]))).toEqual(new Map([[3, "up"], [4, "cancel"], [5, "tab"]]));
+    expect(deckUps.every((e) => e.sent === true && typeof e.q === "number")).toBe(true);
     // The forensics timeline counts the window's three presses, numbers only.
     const report = await harness("/forensics/timeline", { from_ms: since, to_ms: Date.now() });
     expect(report.exit).toBe(0);
@@ -270,9 +277,42 @@ test.describe("The Stream Deck tab", () => {
     await openSurface(page);
     await openDeck(page);
     const key = deckKey(page, 10);
-    await dispatchPointer(key, [{ type: "pointerdown" }]);
-    await expect(key).toHaveAttribute("data-held", "true");
+    const since = Date.now();
+    // The page's link held 1.5 s: no answer can come meanwhile. The down and
+    // the read two frames later run in the page, without a round trip.
+    await impair.stall(1500);
+    const { x, y } = await centre(key);
+    const seen = await key.evaluate(
+      async (el, { clientX, clientY }) => {
+        el.dispatchEvent(
+          new PointerEvent("pointerdown", {
+            pointerId: 21,
+            pointerType: "touch",
+            isPrimary: true,
+            clientX,
+            clientY,
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
+        await new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)));
+        return {
+          held: el.getAttribute("data-held"),
+          pressed: el.getAttribute("data-pressed"),
+          at: performance.timeOrigin + performance.now(),
+        };
+      },
+      { clientX: x, clientY: y },
+    );
+    // The outline is the page's own, at once; Companion's pressed look waits
+    // for its answer.
+    expect([seen.held, seen.pressed]).toEqual(["true", "false"]);
     await expect(key).toHaveAttribute("data-pressed", "true");
+    await expect(key).toHaveAttribute("data-held", "true");
+    // The read came before the hub even had the down.
+    const records = await hubRecords("deck_press", since, (r) => r.some((x) => x.key === 10 && x.down === true), "key 10's down in the event log");
+    const down = records.find((x) => x.key === 10 && x.down === true);
+    expect(down.ts, "the hub got the down after the page showed its outline").toBeGreaterThan(seen.at);
     await dispatchPointer(key, [{ type: "pointerup" }]);
     await expect(key).toHaveAttribute("data-held", "false");
     await expect(key).toHaveAttribute("data-pressed", "false");
@@ -416,11 +456,12 @@ test.describe("The Stream Deck tab", () => {
       [true, true, null],
       [false, false, "test refusal"],
     ]);
-    // A down Companion refuses flashes its key.
+    // A down Companion refuses flashes its key. The hub's acks reach the page
+    // in the order Companion answered, so once key 9 has flashed the page has
+    // already handled key 13's refused up: had that flashed, key 13 would be
+    // in the set too and this poll would never read [9].
     await tap(page, 9);
     await expect.poll(() => flashedKeys(page)).toEqual([9]);
-    await hubRecords("deck_ok", since, (r) => r.some((x) => x.key === 9 && x.down === false), "Companion's answer to key 9's up");
-    expect(await flashedKeys(page)).toEqual([9]);
     // Companion still holds key 13 (it refused the release): a tap with
     // Companion answering OK again releases it.
     await companion.fail(false);
