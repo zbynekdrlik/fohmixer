@@ -5,7 +5,8 @@
 //! closed) and `deck_press` (sent at once or not at all: never queued, never
 //! sent again after a reconnect, #52 §6). A socket close leaves the keys as
 //! they were, dimmed (`online` false), and forgets the waiting presses (the
-//! hub's `Detach` releases what this page held).
+//! hub's `Detach` releases what this page held); the tab and the keys stay
+//! through the reconnect until the hub's next `deck` and `deck_keys`.
 
 use fohmixer_proto::client::{ClientMsg, DeckKey};
 use leptos::prelude::*;
@@ -44,18 +45,19 @@ impl LiveStore {
         self.send(&ClientMsg::DeckView { on });
     }
 
-    /// After a hello: the deck info starts over (the hub's `deck` sets it
-    /// again when it has a Companion), and the open tab tells the hub again.
+    /// After a hello: the open tab tells the hub again. The deck info stays
+    /// as it was (offline since the close) until the hub's `deck` after the
+    /// hello updates it, so a reconnect neither flickers the tab nor takes
+    /// the open deck page down; a hub restarted without `[companion]` (same
+    /// build) leaves the tab until a reload (a new build reloads the page).
     pub(super) fn deck_hello(self) {
-        // P3: the hub has a `[companion]` only if its `deck` follows this
-        // hello; an open page loses the tab when it does not.
-        let _ = self.deck.try_set(None);
         if self.inner.try_with_value(|i| i.deck_viewing) == Some(true) {
             self.send(&ClientMsg::DeckView { on: true });
         }
     }
 
-    /// The socket closed: Companion's state unknown until the next hello.
+    /// The socket closed: Companion's state unknown until the hub's next
+    /// `deck`.
     pub(super) fn deck_closed(self) {
         let _ = self.inner.try_update_value(|i| i.deck.clear());
         let _ = self.deck.try_update(|deck| {

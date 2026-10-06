@@ -130,14 +130,14 @@ exclude_re = [
   # store/live/deck.rs (#52): the Stream Deck's glue, one function at a time:
   # on_deck, on_deck_keys and on_deck_ack (the hub's messages into the
   # signals and the tested DeckWaiting), deck_view and deck_hello (the tab's
-  # deck_view, again after a hello; a hello also resets the deck info, so a
-  # hub that lost its [companion] takes the tab away), deck_closed (a closed
-  # socket: offline, DeckWaiting::clear), can_send (the socket's readiness)
-  # and deck_press (DeckWaiting::next_seq and sent around the socket).
-  # deck.spec.ts drives them (the grid with its keys, the presses at the fake
-  # Companion, the offline dot and the red flash for Companion down and for
-  # the page's own socket down, a refused press's flash, the tab again after
-  # a reconnect, the tab gone after a reconnect to a hub without Companion).
+  # deck_view, again after a hello; the deck info stays through a reconnect,
+  # so the tab never flickers), deck_closed (a closed socket: offline,
+  # DeckWaiting::clear), can_send (the socket's readiness) and deck_press
+  # (DeckWaiting::next_seq and sent around the socket). deck.spec.ts drives
+  # them (the grid with its keys, the presses at the fake Companion, the
+  # offline dot and the red flash for Companion down and for the page's own
+  # socket down, a refused press's flash, the tab and the page kept through
+  # a reconnect).
   "fohmixer-ui/src/store/live/deck\\.rs.*(replace|in) LiveStore::(on_deck|on_deck_keys|on_deck_ack|deck_view|deck_hello|deck_closed|can_send|deck_press)( |$)",
   "fohmixer-ui/src/store/live\\.rs.*(replace|in) (Socket::open|Socket::buffered|Socket::close|Inner::new)( |$)",
   # auth.rs: local storage and the login request (login_outcome, login_body
