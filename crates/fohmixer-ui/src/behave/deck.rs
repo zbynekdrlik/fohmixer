@@ -273,6 +273,42 @@ mod tests {
     }
 
     #[test]
+    fn a_primary_down_releases_a_hold_whose_end_never_came() {
+        let mut p = Presses::default();
+        assert_eq!(p.down(3, 21, 1000.0, true), down_sent(3));
+        // Pointer 21's end never came; the next touch is primary (no other
+        // pointer is down), so the stale hold goes up with its hold.
+        assert_eq!(
+            p.missed_ups(true, 1400.0),
+            vec![up_sent(3, 400.0, Why::Lost)]
+        );
+        assert!(!p.is_held(3));
+        // Then the new down proceeds normally, on the same key too.
+        assert_eq!(p.down(3, 22, 1400.0, true), down_sent(3));
+        assert_eq!(p.up(3, 22, 1500.0, Why::Up), up_sent(3, 100.0, Why::Up));
+    }
+
+    #[test]
+    fn a_second_finger_releases_nothing() {
+        let mut p = Presses::default();
+        assert_eq!(p.down(3, 21, 0.0, true), down_sent(3));
+        assert!(p.missed_ups(false, 50.0).is_empty());
+        assert!(p.is_held(3), "the first finger still holds it");
+        assert_eq!(p.down(4, 22, 50.0, true), down_sent(4));
+        assert_eq!(p.held_keys(), BTreeSet::from([3, 4]));
+    }
+
+    #[test]
+    fn a_primary_down_with_no_stale_hold_sends_no_up() {
+        let mut p = Presses::default();
+        assert!(p.missed_ups(true, 0.0).is_empty());
+        // A flashed hold (its down never went) is forgotten without an up.
+        assert_eq!(p.down(7, 1, 0.0, false), Action::Flash { key: 7 });
+        assert!(p.missed_ups(true, 100.0).is_empty());
+        assert!(!p.is_held(7));
+    }
+
+    #[test]
     fn the_why_of_an_up() {
         assert_eq!(Why::of_event("pointerup"), Some(Why::Up));
         assert_eq!(Why::of_event("pointercancel"), Some(Why::Cancel));
