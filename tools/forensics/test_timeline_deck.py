@@ -18,6 +18,7 @@ if HERE not in sys.path:
 from test_timeline import BASE, OFFSET, Log, ReportCase  # noqa: E402
 from timeline_touch import (  # noqa: E402
     DeckOutage,
+    deck_key_changes,
     deck_outages,
     deck_presses,
     deck_releases,
@@ -474,6 +475,27 @@ class DeckHelpers(unittest.TestCase):
         # Lost and stop releases take none.
         got = deck_releases([rel(10, 2, "lost"), rel(11, 2, "stop")], [ans(12, 2)])
         self.assertEqual([r.ok for r in got], [None, None])
+
+    def test_a_key_change_takes_its_keys_latest_press_at_or_before_it(self):
+        def rec(ts, key):
+            return {"ts": ts, "key": key, "pressed": True, "color": None, "img_hash": "h"}
+
+        # Presses in any order, of several keys; one at the record's own ms
+        # counts (0 ms), one after it does not.
+        presses = [(30_000, 1), (100, 1), (5_000, 2), (20_000, 1), (25_000, 1)]
+        got = deck_key_changes(
+            [rec(50, 1), rec(5_000, 2), rec(19_000, 1), rec(25_000, 1), rec(26_000, 3)],
+            presses,
+            0,
+            40_000,
+        )
+        self.assertEqual(
+            [(c.time, c.key, c.since_press_ms) for c in got],
+            [(5_000, 2, 0), (25_000, 1, 0)],
+        )
+        # Outside the window: left out, but still the image's previous record.
+        got = deck_key_changes([rec(150, 1), rec(200, 1)], [(100, 1)], 160, 400)
+        self.assertEqual([(c.time, c.img_changed) for c in got], [(200, False)])
 
     def test_a_key_change_counts_up_to_ten_seconds_after_a_press(self):
         self.assertTrue(in_press_window(0.0))

@@ -71,6 +71,7 @@ seq). A volume's Live value at position p is p^0.515.
   finger's moves are missing).
 """
 
+import bisect
 import collections
 import itertools
 import math
@@ -576,6 +577,13 @@ def deck_key_changes(records, presses, start, end):
     ``DeckKeyChange``es in time order: whether Companion reacted. ``records``
     are every ``deck_key`` read, in time order: a change's image is compared
     with the key's previous record, one before the window too."""
+    # Each key's press times, sorted: a record finds its key's latest press
+    # at or before it by bisection, never by scanning every press.
+    pressed_at = collections.defaultdict(list)
+    for at, key in presses:
+        pressed_at[key].append(at)
+    for times in pressed_at.values():
+        times.sort()
     last_hash = {}
     out = []
     for record in records:
@@ -585,8 +593,12 @@ def deck_key_changes(records, presses, start, end):
         last_hash[key] = img
         if not start <= record["ts"] <= end:
             continue
-        since = [record["ts"] - at for at, k in presses if k == key and at <= record["ts"]]
-        if not since or not in_press_window(min(since)):
+        times = pressed_at.get(key, ())
+        latest = bisect.bisect_right(times, record["ts"])
+        if latest == 0:
+            continue
+        since = record["ts"] - times[latest - 1]
+        if not in_press_window(since):
             continue
         pressed = record.get("pressed")
         out.append(
@@ -597,7 +609,7 @@ def deck_key_changes(records, presses, start, end):
                 record.get("color"),
                 img,
                 changed,
-                min(since),
+                since,
             )
         )
     return out
