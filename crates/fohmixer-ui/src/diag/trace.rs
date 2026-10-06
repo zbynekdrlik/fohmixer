@@ -125,10 +125,11 @@ pub fn takes_batch(buffered: u32) -> bool {
 /// When the backlog's bound drops an event of kind `ev` (#43 PR E): none
 /// for an essential one, what the forensics need of every touch and outage
 /// (touches, dropouts, resets, socket transitions, visibility, the notes of
-/// what went, a write's intent changes, PR G's system gestures and zooms, #52's Stream Deck
-/// presses); rank 0, first, for the round-trip summaries, long frames and any other kind; rank 1, last, for the moves
-/// (the only per-frame data of a drag the hub cannot see). A touch's first
-/// moves are pushed as essential ([`Recorder::push_essential`]).
+/// what went, a write's intent changes, PR G's system gestures and zooms,
+/// #52's Stream Deck presses); rank 0, first, for the round-trip summaries,
+/// long frames and any other kind; rank 1, last, for the moves (the only
+/// per-frame data of a drag the hub cannot see). A touch's first moves are
+/// pushed as essential ([`Recorder::push_essential`]).
 pub fn drop_rank(ev: &str) -> Option<u8> {
     match ev {
         "touch" | "dropout" | "reset" | "sock" | "visibility" | "overflow" | "intent" | "sys"
