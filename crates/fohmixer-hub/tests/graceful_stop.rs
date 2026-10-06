@@ -1,8 +1,9 @@
 //! The hub binary stops gracefully (copied from iemmixer's
 //! `iem-server/tests/graceful_stop.rs` @ 22372bc and adapted): SIGTERM or
 //! SIGINT closes the listener at once, open requests get up to 5 s, the
-//! process exits 0 and the port is free. The in-process `serve_until` tests
-//! are in `tests/serve_until.rs`.
+//! process exits 0 and the port is free; with `[companion]` the Stream Deck
+//! leaves Companion (`REMOVE-DEVICE`, #52) before the process ends. The
+//! in-process `serve_until` tests are in `tests/serve_until.rs`.
 //!
 //! Unix only: the tests send SIGTERM/SIGINT. The Windows stop (Ctrl-Break to
 //! the hub's console) is exercised on the PC from S3 on.
@@ -13,7 +14,7 @@
 //! 0, so a hub another test starts at that moment could take it.
 #![cfg(unix)]
 
-use std::io::{Read, Write};
+use std::io::{BufRead, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::{Mutex, MutexGuard};
@@ -89,7 +90,12 @@ fn start() -> Server {
 
 /// [`start`] with the environment `envs` on top.
 fn start_with(envs: &[(&str, &str)]) -> Server {
-    let mut server = spawn_hub(envs);
+    start_toml("instances = []\n", envs)
+}
+
+/// [`start_with`] with `toml` as the hub's config file.
+fn start_toml(toml: &str, envs: &[(&str, &str)]) -> Server {
+    let mut server = spawn_hub(toml, envs);
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         if server.port == 0
@@ -112,12 +118,12 @@ fn start_with(envs: &[(&str, &str)]) -> Server {
     }
 }
 
-/// The hub binary with `PORT=0`, its data folder a temporary one with no
-/// Live instances configured, no inherited `RUST_LOG` and the environment
+/// The hub binary with `PORT=0`, its data folder a temporary one with
+/// `toml` as its config file, no inherited `RUST_LOG` and the environment
 /// `envs` on top, its output in the server's log; not waited for.
-fn spawn_hub(envs: &[(&str, &str)]) -> Server {
+fn spawn_hub(toml: &str, envs: &[(&str, &str)]) -> Server {
     let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("fohmixer-hub.toml"), "instances = []\n").unwrap();
+    std::fs::write(dir.path().join("fohmixer-hub.toml"), toml).unwrap();
     let log = std::fs::File::create(dir.path().join("hub.log")).unwrap();
     let mut command = Command::new(env!("CARGO_BIN_EXE_fohmixer-hub"));
     command
@@ -328,7 +334,7 @@ fn rust_log_raises_the_hub_s_own_level() {
 #[test]
 fn a_bad_rust_log_exits_1_naming_it() {
     let _serial = serial();
-    let mut server = spawn_hub(&[("RUST_LOG", "fohmixer_hub=loud")]);
+    let mut server = spawn_hub("instances = []\n", &[("RUST_LOG", "fohmixer_hub=loud")]);
     // It must end by itself; a hub still serving after 10 s fails the test
     // (and is asked to stop by Server's drop).
     let status = exit_within(&mut server, Instant::now(), Duration::from_secs(10));
@@ -337,5 +343,68 @@ fn a_bad_rust_log_exits_1_naming_it() {
     assert!(
         log.contains("fohmixer-hub: RUST_LOG=fohmixer_hub=loud is not a valid log filter"),
         "{log}"
+    );
+}
+
+/// The binary's stop removes the Stream Deck from Companion (#52): the
+/// stop waits (bounded) for the Companion task's `REMOVE-DEVICE` before the
+/// process ends.
+#[test]
+fn sigterm_removes_the_stream_deck_from_companion() {
+    let _turn = serial();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    // A fake Companion: BEGIN, ADD-DEVICE OK, PONG; every line it got, until
+    // the hub closes the connection.
+    let fake = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(20)))
+            .unwrap();
+        stream
+            .write_all(b"BEGIN CompanionVersion=\"5.0.7+fake\" ApiVersion=\"1.12.0\" \n")
+            .unwrap();
+        let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+        let mut got = Vec::new();
+        loop {
+            let mut line = String::new();
+            match reader.read_line(&mut line) {
+                Ok(0) | Err(_) => return got,
+                Ok(_) => {}
+            }
+            let line = line.trim_end().to_string();
+            if line.starts_with("ADD-DEVICE") {
+                stream
+                    .write_all(b"ADD-DEVICE OK DEVICEID=\"fohmixer-1\" \n")
+                    .unwrap();
+            }
+            if let Some(n) = line.strip_prefix("PING ") {
+                stream.write_all(format!("PONG {n} \n").as_bytes()).unwrap();
+            }
+            got.push(line);
+        }
+    });
+    let toml = format!("instances = []\n[companion]\nhost = \"127.0.0.1\"\nport = {port}\n");
+    let mut server = start_toml(&toml, &[]);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !server
+        .log()
+        .contains("Stream Deck registered with Companion")
+    {
+        assert!(
+            Instant::now() < deadline,
+            "never registered: {}",
+            server.log()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let since = request_stop(&server, "TERM");
+    let status = exit_within(&mut server, since, Duration::from_secs(10));
+    assert!(status.success(), "{status}: {}", server.log());
+    let got = fake.join().unwrap();
+    assert_eq!(
+        got.last().map(String::as_str),
+        Some("REMOVE-DEVICE DEVICEID=\"fohmixer-1\""),
+        "{got:?}"
     );
 }

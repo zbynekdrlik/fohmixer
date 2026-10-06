@@ -752,6 +752,77 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_stop_waits_for_the_companion_task_to_remove_its_device() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = Config::defaults(dir.path());
+        config.instances.clear();
+        config.companion = Some(config::CompanionCfg {
+            host: "127.0.0.1".into(),
+            port,
+            columns: 8,
+            rows: 4,
+            bitmap_px: 72,
+            title: "Stream Deck".into(),
+        });
+        let hub = Hub::start(config).unwrap();
+        let (socket, _) = listener.accept().await.unwrap();
+        let (read, mut write) = socket.into_split();
+        write
+            .write_all(b"BEGIN CompanionVersion=\"5.0.7+fake\" ApiVersion=\"1.12.0\" \n")
+            .await
+            .unwrap();
+        let mut lines = BufReader::new(read).lines();
+        let add = lines.next_line().await.unwrap().unwrap();
+        assert!(
+            add.starts_with("ADD-DEVICE DEVICEID=\"fohmixer-1\""),
+            "{add}"
+        );
+        write
+            .write_all(b"ADD-DEVICE OK DEVICEID=\"fohmixer-1\" \n")
+            .await
+            .unwrap();
+        let handle = hub
+            .companion
+            .clone()
+            .expect("a hub with [companion] has the task");
+        for _ in 0..300 {
+            if handle.snapshot().online {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(handle.snapshot().online);
+        // This Companion never answers REMOVE-DEVICE and keeps its socket
+        // open: the task ends at the stop's bound, and the stop waits for it.
+        let stopping = std::time::Instant::now();
+        hub.stop();
+        hub.companion_stopped().await;
+        let waited = stopping.elapsed();
+        assert!(
+            waited >= companion::STOP_BOUND,
+            "the stop did not wait for the Companion task: {waited:?}"
+        );
+        // Its REMOVE-DEVICE went out before the wait ended: read at once.
+        let removed = tokio::time::timeout(Duration::from_millis(50), async {
+            loop {
+                match lines.next_line().await {
+                    Ok(Some(line)) if line.starts_with("REMOVE-DEVICE") => return line,
+                    Ok(Some(_)) => {}
+                    other => panic!("the connection ended without REMOVE-DEVICE: {other:?}"),
+                }
+            }
+        })
+        .await
+        .expect("REMOVE-DEVICE within 50 ms of the stop's wait");
+        assert_eq!(removed, "REMOVE-DEVICE DEVICEID=\"fohmixer-1\"");
+        // It was the last line: the connection ends after it.
+        assert_eq!(lines.next_line().await.ok().flatten(), None);
+    }
+
+    #[tokio::test]
     async fn a_hub_on_an_unusable_data_folder_does_not_start() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("a-file");
