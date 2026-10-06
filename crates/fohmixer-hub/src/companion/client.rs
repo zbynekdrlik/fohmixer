@@ -489,7 +489,7 @@ impl Session<'_> {
                         } else {
                             None
                         };
-                        tracing::info!(device = self.device, left = ?left, writer = %writer_note(written.as_ref()), "the Stream Deck left Companion: the hub stops");
+                        tracing::info!(device = self.device, left = ?left, writer = %writer_note(written.as_ref()), others = ?state.others, "the Stream Deck left Companion: the hub stops");
                         // The presses still waiting are answered offline
                         // below, with the writer and the reader ended.
                         break End::Stop;
@@ -597,10 +597,12 @@ impl Session<'_> {
             Inbound::Pong => None,
             Inbound::Other(cmd) => Some(cmd),
         };
+        // At info, once per command per session (spec §4): bounded, and
+        // seen at the PC's log level; the counts come with the session's end.
         if let Some(cmd) = ignored
             && first_seen(&mut state.others, &cmd)
         {
-            tracing::debug!(device = self.device, cmd = %cmd, "a Companion line the hub ignores");
+            tracing::info!(device = self.device, cmd = ?cmd, "a Companion line the hub ignores");
         }
         None
     }
