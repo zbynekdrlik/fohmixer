@@ -2,8 +2,9 @@
 """Integrity gate (adapted from iemmixer @ 22372bc): no ignored, skipped or
 focused tests (Rust, Playwright, Python), no continue-on-error, self-hosted
 runners or pull_request_target, every action pinned to a full commit SHA with
-its version comment, and no force-kill verb anywhere, comments included
-(spec I7: nothing is force-killed on the Ableton PC)."""
+its version comment, no force-kill verb anywhere, comments included
+(spec I7: nothing is force-killed on the Ableton PC), and every tap target
+of the surface owns its touches (#43 PR G)."""
 from __future__ import annotations
 
 import re
@@ -34,6 +35,16 @@ FORCE_KILL = re.compile(
     r"|\bshutdown(?:\.exe)?\s+/f\b|\.kill\s*\(|\bstart_kill\b|\bkill_on_drop\b|\.terminate\s*\("
     r"|-(?:method)?name\s+['\"]?terminate\b|\bwmic\b.*\b(?:call\s+terminate|delete)\b"
     r"|(?:\bforeach-object|%)\s+(?:-membername\s+)?['\"]?kill\b")
+# Every element of a fohmixer-ui component or page that takes a pointerdown
+# carries `use:owns_touches` (#43 PR G): only an active touchstart listener
+# that prevents it stops WebKit's loupe of a tap followed by a hold. The login
+# page is no surface.
+TAP_TREES = ("crates/fohmixer-ui/src/components", "crates/fohmixer-ui/src/pages")
+TAP_EXEMPT = {"crates/fohmixer-ui/src/pages/login.rs"}
+TAP = re.compile(r"\bon:pointerdown\b")
+TAG_START = re.compile(r"<[a-z][a-z0-9-]*\b")
+# A start tag's end: a `>` that is no closure's `=>` and no `->`.
+TAG_END = re.compile(r"(?<![=-])>")
 CODE_SUFFIXES = (".rs", ".ts", ".js", ".py", ".sh", ".ps1", ".psm1", ".psd1", ".cmd", ".bat", ".yml", ".yaml", ".toml")
 PYTHON_TREES = ("live-script", "sim", "scripts", "tools")
 CODE_TREES = ("crates", "e2e", "scripts", ".github", "live-script", "sim", "tools")
@@ -50,11 +61,32 @@ def lines(path: Path) -> list[tuple[int, str]]:
     return list(enumerate(path.read_text(encoding="utf-8", errors="replace").splitlines(), start=1))
 
 
+def unowned_taps(text: str) -> list[int]:
+    """The lines of `text` (a Rust source's `view!` markup) where an element
+    takes `on:pointerdown` without `use:owns_touches` in its start tag."""
+    found = []
+    for tap in TAP.finditer(text):
+        starts = list(TAG_START.finditer(text, 0, tap.start()))
+        end = TAG_END.search(text, tap.end())
+        if not starts or end is None:
+            continue
+        if "use:owns_touches" not in text[starts[-1].start():end.start()]:
+            found.append(text.count("\n", 0, tap.start()) + 1)
+    return found
+
+
 def violations(root: Path) -> list[str]:
     found: list[str] = []
     for path in files(root, "crates", (".rs",)):
         rel = path.relative_to(root).as_posix()
         found += [f"{rel}:{n}: #[ignore] test" for n, line in lines(path) if RUST_IGNORE.search(line)]
+    for base in TAP_TREES:
+        for path in files(root, base, (".rs",)):
+            rel = path.relative_to(root).as_posix()
+            if rel in TAP_EXEMPT:
+                continue
+            text = path.read_text(encoding="utf-8", errors="replace")
+            found += [f"{rel}:{n}: tap target without use:owns_touches (#43)" for n in unowned_taps(text)]
     for path in files(root, "e2e", (".ts",)):
         rel = path.relative_to(root).as_posix()
         found += [f"{rel}:{n}: skipped or focused E2E test" for n, line in lines(path) if E2E_SKIP.search(line)]
