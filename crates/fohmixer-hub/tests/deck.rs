@@ -6,7 +6,8 @@
 //! the stop), a key held when Companion was lost and the hub stopped before
 //! the link came back (logged `lost`, never sent), a press waiting when the
 //! link goes, presses while Companion is away, a down that reaches the hub
-//! late, and a hub without `[companion]`. Against the scripted fake
+//! late, a down on time right after a clock step, and a hub without
+//! `[companion]`. Against the scripted fake
 //! Companion (`support/companion.rs`); host-free: it also runs in the
 //! `windows` job.
 
@@ -425,6 +426,69 @@ fn a_down_that_reaches_the_hub_late_is_refused_and_never_sent() {
                 .expect("a delay: the offset is known");
             assert_eq!(delay > 500.0, late, "press {i}: {delay} ms");
         }
+        hub.stop().await;
+    });
+}
+
+#[test]
+fn a_down_on_time_right_after_a_clock_step_is_not_refused() {
+    let _serial = serial();
+    runtime().block_on(async {
+        let fake = FakeCompanion::start(Script::companion()).await;
+        let dir = tempfile::tempdir().unwrap();
+        let hub = TestHub::start_config(deck_config(dir.path(), fake.port)).await;
+        let mut a = hub.client().await;
+        deck_online(&mut a, true).await;
+        let page_start = Instant::now();
+        let page_now = || 5_000.0 + page_start.elapsed().as_secs_f64() * 1000.0;
+        // Pings 0 and 1 on the page's clock, then 2 and 3 on a clock that
+        // stepped 2 s back (its clock paused over a sleep: to the hub the
+        // same as its own clock stepping 2 s forward). Ping 3 carries ping
+        // 2's round trip, a little longer than ping 1's: the window starts
+        // over from it at once.
+        for (n, back, rtt, rtt_n) in [
+            (0, 0.0, None, None),
+            (1, 0.0, Some(2.0), Some(0)),
+            (2, 2_000.0, Some(2.0), Some(1)),
+            (3, 2_000.0, Some(3.0), Some(2)),
+        ] {
+            a.send(&ClientMsg::Ping {
+                n,
+                t: page_now() - back,
+                rtt,
+                rtt_n,
+            })
+            .await;
+            a.wait(WAIT, |m| {
+                matches!(m, ServerMsg::Pong { n: got, .. } if *got == n).then_some(())
+            })
+            .await;
+        }
+        // A down on time on the stepped clock: forwarded, not late.
+        press_at(&mut a, 16, true, 1, page_now() - 2_000.0).await;
+        assert!(
+            ack(&mut a, 1).await.2.is_some(),
+            "forwarded: Companion's round trip"
+        );
+        press_at(&mut a, 16, false, 2, page_now() - 2_000.0).await;
+        assert!(ack(&mut a, 2).await.0);
+        assert_eq!(presses_in(&fake.got(), 16), vec![(1, true), (1, false)]);
+        let records = hub
+            .events_until(WAIT, |r| {
+                r.iter().filter(|e| e["ev"] == "deck_press").count() == 2
+            })
+            .await;
+        let down = of(&records, "deck_press")[0];
+        assert_eq!(down["forwarded"], json!(true));
+        let delay = down["delay_ms"].as_f64().expect("a delay");
+        assert!(delay.abs() < 500.0, "{delay} ms");
+        // The step is logged once, on the ping that made it.
+        let steps: Vec<f64> = of(&records, "ping")
+            .iter()
+            .filter_map(|r| r["clock_step_ms"].as_f64())
+            .collect();
+        assert_eq!(steps.len(), 1, "{steps:?}");
+        assert!((steps[0] - 2_000.0).abs() < 100.0, "{steps:?}");
         hub.stop().await;
     });
 }
