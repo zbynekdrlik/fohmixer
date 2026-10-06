@@ -474,6 +474,29 @@ test.describe("The Stream Deck tab", () => {
     expect(ups[1].hold_ms).toBeGreaterThan(0);
   });
 
+  test("a hold whose end never came goes up at a first finger anywhere on the page, not only on a key", async ({ page }) => {
+    await openSurface(page);
+    await openDeck(page);
+    const since = Date.now();
+    // Finger 21 on key 17; its end never comes.
+    await dispatchPointer(deckKey(page, 17), [{ type: "pointerdown" }], 21, true);
+    await until(() => pressesOf(17, since), (p) => p.join() === "true", "key 17 down");
+    // A second finger in the grid's margin releases nothing.
+    const margin = page.locator('[data-testid="deck"] .deck-area');
+    await dispatchPointer(margin, [{ type: "pointerdown" }, { type: "pointerup" }], 22, false);
+    await frames(page);
+    await expect(deckKey(page, 17)).toHaveAttribute("data-held", "true");
+    // The next first finger lands in the margin, on no key: key 17 goes up.
+    await dispatchPointer(margin, [{ type: "pointerdown" }, { type: "pointerup" }], 23, true);
+    await until(() => pressesOf(17, since), (p) => p.join() === "true,false", "key 17 up at a first finger off the keys");
+    await expect(deckKey(page, 17)).toHaveAttribute("data-held", "false");
+    const ups = await hubRecords("deck_press", since, (r) => r.some((x) => x.key === 17 && x.down === false), "key 17's up in the event log");
+    expect(ups.filter((r) => r.key === 17).map((r) => [r.down, r.why, r.forwarded])).toEqual([
+      [true, null, true],
+      [false, "lost", true],
+    ]);
+  });
+
   test("with Companion away the keys dim, the tab shows its dot, a press flashes red and is never sent", async ({ page }) => {
     await openSurface(page);
     await openDeck(page);
