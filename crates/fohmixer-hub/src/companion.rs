@@ -37,9 +37,10 @@ use crate::live::subs::ClientId;
 pub const SERIAL: &str = "fohmixer";
 /// The name Companion shows for the surface.
 pub const PRODUCT: &str = "fohmixer";
-/// The longest line the hub reads (a 144 px webp key is a few KB; Companion
-/// itself allows 2 MB): a longer one ends the link and bounds memory.
-pub const MAX_LINE: usize = 256 * 1024;
+/// The longest line the hub reads (a 144 px webp key is a few KB, a lossless
+/// 420 px one can be several hundred; Companion's own cap, `MAX_LINE_LENGTH`,
+/// is 2 MiB): a longer one ends the link and bounds memory.
+pub const MAX_LINE: usize = 2 * 1024 * 1024;
 /// How often the hub pings Companion (5.0.7 closes a socket silent for 5 s).
 pub const PING_EVERY: Duration = Duration::from_secs(2);
 /// No inbound line for longer than this: the link is lost.

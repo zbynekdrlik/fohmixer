@@ -2,7 +2,7 @@
 //! Companion (`support/companion.rs`): the handshake to `ADD-DEVICE OK` and
 //! Companion's key states, the pings, a press's round trip and its error, a
 //! refused API and a refused `ADD-DEVICE`, 5 s of silence and the reconnect
-//! with the next device id, a line over 256 KiB, and the stop's
+//! with the next device id, a line over 2 MiB, and the stop's
 //! `REMOVE-DEVICE`, whose late answer the hub reads before it closes (no
 //! reset). Host-free: it also runs in the `windows` job.
 
@@ -361,7 +361,7 @@ fn companion_silent_for_five_seconds_is_lost_and_the_next_device_id_registers() 
 }
 
 #[test]
-fn a_line_over_256_kib_ends_the_link() {
+fn a_line_over_2_mib_ends_the_link() {
     let _serial = serial();
     runtime().block_on(async {
         let fake = FakeCompanion::start(Script::companion()).await;
@@ -370,7 +370,7 @@ fn a_line_over_256_kib_ends_the_link() {
         seen.wait(Duration::from_secs(5), up).await;
         fake.send(&format!(
             "KEY-STATE DEVICEID=\"fohmixer-1\" KEY=0 BITMAP=\"data:image/webp;base64,{}\"",
-            "A".repeat(256 * 1024)
+            "A".repeat(2 * 1024 * 1024)
         ));
         let (_, error) = seen
             .wait(Duration::from_secs(5), |e| match e {
@@ -378,7 +378,7 @@ fn a_line_over_256_kib_ends_the_link() {
                 _ => None,
             })
             .await;
-        assert_eq!(error, "a line over 256 KiB");
+        assert_eq!(error, "a line over 2 MiB");
     });
 }
 

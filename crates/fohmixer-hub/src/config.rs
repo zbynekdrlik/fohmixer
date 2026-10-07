@@ -32,7 +32,7 @@
 //! port = 16622           # the default
 //! columns = 8            # 1..=16
 //! rows = 4               # 1..=8
-//! bitmap_px = 144        # 32..=288, the keys' image size
+//! bitmap_px = 144        # 32..=512, the keys' image size
 //! title = "Stream Deck"  # 1..=24 characters, the tab's title
 //! ```
 //!
@@ -451,8 +451,8 @@ impl Config {
         if !(1..=8).contains(&deck.rows) {
             bail!("[companion] rows {}: 1..=8", deck.rows);
         }
-        if !(32..=288).contains(&deck.bitmap_px) {
-            bail!("[companion] bitmap_px {}: 32..=288", deck.bitmap_px);
+        if !(32..=512).contains(&deck.bitmap_px) {
+            bail!("[companion] bitmap_px {}: 32..=512", deck.bitmap_px);
         }
         if !(1..=24).contains(&deck.title.chars().count()) {
             bail!("[companion] title {:?}: 1..=24 characters", deck.title);
@@ -979,11 +979,11 @@ mod tests {
             (table("rows = 9\n"), "[companion] rows 9: 1..=8"),
             (
                 table("bitmap_px = 31\n"),
-                "[companion] bitmap_px 31: 32..=288",
+                "[companion] bitmap_px 31: 32..=512",
             ),
             (
-                table("bitmap_px = 289\n"),
-                "[companion] bitmap_px 289: 32..=288",
+                table("bitmap_px = 513\n"),
+                "[companion] bitmap_px 513: 32..=512",
             ),
             (
                 table("title = \"\"\n"),
@@ -1000,7 +1000,7 @@ mod tests {
         }
         for ok in [
             "columns = 1\nrows = 1\nbitmap_px = 32\n",
-            "columns = 16\nrows = 8\nbitmap_px = 288\n",
+            "columns = 16\nrows = 8\nbitmap_px = 512\n",
             // 24 characters, one of them not ASCII: characters, not bytes.
             "title = \"Stream Deck of the FOH Ž\"\n",
         ] {
