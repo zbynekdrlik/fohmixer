@@ -11,7 +11,7 @@ group, page, pager and the canvas; a clipped node is reported, one with
 nothing shown is dropped), and classifies nodes by their role, not by their
 script alone: strips (by the names of their parts), solo buttons, the stage
 mics and STAGE AUT, areas and their titles, labels, the root overlay (the
-TechAlert strip, REFRESH ALL, the alert box). The former MIDI controls take
+TechAlert strip and the alert box; REFRESH ALL is dropped, #58). The former MIDI controls take
 their targets and ranges from the band set's MIDI mappings (``KeyMidi`` in the
 gzip XML of the ``.als``): a clean mapping becomes a ``param_toggle`` /
 ``param_fader`` writing its targets directly (D10); anything else is dropped
@@ -55,7 +55,7 @@ RUN_GAP = 1.5
 # A strip this many times its page's median strip width is drawn wide.
 WIDE_FROM = 1.2
 # The non-strip controls that go to the rail of a page with strips.
-RAIL_KINDS = ("stage", "hub_toggle", "solo", "param_toggle", "refresh")
+RAIL_KINDS = ("stage", "hub_toggle", "solo", "param_toggle")
 # The strip parts, by their node names (abl-touchosc's group_init.lua).
 STRIP_PARTS = {
     "fader": "fader",
@@ -84,7 +84,8 @@ FULL_RANGES = {
 }
 MACRO_BUS_CHANNEL = 16
 # REFRESH ALL asks the document script to refresh every strip (abl-touchosc's
-# global_refresh_button.lua); other scripts only mention a refresh.
+# global_refresh_button.lua); other scripts only mention a refresh. fohmixer
+# has no such control (#58): the hub keeps every binding current itself.
 REFRESH_CALL = re.compile(r"""\bnotify\s*\(\s*["']refresh_all_groups["']""")
 LUA_COMMENT = re.compile(r"--\[(=*)\[.*?\]\1\]|--[^\n]*", re.DOTALL)
 
@@ -923,7 +924,7 @@ class Importer:
         elif node.type == "GROUP" and any(_midi_of(c) for c in node.children):
             self.midi_group(node, ax, ay, shown, out, path)
         elif _is_refresh(node):
-            out.append(self.item("refresh", shown, path, label=_words(node.text) or node.name))
+            self.drop(path, "REFRESH ALL: the hub keeps every binding current (#58)")
         elif node.type == "GROUP":
             if node.prop("background", False):
                 out.append(self.area("box", shown, path, self.fill(node)))
@@ -1178,9 +1179,6 @@ class Importer:
                 out["color"] = item["color"]
         elif kind == "param_fader":
             out |= {"label": item["label"], "targets": item["targets"]}
-        elif kind == "refresh":
-            if item["label"]:
-                out["label"] = item["label"]
         elif kind == "text":
             out["text"] = item["text"]
         else:
@@ -1349,8 +1347,8 @@ class Importer:
 
     def emit_global(self, overlay):
         """The controls on every page (the rail's footer): the TechAlert strip
-        and its alert box as one ``alert``, REFRESH ALL, any other overlay
-        control; top to bottom. The overlay's labels are dropped."""
+        and its alert box as one ``alert``, any other overlay control; top to
+        bottom. The overlay's labels are dropped."""
         placed = []  # (frame, control)
         bound = set()
         for item in overlay:

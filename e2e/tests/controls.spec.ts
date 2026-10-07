@@ -1,10 +1,23 @@
 import { test, expect } from "./support/fixtures";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { LiveClient, centre, doubleTap, harness, hostLine, openSurface, ready, strip, track, until } from "./support/live";
+import {
+  LiveClient,
+  centre,
+  doubleTap,
+  harness,
+  hostLine,
+  hubSubscriptions,
+  openSurface,
+  ready,
+  selectPage,
+  strip,
+  track,
+  until,
+} from "./support/live";
 
-// Solo, the stage mics with STAGE AUT, TechAlert and REFRESH ALL (spec F6,
-// F7, F14–F16, I5).
+// Solo, the stage mics with STAGE AUT, TechAlert, bindings that stay current
+// with no REFRESH ALL and the page's unfold (spec F3, F7, F14–F16, I5; #58).
 
 let live: LiveClient;
 test.beforeEach(async () => {
@@ -236,12 +249,10 @@ test.describe("SOLO clear", () => {
   });
 });
 
-test.describe("REFRESH ALL", () => {
+test.describe("Bindings stay current with no REFRESH ALL (#58)", () => {
   test("a renamed track turns its strip red; renamed back, the hub binds it again by itself", async ({ page }) => {
     await openSurface(page);
     const hand2 = strip(page, "Hand2 #");
-    const surface = page.getByTestId("surface");
-    const refreshes = await surface.getAttribute("data-refreshes");
     await expect(hand2.getByTestId("status")).toHaveAttribute("data-state", "bound");
     try {
       expect(await hostLine("band", 'rename "Hand2 #" "Hand2 X"')).toBe("RENAMED 1");
@@ -250,50 +261,42 @@ test.describe("REFRESH ALL", () => {
     } finally {
       await hostLine("band", 'rename "Hand2 X" "Hand2 #"');
     }
-    // The hub's name guard (F3) heals the live subscription: no refresh.
+    // The hub's name guard (F3) heals the live subscription.
     await expect(hand2.getByTestId("status")).toHaveAttribute("data-state", "bound");
     await ready(hand2.getByTestId("fader"));
-    await expect(surface).toHaveAttribute("data-refreshes", refreshes ?? "");
   });
 
-  test("a subscription made while the name is gone stays red until REFRESH ALL", async ({ page }) => {
+  test("a subscription made while the name is gone heals by itself when the track is renamed back", async ({ page }) => {
     await openSurface(page);
     const hand2 = strip(page, "Hand2 #");
-    const refresh = page.getByTestId("refresh");
-    const surface = page.getByTestId("surface");
     await expect(hand2.getByTestId("status")).toHaveAttribute("data-state", "bound");
     try {
       expect(await hostLine("band", 'rename "Hand2 #" "Hand2 X"')).toBe("RENAMED 1");
       await expect(hand2.getByTestId("status")).toHaveAttribute("data-state", "unbound");
-      // A refresh now subscribes a name that is gone: it cannot bind.
-      const before = Number(await surface.getAttribute("data-refreshes"));
-      await refresh.click();
-      await expect(refresh).toHaveAttribute("data-flash", "true");
-      await expect(refresh).toHaveAttribute("data-flash", "false");
-      await expect(surface).toHaveAttribute("data-refreshes", String(before + 1));
+      // Away from the FOH page its strips are unsubscribed; back on it they
+      // are subscribed again while the name is gone, so the new
+      // subscription has no track whose name the hub could listen to.
+      const before = await hubSubscriptions();
+      await selectPage(page, "cue");
+      await until(() => hubSubscriptions(), (n) => n < before, "the FOH page's subscriptions ended");
+      await selectPage(page, "foh");
+      await expect(hand2.getByTestId("fader")).toHaveAttribute("data-binding", "unresolved");
       await expect(hand2.getByTestId("status")).toHaveAttribute("data-state", "unbound");
-      await expect(hand2.getByTestId("fader")).toHaveAttribute("aria-disabled", "true");
     } finally {
       await hostLine("band", 'rename "Hand2 X" "Hand2 #"');
     }
-    // Renamed back, that failed subscription stays red (nothing to heal)…
-    await page.waitForTimeout(1000);
-    await expect(hand2.getByTestId("status")).toHaveAttribute("data-state", "unbound");
-    // …until REFRESH ALL resolves every name afresh (F7).
-    await refresh.click();
+    // Renamed back with no list change: the hub watches every track's name
+    // while a binding is in error, so the strip heals with nothing pressed.
     await expect(hand2.getByTestId("status")).toHaveAttribute("data-state", "bound");
     await ready(hand2.getByTestId("fader"));
+    await expect(page.getByTestId("refresh")).toHaveCount(0);
   });
 
-  test("refresh unfolds the configured group tracks", async ({ page }) => {
+  test("the page unfolds the configured group tracks once loaded", async ({ page }) => {
     const group = track("Vocals Repro grp#");
     await live.set("band", group, "fold_state", true);
     expect(await live.get("band", group, "fold_state")).toBe(1);
     await openSurface(page);
-    // The automatic refresh after the load already unfolded it.
-    await until(() => live.get("band", group, "fold_state"), (v) => v === 0, "unfolded by the automatic refresh");
-    await live.set("band", group, "fold_state", true);
-    await page.getByTestId("refresh").click();
-    await until(() => live.get("band", group, "fold_state"), (v) => v === 0, "unfolded by REFRESH ALL");
+    await until(() => live.get("band", group, "fold_state"), (v) => v === 0, "unfolded by the page's load");
   });
 });

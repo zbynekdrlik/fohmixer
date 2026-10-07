@@ -105,10 +105,6 @@
       },
       "period_ms": 300,
       "label": "TechAlert"
-    },
-    {
-      "kind": "refresh",
-      "label": "REFRESH ALL"
     }
   ],
   "config": {

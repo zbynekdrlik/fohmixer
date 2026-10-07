@@ -43,7 +43,7 @@ fn a_socket_waits_for_its_hello_then_pings_until_it_falls_silent() {
     assert_eq!(c.tick(s, 10_500.0, false), Tick::Wait, "no hello: no ping");
     let hello = c.hello(10_800.0);
     assert!(c.ready());
-    assert!(hello.auto_refresh);
+    assert_eq!(hello.specs, Vec::<SubSpec>::new());
     assert_eq!(c.tick(s, 11_000.0, true), Tick::Ping);
     // Silence is counted from the last message heard.
     c.heard(12_000.0);
@@ -180,19 +180,17 @@ fn a_close_or_a_stop_ends_sending() {
     c.want(vec![spec("Hand1 #", "mute")]);
     c.opened(0.0);
     c.hello(0.0);
-    assert_eq!(c.refresh(), Some(vec![spec("Hand1 #", "mute")]));
+    assert!(c.ready());
     c.closed();
     assert!(!c.ready());
-    assert_eq!(c.refresh(), None, "no refresh without a socket");
     c.opened(0.0);
     c.hello(0.0);
     c.stop();
     assert!(!c.ready());
-    assert_eq!(c.refresh(), None);
 }
 
 #[test]
-fn only_the_first_hello_of_the_page_refreshes_and_every_hello_resubscribes() {
+fn every_hello_resubscribes() {
     let mut c = Conn::default();
     let (change, ready) = c.want(vec![spec("Hand1 #", "mute"), spec("Hand2 #", "mute")]);
     assert!(!ready, "before the hello the set waits");
@@ -200,7 +198,6 @@ fn only_the_first_hello_of_the_page_refreshes_and_every_hello_resubscribes() {
     assert_eq!(c.wanted_len(), 2);
     c.opened(0.0);
     let first = c.hello(0.0);
-    assert!(first.auto_refresh);
     assert_eq!(
         first.specs,
         vec![spec("Hand1 #", "mute"), spec("Hand2 #", "mute")]
@@ -208,7 +205,6 @@ fn only_the_first_hello_of_the_page_refreshes_and_every_hello_resubscribes() {
     c.closed();
     c.opened(0.0);
     let again = c.hello(0.0);
-    assert!(!again.auto_refresh);
     assert_eq!(again.specs, first.specs);
     let (change, ready) = c.want(vec![spec("Hand2 #", "mute")]);
     assert!(ready);
@@ -415,4 +411,30 @@ fn a_hidden_page_pings_once_a_second() {
     // Hidden or not, the silence still drops the socket.
     c.set_hidden(true);
     assert_eq!(c.tick(s, 3_300.0, true), Tick::Silent);
+}
+
+#[test]
+fn the_unfold_is_due_once_per_page_with_a_layout_on_a_ready_socket() {
+    let mut c = Conn::default();
+    assert!(!c.unfold_due(true), "no socket yet");
+    c.opened(0.0);
+    assert!(!c.unfold_due(true), "no hello yet");
+    c.hello(0.0);
+    assert!(!c.unfold_due(false), "no layout yet");
+    assert!(c.unfold_due(true), "the first layout after the hello");
+    assert!(!c.unfold_due(true), "once");
+    // A reconnect never unfolds again.
+    c.closed();
+    c.opened(0.0);
+    c.hello(0.0);
+    assert!(!c.unfold_due(true));
+    // A layout shown while the socket is down waits for the hello.
+    let mut c = Conn::default();
+    c.opened(0.0);
+    c.hello(0.0);
+    c.closed();
+    assert!(!c.unfold_due(true), "the socket is down");
+    c.opened(0.0);
+    c.hello(0.0);
+    assert!(c.unfold_due(true), "the hello after it");
 }

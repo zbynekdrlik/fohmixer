@@ -321,6 +321,37 @@ fn a_renamed_track_gives_its_subscriber_an_error_and_a_rename_back_heals_it() {
 }
 
 #[test]
+fn a_subscription_made_while_its_track_is_missing_heals_when_the_track_is_renamed_back() {
+    let _serial = serial();
+    runtime().block_on(async {
+        let mut host = Host::start("band");
+        let dir = tempfile::tempdir().unwrap();
+        let hub = TestHub::start(vec![host.cfg()], dir.path()).await;
+        assert_eq!(host.rename("Hand1 #", "Hand9 #"), 1);
+        let mut a = hub.client().await;
+        let key = a.sub_key("band", VOLUME, "value", true).await;
+        let error = a.value_until(&key, SECS_3, |i| i.error.is_some()).await;
+        assert_eq!(
+            error.error.as_deref(),
+            Some("not found: tracks[name=Hand1 #]")
+        );
+        // No list changes, only a rename: the hub watches every track's
+        // name while the binding is in error (#58), so it heals by itself.
+        assert_eq!(host.rename("Hand9 #", "Hand1 #"), 1);
+        let healed = a.value_until(&key, SECS_3, |i| i.value.is_some()).await;
+        assert_eq!(healed.error, None);
+        assert_eq!(healed.display.as_deref(), Some("0.00 dB"));
+        // Healed: the watches go, the binding's three listeners stay.
+        let status = hub
+            .status_until(SECS_3, |s| s.instances[0].listeners == 3)
+            .await;
+        assert_eq!(status.instances[0].subscriptions, 1);
+        hub.stop().await;
+        host.stop();
+    });
+}
+
+#[test]
 fn a_stall_shows_the_instance_busy_then_free() {
     let _serial = serial();
     runtime().block_on(async {
@@ -408,13 +439,13 @@ async fn busy_states(clients: &mut [Client], span: Duration) -> Vec<String> {
 }
 
 #[test]
-fn many_metered_strips_and_two_refreshing_clients_never_show_busy() {
+fn many_metered_strips_and_two_resubscribing_clients_never_show_busy() {
     // #9: on the PC the busy badge flapped after every client connect while
     // Live's main thread ticked every 31–47 ms. Here 60 strips move their
     // meters 30 times a second, two clients subscribe to all of them and
-    // REFRESH three times (unsubscribe everything, subscribe again, as the
-    // UI does). SimLive's main thread is never late, so no instance state
-    // may say busy.
+    // resubscribe three times (unsubscribe everything, subscribe again, as
+    // a page switch or a reconnect does). SimLive's main thread is never
+    // late, so no instance state may say busy.
     let _serial = serial();
     runtime().block_on(async {
         let dir = tempfile::tempdir().unwrap();

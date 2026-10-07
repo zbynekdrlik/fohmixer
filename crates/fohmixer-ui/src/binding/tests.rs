@@ -113,8 +113,7 @@ fn sample() -> Layout {
                 {"kind": "text", "text": "unfold_band: 'Vocals grp'"}]}]}]}
         ],
         "global": [
-            {"kind": "alert", "binding": tr("TechAlert #"), "period_ms": 300},
-            {"kind": "refresh"}
+            {"kind": "alert", "binding": tr("TechAlert #"), "period_ms": 300}
         ]
     }))
     .expect("the sample parses")
@@ -241,7 +240,6 @@ fn every_control_kind_subscribes_what_it_shows() {
             key: "stage_aut".into(),
             label: "A".into(),
         },
-        Control::Refresh { label: None },
         Control::Text { text: "x".into() },
     ] {
         assert_eq!(sub(&none), Vec::<String>::new());
@@ -263,7 +261,6 @@ fn shown(layout: &Layout, path: &[usize]) -> Vec<String> {
             Control::ParamToggle { label, .. } => label.clone(),
             Control::ParamFader { .. } => "fader".into(),
             Control::Alert { .. } => "alert".into(),
-            Control::Refresh { .. } => "refresh".into(),
             Control::Text { .. } => "text".into(),
         })
         .collect()
@@ -274,23 +271,23 @@ fn the_controls_on_screen_are_the_rail_the_rows_with_the_sub_page_and_the_global
     let layout = sample();
     assert_eq!(
         shown(&layout, &[1, 0]),
-        vec!["stage", "solo", "hub", "A", "C", "A", "alert", "refresh"]
+        vec!["stage", "solo", "hub", "A", "C", "A", "alert"]
     );
     assert_eq!(
         shown(&layout, &[1, 1]),
-        vec!["stage", "solo", "hub", "B", "C", "A", "alert", "refresh"]
+        vec!["stage", "solo", "hub", "B", "C", "A", "alert"]
     );
     // No sub-page chosen (or one that is gone): the pager shows nothing.
     assert_eq!(
         shown(&layout, &[1]),
-        vec!["stage", "solo", "hub", "C", "A", "alert", "refresh"]
+        vec!["stage", "solo", "hub", "C", "A", "alert"]
     );
     assert_eq!(shown(&layout, &[1, 7]), shown(&layout, &[1]));
-    assert_eq!(shown(&layout, &[0]), vec!["Vox 1 TU", "alert", "refresh"]);
-    assert_eq!(shown(&layout, &[2]), vec!["text", "alert", "refresh"]);
+    assert_eq!(shown(&layout, &[0]), vec!["Vox 1 TU", "alert"]);
+    assert_eq!(shown(&layout, &[2]), vec!["text", "alert"]);
     // No page: the global controls only.
-    assert_eq!(shown(&layout, &[]), vec!["alert", "refresh"]);
-    assert_eq!(shown(&layout, &[9]), vec!["alert", "refresh"]);
+    assert_eq!(shown(&layout, &[]), vec!["alert"]);
+    assert_eq!(shown(&layout, &[9]), vec!["alert"]);
 }
 
 #[test]
@@ -398,7 +395,7 @@ fn choosing_a_tab_remembers_it_for_its_pager() {
 }
 
 #[test]
-fn refresh_unfolds_the_configured_groups() {
+fn the_page_unfolds_the_configured_groups() {
     let layout = imported();
     assert_eq!(
         unfold_targets(&layout.config),

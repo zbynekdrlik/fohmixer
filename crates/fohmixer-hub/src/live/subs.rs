@@ -19,8 +19,17 @@
 //!   client's subscription, so a client may subscribe to exactly what a
 //!   guard watches (a track's name) without the guard losing its object.
 //! - A new subscriber of a name binding, or of a binding in error, resolves
-//!   it again (a UI refresh rebinds this way, even when another client holds
-//!   the binding): a renamed-back or newly ambiguous name is found then.
+//!   it again (a page switch rebinds this way, even when another client
+//!   holds the binding): a renamed-back or newly ambiguous name is found
+//!   then.
+//! - While a binding a list guard guards is in error, the hub also watches
+//!   the `name` of every item of that list (`tracks 0`, `tracks 1`, …; the
+//!   list guard's value is the list, so its length is known): a name that
+//!   was missing when its binding was made has no object for its name guard
+//!   to listen to, and renaming another track to it changes no list. Any
+//!   item's rename then resolves the name bindings again, and the binding
+//!   heals by itself (#58: no REFRESH ALL). The watches follow the list's
+//!   length and go once none of the list's bindings is in error.
 //! - On `connect` (a Live start or set load) every entry is resolved again
 //!   by its original path: ids of the old session mean nothing.
 //! - A `remove_listener` is sent only while no `add_listener` of the same
@@ -109,12 +118,16 @@ struct Entry {
     named: bool,
     /// A guard (it has dependents, never clients).
     guard: bool,
+    /// A list guard (it listens to the list a name step selects from).
+    list: bool,
     clients: BTreeSet<ClientId>,
     /// Entries this one guards (it listens to a name or a list they depend
     /// on).
     dependents: BTreeSet<String>,
     /// The guard entries of this one.
     guards: Vec<String>,
+    /// A list guard's item name watches, by index (#58).
+    watches: Vec<String>,
     /// The Live listener key, while resolved.
     live: Option<String>,
     cached: Option<Cached>,
@@ -142,6 +155,8 @@ pub struct Subs {
     next_uuid: u64,
     next_seq: u64,
     deliveries: Vec<(ClientId, ValueItem)>,
+    /// List guards whose item name watches may have to change (#58).
+    watch_dirty: BTreeSet<String>,
 }
 
 /// The key of the guard entry watching `prop` of `target`: never a client's
@@ -283,10 +298,13 @@ impl Subs {
         };
         inst.online = false;
         inst.release.clear();
-        for entry in self.entries.values_mut() {
+        for (key, entry) in self.entries.iter_mut() {
             if entry.instance == instance {
                 entry.live = None;
                 entry.cached = None;
+                if entry.list {
+                    self.watch_dirty.insert(key.clone());
+                }
             }
         }
         self.by_live.retain(|(i, _), _| i != instance);
@@ -370,6 +388,7 @@ impl Subs {
     /// The requests to send now, in order, per instance: first the removals
     /// (only while no `add_listener` is in flight), then the resolutions.
     pub fn drain_outgoing(&mut self) -> Vec<Outgoing> {
+        self.sync_watches();
         let mut out = Vec::new();
         let names: Vec<String> = self.instances.keys().cloned().collect();
         for name in names {
@@ -493,9 +512,11 @@ impl Subs {
                 display,
                 named: path.steps.iter().any(|s| s.name.is_some()),
                 guard,
+                list: false,
                 clients: BTreeSet::new(),
                 dependents: BTreeSet::new(),
                 guards: Vec::new(),
+                watches: Vec::new(),
                 live: None,
                 cached: None,
                 seq: 0,
@@ -517,6 +538,12 @@ impl Subs {
             self.ensure(&guard, instance, &guard_path, &prop, false, true);
             if let Some(entry) = self.entries.get_mut(&guard) {
                 entry.dependents.insert(key.to_string());
+                // The list guard listens to a list attribute (`tracks`), the
+                // name guard to `name`.
+                entry.list = prop != "name";
+                if entry.list {
+                    self.watch_dirty.insert(guard.clone());
+                }
             }
             guards.push(guard);
         }
@@ -541,11 +568,68 @@ impl Subs {
         if let Some(live) = &entry.live {
             self.unlink(&entry.instance, live, key);
         }
-        for guard in entry.guards {
+        self.watch_dirty.remove(key);
+        for guard in entry.guards.into_iter().chain(entry.watches) {
             if let Some(g) = self.entries.get_mut(&guard) {
                 g.dependents.remove(key);
+                if g.list {
+                    self.watch_dirty.insert(guard.clone());
+                }
             }
             self.maybe_drop(&guard);
+        }
+    }
+
+    /// Brings the item name watches of every list guard that may need it in
+    /// line (#58): one per item of the list while any entry the list guard
+    /// guards is in error, none otherwise (also while the list has no
+    /// value: offline, or not resolved yet).
+    fn sync_watches(&mut self) {
+        for list_key in std::mem::take(&mut self.watch_dirty) {
+            let Some(list) = self.entries.get(&list_key).filter(|e| e.list) else {
+                continue;
+            };
+            let in_error = list.dependents.iter().any(|d| {
+                self.entries
+                    .get(d)
+                    .is_some_and(|e| matches!(e.cached, Some(Cached::Error(_))))
+            });
+            let wanted = match &list.cached {
+                Some(Cached::Value {
+                    value: Value::Array(items),
+                    ..
+                }) if in_error => items.len(),
+                _ => 0,
+            };
+            let have = list.watches.len();
+            let instance = list.instance.clone();
+            let owner = format!("{} {}", list.target, list.prop);
+            for index in have..wanted {
+                let target = format!("{owner} {index}");
+                let path =
+                    LomPath::parse(&target).expect("a list guard's target and an index parse");
+                let watch = guard_key(&instance, &target, "name");
+                self.ensure(&watch, &instance, &path, "name", false, true);
+                if let Some(entry) = self.entries.get_mut(&watch) {
+                    entry.dependents.insert(list_key.clone());
+                }
+                if let Some(list) = self.entries.get_mut(&list_key) {
+                    list.watches.push(watch);
+                }
+            }
+            for _ in wanted..have {
+                let Some(watch) = self
+                    .entries
+                    .get_mut(&list_key)
+                    .and_then(|list| list.watches.pop())
+                else {
+                    break;
+                };
+                if let Some(entry) = self.entries.get_mut(&watch) {
+                    entry.dependents.remove(&list_key);
+                }
+                self.maybe_drop(&watch);
+            }
         }
     }
 
@@ -590,7 +674,15 @@ impl Subs {
         for client in &entry.clients {
             self.deliveries.push((*client, cached.item(key)));
         }
+        let was_error = matches!(entry.cached, Some(Cached::Error(_)));
+        let is_error = matches!(cached, Cached::Error(_));
         entry.cached = Some(cached);
+        if entry.list {
+            self.watch_dirty.insert(key.to_string());
+        } else if was_error != is_error {
+            // Its list guards may start or stop watching their items.
+            self.watch_dirty.extend(entry.guards.iter().cloned());
+        }
     }
 
     /// Re-resolves every name binding (and guard) of `instance`.

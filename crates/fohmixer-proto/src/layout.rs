@@ -28,8 +28,7 @@ pub struct Layout {
     /// The id of the page shown first.
     pub default_page: String,
     pub pages: Vec<Page>,
-    /// Controls shown on every page, in the rail's footer (TechAlert,
-    /// REFRESH ALL).
+    /// Controls shown on every page, in the rail's footer (TechAlert).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub global: Vec<Control>,
     #[serde(default)]
@@ -174,11 +173,6 @@ pub enum Control {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         mute_guard: bool,
     },
-    /// REFRESH ALL (spec F6).
-    Refresh {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        label: Option<String>,
-    },
     /// A static text (the Conf page's configuration).
     Text { text: String },
 }
@@ -259,7 +253,7 @@ impl Control {
             Control::ParamToggle { targets, .. } | Control::ParamFader { targets, .. } => {
                 targets.iter().map(|t| &t.binding).collect()
             }
-            Control::HubToggle { .. } | Control::Refresh { .. } | Control::Text { .. } => vec![],
+            Control::HubToggle { .. } | Control::Text { .. } => vec![],
         }
     }
 }
@@ -268,7 +262,7 @@ impl Control {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LayoutConfig {
-    /// Group tracks unfolded on every refresh (spec F7).
+    /// Group tracks the page unfolds once loaded (spec F7).
     #[serde(default)]
     pub unfold: Vec<UnfoldTarget>,
     /// Fader touch shaping and the post-release delay (spec X3); the UI's
@@ -602,7 +596,7 @@ impl Validator {
                 self.targets(at, targets, true);
             }
             Control::ParamFader { targets, .. } => self.targets(at, targets, false),
-            Control::Refresh { .. } | Control::Text { .. } => {}
+            Control::Text { .. } => {}
         }
     }
 

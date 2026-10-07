@@ -233,7 +233,6 @@ mod tests {
         assert!(is_column(&strip(false)));
         assert!(is_column(&fader()));
         assert!(!is_column(&toggle()));
-        assert!(!is_column(&Control::Refresh { label: None }));
     }
 
     #[test]

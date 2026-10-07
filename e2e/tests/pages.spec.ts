@@ -86,7 +86,8 @@ test.describe("Pages and tabs", () => {
       await selectPage(page, id);
       const rail = page.getByTestId("rail");
       await expect(rail.getByTestId("alert-toggle")).toBeVisible();
-      await expect(rail.getByTestId("refresh")).toHaveText("REFRESH ALL");
+      // REFRESH ALL is gone (#58): the hub keeps every binding current.
+      await expect(rail.getByTestId("refresh")).toHaveCount(0);
     }
     await selectPage(page, "cue");
     await expect(page.locator('[data-testid="param-toggle"][data-label="Vox 1 TU"]')).toBeVisible();
@@ -110,7 +111,7 @@ test.describe("The page is a rail and rows of sections", () => {
     const rail = layout().pages[1].rail.map((c: any) =>
       ({ stage: "stage-mics", hub_toggle: "stage-aut", solo: "solo", param_toggle: "param-toggle" })[c.kind as string],
     );
-    expect(kinds).toEqual([...rail, "alert-toggle", "refresh"]);
+    expect(kinds).toEqual([...rail, "alert-toggle"]);
     await expect(page.getByTestId("solo").first()).toHaveText("SOLO Vocals");
   });
 

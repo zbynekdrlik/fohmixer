@@ -7,7 +7,7 @@ fn track(name: &str) -> Value {
 
 /// A small valid layout: a cue page of toggles; the FOH page with a rail,
 /// a nested pager beside fixed strips and a second row; the Conf page's
-/// text; TechAlert and REFRESH ALL on every page.
+/// text; TechAlert on every page.
 fn sample() -> Value {
     json!({
         "schema": 2,
@@ -47,8 +47,7 @@ fn sample() -> Value {
                 {"kind": "group", "id": "conf-1", "controls": [{"kind": "text", "text": "unfold_band: 'Vocals Repro grp#'"}]}]}]}
         ],
         "global": [
-            {"kind": "alert", "binding": track("TechAlert #"), "period_ms": 300, "label": "TechAlert"},
-            {"kind": "refresh", "label": "REFRESH ALL"}
+            {"kind": "alert", "binding": track("TechAlert #"), "period_ms": 300, "label": "TechAlert"}
         ],
         "config": {"unfold": [{"instance": "band", "name": "Vocals Repro grp#"}], "fader_shaping": true},
         "report": {"dropped": []}
@@ -95,8 +94,7 @@ fn defaults_are_filled_and_omitted() {
         "schema": 2, "default_page": "p",
         "pages": [{"id": "p", "title": "P", "rows": [{"sections": [{"kind": "group", "controls": [
             {"kind": "strip", "binding": track("A"), "strip_kind": "standard"},
-            {"kind": "stage", "binding": track("M")},
-            {"kind": "refresh"}]}]}]}]
+            {"kind": "stage", "binding": track("M")}]}]}]}]
     }));
     assert_eq!(layout.validate(), vec![]);
     let page = &layout.pages[0];
@@ -157,8 +155,19 @@ fn defaults_are_filled_and_omitted() {
 #[test]
 fn an_unknown_kind_does_not_parse() {
     let mut v = sample();
-    v["global"][1]["kind"] = json!("battery");
+    v["global"][0]["kind"] = json!("battery");
     assert!(serde_json::from_value::<Layout>(v).is_err());
+    // REFRESH ALL is gone (#58): the hub keeps every binding current itself.
+    let mut v = sample();
+    v["global"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"kind": "refresh", "label": "REFRESH ALL"}));
+    let refused = serde_json::from_value::<Layout>(v).unwrap_err();
+    assert!(
+        refused.to_string().contains("unknown variant `refresh`"),
+        "{refused}"
+    );
     let mut v = sample();
     foh_row(&mut v, 1)[0]["kind"] = json!("area");
     assert!(serde_json::from_value::<Layout>(v).is_err());
@@ -181,14 +190,13 @@ fn place(v: &mut Value, i: usize) -> &mut Value {
         8 => &mut v["pages"][1]["rail"][1],
         9 => &mut v["pages"][1]["rail"][3],
         10 => &mut v["global"][0],
-        11 => &mut v["global"][1],
         _ => &mut v["pages"][2]["rows"][0]["sections"][0]["controls"][0],
     }
 }
 
 #[test]
 fn unknown_fields_do_not_parse() {
-    for i in 0..=12 {
+    for i in 0..=11 {
         let mut v = sample();
         place(&mut v, i)["frame"] = json!({"x": 0});
         assert!(serde_json::from_value::<Layout>(v).is_err(), "place {i}");
@@ -528,7 +536,6 @@ fn a_page_lists_its_controls_rail_first() {
             Control::ParamToggle { .. } => "param_toggle",
             Control::ParamFader { .. } => "param_fader",
             Control::Alert { .. } => "alert",
-            Control::Refresh { .. } => "refresh",
             Control::Text { .. } => "text",
         })
         .collect();
@@ -548,8 +555,10 @@ fn a_page_lists_its_controls_rail_first() {
     let section = &layout.pages[1].rows[0].sections[0];
     assert_eq!(section.groups().len(), 1);
     assert_eq!(layout.pages[1].rows[0].sections[1].groups().len(), 1);
-    let refresh = &layout.global[1];
-    assert_eq!(refresh.bindings(), Vec::<&Binding>::new());
+    assert_eq!(
+        layout.pages[2].controls()[0].bindings(),
+        Vec::<&Binding>::new()
+    );
     assert_eq!(layout.pages[2].controls().len(), 1);
 }
 
@@ -610,11 +619,10 @@ fn imported_layout_parses_and_validates() {
         .iter()
         .map(|c| match c {
             Control::Alert { .. } => "alert",
-            Control::Refresh { .. } => "refresh",
             _ => "other",
         })
         .collect();
-    assert_eq!(global, vec!["alert", "refresh"]);
+    assert_eq!(global, vec!["alert"]);
     let targets: Vec<String> = layout
         .bindings()
         .iter()

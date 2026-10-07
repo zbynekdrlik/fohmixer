@@ -214,7 +214,7 @@ class ImportTest(unittest.TestCase):
 
     # --- the global controls (the root overlay) ---
 
-    def test_the_overlay_becomes_one_alert_and_refresh(self):
+    def test_the_overlay_becomes_one_alert(self):
         # The TechAlert strip and the hidden alert box are one control; the
         # label is the strip's own.
         techalert = {"instance": "band", "anchor": {"kind": "track", "name": "TechAlert #"}}
@@ -222,7 +222,6 @@ class ImportTest(unittest.TestCase):
             self.layout["global"],
             [
                 {"kind": "alert", "binding": techalert, "period_ms": 300, "label": "TechAlert"},
-                {"kind": "refresh", "label": "REFRESH ALL"},
             ],
         )
         # The TechAlert strip is no strip of its own anywhere.
@@ -241,7 +240,7 @@ class ImportTest(unittest.TestCase):
             [d for d in self.report["dropped"] if "battery" in d["node"] or "X5" in d["why"]],
             [{"node": "root/battery", "why": "the battery gauge (X5)"}],
         )
-        self.assertEqual([c["kind"] for c in self.layout["global"]], ["alert", "refresh"])
+        self.assertEqual([c["kind"] for c in self.layout["global"]], ["alert"])
 
     def test_a_guarded_techalert_strip_keeps_its_guard_on_the_alert(self):
         saved = build_fixtures.CONFIG_TEXT
@@ -279,12 +278,21 @@ class ImportTest(unittest.TestCase):
         )
         self.assertNotIn("MAIN MIX", json.dumps(self.layout["pages"] + self.layout["global"]))
 
-    def test_only_the_refresh_control_refreshes_and_backdrops_stay_inert(self):
+    def test_refresh_all_is_dropped_and_backdrops_stay_inert(self):
         # The sidebar backdrops carry the mute script, which mentions a
-        # refresh; only the control that asks for one is REFRESH ALL. The
+        # refresh; only the control that asks for one is REFRESH ALL, and
+        # fohmixer has none (#58: the hub keeps every binding current). The
         # backdrops are no controls and no sections (decoration).
-        refresh = [c for c in all_controls(self.layout) if c["kind"] == "refresh"]
-        self.assertEqual(refresh, [{"kind": "refresh", "label": "REFRESH ALL"}])
+        self.assertEqual(
+            [d for d in self.report["dropped"] if "REFRESH ALL" in d["why"]],
+            [
+                {
+                    "node": "root/refresh",
+                    "why": "REFRESH ALL: the hub keeps every binding current (#58)",
+                }
+            ],
+        )
+        self.assertNotIn("refresh", [c["kind"] for c in all_controls(self.layout)])
         self.assertEqual(self.report["decoration"]["boxes and backdrops without controls"], 8)
 
     def test_partly_visible_nodes_are_clipped_not_dropped(self):
@@ -960,7 +968,7 @@ class ImportTest(unittest.TestCase):
             "- foh row 1: foh-pager (pager): STAGE, OTHERS | foh-2: B-Main repro #, Hand2 #\n",
             text,
         )
-        self.assertIn("- global (every page): TechAlert, REFRESH ALL\n", text)
+        self.assertIn("- global (every page): TechAlert\n", text)
         self.assertIn("## Guessed groups (their controls are in no area)\n\n- cue/cue-1:", text)
 
     def test_the_command_line_refuses_a_file_that_is_no_project(self):
