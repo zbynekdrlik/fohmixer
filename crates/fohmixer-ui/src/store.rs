@@ -16,7 +16,7 @@
 //! disabled (`Readiness`).
 //!
 //! The pure parts are unit-tested natively: here `Slot`, `Readiness`,
-//! `Wanted`, `Badge`, `slot_failure`, `range_from` and `next_range`, in `conn` the
+//! `Wanted`, `Badge`, `range_from` and `next_range`, in `conn` the
 //! connection's decisions (reconnect, hello, the watchdog and its pings, the
 //! layout and instance changes), in `intent` the controls' writes waiting
 //! for their ack (#43), in `deck` the Stream Deck's (#52: the key size, the
@@ -300,24 +300,6 @@ impl Badge {
             Self::Busy => "busy",
             Self::Offline => "offline",
         }
-    }
-}
-
-/// Why a one-command `cmd` did not do its work, if it did not: the
-/// script's error slot or the hub's refusal (spec I6: never retried).
-pub fn slot_failure(outcome: &Result<Vec<Value>, String>) -> Option<String> {
-    match outcome {
-        Ok(slots) => match slots.first() {
-            Some(slot) if slot.get("ok") == Some(&json!(true)) => None,
-            Some(slot) => Some(
-                slot.get("error")
-                    .and_then(Value::as_str)
-                    .unwrap_or("failed")
-                    .to_string(),
-            ),
-            None => Some("no result".to_string()),
-        },
-        Err(e) => Some(e.clone()),
     }
 }
 

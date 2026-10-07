@@ -262,9 +262,6 @@ impl Control {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LayoutConfig {
-    /// Group tracks the page unfolds once loaded (spec F7).
-    #[serde(default)]
-    pub unfold: Vec<UnfoldTarget>,
     /// Fader touch shaping and the post-release delay (spec X3); the UI's
     /// default when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -284,14 +281,6 @@ pub enum MeterSource {
     Level,
     /// `output_meter_left` and `output_meter_right`: two bars.
     Lr,
-}
-
-/// A group track to unfold: its instance and exact name.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct UnfoldTarget {
-    pub instance: String,
-    pub name: String,
 }
 
 /// One target of a former MIDI control: a binding, a property and either
@@ -422,14 +411,6 @@ impl Layout {
         for (i, control) in self.global.iter().enumerate() {
             v.control(&format!("global[{i}]"), control);
         }
-        for (i, target) in self.config.unfold.iter().enumerate() {
-            if target.instance.is_empty() || target.name.is_empty() {
-                v.error(
-                    &format!("config.unfold[{i}]"),
-                    "needs an instance and a name".to_string(),
-                );
-            }
-        }
         v.errors
     }
 
@@ -459,6 +440,25 @@ impl Layout {
             } => Some(binding),
             _ => None,
         })
+    }
+
+    /// The tracks the strips show, as `(instance, name)`, each once and
+    /// sorted (#58: the hub keeps the groups they sit in unfolded, since
+    /// Live meters no track inside a folded group). Return tracks sit in no
+    /// group.
+    pub fn strip_tracks(&self) -> Vec<(String, String)> {
+        let tracks: std::collections::BTreeSet<(String, String)> = self
+            .controls()
+            .into_iter()
+            .filter_map(|c| match c {
+                Control::Strip(strip) => match &strip.binding.anchor {
+                    Anchor::Track { name } => Some((strip.binding.instance.clone(), name.clone())),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect();
+        tracks.into_iter().collect()
     }
 }
 

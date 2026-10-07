@@ -85,11 +85,7 @@ pub fn check(text: &[u8], instances: &[String]) -> Result<Layout, String> {
         .into_iter()
         .map(|e| e.to_string())
         .collect();
-    let named = layout
-        .bindings()
-        .into_iter()
-        .map(|b| &b.instance)
-        .chain(layout.config.unfold.iter().map(|u| &u.instance));
+    let named = layout.bindings().into_iter().map(|b| &b.instance);
     for instance in named {
         if !instances.contains(instance) {
             problems.push(format!("unknown instance {instance:?}"));
@@ -410,11 +406,12 @@ mod tests {
         let error = check(&serde_json::to_vec(&v).unwrap(), &["band".into()]).unwrap_err();
         assert_eq!(error, "layout is invalid: schema: schema 9 is not 2");
         assert!(check(&layout_json("X", "band"), &["band".into()]).is_ok());
-        // A group to unfold on an instance the hub does not have.
+        // TouchOSC's groups to unfold are gone (#58): the hub unfolds the
+        // strips' groups itself, and a layout still naming them is refused.
         let mut v: serde_json::Value = serde_json::from_slice(&layout_json("X", "band")).unwrap();
-        v["config"] = json!({"unfold": [{"instance": "drums", "name": "Kit grp#"}]});
+        v["config"] = json!({"unfold": [{"instance": "band", "name": "Kit grp#"}]});
         let error = check(&serde_json::to_vec(&v).unwrap(), &["band".into()]).unwrap_err();
-        assert_eq!(error, r#"layout is invalid: unknown instance "drums""#);
+        assert!(error.contains("unknown field `unfold`"), "{error}");
     }
 
     fn backup_of(dir: &Path, stamp: &str, text: &[u8]) {

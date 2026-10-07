@@ -270,7 +270,7 @@ export async function until<T>(read: () => Promise<T>, ok: (v: T) => boolean, wh
   return last;
 }
 
-/** Opens the surface logged in (the token seeded once per tab), after the page's unfold. */
+/** Opens the surface logged in (the token seeded once per tab), connected to the hub. */
 export async function openSurface(page: Page) {
   const seeded = await token();
   await page.addInitScript((t) => {
@@ -286,9 +286,6 @@ export async function openSurface(page: Page) {
   await page.goto("/");
   await expect(page.getByTestId("stage")).toBeVisible();
   await expect(page.getByTestId("surface")).toHaveAttribute("data-connected", "true");
-  // The page unfolds the configured groups once its layout is on screen
-  // (spec F7); tests act after it.
-  await expect(page.getByTestId("surface")).not.toHaveAttribute("data-unfolds", "0", { timeout: 5000 });
 }
 
 /**

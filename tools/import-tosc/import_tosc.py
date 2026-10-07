@@ -253,7 +253,6 @@ class LiveSet:
 
     def __init__(self, path):
         self.tracks = []  # (kind, name)
-        self.group_tracks = set()
         self.mappings = []
         self.macro_bus_links = 0
         try:
@@ -303,8 +302,6 @@ class LiveSet:
                 self._mapping(element, key_midi, stack, frame)
             if frame.get("kind") == "track":
                 self.tracks.append((frame["track"], frame["name"]))
-                if tag == "GroupTrack":
-                    self.group_tracks.add(frame["name"])
             if frame.get("kind") in ("track", "device", "branch"):
                 element.clear()
 
@@ -813,13 +810,7 @@ class Importer:
             "default_page": pages[default]["id"],
             "pages": out_pages,
             "global": self.emit_global(overlay),
-            "config": {
-                "unfold": [
-                    {"instance": instance, "name": name}
-                    for scope, name in self.unfold
-                    for instance in ([scope] if scope else self.instances)
-                ]
-            },
+            "config": {},
             "report": self.report,
         }
 
@@ -1387,13 +1378,11 @@ class Importer:
     # --- checks (reported, never fixed: X7) ---
 
     def check_config(self):
+        # TouchOSC's groups to unfold are not imported (#58): the hub keeps
+        # the groups of the strips' tracks unfolded by itself.
         for scope, name in self.unfold:
             key = f"unfold_{scope}" if scope else "unfold"
-            checkable = self.set is not None and scope in (None, self.set_instance)
-            if checkable and name not in self.set.group_tracks:
-                self.report["stale_config"].append(
-                    f"{key} '{name}': no such group track in the set"
-                )
+            self.drop(f"Conf/{key} '{name}'", "the hub keeps the strips' groups unfolded (#58)")
         for guard in self.guards:
             if guard not in self.guards_used:
                 self.report["stale_config"].append(f"double_click_mute '{guard}': matches no strip")

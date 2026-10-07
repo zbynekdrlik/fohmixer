@@ -497,6 +497,15 @@ impl Subs {
             .count()
     }
 
+    /// Client subscriptions of `instance` held by a client besides `own`
+    /// (the router's unfold keeper, #58: its reads are the hub's own).
+    pub fn subscriptions_besides(&self, instance: &str, own: ClientId) -> usize {
+        self.entries
+            .values()
+            .filter(|e| e.instance == instance && e.clients.iter().any(|c| *c != own))
+            .count()
+    }
+
     /// Live listeners held on `instance` (distinct Live keys).
     pub fn listeners(&self, instance: &str) -> usize {
         self.by_live.keys().filter(|(i, _)| i == instance).count()

@@ -1,5 +1,5 @@
 use super::*;
-use fohmixer_proto::layout::StripKind;
+use fohmixer_proto::layout::{Anchor, StripKind};
 use serde_json::json;
 
 /// The layout the import tool makes from its synthetic fixture (the E2E
@@ -392,37 +392,4 @@ fn choosing_a_tab_remembers_it_for_its_pager() {
     choose(&layout, &mut remembered, &[0], 1, 0);
     choose(&layout, &mut remembered, &[], 1, 0);
     assert_eq!(remembered, before);
-}
-
-#[test]
-fn the_page_unfolds_the_configured_groups() {
-    let layout = imported();
-    assert_eq!(
-        unfold_targets(&layout.config),
-        [
-            (
-                "band".to_string(),
-                "live_set tracks[name=Vocals Repro grp#]".to_string()
-            ),
-            (
-                "band".to_string(),
-                "live_set tracks[name=Old grp#]".to_string()
-            ),
-        ]
-    );
-    let config = LayoutConfig {
-        unfold: vec![fohmixer_proto::layout::UnfoldTarget {
-            instance: "master".into(),
-            name: "G]1".into(),
-        }],
-        fader_shaping: None,
-        meter_source: None,
-    };
-    assert_eq!(
-        unfold_targets(&config),
-        [(
-            "master".to_string(),
-            r"live_set tracks[name=G\]1]".to_string()
-        )]
-    );
 }
