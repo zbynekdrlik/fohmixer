@@ -45,7 +45,7 @@ async fn fold_until(client: &mut Client, target: &str, want: i64, what: &str) {
 fn a_strip_track_s_group_is_unfolded_whenever_it_is_folded() {
     let _serial = serial();
     runtime().block_on(async {
-        let mut host = Host::start("band");
+        let host = Host::start("band");
         let port = host.port;
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
@@ -69,7 +69,7 @@ fn a_strip_track_s_group_is_unfolded_whenever_it_is_folded() {
         a.set("band", VOCALS, "fold_state", json!(false)).await;
         // Live restarts: the hub follows the new session's groups too.
         host.stop();
-        let mut host = Host::start_with("band", port, 0.0);
+        let host = Host::start_with("band", port, 0.0);
         a.instance_state("band", true, Some(false), Duration::from_secs(10))
             .await;
         a.set("band", STEMS, "fold_state", json!(true)).await;
