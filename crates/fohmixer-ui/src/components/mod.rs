@@ -195,13 +195,17 @@ pub fn readiness_now(slots: &[RwSignal<Slot>]) -> Readiness {
     }))
 }
 
-/// One layout control.
+/// One layout control; `shared` is the Live instance every strip of its
+/// group shares (#63), none outside a group or in a mixed one.
 #[component]
-pub fn ControlView(control: Control) -> impl IntoView {
+pub fn ControlView(
+    control: Control,
+    #[prop(default = None)] shared: Option<String>,
+) -> impl IntoView {
     let settings = expect_context::<Settings>();
     match control {
         Control::Strip(strip) => {
-            view! { <StripView strip={*strip} settings=settings /> }.into_any()
+            view! { <StripView strip={*strip} settings=settings shared=shared /> }.into_any()
         }
         Control::Solo { binding, label } => {
             view! { <SoloView binding=binding label=label /> }.into_any()

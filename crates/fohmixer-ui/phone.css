@@ -40,19 +40,19 @@
         grid-template-rows: auto minmax(0, 1fr);
     }
 
+    /* The tabs own their touches, so a finger could not scroll the bar:
+       it wraps instead, every screen in reach. */
     .screens {
         display: flex;
+        flex-wrap: wrap;
         gap: 2px;
         min-width: 0;
         margin: 4px 8px 0;
-        overflow-x: auto;
-        touch-action: pan-x;
-        scrollbar-width: none;
     }
 
     .screens .tab {
         flex: none;
-        max-width: 60vw;
+        max-width: 100%;
         padding: 6px 10px;
         overflow: hidden;
         font-size: 11px;
@@ -60,9 +60,21 @@
     }
 
     .row:not([data-shown="true"]),
-    .rail:not([data-shown="true"]),
     .body[data-screen="rail"] .rows {
         display: none;
+    }
+
+    /* The rail on a row's screen: out of the layout and unseen, but drawn,
+       so TechAlert's full-screen wash in its foot still blinks over the
+       row (its own inline visibility wins over the rail's). */
+    .rail:not([data-shown="true"]) {
+        position: absolute;
+        width: 0;
+        height: 0;
+        padding: 0;
+        border: 0;
+        overflow: visible;
+        visibility: hidden;
     }
 
     /* The rail as a screen: its buttons in a grid over the whole width. */

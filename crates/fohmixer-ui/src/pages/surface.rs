@@ -19,7 +19,6 @@ use serde_json::json;
 use crate::app::version_text;
 use crate::behave::solo::soloed;
 use crate::binding::{SubSpec, choose, page_solos, selected_path, solo_sub, visible_subs};
-use crate::components::strip::GroupInstance;
 use crate::components::{ControlView, Settings, fail_flash, key_of, owns_surface, owns_touches};
 use crate::dom;
 use crate::flow::{METRICS, Shape, overflows, pager_shape, row_shape, strip_width};
@@ -495,8 +494,7 @@ fn GroupView(group: Group) -> impl IntoView {
     let title = group.title.clone().unwrap_or_default();
     // The instance its strips share: named once here, not on each strip.
     let shared = crate::flow::shared_instance(&group.controls);
-    provide_context(GroupInstance(shared.clone()));
-    let instance = shared.map(|name| {
+    let instance = shared.clone().map(|name| {
         let instance_attr = name.clone();
         view! {
             <span class="group-instance" data-testid="group-instance" data-instance=instance_attr>
@@ -507,7 +505,10 @@ fn GroupView(group: Group) -> impl IntoView {
     let controls = group
         .controls
         .into_iter()
-        .map(|control| view! { <ControlView control=control /> })
+        .map(|control| {
+            let shared = shared.clone();
+            view! { <ControlView control=control shared=shared /> }
+        })
         .collect_view();
     view! {
         <section

@@ -21,11 +21,6 @@ use crate::behave::scale::{tick_label, tick_pos, ticks};
 use crate::binding::strip_subs;
 use crate::store::{LiveStore, Slot};
 
-/// The Live instance every strip of the enclosing group shares (#63), a
-/// context the group provides: its title names it, its strips do not.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct GroupInstance(pub Option<String>);
-
 /// The dB scale beside a fader: the labels of the fader's volume law at the
 /// fader positions of their levels.
 #[component]
@@ -57,9 +52,10 @@ pub fn DbView(state: RwSignal<Slot>) -> impl IntoView {
     }
 }
 
-/// One strip.
+/// One strip; `shared` is the Live instance every strip of its group shares
+/// (#63: the group's title names it, so the strip does not).
 #[component]
-pub fn StripView(strip: Strip, settings: Settings) -> impl IntoView {
+pub fn StripView(strip: Strip, settings: Settings, shared: Option<String>) -> impl IntoView {
     let store = expect_context::<LiveStore>();
     let subs = strip_subs(&strip, settings.meter_source);
     let volume = subs.volume.as_ref().map(|s| store.slot(s));
@@ -103,7 +99,6 @@ pub fn StripView(strip: Strip, settings: Settings) -> impl IntoView {
     let db = volume.map(|slot| view! { <DbView state=slot /> });
     let ret = strip.strip_kind == StripKind::Return;
     // The instance tag only where the group does not name it (#63).
-    let shared = use_context::<GroupInstance>().and_then(|g| g.0);
     let tagged = shared.as_deref() != Some(instance.as_str());
     let tag = tagged.then(|| {
         let text = if ret {

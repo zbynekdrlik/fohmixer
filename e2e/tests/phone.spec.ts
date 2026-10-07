@@ -1,5 +1,5 @@
 import { test, expect } from "./support/fixtures";
-import { frames, openSurface, ready, strip } from "./support/live";
+import { LiveClient, frames, openSurface, ready, strip, track } from "./support/live";
 
 // On a phone (#63): one screen at a time. Each row of the page is a screen
 // and so is the rail; the screen bar switches them, so a row gets the whole
@@ -61,6 +61,42 @@ test.describe("On a phone in landscape", () => {
     await expect(version).toBeVisible();
     const label = (await version.boundingBox())!;
     expect(label.x + label.width, "the version inside the screen").toBeLessThanOrEqual(844);
+  });
+});
+
+test.describe("On a phone in landscape, TechAlert", () => {
+  test.use({ viewport: { width: 844, height: 390 } });
+
+  test("its wash blinks over a row's screen, the rail out of sight", async ({ page }) => {
+    // The wash lives in the rail's foot (AlertView): a rail taken out of
+    // the layout must still draw it.
+    const alert = track("TechAlert #");
+    const live = await LiveClient.open();
+    try {
+      await live.set("band", alert, "mute", true);
+      await openSurface(page);
+      await expect(page.getByTestId("rail")).toBeHidden();
+      await expect(page.getByTestId("row").nth(0)).toBeVisible();
+      const overlay = page.getByTestId("alert");
+      await live.set("band", alert, "mute", false);
+      await expect(overlay).toHaveAttribute("data-active", "true");
+      // Sampled in the page every 15 ms for 900 ms (the blink is 300 ms).
+      const drawn = await overlay.evaluate(async (el) => {
+        let seen = false;
+        const end = performance.now() + 900;
+        while (performance.now() < end) {
+          const box = el.getBoundingClientRect();
+          const on = el.getAttribute("data-visible") === "true" && getComputedStyle(el).visibility === "visible";
+          if (on && box.width === window.innerWidth && box.height === window.innerHeight) seen = true;
+          await new Promise((done) => setTimeout(done, 15));
+        }
+        return seen;
+      });
+      expect(drawn, "the wash drawn over the whole screen").toBe(true);
+    } finally {
+      await live.set("band", alert, "mute", true);
+      live.close();
+    }
   });
 });
 
