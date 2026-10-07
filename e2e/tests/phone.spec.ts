@@ -67,14 +67,21 @@ test.describe("On a phone in landscape", () => {
 test.describe("On a phone upright", () => {
   test.use({ viewport: { width: 390, height: 844 } });
 
-  test("the top bar wraps inside the screen; a row gets the height and its strips scroll inside it", async ({ page }) => {
+  test("the top bar wraps inside the screen; a row gets the height, a wide one scrolls inside itself", async ({ page }) => {
     await openSurface(page);
     await expect(page.getByTestId("screens")).toBeVisible();
     await expect(page.getByTestId("rail")).toBeHidden();
-    await expect(page.getByTestId("row").nth(0)).toHaveClass(/\bscrolls\b/);
+    const rows = page.getByTestId("row");
+    // The test layout's first row fits 370 px at the narrowest strips (about
+    // 307 px), its second does not (about 468 px).
+    await expect(rows.nth(0)).not.toHaveClass(/\bscrolls\b/);
     const fader = strip(page, "Hand2 #").getByTestId("fader");
     await ready(fader);
     expect((await fader.boundingBox())!.height, "the fader's travel (px)").toBeGreaterThan(400);
+    await page.getByTestId("screen").nth(2).click();
+    await expect(rows.nth(1)).toBeVisible();
+    await expect(rows.nth(1)).toHaveClass(/\bscrolls\b/);
+    expect(await rows.nth(1).evaluate((el) => el.scrollWidth - el.clientWidth), "its scroll range (px)").toBeGreaterThan(50);
     expect(await topBarOverflow(page), "the top bar fits the screen").toBeLessThanOrEqual(0);
     const version = page.getByTestId("stage").getByTestId("version");
     await expect(version).toBeVisible();
