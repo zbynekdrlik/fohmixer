@@ -628,7 +628,9 @@ class _TrackClass(_LiveObject):
     is_grouped = _Prop(readonly=True, observable=False)
     group_track = _Prop(readonly=True, observable=False)
     mixer_device = _Prop(readonly=True, observable=False)
-    _listened = ("devices", "fold_state")
+    # Not fold_state: Live answers add_listener on it with "not observable"
+    # (read on the PC, #58); a fold shows in Song.visible_tracks.
+    _listened = ("devices",)
 
     def __init__(self, song, name, *, foldable=False, group=None, mixer=None, color=0x5480E4):
         super().__init__()

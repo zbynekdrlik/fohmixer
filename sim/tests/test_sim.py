@@ -191,6 +191,15 @@ class ListenerTest(unittest.TestCase):
         self.track.current_monitoring_state = states.IN
         self.assertIs(self.track.current_monitoring_state, states.IN)
 
+    def test_fold_state_and_is_visible_are_not_observable_as_in_live(self):
+        # Live answers add_listener on a track's fold_state or is_visible
+        # with "not observable" (read on the PC, #58); visible_tracks is the
+        # list that tells a fold.
+        group = next(t for t in self.song.tracks if t.name == "Vocals Repro grp#")
+        self.assertFalse(hasattr(group, "add_fold_state_listener"))
+        self.assertFalse(hasattr(group, "add_is_visible_listener"))
+        self.assertTrue(hasattr(self.song, "add_visible_tracks_listener"))
+
     def test_fold_state_changes_visible_tracks(self):
         fired = []
         self.song.add_visible_tracks_listener(lambda: fired.append(1))
