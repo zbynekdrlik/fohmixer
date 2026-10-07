@@ -623,49 +623,54 @@ impl Router {
     }
 
     /// Carries out the unfold keeper's actions (#58): its subscriptions
-    /// first, then the values they already held, which may ask for a read.
-    /// It ends: a value asks only for a read or a write, never for another
-    /// subscription.
+    /// first, then the values they already held. Those ask only for reads
+    /// and writes (`Keeper::value`), so two steps do it, with no loop a
+    /// mutant could make endless.
     fn unfold_apply(&mut self, actions: Vec<unfold::Action>) {
-        let mut work = actions;
-        while !work.is_empty() {
-            let mut cached: Vec<(String, Cached)> = Vec::new();
-            for action in std::mem::take(&mut work) {
-                match action {
-                    unfold::Action::Sub(watch) => {
-                        let (instance, target, prop) = watch.target();
-                        let instance = instance.to_string();
-                        match self
-                            .subs
-                            .subscribe(UNFOLD_CLIENT, &instance, &target, prop, false)
-                        {
-                            Ok(reply) => {
-                                self.unfold.subscribed(watch, reply.key.clone());
-                                if let Some(state) = reply.cached {
-                                    cached.push((reply.key, state));
-                                }
-                            }
-                            Err((_, error)) => {
-                                tracing::warn!(instance = %instance, target = %target, error = %error, "the hub cannot keep the strips' groups unfolded there");
+        let cached = self.unfold_do(actions);
+        let mut next = Vec::new();
+        for (key, state) in cached {
+            next.extend(self.unfold.value(&key, cached_value(&state)));
+        }
+        self.unfold_do(next);
+    }
+
+    /// Carries out actions; the subscriptions' cached states, by key.
+    fn unfold_do(&mut self, actions: Vec<unfold::Action>) -> Vec<(String, Cached)> {
+        let mut cached: Vec<(String, Cached)> = Vec::new();
+        for action in actions {
+            match action {
+                unfold::Action::Sub(watch) => {
+                    let (instance, target, prop) = watch.target();
+                    let instance = instance.to_string();
+                    match self
+                        .subs
+                        .subscribe(UNFOLD_CLIENT, &instance, &target, prop, false)
+                    {
+                        Ok(reply) => {
+                            self.unfold.subscribed(watch, reply.key.clone());
+                            if let Some(state) = reply.cached {
+                                cached.push((reply.key, state));
                             }
                         }
+                        Err((_, error)) => {
+                            tracing::warn!(instance = %instance, target = %target, error = %error, "the hub cannot keep the strips' groups unfolded there");
+                        }
                     }
-                    unfold::Action::Unsub { key } => {
-                        self.subs.unsubscribe(UNFOLD_CLIENT, &key);
-                    }
-                    unfold::Action::Read {
-                        instance,
-                        seq,
-                        commands,
-                    } => self.unfold_read(instance, seq, commands),
-                    unfold::Action::Unfold(track) => self.unfold_group(&track),
-                    unfold::Action::Retry { instance } => self.unfold_retry(instance),
                 }
-            }
-            for (key, state) in cached {
-                work.extend(self.unfold.value(&key, cached_value(&state)));
+                unfold::Action::Unsub { key } => {
+                    self.subs.unsubscribe(UNFOLD_CLIENT, &key);
+                }
+                unfold::Action::Read {
+                    instance,
+                    seq,
+                    commands,
+                } => self.unfold_read(instance, seq, commands),
+                unfold::Action::Unfold(track) => self.unfold_group(&track),
+                unfold::Action::Retry { instance } => self.unfold_retry(instance),
             }
         }
+        cached
     }
 
     /// Reads the groups the strips' tracks sit in; the answer comes back as
@@ -1159,6 +1164,54 @@ mod tests {
             Some(&json!(1))
         );
         assert_eq!(cached_value(&Cached::Error("gone".into())), None);
+    }
+
+    #[tokio::test]
+    async fn a_failed_read_of_the_strips_groups_is_tried_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut router, mut rx, _records) = offline_router(dir.path());
+        router.handle(RouterMsg::Layout {
+            rev: 1,
+            stage: None,
+            targets: BTreeMap::new(),
+            strips: vec![("band".into(), "Keys 1".into())],
+        });
+        // The read goes to an offline instance: its failure comes back…
+        let failed = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .expect("the read's answer")
+            .unwrap();
+        let RouterMsg::UnfoldRead {
+            ref instance,
+            ref outcome,
+            ..
+        } = failed
+        else {
+            panic!("the read's answer")
+        };
+        assert_eq!(
+            (instance.as_str(), outcome),
+            ("band", &Err("instance offline".to_string()))
+        );
+        router.handle(failed);
+        // …and the read is due again after RETRY_MS.
+        let started = std::time::Instant::now();
+        let retry = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .expect("a retry")
+            .unwrap();
+        assert!(
+            matches!(retry, RouterMsg::UnfoldRetry { ref instance } if instance == "band"),
+            "a retry of the band"
+        );
+        assert!(started.elapsed() >= std::time::Duration::from_millis(unfold::RETRY_MS - 100));
+        // The retry reads again: its answer comes back too.
+        router.handle(retry);
+        let again = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .expect("the second read's answer")
+            .unwrap();
+        assert!(matches!(again, RouterMsg::UnfoldRead { .. }));
     }
 
     #[test]
