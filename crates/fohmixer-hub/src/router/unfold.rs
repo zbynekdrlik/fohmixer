@@ -16,9 +16,14 @@
 //!   again on every change and when Live connects or loads a set. A newer
 //!   read voids an older answer.
 //! - **Unfolded:** it listens to each held group's `fold_state`; a folded
-//!   one gets `set_prop fold_state false` at once, when it is first heard
-//!   and whenever someone folds it. A group no strip track sits in any more
-//!   is let go.
+//!   one (Live answers `true`, SimLive 1) gets `set_prop fold_state false`
+//!   at once, when it is first heard and whenever someone folds it. A group
+//!   no strip track sits in any more is let go. A held group's watch that
+//!   fails (the group renamed or deleted, which changes no list) reads the
+//!   instance again.
+//! - **A failed read** (a timeout during a busy connect, Live away) is
+//!   tried again after [`RETRY_MS`], at most [`MAX_RETRIES`] times in a
+//!   row; the next list change or connect reads anyway.
 //!
 //! The layout names no group: the strips are enough (the owner's decision on
 //! #58 replaced TouchOSC's `unfold_<instance>` list).
@@ -37,6 +42,10 @@ pub const FOLD: &str = "fold_state";
 pub const TRACKS: &str = "tracks";
 /// How far up a chain of groups a read looks.
 pub const MAX_DEPTH: usize = 6;
+/// The wait before a failed read is tried again.
+pub const RETRY_MS: u64 = 2000;
+/// Failed reads of an instance in a row that are tried again.
+pub const MAX_RETRIES: u32 = 3;
 
 /// What a keeper subscription reads.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -73,6 +82,8 @@ pub enum Action {
     },
     /// Unfold the group: `set_prop fold_state false` on `target(name)`.
     Unfold(Track),
+    /// Ask `retry` for the instance after `RETRY_MS`.
+    Retry { instance: String },
 }
 
 /// The LOM target of a track by name (the layout's own form, so a page's
@@ -81,7 +92,8 @@ pub fn target(name: &str) -> String {
     format!("live_set tracks[name={}]", escape_name(name))
 }
 
-/// Whether a `fold_state` value says folded (Live answers 0 or 1).
+/// Whether a `fold_state` value says folded (Live answers `true`/`false`,
+/// SimLive 1/0).
 pub fn folded(value: &Value) -> bool {
     value.as_i64() == Some(1) || value.as_bool() == Some(true)
 }
@@ -134,6 +146,8 @@ pub struct Keeper {
     reads: BTreeMap<String, u64>,
     /// The last read's number (one counter across the instances).
     last_read: u64,
+    /// Failed reads in a row, per instance.
+    failures: BTreeMap<String, u32>,
 }
 
 impl Keeper {
@@ -143,6 +157,10 @@ impl Keeper {
         self.strips = by_instance(strips.into_iter().collect());
         self.held
             .retain(|(instance, _)| self.strips.contains_key(instance));
+        // A read in flight for an instance without strips is void.
+        self.reads
+            .retain(|instance, _| self.strips.contains_key(instance));
+        self.failures.clear();
         let mut actions = self.sync();
         let instances: Vec<String> = self.strips.keys().cloned().collect();
         for instance in instances {
@@ -160,26 +178,46 @@ impl Keeper {
     /// A value of a keeper subscription (`None`: an error, nothing there).
     pub fn value(&mut self, key: &str, value: Option<&Value>) -> Vec<Action> {
         match self.by_key.get(key).cloned() {
-            Some(Watch::Tracks(instance)) => vec![self.read(&instance)],
+            Some(Watch::Tracks(instance)) => self.fresh_read(&instance),
             Some(Watch::Fold(track)) if value.is_some_and(folded) => vec![Action::Unfold(track)],
+            // The group renamed or gone: no list change shows that.
+            Some(Watch::Fold((instance, _))) if value.is_none() => self.fresh_read(&instance),
             _ => Vec::new(),
         }
     }
 
-    /// The answer to read `seq` of `instance` (an error: nothing changes;
-    /// the next list change or connect reads again).
+    /// A failed read's second chance (`Action::Retry`).
+    pub fn retry(&mut self, instance: &str) -> Vec<Action> {
+        if self.strips.contains_key(instance) {
+            vec![self.read(instance)]
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// The answer to read `seq` of `instance` (an error: nothing changes,
+    /// and the read is tried again up to `MAX_RETRIES` times in a row).
     pub fn read_done(
         &mut self,
         instance: &str,
         seq: u64,
         outcome: &Result<Vec<Value>, String>,
     ) -> Vec<Action> {
-        let (Some(&latest), Ok(slots)) = (self.reads.get(instance), outcome) else {
-            return Vec::new();
-        };
-        if latest != seq {
+        if self.reads.get(instance) != Some(&seq) {
             return Vec::new();
         }
+        let Ok(slots) = outcome else {
+            let failures = self.failures.entry(instance.to_string()).or_default();
+            *failures += 1;
+            return if *failures <= MAX_RETRIES {
+                vec![Action::Retry {
+                    instance: instance.to_string(),
+                }]
+            } else {
+                Vec::new()
+            };
+        };
+        self.failures.remove(instance);
         self.held.retain(|(i, _)| i != instance);
         self.held.extend(
             read_groups(slots)
@@ -192,6 +230,13 @@ impl Keeper {
     /// The groups held now (for the status and tests).
     pub fn held(&self) -> Vec<Track> {
         self.held.iter().cloned().collect()
+    }
+
+    /// A read on news (a list change, a connect, a group gone): a new run
+    /// of retries.
+    fn fresh_read(&mut self, instance: &str) -> Vec<Action> {
+        self.failures.remove(instance);
+        vec![self.read(instance)]
     }
 
     fn read(&mut self, instance: &str) -> Action {

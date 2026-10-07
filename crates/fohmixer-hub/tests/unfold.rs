@@ -29,6 +29,32 @@ fn layout() -> Value {
     })
 }
 
+/// The test site with `Drums #` moved from `Stems grp#` into `Vocals Repro
+/// grp#`.
+fn moved_site() -> Value {
+    let text = std::fs::read(support::repo().join("sim/fixtures/test-site.json")).unwrap();
+    let mut site: Value = serde_json::from_slice(&text).unwrap();
+    let tracks = site["tracks"].as_array_mut().unwrap();
+    let mut drums = None;
+    for track in tracks.iter_mut() {
+        if let Some(children) = track["children"].as_array_mut()
+            && let Some(i) = children.iter().position(|c| c["name"] == "Drums #")
+        {
+            drums = Some(children.remove(i));
+        }
+    }
+    let drums = drums.expect("the fixture has Drums # in a group");
+    for track in tracks.iter_mut() {
+        if track["name"] == "Vocals Repro grp#" {
+            track["children"]
+                .as_array_mut()
+                .unwrap()
+                .push(drums.clone());
+        }
+    }
+    site
+}
+
 async fn fold_until(client: &mut Client, target: &str, want: i64, what: &str) {
     let deadline = Instant::now() + SECS_3;
     loop {
@@ -67,13 +93,24 @@ fn a_strip_track_s_group_is_unfolded_whenever_it_is_folded() {
         tokio::time::sleep(Duration::from_millis(500)).await;
         assert_eq!(a.get("band", VOCALS, "fold_state").await, json!(1));
         a.set("band", VOCALS, "fold_state", json!(false)).await;
-        // Live restarts: the hub follows the new session's groups too.
+        // Live restarts on a set where the strip's track sits in the other
+        // group: the hub reads the groups again and holds the new one.
         host.stop();
-        let host = Host::start_with("band", port, 0.0);
+        let site = dir.path().join("moved-site.json");
+        std::fs::write(&site, serde_json::to_vec(&moved_site()).unwrap()).unwrap();
+        let host = Host::start_site("band", &site, port, 0.0);
         a.instance_state("band", true, Some(false), Duration::from_secs(10))
             .await;
+        hub.status_until(Duration::from_secs(10), |s| {
+            s.instances[0].unfolded == ["Vocals Repro grp#"]
+        })
+        .await;
+        a.set("band", VOCALS, "fold_state", json!(true)).await;
+        fold_until(&mut a, VOCALS, 0, "the new group unfolded").await;
+        // The old one is let go.
         a.set("band", STEMS, "fold_state", json!(true)).await;
-        fold_until(&mut a, STEMS, 0, "unfolded again after Live came back").await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert_eq!(a.get("band", STEMS, "fold_state").await, json!(1));
         hub.stop().await;
         host.stop();
     });

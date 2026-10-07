@@ -379,10 +379,11 @@ pub struct InstanceStatus {
     /// The last heartbeat's age of Live's main-thread tick.
     pub main_tick_age_ms: Option<f64>,
     /// Client subscriptions (hub keys) on this instance: the pages' and
-    /// STAGE AUT's (the unfold keeper's own reads are not counted).
+    /// STAGE AUT's (the unfold keeper's own subscriptions are not counted).
     pub subscriptions: usize,
-    /// Live listeners the hub holds on this instance (subscriptions and the
-    /// name guards of name bindings, deduplicated).
+    /// Live listeners the hub holds on this instance (subscriptions, the
+    /// unfold keeper's included, and the name guards of name bindings,
+    /// deduplicated).
     pub listeners: usize,
     /// Failed connection attempts since the last connection (0 while
     /// connected).

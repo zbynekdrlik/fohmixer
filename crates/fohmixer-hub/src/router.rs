@@ -103,13 +103,17 @@ pub enum RouterMsg {
         seq: u64,
         outcome: Result<Vec<Value>, String>,
     },
+    /// A failed read of the unfold keeper is due again (#58).
+    UnfoldRetry {
+        instance: String,
+    },
     /// A client's connection ended.
     Detach {
         client: ClientId,
     },
     /// A new layout is served: its revision, its STAGE AUT binding and its
     /// check targets per instance (for the unresolved-names check: the
-    /// bindings and the groups to unfold, `live::names::layout_targets`).
+    /// bindings, `live::names::layout_targets`) and its strips' tracks.
     Layout {
         rev: u64,
         stage: Option<Binding>,
@@ -338,7 +342,14 @@ impl Router {
                 seq,
                 outcome,
             } => {
+                if let Err(error) = &outcome {
+                    tracing::warn!(instance = %instance, error = %error, "the hub could not read the groups of the strips' tracks");
+                }
                 let actions = self.unfold.read_done(&instance, seq, &outcome);
+                self.unfold_apply(actions);
+            }
+            RouterMsg::UnfoldRetry { instance } => {
+                let actions = self.unfold.retry(&instance);
                 self.unfold_apply(actions);
             }
             RouterMsg::Applied {
@@ -648,6 +659,7 @@ impl Router {
                         commands,
                     } => self.unfold_read(instance, seq, commands),
                     unfold::Action::Unfold(track) => self.unfold_group(&track),
+                    unfold::Action::Retry { instance } => self.unfold_retry(instance),
                 }
             }
             for (key, state) in cached {
@@ -671,6 +683,15 @@ impl Router {
                 seq,
                 outcome,
             });
+        });
+    }
+
+    /// Asks the keeper to read `instance` again after `RETRY_MS`.
+    fn unfold_retry(&self, instance: String) {
+        let tx = self.io.tx.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(unfold::RETRY_MS)).await;
+            let _ = tx.send(RouterMsg::UnfoldRetry { instance });
         });
     }
 
@@ -709,8 +730,9 @@ impl Router {
         }
     }
 
-    /// Sends the requests and hands out the table's values; the unfold
-    /// keeper's new subscriptions go out at once.
+    /// Sends the requests and hands out the table's values (the unfold
+    /// keeper's to the keeper: they ask only for reads and writes, which go
+    /// out on their own).
     fn flush(&mut self) {
         self.send_requests();
         let mut unfold = Vec::new();
@@ -720,13 +742,15 @@ impl Router {
                     self.stage_value(value);
                 }
             } else if client == UNFOLD_CLIENT {
+                if let Some(error) = &item.error {
+                    tracing::warn!(key = %item.sub, error = %error, "a watch of the hub's unfold keeper failed (a group renamed, gone or named twice): reading the groups again");
+                }
                 unfold.extend(self.unfold.value(&item.sub, item.value.as_ref()));
             } else if let Some(outbox) = self.clients.get(&client) {
                 outbox.value(item);
             }
         }
         self.unfold_apply(unfold);
-        self.send_requests();
     }
 }
 
@@ -1118,7 +1142,7 @@ mod tests {
         assert_eq!(
             router.subs.subscriptions("band"),
             1,
-            "the strip track's group_track (#58)"
+            "the keeper's watch of the band's track list (#58)"
         );
         let now = status(&mut router);
         assert_eq!(now.subscriptions["band"], 0, "the hub's own read");

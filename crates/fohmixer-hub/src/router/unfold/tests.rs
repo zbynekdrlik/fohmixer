@@ -79,16 +79,22 @@ fn a_read_finds_the_strips_groups_and_their_folds_are_watched() {
         k.held(),
         vec![t("band", "BAND grp#"), t("band", "Stems grp#")]
     );
-    // Folded: unfolded at once, every time; open, or an error: nothing.
+    // Folded (real Live's true, SimLive's 1): unfolded at once, every
+    // time; open: nothing.
     let stems = key(&fold("band", "Stems grp#"));
-    for _ in 0..2 {
+    for folded in [json!(true), json!(1)] {
         assert_eq!(
-            k.value(&stems, Some(&json!(1))),
+            k.value(&stems, Some(&folded)),
             vec![Action::Unfold(t("band", "Stems grp#"))]
         );
     }
+    assert_eq!(k.value(&stems, Some(&json!(false))), vec![]);
     assert_eq!(k.value(&stems, Some(&json!(0))), vec![]);
-    assert_eq!(k.value(&stems, None), vec![]);
+    // Its watch fails (the group renamed or gone, no list change): read.
+    let actions = k.value(&stems, None);
+    let (reads, rest) = apply(&mut k, actions);
+    assert_eq!((reads.len(), rest), (1, vec![]));
+    assert!(reads[0] > seq);
     assert_eq!(k.value("band|unknown|fold_state", Some(&json!(1))), vec![]);
 }
 
@@ -119,16 +125,9 @@ fn a_track_list_change_reads_again_and_lets_go_of_a_group_left() {
         }]
     );
     assert_eq!(k.held(), vec![]);
-    // A failed read changes nothing.
-    let actions = k.value(&key(&Watch::Tracks("band".into())), None);
-    let (third, _) = apply(&mut k, actions);
-    assert_eq!(
-        k.read_done("band", third[0], &Err("instance offline".into())),
-        vec![]
-    );
     // A read of an instance never read is void.
     assert_eq!(
-        k.read_done("master", third[0], &answer(&[Some("G")])),
+        k.read_done("master", again[0], &answer(&[Some("G")])),
         vec![]
     );
 }
@@ -225,4 +224,60 @@ fn fold_values_targets_and_listings() {
         ])
     );
     assert_eq!(by_instance(Vec::new()), BTreeMap::new());
+}
+
+#[test]
+fn a_failed_read_is_tried_again_three_times_in_a_row() {
+    let mut k = Keeper::default();
+    let actions = k.set_strips([t("band", "Drums #")]);
+    let (mut reads, _) = apply(&mut k, actions);
+    let retry = vec![Action::Retry {
+        instance: "band".into(),
+    }];
+    for _ in 0..MAX_RETRIES {
+        let seq = *reads.last().unwrap();
+        assert_eq!(k.read_done("band", seq, &Err("timeout".into())), retry);
+        let actions = k.retry("band");
+        let (again, _) = apply(&mut k, actions);
+        reads.extend(again);
+    }
+    // A fourth failure in a row waits for news (a list change, a connect).
+    let seq = *reads.last().unwrap();
+    assert_eq!(k.read_done("band", seq, &Err("timeout".into())), vec![]);
+    assert_eq!(k.held(), vec![]);
+    // News starts a new run of retries.
+    let actions = k.value(&key(&Watch::Tracks("band".into())), Some(&json!([])));
+    let (fresh, _) = apply(&mut k, actions);
+    assert_eq!(k.read_done("band", fresh[0], &Err("timeout".into())), retry);
+    // A success ends a run: the next failure is the first again.
+    let actions = k.retry("band");
+    let (next, _) = apply(&mut k, actions);
+    let actions = k.read_done("band", next[0], &answer(&[Some("Stems grp#")]));
+    apply(&mut k, actions);
+    assert_eq!(k.held(), vec![t("band", "Stems grp#")]);
+    let actions = k.retry("band");
+    let (after, _) = apply(&mut k, actions);
+    for _ in 0..MAX_RETRIES {
+        let seq = *after.last().unwrap();
+        assert_eq!(k.read_done("band", seq, &Err("timeout".into())), retry);
+    }
+    // A failed read keeps the groups held.
+    assert_eq!(k.held(), vec![t("band", "Stems grp#")]);
+    // An instance without strips is not tried again.
+    assert_eq!(k.retry("master"), vec![]);
+}
+
+#[test]
+fn a_read_in_flight_for_an_instance_dropped_from_the_layout_is_void() {
+    let mut k = Keeper::default();
+    let actions = k.set_strips([t("band", "Drums #"), t("master", "Hand1 #")]);
+    let (reads, _) = apply(&mut k, actions);
+    // The master's strips leave the layout while its read is in flight.
+    let actions = k.set_strips([t("band", "Drums #")]);
+    apply(&mut k, actions);
+    assert_eq!(
+        k.read_done("master", reads[1], &answer(&[Some("M grp#")])),
+        vec![]
+    );
+    assert_eq!(k.held(), vec![]);
 }

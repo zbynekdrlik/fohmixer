@@ -294,20 +294,17 @@ test.describe("Bindings stay current with no REFRESH ALL (#58)", () => {
     await expect(page.getByTestId("refresh")).toHaveCount(0);
   });
 
-  test("the hub keeps a strip track's group unfolded, also after Live comes back", async ({ page }) => {
+  test("the hub keeps a strip track's group unfolded, also after Live comes back", async () => {
     // Live sends no meter of a track inside a folded group (#58): the hub
     // holds the groups the strips' tracks sit in open, with no page.
     const group = track("Vocals Repro grp#");
     await until(hubStatus, (s) => s.instances[0].unfolded.includes("Vocals Repro grp#"), "the hub holds the strip's group");
     await live.set("band", group, "fold_state", true);
     await until(() => live.get("band", group, "fold_state"), (v) => v === 0, "unfolded by the hub");
-    // After a Live restart (a set load alike) it holds it again.
+    // After a Live restart (a set load alike) it still unfolds it.
     await harness("/host/band/restart");
     await until(hubStatus, (s) => s.instances[0].online, "Live back", 10_000);
     await live.set("band", group, "fold_state", true);
     await until(() => live.get("band", group, "fold_state"), (v) => v === 0, "unfolded once Live is back");
-    // The surface shows no button for it.
-    await openSurface(page);
-    await expect(page.getByTestId("refresh")).toHaveCount(0);
   });
 });
