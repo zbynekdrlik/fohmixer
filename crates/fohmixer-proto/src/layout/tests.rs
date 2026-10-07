@@ -677,3 +677,28 @@ fn the_meter_source_is_level_unless_lr_is_named() {
     let absent = serde_json::to_value(&parse(sample()).config).unwrap();
     assert!(absent.get("meter_source").is_none(), "{absent}");
 }
+
+/// The fader law switch (#63): absent is Live's own law, `touchosc` names
+/// TouchOSC's, anything else does not parse.
+#[test]
+fn the_fader_law_is_lives_unless_touchosc_is_named() {
+    let layout = parse(sample());
+    assert_eq!(layout.config.fader_law, None);
+    assert_eq!(FaderLaw::default(), FaderLaw::Live);
+    let mut v = sample();
+    v["config"]["fader_law"] = json!("touchosc");
+    let layout = parse(v);
+    assert_eq!(layout.config.fader_law, Some(FaderLaw::Touchosc));
+    assert_eq!(
+        serde_json::to_value(&layout.config).unwrap()["fader_law"],
+        json!("touchosc")
+    );
+    let mut v = sample();
+    v["config"]["fader_law"] = json!("live");
+    assert_eq!(parse(v).config.fader_law, Some(FaderLaw::Live));
+    let mut v = sample();
+    v["config"]["fader_law"] = json!("console");
+    assert!(serde_json::from_value::<Layout>(v).is_err());
+    let absent = serde_json::to_value(&parse(sample()).config).unwrap();
+    assert!(absent.get("fader_law").is_none(), "{absent}");
+}

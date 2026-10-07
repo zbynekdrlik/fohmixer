@@ -19,6 +19,7 @@ use leptos::html;
 use leptos::prelude::*;
 
 use crate::behave::Start;
+use crate::behave::fader::VolumeLaw;
 use crate::behave::label::longest_word_chars;
 use crate::binding::SubSpec;
 use crate::diag::trace::moves::{self, Press, Trail};
@@ -40,6 +41,8 @@ pub struct Settings {
     pub shaping: bool,
     /// The strip meters' source (spec X2).
     pub meter_source: MeterSource,
+    /// The strip faders' volume law (#63).
+    pub law: VolumeLaw,
 }
 
 /// How long a failed write shows on its control.
@@ -99,14 +102,18 @@ pub fn trace_touch(what: &str, keys: &[String], pointer: i32) {
 }
 
 /// Records a fader's or pan's taken down with where its touch started (#43
-/// PR D, `diag::trace::moves::touch_start`).
-pub fn trace_start(keys: &[String], pointer: i32, press: Press, start: Start) {
-    crate::diag::record(&moves::touch_start(
-        dom::epoch_now(),
-        keys,
-        pointer,
-        press,
-        start,
+/// PR D, `diag::trace::moves::touch_start`) and, for a volume fader, the
+/// law its positions are on (#63, `moves::with_law`).
+pub fn trace_start(
+    keys: &[String],
+    pointer: i32,
+    press: Press,
+    start: Start,
+    law: Option<VolumeLaw>,
+) {
+    crate::diag::record(&moves::with_law(
+        moves::touch_start(dom::epoch_now(), keys, pointer, press, start),
+        law,
     ));
 }
 

@@ -64,6 +64,18 @@ pub fn is_column(control: &Control) -> bool {
     matches!(control, Control::Strip(_) | Control::ParamFader { .. })
 }
 
+/// The Live instance every strip of a group shares (#63: the group's title
+/// names it once instead of each strip); none when the group holds no strip
+/// or its strips differ. The other controls do not count.
+pub fn shared_instance(controls: &[Control]) -> Option<String> {
+    let mut instances = controls.iter().filter_map(|c| match c {
+        Control::Strip(strip) => Some(strip.binding.instance.as_str()),
+        _ => None,
+    });
+    let first = instances.next()?;
+    instances.all(|i| i == first).then(|| first.to_string())
+}
+
 /// How many strips wide a control is.
 fn units(control: &Control, m: &Metrics) -> f64 {
     match control {
@@ -226,6 +238,35 @@ mod tests {
                 })
                 .collect(),
         })
+    }
+
+    fn strip_of(instance: &str) -> Control {
+        let Control::Strip(mut s) = strip(false) else {
+            unreachable!()
+        };
+        s.binding.instance = instance.into();
+        Control::Strip(s)
+    }
+
+    #[test]
+    fn a_group_names_its_instance_only_when_every_strip_shares_it() {
+        assert_eq!(shared_instance(&[]), None, "no strip");
+        assert_eq!(shared_instance(&[toggle(), fader()]), None, "no strip");
+        assert_eq!(shared_instance(&[strip_of("band")]), Some("band".into()));
+        assert_eq!(
+            shared_instance(&[strip_of("master"), toggle(), strip_of("master")]),
+            Some("master".into()),
+            "the other controls do not count"
+        );
+        assert_eq!(
+            shared_instance(&[strip_of("band"), strip_of("master")]),
+            None
+        );
+        assert_eq!(
+            shared_instance(&[strip_of("band"), strip_of("band"), strip_of("master")]),
+            None,
+            "a later strip differs"
+        );
     }
 
     #[test]

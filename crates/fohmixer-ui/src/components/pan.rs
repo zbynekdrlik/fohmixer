@@ -1,7 +1,8 @@
 //! The pan control (spec F11): a horizontal relative drag with its own
-//! pointer, two releases within 300 ms centre it, grey when centred and
-//! cyan otherwise. The frame loop writes the position as `--p` and the bar
-//! from the centre as `--lo` / `--w` (the stylesheet draws them; #21). Its
+//! pointer, two releases within 300 ms glide it to the centre (#63), grey
+//! when centred and cyan otherwise. The frame loop writes the position as
+//! `--p` and the bar from the centre as `--lo` / `--w` (the stylesheet
+//! draws them; #21). Its
 //! writes go through the store's intents like a fader's (#43): a release
 //! with nothing unsent tells the store the release time (L4). It shows
 //! Live's value after its hold (PR B's decision 7) and, like a fader's cap,
@@ -98,7 +99,7 @@ pub fn PanView(state: RwSignal<Slot>, spec: SubSpec) -> impl IntoView {
             let _ = trail.try_update_value(|t| t.start(id, Axis::Right, press, start.from));
             let _ = key.try_with_value(|k| {
                 store.touch(k);
-                trace_start(k, id, press, start);
+                trace_start(k, id, press, start, None);
             });
         }
     };
@@ -156,11 +157,17 @@ pub fn PanView(state: RwSignal<Slot>, spec: SubSpec) -> impl IntoView {
                 dom::set_attr(&el, "data-intent", intent.name());
                 look = Some(intent);
             }
-            let Some(motion) = ctl.try_update_value(|c| c.frame(now, live())) else {
+            let Some((motion, glide_ended)) =
+                ctl.try_update_value(|c| (c.frame(now, live()), c.take_ended()))
+            else {
                 return;
             };
             if let Some(v) = motion.send {
                 send(v, false);
+            }
+            // A glide's end is a release (L4), as a fader's.
+            if glide_ended {
+                let _ = key.try_with_value(|k| store.release(k));
             }
             let Some(p) = motion.pos else {
                 return;

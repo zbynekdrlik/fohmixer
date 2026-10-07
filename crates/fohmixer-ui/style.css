@@ -93,6 +93,7 @@
     --bar: #11111b;
     --section: #151522;
     --panel: #1a1a28;
+    --panel-mute: #12121b;
     --panel-hi: #20203a;
     --track: #0a0a14;
     --line: #2a2a44;
@@ -382,17 +383,6 @@ body {
     color: var(--danger);
 }
 
-.hub-dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: var(--danger);
-}
-
-.hub-dot.online {
-    background: var(--accent);
-}
-
 .badge {
     display: inline-flex;
     align-items: center;
@@ -464,15 +454,16 @@ body {
     gap: 6px;
 }
 
-/* Rows: flow.rs METRICS.section_gap = the row gap; ROWS_PAD = both paddings. */
+/* Rows: flow.rs METRICS.section_gap = the row gap; ROWS_PAD = both
+   paddings (left and right; the height goes to the faders, #63). */
 .rows {
     position: relative;
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 6px;
     min-width: 0;
     min-height: 0;
-    padding: 8px 10px 10px;
+    padding: 4px 10px 6px;
     overflow: hidden;
 }
 
@@ -502,31 +493,63 @@ body {
     min-height: 0;
 }
 
+/* The title sits on the group's top border (#63: no line of its own, the
+   height goes to the faders). */
 .group {
+    position: relative;
     display: grid;
-    grid-template-rows: 18px minmax(0, 1fr);
-    gap: 4px;
+    grid-template-rows: minmax(0, 1fr);
     flex: none;
     min-width: 0;
     min-height: 0;
+    padding-top: 7px;
 }
 
 /* A title never makes its group wider than its strips (flow.rs counts the
-   strips only): its width does not count toward the group's size. */
+   strips only): it is laid over the border, so its width does not count
+   toward the group's size. */
 .group-title {
+    position: absolute;
+    top: 0;
+    left: 12px;
+    z-index: 1;
     display: flex;
     align-items: center;
     gap: 6px;
     min-width: 0;
+    max-width: calc(100% - 24px);
+    height: 14px;
     margin: 0;
+    padding: 0 6px;
     overflow: hidden;
-    contain: inline-size;
-    text-overflow: ellipsis;
+    background: var(--page);
     color: var(--muted);
-    font: 600 11px/18px var(--ui);
+    font: 600 10px/14px var(--ui);
     letter-spacing: 1.4px;
     text-transform: uppercase;
     white-space: nowrap;
+}
+
+.group-title > [data-testid="group-title"] {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* The Live instance every strip of the group shares (#63). */
+.group-instance {
+    flex: none;
+    padding: 0 4px;
+    border-radius: 4px;
+    color: var(--band);
+    background: rgba(78, 205, 196, 0.14);
+    font: 700 9px/13px var(--ui);
+    letter-spacing: 0.5px;
+}
+
+.group-instance[data-instance="master"] {
+    color: var(--master);
+    background: rgba(139, 125, 255, 0.16);
 }
 
 .group-mark {
@@ -542,7 +565,7 @@ body {
     display: flex;
     gap: 4px;
     min-height: 0;
-    padding: 4px;
+    padding: 9px 4px 4px;
     border: 1px solid var(--line-soft);
     border-radius: 12px;
     background: var(--section);

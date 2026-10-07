@@ -270,6 +270,21 @@ pub struct LayoutConfig {
     /// the K2 measurement decides (#5); `level` when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub meter_source: Option<MeterSource>,
+    /// How a strip's volume fader maps its position to Live's volume (#63):
+    /// `live` (Live's own law) when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fader_law: Option<FaderLaw>,
+}
+
+/// The volume law of the strip faders (#63).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FaderLaw {
+    /// Live's own: the fader's position is Live's volume value.
+    #[default]
+    Live,
+    /// TouchOSC's: `v = p^0.515`.
+    Touchosc,
 }
 
 /// The meter source of the strips (spec X2).

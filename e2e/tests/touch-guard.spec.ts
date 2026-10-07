@@ -88,12 +88,13 @@ test("every control owns its touches: its touchstart is prevented, nothing on it
     // too, so only the drag tells the stylesheet apart.
     expect(await style(el, "-webkit-user-drag"), `the ${name} cannot be dragged`).toBe("none");
   }
-  // Outside the controls a touch stays the browser's: a strip's instance tag
-  // and dB scale, a group's title, the rail, a row, the version label.
+  // Outside the controls a touch stays the browser's: a strip's dB scale, a
+  // group's title and the instance it names, the rail, a row, the version
+  // label.
   const free: [string, Locator][] = [
-    ["strip tag", strip(page, "Hand2 #").getByTestId("strip-instance")],
     ["dB scale", strip(page, "Hand2 #").getByTestId("scale")],
     ["group title", page.getByTestId("group-title").first()],
+    ["group instance", page.getByTestId("group-instance").first()],
     ["rail", page.getByTestId("rail")],
     ["row", page.getByTestId("row").first()],
     ["version", page.getByTestId("stage").getByTestId("version")],
@@ -104,8 +105,10 @@ test("every control owns its touches: its touchstart is prevented, nothing on it
 });
 
 test("a scrolling row keeps the touches of its background: a finger there scrolls it, its faders still own theirs", async ({ page, browserName }) => {
-  // A row of 30 strips: wider than the screen at the narrowest strip width,
-  // so it scrolls (`.row.scrolls`, `touch-action: pan-x`).
+  // A row of 31 strips: wider than the screen at the narrowest strip width,
+  // so it scrolls (`.row.scrolls`, `touch-action: pan-x`). A master strip
+  // at its end: the group's strips differ, so each shows its instance tag
+  // (#63), a part of a strip that is no control.
   const LAYOUT = join(__dirname, "..", "..", "tools", "import-tosc", "fixtures", "expected-layout.json");
   const BAND = ["Hand1 #", "Hand2 #", "Hand3 #", "Hand4 #", "Vocal 1 repro#", "Vocal 2 repro#", "Vocal 3 repro#", "Keys 1", "Drums #", "Bass #"];
   const changed = JSON.parse(readFileSync(LAYOUT, "utf-8"));
@@ -115,6 +118,7 @@ test("a scrolling row keeps the touches of its background: a finger there scroll
     binding: { instance: "band", anchor: { kind: "track", name } },
     strip_kind: "standard",
   }));
+  strips.push({ kind: "strip", binding: { instance: "master", anchor: { kind: "track", name: "Hand1 #" } }, strip_kind: "standard" });
   foh.rows.push({ sections: [{ kind: "group", id: "wide", title: "Wide", controls: strips }] });
   await openSurface(page);
   const group = page.locator('[data-testid="group"][data-group="wide"]');
@@ -180,8 +184,9 @@ test("a context menu, a selection and a drag never start on the surface, and the
   expect(await prevented(hand2.getByTestId("mute"), "contextmenu"), "a contextmenu on the mute").toBe(true);
   // Anywhere on the surface: prevented too.
   expect(await prevented(page.getByTestId("row").first(), "contextmenu"), "a contextmenu on a row").toBe(true);
-  // A pinch's start and a cancelled pointer are only recorded.
-  const tag = hand2.getByTestId("strip-instance");
+  // A pinch's start and a cancelled pointer are only recorded (on a part of
+  // the page that is no control: the instance its group names, #63).
+  const tag = page.getByTestId("group-instance").first();
   expect(await prevented(tag, "gesturestart"), "a gesturestart").toBe(false);
   await pointer(tag, "pointercancel", 81);
   // A capture lost while the finger is still down is recorded; the one that
@@ -226,9 +231,9 @@ test("a context menu, a selection and a drag never start on the surface, and the
   const rowMenu = on("contextmenu", "row");
   expect(rowMenu).toEqual([expect.objectContaining({ prevented: true })]);
   expect("keys" in rowMenu[0], "a row has no keys").toBe(false);
-  expect(on("gesturestart", "strip-instance")).toEqual([expect.objectContaining({ prevented: false })]);
-  expect(on("pointercancel", "strip-instance")).toEqual([expect.objectContaining({ pointer: 81, prevented: false })]);
-  expect(on("lostpointercapture", "strip-instance")).toEqual([expect.objectContaining({ pointer: 82, prevented: false })]);
+  expect(on("gesturestart", "group-instance")).toEqual([expect.objectContaining({ prevented: false })]);
+  expect(on("pointercancel", "group-instance")).toEqual([expect.objectContaining({ pointer: 81, prevented: false })]);
+  expect(on("lostpointercapture", "group-instance")).toEqual([expect.objectContaining({ pointer: 82, prevented: false })]);
   expect(sys.length, `only those: ${JSON.stringify(sys)}`).toBe(8);
   for (const e of sys) expect(typeof e.t, "a record's page time").toBe("number");
   const scales = events.filter((e: any) => e.ev === "zoom").map((e: any) => e.scale);

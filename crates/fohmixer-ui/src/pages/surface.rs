@@ -19,6 +19,7 @@ use serde_json::json;
 use crate::app::version_text;
 use crate::behave::solo::soloed;
 use crate::binding::{SubSpec, choose, page_solos, selected_path, solo_sub, visible_subs};
+use crate::components::strip::GroupInstance;
 use crate::components::{ControlView, Settings, fail_flash, key_of, owns_surface, owns_touches};
 use crate::dom;
 use crate::flow::{METRICS, Shape, overflows, pager_shape, row_shape, strip_width};
@@ -168,6 +169,7 @@ fn Shell(layout: Arc<Layout>) -> impl IntoView {
     provide_context(Settings {
         shaping: layout.config.fader_shaping.unwrap_or(true),
         meter_source: layout.config.meter_source.unwrap_or_default(),
+        law: layout.config.fader_law.unwrap_or_default().into(),
     });
     let page = Memo::new(move |_| nav.path.with(|p| p.first().copied()));
     let sub = Memo::new(move |_| nav.path.with(|p| p.get(1).copied()));
@@ -385,8 +387,9 @@ fn PageView(page: Page, global: Vec<Control>, sub: Memo<Option<usize>>) -> impl 
     }
 }
 
-/// A group of controls: its marker and title, then its controls side by
-/// side (strips) or in a grid (buttons).
+/// A group of controls: its marker and title (on the group's border, #63)
+/// with the Live instance its strips share, then its controls side by side
+/// (strips) or in a grid (buttons).
 #[component]
 fn GroupView(group: Group) -> impl IntoView {
     // Strips side by side; buttons in a grid; texts one per line.
@@ -404,6 +407,17 @@ fn GroupView(group: Group) -> impl IntoView {
         .unwrap_or_default();
     let id = group.id.clone().unwrap_or_default();
     let title = group.title.clone().unwrap_or_default();
+    // The instance its strips share: named once here, not on each strip.
+    let shared = crate::flow::shared_instance(&group.controls);
+    provide_context(GroupInstance(shared.clone()));
+    let instance = shared.map(|name| {
+        let instance_attr = name.clone();
+        view! {
+            <span class="group-instance" data-testid="group-instance" data-instance=instance_attr>
+                {name}
+            </span>
+        }
+    });
     let controls = group
         .controls
         .into_iter()
@@ -421,6 +435,7 @@ fn GroupView(group: Group) -> impl IntoView {
             <h2 class="group-title">
                 <i class="group-mark"></i>
                 <span data-testid="group-title">{title}</span>
+                {instance}
             </h2>
             <div class="group-body">{controls}</div>
         </section>
@@ -517,7 +532,9 @@ fn DropoutCounter() -> impl IntoView {
 }
 
 /// The dropout counter, the connection badges (per instance: online, busy,
-/// offline) and the version, at the right end of the top bar.
+/// offline; every one offline while the page has no hub connection, so no
+/// dot of its own says that, #63) and the version, at the right end of the
+/// top bar.
 #[component]
 fn StatusCluster() -> impl IntoView {
     let store = expect_context::<LiveStore>();
@@ -546,7 +563,6 @@ fn StatusCluster() -> impl IntoView {
     view! {
         <div class="status-cluster">
             <DropoutCounter />
-            <span class="hub-dot" class:online=move || store.connected.get()></span>
             {badges}
             <span class="version" data-testid="version">{version_text()}</span>
         </div>

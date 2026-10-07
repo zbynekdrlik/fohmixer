@@ -14,9 +14,12 @@
 //! shaping's size thresholds are TouchOSC's finger distances on that iPad
 //! ([`REFERENCE_TRAVEL`]), not fractions of our shorter travel.
 
+use fohmixer_proto::layout::FaderLaw;
+
 use super::{Motion, Start};
 
-/// Position ↔ Live volume exponent: `v = p^0.515` (−6 dB at half travel).
+/// TouchOSC's position ↔ Live volume exponent: `v = p^0.515` (−6 dB at
+/// half travel).
 pub const EXPONENT: f64 = 0.515;
 /// Live's volume at 0 dB: the double-tap target.
 pub const UNITY: f64 = 0.85;
@@ -68,15 +71,62 @@ const STILL_MS: f64 = 100.0;
 const DOUBLE_MIN_MS: f64 = 50.0;
 const DOUBLE_MAX_MS: f64 = 250.0;
 
-/// The Live volume of fader position `p` (clamped to 0..1; the power keeps
-/// 0 and 1 where they are).
+/// The Live volume of fader position `p` on TouchOSC's law (clamped to
+/// 0..1; the power keeps 0 and 1 where they are).
 pub fn to_live(p: f64) -> f64 {
     p.clamp(0.0, 1.0).powf(EXPONENT)
 }
 
-/// The fader position of Live volume `v` (clamped to 0..1).
+/// The fader position of Live volume `v` on TouchOSC's law (clamped to
+/// 0..1).
 pub fn to_pos(v: f64) -> f64 {
     v.clamp(0.0, 1.0).powf(1.0 / EXPONENT)
+}
+
+/// How a volume fader's position maps to Live's volume (#63; the layout's
+/// `config.fader_law`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum VolumeLaw {
+    /// Live's own: the position is Live's volume value, as Live's mixer
+    /// draws its fader (0 dB at 0.85, −20 dB at 0.36, −40 dB at 0.16: close
+    /// to a console fader). No conversion between the fader and Live.
+    #[default]
+    Live,
+    /// TouchOSC's: `v = p^0.515` (0 dB at 0.7294, −40 dB at 0.024).
+    TouchOsc,
+}
+
+impl VolumeLaw {
+    /// The Live volume of position `p` (clamped to 0..1).
+    pub fn to_live(self, p: f64) -> f64 {
+        match self {
+            Self::Live => p.clamp(0.0, 1.0),
+            Self::TouchOsc => to_live(p),
+        }
+    }
+
+    /// The position of Live volume `v` (clamped to 0..1).
+    pub fn to_pos(self, v: f64) -> f64 {
+        match self {
+            Self::Live => v.clamp(0.0, 1.0),
+            Self::TouchOsc => to_pos(v),
+        }
+    }
+
+    /// This law's position of position `p` on TouchOSC's scale (the meter's
+    /// calibration places Live's levels there).
+    pub fn from_touchosc(self, p: f64) -> f64 {
+        self.to_pos(to_live(p))
+    }
+}
+
+impl From<FaderLaw> for VolumeLaw {
+    fn from(law: FaderLaw) -> Self {
+        match law {
+            FaderLaw::Live => Self::Live,
+            FaderLaw::Touchosc => Self::TouchOsc,
+        }
+    }
 }
 
 /// The position of `value` on a parameter's `(min, max)` range: the
@@ -164,6 +214,8 @@ fn writes_back(diff: f64) -> bool {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Shaper {
     enabled: bool,
+    /// The volume law the dB steps are measured on.
+    law: VolumeLaw,
     /// The fader's travel (px): [`REFERENCE_TRAVEL`] until told.
     travel: f64,
     x: f64,
@@ -180,6 +232,7 @@ impl Shaper {
     pub fn new(enabled: bool) -> Self {
         Self {
             enabled,
+            law: VolumeLaw::TouchOsc,
             travel: REFERENCE_TRAVEL,
             x: 0.0,
             last: 0.0,
@@ -190,6 +243,12 @@ impl Shaper {
             emergency: false,
             processed: 0,
         }
+    }
+
+    /// Measures its dB steps on volume law `law` (TouchOSC's until told,
+    /// #63).
+    pub fn set_law(&mut self, law: VolumeLaw) {
+        self.law = law;
     }
 
     /// The fader's travel in px (at least 1, `FaderCtl`'s): the size
@@ -203,7 +262,7 @@ impl Shaper {
         let p0 = p0.clamp(0.0, 1.0);
         self.x = p0;
         self.last = p0;
-        self.start_audio = to_live(p0);
+        self.start_audio = self.law.to_live(p0);
         self.first_done = false;
         self.reaction = false;
         self.reaction_count = 0;
@@ -230,7 +289,7 @@ impl Shaper {
     /// The smallest step from where the touch started, in the direction of
     /// `delta` (never 0 here).
     fn forced(&self, delta: f64) -> f64 {
-        to_pos(audio_for_db_change(
+        self.law.to_pos(audio_for_db_change(
             self.start_audio,
             MIN_DB_STEP.copysign(delta),
         ))
@@ -251,7 +310,7 @@ impl Shaper {
                 return raw;
             }
             let start_db = value2db(self.start_audio);
-            if short_of_step(value2db(to_live(raw)) - start_db) {
+            if short_of_step(value2db(self.law.to_live(raw)) - start_db) {
                 let forced = self.forced(delta);
                 self.reaction = true;
                 self.reaction_count = 0;
@@ -259,7 +318,7 @@ impl Shaper {
                 return forced;
             }
             let mut scaled = self.last + delta * INITIAL_SCALE;
-            if short_of_step(value2db(to_live(scaled)) - start_db) {
+            if short_of_step(value2db(self.law.to_live(scaled)) - start_db) {
                 scaled = self.forced(delta);
             }
             self.last = scaled;
@@ -295,7 +354,7 @@ impl Shaper {
             self.processed += 1;
             let progress = f64::from(self.processed - 1) / f64::from(SCALED_MOVES - 1);
             let base = INITIAL_SCALE + (FINAL_SCALE - INITIAL_SCALE) * progress;
-            let audio = to_live(raw);
+            let audio = self.law.to_live(raw);
             let linear = (LINEAR_FROM..=LINEAR_TO).contains(&audio);
             let scale = if linear { base * LINEAR_SCALE } else { base };
             let next = (self.last + delta * scale).clamp(0.0, 1.0);
@@ -349,22 +408,36 @@ impl TapTracker {
     }
 }
 
-/// A constant-speed glide (the double tap's move to 0 dB).
+/// A constant-speed glide (the double tap's move to 0 dB, a pan's to the
+/// centre).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Glide {
     from: f64,
     to: f64,
     t0: f64,
+    /// Positions per second.
+    speed: f64,
 }
 
 impl Glide {
+    /// A fader's glide, at [`GLIDE_SPEED`].
     pub fn new(from: f64, to: f64, t0: f64) -> Self {
-        Self { from, to, t0 }
+        Self::at_speed(from, to, t0, GLIDE_SPEED)
+    }
+
+    /// A glide at `speed` positions per second.
+    pub fn at_speed(from: f64, to: f64, t0: f64, speed: f64) -> Self {
+        Self {
+            from,
+            to,
+            t0,
+            speed,
+        }
     }
 
     /// The position at time `t` and whether the glide has arrived.
     pub fn at(&self, t: f64) -> (f64, bool) {
-        let travelled = GLIDE_SPEED * (t - self.t0).max(0.0) / 1000.0;
+        let travelled = self.speed * (t - self.t0).max(0.0) / 1000.0;
         let gap = self.to - self.from;
         if travelled >= gap.abs() {
             (self.to, true)
@@ -450,6 +523,19 @@ impl FaderCtl {
     pub fn anchoring(mut self, on: bool) -> Self {
         self.anchors = on;
         self
+    }
+
+    /// A volume fader on law `law`: the touch shaping measures its dB steps
+    /// there (#63; TouchOSC's law until told, as the Lua's port).
+    pub fn law(mut self, law: VolumeLaw) -> Self {
+        self.shaper.set_law(law);
+        self
+    }
+
+    /// Whether a finger or a glide drives the fader (#63: the strip lights
+    /// while it does, above the finger).
+    pub fn held(&self) -> bool {
+        self.pointer.is_some() || self.glide.is_some()
     }
 
     /// The position the fader holds now: the finger's, a glide's, a write's

@@ -11,6 +11,7 @@ use leptos::prelude::*;
 
 use super::owns_touches;
 use crate::behave::css;
+use crate::behave::fader::VolumeLaw;
 use crate::behave::meter::{MeterBar, level_to_pos};
 use crate::behave::peak::{Peak, clips};
 use crate::behave::scale::zone_style;
@@ -19,9 +20,11 @@ use crate::dom;
 use crate::raf;
 use crate::store::Slot;
 
-/// A meter: one bar per level slot (one for `level`, two for `lr`).
+/// A meter: one bar per level slot (one for `level`, two for `lr`), on the
+/// fader's volume law (#63: the calibration places a level on TouchOSC's
+/// scale; the bar shows it where the fader reads the same dB).
 #[component]
-pub fn MeterView(levels: Vec<RwSignal<Slot>>) -> impl IntoView {
+pub fn MeterView(levels: Vec<RwSignal<Slot>>, law: VolumeLaw) -> impl IntoView {
     let root = NodeRef::<html::Div>::new();
     let count = levels.len();
     let clip = RwSignal::new(false);
@@ -48,7 +51,8 @@ pub fn MeterView(levels: Vec<RwSignal<Slot>>) -> impl IntoView {
                     let _ = clip.try_set(true);
                 }
                 bars[i].target(level_to_pos(level));
-                let (pos, _color) = bars[i].step(step);
+                let (shown, _color) = bars[i].step(step);
+                let pos = law.from_touchosc(shown);
                 let peak = peaks[i].step(pos, now);
                 let (was, was_peak) = drawn[i];
                 if (pos - was).abs() < 1e-4 && (peak - was_peak).abs() < 1e-4 {
@@ -92,7 +96,7 @@ pub fn MeterView(levels: Vec<RwSignal<Slot>>) -> impl IntoView {
             data-testid="meter"
             data-level="0"
             data-peak="0"
-            style={zone_style()}
+            style={zone_style(law)}
             node_ref=root
         >
             <div

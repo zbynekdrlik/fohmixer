@@ -90,6 +90,7 @@ test("a fader dragged through a stall: every hop and the page's record in the ev
   for (const field of ["dt", "c", "travel", "pos", "live", "from"]) expect(typeof down[field], field).toBe("number");
   expect(down.local, "a fader at rest shows Live's value").toBe(false);
   expect(down.from, "the touch starts from Live's value").toBe(down.live);
+  expect(down.law, "a volume fader on Live's own law names it (#63)").toBe("live");
   expect(down.dt, "the pointer event came before its handler").toBeLessThanOrEqual(0);
   const moves = record.filter((e: any) => e.ev === "mv" && e.key === KEY && e.p === 61);
   expect(moves.length, "the frames that sent from the finger").toBeGreaterThan(5);

@@ -1,7 +1,9 @@
 //! The pan control (spec F11; TouchOSC `pan_control.lua` 1.5.3): position
 //! `p` ↔ Live panning `2p − 1`, relative drag, two releases within 300 ms
-//! centre it, grey when centred and cyan otherwise.
+//! glide it to the centre (#63: at iemmixer's 0.4 positions a second; the
+//! TouchOSC script jumped), grey when centred and cyan otherwise.
 
+use super::fader::Glide;
 use super::{Motion, Start};
 
 /// The colour of a centred pan and of an off-centre one.
@@ -11,6 +13,9 @@ pub const OFF_CENTER: &str = "#34C1DC";
 const CENTER_TOLERANCE: f64 = 0.01;
 /// Two releases closer than this centre the pan.
 pub const DOUBLE_TAP_MS: f64 = 300.0;
+/// The double tap's glide to the centre, in positions per second (iemmixer's
+/// pan: 0.02 per 50 ms tick; a full side in 1.25 s).
+pub const GLIDE_SPEED: f64 = 0.4;
 /// After a release the pan shows its own position this long, so Live's
 /// echo of the last value lands before Live's value is shown again
 /// (TouchOSC synced at once; see the S4 decisions on the ticket).
@@ -42,8 +47,8 @@ pub fn color(p: f64) -> &'static str {
 }
 
 /// One pan's input state: one pointer, the relative drag (a touch's first
-/// pointer move only anchors it, #43 PR F), the double tap to the centre and
-/// the post-release hold.
+/// pointer move only anchors it, #43 PR F), the double tap's glide to the
+/// centre and the post-release hold.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PanCtl {
     pointer: Option<i32>,
@@ -55,6 +60,9 @@ pub struct PanCtl {
     unsent: bool,
     last_release: Option<f64>,
     hold_until: f64,
+    glide: Option<Glide>,
+    /// A glide ended since the store last heard of it.
+    ended: bool,
 }
 
 impl Default for PanCtl {
@@ -68,13 +76,15 @@ impl Default for PanCtl {
             unsent: false,
             last_release: None,
             hold_until: f64::NEG_INFINITY,
+            glide: None,
+            ended: false,
         }
     }
 }
 
 impl PanCtl {
     fn local(&self, now: f64) -> bool {
-        self.pointer.is_some() || now < self.hold_until
+        self.pointer.is_some() || self.glide.is_some() || now < self.hold_until
     }
 
     /// Pointer `id` pressed at `x` (px) on a pan `travel` px wide, Live's
@@ -96,6 +106,8 @@ impl PanCtl {
         if !local {
             self.pos = to_pos(live);
         }
+        // A touch stops a glide where it is.
+        self.glide = None;
         self.pointer = Some(id);
         self.first_move = true;
         self.last_x = x;
@@ -138,7 +150,8 @@ impl PanCtl {
     }
 
     /// Pointer `id` lifted: the panning still to send, if any. The second
-    /// release within 300 ms centres the pan.
+    /// release within 300 ms starts the glide to the centre (its frames
+    /// send it).
     pub fn up(&mut self, id: i32, now: f64) -> Option<f64> {
         if self.pointer != Some(id) {
             return None;
@@ -148,9 +161,9 @@ impl PanCtl {
         let double = self.last_release.is_some_and(|t| now - t < DOUBLE_TAP_MS);
         if double {
             self.last_release = None;
-            self.pos = 0.5;
             self.unsent = false;
-            return Some(0.0);
+            self.glide = Some(Glide::at_speed(self.pos, 0.5, now, GLIDE_SPEED));
+            return None;
         }
         self.last_release = Some(now);
         self.take_unsent()
@@ -173,8 +186,38 @@ impl PanCtl {
         unsent.then(|| to_live(self.pos))
     }
 
+    /// Whether a glide ended (arrived, or stopped because Live's value went)
+    /// since the last call: the store then marks its last write released.
+    pub fn take_ended(&mut self) -> bool {
+        std::mem::take(&mut self.ended)
+    }
+
     /// The frame at `now`, Live's panning being `live`.
     pub fn frame(&mut self, now: f64, live: Option<f64>) -> Motion {
+        if self.glide.is_some() && live.is_none() {
+            // Live's value is gone (its instance went offline): the glide
+            // stops where it is and sends nothing more.
+            self.glide = None;
+            self.ended = true;
+            self.hold_until = now + HOLD_MS;
+            return Motion {
+                pos: Some(self.pos),
+                send: None,
+            };
+        }
+        if let Some(glide) = self.glide {
+            let (pos, done) = glide.at(now);
+            self.pos = pos;
+            if done {
+                self.glide = None;
+                self.ended = true;
+                self.hold_until = now + HOLD_MS;
+            }
+            return Motion {
+                pos: Some(pos),
+                send: Some(to_live(pos)),
+            };
+        }
         if self.pointer.is_some() {
             return Motion {
                 pos: Some(self.pos),
@@ -260,20 +303,104 @@ mod tests {
         assert_eq!(p.cancel(2, 50.0), None);
     }
 
+    fn close(a: f64, b: f64) -> bool {
+        (a - b).abs() < 1e-12
+    }
+
     #[test]
-    fn two_releases_within_300_ms_centre_it() {
+    fn two_releases_within_300_ms_glide_it_to_the_centre() {
         let mut p = touched(0.5);
         anchor(&mut p, 1, 100.0);
         p.moved(1, 120.0);
         assert_eq!(p.up(1, 10.0), Some(to_live(to_pos(0.5) + 0.1)));
         assert!(p.down(1, 100.0, 200.0, 200.0, 0.5));
-        assert_eq!(p.up(1, 309.0), Some(0.0), "299 ms after the last release");
-        assert_eq!(p.frame(310.0, Some(0.5)).pos, Some(0.5));
-        // A third release starts over; 300 ms is too late.
-        assert!(p.down(1, 100.0, 200.0, 500.0, 0.0));
-        assert_eq!(p.up(1, 510.0), None);
-        assert!(p.down(1, 100.0, 200.0, 700.0, 0.0));
-        assert_eq!(p.up(1, 810.0), None, "300 ms apart");
+        assert_eq!(
+            p.up(1, 309.0),
+            None,
+            "299 ms after the last release: no jump"
+        );
+        assert!(!p.take_ended());
+        // 0.4 positions a second from 0.75, sent each frame: 0.65 after
+        // 250 ms.
+        let frame = p.frame(559.0, Some(0.5));
+        assert!(close(frame.pos.unwrap(), 0.65), "{frame:?}");
+        assert!(close(frame.send.unwrap(), to_live(0.65)), "{frame:?}");
+        assert!(!p.take_ended(), "still on its way");
+        // At the centre after 625 ms; the end is told once, then the hold.
+        assert_eq!(
+            p.frame(934.0, Some(0.5)),
+            Motion {
+                pos: Some(0.5),
+                send: Some(0.0)
+            }
+        );
+        assert!(p.take_ended());
+        assert!(!p.take_ended(), "told once");
+        assert_eq!(p.frame(1033.0, Some(1.0)).pos, Some(0.5), "the hold");
+        assert_eq!(p.frame(1033.0, Some(1.0)).send, None);
+        assert_eq!(p.frame(1034.0, Some(1.0)).pos, Some(1.0));
+        // A third release starts over; 300 ms is too late: no glide.
+        assert!(p.down(1, 100.0, 200.0, 1500.0, 0.5));
+        assert_eq!(p.up(1, 1510.0), None);
+        assert!(p.down(1, 100.0, 200.0, 1700.0, 0.5));
+        assert_eq!(p.up(1, 1810.0), None, "300 ms apart");
+        assert_eq!(
+            p.frame(1811.0, Some(0.5)),
+            Motion {
+                pos: Some(0.75),
+                send: None
+            },
+            "no glide"
+        );
+        assert!(!p.take_ended());
+    }
+
+    #[test]
+    fn a_pan_glide_stops_where_it_is_when_lives_value_goes() {
+        let mut p = touched(0.5);
+        assert_eq!(p.up(1, 10.0), None);
+        assert!(p.down(1, 100.0, 200.0, 50.0, 0.5));
+        assert_eq!(p.up(1, 60.0), None);
+        let gliding = p.frame(310.0, Some(0.5));
+        assert!(close(gliding.pos.unwrap(), 0.65), "{gliding:?}");
+        // The instance went offline: no more sends, the pan holds.
+        let stopped = p.frame(320.0, None);
+        assert!(close(stopped.pos.unwrap(), 0.65), "{stopped:?}");
+        assert_eq!(stopped.send, None);
+        assert!(p.take_ended(), "a stopped glide ends");
+        let held = p.frame(419.0, Some(0.5));
+        assert!(close(held.pos.unwrap(), 0.65), "{held:?}");
+        assert_eq!(held.send, None, "the glide does not resume");
+        assert_eq!(
+            p.frame(420.0, Some(0.5)).pos,
+            Some(0.75),
+            "then Live's value"
+        );
+    }
+
+    #[test]
+    fn a_touch_stops_the_pan_glide_where_it_is() {
+        let mut p = touched(0.5);
+        assert_eq!(p.up(1, 10.0), None);
+        assert!(p.down(1, 100.0, 200.0, 50.0, 0.5));
+        assert_eq!(p.up(1, 60.0), None);
+        let _ = p.frame(310.0, Some(0.5));
+        let at = p.pos();
+        assert!(close(at, 0.65), "{at}");
+        assert_eq!(
+            p.press(2, 100.0, 200.0, 320.0, 0.5),
+            Some(Start {
+                shown: at,
+                live: 0.75,
+                local: true,
+                from: at,
+            }),
+            "the touch starts where the glide was"
+        );
+        let held = p.frame(900.0, Some(0.5));
+        assert!(close(held.pos.unwrap(), 0.65), "{held:?}");
+        assert_eq!(held.send, None);
+        assert!(!p.take_ended(), "a touch is no glide end");
     }
 
     #[test]

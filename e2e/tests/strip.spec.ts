@@ -16,6 +16,7 @@ import {
   selectPage,
   shown,
   strip,
+  groupOf,
   token,
   track,
   until,
@@ -55,8 +56,13 @@ test.describe("A strip", () => {
     await live.set("band", volume(HAND2), "value", 0.85);
     await expect(strip(page, "Hand2 #").getByTestId("strip-label")).toHaveText("Hand2");
     await expect(strip(page, "B-Main repro #").getByTestId("strip-label")).toHaveText("Main");
-    await expect(strip(page, "Hand2 #").getByTestId("strip-instance")).toHaveText("band");
-    await expect(strip(page, "B-Main repro #").getByTestId("strip-instance")).toHaveText("band · ret");
+    // #63: a group whose strips share an instance names it in its title,
+    // not on each strip; a return says RET on its name button.
+    await expect(groupOf(page, strip(page, "Hand2 #")).getByTestId("group-instance")).toHaveText("band");
+    await expect(strip(page, "Hand2 #").getByTestId("strip-instance")).toHaveCount(0);
+    await expect(strip(page, "B-Main repro #").getByTestId("strip-instance")).toHaveCount(0);
+    await expect(strip(page, "B-Main repro #").getByTestId("strip-ret")).toHaveText("RET");
+    await expect(strip(page, "Hand2 #").getByTestId("strip-ret")).toHaveCount(0);
   });
 
   test("its texts fit their boxes: the dB text, the name and the instance", async ({ page }) => {
@@ -69,14 +75,18 @@ test.describe("A strip", () => {
       await openSurface(page);
       const narrow = strip(page, "Vocal 1 repro#");
       await expect(narrow.getByTestId("db")).toHaveText(dbForm(await live.display("band", volume(VOCAL1), 0.829725)));
-      await expect(narrow.getByTestId("strip-instance")).toHaveText(/band/i);
+      const named = groupOf(page, narrow).getByTestId("group-instance");
+      await expect(named).toHaveText(/band/i);
+      expect(await clipped(named), "the group's instance").toEqual([]);
       for (const name of ["Vocal 1 repro#", "Hand2 #", "B-Main repro #"]) {
-        for (const part of ["db", "strip-label", "strip-instance"]) {
+        for (const part of ["db", "strip-label"]) {
           const el = strip(page, name).getByTestId(part);
           await expect(el).not.toHaveText("");
           expect(await clipped(el), `${name} ${part}`).toEqual([]);
         }
       }
+      const ret = strip(page, "B-Main repro #").getByTestId("strip-ret");
+      expect(await clipped(ret), "the RET mark").toEqual([]);
     } finally {
       await live.set("band", volume(VOCAL1), "value", before);
     }
@@ -303,7 +313,9 @@ test.describe("A strip", () => {
     await openSurface(page);
     const s = strip(page, "Hand2 #");
     const ticks = s.getByTestId("scale").locator(".tick");
-    await expect(ticks).toHaveText(["+6", "0", "−6", "−12", "−18", "−24", "−40"]);
+    // #63: Live's own fader law by default, its low end spread out as a
+    // console's, so −30 and −60 are labelled too.
+    await expect(ticks).toHaveText(["+6", "0", "−6", "−12", "−18", "−24", "−30", "−40", "−60"]);
     const fader = s.getByTestId("fader");
     await ready(fader);
     await until(() => shown(fader), (v) => Math.abs(v - 0.85) < 0.001, "the fader at 0 dB");
@@ -315,6 +327,9 @@ test.describe("A strip", () => {
     const track = (await fader.boundingBox())!;
     const top = (await ticks.nth(0).boundingBox())!;
     expect(Math.abs(top.y + top.height / 2 - track.y)).toBeLessThan(2);
+    // The position is Live's volume: 0 dB at 85 % of the travel.
+    const down = (cap.y + cap.height / 2 - track.y) / track.height;
+    expect(Math.abs(down - 0.15), `0 dB ${down} of the travel from its top`).toBeLessThan(0.01);
   });
 
   test("the meter moves with Live's meter", async ({ page }) => {
@@ -385,7 +400,7 @@ test.describe("A strip", () => {
     await openSurface(page);
     await selectPage(page, "others");
     const master = strip(page, "Hand1 #", "master");
-    await expect(master.getByTestId("strip-instance")).toHaveText("master");
+    await expect(groupOf(page, master).getByTestId("group-instance")).toHaveText("master");
     await expect(master.getByTestId("db")).toHaveText(dbForm(await live.display("master", volume(track("Hand1 #")), 0.6)));
   });
 });

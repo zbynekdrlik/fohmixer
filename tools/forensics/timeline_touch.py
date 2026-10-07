@@ -9,7 +9,8 @@ The page's records (``diag/trace/moves.rs``): a ``touch`` down with its start
 ``live``, ``from``: positions 0..1 of the travel; ``local``) and per frame
 that sent from the finger an ``mv`` (``e``: ``[dt, c]`` of each pointer move,
 ``r``: the 1:1 finger position, ``s``: the position sent, ``q``: its set's
-seq). A volume's Live value at position p is p^0.515.
+seq). A volume's Live value at position p is p on Live's own law (#63, the
+down's ``law`` is ``live``) and p^0.515 on TouchOSC's (a down without it).
 
 - **First-touch jump:** the touch's first applied value (Live's result of
   the first of its own sets that Live applied) is more than ``FIRST_JUMP_DB``
@@ -76,7 +77,7 @@ import collections
 import itertools
 import math
 
-from timeline_read import number, to_live, to_pos, value2db
+from timeline_read import TOUCHOSC_LAW, law_of, number, to_live, to_pos, value2db
 
 # A first applied value further than this from Live's before (dB), with more
 # than this of it not the finger's, is a first-touch jump.
@@ -116,6 +117,7 @@ Touch = collections.namedtuple(
         "no_data_ms",
         "no_data_sets",
         "first_move",
+        "law",
     ),
 )
 Gap = collections.namedtuple("Gap", ("start", "end", "ms", "px"))
@@ -138,9 +140,9 @@ def db_apart(a, b):
     return abs(a - b)
 
 
-def pos_db(p):
-    """The dB of a volume fader at position ``p``."""
-    return value2db(to_live(p))
+def pos_db(p, law=TOUCHOSC_LAW):
+    """The dB of a volume fader at position ``p`` on volume law ``law``."""
+    return value2db(to_live(p, law))
 
 
 def over_jump(db):
@@ -166,27 +168,28 @@ def inside_travel(s):
     return 0.0 < s < 1.0
 
 
-def first_touch(start, live, local, live_before, first_applied, raw):
+def first_touch(start, live, local, live_before, first_applied, raw, law=TOUCHOSC_LAW):
     """A touch that started at position ``start`` (the page's Live position
     ``live``, ``local``) when Live held ``live_before``, whose first applied
     value was ``first_applied`` while the finger was at ``raw`` (the 1:1
     position the finger alone took the fader to by the frame that sent it,
-    from ``start``: ``finger_raw``): (its jump from Live's value in dB, the
-    finger's own move in dB, how far it landed from where the finger alone
-    would have taken Live in dB, whether it is a first-touch jump, why). The
-    dB are None, and it is no jump, when a value is missing."""
+    from ``start``: ``finger_raw``), positions on volume law ``law``: (its
+    jump from Live's value in dB, the finger's own move in dB, how far it
+    landed from where the finger alone would have taken Live in dB, whether
+    it is a first-touch jump, why). The dB are None, and it is no jump, when
+    a value is missing."""
     if None in (start, live_before, first_applied, raw):
         return None, None, None, False, None
     applied_db = value2db(first_applied)
     jump = db_apart(applied_db, value2db(live_before))
-    finger = db_apart(pos_db(raw), pos_db(start))
-    expected = to_live(to_pos(live_before) + raw - start)
+    finger = db_apart(pos_db(raw, law), pos_db(start, law))
+    expected = to_live(to_pos(live_before, law) + raw - start, law)
     off = db_apart(applied_db, value2db(expected))
     if not (over_jump(jump) and over_jump(off)):
         return jump, finger, off, False, None
     if local:
         why = "local"
-    elif live is not None and over_jump(db_apart(pos_db(live), value2db(live_before))):
+    elif live is not None and over_jump(db_apart(pos_db(live, law), value2db(live_before))):
         why = "stale"
     else:
         why = "other"
@@ -342,6 +345,7 @@ def analyse(down, key, frames, first_set, applied, holes=(), hole_sets=0):
     them. The finger is read at the frame that sent that set (its ``q``),
     else at the last frame before it, else at the first frame."""
     data = down.data
+    law = law_of(data)
     start = number(data.get("from"))
     live = number(data.get("live"))
     live_before = number(first_set.get("live_before")) if first_set else None
@@ -355,6 +359,7 @@ def analyse(down, key, frames, first_set, applied, holes=(), hole_sets=0):
         live_before,
         number(value),
         finger_raw(data, frames, seq, start, how),
+        law,
     )
     pressed = event_time(data)
     first_move = moves[0][0] - pressed if moves and pressed is not None else None
@@ -383,6 +388,7 @@ def analyse(down, key, frames, first_set, applied, holes=(), hole_sets=0):
         sum(to - start for start, to in holes),
         hole_sets,
         how,
+        law,
     )
 
 
