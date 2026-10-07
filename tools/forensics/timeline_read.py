@@ -58,16 +58,31 @@ def value2db(v):
     return float("-inf") if db <= -70.0 else db
 
 
-def to_live(p):
-    """Live's volume at fader position ``p`` (``behave/fader.rs`` ``to_live``:
-    ``p^0.515``, ``p`` clamped to 0..1)."""
-    return min(max(p, 0.0), 1.0) ** 0.515
+# The volume laws of a strip fader (#63, ``behave/fader.rs`` ``VolumeLaw``):
+# Live's own (the position is Live's volume) and TouchOSC's (``p^0.515``).
+LIVE_LAW = "live"
+TOUCHOSC_LAW = "touchosc"
 
 
-def to_pos(v):
-    """The fader position of Live's volume ``v`` (``to_pos``, ``v`` clamped
-    to 0..1)."""
-    return min(max(v, 0.0), 1.0) ** (1.0 / 0.515)
+def law_of(data):
+    """The volume law a page's fader touch was on (its down's ``law``, #63):
+    Live's when it says so, else TouchOSC's (pages before #63 named none)."""
+    return LIVE_LAW if data.get("law") == LIVE_LAW else TOUCHOSC_LAW
+
+
+def to_live(p, law=TOUCHOSC_LAW):
+    """Live's volume at fader position ``p`` on volume law ``law`` (Live's
+    own: the position itself; TouchOSC's: ``p^0.515``; ``p`` clamped to
+    0..1)."""
+    p = min(max(p, 0.0), 1.0)
+    return p if law == LIVE_LAW else p**0.515
+
+
+def to_pos(v, law=TOUCHOSC_LAW):
+    """The fader position of Live's volume ``v`` on volume law ``law`` (``v``
+    clamped to 0..1)."""
+    v = min(max(v, 0.0), 1.0)
+    return v if law == LIVE_LAW else v ** (1.0 / 0.515)
 
 
 def number(value):

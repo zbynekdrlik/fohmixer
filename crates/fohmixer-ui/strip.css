@@ -4,19 +4,27 @@
 
 /* --- strips --- */
 
+/* Held in the hands (#63): what is read sits at the top (the name button
+   with Live's dB, then the pan), the fader zone runs down to the foot, which
+   a hand holding the tablet covers. The instance tag only in a group whose
+   strips differ. */
 .strip {
     position: relative;
     display: grid;
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: auto auto minmax(0, 1fr) auto auto;
-    gap: 4px;
+    grid-template-rows: auto auto minmax(0, 1fr);
+    gap: 3px;
     flex: none;
     width: var(--strip-w, 76px);
     min-height: 0;
-    padding: 6px 4px 5px;
+    padding: 5px 4px 4px;
     border: 1px solid transparent;
     border-radius: 9px;
     background: var(--panel);
+}
+
+.strip:has(> .strip-tag) {
+    grid-template-rows: auto auto auto minmax(0, 1fr);
 }
 
 .strip.wide {
@@ -40,13 +48,36 @@
     opacity: 0.9;
 }
 
-/* A muted strip: a red edge, its fader, meter and dB dimmed. */
-.strip:has(.mute[data-muted="true"])::after {
-    border-left: 3px solid var(--mute);
+/* A muted strip steps back (#63): darker, its fader, meter and readout
+   dimmed; only the name button's small MUTE mark is red. The strips that
+   sound stand out, not the silent ones. */
+.strip:has(.mute[data-muted="true"]) {
+    background: var(--panel-mute);
 }
 
-.strip:has(.mute[data-muted="true"]) :is(.fader-cap, .fader-fill, .meter, .db) {
+.strip:has(.mute[data-muted="true"])::before {
+    opacity: 0.3;
+}
+
+.strip:has(.mute[data-muted="true"]) :is(.fader-cap, .fader-fill, .meter, .strip-readout) {
     opacity: 0.4;
+}
+
+/* While a finger or a glide drives the fader (`data-held`), the strip lights
+   all round and its readout turns accent: seen above the finger, which
+   covers the cap (#63). No blur (paint little, #21). */
+.strip:has(.fader[data-held="true"])::after {
+    border: 2px solid var(--accent);
+    box-shadow: 0 0 0 2px var(--accent-dim);
+}
+
+.strip:has(.fader[data-held="true"]) .strip-readout {
+    background: var(--accent);
+    opacity: 1;
+}
+
+.strip:has(.fader[data-held="true"]) .strip-readout .db {
+    color: #07131a;
 }
 
 .strip-tag {
@@ -125,7 +156,9 @@
     grid-template-rows: minmax(0, 1fr);
     gap: 3px;
     min-height: 0;
-    padding: 8px 0 4px;
+    /* At the foot of the strip (#63), the cap's lower half at −∞ (11 px)
+       stays inside it: this padding, the strip's and its border. */
+    padding: 8px 0 7px;
 }
 
 .strip-fz .scale {
@@ -258,7 +291,8 @@
 }
 
 /* The fader: the cap's centre runs the whole track (`--p`, 0 at the
-   bottom); the unity line sits at 0 dB (the fader law's 0.7294). */
+   bottom); the unity line sits at 0 dB (`--u`, the fader law's position of
+   0 dB, written by the strip; TouchOSC's 0.7294 elsewhere). */
 .fader {
     position: relative;
     cursor: ns-resize;
@@ -268,7 +302,7 @@
 .fader::after {
     content: "";
     position: absolute;
-    top: 27.06%;
+    top: calc((1 - var(--u, 0.7294)) * 100%);
     left: calc(var(--x, 50%) - 16px);
     right: 2px;
     height: 1px;
@@ -346,12 +380,45 @@
     border-color: var(--accent);
 }
 
-.strip-dbrow {
+/* The top of the strip: the name button, the status light and Live's dB
+   in a dark window over its lower half (it takes no touch: a tap is the
+   mute's), and a return's RET mark (#63). */
+.strip-head {
+    position: relative;
+    display: grid;
+    min-width: 0;
+    height: 48px;
+}
+
+.strip-readout {
+    position: absolute;
+    left: 50%;
+    bottom: 3px;
+    z-index: 1;
     display: flex;
     align-items: center;
-    justify-content: center;
-    gap: 4px;
-    min-height: 12px;
+    gap: 3px;
+    max-width: 100%;
+    padding: 0 3px;
+    border-radius: 5px;
+    background: rgba(7, 7, 12, 0.72);
+    transform: translateX(-50%);
+    pointer-events: none;
+}
+
+.strip-ret {
+    position: absolute;
+    top: 3px;
+    left: 3px;
+    z-index: 1;
+    padding: 0 2px;
+    border-radius: 3px;
+    background: rgba(7, 7, 12, 0.6);
+    color: var(--muted);
+    /* A line as tall as the face's glyphs (the text never passes its box). */
+    font: 800 7.5px/1.4 var(--ui);
+    letter-spacing: 0.6px;
+    pointer-events: none;
 }
 
 .status {
@@ -388,7 +455,7 @@
     padding: 0 4px;
     border-radius: 7px;
     background: #1f1f2e;
-    box-shadow: inset 0 0 0 1px var(--mute-dim);
+    box-shadow: inset 0 0 0 1px var(--line);
     color: var(--faint);
     font: 700 clamp(11px, calc(var(--strip-w, 76px) * 0.2), 15px) / 1 var(--display);
     letter-spacing: 0.5px;
@@ -413,6 +480,15 @@
 
 @keyframes arm {
     to { outline-offset: 4px; outline-color: transparent; }
+}
+
+/* A strip's name button fills the strip's head, its name in the upper half
+   (the readout window holds the lower one), under the corner marks (RET,
+   MUTE). */
+.strip-head > .mute {
+    align-items: flex-start;
+    height: 100%;
+    padding-top: 10px;
 }
 
 /* The name's size comes from the strip width and the name's length `--n`

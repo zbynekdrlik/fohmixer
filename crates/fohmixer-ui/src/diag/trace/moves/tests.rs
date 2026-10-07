@@ -174,3 +174,24 @@ fn a_touchs_first_record_says_where_its_first_move_left_the_control() {
     let (record, _) = trail.take(2_060.0, KEY, 0.32, Some(3)).expect("a frame");
     assert_eq!(record["a"], json!(0.32));
 }
+
+#[test]
+fn a_volume_faders_touch_start_names_lives_law() {
+    let keys = vec![KEY.to_string()];
+    let start = Start {
+        shown: 0.6,
+        live: 0.6,
+        local: false,
+        from: 0.6,
+    };
+    let record = touch_start(10_000.0, &keys, 1, press(9_996.0, 400.0), start);
+    let live = with_law(record.clone(), Some(VolumeLaw::Live));
+    assert_eq!(live["law"], json!("live"));
+    let mut without = live.clone();
+    without.as_object_mut().unwrap().remove("law");
+    assert_eq!(without, record, "nothing else changes");
+    // TouchOSC's law and the other controls say nothing (as before #63).
+    assert_eq!(with_law(record.clone(), Some(VolumeLaw::TouchOsc)), record);
+    assert_eq!(with_law(record.clone(), None), record);
+    assert_eq!(with_law(json!(null), Some(VolumeLaw::Live)), json!(null));
+}

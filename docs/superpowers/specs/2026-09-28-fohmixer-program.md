@@ -315,15 +315,15 @@ Proof codes:
 | F1 | Pages and areas | Tabs: musician cue page, **FOH/WORSHIP** (default); no Conf tab (#58: TouchOSC's settings text is read by the import, not shown). FOH/WORSHIP has a nested pager STAGE / BAND B / OTHERS, a left sidebar (stage mics, STAGE AUT, three solos, MIDI toggles), the EFFECTS, MASTER A and HANDS areas, and the two top-right strips. TechAlert is on every page (PAR-01; REFRESH ALL removed, #58). The same pages, sections and order; the placement is computed (D13, #21) | E |
 | F2 | Two instances | Strips route to band or master; a missing prefix means band (PAR-02, PAR-03) | S, E |
 | F3 | Strip binding | Exact name match on tracks, then return tracks. Red status and disabled controls when missing. Re-resolved by the hub on every track-list or name change, also for a binding made while its name was missing (PAR-03; #58) | S, E |
-| F4 | Strip label | First word of the name, after dropping a leading `X-` return prefix. The instance label sits under it (PAR-04) | U |
-| F5 | Status pill | Red when unmapped. Yellow when a value arrived in the last 150 ms, fading to green by 500 ms (PAR-05) | E |
+| F4 | Strip label | First word of the name, after dropping a leading `X-` return prefix. The instance is named once in the group's title when all its strips share it, else on each strip; a return in a named group shows RET on its name button (PAR-04; #63) | U |
+| F5 | Status pill | Red when unmapped. Yellow when a value arrived in the last 150 ms, fading to green by 500 ms (PAR-05). It sits with the dB readout in a window over the name button's lower half (#63) | E |
 | F6 | Refresh | **Removed (#58, owner decision 2026-10-07).** No REFRESH ALL: the hub keeps every name binding current by itself (renames, track-list changes, a binding made while its name was missing: F3, #58). Was: automatic about 1 s after load, plus REFRESH ALL (0.5 s debounce, 300 ms yellow flash) (PAR-06) | E |
 | F7 | Auto-unfold | **The hub** keeps every group a strip's track sits in (nested too) unfolded: `fold_state = false` when it reads it folded, at Live's connect or set load and whenever someone folds it. Live meters no track inside a folded group (verified on the PC, #58). No `unfold_<instance>` list any more (PAR-07; #58) | S, E |
-| F8 | Fader law | Position *p* ↔ Live volume *v*: *v* = *p*^0.515. Relative touch with no jump on grab (PAR-08) | U, E |
+| F8 | Fader law | Position *p* ↔ Live volume *v*: **Live's own law, *v* = *p*** (0 dB at 0.85, −20 dB at 0.36, −40 dB at 0.16: close to a console fader; #63, owner 2026-10-07), or TouchOSC's *v* = *p*^0.515 with `config.fader_law: "touchosc"`. The dB scale labels the law (Live's: +6 … −24, −30, −40, −60). Relative touch with no jump on grab (PAR-08) | U, E |
 | F9 | Fader touch shaping | 0.1 dB minimum first step, reaction compensation, gradual 0.9→1.0 scaling, and bypass above 3 % per event (PAR-09). See X3 | U, E |
 | F10 | Fader double-tap | Two taps 50–250 ms apart glide to 0 dB (*v* = 0.85) at about 0.3 position/s, time-based. A touch cancels (PAR-10) | U, E |
-| F11 | Pan | *p* ↔ panning 2*p*−1. Double-tap within 300 ms centres. Grey when centred, cyan otherwise; a bar from the centre (PAR-12, #21) | U, E |
-| F12 | Mute + protection | Toggle, lit when audible. Strips in `double_click_mute` need a second tap within 500 ms (PAR-13, PAR-14) | U, E |
+| F11 | Pan | *p* ↔ panning 2*p*−1. Double-tap within 300 ms glides to the centre at 0.4 position/s (iemmixer's; #63). Grey when centred, cyan otherwise; a bar from the centre (PAR-12, #21) | U, E |
+| F12 | Mute + protection | Toggle, lit when audible: the name button at the top of the strip, where a hand holding the tablet does not cover it (#63). A muted strip steps back (darker, dimmed, a small red MUTE mark). Strips in `double_click_mute` need a second tap within 500 ms (PAR-13, PAR-14) | U, E |
 | F13 | Volume dB text and meters | Volume dB text is Live's display string (X1). Meter bar: 300 ms rise, 200 ms fall, green/yellow/red. Scale per K2 (PAR-15, PAR-16, PAR-18). The meter dBFS label is dropped (D11) | U, E, L |
 | F14 | Solo buttons | Three group-track solo toggles, independent (no exclusivity), lit when on (PAR-19). Owning instance only (X4). The SOLO ✕ pill turns off every solo of the page (#21) | S, E |
 | F15 | Stage mics + STAGE AUT | Inverted mute button. The STAGE AUT flag lives in the hub; while on, the stage mics are muted while playing and live when stopped (PAR-20, §2.4, X9) | S, E |
@@ -504,6 +504,7 @@ Each one gets a short design note and a plan before code, as in iemmixer.
 - **D10** No MIDI: the former MIDI toggles write their target parameters directly through the LOM; the targets come from the set's MIDI mappings (2026-09-28).
 - **D12** Priority: first the OSC-equivalent core; former MIDI controls only where they work cleanly, and Claude triages them (2026-09-28).
 - **D13** TouchOSC's functionality, not its look: a modern surface of our own design (the approved mockup, `docs/mockups/redesign-stage-v1.html`); every TouchOSC behaviour kept (#21, 2026-09-28).
+- **D14** Strips for a tablet held in the hands (#63, 2026-10-07; the owner delegated the choice): what is read sits at the top (the name button with Live's dB, the pan), the fader runs down to the foot; the strip lights while its fader is held; a muted strip steps back; the fader follows Live's own law; the pan glides to the centre. Mockup: `docs/mockups/strips-ergonomics-v1.html`.
 
 **Defaults chosen in this spec** (the owner may override them at review)
 

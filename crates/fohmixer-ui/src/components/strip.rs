@@ -1,7 +1,10 @@
-//! A mixer strip (spec F2–F5, F8–F13; the redesign, #21): the pan bar, the
-//! instance tag, the fader zone (the dB scale, the meter, the fader), the
-//! status light with Live's dB readout, and the name button that is the
-//! mute, lit in the track's Live colour while the track is audible.
+//! A mixer strip (spec F2–F5, F8–F13; the redesign, #21; held in the hands,
+//! #63): at the top the name button, the mute, lit in the track's Live
+//! colour while the track is audible, with the status light and Live's dB
+//! readout over its lower half (a hand holding the tablet covers the
+//! bottom of the screen, so nothing to read sits there); then the pan bar,
+//! the instance tag when the group's strips differ, and the fader zone (the
+//! dB scale, the meter, the fader) down to the strip's foot.
 
 use fohmixer_proto::layout::{Strip, StripKind};
 use leptos::prelude::*;
@@ -12,19 +15,20 @@ use super::fader::{FaderView, Law, Target};
 use super::meter::{MeterView, StatusView};
 use super::pan::PanView;
 use crate::behave::db_text::db_text;
+use crate::behave::fader::{UNITY, VolumeLaw};
 use crate::behave::label::strip_label;
-use crate::behave::scale::{TICKS, tick_label, tick_pos};
+use crate::behave::scale::{tick_label, tick_pos, ticks};
 use crate::binding::strip_subs;
 use crate::store::{LiveStore, Slot};
 
-/// The dB scale beside a fader: TouchOSC's labels at the fader positions of
-/// their levels.
+/// The dB scale beside a fader: the labels of the fader's volume law at the
+/// fader positions of their levels.
 #[component]
-pub fn ScaleView() -> impl IntoView {
-    let ticks = TICKS
+pub fn ScaleView(law: VolumeLaw) -> impl IntoView {
+    let labels = ticks(law)
         .iter()
         .map(|db| {
-            let top = format!("top:{:.3}%;", (1.0 - tick_pos(*db)) * 100.0);
+            let top = format!("top:{:.3}%;", (1.0 - tick_pos(law, *db)) * 100.0);
             let unity = *db == 0.0;
             view! {
                 <span class="tick" class:unity=unity data-db=db.to_string() style=top>
@@ -33,7 +37,7 @@ pub fn ScaleView() -> impl IntoView {
             }
         })
         .collect_view();
-    view! { <div class="scale" data-testid="scale" aria-hidden="true">{ticks}</div> }
+    view! { <div class="scale" data-testid="scale" aria-hidden="true">{labels}</div> }
 }
 
 /// Live's dB readout in TouchOSC's form (one decimal, no unit, white exactly
@@ -48,9 +52,10 @@ pub fn DbView(state: RwSignal<Slot>) -> impl IntoView {
     }
 }
 
-/// One strip.
+/// One strip; `shared` is the Live instance every strip of its group shares
+/// (#63: the group's title names it, so the strip does not).
 #[component]
-pub fn StripView(strip: Strip, settings: Settings) -> impl IntoView {
+pub fn StripView(strip: Strip, settings: Settings, shared: Option<String>) -> impl IntoView {
     let store = expect_context::<LiveStore>();
     let subs = strip_subs(&strip, settings.meter_source);
     let volume = subs.volume.as_ref().map(|s| store.slot(s));
@@ -73,7 +78,7 @@ pub fn StripView(strip: Strip, settings: Settings) -> impl IntoView {
         let targets = vec![Target {
             spec: Some(spec),
             slot,
-            law: Law::Volume,
+            law: Law::Volume(settings.law),
         }];
         view! { <FaderView targets=targets shaping={settings.shaping} /> }
     });
@@ -92,16 +97,34 @@ pub fn StripView(strip: Strip, settings: Settings) -> impl IntoView {
         }
     });
     let db = volume.map(|slot| view! { <DbView state=slot /> });
-    let tag = match strip.strip_kind {
-        StripKind::Return => format!("{instance} · ret"),
-        StripKind::Standard => instance.clone(),
-    };
+    let ret = strip.strip_kind == StripKind::Return;
+    // The instance tag only where the group does not name it (#63).
+    let tagged = shared.as_deref() != Some(instance.as_str());
+    let tag = tagged.then(|| {
+        let text = if ret {
+            format!("{instance} · ret")
+        } else {
+            instance.clone()
+        };
+        let tag_instance = instance.clone();
+        view! {
+            <span class="strip-tag" data-testid="strip-instance" data-instance=tag_instance>
+                {text}
+            </span>
+        }
+    });
+    // A return in a named group says so on its name button.
+    let ret_mark = (ret && !tagged).then(|| {
+        view! { <span class="strip-ret" data-testid="strip-ret" aria-hidden="true">"RET"</span> }
+    });
     let kind = format!("{:?}", strip.strip_kind).to_lowercase();
     // Each attribute its own copy (the macro may move a value into a child
     // before an attribute reads it).
-    let strip_instance = instance.clone();
-    let tag_instance = instance;
+    let strip_instance = instance;
     let wide = strip.wide;
+    let law = settings.law;
+    // The unity line at 0 dB on the fader's law (`strip.css` `.fader::after`).
+    let unity = format!("--u:{:.4};", law.to_pos(UNITY));
     view! {
         <div
             class="strip"
@@ -111,20 +134,21 @@ pub fn StripView(strip: Strip, settings: Settings) -> impl IntoView {
             data-instance=strip_instance
             data-kind=kind
         >
+            <div class="strip-head">
+                {mute_view}
+                <div class="strip-readout" data-testid="strip-readout">
+                    <StatusView slots=all activity=activity />
+                    {db}
+                </div>
+                {ret_mark}
+            </div>
             {pan_view}
-            <span class="strip-tag" data-testid="strip-instance" data-instance=tag_instance>
-                {tag}
-            </span>
-            <div class="strip-fz">
-                <ScaleView />
-                <MeterView levels={meters.clone()} />
+            {tag}
+            <div class="strip-fz" style=unity>
+                <ScaleView law=law />
+                <MeterView levels={meters.clone()} law=law />
                 {fader}
             </div>
-            <div class="strip-dbrow">
-                <StatusView slots=all activity=activity />
-                {db}
-            </div>
-            {mute_view}
         </div>
     }
 }

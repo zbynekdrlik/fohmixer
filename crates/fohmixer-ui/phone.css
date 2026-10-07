@@ -1,0 +1,93 @@
+/* fohmixer on a phone (#63; linked last): one screen at a time. Each row
+   of the page is a screen, and so is the rail; the screen bar (`.screens`,
+   `PageView`) switches them, and the stylesheet hides the others
+   (`data-shown`), so every control stays mounted and subscribed. A row
+   gets the whole height (the tablet's two rows left a phone's fader ~20 px
+   in landscape). The top bar wraps when it must. Nothing changes on a
+   tablet: the screen bar exists only here. */
+
+.screens {
+    display: none;
+}
+
+@media (max-height: 520px), (max-width: 700px) {
+    .mixer {
+        grid-template-rows: auto minmax(0, 1fr);
+    }
+
+    .topbar {
+        flex-wrap: wrap;
+        gap: 4px 8px;
+        padding: 4px 8px;
+    }
+
+    .topbar .tab {
+        padding: 6px 9px;
+        font-size: 11px;
+    }
+
+    .topbar .spacer {
+        display: none;
+    }
+
+    .topbar .status-cluster {
+        margin-left: auto;
+        gap: 8px;
+    }
+
+    .body {
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-rows: auto minmax(0, 1fr);
+    }
+
+    /* The tabs own their touches, so a finger could not scroll the bar:
+       it wraps instead, every screen in reach. */
+    .screens {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 2px;
+        min-width: 0;
+        margin: 4px 8px 0;
+    }
+
+    .screens .tab {
+        flex: none;
+        max-width: 100%;
+        padding: 6px 10px;
+        overflow: hidden;
+        font-size: 11px;
+        text-overflow: ellipsis;
+    }
+
+    .row:not([data-shown="true"]),
+    .body[data-screen="rail"] .rows {
+        display: none;
+    }
+
+    /* The rail on a row's screen: out of the layout and unseen, but drawn,
+       so TechAlert's full-screen wash in its foot still blinks over the
+       row (its own inline visibility wins over the rail's). */
+    .rail:not([data-shown="true"]) {
+        position: absolute;
+        width: 0;
+        height: 0;
+        padding: 0;
+        border: 0;
+        overflow: visible;
+        visibility: hidden;
+    }
+
+    /* The rail as a screen: its buttons in a grid over the whole width. */
+    .rail {
+        border-right: 0;
+    }
+
+    .rail-main,
+    .rail-foot {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+        grid-auto-rows: minmax(52px, auto);
+        align-content: start;
+        gap: 6px;
+    }
+}

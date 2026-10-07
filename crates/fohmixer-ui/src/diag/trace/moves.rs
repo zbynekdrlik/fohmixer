@@ -12,8 +12,10 @@
 //!   showed), `live` (Live's value as the position the control used),
 //!   `local` (it showed its own position: a finger, a glide, an open write or
 //!   the post-release hold) and `from` (where the touch starts: `pos` when
-//!   local, else `live`). Positions are 0..1 of the travel (a volume's Live
-//!   value is p^0.515, a pan's 2p − 1).
+//!   local, else `live`). Positions are 0..1 of the travel (a pan's Live
+//!   value is 2p − 1; a volume's is p on Live's own law, which a volume
+//!   fader's down names with `law: "live"` ([`with_law`], #63), and p^0.515
+//!   on TouchOSC's, a down without `law`).
 //! - **A frame's moves** ([`Trail::take`]), one `mv` per frame that sends
 //!   from the finger: `key` (the control's shown key), `p` (the pointer),
 //!   `e` (`[dt, c]` of each pointer move since the last frame, `dt` the
@@ -34,6 +36,7 @@
 use serde_json::{Value, json};
 
 use crate::behave::Start;
+use crate::behave::fader::VolumeLaw;
 
 /// A touch's first frames of moves stay in the recorder when its backlog is
 /// over its bound (the first-touch diagnosis needs them).
@@ -97,6 +100,18 @@ pub fn touch_start(t: f64, keys: &[String], pointer: i32, press: Press, start: S
         "local": start.local,
         "from": round5(start.from),
     })
+}
+
+/// A volume fader's touch start with the law its positions are on (#63):
+/// `law: "live"` on Live's own law; nothing on TouchOSC's (as every page
+/// before #63) or for another control (`None`).
+pub fn with_law(mut record: Value, law: Option<VolumeLaw>) -> Value {
+    if law == Some(VolumeLaw::Live)
+        && let Some(fields) = record.as_object_mut()
+    {
+        fields.insert("law".into(), json!("live"));
+    }
+    record
 }
 
 /// One finger's moves on one control, between its frames.

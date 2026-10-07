@@ -1,0 +1,1148 @@
+<!doctype html>
+<!-- fohmixer #63: an interactive mockup of ergonomic strips (invented track names); not part of the app. -->
+<html lang="sk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Fohmixer pásy na tablet</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@700&family=Barlow:wght@600;700&family=JetBrains+Mono:wght@500;600&display=swap">
+<style>
+/* Layout: a thin mockup bar (variant switch, measured fader travel), then the
+   mixer as on the tablet: top bar, rail, two rows of strips (the FOH page's
+   shape, invented track names). Dark on purpose: it is fohmixer's own look. */
+:root {
+    color-scheme: dark;
+    --bg: #07070c;
+    --page: #0b0b12;
+    --bar: #11111b;
+    --section: #151522;
+    --panel: #1a1a28;
+    --panel-mute: #12121b;
+    --panel-hi: #20203a;
+    --track: #0a0a14;
+    --line: #2a2a44;
+    --line-soft: rgba(255, 255, 255, 0.06);
+    --accent: #4ecdc4;
+    --accent-dim: rgba(78, 205, 196, 0.28);
+    --accent-glow: rgba(78, 205, 196, 0.5);
+    --mute: #e63946;
+    --mute-dim: rgba(230, 57, 70, 0.22);
+    --mute-bg: #2a141a;
+    --solo: #f4d35e;
+    --band: #4ecdc4;
+    --master: #8b7dff;
+    --text: #eaeaf0;
+    --muted: #9a9ab4;
+    --faint: #5c5c78;
+    --db: #9be7a8;
+    --m-green: #36d67a;
+    --m-yellow: #f5d547;
+    --m-red: #ff4757;
+    --warm: #f5a623;
+    --display: "Barlow Condensed", "Arial Narrow", sans-serif;
+    --ui: "Barlow", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --mono: "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+    height: 100%;
+    margin: 0;
+    overflow: hidden;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--ui);
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+    touch-action: none;
+}
+
+body {
+    display: flex;
+    flex-direction: column;
+    padding-inline: 16px;
+    padding-block: 6px 0;
+}
+
+/* --- the mockup bar (not part of the app) --- */
+
+.mock {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 12px;
+    padding-bottom: 6px;
+}
+
+.mock .seg button {
+    font: 700 13px/1 var(--ui);
+    letter-spacing: 0.5px;
+}
+
+.mock .seg button.selected,
+.mock #laws button.selected {
+    box-shadow: inset 0 -2px 0 var(--solo);
+}
+
+.hint {
+    flex: 1 1 260px;
+    min-width: 0;
+    margin: 0;
+    color: var(--muted);
+    font: 600 12px/1.35 var(--ui);
+}
+
+.hint b { color: var(--text); }
+
+.travel {
+    color: var(--accent);
+    font: 600 12px/1.35 var(--mono);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+.fs {
+    padding: 7px 10px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--panel);
+    color: var(--muted);
+    font: 700 11px/1 var(--ui);
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    cursor: pointer;
+}
+
+.fs:focus-visible, .seg button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* --- the mixer --- */
+
+.mixer {
+    flex: 1;
+    min-height: 0;
+    display: grid;
+    grid-template-rows: 46px minmax(0, 1fr);
+    border: 1px solid var(--line-soft);
+    border-radius: 10px 10px 0 0;
+    overflow: hidden;
+    background: var(--page);
+}
+
+.mixer:fullscreen { border: 0; border-radius: 0; }
+
+.topbar {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    min-width: 0;
+    padding: 0 12px;
+    background: var(--bar);
+    border-bottom: 1px solid var(--line-soft);
+    overflow: hidden;
+}
+
+.seg {
+    display: flex;
+    flex: none;
+    gap: 2px;
+    padding: 3px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--track);
+}
+
+.seg button {
+    padding: 8px 14px;
+    border: 0;
+    border-radius: 7px;
+    background: none;
+    color: var(--muted);
+    font: 700 13px/1 var(--ui);
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    white-space: nowrap;
+    cursor: pointer;
+}
+
+.seg button.selected {
+    background: var(--panel-hi);
+    color: var(--text);
+    box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+.seg.sub button.selected { box-shadow: inset 0 -2px 0 var(--solo); }
+
+.spacer { flex: 1; }
+
+.status {
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: 12px;
+    color: var(--muted);
+    font: 600 11px/1 var(--ui);
+    letter-spacing: 1px;
+    text-transform: uppercase;
+}
+
+.drop {
+    min-width: 24px;
+    padding: 4px 6px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--track);
+    font: 600 12px/1 var(--mono);
+    text-align: center;
+}
+
+.hub-dot, .badge i {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--accent);
+}
+
+.badge { display: inline-flex; align-items: center; gap: 6px; }
+.badge i { background: var(--m-green); }
+
+.version { color: var(--faint); font: 500 10px/1.2 var(--mono); letter-spacing: 0; text-transform: none; }
+
+.body {
+    display: grid;
+    grid-template-columns: 112px minmax(0, 1fr);
+    min-height: 0;
+}
+
+.rail {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-height: 0;
+    padding: 10px 8px;
+    background: var(--bar);
+    border-right: 1px solid var(--line-soft);
+    overflow: hidden;
+}
+
+.rail .gap { flex: 1; }
+
+.rbtn {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 50px;
+    padding: 6px 10px;
+    border: 1px solid var(--line-soft);
+    border-radius: 9px;
+    background: var(--panel);
+    color: var(--muted);
+    font: 700 12px/1.25 var(--ui);
+    letter-spacing: 1px;
+    text-transform: uppercase;
+}
+
+.rbtn::before {
+    content: "";
+    flex: none;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--faint);
+}
+
+.rbtn.lit { border-color: rgba(245, 166, 35, 0.4); background: #2a2216; color: var(--text); }
+.rbtn.lit::before { background: var(--warm); }
+
+.rows {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-width: 0;
+    min-height: 0;
+    padding: 8px 10px 10px;
+    overflow: hidden;
+}
+
+.row {
+    display: flex;
+    flex: 1 1 0;
+    gap: 10px;
+    min-width: 0;
+    min-height: 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+    touch-action: pan-x;
+    scrollbar-width: none;
+}
+
+.group {
+    display: grid;
+    grid-template-rows: 18px minmax(0, 1fr);
+    gap: 4px;
+    flex: none;
+    min-width: 0;
+    min-height: 0;
+}
+
+.group-title {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    overflow: hidden;
+    color: var(--muted);
+    font: 600 11px/18px var(--ui);
+    letter-spacing: 1.4px;
+    text-transform: uppercase;
+    white-space: nowrap;
+}
+
+.group-mark {
+    flex: none;
+    width: 8px;
+    height: 8px;
+    border-radius: 2px;
+    background: var(--gc);
+}
+
+.inst {
+    padding: 1px 4px;
+    border-radius: 4px;
+    color: var(--band);
+    background: rgba(78, 205, 196, 0.14);
+    font: 700 9px/1.3 var(--ui);
+    letter-spacing: 0.5px;
+}
+
+.inst.master { color: var(--master); background: rgba(139, 125, 255, 0.16); }
+
+.group-body {
+    display: flex;
+    gap: 4px;
+    min-height: 0;
+    padding: 4px;
+    border: 1px solid var(--line-soft);
+    border-radius: 12px;
+    background: var(--section);
+}
+
+/* --- a strip --- */
+
+.strip {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    flex: none;
+    width: var(--strip-w, 76px);
+    min-height: 0;
+    padding: 6px 4px 5px;
+    border-radius: 9px;
+    background: var(--panel);
+    transition: box-shadow 0.12s, background 0.2s;
+}
+
+.strip.wide { width: calc(var(--strip-w, 76px) * 1.1); }
+
+.strip::before, .strip::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: 8px;
+    pointer-events: none;
+}
+
+.strip::before { border-top: 3px solid var(--gc); opacity: 0.9; }
+
+.tag {
+    align-self: center;
+    padding: 1px 3px;
+    border-radius: 4px;
+    color: var(--band);
+    background: rgba(78, 205, 196, 0.14);
+    font: 700 clamp(7px, calc((var(--strip-w, 76px) - 22px) / 7), 8.5px) / 1.3 var(--ui);
+    letter-spacing: 0.3px;
+    text-transform: uppercase;
+    white-space: nowrap;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.tag.master { color: var(--master); background: rgba(139, 125, 255, 0.16); }
+
+.pan {
+    position: relative;
+    flex: none;
+    height: 16px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--track);
+    touch-action: none;
+}
+
+.pan-track { position: absolute; top: 3px; bottom: 3px; left: 50%; width: 1px; background: var(--faint); }
+
+.pan-fill {
+    position: absolute;
+    top: 4px;
+    bottom: 4px;
+    left: calc(var(--lo, 0.5) * 100%);
+    width: calc(var(--w, 0) * 100%);
+    border-radius: 3px;
+    background: var(--accent-dim);
+}
+
+.pan-dot {
+    position: absolute;
+    top: 1px;
+    left: calc(var(--p, 0.5) * (100% - 12px));
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: #646464;
+}
+
+.pan.off .pan-dot { background: #34c1dc; }
+
+.fz {
+    flex: 1 1 0;
+    display: grid;
+    grid-template-columns: 17px 11px minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
+    gap: 3px;
+    min-height: 0;
+    padding: 8px 0 4px;
+}
+
+.scale { grid-area: 1 / 1; position: relative; }
+
+.tick {
+    position: absolute;
+    right: 0;
+    transform: translateY(-50%);
+    color: var(--faint);
+    font: 500 8.5px/1 var(--mono);
+    white-space: nowrap;
+}
+
+.tick.unity { color: var(--muted); }
+
+.meter { grid-area: 1 / 2; position: relative; overflow: hidden; background: #0e0e18; }
+
+.meter-zones {
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(to top, var(--m-green) 0 var(--yellow, 31.3%), var(--m-yellow) var(--yellow, 31.3%) var(--red, 60.9%), var(--m-red) var(--red, 60.9%) 100%);
+}
+
+.meter-cover {
+    position: absolute;
+    inset: 0;
+    background: #0e0e18;
+    transform-origin: top;
+    transform: scaleY(1);
+    will-change: transform;
+}
+
+.fader {
+    grid-area: 1 / 1 / 2 / 4;
+    --x: calc(50% + 17px);
+    position: relative;
+    touch-action: none;
+    cursor: ns-resize;
+}
+
+.fader::after {
+    content: "";
+    position: absolute;
+    top: calc((1 - var(--u, 0.7294)) * 100%);
+    left: calc(var(--x) - 16px);
+    right: 2px;
+    height: 1px;
+    background: rgba(255, 255, 255, 0.28);
+}
+
+.groove, .fill {
+    position: absolute;
+    left: var(--x);
+    width: 6px;
+    margin-left: -3px;
+    border-radius: 3px;
+}
+
+.groove { top: 0; bottom: 0; background: var(--track); box-shadow: inset 0 0 0 1px var(--line); }
+
+.fill {
+    bottom: 0;
+    height: 100%;
+    transform-origin: bottom;
+    transform: scaleY(var(--p, 0));
+    background: linear-gradient(to top, rgba(78, 205, 196, 0.25), var(--accent));
+}
+
+.rail-l {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    pointer-events: none;
+    transform: translateY(calc(var(--p, 0) * -100%));
+    will-change: transform;
+}
+
+.cap {
+    --cap-w: min(32px, calc(var(--strip-w, 76px) - 38px));
+    position: absolute;
+    top: 100%;
+    left: var(--x);
+    width: var(--cap-w);
+    height: 22px;
+    margin: -11px 0 0 calc(var(--cap-w) / -2);
+    border: 1px solid #4a4a66;
+    border-bottom-color: #15151f;
+    border-radius: 6px;
+    background: linear-gradient(#3a3a52, #262638);
+}
+
+.cap::before {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 6px;
+    right: 6px;
+    height: 2px;
+    margin-top: -1px;
+    border-radius: 1px;
+    background: var(--text);
+}
+
+.fader.active .cap { border-color: var(--accent); }
+
+.dbrow {
+    display: flex;
+    flex: none;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    min-height: 12px;
+}
+
+.led { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--m-green); }
+
+.db {
+    color: var(--db);
+    font: 600 12px/1.4 var(--mono);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+.db.unity { color: #fff; }
+
+/* The name button: lit in the track's colour while audible. */
+.name {
+    position: relative;
+    display: flex;
+    flex: none;
+    align-items: center;
+    justify-content: center;
+    min-width: 0;
+    height: 34px;
+    padding: 0 4px;
+    border: 0;
+    border-radius: 7px;
+    background: var(--tc);
+    color: var(--tt);
+    font: 700 clamp(11px, calc(var(--strip-w, 76px) * 0.2), 15px) / 1 var(--display);
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    cursor: pointer;
+    touch-action: none;
+}
+
+.label {
+    display: block;
+    max-width: 100%;
+    overflow: hidden;
+    font-size: clamp(9px, min(calc(var(--strip-w, 76px) * 0.2), calc((var(--strip-w, 76px) - 18px - var(--n, 5) * 0.5px) / (var(--n, 5) * 0.5))), 15px);
+    line-height: 1.3;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.mark, .ret {
+    display: none;
+    position: absolute;
+    top: 2px;
+    font: 800 7.5px/1 var(--ui);
+    letter-spacing: 0.6px;
+}
+
+.mark { right: 3px; color: var(--mute); }
+.ret { left: 3px; opacity: 0.75; }
+.strip.muted .mark { display: block; }
+
+.strip.muted .name {
+    background: #1f1f2e;
+    color: var(--faint);
+}
+
+.strip.muted :is(.cap, .fill, .meter, .db) { opacity: 0.4; }
+
+/* ---------- TERAZ: today's strip (0.1.0-dev.39) ---------- */
+
+.v-now .strip.muted::after { border-left: 3px solid var(--mute); }
+.v-now .strip.muted .name { box-shadow: inset 0 0 0 1px var(--mute-dim); }
+
+/* ---------- NÁVRH A and B: what is read sits at the top ---------- */
+
+.v-a .rows, .v-b .rows { gap: 6px; padding: 4px 10px 6px; }
+
+/* The section title sits on the section's border (no line of its own). */
+.v-a .group, .v-b .group { grid-template-rows: minmax(0, 1fr); gap: 0; position: relative; padding-top: 7px; }
+
+.v-a .group-title, .v-b .group-title {
+    position: absolute;
+    top: 0;
+    left: 12px;
+    z-index: 2;
+    max-width: calc(100% - 24px);
+    height: 14px;
+    padding: 0 6px;
+    background: var(--page);
+    font: 600 10px/14px var(--ui);
+}
+
+.v-a .group-body, .v-b .group-body { padding-top: 8px; }
+
+.v-a .strip, .v-b .strip { gap: 3px; padding: 5px 4px 3px; }
+
+.v-a .fz, .v-b .fz { padding: 11px 0 11px; }
+
+.v-a .dbrow, .v-b .dbrow { height: 18px; }
+
+.v-a .db, .v-b .db { font-size: 13px; padding: 0 3px; border-radius: 4px; transition: background 0.12s, color 0.12s; }
+
+.v-a .strip.retstrip .ret, .v-b .strip.retstrip .ret { display: block; }
+
+/* A muted strip steps back: darker, no red edge; only the small MUTE mark is red. */
+.v-a .strip.muted, .v-b .strip.muted { background: var(--panel-mute); }
+.v-a .strip.muted::before, .v-b .strip.muted::before { opacity: 0.3; }
+
+/* While a finger holds the fader: the whole strip lights, above the finger. */
+.v-a .strip.touch, .v-b .strip.touch {
+    box-shadow: 0 0 0 2px var(--accent), 0 0 16px var(--accent-glow);
+}
+
+.v-a .strip.touch .name, .v-b .strip.touch .nlabel { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+
+/* The name and Live's dB in one block at the top (two lines). */
+.name.two, .nlabel.two { flex-direction: column; gap: 1px; height: 44px; }
+.v-a .two .label, .v-b .two .label { line-height: 1.15; }
+.v-a .two .db, .v-b .two .db {
+    color: inherit;
+    font: 600 12px/1.25 var(--mono);
+    opacity: 0.85;
+}
+.v-a .strip.touch .two .db, .v-b .strip.touch .two .db {
+    background: #07131a;
+    color: var(--accent);
+    opacity: 1;
+}
+
+/* B: the name is a coloured label at the top, MUTE its own button at the bottom. */
+.nlabel {
+    position: relative;
+    display: flex;
+    flex: none;
+    align-items: center;
+    justify-content: center;
+    min-width: 0;
+    height: 24px;
+    padding: 0 4px;
+    border-radius: 6px;
+    background: var(--tc);
+    color: var(--tt);
+    font: 700 clamp(11px, calc(var(--strip-w, 76px) * 0.2), 15px) / 1 var(--display);
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+}
+
+.strip.muted .nlabel { background: #1f1f2e; color: var(--faint); }
+
+.mbtn {
+    flex: none;
+    height: 30px;
+    border: 1px solid var(--line);
+    border-radius: 7px;
+    background: #1f1f2e;
+    color: var(--faint);
+    font: 700 11px/1 var(--ui);
+    letter-spacing: 1.2px;
+    cursor: pointer;
+    touch-action: none;
+}
+
+.strip.muted .mbtn { border-color: rgba(230, 57, 70, 0.45); background: var(--mute-bg); color: var(--mute); }
+
+@media (prefers-reduced-motion: reduce) {
+    .strip { transition: none; }
+}
+</style>
+</head>
+<body>
+
+<header class="mock">
+    <div class="seg" id="variants" role="tablist" aria-label="Variant">
+        <button type="button" id="v-now" data-v="now">Teraz</button>
+        <button type="button" id="v-a" data-v="a">Návrh A</button>
+        <button type="button" id="v-b" data-v="b">Návrh B</button>
+    </div>
+    <div class="seg" id="laws" role="tablist" aria-label="Krivka fadra">
+        <button type="button" id="l-touchosc" data-l="touchosc">Krivka TouchOSC</button>
+        <button type="button" id="l-ableton" data-l="ableton">Krivka Ableton</button>
+    </div>
+    <p class="hint" id="hint"></p>
+    <span class="travel" id="travel"></span>
+    <button type="button" class="fs" id="fs">Celá obrazovka</button>
+</header>
+
+<main class="mixer" id="mixer">
+    <div class="topbar">
+        <div class="seg"><button type="button">Cue</button><button type="button" class="selected">FOH</button><button type="button">Stream Deck</button></div>
+        <div class="seg sub"><button type="button" class="selected">Stage</button><button type="button">Band B</button><button type="button">Others</button></div>
+        <span class="spacer"></span>
+        <div class="status">
+            <span class="drop">0</span>
+            <span class="hub-dot"></span>
+            <span class="badge"><i></i>Band</span>
+            <span class="badge"><i></i>Master</span>
+            <span class="version">v0.1.0-dev.39</span>
+        </div>
+    </div>
+    <div class="body">
+        <nav class="rail" aria-label="Rail">
+            <div class="rbtn">Stage</div>
+            <div class="rbtn">Stage aut</div>
+            <div class="rbtn">Solo vocals</div>
+            <div class="rbtn">Solo podklady</div>
+            <div class="rbtn lit">Reverb</div>
+            <div class="rbtn lit">Talkback</div>
+            <div class="rbtn">Autotune</div>
+            <div class="rbtn">Playback</div>
+            <div class="gap"></div>
+            <div class="rbtn">TechAlert</div>
+        </nav>
+        <div class="rows" id="rows"></div>
+    </div>
+</main>
+
+<script>
+(() => {
+    "use strict";
+    const EXPONENT = 0.515; // TouchOSC's law: Live volume v = p^0.515
+    const TICKS = [6, 0, -6, -12, -18, -24, -40];
+    const FADER_GLIDE = 0.3; // positions per second (fohmixer, TouchOSC's 0.005 per frame)
+    const PAN_GLIDE = 0.4; // positions per second (iemmixer's pan)
+    const TOUCHOSC_SHARE = 553 / 1640; // TouchOSC's fader height over the screen height
+    let law = "touchosc";
+
+    // TouchOSC's value2db: Live's volume (0..1) in dB (matches Live's own strings within 0.01 dB at the labels).
+    function value2db(v) {
+        if (v > 1) return 6;
+        if (v >= 0.4) return 40 * v - 34;
+        if (v >= 0.15) return -((399.751894 * v - 201.871345) ** 2 + 12630.61132) / 799.503788;
+        const db = 118.426374 * v ** (5567 / 7504) - 70;
+        return db <= -70 ? -Infinity : db;
+    }
+    const toLive = (p) => (law === "touchosc" ? Math.max(0, p) ** EXPONENT : Math.max(0, p));
+    const fromLive = (v) => (law === "touchosc" ? v ** (1 / EXPONENT) : v);
+    const posToDb = (p) => value2db(toLive(p));
+    function dbToVolume(db) {
+        if (db === -Infinity) return 0;
+        let lo = 0, hi = 1;
+        for (let i = 0; i < 30; i++) {
+            const mid = (lo + hi) / 2;
+            if (value2db(mid) < db) lo = mid; else hi = mid;
+        }
+        return (lo + hi) / 2;
+    }
+    const dbToPos = (db) => fromLive(dbToVolume(db));
+    const unity = () => dbToPos(0);
+
+    const clamp = (v) => Math.min(1, Math.max(0, v));
+
+    function dbText(p) {
+        const db = posToDb(p);
+        if (db === -Infinity) return { text: "−∞", unity: false };
+        const r = Math.round(db * 10) / 10;
+        const text = (r < 0 ? "−" : "") + Math.abs(r).toFixed(1);
+        return { text, unity: r === 0 };
+    }
+
+    function textOn(hex) {
+        const n = parseInt(hex.slice(1), 16);
+        const [r, g, b] = [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+        return 0.299 * r + 0.587 * g + 0.114 * b > 140 ? "#10101a" : "#ffffff";
+    }
+
+    // Invented strips in the FOH page's shape (two rows, the real mutes).
+    function s(name, color, o = {}) {
+        return {
+            name, color,
+            vol: o.db === undefined ? dbToVolume(0) : dbToVolume(o.db), pos: 0,
+            pan: o.pan ?? 0.5,
+            muted: !!o.muted, ret: !!o.ret, wide: !!o.wide,
+            level: 0, env: 0.4 + Math.random() * 0.5,
+            glide: null, panGlide: null, touched: false,
+        };
+    }
+    const ROWS = [
+        [
+            { title: "Stage", inst: "band", gc: "#8cf27a", strips: [
+                s("Klavir", "#8cff5a"), s("Vox 1", "#45d11a", { pan: 0.38 }), s("Vox 2", "#f1ffb0"), s("Vox 3", "#45d11a", { pan: 0.62 }),
+                s("Gitara", "#d94a4a", { muted: true }), s("Akustika", "#11a8e8", { db: -Infinity }), s("Basa", "#7a5af0", { muted: true }),
+                s("Bicie", "#e8a33a", { muted: true }), s("Keys", "#12b5a8"), s("Vocals", "#8cff5a"),
+            ] },
+            { title: "", inst: "band", gc: "#4ecdc4", strips: [
+                s("Podklady", "#8cff5a", { db: -2, wide: true }), s("Band", "#2a55b0", { ret: true, wide: true }),
+            ] },
+        ],
+        [
+            { title: "Effects", inst: "band", gc: "#5c5c78", strips: [
+                s("Claps", "#45d11a", { db: -8.1 }), s("Reverb", "#e8c800"), s("Delay", "#8cc8ff"),
+            ] },
+            { title: "Master A", inst: "master", gc: "#f5e050", strips: [
+                s("Ambient", "#b83030"), s("Stems", "#0fa08a"), s("Click", "#25f5b0", { db: -55.3, muted: true }),
+                s("Video", "#25f5b0", { db: -14.7 }), s("Playback", "#fff23a", { db: -20.2, ret: true }),
+            ] },
+            { title: "Hands", inst: "master", gc: "#45d11a", strips: [
+                s("Hand 1", "#8a9a1e", { db: -9.3 }), s("Hand 2", "#8a9a1e", { db: -Infinity, muted: true }),
+                s("Hand 3", "#8a9a1e", { db: -Infinity, muted: true }), s("Hand 4", "#8a9a1e", { db: -Infinity, muted: true }),
+            ] },
+        ],
+    ];
+
+    const HINTS = {
+        now: "<b>Teraz (0.1.0-dev.39):</b> meno = MUTE dole, dB dole, pri mute červený okraj, pan na dvojťuk skočí do stredu.",
+        a: "<b>Návrh A:</b> meno = MUTE hore a v ňom dB z Abletonu (pri ťahu zasvieti celý pás), mutnutý pás stmavne bez červeného okraja, fader až po spodok, pan na dvojťuk plynule do stredu.",
+        b: "<b>Návrh B:</b> ako A, ale meno s dB hore je len popis a MUTE ostáva samostatne dole (fader je o to tlačidlo kratší).",
+    };
+
+    const rowsEl = document.getElementById("rows");
+    const mixer = document.getElementById("mixer");
+    let variant = "a";
+    try { variant = localStorage.getItem("fohmixer-mock-variant") || "a"; } catch (e) { /* storage blocked */ }
+    if (!HINTS[variant]) variant = "a";
+    try { law = localStorage.getItem("fohmixer-mock-law") || "touchosc"; } catch (e) { /* storage blocked */ }
+    if (law !== "ableton") law = "touchosc";
+
+    const el = (tag, cls, html) => {
+        const e = document.createElement(tag);
+        if (cls) e.className = cls;
+        if (html !== undefined) e.innerHTML = html;
+        return e;
+    };
+
+    function scaleView() {
+        const scale = el("div", "scale");
+        for (const db of TICKS) {
+            const t = el("span", "tick" + (db === 0 ? " unity" : ""), db > 0 ? "+" + db : db < 0 ? "−" + -db : "0");
+            t.style.top = ((1 - dbToPos(db)) * 100).toFixed(2) + "%";
+            scale.append(t);
+        }
+        return scale;
+    }
+
+    function faderZone(st, strip) {
+        const fz = el("div", "fz");
+        fz.append(scaleView());
+        const meter = el("div", "meter");
+        meter.append(el("div", "meter-zones"), el("div", "meter-cover"));
+        fz.append(meter);
+        const fader = el("div", "fader");
+        const railL = el("div", "rail-l");
+        railL.append(el("div", "cap"));
+        fader.append(el("div", "groove"), el("div", "fill"), railL);
+        fz.append(fader);
+        let drag = null;
+        let lastTap = 0;
+        fader.addEventListener("pointerdown", (e) => {
+            e.preventDefault();
+            fader.setPointerCapture(e.pointerId);
+            const h = fader.querySelector(".groove").getBoundingClientRect().height || 1;
+            drag = { id: e.pointerId, y: e.clientY, p: st.pos, h, t: performance.now(), moved: 0 };
+            st.glide = null;
+            st.touched = true;
+            fader.classList.add("active");
+        });
+        fader.addEventListener("pointermove", (e) => {
+            if (!drag || e.pointerId !== drag.id) return;
+            const dy = e.clientY - drag.y;
+            drag.moved = Math.max(drag.moved, Math.abs(dy));
+            st.pos = clamp(drag.p - dy / drag.h);
+        });
+        const end = (e) => {
+            if (!drag || e.pointerId !== drag.id) return;
+            const now = performance.now();
+            const tap = drag.moved < 4 && now - drag.t < 300;
+            if (tap && now - lastTap > 50 && now - lastTap < 300) {
+                st.glide = unity();
+                lastTap = 0;
+            } else {
+                lastTap = tap ? now : 0;
+            }
+            drag = null;
+            st.touched = st.glide !== null;
+            fader.classList.remove("active");
+        };
+        fader.addEventListener("pointerup", end);
+        fader.addEventListener("pointercancel", end);
+        return fz;
+    }
+
+    function panView(st) {
+        const pan = el("div", "pan");
+        pan.append(el("div", "pan-track"), el("div", "pan-fill"), el("div", "pan-dot"));
+        let drag = null;
+        let lastTap = 0;
+        pan.addEventListener("pointerdown", (e) => {
+            e.preventDefault();
+            pan.setPointerCapture(e.pointerId);
+            const w = Math.max(1, pan.getBoundingClientRect().width - 12);
+            drag = { id: e.pointerId, x: e.clientX, p: st.pan, w, t: performance.now(), moved: 0 };
+            st.panGlide = null;
+        });
+        pan.addEventListener("pointermove", (e) => {
+            if (!drag || e.pointerId !== drag.id) return;
+            const dx = e.clientX - drag.x;
+            drag.moved = Math.max(drag.moved, Math.abs(dx));
+            st.pan = clamp(drag.p + dx / drag.w);
+        });
+        const end = (e) => {
+            if (!drag || e.pointerId !== drag.id) return;
+            const now = performance.now();
+            const tap = drag.moved < 4 && now - drag.t < 300;
+            if (tap && now - lastTap < 300) {
+                if (variant === "now") st.pan = 0.5;
+                else st.panGlide = 0.5;
+                lastTap = 0;
+            } else {
+                lastTap = tap ? now : 0;
+            }
+            drag = null;
+        };
+        pan.addEventListener("pointerup", end);
+        pan.addEventListener("pointercancel", end);
+        return pan;
+    }
+
+    function muteTap(target, st, strip) {
+        target.addEventListener("pointerdown", (e) => {
+            e.preventDefault();
+            st.muted = !st.muted;
+            strip.classList.toggle("muted", st.muted);
+        });
+    }
+
+    function stripView(st, inst) {
+        const strip = el("div", "strip" + (st.wide ? " wide" : "") + (st.muted ? " muted" : "") + (st.ret ? " retstrip" : ""));
+        strip.style.setProperty("--tc", st.color);
+        strip.style.setProperty("--tt", textOn(st.color));
+        const label = () => {
+            const l = el("span", "label", st.name);
+            l.style.setProperty("--n", String(st.name.length));
+            return l;
+        };
+        const dbrow = el("div", "dbrow");
+        dbrow.append(el("i", "led"), el("span", "db"));
+        if (variant === "now") {
+            const tag = el("span", "tag" + (inst === "master" ? " master" : ""), inst + (st.ret ? " · ret" : ""));
+            const name = el("button", "name");
+            name.type = "button";
+            name.append(label(), el("span", "mark", "MUTE"));
+            muteTap(name, st, strip);
+            strip.append(panView(st), tag, faderZone(st, strip), dbrow, name);
+        } else if (variant === "a") {
+            const name = el("button", "name two");
+            name.type = "button";
+            name.append(label(), el("span", "db"), el("span", "mark", "MUTE"), el("span", "ret", "RET"));
+            muteTap(name, st, strip);
+            strip.append(name, panView(st), faderZone(st, strip));
+        } else {
+            const nl = el("div", "nlabel two");
+            nl.append(label(), el("span", "db"), el("span", "mark", "MUTE"), el("span", "ret", "RET"));
+            const mb = el("button", "mbtn", "MUTE");
+            mb.type = "button";
+            muteTap(mb, st, strip);
+            strip.append(nl, panView(st), faderZone(st, strip), mb);
+        }
+        st.el = strip;
+        return strip;
+    }
+
+    function build() {
+        mixer.className = "mixer v-" + variant;
+        rowsEl.textContent = "";
+        for (const row of ROWS) {
+            const r = el("div", "row");
+            for (const g of row) {
+                const group = el("section", "group");
+                group.style.setProperty("--gc", g.gc);
+                const title = el("h2", "group-title");
+                title.style.margin = "0";
+                title.append(el("i", "group-mark"));
+                if (g.title) title.append(document.createTextNode(g.title));
+                if (variant !== "now") title.append(el("span", "inst" + (g.inst === "master" ? " master" : ""), g.inst));
+                group.append(title);
+                const body = el("div", "group-body");
+                for (const st of g.strips) body.append(stripView(st, g.inst));
+                group.append(body);
+                r.append(group);
+            }
+            rowsEl.append(r);
+        }
+        document.getElementById("hint").innerHTML = HINTS[variant];
+        for (const b of document.querySelectorAll("#variants button")) {
+            b.classList.toggle("selected", b.dataset.v === variant);
+            b.setAttribute("aria-selected", String(b.dataset.v === variant));
+        }
+        for (const b of document.querySelectorAll("#laws button")) {
+            b.classList.toggle("selected", b.dataset.l === law);
+            b.setAttribute("aria-selected", String(b.dataset.l === law));
+        }
+        rowsEl.style.setProperty("--u", unity().toFixed(4));
+        rowsEl.style.setProperty("--yellow", (dbToPos(-12) * 100).toFixed(2) + "%");
+        rowsEl.style.setProperty("--red", (dbToPos(-3) * 100).toFixed(2) + "%");
+        for (const row of ROWS) for (const g of row) for (const st of g.strips) {
+            st.drawn = null;
+            st.pos = fromLive(st.vol);
+            st.glide = null;
+        }
+        fit();
+    }
+
+    // One strip width for every row (fohmixer's flow.rs): the widest row fits, 64..120 px.
+    function fit() {
+        const cs = getComputedStyle(rowsEl);
+        const width = rowsEl.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+        let w = 120;
+        for (const row of ROWS) {
+            let units = 0, n = 0;
+            for (const g of row) for (const st of g.strips) { units += st.wide ? 1.1 : 1; n++; }
+            const fixed = (n - row.length) * 4 + row.length * 10 + (row.length - 1) * 10;
+            w = Math.min(w, (width - fixed) / units);
+        }
+        w = Math.max(64, Math.min(120, Math.floor(w * 10) / 10));
+        rowsEl.style.setProperty("--strip-w", w + "px");
+        requestAnimationFrame(measure);
+    }
+
+    function measure() {
+        const groove = rowsEl.querySelector(".groove");
+        if (!groove) return;
+        const travel = groove.getBoundingClientRect().height;
+        const share = travel / mixer.getBoundingClientRect().height;
+        document.getElementById("travel").textContent =
+            "dráha fadra " + Math.round(travel) + " px = " + Math.round(share * 100) + " % výšky (TouchOSC " + Math.round(TOUCHOSC_SHARE * 100) + " %)";
+    }
+
+    new ResizeObserver(fit).observe(rowsEl);
+
+    document.getElementById("laws").addEventListener("click", (e) => {
+        const b = e.target.closest("button[data-l]");
+        if (!b) return;
+        law = b.dataset.l;
+        try { localStorage.setItem("fohmixer-mock-law", law); } catch (err) { /* storage blocked */ }
+        build();
+    });
+
+    document.getElementById("variants").addEventListener("click", (e) => {
+        const b = e.target.closest("button[data-v]");
+        if (!b) return;
+        variant = b.dataset.v;
+        try { localStorage.setItem("fohmixer-mock-variant", variant); } catch (err) { /* storage blocked */ }
+        build();
+    });
+
+    const fsButton = document.getElementById("fs");
+    const canFs = mixer.requestFullscreen || mixer.webkitRequestFullscreen;
+    if (!canFs) fsButton.hidden = true;
+    fsButton.addEventListener("click", () => {
+        try {
+            const p = (mixer.requestFullscreen || mixer.webkitRequestFullscreen).call(mixer);
+            if (p && p.catch) p.catch(() => { fsButton.hidden = true; });
+        } catch (err) {
+            fsButton.hidden = true;
+        }
+    });
+
+    // The frame loop: glides, the fader and pan drawing, the dB text, the meters.
+    let last = performance.now();
+    function frame(now) {
+        const dt = Math.min(0.1, (now - last) / 1000);
+        last = now;
+        for (const row of ROWS) for (const g of row) for (const st of g.strips) {
+            if (st.glide !== null) {
+                const step = FADER_GLIDE * dt;
+                const d = st.glide - st.pos;
+                if (Math.abs(d) <= step) { st.pos = st.glide; st.glide = null; st.touched = false; }
+                else st.pos += Math.sign(d) * step;
+            }
+            if (st.panGlide !== null) {
+                const step = PAN_GLIDE * dt;
+                const d = st.panGlide - st.pan;
+                if (Math.abs(d) <= step) { st.pan = st.panGlide; st.panGlide = null; }
+                else st.pan += Math.sign(d) * step;
+            }
+            st.vol = toLive(st.pos);
+            const strip = st.el;
+            if (!strip) continue;
+            if (!st.drawn) {
+                st.drawn = {
+                    fader: strip.querySelector(".fader"), db: strip.querySelector(".db"),
+                    pan: strip.querySelector(".pan"), cover: strip.querySelector(".meter-cover"),
+                    pos: -1, pn: -1, touch: null,
+                };
+            }
+            const d = st.drawn;
+            if (d.pos !== st.pos) {
+                d.fader.style.setProperty("--p", st.pos.toFixed(4));
+                const t = dbText(st.pos);
+                d.db.textContent = t.text;
+                d.db.classList.toggle("unity", t.unity);
+                d.pos = st.pos;
+            }
+            if (d.pn !== st.pan) {
+                d.pan.style.setProperty("--p", st.pan.toFixed(4));
+                d.pan.style.setProperty("--lo", Math.min(st.pan, 0.5).toFixed(4));
+                d.pan.style.setProperty("--w", Math.abs(st.pan - 0.5).toFixed(4));
+                d.pan.classList.toggle("off", Math.abs(st.pan - 0.5) > 0.01);
+                d.pn = st.pan;
+            }
+            if (d.touch !== st.touched) {
+                strip.classList.toggle("touch", st.touched);
+                d.touch = st.touched;
+            }
+            // A made-up signal: wanders, follows the fader, silent when muted.
+            st.env = Math.min(1, Math.max(0.25, st.env + (Math.random() - 0.5) * 0.12));
+            const target = st.muted || st.pos < 0.004 ? 0 : Math.min(1, st.pos * 0.92 * st.env * (0.85 + Math.random() * 0.3));
+            st.level += (target - st.level) * (target > st.level ? 0.5 : 0.08);
+            d.cover.style.transform = "scaleY(" + (1 - st.level).toFixed(4) + ")";
+        }
+        requestAnimationFrame(frame);
+    }
+
+    build();
+    requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

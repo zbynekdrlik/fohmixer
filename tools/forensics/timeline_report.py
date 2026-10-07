@@ -521,7 +521,7 @@ def _touches_table(t):
         def level(value):
             return "n/a" if value is None else db_text(value2db(value))
 
-        start = "n/a" if touch.start is None else db_text(value2db(to_live(touch.start)))
+        start = "n/a" if touch.start is None else db_text(value2db(to_live(touch.start, touch.law)))
         start += " (local)" if touch.local else ""
         worst = max((g.ms for g in touch.move_gaps), default=None)
         cells = (

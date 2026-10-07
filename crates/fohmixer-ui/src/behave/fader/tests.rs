@@ -832,3 +832,81 @@ fn a_press_says_where_the_touch_started() {
         start(0.25, 0.75, true, 0.25)
     );
 }
+
+#[test]
+fn lives_law_is_lives_value_and_touchoscs_is_the_power() {
+    // #63: Live's own law is no conversion at all.
+    let live = VolumeLaw::Live;
+    assert_eq!(VolumeLaw::default(), VolumeLaw::Live);
+    assert_eq!(live.to_live(0.85), 0.85);
+    assert_eq!(live.to_pos(0.7), 0.7);
+    for (p, v) in [(-0.5, 0.0), (1.5, 1.0)] {
+        assert_eq!(live.to_live(p), v, "to_live({p})");
+        assert_eq!(live.to_pos(p), v, "to_pos({p})");
+    }
+    let tosc = VolumeLaw::TouchOsc;
+    assert_close(tosc.to_live(0.5), to_live(0.5));
+    assert_close(tosc.to_pos(0.85), to_pos(0.85));
+    // A position on TouchOSC's scale (the meter's calibration) moves to
+    // the position of the same Live volume.
+    assert_close(live.from_touchosc(0.5), 0.6997929327975979);
+    assert_close(live.from_touchosc(to_pos(0.85)), 0.85);
+    assert_close(tosc.from_touchosc(0.3), 0.3);
+    assert_eq!(VolumeLaw::from(FaderLaw::Live), VolumeLaw::Live);
+    assert_eq!(VolumeLaw::from(FaderLaw::Touchosc), VolumeLaw::TouchOsc);
+}
+
+#[test]
+fn on_lives_law_the_forced_first_step_is_one_tenth_db_of_lives_value() {
+    // −10 dB on Live's law is position 0.6; +0.1 dB is Live's 0.6025 (the
+    // bisection's 14 halvings), on TouchOSC's law another position.
+    let mut s = Shaper::new(true);
+    s.set_law(VolumeLaw::Live);
+    s.start(0.6);
+    assert_eq!(s.move_by(0.001), 0.602508544921875);
+    let mut s = Shaper::new(true);
+    s.start(0.6);
+    assert_ne!(
+        s.move_by(0.001),
+        0.602508544921875,
+        "TouchOSC's law by default"
+    );
+    // The fader passes its law to its shaping.
+    let mut f = FaderCtl::new(true, None).law(VolumeLaw::Live);
+    assert!(f.down(1, 500.0, REFERENCE_TRAVEL, 0.0, 0.6));
+    anchor(&mut f, 1, 500.0, 1.0);
+    assert!(f.moved(1, 500.0 - REFERENCE_TRAVEL * 0.001, 2.0));
+    assert_eq!(f.pos(), 0.602508544921875);
+}
+
+#[test]
+fn a_fader_is_held_while_a_finger_or_its_glide_drives_it() {
+    let mut f = FaderCtl::new(false, zero_db());
+    assert!(!f.held());
+    assert!(f.down(1, 500.0, TRAVEL, 0.0, 0.25));
+    assert!(f.held(), "a finger");
+    assert_eq!(f.up(1, 20.0), None);
+    assert!(!f.held(), "lifted");
+    assert!(f.down(1, 500.0, TRAVEL, 60.0, 0.25));
+    assert_eq!(f.up(1, 80.0), None);
+    assert!(f.held(), "the double tap's glide");
+    let arrive = 80.0 + (to_pos(UNITY) - 0.25) / GLIDE_SPEED * 1000.0 + 1.0;
+    f.frame(arrive, Some(0.25));
+    assert!(!f.held(), "the glide arrived");
+}
+
+#[test]
+fn a_glide_runs_at_its_own_speed() {
+    let g = Glide::at_speed(0.0, 0.5, 100.0, 0.4);
+    assert_eq!(g.at(100.0), (0.0, false));
+    assert_close(g.at(600.0).0, 0.2);
+    assert!(!g.at(1349.0).1);
+    assert_eq!(g.at(1350.0), (0.5, true));
+    let down = Glide::at_speed(1.0, 0.5, 0.0, 0.4);
+    assert_close(down.at(500.0).0, 0.8);
+    assert_eq!(Glide::new(0.0, 1.0, 0.0).at(3400.0), (1.0, true));
+    assert!(
+        !Glide::new(0.0, 1.0, 0.0).at(3300.0).1,
+        "a fader glides at 0.3 a second"
+    );
+}

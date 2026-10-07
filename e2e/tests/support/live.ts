@@ -307,6 +307,11 @@ export function strip(page: Page, name: string, instance = "band"): Locator {
   return page.locator(`[data-testid="strip"][data-track="${name}"][data-instance="${instance}"]`);
 }
 
+/** The group (section) that holds `inner`. */
+export function groupOf(page: Page, inner: Locator): Locator {
+  return page.getByTestId("group").filter({ has: inner });
+}
+
 /** Selects a tab by its page id. */
 export async function selectPage(page: Page, id: string) {
   const tab = page.locator(`[data-testid="tab"][data-page="${id}"]`);

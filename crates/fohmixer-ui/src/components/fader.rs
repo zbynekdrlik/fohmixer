@@ -26,7 +26,7 @@ use serde_json::json;
 use super::{
     fail_flash, owns_touches, readiness, readiness_now, trace_move, trace_start, trace_touch,
 };
-use crate::behave::fader::{self as curve, FaderCtl, UNITY};
+use crate::behave::fader::{self as curve, FaderCtl, UNITY, VolumeLaw};
 use crate::behave::{TouchEnd, touch_end};
 use crate::binding::SubSpec;
 use crate::diag::trace::moves::{Axis, Press, Trail};
@@ -38,8 +38,9 @@ use crate::store::{LiveStore, Readiness, Slot};
 /// How a fader maps its position to Live's value.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Law {
-    /// A track volume: `v = p^0.515`, double tap to 0 dB.
-    Volume,
+    /// A track volume on its volume law (#63: Live's own by default), double
+    /// tap to 0 dB.
+    Volume(VolumeLaw),
     /// A parameter's range, linear (`cc_linear`), read from Live.
     Linear(RwSignal<Option<(f64, f64)>>),
 }
@@ -48,7 +49,7 @@ impl Law {
     /// The position of Live's value, when the law can say.
     fn pos(self, value: f64) -> Option<f64> {
         match self {
-            Self::Volume => Some(curve::to_pos(value)),
+            Self::Volume(law) => Some(law.to_pos(value)),
             Self::Linear(range) => range
                 .try_get_untracked()
                 .flatten()
@@ -59,7 +60,7 @@ impl Law {
     /// Live's value at position `p`.
     fn value(self, p: f64) -> Option<f64> {
         match self {
-            Self::Volume => Some(curve::to_live(p)),
+            Self::Volume(law) => Some(law.to_live(p)),
             Self::Linear(range) => range
                 .try_get_untracked()
                 .flatten()
@@ -70,7 +71,7 @@ impl Law {
     /// Where a double tap glides.
     fn glide_to(self) -> Option<f64> {
         match self {
-            Self::Volume => Some(curve::to_pos(UNITY)),
+            Self::Volume(law) => Some(law.to_pos(UNITY)),
             Self::Linear(_) => None,
         }
     }
@@ -80,15 +81,33 @@ impl Law {
     /// parameter faders keep TouchOSC's first move (the owner's call on #43).
     fn anchors(self) -> bool {
         match self {
-            Self::Volume => true,
+            Self::Volume(_) => true,
             Self::Linear(_) => false,
+        }
+    }
+
+    /// The volume law the touch shaping measures its dB steps on: a volume
+    /// fader's own; TouchOSC's for a parameter fader (as the Lua shaped it).
+    fn shaping_law(self) -> VolumeLaw {
+        match self {
+            Self::Volume(law) => law,
+            Self::Linear(_) => VolumeLaw::TouchOsc,
+        }
+    }
+
+    /// The volume law a touch's record names (#63): a volume fader's; none
+    /// for a parameter fader (its positions are its range's).
+    fn traced(self) -> Option<VolumeLaw> {
+        match self {
+            Self::Volume(law) => Some(law),
+            Self::Linear(_) => None,
         }
     }
 
     /// Whether the law can map (reactive: a parameter's range arrived).
     fn ready(self) -> bool {
         match self {
-            Self::Volume => true,
+            Self::Volume(_) => true,
             Self::Linear(range) => range.with(Option::is_some),
         }
     }
@@ -96,7 +115,7 @@ impl Law {
     /// The same, untracked (in an event handler).
     fn can_map(self) -> bool {
         match self {
-            Self::Volume => true,
+            Self::Volume(_) => true,
             Self::Linear(range) => range.try_with_untracked(Option::is_some).unwrap_or(false),
         }
     }
@@ -131,7 +150,7 @@ pub fn FaderView(targets: Vec<Target>, shaping: bool) -> impl IntoView {
         || {
             (
                 RwSignal::new(Slot::Error("a fader without a target".into())),
-                Law::Volume,
+                Law::Volume(VolumeLaw::default()),
             )
         },
         |t| (t.slot, t.law),
@@ -162,7 +181,11 @@ pub fn FaderView(targets: Vec<Target>, shaping: bool) -> impl IntoView {
     let keys = StoredValue::new(keys);
     let shown_key = StoredValue::new(shown_key);
     let targets = StoredValue::new(targets);
-    let ctl = StoredValue::new(FaderCtl::new(shaping, law.glide_to()).anchoring(law.anchors()));
+    let ctl = StoredValue::new(
+        FaderCtl::new(shaping, law.glide_to())
+            .anchoring(law.anchors())
+            .law(law.shaping_law()),
+    );
     // The finger's moves between frames, for the flight recorder (#43 PR D).
     let trail = StoredValue::new(Trail::default());
     let failed = RwSignal::new(false);
@@ -239,7 +262,7 @@ pub fn FaderView(targets: Vec<Target>, shaping: bool) -> impl IntoView {
             let _ = trail.try_update_value(|t| t.start(id, Axis::Up, press, start.from));
             let _ = keys.try_with_value(|k| {
                 store.touch(k);
-                trace_start(k, id, press, start);
+                trace_start(k, id, press, start, law.traced());
             });
         }
     };
@@ -288,6 +311,7 @@ pub fn FaderView(targets: Vec<Target>, shaping: bool) -> impl IntoView {
         let mut shown: Option<f64> = None;
         let mut look: Option<State> = None;
         let mut ghost: Option<f64> = None;
+        let mut held: Option<bool> = None;
         Box::new(move |now: f64, _step: f64| {
             let (intent, written) = shown_key
                 .try_with_value(|k| k.as_deref().map(|k| store.intent_view(k)))
@@ -298,15 +322,22 @@ pub fn FaderView(targets: Vec<Target>, shaping: bool) -> impl IntoView {
                 .filter(|_| intent.is_open())
                 .and_then(|v| law.pos(v));
             let at = live();
-            let Some((motion, glide_ended)) = ctl.try_update_value(|c| {
+            let Some((motion, glide_ended, is_held)) = ctl.try_update_value(|c| {
                 c.intent(intent.is_open(), now);
                 if let Some(p) = written {
                     c.write_at(p);
                 }
-                (c.frame(now, at), c.take_ended())
+                let motion = c.frame(now, at);
+                (motion, c.take_ended(), c.held())
             }) else {
                 return;
             };
+            // A finger or a glide drives it: the strip lights (#63,
+            // `strip.css`), above the finger.
+            if held != Some(is_held) {
+                dom::set_attr(&el, "data-held", if is_held { "true" } else { "false" });
+                held = Some(is_held);
+            }
             if let Some(p) = motion.send {
                 sent_moves(p, send(p, false));
             }
@@ -375,16 +406,26 @@ mod tests {
 
     #[test]
     fn the_volume_law_is_the_fader_curve_with_a_glide_to_0_db() {
-        let law = Law::Volume;
+        let law = Law::Volume(VolumeLaw::TouchOsc);
         assert_eq!(law.pos(0.85), Some(curve::to_pos(0.85)));
         assert_eq!(law.value(0.5), Some(curve::to_live(0.5)));
         assert_eq!(law.glide_to(), Some(curve::to_pos(UNITY)));
+        assert_eq!(law.shaping_law(), VolumeLaw::TouchOsc);
         assert!(
             law.anchors(),
             "a touch's first move only anchors (#43 PR F)"
         );
         assert!(law.ready());
         assert!(law.can_map());
+        // Live's own law (#63): the position is Live's volume.
+        let live = Law::Volume(VolumeLaw::Live);
+        assert_eq!(live.pos(0.6), Some(0.6));
+        assert_eq!(live.value(0.3), Some(0.3));
+        assert_eq!(live.glide_to(), Some(UNITY));
+        assert_eq!(live.shaping_law(), VolumeLaw::Live);
+        assert_eq!(live.traced(), Some(VolumeLaw::Live));
+        assert_eq!(law.traced(), Some(VolumeLaw::TouchOsc));
+        assert!(live.anchors() && live.ready() && live.can_map());
     }
 
     #[test]
@@ -396,6 +437,12 @@ mod tests {
         assert!(!law.ready());
         assert!(!law.can_map());
         assert_eq!(law.glide_to(), None, "no double tap on a parameter fader");
+        assert_eq!(
+            law.shaping_law(),
+            VolumeLaw::TouchOsc,
+            "shaped as the Lua did"
+        );
+        assert_eq!(law.traced(), None, "its positions are its range's");
         assert!(!law.anchors(), "TouchOSC's first move (#43 PR F)");
         let _ = range.try_set(Some((-15.0, 15.0)));
         assert!(law.ready());

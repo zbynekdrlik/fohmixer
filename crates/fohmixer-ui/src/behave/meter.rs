@@ -32,8 +32,9 @@ const YELLOW_DB: f64 = -12.0;
 const COLOR_SMOOTHING: f64 = 0.3;
 const FRAME_MS: f64 = 1000.0 / 60.0;
 
-/// The fader-scale position of Live's meter level `level` (0..1; not a
-/// number reads as 0).
+/// The position on TouchOSC's fader scale of Live's meter level `level`
+/// (0..1; not a number reads as 0). The meter view moves it to the strip's
+/// volume law (`VolumeLaw::from_touchosc`, #63).
 pub fn level_to_pos(level: f64) -> f64 {
     if level.is_nan() {
         // Silence: a NaN position would stick in the bar (every later
