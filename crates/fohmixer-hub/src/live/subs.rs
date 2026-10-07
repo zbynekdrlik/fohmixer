@@ -29,7 +29,11 @@
 //!   to listen to, and renaming another track to it changes no list. Any
 //!   item's rename then resolves the name bindings again, and the binding
 //!   heals by itself (#58: no REFRESH ALL). The watches follow the list's
-//!   length and go once none of the list's bindings is in error.
+//!   length and go once none of the list's bindings is in error. New
+//!   watches send the list's bindings in error again after them: a rename
+//!   that lands before a watch is heard is found by that resolution. A
+//!   watch is resolved again only when a list changed (its index then holds
+//!   another object), not on every rename.
 //! - On `connect` (a Live start or set load) every entry is resolved again
 //!   by its original path: ids of the old session mean nothing.
 //! - A `remove_listener` is sent only while no `add_listener` of the same
@@ -120,6 +124,8 @@ struct Entry {
     guard: bool,
     /// A list guard (it listens to the list a name step selects from).
     list: bool,
+    /// An item name watch of a list guard (#58).
+    watch: bool,
     clients: BTreeSet<ClientId>,
     /// Entries this one guards (it listens to a name or a list they depend
     /// on).
@@ -163,6 +169,14 @@ pub struct Subs {
 /// key (those end in `|true` or `|false`).
 fn guard_key(instance: &str, target: &str, prop: &str) -> String {
     format!("{}|guard", hub_key(instance, target, prop, false))
+}
+
+/// Whether a guard's firing resolves `entry` again: a name binding or a
+/// guard; an item name watch on an index path (#58) only when a list
+/// changed (`lists`: its index may hold another object now). A rename alone
+/// leaves every index where it was.
+fn re_resolves(entry: &Entry, lists: bool) -> bool {
+    entry.named || (entry.guard && (lists || !entry.watch))
 }
 
 /// A result slot of `add_listener`: the Live key and the state it gives.
@@ -323,14 +337,15 @@ impl Subs {
         }
         // A guard in the frame: the name bindings are resolved again, and
         // their values of this frame may be the renamed object's.
-        let guard_fired = items.iter().any(|item| {
-            self.by_live
-                .get(&(instance.to_string(), item.key.clone()))
-                .is_some_and(|keys| {
-                    keys.iter()
-                        .any(|k| self.entries.get(k).is_some_and(|e| e.guard))
-                })
-        });
+        let fired = |test: fn(&Entry) -> bool| {
+            items.iter().any(|item| {
+                self.by_live
+                    .get(&(instance.to_string(), item.key.clone()))
+                    .is_some_and(|keys| keys.iter().any(|k| self.entries.get(k).is_some_and(test)))
+            })
+        };
+        let guard_fired = fired(|e| e.guard);
+        let list_fired = fired(|e| e.list);
         for item in items {
             let id = (instance.to_string(), item.key.clone());
             let Some(keys) = self.by_live.get(&id).cloned() else {
@@ -361,7 +376,7 @@ impl Subs {
             }
         }
         if guard_fired {
-            self.resolve_named(instance);
+            self.resolve_named(instance, list_fired);
         }
     }
 
@@ -513,6 +528,7 @@ impl Subs {
                 named: path.steps.iter().any(|s| s.name.is_some()),
                 guard,
                 list: false,
+                watch: false,
                 clients: BTreeSet::new(),
                 dependents: BTreeSet::new(),
                 guards: Vec::new(),
@@ -589,11 +605,16 @@ impl Subs {
             let Some(list) = self.entries.get(&list_key).filter(|e| e.list) else {
                 continue;
             };
-            let in_error = list.dependents.iter().any(|d| {
-                self.entries
-                    .get(d)
-                    .is_some_and(|e| matches!(e.cached, Some(Cached::Error(_))))
-            });
+            // The list's bindings in error and their guards (a name guard
+            // made while its name was missing holds no object yet).
+            let again: Vec<String> = list
+                .dependents
+                .iter()
+                .filter_map(|d| self.entries.get(d).map(|e| (d, e)))
+                .filter(|(_, e)| matches!(e.cached, Some(Cached::Error(_))))
+                .flat_map(|(d, e)| std::iter::once(d.clone()).chain(e.guards.iter().cloned()))
+                .collect();
+            let in_error = !again.is_empty();
             let wanted = match &list.cached {
                 Some(Cached::Value {
                     value: Value::Array(items),
@@ -604,6 +625,12 @@ impl Subs {
             let have = list.watches.len();
             let instance = list.instance.clone();
             let owner = format!("{} {}", list.target, list.prop);
+            if let Some(inst) = self.instances.get_mut(&instance) {
+                // Sent after the new watches (an index target sorts before a
+                // name step's `[`): a rename that lands before a watch is
+                // heard is found by this resolution.
+                inst.dirty.extend(again);
+            }
             for index in have..wanted {
                 let target = format!("{owner} {index}");
                 let path =
@@ -612,6 +639,7 @@ impl Subs {
                 self.ensure(&watch, &instance, &path, "name", false, true);
                 if let Some(entry) = self.entries.get_mut(&watch) {
                     entry.dependents.insert(list_key.clone());
+                    entry.watch = true;
                 }
                 if let Some(list) = self.entries.get_mut(&list_key) {
                     list.watches.push(watch);
@@ -685,12 +713,13 @@ impl Subs {
         }
     }
 
-    /// Re-resolves every name binding (and guard) of `instance`.
-    fn resolve_named(&mut self, instance: &str) {
+    /// Re-resolves every name binding (and guard) of `instance`; an item
+    /// name watch on an index path only when a list changed (`lists`).
+    fn resolve_named(&mut self, instance: &str, lists: bool) {
         let keys: Vec<String> = self
             .entries
             .iter()
-            .filter(|(_, e)| e.instance == instance && (e.named || e.guard))
+            .filter(|(_, e)| e.instance == instance && re_resolves(e, lists))
             .map(|(k, _)| k.clone())
             .collect();
         if let Some(inst) = self.instances.get_mut(instance) {
