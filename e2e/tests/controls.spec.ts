@@ -292,11 +292,18 @@ test.describe("Bindings stay current with no REFRESH ALL (#58)", () => {
     await expect(page.getByTestId("refresh")).toHaveCount(0);
   });
 
-  test("the page unfolds the configured group tracks once loaded", async ({ page }) => {
+  test("the page unfolds the configured group tracks once loaded, and again when Live is back", async ({ page }) => {
+    // Live sends no meter of a track inside a folded group (#58).
     const group = track("Vocals Repro grp#");
     await live.set("band", group, "fold_state", true);
     expect(await live.get("band", group, "fold_state")).toBe(1);
     await openSurface(page);
     await until(() => live.get("band", group, "fold_state"), (v) => v === 0, "unfolded by the page's load");
+    const surface = page.getByTestId("surface");
+    await expect(surface).toHaveAttribute("data-unfolds", "1");
+    // A Live restart (a set load alike) unfolds the band's groups again.
+    await harness("/host/band/restart");
+    await expect(surface).toHaveAttribute("data-unfolds", "2", { timeout: 10_000 });
+    await until(() => live.get("band", group, "fold_state"), (v) => v === 0, "unfolded once Live is back");
   });
 });

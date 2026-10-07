@@ -28,7 +28,7 @@ test.describe("Frames while the surface loads", () => {
       const w = window as any;
       w.__frames = [];
       w.__marks = [];
-      let unfolded: string | null = null;
+      let unfolds: string | null = null;
       let stage = false;
       const tick = (t: number) => {
         w.__frames.push(t);
@@ -36,10 +36,10 @@ test.describe("Frames while the surface loads", () => {
           stage = true;
           w.__marks.push([t, "stage"]);
         }
-        const u = document.querySelector('[data-testid="surface"]')?.getAttribute("data-unfolded") ?? null;
-        if (u !== unfolded) {
-          unfolded = u;
-          w.__marks.push([t, `unfolded=${u}`]);
+        const u = document.querySelector('[data-testid="surface"]')?.getAttribute("data-unfolds") ?? null;
+        if (u !== unfolds) {
+          unfolds = u;
+          w.__marks.push([t, `unfolds=${u}`]);
         }
         requestAnimationFrame(tick);
       };
@@ -60,7 +60,7 @@ test.describe("Frames while the surface loads", () => {
       return mark![0];
     };
     const stage = frames.indexOf(at("stage"));
-    const unfoldedAt = at("unfolded=true");
+    const unfoldedAt = at("unfolds=1");
     expect(stage, `the stage frame is not in the frame log; marks: ${timeline}`).toBeGreaterThanOrEqual(0);
     expect(frames.length, `frames after the stage appeared; marks: ${timeline}`).toBeGreaterThan(stage + 1);
 

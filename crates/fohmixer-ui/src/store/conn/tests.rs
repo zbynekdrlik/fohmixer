@@ -438,3 +438,26 @@ fn the_unfold_is_due_once_per_page_with_a_layout_on_a_ready_socket() {
     c.hello(0.0);
     assert!(c.unfold_due(true), "the hello after it");
 }
+
+#[test]
+fn an_instance_back_or_on_another_set_is_unfolded_again() {
+    let (on, off) = (view(true, "Show"), view(false, "Show"));
+    assert!(unfold_again(Some(&off), &on), "Live back after a restart");
+    assert!(
+        unfold_again(Some(&on), &view(true, "Rehearsal")),
+        "another set loaded"
+    );
+    assert!(
+        !unfold_again(None, &on),
+        "its first report: the load unfolds"
+    );
+    assert!(!unfold_again(Some(&on), &on), "the same state");
+    assert!(!unfold_again(Some(&on), &off), "gone");
+    assert!(!unfold_again(Some(&off), &off), "still away");
+    let mut busy = view(true, "Show");
+    busy.busy = true;
+    assert!(
+        !unfold_again(Some(&busy), &on),
+        "busy, then free: nothing refolded"
+    );
+}

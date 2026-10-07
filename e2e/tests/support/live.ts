@@ -288,7 +288,7 @@ export async function openSurface(page: Page) {
   await expect(page.getByTestId("surface")).toHaveAttribute("data-connected", "true");
   // The page unfolds the configured groups once its layout is on screen
   // (spec F7); tests act after it.
-  await expect(page.getByTestId("surface")).toHaveAttribute("data-unfolded", "true", { timeout: 5000 });
+  await expect(page.getByTestId("surface")).not.toHaveAttribute("data-unfolds", "0", { timeout: 5000 });
 }
 
 /**

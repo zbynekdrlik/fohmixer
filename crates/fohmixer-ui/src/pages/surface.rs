@@ -155,7 +155,7 @@ pub fn Surface(token: String, session: RwSignal<Option<String>>) -> impl IntoVie
             data-testid="surface"
             data-subs=move || store.subscribed.get().to_string()
             data-connected=move || store.connected.get().to_string()
-            data-unfolded=move || store.unfolded.get().to_string()
+            data-unfolds=move || store.unfolds.get().to_string()
         >
             {content}
         </div>

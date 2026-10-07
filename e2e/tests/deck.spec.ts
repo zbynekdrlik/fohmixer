@@ -320,8 +320,11 @@ test.describe("The Stream Deck tab", () => {
   });
 
   test("a held key is outlined at once and shows Companion's pressed state", async ({ page }) => {
+    const opened = Date.now();
     await openSurface(page);
     await openDeck(page);
+    // The down's delay below needs the page's clock at the hub.
+    await clockKnown(opened);
     const key = deckKey(page, 10);
     const since = Date.now();
     // The page's link held 300 ms, under the 0.5 s a down may take to the

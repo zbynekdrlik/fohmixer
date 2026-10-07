@@ -120,8 +120,8 @@ pub struct LiveStore {
     pub connected: RwSignal<bool>,
     /// How many subscriptions the pages on screen hold.
     pub subscribed: RwSignal<usize>,
-    /// The configured groups were unfolded (spec F7, once per page).
-    pub unfolded: RwSignal<bool>,
+    /// How many times the page unfolded the configured groups (spec F7).
+    pub unfolds: RwSignal<u32>,
     /// The dropout counter on the surface (#43, §4.4).
     pub dropouts: RwSignal<Counter>,
     /// The Stream Deck (#52): none from a hub without one (no tab).
@@ -142,7 +142,7 @@ impl LiveStore {
             hub: RwSignal::new(BTreeMap::new()),
             connected: RwSignal::new(false),
             subscribed: RwSignal::new(0),
-            unfolded: RwSignal::new(false),
+            unfolds: RwSignal::new(0),
             dropouts: RwSignal::new(Counter::default()),
             deck: RwSignal::new(None),
             deck_keys: RwSignal::new(BTreeMap::new()),
@@ -256,24 +256,34 @@ impl LiveStore {
         self.unfold_once();
     }
 
-    /// Unfolds the `config.unfold` groups (spec F7) once per page: at the
-    /// first layout on screen while the socket takes messages (the hub binds
-    /// a folded group's tracks as well; this is what Live's window shows).
+    /// Unfolds the `config.unfold` groups (spec F7) at the page's first
+    /// layout on screen while the socket takes messages: Live sends no meter
+    /// of a track inside a folded group (verified on the PC, #58).
     fn unfold_once(self) {
         let layout = self.layout.try_get_untracked().flatten();
         let due = self
             .inner
             .try_update_value(|i| i.conn.unfold_due(layout.is_some()))
             .unwrap_or(false);
-        let Some(layout) = layout.filter(|_| due) else {
+        if due {
+            self.unfold(None);
+        }
+    }
+
+    /// Unfolds the `config.unfold` groups of one instance (or all).
+    fn unfold(self, instance: Option<&str>) {
+        let Some(layout) = self.layout.try_get_untracked().flatten() else {
             return;
         };
-        let targets = unfold_targets(&layout.config);
+        let targets: Vec<(String, String)> = unfold_targets(&layout.config)
+            .into_iter()
+            .filter(|(name, _)| instance.is_none_or(|i| i == name))
+            .collect();
         dom::log(&format!("unfold: {} groups", targets.len()));
-        for (instance, target) in targets {
-            self.set_prop(&instance, &target, "fold_state", json!(false), None);
+        for (name, target) in targets {
+            self.set_prop(&name, &target, "fold_state", json!(false), None);
         }
-        let _ = self.unfolded.try_set(true);
+        let _ = self.unfolds.try_update(|n| *n += 1);
     }
 
     fn open_socket(self) {
@@ -599,6 +609,7 @@ impl LiveStore {
             .flatten();
         let change = conn::instance_change(old.as_ref(), &view);
         let back = conn::back_online(old.as_ref(), &view);
+        let unfold = conn::unfold_again(old.as_ref(), &view);
         if change.pending {
             self.mark_pending(Some(name.as_str()));
         }
@@ -610,6 +621,9 @@ impl LiveStore {
         }
         if back {
             self.resend(&name);
+        }
+        if unfold {
+            self.unfold(Some(name.as_str()));
         }
     }
 

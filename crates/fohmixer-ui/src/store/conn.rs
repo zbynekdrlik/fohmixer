@@ -309,6 +309,14 @@ pub fn instance_change(old: Option<&InstanceView>, new: &InstanceView) -> Instan
     }
 }
 
+/// Whether the page unfolds `new`'s groups again (spec F7, #58): its
+/// instance is back online or on another set (a Live restart or a set load
+/// folds them as the set was saved). Its first report (`old` none) is the
+/// page's load: the first layout on screen unfolds then (`Conn::unfold_due`).
+pub fn unfold_again(old: Option<&InstanceView>, new: &InstanceView) -> bool {
+    new.online && old.is_some_and(|o| !o.online || o.set_name != new.set_name)
+}
+
 /// Whether `new` brings its instance back online after `old` (none before
 /// its first report): the store sends that instance's open writes again
 /// (#43, L4). The hub forgets an instance's pending writes when it goes
