@@ -666,7 +666,11 @@ impl Router {
                     seq,
                     commands,
                 } => self.unfold_read(instance, seq, commands),
-                unfold::Action::Unfold(track) => self.unfold_group(&track),
+                unfold::Action::Unfold {
+                    instance,
+                    target,
+                    group,
+                } => self.unfold_group(&instance, target, &group),
                 unfold::Action::Retry { instance } => self.unfold_retry(instance),
             }
         }
@@ -700,14 +704,13 @@ impl Router {
         });
     }
 
-    /// Unfolds a group of the strips' tracks (logged; a failure is logged,
-    /// and the next fold read tries again).
-    fn unfold_group(&self, track: &unfold::Track) {
-        let Some(live) = self.live.get(&track.0) else {
+    /// Unfolds a group a strip's track sits in, through the path it was
+    /// read by (logged; a failure is logged, and the next read tries again).
+    fn unfold_group(&self, instance: &str, target: String, group: &str) {
+        let Some(live) = self.live.get(instance) else {
             return;
         };
-        let target = unfold::target(&track.1);
-        tracing::info!(instance = %track.0, group = %track.1, "the hub unfolds a group a strip's track sits in (Live meters no track inside a folded group)");
+        tracing::info!(instance = %instance, group = %group, "the hub unfolds a group a strip's track sits in (Live meters no track inside a folded group)");
         let result = live.call(vec![json!({
             "target": target,
             "name": "set_prop",
@@ -748,7 +751,7 @@ impl Router {
                 }
             } else if client == UNFOLD_CLIENT {
                 if let Some(error) = &item.error {
-                    tracing::warn!(key = %item.sub, error = %error, "a watch of the hub's unfold keeper failed (a group renamed, gone or named twice): reading the groups again");
+                    tracing::warn!(key = %item.sub, error = %error, "a list the hub's unfold keeper listens to failed");
                 }
                 unfold.extend(self.unfold.value(&item.sub, item.value.as_ref()));
             } else if let Some(outbox) = self.clients.get(&client) {
@@ -1146,8 +1149,8 @@ mod tests {
         router.handle(layout(1, vec![("band".into(), "Keys 1".into())]));
         assert_eq!(
             router.subs.subscriptions("band"),
-            1,
-            "the keeper's watch of the band's track list (#58)"
+            2,
+            "the keeper's watches of the band's tracks and visible tracks (#58)"
         );
         let now = status(&mut router);
         assert_eq!(now.subscriptions["band"], 0, "the hub's own read");
