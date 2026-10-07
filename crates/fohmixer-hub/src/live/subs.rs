@@ -625,13 +625,16 @@ impl Subs {
             let have = list.watches.len();
             let instance = list.instance.clone();
             let owner = format!("{} {}", list.target, list.prop);
-            if let Some(inst) = self.instances.get_mut(&instance) {
-                // Sent after the new watches (an index target sorts before a
-                // name step's `[`): a rename that lands before a watch is
-                // heard is found by this resolution.
-                inst.dirty.extend(again);
-            }
+            // With new watches, sent after them (an index target sorts
+            // before a name step's `[`): a rename that lands before a watch
+            // is heard is found by this resolution.
+            let mut again = Some(again);
             for index in have..wanted {
+                if let Some(keys) = again.take()
+                    && let Some(inst) = self.instances.get_mut(&instance)
+                {
+                    inst.dirty.extend(keys);
+                }
                 let target = format!("{owner} {index}");
                 let path =
                     LomPath::parse(&target).expect("a list guard's target and an index parse");
