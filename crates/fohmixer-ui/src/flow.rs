@@ -76,6 +76,25 @@ pub fn shared_instance(controls: &[Control]) -> Option<String> {
     instances.all(|i| i == first).then(|| first.to_string())
 }
 
+/// A row's name on a phone's screen bar (#63): its groups' titles, a
+/// pager's the sub-page it shows (`sub`, else its first); untitled groups
+/// say nothing.
+pub fn row_titles(row: &Row, sub: Option<usize>) -> Vec<String> {
+    row.sections
+        .iter()
+        .flat_map(|section| match section {
+            Section::Group(group) => group.title.clone().into_iter().collect::<Vec<_>>(),
+            Section::Pager(pager) => pager
+                .pages
+                .get(sub.unwrap_or(0))
+                .map(|page| page.title.clone())
+                .into_iter()
+                .collect(),
+        })
+        .filter(|title| !title.is_empty())
+        .collect()
+}
+
 /// How many strips wide a control is.
 fn units(control: &Control, m: &Metrics) -> f64 {
     match control {
@@ -246,6 +265,42 @@ mod tests {
         };
         s.binding.instance = instance.into();
         Control::Strip(s)
+    }
+
+    fn titled(title: &str, controls: Vec<Control>) -> Group {
+        Group {
+            id: None,
+            title: Some(title.into()),
+            color: None,
+            controls,
+        }
+    }
+
+    #[test]
+    fn a_phone_names_a_row_by_its_titles() {
+        let named = row(vec![
+            Section::Group(titled("Effects", vec![strip(false)])),
+            Section::Group(group(vec![strip(false)])),
+            Section::Group(titled("", vec![strip(false)])),
+            Section::Group(titled("Hands", vec![strip(false)])),
+        ]);
+        assert_eq!(row_titles(&named, None), vec!["Effects", "Hands"]);
+        // A pager says the sub-page it shows, the first before one is chosen.
+        let paged = row(vec![
+            pager(vec![
+                vec![group(vec![strip(false)])],
+                vec![group(vec![strip(false)])],
+            ]),
+            Section::Group(group(vec![strip(true)])),
+        ]);
+        assert_eq!(row_titles(&paged, None), vec!["S0"]);
+        assert_eq!(row_titles(&paged, Some(1)), vec!["S1"]);
+        assert_eq!(
+            row_titles(&paged, Some(5)),
+            Vec::<String>::new(),
+            "no such sub-page"
+        );
+        assert_eq!(row_titles(&row(vec![]), None), Vec::<String>::new());
     }
 
     #[test]

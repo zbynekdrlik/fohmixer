@@ -306,19 +306,94 @@ fn DeckTab() -> impl IntoView {
     }
 }
 
-/// A page: its rail (the global controls at its foot) and its rows.
+/// What a phone shows of a page (#63): its rail or one of its rows. The
+/// stylesheet hides the others only on a phone-sized screen; on the tablet
+/// everything shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Screen {
+    Rail,
+    Row(usize),
+}
+
+/// A page: its rail (the global controls at its foot) and its rows; on a
+/// phone one of them at a time, chosen on the screen bar (#63).
 #[component]
 fn PageView(page: Page, global: Vec<Control>, sub: Memo<Option<usize>>) -> impl IntoView {
     let nav = expect_context::<Nav>();
     let rows_ref = NodeRef::<html::Div>::new();
     let avail = RwSignal::new(0.0_f64);
-    // The rows' room: measured once they are laid out and on every resize.
+    let screen = RwSignal::new(Screen::Row(0));
+    // The rows' room: measured once they are laid out, on every resize and
+    // after a phone's screen changed (in the next frame, once the stylesheet
+    // shows it); hidden behind the rail they measure 0 and keep the last.
     Effect::new(move |_| {
         let _ = nav.viewport.get();
+        let _ = screen.get();
         if let Some(el) = rows_ref.get() {
-            let _ = avail.try_set(f64::from(el.client_width()) - ROWS_PAD);
+            request_animation_frame(move || {
+                let width = f64::from(el.client_width());
+                if width > 0.0 {
+                    let _ = avail.try_set(width - ROWS_PAD);
+                }
+            });
         }
     });
+    // The screen bar: the rail, then each row by its titles.
+    let rail_tab = {
+        let lit = move || screen.get() == Screen::Rail;
+        // A tab owns its touches (#43 PR G); it writes no key.
+        let no_keys: Vec<String> = Vec::new();
+        view! {
+            <button
+                type="button"
+                class="tab"
+                use:owns_touches=no_keys
+                class:selected=lit
+                data-testid="screen"
+                data-screen="rail"
+                data-selected=move || lit().to_string()
+                on:pointerdown=move |_| {
+                    let _ = screen.try_set(Screen::Rail);
+                }
+            >
+                "FUNKCIE"
+            </button>
+        }
+    };
+    let row_tabs = page
+        .rows
+        .clone()
+        .into_iter()
+        .enumerate()
+        .map(|(index, row)| {
+            let lit = move || screen.get() == Screen::Row(index);
+            let title = move || {
+                let titles = crate::flow::row_titles(&row, sub.get());
+                if titles.is_empty() {
+                    (index + 1).to_string()
+                } else {
+                    titles.join(" · ")
+                }
+            };
+            let no_keys: Vec<String> = Vec::new();
+            view! {
+                <button
+                    type="button"
+                    class="tab"
+                    use:owns_touches=no_keys
+                    class:selected=lit
+                    data-testid="screen"
+                    data-screen=index.to_string()
+                    data-selected=move || lit().to_string()
+                    on:pointerdown=move |_| {
+                        let _ = screen.try_set(Screen::Row(index));
+                    }
+                >
+                    {title}
+                </button>
+            }
+        })
+        .collect_view();
     let shapes: Vec<Shape> = page.rows.iter().map(|r| row_shape(r, &METRICS)).collect();
     let width_shapes = shapes.clone();
     let width = Memo::new(move |_| strip_width(&width_shapes, avail.get(), &METRICS));
@@ -335,8 +410,10 @@ fn PageView(page: Page, global: Vec<Control>, sub: Memo<Option<usize>>) -> impl 
         .rows
         .into_iter()
         .zip(shapes)
-        .map(|(row, shape)| {
+        .enumerate()
+        .map(|(index, (row, shape))| {
             let scrolls = move || overflows(shape, width.get(), avail.get());
+            let shown = move || (screen.get() == Screen::Row(index)).to_string();
             let flex = format!("flex:{} 1 0;", row.weight);
             let sections = row
                 .sections
@@ -367,16 +444,25 @@ fn PageView(page: Page, global: Vec<Control>, sub: Memo<Option<usize>>) -> impl 
                 })
                 .collect_view();
             view! {
-                <div class="row" class:scrolls=scrolls data-testid="row" style=flex>
+                <div class="row" class:scrolls=scrolls data-testid="row" data-shown=shown style=flex>
                     {sections}
                 </div>
             }
         })
         .collect_view();
     let strip_width_style = move || format!("--strip-w:{:.1}px;", width.get());
+    let rail_shown = move || (screen.get() == Screen::Rail).to_string();
+    let body_screen = move || match screen.get() {
+        Screen::Rail => "rail",
+        Screen::Row(_) => "row",
+    };
     view! {
-        <div class="body" data-testid="page" data-page=page.id>
-            <nav class="rail" data-testid="rail">
+        <div class="body" data-testid="page" data-page=page.id data-screen=body_screen>
+            <div class="seg screens" data-testid="screens">
+                {rail_tab}
+                {row_tabs}
+            </div>
+            <nav class="rail" data-testid="rail" data-shown=rail_shown>
                 <div class="rail-main">{rail}</div>
                 <div class="rail-foot">{global}</div>
             </nav>
