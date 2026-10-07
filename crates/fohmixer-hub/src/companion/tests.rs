@@ -241,7 +241,7 @@ fn a_bounded_read_is_a_line_too_long_or_the_end() {
     // MAX_LINE bytes and no newline: the connection ended mid-line.
     let cut = vec![b'A'; MAX_LINE];
     assert_eq!(read_outcome(cut.len(), &cut), Read::Closed);
-    assert_eq!(MAX_LINE, 262_144);
+    assert_eq!(MAX_LINE, 2_097_152);
 }
 
 #[test]

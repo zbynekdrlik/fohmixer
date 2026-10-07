@@ -466,7 +466,7 @@ impl Session<'_> {
                                 break end;
                             }
                         }
-                        Some(Read::TooLong) => break state.end(format!("a line over {} KiB", MAX_LINE / 1024)),
+                        Some(Read::TooLong) => break state.end(format!("a line over {} MiB", MAX_LINE / (1024 * 1024))),
                         Some(Read::Failed(error)) => break state.end(format!("reading from Companion failed: {error}")),
                         Some(Read::Closed) | None => break state.end("Companion closed the connection".to_string()),
                     }

@@ -125,7 +125,7 @@ iPad page ──WSS (protocol 2 + deck messages)──▶ hub router ──mpsc�
   4. The link is up only after `ADD-DEVICE OK` arrives within 3 s. `ADD-DEVICE ERROR` or the timeout counts as a failed attempt, logged with Companion's message.
 - **Liveness.**
   - `PING <counter>` every 2 s.
-  - The link is lost after 5 s without any inbound line, on a read or write error, or on a line longer than 256 KiB. A webp key image at 144 px is a few KB; the cap bounds memory.
+  - The link is lost after 5 s without any inbound line, on a read or write error, or on a line longer than 2 MiB (Companion's own `MAX_LINE_LENGTH`). A webp key image at 144 px is a few KB, a lossless 420 px one can be several hundred; the cap bounds memory.
   - Reconnect uses `Backoff` (250 ms doubling to 2 s). The backoff is reset only after a session that reached `ADD-DEVICE OK`.
   - Only the first failure of an outage logs a warning (`first_of_outage`).
 - **Inbound.**
@@ -217,7 +217,7 @@ host = "…"          # required; site data, written by the installer, never in 
 port = 16622        # default
 columns = 8         # 1..=16
 rows = 4            # 1..=8
-bitmap_px = 144     # 32..=288
+bitmap_px = 144     # 32..=512
 title = "Stream Deck"  # 1..=24 characters
 ```
 
