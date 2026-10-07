@@ -519,7 +519,8 @@ fn bindings_are_listed_in_document_order() {
         .map(|b| b.target().unwrap())
         .collect();
     assert_eq!(names[5], "live_set tracks[name=Hand1 #]");
-    assert_eq!(layout.controls().len(), 13);
+    // 11 on the pages, TechAlert on every page (#58: REFRESH ALL is gone).
+    assert_eq!(layout.controls().len(), 12);
 }
 
 #[test]
