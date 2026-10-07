@@ -94,13 +94,24 @@ fn missing(subs: &mut Subs) -> Value {
 fn a_binding_made_while_its_name_is_missing_heals_when_a_track_is_renamed_to_it() {
     let mut subs = online();
     let list = missing(&mut subs);
-    // In error: every item's name is watched, and only that is sent.
+    // In error: every item's name is watched, then the binding and its
+    // guards are resolved again, after the watches.
     let out = subs.drain_outgoing();
     assert_eq!(
         watched(&out),
         vec!["live_set tracks 0", "live_set tracks 1"]
     );
-    assert_eq!(commands(&out).len(), 2, "{:?}", commands(&out));
+    let targets: Vec<String> = commands(&out).into_iter().map(|(t, _, _)| t).collect();
+    assert_eq!(
+        targets,
+        vec![
+            "live_set tracks 0",
+            "live_set tracks 1",
+            VOLUME,
+            "live_set tracks[name=Hand1 #]",
+            "live_set"
+        ]
+    );
     answer(&mut subs, &out, &list, false);
     assert!(subs.drain_outgoing().is_empty(), "watched once");
     assert_eq!(subs.listeners("band"), 3, "the list and its two items");
@@ -109,6 +120,12 @@ fn a_binding_made_while_its_name_is_missing_heals_when_a_track_is_renamed_to_it(
     subs.on_values("band", &[push("live_20.name", json!("Hand1 #"))]);
     assert!(subs.take_deliveries().is_empty(), "guards deliver nothing");
     let out = subs.drain_outgoing();
+    assert_eq!(
+        watched(&out),
+        Vec::<String>::new(),
+        "a rename moves no index: the watches stay as they are"
+    );
+    assert_eq!(commands(&out).len(), 3, "the binding and its two guards");
     let list = json!([track("live_20", "Hand1 #"), track("live_21", "Vox 1")]);
     answer(&mut subs, &out, &list, true);
     assert_eq!(
@@ -240,5 +257,45 @@ fn a_disconnect_drops_the_watches_and_a_connect_brings_them_back() {
     assert_eq!(
         watched(&out),
         vec!["live_set tracks 0", "live_set tracks 1"]
+    );
+}
+
+#[test]
+fn a_rename_before_the_watches_are_heard_is_found_by_the_resolution_after_them() {
+    let mut subs = online();
+    missing(&mut subs);
+    // Track 0 is renamed before the new watches reach the script: their
+    // first answers already carry the new name, so no watch will fire. The
+    // binding and its guards, sent again after them, find the track.
+    let out = subs.drain_outgoing();
+    assert_eq!(
+        watched(&out),
+        vec!["live_set tracks 0", "live_set tracks 1"]
+    );
+    let renamed = json!([track("live_20", "Hand1 #"), track("live_21", "Vox 1")]);
+    answer(&mut subs, &out, &renamed, true);
+    assert_eq!(
+        subs.take_deliveries(),
+        vec![(
+            1,
+            ValueItem::value(VOLUME_KEY, json!(0.85), Some("0.0 dB".into()))
+        )]
+    );
+    let out = subs.drain_outgoing();
+    assert_eq!(
+        removed(&out),
+        vec!["live_21.name"],
+        "healed: the watches go"
+    );
+    // Its name guard holds the track now: a rename away errs again.
+    subs.on_values("band", &[push("live_20.name", json!("Hand9 #"))]);
+    let out = subs.drain_outgoing();
+    answer(&mut subs, &out, &renamed, false);
+    assert_eq!(
+        subs.take_deliveries(),
+        vec![(
+            1,
+            ValueItem::error(VOLUME_KEY, "not found: tracks[name=Hand1 #]")
+        )]
     );
 }
