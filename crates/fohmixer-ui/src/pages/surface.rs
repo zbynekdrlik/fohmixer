@@ -371,10 +371,6 @@ fn PageView(page: Page, global: Vec<Control>, sub: Memo<Option<usize>>) -> impl 
             }
         })
         .collect_view();
-    let conf = page
-        .id
-        .eq_ignore_ascii_case("conf")
-        .then(|| view! { <ConfInfo /> });
     let strip_width_style = move || format!("--strip-w:{:.1}px;", width.get());
     view! {
         <div class="body" data-testid="page" data-page=page.id>
@@ -384,7 +380,6 @@ fn PageView(page: Page, global: Vec<Control>, sub: Memo<Option<usize>>) -> impl 
             </nav>
             <div class="rows" node_ref=rows_ref style=strip_width_style>
                 {rows}
-                {conf}
             </div>
         </div>
     }
@@ -394,8 +389,7 @@ fn PageView(page: Page, global: Vec<Control>, sub: Memo<Option<usize>>) -> impl 
 /// side (strips) or in a grid (buttons).
 #[component]
 fn GroupView(group: Group) -> impl IntoView {
-    // Strips side by side; buttons in a grid; texts (the Conf page) one per
-    // line.
+    // Strips side by side; buttons in a grid; texts one per line.
     let columns = group.controls.iter().any(crate::flow::is_column);
     let texts = !columns
         && group
@@ -555,16 +549,6 @@ fn StatusCluster() -> impl IntoView {
             <span class="hub-dot" class:online=move || store.connected.get()></span>
             {badges}
             <span class="version" data-testid="version">{version_text()}</span>
-        </div>
-    }
-}
-
-/// The build on the Conf page (S4 design note §6).
-#[component]
-fn ConfInfo() -> impl IntoView {
-    view! {
-        <div class="conf-info" data-testid="conf-version">
-            {format!("fohmixer {}", fohmixer_proto::full_version())}
         </div>
     }
 }

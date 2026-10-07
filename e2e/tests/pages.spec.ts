@@ -37,7 +37,8 @@ test.describe("Pages and tabs", () => {
   test("the tabs follow the layout and FOH is shown first", async ({ page }) => {
     await openSurface(page);
     const root = page.locator('[data-testid="tabbar"][data-level="0"] [data-testid="tab"]');
-    await expect(root).toHaveText(["Cue", "FOH", "Conf"]);
+    // No Conf tab (#58): TouchOSC's settings text is read, not shown.
+    await expect(root).toHaveText(["Cue", "FOH"]);
     await expect(root.nth(1)).toHaveAttribute("data-selected", "true");
     await expect(root.nth(0)).toHaveAttribute("data-selected", "false");
     const pager = page.locator('[data-testid="tabbar"][data-level="1"] [data-testid="tab"]');
@@ -82,7 +83,7 @@ test.describe("Pages and tabs", () => {
 
   test("the global controls are on every page, at the foot of the rail", async ({ page }) => {
     await openSurface(page);
-    for (const id of ["cue", "conf", "foh"]) {
+    for (const id of ["cue", "foh"]) {
       await selectPage(page, id);
       const rail = page.getByTestId("rail");
       await expect(rail.getByTestId("alert-toggle")).toBeVisible();
@@ -91,12 +92,6 @@ test.describe("Pages and tabs", () => {
     }
     await selectPage(page, "cue");
     await expect(page.locator('[data-testid="param-toggle"][data-label="Vox 1 TU"]')).toBeVisible();
-    await selectPage(page, "conf");
-    // The Conf text, one line per control, in the layout's order.
-    const conf = layout().pages.find((p: any) => p.id === "conf");
-    const lines = conf.rows[0].sections[0].controls.map((c: any) => c.text);
-    await expect(page.getByTestId("label")).toHaveText(lines);
-    expect(lines).toContain("unfold_band: 'Vocals Repro grp#'");
     await selectPage(page, "foh");
   });
 });
@@ -246,16 +241,6 @@ test.describe("Nothing moves under a finger", () => {
     } finally {
       await harness("/hub/layout/reset");
     }
-  });
-
-  test("the Conf lines stack, one under the other", async ({ page }) => {
-    await openSurface(page);
-    await selectPage(page, "conf");
-    await expect(page.locator('[data-testid="group"].texts')).toHaveCount(1);
-    const boxes = await page.getByTestId("label").evaluateAll((els) => els.map((e) => e.getBoundingClientRect()).map((r) => ({ top: r.top, bottom: r.bottom })));
-    expect(boxes.length).toBeGreaterThan(2);
-    for (let i = 1; i < boxes.length; i++) expect(boxes[i].top).toBeGreaterThanOrEqual(boxes[i - 1].bottom - 0.5);
-    await selectPage(page, "foh");
   });
 });
 

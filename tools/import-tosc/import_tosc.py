@@ -500,8 +500,6 @@ def wide_flags(widths):
 def display(control):
     """A control's name in the report (schema 2 form)."""
     kind = control["kind"]
-    if kind == "text":
-        return control["text"]
     if control.get("label"):
         return control["label"]
     anchor = control.get("binding", {}).get("anchor", {})
@@ -545,6 +543,11 @@ def _find_config(node):
         if found is not None:
             return found
     return None
+
+
+def _contains(node, target):
+    """Whether ``target`` is ``node`` or one of its descendants."""
+    return node is target or any(_contains(c, target) for c in node.children)
 
 
 def _is_strip(node):
@@ -804,15 +807,31 @@ class Importer:
         self.resolve_alerts(overlay)
         self.check_config()
         self.check_bindings()
+        default_id = pages[default]["id"]
+        pages = self.with_content(pages)
+        if default_id not in [p["id"] for p in pages]:
+            default_id = pages[0]["id"]
         out_pages = [self.emit_page(page) for page in pages]
         return {
             "schema": SCHEMA,
-            "default_page": pages[default]["id"],
+            "default_page": default_id,
             "pages": out_pages,
             "global": self.emit_global(overlay),
             "config": {},
             "report": self.report,
         }
+
+    def with_content(self, pages):
+        """The pages without the Conf page: the page holding the Conf text
+        is dropped and reported when that text was all it had (#58: read,
+        not shown). Any other page stays, empty or not."""
+        kept = [p for p in pages if not p["conf"] or p["items"] or "pager" in p]
+        for page in pages:
+            if page not in kept:
+                self.drop(f"page {page['title']}", "only the Conf text, read, not shown (#58)")
+        if not kept:
+            raise ImportError_("no page has anything to show")
+        return kept
 
     def pager(self, node, ox, oy, shown, where, nested):
         """A pager's pages and its default page's index; ``shown`` is its
@@ -840,7 +859,12 @@ class Importer:
         shown = _intersect((ax, ay, w, h), clip)
         title = node.prop("tabLabel", "") or node.name
         base = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-") or "page"
-        page = {"id": self.unique(base), "title": title, "items": []}
+        page = {
+            "id": self.unique(base),
+            "title": title,
+            "items": [],
+            "conf": _contains(node, self.config_node),
+        }
         path = f"{where}/{node.name}"
         for child, labels in _with_labels(node.children):
             if child.type == "PAGER":
@@ -929,9 +953,12 @@ class Importer:
             # when it has none.
             text = _words(node.text)
             out.append(self.area("title" if text else "box", shown, path, self.fill(node), text))
+        elif node is self.config_node:
+            # Read for its settings (_config), never shown: fohmixer has no
+            # Conf page (#58).
+            self.drop(path, "the Conf text: TouchOSC's settings, read, not shown (#58)")
         elif node.type in ("LABEL", "TEXT"):
-            config = node is self.config_node
-            out.append(self.item("label", shown, path, text=node.text, config=config))
+            out.append(self.item("label", shown, path, text=node.text))
         elif node.type == "BUTTON" and node.prop("background", False):
             # A button with no function here (a backdrop carrying the inert
             # mute script): never a section's box.
@@ -1170,8 +1197,6 @@ class Importer:
                 out["color"] = item["color"]
         elif kind == "param_fader":
             out |= {"label": item["label"], "targets": item["targets"]}
-        elif kind == "text":
-            out["text"] = item["text"]
         else:
             raise ValueError(f"no schema 2 control for {kind}")
         return out
@@ -1184,7 +1209,7 @@ class Importer:
         strips = [i for i in items if _full_strip(i)]
         for strip, wide in zip(strips, wide_flags([s["width"] for s in strips]), strict=True):
             strip["wide"] = wide
-        controls, areas, texts = [], [], []
+        controls, areas = [], []
         for item in items:
             kind = item["kind"]
             if kind == "strip" and not item["fader"]:
@@ -1193,8 +1218,6 @@ class Importer:
                 rail.append(item)
             elif kind == "area":
                 areas.append(item)
-            elif kind == "label" and item["config"]:
-                texts.append(item)
             elif kind == "label":
                 self.drop(item["path"], "a free label (schema 2 keeps no free text)")
             else:
@@ -1241,18 +1264,6 @@ class Importer:
             frame = _union([c["frame"] for c in run])
             out.append(
                 {"frame": frame, "title": None, "color": None, "controls": run, "guessed": True}
-            )
-        for text in texts:
-            lines = [line.rstrip() for line in text["text"].splitlines() if line.strip()]
-            controls = [{"kind": "text", "text": line, "frame": text["frame"]} for line in lines]
-            out.append(
-                {
-                    "frame": text["frame"],
-                    "title": None,
-                    "color": None,
-                    "controls": controls,
-                    "guessed": False,
-                }
             )
         return out
 

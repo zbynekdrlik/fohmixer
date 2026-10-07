@@ -589,10 +589,3 @@ body {
     white-space: pre-wrap;
 }
 
-.conf-info {
-    position: absolute;
-    right: 16px;
-    bottom: 12px;
-    color: var(--faint);
-    font: 500 12px/1.2 var(--mono);
-}

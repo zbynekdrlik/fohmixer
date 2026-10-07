@@ -1,6 +1,6 @@
 //! The Stream Deck tab (#52, spec §2, §6): Companion's keys as one grid of
 //! square keys as large as the area allows, the layout's global controls on
-//! the rail (as on the Conf page). A key is down at the touch and up at the
+//! the rail (as on every page). A key is down at the touch and up at the
 //! release (`behave::deck::Presses` decides; this file carries it out): a
 //! down that cannot go now flashes red and is never sent later; a finger on
 //! a key shows a local outline at once (Companion's pressed look needs a
