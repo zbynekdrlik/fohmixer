@@ -2,16 +2,6 @@ use super::*;
 use fohmixer_proto::layout::{Anchor, StripKind};
 use serde_json::json;
 
-/// The layout the import tool makes from its synthetic fixture (the E2E
-/// suite serves the same file).
-fn imported() -> Layout {
-    let text = include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../tools/import-tosc/fixtures/expected-layout.json"
-    ));
-    serde_json::from_str(text).expect("the imported layout parses")
-}
-
 fn track(name: &str, path: Option<&str>) -> Binding {
     Binding {
         instance: "band".into(),
