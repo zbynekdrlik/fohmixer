@@ -156,7 +156,9 @@
     grid-template-rows: minmax(0, 1fr);
     gap: 3px;
     min-height: 0;
-    padding: 8px 0 4px;
+    /* At the foot of the strip (#63), the cap's lower half at −∞ (11 px)
+       stays inside it: this padding, the strip's and its border. */
+    padding: 8px 0 7px;
 }
 
 .strip-fz .scale {
@@ -409,11 +411,12 @@
     top: 3px;
     left: 3px;
     z-index: 1;
-    padding: 1px 2px;
+    padding: 0 2px;
     border-radius: 3px;
     background: rgba(7, 7, 12, 0.6);
     color: var(--muted);
-    font: 800 7.5px/1 var(--ui);
+    /* A line as tall as the face's glyphs (the text never passes its box). */
+    font: 800 7.5px/1.4 var(--ui);
     letter-spacing: 0.6px;
     pointer-events: none;
 }
