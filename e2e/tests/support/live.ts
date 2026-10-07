@@ -97,6 +97,20 @@ export async function openDeck(page: Page, keys = 32) {
   await expect(tab).toHaveAttribute("data-offline", "false");
 }
 
+/**
+ * Waits until the hub knows the clock of a page opened since `since` (#52):
+ * a `ping` record of it with an `offset_ms`. Until then the hub's late gate
+ * counts every down on time, so a test of a late press waits for it
+ * (`openSurface` no longer waits a second for a refresh, #58).
+ */
+export async function clockKnown(since: number) {
+  await until(
+    async () => (await hubEvents()).some((r: any) => r.ev === "ping" && r.ts >= since && typeof r.offset_ms === "number"),
+    (known) => known,
+    "the hub's clock offset of the page",
+  );
+}
+
 /** Every record of the hub's event log (#43), oldest first. */
 export async function hubEvents(): Promise<any[]> {
   const response = await fetch(`${HARNESS}/hub/events`);

@@ -2,6 +2,7 @@ import type { Locator, Page } from "@playwright/test";
 import { expect, test } from "./support/fixtures";
 import {
   centre,
+  clockKnown,
   companion,
   deckKey,
   dispatchPointer,
@@ -345,8 +346,11 @@ test.describe("The Stream Deck tab", () => {
   });
 
   test("a down that would reach Companion late is refused: it flashes red and is never sent", async ({ page }) => {
+    const opened = Date.now();
     await openSurface(page);
     await openDeck(page);
+    // The late gate needs the page's clock at the hub (two pings).
+    await clockKnown(opened);
     await watchFlashes(page);
     const since = Date.now();
     // The page's link held 2 s (under the page's 3 s of silence that closes
