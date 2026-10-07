@@ -7,6 +7,7 @@ import {
   doubleTap,
   harness,
   hostLine,
+  hubStatus,
   hubSubscriptions,
   openSurface,
   ready,
@@ -17,7 +18,8 @@ import {
 } from "./support/live";
 
 // Solo, the stage mics with STAGE AUT, TechAlert, bindings that stay current
-// with no REFRESH ALL and the page's unfold (spec F3, F7, F14–F16, I5; #58).
+// with no REFRESH ALL and the hub's unfold of the strips' groups (spec F3, F7,
+// F14–F16, I5; #58).
 
 let live: LiveClient;
 test.beforeEach(async () => {
@@ -292,18 +294,17 @@ test.describe("Bindings stay current with no REFRESH ALL (#58)", () => {
     await expect(page.getByTestId("refresh")).toHaveCount(0);
   });
 
-  test("the page unfolds the configured group tracks once loaded, and again when Live is back", async ({ page }) => {
-    // Live sends no meter of a track inside a folded group (#58).
+  test("the hub keeps a strip track's group unfolded, also after Live comes back", async () => {
+    // Live sends no meter of a track inside a folded group (#58): the hub
+    // holds the groups the strips' tracks sit in open, with no page.
     const group = track("Vocals Repro grp#");
+    await until(hubStatus, (s) => s.instances[0].unfolded.includes("Vocals Repro grp#"), "the hub holds the strip's group");
     await live.set("band", group, "fold_state", true);
-    expect(await live.get("band", group, "fold_state")).toBe(1);
-    await openSurface(page);
-    await until(() => live.get("band", group, "fold_state"), (v) => v === 0, "unfolded by the page's load");
-    const surface = page.getByTestId("surface");
-    await expect(surface).toHaveAttribute("data-unfolds", "1");
-    // A Live restart (a set load alike) unfolds the band's groups again.
+    await until(() => live.get("band", group, "fold_state"), (v) => v === 0, "unfolded by the hub");
+    // After a Live restart (a set load alike) it still unfolds it.
     await harness("/host/band/restart");
-    await expect(surface).toHaveAttribute("data-unfolds", "2", { timeout: 10_000 });
+    await until(hubStatus, (s) => s.instances[0].online, "Live back", 10_000);
+    await live.set("band", group, "fold_state", true);
     await until(() => live.get("band", group, "fold_state"), (v) => v === 0, "unfolded once Live is back");
   });
 });

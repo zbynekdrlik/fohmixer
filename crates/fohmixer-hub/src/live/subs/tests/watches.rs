@@ -299,3 +299,21 @@ fn a_rename_before_the_watches_are_heard_is_found_by_the_resolution_after_them()
         )]
     );
 }
+
+#[test]
+fn the_subscriptions_besides_one_client_leave_its_own_out() {
+    let mut subs = online();
+    subs.subscribe(1, "band", "live_set", "is_playing", false)
+        .unwrap();
+    subs.subscribe(9, "band", "live_set", "tempo", false)
+        .unwrap();
+    subs.subscribe(9, "band", "live_set", "is_playing", false)
+        .unwrap();
+    subs.subscribe(9, "master", "live_set", "tempo", false)
+        .unwrap();
+    assert_eq!(subs.subscriptions("band"), 2);
+    // Client 9's tempo is its own; is_playing has client 1 too.
+    assert_eq!(subs.subscriptions_besides("band", 9), 1);
+    assert_eq!(subs.subscriptions_besides("band", 1), 2);
+    assert_eq!(subs.subscriptions_besides("master", 9), 0);
+}

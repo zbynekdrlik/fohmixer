@@ -21,9 +21,9 @@ use wasm_bindgen::closure::Closure;
 use super::conn::{self, Conn, Tick};
 use super::deck::{DeckInfo, DeckWaiting};
 use super::intent::Intents;
-use super::{InstanceView, ResultFn, Slot, TOKEN_KEY, next_range, slot_failure};
+use super::{InstanceView, ResultFn, Slot, TOKEN_KEY, next_range};
 use crate::behave::link::{Counter, DropoutWatch};
-use crate::binding::{SubSpec, unfold_targets};
+use crate::binding::SubSpec;
 use crate::diag::{self, trace};
 use crate::dom;
 use crate::net::{self, Decision, LayoutFetch};
@@ -120,8 +120,6 @@ pub struct LiveStore {
     pub connected: RwSignal<bool>,
     /// How many subscriptions the pages on screen hold.
     pub subscribed: RwSignal<usize>,
-    /// How many times the page unfolded the configured groups (spec F7).
-    pub unfolds: RwSignal<u32>,
     /// The dropout counter on the surface (#43, §4.4).
     pub dropouts: RwSignal<Counter>,
     /// The Stream Deck (#52): none from a hub without one (no tab).
@@ -142,7 +140,6 @@ impl LiveStore {
             hub: RwSignal::new(BTreeMap::new()),
             connected: RwSignal::new(false),
             subscribed: RwSignal::new(0),
-            unfolds: RwSignal::new(0),
             dropouts: RwSignal::new(Counter::default()),
             deck: RwSignal::new(None),
             deck_keys: RwSignal::new(BTreeMap::new()),
@@ -253,37 +250,6 @@ impl LiveStore {
         if conn::replaces(current.as_deref(), &layout) {
             let _ = self.layout.try_set(Some(Arc::new(layout)));
         }
-        self.unfold_once();
-    }
-
-    /// Unfolds the `config.unfold` groups (spec F7) at the page's first
-    /// layout on screen while the socket takes messages: Live sends no meter
-    /// of a track inside a folded group (verified on the PC, #58).
-    fn unfold_once(self) {
-        let layout = self.layout.try_get_untracked().flatten();
-        let due = self
-            .inner
-            .try_update_value(|i| i.conn.unfold_due(layout.is_some()))
-            .unwrap_or(false);
-        if due {
-            self.unfold(None);
-        }
-    }
-
-    /// Unfolds the `config.unfold` groups of one instance (or all).
-    fn unfold(self, instance: Option<&str>) {
-        let Some(layout) = self.layout.try_get_untracked().flatten() else {
-            return;
-        };
-        let targets: Vec<(String, String)> = unfold_targets(&layout.config)
-            .into_iter()
-            .filter(|(name, _)| instance.is_none_or(|i| i == name))
-            .collect();
-        dom::log(&format!("unfold: {} groups", targets.len()));
-        for (name, target) in targets {
-            self.set_prop(&name, &target, "fold_state", json!(false), None);
-        }
-        let _ = self.unfolds.try_update(|n| *n += 1);
     }
 
     fn open_socket(self) {
@@ -596,7 +562,6 @@ impl LiveStore {
             self.send_sub(spec);
         }
         self.deck_hello();
-        self.unfold_once();
     }
 
     /// An instance's new state: its slots wait while it is offline; its
@@ -609,7 +574,6 @@ impl LiveStore {
             .flatten();
         let change = conn::instance_change(old.as_ref(), &view);
         let back = conn::back_online(old.as_ref(), &view);
-        let unfold = conn::unfold_again(old.as_ref(), &view);
         if change.pending {
             self.mark_pending(Some(name.as_str()));
         }
@@ -621,9 +585,6 @@ impl LiveStore {
         }
         if back {
             self.resend(&name);
-        }
-        if unfold {
-            self.unfold(Some(name.as_str()));
         }
     }
 
@@ -840,36 +801,6 @@ impl LiveStore {
         if let Some(done) = done {
             done(outcome);
         }
-    }
-
-    /// `set_prop` of one property through a `cmd` (the page's unfold);
-    /// `failed` hears why it failed (spec I6: shown, never retried).
-    fn set_prop(
-        self,
-        instance: &str,
-        target: &str,
-        prop: &str,
-        value: Value,
-        failed: Option<Box<dyn FnOnce(String)>>,
-    ) {
-        let what = format!("{instance} {target} {prop}");
-        let done: ResultFn = Box::new(move |outcome: Result<Vec<Value>, String>| {
-            if let Some(why) = slot_failure(&outcome) {
-                dom::log(&format!("set {what} failed: {why}"));
-                if let Some(failed) = failed {
-                    failed(why);
-                }
-            }
-        });
-        self.cmd(
-            instance,
-            vec![LiveCommand {
-                target: Value::String(target.to_string()),
-                name: "set_prop".to_string(),
-                args: json!({"prop": prop, "value": value}),
-            }],
-            Some(done),
-        );
     }
 
     /// Sets a hub value (STAGE AUT).

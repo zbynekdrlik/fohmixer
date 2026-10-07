@@ -475,18 +475,7 @@
    "label": "TechAlert"
   }
  ],
- "config": {
-  "unfold": [
-   {
-    "instance": "band",
-    "name": "Vocals Repro grp#"
-   },
-   {
-    "instance": "band",
-    "name": "Old grp#"
-   }
-  ]
- },
+ "config": {},
  "report": {
   "source": "test.tosc",
   "instances": [
@@ -529,6 +518,14 @@
    {
     "node": "root/refresh",
     "why": "REFRESH ALL: the hub keeps every binding current (#58)"
+   },
+   {
+    "node": "Conf/unfold_band 'Vocals Repro grp#'",
+    "why": "the hub keeps the strips' groups unfolded (#58)"
+   },
+   {
+    "node": "Conf/unfold_band 'Old grp#'",
+    "why": "the hub keeps the strips' groups unfolded (#58)"
    },
    {
     "node": "root/pager1/WORSHIP/group100/mark",
@@ -621,7 +618,6 @@
    }
   ],
   "stale_config": [
-   "unfold_band 'Old grp#': no such group track in the set",
    "double_click_mute 'band_Nothing': matches no strip"
   ],
   "unresolved": [

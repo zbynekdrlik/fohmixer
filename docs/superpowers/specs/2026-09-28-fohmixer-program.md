@@ -279,8 +279,8 @@ This is a **one-shot tool**, `tools/import-tosc`, outside the hub. It is re-run 
   - strips of kind `standard` or `return`, `wide` for the wider bus strips;
   - solo buttons, the stage-mic group and STAGE AUT;
   - MIDI controls, with type, channel, number, value/velocity scaling, press and release trigger flags, button type, send/receive flags, and fader response mode and grid;
-  - the `Conf` text (`unfold_*`, `double_click_mute`).
-- **It reports and skips** invisible and off-canvas nodes. It also reports stale config: an `unfold` name that no longer exists, a `double_click_mute` entry that matches no strip, and a binding whose track lost its `#`. It never fixes them silently.
+  - the `Conf` text (`double_click_mute`; `unfold_*` is dropped and reported since #58).
+- **It reports and skips** invisible and off-canvas nodes. It also reports stale config: a `double_click_mute` entry that matches no strip, and a binding whose track lost its `#`. It never fixes them silently.
 - **For D10**, it also reads the band set's MIDI mappings (`KeyMidi` with their ranges), writes each MIDI control's target parameters into the layout, and triages each control as clean or dropped (§3.2). Nothing is retyped.
 
 Its tests check the layout document it produces, on a synthetic `.tosc` fixture.
@@ -318,7 +318,7 @@ Proof codes:
 | F4 | Strip label | First word of the name, after dropping a leading `X-` return prefix. The instance label sits under it (PAR-04) | U |
 | F5 | Status pill | Red when unmapped. Yellow when a value arrived in the last 150 ms, fading to green by 500 ms (PAR-05) | E |
 | F6 | Refresh | **Removed (#58, owner decision 2026-10-07).** No REFRESH ALL: the hub keeps every name binding current by itself (renames, track-list changes, a binding made while its name was missing: F3, #58). Was: automatic about 1 s after load, plus REFRESH ALL (0.5 s debounce, 300 ms yellow flash) (PAR-06) | E |
-| F7 | Auto-unfold | `unfold_<instance>` groups get `fold_state = false` once per page, when its first layout is on screen (PAR-07; #58: no refresh any more) | S |
+| F7 | Auto-unfold | **The hub** keeps every group a strip's track sits in (nested too) unfolded: `fold_state = false` when it reads it folded, at Live's connect or set load and whenever someone folds it. Live meters no track inside a folded group (verified on the PC, #58). No `unfold_<instance>` list any more (PAR-07; #58) | S, E |
 | F8 | Fader law | Position *p* ↔ Live volume *v*: *v* = *p*^0.515. Relative touch with no jump on grab (PAR-08) | U, E |
 | F9 | Fader touch shaping | 0.1 dB minimum first step, reaction compensation, gradual 0.9→1.0 scaling, and bypass above 3 % per event (PAR-09). See X3 | U, E |
 | F10 | Fader double-tap | Two taps 50–250 ms apart glide to 0 dB (*v* = 0.85) at about 0.3 position/s, time-based. A touch cancels (PAR-10) | U, E |

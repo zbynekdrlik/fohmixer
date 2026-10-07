@@ -39,9 +39,13 @@ mod writes;
 
 #[path = "router/deck.rs"]
 mod deck;
+mod unfold;
 
 /// The router's own subscriber: the STAGE AUT rule (clients start at 1).
 pub const STAGE_CLIENT: ClientId = 0;
+/// The router's subscriber that keeps the strips' groups unfolded (#58;
+/// client numbers count up from 1 and never reach it).
+pub const UNFOLD_CLIENT: ClientId = ClientId::MAX;
 
 /// A message to the router.
 pub enum RouterMsg {
@@ -93,17 +97,29 @@ pub enum RouterMsg {
         batch: u64,
         outcome: Result<Vec<Value>, String>,
     },
+    /// The answer to a read of the unfold keeper (#58).
+    UnfoldRead {
+        instance: String,
+        seq: u64,
+        outcome: Result<Vec<Value>, String>,
+    },
+    /// A failed read of the unfold keeper is due again (#58).
+    UnfoldRetry {
+        instance: String,
+    },
     /// A client's connection ended.
     Detach {
         client: ClientId,
     },
     /// A new layout is served: its revision, its STAGE AUT binding and its
     /// check targets per instance (for the unresolved-names check: the
-    /// bindings and the groups to unfold, `live::names::layout_targets`).
+    /// bindings, `live::names::layout_targets`) and its strips' tracks.
     Layout {
         rev: u64,
         stage: Option<Binding>,
         targets: BTreeMap<String, Vec<String>>,
+        /// The strips' tracks (`Layout::strip_tracks`, #58).
+        strips: Vec<(String, String)>,
     },
     /// The router's part of `/api/status`.
     Status {
@@ -148,6 +164,8 @@ pub enum RouterMsg {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RouterStatus {
     pub subscriptions: BTreeMap<String, usize>,
+    /// The groups the unfold keeper holds, per instance (#58).
+    pub unfolded: BTreeMap<String, Vec<String>>,
     pub listeners: BTreeMap<String, usize>,
     pub stage_aut: StageAutStatus,
     pub clients: usize,
@@ -196,6 +214,8 @@ pub struct Router {
     started: std::time::Instant,
     /// The Stream Deck (#52); none without `[companion]`.
     deck: Option<deck::DeckIo>,
+    /// Keeps the strips' groups unfolded (#58).
+    unfold: unfold::Keeper,
 }
 
 impl Router {
@@ -227,6 +247,7 @@ impl Router {
             io,
             started: std::time::Instant::now(),
             deck: None,
+            unfold: unfold::Keeper::default(),
         }
     }
 
@@ -316,6 +337,21 @@ impl Router {
                 hub_ms,
                 offset_ms,
             }),
+            RouterMsg::UnfoldRead {
+                instance,
+                seq,
+                outcome,
+            } => {
+                if let Err(error) = &outcome {
+                    tracing::warn!(instance = %instance, error = %error, "the hub could not read the groups of the strips' tracks");
+                }
+                let actions = self.unfold.read_done(&instance, seq, &outcome);
+                self.unfold_apply(actions);
+            }
+            RouterMsg::UnfoldRetry { instance } => {
+                let actions = self.unfold.retry(&instance);
+                self.unfold_apply(actions);
+            }
             RouterMsg::Applied {
                 instance,
                 batch,
@@ -334,12 +370,15 @@ impl Router {
                 rev,
                 stage,
                 targets,
+                strips,
             } => {
                 self.layout_rev = rev;
                 for outbox in self.clients.values() {
                     outbox.layout(rev);
                 }
                 self.set_stage_binding(stage.as_ref());
+                let actions = self.unfold.set_strips(strips);
+                self.unfold_apply(actions);
                 self.names.set_targets(targets);
                 let online: Vec<String> = self
                     .states
@@ -356,8 +395,9 @@ impl Router {
                 let _ = reply.send(RouterStatus {
                     subscriptions: names
                         .clone()
-                        .map(|n| (n.clone(), self.subs.subscriptions(n)))
+                        .map(|n| (n.clone(), self.subs.subscriptions_besides(n, UNFOLD_CLIENT)))
                         .collect(),
+                    unfolded: unfold::by_instance(self.unfold.held()),
                     listeners: names.map(|n| (n.clone(), self.subs.listeners(n))).collect(),
                     stage_aut: StageAutStatus {
                         on: self.stage.is_on(),
@@ -582,9 +622,106 @@ impl Router {
         });
     }
 
-    /// Sends the table's and the name check's requests and hands out the
-    /// table's values.
-    fn flush(&mut self) {
+    /// Carries out the unfold keeper's actions (#58): its subscriptions
+    /// first, then the values they already held. Those ask only for reads
+    /// and writes (`Keeper::value`), so two steps do it, with no loop a
+    /// mutant could make endless.
+    fn unfold_apply(&mut self, actions: Vec<unfold::Action>) {
+        let cached = self.unfold_do(actions);
+        let mut next = Vec::new();
+        for (key, state) in cached {
+            next.extend(self.unfold.value(&key, cached_value(&state)));
+        }
+        self.unfold_do(next);
+    }
+
+    /// Carries out actions; the subscriptions' cached states, by key.
+    fn unfold_do(&mut self, actions: Vec<unfold::Action>) -> Vec<(String, Cached)> {
+        let mut cached: Vec<(String, Cached)> = Vec::new();
+        for action in actions {
+            match action {
+                unfold::Action::Sub(watch) => {
+                    let (instance, target, prop) = watch.target();
+                    let instance = instance.to_string();
+                    match self
+                        .subs
+                        .subscribe(UNFOLD_CLIENT, &instance, &target, prop, false)
+                    {
+                        Ok(reply) => {
+                            self.unfold.subscribed(watch, reply.key.clone());
+                            if let Some(state) = reply.cached {
+                                cached.push((reply.key, state));
+                            }
+                        }
+                        Err((_, error)) => {
+                            tracing::warn!(instance = %instance, target = %target, error = %error, "the hub cannot keep the strips' groups unfolded there");
+                        }
+                    }
+                }
+                unfold::Action::Unsub { key } => {
+                    self.subs.unsubscribe(UNFOLD_CLIENT, &key);
+                }
+                unfold::Action::Read {
+                    instance,
+                    seq,
+                    commands,
+                } => self.unfold_read(instance, seq, commands),
+                unfold::Action::Unfold(track) => self.unfold_group(&track),
+                unfold::Action::Retry { instance } => self.unfold_retry(instance),
+            }
+        }
+        cached
+    }
+
+    /// Reads the groups the strips' tracks sit in; the answer comes back as
+    /// [`RouterMsg::UnfoldRead`].
+    fn unfold_read(&self, instance: String, seq: u64, commands: Vec<Value>) {
+        let Some(live) = self.live.get(&instance) else {
+            return;
+        };
+        let result = live.call(commands);
+        let tx = self.io.tx.clone();
+        tokio::spawn(async move {
+            let outcome = result.await.map_err(|e| e.to_string());
+            let _ = tx.send(RouterMsg::UnfoldRead {
+                instance,
+                seq,
+                outcome,
+            });
+        });
+    }
+
+    /// Asks the keeper to read `instance` again after `RETRY_MS`.
+    fn unfold_retry(&self, instance: String) {
+        let tx = self.io.tx.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(unfold::RETRY_MS)).await;
+            let _ = tx.send(RouterMsg::UnfoldRetry { instance });
+        });
+    }
+
+    /// Unfolds a group of the strips' tracks (logged; a failure is logged,
+    /// and the next fold read tries again).
+    fn unfold_group(&self, track: &unfold::Track) {
+        let Some(live) = self.live.get(&track.0) else {
+            return;
+        };
+        let target = unfold::target(&track.1);
+        tracing::info!(instance = %track.0, group = %track.1, "the hub unfolds a group a strip's track sits in (Live meters no track inside a folded group)");
+        let result = live.call(vec![json!({
+            "target": target,
+            "name": "set_prop",
+            "args": {"prop": unfold::FOLD, "value": false},
+        })]);
+        tokio::spawn(async move {
+            if let Some(problem) = write_failure(&result.await) {
+                tracing::warn!(target = %target, problem = %problem, "the unfold failed");
+            }
+        });
+    }
+
+    /// Sends the table's and the name check's requests.
+    fn send_requests(&mut self) {
         let requests: Vec<Outgoing> = self
             .subs
             .drain_outgoing()
@@ -596,15 +733,37 @@ impl Router {
                 live.send(out.uuid, out.commands);
             }
         }
+    }
+
+    /// Sends the requests and hands out the table's values (the unfold
+    /// keeper's to the keeper: they ask only for reads and writes, which go
+    /// out on their own).
+    fn flush(&mut self) {
+        self.send_requests();
+        let mut unfold = Vec::new();
         for (client, item) in self.subs.take_deliveries() {
             if client == STAGE_CLIENT {
                 if let Some(value) = &item.value {
                     self.stage_value(value);
                 }
+            } else if client == UNFOLD_CLIENT {
+                if let Some(error) = &item.error {
+                    tracing::warn!(key = %item.sub, error = %error, "a watch of the hub's unfold keeper failed (a group renamed, gone or named twice): reading the groups again");
+                }
+                unfold.extend(self.unfold.value(&item.sub, item.value.as_ref()));
             } else if let Some(outbox) = self.clients.get(&client) {
                 outbox.value(item);
             }
         }
+        self.unfold_apply(unfold);
+    }
+}
+
+/// A cached state's value for the unfold keeper (none: an error).
+fn cached_value(state: &Cached) -> Option<&Value> {
+    match state {
+        Cached::Value { value, .. } => Some(value),
+        Cached::Error(_) => None,
     }
 }
 
@@ -956,6 +1115,7 @@ mod tests {
             rev: 1,
             stage: None,
             targets: BTreeMap::new(),
+            strips: Vec::new(),
         });
         assert_eq!(first.take().unwrap(), vec![ServerMsg::Layout { rev: 1 }]);
         let second = attach(&mut router, 2);
@@ -971,6 +1131,87 @@ mod tests {
         router.handle(RouterMsg::Detach { client: 1 });
         assert_eq!(status(&mut router).clients, 1);
         assert!(!router.handle(RouterMsg::Stop));
+    }
+
+    #[tokio::test]
+    async fn the_strips_tracks_are_followed_for_their_groups() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut router, _rx, _records) = offline_router(dir.path());
+        let layout = |rev, strips: Vec<(String, String)>| RouterMsg::Layout {
+            rev,
+            stage: None,
+            targets: BTreeMap::new(),
+            strips,
+        };
+        router.handle(layout(1, vec![("band".into(), "Keys 1".into())]));
+        assert_eq!(
+            router.subs.subscriptions("band"),
+            1,
+            "the keeper's watch of the band's track list (#58)"
+        );
+        let now = status(&mut router);
+        assert_eq!(now.subscriptions["band"], 0, "the hub's own read");
+        assert_eq!(now.unfolded, BTreeMap::new(), "offline: no group known");
+        // A new layout without it lets it go; an instance the hub does not
+        // know is refused (logged) and kept nowhere.
+        router.handle(layout(2, vec![("nowhere".into(), "X".into())]));
+        assert_eq!(router.subs.subscriptions("band"), 0);
+        assert_eq!(
+            cached_value(&Cached::Value {
+                value: json!(1),
+                display: None
+            }),
+            Some(&json!(1))
+        );
+        assert_eq!(cached_value(&Cached::Error("gone".into())), None);
+    }
+
+    #[tokio::test]
+    async fn a_failed_read_of_the_strips_groups_is_tried_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut router, mut rx, _records) = offline_router(dir.path());
+        router.handle(RouterMsg::Layout {
+            rev: 1,
+            stage: None,
+            targets: BTreeMap::new(),
+            strips: vec![("band".into(), "Keys 1".into())],
+        });
+        // The read goes to an offline instance: its failure comes back…
+        let failed = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .expect("the read's answer")
+            .unwrap();
+        let RouterMsg::UnfoldRead {
+            ref instance,
+            ref outcome,
+            ..
+        } = failed
+        else {
+            panic!("the read's answer")
+        };
+        assert_eq!(
+            (instance.as_str(), outcome),
+            ("band", &Err("instance offline".to_string()))
+        );
+        router.handle(failed);
+        // …and the read is due again after RETRY_MS.
+        let started = std::time::Instant::now();
+        let retry = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .expect("a retry")
+            .unwrap();
+        assert!(
+            matches!(retry, RouterMsg::UnfoldRetry { ref instance } if instance == "band"),
+            "a retry of the band"
+        );
+        assert!(started.elapsed() >= std::time::Duration::from_millis(unfold::RETRY_MS - 100));
+        // The retry reads again: its answer comes back too.
+        router.handle(retry);
+        let again = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .expect("the second read's answer")
+            .unwrap();
+        assert!(matches!(again, RouterMsg::UnfoldRead { .. }));
     }
 
     #[test]

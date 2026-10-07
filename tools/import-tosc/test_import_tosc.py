@@ -719,15 +719,14 @@ class ImportTest(unittest.TestCase):
 
     def test_the_config_text_is_read(self):
         self.assertEqual(self.report["instances"], ["band", "master"])
-        self.assertEqual(
-            self.layout["config"],
-            {
-                "unfold": [
-                    {"instance": "band", "name": "Vocals Repro grp#"},
-                    {"instance": "band", "name": "Old grp#"},
-                ]
-            },
+        # The groups to unfold are dropped and reported (#58): the hub keeps
+        # the strips' groups unfolded by itself.
+        self.assertEqual(self.layout["config"], {})
+        why = "the hub keeps the strips' groups unfolded (#58)"
+        self.assertIn(
+            {"node": "Conf/unfold_band 'Vocals Repro grp#'", "why": why}, self.report["dropped"]
         )
+        self.assertIn({"node": "Conf/unfold_band 'Old grp#'", "why": why}, self.report["dropped"])
 
     def test_the_config_text_becomes_text_controls_in_one_group(self):
         conf = self.pages["Conf"]
@@ -740,9 +739,8 @@ class ImportTest(unittest.TestCase):
 
     def test_stale_config_is_reported_never_fixed(self):
         stale = self.report["stale_config"]
-        self.assertIn("unfold_band 'Old grp#': no such group track in the set", stale)
         self.assertIn("double_click_mute 'band_Nothing': matches no strip", stale)
-        self.assertEqual(len(stale), 2, stale)
+        self.assertEqual(len(stale), 1, stale)
 
     def test_unresolved_and_ambiguous_bindings_are_reported(self):
         unresolved = self.report["unresolved"]
@@ -958,7 +956,7 @@ class ImportTest(unittest.TestCase):
         self.assertIn("# TouchOSC import report", text)
         self.assertIn("CC28 ch14", text)
         self.assertIn("no mapping in the set", text)
-        self.assertIn("unfold_band 'Old grp#'", text)
+        self.assertIn("Conf/unfold_band 'Old grp#': the hub keeps", text)
         self.assertIn(
             "- foh rail: STAGE, STAGE AUT, Vocals, Stems, REVERB, VOC MIC, AUTOTUNE, ZVUKAR, "
             "REPRO\n",

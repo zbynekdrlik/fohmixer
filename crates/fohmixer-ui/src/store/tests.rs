@@ -260,29 +260,6 @@ fn badges_are_offline_busy_or_online() {
 }
 
 #[test]
-fn a_failed_set_says_why() {
-    assert_eq!(
-        slot_failure(&Ok(vec![json!({"ok": true, "data": null})])),
-        None
-    );
-    assert_eq!(
-        slot_failure(&Ok(vec![
-            json!({"ok": false, "error": "Invalid value", "errorType": "RuntimeError"})
-        ])),
-        Some("Invalid value".to_string())
-    );
-    assert_eq!(
-        slot_failure(&Ok(vec![json!({"ok": false})])),
-        Some("failed".to_string())
-    );
-    assert_eq!(slot_failure(&Ok(vec![])), Some("no result".to_string()));
-    assert_eq!(
-        slot_failure(&Err("instance offline".into())),
-        Some("instance offline".to_string())
-    );
-}
-
-#[test]
 fn a_parameter_range_needs_two_numbers_in_order() {
     let ok = |v: Value| json!({"ok": true, "data": v});
     assert_eq!(

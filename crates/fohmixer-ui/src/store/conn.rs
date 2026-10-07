@@ -94,8 +94,6 @@ pub struct Conn {
     /// The layout revision on screen.
     rev: u64,
     stopped: bool,
-    /// The configured groups were unfolded (once per page, spec F7).
-    unfolded: bool,
     /// The current socket's number (a new one per socket and per close).
     socket: u64,
     /// When the current socket last heard from the hub (page clock, ms).
@@ -263,16 +261,6 @@ impl Conn {
         self.wanted.contains(key)
     }
 
-    /// Whether the page unfolds the configured groups now (spec F7): once
-    /// per page, the first time a layout is on screen (`layout`) while the
-    /// socket takes messages, after the hello or the first layout, whichever
-    /// comes last.
-    pub fn unfold_due(&mut self, layout: bool) -> bool {
-        let due = layout && self.ready && !self.unfolded;
-        self.unfolded |= due;
-        due
-    }
-
     /// A new command id.
     pub fn next_id(&mut self) -> String {
         self.last_id += 1;
@@ -307,14 +295,6 @@ pub fn instance_change(old: Option<&InstanceView>, new: &InstanceView) -> Instan
         pending: !new.online,
         ranges: new.online && back,
     }
-}
-
-/// Whether the page unfolds `new`'s groups again (spec F7, #58): its
-/// instance is back online or on another set (a Live restart or a set load
-/// folds them as the set was saved). Its first report (`old` none) is the
-/// page's load: the first layout on screen unfolds then (`Conn::unfold_due`).
-pub fn unfold_again(old: Option<&InstanceView>, new: &InstanceView) -> bool {
-    new.online && old.is_some_and(|o| !o.online || o.set_name != new.set_name)
 }
 
 /// Whether `new` brings its instance back online after `old` (none before

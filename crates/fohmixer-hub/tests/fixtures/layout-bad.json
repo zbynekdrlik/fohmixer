@@ -107,14 +107,7 @@
       "label": "TechAlert"
     }
   ],
-  "config": {
-    "unfold": [
-      {
-        "instance": "band",
-        "name": "Stems grp#"
-      }
-    ]
-  },
+  "config": {},
   "report": {
     "dropped": []
   }

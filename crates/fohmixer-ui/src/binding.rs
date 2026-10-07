@@ -9,8 +9,7 @@ use std::collections::BTreeMap;
 
 use fohmixer_proto::client::hub_key;
 use fohmixer_proto::layout::{
-    Anchor, Binding, Control, Group, Layout, LayoutConfig, MeterSource, Page, ParamTarget, Row,
-    Section, Strip,
+    Binding, Control, Group, Layout, MeterSource, Page, ParamTarget, Row, Section, Strip,
 };
 
 /// One subscription: an instance, a LOM target, a property and whether
@@ -256,25 +255,6 @@ pub fn choose(
     if let Some(sub) = holder.pager().and_then(|p| p.pages.get(index)) {
         remembered.insert(holder.id.clone(), sub.id.clone());
     }
-}
-
-/// The group tracks the page unfolds once loaded (spec F7): each
-/// target's instance and LOM target.
-pub fn unfold_targets(config: &LayoutConfig) -> Vec<(String, String)> {
-    config
-        .unfold
-        .iter()
-        .filter_map(|u| {
-            let binding = Binding {
-                instance: u.instance.clone(),
-                anchor: Anchor::Track {
-                    name: u.name.clone(),
-                },
-                path: None,
-            };
-            target_of(&binding, "").map(|t| (u.instance.clone(), t))
-        })
-        .collect()
 }
 
 #[cfg(test)]

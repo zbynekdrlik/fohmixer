@@ -464,6 +464,7 @@ fn api_bodies_round_trip() {
             listeners: 4,
             connect_failures: 0,
             last_error: None,
+            unfolded: vec!["Stems grp#".into()],
         }],
         layout: LayoutStatus {
             rev: 1,

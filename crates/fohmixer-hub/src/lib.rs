@@ -254,6 +254,7 @@ impl HubInner {
                     listeners: router.listeners.get(&cfg.name).copied().unwrap_or(0),
                     connect_failures: snap.connect_failures,
                     last_error: snap.last_error,
+                    unfolded: router.unfolded.get(&cfg.name).cloned().unwrap_or_default(),
                 }
             })
             .collect();
@@ -407,11 +408,16 @@ async fn poll_layout(
                 .as_deref()
                 .map(live::names::layout_targets)
                 .unwrap_or_default();
+            let strips = served
+                .as_deref()
+                .map(fohmixer_proto::layout::Layout::strip_tracks)
+                .unwrap_or_default();
             if router
                 .send(RouterMsg::Layout {
                     rev,
                     stage,
                     targets,
+                    strips,
                 })
                 .is_err()
             {

@@ -49,7 +49,7 @@ fn sample() -> Value {
         "global": [
             {"kind": "alert", "binding": track("TechAlert #"), "period_ms": 300, "label": "TechAlert"}
         ],
-        "config": {"unfold": [{"instance": "band", "name": "Vocals Repro grp#"}], "fader_shaping": true},
+        "config": {"fader_shaping": true},
         "report": {"dropped": []}
     })
 }
@@ -402,13 +402,12 @@ fn bindings_need_an_instance_and_a_name() {
 }
 
 #[test]
-fn colors_alerts_hub_values_and_unfold_targets_are_checked() {
+fn colors_alerts_and_hub_values_are_checked() {
     let mut v = sample();
     foh_row(&mut v, 1)[0]["color"] = json!("grey");
     v["pages"][1]["rail"][3]["color"] = json!("#F3942");
     v["global"][0]["period_ms"] = json!(0);
     v["pages"][1]["rail"][1]["key"] = json!("battery");
-    v["config"]["unfold"] = json!([{"instance": "band", "name": ""}]);
     assert_eq!(
         errors(v),
         vec![
@@ -416,7 +415,6 @@ fn colors_alerts_hub_values_and_unfold_targets_are_checked() {
             r##"pages[1].rail[3].color: "#F3942" is not #RRGGBB or #RRGGBBAA"##.to_string(),
             r#"pages[1].rows[1].sections[0].color: "grey" is not #RRGGBB or #RRGGBBAA"#.to_string(),
             "global[0]: alert period 0 ms".to_string(),
-            "config.unfold[0]: needs an instance and a name".to_string(),
         ]
     );
 }
@@ -561,6 +559,23 @@ fn a_page_lists_its_controls_rail_first() {
         Vec::<&Binding>::new()
     );
     assert_eq!(layout.pages[2].controls().len(), 1);
+}
+
+#[test]
+fn the_strip_tracks_are_each_track_a_strip_shows_once() {
+    let mut v = sample();
+    // The same track twice, on another sub-page too: listed once.
+    foh_row(&mut v, 0)[0]["pages"][1]["sections"] = json!([{"kind": "group", "controls": [
+        {"kind": "strip", "binding": track("Podklady #"), "strip_kind": "standard"}]}]);
+    let layout = parse(v);
+    // The return strip and the other controls' tracks are not strips' tracks.
+    assert_eq!(
+        layout.strip_tracks(),
+        vec![
+            ("band".to_string(), "Klavir #".to_string()),
+            ("band".to_string(), "Podklady #".to_string()),
+        ]
+    );
 }
 
 #[test]

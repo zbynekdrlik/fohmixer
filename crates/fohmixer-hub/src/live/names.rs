@@ -1,9 +1,8 @@
 //! The layout's report of unresolved names (spec §2.5 D4, I5): the hub
-//! resolves every binding of the served layout on its instance, and every
-//! group track its `config.unfold` names (the page unfolds them once
-//! loaded, spec F7), and lists the ones that do not resolve — a missing or
-//! an ambiguous name — in `/api/status`, so an edit that names a track
-//! wrongly shows at once, not only as a red control or a group left folded.
+//! resolves every binding of the served layout on its instance and lists
+//! the ones that do not resolve — a missing or an ambiguous name — in
+//! `/api/status`, so an edit that names a track wrongly shows at once, not
+//! only as a red control.
 //!
 //! A pure state machine like the subscription table: a check of an
 //! instance runs when a layout is accepted (for every connected instance)
@@ -15,30 +14,16 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use fohmixer_proto::client::Unresolved;
-use fohmixer_proto::layout::{Anchor, Binding, Layout};
+use fohmixer_proto::layout::Layout;
 use serde_json::{Value, json};
 
 use super::subs::{BATCH_MAX, Outgoing};
 
 /// The distinct targets of a layout's check, per instance, sorted: every
-/// binding's, and every group to unfold (`config.unfold`) as the target a
-/// track binding of its name has — a renamed group is then unresolved like
-/// a renamed control's track (#9).
+/// binding's.
 pub fn layout_targets(layout: &Layout) -> BTreeMap<String, Vec<String>> {
-    let unfold: Vec<Binding> = layout
-        .config
-        .unfold
-        .iter()
-        .map(|group| Binding {
-            instance: group.instance.clone(),
-            anchor: Anchor::Track {
-                name: group.name.clone(),
-            },
-            path: None,
-        })
-        .collect();
     let mut targets: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    for binding in layout.bindings().into_iter().chain(&unfold) {
+    for binding in layout.bindings() {
         if let Ok(target) = binding.target() {
             targets
                 .entry(binding.instance.clone())
@@ -441,25 +426,22 @@ mod tests {
     }
 
     #[test]
-    fn layout_targets_include_the_groups_to_unfold() {
-        // A renamed group to unfold is checked like a control's track (#9):
-        // its target is the one a track binding of that name has (escaped
-        // alike), shared with a control of the same track, and an instance
-        // with only groups to unfold is checked too.
+    fn layout_targets_are_each_binding_once_per_instance() {
+        // Two controls of one track share its target, escaped as a track
+        // binding writes it; each instance is checked on its own.
         let layout: Layout = serde_json::from_value(json!({
             "schema": 2,
             "default_page": "main",
             "pages": [{"id": "main", "title": "FOH", "rail": [
                 {"kind": "solo",
-                 "binding": {"instance": "band", "anchor": {"kind": "track", "name": "Vox grp#"}}},
+                 "binding": {"instance": "band", "anchor": {"kind": "track", "name": "Keys] grp#"}}},
                 {"kind": "solo",
-                 "binding": {"instance": "band", "anchor": {"kind": "track", "name": "A"}}}
-            ]}],
-            "config": {"unfold": [
-                {"instance": "band", "name": "Vox grp#"},
-                {"instance": "band", "name": "Keys] grp#"},
-                {"instance": "master", "name": "Stems grp#"}
-            ]}
+                 "binding": {"instance": "band", "anchor": {"kind": "track", "name": "A"}}},
+                {"kind": "stage",
+                 "binding": {"instance": "band", "anchor": {"kind": "track", "name": "A"}}},
+                {"kind": "solo",
+                 "binding": {"instance": "master", "anchor": {"kind": "track", "name": "Stems grp#"}}}
+            ]}]
         }))
         .unwrap();
         assert_eq!(
@@ -469,8 +451,7 @@ mod tests {
                     "band".to_string(),
                     vec![
                         "live_set tracks[name=A]".to_string(),
-                        r"live_set tracks[name=Keys\] grp#]".to_string(),
-                        "live_set tracks[name=Vox grp#]".to_string()
+                        r"live_set tracks[name=Keys\] grp#]".to_string()
                     ]
                 ),
                 (

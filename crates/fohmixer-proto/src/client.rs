@@ -378,10 +378,12 @@ pub struct InstanceStatus {
     pub script_version: String,
     /// The last heartbeat's age of Live's main-thread tick.
     pub main_tick_age_ms: Option<f64>,
-    /// Client subscriptions (hub keys) on this instance.
+    /// Client subscriptions (hub keys) on this instance: the pages' and
+    /// STAGE AUT's (the unfold keeper's own subscriptions are not counted).
     pub subscriptions: usize,
-    /// Live listeners the hub holds on this instance (subscriptions and the
-    /// name guards of name bindings, deduplicated).
+    /// Live listeners the hub holds on this instance (subscriptions, the
+    /// unfold keeper's included, and the name guards of name bindings,
+    /// deduplicated).
     pub listeners: usize,
     /// Failed connection attempts since the last connection (0 while
     /// connected).
@@ -389,6 +391,11 @@ pub struct InstanceStatus {
     /// Why the last attempt failed (nothing listens, a timeout, the port
     /// answers as another instance), until a connection succeeds.
     pub last_error: Option<String>,
+    /// The groups the hub keeps unfolded (#58): those a strip's track sits
+    /// in, up the chain, as Live last said; Live meters no track inside a
+    /// folded group.
+    #[serde(default)]
+    pub unfolded: Vec<String>,
 }
 
 /// A layout binding that does not resolve on its instance (spec §2.5 D4,
