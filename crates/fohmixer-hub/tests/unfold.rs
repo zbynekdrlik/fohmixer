@@ -36,8 +36,10 @@ fn moved_site() -> Value {
     let mut site: Value = serde_json::from_slice(&text).unwrap();
     let tracks = site["tracks"].as_array_mut().unwrap();
     let mut drums = None;
+    // `get_mut`, not an index: indexing a missing key inserts a null, which
+    // the site builder reads as a group with no children list.
     for track in tracks.iter_mut() {
-        if let Some(children) = track["children"].as_array_mut()
+        if let Some(children) = track.get_mut("children").and_then(Value::as_array_mut)
             && let Some(i) = children.iter().position(|c| c["name"] == "Drums #")
         {
             drums = Some(children.remove(i));
@@ -46,9 +48,10 @@ fn moved_site() -> Value {
     let drums = drums.expect("the fixture has Drums # in a group");
     for track in tracks.iter_mut() {
         if track["name"] == "Vocals Repro grp#" {
-            track["children"]
-                .as_array_mut()
-                .unwrap()
+            track
+                .get_mut("children")
+                .and_then(Value::as_array_mut)
+                .expect("the group's children")
                 .push(drums.clone());
         }
     }
