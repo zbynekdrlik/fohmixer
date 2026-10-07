@@ -121,6 +121,10 @@ class _StringVector(_Vector):
 
 _export(Base, _Vector, "Vector")
 _export(Base, _StringVector, "StringVector")
+# Live's vector classes report the module "Base", not "Live.Base": repr of
+# song.tracks on the PC is "<Base.Vector object at ...>" (#58).
+_Vector.__module__ = "Base"
+_StringVector.__module__ = "Base"
 
 
 # --- timer -------------------------------------------------------------------------------
