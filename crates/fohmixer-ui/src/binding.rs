@@ -143,7 +143,7 @@ pub fn control_subs(control: &Control, source: MeterSource) -> Vec<SubSpec> {
         Control::ParamFader { targets, .. } => {
             param_subs(targets, true).into_iter().flatten().collect()
         }
-        Control::HubToggle { .. } | Control::Refresh { .. } | Control::Text { .. } => Vec::new(),
+        Control::HubToggle { .. } | Control::Text { .. } => Vec::new(),
     }
 }
 
@@ -258,8 +258,8 @@ pub fn choose(
     }
 }
 
-/// The group tracks REFRESH ALL unfolds (spec F7): each target's instance
-/// and LOM target.
+/// The group tracks the page unfolds once loaded (spec F7): each
+/// target's instance and LOM target.
 pub fn unfold_targets(config: &LayoutConfig) -> Vec<(String, String)> {
     config
         .unfold

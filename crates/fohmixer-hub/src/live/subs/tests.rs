@@ -1,6 +1,7 @@
 use super::*;
 
 mod live_value;
+mod watches;
 
 const VOLUME: &str = "live_set tracks[name=Hand1 #] mixer_device volume";
 const VOLUME_KEY: &str = "band|live_set tracks[name=Hand1 #] mixer_device volume|value|true";
@@ -171,8 +172,8 @@ fn a_second_subscriber_shares_the_listener_and_gets_the_cached_value() {
             display: Some("0.0 dB".into())
         })
     );
-    // A name binding is resolved again for its new subscriber (a UI refresh
-    // finds a renamed or ambiguous name this way): the same key comes back,
+    // A name binding is resolved again for its new subscriber (a page switch
+    // or a reconnect finds a renamed or ambiguous name this way): the same key comes back,
     // no second listener, and an unchanged value is no news.
     let again = subs.drain_outgoing();
     assert_eq!(

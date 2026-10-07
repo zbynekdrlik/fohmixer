@@ -2,7 +2,7 @@
    #43; linked after it). */
 
 /* --- rail buttons (stage, STAGE AUT, solos, the former MIDI toggles,
-   TechAlert, REFRESH ALL) --- */
+   TechAlert) --- */
 
 .btn {
     --c: var(--accent);
@@ -76,22 +76,6 @@
     outline: 2px solid var(--solo);
     outline-offset: 1px;
     animation: arm 0.5s ease-out infinite;
-}
-
-.refresh {
-    padding-left: 8px;
-    border-color: var(--accent-dim);
-    color: var(--accent);
-    text-align: center;
-}
-
-.refresh::before {
-    display: none;
-}
-
-.refresh.flash {
-    background: var(--m-yellow);
-    color: #10101a;
 }
 
 /* TechAlert: the red wash over the whole surface, blinking while unmuted. */

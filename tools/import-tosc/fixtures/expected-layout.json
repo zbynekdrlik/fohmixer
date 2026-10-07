@@ -473,10 +473,6 @@
    },
    "period_ms": 300,
    "label": "TechAlert"
-  },
-  {
-   "kind": "refresh",
-   "label": "REFRESH ALL"
   }
  ],
  "config": {
@@ -529,6 +525,10 @@
    {
     "node": "root/battery",
     "why": "the battery gauge (X5)"
+   },
+   {
+    "node": "root/refresh",
+    "why": "REFRESH ALL: the hub keeps every binding current (#58)"
    },
    {
     "node": "root/pager1/WORSHIP/group100/mark",

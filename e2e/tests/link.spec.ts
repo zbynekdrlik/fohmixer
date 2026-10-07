@@ -1,6 +1,6 @@
 import type { Page, WebSocketRoute } from "@playwright/test";
 import { test, expect } from "./support/fixtures";
-import { HUB_SOCKET, LiveClient, centre, hubEvents, openSurface, ready, shown, strip, track, until, volume } from "./support/live";
+import { HUB_SOCKET, LiveClient, centre, clockKnown, hubEvents, openSurface, ready, shown, strip, track, until, volume } from "./support/live";
 
 // The control link of protocol 2 (#43, PR A): a control's write is a `set`
 // acked by the hub, every hop of a move lands in the hub's event log
@@ -68,7 +68,10 @@ test.describe("The control link", () => {
   test("a fader drag reaches Live as acked sets, and every hop is in the hub's event log", async ({ page }) => {
     await live.set("band", volume(HAND2), "value", 0.5);
     const link = await recordLink(page);
+    const opened = Date.now();
     await openSurface(page);
+    // The sets' one-way delay below needs the page's clock at the hub.
+    await clockKnown(opened);
     const fader = strip(page, "Hand2 #").getByTestId("fader");
     await ready(fader);
     await until(() => shown(fader), (v) => Math.abs(v - 0.5) < 0.001, "the fader at 0.5");

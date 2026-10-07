@@ -29,7 +29,7 @@ use crate::store::intent::{State, most_urgent};
 use crate::store::{LiveStore, Readiness, Slot};
 
 use buttons::{HubToggleView, SoloView, StageMicsView};
-use overlay::{AlertView, RefreshView};
+use overlay::AlertView;
 use params::{ParamFaderView, ParamToggleView};
 use strip::StripView;
 
@@ -226,7 +226,6 @@ pub fn ControlView(control: Control) -> impl IntoView {
             <AlertView binding=binding period_ms=period_ms label=label guarded=mute_guard />
         }
         .into_any(),
-        Control::Refresh { label } => view! { <RefreshView label=label /> }.into_any(),
         Control::Text { text } => {
             view! { <div class="text" data-testid="label">{text}</div> }.into_any()
         }

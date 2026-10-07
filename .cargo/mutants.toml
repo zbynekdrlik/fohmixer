@@ -82,7 +82,7 @@ exclude_re = [
   # PR C moved tick_link to store/live/link.rs (below), replaced
   # send_reports with the flight recorder's upload there, and split send's
   # socket write into send_text (also the recorder's batches).
-  "fohmixer-ui/src/store/live\\.rs.*(replace|in) LiveStore::(new|start|stop|stopped|token|logout|connect|retry|show_layout|open_socket|watch|drop_socket|on_close|on_text|on_hello|on_instance|on_layout|apply|mark_pending|mark_stale|forget_unwanted|send|send_text|send_sub|slot|slot_signal|set_wanted|refresh|cmd|finish|set_prop|set_hub|range|fetch_ranges|fetch_range)( |$)",
+  "fohmixer-ui/src/store/live\\.rs.*(replace|in) LiveStore::(new|start|stop|stopped|token|logout|connect|retry|show_layout|open_socket|watch|drop_socket|on_close|on_text|on_hello|on_instance|on_layout|apply|mark_pending|mark_stale|forget_unwanted|send|send_text|send_sub|slot|slot_signal|set_wanted|unfold_once|unfold|cmd|finish|set_prop|set_hub|range|fetch_ranges|fetch_range)( |$)",
   # store/live/link.rs (#43 PR C): the link's glue, one function at a time:
   # tick_link (the dropout watch's 100 ms timer), collect_dropouts (the
   # watch's finished reports into the flight recorder), upload (the

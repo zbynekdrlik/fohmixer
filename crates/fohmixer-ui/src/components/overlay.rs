@@ -1,6 +1,6 @@
-//! The global controls (spec F6, F16; the rail's footer on every page,
-//! #21): TechAlert, the mute of its track with the full-screen blink while
-//! it is unmuted, and REFRESH ALL.
+//! The global control (spec F16; the rail's footer on every page, #21):
+//! TechAlert, the mute of its track with the full-screen blink while it is
+//! unmuted.
 
 use fohmixer_proto::layout::Binding;
 use leptos::html;
@@ -9,7 +9,7 @@ use leptos::prelude::*;
 use super::buttons::toggle_flag;
 use super::{BtnText, key_of, owns_touches, readiness, slot_of};
 use crate::behave::mute::{GUARD_MS, GuardAction, MuteGuard};
-use crate::behave::timing::{Debounce, REFRESH_FLASH_MS, blink_on};
+use crate::behave::timing::blink_on;
 use crate::binding::mute_sub;
 use crate::dom;
 use crate::raf;
@@ -118,47 +118,5 @@ pub fn AlertView(
             style="visibility:hidden;"
             node_ref=root
         ></div>
-    }
-}
-
-/// REFRESH ALL (spec F6): at most every 0.5 s, a 300 ms yellow flash;
-/// unsubscribes everything, unfolds the configured groups and subscribes
-/// again.
-#[component]
-pub fn RefreshView(label: Option<String>) -> impl IntoView {
-    let store = expect_context::<LiveStore>();
-    let debounce = StoredValue::new(Debounce::default());
-    let flash = RwSignal::new(false);
-    let on_down = move |ev: web_sys::PointerEvent| {
-        ev.prevent_default();
-        let fired = debounce
-            .try_update_value(|d| d.fire(dom::now()))
-            .unwrap_or(false);
-        if !fired {
-            return;
-        }
-        let _ = flash.try_set(true);
-        set_timeout(
-            move || {
-                let _ = flash.try_set(false);
-            },
-            std::time::Duration::from_millis(REFRESH_FLASH_MS as u64),
-        );
-        store.refresh();
-    };
-    let text = label.unwrap_or_else(|| "REFRESH ALL".to_string());
-    // It owns its touches (#43 PR G); it writes no key.
-    let no_keys: Vec<String> = Vec::new();
-    view! {
-        <div
-            class="btn refresh"
-            use:owns_touches=no_keys
-            class:flash=move || flash.get()
-            data-testid="refresh"
-            data-flash=move || flash.get().to_string()
-            on:pointerdown=on_down
-        >
-            <BtnText text=text />
-        </div>
     }
 }

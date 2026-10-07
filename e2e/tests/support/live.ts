@@ -97,6 +97,20 @@ export async function openDeck(page: Page, keys = 32) {
   await expect(tab).toHaveAttribute("data-offline", "false");
 }
 
+/**
+ * Waits until the hub knows the clock of a page opened since `since` (#52):
+ * a `ping` record of it with an `offset_ms`. Until then the hub's late gate
+ * counts every down on time, so a test of a late press waits for it
+ * (`openSurface` no longer waits a second for a refresh, #58).
+ */
+export async function clockKnown(since: number) {
+  await until(
+    async () => (await hubEvents()).some((r: any) => r.ev === "ping" && r.ts >= since && typeof r.offset_ms === "number"),
+    (known) => known,
+    "the hub's clock offset of the page",
+  );
+}
+
 /** Every record of the hub's event log (#43), oldest first. */
 export async function hubEvents(): Promise<any[]> {
   const response = await fetch(`${HARNESS}/hub/events`);
@@ -256,7 +270,7 @@ export async function until<T>(read: () => Promise<T>, ok: (v: T) => boolean, wh
   return last;
 }
 
-/** Opens the surface logged in (the token seeded once per tab), after the automatic refresh. */
+/** Opens the surface logged in (the token seeded once per tab), after the page's unfold. */
 export async function openSurface(page: Page) {
   const seeded = await token();
   await page.addInitScript((t) => {
@@ -272,9 +286,9 @@ export async function openSurface(page: Page) {
   await page.goto("/");
   await expect(page.getByTestId("stage")).toBeVisible();
   await expect(page.getByTestId("surface")).toHaveAttribute("data-connected", "true");
-  // The automatic refresh (spec F6) resubscribes everything a second after
-  // load; tests act after it.
-  await expect(page.getByTestId("surface")).not.toHaveAttribute("data-refreshes", "0", { timeout: 5000 });
+  // The page unfolds the configured groups once its layout is on screen
+  // (spec F7); tests act after it.
+  await expect(page.getByTestId("surface")).not.toHaveAttribute("data-unfolds", "0", { timeout: 5000 });
 }
 
 /**

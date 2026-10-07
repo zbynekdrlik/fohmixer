@@ -213,6 +213,26 @@ class CodecTest(unittest.TestCase):
         self.assertEqual(out[3]["name"], "Hand4 #")
         self.assertEqual({o["class"] for o in out}, {"Track"})
 
+    def test_live_vectors_report_the_module_base_as_live_does(self):
+        # Live answers repr(song.tracks) "<Base.Vector object at ...>" (read on
+        # the PC, #58): its vector classes report the module "Base", and
+        # SimLive's must too, or a codec that misses them passes every test.
+        self.assertEqual(type(self.song.tracks).__module__, "Base")
+        param = self.song.tracks[0].mixer_device.track_activator
+        self.assertEqual(type(param.value_items).__module__, "Base")
+
+    def test_a_vector_of_module_base_becomes_a_list(self):
+        # Live's own vector class, as the PC showed it (#58): not "Live.*".
+        Vector = type("Vector", (), {"__iter__": lambda self: iter((1, "a"))})
+        Vector.__module__ = "Base"
+        self.assertEqual(self.encode(Vector()), [1, "a"])
+        # Another class named like a vector is no vector.
+        Other = type(
+            "Vector", (), {"__iter__": lambda self: iter(()), "__str__": lambda self: "other"}
+        )
+        Other.__module__ = "thing"
+        self.assertEqual(self.encode(Other()), "other")
+
     def test_object_without_name_has_no_name_key(self):
         out = self.encode(self.song.tracks[0].mixer_device, "live_set tracks 0 mixer_device")
         self.assertEqual(out["class"], "MixerDevice")

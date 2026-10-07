@@ -45,10 +45,13 @@ def _is_live_type(cls):
 
 
 def is_vector(value):
+    """A tuple, a list or a Live vector. Live's vector classes report the
+    module ``Base`` (``<Base.Vector object at ...>``, read on the PC, #58), and
+    SimLive's do too."""
     if isinstance(value, (list, tuple)):
         return True
     cls = type(value)
-    return cls.__name__.endswith("Vector") and _is_live_type(cls)
+    return cls.__name__.endswith("Vector") and getattr(cls, "__module__", None) == "Base"
 
 
 def is_live_object(value):

@@ -5,9 +5,8 @@
 //! instances' states and the hub values.
 //!
 //! I8: every subscription starts `Pending` and goes back to `Pending` when
-//! its instance goes offline, REFRESH ALL resubscribes, a page switch
-//! subscribes or unsubscribes it while the hub is connected, or a hello
-//! finds no page wanting it; a value for a key no page wants is dropped
+//! its instance goes offline, a page switch subscribes or unsubscribes it
+//! while the hub is connected, or a hello finds no page wanting it; a value for a key no page wants is dropped
 //! (one the hub sent before it read the unsub); a control accepts input
 //! only while its slots hold Live's values. A lost hub connection keeps
 //! each wanted slot's value, marked `Stale` (#43, L2): the control still

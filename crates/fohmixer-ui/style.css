@@ -446,8 +446,8 @@ body {
     border-right: 1px solid var(--line-soft);
 }
 
-/* The page's controls scroll if they must; TechAlert and REFRESH ALL, at
-   its foot, never leave the screen. */
+/* The page's controls scroll if they must; TechAlert, at its foot, never
+   leaves the screen. */
 .rail-main {
     display: flex;
     flex: 1;

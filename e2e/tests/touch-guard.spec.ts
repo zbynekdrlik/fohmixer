@@ -72,7 +72,6 @@ function controls(page: Page): [string, Locator][] {
     ["param toggle", page.getByTestId("param-toggle").first()],
     ["param fader", page.getByTestId("param-fader").first().getByTestId("fader")],
     ["TechAlert", page.getByTestId("alert-toggle")],
-    ["REFRESH ALL", page.getByTestId("refresh")],
     ["tab", page.getByTestId("tab").first()],
     ["SOLO clear", page.getByTestId("solo-clear")],
     ["dropout counter", page.getByTestId("dropouts")],

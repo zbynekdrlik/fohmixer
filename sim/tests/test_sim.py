@@ -81,7 +81,11 @@ class SiteTest(unittest.TestCase):
         self.assertEqual(type(track).__name__, "Track")
         self.assertEqual(type(track).__module__, "Live.Track")
         self.assertIs(Live.Track.Track, type(track))
-        self.assertEqual(type(self.song.tracks).__module__, "Live.Base")
+        # Live.Base.Vector is reached through Live.Base, but its class reports
+        # the module "Base" as Live's does ("<Base.Vector object at ...>" on
+        # the PC, #58).
+        self.assertIs(Live.Base.Vector, type(self.song.tracks))
+        self.assertEqual(type(self.song.tracks).__module__, "Base")
         self.assertIs(Live.Application.get_application().get_document(), self.song)
 
 

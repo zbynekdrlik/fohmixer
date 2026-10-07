@@ -239,7 +239,7 @@ Apart from that rule, the hub has no mixer model and does no dB maths.
 
 **Rendering.** One `requestAnimationFrame` loop draws faders and meters. Animations are time-based, so 60 Hz and 120 Hz behave the same.
 
-**Components** are generic: `Strip`, `Fader`, `Pan`, `Mute`, `Meter`, `DbLabel`, `SoloButton`, `ParamToggle`, `ParamFader`, `AlertOverlay`, `RefreshButton`. §3.1 gives their v1 behaviour. **The look is our own (D13, #21):** `docs/superpowers/specs/2026-09-28-ui-redesign-design.md` §4 (the top bar, the rail, rows of sections, the strip with its dB scale and meter, the name button in the track's Live colour).
+**Components** are generic: `Strip`, `Fader`, `Pan`, `Mute`, `Meter`, `DbLabel`, `SoloButton`, `ParamToggle`, `ParamFader`, `AlertOverlay` (`RefreshButton` removed, #58). §3.1 gives their v1 behaviour. **The look is our own (D13, #21):** `docs/superpowers/specs/2026-09-28-ui-redesign-design.md` §4 (the top bar, the rail, rows of sections, the strip with its dB scale and meter, the name button in the track's Live colour).
 
 **General binding form**, for every component: `instance` + `anchor` + `path`.
 - **anchor**: a track or return by exact name, `master`, or `song`.
@@ -255,7 +255,7 @@ How it resolves:
 - A strip is just this form with an empty path, so the same code serves v1 and every later control.
 
 **Layout document** (schema 2 since #21; the redesign note §2)
-- It describes pages, each with a rail of function controls and rows of sections; a section is a group of controls or the page's one nested pager, whose sub-pages hold groups; global controls (TechAlert, REFRESH ALL) show on every page.
+- It describes pages, each with a rail of function controls and rows of sections; a section is a group of controls or the page's one nested pager, whose sub-pages hold groups; global controls (TechAlert; REFRESH ALL until #58) show on every page.
 - Nothing is placed: no canvas, frames or z. The UI computes the placement (one strip width shared by all rows).
 - It lives on the Ableton PC in the hub's data folder (§5.2).
 - **Editing it later** (D4): Claude edits the file on the PC through the MCP tools. The hub validates it on reload: schema, known components, and a report of unresolved names. A failed validation keeps the last good layout live, so a bad edit never blanks the surface. Every accepted change is kept as a dated backup.
@@ -275,7 +275,7 @@ This is a **one-shot tool**, `tools/import-tosc`, outside the hub. It is re-run 
   - The script hash table is built from the scripts inside the `.tosc` itself, with trailing newlines normalised.
 - **It emits** (layout schema 2 since #21; it groups what it used to place, the redesign note §3):
   - pages, the rail of each page with strips, rows of groups (containment by an area's frame, the title beside or above it, the area's fill as the group colour) and the nested pager as a section;
-  - the global controls (the TechAlert strip and alert box as one `alert`, REFRESH ALL);
+  - the global controls (the TechAlert strip and alert box as one `alert`; REFRESH ALL is dropped and reported, #58);
   - strips of kind `standard` or `return`, `wide` for the wider bus strips;
   - solo buttons, the stage-mic group and STAGE AUT;
   - MIDI controls, with type, channel, number, value/velocity scaling, press and release trigger flags, button type, send/receive flags, and fader response mode and grid;
@@ -312,13 +312,13 @@ Proof codes:
 
 | # | Feature | Parity detail (TouchOSC behaviour) | Proof |
 |---|---|---|---|
-| F1 | Pages and areas | Tabs: musician cue page, **FOH/WORSHIP** (default), **Conf**. FOH/WORSHIP has a nested pager STAGE / BAND B / OTHERS, a left sidebar (stage mics, STAGE AUT, three solos, MIDI toggles), the EFFECTS, MASTER A and HANDS areas, and the two top-right strips. TechAlert and REFRESH ALL are on every page (PAR-01). The same pages, sections and order; the placement is computed (D13, #21) | E |
+| F1 | Pages and areas | Tabs: musician cue page, **FOH/WORSHIP** (default), **Conf**. FOH/WORSHIP has a nested pager STAGE / BAND B / OTHERS, a left sidebar (stage mics, STAGE AUT, three solos, MIDI toggles), the EFFECTS, MASTER A and HANDS areas, and the two top-right strips. TechAlert is on every page (PAR-01; REFRESH ALL removed, #58). The same pages, sections and order; the placement is computed (D13, #21) | E |
 | F2 | Two instances | Strips route to band or master; a missing prefix means band (PAR-02, PAR-03) | S, E |
-| F3 | Strip binding | Exact name match on tracks, then return tracks. Red status and disabled controls when missing. Re-resolved on refresh and on every track-list or name change (PAR-03) | S, E |
+| F3 | Strip binding | Exact name match on tracks, then return tracks. Red status and disabled controls when missing. Re-resolved by the hub on every track-list or name change, also for a binding made while its name was missing (PAR-03; #58) | S, E |
 | F4 | Strip label | First word of the name, after dropping a leading `X-` return prefix. The instance label sits under it (PAR-04) | U |
 | F5 | Status pill | Red when unmapped. Yellow when a value arrived in the last 150 ms, fading to green by 500 ms (PAR-05) | E |
-| F6 | Refresh | Automatic about 1 s after load, plus REFRESH ALL (0.5 s debounce, 300 ms yellow flash). Unbinds everything, then rebinds from fresh track lists (PAR-06) | E, L |
-| F7 | Auto-unfold | `unfold_<instance>` groups get `fold_state = false` on every refresh (PAR-07) | S |
+| F6 | Refresh | **Removed (#58, owner decision 2026-10-07).** No REFRESH ALL: the hub keeps every name binding current by itself (renames, track-list changes, a binding made while its name was missing: F3, #58). Was: automatic about 1 s after load, plus REFRESH ALL (0.5 s debounce, 300 ms yellow flash) (PAR-06) | E |
+| F7 | Auto-unfold | `unfold_<instance>` groups get `fold_state = false` once per page, when its first layout is on screen (PAR-07; #58: no refresh any more) | S |
 | F8 | Fader law | Position *p* ↔ Live volume *v*: *v* = *p*^0.515. Relative touch with no jump on grab (PAR-08) | U, E |
 | F9 | Fader touch shaping | 0.1 dB minimum first step, reaction compensation, gradual 0.9→1.0 scaling, and bypass above 3 % per event (PAR-09). See X3 | U, E |
 | F10 | Fader double-tap | Two taps 50–250 ms apart glide to 0 dB (*v* = 0.85) at about 0.3 position/s, time-based. A touch cancels (PAR-10) | U, E |
@@ -487,7 +487,7 @@ Each one gets a short design note and a plan before code, as in iemmixer.
   - HTTPS with a real certificate is added if needed.
 - **R6** A Live update changes undocumented details. Pin the Live version per release; the script reports `live_version` on connect.
 - **R7** The shared Python interpreter with AbleSet and the AbletonOSC copies. Mitigations: own folder name, relative imports, own port, own logger name, `SO_EXCLUSIVEADDRUSE`.
-- **R8** Track or device renames break bindings. They show red and never mis-bind (I5); refresh and the import report list unresolved names.
+- **R8** Track or device renames break bindings. They show red and never mis-bind (I5); the hub heals them when the name is back (#58), and `/api/status` and the import report list unresolved names.
 
 ---
 

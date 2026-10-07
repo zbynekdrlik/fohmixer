@@ -120,8 +120,8 @@ pub struct LiveStore {
     pub connected: RwSignal<bool>,
     /// How many subscriptions the pages on screen hold.
     pub subscribed: RwSignal<usize>,
-    /// How many times REFRESH ALL (or the automatic refresh) ran.
-    pub refreshes: RwSignal<u32>,
+    /// How many times the page unfolded the configured groups (spec F7).
+    pub unfolds: RwSignal<u32>,
     /// The dropout counter on the surface (#43, §4.4).
     pub dropouts: RwSignal<Counter>,
     /// The Stream Deck (#52): none from a hub without one (no tab).
@@ -142,7 +142,7 @@ impl LiveStore {
             hub: RwSignal::new(BTreeMap::new()),
             connected: RwSignal::new(false),
             subscribed: RwSignal::new(0),
-            refreshes: RwSignal::new(0),
+            unfolds: RwSignal::new(0),
             dropouts: RwSignal::new(Counter::default()),
             deck: RwSignal::new(None),
             deck_keys: RwSignal::new(BTreeMap::new()),
@@ -253,6 +253,37 @@ impl LiveStore {
         if conn::replaces(current.as_deref(), &layout) {
             let _ = self.layout.try_set(Some(Arc::new(layout)));
         }
+        self.unfold_once();
+    }
+
+    /// Unfolds the `config.unfold` groups (spec F7) at the page's first
+    /// layout on screen while the socket takes messages: Live sends no meter
+    /// of a track inside a folded group (verified on the PC, #58).
+    fn unfold_once(self) {
+        let layout = self.layout.try_get_untracked().flatten();
+        let due = self
+            .inner
+            .try_update_value(|i| i.conn.unfold_due(layout.is_some()))
+            .unwrap_or(false);
+        if due {
+            self.unfold(None);
+        }
+    }
+
+    /// Unfolds the `config.unfold` groups of one instance (or all).
+    fn unfold(self, instance: Option<&str>) {
+        let Some(layout) = self.layout.try_get_untracked().flatten() else {
+            return;
+        };
+        let targets: Vec<(String, String)> = unfold_targets(&layout.config)
+            .into_iter()
+            .filter(|(name, _)| instance.is_none_or(|i| i == name))
+            .collect();
+        dom::log(&format!("unfold: {} groups", targets.len()));
+        for (name, target) in targets {
+            self.set_prop(&name, &target, "fold_state", json!(false), None);
+        }
+        let _ = self.unfolds.try_update(|n| *n += 1);
     }
 
     fn open_socket(self) {
@@ -565,13 +596,7 @@ impl LiveStore {
             self.send_sub(spec);
         }
         self.deck_hello();
-        if hello.auto_refresh {
-            // Spec F6: the automatic refresh a second after the load.
-            set_timeout(
-                move || self.refresh(),
-                Duration::from_millis(crate::behave::timing::AUTO_REFRESH_MS as u64),
-            );
-        }
+        self.unfold_once();
     }
 
     /// An instance's new state: its slots wait while it is offline; its
@@ -584,6 +609,7 @@ impl LiveStore {
             .flatten();
         let change = conn::instance_change(old.as_ref(), &view);
         let back = conn::back_online(old.as_ref(), &view);
+        let unfold = conn::unfold_again(old.as_ref(), &view);
         if change.pending {
             self.mark_pending(Some(name.as_str()));
         }
@@ -595,6 +621,9 @@ impl LiveStore {
         }
         if back {
             self.resend(&name);
+        }
+        if unfold {
+            self.unfold(Some(name.as_str()));
         }
     }
 
@@ -784,30 +813,6 @@ impl LiveStore {
         }
     }
 
-    /// REFRESH ALL (spec F6, F7): unsubscribe everything, unfold the
-    /// configured groups, subscribe everything again (the hub resolves
-    /// every name afresh). Every control waits for its new value (I8).
-    pub fn refresh(self) {
-        let Some(Some(specs)) = self.inner.try_with_value(|i| i.conn.refresh()) else {
-            return;
-        };
-        dom::log(&format!("refresh: {} subscriptions", specs.len()));
-        for spec in &specs {
-            self.send(&ClientMsg::Unsub { sub: spec.key() });
-        }
-        self.mark_pending(None);
-        if let Some(layout) = self.layout.try_get_untracked().flatten() {
-            for (instance, target) in unfold_targets(&layout.config) {
-                self.set_prop(&instance, &target, "fold_state", json!(false), None);
-            }
-        }
-        for spec in &specs {
-            self.send_sub(spec);
-        }
-        self.fetch_ranges(None);
-        let _ = self.refreshes.try_update(|n| *n += 1);
-    }
-
     /// Sends a command batch; `done` gets the result slots (or why none).
     pub fn cmd(self, instance: &str, commands: Vec<LiveCommand>, done: Option<ResultFn>) {
         let Some(id) = self.inner.try_update_value(|i| i.conn.next_id()) else {
@@ -837,7 +842,7 @@ impl LiveStore {
         }
     }
 
-    /// `set_prop` of one property through a `cmd` (REFRESH ALL's unfold);
+    /// `set_prop` of one property through a `cmd` (the page's unfold);
     /// `failed` hears why it failed (spec I6: shown, never retried).
     fn set_prop(
         self,
@@ -876,8 +881,7 @@ impl LiveStore {
     }
 
     /// A parameter's range (`min`, `max`), read from Live when first asked,
-    /// when its instance comes back or loads another set, and on every
-    /// refresh.
+    /// and when its instance comes back or loads another set.
     pub fn range(self, instance: &str, target: &str) -> RwSignal<Option<(f64, f64)>> {
         let key = (instance.to_string(), target.to_string());
         let Some((signal, fresh)) = self.inner.try_update_value(|i| {
