@@ -171,8 +171,9 @@ class ImportTest(unittest.TestCase):
     def test_pages_the_default_page_and_the_nested_pager(self):
         layout = self.layout
         self.assertEqual(layout["schema"], 2)
-        self.assertEqual([p["title"] for p in layout["pages"]], ["Cue", "FOH", "Conf"])
-        self.assertEqual([p["id"] for p in layout["pages"]], ["cue", "foh", "conf"])
+        # No Conf page (#58): its only text is TouchOSC's settings.
+        self.assertEqual([p["title"] for p in layout["pages"]], ["Cue", "FOH"])
+        self.assertEqual([p["id"] for p in layout["pages"]], ["cue", "foh"])
         self.assertEqual(layout["default_page"], "foh")
         self.assertEqual(self.pager["kind"], "pager")
         self.assertEqual(self.pager["id"], "foh-pager")
@@ -209,8 +210,8 @@ class ImportTest(unittest.TestCase):
             list(self.layout), ["schema", "default_page", "pages", "global", "config", "report"]
         )
         self.assertEqual(list(self.foh), ["id", "title", "rail", "rows"])
-        # A page without a rail (the cue and Conf pages) writes none.
-        self.assertEqual(list(self.pages["Conf"]), ["id", "title", "rows"])
+        # A page without a rail (the cue page) writes none.
+        self.assertEqual(list(self.pages["Cue"]), ["id", "title", "rows"])
 
     # --- the global controls (the root overlay) ---
 
@@ -673,8 +674,6 @@ class ImportTest(unittest.TestCase):
                     "foh-4",
                     "foh-5",
                     "foh-6",
-                    "conf",
-                    "conf-1",
                 ]
             ),
         )
@@ -692,7 +691,6 @@ class ImportTest(unittest.TestCase):
         self.assertEqual(ids, ["foh", "foh-pager-2", "stage", "stage-1-2", "foh-pager", "stage-1"])
 
     def test_the_report_lists_the_groups_row_by_row(self):
-        conf = self.groups["conf-1"]
         self.assertEqual(
             self.report["groups"],
             {
@@ -711,7 +709,6 @@ class ImportTest(unittest.TestCase):
                 ],
                 "stage": [["stage-1 STAGE: Vocal 1 repro#, Keys 1"]],
                 "others": [["others-1: Hand1 #"]],
-                "conf": [["conf-1: " + ", ".join(names(conf))]],
             },
         )
 
@@ -728,13 +725,21 @@ class ImportTest(unittest.TestCase):
         )
         self.assertIn({"node": "Conf/unfold_band 'Old grp#'", "why": why}, self.report["dropped"])
 
-    def test_the_config_text_becomes_text_controls_in_one_group(self):
-        conf = self.pages["Conf"]
-        self.assertEqual(row_ids(conf), [["conf-1"]])
-        texts = self.groups["conf-1"]["controls"]
-        self.assertEqual({c["kind"] for c in texts}, {"text"})
-        self.assertEqual(
-            [c["text"] for c in texts], build_fixtures.CONFIG_TEXT.rstrip("\n").split("\n")
+    def test_the_config_text_is_read_not_shown_and_its_page_dropped(self):
+        # The Conf text sets the instances and the mute guards; fohmixer has
+        # no Conf page (#58).
+        self.assertNotIn("Conf", self.pages)
+        self.assertNotIn("text", [c["kind"] for c in all_controls(self.layout)])
+        self.assertIn(
+            {
+                "node": "root/pager1/Conf/config",
+                "why": "the Conf text: TouchOSC's settings, read, not shown (#58)",
+            },
+            self.report["dropped"],
+        )
+        self.assertIn(
+            {"node": "page Conf", "why": "only the Conf text, read, not shown (#58)"},
+            self.report["dropped"],
         )
 
     def test_stale_config_is_reported_never_fixed(self):

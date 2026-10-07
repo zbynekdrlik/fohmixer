@@ -620,7 +620,7 @@ fn imported_layout_parses_and_validates() {
     let layout: Layout = serde_json::from_str(&text).expect("it parses");
     assert_eq!(layout.validate(), vec![]);
     let titles: Vec<&str> = layout.pages.iter().map(|p| p.title.as_str()).collect();
-    assert_eq!(titles, vec!["Cue", "FOH", "Conf"]);
+    assert_eq!(titles, vec!["Cue", "FOH"], "no Conf page (#58)");
     assert_eq!(layout.default_page, layout.pages[1].id);
     let pager = layout.pages[1].pager().expect("the nested pager");
     let sub: Vec<&str> = pager.pages.iter().map(|p| p.title.as_str()).collect();

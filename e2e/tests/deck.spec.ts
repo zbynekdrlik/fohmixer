@@ -246,7 +246,7 @@ test.describe("The Stream Deck tab", () => {
     // under its own test id.
     const bar = page.locator('[data-testid="tabbar"][data-level="0"]');
     await expect(bar.locator('[data-testid="tab"][data-selected="true"]')).toHaveCount(0);
-    await expect(bar.getByTestId("tab")).toHaveText(["Cue", "FOH", "Conf"]);
+    await expect(bar.getByTestId("tab")).toHaveText(["Cue", "FOH"]);
     await expect(bar.getByTestId("deck-tab")).toHaveCount(1);
   });
 

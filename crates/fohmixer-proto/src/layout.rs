@@ -173,7 +173,7 @@ pub enum Control {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         mute_guard: bool,
     },
-    /// A static text (the Conf page's configuration).
+    /// A static text (one line).
     Text { text: String },
 }
 

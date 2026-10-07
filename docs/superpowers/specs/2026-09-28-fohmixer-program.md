@@ -312,7 +312,7 @@ Proof codes:
 
 | # | Feature | Parity detail (TouchOSC behaviour) | Proof |
 |---|---|---|---|
-| F1 | Pages and areas | Tabs: musician cue page, **FOH/WORSHIP** (default), **Conf**. FOH/WORSHIP has a nested pager STAGE / BAND B / OTHERS, a left sidebar (stage mics, STAGE AUT, three solos, MIDI toggles), the EFFECTS, MASTER A and HANDS areas, and the two top-right strips. TechAlert is on every page (PAR-01; REFRESH ALL removed, #58). The same pages, sections and order; the placement is computed (D13, #21) | E |
+| F1 | Pages and areas | Tabs: musician cue page, **FOH/WORSHIP** (default); no Conf tab (#58: TouchOSC's settings text is read by the import, not shown). FOH/WORSHIP has a nested pager STAGE / BAND B / OTHERS, a left sidebar (stage mics, STAGE AUT, three solos, MIDI toggles), the EFFECTS, MASTER A and HANDS areas, and the two top-right strips. TechAlert is on every page (PAR-01; REFRESH ALL removed, #58). The same pages, sections and order; the placement is computed (D13, #21) | E |
 | F2 | Two instances | Strips route to band or master; a missing prefix means band (PAR-02, PAR-03) | S, E |
 | F3 | Strip binding | Exact name match on tracks, then return tracks. Red status and disabled controls when missing. Re-resolved by the hub on every track-list or name change, also for a binding made while its name was missing (PAR-03; #58) | S, E |
 | F4 | Strip label | First word of the name, after dropping a leading `X-` return prefix. The instance label sits under it (PAR-04) | U |

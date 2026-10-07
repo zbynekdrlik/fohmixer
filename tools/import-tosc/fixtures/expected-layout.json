@@ -415,50 +415,6 @@
      ]
     }
    ]
-  },
-  {
-   "id": "conf",
-   "title": "Conf",
-   "rows": [
-    {
-     "sections": [
-      {
-       "kind": "group",
-       "id": "conf-1",
-       "controls": [
-        {
-         "kind": "text",
-         "text": "connection_band: 2"
-        },
-        {
-         "kind": "text",
-         "text": "connection_master: 3"
-        },
-        {
-         "kind": "text",
-         "text": "unfold_band: 'Vocals Repro grp#'"
-        },
-        {
-         "kind": "text",
-         "text": "unfold_band: 'Old grp#'"
-        },
-        {
-         "kind": "text",
-         "text": "double_click_mute: 'master_Hand1 #'"
-        },
-        {
-         "kind": "text",
-         "text": "double_click_mute: 'master_A-Echo'"
-        },
-        {
-         "kind": "text",
-         "text": "double_click_mute: 'band_Nothing'"
-        }
-       ]
-      }
-     ]
-    }
-   ]
   }
  ],
  "global": [
@@ -512,6 +468,10 @@
     "why": "hidden"
    },
    {
+    "node": "root/pager1/Conf/config",
+    "why": "the Conf text: TouchOSC's settings, read, not shown (#58)"
+   },
+   {
     "node": "root/battery",
     "why": "the battery gauge (X5)"
    },
@@ -526,6 +486,10 @@
    {
     "node": "Conf/unfold_band 'Old grp#'",
     "why": "the hub keeps the strips' groups unfolded (#58)"
+   },
+   {
+    "node": "page Conf",
+    "why": "only the Conf text, read, not shown (#58)"
    },
    {
     "node": "root/pager1/WORSHIP/group100/mark",
@@ -649,11 +613,6 @@
    "others": [
     [
      "others-1: Hand1 #"
-    ]
-   ],
-   "conf": [
-    [
-     "conf-1: connection_band: 2, connection_master: 3, unfold_band: 'Vocals Repro grp#', unfold_band: 'Old grp#', double_click_mute: 'master_Hand1 #', double_click_mute: 'master_A-Echo', double_click_mute: 'band_Nothing'"
     ]
    ]
   },
