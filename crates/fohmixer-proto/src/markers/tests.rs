@@ -276,6 +276,41 @@ fn a_tag_group_the_frame_does_not_show_is_a_view_with_the_pins() {
 }
 
 #[test]
+fn a_view_keeps_the_rail_of_the_frames_default_page() {
+    let rail = |label: &str| json!([{"kind": "hub_toggle", "key": "stage_aut", "label": label}]);
+    let mut frame = serde_json::to_value(frame()).unwrap();
+    frame["pages"][0]["rail"] = rail("FOH RAIL");
+    let mut cue = frame["pages"][0].clone();
+    cue["id"] = json!("cue");
+    cue["rail"] = rail("CUE RAIL");
+    cue["rows"] = json!([]);
+    frame["pages"].as_array_mut().unwrap().insert(0, cue);
+    let mut frame: Layout = serde_json::from_value(frame).unwrap();
+    let rail_of = |layout: &Layout, id: &str| -> Vec<Control> {
+        layout
+            .pages
+            .iter()
+            .find(|p| p.id == id)
+            .unwrap()
+            .rail
+            .clone()
+    };
+    assert_ne!(rail_of(&frame, "foh"), rail_of(&frame, "cue"));
+    let composed = compose(&frame, &sample());
+    assert_eq!(
+        rail_of(&composed.layout, "view-TALKSHOW"),
+        rail_of(&frame, "foh")
+    );
+    // Without a default page: the first page's.
+    frame.default_page = "missing".into();
+    let composed = compose(&frame, &sample());
+    assert_eq!(
+        rail_of(&composed.layout, "view-TALKSHOW"),
+        rail_of(&frame, "cue")
+    );
+}
+
+#[test]
 fn views_come_in_the_order_of_their_first_marker() {
     let found = vec![
         found("band", TrackKind::Track, 0, r#""A" +G:ZED_2"#),

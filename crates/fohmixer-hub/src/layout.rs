@@ -18,7 +18,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use fohmixer_proto::client::MarkersStatus;
 use fohmixer_proto::layout::Layout;
@@ -30,6 +30,10 @@ pub const MAX_BACKUPS: usize = 30;
 pub const BACKUP_DIR: &str = "layout-backups";
 /// The backups' name of a served composition (#68).
 pub const SERVED: &str = "served.json";
+
+/// How many following milliseconds a backup's name may move to when its
+/// own is taken (`LayoutStore::free_backup_name`).
+const FREE_NAME_TRIES: u64 = 1000;
 
 /// What is served and why the file on disk is not (when it is not).
 #[derive(Debug, Default)]
@@ -292,7 +296,7 @@ impl LayoutStore {
         {
             return;
         }
-        let name = backup_name(&file_name, SystemTime::now());
+        let name = self.free_backup_name(&file_name, SystemTime::now());
         if let Err(e) = std::fs::write(self.backups.join(&name), text) {
             tracing::error!(backup = %name, error = %e, "cannot write the layout backup");
             return;
@@ -305,6 +309,18 @@ impl LayoutStore {
                 tracing::warn!(backup = %old, error = %e, "cannot prune a layout backup");
             }
         }
+    }
+
+    /// A backup name of `file_name` no file holds yet: two backups within
+    /// one millisecond (a poll's served composition, then the markers' next)
+    /// take the following milliseconds, so neither overwrites the other and
+    /// the names still sort by time.
+    fn free_backup_name(&self, file_name: &str, now: SystemTime) -> String {
+        let taken = |name: &String| self.backups.join(name).exists();
+        (0..FREE_NAME_TRIES)
+            .map(|ms| backup_name(file_name, now + Duration::from_millis(ms)))
+            .find(|name| !taken(name))
+            .unwrap_or_else(|| backup_name(file_name, now))
     }
 
     /// The backup file names of `file_name`, oldest first.
@@ -353,7 +369,6 @@ pub fn store_in(data_dir: &Path, layout: &Path, instances: Vec<String>) -> Layou
 mod tests {
     use super::*;
     use serde_json::json;
-    use std::time::Duration;
 
     fn layout_json(title: &str, instance: &str) -> Vec<u8> {
         serde_json::to_vec(&json!({
@@ -615,6 +630,19 @@ mod tests {
             backup_name("layout.json", t),
             "layout.json.20250924T094500.123Z"
         );
+    }
+
+    #[test]
+    fn a_backup_name_already_taken_moves_to_the_next_free_millisecond() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(dir.path());
+        std::fs::create_dir_all(&store.backups).unwrap();
+        let t = UNIX_EPOCH + Duration::from_millis(1_758_707_100_123);
+        let free = |store: &LayoutStore| store.free_backup_name("layout.json", t);
+        assert_eq!(free(&store), "layout.json.20250924T094500.123Z");
+        std::fs::write(store.backups.join("layout.json.20250924T094500.123Z"), b"").unwrap();
+        std::fs::write(store.backups.join("layout.json.20250924T094500.124Z"), b"").unwrap();
+        assert_eq!(free(&store), "layout.json.20250924T094500.125Z");
     }
 
     #[test]

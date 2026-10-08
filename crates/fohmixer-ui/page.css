@@ -136,6 +136,8 @@
     background: rgba(11, 11, 18, 0.97);
 }
 
+/* No `.btn`: its look (the dot, the padding) is not a close button's, and
+   buttons.css, linked later, would win over this file. */
 .manual-close {
     position: sticky;
     top: 0;
@@ -143,6 +145,14 @@
     float: right;
     min-height: 36px;
     padding: 0 12px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--panel);
+    color: var(--text);
+    font: 700 11.5px/1.15 var(--ui);
+    letter-spacing: 0.6px;
+    cursor: pointer;
+    touch-action: none;
 }
 
 .manual-note {

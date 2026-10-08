@@ -539,19 +539,27 @@ impl Subs {
 
     /// Live listeners held on `instance` for someone besides the `own`
     /// clients (the router's keepers, #58 and #68): a Live key counts when
-    /// one of its entries has another client, or none (a guard).
+    /// one of its entries serves another client (`serves_besides`).
     pub fn listeners_besides(&self, instance: &str, own: &[ClientId]) -> usize {
         self.by_live
             .iter()
             .filter(|((i, _), _)| i == instance)
-            .filter(|(_, keys)| {
-                keys.iter().any(|key| {
-                    self.entries.get(key).is_none_or(|e| {
-                        e.clients.is_empty() || e.clients.iter().any(|c| !own.contains(c))
-                    })
-                })
-            })
+            .filter(|(_, keys)| keys.iter().any(|key| self.serves_besides(key, own, 2)))
             .count()
+    }
+
+    /// Whether the entry `key` serves a client besides the `own` ones: one
+    /// of its own clients, or one of what it guards, `depth` steps down (an
+    /// item watch guards a list guard, which guards the bindings: 2).
+    fn serves_besides(&self, key: &str, own: &[ClientId], depth: u8) -> bool {
+        self.entries.get(key).is_some_and(|e| {
+            e.clients.iter().any(|c| !own.contains(c))
+                || depth.checked_sub(1).is_some_and(|next| {
+                    e.dependents
+                        .iter()
+                        .any(|d| self.serves_besides(d, own, next))
+                })
+        })
     }
 
     // --- internals ---

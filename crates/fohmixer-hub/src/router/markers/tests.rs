@@ -318,7 +318,7 @@ fn a_tuners_rename_changes_the_markers_without_a_read() {
 }
 
 #[test]
-fn a_second_read_subscribes_the_per_track_watches_afresh() {
+fn a_second_read_keeps_the_devices_watches_and_subscribes_the_names_afresh() {
     let mut k = keeper();
     let first = read_band(&mut k);
     let actions = k.value(&tracks_key("band"), Some(&list(1)));
@@ -332,27 +332,90 @@ fn a_second_read_subscribes_the_per_track_watches_afresh() {
         &Ok(vec![ok(json!([])), ok(json!([]))]),
     );
     let applied = apply(&mut k, actions);
-    // No candidate: no second batch; every old watch let go.
+    // No candidate: no second batch. The devices of the track and the
+    // return still there stay; the second track's and every name go.
     assert_eq!(applied.reads.len(), 0);
-    let old: Vec<String> = first.subs.iter().map(key).collect();
-    assert_eq!(applied.unsubs, old);
+    let kept = [
+        Watch::Devices {
+            instance: "band".into(),
+            kind: TrackKind::Track,
+            index: 0,
+        },
+        Watch::Devices {
+            instance: "band".into(),
+            kind: TrackKind::Return,
+            index: 0,
+        },
+    ];
+    let gone: Vec<String> = first
+        .subs
+        .iter()
+        .filter(|w| !kept.contains(w))
+        .map(key)
+        .collect();
+    assert_eq!(gone.len(), 5, "{gone:?}");
+    assert_eq!(applied.unsubs, gone);
+    assert_eq!(applied.subs, Vec::<Watch>::new());
+    assert_eq!(applied.rest, vec![Action::Found(Vec::new())]);
+    assert_eq!(k.found(), &[] as &[Found]);
+    // A third read with a Tuner: its name is subscribed again each time,
+    // the devices stay.
+    let actions = k.value(&tracks_key("band"), Some(&list(2)));
+    let applied = apply(&mut k, actions);
+    let (_, seq, _, _) = applied.reads[0].clone();
+    let devices = vec![
+        ok(json!([device("Device", r#""Vox 1" +G:A"#)])),
+        ok(json!([])),
+        ok(json!([])),
+    ];
+    let actions = k.read_done("band", seq, Step::Devices, &Ok(devices));
+    let applied = apply(&mut k, actions);
+    let actions = k.read_done("band", seq, Step::Classes, &Ok(vec![ok(json!("Tuner"))]));
+    let applied_classes = apply(&mut k, actions);
+    assert_eq!(applied.subs, Vec::<Watch>::new());
+    let name = Watch::Name {
+        instance: "band".into(),
+        kind: TrackKind::Track,
+        index: 0,
+        device: 0,
+    };
+    assert_eq!(
+        applied_classes.subs,
+        vec![
+            Watch::Devices {
+                instance: "band".into(),
+                kind: TrackKind::Track,
+                index: 1,
+            },
+            name.clone(),
+        ]
+    );
+    assert_eq!(applied_classes.unsubs, Vec::<String>::new());
+    let actions = k.value(&tracks_key("band"), Some(&list(3)));
+    let applied = apply(&mut k, actions);
+    let (_, seq, _, _) = applied.reads[0].clone();
+    let devices = vec![
+        ok(json!([device("Device", r#""Vox 1" +G:A"#)])),
+        ok(json!([])),
+        ok(json!([])),
+        ok(json!([])),
+    ];
+    let actions = k.read_done("band", seq, Step::Devices, &Ok(devices));
+    apply(&mut k, actions);
+    let actions = k.read_done("band", seq, Step::Classes, &Ok(vec![ok(json!("Tuner"))]));
+    let applied = apply(&mut k, actions);
+    assert_eq!(applied.unsubs, vec![key(&name)]);
     assert_eq!(
         applied.subs,
         vec![
             Watch::Devices {
                 instance: "band".into(),
                 kind: TrackKind::Track,
-                index: 0
+                index: 2,
             },
-            Watch::Devices {
-                instance: "band".into(),
-                kind: TrackKind::Return,
-                index: 0
-            },
+            name,
         ]
     );
-    assert_eq!(applied.rest, vec![Action::Found(Vec::new())]);
-    assert_eq!(k.found(), &[] as &[Found]);
 }
 
 #[test]
@@ -472,4 +535,57 @@ fn a_second_batch_that_keeps_failing_is_tried_again_three_times_in_a_row() {
     }
     k.read_done("band", seq, Step::Devices, &devices);
     assert_eq!(k.read_done("band", seq, Step::Classes, &failed), vec![]);
+}
+
+#[test]
+fn only_the_last_read_of_each_instance_is_sent() {
+    let read = |instance: &str, seq: u64| Action::Read {
+        instance: instance.into(),
+        seq,
+        step: Step::Devices,
+        commands: Vec::new(),
+    };
+    let sub = Action::Sub(Watch::Tracks("band".into()));
+    let actions = vec![
+        read("band", 1),
+        sub.clone(),
+        read("master", 2),
+        read("band", 3),
+        Action::Found(Vec::new()),
+    ];
+    assert_eq!(
+        latest_reads(actions),
+        vec![
+            sub,
+            read("master", 2),
+            read("band", 3),
+            Action::Found(Vec::new())
+        ]
+    );
+}
+
+#[test]
+fn a_list_change_that_binds_every_tracks_devices_again_asks_for_one_read() {
+    let mut k = keeper();
+    read_band(&mut k);
+    // A track inserted: the table binds each track's `devices` to the
+    // object now at its index, and every value differs from the read's.
+    let mut actions = Vec::new();
+    for (kind, index) in [(TrackKind::Track, 0), (TrackKind::Track, 1)] {
+        let watch = Watch::Devices {
+            instance: "band".into(),
+            kind,
+            index,
+        };
+        actions.extend(k.value(&key(&watch), Some(&json!([device("Device", "new")]))));
+    }
+    assert_eq!(actions.len(), 2, "each value asks for a read");
+    let reads = latest_reads(actions);
+    assert_eq!(reads.len(), 1);
+    let Action::Read { seq, .. } = &reads[0] else {
+        panic!("a read: {reads:?}");
+    };
+    // The one sent is the newest: its answer counts.
+    let answer = Ok(vec![ok(json!([])), ok(json!([])), ok(json!([]))]);
+    assert_ne!(k.read_done("band", *seq, Step::Devices, &answer), vec![]);
 }

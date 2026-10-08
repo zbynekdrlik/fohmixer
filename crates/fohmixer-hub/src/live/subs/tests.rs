@@ -1108,7 +1108,7 @@ fn bad_requests_are_refused_with_their_key() {
 fn requests_are_split_into_batches() {
     let mut subs = online();
     for i in 0..(BATCH_MAX + 6) {
-        subs.subscribe(1, "band", &format!("live_set tracks {i}"), "mute", false)
+        subs.subscribe(1, "band", &format!("live_set scenes {i}"), "name", false)
             .unwrap();
     }
     let out = subs.drain_outgoing();

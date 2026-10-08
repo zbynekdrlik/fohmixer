@@ -154,6 +154,30 @@ pub enum Action {
     Found(Vec<Found>),
 }
 
+/// The actions with only the last read of each instance. A newer read
+/// voids an older one's answer (`Keeper::read_done`), so sending the older
+/// is waste: a change of the list of tracks binds every track's `devices`
+/// to its new object, and each new value asks for a read in one flush.
+pub fn latest_reads(actions: Vec<Action>) -> Vec<Action> {
+    let last: BTreeMap<String, usize> = actions
+        .iter()
+        .enumerate()
+        .filter_map(|(i, a)| match a {
+            Action::Read { instance, .. } => Some((instance.clone(), i)),
+            _ => None,
+        })
+        .collect();
+    actions
+        .into_iter()
+        .enumerate()
+        .filter(|(i, a)| match a {
+            Action::Read { instance, .. } => last.get(instance) == Some(i),
+            _ => true,
+        })
+        .map(|(_, a)| a)
+        .collect()
+}
+
 /// A device that may be a Tuner: where it is and its name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Candidate {
@@ -465,14 +489,25 @@ impl Keeper {
         }
     }
 
-    /// Lets go of the instance's per-track watches and subscribes them
-    /// afresh: every track's `devices`, every Tuner's `name`.
+    /// The instance's per-track watches after a read: every track's
+    /// `devices` (one already held stays: the subscription table binds it to
+    /// the object at its index again when the list of tracks changes), and
+    /// every Tuner's `name` afresh (a device inserted before a Tuner moves
+    /// it, and only a new subscription names the device there now).
     fn resubscribe(&mut self, instance: &str, counts: (u32, u32)) -> Vec<Action> {
+        let devices: Vec<Watch> = tracks_of(counts)
+            .into_iter()
+            .map(|(kind, index)| Watch::Devices {
+                instance: instance.to_string(),
+                kind,
+                index,
+            })
+            .collect();
         let mut actions = Vec::new();
         let gone: Vec<Watch> = self
             .subs
             .keys()
-            .filter(|w| w.per_track() && w.instance() == instance)
+            .filter(|w| w.per_track() && w.instance() == instance && !devices.contains(w))
             .cloned()
             .collect();
         for watch in gone {
@@ -481,12 +516,10 @@ impl Keeper {
                 actions.push(Action::Unsub { key });
             }
         }
-        for (kind, index) in tracks_of(counts) {
-            actions.push(Action::Sub(Watch::Devices {
-                instance: instance.to_string(),
-                kind,
-                index,
-            }));
+        for watch in devices {
+            if !self.subs.contains_key(&watch) {
+                actions.push(Action::Sub(watch));
+            }
         }
         if let Some(state) = self.instances.get(instance) {
             for &((kind, index), device) in state.tuners.keys() {

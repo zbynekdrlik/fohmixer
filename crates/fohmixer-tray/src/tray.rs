@@ -5,7 +5,9 @@
 //! itself. Nothing here ends a process: Exit and `--exit` end this tray only.
 
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, PoisonError};
 use std::thread;
+use std::time::Instant;
 
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
@@ -185,27 +187,35 @@ fn build_tray(
 
     let links = links.clone();
     let open_url = links.open.clone();
+    // When a left click last opened fohmixer (a double click opens one tab).
+    let opened: Mutex<Option<Instant>> = Mutex::new(None);
     let mut builder = TrayIconBuilder::with_id("main")
         .tooltip(view::tooltip(&HubState::Unknown, TRAY_VERSION))
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_tray_icon_event(move |tray, event| {
-            if let TrayIconEvent::Click {
+            let TrayIconEvent::Click {
                 button,
                 button_state,
                 ..
             } = event
-                && view::click_opens(
-                    matches!(button, MouseButton::Left),
-                    matches!(button_state, MouseButtonState::Up),
-                )
-            {
-                open(tray.app_handle(), &open_url);
+            else {
+                return;
+            };
+            let mut last = opened.lock().unwrap_or_else(PoisonError::into_inner);
+            let since = (*last).map(|t| u64::try_from(t.elapsed().as_millis()).unwrap_or(u64::MAX));
+            if view::click_opens(
+                matches!(button, MouseButton::Left),
+                matches!(button_state, MouseButtonState::Up),
+                since,
+            ) {
+                *last = Some(Instant::now());
+                open(tray.app_handle(), &open_url, "Open fohmixer");
             }
         })
         .on_menu_event(move |app, event| match view::action(event.id.as_ref()) {
-            Some(MenuAction::Open) => open(app, &links.open),
-            Some(MenuAction::Manual) => open(app, &links.manual),
+            Some(MenuAction::Open) => open(app, &links.open, "Open fohmixer"),
+            Some(MenuAction::Manual) => open(app, &links.manual, "The tag manual"),
             Some(MenuAction::Copy) => match &links.public {
                 Some(url) => copy(app, url),
                 None => {
@@ -229,11 +239,12 @@ fn build_tray(
     Ok((tray, version_item))
 }
 
-/// Open fohmixer: the hub's local URL in the default browser.
-fn open(app: &AppHandle, url: &str) {
+/// Opens one of the hub's local pages in the default browser (`what` names
+/// the menu item in the log: Open fohmixer, the tag manual).
+fn open(app: &AppHandle, url: &str, what: &str) {
     match app.opener().open_url(url, None::<&str>) {
-        Ok(()) => tracing::info!(url, "Open fohmixer: opened in the default browser"),
-        Err(e) => tracing::error!(url, error = %e, "Open fohmixer: the browser did not open"),
+        Ok(()) => tracing::info!(url, "{what}: opened in the default browser"),
+        Err(e) => tracing::error!(url, error = %e, "{what}: the browser did not open"),
     }
 }
 

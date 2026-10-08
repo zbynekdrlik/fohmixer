@@ -113,7 +113,6 @@ mod tests {
             Links::defaults(),
             Links {
                 open: "http://localhost:8480/".to_string(),
-
                 manual: "http://localhost:8480/znacky.html".to_string(),
                 version: "http://127.0.0.1:8480/api/version".to_string(),
                 public: None,

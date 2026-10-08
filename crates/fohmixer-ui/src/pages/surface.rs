@@ -24,7 +24,7 @@ use crate::app::version_text;
 use crate::arrange::{Arrangement, Cell, Item, LineKey, METRICS, PageModel, Side, arrange, items};
 use crate::behave::solo::soloed;
 use crate::binding::{
-    SubSpec, choose, page_solos, selected_path, solo_sub, view_tap, visible_subs,
+    SubSpec, choose, page_solos, selected_path, solo_sub, stored_pages, view_tap, visible_subs,
 };
 use crate::components::{ControlView, Settings, fail_flash, key_of, owns_surface, owns_touches};
 use crate::dom;
@@ -60,6 +60,10 @@ struct Nav {
     /// The page shown before a view (#68): a second tap on the view's
     /// button goes back to it.
     before_view: RwSignal<Option<String>>,
+    /// The tag manual's overlay is open (#68: the column's ZNAČKY chip
+    /// opens it). Here, not in a layout's shell: a Tuner edit in Live is a
+    /// new layout, and it must not close the manual explaining it.
+    manual: RwSignal<bool>,
 }
 
 impl Nav {
@@ -81,7 +85,11 @@ impl Nav {
         }) else {
             return;
         };
-        if let Ok(text) = serde_json::to_string(&remembered) {
+        // A view shown is never stored (#68): a reload opens the page
+        // before it, with its tabs.
+        let before = self.before_view.try_get_untracked().flatten();
+        let stored = stored_pages(&layout, &remembered, before.as_deref());
+        if let Ok(text) = serde_json::to_string(&stored) {
             dom::storage_set(PAGES_KEY, &text);
         }
         let _ = self.path.try_set(selected_path(&layout, &remembered));
@@ -98,7 +106,8 @@ impl Nav {
             .try_with_untracked(|p| p.first().copied())
             .flatten();
         let before = self.before_view.try_get_untracked().flatten();
-        let (target, remember) = view_tap(&layout, shown, view, before.as_deref());
+        let deck = self.deck.try_get_untracked().unwrap_or(false);
+        let (target, remember) = view_tap(&layout, shown, deck, view, before.as_deref());
         let _ = self.before_view.try_set(remember);
         self.select(0, target);
     }
@@ -133,6 +142,7 @@ pub fn Surface(token: String, session: RwSignal<Option<String>>) -> impl IntoVie
         deck,
         deck_shown: Memo::new(move |_| deck.get()),
         before_view: RwSignal::new(None),
+        manual: RwSignal::new(false),
     };
     provide_context(nav);
     on_cleanup(move || store.stop());
@@ -177,6 +187,8 @@ pub fn Surface(token: String, session: RwSignal<Option<String>>) -> impl IntoVie
             .into_any()
         }
     };
+    // The tag manual (#68) stays open through a new layout.
+    let manual_view = move || nav.manual.get().then(|| view! { <ManualView /> });
     // No context menu, selection or drag starts on the surface (#43 PR G).
     view! {
         <div
@@ -187,14 +199,10 @@ pub fn Surface(token: String, session: RwSignal<Option<String>>) -> impl IntoVie
             data-connected=move || store.connected.get().to_string()
         >
             {content}
+            {manual_view}
         </div>
     }
 }
-
-/// The tag manual's overlay is open (#68; a context of the layout's shell:
-/// the column's ZNAČKY chip opens it).
-#[derive(Clone, Copy)]
-struct ManualOpen(RwSignal<bool>);
 
 /// What the column's head shows (a context of the layout's shell, read by
 /// every page's column).
@@ -221,9 +229,6 @@ fn Shell(layout: Arc<Layout>) -> impl IntoView {
         page,
         sub,
     });
-    let manual = RwSignal::new(false);
-    provide_context(ManualOpen(manual));
-    let manual_view = move || manual.get().then(|| view! { <ManualView /> });
     let viewport = nav.viewport;
     let body = move || {
         if nav.deck_shown.get() {
@@ -238,7 +243,6 @@ fn Shell(layout: Arc<Layout>) -> impl IntoView {
     view! {
         <div class="mixer" data-testid="stage">
             {body}
-            {manual_view}
         </div>
     }
 }
@@ -403,7 +407,7 @@ fn TabBar(
 /// manual's overlay.
 #[component]
 fn ManualChip() -> impl IntoView {
-    let ManualOpen(open) = expect_context::<ManualOpen>();
+    let open = expect_context::<Nav>().manual;
     // The chip owns its touches (#43 PR G); it writes no key.
     let no_keys: Vec<String> = Vec::new();
     view! {
@@ -426,7 +430,7 @@ fn ManualChip() -> impl IntoView {
 /// `<style>` (`manual::manual_parts`); "✕ Zavrieť" closes it.
 #[component]
 fn ManualView() -> impl IntoView {
-    let ManualOpen(open) = expect_context::<ManualOpen>();
+    let open = expect_context::<Nav>().manual;
     let parts: RwSignal<Option<Result<(String, String), String>>> = RwSignal::new(None);
     leptos::task::spawn_local(async move {
         let answer = match crate::net::fetch_text("GET", "/znacky.html", None, None).await {
@@ -457,7 +461,7 @@ fn ManualView() -> impl IntoView {
         <div class="manual-overlay" data-testid="manual">
             <button
                 type="button"
-                class="btn manual-close"
+                class="manual-close"
                 use:owns_touches=no_keys
                 data-testid="manual-close"
                 on:pointerdown=move |_| {

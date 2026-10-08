@@ -42,10 +42,16 @@ pub fn action(id: &str) -> Option<MenuAction> {
     }
 }
 
+/// How long after a left click opens fohmixer another one opens nothing:
+/// a double click is two clicks, and one tab is enough (Windows' default
+/// double-click time is 500 ms).
+pub const OPEN_GAP_MS: u64 = 800;
+
 /// Whether a click on the icon opens fohmixer (#68): the left button's
-/// release (the right button shows the menu).
-pub fn click_opens(left: bool, released: bool) -> bool {
-    left && released
+/// release (the right button shows the menu), unless a click opened it
+/// `since_open_ms` ago, under [`OPEN_GAP_MS`].
+pub fn click_opens(left: bool, released: bool, since_open_ms: Option<u64>) -> bool {
+    left && released && since_open_ms.is_none_or(|ms| ms >= OPEN_GAP_MS)
 }
 
 /// `text` cut to at most `max` UTF-16 units, never inside a character.
@@ -263,9 +269,17 @@ mod tests {
 
     #[test]
     fn only_the_left_buttons_release_opens_fohmixer() {
-        assert!(click_opens(true, true));
-        assert!(!click_opens(true, false));
-        assert!(!click_opens(false, true));
-        assert!(!click_opens(false, false));
+        assert!(click_opens(true, true, None));
+        assert!(!click_opens(true, false, None));
+        assert!(!click_opens(false, true, None));
+        assert!(!click_opens(false, false, None));
+    }
+
+    #[test]
+    fn a_double_click_opens_one_tab() {
+        assert!(!click_opens(true, true, Some(0)));
+        assert!(!click_opens(true, true, Some(799)));
+        assert!(click_opens(true, true, Some(800)));
+        assert!(!click_opens(false, true, Some(800)));
     }
 }

@@ -34,10 +34,20 @@
     display: none;
 }
 
+/* Sized from the strip width (#9: nothing measures text): ZNAČKA? beside
+   the status light fits a 64 px strip at 7.4 px, 10 px from 77 px on. A
+   conflict hides the light (the mockup), so its word has more room. */
 .strip-mark {
-    font: 700 10px/1.4 var(--ui);
+    min-width: 0;
+    overflow: hidden;
+    font: 700 clamp(7px, calc((var(--strip-w, 76px) - 27px) / 5), 10px)/1.4 var(--ui);
     letter-spacing: 0.06em;
     white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+.strip[data-mark="conflict"] .strip-readout .status {
+    display: none;
 }
 
 .strip[data-mark="conflict"] {
@@ -67,6 +77,11 @@
 
 .strip[data-mark="problem"] .strip-mark {
     color: var(--warn);
+}
+
+/* A return's RET mark moves over to make room for the corner. */
+.strip[data-mark="problem"] .strip-ret {
+    left: 18px;
 }
 
 .strip-flag {

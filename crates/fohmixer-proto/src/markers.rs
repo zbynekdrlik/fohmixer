@@ -488,10 +488,19 @@ pub fn compose(frame: &Layout, found: &[Found]) -> Composed {
         .map(|(name, list)| (list.iter().copied().min().unwrap_or(0), name))
         .collect();
     views.sort();
+    // A view keeps the rail of the frame's default page (the approved
+    // mockup: the column's rail stays while a view is shown).
+    let rail = frame
+        .pages
+        .iter()
+        .find(|p| p.id == frame.default_page)
+        .or_else(|| frame.pages.first())
+        .map(|p| p.rail.clone())
+        .unwrap_or_default();
     for (_, name) in views {
         layout
             .pages
-            .push(view_page(name, &groups, &entries, &strips));
+            .push(view_page(name, &groups, &entries, &strips, &rail));
     }
     let problems = entries
         .iter()
@@ -514,6 +523,7 @@ fn view_page(
     groups: &BTreeMap<String, Vec<usize>>,
     entries: &[Entry<'_>],
     strips: &[Strip],
+    rail: &[Control],
 ) -> Page {
     let own = groups.get(name).cloned().unwrap_or_default();
     let mut sections = vec![Section::Group(Group {
@@ -555,7 +565,7 @@ fn view_page(
         id: format!("{VIEW_PREFIX}{name}"),
         title: group_title(name),
         view: true,
-        rail: Vec::new(),
+        rail: rail.to_vec(),
         rows: vec![Row {
             sections,
             weight: 1.0,

@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test, expect } from "./support/fixtures";
-import { LiveClient, centre, frames, harness, hostLine, hubStatus, openSurface, ready, selectPage, until, volume } from "./support/live";
+import { LiveClient, centre, clipped, frames, harness, hostLine, hubStatus, openSurface, ready, selectPage, until, volume } from "./support/live";
 
 // Strips from Tuner markers (#68, spec D16): a Tuner in a track's device
 // chain, renamed with the strip's quoted label and its tags, puts the strip
@@ -121,8 +121,13 @@ test("an equal label disables both strips; a tag problem marks a strip that stil
     const conflict = page.locator('.slot[data-group="markers"] [data-testid="strip"][data-mark="conflict"]');
     await expect(conflict).toHaveCount(2, { timeout: 10_000 });
     await expect(conflict.first().getByTestId("strip-mark")).toHaveText("KONFLIKT");
+    expect(await clipped(conflict.first().getByTestId("strip-mark"))).toEqual([]);
     await expect(conflict.first().getByTestId("db")).toBeHidden();
-    // The first is track 1 (Live's order): a drag on its fader reaches nothing.
+    // The first is track 1 (Live's order, `#2` by index): its fader is
+    // bound and takes touches but for the conflict, and a drag on it
+    // reaches nothing.
+    await expect(conflict.first()).toHaveAttribute("data-track", "#2");
+    await ready(conflict.first().getByTestId("fader"));
     await dragUp(page, conflict.first().getByTestId("fader"));
     await page.waitForTimeout(500);
     expect(await live.get("band", target, "value")).toBe(before);

@@ -3,12 +3,15 @@
 //! overlay. The hub sends every page with `X-Frame-Options: DENY`, so the
 //! overlay fetches the file and shows its `<main>` with its `<style>`.
 
-/// The style and the `<main>` element of the manual page, when it has both.
+/// The style of the head and the `<main>` element of the body of the manual
+/// page, when it has both (a comment before the head never counts).
 pub fn manual_parts(html: &str) -> Option<(String, String)> {
-    let style = between(html, "<style>", "</style>")?;
-    let start = html.find("<main")?;
-    let end = html[start..].find("</main>")? + start + "</main>".len();
-    Some((style.to_string(), html[start..end].to_string()))
+    let head = &html[html.find("<head>")?..];
+    let style = between(head, "<style>", "</style>")?;
+    let body = &html[html.find("<body")?..];
+    let start = body.find("<main")?;
+    let end = body[start..].find("</main>")? + start + "</main>".len();
+    Some((style.to_string(), body[start..end].to_string()))
 }
 
 /// The text between the first `open` and the `close` after it.
@@ -32,17 +35,34 @@ mod tests {
                 "<main class=\"z\">x</main>".to_string()
             ))
         );
-        assert_eq!(manual_parts("<style>a</style>"), None);
-        assert_eq!(manual_parts("<main>x</main>"), None);
-        assert_eq!(manual_parts("<style>a</style><main>x"), None);
-        assert_eq!(manual_parts("<style>a<main>x</main>"), None);
+        let none = [
+            "<head></head><body><main>x</main></body>",
+            "<head><style>a</style></head><body></body>",
+            "<head><style>a</style></head><body><main>x",
+            "<head><style>a<body><main>x</main>",
+            "<style>a</style><body><main>x</main>",
+            "<head><style>a</style></head><main>x</main>",
+        ];
+        for html in none {
+            assert_eq!(manual_parts(html), None, "{html}");
+        }
+    }
+
+    #[test]
+    fn a_comment_before_the_head_naming_both_is_left_out() {
+        let html = "<!-- its <main> with this <style> --><head><style>s</style></head><body><main>m</main></body>";
+        assert_eq!(
+            manual_parts(html),
+            Some(("s".to_string(), "<main>m</main>".to_string()))
+        );
     }
 
     #[test]
     fn the_shipped_manual_has_both() {
         let (style, main) = manual_parts(include_str!("../znacky.html")).expect("both parts");
-        assert!(style.contains(".znacky"), "{style}");
+        assert!(style.trim_start().starts_with(".znacky {"), "{style}");
         assert!(main.starts_with("<main class=\"znacky\""), "{main}");
+        assert_eq!(main.matches("<main").count(), 1, "{main}");
         assert!(main.ends_with("</main>"), "{main}");
         assert!(main.contains("+G:VOCALS:2"), "the syntax");
         assert!(main.contains("KONFLIKT"), "the problems");
