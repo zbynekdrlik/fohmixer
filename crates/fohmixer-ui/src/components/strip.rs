@@ -18,7 +18,7 @@ use super::meter::{MeterView, StatusView};
 use super::pan::PanView;
 use crate::behave::db_text::db_text;
 use crate::behave::fader::{UNITY, VolumeLaw};
-use crate::behave::label::shown_label;
+use crate::behave::label::{mark_look, shown_label};
 use crate::behave::scale::{tick_label, tick_pos, ticks};
 use crate::binding::strip_subs;
 use crate::store::{LiveStore, Slot};
@@ -121,6 +121,16 @@ pub fn StripView(strip: Strip, settings: Settings, shared: Option<String>) -> im
     let ret_mark = (ret && !tagged).then(|| {
         view! { <span class="strip-ret" data-testid="strip-ret" aria-hidden="true">"RET"</span> }
     });
+    // A marker problem (#68): a conflict disables the strip, any other
+    // problem marks it; the word replaces Live's dB on the readout line.
+    let look = mark_look(strip.mark);
+    let mark = look.map(|(mark, _)| mark);
+    let mark_word = look.map(|(_, word)| {
+        view! { <span class="strip-mark" data-testid="strip-mark">{word}</span> }
+    });
+    let flag = (mark == Some("problem")).then(|| {
+        view! { <span class="strip-flag" aria-hidden="true">"!"</span> }
+    });
     let kind = format!("{:?}", strip.strip_kind).to_lowercase();
     // Each attribute its own copy (the macro may move a value into a child
     // before an attribute reads it).
@@ -138,14 +148,17 @@ pub fn StripView(strip: Strip, settings: Settings, shared: Option<String>) -> im
             data-label=label_attr
             data-instance=strip_instance
             data-kind=kind
+            data-mark=mark
         >
             <div class="strip-head">
                 {mute_view}
                 <div class="strip-readout" data-testid="strip-readout">
                     <StatusView slots=all activity=activity />
                     {db}
+                    {mark_word}
                 </div>
                 {ret_mark}
+                {flag}
             </div>
             {tag}
             <div class="strip-fz" style=unity>

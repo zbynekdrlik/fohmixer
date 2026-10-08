@@ -23,10 +23,13 @@ use serde_json::json;
 use crate::app::version_text;
 use crate::arrange::{Arrangement, Cell, Item, LineKey, METRICS, PageModel, Side, arrange, items};
 use crate::behave::solo::soloed;
-use crate::binding::{SubSpec, choose, page_solos, selected_path, solo_sub, visible_subs};
+use crate::binding::{
+    SubSpec, choose, page_solos, selected_path, solo_sub, view_tap, visible_subs,
+};
 use crate::components::{ControlView, Settings, fail_flash, key_of, owns_surface, owns_touches};
 use crate::dom;
 use crate::flow::{is_column, shared_instance};
+use crate::manual::manual_parts;
 use crate::pages::deck::DeckView;
 use crate::store::{Badge, LiveStore, Slot};
 
@@ -54,6 +57,9 @@ struct Nav {
     /// page, and a tap on the open deck tab does not mount its page again
     /// (which would lift the held keys).
     deck_shown: Memo<bool>,
+    /// The page shown before a view (#68): a second tap on the view's
+    /// button goes back to it.
+    before_view: RwSignal<Option<String>>,
 }
 
 impl Nav {
@@ -79,6 +85,22 @@ impl Nav {
             dom::storage_set(PAGES_KEY, &text);
         }
         let _ = self.path.try_set(selected_path(&layout, &remembered));
+    }
+
+    /// A view's button was tapped (#68): the view, or back to the page shown
+    /// before it (`binding::view_tap`).
+    fn tap_view(self, view: usize) {
+        let Some(Some(layout)) = self.store.layout.try_get_untracked() else {
+            return;
+        };
+        let shown = self
+            .path
+            .try_with_untracked(|p| p.first().copied())
+            .flatten();
+        let before = self.before_view.try_get_untracked().flatten();
+        let (target, remember) = view_tap(&layout, shown, view, before.as_deref());
+        let _ = self.before_view.try_set(remember);
+        self.select(0, target);
     }
 
     /// The Stream Deck tab was tapped (#52).
@@ -110,6 +132,7 @@ pub fn Surface(token: String, session: RwSignal<Option<String>>) -> impl IntoVie
         viewport,
         deck,
         deck_shown: Memo::new(move |_| deck.get()),
+        before_view: RwSignal::new(None),
     };
     provide_context(nav);
     on_cleanup(move || store.stop());
@@ -168,6 +191,11 @@ pub fn Surface(token: String, session: RwSignal<Option<String>>) -> impl IntoVie
     }
 }
 
+/// The tag manual's overlay is open (#68; a context of the layout's shell:
+/// the column's ZNAČKY chip opens it).
+#[derive(Clone, Copy)]
+struct ManualOpen(RwSignal<bool>);
+
 /// What the column's head shows (a context of the layout's shell, read by
 /// every page's column).
 #[derive(Clone)]
@@ -193,6 +221,9 @@ fn Shell(layout: Arc<Layout>) -> impl IntoView {
         page,
         sub,
     });
+    let manual = RwSignal::new(false);
+    provide_context(ManualOpen(manual));
+    let manual_view = move || manual.get().then(|| view! { <ManualView /> });
     let viewport = nav.viewport;
     let body = move || {
         if nav.deck_shown.get() {
@@ -204,7 +235,12 @@ fn Shell(layout: Arc<Layout>) -> impl IntoView {
         let global = layout.global.clone();
         Some(view! { <PageView page=shown global=global sub=sub /> }.into_any())
     };
-    view! { <div class="mixer" data-testid="stage">{body}</div> }
+    view! {
+        <div class="mixer" data-testid="stage">
+            {body}
+            {manual_view}
+        </div>
+    }
 }
 
 /// The head of a page's column: the dropout counter, the badges and the
@@ -225,20 +261,70 @@ pub fn ColumnHead() -> impl IntoView {
     let for_pager = layout.clone();
     // Every read tolerates a disposed value: a layout change disposes the
     // selection while the old column's effects may still run once.
+    // While a view is shown (#68), the pager's tabs of the page before it
+    // stay, dimmed.
     let pager_tabs = move || {
         let index = page.try_get().flatten()?;
         if nav.deck_shown.try_get().unwrap_or(false) {
             return None;
         }
-        let pager = for_pager.pages.get(index)?.pager()?;
+        let shown = for_pager.pages.get(index)?;
+        let (holder, dim) = if shown.view {
+            let before = nav.before_view.try_get().flatten()?;
+            (for_pager.pages.iter().find(|p| p.id == before)?, true)
+        } else {
+            (shown, false)
+        };
+        let pager = holder.pager()?;
         let tabs: Vec<(usize, String, String)> = pager
             .pages
             .iter()
             .enumerate()
             .map(|(i, s)| (i, s.id.clone(), s.title.clone()))
             .collect();
-        Some(view! { <TabBar tabs=tabs level=1 selected=sub /> })
+        Some(view! { <TabBar tabs=tabs level=1 selected=sub dim=dim /> })
     };
+    // The views (#68): a button for each tag group the frame does not show.
+    let views: Vec<(usize, String, String)> = layout
+        .pages
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| p.view)
+        .map(|(i, p)| (i, p.id.clone(), p.title.clone()))
+        .collect();
+    let views_bar = (!views.is_empty()).then(|| {
+        let buttons = views
+            .into_iter()
+            .map(|(index, id, title)| {
+                let lit = move || {
+                    page.try_get().flatten() == Some(index)
+                        && !nav.deck_shown.try_get().unwrap_or(false)
+                };
+                // A view's button owns its touches (#43 PR G); it writes no key.
+                let no_keys: Vec<String> = Vec::new();
+                view! {
+                    <button
+                        type="button"
+                        class="tab view"
+                        use:owns_touches=no_keys
+                        class:selected=lit
+                        data-testid="view"
+                        data-page=id
+                        data-selected=move || lit().to_string()
+                        on:pointerdown=move |_| nav.tap_view(index)
+                    >
+                        {title}
+                    </button>
+                }
+            })
+            .collect_view();
+        view! {
+            <div class="cap-title" data-testid="views-title">"Pohľady"</div>
+            <div class="seg views" data-testid="views">
+                {buttons}
+            </div>
+        }
+    });
     let solo = move || {
         let solos = page
             .try_get()
@@ -257,6 +343,7 @@ pub fn ColumnHead() -> impl IntoView {
             <StatusCluster />
             <TabBar tabs=tabs level=0 selected=page />
             {pager_tabs}
+            {views_bar}
             {solo}
         </div>
     }
@@ -268,6 +355,9 @@ fn TabBar(
     tabs: Vec<(usize, String, String)>,
     level: usize,
     selected: Memo<Option<usize>>,
+    /// Dimmed and inert (#68: the pager's tabs while a view is shown).
+    #[prop(optional)]
+    dim: bool,
 ) -> impl IntoView {
     let nav = expect_context::<Nav>();
     let buttons = tabs
@@ -302,9 +392,81 @@ fn TabBar(
         view! { <Show when=has_deck><DeckTab /></Show> }
     });
     view! {
-        <div class="seg" data-testid="tabbar" data-level={level.to_string()}>
+        <div class="seg" class:dim=dim data-testid="tabbar" data-level={level.to_string()}>
             {buttons}
             {deck_tab}
+        </div>
+    }
+}
+
+/// The tag manual's chip on the column's status line (#68): opens the
+/// manual's overlay.
+#[component]
+fn ManualChip() -> impl IntoView {
+    let ManualOpen(open) = expect_context::<ManualOpen>();
+    // The chip owns its touches (#43 PR G); it writes no key.
+    let no_keys: Vec<String> = Vec::new();
+    view! {
+        <button
+            type="button"
+            class="manual-chip"
+            use:owns_touches=no_keys
+            data-testid="manual-open"
+            on:pointerdown=move |_| {
+                let _ = open.try_set(true);
+            }
+        >
+            "ZNAČKY"
+        </button>
+    }
+}
+
+/// The tag manual over the screen (#68): `znacky.html`, fetched from the
+/// hub (one source with the page the tray opens), its `<main>` with its
+/// `<style>` (`manual::manual_parts`); "✕ Zavrieť" closes it.
+#[component]
+fn ManualView() -> impl IntoView {
+    let ManualOpen(open) = expect_context::<ManualOpen>();
+    let parts: RwSignal<Option<Result<(String, String), String>>> = RwSignal::new(None);
+    leptos::task::spawn_local(async move {
+        let answer = match crate::net::fetch_text("GET", "/znacky.html", None, None).await {
+            Ok((200, text)) => {
+                manual_parts(&text).ok_or_else(|| "no manual in the page".to_string())
+            }
+            Ok((status, _)) => Err(format!("HTTP {status}")),
+            Err(e) => Err(e),
+        };
+        if let Err(why) = &answer {
+            dom::log(&format!("the tag manual did not load: {why}"));
+        }
+        let _ = parts.try_set(Some(answer));
+    });
+    let no_keys: Vec<String> = Vec::new();
+    let content = move || match parts.try_get().flatten() {
+        None => view! { <p class="manual-note">"Načítavam…"</p> }.into_any(),
+        Some(Err(why)) => {
+            view! { <p class="manual-note">{format!("Návod sa nenačítal: {why}")}</p> }.into_any()
+        }
+        Some(Ok((style, main))) => view! {
+            <style>{style}</style>
+            <div class="manual-body" inner_html=main></div>
+        }
+        .into_any(),
+    };
+    view! {
+        <div class="manual-overlay" data-testid="manual">
+            <button
+                type="button"
+                class="btn manual-close"
+                use:owns_touches=no_keys
+                data-testid="manual-close"
+                on:pointerdown=move |_| {
+                    let _ = open.try_set(false);
+                }
+            >
+                "✕ Zavrieť"
+            </button>
+            {content}
         </div>
     }
 }
@@ -842,6 +1004,7 @@ fn StatusCluster() -> impl IntoView {
             <DropoutCounter />
             {badges}
             <span class="version" data-testid="version">{version_text()}</span>
+            <ManualChip />
         </div>
     }
 }

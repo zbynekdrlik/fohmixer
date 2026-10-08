@@ -408,3 +408,45 @@ fn choosing_a_tab_remembers_it_for_its_pager() {
     choose(&layout, &mut remembered, &[], 1, 0);
     assert_eq!(remembered, before);
 }
+
+/// A layout of two pages and two views (#68).
+fn with_views() -> Layout {
+    serde_json::from_value(serde_json::json!({
+        "schema": 2,
+        "default_page": "foh",
+        "pages": [
+            {"id": "cue", "title": "Cue"},
+            {"id": "foh", "title": "FOH"},
+            {"id": "view-TALK", "title": "TALK", "view": true},
+            {"id": "view-SOLO", "title": "SOLO", "view": true}
+        ]
+    }))
+    .expect("the layout parses")
+}
+
+#[test]
+fn a_views_button_shows_it_and_a_second_tap_returns_to_the_page_before() {
+    let layout = with_views();
+    // From the cue page: the view, the cue page remembered.
+    assert_eq!(view_tap(&layout, Some(0), 2, None), (2, Some("cue".into())));
+    // Again: back to the cue page.
+    assert_eq!(view_tap(&layout, Some(2), 2, Some("cue")), (0, None));
+    // From one view to another: the page before the first stays.
+    assert_eq!(
+        view_tap(&layout, Some(2), 3, Some("cue")),
+        (3, Some("cue".into()))
+    );
+    // Nothing remembered (or a view, or a page gone): the default page.
+    assert_eq!(view_tap(&layout, Some(3), 3, None), (1, None));
+    assert_eq!(view_tap(&layout, Some(3), 3, Some("view-TALK")), (1, None));
+    assert_eq!(view_tap(&layout, Some(3), 3, Some("gone")), (1, None));
+    // Nothing shown yet: the view, nothing to remember.
+    assert_eq!(view_tap(&layout, None, 2, None), (2, None));
+}
+
+#[test]
+fn a_view_returns_to_the_first_page_without_a_default() {
+    let mut layout = with_views();
+    layout.default_page = "missing".into();
+    assert_eq!(view_tap(&layout, Some(2), 2, None), (0, None));
+}

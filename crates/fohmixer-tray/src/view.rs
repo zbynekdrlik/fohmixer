@@ -7,6 +7,7 @@ use crate::poll::HubState;
 
 /// The menu items' ids.
 pub const OPEN: &str = "open";
+pub const MANUAL: &str = "manual";
 pub const COPY: &str = "copy";
 pub const EXIT: &str = "exit";
 /// The disabled line with the hub's version.
@@ -21,6 +22,8 @@ pub const TOOLTIP_MAX: usize = 127;
 pub enum MenuAction {
     /// Open fohmixer: the hub's local URL in the default browser.
     Open,
+    /// The tag manual (#68): the hub's `/znacky.html` in the browser.
+    Manual,
     /// Copy URL: the public URL to the clipboard.
     Copy,
     /// Exit: the tray only; the hub keeps running.
@@ -32,10 +35,17 @@ pub enum MenuAction {
 pub fn action(id: &str) -> Option<MenuAction> {
     match id {
         OPEN => Some(MenuAction::Open),
+        MANUAL => Some(MenuAction::Manual),
         COPY => Some(MenuAction::Copy),
         EXIT => Some(MenuAction::Exit),
         _ => None,
     }
+}
+
+/// Whether a click on the icon opens fohmixer (#68): the left button's
+/// release (the right button shows the menu).
+pub fn click_opens(left: bool, released: bool) -> bool {
+    left && released
 }
 
 /// `text` cut to at most `max` UTF-16 units, never inside a character.
@@ -125,6 +135,8 @@ mod tests {
     #[test]
     fn menu_ids_map_to_their_actions() {
         assert_eq!(action("open"), Some(MenuAction::Open));
+        assert_eq!(action("manual"), Some(MenuAction::Manual));
+        assert_eq!(MANUAL, "manual");
         assert_eq!(action("copy"), Some(MenuAction::Copy));
         assert_eq!(action("exit"), Some(MenuAction::Exit));
         assert_eq!(action("version"), None);
@@ -247,5 +259,13 @@ mod tests {
         assert!(changed(&up("1.0.0", "a"), &up("1.0.1", "a")));
         assert!(changed(&up("1.0.0", "a"), &up("1.0.0", "b")));
         assert!(changed(&down("no answer", "x"), &down("HTTP 503", "x")));
+    }
+
+    #[test]
+    fn only_the_left_buttons_release_opens_fohmixer() {
+        assert!(click_opens(true, true));
+        assert!(!click_opens(true, false));
+        assert!(!click_opens(false, true));
+        assert!(!click_opens(false, false));
     }
 }

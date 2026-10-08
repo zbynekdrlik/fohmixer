@@ -18,6 +18,18 @@ pub fn shown_label(label: Option<&str>, name: &str) -> String {
     label.map_or_else(|| strip_label(name), str::to_string)
 }
 
+/// How a marker strip's problem shows (#68): its `data-mark` and the word
+/// on its readout line; none without a problem.
+pub fn mark_look(
+    mark: Option<fohmixer_proto::layout::StripMark>,
+) -> Option<(&'static str, &'static str)> {
+    use fohmixer_proto::layout::StripMark;
+    match mark? {
+        StripMark::Conflict => Some(("conflict", "KONFLIKT")),
+        StripMark::Problem => Some(("problem", "ZNAČKA?")),
+    }
+}
+
 /// The length the stylesheet sizes a label's font by (`--n`, #21): its
 /// characters, not its bytes, and at least 1 (an empty label divides by
 /// nothing).
@@ -38,6 +50,20 @@ pub fn longest_word_chars(text: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_marker_problem_shows_its_mark_and_word() {
+        use fohmixer_proto::layout::StripMark;
+        assert_eq!(
+            mark_look(Some(StripMark::Conflict)),
+            Some(("conflict", "KONFLIKT"))
+        );
+        assert_eq!(
+            mark_look(Some(StripMark::Problem)),
+            Some(("problem", "ZNAČKA?"))
+        );
+        assert_eq!(mark_look(None), None);
+    }
 
     #[test]
     fn a_marker_strip_shows_its_own_label_whole() {

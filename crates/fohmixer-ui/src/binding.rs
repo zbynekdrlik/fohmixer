@@ -228,6 +228,32 @@ pub fn selected_path(layout: &Layout, remembered: &BTreeMap<String, String>) -> 
     path
 }
 
+/// What a tap on view `view`'s button shows (#68): the view, remembering
+/// the page shown when that is no view; or, when the view is already shown,
+/// the page remembered before it (else the layout's default page). The
+/// page's index, and the page to remember from now on.
+pub fn view_tap(
+    layout: &Layout,
+    shown: Option<usize>,
+    view: usize,
+    before: Option<&str>,
+) -> (usize, Option<String>) {
+    let ids = || layout.pages.iter().map(|p| &p.id);
+    if shown == Some(view) {
+        let back = before
+            .and_then(|id| index_of(ids(), id))
+            .filter(|&i| layout.pages.get(i).is_some_and(|p| !p.view))
+            .or_else(|| index_of(ids(), &layout.default_page))
+            .unwrap_or(0);
+        return (back, None);
+    }
+    let remember = match shown.and_then(|i| layout.pages.get(i)) {
+        Some(page) if !page.view => Some(page.id.clone()),
+        _ => before.map(str::to_string),
+    };
+    (view, remember)
+}
+
 /// Remembers page `index` of level `level` (0: the pages; 1: the sub-pages of
 /// the pager of the page `path[0]`).
 pub fn choose(

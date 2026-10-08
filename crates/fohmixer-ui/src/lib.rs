@@ -20,6 +20,7 @@ pub mod diag;
 pub mod dom;
 pub mod flow;
 pub mod lifecycle;
+pub mod manual;
 pub mod net;
 pub mod pages;
 pub mod raf;

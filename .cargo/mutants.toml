@@ -170,9 +170,11 @@ exclude_re = [
   # pages/surface.rs: a tab press (store, local storage), the Stream Deck
   # tab's press (#52: Nav::show_deck sets the tab's signal, Nav::select
   # clears it, each only on a change; deck.spec.ts opens it and checks a
-  # reload never restores it) and the remembered pages' read; choose and
-  # selected_path are the tested decisions.
-  "fohmixer-ui/src/pages/surface\\.rs.*(replace|in) (Nav::select|Nav::show_deck|remembered_pages)( |$)",
+  # reload never restores it), a view's button (#68: Nav::tap_view carries
+  # out the tested view_tap through Nav::select; markers.spec.ts taps it)
+  # and the remembered pages' read; choose and selected_path are the tested
+  # decisions.
+  "fohmixer-ui/src/pages/surface\\.rs.*(replace|in) (Nav::select|Nav::show_deck|Nav::tap_view|remembered_pages)( |$)",
   # pages/deck.rs (#52): the Stream Deck page's glue, one function at a
   # time: carry (a press decision of the tested behave::deck::Presses onto
   # the socket through LiveStore::deck_press, into the recorder through the

@@ -44,6 +44,8 @@ fn default_https_port() -> u16 {
 pub struct Links {
     /// Open fohmixer: the hub on this PC, `http://localhost:<http_port>/`.
     pub open: String,
+    /// The tag manual (#68): `/znacky.html` of the same hub.
+    pub manual: String,
     /// The version poll: `http://127.0.0.1:<http_port>/api/version` (an
     /// address: `localhost` may resolve to `::1` first).
     pub version: String,
@@ -58,6 +60,7 @@ impl Links {
     pub fn new(http_port: u16, tls: Option<(&str, u16)>) -> Self {
         Self {
             open: format!("http://localhost:{http_port}/"),
+            manual: format!("http://localhost:{http_port}/znacky.html"),
             version: format!("http://127.0.0.1:{http_port}/api/version"),
             public: tls.map(|(name, port)| public_url(name, port)),
         }
@@ -110,6 +113,8 @@ mod tests {
             Links::defaults(),
             Links {
                 open: "http://localhost:8480/".to_string(),
+
+                manual: "http://localhost:8480/znacky.html".to_string(),
                 version: "http://127.0.0.1:8480/api/version".to_string(),
                 public: None,
             }

@@ -1,0 +1,64 @@
+<!doctype html>
+<!-- fohmixer #68 (spec D16): the tag manual. One source: the hub serves it as
+     /znacky.html (the tray's menu opens it), and the app's ZNAČKY overlay
+     fetches it and shows its <main class="znacky"> with this <style>. -->
+<html lang="sk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fohmixer značky</title>
+<style>
+.znacky {
+    max-width: 760px;
+    margin: 0 auto;
+    padding: 16px;
+    color: #eaeaf0;
+    font: 500 15px/1.5 "Barlow", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+.znacky h1 { margin: 0 0 8px; font-size: 22px; letter-spacing: 0.04em; }
+.znacky h2 { margin: 18px 0 6px; font-size: 16px; letter-spacing: 0.04em; color: #9a9ab4; }
+.znacky p { margin: 6px 0; }
+.znacky code {
+    padding: 1px 5px;
+    border-radius: 4px;
+    background: #151522;
+    color: #9be7a8;
+    font: 600 14px "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+    overflow-wrap: anywhere;
+}
+.znacky table { width: 100%; margin: 8px 0; border-collapse: collapse; }
+.znacky td { padding: 6px; border-top: 1px solid #23233a; vertical-align: top; }
+.znacky td:first-child { width: 1%; white-space: nowrap; }
+.znacky ul { margin: 6px 0; padding-left: 20px; }
+html, body { margin: 0; background: #0b0b12; }
+</style>
+</head>
+<body>
+<main class="znacky" data-testid="znacky">
+<h1>ZNAČKY V TUNERI</h1>
+<p>Čo je na fohmixeri, určuje <b>Tuner</b> v tracku v Abletone. Pridaj ho do tracku (najlepšie vypnutý: zvuk nemení a nič nestojí) a premenuj ho (<b>Ctrl+R</b>). Meno tracku sa nepoužíva.</p>
+<p>Príklad: <code>"Vox 1" +G:VOCALS:2 +G:TALKSHOW:1 +PIN +MG</code></p>
+
+<h2>ZÁPIS</h2>
+<table>
+<tr><td><code>"Vox 1"</code></td><td>meno na fadri, v úvodzovkách, môže mať aj viac slov</td></tr>
+<tr><td><code>+G:VOCALS</code></td><td>skupina: veľké písmená, číslice, <code>-</code> a <code>_</code> (<code>_</code> sa ukáže ako medzera); fader stojí v poradí trackov v Live</td></tr>
+<tr><td><code>+G:VOCALS:2</code></td><td>skupina a pozícia v nej (1 až 999); môže sa opakovať: jeden fader vo viacerých skupinách</td></tr>
+<tr><td><code>+PIN</code></td><td>vždy na obrazovke: v každom pohľade aj pri posune ◀ ▶</td></tr>
+<tr><td><code>+MG</code></td><td>ochrana mute: zmena chce druhé ťuknutie</td></tr>
+</table>
+<p>Značky píš veľkými písmenami (ako v AbleSete). Tuner bez úvodzoviek a bez značky <code>+</code> je obyčajný Tuner a fohmixer si ho nevšíma.</p>
+
+<h2>POHĽADY</h2>
+<p>Skupinu, ktorú hlavný pohľad nemá, ukáže tlačidlo v strednom páse (POHĽADY): jej fadre a všetky pripnuté. Ďalší ťuk ťa vráti späť.</p>
+
+<h2>CHYBY</h2>
+<ul>
+<li><b>KONFLIKT:</b> dva Tunery s rovnakým menom. Oba fadre sú vypnuté, kým jedno meno nezmeníš.</li>
+<li><b>Žltý roh (ZNAČKA?):</b> neznáma značka, zlá hodnota, dva Tunery v jednom tracku alebo dva fadre na jednej pozícii. Fader funguje, oprav meno Tunera.</li>
+<li>Tuner bez skupiny (<code>+G:</code>) sa neukáže nikde.</li>
+</ul>
+<p>Zmena v Abletone sa na tablete ukáže do sekundy.</p>
+</main>
+</body>
+</html>

@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::thread;
 
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
-use tauri::tray::{TrayIcon, TrayIconBuilder};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, RunEvent, Wry};
 use tauri_plugin_clipboard_manager::ClipboardExt;
 use tauri_plugin_opener::OpenerExt;
@@ -147,8 +147,10 @@ fn load_links(data_dir: &Path) -> Links {
     links
 }
 
-/// The icon with its menu: the hub's version (disabled), Open fohmixer, Copy
-/// URL, Exit. Returns the icon and the version line (the poll updates both).
+/// The icon with its menu: the hub's version (disabled), Open fohmixer, the
+/// tag manual (#68), Copy URL, Exit; a left click opens fohmixer, the right
+/// one shows the menu. Returns the icon and the version line (the poll
+/// updates both).
 fn build_tray(
     app: &AppHandle,
     links: &Links,
@@ -162,6 +164,7 @@ fn build_tray(
         None::<&str>,
     )?;
     let open_item = MenuItem::with_id(app, view::OPEN, "Open fohmixer", true, None::<&str>)?;
+    let manual_item = MenuItem::with_id(app, view::MANUAL, "Návod k značkám", true, None::<&str>)?;
     let (copy_label, copy_enabled) = view::copy_item(links.public.as_deref());
     let copy_item = MenuItem::with_id(app, view::COPY, copy_label, copy_enabled, None::<&str>)?;
     let exit_item = MenuItem::with_id(app, view::EXIT, "Exit (the tray only)", true, None::<&str>)?;
@@ -173,6 +176,7 @@ fn build_tray(
             &version_item,
             &separator1,
             &open_item,
+            &manual_item,
             &copy_item,
             &separator2,
             &exit_item,
@@ -180,11 +184,28 @@ fn build_tray(
     )?;
 
     let links = links.clone();
+    let open_url = links.open.clone();
     let mut builder = TrayIconBuilder::with_id("main")
         .tooltip(view::tooltip(&HubState::Unknown, TRAY_VERSION))
         .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_tray_icon_event(move |tray, event| {
+            if let TrayIconEvent::Click {
+                button,
+                button_state,
+                ..
+            } = event
+                && view::click_opens(
+                    matches!(button, MouseButton::Left),
+                    matches!(button_state, MouseButtonState::Up),
+                )
+            {
+                open(tray.app_handle(), &open_url);
+            }
+        })
         .on_menu_event(move |app, event| match view::action(event.id.as_ref()) {
             Some(MenuAction::Open) => open(app, &links.open),
+            Some(MenuAction::Manual) => open(app, &links.manual),
             Some(MenuAction::Copy) => match &links.public {
                 Some(url) => copy(app, url),
                 None => {

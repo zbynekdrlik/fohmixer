@@ -88,6 +88,68 @@
     justify-content: center;
 }
 
+/* The views (#68, the approved mockup surface-views-v4): a button for each
+   tag group the frame does not show, lit while its view is shown; the
+   pager's tabs of the page before it stay, dimmed and inert. */
+.column .cap-title {
+    flex: none;
+    color: var(--muted);
+    font: 700 9px var(--ui);
+    letter-spacing: 0.12em;
+    text-align: center;
+    text-transform: uppercase;
+}
+
+.column .seg.views {
+    grid-template-columns: repeat(var(--rail-cols), minmax(0, 1fr));
+}
+
+.column .tab.view.selected {
+    border-color: var(--warn);
+    background: var(--warn);
+    color: #0b0b12;
+}
+
+.column .seg.dim {
+    opacity: 0.35;
+    pointer-events: none;
+}
+
+/* The tag manual's chip on the status line (#68), and the manual over the
+   screen (the hub's znacky.html, its own style). */
+.manual-chip {
+    padding: 0 4px;
+    border: 1px dashed var(--line-soft);
+    border-radius: 4px;
+    background: none;
+    color: var(--muted);
+    font: 700 9.5px/14px var(--ui);
+    letter-spacing: 0.06em;
+}
+
+.manual-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 30;
+    overflow: auto;
+    padding: 12px;
+    background: rgba(11, 11, 18, 0.97);
+}
+
+.manual-close {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    float: right;
+    min-height: 36px;
+    padding: 0 12px;
+}
+
+.manual-note {
+    color: var(--muted);
+    text-align: center;
+}
+
 /* A line's arrows: ◀, where its window stands, ▶. */
 .shifts {
     display: flex;
