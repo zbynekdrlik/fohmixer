@@ -440,6 +440,21 @@ impl Keeper {
         latest_reads(actions)
     }
 
+    /// The instance connected (again): the script's object refs start over
+    /// with each connection, so a read gets the Tuners and their refs again,
+    /// and the failures' count starts over. Nothing while its list of
+    /// tracks is still unknown (that list's first value reads).
+    pub fn connected(&mut self, instance: &str) -> Vec<Action> {
+        let Some(state) = self.instances.get_mut(instance) else {
+            return Vec::new();
+        };
+        state.failures = 0;
+        if state.tracks.is_none() {
+            return Vec::new();
+        }
+        vec![self.read(instance)]
+    }
+
     /// A failed read's second chance (`Action::Retry`).
     pub fn retry(&mut self, instance: &str) -> Vec<Action> {
         if self.instances.contains_key(instance) {

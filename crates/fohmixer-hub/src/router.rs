@@ -540,7 +540,7 @@ impl Router {
                 self.names.start(instance);
                 // The script's object refs start over with each connection:
                 // the marker keeper reads the Tuners (and their refs) again.
-                let actions = self.markers.retry(instance);
+                let actions = self.markers.connected(instance);
                 self.markers_apply(actions);
                 self.broadcast_instance(instance);
             }
@@ -1350,6 +1350,76 @@ mod tests {
             .expect("the second read's answer")
             .unwrap();
         assert!(matches!(again, RouterMsg::UnfoldRead { .. }));
+    }
+
+    /// The next message the router's own tasks send that `want` takes.
+    async fn next_of(
+        rx: &mut mpsc::UnboundedReceiver<RouterMsg>,
+        what: &str,
+        want: impl Fn(&RouterMsg) -> bool,
+    ) -> RouterMsg {
+        loop {
+            let msg = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+                .await
+                .unwrap_or_else(|_| panic!("no {what}"))
+                .expect("the channel is open");
+            if want(&msg) {
+                return msg;
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_connect_and_a_failed_rename_read_the_tuners_again() {
+        // #68 PR C: the script's object refs start over with each
+        // connection; a rename names a Tuner by its ref.
+        let dir = tempfile::tempdir().unwrap();
+        let (router, mut rx, _records) = offline_router(dir.path());
+        let store = Arc::new(crate::layout::store_in(
+            dir.path(),
+            std::path::Path::new("layout.json"),
+            vec!["band".into()],
+        ));
+        let mut router = router.with_layout(store);
+        // The keeper knows the band's tracks (its watch's value; the read
+        // that value asks for is left out).
+        let tracks = fohmixer_proto::client::hub_key("band", "live_set", markers::TRACKS, false);
+        let _ = router
+            .markers
+            .value(&tracks, Some(&json!([{"$ref": "t0", "name": "Bass #"}])));
+        // A connect reads the Tuners again (offline here: the read fails).
+        router.handle(RouterMsg::Live {
+            instance: "band".into(),
+            event: LiveEvent::Connected(crate::live::ConnectInfo {
+                instance: "band".into(),
+                set_name: "set".into(),
+                script_version: "0".into(),
+                live_version: "12".into(),
+            }),
+        });
+        let read = next_of(&mut rx, "read", |m| {
+            matches!(m, RouterMsg::MarkersRead { .. })
+        })
+        .await;
+        let RouterMsg::MarkersRead { instance, step, .. } = read else {
+            unreachable!()
+        };
+        assert_eq!((instance.as_str(), step), ("band", markers::Step::Devices));
+        // A rename that fails (an unknown ref, here an offline instance)
+        // asks for a read again.
+        router.markers_apply(vec![markers::Action::Rename {
+            instance: "band".into(),
+            target: json!({"$ref": "gone"}),
+            name: r#""Bass" +G:A:1"#.into(),
+        }]);
+        let retry = next_of(&mut rx, "retry", |m| {
+            matches!(m, RouterMsg::MarkersRetry { .. })
+        })
+        .await;
+        let RouterMsg::MarkersRetry { instance } = retry else {
+            unreachable!()
+        };
+        assert_eq!(instance, "band");
     }
 
     #[tokio::test]

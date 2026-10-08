@@ -820,3 +820,33 @@ fn the_lists_read_afresh_replace_the_kept_ones_and_a_change_reads_again() {
         "{actions:?}"
     );
 }
+
+#[test]
+fn a_connect_reads_the_tuners_again_once_the_lists_are_known() {
+    let mut k = keeper();
+    // The lists are not known yet: the first value reads.
+    assert_eq!(k.connected("band"), vec![]);
+    assert_eq!(k.connected("nobody"), vec![]);
+    let actions = k.value(&tracks_key("band"), Some(&list(1)));
+    let mut seq = apply(&mut k, actions).reads[0].1;
+    // The retries run out while Live is away…
+    let failed: Result<Vec<Value>, String> = Err("timeout".into());
+    for _ in 0..MAX_RETRIES {
+        k.read_done("band", seq, Step::Devices, &failed);
+        let actions = k.retry("band");
+        seq = apply(&mut k, actions).reads[0].1;
+    }
+    assert_eq!(k.read_done("band", seq, Step::Devices, &failed), vec![]);
+    // …a connect reads again, and its failure is tried again.
+    let actions = k.connected("band");
+    let applied = apply(&mut k, actions);
+    assert_eq!(applied.reads.len(), 1);
+    let (instance, seq, step, _) = applied.reads[0].clone();
+    assert_eq!((instance.as_str(), step), ("band", Step::Devices));
+    assert_eq!(
+        k.read_done("band", seq, Step::Devices, &failed),
+        vec![Action::Retry {
+            instance: "band".into()
+        }]
+    );
+}
