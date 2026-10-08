@@ -115,6 +115,7 @@ fn strip(name: &str) -> Strip {
         strip_kind: StripKind::Standard,
         wide: false,
         mute_guard: false,
+        pinned: false,
     }
 }
 
@@ -281,12 +282,34 @@ fn the_controls_on_screen_are_the_rail_the_rows_with_the_sub_page_and_the_global
 }
 
 #[test]
-fn a_row_shows_its_groups_and_its_pagers_selected_sub_page() {
-    let layout = sample();
-    let row = &layout.pages[1].rows[0];
-    assert_eq!(shown_groups(row, Some(0)).len(), 2);
-    assert_eq!(shown_groups(row, None).len(), 1);
-    assert_eq!(shown_groups(row, Some(2)).len(), 1);
+fn a_pinned_strip_of_another_sub_page_stays_on_screen() {
+    // #63: STAGE's strip A pinned; OTHERS shown: A stays, in the pager's
+    // place, before the shown sub-page's strips.
+    let mut layout = sample();
+    let Section::Pager(pager) = &mut layout.pages[1].rows[0].sections[0] else {
+        panic!("the pager")
+    };
+    let Section::Group(group) = &mut pager.pages[0].sections[0] else {
+        panic!("STAGE's group")
+    };
+    let Control::Strip(a) = &mut group.controls[0] else {
+        panic!("the strip A")
+    };
+    a.pinned = true;
+    assert_eq!(
+        shown(&layout, &[1, 1]),
+        vec!["stage", "solo", "hub", "A", "B", "C", "A", "alert"]
+    );
+    // On its own sub-page, once.
+    assert_eq!(
+        shown(&layout, &[1, 0]),
+        vec!["stage", "solo", "hub", "A", "C", "A", "alert"]
+    );
+    // No sub-page chosen: the pinned strip still shows.
+    assert_eq!(
+        shown(&layout, &[1]),
+        vec!["stage", "solo", "hub", "A", "C", "A", "alert"]
+    );
 }
 
 #[test]

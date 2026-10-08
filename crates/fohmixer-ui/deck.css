@@ -1,6 +1,6 @@
-/* The Stream Deck tab (#52): Companion's keys in one grid of square keys.
-   The key size --key comes from pages/deck.rs (key_side over the measured
-   .deck-area); keep KEY_GAP equal to .deck-grid's gap and AREA_PAD to
+/* The Stream Deck tab (#52): Companion's keys as square keys in two halves,
+   the control column between them (#63). The key size --key comes from
+   pages/deck.rs (half_vars: key_side over the left .deck-area); keep KEY_GAP equal to .deck-grid's gap and AREA_PAD to
    .deck-area's padding. Companion draws each key's text, colours and pressed
    look into its image; the page adds the held outline (a finger on it, at
    once), the red flash and the offline dimming. */
@@ -17,6 +17,11 @@
     height: 7px;
     border-radius: 50%;
     background: var(--danger);
+}
+
+/* The page's one line: the left keys, the column, the right keys (#63). */
+.deck-page {
+    grid-template-rows: minmax(0, 1fr);
 }
 
 .deck-area {

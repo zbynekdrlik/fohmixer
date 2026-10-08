@@ -12,7 +12,7 @@ test.describe("Version label (version-on-dashboard)", () => {
     expect(text).toBe(`v${api.version}`);
   });
 
-  test("the surface shows it over the tab bar", async ({ page }) => {
+  test("the surface shows it in the control column", async ({ page }) => {
     const api = await (await page.request.get("/api/version")).json();
     await openSurface(page);
     await expect(page.getByTestId("stage").getByTestId("version")).toHaveText(`v${api.version}`);

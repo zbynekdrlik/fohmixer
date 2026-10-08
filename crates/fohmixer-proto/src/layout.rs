@@ -189,6 +189,11 @@ pub struct Strip {
     /// A mute change needs a second tap (spec F12).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub mute_guard: bool,
+    /// Never leaves the screen (#63): it keeps its place on every sub-page
+    /// of its pager and stays shown when the column's arrows shift a line
+    /// that does not fit. The owner chooses these strips.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pinned: bool,
 }
 
 /// The strip kinds: a track, or a return track (its name carries the
@@ -243,6 +248,11 @@ impl Page {
 }
 
 impl Control {
+    /// Whether the control never leaves the screen (#63): a pinned strip.
+    pub fn pinned(&self) -> bool {
+        matches!(self, Control::Strip(strip) if strip.pinned)
+    }
+
     /// The bindings this control reads or writes.
     pub fn bindings(&self) -> Vec<&Binding> {
         match self {

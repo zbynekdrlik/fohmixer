@@ -210,7 +210,7 @@ test.describe("The Stream Deck tab", () => {
     await companion.reset();
   });
 
-  test("shows 8 × 4 square keys in key order, and only the global controls on the rail", async ({ page }) => {
+  test("shows 8 × 4 square keys in key order around the column, and only the global controls on the rail", async ({ page }) => {
     await openSurface(page);
     await openDeck(page);
     const boxes = await page.getByTestId("deck-key").evaluateAll((els) =>
@@ -219,7 +219,9 @@ test.describe("The Stream Deck tab", () => {
         return { key: Number(e.getAttribute("data-key")), x: r.x, y: r.y, w: r.width, h: r.height };
       }),
     );
-    expect(boxes.map((b) => b.key)).toEqual([...Array(32).keys()]);
+    // #63: the left half's keys (columns 0–3 of each row), then the right's.
+    expect(boxes.map((b) => b.key)).toEqual([0, 1, 2, 3, 8, 9, 10, 11, 16, 17, 18, 19, 24, 25, 26, 27, 4, 5, 6, 7, 12, 13, 14, 15, 20, 21, 22, 23, 28, 29, 30, 31]);
+    boxes.sort((a, b) => a.key - b.key);
     const viewport = page.viewportSize()!;
     for (const b of boxes) {
       expect(Math.abs(b.w - b.h), `key ${b.key} is square`).toBeLessThanOrEqual(1);
@@ -237,6 +239,10 @@ test.describe("The Stream Deck tab", () => {
         expect(Math.abs(boxes[key].x - boxes[key - 8].x)).toBeLessThanOrEqual(1);
       }
     }
+    // The column sits between keys 3 and 4.
+    const column = (await page.locator('[data-testid="deck"] [data-testid="column"]').boundingBox())!;
+    expect(boxes[3].x + boxes[3].w).toBeLessThanOrEqual(column.x + 0.5);
+    expect(boxes[4].x).toBeGreaterThanOrEqual(column.x + column.width - 0.5);
     await expect(page.locator('[data-testid="deck"] .rail-main > *')).toHaveCount(0);
     await expect(page.locator('[data-testid="deck"] .rail-foot > *').first()).toBeVisible();
     await expect(page.getByTestId("deck-tab")).toHaveAttribute("data-offline", "false");
@@ -250,11 +256,11 @@ test.describe("The Stream Deck tab", () => {
     await expect(bar.getByTestId("deck-tab")).toHaveCount(1);
   });
 
-  test("the top bar keeps the version on screen beside the deck tab", async ({ page }) => {
+  test("the column keeps the version on screen beside the deck tab", async ({ page }) => {
     await openSurface(page);
     await expect(page.getByTestId("deck-tab")).toBeVisible();
     const width = page.viewportSize()!.width;
-    // The widest bar first: FOH with its pager's tabs; then the deck's.
+    // FOH with its pager's tabs first; then the deck's.
     for (const shown of ["foh", "deck"]) {
       if (shown === "deck") await openDeck(page);
       const version = page.getByTestId("version");
@@ -489,7 +495,7 @@ test.describe("The Stream Deck tab", () => {
     await dispatchPointer(deckKey(page, 17), [{ type: "pointerdown" }], 21, true);
     await until(() => pressesOf(17, since), (p) => p.join() === "true", "key 17 down");
     // A second finger in the grid's margin releases nothing.
-    const margin = page.locator('[data-testid="deck"] .deck-area');
+    const margin = page.locator('[data-testid="deck"] .deck-area').first();
     await dispatchPointer(margin, [{ type: "pointerdown" }, { type: "pointerup" }], 22, false);
     await frames(page);
     await expect(deckKey(page, 17)).toHaveAttribute("data-held", "true");

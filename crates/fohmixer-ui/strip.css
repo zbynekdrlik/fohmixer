@@ -4,10 +4,10 @@
 
 /* --- strips --- */
 
-/* Held in the hands (#63): what is read sits at the top (the name button
-   with Live's dB, then the pan), the fader zone runs down to the foot, which
-   a hand holding the tablet covers. The instance tag only in a group whose
-   strips differ. */
+/* Held in the hands (#63): what is read sits at the top (the name button,
+   Live's dB under it, then the pan), the fader zone runs down to the foot,
+   which a hand holding the tablet covers. The instance tag only in a group
+   whose strips differ. */
 .strip {
     position: relative;
     display: grid;
@@ -46,6 +46,17 @@
 .strip::before {
     border-top: 3px solid var(--gc, var(--accent));
     opacity: 0.9;
+}
+
+/* A pager's slot the shown sub-page leaves empty (#63): the strips after it
+   keep their places. */
+.strip.blank {
+    border: 1px dashed var(--line-soft);
+    background: none;
+}
+
+.strip.blank::before {
+    display: none;
 }
 
 /* A muted strip steps back (#63): darker, its fader, meter and readout
@@ -380,29 +391,26 @@
     border-color: var(--accent);
 }
 
-/* The top of the strip: the name button, the status light and Live's dB
-   in a dark window over its lower half (it takes no touch: a tap is the
-   mute's), and a return's RET mark (#63). */
+/* The top of the strip (#63): the name button, 30 px (the fader, not the
+   button, gets the height), the status light and Live's dB on a line under
+   it (it takes no touch), and a return's RET mark. */
 .strip-head {
     position: relative;
     display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: 30px auto;
+    row-gap: 2px;
     min-width: 0;
-    height: 48px;
 }
 
 .strip-readout {
-    position: absolute;
-    left: 50%;
-    bottom: 3px;
-    z-index: 1;
     display: flex;
+    justify-self: center;
     align-items: center;
     gap: 3px;
     max-width: 100%;
     padding: 0 3px;
     border-radius: 5px;
-    background: rgba(7, 7, 12, 0.72);
-    transform: translateX(-50%);
     pointer-events: none;
 }
 
@@ -482,13 +490,11 @@
     to { outline-offset: 4px; outline-color: transparent; }
 }
 
-/* A strip's name button fills the strip's head, its name in the upper half
-   (the readout window holds the lower one), under the corner marks (RET,
-   MUTE). */
+/* A strip's name button: the head's first line, its name under the corner
+   marks (RET, MUTE). */
 .strip-head > .mute {
-    align-items: flex-start;
-    height: 100%;
-    padding-top: 10px;
+    height: 30px;
+    padding-top: 3px;
 }
 
 /* The name's size comes from the strip width and the name's length `--n`

@@ -187,15 +187,8 @@ exclude_re = [
   # deck.spec.ts drives them in Chromium and WebKit (down and up on
   # pointerup, pointercancel and leaving the tab, with the page's deck
   # events and their whys in the event log; the outline; the red flash with
-  # no later send). grid_vars (the grid's size) is tested.
+  # no later send). half_keys and half_vars (each half's keys and size, #63) are tested.
   "fohmixer-ui/src/pages/deck\\.rs.*(replace|in) (carry|show_held|lift_keys|leave_keys|lift_missed)( |$)",
-  # pages/overview.rs (#63): the phone's overview bar reads the shown row
-  # and its strips from the DOM (offsets, scroll sizes, the name buttons'
-  # colours) and writes the miniature's blocks; nothing of it runs natively.
-  # Its geometry is flow::overview_window / overview_scroll (tested);
-  # e2e/tests/phone.spec.ts drives the bar (a tap moves the row, the blocks
-  # match the strips).
-  "fohmixer-ui/src/pages/overview\\.rs.*(replace|in) (row_at|has_class|collect_strips|strip_colour|draw_strips)( |$)",
   # diag.rs (#26), one browser call each: install (the window error,
   # unhandledrejection and visibilitychange listeners), observe_attributes
   # (the MutationObserver on data-sw / data-wake-lock), connected and

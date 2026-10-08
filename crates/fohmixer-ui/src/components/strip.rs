@@ -1,10 +1,11 @@
 //! A mixer strip (spec F2–F5, F8–F13; the redesign, #21; held in the hands,
 //! #63): at the top the name button, the mute, lit in the track's Live
-//! colour while the track is audible, with the status light and Live's dB
-//! readout over its lower half (a hand holding the tablet covers the
-//! bottom of the screen, so nothing to read sits there); then the pan bar,
-//! the instance tag when the group's strips differ, and the fader zone (the
-//! dB scale, the meter, the fader) down to the strip's foot.
+//! colour while the track is audible and only 30 px high (the fader gets
+//! the height), with the status light and Live's dB readout on the line
+//! under it (a hand holding the tablet covers the bottom of the screen, so
+//! nothing to read sits there); then the pan bar, the instance tag when the
+//! group's strips differ, and the fader zone (the dB scale, the meter, the
+//! fader) down to the strip's foot.
 
 use fohmixer_proto::layout::{Strip, StripKind};
 use leptos::prelude::*;

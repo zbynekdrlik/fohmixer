@@ -4,8 +4,8 @@ import { test, expect } from "./support/fixtures";
 import { clipped, harness, hubSubscriptions, openSurface, selectPage, strip, until } from "./support/live";
 
 // Pages, the pager, the rail, the rows of sections (the redesign, #21; spec
-// §4.2): the imported synthetic layout (schema 2), only the controls on
-// screen subscribed.
+// §4.2) on both sides of the control column (#63): the imported synthetic
+// layout (schema 2), only the controls on screen subscribed.
 
 const LAYOUT = join(__dirname, "..", "..", "tools", "import-tosc", "fixtures", "expected-layout.json");
 const layout = () => JSON.parse(readFileSync(LAYOUT, "utf-8"));
@@ -96,7 +96,7 @@ test.describe("Pages and tabs", () => {
   });
 });
 
-test.describe("The page is a rail and rows of sections", () => {
+test.describe("The page is its rows of sections around the control column", () => {
   test("the rail holds the page's function controls in the layout's order", async ({ page }) => {
     await openSurface(page);
     const kinds = await page
@@ -147,18 +147,26 @@ test.describe("The page is a rail and rows of sections", () => {
     const fixture = layout();
     const foh = fixture.pages[1];
     await openSurface(page);
-    const rows = page.getByTestId("row");
-    await expect(rows).toHaveCount(foh.rows.length);
+    // Each row is a line of its own (a tablet's and a desktop's height), cut
+    // in two by the column: its left half, then its right one.
+    const halves = page.getByTestId("half");
+    await expect(halves).toHaveCount(2 * foh.rows.length);
     // Row by row: the groups (the pager's selected sub-page in its place).
     const expected: string[][] = foh.rows.map((row: any) =>
       row.sections.flatMap((s: any) => (s.kind === "pager" ? s.pages[0].sections.map((g: any) => g.id) : [s.id])),
     );
     for (let r = 0; r < expected.length; r++) {
-      const ids = await rows
-        .nth(r)
-        .locator('[data-testid="group"]')
+      const ids = await page
+        .locator(`[data-testid="half"][data-line="${r}"] [data-testid="group"]`)
         .evaluateAll((els) => els.map((e) => e.getAttribute("data-group")));
       expect(ids, `row ${r}`).toEqual(expected[r]);
+    }
+    // The column sits between the halves.
+    const column = (await page.getByTestId("column").boundingBox())!;
+    for (const [side, edge] of [["left", "right"], ["right", "left"]] as const) {
+      const box = (await page.locator(`[data-testid="half"][data-line="0"][data-side="${side}"]`).boundingBox())!;
+      if (edge === "right") expect(box.x + box.width, "the left half ends before the column").toBeLessThanOrEqual(column.x + 0.5);
+      else expect(box.x, "the right half starts after the column").toBeGreaterThanOrEqual(column.x + column.width - 0.5);
     }
     expect(await groups(page)).toEqual(expected.flat());
     // Titles and colour markers.
@@ -190,7 +198,7 @@ test.describe("The page is a rail and rows of sections", () => {
     expect(widths[0]).toBeLessThanOrEqual(120.5);
     const wide = await strip(page, "B-Main repro #").evaluate((e) => e.getBoundingClientRect().width);
     expect(Math.abs(wide - widths[0] * 1.1)).toBeLessThan(0.6);
-    // The page never scrolls; this layout fits without a row scrolling.
+    // The page never scrolls; this layout fits: no line needs arrows.
     const size = await page.evaluate(() => ({
       w: document.documentElement.scrollWidth,
       h: document.documentElement.scrollHeight,
@@ -199,7 +207,7 @@ test.describe("The page is a rail and rows of sections", () => {
     }));
     expect(size.w).toBeLessThanOrEqual(size.vw);
     expect(size.h).toBeLessThanOrEqual(size.vh);
-    await expect(page.locator('[data-testid="row"].scrolls')).toHaveCount(0);
+    await expect(page.getByTestId("shift")).toHaveCount(0);
     for (const s of await page.locator('[data-testid="strip"]').all()) {
       const box = (await s.boundingBox())!;
       expect(box.x + box.width).toBeLessThanOrEqual(size.vw + 0.5);
@@ -234,8 +242,8 @@ test.describe("Nothing moves under a finger", () => {
       await expect(group.getByTestId("group-title")).toHaveText(section.title, { timeout: 10_000 });
       const body = (await group.locator(".group-body").boundingBox())!;
       const one = (await group.locator(".group-body > *").first().boundingBox())!;
-      // The body is its one column and its padding and border (10 px), nothing more.
-      expect(Math.abs(body.width - (one.width + 10))).toBeLessThan(1);
+      // The body is its one column, nothing more (#63: no padding, no border).
+      expect(Math.abs(body.width - one.width)).toBeLessThan(1);
       const box = (await group.boundingBox())!;
       expect(Math.abs(box.width - body.width)).toBeLessThan(1);
     } finally {
