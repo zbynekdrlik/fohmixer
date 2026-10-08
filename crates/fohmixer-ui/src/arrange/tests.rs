@@ -276,6 +276,18 @@ fn rows_are_lines_of_their_own_while_each_keeps_340_px_of_its_share() {
         lines(&[1.5, 1.0], 856.0_f64.next_down(), &METRICS),
         vec![vec![0, 1]]
     );
+    // The lightest weight counts as a weight, not as 1: the lighter row of
+    // 2:3 gets 2/5 of 850 px, each row of 0.5:0.5 half of 680 px.
+    assert_eq!(lines(&[2.0, 3.0], 856.0, &METRICS), vec![vec![0], vec![1]]);
+    assert_eq!(
+        lines(&[2.0, 3.0], 856.0_f64.next_down(), &METRICS),
+        vec![vec![0, 1]]
+    );
+    assert_eq!(lines(&[0.5, 0.5], 686.0, &METRICS), vec![vec![0], vec![1]]);
+    assert_eq!(
+        lines(&[0.5, 0.5], 686.0_f64.next_down(), &METRICS),
+        vec![vec![0, 1]]
+    );
     assert_eq!(lines(&[1.0], 200.0, &METRICS), vec![vec![0]]);
     assert_eq!(lines(&[], 900.0, &METRICS), Vec::<Vec<usize>>::new());
 }
