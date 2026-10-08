@@ -187,12 +187,12 @@ pub fn PanView(state: RwSignal<Slot>, spec: SubSpec) -> impl IntoView {
     });
 
     let state = Memo::new(move |_| readiness(&[slot]));
-    let binding = move || state.get().name();
-    let disabled = move || state.get().disabled();
+    let binding = move || state.try_get().map_or("waiting", |s| s.name());
+    let disabled = move || state.try_get().map_or("true", |s| s.disabled());
     view! {
         <div
             class="pan"
-            class:failed=move || failed.get()
+            class:failed=move || failed.try_get().unwrap_or(false)
             data-testid="pan"
             data-binding=binding
             aria-disabled=disabled

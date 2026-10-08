@@ -37,7 +37,7 @@ fn toggle_state(targets: &[Target], tracked: bool) -> ToggleState {
         .map(|t| {
             let read = |s: &Slot| s.value().map(|v| is_on(v, &t.on));
             if tracked {
-                t.slot.with(read)
+                t.slot.try_with(read).flatten()
             } else {
                 t.slot.try_with_untracked(read).flatten()
             }
@@ -77,7 +77,7 @@ pub fn ParamToggleView(
         .collect();
     let slots: Vec<RwSignal<Slot>> = targets.iter().map(|t| t.slot).collect();
     let binding = Memo::new(move |_| readiness(&slots));
-    let bound = move || binding.get().name();
+    let bound = move || binding.try_get().map_or("waiting", |s| s.name());
     let keys: Vec<String> = targets
         .iter()
         .filter_map(|t| t.spec.as_ref())
@@ -161,7 +161,7 @@ pub fn ParamToggleView(
             class="btn param-toggle"
             node_ref=root
             use:owns_touches=touch_keys
-            class:failed=move || failed.get()
+            class:failed=move || failed.try_get().unwrap_or(false)
             data-testid="param-toggle"
             data-label=label_attr
             data-press=press_name
@@ -201,7 +201,10 @@ pub fn ParamFaderView(label: String, targets: Vec<ParamTarget>) -> impl IntoView
     let slot = targets
         .first()
         .map_or_else(|| RwSignal::new(Slot::Pending), |t| t.slot);
-    let display = move || slot.with(|s| s.display().unwrap_or_default().to_string());
+    let display = move || {
+        slot.try_with(|s| s.display().unwrap_or_default().to_string())
+            .unwrap_or_default()
+    };
     let label_attr = label.clone();
     view! {
         <div class="strip param-fader" data-testid="param-fader" data-label=label_attr>

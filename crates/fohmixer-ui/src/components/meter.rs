@@ -101,9 +101,9 @@ pub fn MeterView(levels: Vec<RwSignal<Slot>>, law: VolumeLaw) -> impl IntoView {
         >
             <div
                 class="meter-clip"
-                class:on=move || clip.get()
+                class:on=move || clip.try_get().unwrap_or(false)
                 data-testid="clip"
-                data-on=move || clip.get().to_string()
+                data-on=move || clip.try_get().unwrap_or(false).to_string()
                 use:owns_touches=no_keys
                 on:pointerdown=reset
             ></div>

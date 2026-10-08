@@ -45,9 +45,9 @@ pub fn ScaleView(law: VolumeLaw) -> impl IntoView {
 /// at 0 dB).
 #[component]
 pub fn DbView(state: RwSignal<Slot>) -> impl IntoView {
-    let text = Memo::new(move |_| state.with(|s| s.display().and_then(db_text)));
-    let shown = move || text.get().map(|t| t.text).unwrap_or_default();
-    let unity = move || text.get().is_some_and(|t| t.unity);
+    let text = Memo::new(move |_| state.try_with(|s| s.display().and_then(db_text)).flatten());
+    let shown = move || text.try_get().flatten().map(|t| t.text).unwrap_or_default();
+    let unity = move || text.try_get().flatten().is_some_and(|t| t.unity);
     view! {
         <span class="db" class:unity=unity data-testid="db">{shown}</span>
     }
