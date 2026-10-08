@@ -365,9 +365,10 @@ fn PageView(page: Page, global: Vec<Control>, sub: Memo<Option<usize>>) -> impl 
     });
     // Each line's window (a line that does not fit), from the column's
     // arrows, kept by the line's key (`PageModel::line_key`: its rows, and
-    // the sub-page where the pager is): a turned screen or another sub-page
-    // shows that line's window from its start, coming back finds it where it
-    // was, and the other lines keep theirs.
+    // the sub-page where the pager is): another sub-page, or a turned screen
+    // that groups the rows into other lines, shows that line's window from
+    // its start and coming back finds it where it was; a turned screen with
+    // the same lines keeps each window (clamped by `shown`).
     let offsets = RwSignal::new(BTreeMap::<LineKey, usize>::new());
     // Every read below tolerates a disposed value (`try_*`): a layout change
     // disposes the page while its keyed lists' effects may still run once.

@@ -176,8 +176,9 @@ impl PageModel {
     }
 
     /// What a line's window is kept for: its rows, and the shown sub-page
-    /// when one of them holds the pager (another sub-page starts its window
-    /// over, the other lines keep theirs).
+    /// when one of them holds the pager (another sub-page shows its window
+    /// from the start, coming back finds it where it was; the other lines
+    /// keep theirs).
     pub fn line_key(&self, rows: &[usize], sub: Option<usize>) -> LineKey {
         let paged = self.pager_row().is_some_and(|row| rows.contains(&row));
         LineKey {
