@@ -23,6 +23,7 @@ use crate::components::{ControlView, Settings, fail_flash, key_of, owns_surface,
 use crate::dom;
 use crate::flow::{METRICS, Shape, overflows, pager_shape, row_shape, strip_width};
 use crate::pages::deck::DeckView;
+use crate::pages::overview::OverviewView;
 use crate::store::{Badge, LiveStore, Slot};
 
 /// Where the selected pages are remembered (a JSON map: `""` for the pages,
@@ -461,6 +462,7 @@ fn PageView(page: Page, global: Vec<Control>, sub: Memo<Option<usize>>) -> impl 
                 {rail_tab}
                 {row_tabs}
             </div>
+            <OverviewView rows=rows_ref />
             <nav class="rail" data-testid="rail" data-shown=rail_shown>
                 <div class="rail-main">{rail}</div>
                 <div class="rail-foot">{global}</div>

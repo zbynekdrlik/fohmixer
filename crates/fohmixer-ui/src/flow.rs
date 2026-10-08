@@ -187,6 +187,29 @@ pub fn strip_width(rows: &[Shape], avail: f64, m: &Metrics) -> f64 {
 /// How much a row may pass its room before it scrolls (rounding).
 pub const SLACK: f64 = 0.5;
 
+/// Where a phone's overview bar draws a row's visible part (#63): its left
+/// edge and its width as shares of the row's whole width (`scroll_width`,
+/// px), the row showing `client_width` px from `scroll_left`; none when the
+/// row fits (nothing to move).
+pub fn overview_window(
+    scroll_left: f64,
+    scroll_width: f64,
+    client_width: f64,
+) -> Option<(f64, f64)> {
+    if scroll_width <= client_width + SLACK {
+        return None;
+    }
+    let width = client_width / scroll_width;
+    let left = (scroll_left / scroll_width).clamp(0.0, 1.0 - width);
+    Some((left, width))
+}
+
+/// The scroll position that centres a row's visible part on share `at` of
+/// the overview bar (#63), within the row's scroll range.
+pub fn overview_scroll(at: f64, scroll_width: f64, client_width: f64) -> f64 {
+    (at * scroll_width - client_width / 2.0).clamp(0.0, (scroll_width - client_width).max(0.0))
+}
+
 /// Whether a row with strips `width` wide passes `avail` (it then scrolls
 /// inside itself).
 pub fn overflows(row: Shape, width: f64, avail: f64) -> bool {
@@ -274,6 +297,36 @@ mod tests {
             color: None,
             controls,
         }
+    }
+
+    #[test]
+    fn the_overview_draws_the_visible_part_of_a_row_that_scrolls() {
+        // 400 px of a 1000 px row, scrolled by 300 px.
+        assert_eq!(overview_window(300.0, 1000.0, 400.0), Some((0.3, 0.4)));
+        // At the ends the part stays inside the bar.
+        assert_eq!(overview_window(-20.0, 1000.0, 400.0), Some((0.0, 0.4)));
+        assert_eq!(overview_window(700.0, 1000.0, 400.0), Some((0.6, 0.4)));
+        assert_eq!(overview_window(900.0, 1000.0, 400.0), Some((0.6, 0.4)));
+        // A row that fits (within the rounding slack) needs no bar.
+        assert_eq!(overview_window(0.0, 400.0, 400.0), None);
+        assert_eq!(overview_window(0.0, 400.5, 400.0), None);
+        assert_eq!(
+            overview_window(0.0, 400.75, 400.0).map(|(l, _)| l),
+            Some(0.0)
+        );
+    }
+
+    #[test]
+    fn a_touch_on_the_overview_centres_the_row_there() {
+        // A 1000 px row seen 400 px wide: the middle of the bar shows 300..700.
+        assert_eq!(overview_scroll(0.5, 1000.0, 400.0), 300.0);
+        assert_eq!(overview_scroll(0.25, 1000.0, 400.0), 50.0);
+        // Near the ends it stops at the row's ends.
+        assert_eq!(overview_scroll(0.1, 1000.0, 400.0), 0.0);
+        assert_eq!(overview_scroll(0.95, 1000.0, 400.0), 600.0);
+        assert_eq!(overview_scroll(-1.0, 1000.0, 400.0), 0.0);
+        // A row that fits never moves.
+        assert_eq!(overview_scroll(0.9, 300.0, 400.0), 0.0);
     }
 
     #[test]

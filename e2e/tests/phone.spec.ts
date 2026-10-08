@@ -1,5 +1,5 @@
 import { test, expect } from "./support/fixtures";
-import { LiveClient, frames, openSurface, ready, strip, track } from "./support/live";
+import { LiveClient, frames, openSurface, ready, strip, track, until } from "./support/live";
 
 // On a phone (#63): one screen at a time. Each row of the page is a screen
 // and so is the rail; the screen bar switches them, so a row gets the whole
@@ -128,16 +128,41 @@ test.describe("On a phone upright", () => {
     const fader = strip(page, "Hand2 #").getByTestId("fader");
     await ready(fader);
     expect((await fader.boundingBox())!.height, "the fader's travel (px)").toBeGreaterThan(400);
+    const overview = page.getByTestId("overview");
+    await expect(overview, "the first row fits: no overview").toHaveAttribute("data-needed", "false");
     await page.getByTestId("screen").nth(2).click();
-    await expect(rows.nth(1)).toBeVisible();
-    await expect(rows.nth(1)).toHaveClass(/\bscrolls\b/);
-    expect(await rows.nth(1).evaluate((el) => el.scrollWidth - el.clientWidth), "its scroll range (px)").toBeGreaterThan(50);
+    const wide = rows.nth(1);
+    await expect(wide).toBeVisible();
+    await expect(wide).toHaveClass(/\bscrolls\b/);
+    const range = await wide.evaluate((el) => el.scrollWidth - el.clientWidth);
+    expect(range, "its scroll range (px)").toBeGreaterThan(50);
+    // The overview bar: the row in miniature, a block per strip, the part on
+    // screen outlined; a finger on its right end brings the last strip in.
+    await expect(overview).toHaveAttribute("data-needed", "true");
+    await expect(overview).toBeVisible();
+    const strips = wide.getByTestId("strip");
+    await expect(overview.locator(".overview-strip")).toHaveCount(await strips.count());
+    expect(await wide.evaluate((el) => el.scrollLeft)).toBe(0);
+    const bar = (await overview.boundingBox())!;
+    await page.mouse.click(bar.x + bar.width - 2, bar.y + bar.height / 2);
+    await until(() => wide.evaluate((el) => el.scrollLeft), (left) => Math.abs(left - range) <= 1, "the row at its right end");
+    const last = (await strips.last().boundingBox())!;
+    expect(last.x + last.width, "the last strip on screen").toBeLessThanOrEqual(390);
+    // A drag back to the left end moves the row along.
+    await page.mouse.move(bar.x + bar.width - 2, bar.y + bar.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(bar.x + 2, bar.y + bar.height / 2, { steps: 8 });
+    await page.mouse.up();
+    await until(() => wide.evaluate((el) => el.scrollLeft), (left) => left <= 1, "the row back at its left end");
+    await frames(page);
+    const outline = (await overview.locator(".overview-window").boundingBox())!;
+    expect(outline.x - bar.x, "the outline at the bar's left end").toBeLessThan(4);
     expect(await topBarOverflow(page), "the top bar fits the screen").toBeLessThanOrEqual(0);
     // The screen bar's tabs own their touches, so a finger cannot scroll it:
     // it wraps, every tab inside it.
-    const bar = page.getByTestId("screens");
-    await expect(bar).toHaveCSS("flex-wrap", "wrap");
-    expect(await bar.evaluate((el) => el.scrollWidth - el.clientWidth), "the screen bar's tabs inside it").toBeLessThanOrEqual(0);
+    const screenBar = page.getByTestId("screens");
+    await expect(screenBar).toHaveCSS("flex-wrap", "wrap");
+    expect(await screenBar.evaluate((el) => el.scrollWidth - el.clientWidth), "the screen bar's tabs inside it").toBeLessThanOrEqual(0);
     const version = page.getByTestId("stage").getByTestId("version");
     await expect(version).toBeVisible();
     const label = (await version.boundingBox())!;
