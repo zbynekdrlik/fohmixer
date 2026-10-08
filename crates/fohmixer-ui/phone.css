@@ -6,10 +6,12 @@
    in landscape). The top bar wraps when it must. Nothing changes on a
    tablet: the screen bar exists only here. */
 
-.screens {
+.screens,
+.overview {
     display: none;
 }
 
+/* The same query is pages/overview.rs's PHONE: keep them equal. */
 @media (max-height: 520px), (max-width: 700px) {
     .mixer {
         grid-template-rows: auto minmax(0, 1fr);
@@ -35,9 +37,64 @@
         gap: 8px;
     }
 
+    /* The screen bar, the overview bar, then the screen (a row or the
+       rail), each in its own grid row whether the overview shows or not. */
     .body {
         grid-template-columns: minmax(0, 1fr);
-        grid-template-rows: auto minmax(0, 1fr);
+        grid-template-rows: auto auto minmax(0, 1fr);
+    }
+
+    .screens {
+        grid-row: 1;
+    }
+
+    .rows,
+    .rail[data-shown="true"] {
+        grid-row: 3;
+    }
+
+    /* The overview bar (pages/overview.rs): the shown row in miniature, its
+       part on screen outlined; a touch or a drag there moves the row. Only
+       while the row does not fit. */
+    .overview {
+        grid-row: 2;
+        display: block;
+        position: relative;
+        height: 26px;
+        margin: 4px 8px 0;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: var(--track);
+        touch-action: none;
+        cursor: pointer;
+    }
+
+    .overview[data-needed="false"] {
+        visibility: hidden;
+        height: 0;
+        margin: 0;
+        border: 0;
+    }
+
+    .overview-strips {
+        position: absolute;
+        inset: 4px 0;
+    }
+
+    .overview-strip {
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        border-radius: 2px;
+    }
+
+    .overview-window {
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        border: 2px solid var(--accent);
+        border-radius: 5px;
+        pointer-events: none;
     }
 
     /* The tabs own their touches, so a finger could not scroll the bar:

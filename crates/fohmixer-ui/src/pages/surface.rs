@@ -23,6 +23,7 @@ use crate::components::{ControlView, Settings, fail_flash, key_of, owns_surface,
 use crate::dom;
 use crate::flow::{METRICS, Shape, overflows, pager_shape, row_shape, strip_width};
 use crate::pages::deck::DeckView;
+use crate::pages::overview::OverviewView;
 use crate::store::{Badge, LiveStore, Slot};
 
 /// Where the selected pages are remembered (a JSON map: `""` for the pages,
@@ -451,6 +452,11 @@ fn PageView(page: Page, global: Vec<Control>, sub: Memo<Option<usize>>) -> impl 
         .collect_view();
     let strip_width_style = move || format!("--strip-w:{:.1}px;", width.get());
     let rail_shown = move || (screen.get() == Screen::Rail).to_string();
+    // The row a phone shows (none while the rail shows), for its overview.
+    let shown_index = Memo::new(move |_| match screen.get() {
+        Screen::Row(index) => Some(index),
+        Screen::Rail => None,
+    });
     let body_screen = move || match screen.get() {
         Screen::Rail => "rail",
         Screen::Row(_) => "row",
@@ -461,6 +467,7 @@ fn PageView(page: Page, global: Vec<Control>, sub: Memo<Option<usize>>) -> impl 
                 {rail_tab}
                 {row_tabs}
             </div>
+            <OverviewView rows=rows_ref shown=shown_index sub=sub />
             <nav class="rail" data-testid="rail" data-shown=rail_shown>
                 <div class="rail-main">{rail}</div>
                 <div class="rail-foot">{global}</div>
