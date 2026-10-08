@@ -1,0 +1,505 @@
+<!doctype html>
+<!-- fohmixer #63: a mockup of the surface with one control column in the middle (invented track names); not part of the app. -->
+<html lang="sk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Fohmixer stredový pás</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@700&family=Barlow:wght@600;700&family=JetBrains+Mono:wght@500;600&display=swap">
+<style>
+/* The page: a thin mockup bar (device, variant, measured fader travel), then
+   the device's screen drawn at its real size in CSS px and scaled to fit.
+   Inside the screen: the left bank of strips, the control column, the right
+   bank. Dark on purpose: it is fohmixer's own look. */
+:root {
+    color-scheme: dark;
+    --bg: #050508;
+    --page: #0b0b12;
+    --column: #10101a;
+    --panel: #1a1a28;
+    --panel-mute: #12121b;
+    --track: #0a0a14;
+    --line: #2a2a44;
+    --accent: #4ecdc4;
+    --mute: #e63946;
+    --band: #4ecdc4;
+    --master: #8b7dff;
+    --text: #eaeaf0;
+    --muted: #9a9ab4;
+    --faint: #5c5c78;
+    --db: #9be7a8;
+    --warm: #f5a623;
+    --m-green: #36d67a;
+    --display: "Barlow Condensed", "Arial Narrow", sans-serif;
+    --ui: "Barlow", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --mono: "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+}
+* { box-sizing: border-box; }
+html, body {
+    height: 100%;
+    margin: 0;
+    overflow: hidden;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--ui);
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+}
+body { display: flex; flex-direction: column; }
+
+/* The mockup bar (not part of the design). */
+.mock {
+    flex: none;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 12px;
+    padding: 6px 10px;
+    background: #16161f;
+    border-bottom: 1px solid #333;
+    font-size: 13px;
+}
+.mock .set { display: flex; gap: 4px; }
+.mock button {
+    font: 700 12px var(--ui);
+    color: var(--muted);
+    background: #22222e;
+    border: 1px solid #3a3a4a;
+    border-radius: 6px;
+    padding: 5px 9px;
+}
+.mock button[aria-pressed="true"] { color: #0b0b12; background: var(--accent); border-color: var(--accent); }
+.mock .out { font-family: var(--mono); color: var(--db); }
+.mock .note { color: var(--muted); font-size: 12px; }
+
+.stage { flex: 1; position: relative; min-height: 0; }
+.screen {
+    position: absolute;
+    left: 0;
+    top: 0;
+    transform-origin: 0 0;
+    background: var(--page);
+    border-radius: 14px;
+    outline: 2px solid #2c2c3a;
+    overflow: hidden;
+    display: grid;
+    grid-template-columns: 1fr var(--col) 1fr;
+    gap: 6px;
+    padding: 6px;
+}
+
+/* A bank: its strips in one or two lines, each line under a thin row of
+   group labels. */
+.bank { display: flex; flex-direction: column; gap: 6px; min-width: 0; overflow: hidden; }
+.line { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.labels { flex: none; height: 14px; display: flex; gap: 4px; }
+.label {
+    flex: none;
+    font: 700 10px/14px var(--display);
+    letter-spacing: 0.08em;
+    color: var(--muted);
+    border-top: 2px solid var(--gc);
+    padding: 0 3px;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+.strips { flex: 1; display: flex; gap: 4px; min-height: 0; }
+.strip {
+    flex: none;
+    width: var(--strip);
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    background: var(--panel);
+    border-radius: 8px;
+    padding: 3px;
+    min-height: 0;
+}
+.strip.muted { background: var(--panel-mute); }
+.name {
+    flex: none;
+    height: var(--head);
+    border: 0;
+    border-radius: 6px;
+    background: var(--tc);
+    color: #0b0b12;
+    font: 700 14px/1 var(--display);
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    padding: 0 3px;
+}
+.strip.muted .name { background: #232333; color: var(--faint); }
+.dbl {
+    flex: none;
+    height: 15px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    font: 600 12px/1 var(--mono);
+    color: var(--db);
+}
+.dbl::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--m-green); }
+.strip.muted .dbl { color: var(--faint); }
+.pan { flex: none; height: 16px; border-radius: 8px; background: var(--track); position: relative; }
+.pan::after {
+    content: "";
+    position: absolute;
+    left: calc(50% - 6px);
+    top: 2px;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: #8a8aa4;
+}
+.fz { flex: 1; display: grid; grid-template-columns: 18px 5px 1fr; gap: 3px; padding: 6px 0 4px; min-height: 0; }
+.scale, .meter, .fader { position: relative; }
+.tick {
+    position: absolute;
+    right: 0;
+    transform: translateY(-50%);
+    font: 500 9px/1 var(--mono);
+    color: var(--faint);
+}
+.meter { background: var(--track); border-radius: 2px; overflow: hidden; }
+.meter i {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: linear-gradient(to top, var(--m-green) 70%, #f5d547 88%, #ff4757);
+}
+.strip.muted .meter i { opacity: 0.25; }
+.fader { touch-action: none; }
+.fader::before {
+    content: "";
+    position: absolute;
+    left: calc(50% - 2px);
+    top: 0;
+    bottom: 0;
+    width: 4px;
+    border-radius: 2px;
+    background: var(--track);
+}
+.fader .unity { position: absolute; left: 10%; right: 10%; height: 1px; background: #3a3a55; }
+.fader .fill {
+    position: absolute;
+    left: calc(50% - 2px);
+    width: 4px;
+    bottom: 0;
+    background: var(--accent);
+    opacity: 0.75;
+    border-radius: 2px;
+}
+.strip.muted .fader .fill { opacity: 0.25; }
+.cap {
+    position: absolute;
+    left: calc(50% - 17px);
+    width: 34px;
+    height: 22px;
+    margin-top: -11px;
+    border-radius: 5px;
+    background: linear-gradient(#4a4a62, #2c2c40);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.6);
+}
+.cap::after { content: ""; position: absolute; left: 8px; right: 8px; top: 10px; height: 2px; background: #d8d8e4; }
+.strip.held { outline: 2px solid var(--accent); }
+
+/* The control column. */
+.column {
+    background: var(--column);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 6px;
+    display: flex;
+    flex-direction: column;
+    gap: var(--cgap);
+    min-height: 0;
+    overflow: hidden;
+}
+.status {
+    flex: none;
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    align-items: center;
+    gap: 3px 6px;
+    font: 600 10px var(--mono);
+    color: var(--muted);
+}
+.badge { display: inline-flex; align-items: center; gap: 3px; font: 700 11px var(--display); letter-spacing: 0.06em; color: var(--text); }
+.badge::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--m-green); }
+.count { border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
+.grid { flex: none; display: grid; grid-template-columns: repeat(var(--railcols), 1fr); gap: 4px; }
+.grid.three { grid-template-columns: repeat(var(--tabcols), 1fr); }
+.btn {
+    border: 1px solid var(--line);
+    border-radius: 7px;
+    background: #181826;
+    color: var(--muted);
+    font: 700 11px/1.05 var(--display);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    height: var(--btn);
+    padding: 0 2px;
+    overflow: hidden;
+}
+.btn.on { color: #0b0b12; background: var(--accent); border-color: var(--accent); }
+.btn.warm { color: var(--warm); border-color: rgba(245, 166, 35, 0.45); }
+.btn.alert { color: var(--mute); border-color: rgba(230, 57, 70, 0.5); }
+.cap-title { flex: none; font: 700 9px var(--display); letter-spacing: 0.12em; color: var(--faint); text-align: center; text-transform: uppercase; }
+.banks { flex: none; display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.bankctl { display: flex; flex-direction: column; gap: 4px; }
+.arrows { display: grid; grid-template-columns: 1fr 1fr; gap: 3px; }
+.arrows .btn { font-size: 15px; color: var(--text); }
+.where { font: 600 10px var(--mono); color: var(--muted); text-align: center; }
+.spacer { flex: 1; min-height: 0; }
+</style>
+</head>
+<body>
+<div class="mock">
+    <div class="set" id="devices"></div>
+    <div class="set" id="variants"></div>
+    <span class="out" id="out"></span>
+    <span class="note">Fader sa dá ťahať, meno stlmí stopu, ◀ ▶ posúvajú svoju stranu, STAGE / BAND B / OTHERS menia ľavú stranu.</span>
+</div>
+<div class="stage" id="stage"><div class="screen" id="screen"></div></div>
+<script>
+"use strict";
+// The devices, in CSS px, with the sizes that suit them.
+const DEVICES = [
+    { id: "tablet", label: "Tablet", w: 1194, h: 834, col: 132, fit: 6, head: 30, btn: 40, cgap: 10, railcols: 2, tabcols: 3 },
+    { id: "phone-l", label: "Telefón naležato", w: 844, h: 390, col: 150, fit: 4, head: 28, btn: 26, cgap: 5, railcols: 2, tabcols: 3 },
+    { id: "phone-p", label: "Telefón nastojato", w: 390, h: 844, col: 96, fit: 2, head: 28, btn: 30, cgap: 6, railcols: 1, tabcols: 1 },
+];
+const VARIANTS = [
+    { id: "A", label: "A: fader cez celú výšku" },
+    { id: "B", label: "B: dva rady na tablete" },
+];
+// The FOH page's shape (counts as in the real layout, invented names).
+const C = ["#7cf27c", "#3fcf3f", "#f0f7b0", "#2ec4b6", "#1aa3e8", "#9be7a8", "#f5d547", "#e86b5a", "#b892ff", "#5ad1e8"];
+const strip = (name, i, muted = false, db = 0) => ({ name, tc: C[i % C.length], muted, db, level: muted ? 0.2 : 0.35 + ((i * 37) % 40) / 100 });
+const SUBPAGES = [
+    { id: "STAGE", group: { title: "STAGE", color: "var(--band)", strips: ["Vox 1", "Vox 2", "Vox 3", "Vox 4", "Gitara", "Bas", "Klavir", "Bicie", "Synth", "Zbor"].map((n, i) => strip(n, i, i === 4 || i === 6, i === 5 ? -Infinity : 0)) } },
+    { id: "BAND B", group: { title: "BAND B", color: "var(--band)", strips: ["Gitara B", "Bas B", "Klavir B", "Bicie B", "Vox B"].map((n, i) => strip(n, i + 3)) } },
+    { id: "OTHERS", group: { title: "OTHERS", color: "var(--band)", strips: ["Hosť 1", "Hosť 2"].map((n, i) => strip(n, i + 6)) } },
+];
+const FIXED_LEFT = { title: "BAND", color: "var(--band)", strips: [strip("Podklady", 1, false, -2), strip("Band", 9)] };
+const RIGHT = [
+    { title: "EFFECTS", color: "var(--band)", strips: [strip("Hall", 2, false, -8.1), strip("Plate", 6), strip("Delay", 9)] },
+    { title: "MASTER A", color: "var(--master)", strips: [strip("Main", 7), strip("Sub", 3), strip("Stream", 4, true, -55.3), strip("Lobby", 5, false, -14.7), strip("Repro", 6, false, -20.2)] },
+    { title: "HANDS", color: "var(--master)", strips: [strip("Hand 1", 1, false, -9.3), strip("Hand 2", 2, true, -Infinity), strip("Hand 3", 3, true, -Infinity), strip("Hand 4", 4, true, -Infinity)] },
+];
+const RAIL = ["Stage", "Stage aut", "Solo vox", "Solo iem", "Solo podkl.", "Reverb", "Voc mic", "Autotune", "Zvukár", "Repro"];
+const PAGES = [["Mix", false], ["FOH", true], ["Deck", false]];
+
+// Live's own fader law (position 0..1 ↔ dB).
+const LAW = [[1, 6], [0.85, 0], [0.7, -6], [0.55, -12], [0.4, -18], [0.302, -24], [0.238, -30], [0.157, -40], [0.036, -60], [0, -Infinity]];
+function dbToPos(db) {
+    if (db === -Infinity) return 0;
+    for (let i = 0; i < LAW.length - 1; i++) {
+        const [p0, d0] = LAW[i], [p1, d1] = LAW[i + 1];
+        if (db <= d0 && (db >= d1 || d1 === -Infinity)) return d1 === -Infinity ? p1 + (p0 - p1) * 0.5 : p1 + ((db - d1) / (d0 - d1)) * (p0 - p1);
+    }
+    return 0;
+}
+function posToDb(p) {
+    if (p <= 0.01) return -Infinity;
+    for (let i = 0; i < LAW.length - 1; i++) {
+        const [p0, d0] = LAW[i], [p1, d1] = LAW[i + 1];
+        if (p <= p0 && p >= p1) return d1 === -Infinity ? -60 - (0.036 - p) * 400 : d1 + ((p - p1) / (p0 - p1)) * (d0 - d1);
+    }
+    return 6;
+}
+const dbText = (db) => (db === -Infinity ? "-∞" : (db > 0 ? "+" : "") + db.toFixed(1));
+
+const state = { device: "tablet", variant: "A", sub: 0, off: [0, 0] };
+const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e; };
+
+function stripView(s) {
+    const root = el("div", "strip" + (s.muted ? " muted" : ""));
+    root.style.setProperty("--tc", s.tc);
+    const name = el("button", "name", s.name);
+    const dbl = el("div", "dbl", dbText(s.db));
+    name.addEventListener("pointerdown", () => { s.muted = !s.muted; root.classList.toggle("muted", s.muted); });
+    root.append(name, dbl, el("div", "pan"));
+    const fz = el("div", "fz");
+    const scale = el("div", "scale");
+    for (const d of [6, 0, -6, -12, -18, -24, -30, -40, -60]) {
+        const t = el("span", "tick", d > 0 ? "+" + d : String(d));
+        t.style.top = (1 - dbToPos(d)) * 100 + "%";
+        scale.append(t);
+    }
+    const meter = el("div", "meter");
+    const lvl = el("i");
+    lvl.style.height = s.level * 100 + "%";
+    meter.append(lvl);
+    const fader = el("div", "fader");
+    const unity = el("div", "unity");
+    unity.style.top = (1 - 0.85) * 100 + "%";
+    const fill = el("div", "fill");
+    const cap = el("div", "cap");
+    const place = () => { const p = dbToPos(s.db); cap.style.top = (1 - p) * 100 + "%"; fill.style.height = p * 100 + "%"; dbl.textContent = dbText(s.db); };
+    place();
+    fader.append(unity, fill, cap);
+    let drag = null;
+    fader.addEventListener("pointerdown", (e) => {
+        fader.setPointerCapture(e.pointerId);
+        drag = { y: e.clientY, p: dbToPos(s.db), h: fader.getBoundingClientRect().height };
+        root.classList.add("held");
+    });
+    fader.addEventListener("pointermove", (e) => {
+        if (!drag) return;
+        const p = Math.min(1, Math.max(0, drag.p - (e.clientY - drag.y) / drag.h));
+        s.db = posToDb(p);
+        place();
+    });
+    const end = () => { drag = null; root.classList.remove("held"); };
+    fader.addEventListener("pointerup", end);
+    fader.addEventListener("pointercancel", end);
+    fz.append(scale, meter, fader);
+    root.append(fz);
+    return root;
+}
+
+// The groups each bank shows: left = the upper row (the sub-page and BAND),
+// right = the lower row.
+const bankGroups = (side) => (side === 0 ? [SUBPAGES[state.sub].group, FIXED_LEFT] : RIGHT);
+
+// One line of strips (`from`, `count` of the bank's flat list) with its labels.
+function lineView(groups, from, count, d) {
+    const line = el("div", "line");
+    const labels = el("div", "labels");
+    const strips = el("div", "strips");
+    let i = 0;
+    for (const g of groups) {
+        let n = 0;
+        for (const s of g.strips) {
+            if (i >= from && i < from + count) { strips.append(stripView(s)); n++; }
+            i++;
+        }
+        if (n) {
+            const label = el("div", "label", g.title);
+            label.style.setProperty("--gc", g.color);
+            label.style.width = n * d.strip + (n - 1) * 4 + "px";
+            labels.append(label);
+        }
+    }
+    line.append(labels, strips);
+    return line;
+}
+
+function bankView(side, d, lines, fit) {
+    const bank = el("div", "bank");
+    const groups = bankGroups(side);
+    for (let l = 0; l < lines; l++) bank.append(lineView(groups, state.off[side] + l * fit, fit, d));
+    return bank;
+}
+
+function columnView(d, fits, totals, lines) {
+    const col = el("div", "column");
+    const status = el("div", "status");
+    status.append(el("span", "badge", "BAND"), el("span", "badge", "MASTER"), el("span", "count", "0"), el("span", "", "v0.1.0"));
+    col.append(status);
+    const pages = el("div", "grid three");
+    for (const [t, on] of PAGES) pages.append(el("button", "btn" + (on ? " on" : ""), t));
+    col.append(pages);
+    // The left bank's layers (the pager's sub-pages), then each bank's
+    // arrows on its own side of the column.
+    col.append(el("div", "cap-title", "ľavá strana"));
+    const subs = el("div", "grid three");
+    SUBPAGES.forEach((sp, i) => {
+        const b = el("button", "btn" + (i === state.sub ? " on" : ""), sp.id);
+        b.addEventListener("pointerdown", () => { state.sub = i; state.off[0] = 0; render(); });
+        subs.append(b);
+    });
+    col.append(subs);
+    const banks = el("div", "banks");
+    for (const side of [0, 1]) {
+        const ctl = el("div", "bankctl");
+        const step = fits[side] * lines;
+        const arrows = el("div", "arrows");
+        const back = el("button", "btn", "◀");
+        const fwd = el("button", "btn", "▶");
+        back.addEventListener("pointerdown", () => { state.off[side] = Math.max(0, state.off[side] - step); render(); });
+        fwd.addEventListener("pointerdown", () => { if (state.off[side] + step < totals[side]) { state.off[side] += step; render(); } });
+        arrows.append(back, fwd);
+        const shown = Math.min(totals[side], state.off[side] + step);
+        ctl.append(arrows, el("div", "where", `${side ? "P" : "Ľ"} ${state.off[side] + 1}–${shown}/${totals[side]}`));
+        banks.append(ctl);
+    }
+    col.append(banks);
+    col.append(el("div", "cap-title", "funkcie"));
+    const rail = el("div", "grid");
+    RAIL.forEach((t, i) => rail.append(el("button", "btn" + (i === 5 || i === 6 ? " warm" : ""), t)));
+    col.append(rail, el("div", "spacer"), el("button", "btn alert", "TechAlert"));
+    return col;
+}
+
+function render() {
+    const d = DEVICES.find((x) => x.id === state.device);
+    const screen = document.getElementById("screen");
+    screen.replaceChildren();
+    screen.style.width = d.w + "px";
+    screen.style.height = d.h + "px";
+        // Variant B stacks two lines per bank only where each line keeps a long fader (the tablet).
+    const lines = state.variant === "B" && d.h >= 700 ? 2 : 1;
+    const bankWidth = (d.w - 12 - d.col - 12) / 2;
+    const fit = d.fit;
+    d.strip = Math.floor((bankWidth - (fit - 1) * 4) / fit);
+    const totals = [0, 1].map((side) => bankGroups(side).reduce((n, g) => n + g.strips.length, 0));
+    const fits = [fit, fit];
+    for (const side of [0, 1]) if (state.off[side] >= totals[side]) state.off[side] = 0;
+    for (const [k, v] of [["--col", d.col], ["--strip", d.strip], ["--head", d.head], ["--btn", d.btn], ["--cgap", d.cgap]]) screen.style.setProperty(k, v + "px");
+    screen.style.setProperty("--railcols", d.railcols);
+    screen.style.setProperty("--tabcols", d.tabcols);
+    screen.append(bankView(0, d, lines, fit), columnView(d, fits, totals, lines), bankView(1, d, lines, fit));
+    fitScreen();
+    const fader = screen.querySelector(".fader");
+    const travel = fader ? Math.round(fader.getBoundingClientRect().height / scaleOf()) : 0;
+    const col = screen.querySelector(".column");
+    const over = col.scrollHeight - col.clientHeight;
+    document.getElementById("out").textContent =
+        `${d.w}×${d.h}: dráha fadra ${travel} px (dnes ${d.id === "tablet" ? 268 : d.id === "phone-l" ? 157 : 550}, TouchOSC 281) · naraz ${fit * lines * 2} pásov` + (over > 0 ? ` · stĺpec pretečie o ${over} px` : "");
+    for (const b of document.querySelectorAll("[data-device]")) b.setAttribute("aria-pressed", String(b.dataset.device === state.device));
+    for (const b of document.querySelectorAll("[data-variant]")) b.setAttribute("aria-pressed", String(b.dataset.variant === state.variant));
+}
+
+let scaleNow = 1;
+const scaleOf = () => scaleNow;
+function fitScreen() {
+    const stage = document.getElementById("stage");
+    const screen = document.getElementById("screen");
+    const d = DEVICES.find((x) => x.id === state.device);
+    const s = Math.min(1, (stage.clientWidth - 16) / d.w, (stage.clientHeight - 16) / d.h);
+    scaleNow = s;
+    screen.style.left = Math.max(8, (stage.clientWidth - d.w * s) / 2) + "px";
+    screen.style.top = "8px";
+    screen.style.transform = `scale(${s})`;
+}
+
+for (const d of DEVICES) {
+    const b = el("button", "", d.label);
+    b.dataset.device = d.id;
+    b.addEventListener("click", () => { state.device = d.id; state.off = [0, 0]; render(); });
+    document.getElementById("devices").append(b);
+}
+for (const v of VARIANTS) {
+    const b = el("button", "", v.label);
+    b.dataset.variant = v.id;
+    b.addEventListener("click", () => { state.variant = v.id; state.off = [0, 0]; render(); });
+    document.getElementById("variants").append(b);
+}
+window.addEventListener("resize", render);
+render();
+</script>
+</body>
+</html>
