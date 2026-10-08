@@ -313,7 +313,87 @@ fn the_subscriptions_besides_one_client_leave_its_own_out() {
         .unwrap();
     assert_eq!(subs.subscriptions("band"), 2);
     // Client 9's tempo is its own; is_playing has client 1 too.
-    assert_eq!(subs.subscriptions_besides("band", 9), 1);
-    assert_eq!(subs.subscriptions_besides("band", 1), 2);
-    assert_eq!(subs.subscriptions_besides("master", 9), 0);
+    assert_eq!(subs.subscriptions_besides("band", &[9]), 1);
+    assert_eq!(subs.subscriptions_besides("band", &[1]), 2);
+    assert_eq!(subs.subscriptions_besides("master", &[9]), 0);
+    // Several own clients (the unfold and the marker keepers, #68).
+    assert_eq!(subs.subscriptions_besides("band", &[1, 9]), 0);
+    assert_eq!(subs.subscriptions_besides("band", &[]), 2);
+}
+
+#[test]
+fn the_listeners_besides_the_hubs_own_clients_leave_theirs_out() {
+    let mut subs = online();
+    subs.subscribe(1, "band", "live_set", "is_playing", false)
+        .unwrap();
+    subs.subscribe(9, "band", "live_set", "tempo", false)
+        .unwrap();
+    subs.subscribe(9, "band", "live_set", "is_playing", false)
+        .unwrap();
+    for o in subs.drain_outgoing() {
+        let slots: Vec<Value> = o
+            .commands
+            .iter()
+            .map(|c| {
+                ok(
+                    &format!("live_{}", c["args"]["prop"].as_str().unwrap()),
+                    json!(1),
+                )
+            })
+            .collect();
+        subs.on_result(&o.instance, &o.uuid, &slots);
+    }
+    assert_eq!(subs.listeners("band"), 2);
+    // Client 9's tempo is its own; is_playing has client 1 too.
+    assert_eq!(subs.listeners_besides("band", &[9]), 1);
+    assert_eq!(subs.listeners_besides("band", &[1]), 2);
+    assert_eq!(subs.listeners_besides("band", &[1, 9]), 0);
+    assert_eq!(subs.listeners_besides("band", &[]), 2);
+    assert_eq!(subs.listeners_besides("master", &[]), 0);
+}
+
+#[test]
+fn a_guard_counts_as_a_listener_only_for_the_clients_it_guards() {
+    // #68: the marker keeper (here 9) binds tracks by index, which guards
+    // the list of tracks; that guard is the hub's own until a client's
+    // binding needs it too.
+    const INDEXED: &str = "live_set tracks 0";
+    let mut subs = online();
+    subs.subscribe(9, "band", INDEXED, "devices", false)
+        .unwrap();
+    let out = subs.drain_outgoing();
+    answer_with(
+        &mut subs,
+        &out,
+        &[
+            (INDEXED, "devices", ok("live_30.devices", json!([]))),
+            (
+                "live_set",
+                "tracks",
+                ok(
+                    "live_1.tracks",
+                    json!([track("live_20", "Hand9 #"), track("live_21", "Vox 1")]),
+                ),
+            ),
+        ],
+    );
+    assert!(subs.drain_outgoing().is_empty());
+    subs.take_deliveries();
+    assert_eq!(subs.listeners("band"), 2);
+    assert_eq!(subs.listeners_besides("band", &[9]), 0);
+    assert_eq!(subs.listeners_besides("band", &[]), 2);
+    // Client 1's binding in error shares the list guard and adds the item
+    // watches (a watch guards the list guard, which guards the binding).
+    let list = missing(&mut subs);
+    let out = subs.drain_outgoing();
+    answer(&mut subs, &out, &list, false);
+    assert_eq!(subs.listeners("band"), 4);
+    assert_eq!(subs.listeners_besides("band", &[9]), 3);
+    assert_eq!(subs.listeners_besides("band", &[1]), 4);
+    assert_eq!(subs.listeners_besides("band", &[1, 9]), 0);
+    // Client 1 leaves: the guard is the hub's own again.
+    assert!(subs.unsubscribe(1, VOLUME_KEY));
+    subs.drain_outgoing();
+    assert_eq!(subs.listeners("band"), 2);
+    assert_eq!(subs.listeners_besides("band", &[9]), 0);
 }

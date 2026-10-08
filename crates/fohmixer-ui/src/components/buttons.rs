@@ -41,6 +41,8 @@ fn solo_text(label: Option<&str>, binding: &Binding) -> String {
 pub fn anchor_name(binding: &Binding) -> String {
     match &binding.anchor {
         Anchor::Track { name } | Anchor::Return { name } => name.clone(),
+        // A marker strip's track by index (#68): Live's track number.
+        Anchor::TrackAt { index } | Anchor::ReturnAt { index } => format!("#{}", index + 1),
         Anchor::Master => "Master".to_string(),
         Anchor::Song => "Song".to_string(),
     }
@@ -329,6 +331,8 @@ mod tests {
             })),
             "A-Reverb #"
         );
+        assert_eq!(anchor_name(&binding(Anchor::TrackAt { index: 0 })), "#1");
+        assert_eq!(anchor_name(&binding(Anchor::ReturnAt { index: 11 })), "#12");
         assert_eq!(anchor_name(&binding(Anchor::Master)), "Master");
         assert_eq!(anchor_name(&binding(Anchor::Song)), "Song");
     }

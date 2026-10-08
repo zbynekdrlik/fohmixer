@@ -20,6 +20,17 @@ WebSocket server is bound. Control lines on stdin (never over the WebSocket):
                                 <name> at <level> (the animation leaves them)
                                 until ``off``; prints ``METER <count>`` (the UI
                                 tests' clip light, #21)
+    tuner <track|return> <index> <set|add|remove> ['<name>']
+                                a Tuner marker (#68) on the track (or return) at
+                                <index>, as a user in Live would: ``set`` renames
+                                its first Tuner (one is added if it has none),
+                                ``add`` adds another, ``remove`` deletes the first;
+                                prints ``TUNER <tuners on the track>``, or
+                                ``TUNER -1`` when there is no such track
+    delete-track <index>        delete the track at <index> as a user in Live
+                                would (its group's children too; the lists'
+                                listeners fire); prints ``DELETED <tracks
+                                left>``, or ``DELETED -1`` with no such track
 
 SIGTERM or SIGINT calls ``FohMixer.disconnect()`` on the main thread and exits 0.
 Used by the S2 integration tests and by the hub (S3) and UI (S4) tests.
@@ -114,6 +125,46 @@ def hold_meter(song, held, name, level):
     return count
 
 
+def tuner(song, kind, index, action, name):
+    """Set, add or remove a Tuner on the track (or return) at ``index`` (main
+    thread); the Tuners it then holds, -1 when there is no such track."""
+    tracks = song.return_tracks if kind == "return" else song.tracks
+    if not 0 <= index < len(tracks):
+        return -1
+    track = tracks[index]
+    tuners = [d for d in track._devices if d.class_name == "Tuner"]
+    if action == "remove":
+        if tuners:
+            track.delete_device(track._devices.index(tuners[0]))
+    elif action == "set" and tuners:
+        tuners[0]._sim_set("name", name)
+    else:
+        track._devices.append(Live.Device.Device(name, "Tuner", display_name="Tuner"))
+        track._fire("devices")
+    return sum(1 for d in track._devices if d.class_name == "Tuner")
+
+
+def delete_track(song, index):
+    """Delete the track at ``index`` (main thread); the tracks left, -1 if none."""
+    if not 0 <= index < len(song.tracks):
+        return -1
+    song.delete_track(index)
+    return len(song.tracks)
+
+
+def tuner_line(line):
+    """A ``tuner`` line's ``(kind, index, action, name)``, or None."""
+    try:
+        parts = shlex.split(line)[1:]
+    except ValueError:
+        return None
+    if len(parts) not in (3, 4) or parts[0] not in ("track", "return") or not parts[1].isdigit():
+        return None
+    if parts[2] not in ("set", "add", "remove") or (parts[2] != "remove") != (len(parts) == 4):
+        return None
+    return parts[0], int(parts[1]), parts[2], parts[3] if len(parts) == 4 else ""
+
+
 def meter_level(text):
     """A held meter level: ``off`` is None; a number 0..1; anything else is not one."""
     if text == "off":
@@ -160,6 +211,13 @@ def control(main_thread, song, line, held):
         if level is not False:
             count = main_thread.call(lambda: hold_meter(song, held, parts[0], level))
             return f"METER {count}"
+    if len(words) == 2 and words[0] == "delete-track" and words[1].isdigit():
+        index = int(words[1])
+        return f"DELETED {main_thread.call(lambda: delete_track(song, index))}"
+    if words and words[0] == "tuner":
+        parsed = tuner_line(line)
+        if parsed is not None:
+            return f"TUNER {main_thread.call(lambda: tuner(song, *parsed))}"
     if len(words) == 3 and words[0] == "listeners":
         prop, text = words[1], words[2].strip()
         return f"LISTENERS {main_thread.call(lambda: count_listeners(song, prop, text))}"

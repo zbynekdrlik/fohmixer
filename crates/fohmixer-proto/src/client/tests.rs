@@ -474,6 +474,16 @@ fn api_bodies_round_trip() {
                 target: "live_set tracks[name=Nobody #]".into(),
                 error: "not found: tracks[name=Nobody #]".into(),
             }],
+            markers: MarkersStatus {
+                found: 2,
+                problems: vec![crate::markers::MarkerReport {
+                    instance: "band".into(),
+                    kind: crate::markers::TrackKind::Track,
+                    index: 4,
+                    name: r#""Vox" +G:x"#.into(),
+                    problems: vec![crate::markers::TagProblem::BadGroup { tag: "+G:x".into() }],
+                }],
+            },
         },
         stage_aut: StageAutStatus {
             on: true,
@@ -539,6 +549,11 @@ fn api_bodies_round_trip() {
     assert_eq!(json["remote"]["https"]["days_left"], 60);
     assert_eq!(json["remote"]["tunnel"]["ready_connections"], 4);
     assert_eq!(json["remote"]["access"], json!(true));
+    assert_eq!(
+        json["layout"]["markers"],
+        json!({"found": 2, "problems": [{"instance": "band", "kind": "track", "index": 4,
+               "name": "\"Vox\" +G:x", "problems": [{"code": "bad_group", "tag": "+G:x"}]}]})
+    );
     // A report's fields sit next to when and where it came from.
     assert_eq!(
         json["client_reports"][0],
@@ -556,8 +571,10 @@ fn api_bodies_round_trip() {
     older.as_object_mut().unwrap().remove("remote");
     older.as_object_mut().unwrap().remove("client_reports");
     older.as_object_mut().unwrap().remove("companion");
+    older["layout"].as_object_mut().unwrap().remove("markers");
     let older = serde_json::from_value::<HubStatus>(older).unwrap();
     assert_eq!(older.remote, RemoteStatus::default());
+    assert_eq!(older.layout.markers, MarkersStatus::default());
     assert!(older.client_reports.is_empty());
     assert_eq!(
         older.companion, None,

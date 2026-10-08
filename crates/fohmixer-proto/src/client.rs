@@ -381,9 +381,9 @@ pub struct InstanceStatus {
     /// Client subscriptions (hub keys) on this instance: the pages' and
     /// STAGE AUT's (the unfold keeper's own subscriptions are not counted).
     pub subscriptions: usize,
-    /// Live listeners the hub holds on this instance (subscriptions, the
-    /// unfold keeper's included, and the name guards of name bindings,
-    /// deduplicated).
+    /// Live listeners the hub holds on this instance for its clients
+    /// (subscriptions and the name guards of name bindings, deduplicated;
+    /// the hub's own keepers' left out, #58 and #68).
     pub listeners: usize,
     /// Failed connection attempts since the last connection (0 while
     /// connected).
@@ -417,6 +417,18 @@ pub struct LayoutStatus {
     pub rev: u64,
     pub error: Option<String>,
     pub unresolved: Vec<Unresolved>,
+    /// The Tuner markers (#68); absent in an older hub's answer.
+    #[serde(default)]
+    pub markers: MarkersStatus,
+}
+
+/// The Tuner markers in `GET /api/status` (#68, I9): how many the hub
+/// found, and every marker problem (also a marker with no group, which
+/// shows on no page).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MarkersStatus {
+    pub found: usize,
+    pub problems: Vec<crate::markers::MarkerReport>,
 }
 
 /// STAGE AUT in `GET /api/status`: the flag and the mute writes it made.

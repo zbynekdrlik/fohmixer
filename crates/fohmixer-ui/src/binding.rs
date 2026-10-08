@@ -228,6 +228,55 @@ pub fn selected_path(layout: &Layout, remembered: &BTreeMap<String, String>) -> 
     path
 }
 
+/// What a tap on view `view`'s button shows (#68): the view, remembering
+/// the page shown when that is no view; or, when the view is already shown
+/// (and not under the Stream Deck tab, `deck`), the page remembered before
+/// it (else the layout's default page). The page's index, and the page to
+/// remember from now on.
+pub fn view_tap(
+    layout: &Layout,
+    shown: Option<usize>,
+    deck: bool,
+    view: usize,
+    before: Option<&str>,
+) -> (usize, Option<String>) {
+    let ids = || layout.pages.iter().map(|p| &p.id);
+    if shown == Some(view) && !deck {
+        let back = before
+            .and_then(|id| index_of(ids(), id))
+            .filter(|&i| layout.pages.get(i).is_some_and(|p| !p.view))
+            .or_else(|| index_of(ids(), &layout.default_page))
+            .unwrap_or(0);
+        return (back, None);
+    }
+    let remember = match shown.and_then(|i| layout.pages.get(i)) {
+        Some(page) if !page.view => Some(page.id.clone()),
+        _ => before.map(str::to_string),
+    };
+    (view, remember)
+}
+
+/// The selection as the device stores it (#68): a view shown is never
+/// stored, the page before it is (nothing when there was none), so a reload
+/// opens a page with its tabs.
+pub fn stored_pages(
+    layout: &Layout,
+    remembered: &BTreeMap<String, String>,
+    before: Option<&str>,
+) -> BTreeMap<String, String> {
+    let mut stored = remembered.clone();
+    let shows_view = remembered
+        .get("")
+        .is_some_and(|id| layout.pages.iter().any(|p| p.view && p.id == *id));
+    if shows_view {
+        match before {
+            Some(id) => stored.insert(String::new(), id.to_string()),
+            None => stored.remove(""),
+        };
+    }
+    stored
+}
+
 /// Remembers page `index` of level `level` (0: the pages; 1: the sub-pages of
 /// the pager of the page `path[0]`).
 pub fn choose(

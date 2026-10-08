@@ -38,6 +38,21 @@ fn instances() -> Vec<InstanceCfg> {
     ]
 }
 
+/// The layout file's own backups in `dir` (the served compositions, #68,
+/// are kept beside them).
+fn layout_backups(dir: &Path) -> usize {
+    std::fs::read_dir(dir.join("layout-backups"))
+        .unwrap()
+        .filter(|e| {
+            e.as_ref()
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with("layout.json.")
+        })
+        .count()
+}
+
 async fn layout(hub: &TestHub) -> LayoutResponse {
     let (code, body) = hub.get("/api/layout").await;
     assert_eq!(code, 200, "{body}");
@@ -74,10 +89,7 @@ fn the_layout_is_served_replaced_and_kept_through_a_bad_edit() {
             })
             .await;
         assert_eq!(layout(&hub).await.layout.pages[0].title, "FOH 2");
-        let backups = std::fs::read_dir(dir.path().join("layout-backups"))
-            .unwrap()
-            .count();
-        assert_eq!(backups, 2);
+        assert_eq!(layout_backups(dir.path()), 2);
         // An edit saved in place truncates the file first, so a poll may read
         // it empty. That read does not parse: the last good layout stays and
         // the next poll reads the finished file (#5: taking this transient
@@ -123,12 +135,7 @@ fn the_layout_is_served_replaced_and_kept_through_a_bad_edit() {
                 .is_none(),
             "no push for a rejected layout"
         );
-        assert_eq!(
-            std::fs::read_dir(dir.path().join("layout-backups"))
-                .unwrap()
-                .count(),
-            2
-        );
+        assert_eq!(layout_backups(dir.path()), 2);
         hub.stop().await;
     });
 }

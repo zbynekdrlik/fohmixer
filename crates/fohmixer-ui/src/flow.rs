@@ -38,6 +38,8 @@ mod tests {
             wide,
             mute_guard: false,
             pinned: false,
+            label: None,
+            mark: None,
         }))
     }
 

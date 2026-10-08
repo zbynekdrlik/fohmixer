@@ -5,10 +5,12 @@
 //! itself. Nothing here ends a process: Exit and `--exit` end this tray only.
 
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, PoisonError};
 use std::thread;
+use std::time::Instant;
 
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
-use tauri::tray::{TrayIcon, TrayIconBuilder};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, RunEvent, Wry};
 use tauri_plugin_clipboard_manager::ClipboardExt;
 use tauri_plugin_opener::OpenerExt;
@@ -147,8 +149,10 @@ fn load_links(data_dir: &Path) -> Links {
     links
 }
 
-/// The icon with its menu: the hub's version (disabled), Open fohmixer, Copy
-/// URL, Exit. Returns the icon and the version line (the poll updates both).
+/// The icon with its menu: the hub's version (disabled), Open fohmixer, the
+/// tag manual (#68), Copy URL, Exit; a left click opens fohmixer, the right
+/// one shows the menu. Returns the icon and the version line (the poll
+/// updates both).
 fn build_tray(
     app: &AppHandle,
     links: &Links,
@@ -162,6 +166,7 @@ fn build_tray(
         None::<&str>,
     )?;
     let open_item = MenuItem::with_id(app, view::OPEN, "Open fohmixer", true, None::<&str>)?;
+    let manual_item = MenuItem::with_id(app, view::MANUAL, "Návod k značkám", true, None::<&str>)?;
     let (copy_label, copy_enabled) = view::copy_item(links.public.as_deref());
     let copy_item = MenuItem::with_id(app, view::COPY, copy_label, copy_enabled, None::<&str>)?;
     let exit_item = MenuItem::with_id(app, view::EXIT, "Exit (the tray only)", true, None::<&str>)?;
@@ -173,6 +178,7 @@ fn build_tray(
             &version_item,
             &separator1,
             &open_item,
+            &manual_item,
             &copy_item,
             &separator2,
             &exit_item,
@@ -180,11 +186,36 @@ fn build_tray(
     )?;
 
     let links = links.clone();
+    let open_url = links.open.clone();
+    // When a left click last opened fohmixer (a double click opens one tab).
+    let opened: Mutex<Option<Instant>> = Mutex::new(None);
     let mut builder = TrayIconBuilder::with_id("main")
         .tooltip(view::tooltip(&HubState::Unknown, TRAY_VERSION))
         .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_tray_icon_event(move |tray, event| {
+            let TrayIconEvent::Click {
+                button,
+                button_state,
+                ..
+            } = event
+            else {
+                return;
+            };
+            let mut last = opened.lock().unwrap_or_else(PoisonError::into_inner);
+            let since = (*last).map(|t| u64::try_from(t.elapsed().as_millis()).unwrap_or(u64::MAX));
+            if view::click_opens(
+                matches!(button, MouseButton::Left),
+                matches!(button_state, MouseButtonState::Up),
+                since,
+            ) {
+                *last = Some(Instant::now());
+                open(tray.app_handle(), &open_url, "Open fohmixer");
+            }
+        })
         .on_menu_event(move |app, event| match view::action(event.id.as_ref()) {
-            Some(MenuAction::Open) => open(app, &links.open),
+            Some(MenuAction::Open) => open(app, &links.open, "Open fohmixer"),
+            Some(MenuAction::Manual) => open(app, &links.manual, "The tag manual"),
             Some(MenuAction::Copy) => match &links.public {
                 Some(url) => copy(app, url),
                 None => {
@@ -208,11 +239,12 @@ fn build_tray(
     Ok((tray, version_item))
 }
 
-/// Open fohmixer: the hub's local URL in the default browser.
-fn open(app: &AppHandle, url: &str) {
+/// Opens one of the hub's local pages in the default browser (`what` names
+/// the menu item in the log: Open fohmixer, the tag manual).
+fn open(app: &AppHandle, url: &str, what: &str) {
     match app.opener().open_url(url, None::<&str>) {
-        Ok(()) => tracing::info!(url, "Open fohmixer: opened in the default browser"),
-        Err(e) => tracing::error!(url, error = %e, "Open fohmixer: the browser did not open"),
+        Ok(()) => tracing::info!(url, "{what}: opened in the default browser"),
+        Err(e) => tracing::error!(url, error = %e, "{what}: the browser did not open"),
     }
 }
 

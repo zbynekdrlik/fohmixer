@@ -63,8 +63,9 @@
 /* A muted strip steps back (#63): darker, its fader, meter and readout
    dimmed; only the name button's small MUTE mark is red. The strips that
    sound stand out, not the silent ones. */
+/* The colour only: a conflict's hatching (`states.css`) stays. */
 .strip:has(.mute[data-muted="true"]) {
-    background: var(--panel-mute);
+    background-color: var(--panel-mute);
 }
 
 .strip:has(.mute[data-muted="true"])::before {

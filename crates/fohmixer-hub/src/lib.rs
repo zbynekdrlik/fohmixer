@@ -264,6 +264,7 @@ impl HubInner {
                 rev: self.layout.current().0,
                 error: self.layout.error(),
                 unresolved: router.unresolved,
+                markers: self.layout.markers_status(),
             },
             stage_aut: router.stage_aut,
             clients: router.clients,
@@ -355,6 +356,8 @@ impl Hub {
         if let (Some(cfg), Some((handle, _))) = (&config.companion, &companion) {
             router = router.with_deck(cfg.clone(), handle.clone());
         }
+        // The Tuner markers (#68) go to the layout store.
+        router = router.with_layout(Arc::clone(&layout));
         tokio::spawn(router.run(router_rx));
         tasks.push(tokio::spawn(poll_layout(
             Arc::clone(&layout),
@@ -403,22 +406,8 @@ async fn poll_layout(
         tick.tick().await;
         if let Some(rev) = layout.poll() {
             let served = layout.current().1;
-            let stage = served.as_ref().and_then(|l| l.stage_aut_binding().cloned());
-            let targets = served
-                .as_deref()
-                .map(live::names::layout_targets)
-                .unwrap_or_default();
-            let strips = served
-                .as_deref()
-                .map(fohmixer_proto::layout::Layout::strip_tracks)
-                .unwrap_or_default();
             if router
-                .send(RouterMsg::Layout {
-                    rev,
-                    stage,
-                    targets,
-                    strips,
-                })
+                .send(router::layout_msg(rev, served.as_deref()))
                 .is_err()
             {
                 return;

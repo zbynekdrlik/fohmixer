@@ -17,7 +17,8 @@ what only the harness can do:
 
     GET  /health                         {"ok": true}
     POST /host/<name>/line {"line": ...} a control line on the host's stdin
-                                         (``stall``, ``rename``, ``listeners``, ``meter``);
+                                         (``stall``, ``rename``, ``listeners``, ``meter``,
+                                         ``tuner``: a Tuner marker, #68);
                                          {"answer": <its answer line or null>}
     POST /host/<name>/restart            the host stopped (SIGTERM) and started
     POST /hub/restart {"rotate_secret"}  the hub stopped and started; with
@@ -121,7 +122,13 @@ READY_S = 20.0
 STOP_S = 10.0
 ANSWER_S = 5.0
 # The control lines a host answers, and the prefix of each answer.
-ANSWERS = {"rename": "RENAMED", "listeners": "LISTENERS", "meter": "METER"}
+ANSWERS = {
+    "rename": "RENAMED",
+    "listeners": "LISTENERS",
+    "meter": "METER",
+    "tuner": "TUNER",
+    "delete-track": "DELETED",
+}
 
 
 def hub_config(http_port, band_port, master_port, remote=None, companion=None):

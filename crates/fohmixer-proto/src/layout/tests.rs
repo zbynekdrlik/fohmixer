@@ -502,6 +502,25 @@ fn binding_targets_follow_the_anchor() {
             .unwrap(),
         "live_set master_track mixer_device volume"
     );
+    // A marker strip's track by its index (#68).
+    assert_eq!(
+        b(Anchor::TrackAt { index: 12 }, None).target().unwrap(),
+        "live_set tracks 12"
+    );
+    assert_eq!(
+        b(Anchor::ReturnAt { index: 0 }, Some("mixer_device volume"))
+            .target()
+            .unwrap(),
+        "live_set return_tracks 0 mixer_device volume"
+    );
+    assert_eq!(
+        serde_json::to_value(b(Anchor::TrackAt { index: 3 }, None)).unwrap(),
+        json!({"instance": "band", "anchor": {"kind": "track_at", "index": 3}})
+    );
+    assert_eq!(
+        serde_json::to_value(b(Anchor::ReturnAt { index: 1 }, None)).unwrap(),
+        json!({"instance": "band", "anchor": {"kind": "return_at", "index": 1}})
+    );
     assert_eq!(b(Anchor::Song, Some("")).target().unwrap(), "live_set");
     assert_eq!(b(Anchor::Song, None).target().unwrap(), "live_set");
     assert!(b(Anchor::Master, Some("_x")).target().is_err());
@@ -592,15 +611,28 @@ fn a_page_lists_its_controls_rail_first() {
 fn the_strip_tracks_are_each_track_a_strip_shows_once() {
     let mut v = sample();
     // The same track twice, on another sub-page too: listed once.
+    // A marker strip's track by index (#68) and a return's by index too.
     foh_row(&mut v, 0)[0]["pages"][1]["sections"] = json!([{"kind": "group", "controls": [
-        {"kind": "strip", "binding": track("Podklady #"), "strip_kind": "standard"}]}]);
+        {"kind": "strip", "binding": track("Podklady #"), "strip_kind": "standard"},
+        {"kind": "strip", "binding": {"instance": "master", "anchor": {"kind": "track_at", "index": 4}},
+         "strip_kind": "standard", "label": "Vox 2"},
+        {"kind": "strip", "binding": {"instance": "band", "anchor": {"kind": "return_at", "index": 0}},
+         "strip_kind": "return", "label": "Hall"}]}]);
     let layout = parse(v);
-    // The return strip and the other controls' tracks are not strips' tracks.
+    // The returns and the other controls' tracks are not strips' tracks;
+    // each as its LOM target.
     assert_eq!(
         layout.strip_tracks(),
         vec![
-            ("band".to_string(), "Klavir #".to_string()),
-            ("band".to_string(), "Podklady #".to_string()),
+            (
+                "band".to_string(),
+                "live_set tracks[name=Klavir #]".to_string()
+            ),
+            (
+                "band".to_string(),
+                "live_set tracks[name=Podklady #]".to_string()
+            ),
+            ("master".to_string(), "live_set tracks 4".to_string()),
         ]
     );
 }
@@ -728,4 +760,55 @@ fn the_fader_law_is_lives_unless_touchosc_is_named() {
     assert!(serde_json::from_value::<Layout>(v).is_err());
     let absent = serde_json::to_value(&parse(sample()).config).unwrap();
     assert!(absent.get("fader_law").is_none(), "{absent}");
+}
+
+#[test]
+fn marker_fields_round_trip_and_stay_out_when_unset() {
+    let mut v = sample();
+    foh_row(&mut v, 1)[0]["tags"] = json!("MASTER_A");
+    foh_row(&mut v, 1)[0]["controls"][0]["label"] = json!("Hall big");
+    foh_row(&mut v, 1)[0]["controls"][0]["mark"] = json!("conflict");
+    v["pages"][0]["view"] = json!(true);
+    let layout = parse(v.clone());
+    assert_eq!(layout.validate(), vec![]);
+    assert_eq!(serde_json::to_value(&layout).unwrap(), v);
+    let Section::Group(group) = &layout.pages[1].rows[1].sections[0] else {
+        panic!("a group")
+    };
+    assert_eq!(group.tags.as_deref(), Some("MASTER_A"));
+    let Control::Strip(strip) = &group.controls[0] else {
+        panic!("a strip")
+    };
+    assert_eq!(strip.label.as_deref(), Some("Hall big"));
+    assert_eq!(strip.mark, Some(StripMark::Conflict));
+    assert!(layout.pages[0].view);
+    assert!(!layout.pages[1].view);
+    // Unset: nothing written.
+    let plain = parse(sample());
+    let written = serde_json::to_value(&plain).unwrap();
+    assert_eq!(written, sample());
+    assert_eq!(
+        serde_json::to_value(StripMark::Problem).unwrap(),
+        json!("problem")
+    );
+}
+
+#[test]
+fn a_bad_tag_group_an_empty_label_or_a_view_as_default_page_is_refused() {
+    let mut v = sample();
+    foh_row(&mut v, 1)[0]["tags"] = json!("Vocals");
+    foh_row(&mut v, 1)[0]["controls"][0]["label"] = json!("  ");
+    assert_eq!(
+        errors(v),
+        vec![
+            r#"pages[1].rows[1].sections[0].tags: "Vocals" is not a tag group name"#.to_string(),
+            "pages[1].rows[1].sections[0].controls[0].label: an empty label".to_string(),
+        ]
+    );
+    let mut v = sample();
+    v["pages"][1]["view"] = json!(true);
+    assert_eq!(
+        errors(v),
+        vec![r#"default_page: "foh" is not a page"#.to_string()]
+    );
 }

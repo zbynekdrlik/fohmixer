@@ -116,6 +116,8 @@ fn strip(name: &str) -> Strip {
         wide: false,
         mute_guard: false,
         pinned: false,
+        label: None,
+        mark: None,
     }
 }
 
@@ -405,4 +407,93 @@ fn choosing_a_tab_remembers_it_for_its_pager() {
     choose(&layout, &mut remembered, &[0], 1, 0);
     choose(&layout, &mut remembered, &[], 1, 0);
     assert_eq!(remembered, before);
+}
+
+/// A layout of two pages and two views (#68).
+fn with_views() -> Layout {
+    serde_json::from_value(serde_json::json!({
+        "schema": 2,
+        "default_page": "foh",
+        "pages": [
+            {"id": "cue", "title": "Cue"},
+            {"id": "foh", "title": "FOH"},
+            {"id": "view-TALK", "title": "TALK", "view": true},
+            {"id": "view-SOLO", "title": "SOLO", "view": true}
+        ]
+    }))
+    .expect("the layout parses")
+}
+
+#[test]
+fn a_views_button_shows_it_and_a_second_tap_returns_to_the_page_before() {
+    let layout = with_views();
+    // From the cue page: the view, the cue page remembered.
+    assert_eq!(
+        view_tap(&layout, Some(0), false, 2, None),
+        (2, Some("cue".into()))
+    );
+    // Again: back to the cue page.
+    assert_eq!(view_tap(&layout, Some(2), false, 2, Some("cue")), (0, None));
+    // From one view to another: the page before the first stays.
+    assert_eq!(
+        view_tap(&layout, Some(2), false, 3, Some("cue")),
+        (3, Some("cue".into()))
+    );
+    // Nothing remembered (or a view, or a page gone): the default page.
+    assert_eq!(view_tap(&layout, Some(3), false, 3, None), (1, None));
+    assert_eq!(
+        view_tap(&layout, Some(3), false, 3, Some("view-TALK")),
+        (1, None)
+    );
+    assert_eq!(
+        view_tap(&layout, Some(3), false, 3, Some("gone")),
+        (1, None)
+    );
+    // Nothing shown yet: the view, nothing to remember.
+    assert_eq!(view_tap(&layout, None, false, 2, None), (2, None));
+}
+
+#[test]
+fn a_views_button_under_the_stream_deck_tab_shows_the_view() {
+    let layout = with_views();
+    // The view is the page under the deck tab: a tap shows it, never back.
+    assert_eq!(
+        view_tap(&layout, Some(2), true, 2, Some("cue")),
+        (2, Some("cue".into()))
+    );
+    // The cue page under it is remembered as without the deck.
+    assert_eq!(
+        view_tap(&layout, Some(0), true, 2, None),
+        (2, Some("cue".into()))
+    );
+}
+
+#[test]
+fn a_view_shown_is_never_stored_the_page_before_it_is() {
+    let layout = with_views();
+    let pages = |pairs: &[(&str, &str)]| -> BTreeMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect()
+    };
+    let shown = pages(&[("", "view-SOLO"), ("foh", "others")]);
+    assert_eq!(
+        stored_pages(&layout, &shown, Some("cue")),
+        pages(&[("", "cue"), ("foh", "others")])
+    );
+    assert_eq!(
+        stored_pages(&layout, &shown, None),
+        pages(&[("foh", "others")])
+    );
+    // A page is stored as it is.
+    let page = pages(&[("", "cue")]);
+    assert_eq!(stored_pages(&layout, &page, Some("foh")), page);
+}
+
+#[test]
+fn a_view_returns_to_the_first_page_without_a_default() {
+    let mut layout = with_views();
+    layout.default_page = "missing".into();
+    assert_eq!(view_tap(&layout, Some(2), false, 2, None), (0, None));
 }
