@@ -158,15 +158,41 @@ fn the_served_strips_follow_the_tuner_markers() {
             }]
         );
 
-        // A rename elsewhere leaves the composition as it is: no revision.
+        // A plain Tuner added (a read of the devices, the same markers) and
+        // a rename elsewhere leave the composition as it is: no revision.
         let rev = layout_until(&hub, "settled", |_| true).await.rev;
+        assert_eq!(host.tuner("track", 3, "add", "Tuner"), 1);
         assert_eq!(host.rename("Hand2 #", "Hand2 renamed #"), 1);
         tokio::time::sleep(Duration::from_millis(1500)).await;
         assert_eq!(layout_until(&hub, "unchanged", |_| true).await.rev, rev);
+        hub.status_until(SECS_5, |s| s.layout.markers.found == 3)
+            .await;
+
+        // A track deleted above the markers: a key bound by index follows the
+        // object now at that index (a list change resolves it again), and
+        // the markers follow their tracks.
+        let volume8 = "live_set tracks 8 mixer_device volume";
+        let key = a.sub_key("band", volume8, "value", false).await;
+        a.set("band", volume8, "value", json!(0.7)).await;
+        a.value_until(&key, SECS_5, |i| i.value == Some(json!(0.7)))
+            .await;
+        assert_eq!(host.delete_track(1), 14);
+        // Index 8 holds what was 9 now (Stems grp#, at 0.85).
+        a.value_until(&key, SECS_5, |i| i.value == Some(json!(0.85)))
+            .await;
+        let served = layout_until(&hub, "the markers moved", |s| {
+            strips(s, "p")
+                .iter()
+                .map(|(_, anchor, _)| anchor.clone())
+                .collect::<Vec<_>>()
+                == vec![Anchor::TrackAt { index: 7 }, Anchor::TrackAt { index: 11 }]
+        })
+        .await;
+        assert_eq!(strips(&served, "view-TALK").len(), 1);
 
         // Removed: the strip goes.
-        assert_eq!(host.tuner("track", 12, "remove", ""), 0);
-        assert_eq!(host.tuner("track", 8, "remove", ""), 0);
+        assert_eq!(host.tuner("track", 11, "remove", ""), 0);
+        assert_eq!(host.tuner("track", 7, "remove", ""), 0);
         let served = layout_until(&hub, "the strips gone", |s| strips(s, "p").is_empty()).await;
         assert_eq!(strips(&served, "view-TALK").len(), 1);
         hub.status_until(SECS_5, |s| s.layout.markers.found == 1)

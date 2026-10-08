@@ -451,3 +451,80 @@ fn a_problem_report_serializes_with_its_code() {
                "problems": [{"code": "no_label"}, {"code": "same_place", "group": "A", "place": 2}]})
     );
 }
+
+#[test]
+fn a_views_pins_are_grouped_by_their_first_group_in_the_markers_order() {
+    let found = vec![
+        found("band", TrackKind::Track, 0, r#""A" +G:SOLO"#),
+        found("band", TrackKind::Track, 1, r#""P1" +G:VOCALS +PIN"#),
+        found(
+            "band",
+            TrackKind::Track,
+            2,
+            r#""P2" +G:VOCALS:1 +G:HANDS +PIN"#,
+        ),
+        found("band", TrackKind::Track, 3, r#""P3" +G:HANDS +PIN"#),
+    ];
+    let composed = compose(&frame(), &found);
+    assert_eq!(composed.layout.validate(), vec![]);
+    let view = composed
+        .layout
+        .pages
+        .iter()
+        .find(|p| p.id == "view-SOLO")
+        .expect("the view");
+    let groups: Vec<(Option<String>, Vec<String>)> = view.rows[0]
+        .sections
+        .iter()
+        .flat_map(Section::groups)
+        .map(|g| (g.id.clone(), labels(&g.controls)))
+        .collect();
+    assert_eq!(
+        groups,
+        vec![
+            (Some("view-SOLO-strips".into()), vec!["A".to_string()]),
+            (
+                Some("view-SOLO-pins-VOCALS".into()),
+                vec!["P1".to_string(), "P2".to_string()]
+            ),
+            (Some("view-SOLO-pins-HANDS".into()), vec!["P3".to_string()]),
+        ]
+    );
+}
+
+#[test]
+fn a_frame_holds_no_view_no_view_id_and_no_tags_group_with_controls() {
+    assert_eq!(frame_problems(&frame()), vec![]);
+    let bad: Layout = serde_json::from_value(json!({
+        "schema": 2,
+        "default_page": "p",
+        "pages": [
+            {"id": "p", "title": "P", "rows": [{"sections": [
+                {"kind": "group", "id": "view-x", "tags": "A", "controls": [
+                    {"kind": "text", "text": "t"}]},
+                {"kind": "pager", "id": "view-pager", "default_page": "view-sub", "pages": [
+                    {"id": "view-sub", "title": "S"}]}]}]},
+            {"id": "view-A", "title": "A", "view": true}
+        ]
+    }))
+    .expect("parses");
+    let problems: Vec<String> = frame_problems(&bad)
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    assert_eq!(
+        problems,
+        vec![
+            r#"pages[0].rows[0].sections[0]: "view-x" starts with "view-", the Tuner markers' views"#
+                .to_string(),
+            r#"pages[0].rows[0].sections[1]: "view-pager" starts with "view-", the Tuner markers' views"#
+                .to_string(),
+            r#"pages[0].rows[0].sections[1]: "view-sub" starts with "view-", the Tuner markers' views"#
+                .to_string(),
+            r#"pages[1]: "view-A" starts with "view-", the Tuner markers' views"#.to_string(),
+            r#"pages[0]: the tags group "view-x" holds controls of its own (the markers' strips replace them)"#
+                .to_string(),
+            "pages[1]: a view page: the Tuner markers make those".to_string(),
+        ]
+    );
+}

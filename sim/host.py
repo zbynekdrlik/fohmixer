@@ -27,6 +27,10 @@ WebSocket server is bound. Control lines on stdin (never over the WebSocket):
                                 ``add`` adds another, ``remove`` deletes the first;
                                 prints ``TUNER <tuners on the track>``, or
                                 ``TUNER -1`` when there is no such track
+    delete-track <index>        delete the track at <index> as a user in Live
+                                would (its group's children too; the lists'
+                                listeners fire); prints ``DELETED <tracks
+                                left>``, or ``DELETED -1`` with no such track
 
 SIGTERM or SIGINT calls ``FohMixer.disconnect()`` on the main thread and exits 0.
 Used by the S2 integration tests and by the hub (S3) and UI (S4) tests.
@@ -140,6 +144,14 @@ def tuner(song, kind, index, action, name):
     return sum(1 for d in track._devices if d.class_name == "Tuner")
 
 
+def delete_track(song, index):
+    """Delete the track at ``index`` (main thread); the tracks left, -1 if none."""
+    if not 0 <= index < len(song.tracks):
+        return -1
+    song.delete_track(index)
+    return len(song.tracks)
+
+
 def tuner_line(line):
     """A ``tuner`` line's ``(kind, index, action, name)``, or None."""
     try:
@@ -199,6 +211,9 @@ def control(main_thread, song, line, held):
         if level is not False:
             count = main_thread.call(lambda: hold_meter(song, held, parts[0], level))
             return f"METER {count}"
+    if len(words) == 2 and words[0] == "delete-track" and words[1].isdigit():
+        index = int(words[1])
+        return f"DELETED {main_thread.call(lambda: delete_track(song, index))}"
     if words and words[0] == "tuner":
         parsed = tuner_line(line)
         if parsed is not None:

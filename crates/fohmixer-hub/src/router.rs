@@ -127,6 +127,11 @@ pub enum RouterMsg {
     MarkersRetry {
         instance: String,
     },
+    /// The markers' change `generation` has had its quiet time (#68): served
+    /// when no newer change came.
+    MarkersSettle {
+        generation: u64,
+    },
     /// A client's connection ended.
     Detach {
         client: ClientId,
@@ -241,6 +246,9 @@ pub struct Router {
     /// The layout store the markers go to (#68); none in tests that need
     /// no markers.
     layout_store: Option<Arc<crate::layout::LayoutStore>>,
+    /// The latest markers waiting for their quiet time, and its number.
+    markers_pending: Option<Vec<fohmixer_proto::markers::Found>>,
+    markers_generation: u64,
 }
 
 impl Router {
@@ -275,6 +283,8 @@ impl Router {
             unfold: unfold::Keeper::default(),
             markers: markers::Keeper::default(),
             layout_store: None,
+            markers_pending: None,
+            markers_generation: 0,
         }
     }
 
@@ -395,6 +405,7 @@ impl Router {
                 let actions = self.markers.retry(&instance);
                 self.markers_apply(actions);
             }
+            RouterMsg::MarkersSettle { generation } => self.markers_settled(generation),
             RouterMsg::Applied {
                 instance,
                 batch,
@@ -415,6 +426,11 @@ impl Router {
                 targets,
                 strips,
             } => {
+                // Two producers (the file's poll and the markers, #68): an
+                // older revision arriving late never replaces a newer one.
+                if rev <= self.layout_rev {
+                    return true;
+                }
                 self.layout_rev = rev;
                 for outbox in self.clients.values() {
                     outbox.layout(rev);
@@ -1207,6 +1223,25 @@ mod tests {
         assert!(!router.handle(RouterMsg::Stop));
     }
 
+    #[test]
+    fn an_older_layout_revision_never_replaces_a_newer_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut router = router(dir.path());
+        let first = attach(&mut router, 1);
+        first.take();
+        let layout = |rev| RouterMsg::Layout {
+            rev,
+            stage: None,
+            targets: BTreeMap::new(),
+            strips: Vec::new(),
+        };
+        router.handle(layout(2));
+        router.handle(layout(1));
+        router.handle(layout(2));
+        assert_eq!(router.layout_rev, 2);
+        assert_eq!(first.take().unwrap(), vec![ServerMsg::Layout { rev: 2 }]);
+    }
+
     #[tokio::test]
     async fn the_strips_tracks_are_followed_for_their_groups() {
         let dir = tempfile::tempdir().unwrap();
@@ -1350,6 +1385,7 @@ mod tests {
 
     #[tokio::test]
     async fn new_markers_are_served_as_a_new_layout_revision_only_when_it_changes() {
+        use fohmixer_proto::layout::{Control, Section};
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("layout.json"),
@@ -1368,8 +1404,20 @@ mod tests {
             vec!["band".into()],
         ));
         assert_eq!(store.poll(), Some(1));
-        let (router, _rx, _records) = offline_router(dir.path());
+        let (router, mut rx, _records) = offline_router(dir.path());
         let mut router = router.with_layout(Arc::clone(&store));
+        // The next quiet-time message (the reads' answers go by).
+        async fn settled(rx: &mut mpsc::UnboundedReceiver<RouterMsg>) -> RouterMsg {
+            loop {
+                let msg = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+                    .await
+                    .expect("a message")
+                    .expect("the channel is open");
+                if matches!(msg, RouterMsg::MarkersSettle { .. }) {
+                    return msg;
+                }
+            }
+        }
         let found = |name: &str| {
             vec![fohmixer_proto::markers::Found {
                 instance: "band".into(),
@@ -1380,17 +1428,49 @@ mod tests {
             }]
         };
         router.markers_found(found(r#""Vox" +G:A"#));
+        // Nothing before the quiet time.
+        assert_eq!(router.layout_rev, 0);
+        let started = std::time::Instant::now();
+        let settle = settled(&mut rx).await;
+        assert!(started.elapsed() >= std::time::Duration::from_millis(markers::SETTLE_MS - 50));
+        router.handle(settle);
         assert_eq!(router.layout_rev, 2);
         assert_eq!(store.current().0, 2);
         assert_eq!(store.markers_status().found, 1);
         // The same markers: the same composition, no revision (I10).
         router.markers_found(found(r#""Vox" +G:A"#));
+        let settle = settled(&mut rx).await;
+        router.handle(settle);
         assert_eq!(router.layout_rev, 2);
+        // Two changes in a row: only the latest is served, once.
+        router.markers_found(found(r#""One" +G:A"#));
+        router.markers_found(found(r#""Two" +G:A"#));
+        let first = settled(&mut rx).await;
+        let second = settled(&mut rx).await;
+        router.handle(first);
+        assert_eq!(router.layout_rev, 2, "a newer change came");
+        router.handle(second);
+        assert_eq!(router.layout_rev, 3);
+        let served = store.current().1.unwrap();
+        let Section::Group(group) = &served.pages[0].rows[0].sections[0] else {
+            panic!("the group")
+        };
+        let Control::Strip(strip) = &group.controls[0] else {
+            panic!("a strip")
+        };
+        assert_eq!(strip.label.as_deref(), Some("Two"));
         // A router with no store keeps its layout as it is.
-        let (mut bare, _rx, _records) = offline_router(dir.path());
+        let (mut bare, mut bare_rx, _records) = offline_router(dir.path());
         bare.markers_found(found(r#""Other" +G:A"#));
+        bare.handle(RouterMsg::MarkersSettle { generation: 0 });
         assert_eq!(bare.layout_rev, 0);
-        assert_eq!(store.current().0, 2);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(500), bare_rx.recv())
+                .await
+                .is_err(),
+            "no quiet time without a store"
+        );
+        assert_eq!(store.current().0, 3);
     }
 
     #[test]

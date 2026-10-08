@@ -120,6 +120,10 @@ struct Entry {
     /// The target selects by name somewhere (it is re-resolved when a guard
     /// fires).
     named: bool,
+    /// The target selects a track of `live_set` by its index (#68: a marker
+    /// strip): re-resolved when its list changes (a track inserted, moved
+    /// or deleted puts another object at the index).
+    indexed: bool,
     /// A guard (it has dependents, never clients).
     guard: bool,
     /// A list guard (it listens to the list a name step selects from).
@@ -176,7 +180,20 @@ fn guard_key(instance: &str, target: &str, prop: &str) -> String {
 /// changed (`lists`: its index may hold another object now). A rename alone
 /// leaves every index where it was.
 fn re_resolves(entry: &Entry, lists: bool) -> bool {
-    entry.named || (entry.guard && (lists || !entry.watch))
+    entry.named || (entry.indexed && lists) || (entry.guard && (lists || !entry.watch))
+}
+
+/// The lists of `live_set` a marker strip's track is selected from by
+/// index (#68).
+const INDEXED_LISTS: [&str; 2] = ["tracks", "return_tracks"];
+
+/// Whether `path` selects a track of `live_set` by its index (#68).
+fn track_by_index(path: &LomPath) -> bool {
+    path.root == "live_set"
+        && path
+            .steps
+            .first()
+            .is_some_and(|s| s.index.is_some() && INDEXED_LISTS.contains(&s.attr.as_str()))
 }
 
 /// A result slot of `add_listener`: the Live key and the state it gives.
@@ -207,9 +224,13 @@ fn parse_slot(slot: &Value) -> Result<(String, Cached), String> {
 }
 
 /// The guards of a path: for every name step, the list it selects from
-/// (the owner's list attribute) and the selected object's `name`.
+/// (the owner's list attribute) and the selected object's `name`; for a
+/// track of `live_set` selected by index (#68), its list.
 fn guard_targets(path: &LomPath) -> Vec<(String, String)> {
     let mut guards = Vec::new();
+    if track_by_index(path) {
+        guards.push((path.prefix(0).text(), path.steps[0].attr.clone()));
+    }
     for (k, step) in path.steps.iter().enumerate() {
         if step.name.is_some() {
             guards.push((path.prefix(k).text(), step.attr.clone()));
@@ -362,7 +383,11 @@ impl Subs {
                 if item.error.is_some() {
                     entry.live = None;
                 }
-                if guard_fired && entry.named && !entry.guard {
+                // A value in the frame of a rename (a name binding) or of a
+                // list change (a track by index, #68) may be the other
+                // object's: the binding resolves again.
+                let moved = (guard_fired && entry.named) || (list_fired && entry.indexed);
+                if moved && !entry.guard {
                     continue;
                 }
                 let cached = match &item.error {
@@ -553,6 +578,7 @@ impl Subs {
                 prop: prop.to_string(),
                 display,
                 named: path.steps.iter().any(|s| s.name.is_some()),
+                indexed: track_by_index(path),
                 guard,
                 list: false,
                 watch: false,
@@ -638,7 +664,7 @@ impl Subs {
                 .dependents
                 .iter()
                 .filter_map(|d| self.entries.get(d).map(|e| (d, e)))
-                .filter(|(_, e)| matches!(e.cached, Some(Cached::Error(_))))
+                .filter(|(_, e)| e.named && matches!(e.cached, Some(Cached::Error(_))))
                 .flat_map(|(d, e)| std::iter::once(d.clone()).chain(e.guards.iter().cloned()))
                 .collect();
             let in_error = !again.is_empty();

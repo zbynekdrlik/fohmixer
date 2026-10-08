@@ -22,7 +22,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use fohmixer_proto::client::MarkersStatus;
 use fohmixer_proto::layout::Layout;
-use fohmixer_proto::markers::{Found, MarkerReport, compose};
+use fohmixer_proto::markers::{Found, MarkerReport, compose, frame_problems};
 
 /// Backups kept.
 pub const MAX_BACKUPS: usize = 30;
@@ -96,9 +96,11 @@ pub fn check_files(layout: &Path, config: &Path) -> anyhow::Result<()> {
 pub fn check(text: &[u8], instances: &[String]) -> Result<Layout, String> {
     let layout: Layout =
         serde_json::from_slice(text).map_err(|e| format!("layout does not parse: {e}"))?;
+    // A frame (#68): the layout's own rules, and what only the markers make.
     let mut problems: Vec<String> = layout
         .validate()
         .into_iter()
+        .chain(frame_problems(&layout))
         .map(|e| e.to_string())
         .collect();
     let named = layout.bindings().into_iter().map(|b| &b.instance);
@@ -160,9 +162,7 @@ impl LayoutStore {
             rev,
             "the layout's markers changed: a new composition served"
         );
-        if let Some(text) = served.and_then(|l| serde_json::to_vec_pretty(l.as_ref()).ok()) {
-            self.backup_named(SERVED, &text);
-        }
+        self.backup_served(served.as_deref());
         Some(rev)
     }
 
@@ -212,6 +212,7 @@ impl LayoutStore {
                 state.rev += 1;
                 state.frame = Some(Arc::new(layout));
                 serve(&mut state);
+                self.backup_served(state.layout.as_deref());
                 state.error = None;
                 self.backup(&text);
                 state.accepted = Some(text);
@@ -271,6 +272,13 @@ impl LayoutStore {
         self.backup_named(&self.file_name(), text);
     }
 
+    /// Keeps a served composition (#68) as a dated `served.json` backup.
+    fn backup_served(&self, served: Option<&Layout>) {
+        if let Some(text) = served.and_then(|l| serde_json::to_vec_pretty(l).ok()) {
+            self.backup_named(SERVED, &text);
+        }
+    }
+
     /// The same for backups named `file_name`.
     fn backup_named(&self, file_name: &str, text: &[u8]) {
         let file_name = file_name.to_string();
@@ -317,6 +325,11 @@ impl LayoutStore {
     /// The backups kept now (tests, diagnostics).
     pub fn backups(&self) -> Vec<String> {
         self.list_backups(&self.file_name())
+    }
+
+    /// The served compositions kept now (#68; tests, diagnostics).
+    pub fn served_backups(&self) -> Vec<String> {
+        self.list_backups(SERVED)
     }
 }
 
@@ -602,6 +615,59 @@ mod tests {
             backup_name("layout.json", t),
             "layout.json.20250924T094500.123Z"
         );
+    }
+
+    #[test]
+    fn markers_compose_with_the_frame_and_each_new_composition_is_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(dir.path());
+        let frame = serde_json::to_vec(&json!({
+            "schema": 2,
+            "default_page": "main",
+            "pages": [{"id": "main", "title": "M", "rows": [{"sections": [
+                {"kind": "group", "id": "g", "tags": "A"}]}]}]
+        }))
+        .unwrap();
+        // No frame yet: markers wait for one.
+        let found = |name: &str| {
+            vec![Found {
+                instance: "band".into(),
+                kind: fohmixer_proto::markers::TrackKind::Track,
+                index: 2,
+                name: name.into(),
+                tuners: 1,
+            }]
+        };
+        assert_eq!(store.set_markers(found(r#""Vox" +G:A"#)), None);
+        assert_eq!(store.markers_status().found, 1);
+        write(dir.path(), &frame);
+        assert_eq!(store.poll(), Some(1));
+        let strips = |store: &LayoutStore| store.current().1.unwrap().controls().len();
+        assert_eq!(strips(&store), 1, "the markers the store held");
+        assert_eq!(store.served_backups().len(), 1);
+        // A new composition: a revision and a backup; the same: neither.
+        assert_eq!(store.set_markers(found(r#""Other" +G:A"#)), Some(2));
+        assert_eq!(store.served_backups().len(), 2);
+        assert_eq!(store.set_markers(found(r#""Other" +G:A"#)), None);
+        assert_eq!(store.served_backups().len(), 2);
+        // A problem is listed.
+        assert_eq!(store.set_markers(found(r#""X" +G:A +NOPE"#)), Some(3));
+        assert_eq!(store.markers_status().problems.len(), 1);
+        // The frame's backups stay the frame's.
+        assert_eq!(store.backups().len(), 1);
+        // A frame the markers' rules refuse is not served.
+        write(
+            dir.path(),
+            &serde_json::to_vec(&json!({
+                "schema": 2,
+                "default_page": "main",
+                "pages": [{"id": "main", "title": "M"}, {"id": "view-A", "title": "A", "view": true}]
+            }))
+            .unwrap(),
+        );
+        assert_eq!(store.poll(), None);
+        assert!(store.error().unwrap().contains("a view page"));
+        assert_eq!(store.current().0, 3);
     }
 
     #[test]

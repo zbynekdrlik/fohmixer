@@ -131,6 +131,16 @@ impl Host {
             .unwrap_or_else(|| panic!("not a TUNER line: {answer}"))
     }
 
+    /// Deletes the track at `index` as a user in Live would; the tracks left
+    /// (-1: no such track).
+    pub fn delete_track(&mut self, index: u32) -> i64 {
+        let answer = self.answer(&format!("delete-track {index}"));
+        answer
+            .strip_prefix("DELETED ")
+            .and_then(|n| n.parse().ok())
+            .unwrap_or_else(|| panic!("not a DELETED line: {answer}"))
+    }
+
     /// The Live listeners on `prop` of the object at `path` (-1: none there).
     pub fn listeners(&mut self, prop: &str, path: &str) -> i64 {
         let answer = self.answer(&format!("listeners {prop} {path}"));

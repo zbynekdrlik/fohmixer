@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test, expect } from "./support/fixtures";
-import { LiveClient, centre, frames, harness, hostLine, openSurface, ready, selectPage, until, volume } from "./support/live";
+import { LiveClient, centre, frames, harness, hostLine, hubStatus, openSurface, ready, selectPage, until, volume } from "./support/live";
 
 // Strips from Tuner markers (#68, spec D16): a Tuner in a track's device
 // chain, renamed with the strip's quoted label and its tags, puts the strip
@@ -17,6 +17,11 @@ function withMarkers(): any {
   const foh = frame.pages.find((p: any) => p.id === "foh");
   foh.rows[1].sections.push({ kind: "group", id: "markers", title: "MARKERS", tags: "MARKERS" });
   return frame;
+}
+
+/** Waits until the hub holds no Tuner marker: the next spec starts on the fixture, never rebuilt by a late read. */
+async function markersGone() {
+  await until(async () => (await hubStatus()).layout.markers.found, (n: number) => n === 0, "the Tuner markers gone", 10_000);
 }
 
 /** A mouse drag up the fader, from its centre (its first move only anchors, #43 PR F). */
@@ -57,6 +62,7 @@ test("a Tuner marker puts its strip on the surface and a rename in Live follows"
     await hostLine("band", "tuner track 1 remove");
     await hostLine("band", "tuner track 2 remove");
     await harness("/hub/layout/reset");
+    await markersGone();
   }
   await expect(marker).toHaveCount(0, { timeout: 10_000 });
 });
@@ -96,6 +102,7 @@ test("a tag group the frame does not show is a view: its strips and the pins, a 
     await hostLine("band", "tuner track 1 remove");
     await hostLine("band", "tuner track 2 remove");
     await harness("/hub/layout/reset");
+    await markersGone();
   }
   await expect(button).toHaveCount(0, { timeout: 10_000 });
 });
@@ -137,6 +144,7 @@ test("an equal label disables both strips; a tag problem marks a strip that stil
     await hostLine("band", "tuner track 1 remove");
     await hostLine("band", "tuner track 2 remove");
     await harness("/hub/layout/reset");
+    await markersGone();
   }
   await expect(group).toHaveCount(0, { timeout: 10_000 });
 });

@@ -391,16 +391,18 @@ fn a_rename_turns_the_binding_into_an_error_and_a_rename_back_heals_it() {
     );
 }
 
+// The next four are about any binding by index: a scene stands for one (a
+// track of `live_set` by index also guards its list, #68, tested below).
 #[test]
 fn removals_wait_for_resolutions_in_flight() {
     let mut subs = online();
     let a = subs
-        .subscribe(1, "band", "live_set tracks 0", "mute", false)
+        .subscribe(1, "band", "live_set scenes 0", "mute", false)
         .unwrap();
     let out = subs.drain_outgoing();
     subs.on_result("band", &out[0].uuid, &[ok("live_5.mute", json!(false))]);
     // B resolves to the same key while A leaves: its request is out first.
-    subs.subscribe(2, "band", "live_set tracks 0", "solo", false)
+    subs.subscribe(2, "band", "live_set scenes 0", "solo", false)
         .unwrap();
     let resolving = subs.drain_outgoing();
     subs.unsubscribe(1, &a.key);
@@ -427,7 +429,7 @@ fn removals_wait_for_resolutions_in_flight() {
 fn a_removal_is_cancelled_when_the_key_is_wanted_again() {
     let mut subs = online();
     let a = subs
-        .subscribe(1, "band", "live_set tracks 0", "mute", false)
+        .subscribe(1, "band", "live_set scenes 0", "mute", false)
         .unwrap();
     let out = subs.drain_outgoing();
     subs.on_result("band", &out[0].uuid, &[ok("live_5.mute", json!(false))]);
@@ -455,7 +457,7 @@ fn a_removal_is_cancelled_when_the_key_is_wanted_again() {
 fn a_stale_answer_is_ignored_and_an_unwanted_key_released() {
     let mut subs = online();
     let reply = subs
-        .subscribe(1, "band", "live_set tracks 0", "mute", false)
+        .subscribe(1, "band", "live_set scenes 0", "mute", false)
         .unwrap();
     let first = subs.drain_outgoing();
     // Re-resolved (a reconnect) before the first answer arrived.
@@ -473,10 +475,10 @@ fn a_stale_answer_is_ignored_and_an_unwanted_key_released() {
         vec![(1, ValueItem::value(&reply.key, json!(false), None))]
     );
     // An answer for an entry that is gone releases its key.
-    subs.subscribe(2, "band", "live_set tracks 1", "mute", false)
+    subs.subscribe(2, "band", "live_set scenes 1", "mute", false)
         .unwrap();
     let out = subs.drain_outgoing();
-    subs.unsubscribe(2, "band|live_set tracks 1|mute|false");
+    subs.unsubscribe(2, "band|live_set scenes 1|mute|false");
     subs.on_result("band", &out[0].uuid, &[ok("live_6.mute", json!(false))]);
     assert_eq!(
         commands(&subs.drain_outgoing()),
@@ -509,13 +511,13 @@ fn a_stale_answer_is_ignored_and_an_unwanted_key_released() {
 fn a_removal_goes_out_while_another_instance_resolves() {
     let mut subs = online();
     let master = subs
-        .subscribe(1, "master", "live_set tracks 0", "mute", false)
+        .subscribe(1, "master", "live_set scenes 0", "mute", false)
         .unwrap();
     let out = subs.drain_outgoing();
     subs.on_result("master", &out[0].uuid, &[ok("live_7.mute", json!(false))]);
     subs.unsubscribe(1, &master.key);
     // Band resolves in the same drain: master's removal is not held.
-    subs.subscribe(2, "band", "live_set tracks 0", "mute", false)
+    subs.subscribe(2, "band", "live_set scenes 0", "mute", false)
         .unwrap();
     let out = subs.drain_outgoing();
     let by: Vec<(String, String)> = out
@@ -535,7 +537,7 @@ fn a_removal_goes_out_while_another_instance_resolves() {
     );
     // A removal in flight does not hold the next removal either.
     let second = subs
-        .subscribe(1, "master", "live_set tracks 1", "mute", false)
+        .subscribe(1, "master", "live_set scenes 1", "mute", false)
         .unwrap();
     let out = subs.drain_outgoing();
     let resolve = out.iter().find(|o| o.instance == "master").unwrap();
@@ -713,7 +715,26 @@ fn a_second_subscriber_of_an_index_binding_sends_nothing_unless_in_error() {
     subs.subscribe(1, "band", "live_set tracks 0", "mute", false)
         .unwrap();
     let out = subs.drain_outgoing();
-    subs.on_result("band", &out[0].uuid, &[ok("live_5.mute", json!(false))]);
+    // The binding, and the list its track is selected from by index (#68).
+    assert_eq!(
+        commands(&out),
+        vec![
+            (
+                "live_set tracks 0".into(),
+                "add_listener".into(),
+                "mute".into()
+            ),
+            ("live_set".into(), "add_listener".into(), "tracks".into()),
+        ]
+    );
+    subs.on_result(
+        "band",
+        &out[0].uuid,
+        &[
+            ok("live_5.mute", json!(false)),
+            ok("live_1.tracks", json!([])),
+        ],
+    );
     let second = subs
         .subscribe(2, "band", "live_set tracks 0", "mute", false)
         .unwrap();
@@ -1210,7 +1231,12 @@ fn guard_targets_cover_every_name_step() {
             ),
         ]
     );
-    assert!(guard_targets(&LomPath::parse("live_set tracks 0 mute").unwrap()).is_empty());
+    // A track by index (#68): its list only; any other index step none.
+    assert_eq!(
+        guard_targets(&LomPath::parse("live_set tracks 0 mute").unwrap()),
+        vec![("live_set".to_string(), "tracks".to_string())]
+    );
+    assert!(guard_targets(&LomPath::parse("live_set scenes 0 name").unwrap()).is_empty());
 }
 
 #[test]
@@ -1257,5 +1283,134 @@ fn slots_parse() {
     assert_eq!(
         parse_slot(&json!({"ok": true})),
         Err("add_listener answered without a key".into())
+    );
+}
+
+/// Answers every `add_listener` of `out` from `answers` (target, prop →
+/// slot); anything else a key-less answer.
+fn answer_with(subs: &mut Subs, out: &[Outgoing], answers: &[(&str, &str, Value)]) {
+    for o in out {
+        let slots: Vec<Value> = o
+            .commands
+            .iter()
+            .map(|c| {
+                let target = c["target"].as_str().unwrap_or("");
+                let prop = c["args"]["prop"].as_str().unwrap_or("");
+                answers
+                    .iter()
+                    .find(|(t, p, _)| *t == target && *p == prop)
+                    .map_or_else(
+                        || json!({"ok": true, "data": null}),
+                        |(_, _, slot)| slot.clone(),
+                    )
+            })
+            .collect();
+        subs.on_result(&o.instance, &o.uuid, &slots);
+    }
+}
+
+#[test]
+fn a_track_by_index_resolves_again_when_its_list_changes_and_only_then() {
+    // #68: a marker strip binds its track by index; a track inserted,
+    // moved or deleted puts another object there.
+    const INDEXED: &str = "live_set tracks 6 mixer_device volume";
+    let mut subs = online();
+    subs.subscribe(1, "band", INDEXED, "value", false).unwrap();
+    sub_volume(&mut subs, 2);
+    let out = subs.drain_outgoing();
+    answer_with(
+        &mut subs,
+        &out,
+        &[
+            (INDEXED, "value", ok("live_30.value", json!(0.5))),
+            ("live_set", "tracks", ok("live_1.tracks", json!(["a"]))),
+            (
+                VOLUME,
+                "value",
+                ok_display("live_10.value", json!(0.85), "0.0 dB"),
+            ),
+            (
+                "live_set tracks[name=Hand1 #]",
+                "name",
+                ok("live_11.name", json!("Hand1 #")),
+            ),
+        ],
+    );
+    assert!(subs.drain_outgoing().is_empty());
+    subs.take_deliveries();
+    // A value alone is the binding's.
+    subs.on_values("band", &[push("live_30.value", json!(0.6))]);
+    assert_eq!(subs.take_deliveries().len(), 1);
+    // A rename (a name guard) leaves it where it is.
+    subs.on_values("band", &[push("live_11.name", json!("Hand1 X #"))]);
+    let again: Vec<String> = commands(&subs.drain_outgoing())
+        .into_iter()
+        .map(|(t, _, _)| t)
+        .collect();
+    assert!(!again.contains(&INDEXED.to_string()), "{again:?}");
+    // A track inserted: the list fires with the old object's value in the
+    // same frame; that value is not the binding's, and it resolves again.
+    subs.take_deliveries();
+    subs.on_values(
+        "band",
+        &[
+            push("live_1.tracks", json!(["x", "a"])),
+            push("live_30.value", json!(0.9)),
+        ],
+    );
+    assert!(
+        !subs.take_deliveries().iter().any(|(c, _)| *c == 1),
+        "the moved object's value is not the binding's"
+    );
+    let again: Vec<String> = commands(&subs.drain_outgoing())
+        .into_iter()
+        .map(|(t, _, _)| t)
+        .collect();
+    assert!(again.contains(&INDEXED.to_string()), "{again:?}");
+}
+
+#[test]
+fn an_index_binding_in_error_watches_no_items() {
+    // The item name watches (#58) heal name bindings; a track by index in
+    // error (past the list's end) needs none.
+    let mut subs = online();
+    subs.subscribe(1, "band", "live_set tracks 9", "mute", false)
+        .unwrap();
+    let out = subs.drain_outgoing();
+    answer_with(
+        &mut subs,
+        &out,
+        &[
+            ("live_set tracks 9", "mute", fail("index out of range")),
+            ("live_set", "tracks", ok("live_1.tracks", json!(["a", "b"]))),
+        ],
+    );
+    assert_eq!(subs.listeners("band"), 1, "the list only, no item watches");
+    assert!(
+        commands(&subs.drain_outgoing())
+            .iter()
+            .all(|(t, _, p)| !(p == "name" && t.starts_with("live_set tracks "))),
+        "no item watch"
+    );
+}
+
+#[test]
+fn only_a_track_of_live_set_by_index_is_indexed() {
+    let path = |t: &str| LomPath::parse(t).unwrap();
+    assert!(track_by_index(&path(
+        "live_set tracks 3 mixer_device volume"
+    )));
+    assert!(track_by_index(&path("live_set return_tracks 0")));
+    assert!(!track_by_index(&path("live_set tracks[name=A] devices 0")));
+    assert!(!track_by_index(&path("live_set master_track")));
+    assert!(!track_by_index(&path("live_set scenes 2")));
+    assert!(!track_by_index(&path("live_set")));
+    assert_eq!(
+        guard_targets(&path("live_set tracks 3 mixer_device volume")),
+        vec![("live_set".to_string(), "tracks".to_string())]
+    );
+    assert_eq!(
+        guard_targets(&path("live_set return_tracks 1")),
+        vec![("live_set".to_string(), "return_tracks".to_string())]
     );
 }

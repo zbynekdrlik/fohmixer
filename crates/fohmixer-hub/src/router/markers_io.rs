@@ -102,10 +102,31 @@ impl Router {
         });
     }
 
-    /// The markers changed: the store composes them with its frame, and a
-    /// new composition goes out as a layout change.
+    /// The markers changed: they wait `SETTLE_MS` for the next change (a
+    /// set load or a burst of edits is one new layout).
     pub(super) fn markers_found(&mut self, found: Vec<Found>) {
-        let Some(store) = self.layout_store.clone() else {
+        if self.layout_store.is_none() {
+            return;
+        }
+        self.markers_generation += 1;
+        self.markers_pending = Some(found);
+        let generation = self.markers_generation;
+        let tx = self.io.tx.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(markers::SETTLE_MS)).await;
+            let _ = tx.send(RouterMsg::MarkersSettle { generation });
+        });
+    }
+
+    /// A change had its quiet time: when it is still the latest, the store
+    /// composes the markers with its frame, and a new composition goes out
+    /// as a layout change.
+    pub(super) fn markers_settled(&mut self, generation: u64) {
+        if generation != self.markers_generation {
+            return;
+        }
+        let (Some(store), Some(found)) = (self.layout_store.clone(), self.markers_pending.take())
+        else {
             return;
         };
         tracing::info!(found = found.len(), "the Tuner markers changed");

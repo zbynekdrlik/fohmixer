@@ -444,3 +444,32 @@ fn the_markers_of_an_instance_are_counted_per_track_in_order() {
     );
     assert_eq!(found_of("band", &BTreeMap::new()), vec![]);
 }
+
+#[test]
+fn a_second_batch_that_keeps_failing_is_tried_again_three_times_in_a_row() {
+    let mut k = keeper();
+    let actions = k.value(&tracks_key("band"), Some(&list(1)));
+    let mut seq = apply(&mut k, actions).reads[0].1;
+    let devices = Ok(vec![ok(json!([device("Device", "Tuner")]))]);
+    let failed: Result<Vec<Value>, String> = Err("timeout".into());
+    for _ in 0..MAX_RETRIES {
+        let actions = k.read_done("band", seq, Step::Devices, &devices);
+        assert!(matches!(
+            actions.as_slice(),
+            [Action::Read {
+                step: Step::Classes,
+                ..
+            }]
+        ));
+        assert_eq!(
+            k.read_done("band", seq, Step::Classes, &failed),
+            vec![Action::Retry {
+                instance: "band".into()
+            }]
+        );
+        let actions = k.retry("band");
+        seq = apply(&mut k, actions).reads[0].1;
+    }
+    k.read_done("band", seq, Step::Devices, &devices);
+    assert_eq!(k.read_done("band", seq, Step::Classes, &failed), vec![]);
+}

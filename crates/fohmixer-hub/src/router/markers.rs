@@ -47,6 +47,9 @@ pub const NATIVE: &str = "Device";
 pub const RETRY_MS: u64 = 2000;
 /// Failed reads of an instance in a row that are tried again.
 pub const MAX_RETRIES: u32 = 3;
+/// The quiet time after a change of the markers before they are served: a
+/// set load or a burst of edits is one new layout, not several.
+pub const SETTLE_MS: u64 = 300;
 
 /// A track (or return track) of an instance: its kind and index.
 pub type TrackAt = (TrackKind, u32);
@@ -403,7 +406,6 @@ impl Keeper {
                 Vec::new()
             };
         };
-        state.failures = 0;
         let tuners = match step {
             Step::Devices => {
                 let (devices, candidates) = read_devices(pending.counts, slots);
@@ -425,6 +427,9 @@ impl Keeper {
         let Some(done) = state.pending.take() else {
             return Vec::new();
         };
+        // Only a whole read resets the count: a second batch that keeps
+        // failing is tried again `MAX_RETRIES` times too.
+        state.failures = 0;
         state.devices = done.devices;
         state.tuners = tuners;
         let mut actions = self.resubscribe(instance, done.counts);

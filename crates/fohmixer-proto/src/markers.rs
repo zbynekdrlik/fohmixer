@@ -17,7 +17,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::layout::{
-    Anchor, Binding, Control, Group, Layout, Page, Row, Section, Strip, StripKind, StripMark,
+    Anchor, Binding, Control, Group, Layout, LayoutError, Page, Row, Section, Strip, StripKind,
+    StripMark,
 };
 
 /// The `class_name` of Live's Tuner (only a Tuner can be a marker).
@@ -178,6 +179,67 @@ pub fn parse(name: &str) -> Marker {
         marker.problems.push(TagProblem::NoGroup);
     }
     marker
+}
+
+/// What a frame (the layout file) may not hold (#68): a view page or an
+/// id starting with [`VIEW_PREFIX`] (the markers make those), or a `tags`
+/// group with controls of its own (the composition replaces them).
+pub fn frame_problems(frame: &Layout) -> Vec<LayoutError> {
+    let mut out = Vec::new();
+    let mut id = |at: &str, id: &str| {
+        if id.starts_with(VIEW_PREFIX) {
+            out.push(LayoutError {
+                at: at.to_string(),
+                message: format!("{id:?} starts with {VIEW_PREFIX:?}, the Tuner markers' views"),
+            });
+        }
+    };
+    for (i, page) in frame.pages.iter().enumerate() {
+        let at = format!("pages[{i}]");
+        id(&at, page.id.as_str());
+        for (r, row) in page.rows.iter().enumerate() {
+            for (s, section) in row.sections.iter().enumerate() {
+                let section_at = format!("{at}.rows[{r}].sections[{s}]");
+                if let Section::Pager(pager) = section {
+                    id(&section_at, pager.id.as_str());
+                    for sub in &pager.pages {
+                        id(&section_at, sub.id.as_str());
+                    }
+                }
+                for group in section.groups() {
+                    if let Some(group_id) = &group.id {
+                        id(&section_at, group_id.as_str());
+                    }
+                }
+            }
+        }
+    }
+    for (i, page) in frame.pages.iter().enumerate() {
+        let at = format!("pages[{i}]");
+        if page.view {
+            out.push(LayoutError {
+                at: at.clone(),
+                message: "a view page: the Tuner markers make those".to_string(),
+            });
+        }
+        let groups = page
+            .rows
+            .iter()
+            .flat_map(|r| &r.sections)
+            .flat_map(Section::groups);
+        for group in groups {
+            if group.tags.is_some() && !group.controls.is_empty() {
+                out.push(LayoutError {
+                    at: at.clone(),
+                    message: format!(
+                        "the tags group {:?} holds controls of its own (the markers' strips replace them)",
+                        group.id.as_deref().unwrap_or("")
+                    ),
+                });
+            }
+        }
+    }
+    out
 }
 
 /// Whether a marker's track is a track or a return track.

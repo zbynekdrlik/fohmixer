@@ -291,6 +291,12 @@ class IntegrationTest(unittest.TestCase):
         self.assertEqual(self.answer(host, "tuner track 0 remove"), "TUNER 0")
         self.assertEqual(self.answer(host, "tuner return 0 set '\"Hall\" +G:FX'"), "TUNER 1")
         self.assertEqual(self.answer(host, "tuner track 999 set 'x'"), "TUNER -1")
+        # A track deleted as in Live: the list's listener fires.
+        tracks = a.call("live_set", "add_listener", {"prop": "tracks"})
+        before = len(a.call("live_set", "get_prop", {"prop": "tracks"}))
+        self.assertEqual(self.answer(host, "delete-track 0"), f"DELETED {before - 1}")
+        self.assertEqual(len(a.wait_value(tracks["key"])["value"]), before - 1)
+        self.assertEqual(self.answer(host, "delete-track 999"), "DELETED -1")
         for line in (
             "tuner track x set 'y'",
             "tuner bus 0 set 'y'",

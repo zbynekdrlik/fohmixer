@@ -122,7 +122,13 @@ READY_S = 20.0
 STOP_S = 10.0
 ANSWER_S = 5.0
 # The control lines a host answers, and the prefix of each answer.
-ANSWERS = {"rename": "RENAMED", "listeners": "LISTENERS", "meter": "METER", "tuner": "TUNER"}
+ANSWERS = {
+    "rename": "RENAMED",
+    "listeners": "LISTENERS",
+    "meter": "METER",
+    "tuner": "TUNER",
+    "delete-track": "DELETED",
+}
 
 
 def hub_config(http_port, band_port, master_port, remote=None, companion=None):
