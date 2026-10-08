@@ -230,9 +230,9 @@ test("a context menu, a selection and a drag never start on the surface, and the
     ]);
   }
   expect(on("contextmenu", "mute")).toEqual([expect.objectContaining({ keys: [MUTE_KEY], prevented: true })]);
-  const rowMenu = on("contextmenu", "row");
-  expect(rowMenu).toEqual([expect.objectContaining({ prevented: true })]);
-  expect("keys" in rowMenu[0], "a row has no keys").toBe(false);
+  const halfMenu = on("contextmenu", "half");
+  expect(halfMenu).toEqual([expect.objectContaining({ prevented: true })]);
+  expect("keys" in halfMenu[0], "a half has no keys").toBe(false);
   expect(on("gesturestart", "group-instance")).toEqual([expect.objectContaining({ prevented: false })]);
   expect(on("pointercancel", "group-instance")).toEqual([expect.objectContaining({ pointer: 81, prevented: false })]);
   expect(on("lostpointercapture", "group-instance")).toEqual([expect.objectContaining({ pointer: 82, prevented: false })]);

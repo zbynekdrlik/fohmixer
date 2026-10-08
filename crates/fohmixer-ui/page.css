@@ -36,6 +36,12 @@
     }
 }
 
+/* The column's head (the status, the tabs, SOLO ✕) is no box of its own:
+   its parts are the column's (surface.rs ColumnHead). */
+.column-head {
+    display: contents;
+}
+
 /* The control column, bottom to top of the screen: what the thumbs of two
    hands holding the tablet do not reach. */
 .column {
@@ -300,6 +306,20 @@
     .column .shift-btn,
     .rail-foot .btn {
         min-height: 28px;
+    }
+
+    /* A rail button's words on two lines in its 24 px: at most 9.5 px. */
+    .column .btn {
+        padding: 1px 3px 1px 12px;
+    }
+
+    .column .btn::before {
+        left: 4px;
+    }
+
+    .column .rail .btn-text {
+        font-size: min(9.5px, calc((var(--tw, 65px) - var(--n, 5) * 0.6px) / (var(--n, 5) * 0.65)));
+        line-height: 1;
     }
 }
 

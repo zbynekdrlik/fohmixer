@@ -220,9 +220,11 @@ pub fn ColumnHead() -> impl IntoView {
         .map(|p| (p.id.clone(), p.title.clone()))
         .collect();
     let for_pager = layout.clone();
+    // Every read tolerates a disposed value: a layout change disposes the
+    // selection while the old column's effects may still run once.
     let pager_tabs = move || {
-        let index = page.get()?;
-        if nav.deck_shown.get() {
+        let index = page.try_get().flatten()?;
+        if nav.deck_shown.try_get().unwrap_or(false) {
             return None;
         }
         let pager = for_pager.pages.get(index)?.pager()?;
@@ -235,17 +237,24 @@ pub fn ColumnHead() -> impl IntoView {
     };
     let solo = move || {
         let solos = page
-            .get()
+            .try_get()
+            .flatten()
             .and_then(|i| layout.pages.get(i))
             .map(page_solos)
             .unwrap_or_default();
         view! { <SoloClear bindings=solos /> }
     };
+    // `.column-head` draws no box of its own (`display: contents`): it marks
+    // the head for the Stream Deck page, whose capture listener lifts no
+    // hold on a down there (a tab or the counter: outside its page before
+    // the column).
     view! {
-        <StatusCluster />
-        <TabBar tabs=tabs level=0 selected=page />
-        {pager_tabs}
-        {solo}
+        <div class="column-head">
+            <StatusCluster />
+            <TabBar tabs=tabs level=0 selected=page />
+            {pager_tabs}
+            {solo}
+        </div>
     }
 }
 
@@ -261,8 +270,11 @@ fn TabBar(
         .into_iter()
         .enumerate()
         .map(|(index, (id, title))| {
-            let lit =
-                move || selected.get() == Some(index) && !(level == 0 && nav.deck_shown.get());
+            let lit = move || {
+                // A disposed selection (a layout change) lights nothing.
+                selected.try_get().flatten() == Some(index)
+                    && !(level == 0 && nav.deck_shown.try_get().unwrap_or(false))
+            };
             // A tab owns its touches (#43 PR G); it writes no key.
             let no_keys: Vec<String> = Vec::new();
             view! {
@@ -353,56 +365,67 @@ fn PageView(page: Page, global: Vec<Control>, sub: Memo<Option<usize>>) -> impl 
     });
     // Each line's window (a line that does not fit), from the column's arrows.
     let offsets = RwSignal::new(Vec::<usize>::new());
+    // Every read below tolerates a disposed value (`try_*`): a layout change
+    // disposes the page while its keyed lists' effects may still run once.
     let arranged = {
         let model = model.clone();
         Memo::new(move |_| {
-            let (side, height) = room.get();
-            let sub = sub.get();
-            (side > 0.0).then(|| {
-                offsets.with(|offsets| arrange(&model, sub, side, height, offsets, &METRICS))
-            })
+            let (side, height) = room.try_get()?;
+            let sub = sub.try_get()?;
+            if side <= 0.0 {
+                return None;
+            }
+            offsets.try_with(|offsets| arrange(&model, sub, side, height, offsets, &METRICS))
         })
     };
-    let count = Memo::new(move |_| arranged.with(|a| a.as_ref().map_or(0, |a| a.lines.len())));
+    let count = Memo::new(move |_| {
+        arranged
+            .try_with(|a| a.as_ref().map_or(0, |a| a.lines.len()))
+            .unwrap_or(0)
+    });
     let shifted = Memo::new(move |_| {
-        arranged.with(|a| {
-            a.as_ref()
-                .map(|a| {
-                    a.lines
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, line)| line.shift.is_some())
-                        .map(|(index, _)| index)
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default()
-        })
+        arranged
+            .try_with(|a| {
+                a.as_ref()
+                    .map(|a| {
+                        a.lines
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, line)| line.shift.is_some())
+                            .map(|(index, _)| index)
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default()
+            })
+            .unwrap_or_default()
     });
     // The lines' heights by their rows' weights (a line of several rows: 1),
     // and the strip width every line shares (floored: a side never overflows
     // by rounding).
     let body_style = move || {
-        arranged.with(|a| {
-            let Some(a) = a else {
-                return String::new();
-            };
-            let rows: Vec<String> = a
-                .lines
-                .iter()
-                .map(|line| {
-                    let weight = match line.rows.as_slice() {
-                        [row] => weights.get(*row).copied().unwrap_or(1.0),
-                        _ => 1.0,
-                    };
-                    format!("minmax(0,{weight}fr)")
-                })
-                .collect();
-            let width = (a.width * 100.0).floor() / 100.0;
-            format!(
-                "grid-template-rows:{};--strip-w:{width:.2}px;",
-                rows.join(" ")
-            )
-        })
+        arranged
+            .try_with(|a| {
+                let Some(a) = a else {
+                    return String::new();
+                };
+                let rows: Vec<String> = a
+                    .lines
+                    .iter()
+                    .map(|line| {
+                        let weight = match line.rows.as_slice() {
+                            [row] => weights.get(*row).copied().unwrap_or(1.0),
+                            _ => 1.0,
+                        };
+                        format!("minmax(0,{weight}fr)")
+                    })
+                    .collect();
+                let width = (a.width * 100.0).floor() / 100.0;
+                format!(
+                    "grid-template-rows:{};--strip-w:{width:.2}px;",
+                    rows.join(" ")
+                )
+            })
+            .unwrap_or_default()
     };
     let rail = page
         .rail
@@ -425,11 +448,15 @@ fn PageView(page: Page, global: Vec<Control>, sub: Memo<Option<usize>>) -> impl 
         move |line: usize| view! { <ShiftView arranged=arranged offsets=offsets line=line /> };
     view! {
         <div class="body" data-testid="page" data-page=page.id node_ref=body_ref style=body_style>
-            <For each=move || 0..count.get() key=|line| *line children=halves />
+            <For each=move || 0..count.try_get().unwrap_or(0) key=|line| *line children=halves />
             <nav class="column" data-testid="column" node_ref=column_ref>
                 <ColumnHead />
                 <div class="shifts">
-                    <For each=move || shifted.get() key=|line| *line children=shift />
+                    <For
+                        each=move || shifted.try_get().unwrap_or_default()
+                        key=|line| *line
+                        children=shift
+                    />
                 </div>
                 <div class="rail" data-testid="rail">
                     <div class="rail-main">{rail}</div>
@@ -456,15 +483,17 @@ fn HalfView(
     side: Side,
 ) -> impl IntoView {
     let half = Memo::new(move |_| {
-        arranged.with(|a| {
-            a.as_ref()
-                .and_then(|a| a.lines.get(line))
-                .map(|l| match side {
-                    Side::Left => runs(&l.left),
-                    Side::Right => runs(&l.right),
-                })
-                .unwrap_or_default()
-        })
+        arranged
+            .try_with(|a| {
+                a.as_ref()
+                    .and_then(|a| a.lines.get(line))
+                    .map(|l| match side {
+                        Side::Left => runs(&l.left),
+                        Side::Right => runs(&l.right),
+                    })
+                    .unwrap_or_default()
+            })
+            .unwrap_or_default()
     });
     let (column, name) = match side {
         Side::Left => (1, "left"),
@@ -477,7 +506,11 @@ fn HalfView(
     };
     view! {
         <div class="half" data-testid="half" data-line=line.to_string() data-side=name style=place>
-            <For each=move || half.get() key=|run| run.key.clone() children=run />
+            <For
+                each=move || half.try_get().unwrap_or_default()
+                key=|run| run.key.clone()
+                children=run
+            />
         </div>
     }
 }
@@ -489,12 +522,13 @@ fn HalfView(
 fn RunView(half: Memo<Vec<Run>>, model: Arc<PageModel>, run: Run) -> impl IntoView {
     let key = run.key.clone();
     let cells = Memo::new(move |_| {
-        half.with(|runs| {
+        half.try_with(|runs| {
             runs.iter()
                 .find(|r| r.key == key)
                 .map(|r| r.cells.clone())
                 .unwrap_or_default()
         })
+        .unwrap_or_default()
     });
     let cell_model = model.clone();
     let cell = move |cell: Cell| {
@@ -503,7 +537,11 @@ fn RunView(half: Memo<Vec<Run>>, model: Arc<PageModel>, run: Run) -> impl IntoVi
     };
     let body = view! {
         <div class="group-body">
-            <For each=move || cells.get() key=Cell::key children=cell />
+            <For
+                each=move || cells.try_get().unwrap_or_default()
+                key=Cell::key
+                children=cell
+            />
         </div>
     };
     let Some(group) = run.group.and_then(|g| model.groups.get(g)) else {
@@ -602,11 +640,13 @@ fn ShiftView(
     line: usize,
 ) -> impl IntoView {
     let shift = Memo::new(move |_| {
-        arranged.with(|a| {
-            a.as_ref()
-                .and_then(|a| a.lines.get(line))
-                .and_then(|l| l.shift)
-        })
+        arranged
+            .try_with(|a| {
+                a.as_ref()
+                    .and_then(|a| a.lines.get(line))
+                    .and_then(|l| l.shift)
+            })
+            .flatten()
     });
     let step = move |forward: bool| {
         let Some(Some(now)) = shift.try_get_untracked() else {
@@ -628,9 +668,10 @@ fn ShiftView(
         ev.prevent_default();
         step(true);
     };
-    let at_start = move || shift.get().is_none_or(|s| s.offset == 0);
-    let at_end = move || shift.get().is_none_or(|s| s.offset >= s.last);
-    let label = move || shift.get().map(|s| s.label()).unwrap_or_default();
+    let now = move || shift.try_get().flatten();
+    let at_start = move || now().is_none_or(|s| s.offset == 0);
+    let at_end = move || now().is_none_or(|s| s.offset >= s.last);
+    let label = move || now().map(|s| s.label()).unwrap_or_default();
     // The arrows own their touches (#43 PR G); they write no key.
     let back_keys: Vec<String> = Vec::new();
     let next_keys: Vec<String> = Vec::new();

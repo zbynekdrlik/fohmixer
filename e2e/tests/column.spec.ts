@@ -62,20 +62,24 @@ test.describe("At the tablet's and the desktop's own size", () => {
   });
 
   test("a pinned strip keeps its place and its values when the pager shows another sub-page", async ({ page }) => {
+    // STAGE's first strip pinned (the fixture's Keys 1 is a duplicate name in
+    // the set, never bound: the other one).
     const changed = JSON.parse(readFileSync(LAYOUT, "utf-8"));
     const stage = changed.pages[1].rows[0].sections[0].pages[0].sections[0];
-    const keys = stage.controls.find((c: any) => c.binding.anchor.name === "Keys 1");
-    keys.pinned = true;
+    const vocal = stage.controls.find((c: any) => c.binding.anchor.name === "Vocal 1 repro#");
+    vocal.pinned = true;
     await openSurface(page);
     try {
       await harness("/hub/layout", { layout: changed });
       await selectPage(page, "stage");
-      const pinned = strip(page, "Keys 1");
+      const pinned = strip(page, "Vocal 1 repro#");
       await expect(pinned).toBeVisible({ timeout: 10_000 });
+      await expect(strip(page, "Keys 1")).toBeVisible();
+      await expect(pinned.getByTestId("status")).toHaveAttribute("data-state", "bound");
       const before = (await pinned.boundingBox())!;
       await selectPage(page, "others");
       await expect(strip(page, "Hand1 #", "master")).toBeVisible();
-      await expect(strip(page, "Vocal 1 repro#")).toHaveCount(0);
+      await expect(strip(page, "Keys 1")).toHaveCount(0);
       await expect(pinned).toBeVisible();
       const after = (await pinned.boundingBox())!;
       expect(Math.abs(after.x - before.x), "the pinned strip's place").toBeLessThan(0.5);

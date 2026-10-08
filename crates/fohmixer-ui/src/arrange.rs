@@ -356,16 +356,16 @@ pub fn shown(cells: &[Cell], side: f64, offset: usize, m: &Metrics) -> (Vec<Cell
     if total == 0 || fits(&real, side, m) {
         return (real, None);
     }
-    let mut tail = total;
-    while tail > 0 && !fits(&window(&real, total - tail, tail), side, m) {
-        tail -= 1;
-    }
+    let tail = (1..=total)
+        .rev()
+        .find(|&t| fits(&window(&real, total - t, t), side, m))
+        .unwrap_or(0);
     let last = total - tail;
     let offset = offset.min(last);
-    let mut free = total - offset;
-    while free > 0 && !fits(&window(&real, offset, free), side, m) {
-        free -= 1;
-    }
+    let free = (1..=total - offset)
+        .rev()
+        .find(|&f| fits(&window(&real, offset, f), side, m))
+        .unwrap_or(0);
     let shift = Shift {
         offset,
         step: free.max(1),

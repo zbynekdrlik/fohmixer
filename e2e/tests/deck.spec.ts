@@ -627,7 +627,10 @@ test.describe("The Stream Deck tab", () => {
     await faders.evaluateAll((els) => els.forEach((el) => el.setAttribute("data-e2e-kept", "1")));
     const fixed = () =>
       page.evaluate(() => {
-        const outside = [...document.querySelectorAll('[data-testid="fader"]')].filter((e) => !e.closest('[data-testid="pager"]'));
+        // The pager's region (#63): the runs of its sub-pages' groups.
+        const outside = [...document.querySelectorAll('[data-testid="fader"]')].filter(
+          (e) => !e.closest('[data-group="stage-1"], [data-group="others-1"]'),
+        );
         return [outside.length, outside.filter((e) => e.hasAttribute("data-e2e-kept")).length];
       });
     const [fixedFaders] = await fixed();
@@ -639,7 +642,7 @@ test.describe("The Stream Deck tab", () => {
     await expect(page.locator('[data-testid="fader"][data-e2e-kept]')).toHaveCount(all);
     // The pager's other page: only the pager's faders are new.
     await selectPage(page, "others");
-    await expect(page.locator('[data-testid="pager"][data-page="others"]')).toBeVisible();
+    await expect(page.locator('[data-testid="group"][data-group="others-1"]')).toBeVisible();
     await frames(page);
     expect(await fixed()).toEqual([fixedFaders, fixedFaders]);
   });

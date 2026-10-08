@@ -402,6 +402,45 @@ fn a_window_over_a_wider_strip_shows_fewer_and_the_last_window_reaches_the_last_
 }
 
 #[test]
+fn pinned_cells_that_do_not_fit_with_one_other_show_alone() {
+    // Three pins and one other on 64 px sides: not even the pins fit, the
+    // other never shows.
+    let cells = [p(0, 0), p(0, 1), p(0, 2), c(0, 3)];
+    assert_eq!(
+        shown(&cells, 64.0, 0, &METRICS),
+        (
+            vec![p(0, 0), p(0, 1), p(0, 2)],
+            Some(Shift {
+                offset: 0,
+                step: 1,
+                last: 1,
+                total: 1
+            })
+        )
+    );
+}
+
+#[test]
+fn the_last_window_is_the_last_cells_that_fit() {
+    // Sides of 136 px: two strips a side, but a strip and a wide one not.
+    // From the end the two wide ones fit, three cells do not: the last
+    // window starts at the fifth cell (from the third, three would fit).
+    let cells = [c(0, 0), c(0, 1), c(0, 2), c(0, 3), w(0, 4), w(0, 5)];
+    assert_eq!(
+        shown(&cells, 136.0, 99, &METRICS),
+        (
+            vec![w(0, 4), w(0, 5)],
+            Some(Shift {
+                offset: 4,
+                step: 2,
+                last: 4,
+                total: 6
+            })
+        )
+    );
+}
+
+#[test]
 fn the_last_window_ends_at_the_last_cell_even_where_a_window_from_the_start_holds_more() {
     // The fixture's FOH page on a phone on its side (sides of 336 px): ten
     // cells, three of them wide. From the start nine fit, at the end eight:

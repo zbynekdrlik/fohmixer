@@ -74,6 +74,14 @@ fn half_vars(shape: Option<(u32, u32)>, area: (f64, f64), left: bool) -> String 
     format!("--cols:{shown};--rows:{rows};--key:{side:.0}px;")
 }
 
+/// Whether a pointer's down landed in the column's head (`.column-head`).
+fn in_column_head(ev: &web_sys::PointerEvent) -> bool {
+    ev.target()
+        .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+        .and_then(|el| el.closest(".column-head").ok().flatten())
+        .is_some()
+}
+
 /// Carries a press decision made at page time `t` out: onto the socket and
 /// into the flight recorder; a down that could not go flashes `failed`
 /// (when given) and its up is not sent either (`Presses::unsent`, at once).
@@ -206,6 +214,11 @@ pub fn DeckView(global: Vec<Control>, viewport: RwSignal<(f64, f64)>) -> impl In
     // listener on the page's root runs before every handler inside it.
     root_ref.on_load(move |root| {
         let listener = Closure::wrap(Box::new(move |ev: web_sys::PointerEvent| {
+            // The column's head (the tabs, the counter: outside this page
+            // before the column, #63) is no finger on the deck.
+            if in_column_head(&ev) {
+                return;
+            }
             lift_missed(store, presses, held, ev.is_primary(), dom::event_epoch(&ev));
         }) as Box<dyn FnMut(web_sys::PointerEvent)>);
         let _ = root.add_event_listener_with_callback_and_bool(
