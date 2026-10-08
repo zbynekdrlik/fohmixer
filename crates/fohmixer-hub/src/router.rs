@@ -811,7 +811,7 @@ impl Router {
     fn flush(&mut self) {
         self.send_requests();
         let mut unfold = Vec::new();
-        let mut marker_actions = Vec::new();
+        let mut marker_items: Vec<(String, Option<Value>)> = Vec::new();
         for (client, item) in self.subs.take_deliveries() {
             if client == STAGE_CLIENT {
                 if let Some(value) = &item.value {
@@ -826,12 +826,15 @@ impl Router {
                 if let Some(error) = &item.error {
                     tracing::warn!(key = %item.sub, error = %error, "a list or name the hub's marker keeper listens to failed");
                 }
-                marker_actions.extend(self.markers.value(&item.sub, item.value.as_ref()));
+                marker_items.push((item.sub, item.value));
             } else if let Some(outbox) = self.clients.get(&client) {
                 outbox.value(item);
             }
         }
         self.unfold_apply(unfold);
+        let marker_actions = self
+            .markers
+            .values(marker_items.iter().map(|(k, v)| (k.as_str(), v.as_ref())));
         self.markers_apply(marker_actions);
     }
 }

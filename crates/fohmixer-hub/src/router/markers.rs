@@ -13,8 +13,13 @@
 //!   a plug-in or a Max device is never a Tuner) in a second batch. The
 //!   Tuners found replace the instance's; the keeper then listens to every
 //!   track's `devices` (a Tuner added or removed) and every Tuner's `name`
-//!   (a rename fires only that listener), subscribed afresh after each read
-//!   so an index path names the object that is there now.
+//!   (a rename fires only that listener). A `devices` watch it holds stays
+//!   (the subscription table binds a track by index to the object there
+//!   when the list of tracks changes); the names are subscribed afresh
+//!   after each read (a device inserted before a Tuner moves it).
+//! - **One read per flush:** the values of one flush ([`Keeper::values`])
+//!   ask for at most one read of an instance: a list change gives every
+//!   track's `devices` a new value at once.
 //! - **Values:** a `devices` value that differs from what the read saw
 //!   starts a read; a Tuner's `name` value updates that Tuner. The values a
 //!   fresh subscription brings equal what the read saw, so they start
@@ -118,7 +123,8 @@ impl Watch {
         }
     }
 
-    /// A watch of one track or device (subscribed afresh after each read).
+    /// A watch of one track or device (a read keeps the `devices` it still
+    /// wants and subscribes the Tuners' names afresh).
     fn per_track(&self) -> bool {
         matches!(self, Self::Devices { .. } | Self::Name { .. })
     }
@@ -158,7 +164,7 @@ pub enum Action {
 /// voids an older one's answer (`Keeper::read_done`), so sending the older
 /// is waste: a change of the list of tracks binds every track's `devices`
 /// to its new object, and each new value asks for a read in one flush.
-pub fn latest_reads(actions: Vec<Action>) -> Vec<Action> {
+fn latest_reads(actions: Vec<Action>) -> Vec<Action> {
     let last: BTreeMap<String, usize> = actions
         .iter()
         .enumerate()
@@ -392,6 +398,20 @@ impl Keeper {
         } else {
             Vec::new()
         }
+    }
+
+    /// The values of one flush (the router's deliveries, or the values
+    /// fresh subscriptions already held): each through [`Keeper::value`],
+    /// then only the last read of each instance (`latest_reads`).
+    pub fn values<'a>(
+        &mut self,
+        items: impl IntoIterator<Item = (&'a str, Option<&'a Value>)>,
+    ) -> Vec<Action> {
+        let mut actions = Vec::new();
+        for (key, value) in items {
+            actions.extend(self.value(key, value));
+        }
+        latest_reads(actions)
     }
 
     /// A failed read's second chance (`Action::Retry`).

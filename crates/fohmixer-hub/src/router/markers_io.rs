@@ -25,15 +25,16 @@ impl Router {
     /// Carries out the marker keeper's actions: its subscriptions first,
     /// then the values they already held. Those ask only for reads and the
     /// markers (`Keeper::value`), so two steps do it, with no loop a mutant
-    /// could make endless. Each step sends only its last read of an
-    /// instance (`markers::latest_reads`).
+    /// could make endless (`Keeper::values`: one read of an instance at
+    /// most).
     pub(super) fn markers_apply(&mut self, actions: Vec<markers::Action>) {
-        let cached = self.markers_do(markers::latest_reads(actions));
-        let mut next = Vec::new();
-        for (key, state) in cached {
-            next.extend(self.markers.value(&key, cached_value(&state)));
-        }
-        self.markers_do(markers::latest_reads(next));
+        let cached = self.markers_do(actions);
+        let next = self.markers.values(
+            cached
+                .iter()
+                .map(|(key, state)| (key.as_str(), cached_value(state))),
+        );
+        self.markers_do(next);
     }
 
     /// Carries out actions; the subscriptions' cached states, by key.

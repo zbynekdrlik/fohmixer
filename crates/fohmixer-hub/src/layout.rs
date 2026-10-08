@@ -160,13 +160,13 @@ impl LayoutStore {
         }
         state.rev += 1;
         let rev = state.rev;
-        let served = state.layout.clone();
-        drop(state);
         tracing::info!(
             rev,
             "the layout's markers changed: a new composition served"
         );
-        self.backup_served(served.as_deref());
+        // Under the lock, as `poll` keeps its own: two writers never pick
+        // the same free name, and the newest backup is the newest served.
+        self.backup_served(state.layout.as_deref());
         Some(rev)
     }
 

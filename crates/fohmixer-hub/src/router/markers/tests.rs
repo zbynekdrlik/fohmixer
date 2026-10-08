@@ -570,18 +570,19 @@ fn a_list_change_that_binds_every_tracks_devices_again_asks_for_one_read() {
     read_band(&mut k);
     // A track inserted: the table binds each track's `devices` to the
     // object now at its index, and every value differs from the read's.
-    let mut actions = Vec::new();
-    for (kind, index) in [(TrackKind::Track, 0), (TrackKind::Track, 1)] {
-        let watch = Watch::Devices {
-            instance: "band".into(),
-            kind,
-            index,
-        };
-        actions.extend(k.value(&key(&watch), Some(&json!([device("Device", "new")]))));
-    }
-    assert_eq!(actions.len(), 2, "each value asks for a read");
-    let reads = latest_reads(actions);
-    assert_eq!(reads.len(), 1);
+    let value = json!([device("Device", "new")]);
+    let keys: Vec<String> = [(TrackKind::Track, 0), (TrackKind::Track, 1)]
+        .into_iter()
+        .map(|(kind, index)| {
+            key(&Watch::Devices {
+                instance: "band".into(),
+                kind,
+                index,
+            })
+        })
+        .collect();
+    let reads = k.values(keys.iter().map(|key| (key.as_str(), Some(&value))));
+    assert_eq!(reads.len(), 1, "one read for the flush: {reads:?}");
     let Action::Read { seq, .. } = &reads[0] else {
         panic!("a read: {reads:?}");
     };

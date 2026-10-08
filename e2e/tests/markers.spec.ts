@@ -136,6 +136,8 @@ test("an equal label disables both strips; a tag problem marks a strip that stil
     const problem = group.and(page.locator('[data-label="Other"]'));
     await expect(problem).toHaveAttribute("data-mark", "problem", { timeout: 10_000 });
     await expect(problem.getByTestId("strip-mark")).toHaveText("ZNAČKA?");
+    // Beside the status light: the tighter fit of the two words.
+    expect(await clipped(problem.getByTestId("strip-mark"))).toEqual([]);
     const same = group.and(page.locator('[data-label="Same"]'));
     await expect(same).toHaveCount(1);
     expect(await same.getAttribute("data-mark")).toBeNull();
@@ -173,4 +175,29 @@ test("the ZNAČKY chip opens the tag manual over the screen and closes it", asyn
   expect(box.width).toBeGreaterThanOrEqual(viewport.width - 1);
   await page.getByTestId("manual-close").click();
   await expect(manual).toHaveCount(0);
+});
+
+test("the tag manual stays open through a new layout (a Tuner edited in Live)", async ({ page }) => {
+  await openSurface(page);
+  const tab = page.locator('[data-testid="tab"][data-page="foh"]');
+  await expect(tab).toHaveText("FOH");
+  try {
+    await page.getByTestId("manual-open").click();
+    const manual = page.getByTestId("manual");
+    await expect(manual.getByTestId("znacky")).toContainText("ZNAČKY V TUNERI", { timeout: 10_000 });
+    await manual.evaluate((e) => e.setAttribute("data-e2e-kept", "1"));
+    // A new layout (the markers' compositions come the same way): the
+    // page under the manual is rebuilt, the manual is the same element.
+    const frame = withMarkers();
+    frame.pages.find((p: any) => p.id === "foh").title = "FOH 2";
+    await harness("/hub/layout", { layout: frame });
+    await expect(tab).toHaveText("FOH 2", { timeout: 10_000 });
+    await expect(manual).toHaveAttribute("data-e2e-kept", "1");
+    await expect(manual.getByTestId("znacky")).toContainText("ZNAČKY V TUNERI");
+    await page.getByTestId("manual-close").click();
+    await expect(manual).toHaveCount(0);
+  } finally {
+    await harness("/hub/layout/reset");
+  }
+  await expect(tab).toHaveText("FOH", { timeout: 10_000 });
 });
