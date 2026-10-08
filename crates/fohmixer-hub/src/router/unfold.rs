@@ -35,7 +35,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use fohmixer_proto::path::escape_name;
 use serde_json::{Value, json};
 
-/// A track of an instance, by name: `(instance, name)`.
+/// A track of an instance: `(instance, LOM target)` for a strip's track
+/// (`Layout::strip_tracks`: by name, or a marker strip's by index, #68),
+/// `(instance, group name)` for a group held.
 pub type Track = (String, String);
 
 /// The property a group's fold is read from and written to.
@@ -106,9 +108,10 @@ pub fn target(name: &str) -> String {
     format!("live_set tracks[name={}]", escape_name(name))
 }
 
-/// The path of the group `depth` steps up from the track `name`.
-pub fn group_path(name: &str, depth: usize) -> String {
-    format!("{}{}", target(name), " group_track".repeat(depth))
+/// The path of the group `depth` steps up from the track at `track` (its
+/// LOM target).
+pub fn group_path(track: &str, depth: usize) -> String {
+    format!("{track}{}", " group_track".repeat(depth))
 }
 
 /// Whether a `fold_state` value says folded (Live answers `true`/`false`,
@@ -122,7 +125,7 @@ pub fn folded(value: &Value) -> bool {
 pub fn read_commands(tracks: &[String]) -> Vec<Value> {
     tracks
         .iter()
-        .flat_map(|name| (1..=MAX_DEPTH).map(move |depth| group_path(name, depth)))
+        .flat_map(|track| (1..=MAX_DEPTH).map(move |depth| group_path(track, depth)))
         .flat_map(|path| {
             [
                 json!({"target": path, "name": "get_prop", "args": {"prop": "name"}}),
@@ -148,7 +151,7 @@ pub fn read_groups(
     let mut folded_at = BTreeMap::new();
     let paths = tracks
         .iter()
-        .flat_map(|name| (1..=MAX_DEPTH).map(move |depth| group_path(name, depth)));
+        .flat_map(|track| (1..=MAX_DEPTH).map(move |depth| group_path(track, depth)));
     for (path, pair) in paths.zip(slots.chunks(2)) {
         let Some(name) = answered(pair.first()).and_then(Value::as_str) else {
             continue;

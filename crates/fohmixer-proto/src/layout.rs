@@ -49,12 +49,15 @@ pub struct LayoutResponse {
 }
 
 /// A top-level page (a tab in the control column, #63): its rail and its
-/// rows.
+/// rows. A view (#68) is a page the markers made for a tag group the frame
+/// does not show: a button in the column's POHĽADY, never a page tab.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Page {
     pub id: String,
     pub title: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub view: bool,
     /// The function controls down the left side (stage mics, STAGE AUT,
     /// solos, the former MIDI toggles), top to bottom.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -101,6 +104,10 @@ pub struct Group {
     pub title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
+    /// The tag group whose marker strips this group shows (#68, D16): the
+    /// served layout fills `controls` with them (the frame leaves it empty).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tags: Option<String>,
     #[serde(default)]
     pub controls: Vec<Control>,
 }
@@ -195,6 +202,22 @@ pub struct Strip {
     /// that does not fit. The owner chooses these strips.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub pinned: bool,
+    /// The name it shows (#68): a marker strip's quoted label, as written;
+    /// none for a strip bound by name (its track's name's first word).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// A marker problem shown on the strip (#68, I9).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mark: Option<StripMark>,
+}
+
+/// How a marker strip is marked (#68): a conflict (its label is on another
+/// marker too) disables it; any other problem leaves it working.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StripMark {
+    Conflict,
+    Problem,
 }
 
 /// The strip kinds: a track, or a return track (its name carries the
@@ -365,6 +388,14 @@ pub enum Anchor {
     Return {
         name: String,
     },
+    /// A track by its index in `live_set tracks` (a marker strip, #68).
+    TrackAt {
+        index: u32,
+    },
+    /// A return track by its index in `live_set return_tracks` (#68).
+    ReturnAt {
+        index: u32,
+    },
     Master,
     Song,
 }
@@ -377,6 +408,8 @@ impl Binding {
             Anchor::Return { name } => {
                 format!("live_set return_tracks[name={}]", escape_name(name))
             }
+            Anchor::TrackAt { index } => format!("live_set tracks {index}"),
+            Anchor::ReturnAt { index } => format!("live_set return_tracks {index}"),
             Anchor::Master => "live_set master_track".to_string(),
             Anchor::Song => "live_set".to_string(),
         };
@@ -425,7 +458,11 @@ impl Layout {
         }
         if self.pages.is_empty() {
             v.error("pages", "no pages".to_string());
-        } else if !self.pages.iter().any(|p| p.id == self.default_page) {
+        } else if !self
+            .pages
+            .iter()
+            .any(|p| p.id == self.default_page && !p.view)
+        {
             v.error(
                 "default_page",
                 format!("{:?} is not a page", self.default_page),
@@ -468,17 +505,26 @@ impl Layout {
         })
     }
 
-    /// The tracks the strips show, as `(instance, name)`, each once and
-    /// sorted (#58: the hub keeps the groups they sit in unfolded, since
-    /// Live meters no track inside a folded group). Return tracks sit in no
-    /// group.
+    /// The tracks the strips show, as `(instance, LOM target)`, each once
+    /// and sorted (#58: the hub keeps the groups they sit in unfolded, since
+    /// Live meters no track inside a folded group; #68: a marker strip's
+    /// track by its index). Return tracks sit in no group.
     pub fn strip_tracks(&self) -> Vec<(String, String)> {
         let tracks: std::collections::BTreeSet<(String, String)> = self
             .controls()
             .into_iter()
             .filter_map(|c| match c {
                 Control::Strip(strip) => match &strip.binding.anchor {
-                    Anchor::Track { name } => Some((strip.binding.instance.clone(), name.clone())),
+                    Anchor::Track { .. } | Anchor::TrackAt { .. } => {
+                        let target = Binding {
+                            instance: strip.binding.instance.clone(),
+                            anchor: strip.binding.anchor.clone(),
+                            path: None,
+                        }
+                        .target()
+                        .ok()?;
+                        Some((strip.binding.instance.clone(), target))
+                    }
                     _ => None,
                 },
                 _ => None,
@@ -570,6 +616,14 @@ impl Validator {
         if let Some(color) = &group.color {
             self.color(&format!("{at}.color"), color);
         }
+        if let Some(tags) = &group.tags
+            && !crate::markers::valid_group_name(tags)
+        {
+            self.error(
+                &format!("{at}.tags"),
+                format!("{tags:?} is not a tag group name"),
+            );
+        }
         for (i, control) in group.controls.iter().enumerate() {
             self.control(&format!("{at}.controls[{i}]"), control);
         }
@@ -598,7 +652,12 @@ impl Validator {
 
     fn control(&mut self, at: &str, control: &Control) {
         match control {
-            Control::Strip(strip) => self.binding(&format!("{at}.binding"), &strip.binding),
+            Control::Strip(strip) => {
+                self.binding(&format!("{at}.binding"), &strip.binding);
+                if strip.label.as_deref().is_some_and(|l| l.trim().is_empty()) {
+                    self.error(&format!("{at}.label"), "an empty label".to_string());
+                }
+            }
             Control::Solo { binding, .. } | Control::Stage { binding, .. } => {
                 self.binding(&format!("{at}.binding"), binding);
             }

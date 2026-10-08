@@ -16,13 +16,17 @@
 //! The Stream Deck (#52, `deck.rs`): the router owns its state too; the
 //! Companion task's events come as messages, and `router/deck.rs` carries
 //! the decisions out.
+//!
+//! The Tuner markers (#68, `router/markers.rs`): the router's marker keeper
+//! finds them; `router/markers_io.rs` hands each new set to the layout
+//! store, whose new composition goes out as a layout change.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use fohmixer_proto::client::{HUB_STAGE_AUT, ServerMsg, StageAutStatus, Unresolved, ValueItem};
-use fohmixer_proto::layout::Binding;
+use fohmixer_proto::layout::{Binding, Layout};
 use serde_json::{Value, json};
 use tokio::sync::{mpsc, oneshot};
 
@@ -39,6 +43,9 @@ mod writes;
 
 #[path = "router/deck.rs"]
 mod deck;
+mod markers;
+#[path = "router/markers_io.rs"]
+mod markers_io;
 mod unfold;
 
 /// The router's own subscriber: the STAGE AUT rule (clients start at 1).
@@ -46,6 +53,8 @@ pub const STAGE_CLIENT: ClientId = 0;
 /// The router's subscriber that keeps the strips' groups unfolded (#58;
 /// client numbers count up from 1 and never reach it).
 pub const UNFOLD_CLIENT: ClientId = ClientId::MAX;
+/// The router's subscriber that follows the Tuner markers (#68).
+pub const MARKERS_CLIENT: ClientId = ClientId::MAX - 1;
 
 /// A message to the router.
 pub enum RouterMsg {
@@ -105,6 +114,17 @@ pub enum RouterMsg {
     },
     /// A failed read of the unfold keeper is due again (#58).
     UnfoldRetry {
+        instance: String,
+    },
+    /// The answer to a batch of a read of the marker keeper (#68).
+    MarkersRead {
+        instance: String,
+        seq: u64,
+        step: markers::Step,
+        outcome: Result<Vec<Value>, String>,
+    },
+    /// A failed read of the marker keeper is due again (#68).
+    MarkersRetry {
         instance: String,
     },
     /// A client's connection ended.
@@ -216,6 +236,11 @@ pub struct Router {
     deck: Option<deck::DeckIo>,
     /// Keeps the strips' groups unfolded (#58).
     unfold: unfold::Keeper,
+    /// Finds the Tuner markers (#68).
+    markers: markers::Keeper,
+    /// The layout store the markers go to (#68); none in tests that need
+    /// no markers.
+    layout_store: Option<Arc<crate::layout::LayoutStore>>,
 }
 
 impl Router {
@@ -248,6 +273,8 @@ impl Router {
             started: std::time::Instant::now(),
             deck: None,
             unfold: unfold::Keeper::default(),
+            markers: markers::Keeper::default(),
+            layout_store: None,
         }
     }
 
@@ -352,6 +379,22 @@ impl Router {
                 let actions = self.unfold.retry(&instance);
                 self.unfold_apply(actions);
             }
+            RouterMsg::MarkersRead {
+                instance,
+                seq,
+                step,
+                outcome,
+            } => {
+                if let Err(error) = &outcome {
+                    tracing::warn!(instance = %instance, error = %error, "the hub could not read the Tuner markers");
+                }
+                let actions = self.markers.read_done(&instance, seq, step, &outcome);
+                self.markers_apply(actions);
+            }
+            RouterMsg::MarkersRetry { instance } => {
+                let actions = self.markers.retry(&instance);
+                self.markers_apply(actions);
+            }
             RouterMsg::Applied {
                 instance,
                 batch,
@@ -395,7 +438,10 @@ impl Router {
                 let _ = reply.send(RouterStatus {
                     subscriptions: names
                         .clone()
-                        .map(|n| (n.clone(), self.subs.subscriptions_besides(n, UNFOLD_CLIENT)))
+                        .map(|n| {
+                            let own = [UNFOLD_CLIENT, MARKERS_CLIENT];
+                            (n.clone(), self.subs.subscriptions_besides(n, &own))
+                        })
                         .collect(),
                     unfolded: unfold::by_instance(self.unfold.held()),
                     listeners: names.map(|n| (n.clone(), self.subs.listeners(n))).collect(),
@@ -744,6 +790,7 @@ impl Router {
     fn flush(&mut self) {
         self.send_requests();
         let mut unfold = Vec::new();
+        let mut marker_actions = Vec::new();
         for (client, item) in self.subs.take_deliveries() {
             if client == STAGE_CLIENT {
                 if let Some(value) = &item.value {
@@ -754,11 +801,30 @@ impl Router {
                     tracing::warn!(key = %item.sub, error = %error, "a list the hub's unfold keeper listens to failed");
                 }
                 unfold.extend(self.unfold.value(&item.sub, item.value.as_ref()));
+            } else if client == MARKERS_CLIENT {
+                if let Some(error) = &item.error {
+                    tracing::warn!(key = %item.sub, error = %error, "a list or name the hub's marker keeper listens to failed");
+                }
+                marker_actions.extend(self.markers.value(&item.sub, item.value.as_ref()));
             } else if let Some(outbox) = self.clients.get(&client) {
                 outbox.value(item);
             }
         }
         self.unfold_apply(unfold);
+        self.markers_apply(marker_actions);
+    }
+}
+
+/// The `Layout` message of the layout served at revision `rev`: the file
+/// changed, or the markers did (#68).
+pub fn layout_msg(rev: u64, served: Option<&Layout>) -> RouterMsg {
+    RouterMsg::Layout {
+        rev,
+        stage: served.and_then(|l| l.stage_aut_binding().cloned()),
+        targets: served
+            .map(crate::live::names::layout_targets)
+            .unwrap_or_default(),
+        strips: served.map(Layout::strip_tracks).unwrap_or_default(),
     }
 }
 
@@ -1215,6 +1281,111 @@ mod tests {
             .expect("the second read's answer")
             .unwrap();
         assert!(matches!(again, RouterMsg::UnfoldRead { .. }));
+    }
+
+    #[tokio::test]
+    async fn the_markers_are_followed_and_a_failed_read_is_tried_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let (router, mut rx, _records) = offline_router(dir.path());
+        let store = Arc::new(crate::layout::store_in(
+            dir.path(),
+            std::path::Path::new("layout.json"),
+            vec!["band".into()],
+        ));
+        let mut router = router.with_layout(store);
+        assert_eq!(
+            router.subs.subscriptions("band"),
+            2,
+            "the keeper's watches of the band's tracks and return tracks (#68)"
+        );
+        assert_eq!(
+            status(&mut router).subscriptions["band"],
+            0,
+            "the hub's own"
+        );
+        // A read (a retry starts one) goes to an offline instance: its
+        // failure comes back…
+        router.handle(RouterMsg::MarkersRetry {
+            instance: "band".into(),
+        });
+        let failed = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .expect("the read's answer")
+            .unwrap();
+        let RouterMsg::MarkersRead {
+            ref instance,
+            ref outcome,
+            step,
+            ..
+        } = failed
+        else {
+            panic!("the read's answer")
+        };
+        assert_eq!(
+            (instance.as_str(), outcome, step),
+            (
+                "band",
+                &Err("instance offline".to_string()),
+                markers::Step::Devices
+            )
+        );
+        router.handle(failed);
+        // …and the read is due again after RETRY_MS.
+        let started = std::time::Instant::now();
+        let retry = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .expect("a retry")
+            .unwrap();
+        assert!(
+            matches!(retry, RouterMsg::MarkersRetry { ref instance } if instance == "band"),
+            "a retry of the band"
+        );
+        assert!(started.elapsed() >= std::time::Duration::from_millis(markers::RETRY_MS - 100));
+    }
+
+    #[tokio::test]
+    async fn new_markers_are_served_as_a_new_layout_revision_only_when_it_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("layout.json"),
+            serde_json::to_vec(&json!({
+                "schema": 2,
+                "default_page": "p",
+                "pages": [{"id": "p", "title": "P", "rows": [{"sections": [
+                    {"kind": "group", "id": "g", "tags": "A"}]}]}]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let store = Arc::new(crate::layout::store_in(
+            dir.path(),
+            std::path::Path::new("layout.json"),
+            vec!["band".into()],
+        ));
+        assert_eq!(store.poll(), Some(1));
+        let (router, _rx, _records) = offline_router(dir.path());
+        let mut router = router.with_layout(Arc::clone(&store));
+        let found = |name: &str| {
+            vec![fohmixer_proto::markers::Found {
+                instance: "band".into(),
+                kind: fohmixer_proto::markers::TrackKind::Track,
+                index: 3,
+                name: name.into(),
+                tuners: 1,
+            }]
+        };
+        router.markers_found(found(r#""Vox" +G:A"#));
+        assert_eq!(router.layout_rev, 2);
+        assert_eq!(store.current().0, 2);
+        assert_eq!(store.markers_status().found, 1);
+        // The same markers: the same composition, no revision (I10).
+        router.markers_found(found(r#""Vox" +G:A"#));
+        assert_eq!(router.layout_rev, 2);
+        // A router with no store keeps its layout as it is.
+        let (mut bare, _rx, _records) = offline_router(dir.path());
+        bare.markers_found(found(r#""Other" +G:A"#));
+        assert_eq!(bare.layout_rev, 0);
+        assert_eq!(store.current().0, 2);
     }
 
     #[test]

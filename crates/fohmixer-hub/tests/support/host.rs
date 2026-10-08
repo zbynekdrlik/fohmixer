@@ -114,6 +114,23 @@ impl Host {
             .unwrap_or_else(|| panic!("not a RENAMED line: {answer}"))
     }
 
+    /// Sets (`set`), adds (`add`) or removes (`remove`) a Tuner marker on the
+    /// track (`kind` `track` or `return`) at `index` (#68); the Tuners it
+    /// then holds (-1: no such track).
+    pub fn tuner(&mut self, kind: &str, index: u32, action: &str, name: &str) -> i64 {
+        let quoted = name.replace('\'', "'\"'\"'");
+        let line = if action == "remove" {
+            format!("tuner {kind} {index} remove")
+        } else {
+            format!("tuner {kind} {index} {action} '{quoted}'")
+        };
+        let answer = self.answer(&line);
+        answer
+            .strip_prefix("TUNER ")
+            .and_then(|n| n.parse().ok())
+            .unwrap_or_else(|| panic!("not a TUNER line: {answer}"))
+    }
+
     /// The Live listeners on `prop` of the object at `path` (-1: none there).
     pub fn listeners(&mut self, prop: &str, path: &str) -> i64 {
         let answer = self.answer(&format!("listeners {prop} {path}"));

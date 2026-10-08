@@ -116,6 +116,8 @@ fn strip(name: &str) -> Strip {
         wide: false,
         mute_guard: false,
         pinned: false,
+        label: None,
+        mark: None,
     }
 }
 

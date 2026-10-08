@@ -417,6 +417,18 @@ pub struct LayoutStatus {
     pub rev: u64,
     pub error: Option<String>,
     pub unresolved: Vec<Unresolved>,
+    /// The Tuner markers (#68); absent in an older hub's answer.
+    #[serde(default)]
+    pub markers: MarkersStatus,
+}
+
+/// The Tuner markers in `GET /api/status` (#68, I9): how many the hub
+/// found, and every marker problem (also a marker with no group, which
+/// shows on no page).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MarkersStatus {
+    pub found: usize,
+    pub problems: Vec<crate::markers::MarkerReport>,
 }
 
 /// STAGE AUT in `GET /api/status`: the flag and the mute writes it made.

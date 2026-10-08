@@ -313,7 +313,10 @@ fn the_subscriptions_besides_one_client_leave_its_own_out() {
         .unwrap();
     assert_eq!(subs.subscriptions("band"), 2);
     // Client 9's tempo is its own; is_playing has client 1 too.
-    assert_eq!(subs.subscriptions_besides("band", 9), 1);
-    assert_eq!(subs.subscriptions_besides("band", 1), 2);
-    assert_eq!(subs.subscriptions_besides("master", 9), 0);
+    assert_eq!(subs.subscriptions_besides("band", &[9]), 1);
+    assert_eq!(subs.subscriptions_besides("band", &[1]), 2);
+    assert_eq!(subs.subscriptions_besides("master", &[9]), 0);
+    // Several own clients (the unfold and the marker keepers, #68).
+    assert_eq!(subs.subscriptions_besides("band", &[1, 9]), 0);
+    assert_eq!(subs.subscriptions_besides("band", &[]), 2);
 }

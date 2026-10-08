@@ -9,23 +9,39 @@
 //! while the file is bad (or gone) serves the newest backup that is still
 //! valid — the last good layout survives a restart — and reports the file's
 //! error until the file is fixed.
+//!
+//! The file is the frame (#68, spec D16): the store serves it composed with
+//! the Tuner markers the router's marker keeper found
+//! (`fohmixer_proto::markers::compose`). A new marker set bumps the revision
+//! only when the composition changed (I10); each such composition is kept
+//! as `layout-backups/served.json.<UTC time>`, the newest 30.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use fohmixer_proto::client::MarkersStatus;
 use fohmixer_proto::layout::Layout;
+use fohmixer_proto::markers::{Found, MarkerReport, compose};
 
 /// Backups kept.
 pub const MAX_BACKUPS: usize = 30;
 /// The backup folder inside the data folder.
 pub const BACKUP_DIR: &str = "layout-backups";
+/// The backups' name of a served composition (#68).
+pub const SERVED: &str = "served.json";
 
 /// What is served and why the file on disk is not (when it is not).
 #[derive(Debug, Default)]
 struct State {
     rev: u64,
+    /// The served layout: the frame composed with the markers.
     layout: Option<Arc<Layout>>,
+    /// The accepted file (#68: the frame).
+    frame: Option<Arc<Layout>>,
+    /// The markers found, and the problems of the last composition.
+    markers: Vec<Found>,
+    problems: Vec<MarkerReport>,
     /// The accepted file content.
     accepted: Option<Vec<u8>>,
     error: Option<String>,
@@ -126,6 +142,39 @@ impl LayoutStore {
         self.lock().error.clone()
     }
 
+    /// The markers the keeper found (#68): served composed with the frame;
+    /// `Some(rev)` when the composition changed (I10).
+    pub fn set_markers(&self, found: Vec<Found>) -> Option<u64> {
+        let mut state = self.lock();
+        state.markers = found;
+        let before = state.layout.clone();
+        serve(&mut state);
+        if state.layout == before {
+            return None;
+        }
+        state.rev += 1;
+        let rev = state.rev;
+        let served = state.layout.clone();
+        drop(state);
+        tracing::info!(
+            rev,
+            "the layout's markers changed: a new composition served"
+        );
+        if let Some(text) = served.and_then(|l| serde_json::to_vec_pretty(l.as_ref()).ok()) {
+            self.backup_named(SERVED, &text);
+        }
+        Some(rev)
+    }
+
+    /// The markers in `/api/status` (#68): how many, and every problem.
+    pub fn markers_status(&self) -> MarkersStatus {
+        let state = self.lock();
+        MarkersStatus {
+            found: state.markers.len(),
+            problems: state.problems.clone(),
+        }
+    }
+
     /// Checks the file; `Some(rev)` when a new layout is served.
     pub fn poll(&self) -> Option<u64> {
         let seen = match std::fs::metadata(&self.path) {
@@ -161,7 +210,8 @@ impl LayoutStore {
         match check(&text, &self.instances) {
             Ok(layout) => {
                 state.rev += 1;
-                state.layout = Some(Arc::new(layout));
+                state.frame = Some(Arc::new(layout));
+                serve(&mut state);
                 state.error = None;
                 self.backup(&text);
                 state.accepted = Some(text);
@@ -193,7 +243,8 @@ impl LayoutStore {
                 continue;
             };
             state.rev += 1;
-            state.layout = Some(Arc::new(layout));
+            state.frame = Some(Arc::new(layout));
+            serve(state);
             state.accepted = Some(text);
             tracing::warn!(
                 backup = %name,
@@ -214,10 +265,15 @@ impl LayoutStore {
             .unwrap_or_else(|| "layout.json".to_string())
     }
 
-    /// Keeps `text` as a dated backup (unless the newest backup already
-    /// holds it) and prunes the oldest beyond [`MAX_BACKUPS`].
+    /// Keeps `text` as a dated backup of the file (unless the newest backup
+    /// already holds it) and prunes the oldest beyond [`MAX_BACKUPS`].
     fn backup(&self, text: &[u8]) {
-        let file_name = self.file_name();
+        self.backup_named(&self.file_name(), text);
+    }
+
+    /// The same for backups named `file_name`.
+    fn backup_named(&self, file_name: &str, text: &[u8]) {
+        let file_name = file_name.to_string();
         if let Err(e) = std::fs::create_dir_all(&self.backups) {
             tracing::error!(dir = %self.backups.display(), error = %e, "cannot create the layout backup folder");
             return;
@@ -262,6 +318,17 @@ impl LayoutStore {
     pub fn backups(&self) -> Vec<String> {
         self.list_backups(&self.file_name())
     }
+}
+
+/// Serves the frame composed with the markers (none without a frame).
+fn serve(state: &mut State) {
+    let Some(frame) = state.frame.clone() else {
+        state.problems = Vec::new();
+        return;
+    };
+    let composed = compose(&frame, &state.markers);
+    state.problems = composed.problems;
+    state.layout = Some(Arc::new(composed.layout));
 }
 
 /// The store of a data folder: `layout` (relative to it) and its backups.

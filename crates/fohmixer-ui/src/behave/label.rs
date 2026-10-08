@@ -12,6 +12,12 @@ pub fn strip_label(name: &str) -> String {
     rest.split_whitespace().next().unwrap_or("").to_string()
 }
 
+/// The name a strip shows (#68): a marker strip's own label as written,
+/// else [`strip_label`] of its track's name.
+pub fn shown_label(label: Option<&str>, name: &str) -> String {
+    label.map_or_else(|| strip_label(name), str::to_string)
+}
+
 /// The length the stylesheet sizes a label's font by (`--n`, #21): its
 /// characters, not its bytes, and at least 1 (an empty label divides by
 /// nothing).
@@ -32,6 +38,16 @@ pub fn longest_word_chars(text: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_marker_strip_shows_its_own_label_whole() {
+        assert_eq!(
+            shown_label(Some("Vox 1 mastered"), "Vox 1 #"),
+            "Vox 1 mastered"
+        );
+        assert_eq!(shown_label(None, "Vox 1 #"), "Vox");
+        assert_eq!(shown_label(None, "A-Reverb #"), "Reverb");
+    }
 
     #[test]
     fn the_label_is_the_first_word_without_the_return_prefix() {

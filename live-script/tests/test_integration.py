@@ -271,6 +271,39 @@ class IntegrationTest(unittest.TestCase):
             self.assertLess(time.monotonic(), deadline, "".join(host.stderr))
             time.sleep(0.02)
 
+    def test_a_tuner_marker_is_added_renamed_and_removed_as_in_live(self):
+        # #68: the hub follows a track's devices and its Tuner's name.
+        host = self.host()
+        a = self.client(host)
+        devices = a.call("live_set tracks 0", "add_listener", {"prop": "devices"})
+        before = len(a.call("live_set tracks 0", "get_prop", {"prop": "devices"}))
+        self.assertEqual(self.answer(host, "tuner track 0 set '\"Vox 1\" +G:VOCALS'"), "TUNER 1")
+        listed = a.wait_value(devices["key"])["value"]
+        self.assertEqual(len(listed), before + 1)
+        self.assertEqual(listed[-1]["name"], '"Vox 1" +G:VOCALS')
+        tuner = f"live_set tracks 0 devices {before}"
+        self.assertEqual(a.call(tuner, "get_prop", {"prop": "class_name"}), "Tuner")
+        name = a.call(tuner, "add_listener", {"prop": "name"})
+        self.assertEqual(self.answer(host, "tuner track 0 set '\"Vox 2\" +PIN'"), "TUNER 1")
+        self.assertEqual(a.wait_value(name["key"])["value"], '"Vox 2" +PIN')
+        self.assertEqual(self.answer(host, "tuner track 0 add '\"Vox 3\"'"), "TUNER 2")
+        self.assertEqual(self.answer(host, "tuner track 0 remove"), "TUNER 1")
+        self.assertEqual(self.answer(host, "tuner track 0 remove"), "TUNER 0")
+        self.assertEqual(self.answer(host, "tuner return 0 set '\"Hall\" +G:FX'"), "TUNER 1")
+        self.assertEqual(self.answer(host, "tuner track 999 set 'x'"), "TUNER -1")
+        for line in (
+            "tuner track x set 'y'",
+            "tuner bus 0 set 'y'",
+            "tuner track 0 set",
+            "tuner track 0 remove 'y'",
+            "tuner track 0 rename 'y'",
+        ):
+            host.control(line)
+        deadline = time.monotonic() + 2
+        while "".join(host.stderr).count("unknown control line") < 5:
+            self.assertLess(time.monotonic(), deadline, "".join(host.stderr))
+            time.sleep(0.02)
+
     def test_a_held_meter_stays_until_released(self):
         # The UI tests' clip light (#21): the animation leaves a held track.
         host = self.host(meters_hz=30)

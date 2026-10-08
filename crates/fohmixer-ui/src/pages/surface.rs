@@ -214,10 +214,13 @@ fn Shell(layout: Arc<Layout>) -> impl IntoView {
 pub fn ColumnHead() -> impl IntoView {
     let nav = expect_context::<Nav>();
     let Head { layout, page, sub } = expect_context::<Head>();
-    let tabs: Vec<(String, String)> = layout
+    // A view (#68) is no page tab: the column's POHĽADY shows it.
+    let tabs: Vec<(usize, String, String)> = layout
         .pages
         .iter()
-        .map(|p| (p.id.clone(), p.title.clone()))
+        .enumerate()
+        .filter(|(_, p)| !p.view)
+        .map(|(i, p)| (i, p.id.clone(), p.title.clone()))
         .collect();
     let for_pager = layout.clone();
     // Every read tolerates a disposed value: a layout change disposes the
@@ -228,10 +231,11 @@ pub fn ColumnHead() -> impl IntoView {
             return None;
         }
         let pager = for_pager.pages.get(index)?.pager()?;
-        let tabs: Vec<(String, String)> = pager
+        let tabs: Vec<(usize, String, String)> = pager
             .pages
             .iter()
-            .map(|s| (s.id.clone(), s.title.clone()))
+            .enumerate()
+            .map(|(i, s)| (i, s.id.clone(), s.title.clone()))
             .collect();
         Some(view! { <TabBar tabs=tabs level=1 selected=sub /> })
     };
@@ -261,15 +265,14 @@ pub fn ColumnHead() -> impl IntoView {
 /// A tab bar (a segmented control): one tab per page, the selected one lit.
 #[component]
 fn TabBar(
-    tabs: Vec<(String, String)>,
+    tabs: Vec<(usize, String, String)>,
     level: usize,
     selected: Memo<Option<usize>>,
 ) -> impl IntoView {
     let nav = expect_context::<Nav>();
     let buttons = tabs
         .into_iter()
-        .enumerate()
-        .map(|(index, (id, title))| {
+        .map(|(index, id, title)| {
             let lit = move || {
                 // A disposed selection (a layout change) lights nothing.
                 selected.try_get().flatten() == Some(index)

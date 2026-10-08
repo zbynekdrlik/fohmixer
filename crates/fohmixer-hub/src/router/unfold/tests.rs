@@ -6,6 +6,11 @@ fn t(instance: &str, name: &str) -> Track {
     (instance.to_string(), name.to_string())
 }
 
+/// A strip's track by name, as `Layout::strip_tracks` gives it: its target.
+fn s(instance: &str, name: &str) -> Track {
+    (instance.to_string(), target(name))
+}
+
 fn key(watch: &Watch) -> String {
     let (instance, target, prop) = watch.target();
     format!("{instance}|{target}|{prop}")
@@ -59,7 +64,7 @@ fn unfold(group: &str, path: &str) -> Action {
 #[test]
 fn a_read_holds_the_strips_groups_and_unfolds_the_folded_ones() {
     let mut k = Keeper::default();
-    let actions = k.set_strips([t("band", "Drums #"), t("band", "Vox")]);
+    let actions = k.set_strips([s("band", "Drums #"), s("band", "Vox")]);
     // Both of the band's lists are watched, and the groups read at once.
     assert_eq!(
         actions[..2],
@@ -103,7 +108,7 @@ fn a_read_holds_the_strips_groups_and_unfolds_the_folded_ones() {
 fn a_group_two_strips_share_is_unfolded_once_through_the_first_path() {
     let mut k = Keeper::default();
     let (reads, _) = {
-        let actions = k.set_strips([t("band", "A"), t("band", "B")]);
+        let actions = k.set_strips([s("band", "A"), s("band", "B")]);
         apply(&mut k, actions)
     };
     let mut slots = chain(&[("G", json!(true))]);
@@ -117,7 +122,7 @@ fn a_group_two_strips_share_is_unfolded_once_through_the_first_path() {
 #[test]
 fn a_list_change_reads_again_and_a_late_answer_is_void() {
     let mut k = Keeper::default();
-    let actions = k.set_strips([t("band", "Drums #")]);
+    let actions = k.set_strips([s("band", "Drums #")]);
     let (reads, _) = apply(&mut k, actions);
     k.read_done(
         "band",
@@ -150,7 +155,7 @@ fn a_list_change_reads_again_and_a_late_answer_is_void() {
 #[test]
 fn the_track_leaving_its_group_lets_the_group_go() {
     let mut k = Keeper::default();
-    let actions = k.set_strips([t("band", "Drums #")]);
+    let actions = k.set_strips([s("band", "Drums #")]);
     let (reads, _) = apply(&mut k, actions);
     k.read_done(
         "band",
@@ -166,7 +171,7 @@ fn the_track_leaving_its_group_lets_the_group_go() {
 #[test]
 fn a_new_layout_reads_each_instance_and_drops_one_without_strips() {
     let mut k = Keeper::default();
-    let actions = k.set_strips([t("band", "Drums #"), t("master", "Hand1 #")]);
+    let actions = k.set_strips([s("band", "Drums #"), s("master", "Hand1 #")]);
     let (reads, _) = apply(&mut k, actions);
     assert_eq!(reads.len(), 2, "one read per instance");
     k.read_done(
@@ -185,7 +190,7 @@ fn a_new_layout_reads_each_instance_and_drops_one_without_strips() {
         let actions = k.value(&key(&Watch::Visible("master".into())), Some(&json!([])));
         apply(&mut k, actions).0[0]
     };
-    let actions = k.set_strips([t("band", "Drums #")]);
+    let actions = k.set_strips([s("band", "Drums #")]);
     let mut gone: Vec<String> = actions
         .iter()
         .filter_map(|a| match a {
@@ -217,7 +222,7 @@ fn a_new_layout_reads_each_instance_and_drops_one_without_strips() {
 #[test]
 fn a_failed_read_is_tried_again_three_times_in_a_row() {
     let mut k = Keeper::default();
-    let actions = k.set_strips([t("band", "Drums #")]);
+    let actions = k.set_strips([s("band", "Drums #")]);
     let (mut reads, _) = apply(&mut k, actions);
     let retry = vec![Action::Retry {
         instance: "band".into(),
@@ -254,7 +259,7 @@ fn a_failed_read_is_tried_again_three_times_in_a_row() {
 
 #[test]
 fn reads_climb_the_chain_of_groups() {
-    let commands = read_commands(&["A]b".to_string()]);
+    let commands = read_commands(&[target("A]b")]);
     assert_eq!(commands.len(), 2 * MAX_DEPTH);
     assert_eq!(
         commands[0],
@@ -270,7 +275,7 @@ fn reads_climb_the_chain_of_groups() {
     );
     assert_eq!(read_commands(&[]), Vec::<Value>::new());
     // A name that is not a string, a slot not ok or missing: no group.
-    let tracks = vec!["T".to_string()];
+    let tracks = vec![target("T")];
     let (names, folded_at) = read_groups(
         &tracks,
         &[
@@ -295,7 +300,7 @@ fn fold_values_targets_and_listings() {
     assert!(!folded(&json!(2)));
     assert_eq!(target("Stems grp#"), "live_set tracks[name=Stems grp#]");
     assert_eq!(
-        group_path("A", 2),
+        group_path(&target("A"), 2),
         "live_set tracks[name=A] group_track group_track"
     );
     assert_eq!(
