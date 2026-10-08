@@ -512,6 +512,23 @@ impl Subs {
         self.by_live.keys().filter(|(i, _)| i == instance).count()
     }
 
+    /// Live listeners held on `instance` for someone besides the `own`
+    /// clients (the router's keepers, #58 and #68): a Live key counts when
+    /// one of its entries has another client, or none (a guard).
+    pub fn listeners_besides(&self, instance: &str, own: &[ClientId]) -> usize {
+        self.by_live
+            .iter()
+            .filter(|((i, _), _)| i == instance)
+            .filter(|(_, keys)| {
+                keys.iter().any(|key| {
+                    self.entries.get(key).is_none_or(|e| {
+                        e.clients.is_empty() || e.clients.iter().any(|c| !own.contains(c))
+                    })
+                })
+            })
+            .count()
+    }
+
     // --- internals ---
 
     /// Creates the entry `key` if it does not exist (to be resolved); true

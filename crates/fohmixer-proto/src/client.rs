@@ -381,9 +381,9 @@ pub struct InstanceStatus {
     /// Client subscriptions (hub keys) on this instance: the pages' and
     /// STAGE AUT's (the unfold keeper's own subscriptions are not counted).
     pub subscriptions: usize,
-    /// Live listeners the hub holds on this instance (subscriptions, the
-    /// unfold keeper's included, and the name guards of name bindings,
-    /// deduplicated).
+    /// Live listeners the hub holds on this instance for its clients
+    /// (subscriptions and the name guards of name bindings, deduplicated;
+    /// the hub's own keepers' left out, #58 and #68).
     pub listeners: usize,
     /// Failed connection attempts since the last connection (0 while
     /// connected).

@@ -32,7 +32,6 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use fohmixer_proto::path::escape_name;
 use serde_json::{Value, json};
 
 /// A track of an instance: `(instance, LOM target)` for a strip's track
@@ -103,9 +102,14 @@ pub enum Action {
     Retry { instance: String },
 }
 
-/// The LOM target of a track by name (the layout's own form).
+/// The LOM target of a track by name (the layout's own form; the tests'
+/// strips, `Layout::strip_tracks` gives the hub's).
+#[cfg(test)]
 pub fn target(name: &str) -> String {
-    format!("live_set tracks[name={}]", escape_name(name))
+    format!(
+        "live_set tracks[name={}]",
+        fohmixer_proto::path::escape_name(name)
+    )
 }
 
 /// The path of the group `depth` steps up from the track at `track` (its

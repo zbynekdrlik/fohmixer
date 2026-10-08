@@ -320,3 +320,34 @@ fn the_subscriptions_besides_one_client_leave_its_own_out() {
     assert_eq!(subs.subscriptions_besides("band", &[1, 9]), 0);
     assert_eq!(subs.subscriptions_besides("band", &[]), 2);
 }
+
+#[test]
+fn the_listeners_besides_the_hubs_own_clients_leave_theirs_out() {
+    let mut subs = online();
+    subs.subscribe(1, "band", "live_set", "is_playing", false)
+        .unwrap();
+    subs.subscribe(9, "band", "live_set", "tempo", false)
+        .unwrap();
+    subs.subscribe(9, "band", "live_set", "is_playing", false)
+        .unwrap();
+    for o in subs.drain_outgoing() {
+        let slots: Vec<Value> = o
+            .commands
+            .iter()
+            .map(|c| {
+                ok(
+                    &format!("live_{}", c["args"]["prop"].as_str().unwrap()),
+                    json!(1),
+                )
+            })
+            .collect();
+        subs.on_result(&o.instance, &o.uuid, &slots);
+    }
+    assert_eq!(subs.listeners("band"), 2);
+    // Client 9's tempo is its own; is_playing has client 1 too.
+    assert_eq!(subs.listeners_besides("band", &[9]), 1);
+    assert_eq!(subs.listeners_besides("band", &[1]), 2);
+    assert_eq!(subs.listeners_besides("band", &[1, 9]), 0);
+    assert_eq!(subs.listeners_besides("band", &[]), 2);
+    assert_eq!(subs.listeners_besides("master", &[]), 0);
+}

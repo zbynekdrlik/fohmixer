@@ -444,7 +444,12 @@ impl Router {
                         })
                         .collect(),
                     unfolded: unfold::by_instance(self.unfold.held()),
-                    listeners: names.map(|n| (n.clone(), self.subs.listeners(n))).collect(),
+                    listeners: names
+                        .map(|n| {
+                            let own = [UNFOLD_CLIENT, MARKERS_CLIENT];
+                            (n.clone(), self.subs.listeners_besides(n, &own))
+                        })
+                        .collect(),
                     stage_aut: StageAutStatus {
                         on: self.stage.is_on(),
                         writes: self.stage.writes(),
