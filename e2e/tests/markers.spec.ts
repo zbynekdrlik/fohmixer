@@ -156,6 +156,37 @@ test("an equal label disables both strips; a tag problem marks a strip that stil
   await expect(group).toHaveCount(0, { timeout: 10_000 });
 });
 
+test("a tags group's own controls follow its marker strips", async ({ page }) => {
+  // #68 PR C: a migrated group that ended with a parameter fader keeps it
+  // after its marker strips; here a text.
+  const frame = withMarkers();
+  const foh = frame.pages.find((p: any) => p.id === "foh");
+  foh.rows[1].sections.find((s: any) => s.id === "markers").controls = [{ kind: "text", text: "OWN" }];
+  await openSurface(page);
+  const slots = page.locator('.slot[data-group="markers"]');
+  const own = slots.getByTestId("label");
+  const strip = slots.locator('[data-testid="strip"]');
+  try {
+    await harness("/hub/layout", { layout: frame });
+    await selectPage(page, "foh");
+    await expect(own).toHaveText("OWN", { timeout: 10_000 });
+    await expect(strip).toHaveCount(0);
+    expect(await hostLine("band", `tuner track 1 set '"Hand two" +G:MARKERS'`)).toBe("TUNER 1");
+    await expect(strip).toHaveCount(1, { timeout: 10_000 });
+    await expect(strip).toHaveAttribute("data-label", "Hand two");
+    await ready(strip.getByTestId("fader"));
+    // The strip first, then the group's own text, on screen.
+    const stripBox = (await strip.boundingBox())!;
+    const ownBox = (await own.boundingBox())!;
+    expect(ownBox.x).toBeGreaterThan(stripBox.x + stripBox.width - 1);
+  } finally {
+    await hostLine("band", "tuner track 1 remove");
+    await harness("/hub/layout/reset");
+    await markersGone();
+  }
+  await expect(own).toHaveCount(0, { timeout: 10_000 });
+});
+
 test("the ZNAČKY chip opens the tag manual over the screen and closes it", async ({ page }) => {
   await openSurface(page);
   // The same page the tray opens.

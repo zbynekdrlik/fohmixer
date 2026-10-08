@@ -550,7 +550,7 @@ fn a_views_pins_are_grouped_by_their_first_group_in_the_markers_order() {
 }
 
 #[test]
-fn a_frame_holds_no_view_no_view_id_and_no_tags_group_with_controls() {
+fn a_frame_holds_no_view_no_view_id_and_no_strip_in_a_tags_group() {
     assert_eq!(frame_problems(&frame()), vec![]);
     let bad: Layout = serde_json::from_value(json!({
         "schema": 2,

@@ -3,17 +3,16 @@
 //! group of the same title, place and other controls, and each strip's track
 //! gets the marker that puts the same strip there again. The hub names the
 //! owner's plain Tuners with these markers; the CLI writes the frame.
+//!
+//! What a marker cannot carry is a problem, never dropped silently: the hub
+//! renames nothing and the CLI writes nothing while the frame has one.
 
 use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
-use super::{MAX_GROUP_NAME, TrackKind};
-use crate::layout::{Anchor, Control, Group, Layout, Section, strip_label};
-
-/// The longest place a migrated group gives (a group of more strips keeps
-/// the rest in Live's order: no place).
-const MAX_MIGRATED_PLACE: usize = 999;
+use super::{MAX_GROUP_NAME, MAX_PLACE, TrackKind};
+use crate::layout::{Anchor, Control, Group, Layout, Section, Strip, strip_label};
 
 /// A track's planned marker.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -55,20 +54,30 @@ impl MigrationRow {
     }
 }
 
-/// `/api/markers/migration`'s answer: every planned track; for a `POST`,
-/// how many Tuners it asked Live to rename.
+/// `/api/markers/migration`'s answer: every planned track, the frame's
+/// problems (no rename while there is one), whether a read of the tracks
+/// was still running (no rename then either), and for a `POST` how many
+/// Tuners it asked Live to rename.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MigrationStatus {
     pub rows: Vec<MigrationRow>,
     #[serde(default)]
+    pub problems: Vec<String>,
+    #[serde(default)]
+    pub reading: bool,
+    #[serde(default)]
     pub renamed: u32,
 }
 
-/// The converted frame and the markers that fill it.
+/// The converted frame, the markers that fill it, and what they could not
+/// carry over.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Migration {
     pub frame: Layout,
     pub planned: Vec<Planned>,
+    /// Each a sentence naming the track or the group: the surface would
+    /// change if the migration went on.
+    pub problems: Vec<String>,
 }
 
 /// A planned track before its label is chosen.
@@ -77,8 +86,9 @@ struct Track {
     kind: TrackKind,
     name: String,
     groups: Vec<(String, usize)>,
-    pin: bool,
-    mute_guard: bool,
+    /// Each of its strips' pin and mute guard.
+    pins: Vec<bool>,
+    guards: Vec<bool>,
 }
 
 /// The frame with every group of strips bound by name turned into a `tags`
@@ -87,17 +97,24 @@ struct Track {
 pub fn migration(frame: &Layout) -> Migration {
     let mut out = frame.clone();
     let mut tracks: Vec<Track> = Vec::new();
-    let mut used: BTreeSet<String> = BTreeSet::new();
+    let mut problems: Vec<String> = Vec::new();
+    // The frame's own tag groups keep their names.
+    let mut used: BTreeSet<String> = groups(frame)
+        .iter()
+        .filter_map(|g| g.tags.clone())
+        .collect();
     for page in &mut out.pages {
         for row in &mut page.rows {
             for section in &mut row.sections {
                 match section {
-                    Section::Group(group) => migrate_group(group, &mut used, &mut tracks),
+                    Section::Group(group) => {
+                        migrate_group(group, &mut used, &mut tracks, &mut problems);
+                    }
                     Section::Pager(pager) => {
                         for sub in &mut pager.pages {
                             for inner in &mut sub.sections {
                                 if let Section::Group(group) = inner {
-                                    migrate_group(group, &mut used, &mut tracks);
+                                    migrate_group(group, &mut used, &mut tracks, &mut problems);
                                 }
                             }
                         }
@@ -106,12 +123,31 @@ pub fn migration(frame: &Layout) -> Migration {
             }
         }
     }
+    for track in &tracks {
+        if track.pins.iter().any(|p| *p != track.pins[0]) {
+            problems.push(format!(
+                "{:?} ({}): pinned in one group and not in another (a marker pins it in all)",
+                track.name, track.instance
+            ));
+        }
+        if track.guards.iter().any(|g| *g != track.guards[0]) {
+            problems.push(format!(
+                "{:?} ({}): mute-guarded in one group and not in another (a marker guards it in all)",
+                track.name, track.instance
+            ));
+        }
+    }
     let labels = labels(&tracks);
     let planned = tracks
         .into_iter()
         .zip(labels)
         .map(|(track, label)| Planned {
-            marker: marker_name(&label, &track.groups, track.pin, track.mute_guard),
+            marker: marker_name(
+                &label,
+                &track.groups,
+                track.pins.contains(&true),
+                track.guards.contains(&true),
+            ),
             instance: track.instance,
             kind: track.kind,
             track: track.name,
@@ -120,11 +156,24 @@ pub fn migration(frame: &Layout) -> Migration {
     Migration {
         frame: out,
         planned,
+        problems,
     }
 }
 
-/// The instance, kind and name of a strip bound by name; none otherwise.
-fn by_name(control: &Control) -> Option<(&str, TrackKind, &str, bool, bool)> {
+/// Every group of the layout, its pagers' sub-pages' too.
+fn groups(layout: &Layout) -> Vec<&Group> {
+    layout
+        .pages
+        .iter()
+        .flat_map(|p| &p.rows)
+        .flat_map(|r| &r.sections)
+        .flat_map(Section::groups)
+        .collect()
+}
+
+/// The strip and its track's instance, kind and name, when it is bound by
+/// name; none otherwise.
+fn by_name(control: &Control) -> Option<(&Strip, TrackKind, &str)> {
     let Control::Strip(strip) = control else {
         return None;
     };
@@ -133,23 +182,20 @@ fn by_name(control: &Control) -> Option<(&str, TrackKind, &str, bool, bool)> {
         Anchor::Return { name } => (TrackKind::Return, name),
         _ => return None,
     };
-    Some((
-        strip.binding.instance.as_str(),
-        kind,
-        name.as_str(),
-        strip.pinned,
-        strip.mute_guard,
-    ))
+    Some((strip.as_ref(), kind, name.as_str()))
 }
 
 /// Turns `group` into a tags group when every strip in it is bound by name
-/// (and it holds one at least), recording its strips' tracks.
-fn migrate_group(group: &mut Group, used: &mut BTreeSet<String>, tracks: &mut Vec<Track>) {
-    let strips: Vec<&Control> = group
-        .controls
-        .iter()
-        .filter(|c| matches!(c, Control::Strip(_)))
-        .collect();
+/// (and it holds one at least), recording its strips' tracks and what a
+/// marker cannot carry.
+fn migrate_group(
+    group: &mut Group,
+    used: &mut BTreeSet<String>,
+    tracks: &mut Vec<Track>,
+    problems: &mut Vec<String>,
+) {
+    let is_strip = |c: &Control| matches!(c, Control::Strip(_));
+    let strips: Vec<&Control> = group.controls.iter().filter(|c| is_strip(c)).collect();
     if group.tags.is_some() || strips.is_empty() || strips.iter().any(|c| by_name(c).is_none()) {
         return;
     }
@@ -161,10 +207,32 @@ fn migrate_group(group: &mut Group, used: &mut BTreeSet<String>, tracks: &mut Ve
         .or_else(|| group.id.as_deref().map(tag_name).filter(|t| !t.is_empty()))
         .unwrap_or_else(|| "GROUP".to_string());
     let tag = unique(&base, used);
-    for (i, (instance, kind, name, pin, mute_guard)) in
-        strips.iter().copied().filter_map(by_name).enumerate()
-    {
-        let place = i + 1;
+    // The marker strips come first, then the group's other controls.
+    let before_last = group
+        .controls
+        .iter()
+        .rposition(is_strip)
+        .map_or(&[][..], |last| &group.controls[..last]);
+    if before_last.iter().any(|c| !is_strip(c)) {
+        problems.push(format!(
+            "group {tag}: a control before or between its strips would move after them"
+        ));
+    }
+    let mut seen: Vec<(&str, TrackKind, &str)> = Vec::new();
+    for (i, (strip, kind, name)) in strips.iter().copied().filter_map(by_name).enumerate() {
+        let instance = strip.binding.instance.as_str();
+        if seen.contains(&(instance, kind, name)) {
+            problems.push(format!(
+                "{name:?} ({instance}): twice in group {tag} (a marker shows it once)"
+            ));
+            continue;
+        }
+        seen.push((instance, kind, name));
+        if strip.wide || strip.label.is_some() || strip.binding.path.is_some() {
+            problems.push(format!(
+                "{name:?} ({instance}): its width, label or path would be lost"
+            ));
+        }
         let at = tracks
             .iter()
             .position(|t| t.instance == instance && t.kind == kind && t.name == name);
@@ -176,19 +244,17 @@ fn migrate_group(group: &mut Group, used: &mut BTreeSet<String>, tracks: &mut Ve
                     kind,
                     name: name.to_string(),
                     groups: Vec::new(),
-                    pin: false,
-                    mute_guard: false,
+                    pins: Vec::new(),
+                    guards: Vec::new(),
                 });
                 tracks.last_mut().expect("just pushed")
             }
         };
-        if !track.groups.iter().any(|(g, _)| *g == tag) {
-            track.groups.push((tag.clone(), place));
-        }
-        track.pin |= pin;
-        track.mute_guard |= mute_guard;
+        track.groups.push((tag.clone(), i + 1));
+        track.pins.push(strip.pinned);
+        track.guards.push(strip.mute_guard);
     }
-    group.controls.retain(|c| !matches!(c, Control::Strip(_)));
+    group.controls.retain(|c| !is_strip(c));
     group.tags = Some(tag);
 }
 
@@ -255,6 +321,7 @@ fn unique(base: &str, used: &mut BTreeSet<String>) -> String {
 /// A track's name without its return prefix (`X-`), its `#` marks and a
 /// `"` (a label holds none).
 pub fn full_label(name: &str) -> String {
+    let name = name.replace('"', "");
     let mut chars = name.trim_start().chars();
     let prefixed = matches!(
         (chars.next(), chars.next()),
@@ -266,11 +333,7 @@ pub fn full_label(name: &str) -> String {
         name.trim_start()
     };
     let words: Vec<&str> = rest.split_whitespace().filter(|w| *w != "#").collect();
-    words
-        .join(" ")
-        .trim_end_matches('#')
-        .trim_end()
-        .replace('"', "")
+    words.join(" ").trim_end_matches('#').trim_end().to_string()
 }
 
 /// Each track's label: what its strip shows now ([`strip_label`]); where two
@@ -299,8 +362,10 @@ fn labels(tracks: &[Track]) -> Vec<String> {
         } else {
             label.as_str()
         };
-        // Each label taken or another track's rules out one candidate.
-        let name = (1..=out.len() + second.len() + 1)
+        // Each label already given rules out one candidate, and so does
+        // each other track's own label: of `out + second` candidates
+        // (`second` holds this track's own) one is free.
+        let name = (1..=out.len() + second.len())
             .map(|n| {
                 if n == 1 {
                     label.to_string()
@@ -315,12 +380,12 @@ fn labels(tracks: &[Track]) -> Vec<String> {
     out
 }
 
-/// The Tuner name: the quoted label, a `+G:` tag per group with its place,
-/// then `+PIN` and `+MG` when set.
+/// The Tuner name: the quoted label, a `+G:` tag per group with its place
+/// (none past [`MAX_PLACE`]), then `+PIN` and `+MG` when set.
 pub fn marker_name(label: &str, groups: &[(String, usize)], pin: bool, mute_guard: bool) -> String {
     let mut out = format!("\"{label}\"");
     for (group, place) in groups {
-        if *place <= MAX_MIGRATED_PLACE {
+        if u32::try_from(*place).is_ok_and(|p| p <= MAX_PLACE) {
             out.push_str(&format!(" +G:{group}:{place}"));
         } else {
             out.push_str(&format!(" +G:{group}"));

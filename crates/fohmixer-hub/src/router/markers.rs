@@ -511,10 +511,13 @@ impl Keeper {
     }
 
     /// The renames of the migration: each planned track that is ready
-    /// (`MigrationRow::ready`) gets its one plain Tuner named its marker.
+    /// (`MigrationRow::ready`) gets its one plain Tuner named its marker,
+    /// unless a read of its instance is running (a device inserted before
+    /// the Tuner may have moved it).
     pub fn renames(&self, planned: &[Planned]) -> Vec<Action> {
         planned
             .iter()
+            .filter(|p| !self.reading(&p.instance))
             .filter_map(|p| {
                 let (row, device) = self.locate(p);
                 Some(Action::Rename {
@@ -526,6 +529,37 @@ impl Keeper {
                 })
             })
             .collect()
+    }
+
+    /// Whether a read of `instance` is running.
+    pub fn reading(&self, instance: &str) -> bool {
+        self.instances
+            .get(instance)
+            .is_some_and(|state| state.pending.is_some())
+    }
+
+    /// The instance's lists read afresh (the migration's names: Live fires
+    /// no list listener on a track's rename): `slots` answer `get_prop
+    /// tracks` and `get_prop return_tracks`. A list that changed is kept and
+    /// starts a read, as its listener's value would.
+    pub fn refresh(&mut self, instance: &str, slots: &[Value]) -> Vec<Action> {
+        let tracks = answered(slots.first()).cloned();
+        let returns = answered(slots.get(1)).cloned();
+        let Some(state) = self.instances.get_mut(instance) else {
+            return Vec::new();
+        };
+        let mut changed = false;
+        for (fresh, kept) in [(tracks, &mut state.tracks), (returns, &mut state.returns)] {
+            if fresh.is_some() && fresh != *kept {
+                *kept = fresh;
+                changed = true;
+            }
+        }
+        if changed {
+            vec![self.read(instance)]
+        } else {
+            Vec::new()
+        }
     }
 
     /// A planned track's row, and the device of its one plain Tuner when

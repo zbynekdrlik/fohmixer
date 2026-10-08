@@ -11,7 +11,8 @@
 //!                                       would serve (the installer, #21): exit 0, or 2 with why
 //!   fohmixer-hub markers plan <layout>  print, per strip's track of <layout> bound by name, the
 //!                                       Tuner marker the migration gives it (#68; track names:
-//!                                       the output stays on the PC)
+//!                                       the output stays on the PC); exit 1 with each problem
+//!                                       that stops the migration on stderr
 //!   fohmixer-hub markers frame <layout> <out>
 //!                                       write <layout> converted to tags groups to <out>, a new
 //!                                       file: exit 0, or 2 with why
@@ -137,16 +138,24 @@ fn layout_command(layout: &str, config: &str) -> ExitCode {
     }
 }
 
-/// `markers plan <layout>`: the planned markers on stdout, a line each;
-/// exit 0, or 2 (and why on stderr) for a layout that cannot be read.
+/// `markers plan <layout>`: the planned markers on stdout, a line each, and
+/// what stops the migration on stderr; exit 0, 1 when something stops it,
+/// or 2 (and why on stderr) for a layout that cannot be read.
 fn plan_command(layout: &str) -> ExitCode {
     match fohmixer_hub::layout::plan_lines(std::path::Path::new(layout)) {
-        Ok(lines) => {
+        Ok((lines, problems)) => {
             for line in &lines {
                 println!("{line}");
             }
             eprintln!("fohmixer-hub: {} tracks planned", lines.len());
-            ExitCode::SUCCESS
+            for problem in &problems {
+                eprintln!("fohmixer-hub: problem: {problem}");
+            }
+            if problems.is_empty() {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            }
         }
         Err(e) => {
             eprintln!("fohmixer-hub: {e:#}");

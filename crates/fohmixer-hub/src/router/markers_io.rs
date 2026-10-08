@@ -84,24 +84,81 @@ impl Router {
         cached
     }
 
-    /// The migration's rows (#68 PR C): the planned tracks of the store's
-    /// frame as the keeper finds them; with `apply`, the ready tracks' plain
-    /// Tuners are renamed (the rows are what the keeper saw before).
-    pub(super) fn markers_migration(&mut self, apply: bool) -> MigrationStatus {
-        let planned = self
+    /// `/api/markers/migration` (#68 PR C): first every instance's lists
+    /// read afresh (Live fires no list listener on a track's rename, so the
+    /// keeper's names may be old); the answer comes back as
+    /// [`RouterMsg::MigrationLists`].
+    pub(super) fn markers_migration(
+        &self,
+        apply: bool,
+        reply: tokio::sync::oneshot::Sender<MigrationStatus>,
+    ) {
+        let reads: Vec<_> = self
+            .live
+            .iter()
+            .map(|(instance, live)| {
+                let commands = [markers::TRACKS, markers::RETURNS]
+                    .into_iter()
+                    .map(|prop| serde_json::json!({"target": "live_set", "name": "get_prop", "args": {"prop": prop}}))
+                    .collect();
+                (instance.clone(), live.call(commands))
+            })
+            .collect();
+        let tx = self.io.tx.clone();
+        tokio::spawn(async move {
+            let mut lists = Vec::new();
+            for (instance, read) in reads {
+                lists.push((instance, read.await.map_err(|e| e.to_string())));
+            }
+            let _ = tx.send(RouterMsg::MigrationLists {
+                apply,
+                reply,
+                lists,
+            });
+        });
+    }
+
+    /// The migration's rows: the planned tracks of the store's frame as
+    /// the keeper finds them with the fresh `lists`; with `apply`, the ready
+    /// tracks' plain Tuners are renamed (the rows are what the keeper saw
+    /// before), unless the frame has a problem or a read is running.
+    pub(super) fn markers_migration_lists(
+        &mut self,
+        apply: bool,
+        lists: &[(String, Result<Vec<Value>, String>)],
+    ) -> MigrationStatus {
+        let mut actions = Vec::new();
+        for (instance, outcome) in lists {
+            match outcome {
+                Ok(slots) => actions.extend(self.markers.refresh(instance, slots)),
+                Err(error) => {
+                    tracing::warn!(instance = %instance, error = %error, "the migration could not read the lists afresh");
+                }
+            }
+        }
+        self.markers_do(actions);
+        let Some(migration) = self
             .layout_store
             .as_ref()
-            .map(|store| store.planned())
-            .unwrap_or_default();
-        let rows = self.markers.migration_rows(&planned);
-        let renames = if apply {
-            self.markers.renames(&planned)
+            .and_then(|store| store.migration())
+        else {
+            return MigrationStatus::default();
+        };
+        let rows = self.markers.migration_rows(&migration.planned);
+        let reading = rows.iter().any(|row| self.markers.reading(&row.instance));
+        let renames = if apply && migration.problems.is_empty() {
+            self.markers.renames(&migration.planned)
         } else {
             Vec::new()
         };
         let renamed = u32::try_from(renames.len()).unwrap_or(u32::MAX);
         self.markers_do(renames);
-        MigrationStatus { rows, renamed }
+        MigrationStatus {
+            rows,
+            problems: migration.problems,
+            reading,
+            renamed,
+        }
     }
 
     /// Names a Tuner (`set_prop name`); a failure is logged. The new name

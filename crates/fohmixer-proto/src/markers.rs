@@ -182,8 +182,8 @@ pub fn parse(name: &str) -> Marker {
 }
 
 /// What a frame (the layout file) may not hold (#68): a view page or an
-/// id starting with [`VIEW_PREFIX`] (the markers make those), or a `tags`
-/// group with controls of its own (the composition replaces them).
+/// id starting with [`VIEW_PREFIX`] (the markers make those), or a strip in
+/// a `tags` group (its strips are its markers'; other controls follow them).
 pub fn frame_problems(frame: &Layout) -> Vec<LayoutError> {
     let mut out = Vec::new();
     let mut id = |at: &str, id: &str| {

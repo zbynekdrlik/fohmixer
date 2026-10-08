@@ -321,6 +321,18 @@ fn the_migration_names_the_owners_plain_tuners_with_their_planned_markers() {
         assert_eq!(code, 200, "{body}");
         let posted: MigrationStatus = serde_json::from_value(body).unwrap();
         assert_eq!(posted.renamed, 0);
+        assert!(posted.problems.is_empty());
+        // Live fires no list listener on a rename: the names are read
+        // afresh, so a renamed track is no longer found under its old name.
+        assert_eq!(host.rename("Hand2 #", "Hand2b #"), 1);
+        let status = migration_until(&hub, "the rename seen", |s| row(s, "Hand2 #").0 == 0).await;
+        assert_eq!(row(&status, "Hand2 #"), (0, None, 0, 0, false));
+        assert_eq!(host.rename("Hand2b #", "Hand2 #"), 1);
+        let status = migration_until(&hub, "the name back", |s| {
+            row(s, "Hand2 #") == (1, Some(1), 2, 0, false) && !s.reading
+        })
+        .await;
+        assert_eq!(row(&status, "Hand1 #"), (1, Some(0), 0, 1, true));
         hub.stop().await;
         host.stop();
     });

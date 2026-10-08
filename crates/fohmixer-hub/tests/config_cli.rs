@@ -188,3 +188,33 @@ fn markers_plan_prints_each_tracks_marker_and_frame_writes_a_new_file() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("reading layout "));
     assert!(out.stdout.is_empty());
 }
+
+#[test]
+fn markers_plan_says_what_stops_the_migration() {
+    let dir = tempfile::tempdir().unwrap();
+    let layout = dir.path().join("layout.json");
+    std::fs::write(
+        &layout,
+        serde_json::to_vec(&serde_json::json!({
+            "schema": 2,
+            "default_page": "main",
+            "pages": [{"id": "main", "title": "M", "rows": [{"sections": [
+                {"kind": "group", "id": "g", "title": "G", "controls": [
+                    {"kind": "strip", "strip_kind": "standard", "wide": true,
+                     "binding": {"instance": "band", "anchor": {"kind": "track", "name": "Bass #"}}}]}]}]}]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let out = markers(&[std::ffi::OsStr::new("plan"), layout.as_os_str()]);
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "band\ttrack\tBass #\t\"Bass\" +G:G:1\n"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains(r#"problem: "Bass #" (band): its width, label or path would be lost"#),
+        "{stderr}"
+    );
+}

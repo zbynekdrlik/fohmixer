@@ -157,6 +157,13 @@ pub enum RouterMsg {
         apply: bool,
         reply: oneshot::Sender<fohmixer_proto::markers::migrate::MigrationStatus>,
     },
+    /// Each instance's lists read afresh for a `Migration` (the answers of
+    /// `get_prop tracks` and `get_prop return_tracks`, or why not).
+    MigrationLists {
+        apply: bool,
+        reply: oneshot::Sender<fohmixer_proto::markers::migrate::MigrationStatus>,
+        lists: Vec<(String, Result<Vec<Value>, String>)>,
+    },
     /// A page opened or closed the Stream Deck tab (#52).
     DeckView {
         client: ClientId,
@@ -456,8 +463,13 @@ impl Router {
                     self.names.start(&name);
                 }
             }
-            RouterMsg::Migration { apply, reply } => {
-                let _ = reply.send(self.markers_migration(apply));
+            RouterMsg::Migration { apply, reply } => self.markers_migration(apply, reply),
+            RouterMsg::MigrationLists {
+                apply,
+                reply,
+                lists,
+            } => {
+                let _ = reply.send(self.markers_migration_lists(apply, &lists));
             }
             RouterMsg::Status { reply } => {
                 let names = self.live.keys();

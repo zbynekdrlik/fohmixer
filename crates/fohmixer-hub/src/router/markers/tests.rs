@@ -709,8 +709,9 @@ fn the_migration_finds_each_planned_track_and_renames_only_a_ready_one() {
 }
 
 #[test]
-fn a_rename_names_the_one_plain_tuner_even_after_a_marker_device() {
-    // The plain Tuner is the track's second device: the rename names it.
+fn a_rename_names_the_one_plain_tuner_after_another_device() {
+    // The plain Tuner is the track's second device (after an EQ Eight): the
+    // rename names that device.
     let mut k = keeper();
     let actions = k.value(
         &tracks_key("band"),
@@ -739,5 +740,65 @@ fn a_rename_names_the_one_plain_tuner_even_after_a_marker_device() {
             device: 1,
             name: r#""Bass" +G:A:1"#.into(),
         }]
+    );
+}
+
+#[test]
+fn the_lists_read_afresh_replace_the_kept_ones_and_a_change_reads_again() {
+    let mut k = keeper();
+    let named = |name: &str| json!([{"$ref": "t0", "name": name}]);
+    let actions = k.value(&tracks_key("band"), Some(&named("Bass #")));
+    apply(&mut k, actions);
+    let actions = k.value(&returns_key("band"), Some(&json!([])));
+    let mut applied = apply(&mut k, actions);
+    let (_, seq, _, _) = applied.reads.pop().expect("a read");
+    let actions = k.read_done(
+        "band",
+        seq,
+        Step::Devices,
+        &Ok(vec![ok(json!([device("Device", "Tuner")]))]),
+    );
+    apply(&mut k, actions);
+    let actions = k.read_done("band", seq, Step::Classes, &Ok(vec![ok(json!("Tuner"))]));
+    apply(&mut k, actions);
+    assert!(!k.reading("band"));
+    let planned = vec![plan(TrackKind::Track, "Bass #", r#""Bass" +G:A:1"#)];
+    assert_eq!(k.renames(&planned).len(), 1);
+    // The same lists: nothing to do.
+    assert_eq!(
+        k.refresh("band", &[ok(named("Bass #")), ok(json!([]))]),
+        vec![]
+    );
+    // A failed or missing answer keeps the kept list.
+    assert_eq!(
+        k.refresh("band", &[json!({"ok": false, "error": "x"})]),
+        vec![]
+    );
+    assert_eq!(k.migration_rows(&planned)[0].matches, 1);
+    // An unknown instance: nothing.
+    assert_eq!(k.refresh("nobody", &[ok(named("Kick #"))]), vec![]);
+    // A rename Live told no listener about: kept, and a read starts.
+    let actions = k.refresh("band", &[ok(named("Kick #")), ok(json!([]))]);
+    assert!(
+        matches!(actions.as_slice(), [Action::Read { .. }]),
+        "{actions:?}"
+    );
+    assert_eq!(k.migration_rows(&planned)[0].matches, 0);
+    // While that read runs, no rename goes out.
+    assert!(k.reading("band"));
+    let planned = vec![plan(TrackKind::Track, "Kick #", r#""Kick" +G:A:1"#)];
+    assert_eq!(k.migration_rows(&planned)[0].plain, 1);
+    assert_eq!(k.renames(&planned), vec![]);
+    // A changed list of returns reads again too.
+    let actions = k.refresh(
+        "band",
+        &[
+            ok(named("Kick #")),
+            ok(json!([{"$ref": "r0", "name": "A-Hall #"}])),
+        ],
+    );
+    assert!(
+        matches!(actions.as_slice(), [Action::Read { .. }]),
+        "{actions:?}"
     );
 }

@@ -22,7 +22,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use fohmixer_proto::client::MarkersStatus;
 use fohmixer_proto::layout::Layout;
-use fohmixer_proto::markers::migrate::{Planned, migration};
+use fohmixer_proto::markers::migrate::{Migration, Planned, migration};
 use fohmixer_proto::markers::{Found, MarkerReport, TrackKind, compose, frame_problems};
 
 /// Backups kept.
@@ -98,10 +98,12 @@ pub fn check_files(layout: &Path, config: &Path) -> anyhow::Result<()> {
 
 /// `fohmixer-hub markers plan <layout>` (#68 PR C): a line per planned
 /// track (the migration of the frame's strips bound by name to Tuner
-/// markers). The lines hold track names: they stay on the PC.
-pub fn plan_lines(layout: &Path) -> anyhow::Result<Vec<String>> {
+/// markers), and the problems that stop it. The lines hold track names:
+/// they stay on the PC.
+pub fn plan_lines(layout: &Path) -> anyhow::Result<(Vec<String>, Vec<String>)> {
     let frame = read_frame(layout)?;
-    Ok(migration(&frame).planned.iter().map(plan_line).collect())
+    let m = migration(&frame);
+    Ok((m.planned.iter().map(plan_line).collect(), m.problems))
 }
 
 /// A planned track: instance, kind, the track's name and its marker,
@@ -125,6 +127,12 @@ pub fn migrate_file(layout: &Path, out: &Path) -> anyhow::Result<usize> {
     use std::io::Write as _;
     let frame = read_frame(layout)?;
     let m = migration(&frame);
+    if !m.problems.is_empty() {
+        anyhow::bail!(
+            "the migration would change the surface: {}",
+            m.problems.join("; ")
+        );
+    }
     let problems: Vec<String> = m
         .frame
         .validate()
@@ -231,14 +239,10 @@ impl LayoutStore {
         Some(rev)
     }
 
-    /// The planned markers of the frame's strips bound by name (#68 PR C;
-    /// none without a frame).
-    pub fn planned(&self) -> Vec<Planned> {
-        self.lock()
-            .frame
-            .as_deref()
-            .map(|frame| migration(frame).planned)
-            .unwrap_or_default()
+    /// The migration of the frame's strips bound by name (#68 PR C; none
+    /// without a frame).
+    pub fn migration(&self) -> Option<Migration> {
+        self.lock().frame.as_deref().map(migration)
     }
 
     /// The markers in `/api/status` (#68): how many, and every problem.
@@ -721,10 +725,13 @@ mod tests {
         std::fs::write(&path, &frame).unwrap();
         assert_eq!(
             plan_lines(&path).unwrap(),
-            vec![
-                "master\ttrack\tHand1 #\t\"Hand1\" +G:HANDS:1 +PIN".to_string(),
-                "band\treturn\tA-Hall #\t\"Hall\" +G:HANDS:2".to_string(),
-            ]
+            (
+                vec![
+                    "master\ttrack\tHand1 #\t\"Hand1\" +G:HANDS:1 +PIN".to_string(),
+                    "band\treturn\tA-Hall #\t\"Hall\" +G:HANDS:2".to_string(),
+                ],
+                Vec::<String>::new()
+            )
         );
         let out = dir.path().join("converted.json");
         assert_eq!(migrate_file(&path, &out).unwrap(), 2);
@@ -734,8 +741,20 @@ mod tests {
         let group = converted.pages[0].rows[0].sections[0].groups()[0].clone();
         assert_eq!(group.tags.as_deref(), Some("HANDS"));
         assert!(group.controls.is_empty());
-        // The hub would serve it.
+        // The hub would serve it, and the store plans the same.
         check(&written, &["band".to_string(), "master".to_string()]).unwrap();
+        let store = store_in(
+            dir.path(),
+            Path::new("layout.json"),
+            vec!["band".into(), "master".into()],
+        );
+        assert!(store.migration().is_none(), "no frame before a poll");
+        store.poll();
+        let planned = store.migration().unwrap().planned;
+        assert_eq!(
+            planned.iter().map(plan_line).collect::<Vec<_>>(),
+            plan_lines(&path).unwrap().0
+        );
         // Never over a file.
         let again = migrate_file(&path, &out).unwrap_err().to_string();
         assert!(again.starts_with("creating "), "{again}");
@@ -747,9 +766,34 @@ mod tests {
     }
 
     #[test]
+    fn a_migration_that_would_change_the_surface_is_not_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let frame = serde_json::to_vec(&json!({
+            "schema": 2,
+            "default_page": "main",
+            "pages": [{"id": "main", "title": "M", "rows": [{"sections": [
+                {"kind": "group", "id": "g", "title": "G", "controls": [
+                    {"kind": "strip", "strip_kind": "standard", "wide": true,
+                     "binding": {"instance": "band", "anchor": {"kind": "track", "name": "Bass #"}}}]}]}]}]
+        }))
+        .unwrap();
+        let path = dir.path().join("layout.json");
+        std::fs::write(&path, &frame).unwrap();
+        let problem = r#""Bass #" (band): its width, label or path would be lost"#;
+        assert_eq!(plan_lines(&path).unwrap().1, vec![problem.to_string()]);
+        let out = dir.path().join("converted.json");
+        let why = migrate_file(&path, &out).unwrap_err().to_string();
+        assert_eq!(
+            why,
+            format!("the migration would change the surface: {problem}")
+        );
+        assert!(!out.exists());
+    }
+
+    #[test]
     fn a_converted_frame_the_rules_refuse_is_not_written() {
-        // A frame whose title is taken as a view id by a pager: the
-        // conversion keeps it, and the rules refuse the result.
+        // A group whose id starts with `view-` (the frame's rules refuse
+        // it): the conversion keeps the id, and the rules refuse the result.
         let dir = tempfile::tempdir().unwrap();
         let frame = serde_json::to_vec(&json!({
             "schema": 2,
