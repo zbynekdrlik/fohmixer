@@ -1,0 +1,645 @@
+<!doctype html>
+<!-- fohmixer #68: a mockup of the views (tag groups the default view does not place, shown by a button in the control column), the conflict and problem marks on a strip, and the tag manual; built on the approved #63 column mockup (invented names); not part of the app. -->
+<html lang="sk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Fohmixer pohľady a značky</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@700&family=Barlow:wght@600;700&family=JetBrains+Mono:wght@500;600&display=swap">
+<style>
+/* The page: a thin mockup bar (device, measured fader travel), then
+   the device's screen drawn at its real size in CSS px and scaled to fit.
+   Inside the screen: the page's rows, each cut in two by the control column
+   in the middle. Dark on purpose: it is fohmixer's own look. */
+:root {
+    color-scheme: dark;
+    --bg: #050508;
+    --page: #0b0b12;
+    --column: #10101a;
+    --panel: #1a1a28;
+    --panel-mute: #12121b;
+    --track: #0a0a14;
+    --line: #2a2a44;
+    --accent: #4ecdc4;
+    --mute: #e63946;
+    --band: #4ecdc4;
+    --master: #8b7dff;
+    --text: #eaeaf0;
+    --muted: #9a9ab4;
+    --faint: #5c5c78;
+    --db: #9be7a8;
+    --warm: #f5a623;
+    --m-green: #36d67a;
+    --display: "Barlow Condensed", "Arial Narrow", sans-serif;
+    --ui: "Barlow", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --mono: "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+}
+* { box-sizing: border-box; }
+html, body {
+    height: 100%;
+    margin: 0;
+    overflow: hidden;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--ui);
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+}
+body { display: flex; flex-direction: column; }
+
+/* The mockup bar (not part of the design). */
+.mock {
+    flex: none;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 12px;
+    padding: 6px 10px;
+    background: #16161f;
+    border-bottom: 1px solid #333;
+    font-size: 13px;
+}
+.mock .set { display: flex; gap: 4px; }
+.mock button {
+    font: 700 12px var(--ui);
+    color: var(--muted);
+    background: #22222e;
+    border: 1px solid #3a3a4a;
+    border-radius: 6px;
+    padding: 5px 9px;
+}
+.mock button[aria-pressed="true"] { color: #0b0b12; background: var(--accent); border-color: var(--accent); }
+.mock .out { font-family: var(--mono); color: var(--db); }
+.mock .note { color: var(--muted); font-size: 12px; }
+
+.stage { flex: 1; position: relative; min-height: 0; }
+.screen {
+    position: absolute;
+    left: 0;
+    top: 0;
+    transform-origin: 0 0;
+    background: var(--page);
+    border-radius: 14px;
+    outline: 2px solid #2c2c3a;
+    overflow: hidden;
+    display: grid;
+    grid-template-columns: 1fr var(--col) 1fr;
+    gap: 6px;
+    padding: 6px;
+}
+
+/* A bank: its strips in one or two lines, each line under a thin row of
+   group labels. */
+.side { display: flex; flex-direction: column; gap: 6px; min-width: 0; overflow: hidden; }
+.line { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.labels { flex: none; height: 14px; display: flex; gap: 4px; }
+.label {
+    flex: none;
+    font: 700 10px/14px var(--display);
+    letter-spacing: 0.08em;
+    color: var(--muted);
+    border-top: 2px solid var(--gc);
+    padding: 0 3px;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+.strips { flex: 1; display: flex; gap: 4px; min-height: 0; }
+.strip {
+    flex: none;
+    width: var(--strip);
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    background: var(--panel);
+    border-radius: 8px;
+    padding: 3px;
+    min-height: 0;
+}
+.strip.muted { background: var(--panel-mute); }
+.name {
+    flex: none;
+    height: var(--head);
+    border: 0;
+    border-radius: 6px;
+    background: var(--tc);
+    color: #0b0b12;
+    font: 700 14px/1 var(--display);
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    padding: 0 3px;
+}
+.strip.muted .name { background: #232333; color: var(--faint); }
+.dbl {
+    flex: none;
+    height: 15px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    font: 600 12px/1 var(--mono);
+    color: var(--db);
+}
+.dbl::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--m-green); }
+.strip.muted .dbl { color: var(--faint); }
+.pan { flex: none; height: 16px; border-radius: 8px; background: var(--track); position: relative; }
+.pan::after {
+    content: "";
+    position: absolute;
+    left: calc(50% - 6px);
+    top: 2px;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: #8a8aa4;
+}
+.fz { flex: 1; display: grid; grid-template-columns: 18px 5px 1fr; gap: 3px; padding: 6px 0 4px; min-height: 0; }
+.scale, .meter, .fader { position: relative; }
+.tick {
+    position: absolute;
+    right: 0;
+    transform: translateY(-50%);
+    font: 500 9px/1 var(--mono);
+    color: var(--faint);
+}
+.meter { background: var(--track); border-radius: 2px; overflow: hidden; }
+.meter i {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: linear-gradient(to top, var(--m-green) 70%, #f5d547 88%, #ff4757);
+}
+.strip.muted .meter i { opacity: 0.25; }
+.fader { touch-action: none; }
+.fader::before {
+    content: "";
+    position: absolute;
+    left: calc(50% - 2px);
+    top: 0;
+    bottom: 0;
+    width: 4px;
+    border-radius: 2px;
+    background: var(--track);
+}
+.fader .unity { position: absolute; left: 10%; right: 10%; height: 1px; background: #3a3a55; }
+.fader .fill {
+    position: absolute;
+    left: calc(50% - 2px);
+    width: 4px;
+    bottom: 0;
+    background: var(--accent);
+    opacity: 0.75;
+    border-radius: 2px;
+}
+.strip.muted .fader .fill { opacity: 0.25; }
+.cap {
+    position: absolute;
+    left: calc(50% - 17px);
+    width: 34px;
+    height: 22px;
+    margin-top: -11px;
+    border-radius: 5px;
+    background: linear-gradient(#4a4a62, #2c2c40);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.6);
+}
+.cap::after { content: ""; position: absolute; left: 8px; right: 8px; top: 10px; height: 2px; background: #d8d8e4; }
+.strip.held { outline: 2px solid var(--accent); }
+/* A strip that always stays visible: a white corner on its name button. */
+.strip.pinned .name { position: relative; }
+.strip.pinned .name::after {
+    content: "";
+    position: absolute;
+    right: 0;
+    top: 0;
+    border-style: solid;
+    border-width: 0 11px 11px 0;
+    border-color: transparent #fff transparent transparent;
+    border-top-right-radius: 6px;
+}
+/* A slot the shown sub-page leaves empty (the strips after it keep their place). */
+.strip.blank { background: transparent; border: 1px dashed #24243a; }
+
+/* The control column. */
+.column {
+    background: var(--column);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 6px;
+    display: flex;
+    flex-direction: column;
+    gap: var(--cgap);
+    min-height: 0;
+    overflow: hidden;
+}
+.status {
+    flex: none;
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    align-items: center;
+    gap: 3px 6px;
+    font: 600 10px var(--mono);
+    color: var(--muted);
+}
+.badge { display: inline-flex; align-items: center; gap: 3px; font: 700 11px var(--display); letter-spacing: 0.06em; color: var(--text); }
+.badge::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--m-green); }
+.count { border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
+.grid { flex: none; display: grid; grid-template-columns: repeat(var(--railcols), 1fr); gap: 4px; }
+.grid.three { grid-template-columns: repeat(var(--tabcols), 1fr); }
+.btn {
+    border: 1px solid var(--line);
+    border-radius: 7px;
+    background: #181826;
+    color: var(--muted);
+    font: 700 11px/1.05 var(--display);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    height: var(--btn);
+    padding: 0 2px;
+    overflow: hidden;
+}
+.btn.on { color: #0b0b12; background: var(--accent); border-color: var(--accent); }
+.btn.warm { color: var(--warm); border-color: rgba(245, 166, 35, 0.45); }
+.btn.alert { color: var(--mute); border-color: rgba(230, 57, 70, 0.5); }
+.cap-title { flex: none; font: 700 9px var(--display); letter-spacing: 0.12em; color: var(--faint); text-align: center; text-transform: uppercase; }
+.shifts { flex: none; display: flex; flex-direction: column; gap: 4px; }
+.arrows { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 3px; }
+.arrows .btn { font-size: 15px; color: var(--text); }
+.where { font: 600 10px var(--mono); color: var(--muted); text-align: center; }
+.spacer { flex: 1; min-height: 0; }
+/* A view's button (a tag group the default view does not place): lit while shown. */
+.btn.view { color: var(--text); border-color: #3c3c5c; }
+.btn.view.on { color: #0b0b12; background: var(--warm); border-color: var(--warm); }
+.grid.dim { opacity: 0.35; }
+/* The tag manual's chip on the status line: small, out of the thumbs' way. */
+.chip { border: 1px dashed var(--line); border-radius: 4px; padding: 0 4px; background: none; color: var(--muted); font: 700 10px var(--display); letter-spacing: 0.06em; }
+/* The rail takes the column's rest and scrolls past it (as page.css's .rail-main). */
+.grid.rail { flex: 1 1 auto; min-height: 0; overflow: auto; align-content: start; }
+/* A strip in conflict (its label is on another Tuner too): disabled. */
+.strip.conflict { position: relative; background: var(--panel-mute); }
+.strip.conflict::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: 8px;
+    border: 2px solid var(--mute);
+    background: repeating-linear-gradient(135deg, rgba(230, 57, 70, 0.16) 0 6px, transparent 6px 12px);
+    pointer-events: none;
+}
+.strip.conflict .name { background: #2a1a20; color: #ff8a93; }
+.strip.conflict .fader, .strip.conflict .pan { opacity: 0.25; }
+.strip.conflict .dbl { color: var(--mute); font: 700 10px/1 var(--display); letter-spacing: 0.06em; }
+.strip.conflict .dbl::before { display: none; }
+/* A strip whose marker has a problem it still works with (an unknown tag): a yellow corner and the word on its readout line. */
+.strip.warn .name { position: relative; }
+.strip.warn .name::before {
+    content: "!";
+    position: absolute;
+    left: 2px;
+    top: 2px;
+    width: 12px;
+    height: 12px;
+    border-radius: 3px;
+    background: var(--warm);
+    color: #0b0b12;
+    font: 700 10px/12px var(--ui);
+}
+.strip.warn .dbl { color: var(--warm); }
+/* The tag manual, over the page (closed by its button; the column keeps working under it). */
+.manual {
+    position: absolute;
+    inset: 6px;
+    background: rgba(11, 11, 18, 0.97);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 14px 18px;
+    overflow: auto;
+    font: 600 14px/1.45 var(--ui);
+    color: var(--text);
+    z-index: 5;
+}
+.manual h2 { margin: 0 0 8px; font: 700 20px var(--display); letter-spacing: 0.06em; }
+.manual code { font: 600 13px var(--mono); color: var(--db); background: #151522; padding: 1px 5px; border-radius: 4px; }
+.manual table { border-collapse: collapse; width: 100%; margin: 8px 0; }
+.manual td { border-top: 1px solid #23233a; padding: 5px 6px; vertical-align: top; }
+.manual td:first-child { white-space: nowrap; width: 1%; }
+.manual .x { float: right; }
+</style>
+</head>
+<body>
+<div class="mock">
+    <div class="set" id="devices"></div>
+    <span class="out" id="out"></span>
+    <span class="note">Oranžové tlačidlá POHĽADY = skupiny, ktoré hlavný pohľad nemá (ťuk ukáže len ich fadre a pripnuté, ďalší ťuk späť). Šrafovaný červený pás = konflikt (rovnaké meno v dvoch Tuneroch, oba vypnuté). Žltý roh = chyba v značke, pás funguje. ZNAČKY otvorí návod.</span>
+</div>
+<div class="stage" id="stage"><div class="screen" id="screen"></div></div>
+<script>
+"use strict";
+// The devices, in CSS px: the column's width and how many strips fit on each side of it.
+const DEVICES = [
+    { id: "tablet", label: "Tablet", w: 1194, h: 834, col: 132, fit: 6, head: 30, btn: 40, cgap: 10, railcols: 2, tabcols: 3 },
+    { id: "phone-l", label: "Telefón naležato", w: 844, h: 390, col: 150, fit: 5, head: 28, btn: 26, cgap: 5, railcols: 2, tabcols: 3 },
+    { id: "phone-p", label: "Telefón nastojato", w: 390, h: 844, col: 96, fit: 2, head: 28, btn: 30, cgap: 6, railcols: 1, tabcols: 1 },
+];
+// The FOH page's shape: the counts and the order of the real layout, invented names.
+const C = ["#7cf27c", "#3fcf3f", "#f0f7b0", "#2ec4b6", "#1aa3e8", "#9be7a8", "#f5d547", "#e86b5a", "#b892ff", "#5ad1e8"];
+const strip = (name, i, o = {}) => ({ name, tc: C[i % C.length], muted: !!o.muted, pinned: !!o.pinned, conflict: !!o.conflict, warn: o.warn, db: o.db ?? 0, level: o.muted ? 0.2 : 0.35 + ((i * 37) % 40) / 100 });
+const group = (title, color, strips) => ({ title, color, strips });
+const SUBPAGES = [
+    group("STAGE", "var(--band)", [strip("Vox 1", 0), strip("Vox 2", 1), strip("Vox 3", 2), strip("Vox 4", 3), strip("Vox 5", 4, { muted: true }), strip("Gitara", 5, { db: -Infinity, warn: "ZNAČKA?" }), strip("Vox 6", 6, { muted: true }), strip("Vox 7", 7, { muted: true }), strip("Klavir", 8, { conflict: true }), strip("Vox bus", 9, { pinned: true })]),
+    group("BAND B", "var(--band)", ["Gitara B", "Bas B", "Klavir B", "Bicie B", "Vox B"].map((n, i) => strip(n, i + 3))),
+    group("OTHERS", "var(--band)", ["Hosť 1", "Hosť 2"].map((n, i) => strip(n, i + 6))),
+];
+const REGION = Math.max(...SUBPAGES.map((g) => g.strips.length));
+const ROW0_FIXED = [group("BAND", "var(--band)", [strip("Playback", 1, { pinned: true, db: -2 }), strip("Band ret", 9, { pinned: true })])];
+const ROW1 = [
+    group("EFFECTS", "var(--band)", [strip("Claps", 2, { db: -8.1 }), strip("Hall", 6), strip("Klavir", 8, { conflict: true })]),
+    group("MASTER A", "var(--master)", [strip("Out A", 7), strip("Out B", 3), strip("Out C abl", 4, { muted: true, db: -55.3 }), strip("Out C", 5, { pinned: true, db: -14.7 }), strip("Speakers", 6, { pinned: true, db: -20.2 })]),
+    group("HANDS", "var(--master)", [strip("Wireless 1", 1, { pinned: true, db: -9.3 }), strip("Wireless 2", 2, { muted: true, db: -Infinity }), strip("Wireless 3", 3, { muted: true, db: -Infinity }), strip("Wireless 4", 4, { muted: true, db: -Infinity })]),
+];
+// Views: the tag groups the default view (the frame) does not place, in the order of their first Tuner.
+const byName = (n) => [...SUBPAGES, ...ROW0_FIXED, ...ROW1].flatMap((g) => g.strips).find((s) => s.name === n);
+const VIEWS = [
+    group("TALKSHOW", "var(--warm)", [byName("Wireless 1"), byName("Wireless 2")]),
+    group("SOLO", "var(--warm)", [byName("Vox 1"), byName("Playback"), byName("Hall")]),
+];
+const RAIL = ["Stage", "Stage aut", "Solo vocals", "Solo iem", "Solo podklady", "Reverb", "Voc mic", "Autotune", "Zvukár", "Repro"];
+const PAGES = [["Mix", false], ["FOH", true], ["Deck", false]];
+
+// Live's own fader law (position 0..1 and dB).
+const LAW = [[1, 6], [0.85, 0], [0.7, -6], [0.55, -12], [0.4, -18], [0.302, -24], [0.238, -30], [0.157, -40], [0.036, -60], [0, -Infinity]];
+function dbToPos(db) {
+    if (db === -Infinity) return 0;
+    for (let i = 0; i < LAW.length - 1; i++) {
+        const [p0, d0] = LAW[i], [p1, d1] = LAW[i + 1];
+        if (db <= d0 && (db >= d1 || d1 === -Infinity)) return d1 === -Infinity ? p1 + (p0 - p1) * 0.5 : p1 + ((db - d1) / (d0 - d1)) * (p0 - p1);
+    }
+    return 0;
+}
+function posToDb(p) {
+    if (p <= 0.01) return -Infinity;
+    for (let i = 0; i < LAW.length - 1; i++) {
+        const [p0, d0] = LAW[i], [p1, d1] = LAW[i + 1];
+        if (p <= p0 && p >= p1) return d1 === -Infinity ? -60 - (0.036 - p) * 400 : d1 + ((p - p1) / (p0 - p1)) * (d0 - d1);
+    }
+    return 6;
+}
+const dbText = (db) => (db === -Infinity ? "-∞" : (db > 0 ? "+" : "") + db.toFixed(1));
+
+const state = { device: "tablet", sub: 0, off: [0, 0], view: null, manual: false };
+const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e; };
+
+function stripView(s) {
+    if (s.blank) return el("div", "strip blank");
+    const root = el("div", "strip" + (s.muted ? " muted" : "") + (s.pinned ? " pinned" : "") + (s.conflict ? " conflict" : "") + (s.warn ? " warn" : ""));
+    root.style.setProperty("--tc", s.tc);
+    const name = el("button", "name", s.name);
+    const dbl = el("div", "dbl", s.conflict ? "KONFLIKT" : s.warn ? s.warn : dbText(s.db));
+    if (!s.conflict) name.addEventListener("pointerdown", () => { s.muted = !s.muted; root.classList.toggle("muted", s.muted); });
+    root.append(name, dbl, el("div", "pan"));
+    const fz = el("div", "fz");
+    const scale = el("div", "scale");
+    for (const d of [6, 0, -6, -12, -18, -24, -30, -40, -60]) {
+        const t = el("span", "tick", d > 0 ? "+" + d : String(d));
+        t.style.top = (1 - dbToPos(d)) * 100 + "%";
+        scale.append(t);
+    }
+    const meter = el("div", "meter");
+    const lvl = el("i");
+    lvl.style.height = s.level * 100 + "%";
+    meter.append(lvl);
+    const fader = el("div", "fader");
+    const unity = el("div", "unity");
+    unity.style.top = (1 - 0.85) * 100 + "%";
+    const fill = el("div", "fill");
+    const cap = el("div", "cap");
+    const place = () => { const p = dbToPos(s.db); cap.style.top = (1 - p) * 100 + "%"; fill.style.height = p * 100 + "%"; if (!s.conflict && !s.warn) dbl.textContent = dbText(s.db); };
+    place();
+    fader.append(unity, fill, cap);
+    let drag = null;
+    fader.addEventListener("pointerdown", (e) => {
+        if (s.conflict) return;
+        fader.setPointerCapture(e.pointerId);
+        drag = { y: e.clientY, p: dbToPos(s.db), h: fader.getBoundingClientRect().height };
+        root.classList.add("held");
+    });
+    fader.addEventListener("pointermove", (e) => {
+        if (!drag) return;
+        const p = Math.min(1, Math.max(0, drag.p - (e.clientY - drag.y) / drag.h));
+        s.db = posToDb(p);
+        place();
+    });
+    const end = () => { drag = null; root.classList.remove("held"); };
+    fader.addEventListener("pointerup", end);
+    fader.addEventListener("pointercancel", end);
+    fz.append(scale, meter, fader);
+    root.append(fz);
+    return root;
+}
+
+// A row's slots in the layout's order, each a strip with its group's title
+// and colour. The sub-pages share one region of REGION slots: a pinned strip
+// keeps its slot on every sub-page, the shown sub-page fills the other slots
+// in order and leaves the rest empty, so no strip after the region moves.
+function slots(row) {
+    const tag = (g, s) => ({ ...s, ref: s, group: g.title, gc: g.color });
+    if (row === 1) return ROW1.flatMap((g) => g.strips.map((s) => tag(g, s)));
+    const region = Array.from({ length: REGION }, () => ({ blank: true }));
+    SUBPAGES.forEach((g) => g.strips.forEach((s, i) => { if (s.pinned) region[i] = tag(g, s); }));
+    const shown = SUBPAGES[state.sub];
+    let at = 0;
+    for (const s of shown.strips.filter((x) => !x.pinned)) {
+        while (at < REGION && !region[at].blank) at++;
+        if (at < REGION) region[at] = tag(shown, s);
+    }
+    return [...region, ...ROW0_FIXED.flatMap((g) => g.strips.map((s) => tag(g, s)))];
+}
+
+// The strips a line shows, `room` of them: all of them when they fit (empty
+// slots kept); otherwise every pinned strip plus a window over the others
+// that ◀ ▶ moves, in the layout's order.
+function visible(list, room, line) {
+    if (list.length <= room) return { shown: list, more: 0 };
+    const real = list.filter((s) => !s.blank);
+    if (real.length <= room) return { shown: real, more: 0 };
+    const pinned = real.filter((s) => s.pinned);
+    const others = real.filter((s) => !s.pinned);
+    const free = Math.max(0, room - pinned.length);
+    const max = Math.max(0, others.length - free);
+    state.off[line] = Math.min(Math.max(0, state.off[line]), max);
+    const window = new Set(others.slice(state.off[line], state.off[line] + free));
+    return { shown: real.filter((s) => s.pinned || window.has(s)), more: max, free, total: others.length };
+}
+
+// The thin row of group titles over a line's strips: one per run of strips of one group.
+function labelsFor(strips, d) {
+    const labels = el("div", "labels");
+    const runs = [];
+    for (const s of strips) {
+        const last = runs[runs.length - 1];
+        if (last && last.group === s.group) last.n++;
+        else runs.push({ group: s.group, gc: s.gc, n: 1 });
+    }
+    for (const r of runs) {
+        const label = el("div", "label", r.group || "");
+        label.style.setProperty("--gc", r.gc || "transparent");
+        label.style.width = r.n * d.strip + (r.n - 1) * 4 + "px";
+        labels.append(label);
+    }
+    return labels;
+}
+
+function lineHalf(strips, d) {
+    const line = el("div", "line");
+    const row = el("div", "strips");
+    for (const s of strips) row.append(stripView(s.blank ? s : s.ref));
+    line.append(labelsFor(strips, d), row);
+    return line;
+}
+
+function columnView(d, lines) {
+    const col = el("div", "column");
+    const status = el("div", "status");
+    status.append(el("span", "badge", "BAND"), el("span", "badge", "MASTER"), el("span", "count", "0"), el("span", "", "v0.1.0"));
+    const help = el("button", "chip", "ZNAČKY");
+    help.addEventListener("pointerdown", () => { state.manual = !state.manual; render(); });
+    status.append(help);
+    col.append(status);
+    const pages = el("div", "grid three");
+    for (const [t, on] of PAGES) pages.append(el("button", "btn" + (on ? " on" : ""), t));
+    col.append(pages);
+    const subs = el("div", "grid three" + (state.view ? " dim" : ""));
+    SUBPAGES.forEach((g, i) => {
+        const b = el("button", "btn" + (i === state.sub ? " on" : ""), g.title);
+        b.addEventListener("pointerdown", () => { state.sub = i; render(); });
+        subs.append(b);
+    });
+    col.append(subs);
+    // The views: a tag group the default view does not place. A tap shows it, a second tap returns.
+    col.append(el("div", "cap-title", "pohľady"));
+    const views = el("div", "grid");
+    for (const v of VIEWS) {
+        const b = el("button", "btn view" + (state.view === v.title ? " on" : ""), v.title);
+        b.addEventListener("pointerdown", () => { state.view = state.view === v.title ? null : v.title; state.off = [0, 0]; render(); });
+        views.append(b);
+    }
+    col.append(views);
+    // ◀ ▶ only for a line that does not fit.
+    const shifts = el("div", "shifts");
+    lines.forEach((v, i) => {
+        if (!v.more) return;
+        const arrows = el("div", "arrows");
+        const back = el("button", "btn", "◀");
+        const fwd = el("button", "btn", "▶");
+        back.addEventListener("pointerdown", () => { state.off[i] -= v.free; render(); });
+        fwd.addEventListener("pointerdown", () => { state.off[i] += v.free; render(); });
+        arrows.append(back, el("div", "where", lines.length > 1 ? (i ? "dolný" : "horný") : "posun"), fwd);
+        shifts.append(arrows);
+    });
+    col.append(shifts);
+    col.append(el("div", "cap-title", "funkcie"));
+    const rail = el("div", "grid rail");
+    RAIL.forEach((t, i) => rail.append(el("button", "btn" + (i === 5 || i === 6 ? " warm" : ""), t)));
+    col.append(rail, el("button", "btn alert", "TechAlert"));
+    return col;
+}
+
+function render() {
+    const d = DEVICES.find((x) => x.id === state.device);
+    const screen = document.getElementById("screen");
+    screen.replaceChildren();
+    screen.style.width = d.w + "px";
+    screen.style.height = d.h + "px";
+    const sideWidth = (d.w - 12 - d.col - 12) / 2;
+    d.strip = Math.floor((sideWidth - (d.fit - 1) * 4) / d.fit);
+    for (const [k, v] of [["--col", d.col], ["--strip", d.strip], ["--head", d.head], ["--btn", d.btn], ["--cgap", d.cgap]]) screen.style.setProperty(k, v + "px");
+    screen.style.setProperty("--railcols", d.railcols);
+    screen.style.setProperty("--tabcols", d.tabcols);
+    // Two lines (the page's two rows) where each fader keeps a long travel; one line holding both rows otherwise.
+    const two = d.h >= 700;
+    let content;
+    if (state.view) {
+        // A view: its group's strips, then every pinned strip not in it, under their own groups' titles; one row.
+        const v = VIEWS.find((x) => x.title === state.view);
+        const inView = new Set(v.strips);
+        const tag = (g, s) => ({ ...s, ref: s, group: g.title, gc: g.color });
+        const pins = [...SUBPAGES, ...ROW0_FIXED, ...ROW1].flatMap((g) => g.strips.filter((s) => s.pinned && !inView.has(s)).map((s) => tag(g, s)));
+        content = [[...v.strips.map((s) => tag(v, s)), ...pins]];
+    } else {
+        content = two ? [slots(0), slots(1)] : [[...slots(0), ...slots(1)]];
+    }
+    const lines = content.map((list, i) => visible(list, d.fit * 2, i));
+    const left = el("div", "side");
+    const right = el("div", "side");
+    for (const v of lines) {
+        // A view's few strips: the halves balanced around the column (as arrange.rs splits them).
+        const cut = state.view && v.shown.length <= d.fit * 2 ? Math.ceil(v.shown.length / 2) : d.fit;
+        left.append(lineHalf(v.shown.slice(0, cut), d));
+        right.append(lineHalf(v.shown.slice(cut), d));
+    }
+    screen.append(left, columnView(d, lines), right);
+    if (state.manual) screen.append(manualView());
+    fitScreen();
+    const fader = screen.querySelector(".fader");
+    const travel = fader ? Math.round(fader.getBoundingClientRect().height / scaleNow) : 0;
+    const shown = screen.querySelectorAll(".strip:not(.blank)").length;
+    const pinned = screen.querySelectorAll(".strip.pinned").length;
+    const col = screen.querySelector(".column");
+    const over = col.scrollHeight - col.clientHeight;
+    document.getElementById("out").textContent =
+        `${d.w}×${d.h}${state.view ? " · pohľad " + state.view : ""}: dráha fadra ${travel} px · naraz ${shown} pásov, z toho ${pinned} vždy viditeľných` + (over > 0 ? ` · stĺpec pretečie o ${over} px` : "");
+    for (const b of document.querySelectorAll("[data-device]")) b.setAttribute("aria-pressed", String(b.dataset.device === state.device));
+}
+
+function manualView() {
+    const m = el("div", "manual");
+    const x = el("button", "btn x", "✕ Zavrieť");
+    x.style.padding = "0 10px";
+    x.addEventListener("pointerdown", () => { state.manual = false; render(); });
+    m.append(x);
+    m.insertAdjacentHTML("beforeend", `<h2>ZNAČKY V TUNERI</h2>
+<p>Fader na fohmixeri = <b>Tuner</b> v tracku (najlepšie vypnutý), premenovaný (Ctrl+R). Meno tracku sa nepoužíva.</p>
+<p>Príklad: <code>"Vox 1" +G:VOCALS:2 +G:TALKSHOW:1 +PIN +MG</code></p>
+<table>
+<tr><td><code>"Vox 1"</code></td><td>meno na fadri, v úvodzovkách, aj viac slov</td></tr>
+<tr><td><code>+G:VOCALS</code></td><td>skupina (veľké písmená, číslice, <code>-</code>, <code>_</code> = medzera); fader v poradí trackov v Live</td></tr>
+<tr><td><code>+G:VOCALS:2</code></td><td>skupina a pozícia v nej; môže sa opakovať: jeden fader vo viacerých skupinách</td></tr>
+<tr><td><code>+PIN</code></td><td>vždy na obrazovke, v každom pohľade aj pri posune ◀ ▶</td></tr>
+<tr><td><code>+MG</code></td><td>ochrana mute: zmena chce druhé ťuknutie</td></tr>
+</table>
+<p><b>Pohľady:</b> skupina, ktorú hlavný pohľad nemá, je tlačidlo v strednom páse (POHĽADY): ukáže svoje fadre a pripnuté, ďalší ťuk späť.</p>
+<p><b>Chyby:</b> rovnaké meno v dvoch Tuneroch = oba fadre vypnuté, červené KONFLIKT. Neznáma značka, zlá hodnota, dva Tunery v jednom tracku, dva fadre na jednej pozícii = žltý roh, fader funguje.</p>`);
+    return m;
+}
+
+let scaleNow = 1;
+function fitScreen() {
+    const stage = document.getElementById("stage");
+    const screen = document.getElementById("screen");
+    const d = DEVICES.find((x) => x.id === state.device);
+    const s = Math.min(1, (stage.clientWidth - 16) / d.w, (stage.clientHeight - 16) / d.h);
+    scaleNow = s;
+    screen.style.left = Math.max(8, (stage.clientWidth - d.w * s) / 2) + "px";
+    screen.style.top = "8px";
+    screen.style.transform = `scale(${s})`;
+}
+
+for (const d of DEVICES) {
+    const b = el("button", "", d.label);
+    b.dataset.device = d.id;
+    b.addEventListener("click", () => { state.device = d.id; state.off = [0, 0]; render(); });
+    document.getElementById("devices").append(b);
+}
+window.addEventListener("resize", render);
+render();
+</script>
+</body>
+</html>
