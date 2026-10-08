@@ -273,3 +273,46 @@
     display: block;
     overflow-y: auto;
 }
+
+/* A low screen (a phone on its side): the column's parts closer together,
+   so the rail's two columns of buttons fit its height. */
+@media (max-height: 520px) {
+    .column {
+        gap: 5px;
+        padding: 6px 5px;
+    }
+
+    .column .tab {
+        padding: 4px 2px;
+    }
+
+    /* The counter and both badges on one line, the version under them. */
+    .column .status-cluster {
+        gap: 3px 5px;
+        font-size: 10px;
+        letter-spacing: 0.4px;
+    }
+
+    .column .badge {
+        gap: 4px;
+    }
+
+    .column .shift-btn,
+    .rail-foot .btn {
+        min-height: 28px;
+    }
+}
+
+/* A narrow screen (a phone upright): the arrows side by side, where the
+   window stands under them. */
+@media (max-width: 520px) {
+    .shift {
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    }
+
+    .shift-where {
+        grid-column: 1 / -1;
+        grid-row: 2;
+        text-align: center;
+    }
+}
