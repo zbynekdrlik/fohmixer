@@ -42,6 +42,11 @@ fn device(class: &str, name: &str) -> Value {
     json!({"$ref": "x", "class": class, "name": name, "path": "p"})
 }
 
+/// A device of Live's own (class `Device`) with its own `$ref`.
+fn device_ref(reference: &str, name: &str) -> Value {
+    json!({"$ref": reference, "class": "Device", "name": name, "path": "p"})
+}
+
 fn ok(data: Value) -> Value {
     json!({"ok": true, "data": data})
 }
@@ -620,7 +625,7 @@ fn the_migration_finds_each_planned_track_and_renames_only_a_ready_one() {
     let mut applied = apply(&mut k, actions);
     let (_, seq, _, _) = applied.reads.pop().expect("a read");
     let devices = vec![
-        ok(json!([device("Device", "Tuner")])),
+        ok(json!([device_ref("d0", "Tuner")])),
         ok(json!([
             device("Device", r#""Vox 2" +G:A"#),
             device("Device", "Tuner")
@@ -631,7 +636,7 @@ fn the_migration_finds_each_planned_track_and_renames_only_a_ready_one() {
             device("Device", "Tuner"),
             device("Device", "Tuner 2")
         ])),
-        ok(json!([device("Device", "Tuner")])),
+        ok(json!([device_ref("r0d0", "Tuner")])),
     ];
     let actions = k.read_done("band", seq, Step::Devices, &Ok(devices));
     apply(&mut k, actions);
@@ -678,19 +683,15 @@ fn the_migration_finds_each_planned_track_and_renames_only_a_ready_one() {
     assert_eq!(rows[0].track, "Vox 1 #");
     assert_eq!(rows[0].marker, vox1);
     assert_eq!(rows[5].kind, TrackKind::Return);
-    let rename = |kind, index, name: &str| Action::Rename {
+    // Each names its Tuner by the `$ref` the read saw.
+    let rename = |target: &str, name: &str| Action::Rename {
         instance: "band".into(),
-        kind,
-        index,
-        device: 0,
+        target: json!({"$ref": target}),
         name: name.into(),
     };
     assert_eq!(
         k.renames(&planned),
-        vec![
-            rename(TrackKind::Track, 0, vox1),
-            rename(TrackKind::Return, 0, hall)
-        ]
+        vec![rename("d0", vox1), rename("r0d0", hall)]
     );
     // The rename comes back through the Tuner's name watch: done, and no
     // second rename.
@@ -702,10 +703,7 @@ fn the_migration_finds_each_planned_track_and_renames_only_a_ready_one() {
     };
     k.value(&key(&name), Some(&json!(vox1)));
     assert_eq!(seen(&k)[0], (1, Some(0), 0, 1, true));
-    assert_eq!(
-        k.renames(&planned),
-        vec![rename(TrackKind::Return, 0, hall)]
-    );
+    assert_eq!(k.renames(&planned), vec![rename("r0d0", hall)]);
 }
 
 #[test]
@@ -722,8 +720,8 @@ fn a_rename_names_the_one_plain_tuner_after_another_device() {
     let mut applied = apply(&mut k, actions);
     let (_, seq, _, _) = applied.reads.pop().expect("a read");
     let devices = vec![ok(json!([
-        device("Device", "EQ Eight"),
-        device("Device", "Tuner")
+        device_ref("e0", "EQ Eight"),
+        device_ref("d1", "Tuner")
     ]))];
     let actions = k.read_done("band", seq, Step::Devices, &Ok(devices));
     apply(&mut k, actions);
@@ -735,9 +733,7 @@ fn a_rename_names_the_one_plain_tuner_after_another_device() {
         k.renames(&planned),
         vec![Action::Rename {
             instance: "band".into(),
-            kind: TrackKind::Track,
-            index: 0,
-            device: 1,
+            target: json!({"$ref": "d1"}),
             name: r#""Bass" +G:A:1"#.into(),
         }]
     );
@@ -767,18 +763,24 @@ fn the_lists_read_afresh_replace_the_kept_ones_and_a_change_reads_again() {
     // The same lists: nothing to do.
     assert_eq!(
         k.refresh("band", &[ok(named("Bass #")), ok(json!([]))]),
-        vec![]
+        Some(vec![])
     );
-    // A failed or missing answer keeps the kept list.
+    // A failed or missing answer keeps the kept lists, and says so.
     assert_eq!(
-        k.refresh("band", &[json!({"ok": false, "error": "x"})]),
-        vec![]
+        k.refresh("band", &[json!({"ok": false, "error": "x"}), ok(json!([]))]),
+        None
     );
+    assert_eq!(k.refresh("band", &[ok(named("Kick #"))]), None);
     assert_eq!(k.migration_rows(&planned)[0].matches, 1);
     // An unknown instance: nothing.
-    assert_eq!(k.refresh("nobody", &[ok(named("Kick #"))]), vec![]);
+    assert_eq!(
+        k.refresh("nobody", &[ok(named("Kick #")), ok(json!([]))]),
+        None
+    );
     // A rename Live told no listener about: kept, and a read starts.
-    let actions = k.refresh("band", &[ok(named("Kick #")), ok(json!([]))]);
+    let actions = k
+        .refresh("band", &[ok(named("Kick #")), ok(json!([]))])
+        .unwrap();
     assert!(
         matches!(actions.as_slice(), [Action::Read { .. }]),
         "{actions:?}"
@@ -790,13 +792,15 @@ fn the_lists_read_afresh_replace_the_kept_ones_and_a_change_reads_again() {
     assert_eq!(k.migration_rows(&planned)[0].plain, 1);
     assert_eq!(k.renames(&planned), vec![]);
     // A changed list of returns reads again too.
-    let actions = k.refresh(
-        "band",
-        &[
-            ok(named("Kick #")),
-            ok(json!([{"$ref": "r0", "name": "A-Hall #"}])),
-        ],
-    );
+    let actions = k
+        .refresh(
+            "band",
+            &[
+                ok(named("Kick #")),
+                ok(json!([{"$ref": "r0", "name": "A-Hall #"}])),
+            ],
+        )
+        .unwrap();
     assert!(
         matches!(actions.as_slice(), [Action::Read { .. }]),
         "{actions:?}"

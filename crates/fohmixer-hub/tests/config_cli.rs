@@ -214,7 +214,8 @@ fn markers_plan_says_what_stops_the_migration() {
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains(r#"problem: "Bass #" (band): its width, label or path would be lost"#),
+        stderr
+            .contains(r#"problem: "Bass #" (band): its width, label, path or kind would be lost"#),
         "{stderr}"
     );
 }

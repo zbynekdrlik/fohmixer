@@ -159,14 +159,13 @@ pub enum Action {
     Retry { instance: String },
     /// The markers found changed: every instance's, sorted.
     Found(Vec<Found>),
-    /// The migration (#68 PR C): `set_prop name` of the Tuner `device` of
-    /// the track at `index` to `name`. The new name comes back through the
-    /// Tuner's own `name` watch.
+    /// The migration (#68 PR C): `set_prop name` of the Tuner `target` (its
+    /// `$ref` as the last read saw it: a device inserted since moves no
+    /// rename onto another object; a deleted one answers stale) to `name`.
+    /// The new name comes back through the Tuner's own `name` watch.
     Rename {
         instance: String,
-        kind: TrackKind,
-        index: u32,
-        device: u32,
+        target: Value,
         name: String,
     },
 }
@@ -521,10 +520,8 @@ impl Keeper {
             .filter_map(|p| {
                 let (row, device) = self.locate(p);
                 Some(Action::Rename {
-                    index: row.index?,
-                    device: device?,
+                    target: device?,
                     instance: row.instance,
-                    kind: row.kind,
                     name: row.marker,
                 })
             })
@@ -541,30 +538,29 @@ impl Keeper {
     /// The instance's lists read afresh (the migration's names: Live fires
     /// no list listener on a track's rename): `slots` answer `get_prop
     /// tracks` and `get_prop return_tracks`. A list that changed is kept and
-    /// starts a read, as its listener's value would.
-    pub fn refresh(&mut self, instance: &str, slots: &[Value]) -> Vec<Action> {
-        let tracks = answered(slots.first()).cloned();
-        let returns = answered(slots.get(1)).cloned();
-        let Some(state) = self.instances.get_mut(instance) else {
-            return Vec::new();
-        };
+    /// starts a read, as its listener's value would. None when a list did
+    /// not answer (or the instance is not followed): its names may be old.
+    pub fn refresh(&mut self, instance: &str, slots: &[Value]) -> Option<Vec<Action>> {
+        let tracks = answered(slots.first())?.clone();
+        let returns = answered(slots.get(1))?.clone();
+        let state = self.instances.get_mut(instance)?;
         let mut changed = false;
         for (fresh, kept) in [(tracks, &mut state.tracks), (returns, &mut state.returns)] {
-            if fresh.is_some() && fresh != *kept {
-                *kept = fresh;
+            if kept.as_ref() != Some(&fresh) {
+                *kept = Some(fresh);
                 changed = true;
             }
         }
-        if changed {
+        Some(if changed {
             vec![self.read(instance)]
         } else {
             Vec::new()
-        }
+        })
     }
 
-    /// A planned track's row, and the device of its one plain Tuner when
-    /// the row is ready.
-    fn locate(&self, planned: &Planned) -> (MigrationRow, Option<u32>) {
+    /// A planned track's row, and its one plain Tuner's `$ref` (as the last
+    /// read saw it) when the row is ready.
+    fn locate(&self, planned: &Planned) -> (MigrationRow, Option<Value>) {
         let state = self.instances.get(&planned.instance);
         let list = state.and_then(|s| match planned.kind {
             TrackKind::Track => s.tracks.as_ref(),
@@ -607,7 +603,16 @@ impl Keeper {
             markers: count(markers),
             done: tuners.iter().any(|(_, name)| **name == planned.marker),
         };
-        let device = plain.first().copied().filter(|_| row.ready());
+        let device = plain
+            .first()
+            .copied()
+            .filter(|_| row.ready())
+            .zip(index)
+            .and_then(|(device, index)| {
+                let devices = state?.devices.get(&(planned.kind, index))?;
+                let reference = devices.get(usize::try_from(device).ok()?)?.get("$ref")?;
+                Some(json!({ "$ref": reference }))
+            });
         (row, device)
     }
 

@@ -23,7 +23,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use fohmixer_proto::client::MarkersStatus;
 use fohmixer_proto::layout::Layout;
 use fohmixer_proto::markers::migrate::{Migration, Planned, migration};
-use fohmixer_proto::markers::{Found, MarkerReport, TrackKind, compose, frame_problems};
+use fohmixer_proto::markers::{Found, MarkerReport, TrackKind, compose, frame_problems, parse};
 
 /// Backups kept.
 pub const MAX_BACKUPS: usize = 30;
@@ -240,9 +240,38 @@ impl LayoutStore {
     }
 
     /// The migration of the frame's strips bound by name (#68 PR C; none
-    /// without a frame).
+    /// without a frame). A group it makes whose name Tuner markers in Live
+    /// already use (other than its own planned ones) is a problem: their
+    /// strips would join the migrated group.
     pub fn migration(&self) -> Option<Migration> {
-        self.lock().frame.as_deref().map(migration)
+        let state = self.lock();
+        let frame = state.frame.as_deref()?;
+        let mut m = migration(frame);
+        let in_live: std::collections::BTreeSet<String> = state
+            .markers
+            .iter()
+            .filter(|found| !m.planned.iter().any(|p| p.marker == found.name))
+            .flat_map(|found| parse(&found.name).groups)
+            .map(|group| group.name)
+            .collect();
+        let tags = |layout: &Layout| -> Vec<String> {
+            layout
+                .pages
+                .iter()
+                .flat_map(|p| &p.rows)
+                .flat_map(|r| &r.sections)
+                .flat_map(fohmixer_proto::layout::Section::groups)
+                .filter_map(|g| g.tags.clone())
+                .collect()
+        };
+        let own = tags(frame);
+        for tag in tags(&m.frame) {
+            if !own.contains(&tag) && in_live.contains(&tag) {
+                m.problems
+                    .push(format!("group {tag}: Tuner markers in Live already use it"));
+            }
+        }
+        Some(m)
     }
 
     /// The markers in `/api/status` (#68): how many, and every problem.
@@ -755,6 +784,25 @@ mod tests {
             planned.iter().map(plan_line).collect::<Vec<_>>(),
             plan_lines(&path).unwrap().0
         );
+        // A marker in Live already in the group the migration makes is a
+        // problem; the migration's own planned markers are not.
+        let found = |name: &str| Found {
+            instance: "band".into(),
+            kind: TrackKind::Track,
+            index: 7,
+            name: name.into(),
+            tuners: 1,
+        };
+        let _ = store.set_markers(vec![found(&planned[0].marker)]);
+        assert_eq!(store.migration().unwrap().problems, Vec::<String>::new());
+        let _ = store.set_markers(vec![
+            found(r#""Other" +G:HANDS"#),
+            found(r#""Else" +G:VIEW"#),
+        ]);
+        assert_eq!(
+            store.migration().unwrap().problems,
+            vec!["group HANDS: Tuner markers in Live already use it".to_string()]
+        );
         // Never over a file.
         let again = migrate_file(&path, &out).unwrap_err().to_string();
         assert!(again.starts_with("creating "), "{again}");
@@ -779,7 +827,7 @@ mod tests {
         .unwrap();
         let path = dir.path().join("layout.json");
         std::fs::write(&path, &frame).unwrap();
-        let problem = r#""Bass #" (band): its width, label or path would be lost"#;
+        let problem = r#""Bass #" (band): its width, label, path or kind would be lost"#;
         assert_eq!(plan_lines(&path).unwrap().1, vec![problem.to_string()]);
         let out = dir.path().join("converted.json");
         let why = migrate_file(&path, &out).unwrap_err().to_string();

@@ -5,8 +5,8 @@
 
 use std::sync::Arc;
 
+use fohmixer_proto::markers::Found;
 use fohmixer_proto::markers::migrate::MigrationStatus;
-use fohmixer_proto::markers::{Found, TrackKind};
 use serde_json::Value;
 
 use super::{MARKERS_CLIENT, Router, RouterMsg, cached_value, layout_msg, markers, write_failure};
@@ -74,11 +74,9 @@ impl Router {
                 markers::Action::Found(found) => self.markers_found(found),
                 markers::Action::Rename {
                     instance,
-                    kind,
-                    index,
-                    device,
+                    target,
                     name,
-                } => self.markers_rename(&instance, kind, index, device, name),
+                } => self.markers_rename(&instance, target, name),
             }
         }
         cached
@@ -128,12 +126,20 @@ impl Router {
         lists: &[(String, Result<Vec<Value>, String>)],
     ) -> MigrationStatus {
         let mut actions = Vec::new();
+        // The instances whose lists did not answer: their names may be old,
+        // so nothing of theirs is renamed.
+        let mut unread: Vec<&str> = Vec::new();
         for (instance, outcome) in lists {
-            match outcome {
-                Ok(slots) => actions.extend(self.markers.refresh(instance, slots)),
+            let fresh = match outcome {
+                Ok(slots) => self.markers.refresh(instance, slots),
                 Err(error) => {
                     tracing::warn!(instance = %instance, error = %error, "the migration could not read the lists afresh");
+                    None
                 }
+            };
+            match fresh {
+                Some(reads) => actions.extend(reads),
+                None => unread.push(instance),
             }
         }
         self.markers_do(actions);
@@ -145,9 +151,17 @@ impl Router {
             return MigrationStatus::default();
         };
         let rows = self.markers.migration_rows(&migration.planned);
-        let reading = rows.iter().any(|row| self.markers.reading(&row.instance));
-        let renames = if apply && migration.problems.is_empty() {
-            self.markers.renames(&migration.planned)
+        let unsettled =
+            |instance: &str| self.markers.reading(instance) || unread.contains(&instance);
+        let reading = rows.iter().any(|row| unsettled(&row.instance));
+        let renames: Vec<markers::Action> = if apply && migration.problems.is_empty() {
+            self.markers
+                .renames(&migration.planned)
+                .into_iter()
+                .filter(|action| {
+                    !matches!(action, markers::Action::Rename { instance, .. } if unread.contains(&instance.as_str()))
+                })
+                .collect()
         } else {
             Vec::new()
         };
@@ -161,21 +175,14 @@ impl Router {
         }
     }
 
-    /// Names a Tuner (`set_prop name`); a failure is logged. The new name
-    /// comes back through the Tuner's own `name` watch.
-    fn markers_rename(
-        &self,
-        instance: &str,
-        kind: TrackKind,
-        index: u32,
-        device: u32,
-        name: String,
-    ) {
+    /// Names a Tuner (`set_prop name` on its `$ref`); a failure is logged.
+    /// The new name comes back through the Tuner's own `name` watch.
+    fn markers_rename(&self, instance: &str, target: Value, name: String) {
         let Some(live) = self.live.get(instance) else {
             return;
         };
-        let target = markers::device_path(kind, index, device);
-        tracing::info!(instance = %instance, target = %target, "the marker migration names a Tuner (#68)");
+        let shown = target.to_string();
+        tracing::info!(instance = %instance, target = %shown, "the marker migration names a Tuner (#68)");
         let result = live.call(vec![serde_json::json!({
             "target": target,
             "name": "set_prop",
@@ -183,7 +190,7 @@ impl Router {
         })]);
         tokio::spawn(async move {
             if let Some(problem) = write_failure(&result.await) {
-                tracing::warn!(target = %target, problem = %problem, "a Tuner's rename failed");
+                tracing::warn!(target = %shown, problem = %problem, "a Tuner's rename failed");
             }
         });
     }

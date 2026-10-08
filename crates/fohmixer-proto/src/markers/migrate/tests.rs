@@ -418,7 +418,7 @@ fn what_a_marker_cannot_carry_is_a_problem() {
         Vec::<String>::new()
     );
     // Its width, label or path would be lost.
-    let lost = vec![r#""Bass #" (band): its width, label or path would be lost"#];
+    let lost = vec![r#""Bass #" (band): its width, label, path or kind would be lost"#];
     let with = |field: &str, value: Value| {
         let mut s = plain.clone();
         s[field] = value;
@@ -429,6 +429,18 @@ fn what_a_marker_cannot_carry_is_a_problem() {
     let mut path = plain.clone();
     path["binding"]["path"] = json!("mixer_device volume");
     assert_eq!(problems_of(json!([path])), lost);
+    // A strip of another kind than its track's.
+    assert_eq!(
+        problems_of(json!([with("strip_kind", json!("return"))])),
+        lost
+    );
+    let mut ret = strip("band", "return", "Bass #", false, false);
+    assert_eq!(problems_of(json!([ret.clone()])), Vec::<String>::new());
+    ret["strip_kind"] = json!("standard");
+    assert_eq!(
+        problems_of(json!([ret])),
+        vec![r#""Bass #" (band): its width, label, path or kind would be lost"#]
+    );
 }
 
 #[test]
@@ -489,9 +501,9 @@ fn the_e2e_fixture_migrates_and_composes_the_same_strips_but_their_width() {
     assert_eq!(
         m.problems,
         vec![
-            r#""B-Main repro #" (band): its width, label or path would be lost"#,
-            r#""Hand2 #" (band): its width, label or path would be lost"#,
-            r#""A-Echo" (master): its width, label or path would be lost"#,
+            r#""B-Main repro #" (band): its width, label, path or kind would be lost"#,
+            r#""Hand2 #" (band): its width, label, path or kind would be lost"#,
+            r#""A-Echo" (master): its width, label, path or kind would be lost"#,
         ]
     );
     assert!(frame_problems(&m.frame).is_empty());

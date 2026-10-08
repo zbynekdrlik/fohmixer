@@ -538,7 +538,10 @@ mod tests {
         let response = get_with_token(&hub, "/api/markers/migration").await;
         assert_eq!(response.status(), StatusCode::OK);
         let body: serde_json::Value = serde_json::from_slice(&body_bytes(response).await).unwrap();
-        assert_eq!(body, serde_json::json!({"rows": [], "renamed": 0}));
+        assert_eq!(
+            body,
+            serde_json::json!({"rows": [], "problems": [], "reading": false, "renamed": 0})
+        );
         let token = hub.auth.issue().unwrap();
         let response = lan(crate::app_router(hub.clone()))
             .oneshot(

@@ -337,3 +337,49 @@ fn the_migration_names_the_owners_plain_tuners_with_their_planned_markers() {
         host.stop();
     });
 }
+
+#[test]
+fn a_frame_with_a_problem_renames_nothing() {
+    // #68 PR C: a text before the group's strip would move after it: the
+    // migration stops, the ready Tuner keeps its plain name.
+    let _serial = serial();
+    runtime().block_on(async {
+        let mut host = Host::start("band");
+        let dir = tempfile::tempdir().unwrap();
+        let frame = json!({
+            "schema": 2,
+            "default_page": "p",
+            "pages": [{"id": "p", "title": "P", "rows": [{"sections": [
+                {"kind": "group", "id": "hands", "title": "Hands", "controls": [
+                    {"kind": "text", "text": "t"},
+                    {"kind": "strip", "strip_kind": "standard",
+                     "binding": {"instance": "band", "anchor": {"kind": "track", "name": "Hand1 #"}}}]}]}]}]
+        });
+        std::fs::write(
+            dir.path().join("layout.json"),
+            serde_json::to_vec(&frame).unwrap(),
+        )
+        .unwrap();
+        let hub = TestHub::start(vec![host.cfg()], dir.path()).await;
+        assert_eq!(host.tuner("track", 0, "add", "Tuner"), 1);
+        let status = migration_until(&hub, "the Tuner found", |s| {
+            s.rows.len() == 1 && row(s, "Hand1 #") == (1, Some(0), 1, 0, false) && !s.reading
+        })
+        .await;
+        assert_eq!(
+            status.problems,
+            vec!["group HANDS: a control before or between its strips would move after them"]
+        );
+        let (code, body) = hub.post("/api/markers/migration").await;
+        assert_eq!(code, 200, "{body}");
+        let posted: MigrationStatus = serde_json::from_value(body).unwrap();
+        assert_eq!(posted.renamed, 0);
+        assert_eq!(posted.problems, status.problems);
+        // Nothing reached Live: the Tuner is still plain.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let status = migration_until(&hub, "still plain", |_| true).await;
+        assert_eq!(row(&status, "Hand1 #"), (1, Some(0), 1, 0, false));
+        hub.stop().await;
+        host.stop();
+    });
+}

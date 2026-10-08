@@ -12,7 +12,7 @@ use std::collections::BTreeSet;
 use serde::{Deserialize, Serialize};
 
 use super::{MAX_GROUP_NAME, MAX_PLACE, TrackKind};
-use crate::layout::{Anchor, Control, Group, Layout, Section, Strip, strip_label};
+use crate::layout::{Anchor, Control, Group, Layout, Section, Strip, StripKind, strip_label};
 
 /// A track's planned marker.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -228,9 +228,19 @@ fn migrate_group(
             continue;
         }
         seen.push((instance, kind, name));
-        if strip.wide || strip.label.is_some() || strip.binding.path.is_some() {
+        // A marker's strip is never wide, labels itself, binds no path and
+        // takes its kind from its track's.
+        let kind_of_track = match kind {
+            TrackKind::Track => StripKind::Standard,
+            TrackKind::Return => StripKind::Return,
+        };
+        if strip.wide
+            || strip.label.is_some()
+            || strip.binding.path.is_some()
+            || strip.strip_kind != kind_of_track
+        {
             problems.push(format!(
-                "{name:?} ({instance}): its width, label or path would be lost"
+                "{name:?} ({instance}): its width, label, path or kind would be lost"
             ));
         }
         let at = tracks
