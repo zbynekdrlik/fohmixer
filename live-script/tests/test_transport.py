@@ -29,6 +29,29 @@ from main_thread import MainThread
 from websockets.exceptions import ConnectionClosed, InvalidStatus
 from websockets.sync.client import connect
 
+
+# A step just short of a boundary, exact in binary: from a time on that
+# grid (a whole second), every boundary below is exact too.
+SHORT = 2**-7
+
+
+def past(base, delta):
+    """The first time the transport counts as ``delta`` after ``base``
+    (``now - base >= delta``): ``base + delta`` can land a hair short in
+    floats ((t0 + 1.0) - t0 < 1.0 for some t0: CI of 6b84c8c, #68)."""
+    when = base + delta
+    for _ in range(4):
+        if when - base >= delta:
+            return when
+        when = math.nextafter(when, math.inf)
+    raise AssertionError(f"no time {delta} after {base}")
+
+
+def whole_second():
+    """Now, as a whole second (the boundaries from it are exact)."""
+    return float(math.floor(time.monotonic()))
+
+
 TIME_WAIT = "06"
 TICK_MS = 10
 
@@ -579,8 +602,8 @@ class OneTickTest(unittest.TestCase):
 
     def stall_closes(self, conn, last, write):
         """From the last progress at ``last``, ``write(now)`` (a tick's writes
-        at ``now``) leaves the connection open SEND_STALL_S - 0.01 later and
-        closes it at SEND_STALL_S. The kernel can still take a trickle after
+        at ``now``) leaves the connection open SEND_STALL_S - SHORT later and
+        closes it at SEND_STALL_S (``past``: the first float that far). The kernel can still take a trickle after
         the socket filled (its send buffer grows by autotuning: e9a3e76, and
         this test on the CI of a38d97a, #68): a write that takes bytes is
         progress at its time, and the boundary is checked again from there.
@@ -593,8 +616,8 @@ class OneTickTest(unittest.TestCase):
         progress without a byte never closes: the 20 steps end in a failure."""
         for _ in range(20):
             for now, closes in (
-                (last + transport.SEND_STALL_S - 0.01, False),
-                (last + transport.SEND_STALL_S, True),
+                (last + transport.SEND_STALL_S - SHORT, False),
+                (past(last, transport.SEND_STALL_S), True),
             ):
                 write(now)
                 late = f"{now - last:.2f} s after the last progress"
@@ -613,7 +636,7 @@ class OneTickTest(unittest.TestCase):
         self.client(rcvbuf=4096)
         self.tick()
         conn = self.server.connections()[0]
-        t0 = time.monotonic()
+        t0 = whole_second()
         self.fill_socket(conn, lambda: conn.flush(t0))
         self.stall_closes(conn, t0, conn.flush)
         self.assertTrue(conn.finished)
@@ -637,7 +660,7 @@ class OneTickTest(unittest.TestCase):
         # Times given: open until SEND_STALL_S after that byte, closed at it
         # (a trickle the kernel takes meanwhile is progress at its tick's
         # given time, and `stall_closes` checks the boundary from there).
-        first = start + transport.SEND_STALL_S - 0.01
+        first = start + transport.SEND_STALL_S - SHORT
         self.server.poll_out(first)
         self.assertTrue(conn.is_open)
         if conn._last_progress != first:
@@ -661,15 +684,15 @@ class OneTickTest(unittest.TestCase):
         self.tick()
         conn = self.server.connections()[0]
         conn.close()
-        t0 = time.monotonic()
+        t0 = whole_second()
         conn.flush(t0)
         self.settle(client)
         self.assertEqual(
             [m.get("event") or m["opcode"] for m in client.messages()], ["connect", CLOSE]
         )
-        conn.flush(t0 + transport.CLOSE_HANDSHAKE_TIMEOUT_S - 0.01)
+        conn.flush(t0 + transport.CLOSE_HANDSHAKE_TIMEOUT_S - SHORT)
         self.assertFalse(conn.finished)
-        conn.flush(t0 + transport.CLOSE_HANDSHAKE_TIMEOUT_S)
+        conn.flush(past(t0, transport.CLOSE_HANDSHAKE_TIMEOUT_S))
         self.assertTrue(conn.finished)
 
     def test_one_large_message_goes_out_in_one_tick_when_the_socket_takes_it(self):
