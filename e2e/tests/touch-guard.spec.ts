@@ -147,7 +147,7 @@ test("a line wider than the screen keeps its pinned strip; its arrows own their 
     expect(await prevented(cells.getByTestId("fader").first(), "touchstart"), "a touchstart on a fader in it").toBe(true);
     // ▶ moves the window; the pinned strip stays, the same element (a
     // rebuilt strip would lose the mark, and a finger on it its touch).
-    const slot = page.locator('.slot:has([data-testid="strip"][data-instance="master"][data-track="Hand1 #"])').filter({ has: pinned });
+    const slot = cells.filter({ has: page.locator('[data-testid="strip"][data-instance="master"]') });
     await expect(slot).toHaveAttribute("data-side", "right");
     await pinned.evaluate((e) => e.setAttribute("data-e2e-kept", "1"));
     await next.dispatchEvent("pointerdown");

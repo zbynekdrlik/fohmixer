@@ -175,6 +175,14 @@ test.describe("The page is its rows of sections around the control column", () =
       if (s.side === "left") expect(s.right, "a left cell ends before the column").toBeLessThanOrEqual(column.x + 0.5);
       else expect(s.left, "a right cell starts after the column").toBeGreaterThanOrEqual(column.x + column.width - 0.5);
     }
+    // Each line's right side starts right after the column (the page's 6 px
+    // gap), however much of its left half the left side fills.
+    for (let r = 0; r < expected.length; r++) {
+      const first = await page
+        .locator(`[data-testid="line"][data-line="${r}"] .slot[data-side="right"]`)
+        .evaluateAll((slots) => Math.min(...slots.map((s) => s.getBoundingClientRect().left)));
+      expect(Math.abs(first - (column.x + column.width + 6)), `row ${r}: its right side at the column`).toBeLessThan(1);
+    }
     expect(await groups(page)).toEqual(expected.flat());
     // Titles and colour markers.
     for (const row of foh.rows) {

@@ -366,7 +366,8 @@ fn PageView(page: Page, global: Vec<Control>, sub: Memo<Option<usize>>) -> impl 
     // Each line's window (a line that does not fit), from the column's
     // arrows, kept by the line's key (`PageModel::line_key`: its rows, and
     // the sub-page where the pager is): a turned screen or another sub-page
-    // starts a window at its beginning, the other lines keep theirs.
+    // shows that line's window from its start, coming back finds it where it
+    // was, and the other lines keep theirs.
     let offsets = RwSignal::new(BTreeMap::<LineKey, usize>::new());
     // Every read below tolerates a disposed value (`try_*`): a layout change
     // disposes the page while its keyed lists' effects may still run once.
@@ -476,9 +477,9 @@ fn PageView(page: Page, global: Vec<Control>, sub: Memo<Option<usize>>) -> impl 
 }
 
 /// One line: its items in one keyed list (`arrange::items`), each on its
-/// side of the column (`page.css` orders the left side's, `.split` as wide
-/// as the column, the right side's), so a cell that changes side or group
-/// run moves and is not rebuilt.
+/// side of the column (`page.css` orders the left side's, `.split` taking
+/// the rest of the left half and the column, the right side's), so a cell
+/// that changes side or group run moves and is not rebuilt.
 #[component]
 fn LineView(
     arranged: Memo<Option<Arrangement>>,

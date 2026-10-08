@@ -78,9 +78,13 @@ test.describe("At the tablet's and the desktop's own size", () => {
     await openSurface(page);
     try {
       await harness("/hub/layout", { layout: changed });
-      await selectPage(page, "stage");
+      // The changed layout on screen first: STAGE's strip shows on OTHERS
+      // (on STAGE the old layout shows it too, and its page would be
+      // replaced under the measure: CI of 7767ccf).
+      await selectPage(page, "others");
       const pinned = strip(page, "Vocal 1 repro#");
       await expect(pinned).toBeVisible({ timeout: 10_000 });
+      await selectPage(page, "stage");
       await expect(strip(page, "Keys 1")).toBeVisible();
       await expect(pinned.getByTestId("status")).toHaveAttribute("data-state", "bound");
       const before = (await pinned.boundingBox())!;
@@ -211,8 +215,10 @@ test.describe("On a phone on its side", () => {
           if (css.zIndex !== "auto" && a !== column) why.push(`${a.className} z-index ${css.zIndex}`);
           if (css.transform !== "none" || css.filter !== "none" || css.contain !== "none") why.push(`${a.className} transform, filter or contain`);
         }
-        // The column above every other layer of the page.
+        // The column above every other layer of the page (a strip's clip
+        // light is 2).
         const top = Number(getComputedStyle(column).zIndex);
+        if (!(Number.isFinite(top) && top > 2)) why.push(`the column's z-index ${getComputedStyle(column).zIndex}`);
         for (const other of document.querySelectorAll(".surface *")) {
           if (column.contains(other)) continue;
           const z = Number(getComputedStyle(other).zIndex);
