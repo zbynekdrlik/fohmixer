@@ -182,8 +182,8 @@ pub fn parse(name: &str) -> Marker {
 }
 
 /// What a frame (the layout file) may not hold (#68): a view page or an
-/// id starting with [`VIEW_PREFIX`] (the markers make those), or a `tags`
-/// group with controls of its own (the composition replaces them).
+/// id starting with [`VIEW_PREFIX`] (the markers make those), or a strip in
+/// a `tags` group (its strips are its markers'; other controls follow them).
 pub fn frame_problems(frame: &Layout) -> Vec<LayoutError> {
     let mut out = Vec::new();
     let mut id = |at: &str, id: &str| {
@@ -227,12 +227,19 @@ pub fn frame_problems(frame: &Layout) -> Vec<LayoutError> {
             .iter()
             .flat_map(|r| &r.sections)
             .flat_map(Section::groups);
+        // A tags group may keep other controls (shown after its marker
+        // strips, PR C: a group ending with a parameter fader), never a strip.
         for group in groups {
-            if group.tags.is_some() && !group.controls.is_empty() {
+            if group.tags.is_some()
+                && group
+                    .controls
+                    .iter()
+                    .any(|c| matches!(c, Control::Strip(_)))
+            {
                 out.push(LayoutError {
                     at: at.clone(),
                     message: format!(
-                        "the tags group {:?} holds controls of its own (the markers' strips replace them)",
+                        "the tags group {:?} holds a strip of its own (the markers' strips fill it)",
                         group.id.as_deref().unwrap_or("")
                     ),
                 });
@@ -384,6 +391,8 @@ fn fill(sections: &mut [Section], strips: &BTreeMap<String, Vec<Strip>>) {
         match section {
             Section::Group(group) => {
                 if let Some(name) = &group.tags {
+                    // Its marker strips, then its own controls (no strip).
+                    let own = std::mem::take(&mut group.controls);
                     group.controls = strips
                         .get(name)
                         .map(|list| {
@@ -393,6 +402,7 @@ fn fill(sections: &mut [Section], strips: &BTreeMap<String, Vec<Strip>>) {
                                 .collect()
                         })
                         .unwrap_or_default();
+                    group.controls.extend(own);
                 }
             }
             Section::Pager(pager) => {
@@ -572,6 +582,8 @@ fn view_page(
         }],
     }
 }
+
+pub mod migrate;
 
 #[cfg(test)]
 mod tests;

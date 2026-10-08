@@ -105,7 +105,8 @@ pub struct Group {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
     /// The tag group whose marker strips this group shows (#68, D16): the
-    /// served layout fills `controls` with them (the frame leaves it empty).
+    /// served layout puts them first in `controls`, before the frame's own
+    /// controls there (which hold no strip).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tags: Option<String>,
     #[serde(default)]
@@ -398,6 +399,20 @@ pub enum Anchor {
     },
     Master,
     Song,
+}
+
+/// The label a strip bound by name shows (spec F4): the first word of its
+/// track's name, after a leading return prefix (`X-`: a letter and a hyphen)
+/// is dropped. The UI shows it; the marker migration (#68) labels a
+/// strip's marker with it.
+pub fn strip_label(name: &str) -> String {
+    let mut chars = name.chars();
+    let prefixed = matches!(
+        (chars.next(), chars.next()),
+        (Some(letter), Some('-')) if letter.is_alphabetic()
+    );
+    let rest = if prefixed { chars.as_str() } else { name };
+    rest.split_whitespace().next().unwrap_or("").to_string()
 }
 
 impl Binding {

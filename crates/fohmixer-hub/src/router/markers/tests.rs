@@ -42,6 +42,11 @@ fn device(class: &str, name: &str) -> Value {
     json!({"$ref": "x", "class": class, "name": name, "path": "p"})
 }
 
+/// A device of Live's own (class `Device`) with its own `$ref`.
+fn device_ref(reference: &str, name: &str) -> Value {
+    json!({"$ref": reference, "class": "Device", "name": name, "path": "p"})
+}
+
 fn ok(data: Value) -> Value {
     json!({"ok": true, "data": data})
 }
@@ -589,4 +594,259 @@ fn a_list_change_that_binds_every_tracks_devices_again_asks_for_one_read() {
     // The one sent is the newest: its answer counts.
     let answer = Ok(vec![ok(json!([])), ok(json!([])), ok(json!([]))]);
     assert_ne!(k.read_done("band", *seq, Step::Devices, &answer), vec![]);
+}
+
+fn plan(kind: TrackKind, track: &str, marker: &str) -> Planned {
+    Planned {
+        instance: "band".into(),
+        kind,
+        track: track.into(),
+        marker: marker.into(),
+    }
+}
+
+#[test]
+fn the_migration_finds_each_planned_track_and_renames_only_a_ready_one() {
+    // #68 PR C: the planned tracks by name in the keeper's own lists.
+    let mut k = keeper();
+    let tracks = json!([
+        {"$ref": "t0", "name": "Vox 1 #"},
+        {"$ref": "t1", "name": "Vox 2 #"},
+        {"$ref": "t2", "name": "Dup #"},
+        {"$ref": "t3", "name": "Dup #"},
+        {"$ref": "t4", "name": "Two #"},
+    ]);
+    let actions = k.value(&tracks_key("band"), Some(&tracks));
+    apply(&mut k, actions);
+    let actions = k.value(
+        &returns_key("band"),
+        Some(&json!([{"$ref": "r0", "name": "A-Hall #"}])),
+    );
+    let mut applied = apply(&mut k, actions);
+    let (_, seq, _, _) = applied.reads.pop().expect("a read");
+    let devices = vec![
+        ok(json!([device_ref("d0", "Tuner")])),
+        ok(json!([
+            device("Device", r#""Vox 2" +G:A"#),
+            device("Device", "Tuner")
+        ])),
+        ok(json!([device("Device", "Tuner")])),
+        ok(json!([])),
+        ok(json!([
+            device("Device", "Tuner"),
+            device("Device", "Tuner 2")
+        ])),
+        ok(json!([device_ref("r0d0", "Tuner")])),
+    ];
+    let actions = k.read_done("band", seq, Step::Devices, &Ok(devices));
+    apply(&mut k, actions);
+    let classes = vec![ok(json!("Tuner")); 7];
+    let actions = k.read_done("band", seq, Step::Classes, &Ok(classes));
+    apply(&mut k, actions);
+    let vox1 = r#""Vox 1" +G:A:1"#;
+    let hall = r#""Hall" +G:A:2"#;
+    let planned = vec![
+        plan(TrackKind::Track, "Vox 1 #", vox1),
+        plan(TrackKind::Track, "Vox 2 #", r#""Vox 2" +G:A"#),
+        plan(TrackKind::Track, "Dup #", r#""Dup" +G:A"#),
+        plan(TrackKind::Track, "Missing #", r#""Missing" +G:A"#),
+        plan(TrackKind::Track, "Two #", r#""Two" +G:A"#),
+        plan(TrackKind::Return, "A-Hall #", hall),
+        plan(TrackKind::Return, "Vox 1 #", vox1),
+        Planned {
+            instance: "nobody".into(),
+            kind: TrackKind::Track,
+            track: "Vox 1 #".into(),
+            marker: vox1.into(),
+        },
+    ];
+    let seen = |k: &Keeper| -> Vec<(u32, Option<u32>, u32, u32, bool)> {
+        k.migration_rows(&planned)
+            .iter()
+            .map(|r| (r.matches, r.index, r.plain, r.markers, r.done))
+            .collect()
+    };
+    assert_eq!(
+        seen(&k),
+        vec![
+            (1, Some(0), 1, 0, false),
+            (1, Some(1), 1, 1, true),
+            (2, None, 0, 0, false),
+            (0, None, 0, 0, false),
+            (1, Some(4), 2, 0, false),
+            (1, Some(0), 1, 0, false),
+            (0, None, 0, 0, false),
+            (0, None, 0, 0, false),
+        ]
+    );
+    let rows = k.migration_rows(&planned);
+    assert_eq!(rows[0].track, "Vox 1 #");
+    assert_eq!(rows[0].marker, vox1);
+    assert_eq!(rows[5].kind, TrackKind::Return);
+    // Each names its Tuner by the `$ref` the read saw.
+    let rename = |target: &str, name: &str| Action::Rename {
+        instance: "band".into(),
+        target: json!({"$ref": target}),
+        name: name.into(),
+    };
+    assert_eq!(
+        k.renames(&planned),
+        vec![rename("d0", vox1), rename("r0d0", hall)]
+    );
+    // The rename comes back through the Tuner's name watch: done, and no
+    // second rename.
+    let name = Watch::Name {
+        instance: "band".into(),
+        kind: TrackKind::Track,
+        index: 0,
+        device: 0,
+    };
+    k.value(&key(&name), Some(&json!(vox1)));
+    assert_eq!(seen(&k)[0], (1, Some(0), 0, 1, true));
+    assert_eq!(k.renames(&planned), vec![rename("r0d0", hall)]);
+}
+
+#[test]
+fn a_rename_names_the_one_plain_tuner_after_another_device() {
+    // The plain Tuner is the track's second device (after an EQ Eight): the
+    // rename names that device.
+    let mut k = keeper();
+    let actions = k.value(
+        &tracks_key("band"),
+        Some(&json!([{"$ref": "t0", "name": "Bass #"}])),
+    );
+    apply(&mut k, actions);
+    let actions = k.value(&returns_key("band"), Some(&json!([])));
+    let mut applied = apply(&mut k, actions);
+    let (_, seq, _, _) = applied.reads.pop().expect("a read");
+    let devices = vec![ok(json!([
+        device_ref("e0", "EQ Eight"),
+        device_ref("d1", "Tuner")
+    ]))];
+    let actions = k.read_done("band", seq, Step::Devices, &Ok(devices));
+    apply(&mut k, actions);
+    let classes = vec![ok(json!("Eq8")), ok(json!("Tuner"))];
+    let actions = k.read_done("band", seq, Step::Classes, &Ok(classes));
+    apply(&mut k, actions);
+    let planned = vec![plan(TrackKind::Track, "Bass #", r#""Bass" +G:A:1"#)];
+    assert_eq!(
+        k.renames(&planned),
+        vec![Action::Rename {
+            instance: "band".into(),
+            target: json!({"$ref": "d1"}),
+            name: r#""Bass" +G:A:1"#.into(),
+        }]
+    );
+}
+
+#[test]
+fn the_lists_read_afresh_replace_the_kept_ones_and_a_change_reads_again() {
+    let mut k = keeper();
+    let named = |name: &str| json!([{"$ref": "t0", "name": name}]);
+    let actions = k.value(&tracks_key("band"), Some(&named("Bass #")));
+    apply(&mut k, actions);
+    let actions = k.value(&returns_key("band"), Some(&json!([])));
+    let mut applied = apply(&mut k, actions);
+    let (_, seq, _, _) = applied.reads.pop().expect("a read");
+    let actions = k.read_done(
+        "band",
+        seq,
+        Step::Devices,
+        &Ok(vec![ok(json!([device("Device", "Tuner")]))]),
+    );
+    apply(&mut k, actions);
+    let actions = k.read_done("band", seq, Step::Classes, &Ok(vec![ok(json!("Tuner"))]));
+    apply(&mut k, actions);
+    assert!(!k.reading("band"));
+    let planned = vec![plan(TrackKind::Track, "Bass #", r#""Bass" +G:A:1"#)];
+    assert_eq!(k.renames(&planned).len(), 1);
+    let lists = |tracks: Value, returns: Value| vec![ok(tracks), ok(returns)];
+    // The same lists: nothing to do.
+    assert_eq!(
+        k.refresh("band", Some(lists(named("Bass #"), json!([])).as_slice())),
+        vec![]
+    );
+    assert!(!k.reading("band"));
+    // A failed read, a list that did not answer: the kept lists stay, the
+    // instance counts as reading, and nothing is renamed until a read
+    // answers again.
+    assert_eq!(k.refresh("band", None), vec![]);
+    assert!(k.reading("band"));
+    assert_eq!(k.renames(&planned), vec![]);
+    assert_eq!(k.migration_rows(&planned)[0].matches, 1);
+    let error = vec![json!({"ok": false, "error": "x"}), ok(json!([]))];
+    assert_eq!(
+        k.refresh("band", Some(lists(named("Bass #"), json!([])).as_slice())),
+        vec![]
+    );
+    assert!(!k.reading("band"));
+    assert_eq!(k.refresh("band", Some(error.as_slice())), vec![]);
+    assert!(k.reading("band"));
+    assert_eq!(
+        k.refresh("band", Some([ok(named("Bass #"))].as_slice())),
+        vec![]
+    );
+    assert!(k.reading("band"));
+    assert_eq!(
+        k.refresh("band", Some(lists(named("Bass #"), json!([])).as_slice())),
+        vec![]
+    );
+    assert_eq!(k.renames(&planned).len(), 1);
+    // An unknown instance: nothing.
+    assert_eq!(
+        k.refresh("nobody", Some(lists(named("Kick #"), json!([])).as_slice())),
+        vec![]
+    );
+    assert!(!k.reading("nobody"));
+    // A rename Live told no listener about: kept, and a read starts.
+    let actions = k.refresh("band", Some(lists(named("Kick #"), json!([])).as_slice()));
+    assert!(
+        matches!(actions.as_slice(), [Action::Read { .. }]),
+        "{actions:?}"
+    );
+    assert_eq!(k.migration_rows(&planned)[0].matches, 0);
+    // While that read runs, no rename goes out.
+    assert!(k.reading("band"));
+    let planned = vec![plan(TrackKind::Track, "Kick #", r#""Kick" +G:A:1"#)];
+    assert_eq!(k.migration_rows(&planned)[0].plain, 1);
+    assert_eq!(k.renames(&planned), vec![]);
+    // A changed list of returns reads again too.
+    let actions = k.refresh(
+        "band",
+        Some(lists(named("Kick #"), json!([{"$ref": "r0", "name": "A-Hall #"}])).as_slice()),
+    );
+    assert!(
+        matches!(actions.as_slice(), [Action::Read { .. }]),
+        "{actions:?}"
+    );
+}
+
+#[test]
+fn a_connect_reads_the_tuners_again_once_the_lists_are_known() {
+    let mut k = keeper();
+    // The lists are not known yet: the first value reads.
+    assert_eq!(k.connected("band"), vec![]);
+    assert_eq!(k.connected("nobody"), vec![]);
+    let actions = k.value(&tracks_key("band"), Some(&list(1)));
+    let mut seq = apply(&mut k, actions).reads[0].1;
+    // The retries run out while Live is away…
+    let failed: Result<Vec<Value>, String> = Err("timeout".into());
+    for _ in 0..MAX_RETRIES {
+        k.read_done("band", seq, Step::Devices, &failed);
+        let actions = k.retry("band");
+        seq = apply(&mut k, actions).reads[0].1;
+    }
+    assert_eq!(k.read_done("band", seq, Step::Devices, &failed), vec![]);
+    // …a connect reads again, and its failure is tried again.
+    let actions = k.connected("band");
+    let applied = apply(&mut k, actions);
+    assert_eq!(applied.reads.len(), 1);
+    let (instance, seq, step, _) = applied.reads[0].clone();
+    assert_eq!((instance.as_str(), step), ("band", Step::Devices));
+    assert_eq!(
+        k.read_done("band", seq, Step::Devices, &failed),
+        vec![Action::Retry {
+            instance: "band".into()
+        }]
+    );
 }

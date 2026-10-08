@@ -122,3 +122,100 @@ fn a_layout_the_hub_would_serve_passes_and_another_is_exit_2_with_why() {
     assert_eq!(out.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&out.stderr).contains("layout check <layout> <config>"));
 }
+
+fn markers(args: &[&std::ffi::OsStr]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_fohmixer-hub"))
+        .arg("markers")
+        .args(args)
+        .output()
+        .expect("run fohmixer-hub")
+}
+
+#[test]
+fn markers_plan_prints_each_tracks_marker_and_frame_writes_a_new_file() {
+    // #68 PR C: the migration of a frame's strips bound by name.
+    let dir = tempfile::tempdir().unwrap();
+    let layout = dir.path().join("layout.json");
+    std::fs::write(
+        &layout,
+        serde_json::to_vec(&serde_json::json!({
+            "schema": 2,
+            "default_page": "main",
+            "pages": [{"id": "main", "title": "M", "rows": [{"sections": [
+                {"kind": "group", "id": "g", "title": "Vocals", "controls": [
+                    {"kind": "strip", "strip_kind": "standard", "mute_guard": true,
+                     "binding": {"instance": "band", "anchor": {"kind": "track", "name": "Vox 1 #"}}}]}]}]}]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let out = markers(&[std::ffi::OsStr::new("plan"), layout.as_os_str()]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "band\ttrack\tVox 1 #\t\"Vox\" +G:VOCALS:1 +MG\n"
+    );
+    assert!(stderr.contains("1 tracks planned"), "{stderr}");
+    let converted = dir.path().join("converted.json");
+    let out = markers(&[
+        std::ffi::OsStr::new("frame"),
+        layout.as_os_str(),
+        converted.as_os_str(),
+    ]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+    assert!(stderr.contains("1 tracks come from markers"), "{stderr}");
+    let written: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&converted).unwrap()).unwrap();
+    assert_eq!(
+        written["pages"][0]["rows"][0]["sections"][0]["tags"],
+        "VOCALS"
+    );
+    // Never over a file, and a layout that cannot be read is exit 2.
+    let out = markers(&[
+        std::ffi::OsStr::new("frame"),
+        layout.as_os_str(),
+        converted.as_os_str(),
+    ]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("creating "));
+    let out = markers(&[
+        std::ffi::OsStr::new("plan"),
+        dir.path().join("none.json").as_os_str(),
+    ]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("reading layout "));
+    assert!(out.stdout.is_empty());
+}
+
+#[test]
+fn markers_plan_says_what_stops_the_migration() {
+    let dir = tempfile::tempdir().unwrap();
+    let layout = dir.path().join("layout.json");
+    std::fs::write(
+        &layout,
+        serde_json::to_vec(&serde_json::json!({
+            "schema": 2,
+            "default_page": "main",
+            "pages": [{"id": "main", "title": "M", "rows": [{"sections": [
+                {"kind": "group", "id": "g", "title": "G", "controls": [
+                    {"kind": "strip", "strip_kind": "standard", "wide": true,
+                     "binding": {"instance": "band", "anchor": {"kind": "track", "name": "Bass #"}}}]}]}]}]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let out = markers(&[std::ffi::OsStr::new("plan"), layout.as_os_str()]);
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "band\ttrack\tBass #\t\"Bass\" +G:G:1\n"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr
+            .contains(r#"problem: "Bass #" (band): its width, label, path or kind would be lost"#),
+        "{stderr}"
+    );
+}

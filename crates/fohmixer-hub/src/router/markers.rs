@@ -33,6 +33,7 @@
 
 use std::collections::BTreeMap;
 
+use fohmixer_proto::markers::migrate::{MigrationRow, Planned};
 use fohmixer_proto::markers::{Found, TUNER_CLASS, TrackKind, is_marker};
 use serde_json::{Value, json};
 
@@ -158,6 +159,15 @@ pub enum Action {
     Retry { instance: String },
     /// The markers found changed: every instance's, sorted.
     Found(Vec<Found>),
+    /// The migration (#68 PR C): `set_prop name` of the Tuner `target` (its
+    /// `$ref` as the last read saw it: a device inserted since moves no
+    /// rename onto another object; a deleted one answers stale) to `name`.
+    /// The new name comes back through the Tuner's own `name` watch.
+    Rename {
+        instance: String,
+        target: Value,
+        name: String,
+    },
 }
 
 /// The actions with only the last read of each instance. A newer read
@@ -216,6 +226,22 @@ struct Instance {
     tuners: BTreeMap<(TrackAt, u32), String>,
     pending: Option<Pending>,
     failures: u32,
+    /// The migration's fresh read of the lists did not answer: the names
+    /// may be old, so nothing of this instance is renamed (#68 PR C).
+    stale: bool,
+}
+
+/// The names of a list value's items (the script encodes a track as an
+/// object with its `name`); none for an item without one.
+fn item_names(list: Option<&Value>) -> Vec<Option<&str>> {
+    list.and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .map(|item| item.get("name").and_then(Value::as_str))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// The length of a list value (0: no list).
@@ -414,6 +440,21 @@ impl Keeper {
         latest_reads(actions)
     }
 
+    /// The instance connected (again): the script's object refs start over
+    /// with each connection, so a read gets the Tuners and their refs again,
+    /// and the failures' count starts over. Nothing while its list of
+    /// tracks is still unknown (that list's first value reads).
+    pub fn connected(&mut self, instance: &str) -> Vec<Action> {
+        let Some(state) = self.instances.get_mut(instance) else {
+            return Vec::new();
+        };
+        state.failures = 0;
+        if state.tracks.is_none() {
+            return Vec::new();
+        }
+        vec![self.read(instance)]
+    }
+
     /// A failed read's second chance (`Action::Retry`).
     pub fn retry(&mut self, instance: &str) -> Vec<Action> {
         if self.instances.contains_key(instance) {
@@ -479,6 +520,130 @@ impl Keeper {
         let mut actions = self.resubscribe(instance, done.counts);
         actions.extend(self.report());
         actions
+    }
+
+    /// Each planned track (#68 PR C) as the latest reads found it.
+    pub fn migration_rows(&self, planned: &[Planned]) -> Vec<MigrationRow> {
+        planned.iter().map(|p| self.locate(p).0).collect()
+    }
+
+    /// The renames of the migration: each planned track that is ready
+    /// (`MigrationRow::ready`) gets its one plain Tuner named its marker,
+    /// unless a read of its instance is running (a device inserted before
+    /// the Tuner may have moved it).
+    pub fn renames(&self, planned: &[Planned]) -> Vec<Action> {
+        planned
+            .iter()
+            .filter(|p| !self.reading(&p.instance))
+            .filter_map(|p| {
+                let (row, device) = self.locate(p);
+                Some(Action::Rename {
+                    target: device?,
+                    instance: row.instance,
+                    name: row.marker,
+                })
+            })
+            .collect()
+    }
+
+    /// Whether `instance`'s names are not settled: a read of it runs, or the
+    /// migration's fresh read of its lists did not answer.
+    pub fn reading(&self, instance: &str) -> bool {
+        self.instances
+            .get(instance)
+            .is_some_and(|state| state.pending.is_some() || state.stale)
+    }
+
+    /// The instance's lists read afresh (the migration's names: Live fires
+    /// no list listener on a track's rename): `slots` answer `get_prop
+    /// tracks` and `get_prop return_tracks`, none when the read failed. A
+    /// list that changed is kept and starts a read, as its listener's value
+    /// would; a list that did not answer leaves the instance `reading`.
+    pub fn refresh(&mut self, instance: &str, slots: Option<&[Value]>) -> Vec<Action> {
+        let Some(state) = self.instances.get_mut(instance) else {
+            return Vec::new();
+        };
+        let lists = slots.and_then(|slots| {
+            Some((
+                answered(slots.first())?.clone(),
+                answered(slots.get(1))?.clone(),
+            ))
+        });
+        let Some((tracks, returns)) = lists else {
+            state.stale = true;
+            return Vec::new();
+        };
+        state.stale = false;
+        let mut changed = false;
+        for (fresh, kept) in [(tracks, &mut state.tracks), (returns, &mut state.returns)] {
+            if kept.as_ref() != Some(&fresh) {
+                *kept = Some(fresh);
+                changed = true;
+            }
+        }
+        if changed {
+            vec![self.read(instance)]
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// A planned track's row, and its one plain Tuner's `$ref` (as the last
+    /// read saw it) when the row is ready.
+    fn locate(&self, planned: &Planned) -> (MigrationRow, Option<Value>) {
+        let state = self.instances.get(&planned.instance);
+        let list = state.and_then(|s| match planned.kind {
+            TrackKind::Track => s.tracks.as_ref(),
+            TrackKind::Return => s.returns.as_ref(),
+        });
+        let indexes: Vec<u32> = item_names(list)
+            .into_iter()
+            .enumerate()
+            .filter(|(_, name)| *name == Some(planned.track.as_str()))
+            .filter_map(|(i, _)| u32::try_from(i).ok())
+            .collect();
+        let index = match indexes.as_slice() {
+            [one] => Some(*one),
+            _ => None,
+        };
+        let tuners: Vec<(u32, &String)> = match (state, index) {
+            (Some(state), Some(index)) => state
+                .tuners
+                .iter()
+                .filter(|(((kind, at), _), _)| *kind == planned.kind && *at == index)
+                .map(|((_, device), name)| (*device, name))
+                .collect(),
+            _ => Vec::new(),
+        };
+        let plain: Vec<u32> = tuners
+            .iter()
+            .filter(|(_, name)| !is_marker(name))
+            .map(|(device, _)| *device)
+            .collect();
+        let markers = tuners.iter().filter(|(_, name)| is_marker(name)).count();
+        let count = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
+        let row = MigrationRow {
+            instance: planned.instance.clone(),
+            kind: planned.kind,
+            track: planned.track.clone(),
+            marker: planned.marker.clone(),
+            matches: count(indexes.len()),
+            index,
+            plain: count(plain.len()),
+            markers: count(markers),
+            done: tuners.iter().any(|(_, name)| **name == planned.marker),
+        };
+        let device = plain
+            .first()
+            .copied()
+            .filter(|_| row.ready())
+            .zip(index)
+            .and_then(|(device, index)| {
+                let devices = state?.devices.get(&(planned.kind, index))?;
+                let reference = devices.get(usize::try_from(device).ok()?)?.get("$ref")?;
+                Some(json!({ "$ref": reference }))
+            });
+        (row, device)
     }
 
     /// The markers found now (for the tests).
