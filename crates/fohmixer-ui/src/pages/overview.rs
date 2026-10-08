@@ -10,6 +10,7 @@
 
 use leptos::html;
 use leptos::prelude::*;
+use wasm_bindgen::JsCast;
 
 use crate::components::owns_touches;
 use crate::dom;
@@ -21,9 +22,26 @@ use crate::raf;
 /// layout.
 const REDRAW_MS: f64 = 500.0;
 
-/// The row a phone shows among `rows`.
-fn shown_row(rows: &web_sys::Element) -> Option<web_sys::HtmlElement> {
-    dom::child(rows, r#".row[data-shown="true"]"#)
+/// The phone layout's media query: equal to `phone.css`'s, so the frame
+/// loop reads nothing on a tablet.
+const PHONE: &str = "(max-height: 520px), (max-width: 700px)";
+
+/// How often the bar reads the shown row's scroll position while no finger
+/// drags it, in ms (a read is a layout read; a drag reads every frame).
+const READ_MS: f64 = 100.0;
+
+/// The row number `index` of `rows` (its rows are its children, in order).
+fn row_at(rows: &web_sys::Element, index: usize) -> Option<web_sys::HtmlElement> {
+    let mut row = rows.first_element_child();
+    for _ in 0..index {
+        row = row?.next_element_sibling();
+    }
+    row?.dyn_into().ok()
+}
+
+/// Whether `el` carries the class `name`.
+fn has_class(el: &web_sys::Element, name: &str) -> bool {
+    el.class_name().split_whitespace().any(|c| c == name)
 }
 
 /// The strips under `el`, in order.
@@ -45,7 +63,7 @@ fn strip_colour(strip: &web_sys::Element) -> String {
     let Some(mute) = dom::child(strip, ".mute") else {
         return "var(--faint)".to_string();
     };
-    if !mute.class_name().split_whitespace().any(|c| c == "lit") {
+    if !has_class(&mute, "lit") {
         return "#2a2a3c".to_string();
     }
     let colour = mute.style().get_property_value("--tc").unwrap_or_default();
@@ -99,21 +117,27 @@ fn draw_strips(target: &web_sys::HtmlElement, row: &web_sys::HtmlElement, width:
     }
 }
 
-/// The overview bar of the rows in `rows` (the page's `.rows`).
+/// The overview bar of the rows in `rows` (the page's `.rows`), for the row
+/// `shown` (a phone's screen; none while the rail shows) and the pager's
+/// sub-page `sub` (a switch redraws the miniature at once).
 #[component]
-pub fn OverviewView(rows: NodeRef<html::Div>) -> impl IntoView {
+pub fn OverviewView(
+    rows: NodeRef<html::Div>,
+    shown: Memo<Option<usize>>,
+    sub: Memo<Option<usize>>,
+) -> impl IntoView {
     let root = NodeRef::<html::Div>::new();
-    // The pointer that drags the bar.
+    // The pointer that drags the bar (one at a time: a second finger is
+    // ignored while the first is down).
     let held = StoredValue::new(None::<i32>);
+    let shown_row = move || {
+        let index = shown.try_get_untracked().flatten()?;
+        let rows_el = rows.try_get_untracked().flatten()?;
+        row_at(&rows_el, index)
+    };
     // Moves the shown row so its visible part centres where `ev` is.
     let jump = move |ev: &web_sys::PointerEvent| {
-        let Some(bar) = dom::current_element(ev) else {
-            return;
-        };
-        let Some(rows_el) = rows.try_get_untracked().flatten() else {
-            return;
-        };
-        let Some(row) = shown_row(&rows_el) else {
+        let (Some(bar), Some(row)) = (dom::current_element(ev), shown_row()) else {
             return;
         };
         let rect = bar.get_bounding_client_rect();
@@ -130,6 +154,9 @@ pub fn OverviewView(rows: NodeRef<html::Div>) -> impl IntoView {
     };
     let on_down = move |ev: web_sys::PointerEvent| {
         ev.prevent_default();
+        if held.get_value().is_some() {
+            return;
+        }
         if let Some(bar) = dom::current_element(&ev) {
             let _ = bar.set_pointer_capture(ev.pointer_id());
         }
@@ -149,18 +176,34 @@ pub fn OverviewView(rows: NodeRef<html::Div>) -> impl IntoView {
     raf::animate(root, move |el| {
         let window = dom::child(&el, ".overview-window");
         let strips = dom::child(&el, ".overview-strips");
+        let phone = web_sys::window().and_then(|w| w.match_media(PHONE).ok().flatten());
         let mut needed: Option<bool> = None;
         let mut drawn: Option<(f64, f64)> = None;
+        let mut drawn_for: Option<(usize, Option<usize>)> = None;
+        let mut next_read = f64::NEG_INFINITY;
         let mut next_redraw = f64::NEG_INFINITY;
         Box::new(move |now: f64, _step: f64| {
-            // The tablet has no bar (the stylesheet shows it on a phone only).
-            if el.client_width() == 0 {
+            // A tablet has no bar: nothing is read there.
+            if !phone.as_ref().is_some_and(web_sys::MediaQueryList::matches) {
                 return;
             }
-            let row = rows
+            let dragging = held.try_get_value().flatten().is_some();
+            if now < next_read && !dragging {
+                return;
+            }
+            next_read = now + READ_MS;
+            // Another row or sub-page: the miniature is drawn again at once.
+            let key = shown
                 .try_get_untracked()
                 .flatten()
-                .and_then(|rows_el| shown_row(&rows_el));
+                .map(|index| (index, sub.try_get_untracked().flatten()));
+            if drawn_for != key {
+                drawn_for = key;
+                next_redraw = f64::NEG_INFINITY;
+            }
+            // Only a row that scrolls (its own decision, `flow::overflows`)
+            // and has a scroll range needs the bar.
+            let row = shown_row().filter(|row| has_class(row, "scrolls"));
             let geometry = row.as_ref().and_then(|row| {
                 let width = f64::from(row.scroll_width());
                 overview_window(

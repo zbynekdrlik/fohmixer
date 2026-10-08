@@ -142,10 +142,48 @@ test.describe("On a phone upright", () => {
     await expect(overview).toBeVisible();
     const strips = wide.getByTestId("strip");
     await expect(overview.locator(".overview-strip")).toHaveCount(await strips.count());
+    // Each block at its strip's place and width (shares of the row's whole
+    // width), audible ones in the name button's colour, muted ones dark; the
+    // miniature is redrawn every 500 ms, so the colours may take a redraw.
+    type Block = { place: number; width: number; colour: boolean; lit: boolean };
+    const blocks = await until(
+      () =>
+        wide.evaluate((row): Block[] => {
+          const shown = row as HTMLElement;
+          const origin = shown.getBoundingClientRect().left - shown.scrollLeft;
+          const minis = [...document.querySelectorAll(".overview-strip")] as HTMLElement[];
+          return ([...shown.querySelectorAll('[data-testid="strip"]')] as HTMLElement[]).map((strip, i) => {
+            const box = strip.getBoundingClientRect();
+            const mini = minis[i];
+            const mute = strip.querySelector(".mute") as HTMLElement | null;
+            const lit = mute?.classList.contains("lit") ?? false;
+            const want = lit && mute ? getComputedStyle(mute).backgroundColor : "rgb(42, 42, 60)";
+            return {
+              place: Math.abs(parseFloat(mini?.style.left ?? "NaN") - ((box.left - origin) / shown.scrollWidth) * 100),
+              width: Math.abs(parseFloat(mini?.style.width ?? "NaN") - (box.width / shown.scrollWidth) * 100),
+              colour: !!mini && getComputedStyle(mini).backgroundColor === want,
+              lit,
+            };
+          });
+        }),
+      (all) => all.every((b) => b.place < 0.5 && b.width < 0.5 && b.colour),
+      "every block at its strip's place, in its colour",
+      5000,
+    );
+    expect(blocks.some((b) => b.lit), "an audible strip among them").toBe(true);
     expect(await wide.evaluate((el) => el.scrollLeft)).toBe(0);
     const bar = (await overview.boundingBox())!;
     await page.mouse.click(bar.x + bar.width - 2, bar.y + bar.height / 2);
     await until(() => wide.evaluate((el) => el.scrollLeft), (left) => Math.abs(left - range) <= 1, "the row at its right end");
+    // The outline: the row's visible share of the bar (inside its 1 px
+    // border), at its right end.
+    const share = await wide.evaluate((el) => el.clientWidth / el.scrollWidth);
+    const inner = { x: bar.x + 1, width: bar.width - 2 };
+    await until(
+      async () => (await overview.locator(".overview-window").boundingBox())!,
+      (o) => Math.abs(o.x + o.width - (inner.x + inner.width)) <= 2 && Math.abs(o.width - inner.width * share) <= 2,
+      "the outline at the right end, as wide as the row's visible share",
+    );
     const last = (await strips.last().boundingBox())!;
     expect(last.x + last.width, "the last strip on screen").toBeLessThanOrEqual(390);
     // A drag back to the left end moves the row along.
@@ -154,9 +192,11 @@ test.describe("On a phone upright", () => {
     await page.mouse.move(bar.x + 2, bar.y + bar.height / 2, { steps: 8 });
     await page.mouse.up();
     await until(() => wide.evaluate((el) => el.scrollLeft), (left) => left <= 1, "the row back at its left end");
-    await frames(page);
-    const outline = (await overview.locator(".overview-window").boundingBox())!;
-    expect(outline.x - bar.x, "the outline at the bar's left end").toBeLessThan(4);
+    await until(
+      async () => (await overview.locator(".overview-window").boundingBox())!,
+      (o) => Math.abs(o.x - inner.x) <= 2,
+      "the outline back at the bar's left end",
+    );
     expect(await topBarOverflow(page), "the top bar fits the screen").toBeLessThanOrEqual(0);
     // The screen bar's tabs own their touches, so a finger cannot scroll it:
     // it wraps, every tab inside it.

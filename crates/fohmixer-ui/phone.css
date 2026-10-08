@@ -11,6 +11,7 @@
     display: none;
 }
 
+/* The same query is pages/overview.rs's PHONE: keep them equal. */
 @media (max-height: 520px), (max-width: 700px) {
     .mixer {
         grid-template-rows: auto minmax(0, 1fr);
