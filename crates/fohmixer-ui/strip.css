@@ -5,14 +5,15 @@
 /* --- strips --- */
 
 /* Held in the hands (#63): what is read sits at the top (the name button,
-   Live's dB under it, then the pan), the fader zone runs down to the foot,
-   which a hand holding the tablet covers. The instance tag only in a group
-   whose strips differ. */
+   Live's dB under it), the fader zone runs down towards the foot, which a
+   hand holding the tablet covers, and the pan sits at the foot (the owner,
+   2026-10-08: a pan right under the mute was a touch on the mute; the pan
+   is rarely used). The instance tag only in a group whose strips differ. */
 .strip {
     position: relative;
     display: grid;
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: auto auto minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr) auto;
     gap: 3px;
     flex: none;
     width: var(--strip-w, 76px);
@@ -24,7 +25,7 @@
 }
 
 .strip:has(> .strip-tag) {
-    grid-template-rows: auto auto auto minmax(0, 1fr);
+    grid-template-rows: auto auto minmax(0, 1fr) auto;
 }
 
 .strip.wide {
@@ -167,9 +168,9 @@
     grid-template-rows: minmax(0, 1fr);
     gap: 3px;
     min-height: 0;
-    /* At the foot of the strip (#63), the cap's lower half at −∞ (11 px)
-       stays inside it: this padding, the strip's and its border. */
-    padding: 8px 0 7px;
+    /* The cap's lower half at −∞ (11 px) stays clear of the pan under the
+       zone (#63): this padding and the strip's 3 px gap. */
+    padding: 8px 0 8px;
 }
 
 .strip-fz .scale {

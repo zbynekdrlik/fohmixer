@@ -3,9 +3,10 @@
 //! colour while the track is audible and only 30 px high (the fader gets
 //! the height), with the status light and Live's dB readout on the line
 //! under it (a hand holding the tablet covers the bottom of the screen, so
-//! nothing to read sits there); then the pan bar, the instance tag when the
-//! group's strips differ, and the fader zone (the dB scale, the meter, the
-//! fader) down to the strip's foot.
+//! nothing to read sits there); then the instance tag when the group's
+//! strips differ, the fader zone (the dB scale, the meter, the fader), and
+//! the pan bar at the foot (the owner, 2026-10-08: a pan right under the
+//! mute was a touch on the mute; the pan is rarely used).
 
 use fohmixer_proto::layout::{Strip, StripKind};
 use leptos::prelude::*;
@@ -143,13 +144,13 @@ pub fn StripView(strip: Strip, settings: Settings, shared: Option<String>) -> im
                 </div>
                 {ret_mark}
             </div>
-            {pan_view}
             {tag}
             <div class="strip-fz" style=unity>
                 <ScaleView law=law />
                 <MeterView levels={meters.clone()} law=law />
                 {fader}
             </div>
+            {pan_view}
         </div>
     }
 }
