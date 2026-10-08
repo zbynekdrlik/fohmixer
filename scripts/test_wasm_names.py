@@ -74,6 +74,25 @@ class FunctionNames(unittest.TestCase):
         self.assertEqual(wasm_names.leb128(b"\x00\x7f", 1), (127, 2))
 
 
+class Strip(unittest.TestCase):
+    def test_the_name_section_goes_and_every_other_byte_stays(self):
+        named = module({0: "main", 2: "fohmixer_ui::app::App"})
+        stripped = wasm_names.strip_names(named)
+        self.assertEqual(wasm_names.function_names(stripped), {})
+        # The magic, the version, the type section and the producers.
+        self.assertEqual(
+            stripped,
+            wasm_names.MAGIC
+            + b"\x01\0\0\0"
+            + section(1, b"\x00")
+            + section(0, text("producers") + b"\x00"),
+        )
+        # A module without names stays as it is.
+        self.assertEqual(wasm_names.strip_names(stripped), stripped)
+        with self.assertRaises(wasm_names.NotAModule):
+            wasm_names.strip_names(b"not wasm")
+
+
 class Check(unittest.TestCase):
     def test_enough_names_with_the_crates_own(self):
         names = {i: f"fohmixer_ui::f{i}" for i in range(3)}
@@ -113,6 +132,27 @@ class Main(unittest.TestCase):
         code, out, _ = self.run_main(["lookup", path, "2", "1"])
         self.assertEqual(code, 0)
         self.assertEqual(out, "2 fohmixer_ui::app::App\n1 ?\n")
+
+    def test_strip_in_place_or_to_a_path_and_one_file_only(self):
+        named = module({0: "main", 2: "fohmixer_ui::app::App"})
+        path = self.write(named)
+        to = path + ".out"
+        self.addCleanup(lambda: os.path.exists(to) and os.unlink(to))
+        code, out, _ = self.run_main(["strip", path, "--to", to])
+        self.assertEqual(code, 0)
+        self.assertIn(f"{len(named)} bytes", out)
+        with open(to, "rb") as f:
+            self.assertEqual(wasm_names.function_names(f.read()), {})
+        with open(path, "rb") as f:
+            self.assertEqual(f.read(), named, "the source stays without --to")
+        pattern = os.path.join(os.path.dirname(path), "*" + os.path.basename(path)[-12:])
+        code, _, _ = self.run_main(["strip", pattern])
+        self.assertEqual(code, 0)
+        with open(path, "rb") as f:
+            self.assertEqual(wasm_names.function_names(f.read()), {})
+        code, _, err = self.run_main(["strip", path + ".none*"])
+        self.assertEqual(code, 2)
+        self.assertIn("matches 0 files, want one", err)
 
     def test_no_module_exits_2(self):
         path = self.write(b"not wasm")

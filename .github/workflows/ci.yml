@@ -179,6 +179,12 @@ jobs:
       - name: Rust toolchain (rust-toolchain.toml)
         run: rustup toolchain install
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Python 3.11
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+      - name: The function-name strip on Windows (#43; the bundle job runs it after the merge)
+        run: python -m unittest scripts/test_wasm_names.py -v
       - name: Placeholder UI dist (rust-embed needs the folder)
         shell: bash
         run: mkdir -p crates/fohmixer-ui/dist && echo placeholder > crates/fohmixer-ui/dist/index.html
@@ -217,6 +223,14 @@ jobs:
         with:
           name: wasm-dist
           path: crates/fohmixer-ui/dist
+      # The function names are for CI's traces (#43): the shipped module leaves
+      # them out, its code and function indexes unchanged (scripts/wasm_names.py).
+      - name: Python 3.11
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+      - name: Leave the function names out of the shipped UI
+        run: python scripts/wasm_names.py strip 'crates/fohmixer-ui/dist/*_bg.wasm'
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Build the hub (release, the real UI embedded) and the tray (release)
         run: cargo build --locked --release -p fohmixer-hub -p fohmixer-tray
@@ -326,6 +340,16 @@ jobs:
           # The module names its functions (#43; a stripped build names only
           # wasm-bindgen's adapters, a dozen).
           python3 scripts/wasm_names.py check crates/fohmixer-ui/dist/*_bg.wasm --min 1000 --name 'fohmixer_ui'
+          # The bundle job ships the module without them (half the bytes): the
+          # strip leaves a valid module with the same exports.
+          python3 scripts/wasm_names.py strip 'crates/fohmixer-ui/dist/*_bg.wasm' --to "$RUNNER_TEMP/stripped.wasm"
+          node -e "const fs = require('fs');
+            const named = new WebAssembly.Module(fs.readFileSync(process.argv[1]));
+            const bytes = fs.readFileSync(process.argv[2]);
+            if (!WebAssembly.validate(bytes)) throw new Error('the stripped module is invalid');
+            const exports = (m) => WebAssembly.Module.exports(m).map((e) => e.name).join();
+            if (exports(named) !== exports(new WebAssembly.Module(bytes))) throw new Error('the strip changed the exports');" \
+            crates/fohmixer-ui/dist/*_bg.wasm "$RUNNER_TEMP/stripped.wasm"
       # Kept a week: an e2e trace's wasm frames are named from it (#43).
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
