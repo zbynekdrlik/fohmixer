@@ -82,7 +82,8 @@ def check(names: dict[int, str], minimum: int, needle: str) -> str | None:
     if len(names) < minimum:
         return f"{len(names)} function names, want at least {minimum}"
     if not any(needle in name for name in names.values()):
-        return f"no function name holds {needle!r}"
+        sample = [names[i] for i in sorted(names)[:: max(1, len(names) // 5)][:5]]
+        return f"no function name holds {needle!r} (some: {sample})"
     return None
 
 

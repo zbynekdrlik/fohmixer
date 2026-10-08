@@ -84,7 +84,7 @@ class Check(unittest.TestCase):
         )
         self.assertEqual(
             wasm_names.check({0: "core::fmt"}, 1, "fohmixer_ui::"),
-            "no function name holds 'fohmixer_ui::'",
+            "no function name holds 'fohmixer_ui::' (some: ['core::fmt'])",
         )
 
 
