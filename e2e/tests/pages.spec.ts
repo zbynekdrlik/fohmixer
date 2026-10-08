@@ -4,8 +4,8 @@ import { test, expect } from "./support/fixtures";
 import { clipped, harness, hubSubscriptions, openSurface, selectPage, strip, until } from "./support/live";
 
 // Pages, the pager, the rail, the rows of sections (the redesign, #21; spec
-// §4.2): the imported synthetic layout (schema 2), only the controls on
-// screen subscribed.
+// §4.2) on both sides of the control column (#63): the imported synthetic
+// layout (schema 2), only the controls on screen subscribed.
 
 const LAYOUT = join(__dirname, "..", "..", "tools", "import-tosc", "fixtures", "expected-layout.json");
 const layout = () => JSON.parse(readFileSync(LAYOUT, "utf-8"));
@@ -96,7 +96,7 @@ test.describe("Pages and tabs", () => {
   });
 });
 
-test.describe("The page is a rail and rows of sections", () => {
+test.describe("The page is its rows of sections around the control column", () => {
   test("the rail holds the page's function controls in the layout's order", async ({ page }) => {
     await openSurface(page);
     const kinds = await page
@@ -147,18 +147,41 @@ test.describe("The page is a rail and rows of sections", () => {
     const fixture = layout();
     const foh = fixture.pages[1];
     await openSurface(page);
-    const rows = page.getByTestId("row");
-    await expect(rows).toHaveCount(foh.rows.length);
+    // Each row is a line of its own (a tablet's and a desktop's height), cut
+    // in two by the column: its left side, then its right one.
+    await expect(page.getByTestId("line")).toHaveCount(foh.rows.length);
     // Row by row: the groups (the pager's selected sub-page in its place).
     const expected: string[][] = foh.rows.map((row: any) =>
       row.sections.flatMap((s: any) => (s.kind === "pager" ? s.pages[0].sections.map((g: any) => g.id) : [s.id])),
     );
     for (let r = 0; r < expected.length; r++) {
-      const ids = await rows
-        .nth(r)
-        .locator('[data-testid="group"]')
+      const ids = await page
+        .locator(`[data-testid="line"][data-line="${r}"] [data-testid="group"]`)
         .evaluateAll((els) => els.map((e) => e.getAttribute("data-group")));
       expect(ids, `row ${r}`).toEqual(expected[r]);
+    }
+    // The column sits between the sides: every left cell before it, every
+    // right cell after it, on every line.
+    const column = (await page.getByTestId("column").boundingBox())!;
+    const sides = await page.locator('[data-testid="line"] .slot').evaluateAll((slots) =>
+      slots.map((s) => {
+        const r = s.getBoundingClientRect();
+        return { side: s.getAttribute("data-side"), left: r.left, right: r.right };
+      }),
+    );
+    expect(sides.filter((s) => s.side === "left").length).toBeGreaterThan(0);
+    expect(sides.filter((s) => s.side === "right").length).toBeGreaterThan(0);
+    for (const s of sides) {
+      if (s.side === "left") expect(s.right, "a left cell ends before the column").toBeLessThanOrEqual(column.x + 0.5);
+      else expect(s.left, "a right cell starts after the column").toBeGreaterThanOrEqual(column.x + column.width - 0.5);
+    }
+    // Each line's right side starts right after the column (the page's 6 px
+    // gap), however much of its left half the left side fills.
+    for (let r = 0; r < expected.length; r++) {
+      const first = await page
+        .locator(`[data-testid="line"][data-line="${r}"] .slot[data-side="right"]`)
+        .evaluateAll((slots) => Math.min(...slots.map((s) => s.getBoundingClientRect().left)));
+      expect(Math.abs(first - (column.x + column.width + 6)), `row ${r}: its right side at the column`).toBeLessThan(1);
     }
     expect(await groups(page)).toEqual(expected.flat());
     // Titles and colour markers.
@@ -167,13 +190,21 @@ test.describe("The page is a rail and rows of sections", () => {
         if (section.kind !== "group") continue;
         const group = page.locator(`[data-testid="group"][data-group="${section.id}"]`);
         await expect(group.getByTestId("group-title")).toHaveText(section.title ?? "");
-        if (section.color) await expect(group.locator(".group-mark")).toHaveCSS("background-color", rgb(section.color));
+        if (section.color) {
+          await expect(group.locator(".group-mark")).toHaveCSS("background-color", rgb(section.color));
+          // Each strip of the group wears its colour on its top edge.
+          const edges = await page
+            .locator(`.slot[data-group="${section.id}"] [data-testid="strip"]`)
+            .evaluateAll((els) => els.map((e) => getComputedStyle(e, "::before").borderTopColor));
+          expect(edges.length, `strips of ${section.id}`).toBeGreaterThan(0);
+          for (const edge of edges) expect(edge, `${section.id}'s strip edge`).toBe(rgb(section.color));
+        }
       }
     }
     // The strips of a group in its order.
     const effects = foh.rows.flatMap((r: any) => r.sections).find((s: any) => s.title === "EFFECTS");
     const names = await page
-      .locator(`[data-testid="group"][data-group="${effects.id}"] [data-testid="strip"]`)
+      .locator(`.slot[data-group="${effects.id}"] [data-testid="strip"]`)
       .evaluateAll((els) => els.map((e) => `${e.getAttribute("data-instance")}:${e.getAttribute("data-track")}`));
     expect(names).toEqual(effects.controls.map((c: any) => `${c.binding.instance}:${c.binding.anchor.name}`));
     await expect(strip(page, "B-Main repro #")).toHaveAttribute("data-kind", "return");
@@ -190,7 +221,7 @@ test.describe("The page is a rail and rows of sections", () => {
     expect(widths[0]).toBeLessThanOrEqual(120.5);
     const wide = await strip(page, "B-Main repro #").evaluate((e) => e.getBoundingClientRect().width);
     expect(Math.abs(wide - widths[0] * 1.1)).toBeLessThan(0.6);
-    // The page never scrolls; this layout fits without a row scrolling.
+    // The page never scrolls; this layout fits: no line needs arrows.
     const size = await page.evaluate(() => ({
       w: document.documentElement.scrollWidth,
       h: document.documentElement.scrollHeight,
@@ -199,7 +230,7 @@ test.describe("The page is a rail and rows of sections", () => {
     }));
     expect(size.w).toBeLessThanOrEqual(size.vw);
     expect(size.h).toBeLessThanOrEqual(size.vh);
-    await expect(page.locator('[data-testid="row"].scrolls')).toHaveCount(0);
+    await expect(page.getByTestId("shift")).toHaveCount(0);
     for (const s of await page.locator('[data-testid="strip"]').all()) {
       const box = (await s.boundingBox())!;
       expect(box.x + box.width).toBeLessThanOrEqual(size.vw + 0.5);
@@ -232,12 +263,11 @@ test.describe("Nothing moves under a finger", () => {
       await harness("/hub/layout", { layout: changed });
       const group = page.locator(`[data-testid="group"][data-group="${section.id}"]`);
       await expect(group.getByTestId("group-title")).toHaveText(section.title, { timeout: 10_000 });
-      const body = (await group.locator(".group-body").boundingBox())!;
-      const one = (await group.locator(".group-body > *").first().boundingBox())!;
-      // The body is its one column and its padding and border (10 px), nothing more.
-      expect(Math.abs(body.width - (one.width + 10))).toBeLessThan(1);
-      const box = (await group.boundingBox())!;
-      expect(Math.abs(box.width - body.width)).toBeLessThan(1);
+      // The title spans its one cell, nothing more (#63: a line over the run).
+      const title = (await group.locator(".group-title").boundingBox())!;
+      const one = (await page.locator(`.slot[data-group="${section.id}"]`).first().boundingBox())!;
+      expect(Math.abs(title.width - one.width)).toBeLessThan(1);
+      expect(Math.abs(title.x - one.x)).toBeLessThan(1);
     } finally {
       await harness("/hub/layout/reset");
     }

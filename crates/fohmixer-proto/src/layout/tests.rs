@@ -88,6 +88,11 @@ fn the_sample_parses_validates_and_round_trips() {
     assert_eq!(serde_json::to_value(&layout).unwrap(), sample());
 }
 
+/// The FOH page's EFFECTS group (its lower row's first section).
+fn layout_sample_group(layout: &Layout) -> Section {
+    layout.pages[1].rows[1].sections[0].clone()
+}
+
 #[test]
 fn defaults_are_filled_and_omitted() {
     let layout = parse(json!({
@@ -109,6 +114,7 @@ fn defaults_are_filled_and_omitted() {
     };
     assert!(!strip.wide);
     assert!(!strip.mute_guard);
+    assert!(!strip.pinned);
     assert_eq!(layout.global, vec![]);
     assert_eq!(layout.config, LayoutConfig::default());
     let back = serde_json::to_value(&layout).unwrap();
@@ -120,8 +126,29 @@ fn defaults_are_filled_and_omitted() {
     );
     let strip = &back["pages"][0]["rows"][0]["sections"][0]["controls"][0];
     assert!(
-        strip.get("wide").is_none() && strip.get("mute_guard").is_none(),
+        strip.get("wide").is_none()
+            && strip.get("mute_guard").is_none()
+            && strip.get("pinned").is_none(),
         "{strip}"
+    );
+    // A pinned strip (#63) is read and written.
+    let mut v = sample();
+    v["pages"][1]["rows"][0]["sections"][1]["controls"][0]["pinned"] = json!(true);
+    let pinned = parse(v);
+    let Section::Group(group) = &pinned.pages[1].rows[0].sections[1] else {
+        panic!("a group")
+    };
+    assert!(matches!(&group.controls[0], Control::Strip(s) if s.pinned));
+    assert!(group.controls[0].pinned());
+    let Section::Group(unpinned) = &layout_sample_group(&pinned) else {
+        panic!("a group")
+    };
+    assert!(!unpinned.controls[0].pinned(), "a strip not marked");
+    assert!(!pinned.global[0].pinned(), "no other control is pinned");
+    assert_eq!(
+        serde_json::to_value(&pinned).unwrap()["pages"][1]["rows"][0]["sections"][1]["controls"][0]
+            ["pinned"],
+        json!(true)
     );
     let stage = &back["pages"][0]["rows"][0]["sections"][0]["controls"][1];
     assert!(

@@ -89,18 +89,18 @@ pub fn AlertView(
             }
         }
     };
-    let active = move || slot.with(Slot::flag) == Some(false);
+    let active = move || slot.try_with(Slot::flag).flatten() == Some(false);
     let state = Memo::new(move |_| readiness(&[slot]));
-    let bound = move || state.get().name();
-    let disabled = move || state.get().disabled();
+    let bound = move || state.try_get().map_or("waiting", |s| s.name());
+    let disabled = move || state.try_get().map_or("true", |s| s.disabled());
     let text = label.unwrap_or_else(|| "TechAlert".to_string());
     view! {
         <div
             class="btn alert-toggle"
             use:owns_touches=touch_keys
             class:on=active
-            class:armed=move || armed.get()
-            class:failed=move || failed.get()
+            class:armed=move || armed.try_get().unwrap_or(false)
+            class:failed=move || failed.try_get().unwrap_or(false)
             data-testid="alert-toggle"
             data-on=move || active().to_string()
             data-binding=bound

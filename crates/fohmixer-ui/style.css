@@ -1,18 +1,20 @@
 /* fohmixer UI (the redesign, #21; spec docs/superpowers/specs/2026-09-28-
    ui-redesign-design.md §4): a dark FOH surface in the iemmixer design
-   language. The stylesheet lays the page out (rows by weight, sections left
-   to right); the strip width all rows share is `--strip-w` (computed by
-   `flow.rs`: keep its METRICS equal to the gaps and paddings here). Moving
-   parts are drawn from CSS variables the animation loop writes (`--p` on a
-   fader and a pan, a meter cover's transform).
+   language. A page is its two sides and the control column between them
+   (#63); `arrange.rs` decides where each control goes and the strip width
+   every line shares (`--strip-w` on `.body`: keep its METRICS equal to the
+   gaps in page.css, and surface.rs's BODY_PAD and BODY_GAP to `.body`'s
+   padding and gap). Moving parts are drawn from CSS variables the animation loop
+   writes (`--p` on a fader and a pan, a meter cover's transform).
 
    The stylesheets, linked in this order by index.html (the cascade is the
    one file's they were split from, #43): style.css (fonts, tokens, login,
-   surface, top bar, page, Conf page), buttons.css (rail buttons, TechAlert),
-   strip.css (strips, pan, meter, fader, name button, parameter fader),
-   states.css (disabled, failed, unresolved, reduced motion) and intent.css
-   (the look of a write Live has not confirmed), then deck.css (the Stream
-   Deck tab, #52) and phone.css (one screen at a time on a phone, #63). */
+   surface, the tabs, the status), page.css (the page: its sides and the
+   control column, #63), buttons.css (rail buttons,
+   TechAlert), strip.css (strips, pan, meter, fader, name button, parameter
+   fader), states.css (disabled, failed, unresolved, reduced motion) and
+   intent.css (the look of a write Live has not confirmed), then deck.css
+   (the Stream Deck tab, #52). */
 
 @font-face {
     font-family: "Barlow Condensed";
@@ -274,23 +276,13 @@ body {
     position: absolute;
     inset: 0;
     display: grid;
-    grid-template-rows: 46px minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
     grid-template-columns: minmax(0, 1fr);
     background: var(--page);
     touch-action: none;
 }
 
-/* --- the top bar --- */
-
-.topbar {
-    display: flex;
-    align-items: center;
-    gap: 14px;
-    min-width: 0;
-    padding: 0 12px;
-    background: var(--bar);
-    border-bottom: 1px solid var(--line-soft);
-}
+/* --- the tabs (in the column's head) --- */
 
 .seg {
     display: flex;
@@ -324,10 +316,6 @@ body {
 
 .seg[data-level="1"] .tab.selected {
     box-shadow: inset 0 -2px 0 var(--solo);
-}
-
-.spacer {
-    flex: 1;
 }
 
 .solo-clear {
@@ -418,192 +406,7 @@ body {
     font-variant-numeric: tabular-nums;
 }
 
-/* --- the page: the rail and the rows --- */
-
-.body {
-    display: grid;
-    grid-template-columns: 112px minmax(0, 1fr);
-    min-height: 0;
-}
-
-.rail {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    min-height: 0;
-    padding: 10px 8px;
-    background: var(--bar);
-    border-right: 1px solid var(--line-soft);
-}
-
-/* The page's controls scroll if they must; TechAlert, at its foot, never
-   leaves the screen. */
-.rail-main {
-    display: flex;
-    flex: 1;
-    flex-direction: column;
-    gap: 6px;
-    min-height: 0;
-    overflow-y: auto;
-}
-
-.rail-foot {
-    display: flex;
-    flex: none;
-    flex-direction: column;
-    gap: 6px;
-}
-
-/* Rows: flow.rs METRICS.section_gap = the row gap; ROWS_PAD = both
-   paddings (left and right; the height goes to the faders, #63). */
-.rows {
-    position: relative;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    min-width: 0;
-    min-height: 0;
-    padding: 4px 10px 6px;
-    overflow: hidden;
-}
-
-.row {
-    display: flex;
-    gap: 10px;
-    min-width: 0;
-    min-height: 0;
-}
-
-.row.scrolls {
-    overflow-x: auto;
-    touch-action: pan-x;
-}
-
-/* A pager is as wide as its widest sub-page (flow.rs pager_shape, inline),
-   so switching it never moves the row's other groups. */
-.pager {
-    display: flex;
-    flex: none;
-    min-height: 0;
-}
-
-.pager-page {
-    display: flex;
-    gap: 10px;
-    min-height: 0;
-}
-
-/* The title sits on the group's top border (#63: no line of its own, the
-   height goes to the faders). */
-.group {
-    position: relative;
-    display: grid;
-    grid-template-rows: minmax(0, 1fr);
-    flex: none;
-    min-width: 0;
-    min-height: 0;
-    padding-top: 7px;
-}
-
-/* A title never makes its group wider than its strips (flow.rs counts the
-   strips only): it is laid over the border, so its width does not count
-   toward the group's size. */
-.group-title {
-    position: absolute;
-    top: 0;
-    left: 12px;
-    z-index: 1;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    min-width: 0;
-    max-width: calc(100% - 24px);
-    height: 14px;
-    margin: 0;
-    padding: 0 6px;
-    overflow: hidden;
-    background: var(--page);
-    color: var(--muted);
-    font: 600 10px/14px var(--ui);
-    letter-spacing: 1.4px;
-    text-transform: uppercase;
-    white-space: nowrap;
-}
-
-.group-title > [data-testid="group-title"] {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-/* The Live instance every strip of the group shares (#63). */
-.group-instance {
-    flex: none;
-    padding: 0 4px;
-    border-radius: 4px;
-    color: var(--band);
-    background: rgba(78, 205, 196, 0.14);
-    font: 700 9px/13px var(--ui);
-    letter-spacing: 0.5px;
-}
-
-.group-instance[data-instance="master"] {
-    color: var(--master);
-    background: rgba(139, 125, 255, 0.16);
-}
-
-.group-mark {
-    flex: none;
-    width: 8px;
-    height: 8px;
-    border-radius: 2px;
-    background: var(--gc, var(--accent));
-}
-
-/* flow.rs METRICS: section_pad = padding + border (both sides), strip_gap. */
-.group-body {
-    display: flex;
-    gap: 4px;
-    min-height: 0;
-    padding: 9px 4px 4px;
-    border: 1px solid var(--line-soft);
-    border-radius: 12px;
-    background: var(--section);
-}
-
-/* A group of buttons (the cue page): a grid filling the rest of the row
-   (METRICS.free_min + the padding). */
-.group.buttons {
-    flex: 1 1 0;
-    min-width: 190px;
-}
-
-.group.buttons .group-body {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-    grid-auto-rows: 72px;
-    align-content: start;
-    gap: 6px;
-    padding: 8px;
-}
-
-.group.buttons .btn {
-    font-size: 15px;
-    text-align: center;
-    padding-left: 8px;
-}
-
-/* A group of texts (the Conf page): one line each, as wide as the row. */
-.group.texts {
-    flex: 1 1 0;
-}
-
-.group.texts .group-body {
-    display: block;
-    overflow-y: auto;
-}
-
-/* --- the Conf page --- */
+/* --- a text --- */
 
 .text {
     padding: 8px;

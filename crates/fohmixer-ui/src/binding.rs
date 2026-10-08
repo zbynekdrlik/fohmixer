@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 
 use fohmixer_proto::client::hub_key;
 use fohmixer_proto::layout::{
-    Binding, Control, Group, Layout, MeterSource, Page, ParamTarget, Row, Section, Strip,
+    Binding, Control, Layout, MeterSource, Page, ParamTarget, Section, Strip,
 };
 
 /// One subscription: an instance, a LOM target, a property and whether
@@ -146,32 +146,26 @@ pub fn control_subs(control: &Control, source: MeterSource) -> Vec<SubSpec> {
     }
 }
 
-/// The groups of a row on screen: its groups, and in a pager's place the
-/// groups of its sub-page `sub` (index; a missing one shows nothing).
-pub fn shown_groups(row: &Row, sub: Option<usize>) -> Vec<&Group> {
-    row.sections
-        .iter()
-        .flat_map(|section| match section {
-            Section::Group(group) => vec![group],
-            Section::Pager(pager) => sub
-                .and_then(|i| pager.pages.get(i))
-                .map(|page| page.sections.iter().flat_map(Section::groups).collect())
-                .unwrap_or_default(),
-        })
-        .collect()
-}
-
 /// The controls on screen for a selection `path` (from [`selected_path`]:
 /// the page, then its pager's sub-page): the page's rail, its rows with the
-/// selected sub-page, then the global controls.
+/// selected sub-page and the pinned controls of the pager's other sub-pages
+/// (#63: they never leave the screen), then the global controls.
 pub fn visible_controls<'a>(layout: &'a Layout, path: &[usize]) -> Vec<&'a Control> {
     let mut out: Vec<&Control> = Vec::new();
     if let Some(page) = path.first().and_then(|i| layout.pages.get(*i)) {
         out.extend(page.rail.iter());
         let sub = path.get(1).copied();
-        for row in &page.rows {
-            for group in shown_groups(row, sub) {
-                out.extend(group.controls.iter());
+        for section in page.rows.iter().flat_map(|row| &row.sections) {
+            match section {
+                Section::Group(group) => out.extend(group.controls.iter()),
+                Section::Pager(pager) => {
+                    for (index, shown) in pager.pages.iter().enumerate() {
+                        let all = Some(index) == sub;
+                        for group in shown.sections.iter().flat_map(Section::groups) {
+                            out.extend(group.controls.iter().filter(|c| all || c.pinned()));
+                        }
+                    }
+                }
             }
         }
     }

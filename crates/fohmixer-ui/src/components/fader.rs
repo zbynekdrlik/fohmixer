@@ -108,7 +108,7 @@ impl Law {
     fn ready(self) -> bool {
         match self {
             Self::Volume(_) => true,
-            Self::Linear(range) => range.with(Option::is_some),
+            Self::Linear(range) => range.try_with(Option::is_some).unwrap_or(false),
         }
     }
 
@@ -373,12 +373,12 @@ pub fn FaderView(targets: Vec<Target>, shaping: bool) -> impl IntoView {
         })
     });
 
-    let binding = move || state.get().name();
-    let disabled = move || state.get().disabled();
+    let binding = move || state.try_get().map_or("waiting", |s| s.name());
+    let disabled = move || state.try_get().map_or("true", |s| s.disabled());
     view! {
         <div
             class="fader"
-            class:failed=move || failed.get()
+            class:failed=move || failed.try_get().unwrap_or(false)
             data-testid="fader"
             data-binding=binding
             aria-disabled=disabled

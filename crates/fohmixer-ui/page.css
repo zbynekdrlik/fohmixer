@@ -1,0 +1,375 @@
+/* fohmixer: a page, its two sides and the control column between them
+   (#63; split from style.css, linked after it). `arrange.rs` places the
+   controls: keep its METRICS (the gap between cells, the block's width)
+   and surface.rs's BODY_PAD and BODY_GAP equal to the rules here. */
+
+/* --- the page: two sides and the control column (#63) --- */
+
+/* The column's width: 132 px; on a low screen (a phone on its side) wider,
+   so its buttons go two by two; on a narrow one (a phone upright)
+   narrower. `--tw` is a rail button's text width (the column's inner width
+   less a button's border and padding), `--rail-cols` the rail's columns. */
+.body {
+    --col: 132px;
+    --tw: 98px;
+    --rail-cols: 1;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) var(--col) minmax(0, 1fr);
+    gap: 6px;
+    min-height: 0;
+    padding: 6px;
+}
+
+@media (max-height: 520px) {
+    .body {
+        --col: 148px;
+        --tw: 45px;
+        --rail-cols: 2;
+    }
+}
+
+@media (max-width: 520px) {
+    .body {
+        --col: 96px;
+        --tw: 62px;
+        --rail-cols: 1;
+    }
+}
+
+/* The column's head (the status, the tabs, SOLO ✕) is no box of its own:
+   its parts are the column's (surface.rs ColumnHead). */
+.column-head {
+    display: contents;
+}
+
+/* The control column, bottom to top of the screen: what the thumbs of two
+   hands holding the tablet do not reach. The page's top layer (z-index 10,
+   above a strip's own layers, the clip light's 2 the highest): a line's
+   strips that overflow a side (pins that do not fit) pass under it and
+   never take its touches; TechAlert's wash, inside it, stays on top. */
+.column {
+    position: relative;
+    z-index: 10;
+    grid-column: 2;
+    grid-row: 1 / -1;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-width: 0;
+    min-height: 0;
+    padding: 8px 6px;
+    overflow: hidden;
+    background: var(--bar);
+    border: 1px solid var(--line-soft);
+    border-radius: 12px;
+}
+
+.column .status-cluster {
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 4px 8px;
+}
+
+.column .seg {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(52px, 1fr));
+}
+
+.column .tab {
+    padding: 7px 3px;
+    font-size: 11px;
+    letter-spacing: 0.4px;
+    text-align: center;
+    white-space: normal;
+}
+
+.column .solo-clear.on {
+    display: flex;
+    justify-content: center;
+}
+
+/* A line's arrows: ◀, where its window stands, ▶. */
+.shifts {
+    display: flex;
+    flex: none;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.shift {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+    align-items: center;
+    gap: 4px;
+}
+
+/* `.btn.shift-btn`: above `.column .btn` (its padding and minimum height). */
+.column .btn.shift-btn {
+    min-height: 36px;
+    padding: 0;
+    justify-content: center;
+    color: var(--text);
+    font-size: 16px;
+    text-align: center;
+}
+
+.column .btn.shift-btn::before {
+    display: none;
+}
+
+.column .btn.shift-btn.end {
+    opacity: 0.35;
+}
+
+.shift-where {
+    color: var(--muted);
+    font: 600 10px/1.2 var(--mono);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+/* The rail: the page's function controls, shrinking to the column's room;
+   TechAlert, at its foot, never leaves the screen. */
+.rail {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    gap: 6px;
+    min-height: 0;
+}
+
+.rail-main {
+    display: grid;
+    flex: 1;
+    grid-template-columns: repeat(var(--rail-cols), minmax(0, 1fr));
+    grid-auto-rows: minmax(24px, 44px);
+    align-content: start;
+    gap: 4px;
+    min-height: 0;
+    overflow-y: auto;
+}
+
+.rail-foot {
+    display: flex;
+    flex: none;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.column .btn {
+    min-height: 0;
+    padding: 4px 4px 4px 14px;
+}
+
+.column .btn::before {
+    left: 5px;
+}
+
+.rail-foot .btn {
+    min-height: 36px;
+}
+
+/* A line (#63): one row of its items (surface.rs LineView), the left
+   side's, then `.split` (the rest of the left half and the column), then
+   the right side's; one
+   gap (arrange.rs METRICS.gap) between any two cells, a group's or not. It
+   spans the page's three columns: the column, the page's top layer, lies
+   over the split and takes its touches. The titles take the line's top
+   16 px.
+   Nothing is clipped: the strip width fits the halves (a held strip's
+   ring stays whole). */
+.line {
+    display: flex;
+    grid-column: 1 / -1;
+    gap: 4px;
+    min-width: 0;
+    min-height: 0;
+    padding-top: 16px;
+}
+
+.line > [data-side="left"] {
+    order: 0;
+}
+
+/* The split takes what the left side leaves of its half (the line's width
+   less the column and its gaps, halved, less the left side's span of
+   `--l-units` strips and `--l-cells` cells) and the column: the right side
+   starts right after the column, as in the owner's mockup. Never narrower
+   than the column (pins that overflow a side). */
+.line > .split {
+    flex: none;
+    order: 1;
+    width: max(
+        calc(var(--col) + 4px),
+        calc(
+            (100% - var(--col) - 12px) / 2
+            - (var(--strip-w, 76px) * var(--l-units, 0) + (var(--l-cells, 0) - 1) * 4px)
+            + var(--col) + 4px
+        )
+    );
+}
+
+.line > [data-side="right"] {
+    order: 2;
+}
+
+/* A cell's place: the strip (or button, block, blank) fills its height. */
+.slot {
+    display: grid;
+    flex: none;
+    min-width: 0;
+    min-height: 0;
+}
+
+/* A group's title before its run: no width of its own (its negative
+   margin takes back the gap after it), its line laid over the run's top,
+   `--n` cells and `--units` strips wide. */
+.run-title {
+    position: relative;
+    flex: none;
+    width: 0;
+    margin-right: -4px;
+}
+
+.group-title {
+    position: absolute;
+    top: -16px;
+    left: 0;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    width: calc(var(--strip-w, 76px) * var(--units, 1) + (var(--n, 1) - 1) * 4px);
+    height: 14px;
+    margin: 0;
+    padding: 0 4px;
+    overflow: hidden;
+    border-top: 2px solid var(--gc, var(--line));
+    color: var(--muted);
+    font: 600 9.5px/12px var(--ui);
+    letter-spacing: 1.2px;
+    text-transform: uppercase;
+    white-space: nowrap;
+}
+
+.group-title > [data-testid="group-title"] {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* The Live instance every strip of the group shares (#63). */
+.group-instance {
+    flex: none;
+    padding: 0 4px;
+    border-radius: 4px;
+    color: var(--band);
+    background: rgba(78, 205, 196, 0.14);
+    font: 700 9px/12px var(--ui);
+    letter-spacing: 0.5px;
+}
+
+.group-instance[data-instance="master"] {
+    color: var(--master);
+    background: rgba(139, 125, 255, 0.16);
+}
+
+.group-mark {
+    flex: none;
+    width: 7px;
+    height: 7px;
+    border-radius: 2px;
+    background: var(--gc, var(--accent));
+}
+
+/* A button in a group of strips: one strip wide. */
+.cell {
+    display: grid;
+    align-content: start;
+    width: var(--strip-w, 76px);
+}
+
+/* A group of buttons (the cue page) as one block, `--units` strips wide
+   (arrange.rs: METRICS.block, one in a pager's region); its buttons share
+   its height, up to 72 px each. A group of texts: one line each. */
+.block {
+    display: grid;
+    grid-auto-rows: minmax(0, 72px);
+    align-content: start;
+    gap: 6px;
+    width: calc(var(--strip-w, 76px) * var(--units, 2.4));
+    min-height: 0;
+    padding: 6px;
+    overflow: hidden;
+    border: 1px solid var(--line-soft);
+    border-radius: 12px;
+    background: var(--section);
+}
+
+.block .btn {
+    min-height: 0;
+    padding-left: 20px;
+    font-size: 14px;
+    text-align: center;
+}
+
+.block.texts {
+    display: block;
+    overflow-y: auto;
+}
+
+/* A low screen (a phone on its side): the column's parts closer together,
+   so the rail's two columns of buttons fit its height. */
+@media (max-height: 520px) {
+    .column {
+        gap: 5px;
+        padding: 6px 5px;
+    }
+
+    .column .tab {
+        padding: 4px 2px;
+    }
+
+    /* The counter and both badges on one line, the version under them. */
+    .column .status-cluster {
+        gap: 3px 5px;
+        font-size: 10px;
+        letter-spacing: 0.4px;
+    }
+
+    .column .badge {
+        gap: 4px;
+    }
+
+    .column .btn.shift-btn,
+    .rail-foot .btn {
+        min-height: 28px;
+    }
+
+    /* A rail button's words on two lines in its 24 px: at most 9.5 px. */
+    .column .btn {
+        padding: 1px 3px 1px 12px;
+    }
+
+    .column .btn::before {
+        left: 4px;
+    }
+
+    .column .rail .btn-text {
+        font-size: min(9.5px, calc((var(--tw, 65px) - var(--n, 5) * 0.6px) / (var(--n, 5) * 0.65)));
+        line-height: 1;
+    }
+}
+
+/* A narrow screen (a phone upright): the arrows side by side, where the
+   window stands under them. */
+@media (max-width: 520px) {
+    .shift {
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    }
+
+    .shift-where {
+        grid-column: 1 / -1;
+        grid-row: 2;
+        text-align: center;
+    }
+}

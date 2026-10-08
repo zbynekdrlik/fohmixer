@@ -122,17 +122,17 @@ pub fn MuteView(
             }
         }
     };
-    let muted = move || slot.with(Slot::flag);
+    let muted = move || slot.try_with(Slot::flag).flatten();
     let is_lit = move || muted().is_some_and(lit);
     let state = Memo::new(move |_| readiness(&[slot]));
-    let binding = move || state.get().name();
-    let disabled = move || state.get().disabled();
+    let binding = move || state.try_get().map_or("waiting", |s| s.name());
+    let disabled = move || state.try_get().map_or("true", |s| s.disabled());
     let muted_attr = move || match muted() {
         Some(true) => "true",
         Some(false) => "false",
         None => "unknown",
     };
-    let look = move || colour_style(color.and_then(|c| c.with(Slot::number)));
+    let look = move || colour_style(color.and_then(|c| c.try_with(Slot::number).flatten()));
     let length = format!("--n:{};", label_chars(&label));
     view! {
         <div
@@ -140,8 +140,8 @@ pub fn MuteView(
             node_ref=root
             use:owns_touches=touch_keys
             class:lit=is_lit
-            class:armed=move || armed.get()
-            class:failed=move || failed.get()
+            class:armed=move || armed.try_get().unwrap_or(false)
+            class:failed=move || failed.try_get().unwrap_or(false)
             data-testid="mute"
             data-muted=muted_attr
             data-binding=binding
@@ -180,17 +180,17 @@ pub fn SoloView(binding: Binding, label: Option<String>) -> impl IntoView {
             }
         });
     };
-    let on = move || slot.with(Slot::flag) == Some(true);
+    let on = move || slot.try_with(Slot::flag).flatten() == Some(true);
     let state = Memo::new(move |_| readiness(&[slot]));
-    let bound = move || state.get().name();
-    let disabled = move || state.get().disabled();
+    let bound = move || state.try_get().map_or("waiting", |s| s.name());
+    let disabled = move || state.try_get().map_or("true", |s| s.disabled());
     view! {
         <div
             class="btn solo"
             node_ref=root
             use:owns_touches=touch_keys
             class:on=on
-            class:failed=move || failed.get()
+            class:failed=move || failed.try_get().unwrap_or(false)
             data-testid="solo"
             data-track=track
             data-on=move || on().to_string()
@@ -231,18 +231,18 @@ pub fn StageMicsView(binding: Binding, label: Option<String>) -> impl IntoView {
             }
         });
     };
-    let muted = move || slot.with(Slot::flag) == Some(true);
-    let live = move || slot.with(Slot::flag) == Some(false);
+    let muted = move || slot.try_with(Slot::flag).flatten() == Some(true);
+    let live = move || slot.try_with(Slot::flag).flatten() == Some(false);
     let state = Memo::new(move |_| readiness(&[slot]));
-    let bound = move || state.get().name();
-    let disabled = move || state.get().disabled();
+    let bound = move || state.try_get().map_or("waiting", |s| s.name());
+    let disabled = move || state.try_get().map_or("true", |s| s.disabled());
     view! {
         <div
             class="btn stage-mics"
             node_ref=root
             use:owns_touches=touch_keys
             class:on=live
-            class:failed=move || failed.get()
+            class:failed=move || failed.try_get().unwrap_or(false)
             data-testid="stage-mics"
             data-muted=move || muted().to_string()
             data-binding=bound

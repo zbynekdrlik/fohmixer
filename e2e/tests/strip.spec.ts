@@ -58,7 +58,7 @@ test.describe("A strip", () => {
     await expect(strip(page, "B-Main repro #").getByTestId("strip-label")).toHaveText("Main");
     // #63: a group whose strips share an instance names it in its title,
     // not on each strip; a return says RET on its name button.
-    await expect(groupOf(page, strip(page, "Hand2 #")).getByTestId("group-instance")).toHaveText("band");
+    await expect((await groupOf(page, strip(page, "Hand2 #"))).getByTestId("group-instance")).toHaveText("band");
     await expect(strip(page, "Hand2 #").getByTestId("strip-instance")).toHaveCount(0);
     await expect(strip(page, "B-Main repro #").getByTestId("strip-instance")).toHaveCount(0);
     await expect(strip(page, "B-Main repro #").getByTestId("strip-ret")).toHaveText("RET");
@@ -75,7 +75,7 @@ test.describe("A strip", () => {
       await openSurface(page);
       const narrow = strip(page, "Vocal 1 repro#");
       await expect(narrow.getByTestId("db")).toHaveText(dbForm(await live.display("band", volume(VOCAL1), 0.829725)));
-      const named = groupOf(page, narrow).getByTestId("group-instance");
+      const named = (await groupOf(page, narrow)).getByTestId("group-instance");
       await expect(named).toHaveText(/band/i);
       expect(await clipped(named), "the group's instance").toEqual([]);
       for (const name of ["Vocal 1 repro#", "Hand2 #", "B-Main repro #"]) {
@@ -92,11 +92,14 @@ test.describe("A strip", () => {
     }
   });
 
-  test("at the narrowest strip width a long name fits, every part stays in its strip, no row scrolls up or down", async ({ page }) => {
+  test("at the narrowest strip width a long name fits, every part stays in its strip, no line scrolls up or down", async ({ page }) => {
     // #21 second review: without a clip, a long name widened the strip's
     // column over the next strip (a 9-letter name at 64 px: 17 px in
     // WebKit), the fader's rail gave a scrolling row a vertical scroll
     // range, and a name longer than about 6 letters ended in an ellipsis.
+    // #63: the page's one row of 19 strips does not fit, so the line shows a
+    // window of as many as fit; at 1236 px a side (540 px) holds 8 strips
+    // at exactly 64 px.
     const LAYOUT = join(__dirname, "..", "..", "tools", "import-tosc", "fixtures", "expected-layout.json");
     const BAND = ["TechAlert #", "Hand1 #", "Hand2 #", "Hand3 #", "Hand4 #", "Vocals Repro grp#", "Vocal 1 repro#", "Vocal 2 repro#", "Vocal 3 repro#", "Keys 1", "Stems grp#", "Drums #", "Bass #", "Mics Stage #"];
     const MASTER = ["Hand1 #", "Hand2 #", "Hand3 #", "Hand4 #"];
@@ -107,18 +110,20 @@ test.describe("A strip", () => {
       binding: { instance, anchor: { kind: "track", name } },
       strip_kind: "standard",
     }));
-    // A master return: the longest instance tag, "master · ret".
-    strips.push({ kind: "strip", binding: { instance: "master", anchor: { kind: "return", name: "A-Reverb #" } }, strip_kind: "return" });
-    foh.rows.push({ sections: [{ kind: "group", id: "narrow", title: "Narrow", controls: strips }] });
+    // A master return first: the longest instance tag, "master · ret".
+    strips.unshift({ kind: "strip", binding: { instance: "master", anchor: { kind: "return", name: "A-Reverb #" } }, strip_kind: "return" });
+    foh.rows = [{ sections: [{ kind: "group", id: "narrow", title: "Narrow", controls: strips }] }];
+    await page.setViewportSize({ width: 1236, height: 720 });
     await openSurface(page);
     const group = page.locator('[data-testid="group"][data-group="narrow"]');
+    const cells = page.locator('.slot[data-group="narrow"]');
     try {
       await harness("/hub/layout", { layout: changed });
-      await expect(group.locator('[data-testid="strip"]')).toHaveCount(BAND.length + MASTER.length + 1, { timeout: 10_000 });
-      const alert = group.locator('[data-testid="strip"][data-track="TechAlert #"]');
+      await expect(cells.locator('[data-testid="strip"]')).toHaveCount(16, { timeout: 10_000 });
+      const alert = cells.locator('[data-testid="strip"][data-track="TechAlert #"]');
       await expect(alert.getByTestId("strip-label")).toHaveText("TechAlert");
       await frames(page);
-      const width = await page.locator(".rows").evaluate((el) => parseFloat(getComputedStyle(el).getPropertyValue("--strip-w")));
+      const width = await page.getByTestId("page").evaluate((el) => parseFloat(getComputedStyle(el).getPropertyValue("--strip-w")));
       expect(width, "the premise: the strips at their narrowest").toBe(64);
       // Every part of every strip on the page inside its strip (the meter's
       // moving layers are clipped by their bar, the cap's rail is a
@@ -140,16 +145,16 @@ test.describe("A strip", () => {
         }),
       );
       expect(outside).toEqual([]);
-      await expect(group.locator('[data-testid="strip"][data-track="A-Reverb #"]').getByTestId("strip-instance")).toHaveText(/master · ret/i);
+      await expect(cells.locator('[data-testid="strip"][data-track="A-Reverb #"]').getByTestId("strip-instance")).toHaveText(/master · ret/i);
       for (const part of ["strip-label", "strip-instance"]) {
-        for (const text of await group.getByTestId(part).all()) {
+        for (const text of await cells.getByTestId(part).all()) {
           expect(await clipped(text), `${part} ${await text.textContent()}`).toEqual([]);
         }
       }
-      const scrolls = await page.getByTestId("row").evaluateAll((rows) =>
-        rows.filter((r) => r.scrollHeight > r.clientHeight).map((r) => `${r.scrollHeight} > ${r.clientHeight}`),
+      const scrolls = await page.getByTestId("line").evaluateAll((lines) =>
+        lines.filter((r) => r.scrollHeight > r.clientHeight).map((r) => `${r.scrollHeight} > ${r.clientHeight}`),
       );
-      expect(scrolls, "rows with a vertical scroll range").toEqual([]);
+      expect(scrolls, "lines with a vertical scroll range").toEqual([]);
     } finally {
       await harness("/hub/layout/reset");
     }
@@ -400,7 +405,7 @@ test.describe("A strip", () => {
     await openSurface(page);
     await selectPage(page, "others");
     const master = strip(page, "Hand1 #", "master");
-    await expect(groupOf(page, master).getByTestId("group-instance")).toHaveText("master");
+    await expect((await groupOf(page, master)).getByTestId("group-instance")).toHaveText("master");
     await expect(master.getByTestId("db")).toHaveText(dbForm(await live.display("master", volume(track("Hand1 #")), 0.6)));
   });
 });

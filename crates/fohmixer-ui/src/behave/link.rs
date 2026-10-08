@@ -16,7 +16,7 @@
 //! lasted, whether the socket was lost, and the last round trips before it.
 //!
 //! The counter on the surface (PR C, owner's ruling of 2026-10-03: a
-//! number in the top bar, no words) is [`DropoutWatch::counter`]: the
+//! number in the control column, no words) is [`DropoutWatch::counter`]: the
 //! dropouts since the last tap, red while one lasts. A tap
 //! ([`DropoutWatch::reset`]) puts it back to 0 and gives the reset's event
 //! for the event log. A dropout that lasts through a tap was counted when it

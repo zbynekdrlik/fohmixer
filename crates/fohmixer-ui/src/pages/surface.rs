@@ -1,36 +1,42 @@
-//! The mixer surface (the redesign, #21; spec §4.2): the top bar (the pages'
-//! tabs, the Stream Deck tab (#52, last, only from a hub with one), the page
-//! pager's tabs, the SOLO ✕ pill, the dropout counter (#43), the connection
-//! badges and the version), the page's rail with the global controls at its
-//! foot, and the page's rows of sections (or the Stream Deck's keys,
-//! `pages::deck`). Only the controls on screen are mounted, so only their
-//! bindings are subscribed; the selected page and sub-page are remembered on
-//! the device, the Stream Deck tab never is. The one number the stylesheet
-//! cannot decide, the strip width all rows share, comes from `flow`.
+//! The mixer surface (the redesign, #21; spec §4.2; the control column,
+//! #63): every page is its two sides and the control column between them.
+//! The column holds the dropout counter (#43), the connection badges and
+//! the version, the pages' tabs (the Stream Deck tab, #52, last, only from
+//! a hub with one), the pager's tabs, the SOLO ✕ pill, the arrows of a line
+//! that does not fit, the page's rail and the global controls at its foot;
+//! nothing sits above the faders. Where the controls go is `arrange` (pure);
+//! this file measures a side and the height and renders the arrangement
+//! with keyed lists, so a sub-page switch or a shift remounts only the
+//! controls that change. Only the controls on screen are mounted, and the
+//! subscriptions are the selected path's (`binding::visible_subs`); the
+//! selected page and sub-page are remembered on the device, the Stream Deck
+//! tab never is.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use fohmixer_proto::layout::{Binding, Control, Group, Layout, Page, Section};
+use fohmixer_proto::layout::{Binding, Control, Layout, Page};
 use leptos::html;
 use leptos::prelude::*;
 use serde_json::json;
 
 use crate::app::version_text;
+use crate::arrange::{Arrangement, Cell, Item, LineKey, METRICS, PageModel, Side, arrange, items};
 use crate::behave::solo::soloed;
 use crate::binding::{SubSpec, choose, page_solos, selected_path, solo_sub, visible_subs};
 use crate::components::{ControlView, Settings, fail_flash, key_of, owns_surface, owns_touches};
 use crate::dom;
-use crate::flow::{METRICS, Shape, overflows, pager_shape, row_shape, strip_width};
+use crate::flow::{is_column, shared_instance};
 use crate::pages::deck::DeckView;
-use crate::pages::overview::OverviewView;
 use crate::store::{Badge, LiveStore, Slot};
 
 /// Where the selected pages are remembered (a JSON map: `""` for the pages,
 /// a page's id for its pager → the selected page's id).
 const PAGES_KEY: &str = "fohmixer_pages";
-/// The rows' padding, both sides (`.rows` in the stylesheet).
-const ROWS_PAD: f64 = 20.0;
+/// The page's padding, both sides (`.body` in the stylesheet).
+const BODY_PAD: f64 = 12.0;
+/// Between a side and the column (`.body`'s gap).
+const BODY_GAP: f64 = 6.0;
 
 /// The page selection (a context of the surface).
 #[derive(Clone, Copy)]
@@ -162,7 +168,16 @@ pub fn Surface(token: String, session: RwSignal<Option<String>>) -> impl IntoVie
     }
 }
 
-/// One layout: the top bar and the selected page.
+/// What the column's head shows (a context of the layout's shell, read by
+/// every page's column).
+#[derive(Clone)]
+struct Head {
+    layout: Arc<Layout>,
+    page: Memo<Option<usize>>,
+    sub: Memo<Option<usize>>,
+}
+
+/// One layout: the selected page or the Stream Deck tab.
 #[component]
 fn Shell(layout: Arc<Layout>) -> impl IntoView {
     let nav = expect_context::<Nav>();
@@ -173,15 +188,43 @@ fn Shell(layout: Arc<Layout>) -> impl IntoView {
     });
     let page = Memo::new(move |_| nav.path.with(|p| p.first().copied()));
     let sub = Memo::new(move |_| nav.path.with(|p| p.get(1).copied()));
+    provide_context(Head {
+        layout: layout.clone(),
+        page,
+        sub,
+    });
+    let viewport = nav.viewport;
+    let body = move || {
+        if nav.deck_shown.get() {
+            let global = layout.global.clone();
+            return Some(view! { <DeckView global=global viewport=viewport /> }.into_any());
+        }
+        let index = page.get()?;
+        let shown = layout.pages.get(index)?.clone();
+        let global = layout.global.clone();
+        Some(view! { <PageView page=shown global=global sub=sub /> }.into_any())
+    };
+    view! { <div class="mixer" data-testid="stage">{body}</div> }
+}
+
+/// The head of a page's column: the dropout counter, the badges and the
+/// version, the pages' tabs, the pager's tabs (none on the Stream Deck
+/// tab) and SOLO ✕.
+#[component]
+pub fn ColumnHead() -> impl IntoView {
+    let nav = expect_context::<Nav>();
+    let Head { layout, page, sub } = expect_context::<Head>();
     let tabs: Vec<(String, String)> = layout
         .pages
         .iter()
         .map(|p| (p.id.clone(), p.title.clone()))
         .collect();
     let for_pager = layout.clone();
+    // Every read tolerates a disposed value: a layout change disposes the
+    // selection while the old column's effects may still run once.
     let pager_tabs = move || {
-        let index = page.get()?;
-        if nav.deck_shown.get() {
+        let index = page.try_get().flatten()?;
+        if nav.deck_shown.try_get().unwrap_or(false) {
             return None;
         }
         let pager = for_pager.pages.get(index)?.pager()?;
@@ -192,37 +235,25 @@ fn Shell(layout: Arc<Layout>) -> impl IntoView {
             .collect();
         Some(view! { <TabBar tabs=tabs level=1 selected=sub /> })
     };
-    let for_solo = layout.clone();
     let solo = move || {
         let solos = page
-            .get()
-            .and_then(|i| for_solo.pages.get(i))
+            .try_get()
+            .flatten()
+            .and_then(|i| layout.pages.get(i))
             .map(page_solos)
             .unwrap_or_default();
         view! { <SoloClear bindings=solos /> }
     };
-    let for_page = layout.clone();
-    let viewport = nav.viewport;
-    let body = move || {
-        if nav.deck_shown.get() {
-            let global = for_page.global.clone();
-            return Some(view! { <DeckView global=global viewport=viewport /> }.into_any());
-        }
-        let index = page.get()?;
-        let shown = for_page.pages.get(index)?.clone();
-        let global = for_page.global.clone();
-        Some(view! { <PageView page=shown global=global sub=sub /> }.into_any())
-    };
+    // `.column-head` draws no box of its own (`display: contents`): it marks
+    // the head for the Stream Deck page, whose capture listener lifts no
+    // hold on a down there (a tab or the counter: outside its page before
+    // the column).
     view! {
-        <div class="mixer" data-testid="stage">
-            <header class="topbar">
-                <TabBar tabs=tabs level=0 selected=page />
-                {pager_tabs}
-                <div class="spacer"></div>
-                {solo}
-                <StatusCluster />
-            </header>
-            {body}
+        <div class="column-head">
+            <StatusCluster />
+            <TabBar tabs=tabs level=0 selected=page />
+            {pager_tabs}
+            {solo}
         </div>
     }
 }
@@ -239,8 +270,11 @@ fn TabBar(
         .into_iter()
         .enumerate()
         .map(|(index, (id, title))| {
-            let lit =
-                move || selected.get() == Some(index) && !(level == 0 && nav.deck_shown.get());
+            let lit = move || {
+                // A disposed selection (a layout change) lights nothing.
+                selected.try_get().flatten() == Some(index)
+                    && !(level == 0 && nav.deck_shown.try_get().unwrap_or(false))
+            };
             // A tab owns its touches (#43 PR G); it writes no key.
             let no_keys: Vec<String> = Vec::new();
             view! {
@@ -306,97 +340,107 @@ fn DeckTab() -> impl IntoView {
     }
 }
 
-/// What a phone shows of a page (#63): its rail or one of its rows. The
-/// stylesheet hides the others only on a phone-sized screen; on the tablet
-/// everything shows.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Screen {
-    Rail,
-    Row(usize),
-}
-
-/// A page: its rail (the global controls at its foot) and its rows; on a
-/// phone one of them at a time, chosen on the screen bar (#63).
+/// A page: its lines, each cut in two by the column (the column: its head,
+/// the arrows of the lines that do not fit, the rail and the global controls
+/// at its foot).
 #[component]
 fn PageView(page: Page, global: Vec<Control>, sub: Memo<Option<usize>>) -> impl IntoView {
     let nav = expect_context::<Nav>();
-    let rows_ref = NodeRef::<html::Div>::new();
-    let avail = RwSignal::new(0.0_f64);
-    let screen = RwSignal::new(Screen::Row(0));
-    // The rows' room: measured once they are laid out, on every resize and
-    // after a phone's screen changed (in the next frame, once the stylesheet
-    // shows it); hidden behind the rail they measure 0 and keep the last.
+    let model = Arc::new(PageModel::of(&page));
+    let weights: Vec<f64> = page.rows.iter().map(|r| r.weight).collect();
+    let body_ref = NodeRef::<html::Div>::new();
+    let column_ref = NodeRef::<html::Nav>::new();
+    // A side's width and the lines' height: measured once laid out and on
+    // every resize.
+    let room = RwSignal::new((0.0_f64, 0.0_f64));
     Effect::new(move |_| {
         let _ = nav.viewport.get();
-        let _ = screen.get();
-        if let Some(el) = rows_ref.get() {
-            request_animation_frame(move || {
-                let width = f64::from(el.client_width());
-                if width > 0.0 {
-                    let _ = avail.try_set(width - ROWS_PAD);
-                }
-            });
+        if let (Some(body), Some(column)) = (body_ref.get(), column_ref.get()) {
+            let width = f64::from(body.client_width());
+            let column = f64::from(column.offset_width());
+            let side = (width - BODY_PAD - column - 2.0 * BODY_GAP) / 2.0;
+            let height = f64::from(body.client_height()) - BODY_PAD;
+            let _ = room.try_set((side.max(0.0), height.max(0.0)));
         }
     });
-    // The screen bar: the rail, then each row by its titles.
-    let rail_tab = {
-        let lit = move || screen.get() == Screen::Rail;
-        // A tab owns its touches (#43 PR G); it writes no key.
-        let no_keys: Vec<String> = Vec::new();
-        view! {
-            <button
-                type="button"
-                class="tab"
-                use:owns_touches=no_keys
-                class:selected=lit
-                data-testid="screen"
-                data-screen="rail"
-                data-selected=move || lit().to_string()
-                on:pointerdown=move |_| {
-                    let _ = screen.try_set(Screen::Rail);
-                }
-            >
-                "FUNKCIE"
-            </button>
-        }
-    };
-    let row_tabs = page
-        .rows
-        .clone()
-        .into_iter()
-        .enumerate()
-        .map(|(index, row)| {
-            let lit = move || screen.get() == Screen::Row(index);
-            let title = move || {
-                let titles = crate::flow::row_titles(&row, sub.get());
-                if titles.is_empty() {
-                    (index + 1).to_string()
-                } else {
-                    titles.join(" · ")
-                }
-            };
-            let no_keys: Vec<String> = Vec::new();
-            view! {
-                <button
-                    type="button"
-                    class="tab"
-                    use:owns_touches=no_keys
-                    class:selected=lit
-                    data-testid="screen"
-                    data-screen=index.to_string()
-                    data-selected=move || lit().to_string()
-                    on:pointerdown=move |_| {
-                        let _ = screen.try_set(Screen::Row(index));
-                    }
-                >
-                    {title}
-                </button>
+    // Each line's window (a line that does not fit), from the column's
+    // arrows, kept by the line's key (`PageModel::line_key`: its rows, and
+    // the sub-page where the pager is): another sub-page, or a turned screen
+    // that groups the rows into other lines, shows that line's window from
+    // its start and coming back finds it where it was; a turned screen with
+    // the same lines keeps each window (clamped by `shown`).
+    let offsets = RwSignal::new(BTreeMap::<LineKey, usize>::new());
+    // Every read below tolerates a disposed value (`try_*`): a layout change
+    // disposes the page while its keyed lists' effects may still run once.
+    let arranged = {
+        let model = model.clone();
+        Memo::new(move |_| {
+            let (side, height) = room.try_get()?;
+            let sub = sub.try_get()?;
+            if side <= 0.0 {
+                return None;
             }
+            offsets.try_with(|offsets| {
+                let offset = |key: &LineKey| offsets.get(key).copied().unwrap_or(0);
+                arrange(&model, sub, side, height, offset, &METRICS)
+            })
         })
-        .collect_view();
-    let shapes: Vec<Shape> = page.rows.iter().map(|r| row_shape(r, &METRICS)).collect();
-    let width_shapes = shapes.clone();
-    let width = Memo::new(move |_| strip_width(&width_shapes, avail.get(), &METRICS));
+    };
+    let count = Memo::new(move |_| {
+        arranged
+            .try_with(|a| a.as_ref().map_or(0, |a| a.lines.len()))
+            .unwrap_or(0)
+    });
+    let shifted = Memo::new(move |_| {
+        arranged
+            .try_with(|a| {
+                a.as_ref()
+                    .map(|a| {
+                        a.lines
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, line)| line.shift.is_some())
+                            .map(|(index, _)| index)
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default()
+            })
+            .unwrap_or_default()
+    });
+    // The lines' heights by their rows' weights (a line of several rows: 1),
+    // and the strip width every line shares (floored: a side never overflows
+    // by rounding).
+    let body_style = move || {
+        arranged
+            .try_with(|a| {
+                let Some(a) = a else {
+                    return String::new();
+                };
+                // Each line's share as `arrange::lines` counts it: its
+                // weight over the lines' (fractions summing to the lines'
+                // count, so the lines fill the height).
+                let line_weights: Vec<f64> = a
+                    .lines
+                    .iter()
+                    .map(|line| match line.rows.as_slice() {
+                        [row] => weights.get(*row).copied().unwrap_or(1.0),
+                        _ => 1.0,
+                    })
+                    .collect();
+                let total: f64 = line_weights.iter().sum();
+                let count = line_weights.len() as f64;
+                let rows: Vec<String> = line_weights
+                    .iter()
+                    .map(|w| format!("minmax(0,{}fr)", w / total * count))
+                    .collect();
+                let width = (a.width * 100.0).floor() / 100.0;
+                format!(
+                    "grid-template-rows:{};--strip-w:{width:.2}px;",
+                    rows.join(" ")
+                )
+            })
+            .unwrap_or_default()
+    };
     let rail = page
         .rail
         .into_iter()
@@ -406,133 +450,267 @@ fn PageView(page: Page, global: Vec<Control>, sub: Memo<Option<usize>>) -> impl 
         .into_iter()
         .map(|control| view! { <ControlView control=control /> })
         .collect_view();
-    let rows = page
-        .rows
-        .into_iter()
-        .zip(shapes)
-        .enumerate()
-        .map(|(index, (row, shape))| {
-            let scrolls = move || overflows(shape, width.get(), avail.get());
-            let shown = move || (screen.get() == Screen::Row(index)).to_string();
-            let flex = format!("flex:{} 1 0;", row.weight);
-            let sections = row
-                .sections
-                .into_iter()
-                .map(|section| match section {
-                    Section::Group(group) => view! { <GroupView group=group /> }.into_any(),
-                    Section::Pager(pager) => {
-                        // As wide as its widest sub-page, whichever it shows.
-                        let shape = pager_shape(&pager, &METRICS);
-                        let size = move || format!("width:{:.1}px;", shape.width(width.get()));
-                        let shown = move || {
-                            let page = sub.get().and_then(|i| pager.pages.get(i).cloned())?;
-                            let groups = page
-                                .sections
-                                .iter()
-                                .flat_map(Section::groups)
-                                .cloned()
-                                .map(|group| view! { <GroupView group=group /> })
-                                .collect_view();
-                            Some(view! {
-                                <div class="pager-page" data-testid="pager" data-page=page.id>
-                                    {groups}
-                                </div>
-                            })
-                        };
-                        view! { <div class="pager" style=size>{shown}</div> }.into_any()
-                    }
-                })
-                .collect_view();
-            view! {
-                <div class="row" class:scrolls=scrolls data-testid="row" data-shown=shown style=flex>
-                    {sections}
-                </div>
-            }
-        })
-        .collect_view();
-    let strip_width_style = move || format!("--strip-w:{:.1}px;", width.get());
-    let rail_shown = move || (screen.get() == Screen::Rail).to_string();
-    // The row a phone shows (none while the rail shows), for its overview.
-    let shown_index = Memo::new(move |_| match screen.get() {
-        Screen::Row(index) => Some(index),
-        Screen::Rail => None,
-    });
-    let body_screen = move || match screen.get() {
-        Screen::Rail => "rail",
-        Screen::Row(_) => "row",
+    let line_view = move |line: usize| {
+        let model = model.clone();
+        view! { <LineView arranged=arranged model=model line=line /> }
     };
+    let shift =
+        move |line: usize| view! { <ShiftView arranged=arranged offsets=offsets line=line /> };
     view! {
-        <div class="body" data-testid="page" data-page=page.id data-screen=body_screen>
-            <div class="seg screens" data-testid="screens">
-                {rail_tab}
-                {row_tabs}
-            </div>
-            <OverviewView rows=rows_ref shown=shown_index sub=sub />
-            <nav class="rail" data-testid="rail" data-shown=rail_shown>
-                <div class="rail-main">{rail}</div>
-                <div class="rail-foot">{global}</div>
+        <div class="body" data-testid="page" data-page=page.id node_ref=body_ref style=body_style>
+            <For each=move || 0..count.try_get().unwrap_or(0) key=|line| *line children=line_view />
+            <nav class="column" data-testid="column" node_ref=column_ref>
+                <ColumnHead />
+                <div class="shifts">
+                    <For
+                        each=move || shifted.try_get().unwrap_or_default()
+                        key=|line| *line
+                        children=shift
+                    />
+                </div>
+                <div class="rail" data-testid="rail">
+                    <div class="rail-main">{rail}</div>
+                    <div class="rail-foot">{global}</div>
+                </div>
             </nav>
-            <div class="rows" node_ref=rows_ref style=strip_width_style>
-                {rows}
-            </div>
         </div>
     }
 }
 
-/// A group of controls: its marker and title (on the group's border, #63)
-/// with the Live instance its strips share, then its controls side by side
-/// (strips) or in a grid (buttons).
+/// One line: its items in one keyed list (`arrange::items`), each on its
+/// side of the column (`page.css` orders the left side's, `.split` taking
+/// the rest of the left half and the column, the right side's), so a cell
+/// that changes side or group run moves and is not rebuilt.
 #[component]
-fn GroupView(group: Group) -> impl IntoView {
-    // Strips side by side; buttons in a grid; texts one per line.
-    let columns = group.controls.iter().any(crate::flow::is_column);
-    let texts = !columns
-        && group
-            .controls
-            .iter()
-            .all(|c| matches!(c, Control::Text { .. }));
-    let buttons = !columns && !texts;
-    let look = group
-        .color
-        .as_ref()
-        .map(|c| format!("--gc:{c};"))
-        .unwrap_or_default();
-    let id = group.id.clone().unwrap_or_default();
-    let title = group.title.clone().unwrap_or_default();
-    // The instance its strips share: named once here, not on each strip.
-    let shared = crate::flow::shared_instance(&group.controls);
-    let instance = shared.clone().map(|name| {
-        let instance_attr = name.clone();
-        view! {
-            <span class="group-instance" data-testid="group-instance" data-instance=instance_attr>
-                {name}
-            </span>
-        }
+fn LineView(
+    arranged: Memo<Option<Arrangement>>,
+    model: Arc<PageModel>,
+    line: usize,
+) -> impl IntoView {
+    let list = Memo::new(move |_| {
+        arranged
+            .try_with(|a| {
+                a.as_ref()
+                    .and_then(|a| a.lines.get(line))
+                    .map(items)
+                    .unwrap_or_default()
+            })
+            .unwrap_or_default()
     });
-    let controls = group
-        .controls
-        .into_iter()
-        .map(|control| {
-            let shared = shared.clone();
-            view! { <ControlView control=control shared=shared /> }
-        })
-        .collect_view();
+    // The line's row, and its left side's span (`--l-units` strips and
+    // `--l-cells` cells): `.split` takes the rest of the left side and the
+    // column, so the right side starts right after the column.
+    let place = move || {
+        let (units, cells) = arranged
+            .try_with(|a| {
+                a.as_ref()
+                    .and_then(|a| a.lines.get(line))
+                    .map(|l| (l.left.iter().map(Cell::units).sum::<f64>(), l.left.len()))
+            })
+            .flatten()
+            .unwrap_or((0.0, 0));
+        format!("grid-row:{};--l-units:{units};--l-cells:{cells};", line + 1)
+    };
+    let item = move |item: Item| {
+        let model = model.clone();
+        view! { <ItemView list=list model=model item=item /> }
+    };
     view! {
-        <section
-            class="group"
-            class:buttons=buttons
-            class:texts=texts
-            data-testid="group"
-            data-group=id
-            style=look
-        >
-            <h2 class="group-title">
-                <i class="group-mark"></i>
-                <span data-testid="group-title">{title}</span>
-                {instance}
-            </h2>
-            <div class="group-body">{controls}</div>
-        </section>
+        <div class="line" data-testid="line" data-line=line.to_string() style=place>
+            <div class="split" aria-hidden="true"></div>
+            <For each=move || list.try_get().unwrap_or_default() key=Item::key children=item />
+        </div>
+    }
+}
+
+/// One item of a line: a group's title (its marker, its title and the
+/// instance its strips share, #63) over its run of cells, or a cell. Its
+/// side and a title's run are read from the line by its key (a keyed list
+/// keeps the item it was made with).
+#[component]
+fn ItemView(list: Memo<Vec<Item>>, model: Arc<PageModel>, item: Item) -> impl IntoView {
+    let id = item.key();
+    let now = Memo::new(move |_| {
+        list.try_with(|all| all.iter().find(|i| i.key() == id).cloned())
+            .flatten()
+    });
+    let side = move || match now.try_get().flatten().map_or(Side::Left, |i| i.side()) {
+        Side::Left => "left",
+        Side::Right => "right",
+    };
+    match item {
+        Item::Title { group, .. } => {
+            let Some(group) = model.groups.get(group) else {
+                return ().into_any();
+            };
+            let id = group.id.clone();
+            let title = group.title.clone().unwrap_or_default();
+            let color = group.color.clone();
+            let instance = shared_instance(&group.controls).map(|name| {
+                let instance_attr = name.clone();
+                view! {
+                    <span class="group-instance" data-testid="group-instance" data-instance=instance_attr>
+                        {name}
+                    </span>
+                }
+            });
+            // The title spans its run: `--n` cells, `--units` strips wide.
+            let look = move || {
+                let (cells, units) = match now.try_get().flatten() {
+                    Some(Item::Title { cells, units, .. }) => (cells, units),
+                    _ => (1, 1.0),
+                };
+                let mark = color
+                    .as_ref()
+                    .map(|c| format!("--gc:{c};"))
+                    .unwrap_or_default();
+                format!("{mark}--n:{cells};--units:{units};")
+            };
+            view! {
+                <div class="run-title" data-testid="group" data-group=id data-side=side style=look>
+                    <h2 class="group-title">
+                        <i class="group-mark"></i>
+                        <span data-testid="group-title">{title}</span>
+                        {instance}
+                    </h2>
+                </div>
+            }
+            .into_any()
+        }
+        Item::Cell { cell, .. } => {
+            let group = cell.group().and_then(|g| model.groups.get(g));
+            let id = group.and_then(|g| g.id.clone());
+            // The group's colour on the strip's top edge (`.strip::before`).
+            let look = group
+                .and_then(|g| g.color.as_ref())
+                .map(|c| format!("--gc:{c};"))
+                .unwrap_or_default();
+            view! {
+                <div class="slot" data-side=side data-group=id style=look>
+                    <CellView model=model cell=cell />
+                </div>
+            }
+            .into_any()
+        }
+    }
+}
+
+/// One cell: a control (in a pager's slot a wide strip is one strip wide),
+/// a group of buttons or texts as one block, or an empty slot.
+#[component]
+fn CellView(model: Arc<PageModel>, cell: Cell) -> impl IntoView {
+    match cell {
+        Cell::Control { at, units, .. } => {
+            let Some(group) = model.groups.get(at.group) else {
+                return ().into_any();
+            };
+            let Some(control) = group.controls.get(at.control).cloned() else {
+                return ().into_any();
+            };
+            let shared = shared_instance(&group.controls);
+            let control = match control {
+                Control::Strip(mut strip) if strip.wide && units < METRICS.wide => {
+                    strip.wide = false;
+                    Control::Strip(strip)
+                }
+                other => other,
+            };
+            if is_column(&control) {
+                view! { <ControlView control=control shared=shared /> }.into_any()
+            } else {
+                view! {
+                    <div class="cell">
+                        <ControlView control=control shared=shared />
+                    </div>
+                }
+                .into_any()
+            }
+        }
+        Cell::Block { group, units } => {
+            let controls = model
+                .groups
+                .get(group)
+                .map(|g| g.controls.clone())
+                .unwrap_or_default();
+            let texts = controls.iter().all(|c| matches!(c, Control::Text { .. }));
+            let views = controls
+                .into_iter()
+                .map(|control| view! { <ControlView control=control /> })
+                .collect_view();
+            let width = format!("--units:{units};");
+            view! { <div class="block" class:texts=texts style=width>{views}</div> }.into_any()
+        }
+        Cell::Blank { .. } => {
+            view! { <div class="strip blank" data-testid="blank"></div> }.into_any()
+        }
+    }
+}
+
+/// A line's arrows in the column (a line that does not fit): ◀ and ▶ move
+/// its window a step, and between them where it stands.
+#[component]
+fn ShiftView(
+    arranged: Memo<Option<Arrangement>>,
+    offsets: RwSignal<BTreeMap<LineKey, usize>>,
+    line: usize,
+) -> impl IntoView {
+    let shift = Memo::new(move |_| {
+        arranged
+            .try_with(|a| {
+                a.as_ref()
+                    .and_then(|a| a.lines.get(line))
+                    .and_then(|l| l.shift.map(|s| (l.key.clone(), s)))
+            })
+            .flatten()
+    });
+    let step = move |forward: bool| {
+        let Some(Some((key, now))) = shift.try_get_untracked() else {
+            return;
+        };
+        let next = now.moved(forward);
+        let _ = offsets.try_update(|all| {
+            all.insert(key, next);
+        });
+    };
+    let on_back = move |ev: web_sys::PointerEvent| {
+        ev.prevent_default();
+        step(false);
+    };
+    let on_next = move |ev: web_sys::PointerEvent| {
+        ev.prevent_default();
+        step(true);
+    };
+    let now = move || shift.try_get().flatten().map(|(_, s)| s);
+    let at_start = move || now().is_none_or(|s| s.offset == 0);
+    let at_end = move || now().is_none_or(|s| s.offset >= s.last);
+    let label = move || now().map(|s| s.label()).unwrap_or_default();
+    // The arrows own their touches (#43 PR G); they write no key.
+    let back_keys: Vec<String> = Vec::new();
+    let next_keys: Vec<String> = Vec::new();
+    view! {
+        <div class="shift" data-testid="shift" data-line=line.to_string()>
+            <button
+                type="button"
+                class="btn shift-btn"
+                use:owns_touches=back_keys
+                class:end=at_start
+                data-testid="shift-back"
+                on:pointerdown=on_back
+            >
+                "◀"
+            </button>
+            <span class="shift-where" data-testid="shift-where">{label}</span>
+            <button
+                type="button"
+                class="btn shift-btn"
+                use:owns_touches=next_keys
+                class:end=at_end
+                data-testid="shift-next"
+                on:pointerdown=on_next
+            >
+                "▶"
+            </button>
+        </div>
     }
 }
 
@@ -553,7 +731,10 @@ fn SoloClear(bindings: Vec<Binding>) -> impl IntoView {
     // The pill owns its touches (#43 PR G) and names the solos it clears.
     let touch_keys: Vec<String> = solos.iter().map(|(spec, _)| key_of(spec)).collect();
     let any = Memo::new(move |_| {
-        let states: Vec<Option<bool>> = slots.iter().map(|s| s.with(Slot::flag)).collect();
+        let states: Vec<Option<bool>> = slots
+            .iter()
+            .map(|s| s.try_with(Slot::flag).flatten())
+            .collect();
         !soloed(&states).is_empty()
     });
     let solos = StoredValue::new(solos);
@@ -584,10 +765,10 @@ fn SoloClear(bindings: Vec<Binding>) -> impl IntoView {
             type="button"
             class="solo-clear"
             use:owns_touches=touch_keys
-            class:on=move || any.get()
-            class:failed=move || failed.get()
+            class:on=move || any.try_get().unwrap_or(false)
+            class:failed=move || failed.try_get().unwrap_or(false)
             data-testid="solo-clear"
-            data-on=move || any.get().to_string()
+            data-on=move || any.try_get().unwrap_or(false).to_string()
             on:pointerdown=on_down
         >
             "SOLO ✕"
@@ -627,8 +808,7 @@ fn DropoutCounter() -> impl IntoView {
 
 /// The dropout counter, the connection badges (per instance: online, busy,
 /// offline; every one offline while the page has no hub connection, so no
-/// dot of its own says that, #63) and the version, at the right end of the
-/// top bar.
+/// dot of its own says that, #63) and the version, at the top of the column.
 #[component]
 fn StatusCluster() -> impl IntoView {
     let store = expect_context::<LiveStore>();
