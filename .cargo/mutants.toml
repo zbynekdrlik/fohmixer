@@ -188,7 +188,11 @@ exclude_re = [
   # pointerup, pointercancel and leaving the tab, with the page's deck
   # events and their whys in the event log; the outline; the red flash with
   # no later send). half_keys and half_vars (each half's keys and size, #63) are tested.
-  "fohmixer-ui/src/pages/deck\\.rs.*(replace|in) (carry|show_held|lift_keys|leave_keys|lift_missed)( |$)",
+  # in_column_head (#63): whether a down's target lies in the column's head
+  # (web_sys Element::closest); deck.spec.ts proves it: a tap of a layout
+  # tab or of the open deck tab leaves a held key held (its up says "tab",
+  # not "lost").
+  "fohmixer-ui/src/pages/deck\\.rs.*(replace|in) (carry|show_held|lift_keys|leave_keys|lift_missed|in_column_head)( |$)",
   # diag.rs (#26), one browser call each: install (the window error,
   # unhandledrejection and visibilitychange listeners), observe_attributes
   # (the MutationObserver on data-sw / data-wake-lock), connected and

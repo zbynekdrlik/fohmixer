@@ -1,0 +1,7 @@
+# The page's WASM build keeps Leptos' debug locations (#63): a "reactive value
+# that has already been disposed" panic then names the signal's definition and
+# the call that read it, in the browser's console and the page's diagnostic
+# reports, instead of a bare message from a stripped build. Native builds
+# (tests, coverage, mutation) are not affected.
+[target.wasm32-unknown-unknown]
+rustflags = ["--cfg", "leptos_debuginfo"]
