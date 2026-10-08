@@ -15,6 +15,12 @@ lto = true
 codegen-units = 1
 strip = true
 
+# DIAGNOSTIC (#63, to be removed): reactive_graph's debug checks in the
+# release build, so a "reactive value that has already been disposed" panic
+# names the signal's definition and its reader.
+[profile.release.package.reactive_graph]
+debug-assertions = true
+
 [profile.dev]
 opt-level = 1
 
