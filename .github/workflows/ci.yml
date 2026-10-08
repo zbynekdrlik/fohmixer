@@ -282,6 +282,10 @@ jobs:
           tool: trunk@0.21.14
       - name: Build the UI (release)
         working-directory: crates/fohmixer-ui
+        # The name section stays (#43): a WebKit trap's wasm-function[N]
+        # frames are named from this run's wasm-dist (scripts/wasm_names.py).
+        env:
+          CARGO_PROFILE_RELEASE_STRIP: debuginfo
         run: trunk build --release --locked
       - name: Verify the bundle
         run: |
@@ -319,11 +323,15 @@ jobs:
             exit 1
           fi
           grep -q 'crossorigin="use-credentials"' crates/fohmixer-ui/dist/index.html
+          # The module names its functions (#43; a stripped build names only
+          # wasm-bindgen's adapters, a dozen).
+          python3 scripts/wasm_names.py check crates/fohmixer-ui/dist/*_bg.wasm --min 1000 --name 'fohmixer_ui::'
+      # Kept a week: an e2e trace's wasm frames are named from it (#43).
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: wasm-dist
           path: crates/fohmixer-ui/dist/
-          retention-days: 1
+          retention-days: 7
           if-no-files-found: error
 
   e2e:
