@@ -295,6 +295,9 @@ Its tests check the layout document it produces, on a synthetic `.tosc` fixture.
 - **I6** The hub never retries a set on its own. A failed slot is shown and logged.
 - **I7** Nothing is force-killed on the Ableton PC. fohmixer never restarts Live.
 - **I8** On app start, reconnect, Live reconnect and set load, a control accepts input only after it shows Live's current value. Until then it is visibly disabled.
+- **I9** A marker problem is never dropped silently: the strip shows, marked (both strips of an equal label disabled), and the problem is listed in `/api/status`.
+- **I10** An unchanged composition never bumps the layout revision: the tablets refetch only when the frame or a marker changed what they show.
+- **I11** fohmixer only reads a marker's name: it never touches a Tuner, and a Tuner never alters the signal.
 
 ---
 
@@ -314,8 +317,8 @@ Proof codes:
 |---|---|---|---|
 | F1 | Pages and areas | Tabs: musician cue page, **FOH/WORSHIP** (default); no Conf tab (#58: TouchOSC's settings text is read by the import, not shown). FOH/WORSHIP has a nested pager STAGE / BAND B / OTHERS, a left sidebar (stage mics, STAGE AUT, three solos, MIDI toggles), the EFFECTS, MASTER A and HANDS areas, and the two top-right strips. TechAlert is on every page (PAR-01; REFRESH ALL removed, #58). The same pages, sections and order; the placement is computed (D13, #21) | E |
 | F2 | Two instances | Strips route to band or master; a missing prefix means band (PAR-02, PAR-03) | S, E |
-| F3 | Strip binding | Exact name match on tracks, then return tracks. Red status and disabled controls when missing. Re-resolved by the hub on every track-list or name change, also for a binding made while its name was missing (PAR-03; #58) | S, E |
-| F4 | Strip label | First word of the name, after dropping a leading `X-` return prefix. The instance is named once in the group's title when all its strips share it, else on each strip; a return in a named group shows RET on its name button (PAR-04; #63) | U |
+| F3 | Strip binding | Exact name match on tracks, then return tracks. Red status and disabled controls when missing. Re-resolved by the hub on every track-list or name change, also for a binding made while its name was missing (PAR-03; #58). A marker strip (D16) binds by the index of the track that holds its Tuner instead | S, E |
+| F4 | Strip label | First word of the name, after dropping a leading `X-` return prefix. The instance is named once in the group's title when all its strips share it, else on each strip; a return in a named group shows RET on its name button (PAR-04; #63). A marker strip (D16) shows its Tuner's quoted label, never the track's name | U |
 | F5 | Status pill | Red when unmapped. Yellow when a value arrived in the last 150 ms, fading to green by 500 ms (PAR-05). It sits with the dB readout on the line under the name button (#63) | E |
 | F6 | Refresh | **Removed (#58, owner decision 2026-10-07).** No REFRESH ALL: the hub keeps every name binding current by itself (renames, track-list changes, a binding made while its name was missing: F3, #58). Was: automatic about 1 s after load, plus REFRESH ALL (0.5 s debounce, 300 ms yellow flash) (PAR-06) | E |
 | F7 | Auto-unfold | **The hub** keeps every group a strip's track sits in (nested too) unfolded: `fold_state = false` when it reads it folded, at Live's connect or set load and whenever someone folds it. Live meters no track inside a folded group (verified on the PC, #58). No `unfold_<instance>` list any more (PAR-07; #58) | S, E |
@@ -334,6 +337,10 @@ Proof codes:
 | F20 | Many clients | Any number of clients see the same state live. TouchOSC needed one script copy per tablet | S, E |
 | F21 | Second tablet | If K5 finds a second TouchOSC client (band port 12000, the cue-page project), its project is imported the same way and served by the same hub | S, L |
 | F22 | Current state on open | On app start, reconnect, Live reconnect or set load, every control shows Live's current value before it accepts input (I8). This is new: TouchOSC often failed to load the current state | S, E, L |
+| F23 | Strips from markers | The hub reads both instances' tracks, return tracks, their device lists and the Tuners' names, follows every change, and composes the frame and the markers into the served layout: label, groups and places, pin, mute guard (D16) | S, E |
+| F24 | Views | Every tag group the default view does not place is a view button in the control column: it shows that group's strips and the pins, a second tap returns (D16) | E |
+| F25 | Marker problems | An equal label in two tracks disables both strips, marked; two Tuners in one track, two strips on one place, an unknown tag or a malformed value mark the strip; `/api/status` lists them (D16, I9) | S, E |
+| F26 | Tag manual and tray | A `ZNAČKY` button in the column and an item in the tray's right-click menu open the tag manual the hub serves; the tray's left click opens fohmixer (D16) | E |
 
 ### 3.2 The former MIDI toggles (D10, D12)
 
@@ -488,6 +495,9 @@ Each one gets a short design note and a plan before code, as in iemmixer.
 - **R6** A Live update changes undocumented details. Pin the Live version per release; the script reports `live_version` on connect.
 - **R7** The shared Python interpreter with AbleSet and the AbletonOSC copies. Mitigations: own folder name, relative imports, own port, own logger name, `SO_EXCLUSIVEADDRUSE`.
 - **R8** Track or device renames break bindings. They show red and never mis-bind (I5); the hub heals them when the name is back (#58), and `/api/status` and the import report list unresolved names.
+- **R9** Live may not report a change of `Track.devices` or `Device.name` through a listener (D16). Probed on the PC before the hub side is built; the fallback re-reads on every track-list push and on a slow timer.
+- **R10** Quotes in a device name, and a renamed Tuner surviving a save and a copied track, are unproven. Probed on the PC first.
+- **R11** A marker strip binds by its track's index, which moves when a track is inserted above it. The composed layout follows at once; the tablets then rebuild the page, as for any layout change (an edit of the set, not of a show).
 
 ---
 
@@ -497,7 +507,7 @@ Each one gets a short design note and a plan before code, as in iemmixer.
 
 - **D1** Architecture: Rust hub + own thin Live script + PWA (2026-09-27).
 - **D2** A thin layer over the native LOM, JSON, no OSC, no binary frames, no curated data model (2026-09-28).
-- **D3** v1 = as close as possible to the TouchOSC surface; nothing re-entered (2026-09-28).
+- **D3** v1 = as close as possible to the TouchOSC surface; nothing re-entered (2026-09-28). Superseded for what is on the surface by D16 (2026-10-08).
 - **D4** After v1, any control by prompt that the Live API allows (2026-09-28).
 - **D5** AbleSet / `ableton-js` is the reference, not a dependency (2026-09-28).
 
@@ -506,10 +516,11 @@ Each one gets a short design note and a plan before code, as in iemmixer.
 - **D13** TouchOSC's functionality, not its look: a modern surface of our own design (the approved mockup, `docs/mockups/redesign-stage-v1.html`); every TouchOSC behaviour kept (#21, 2026-09-28).
 - **D14** Strips for a tablet held in the hands (#63, 2026-10-07; the owner delegated the choice): what is read sits at the top (the name button with Live's dB), the fader runs down towards the foot (the pan, at first under the name button, went under the fader on 2026-10-08: a pan touch hit the mute); the strip lights while its fader is held; a muted strip steps back; the fader follows Live's own law; the pan glides to the centre. Mockup: `docs/mockups/strips-ergonomics-v1.html`.
 - **D15** One control column (#63, the owner's design and approval of 2026-10-08; it replaces the phone's screen bar and overview bar of 0.1.0-dev.41–43): the fader's height is the base requirement, so nothing sits above the faders. One column in the middle of every screen, bottom to top, holds the status, the tabs, the arrows, the rail and TechAlert: the thumbs of two hands holding the tablet do not reach it. The page's rows keep the layout's own arrangement and are cut in two by it; each row is a line while every line keeps 340 px, else one line holds all rows. Strips the owner marks `pinned` never leave the screen: a pinned strip keeps its slot on every sub-page, and a line that does not fit shows its pinned strips and a window the column's arrows move. Which strips sit on the first view is the owner's choice, never an arrangement Claude invents. One layout for every screen. Mockup: `docs/mockups/surface-column-v3.html`.
+- **D16** Strips from Tuner markers in the Live sets (#68; the owner's design and approval of 2026-10-08 on #3). TouchOSC is obsolete: no compatibility is kept and nothing is re-imported; the import tool goes once the sets carry markers. A **Tuner** in the device chain of a track or return track is a marker when its name has a quoted label or a ` +` tag, e.g. `"Vox 1" +G:VOCALS:2 +G:TALKSHOW:1 +PIN +MG`. Live's manual: the Tuner "does not alter the signal in any way"; switched off it costs no CPU. The quoted label is the strip's name, any words, never the track's name (Live allows equal track names; the `#` suffix ends). `+G:NAME[:N]` puts the strip in group NAME (uppercase letters, digits, `-`, `_` shown as a space) at place N, else in Live's track order, and repeats for several groups (one fader in several views); `+PIN` keeps it on screen in every view (D15); `+MG` is the mute guard (F12). The strip binds to the track that holds its Tuner, by index. The frame file stays on the PC and is the default view: its groups name the tag groups they show; every other tag group is a view button in the control column, which shows that group's strips and the pins, a second tap returns. Problems are shown, never dropped (I9): an equal label in two tracks disables both strips, marked. A `ZNAČKY` button in the column and the tray's right-click menu open the tag manual the hub serves; the tray's left click opens fohmixer. The surface parts are built after an approved mockup (D15).
 
 **Defaults chosen in this spec** (the owner may override them at review)
 
-- **D6** The v1 layout is imported from the TouchOSC projects and lives on the Ableton PC, not in the public repo (§2.5, §5.2).
+- **D6** The v1 layout is imported from the TouchOSC projects and lives on the Ableton PC, not in the public repo (§2.5, §5.2). The strips' source is the Live sets' markers since D16; the frame stays on the PC.
 - **D7** ~~v1 is LAN-only, with no internet exposure (R5).~~ Changed by the owner on #17 (2026-09-28): one name for the LAN and a Cloudflare Tunnel behind Cloudflare Access (e-mail), LAN first by the router's DNS; the mixer must stay openable on the Ableton PC and on any wired PC with the internet and the Wi-Fi down (hosts entry, the always-on emergency `http://<PC IP>:8480`); the engineer PIN stays everywhere (§2.4 Remote access).
 - **D8** The fader touch shaping and post-release delay are kept in v1 behind a switch; the engineer decides during the parallel run (X3).
 - **D9** The hub runs as a scheduled task at logon on the Ableton PC (iemmixer pattern).
