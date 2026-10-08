@@ -56,6 +56,14 @@ test.describe("At the tablet's and the desktop's own size", () => {
     // the tablet, and 225 px on the desktop's 720 px.
     const least = viewport.height >= 800 ? 285 : 225;
     expect(await travel(page, "Hand2 #"), "the fader's travel (px)").toBeGreaterThan(least);
+    // The pan at the strip's foot, under the fader, away from the mute (the
+    // owner: under the mute a pan touch hit the mute).
+    const hand2 = strip(page, "Hand2 #");
+    const mute = (await hand2.getByTestId("mute").boundingBox())!;
+    const fader = (await hand2.getByTestId("fader").boundingBox())!;
+    const pan = (await hand2.getByTestId("pan").boundingBox())!;
+    expect(pan.y, "the pan under the fader").toBeGreaterThanOrEqual(fader.y + fader.height - 0.5);
+    expect(pan.y - (mute.y + mute.height), "the pan's distance from the mute (px)").toBeGreaterThan(least);
     for (const tab of await page.getByTestId("tab").all()) {
       expect(await clipped(tab), `tab ${await tab.getAttribute("data-page")}`).toEqual([]);
     }
