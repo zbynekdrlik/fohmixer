@@ -182,7 +182,15 @@ test.describe("The page is its rows of sections around the control column", () =
         if (section.kind !== "group") continue;
         const group = page.locator(`[data-testid="group"][data-group="${section.id}"]`);
         await expect(group.getByTestId("group-title")).toHaveText(section.title ?? "");
-        if (section.color) await expect(group.locator(".group-mark")).toHaveCSS("background-color", rgb(section.color));
+        if (section.color) {
+          await expect(group.locator(".group-mark")).toHaveCSS("background-color", rgb(section.color));
+          // Each strip of the group wears its colour on its top edge.
+          const edges = await page
+            .locator(`.slot[data-group="${section.id}"] [data-testid="strip"]`)
+            .evaluateAll((els) => els.map((e) => getComputedStyle(e, "::before").borderTopColor));
+          expect(edges.length, `strips of ${section.id}`).toBeGreaterThan(0);
+          for (const edge of edges) expect(edge, `${section.id}'s strip edge`).toBe(rgb(section.color));
+        }
       }
     }
     // The strips of a group in its order.

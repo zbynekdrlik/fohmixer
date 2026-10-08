@@ -108,10 +108,11 @@ test("every control owns its touches: its touchstart is prevented, nothing on it
 test("a line wider than the screen keeps its pinned strip; its arrows own their touches and move the rest", async ({ page }) => {
   // #63: a third row of 31 strips puts every row on one line (a tablet's and
   // a desktop's height are under three lines' 1 020 px), which does not fit:
-  // the line shows its pinned strip (a master strip at its end) and a window
-  // over the others, moved by the column's arrows. A master strip at its
-  // end: the group's strips differ, so each shows its instance tag (#63), a
-  // part of a strip that is no control.
+  // the line shows its pinned strip and a window over the others, moved by
+  // the column's arrows. The pinned strip, a master strip sixth in the row,
+  // ends the first window (the right side) and starts the next (the left):
+  // it changes side and must not be rebuilt. The group's strips differ, so
+  // each shows its instance tag (#63), a part of a strip that is no control.
   const LAYOUT = join(__dirname, "..", "..", "tools", "import-tosc", "fixtures", "expected-layout.json");
   const BAND = ["Hand1 #", "Hand2 #", "Hand3 #", "Hand4 #", "Vocal 1 repro#", "Vocal 2 repro#", "Vocal 3 repro#", "Keys 1", "Drums #", "Bass #"];
   const changed = JSON.parse(readFileSync(LAYOUT, "utf-8"));
@@ -121,7 +122,7 @@ test("a line wider than the screen keeps its pinned strip; its arrows own their 
     binding: { instance: "band", anchor: { kind: "track", name } },
     strip_kind: "standard",
   }));
-  strips.push({ kind: "strip", binding: { instance: "master", anchor: { kind: "track", name: "Hand1 #" } }, strip_kind: "standard", pinned: true });
+  strips.splice(5, 0, { kind: "strip", binding: { instance: "master", anchor: { kind: "track", name: "Hand1 #" } }, strip_kind: "standard", pinned: true });
   foh.rows.push({ sections: [{ kind: "group", id: "wide", title: "Wide", controls: strips }] });
   await openSurface(page);
   const group = page.locator('[data-testid="group"][data-group="wide"]');
@@ -146,14 +147,18 @@ test("a line wider than the screen keeps its pinned strip; its arrows own their 
     expect(await prevented(cells.getByTestId("fader").first(), "touchstart"), "a touchstart on a fader in it").toBe(true);
     // ▶ moves the window; the pinned strip stays, the same element (a
     // rebuilt strip would lose the mark, and a finger on it its touch).
+    const slot = page.locator('.slot:has([data-testid="strip"][data-instance="master"][data-track="Hand1 #"])').filter({ has: pinned });
+    await expect(slot).toHaveAttribute("data-side", "right");
     await pinned.evaluate((e) => e.setAttribute("data-e2e-kept", "1"));
     await next.dispatchEvent("pointerdown");
     await expect(where).not.toHaveText(start);
+    await expect(slot).toHaveAttribute("data-side", "left");
     await expect(pinned).toBeVisible();
     await expect(pinned).toHaveAttribute("data-e2e-kept", "1");
     // ◀ brings the first window back.
     await back.dispatchEvent("pointerdown");
     await expect(where).toHaveText(start);
+    await expect(slot).toHaveAttribute("data-side", "right");
     await expect(pinned).toHaveAttribute("data-e2e-kept", "1");
   } finally {
     await harness("/hub/layout/reset");

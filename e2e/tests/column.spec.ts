@@ -203,11 +203,20 @@ test.describe("On a phone on its side", () => {
       expect(drawn, "the wash drawn over the whole screen").toBe(true);
       const covered = await overlay.evaluate((el) => {
         const why: string[] = [];
+        const column = el.closest(".column")!;
         for (let a = el.parentElement; a && a !== document.body; a = a.parentElement) {
           const css = getComputedStyle(a);
           if (Number(css.opacity) < 1) why.push(`${a.className} opacity ${css.opacity}`);
-          if (css.zIndex !== "auto" && a.closest(".column")) why.push(`${a.className} z-index ${css.zIndex}`);
+          // Only the column opens a stacking context (the page's top layer).
+          if (css.zIndex !== "auto" && a !== column) why.push(`${a.className} z-index ${css.zIndex}`);
           if (css.transform !== "none" || css.filter !== "none" || css.contain !== "none") why.push(`${a.className} transform, filter or contain`);
+        }
+        // The column above every other layer of the page.
+        const top = Number(getComputedStyle(column).zIndex);
+        for (const other of document.querySelectorAll(".surface *")) {
+          if (column.contains(other)) continue;
+          const z = Number(getComputedStyle(other).zIndex);
+          if (Number.isFinite(z) && z >= top) why.push(`${other.className} z-index ${z} at or above the column's ${top}`);
         }
         return why;
       });

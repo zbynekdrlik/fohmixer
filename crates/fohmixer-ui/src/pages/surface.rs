@@ -21,7 +21,7 @@ use leptos::prelude::*;
 use serde_json::json;
 
 use crate::app::version_text;
-use crate::arrange::{Arrangement, Cell, Item, METRICS, PageModel, Side, arrange, items};
+use crate::arrange::{Arrangement, Cell, Item, LineKey, METRICS, PageModel, Side, arrange, items};
 use crate::behave::solo::soloed;
 use crate::binding::{SubSpec, choose, page_solos, selected_path, solo_sub, visible_subs};
 use crate::components::{ControlView, Settings, fail_flash, key_of, owns_surface, owns_touches};
@@ -364,9 +364,10 @@ fn PageView(page: Page, global: Vec<Control>, sub: Memo<Option<usize>>) -> impl 
         }
     });
     // Each line's window (a line that does not fit), from the column's
-    // arrows; back to the start when the lines change (a turned screen) or
-    // the sub-page does.
-    let offsets = RwSignal::new(Vec::<usize>::new());
+    // arrows, kept by the line's key (`PageModel::line_key`: its rows, and
+    // the sub-page where the pager is): a turned screen or another sub-page
+    // starts a window at its beginning, the other lines keep theirs.
+    let offsets = RwSignal::new(BTreeMap::<LineKey, usize>::new());
     // Every read below tolerates a disposed value (`try_*`): a layout change
     // disposes the page while its keyed lists' effects may still run once.
     let arranged = {
@@ -377,26 +378,12 @@ fn PageView(page: Page, global: Vec<Control>, sub: Memo<Option<usize>>) -> impl 
             if side <= 0.0 {
                 return None;
             }
-            offsets.try_with(|offsets| arrange(&model, sub, side, height, offsets, &METRICS))
+            offsets.try_with(|offsets| {
+                let offset = |key: &LineKey| offsets.get(key).copied().unwrap_or(0);
+                arrange(&model, sub, side, height, offset, &METRICS)
+            })
         })
     };
-    let shape = Memo::new(move |_| {
-        arranged
-            .try_with(|a| {
-                a.as_ref()
-                    .map(|a| a.lines.iter().map(|l| l.rows.clone()).collect::<Vec<_>>())
-            })
-            .flatten()
-    });
-    Effect::new(
-        move |before: Option<(Option<Vec<Vec<usize>>>, Option<usize>)>| {
-            let now = (shape.try_get().flatten(), sub.try_get().flatten());
-            if before.is_some_and(|before| before != now) {
-                let _ = offsets.try_set(Vec::new());
-            }
-            now
-        },
-    );
     let count = Memo::new(move |_| {
         arranged
             .try_with(|a| a.as_ref().map_or(0, |a| a.lines.len()))
@@ -427,16 +414,22 @@ fn PageView(page: Page, global: Vec<Control>, sub: Memo<Option<usize>>) -> impl 
                 let Some(a) = a else {
                     return String::new();
                 };
-                let rows: Vec<String> = a
+                // Each line's share as `arrange::lines` counts it: its
+                // weight over the lines' (fractions summing to the lines'
+                // count, so the lines fill the height).
+                let line_weights: Vec<f64> = a
                     .lines
                     .iter()
-                    .map(|line| {
-                        let weight = match line.rows.as_slice() {
-                            [row] => weights.get(*row).copied().unwrap_or(1.0),
-                            _ => 1.0,
-                        };
-                        format!("minmax(0,{weight}fr)")
+                    .map(|line| match line.rows.as_slice() {
+                        [row] => weights.get(*row).copied().unwrap_or(1.0),
+                        _ => 1.0,
                     })
+                    .collect();
+                let total: f64 = line_weights.iter().sum();
+                let count = line_weights.len() as f64;
+                let rows: Vec<String> = line_weights
+                    .iter()
+                    .map(|w| format!("minmax(0,{}fr)", w / total * count))
                     .collect();
                 let width = (a.width * 100.0).floor() / 100.0;
                 format!(
@@ -497,12 +490,25 @@ fn LineView(
             .try_with(|a| {
                 a.as_ref()
                     .and_then(|a| a.lines.get(line))
-                    .map(|l| items(l, &METRICS))
+                    .map(items)
                     .unwrap_or_default()
             })
             .unwrap_or_default()
     });
-    let place = format!("grid-row:{};", line + 1);
+    // The line's row, and its left side's span (`--l-units` strips and
+    // `--l-cells` cells): `.split` takes the rest of the left side and the
+    // column, so the right side starts right after the column.
+    let place = move || {
+        let (units, cells) = arranged
+            .try_with(|a| {
+                a.as_ref()
+                    .and_then(|a| a.lines.get(line))
+                    .map(|l| (l.left.iter().map(Cell::units).sum::<f64>(), l.left.len()))
+            })
+            .flatten()
+            .unwrap_or((0.0, 0));
+        format!("grid-row:{};--l-units:{units};--l-cells:{cells};", line + 1)
+    };
     let item = move |item: Item| {
         let model = model.clone();
         view! { <ItemView list=list model=model item=item /> }
@@ -535,7 +541,7 @@ fn ItemView(list: Memo<Vec<Item>>, model: Arc<PageModel>, item: Item) -> impl In
             let Some(group) = model.groups.get(group) else {
                 return ().into_any();
             };
-            let id = group.id.clone().unwrap_or_default();
+            let id = group.id.clone();
             let title = group.title.clone().unwrap_or_default();
             let color = group.color.clone();
             let instance = shared_instance(&group.controls).map(|name| {
@@ -546,7 +552,7 @@ fn ItemView(list: Memo<Vec<Item>>, model: Arc<PageModel>, item: Item) -> impl In
                     </span>
                 }
             });
-            // The title spans its run: `--n` cells, `--u` strips wide.
+            // The title spans its run: `--n` cells, `--units` strips wide.
             let look = move || {
                 let (cells, units) = match now.try_get().flatten() {
                     Some(Item::Title { cells, units, .. }) => (cells, units),
@@ -556,7 +562,7 @@ fn ItemView(list: Memo<Vec<Item>>, model: Arc<PageModel>, item: Item) -> impl In
                     .as_ref()
                     .map(|c| format!("--gc:{c};"))
                     .unwrap_or_default();
-                format!("{mark}--n:{cells};--u:{units};")
+                format!("{mark}--n:{cells};--units:{units};")
             };
             view! {
                 <div class="run-title" data-testid="group" data-group=id data-side=side style=look>
@@ -570,12 +576,15 @@ fn ItemView(list: Memo<Vec<Item>>, model: Arc<PageModel>, item: Item) -> impl In
             .into_any()
         }
         Item::Cell { cell, .. } => {
-            let id = cell
-                .group()
-                .and_then(|g| model.groups.get(g))
-                .and_then(|g| g.id.clone());
+            let group = cell.group().and_then(|g| model.groups.get(g));
+            let id = group.and_then(|g| g.id.clone());
+            // The group's colour on the strip's top edge (`.strip::before`).
+            let look = group
+                .and_then(|g| g.color.as_ref())
+                .map(|c| format!("--gc:{c};"))
+                .unwrap_or_default();
             view! {
-                <div class="slot" data-side=side data-group=id>
+                <div class="slot" data-side=side data-group=id style=look>
                     <CellView model=model cell=cell />
                 </div>
             }
@@ -626,7 +635,7 @@ fn CellView(model: Arc<PageModel>, cell: Cell) -> impl IntoView {
                 .into_iter()
                 .map(|control| view! { <ControlView control=control /> })
                 .collect_view();
-            let width = format!("--u:{units};");
+            let width = format!("--units:{units};");
             view! { <div class="block" class:texts=texts style=width>{views}</div> }.into_any()
         }
         Cell::Blank { .. } => {
@@ -640,7 +649,7 @@ fn CellView(model: Arc<PageModel>, cell: Cell) -> impl IntoView {
 #[component]
 fn ShiftView(
     arranged: Memo<Option<Arrangement>>,
-    offsets: RwSignal<Vec<usize>>,
+    offsets: RwSignal<BTreeMap<LineKey, usize>>,
     line: usize,
 ) -> impl IntoView {
     let shift = Memo::new(move |_| {
@@ -648,20 +657,17 @@ fn ShiftView(
             .try_with(|a| {
                 a.as_ref()
                     .and_then(|a| a.lines.get(line))
-                    .and_then(|l| l.shift)
+                    .and_then(|l| l.shift.map(|s| (l.key.clone(), s)))
             })
             .flatten()
     });
     let step = move |forward: bool| {
-        let Some(Some(now)) = shift.try_get_untracked() else {
+        let Some(Some((key, now))) = shift.try_get_untracked() else {
             return;
         };
         let next = now.moved(forward);
         let _ = offsets.try_update(|all| {
-            if all.len() <= line {
-                all.resize(line + 1, 0);
-            }
-            all[line] = next;
+            all.insert(key, next);
         });
     };
     let on_back = move |ev: web_sys::PointerEvent| {
@@ -672,7 +678,7 @@ fn ShiftView(
         ev.prevent_default();
         step(true);
     };
-    let now = move || shift.try_get().flatten();
+    let now = move || shift.try_get().flatten().map(|(_, s)| s);
     let at_start = move || now().is_none_or(|s| s.offset == 0);
     let at_end = move || now().is_none_or(|s| s.offset >= s.last);
     let label = move || now().map(|s| s.label()).unwrap_or_default();

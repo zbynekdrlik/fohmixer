@@ -74,7 +74,7 @@ pub enum Cell {
 
 impl Cell {
     /// How many strips wide the cell is.
-    pub fn units(&self, m: &Metrics) -> f64 {
+    pub fn units(&self) -> f64 {
         match self {
             Cell::Control { units, .. } | Cell::Block { units, .. } => *units,
             Cell::Blank { .. } => 1.0,
@@ -166,6 +166,24 @@ impl PageModel {
     /// The rows' weights (their shares of the height).
     pub fn weights(&self) -> &[f64] {
         &self.weights
+    }
+
+    /// The row that holds the pager, if any.
+    pub fn pager_row(&self) -> Option<usize> {
+        self.rows
+            .iter()
+            .position(|parts| parts.iter().any(|p| matches!(p, Part::Pager(_))))
+    }
+
+    /// What a line's window is kept for: its rows, and the shown sub-page
+    /// when one of them holds the pager (another sub-page starts its window
+    /// over, the other lines keep theirs).
+    pub fn line_key(&self, rows: &[usize], sub: Option<usize>) -> LineKey {
+        let paged = self.pager_row().is_some_and(|row| rows.contains(&row));
+        LineKey {
+            rows: rows.to_vec(),
+            sub: if paged { sub } else { None },
+        }
     }
 
     /// The control at `at`.
@@ -283,7 +301,7 @@ pub fn lines(weights: &[f64], height: f64, m: &Metrics) -> Vec<Vec<usize>> {
 
 /// The px `cells` take side by side with strips `width` wide.
 pub fn span(cells: &[Cell], width: f64, m: &Metrics) -> f64 {
-    let units: f64 = cells.iter().map(|c| c.units(m)).sum();
+    let units: f64 = cells.iter().map(|c| c.units()).sum();
     units * width + cells.len().saturating_sub(1) as f64 * m.gap
 }
 
@@ -307,7 +325,7 @@ pub fn fit(left: &[Cell], right: &[Cell], side: f64, m: &Metrics) -> f64 {
     [left, right]
         .iter()
         .filter_map(|half| {
-            let units: f64 = half.iter().map(|c| c.units(m)).sum();
+            let units: f64 = half.iter().map(|c| c.units()).sum();
             (units > 0.0).then(|| (side - half.len().saturating_sub(1) as f64 * m.gap) / units)
         })
         .fold(f64::INFINITY, f64::min)
@@ -410,10 +428,19 @@ pub fn shown(cells: &[Cell], side: f64, offset: usize, m: &Metrics) -> (Vec<Cell
     (window(&real, offset, free), Some(shift))
 }
 
-/// One line as arranged: the page rows it holds, its halves and its window.
+/// What a line's window is kept for (`PageModel::line_key`).
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct LineKey {
+    pub rows: Vec<usize>,
+    pub sub: Option<usize>,
+}
+
+/// One line as arranged: the page rows it holds (and its window's key), its
+/// halves and its window.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LineArrangement {
     pub rows: Vec<usize>,
+    pub key: LineKey,
     pub left: Vec<Cell>,
     pub right: Vec<Cell>,
     pub shift: Option<Shift>,
@@ -427,24 +454,34 @@ pub struct Arrangement {
 }
 
 /// The page arranged with its pager on sub-page `sub`, a side `side` px
-/// wide and the lines `height` px high together, each line's window at its
-/// `offsets` entry (0 when it has none).
+/// wide and the lines `height` px high together, each line's window at
+/// `offset(its key)`. A block wider than a side at the narrowest strip is
+/// narrowed to the side.
 pub fn arrange(
     model: &PageModel,
     sub: Option<usize>,
     side: f64,
     height: f64,
-    offsets: &[usize],
+    offset: impl Fn(&LineKey) -> usize,
     m: &Metrics,
 ) -> Arrangement {
     let mut width = m.max;
     let mut out = Vec::new();
-    for (index, rows) in lines(model.weights(), height, m).into_iter().enumerate() {
+    let widest = (side / m.min).max(1.0);
+    for rows in lines(model.weights(), height, m) {
         let cells: Vec<Cell> = rows
             .iter()
             .flat_map(|row| row_cells(model, *row, sub, m))
+            .map(|cell| match cell {
+                Cell::Block { group, units } => Cell::Block {
+                    group,
+                    units: units.min(widest),
+                },
+                other => other,
+            })
             .collect();
-        let offset = offsets.get(index).copied().unwrap_or(0);
+        let key = model.line_key(&rows, sub);
+        let offset = offset(&key);
         let (cells, shift) = shown(&cells, side, offset, m);
         let at = split(&cells, m);
         // A line with a window takes the narrowest strip: its window moves,
@@ -457,6 +494,7 @@ pub fn arrange(
         width = width.min(line_width);
         out.push(LineArrangement {
             rows,
+            key,
             left: cells[..at].to_vec(),
             right: cells[at..].to_vec(),
             shift,
@@ -545,7 +583,7 @@ impl Item {
 
 /// A line as one list, the left half's then the right half's: each run of
 /// a group's cells after its title (a run of blanks has none).
-pub fn items(line: &LineArrangement, m: &Metrics) -> Vec<Item> {
+pub fn items(line: &LineArrangement) -> Vec<Item> {
     let mut out = Vec::new();
     let mut titles: Vec<usize> = Vec::new();
     for (side, half) in [(Side::Left, &line.left), (Side::Right, &line.right)] {
@@ -558,7 +596,7 @@ pub fn items(line: &LineArrangement, m: &Metrics) -> Vec<Item> {
                     group,
                     side,
                     cells: run.cells.len(),
-                    units: run.cells.iter().map(|c| c.units(m)).sum(),
+                    units: run.cells.iter().map(|c| c.units()).sum(),
                 });
             }
             out.extend(run.cells.iter().map(|&cell| Item::Cell { cell, side }));
