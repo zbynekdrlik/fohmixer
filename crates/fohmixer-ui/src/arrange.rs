@@ -1,17 +1,21 @@
 //! Where the controls go (#63, the owner's design of 2026-10-08): one
 //! control column in the middle of every screen, the page's rows cut in two
 //! by it. Each row is a line of its own while every line keeps a long fader
-//! (`Metrics::line_min` of height); a lower screen shows one line holding
-//! the rows in order. A line is a run of cells, each a strip wide (a wide
-//! strip 1.1) and one gap apart, cut where its halves are most even. One
-//! strip width serves every line: the widest at which each line's halves
-//! fit a side. A line that does not fit at the narrowest width shows its
-//! pinned cells and a window over the others, which the column's arrows
-//! move. A pager's sub-pages share one region of slots: a pinned control
-//! keeps its slot on every sub-page and the slots are one unit each, so
-//! nothing after the region moves when the sub-page changes. The layout's
-//! own order is kept everywhere: which strips sit where is the owner's
-//! choice. This module is pure; `pages::surface` measures and renders.
+//! (`Metrics::line_min` of height, by the rows' weights); a lower screen
+//! shows one line holding the rows in order. A line is a run of cells, each
+//! a strip wide (a wide strip 1.1) and one gap apart, cut where its halves
+//! are most even. One strip width serves every line: the widest at which
+//! each line's halves fit a side (a line with a window: the narrowest, so a
+//! shift resizes nothing). A line that does not fit at the narrowest width
+//! shows its pinned cells and a window over the others, which the column's
+//! arrows move. A pager's sub-pages share one region of slots: a pinned
+//! control keeps its slot on every sub-page and the slots are one unit
+//! each, so nothing after the region moves when the sub-page changes. A
+//! line renders as one keyed list of its cells and its groups' titles
+//! (`items`), each on its side, so a cell that changes side or group run
+//! moves without being rebuilt. The layout's own order is kept everywhere:
+//! which strips sit where is the owner's choice. This module is pure;
+//! `pages::surface` measures and renders.
 
 use fohmixer_proto::layout::{Control, Group, Page, Section};
 
@@ -23,7 +27,7 @@ mod tests;
 /// The arrangement's measures (px): keep them equal to the stylesheet.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Metrics {
-    /// Between two cells (`.half` and `.group-body` gaps).
+    /// Between two cells (`.line`'s gap).
     pub gap: f64,
     /// The strip width's bounds.
     pub min: f64,
@@ -34,6 +38,8 @@ pub struct Metrics {
     pub block: f64,
     /// The least height of a line while each row is a line of its own.
     pub line_min: f64,
+    /// Between two lines (`.body`'s gap).
+    pub line_gap: f64,
 }
 
 /// The surface's measures.
@@ -44,6 +50,7 @@ pub const METRICS: Metrics = Metrics {
     wide: 1.1,
     block: 2.4,
     line_min: 340.0,
+    line_gap: 6.0,
 };
 
 /// A control of the page: its group's index in [`PageModel::groups`] and
@@ -59,8 +66,8 @@ pub struct At {
 pub enum Cell {
     /// A control, `units` strips wide; `pinned` never leaves the screen.
     Control { at: At, units: f64, pinned: bool },
-    /// A group of buttons or texts, as one block.
-    Block { group: usize },
+    /// A group of buttons or texts, as one block `units` strips wide.
+    Block { group: usize, units: f64 },
     /// A pager slot the shown sub-page leaves empty.
     Blank { slot: usize },
 }
@@ -69,8 +76,7 @@ impl Cell {
     /// How many strips wide the cell is.
     pub fn units(&self, m: &Metrics) -> f64 {
         match self {
-            Cell::Control { units, .. } => *units,
-            Cell::Block { .. } => m.block,
+            Cell::Control { units, .. } | Cell::Block { units, .. } => *units,
             Cell::Blank { .. } => 1.0,
         }
     }
@@ -84,7 +90,7 @@ impl Cell {
     pub fn group(&self) -> Option<usize> {
         match self {
             Cell::Control { at, .. } => Some(at.group),
-            Cell::Block { group } => Some(*group),
+            Cell::Block { group, .. } => Some(*group),
             Cell::Blank { .. } => None,
         }
     }
@@ -93,7 +99,7 @@ impl Cell {
     pub fn key(&self) -> String {
         match self {
             Cell::Control { at, .. } => format!("c{}-{}", at.group, at.control),
-            Cell::Block { group } => format!("b{group}"),
+            Cell::Block { group, .. } => format!("b{group}"),
             Cell::Blank { slot } => format!("s{slot}"),
         }
     }
@@ -108,11 +114,12 @@ enum Part {
 }
 
 /// A page as the arrangement reads it: every group once (the rows' and the
-/// pager's sub-pages', in document order) and its rows.
+/// pager's sub-pages', in document order), its rows and their weights.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PageModel {
     pub groups: Vec<Group>,
     rows: Vec<Vec<Part>>,
+    weights: Vec<f64>,
 }
 
 impl PageModel {
@@ -143,12 +150,22 @@ impl PageModel {
             }
             rows.push(parts);
         }
-        PageModel { groups, rows }
+        let weights = page.rows.iter().map(|row| row.weight).collect();
+        PageModel {
+            groups,
+            rows,
+            weights,
+        }
     }
 
     /// How many rows the page has.
     pub fn rows(&self) -> usize {
         self.rows.len()
+    }
+
+    /// The rows' weights (their shares of the height).
+    pub fn weights(&self) -> &[f64] {
+        &self.weights
     }
 
     /// The control at `at`.
@@ -157,15 +174,20 @@ impl PageModel {
     }
 }
 
-/// A group's cells: each control one (a wide strip `m.wide` units, but one
-/// unit in a pager's region, whose slots all are); a group without a column
-/// control is one block; an empty group nothing.
+/// A group's cells: each control one (a wide strip `m.wide` units), a
+/// group without a column control one block (`m.block` units), an empty
+/// group nothing; in a pager's region every cell is one unit, so its slots
+/// are all as wide and the region's width never changes.
 fn group_cells(group: &Group, index: usize, region: bool, m: &Metrics) -> Vec<Cell> {
     if group.controls.is_empty() {
         return Vec::new();
     }
     if !group.controls.iter().any(is_column) {
-        return vec![Cell::Block { group: index }];
+        let units = if region { 1.0 } else { m.block };
+        return vec![Cell::Block {
+            group: index,
+            units,
+        }];
     }
     group
         .controls
@@ -240,12 +262,19 @@ pub fn row_cells(model: &PageModel, row: usize, sub: Option<usize>, m: &Metrics)
         .collect()
 }
 
-/// The page's `rows` as lines in `height` px: each row its own line while
-/// every line keeps `m.line_min`; otherwise one line holding them all.
-pub fn lines(rows: usize, height: f64, m: &Metrics) -> Vec<Vec<usize>> {
+/// The page's rows (their `weights`) as lines in `height` px: each row its
+/// own line while every line keeps `m.line_min` of its share (by weight,
+/// the gaps between the lines taken first); otherwise one line holding them
+/// all.
+pub fn lines(weights: &[f64], height: f64, m: &Metrics) -> Vec<Vec<usize>> {
+    let rows = weights.len();
     if rows == 0 {
-        Vec::new()
-    } else if height >= m.line_min * rows as f64 {
+        return Vec::new();
+    }
+    let room = height - (rows - 1) as f64 * m.line_gap;
+    let total: f64 = weights.iter().sum();
+    let lightest = weights.iter().copied().fold(f64::INFINITY, f64::min);
+    if room * lightest >= m.line_min * total {
         (0..rows).map(|row| vec![row]).collect()
     } else {
         vec![(0..rows).collect()]
@@ -309,11 +338,13 @@ fn window(cells: &[Cell], offset: usize, free: usize) -> Vec<Cell> {
         .collect()
 }
 
-/// A line's window: the first of its other cells shown, how many show (the
-/// arrows' step), the last first one and how many other cells there are.
+/// A line's window: the first of its other cells shown, how many show
+/// (`free`; the arrows' step is at least one), the last first one and how
+/// many other cells there are.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Shift {
     pub offset: usize,
+    pub free: usize,
     pub step: usize,
     pub last: usize,
     pub total: usize,
@@ -331,9 +362,12 @@ impl Shift {
     }
 
     /// Where the window stands, for the column: the numbers of its first
-    /// and last other cells, of how many.
+    /// and last other cells, of how many (none shown: 0 of how many).
     pub fn label(self) -> String {
-        let end = (self.offset + self.step).min(self.total);
+        if self.free == 0 {
+            return format!("0/{}", self.total);
+        }
+        let end = (self.offset + self.free).min(self.total);
         format!("{}–{end}/{}", self.offset + 1, self.total)
     }
 }
@@ -368,6 +402,7 @@ pub fn shown(cells: &[Cell], side: f64, offset: usize, m: &Metrics) -> (Vec<Cell
         .unwrap_or(0);
     let shift = Shift {
         offset,
+        free,
         step: free.max(1),
         last,
         total,
@@ -404,7 +439,7 @@ pub fn arrange(
 ) -> Arrangement {
     let mut width = m.max;
     let mut out = Vec::new();
-    for (index, rows) in lines(model.rows(), height, m).into_iter().enumerate() {
+    for (index, rows) in lines(model.weights(), height, m).into_iter().enumerate() {
         let cells: Vec<Cell> = rows
             .iter()
             .flat_map(|row| row_cells(model, *row, sub, m))
@@ -412,7 +447,14 @@ pub fn arrange(
         let offset = offsets.get(index).copied().unwrap_or(0);
         let (cells, shift) = shown(&cells, side, offset, m);
         let at = split(&cells, m);
-        width = width.min(fit(&cells[..at], &cells[at..], side, m));
+        // A line with a window takes the narrowest strip: its window moves,
+        // the strips keep their width.
+        let line_width = if shift.is_some() {
+            m.min
+        } else {
+            fit(&cells[..at], &cells[at..], side, m)
+        };
+        width = width.min(line_width);
         out.push(LineArrangement {
             rows,
             left: cells[..at].to_vec(),
@@ -454,6 +496,72 @@ pub fn runs(cells: &[Cell]) -> Vec<Run> {
                     cells: vec![*cell],
                 });
             }
+        }
+    }
+    out
+}
+
+/// A side of the column.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Side {
+    Left,
+    Right,
+}
+
+/// One item of a line's keyed list: a group's title over its run of cells
+/// on one side (`cells` of them, `units` strips wide), or a cell.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Item {
+    Title {
+        key: String,
+        group: usize,
+        side: Side,
+        cells: usize,
+        units: f64,
+    },
+    Cell {
+        cell: Cell,
+        side: Side,
+    },
+}
+
+impl Item {
+    /// Its key in the line's list: a title by its group and how many titles
+    /// of that group come before it in the line, a cell by the cell's.
+    pub fn key(&self) -> String {
+        match self {
+            Item::Title { key, .. } => key.clone(),
+            Item::Cell { cell, .. } => cell.key(),
+        }
+    }
+
+    /// The side of the column it sits on.
+    pub fn side(&self) -> Side {
+        match self {
+            Item::Title { side, .. } | Item::Cell { side, .. } => *side,
+        }
+    }
+}
+
+/// A line as one list, the left half's then the right half's: each run of
+/// a group's cells after its title (a run of blanks has none).
+pub fn items(line: &LineArrangement, m: &Metrics) -> Vec<Item> {
+    let mut out = Vec::new();
+    let mut titles: Vec<usize> = Vec::new();
+    for (side, half) in [(Side::Left, &line.left), (Side::Right, &line.right)] {
+        for run in runs(half) {
+            if let Some(group) = run.group {
+                let before = titles.iter().filter(|g| **g == group).count();
+                titles.push(group);
+                out.push(Item::Title {
+                    key: format!("t{group}-{before}"),
+                    group,
+                    side,
+                    cells: run.cells.len(),
+                    units: run.cells.iter().map(|c| c.units(m)).sum(),
+                });
+            }
+            out.extend(run.cells.iter().map(|&cell| Item::Cell { cell, side }));
         }
     }
     out

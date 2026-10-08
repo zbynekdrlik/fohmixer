@@ -21,7 +21,7 @@ use leptos::prelude::*;
 use serde_json::json;
 
 use crate::app::version_text;
-use crate::arrange::{Arrangement, Cell, METRICS, PageModel, Run, arrange, runs};
+use crate::arrange::{Arrangement, Cell, Item, METRICS, PageModel, Side, arrange, items};
 use crate::behave::solo::soloed;
 use crate::binding::{SubSpec, choose, page_solos, selected_path, solo_sub, visible_subs};
 use crate::components::{ControlView, Settings, fail_flash, key_of, owns_surface, owns_touches};
@@ -340,9 +340,9 @@ fn DeckTab() -> impl IntoView {
     }
 }
 
-/// A page: its lines' halves on both sides of the column (the column: its
-/// head, the arrows of the lines that do not fit, the rail and the global
-/// controls at its foot).
+/// A page: its lines, each cut in two by the column (the column: its head,
+/// the arrows of the lines that do not fit, the rail and the global controls
+/// at its foot).
 #[component]
 fn PageView(page: Page, global: Vec<Control>, sub: Memo<Option<usize>>) -> impl IntoView {
     let nav = expect_context::<Nav>();
@@ -363,7 +363,9 @@ fn PageView(page: Page, global: Vec<Control>, sub: Memo<Option<usize>>) -> impl 
             let _ = room.try_set((side.max(0.0), height.max(0.0)));
         }
     });
-    // Each line's window (a line that does not fit), from the column's arrows.
+    // Each line's window (a line that does not fit), from the column's
+    // arrows; back to the start when the lines change (a turned screen) or
+    // the sub-page does.
     let offsets = RwSignal::new(Vec::<usize>::new());
     // Every read below tolerates a disposed value (`try_*`): a layout change
     // disposes the page while its keyed lists' effects may still run once.
@@ -378,6 +380,23 @@ fn PageView(page: Page, global: Vec<Control>, sub: Memo<Option<usize>>) -> impl 
             offsets.try_with(|offsets| arrange(&model, sub, side, height, offsets, &METRICS))
         })
     };
+    let shape = Memo::new(move |_| {
+        arranged
+            .try_with(|a| {
+                a.as_ref()
+                    .map(|a| a.lines.iter().map(|l| l.rows.clone()).collect::<Vec<_>>())
+            })
+            .flatten()
+    });
+    Effect::new(
+        move |before: Option<(Option<Vec<Vec<usize>>>, Option<usize>)>| {
+            let now = (shape.try_get().flatten(), sub.try_get().flatten());
+            if before.is_some_and(|before| before != now) {
+                let _ = offsets.try_set(Vec::new());
+            }
+            now
+        },
+    );
     let count = Memo::new(move |_| {
         arranged
             .try_with(|a| a.as_ref().map_or(0, |a| a.lines.len()))
@@ -436,19 +455,15 @@ fn PageView(page: Page, global: Vec<Control>, sub: Memo<Option<usize>>) -> impl 
         .into_iter()
         .map(|control| view! { <ControlView control=control /> })
         .collect_view();
-    let halves = move |line: usize| {
-        let left = model.clone();
-        let right = model.clone();
-        view! {
-            <HalfView arranged=arranged model=left line=line side=Side::Left />
-            <HalfView arranged=arranged model=right line=line side=Side::Right />
-        }
+    let line_view = move |line: usize| {
+        let model = model.clone();
+        view! { <LineView arranged=arranged model=model line=line /> }
     };
     let shift =
         move |line: usize| view! { <ShiftView arranged=arranged offsets=offsets line=line /> };
     view! {
         <div class="body" data-testid="page" data-page=page.id node_ref=body_ref style=body_style>
-            <For each=move || 0..count.try_get().unwrap_or(0) key=|line| *line children=halves />
+            <For each=move || 0..count.try_get().unwrap_or(0) key=|line| *line children=line_view />
             <nav class="column" data-testid="column" node_ref=column_ref>
                 <ColumnHead />
                 <div class="shifts">
@@ -467,118 +482,106 @@ fn PageView(page: Page, global: Vec<Control>, sub: Memo<Option<usize>>) -> impl 
     }
 }
 
-/// A side of the page.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Side {
-    Left,
-    Right,
-}
-
-/// One line's half on one side: its runs of a group's cells, keyed.
+/// One line: its items in one keyed list (`arrange::items`), each on its
+/// side of the column (`page.css` orders the left side's, `.split` as wide
+/// as the column, the right side's), so a cell that changes side or group
+/// run moves and is not rebuilt.
 #[component]
-fn HalfView(
+fn LineView(
     arranged: Memo<Option<Arrangement>>,
     model: Arc<PageModel>,
     line: usize,
-    side: Side,
 ) -> impl IntoView {
-    let half = Memo::new(move |_| {
+    let list = Memo::new(move |_| {
         arranged
             .try_with(|a| {
                 a.as_ref()
                     .and_then(|a| a.lines.get(line))
-                    .map(|l| match side {
-                        Side::Left => runs(&l.left),
-                        Side::Right => runs(&l.right),
-                    })
+                    .map(|l| items(l, &METRICS))
                     .unwrap_or_default()
             })
             .unwrap_or_default()
     });
-    let (column, name) = match side {
-        Side::Left => (1, "left"),
-        Side::Right => (3, "right"),
-    };
-    let place = format!("grid-row:{};grid-column:{column};", line + 1);
-    let run = move |run: Run| {
+    let place = format!("grid-row:{};", line + 1);
+    let item = move |item: Item| {
         let model = model.clone();
-        view! { <RunView half=half model=model run=run /> }
+        view! { <ItemView list=list model=model item=item /> }
     };
     view! {
-        <div class="half" data-testid="half" data-line=line.to_string() data-side=name style=place>
-            <For
-                each=move || half.try_get().unwrap_or_default()
-                key=|run| run.key.clone()
-                children=run
-            />
+        <div class="line" data-testid="line" data-line=line.to_string() style=place>
+            <div class="split" aria-hidden="true"></div>
+            <For each=move || list.try_get().unwrap_or_default() key=Item::key children=item />
         </div>
     }
 }
 
-/// A run: one group's cells side by side under the group's title (its
-/// marker, its title and the instance its strips share, #63); a run of
-/// blanks has an empty title line.
+/// One item of a line: a group's title (its marker, its title and the
+/// instance its strips share, #63) over its run of cells, or a cell. Its
+/// side and a title's run are read from the line by its key (a keyed list
+/// keeps the item it was made with).
 #[component]
-fn RunView(half: Memo<Vec<Run>>, model: Arc<PageModel>, run: Run) -> impl IntoView {
-    let key = run.key.clone();
-    let cells = Memo::new(move |_| {
-        half.try_with(|runs| {
-            runs.iter()
-                .find(|r| r.key == key)
-                .map(|r| r.cells.clone())
-                .unwrap_or_default()
-        })
-        .unwrap_or_default()
+fn ItemView(list: Memo<Vec<Item>>, model: Arc<PageModel>, item: Item) -> impl IntoView {
+    let id = item.key();
+    let now = Memo::new(move |_| {
+        list.try_with(|all| all.iter().find(|i| i.key() == id).cloned())
+            .flatten()
     });
-    let cell_model = model.clone();
-    let cell = move |cell: Cell| {
-        let model = cell_model.clone();
-        view! { <CellView model=model cell=cell /> }
+    let side = move || match now.try_get().flatten().map_or(Side::Left, |i| i.side()) {
+        Side::Left => "left",
+        Side::Right => "right",
     };
-    let body = view! {
-        <div class="group-body">
-            <For
-                each=move || cells.try_get().unwrap_or_default()
-                key=Cell::key
-                children=cell
-            />
-        </div>
-    };
-    let Some(group) = run.group.and_then(|g| model.groups.get(g)) else {
-        return view! {
-            <section class="group blanks">
-                <h2 class="group-title"></h2>
-                {body}
-            </section>
+    match item {
+        Item::Title { group, .. } => {
+            let Some(group) = model.groups.get(group) else {
+                return ().into_any();
+            };
+            let id = group.id.clone().unwrap_or_default();
+            let title = group.title.clone().unwrap_or_default();
+            let color = group.color.clone();
+            let instance = shared_instance(&group.controls).map(|name| {
+                let instance_attr = name.clone();
+                view! {
+                    <span class="group-instance" data-testid="group-instance" data-instance=instance_attr>
+                        {name}
+                    </span>
+                }
+            });
+            // The title spans its run: `--n` cells, `--u` strips wide.
+            let look = move || {
+                let (cells, units) = match now.try_get().flatten() {
+                    Some(Item::Title { cells, units, .. }) => (cells, units),
+                    _ => (1, 1.0),
+                };
+                let mark = color
+                    .as_ref()
+                    .map(|c| format!("--gc:{c};"))
+                    .unwrap_or_default();
+                format!("{mark}--n:{cells};--u:{units};")
+            };
+            view! {
+                <div class="run-title" data-testid="group" data-group=id data-side=side style=look>
+                    <h2 class="group-title">
+                        <i class="group-mark"></i>
+                        <span data-testid="group-title">{title}</span>
+                        {instance}
+                    </h2>
+                </div>
+            }
+            .into_any()
         }
-        .into_any();
-    };
-    let look = group
-        .color
-        .as_ref()
-        .map(|c| format!("--gc:{c};"))
-        .unwrap_or_default();
-    let id = group.id.clone().unwrap_or_default();
-    let title = group.title.clone().unwrap_or_default();
-    let instance = shared_instance(&group.controls).map(|name| {
-        let instance_attr = name.clone();
-        view! {
-            <span class="group-instance" data-testid="group-instance" data-instance=instance_attr>
-                {name}
-            </span>
+        Item::Cell { cell, .. } => {
+            let id = cell
+                .group()
+                .and_then(|g| model.groups.get(g))
+                .and_then(|g| g.id.clone());
+            view! {
+                <div class="slot" data-side=side data-group=id>
+                    <CellView model=model cell=cell />
+                </div>
+            }
+            .into_any()
         }
-    });
-    view! {
-        <section class="group" data-testid="group" data-group=id style=look>
-            <h2 class="group-title">
-                <i class="group-mark"></i>
-                <span data-testid="group-title">{title}</span>
-                {instance}
-            </h2>
-            {body}
-        </section>
     }
-    .into_any()
 }
 
 /// One cell: a control (in a pager's slot a wide strip is one strip wide),
@@ -612,7 +615,7 @@ fn CellView(model: Arc<PageModel>, cell: Cell) -> impl IntoView {
                 .into_any()
             }
         }
-        Cell::Block { group } => {
+        Cell::Block { group, units } => {
             let controls = model
                 .groups
                 .get(group)
@@ -623,7 +626,8 @@ fn CellView(model: Arc<PageModel>, cell: Cell) -> impl IntoView {
                 .into_iter()
                 .map(|control| view! { <ControlView control=control /> })
                 .collect_view();
-            view! { <div class="block" class:texts=texts>{views}</div> }.into_any()
+            let width = format!("--u:{units};");
+            view! { <div class="block" class:texts=texts style=width>{views}</div> }.into_any()
         }
         Cell::Blank { .. } => {
             view! { <div class="strip blank" data-testid="blank"></div> }.into_any()
@@ -719,7 +723,10 @@ fn SoloClear(bindings: Vec<Binding>) -> impl IntoView {
     // The pill owns its touches (#43 PR G) and names the solos it clears.
     let touch_keys: Vec<String> = solos.iter().map(|(spec, _)| key_of(spec)).collect();
     let any = Memo::new(move |_| {
-        let states: Vec<Option<bool>> = slots.iter().map(|s| s.with(Slot::flag)).collect();
+        let states: Vec<Option<bool>> = slots
+            .iter()
+            .map(|s| s.try_with(Slot::flag).flatten())
+            .collect();
         !soloed(&states).is_empty()
     });
     let solos = StoredValue::new(solos);
@@ -750,10 +757,10 @@ fn SoloClear(bindings: Vec<Binding>) -> impl IntoView {
             type="button"
             class="solo-clear"
             use:owns_touches=touch_keys
-            class:on=move || any.get()
-            class:failed=move || failed.get()
+            class:on=move || any.try_get().unwrap_or(false)
+            class:failed=move || failed.try_get().unwrap_or(false)
             data-testid="solo-clear"
-            data-on=move || any.get().to_string()
+            data-on=move || any.try_get().unwrap_or(false).to_string()
             on:pointerdown=on_down
         >
             "SOLO ✕"

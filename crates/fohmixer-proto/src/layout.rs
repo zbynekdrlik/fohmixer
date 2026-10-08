@@ -48,7 +48,8 @@ pub struct LayoutResponse {
     pub layout: Layout,
 }
 
-/// A top-level page (a tab of the top bar): its rail and its rows.
+/// A top-level page (a tab in the control column, #63): its rail and its
+/// rows.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Page {
@@ -105,7 +106,7 @@ pub struct Group {
 }
 
 /// A nested pager: its sub-pages, the one shown first, and its tabs in the
-/// top bar.
+/// control column (#63).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Pager {

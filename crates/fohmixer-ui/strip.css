@@ -168,9 +168,9 @@
     grid-template-rows: minmax(0, 1fr);
     gap: 3px;
     min-height: 0;
-    /* The cap's lower half at −∞ (11 px) stays clear of the pan under the
-       zone (#63): this padding and the strip's 3 px gap. */
-    padding: 8px 0 8px;
+    /* The cap's lower half at −∞ (11 px) stays 2 px clear of the pan
+       under the zone (#63): this padding and the strip's 3 px gap. */
+    padding: 8px 0 10px;
 }
 
 .strip-fz .scale {

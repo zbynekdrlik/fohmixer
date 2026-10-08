@@ -98,7 +98,8 @@
     gap: 4px;
 }
 
-.column .shift-btn {
+/* `.btn.shift-btn`: above `.column .btn` (its padding and minimum height). */
+.column .btn.shift-btn {
     min-height: 36px;
     padding: 0;
     justify-content: center;
@@ -107,11 +108,11 @@
     text-align: center;
 }
 
-.column .shift-btn::before {
+.column .btn.shift-btn::before {
     display: none;
 }
 
-.column .shift-btn.end {
+.column .btn.shift-btn.end {
     opacity: 0.35;
 }
 
@@ -140,7 +141,7 @@
     align-content: start;
     gap: 4px;
     min-height: 0;
-    overflow: hidden;
+    overflow-y: auto;
 }
 
 .rail-foot {
@@ -163,36 +164,62 @@
     min-height: 36px;
 }
 
-/* A line's half: runs of a group's cells, one gap (arrange.rs METRICS.gap)
-   between any two cells, a group's or not: a pager's region keeps one
-   width whichever sub-page it shows. */
-.half {
+/* A line (#63): one row of its items (surface.rs LineView), the left
+   side's, then `.split` as wide as the column, then the right side's; one
+   gap (arrange.rs METRICS.gap) between any two cells, a group's or not. It
+   spans the page's three columns: the column, later in the page, lies over
+   the split and takes its touches (the line is no positioned box, so it
+   is not drawn above the column). The titles take the line's top 16 px.
+   Nothing is clipped: the strip width fits the halves (a held strip's
+   ring stays whole). */
+.line {
     display: flex;
+    grid-column: 1 / -1;
     gap: 4px;
     min-width: 0;
     min-height: 0;
-    overflow: hidden;
+    padding-top: 16px;
 }
 
-/* A run: the group's title line (its colour on top) over its cells. The
-   title never widens the run (`width: 0; min-width: 100%`: it takes no
-   room of its own and the run's width). */
-.group {
-    display: flex;
+.line > [data-side="left"] {
+    order: 0;
+}
+
+.line > .split {
+    flex: 1 0 calc(var(--col) + 4px);
+    order: 1;
+}
+
+.line > [data-side="right"] {
+    order: 2;
+}
+
+/* A cell's place: the strip (or button, block, blank) fills its height. */
+.slot {
+    display: grid;
     flex: none;
-    flex-direction: column;
-    gap: 2px;
     min-width: 0;
     min-height: 0;
 }
 
-.group-title {
-    display: flex;
+/* A group's title before its run: no width of its own (its negative
+   margin takes back the gap after it), its line laid over the run's top,
+   `--n` cells and `--u` strips wide. */
+.run-title {
+    position: relative;
     flex: none;
+    width: 0;
+    margin-right: -4px;
+}
+
+.group-title {
+    position: absolute;
+    top: -16px;
+    left: 0;
+    display: flex;
     align-items: center;
     gap: 5px;
-    width: 0;
-    min-width: 100%;
+    width: calc(var(--strip-w, 76px) * var(--u, 1) + (var(--n, 1) - 1) * 4px);
     height: 14px;
     margin: 0;
     padding: 0 4px;
@@ -203,10 +230,6 @@
     letter-spacing: 1.2px;
     text-transform: uppercase;
     white-space: nowrap;
-}
-
-.group.blanks .group-title {
-    border-top-color: transparent;
 }
 
 .group-title > [data-testid="group-title"] {
@@ -239,37 +262,32 @@
     background: var(--gc, var(--accent));
 }
 
-.group-body {
-    display: flex;
-    flex: 1;
-    gap: 4px;
-    min-height: 0;
-}
-
 /* A button in a group of strips: one strip wide. */
 .cell {
     display: grid;
-    flex: none;
     align-content: start;
     width: var(--strip-w, 76px);
 }
 
-/* A group of buttons (the cue page) as one block, METRICS.block strips
-   wide; a group of texts one line each. */
+/* A group of buttons (the cue page) as one block, `--u` strips wide
+   (arrange.rs: METRICS.block, one in a pager's region); its buttons share
+   its height, up to 72 px each. A group of texts: one line each. */
 .block {
     display: grid;
-    flex: none;
-    grid-auto-rows: minmax(44px, 72px);
+    grid-auto-rows: minmax(0, 72px);
     align-content: start;
     gap: 6px;
-    width: calc(var(--strip-w, 76px) * 2.4);
+    width: calc(var(--strip-w, 76px) * var(--u, 2.4));
+    min-height: 0;
     padding: 6px;
+    overflow: hidden;
     border: 1px solid var(--line-soft);
     border-radius: 12px;
     background: var(--section);
 }
 
 .block .btn {
+    min-height: 0;
     padding-left: 20px;
     font-size: 14px;
     text-align: center;
@@ -303,7 +321,7 @@
         gap: 4px;
     }
 
-    .column .shift-btn,
+    .column .btn.shift-btn,
     .rail-foot .btn {
         min-height: 28px;
     }

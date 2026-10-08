@@ -11,8 +11,8 @@ import { centre, frames, harness, hubEvents, openSurface, pageEvents, ready, str
 // that calls `preventDefault` does (WebKit bug 231161). So every control's
 // root prevents its `touchstart` (Pointer Events stay the input path), the
 // surface prevents `contextmenu`, `selectstart` and `dragstart`, no element of
-// it can be dragged or selected, and the page's background (a half of a line,
-// the column) keeps its touches. The page's flight recorder records
+// it can be dragged or selected, and the page's background (a line, the
+// column) keeps its touches. The page's flight recorder records
 // the system's gestures (a context menu, a selection, a drag, a pinch, a
 // cancelled pointer, a capture lost while the finger is still down, a zoom),
 // and the forensics timeline lists them.
@@ -89,15 +89,15 @@ test("every control owns its touches: its touchstart is prevented, nothing on it
     expect(await style(el, "-webkit-user-drag"), `the ${name} cannot be dragged`).toBe("none");
   }
   // Outside the controls a touch stays the browser's: a strip's dB scale, a
-  // group's title and the instance it names, the rail, the column, a line's
-  // half, the version label.
+  // group's title and the instance it names, the rail, the column, a line,
+  // the version label.
   const free: [string, Locator][] = [
     ["dB scale", strip(page, "Hand2 #").getByTestId("scale")],
     ["group title", page.getByTestId("group-title").first()],
     ["group instance", page.getByTestId("group-instance").first()],
     ["rail", page.getByTestId("rail")],
     ["column", page.getByTestId("column")],
-    ["half", page.getByTestId("half").first()],
+    ["line", page.getByTestId("line").first()],
     ["version", page.getByTestId("stage").getByTestId("version")],
   ];
   for (const [name, el] of free) {
@@ -125,32 +125,36 @@ test("a line wider than the screen keeps its pinned strip; its arrows own their 
   foh.rows.push({ sections: [{ kind: "group", id: "wide", title: "Wide", controls: strips }] });
   await openSurface(page);
   const group = page.locator('[data-testid="group"][data-group="wide"]');
+  const cells = page.locator('.slot[data-group="wide"]');
   try {
     await harness("/hub/layout", { layout: changed });
     const shift = page.getByTestId("shift");
     await expect(shift).toHaveCount(1, { timeout: 10_000 });
-    await expect(page.getByTestId("half")).toHaveCount(2);
-    const pinned = group.locator('[data-testid="strip"][data-instance="master"]');
+    await expect(page.getByTestId("line")).toHaveCount(1);
+    const pinned = cells.locator('[data-testid="strip"][data-instance="master"]');
     await expect(pinned).toBeVisible();
     const where = shift.getByTestId("shift-where");
     await expect(where).toHaveText(/^1–\d+\/\d+$/);
     const start = (await where.textContent())!;
     const next = shift.getByTestId("shift-next");
     const back = shift.getByTestId("shift-back");
-    // The arrows own their touches; a half's background and a strip's tag keep theirs.
+    // The arrows own their touches; a line's background and a strip's tag keep theirs.
     expect(await prevented(next, "touchstart"), "a touchstart on ▶").toBe(true);
     expect(await prevented(back, "touchstart"), "a touchstart on ◀").toBe(true);
-    expect(await prevented(page.getByTestId("half").first(), "touchstart"), "a touchstart on a half's background").toBe(false);
-    expect(await prevented(group.getByTestId("strip-instance").first(), "touchstart"), "a touchstart on a strip's tag").toBe(false);
-    expect(await prevented(group.getByTestId("fader").first(), "touchstart"), "a touchstart on a fader in it").toBe(true);
-    // ▶ moves the window; the pinned strip stays.
+    expect(await prevented(page.getByTestId("line").first(), "touchstart"), "a touchstart on a line's background").toBe(false);
+    expect(await prevented(cells.getByTestId("strip-instance").first(), "touchstart"), "a touchstart on a strip's tag").toBe(false);
+    expect(await prevented(cells.getByTestId("fader").first(), "touchstart"), "a touchstart on a fader in it").toBe(true);
+    // ▶ moves the window; the pinned strip stays, the same element (a
+    // rebuilt strip would lose the mark, and a finger on it its touch).
+    await pinned.evaluate((e) => e.setAttribute("data-e2e-kept", "1"));
     await next.dispatchEvent("pointerdown");
     await expect(where).not.toHaveText(start);
     await expect(pinned).toBeVisible();
+    await expect(pinned).toHaveAttribute("data-e2e-kept", "1");
     // ◀ brings the first window back.
     await back.dispatchEvent("pointerdown");
     await expect(where).toHaveText(start);
-    await expect(pinned).toBeVisible();
+    await expect(pinned).toHaveAttribute("data-e2e-kept", "1");
   } finally {
     await harness("/hub/layout/reset");
   }
@@ -185,7 +189,7 @@ test("a context menu, a selection and a drag never start on the surface, and the
   }
   expect(await prevented(hand2.getByTestId("mute"), "contextmenu"), "a contextmenu on the mute").toBe(true);
   // Anywhere on the surface: prevented too.
-  expect(await prevented(page.getByTestId("half").first(), "contextmenu"), "a contextmenu on a half").toBe(true);
+  expect(await prevented(page.getByTestId("line").first(), "contextmenu"), "a contextmenu on a line").toBe(true);
   // A pinch's start and a cancelled pointer are only recorded (on a part of
   // the page that is no control: the instance its group names, #63).
   const tag = page.getByTestId("group-instance").first();
@@ -230,9 +234,9 @@ test("a context menu, a selection and a drag never start on the surface, and the
     ]);
   }
   expect(on("contextmenu", "mute")).toEqual([expect.objectContaining({ keys: [MUTE_KEY], prevented: true })]);
-  const halfMenu = on("contextmenu", "half");
-  expect(halfMenu).toEqual([expect.objectContaining({ prevented: true })]);
-  expect("keys" in halfMenu[0], "a half has no keys").toBe(false);
+  const lineMenu = on("contextmenu", "line");
+  expect(lineMenu).toEqual([expect.objectContaining({ prevented: true })]);
+  expect("keys" in lineMenu[0], "a line has no keys").toBe(false);
   expect(on("gesturestart", "group-instance")).toEqual([expect.objectContaining({ prevented: false })]);
   expect(on("pointercancel", "group-instance")).toEqual([expect.objectContaining({ pointer: 81, prevented: false })]);
   expect(on("lostpointercapture", "group-instance")).toEqual([expect.objectContaining({ pointer: 82, prevented: false })]);

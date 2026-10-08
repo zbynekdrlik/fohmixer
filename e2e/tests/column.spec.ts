@@ -47,9 +47,8 @@ test.describe("At the tablet's and the desktop's own size", () => {
     for (const id of ["version", "dropouts", "tabbar", "rail", "alert-toggle"]) {
       await expect(column.getByTestId(id).first(), id).toBeVisible();
     }
-    await expect(page.locator(".topbar")).toHaveCount(0);
     // Two lines, each cut by the column; no arrows.
-    await expect(page.getByTestId("half")).toHaveCount(4);
+    await expect(page.getByTestId("line")).toHaveCount(2);
     await expect(page.getByTestId("shift")).toHaveCount(0);
     expect(await headFirst(page)).toEqual([]);
     // The faders get the height: longer than TouchOSC's two rows (281 px) on
@@ -85,10 +84,12 @@ test.describe("At the tablet's and the desktop's own size", () => {
       await expect(strip(page, "Keys 1")).toBeVisible();
       await expect(pinned.getByTestId("status")).toHaveAttribute("data-state", "bound");
       const before = (await pinned.boundingBox())!;
+      // A rebuilt strip would lose the mark (and a finger on it its touch).
+      await pinned.evaluate((e) => e.setAttribute("data-e2e-kept", "1"));
       await selectPage(page, "others");
       await expect(strip(page, "Hand1 #", "master")).toBeVisible();
       await expect(strip(page, "Keys 1")).toHaveCount(0);
-      await expect(pinned).toBeVisible();
+      await expect(pinned).toHaveAttribute("data-e2e-kept", "1");
       const after = (await pinned.boundingBox())!;
       expect(Math.abs(after.x - before.x), "the pinned strip's place").toBeLessThan(0.5);
       // Subscribed on OTHERS too: bound, with Live's dB.
@@ -109,8 +110,7 @@ test.describe("On a phone on its side", () => {
     const column = (await page.getByTestId("column").boundingBox())!;
     expect(Math.abs(column.x + column.width / 2 - 422), "the column's centre (px off the screen's)").toBeLessThan(1);
     expect(column.y + column.height).toBeLessThanOrEqual(390);
-    await expect(page.getByTestId("half")).toHaveCount(2);
-    await expect(page.locator(".topbar")).toHaveCount(0);
+    await expect(page.getByTestId("line")).toHaveCount(1);
     expect(await headFirst(page)).toEqual([]);
     // The fader runs most of the screen's height (0.1.0-dev.43's screen bar
     // and overview left it 157 px).
@@ -133,10 +133,47 @@ test.describe("On a phone on its side", () => {
     // The rail's buttons in the column, their words whole.
     const rail = page.getByTestId("rail");
     await expect(rail.getByTestId("solo").first()).toBeVisible();
-    for (const button of await rail.locator(".btn").all()) {
-      expect(await clipped(button), `rail button ${await button.textContent()}`).toEqual([]);
-      const box = (await button.boundingBox())!;
-      expect(box.y + box.height, `rail button ${await button.textContent()} on screen`).toBeLessThanOrEqual(390);
+    // Every rail button whole inside the rail's part that holds it (a part
+    // hides what passes it) and on screen.
+    for (const part of [".rail-main", ".rail-foot"]) {
+      const area = (await rail.locator(part).boundingBox())!;
+      for (const button of await rail.locator(`${part} .btn`).all()) {
+        const name = await button.textContent();
+        expect(await clipped(button), `rail button ${name}`).toEqual([]);
+        const box = (await button.boundingBox())!;
+        expect(box.y, `rail button ${name}: top inside ${part}`).toBeGreaterThanOrEqual(area.y - 0.5);
+        expect(box.y + box.height, `rail button ${name}: bottom inside ${part}`).toBeLessThanOrEqual(area.y + area.height + 0.5);
+        expect(box.y + box.height, `rail button ${name} on screen`).toBeLessThanOrEqual(390);
+      }
+    }
+  });
+
+  test("a group of nine buttons shares its block's height: every button whole and on screen", async ({ page }) => {
+    // The cue page's group of toggles grown to nine (spec F17's count): a
+    // block is one cell 2.4 strips wide, so its buttons share its height.
+    const changed = JSON.parse(readFileSync(LAYOUT, "utf-8"));
+    const cue = changed.pages.find((p: any) => p.id === "cue");
+    const toggles = cue.rows[0].sections[0].controls;
+    const one = toggles[0];
+    cue.rows[0].sections[0].controls = Array.from({ length: 9 }, (_, i) => ({ ...one, label: `Cue ${i + 1}` }));
+    await openSurface(page);
+    try {
+      await harness("/hub/layout", { layout: changed });
+      await selectPage(page, "cue");
+      const block = page.locator(".block");
+      await expect(block.getByTestId("param-toggle")).toHaveCount(9, { timeout: 10_000 });
+      const area = (await block.boundingBox())!;
+      for (const button of await block.getByTestId("param-toggle").all()) {
+        const name = await button.getAttribute("data-label");
+        const box = (await button.boundingBox())!;
+        expect(box.height, `${name}: a button to tap`).toBeGreaterThanOrEqual(24);
+        expect(box.y + box.height, `${name}: inside its block`).toBeLessThanOrEqual(area.y + area.height + 0.5);
+        expect(box.y + box.height, `${name}: on screen`).toBeLessThanOrEqual(390);
+        expect(await clipped(button), `${name}`).toEqual([]);
+      }
+    } finally {
+      await selectPage(page, "foh");
+      await harness("/hub/layout/reset");
     }
   });
 
@@ -189,10 +226,13 @@ test.describe("On a phone upright", () => {
     await openSurface(page);
     const column = (await page.getByTestId("column").boundingBox())!;
     expect(Math.abs(column.x + column.width / 2 - 195), "the column's centre (px off the screen's)").toBeLessThan(1);
-    await expect(page.getByTestId("half")).toHaveCount(4);
+    await expect(page.getByTestId("line")).toHaveCount(2);
     await expect(page.getByTestId("shift")).toHaveCount(2);
-    for (const half of await page.getByTestId("half").all()) {
-      expect(await half.getByTestId("strip").count(), "strips in a half").toBeLessThanOrEqual(2);
+    for (const line of await page.getByTestId("line").all()) {
+      for (const side of ["left", "right"]) {
+        const strips = line.locator(`.slot[data-side="${side}"] [data-testid="strip"]`);
+        expect(await strips.count(), `strips on the ${side}`).toBeLessThanOrEqual(2);
+      }
     }
     expect(await headFirst(page)).toEqual([]);
     expect(await travel(page, "Vocal 1 repro#"), "the fader's travel (px)").toBeGreaterThan(250);

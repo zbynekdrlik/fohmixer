@@ -148,25 +148,32 @@ test.describe("The page is its rows of sections around the control column", () =
     const foh = fixture.pages[1];
     await openSurface(page);
     // Each row is a line of its own (a tablet's and a desktop's height), cut
-    // in two by the column: its left half, then its right one.
-    const halves = page.getByTestId("half");
-    await expect(halves).toHaveCount(2 * foh.rows.length);
+    // in two by the column: its left side, then its right one.
+    await expect(page.getByTestId("line")).toHaveCount(foh.rows.length);
     // Row by row: the groups (the pager's selected sub-page in its place).
     const expected: string[][] = foh.rows.map((row: any) =>
       row.sections.flatMap((s: any) => (s.kind === "pager" ? s.pages[0].sections.map((g: any) => g.id) : [s.id])),
     );
     for (let r = 0; r < expected.length; r++) {
       const ids = await page
-        .locator(`[data-testid="half"][data-line="${r}"] [data-testid="group"]`)
+        .locator(`[data-testid="line"][data-line="${r}"] [data-testid="group"]`)
         .evaluateAll((els) => els.map((e) => e.getAttribute("data-group")));
       expect(ids, `row ${r}`).toEqual(expected[r]);
     }
-    // The column sits between the halves.
+    // The column sits between the sides: every left cell before it, every
+    // right cell after it, on every line.
     const column = (await page.getByTestId("column").boundingBox())!;
-    for (const [side, edge] of [["left", "right"], ["right", "left"]] as const) {
-      const box = (await page.locator(`[data-testid="half"][data-line="0"][data-side="${side}"]`).boundingBox())!;
-      if (edge === "right") expect(box.x + box.width, "the left half ends before the column").toBeLessThanOrEqual(column.x + 0.5);
-      else expect(box.x, "the right half starts after the column").toBeGreaterThanOrEqual(column.x + column.width - 0.5);
+    const sides = await page.locator('[data-testid="line"] .slot').evaluateAll((slots) =>
+      slots.map((s) => {
+        const r = s.getBoundingClientRect();
+        return { side: s.getAttribute("data-side"), left: r.left, right: r.right };
+      }),
+    );
+    expect(sides.filter((s) => s.side === "left").length).toBeGreaterThan(0);
+    expect(sides.filter((s) => s.side === "right").length).toBeGreaterThan(0);
+    for (const s of sides) {
+      if (s.side === "left") expect(s.right, "a left cell ends before the column").toBeLessThanOrEqual(column.x + 0.5);
+      else expect(s.left, "a right cell starts after the column").toBeGreaterThanOrEqual(column.x + column.width - 0.5);
     }
     expect(await groups(page)).toEqual(expected.flat());
     // Titles and colour markers.
@@ -181,7 +188,7 @@ test.describe("The page is its rows of sections around the control column", () =
     // The strips of a group in its order.
     const effects = foh.rows.flatMap((r: any) => r.sections).find((s: any) => s.title === "EFFECTS");
     const names = await page
-      .locator(`[data-testid="group"][data-group="${effects.id}"] [data-testid="strip"]`)
+      .locator(`.slot[data-group="${effects.id}"] [data-testid="strip"]`)
       .evaluateAll((els) => els.map((e) => `${e.getAttribute("data-instance")}:${e.getAttribute("data-track")}`));
     expect(names).toEqual(effects.controls.map((c: any) => `${c.binding.instance}:${c.binding.anchor.name}`));
     await expect(strip(page, "B-Main repro #")).toHaveAttribute("data-kind", "return");
@@ -240,12 +247,11 @@ test.describe("Nothing moves under a finger", () => {
       await harness("/hub/layout", { layout: changed });
       const group = page.locator(`[data-testid="group"][data-group="${section.id}"]`);
       await expect(group.getByTestId("group-title")).toHaveText(section.title, { timeout: 10_000 });
-      const body = (await group.locator(".group-body").boundingBox())!;
-      const one = (await group.locator(".group-body > *").first().boundingBox())!;
-      // The body is its one column, nothing more (#63: no padding, no border).
-      expect(Math.abs(body.width - one.width)).toBeLessThan(1);
-      const box = (await group.boundingBox())!;
-      expect(Math.abs(box.width - body.width)).toBeLessThan(1);
+      // The title spans its one cell, nothing more (#63: a line over the run).
+      const title = (await group.locator(".group-title").boundingBox())!;
+      const one = (await page.locator(`.slot[data-group="${section.id}"]`).first().boundingBox())!;
+      expect(Math.abs(title.width - one.width)).toBeLessThan(1);
+      expect(Math.abs(title.x - one.x)).toBeLessThan(1);
     } finally {
       await harness("/hub/layout/reset");
     }

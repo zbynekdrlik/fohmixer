@@ -173,7 +173,10 @@ fn a_groups_controls_are_its_cells_a_wide_strip_wider_and_buttons_one_block() {
             c(0, 0),
             w(0, 1),
             p(0, 2),
-            Cell::Block { group: 1 },
+            Cell::Block {
+                group: 1,
+                units: 2.4
+            },
             c(3, 0),
             c(3, 1),
         ]
@@ -255,12 +258,26 @@ fn a_pinned_strip_whose_slot_is_taken_takes_the_next_free_one_and_region_strips_
 }
 
 #[test]
-fn rows_are_lines_of_their_own_while_each_keeps_340_px() {
-    assert_eq!(lines(2, 680.0, &METRICS), vec![vec![0], vec![1]]);
-    assert_eq!(lines(2, 680.0_f64.next_down(), &METRICS), vec![vec![0, 1]]);
-    assert_eq!(lines(3, 1020.0, &METRICS), vec![vec![0], vec![1], vec![2]]);
-    assert_eq!(lines(1, 200.0, &METRICS), vec![vec![0]]);
-    assert_eq!(lines(0, 900.0, &METRICS), Vec::<Vec<usize>>::new());
+fn rows_are_lines_of_their_own_while_each_keeps_340_px_of_its_share() {
+    // Two even rows: 340 px each and the 6 px gap.
+    assert_eq!(lines(&[1.0, 1.0], 686.0, &METRICS), vec![vec![0], vec![1]]);
+    assert_eq!(
+        lines(&[1.0, 1.0], 686.0_f64.next_down(), &METRICS),
+        vec![vec![0, 1]]
+    );
+    assert_eq!(
+        lines(&[1.0, 1.0, 1.0], 1032.0, &METRICS),
+        vec![vec![0], vec![1], vec![2]]
+    );
+    // A row of weight 1 beside one of 1.5 gets 2/5 of the room: 850 px
+    // leave it 340 (a 3:2 split's lighter row is the one that must fit).
+    assert_eq!(lines(&[1.5, 1.0], 856.0, &METRICS), vec![vec![0], vec![1]]);
+    assert_eq!(
+        lines(&[1.5, 1.0], 856.0_f64.next_down(), &METRICS),
+        vec![vec![0, 1]]
+    );
+    assert_eq!(lines(&[1.0], 200.0, &METRICS), vec![vec![0]]);
+    assert_eq!(lines(&[], 900.0, &METRICS), Vec::<Vec<usize>>::new());
 }
 
 #[test]
@@ -303,7 +320,15 @@ fn a_line_is_cut_where_its_wider_half_is_the_narrowest() {
     // A block counts 2.4 strips: 1 | 3 (153.6 | 200) beats 2 | 2 (221.6 | 132).
     assert_eq!(
         split(
-            &[Cell::Block { group: 2 }, c(0, 0), c(0, 1), c(0, 2)],
+            &[
+                Cell::Block {
+                    group: 2,
+                    units: 2.4
+                },
+                c(0, 0),
+                c(0, 1),
+                c(0, 2)
+            ],
             &METRICS
         ),
         1
@@ -321,6 +346,7 @@ fn a_line_that_fits_shows_every_cell_and_needs_no_arrows() {
             ones(2),
             Some(Shift {
                 offset: 0,
+                free: 2,
                 step: 2,
                 last: 2,
                 total: 4
@@ -354,6 +380,7 @@ fn a_line_that_does_not_fit_shows_its_pinned_cells_and_a_window_the_arrows_move(
         .collect();
     let shift = |offset| Shift {
         offset,
+        free: 2,
         step: 2,
         last: 6,
         total: 8,
@@ -378,6 +405,7 @@ fn a_window_over_a_wider_strip_shows_fewer_and_the_last_window_reaches_the_last_
     let shift = |offset, step| {
         Some(Shift {
             offset,
+            free: step,
             step,
             last: 3,
             total: 4,
@@ -412,6 +440,7 @@ fn pinned_cells_that_do_not_fit_with_one_other_show_alone() {
             vec![p(0, 0), p(0, 1), p(0, 2)],
             Some(Shift {
                 offset: 0,
+                free: 0,
                 step: 1,
                 last: 1,
                 total: 1
@@ -432,6 +461,7 @@ fn the_last_window_is_the_last_cells_that_fit() {
             vec![w(0, 4), w(0, 5)],
             Some(Shift {
                 offset: 4,
+                free: 2,
                 step: 2,
                 last: 4,
                 total: 6
@@ -463,6 +493,7 @@ fn the_last_window_ends_at_the_last_cell_even_where_a_window_from_the_start_hold
         shift,
         Some(Shift {
             offset: 0,
+            free: 9,
             step: 9,
             last: 2,
             total: 10
@@ -474,6 +505,7 @@ fn the_last_window_ends_at_the_last_cell_even_where_a_window_from_the_start_hold
         shift,
         Some(Shift {
             offset: 2,
+            free: 8,
             step: 8,
             last: 2,
             total: 10
@@ -536,6 +568,7 @@ fn a_low_screen_shows_one_line_of_the_pinned_strips_and_a_window_over_the_rest()
         line.shift,
         Some(Shift {
             offset: 0,
+            free: 4,
             step: 4,
             last: 14,
             total: 18
@@ -578,7 +611,10 @@ fn a_halfs_cells_run_by_group_keyed_by_group_and_turn() {
         Cell::Blank { slot: 3 },
         p(0, 9),
         c(3, 0),
-        Cell::Block { group: 4 },
+        Cell::Block {
+            group: 4,
+            units: 2.4,
+        },
     ];
     let all = runs(&half);
     assert_eq!(
@@ -600,6 +636,7 @@ fn a_halfs_cells_run_by_group_keyed_by_group_and_turn() {
 fn an_arrow_moves_the_window_a_step_within_the_line_and_the_column_says_where() {
     let at = |offset| Shift {
         offset,
+        free: 4,
         step: 4,
         last: 14,
         total: 18,
@@ -612,12 +649,287 @@ fn an_arrow_moves_the_window_a_step_within_the_line_and_the_column_says_where() 
     assert_eq!(at(0).moved(false), 0);
     assert_eq!(at(0).label(), "1–4/18");
     assert_eq!(at(14).label(), "15–18/18");
+    // No other cell fits beside the pins: none shown of how many.
+    let none = Shift {
+        offset: 0,
+        free: 0,
+        step: 1,
+        last: 1,
+        total: 1,
+    };
+    assert_eq!(none.label(), "0/1");
+    assert_eq!(none.moved(true), 1);
     // A last window shorter than a step ends at the last cell.
     let short = Shift {
         offset: 6,
+        free: 3,
         step: 3,
         last: 6,
         total: 8,
     };
     assert_eq!(short.label(), "7–8/8");
+}
+
+#[test]
+fn a_group_of_buttons_in_a_pager_region_is_one_unit_like_every_slot() {
+    let model = PageModel::of(&page(vec![vec![pager(vec![
+        (
+            "a",
+            vec![group("a", vec![toggle("T0"), toggle("T1"), toggle("T2")])],
+        ),
+        (
+            "b",
+            vec![group("b", vec![strip("B0"), strip("B1"), strip("B2")])],
+        ),
+    ])]]));
+    let buttons = row_cells(&model, 0, Some(0), &METRICS);
+    assert_eq!(
+        buttons,
+        vec![
+            Cell::Block {
+                group: 0,
+                units: 1.0
+            },
+            Cell::Blank { slot: 1 },
+            Cell::Blank { slot: 2 },
+        ]
+    );
+    let units = |cells: &[Cell]| cells.iter().map(|c| c.units(&METRICS)).sum::<f64>();
+    assert_eq!(units(&buttons), 3.0);
+    assert_eq!(units(&row_cells(&model, 0, Some(1), &METRICS)), 3.0);
+    // Outside a region a block is 2.4 strips.
+    let fixed = PageModel::of(&page(vec![vec![group("t", vec![toggle("T0")])]]));
+    assert_eq!(
+        row_cells(&fixed, 0, None, &METRICS),
+        vec![Cell::Block {
+            group: 0,
+            units: 2.4
+        }]
+    );
+}
+
+#[test]
+fn every_line_takes_the_strip_width_of_the_tightest_line() {
+    let four = || group("u", (0..4).map(|i| strip(&format!("U{i}"))).collect());
+    let twelve = || group("l", (0..12).map(|i| strip(&format!("L{i}"))).collect());
+    // Four strips alone take the widest strip; twelve need 83 px.
+    let alone = PageModel::of(&page(vec![vec![four()]]));
+    assert_eq!(
+        arrange(&alone, None, 519.0, 822.0, &[], &METRICS).width,
+        120.0
+    );
+    let tight = (519.0 - 20.0) / 6.0;
+    let upper_first = PageModel::of(&page(vec![vec![four()], vec![twelve()]]));
+    let lower_first = PageModel::of(&page(vec![vec![twelve()], vec![four()]]));
+    for model in [upper_first, lower_first] {
+        let a = arrange(&model, None, 519.0, 822.0, &[], &METRICS);
+        assert_eq!(a.lines.len(), 2);
+        assert_eq!(a.width, tight);
+    }
+}
+
+#[test]
+fn each_line_moves_its_own_window() {
+    // A phone upright (sides of 135 px: two strips a side): both rows are
+    // lines with a window, each with three pins and room for one other.
+    let model = PageModel::of(&foh());
+    let a = arrange(&model, Some(0), 135.0, 832.0, &[0, 2], &METRICS);
+    assert_eq!(a.lines.len(), 2);
+    let upper = &a.lines[0];
+    assert_eq!(keys(&upper.left), ["c0-0", "c0-9"]);
+    assert_eq!(keys(&upper.right), ["c3-0", "c3-1"]);
+    assert_eq!(upper.shift.map(|s| (s.offset, s.last)), Some((0, 8)));
+    let lower = &a.lines[1];
+    assert_eq!(keys(&lower.left), ["c4-2", "c5-3"]);
+    assert_eq!(keys(&lower.right), ["c5-4", "c6-0"]);
+    assert_eq!(lower.shift.map(|s| (s.offset, s.last)), Some((2, 8)));
+}
+
+#[test]
+fn a_line_with_a_window_takes_the_narrowest_strip_wherever_its_window_stands() {
+    // Ten strips, three wide, on sides of 336 px: from the third on eight
+    // would fit at 77 px, but the strips stay at 64 px.
+    let strips = (0..10)
+        .map(|i| {
+            if i == 2 || i == 3 || i == 9 {
+                wide(&format!("W{i}"))
+            } else {
+                strip(&format!("S{i}"))
+            }
+        })
+        .collect();
+    let model = PageModel::of(&page(vec![vec![group("g", strips)]]));
+    for offset in [0, 2] {
+        let a = arrange(&model, None, 336.0, 378.0, &[offset], &METRICS);
+        assert_eq!(a.width, 64.0, "offset {offset}");
+        assert_eq!(a.lines[0].shift.map(|s| s.offset), Some(offset));
+    }
+}
+
+#[test]
+fn a_line_is_one_list_of_its_cells_after_their_groups_titles_each_on_its_side() {
+    let model = PageModel::of(&foh());
+    // BAND B: its five strips and a blank on the left; blanks, the pinned
+    // strip of STAGE and BAND on the right.
+    let band_b = arrange(&model, Some(1), 519.0, 822.0, &[], &METRICS);
+    let line = items(&band_b.lines[0], &METRICS);
+    let shape: Vec<(String, Side)> = line.iter().map(|i| (i.key(), i.side())).collect();
+    let l = |k: &str| (k.to_string(), Side::Left);
+    let r = |k: &str| (k.to_string(), Side::Right);
+    assert_eq!(
+        shape,
+        vec![
+            l("t1-0"),
+            l("c1-0"),
+            l("c1-1"),
+            l("c1-2"),
+            l("c1-3"),
+            l("c1-4"),
+            l("s5"),
+            r("s6"),
+            r("s7"),
+            r("s8"),
+            r("t0-0"),
+            r("c0-9"),
+            r("t3-0"),
+            r("c3-0"),
+            r("c3-1"),
+        ]
+    );
+    assert_eq!(
+        line[12],
+        Item::Title {
+            key: "t3-0".into(),
+            group: 3,
+            side: Side::Right,
+            cells: 2,
+            units: 2.0
+        }
+    );
+    // STAGE cut by the column: a title on each side, the second keyed apart.
+    let stage = arrange(&model, Some(0), 519.0, 822.0, &[], &METRICS);
+    let titles: Vec<Item> = items(&stage.lines[0], &METRICS)
+        .into_iter()
+        .filter(|i| matches!(i, Item::Title { .. }))
+        .collect();
+    assert_eq!(
+        titles,
+        vec![
+            Item::Title {
+                key: "t0-0".into(),
+                group: 0,
+                side: Side::Left,
+                cells: 6,
+                units: 6.0
+            },
+            Item::Title {
+                key: "t0-1".into(),
+                group: 0,
+                side: Side::Right,
+                cells: 4,
+                units: 4.0
+            },
+            Item::Title {
+                key: "t3-0".into(),
+                group: 3,
+                side: Side::Right,
+                cells: 2,
+                units: 2.0
+            },
+        ]
+    );
+    // A title spans its cells' units: a wide strip counts 1.1.
+    let mixed = PageModel::of(&page(vec![vec![group("m", vec![strip("A"), wide("B")])]]));
+    let wide_line = arrange(&mixed, None, 519.0, 822.0, &[], &METRICS);
+    let all = items(&wide_line.lines[0], &METRICS);
+    let units: f64 = all
+        .iter()
+        .filter_map(|i| match i {
+            Item::Title { units, .. } => Some(*units),
+            Item::Cell { .. } => None,
+        })
+        .sum();
+    assert!((units - 2.1).abs() < 1e-9, "{units}");
+    assert_eq!(
+        items(
+            &LineArrangement {
+                rows: vec![],
+                left: vec![],
+                right: vec![],
+                shift: None
+            },
+            &METRICS
+        ),
+        vec![]
+    );
+}
+
+#[test]
+fn every_region_holds_every_pin_in_one_slot_and_the_shown_sub_pages_others_in_order() {
+    // Every pair of sub-pages of up to four strips, each pinned or not.
+    let sub = |name: &str, len: usize, mask: u32| -> Vec<Value> {
+        (0..len)
+            .map(|i| {
+                let name = format!("{name}{i}");
+                if mask & (1 << i) != 0 {
+                    pinned(&name)
+                } else {
+                    strip(&name)
+                }
+            })
+            .collect()
+    };
+    for len_a in 0..=4usize {
+        for len_b in 0..=4usize {
+            for mask_a in 0..(1u32 << len_a) {
+                for mask_b in 0..(1u32 << len_b) {
+                    let model = PageModel::of(&page(vec![vec![pager(vec![
+                        ("a", vec![group("a", sub("A", len_a, mask_a))]),
+                        ("b", vec![group("b", sub("B", len_b, mask_b))]),
+                    ])]]));
+                    let pins = (mask_a.count_ones() + mask_b.count_ones()) as usize;
+                    let others = [
+                        len_a - mask_a.count_ones() as usize,
+                        len_b - mask_b.count_ones() as usize,
+                    ];
+                    let size = others[0].max(others[1]) + pins;
+                    let shown: Vec<Vec<Cell>> = (0..2)
+                        .map(|s| row_cells(&model, 0, Some(s), &METRICS))
+                        .collect();
+                    let case = format!("A {len_a}/{mask_a:b}, B {len_b}/{mask_b:b}");
+                    for (s, cells) in shown.iter().enumerate() {
+                        assert_eq!(cells.len(), size, "{case}: slots on {s}");
+                        // Every pin once, in the same slot whichever sub-page shows.
+                        let pinned: Vec<(usize, String)> = cells
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, c)| c.pinned())
+                            .map(|(i, c)| (i, c.key()))
+                            .collect();
+                        assert_eq!(pinned.len(), pins, "{case}: pins on {s}");
+                        let other_pins: Vec<(usize, String)> = shown[1 - s]
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, c)| c.pinned())
+                            .map(|(i, c)| (i, c.key()))
+                            .collect();
+                        assert_eq!(pinned, other_pins, "{case}: pin slots");
+                        // The shown sub-page's others, in order, then blanks.
+                        let mine: Vec<String> = cells
+                            .iter()
+                            .filter(|c| !c.pinned() && c.group() == Some(s))
+                            .map(Cell::key)
+                            .collect();
+                        let expected: Vec<String> = (0..[len_a, len_b][s])
+                            .filter(|i| [mask_a, mask_b][s] & (1 << i) == 0)
+                            .map(|i| format!("c{s}-{i}"))
+                            .collect();
+                        assert_eq!(mine, expected, "{case}: others on {s}");
+                        let blanks = cells.iter().filter(|c| c.group().is_none()).count();
+                        assert_eq!(blanks, size - pins - others[s], "{case}: blanks on {s}");
+                    }
+                }
+            }
+        }
+    }
 }
