@@ -584,19 +584,24 @@ class OneTickTest(unittest.TestCase):
         the socket filled (its send buffer grows by autotuning: e9a3e76, and
         this test on the CI of a38d97a, #68): a write that takes bytes is
         progress at its time, and the boundary is checked again from there.
-        A write that takes nothing must hold the boundary exactly."""
+        A write that takes nothing must hold the boundary exactly.
+
+        The progress is the connection's own record (``_last_progress``, set
+        to the write's time when it sent a byte): the unsent count cannot
+        tell, since a write that sends a heartbeat's worth of bytes may also
+        queue a heartbeat (CI of dfdfc3a, #68). A mutant that records
+        progress without a byte never closes: the 20 steps end in a failure."""
         for _ in range(20):
             for now, closes in (
                 (last + transport.SEND_STALL_S - 0.01, False),
                 (last + transport.SEND_STALL_S, True),
             ):
-                unsent = conn.pending()[2]
                 write(now)
                 late = f"{now - last:.2f} s after the last progress"
                 if conn.finished:
                     self.assertTrue(closes, f"closed at {late}")
                     return
-                if conn.pending()[2] != unsent:
+                if conn._last_progress == now:
                     last = now
                     break
                 self.assertFalse(closes, f"open at {late}, the socket took nothing")
@@ -632,16 +637,20 @@ class OneTickTest(unittest.TestCase):
         # Times given: open until SEND_STALL_S after that byte, closed at it
         # (a trickle the kernel takes meanwhile is progress at its tick's
         # given time, and `stall_closes` checks the boundary from there).
-        unsent = conn.pending()[2]
-        self.server.poll_out(start + transport.SEND_STALL_S - 0.01)
+        first = start + transport.SEND_STALL_S - 0.01
+        self.server.poll_out(first)
         self.assertTrue(conn.is_open)
-        if conn.pending()[2] == unsent:
+        if conn._last_progress != first:
             self.server.poll_out(end + transport.SEND_STALL_S)
             if not conn.finished:
-                self.assertNotEqual(conn.pending()[2], unsent, "open, the socket took nothing")
+                self.assertEqual(
+                    conn._last_progress,
+                    end + transport.SEND_STALL_S,
+                    "open, the socket took nothing",
+                )
                 self.stall_closes(conn, end + transport.SEND_STALL_S, self.server.poll_out)
         else:
-            self.stall_closes(conn, start + transport.SEND_STALL_S - 0.01, self.server.poll_out)
+            self.stall_closes(conn, first, self.server.poll_out)
         self.assertTrue(conn.finished)
         self.assertTrue(any("read nothing for" in m for m in self.log.messages), self.log.messages)
         self.assertEqual(self.server.connections(), [])

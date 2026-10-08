@@ -126,21 +126,12 @@ impl Router {
         lists: &[(String, Result<Vec<Value>, String>)],
     ) -> MigrationStatus {
         let mut actions = Vec::new();
-        // The instances whose lists did not answer: their names may be old,
-        // so nothing of theirs is renamed.
-        let mut unread: Vec<&str> = Vec::new();
         for (instance, outcome) in lists {
-            let fresh = match outcome {
-                Ok(slots) => self.markers.refresh(instance, slots),
-                Err(error) => {
-                    tracing::warn!(instance = %instance, error = %error, "the migration could not read the lists afresh");
-                    None
-                }
-            };
-            match fresh {
-                Some(reads) => actions.extend(reads),
-                None => unread.push(instance),
+            if let Err(error) = outcome {
+                tracing::warn!(instance = %instance, error = %error, "the migration could not read the lists afresh");
             }
+            let slots = outcome.as_ref().ok().map(Vec::as_slice);
+            actions.extend(self.markers.refresh(instance, slots));
         }
         self.markers_do(actions);
         let Some(migration) = self
@@ -151,17 +142,9 @@ impl Router {
             return MigrationStatus::default();
         };
         let rows = self.markers.migration_rows(&migration.planned);
-        let unsettled =
-            |instance: &str| self.markers.reading(instance) || unread.contains(&instance);
-        let reading = rows.iter().any(|row| unsettled(&row.instance));
-        let renames: Vec<markers::Action> = if apply && migration.problems.is_empty() {
-            self.markers
-                .renames(&migration.planned)
-                .into_iter()
-                .filter(|action| {
-                    !matches!(action, markers::Action::Rename { instance, .. } if unread.contains(&instance.as_str()))
-                })
-                .collect()
+        let reading = rows.iter().any(|row| self.markers.reading(&row.instance));
+        let renames = if apply && migration.problems.is_empty() {
+            self.markers.renames(&migration.planned)
         } else {
             Vec::new()
         };
@@ -188,9 +171,14 @@ impl Router {
             "name": "set_prop",
             "args": {"prop": "name", "value": name},
         })]);
+        let tx = self.io.tx.clone();
+        let instance = instance.to_string();
         tokio::spawn(async move {
             if let Some(problem) = write_failure(&result.await) {
-                tracing::warn!(target = %shown, problem = %problem, "a Tuner's rename failed");
+                // The `$ref` may be gone (the script's registry starts over
+                // with each connection): a read gets the Tuners' refs again.
+                tracing::warn!(target = %shown, problem = %problem, "a Tuner's rename failed; the Tuners are read again");
+                let _ = tx.send(RouterMsg::MarkersRetry { instance });
             }
         });
     }

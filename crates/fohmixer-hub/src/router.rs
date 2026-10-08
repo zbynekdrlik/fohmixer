@@ -538,6 +538,10 @@ impl Router {
                 }
                 self.subs.connected(instance);
                 self.names.start(instance);
+                // The script's object refs start over with each connection:
+                // the marker keeper reads the Tuners (and their refs) again.
+                let actions = self.markers.retry(instance);
+                self.markers_apply(actions);
                 self.broadcast_instance(instance);
             }
             LiveEvent::Disconnected => {

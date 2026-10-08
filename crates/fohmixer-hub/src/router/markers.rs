@@ -226,6 +226,9 @@ struct Instance {
     tuners: BTreeMap<(TrackAt, u32), String>,
     pending: Option<Pending>,
     failures: u32,
+    /// The migration's fresh read of the lists did not answer: the names
+    /// may be old, so nothing of this instance is renamed (#68 PR C).
+    stale: bool,
 }
 
 /// The names of a list value's items (the script encodes a track as an
@@ -528,22 +531,34 @@ impl Keeper {
             .collect()
     }
 
-    /// Whether a read of `instance` is running.
+    /// Whether `instance`'s names are not settled: a read of it runs, or the
+    /// migration's fresh read of its lists did not answer.
     pub fn reading(&self, instance: &str) -> bool {
         self.instances
             .get(instance)
-            .is_some_and(|state| state.pending.is_some())
+            .is_some_and(|state| state.pending.is_some() || state.stale)
     }
 
     /// The instance's lists read afresh (the migration's names: Live fires
     /// no list listener on a track's rename): `slots` answer `get_prop
-    /// tracks` and `get_prop return_tracks`. A list that changed is kept and
-    /// starts a read, as its listener's value would. None when a list did
-    /// not answer (or the instance is not followed): its names may be old.
-    pub fn refresh(&mut self, instance: &str, slots: &[Value]) -> Option<Vec<Action>> {
-        let tracks = answered(slots.first())?.clone();
-        let returns = answered(slots.get(1))?.clone();
-        let state = self.instances.get_mut(instance)?;
+    /// tracks` and `get_prop return_tracks`, none when the read failed. A
+    /// list that changed is kept and starts a read, as its listener's value
+    /// would; a list that did not answer leaves the instance `reading`.
+    pub fn refresh(&mut self, instance: &str, slots: Option<&[Value]>) -> Vec<Action> {
+        let Some(state) = self.instances.get_mut(instance) else {
+            return Vec::new();
+        };
+        let lists = slots.and_then(|slots| {
+            Some((
+                answered(slots.first())?.clone(),
+                answered(slots.get(1))?.clone(),
+            ))
+        });
+        let Some((tracks, returns)) = lists else {
+            state.stale = true;
+            return Vec::new();
+        };
+        state.stale = false;
         let mut changed = false;
         for (fresh, kept) in [(tracks, &mut state.tracks), (returns, &mut state.returns)] {
             if kept.as_ref() != Some(&fresh) {
@@ -551,11 +566,11 @@ impl Keeper {
                 changed = true;
             }
         }
-        Some(if changed {
+        if changed {
             vec![self.read(instance)]
         } else {
             Vec::new()
-        })
+        }
     }
 
     /// A planned track's row, and its one plain Tuner's `$ref` (as the last

@@ -760,27 +760,46 @@ fn the_lists_read_afresh_replace_the_kept_ones_and_a_change_reads_again() {
     assert!(!k.reading("band"));
     let planned = vec![plan(TrackKind::Track, "Bass #", r#""Bass" +G:A:1"#)];
     assert_eq!(k.renames(&planned).len(), 1);
+    let lists = |tracks: Value, returns: Value| vec![ok(tracks), ok(returns)];
     // The same lists: nothing to do.
     assert_eq!(
-        k.refresh("band", &[ok(named("Bass #")), ok(json!([]))]),
-        Some(vec![])
+        k.refresh("band", Some(lists(named("Bass #"), json!([])).as_slice())),
+        vec![]
     );
-    // A failed or missing answer keeps the kept lists, and says so.
-    assert_eq!(
-        k.refresh("band", &[json!({"ok": false, "error": "x"}), ok(json!([]))]),
-        None
-    );
-    assert_eq!(k.refresh("band", &[ok(named("Kick #"))]), None);
+    assert!(!k.reading("band"));
+    // A failed read, a list that did not answer: the kept lists stay, the
+    // instance counts as reading, and nothing is renamed until a read
+    // answers again.
+    assert_eq!(k.refresh("band", None), vec![]);
+    assert!(k.reading("band"));
+    assert_eq!(k.renames(&planned), vec![]);
     assert_eq!(k.migration_rows(&planned)[0].matches, 1);
+    let error = vec![json!({"ok": false, "error": "x"}), ok(json!([]))];
+    assert_eq!(
+        k.refresh("band", Some(lists(named("Bass #"), json!([])).as_slice())),
+        vec![]
+    );
+    assert!(!k.reading("band"));
+    assert_eq!(k.refresh("band", Some(error.as_slice())), vec![]);
+    assert!(k.reading("band"));
+    assert_eq!(
+        k.refresh("band", Some([ok(named("Bass #"))].as_slice())),
+        vec![]
+    );
+    assert!(k.reading("band"));
+    assert_eq!(
+        k.refresh("band", Some(lists(named("Bass #"), json!([])).as_slice())),
+        vec![]
+    );
+    assert_eq!(k.renames(&planned).len(), 1);
     // An unknown instance: nothing.
     assert_eq!(
-        k.refresh("nobody", &[ok(named("Kick #")), ok(json!([]))]),
-        None
+        k.refresh("nobody", Some(lists(named("Kick #"), json!([])).as_slice())),
+        vec![]
     );
+    assert!(!k.reading("nobody"));
     // A rename Live told no listener about: kept, and a read starts.
-    let actions = k
-        .refresh("band", &[ok(named("Kick #")), ok(json!([]))])
-        .unwrap();
+    let actions = k.refresh("band", Some(lists(named("Kick #"), json!([])).as_slice()));
     assert!(
         matches!(actions.as_slice(), [Action::Read { .. }]),
         "{actions:?}"
@@ -792,15 +811,10 @@ fn the_lists_read_afresh_replace_the_kept_ones_and_a_change_reads_again() {
     assert_eq!(k.migration_rows(&planned)[0].plain, 1);
     assert_eq!(k.renames(&planned), vec![]);
     // A changed list of returns reads again too.
-    let actions = k
-        .refresh(
-            "band",
-            &[
-                ok(named("Kick #")),
-                ok(json!([{"$ref": "r0", "name": "A-Hall #"}])),
-            ],
-        )
-        .unwrap();
+    let actions = k.refresh(
+        "band",
+        Some(lists(named("Kick #"), json!([{"$ref": "r0", "name": "A-Hall #"}])).as_slice()),
+    );
     assert!(
         matches!(actions.as_slice(), [Action::Read { .. }]),
         "{actions:?}"
