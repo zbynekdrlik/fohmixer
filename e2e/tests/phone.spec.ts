@@ -93,6 +93,20 @@ test.describe("On a phone in landscape, TechAlert", () => {
         return seen;
       });
       expect(drawn, "the wash drawn over the whole screen").toBe(true);
+      // Nothing above it makes it transparent or puts it under the row: no
+      // ancestor's opacity below 1, and no ancestor (the rail) opens a
+      // stacking context of its own (z-index, opacity, transform, filter).
+      const covered = await overlay.evaluate((el) => {
+        const why: string[] = [];
+        for (let a = el.parentElement; a && a !== document.body; a = a.parentElement) {
+          const css = getComputedStyle(a);
+          if (Number(css.opacity) < 1) why.push(`${a.className} opacity ${css.opacity}`);
+          if (css.zIndex !== "auto" && a.closest(".rail")) why.push(`${a.className} z-index ${css.zIndex}`);
+          if (css.transform !== "none" || css.filter !== "none") why.push(`${a.className} transform or filter`);
+        }
+        return why;
+      });
+      expect(covered, "the wash's ancestors").toEqual([]);
     } finally {
       await live.set("band", alert, "mute", true);
       live.close();
@@ -119,6 +133,11 @@ test.describe("On a phone upright", () => {
     await expect(rows.nth(1)).toHaveClass(/\bscrolls\b/);
     expect(await rows.nth(1).evaluate((el) => el.scrollWidth - el.clientWidth), "its scroll range (px)").toBeGreaterThan(50);
     expect(await topBarOverflow(page), "the top bar fits the screen").toBeLessThanOrEqual(0);
+    // The screen bar's tabs own their touches, so a finger cannot scroll it:
+    // it wraps, every tab inside it.
+    const bar = page.getByTestId("screens");
+    await expect(bar).toHaveCSS("flex-wrap", "wrap");
+    expect(await bar.evaluate((el) => el.scrollWidth - el.clientWidth), "the screen bar's tabs inside it").toBeLessThanOrEqual(0);
     const version = page.getByTestId("stage").getByTestId("version");
     await expect(version).toBeVisible();
     const label = (await version.boundingBox())!;
