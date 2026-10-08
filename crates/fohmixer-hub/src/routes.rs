@@ -18,6 +18,7 @@ use axum::{
 use fohmixer_proto::VersionInfo;
 use fohmixer_proto::client::HubStatus;
 use fohmixer_proto::layout::LayoutResponse;
+use fohmixer_proto::markers::migrate::MigrationStatus;
 use rust_embed::RustEmbed;
 
 use crate::auth::{Rejection, error_response};
@@ -97,6 +98,28 @@ async fn get_status(
 ) -> Result<Json<HubStatus>, Rejection> {
     hub.auth.require(&headers)?;
     Ok(Json(hub.status().await))
+}
+
+/// `GET /api/markers/migration` (a token, #68 PR C): each planned track of
+/// the frame (the migration of its strips bound by name to Tuner markers)
+/// as the marker keeper finds it in Live. It names tracks: a token only.
+async fn get_migration(
+    State(hub): State<Hub>,
+    headers: HeaderMap,
+) -> Result<Json<MigrationStatus>, Rejection> {
+    hub.auth.require(&headers)?;
+    Ok(Json(hub.migration(false).await))
+}
+
+/// `POST /api/markers/migration` (a token, #68 PR C): names the one plain
+/// Tuner of each ready planned track its marker; the rows as they were and
+/// how many renames went to Live.
+async fn post_migration(
+    State(hub): State<Hub>,
+    headers: HeaderMap,
+) -> Result<Json<MigrationStatus>, Rejection> {
+    hub.auth.require(&headers)?;
+    Ok(Json(hub.migration(true).await))
 }
 
 /// Whether `port` is a port number's digits (one or more, nothing else).
@@ -233,6 +256,10 @@ pub fn api_routes() -> Router<Hub> {
         .route("/api/auth", post(crate::auth::login))
         .route("/api/layout", get(get_layout))
         .route("/api/status", get(get_status))
+        .route(
+            "/api/markers/migration",
+            get(get_migration).post(post_migration),
+        )
         .route("/ws", get(crate::ws::ws_handler))
 }
 
@@ -477,7 +504,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_layout_and_the_status_need_a_token() {
-        for path in ["/api/layout", "/api/status"] {
+        for path in ["/api/layout", "/api/status", "/api/markers/migration"] {
             let response = get_path(path).await;
             assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{path}");
             let body: serde_json::Value =
@@ -492,6 +519,38 @@ mod tests {
         )
         .await;
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        // The migration's renames too (#68 PR C).
+        let response = send(
+            Request::post("/api/markers/migration")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn with_a_token_the_migration_answers_its_rows() {
+        // No frame: nothing planned, nothing renamed (tests/markers.rs runs
+        // it against SimLive).
+        let dir = tempfile::tempdir().unwrap();
+        let hub = crate::test_hub(dir.path());
+        let response = get_with_token(&hub, "/api/markers/migration").await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value = serde_json::from_slice(&body_bytes(response).await).unwrap();
+        assert_eq!(body, serde_json::json!({"rows": [], "renamed": 0}));
+        let token = hub.auth.issue().unwrap();
+        let response = lan(crate::app_router(hub.clone()))
+            .oneshot(
+                Request::post("/api/markers/migration")
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        hub.stop();
     }
 
     async fn get_with_token(hub: &crate::Hub, path: &str) -> Response {

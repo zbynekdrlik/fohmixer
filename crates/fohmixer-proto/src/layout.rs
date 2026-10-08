@@ -400,6 +400,20 @@ pub enum Anchor {
     Song,
 }
 
+/// The label a strip bound by name shows (spec F4): the first word of its
+/// track's name, after a leading return prefix (`X-`: a letter and a hyphen)
+/// is dropped. The UI shows it; the marker migration (#68) labels a
+/// strip's marker with it.
+pub fn strip_label(name: &str) -> String {
+    let mut chars = name.chars();
+    let prefixed = matches!(
+        (chars.next(), chars.next()),
+        (Some(letter), Some('-')) if letter.is_alphabetic()
+    );
+    let rest = if prefixed { chars.as_str() } else { name };
+    rest.split_whitespace().next().unwrap_or("").to_string()
+}
+
 impl Binding {
     /// The LOM target path (S2 design note §3.1) the binding names.
     pub fn target(&self) -> Result<String, PathError> {

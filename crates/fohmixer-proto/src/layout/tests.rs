@@ -812,3 +812,24 @@ fn a_bad_tag_group_an_empty_label_or_a_view_as_default_page_is_refused() {
         vec![r#"default_page: "foh" is not a page"#.to_string()]
     );
 }
+
+#[test]
+fn the_label_is_the_first_word_without_the_return_prefix() {
+    assert_eq!(strip_label("B-Main repro #"), "Main");
+    assert_eq!(strip_label("Vocal 1 repro#"), "Vocal");
+    assert_eq!(strip_label("A-Reverb #"), "Reverb");
+    assert_eq!(strip_label("Hand1 #"), "Hand1");
+    assert_eq!(strip_label("TechAlert #"), "TechAlert");
+    assert_eq!(strip_label("  Keys 1"), "Keys");
+}
+
+#[test]
+fn only_a_letter_and_a_hyphen_is_a_prefix() {
+    assert_eq!(strip_label("1-Mic"), "1-Mic");
+    assert_eq!(strip_label("AB-Mic x"), "AB-Mic");
+    assert_eq!(strip_label("-Mic"), "-Mic");
+    assert_eq!(strip_label("Č-Mic"), "Mic");
+    assert_eq!(strip_label("B-"), "");
+    assert_eq!(strip_label("B"), "B");
+    assert_eq!(strip_label(""), "");
+}

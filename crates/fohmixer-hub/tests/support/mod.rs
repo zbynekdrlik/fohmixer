@@ -161,6 +161,11 @@ impl TestHub {
         http(self.addr, "GET", path, Some(&self.token), None).await
     }
 
+    /// `POST path` with the token and no body: the status code and the body.
+    pub async fn post(&self, path: &str) -> (u16, Value) {
+        http(self.addr, "POST", path, Some(&self.token), None).await
+    }
+
     /// `GET /api/status`.
     pub async fn status(&self) -> HubStatus {
         let (code, body) = self.get("/api/status").await;

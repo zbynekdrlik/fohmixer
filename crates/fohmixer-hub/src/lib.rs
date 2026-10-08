@@ -226,6 +226,17 @@ impl HubInner {
         }
     }
 
+    /// `/api/markers/migration` (#68 PR C): the planned tracks as the marker
+    /// keeper finds them; with `apply`, the ready ones' Tuners are renamed.
+    pub async fn migration(
+        &self,
+        apply: bool,
+    ) -> fohmixer_proto::markers::migrate::MigrationStatus {
+        let (reply, answer) = oneshot::channel();
+        self.route(RouterMsg::Migration { apply, reply });
+        answer.await.unwrap_or_default()
+    }
+
     /// `GET /api/status`.
     pub async fn status(&self) -> HubStatus {
         let (reply, answer) = oneshot::channel();

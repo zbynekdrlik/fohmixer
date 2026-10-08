@@ -9,6 +9,12 @@
 //!   fohmixer-hub layout check <layout> <config>
 //!                                       check <layout> as the layout the hub configured by <config>
 //!                                       would serve (the installer, #21): exit 0, or 2 with why
+//!   fohmixer-hub markers plan <layout>  print, per strip's track of <layout> bound by name, the
+//!                                       Tuner marker the migration gives it (#68; track names:
+//!                                       the output stays on the PC)
+//!   fohmixer-hub markers frame <layout> <out>
+//!                                       write <layout> converted to tags groups to <out>, a new
+//!                                       file: exit 0, or 2 with why
 //!
 //! `pin` and `cloudflare` run as the hub's user: what they store is sealed
 //! (DPAPI) for that account.
@@ -30,7 +36,7 @@ use fohmixer_hub::config::Config;
 use fohmixer_hub::provision::{self, ProvisionError};
 use tokio::sync::oneshot;
 
-const USAGE: &str = "usage: fohmixer-hub [pin set-engineer | cloudflare set-token | config check <file> | layout check <layout> <config>]   (the PIN or the token is read from stdin)";
+const USAGE: &str = "usage: fohmixer-hub [pin set-engineer | cloudflare set-token | config check <file> | layout check <layout> <config> | markers plan <layout> | markers frame <layout> <out>]   (the PIN or the token is read from stdin)";
 
 fn data_dir() -> PathBuf {
     PathBuf::from(std::env::var("FOHMIXER_DATA").unwrap_or_else(|_| ".".to_string()))
@@ -52,6 +58,8 @@ fn main() -> ExitCode {
         ["cloudflare", "set-token"] => token_command(),
         ["config", "check", file] => config_command(file),
         ["layout", "check", layout, config] => layout_command(layout, config),
+        ["markers", "plan", layout] => plan_command(layout),
+        ["markers", "frame", layout, out] => frame_command(layout, out),
         _ => {
             eprintln!("{USAGE}");
             ExitCode::from(2)
@@ -120,6 +128,40 @@ fn layout_command(layout: &str, config: &str) -> ExitCode {
     match fohmixer_hub::layout::check_files(layout_path, config_path) {
         Ok(()) => {
             eprintln!("fohmixer-hub: layout {layout}: OK");
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("fohmixer-hub: {e:#}");
+            ExitCode::from(2)
+        }
+    }
+}
+
+/// `markers plan <layout>`: the planned markers on stdout, a line each;
+/// exit 0, or 2 (and why on stderr) for a layout that cannot be read.
+fn plan_command(layout: &str) -> ExitCode {
+    match fohmixer_hub::layout::plan_lines(std::path::Path::new(layout)) {
+        Ok(lines) => {
+            for line in &lines {
+                println!("{line}");
+            }
+            eprintln!("fohmixer-hub: {} tracks planned", lines.len());
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("fohmixer-hub: {e:#}");
+            ExitCode::from(2)
+        }
+    }
+}
+
+/// `markers frame <layout> <out>`: exit 0 when the converted frame is
+/// written to the new file `out`, 2 (and why on stderr) otherwise.
+fn frame_command(layout: &str, out: &str) -> ExitCode {
+    let (layout_path, out_path) = (std::path::Path::new(layout), std::path::Path::new(out));
+    match fohmixer_hub::layout::migrate_file(layout_path, out_path) {
+        Ok(planned) => {
+            eprintln!("fohmixer-hub: wrote {out}: {planned} tracks come from markers");
             ExitCode::SUCCESS
         }
         Err(e) => {

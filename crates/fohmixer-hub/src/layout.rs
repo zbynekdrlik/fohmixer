@@ -22,7 +22,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use fohmixer_proto::client::MarkersStatus;
 use fohmixer_proto::layout::Layout;
-use fohmixer_proto::markers::{Found, MarkerReport, compose, frame_problems};
+use fohmixer_proto::markers::migrate::{Planned, migration};
+use fohmixer_proto::markers::{Found, MarkerReport, TrackKind, compose, frame_problems};
 
 /// Backups kept.
 pub const MAX_BACKUPS: usize = 30;
@@ -93,6 +94,66 @@ pub fn check_files(layout: &Path, config: &Path) -> anyhow::Result<()> {
     check(&bytes, &names)
         .map(|_| ())
         .map_err(|e| anyhow::anyhow!("layout {}: {e}", layout.display()))
+}
+
+/// `fohmixer-hub markers plan <layout>` (#68 PR C): a line per planned
+/// track (the migration of the frame's strips bound by name to Tuner
+/// markers). The lines hold track names: they stay on the PC.
+pub fn plan_lines(layout: &Path) -> anyhow::Result<Vec<String>> {
+    let frame = read_frame(layout)?;
+    Ok(migration(&frame).planned.iter().map(plan_line).collect())
+}
+
+/// A planned track: instance, kind, the track's name and its marker,
+/// tab-separated.
+pub fn plan_line(planned: &Planned) -> String {
+    let kind = match planned.kind {
+        TrackKind::Track => "track",
+        TrackKind::Return => "return",
+    };
+    format!(
+        "{}\t{kind}\t{}\t{}",
+        planned.instance, planned.track, planned.marker
+    )
+}
+
+/// `fohmixer-hub markers frame <layout> <out>` (#68 PR C): writes the
+/// converted frame to `out`, a new file (never over one), when it passes the
+/// layout's and the markers' rules; the number of planned tracks.
+pub fn migrate_file(layout: &Path, out: &Path) -> anyhow::Result<usize> {
+    use anyhow::Context as _;
+    use std::io::Write as _;
+    let frame = read_frame(layout)?;
+    let m = migration(&frame);
+    let problems: Vec<String> = m
+        .frame
+        .validate()
+        .into_iter()
+        .chain(frame_problems(&m.frame))
+        .map(|e| e.to_string())
+        .collect();
+    if !problems.is_empty() {
+        anyhow::bail!("the converted frame is invalid: {}", problems.join("; "));
+    }
+    let mut text = serde_json::to_vec_pretty(&m.frame)?;
+    text.push(b'\n');
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(out)
+        .with_context(|| format!("creating {}", out.display()))?;
+    file.write_all(&text)
+        .with_context(|| format!("writing {}", out.display()))?;
+    Ok(m.planned.len())
+}
+
+/// The layout file at `layout`, parsed.
+fn read_frame(layout: &Path) -> anyhow::Result<Layout> {
+    use anyhow::Context as _;
+    let bytes =
+        std::fs::read(layout).with_context(|| format!("reading layout {}", layout.display()))?;
+    serde_json::from_slice(&bytes)
+        .with_context(|| format!("layout {} does not parse", layout.display()))
 }
 
 /// Why a layout text cannot be served: it does not parse, does not validate,
@@ -168,6 +229,16 @@ impl LayoutStore {
         // the same free name, and the newest backup is the newest served.
         self.backup_served(state.layout.as_deref());
         Some(rev)
+    }
+
+    /// The planned markers of the frame's strips bound by name (#68 PR C;
+    /// none without a frame).
+    pub fn planned(&self) -> Vec<Planned> {
+        self.lock()
+            .frame
+            .as_deref()
+            .map(|frame| migration(frame).planned)
+            .unwrap_or_default()
     }
 
     /// The markers in `/api/status` (#68): how many, and every problem.
@@ -630,6 +701,72 @@ mod tests {
             backup_name("layout.json", t),
             "layout.json.20250924T094500.123Z"
         );
+    }
+
+    #[test]
+    fn the_migration_is_planned_and_written_to_a_new_file_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let frame = serde_json::to_vec(&json!({
+            "schema": 2,
+            "default_page": "main",
+            "pages": [{"id": "main", "title": "M", "rows": [{"sections": [
+                {"kind": "group", "id": "g", "title": "Hands", "controls": [
+                    {"kind": "strip", "strip_kind": "standard", "pinned": true,
+                     "binding": {"instance": "master", "anchor": {"kind": "track", "name": "Hand1 #"}}},
+                    {"kind": "strip", "strip_kind": "return",
+                     "binding": {"instance": "band", "anchor": {"kind": "return", "name": "A-Hall #"}}}]}]}]}]
+        }))
+        .unwrap();
+        let path = dir.path().join("layout.json");
+        std::fs::write(&path, &frame).unwrap();
+        assert_eq!(
+            plan_lines(&path).unwrap(),
+            vec![
+                "master\ttrack\tHand1 #\t\"Hand1\" +G:HANDS:1 +PIN".to_string(),
+                "band\treturn\tA-Hall #\t\"Hall\" +G:HANDS:2".to_string(),
+            ]
+        );
+        let out = dir.path().join("converted.json");
+        assert_eq!(migrate_file(&path, &out).unwrap(), 2);
+        let written = std::fs::read(&out).unwrap();
+        assert_eq!(written.last(), Some(&b'\n'));
+        let converted: Layout = serde_json::from_slice(&written).unwrap();
+        let group = converted.pages[0].rows[0].sections[0].groups()[0].clone();
+        assert_eq!(group.tags.as_deref(), Some("HANDS"));
+        assert!(group.controls.is_empty());
+        // The hub would serve it.
+        check(&written, &["band".to_string(), "master".to_string()]).unwrap();
+        // Never over a file.
+        let again = migrate_file(&path, &out).unwrap_err().to_string();
+        assert!(again.starts_with("creating "), "{again}");
+        assert_eq!(std::fs::read(&out).unwrap(), written);
+        // A file that does not parse is said so.
+        std::fs::write(&path, b"{").unwrap();
+        let bad = plan_lines(&path).unwrap_err().to_string();
+        assert!(bad.contains("does not parse"), "{bad}");
+    }
+
+    #[test]
+    fn a_converted_frame_the_rules_refuse_is_not_written() {
+        // A frame whose title is taken as a view id by a pager: the
+        // conversion keeps it, and the rules refuse the result.
+        let dir = tempfile::tempdir().unwrap();
+        let frame = serde_json::to_vec(&json!({
+            "schema": 2,
+            "default_page": "main",
+            "pages": [{"id": "main", "title": "M", "rows": [{"sections": [
+                {"kind": "group", "id": "view-g", "controls": [
+                    {"kind": "strip", "strip_kind": "standard",
+                     "binding": {"instance": "band", "anchor": {"kind": "track", "name": "Bass #"}}}]}]}]}]
+        }))
+        .unwrap();
+        let path = dir.path().join("layout.json");
+        std::fs::write(&path, &frame).unwrap();
+        let out = dir.path().join("converted.json");
+        let why = migrate_file(&path, &out).unwrap_err().to_string();
+        assert!(why.starts_with("the converted frame is invalid: "), "{why}");
+        assert!(why.contains("\"view-g\" starts with \"view-\""), "{why}");
+        assert!(!out.exists());
     }
 
     #[test]

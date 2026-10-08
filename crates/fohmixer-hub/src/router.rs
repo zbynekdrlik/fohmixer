@@ -150,6 +150,13 @@ pub enum RouterMsg {
     Status {
         reply: oneshot::Sender<RouterStatus>,
     },
+    /// `/api/markers/migration` (#68 PR C): the planned tracks as the
+    /// marker keeper finds them; with `apply`, the ready ones' Tuners are
+    /// renamed.
+    Migration {
+        apply: bool,
+        reply: oneshot::Sender<fohmixer_proto::markers::migrate::MigrationStatus>,
+    },
     /// A page opened or closed the Stream Deck tab (#52).
     DeckView {
         client: ClientId,
@@ -448,6 +455,9 @@ impl Router {
                 for name in online {
                     self.names.start(&name);
                 }
+            }
+            RouterMsg::Migration { apply, reply } => {
+                let _ = reply.send(self.markers_migration(apply));
             }
             RouterMsg::Status { reply } => {
                 let names = self.live.keys();

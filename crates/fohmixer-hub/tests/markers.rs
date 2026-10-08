@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 
 use fohmixer_proto::layout::{Anchor, Control, LayoutResponse, StripMark};
 use fohmixer_proto::markers::TagProblem;
+use fohmixer_proto::markers::migrate::MigrationStatus;
 use serde_json::{Value, json};
 use support::{Host, TestHub, runtime, serial};
 
@@ -198,6 +199,128 @@ fn the_served_strips_follow_the_tuner_markers() {
         hub.status_until(SECS_5, |s| s.layout.markers.found == 1)
             .await;
 
+        hub.stop().await;
+        host.stop();
+    });
+}
+
+/// The migration's rows once `check` holds on them (polled).
+async fn migration_until(
+    hub: &TestHub,
+    what: &str,
+    check: impl Fn(&MigrationStatus) -> bool,
+) -> MigrationStatus {
+    let deadline = Instant::now() + SECS_5;
+    loop {
+        let (code, body) = hub.get("/api/markers/migration").await;
+        assert_eq!(code, 200, "{body}");
+        let status: MigrationStatus = serde_json::from_value(body).unwrap();
+        if check(&status) {
+            return status;
+        }
+        assert!(Instant::now() < deadline, "{what}: {status:?}");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// A row's (matches, index, plain, markers, done), by track.
+fn row(status: &MigrationStatus, track: &str) -> (u32, Option<u32>, u32, u32, bool) {
+    let r = status
+        .rows
+        .iter()
+        .find(|r| r.track == track)
+        .unwrap_or_else(|| panic!("no row {track}"));
+    (r.matches, r.index, r.plain, r.markers, r.done)
+}
+
+#[test]
+fn the_migration_names_the_owners_plain_tuners_with_their_planned_markers() {
+    // #68 PR C on the test site: Hand1 # is track 0, Hand2 # track 1, Keys 1
+    // is two tracks, A-Reverb # is return 0.
+    let _serial = serial();
+    runtime().block_on(async {
+        let mut host = Host::start("band");
+        let dir = tempfile::tempdir().unwrap();
+        let strip = |kind: &str, name: &str, pinned: bool| {
+            json!({"kind": "strip", "strip_kind": if kind == "return" { "return" } else { "standard" },
+                   "pinned": pinned,
+                   "binding": {"instance": "band", "anchor": {"kind": kind, "name": name}}})
+        };
+        let frame = json!({
+            "schema": 2,
+            "default_page": "p",
+            "pages": [{"id": "p", "title": "P", "rows": [{"sections": [
+                {"kind": "group", "id": "hands", "title": "Hands", "controls": [
+                    strip("track", "Hand1 #", true), strip("track", "Hand2 #", false)]},
+                {"kind": "group", "id": "fx", "title": "FX", "controls": [
+                    strip("return", "A-Reverb #", false), {"kind": "text", "text": "t"}]},
+                {"kind": "group", "id": "keys", "title": "Keys", "controls": [
+                    strip("track", "Keys 1", false)]}]}]}]
+        });
+        std::fs::write(
+            dir.path().join("layout.json"),
+            serde_json::to_vec(&frame).unwrap(),
+        )
+        .unwrap();
+        let hub = TestHub::start(vec![host.cfg()], dir.path()).await;
+        // The keeper's lists are read: every track found by name, none with
+        // a Tuner yet.
+        let status = migration_until(&hub, "the lists read", |s| {
+            s.rows.len() == 4 && s.rows.iter().all(|r| r.matches > 0)
+        })
+        .await;
+        assert_eq!(row(&status, "Hand1 #"), (1, Some(0), 0, 0, false));
+        assert_eq!(row(&status, "Keys 1"), (2, None, 0, 0, false));
+        let markers: Vec<&str> = status.rows.iter().map(|r| r.marker.as_str()).collect();
+        assert_eq!(
+            markers,
+            [
+                r#""Hand1" +G:HANDS:1 +PIN"#,
+                r#""Hand2" +G:HANDS:2"#,
+                r#""Reverb" +G:FX:1"#,
+                r#""Keys" +G:KEYS:1"#,
+            ]
+        );
+        // The owner adds plain Tuners: one on Hand1 # and the reverb, two on
+        // Hand2 #.
+        assert_eq!(host.tuner("track", 0, "add", "Tuner"), 1);
+        assert_eq!(host.tuner("track", 1, "add", "Tuner"), 1);
+        assert_eq!(host.tuner("track", 1, "add", "Tuner"), 2);
+        assert_eq!(host.tuner("return", 0, "add", "Tuner"), 1);
+        let status = migration_until(&hub, "the Tuners found", |s| {
+            row(s, "Hand1 #").2 == 1 && row(s, "Hand2 #").2 == 2 && row(s, "A-Reverb #").2 == 1
+        })
+        .await;
+        assert!(status.rows.iter().all(|r| !r.done));
+        // The renames: only the ready tracks.
+        let (code, body) = hub.post("/api/markers/migration").await;
+        assert_eq!(code, 200, "{body}");
+        let posted: MigrationStatus = serde_json::from_value(body).unwrap();
+        assert_eq!(posted.renamed, 2);
+        let status = migration_until(&hub, "the renames done", |s| {
+            row(s, "Hand1 #").4 && row(s, "A-Reverb #").4
+        })
+        .await;
+        assert_eq!(row(&status, "Hand1 #"), (1, Some(0), 0, 1, true));
+        assert_eq!(row(&status, "Hand2 #"), (1, Some(1), 2, 0, false));
+        // The frame still names its strips: the tag groups are views.
+        let served = layout_until(&hub, "the views", |l| {
+            !strips(l, "view-HANDS").is_empty() && !strips(l, "view-FX").is_empty()
+        })
+        .await;
+        assert_eq!(
+            strips(&served, "view-FX")[0],
+            ("Reverb".to_string(), Anchor::ReturnAt { index: 0 }, None)
+        );
+        assert_eq!(
+            strips(&served, "view-HANDS")[0],
+            ("Hand1".to_string(), Anchor::TrackAt { index: 0 }, None)
+        );
+        // Nothing is ready any more.
+        let (code, body) = hub.post("/api/markers/migration").await;
+        assert_eq!(code, 200, "{body}");
+        let posted: MigrationStatus = serde_json::from_value(body).unwrap();
+        assert_eq!(posted.renamed, 0);
         hub.stop().await;
         host.stop();
     });

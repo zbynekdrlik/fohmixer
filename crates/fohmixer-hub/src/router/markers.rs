@@ -33,6 +33,7 @@
 
 use std::collections::BTreeMap;
 
+use fohmixer_proto::markers::migrate::{MigrationRow, Planned};
 use fohmixer_proto::markers::{Found, TUNER_CLASS, TrackKind, is_marker};
 use serde_json::{Value, json};
 
@@ -158,6 +159,16 @@ pub enum Action {
     Retry { instance: String },
     /// The markers found changed: every instance's, sorted.
     Found(Vec<Found>),
+    /// The migration (#68 PR C): `set_prop name` of the Tuner `device` of
+    /// the track at `index` to `name`. The new name comes back through the
+    /// Tuner's own `name` watch.
+    Rename {
+        instance: String,
+        kind: TrackKind,
+        index: u32,
+        device: u32,
+        name: String,
+    },
 }
 
 /// The actions with only the last read of each instance. A newer read
@@ -216,6 +227,19 @@ struct Instance {
     tuners: BTreeMap<(TrackAt, u32), String>,
     pending: Option<Pending>,
     failures: u32,
+}
+
+/// The names of a list value's items (the script encodes a track as an
+/// object with its `name`); none for an item without one.
+fn item_names(list: Option<&Value>) -> Vec<Option<&str>> {
+    list.and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .map(|item| item.get("name").and_then(Value::as_str))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// The length of a list value (0: no list).
@@ -479,6 +503,78 @@ impl Keeper {
         let mut actions = self.resubscribe(instance, done.counts);
         actions.extend(self.report());
         actions
+    }
+
+    /// Each planned track (#68 PR C) as the latest reads found it.
+    pub fn migration_rows(&self, planned: &[Planned]) -> Vec<MigrationRow> {
+        planned.iter().map(|p| self.locate(p).0).collect()
+    }
+
+    /// The renames of the migration: each planned track that is ready
+    /// (`MigrationRow::ready`) gets its one plain Tuner named its marker.
+    pub fn renames(&self, planned: &[Planned]) -> Vec<Action> {
+        planned
+            .iter()
+            .filter_map(|p| {
+                let (row, device) = self.locate(p);
+                Some(Action::Rename {
+                    index: row.index?,
+                    device: device?,
+                    instance: row.instance,
+                    kind: row.kind,
+                    name: row.marker,
+                })
+            })
+            .collect()
+    }
+
+    /// A planned track's row, and the device of its one plain Tuner when
+    /// the row is ready.
+    fn locate(&self, planned: &Planned) -> (MigrationRow, Option<u32>) {
+        let state = self.instances.get(&planned.instance);
+        let list = state.and_then(|s| match planned.kind {
+            TrackKind::Track => s.tracks.as_ref(),
+            TrackKind::Return => s.returns.as_ref(),
+        });
+        let indexes: Vec<u32> = item_names(list)
+            .into_iter()
+            .enumerate()
+            .filter(|(_, name)| *name == Some(planned.track.as_str()))
+            .filter_map(|(i, _)| u32::try_from(i).ok())
+            .collect();
+        let index = match indexes.as_slice() {
+            [one] => Some(*one),
+            _ => None,
+        };
+        let tuners: Vec<(u32, &String)> = match (state, index) {
+            (Some(state), Some(index)) => state
+                .tuners
+                .iter()
+                .filter(|(((kind, at), _), _)| *kind == planned.kind && *at == index)
+                .map(|((_, device), name)| (*device, name))
+                .collect(),
+            _ => Vec::new(),
+        };
+        let plain: Vec<u32> = tuners
+            .iter()
+            .filter(|(_, name)| !is_marker(name))
+            .map(|(device, _)| *device)
+            .collect();
+        let markers = tuners.iter().filter(|(_, name)| is_marker(name)).count();
+        let count = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
+        let row = MigrationRow {
+            instance: planned.instance.clone(),
+            kind: planned.kind,
+            track: planned.track.clone(),
+            marker: planned.marker.clone(),
+            matches: count(indexes.len()),
+            index,
+            plain: count(plain.len()),
+            markers: count(markers),
+            done: tuners.iter().any(|(_, name)| **name == planned.marker),
+        };
+        let device = plain.first().copied().filter(|_| row.ready());
+        (row, device)
     }
 
     /// The markers found now (for the tests).

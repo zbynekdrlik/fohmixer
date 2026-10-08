@@ -5,10 +5,11 @@
 
 use std::sync::Arc;
 
-use fohmixer_proto::markers::Found;
+use fohmixer_proto::markers::migrate::MigrationStatus;
+use fohmixer_proto::markers::{Found, TrackKind};
 use serde_json::Value;
 
-use super::{MARKERS_CLIENT, Router, RouterMsg, cached_value, layout_msg, markers};
+use super::{MARKERS_CLIENT, Router, RouterMsg, cached_value, layout_msg, markers, write_failure};
 use crate::layout::LayoutStore;
 use crate::live::subs::Cached;
 
@@ -71,9 +72,63 @@ impl Router {
                 } => self.markers_read(instance, seq, step, commands),
                 markers::Action::Retry { instance } => self.markers_retry(instance),
                 markers::Action::Found(found) => self.markers_found(found),
+                markers::Action::Rename {
+                    instance,
+                    kind,
+                    index,
+                    device,
+                    name,
+                } => self.markers_rename(&instance, kind, index, device, name),
             }
         }
         cached
+    }
+
+    /// The migration's rows (#68 PR C): the planned tracks of the store's
+    /// frame as the keeper finds them; with `apply`, the ready tracks' plain
+    /// Tuners are renamed (the rows are what the keeper saw before).
+    pub(super) fn markers_migration(&mut self, apply: bool) -> MigrationStatus {
+        let planned = self
+            .layout_store
+            .as_ref()
+            .map(|store| store.planned())
+            .unwrap_or_default();
+        let rows = self.markers.migration_rows(&planned);
+        let renames = if apply {
+            self.markers.renames(&planned)
+        } else {
+            Vec::new()
+        };
+        let renamed = u32::try_from(renames.len()).unwrap_or(u32::MAX);
+        self.markers_do(renames);
+        MigrationStatus { rows, renamed }
+    }
+
+    /// Names a Tuner (`set_prop name`); a failure is logged. The new name
+    /// comes back through the Tuner's own `name` watch.
+    fn markers_rename(
+        &self,
+        instance: &str,
+        kind: TrackKind,
+        index: u32,
+        device: u32,
+        name: String,
+    ) {
+        let Some(live) = self.live.get(instance) else {
+            return;
+        };
+        let target = markers::device_path(kind, index, device);
+        tracing::info!(instance = %instance, target = %target, "the marker migration names a Tuner (#68)");
+        let result = live.call(vec![serde_json::json!({
+            "target": target,
+            "name": "set_prop",
+            "args": {"prop": "name", "value": name},
+        })]);
+        tokio::spawn(async move {
+            if let Some(problem) = write_failure(&result.await) {
+                tracing::warn!(target = %target, problem = %problem, "a Tuner's rename failed");
+            }
+        });
     }
 
     /// Reads a batch of the markers; the answer comes back as

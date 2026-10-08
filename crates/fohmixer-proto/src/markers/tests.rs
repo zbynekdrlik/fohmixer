@@ -249,6 +249,28 @@ fn a_frame_group_shows_its_tag_group_by_place_then_in_lives_order() {
 }
 
 #[test]
+fn a_tags_groups_own_controls_follow_its_marker_strips() {
+    // PR C: a migrated group that ended with a parameter fader keeps it.
+    let mut frame = serde_json::to_value(frame()).unwrap();
+    frame["pages"][0]["rows"][1]["sections"][0]["controls"] =
+        json!([{"kind": "text", "text": "t"}]);
+    let frame: Layout = serde_json::from_value(frame).unwrap();
+    assert_eq!(frame_problems(&frame), vec![]);
+    let composed = compose(&frame, &sample());
+    let hands = group(&composed.layout, "hands");
+    assert_eq!(labels(&hands.controls), ["Hand 1"]);
+    assert_eq!(hands.controls.len(), 2);
+    assert!(matches!(hands.controls[0], Control::Strip(_)));
+    assert_eq!(hands.controls[1], Control::Text { text: "t".into() });
+    // Without markers it shows its own controls alone.
+    let bare = compose(&frame, &[]);
+    assert_eq!(
+        group(&bare.layout, "hands").controls,
+        vec![Control::Text { text: "t".into() }]
+    );
+}
+
+#[test]
 fn a_tag_group_the_frame_does_not_show_is_a_view_with_the_pins() {
     let composed = compose(&frame(), &sample());
     let ids: Vec<&str> = composed
@@ -536,9 +558,13 @@ fn a_frame_holds_no_view_no_view_id_and_no_tags_group_with_controls() {
         "pages": [
             {"id": "p", "title": "P", "rows": [{"sections": [
                 {"kind": "group", "id": "view-x", "tags": "A", "controls": [
-                    {"kind": "text", "text": "t"}]},
+                    {"kind": "text", "text": "t"},
+                    {"kind": "strip", "binding": {"instance": "band", "anchor": {"kind": "track", "name": "Bass #"}},
+                     "strip_kind": "standard"}]},
                 {"kind": "pager", "id": "view-pager", "default_page": "view-sub", "pages": [
-                    {"id": "view-sub", "title": "S"}]}]}]},
+                    {"id": "view-sub", "title": "S"}]},
+                {"kind": "group", "id": "own", "tags": "B", "controls": [
+                    {"kind": "text", "text": "t"}]}]}]},
             {"id": "view-A", "title": "A", "view": true}
         ]
     }))
@@ -557,7 +583,7 @@ fn a_frame_holds_no_view_no_view_id_and_no_tags_group_with_controls() {
             r#"pages[0].rows[0].sections[1]: "view-sub" starts with "view-", the Tuner markers' views"#
                 .to_string(),
             r#"pages[1]: "view-A" starts with "view-", the Tuner markers' views"#.to_string(),
-            r#"pages[0]: the tags group "view-x" holds controls of its own (the markers' strips replace them)"#
+            r#"pages[0]: the tags group "view-x" holds a strip of its own (the markers' strips fill it)"#
                 .to_string(),
             "pages[1]: a view page: the Tuner markers make those".to_string(),
         ]
