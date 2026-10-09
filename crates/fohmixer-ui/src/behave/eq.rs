@@ -227,15 +227,29 @@ pub fn list_text(error: &str) -> String {
     }
 }
 
-/// The line under a card after its open failed (`why`, the hub's reason);
-/// none for a close the page or the hub made on purpose; the screen off
-/// says so plainly.
+/// The hub's reason when Live opened no editor window within its wait
+/// (the hub's `plugwin::NO_WINDOW`; the protocol's `reason` does not name
+/// it).
+pub const NO_WINDOW: &str = "no window";
+
+/// The line under a card after its editor did not open or closed (`why`,
+/// the hub's reason), in Slovak: none for a close the page or the hub made
+/// on purpose (`exit`, `switch`, `detach`, the page's own `socket`) and for
+/// a lock (the card already reads ZAMKNUTÉ); each reason the hub names has
+/// its sentence; only an unexpected failure shows the hub's own words.
 pub fn failure_text(why: &str) -> Option<String> {
-    let quiet = ["exit", "switch", "detach", "socket"];
-    if why == reason::OFF {
-        return Some(OFF_TEXT.to_string());
-    }
-    (!quiet.contains(&why)).then(|| format!("Neotvoril sa: {why}"))
+    let text = match why {
+        reason::EXIT | reason::SWITCH | reason::DETACH | "socket" | reason::LOCKED => return None,
+        reason::OFF => OFF_TEXT,
+        reason::CLOSING => "ešte sa zatvára, skús znova",
+        reason::UNKNOWN => "zoznam je starý, otvor kanál znova",
+        reason::MOVED => "Pro-Q 4 sa presunul, otvor kanál znova",
+        reason::OPEN_ON_PC => "Pro-Q 4 je otvorený priamo na PC, zatvor ho tam",
+        NO_WINDOW => "okno Pro-Q 4 sa neotvorilo",
+        reason::GONE => "okno Pro-Q 4 sa zavrelo",
+        other => return Some(format!("Neotvoril sa: {other}")),
+    };
+    Some(text.to_string())
 }
 
 #[cfg(test)]
