@@ -1052,6 +1052,23 @@ async fn the_stop_waits_for_the_worker_to_hand_its_windows_back() {
     );
 }
 
+#[tokio::test]
+async fn a_second_look_at_the_stop_waits_for_the_first_ones_answer() {
+    let (plugwin, handle) = slow_worker(Duration::from_millis(300)).await;
+    plugwin.stop();
+    let second = async {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let ended = plugwin.stopped().await;
+        // Its answer comes only once the worker handed its window back.
+        let released = handle.records().iter().any(|r| r["op"] == "release");
+        (ended, released)
+    };
+    let (first, (second, released)) = tokio::join!(plugwin.stopped(), second);
+    assert!(first, "the first look: ended within the wait");
+    assert!(second);
+    assert!(released, "the second look answered before the worker ended");
+}
+
 /// Waits (bounded) for `check`.
 async fn until(what: &str, check: impl Fn() -> bool) {
     for _ in 0..200 {
