@@ -21,11 +21,14 @@
 //!   its editor closes with one). The device turned off is never another
 //!   one's: it is turned off through the `$ref` its open read (the same
 //!   object wherever it moved since). Only when that ref is gone (the
-//!   script's registry starts over with each connection) does the close
-//!   check (`eq::close`) decide: it re-reads the held path first and, when
-//!   the editor moved, looks for the one open Pro-Q 4 of the set; when that
-//!   is not certain, Live is left alone. An open whose window was not found
-//!   turns its editor off the same way. The answer comes back as
+//!   script answers that it names no object: its registry starts over with
+//!   each connection, or the device was deleted) or none is held does the
+//!   close check (`eq::close`) decide: it re-reads the held path first and,
+//!   when the editor moved, looks for the one open Pro-Q 4 of the set; when
+//!   that is not certain, Live is left alone. A ref turn-off that got no
+//!   answer (offline, a timeout) or failed otherwise leaves Live alone too:
+//!   the ref may still be good. An open whose window was not found turns
+//!   its editor off the same way. The answer comes back as
 //!   `RouterMsg::EqClosed`.
 
 use std::collections::BTreeMap;
@@ -38,7 +41,7 @@ use fohmixer_proto::layout::Binding;
 use serde_json::{Value, json};
 
 use super::{Router, RouterMsg, write_failure};
-use crate::eq::close::{self, Check, CloseCheck};
+use crate::eq::close::{self, Check, CloseCheck, RefOff};
 use crate::eq::open;
 use crate::eq::walk::{Found, MAX_READS, Step, Walk};
 use crate::eq::{Act, EditorKey, Eqs, GUARD_WAIT, Pictures, record};
@@ -86,16 +89,20 @@ async fn set_editor(live: &LiveHandle, path: &str, open: bool) -> Result<(), Str
     set_editor_of(live, Value::from(path), open).await
 }
 
+/// The command that opens (`open`) or closes the editor of the device
+/// `target` names (a path, or a `$ref`).
+fn set_command(target: Value, open: bool) -> Vec<Value> {
+    vec![json!({
+        "target": target,
+        "name": "set_prop",
+        "args": {"prop": EDITOR_OPEN, "value": open},
+    })]
+}
+
 /// Opens (`open`) or closes the editor of the device `target` names (a path,
 /// or a `$ref`).
 async fn set_editor_of(live: &LiveHandle, target: Value, open: bool) -> Result<(), String> {
-    let outcome = live
-        .call(vec![json!({
-            "target": target,
-            "name": "set_prop",
-            "args": {"prop": EDITOR_OPEN, "value": open},
-        })])
-        .await;
+    let outcome = live.call(set_command(target, open)).await;
     write_failure(&outcome).map_or(Ok(()), Err)
 }
 
@@ -126,10 +133,12 @@ async fn check_close(live: &LiveHandle, held: &str) -> Check {
 
 /// Turns the editor of `key` (`session`) off in Live, never another
 /// device's: through its `reference` (the device its open read, wherever it
-/// moved since); without one, or when it is gone (another script
-/// connection, the device deleted), the close check decides which one, or
-/// none. Its outcome is logged; an editor the check found moved is an `eq`
-/// record `moved` with the path it was found at (`to`).
+/// moved since). Only without one, or when the script answers that it is
+/// gone (another script connection, the device deleted), does the close
+/// check decide which one, or none; a turn-off through the ref that got no
+/// answer or failed otherwise leaves Live alone (the ref may still be
+/// good). Its outcome is logged; an editor the check found moved is an
+/// `eq` record `moved` with the path it was found at (`to`).
 async fn turn_off(
     live: &LiveHandle,
     key: &EditorKey,
@@ -138,13 +147,18 @@ async fn turn_off(
     events: &EventLog,
 ) -> Result<(), String> {
     if let Some(target) = reference {
-        match set_editor_of(live, target.clone(), false).await {
-            Ok(()) => {
+        let outcome = live.call(set_command(target.clone(), false)).await;
+        match close::ref_off(outcome.as_deref().map_err(ToString::to_string)) {
+            RefOff::Done => {
                 tracing::info!(session, instance = %key.instance, path = %key.path, "a Pro-Q 4 editor is turned off through its ref");
                 return Ok(());
             }
-            Err(why) => {
+            RefOff::Gone(why) => {
                 tracing::info!(session, instance = %key.instance, why = %why, "a Pro-Q 4 editor's ref is gone: its held path is checked");
+            }
+            RefOff::Failed(why) => {
+                tracing::warn!(session, instance = %key.instance, path = %key.path, why = %why, "a Pro-Q 4 editor could not be turned off through its ref: it is left open in Live");
+                return Err(close::ref_failed(&why));
             }
         }
     }

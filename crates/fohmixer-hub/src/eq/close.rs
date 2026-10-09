@@ -1,5 +1,11 @@
 //! Which device a close turns off in Live (#71 PR E), pure: never one other
-//! than the editor the hub opened. The hub holds an editor by its path in
+//! than the editor the hub opened. The close turns it off through the
+//! `$ref` its open read ([`ref_off`] reads the answer): the same object
+//! wherever it moved. Only when that ref is gone (the script answers
+//! [`REF_GONE`]: another connection's registry, the device deleted) or no
+//! ref is held does the path check below decide; a ref turn-off that got
+//! no answer or failed otherwise leaves Live alone (the ref may still be
+//! good, and the set may still land). The hub holds an editor by its path in
 //! Live's index form (`live_set tracks 1 devices 0`); a track inserted,
 //! deleted or moved above it, or a device before it, makes that path name
 //! another device. So before `is_editor_open = false` the close re-reads, in
@@ -56,6 +62,54 @@ pub fn unread(why: &str) -> String {
 /// Why Live is left alone when a track's walk failed.
 pub fn walk_failed(why: &str) -> String {
     format!("the editor moved and a track could not be walked ({why}): Live is left alone")
+}
+
+/// Why Live is left alone when the turn-off through the editor's `$ref`
+/// failed while the ref may still be good (no answer, or the set failed).
+pub fn ref_failed(why: &str) -> String {
+    format!("the editor could not be turned off through its ref, Live is left alone: {why}")
+}
+
+/// The script's `errorType`s of a `$ref` that names no object any more: one
+/// its registry never issued or cleared (`UnknownRef`: each connection
+/// starts a new registry), or whose object was deleted or is another class
+/// now (`StaleRef`).
+pub const REF_GONE: [&str; 2] = ["UnknownRef", "StaleRef"];
+
+/// What the turn-off through an editor's `$ref` answered.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RefOff {
+    /// It went through.
+    Done,
+    /// The ref names no object any more (the script's answer): the held
+    /// path is checked.
+    Gone(String),
+    /// No answer (Live offline, a timeout, a refused request) or another
+    /// failure: the ref may still be good and the set may still land, so
+    /// Live is left alone.
+    Failed(String),
+}
+
+/// What the turn-off through a `$ref` answered: its slots, or why the call
+/// got none.
+pub fn ref_off(answer: Result<&[Value], String>) -> RefOff {
+    let slots = match answer {
+        Ok(slots) => slots,
+        Err(why) => return RefOff::Failed(why),
+    };
+    let slot = slots.first();
+    if slot.and_then(|s| s.get("ok")) == Some(&Value::Bool(true)) {
+        return RefOff::Done;
+    }
+    let text = Value::from(slots.to_vec()).to_string();
+    let kind = slot
+        .and_then(|s| s.get("errorType"))
+        .and_then(Value::as_str);
+    if kind.is_some_and(|kind| REF_GONE.contains(&kind)) {
+        RefOff::Gone(text)
+    } else {
+        RefOff::Failed(text)
+    }
 }
 
 /// What a close does next.
@@ -433,10 +487,58 @@ mod tests {
     }
 
     #[test]
+    fn a_ref_turn_off_falls_back_to_the_path_only_when_the_ref_is_gone() {
+        let answer = |slot: Value| ref_off(Ok(&[slot][..]));
+        assert_eq!(answer(json!({"ok": true, "data": null})), RefOff::Done);
+        // Gone: the registry does not know it, or its object was deleted or
+        // is another class now.
+        let gone =
+            |error: &str, kind: &str| json!({"ok": false, "error": error, "errorType": kind});
+        for (error, kind) in [
+            ("unknown id: live_7", "UnknownRef"),
+            ("deleted: live_7", "StaleRef"),
+            (
+                "class changed: live_7 is Track, not PluginDevice",
+                "StaleRef",
+            ),
+        ] {
+            let slot = gone(error, kind);
+            let text = json!([slot.clone()]).to_string();
+            assert_eq!(answer(slot), RefOff::Gone(text), "{kind}");
+        }
+        // Any other failure of the set: the ref may still be good.
+        let live = gone("live error: busy", "OpError");
+        assert_eq!(
+            answer(live.clone()),
+            RefOff::Failed(json!([live]).to_string())
+        );
+        let bare = json!({"ok": false});
+        assert_eq!(
+            answer(bare.clone()),
+            RefOff::Failed(json!([bare]).to_string())
+        );
+        let none: &[Value] = &[];
+        assert_eq!(ref_off(Ok(none)), RefOff::Failed("[]".to_string()));
+        // No answer at all: Live offline, a timeout, a refused request.
+        for why in ["instance offline", "no result within 3 s", "refused: busy"] {
+            assert_eq!(
+                ref_off(Err(why.to_string())),
+                RefOff::Failed(why.to_string())
+            );
+        }
+        assert_eq!(REF_GONE, ["UnknownRef", "StaleRef"]);
+    }
+
+    #[test]
     fn the_messages_say_why_live_is_left_alone() {
         assert_eq!(
             unread("instance offline"),
             "Live could not be read, it is left alone: instance offline"
+        );
+        assert_eq!(
+            ref_failed("instance offline"),
+            "the editor could not be turned off through its ref, Live is left alone: \
+             instance offline"
         );
         assert_eq!(
             walk_failed("busy"),
