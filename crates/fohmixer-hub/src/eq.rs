@@ -335,8 +335,9 @@ impl Eqs {
             .collect()
     }
 
-    /// The editor `client` holds, its session and stage name (`/api/status`
-    /// and the tests).
+    /// The editor `client` holds, its session and stage name (the tests
+    /// read the state through it; `/api/status` shows nothing of the Pro-Q
+    /// 4 screen).
     pub fn held_by(&self, client: ClientId) -> Option<(EditorKey, u32, &'static str)> {
         let key = self.held.get(&client)?;
         let editor = self.editors.get(key)?;
