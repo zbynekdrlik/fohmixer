@@ -28,9 +28,12 @@
 //!   editor and its process the editor's. An up or a cancel goes at the last
 //!   point injected, without the window's mapping or that check: a window
 //!   gone or moved still ends the contact where it was. The cursor saved at
-//!   the down is put back (`SetCursorPos`) when the contact ends and when a
-//!   phase fails, the window gone included. A call too soon after the last
-//!   one (`ERROR_NOT_READY`) is tried again after 1 ms, twice.
+//!   the down is put back (`SetCursorPos`) when the contact ends (the window
+//!   gone included) and when a down fails with no contact before it
+//!   ([`restores`]); a failed update or keep-alive keeps it saved, as the
+//!   worker's cancel at the last point follows and moves the cursor there
+//!   again. A call too soon after the last one (`ERROR_NOT_READY`) is tried
+//!   again after 1 ms, twice.
 //! - **Release:** the z-order as it was (`HWND_NOTOPMOST`, or topmost again
 //!   when it was), posted as the take's.
 
@@ -236,6 +239,16 @@ fn last_after(phase: Phase, went: bool, point: POINT, last: Option<POINT>) -> Op
     } else {
         last
     }
+}
+
+/// Whether the cursor saved at the down goes back after `phase` (`failed`:
+/// it was not injected; `down`: a contact was down before it): when the
+/// contact ends, and when a down fails with no contact before it. A failed
+/// phase of a contact still down keeps it saved: the worker follows with a
+/// cancel at the contact's last point, which moves the cursor there again,
+/// and that end puts it back.
+fn restores(phase: Phase, failed: bool, down: bool) -> bool {
+    phase.ends() || (failed && !down)
 }
 
 /// The window whose client area is the picture: Pro-Q's own child
@@ -460,11 +473,12 @@ impl Backend for Win {
     }
 
     fn touch(&mut self, taken: &Taken, phase: Phase, at: (i32, i32)) -> Result<(), String> {
+        let down = self.last.is_some();
         let injected = self.inject_at(taken, phase, at);
         // An end puts the cursor back even when it failed (the window gone);
-        // a failed down or update too: the cursor never stays where a
-        // contact left it.
-        if (phase.ends() || injected.is_err())
+        // a failed down with no contact before it too. A contact still down
+        // keeps it saved for its end (the worker's cancel follows).
+        if restores(phase, injected.is_err(), down)
             && let Some(saved) = self.cursor.take()
         {
             // SAFETY: moves the cursor back where it was.
@@ -544,6 +558,23 @@ mod tests {
         );
         assert_eq!(last_after(Phase::Up, true, b, Some(a)), None);
         assert_eq!(last_after(Phase::Cancel, false, b, Some(a)), None);
+    }
+
+    #[test]
+    fn the_cursor_goes_back_when_the_contact_ends_or_never_began() {
+        for phase in [Phase::Up, Phase::Cancel] {
+            for (failed, down) in [(false, true), (true, true), (false, false), (true, false)] {
+                assert!(restores(phase, failed, down), "{phase:?} {failed} {down}");
+            }
+        }
+        assert!(restores(Phase::Down, true, false), "a down that failed");
+        assert!(!restores(Phase::Down, false, false), "a down that went");
+        assert!(!restores(Phase::Update, false, true), "an update that went");
+        // A failed phase of a contact still down: the worker's cancel at
+        // its last point follows, and that end puts the cursor back.
+        assert!(!restores(Phase::Update, true, true));
+        assert!(!restores(Phase::Down, true, true));
+        assert!(restores(Phase::Update, true, false), "no contact down");
     }
 
     #[test]
