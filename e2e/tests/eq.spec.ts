@@ -5,7 +5,9 @@ import {
   centre,
   clipped,
   frames,
+  harness,
   hubEvents,
+  hubStatus,
   impair,
   openDetail,
   openSurface,
@@ -26,7 +28,7 @@ import {
 //
 // The fixture's Hand2 # holds two: `Pro-Q 4` on the track, and `De-ess`
 // inside the rack `Vocal FX`, chain `Main` (its `Pro-C 2` in chain `Air` is
-// no Pro-Q 4 and is not listed).
+// no Pro-Q 4 and is not listed). The return B-Main repro # holds none.
 
 /** The picture's size (Pro-Q 4 at 100 %, the simulated backend's). */
 const WIDTH = 1349;
@@ -149,6 +151,47 @@ async function cardFits(c: Locator) {
   }
 }
 
+/**
+ * The page hidden (`document.hidden`, `visibilityState`) or shown again, with
+ * the `visibilitychange` a browser fires (it bubbles to the window), as
+ * deck.spec.ts does.
+ */
+async function setHidden(page: Page, hidden: boolean) {
+  await page.evaluate((on) => {
+    const doc = document as any;
+    if (on) {
+      Object.defineProperty(doc, "hidden", { configurable: true, get: () => true });
+      Object.defineProperty(doc, "visibilityState", { configurable: true, get: () => "hidden" });
+    } else {
+      delete doc.hidden;
+      delete doc.visibilityState;
+    }
+    document.dispatchEvent(new Event("visibilitychange", { bubbles: true }));
+  }, hidden);
+}
+
+/**
+ * Records every text a card's note shows, as it appears (`window.eqNotes`):
+ * a note can last only until the hub's next word about its editor.
+ */
+async function recordNotes(page: Page) {
+  await page.evaluate(() => {
+    const seen: string[] = [];
+    (window as any).eqNotes = seen;
+    const look = () =>
+      document.querySelectorAll('[data-testid="eq-card-note"]').forEach((note) => {
+        const text = note.textContent ?? "";
+        if (!seen.includes(text)) seen.push(text);
+      });
+    new MutationObserver(look).observe(document.body, { childList: true, subtree: true, characterData: true });
+  });
+}
+
+/** The notes `recordNotes` saw. */
+async function notesSeen(page: Page): Promise<string[]> {
+  return page.evaluate(() => (window as any).eqNotes as string[]);
+}
+
 /** A page's console errors and warnings (a second page has no console guard). */
 function watchConsole(page: Page): string[] {
   const problems: string[] = [];
@@ -176,10 +219,12 @@ test.describe("The Pro-Q 4 screen", () => {
       await expect(open).toHaveAttribute("aria-disabled", "false");
       await cardFits(c);
     }
-    // Back to the mix and into a track with no device.
+    // Back to the mix and into a band strip with no device (the return
+    // `B-Main repro #` on the default page; Hand1 # is a master strip on the
+    // OTHERS page).
     await detail.getByTestId("detail-exit").click();
     await expect(page.getByTestId("detail")).toHaveCount(0);
-    const other = await openDetail(page, "Hand1 #");
+    const other = await openDetail(page, "B-Main repro #");
     await expect(other.getByTestId("eq-note")).toHaveText("Na tomto tracku nie je Pro-Q 4.");
     await expect(other.getByTestId("eq-card")).toHaveCount(0);
     expect(await clipped(other.getByTestId("eq-note"))).toEqual([]);
@@ -341,6 +386,102 @@ test.describe("The Pro-Q 4 screen", () => {
     await closedWithGuard(before);
     await editorOpen(held.trackPath, false);
   });
+
+  test("an open the hub refuses says why under its card in Slovak, never the hub's English", async ({ page }) => {
+    await openSurface(page);
+    const { onTrack, trackPath } = await hand2Cards(page);
+    await editorOpen(trackPath, false);
+    await onTrack.getByTestId("eq-open").click();
+    await openScreen(page, trackPath);
+    const before = (await simEq.records()).length;
+    await recordNotes(page);
+    // Back to the channel and at once the same card again: the hub is still
+    // closing it (the guard's tap, then 300 ms), so it refuses the open
+    // (`closing`) until the close is done. Both downs in one evaluate, the
+    // second once the screen is gone.
+    await page.evaluate(async (path) => {
+      const down = (selector: string) => {
+        const el = document.querySelector(selector);
+        if (!el) throw new Error(`no ${selector}`);
+        el.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, pointerId: 41, isPrimary: true }));
+      };
+      down('[data-testid="eq-exit"]');
+      for (let i = 0; document.querySelector('[data-testid="eq-screen"]'); i++) {
+        if (i === 100) throw new Error("the screen stayed");
+        await new Promise((r) => setTimeout(r, 0));
+      }
+      down(`[data-testid="eq-card"][data-path="${path}"] [data-testid="eq-open"]`);
+    }, trackPath);
+    await expect.poll(() => notesSeen(page), { message: "the card's note" }).toContain("ešte sa zatvára, skús znova");
+    // The refused screen went; the first close ends with its guard, and the
+    // note goes with it (the editor can open again).
+    await expect(page.getByTestId("eq-screen")).toHaveCount(0);
+    await closedWithGuard(before);
+    await editorOpen(trackPath, false);
+    await expect(onTrack.getByTestId("eq-card-note")).toHaveCount(0);
+    // The only note it showed: the Slovak one (never "Neotvoril sa: closing").
+    expect(await notesSeen(page)).toEqual(["ešte sa zatvára, skús znova"]);
+  });
+
+  test("a page going hidden lifts its finger: the PC's contact is cancelled where it was", async ({ page }) => {
+    await openSurface(page);
+    const { onTrack, trackPath } = await hand2Cards(page);
+    await editorOpen(trackPath, false);
+    await onTrack.getByTestId("eq-open").click();
+    const screen = await openScreen(page, trackPath);
+    const map = await pictureMap(screen.getByTestId("eq-canvas"));
+    const at = map.toPage(FROM);
+    const before = (await simEq.records()).length;
+    const touches = async () => (await simEq.records()).slice(before).filter((r) => r.op === "touch");
+    await page.mouse.move(at.x, at.y);
+    await page.mouse.down();
+    await until(touches, (all) => all.some((r) => r.phase === "down"), "the finger's down");
+    // The finger rests and the page goes hidden (it still pings, so the
+    // hub's 2 s silence would never end the contact).
+    await setHidden(page, true);
+    const ended = await until(touches, (all) => all.some((r) => r.phase === "cancel"), "the hidden page's cancel", 1_500);
+    expect(ended[0].phase).toBe("down");
+    const cancel = ended[ended.length - 1];
+    expect(cancel.phase).toBe("cancel");
+    expect(near(cancel, map.toPicture(at)), `the cancel ${JSON.stringify(cancel)} at ${JSON.stringify(map.toPicture(at))}`).toBe(true);
+    // Between them only the resting finger's resends, at its point.
+    for (const r of ended.slice(1, -1)) {
+      expect(r.phase).toBe("update");
+      expect(near(r, map.toPicture(at))).toBe(true);
+    }
+    // Shown again, the lift sends nothing; the exit closes with the guard.
+    await setHidden(page, false);
+    await page.mouse.up();
+    const closing = (await simEq.records()).length;
+    await screen.getByTestId("eq-exit").click();
+    await expect(page.getByTestId("eq-screen")).toHaveCount(0);
+    await closedWithGuard(closing);
+    await editorOpen(trackPath, false);
+    expect((await touches()).filter((r) => r.phase === "up" && !near(r, INERT)), "no lift of the cancelled finger").toEqual([]);
+  });
+
+  test("the cards are listed again when Live comes back, and open", async ({ page }) => {
+    await openSurface(page);
+    const { detail, trackPath } = await hand2Cards(page);
+    // The cards as listed now; a new list makes new ones.
+    await detail.getByTestId("eq-card").first().evaluate((el) => el.setAttribute("data-e2e-kept", "1"));
+    await harness("/host/band/restart");
+    await until(hubStatus, (s) => s.instances[0].online, "the band's Live back", 10_000);
+    await expect(detail.locator('[data-testid="eq-card"][data-e2e-kept]'), "listed again").toHaveCount(0, { timeout: 10_000 });
+    await expect(detail.getByTestId("eq-card")).toHaveCount(2);
+    const onTrack = card(detail, ON_TRACK);
+    await expect(onTrack).toHaveCount(1);
+    await expect(onTrack).toHaveAttribute("data-path", trackPath);
+    await editorOpen(trackPath, false);
+    await onTrack.getByTestId("eq-open").click();
+    const screen = await openScreen(page, trackPath);
+    await editorOpen(trackPath, true);
+    const before = (await simEq.records()).length;
+    await screen.getByTestId("eq-exit").click();
+    await expect(page.getByTestId("eq-screen")).toHaveCount(0);
+    await closedWithGuard(before);
+    await editorOpen(trackPath, false);
+  });
 });
 
 test.describe("The Pro-Q 4 screen and a lost link", () => {
@@ -370,6 +511,33 @@ test.describe("The Pro-Q 4 screen and a lost link", () => {
     await editorOpen(trackPath, true);
     await screen.getByTestId("eq-exit").click();
     await expect(page.getByTestId("eq-screen")).toHaveCount(0);
+    await editorOpen(trackPath, false);
+  });
+
+  test("while the socket is down a card offers no open (no screen waiting for nothing); back on the link it does", async ({ page }) => {
+    await openSurface(page);
+    const { onTrack, trackPath } = await hand2Cards(page);
+    await editorOpen(trackPath, false);
+    const open = onTrack.getByTestId("eq-open");
+    await expect(open).toHaveAttribute("aria-disabled", "false");
+    try {
+      // The link cut and held: the page cannot reconnect meanwhile.
+      await impair.block(true);
+      await impair.drop();
+      await expect(page.getByTestId("surface")).toHaveAttribute("data-connected", "false");
+      await expect(open).toHaveAttribute("aria-disabled", "true");
+      await expect(open).toHaveText("OTVORIŤ EQ NA CELÚ OBRAZOVKU");
+      // A real tap opens nothing.
+      await open.scrollIntoViewIfNeeded();
+      const { x, y } = await centre(open);
+      await page.mouse.click(x, y);
+      await page.waitForTimeout(500);
+      await expect(page.getByTestId("eq-screen")).toHaveCount(0);
+    } finally {
+      await impair.block(false);
+    }
+    await expect(page.getByTestId("surface")).toHaveAttribute("data-connected", "true", { timeout: 10_000 });
+    await expect(open).toHaveAttribute("aria-disabled", "false");
     await editorOpen(trackPath, false);
   });
 });

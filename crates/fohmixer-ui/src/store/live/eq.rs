@@ -19,7 +19,7 @@ use super::LiveStore;
 use crate::behave::eq::{Out, picture_url, shows_frame};
 use crate::dom;
 use crate::net;
-use crate::store::eq::{EqListView, EqView, socket_closed};
+use crate::store::eq::{EqListView, EqView, asked, socket_closed};
 
 /// Where the open editor's frames go: the screen's painter.
 pub type FrameSink = Rc<dyn Fn(web_sys::Blob)>;
@@ -98,13 +98,16 @@ impl LiveStore {
         });
     }
 
-    /// Opens the editor at `path` on `instance`: opening from now on.
+    /// Opens the editor at `path` on `instance`: opening from now on, or
+    /// closed at once (`socket`) when the socket could not take the ask
+    /// (`store::eq::asked`; the hub's answer comes in a later task either
+    /// way).
     pub fn eq_open(self, instance: &str, path: &str) {
-        let _ = self.eq.try_set(Some(EqView::opening(instance, path)));
-        self.send(&ClientMsg::EqOpen {
+        let sent = self.send(&ClientMsg::EqOpen {
             instance: instance.to_string(),
             path: path.to_string(),
         });
+        let _ = self.eq.try_set(Some(asked(instance, path, sent)));
     }
 
     /// A finger on the open editor.

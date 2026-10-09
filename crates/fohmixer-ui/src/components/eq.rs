@@ -3,7 +3,8 @@
 //!
 //! - **The cards** ([`EqCards`], the channel detail's middle): the strip's
 //!   Pro-Q 4 instances as the hub reads them (`eq_list`, asked when the
-//!   detail opens, after every reconnect and once the screen closed), one
+//!   detail opens, after every reconnect, whenever the strip's instance
+//!   comes back online, and once the screen closed), one
 //!   card each: its last picture (fetched with the token into a blob URL;
 //!   a plain field before a first open), where it sits, and `OTVORIŤ EQ NA
 //!   CELÚ OBRAZOVKU`, or `ZAMKNUTÉ` with who holds it since when.
@@ -34,22 +35,23 @@ use wasm_bindgen::JsCast;
 use super::buttons::colour_style;
 use super::{owns_touches, trace_detail};
 use crate::behave::eq::{
-    CardLock, Finger, Fit, card_lock, failure_text, fit, hh_mm, list_text, locked_text, on_picture,
-    to_picture,
+    CardLock, Finger, Fit, ListLink, can_open, card_lock, failure_text, fit, hh_mm, list_text,
+    lists_now, locked_text, on_picture, place_text, to_picture,
 };
 use crate::binding::detail_keys;
 use crate::dom;
 use crate::raf;
-use crate::store::eq::{EqView, ended};
+use crate::store::eq::{EqView, ended, screen_state, screen_view};
 use crate::store::{FrameSink, LiveStore, Slot};
 
-/// What the screen shows: an editor, where it sits, and the strip's name,
-/// its chip's colours and its keys (the flight recorder's).
+/// What the screen shows: an editor, its name as its card gives it
+/// (`behave::eq::place_text`), and the strip's name, its chip's colours and
+/// its keys (the flight recorder's).
 #[derive(Debug, Clone, PartialEq)]
 pub struct EqTarget {
     pub instance: String,
     pub path: String,
-    pub place: String,
+    pub title: String,
     pub label: String,
     pub chip: String,
     pub keys: Vec<String>,
@@ -157,6 +159,13 @@ fn EqCard(
         })
     };
     let other = move || matches!(lock.try_get(), Some(CardLock::Other(_)));
+    // Offered while free (or this page's) and the page is connected: an
+    // open the socket cannot take is not offered (`can_open`).
+    let disabled = move || {
+        let lock = lock.try_get().unwrap_or(CardLock::Free);
+        let connected = store.connected.try_get().unwrap_or(false);
+        (!can_open(lock, connected)).to_string()
+    };
     let since = move || match lock.try_get() {
         Some(CardLock::Other(since)) => Some(locked_text(&local_hh_mm(since))),
         _ => None,
@@ -174,17 +183,19 @@ fn EqCard(
                 .flatten()
         }
     };
+    let title = place_text(&item.place, &item.name);
     let target = StoredValue::new(EqTarget {
         instance,
         path: item.path.clone(),
-        place: item.place.clone(),
+        title: title.clone(),
         label,
         chip: String::new(),
         keys,
     });
     let on_open = move |ev: web_sys::PointerEvent| {
         ev.prevent_default();
-        if matches!(lock.try_get_untracked(), Some(CardLock::Other(_))) {
+        let free = lock.try_get_untracked().unwrap_or(CardLock::Free);
+        if !can_open(free, store.can_send()) {
             return;
         }
         let (Some(nav), Some(mut target)) = (nav, target.try_get_value()) else {
@@ -195,8 +206,6 @@ fn EqCard(
         nav.open(target, ev.pointer_id());
     };
     let no_keys: Vec<String> = Vec::new();
-    let renamed = (item.name != PRODUCT).then(|| format!(" · {}", item.name));
-    let place = format!("{PRODUCT} · {}{}", item.place, renamed.unwrap_or_default());
     let path_attr = item.path.clone();
     let alt = format!("{PRODUCT}, posledný obraz");
     let picture = move || match shown.try_get().flatten() {
@@ -222,13 +231,13 @@ fn EqCard(
                     </div>
                 })}
             </div>
-            <div class="eq-card-where" data-testid="eq-card-where">{place}</div>
+            <div class="eq-card-where" data-testid="eq-card-where">{title}</div>
             <button
                 type="button"
                 class="eq-card-open"
                 data-testid="eq-open"
                 use:owns_touches=no_keys
-                aria-disabled=move || other().to_string()
+                aria-disabled=disabled
                 on:pointerdown=on_open
             >
                 {move || if other() { "ZAMKNUTÉ" } else { "OTVORIŤ EQ NA CELÚ OBRAZOVKU" }}
@@ -247,11 +256,28 @@ pub fn EqCards(strip: Strip, label: String, color: Option<RwSignal<Slot>>) -> im
     let nav = use_context::<EqNav>();
     let binding = StoredValue::new(strip.binding.clone());
     let keys = detail_keys(&strip);
-    // Asked when the detail opens and after every reconnect.
-    Effect::new(move |_| {
-        if store.connected.try_get().unwrap_or(false) {
+    // The strip's instance online, as the hub last said (only its own
+    // flag: another instance's state or a busy flag lists nothing).
+    let online = {
+        let instance = strip.binding.instance.clone();
+        Memo::new(move |_| {
+            store
+                .instances
+                .try_with(|all| all.get(&instance).is_some_and(|v| v.online))
+                .unwrap_or(false)
+        })
+    };
+    // Asked when the detail opens, after every reconnect and whenever Live
+    // comes back online (`lists_now`).
+    Effect::new(move |before: Option<ListLink>| {
+        let now = ListLink {
+            connected: store.connected.try_get().unwrap_or(false),
+            online: online.try_get().unwrap_or(false),
+        };
+        if lists_now(before, now) {
             let _ = binding.try_with_value(|b| store.list_eq(b));
         }
+        now
     });
     // Asked again once the screen closed: a new last picture.
     Effect::new(move |was_open: Option<bool>| {
@@ -429,9 +455,17 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
     let sink: FrameSink = Rc::new(move |blob: web_sys::Blob| paint(painter, blob));
     store.eq_frames(Some(sink));
     store.eq_open(&target.instance, &target.path);
+    // A hidden page lifts its finger (`Finger::visibility`), as the Stream
+    // Deck lifts its keys: `visibilitychange` bubbles to the window.
+    let hidden = window_event_listener_untyped("visibilitychange", move |_| {
+        if let Some(Some(out)) = finger.try_update_value(|f| f.visibility(dom::hidden())) {
+            store.eq_input(out);
+        }
+    });
     // Leaving the screen: a finger still down ends, the hub closes the
     // editor, the frames stop. (The component's own signals stay untouched.)
     on_cleanup(move || {
+        hidden.remove();
         if let Some(Some(out)) = finger.try_update_value(Finger::leave) {
             store.eq_input(out);
         }
@@ -459,12 +493,21 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
             }
         });
     }
+    // The editor this screen shows: the page's editor counts only when it
+    // is this one (a late close of the one before is not this screen's).
+    let editor = StoredValue::new((target.instance.clone(), target.path.clone()));
     // The picture's size: the last frame's, else the hub's word at the open.
     let size = move || {
         painter.try_with_value(|p| p.size).flatten().or_else(|| {
-            store
-                .eq
-                .try_with_untracked(|v| v.as_ref().and_then(|v| v.size))
+            editor
+                .try_with_value(|(instance, path)| {
+                    store
+                        .eq
+                        .try_with_untracked(|v| {
+                            screen_view(v.as_ref(), instance, path).and_then(|v| v.size)
+                        })
+                        .flatten()
+                })
                 .flatten()
         })
     };
@@ -548,15 +591,25 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
         let _ = legend.try_update(|on| *on = !*on);
     };
     let state = move || {
-        store
-            .eq
-            .try_with(|v| v.as_ref().map_or("opening", state_name))
+        editor
+            .try_with_value(|(instance, path)| {
+                store
+                    .eq
+                    .try_with(|v| screen_state(v.as_ref(), instance, path))
+            })
+            .flatten()
             .unwrap_or("opening")
     };
     let session = move || {
-        store
-            .eq
-            .try_with(|v| v.as_ref().and_then(EqView::open_session))
+        editor
+            .try_with_value(|(instance, path)| {
+                store
+                    .eq
+                    .try_with(|v| {
+                        screen_view(v.as_ref(), instance, path).and_then(EqView::open_session)
+                    })
+                    .flatten()
+            })
             .flatten()
             .map(|s| s.to_string())
             .unwrap_or_default()
@@ -566,7 +619,7 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
     let exit_keys: Vec<String> = Vec::new();
     let help_keys: Vec<String> = Vec::new();
     let area_keys: Vec<String> = Vec::new();
-    let where_text = format!("{PRODUCT} · {}", target.place);
+    let where_text = target.title.clone();
     let chip = target.chip.clone();
     view! {
         <div
@@ -623,15 +676,6 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
     }
 }
 
-/// The screen's state as its `data-state`.
-fn state_name(view: &EqView) -> &'static str {
-    match view.state {
-        EqState::Opening => "opening",
-        EqState::Open => "open",
-        EqState::Closed => "closed",
-    }
-}
-
 /// What a finger does on the Pro-Q (`?`): real touches reach the PC.
 #[component]
 fn EqLegend() -> impl IntoView {
@@ -646,20 +690,5 @@ fn EqLegend() -> impl IntoView {
                 <tr><td>"2 prsty"</td><td>"druhý prst sa nepoužije"</td></tr>
             </table>
         </div>
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_screens_state_is_its_editors() {
-        let mut view = EqView::opening("band", "p");
-        assert_eq!(state_name(&view), "opening");
-        view.state = EqState::Open;
-        assert_eq!(state_name(&view), "open");
-        view.state = EqState::Closed;
-        assert_eq!(state_name(&view), "closed");
     }
 }

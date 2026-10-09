@@ -118,7 +118,8 @@
     touch-action: none;
 }
 
-.eq-card[data-locked="true"] .eq-card-open {
+/* Not offered: another page holds it, or the page's socket is down. */
+.eq-card-open[aria-disabled="true"] {
     border-color: #3a3a4a;
     background: #181826;
     color: var(--faint);
