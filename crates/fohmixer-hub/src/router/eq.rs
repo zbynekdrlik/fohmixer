@@ -19,12 +19,16 @@
 //!   the window released. A guard that could not tap leaves the editor open
 //!   in Live (a value text field may be open: Pro-Q 4.02 crashes Live when
 //!   its editor closes with one). The device turned off is never another
-//!   one's: the close check (`eq::close`) re-reads the held path first and,
-//!   when the editor moved, looks for the one open Pro-Q 4 of the set; when
-//!   that is not certain, Live is left alone. An open whose window was not
-//!   found turns its editor off the same way. The answer comes back as
+//!   one's: it is turned off through the `$ref` its open read (the same
+//!   object wherever it moved since). Only when that ref is gone (the
+//!   script's registry starts over with each connection) does the close
+//!   check (`eq::close`) decide: it re-reads the held path first and, when
+//!   the editor moved, looks for the one open Pro-Q 4 of the set; when that
+//!   is not certain, Live is left alone. An open whose window was not found
+//!   turns its editor off the same way. The answer comes back as
 //!   `RouterMsg::EqClosed`.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use bytes::Bytes;
@@ -55,6 +59,11 @@ pub(super) struct EqIo {
     state: Eqs,
     plugwin: Plugwin,
     pictures: Arc<Pictures>,
+    /// Each open editor's device `$ref` (by session, with its instance), as
+    /// its open read it: its close turns the editor off through it. A ref
+    /// holds for one script connection: an instance's are forgotten when it
+    /// connects again.
+    refs: BTreeMap<u32, (String, Value)>,
 }
 
 /// Reads the Pro-Q 4 instances of the track at `target` (a walk of its
@@ -74,9 +83,15 @@ async fn walk(live: LiveHandle, target: String) -> Result<Vec<Found>, String> {
 
 /// Opens (`open`) or closes the editor of the device at `path`.
 async fn set_editor(live: &LiveHandle, path: &str, open: bool) -> Result<(), String> {
+    set_editor_of(live, Value::from(path), open).await
+}
+
+/// Opens (`open`) or closes the editor of the device `target` names (a path,
+/// or a `$ref`).
+async fn set_editor_of(live: &LiveHandle, target: Value, open: bool) -> Result<(), String> {
     let outcome = live
         .call(vec![json!({
-            "target": path,
+            "target": target,
             "name": "set_prop",
             "args": {"prop": EDITOR_OPEN, "value": open},
         })])
@@ -110,15 +125,29 @@ async fn check_close(live: &LiveHandle, held: &str) -> Check {
 }
 
 /// Turns the editor of `key` (`session`) off in Live, never another
-/// device's: the close check decides which one, or none. Its outcome is
-/// logged; a moved editor is an `eq` record `moved` with the path it was
-/// found at (`to`).
+/// device's: through its `reference` (the device its open read, wherever it
+/// moved since); without one, or when it is gone (another script
+/// connection, the device deleted), the close check decides which one, or
+/// none. Its outcome is logged; an editor the check found moved is an `eq`
+/// record `moved` with the path it was found at (`to`).
 async fn turn_off(
     live: &LiveHandle,
     key: &EditorKey,
     session: u32,
+    reference: Option<&Value>,
     events: &EventLog,
 ) -> Result<(), String> {
+    if let Some(target) = reference {
+        match set_editor_of(live, target.clone(), false).await {
+            Ok(()) => {
+                tracing::info!(session, instance = %key.instance, path = %key.path, "a Pro-Q 4 editor is turned off through its ref");
+                return Ok(());
+            }
+            Err(why) => {
+                tracing::info!(session, instance = %key.instance, why = %why, "a Pro-Q 4 editor's ref is gone: its held path is checked");
+            }
+        }
+    }
     match check_close(live, &key.path).await {
         Check::Close { path, moved } => {
             if moved {
@@ -141,9 +170,10 @@ async fn turn_off(
 
 /// The open sequence: the device read (still the Pro-Q 4 the list named
 /// `name`, its editor closed in Live), the windows listed, the editor
-/// opened in Live, the new window taken; its picture's size. When no window
-/// could be taken, the editor (which this open turned on: the read found it
-/// closed) is turned off again, never another device's.
+/// opened in Live, the new window taken; its picture's size and the
+/// device's `$ref`. When no window could be taken, the editor (which this
+/// open turned on: the read found it closed) is turned off again through
+/// its ref, never another device's.
 async fn open_editor(
     live: Option<LiveHandle>,
     plugwin: Plugwin,
@@ -151,42 +181,47 @@ async fn open_editor(
     name: Option<String>,
     session: u32,
     events: EventLog,
-) -> Result<(u32, u32), String> {
+) -> Result<((u32, u32), Value), String> {
     let live = live.ok_or(UNKNOWN_INSTANCE)?;
     let name = name.ok_or(reason::UNKNOWN)?;
     let slots = live
         .call(open::read(&key.path))
         .await
         .map_err(|e| e.to_string())?;
-    if let Err(why) = open::ready(&slots, &key.path, &name) {
-        tracing::info!(session, instance = %key.instance, path = %key.path, why, "a Pro-Q 4 open is refused: Live is left alone");
-        return Err(why.to_string());
-    }
+    let reference = match open::ready(&slots, &key.path, &name) {
+        Ok(reference) => reference,
+        Err(why) => {
+            tracing::info!(session, instance = %key.instance, path = %key.path, why, "a Pro-Q 4 open is refused: Live is left alone");
+            return Err(why.to_string());
+        }
+    };
     let before = plugwin.list().await?;
-    set_editor(&live, &key.path, true).await?;
+    set_editor_of(&live, reference.clone(), true).await?;
     let taken = plugwin.take(session, before).await;
     if taken.is_err()
-        && let Err(why) = turn_off(&live, &key, session, &events).await
+        && let Err(why) = turn_off(&live, &key, session, Some(&reference), &events).await
     {
         tracing::warn!(session, why = %why, "an editor whose window was not found could not be closed again in Live");
     }
-    taken
+    taken.map(|size| (size, reference))
 }
 
 /// The close sequence: the guard, its wait, the editor turned off in Live
-/// (not when the guard failed; never another device's), the window
-/// released; what went wrong, if anything.
+/// (not when the guard failed; through its `reference` when there is one;
+/// never another device's), the window released; what went wrong, if
+/// anything.
 async fn close_editor(
     live: Option<LiveHandle>,
     plugwin: Plugwin,
     key: EditorKey,
     session: u32,
+    reference: Option<Value>,
     events: EventLog,
 ) -> Option<String> {
     let guarded = plugwin.guard(session).await;
     tokio::time::sleep(GUARD_WAIT).await;
     let closed = match (guarded, live) {
-        (Ok(()), Some(live)) => turn_off(&live, &key, session, &events).await,
+        (Ok(()), Some(live)) => turn_off(&live, &key, session, reference.as_ref(), &events).await,
         (Ok(()), None) => Err(UNKNOWN_INSTANCE.to_string()),
         (Err(why), _) => Err(format!("the guard failed, the editor stays open: {why}")),
     };
@@ -219,6 +254,7 @@ impl Router {
             state: Eqs::default(),
             plugwin,
             pictures,
+            refs: BTreeMap::new(),
         });
         self
     }
@@ -337,14 +373,21 @@ impl Router {
         self.eq_acts(acts);
     }
 
-    /// An open sequence ended.
+    /// An open sequence ended: the device's `$ref` is kept for its close
+    /// (only for the editor of that session: a stale answer keeps none).
     pub(super) fn eq_opened(
         &mut self,
         key: &EditorKey,
         session: u32,
         outcome: Result<(u32, u32), String>,
+        reference: Option<Value>,
     ) {
         if let Some(io) = self.eq.as_mut() {
+            if let Some(reference) = reference
+                && io.state.key_of(session).as_ref() == Some(key)
+            {
+                io.refs.insert(session, (key.instance.clone(), reference));
+            }
             let acts = io.state.opened(key, session, outcome);
             self.eq_acts(acts);
         }
@@ -372,6 +415,7 @@ impl Router {
         let Some(io) = self.eq.as_mut() else {
             return;
         };
+        io.refs.remove(&session);
         if let Some(problem) = &problem {
             tracing::warn!(session, instance = %key.instance, path = %key.path, problem = %problem, "a Pro-Q 4 editor's close went wrong");
             self.io.events.record(
@@ -390,6 +434,7 @@ impl Router {
         };
         match event {
             PlugwinEvent::Lost { session } => {
+                io.refs.remove(&session);
                 let acts = io
                     .state
                     .key_of(session)
@@ -481,12 +526,17 @@ impl Router {
                 );
                 let name = io.state.name_of(&key).map(str::to_string);
                 tokio::spawn(async move {
-                    let outcome =
+                    let opened =
                         open_editor(live, plugwin, key.clone(), name, session, events).await;
+                    let (outcome, reference) = match opened {
+                        Ok((size, reference)) => (Ok(size), Some(reference)),
+                        Err(why) => (Err(why), None),
+                    };
                     let _ = tx.send(RouterMsg::EqOpened {
                         key,
                         session,
                         outcome,
+                        reference,
                     });
                 });
             }
@@ -497,8 +547,13 @@ impl Router {
                     self.io.tx.clone(),
                     self.io.events.clone(),
                 );
+                let reference = io
+                    .refs
+                    .get(&session)
+                    .map(|(_, reference)| reference.clone());
                 tokio::spawn(async move {
-                    let problem = close_editor(live, plugwin, key.clone(), session, events).await;
+                    let problem =
+                        close_editor(live, plugwin, key.clone(), session, reference, events).await;
                     let _ = tx.send(RouterMsg::EqClosed {
                         key,
                         session,

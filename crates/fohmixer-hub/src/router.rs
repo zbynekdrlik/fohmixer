@@ -216,11 +216,14 @@ pub enum RouterMsg {
         instance: String,
         path: String,
     },
-    /// An editor's open sequence ended: its picture's size, or why not.
+    /// An editor's open sequence ended: its picture's size, or why not, and
+    /// the device's `$ref` the open read (its close turns it off through
+    /// it).
     EqOpened {
         key: crate::eq::EditorKey,
         session: u32,
         outcome: Result<(u32, u32), String>,
+        reference: Option<Value>,
     },
     /// A finger on a page's editor.
     EqInput {
@@ -598,7 +601,8 @@ impl Router {
                 key,
                 session,
                 outcome,
-            } => self.eq_opened(&key, session, outcome),
+                reference,
+            } => self.eq_opened(&key, session, outcome, reference),
             RouterMsg::EqInput {
                 client,
                 touch,

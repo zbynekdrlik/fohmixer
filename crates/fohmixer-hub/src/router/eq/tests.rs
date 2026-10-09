@@ -469,7 +469,7 @@ async fn the_close_sequence_leaves_an_editor_open_when_its_guard_fails() {
     // No instance: the guard taps, and nothing can close it.
     plugwin.take(1, Vec::new()).await.unwrap();
     assert_eq!(
-        close_editor(None, plugwin.clone(), key(), 1, events.clone()).await,
+        close_editor(None, plugwin.clone(), key(), 1, None, events.clone()).await,
         Some(UNKNOWN_INSTANCE.to_string())
     );
     // The guard cannot tap: the editor stays open (not even asked).
@@ -481,6 +481,7 @@ async fn the_close_sequence_leaves_an_editor_open_when_its_guard_fails() {
             plugwin.clone(),
             key(),
             2,
+            None,
             events.clone()
         )
         .await,
@@ -533,6 +534,56 @@ async fn the_close_sequence_leaves_an_editor_open_when_its_guard_fails() {
         walk(live, PATH.into()).await,
         Err("instance offline".to_string())
     );
+}
+
+#[tokio::test]
+async fn a_close_whose_ref_fails_checks_the_held_path() {
+    let (plugwin, _sim) = sim_plugwin();
+    let (events, _records) = EventLog::channel(64);
+    plugwin.take(1, Vec::new()).await.unwrap();
+    // The ref's turn-off fails (here the instance is offline): the close
+    // check reads the held path, which fails too, so Live is left alone.
+    let reference = Some(json!({"$ref": "live_1", "class": "PluginDevice"}));
+    assert_eq!(
+        close_editor(Some(offline_live()), plugwin, key(), 1, reference, events).await,
+        Some(close::unread("instance offline"))
+    );
+}
+
+#[tokio::test]
+async fn an_opened_editors_ref_is_kept_for_its_close_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut rig = rig(dir.path());
+    let _outbox = attach(&mut rig.router, 1);
+    let io = rig.router.eq.as_mut().unwrap();
+    io.state.listed([found_key()]);
+    io.state.open(1, &key(), 0.0);
+    let reference = json!({"$ref": "live_1", "class": "PluginDevice"});
+    // An answer of another session keeps none.
+    rig.router.handle(RouterMsg::EqOpened {
+        key: key(),
+        session: 9,
+        outcome: Ok((1349, 809)),
+        reference: Some(reference.clone()),
+    });
+    assert!(rig.router.eq.as_ref().unwrap().refs.is_empty());
+    rig.router.handle(RouterMsg::EqOpened {
+        key: key(),
+        session: 1,
+        outcome: Ok((1349, 809)),
+        reference: Some(reference.clone()),
+    });
+    assert_eq!(
+        rig.router.eq.as_ref().unwrap().refs.get(&1),
+        Some(&("band".to_string(), reference))
+    );
+    // Its close's end forgets it.
+    rig.router.handle(RouterMsg::EqClosed {
+        key: key(),
+        session: 1,
+        problem: None,
+    });
+    assert!(rig.router.eq.as_ref().unwrap().refs.is_empty());
 }
 
 #[tokio::test]
@@ -621,6 +672,7 @@ async fn a_hub_without_the_screen_says_so() {
         key: key(),
         session: 1,
         outcome: Ok((1, 1)),
+        reference: Some(json!({"$ref": "live_1"})),
     });
     router.handle(RouterMsg::EqListed {
         client: 1,

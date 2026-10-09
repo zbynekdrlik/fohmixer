@@ -558,6 +558,43 @@ fn a_moved_editor_is_closed_and_another_open_one_left_alone() {
     });
 }
 
+#[test]
+fn a_deleted_editors_close_checks_its_held_path_and_leaves_live_alone() {
+    let _serial = serial();
+    runtime().block_on(async {
+        let mut host = Host::start("band");
+        let dir = tempfile::tempdir().unwrap();
+        let hub = TestHub::start_config(config(dir.path(), &host)).await;
+        let mut a = client(&hub).await;
+        a.send(&ClientMsg::EqList { binding: hand2() }).await;
+        listed(&mut a).await;
+        open(&mut a, ON_TRACK).await;
+        // Its own track deleted: its ref is stale, so the close check reads
+        // the held path (Hand3 #'s now, no device there), walks the set,
+        // finds no open Pro-Q 4 and leaves Live alone.
+        assert!(host.delete_track(1) > 0, "Hand2 # deleted");
+        a.send(&ClientMsg::EqClose).await;
+        let closed = state(&mut a, ON_TRACK).await;
+        assert_eq!(
+            (closed.0, closed.3.as_deref()),
+            (EqState::Closed, Some(reason::EXIT))
+        );
+        let records = hub
+            .events_until(WAIT, |records| {
+                eq_whats(records).contains(&"closed".to_string())
+            })
+            .await;
+        let eq: Vec<Value> = records.into_iter().filter(|r| r["ev"] == "eq").collect();
+        let problem = eq_record(&eq, "problem").expect("a problem record");
+        assert_eq!(
+            problem["why"].as_str(),
+            Some(fohmixer_hub::eq::close::NONE_OPEN)
+        );
+        hub.stop().await;
+        host.stop();
+    });
+}
+
 /// A set whose second and third tracks hold a Pro-Q 4 each (two engineers'
 /// editors on neighbouring tracks), its first track none.
 fn neighbours(dir: &Path) -> std::path::PathBuf {
