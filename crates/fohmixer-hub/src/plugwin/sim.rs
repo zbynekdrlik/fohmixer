@@ -250,6 +250,10 @@ impl Backend for Sim {
         }
     }
 
+    fn ready(&mut self, _window: WindowId) -> bool {
+        !self.lock().child_late
+    }
+
     fn take(&mut self, window: WindowId) -> Result<Taken, String> {
         let mut state = self.lock();
         if state.child_late {

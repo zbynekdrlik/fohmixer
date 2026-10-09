@@ -251,6 +251,13 @@ fn restores(phase: Phase, failed: bool, down: bool) -> bool {
     phase.ends() || (failed && !down)
 }
 
+/// Pro-Q's own child window of `window` (its picture), if it is there yet.
+fn picture_child(window: HWND) -> Option<HWND> {
+    children(window)
+        .into_iter()
+        .find(|c| class_of(*c) == PICTURE_CLASS)
+}
+
 /// The window whose client area is the picture: Pro-Q's own child
 /// (`child`), else the window itself, unless the take needs the child.
 fn picture_of(child: Option<HWND>, window: HWND, needs_child: bool) -> Result<HWND, String> {
@@ -369,16 +376,19 @@ impl Backend for Win {
             .collect())
     }
 
+    fn ready(&mut self, window: WindowId) -> bool {
+        // Live shows the editor's window before Pro-Q attaches its view:
+        // the hub's take waits for it (the worker polls on).
+        !self.needs_child || picture_child(hwnd(window)).is_some()
+    }
+
     fn take(&mut self, window: WindowId) -> Result<Taken, String> {
         let handle = hwnd(window);
         if !exists(handle) {
             return Err("no such window".to_string());
         }
         // The picture first: a refused window is left as it was.
-        let child = children(handle)
-            .into_iter()
-            .find(|c| class_of(*c) == PICTURE_CLASS);
-        let picture = picture_of(child, handle, self.needs_child)?;
+        let picture = picture_of(picture_child(handle), handle, self.needs_child)?;
         // SAFETY: a plain query of a live handle.
         let style = unsafe { GetWindowLongW(handle, GWL_EXSTYLE) } as u32;
         let was_topmost = (style & WS_EX_TOPMOST.0) != 0;
@@ -539,6 +549,9 @@ mod tests {
         assert!(!exists(hwnd(WindowId(0))));
         assert!(backend.take(WindowId(0)).is_err());
         assert!(Win::for_hub().take(WindowId(0)).is_err());
+        // The hub's take waits for Pro-Q's picture; the probe's takes any.
+        assert!(!Win::for_hub().ready(WindowId(0)));
+        assert!(backend.ready(WindowId(0)));
     }
 
     #[test]

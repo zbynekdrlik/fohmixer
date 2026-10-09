@@ -170,11 +170,19 @@ fn an_open_takes_the_one_new_window_or_fails_once_its_wait_is_over() {
     assert_eq!(pick(&[a, b], &[b]), Pick::None, "one went away");
     assert_eq!(pick(&[a], &[a, b, c]), Pick::Several);
     assert_eq!(pick(&[], &[c]), Pick::One(c));
-    assert_eq!(found(&Pick::One(b), 0.0), Some(Ok(b)));
-    assert_eq!(found(&Pick::None, 2999.0), None);
-    assert_eq!(found(&Pick::None, 3000.0), Some(Err(NO_WINDOW)));
-    assert_eq!(found(&Pick::Several, 2999.0), None);
-    assert_eq!(found(&Pick::Several, 3000.0), Some(Err(SEVERAL)));
+    assert_eq!(found(&Pick::One(b), true, 0.0), Some(Ok(b)));
+    assert_eq!(found(&Pick::None, false, 2999.0), None);
+    assert_eq!(found(&Pick::None, false, 3000.0), Some(Err(NO_WINDOW)));
+    assert_eq!(found(&Pick::Several, false, 2999.0), None);
+    assert_eq!(found(&Pick::Several, false, 3000.0), Some(Err(SEVERAL)));
+    // One new window whose picture is not there yet: awaited, refused only
+    // once the wait is over.
+    assert_eq!(found(&Pick::One(b), false, 2999.0), None);
+    assert_eq!(
+        found(&Pick::One(b), false, 3000.0),
+        Some(Err(reason::NO_PICTURE))
+    );
+    assert_eq!(found(&Pick::One(b), true, 3000.0), Some(Ok(b)));
 }
 
 #[test]
@@ -960,6 +968,9 @@ impl Backend for Slow {
     }
     fn live_opened(&mut self) {
         self.sim.live_opened();
+    }
+    fn ready(&mut self, window: WindowId) -> bool {
+        self.sim.ready(window)
     }
     fn take(&mut self, window: WindowId) -> Result<Taken, String> {
         self.sim.take(window)

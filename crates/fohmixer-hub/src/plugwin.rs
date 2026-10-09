@@ -12,7 +12,9 @@
 //!   sets `is_editor_open = true`, and the worker takes the window that is new
 //!   in the list ([`pick`]), polling every [`FIND_POLL_MS`] for up to
 //!   [`FIND_MS`]; several new ones are refused (an open of the PC's own may
-//!   have come at once).
+//!   have come at once). A new window the backend cannot take yet
+//!   ([`Backend::ready`]: Live shows it before Pro-Q attaches its picture)
+//!   is awaited the same way, and refused only when the wait is over.
 //! - **Taking it:** on top of every window (no move or size; the z-order
 //!   change is posted, never waited for), its picture located (Pro-Q's own
 //!   child window).
@@ -183,6 +185,9 @@ pub trait Backend: Send {
     /// Live was asked to open an editor (the simulated backend opens its
     /// window; a real one has nothing to do).
     fn live_opened(&mut self) {}
+    /// Whether `window` can be taken now: the hub's Windows backend wants
+    /// Pro-Q's own child window, which may come after the window itself.
+    fn ready(&mut self, window: WindowId) -> bool;
     /// Takes `window`: on top of every window (no move, no size), its
     /// picture located.
     fn take(&mut self, window: WindowId) -> Result<Taken, String>;
@@ -315,11 +320,13 @@ pub fn pick(before: &[WindowId], now: &[WindowId]) -> Pick {
     }
 }
 
-/// What an open does with what it found after `waited_ms`: take the one
-/// new window, fail once the wait is over without exactly one, or wait on.
-pub fn found(pick: &Pick, waited_ms: f64) -> Option<Result<WindowId, &'static str>> {
+/// What an open does with what it found after `waited_ms` (`ready`: the
+/// one new window can be taken now, its picture there): take it, fail once
+/// the wait is over without exactly one that is ready, or wait on.
+pub fn found(pick: &Pick, ready: bool, waited_ms: f64) -> Option<Result<WindowId, &'static str>> {
     match pick {
-        Pick::One(window) => Some(Ok(*window)),
+        Pick::One(window) if ready => Some(Ok(*window)),
+        Pick::One(_) => find_over(waited_ms).then_some(Err(reason::NO_PICTURE)),
         Pick::None => find_over(waited_ms).then_some(Err(NO_WINDOW)),
         Pick::Several => find_over(waited_ms).then_some(Err(SEVERAL)),
     }
@@ -739,8 +746,15 @@ impl Worker {
                 continue;
             }
             let decision = match self.backend.editors() {
-                Ok(list) => found(&pick(&finding.before, &list), now - finding.started)
-                    .map(|found| found.map_err(str::to_string)),
+                Ok(list) => {
+                    let new = pick(&finding.before, &list);
+                    let ready = match new {
+                        Pick::One(window) => self.backend.ready(window),
+                        Pick::None | Pick::Several => false,
+                    };
+                    found(&new, ready, now - finding.started)
+                        .map(|found| found.map_err(str::to_string))
+                }
                 Err(why) => Some(Err(why)),
             };
             match decision {
