@@ -656,16 +656,23 @@ async fn the_close_sequence_leaves_an_editor_open_when_its_guard_fails() {
 }
 
 #[tokio::test]
-async fn a_close_whose_ref_fails_checks_the_held_path() {
+async fn a_close_whose_ref_gets_no_answer_leaves_live_alone_without_a_path_check() {
     let (plugwin, _sim) = sim_plugwin();
     let (events, _records) = EventLog::channel(64);
     plugwin.take(1, Vec::new()).await.unwrap();
-    // The ref's turn-off fails (here the instance is offline): the close
-    // check reads the held path, which fails too, so Live is left alone.
+    // The ref's turn-off gets no answer (here the instance is offline; a
+    // timeout or a refusal alike): the ref may still be good, and the set
+    // may even land later, so the held path is not checked (that check
+    // takes any open Pro-Q 4 there, another engineer's after a move) and
+    // Live is left alone.
     let reference = Some(json!({"$ref": "live_1", "class": "PluginDevice"}));
     assert_eq!(
         close_editor(Some(offline_live()), plugwin, key(), 1, reference, events).await,
-        Some(close::unread("instance offline"))
+        Some(
+            "the editor could not be turned off through its ref, Live is left alone: \
+             instance offline"
+                .to_string()
+        )
     );
 }
 
