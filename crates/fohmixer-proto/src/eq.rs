@@ -225,6 +225,7 @@ mod tests {
                 "left open in Live"
             ]
         );
+        assert_eq!(NOT_ON_TOP, "the window did not come on top");
     }
 
     #[test]

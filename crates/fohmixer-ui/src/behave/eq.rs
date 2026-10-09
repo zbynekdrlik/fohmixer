@@ -272,6 +272,7 @@ pub fn failure_text(why: &str) -> Option<String> {
         reason::UNKNOWN_INSTANCE => "neznámy Live",
         reason::SEVERAL => "otvorilo sa viac okien, skús znova",
         reason::NO_PICTURE => "okno nie je Pro-Q 4",
+        reason::NOT_ON_TOP => "okno Pro-Q 4 sa nedostalo navrch, skús znova",
         reason::STOPPED => "hub sa zastavuje",
         reason::LEFT_OPEN => "Pro-Q 4 sa nepodarilo bezpečne zavrieť, ostáva otvorený na PC",
         other => return Some(format!("Neotvoril sa: {other}")),
@@ -475,6 +476,10 @@ mod tests {
         );
         assert_eq!(said("the window worker stopped"), "hub sa zastavuje");
         assert_eq!(
+            said("the window did not come on top"),
+            "okno Pro-Q 4 sa nedostalo navrch, skús znova"
+        );
+        assert_eq!(
             said("left open in Live"),
             "Pro-Q 4 sa nepodarilo bezpečne zavrieť, ostáva otvorený na PC"
         );
@@ -489,6 +494,7 @@ mod tests {
                 "the window has no Pro-Q picture (FF_UIWindow)",
             ),
             (reason::STOPPED, "the window worker stopped"),
+            (reason::NOT_ON_TOP, "the window did not come on top"),
             (reason::LEFT_OPEN, "left open in Live"),
         ] {
             assert_eq!(said(named), said(word), "{word}");

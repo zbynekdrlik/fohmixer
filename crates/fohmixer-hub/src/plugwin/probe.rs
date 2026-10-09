@@ -6,7 +6,9 @@
 //! holds a track name):
 //!
 //! 1. the process's visible top-level windows; the first one is taken (on
-//!    top, its picture found): `picture`, `child` (Pro-Q's own child found);
+//!    top, its picture found; the probe waits for the posted z-order change
+//!    to land, as the hub's take does, at most `FIND_MS`): `picture`,
+//!    `child` (Pro-Q's own child found);
 //! 2. `--frames` captures at the hub's rate: their sizes, how many differed,
 //!    the grab and encode times, the frame sizes, the rate reached;
 //! 3. a double tap at `--band` (on a fresh Pro-Q's curve: a new band);
@@ -36,7 +38,10 @@ use std::time::{Duration, Instant};
 use super::sim::Sim;
 #[cfg(windows)]
 use super::win::probe_backend as platform;
-use super::{Backend, GUARD_TAP, Phase, Pixels, QUALITY, Taken, encode, inert_spot, millis};
+use super::{
+    Backend, GUARD_TAP, NOT_ON_TOP, Phase, Pixels, QUALITY, STEP, Taken, encode, inert_spot,
+    millis, placed,
+};
 
 /// The CLI's usage line.
 pub const USAGE: &str = "usage: fohmixer-hub eq-probe --pid <pid> [--frames <n>] [--band <x,y>] [--to <x,y>] [--inert <x,y>] [--out <folder>] [--close] [--sim]";
@@ -62,6 +67,9 @@ pub const TAP: Duration = Duration::from_millis(60);
 pub const TAP_GAP: Duration = Duration::from_millis(120);
 /// The wait for the editor to draw what a gesture did.
 pub const SETTLE: Duration = Duration::from_millis(400);
+/// The looks at the taken window's place on top, [`STEP`] apart: past
+/// `FIND_MS` (3 s) the last one fails ([`placed`]).
+pub const TOP_LOOKS: u32 = 300;
 
 /// The probe's arguments.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -252,6 +260,20 @@ impl Drop for Held<'_> {
     }
 }
 
+/// Waits for the taken window to be on top (the take posts its z-order
+/// change, which the window's thread lands later; the hub's take waits the
+/// same way): looked at every [`STEP`], at most `FIND_MS`.
+fn on_top(held: &mut Held<'_>) -> Result<(), String> {
+    let started = Instant::now();
+    for _ in 0..=TOP_LOOKS {
+        match placed(held.backend.on_top(&held.taken), millis(started.elapsed())) {
+            Some(answer) => return answer.map_err(str::to_string),
+            None => std::thread::sleep(STEP),
+        }
+    }
+    Err(NOT_ON_TOP.to_string())
+}
+
 /// A double tap at `at`.
 fn double_tap(held: &mut Held<'_>, at: (i32, i32), step: &str) -> Result<(), String> {
     for gap in [TAP_GAP, Duration::ZERO] {
@@ -351,6 +373,7 @@ pub fn run(backend: &mut dyn Backend, args: &Args, out: &mut dyn Write) -> Resul
         contact: None,
         released: false,
     };
+    on_top(&mut held)?;
     report.line(&format!(
         "picture={}x{} child={} was_topmost={}",
         held.taken.width,

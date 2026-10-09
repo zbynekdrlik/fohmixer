@@ -186,6 +186,16 @@ fn an_open_takes_the_one_new_window_or_fails_once_its_wait_is_over() {
 }
 
 #[test]
+fn a_taken_window_answers_once_on_top_or_fails_once_its_wait_is_over() {
+    assert_eq!(placed(true, 0.0), Some(Ok(())));
+    assert_eq!(placed(true, 3000.0), Some(Ok(())), "on top wins at the end");
+    assert_eq!(placed(false, 0.0), None);
+    assert_eq!(placed(false, 3000.0_f64.next_down()), None);
+    assert_eq!(placed(false, 3000.0), Some(Err(NOT_ON_TOP)));
+    assert_eq!(NOT_ON_TOP, reason::NOT_ON_TOP);
+}
+
+#[test]
 fn a_picture_is_encoded_as_a_jpeg() {
     let pixels = sim::picture(5, 16, 8);
     let jpeg = encode(&pixels, QUALITY).unwrap();
@@ -1109,6 +1119,9 @@ impl Backend for Slow {
     }
     fn take(&mut self, window: WindowId) -> Result<Taken, String> {
         self.sim.take(window)
+    }
+    fn on_top(&mut self, taken: &Taken) -> bool {
+        self.sim.on_top(taken)
     }
     fn alive(&mut self, taken: &Taken) -> bool {
         self.sim.alive(taken)

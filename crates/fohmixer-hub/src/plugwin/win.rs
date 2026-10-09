@@ -11,8 +11,11 @@
 //! - **Take:** `SetWindowPos(HWND_TOPMOST)` without a move or a size,
 //!   posted (`SWP_ASYNCWINDOWPOS`: the window is Live's, and a z-order
 //!   change of another thread's window would otherwise wait for Live's busy
-//!   UI thread while a resting contact needs its keep-alive); the
-//!   picture is Pro-Q's own child `FF_UIWindow` ([`PICTURE_CLASS`]). The
+//!   UI thread while a resting contact needs its keep-alive); whether it
+//!   landed is the window's `WS_EX_TOPMOST` style (`GetWindowLongW`, a read
+//!   that sends no message; [`Backend::on_top`]), which the worker waits for
+//!   before the take answers. The picture is Pro-Q's own child
+//!   `FF_UIWindow` ([`PICTURE_CLASS`]). The
 //!   hub's take ([`Win::for_hub`]) refuses a window without it (no Pro-Q
 //!   editor: Live's other instance's window or a plug-in opened by hand at
 //!   that moment), before it touches the window; the probe's
@@ -134,6 +137,14 @@ fn exists(window: HWND) -> bool {
 fn visible(window: HWND) -> bool {
     // SAFETY: as `exists`.
     unsafe { IsWindowVisible(window) }.as_bool()
+}
+
+/// Whether `window` is on top of every window (`WS_EX_TOPMOST`): a read of
+/// its style, no message to its thread.
+fn topmost(window: HWND) -> bool {
+    // SAFETY: a plain query of a handle (a stale one reads 0).
+    let style = unsafe { GetWindowLongW(window, GWL_EXSTYLE) } as u32;
+    (style & WS_EX_TOPMOST.0) != 0
 }
 
 /// A window's client area's size.
@@ -389,9 +400,7 @@ impl Backend for Win {
         }
         // The picture first: a refused window is left as it was.
         let picture = picture_of(picture_child(handle), handle, self.needs_child)?;
-        // SAFETY: a plain query of a live handle.
-        let style = unsafe { GetWindowLongW(handle, GWL_EXSTYLE) } as u32;
-        let was_topmost = (style & WS_EX_TOPMOST.0) != 0;
+        let was_topmost = topmost(handle);
         place(handle, true)?;
         let (width, height) = client_size(picture)?;
         Ok(Taken {
@@ -402,6 +411,10 @@ impl Backend for Win {
             width: u32::try_from(width).unwrap_or(0),
             height: u32::try_from(height).unwrap_or(0),
         })
+    }
+
+    fn on_top(&mut self, taken: &Taken) -> bool {
+        topmost(hwnd(taken.window))
     }
 
     fn alive(&mut self, taken: &Taken) -> bool {
@@ -552,6 +565,17 @@ mod tests {
         // The hub's take waits for Pro-Q's picture; the probe's takes any.
         assert!(!Win::for_hub().ready(WindowId(0)));
         assert!(backend.ready(WindowId(0)));
+        // No window is on top.
+        let none = Taken {
+            window: WindowId(0),
+            picture: WindowId(0),
+            pid: 0,
+            was_topmost: false,
+            width: 0,
+            height: 0,
+        };
+        assert!(!backend.on_top(&none));
+        assert!(!topmost(hwnd(WindowId(0))));
     }
 
     #[test]

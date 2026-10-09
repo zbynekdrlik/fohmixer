@@ -230,6 +230,33 @@ fn a_probe_names_the_step_that_failed() {
 }
 
 #[test]
+fn a_probe_waits_for_its_window_on_top_and_hands_back_one_that_never_comes() {
+    // The take's z-order change is posted: the probe grabs nothing before
+    // the window is on top, as the hub's take answers nothing before.
+    assert_eq!(TOP_LOOKS, 300);
+    let (mut sim, handle, _) = one_window(42);
+    handle.topmost_late(true);
+    let mut probe = args(42);
+    probe.frames = 1;
+    let mut out = Vec::new();
+    let started = Instant::now();
+    assert_eq!(
+        run(&mut sim, &probe, &mut out),
+        Err(crate::plugwin::NOT_ON_TOP.to_string())
+    );
+    let waited = started.elapsed();
+    assert!(
+        (Duration::from_millis(3000)..Duration::from_secs(10)).contains(&waited),
+        "{waited:?}"
+    );
+    assert_eq!(String::from_utf8(out).unwrap(), "windows=1\n");
+    assert_eq!(
+        ops(&handle),
+        vec![op("take", "", -1, -1), op("release", "", -1, -1)]
+    );
+}
+
+#[test]
 fn a_step_that_fails_ends_its_contact_and_hands_the_window_back() {
     let (mut sim, handle, window) = one_window(42);
     let taken = sim.take(window).unwrap();

@@ -305,6 +305,13 @@ impl Backend for Sim {
         })
     }
 
+    fn on_top(&mut self, taken: &Taken) -> bool {
+        self.lock()
+            .windows
+            .get(&taken.window)
+            .is_some_and(|w| w.topmost)
+    }
+
     fn alive(&mut self, taken: &Taken) -> bool {
         self.lock().windows.contains_key(&taken.window)
     }
@@ -550,6 +557,29 @@ mod tests {
         handle.remove_window(WindowId(2));
         assert!(handle.windows().is_empty());
         assert_eq!(handle.topmost(window), None);
+    }
+
+    #[test]
+    fn a_takes_place_on_top_lands_late_while_a_test_holds_it() {
+        let (mut sim, handle) = Sim::new(None);
+        handle.auto_open(false);
+        let (first, second) = (handle.add_window(0), handle.add_window(0));
+        handle.topmost_late(true);
+        let taken = sim.take(first).unwrap();
+        let other = sim.take(second).unwrap();
+        assert_eq!(handle.topmost(first), Some(false), "posted, not landed");
+        assert!(!sim.on_top(&taken));
+        // A release before it landed: the change never lands.
+        sim.release(&other);
+        handle.topmost_late(false);
+        assert!(sim.on_top(&taken), "landed");
+        assert_eq!(handle.topmost(second), Some(false));
+        assert!(!sim.on_top(&other));
+        // Not held: on top at once; a window gone is on top of nothing.
+        let again = sim.take(second).unwrap();
+        assert!(sim.on_top(&again));
+        handle.remove_window(second);
+        assert!(!sim.on_top(&again));
     }
 
     #[test]

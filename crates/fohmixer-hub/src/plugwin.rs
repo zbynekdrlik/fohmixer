@@ -17,7 +17,12 @@
 //!   is awaited the same way, and refused only when the wait is over.
 //! - **Taking it:** on top of every window (no move or size; the z-order
 //!   change is posted, never waited for), its picture located (Pro-Q's own
-//!   child window).
+//!   child window). The change lands once the window's thread (Live's) takes
+//!   it, so the take answers only once the window is on top
+//!   ([`Backend::on_top`], a read of its style at every step, no message):
+//!   until then another window may cover it, and a grab or a touch would
+//!   meet that window. One not on top within [`FIND_MS`] of its take is
+//!   handed back, and the open fails ([`NOT_ON_TOP`], [`placed`]).
 //! - **The capture:** every [`CAPTURE_MS`] (25 fps) while its holder views
 //!   it: a picture equal to the last one is skipped, another goes to the
 //!   encoder, a thread of its own: it makes the JPEG ([`QUALITY`]) and hands
@@ -103,6 +108,9 @@ pub const INERT_Y: i32 = 15;
 pub const NO_WINDOW: &str = reason::NO_WINDOW;
 /// Why an open found several (a reason its page reads).
 pub const SEVERAL: &str = reason::SEVERAL;
+/// Why an open failed when its window never came on top (a reason its
+/// page reads).
+pub const NOT_ON_TOP: &str = reason::NOT_ON_TOP;
 /// Why a command found no editor of its session.
 pub const NO_EDITOR: &str = "no such editor";
 /// Why a command found no worker (a reason a page reads).
@@ -192,8 +200,12 @@ pub trait Backend: Send {
     /// Pro-Q's own child window, which may come after the window itself.
     fn ready(&mut self, window: WindowId) -> bool;
     /// Takes `window`: on top of every window (no move, no size), its
-    /// picture located.
+    /// picture located. The z-order change may land later
+    /// ([`Backend::on_top`]).
     fn take(&mut self, window: WindowId) -> Result<Taken, String>;
+    /// Whether the taken window is on top of every window now: the take's
+    /// change is posted to the window's thread, which lands it when it can.
+    fn on_top(&mut self, taken: &Taken) -> bool;
     /// Whether the window is still there.
     fn alive(&mut self, taken: &Taken) -> bool;
     /// The picture now.
@@ -332,6 +344,17 @@ pub fn found(pick: &Pick, ready: bool, waited_ms: f64) -> Option<Result<WindowId
         Pick::One(_) => find_over(waited_ms).then_some(Err(reason::NO_PICTURE)),
         Pick::None => find_over(waited_ms).then_some(Err(NO_WINDOW)),
         Pick::Several => find_over(waited_ms).then_some(Err(SEVERAL)),
+    }
+}
+
+/// What a taken window does `waited_ms` after its take (`on_top`: its
+/// posted z-order change landed): its take answers, fails once the wait is
+/// over, or waits on.
+pub fn placed(on_top: bool, waited_ms: f64) -> Option<Result<(), &'static str>> {
+    if on_top {
+        Some(Ok(()))
+    } else {
+        find_over(waited_ms).then_some(Err(NOT_ON_TOP))
     }
 }
 
@@ -588,12 +611,15 @@ impl Drop for Encoder {
     }
 }
 
-/// An open waiting for its window.
+/// An open waiting for its window, and then for it to come on top.
 struct Finding {
     session: u32,
     before: Vec<WindowId>,
     started: f64,
     polled: Option<f64>,
+    /// The window taken, waiting for its place on top, and when it was
+    /// taken (worker ms).
+    placing: Option<(Taken, f64)>,
     reply: oneshot::Sender<Result<(u32, u32), String>>,
 }
 
@@ -694,6 +720,7 @@ impl Worker {
                     before,
                     started,
                     polled: None,
+                    placing: None,
                     reply,
                 });
             }
@@ -760,10 +787,15 @@ impl Worker {
         }
     }
 
-    /// The opens whose poll is due look for their window.
+    /// The opens whose poll is due look for their window; a window taken
+    /// already is looked at every step until it is on top.
     fn find(&mut self) {
         let now = self.now();
         for mut finding in std::mem::take(&mut self.finding) {
+            if let Some((taken, at)) = finding.placing.take() {
+                self.place(finding, taken, at);
+                continue;
+            }
             // A poll is due on its interval, and always once the wait is
             // over (its answer never waits for the next poll).
             if !(finding.polled.is_none_or(|at| poll_due(now - at))
@@ -792,24 +824,45 @@ impl Worker {
                 Some(Err(why)) => {
                     let _ = finding.reply.send(Err(why));
                 }
-                Some(Ok(window)) => {
-                    let answer = self.backend.take(window).map(|taken| {
-                        let size = (taken.width, taken.height);
-                        self.editors.insert(
-                            finding.session,
-                            Editor {
-                                taken,
-                                sink: None,
-                                last: None,
-                                grabbed: f64::NEG_INFINITY,
-                                minute: now,
-                                counts: Counts::default(),
-                            },
-                        );
-                        size
-                    });
-                    let _ = finding.reply.send(answer);
-                }
+                Some(Ok(window)) => match self.backend.take(window) {
+                    Ok(taken) => self.place(finding, taken, now),
+                    Err(why) => {
+                        let _ = finding.reply.send(Err(why));
+                    }
+                },
+            }
+        }
+    }
+
+    /// A window taken at `at`, looked at: once it is on top the editor is
+    /// the worker's and its take answers its picture's size; one not on top
+    /// once the wait is over is handed back and its take fails; else it
+    /// waits on.
+    fn place(&mut self, mut finding: Finding, taken: Taken, at: f64) {
+        let now = self.now();
+        match placed(self.backend.on_top(&taken), now - at) {
+            None => {
+                finding.placing = Some((taken, at));
+                self.finding.push(finding);
+            }
+            Some(Err(why)) => {
+                self.backend.release(&taken);
+                let _ = finding.reply.send(Err(why.to_string()));
+            }
+            Some(Ok(())) => {
+                let size = (taken.width, taken.height);
+                self.editors.insert(
+                    finding.session,
+                    Editor {
+                        taken,
+                        sink: None,
+                        last: None,
+                        grabbed: f64::NEG_INFINITY,
+                        minute: now,
+                        counts: Counts::default(),
+                    },
+                );
+                let _ = finding.reply.send(Ok(size));
             }
         }
     }
@@ -981,8 +1034,14 @@ impl Worker {
     }
 
     /// The worker ends: every window handed back (the editors stay open in
-    /// Live), and its encoder with it.
+    /// Live; a window still waiting for its place on top too, its take
+    /// unanswered), and its encoder with it.
     fn shutdown(&mut self) {
+        for finding in std::mem::take(&mut self.finding) {
+            if let Some((taken, _)) = finding.placing {
+                self.backend.release(&taken);
+            }
+        }
         let sessions: Vec<u32> = self.editors.keys().copied().collect();
         for session in sessions {
             self.release(session, false);
