@@ -62,8 +62,11 @@ fn t(phase: &str, x: i64, y: i64) -> (String, i64, i64) {
     (phase.to_string(), x, y)
 }
 
+/// The frames a test sink kept: each one's session and size.
+type Kept = Arc<Mutex<Vec<(u32, usize)>>>;
+
 /// A sink that keeps each frame's session and size.
-fn sink() -> (FrameSink, Arc<Mutex<Vec<(u32, usize)>>>) {
+fn sink() -> (FrameSink, Kept) {
     let frames = Arc::new(Mutex::new(Vec::new()));
     let into = Arc::clone(&frames);
     let sink: FrameSink = Arc::new(move |session: u32, jpeg: Bytes| {

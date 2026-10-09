@@ -436,7 +436,11 @@ impl Worker {
     /// The opens whose poll is due look for their window.
     fn find(&mut self, now: f64) {
         for mut finding in std::mem::take(&mut self.finding) {
-            if !finding.polled.is_none_or(|at| poll_due(now - at)) {
+            // A poll is due on its interval, and always once the wait is
+            // over (its answer never waits for the next poll).
+            if !(finding.polled.is_none_or(|at| poll_due(now - at))
+                || find_over(now - finding.started))
+            {
                 self.finding.push(finding);
                 continue;
             }

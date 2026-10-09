@@ -218,7 +218,7 @@ async fn a_list_answers_what_it_could_not_read() {
     });
     let mut bad = hand2();
     bad.path = Some("devices[".into());
-    let why = bad.target().err().expect("a bad path").to_string();
+    let why = bad.target().expect_err("a bad path").to_string();
     router.handle(RouterMsg::EqList {
         client: 1,
         binding: bad.clone(),

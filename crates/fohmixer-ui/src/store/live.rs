@@ -442,8 +442,9 @@ impl LiveStore {
         self.retry();
     }
 
-    /// Something came from the hub: the socket and the link live.
-    fn heard(self) {
+    /// Something came from the hub: the socket and the link live. Returns
+    /// the page clock it came at (a pong's round trip is measured to it).
+    fn heard(self) -> f64 {
         let (now, epoch) = (dom::now(), dom::epoch_now());
         let _ = self.inner.try_update_value(|i| {
             i.conn.heard(now);
@@ -451,16 +452,17 @@ impl LiveStore {
         });
         self.collect_dropouts();
         self.show_counter();
+        epoch
     }
 
     /// A binary message (a Pro-Q 4 frame, #71 PR E).
     fn on_binary(self, data: &wasm_bindgen::JsValue) {
-        self.heard();
+        let _ = self.heard();
         self.on_frame(data);
     }
 
     fn on_text(self, text: &str) {
-        self.heard();
+        let epoch = self.heard();
         let msg = match serde_json::from_str::<ServerMsg>(text) {
             Ok(msg) => msg,
             Err(e) => {

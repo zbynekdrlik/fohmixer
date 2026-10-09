@@ -232,11 +232,13 @@ pub async fn http(
     request.push_str("\r\n");
     request.push_str(&body);
     stream.write_all(request.as_bytes()).await.unwrap();
-    let mut text = String::new();
-    tokio::time::timeout(Duration::from_secs(10), stream.read_to_string(&mut text))
+    // Bytes: a picture's body is no UTF-8 (#71).
+    let mut bytes = Vec::new();
+    tokio::time::timeout(Duration::from_secs(10), stream.read_to_end(&mut bytes))
         .await
         .expect("an answer within 10 s")
         .unwrap();
+    let text = String::from_utf8_lossy(&bytes);
     let code: u16 = text
         .split_whitespace()
         .nth(1)

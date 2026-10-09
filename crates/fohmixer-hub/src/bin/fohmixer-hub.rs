@@ -192,7 +192,7 @@ fn frame_command(layout: &str, out: &str) -> ExitCode {
 /// `eq-probe …`: exit 0 when every step ran, 1 when one failed (why on
 /// stderr), 2 for bad arguments or no backend here.
 fn probe_command(args: &[&str]) -> ExitCode {
-    use fohmixer_hub::plugwin::{Backend as _, probe};
+    use fohmixer_hub::plugwin::probe;
     let parsed = match probe::parse(args) {
         Ok(parsed) => parsed,
         Err(why) => {

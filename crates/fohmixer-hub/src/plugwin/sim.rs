@@ -43,13 +43,13 @@ pub fn counter(elapsed_ms: f64) -> u64 {
 pub fn picture(count: u64, width: u32, height: u32) -> Pixels {
     let (w, h) = (width as usize, height as usize);
     let mut bgra = vec![0_u8; w * h * 4];
-    for (i, pixel) in bgra.chunks_exact_mut(4).enumerate() {
+    for (i, pixel) in bgra.as_chunks_mut::<4>().0.iter_mut().enumerate() {
         let (x, y) = (i % w, i / w);
         let bar = (count as usize * 37) % w.max(1);
         let lit = x.abs_diff(bar) < 6;
         let bit = (x < 16 * 8 && y < 16) && ((count >> (x / 16)) & 1) == 1;
         let shade: u8 = if lit || bit { 0xF0 } else { 0x20 };
-        pixel.copy_from_slice(&[shade, shade / 2, shade, 0xFF]);
+        *pixel = [shade, shade / 2, shade, 0xFF];
     }
     Pixels {
         width,
