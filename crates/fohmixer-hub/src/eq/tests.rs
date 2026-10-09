@@ -54,13 +54,10 @@ fn open_one(eqs: &mut Eqs) -> u32 {
 }
 
 #[test]
-fn a_resting_contact_goes_again_after_100_ms_and_a_page_is_silent_after_2_s() {
-    assert!(!resend_due(100.0_f64.next_down()));
-    assert!(resend_due(100.0));
+fn a_page_is_silent_after_2_s() {
     assert!(!silent(2000.0_f64.next_down()));
     assert!(silent(2000.0));
     assert_eq!(GUARD_WAIT, Duration::from_millis(300));
-    assert_eq!(TICK, Duration::from_millis(100));
 }
 
 #[test]
@@ -591,27 +588,19 @@ fn a_finger_makes_one_contact_on_the_open_editor() {
 }
 
 #[test]
-fn a_resting_contact_goes_again_and_a_silent_pages_contact_ends() {
+fn a_resting_contact_is_left_to_the_worker_and_a_silent_pages_ends() {
     let mut eqs = listed();
     open_one(&mut eqs);
     assert_eq!(eqs.tick(1.0), Vec::new(), "no contact");
     eqs.input(1, Touch::Down, 5.0, 6.0, 1000.0);
-    assert_eq!(eqs.tick(1099.0), Vec::new());
-    let again = Act::Touch {
-        session: 1,
-        contact: 1,
-        phase: Phase::Update,
-        at: (5, 6),
-    };
-    assert_eq!(eqs.tick(1100.0), vec![again.clone()]);
-    assert_eq!(eqs.tick(1150.0), Vec::new(), "counted from the resend");
-    assert_eq!(eqs.tick(1200.0), vec![again]);
-    // A move counts as sent.
-    eqs.input(1, Touch::Move, 7.0, 6.0, 1250.0);
-    assert_eq!(eqs.tick(1300.0), Vec::new());
+    // The window worker keeps a resting contact alive on its own clock:
+    // the router's tick sends nothing for it.
+    assert_eq!(eqs.tick(1100.0), Vec::new());
+    assert_eq!(eqs.tick(1250.0), Vec::new());
+    eqs.input(1, Touch::Move, 7.0, 6.0, 1300.0);
     // Heard (a ping) keeps it; silent for 2 s ends it.
     eqs.heard(1, 2500.0);
-    assert_eq!(eqs.tick(4499.0).len(), 1, "a resend only");
+    assert_eq!(eqs.tick(4499.0), Vec::new());
     assert_eq!(
         eqs.tick(4500.0),
         vec![

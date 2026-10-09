@@ -700,13 +700,26 @@ fn a_resting_finger_goes_again_until_its_page_falls_silent() {
             last_ping = Instant::now();
             tokio::time::sleep(Duration::from_millis(300)).await;
         }
-        let ops: Vec<_> = sim_records(dir.path()).iter().map(op).collect();
+        let records = sim_records(dir.path());
+        let ops: Vec<_> = records.iter().map(op).collect();
         let resends = ops
             .iter()
             .filter(|o| **o == step("touch", "update", 100, 100))
             .count();
-        assert!(resends >= 10, "{ops:?}");
+        // Windows ends an injected contact that gets no frame for 100 ms:
+        // the window worker injects a resting one again every 50 ms.
+        assert!(resends >= 30, "{ops:?}");
         assert!(!ops.iter().any(|o| o.1 == "cancel"), "{ops:?}");
+        let times: Vec<f64> = records
+            .iter()
+            .filter(|r| r["op"] == "touch")
+            .map(|r| r["t"].as_f64().expect("a touch's time"))
+            .collect();
+        let largest = times
+            .windows(2)
+            .map(|pair| pair[1] - pair[0])
+            .fold(0.0, f64::max);
+        assert!(largest < 100.0, "the largest gap {largest} ms: {times:?}");
         // Silent for 2 s: the contact ends where it rested.
         let ops = sim_until(dir.path(), &[step("touch", "cancel", 100, 100)]).await;
         assert!(

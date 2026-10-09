@@ -491,6 +491,44 @@ fn a_captured_editor_sends_its_pictures_skipping_a_same_one() {
 }
 
 #[test]
+fn a_resting_contact_is_injected_again_50_ms_after_its_last_injection() {
+    let (mut worker, handle, heard) = worker();
+    take(&mut worker, &handle, 1, 0.0);
+    touch_at(&mut worker, 1, 1, Phase::Down, (10, 20), 1000.0);
+    worker.step(1049.0);
+    assert_eq!(touches(&handle), vec![t("down", 10, 20)]);
+    worker.step(1050.0);
+    assert_eq!(touches(&handle)[1..], [t("update", 10, 20)]);
+    worker.step(1099.0);
+    assert_eq!(touches(&handle).len(), 2, "counted from the last injection");
+    // A move is an injection: the next keep-alive counts from it.
+    touch_at(&mut worker, 1, 1, Phase::Update, (12, 20), 1120.0);
+    worker.step(1169.0);
+    assert_eq!(touches(&handle).len(), 3);
+    worker.step(1170.0);
+    assert_eq!(touches(&handle)[3..], [t("update", 12, 20)]);
+    // Ended: nothing more.
+    touch_at(&mut worker, 1, 1, Phase::Up, (12, 20), 1180.0);
+    worker.step(1300.0);
+    assert_eq!(touches(&handle)[4..], [t("up", 12, 20)]);
+    // A keep-alive the point refuses (another window over it) ends the
+    // contact with a cancel at its last point, and says so.
+    touch_at(&mut worker, 1, 2, Phase::Down, (5, 5), 2000.0);
+    handle.refuse(true);
+    worker.step(2050.0);
+    assert_eq!(worker.contact, None);
+    assert_eq!(touches(&handle)[5..], [t("down", 5, 5), t("cancel", 5, 5)]);
+    assert_eq!(
+        heard.lock().unwrap().last(),
+        Some(&PlugwinEvent::ContactEnded {
+            session: 1,
+            contact: 2,
+            why: REFUSED.to_string()
+        })
+    );
+}
+
+#[test]
 fn a_contact_goes_to_its_editor_one_at_a_time_and_a_refused_one_ends() {
     let (mut worker, handle, heard) = worker();
     take(&mut worker, &handle, 1, 0.0);
