@@ -566,9 +566,19 @@ fn a_captured_editor_sends_its_pictures_skipping_a_same_one() {
     // Still: the sim's counter moves on (one step is 250 ms), its picture
     // does not.
     std::thread::sleep(Duration::from_millis(260));
+    let first = worker.editors[&1].last.clone().expect("its first picture");
     worker.step_at(60.0);
-    std::thread::sleep(Duration::from_millis(50));
-    assert_eq!(frames.lock().unwrap().len(), 1, "the same picture: skipped");
+    // The hand-off is synchronous: the grab happened, and nothing was
+    // handed to the encoder (a frame it encoded would come later than any
+    // look at the sink).
+    assert_eq!(worker.editors[&1].counts.grabs, 2);
+    assert!(
+        worker.encoder.shared.lock().waiting.is_none(),
+        "the same picture: skipped"
+    );
+    let kept = worker.editors[&1].last.as_ref().expect("a picture");
+    assert!(Arc::ptr_eq(&first, kept), "the first picture still kept");
+    assert_eq!(frames.lock().unwrap().len(), 1);
     handle.still(false);
     std::thread::sleep(Duration::from_millis(260));
     worker.step_at(100.0);
@@ -801,6 +811,14 @@ fn the_guard_ends_the_contact_stops_the_frames_and_taps_the_inert_spot() {
     handle.still(false);
     std::thread::sleep(Duration::from_millis(260));
     worker.step_at(100.0);
+    // The hand-off is synchronous: no sink, no grab since the guard,
+    // nothing handed to the encoder.
+    assert!(worker.editors[&1].sink.is_none());
+    assert_eq!(
+        worker.editors[&1].counts.grabs, 1,
+        "no grab after the guard"
+    );
+    assert!(worker.encoder.shared.lock().waiting.is_none());
     assert_eq!(frames.lock().unwrap().len(), 1, "no frame after the guard");
     // A guard of no editor, and one whose tap is refused, fail.
     let (reply, mut answer) = oneshot::channel();
@@ -1012,8 +1030,8 @@ async fn the_stop_waits_for_the_worker_to_hand_its_windows_back() {
     assert_eq!((STOP_POLLS, STOP_POLL), (100, Duration::from_millis(10)));
     assert_eq!(STOP_WAIT, STOP_POLL * STOP_POLLS);
     let (plugwin, handle) = slow_worker(Duration::from_millis(300)).await;
-    plugwin.stop();
     let started = Instant::now();
+    plugwin.stop();
     assert!(plugwin.stopped().await, "ended within the wait");
     assert!(
         started.elapsed() >= Duration::from_millis(250),
@@ -1024,8 +1042,8 @@ async fn the_stop_waits_for_the_worker_to_hand_its_windows_back() {
     assert!(plugwin.stopped().await, "a later look answers at once");
     // A worker that does not end within the wait: false, bounded.
     let (plugwin, _handle) = slow_worker(STOP_WAIT + Duration::from_millis(700)).await;
-    plugwin.stop();
     let started = Instant::now();
+    plugwin.stop();
     assert!(!plugwin.stopped().await);
     let waited = started.elapsed();
     assert!(
