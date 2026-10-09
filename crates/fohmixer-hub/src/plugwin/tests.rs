@@ -398,6 +398,49 @@ fn the_guard_ends_the_contact_stops_the_frames_and_taps_the_inert_spot() {
 }
 
 #[test]
+fn a_window_lost_under_a_contact_ends_it_with_a_cancel_at_its_last_point() {
+    let (mut worker, handle, heard) = worker();
+    let window = take(&mut worker, &handle, 1, 0.0);
+    take(&mut worker, &handle, 2, 0.0);
+    worker.command(
+        Command::Touch {
+            session: 1,
+            phase: Phase::Down,
+            at: (10, 20),
+        },
+        0.0,
+    );
+    worker.command(
+        Command::Touch {
+            session: 1,
+            phase: Phase::Update,
+            at: (12, 24),
+        },
+        0.0,
+    );
+    // The other editor's window going away leaves this contact alone.
+    let other = handle.windows()[1];
+    handle.remove_window(other);
+    worker.step(10.0);
+    assert_eq!(worker.contact, Some((1, (12, 24))));
+    assert_eq!(touches(&handle).len(), 2);
+    handle.remove_window(window);
+    worker.step(20.0);
+    assert_eq!(worker.contact, None);
+    assert_eq!(
+        touches(&handle),
+        vec![t("down", 10, 20), t("update", 12, 24), t("cancel", 12, 24)]
+    );
+    assert_eq!(
+        heard.lock().unwrap().as_slice(),
+        [
+            PlugwinEvent::Lost { session: 2 },
+            PlugwinEvent::Lost { session: 1 }
+        ]
+    );
+}
+
+#[test]
 fn a_release_ends_the_contact_and_hands_the_window_back() {
     let (mut worker, handle, _) = worker();
     let window = take(&mut worker, &handle, 1, 0.0);
