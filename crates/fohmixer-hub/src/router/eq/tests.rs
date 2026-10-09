@@ -406,7 +406,12 @@ async fn an_open_of_an_offline_instance_fails_and_frees_the_editor() {
     } = rig(dir.path());
     let outbox = attach(&mut router, 1);
     let other = attach(&mut router, 2);
-    router.eq.as_mut().unwrap().state.listed([found_key()]);
+    router
+        .eq
+        .as_mut()
+        .unwrap()
+        .state
+        .listed("band", "live_set tracks 1", [found_key()]);
     router.handle(RouterMsg::EqOpen {
         client: 1,
         instance: "band".into(),
@@ -440,7 +445,7 @@ async fn held_open(rig: &mut Rig) -> Arc<Outbox> {
     let outbox = attach(&mut rig.router, 1);
     assert_eq!(rig.plugwin.take(1, Vec::new()).await, Ok((1349, 809)));
     let io = rig.router.eq.as_mut().unwrap();
-    io.state.listed([found_key()]);
+    io.state.listed("band", "live_set tracks 1", [found_key()]);
     io.state.open(1, &key(), 0.0);
     let acts = io.state.opened(&key(), 1, Ok((1349, 809)));
     rig.router.eq_acts(acts);
@@ -657,7 +662,7 @@ async fn an_opened_editors_ref_is_kept_for_its_close_only() {
     let mut rig = rig(dir.path());
     let _outbox = attach(&mut rig.router, 1);
     let io = rig.router.eq.as_mut().unwrap();
-    io.state.listed([found_key()]);
+    io.state.listed("band", "live_set tracks 1", [found_key()]);
     io.state.open(1, &key(), 0.0);
     let reference = json!({"$ref": "live_1", "class": "PluginDevice"});
     // An answer of another session keeps none.
