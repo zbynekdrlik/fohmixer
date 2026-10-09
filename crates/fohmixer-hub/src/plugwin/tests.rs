@@ -674,6 +674,53 @@ fn the_guard_ends_the_contact_stops_the_frames_and_taps_the_inert_spot() {
 }
 
 #[test]
+fn the_guard_first_cancels_another_sessions_contact() {
+    // Two engineers: one drags on the first editor while the other's
+    // editor closes. The PC injects one contact: the guard's tap would
+    // fail, or its up would end the other's drag.
+    let (mut worker, handle, heard) = worker();
+    let first = take(&mut worker, &handle, 1, 0.0);
+    let second = take(&mut worker, &handle, 2, 0.0);
+    touch_at(&mut worker, 1, 7, Phase::Down, (10, 20), 0.0);
+    let (reply, mut answer) = oneshot::channel();
+    worker.command(Command::Guard { session: 2, reply }, 1.0);
+    assert_eq!(answer.try_recv().unwrap(), Ok(()));
+    assert_eq!(worker.contact, None, "the other engineer's contact ended");
+    let on = |r: &serde_json::Value| {
+        (
+            r["window"].as_u64().unwrap(),
+            r["phase"].as_str().unwrap().to_string(),
+            r["x"].as_i64().unwrap(),
+            r["y"].as_i64().unwrap(),
+        )
+    };
+    let touched: Vec<_> = handle
+        .records()
+        .iter()
+        .filter(|r| r["op"] == "touch")
+        .map(on)
+        .collect();
+    let at = |window: WindowId, phase: &str, x: i64, y: i64| (window.0, phase.to_string(), x, y);
+    assert_eq!(
+        touched,
+        vec![
+            at(first, "down", 10, 20),
+            at(first, "cancel", 10, 20),
+            at(second, "down", 546, 15),
+            at(second, "up", 546, 15),
+        ]
+    );
+    assert_eq!(
+        heard.lock().unwrap().as_slice(),
+        [PlugwinEvent::ContactEnded {
+            session: 1,
+            contact: 7,
+            why: "the close guard of another editor".to_string()
+        }]
+    );
+}
+
+#[test]
 fn a_window_lost_under_a_contact_ends_it_with_a_cancel_at_its_last_point() {
     let (mut worker, handle, heard) = worker();
     let window = take(&mut worker, &handle, 1, 0.0);
