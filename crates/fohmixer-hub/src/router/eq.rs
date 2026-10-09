@@ -174,7 +174,7 @@ async fn close_editor(
         (Ok(()), None) => Err(UNKNOWN_INSTANCE.to_string()),
         (Err(why), _) => Err(format!("the guard failed, the editor stays open: {why}")),
     };
-    plugwin.release(session).await;
+    plugwin.release(session, closed.is_ok()).await;
     closed.err()
 }
 

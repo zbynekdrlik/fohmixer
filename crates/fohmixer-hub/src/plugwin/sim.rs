@@ -1,16 +1,24 @@
 //! The simulated window backend (#71 PR E): the hub's backend off Windows,
-//! in the E2E harness and in the tests. Live's editor windows are numbers:
-//! asking Live to open an editor opens one ([`Backend::live_opened`], unless
-//! a test turned that off), and releasing it closes it again (Live closes
-//! the window when `is_editor_open` turns false). Its picture is synthetic,
-//! [`SIM_WIDTH`] × [`SIM_HEIGHT`] like Pro-Q 4 at 100 %, a counter drawn in
-//! that steps every [`STEP_MS`] so frames differ.
+//! in the E2E harness and in the tests. Live's editor windows are numbers,
+//! tied to Live's `is_editor_open` as far as the hub changes it: asking Live
+//! to open an editor opens one ([`Backend::live_opened`], unless a test
+//! turned that off), and the window closes only when Live closed the editor
+//! ([`Backend::live_closed`]). A window handed back without that (a guard
+//! that failed, a close check that left Live alone, the hub's stop) stays,
+//! as the editor stays open in Live. An editor already open in Live opens no
+//! new window; the hub reads `is_editor_open` first and refuses it. Its
+//! picture is synthetic, [`SIM_WIDTH`] × [`SIM_HEIGHT`] like Pro-Q 4 at
+//! 100 % (Pro-Q's own child window is always there: the sim's take never
+//! lacks it), a counter drawn in that steps every [`STEP_MS`] so frames
+//! differ.
 //!
 //! Every take, touch, release and close is recorded, in order: in memory
 //! for the tests ([`SimHandle::records`]) and, when the sim has a record
 //! file (`<data>/eq-sim.jsonl`, one JSON object a line), there too, where the
-//! E2E harness reads them (`GET /sim/eq`). A test can make the sim refuse
-//! the editor's points (`refuse`) as a window covering it would.
+//! E2E harness reads them (`GET /sim/eq`). A touch record carries its time
+//! (`t`, ms since the sim started), so a test can measure the gaps between
+//! a contact's injections. A test can make the sim refuse the editor's
+//! points (`refuse`) as a window covering it would.
 
 use std::collections::BTreeMap;
 use std::io::Write as _;
@@ -259,12 +267,14 @@ impl Backend for Sim {
         if phase.checked() && state.refuse {
             return Err(REFUSED.to_string());
         }
+        let t = state.started.elapsed().as_secs_f64() * 1000.0;
         state.record(json!({
             "op": "touch",
             "window": taken.window.0,
             "phase": phase.name(),
             "x": at.0,
             "y": at.1,
+            "t": t,
         }));
         Ok(())
     }
@@ -275,9 +285,13 @@ impl Backend for Sim {
             window.topmost = taken.was_topmost;
         }
         state.record(json!({"op": "release", "window": taken.window.0}));
-        // Live closes its window once `is_editor_open` is false.
+    }
+
+    fn live_closed(&mut self, taken: &Taken) {
+        // Live closes its editor's window once `is_editor_open` is false; a
+        // host's window (the probe's) is no editor of Live's.
         if taken.pid == 0 {
-            state.windows.remove(&taken.window);
+            self.lock().windows.remove(&taken.window);
         }
     }
 
@@ -372,6 +386,9 @@ mod tests {
         sim.touch(&taken, Phase::Cancel, (10, 20)).unwrap();
         sim.touch(&taken, Phase::Up, (10, 20)).unwrap();
         sim.release(&taken);
+        assert!(sim.alive(&taken), "handed back, still open in Live");
+        assert_eq!(handle.topmost(window), Some(false), "z-order put back");
+        sim.live_closed(&taken);
         assert!(!sim.alive(&taken), "Live closed it");
         assert!(sim.grab(&taken).is_err());
         assert!(sim.take(window).is_err());
@@ -382,13 +399,50 @@ mod tests {
             json!({"op": "touch", "window": 1, "phase": "up", "x": 10, "y": 20}),
             json!({"op": "release", "window": 1}),
         ];
-        assert_eq!(handle.records(), expected);
+        assert_eq!(untimed(&handle.records()), expected);
         let lines: Vec<Value> = std::fs::read_to_string(&file)
             .unwrap()
             .lines()
             .map(|l| serde_json::from_str(l).unwrap())
             .collect();
-        assert_eq!(lines, expected);
+        assert_eq!(lines, handle.records());
+        // Every touch carries its time, in order.
+        let times: Vec<f64> = lines
+            .iter()
+            .filter(|r| r["op"] == "touch")
+            .map(|r| r["t"].as_f64().expect("a time"))
+            .collect();
+        assert_eq!(times.len(), 3);
+        assert!(times.is_sorted(), "{times:?}");
+        assert!(times[0] >= 0.0);
+    }
+
+    /// Records without their touches' times.
+    fn untimed(records: &[Value]) -> Vec<Value> {
+        records
+            .iter()
+            .map(|r| {
+                let mut r = r.clone();
+                if let Some(fields) = r.as_object_mut() {
+                    fields.remove("t");
+                }
+                r
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_touch_is_recorded_at_its_time() {
+        let (mut sim, handle) = Sim::new(None);
+        sim.live_opened();
+        let taken = sim.take(handle.windows()[0]).unwrap();
+        sim.touch(&taken, Phase::Down, (1, 2)).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        sim.touch(&taken, Phase::Up, (1, 2)).unwrap();
+        let records = handle.records();
+        let gap = records[2]["t"].as_f64().unwrap() - records[1]["t"].as_f64().unwrap();
+        assert!((30.0..1000.0).contains(&gap), "{gap}");
+        assert!(records[0].get("t").is_none(), "a take has no time");
     }
 
     #[test]
@@ -405,6 +459,7 @@ mod tests {
         assert_eq!(taken.pid, 42);
         sim.release(&taken);
         assert_eq!(handle.topmost(window), Some(false), "z-order put back");
+        sim.live_closed(&taken);
         assert!(sim.alive(&taken), "a host's window stays");
         // Topmost before: topmost after.
         let mut again = sim.take(window).unwrap();

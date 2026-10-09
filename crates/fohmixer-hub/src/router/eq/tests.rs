@@ -489,6 +489,7 @@ async fn the_close_sequence_leaves_an_editor_open_when_its_guard_fails() {
         .filter(|r| r["op"] == "release")
         .count();
     assert_eq!(released, 2, "both windows handed back");
+    assert_eq!(sim.windows().len(), 2, "both editors still open in Live");
     // Opens: no instance, an offline one.
     assert_eq!(
         open_editor(None, plugwin.clone(), key(), 3, events.clone()).await,

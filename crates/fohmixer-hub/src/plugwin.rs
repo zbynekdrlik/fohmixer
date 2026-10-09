@@ -29,8 +29,10 @@
 //!   ([`inert_spot`]): a value text field closes on a click elsewhere, and
 //!   Pro-Q 4.02 crashes Live when its editor closes with one open. A guard
 //!   that cannot tap fails: the router then leaves the editor open.
-//! - **The release** ([`Plugwin::release`]): the window's z-order as it was.
-//!   The stop ends the contact and releases every window.
+//! - **The release** ([`Plugwin::release`]): the window's z-order as it was,
+//!   and, when Live closed the editor, [`Backend::live_closed`]. The stop
+//!   ends the contact and releases every window (the editors stay open in
+//!   Live).
 
 pub mod probe;
 pub mod sim;
@@ -165,6 +167,10 @@ pub trait Backend: Send {
     fn touch(&mut self, taken: &Taken, phase: Phase, at: (i32, i32)) -> Result<(), String>;
     /// The window's z-order as it was.
     fn release(&mut self, taken: &Taken);
+    /// Live closed the editor (`is_editor_open = false` went through) after
+    /// its window was handed back: the simulated backend closes the window
+    /// then; a real one has nothing to do (Live closes it).
+    fn live_closed(&mut self, _taken: &Taken) {}
     /// Asks the window to close (the probe's `--close` only).
     fn close_window(&mut self, taken: &Taken);
 }
@@ -345,6 +351,7 @@ enum Command {
     },
     Release {
         session: u32,
+        closed: bool,
         reply: oneshot::Sender<()>,
     },
     Stop,
@@ -416,8 +423,12 @@ impl Worker {
             Command::Guard { session, reply } => {
                 let _ = reply.send(self.guard(session));
             }
-            Command::Release { session, reply } => {
-                self.release(session);
+            Command::Release {
+                session,
+                closed,
+                reply,
+            } => {
+                self.release(session, closed);
                 let _ = reply.send(());
             }
             Command::Stop => {}
@@ -592,19 +603,23 @@ impl Worker {
     }
 
     /// `session`'s window handed back: its contact ended, its z-order as it
-    /// was.
-    fn release(&mut self, session: u32) {
+    /// was; `closed`: Live closed the editor.
+    fn release(&mut self, session: u32, closed: bool) {
         self.end_contact(session);
         if let Some(editor) = self.editors.remove(&session) {
             self.backend.release(&editor.taken);
+            if closed {
+                self.backend.live_closed(&editor.taken);
+            }
         }
     }
 
-    /// The worker ends: every window handed back.
+    /// The worker ends: every window handed back (the editors stay open in
+    /// Live).
     fn shutdown(&mut self) {
         let sessions: Vec<u32> = self.editors.keys().copied().collect();
         for session in sessions {
-            self.release(session);
+            self.release(session, false);
         }
     }
 }
@@ -683,10 +698,15 @@ impl Plugwin {
         answer.await.map_err(|_| STOPPED.to_string())?
     }
 
-    /// `session`'s window handed back.
-    pub async fn release(&self, session: u32) {
+    /// `session`'s window handed back; `closed`: Live closed the editor.
+    pub async fn release(&self, session: u32, closed: bool) {
         let (reply, answer) = oneshot::channel();
-        if self.tx.send(Command::Release { session, reply }).is_ok() {
+        let command = Command::Release {
+            session,
+            closed,
+            reply,
+        };
+        if self.tx.send(command).is_ok() {
             let _ = answer.await;
         }
     }

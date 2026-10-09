@@ -453,7 +453,12 @@ fn a_release_ends_the_contact_and_hands_the_window_back() {
         0.0,
     );
     let (reply, mut answer) = oneshot::channel();
-    worker.command(Command::Release { session: 1, reply }, 1.0);
+    let release = |session: u32, closed: bool, reply| Command::Release {
+        session,
+        closed,
+        reply,
+    };
+    worker.command(release(1, true, reply), 1.0);
     assert_eq!(answer.try_recv(), Ok(()));
     assert!(worker.editors.is_empty());
     assert_eq!(worker.contact, None);
@@ -462,11 +467,19 @@ fn a_release_ends_the_contact_and_hands_the_window_back() {
         handle.records().last(),
         Some(&json!({"op": "release", "window": window.0}))
     );
+    assert!(handle.windows().is_empty(), "Live closed it");
     // A release of no editor still answers.
     let (reply, mut answer) = oneshot::channel();
-    worker.command(Command::Release { session: 1, reply }, 2.0);
+    worker.command(release(1, true, reply), 2.0);
     assert_eq!(answer.try_recv(), Ok(()));
-    // The stop hands every window back.
+    // Handed back while Live keeps it open: its window stays.
+    let open = take(&mut worker, &handle, 4, 2.5);
+    let (reply, mut answer) = oneshot::channel();
+    worker.command(release(4, false, reply), 2.5);
+    assert_eq!(answer.try_recv(), Ok(()));
+    assert_eq!(handle.windows(), vec![open]);
+    assert_eq!(handle.topmost(open), Some(false), "z-order put back");
+    // The stop hands every window back; the editors stay open in Live.
     take(&mut worker, &handle, 2, 3.0);
     take(&mut worker, &handle, 3, 3.0);
     worker.command(Command::Stop, 4.0);
@@ -477,7 +490,8 @@ fn a_release_ends_the_contact_and_hands_the_window_back() {
         .iter()
         .filter(|r| r["op"] == "release")
         .count();
-    assert_eq!(released, 3);
+    assert_eq!(released, 4);
+    assert_eq!(handle.windows().len(), 3, "still open in Live");
 }
 
 /// Waits (bounded) for `check`.
@@ -520,7 +534,7 @@ async fn the_worker_thread_serves_its_handle_and_ends_at_the_stop() {
         .await
         .unwrap();
     assert_eq!(guarded, Ok(()));
-    tokio::time::timeout(bounded, plugwin.release(1))
+    tokio::time::timeout(bounded, plugwin.release(1, true))
         .await
         .unwrap();
     assert!(handle.windows().is_empty(), "Live closed it");
@@ -540,7 +554,7 @@ async fn the_worker_thread_serves_its_handle_and_ends_at_the_stop() {
     assert_eq!(plugwin.list().await, Err(STOPPED.to_string()));
     assert_eq!(plugwin.take(2, Vec::new()).await, Err(STOPPED.to_string()));
     assert_eq!(plugwin.guard(2).await, Err(STOPPED.to_string()));
-    tokio::time::timeout(bounded, plugwin.release(2))
+    tokio::time::timeout(bounded, plugwin.release(2, false))
         .await
         .unwrap();
     assert!(heard.lock().unwrap().is_empty());
