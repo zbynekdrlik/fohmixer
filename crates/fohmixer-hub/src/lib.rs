@@ -454,9 +454,7 @@ fn plugwin_backend(config: &Config) -> anyhow::Result<Option<Box<dyn plugwin::Ba
 }
 
 #[cfg(windows)]
-fn windows_backend() -> anyhow::Result<Box<dyn plugwin::Backend>> {
-    Ok(Box::new(plugwin::win::Win::new()))
-}
+use crate::plugwin::win::hub_backend as windows_backend;
 
 #[cfg(not(windows))]
 fn windows_backend() -> anyhow::Result<Box<dyn plugwin::Backend>> {

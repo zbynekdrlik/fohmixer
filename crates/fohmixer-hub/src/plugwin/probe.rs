@@ -31,6 +31,8 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use super::sim::Sim;
+#[cfg(windows)]
+use super::win::probe_backend as platform;
 use super::{Backend, GUARD_TAP, Phase, Pixels, QUALITY, Taken, encode, guard_tap, inert_spot};
 
 /// The CLI's usage line.
@@ -128,11 +130,6 @@ pub fn backend(args: &Args) -> Result<Box<dyn Backend>, String> {
         return Ok(Box::new(sim));
     }
     platform()
-}
-
-#[cfg(windows)]
-fn platform() -> Result<Box<dyn Backend>, String> {
-    Ok(Box::new(super::win::Win::new()))
 }
 
 #[cfg(not(windows))]
