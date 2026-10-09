@@ -282,7 +282,7 @@ test.describe("The Pro-Q 4 screen", () => {
     expect(up.phase).toBe("up");
     expect(near(up, map.toPicture(to)), `the up ${JSON.stringify(up)} at ${JSON.stringify(map.toPicture(to))}`).toBe(true);
     // The moves between, along the way (a resting finger's point is sent
-    // again every 100 ms, so a point can repeat).
+    // again every 50 ms, so a point can repeat).
     const moves = drag.slice(1, -1);
     const points = new Set(moves.map((m) => `${m.x},${m.y}`));
     expect(points.size, `the moves' points: ${[...points].join(" ")}`).toBeGreaterThanOrEqual(DRAG_STEPS / 2);
@@ -461,13 +461,43 @@ test.describe("The Pro-Q 4 screen", () => {
   });
 
   test("the cards are listed again when Live comes back, and open", async ({ page }) => {
+    // What the page's socket carries, watched before the page opens: its
+    // `eq_list` asks, and the band instance's states the hub sends it. A
+    // new list of the same cards changes nothing on the page (the cards'
+    // memo keeps an equal list), so the page's asks prove a list again.
+    let lists = 0;
+    const band: boolean[] = [];
+    page.on("websocket", (ws) => {
+      ws.on("framesent", ({ payload }) => {
+        if (typeof payload === "string" && payload.includes('"type":"eq_list"')) lists += 1;
+      });
+      ws.on("framereceived", ({ payload }) => {
+        if (typeof payload !== "string") return;
+        let msg: any;
+        try {
+          msg = JSON.parse(payload);
+        } catch {
+          return;
+        }
+        if (msg.type === "instance" && msg.name === "band") band.push(msg.online);
+      });
+    });
     await openSurface(page);
     const { detail, trackPath } = await hand2Cards(page);
-    // The cards as listed now; a new list makes new ones.
-    await detail.getByTestId("eq-card").first().evaluate((el) => el.setAttribute("data-e2e-kept", "1"));
+    expect(lists, "the detail's list").toBeGreaterThanOrEqual(1);
+    const asked = lists;
+    const states = band.length;
     await harness("/host/band/restart");
+    // The page hears its Live go offline, then come back (the hub sends
+    // both, in order).
+    await until(
+      async () => band.slice(states),
+      (seen) => seen.includes(false) && seen.lastIndexOf(true) > seen.indexOf(false),
+      "the band offline, then online again",
+      10_000
+    );
     await until(hubStatus, (s) => s.instances[0].online, "the band's Live back", 10_000);
-    await expect(detail.locator('[data-testid="eq-card"][data-e2e-kept]'), "listed again").toHaveCount(0, { timeout: 10_000 });
+    await until(async () => lists, (n) => n > asked, "the cards listed again", 10_000);
     await expect(detail.getByTestId("eq-card")).toHaveCount(2);
     const onTrack = card(detail, ON_TRACK);
     await expect(onTrack).toHaveCount(1);
