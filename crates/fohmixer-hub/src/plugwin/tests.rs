@@ -430,6 +430,46 @@ fn an_open_whose_window_never_comes_fails_after_its_wait() {
 }
 
 #[test]
+fn a_window_whose_pro_q_picture_comes_late_is_awaited_until_the_wait_is_over() {
+    // Live shows its editor's window before Pro-Q attaches its picture
+    // (`FF_UIWindow`): the open waits for it.
+    let (mut worker, handle, _) = worker();
+    handle.child_late(true);
+    let (reply, mut answer) = oneshot::channel();
+    let take = Command::Take {
+        session: 1,
+        before: Vec::new(),
+        reply,
+    };
+    worker.command_at(take, 0.0);
+    worker.step_at(0.0);
+    assert!(answer.try_recv().is_err(), "its picture is not there yet");
+    worker.step_at(50.0);
+    assert!(answer.try_recv().is_err());
+    handle.child_late(false);
+    worker.step_at(100.0);
+    assert_eq!(answer.try_recv().unwrap(), Ok((1349, 809)));
+    // One whose picture never comes fails once the wait is over.
+    handle.child_late(true);
+    let (reply, mut answer) = oneshot::channel();
+    let take = Command::Take {
+        session: 2,
+        before: handle.windows(),
+        reply,
+    };
+    worker.command_at(take, 1000.0);
+    worker.step_at(1000.0);
+    worker.step_at(3999.0);
+    assert!(answer.try_recv().is_err(), "still waiting");
+    worker.step_at(4000.0);
+    assert_eq!(
+        answer.try_recv().unwrap(),
+        Err(reason::NO_PICTURE.to_string())
+    );
+    assert_eq!(worker.editors.keys().copied().collect::<Vec<u32>>(), [1]);
+}
+
+#[test]
 fn a_late_window_is_found_by_a_later_poll() {
     let (mut worker, handle, _) = worker();
     handle.auto_open(false);

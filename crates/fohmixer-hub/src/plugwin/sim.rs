@@ -8,8 +8,9 @@
 //! as the editor stays open in Live. An editor already open in Live opens no
 //! new window; the hub reads `is_editor_open` first and refuses it. Its
 //! picture is synthetic, [`SIM_WIDTH`] × [`SIM_HEIGHT`] like Pro-Q 4 at
-//! 100 % (Pro-Q's own child window is always there: the sim's take never
-//! lacks it), a counter drawn in that steps every [`STEP_MS`] so frames
+//! 100 % (Pro-Q's own child window is there unless a test holds it back,
+//! `child_late`: the take then refuses the window, as the hub's Windows
+//! take does), a counter drawn in that steps every [`STEP_MS`] so frames
 //! differ.
 //!
 //! Every take, touch, release and close is recorded, in order: in memory
@@ -28,6 +29,8 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
+
+use fohmixer_proto::eq::reason;
 
 use super::{Backend, Phase, Pixels, Taken, WindowId};
 
@@ -86,6 +89,9 @@ struct State {
     still: bool,
     /// How long a grab takes.
     grab_delay: Duration,
+    /// Pro-Q's own child window is not there yet (Live shows the editor's
+    /// window before the plug-in attaches its view).
+    child_late: bool,
     /// The last picture drawn and its count: a grab draws only a new count
     /// or size (drawing one costs the worker tens of ms in a test build).
     drawn: Option<(u64, Pixels)>,
@@ -146,6 +152,7 @@ impl Sim {
             refuse: false,
             still: false,
             grab_delay: Duration::ZERO,
+            child_late: false,
             drawn: None,
             records: Vec::new(),
             file,
@@ -199,6 +206,12 @@ impl SimHandle {
         self.lock().grab_delay = delay;
     }
 
+    /// Whether Pro-Q's own child window is still missing from the editor
+    /// windows (a take refuses them meanwhile).
+    pub fn child_late(&self, on: bool) {
+        self.lock().child_late = on;
+    }
+
     /// Whether `window` is on top of every window.
     pub fn topmost(&self, window: WindowId) -> Option<bool> {
         self.lock().windows.get(&window).map(|w| w.topmost)
@@ -239,6 +252,9 @@ impl Backend for Sim {
 
     fn take(&mut self, window: WindowId) -> Result<Taken, String> {
         let mut state = self.lock();
+        if state.child_late {
+            return Err(reason::NO_PICTURE.to_string());
+        }
         let found = state
             .windows
             .get_mut(&window)
