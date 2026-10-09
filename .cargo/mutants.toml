@@ -158,12 +158,13 @@ exclude_re = [
   # signals, the list numbered), on_frame (a binary message's header read
   # with the tested frame_parts, the session checked with the tested
   # shows_frame, the JPEG as a Blob to the screen's sink), eq_frames (the
-  # sink kept), list_eq, eq_open (the tested EqView::opening, then the
-  # message), eq_input, eq_close (the messages), eq_socket_closed (the tested
-  # socket_closed) and eq_picture (net::fetch_blob of the tested
-  # picture_url). eq.spec.ts drives them in Chromium and WebKit (the cards,
-  # the open, the frames drawn, a drag at the mapped pixels, the exit, the
-  # lock another page sees, the picture after the close).
+  # sink kept), list_eq, eq_open (the message, then the tested asked: an ask
+  # the socket did not take closes at once), eq_input, eq_close (the
+  # messages), eq_socket_closed (the tested socket_closed) and eq_picture
+  # (net::fetch_blob of the tested picture_url). eq.spec.ts drives them in
+  # Chromium and WebKit (the cards, the open, the frames drawn, a drag at
+  # the mapped pixels, the exit, the lock another page sees, the picture
+  # after the close, no open offered while the socket is down).
   "fohmixer-ui/src/store/live/eq\\.rs.*(replace|in) LiveStore::(on_eq_list|on_eq_locks|on_eq|on_frame|eq_frames|list_eq|eq_open|eq_input|eq_close|eq_socket_closed|eq_picture)( |$)",
   "fohmixer-ui/src/store/live\\.rs.*(replace|in) (Socket::open|Socket::buffered|Socket::close|Inner::new)( |$)",
   # auth.rs: local storage and the login request (login_outcome, login_body

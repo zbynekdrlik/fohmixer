@@ -59,9 +59,16 @@ impl EqView {
 }
 
 /// The page's editor right after it asked to open `path` on `instance`
-/// (`sent`: the socket took the ask).
-pub fn asked(instance: &str, path: &str, _sent: bool) -> EqView {
-    EqView::opening(instance, path)
+/// (`sent`: the socket took the ask): opening, or closed with [`SOCKET`]
+/// when the socket could not take it (nothing would ever answer, and the
+/// screen would wait on "Otváram Pro-Q 4…" until left).
+pub fn asked(instance: &str, path: &str, sent: bool) -> EqView {
+    let mut view = EqView::opening(instance, path);
+    if !sent {
+        view.state = EqState::Closed;
+        view.reason = Some(SOCKET.to_string());
+    }
+    view
 }
 
 /// The page's editor as the screen showing the editor at `path` on

@@ -34,8 +34,8 @@ use wasm_bindgen::JsCast;
 use super::buttons::colour_style;
 use super::{owns_touches, trace_detail};
 use crate::behave::eq::{
-    CardLock, Finger, Fit, card_lock, failure_text, fit, hh_mm, list_text, locked_text, on_picture,
-    place_text, to_picture,
+    CardLock, Finger, Fit, can_open, card_lock, failure_text, fit, hh_mm, list_text, locked_text,
+    on_picture, place_text, to_picture,
 };
 use crate::binding::detail_keys;
 use crate::dom;
@@ -158,6 +158,13 @@ fn EqCard(
         })
     };
     let other = move || matches!(lock.try_get(), Some(CardLock::Other(_)));
+    // Offered while free (or this page's) and the page is connected: an
+    // open the socket cannot take is not offered (`can_open`).
+    let disabled = move || {
+        let lock = lock.try_get().unwrap_or(CardLock::Free);
+        let connected = store.connected.try_get().unwrap_or(false);
+        (!can_open(lock, connected)).to_string()
+    };
     let since = move || match lock.try_get() {
         Some(CardLock::Other(since)) => Some(locked_text(&local_hh_mm(since))),
         _ => None,
@@ -186,7 +193,8 @@ fn EqCard(
     });
     let on_open = move |ev: web_sys::PointerEvent| {
         ev.prevent_default();
-        if matches!(lock.try_get_untracked(), Some(CardLock::Other(_))) {
+        let free = lock.try_get_untracked().unwrap_or(CardLock::Free);
+        if !can_open(free, store.can_send()) {
             return;
         }
         let (Some(nav), Some(mut target)) = (nav, target.try_get_value()) else {
@@ -228,7 +236,7 @@ fn EqCard(
                 class="eq-card-open"
                 data-testid="eq-open"
                 use:owns_touches=no_keys
-                aria-disabled=move || other().to_string()
+                aria-disabled=disabled
                 on:pointerdown=on_open
             >
                 {move || if other() { "ZAMKNUTÉ" } else { "OTVORIŤ EQ NA CELÚ OBRAZOVKU" }}

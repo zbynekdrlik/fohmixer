@@ -150,9 +150,12 @@ pub fn card_lock(locks: &[EqLock], instance: &str, path: &str) -> CardLock {
 }
 
 /// Whether a card's down opens its editor (`can_send`: the page's socket
-/// takes a message now).
-pub fn can_open(lock: CardLock, _can_send: bool) -> bool {
-    !matches!(lock, CardLock::Other(_))
+/// takes a message now): not while another page holds it (ZAMKNUTÉ), and
+/// only while the socket can take the open, as a Stream Deck press
+/// (`behave::deck::can_press`): an open the socket drops would leave the
+/// screen waiting on "Otváram Pro-Q 4…" for nothing.
+pub fn can_open(lock: CardLock, can_send: bool) -> bool {
+    can_send && !matches!(lock, CardLock::Other(_))
 }
 
 /// What the cards' list waits on: the page's socket past its hello, and the
