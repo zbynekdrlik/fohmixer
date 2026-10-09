@@ -207,6 +207,24 @@ fn a_path_two_tracks_lists_name_belongs_to_the_newest_list() {
 }
 
 #[test]
+fn a_path_named_for_another_device_than_before_comes_back_too() {
+    // Its card's picture is the device it was listed for before.
+    let mut eqs = Eqs::default();
+    let (x, y) = ("live_set tracks 1", "live_set tracks 0");
+    let p = key(5);
+    let named = |name: &str| [(p.clone(), name.to_string())];
+    assert_eq!(eqs.listed("band", y, named("De-ess")), Vec::new());
+    // Another track's list names P for its own device now.
+    assert_eq!(eqs.listed("band", x, named("Vox EQ")), vec![p.clone()]);
+    // The same again: nothing comes back.
+    assert_eq!(eqs.listed("band", x, named("Vox EQ")), Vec::new());
+    // Its own track's list names P for another device (renamed, or another
+    // device moved in): it comes back too.
+    assert_eq!(eqs.listed("band", x, named("Air EQ")), vec![p.clone()]);
+    assert_eq!(eqs.name_of(&p), Some("Air EQ"));
+}
+
+#[test]
 fn an_open_takes_the_lock_and_another_client_is_refused() {
     let mut eqs = listed();
     assert_eq!(

@@ -377,6 +377,19 @@ async fn a_new_list_and_a_connect_drop_the_pictures_they_no_longer_name() {
         [&key(), &inner, &drums].map(|k| pictures.has(k)),
         [true, false, true]
     );
+    // The track lists its path for another device now (renamed, or
+    // another device moved there): the old device's picture goes.
+    rig.router.handle(RouterMsg::EqListed {
+        client: 1,
+        binding: hand2(),
+        outcome: Ok(vec![Found {
+            path: key().path,
+            place: "na tracku".into(),
+            name: "De-ess".into(),
+        }]),
+    });
+    assert!(!pictures.has(&key()), "another device's picture");
+    pictures.put(&key(), Bytes::from_static(b"jpeg"));
     // The band instance connects again: its pictures and refs go.
     let refs = &mut rig.router.eq.as_mut().unwrap().refs;
     refs.insert(1, ("band".to_string(), json!({"$ref": "a"})));
