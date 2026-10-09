@@ -877,13 +877,21 @@ fn a_real_label_is_never_another_tracks_placeholder() {
     assert_eq!(detail_strip(&both, &real), Some(real.clone()));
     // With only the placeholder left, the real one's detail closes.
     assert_eq!(
-        detail_update(&with_strips(&[placeholder.clone()]), Some(&real), false),
+        detail_update(
+            &with_strips(std::slice::from_ref(&placeholder)),
+            Some(&real),
+            false
+        ),
         Some(DetailChange::Close("layout"))
     );
     // A placeholder held within its layout is its binding: never the real
     // "#3" elsewhere.
     assert_eq!(
-        detail_update(&with_strips(&[real.clone()]), Some(&placeholder), false),
+        detail_update(
+            &with_strips(std::slice::from_ref(&real)),
+            Some(&placeholder),
+            false
+        ),
         Some(DetailChange::Close("layout"))
     );
     assert_eq!(detail_update(&both, Some(&placeholder), false), None);
