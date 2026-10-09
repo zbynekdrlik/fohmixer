@@ -45,7 +45,7 @@
 //! - **The release** ([`Plugwin::release`]): the window's z-order as it was,
 //!   and, when Live closed the editor, [`Backend::live_closed`]. The stop
 //!   ends the contact and releases every window (the editors stay open in
-//!   Live).
+//!   Live); the hub's stop waits for that, bounded ([`Plugwin::stopped`]).
 
 pub mod probe;
 pub mod sim;
@@ -71,6 +71,11 @@ pub const RATE_MS: f64 = 60_000.0;
 /// A contact down this long (ms) since its last injection is injected
 /// again at its last point (Windows cancels one silent for 100 ms).
 pub const KEEPALIVE_MS: f64 = 50.0;
+/// How long the hub's stop waits for the worker to hand its windows back
+/// and end ([`Plugwin::stopped`]): [`STOP_POLLS`] looks [`STOP_POLL`] apart.
+pub const STOP_WAIT: Duration = Duration::from_secs(1);
+pub const STOP_POLL: Duration = Duration::from_millis(10);
+pub const STOP_POLLS: u32 = 100;
 /// The worker's longest sleep between two looks at its clocks.
 pub const STEP: Duration = Duration::from_millis(10);
 /// How long the guard's finger stays on the inert spot.
@@ -921,10 +926,14 @@ pub fn guard_tap(backend: &mut dyn Backend, taken: &Taken, spot: (i32, i32)) -> 
     backend.touch(taken, Phase::Up, spot)
 }
 
+/// The worker's thread, until a stop's wait joined it.
+type Thread = Mutex<Option<std::thread::JoinHandle<()>>>;
+
 /// The handle of the window worker (cheap to clone).
 #[derive(Clone)]
 pub struct Plugwin {
     tx: mpsc::Sender<Command>,
+    thread: Arc<Thread>,
 }
 
 impl Plugwin {
@@ -941,10 +950,13 @@ impl Plugwin {
             encoder: Encoder::spawn()?,
             clock: Instant::now(),
         };
-        std::thread::Builder::new()
+        let thread = std::thread::Builder::new()
             .name("plugwin".to_string())
             .spawn(move || worker.run(&rx))?;
-        Ok(Self { tx })
+        Ok(Self {
+            tx,
+            thread: Arc::new(Mutex::new(Some(thread))),
+        })
     }
 
     /// The editor windows on the screen now.
@@ -1010,6 +1022,29 @@ impl Plugwin {
     /// The worker hands every window back and ends.
     pub fn stop(&self) {
         let _ = self.tx.send(Command::Stop);
+    }
+
+    /// Waits, bounded ([`STOP_WAIT`]), for the worker's thread to end after
+    /// a stop (its windows handed back, its contact ended): whether it did.
+    /// Once it did, a later call answers at once.
+    pub async fn stopped(&self) -> bool {
+        let thread = self
+            .thread
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        let Some(thread) = thread else {
+            return true;
+        };
+        for _ in 0..STOP_POLLS {
+            if thread.is_finished() {
+                let _ = thread.join();
+                return true;
+            }
+            tokio::time::sleep(STOP_POLL).await;
+        }
+        *self.thread.lock().unwrap_or_else(PoisonError::into_inner) = Some(thread);
+        false
     }
 }
 

@@ -796,6 +796,79 @@ fn a_release_ends_the_contact_and_hands_the_window_back() {
     assert_eq!(handle.windows().len(), 3, "still open in Live");
 }
 
+/// A simulated backend whose release takes `hold` (a slow hand-back).
+struct SlowRelease {
+    sim: Sim,
+    hold: Duration,
+}
+
+impl Backend for SlowRelease {
+    fn editors(&mut self) -> Result<Vec<WindowId>, String> {
+        self.sim.editors()
+    }
+    fn windows_of(&mut self, pid: u32) -> Result<Vec<WindowId>, String> {
+        self.sim.windows_of(pid)
+    }
+    fn live_opened(&mut self) {
+        self.sim.live_opened();
+    }
+    fn take(&mut self, window: WindowId) -> Result<Taken, String> {
+        self.sim.take(window)
+    }
+    fn alive(&mut self, taken: &Taken) -> bool {
+        self.sim.alive(taken)
+    }
+    fn grab(&mut self, taken: &Taken) -> Result<Pixels, String> {
+        self.sim.grab(taken)
+    }
+    fn touch(&mut self, taken: &Taken, phase: Phase, at: (i32, i32)) -> Result<(), String> {
+        self.sim.touch(taken, phase, at)
+    }
+    fn release(&mut self, taken: &Taken) {
+        std::thread::sleep(self.hold);
+        self.sim.release(taken);
+    }
+    fn close_window(&mut self, taken: &Taken) {
+        self.sim.close_window(taken);
+    }
+}
+
+/// A worker thread on a sim whose release takes `hold`, holding a window.
+async fn slow_worker(hold: Duration) -> (Plugwin, SimHandle) {
+    let (sim, handle) = Sim::new(None);
+    let backend = SlowRelease { sim, hold };
+    let plugwin = Plugwin::spawn(Box::new(backend), Arc::new(|_: PlugwinEvent| {})).unwrap();
+    assert_eq!(plugwin.take(1, Vec::new()).await, Ok((1349, 809)));
+    (plugwin, handle)
+}
+
+#[tokio::test]
+async fn the_stop_waits_for_the_worker_to_hand_its_windows_back() {
+    assert_eq!((STOP_POLLS, STOP_POLL), (100, Duration::from_millis(10)));
+    assert_eq!(STOP_WAIT, STOP_POLL * STOP_POLLS);
+    let (plugwin, handle) = slow_worker(Duration::from_millis(300)).await;
+    plugwin.stop();
+    let started = Instant::now();
+    assert!(plugwin.stopped().await, "ended within the wait");
+    assert!(
+        started.elapsed() >= Duration::from_millis(250),
+        "waited for the release: {:?}",
+        started.elapsed()
+    );
+    assert!(handle.records().iter().any(|r| r["op"] == "release"));
+    assert!(plugwin.stopped().await, "a later look answers at once");
+    // A worker that does not end within the wait: false, bounded.
+    let (plugwin, _handle) = slow_worker(STOP_WAIT + Duration::from_millis(700)).await;
+    plugwin.stop();
+    let started = Instant::now();
+    assert!(!plugwin.stopped().await);
+    let waited = started.elapsed();
+    assert!(
+        (STOP_WAIT..Duration::from_secs(3)).contains(&waited),
+        "{waited:?}"
+    );
+}
+
 /// Waits (bounded) for `check`.
 async fn until(what: &str, check: impl Fn() -> bool) {
     for _ in 0..200 {
