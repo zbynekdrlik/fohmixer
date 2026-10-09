@@ -558,8 +558,18 @@ fn a_moved_editor_is_closed_and_another_open_one_left_alone() {
     });
 }
 
+/// The `eq` records once a close ended (its `closed` record logged).
+async fn closed_records(hub: &TestHub) -> Vec<Value> {
+    let records = hub
+        .events_until(WAIT, |records| {
+            eq_whats(records).contains(&"closed".to_string())
+        })
+        .await;
+    records.into_iter().filter(|r| r["ev"] == "eq").collect()
+}
+
 #[test]
-fn a_deleted_editors_close_checks_its_held_path_and_leaves_live_alone() {
+fn a_deleted_editors_close_leaves_live_alone_and_tells_its_holder_nothing_is_open() {
     let _serial = serial();
     runtime().block_on(async {
         let mut host = Host::start("band");
@@ -569,28 +579,22 @@ fn a_deleted_editors_close_checks_its_held_path_and_leaves_live_alone() {
         a.send(&ClientMsg::EqList { binding: hand2() }).await;
         listed(&mut a).await;
         open(&mut a, ON_TRACK).await;
-        // Its own track deleted: its ref is stale, so the close check reads
-        // the held path (Hand3 #'s now, no device there), walks the set,
-        // finds no open Pro-Q 4 and leaves Live alone. The page hears that
-        // its editor may still be open in Live.
+        // Its own track deleted: Live closed its editor with it, and the
+        // script answers the ref's turn-off `StaleRef`. Nothing of the
+        // hub's is open in Live, so Live is left alone and the page hears
+        // its own close (never "left open": nothing is there to close).
         assert!(host.delete_track(1) > 0, "Hand2 # deleted");
         a.send(&ClientMsg::EqClose).await;
         let closed = state(&mut a, ON_TRACK).await;
         assert_eq!(
             (closed.0, closed.3.as_deref()),
-            (EqState::Closed, Some("left open in Live"))
+            (EqState::Closed, Some(reason::EXIT))
         );
-        let records = hub
-            .events_until(WAIT, |records| {
-                eq_whats(records).contains(&"closed".to_string())
-            })
-            .await;
-        let eq: Vec<Value> = records.into_iter().filter(|r| r["ev"] == "eq").collect();
-        let problem = eq_record(&eq, "problem").expect("a problem record");
-        assert_eq!(
-            problem["why"].as_str(),
-            Some(fohmixer_hub::eq::close::NONE_OPEN)
-        );
+        let eq = closed_records(&hub).await;
+        assert!(eq_record(&eq, "problem").is_none(), "{eq:?}");
+        let none_open = eq_record(&eq, "none_open").expect("a none_open record");
+        let why = none_open["why"].as_str().unwrap_or("");
+        assert!(why.starts_with("the editor's device was deleted"), "{why}");
         hub.stop().await;
         host.stop();
     });
@@ -670,6 +674,47 @@ fn a_close_turns_off_its_own_moved_editor_never_the_one_now_at_its_path() {
             .await;
         let eq: Vec<Value> = records.into_iter().filter(|r| r["ev"] == "eq").collect();
         assert!(eq_record(&eq, "problem").is_none(), "{eq:?}");
+        hub.stop().await;
+        host.stop();
+    });
+}
+
+#[test]
+fn a_deleted_editors_close_never_turns_off_the_editor_now_at_its_path() {
+    let _serial = serial();
+    runtime().block_on(async {
+        let dir = tempfile::tempdir().unwrap();
+        let mut host = Host::start_site("band", &neighbours(dir.path()), 0, 0.0);
+        let hub = TestHub::start_config(config(dir.path(), &host)).await;
+        let (kick, snare) = ("live_set tracks 1 devices 0", "live_set tracks 2 devices 0");
+        let mut a = client(&hub).await;
+        a.send(&ClientMsg::EqList {
+            binding: track("Kick #"),
+        })
+        .await;
+        assert_eq!(listed(&mut a).await.0.len(), 1);
+        open(&mut a, kick).await;
+        // The Snare's editor opened on the PC by hand.
+        a.set("band", snare, "is_editor_open", json!(true)).await;
+        // The Kick's track deleted with A's editor (Live closed it): A's
+        // held path names the Snare's open editor now. Its ref answers
+        // `StaleRef`, and the close never looks at the held path (its
+        // device would close without its guard).
+        assert!(host.delete_track(1) > 0, "Kick # deleted");
+        a.send(&ClientMsg::EqClose).await;
+        let closed = state(&mut a, kick).await;
+        assert_eq!(
+            (closed.0, closed.3.as_deref()),
+            (EqState::Closed, Some(reason::EXIT))
+        );
+        assert_eq!(
+            a.get("band", kick, "is_editor_open").await,
+            json!(true),
+            "the Snare's editor, at the held path now, stays open"
+        );
+        let eq = closed_records(&hub).await;
+        assert!(eq_record(&eq, "problem").is_none(), "{eq:?}");
+        assert!(eq_record(&eq, "none_open").is_some(), "{eq:?}");
         hub.stop().await;
         host.stop();
     });
