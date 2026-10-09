@@ -42,12 +42,61 @@
 5. [x] E2E: `e2e/tests/detail.spec.ts` (a short touch on ☰ shows the hint and opens nothing; a hold opens the detail of that strip with its name; its fader drag reaches the track's volume in SimLive; its mute toggles the track's mute; its pan drag and `STRED` reach the track's panning; `← SPÄŤ NA MIX` returns to the page; a new layout keeps it open; TechAlert flashes over it; strips show no pan; clipped() and console clean); a helper `openDetail(page, track)` in `e2e/tests/support`; the pan tests of `column.spec.ts`, `intent.spec.ts`, `resilience.spec.ts`, `strip.spec.ts`, `touch-guard.spec.ts` move to the detail's pan.
 6. [x] Docs: `.claude/rules/ui-rust.md` (the detail, the hold, `wanted_subs`), `.claude/rules/e2e.md` (the helper), the spec's F27 status (the detail without its Pro-Q 4 until PR E).
 
-## PR E: Pro-Q 4 on the surface (after the owner's answer on #71)
+## PR E: Pro-Q 4 on the surface
 
-Outline, refined into tasks once the input path is decided:
+The owner's decisions (#71): the real editor as a live picture; touches as **real Windows touch input** with the editor on top on the PC's screen (the cursor may jump during a drag, as with RustDesk); nothing tried in a running Live before it is proven in the isolated host; the FabFilter update postponed until the screen is shown working, so the hub guards against the 4.02 close crash itself. The PC findings are in `.claude/rules/plugin-window.md`; read it first.
 
-- The hub finds each Pro-Q 4 of a strip's track (`class_display_name == "Pro-Q 4"`, on the track and in rack chains, nested) and serves them to the detail (instance, device path, where: on the track / rack › chain).
-- The hub opens an editor (`is_editor_open = true`), finds its new `Vst3PlugWindow`, captures it (Windows Graphics Capture; PrintWindow only as a fallback: it renders on Live's thread), and streams JPEG frames to the one device holding its lock; it keeps the last frame for the card's picture; it closes the editor when the device leaves the EQ or its connection closes, never while a gesture is in progress.
-- The lock per Pro-Q 4 instance: held by one connection; others see it locked.
-- The input path, proven first against Pro-Q in a separate host process (Carla portable or REAPER portable with a dedicated plug-in process): per the owner's answer on #71.
-- The FabFilter update on the PC (the close crash fixed after 4.02) is asked of the owner separately.
+### The rules (decided)
+
+- **The model is the Stream Deck's (#52):** a pure state module in the hub (`eq.rs`, like `deck.rs`: who holds which editor, which client views which, the gesture in progress), router glue (`router/eq.rs`), a platform backend behind a trait (`plugwin`: a Windows implementation, and a simulated one for tests and CI), proto messages beside the deck's, and the page's components.
+- **Discovery:** `ClientMsg::EqList { strip binding }` → the hub resolves the strip's track as it does a strip (by name or by index) and walks its devices through the script's `get_prop`: a `PluginDevice` whose `class_display_name` is `Pro-Q 4` is one; a `RackDevice`'s `chains` → `devices` are walked too, three levels deep at most. The answer lists each with its LOM path (`live_set tracks N devices D [chains C devices E …]`) and where it sits (`na tracku`, or the rack's and chain's names: `<rack> › <chain>`), and the lock state. A list is read when asked (a detail opening), never followed.
+- **Open:** `ClientMsg::EqOpen { instance, path }`.
+  - If another client holds that editor, the answer is `locked`.
+  - Otherwise the client takes the lock (one editor per client: opening another one closes its previous one first).
+  - The hub lists the top-level `Vst3PlugWindow`s, sets `is_editor_open = true`, and takes the new window (the list after minus before, within 3 s; else `failed: no window` and `is_editor_open = false`).
+  - It makes the window topmost (`SetWindowPos HWND_TOPMOST`, no move or size), keeping Live's position, and records its `FF_UIWindow` child's client rect, the picture.
+- **Capture:** while open, a capture thread copies the child's screen rectangle (BitBlt from the screen DC: the window is on top, so the screen holds it; nothing runs on Live's thread) at up to 25 fps, encodes JPEG (quality about 70, the `jpeg-encoder` crate), skips a frame equal to the last one, and hands the newest to the holder's socket as a **binary** WebSocket message (the newest frame wins, never a queue: a slow tablet gets fewer frames, never old ones). The last frame per editor is kept for the card's picture (`GET /api/eq/picture?instance=&path=`, token, `image/jpeg`; 404 before a first open).
+- **Input:** `ClientMsg::EqInput { kind: down|move|up|cancel, x, y }` in the picture's pixels (the page maps its finger into them).
+  - The hub clamps to the picture.
+  - It checks that the point's root window (`WindowFromPoint` → `GetAncestor(GA_ROOT)`) is the editor; otherwise it injects nothing and ends any contact.
+  - It injects touch: `InjectTouchInput` with DOWN `INRANGE|INCONTACT|DOWN`, UPDATE `INRANGE|INCONTACT|UPDATE`, UP `UP` at the last point, cancel `UP|CANCELED`; **never `PRIMARY`**.
+  - While a contact rests it re-sends the last point every 100 ms; a contact silent for 2 s ends with a cancel (a page that went away).
+  - After the contact ends it puts the cursor back where it was (`SetCursorPos`).
+  - One contact at a time per editor.
+- **Close:** `ClientMsg::EqClose`, the holder's socket closing, or the holder opening another editor.
+  - The hub ends any contact (UP).
+  - The **close guard** comes next: it injects a tap on an inert spot of the editor, a point verified in the isolated host (a value text field closes on a click elsewhere; the top bar's empty middle worked; pick a point no control covers and pin it in the rules), then waits 300 ms.
+  - It sets `is_editor_open = false`, restores the window's z-order (not topmost), and releases the lock.
+  - It never closes while a contact is down.
+- **Locks are broadcast** (`ServerMsg::EqLocks`: instance, path, held by this client or another, since), so every detail shows a locked card at once.
+- **The simulated backend** (`plugwin::Sim`, the hub's default off Windows and in the e2e harness):
+  - It makes a synthetic picture (a fixed size, a frame counter drawn in, so frames differ).
+  - It records every input and close.
+  - The harness reads them (`/sim/eq`), and SimLive gets plug-in devices: `class_display_name`, `is_editor_open` get/set/observe, a Pro-Q 4 on a track and one in a rack chain, with Python tests.
+- **The isolated check before any Live:** a hub CLI `fohmixer-hub eq-probe --pid <host pid>` drives the Windows backend against a window of the given process (the Carla bridge): capture N frames (their size and rate), a scripted drag, a double-click on a band, the close guard and a close. The PC run against Carla is part of the PR's verification, recorded on #71, before the first real open in Live.
+- **The page:**
+  - **The detail's middle:** one card per listed Pro-Q 4. A card shows:
+    - its picture: the last frame, fetched with the token into a blob URL, or a plain placeholder before a first open;
+    - where it sits;
+    - `OTVORIŤ EQ NA CELÚ OBRAZOVKU`, or `ZAMKNUTÉ` with "Upravuje ho iný zvukár (od HH:MM)" when another client holds it.
+  - **The EQ screen** (full screen, over the detail; the approved mockup):
+    - the bar: `← SPÄŤ NA KANÁL`, the chip, `Pro-Q 4 · <where>`, the lock mark, `?` with the touch legend;
+    - the picture: binary frames into a canvas, through `createImageBitmap`, fitted;
+    - one finger maps to `EqInput` (moves at most once per animation frame; the up and cancel always sent; `lostpointercapture` is a cancel);
+    - a second finger is ignored;
+    - leaving the screen sends `EqClose`.
+  - The touch's state machine and the coordinate mapping are pure and tested (`behave/eq.rs`). Every tap target owns its touches.
+- **Logging and the flight recorder:**
+  - The hub logs each open, close and lock with its reason, and the capture's rate once a minute while open.
+  - The page records the EQ's open, close and lock refusals as `detail` events (the existing kind; new `what`s).
+
+### Tasks
+
+1. [ ] Proto messages and their tests (serde shapes, binary frame contract documented).
+2. [ ] Hub pure state `eq.rs` (holders, locks, gestures, the close sequence's steps) with tests; router glue; discovery through the script; logs.
+3. [ ] `plugwin` trait, the Windows backend (window diff, topmost, BitBlt capture, JPEG, touch injection, cursor restore, the guard), the simulated backend; the `eq-probe` CLI.
+4. [ ] SimLive plug-in devices, the harness `/sim/eq`, Python tests.
+5. [ ] The page: cards, the EQ screen, the touch state machine, binary frames; CSS (the mockup's look).
+6. [ ] E2E (both projects): list, open, frames arrive, a drag reaches the simulated backend at the mapped coordinates, exit closes with the guard first, a second context sees the lock, the console clean.
+7. [ ] The isolated check on the PC against Carla (the probe CLI), recorded on #71; only then the first open in the band Live, then the owner's demonstration.
+8. [ ] Docs: `plugin-window.md` (the inert spot, the backend), `ui-rust.md`, `e2e.md`, `live-script.md`, the spec's F28.
