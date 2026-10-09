@@ -432,18 +432,23 @@ impl Router {
         self.eq_acts(acts);
     }
 
-    /// An open sequence ended: the device's `$ref` is kept for its close
-    /// (only for the editor of that session: a stale answer keeps none).
+    /// An open sequence ended: the device's `$ref` is kept for its close,
+    /// only for the editor of that session and only when the instance did
+    /// not connect again since the open began (`connection`: the script's
+    /// registry starts over with each connection, and a pointer it
+    /// registers anew can name another object). A stale answer keeps none.
     pub(super) fn eq_opened(
         &mut self,
         key: &EditorKey,
         session: u32,
         outcome: Result<(u32, u32), String>,
         reference: Option<Value>,
+        connection: u32,
     ) {
         if let Some(io) = self.eq.as_mut() {
             if let Some(reference) = reference
                 && io.state.key_of(session).as_ref() == Some(key)
+                && io.state.connection(&key.instance) == connection
             {
                 io.refs.insert(session, (key.instance.clone(), reference));
             }
@@ -582,7 +587,11 @@ impl Router {
             return;
         };
         match act {
-            Act::Open { key, session } => {
+            Act::Open {
+                key,
+                session,
+                connection,
+            } => {
                 let (live, plugwin, tx, events) = (
                     self.live.get(&key.instance).cloned(),
                     io.plugwin.clone(),
@@ -602,6 +611,7 @@ impl Router {
                         session,
                         outcome,
                         reference,
+                        connection,
                     });
                 });
             }

@@ -715,6 +715,7 @@ async fn an_opened_editors_ref_is_kept_for_its_close_only() {
         session: 9,
         outcome: Ok((1349, 809)),
         reference: Some(reference.clone()),
+        connection: 0,
     });
     assert!(rig.router.eq.as_ref().unwrap().refs.is_empty());
     rig.router.handle(RouterMsg::EqOpened {
@@ -722,6 +723,7 @@ async fn an_opened_editors_ref_is_kept_for_its_close_only() {
         session: 1,
         outcome: Ok((1349, 809)),
         reference: Some(reference.clone()),
+        connection: 0,
     });
     assert_eq!(
         rig.router.eq.as_ref().unwrap().refs.get(&1),
@@ -734,6 +736,43 @@ async fn an_opened_editors_ref_is_kept_for_its_close_only() {
         problem: None,
     });
     assert!(rig.router.eq.as_ref().unwrap().refs.is_empty());
+}
+
+#[tokio::test]
+async fn an_open_answered_after_its_instance_connected_again_keeps_no_ref() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut rig = rig(dir.path());
+    let _outbox = attach(&mut rig.router, 1);
+    let io = rig.router.eq.as_mut().unwrap();
+    io.state.listed("band", "live_set tracks 1", [found_key()]);
+    let connection = io.state.connection("band");
+    io.state.open(1, &key(), 0.0);
+    // The instance connects again while the open runs: the ref it read
+    // names an object of the old connection's registry.
+    rig.router.handle(connected());
+    let reference = json!({"$ref": "live_1", "class": "PluginDevice"});
+    rig.router.handle(RouterMsg::EqOpened {
+        key: key(),
+        session: 1,
+        outcome: Ok((1349, 809)),
+        reference: Some(reference.clone()),
+        connection,
+    });
+    assert!(rig.router.eq.as_ref().unwrap().refs.is_empty());
+    // The same answer from the connection now keeps it.
+    let now = rig.router.eq.as_ref().unwrap().state.connection("band");
+    assert_eq!(now, connection + 1);
+    rig.router.handle(RouterMsg::EqOpened {
+        key: key(),
+        session: 1,
+        outcome: Ok((1349, 809)),
+        reference: Some(reference.clone()),
+        connection: now,
+    });
+    assert_eq!(
+        rig.router.eq.as_ref().unwrap().refs.get(&1),
+        Some(&("band".to_string(), reference))
+    );
 }
 
 #[tokio::test]
@@ -824,6 +863,7 @@ async fn a_hub_without_the_screen_says_so() {
         session: 1,
         outcome: Ok((1, 1)),
         reference: Some(json!({"$ref": "live_1"})),
+        connection: 0,
     });
     router.handle(RouterMsg::EqListed {
         client: 1,

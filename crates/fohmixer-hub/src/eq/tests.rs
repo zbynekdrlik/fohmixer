@@ -225,6 +225,25 @@ fn a_path_named_for_another_device_than_before_comes_back_too() {
 }
 
 #[test]
+fn an_instances_connections_are_counted_and_ride_its_opens() {
+    let mut eqs = listed();
+    assert_eq!(eqs.connection("band"), 0);
+    eqs.forget("band");
+    eqs.forget("band");
+    eqs.forget("drums");
+    let now = ["band", "drums", "master"].map(|i| eqs.connection(i));
+    assert_eq!(now, [2, 1, 0]);
+    eqs.listed("band", TRACK, [found(key(1))]);
+    let acts = eqs.open(1, &key(1), WALL);
+    let open = Act::Open {
+        key: key(1),
+        session: 1,
+        connection: 2,
+    };
+    assert!(acts.contains(&open), "{acts:?}");
+}
+
+#[test]
 fn an_open_takes_the_lock_and_another_client_is_refused() {
     let mut eqs = listed();
     assert_eq!(
@@ -236,7 +255,8 @@ fn an_open_takes_the_lock_and_another_client_is_refused() {
             rec("open", &key(1), Some(1), Some(1), None),
             Act::Open {
                 key: key(1),
-                session: 1
+                session: 1,
+                connection: 0
             },
         ]
     );
@@ -310,7 +330,8 @@ fn opens_run_one_at_a_time() {
             rec("open", &key(2), Some(2), Some(2), None),
             Act::Open {
                 key: key(2),
-                session: 2
+                session: 2,
+                connection: 0
             },
         ]
     );
@@ -322,7 +343,8 @@ fn opens_run_one_at_a_time() {
             rec("open", &key(3), Some(3), Some(3), None),
             Act::Open {
                 key: key(3),
-                session: 3
+                session: 3,
+                connection: 0
             },
         ]
     );
@@ -449,7 +471,8 @@ fn an_editor_left_while_it_opens_closes_once_open() {
         opens,
         [&Act::Open {
             key: key(4),
-            session: 4
+            session: 4,
+            connection: 0
         }],
         "{acts:?}"
     );
@@ -491,7 +514,8 @@ fn opening_another_editor_closes_the_held_one_first() {
             rec("open", &key(2), Some(1), Some(2), None),
             Act::Open {
                 key: key(2),
-                session: 2
+                session: 2,
+                connection: 0
             },
         ]
     );

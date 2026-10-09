@@ -112,8 +112,14 @@ pub fn phases(touch: Touch, last: Option<(i32, i32)>, at: (i32, i32)) -> Vec<(Ph
 #[derive(Debug, Clone, PartialEq)]
 pub enum Act {
     /// The open sequence of `key` as `session`: the window list, `is_editor_open
-    /// = true`, the new window taken.
-    Open { key: EditorKey, session: u32 },
+    /// = true`, the new window taken. `connection`: its instance's connection
+    /// it starts on ([`Eqs::connection`]); the device's `$ref` the open reads
+    /// holds for that connection only.
+    Open {
+        key: EditorKey,
+        session: u32,
+        connection: u32,
+    },
     /// The close sequence: the guard (any contact ended, the inert spot
     /// tapped), [`GUARD_WAIT`], `is_editor_open = false`, the window released.
     Close {
@@ -273,6 +279,9 @@ pub struct Eqs {
     sessions: u32,
     /// The last contact number given out.
     contacts: u32,
+    /// How often each instance connected again since the hub started (its
+    /// connection's number: a `$ref` holds for one connection only).
+    connections: BTreeMap<String, u32>,
 }
 
 impl Eqs {
@@ -321,9 +330,18 @@ impl Eqs {
     }
 
     /// An instance connected again: its lists may name other devices now
-    /// (another set), so they are forgotten until listed again.
+    /// (another set), so they are forgotten until listed again, and its
+    /// connection's number goes up.
     pub fn forget(&mut self, instance: &str) {
         self.lists.retain(|(of, _), _| of.as_str() != instance);
+        *self.connections.entry(instance.to_string()).or_default() += 1;
+    }
+
+    /// The number of `instance`'s connection now (0 until it connected
+    /// again): an open's answer from an older one brings a `$ref` of an
+    /// older script registry.
+    pub fn connection(&self, instance: &str) -> u32 {
+        self.connections.get(instance).copied().unwrap_or(0)
     }
 
     /// Something came from `client` at `now`.
@@ -460,6 +478,7 @@ impl Eqs {
         editor.session = self.sessions;
         editor.stage = Stage::Opening;
         self.opening = true;
+        let connection = self.connections.get(&key.instance).copied().unwrap_or(0);
         vec![
             Act::Record(record(
                 "open",
@@ -471,6 +490,7 @@ impl Eqs {
             Act::Open {
                 key,
                 session: self.sessions,
+                connection,
             },
         ]
     }
