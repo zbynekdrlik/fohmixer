@@ -416,8 +416,12 @@ async fn a_closed_socket_closes_its_editor_through_the_guard() {
     let RouterMsg::EqClosed { ref problem, .. } = closed else {
         unreachable!()
     };
-    // The guard tapped; the offline instance could not close the editor.
-    assert_eq!(problem.as_deref(), Some("instance offline"));
+    // The guard tapped; the offline instance could not be read again, so
+    // Live is left alone.
+    assert_eq!(
+        problem.as_deref(),
+        Some(close::unread("instance offline").as_str())
+    );
     rig.router.handle(closed);
     let phases: Vec<(String, i64, i64)> = rig
         .sim
@@ -456,17 +460,25 @@ async fn a_closed_socket_closes_its_editor_through_the_guard() {
 async fn the_close_sequence_leaves_an_editor_open_when_its_guard_fails() {
     let (plugwin, sim) = sim_plugwin();
     let live = offline_live();
+    let (events, _records) = EventLog::channel(64);
     // No instance: the guard taps, and nothing can close it.
     plugwin.take(1, Vec::new()).await.unwrap();
     assert_eq!(
-        close_editor(None, plugwin.clone(), PATH.into(), 1).await,
+        close_editor(None, plugwin.clone(), key(), 1, events.clone()).await,
         Some(UNKNOWN_INSTANCE.to_string())
     );
     // The guard cannot tap: the editor stays open (not even asked).
     plugwin.take(2, Vec::new()).await.unwrap();
     sim.refuse(true);
     assert_eq!(
-        close_editor(Some(live.clone()), plugwin.clone(), PATH.into(), 2).await,
+        close_editor(
+            Some(live.clone()),
+            plugwin.clone(),
+            key(),
+            2,
+            events.clone()
+        )
+        .await,
         Some(format!(
             "the guard failed, the editor stays open: {REFUSED}"
         ))
@@ -479,11 +491,18 @@ async fn the_close_sequence_leaves_an_editor_open_when_its_guard_fails() {
     assert_eq!(released, 2, "both windows handed back");
     // Opens: no instance, an offline one.
     assert_eq!(
-        open_editor(None, plugwin.clone(), PATH.into(), 3).await,
+        open_editor(None, plugwin.clone(), key(), 3, events.clone()).await,
         Err(UNKNOWN_INSTANCE.to_string())
     );
     assert_eq!(
-        open_editor(Some(live.clone()), plugwin.clone(), PATH.into(), 3).await,
+        open_editor(
+            Some(live.clone()),
+            plugwin.clone(),
+            key(),
+            3,
+            events.clone()
+        )
+        .await,
         Err("instance offline".to_string())
     );
     assert_eq!(

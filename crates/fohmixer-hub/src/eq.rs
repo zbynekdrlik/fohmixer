@@ -25,12 +25,15 @@
 //! - **The close:** never while a contact is down: the close sequence's
 //!   guard ends it first (`plugwin`), then taps the inert spot, waits
 //!   [`GUARD_WAIT`], sets `is_editor_open = false` and releases the window.
-//!   An editor still opening closes as soon as it is open; one still queued
-//!   is dropped at once.
+//!   The device it turns off is checked first ([`close`]): the held path's
+//!   device if it is still the open Pro-Q 4, else the one open Pro-Q 4 of
+//!   the set, else none (Live is left alone). An editor still opening
+//!   closes as soon as it is open; one still queued is dropped at once.
 //!
 //! Times: `now` is the router's clock (ms), `wall` the hub's UTC ms (the
 //! lock's "since", shown on the pages).
 
+pub mod close;
 pub mod walk;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};

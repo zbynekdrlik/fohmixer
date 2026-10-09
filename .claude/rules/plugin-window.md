@@ -79,15 +79,18 @@ The surface's side (the cards and the screen) is in `.claude/rules/ui-rust.md`, 
   - A resting contact is sent again every 100 ms (`RESEND_MS`).
   - A holder silent for 2 s (`SILENT_MS`: no message at all, pings included) gets its contact cancelled.
   - A detached page's editor closes (`detach`).
-  - Records go to the event log as `eq` (warn class): `take`, `open`, `opened`, `touch` (down, up, cancel; never a move), `busy`, `silent`, `close` (why), `closed`, `lost`, `failed`, `refused`, `problem`, `contact_ended`, and once a minute per editor `rate` (grabs, sent, failed, grab and encode ms, bytes, size).
+  - Records go to the event log as `eq` (warn class): `take`, `open`, `opened`, `touch` (down, up, cancel; never a move), `busy`, `silent`, `close` (why), `closed`, `lost`, `failed`, `refused`, `problem`, `moved` (with `to`), `contact_ended`, and once a minute per editor `rate` (grabs, sent, failed, grab and encode ms, bytes, size).
 - **The close sequence** (`router/eq.rs` `close_editor`), in this order:
   1. The guard: the contact ends at its last point, the frames stop, and the inert spot is tapped (down, 30 ms, up). This closes a text field Pro-Q 4.02 may have open.
   2. A wait of 300 ms (`GUARD_WAIT`).
   3. `is_editor_open = false`, **only if the guard succeeded.** A failed guard leaves the editor open in Live (`problem`), never closed with a field possibly open.
+     - **Never another device** (`eq/close.rs`, pure, tested; carried out by `check_close` / `turn_off`): the held path is Live's index form, which a track or device moved above it points elsewhere. First, one batch re-reads the device at the held path (`class_display_name`, `is_editor_open`). If it is still a Pro-Q 4 with its editor open, it closes there. Otherwise the set's tracks, return tracks and master track are walked for their Pro-Q 4s (the list's walk, bounded the same way) and their `is_editor_open` read in one batch. Exactly one open: it is the moved editor (a client holds one, and the window is the hub's), closed at its new path, logged as a warning and recorded as `eq` `moved` with `to`. None or several open, or any read or walk that failed: Live is left alone (the window is still handed back) and the router records a `problem` with the reason.
+     - An open whose window was not found turns its editor off through the same check.
+     - What it cannot tell apart: another client's open Pro-Q 4 that moved onto the held path reads as the held one. That needs two engineers holding editors while a track moves; the script's `$ref` (the device's identity, reset with each script connection) would be the stronger check.
   4. The window's z-order put back.
 - **The inert spot:** `plugwin::INERT_X` = 0.405 of the picture's width and `INERT_Y` = 15 px from its top: (546, 15) at 1349 px. This is the top bar's empty middle in the mockup's picture: right of the logo panel (which ends at about 534) and left of the undo icon (about 564). The PC check confirms it (`eq-probe` saves `after-guard.jpg`). If it hits something, try `--inert` at the wide empty area right of Help (about 1100–1300, 15) and change the constant.
 - **The window worker** (`plugwin.rs`): a std thread owning the `Backend`; the router talks to it over a channel.
-  - **Open:** list Live's editor windows, set `is_editor_open = true`, then poll every 50 ms for up to 3 s for the ONE new window. Several new windows fail (`several windows`); none fail (`no window`). If the take fails, `is_editor_open` goes back to false.
+  - **Open:** list Live's editor windows, set `is_editor_open = true`, then poll every 50 ms for up to 3 s for the ONE new window. Several new windows fail (`several windows`); none fail (`no window`). If the take fails, the editor is turned off again through the close check below.
   - **Take:** the window topmost (nothing moved or sized).
   - **Capture:** every 40 ms. A frame is sent only when the picture changed. JPEG q70 through `jpeg-encoder` (pure Rust, `simd`; its IJG licence part is a `deny.toml` exception).
   - **Lost:** a window that went away (closed in Live or on the PC) releases the editor (`window closed`).
@@ -97,7 +100,7 @@ The surface's side (the cards and the screen) is in `.claude/rules/ui-rust.md`, 
   - Grab: `BitBlt` of the picture's screen rectangle from the screen DC, then `GetDIBits`. Nothing runs on Live's window thread. This is not `PrintWindow`, and not WGC (its border cannot be switched off on the PC's Windows 10).
   - Touch: `InitializeTouchInjection(1, TOUCH_FEEDBACK_NONE)`, then the flags above (a cancel is `UP|CANCELED`). The contact area is 4 × 4 px (`TOUCH_MASK_CONTACTAREA`). `ERROR_NOT_READY` is retried after 1 ms, twice.
   - A down or an update checks the point's root window and its process first. The cursor is put back when the contact ends.
-- **Configuration:** `[eq] backend = "windows" | "sim" | "off"`. The default is `windows` on Windows, else `sim`; `windows` off Windows fails the config check. `off` answers every list with the error `off`. `Install-Fohmixer.ps1` does not write an `[eq]` table, so a deployed hub runs the Windows backend once this ships.
+- **Configuration:** `[eq] backend = "windows" | "sim" | "off"`. **Live's windows are never the default:** `off` on Windows, `sim` elsewhere (the tests and the E2E harness); `windows` off Windows fails the config check (`config.rs`; the Windows default is tested in the `windows` CI job, `config::tests::eq_backend`). `off` answers every list with the error `off` and every open closed with `off`; the page's cards then say "EQ je na PC vypnuté." (`behave::eq::list_text`, a plain note). The PC turns the screen on only by writing `[eq]` / `backend = "windows"` into its `fohmixer-hub.toml` after `eq-probe` passed against Carla's bridge (the steps, and that every install drops the table again: `.claude/rules/deploy-pc.md`).
 - **The simulated backend** (`plugwin/sim.rs`): the hub's backend off Windows, in the tests and in the E2E harness.
   - Asking Live to open an editor opens a window (`live_opened`); the release closes it again.
   - Its picture is 1349 × 809 with a counter that steps every 250 ms, so frames differ.
@@ -109,4 +112,5 @@ The surface's side (the cards and the screen) is in `.claude/rules/ui-rust.md`, 
   - Output, one `name=value` line each, no window title: `windows=`, `picture=WxH child= was_topmost=`, `frames= sent= same=`, `grab_ms_mean= grab_ms_max=`, `encode_ms_mean= encode_ms_max= bytes_mean=`, `fps=`, `band=ok at=`, `drag=ok steps= to=`, `field=ok`, `guard=ok at= tap_ms=30`, `release=ok`, `close=sent`.
   - With `--out`: `frame-NN.jpg`, `after-band.jpg`, `after-drag.jpg`, `field-open.jpg` (the field open), `after-guard.jpg` (the field closed again).
   - Exit 0 when every step ran; 1 when a step failed (why on stderr); 2 for bad arguments or no backend. `--sim` runs it on the simulated backend (`tests/eq_probe_cli.rs`).
+  - It reads no config: it drives the window backend directly, whatever `[eq]` says (it works while the hub's screen is off).
   - Expect `windows=1` and `child=true`. Another window of the bridge would be taken first.

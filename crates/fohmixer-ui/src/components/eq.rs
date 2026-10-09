@@ -34,7 +34,8 @@ use wasm_bindgen::JsCast;
 use super::buttons::colour_style;
 use super::{owns_touches, trace_detail};
 use crate::behave::eq::{
-    CardLock, Finger, Fit, card_lock, failure_text, fit, hh_mm, locked_text, on_picture, to_picture,
+    CardLock, Finger, Fit, card_lock, failure_text, fit, hh_mm, list_text, locked_text, on_picture,
+    to_picture,
 };
 use crate::binding::detail_keys;
 use crate::dom;
@@ -277,12 +278,10 @@ pub fn EqCards(strip: Strip, label: String, color: Option<RwSignal<Slot>>) -> im
                 .into_any();
         };
         if let Some(error) = list.error {
-            let text = if error == fohmixer_proto::eq::reason::OFF {
-                "Pro-Q obrazovka je na tomto hube vypnutá.".to_string()
-            } else {
-                format!("Pro-Q 4 sa nedá prečítať: {error}")
-            };
-            return view! { <p class="eq-note" data-testid="eq-note">{text}</p> }.into_any();
+            let off = (error == fohmixer_proto::eq::reason::OFF).to_string();
+            let text = list_text(&error);
+            return view! { <p class="eq-note" data-testid="eq-note" data-off=off>{text}</p> }
+                .into_any();
         }
         if list.items.is_empty() {
             return view! {

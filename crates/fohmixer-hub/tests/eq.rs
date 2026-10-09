@@ -24,6 +24,9 @@ use support::{Client, Host, TestHub, runtime, serial};
 const WAIT: Duration = Duration::from_secs(5);
 const ON_TRACK: &str = "live_set tracks 1 devices 0";
 const IN_CHAIN: &str = "live_set tracks 1 devices 1 chains 0 devices 0";
+/// The same devices once the track above Hand2 # is deleted.
+const MOVED_ON_TRACK: &str = "live_set tracks 0 devices 0";
+const MOVED_IN_CHAIN: &str = "live_set tracks 0 devices 1 chains 0 devices 0";
 
 fn config(dir: &Path, host: &Host) -> Config {
     let mut config = Config::defaults(dir);
@@ -399,6 +402,78 @@ fn another_pro_q_closes_the_first_and_a_closed_socket_closes_its_own() {
         assert_eq!(closed[1]["why"], "detach");
         hub.stop().await;
         host.stop();
+    });
+}
+
+/// Opens Hand2 #'s Pro-Q 4 on the track, deletes the track above it (the
+/// held path now names Hand3 #'s first device: none), then leaves the
+/// screen; with `several`, the rack's Pro-Q 4 has its editor open in Live
+/// too (opened there by hand). Live's two editors afterwards (on the track,
+/// in the chain, at their new paths) and the hub's `eq` records.
+async fn close_after_a_move(several: bool) -> (Value, Value, Vec<Value>) {
+    let mut host = Host::start("band");
+    let dir = tempfile::tempdir().unwrap();
+    let hub = TestHub::start_config(config(dir.path(), &host)).await;
+    let mut a = client(&hub).await;
+    a.send(&ClientMsg::EqList { binding: hand2() }).await;
+    listed(&mut a).await;
+    open(&mut a, ON_TRACK).await;
+    if several {
+        a.set("band", IN_CHAIN, "is_editor_open", json!(true)).await;
+    }
+    assert!(host.delete_track(0) > 0, "Hand1 # deleted");
+    a.send(&ClientMsg::EqClose).await;
+    // The closed state comes once the whole close sequence ran.
+    let closed = state(&mut a, ON_TRACK).await;
+    assert_eq!(
+        (closed.0, closed.3.as_deref()),
+        (EqState::Closed, Some("exit"))
+    );
+    let records = hub
+        .events_until(WAIT, |records| {
+            eq_whats(records).contains(&"closed".to_string())
+        })
+        .await;
+    let on_track = a.get("band", MOVED_ON_TRACK, "is_editor_open").await;
+    let in_chain = a.get("band", MOVED_IN_CHAIN, "is_editor_open").await;
+    hub.stop().await;
+    host.stop();
+    let eq = records.into_iter().filter(|r| r["ev"] == "eq").collect();
+    (on_track, in_chain, eq)
+}
+
+/// The `eq` record of `what`, if any.
+fn eq_record<'a>(records: &'a [Value], what: &str) -> Option<&'a Value> {
+    records.iter().find(|r| r["what"] == what)
+}
+
+#[test]
+fn a_moved_editor_found_open_once_is_closed_at_its_new_path() {
+    let _serial = serial();
+    runtime().block_on(async {
+        let (on_track, in_chain, records) = close_after_a_move(false).await;
+        assert_eq!((on_track, in_chain), (json!(false), json!(false)));
+        let moved = eq_record(&records, "moved").expect("a moved record");
+        assert_eq!(
+            (moved["path"].as_str(), moved["to"].as_str()),
+            (Some(ON_TRACK), Some(MOVED_ON_TRACK))
+        );
+        assert!(eq_record(&records, "problem").is_none(), "{records:?}");
+    });
+}
+
+#[test]
+fn a_moved_editor_with_several_open_leaves_live_alone() {
+    let _serial = serial();
+    runtime().block_on(async {
+        let (on_track, in_chain, records) = close_after_a_move(true).await;
+        assert_eq!((on_track, in_chain), (json!(true), json!(true)));
+        let problem = eq_record(&records, "problem").expect("a problem record");
+        assert_eq!(
+            problem["why"].as_str(),
+            Some(fohmixer_hub::eq::close::SEVERAL_OPEN)
+        );
+        assert!(eq_record(&records, "moved").is_none(), "{records:?}");
     });
 }
 

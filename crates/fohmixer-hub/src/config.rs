@@ -36,9 +36,11 @@
 //! title = "Stream Deck"  # 1..=24 characters, the tab's title
 //!
 //! # The Pro-Q 4 screen (#71 PR E), optional: which window backend shows the
-//! # editors. "windows" (the default on Windows: Live's editor windows),
-//! # "sim" (a synthetic picture: the default elsewhere, the E2E harness) or
-//! # "off" (no Pro-Q screen: the detail lists none).
+//! # editors. "off" (the default on Windows: no Pro-Q screen, the detail
+//! # says so), "windows" (Live's editor windows: written by hand on the PC
+//! # only after `eq-probe` passed against Carla's bridge,
+//! # `.claude/rules/plugin-window.md`) or "sim" (a synthetic picture: the
+//! # default elsewhere, the tests and the E2E harness).
 //! [eq]
 //! backend = "windows"
 //! ```
@@ -274,11 +276,14 @@ pub struct EqCfg {
     pub backend: Option<EqBackend>,
 }
 
-/// The backend when `[eq]` names none: the platform's own (the simulated
-/// one off Windows).
+/// The backend when `[eq]` names none: never Live's windows. On Windows
+/// the screen is off until the PC's `fohmixer-hub.toml` says `backend =
+/// "windows"` (written by hand once `eq-probe` passed against Carla's
+/// bridge: nothing touches a plug-in's window in a running Live before);
+/// elsewhere the simulated one (the tests, the E2E harness).
 pub fn default_eq_backend() -> EqBackend {
     if cfg!(windows) {
-        EqBackend::Windows
+        EqBackend::Off
     } else {
         EqBackend::Sim
     }
@@ -1061,25 +1066,49 @@ mod tests {
         }
     }
 
+    /// A config's `[eq]` backend.
+    fn eq_backend_of(text: &str) -> EqBackend {
+        Config::parse(text, &data()).unwrap().eq_backend()
+    }
+
+    /// Why a config is refused.
+    fn eq_refused(text: &str) -> String {
+        format!("{:#}", Config::parse(text, &data()).unwrap_err())
+    }
+
     #[test]
-    fn the_eq_backend_is_the_tables_or_the_platforms() {
-        let backend = |text: &str| Config::parse(text, &data()).unwrap().eq_backend();
-        assert_eq!(backend("[eq]\nbackend = \"sim\"\n"), EqBackend::Sim);
-        assert_eq!(backend("[eq]\nbackend = \"off\"\n"), EqBackend::Off);
-        assert_eq!(backend(""), default_eq_backend());
-        assert_eq!(backend("[eq]\n"), default_eq_backend());
-        let refused = |text: &str| format!("{:#}", Config::parse(text, &data()).unwrap_err());
-        assert!(refused("[eq]\nbackend = \"mac\"\n").contains("unknown variant"));
-        assert!(refused("[eq]\nscreen = 1\n").contains("unknown field"));
-        if cfg!(windows) {
-            assert_eq!(default_eq_backend(), EqBackend::Windows);
-            assert_eq!(backend("[eq]\nbackend = \"windows\"\n"), EqBackend::Windows);
-        } else {
-            assert_eq!(default_eq_backend(), EqBackend::Sim);
-            assert_eq!(
-                refused("[eq]\nbackend = \"windows\"\n"),
-                "[eq] backend \"windows\" runs on Windows only"
-            );
-        }
+    fn eq_backend_is_the_tables_or_the_platforms() {
+        assert_eq!(eq_backend_of("[eq]\nbackend = \"sim\"\n"), EqBackend::Sim);
+        assert_eq!(eq_backend_of("[eq]\nbackend = \"off\"\n"), EqBackend::Off);
+        assert_eq!(eq_backend_of(""), default_eq_backend());
+        assert_eq!(eq_backend_of("[eq]\n"), default_eq_backend());
+        assert!(eq_refused("[eq]\nbackend = \"mac\"\n").contains("unknown variant"));
+        assert!(eq_refused("[eq]\nscreen = 1\n").contains("unknown field"));
+    }
+
+    // Live's windows are never the default: on Windows the screen is off
+    // until the PC's config names them (the `windows` CI job runs this one).
+    #[cfg(windows)]
+    #[test]
+    fn eq_backend_defaults_to_off_on_windows_and_takes_windows_when_named() {
+        assert_eq!(default_eq_backend(), EqBackend::Off);
+        assert_eq!(eq_backend_of(""), EqBackend::Off);
+        assert_eq!(
+            eq_backend_of("[eq]\nbackend = \"windows\"\n"),
+            EqBackend::Windows
+        );
+    }
+
+    // Off Windows the default is the simulated backend, and `windows` is
+    // refused.
+    #[cfg(not(windows))]
+    #[test]
+    fn eq_backend_defaults_to_sim_off_windows_and_refuses_windows() {
+        assert_eq!(default_eq_backend(), EqBackend::Sim);
+        assert_eq!(eq_backend_of(""), EqBackend::Sim);
+        assert_eq!(
+            eq_refused("[eq]\nbackend = \"windows\"\n"),
+            "[eq] backend \"windows\" runs on Windows only"
+        );
     }
 }

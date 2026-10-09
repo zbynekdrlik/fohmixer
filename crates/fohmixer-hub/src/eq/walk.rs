@@ -72,12 +72,12 @@ pub enum Step {
 }
 
 /// A `get_prop` of `prop` on `path`.
-fn get(path: &str, prop: &str) -> Value {
+pub(super) fn get(path: &str, prop: &str) -> Value {
     json!({"target": path, "name": "get_prop", "args": {"prop": prop}})
 }
 
 /// A slot's data when it answered.
-fn answered(slot: &Value) -> Option<&Value> {
+pub(super) fn answered(slot: &Value) -> Option<&Value> {
     (slot.get("ok") == Some(&Value::Bool(true)))
         .then(|| slot.get("data"))
         .flatten()
@@ -101,7 +101,7 @@ fn refused(slot: Option<&Value>) -> Option<String> {
 
 /// The objects of a list answer: each one's class, path and name (one
 /// without a path is left out).
-fn items(data: &Value) -> Vec<(&str, &str, &str)> {
+pub(super) fn items(data: &Value) -> Vec<(&str, &str, &str)> {
     data.as_array()
         .into_iter()
         .flatten()

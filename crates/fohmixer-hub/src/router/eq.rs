@@ -15,7 +15,11 @@
 //!   inert spot tapped), [`GUARD_WAIT`], then `is_editor_open = false`, then
 //!   the window released. A guard that could not tap leaves the editor open
 //!   in Live (a value text field may be open: Pro-Q 4.02 crashes Live when
-//!   its editor closes with one). The answer comes back as
+//!   its editor closes with one). The device turned off is never another
+//!   one's: the close check (`eq::close`) re-reads the held path first and,
+//!   when the editor moved, looks for the one open Pro-Q 4 of the set; when
+//!   that is not certain, Live is left alone. An open whose window was not
+//!   found turns its editor off the same way. The answer comes back as
 //!   `RouterMsg::EqClosed`.
 
 use std::sync::Arc;
@@ -27,14 +31,16 @@ use fohmixer_proto::layout::Binding;
 use serde_json::{Value, json};
 
 use super::{Router, RouterMsg, write_failure};
+use crate::eq::close::{self, Check, CloseCheck};
 use crate::eq::walk::{Found, MAX_READS, Step, Walk};
 use crate::eq::{Act, EditorKey, Eqs, GUARD_WAIT, Pictures, record};
+use crate::events::EventLog;
 use crate::live::client::LiveHandle;
 use crate::live::subs::ClientId;
 use crate::plugwin::{Plugwin, PlugwinEvent, Rate};
 
 /// The Live property that opens and closes a plug-in's editor.
-pub const EDITOR_OPEN: &str = "is_editor_open";
+pub const EDITOR_OPEN: &str = close::EDITOR_OPEN;
 /// Why a list or an open found no instance of that name.
 pub const UNKNOWN_INSTANCE: &str = "unknown instance";
 /// Why a walk did not end.
@@ -74,40 +80,97 @@ async fn set_editor(live: &LiveHandle, path: &str, open: bool) -> Result<(), Str
     write_failure(&outcome).map_or(Ok(()), Err)
 }
 
+/// Carries a close check (`eq::close`) out: its reads through the script
+/// and its walks, one after the other (at most [`close::STEPS`] steps);
+/// the close it settles on, or why Live is left alone.
+async fn check_close(live: &LiveHandle, held: &str) -> Check {
+    let (mut check, mut step) = CloseCheck::start(held);
+    for _ in 0..close::STEPS {
+        step = match step {
+            Check::Read(commands) => match live.call(commands).await {
+                Ok(slots) => check.answer(&slots),
+                Err(e) => return Check::Leave(close::unread(&e.to_string())),
+            },
+            Check::Walk(targets) => {
+                let mut outcomes: Vec<Result<Vec<String>, String>> = Vec::new();
+                for target in targets {
+                    let found = walk(live.clone(), target).await;
+                    outcomes.push(found.map(|found| found.into_iter().map(|f| f.path).collect()));
+                }
+                check.walked(outcomes)
+            }
+            settled @ (Check::Close { .. } | Check::Leave(_)) => return settled,
+        };
+    }
+    close::settled(step)
+}
+
+/// Turns the editor of `key` (`session`) off in Live, never another
+/// device's: the close check decides which one, or none. Its outcome is
+/// logged; a moved editor is an `eq` record `moved` with the path it was
+/// found at (`to`).
+async fn turn_off(
+    live: &LiveHandle,
+    key: &EditorKey,
+    session: u32,
+    events: &EventLog,
+) -> Result<(), String> {
+    match check_close(live, &key.path).await {
+        Check::Close { path, moved } => {
+            if moved {
+                tracing::warn!(session, instance = %key.instance, from = %key.path, to = %path, "a Pro-Q 4 editor moved: the one open Pro-Q 4 of the set is turned off");
+                let mut fields = record("moved", key, None, Some(session), None);
+                fields["to"] = json!(path.as_str());
+                events.record("eq", fields);
+            } else {
+                tracing::info!(session, instance = %key.instance, path = %path, "a Pro-Q 4 editor is turned off at its path");
+            }
+            set_editor(live, &path, false).await
+        }
+        Check::Leave(why) => {
+            tracing::warn!(session, instance = %key.instance, path = %key.path, why = %why, "a Pro-Q 4 editor is left open in Live");
+            Err(why)
+        }
+        Check::Read(_) | Check::Walk(_) => Err(close::UNFINISHED.to_string()),
+    }
+}
+
 /// The open sequence: the windows listed, the editor opened in Live, the
 /// new window taken; its picture's size. When no window could be taken,
-/// the editor is closed again in Live.
+/// the editor is turned off again (never another device's).
 async fn open_editor(
     live: Option<LiveHandle>,
     plugwin: Plugwin,
-    path: String,
+    key: EditorKey,
     session: u32,
+    events: EventLog,
 ) -> Result<(u32, u32), String> {
     let live = live.ok_or(UNKNOWN_INSTANCE)?;
     let before = plugwin.list().await?;
-    set_editor(&live, &path, true).await?;
+    set_editor(&live, &key.path, true).await?;
     let taken = plugwin.take(session, before).await;
     if taken.is_err()
-        && let Err(why) = set_editor(&live, &path, false).await
+        && let Err(why) = turn_off(&live, &key, session, &events).await
     {
         tracing::warn!(session, why = %why, "an editor whose window was not found could not be closed again in Live");
     }
     taken
 }
 
-/// The close sequence: the guard, its wait, the editor closed in Live (not
-/// when the guard failed), the window released; what went wrong, if
-/// anything.
+/// The close sequence: the guard, its wait, the editor turned off in Live
+/// (not when the guard failed; never another device's), the window
+/// released; what went wrong, if anything.
 async fn close_editor(
     live: Option<LiveHandle>,
     plugwin: Plugwin,
-    path: String,
+    key: EditorKey,
     session: u32,
+    events: EventLog,
 ) -> Option<String> {
     let guarded = plugwin.guard(session).await;
     tokio::time::sleep(GUARD_WAIT).await;
     let closed = match (guarded, live) {
-        (Ok(()), Some(live)) => set_editor(&live, &path, false).await,
+        (Ok(()), Some(live)) => turn_off(&live, &key, session, &events).await,
         (Ok(()), None) => Err(UNKNOWN_INSTANCE.to_string()),
         (Err(why), _) => Err(format!("the guard failed, the editor stays open: {why}")),
     };
@@ -390,13 +453,14 @@ impl Router {
         };
         match act {
             Act::Open { key, session } => {
-                let (live, plugwin, tx) = (
+                let (live, plugwin, tx, events) = (
                     self.live.get(&key.instance).cloned(),
                     io.plugwin.clone(),
                     self.io.tx.clone(),
+                    self.io.events.clone(),
                 );
                 tokio::spawn(async move {
-                    let outcome = open_editor(live, plugwin, key.path.clone(), session).await;
+                    let outcome = open_editor(live, plugwin, key.clone(), session, events).await;
                     let _ = tx.send(RouterMsg::EqOpened {
                         key,
                         session,
@@ -405,13 +469,14 @@ impl Router {
                 });
             }
             Act::Close { key, session, .. } => {
-                let (live, plugwin, tx) = (
+                let (live, plugwin, tx, events) = (
                     self.live.get(&key.instance).cloned(),
                     io.plugwin.clone(),
                     self.io.tx.clone(),
+                    self.io.events.clone(),
                 );
                 tokio::spawn(async move {
-                    let problem = close_editor(live, plugwin, key.path.clone(), session).await;
+                    let problem = close_editor(live, plugwin, key.clone(), session, events).await;
                     let _ = tx.send(RouterMsg::EqClosed {
                         key,
                         session,

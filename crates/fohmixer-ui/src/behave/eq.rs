@@ -7,7 +7,7 @@
 //! card's lock ([`card_lock`]) and its text, which frames the screen shows
 //! ([`shows_frame`]) and a card's picture URL ([`picture_url`]).
 
-use fohmixer_proto::eq::{EqLock, Touch};
+use fohmixer_proto::eq::{EqLock, Touch, reason};
 
 /// Where a picture sits fitted into an area: its scale (CSS px a picture
 /// pixel) and its top-left corner in the area (CSS px).
@@ -182,11 +182,30 @@ pub fn picture_url(instance: &str, path: &str) -> String {
     )
 }
 
-/// The line under a card after its open failed (`reason`, the hub's); none
-/// for a close the page or the hub made on purpose.
-pub fn failure_text(reason: &str) -> Option<String> {
+/// What the screen's place in the detail says when the PC's hub has it off
+/// (`[eq] backend = "off"`, the default on Windows until the PC's check
+/// passed): a plain note, never an error.
+pub const OFF_TEXT: &str = "EQ je na PC vypnuté.";
+
+/// The cards' note when the hub gave no list (`error`, its reason): the
+/// screen off, or why the track's devices could not be read.
+pub fn list_text(error: &str) -> String {
+    if error == reason::OFF {
+        OFF_TEXT.to_string()
+    } else {
+        format!("Pro-Q 4 sa nedá prečítať: {error}")
+    }
+}
+
+/// The line under a card after its open failed (`why`, the hub's reason);
+/// none for a close the page or the hub made on purpose; the screen off
+/// says so plainly.
+pub fn failure_text(why: &str) -> Option<String> {
     let quiet = ["exit", "switch", "detach", "socket"];
-    (!quiet.contains(&reason)).then(|| format!("Neotvoril sa: {reason}"))
+    if why == reason::OFF {
+        return Some(OFF_TEXT.to_string());
+    }
+    (!quiet.contains(&why)).then(|| format!("Neotvoril sa: {why}"))
 }
 
 #[cfg(test)]
@@ -333,5 +352,19 @@ mod tests {
             failure_text("locked"),
             Some("Neotvoril sa: locked".to_string())
         );
+        assert_eq!(
+            failure_text("off"),
+            Some("EQ je na PC vypnuté.".to_string())
+        );
+    }
+
+    #[test]
+    fn a_list_the_hub_did_not_give_says_why_and_the_screen_off_plainly() {
+        assert_eq!(list_text("off"), "EQ je na PC vypnuté.");
+        assert_eq!(
+            list_text("unknown instance"),
+            "Pro-Q 4 sa nedá prečítať: unknown instance"
+        );
+        assert_eq!(list_text(""), "Pro-Q 4 sa nedá prečítať: ");
     }
 }

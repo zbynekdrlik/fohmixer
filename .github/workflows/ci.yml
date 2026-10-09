@@ -192,8 +192,8 @@ jobs:
         run: mkdir -p crates/fohmixer-ui/dist && echo placeholder > crates/fohmixer-ui/dist/index.html
       - name: Clippy (hub and tray, Windows-only code included)
         run: cargo clippy --locked -p fohmixer-hub -p fohmixer-tray --all-targets -- -D warnings
-      - name: Sealed-secret and window-backend tests (DPAPI; the PIN pepper, the Cloudflare token; the Pro-Q 4 screen's Win32 calls)
-        run: cargo test --locked -p fohmixer-hub --lib -- "pepper::" "sealed::" "cf_token::" "plugwin::win::"
+      - name: Sealed-secret and window-backend tests (DPAPI; the PIN pepper, the Cloudflare token; the Pro-Q 4 screen's Win32 calls and its default backend, off on Windows)
+        run: cargo test --locked -p fohmixer-hub --lib -- "pepper::" "sealed::" "cf_token::" "plugwin::win::" "config::tests::eq_backend"
       - name: Hub API tests on Windows (the layout, auth, the installer's config check, the Stream Deck's Companion link, the eq-probe CLI; no Live host needed)
         run: cargo test --locked -p fohmixer-hub --test layout --test auth --test config_cli --test companion_client --test deck --test eq_probe_cli
       - name: PC install self-test (Windows PowerShell 5.1 as on the PC; the debug hub started and stopped by Ctrl-Break, the debug tray started and ended by --exit)
