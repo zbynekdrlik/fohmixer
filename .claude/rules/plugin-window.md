@@ -126,3 +126,7 @@ The surface's side (the cards and the screen) is in `.claude/rules/ui-rust.md`, 
   - Exit 0 when every step ran; 1 when a step failed (why on stderr); 2 for bad arguments or no backend. `--sim` runs it on the simulated backend (`tests/eq_probe_cli.rs`).
   - It reads no config: it drives the window backend directly, whatever `[eq]` says (it works while the hub's screen is off).
   - Expect `windows=1` and `child=true`. Another window of the bridge would be taken first.
+
+## PR #73 review round 2 (fixed before the merge)
+
+The keep-alive looks again after each grab on a fresh clock; z-order changes are posted (`SWP_ASYNCWINDOWPOS`); a path belongs to the newest list that names it, and a path listed for another device drops its card's picture; a close checks the held path only when its ref is gone (or none is held), never on a timeout, Live offline or a refusal; the guard looks its editor up first; a failed update keeps the saved cursor for the cancel that follows; a new window is awaited until Pro-Q's picture is there; every reason a page reads is the protocol's, in Slovak, and a close that left the editor open in Live says so to its holder; an open's ref from an older connection is dropped; a down dropped for a contact still down ends with `busy`; a frame encoded after its session's frames stopped never reaches the sink; the stop's wait keeps the worker's handle under its lock. Ruled to stay: the close check's sequential walk of the set (it only runs as the ref's fallback).
