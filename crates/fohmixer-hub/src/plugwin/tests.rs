@@ -447,6 +447,23 @@ fn an_open_late_in_the_workers_life_counts_its_own_poll_and_wait() {
 }
 
 #[test]
+fn a_minutes_rate_counts_from_the_editors_take() {
+    let (mut worker, handle, heard) = worker();
+    take(&mut worker, &handle, 1, 100_000.0);
+    worker.step(100_010.0);
+    assert!(
+        heard.lock().unwrap().is_empty(),
+        "no rate right after the take"
+    );
+    worker.step(160_000.0);
+    let events = heard.lock().unwrap().clone();
+    assert!(
+        matches!(events.as_slice(), [PlugwinEvent::Rate { session: 1, .. }]),
+        "one rate a minute after the take: {events:?}"
+    );
+}
+
+#[test]
 fn a_captured_editor_sends_its_pictures_skipping_a_same_one() {
     let (mut worker, handle, heard) = worker();
     handle.still(true);
@@ -470,6 +487,9 @@ fn a_captured_editor_sends_its_pictures_skipping_a_same_one() {
     wait_for("the first frame", || frames.lock().unwrap().len() == 1);
     assert_eq!(frames.lock().unwrap()[0].0, 1);
     worker.step(59.0);
+    // Still: the sim's counter moves on (one step is 250 ms), its picture
+    // does not.
+    std::thread::sleep(Duration::from_millis(260));
     worker.step(60.0);
     std::thread::sleep(Duration::from_millis(50));
     assert_eq!(frames.lock().unwrap().len(), 1, "the same picture: skipped");
@@ -477,13 +497,17 @@ fn a_captured_editor_sends_its_pictures_skipping_a_same_one() {
     std::thread::sleep(Duration::from_millis(260));
     worker.step(100.0);
     wait_for("a new picture", || frames.lock().unwrap().len() == 2);
-    // The minute's counts: three grabs, two frames sent.
+    // Moving: the picture changes with the time.
+    std::thread::sleep(Duration::from_millis(260));
+    worker.step(140.0);
+    wait_for("the picture after it", || frames.lock().unwrap().len() == 3);
+    // The minute's counts: four grabs, three frames sent.
     worker.step(60_000.0);
     let events = heard.lock().unwrap().clone();
     let [PlugwinEvent::Rate { session: 1, rate }] = events.as_slice() else {
         panic!("one rate: {events:?}")
     };
-    assert_eq!((rate.grabs, rate.sent, rate.failed), (3, 2, 0));
+    assert_eq!((rate.grabs, rate.sent, rate.failed), (4, 3, 0));
     assert_eq!((rate.width, rate.height), (1349, 809));
     assert!(rate.bytes > 0.0);
     // The window goes away: lost.

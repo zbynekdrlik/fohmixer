@@ -313,6 +313,10 @@ mod tests {
         assert_eq!(to_picture(fit, (0.0, 250.0)), (0.0, 0.0));
         assert_eq!(to_picture(fit, (500.0, 500.0)), (1000.0, 500.0));
         assert_eq!(to_picture(fit, (10.0, 260.5)), (20.0, 21.0));
+        // Taller: bands left and right, the left one counts.
+        let tall = fit((1000.0, 1000.0), (1000, 2000)).unwrap();
+        assert_eq!(to_picture(tall, (250.0, 0.0)), (0.0, 0.0));
+        assert_eq!(to_picture(tall, (260.0, 5.0)), (20.0, 10.0));
         assert!(on_picture((0.0, 0.0), (2000, 1000)));
         assert!(on_picture((1999.9, 999.9), (2000, 1000)));
         assert!(!on_picture((2000.0, 10.0), (2000, 1000)));

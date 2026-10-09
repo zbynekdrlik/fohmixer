@@ -944,6 +944,23 @@ mod tests {
         }
     }
 
+    #[cfg(not(windows))]
+    #[test]
+    fn the_windows_window_backend_is_refused_off_windows() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = Config::defaults(dir.path());
+        config.eq = Some(config::EqCfg {
+            backend: Some(config::EqBackend::Windows),
+        });
+        let refused = plugwin_backend(&config)
+            .err()
+            .expect("the Windows backend off Windows");
+        assert!(
+            refused.to_string().contains("runs on Windows only"),
+            "{refused}"
+        );
+    }
+
     #[tokio::test]
     async fn the_stop_waits_for_the_window_worker_to_end() {
         let dir = tempfile::tempdir().unwrap();

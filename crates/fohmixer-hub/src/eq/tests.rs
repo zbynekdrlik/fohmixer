@@ -365,16 +365,26 @@ fn an_editor_left_while_it_opens_closes_once_open() {
             },
         ]
     );
-    // A queued one is dropped at once, and never opens.
+    // A queued one is dropped at once, and never opens; the one queued
+    // after it still does.
     eqs.open(2, &key(2), WALL);
     eqs.open(3, &key(3), WALL);
+    eqs.open(4, &key(4), WALL);
     assert_eq!(
         eqs.close(3, reason::EXIT, true),
         vec![tell(3, closed_msg(&key(3), reason::EXIT, None)), Act::Locks]
     );
     let acts = eqs.opened(&key(2), 2, Ok((1, 1)));
-    assert!(
-        !acts.iter().any(|a| matches!(a, Act::Open { .. })),
+    let opens: Vec<&Act> = acts
+        .iter()
+        .filter(|a| matches!(a, Act::Open { .. }))
+        .collect();
+    assert_eq!(
+        opens,
+        [&Act::Open {
+            key: key(4),
+            session: 4
+        }],
         "{acts:?}"
     );
 }
