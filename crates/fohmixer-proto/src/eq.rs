@@ -52,6 +52,8 @@ pub mod reason {
     /// Its editor is already open in Live (opened on the PC, a failed
     /// guard, a hub restart): the hub never closes it without its window.
     pub const OPEN_ON_PC: &str = "open on the PC";
+    /// The device's state could not be read before the open: try again.
+    pub const UNREAD: &str = "unread";
 }
 
 /// A finger's phase on the picture (`eq_input`).

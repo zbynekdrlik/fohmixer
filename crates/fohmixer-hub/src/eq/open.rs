@@ -27,7 +27,7 @@ use super::walk::{DEVICES, DISPLAY_NAME, PLUGIN, answered, get};
 /// A device's name (what the list showed).
 pub const NAME: &str = "name";
 /// Why an open is refused when the editor's state could not be read.
-pub const UNREAD: &str = "the device's editor state could not be read";
+pub const UNREAD: &str = reason::UNREAD;
 
 /// A device path's parent (its track or chain) and its index among the
 /// parent's devices: `live_set tracks 1 devices 0` is (`live_set tracks 1`,

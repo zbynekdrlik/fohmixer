@@ -268,6 +268,7 @@ pub fn failure_text(why: &str) -> Option<String> {
         reason::UNKNOWN => "zoznam je starý, otvor kanál znova",
         reason::MOVED => "Pro-Q 4 sa presunul, otvor kanál znova",
         reason::OPEN_ON_PC => "Pro-Q 4 je otvorený priamo na PC, zatvor ho tam",
+        reason::UNREAD => "Pro-Q 4 sa nedá prečítať, skús znova",
         NO_WINDOW => "okno Pro-Q 4 sa neotvorilo",
         reason::GONE => "okno Pro-Q 4 sa zavrelo",
         other => return Some(format!("Neotvoril sa: {other}")),
@@ -431,12 +432,14 @@ mod tests {
         );
         assert_eq!(said("no window"), "okno Pro-Q 4 sa neotvorilo");
         assert_eq!(said("window closed"), "okno Pro-Q 4 sa zavrelo");
+        assert_eq!(said("unread"), "Pro-Q 4 sa nedá prečítať, skús znova");
         // The protocol's names for them.
         assert_eq!(said(reason::CLOSING), said("closing"));
         assert_eq!(said(reason::UNKNOWN), said("unknown"));
         assert_eq!(said(reason::MOVED), said("moved"));
         assert_eq!(said(reason::OPEN_ON_PC), said("open on the PC"));
         assert_eq!(said(reason::GONE), said("window closed"));
+        assert_eq!(said(reason::UNREAD), said("unread"));
         // Anything else keeps the hub's own words.
         assert_eq!(
             failure_text("several windows"),
