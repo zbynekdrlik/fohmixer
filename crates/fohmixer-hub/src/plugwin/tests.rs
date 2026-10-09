@@ -20,9 +20,21 @@ fn worker() -> (Worker, SimHandle, Heard) {
         editors: BTreeMap::new(),
         finding: Vec::new(),
         contact: None,
+        encoder: Encoder::spawn().unwrap(),
         clock: Instant::now(),
     };
     (worker, handle, heard)
+}
+
+/// Waits (bounded, 5 s) on the test's own thread for `check`.
+fn wait_for(what: &str, check: impl Fn() -> bool) {
+    for _ in 0..500 {
+        if check() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    panic!("never: {what}");
 }
 
 /// Takes the editor Live opens as `session` at `now`; its window.
@@ -198,6 +210,128 @@ fn a_minutes_counts_are_means_over_the_grabs_and_the_frames() {
 }
 
 #[test]
+fn a_minutes_counts_add_up_the_grabs_and_the_encoder_s_frames() {
+    let mut counts = Counts::default();
+    counts.grabbed(2.5, true);
+    counts.grabbed(4.0, false);
+    counts.encoded(3.0, Some(1000));
+    counts.encoded(5.5, Some(3000));
+    counts.encoded(9.0, None);
+    assert_eq!(
+        counts,
+        Counts {
+            grabs: 2,
+            sent: 2,
+            failed: 2,
+            grab_ms: 6.5,
+            encode_ms: 8.5,
+            bytes: 4000.0,
+            width: 0,
+            height: 0,
+        }
+    );
+    assert_eq!(millis(Duration::from_millis(1500)), 1500.0);
+    assert_eq!(millis(Duration::from_micros(2500)), 2.5);
+    assert_eq!(millis(Duration::ZERO), 0.0);
+}
+
+/// A picture for the encoder, `width` × 8 px.
+fn job(session: u32, width: u32, sink: FrameSink) -> Job {
+    Job {
+        session,
+        pixels: Arc::new(sim::picture(1, width, 8)),
+        sink,
+    }
+}
+
+#[test]
+fn the_encoder_waits_while_no_picture_waits_and_until_the_stop() {
+    let none = |waiting: bool, stopped: bool| Handoff {
+        waiting: waiting.then(|| job(1, 16, sink().0)),
+        done: Vec::new(),
+        stopped,
+    };
+    assert!(idle(&mut none(false, false)));
+    assert!(!idle(&mut none(true, false)));
+    assert!(!idle(&mut none(false, true)));
+    assert!(!idle(&mut none(true, true)));
+}
+
+#[test]
+fn the_newest_picture_wins_and_a_forgotten_one_is_dropped() {
+    // The hand-off alone, no thread: what the encoder would take next.
+    let mut encoder = Encoder {
+        shared: Arc::new(Shared::default()),
+        thread: None,
+    };
+    let waiting = |encoder: &Encoder| {
+        encoder
+            .shared
+            .lock()
+            .waiting
+            .as_ref()
+            .map(|job| (job.session, job.pixels.width))
+    };
+    encoder.put(1, job(1, 16, sink().0).pixels, sink().0);
+    encoder.put(2, job(2, 24, sink().0).pixels, sink().0);
+    assert_eq!(waiting(&encoder), Some((2, 24)), "the newest wins");
+    encoder.forget(1);
+    assert_eq!(waiting(&encoder), Some((2, 24)), "another session's");
+    let next = encoder.shared.wait_job().expect("a picture waits");
+    assert_eq!((next.session, next.pixels.width), (2, 24));
+    assert_eq!(waiting(&encoder), None, "taken");
+    encoder.put(3, job(3, 16, sink().0).pixels, sink().0);
+    encoder.forget(3);
+    assert_eq!(waiting(&encoder), None, "forgotten");
+    // What it made is handed over once.
+    let made = Encoded {
+        session: 2,
+        ms: 1.5,
+        bytes: Some(10),
+    };
+    encoder.shared.lock().done.push(made);
+    assert_eq!(encoder.done(), vec![made]);
+    assert_eq!(encoder.done(), Vec::new());
+    // Stopped: a waiting picture is dropped, and there is no next one.
+    encoder.put(4, job(4, 16, sink().0).pixels, sink().0);
+    encoder.stop();
+    assert_eq!(waiting(&encoder), None);
+    assert!(encoder.shared.wait_job().is_none());
+}
+
+#[test]
+fn the_encoders_thread_sends_each_jpeg_to_its_sink_and_ends_at_the_stop() {
+    let mut encoder = Encoder::spawn().unwrap();
+    let (sink, frames) = sink();
+    encoder.put(5, job(5, 16, sink.clone()).pixels, sink.clone());
+    wait_for("a frame", || frames.lock().unwrap().len() == 1);
+    let got = frames.lock().unwrap().clone();
+    let [(session, size)] = got.as_slice() else {
+        panic!("one frame: {got:?}")
+    };
+    let (session, size) = (*session, *size);
+    assert_eq!(session, 5);
+    let done = encoder.done();
+    assert_eq!(done.len(), 1, "reported before the sink got it");
+    assert_eq!((done[0].session, done[0].bytes), (5, Some(size)));
+    assert!(done[0].ms >= 0.0);
+    // A picture that cannot be encoded is reported, and no frame sent.
+    let broken = Arc::new(Pixels {
+        width: 16,
+        height: 8,
+        bgra: vec![0; 10],
+    });
+    encoder.put(6, broken, sink);
+    wait_for("its report", || {
+        encoder.shared.lock().done.iter().any(|e| e.session == 6)
+    });
+    assert_eq!(encoder.done()[0].bytes, None);
+    assert_eq!(frames.lock().unwrap().len(), 1);
+    encoder.stop();
+    assert!(encoder.thread.is_none(), "joined");
+}
+
+#[test]
 fn a_phase_says_whether_it_is_checked_and_whether_it_ends() {
     let all = [Phase::Down, Phase::Update, Phase::Up, Phase::Cancel];
     assert_eq!(all.map(Phase::name), ["down", "update", "up", "cancel"]);
@@ -325,15 +459,17 @@ fn a_captured_editor_sends_its_pictures_skipping_a_same_one() {
         20.0,
     );
     worker.step(20.0);
-    assert_eq!(frames.lock().unwrap().len(), 1);
+    // The encoder's thread makes the frame.
+    wait_for("the first frame", || frames.lock().unwrap().len() == 1);
     assert_eq!(frames.lock().unwrap()[0].0, 1);
     worker.step(59.0);
     worker.step(60.0);
+    std::thread::sleep(Duration::from_millis(50));
     assert_eq!(frames.lock().unwrap().len(), 1, "the same picture: skipped");
     handle.still(false);
     std::thread::sleep(Duration::from_millis(260));
     worker.step(100.0);
-    assert_eq!(frames.lock().unwrap().len(), 2, "a new picture");
+    wait_for("a new picture", || frames.lock().unwrap().len() == 2);
     // The minute's counts: three grabs, two frames sent.
     worker.step(60_000.0);
     let events = heard.lock().unwrap().clone();
@@ -434,6 +570,7 @@ fn the_guard_ends_the_contact_stops_the_frames_and_taps_the_inert_spot() {
     let (sink, frames) = sink();
     worker.command(Command::Capture { session: 1, sink }, 0.0);
     worker.step(0.0);
+    wait_for("the first frame", || frames.lock().unwrap().len() == 1);
     touch_at(&mut worker, 1, 1, Phase::Down, (10, 20), 0.0);
     let (reply, mut answer) = oneshot::channel();
     worker.command(Command::Guard { session: 1, reply }, 1.0);

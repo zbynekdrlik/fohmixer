@@ -83,6 +83,9 @@ struct State {
     refuse: bool,
     /// The picture never changes (its counter stays 0).
     still: bool,
+    /// The last picture drawn and its count: a grab draws only a new count
+    /// or size (drawing one costs the worker tens of ms in a test build).
+    drawn: Option<(u64, Pixels)>,
     records: Vec<Value>,
     file: Option<PathBuf>,
     started: Instant,
@@ -139,6 +142,7 @@ impl Sim {
             auto_open: true,
             refuse: false,
             still: false,
+            drawn: None,
             records: Vec::new(),
             file,
             started: Instant::now(),
@@ -258,8 +262,18 @@ impl Backend for Sim {
         } else {
             counter(state.started.elapsed().as_secs_f64() * 1000.0)
         };
+        let drawn = state
+            .drawn
+            .as_ref()
+            .filter(|(n, p)| *n == count && (p.width, p.height) == (taken.width, taken.height))
+            .map(|(_, p)| p.clone());
         drop(state);
-        Ok(picture(count, taken.width, taken.height))
+        if let Some(pixels) = drawn {
+            return Ok(pixels);
+        }
+        let pixels = picture(count, taken.width, taken.height);
+        self.lock().drawn = Some((count, pixels.clone()));
+        Ok(pixels)
     }
 
     fn touch(&mut self, taken: &Taken, phase: Phase, at: (i32, i32)) -> Result<(), String> {
@@ -475,6 +489,34 @@ mod tests {
         handle.remove_window(WindowId(2));
         assert!(handle.windows().is_empty());
         assert_eq!(handle.topmost(window), None);
+    }
+
+    #[test]
+    fn a_grab_draws_its_picture_once_per_count_and_size() {
+        let (mut sim, handle) = Sim::new(None);
+        handle.still(true);
+        sim.live_opened();
+        let taken = sim.take(handle.windows()[0]).unwrap();
+        let first = sim.grab(&taken).unwrap();
+        assert_eq!(first, picture(0, 1349, 809));
+        assert_eq!(sim.grab(&taken).unwrap(), first);
+        // Another size: drawn at that size, then the first one again.
+        let small = Taken {
+            window: taken.window,
+            picture: taken.picture,
+            pid: taken.pid,
+            was_topmost: false,
+            width: 16,
+            height: 8,
+        };
+        assert_eq!(sim.grab(&small).unwrap(), picture(0, 16, 8));
+        assert_eq!(sim.grab(&taken).unwrap(), first);
+        // Another count: drawn anew.
+        handle.still(false);
+        std::thread::sleep(std::time::Duration::from_millis(260));
+        let later = sim.grab(&taken).unwrap();
+        assert_eq!((later.width, later.height), (1349, 809));
+        assert_ne!(later, first);
     }
 
     #[test]

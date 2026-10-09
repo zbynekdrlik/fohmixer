@@ -16,11 +16,14 @@
 //! - **Taking it:** on top of every window (no move or size), its picture
 //!   located (Pro-Q's own child window).
 //! - **The capture:** every [`CAPTURE_MS`] (25 fps) while its holder views
-//!   it: a picture equal to the last one is skipped, another is encoded as a
-//!   JPEG ([`QUALITY`]) and handed to its [`FrameSink`] (the holder's
-//!   socket, newest wins, and the card's last picture). The counts go to the
-//!   hub's log once a minute ([`Rate`]). A window that went away is reported
-//!   [`PlugwinEvent::Lost`].
+//!   it: a picture equal to the last one is skipped, another goes to the
+//!   encoder, a thread of its own: it makes the JPEG ([`QUALITY`]) and hands
+//!   it to its [`FrameSink`] (the holder's socket, newest wins, and the
+//!   card's last picture). One picture waits for the encoder at most, the
+//!   newest (a slow encode drops pictures, never queues them), so the
+//!   worker blocks only for the grab and its contacts are never held up by
+//!   an encode. The counts go to the hub's log once a minute ([`Rate`]). A
+//!   window that went away is reported [`PlugwinEvent::Lost`].
 //! - **A contact:** one on the screen at a time, numbered by the router. A
 //!   down goes only when no contact is down; any other phase only of the
 //!   contact down ([`accepts`]). A down or an update lands only when the
@@ -42,8 +45,8 @@ pub mod sim;
 pub mod win;
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
 use std::sync::mpsc::{self, RecvTimeoutError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
@@ -216,6 +219,11 @@ pub enum PlugwinEvent {
     Rate { session: u32, rate: Rate },
 }
 
+/// `elapsed` in milliseconds.
+pub fn millis(elapsed: Duration) -> f64 {
+    elapsed.as_secs_f64() * 1000.0
+}
+
 /// Whether a phase of contact `contact` on `session` goes to the screen
 /// while `held` (its session and number) is down: a down only when none is
 /// (the router ends a contact before its next down), any other phase only
@@ -310,6 +318,28 @@ struct Counts {
 }
 
 impl Counts {
+    /// A grab that took `ms` (`ok`: it gave a picture).
+    fn grabbed(&mut self, ms: f64, ok: bool) {
+        self.grabs += 1;
+        self.grab_ms += ms;
+        if !ok {
+            self.failed += 1;
+        }
+    }
+
+    /// A picture the encoder took `ms` for: its JPEG's size, none when it
+    /// failed.
+    fn encoded(&mut self, ms: f64, bytes: Option<usize>) {
+        match bytes {
+            Some(bytes) => {
+                self.sent += 1;
+                self.encode_ms += ms;
+                self.bytes += bytes as f64;
+            }
+            None => self.failed += 1,
+        }
+    }
+
     /// The minute's rate: means over the grabs and the frames sent.
     fn rate(&self) -> Rate {
         let mean = |total: f64, n: u32| if n == 0 { 0.0 } else { total / f64::from(n) };
@@ -331,12 +361,159 @@ struct Editor {
     taken: Taken,
     /// Where its frames go (none: not captured).
     sink: Option<FrameSink>,
-    /// The last picture sent, to skip an equal one.
-    last: Option<Pixels>,
+    /// The last picture handed to the encoder, to skip an equal one.
+    last: Option<Arc<Pixels>>,
     /// When it was last grabbed and when its minute began (worker ms).
     grabbed: f64,
     minute: f64,
     counts: Counts,
+}
+
+/// A picture on its way to its JPEG: its session, its pixels, its sink.
+struct Job {
+    session: u32,
+    pixels: Arc<Pixels>,
+    sink: FrameSink,
+}
+
+/// What the encoder made of one picture: its session, how long it took
+/// (ms), and its JPEG's size (none: it failed).
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Encoded {
+    session: u32,
+    ms: f64,
+    bytes: Option<usize>,
+}
+
+/// What the worker and its encoder share: the one picture waiting (a newer
+/// one replaces it: the newest wins), what the encoder made since the
+/// worker last looked, and the stop.
+#[derive(Default)]
+struct Handoff {
+    waiting: Option<Job>,
+    done: Vec<Encoded>,
+    stopped: bool,
+}
+
+/// Whether the encoder has nothing to do yet: no picture waiting, no stop.
+fn idle(handoff: &mut Handoff) -> bool {
+    handoff.waiting.is_none() && !handoff.stopped
+}
+
+/// The hand-off and the encoder's wake-up.
+#[derive(Default)]
+struct Shared {
+    handoff: Mutex<Handoff>,
+    ready: Condvar,
+}
+
+impl Shared {
+    fn lock(&self) -> MutexGuard<'_, Handoff> {
+        self.handoff.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The next picture to encode (it waits for one); none once stopped.
+    fn wait_job(&self) -> Option<Job> {
+        let mut handoff = self
+            .ready
+            .wait_while(self.lock(), idle)
+            .unwrap_or_else(PoisonError::into_inner);
+        if handoff.stopped {
+            return None;
+        }
+        handoff.waiting.take()
+    }
+}
+
+/// The encoder thread: each picture handed to it as a JPEG to its sink,
+/// until the stop. What it made is reported before the sink gets it, so the
+/// worker's counts hold every frame a sink got.
+fn encode_frames(shared: &Shared) {
+    while let Some(job) = shared.wait_job() {
+        let started = Instant::now();
+        let jpeg = encode(&job.pixels, QUALITY);
+        let ms = millis(started.elapsed());
+        if let Err(why) = &jpeg {
+            tracing::warn!(session = job.session, why = %why, "a plug-in editor's picture could not be encoded");
+        }
+        shared.lock().done.push(Encoded {
+            session: job.session,
+            ms,
+            bytes: jpeg.as_ref().ok().map(Vec::len),
+        });
+        if let Ok(jpeg) = jpeg {
+            (job.sink)(job.session, Bytes::from(jpeg));
+        }
+    }
+}
+
+/// The JPEG encoder: its thread and the hand-off. Dropped, it stops.
+struct Encoder {
+    shared: Arc<Shared>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Encoder {
+    /// Starts the encoder's thread.
+    fn spawn() -> std::io::Result<Self> {
+        let shared = Arc::new(Shared::default());
+        let theirs = Arc::clone(&shared);
+        let thread = std::thread::Builder::new()
+            .name("plugwin-jpeg".to_string())
+            .spawn(move || encode_frames(&theirs))?;
+        Ok(Self {
+            shared,
+            thread: Some(thread),
+        })
+    }
+
+    /// `pixels` of `session` to encode for `sink`: it replaces a picture
+    /// still waiting (the newest wins).
+    fn put(&self, session: u32, pixels: Arc<Pixels>, sink: FrameSink) {
+        self.shared.lock().waiting = Some(Job {
+            session,
+            pixels,
+            sink,
+        });
+        self.shared.ready.notify_one();
+    }
+
+    /// A picture of `session` still waiting is dropped (its frames stop).
+    fn forget(&self, session: u32) {
+        let mut handoff = self.shared.lock();
+        if handoff
+            .waiting
+            .as_ref()
+            .is_some_and(|job| job.session == session)
+        {
+            handoff.waiting = None;
+        }
+    }
+
+    /// What the encoder made since the last look.
+    fn done(&self) -> Vec<Encoded> {
+        std::mem::take(&mut self.shared.lock().done)
+    }
+
+    /// The encoder ends (a picture still waiting is dropped) and its thread
+    /// is joined.
+    fn stop(&mut self) {
+        {
+            let mut handoff = self.shared.lock();
+            handoff.stopped = true;
+            handoff.waiting = None;
+        }
+        self.shared.ready.notify_one();
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+impl Drop for Encoder {
+    fn drop(&mut self) {
+        self.stop();
+    }
 }
 
 /// An open waiting for its window.
@@ -387,19 +564,20 @@ struct Held {
 }
 
 /// The worker: its backend, the editors it holds by session, the opens
-/// waiting for their windows and the contact on the screen.
+/// waiting for their windows, the contact on the screen and the encoder.
 struct Worker {
     backend: Box<dyn Backend>,
     events: Events,
     editors: BTreeMap<u32, Editor>,
     finding: Vec<Finding>,
     contact: Option<Held>,
+    encoder: Encoder,
     clock: Instant,
 }
 
 impl Worker {
     fn now(&self) -> f64 {
-        self.clock.elapsed().as_secs_f64() * 1000.0
+        millis(self.clock.elapsed())
     }
 
     /// Serves commands until `Stop` or the last handle is gone, looking at
@@ -469,12 +647,23 @@ impl Worker {
         }
     }
 
-    /// The clocks at `now`: the opens' polls, the captures, the minutes.
+    /// The clocks at `now`: the encoder's frames counted, the opens' polls,
+    /// the captures, the minutes.
     fn step(&mut self, now: f64) {
+        self.count_encoded();
         self.find(now);
         let sessions: Vec<u32> = self.editors.keys().copied().collect();
         for session in sessions {
             self.capture(session, now);
+        }
+    }
+
+    /// What the encoder made since the last look, into its editors' counts.
+    fn count_encoded(&mut self) {
+        for done in self.encoder.done() {
+            if let Some(editor) = self.editors.get_mut(&done.session) {
+                editor.counts.encoded(done.ms, done.bytes);
+            }
         }
     }
 
@@ -534,6 +723,7 @@ impl Worker {
         if !self.backend.alive(&editor.taken) {
             let gone = editor.taken.clone();
             self.editors.remove(&session);
+            self.encoder.forget(session);
             if let Some(held) = self.contact.filter(|held| held.session == session) {
                 self.contact = None;
                 // The window is gone, so nothing lands: the cancel ends the
@@ -558,35 +748,24 @@ impl Worker {
         editor.grabbed = now;
         let started = Instant::now();
         let grabbed = self.backend.grab(&editor.taken);
-        editor.counts.grabs += 1;
-        editor.counts.grab_ms += started.elapsed().as_secs_f64() * 1000.0;
+        editor
+            .counts
+            .grabbed(millis(started.elapsed()), grabbed.is_ok());
         let pixels = match grabbed {
             Ok(pixels) => pixels,
             Err(why) => {
-                editor.counts.failed += 1;
                 tracing::debug!(session, why = %why, "a picture of a plug-in editor could not be grabbed");
                 return;
             }
         };
         editor.counts.width = pixels.width;
         editor.counts.height = pixels.height;
-        if editor.last.as_ref() == Some(&pixels) {
+        if editor.last.as_deref() == Some(&pixels) {
             return;
         }
-        let started = Instant::now();
-        match encode(&pixels, QUALITY) {
-            Ok(jpeg) => {
-                editor.counts.sent += 1;
-                editor.counts.encode_ms += started.elapsed().as_secs_f64() * 1000.0;
-                editor.counts.bytes += jpeg.len() as f64;
-                editor.last = Some(pixels);
-                sink(session, Bytes::from(jpeg));
-            }
-            Err(why) => {
-                editor.counts.failed += 1;
-                tracing::warn!(session, why = %why, "a plug-in editor's picture could not be encoded");
-            }
-        }
+        let pixels = Arc::new(pixels);
+        editor.last = Some(Arc::clone(&pixels));
+        self.encoder.put(session, pixels, sink);
     }
 
     /// A phase of contact `contact` on `session`'s window: one contact on
@@ -640,6 +819,7 @@ impl Worker {
         self.end_contact(session);
         let editor = self.editors.get_mut(&session).ok_or(NO_EDITOR)?;
         editor.sink = None;
+        self.encoder.forget(session);
         let width = editor.last.as_ref().map_or(editor.taken.width, |p| p.width);
         let taken = editor.taken.clone();
         guard_tap(self.backend.as_mut(), &taken, inert_spot(width))
@@ -649,6 +829,7 @@ impl Worker {
     /// was; `closed`: Live closed the editor.
     fn release(&mut self, session: u32, closed: bool) {
         self.end_contact(session);
+        self.encoder.forget(session);
         if let Some(editor) = self.editors.remove(&session) {
             self.backend.release(&editor.taken);
             if closed {
@@ -658,12 +839,13 @@ impl Worker {
     }
 
     /// The worker ends: every window handed back (the editors stay open in
-    /// Live).
+    /// Live), and its encoder with it.
     fn shutdown(&mut self) {
         let sessions: Vec<u32> = self.editors.keys().copied().collect();
         for session in sessions {
             self.release(session, false);
         }
+        self.encoder.stop();
     }
 }
 
@@ -682,7 +864,8 @@ pub struct Plugwin {
 }
 
 impl Plugwin {
-    /// Starts the worker thread on `backend`; `events` hears it.
+    /// Starts the worker thread (and its encoder's) on `backend`; `events`
+    /// hears it.
     pub fn spawn(backend: Box<dyn Backend>, events: Events) -> std::io::Result<Self> {
         let (tx, rx) = mpsc::channel();
         let worker = Worker {
@@ -691,6 +874,7 @@ impl Plugwin {
             editors: BTreeMap::new(),
             finding: Vec::new(),
             contact: None,
+            encoder: Encoder::spawn()?,
             clock: Instant::now(),
         };
         std::thread::Builder::new()
