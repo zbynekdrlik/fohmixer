@@ -183,6 +183,30 @@ fn a_tracks_new_list_replaces_its_last_one() {
 }
 
 #[test]
+fn a_path_two_tracks_lists_name_belongs_to_the_newest_list() {
+    // Strip Y listed path P when its device sat there; a track inserted
+    // above moved X's device onto P, and X's list names it. Y (its target
+    // sorting first) was not listed since.
+    let mut eqs = Eqs::default();
+    let (x, y) = ("live_set tracks 1", "live_set tracks 0");
+    let p = key(5);
+    let named = |name: &str| [(p.clone(), name.to_string())];
+    eqs.listed("band", y, named("De-ess"));
+    eqs.listed("band", x, named("Vox EQ"));
+    assert_eq!(eqs.name_of(&p), Some("Vox EQ"), "the newer list's");
+    // Y listed again names P (its device back there): Y's name now.
+    eqs.listed("band", y, named("De-ess"));
+    assert_eq!(eqs.name_of(&p), Some("De-ess"));
+    // Listing X again mends what Y's list said.
+    eqs.listed("band", x, named("Vox EQ"));
+    assert_eq!(eqs.name_of(&p), Some("Vox EQ"));
+    // X's track loses its device: no list names P any more (Y's gave it up).
+    let none: Vec<(EditorKey, String)> = Vec::new();
+    assert_eq!(eqs.listed("band", x, none), vec![p.clone()]);
+    assert_eq!(eqs.name_of(&p), None);
+}
+
+#[test]
 fn an_open_takes_the_lock_and_another_client_is_refused() {
     let mut eqs = listed();
     assert_eq!(
