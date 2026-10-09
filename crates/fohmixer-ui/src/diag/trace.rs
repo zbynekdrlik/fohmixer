@@ -126,14 +126,14 @@ pub fn takes_batch(buffered: u32) -> bool {
 /// for an essential one, what the forensics need of every touch and outage
 /// (touches, dropouts, resets, socket transitions, visibility, the notes of
 /// what went, a write's intent changes, PR G's system gestures and zooms,
-/// #52's Stream Deck presses); rank 0, first, for the round-trip summaries,
+/// #52's Stream Deck presses, #71's channel detail steps); rank 0, first, for the round-trip summaries,
 /// long frames and any other kind; rank 1, last, for the moves (the only
 /// per-frame data of a drag the hub cannot see). A touch's first moves are
 /// pushed as essential ([`Recorder::push_essential`]).
 pub fn drop_rank(ev: &str) -> Option<u8> {
     match ev {
         "touch" | "dropout" | "reset" | "sock" | "visibility" | "overflow" | "intent" | "sys"
-        | "zoom" | "deck" => None,
+        | "zoom" | "deck" | "detail" => None,
         "mv" => Some(1),
         _ => Some(0),
     }
@@ -182,6 +182,32 @@ pub fn deck(
     }
     if let Some(seq) = seq {
         event["q"] = json!(seq);
+    }
+    event
+}
+
+/// A channel detail's step (#71): `what` — `press` (a finger down on a
+/// strip's ☰), `slid` (it slid off: no tap, nothing opens), `tap` (lifted
+/// before the hold: the hint), `open` (`why`: `check`, the hold's check;
+/// `lift`, a lift after the hold no check had seen) or `close` (`why`:
+/// `exit`, `layout` — a new layout without its strip, or a placeholder
+/// carried into it —, `conflict`); `keys` the strip's volume and mute write
+/// keys (`binding::detail_keys`), `pointer` the finger's (none for a close
+/// the page made). Essential: rare, and what a "the detail popped up"
+/// report is read from.
+pub fn detail(
+    t: f64,
+    what: &str,
+    why: Option<&str>,
+    keys: &[String],
+    pointer: Option<i32>,
+) -> Value {
+    let mut event = json!({"ev": "detail", "t": t, "what": what, "keys": keys});
+    if let Some(why) = why {
+        event["why"] = json!(why);
+    }
+    if let Some(pointer) = pointer {
+        event["pointer"] = json!(pointer);
     }
     event
 }

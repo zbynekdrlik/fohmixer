@@ -130,6 +130,12 @@ SystemEvent = collections.namedtuple(
 )
 # The gestures the surface prevents: one that was not prevented escaped.
 ESCAPABLE = ("contextmenu", "selectstart", "dragstart")
+# A channel detail's step (#71) on the hub's clock: ``what`` (``press``,
+# ``slid``, ``tap``, ``open``, ``close``), ``why`` (an open's ``check`` or
+# ``lift``, a close's ``exit``, ``layout`` or ``conflict``; else None), the
+# strip's ``keys`` (its volume's and mute's, a tuple) and the finger's
+# ``pointer`` (None for a close the page made).
+DetailEvent = collections.namedtuple("DetailEvent", ("time", "what", "why", "keys", "pointer"))
 
 
 def db_apart(a, b):
@@ -428,6 +434,20 @@ def system_event(hub, data):
         pointer if isinstance(pointer, int) and not isinstance(pointer, bool) else None,
         data.get("prevented") is True,
         None,
+    )
+
+
+def detail_event(hub, data):
+    """The ``DetailEvent`` of a page ``detail`` event (``data``) at hub time
+    ``hub``. A field of the wrong type reads as missing: ``what`` as ``?``,
+    ``why`` and ``pointer`` as None, a key that is no text is left out."""
+    what, why, keys, pointer = (data.get(k) for k in ("what", "why", "keys", "pointer"))
+    return DetailEvent(
+        hub,
+        what if isinstance(what, str) else "?",
+        why if isinstance(why, str) else None,
+        tuple(k for k in keys if isinstance(k, str)) if isinstance(keys, list) else (),
+        pointer if isinstance(pointer, int) and not isinstance(pointer, bool) else None,
     )
 
 

@@ -85,6 +85,10 @@ fn what_a_touch_and_an_outage_need_is_essential_moves_round_trips_and_long_frame
         "visibility",
         "overflow",
         "intent",
+        "sys",
+        "zoom",
+        "deck",
+        "detail",
     ] {
         assert!(is_essential(ev), "{ev}");
     }
@@ -661,4 +665,27 @@ fn a_stream_deck_press_and_the_tab_are_page_events() {
         deck_view(6.0, false),
         json!({"ev": "deck_view", "t": 6.0, "on": false})
     );
+}
+
+#[test]
+fn a_channel_details_steps_name_the_strips_keys() {
+    let keys = vec![
+        "band|live_set tracks 4 mixer_device volume|value".to_string(),
+        "band|live_set tracks 4|mute".to_string(),
+    ];
+    assert_eq!(
+        detail(1_000.5, "press", None, &keys, Some(21)),
+        json!({"ev": "detail", "t": 1_000.5, "what": "press", "keys": keys, "pointer": 21})
+    );
+    assert_eq!(
+        detail(1_520.0, "open", Some("check"), &keys, Some(21)),
+        json!({"ev": "detail", "t": 1_520.0, "what": "open", "why": "check", "keys": keys,
+               "pointer": 21})
+    );
+    // A close the page made: no pointer.
+    assert_eq!(
+        detail(9_000.0, "close", Some("layout"), &keys, None),
+        json!({"ev": "detail", "t": 9_000.0, "what": "close", "why": "layout", "keys": keys})
+    );
+    assert_eq!(drop_rank("detail"), None);
 }

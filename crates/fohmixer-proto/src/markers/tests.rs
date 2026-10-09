@@ -589,3 +589,73 @@ fn a_frame_holds_no_view_no_view_id_and_no_strip_in_a_tags_group() {
         ]
     );
 }
+
+#[test]
+fn a_marker_without_a_label_shows_its_tracks_number_and_is_known_by_it() {
+    assert_eq!(placeholder_label(0), "#1");
+    assert_eq!(placeholder_label(7), "#8");
+    // #71: compose's strips say which label is a placeholder.
+    let composed = compose(
+        &frame(),
+        &[
+            found("band", TrackKind::Track, 3, r#""Vox 1" +G:VOCALS"#),
+            found("band", TrackKind::Track, 7, "+G:VOCALS"),
+            found("band", TrackKind::Return, 2, r#""" +G:VOCALS"#),
+        ],
+    );
+    let vocals = group(&composed.layout, "vocals");
+    let shown: Vec<(String, bool)> = strips(&vocals.controls)
+        .iter()
+        .map(|s| {
+            (
+                s.label.clone().unwrap_or_default(),
+                has_placeholder_label(s),
+            )
+        })
+        .collect();
+    assert_eq!(
+        shown,
+        [
+            ("Vox 1".to_string(), false),
+            ("#8".to_string(), true),
+            ("#3".to_string(), true)
+        ]
+    );
+    // Only on an index anchor, and only its own index's number.
+    let bound = |anchor: Anchor, label: &str| Strip {
+        binding: Binding {
+            instance: "band".into(),
+            anchor,
+            path: None,
+        },
+        strip_kind: StripKind::Standard,
+        wide: false,
+        mute_guard: false,
+        pinned: false,
+        label: Some(label.into()),
+        mark: None,
+    };
+    assert!(has_placeholder_label(&bound(
+        Anchor::TrackAt { index: 2 },
+        "#3"
+    )));
+    assert!(has_placeholder_label(&bound(
+        Anchor::ReturnAt { index: 0 },
+        "#1"
+    )));
+    assert!(!has_placeholder_label(&bound(
+        Anchor::TrackAt { index: 4 },
+        "#3"
+    )));
+    assert!(!has_placeholder_label(&bound(
+        Anchor::TrackAt { index: 2 },
+        "Vox"
+    )));
+    let named = Anchor::Track {
+        name: "Hand1 #".into(),
+    };
+    assert!(!has_placeholder_label(&bound(named, "#1")));
+    let mut unlabelled = bound(Anchor::TrackAt { index: 0 }, "#1");
+    unlabelled.label = None;
+    assert!(!has_placeholder_label(&unlabelled));
+}

@@ -8,8 +8,12 @@ import {
   clipped,
   frames,
   harness,
+  hostLine,
+  hubEvents,
+  hubStatus,
   openDetail,
   openSurface,
+  pageEvents,
   panning,
   ready,
   shown,
@@ -146,6 +150,7 @@ test.describe("The channel detail", () => {
     const subs = Number(await surface.getAttribute("data-subs"));
     // A finger down: the button fills; past 500 ms the detail opens while
     // the finger still holds, and its lift is no tap.
+    const since = await page.evaluate(() => performance.timeOrigin + performance.now());
     expect((await fireAndRead(menu, "pointerdown")).holding, "filling while pressed").toBe("true");
     const detail = page.getByTestId("detail");
     await expect(detail).toBeVisible({ timeout: 2000 });
@@ -182,6 +187,25 @@ test.describe("The channel detail", () => {
     await expect(detail).toHaveCount(0);
     await expect(s.getByTestId("fader")).toBeVisible();
     await expect(surface).toHaveAttribute("data-subs", String(subs));
+    // The flight recorder heard each step with the strip's keys (its
+    // volume's and mute's): the press, the hold's open, the exit's close.
+    const volumeKey = `master|${volume(track("Hand2 #"))}|value`;
+    const steps = await until(
+      async () =>
+        pageEvents(await hubEvents())
+          .filter((e: any) => e.ev === "detail" && e.t >= since && e.keys?.includes(volumeKey))
+          .sort((a: any, b: any) => a.t - b.t),
+      (all) => all.some((e: any) => e.what === "close"),
+      "the detail's steps in the event log",
+      15_000,
+    );
+    expect(steps.map((e: any) => [e.what, e.why ?? null])).toEqual([
+      ["press", null],
+      ["open", "check"],
+      ["close", "exit"],
+    ]);
+    expect(steps[0].keys).toEqual([volumeKey, `master|${track("Hand2 #")}|mute`]);
+    expect(steps[1].pointer, "the hold's finger").toBe(21);
   });
 
   test("its fader drag reaches the track's volume and its mute toggles the track's mute", async ({ page }) => {
@@ -479,6 +503,56 @@ test.describe("The channel detail with real input", () => {
       await until(() => live.get("band", HAND2, "mute"), (v) => v === false, "audible again");
     } finally {
       await live.set("band", HAND2, "mute", false);
+    }
+  });
+});
+
+test.describe("A marker strip's detail", () => {
+  /** The fixture with a MARKERS group (the strips of that tag group) in the FOH page's second row. */
+  function withMarkers(): any {
+    const frame = JSON.parse(readFileSync(LAYOUT, "utf-8"));
+    frame.pages.find((p: any) => p.id === "foh").rows[1].sections.push({ kind: "group", id: "markers", title: "MARKERS", tags: "MARKERS" });
+    return frame;
+  }
+
+  test("follows its marker when a track above it is deleted: the same label, its pan bound to that track and driving it", async ({ page }) => {
+    // #71 review: a marker strip binds by its track's index; its open
+    // detail follows the marker's label to the new index, and the surface
+    // writes the strip it resolves back, so the wanted set subscribes the
+    // detail's keys at that index (else its pan would stay unbound).
+    const PAN = panning(track("Hand3 #"));
+    await openSurface(page);
+    try {
+      await harness("/hub/layout", { layout: withMarkers() });
+      // Hand3 # (index 2) gets the marker.
+      expect(await hostLine("band", `tuner track 2 set '"Follow me" +G:MARKERS'`)).toBe("TUNER 1");
+      const marker = page.locator('.slot[data-group="markers"] [data-testid="strip"]');
+      await expect(marker).toHaveAttribute("data-track", "#3", { timeout: 10_000 });
+      await live.set("band", PAN, "value", 0);
+      const detail = await openDetail(page, "#3");
+      await expect(detail).toHaveAttribute("data-label", "Follow me");
+      await ready(detail.getByTestId("pan"));
+      // Hand1 # (index 0) deleted in Live: Hand3 # and its marker move to
+      // index 1, and another track now sits at index 2.
+      expect(await hostLine("band", "delete-track 0")).toMatch(/^DELETED \d+$/);
+      await expect(detail).toHaveAttribute("data-track", "#2", { timeout: 10_000 });
+      await expect(detail).toHaveAttribute("data-label", "Follow me");
+      const pan = detail.getByTestId("pan");
+      await ready(pan);
+      await expect(pan).toHaveAttribute("data-binding", "ready");
+      // Its pan reads Hand3 #'s panning at the new index, and STRED drives it.
+      await live.set("band", PAN, "value", 0.5);
+      await until(() => shown(pan), (v) => Math.abs(v - 0.5) < 1e-3, "the pan at Hand3's panning");
+      await expect(detail.getByTestId("pan-display")).toHaveText("25R");
+      await detail.getByTestId("detail-centre").click();
+      await until(() => live.get("band", PAN, "value"), (v) => v === 0, "Hand3 centred by STRED");
+    } finally {
+      // The test site whole again: the band host restarted from its
+      // fixture (the deleted track back, no Tuner), the layout reset.
+      await harness("/host/band/restart");
+      await harness("/hub/layout/reset");
+      await until(async () => (await hubStatus()).layout.markers.found, (n: number) => n === 0, "the Tuner markers gone", 15_000);
+      await until(hubStatus, (st) => st.instances[0].online, "the band's Live back", 10_000);
     }
   });
 });

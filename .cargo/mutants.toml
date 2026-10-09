@@ -159,7 +159,14 @@ exclude_re = [
   # (a frame's moves, the tested Trail::take, into the recorder, a touch's
   # first ones essential); forensics.spec.ts reads both back from the event
   # log.
-  "fohmixer-ui/src/components/mod\\.rs.*(replace|in) (trace_touch|trace_start|trace_move|intent_look)( |$)",
+  # #71 added trace_detail (a channel detail's step, the tested
+  # trace::detail event with the page clock, into the recorder) and, in
+  # components/detail.rs, DetailStrip::open and DetailStrip::close (the
+  # detail's signal and open time written, the step recorded with the
+  # tested binding::detail_keys); detail.spec.ts reads the steps back from
+  # the event log and drives the open, the exit and a layout's close.
+  "fohmixer-ui/src/components/mod\\.rs.*(replace|in) (trace_touch|trace_start|trace_move|intent_look|trace_detail)( |$)",
+  "fohmixer-ui/src/components/detail\\.rs.*(replace|in) DetailStrip::(open|close)( |$)",
   # components (#43 PR G): the directives owns_touches (a control's root:
   # dom::prevent_on with the tested sys::CONTROL_PREVENTS, and its keys as
   # the tested sys::keys_text in sys::KEYS_ATTR) and owns_surface (the

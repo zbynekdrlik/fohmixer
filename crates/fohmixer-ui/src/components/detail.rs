@@ -20,17 +20,50 @@ use super::fader::{FaderView, Law, Target};
 use super::meter::{MeterView, StatusView};
 use super::pan::PanView;
 use super::strip::{DbView, ScaleView};
-use super::{Settings, fail_flash, key_of, owns_touches, readiness, readiness_now, trace_touch};
+use super::{
+    Settings, fail_flash, key_of, owns_touches, readiness, readiness_now, trace_detail, trace_touch,
+};
 use crate::behave::fader::UNITY;
-use crate::behave::hold::OPEN_GUARD_MS;
+use crate::behave::hold::guard_left;
 use crate::behave::label::shown_label;
-use crate::binding::{SubSpec, detail_subs};
+use crate::binding::{CLOSE_EXIT, SubSpec, detail_keys, detail_subs};
+use crate::dom;
 use crate::store::{LiveStore, Readiness, Slot};
 
-/// The channel detail's strip, as held (`Nav.detail` on the surface): a
-/// context, so a hold on a strip's ☰ opens it and its exit closes it.
+/// The channel detail's strip, as held (`Nav.detail` on the surface), and
+/// when a hold opened it: a context, so a hold on a strip's ☰ opens it, its
+/// exit and a new layout close it. Each open and close goes to the flight
+/// recorder with the strip's keys.
 #[derive(Clone, Copy)]
-pub struct DetailStrip(pub RwSignal<Option<Strip>>);
+pub struct DetailStrip {
+    /// The strip as held.
+    pub strip: RwSignal<Option<Strip>>,
+    /// When a hold opened it (the page clock, `dom::now`): the opening
+    /// guard counts from it (`behave::hold::guard_left`).
+    pub opened_at: StoredValue<f64>,
+}
+
+impl DetailStrip {
+    /// A hold opened `strip`'s detail (`why`: `check`, the hold's check;
+    /// `lift`, a lift after the hold) by pointer `pointer`.
+    pub fn open(self, strip: Strip, why: &str, pointer: i32) {
+        trace_detail("open", Some(why), &detail_keys(&strip), Some(pointer));
+        let _ = self.opened_at.try_set_value(dom::now());
+        let _ = self.strip.try_set(Some(strip));
+    }
+
+    /// The detail closes (`why`: `exit`, `layout`, `conflict`; `pointer`
+    /// the exit's finger).
+    pub fn close(self, why: &str, pointer: Option<i32>) {
+        let keys = self
+            .strip
+            .try_with_untracked(|held| held.as_ref().map(detail_keys))
+            .flatten()
+            .unwrap_or_default();
+        trace_detail("close", Some(why), &keys, pointer);
+        let _ = self.strip.try_set(None);
+    }
+}
 
 /// The bar's line beside the name chip: the group's title and the Live
 /// instance (a return's with "ret", as a strip's tag writes it).
@@ -124,32 +157,38 @@ pub fn DetailView(strip: Strip, group: Option<String>) -> impl IntoView {
     let kind = format!("{:?}", strip.strip_kind).to_lowercase();
     let law = settings.law;
 
-    // Right after it opens, its parts take no touch for OPEN_GUARD_MS
-    // (`data-guard`, `detail.css`): a second tap at ☰'s spot would land on
-    // its MUTE. The detail itself still takes them, so nothing passes
+    // Right after a hold opens it, its parts take no touch for what is left
+    // of OPEN_GUARD_MS (`data-guard`, `detail.css`; `guard_left`: a new
+    // layout's remount guards no more): a second tap at ☰'s spot would land
+    // on its MUTE. The detail itself still takes them, so nothing passes
     // through to the strips below. The timer goes with the detail.
-    let guard = RwSignal::new(true);
+    let opened_at = shown
+        .and_then(|d| d.opened_at.try_get_value())
+        .unwrap_or(f64::NEG_INFINITY);
+    let left = guard_left(opened_at, dom::now());
+    let guard = RwSignal::new(left > 0.0);
     let guard_off = StoredValue::new(None::<TimeoutHandle>);
-    let timer = set_timeout_with_handle(
-        move || {
-            let _ = guard_off.try_set_value(None);
-            let _ = guard.try_set(false);
-        },
-        Duration::from_millis(OPEN_GUARD_MS as u64),
-    );
-    let _ = guard_off.try_set_value(timer.ok());
+    if left > 0.0 {
+        let timer = set_timeout_with_handle(
+            move || {
+                let _ = guard_off.try_set_value(None);
+                let _ = guard.try_set(false);
+            },
+            Duration::from_millis(left.ceil() as u64),
+        );
+        let _ = guard_off.try_set_value(timer.ok());
+    }
     on_cleanup(move || {
         if let Some(Some(handle)) = guard_off.try_update_value(Option::take) {
             handle.clear();
         }
     });
-    // Back to the mix: the detail closes (its exit owns its touches, writes
-    // no key, and its tap goes to the flight recorder).
+    // Back to the mix: the detail closes (its exit owns its touches and
+    // writes no key; the close goes to the flight recorder).
     let close = move |ev: web_sys::PointerEvent| {
         ev.prevent_default();
-        trace_touch("tap", &[], ev.pointer_id());
-        if let Some(DetailStrip(open)) = shown {
-            let _ = open.try_set(None);
+        if let Some(detail) = shown {
+            detail.close(CLOSE_EXIT, Some(ev.pointer_id()));
         }
     };
     // Its two labels: a phone upright shows the short one (`detail.css`).

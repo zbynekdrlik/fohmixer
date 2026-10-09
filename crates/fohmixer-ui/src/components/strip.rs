@@ -19,13 +19,13 @@ use super::buttons::{MuteView, anchor_name};
 use super::detail::DetailStrip;
 use super::fader::{FaderView, Law, Target};
 use super::meter::{MeterView, StatusView};
-use super::{Settings, owns_touches, trace_touch};
+use super::{Settings, owns_touches, trace_detail};
 use crate::behave::db_text::db_text;
 use crate::behave::fader::{UNITY, VolumeLaw};
 use crate::behave::hold::{HINT_MS, HOLD_MS, Hold, Lift};
 use crate::behave::label::{mark_look, shown_label};
 use crate::behave::scale::{tick_label, tick_pos, ticks};
-use crate::binding::strip_subs;
+use crate::binding::{detail_keys, strip_subs};
 use crate::dom;
 use crate::store::{LiveStore, Slot};
 
@@ -66,12 +66,13 @@ pub fn DbView(state: RwSignal<Slot>) -> impl IntoView {
 /// for `HINT_MS` (`data-hint`: the stylesheet's text over the name button,
 /// no layout change), a finger that slides further than `SLIDE_PX` ends
 /// the press with neither (a fader grab that lands on ☰). It owns its
-/// touches and writes no key; its down, up and cancel go to the flight
-/// recorder; a conflicted strip's is inert like the rest of it
-/// (`states.css`).
+/// touches and writes no key; each step (press, slid, tap, open) goes to
+/// the flight recorder with the strip's keys (`binding::detail_keys`); a
+/// conflicted strip's is inert like the rest of it (`states.css`).
 #[component]
 fn StripMenu(strip: Strip) -> impl IntoView {
     let detail = use_context::<DetailStrip>();
+    let keys = StoredValue::new(detail_keys(&strip));
     let strip = StoredValue::new(strip);
     let hold = StoredValue::new(Hold::default());
     let check = StoredValue::new(None::<TimeoutHandle>);
@@ -95,9 +96,14 @@ fn StripMenu(strip: Strip) -> impl IntoView {
         }
         let _ = holding.try_set(pressing);
     };
-    let open = move || {
-        if let (Some(DetailStrip(shown)), Some(held)) = (detail, strip.try_get_value()) {
-            let _ = shown.try_set(Some(held));
+    // The flight recorder hears each step with the strip's keys.
+    let step = move |what: &str, pointer: i32| {
+        let _ = keys.try_with_value(|k| trace_detail(what, None, k, Some(pointer)));
+    };
+    // `why`: `check` (the hold's check) or `lift` (a lift after the hold).
+    let open = move |why: &str, pointer: i32| {
+        if let (Some(shown), Some(held)) = (detail, strip.try_get_value()) {
+            shown.open(held, why, pointer);
         }
     };
     let show_hint = move || {
@@ -118,14 +124,13 @@ fn StripMenu(strip: Strip) -> impl IntoView {
         ev.prevent_default();
         let id = ev.pointer_id();
         let primary = ev.is_primary();
-        let (x, y) = (f64::from(ev.client_x()), f64::from(ev.client_y()));
         let pressed = hold
-            .try_update_value(|h| h.down(id, primary, x, y, dom::now()))
+            .try_update_value(|h| h.down(id, primary, dom::now()))
             .unwrap_or(false);
         if !pressed {
             return;
         }
-        trace_touch("down", &[], id);
+        step("press", id);
         if let Some(el) = dom::current_element(&ev) {
             let _ = el.set_pointer_capture(id);
         }
@@ -142,7 +147,7 @@ fn StripMenu(strip: Strip) -> impl IntoView {
                     .unwrap_or(false);
                 settle();
                 if opens {
-                    open();
+                    open("check", id);
                 }
             },
             Duration::from_millis(HOLD_MS as u64 + 20),
@@ -150,8 +155,7 @@ fn StripMenu(strip: Strip) -> impl IntoView {
         let _ = check.try_set_value(timer.ok());
         settle();
     };
-    // A finger that slides off the press ends it (`Hold::moved`): the
-    // recorder hears it as a cancel.
+    // A finger that slides off the press ends it (`Hold::moved`).
     let on_move = move |ev: web_sys::PointerEvent| {
         let id = ev.pointer_id();
         let (x, y) = (f64::from(ev.client_x()), f64::from(ev.client_y()));
@@ -159,34 +163,29 @@ fn StripMenu(strip: Strip) -> impl IntoView {
             .try_update_value(|h| h.moved(id, x, y))
             .unwrap_or(false);
         if ended {
-            trace_touch("cancel", &[], id);
+            step("slid", id);
             settle();
         }
     };
     let on_up = move |ev: web_sys::PointerEvent| {
         let id = ev.pointer_id();
-        let mine = hold.try_with_value(|h| h.drives(id)).unwrap_or(false);
         let lift = hold
             .try_update_value(|h| h.up(id, dom::now()))
             .unwrap_or(Lift::Nothing);
-        if mine {
-            trace_touch("up", &[], id);
-        }
         settle();
         match lift {
-            Lift::Open => open(),
-            Lift::Tap => show_hint(),
+            Lift::Open => open("lift", id),
+            Lift::Tap => {
+                step("tap", id);
+                show_hint();
+            }
             Lift::Nothing => {}
         }
     };
     // A cancelled pointer, or one whose capture was lost: no tap.
     let on_cancel = move |ev: web_sys::PointerEvent| {
         let id = ev.pointer_id();
-        let mine = hold.try_with_value(|h| h.drives(id)).unwrap_or(false);
         let _ = hold.try_update_value(|h| h.cancel(id));
-        if mine {
-            trace_touch("cancel", &[], id);
-        }
         settle();
     };
     // It owns its touches (#43 PR G); it writes no key.

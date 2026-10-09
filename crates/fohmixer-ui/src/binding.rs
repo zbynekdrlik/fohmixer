@@ -9,10 +9,11 @@
 use std::collections::BTreeMap;
 use std::mem::discriminant;
 
-use fohmixer_proto::client::hub_key;
+use fohmixer_proto::client::{hub_key, set_key};
 use fohmixer_proto::layout::{
-    Binding, Control, Layout, MeterSource, Page, ParamTarget, Section, Strip, StripMark,
+    Anchor, Binding, Control, Layout, MeterSource, Page, ParamTarget, Section, Strip, StripMark,
 };
+use fohmixer_proto::markers::has_placeholder_label;
 
 /// One subscription: an instance, a LOM target, a property and whether
 /// Live's display string comes with the value.
@@ -133,20 +134,30 @@ pub fn detail_subs(strip: &Strip, source: MeterSource) -> StripSubs {
 }
 
 /// Whether a layout's `strip` is the strip an open detail holds (`held`,
-/// #71). A marker strip (one with a label, #68: bound by the index of the
-/// track its marker sits on) is its marker: the same instance, the same
-/// kind of anchor (a track or a return) and the same label, wherever the
-/// track order put it, never another marker at its old index. Any other
-/// strip is its binding.
+/// #71). A marker strip (a label on an index anchor, #68: bound by the
+/// index of the track its marker sits on) is its marker: the same
+/// instance, the same kind of anchor (a track or a return) and the same
+/// label, wherever the track order put it, never another marker at its old
+/// index. Any other strip, a labelled one bound by name too, is its
+/// binding.
 fn same_strip(strip: &Strip, held: &Strip) -> bool {
-    match &held.label {
-        Some(label) => {
+    match (&held.label, &held.binding.anchor) {
+        (Some(label), Anchor::TrackAt { .. } | Anchor::ReturnAt { .. }) => {
             strip.label.as_ref() == Some(label)
                 && strip.binding.instance == held.binding.instance
                 && discriminant(&strip.binding.anchor) == discriminant(&held.binding.anchor)
         }
-        None => strip.binding == held.binding,
+        _ => strip.binding == held.binding,
     }
+}
+
+/// Whether `layout` holds the strip an open detail holds only in conflict
+/// (#68): a strip that is the held one, marked `Conflict`.
+fn in_conflict(layout: &Layout, held: &Strip) -> bool {
+    layout.controls().into_iter().any(|control| {
+        matches!(control, Control::Strip(strip)
+            if same_strip(strip, held) && strip.mark == Some(StripMark::Conflict))
+    })
 }
 
 /// The strip an open detail shows in `layout` (#71): the layout's strip
@@ -168,16 +179,53 @@ pub fn detail_strip(layout: &Layout, held: &Strip) -> Option<Strip> {
         })
 }
 
-/// What an open detail's held strip becomes in `layout` (#71): `None` while
-/// it stays as it is; else `Some` of the layout's strip it resolves to
-/// ([`detail_strip`]: a marker strip moved to another index, its label,
-/// guard or mark changed), or `Some(None)` when the layout has no such
-/// strip (the detail closes). The surface writes it back, so its wanted set
-/// subscribes the keys the detail's slots read.
-pub fn detail_update(layout: &Layout, held: Option<&Strip>) -> Option<Option<Strip>> {
+/// What an open detail's held strip becomes in a layout (#71).
+#[derive(Debug, Clone, PartialEq)]
+pub enum DetailChange {
+    /// The layout's strip it resolves to (a marker moved to another index,
+    /// its label, guard or mark changed): written back, so the wanted set
+    /// subscribes the keys the detail's slots read.
+    Follow(Strip),
+    /// It closes, and why (the flight recorder's `close`): `layout` (the
+    /// layout has no such strip, or a placeholder was carried into it) or
+    /// `conflict` (the layout holds it only in conflict).
+    Close(&'static str),
+}
+
+/// What an open detail's held strip (`held`) becomes in `layout` (#71):
+/// nothing while it stays as it is; else [`DetailChange`]. `carried`: the
+/// strip was held when this layout came (a detail carried over from the
+/// previous one); a carried marker strip that shows its placeholder label
+/// (`markers::has_placeholder_label`: no identity to follow) closes. A
+/// detail opened within a layout is never carried.
+pub fn detail_update(layout: &Layout, held: Option<&Strip>, carried: bool) -> Option<DetailChange> {
     let held = held?;
-    let found = detail_strip(layout, held);
-    (found.as_ref() != Some(held)).then_some(found)
+    if carried && has_placeholder_label(held) {
+        return Some(DetailChange::Close(CLOSE_LAYOUT));
+    }
+    match detail_strip(layout, held) {
+        Some(found) if found == *held => None,
+        Some(found) => Some(DetailChange::Follow(found)),
+        None if in_conflict(layout, held) => Some(DetailChange::Close(CLOSE_CONFLICT)),
+        None => Some(DetailChange::Close(CLOSE_LAYOUT)),
+    }
+}
+
+/// Why a detail closed (the flight recorder's `close`, #71): its exit, a
+/// new layout without its strip, its strip in conflict.
+pub const CLOSE_EXIT: &str = "exit";
+pub const CLOSE_LAYOUT: &str = "layout";
+pub const CLOSE_CONFLICT: &str = "conflict";
+
+/// The keys a channel detail's events name (#71, the flight recorder): its
+/// strip's volume and mute write keys, as those controls name theirs.
+pub fn detail_keys(strip: &Strip) -> Vec<String> {
+    let subs = strip_subs(strip, MeterSource::Level);
+    [subs.volume, subs.mute]
+        .iter()
+        .flatten()
+        .map(|s| set_key(&s.instance, &s.target, &s.prop))
+        .collect()
 }
 
 /// The title of a group that holds a strip bound as `binding` (the

@@ -137,6 +137,19 @@ pub fn trace_move(trail: StoredValue<Trail>, key: &str, p: f64, seq: Option<u64>
     }
 }
 
+/// Records a channel detail's step (#71, `diag::trace::detail`: `press`,
+/// `slid`, `tap`, `open`, `close` with its `why`) with the strip's `keys`,
+/// in the page's flight recorder.
+pub fn trace_detail(what: &str, why: Option<&str>, keys: &[String], pointer: Option<i32>) {
+    crate::diag::record(&crate::diag::trace::detail(
+        dom::epoch_now(),
+        what,
+        why,
+        keys,
+        pointer,
+    ));
+}
+
 /// The flight recorder's name of the event that ends a touch: `up` for a
 /// `pointerup`, `cancel` for a `pointercancel`; none for the
 /// `lostpointercapture` that follows either (it ends nothing new).

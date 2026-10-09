@@ -1,5 +1,5 @@
 use super::*;
-use fohmixer_proto::layout::{Anchor, StripKind};
+use fohmixer_proto::layout::StripKind;
 use serde_json::json;
 
 fn track(name: &str, path: Option<&str>) -> Binding {
@@ -770,23 +770,37 @@ fn a_different_marker_at_the_held_index_never_matches() {
 }
 
 #[test]
-fn a_marker_in_conflict_closes_its_detail() {
+fn a_marker_in_conflict_closes_its_detail_and_says_so() {
     let vox = marker(4, "Vox 1");
     let mut first = marker(4, "Vox 1");
     first.mark = Some(StripMark::Conflict);
     let mut second = marker(6, "Vox 1");
     second.mark = Some(StripMark::Conflict);
-    assert_eq!(detail_strip(&with_strips(&[first, second]), &vox), None);
+    let conflict = with_strips(&[first, second.clone()]);
+    assert_eq!(detail_strip(&conflict, &vox), None);
     assert_eq!(
-        detail_update(&with_strips(&[marker(4, "Vox 2")]), Some(&vox)),
-        Some(None)
+        detail_update(&conflict, Some(&vox), false),
+        Some(DetailChange::Close("conflict"))
+    );
+    // Gone, beside another marker in conflict: the layout closed it.
+    let mut other = marker(2, "Klavir");
+    other.mark = Some(StripMark::Conflict);
+    assert_eq!(
+        detail_update(
+            &with_strips(&[marker(4, "Vox 2"), other]),
+            Some(&vox),
+            false
+        ),
+        Some(DetailChange::Close("layout"))
     );
     // A held strip marked in conflict before: the layout's strip as it is now.
-    let mut was = marker(6, "Vox 1");
-    was.mark = Some(StripMark::Conflict);
     assert_eq!(
-        detail_update(&with_strips(&[marker(6, "Vox 1")]), Some(&was)),
-        Some(Some(marker(6, "Vox 1")))
+        detail_update(&with_strips(&[marker(6, "Vox 1")]), Some(&second), false),
+        Some(DetailChange::Follow(marker(6, "Vox 1")))
+    );
+    assert_eq!(
+        (CLOSE_EXIT, CLOSE_LAYOUT, CLOSE_CONFLICT),
+        ("exit", "layout", "conflict")
     );
 }
 
@@ -795,19 +809,100 @@ fn a_held_strip_is_written_back_only_when_the_layout_changes_it() {
     let vox = marker(4, "Vox 1");
     let same = with_strips(&[marker(4, "Vox 1")]);
     // No detail, or the same strip: nothing to write.
-    assert_eq!(detail_update(&same, None), None);
-    assert_eq!(detail_update(&same, Some(&vox)), None);
+    assert_eq!(detail_update(&same, None, false), None);
+    assert_eq!(detail_update(&same, None, true), None);
+    assert_eq!(detail_update(&same, Some(&vox), false), None);
+    assert_eq!(
+        detail_update(&same, Some(&vox), true),
+        None,
+        "carried, labelled"
+    );
     // Moved: the strip at its new index, so the wanted set follows it.
     let moved = with_strips(&[marker(3, "Vox 1")]);
     assert_eq!(
-        detail_update(&moved, Some(&vox)),
-        Some(Some(marker(3, "Vox 1")))
+        detail_update(&moved, Some(&vox), true),
+        Some(DetailChange::Follow(marker(3, "Vox 1")))
     );
     // Gone: it closes.
     let gone = with_strips(&[marker(4, "Vox 2")]);
-    assert_eq!(detail_update(&gone, Some(&vox)), Some(None));
+    assert_eq!(
+        detail_update(&gone, Some(&vox), false),
+        Some(DetailChange::Close("layout"))
+    );
     // A strip bound by name: the same binding is the same strip.
     let layout = sample();
-    assert_eq!(detail_update(&layout, Some(&held("C"))), None);
-    assert_eq!(detail_update(&layout, Some(&held("Gone"))), Some(None));
+    assert_eq!(detail_update(&layout, Some(&held("C")), true), None);
+    assert_eq!(
+        detail_update(&layout, Some(&held("Gone")), false),
+        Some(DetailChange::Close("layout"))
+    );
+}
+
+#[test]
+fn a_placeholder_labelled_marker_carried_into_a_new_layout_closes() {
+    // A Tuner without a label shows its track's number (`#5` at index 4):
+    // no identity, the same label names another track after a shift.
+    let five = marker(4, "#5");
+    let shifted = with_strips(&[marker(3, "#4"), marker(4, "#5")]);
+    assert_eq!(
+        detail_update(&shifted, Some(&five), true),
+        Some(DetailChange::Close("layout")),
+        "never the other track now labelled #5"
+    );
+    // Even where it still sits: a new layout cannot tell.
+    let same = with_strips(&[marker(4, "#5")]);
+    assert_eq!(
+        detail_update(&same, Some(&five), true),
+        Some(DetailChange::Close("layout"))
+    );
+    // A detail opened within the layout is not carried: it stays.
+    assert_eq!(detail_update(&same, Some(&five), false), None);
+    // A real label that is no placeholder of its index is followed.
+    let named = marker(4, "#9");
+    assert_eq!(
+        detail_update(&with_strips(&[marker(2, "#9")]), Some(&named), true),
+        Some(DetailChange::Follow(marker(2, "#9")))
+    );
+}
+
+#[test]
+fn a_labelled_strip_bound_by_name_is_its_binding() {
+    // A hand-made layout: two tracks bound by name, the same label.
+    let label = |name: &str| {
+        let mut s = strip(name);
+        s.label = Some("VOC".into());
+        s
+    };
+    let layout = with_strips(&[label("Vocal 3 repro#"), label("Vocal 3#")]);
+    assert_eq!(
+        detail_strip(&layout, &label("Vocal 3#")),
+        Some(label("Vocal 3#")),
+        "never the first strip of that label"
+    );
+    assert_eq!(detail_update(&layout, Some(&label("Vocal 3#")), true), None);
+    assert_eq!(
+        detail_strip(&with_strips(&[label("Vocal 3 repro#")]), &label("Vocal 3#")),
+        None
+    );
+}
+
+#[test]
+fn a_details_events_name_its_volume_and_mute_keys() {
+    assert_eq!(
+        detail_keys(&strip("Hand2 #")),
+        vec![
+            "band|live_set tracks[name=Hand2 #] mixer_device volume|value".to_string(),
+            "band|live_set tracks[name=Hand2 #]|mute".to_string(),
+        ]
+    );
+    assert_eq!(
+        detail_keys(&marker(4, "Vox 1")),
+        vec![
+            "band|live_set tracks 4 mixer_device volume|value".to_string(),
+            "band|live_set tracks 4|mute".to_string(),
+        ]
+    );
+    let mut bad = strip("X");
+    bad.binding.path = Some("devices[name=".into());
+    assert_eq!(detail_keys(&bad), Vec::<String>::new());
 }
