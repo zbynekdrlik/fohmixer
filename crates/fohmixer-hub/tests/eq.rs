@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use fohmixer_hub::config::{Config, EqBackend, EqCfg};
 use fohmixer_proto::client::{ClientMsg, ServerMsg};
-use fohmixer_proto::eq::{EqItem, EqLock, EqState, Touch, frame_parts};
+use fohmixer_proto::eq::{EqItem, EqLock, EqState, Touch, frame_parts, reason};
 use fohmixer_proto::layout::{Anchor, Binding};
 use serde_json::{Value, json};
 use support::{Client, Host, TestHub, runtime, serial};
@@ -119,6 +119,26 @@ async fn open(client: &mut Client, path: &str) -> u32 {
     assert_eq!(open.0, EqState::Open, "{open:?}");
     assert_eq!(open.2, Some((1349, 809)));
     open.1.expect("a session")
+}
+
+/// Opens `path` for `client` and wants it refused after its opening (the
+/// open sequence reads the device first): why.
+async fn open_refused(client: &mut Client, path: &str) -> Option<String> {
+    client
+        .send(&ClientMsg::EqOpen {
+            instance: "band".into(),
+            path: path.into(),
+        })
+        .await;
+    let opening = state(client, path).await;
+    assert_eq!(opening.0, EqState::Opening, "{opening:?}");
+    let refused = state(client, path).await;
+    assert_eq!(
+        (refused.0, refused.1, refused.2),
+        (EqState::Closed, None, None),
+        "{refused:?}"
+    );
+    refused.3
 }
 
 async fn input(client: &mut Client, touch: Touch, x: f64, y: f64) {
@@ -340,6 +360,75 @@ fn only_a_listed_pro_q_opens_and_a_missing_track_says_why() {
         a.send(&ClientMsg::EqList { binding: plain }).await;
         assert_eq!(listed(&mut a).await, (Vec::new(), None));
         assert!(sim_records(dir.path()).is_empty(), "no window touched");
+        hub.stop().await;
+        host.stop();
+    });
+}
+
+#[test]
+fn an_editor_already_open_in_live_is_refused_and_left_open() {
+    let _serial = serial();
+    runtime().block_on(async {
+        let host = Host::start("band");
+        let dir = tempfile::tempdir().unwrap();
+        let hub = TestHub::start_config(config(dir.path(), &host)).await;
+        let mut a = client(&hub).await;
+        a.send(&ClientMsg::EqList { binding: hand2() }).await;
+        listed(&mut a).await;
+        // Opened on the PC (a failed guard and a hub's restart leave one
+        // open too): the hub has no window of it, so it never takes it and
+        // never closes it (a close without its window skips the guard).
+        a.set("band", ON_TRACK, "is_editor_open", json!(true)).await;
+        assert_eq!(
+            open_refused(&mut a, ON_TRACK).await.as_deref(),
+            Some(reason::OPEN_ON_PC)
+        );
+        editor_open(&mut a, ON_TRACK, true).await;
+        assert!(
+            sim_records(dir.path()).is_empty(),
+            "no window taken: {:?}",
+            sim_records(dir.path())
+        );
+        // Closed on the PC, it opens again.
+        a.set("band", ON_TRACK, "is_editor_open", json!(false))
+            .await;
+        open(&mut a, ON_TRACK).await;
+        editor_open(&mut a, ON_TRACK, true).await;
+        hub.stop().await;
+        host.stop();
+    });
+}
+
+#[test]
+fn a_device_renamed_or_moved_since_its_list_is_refused() {
+    let _serial = serial();
+    runtime().block_on(async {
+        let mut host = Host::start("band");
+        let dir = tempfile::tempdir().unwrap();
+        let hub = TestHub::start_config(config(dir.path(), &host)).await;
+        let mut a = client(&hub).await;
+        a.send(&ClientMsg::EqList { binding: hand2() }).await;
+        listed(&mut a).await;
+        // Renamed in Live since the list: not the device the page listed.
+        a.set("band", IN_CHAIN, "name", json!("Air EQ")).await;
+        assert_eq!(
+            open_refused(&mut a, IN_CHAIN).await.as_deref(),
+            Some(reason::MOVED)
+        );
+        // The track above deleted: the listed path names no device now.
+        assert!(host.delete_track(0) > 0, "Hand1 # deleted");
+        assert_eq!(
+            open_refused(&mut a, ON_TRACK).await.as_deref(),
+            Some(reason::MOVED)
+        );
+        // Live is left alone: neither editor opened, no window taken.
+        editor_open(&mut a, MOVED_ON_TRACK, false).await;
+        editor_open(&mut a, MOVED_IN_CHAIN, false).await;
+        assert!(
+            sim_records(dir.path()).is_empty(),
+            "no window taken: {:?}",
+            sim_records(dir.path())
+        );
         hub.stop().await;
         host.stop();
     });
