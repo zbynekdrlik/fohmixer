@@ -10,7 +10,9 @@
 //! (`data-intent`, `intent.css`, #43 PR C); each touch's down (with where
 //! it started, `PanCtl::press`), up and cancel goes to the page's flight
 //! recorder, and each frame that sends from the finger with the pointer moves
-//! it carried (`diag::trace::moves::Trail`, PR D).
+//! it carried (`diag::trace::moves::Trail`, PR D). It lives in the channel
+//! detail (#71, D17), large; its dot's width is the stylesheet's (`--dot`),
+//! measured at each touch's down, never assumed.
 
 use fohmixer_proto::client::set_key;
 use leptos::html;
@@ -26,10 +28,6 @@ use crate::dom;
 use crate::raf;
 use crate::store::intent::State;
 use crate::store::{LiveStore, Slot};
-
-/// The dot's width in px (`.pan-dot` in the stylesheet): it travels the
-/// bar's width less its own.
-const DOT: f64 = 12.0;
 
 /// A pan control showing and writing Live's panning.
 #[component]
@@ -82,8 +80,10 @@ pub fn PanView(state: RwSignal<Slot>, spec: SubSpec) -> impl IntoView {
             return;
         };
         ev.prevent_default();
-        // The dot's travel, in screen px: the width less the dot's own.
-        let travel = (el.get_bounding_client_rect().width() - DOT).max(1.0);
+        // The dot's travel, in screen px: the width less the dot's own, as
+        // drawn (`--dot` in the stylesheet: the detail's dot is large).
+        let dot = dom::child(&el, ".pan-dot").map_or(0.0, |d| d.get_bounding_client_rect().width());
+        let travel = (el.get_bounding_client_rect().width() - dot).max(1.0);
         let id = ev.pointer_id();
         let x = f64::from(ev.client_x());
         let taken = ctl

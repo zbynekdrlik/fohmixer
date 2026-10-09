@@ -12,9 +12,9 @@
    surface, the tabs, the status), page.css (the page: its sides and the
    control column, #63), buttons.css (rail buttons,
    TechAlert), strip.css (strips, pan, meter, fader, name button, parameter
-   fader), states.css (disabled, failed, unresolved, reduced motion) and
-   intent.css (the look of a write Live has not confirmed), then deck.css
-   (the Stream Deck tab, #52). */
+   fader), detail.css (the channel detail, #71), states.css (disabled,
+   failed, unresolved, reduced motion) and intent.css (the look of a write
+   Live has not confirmed), then deck.css (the Stream Deck tab, #52). */
 
 @font-face {
     font-family: "Barlow Condensed";

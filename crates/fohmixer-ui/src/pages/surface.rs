@@ -24,9 +24,10 @@ use crate::app::version_text;
 use crate::arrange::{Arrangement, Cell, Item, LineKey, METRICS, PageModel, Side, arrange, items};
 use crate::behave::solo::soloed;
 use crate::binding::{
-    SubSpec, choose, page_solos, selected_path, solo_sub, stored_pages, view_tap, wanted_subs,
+    SubSpec, choose, detail_strip, group_title, page_solos, selected_path, solo_sub, stored_pages,
+    view_tap, wanted_subs,
 };
-use crate::components::detail::DetailStrip;
+use crate::components::detail::{DetailStrip, DetailView};
 use crate::components::{ControlView, Settings, fail_flash, key_of, owns_surface, owns_touches};
 use crate::dom;
 use crate::flow::{is_column, shared_instance};
@@ -223,7 +224,8 @@ struct Head {
     sub: Memo<Option<usize>>,
 }
 
-/// One layout: the selected page or the Stream Deck tab.
+/// One layout: the selected page or the Stream Deck tab, and an open
+/// channel detail over it (#71).
 #[component]
 fn Shell(layout: Arc<Layout>) -> impl IntoView {
     let nav = expect_context::<Nav>();
@@ -240,6 +242,34 @@ fn Shell(layout: Arc<Layout>) -> impl IntoView {
         sub,
     });
     let viewport = nav.viewport;
+    // The channel detail (#71): the layout's strip with the held one's
+    // binding (`binding::detail_strip`: its label, guard and mark this
+    // layout's), over the page. A new layout mounts it again with the
+    // shell, as it does the page; one without that strip (or with it only
+    // in conflict) closes it.
+    let held = nav.detail;
+    let current = {
+        let layout = layout.clone();
+        Memo::new(move |_| {
+            held.try_get()
+                .flatten()
+                .and_then(|strip| detail_strip(&layout, &strip))
+        })
+    };
+    Effect::new(move |_| {
+        let open = held.try_with(Option::is_some).unwrap_or(false);
+        let found = current.try_with(Option::is_some).unwrap_or(false);
+        if open && !found {
+            let _ = held.try_set(None);
+        }
+    });
+    let titles = layout.clone();
+    let detail = move || {
+        current.try_get().flatten().map(|strip| {
+            let group = group_title(&titles, &strip.binding);
+            view! { <DetailView strip=strip group=group /> }
+        })
+    };
     let body = move || {
         if nav.deck_shown.get() {
             let global = layout.global.clone();
@@ -253,6 +283,7 @@ fn Shell(layout: Arc<Layout>) -> impl IntoView {
     view! {
         <div class="mixer" data-testid="stage">
             {body}
+            {detail}
         </div>
     }
 }

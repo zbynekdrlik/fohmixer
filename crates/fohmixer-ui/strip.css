@@ -1,6 +1,6 @@
-/* fohmixer: a strip and its parts, the pan, the meter, the fader, the name
-   button and the former MIDI fader (split from style.css, #43; linked after
-   buttons.css). */
+/* fohmixer: a strip and its parts, the pan (the channel detail's since
+   #71), the meter, the fader, the name button and the former MIDI fader
+   (split from style.css, #43; linked after buttons.css). */
 
 /* --- strips --- */
 
@@ -119,8 +119,11 @@
     background: rgba(139, 125, 255, 0.16);
 }
 
-/* The pan bar: a fill from the centre and a dot (`--p`, `--lo`, `--w`). */
+/* The pan bar: a fill from the centre and a dot (`--p`, `--lo`, `--w`).
+   The dot is `--dot` wide (the channel detail's is large, #71): it travels
+   the bar's width less its own, and the pan measures it at each touch. */
 .pan {
+    --dot: 12px;
     position: relative;
     height: 16px;
     border: 1px solid var(--line);
@@ -152,9 +155,9 @@
 .pan-dot {
     position: absolute;
     top: 1px;
-    left: calc(var(--p, 0.5) * (100% - 12px));
-    width: 12px;
-    height: 12px;
+    left: calc(var(--p, 0.5) * (100% - var(--dot)));
+    width: var(--dot);
+    height: var(--dot);
     border-radius: 50%;
     background: #8a8aa0;
 }

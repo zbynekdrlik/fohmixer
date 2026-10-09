@@ -1,0 +1,368 @@
+/* fohmixer: the channel detail (#71, F27, D17; the approved mockup
+   docs/mockups/channel-detail-v2.html; linked after strip.css and before
+   states.css, so a state still wins over its look). One channel over the
+   whole screen: a bar (back to the mix, the name chip in the track's
+   colour, its group and instance), then the mute, Live's dB and a tall
+   fader on the left (the left thumb), the pan with Live's display string
+   and STRED on the right (the right thumb), the middle free (PR E puts the
+   channel's Pro-Q 4 there). Its parts are the strip's components drawn
+   larger. */
+
+.detail {
+    --bar-h: 52px;
+    --chl: 230px;
+    --chr: 300px;
+    position: absolute;
+    inset: 0;
+    z-index: 20;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    background: var(--page);
+    touch-action: none;
+}
+
+/* TechAlert's wash (F16) flashes over the detail too. It lives in the
+   column (`position: fixed`, z-index 50), and the column's z-index 10 makes
+   it a stacking context the detail's 20 would cover, wash and all; so while
+   a detail is open the column opens none (z-index auto) and the wash's 50
+   counts at the page's level, over the detail. The detail still covers the
+   column itself. */
+.mixer:has(> .detail) .column {
+    z-index: auto;
+}
+
+/* --- the bar --- */
+
+.detail-bar {
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: 10px;
+    height: var(--bar-h);
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--line);
+    background: var(--bar);
+}
+
+.detail-exit {
+    flex: none;
+    height: 100%;
+    padding: 0 14px;
+    border: 1px solid rgba(78, 205, 196, 0.55);
+    border-radius: 10px;
+    background: var(--panel);
+    color: var(--accent);
+    font: 700 15px/1.2 var(--display);
+    letter-spacing: 0.06em;
+    white-space: nowrap;
+    cursor: pointer;
+    touch-action: none;
+}
+
+.detail-name {
+    display: flex;
+    flex: 1;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    min-width: 0;
+}
+
+/* The track's colour, as the strip's name button (`--tc`, `--tt`); the
+   accent until Live's colour is known. */
+.detail-chip {
+    flex: none;
+    max-width: 60%;
+    padding: 3px 12px;
+    overflow: hidden;
+    border-radius: 6px;
+    background: var(--tc, var(--accent));
+    color: var(--tt, #10101a);
+    font: 700 18px/1.3 var(--display);
+    letter-spacing: 0.03em;
+    text-overflow: ellipsis;
+    text-transform: uppercase;
+    white-space: nowrap;
+}
+
+.detail-sub {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--muted);
+    font: 600 12px/1.4 var(--mono);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* --- the body: the left thumb's column, the middle, the right thumb's --- */
+
+.detail-body {
+    display: grid;
+    flex: 1;
+    grid-template-columns: var(--chl) minmax(0, 1fr) var(--chr);
+    grid-template-rows: minmax(0, 1fr);
+    gap: 10px;
+    min-height: 0;
+    padding: 10px;
+}
+
+.detail-box {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    min-width: 0;
+    min-height: 0;
+    padding: 10px;
+    border-radius: 12px;
+    background: var(--panel);
+}
+
+.detail-middle {
+    min-width: 0;
+    min-height: 0;
+}
+
+/* The mute (the strip's, its label MUTE): dark while the channel sounds,
+   red while muted (the mockup's; the strip's name button is lit in the
+   track's colour instead). */
+.detail-left .mute {
+    flex: none;
+    height: 52px;
+    border-radius: 9px;
+    background: #181826;
+    box-shadow: inset 0 0 0 1px var(--line);
+    color: var(--text);
+    font: 700 20px/1 var(--display);
+    letter-spacing: 0.08em;
+}
+
+.detail-left .mute.lit {
+    background: #181826;
+    box-shadow: inset 0 0 0 1px var(--line);
+    color: var(--text);
+}
+
+.detail-left .mute[data-muted="true"] {
+    background: var(--mute);
+    box-shadow: none;
+    color: #ffffff;
+}
+
+.detail-left .strip-label {
+    font-size: 20px;
+}
+
+.detail-left .mute .mute-mark {
+    display: none;
+}
+
+/* The status light and Live's dB, large. */
+.detail-readout {
+    display: flex;
+    flex: none;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    min-width: 0;
+}
+
+.detail-readout .status {
+    width: 8px;
+    height: 8px;
+}
+
+.detail-readout .db {
+    font-size: 26px;
+    line-height: 36px;
+}
+
+/* The fader zone as the strip's (`strip.css` .strip-fz), larger: the
+   scale's 26 px, the meter's 10, two 6 px gaps, so the cap sits at
+   50% + 24 px of the zone; as tall as the screen allows. The padding keeps
+   the cap's halves and the clip light inside the box at either end. */
+.detail-fz {
+    display: grid;
+    flex: 1;
+    grid-template-columns: 26px 10px minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
+    gap: 6px;
+    min-height: 0;
+    padding: 18px 0 20px;
+}
+
+.detail-fz .scale {
+    grid-area: 1 / 1;
+}
+
+.detail-fz .meter {
+    grid-area: 1 / 2;
+}
+
+.detail-fz .fader {
+    grid-area: 1 / 1 / 2 / 4;
+    --x: calc(50% + 24px);
+}
+
+.detail-fz .tick {
+    font-size: 11px;
+    line-height: 14px;
+}
+
+.detail-fz .fader-groove,
+.detail-fz .fader-fill {
+    width: 8px;
+    margin-left: -4px;
+}
+
+.detail-fz .fader-cap {
+    --cap-w: 60px;
+    height: 34px;
+    margin: -17px 0 0 calc(var(--cap-w) / -2);
+    border-radius: 8px;
+}
+
+.detail-fz .fader-cap::before {
+    left: 12px;
+    right: 12px;
+}
+
+.detail-fz .fader-ghost::after {
+    left: calc(var(--x, 50%) - 30px);
+    width: 60px;
+}
+
+/* --- the pan, large (`--dot`: its dot's width, which the pan measures) --- */
+
+.detail-title {
+    margin: 0;
+    color: var(--faint);
+    font: 700 12px/1.3 var(--display);
+    letter-spacing: 0.12em;
+}
+
+.detail .pan {
+    --dot: 48px;
+    flex: none;
+    height: 64px;
+    border-radius: 10px;
+}
+
+.detail .pan-dot {
+    top: 7px;
+    border-radius: 10px;
+}
+
+.detail .pan-track {
+    top: 10px;
+    bottom: 10px;
+    width: 2px;
+    margin-left: -1px;
+}
+
+.detail .pan-fill {
+    top: 28px;
+    bottom: 28px;
+}
+
+/* The ends and Live's display string of the pan. */
+.detail-pan-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    min-width: 0;
+    color: var(--muted);
+    font: 600 12px/1.4 var(--mono);
+    white-space: nowrap;
+}
+
+.detail-pan-value {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--text);
+    font: 600 20px/1.3 var(--mono);
+    text-overflow: ellipsis;
+}
+
+.detail-centre {
+    flex: none;
+    min-height: 44px;
+    padding: 0 10px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: #181826;
+    color: var(--text);
+    font: 700 15px/1.2 var(--display);
+    letter-spacing: 0.08em;
+    cursor: pointer;
+    touch-action: none;
+}
+
+/* A phone on its side (#63's low screen): a lower bar, narrower columns. */
+@media (max-height: 520px) {
+    .detail {
+        --bar-h: 40px;
+        --chl: 150px;
+        --chr: 230px;
+    }
+
+    .detail-body,
+    .detail-box {
+        gap: 6px;
+    }
+
+    .detail-body {
+        padding: 6px;
+    }
+
+    .detail-box {
+        padding: 8px;
+    }
+
+    .detail-left .mute {
+        height: 40px;
+    }
+
+    .detail-readout .db {
+        font-size: 22px;
+        line-height: 30px;
+    }
+
+    .detail-centre {
+        min-height: 36px;
+    }
+}
+
+/* A phone upright (the mockup's portrait): the fader all the way down on
+   the left, the pan beside its top, the middle under the pan; nothing
+   wider than the screen. */
+@media (max-width: 520px) {
+    .detail {
+        --bar-h: 46px;
+        --chl: 130px;
+    }
+
+    .detail-body {
+        grid-template-columns: var(--chl) minmax(0, 1fr);
+        grid-template-rows: auto minmax(0, 1fr);
+    }
+
+    .detail-left {
+        grid-row: 1 / span 2;
+    }
+
+    .detail-right {
+        grid-column: 2;
+        grid-row: 1;
+    }
+
+    .detail-middle {
+        grid-column: 2;
+        grid-row: 2;
+    }
+
+    .detail-exit {
+        padding: 0 10px;
+    }
+}
