@@ -6,6 +6,7 @@
 //! only.
 
 pub mod buttons;
+pub mod detail;
 pub mod fader;
 pub mod meter;
 pub mod overlay;
@@ -134,6 +135,19 @@ pub fn trace_move(trail: StoredValue<Trail>, key: &str, p: f64, seq: Option<u64>
     } else {
         crate::diag::record(&record);
     }
+}
+
+/// Records a channel detail's step (#71, `diag::trace::detail`: `press`,
+/// `slid`, `tap`, `open`, `close` with its `why`) with the strip's `keys`,
+/// in the page's flight recorder.
+pub fn trace_detail(what: &str, why: Option<&str>, keys: &[String], pointer: Option<i32>) {
+    crate::diag::record(&crate::diag::trace::detail(
+        dom::epoch_now(),
+        what,
+        why,
+        keys,
+        pointer,
+    ));
 }
 
 /// The flight recorder's name of the event that ends a touch: `up` for a

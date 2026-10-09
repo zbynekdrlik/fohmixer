@@ -1,7 +1,7 @@
 """The forensics timeline's analysis (#43): page time on the hub's clock,
 gestures and gaps, busy episodes, the control lanes, confirmations, the
 volume jumps with their cause, the touches of single volume faders
-(``timeline_touch.py``, PR D), the system's gestures (PR G), the Stream Deck's presses (#52) and the summary. Pure: it reads nothing. One of
+(``timeline_touch.py``, PR D), the system's gestures (PR G), the Stream Deck's presses (#52), the channel detail's steps (#71) and the summary. Pure: it reads nothing. One of
 the five files of ``timeline.py`` (see its docstring), copied to the Ableton
 PC together with it.
 """
@@ -363,6 +363,14 @@ class Timeline:
             timeline_touch.system_event(e.hub, e.data)
             for e in self.page
             if e.ev in ("sys", "zoom") and self.in_window(e.hub)
+        ]
+        # The channel detail's steps (#71): a hold on a strip's burger, a
+        # slide off it, a tap, the detail's opens and closes; the page's,
+        # whatever the key filter (each names its strip's keys).
+        self.details = [
+            timeline_touch.detail_event(e.hub, e.data)
+            for e in self.page
+            if e.ev == "detail" and self.in_window(e.hub)
         ]
         # The Stream Deck (#52): presses with Companion's answers, the hub's
         # own releases with theirs, the red flashes, Companion's link
@@ -831,6 +839,11 @@ def system_count(timeline, what):
     return str(sum(e.what == what for e in timeline.system))
 
 
+def detail_count(timeline, what):
+    """How many of the window's channel detail steps (#71) are ``what``."""
+    return str(sum(e.what == what for e in timeline.details))
+
+
 def summary(timeline):
     """The summary as (name, text) pairs: stdout's lines and the report's
     table. No key and no name: a control is ``key#<hash>``."""
@@ -895,6 +908,9 @@ def summary(timeline):
         ("pointer_cancels", system_count(timeline, "pointercancel")),
         ("lost_captures", system_count(timeline, "lostpointercapture")),
         ("zooms", system_count(timeline, "zoom")),
+        ("detail_presses", detail_count(timeline, "press")),
+        ("detail_opens", detail_count(timeline, "open")),
+        ("detail_slid", detail_count(timeline, "slid")),
         ("deck_presses", str(sum(p.down for p in timeline.deck_presses))),
         ("deck_unsent", str(len(timeline.deck_unsent))),
         ("deck_forced_releases", str(len(timeline.deck_releases))),

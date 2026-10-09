@@ -1,19 +1,20 @@
-/* fohmixer: a strip and its parts, the pan, the meter, the fader, the name
-   button and the former MIDI fader (split from style.css, #43; linked after
-   buttons.css). */
+/* fohmixer: a strip and its parts, the meter, the fader, the name button
+   and the former MIDI fader (split from style.css, #43; linked after
+   buttons.css). The pan is the channel detail's (#71, detail.css). */
 
 /* --- strips --- */
 
 /* Held in the hands (#63): what is read sits at the top (the name button,
-   Live's dB under it), the fader zone runs down towards the foot, which a
-   hand holding the tablet covers, and the pan sits at the foot (the owner,
-   2026-10-08: a pan right under the mute was a touch on the mute; the pan
-   is rarely used). The instance tag only in a group whose strips differ. */
+   Live's dB under it), the fader zone runs down to the foot, which a hand
+   holding the tablet covers. No pan (#71, D17: it is the channel detail's;
+   at the foot the iPad's home bar waits for a swipe). The instance tag
+   only in a group whose strips differ. */
 .strip {
+    --head-w: calc(var(--strip-w, 76px) - 10px);
     position: relative;
     display: grid;
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: auto minmax(0, 1fr) auto;
+    grid-template-rows: auto minmax(0, 1fr);
     gap: 3px;
     flex: none;
     width: var(--strip-w, 76px);
@@ -25,10 +26,13 @@
 }
 
 .strip:has(> .strip-tag) {
-    grid-template-rows: auto auto minmax(0, 1fr) auto;
+    grid-template-rows: auto auto minmax(0, 1fr);
 }
 
+/* `--head-w`: the head's width (the strip's less its padding and border;
+   the hint over the name button, detail.css). */
 .strip.wide {
+    --head-w: calc(var(--strip-w, 76px) * 1.1 - 10px);
     width: calc(var(--strip-w, 76px) * 1.1);
 }
 
@@ -119,46 +123,6 @@
     background: rgba(139, 125, 255, 0.16);
 }
 
-/* The pan bar: a fill from the centre and a dot (`--p`, `--lo`, `--w`). */
-.pan {
-    position: relative;
-    height: 16px;
-    border: 1px solid var(--line);
-    border-radius: 8px;
-    background: var(--track);
-    cursor: ew-resize;
-    touch-action: none;
-}
-
-.pan-track {
-    position: absolute;
-    top: 3px;
-    bottom: 3px;
-    left: 50%;
-    width: 1px;
-    background: var(--faint);
-}
-
-.pan-fill {
-    position: absolute;
-    top: 4px;
-    bottom: 4px;
-    left: calc(var(--lo, 0.5) * 100%);
-    width: calc(var(--w, 0) * 100%);
-    border-radius: 3px;
-    background: var(--accent-dim);
-}
-
-.pan-dot {
-    position: absolute;
-    top: 1px;
-    left: calc(var(--p, 0.5) * (100% - 12px));
-    width: 12px;
-    height: 12px;
-    border-radius: 50%;
-    background: #8a8aa0;
-}
-
 /* The fader zone: the dB scale, the meter, the fader, one height. The
    fader covers the whole zone (its touch target is the strip's width, not
    its column); its groove, fill and cap sit in the third column, centred at
@@ -169,8 +133,8 @@
     grid-template-rows: minmax(0, 1fr);
     gap: 3px;
     min-height: 0;
-    /* The cap's lower half at −∞ (11 px) stays 2 px clear of the pan
-       under the zone (#63): this padding and the strip's 3 px gap. */
+    /* The cap's lower half at −∞ (11 px) stays off the strip's foot and
+       the screen's edge (#71: no pan under the zone any more). */
     padding: 8px 0 10px;
 }
 
@@ -394,26 +358,53 @@
 }
 
 /* The top of the strip (#63): the name button, 30 px (the fader, not the
-   button, gets the height), the status light and Live's dB on a line under
-   it (it takes no touch), and a return's RET mark. */
+   button, gets the height), the readout line under it, and a return's RET
+   mark. */
 .strip-head {
     position: relative;
     display: grid;
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: 30px auto;
+    grid-template-rows: 30px 22px;
     row-gap: 2px;
     min-width: 0;
+}
+
+/* The readout line (#71): the status light and Live's dB (or a mark's
+   word) centred in its first column, which takes no touch, and ☰ at its
+   end, 22 px wide from an 88 px strip, 18 px at 72 px and under. It
+   reaches 2 px into the strip's padding each side, so the readout has room
+   beside ☰ from the narrowest strip up. */
+.strip-info {
+    --menu-w: clamp(18px, calc(var(--strip-w, 76px) * 0.25), 22px);
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    min-width: 0;
+    height: 22px;
+    margin: 0 -2px;
 }
 
 .strip-readout {
     display: flex;
     justify-self: center;
     align-items: center;
-    gap: 3px;
+    gap: 2px;
     max-width: 100%;
-    padding: 0 3px;
+    min-width: 0;
+    padding: 0 2px;
     border-radius: 5px;
     pointer-events: none;
+}
+
+/* Live's dB beside ☰ (#71): the font shrinks with the strip width, so the
+   longest reading ("−69.9", 3 em of the mono face) fits the first column
+   less the light from the narrowest strip up (nothing is measured; swept
+   over 64–120 px in Chromium and WebKit): 8.5 px at 64 px, 12 px from
+   76.8 px. Its line is 17 px whatever the size (the face's whole height at
+   12 px; at the smallest sizes Chromium rounds the face's metrics up). */
+.strip-readout .db {
+    font-size: clamp(7px, calc((var(--strip-w, 76px) - 18px - var(--menu-w)) / 3.3), 12px);
+    line-height: 17px;
 }
 
 .strip-ret {

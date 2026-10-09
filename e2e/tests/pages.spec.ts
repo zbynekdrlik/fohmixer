@@ -280,15 +280,16 @@ test.describe("Subscriptions follow the controls on screen", () => {
     await selectPage(page, "stage");
     const foh = await pageSubs(page);
     // Rail (stage, two solos, five toggles' targets), the STAGE sub-page's
-    // and the fixed groups' strips (volume, pan, mute, meter, colour each),
-    // the parameter fader and TechAlert: 55 keys.
-    expect(foh).toBe(55);
+    // and the fixed groups' strips (volume, mute, meter, colour each; #71:
+    // the pan only in a channel detail), the parameter fader and TechAlert:
+    // 46 keys.
+    expect(foh).toBe(46);
     await expectHubToHold(page, foh);
     await selectPage(page, "cue");
     await expectHubToHold(page, 2);
     await selectPage(page, "foh");
     await selectPage(page, "others");
-    await expectHubToHold(page, 51);
+    await expectHubToHold(page, 43);
     await selectPage(page, "stage");
     await expectHubToHold(page, foh);
   });
@@ -296,7 +297,7 @@ test.describe("Subscriptions follow the controls on screen", () => {
   test("a layout change while a page is open releases the old subscriptions", async ({ page }) => {
     await openSurface(page);
     await selectPage(page, "stage");
-    await expectHubToHold(page, 55);
+    await expectHubToHold(page, 46);
     const changed = layout();
     for (const row of changed.pages[1].rows) {
       for (const section of row.sections) {
@@ -309,11 +310,11 @@ test.describe("Subscriptions follow the controls on screen", () => {
     try {
       await harness("/hub/layout", { layout: changed });
       await expect(strip(page, "Hand2 #")).toHaveCount(0, { timeout: 10_000 });
-      await expectHubToHold(page, 50);
+      await expectHubToHold(page, 42);
     } finally {
       await harness("/hub/layout/reset");
     }
     await expect(strip(page, "Hand2 #")).toBeVisible({ timeout: 10_000 });
-    await expectHubToHold(page, 55);
+    await expectHubToHold(page, 46);
   });
 });

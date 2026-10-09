@@ -3,13 +3,15 @@
 //! return. Everything here is unit-tested natively; the parity numbers come
 //! from the TouchOSC scripts of `abl-touchosc` (fader_script 2.5.4,
 //! mute_button 2.7.2, pan_control 1.5.3, meter_script 2.5.2,
-//! document_script 2.10.0), as the S4 design note quotes them, and the Stream
-//! Deck's presses (#52, `deck`).
+//! document_script 2.10.0), as the S4 design note quotes them, the Stream
+//! Deck's presses (#52, `deck`) and the hold that opens a channel's detail
+//! (#71, `hold`).
 
 pub mod colour;
 pub mod db_text;
 pub mod deck;
 pub mod fader;
+pub mod hold;
 pub mod label;
 pub mod link;
 pub mod meter;

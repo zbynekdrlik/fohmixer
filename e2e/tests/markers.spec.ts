@@ -131,6 +131,13 @@ test("an equal label disables both strips; a tag problem marks a strip that stil
     await dragUp(page, conflict.first().getByTestId("fader"));
     await page.waitForTimeout(500);
     expect(await live.get("band", target, "value")).toBe(before);
+    // Its ☰ is inert too (#71): a finger held on it opens no detail.
+    const menu = (await conflict.first().getByTestId("strip-menu").boundingBox())!;
+    await page.mouse.move(menu.x + menu.width / 2, menu.y + menu.height / 2);
+    await page.mouse.down();
+    await page.waitForTimeout(700);
+    await page.mouse.up();
+    await expect(page.getByTestId("detail")).toHaveCount(0);
     // A tag problem: marked, and its fader works.
     expect(await hostLine("band", `tuner track 1 set '"Other" +G:MARKERS +GX'`)).toBe("TUNER 1");
     const problem = group.and(page.locator('[data-label="Other"]'));

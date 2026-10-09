@@ -24,7 +24,8 @@ use crate::store::{LiveStore, Slot};
 
 /// The style of a button lit in Live's colour `value` (the track colour and
 /// the text colour that reads on it); nothing until the colour is known.
-fn colour_style(value: Option<f64>) -> String {
+/// The channel detail's name chip takes it too (#71).
+pub(crate) fn colour_style(value: Option<f64>) -> String {
     value
         .and_then(|v| css_color(v).map(|css| format!("--tc:{css};--tt:{};", text_on(v))))
         .unwrap_or_default()

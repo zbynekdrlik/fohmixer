@@ -620,6 +620,45 @@ def _system_table(t):
     return f"<p>{esc(SYSTEM_LEGEND)}</p>{table}"
 
 
+DETAIL_LEGEND = (
+    "Channel detail (#71): each step of a hold on a strip's burger and of the detail it "
+    "opens, as the page recorded it: press (a finger down on the burger), slid (it slid "
+    "off: no tap, nothing opened), tap (lifted before the hold: the hint), open (by the "
+    "hold's check, or a lift after the hold) and close (the exit, a new layout without the "
+    "strip, a strip without a label carried into a new layout, or the strip in conflict). The channel is the strip's volume and mute."
+)
+
+
+def _detail_table(t):
+    if not t.details:
+        return "<p>No channel detail step in the window.</p>"
+    head = "".join(f"<th>{h}</th>" for h in ("time (local)", "step", "why", "channel", "pointer"))
+    rows = []
+    for e in t.details:
+        cells = (
+            local_text(e.time),
+            e.what,
+            e.why or "n/a",
+            ", ".join(e.keys) or "none",
+            "n/a" if e.pointer is None else str(e.pointer),
+        )
+        content = "".join(f"<td>{esc(c)}</td>" for c in cells)
+        rows.append(
+            tag(
+                "tr",
+                content,
+                class_="detail",
+                data_time=num(e.time),
+                data_what=e.what,
+                data_why=e.why,
+                data_key_hash=key_hash(e.keys[0]) if e.keys else None,
+                data_pointer=None if e.pointer is None else str(e.pointer),
+            )
+        )
+    table = f'<table class="detail"><tr>{head}</tr>{"".join(rows)}</table>'
+    return f"<p>{esc(DETAIL_LEGEND)}</p>{table}"
+
+
 DECK_LEGEND = (
     "Stream Deck (#52): each press with the hub's delay (the page's send to the hub), "
     "Companion's round trip, the hold as the page measured it and as the hub forwarded "
@@ -840,6 +879,7 @@ def render(t, pairs, files):
         f"<h2>Volume jumps over 3 dB</h2>{_jumps_table(t)}"
         f"<h2>Touches of single volume faders</h2>{_touches_table(t)}"
         f"<h2>System gestures</h2>{_system_table(t)}"
+        f"<h2>Channel detail</h2>{_detail_table(t)}"
         f"<h2>Stream Deck</h2>{_deck_table(t)}"
         "</body></html>\n"
     )

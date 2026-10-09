@@ -1,16 +1,19 @@
 //! What the surface subscribes (spec §2.5, S4 design note §4–§5; schema 2,
 //! #21): each control's Live properties through the general binding form,
 //! and the set of the controls on screen: the page's rail and rows with the
-//! selected sub-page, and the global controls. Switching a page changes the
-//! set, and the store subscribes the difference, so hidden pages hold no
-//! Live listeners.
+//! selected sub-page, and the global controls, with an open channel
+//! detail's strip and its pan (#71). Switching a page changes the set, and
+//! the store subscribes the difference, so hidden pages hold no Live
+//! listeners.
 
 use std::collections::BTreeMap;
+use std::mem::discriminant;
 
-use fohmixer_proto::client::hub_key;
+use fohmixer_proto::client::{hub_key, set_key};
 use fohmixer_proto::layout::{
-    Binding, Control, Layout, MeterSource, Page, ParamTarget, Section, Strip,
+    Anchor, Binding, Control, Layout, MeterSource, Page, ParamTarget, Section, Strip, StripMark,
 };
+use fohmixer_proto::markers::has_placeholder_label;
 
 /// One subscription: an instance, a LOM target, a property and whether
 /// Live's display string comes with the value.
@@ -80,6 +83,20 @@ impl StripSubs {
         out.extend(self.color.iter().cloned());
         out
     }
+
+    /// What a strip on the page subscribes (#71): every part but the pan,
+    /// which left the strip for the channel detail; the hub follows fewer
+    /// listeners.
+    pub fn shown(&self) -> Vec<SubSpec> {
+        let mut out: Vec<SubSpec> = [&self.volume, &self.mute]
+            .into_iter()
+            .flatten()
+            .cloned()
+            .collect();
+        out.extend(self.meters.iter().cloned());
+        out.extend(self.color.iter().cloned());
+        out
+    }
 }
 
 /// The meter properties of a meter source (spec X2).
@@ -90,7 +107,8 @@ pub fn meter_props(source: MeterSource) -> &'static [&'static str] {
     }
 }
 
-/// The subscriptions of a strip: every part is drawn (schema 2).
+/// The subscriptions of a strip, by part (schema 2): the strip on the page
+/// subscribes [`StripSubs::shown`], its channel detail [`detail_subs`].
 pub fn strip_subs(strip: &Strip, source: MeterSource) -> StripSubs {
     let b = &strip.binding;
     StripSubs {
@@ -103,6 +121,137 @@ pub fn strip_subs(strip: &Strip, source: MeterSource) -> StripSubs {
             .collect(),
         color: spec(b, "", "color", false),
     }
+}
+
+/// The subscriptions of a strip's channel detail (#71, F27): every part of
+/// the strip, its pan with Live's display string.
+pub fn detail_subs(strip: &Strip, source: MeterSource) -> StripSubs {
+    let mut subs = strip_subs(strip, source);
+    if let Some(pan) = subs.pan.as_mut() {
+        pan.display = true;
+    }
+    subs
+}
+
+/// Whether a layout's `strip` is the strip an open detail holds (`held`,
+/// #71). A marker strip (a label on an index anchor, #68: bound by the
+/// index of the track its marker sits on) is its marker: the same
+/// instance, the same kind of anchor (a track or a return) and the same
+/// label, wherever the track order put it, never another marker at its old
+/// index. Any other strip, a labelled one bound by name too, is its
+/// binding; so is a strip that shows a placeholder (`#<index + 1>`, a Tuner
+/// without a label) on either side: a real label `"#3"` is never the
+/// placeholder `#3` of another track.
+fn same_strip(strip: &Strip, held: &Strip) -> bool {
+    if has_placeholder_label(held) || has_placeholder_label(strip) {
+        return strip.binding == held.binding;
+    }
+    match (&held.label, &held.binding.anchor) {
+        (Some(label), Anchor::TrackAt { .. } | Anchor::ReturnAt { .. }) => {
+            strip.label.as_ref() == Some(label)
+                && strip.binding.instance == held.binding.instance
+                && discriminant(&strip.binding.anchor) == discriminant(&held.binding.anchor)
+        }
+        _ => strip.binding == held.binding,
+    }
+}
+
+/// Whether `layout` holds the strip an open detail holds only in conflict
+/// (#68): a strip that is the held one, marked `Conflict`.
+fn in_conflict(layout: &Layout, held: &Strip) -> bool {
+    layout.controls().into_iter().any(|control| {
+        matches!(control, Control::Strip(strip)
+            if same_strip(strip, held) && strip.mark == Some(StripMark::Conflict))
+    })
+}
+
+/// The strip an open detail shows in `layout` (#71): the layout's strip
+/// that is the held one (`same_strip`: a marker strip follows its marker),
+/// with its binding, label, guard and mark as the layout has them now; none
+/// when the layout has no such strip, or only in conflict (#68: a conflict
+/// disables the strip, so its detail closes).
+pub fn detail_strip(layout: &Layout, held: &Strip) -> Option<Strip> {
+    layout
+        .controls()
+        .into_iter()
+        .find_map(|control| match control {
+            Control::Strip(strip)
+                if same_strip(strip, held) && strip.mark != Some(StripMark::Conflict) =>
+            {
+                Some((**strip).clone())
+            }
+            _ => None,
+        })
+}
+
+/// What an open detail's held strip becomes in a layout (#71).
+#[derive(Debug, Clone, PartialEq)]
+pub enum DetailChange {
+    /// The layout's strip it resolves to (a marker moved to another index,
+    /// its label, guard or mark changed): written back, so the wanted set
+    /// subscribes the keys the detail's slots read.
+    Follow(Strip),
+    /// It closes, and why (the flight recorder's `close`): `layout` (the
+    /// layout has no such strip), `placeholder` (a placeholder-labelled
+    /// marker carried into a new layout) or `conflict` (the layout holds it
+    /// only in conflict).
+    Close(&'static str),
+}
+
+/// What an open detail's held strip (`held`) becomes in `layout` (#71):
+/// nothing while it stays as it is; else [`DetailChange`]. `carried`: the
+/// strip was held when this layout came (a detail carried over from the
+/// previous one); a carried marker strip that shows its placeholder label
+/// (`markers::has_placeholder_label`: no identity to follow) closes. A
+/// detail opened within a layout is never carried.
+pub fn detail_update(layout: &Layout, held: Option<&Strip>, carried: bool) -> Option<DetailChange> {
+    let held = held?;
+    if carried && has_placeholder_label(held) {
+        return Some(DetailChange::Close(CLOSE_PLACEHOLDER));
+    }
+    match detail_strip(layout, held) {
+        Some(found) if found == *held => None,
+        Some(found) => Some(DetailChange::Follow(found)),
+        None if in_conflict(layout, held) => Some(DetailChange::Close(CLOSE_CONFLICT)),
+        None => Some(DetailChange::Close(CLOSE_LAYOUT)),
+    }
+}
+
+/// Why a detail closed (the flight recorder's `close`, #71): its exit, a
+/// new layout without its strip, a placeholder-labelled marker carried into
+/// a new layout, its strip in conflict.
+pub const CLOSE_EXIT: &str = "exit";
+pub const CLOSE_LAYOUT: &str = "layout";
+pub const CLOSE_CONFLICT: &str = "conflict";
+pub const CLOSE_PLACEHOLDER: &str = "placeholder";
+
+/// The keys a channel detail's events name (#71, the flight recorder): its
+/// strip's volume and mute write keys, as those controls name theirs.
+pub fn detail_keys(strip: &Strip) -> Vec<String> {
+    let subs = strip_subs(strip, MeterSource::Level);
+    [subs.volume, subs.mute]
+        .iter()
+        .flatten()
+        .map(|s| set_key(&s.instance, &s.target, &s.prop))
+        .collect()
+}
+
+/// The title of a group that holds a strip bound as `binding` (the
+/// detail's bar, #71): the first titled one in the layout's order.
+pub fn group_title(layout: &Layout, binding: &Binding) -> Option<String> {
+    layout
+        .pages
+        .iter()
+        .flat_map(|page| page.rows.iter())
+        .flat_map(|row| row.sections.iter())
+        .flat_map(Section::groups)
+        .filter(|group| {
+            group
+                .controls
+                .iter()
+                .any(|c| matches!(c, Control::Strip(s) if s.binding == *binding))
+        })
+        .find_map(|group| group.title.clone())
 }
 
 /// The subscription of a solo button: its group track's solo.
@@ -131,7 +280,7 @@ pub fn param_subs(targets: &[ParamTarget], fader: bool) -> Vec<Option<SubSpec>> 
 /// use the functions above, so the two cannot drift apart).
 pub fn control_subs(control: &Control, source: MeterSource) -> Vec<SubSpec> {
     match control {
-        Control::Strip(strip) => strip_subs(strip, source).all(),
+        Control::Strip(strip) => strip_subs(strip, source).shown(),
         Control::Solo { binding, .. } => solo_sub(binding).into_iter().collect(),
         Control::Stage { binding, .. } | Control::Alert { binding, .. } => {
             mute_sub(binding).into_iter().collect()
@@ -179,6 +328,22 @@ pub fn visible_subs(layout: &Layout, path: &[usize]) -> Vec<SubSpec> {
     let unique: BTreeMap<String, SubSpec> = visible_controls(layout, path)
         .into_iter()
         .flat_map(|c| control_subs(c, source))
+        .map(|s| (s.key(), s))
+        .collect();
+    unique.into_values().collect()
+}
+
+/// Every subscription the surface wants (#71): the controls on screen
+/// ([`visible_subs`]) and, while a channel detail is open, its strip's
+/// ([`detail_subs`]: its pan with Live's display string), each key once.
+pub fn wanted_subs(layout: &Layout, path: &[usize], detail: Option<&Strip>) -> Vec<SubSpec> {
+    let source = layout.config.meter_source.unwrap_or_default();
+    let detail = detail
+        .map(|strip| detail_subs(strip, source).all())
+        .unwrap_or_default();
+    let unique: BTreeMap<String, SubSpec> = visible_subs(layout, path)
+        .into_iter()
+        .chain(detail)
         .map(|s| (s.key(), s))
         .collect();
     unique.into_values().collect()

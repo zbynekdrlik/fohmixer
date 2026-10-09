@@ -295,6 +295,25 @@ pub struct Composed {
     pub problems: Vec<MarkerReport>,
 }
 
+/// The label a marker strip shows when its Tuner names none (a missing,
+/// empty or unclosed label): its track's number, `#<index + 1>`, as Live
+/// numbers tracks. It is no identity: after a track-list change the same
+/// label names another track.
+pub fn placeholder_label(index: u32) -> String {
+    format!("#{}", index + 1)
+}
+
+/// Whether `strip` is a marker strip that shows [`placeholder_label`]
+/// (#71: a channel detail cannot follow it through a new layout). The one
+/// test of it, beside where the placeholder is made.
+pub fn has_placeholder_label(strip: &Strip) -> bool {
+    let index = match strip.binding.anchor {
+        Anchor::TrackAt { index } | Anchor::ReturnAt { index } => index,
+        _ => return false,
+    };
+    strip.label.as_deref() == Some(placeholder_label(index).as_str())
+}
+
 /// One marker read: where, what it says, and every problem it has.
 struct Entry<'a> {
     found: &'a Found,
@@ -342,7 +361,7 @@ impl Entry<'_> {
                 self.marker
                     .label
                     .clone()
-                    .unwrap_or_else(|| format!("#{}", self.found.index + 1)),
+                    .unwrap_or_else(|| placeholder_label(self.found.index)),
             ),
             mark,
         }

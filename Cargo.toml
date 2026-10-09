@@ -3,7 +3,7 @@ members = ["crates/fohmixer-proto", "crates/fohmixer-hub", "crates/fohmixer-ui",
 resolver = "2"
 
 [workspace.package]
-version = "0.1.0-dev.46"
+version = "0.1.0-dev.47"
 edition = "2024"
 authors = ["fohmixer contributors"]
 license = "MIT OR Apache-2.0"

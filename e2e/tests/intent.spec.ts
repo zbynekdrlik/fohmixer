@@ -1,12 +1,14 @@
 import type { Page } from "@playwright/test";
 import { test, expect } from "./support/fixtures";
-import { LiveClient, centre, frames, hubEvents, impair, openSurface, pageEvents, panning, ready, shown, strip, track, until } from "./support/live";
+import { LiveClient, centre, frames, hubEvents, impair, openDetail, openSurface, pageEvents, panning, ready, shown, track, until } from "./support/live";
 
 // The look of a pan's and a toggle's write Live has not confirmed (#43, PR C,
 // following PR B's fader look, design note §4.3): they keep showing Live's
 // value (P2; PR B's decision 7) and only get the fader's outline, amber once
 // a release is 1 s old without its ack (`unconfirmed`), red once it was too
-// old to send again after a reconnect (`not_sent`); no text, no ghost.
+// old to send again after a reconnect (`not_sent`); no text, no ghost. The
+// pan is the channel detail's (#71), so the test opens Hand2's detail and
+// writes its pan and its mute (the strip's mute, labelled MUTE there).
 
 const HAND2 = track("Hand2 #");
 const PAN = panning(HAND2);
@@ -43,7 +45,7 @@ test.describe("The look of an open write on the pan and the toggles", () => {
     await live.set("band", HAND2, "mute", false);
     try {
       await openSurface(page);
-      const s = strip(page, "Hand2 #");
+      const s = await openDetail(page, "Hand2 #");
       const pan = s.getByTestId("pan");
       const mute = s.getByTestId("mute");
       const dot = pan.locator(".pan-dot");

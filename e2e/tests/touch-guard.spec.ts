@@ -2,7 +2,7 @@ import type { Locator, Page } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test, expect } from "./support/fixtures";
-import { centre, frames, harness, hubEvents, openSurface, pageEvents, ready, strip, track, until, volume } from "./support/live";
+import { centre, frames, harness, hubEvents, openDetail, openSurface, pageEvents, ready, strip, track, until, volume } from "./support/live";
 
 // The controls own their touches (#43 PR G, design comment 6011117148). The
 // owner's retest of PR F on the FOH iPad saw, now and then, a magnifier
@@ -61,8 +61,8 @@ function controls(page: Page): [string, Locator][] {
   return [
     ["fader", hand2.getByTestId("fader")],
     ["fader cap", hand2.getByTestId("fader").locator(".fader-cap")],
-    ["pan", hand2.getByTestId("pan")],
-    ["pan dot", hand2.getByTestId("pan").locator(".pan-dot")],
+    ["strip menu", hand2.getByTestId("strip-menu")],
+    ["strip menu icon", hand2.locator(".strip-menu-icon")],
     ["mute", hand2.getByTestId("mute")],
     ["mute label", hand2.getByTestId("strip-label")],
     ["meter clip", hand2.getByTestId("clip")],
@@ -101,6 +101,32 @@ test("every control owns its touches: its touchstart is prevented, nothing on it
     ["version", page.getByTestId("stage").getByTestId("version")],
   ];
   for (const [name, el] of free) {
+    expect(await prevented(el, "touchstart"), `a touchstart on the ${name}`).toBe(false);
+  }
+  // The channel detail's (#71): its controls own their touches (the pan,
+  // which left the strip, among them), its background keeps its own.
+  const detail = await openDetail(page, "Hand2 #");
+  await ready(detail.getByTestId("pan"));
+  const own: [string, Locator][] = [
+    ["detail's exit", detail.getByTestId("detail-exit")],
+    ["detail's mute", detail.getByTestId("mute")],
+    ["detail's mute label", detail.getByTestId("strip-label")],
+    ["detail's fader", detail.getByTestId("fader")],
+    ["detail's fader cap", detail.getByTestId("fader").locator(".fader-cap")],
+    ["detail's meter clip", detail.getByTestId("clip")],
+    ["pan", detail.getByTestId("pan")],
+    ["pan dot", detail.getByTestId("pan").locator(".pan-dot")],
+    ["STRED", detail.getByTestId("detail-centre")],
+  ];
+  for (const [name, el] of own) {
+    expect(await prevented(el, "touchstart"), `a touchstart on the ${name}`).toBe(true);
+    expect(await style(el, "-webkit-user-drag"), `the ${name} cannot be dragged`).toBe("none");
+  }
+  for (const [name, el] of [
+    ["detail's name", detail.getByTestId("detail-name")],
+    ["detail's middle", detail.getByTestId("detail-middle")],
+    ["detail's readout", detail.getByTestId("detail-readout")],
+  ] as [string, Locator][]) {
     expect(await prevented(el, "touchstart"), `a touchstart on the ${name}`).toBe(false);
   }
 });

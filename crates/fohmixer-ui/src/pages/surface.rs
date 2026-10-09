@@ -8,14 +8,14 @@
 //! this file measures a side and the height and renders the arrangement
 //! with keyed lists, so a sub-page switch or a shift remounts only the
 //! controls that change. Only the controls on screen are mounted, and the
-//! subscriptions are the selected path's (`binding::visible_subs`); the
-//! selected page and sub-page are remembered on the device, the Stream Deck
-//! tab never is.
+//! subscriptions are the selected path's with an open channel detail's
+//! (`binding::wanted_subs`, #71); the selected page and sub-page are
+//! remembered on the device, the Stream Deck tab and the detail never are.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use fohmixer_proto::layout::{Binding, Control, Layout, Page};
+use fohmixer_proto::layout::{Binding, Control, Layout, Page, Strip};
 use leptos::html;
 use leptos::prelude::*;
 use serde_json::json;
@@ -24,8 +24,10 @@ use crate::app::version_text;
 use crate::arrange::{Arrangement, Cell, Item, LineKey, METRICS, PageModel, Side, arrange, items};
 use crate::behave::solo::soloed;
 use crate::binding::{
-    SubSpec, choose, page_solos, selected_path, solo_sub, stored_pages, view_tap, visible_subs,
+    DetailChange, SubSpec, choose, detail_strip, detail_update, group_title, page_solos,
+    selected_path, solo_sub, stored_pages, view_tap, wanted_subs,
 };
+use crate::components::detail::{DetailStrip, DetailView};
 use crate::components::{ControlView, Settings, fail_flash, key_of, owns_surface, owns_touches};
 use crate::dom;
 use crate::flow::{is_column, shared_instance};
@@ -64,6 +66,13 @@ struct Nav {
     /// opens it). Here, not in a layout's shell: a Tuner edit in Live is a
     /// new layout, and it must not close the manual explaining it.
     manual: RwSignal<bool>,
+    /// The channel detail's strip, as held (#71: a hold on a strip's ☰
+    /// opens it). Here, not in a layout's shell: a new layout keeps it open
+    /// while its strip is in it (`binding::detail_strip`).
+    detail: RwSignal<Option<Strip>>,
+    /// When a hold opened the detail (the page clock): its opening guard
+    /// counts from it, so a new layout's remount does not guard again.
+    detail_opened: StoredValue<f64>,
 }
 
 impl Nav {
@@ -143,8 +152,15 @@ pub fn Surface(token: String, session: RwSignal<Option<String>>) -> impl IntoVie
         deck_shown: Memo::new(move |_| deck.get()),
         before_view: RwSignal::new(None),
         manual: RwSignal::new(false),
+        detail: RwSignal::new(None),
+        detail_opened: StoredValue::new(f64::NEG_INFINITY),
     };
     provide_context(nav);
+    // A strip's ☰ opens the channel detail, its exit closes it (#71).
+    provide_context(DetailStrip {
+        strip: nav.detail,
+        opened_at: nav.detail_opened,
+    });
     on_cleanup(move || store.stop());
     store.start();
 
@@ -160,13 +176,15 @@ pub fn Surface(token: String, session: RwSignal<Option<String>>) -> impl IntoVie
             let _ = nav.path.try_set(selected_path(&layout, &remembered));
         }
     });
-    // The controls on screen are the ones subscribed.
+    // The controls on screen are the ones subscribed, with an open
+    // detail's strip and its pan (#71).
     Effect::new(move |_| {
         let Some(layout) = store.layout.get() else {
             return;
         };
         let path = nav.path.get();
-        store.set_wanted(visible_subs(&layout, &path));
+        let detail = nav.detail.try_get().flatten();
+        store.set_wanted(wanted_subs(&layout, &path, detail.as_ref()));
     });
 
     let content = move || match store.layout.get() {
@@ -213,7 +231,8 @@ struct Head {
     sub: Memo<Option<usize>>,
 }
 
-/// One layout: the selected page or the Stream Deck tab.
+/// One layout: the selected page or the Stream Deck tab, and an open
+/// channel detail over it (#71).
 #[component]
 fn Shell(layout: Arc<Layout>) -> impl IntoView {
     let nav = expect_context::<Nav>();
@@ -230,6 +249,55 @@ fn Shell(layout: Arc<Layout>) -> impl IntoView {
         sub,
     });
     let viewport = nav.viewport;
+    // The channel detail (#71): the layout's strip that is the held one
+    // (`binding::detail_strip`: a marker strip follows its marker to any
+    // index; its binding, label, guard and mark this layout's), over the
+    // page. A new layout mounts it again with the shell, as it does the
+    // page. The held strip follows what the layout makes of it
+    // (`binding::detail_update`), written back so the wanted set subscribes
+    // the keys the detail reads: at once for the detail carried in from the
+    // previous layout (a placeholder-labelled marker closes: it has no
+    // identity to follow), then on every change; a layout without that
+    // strip, or with it only in conflict, closes it, and the flight
+    // recorder hears why.
+    let held = nav.detail;
+    let detail_nav = DetailStrip {
+        strip: held,
+        opened_at: nav.detail_opened,
+    };
+    let apply = move |change: Option<DetailChange>| match change {
+        Some(DetailChange::Follow(strip)) => {
+            let _ = held.try_set(Some(strip));
+        }
+        Some(DetailChange::Close(why)) => detail_nav.close(why, None),
+        None => {}
+    };
+    let carried = held.try_get_untracked().flatten();
+    apply(detail_update(&layout, carried.as_ref(), true));
+    let current = {
+        let layout = layout.clone();
+        Memo::new(move |_| {
+            held.try_get()
+                .flatten()
+                .and_then(|strip| detail_strip(&layout, &strip))
+        })
+    };
+    {
+        let layout = layout.clone();
+        Effect::new(move |_| {
+            let change = held
+                .try_with(|strip| detail_update(&layout, strip.as_ref(), false))
+                .flatten();
+            apply(change);
+        });
+    }
+    let titles = layout.clone();
+    let detail = move || {
+        current.try_get().flatten().map(|strip| {
+            let group = group_title(&titles, &strip.binding);
+            view! { <DetailView strip=strip group=group /> }
+        })
+    };
     let body = move || {
         if nav.deck_shown.get() {
             let global = layout.global.clone();
@@ -243,6 +311,7 @@ fn Shell(layout: Arc<Layout>) -> impl IntoView {
     view! {
         <div class="mixer" data-testid="stage">
             {body}
+            {detail}
         </div>
     }
 }
