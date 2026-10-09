@@ -4,9 +4,10 @@
 //! the height), with the status light and Live's dB readout on the line
 //! under it (a hand holding the tablet covers the bottom of the screen, so
 //! nothing to read sits there); then the instance tag when the group's
-//! strips differ, the fader zone (the dB scale, the meter, the fader), and
-//! the pan bar at the foot (the owner, 2026-10-08: a pan right under the
-//! mute was a touch on the mute; the pan is rarely used).
+//! strips differ and the fader zone (the dB scale, the meter, the fader).
+//! The pan left the strip for the channel detail (#71, D17: at the foot
+//! the iPad's home bar waits for a swipe, and pans are rarely used), so the
+//! strip neither draws nor subscribes it (`StripSubs::shown`).
 
 use fohmixer_proto::layout::{Strip, StripKind};
 use leptos::prelude::*;
@@ -15,7 +16,6 @@ use super::Settings;
 use super::buttons::{MuteView, anchor_name};
 use super::fader::{FaderView, Law, Target};
 use super::meter::{MeterView, StatusView};
-use super::pan::PanView;
 use crate::behave::db_text::db_text;
 use crate::behave::fader::{UNITY, VolumeLaw};
 use crate::behave::label::{mark_look, shown_label};
@@ -61,13 +61,12 @@ pub fn StripView(strip: Strip, settings: Settings, shared: Option<String>) -> im
     let store = expect_context::<LiveStore>();
     let subs = strip_subs(&strip, settings.meter_source);
     let volume = subs.volume.as_ref().map(|s| store.slot(s));
-    let pan = subs.pan.as_ref().map(|s| store.slot(s));
     let mute = subs.mute.as_ref().map(|s| store.slot(s));
     let color = subs.color.as_ref().map(|s| store.slot(s));
     let meters: Vec<RwSignal<Slot>> = subs.meters.iter().map(|s| store.slot(s)).collect();
     // The status light: every value the strip shows (the colour never
     // gates it), and activity from the volume and the meters.
-    let all: Vec<RwSignal<Slot>> = [volume, pan, mute]
+    let all: Vec<RwSignal<Slot>> = [volume, mute]
         .into_iter()
         .flatten()
         .chain(meters.iter().copied())
@@ -86,9 +85,6 @@ pub fn StripView(strip: Strip, settings: Settings, shared: Option<String>) -> im
         }];
         view! { <FaderView targets=targets shaping={settings.shaping} /> }
     });
-    let pan_view = pan
-        .zip(subs.pan.clone())
-        .map(|(slot, spec)| view! { <PanView state=slot spec=spec /> });
     let mute_view = mute.zip(subs.mute.clone()).map(|(slot, spec)| {
         view! {
             <MuteView
@@ -166,7 +162,6 @@ pub fn StripView(strip: Strip, settings: Settings, shared: Option<String>) -> im
                 <MeterView levels={meters.clone()} law=law />
                 {fader}
             </div>
-            {pan_view}
         </div>
     }
 }

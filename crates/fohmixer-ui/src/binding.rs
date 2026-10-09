@@ -1,15 +1,16 @@
 //! What the surface subscribes (spec §2.5, S4 design note §4–§5; schema 2,
 //! #21): each control's Live properties through the general binding form,
 //! and the set of the controls on screen: the page's rail and rows with the
-//! selected sub-page, and the global controls. Switching a page changes the
-//! set, and the store subscribes the difference, so hidden pages hold no
-//! Live listeners.
+//! selected sub-page, and the global controls, with an open channel
+//! detail's strip and its pan (#71). Switching a page changes the set, and
+//! the store subscribes the difference, so hidden pages hold no Live
+//! listeners.
 
 use std::collections::BTreeMap;
 
 use fohmixer_proto::client::hub_key;
 use fohmixer_proto::layout::{
-    Binding, Control, Layout, MeterSource, Page, ParamTarget, Section, Strip,
+    Binding, Control, Layout, MeterSource, Page, ParamTarget, Section, Strip, StripMark,
 };
 
 /// One subscription: an instance, a LOM target, a property and whether
@@ -80,6 +81,20 @@ impl StripSubs {
         out.extend(self.color.iter().cloned());
         out
     }
+
+    /// What a strip on the page subscribes (#71): every part but the pan,
+    /// which left the strip for the channel detail; the hub follows fewer
+    /// listeners.
+    pub fn shown(&self) -> Vec<SubSpec> {
+        let mut out: Vec<SubSpec> = [&self.volume, &self.mute]
+            .into_iter()
+            .flatten()
+            .cloned()
+            .collect();
+        out.extend(self.meters.iter().cloned());
+        out.extend(self.color.iter().cloned());
+        out
+    }
 }
 
 /// The meter properties of a meter source (spec X2).
@@ -90,7 +105,8 @@ pub fn meter_props(source: MeterSource) -> &'static [&'static str] {
     }
 }
 
-/// The subscriptions of a strip: every part is drawn (schema 2).
+/// The subscriptions of a strip, by part (schema 2): the strip on the page
+/// subscribes [`StripSubs::shown`], its channel detail [`detail_subs`].
 pub fn strip_subs(strip: &Strip, source: MeterSource) -> StripSubs {
     let b = &strip.binding;
     StripSubs {
@@ -103,6 +119,52 @@ pub fn strip_subs(strip: &Strip, source: MeterSource) -> StripSubs {
             .collect(),
         color: spec(b, "", "color", false),
     }
+}
+
+/// The subscriptions of a strip's channel detail (#71, F27): every part of
+/// the strip, its pan with Live's display string.
+pub fn detail_subs(strip: &Strip, source: MeterSource) -> StripSubs {
+    let mut subs = strip_subs(strip, source);
+    if let Some(pan) = subs.pan.as_mut() {
+        pan.display = true;
+    }
+    subs
+}
+
+/// The strip an open detail shows in `layout` (#71): the layout's strip
+/// bound as the one held (`held`), with its label, guard and mark as the
+/// layout has them now; none when the layout has no such strip, or only in
+/// conflict (#68: a conflict disables the strip, so its detail closes).
+pub fn detail_strip(layout: &Layout, held: &Strip) -> Option<Strip> {
+    layout
+        .controls()
+        .into_iter()
+        .find_map(|control| match control {
+            Control::Strip(strip)
+                if strip.binding == held.binding && strip.mark != Some(StripMark::Conflict) =>
+            {
+                Some((**strip).clone())
+            }
+            _ => None,
+        })
+}
+
+/// The title of a group that holds a strip bound as `binding` (the
+/// detail's bar, #71): the first titled one in the layout's order.
+pub fn group_title(layout: &Layout, binding: &Binding) -> Option<String> {
+    layout
+        .pages
+        .iter()
+        .flat_map(|page| page.rows.iter())
+        .flat_map(|row| row.sections.iter())
+        .flat_map(Section::groups)
+        .filter(|group| {
+            group
+                .controls
+                .iter()
+                .any(|c| matches!(c, Control::Strip(s) if s.binding == *binding))
+        })
+        .find_map(|group| group.title.clone())
 }
 
 /// The subscription of a solo button: its group track's solo.
@@ -131,7 +193,7 @@ pub fn param_subs(targets: &[ParamTarget], fader: bool) -> Vec<Option<SubSpec>> 
 /// use the functions above, so the two cannot drift apart).
 pub fn control_subs(control: &Control, source: MeterSource) -> Vec<SubSpec> {
     match control {
-        Control::Strip(strip) => strip_subs(strip, source).all(),
+        Control::Strip(strip) => strip_subs(strip, source).shown(),
         Control::Solo { binding, .. } => solo_sub(binding).into_iter().collect(),
         Control::Stage { binding, .. } | Control::Alert { binding, .. } => {
             mute_sub(binding).into_iter().collect()
@@ -179,6 +241,22 @@ pub fn visible_subs(layout: &Layout, path: &[usize]) -> Vec<SubSpec> {
     let unique: BTreeMap<String, SubSpec> = visible_controls(layout, path)
         .into_iter()
         .flat_map(|c| control_subs(c, source))
+        .map(|s| (s.key(), s))
+        .collect();
+    unique.into_values().collect()
+}
+
+/// Every subscription the surface wants (#71): the controls on screen
+/// ([`visible_subs`]) and, while a channel detail is open, its strip's
+/// ([`detail_subs`]: its pan with Live's display string), each key once.
+pub fn wanted_subs(layout: &Layout, path: &[usize], detail: Option<&Strip>) -> Vec<SubSpec> {
+    let source = layout.config.meter_source.unwrap_or_default();
+    let detail = detail
+        .map(|strip| detail_subs(strip, source).all())
+        .unwrap_or_default();
+    let unique: BTreeMap<String, SubSpec> = visible_subs(layout, path)
+        .into_iter()
+        .chain(detail)
         .map(|s| (s.key(), s))
         .collect();
     unique.into_values().collect()

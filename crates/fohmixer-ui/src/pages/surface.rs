@@ -8,14 +8,14 @@
 //! this file measures a side and the height and renders the arrangement
 //! with keyed lists, so a sub-page switch or a shift remounts only the
 //! controls that change. Only the controls on screen are mounted, and the
-//! subscriptions are the selected path's (`binding::visible_subs`); the
-//! selected page and sub-page are remembered on the device, the Stream Deck
-//! tab never is.
+//! subscriptions are the selected path's with an open channel detail's
+//! (`binding::wanted_subs`, #71); the selected page and sub-page are
+//! remembered on the device, the Stream Deck tab and the detail never are.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use fohmixer_proto::layout::{Binding, Control, Layout, Page};
+use fohmixer_proto::layout::{Binding, Control, Layout, Page, Strip};
 use leptos::html;
 use leptos::prelude::*;
 use serde_json::json;
@@ -24,7 +24,7 @@ use crate::app::version_text;
 use crate::arrange::{Arrangement, Cell, Item, LineKey, METRICS, PageModel, Side, arrange, items};
 use crate::behave::solo::soloed;
 use crate::binding::{
-    SubSpec, choose, page_solos, selected_path, solo_sub, stored_pages, view_tap, visible_subs,
+    SubSpec, choose, page_solos, selected_path, solo_sub, stored_pages, view_tap, wanted_subs,
 };
 use crate::components::{ControlView, Settings, fail_flash, key_of, owns_surface, owns_touches};
 use crate::dom;
@@ -64,6 +64,10 @@ struct Nav {
     /// opens it). Here, not in a layout's shell: a Tuner edit in Live is a
     /// new layout, and it must not close the manual explaining it.
     manual: RwSignal<bool>,
+    /// The channel detail's strip, as held (#71: a hold on a strip's ☰
+    /// opens it). Here, not in a layout's shell: a new layout keeps it open
+    /// while its strip is in it (`binding::detail_strip`).
+    detail: RwSignal<Option<Strip>>,
 }
 
 impl Nav {
@@ -143,6 +147,7 @@ pub fn Surface(token: String, session: RwSignal<Option<String>>) -> impl IntoVie
         deck_shown: Memo::new(move |_| deck.get()),
         before_view: RwSignal::new(None),
         manual: RwSignal::new(false),
+        detail: RwSignal::new(None),
     };
     provide_context(nav);
     on_cleanup(move || store.stop());
@@ -160,13 +165,15 @@ pub fn Surface(token: String, session: RwSignal<Option<String>>) -> impl IntoVie
             let _ = nav.path.try_set(selected_path(&layout, &remembered));
         }
     });
-    // The controls on screen are the ones subscribed.
+    // The controls on screen are the ones subscribed, with an open
+    // detail's strip and its pan (#71).
     Effect::new(move |_| {
         let Some(layout) = store.layout.get() else {
             return;
         };
         let path = nav.path.get();
-        store.set_wanted(visible_subs(&layout, &path));
+        let detail = nav.detail.try_get().flatten();
+        store.set_wanted(wanted_subs(&layout, &path, detail.as_ref()));
     });
 
     let content = move || match store.layout.get() {

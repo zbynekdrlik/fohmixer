@@ -143,6 +143,17 @@ fn a_strip_subscribes_every_part_and_its_colour() {
         subs.color.as_ref().map(SubSpec::key),
         Some(format!("band|{t}|color|false"))
     );
+    // #71: the strip on the page draws no pan (the channel detail does), so
+    // it subscribes every part but the pan.
+    assert_eq!(
+        keys(&subs.shown()),
+        vec![
+            format!("band|{t} mixer_device volume|value|true"),
+            format!("band|{t}|mute|false"),
+            format!("band|{t}|output_meter_level|false"),
+            format!("band|{t}|color|false"),
+        ]
+    );
     // Two bars with `lr`.
     let lr = strip_subs(&strip("Hand2 #"), MeterSource::Lr);
     assert_eq!(
@@ -153,11 +164,52 @@ fn a_strip_subscribes_every_part_and_its_colour() {
         ]
     );
     assert_eq!(lr.all().len(), 6);
+    assert_eq!(lr.shown().len(), 5);
     // A binding whose path does not parse subscribes nothing.
     let mut bad = strip("X");
     bad.binding.path = Some("devices[name=".into());
     assert_eq!(strip_subs(&bad, MeterSource::Level).all(), vec![]);
+    assert_eq!(strip_subs(&bad, MeterSource::Level).shown(), vec![]);
     assert_eq!(StripSubs::default().all(), vec![]);
+    assert_eq!(StripSubs::default().shown(), vec![]);
+}
+
+#[test]
+fn a_channel_detail_subscribes_every_part_its_pan_with_lives_display() {
+    let t = "live_set tracks[name=Hand2 #]";
+    let subs = detail_subs(&strip("Hand2 #"), MeterSource::Level);
+    assert_eq!(
+        keys(&subs.all()),
+        vec![
+            format!("band|{t} mixer_device volume|value|true"),
+            format!("band|{t} mixer_device panning|value|true"),
+            format!("band|{t}|mute|false"),
+            format!("band|{t}|output_meter_level|false"),
+            format!("band|{t}|color|false"),
+        ]
+    );
+    // The parts are the strip's, but for the pan's display string.
+    let page = strip_subs(&strip("Hand2 #"), MeterSource::Level);
+    assert_eq!(subs.volume, page.volume);
+    assert_eq!(subs.mute, page.mute);
+    assert_eq!(subs.color, page.color);
+    assert_eq!(subs.meters, page.meters);
+    assert_eq!(
+        subs.pan.map(|p| (p.target, p.prop, p.display)),
+        Some((
+            format!("{t} mixer_device panning"),
+            "value".to_string(),
+            true
+        ))
+    );
+    assert_eq!(
+        detail_subs(&strip("Hand2 #"), MeterSource::Lr).meters.len(),
+        2
+    );
+    // A binding whose path does not parse: nothing.
+    let mut bad = strip("X");
+    bad.binding.path = Some("devices[name=".into());
+    assert_eq!(detail_subs(&bad, MeterSource::Level), StripSubs::default());
 }
 
 #[test]
@@ -225,8 +277,8 @@ fn every_control_kind_subscribes_what_it_shows() {
     );
     assert_eq!(
         sub(&Control::Strip(Box::new(strip("S")))).len(),
-        5,
-        "a strip: volume, pan, mute, one meter, colour"
+        4,
+        "a strip: volume, mute, one meter, colour (#71: its pan is the detail's)"
     );
     for none in [
         Control::HubToggle {
@@ -318,8 +370,9 @@ fn a_pinned_strip_of_another_sub_page_stays_on_screen() {
 fn every_key_on_screen_is_subscribed_once() {
     let layout = sample();
     let subs = visible_subs(&layout, &[1, 0]);
-    // stage + solo, strips A and C (A twice on screen), TechAlert.
-    assert_eq!(subs.len(), 2 + 5 + 5 + 1);
+    // stage + solo, strips A and C (A twice on screen; no pan, #71),
+    // TechAlert.
+    assert_eq!(subs.len(), 2 + 4 + 4 + 1);
     let unique: std::collections::BTreeSet<String> = subs.iter().map(SubSpec::key).collect();
     assert_eq!(unique.len(), subs.len());
     assert!(
@@ -329,7 +382,12 @@ fn every_key_on_screen_is_subscribed_once() {
     assert!(!subs.iter().any(|s| s.target.contains("name=B]")));
     // The other sub-page: B instead of A (A stays, the fixed group holds it).
     let others = visible_subs(&layout, &[1, 1]);
-    assert_eq!(others.len(), 2 + 5 + 5 + 5 + 1);
+    assert_eq!(others.len(), 2 + 4 + 4 + 4 + 1);
+    assert!(
+        !others
+            .iter()
+            .any(|s| s.target.ends_with("mixer_device panning"))
+    );
     // The cue page: its toggle's target and TechAlert.
     assert_eq!(visible_subs(&layout, &[0]).len(), 2);
 }
@@ -496,4 +554,134 @@ fn a_view_returns_to_the_first_page_without_a_default() {
     let mut layout = with_views();
     layout.default_page = "missing".into();
     assert_eq!(view_tap(&layout, Some(2), false, 2, None), (0, None));
+}
+
+/// The sample's strip `name` bound by name in the band (as a detail holds
+/// it).
+fn held(name: &str) -> Strip {
+    strip(name)
+}
+
+#[test]
+fn a_detail_adds_its_pan_with_lives_display_to_a_page_that_shows_its_strip() {
+    let layout = sample();
+    let page = visible_subs(&layout, &[1, 0]);
+    // No detail: the controls on screen.
+    assert_eq!(wanted_subs(&layout, &[1, 0], None), page);
+    // C is on screen: its detail adds exactly its pan with the display.
+    let wanted = wanted_subs(&layout, &[1, 0], Some(&held("C")));
+    let added: Vec<String> = keys(&wanted)
+        .into_iter()
+        .filter(|k| !keys(&page).contains(k))
+        .collect();
+    assert_eq!(
+        added,
+        vec!["band|live_set tracks[name=C] mixer_device panning|value|true".to_string()]
+    );
+    assert_eq!(wanted.len(), page.len() + 1);
+    let unique: std::collections::BTreeSet<String> = keys(&wanted).into_iter().collect();
+    assert_eq!(unique.len(), wanted.len(), "each key once");
+}
+
+#[test]
+fn a_detail_of_a_strip_on_no_page_shown_adds_all_its_subscriptions() {
+    let layout = sample();
+    // The cue page shows its toggle and TechAlert; B's detail adds B.
+    let page = visible_subs(&layout, &[0]);
+    let wanted = wanted_subs(&layout, &[0], Some(&held("B")));
+    assert_eq!(wanted.len(), page.len() + 5);
+    for key in keys(&detail_subs(&held("B"), MeterSource::Level).all()) {
+        assert!(keys(&wanted).contains(&key), "{key}");
+    }
+    for key in keys(&page) {
+        assert!(keys(&wanted).contains(&key), "{key}");
+    }
+    // The layout's meter source applies to the detail too.
+    let mut lr = sample();
+    lr.config.meter_source = Some(MeterSource::Lr);
+    let wanted = wanted_subs(&lr, &[0], Some(&held("B")));
+    assert_eq!(wanted.len(), page.len() + 6);
+    assert!(
+        wanted
+            .iter()
+            .any(|s| s.target == "live_set tracks[name=B]" && s.prop == "output_meter_right")
+    );
+}
+
+/// The sample's first group that holds strip A (the pager's STAGE).
+fn stage_group(layout: &mut Layout) -> &mut fohmixer_proto::layout::Group {
+    let Section::Pager(pager) = &mut layout.pages[1].rows[0].sections[0] else {
+        panic!("the pager")
+    };
+    let Section::Group(group) = &mut pager.pages[0].sections[0] else {
+        panic!("STAGE's group")
+    };
+    group
+}
+
+#[test]
+fn a_detail_shows_the_layouts_strip_with_the_same_binding() {
+    let mut layout = sample();
+    // A new layout: A's label, guard and mark changed.
+    let Control::Strip(a) = &mut stage_group(&mut layout).controls[0] else {
+        panic!("the strip A")
+    };
+    a.label = Some("Lead".into());
+    a.mute_guard = true;
+    a.mark = Some(StripMark::Problem);
+    let shown = detail_strip(&layout, &held("A")).expect("A is in the layout");
+    assert_eq!(shown.binding, held("A").binding);
+    assert_eq!(shown.label.as_deref(), Some("Lead"));
+    assert!(shown.mute_guard);
+    assert_eq!(shown.mark, Some(StripMark::Problem));
+    // C as it is; a strip the layout does not hold: none.
+    assert_eq!(detail_strip(&layout, &held("C")), Some(held("C")));
+    assert_eq!(detail_strip(&layout, &held("Gone")), None);
+    // Another instance's track of the same name is another strip.
+    let mut master = held("C");
+    master.binding.instance = "master".into();
+    assert_eq!(detail_strip(&layout, &master), None);
+}
+
+#[test]
+fn a_strip_in_conflict_has_no_detail() {
+    let mut layout = sample();
+    // B is only on OTHERS: in conflict, its detail closes.
+    let Section::Pager(pager) = &mut layout.pages[1].rows[0].sections[0] else {
+        panic!("the pager")
+    };
+    let Section::Group(group) = &mut pager.pages[1].sections[0] else {
+        panic!("OTHERS' group")
+    };
+    let Control::Strip(b) = &mut group.controls[0] else {
+        panic!("the strip B")
+    };
+    b.mark = Some(StripMark::Conflict);
+    assert_eq!(detail_strip(&layout, &held("B")), None);
+    // A in conflict on STAGE but whole in the fixed group: that one.
+    let Control::Strip(a) = &mut stage_group(&mut layout).controls[0] else {
+        panic!("the strip A")
+    };
+    a.mark = Some(StripMark::Conflict);
+    assert_eq!(detail_strip(&layout, &held("A")), Some(held("A")));
+}
+
+#[test]
+fn a_details_title_is_its_first_titled_group() {
+    let mut layout = sample();
+    let a = held("A").binding;
+    assert_eq!(group_title(&layout, &a), None, "no group has a title");
+    // The fixed group titled: A's first group (STAGE) has none, so that one.
+    let Section::Group(fixed) = &mut layout.pages[1].rows[0].sections[1] else {
+        panic!("the fixed group")
+    };
+    fixed.title = Some("BAND".into());
+    assert_eq!(group_title(&layout, &a).as_deref(), Some("BAND"));
+    stage_group(&mut layout).title = Some("STAGE".into());
+    assert_eq!(group_title(&layout, &a).as_deref(), Some("STAGE"));
+    // B sits only on OTHERS (untitled); a track on no strip has none.
+    assert_eq!(group_title(&layout, &held("B").binding), None);
+    assert_eq!(group_title(&layout, &held("Gone").binding), None);
+    // A group holding only other controls is no strip's group.
+    assert_eq!(group_title(&layout, &track("Vocals grp", None)), None);
 }
