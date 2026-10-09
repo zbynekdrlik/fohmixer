@@ -716,11 +716,17 @@ fn a_resting_finger_goes_again_until_its_page_falls_silent() {
             .filter(|r| r["op"] == "touch")
             .map(|r| r["t"].as_f64().expect("a touch's time"))
             .collect();
-        let largest = times
-            .windows(2)
-            .map(|pair| pair[1] - pair[0])
-            .fold(0.0, f64::max);
-        assert!(largest < 100.0, "the largest gap {largest} ms: {times:?}");
+        // Wall-clock times of a whole hub: a loaded runner (two host tests
+        // at once, the coverage build, the encoder's JPEGs) may hold the
+        // worker up once. The strict 100 ms bound is the explicit-clock
+        // unit tests' (`plugwin::tests`).
+        let gaps: Vec<f64> = times.windows(2).map(|pair| pair[1] - pair[0]).collect();
+        let late = gaps.iter().filter(|gap| **gap >= 100.0).count();
+        let largest = gaps.iter().copied().fold(0.0, f64::max);
+        assert!(
+            late <= 1 && largest < 150.0,
+            "{late} gaps of 100 ms or more, the largest {largest} ms: {gaps:?}"
+        );
         // Silent for 2 s: the contact ends where it rested.
         let ops = sim_until(dir.path(), &[step("touch", "cancel", 100, 100)]).await;
         assert!(
