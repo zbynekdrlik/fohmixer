@@ -222,8 +222,11 @@ fn a_probe_names_the_step_that_failed() {
         run(&mut sim, &probe, &mut out),
         Err(format!("band: down at 431,321: {REFUSED}"))
     );
-    // Without --out nothing is saved; the release did not run.
-    assert!(!handle.records().iter().any(|r| r["op"] == "release"));
+    // The refused down left no contact; the window is handed back.
+    assert_eq!(
+        ops(&handle),
+        vec![op("take", "", -1, -1), op("release", "", -1, -1)]
+    );
 }
 
 #[test]
