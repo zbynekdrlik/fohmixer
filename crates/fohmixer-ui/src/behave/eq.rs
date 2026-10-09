@@ -116,9 +116,12 @@ impl Finger {
         self.cancel(pointer)
     }
 
-    /// The page went hidden (`hidden`) or was shown again.
-    pub fn visibility(&mut self, _hidden: bool) -> Option<Out> {
-        None
+    /// The page went hidden (`hidden`) or was shown again: a hidden page
+    /// lifts its finger (a cancel, if one is down), as the Stream Deck's
+    /// keys go up. A hidden page still pings, so the hub's 2 s silence would
+    /// never end the PC's contact.
+    pub fn visibility(&mut self, hidden: bool) -> Option<Out> {
+        if hidden { self.leave() } else { None }
     }
 
     /// Whether a finger is down.

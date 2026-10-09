@@ -437,9 +437,17 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
     let sink: FrameSink = Rc::new(move |blob: web_sys::Blob| paint(painter, blob));
     store.eq_frames(Some(sink));
     store.eq_open(&target.instance, &target.path);
+    // A hidden page lifts its finger (`Finger::visibility`), as the Stream
+    // Deck lifts its keys: `visibilitychange` bubbles to the window.
+    let hidden = window_event_listener_untyped("visibilitychange", move |_| {
+        if let Some(Some(out)) = finger.try_update_value(|f| f.visibility(dom::hidden())) {
+            store.eq_input(out);
+        }
+    });
     // Leaving the screen: a finger still down ends, the hub closes the
     // editor, the frames stop. (The component's own signals stay untouched.)
     on_cleanup(move || {
+        hidden.remove();
         if let Some(Some(out)) = finger.try_update_value(Finger::leave) {
             store.eq_input(out);
         }
