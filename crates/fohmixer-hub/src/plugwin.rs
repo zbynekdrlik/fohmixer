@@ -34,8 +34,11 @@
 //!   once [`KEEPALIVE_MS`] passed since its last injection, looking at least
 //!   every [`STEP`] (it blocks only for a grab). The largest gap between two
 //!   injections of a contact goes into the minute's counts ([`Rate`]).
-//! - **The close guard** ([`Plugwin::guard`]): the frames stop, any contact
-//!   ends at its last point, then a tap on the editor's inert spot
+//! - **The close guard** ([`Plugwin::guard`]): the frames stop, its own
+//!   contact ends at its last point (an up), another session's is cancelled
+//!   there and reported ([`GUARD_CANCEL`]: the PC injects one contact, so
+//!   the tap would fail or end the other engineer's drag), then a tap on
+//!   the editor's inert spot
 //!   ([`inert_spot`]): a value text field closes on a click elsewhere, and
 //!   Pro-Q 4.02 crashes Live when its editor closes with one open. A guard
 //!   that cannot tap fails: the router then leaves the editor open.
@@ -89,6 +92,8 @@ pub const SEVERAL: &str = "several windows";
 pub const NO_EDITOR: &str = "no such editor";
 /// Why a command found no worker.
 pub const STOPPED: &str = "the window worker stopped";
+/// Why the close guard ended another session's contact.
+pub const GUARD_CANCEL: &str = "the close guard of another editor";
 
 /// A window's handle as a number (a Win32 `HWND` is a pointer, not `Send`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -854,10 +859,28 @@ impl Worker {
         }
     }
 
-    /// The close guard of `session`: no more frames, its contact ended, a
-    /// tap on the inert spot.
+    /// Another session's contact down, cancelled at its last point and
+    /// reported: the close guard's tap needs the PC's one injected contact.
+    fn cancel_other(&mut self, session: u32) {
+        let Some(held) = self.contact.filter(|held| held.session != session) else {
+            return;
+        };
+        self.contact = None;
+        if let Some(editor) = self.editors.get(&held.session) {
+            let _ = self.backend.touch(&editor.taken, Phase::Cancel, held.at);
+        }
+        (self.events)(PlugwinEvent::ContactEnded {
+            session: held.session,
+            contact: held.contact,
+            why: GUARD_CANCEL.to_string(),
+        });
+    }
+
+    /// The close guard of `session`: no more frames, its contact ended
+    /// (another session's cancelled), a tap on the inert spot.
     fn guard(&mut self, session: u32) -> Result<(), String> {
         self.end_contact(session);
+        self.cancel_other(session);
         let editor = self.editors.get_mut(&session).ok_or(NO_EDITOR)?;
         editor.sink = None;
         self.encoder.forget(session);
