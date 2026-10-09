@@ -19,6 +19,11 @@ fn key() -> EditorKey {
     EditorKey::new("band", PATH)
 }
 
+/// `key()` as a list found it, with its device's name.
+fn found_key() -> (EditorKey, String) {
+    (key(), "Pro-Q 4".to_string())
+}
+
 /// The `band` instance on a port nothing listens on: every call answers
 /// "instance offline".
 fn offline_live() -> LiveHandle {
@@ -302,7 +307,7 @@ async fn an_open_of_an_offline_instance_fails_and_frees_the_editor() {
     } = rig(dir.path());
     let outbox = attach(&mut router, 1);
     let other = attach(&mut router, 2);
-    router.eq.as_mut().unwrap().state.listed([key()]);
+    router.eq.as_mut().unwrap().state.listed([found_key()]);
     router.handle(RouterMsg::EqOpen {
         client: 1,
         instance: "band".into(),
@@ -336,7 +341,7 @@ async fn held_open(rig: &mut Rig) -> Arc<Outbox> {
     let outbox = attach(&mut rig.router, 1);
     assert_eq!(rig.plugwin.take(1, Vec::new()).await, Ok((1349, 809)));
     let io = rig.router.eq.as_mut().unwrap();
-    io.state.listed([key()]);
+    io.state.listed([found_key()]);
     io.state.open(1, &key(), 0.0);
     let acts = io.state.opened(&key(), 1, Ok((1349, 809)));
     rig.router.eq_acts(acts);
@@ -490,9 +495,10 @@ async fn the_close_sequence_leaves_an_editor_open_when_its_guard_fails() {
         .count();
     assert_eq!(released, 2, "both windows handed back");
     assert_eq!(sim.windows().len(), 2, "both editors still open in Live");
-    // Opens: no instance, an offline one.
+    // Opens: no instance, no listed name, an offline instance (its read).
+    let name = || Some("Pro-Q 4".to_string());
     assert_eq!(
-        open_editor(None, plugwin.clone(), key(), 3, events.clone()).await,
+        open_editor(None, plugwin.clone(), key(), name(), 3, events.clone()).await,
         Err(UNKNOWN_INSTANCE.to_string())
     );
     assert_eq!(
@@ -500,6 +506,19 @@ async fn the_close_sequence_leaves_an_editor_open_when_its_guard_fails() {
             Some(live.clone()),
             plugwin.clone(),
             key(),
+            None,
+            3,
+            events.clone()
+        )
+        .await,
+        Err(reason::UNKNOWN.to_string())
+    );
+    assert_eq!(
+        open_editor(
+            Some(live.clone()),
+            plugwin.clone(),
+            key(),
+            name(),
             3,
             events.clone()
         )

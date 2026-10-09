@@ -7,10 +7,18 @@ fn key(n: u32) -> EditorKey {
     EditorKey::new("band", &format!("live_set tracks {n} devices 0"))
 }
 
+/// The device name the lists found.
+const NAME: &str = "Vox EQ";
+
+/// `key` as a list found it, with its device's name.
+fn found(key: EditorKey) -> (EditorKey, String) {
+    (key, NAME.to_string())
+}
+
 /// A state where editors 1..=4 were listed.
 fn listed() -> Eqs {
     let mut eqs = Eqs::default();
-    eqs.listed((1..=4).map(key));
+    eqs.listed((1..=4).map(key).map(found));
     eqs
 }
 
@@ -118,7 +126,10 @@ fn only_a_listed_editor_opens() {
             rec("refused", &key(1), Some(1), None, Some(reason::UNKNOWN)),
         ]
     );
-    eqs.listed([key(1)]);
+    eqs.listed([found(key(1)), (key(2), "Kick EQ".to_string())]);
+    assert_eq!(eqs.name_of(&key(1)), Some(NAME));
+    assert_eq!(eqs.name_of(&key(2)), Some("Kick EQ"));
+    assert_eq!(eqs.name_of(&key(3)), None);
     assert_eq!(eqs.open(1, &key(1), WALL).len(), 5);
     // A new connection of the instance: listed again before an open.
     eqs.forget("master");

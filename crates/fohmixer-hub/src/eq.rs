@@ -14,7 +14,9 @@
 //!   window list before and after `is_editor_open = true`, so two opens at
 //!   once could take each other's window. The others wait in a queue.
 //! - **Only listed editors open:** a path the hub's `eq_list` reads found
-//!   ([`Eqs::listed`]); never an arbitrary LOM path.
+//!   ([`Eqs::listed`]); never an arbitrary LOM path. The open sequence reads
+//!   the device first ([`open`]): still the listed Pro-Q 4 (its name), its
+//!   editor closed in Live.
 //! - **The contact:** one on the screen at a time (the PC has one cursor),
 //!   on an open editor of the client touching. A move goes on at once; an
 //!   up at a point other than the last one moves there first; a resting
@@ -34,9 +36,10 @@
 //! lock's "since", shown on the pages).
 
 pub mod close;
+pub mod open;
 pub mod walk;
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
@@ -261,22 +264,28 @@ pub struct Eqs {
     opening: bool,
     contact: Option<Contact>,
     heard: HashMap<ClientId, f64>,
-    /// The editors an `eq_list` read found.
-    known: BTreeSet<EditorKey>,
+    /// The editors an `eq_list` read found, with the device's name.
+    known: BTreeMap<EditorKey, String>,
     /// The last session number given out.
     sessions: u32,
 }
 
 impl Eqs {
-    /// An `eq_list` read found these editors: they may be opened.
-    pub fn listed(&mut self, keys: impl IntoIterator<Item = EditorKey>) {
-        self.known.extend(keys);
+    /// An `eq_list` read found these editors (each with its device's
+    /// name): they may be opened.
+    pub fn listed(&mut self, found: impl IntoIterator<Item = (EditorKey, String)>) {
+        self.known.extend(found);
+    }
+
+    /// The device name a list found at `key` (the open checks it).
+    pub fn name_of(&self, key: &EditorKey) -> Option<&str> {
+        self.known.get(key).map(String::as_str)
     }
 
     /// An instance connected again: its listed paths may name other devices
     /// now (another set), so they are forgotten until listed again.
     pub fn forget(&mut self, instance: &str) {
-        self.known.retain(|key| key.instance != instance);
+        self.known.retain(|key, _| key.instance != instance);
     }
 
     /// Something came from `client` at `now`.
@@ -315,7 +324,7 @@ impl Eqs {
 
     /// `client` opens `key` at `wall`.
     pub fn open(&mut self, client: ClientId, key: &EditorKey, wall: f64) -> Vec<Act> {
-        if !self.known.contains(key) {
+        if !self.known.contains_key(key) {
             return vec![
                 Act::Tell {
                     client,

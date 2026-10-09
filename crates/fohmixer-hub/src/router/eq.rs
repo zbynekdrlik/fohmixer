@@ -8,9 +8,12 @@
 //! the capture's rate once a minute) and hands every window back at the stop.
 //!
 //! - **The open sequence** (one at a time, the state queues the others):
-//!   the editor windows listed, `is_editor_open = true` through the script,
-//!   the new window taken by the worker; when no window comes, the editor is
-//!   closed again in Live. The answer comes back as `RouterMsg::EqOpened`.
+//!   the device read first (`eq::open`: still the listed Pro-Q 4, its editor
+//!   closed in Live, else refused `moved` or `open on the PC`), the editor
+//!   windows listed, `is_editor_open = true` through the script, the new
+//!   window taken by the worker; when no window comes, the editor this open
+//!   turned on is closed again in Live. The answer comes back as
+//!   `RouterMsg::EqOpened`.
 //! - **The close sequence:** the worker's guard (any contact ended, the
 //!   inert spot tapped), [`GUARD_WAIT`], then `is_editor_open = false`, then
 //!   the window released. A guard that could not tap leaves the editor open
@@ -32,6 +35,7 @@ use serde_json::{Value, json};
 
 use super::{Router, RouterMsg, write_failure};
 use crate::eq::close::{self, Check, CloseCheck};
+use crate::eq::open;
 use crate::eq::walk::{Found, MAX_READS, Step, Walk};
 use crate::eq::{Act, EditorKey, Eqs, GUARD_WAIT, Pictures, record};
 use crate::events::EventLog;
@@ -135,17 +139,29 @@ async fn turn_off(
     }
 }
 
-/// The open sequence: the windows listed, the editor opened in Live, the
-/// new window taken; its picture's size. When no window could be taken,
-/// the editor is turned off again (never another device's).
+/// The open sequence: the device read (still the Pro-Q 4 the list named
+/// `name`, its editor closed in Live), the windows listed, the editor
+/// opened in Live, the new window taken; its picture's size. When no window
+/// could be taken, the editor (which this open turned on: the read found it
+/// closed) is turned off again, never another device's.
 async fn open_editor(
     live: Option<LiveHandle>,
     plugwin: Plugwin,
     key: EditorKey,
+    name: Option<String>,
     session: u32,
     events: EventLog,
 ) -> Result<(u32, u32), String> {
     let live = live.ok_or(UNKNOWN_INSTANCE)?;
+    let name = name.ok_or(reason::UNKNOWN)?;
+    let slots = live
+        .call(open::read(&key.path))
+        .await
+        .map_err(|e| e.to_string())?;
+    if let Err(why) = open::ready(&slots, &key.path, &name) {
+        tracing::info!(session, instance = %key.instance, path = %key.path, why, "a Pro-Q 4 open is refused: Live is left alone");
+        return Err(why.to_string());
+    }
     let before = plugwin.list().await?;
     set_editor(&live, &key.path, true).await?;
     let taken = plugwin.take(session, before).await;
@@ -289,7 +305,11 @@ impl Router {
             .iter()
             .map(|f| EditorKey::new(&binding.instance, &f.path))
             .collect();
-        io.state.listed(keys.iter().cloned());
+        io.state.listed(
+            keys.iter()
+                .cloned()
+                .zip(found.iter().map(|f| f.name.clone())),
+        );
         let items = found
             .into_iter()
             .zip(&keys)
@@ -459,8 +479,10 @@ impl Router {
                     self.io.tx.clone(),
                     self.io.events.clone(),
                 );
+                let name = io.state.name_of(&key).map(str::to_string);
                 tokio::spawn(async move {
-                    let outcome = open_editor(live, plugwin, key.clone(), session, events).await;
+                    let outcome =
+                        open_editor(live, plugwin, key.clone(), name, session, events).await;
                     let _ = tx.send(RouterMsg::EqOpened {
                         key,
                         session,
