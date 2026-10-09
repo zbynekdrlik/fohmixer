@@ -615,8 +615,11 @@ async fn the_close_sequence_leaves_an_editor_open_when_its_guard_fails() {
         close_editor(None, plugwin.clone(), key(), 1, None, events.clone()).await,
         Some(UNKNOWN_INSTANCE.to_string())
     );
-    // The guard cannot tap: the editor stays open (not even asked).
-    plugwin.take(2, Vec::new()).await.unwrap();
+    // The guard cannot tap: the editor stays open (not even asked). The
+    // first editor's window stays (no Live closed it): the take's diff
+    // starts from it.
+    let before = plugwin.list().await.unwrap();
+    plugwin.take(2, before).await.unwrap();
     sim.refuse(true);
     assert_eq!(
         close_editor(

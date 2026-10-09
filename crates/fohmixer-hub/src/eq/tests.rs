@@ -469,9 +469,10 @@ fn an_editor_left_while_it_opens_closes_once_open() {
         .collect();
     assert_eq!(
         opens,
+        // Sessions are numbered as editors open: the third one opened.
         [&Act::Open {
             key: key(4),
-            session: 4,
+            session: 3,
             connection: 0
         }],
         "{acts:?}"
