@@ -35,12 +35,12 @@
 
 ### Tasks
 
-1. [ ] `behave/hold.rs` + tests (boundaries, a second pointer, cancel, re-press).
-2. [ ] `binding`: `StripSubs::shown`, `detail_subs`, `detail_strip`, `wanted_subs` + tests; `Surface` uses `wanted_subs`.
-3. [ ] The strip: no pan, `.strip-info` with `.strip-menu`, the hold glue, the hint; CSS swept 64–120 px in Chromium and WebKit.
-4. [ ] `Nav.detail`, `DetailView` in `Shell`, `detail.css` (+ `index.html` link, `Trunk.toml` watch), the STRED write, the exit.
-5. [ ] E2E: `e2e/tests/detail.spec.ts` (a short touch on ☰ shows the hint and opens nothing; a hold opens the detail of that strip with its name; its fader drag reaches the track's volume in SimLive; its mute toggles the track's mute; its pan drag and `STRED` reach the track's panning; `← SPÄŤ NA MIX` returns to the page; a new layout keeps it open; TechAlert flashes over it; strips show no pan; clipped() and console clean); a helper `openDetail(page, track)` in `e2e/tests/support`; the pan tests of `column.spec.ts`, `intent.spec.ts`, `resilience.spec.ts`, `strip.spec.ts`, `touch-guard.spec.ts` move to the detail's pan.
-6. [ ] Docs: `.claude/rules/ui-rust.md` (the detail, the hold, `wanted_subs`), `.claude/rules/e2e.md` (the helper), the spec's F27 status.
+1. [x] `behave/hold.rs` + tests (boundaries, a second pointer, cancel, re-press).
+2. [x] `binding`: `StripSubs::shown`, `detail_subs`, `detail_strip`, `wanted_subs` + tests; `Surface` uses `wanted_subs`.
+3. [x] The strip: no pan, `.strip-info` with `.strip-menu`, the hold glue, the hint; CSS swept 64–120 px in Chromium and WebKit.
+4. [x] `Nav.detail`, `DetailView` in `Shell`, `detail.css` (+ `index.html` link, `Trunk.toml` watch), the STRED write, the exit.
+5. [x] E2E: `e2e/tests/detail.spec.ts` (a short touch on ☰ shows the hint and opens nothing; a hold opens the detail of that strip with its name; its fader drag reaches the track's volume in SimLive; its mute toggles the track's mute; its pan drag and `STRED` reach the track's panning; `← SPÄŤ NA MIX` returns to the page; a new layout keeps it open; TechAlert flashes over it; strips show no pan; clipped() and console clean); a helper `openDetail(page, track)` in `e2e/tests/support`; the pan tests of `column.spec.ts`, `intent.spec.ts`, `resilience.spec.ts`, `strip.spec.ts`, `touch-guard.spec.ts` move to the detail's pan.
+6. [x] Docs: `.claude/rules/ui-rust.md` (the detail, the hold, `wanted_subs`), `.claude/rules/e2e.md` (the helper), the spec's F27 status (the detail without its Pro-Q 4 until PR E).
 
 ## PR E: Pro-Q 4 on the surface (after the owner's answer on #71)
 
