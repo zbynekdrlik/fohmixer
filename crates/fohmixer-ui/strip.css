@@ -439,7 +439,7 @@
    longest reading ("−69.9", 3 em of the mono face) fits the first column
    less the light from the narrowest strip up (nothing is measured; swept
    over 64–120 px in Chromium and WebKit): 8.5 px at 64 px, 12 px from
-   78 px. Its line is 17 px whatever the size (the face's whole height at
+   76.8 px. Its line is 17 px whatever the size (the face's whole height at
    12 px; at the smallest sizes Chromium rounds the face's metrics up). */
 .strip-readout .db {
     font-size: clamp(7px, calc((var(--strip-w, 76px) - 18px - var(--menu-w)) / 3.3), 12px);
