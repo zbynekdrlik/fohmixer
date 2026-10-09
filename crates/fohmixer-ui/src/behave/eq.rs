@@ -446,12 +446,33 @@ mod tests {
         assert_eq!(said(reason::UNREAD), said("unread"));
         // Anything else keeps the hub's own words.
         assert_eq!(
-            failure_text("several windows"),
-            Some("Neotvoril sa: several windows".to_string())
+            failure_text("EnumWindows: access denied"),
+            Some("Neotvoril sa: EnumWindows: access denied".to_string())
         );
         assert_eq!(
             failure_text("the guard's tap failed"),
             Some("Neotvoril sa: the guard's tap failed".to_string())
+        );
+    }
+
+    #[test]
+    fn every_reason_the_hub_sends_a_page_reads_in_slovak() {
+        let said = |why: &str| failure_text(why).unwrap_or_default();
+        assert_eq!(said("instance offline"), "Live je nedostupný, skús znova");
+        assert_eq!(said("Live did not answer"), "Live neodpovedá, skús znova");
+        assert_eq!(said("unknown instance"), "neznámy Live");
+        assert_eq!(
+            said("several windows"),
+            "otvorilo sa viac okien, skús znova"
+        );
+        assert_eq!(
+            said("the window has no Pro-Q picture (FF_UIWindow)"),
+            "okno nie je Pro-Q 4"
+        );
+        assert_eq!(said("the window worker stopped"), "hub sa zastavuje");
+        assert_eq!(
+            said("left open in Live"),
+            "Pro-Q 4 sa nepodarilo bezpečne zavrieť, ostáva otvorený na PC"
         );
     }
 

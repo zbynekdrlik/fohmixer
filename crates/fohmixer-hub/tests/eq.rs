@@ -571,13 +571,14 @@ fn a_deleted_editors_close_checks_its_held_path_and_leaves_live_alone() {
         open(&mut a, ON_TRACK).await;
         // Its own track deleted: its ref is stale, so the close check reads
         // the held path (Hand3 #'s now, no device there), walks the set,
-        // finds no open Pro-Q 4 and leaves Live alone.
+        // finds no open Pro-Q 4 and leaves Live alone. The page hears that
+        // its editor may still be open in Live.
         assert!(host.delete_track(1) > 0, "Hand2 # deleted");
         a.send(&ClientMsg::EqClose).await;
         let closed = state(&mut a, ON_TRACK).await;
         assert_eq!(
             (closed.0, closed.3.as_deref()),
-            (EqState::Closed, Some(reason::EXIT))
+            (EqState::Closed, Some("left open in Live"))
         );
         let records = hub
             .events_until(WAIT, |records| {
