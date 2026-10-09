@@ -35,7 +35,7 @@ use super::buttons::colour_style;
 use super::{owns_touches, trace_detail};
 use crate::behave::eq::{
     CardLock, Finger, Fit, card_lock, failure_text, fit, hh_mm, list_text, locked_text, on_picture,
-    to_picture,
+    place_text, to_picture,
 };
 use crate::binding::detail_keys;
 use crate::dom;
@@ -43,13 +43,14 @@ use crate::raf;
 use crate::store::eq::{EqView, ended};
 use crate::store::{FrameSink, LiveStore, Slot};
 
-/// What the screen shows: an editor, where it sits, and the strip's name,
-/// its chip's colours and its keys (the flight recorder's).
+/// What the screen shows: an editor, its name as its card gives it
+/// (`behave::eq::place_text`), and the strip's name, its chip's colours and
+/// its keys (the flight recorder's).
 #[derive(Debug, Clone, PartialEq)]
 pub struct EqTarget {
     pub instance: String,
     pub path: String,
-    pub place: String,
+    pub title: String,
     pub label: String,
     pub chip: String,
     pub keys: Vec<String>,
@@ -174,10 +175,11 @@ fn EqCard(
                 .flatten()
         }
     };
+    let title = place_text(&item.place, &item.name);
     let target = StoredValue::new(EqTarget {
         instance,
         path: item.path.clone(),
-        place: item.place.clone(),
+        title: title.clone(),
         label,
         chip: String::new(),
         keys,
@@ -195,8 +197,6 @@ fn EqCard(
         nav.open(target, ev.pointer_id());
     };
     let no_keys: Vec<String> = Vec::new();
-    let renamed = (item.name != PRODUCT).then(|| format!(" · {}", item.name));
-    let place = format!("{PRODUCT} · {}{}", item.place, renamed.unwrap_or_default());
     let path_attr = item.path.clone();
     let alt = format!("{PRODUCT}, posledný obraz");
     let picture = move || match shown.try_get().flatten() {
@@ -222,7 +222,7 @@ fn EqCard(
                     </div>
                 })}
             </div>
-            <div class="eq-card-where" data-testid="eq-card-where">{place}</div>
+            <div class="eq-card-where" data-testid="eq-card-where">{title}</div>
             <button
                 type="button"
                 class="eq-card-open"
@@ -566,7 +566,7 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
     let exit_keys: Vec<String> = Vec::new();
     let help_keys: Vec<String> = Vec::new();
     let area_keys: Vec<String> = Vec::new();
-    let where_text = format!("{PRODUCT} · {}", target.place);
+    let where_text = target.title.clone();
     let chip = target.chip.clone();
     view! {
         <div

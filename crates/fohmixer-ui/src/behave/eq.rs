@@ -169,9 +169,15 @@ pub fn lists_now(before: Option<ListLink>, now: ListLink) -> bool {
     now.connected && before.is_none_or(|b| !b.connected)
 }
 
-/// What names an editor on its card and on its screen.
-pub fn place_text(place: &str, _name: &str) -> String {
-    format!("{PRODUCT} · {place}")
+/// What names an editor on its card and on its screen: the product, where
+/// it sits (`na tracku`, or its racks and chains), and the device's name
+/// when it was renamed (`Pro-Q 4 · Vocal FX › Main · De-ess`).
+pub fn place_text(place: &str, name: &str) -> String {
+    if name == PRODUCT {
+        format!("{PRODUCT} · {place}")
+    } else {
+        format!("{PRODUCT} · {place} · {name}")
+    }
 }
 
 /// `HH:MM` of a clock's hours and minutes.
