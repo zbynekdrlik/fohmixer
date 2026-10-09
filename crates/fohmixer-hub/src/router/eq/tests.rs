@@ -296,6 +296,54 @@ async fn a_listed_editor_is_known_and_says_whether_a_picture_is_kept() {
     assert_eq!(whats(&records), vec!["take", "open"]);
 }
 
+/// The `band` instance connected (again).
+fn connected() -> RouterMsg {
+    RouterMsg::Live {
+        instance: "band".into(),
+        event: LiveEvent::Connected(crate::live::ConnectInfo {
+            instance: "band".into(),
+            set_name: "set".into(),
+            script_version: "0".into(),
+            live_version: "12".into(),
+        }),
+    }
+}
+
+#[tokio::test]
+async fn an_open_after_its_instance_connected_again_is_refused_until_listed() {
+    let dir = tempfile::tempdir().unwrap();
+    let Rig {
+        mut router,
+        records,
+        ..
+    } = rig(dir.path());
+    let outbox = attach(&mut router, 1);
+    router.handle(RouterMsg::EqListed {
+        client: 1,
+        binding: hand2(),
+        outcome: Ok(vec![Found {
+            path: PATH.into(),
+            place: "na tracku".into(),
+            name: "Pro-Q 4".into(),
+        }]),
+    });
+    // The instance connects again: another set may be loaded, so the path
+    // listed before may name another device.
+    router.handle(connected());
+    outbox.take();
+    let _ = records.try_iter().count();
+    router.handle(RouterMsg::EqOpen {
+        client: 1,
+        instance: "band".into(),
+        path: PATH.into(),
+    });
+    assert_eq!(
+        eq_msgs(&outbox),
+        vec![crate::eq::closed_msg(&key(), reason::UNKNOWN, None)]
+    );
+    assert_eq!(whats(&records), vec!["refused"]);
+}
+
 #[tokio::test]
 async fn an_open_of_an_offline_instance_fails_and_frees_the_editor() {
     let dir = tempfile::tempdir().unwrap();
