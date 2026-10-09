@@ -812,6 +812,21 @@ fn the_guard_first_cancels_another_sessions_contact() {
 }
 
 #[test]
+fn a_guard_of_an_editor_the_worker_no_longer_holds_ends_no_contact() {
+    // A close racing its lost window: its guard fails, and the other
+    // engineer's drag goes on untouched.
+    let (mut worker, handle, heard) = worker();
+    take(&mut worker, &handle, 1, 0.0);
+    touch_at(&mut worker, 1, 3, Phase::Down, (10, 20), 0.0);
+    let (reply, mut answer) = oneshot::channel();
+    worker.command_at(Command::Guard { session: 2, reply }, 1.0);
+    assert_eq!(answer.try_recv().unwrap(), Err(NO_EDITOR.to_string()));
+    assert_eq!(held(&worker), Some((1, 3, (10, 20))));
+    assert_eq!(touches(&handle), vec![t("down", 10, 20)]);
+    assert!(heard.lock().unwrap().is_empty());
+}
+
+#[test]
 fn a_window_lost_under_a_contact_ends_it_with_a_cancel_at_its_last_point() {
     let (mut worker, handle, heard) = worker();
     let window = take(&mut worker, &handle, 1, 0.0);
