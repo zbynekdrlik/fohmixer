@@ -26,7 +26,9 @@
 //!   contact is sent again every [`RESEND_MS`]; a client heard from not at
 //!   all for [`SILENT_MS`] (its pings stop: the page went away) ends its
 //!   contact with a cancel. A down while the client's own contact is still
-//!   down ends that one first.
+//!   down ends that one first. Every contact is numbered: its phases carry
+//!   the number, and the window worker's word that it ended a contact ends
+//!   only that one (a late word never ends a newer contact).
 //! - **The close:** never while a contact is down: the close sequence's
 //!   guard ends it first (`plugwin`), then taps the inert spot, waits
 //!   [`GUARD_WAIT`], sets `is_editor_open = false` and releases the window.
@@ -133,9 +135,11 @@ pub enum Act {
         session: u32,
         holder: ClientId,
     },
-    /// A contact phase into the window of `session`.
+    /// A contact phase (of contact number `contact`) into the window of
+    /// `session`.
     Touch {
         session: u32,
+        contact: u32,
         phase: Phase,
         at: (i32, i32),
     },
@@ -192,6 +196,8 @@ struct Editor {
 struct Contact {
     key: EditorKey,
     session: u32,
+    /// Its number (one counter for the hub's contacts).
+    number: u32,
     at: (i32, i32),
     /// When a phase of it last went (router ms).
     sent: f64,
@@ -275,6 +281,8 @@ pub struct Eqs {
     lists: BTreeMap<(String, String), Listing>,
     /// The last session number given out.
     sessions: u32,
+    /// The last contact number given out.
+    contacts: u32,
 }
 
 impl Eqs {
@@ -688,11 +696,21 @@ impl Eqs {
         let last = self.contact.as_ref().map(|c| c.at);
         let steps = phases(touch, last, at);
         let ends = matches!(touch, Touch::Up | Touch::Cancel);
+        // A down starts a new contact; the other phases are the old one's
+        // (a down's first phase, ending the old contact, included).
+        let old = self.contact.as_ref().map_or(0, |c| c.number);
+        let number = if touch == Touch::Down {
+            self.contacts += 1;
+            self.contacts
+        } else {
+            old
+        };
         let mut acts = Vec::new();
         if let Some((_, at)) = steps.last() {
             self.contact = (!ends).then(|| Contact {
                 key: key.clone(),
                 session,
+                number,
                 at: *at,
                 sent: now,
             });
@@ -707,11 +725,12 @@ impl Eqs {
                 )));
             }
         }
-        acts.extend(
-            steps
-                .into_iter()
-                .map(|(phase, at)| Act::Touch { session, phase, at }),
-        );
+        acts.extend(steps.into_iter().map(|(phase, at)| Act::Touch {
+            session,
+            contact: if phase == Phase::Down { number } else { old },
+            phase,
+            at,
+        }));
         acts
     }
 
@@ -726,13 +745,14 @@ impl Eqs {
             .and_then(|c| self.heard.get(&c))
             .is_none_or(|at| silent(now - at));
         if quiet {
-            let (session, at) = (contact.session, contact.at);
+            let (session, number, at) = (contact.session, contact.number, contact.at);
             let key = contact.key.clone();
             self.contact = None;
             return vec![
                 Act::Record(record("silent", &key, holder, Some(session), None)),
                 Act::Touch {
                     session,
+                    contact: number,
                     phase: Phase::Cancel,
                     at,
                 },
@@ -742,6 +762,7 @@ impl Eqs {
             contact.sent = now;
             return vec![Act::Touch {
                 session: contact.session,
+                contact: contact.number,
                 phase: Phase::Update,
                 at: contact.at,
             }];
@@ -749,10 +770,15 @@ impl Eqs {
         Vec::new()
     }
 
-    /// The backend ended `session`'s contact itself (its point was not the
-    /// editor's any more).
-    pub fn contact_ended(&mut self, session: u32) {
-        if self.contact.as_ref().is_some_and(|c| c.session == session) {
+    /// The backend ended contact `number` of `session` itself (its point was
+    /// not the editor's any more, or the close guard needed the screen): it
+    /// is forgotten. A later contact (a newer number) is not that one.
+    pub fn contact_ended(&mut self, session: u32, number: u32) {
+        if self
+            .contact
+            .as_ref()
+            .is_some_and(|c| c.session == session && c.number == number)
+        {
             self.contact = None;
         }
     }

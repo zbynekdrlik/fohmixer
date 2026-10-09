@@ -462,12 +462,16 @@ impl Router {
                     .unwrap_or_default();
                 self.eq_acts(acts);
             }
-            PlugwinEvent::ContactEnded { session, why } => {
-                io.state.contact_ended(session);
-                tracing::info!(session, why = %why, "the window worker ended a Pro-Q 4 contact");
+            PlugwinEvent::ContactEnded {
+                session,
+                contact,
+                why,
+            } => {
+                io.state.contact_ended(session, contact);
+                tracing::info!(session, contact, why = %why, "the window worker ended a Pro-Q 4 contact");
                 self.io.events.record(
                     "eq",
-                    json!({"what": "contact_ended", "session": session, "why": why}),
+                    json!({"what": "contact_ended", "session": session, "contact": contact, "why": why}),
                 );
             }
             PlugwinEvent::Rate { session, rate } => {
@@ -598,7 +602,12 @@ impl Router {
                     }),
                 );
             }
-            Act::Touch { session, phase, at } => io.plugwin.touch(session, phase, at),
+            Act::Touch {
+                session,
+                contact,
+                phase,
+                at,
+            } => io.plugwin.touch(session, contact, phase, at),
             Act::Tell { client, msg } => {
                 if let Some(outbox) = self.clients.get(&client) {
                     if matches!(

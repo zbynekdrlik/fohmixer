@@ -512,8 +512,10 @@ fn a_finger_makes_one_contact_on_the_open_editor() {
         "not open yet"
     );
     eqs.opened(&key(1), 1, Ok((100, 50)));
-    let touch = |phase: Phase, at: (i32, i32)| Act::Touch {
+    // Each down starts a contact of the next number.
+    let touch = |contact: u32, phase: Phase, at: (i32, i32)| Act::Touch {
         session: 1,
+        contact,
         phase,
         at,
     };
@@ -526,19 +528,19 @@ fn a_finger_makes_one_contact_on_the_open_editor() {
         eqs.input(1, Touch::Down, 10.4, 200.0, 2.0),
         vec![
             rec("touch", &key(1), Some(1), Some(1), Some("down")),
-            touch(Phase::Down, (10, 49)),
+            touch(1, Phase::Down, (10, 49)),
         ]
     );
     assert_eq!(
         eqs.input(1, Touch::Move, 12.0, 20.0, 3.0),
-        vec![touch(Phase::Update, (12, 20))]
+        vec![touch(1, Phase::Update, (12, 20))]
     );
     assert_eq!(
         eqs.input(1, Touch::Up, 14.0, 21.0, 4.0),
         vec![
             rec("touch", &key(1), Some(1), Some(1), Some("up")),
-            touch(Phase::Update, (14, 21)),
-            touch(Phase::Up, (14, 21)),
+            touch(1, Phase::Update, (14, 21)),
+            touch(1, Phase::Up, (14, 21)),
         ]
     );
     assert_eq!(
@@ -551,7 +553,7 @@ fn a_finger_makes_one_contact_on_the_open_editor() {
         eqs.input(1, Touch::Up, 1.0, 1.0, 7.0),
         vec![
             rec("touch", &key(1), Some(1), Some(1), Some("up")),
-            touch(Phase::Up, (1, 1)),
+            touch(2, Phase::Up, (1, 1)),
         ],
         "at its last point: no move first"
     );
@@ -560,8 +562,8 @@ fn a_finger_makes_one_contact_on_the_open_editor() {
         eqs.input(1, Touch::Down, 2.0, 2.0, 9.0),
         vec![
             rec("touch", &key(1), Some(1), Some(1), Some("down")),
-            touch(Phase::Up, (1, 1)),
-            touch(Phase::Down, (2, 2)),
+            touch(3, Phase::Up, (1, 1)),
+            touch(4, Phase::Down, (2, 2)),
         ],
         "a new down ends the old contact first"
     );
@@ -569,7 +571,7 @@ fn a_finger_makes_one_contact_on_the_open_editor() {
         eqs.input(1, Touch::Cancel, 30.0, 30.0, 10.0),
         vec![
             rec("touch", &key(1), Some(1), Some(1), Some("cancel")),
-            touch(Phase::Cancel, (2, 2)),
+            touch(4, Phase::Cancel, (2, 2)),
         ],
         "a cancel ends it where it was"
     );
@@ -597,6 +599,7 @@ fn a_resting_contact_goes_again_and_a_silent_pages_contact_ends() {
     assert_eq!(eqs.tick(1099.0), Vec::new());
     let again = Act::Touch {
         session: 1,
+        contact: 1,
         phase: Phase::Update,
         at: (5, 6),
     };
@@ -615,6 +618,7 @@ fn a_resting_contact_goes_again_and_a_silent_pages_contact_ends() {
             rec("silent", &key(1), Some(1), Some(1), None),
             Act::Touch {
                 session: 1,
+                contact: 1,
                 phase: Phase::Cancel,
                 at: (7, 6)
             },
@@ -630,19 +634,36 @@ fn a_resting_contact_goes_again_and_a_silent_pages_contact_ends() {
 }
 
 #[test]
-fn a_contact_the_worker_ended_is_forgotten() {
+fn a_contact_the_worker_ended_is_forgotten_never_a_newer_one() {
     let mut eqs = listed();
     open_one(&mut eqs);
+    let moved = |contact: u32, at: (i32, i32)| {
+        vec![Act::Touch {
+            session: 1,
+            contact,
+            phase: Phase::Update,
+            at,
+        }]
+    };
     eqs.input(1, Touch::Down, 5.0, 6.0, 0.0);
-    eqs.contact_ended(2);
-    assert_eq!(eqs.tick(100.0).len(), 1, "another session's: kept");
-    eqs.contact_ended(1);
-    assert_eq!(eqs.tick(200.0), Vec::new());
+    // Another session's contact, or another number: this one is kept.
+    eqs.contact_ended(2, 1);
+    eqs.contact_ended(1, 2);
+    assert_eq!(eqs.input(1, Touch::Move, 6.0, 6.0, 10.0), moved(1, (6, 6)));
+    eqs.contact_ended(1, 1);
+    assert_eq!(eqs.tick(20.0), Vec::new());
     assert_eq!(
-        eqs.input(1, Touch::Move, 7.0, 7.0, 210.0),
+        eqs.input(1, Touch::Move, 7.0, 7.0, 30.0),
         Vec::new(),
         "no contact to move"
     );
+    // A late word of an older contact (its last update refused after the
+    // router had sent its up and a new down) leaves the newer one alone.
+    eqs.input(1, Touch::Down, 5.0, 6.0, 40.0);
+    eqs.input(1, Touch::Up, 5.0, 6.0, 50.0);
+    eqs.input(1, Touch::Down, 8.0, 8.0, 60.0);
+    eqs.contact_ended(1, 2);
+    assert_eq!(eqs.input(1, Touch::Move, 9.0, 9.0, 70.0), moved(3, (9, 9)));
 }
 
 #[test]

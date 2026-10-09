@@ -21,9 +21,11 @@
 //!   socket, newest wins, and the card's last picture). The counts go to the
 //!   hub's log once a minute ([`Rate`]). A window that went away is reported
 //!   [`PlugwinEvent::Lost`].
-//! - **A contact:** one on the screen at a time. A down or an update lands
-//!   only when the point's window is the editor's; else nothing is injected
-//!   and the contact ends ([`PlugwinEvent::ContactEnded`]).
+//! - **A contact:** one on the screen at a time, numbered by the router. A
+//!   down goes only when no contact is down; any other phase only of the
+//!   contact down ([`accepts`]). A down or an update lands only when the
+//!   point's window is the editor's; else nothing is injected and the
+//!   contact ends ([`PlugwinEvent::ContactEnded`], with its number).
 //! - **The close guard** ([`Plugwin::guard`]): the frames stop, any contact
 //!   ends at its last point, then a tap on the editor's inert spot
 //!   ([`inert_spot`]): a value text field closes on a click elsewhere, and
@@ -203,10 +205,27 @@ pub struct Rate {
 pub enum PlugwinEvent {
     /// The window of `session` went away.
     Lost { session: u32 },
-    /// The contact on `session` ended: its point was not the editor's.
-    ContactEnded { session: u32, why: String },
+    /// Contact `contact` on `session` ended: its point was not the
+    /// editor's.
+    ContactEnded {
+        session: u32,
+        contact: u32,
+        why: String,
+    },
     /// The capture of `session` over the last minute.
     Rate { session: u32, rate: Rate },
+}
+
+/// Whether a phase of contact `contact` on `session` goes to the screen
+/// while `held` (its session and number) is down: a down only when none is
+/// (the router ends a contact before its next down), any other phase only
+/// of the contact held (one the worker already ended, or another session's,
+/// is dropped).
+pub fn accepts(held: Option<(u32, u32)>, session: u32, contact: u32, phase: Phase) -> bool {
+    match held {
+        None => phase == Phase::Down,
+        Some(down) => phase != Phase::Down && down == (session, contact),
+    }
 }
 
 /// Whether a capture last made `since_ms` ago is due.
@@ -342,6 +361,7 @@ enum Command {
     },
     Touch {
         session: u32,
+        contact: u32,
         phase: Phase,
         at: (i32, i32),
     },
@@ -357,6 +377,15 @@ enum Command {
     Stop,
 }
 
+/// The contact on the screen: its session, its number (the router's) and
+/// its last point.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Held {
+    session: u32,
+    contact: u32,
+    at: (i32, i32),
+}
+
 /// The worker: its backend, the editors it holds by session, the opens
 /// waiting for their windows and the contact on the screen.
 struct Worker {
@@ -364,7 +393,7 @@ struct Worker {
     events: Events,
     editors: BTreeMap<u32, Editor>,
     finding: Vec<Finding>,
-    contact: Option<(u32, (i32, i32))>,
+    contact: Option<Held>,
     clock: Instant,
 }
 
@@ -419,7 +448,12 @@ impl Worker {
                     editor.sink = Some(sink);
                 }
             }
-            Command::Touch { session, phase, at } => self.touch(session, phase, at),
+            Command::Touch {
+                session,
+                contact,
+                phase,
+                at,
+            } => self.touch(session, contact, phase, at),
             Command::Guard { session, reply } => {
                 let _ = reply.send(self.guard(session));
             }
@@ -500,11 +534,11 @@ impl Worker {
         if !self.backend.alive(&editor.taken) {
             let gone = editor.taken.clone();
             self.editors.remove(&session);
-            if let Some((_, last)) = self.contact.filter(|(s, _)| *s == session) {
+            if let Some(held) = self.contact.filter(|held| held.session == session) {
                 self.contact = None;
                 // The window is gone, so nothing lands: the cancel ends the
                 // backend's contact (the Windows one puts the cursor back).
-                let _ = self.backend.touch(&gone, Phase::Cancel, last);
+                let _ = self.backend.touch(&gone, Phase::Cancel, held.at);
             }
             (self.events)(PlugwinEvent::Lost { session });
             return;
@@ -555,39 +589,48 @@ impl Worker {
         }
     }
 
-    /// A contact phase on `session`'s window: one contact on the screen; a
-    /// refused down or update ends the contact and says so.
-    fn touch(&mut self, session: u32, phase: Phase, at: (i32, i32)) {
-        let Some(editor) = self.editors.get(&session) else {
+    /// A phase of contact `contact` on `session`'s window: one contact on
+    /// the screen ([`accepts`]); a refused down or update ends the contact
+    /// and says so.
+    fn touch(&mut self, session: u32, contact: u32, phase: Phase, at: (i32, i32)) {
+        let Some(taken) = self.editors.get(&session).map(|e| e.taken.clone()) else {
             return;
         };
-        let other = self.contact.is_some_and(|(s, _)| s != session);
-        if other {
+        let held = self.contact.map(|held| (held.session, held.contact));
+        if !accepts(held, session, contact, phase) {
             return;
         }
-        match self.backend.touch(&editor.taken, phase, at) {
+        match self.backend.touch(&taken, phase, at) {
             Ok(()) => {
-                self.contact = (!phase.ends()).then_some((session, at));
+                self.contact = (!phase.ends()).then_some(Held {
+                    session,
+                    contact,
+                    at,
+                });
             }
             Err(why) => {
-                if let Some((_, last)) = self.contact.take()
+                if let Some(held) = self.contact.take()
                     && phase.checked()
                 {
-                    let _ = self.backend.touch(&editor.taken, Phase::Cancel, last);
+                    let _ = self.backend.touch(&taken, Phase::Cancel, held.at);
                 }
-                (self.events)(PlugwinEvent::ContactEnded { session, why });
+                (self.events)(PlugwinEvent::ContactEnded {
+                    session,
+                    contact,
+                    why,
+                });
             }
         }
     }
 
     /// The contact on `session`, ended at its last point.
     fn end_contact(&mut self, session: u32) {
-        let Some((_, last)) = self.contact.filter(|(s, _)| *s == session) else {
+        let Some(held) = self.contact.filter(|held| held.session == session) else {
             return;
         };
         self.contact = None;
         if let Some(editor) = self.editors.get(&session) {
-            let _ = self.backend.touch(&editor.taken, Phase::Up, last);
+            let _ = self.backend.touch(&editor.taken, Phase::Up, held.at);
         }
     }
 
@@ -684,9 +727,14 @@ impl Plugwin {
         let _ = self.tx.send(Command::Capture { session, sink });
     }
 
-    /// A contact phase on `session`'s window.
-    pub fn touch(&self, session: u32, phase: Phase, at: (i32, i32)) {
-        let _ = self.tx.send(Command::Touch { session, phase, at });
+    /// A phase of contact `contact` on `session`'s window.
+    pub fn touch(&self, session: u32, contact: u32, phase: Phase, at: (i32, i32)) {
+        let _ = self.tx.send(Command::Touch {
+            session,
+            contact,
+            phase,
+            at,
+        });
     }
 
     /// The close guard of `session`.

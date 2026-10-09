@@ -42,6 +42,31 @@ fn take(worker: &mut Worker, handle: &SimHandle, session: u32, now: f64) -> Wind
     *handle.windows().last().unwrap()
 }
 
+/// A phase of contact `contact` on `session` at `now`.
+fn touch_at(
+    worker: &mut Worker,
+    session: u32,
+    contact: u32,
+    phase: Phase,
+    at: (i32, i32),
+    now: f64,
+) {
+    let command = Command::Touch {
+        session,
+        contact,
+        phase,
+        at,
+    };
+    worker.command(command, now);
+}
+
+/// The worker's contact: its session, its number and its point.
+fn held(worker: &Worker) -> Option<(u32, u32, (i32, i32))> {
+    worker
+        .contact
+        .map(|held| (held.session, held.contact, held.at))
+}
+
 /// The sim's touch records: phase and point.
 fn touches(handle: &SimHandle) -> Vec<(String, i64, i64)> {
     handle
@@ -334,18 +359,18 @@ fn a_contact_goes_to_its_editor_one_at_a_time_and_a_refused_one_ends() {
     let (mut worker, handle, heard) = worker();
     take(&mut worker, &handle, 1, 0.0);
     take(&mut worker, &handle, 2, 0.0);
-    let touch = |worker: &mut Worker, session: u32, phase: Phase, at: (i32, i32)| {
-        worker.command(Command::Touch { session, phase, at }, 0.0);
+    let touch = |worker: &mut Worker, session: u32, contact: u32, phase: Phase, at: (i32, i32)| {
+        touch_at(worker, session, contact, phase, at, 0.0);
     };
-    touch(&mut worker, 1, Phase::Down, (10, 20));
-    touch(&mut worker, 2, Phase::Down, (1, 1));
-    touch(&mut worker, 9, Phase::Down, (1, 1));
-    touch(&mut worker, 1, Phase::Update, (11, 21));
-    assert_eq!(worker.contact, Some((1, (11, 21))));
-    touch(&mut worker, 1, Phase::Up, (11, 21));
+    touch(&mut worker, 1, 1, Phase::Down, (10, 20));
+    touch(&mut worker, 2, 2, Phase::Down, (1, 1));
+    touch(&mut worker, 9, 3, Phase::Down, (1, 1));
+    touch(&mut worker, 1, 1, Phase::Update, (11, 21));
+    assert_eq!(held(&worker), Some((1, 1, (11, 21))));
+    touch(&mut worker, 1, 1, Phase::Up, (11, 21));
     assert_eq!(worker.contact, None);
-    touch(&mut worker, 2, Phase::Down, (1, 1));
-    touch(&mut worker, 2, Phase::Cancel, (1, 1));
+    touch(&mut worker, 2, 2, Phase::Down, (1, 1));
+    touch(&mut worker, 2, 2, Phase::Cancel, (1, 1));
     assert_eq!(
         touches(&handle),
         vec![
@@ -357,25 +382,48 @@ fn a_contact_goes_to_its_editor_one_at_a_time_and_a_refused_one_ends() {
         ],
         "the second editor's down waited for the first contact's end"
     );
+    // A phase of no contact down, of another number or of another session
+    // is dropped.
+    touch(&mut worker, 2, 2, Phase::Update, (3, 3));
+    touch(&mut worker, 1, 4, Phase::Down, (7, 7));
+    touch(&mut worker, 1, 3, Phase::Update, (8, 8));
+    touch(&mut worker, 2, 4, Phase::Up, (7, 7));
+    assert_eq!(held(&worker), Some((1, 4, (7, 7))));
+    touch(&mut worker, 1, 4, Phase::Up, (7, 7));
+    assert_eq!(touches(&handle)[5..], [t("down", 7, 7), t("up", 7, 7)]);
     // A refused down: no contact, said so.
     handle.refuse(true);
-    touch(&mut worker, 1, Phase::Down, (5, 5));
+    touch(&mut worker, 1, 5, Phase::Down, (5, 5));
     assert_eq!(worker.contact, None);
-    assert_eq!(
-        heard.lock().unwrap().last(),
-        Some(&PlugwinEvent::ContactEnded {
-            session: 1,
-            why: REFUSED.to_string()
-        })
-    );
+    let ended = |contact: u32| PlugwinEvent::ContactEnded {
+        session: 1,
+        contact,
+        why: REFUSED.to_string(),
+    };
+    assert_eq!(heard.lock().unwrap().last(), Some(&ended(5)));
     // A refused update: the contact ends with a cancel at its last point.
     handle.refuse(false);
-    touch(&mut worker, 1, Phase::Down, (5, 5));
+    touch(&mut worker, 1, 6, Phase::Down, (5, 5));
     handle.refuse(true);
-    touch(&mut worker, 1, Phase::Update, (6, 6));
+    touch(&mut worker, 1, 6, Phase::Update, (6, 6));
     assert_eq!(worker.contact, None);
-    assert_eq!(touches(&handle)[5..], [t("down", 5, 5), t("cancel", 5, 5)]);
-    assert_eq!(heard.lock().unwrap().len(), 2);
+    assert_eq!(touches(&handle)[7..], [t("down", 5, 5), t("cancel", 5, 5)]);
+    assert_eq!(heard.lock().unwrap().as_slice(), [ended(5), ended(6)]);
+}
+
+#[test]
+fn a_down_goes_when_no_contact_is_down_and_the_rest_only_to_the_one_down() {
+    let all = [Phase::Down, Phase::Update, Phase::Up, Phase::Cancel];
+    assert_eq!(
+        all.map(|p| accepts(None, 1, 1, p)),
+        [true, false, false, false]
+    );
+    assert_eq!(
+        all.map(|p| accepts(Some((1, 1)), 1, 1, p)),
+        [false, true, true, true]
+    );
+    assert_eq!(all.map(|p| accepts(Some((1, 1)), 1, 2, p)), [false; 4]);
+    assert_eq!(all.map(|p| accepts(Some((1, 1)), 2, 1, p)), [false; 4]);
 }
 
 #[test]
@@ -386,14 +434,7 @@ fn the_guard_ends_the_contact_stops_the_frames_and_taps_the_inert_spot() {
     let (sink, frames) = sink();
     worker.command(Command::Capture { session: 1, sink }, 0.0);
     worker.step(0.0);
-    worker.command(
-        Command::Touch {
-            session: 1,
-            phase: Phase::Down,
-            at: (10, 20),
-        },
-        0.0,
-    );
+    touch_at(&mut worker, 1, 1, Phase::Down, (10, 20), 0.0);
     let (reply, mut answer) = oneshot::channel();
     worker.command(Command::Guard { session: 1, reply }, 1.0);
     assert_eq!(answer.try_recv().unwrap(), Ok(()));
@@ -426,27 +467,13 @@ fn a_window_lost_under_a_contact_ends_it_with_a_cancel_at_its_last_point() {
     let (mut worker, handle, heard) = worker();
     let window = take(&mut worker, &handle, 1, 0.0);
     take(&mut worker, &handle, 2, 0.0);
-    worker.command(
-        Command::Touch {
-            session: 1,
-            phase: Phase::Down,
-            at: (10, 20),
-        },
-        0.0,
-    );
-    worker.command(
-        Command::Touch {
-            session: 1,
-            phase: Phase::Update,
-            at: (12, 24),
-        },
-        0.0,
-    );
+    touch_at(&mut worker, 1, 1, Phase::Down, (10, 20), 0.0);
+    touch_at(&mut worker, 1, 1, Phase::Update, (12, 24), 0.0);
     // The other editor's window going away leaves this contact alone.
     let other = handle.windows()[1];
     handle.remove_window(other);
     worker.step(10.0);
-    assert_eq!(worker.contact, Some((1, (12, 24))));
+    assert_eq!(held(&worker), Some((1, 1, (12, 24))));
     assert_eq!(touches(&handle).len(), 2);
     handle.remove_window(window);
     worker.step(20.0);
@@ -468,14 +495,7 @@ fn a_window_lost_under_a_contact_ends_it_with_a_cancel_at_its_last_point() {
 fn a_release_ends_the_contact_and_hands_the_window_back() {
     let (mut worker, handle, _) = worker();
     let window = take(&mut worker, &handle, 1, 0.0);
-    worker.command(
-        Command::Touch {
-            session: 1,
-            phase: Phase::Down,
-            at: (3, 4),
-        },
-        0.0,
-    );
+    touch_at(&mut worker, 1, 1, Phase::Down, (3, 4), 0.0);
     let (reply, mut answer) = oneshot::channel();
     let release = |session: u32, closed: bool, reply| Command::Release {
         session,
@@ -552,7 +572,7 @@ async fn the_worker_thread_serves_its_handle_and_ends_at_the_stop() {
     let (sink, frames) = sink();
     plugwin.capture(1, sink);
     until("a frame", || !frames.lock().unwrap().is_empty()).await;
-    plugwin.touch(1, Phase::Down, (8, 9));
+    plugwin.touch(1, 1, Phase::Down, (8, 9));
     until("the touch", || touches(&handle) == vec![t("down", 8, 9)]).await;
     let guarded = tokio::time::timeout(bounded, plugwin.guard(1))
         .await

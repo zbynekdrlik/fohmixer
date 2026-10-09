@@ -693,6 +693,7 @@ async fn the_workers_events_free_a_lost_editor_and_are_recorded() {
     assert!(eq_msgs(&outbox).is_empty(), "not a session given out");
     rig.router.eq_worker(PlugwinEvent::ContactEnded {
         session: 1,
+        contact: 1,
         why: REFUSED.into(),
     });
     rig.router.eq_worker(PlugwinEvent::Rate {
