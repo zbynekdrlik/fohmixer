@@ -28,9 +28,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use serde_json::{Value, json};
-
 use fohmixer_proto::eq::reason;
+use serde_json::{Value, json};
 
 use super::{Backend, Phase, Pixels, Taken, WindowId};
 
