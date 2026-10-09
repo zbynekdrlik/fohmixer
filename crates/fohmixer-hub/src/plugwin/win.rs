@@ -8,7 +8,10 @@
 //! - Its calls run on the window worker's thread, made per-monitor aware
 //!   ([`Backend::start`]): every coordinate is a physical pixel.
 //! - **Editors:** Live's top-level `Vst3PlugWindow`s ([`EDITOR_CLASS`]).
-//! - **Take:** `SetWindowPos(HWND_TOPMOST)` without a move or a size; the
+//! - **Take:** `SetWindowPos(HWND_TOPMOST)` without a move or a size,
+//!   posted (`SWP_ASYNCWINDOWPOS`: the window is Live's, and a z-order
+//!   change of another thread's window would otherwise wait for Live's busy
+//!   UI thread while a resting contact needs its keep-alive); the
 //!   picture is Pro-Q's own child `FF_UIWindow` ([`PICTURE_CLASS`]). The
 //!   hub's take ([`Win::for_hub`]) refuses a window without it (no Pro-Q
 //!   editor: Live's other instance's window or a plug-in opened by hand at
@@ -29,7 +32,7 @@
 //!   phase fails, the window gone included. A call too soon after the last
 //!   one (`ERROR_NOT_READY`) is tried again after 1 ms, twice.
 //! - **Release:** the z-order as it was (`HWND_NOTOPMOST`, or topmost again
-//!   when it was).
+//!   when it was), posted as the take's.
 
 use std::time::Duration;
 
@@ -50,9 +53,9 @@ use windows::Win32::UI::Input::Pointer::{
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumChildWindows, EnumWindows, GA_ROOT, GWL_EXSTYLE, GetAncestor, GetClassNameW, GetClientRect,
     GetCursorPos, GetWindowLongW, GetWindowThreadProcessId, HWND_NOTOPMOST, HWND_TOPMOST, IsWindow,
-    IsWindowVisible, PT_TOUCH, PostMessageW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SetCursorPos,
-    SetWindowPos, TOUCH_FLAG_NONE, TOUCH_MASK_CONTACTAREA, WM_CLOSE, WS_EX_TOPMOST,
-    WindowFromPoint,
+    IsWindowVisible, PT_TOUCH, PostMessageW, SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOMOVE,
+    SWP_NOSIZE, SetCursorPos, SetWindowPos, TOUCH_FLAG_NONE, TOUCH_MASK_CONTACTAREA, WM_CLOSE,
+    WS_EX_TOPMOST, WindowFromPoint,
 };
 use windows::core::{BOOL, HRESULT};
 
@@ -150,7 +153,8 @@ fn to_screen(window: HWND, at: (i32, i32)) -> Result<POINT, String> {
 }
 
 /// Puts `window` on top of every window (`top`) or back among the others,
-/// with no move, no size and no activation.
+/// with no move, no size and no activation. The change is posted to the
+/// window's thread (Live's UI thread): the worker never waits for it.
 fn place(window: HWND, top: bool) -> Result<(), String> {
     let after = if top { HWND_TOPMOST } else { HWND_NOTOPMOST };
     // SAFETY: a z-order change of a handle; a stale one fails the call.
@@ -162,7 +166,7 @@ fn place(window: HWND, top: bool) -> Result<(), String> {
             0,
             0,
             0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS,
         )
     }
     .map_err(|e| format!("SetWindowPos: {e}"))

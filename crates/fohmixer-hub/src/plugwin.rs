@@ -13,17 +13,20 @@
 //!   in the list ([`pick`]), polling every [`FIND_POLL_MS`] for up to
 //!   [`FIND_MS`]; several new ones are refused (an open of the PC's own may
 //!   have come at once).
-//! - **Taking it:** on top of every window (no move or size), its picture
-//!   located (Pro-Q's own child window).
+//! - **Taking it:** on top of every window (no move or size; the z-order
+//!   change is posted, never waited for), its picture located (Pro-Q's own
+//!   child window).
 //! - **The capture:** every [`CAPTURE_MS`] (25 fps) while its holder views
 //!   it: a picture equal to the last one is skipped, another goes to the
 //!   encoder, a thread of its own: it makes the JPEG ([`QUALITY`]) and hands
 //!   it to its [`FrameSink`] (the holder's socket, newest wins, and the
 //!   card's last picture). One picture waits for the encoder at most, the
-//!   newest (a slow encode drops pictures, never queues them), so the
-//!   worker blocks only for the grab and its contacts are never held up by
-//!   an encode. The counts go to the hub's log once a minute ([`Rate`]). A
-//!   window that went away is reported [`PlugwinEvent::Lost`].
+//!   newest (a slow encode drops pictures, never queues them), so its
+//!   contacts are never held up by an encode. What blocks the worker: the
+//!   grab, and the window list and its checks (an open's polls, a take);
+//!   a z-order change (a take, a release) is posted. The counts go to the
+//!   hub's log once a minute ([`Rate`]). A window that went away is
+//!   reported [`PlugwinEvent::Lost`].
 //! - **A contact:** one on the screen at a time, numbered by the router. A
 //!   down goes only when no contact is down; any other phase only of the
 //!   contact down ([`accepts`]). A down or an update lands only when the
