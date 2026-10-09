@@ -586,8 +586,11 @@ impl Eqs {
         }
     }
 
-    /// The close sequence of `key` (`session`) ended.
-    pub fn closed(&mut self, key: &EditorKey, session: u32) -> Vec<Act> {
+    /// The close sequence of `key` (`session`) ended; `left_open`: it left
+    /// the editor open in Live (its guard could not tap, or the hub could
+    /// not be sure which device to turn off), and its holder hears that
+    /// ([`reason::LEFT_OPEN`]) instead of why it closed.
+    pub fn closed(&mut self, key: &EditorKey, session: u32, left_open: bool) -> Vec<Act> {
         let Some(editor) = self
             .editors
             .get(key)
@@ -604,7 +607,8 @@ impl Eqs {
             Some(session),
             Some(why),
         ))];
-        acts.extend(self.release(key, why));
+        let told = if left_open { reason::LEFT_OPEN } else { why };
+        acts.extend(self.release(key, told));
         acts
     }
 

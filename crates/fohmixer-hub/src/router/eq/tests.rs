@@ -169,6 +169,30 @@ fn a_minutes_rate_is_one_record() {
     assert_eq!(EDITOR_OPEN, "is_editor_open");
 }
 
+#[test]
+fn an_opens_calls_without_an_answer_read_as_the_protocols_reasons() {
+    assert_eq!(live_reason(&LiveError::Offline), reason::OFFLINE);
+    assert_eq!(live_reason(&LiveError::Timeout), reason::NO_ANSWER);
+    assert_eq!(
+        live_reason(&LiveError::Refused("busy".into())),
+        "refused: busy"
+    );
+    assert_eq!(
+        open_failure(&Err(LiveError::Timeout)),
+        Some(reason::NO_ANSWER.to_string())
+    );
+    assert_eq!(
+        open_failure(&Ok(vec![json!({"ok": true, "data": null})])),
+        None
+    );
+    let refused = json!({"ok": false, "error": "live error: x", "errorType": "OpError"});
+    assert_eq!(
+        open_failure(&Ok(vec![refused.clone()])),
+        Some(json!([refused]).to_string())
+    );
+    assert_eq!(UNKNOWN_INSTANCE, reason::UNKNOWN_INSTANCE);
+}
+
 #[tokio::test]
 async fn a_new_client_hears_the_locks_and_an_unlisted_open_is_refused() {
     let dir = tempfile::tempdir().unwrap();

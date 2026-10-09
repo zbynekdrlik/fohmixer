@@ -68,8 +68,8 @@ use super::{Backend, Phase, Pixels, Taken, WindowId};
 pub const EDITOR_CLASS: &str = "Vst3PlugWindow";
 /// The class of Pro-Q's own child window: the picture.
 pub const PICTURE_CLASS: &str = "FF_UIWindow";
-/// Why the hub's take refuses a window.
-pub const NO_PICTURE: &str = "the window has no Pro-Q picture (FF_UIWindow)";
+/// Why the hub's take refuses a window (a reason its page reads).
+pub const NO_PICTURE: &str = fohmixer_proto::eq::reason::NO_PICTURE;
 /// The half-size of an injected contact's area (px).
 const CONTACT_RADIUS: i32 = 2;
 

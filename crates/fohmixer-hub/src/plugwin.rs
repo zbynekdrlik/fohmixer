@@ -64,6 +64,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
+use fohmixer_proto::eq::reason;
 use tokio::sync::oneshot;
 
 /// The capture's period (ms): 25 frames a second at most.
@@ -95,14 +96,14 @@ pub const INERT_X: f64 = 0.405;
 /// The inert spot's height in the picture (px): the top bar's middle.
 pub const INERT_Y: i32 = 15;
 
-/// Why an open found no window.
-pub const NO_WINDOW: &str = "no window";
-/// Why an open found several.
-pub const SEVERAL: &str = "several windows";
+/// Why an open found no window (a reason its page reads).
+pub const NO_WINDOW: &str = reason::NO_WINDOW;
+/// Why an open found several (a reason its page reads).
+pub const SEVERAL: &str = reason::SEVERAL;
 /// Why a command found no editor of its session.
 pub const NO_EDITOR: &str = "no such editor";
-/// Why a command found no worker.
-pub const STOPPED: &str = "the window worker stopped";
+/// Why a command found no worker (a reason a page reads).
+pub const STOPPED: &str = reason::STOPPED;
 /// Why the close guard ended another session's contact.
 pub const GUARD_CANCEL: &str = "the close guard of another editor";
 

@@ -54,6 +54,26 @@ pub mod reason {
     pub const OPEN_ON_PC: &str = "open on the PC";
     /// The device's state could not be read before the open: try again.
     pub const UNREAD: &str = "unread";
+    /// Live is not connected to the hub (its Live client's own words).
+    pub const OFFLINE: &str = "instance offline";
+    /// Live gave no answer in time (its thread busy): try again.
+    pub const NO_ANSWER: &str = "Live did not answer";
+    /// The hub knows no Live instance of that name.
+    pub const UNKNOWN_INSTANCE: &str = "unknown instance";
+    /// Live opened no editor window within the hub's wait.
+    pub const NO_WINDOW: &str = "no window";
+    /// Several new editor windows came at once (an open on the PC at the
+    /// same moment): try again.
+    pub const SEVERAL: &str = "several windows";
+    /// The new window has no Pro-Q 4 picture (its `FF_UIWindow` child): it
+    /// is not a Pro-Q 4 editor.
+    pub const NO_PICTURE: &str = "the window has no Pro-Q picture (FF_UIWindow)";
+    /// The hub's window worker stopped: the hub is stopping.
+    pub const STOPPED: &str = "the window worker stopped";
+    /// The close left the editor open in Live: its guard could not tap (a
+    /// value field may be open), or the hub could not be sure which device
+    /// to turn off. Close it on the PC.
+    pub const LEFT_OPEN: &str = "left open in Live";
 }
 
 /// A finger's phase on the picture (`eq_input`).
@@ -156,6 +176,52 @@ mod tests {
         assert_eq!(frame_parts(&[0, 0, 0, 7]), Some((7, &[][..])));
         assert_eq!(frame_parts(&[0, 0, 7]), None);
         assert_eq!(frame_parts(&[]), None);
+    }
+
+    #[test]
+    fn the_reasons_have_their_wire_words() {
+        use super::reason::*;
+        assert_eq!(
+            [LOCKED, UNKNOWN, OFF, EXIT, DETACH, SWITCH, GONE, CLOSING],
+            [
+                "locked",
+                "unknown",
+                "off",
+                "exit",
+                "detach",
+                "switch",
+                "window closed",
+                "closing"
+            ]
+        );
+        assert_eq!(
+            [
+                MOVED,
+                OPEN_ON_PC,
+                UNREAD,
+                OFFLINE,
+                NO_ANSWER,
+                UNKNOWN_INSTANCE
+            ],
+            [
+                "moved",
+                "open on the PC",
+                "unread",
+                "instance offline",
+                "Live did not answer",
+                "unknown instance"
+            ]
+        );
+        assert_eq!(
+            [NO_WINDOW, SEVERAL, NO_PICTURE, STOPPED, LEFT_OPEN],
+            [
+                "no window",
+                "several windows",
+                "the window has no Pro-Q picture (FF_UIWindow)",
+                "the window worker stopped",
+                "left open in Live"
+            ]
+        );
     }
 
     #[test]

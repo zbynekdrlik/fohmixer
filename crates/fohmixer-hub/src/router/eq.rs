@@ -46,14 +46,15 @@ use crate::eq::open;
 use crate::eq::walk::{Found, MAX_READS, Step, Walk};
 use crate::eq::{Act, EditorKey, Eqs, GUARD_WAIT, Pictures, record};
 use crate::events::EventLog;
-use crate::live::client::LiveHandle;
+use crate::live::client::{LiveError, LiveHandle};
 use crate::live::subs::ClientId;
 use crate::plugwin::{Plugwin, PlugwinEvent, Rate};
 
 /// The Live property that opens and closes a plug-in's editor.
 pub const EDITOR_OPEN: &str = close::EDITOR_OPEN;
-/// Why a list or an open found no instance of that name.
-pub const UNKNOWN_INSTANCE: &str = "unknown instance";
+/// Why a list or an open found no instance of that name (a reason a page
+/// reads).
+pub const UNKNOWN_INSTANCE: &str = reason::UNKNOWN_INSTANCE;
 /// Why a walk did not end.
 pub const TOO_DEEP: &str = "the devices nest too deep";
 
@@ -97,6 +98,26 @@ fn set_command(target: Value, open: bool) -> Vec<Value> {
         "name": "set_prop",
         "args": {"prop": EDITOR_OPEN, "value": open},
     })]
+}
+
+/// Why an open's call through the script got no answer, as its page reads
+/// it (the protocol's reasons): Live offline, or no answer in time (its
+/// thread busy); a refused request keeps its own words.
+pub fn live_reason(e: &LiveError) -> String {
+    match e {
+        LiveError::Offline => reason::OFFLINE.to_string(),
+        LiveError::Timeout => reason::NO_ANSWER.to_string(),
+        LiveError::Refused(_) => e.to_string(),
+    }
+}
+
+/// Why an open's write through the script failed, as its page reads it:
+/// no answer ([`live_reason`]), or the script's own answer.
+fn open_failure(outcome: &Result<Vec<Value>, LiveError>) -> Option<String> {
+    match outcome {
+        Err(e) => Some(live_reason(e)),
+        Ok(_) => write_failure(outcome),
+    }
 }
 
 /// Opens (`open`) or closes the editor of the device `target` names (a path,
@@ -201,7 +222,7 @@ async fn open_editor(
     let slots = live
         .call(open::read(&key.path))
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| live_reason(&e))?;
     let reference = match open::ready(&slots, &key.path, &name) {
         Ok(reference) => reference,
         Err(why) => {
@@ -210,7 +231,10 @@ async fn open_editor(
         }
     };
     let before = plugwin.list().await?;
-    set_editor_of(&live, reference.clone(), true).await?;
+    let set = live.call(set_command(reference.clone(), true)).await;
+    if let Some(why) = open_failure(&set) {
+        return Err(why);
+    }
     let taken = plugwin.take(session, before).await;
     if taken.is_err()
         && let Err(why) = turn_off(&live, &key, session, Some(&reference), &events).await
@@ -445,7 +469,8 @@ impl Router {
         }
     }
 
-    /// A close sequence ended (`problem`: what went wrong).
+    /// A close sequence ended (`problem`: what went wrong; the editor is
+    /// then still open in Live, which its holder hears).
     pub(super) fn eq_closed(&mut self, key: &EditorKey, session: u32, problem: Option<String>) {
         let Some(io) = self.eq.as_mut() else {
             return;
@@ -458,7 +483,7 @@ impl Router {
                 record("problem", key, None, Some(session), Some(problem)),
             );
         }
-        let acts = io.state.closed(key, session);
+        let acts = io.state.closed(key, session, problem.is_some());
         self.eq_acts(acts);
     }
 

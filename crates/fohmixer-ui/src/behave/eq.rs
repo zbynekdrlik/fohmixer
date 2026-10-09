@@ -250,16 +250,12 @@ pub fn list_text(error: &str) -> String {
     }
 }
 
-/// The hub's reason when Live opened no editor window within its wait
-/// (the hub's `plugwin::NO_WINDOW`; the protocol's `reason` does not name
-/// it).
-pub const NO_WINDOW: &str = "no window";
-
 /// The line under a card after its editor did not open or closed (`why`,
 /// the hub's reason), in Slovak: none for a close the page or the hub made
 /// on purpose (`exit`, `switch`, `detach`, the page's own `socket`) and for
-/// a lock (the card already reads ZAMKNUTÉ); each reason the hub names has
-/// its sentence; only an unexpected failure shows the hub's own words.
+/// a lock (the card already reads ZAMKNUTÉ); each reason the protocol
+/// names (`fohmixer_proto::eq::reason`) has its sentence; only an
+/// unexpected failure shows the hub's own words.
 pub fn failure_text(why: &str) -> Option<String> {
     let text = match why {
         reason::EXIT | reason::SWITCH | reason::DETACH | "socket" | reason::LOCKED => return None,
@@ -269,8 +265,15 @@ pub fn failure_text(why: &str) -> Option<String> {
         reason::MOVED => "Pro-Q 4 sa presunul, otvor kanál znova",
         reason::OPEN_ON_PC => "Pro-Q 4 je otvorený priamo na PC, zatvor ho tam",
         reason::UNREAD => "Pro-Q 4 sa nedá prečítať, skús znova",
-        NO_WINDOW => "okno Pro-Q 4 sa neotvorilo",
+        reason::NO_WINDOW => "okno Pro-Q 4 sa neotvorilo",
         reason::GONE => "okno Pro-Q 4 sa zavrelo",
+        reason::OFFLINE => "Live je nedostupný, skús znova",
+        reason::NO_ANSWER => "Live neodpovedá, skús znova",
+        reason::UNKNOWN_INSTANCE => "neznámy Live",
+        reason::SEVERAL => "otvorilo sa viac okien, skús znova",
+        reason::NO_PICTURE => "okno nie je Pro-Q 4",
+        reason::STOPPED => "hub sa zastavuje",
+        reason::LEFT_OPEN => "Pro-Q 4 sa nepodarilo bezpečne zavrieť, ostáva otvorený na PC",
         other => return Some(format!("Neotvoril sa: {other}")),
     };
     Some(text.to_string())
@@ -444,6 +447,7 @@ mod tests {
         assert_eq!(said(reason::OPEN_ON_PC), said("open on the PC"));
         assert_eq!(said(reason::GONE), said("window closed"));
         assert_eq!(said(reason::UNREAD), said("unread"));
+        assert_eq!(said(reason::NO_WINDOW), said("no window"));
         // Anything else keeps the hub's own words.
         assert_eq!(
             failure_text("EnumWindows: access denied"),
@@ -474,6 +478,22 @@ mod tests {
             said("left open in Live"),
             "Pro-Q 4 sa nepodarilo bezpečne zavrieť, ostáva otvorený na PC"
         );
+        // The protocol's names for them.
+        for (named, word) in [
+            (reason::OFFLINE, "instance offline"),
+            (reason::NO_ANSWER, "Live did not answer"),
+            (reason::UNKNOWN_INSTANCE, "unknown instance"),
+            (reason::SEVERAL, "several windows"),
+            (
+                reason::NO_PICTURE,
+                "the window has no Pro-Q picture (FF_UIWindow)",
+            ),
+            (reason::STOPPED, "the window worker stopped"),
+            (reason::LEFT_OPEN, "left open in Live"),
+        ] {
+            assert_eq!(said(named), said(word), "{word}");
+            assert!(!said(named).starts_with("Neotvoril sa"), "{word}");
+        }
     }
 
     #[test]

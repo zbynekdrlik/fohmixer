@@ -375,9 +375,9 @@ fn an_open_editor_closes_through_the_close_sequence() {
         eqs.open(1, &key(1), WALL),
         vec![tell(1, closed_msg(&key(1), reason::CLOSING, None))]
     );
-    assert_eq!(eqs.closed(&key(1), 7), Vec::new(), "another session");
+    assert_eq!(eqs.closed(&key(1), 7, false), Vec::new(), "another session");
     assert_eq!(
-        eqs.closed(&key(1), 1),
+        eqs.closed(&key(1), 1, false),
         vec![
             rec("closed", &key(1), Some(1), Some(1), Some(reason::EXIT)),
             tell(1, closed_msg(&key(1), reason::EXIT, None)),
@@ -385,9 +385,33 @@ fn an_open_editor_closes_through_the_close_sequence() {
         ]
     );
     assert_eq!(eqs.held_by(1), None);
-    assert_eq!(eqs.closed(&key(1), 1), Vec::new(), "closed once");
+    assert_eq!(eqs.closed(&key(1), 1, false), Vec::new(), "closed once");
     assert!(eqs.taken().is_empty());
     assert_eq!(eqs.close(1, reason::EXIT, true), Vec::new(), "nothing held");
+}
+
+#[test]
+fn a_close_that_left_the_editor_open_in_live_says_so_to_its_holder() {
+    // Its guard could not tap, or the hub could not be sure which device
+    // to turn off: the editor stays open in Live.
+    let mut eqs = listed();
+    let session = open_one(&mut eqs);
+    eqs.close(1, reason::EXIT, true);
+    assert_eq!(
+        eqs.closed(&key(1), session, true),
+        vec![
+            rec(
+                "closed",
+                &key(1),
+                Some(1),
+                Some(session),
+                Some(reason::EXIT)
+            ),
+            tell(1, closed_msg(&key(1), reason::LEFT_OPEN, None)),
+            Act::Locks,
+        ]
+    );
+    assert_eq!(eqs.held_by(1), None, "free again");
 }
 
 #[test]
@@ -459,7 +483,7 @@ fn opening_another_editor_closes_the_held_one_first() {
         ]
     );
     assert_eq!(
-        eqs.closed(&key(1), 1),
+        eqs.closed(&key(1), 1, false),
         vec![
             rec("closed", &key(1), Some(1), Some(1), Some(reason::SWITCH)),
             tell(1, closed_msg(&key(1), reason::SWITCH, None)),
@@ -497,7 +521,7 @@ fn a_newer_open_replaces_the_one_waiting_and_leaving_drops_it() {
     let mut eqs = listed();
     open_one(&mut eqs);
     eqs.open(1, &key(2), WALL);
-    eqs.closed(&key(1), 1);
+    eqs.closed(&key(1), 1, false);
     assert_eq!(eqs.held_by(1), Some((key(2), 2, "opening")));
 }
 
