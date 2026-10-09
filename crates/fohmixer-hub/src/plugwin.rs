@@ -899,16 +899,18 @@ impl Worker {
         });
     }
 
-    /// The close guard of `session`: no more frames, its contact ended
-    /// (another session's cancelled), a tap on the inert spot.
+    /// The close guard of `session`: its editor looked up first (a guard
+    /// of a window already lost fails and ends no contact), then no more
+    /// frames, its contact ended (another session's cancelled), a tap on the
+    /// inert spot.
     fn guard(&mut self, session: u32) -> Result<(), String> {
-        self.end_contact(session);
-        self.cancel_other(session);
         let editor = self.editors.get_mut(&session).ok_or(NO_EDITOR)?;
         editor.sink = None;
-        self.encoder.forget(session);
         let width = editor.last.as_ref().map_or(editor.taken.width, |p| p.width);
         let taken = editor.taken.clone();
+        self.encoder.forget(session);
+        self.end_contact(session);
+        self.cancel_other(session);
         guard_tap(self.backend.as_mut(), &taken, inert_spot(width))
     }
 
