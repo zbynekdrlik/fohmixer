@@ -230,6 +230,86 @@ fn a_probe_names_the_step_that_failed() {
 }
 
 #[test]
+fn a_step_that_fails_ends_its_contact_and_hands_the_window_back() {
+    let (mut sim, handle, window) = one_window(42);
+    let taken = sim.take(window).unwrap();
+    {
+        let mut held = Held {
+            backend: &mut sim,
+            taken,
+            contact: None,
+            released: false,
+        };
+        held.touch(Phase::Down, (10, 20), "drag").unwrap();
+        held.touch(Phase::Update, (11, 21), "drag").unwrap();
+        handle.refuse(true);
+        assert_eq!(
+            held.touch(Phase::Update, (12, 22), "drag"),
+            Err(format!("drag: update at 12,22: {REFUSED}"))
+        );
+    }
+    assert_eq!(
+        ops(&handle),
+        vec![
+            op("take", "", -1, -1),
+            op("touch", "down", 10, 20),
+            op("touch", "update", 11, 21),
+            op("touch", "cancel", 11, 21),
+            op("release", "", -1, -1),
+        ],
+        "cancelled at its last point, then released"
+    );
+    // Released by the probe: once; an ended contact is not cancelled.
+    let (mut sim, handle, window) = one_window(42);
+    let taken = sim.take(window).unwrap();
+    {
+        let mut held = Held {
+            backend: &mut sim,
+            taken,
+            contact: None,
+            released: false,
+        };
+        held.touch(Phase::Down, (1, 2), "tap").unwrap();
+        held.touch(Phase::Up, (1, 2), "tap").unwrap();
+        held.guard_tap((3, 4)).unwrap();
+        held.release();
+    }
+    assert_eq!(
+        ops(&handle),
+        vec![
+            op("take", "", -1, -1),
+            op("touch", "down", 1, 2),
+            op("touch", "up", 1, 2),
+            op("touch", "down", 3, 4),
+            op("touch", "up", 3, 4),
+            op("release", "", -1, -1),
+        ]
+    );
+    // A guard tap whose up fails leaves its down to cancel.
+    let (mut sim, handle, window) = one_window(42);
+    let taken = sim.take(window).unwrap();
+    handle.refuse(true);
+    {
+        let mut held = Held {
+            backend: &mut sim,
+            taken,
+            contact: Some((5, 6)),
+            released: false,
+        };
+        assert_eq!(held.guard_tap((3, 4)), Err(REFUSED.to_string()));
+        assert_eq!(
+            held.contact,
+            Some((5, 6)),
+            "the refused down changed nothing"
+        );
+    }
+    assert_eq!(
+        ops(&handle)[1..],
+        [op("touch", "cancel", 5, 6), op("release", "", -1, -1)]
+    );
+}
+
+#[test]
 fn the_probes_backend_is_the_sim_or_the_platforms() {
     let mut probe = args(5);
     probe.sim = true;

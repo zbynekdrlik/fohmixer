@@ -20,6 +20,9 @@
 //!    request to the window (Carla's bridge ends with `0xC0000005` on it
 //!    whatever the plug-in's state).
 //!
+//! Once the window is taken, a step that fails still ends a contact it left
+//! down (a cancel at its last point) and hands the window back.
+//!
 //! With `--out` every picture is saved there as a JPEG (`frame-NN.jpg`,
 //! then `after-band.jpg`, `after-drag.jpg`, `field-open.jpg`,
 //! `after-guard.jpg`): the field must be open in the third and closed in
@@ -33,7 +36,7 @@ use std::time::{Duration, Instant};
 use super::sim::Sim;
 #[cfg(windows)]
 use super::win::probe_backend as platform;
-use super::{Backend, GUARD_TAP, Phase, Pixels, QUALITY, Taken, encode, guard_tap, inert_spot};
+use super::{Backend, GUARD_TAP, Phase, Pixels, QUALITY, Taken, encode, inert_spot, millis};
 
 /// The CLI's usage line.
 pub const USAGE: &str = "usage: fohmixer-hub eq-probe --pid <pid> [--frames <n>] [--band <x,y>] [--to <x,y>] [--inert <x,y>] [--out <folder>] [--close] [--sim]";
@@ -194,30 +197,67 @@ impl Report<'_> {
     }
 }
 
-/// A gesture's touch, its failure named by `step`.
-fn touch(
-    backend: &mut dyn Backend,
-    taken: &Taken,
-    phase: Phase,
-    at: (i32, i32),
-    step: &str,
-) -> Result<(), String> {
-    backend
-        .touch(taken, phase, at)
-        .map_err(|why| format!("{step}: {} at {},{}: {why}", phase.name(), at.0, at.1))
+/// The probe's hold on the window it took: every touch goes through it, so
+/// a step that fails, on any path out, leaves no contact down and no window
+/// on top. Dropped, it cancels a contact still down at its last point and
+/// hands the window back (its z-order as it was), unless the release ran.
+struct Held<'a> {
+    backend: &'a mut dyn Backend,
+    taken: Taken,
+    /// The contact down, at its last point.
+    contact: Option<(i32, i32)>,
+    released: bool,
+}
+
+impl Held<'_> {
+    /// A gesture's touch, its failure named by `step`.
+    fn touch(&mut self, phase: Phase, at: (i32, i32), step: &str) -> Result<(), String> {
+        self.backend
+            .touch(&self.taken, phase, at)
+            .map_err(|why| format!("{step}: {} at {},{}: {why}", phase.name(), at.0, at.1))?;
+        self.contact = (!phase.ends()).then_some(at);
+        Ok(())
+    }
+
+    /// The guard's tap at `spot`: down, a short hold, up.
+    fn guard_tap(&mut self, spot: (i32, i32)) -> Result<(), String> {
+        self.backend.touch(&self.taken, Phase::Down, spot)?;
+        self.contact = Some(spot);
+        std::thread::sleep(GUARD_TAP);
+        self.backend.touch(&self.taken, Phase::Up, spot)?;
+        self.contact = None;
+        Ok(())
+    }
+
+    /// The picture now.
+    fn grab(&mut self) -> Result<Pixels, String> {
+        self.backend.grab(&self.taken)
+    }
+
+    /// The window handed back (its z-order as it was).
+    fn release(&mut self) {
+        self.released = true;
+        self.backend.release(&self.taken);
+    }
+}
+
+impl Drop for Held<'_> {
+    fn drop(&mut self) {
+        if let Some(at) = self.contact.take() {
+            let _ = self.backend.touch(&self.taken, Phase::Cancel, at);
+        }
+        if !self.released {
+            self.backend.release(&self.taken);
+        }
+    }
 }
 
 /// A double tap at `at`.
-fn double_tap(
-    backend: &mut dyn Backend,
-    taken: &Taken,
-    at: (i32, i32),
-    step: &str,
-) -> Result<(), String> {
+fn double_tap(held: &mut Held<'_>, at: (i32, i32), step: &str) -> Result<(), String> {
     for gap in [TAP_GAP, Duration::ZERO] {
-        touch(backend, taken, Phase::Down, at, step)?;
+        held.touch(Phase::Down, at, step)?;
         std::thread::sleep(TAP);
-        touch(backend, taken, Phase::Up, at, step)?;
+        held.touch(Phase::Up, at, step)?;
         std::thread::sleep(gap);
     }
     Ok(())
@@ -225,30 +265,24 @@ fn double_tap(
 
 /// A drag from `from` to `to`: the down, the updates, the rest with its
 /// resends, the up at the last point.
-fn drag(
-    backend: &mut dyn Backend,
-    taken: &Taken,
-    from: (i32, i32),
-    to: (i32, i32),
-) -> Result<usize, String> {
-    touch(backend, taken, Phase::Down, from, "drag")?;
+fn drag(held: &mut Held<'_>, from: (i32, i32), to: (i32, i32)) -> Result<usize, String> {
+    held.touch(Phase::Down, from, "drag")?;
     let points = drag_points(from, to, DRAG_STEPS);
     for at in &points {
         std::thread::sleep(DRAG_STEP);
-        touch(backend, taken, Phase::Update, *at, "drag")?;
+        held.touch(Phase::Update, *at, "drag")?;
     }
     for _ in 0..RESENDS {
         std::thread::sleep(RESEND);
-        touch(backend, taken, Phase::Update, to, "drag")?;
+        held.touch(Phase::Update, to, "drag")?;
     }
-    touch(backend, taken, Phase::Up, to, "drag")?;
+    held.touch(Phase::Up, to, "drag")?;
     Ok(points.len())
 }
 
 /// Grabs `frames` pictures at the hub's rate and reports them.
 fn capture(
-    backend: &mut dyn Backend,
-    taken: &Taken,
+    held: &mut Held<'_>,
     frames: u32,
     report: &mut Report<'_>,
 ) -> Result<Option<Pixels>, String> {
@@ -259,17 +293,15 @@ fn capture(
     for n in 0..frames {
         std::thread::sleep(due_at(n).saturating_sub(started.elapsed()));
         let at = Instant::now();
-        let pixels = backend
-            .grab(taken)
-            .map_err(|why| format!("capture: {why}"))?;
-        grabs.push(at.elapsed().as_secs_f64() * 1000.0);
+        let pixels = held.grab().map_err(|why| format!("capture: {why}"))?;
+        grabs.push(millis(at.elapsed()));
         if last.as_ref() == Some(&pixels) {
             same += 1;
             continue;
         }
         let at = Instant::now();
         let jpeg = encode(&pixels, QUALITY)?;
-        encodes.push(at.elapsed().as_secs_f64() * 1000.0);
+        encodes.push(millis(at.elapsed()));
         sizes.push(jpeg.len() as f64);
         report.save(&format!("frame-{n:02}.jpg"), &pixels)?;
         last = Some(pixels);
@@ -290,21 +322,15 @@ fn capture(
 }
 
 /// After a gesture: the editor's wait to draw it, then its picture saved.
-fn settle(
-    backend: &mut dyn Backend,
-    taken: &Taken,
-    name: &str,
-    report: &mut Report<'_>,
-) -> Result<(), String> {
+fn settle(held: &mut Held<'_>, name: &str, report: &mut Report<'_>) -> Result<(), String> {
     std::thread::sleep(SETTLE);
-    let pixels = backend
-        .grab(taken)
-        .map_err(|why| format!("{name}: {why}"))?;
+    let pixels = held.grab().map_err(|why| format!("{name}: {why}"))?;
     report.save(name, &pixels)
 }
 
 /// The probe's steps on `backend` (its thread started), the findings to
-/// `out`; the first step that failed, if one did.
+/// `out`; the first step that failed, if one did. Once the window is taken,
+/// every way out ends a contact still down and hands the window back.
 pub fn run(backend: &mut dyn Backend, args: &Args, out: &mut dyn Write) -> Result<(), String> {
     let mut report = Report {
         out,
@@ -319,29 +345,35 @@ pub fn run(backend: &mut dyn Backend, args: &Args, out: &mut dyn Write) -> Resul
         .first()
         .ok_or(format!("no visible window of process {}", args.pid))?;
     let taken = backend.take(window)?;
+    let mut held = Held {
+        backend,
+        taken,
+        contact: None,
+        released: false,
+    };
     report.line(&format!(
         "picture={}x{} child={} was_topmost={}",
-        taken.width,
-        taken.height,
-        taken.picture != taken.window,
-        taken.was_topmost
+        held.taken.width,
+        held.taken.height,
+        held.taken.picture != held.taken.window,
+        held.taken.was_topmost
     ))?;
-    let last = capture(backend, &taken, args.frames, &mut report)?;
-    let width = last.as_ref().map_or(taken.width, |p| p.width);
-    double_tap(backend, &taken, args.band, "band")?;
+    let last = capture(&mut held, args.frames, &mut report)?;
+    let width = last.as_ref().map_or(held.taken.width, |p| p.width);
+    double_tap(&mut held, args.band, "band")?;
     report.line(&format!("band=ok at={},{}", args.band.0, args.band.1))?;
-    settle(backend, &taken, "after-band.jpg", &mut report)?;
-    let steps = drag(backend, &taken, args.band, args.to)?;
+    settle(&mut held, "after-band.jpg", &mut report)?;
+    let steps = drag(&mut held, args.band, args.to)?;
     report.line(&format!(
         "drag=ok steps={steps} to={},{}",
         args.to.0, args.to.1
     ))?;
-    settle(backend, &taken, "after-drag.jpg", &mut report)?;
-    double_tap(backend, &taken, args.to, "field")?;
+    settle(&mut held, "after-drag.jpg", &mut report)?;
+    double_tap(&mut held, args.to, "field")?;
     report.line("field=ok")?;
-    settle(backend, &taken, "field-open.jpg", &mut report)?;
+    settle(&mut held, "field-open.jpg", &mut report)?;
     let spot = args.inert.unwrap_or_else(|| inert_spot(width));
-    guard_tap(backend, &taken, spot)
+    held.guard_tap(spot)
         .map_err(|why| format!("guard at {},{}: {why}", spot.0, spot.1))?;
     report.line(&format!(
         "guard=ok at={},{} tap_ms={}",
@@ -349,11 +381,11 @@ pub fn run(backend: &mut dyn Backend, args: &Args, out: &mut dyn Write) -> Resul
         spot.1,
         GUARD_TAP.as_millis()
     ))?;
-    settle(backend, &taken, "after-guard.jpg", &mut report)?;
-    backend.release(&taken);
+    settle(&mut held, "after-guard.jpg", &mut report)?;
+    held.release();
     report.line("release=ok")?;
     if args.close {
-        backend.close_window(&taken);
+        held.backend.close_window(&held.taken);
         report.line("close=sent")?;
     }
     Ok(())
