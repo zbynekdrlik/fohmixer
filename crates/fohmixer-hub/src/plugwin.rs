@@ -961,8 +961,25 @@ pub fn guard_tap(backend: &mut dyn Backend, taken: &Taken, spot: (i32, i32)) -> 
     backend.touch(taken, Phase::Up, spot)
 }
 
-/// The worker's thread, until a stop's wait joined it.
-type Thread = Mutex<Option<std::thread::JoinHandle<()>>>;
+/// The worker's thread, until a stop's wait joined it. An async lock: a
+/// stop's wait holds it while it polls ([`Plugwin::stopped`]).
+type Thread = tokio::sync::Mutex<Option<std::thread::JoinHandle<()>>>;
+
+/// Whether the worker's thread ended: joined (its handle taken) once it
+/// finished, or joined already.
+fn joined(thread: &mut Option<std::thread::JoinHandle<()>>) -> bool {
+    match thread.take() {
+        None => true,
+        Some(handle) if handle.is_finished() => {
+            let _ = handle.join();
+            true
+        }
+        Some(handle) => {
+            *thread = Some(handle);
+            false
+        }
+    }
+}
 
 /// The handle of the window worker (cheap to clone).
 #[derive(Clone)]
@@ -991,7 +1008,7 @@ impl Plugwin {
             .spawn(move || worker.run(&rx))?;
         Ok(Self {
             tx,
-            thread: Arc::new(Mutex::new(Some(thread))),
+            thread: Arc::new(tokio::sync::Mutex::new(Some(thread))),
         })
     }
 
@@ -1062,24 +1079,17 @@ impl Plugwin {
 
     /// Waits, bounded ([`STOP_WAIT`]), for the worker's thread to end after
     /// a stop (its windows handed back, its contact ended): whether it did.
-    /// Once it did, a later call answers at once.
+    /// The handle stays under the lock while it is polled, so a second
+    /// caller waits for the first one's answer; once the thread ended, a
+    /// later call answers at once.
     pub async fn stopped(&self) -> bool {
-        let thread = self
-            .thread
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take();
-        let Some(thread) = thread else {
-            return true;
-        };
+        let mut thread = self.thread.lock().await;
         for _ in 0..STOP_POLLS {
-            if thread.is_finished() {
-                let _ = thread.join();
+            if joined(&mut thread) {
                 return true;
             }
             tokio::time::sleep(STOP_POLL).await;
         }
-        *self.thread.lock().unwrap_or_else(PoisonError::into_inner) = Some(thread);
         false
     }
 }
