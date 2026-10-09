@@ -70,6 +70,40 @@ class SiteTest(unittest.TestCase):
         self.assertIn("Chain Selector", [p.name for p in rack.parameters])
         self.assertEqual(type(rack.chains[0].mixer_device).__name__, "ChainMixerDevice")
 
+    def test_pro_q_4_on_a_track_and_in_a_rack_chain(self):
+        # #71: Hand2 # holds a Pro-Q 4, a rack whose first chain holds a renamed
+        # one and whose second chain holds another plug-in.
+        hand2 = {t.name: t for t in self.song.tracks}["Hand2 #"]
+        on_track, rack = hand2.devices
+        self.assertEqual(type(on_track).__name__, "PluginDevice")
+        self.assertEqual(type(on_track).__module__, "Live.PluginDevice")
+        self.assertIs(Live.PluginDevice.PluginDevice, type(on_track))
+        self.assertEqual(
+            (on_track.name, on_track.class_name, on_track.class_display_name),
+            ("Pro-Q 4", "PluginDevice", "Pro-Q 4"),
+        )
+        self.assertEqual(type(rack).__name__, "RackDevice")
+        main, air = rack.chains
+        self.assertEqual((main.name, air.name), ("Main", "Air"))
+        renamed = main.devices[0]
+        self.assertEqual((renamed.name, renamed.class_display_name), ("De-ess", "Pro-Q 4"))
+        self.assertEqual(air.devices[0].class_display_name, "Pro-C 2")
+        self.assertEqual([p.name for p in on_track.parameters], ["Device On"])
+
+    def test_a_plug_ins_editor_opens_and_closes_and_is_heard(self):
+        plugin = {t.name: t for t in self.song.tracks}["Hand2 #"].devices[0]
+        self.assertIs(plugin.is_editor_open, False)
+        heard = []
+        plugin.add_is_editor_open_listener(lambda: heard.append(plugin.is_editor_open))
+        plugin.is_editor_open = True
+        plugin.is_editor_open = True
+        plugin.is_editor_open = 0
+        self.assertEqual(heard, [True, False])
+        with self.assertRaises(TypeError):
+            plugin.is_editor_open = "yes"
+        with self.assertRaises(AttributeError):
+            plugin.class_display_name = "Pro-Q 3"
+
     def test_live_ptrs_are_unique(self):
         objs = _all_objects(self.song)
         self.assertGreater(len(objs), 150)
