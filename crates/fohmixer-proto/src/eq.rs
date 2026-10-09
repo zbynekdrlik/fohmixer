@@ -46,6 +46,12 @@ pub mod reason {
     pub const GONE: &str = "window closed";
     /// It is still closing: open it again once it closed.
     pub const CLOSING: &str = "closing";
+    /// The listed path names another device now (a track or device moved,
+    /// another set): list again.
+    pub const MOVED: &str = "moved";
+    /// Its editor is already open in Live (opened on the PC, a failed
+    /// guard, a hub restart): the hub never closes it without its window.
+    pub const OPEN_ON_PC: &str = "open on the PC";
 }
 
 /// A finger's phase on the picture (`eq_input`).
