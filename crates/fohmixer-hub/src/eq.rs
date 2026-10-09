@@ -278,20 +278,24 @@ pub struct Eqs {
 impl Eqs {
     /// The list of the track at `target` on `instance` found these editors
     /// (each with its device's name): they may be opened. It replaces that
-    /// track's last list; the editors the last one named that no list names
-    /// now (their device moved or went) come back: their cards' pictures are
-    /// another device's or none.
+    /// track's last list, and an editor it names is its own from now on:
+    /// another track's older list no longer names it (a track or a device
+    /// moved, so a strip not listed since may still hold the path of the
+    /// device another strip has now). The editors the last list named that
+    /// no list names now (their device moved or went) come back: their
+    /// cards' pictures are another device's or none.
     pub fn listed(
         &mut self,
         instance: &str,
         target: &str,
         found: impl IntoIterator<Item = (EditorKey, String)>,
     ) -> Vec<EditorKey> {
+        let found: Listing = found.into_iter().collect();
+        for listing in self.lists.values_mut() {
+            listing.retain(|key, _| !found.contains_key(key));
+        }
         let list = (instance.to_string(), target.to_string());
-        let before = self
-            .lists
-            .insert(list, found.into_iter().collect())
-            .unwrap_or_default();
+        let before = self.lists.insert(list, found).unwrap_or_default();
         before
             .into_keys()
             .filter(|key| !self.is_listed(key))
@@ -303,7 +307,8 @@ impl Eqs {
         self.lists.values().any(|listing| listing.contains_key(key))
     }
 
-    /// The device name a list found at `key` (the open checks it).
+    /// The device name a list found at `key` (the open checks it): the
+    /// newest list's, the only one that names it ([`Eqs::listed`]).
     pub fn name_of(&self, key: &EditorKey) -> Option<&str> {
         self.lists
             .values()
