@@ -132,7 +132,8 @@ SystemEvent = collections.namedtuple(
 ESCAPABLE = ("contextmenu", "selectstart", "dragstart")
 # A channel detail's step (#71) on the hub's clock: ``what`` (``press``,
 # ``slid``, ``tap``, ``open``, ``close``), ``why`` (an open's ``check`` or
-# ``lift``, a close's ``exit``, ``layout`` or ``conflict``; else None), the
+# ``lift``, a close's ``exit``, ``layout``, ``placeholder`` or ``conflict``;
+# else None), the
 # strip's ``keys`` (its volume's and mute's, a tuple) and the finger's
 # ``pointer`` (None for a close the page made).
 DetailEvent = collections.namedtuple("DetailEvent", ("time", "what", "why", "keys", "pointer"))

@@ -799,8 +799,8 @@ fn a_marker_in_conflict_closes_its_detail_and_says_so() {
         Some(DetailChange::Follow(marker(6, "Vox 1")))
     );
     assert_eq!(
-        (CLOSE_EXIT, CLOSE_LAYOUT, CLOSE_CONFLICT),
-        ("exit", "layout", "conflict")
+        (CLOSE_EXIT, CLOSE_LAYOUT, CLOSE_CONFLICT, CLOSE_PLACEHOLDER),
+        ("exit", "layout", "conflict", "placeholder")
     );
 }
 
@@ -846,14 +846,14 @@ fn a_placeholder_labelled_marker_carried_into_a_new_layout_closes() {
     let shifted = with_strips(&[marker(3, "#4"), marker(4, "#5")]);
     assert_eq!(
         detail_update(&shifted, Some(&five), true),
-        Some(DetailChange::Close("layout")),
+        Some(DetailChange::Close("placeholder")),
         "never the other track now labelled #5"
     );
     // Even where it still sits: a new layout cannot tell.
     let same = with_strips(&[marker(4, "#5")]);
     assert_eq!(
         detail_update(&same, Some(&five), true),
-        Some(DetailChange::Close("layout"))
+        Some(DetailChange::Close("placeholder"))
     );
     // A detail opened within the layout is not carried: it stays.
     assert_eq!(detail_update(&same, Some(&five), false), None);
@@ -863,6 +863,30 @@ fn a_placeholder_labelled_marker_carried_into_a_new_layout_closes() {
         detail_update(&with_strips(&[marker(2, "#9")]), Some(&named), true),
         Some(DetailChange::Follow(marker(2, "#9")))
     );
+}
+
+#[test]
+fn a_real_label_is_never_another_tracks_placeholder() {
+    // A Tuner labelled "#3" on track 7 (index 6), and a Tuner without a
+    // label on track 3 (index 2), which shows its placeholder #3.
+    let real = marker(6, "#3");
+    let placeholder = marker(2, "#3");
+    // Within one layout the real one stays itself, never the placeholder.
+    let both = with_strips(&[placeholder.clone(), real.clone()]);
+    assert_eq!(detail_update(&both, Some(&real), false), None);
+    assert_eq!(detail_strip(&both, &real), Some(real.clone()));
+    // With only the placeholder left, the real one's detail closes.
+    assert_eq!(
+        detail_update(&with_strips(&[placeholder.clone()]), Some(&real), false),
+        Some(DetailChange::Close("layout"))
+    );
+    // A placeholder held within its layout is its binding: never the real
+    // "#3" elsewhere.
+    assert_eq!(
+        detail_update(&with_strips(&[real.clone()]), Some(&placeholder), false),
+        Some(DetailChange::Close("layout"))
+    );
+    assert_eq!(detail_update(&both, Some(&placeholder), false), None);
 }
 
 #[test]

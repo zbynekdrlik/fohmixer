@@ -2,7 +2,8 @@
 (``diag/trace.rs`` ``detail``) of a hold on a strip's burger and of the
 detail it opens: ``press``, ``slid`` (the finger slid off: nothing opened),
 ``tap`` (the hint), ``open`` (``why``: the hold's ``check`` or a ``lift``
-after it) and ``close`` (``why``: ``exit``, ``layout``, ``conflict``), each
+after it) and ``close`` (``why``: ``exit``, ``layout``, ``placeholder``,
+``conflict``), each
 with the strip's volume and mute keys and the finger's pointer. The report
 lists them in a table of their own; stdout counts the presses, opens and
 slides. The synthetic logs and the report reader come from

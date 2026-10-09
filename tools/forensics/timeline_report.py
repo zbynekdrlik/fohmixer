@@ -625,7 +625,7 @@ DETAIL_LEGEND = (
     "opens, as the page recorded it: press (a finger down on the burger), slid (it slid "
     "off: no tap, nothing opened), tap (lifted before the hold: the hint), open (by the "
     "hold's check, or a lift after the hold) and close (the exit, a new layout without the "
-    "strip, or the strip in conflict). The channel is the strip's volume and mute."
+    "strip, a strip without a label carried into a new layout, or the strip in conflict). The channel is the strip's volume and mute."
 )
 
 

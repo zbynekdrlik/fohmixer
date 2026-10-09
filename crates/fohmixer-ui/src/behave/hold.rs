@@ -115,9 +115,14 @@ impl Hold {
 
     /// Pointer `pointer` moved to `x`, `y`: whether that ended its press
     /// (slid off it: no tap, nothing opens, the fill clears). The press's
-    /// first move only anchors it there.
+    /// first move only anchors it there; a press that opened the detail
+    /// already has nothing left to end (its finger moving on is no slide).
     pub fn moved(&mut self, pointer: i32, x: f64, y: f64) -> bool {
-        let Some(press) = self.press.as_mut().filter(|p| p.pointer == pointer) else {
+        let Some(press) = self
+            .press
+            .as_mut()
+            .filter(|p| p.pointer == pointer && !p.opened)
+        else {
             return false;
         };
         let Some((ax, ay)) = press.anchor else {
@@ -255,6 +260,12 @@ mod tests {
         assert!(!h.holding(), "the button stops filling");
         assert!(!h.due(1600.0));
         assert!(!h.open(1600.0), "once");
+        // Its finger moving on, however far, is no slide.
+        assert!(!h.moved(7, 0.0, 0.0), "the anchor");
+        assert!(
+            !h.moved(7, 0.0, 300.0),
+            "an opened press slides off nothing"
+        );
         // Its lift after that ends nothing.
         assert_eq!(h.up(7, 1700.0), Lift::Nothing);
         assert!(!h.open(1800.0));

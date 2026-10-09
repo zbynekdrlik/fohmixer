@@ -139,8 +139,13 @@ pub fn detail_subs(strip: &Strip, source: MeterSource) -> StripSubs {
 /// instance, the same kind of anchor (a track or a return) and the same
 /// label, wherever the track order put it, never another marker at its old
 /// index. Any other strip, a labelled one bound by name too, is its
-/// binding.
+/// binding; so is a strip that shows a placeholder (`#<index + 1>`, a Tuner
+/// without a label) on either side: a real label `"#3"` is never the
+/// placeholder `#3` of another track.
 fn same_strip(strip: &Strip, held: &Strip) -> bool {
+    if has_placeholder_label(held) || has_placeholder_label(strip) {
+        return strip.binding == held.binding;
+    }
     match (&held.label, &held.binding.anchor) {
         (Some(label), Anchor::TrackAt { .. } | Anchor::ReturnAt { .. }) => {
             strip.label.as_ref() == Some(label)
@@ -187,8 +192,9 @@ pub enum DetailChange {
     /// subscribes the keys the detail's slots read.
     Follow(Strip),
     /// It closes, and why (the flight recorder's `close`): `layout` (the
-    /// layout has no such strip, or a placeholder was carried into it) or
-    /// `conflict` (the layout holds it only in conflict).
+    /// layout has no such strip), `placeholder` (a placeholder-labelled
+    /// marker carried into a new layout) or `conflict` (the layout holds it
+    /// only in conflict).
     Close(&'static str),
 }
 
@@ -201,7 +207,7 @@ pub enum DetailChange {
 pub fn detail_update(layout: &Layout, held: Option<&Strip>, carried: bool) -> Option<DetailChange> {
     let held = held?;
     if carried && has_placeholder_label(held) {
-        return Some(DetailChange::Close(CLOSE_LAYOUT));
+        return Some(DetailChange::Close(CLOSE_PLACEHOLDER));
     }
     match detail_strip(layout, held) {
         Some(found) if found == *held => None,
@@ -212,10 +218,12 @@ pub fn detail_update(layout: &Layout, held: Option<&Strip>, carried: bool) -> Op
 }
 
 /// Why a detail closed (the flight recorder's `close`, #71): its exit, a
-/// new layout without its strip, its strip in conflict.
+/// new layout without its strip, a placeholder-labelled marker carried into
+/// a new layout, its strip in conflict.
 pub const CLOSE_EXIT: &str = "exit";
 pub const CLOSE_LAYOUT: &str = "layout";
 pub const CLOSE_CONFLICT: &str = "conflict";
+pub const CLOSE_PLACEHOLDER: &str = "placeholder";
 
 /// The keys a channel detail's events name (#71, the flight recorder): its
 /// strip's volume and mute write keys, as those controls name theirs.
