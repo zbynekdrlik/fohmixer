@@ -20,6 +20,10 @@
 //! The Tuner markers (#68, `router/markers.rs`): the router's marker keeper
 //! finds them; `router/markers_io.rs` hands each new set to the layout
 //! store, whose new composition goes out as a layout change.
+//!
+//! The Pro-Q 4 screen (#71 PR E, `eq.rs`): the router owns who holds which
+//! editor; `router/eq.rs` carries the state's acts out through the window
+//! worker (`plugwin.rs`) and the instances.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
@@ -43,6 +47,7 @@ mod writes;
 
 #[path = "router/deck.rs"]
 mod deck;
+mod eq;
 mod markers;
 #[path = "router/markers_io.rs"]
 mod markers_io;
@@ -191,9 +196,53 @@ pub enum RouterMsg {
     Deck {
         event: crate::companion::CompanionEvent,
     },
-    /// The Stream Deck's clock (#52, every `crate::deck::TICK` with
-    /// `[companion]`).
+    /// The Stream Deck's and the Pro-Q contacts' clock (#52, #71 PR E:
+    /// every `crate::deck::TICK` with `[companion]` or the Pro-Q screen).
     Tick,
+    /// A page asks for the Pro-Q 4 instances of a strip's track (#71 PR E).
+    EqList {
+        client: ClientId,
+        binding: Binding,
+    },
+    /// The walk of a strip's track ended (#71 PR E).
+    EqListed {
+        client: ClientId,
+        binding: Binding,
+        outcome: Result<Vec<crate::eq::walk::Found>, String>,
+    },
+    /// A page opens a Pro-Q 4 editor (#71 PR E).
+    EqOpen {
+        client: ClientId,
+        instance: String,
+        path: String,
+    },
+    /// An editor's open sequence ended: its picture's size, or why not.
+    EqOpened {
+        key: crate::eq::EditorKey,
+        session: u32,
+        outcome: Result<(u32, u32), String>,
+    },
+    /// A finger on a page's editor.
+    EqInput {
+        client: ClientId,
+        touch: fohmixer_proto::eq::Touch,
+        x: f64,
+        y: f64,
+    },
+    /// A page leaves its editor.
+    EqClose {
+        client: ClientId,
+    },
+    /// An editor's close sequence ended (`problem`: what went wrong).
+    EqClosed {
+        key: crate::eq::EditorKey,
+        session: u32,
+        problem: Option<String>,
+    },
+    /// An event of the window worker (#71 PR E).
+    EqWorker {
+        event: crate::plugwin::PlugwinEvent,
+    },
     /// The hub stops: the Stream Deck's held keys released and its task
     /// told to stop (#52), then every client closed.
     Stop,
@@ -253,6 +302,8 @@ pub struct Router {
     started: std::time::Instant,
     /// The Stream Deck (#52); none without `[companion]`.
     deck: Option<deck::DeckIo>,
+    /// The Pro-Q 4 screen (#71 PR E); none with `[eq] backend = "off"`.
+    eq: Option<eq::EqIo>,
     /// Keeps the strips' groups unfolded (#58).
     unfold: unfold::Keeper,
     /// Finds the Tuner markers (#68).
@@ -294,6 +345,7 @@ impl Router {
             io,
             started: std::time::Instant::now(),
             deck: None,
+            eq: None,
             unfold: unfold::Keeper::default(),
             markers: markers::Keeper::default(),
             layout_store: None,
@@ -303,9 +355,10 @@ impl Router {
     }
 
     /// Serves messages until [`RouterMsg::Stop`], then releases the Stream
-    /// Deck's held keys and tells its task to stop (#52), and closes every
-    /// client (it holds a sender of its own for its batches' results, so the
-    /// channel never ends by itself: the hub's stop sends `Stop`).
+    /// Deck's held keys and tells its task to stop (#52), hands the Pro-Q 4
+    /// editors' windows back (#71 PR E), and closes every client (it holds a
+    /// sender of its own for its batches' results, so the channel never ends
+    /// by itself: the hub's stop sends `Stop`).
     pub async fn run(mut self, mut rx: mpsc::UnboundedReceiver<RouterMsg>) {
         while let Some(msg) = rx.recv().await {
             let go_on = self.handle(msg);
@@ -315,6 +368,7 @@ impl Router {
             }
         }
         self.deck_stop();
+        self.eq_stop();
         for outbox in self.clients.values() {
             outbox.close();
         }
@@ -337,6 +391,7 @@ impl Router {
                     outbox.layout(self.layout_rev);
                 }
                 self.deck_attach(client, &outbox);
+                self.eq_attach(client, &outbox);
                 self.clients.insert(client, outbox);
                 self.peers.insert(client, peer);
             }
@@ -427,6 +482,7 @@ impl Router {
             } => self.on_applied(&instance, batch, &outcome),
             RouterMsg::Detach { client } => {
                 self.deck_detach(client);
+                self.eq_detach(client);
                 self.subs.drop_client(client);
                 self.clients.remove(&client);
                 self.peers.remove(&client);
@@ -518,9 +574,44 @@ impl Router {
                 hub_ms,
                 offset_ms,
             }),
-            RouterMsg::Heard { client } => self.deck_heard(client),
+            RouterMsg::Heard { client } => {
+                self.deck_heard(client);
+                self.eq_heard(client);
+            }
             RouterMsg::Deck { event } => self.deck_event(event),
-            RouterMsg::Tick => self.deck_tick(),
+            RouterMsg::Tick => {
+                self.deck_tick();
+                self.eq_tick();
+            }
+            RouterMsg::EqList { client, binding } => self.eq_list(client, binding),
+            RouterMsg::EqListed {
+                client,
+                binding,
+                outcome,
+            } => self.eq_listed(client, binding, outcome),
+            RouterMsg::EqOpen {
+                client,
+                instance,
+                path,
+            } => self.eq_open(client, &instance, &path),
+            RouterMsg::EqOpened {
+                key,
+                session,
+                outcome,
+            } => self.eq_opened(&key, session, outcome),
+            RouterMsg::EqInput {
+                client,
+                touch,
+                x,
+                y,
+            } => self.eq_input(client, touch, x, y),
+            RouterMsg::EqClose { client } => self.eq_close(client),
+            RouterMsg::EqClosed {
+                key,
+                session,
+                problem,
+            } => self.eq_closed(&key, session, problem),
+            RouterMsg::EqWorker { event } => self.eq_worker(event),
             RouterMsg::Stop => return false,
         }
         true

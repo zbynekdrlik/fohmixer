@@ -1,0 +1,693 @@
+//! A plug-in's editor window on the PC's screen (#71 PR E, D17, F28; what
+//! the PC tests established: `.claude/rules/plugin-window.md`).
+//!
+//! A platform backend behind [`Backend`] does what touches a window: the
+//! Windows one (`win.rs`, compiled on Windows only) and the simulated one
+//! ([`sim::Sim`], the hub's backend elsewhere, in the E2E harness and in the
+//! tests). One worker thread owns the backend ([`Plugwin::spawn`]): nothing
+//! runs on Live's thread, and nothing in the router waits for a window.
+//!
+//! - **Finding an editor:** Live does not make a new editor window the
+//!   foreground one, so the router lists the editor windows ([`Plugwin::list`]),
+//!   sets `is_editor_open = true`, and the worker takes the window that is new
+//!   in the list ([`pick`]), polling every [`FIND_POLL_MS`] for up to
+//!   [`FIND_MS`]; several new ones are refused (an open of the PC's own may
+//!   have come at once).
+//! - **Taking it:** on top of every window (no move or size), its picture
+//!   located (Pro-Q's own child window).
+//! - **The capture:** every [`CAPTURE_MS`] (25 fps) while its holder views
+//!   it: a picture equal to the last one is skipped, another is encoded as a
+//!   JPEG ([`QUALITY`]) and handed to its [`FrameSink`] (the holder's
+//!   socket, newest wins, and the card's last picture). The counts go to the
+//!   hub's log once a minute ([`Rate`]). A window that went away is reported
+//!   [`PlugwinEvent::Lost`].
+//! - **A contact:** one on the screen at a time. A down or an update lands
+//!   only when the point's window is the editor's; else nothing is injected
+//!   and the contact ends ([`PlugwinEvent::ContactEnded`]).
+//! - **The close guard** ([`Plugwin::guard`]): the frames stop, any contact
+//!   ends at its last point, then a tap on the editor's inert spot
+//!   ([`inert_spot`]): a value text field closes on a click elsewhere, and
+//!   Pro-Q 4.02 crashes Live when its editor closes with one open. A guard
+//!   that cannot tap fails: the router then leaves the editor open.
+//! - **The release** ([`Plugwin::release`]): the window's z-order as it was.
+//!   The stop ends the contact and releases every window.
+
+pub mod probe;
+pub mod sim;
+#[cfg(windows)]
+pub mod win;
+
+use std::collections::BTreeMap;
+use std::sync::Arc;
+use std::sync::mpsc::{self, RecvTimeoutError};
+use std::time::{Duration, Instant};
+
+use bytes::Bytes;
+use tokio::sync::oneshot;
+
+/// The capture's period (ms): 25 frames a second at most.
+pub const CAPTURE_MS: f64 = 40.0;
+/// How often the editor windows are listed while one is awaited (ms).
+pub const FIND_POLL_MS: f64 = 50.0;
+/// How long a new editor window is awaited after `is_editor_open = true` (ms).
+pub const FIND_MS: f64 = 3000.0;
+/// How often a capture's counts are logged (ms).
+pub const RATE_MS: f64 = 60_000.0;
+/// The worker's longest sleep between two looks at its clocks.
+pub const STEP: Duration = Duration::from_millis(10);
+/// How long the guard's finger stays on the inert spot.
+pub const GUARD_TAP: Duration = Duration::from_millis(30);
+/// The frames' JPEG quality.
+pub const QUALITY: u8 = 70;
+/// The inert spot: this share of the picture's width, in the top bar's empty
+/// middle (Pro-Q 4 at 100 %: x 546 of 1349, right of the logo's panel, left
+/// of the undo arrows; the main session confirms it on the PC, #71).
+pub const INERT_X: f64 = 0.405;
+/// The inert spot's height in the picture (px): the top bar's middle.
+pub const INERT_Y: i32 = 15;
+
+/// Why an open found no window.
+pub const NO_WINDOW: &str = "no window";
+/// Why an open found several.
+pub const SEVERAL: &str = "several windows";
+/// Why a command found no editor of its session.
+pub const NO_EDITOR: &str = "no such editor";
+/// Why a command found no worker.
+pub const STOPPED: &str = "the window worker stopped";
+
+/// A window's handle as a number (a Win32 `HWND` is a pointer, not `Send`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct WindowId(pub u64);
+
+/// One phase of a contact.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Phase {
+    Down,
+    Update,
+    Up,
+    Cancel,
+}
+
+impl Phase {
+    /// Its name in the records.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Down => "down",
+            Self::Update => "update",
+            Self::Up => "up",
+            Self::Cancel => "cancel",
+        }
+    }
+
+    /// Whether it lands only on the editor's own window (a down or an
+    /// update; an up or a cancel always goes: a contact must end).
+    pub fn checked(self) -> bool {
+        matches!(self, Self::Down | Self::Update)
+    }
+
+    /// Whether it ends the contact.
+    pub fn ends(self) -> bool {
+        matches!(self, Self::Up | Self::Cancel)
+    }
+}
+
+/// An editor window the backend took.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Taken {
+    /// The top-level window.
+    pub window: WindowId,
+    /// The window whose client area is the picture: Pro-Q's own child,
+    /// else the window itself.
+    pub picture: WindowId,
+    /// Its process.
+    pub pid: u32,
+    /// Whether it was on top of every window before (its z-order put back).
+    pub was_topmost: bool,
+    /// The picture's size when it was taken.
+    pub width: u32,
+    pub height: u32,
+}
+
+/// One picture: top-down BGRA rows, 4 bytes a pixel.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Pixels {
+    pub width: u32,
+    pub height: u32,
+    pub bgra: Vec<u8>,
+}
+
+/// What touches a window.
+pub trait Backend: Send {
+    /// Readies the calling thread (the worker's, or the probe's): the
+    /// Windows backend makes it per-monitor aware and sets up touch
+    /// injection.
+    fn start(&mut self) -> Result<(), String> {
+        Ok(())
+    }
+    /// The plug-in editor windows on the screen now (Live's).
+    fn editors(&mut self) -> Result<Vec<WindowId>, String>;
+    /// The visible top-level windows of process `pid` (the probe's host).
+    fn windows_of(&mut self, pid: u32) -> Result<Vec<WindowId>, String>;
+    /// Live was asked to open an editor (the simulated backend opens its
+    /// window; a real one has nothing to do).
+    fn live_opened(&mut self) {}
+    /// Takes `window`: on top of every window (no move, no size), its
+    /// picture located.
+    fn take(&mut self, window: WindowId) -> Result<Taken, String>;
+    /// Whether the window is still there.
+    fn alive(&mut self, taken: &Taken) -> bool;
+    /// The picture now.
+    fn grab(&mut self, taken: &Taken) -> Result<Pixels, String>;
+    /// A contact phase at picture point `at`: a down or an update lands only
+    /// when the point's window is the editor's (else an error, nothing
+    /// injected); an up or a cancel always goes. The system cursor is put
+    /// back when the contact ends.
+    fn touch(&mut self, taken: &Taken, phase: Phase, at: (i32, i32)) -> Result<(), String>;
+    /// The window's z-order as it was.
+    fn release(&mut self, taken: &Taken);
+    /// Asks the window to close (the probe's `--close` only).
+    fn close_window(&mut self, taken: &Taken);
+}
+
+/// Where a frame goes: its session and its JPEG.
+pub type FrameSink = Arc<dyn Fn(u32, Bytes) + Send + Sync>;
+/// What hears the worker.
+pub type Events = Arc<dyn Fn(PlugwinEvent) + Send + Sync>;
+
+/// A capture's counts over its last minute.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Rate {
+    /// Pictures grabbed.
+    pub grabs: u32,
+    /// Frames sent (a picture unlike the last one).
+    pub sent: u32,
+    /// Grabs that failed.
+    pub failed: u32,
+    /// The mean grab and encode time (ms) and frame size (bytes).
+    pub grab_ms: f64,
+    pub encode_ms: f64,
+    pub bytes: f64,
+    /// The last picture's size.
+    pub width: u32,
+    pub height: u32,
+}
+
+/// What the worker tells the router.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PlugwinEvent {
+    /// The window of `session` went away.
+    Lost { session: u32 },
+    /// The contact on `session` ended: its point was not the editor's.
+    ContactEnded { session: u32, why: String },
+    /// The capture of `session` over the last minute.
+    Rate { session: u32, rate: Rate },
+}
+
+/// Whether a capture last made `since_ms` ago is due.
+pub fn capture_due(since_ms: f64) -> bool {
+    since_ms >= CAPTURE_MS
+}
+
+/// Whether the windows last listed `since_ms` ago for an open are due.
+pub fn poll_due(since_ms: f64) -> bool {
+    since_ms >= FIND_POLL_MS
+}
+
+/// Whether an open's wait for its window, `waited_ms` so far, is over.
+pub fn find_over(waited_ms: f64) -> bool {
+    waited_ms >= FIND_MS
+}
+
+/// Whether a capture's minute is over, `since_ms` after it began.
+pub fn rate_due(since_ms: f64) -> bool {
+    since_ms >= RATE_MS
+}
+
+/// The inert spot of a picture `width` wide (see [`INERT_X`]).
+pub fn inert_spot(width: u32) -> (i32, i32) {
+    ((f64::from(width) * INERT_X).round() as i32, INERT_Y)
+}
+
+/// The windows in the list `now` that the list `before` lacked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Pick {
+    None,
+    One(WindowId),
+    Several,
+}
+
+/// The new window of an open: the one in `now` not in `before`.
+pub fn pick(before: &[WindowId], now: &[WindowId]) -> Pick {
+    let new: Vec<WindowId> = now
+        .iter()
+        .filter(|w| !before.contains(w))
+        .copied()
+        .collect();
+    match new.as_slice() {
+        [] => Pick::None,
+        [one] => Pick::One(*one),
+        _ => Pick::Several,
+    }
+}
+
+/// What an open does with what it found after `waited_ms`: take the one
+/// new window, fail once the wait is over without exactly one, or wait on.
+pub fn found(pick: &Pick, waited_ms: f64) -> Option<Result<WindowId, &'static str>> {
+    match pick {
+        Pick::One(window) => Some(Ok(*window)),
+        Pick::None => find_over(waited_ms).then_some(Err(NO_WINDOW)),
+        Pick::Several => find_over(waited_ms).then_some(Err(SEVERAL)),
+    }
+}
+
+/// A picture as a JPEG.
+pub fn encode(pixels: &Pixels, quality: u8) -> Result<Vec<u8>, String> {
+    let width = u16::try_from(pixels.width).map_err(|_| "a picture over 65535 px wide")?;
+    let height = u16::try_from(pixels.height).map_err(|_| "a picture over 65535 px high")?;
+    let mut jpeg = Vec::new();
+    jpeg_encoder::Encoder::new(&mut jpeg, quality)
+        .encode(&pixels.bgra, width, height, jpeg_encoder::ColorType::Bgra)
+        .map_err(|e| e.to_string())?;
+    Ok(jpeg)
+}
+
+/// A capture's running counts.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+struct Counts {
+    grabs: u32,
+    sent: u32,
+    failed: u32,
+    grab_ms: f64,
+    encode_ms: f64,
+    bytes: f64,
+    width: u32,
+    height: u32,
+}
+
+impl Counts {
+    /// The minute's rate: means over the grabs and the frames sent.
+    fn rate(&self) -> Rate {
+        let mean = |total: f64, n: u32| if n == 0 { 0.0 } else { total / f64::from(n) };
+        Rate {
+            grabs: self.grabs,
+            sent: self.sent,
+            failed: self.failed,
+            grab_ms: mean(self.grab_ms, self.grabs),
+            encode_ms: mean(self.encode_ms, self.sent),
+            bytes: mean(self.bytes, self.sent),
+            width: self.width,
+            height: self.height,
+        }
+    }
+}
+
+/// An editor the worker holds.
+struct Editor {
+    taken: Taken,
+    /// Where its frames go (none: not captured).
+    sink: Option<FrameSink>,
+    /// The last picture sent, to skip an equal one.
+    last: Option<Pixels>,
+    /// When it was last grabbed and when its minute began (worker ms).
+    grabbed: f64,
+    minute: f64,
+    counts: Counts,
+}
+
+/// An open waiting for its window.
+struct Finding {
+    session: u32,
+    before: Vec<WindowId>,
+    started: f64,
+    polled: Option<f64>,
+    reply: oneshot::Sender<Result<(u32, u32), String>>,
+}
+
+enum Command {
+    List(oneshot::Sender<Result<Vec<WindowId>, String>>),
+    Take {
+        session: u32,
+        before: Vec<WindowId>,
+        reply: oneshot::Sender<Result<(u32, u32), String>>,
+    },
+    Capture {
+        session: u32,
+        sink: FrameSink,
+    },
+    Touch {
+        session: u32,
+        phase: Phase,
+        at: (i32, i32),
+    },
+    Guard {
+        session: u32,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+    Release {
+        session: u32,
+        reply: oneshot::Sender<()>,
+    },
+    Stop,
+}
+
+/// The worker: its backend, the editors it holds by session, the opens
+/// waiting for their windows and the contact on the screen.
+struct Worker {
+    backend: Box<dyn Backend>,
+    events: Events,
+    editors: BTreeMap<u32, Editor>,
+    finding: Vec<Finding>,
+    contact: Option<(u32, (i32, i32))>,
+    clock: Instant,
+}
+
+impl Worker {
+    fn now(&self) -> f64 {
+        self.clock.elapsed().as_secs_f64() * 1000.0
+    }
+
+    /// Serves commands until `Stop` or the last handle is gone, looking at
+    /// its clocks at least every [`STEP`]; then hands every window back.
+    fn run(mut self, rx: &mpsc::Receiver<Command>) {
+        if let Err(why) = self.backend.start() {
+            tracing::error!(why = %why, "the plug-in window worker could not set up its thread: touches will fail");
+        }
+        loop {
+            match rx.recv_timeout(STEP) {
+                Ok(Command::Stop) | Err(RecvTimeoutError::Disconnected) => break,
+                Ok(command) => {
+                    let now = self.now();
+                    self.command(command, now);
+                }
+                Err(RecvTimeoutError::Timeout) => {}
+            }
+            let now = self.now();
+            self.step(now);
+        }
+        self.shutdown();
+    }
+
+    /// One command at `now` (the worker's ms).
+    fn command(&mut self, command: Command, now: f64) {
+        match command {
+            Command::List(reply) => {
+                let _ = reply.send(self.backend.editors());
+            }
+            Command::Take {
+                session,
+                before,
+                reply,
+            } => {
+                self.backend.live_opened();
+                self.finding.push(Finding {
+                    session,
+                    before,
+                    started: now,
+                    polled: None,
+                    reply,
+                });
+            }
+            Command::Capture { session, sink } => {
+                if let Some(editor) = self.editors.get_mut(&session) {
+                    editor.sink = Some(sink);
+                }
+            }
+            Command::Touch { session, phase, at } => self.touch(session, phase, at),
+            Command::Guard { session, reply } => {
+                let _ = reply.send(self.guard(session));
+            }
+            Command::Release { session, reply } => {
+                self.release(session);
+                let _ = reply.send(());
+            }
+            Command::Stop => {}
+        }
+    }
+
+    /// The clocks at `now`: the opens' polls, the captures, the minutes.
+    fn step(&mut self, now: f64) {
+        self.find(now);
+        let sessions: Vec<u32> = self.editors.keys().copied().collect();
+        for session in sessions {
+            self.capture(session, now);
+        }
+    }
+
+    /// The opens whose poll is due look for their window.
+    fn find(&mut self, now: f64) {
+        for mut finding in std::mem::take(&mut self.finding) {
+            if !finding.polled.is_none_or(|at| poll_due(now - at)) {
+                self.finding.push(finding);
+                continue;
+            }
+            let decision = match self.backend.editors() {
+                Ok(list) => found(&pick(&finding.before, &list), now - finding.started)
+                    .map(|found| found.map_err(str::to_string)),
+                Err(why) => Some(Err(why)),
+            };
+            match decision {
+                None => {
+                    finding.polled = Some(now);
+                    self.finding.push(finding);
+                }
+                Some(Err(why)) => {
+                    let _ = finding.reply.send(Err(why));
+                }
+                Some(Ok(window)) => {
+                    let answer = self.backend.take(window).map(|taken| {
+                        let size = (taken.width, taken.height);
+                        self.editors.insert(
+                            finding.session,
+                            Editor {
+                                taken,
+                                sink: None,
+                                last: None,
+                                grabbed: f64::NEG_INFINITY,
+                                minute: now,
+                                counts: Counts::default(),
+                            },
+                        );
+                        size
+                    });
+                    let _ = finding.reply.send(answer);
+                }
+            }
+        }
+    }
+
+    /// One capture of `session` when due: a window gone is lost; a picture
+    /// like the last one is skipped; another goes to the sink. The minute's
+    /// counts when it is over.
+    fn capture(&mut self, session: u32, now: f64) {
+        let Some(editor) = self.editors.get_mut(&session) else {
+            return;
+        };
+        if !self.backend.alive(&editor.taken) {
+            self.editors.remove(&session);
+            if self.contact.is_some_and(|(s, _)| s == session) {
+                self.contact = None;
+            }
+            (self.events)(PlugwinEvent::Lost { session });
+            return;
+        }
+        if rate_due(now - editor.minute) {
+            let rate = editor.counts.rate();
+            editor.counts = Counts::default();
+            editor.minute = now;
+            (self.events)(PlugwinEvent::Rate { session, rate });
+        }
+        let Some(sink) = editor.sink.clone() else {
+            return;
+        };
+        if !capture_due(now - editor.grabbed) {
+            return;
+        }
+        editor.grabbed = now;
+        let started = Instant::now();
+        let grabbed = self.backend.grab(&editor.taken);
+        editor.counts.grabs += 1;
+        editor.counts.grab_ms += started.elapsed().as_secs_f64() * 1000.0;
+        let pixels = match grabbed {
+            Ok(pixels) => pixels,
+            Err(why) => {
+                editor.counts.failed += 1;
+                tracing::debug!(session, why = %why, "a picture of a plug-in editor could not be grabbed");
+                return;
+            }
+        };
+        editor.counts.width = pixels.width;
+        editor.counts.height = pixels.height;
+        if editor.last.as_ref() == Some(&pixels) {
+            return;
+        }
+        let started = Instant::now();
+        match encode(&pixels, QUALITY) {
+            Ok(jpeg) => {
+                editor.counts.sent += 1;
+                editor.counts.encode_ms += started.elapsed().as_secs_f64() * 1000.0;
+                editor.counts.bytes += jpeg.len() as f64;
+                editor.last = Some(pixels);
+                sink(session, Bytes::from(jpeg));
+            }
+            Err(why) => {
+                editor.counts.failed += 1;
+                tracing::warn!(session, why = %why, "a plug-in editor's picture could not be encoded");
+            }
+        }
+    }
+
+    /// A contact phase on `session`'s window: one contact on the screen; a
+    /// refused down or update ends the contact and says so.
+    fn touch(&mut self, session: u32, phase: Phase, at: (i32, i32)) {
+        let Some(editor) = self.editors.get(&session) else {
+            return;
+        };
+        let other = self.contact.is_some_and(|(s, _)| s != session);
+        if other {
+            return;
+        }
+        match self.backend.touch(&editor.taken, phase, at) {
+            Ok(()) => {
+                self.contact = (!phase.ends()).then_some((session, at));
+            }
+            Err(why) => {
+                if let Some((_, last)) = self.contact.take()
+                    && phase.checked()
+                {
+                    let _ = self.backend.touch(&editor.taken, Phase::Cancel, last);
+                }
+                (self.events)(PlugwinEvent::ContactEnded { session, why });
+            }
+        }
+    }
+
+    /// The contact on `session`, ended at its last point.
+    fn end_contact(&mut self, session: u32) {
+        let Some((_, last)) = self.contact.filter(|(s, _)| *s == session) else {
+            return;
+        };
+        self.contact = None;
+        if let Some(editor) = self.editors.get(&session) {
+            let _ = self.backend.touch(&editor.taken, Phase::Up, last);
+        }
+    }
+
+    /// The close guard of `session`: no more frames, its contact ended, a
+    /// tap on the inert spot.
+    fn guard(&mut self, session: u32) -> Result<(), String> {
+        self.end_contact(session);
+        let editor = self.editors.get_mut(&session).ok_or(NO_EDITOR)?;
+        editor.sink = None;
+        let width = editor.last.as_ref().map_or(editor.taken.width, |p| p.width);
+        let taken = editor.taken.clone();
+        guard_tap(self.backend.as_mut(), &taken, inert_spot(width))
+    }
+
+    /// `session`'s window handed back: its contact ended, its z-order as it
+    /// was.
+    fn release(&mut self, session: u32) {
+        self.end_contact(session);
+        if let Some(editor) = self.editors.remove(&session) {
+            self.backend.release(&editor.taken);
+        }
+    }
+
+    /// The worker ends: every window handed back.
+    fn shutdown(&mut self) {
+        let sessions: Vec<u32> = self.editors.keys().copied().collect();
+        for session in sessions {
+            self.release(session);
+        }
+    }
+}
+
+/// A tap at `spot` (the guard's): down, a short hold, up. A refused down
+/// taps nothing.
+pub fn guard_tap(backend: &mut dyn Backend, taken: &Taken, spot: (i32, i32)) -> Result<(), String> {
+    backend.touch(taken, Phase::Down, spot)?;
+    std::thread::sleep(GUARD_TAP);
+    backend.touch(taken, Phase::Up, spot)
+}
+
+/// The handle of the window worker (cheap to clone).
+#[derive(Clone)]
+pub struct Plugwin {
+    tx: mpsc::Sender<Command>,
+}
+
+impl Plugwin {
+    /// Starts the worker thread on `backend`; `events` hears it.
+    pub fn spawn(backend: Box<dyn Backend>, events: Events) -> std::io::Result<Self> {
+        let (tx, rx) = mpsc::channel();
+        let worker = Worker {
+            backend,
+            events,
+            editors: BTreeMap::new(),
+            finding: Vec::new(),
+            contact: None,
+            clock: Instant::now(),
+        };
+        std::thread::Builder::new()
+            .name("plugwin".to_string())
+            .spawn(move || worker.run(&rx))?;
+        Ok(Self { tx })
+    }
+
+    /// The editor windows on the screen now.
+    pub async fn list(&self) -> Result<Vec<WindowId>, String> {
+        let (reply, answer) = oneshot::channel();
+        self.tx
+            .send(Command::List(reply))
+            .map_err(|_| STOPPED.to_string())?;
+        answer.await.map_err(|_| STOPPED.to_string())?
+    }
+
+    /// Takes the editor window new since `before` as `session` (Live was
+    /// just asked to open it): its picture's size.
+    pub async fn take(&self, session: u32, before: Vec<WindowId>) -> Result<(u32, u32), String> {
+        let (reply, answer) = oneshot::channel();
+        self.tx
+            .send(Command::Take {
+                session,
+                before,
+                reply,
+            })
+            .map_err(|_| STOPPED.to_string())?;
+        answer.await.map_err(|_| STOPPED.to_string())?
+    }
+
+    /// `session`'s frames go to `sink` from now on.
+    pub fn capture(&self, session: u32, sink: FrameSink) {
+        let _ = self.tx.send(Command::Capture { session, sink });
+    }
+
+    /// A contact phase on `session`'s window.
+    pub fn touch(&self, session: u32, phase: Phase, at: (i32, i32)) {
+        let _ = self.tx.send(Command::Touch { session, phase, at });
+    }
+
+    /// The close guard of `session`.
+    pub async fn guard(&self, session: u32) -> Result<(), String> {
+        let (reply, answer) = oneshot::channel();
+        self.tx
+            .send(Command::Guard { session, reply })
+            .map_err(|_| STOPPED.to_string())?;
+        answer.await.map_err(|_| STOPPED.to_string())?
+    }
+
+    /// `session`'s window handed back.
+    pub async fn release(&self, session: u32) {
+        let (reply, answer) = oneshot::channel();
+        if self.tx.send(Command::Release { session, reply }).is_ok() {
+            let _ = answer.await;
+        }
+    }
+
+    /// The worker hands every window back and ends.
+    pub fn stop(&self) {
+        let _ = self.tx.send(Command::Stop);
+    }
+}
+
+#[cfg(test)]
+mod tests;

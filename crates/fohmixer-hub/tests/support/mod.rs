@@ -331,6 +331,23 @@ impl Client {
         next_msg(&mut self.ws, limit).await
     }
 
+    /// The next binary message (a Pro-Q 4 frame, #71 PR E) within `limit`;
+    /// the text messages read meanwhile are kept for `wait`.
+    pub async fn frame(&mut self, limit: Duration) -> Option<Vec<u8>> {
+        let deadline = Instant::now() + limit;
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            match tokio::time::timeout(left, self.ws.next()).await {
+                Ok(Some(Ok(Message::Binary(bytes)))) => return Some(bytes.to_vec()),
+                Ok(Some(Ok(Message::Text(text)))) => self
+                    .pending
+                    .push(serde_json::from_str(text.as_str()).expect("a protocol message")),
+                Ok(Some(Ok(_))) => {}
+                Ok(Some(Err(_)) | None) | Err(_) => return None,
+            }
+        }
+    }
+
     /// Whether a message `take` maps to arrives within `limit`.
     pub async fn gets<T>(
         &mut self,

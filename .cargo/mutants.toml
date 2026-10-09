@@ -14,6 +14,13 @@ exclude_globs = [
   # Linux runners; the `windows` CI job builds them and runs the `pepper::`,
   # `sealed::` and `cf_token::` tests against them.
   "crates/fohmixer-hub/src/dpapi.rs",
+  # The Pro-Q 4 screen's Windows window backend (#71 PR E, as dpapi.rs): not
+  # compiled on the Linux runners; the `windows` CI job lints it and runs
+  # its `plugwin::win::` tests and the eq-probe CLI test against it, and the
+  # PC run of `fohmixer-hub eq-probe` against Carla's bridge drives every
+  # call (.claude/rules/plugin-window.md). Its decisions (the phases' flags
+  # aside, pinned by its own test) are the tested plugwin.rs and eq.rs.
+  "crates/fohmixer-hub/src/plugwin/win.rs",
   # The tray's Windows-only Tauri glue (#39, as iemmixer excludes iem-tray):
   # not compiled on the Linux runners; the `windows` CI job builds and lints
   # it, and Test-Fohmixer.ps1 runs the exe (start, `--exit`, the log). Its

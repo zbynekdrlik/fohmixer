@@ -6,14 +6,18 @@
 //! commands go straight to their instance (in order) and their results
 //! come back as `result`; `sub`/`unsub`/`set_hub` and the writes (`set`,
 //! #43) go to the router; the Stream Deck's `deck_view` and `deck_press`
-//! (#52) too, and with `[companion]` every message tells the router the page
-//! was heard (a holding page silent for 2 s is released); `ping` is
+//! (#52) too, and so do the Pro-Q 4 screen's `eq_list`, `eq_open`,
+//! `eq_input` and `eq_close` (#71 PR E); with `[companion]` or the Pro-Q
+//! screen every message tells the router the page was heard (a holding
+//! page silent for 2 s is released, a silent page's contact ends); `ping` is
 //! answered `pong` with the hub's clock (the client's watchdog and round
 //! trip). The socket's open and close and every ping are event-log records
 //! (#43; a ping's carries the page's clock offset, `clock.rs`). A writer
 //! task drains the client's outbox, so a slow client never holds up anyone
 //! else; a client that takes longer than [`SEND_TIMEOUT`] to accept a
-//! message is closed (it reconnects and resyncs).
+//! message is closed (it reconnects and resyncs). After each batch the
+//! writer sends the client's newest Pro-Q 4 frame waiting, if any, as a
+//! binary message (`fohmixer_proto::eq::frame`).
 //!
 //! A socket's connect and disconnect lines name who opened it (#9, an
 //! [`Opener`]): the peer, the address Cloudflare forwarded (through the
@@ -188,21 +192,11 @@ async fn session(mut socket: WebSocket, hub: Hub, proto: Option<u32>, who: Opene
         let outbox = Arc::clone(&outbox);
         tokio::spawn(async move {
             while let Some(batch) = outbox.next_batch().await {
-                for msg in &batch {
-                    match tokio::time::timeout(SEND_TIMEOUT, sink.send(text(msg))).await {
-                        Ok(Ok(())) => {}
-                        Ok(Err(_)) => {
-                            outbox.close();
-                            return "a write to the client failed";
-                        }
-                        Err(_) => {
-                            tracing::warn!(
-                                client,
-                                "a client took over 5 s to take a message: closing it"
-                            );
-                            outbox.close();
-                            return "the client took over 5 s to take a message";
-                        }
+                let frame = outbox.take_frame().map(Message::Binary);
+                for message in batch.iter().map(text).chain(frame) {
+                    if let Err(why) = deliver(&mut sink, message, client).await {
+                        outbox.close();
+                        return why;
                     }
                 }
             }
@@ -236,6 +230,26 @@ async fn session(mut socket: WebSocket, hub: Hub, proto: Option<u32>, who: Opene
     log_socket("client disconnected", client, &who);
     hub.events
         .record("sock", sock_fields("close", client, &who, Some(reason)));
+}
+
+/// Writes one message to a client within [`SEND_TIMEOUT`]; why it could
+/// not.
+async fn deliver(
+    sink: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+    message: Message,
+    client: ClientId,
+) -> Result<(), &'static str> {
+    match tokio::time::timeout(SEND_TIMEOUT, sink.send(message)).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(_)) => Err("a write to the client failed"),
+        Err(_) => {
+            tracing::warn!(
+                client,
+                "a client took over 5 s to take a message: closing it"
+            );
+            Err("the client took over 5 s to take a message")
+        }
+    }
 }
 
 /// The event-log fields of a socket's open or close (`what`), with why it
@@ -328,9 +342,9 @@ fn handle_text(hub: &Hub, conn: &mut Conn, text: &str) {
     let client = conn.client;
     let outbox = Arc::clone(&conn.outbox);
     let outbox = &outbox;
-    // A holding page's silence releases its Stream Deck keys (#52): every
-    // message it sends counts.
-    if hub.config.companion.is_some() {
+    // A holding page's silence releases its Stream Deck keys (#52) and ends
+    // its Pro-Q contact (#71 PR E): every message it sends counts.
+    if hub.hears_clients() {
         hub.route(RouterMsg::Heard { client });
     }
     match serde_json::from_str::<ClientMsg>(text) {
@@ -395,6 +409,19 @@ fn handle_text(hub: &Hub, conn: &mut Conn, text: &str) {
             hub_ms: crate::live::wall_ms().unwrap_or(0.0),
             offset_ms: conn.offset,
         }),
+        Ok(ClientMsg::EqList { binding }) => hub.route(RouterMsg::EqList { client, binding }),
+        Ok(ClientMsg::EqOpen { instance, path }) => hub.route(RouterMsg::EqOpen {
+            client,
+            instance,
+            path,
+        }),
+        Ok(ClientMsg::EqInput { touch, x, y }) => hub.route(RouterMsg::EqInput {
+            client,
+            touch,
+            x,
+            y,
+        }),
+        Ok(ClientMsg::EqClose) => hub.route(RouterMsg::EqClose { client }),
         // Through the outbox like every answer: a pong proves the writer
         // still reaches the client.
         Ok(ClientMsg::Ping { n, t, rtt, rtt_n }) => {

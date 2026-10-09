@@ -18,6 +18,12 @@ allow = [
 ]
 confidence-threshold = 0.9
 unused-allowed-license = "allow"
+# jpeg-encoder (#71 PR E, the Pro-Q 4 screen's frames): MIT OR Apache-2.0
+# and the Independent JPEG Group's licence for its DCT, which asks for
+# credit in the documentation of a product that ships it (README, LICENSE-IJG).
+exceptions = [
+  { allow = ["IJG"], crate = "jpeg-encoder" },
+]
 
 [bans]
 multiple-versions = "allow"

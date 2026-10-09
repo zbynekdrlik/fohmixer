@@ -1,15 +1,16 @@
 //! HTTP routes (trimmed from iemmixer's `iem-server/src/routes.rs` @
 //! 22372bc): the version, client panic reports, the pages' diagnostic
 //! reports (#26, `client_report.rs`) and the embedded UI (public);
-//! the engineer login; the layout, the status and the client WebSocket (a
-//! token). Every request must name this hub as its `Host` ([`check_host`]).
+//! the engineer login; the layout, the status, a Pro-Q 4 editor's last
+//! picture (#71 PR E) and the client WebSocket (a token). Every request must
+//! name this hub as its `Host` ([`check_host`]).
 
 use std::net::{Ipv4Addr, Ipv6Addr};
 
 use axum::{
     Json, Router,
     body::Body,
-    extract::{DefaultBodyLimit, Path, Request, State},
+    extract::{DefaultBodyLimit, Path, Query, Request, State},
     http::{HeaderMap, StatusCode, header},
     middleware::Next,
     response::{IntoResponse, Response},
@@ -120,6 +121,38 @@ async fn post_migration(
 ) -> Result<Json<MigrationStatus>, Rejection> {
     hub.auth.require(&headers)?;
     Ok(Json(hub.migration(true).await))
+}
+
+/// The query of `GET /api/eq/picture`: the editor's instance and path.
+#[derive(Debug, serde::Deserialize)]
+pub struct PictureQuery {
+    pub instance: String,
+    pub path: String,
+}
+
+/// `GET /api/eq/picture?instance=&path=` (a token, #71 PR E): the last
+/// picture of a Pro-Q 4 editor (`image/jpeg`, never cached), or 404 before
+/// its first open.
+async fn get_eq_picture(
+    State(hub): State<Hub>,
+    headers: HeaderMap,
+    Query(query): Query<PictureQuery>,
+) -> Result<Response, Rejection> {
+    hub.auth.require(&headers)?;
+    let key = crate::eq::EditorKey::new(&query.instance, &query.path);
+    let Some(jpeg) = hub.pictures.get(&key) else {
+        return Err(Rejection::from(error_response(
+            StatusCode::NOT_FOUND,
+            "NO_PICTURE",
+            "no picture of this editor yet",
+        )));
+    };
+    Ok(Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "image/jpeg")
+        .header(header::CACHE_CONTROL, "no-store")
+        .body(Body::from(jpeg))
+        .expect("a picture response is valid"))
 }
 
 /// Whether `port` is a port number's digits (one or more, nothing else).
@@ -260,6 +293,7 @@ pub fn api_routes() -> Router<Hub> {
             "/api/markers/migration",
             get(get_migration).post(post_migration),
         )
+        .route("/api/eq/picture", get(get_eq_picture))
         .route("/ws", get(crate::ws::ws_handler))
 }
 
@@ -482,6 +516,7 @@ mod tests {
             assert!(csp.starts_with("default-src 'self';"), "{path}: {csp}");
             assert!(csp.contains("'wasm-unsafe-eval'"), "{path}: {csp}");
             assert!(csp.contains("connect-src 'self';"), "{path}: {csp}");
+            assert!(csp.contains("img-src 'self' data: blob:;"), "{path}: {csp}");
         }
     }
 
@@ -504,7 +539,12 @@ mod tests {
 
     #[tokio::test]
     async fn the_layout_and_the_status_need_a_token() {
-        for path in ["/api/layout", "/api/status", "/api/markers/migration"] {
+        for path in [
+            "/api/layout",
+            "/api/status",
+            "/api/markers/migration",
+            "/api/eq/picture?instance=band&path=p",
+        ] {
             let response = get_path(path).await;
             assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{path}");
             let body: serde_json::Value =
@@ -567,6 +607,36 @@ mod tests {
             )
             .await
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn with_a_token_a_pro_q_picture_is_its_last_jpeg_or_404() {
+        let dir = tempfile::tempdir().unwrap();
+        let hub = crate::test_hub(dir.path());
+        let path = "/api/eq/picture?instance=band&path=live_set%20tracks%201%20devices%200";
+        let response = get_with_token(&hub, path).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let body: serde_json::Value = serde_json::from_slice(&body_bytes(response).await).unwrap();
+        assert_eq!(body["code"], "NO_PICTURE");
+        hub.pictures.put(
+            &crate::eq::EditorKey::new("band", "live_set tracks 1 devices 0"),
+            bytes::Bytes::from_static(b"\xFF\xD8jpeg"),
+        );
+        let response = get_with_token(&hub, path).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(header_of(&response, "content-type"), "image/jpeg");
+        assert_eq!(header_of(&response, "cache-control"), "no-store");
+        assert_eq!(body_bytes(response).await, b"\xFF\xD8jpeg");
+        // Another editor has none; a query without its path is refused.
+        let response = get_with_token(
+            &hub,
+            "/api/eq/picture?instance=master&path=live_set%20tracks%201%20devices%200",
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let response = get_with_token(&hub, "/api/eq/picture?instance=band").await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        hub.stop();
     }
 
     #[tokio::test]

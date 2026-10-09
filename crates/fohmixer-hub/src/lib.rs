@@ -29,6 +29,12 @@
 //! (`deck.rs`, `router/deck.rs`), its link in `/api/status`. The stop
 //! releases the held keys and waits (bounded) for the Companion task's
 //! `REMOVE-DEVICE`.
+//!
+//! The Pro-Q 4 screen (#71 PR E, `[eq]`): a window worker (`plugwin.rs`:
+//! the Windows backend on the PC, the simulated one elsewhere) opens,
+//! captures and touches a plug-in's editor; the router holds who holds which
+//! (`eq.rs`, `router/eq.rs`); the editors' last pictures are kept for
+//! `GET /api/eq/picture`.
 
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -58,6 +64,7 @@ pub mod config;
 pub mod deck;
 #[cfg(windows)]
 mod dpapi;
+pub mod eq;
 pub mod events;
 pub mod http_client;
 pub mod https;
@@ -68,6 +75,7 @@ pub mod outbox;
 pub mod pepper;
 pub mod pin_hash;
 pub mod pin_store;
+pub mod plugwin;
 pub mod provision;
 pub mod remote;
 pub mod router;
@@ -144,6 +152,10 @@ pub struct HubInner {
     pub(crate) companion: Option<CompanionHandle>,
     /// Its task, awaited after the stop so its `REMOVE-DEVICE` goes out.
     companion_task: Mutex<Option<JoinHandle<()>>>,
+    /// The Pro-Q 4 editors' last pictures (#71 PR E, `GET /api/eq/picture`).
+    pub pictures: Arc<eq::Pictures>,
+    /// The Pro-Q 4 screen is on (`[eq] backend` is not `off`).
+    pub eq: bool,
     live: BTreeMap<String, LiveHandle>,
     router: mpsc::UnboundedSender<RouterMsg>,
     next_client: AtomicU64,
@@ -184,6 +196,13 @@ impl HubInner {
     /// The handle of an instance.
     pub fn live(&self, name: &str) -> Option<&LiveHandle> {
         self.live.get(name)
+    }
+
+    /// Whether every client message tells the router the page was heard:
+    /// a silent page's Stream Deck keys are released (#52) and its Pro-Q
+    /// contact ends (#71 PR E).
+    pub fn hears_clients(&self) -> bool {
+        self.companion.is_some() || self.eq
     }
 
     /// Sends a message to the router.
@@ -340,7 +359,22 @@ impl Hub {
             });
             CompanionHandle::spawn(cfg, events)
         });
-        if config.companion.is_some() {
+        // The Pro-Q 4 screen (#71 PR E): the window worker, its events to
+        // the router.
+        let plugwin = match plugwin_backend(&config)? {
+            Some(backend) => {
+                let tx = router_tx.clone();
+                let events: plugwin::Events = Arc::new(move |event: plugwin::PlugwinEvent| {
+                    let _ = tx.send(RouterMsg::EqWorker { event });
+                });
+                Some(
+                    plugwin::Plugwin::spawn(backend, events)
+                        .context("starting the plug-in window worker")?,
+                )
+            }
+            None => None,
+        };
+        if config.companion.is_some() || plugwin.is_some() {
             tasks.push(tokio::spawn(deck_ticks(router_tx.clone(), deck::TICK)));
         }
         let names: Vec<String> = config.instances.iter().map(|i| i.name.clone()).collect();
@@ -353,6 +387,7 @@ impl Hub {
             public_name = config.tls.as_ref().map(|t| t.name.as_str()).unwrap_or("-"),
             access = config.access.is_some(),
             companion = config.companion.is_some(),
+            eq = ?config.eq_backend(),
             "hub started"
         );
         let mut router = router::Router::new(
@@ -366,6 +401,11 @@ impl Hub {
         );
         if let (Some(cfg), Some((handle, _))) = (&config.companion, &companion) {
             router = router.with_deck(cfg.clone(), handle.clone());
+        }
+        let pictures = Arc::new(eq::Pictures::default());
+        let eq = plugwin.is_some();
+        if let Some(plugwin) = plugwin {
+            router = router.with_eq(plugwin, Arc::clone(&pictures));
         }
         // The Tuner markers (#68) go to the layout store.
         router = router.with_layout(Arc::clone(&layout));
@@ -389,12 +429,38 @@ impl Hub {
             events,
             companion,
             companion_task: Mutex::new(companion_task),
+            pictures,
+            eq,
             live,
             router: router_tx,
             next_client: AtomicU64::new(1),
             tasks: Mutex::new(tasks),
         })))
     }
+}
+
+/// The window backend of `[eq]` (#71 PR E): none when it is `off`; the
+/// simulated one records into the data folder (`eq-sim.jsonl`, the E2E
+/// harness's `/sim/eq`).
+fn plugwin_backend(config: &Config) -> anyhow::Result<Option<Box<dyn plugwin::Backend>>> {
+    match config.eq_backend() {
+        config::EqBackend::Off => Ok(None),
+        config::EqBackend::Sim => {
+            let file = config.data_dir.join(plugwin::sim::RECORD_FILE);
+            Ok(Some(Box::new(plugwin::sim::Sim::new(Some(file)).0)))
+        }
+        config::EqBackend::Windows => windows_backend().map(Some),
+    }
+}
+
+#[cfg(windows)]
+fn windows_backend() -> anyhow::Result<Box<dyn plugwin::Backend>> {
+    Ok(Box::new(plugwin::win::Win::new()))
+}
+
+#[cfg(not(windows))]
+fn windows_backend() -> anyhow::Result<Box<dyn plugwin::Backend>> {
+    anyhow::bail!("[eq] backend \"windows\" runs on Windows only")
 }
 
 /// The HTTP client of the remote-access tasks, on rustls with ring.
@@ -468,11 +534,12 @@ fn router(hub: Hub, redirect: bool) -> Router {
     );
     // CSP allows WASM + inline scripts (Trunk's loader) and inline styles
     // (Leptos); connections go to this server only (the client WebSocket is
-    // same-origin, which 'self' covers).
+    // same-origin, which 'self' covers); images may also be the page's own
+    // blobs (a Pro-Q 4 card's last picture, fetched with the token, #71).
     let csp = SetResponseHeaderLayer::overriding(
         HeaderName::from_static("content-security-policy"),
         HeaderValue::from_static(
-            "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; font-src 'self'",
+            "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data: blob:; font-src 'self'",
         ),
     );
 

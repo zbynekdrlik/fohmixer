@@ -32,10 +32,17 @@
 //! can still wait behind about one send buffer (~64 KB) of key frames, far
 //! less than a page; and a key that keeps changing never holds the others
 //! back.
+//!
+//! The picture of the client's open Pro-Q 4 editor (#71 PR E) waits in one
+//! slot, the newest frame replacing one not yet written (a slow link gets
+//! fewer frames, never old ones), and goes as a binary message after each
+//! batch ([`Outbox::take_frame`]): a frame never holds up a pong or an ack
+//! for longer than one frame's write.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
+use bytes::Bytes;
 use fohmixer_proto::client::{AckItem, DeckKey, ServerMsg, ValueItem};
 use serde_json::Value;
 use tokio::sync::Notify;
@@ -57,6 +64,8 @@ struct Inner {
     /// The key the next batch's deck keys start from (the one after the
     /// last written; the round wraps to the lowest).
     deck_next: u32,
+    /// The newest frame of the client's Pro-Q 4 editor (#71 PR E).
+    frame: Option<Bytes>,
     closed: bool,
 }
 
@@ -103,6 +112,7 @@ impl Inner {
             && self.values.is_empty()
             && self.acks.is_empty()
             && self.deck.is_empty()
+            && self.frame.is_none()
     }
 }
 
@@ -178,6 +188,27 @@ impl Outbox {
         self.put(|inner| {
             inner.deck.insert(key.key, key);
         });
+    }
+
+    /// The newest frame of the client's Pro-Q 4 editor (#71 PR E): it
+    /// replaces one still waiting.
+    pub fn eq_frame(&self, frame: Bytes) {
+        self.put(|inner| inner.frame = Some(frame));
+    }
+
+    /// The client's editor closed: a frame still waiting is dropped.
+    pub fn forget_eq(&self) {
+        self.lock().frame = None;
+    }
+
+    /// The frame waiting, if any (the writer sends it after each batch);
+    /// none once closed.
+    pub fn take_frame(&self) -> Option<Bytes> {
+        let mut inner = self.lock();
+        if inner.closed {
+            return None;
+        }
+        inner.frame.take()
     }
 
     /// The client closed the tab: the keys waiting for it are dropped.
@@ -266,7 +297,9 @@ impl Outbox {
 
     /// Waits until something is waiting (or the outbox closed) and takes it;
     /// deck keys left by the last take are something waiting, so the writer
-    /// takes them at once, after what came meanwhile.
+    /// takes them at once, after what came meanwhile. A frame alone is
+    /// something waiting too: the batch is then empty, and the writer takes
+    /// the frame after it ([`Outbox::take_frame`]).
     pub async fn next_batch(&self) -> Option<Vec<ServerMsg>> {
         loop {
             {
@@ -776,5 +809,45 @@ mod tests {
             .unwrap();
         assert_eq!(got, None);
         assert_eq!(outbox.next_batch().await, None);
+    }
+
+    #[tokio::test]
+    async fn the_newest_frame_waits_alone_and_wakes_the_writer() {
+        let outbox = Arc::new(Outbox::new());
+        assert_eq!(outbox.take_frame(), None);
+        let writer = Arc::clone(&outbox);
+        let batch = tokio::spawn(async move { writer.next_batch().await });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(!batch.is_finished(), "nothing to write yet");
+        outbox.eq_frame(Bytes::from_static(b"old"));
+        outbox.eq_frame(Bytes::from_static(b"new"));
+        // A frame alone wakes the writer with an empty batch.
+        let batch = tokio::time::timeout(Duration::from_secs(2), batch)
+            .await
+            .expect("woken by a frame")
+            .unwrap();
+        assert_eq!(batch, Some(vec![]));
+        assert_eq!(outbox.take_frame(), Some(Bytes::from_static(b"new")));
+        assert_eq!(outbox.take_frame(), None, "taken once");
+        assert!(outbox.lock().is_empty());
+        // The batch's messages first; the frame stays for take_frame.
+        outbox.eq_frame(Bytes::from_static(b"next"));
+        outbox.layout(3);
+        assert_eq!(outbox.take().unwrap(), vec![ServerMsg::Layout { rev: 3 }]);
+        assert!(!outbox.lock().is_empty(), "the frame still waits");
+        // A closed editor's frame is dropped.
+        outbox.forget_eq();
+        assert!(outbox.lock().is_empty());
+        assert_eq!(outbox.take_frame(), None);
+        // A closed outbox writes no frame.
+        outbox.eq_frame(Bytes::from_static(b"late"));
+        outbox.close();
+        assert_eq!(outbox.take_frame(), None);
+        outbox.eq_frame(Bytes::from_static(b"after"));
+        assert_eq!(
+            outbox.lock().frame.as_deref(),
+            Some(&b"late"[..]),
+            "a closed outbox takes nothing new"
+        );
     }
 }
