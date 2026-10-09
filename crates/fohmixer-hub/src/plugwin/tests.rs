@@ -1212,12 +1212,13 @@ async fn until(what: &str, check: impl Fn() -> bool) {
 
 #[tokio::test]
 async fn a_resting_contact_goes_again_in_time_while_two_editors_grab_slowly() {
-    // Two engineers, each with an editor captured, and every grab taking
-    // 25 ms (the PC's BitBlt of a 4.3 MB picture): the keep-alive must not
-    // wait for the step's grabs, or Windows cancels the resting contact
-    // (no frame for 100 ms). Waiting for both grabs would make gaps of
-    // 50 + 2 × 25 ms and more; checked between them, the worst is about
-    // 75 ms, which leaves a loaded runner 25 ms.
+    // Two editors captured (the worker takes several; the hub holds one at
+    // a time since the round-3 ruling, so two is the worst case), every
+    // grab taking 25 ms (the PC's BitBlt of a 4.3 MB picture): the
+    // keep-alive must not wait for the step's grabs, or Windows cancels the
+    // resting contact (no frame for 100 ms). Waiting for both grabs makes
+    // gaps of 50 + 2 × 25 ms and more on nearly every keep-alive; checked
+    // between them, the worst is about 75 ms.
     let (sim, handle) = Sim::new(None);
     handle.still(true);
     handle.grab_delay(Duration::from_millis(25));
@@ -1248,11 +1249,18 @@ async fn a_resting_contact_goes_again_in_time_while_two_editors_grab_slowly() {
         .iter()
         .map(|r| r["t"].as_f64().expect("a touch's time"))
         .collect();
-    let largest = times
-        .windows(2)
-        .map(|pair| pair[1] - pair[0])
-        .fold(0.0, f64::max);
-    assert!(largest < 100.0, "the largest gap {largest} ms: {times:?}");
+    // Wall-clock times on a thread the runner shares with every other test
+    // (the coverage build, the mutation shards): it may be held up once,
+    // as the integration test allows (`tests/eq.rs`). The strict 100 ms
+    // bound is the explicit-clock test's
+    // (`the_keep_alive_is_looked_at_first_and_after_each_grab_on_a_fresh_clock`).
+    let gaps: Vec<f64> = times.windows(2).map(|pair| pair[1] - pair[0]).collect();
+    let late = gaps.iter().filter(|gap| **gap >= 100.0).count();
+    let largest = gaps.iter().copied().fold(0.0, f64::max);
+    assert!(
+        late <= 1 && largest < 150.0,
+        "{late} gaps of 100 ms or more, the largest {largest} ms: {gaps:?}"
+    );
 }
 
 #[tokio::test]
