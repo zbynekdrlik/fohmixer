@@ -26,7 +26,7 @@ import {
 //
 // The fixture's Hand2 # holds two: `Pro-Q 4` on the track, and `De-ess`
 // inside the rack `Vocal FX`, chain `Main` (its `Pro-C 2` in chain `Air` is
-// no Pro-Q 4 and is not listed).
+// no Pro-Q 4 and is not listed). The return B-Main repro # holds none.
 
 /** The picture's size (Pro-Q 4 at 100 %, the simulated backend's). */
 const WIDTH = 1349;
@@ -176,10 +176,12 @@ test.describe("The Pro-Q 4 screen", () => {
       await expect(open).toHaveAttribute("aria-disabled", "false");
       await cardFits(c);
     }
-    // Back to the mix and into a track with no device.
+    // Back to the mix and into a band strip with no device (the return
+    // `B-Main repro #` on the default page; Hand1 # is a master strip on the
+    // OTHERS page).
     await detail.getByTestId("detail-exit").click();
     await expect(page.getByTestId("detail")).toHaveCount(0);
-    const other = await openDetail(page, "Hand1 #");
+    const other = await openDetail(page, "B-Main repro #");
     await expect(other.getByTestId("eq-note")).toHaveText("Na tomto tracku nie je Pro-Q 4.");
     await expect(other.getByTestId("eq-card")).toHaveCount(0);
     expect(await clipped(other.getByTestId("eq-note"))).toEqual([]);
