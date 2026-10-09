@@ -3,8 +3,11 @@
 //! `object-fit: contain`), a point of the screen in the picture's pixels
 //! ([`to_picture`]), the one finger the screen takes ([`Finger`]: a second
 //! finger is ignored, a move goes at most once per animation frame, the
-//! newest one, and the end always goes, a lost capture as a cancel), a
-//! card's lock ([`card_lock`]) and its text, which frames the screen shows
+//! newest one, and the end always goes, a lost capture as a cancel, a
+//! hidden page's finger lifted), a card's lock ([`card_lock`]) and its
+//! text, whether its open is offered ([`can_open`]), when the cards are
+//! listed ([`lists_now`]), what names an editor ([`place_text`]), a card's
+//! note in Slovak ([`failure_text`]), which frames the screen shows
 //! ([`shows_frame`]) and a card's picture URL ([`picture_url`]).
 
 use fohmixer_proto::eq::{EqLock, PRODUCT, Touch, reason};

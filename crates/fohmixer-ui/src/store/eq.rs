@@ -1,9 +1,11 @@
 //! The Pro-Q 4 screen in the store (#71 PR E, F28), pure: the latest
 //! `eq_list` answer ([`EqListView`], numbered so a card fetches its picture
 //! again on each one), this page's editor ([`EqView`], from the hub's `eq`;
-//! `opening` from the moment the page asks), when the screen showing an
-//! editor ends ([`ended`]) and what a closed socket does to it
-//! ([`socket_closed`]: the hub closes the editor of a socket it lost).
+//! from the moment the page asks, [`asked`]: `opening`, or closed with
+//! `socket` when the socket did not take the ask), what a screen reads of
+//! it (only its own editor: [`screen_view`], [`screen_state`]), when the
+//! screen showing an editor ends ([`ended`]) and what a closed socket does
+//! to it ([`socket_closed`]: the hub closes the editor of a socket it lost).
 //! `store/live/eq.rs` carries them out.
 
 use fohmixer_proto::eq::{EqItem, EqState};
