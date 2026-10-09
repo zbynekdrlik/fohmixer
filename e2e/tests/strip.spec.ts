@@ -10,6 +10,7 @@ import {
   frames,
   hostLine,
   harness,
+  openDetail,
   openSurface,
   panning,
   ready,
@@ -23,9 +24,10 @@ import {
   volume,
 } from "./support/live";
 
-// A strip (spec F2–F5, F8–F13, F20, F22, I8): Live's values, the fader, pan
-// and mute writing Live, the meter, the status pill, and the controls waiting
-// for Live's value before they take input.
+// A strip (spec F2–F5, F8–F13, F20, F22, I8): Live's values, the fader and
+// mute writing Live (the pan in the strip's channel detail, #71), the meter,
+// the status pill, and the controls waiting for Live's value before they take
+// input.
 
 let live: LiveClient;
 test.beforeEach(async () => {
@@ -234,10 +236,11 @@ test.describe("A strip", () => {
     await expect(strip(page, "Hand2 #").getByTestId("db")).toHaveText("0.0");
   });
 
-  test("a pan drag moves Live's panning and a double tap centres it", async ({ page }) => {
+  test("its detail's pan drag moves Live's panning and a double tap centres it", async ({ page }) => {
     await live.set("band", panning(HAND2), "value", 0.0);
     await openSurface(page);
-    const pan = strip(page, "Hand2 #").getByTestId("pan");
+    // The pan is the channel detail's (#71).
+    const pan = (await openDetail(page, "Hand2 #")).getByTestId("pan");
     await ready(pan);
     const { x, y } = await centre(pan);
     await page.mouse.move(x, y);

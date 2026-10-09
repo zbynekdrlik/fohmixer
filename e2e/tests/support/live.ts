@@ -324,6 +324,21 @@ export async function selectPage(page: Page, id: string) {
   await expect(tab).toHaveAttribute("data-selected", "true");
 }
 
+/**
+ * Opens the channel detail of `name`'s strip (#71, F27): a hold on its ☰,
+ * a touch held 600 ms (the hold is 500 ms) dispatched in the page as
+ * `dispatchPointer` times it; the detail, once it shows that strip.
+ */
+export async function openDetail(page: Page, name: string, instance = "band"): Promise<Locator> {
+  const menu = strip(page, name, instance).getByTestId("strip-menu");
+  await expect(menu).toBeVisible();
+  await dispatchPointer(menu, [{ type: "pointerdown" }, { wait: 600 }, { type: "pointerup" }]);
+  const detail = page.getByTestId("detail");
+  await expect(detail).toHaveAttribute("data-track", name);
+  await expect(detail).toHaveAttribute("data-instance", instance);
+  return detail;
+}
+
 /** Waits until a control shows Live's value (I8: then it takes input). */
 export async function ready(control: Locator) {
   await expect(control).toHaveAttribute("aria-disabled", "false");

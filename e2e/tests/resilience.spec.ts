@@ -9,6 +9,7 @@ import {
   hostLine,
   hubEvents,
   impair,
+  openDetail,
   openSurface,
   pageEvents,
   panning,
@@ -314,7 +315,8 @@ test.describe("The control link's resilience (L1-L4)", () => {
     await live.set("band", PAN, "value", 0);
     try {
       await openSurface(page);
-      const pan = strip(page, "Hand2 #").getByTestId("pan");
+      // The pan is the channel detail's (#71).
+      const pan = (await openDetail(page, "Hand2 #")).getByTestId("pan");
       await ready(pan);
       await until(() => shown(pan), (v) => Math.abs(v) < SAME, "the pan centred");
       await linkDown(page);

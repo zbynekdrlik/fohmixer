@@ -55,14 +55,18 @@ test.describe("At the tablet's and the desktop's own size", () => {
     // the tablet, and 225 px on the desktop's 720 px.
     const least = viewport.height >= 800 ? 285 : 225;
     expect(await travel(page, "Hand2 #"), "the fader's travel (px)").toBeGreaterThan(least);
-    // The pan at the strip's foot, under the fader, away from the mute (the
-    // owner: under the mute a pan touch hit the mute).
+    // No pan on the strip (#71, D17: it is the channel detail's, the iPad's
+    // home bar waits at the foot): the readout line with ☰ under the name
+    // button, then the fader down to the strip's foot.
     const hand2 = strip(page, "Hand2 #");
+    await expect(hand2.getByTestId("pan")).toHaveCount(0);
+    const area = (await hand2.boundingBox())!;
     const mute = (await hand2.getByTestId("mute").boundingBox())!;
+    const menu = (await hand2.getByTestId("strip-menu").boundingBox())!;
     const fader = (await hand2.getByTestId("fader").boundingBox())!;
-    const pan = (await hand2.getByTestId("pan").boundingBox())!;
-    expect(pan.y, "the pan under the fader").toBeGreaterThanOrEqual(fader.y + fader.height - 0.5);
-    expect(pan.y - (mute.y + mute.height), "the pan's distance from the mute (px)").toBeGreaterThan(least);
+    expect(menu.y, "☰ under the name button").toBeGreaterThanOrEqual(mute.y + mute.height - 0.5);
+    expect(fader.y, "the fader under ☰").toBeGreaterThanOrEqual(menu.y + menu.height - 0.5);
+    expect(area.y + area.height - (fader.y + fader.height), "the fader's foot from the strip's (px)").toBeLessThan(16);
     for (const tab of await page.getByTestId("tab").all()) {
       expect(await clipped(tab), `tab ${await tab.getAttribute("data-page")}`).toEqual([]);
     }
