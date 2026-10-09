@@ -35,19 +35,24 @@
 }
 
 /* Sized from the strip width (#9: nothing measures text): ZNAČKA? beside
-   the status light fits a 64 px strip at 7.4 px, 10 px from 77 px on. A
+   the status light and ☰ (#71), in the condensed face (the #71 mockup's),
+   fits from the narrowest strip up (swept 64–120 px in both engines). A
    conflict hides the light (the mockup), so its word has more room. */
 .strip-mark {
     min-width: 0;
     overflow: hidden;
-    font: 700 clamp(7px, calc((var(--strip-w, 76px) - 27px) / 5), 10px)/1.4 var(--ui);
-    letter-spacing: 0.06em;
+    font: 700 clamp(6px, calc((var(--strip-w, 76px) - 18px - var(--menu-w, 20px)) / 3.8), 10px)/1.4 var(--display);
+    letter-spacing: 0.04em;
     white-space: nowrap;
     text-overflow: ellipsis;
 }
 
 .strip[data-mark="conflict"] .strip-readout .status {
     display: none;
+}
+
+.strip[data-mark="conflict"] .strip-mark {
+    font-size: clamp(6px, calc((var(--strip-w, 76px) - 10px - var(--menu-w, 20px)) / 4), 10px);
 }
 
 .strip[data-mark="conflict"] {
@@ -65,7 +70,7 @@
 
 .strip[data-mark="conflict"] .mute,
 .strip[data-mark="conflict"] .fader,
-.strip[data-mark="conflict"] .pan {
+.strip[data-mark="conflict"] .strip-menu {
     opacity: 0.35;
 }
 

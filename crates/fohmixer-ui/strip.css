@@ -394,25 +394,121 @@
 }
 
 /* The top of the strip (#63): the name button, 30 px (the fader, not the
-   button, gets the height), the status light and Live's dB on a line under
-   it (it takes no touch), and a return's RET mark. */
+   button, gets the height), the readout line under it, and a return's RET
+   mark. */
 .strip-head {
     position: relative;
     display: grid;
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: 30px auto;
+    grid-template-rows: 30px 22px;
     row-gap: 2px;
     min-width: 0;
+}
+
+/* The readout line (#71): the status light and Live's dB (or a mark's
+   word) centred in its first column, which takes no touch, and ☰ at its
+   end, 22 px wide from an 88 px strip, 18 px at 72 px and under. It
+   reaches 2 px into the strip's padding each side, so the readout has room
+   beside ☰ from the narrowest strip up. */
+.strip-info {
+    --menu-w: clamp(18px, calc(var(--strip-w, 76px) * 0.25), 22px);
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    min-width: 0;
+    height: 22px;
+    margin: 0 -2px;
 }
 
 .strip-readout {
     display: flex;
     justify-self: center;
     align-items: center;
-    gap: 3px;
+    gap: 2px;
     max-width: 100%;
-    padding: 0 3px;
+    min-width: 0;
+    padding: 0 2px;
     border-radius: 5px;
+    pointer-events: none;
+}
+
+/* Live's dB beside ☰ (#71): the font shrinks with the strip width, so the
+   longest reading ("−69.9", 3 em of the mono face) fits the first column
+   less the light from the narrowest strip up (nothing is measured; swept
+   over 64–120 px in Chromium and WebKit): 8.5 px at 64 px, 12 px from
+   78 px. Its line is 17 px whatever the size (the face's whole height at
+   12 px; at the smallest sizes Chromium rounds the face's metrics up). */
+.strip-readout .db {
+    font-size: clamp(7px, calc((var(--strip-w, 76px) - 18px - var(--menu-w)) / 3.3), 12px);
+    line-height: 17px;
+}
+
+/* ☰ (#71, F27): a hold opens the channel detail. The button fills from
+   the bottom while the finger stays (`data-holding`: a transition, never
+   an animation); a tap's hint covers the name button for a moment
+   (`data-hint`: no element, no layout change, no touch). */
+.strip-menu {
+    position: relative;
+    display: grid;
+    place-items: center;
+    width: var(--menu-w);
+    height: 20px;
+    margin: 0;
+    padding: 0;
+    overflow: visible;
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    background: #141420;
+    color: var(--muted);
+    font: 700 12px/1 var(--ui);
+    cursor: pointer;
+    touch-action: none;
+}
+
+.strip-menu::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: 4px;
+    background: var(--accent);
+    opacity: 0.55;
+    transform: scaleY(0);
+    transform-origin: bottom;
+    pointer-events: none;
+}
+
+.strip-menu[data-holding="true"]::before {
+    transform: scaleY(1);
+    transition: transform 500ms linear;
+}
+
+/* Over the fill. */
+.strip-menu-icon {
+    position: relative;
+    pointer-events: none;
+}
+
+/* The hint, "podrž ☰ / na detail", exactly over the name button: right
+   1 px inside ☰'s padding box (the line reaches 2 px past the head),
+   4 px above it (the line's 1 px, ☰'s border, the head's 2 px gap), the
+   head's width and the button's 30 px; the text escaped (ž, ☰). */
+.strip-menu[data-hint="true"]::after {
+    content: "podr\17E  \2630\A na detail";
+    position: absolute;
+    right: 1px;
+    bottom: calc(100% + 4px);
+    z-index: 3;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: calc(var(--strip-w, 76px) - 10px);
+    height: 30px;
+    border-radius: 7px;
+    background: var(--accent);
+    color: #0b0b12;
+    font: 700 11px/1.15 var(--ui);
+    text-align: center;
+    white-space: pre;
     pointer-events: none;
 }
 

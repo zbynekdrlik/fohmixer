@@ -26,6 +26,7 @@ use crate::behave::solo::soloed;
 use crate::binding::{
     SubSpec, choose, page_solos, selected_path, solo_sub, stored_pages, view_tap, wanted_subs,
 };
+use crate::components::detail::DetailStrip;
 use crate::components::{ControlView, Settings, fail_flash, key_of, owns_surface, owns_touches};
 use crate::dom;
 use crate::flow::{is_column, shared_instance};
@@ -150,6 +151,8 @@ pub fn Surface(token: String, session: RwSignal<Option<String>>) -> impl IntoVie
         detail: RwSignal::new(None),
     };
     provide_context(nav);
+    // A strip's ☰ opens the channel detail, its exit closes it (#71).
+    provide_context(DetailStrip(nav.detail));
     on_cleanup(move || store.stop());
     store.start();
 
