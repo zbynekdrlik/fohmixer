@@ -30,10 +30,11 @@
 //!   hub's log once a minute ([`Rate`]). A window that went away is
 //!   reported [`PlugwinEvent::Lost`].
 //! - **A contact:** one on the screen at a time, numbered by the router. A
-//!   down goes only when no contact is down; any other phase only of the
-//!   contact down ([`accepts`]). A down or an update lands only when the
-//!   point's window is the editor's; else nothing is injected and the
-//!   contact ends ([`PlugwinEvent::ContactEnded`], with its number).
+//!   down goes only when no contact is down (else it ends at once, [`BUSY`]);
+//!   any other phase only of the contact down ([`accepts`]). A down or an
+//!   update lands only when the point's window is the editor's; else
+//!   nothing is injected and the contact ends
+//!   ([`PlugwinEvent::ContactEnded`], with its number).
 //! - **The keep-alive:** Windows ends an injected contact that gets no frame
 //!   for 100 ms, so the worker injects a resting contact's last point again
 //!   once [`KEEPALIVE_MS`] passed since its last injection. Each step looks
@@ -108,6 +109,8 @@ pub const NO_EDITOR: &str = "no such editor";
 pub const STOPPED: &str = reason::STOPPED;
 /// Why the close guard ended another session's contact.
 pub const GUARD_CANCEL: &str = "the close guard of another editor";
+/// Why a down never went: another contact was still down.
+pub const BUSY: &str = "busy";
 
 /// A window's handle as a number (a Win32 `HWND` is a pointer, not `Send`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -853,6 +856,17 @@ impl Worker {
         };
         let held = self.contact.map(|held| (held.session, held.contact));
         if !accepts(held, session, contact, phase) {
+            // A down while another contact is still down (the router let it
+            // go after it ended that one, before this worker did): it never
+            // goes, and the router hears its contact ended. Any other phase
+            // dropped is of a contact already ended.
+            if phase == Phase::Down {
+                (self.events)(PlugwinEvent::ContactEnded {
+                    session,
+                    contact,
+                    why: BUSY.to_string(),
+                });
+            }
             return;
         }
         // Accepted: a down has no contact before it, any other phase is of
