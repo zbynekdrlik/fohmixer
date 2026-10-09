@@ -18,13 +18,14 @@
 //! E2E harness reads them (`GET /sim/eq`). A touch record carries its time
 //! (`t`, ms since the sim started), so a test can measure the gaps between
 //! a contact's injections. A test can make the sim refuse the editor's
-//! points (`refuse`) as a window covering it would.
+//! points (`refuse`) as a window covering it would, or make each grab take
+//! its time (`grab_delay`) as the PC's BitBlt of a 4.3 MB picture does.
 
 use std::collections::BTreeMap;
 use std::io::Write as _;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
@@ -83,6 +84,8 @@ struct State {
     refuse: bool,
     /// The picture never changes (its counter stays 0).
     still: bool,
+    /// How long a grab takes.
+    grab_delay: Duration,
     /// The last picture drawn and its count: a grab draws only a new count
     /// or size (drawing one costs the worker tens of ms in a test build).
     drawn: Option<(u64, Pixels)>,
@@ -142,6 +145,7 @@ impl Sim {
             auto_open: true,
             refuse: false,
             still: false,
+            grab_delay: Duration::ZERO,
             drawn: None,
             records: Vec::new(),
             file,
@@ -188,6 +192,11 @@ impl SimHandle {
     /// Whether the picture stays the same.
     pub fn still(&self, on: bool) {
         self.lock().still = on;
+    }
+
+    /// How long each grab takes from now on (the worker waits for it).
+    pub fn grab_delay(&self, delay: Duration) {
+        self.lock().grab_delay = delay;
     }
 
     /// Whether `window` is on top of every window.
@@ -253,6 +262,9 @@ impl Backend for Sim {
     }
 
     fn grab(&mut self, taken: &Taken) -> Result<Pixels, String> {
+        // A slow grab waits without the lock (a test reads the records).
+        let delay = self.lock().grab_delay;
+        std::thread::sleep(delay);
         let state = self.lock();
         if !state.windows.contains_key(&taken.window) {
             return Err("no such window".to_string());
@@ -517,6 +529,19 @@ mod tests {
         let later = sim.grab(&taken).unwrap();
         assert_eq!((later.width, later.height), (1349, 809));
         assert_ne!(later, first);
+    }
+
+    #[test]
+    fn a_grab_takes_the_time_a_test_gives_it() {
+        let (mut sim, handle) = Sim::new(None);
+        handle.still(true);
+        sim.live_opened();
+        let taken = sim.take(handle.windows()[0]).unwrap();
+        sim.grab(&taken).unwrap();
+        handle.grab_delay(Duration::from_millis(30));
+        let started = Instant::now();
+        assert_eq!(sim.grab(&taken).unwrap(), picture(0, 1349, 809));
+        assert!(started.elapsed() >= Duration::from_millis(30));
     }
 
     #[test]

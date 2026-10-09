@@ -905,6 +905,49 @@ async fn until(what: &str, check: impl Fn() -> bool) {
 }
 
 #[tokio::test]
+async fn a_resting_contact_goes_again_in_time_while_two_editors_grab_slowly() {
+    // Two engineers, each with an editor captured, and every grab taking
+    // 35 ms (the PC's BitBlt of a 4.3 MB picture): the keep-alive must not
+    // wait for the step's grabs, or Windows cancels the resting contact
+    // (no frame for 100 ms).
+    let (sim, handle) = Sim::new(None);
+    handle.still(true);
+    handle.grab_delay(Duration::from_millis(35));
+    let plugwin = Plugwin::spawn(Box::new(sim), Arc::new(|_: PlugwinEvent| {})).unwrap();
+    let bounded = Duration::from_secs(5);
+    for session in [1, 2] {
+        let before = handle.windows();
+        let size = tokio::time::timeout(bounded, plugwin.take(session, before))
+            .await
+            .unwrap();
+        assert_eq!(size, Ok((1349, 809)));
+        plugwin.capture(session, sink().0);
+    }
+    plugwin.touch(1, 1, Phase::Down, (8, 9));
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+    plugwin.touch(1, 1, Phase::Up, (8, 9));
+    until("the up", || touches(&handle).last() == Some(&t("up", 8, 9))).await;
+    plugwin.stop();
+    let records = handle.records();
+    let touched: Vec<&serde_json::Value> = records.iter().filter(|r| r["op"] == "touch").collect();
+    let resends = touched.iter().filter(|r| r["phase"] == "update").count();
+    assert!(resends >= 8, "{touched:?}");
+    assert!(
+        !touched.iter().any(|r| r["phase"] == "cancel"),
+        "{touched:?}"
+    );
+    let times: Vec<f64> = touched
+        .iter()
+        .map(|r| r["t"].as_f64().expect("a touch's time"))
+        .collect();
+    let largest = times
+        .windows(2)
+        .map(|pair| pair[1] - pair[0])
+        .fold(0.0, f64::max);
+    assert!(largest < 100.0, "the largest gap {largest} ms: {times:?}");
+}
+
+#[tokio::test]
 async fn the_worker_thread_serves_its_handle_and_ends_at_the_stop() {
     let (sim, handle) = Sim::new(None);
     let heard: Heard = Arc::new(Mutex::new(Vec::new()));
