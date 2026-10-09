@@ -16,7 +16,10 @@
 //! - **Only listed editors open:** a path the hub's `eq_list` reads found
 //!   ([`Eqs::listed`]); never an arbitrary LOM path. The open sequence reads
 //!   the device first ([`open`]): still the listed Pro-Q 4 (its name), its
-//!   editor closed in Live.
+//!   editor closed in Live. A track's new list replaces its last one (the
+//!   cards' pictures of what it no longer names are dropped), and an
+//!   instance that connects again has its lists forgotten (another set may
+//!   be loaded).
 //! - **The contact:** one on the screen at a time (the PC has one cursor),
 //!   on an open editor of the client touching. A move goes on at once; an
 //!   up at a point other than the last one moves there first; a resting
@@ -144,6 +147,9 @@ pub enum Act {
     Record(Value),
 }
 
+/// What one list found: each editor with its device's name.
+type Listing = BTreeMap<EditorKey, String>;
+
 /// An editor's stage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Stage {
@@ -264,28 +270,53 @@ pub struct Eqs {
     opening: bool,
     contact: Option<Contact>,
     heard: HashMap<ClientId, f64>,
-    /// The editors an `eq_list` read found, with the device's name.
-    known: BTreeMap<EditorKey, String>,
+    /// What each list found (by its instance and its track's LOM target):
+    /// the editors that may be opened, with their device's name.
+    lists: BTreeMap<(String, String), Listing>,
     /// The last session number given out.
     sessions: u32,
 }
 
 impl Eqs {
-    /// An `eq_list` read found these editors (each with its device's
-    /// name): they may be opened.
-    pub fn listed(&mut self, found: impl IntoIterator<Item = (EditorKey, String)>) {
-        self.known.extend(found);
+    /// The list of the track at `target` on `instance` found these editors
+    /// (each with its device's name): they may be opened. It replaces that
+    /// track's last list; the editors the last one named that no list names
+    /// now (their device moved or went) come back: their cards' pictures are
+    /// another device's or none.
+    pub fn listed(
+        &mut self,
+        instance: &str,
+        target: &str,
+        found: impl IntoIterator<Item = (EditorKey, String)>,
+    ) -> Vec<EditorKey> {
+        let list = (instance.to_string(), target.to_string());
+        let before = self
+            .lists
+            .insert(list, found.into_iter().collect())
+            .unwrap_or_default();
+        before
+            .into_keys()
+            .filter(|key| !self.is_listed(key))
+            .collect()
+    }
+
+    /// Whether a list names `key`.
+    fn is_listed(&self, key: &EditorKey) -> bool {
+        self.lists.values().any(|listing| listing.contains_key(key))
     }
 
     /// The device name a list found at `key` (the open checks it).
     pub fn name_of(&self, key: &EditorKey) -> Option<&str> {
-        self.known.get(key).map(String::as_str)
+        self.lists
+            .values()
+            .find_map(|listing| listing.get(key))
+            .map(String::as_str)
     }
 
-    /// An instance connected again: its listed paths may name other devices
-    /// now (another set), so they are forgotten until listed again.
+    /// An instance connected again: its lists may name other devices now
+    /// (another set), so they are forgotten until listed again.
     pub fn forget(&mut self, instance: &str) {
-        self.known.retain(|key, _| key.instance != instance);
+        self.lists.retain(|(of, _), _| of.as_str() != instance);
     }
 
     /// Something came from `client` at `now`.
@@ -324,7 +355,7 @@ impl Eqs {
 
     /// `client` opens `key` at `wall`.
     pub fn open(&mut self, client: ClientId, key: &EditorKey, wall: f64) -> Vec<Act> {
-        if !self.known.contains_key(key) {
+        if !self.is_listed(key) {
             return vec![
                 Act::Tell {
                     client,
@@ -769,6 +800,23 @@ impl Pictures {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .contains_key(key)
+    }
+
+    /// The pictures of `keys` are forgotten (a new list no longer names
+    /// them).
+    pub fn remove(&self, keys: &[EditorKey]) {
+        let mut inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
+        for key in keys {
+            inner.remove(key);
+        }
+    }
+
+    /// Every picture of `instance` is forgotten (it connected again).
+    pub fn forget(&self, instance: &str) {
+        self.inner
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|key, _| key.instance != instance);
     }
 }
 

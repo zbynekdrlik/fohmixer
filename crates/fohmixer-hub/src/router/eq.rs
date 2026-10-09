@@ -341,11 +341,16 @@ impl Router {
             .iter()
             .map(|f| EditorKey::new(&binding.instance, &f.path))
             .collect();
-        io.state.listed(
+        // The walk ran on this target (`eq_list` checked it).
+        let target = binding.target().unwrap_or_default();
+        let gone = io.state.listed(
+            &binding.instance,
+            &target,
             keys.iter()
                 .cloned()
                 .zip(found.iter().map(|f| f.name.clone())),
         );
+        io.pictures.remove(&gone);
         let items = found
             .into_iter()
             .zip(&keys)
@@ -357,6 +362,21 @@ impl Router {
             })
             .collect();
         self.eq_list_reply(client, binding, items, None);
+    }
+
+    /// `instance` connected (again): its lists, its cards' pictures and its
+    /// editors' refs are forgotten (another set may be loaded, and the
+    /// script's object registry starts over). On `Connected`, not on
+    /// `Disconnected`: both changes show only from the new connection on,
+    /// and a walk answered from the old connection after its
+    /// `Disconnected` (its reads already done) would otherwise list paths
+    /// of the old one again.
+    pub(super) fn eq_connected(&mut self, instance: &str) {
+        if let Some(io) = self.eq.as_mut() {
+            io.state.forget(instance);
+            io.pictures.forget(instance);
+            io.refs.retain(|_, (of, _)| of.as_str() != instance);
+        }
     }
 
     /// `client` opens the editor of the device at `path` on `instance`.

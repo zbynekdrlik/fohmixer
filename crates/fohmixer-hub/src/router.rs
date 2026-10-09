@@ -634,9 +634,11 @@ impl Router {
                 self.subs.connected(instance);
                 self.names.start(instance);
                 // The script's object refs start over with each connection:
-                // the marker keeper reads the Tuners (and their refs) again.
+                // the marker keeper reads the Tuners (and their refs) again,
+                // and the Pro-Q 4 screen forgets its lists and refs.
                 let actions = self.markers.connected(instance);
                 self.markers_apply(actions);
+                self.eq_connected(instance);
                 self.broadcast_instance(instance);
             }
             LiveEvent::Disconnected => {

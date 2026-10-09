@@ -345,6 +345,56 @@ async fn an_open_after_its_instance_connected_again_is_refused_until_listed() {
 }
 
 #[tokio::test]
+async fn a_new_list_and_a_connect_drop_the_pictures_they_no_longer_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut rig = rig(dir.path());
+    let _outbox = attach(&mut rig.router, 1);
+    let pictures = Arc::clone(&rig.router.eq.as_ref().unwrap().pictures);
+    let inner = EditorKey::new("band", "live_set tracks 1 devices 1 chains 0 devices 0");
+    let drums = EditorKey::new("drums", PATH);
+    for k in [key(), inner.clone(), drums.clone()] {
+        pictures.put(&k, Bytes::from_static(b"jpeg"));
+    }
+    let found = |key: &EditorKey| Found {
+        path: key.path.clone(),
+        place: "na tracku".into(),
+        name: "Pro-Q 4".into(),
+    };
+    rig.router.handle(RouterMsg::EqListed {
+        client: 1,
+        binding: hand2(),
+        outcome: Ok(vec![found(&key()), found(&inner)]),
+    });
+    // The track lists again without the chain's Pro-Q 4: its card's
+    // picture goes; the other stays.
+    rig.router.handle(RouterMsg::EqListed {
+        client: 1,
+        binding: hand2(),
+        outcome: Ok(vec![found(&key())]),
+    });
+    assert_eq!(
+        [&key(), &inner, &drums].map(|k| pictures.has(k)),
+        [true, false, true]
+    );
+    // The band instance connects again: its pictures and refs go.
+    let refs = &mut rig.router.eq.as_mut().unwrap().refs;
+    refs.insert(1, ("band".to_string(), json!({"$ref": "a"})));
+    refs.insert(2, ("drums".to_string(), json!({"$ref": "b"})));
+    rig.router.handle(connected());
+    assert_eq!([&key(), &drums].map(|k| pictures.has(k)), [false, true]);
+    let kept: Vec<u32> = rig
+        .router
+        .eq
+        .as_ref()
+        .unwrap()
+        .refs
+        .keys()
+        .copied()
+        .collect();
+    assert_eq!(kept, [2]);
+}
+
+#[tokio::test]
 async fn an_open_of_an_offline_instance_fails_and_frees_the_editor() {
     let dir = tempfile::tempdir().unwrap();
     let Rig {

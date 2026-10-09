@@ -15,10 +15,13 @@ fn found(key: EditorKey) -> (EditorKey, String) {
     (key, NAME.to_string())
 }
 
+/// The LOM target of the track the tests list.
+const TRACK: &str = "live_set tracks[name=Vox #]";
+
 /// A state where editors 1..=4 were listed.
 fn listed() -> Eqs {
     let mut eqs = Eqs::default();
-    eqs.listed((1..=4).map(key).map(found));
+    eqs.listed("band", TRACK, (1..=4).map(key).map(found));
     eqs
 }
 
@@ -126,7 +129,11 @@ fn only_a_listed_editor_opens() {
             rec("refused", &key(1), Some(1), None, Some(reason::UNKNOWN)),
         ]
     );
-    eqs.listed([found(key(1)), (key(2), "Kick EQ".to_string())]);
+    eqs.listed(
+        "band",
+        TRACK,
+        [found(key(1)), (key(2), "Kick EQ".to_string())],
+    );
     assert_eq!(eqs.name_of(&key(1)), Some(NAME));
     assert_eq!(eqs.name_of(&key(2)), Some("Kick EQ"));
     assert_eq!(eqs.name_of(&key(3)), None);
@@ -142,6 +149,40 @@ fn only_a_listed_editor_opens() {
             rec("refused", &key(1), Some(3), None, Some(reason::UNKNOWN)),
         ]
     );
+}
+
+#[test]
+fn a_tracks_new_list_replaces_its_last_one() {
+    let mut eqs = Eqs::default();
+    let other = "live_set tracks 7";
+    assert_eq!(
+        eqs.listed("band", TRACK, [found(key(1)), found(key(2))]),
+        Vec::new()
+    );
+    // The same track by another binding names editor 2 too.
+    assert_eq!(eqs.listed("band", other, [found(key(2))]), Vec::new());
+    // Editor 1 went, editor 3 came: only 1 is no list's now.
+    assert_eq!(eqs.listed("band", TRACK, [found(key(3))]), vec![key(1)]);
+    assert_eq!(eqs.name_of(&key(1)), None);
+    assert_eq!(
+        eqs.open(1, &key(1), WALL),
+        vec![
+            tell(1, closed_msg(&key(1), reason::UNKNOWN, None)),
+            rec("refused", &key(1), Some(1), None, Some(reason::UNKNOWN)),
+        ]
+    );
+    assert_eq!(eqs.name_of(&key(2)), Some(NAME));
+    assert_eq!(eqs.name_of(&key(3)), Some(NAME));
+    // The same answer again drops nothing.
+    assert_eq!(eqs.listed("band", TRACK, [found(key(3))]), Vec::new());
+    // Another instance's list of the same target is its own; a connect
+    // forgets only its own instance's lists.
+    let drums = EditorKey::new("drums", "live_set tracks 0 devices 0");
+    eqs.listed("drums", TRACK, [(drums.clone(), "Snare EQ".to_string())]);
+    assert_eq!(eqs.name_of(&key(3)), Some(NAME));
+    eqs.forget("band");
+    assert_eq!((eqs.name_of(&key(2)), eqs.name_of(&key(3))), (None, None));
+    assert_eq!(eqs.name_of(&drums), Some("Snare EQ"));
 }
 
 #[test]
@@ -614,4 +655,17 @@ fn the_last_pictures_are_kept_per_editor() {
     assert!(pictures.has(&key(1)));
     assert!(!pictures.has(&key(2)));
     assert_eq!(pictures.get(&key(1)), Some(Bytes::from_static(b"two")));
+    // Dropped by key, and by instance.
+    let drums = EditorKey::new("drums", "live_set tracks 0 devices 0");
+    for k in [key(2), key(3), drums.clone()] {
+        pictures.put(&k, Bytes::from_static(b"jpeg"));
+    }
+    pictures.remove(&[key(1), key(2)]);
+    assert_eq!(
+        [key(1), key(2), key(3)].map(|k| pictures.has(&k)),
+        [false, false, true]
+    );
+    pictures.forget("band");
+    assert!(!pictures.has(&key(3)));
+    assert!(pictures.has(&drums));
 }
