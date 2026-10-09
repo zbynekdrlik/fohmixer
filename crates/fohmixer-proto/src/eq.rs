@@ -68,6 +68,9 @@ pub mod reason {
     /// The new window has no Pro-Q 4 picture (its `FF_UIWindow` child): it
     /// is not a Pro-Q 4 editor.
     pub const NO_PICTURE: &str = "the window has no Pro-Q picture (FF_UIWindow)";
+    /// The taken window never came on top of the others within the hub's
+    /// wait (its z-order change is posted to Live's busy thread): try again.
+    pub const NOT_ON_TOP: &str = "the window did not come on top";
     /// The hub's window worker stopped: the hub is stopping.
     pub const STOPPED: &str = "the window worker stopped";
     /// The close left the editor open in Live: its guard could not tap (a

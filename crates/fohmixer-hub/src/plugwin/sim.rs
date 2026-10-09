@@ -19,10 +19,12 @@
 //! E2E harness reads them (`GET /sim/eq`). A touch record carries its time
 //! (`t`, ms since the sim started), so a test can measure the gaps between
 //! a contact's injections. A test can make the sim refuse the editor's
-//! points (`refuse`) as a window covering it would, or make each grab take
-//! its time (`grab_delay`) as the PC's BitBlt of a 4.3 MB picture does.
+//! points (`refuse`) as a window covering it would, make each grab take its
+//! time (`grab_delay`) as the PC's BitBlt of a 4.3 MB picture does, or hold
+//! a take's place on top back (`topmost_late`: the Windows take posts its
+//! z-order change, and Live's busy thread lands it later).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write as _;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -91,6 +93,10 @@ struct State {
     /// Pro-Q's own child window is not there yet (Live shows the editor's
     /// window before the plug-in attaches its view).
     child_late: bool,
+    /// A take's place on top waits: its z-order change is posted and lands
+    /// once the switch is off (`posted` holds the windows waiting).
+    topmost_late: bool,
+    posted: BTreeSet<WindowId>,
     /// The last picture drawn and its count: a grab draws only a new count
     /// or size (drawing one costs the worker tens of ms in a test build).
     drawn: Option<(u64, Pixels)>,
@@ -152,6 +158,8 @@ impl Sim {
             still: false,
             grab_delay: Duration::ZERO,
             child_late: false,
+            topmost_late: false,
+            posted: BTreeSet::new(),
             drawn: None,
             records: Vec::new(),
             file,
@@ -211,6 +219,20 @@ impl SimHandle {
         self.lock().child_late = on;
     }
 
+    /// Whether a take's place on top waits (its z-order change posted to a
+    /// busy window thread); switched off, every change waiting lands.
+    pub fn topmost_late(&self, on: bool) {
+        let mut state = self.lock();
+        state.topmost_late = on;
+        if !on {
+            for window in std::mem::take(&mut state.posted) {
+                if let Some(found) = state.windows.get_mut(&window) {
+                    found.topmost = true;
+                }
+            }
+        }
+    }
+
     /// Whether `window` is on top of every window.
     pub fn topmost(&self, window: WindowId) -> Option<bool> {
         self.lock().windows.get(&window).map(|w| w.topmost)
@@ -258,13 +280,20 @@ impl Backend for Sim {
         if state.child_late {
             return Err(reason::NO_PICTURE.to_string());
         }
+        let late = state.topmost_late;
         let found = state
             .windows
             .get_mut(&window)
             .ok_or_else(|| "no such window".to_string())?;
         let was_topmost = found.topmost;
-        found.topmost = true;
+        // Posted: on top at once, or once the window's thread lands it.
+        if !late {
+            found.topmost = true;
+        }
         let pid = found.pid;
+        if late {
+            state.posted.insert(window);
+        }
         state.record(json!({"op": "take", "window": window.0}));
         Ok(Taken {
             window,
@@ -326,6 +355,7 @@ impl Backend for Sim {
 
     fn release(&mut self, taken: &Taken) {
         let mut state = self.lock();
+        state.posted.remove(&taken.window);
         if let Some(window) = state.windows.get_mut(&taken.window) {
             window.topmost = taken.was_topmost;
         }

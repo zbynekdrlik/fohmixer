@@ -506,6 +506,83 @@ fn a_window_whose_pro_q_picture_comes_late_is_awaited_until_the_wait_is_over() {
 }
 
 #[test]
+fn a_take_answers_once_its_window_is_on_top() {
+    // The take's z-order change is posted: Live's thread, busy around an
+    // editor's open, lands it later. Until then another editor may cover
+    // the window, so a grab would show its pixels and a touch there would be
+    // refused: the take answers only once its window is on top.
+    let (mut worker, handle, _) = worker();
+    handle.topmost_late(true);
+    let (reply, mut answer) = oneshot::channel();
+    let take = Command::Take {
+        session: 1,
+        before: Vec::new(),
+        reply,
+    };
+    worker.command_at(take, 0.0);
+    worker.step_at(0.0);
+    let window = handle.windows()[0];
+    assert_eq!(
+        handle.records(),
+        vec![json!({"op": "take", "window": window.0})],
+        "taken, its change posted"
+    );
+    assert!(answer.try_recv().is_err(), "not on top yet");
+    assert!(worker.editors.is_empty(), "nothing grabbed or touched yet");
+    worker.step_at(2999.0);
+    assert!(answer.try_recv().is_err());
+    // Landed: the take answers at the next look, even at the wait's end.
+    handle.topmost_late(false);
+    worker.step_at(3000.0);
+    assert_eq!(answer.try_recv().unwrap(), Ok((1349, 809)));
+    assert_eq!(worker.editors[&1].taken.window, window);
+    // One that never comes on top is handed back once the wait (counted
+    // from its take) is over, and its take fails.
+    handle.topmost_late(true);
+    let (reply, mut answer) = oneshot::channel();
+    let take = Command::Take {
+        session: 2,
+        before: handle.windows(),
+        reply,
+    };
+    worker.command_at(take, 5000.0);
+    worker.step_at(5000.0);
+    let second = *handle.windows().last().unwrap();
+    worker.step_at(7999.0);
+    assert!(answer.try_recv().is_err(), "still waiting");
+    worker.step_at(8000.0);
+    assert_eq!(
+        answer.try_recv().unwrap(),
+        Err(reason::NOT_ON_TOP.to_string())
+    );
+    assert_eq!(
+        handle.records().last(),
+        Some(&json!({"op": "release", "window": second.0}))
+    );
+    assert_eq!(handle.topmost(second), Some(false), "its z-order as it was");
+    assert_eq!(worker.editors.keys().copied().collect::<Vec<u32>>(), [1]);
+    // The stop hands back a window still waiting for its place on top.
+    let (reply, _answer) = oneshot::channel();
+    let take = Command::Take {
+        session: 3,
+        before: handle.windows(),
+        reply,
+    };
+    worker.command_at(take, 9000.0);
+    worker.step_at(9000.0);
+    let third = *handle.windows().last().unwrap();
+    assert!(!worker.editors.contains_key(&3));
+    worker.shutdown();
+    let released: Vec<u64> = handle
+        .records()
+        .iter()
+        .filter(|r| r["op"] == "release")
+        .map(|r| r["window"].as_u64().unwrap())
+        .collect();
+    assert_eq!(released, [second.0, third.0, window.0]);
+}
+
+#[test]
 fn a_late_window_is_found_by_a_later_poll() {
     let (mut worker, handle, _) = worker();
     handle.auto_open(false);
