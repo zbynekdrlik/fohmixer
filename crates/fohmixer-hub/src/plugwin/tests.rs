@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::sync::Mutex;
 
 use serde_json::json;
@@ -8,22 +9,49 @@ use super::*;
 /// The events a worker told, in order.
 type Heard = Arc<Mutex<Vec<PlugwinEvent>>>;
 
-/// A worker on a simulated backend, run by hand (`command`, `step` at
-/// chosen times).
+thread_local! {
+    /// The clock of a worker run by hand on the test's thread (ms): it
+    /// stands where the test set it ([`Worker::step_at`],
+    /// [`Worker::command_at`]); a slow backend's grab moves it on ([`Slow`]).
+    static NOW: Cell<f64> = const { Cell::new(0.0) };
+}
+
+impl Worker {
+    /// One step at `now` on the test's clock.
+    fn step_at(&mut self, now: f64) {
+        NOW.with(|clock| clock.set(now));
+        self.step();
+    }
+
+    /// One command at `now` on the test's clock.
+    fn command_at(&mut self, command: Command, now: f64) {
+        NOW.with(|clock| clock.set(now));
+        self.command(command);
+    }
+}
+
+/// A worker on a simulated backend, run by hand (`command_at`, `step_at`
+/// at chosen times).
 fn worker() -> (Worker, SimHandle, Heard) {
     let (sim, handle) = Sim::new(None);
+    let (worker, heard) = worker_on(Box::new(sim));
+    (worker, handle, heard)
+}
+
+/// A worker on `backend`, run by hand on the test's clock.
+fn worker_on(backend: Box<dyn Backend>) -> (Worker, Heard) {
     let heard: Heard = Arc::new(Mutex::new(Vec::new()));
     let into = Arc::clone(&heard);
     let worker = Worker {
-        backend: Box::new(sim),
+        backend,
         events: Arc::new(move |event: PlugwinEvent| into.lock().unwrap().push(event)),
         editors: BTreeMap::new(),
         finding: Vec::new(),
         contact: None,
         encoder: Encoder::spawn().unwrap(),
-        clock: Instant::now(),
+        clock: Box::new(|| NOW.with(Cell::get)),
     };
-    (worker, handle, heard)
+    (worker, heard)
 }
 
 /// Waits (bounded, 5 s) on the test's own thread for `check`.
@@ -41,7 +69,7 @@ fn wait_for(what: &str, check: impl Fn() -> bool) {
 fn take(worker: &mut Worker, handle: &SimHandle, session: u32, now: f64) -> WindowId {
     let before = handle.windows();
     let (reply, mut answer) = oneshot::channel();
-    worker.command(
+    worker.command_at(
         Command::Take {
             session,
             before,
@@ -49,7 +77,7 @@ fn take(worker: &mut Worker, handle: &SimHandle, session: u32, now: f64) -> Wind
         },
         now,
     );
-    worker.step(now);
+    worker.step_at(now);
     assert_eq!(answer.try_recv().unwrap(), Ok((1349, 809)));
     *handle.windows().last().unwrap()
 }
@@ -69,7 +97,7 @@ fn touch_at(
         phase,
         at,
     };
-    worker.command(command, now);
+    worker.command_at(command, now);
 }
 
 /// The worker's contact: its session, its number and its point.
@@ -350,7 +378,7 @@ fn a_phase_says_whether_it_is_checked_and_whether_it_ends() {
 fn the_worker_lists_and_takes_the_window_live_opens() {
     let (mut worker, handle, _) = worker();
     let (reply, mut answer) = oneshot::channel();
-    worker.command(Command::List(reply), 0.0);
+    worker.command_at(Command::List(reply), 0.0);
     assert_eq!(answer.try_recv().unwrap(), Ok(Vec::new()));
     let window = take(&mut worker, &handle, 1, 0.0);
     assert_eq!(handle.topmost(window), Some(true));
@@ -366,7 +394,7 @@ fn an_open_whose_window_never_comes_fails_after_its_wait() {
     let (mut worker, handle, _) = worker();
     handle.auto_open(false);
     let (reply, mut answer) = oneshot::channel();
-    worker.command(
+    worker.command_at(
         Command::Take {
             session: 1,
             before: Vec::new(),
@@ -374,17 +402,17 @@ fn an_open_whose_window_never_comes_fails_after_its_wait() {
         },
         100.0,
     );
-    worker.step(100.0);
-    worker.step(149.0);
-    worker.step(150.0);
-    worker.step(3099.0);
+    worker.step_at(100.0);
+    worker.step_at(149.0);
+    worker.step_at(150.0);
+    worker.step_at(3099.0);
     assert!(answer.try_recv().is_err(), "still waiting");
-    worker.step(3100.0);
+    worker.step_at(3100.0);
     assert_eq!(answer.try_recv().unwrap(), Err(NO_WINDOW.to_string()));
     assert!(worker.finding.is_empty());
     // Two new windows at once: refused once the wait is over.
     let (reply, mut answer) = oneshot::channel();
-    worker.command(
+    worker.command_at(
         Command::Take {
             session: 2,
             before: Vec::new(),
@@ -394,9 +422,9 @@ fn an_open_whose_window_never_comes_fails_after_its_wait() {
     );
     handle.add_window(0);
     handle.add_window(0);
-    worker.step(5000.0);
+    worker.step_at(5000.0);
     assert!(answer.try_recv().is_err());
-    worker.step(8000.0);
+    worker.step_at(8000.0);
     assert_eq!(answer.try_recv().unwrap(), Err(SEVERAL.to_string()));
     assert!(worker.editors.is_empty());
 }
@@ -406,7 +434,7 @@ fn a_late_window_is_found_by_a_later_poll() {
     let (mut worker, handle, _) = worker();
     handle.auto_open(false);
     let (reply, mut answer) = oneshot::channel();
-    worker.command(
+    worker.command_at(
         Command::Take {
             session: 1,
             before: Vec::new(),
@@ -414,11 +442,11 @@ fn a_late_window_is_found_by_a_later_poll() {
         },
         0.0,
     );
-    worker.step(0.0);
+    worker.step_at(0.0);
     handle.add_window(0);
-    worker.step(49.0);
+    worker.step_at(49.0);
     assert!(answer.try_recv().is_err(), "the next poll is not due yet");
-    worker.step(50.0);
+    worker.step_at(50.0);
     assert_eq!(answer.try_recv().unwrap(), Ok((1349, 809)));
 }
 
@@ -429,7 +457,7 @@ fn an_open_late_in_the_workers_life_counts_its_own_poll_and_wait() {
     let (mut worker, handle, _) = worker();
     handle.auto_open(false);
     let (reply, mut answer) = oneshot::channel();
-    worker.command(
+    worker.command_at(
         Command::Take {
             session: 1,
             before: Vec::new(),
@@ -437,12 +465,12 @@ fn an_open_late_in_the_workers_life_counts_its_own_poll_and_wait() {
         },
         10_000.0,
     );
-    worker.step(10_000.0);
+    worker.step_at(10_000.0);
     assert!(answer.try_recv().is_err(), "its wait has just begun");
     handle.add_window(0);
-    worker.step(10_049.0);
+    worker.step_at(10_049.0);
     assert!(answer.try_recv().is_err(), "the next poll is not due yet");
-    worker.step(10_050.0);
+    worker.step_at(10_050.0);
     assert_eq!(answer.try_recv().unwrap(), Ok((1349, 809)));
 }
 
@@ -450,12 +478,12 @@ fn an_open_late_in_the_workers_life_counts_its_own_poll_and_wait() {
 fn a_minutes_rate_counts_from_the_editors_take() {
     let (mut worker, handle, heard) = worker();
     take(&mut worker, &handle, 1, 100_000.0);
-    worker.step(100_010.0);
+    worker.step_at(100_010.0);
     assert!(
         heard.lock().unwrap().is_empty(),
         "no rate right after the take"
     );
-    worker.step(160_000.0);
+    worker.step_at(160_000.0);
     let events = heard.lock().unwrap().clone();
     assert!(
         matches!(events.as_slice(), [PlugwinEvent::Rate { session: 1, .. }]),
@@ -468,41 +496,41 @@ fn a_captured_editor_sends_its_pictures_skipping_a_same_one() {
     let (mut worker, handle, heard) = worker();
     handle.still(true);
     take(&mut worker, &handle, 1, 0.0);
-    worker.step(10.0);
+    worker.step_at(10.0);
     assert!(
         heard.lock().unwrap().is_empty(),
         "no capture before its sink"
     );
     let (sink, frames) = sink();
-    worker.command(Command::Capture { session: 1, sink }, 20.0);
-    worker.command(
+    worker.command_at(Command::Capture { session: 1, sink }, 20.0);
+    worker.command_at(
         Command::Capture {
             session: 9,
             sink: super::tests::sink().0,
         },
         20.0,
     );
-    worker.step(20.0);
+    worker.step_at(20.0);
     // The encoder's thread makes the frame.
     wait_for("the first frame", || frames.lock().unwrap().len() == 1);
     assert_eq!(frames.lock().unwrap()[0].0, 1);
-    worker.step(59.0);
+    worker.step_at(59.0);
     // Still: the sim's counter moves on (one step is 250 ms), its picture
     // does not.
     std::thread::sleep(Duration::from_millis(260));
-    worker.step(60.0);
+    worker.step_at(60.0);
     std::thread::sleep(Duration::from_millis(50));
     assert_eq!(frames.lock().unwrap().len(), 1, "the same picture: skipped");
     handle.still(false);
     std::thread::sleep(Duration::from_millis(260));
-    worker.step(100.0);
+    worker.step_at(100.0);
     wait_for("a new picture", || frames.lock().unwrap().len() == 2);
     // Moving: the picture changes with the time.
     std::thread::sleep(Duration::from_millis(260));
-    worker.step(140.0);
+    worker.step_at(140.0);
     wait_for("the picture after it", || frames.lock().unwrap().len() == 3);
     // The minute's counts: four grabs, three frames sent.
-    worker.step(60_000.0);
+    worker.step_at(60_000.0);
     let events = heard.lock().unwrap().clone();
     let [PlugwinEvent::Rate { session: 1, rate }] = events.as_slice() else {
         panic!("one rate: {events:?}")
@@ -513,7 +541,7 @@ fn a_captured_editor_sends_its_pictures_skipping_a_same_one() {
     // The window goes away: lost.
     let window = handle.windows()[0];
     handle.remove_window(window);
-    worker.step(60_100.0);
+    worker.step_at(60_100.0);
     assert_eq!(
         heard.lock().unwrap().last(),
         Some(&PlugwinEvent::Lost { session: 1 })
@@ -526,27 +554,27 @@ fn a_resting_contact_is_injected_again_50_ms_after_its_last_injection() {
     let (mut worker, handle, heard) = worker();
     take(&mut worker, &handle, 1, 0.0);
     touch_at(&mut worker, 1, 1, Phase::Down, (10, 20), 1000.0);
-    worker.step(1049.0);
+    worker.step_at(1049.0);
     assert_eq!(touches(&handle), vec![t("down", 10, 20)]);
-    worker.step(1050.0);
+    worker.step_at(1050.0);
     assert_eq!(touches(&handle)[1..], [t("update", 10, 20)]);
-    worker.step(1099.0);
+    worker.step_at(1099.0);
     assert_eq!(touches(&handle).len(), 2, "counted from the last injection");
     // A move is an injection: the next keep-alive counts from it.
     touch_at(&mut worker, 1, 1, Phase::Update, (12, 20), 1120.0);
-    worker.step(1169.0);
+    worker.step_at(1169.0);
     assert_eq!(touches(&handle).len(), 3);
-    worker.step(1170.0);
+    worker.step_at(1170.0);
     assert_eq!(touches(&handle)[3..], [t("update", 12, 20)]);
     // Ended: nothing more.
     touch_at(&mut worker, 1, 1, Phase::Up, (12, 20), 1180.0);
-    worker.step(1300.0);
+    worker.step_at(1300.0);
     assert_eq!(touches(&handle)[4..], [t("up", 12, 20)]);
     // A keep-alive the point refuses (another window over it) ends the
     // contact with a cancel at its last point, and says so.
     touch_at(&mut worker, 1, 2, Phase::Down, (5, 5), 2000.0);
     handle.refuse(true);
-    worker.step(2050.0);
+    worker.step_at(2050.0);
     assert_eq!(worker.contact, None);
     assert_eq!(touches(&handle)[5..], [t("down", 5, 5), t("cancel", 5, 5)]);
     assert_eq!(
@@ -567,7 +595,7 @@ fn a_minute_holds_the_largest_gap_between_a_contacts_injections() {
     assert!(keepalive_due(50.0));
     touch_at(&mut worker, 1, 1, Phase::Down, (10, 20), 100.0);
     touch_at(&mut worker, 1, 1, Phase::Update, (11, 20), 130.0);
-    worker.step(180.0);
+    worker.step_at(180.0);
     touch_at(&mut worker, 1, 1, Phase::Update, (12, 20), 260.0);
     touch_at(&mut worker, 1, 1, Phase::Up, (12, 20), 270.0);
     assert_eq!(
@@ -580,12 +608,51 @@ fn a_minute_holds_the_largest_gap_between_a_contacts_injections() {
             t("up", 12, 20),
         ]
     );
-    worker.step(60_000.0);
+    worker.step_at(60_000.0);
     let events = heard.lock().unwrap().clone();
     let [PlugwinEvent::Rate { session: 1, rate }] = events.as_slice() else {
         panic!("one rate: {events:?}")
     };
     assert_eq!(rate.gap_ms, 80.0, "130 to 180 to 260 to 270");
+}
+
+#[test]
+fn the_keep_alive_is_looked_at_first_and_after_each_grab_on_a_fresh_clock() {
+    // Two editors captured, each grab taking 35 ms of the worker's clock.
+    let (sim, handle) = Sim::new(None);
+    handle.still(true);
+    let slow = Slow {
+        sim,
+        hold: Duration::ZERO,
+        grab_ms: 35.0,
+    };
+    let (mut worker, _) = worker_on(Box::new(slow));
+    take(&mut worker, &handle, 1, 0.0);
+    take(&mut worker, &handle, 2, 0.0);
+    for session in [1, 2] {
+        let capture = Command::Capture {
+            session,
+            sink: sink().0,
+        };
+        worker.command_at(capture, 0.0);
+    }
+    touch_at(&mut worker, 1, 1, Phase::Down, (10, 20), 1000.0);
+    // At 1040 nothing is due; the first grab ends at 1075, when the
+    // contact is 75 ms old: it goes then, not after the second grab.
+    worker.step_at(1040.0);
+    assert_eq!(
+        touches(&handle),
+        vec![t("down", 10, 20), t("update", 10, 20)]
+    );
+    let sent = |worker: &Worker| worker.contact.map(|held| held.sent);
+    assert_eq!(sent(&worker), Some(1075.0), "stamped when it went");
+    assert_eq!(worker.editors[&1].counts.gap_ms, 75.0);
+    // At 1130 it is due before any grab (55 ms): it goes first, then again
+    // after the second grab (1200).
+    worker.step_at(1130.0);
+    assert_eq!(touches(&handle).len(), 4);
+    assert_eq!(sent(&worker), Some(1200.0));
+    assert_eq!(worker.editors[&1].counts.gap_ms, 75.0, "55 and 70 since");
 }
 
 #[test]
@@ -666,12 +733,12 @@ fn the_guard_ends_the_contact_stops_the_frames_and_taps_the_inert_spot() {
     handle.still(true);
     take(&mut worker, &handle, 1, 0.0);
     let (sink, frames) = sink();
-    worker.command(Command::Capture { session: 1, sink }, 0.0);
-    worker.step(0.0);
+    worker.command_at(Command::Capture { session: 1, sink }, 0.0);
+    worker.step_at(0.0);
     wait_for("the first frame", || frames.lock().unwrap().len() == 1);
     touch_at(&mut worker, 1, 1, Phase::Down, (10, 20), 0.0);
     let (reply, mut answer) = oneshot::channel();
-    worker.command(Command::Guard { session: 1, reply }, 1.0);
+    worker.command_at(Command::Guard { session: 1, reply }, 1.0);
     assert_eq!(answer.try_recv().unwrap(), Ok(()));
     assert_eq!(worker.contact, None);
     assert_eq!(
@@ -685,15 +752,15 @@ fn the_guard_ends_the_contact_stops_the_frames_and_taps_the_inert_spot() {
     );
     handle.still(false);
     std::thread::sleep(Duration::from_millis(260));
-    worker.step(100.0);
+    worker.step_at(100.0);
     assert_eq!(frames.lock().unwrap().len(), 1, "no frame after the guard");
     // A guard of no editor, and one whose tap is refused, fail.
     let (reply, mut answer) = oneshot::channel();
-    worker.command(Command::Guard { session: 7, reply }, 2.0);
+    worker.command_at(Command::Guard { session: 7, reply }, 2.0);
     assert_eq!(answer.try_recv().unwrap(), Err(NO_EDITOR.to_string()));
     handle.refuse(true);
     let (reply, mut answer) = oneshot::channel();
-    worker.command(Command::Guard { session: 1, reply }, 3.0);
+    worker.command_at(Command::Guard { session: 1, reply }, 3.0);
     assert_eq!(answer.try_recv().unwrap(), Err(REFUSED.to_string()));
 }
 
@@ -707,7 +774,7 @@ fn the_guard_first_cancels_another_sessions_contact() {
     let second = take(&mut worker, &handle, 2, 0.0);
     touch_at(&mut worker, 1, 7, Phase::Down, (10, 20), 0.0);
     let (reply, mut answer) = oneshot::channel();
-    worker.command(Command::Guard { session: 2, reply }, 1.0);
+    worker.command_at(Command::Guard { session: 2, reply }, 1.0);
     assert_eq!(answer.try_recv().unwrap(), Ok(()));
     assert_eq!(worker.contact, None, "the other engineer's contact ended");
     let on = |r: &serde_json::Value| {
@@ -754,11 +821,11 @@ fn a_window_lost_under_a_contact_ends_it_with_a_cancel_at_its_last_point() {
     // The other editor's window going away leaves this contact alone.
     let other = handle.windows()[1];
     handle.remove_window(other);
-    worker.step(10.0);
+    worker.step_at(10.0);
     assert_eq!(held(&worker), Some((1, 1, (12, 24))));
     assert_eq!(touches(&handle).len(), 2);
     handle.remove_window(window);
-    worker.step(20.0);
+    worker.step_at(20.0);
     assert_eq!(worker.contact, None);
     assert_eq!(
         touches(&handle),
@@ -784,7 +851,7 @@ fn a_release_ends_the_contact_and_hands_the_window_back() {
         closed,
         reply,
     };
-    worker.command(release(1, true, reply), 1.0);
+    worker.command_at(release(1, true, reply), 1.0);
     assert_eq!(answer.try_recv(), Ok(()));
     assert!(worker.editors.is_empty());
     assert_eq!(worker.contact, None);
@@ -796,19 +863,19 @@ fn a_release_ends_the_contact_and_hands_the_window_back() {
     assert!(handle.windows().is_empty(), "Live closed it");
     // A release of no editor still answers.
     let (reply, mut answer) = oneshot::channel();
-    worker.command(release(1, true, reply), 2.0);
+    worker.command_at(release(1, true, reply), 2.0);
     assert_eq!(answer.try_recv(), Ok(()));
     // Handed back while Live keeps it open: its window stays.
     let open = take(&mut worker, &handle, 4, 2.5);
     let (reply, mut answer) = oneshot::channel();
-    worker.command(release(4, false, reply), 2.5);
+    worker.command_at(release(4, false, reply), 2.5);
     assert_eq!(answer.try_recv(), Ok(()));
     assert_eq!(handle.windows(), vec![open]);
     assert_eq!(handle.topmost(open), Some(false), "z-order put back");
     // The stop hands every window back; the editors stay open in Live.
     take(&mut worker, &handle, 2, 3.0);
     take(&mut worker, &handle, 3, 3.0);
-    worker.command(Command::Stop, 4.0);
+    worker.command_at(Command::Stop, 4.0);
     worker.shutdown();
     assert!(worker.editors.is_empty());
     let released = handle
@@ -820,13 +887,16 @@ fn a_release_ends_the_contact_and_hands_the_window_back() {
     assert_eq!(handle.windows().len(), 3, "still open in Live");
 }
 
-/// A simulated backend whose release takes `hold` (a slow hand-back).
-struct SlowRelease {
+/// A simulated backend whose release takes `hold` (a slow hand-back) and
+/// whose grab moves the test's clock on by `grab_ms` (a grab's time on the
+/// PC, for a worker run by hand).
+struct Slow {
     sim: Sim,
     hold: Duration,
+    grab_ms: f64,
 }
 
-impl Backend for SlowRelease {
+impl Backend for Slow {
     fn editors(&mut self) -> Result<Vec<WindowId>, String> {
         self.sim.editors()
     }
@@ -843,6 +913,7 @@ impl Backend for SlowRelease {
         self.sim.alive(taken)
     }
     fn grab(&mut self, taken: &Taken) -> Result<Pixels, String> {
+        NOW.with(|clock| clock.set(clock.get() + self.grab_ms));
         self.sim.grab(taken)
     }
     fn touch(&mut self, taken: &Taken, phase: Phase, at: (i32, i32)) -> Result<(), String> {
@@ -860,7 +931,11 @@ impl Backend for SlowRelease {
 /// A worker thread on a sim whose release takes `hold`, holding a window.
 async fn slow_worker(hold: Duration) -> (Plugwin, SimHandle) {
     let (sim, handle) = Sim::new(None);
-    let backend = SlowRelease { sim, hold };
+    let backend = Slow {
+        sim,
+        hold,
+        grab_ms: 0.0,
+    };
     let plugwin = Plugwin::spawn(Box::new(backend), Arc::new(|_: PlugwinEvent| {})).unwrap();
     assert_eq!(plugwin.take(1, Vec::new()).await, Ok((1349, 809)));
     (plugwin, handle)

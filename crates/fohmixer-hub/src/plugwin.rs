@@ -31,8 +31,11 @@
 //!   contact ends ([`PlugwinEvent::ContactEnded`], with its number).
 //! - **The keep-alive:** Windows ends an injected contact that gets no frame
 //!   for 100 ms, so the worker injects a resting contact's last point again
-//!   once [`KEEPALIVE_MS`] passed since its last injection, looking at least
-//!   every [`STEP`] (it blocks only for a grab). The largest gap between two
+//!   once [`KEEPALIVE_MS`] passed since its last injection. Each step looks
+//!   at it first, again after the opens' polls and again after each grab,
+//!   every time on a fresh read of its clock: a grab blocks the worker for
+//!   its time, and two engineers' editors are grabbed one after the other.
+//!   An injection is stamped when it goes. The largest gap between two
 //!   injections of a contact goes into the minute's counts ([`Rate`]).
 //! - **The close guard** ([`Plugwin::guard`]): the frames stop, its own
 //!   contact ends at its last point (an up), another session's is cancelled
@@ -596,8 +599,13 @@ struct Held {
     sent: f64,
 }
 
+/// The worker's clock: milliseconds since it started (a test's stands
+/// where the test set it).
+type Clock = Box<dyn Fn() -> f64 + Send>;
+
 /// The worker: its backend, the editors it holds by session, the opens
-/// waiting for their windows, the contact on the screen and the encoder.
+/// waiting for their windows, the contact on the screen, the encoder and
+/// its clock.
 struct Worker {
     backend: Box<dyn Backend>,
     events: Events,
@@ -605,12 +613,13 @@ struct Worker {
     finding: Vec<Finding>,
     contact: Option<Held>,
     encoder: Encoder,
-    clock: Instant,
+    clock: Clock,
 }
 
 impl Worker {
+    /// Its clock now (ms): read afresh at every look and every injection.
     fn now(&self) -> f64 {
-        millis(self.clock.elapsed())
+        (self.clock)()
     }
 
     /// Serves commands until `Stop` or the last handle is gone, looking at
@@ -622,20 +631,16 @@ impl Worker {
         loop {
             match rx.recv_timeout(STEP) {
                 Ok(Command::Stop) | Err(RecvTimeoutError::Disconnected) => break,
-                Ok(command) => {
-                    let now = self.now();
-                    self.command(command, now);
-                }
+                Ok(command) => self.command(command),
                 Err(RecvTimeoutError::Timeout) => {}
             }
-            let now = self.now();
-            self.step(now);
+            self.step();
         }
         self.shutdown();
     }
 
-    /// One command at `now` (the worker's ms).
-    fn command(&mut self, command: Command, now: f64) {
+    /// One command.
+    fn command(&mut self, command: Command) {
         match command {
             Command::List(reply) => {
                 let _ = reply.send(self.backend.editors());
@@ -646,10 +651,11 @@ impl Worker {
                 reply,
             } => {
                 self.backend.live_opened();
+                let started = self.now();
                 self.finding.push(Finding {
                     session,
                     before,
-                    started: now,
+                    started,
                     polled: None,
                     reply,
                 });
@@ -664,7 +670,7 @@ impl Worker {
                 contact,
                 phase,
                 at,
-            } => self.touch(session, contact, phase, at, now),
+            } => self.touch(session, contact, phase, at),
             Command::Guard { session, reply } => {
                 let _ = reply.send(self.guard(session));
             }
@@ -680,25 +686,31 @@ impl Worker {
         }
     }
 
-    /// The clocks at `now`: the encoder's frames counted, the opens' polls,
-    /// the captures, the minutes, the contact's keep-alive.
-    fn step(&mut self, now: f64) {
+    /// The clocks, each read afresh: the encoder's frames counted, the
+    /// contact's keep-alive, the opens' polls, the captures and their
+    /// minutes. The keep-alive is looked at first, after the polls (a list
+    /// of the windows, a take) and after each capture (a grab blocks for
+    /// its time): it never waits for a whole step.
+    fn step(&mut self) {
         self.count_encoded();
-        self.find(now);
+        self.keep_alive();
+        self.find();
+        self.keep_alive();
         let sessions: Vec<u32> = self.editors.keys().copied().collect();
         for session in sessions {
-            self.capture(session, now);
+            self.capture(session);
+            self.keep_alive();
         }
-        self.keep_alive(now);
     }
 
     /// The contact down, injected again at its last point once
     /// [`KEEPALIVE_MS`] passed since its last injection.
-    fn keep_alive(&mut self, now: f64) {
+    fn keep_alive(&mut self) {
+        let now = self.now();
         let Some(held) = self.contact.filter(|held| keepalive_due(now - held.sent)) else {
             return;
         };
-        self.touch(held.session, held.contact, Phase::Update, held.at, now);
+        self.touch(held.session, held.contact, Phase::Update, held.at);
     }
 
     /// What the encoder made since the last look, into its editors' counts.
@@ -711,7 +723,8 @@ impl Worker {
     }
 
     /// The opens whose poll is due look for their window.
-    fn find(&mut self, now: f64) {
+    fn find(&mut self) {
+        let now = self.now();
         for mut finding in std::mem::take(&mut self.finding) {
             // A poll is due on its interval, and always once the wait is
             // over (its answer never waits for the next poll).
@@ -759,7 +772,8 @@ impl Worker {
     /// One capture of `session` when due: a window gone is lost; a picture
     /// like the last one is skipped; another goes to the sink. The minute's
     /// counts when it is over.
-    fn capture(&mut self, session: u32, now: f64) {
+    fn capture(&mut self, session: u32) {
+        let now = self.now();
         let Some(editor) = self.editors.get_mut(&session) else {
             return;
         };
@@ -811,11 +825,11 @@ impl Worker {
         self.encoder.put(session, pixels, sink);
     }
 
-    /// A phase of contact `contact` on `session`'s window at `now`: one
-    /// contact on the screen ([`accepts`]); its gap since the contact's last
-    /// injection counted; a refused down or update ends the contact and says
-    /// so.
-    fn touch(&mut self, session: u32, contact: u32, phase: Phase, at: (i32, i32), now: f64) {
+    /// A phase of contact `contact` on `session`'s window: one contact on
+    /// the screen ([`accepts`]); stamped when it goes, its gap since the
+    /// contact's last injection counted; a refused down or update ends the
+    /// contact and says so.
+    fn touch(&mut self, session: u32, contact: u32, phase: Phase, at: (i32, i32)) {
         let Some(taken) = self.editors.get(&session).map(|e| e.taken.clone()) else {
             return;
         };
@@ -824,7 +838,8 @@ impl Worker {
             return;
         }
         // Accepted: a down has no contact before it, any other phase is of
-        // the contact held.
+        // the contact held. The clock is read as it goes.
+        let now = self.now();
         let gap = self.contact.map(|held| now - held.sent);
         match self.backend.touch(&taken, phase, at) {
             Ok(()) => {
@@ -941,6 +956,7 @@ impl Plugwin {
     /// hears it.
     pub fn spawn(backend: Box<dyn Backend>, events: Events) -> std::io::Result<Self> {
         let (tx, rx) = mpsc::channel();
+        let started = Instant::now();
         let worker = Worker {
             backend,
             events,
@@ -948,7 +964,7 @@ impl Plugwin {
             finding: Vec::new(),
             contact: None,
             encoder: Encoder::spawn()?,
-            clock: Instant::now(),
+            clock: Box::new(move || millis(started.elapsed())),
         };
         let thread = std::thread::Builder::new()
             .name("plugwin".to_string())
