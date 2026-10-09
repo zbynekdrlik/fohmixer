@@ -1123,12 +1123,14 @@ async fn until(what: &str, check: impl Fn() -> bool) {
 #[tokio::test]
 async fn a_resting_contact_goes_again_in_time_while_two_editors_grab_slowly() {
     // Two engineers, each with an editor captured, and every grab taking
-    // 35 ms (the PC's BitBlt of a 4.3 MB picture): the keep-alive must not
+    // 25 ms (the PC's BitBlt of a 4.3 MB picture): the keep-alive must not
     // wait for the step's grabs, or Windows cancels the resting contact
-    // (no frame for 100 ms).
+    // (no frame for 100 ms). Waiting for both grabs would make gaps of
+    // 50 + 2 × 25 ms and more; checked between them, the worst is about
+    // 75 ms, which leaves a loaded runner 25 ms.
     let (sim, handle) = Sim::new(None);
     handle.still(true);
-    handle.grab_delay(Duration::from_millis(35));
+    handle.grab_delay(Duration::from_millis(25));
     let plugwin = Plugwin::spawn(Box::new(sim), Arc::new(|_: PlugwinEvent| {})).unwrap();
     let bounded = Duration::from_secs(5);
     for session in [1, 2] {
