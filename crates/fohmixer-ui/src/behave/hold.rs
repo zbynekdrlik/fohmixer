@@ -3,8 +3,10 @@
 //! only shows the hint. One press at a time: a second finger's down is not
 //! one, a primary pointer's down starts over (an end the browser never
 //! delivered leaves nothing stuck). A finger may slide up to `SLIDE_PX`
-//! from where it went down; further, the press ends with neither a tap nor
-//! an open (a fader grab that lands on ☰ never opens the detail). Else only
+//! from where its first move put it (the iPad's first move comes late and
+//! 6–15 px away, so it only anchors the press, as a fader's does, #43 PR F);
+//! further, the press ends with neither a tap nor an open (a fader grab
+//! that lands on ☰ never opens the detail). Else only
 //! its release ends the press, and a cancel or a lost capture ends it
 //! without a tap. Right after the detail opens, its parts take no touch for
 //! `OPEN_GUARD_MS` (a second tap at ☰'s spot would land on its MUTE).
@@ -29,14 +31,16 @@ pub fn slid_off(dx: f64, dy: f64) -> bool {
     dx.hypot(dy) > SLIDE_PX
 }
 
-/// One press: its pointer, when and where it went down, and whether it
-/// opened the detail.
+/// One press: its pointer, when it went down, where its finger is
+/// anchored (the down point, then its first move), whether that first move
+/// came, and whether it opened the detail.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Press {
     pointer: i32,
     at: f64,
     x: f64,
     y: f64,
+    anchored: bool,
     opened: bool,
 }
 
@@ -73,6 +77,7 @@ impl Hold {
             at: now,
             x,
             y,
+            anchored: false,
             opened: false,
         });
         true
@@ -110,11 +115,18 @@ impl Hold {
     }
 
     /// Pointer `pointer` moved to `x`, `y`: whether that ended its press
-    /// (slid off it: no tap, nothing opens, the fill clears).
+    /// (slid off it: no tap, nothing opens, the fill clears). The press's
+    /// first move only anchors it there.
     pub fn moved(&mut self, pointer: i32, x: f64, y: f64) -> bool {
-        let Some(press) = self.press.filter(|p| p.pointer == pointer) else {
+        let Some(press) = self.press.as_mut().filter(|p| p.pointer == pointer) else {
             return false;
         };
+        if !press.anchored {
+            press.x = x;
+            press.y = y;
+            press.anchored = true;
+            return false;
+        }
         if !slid_off(x - press.x, y - press.y) {
             return false;
         }
@@ -178,18 +190,21 @@ mod tests {
     }
 
     #[test]
-    fn a_slide_past_10_px_ends_the_press_with_neither_a_tap_nor_an_open() {
+    fn a_slide_past_10_px_from_the_first_move_ends_the_press_with_neither_a_tap_nor_an_open() {
         let mut h = Hold::default();
         assert!(h.down(1, true, 100.0, 200.0, 0.0));
         assert!(h.drives(1) && !h.drives(2));
-        // Up to 10 px from the down point: the press goes on.
-        assert!(!h.moved(1, 110.0, 200.0));
-        assert!(!h.moved(1, 100.0, 190.0));
-        assert!(!h.moved(1, 94.0, 192.1));
+        // The first move only anchors the press, however far (the iPad's
+        // comes 6–15 px away).
+        assert!(!h.moved(1, 115.0, 200.0));
+        // Up to 10 px from the anchor: the press goes on.
+        assert!(!h.moved(1, 125.0, 200.0));
+        assert!(!h.moved(1, 115.0, 190.0));
+        assert!(!h.moved(1, 109.0, 192.1));
         // Another pointer's move ends nothing.
         assert!(!h.moved(2, 300.0, 300.0));
         assert!(h.holding());
-        assert!(h.moved(1, 100.0, 210.5), "past 10 px");
+        assert!(h.moved(1, 115.0, 210.5), "past 10 px from the anchor");
         assert!(!h.holding(), "the fill clears");
         assert!(!h.drives(1));
         assert!(!h.open(600.0), "nothing opens");
@@ -197,14 +212,24 @@ mod tests {
         assert!(!h.moved(1, 0.0, 0.0), "no press to end");
         // Within the slide the press still opens at its hold.
         assert!(h.down(3, true, 50.0, 40.0, 1000.0));
+        assert!(!h.moved(3, 50.0, 40.0));
         assert!(!h.moved(3, 57.0, 47.0));
         assert!(h.open(1500.0));
         // A fader grab that lands on ☰ and pulls down: no detail, no hint.
         let mut grab = Hold::default();
         assert!(grab.down(4, true, 60.0, 50.0, 0.0));
+        assert!(!grab.moved(4, 60.0, 60.0), "the anchor");
         assert!(grab.moved(4, 60.0, 80.0));
         assert!(!grab.open(520.0));
         assert_eq!(grab.up(4, 900.0), Lift::Nothing);
+        // A new press anchors again at its own first move.
+        let mut again = Hold::default();
+        assert!(again.down(5, true, 0.0, 0.0, 0.0));
+        assert!(!again.moved(5, 3.0, 0.0));
+        assert!(again.down(5, true, 100.0, 100.0, 50.0));
+        assert!(!again.moved(5, 140.0, 100.0), "the new press's anchor");
+        assert!(!again.moved(5, 150.0, 100.0), "exactly 10 px");
+        assert!(again.moved(5, 150.0_f64.next_up(), 100.0));
     }
 
     #[test]

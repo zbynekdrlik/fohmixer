@@ -416,7 +416,9 @@ test.describe("The channel detail with real input", () => {
       await record(menu);
       await page.mouse.move(at.x, at.y);
       await page.mouse.down();
-      await page.mouse.move(at.x, at.y + 30);
+      // Three moves: the first only anchors the press (as the iPad's late
+      // first move does), the last is 20 px past it.
+      for (const dy of [10, 20, 30]) await page.mouse.move(at.x, at.y + dy);
       await page.waitForTimeout(700);
       await page.mouse.up();
       await page.waitForTimeout(100);
