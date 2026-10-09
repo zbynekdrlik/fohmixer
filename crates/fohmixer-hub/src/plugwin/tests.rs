@@ -722,6 +722,9 @@ fn a_contact_goes_to_its_editor_one_at_a_time_and_a_refused_one_ends() {
         touch_at(worker, session, contact, phase, at, 0.0);
     };
     touch(&mut worker, 1, 1, Phase::Down, (10, 20));
+    // Another session's down while this contact is down: dropped, and the
+    // router hears that contact ended (`busy`), so its state never holds a
+    // contact the worker never took.
     touch(&mut worker, 2, 2, Phase::Down, (1, 1));
     touch(&mut worker, 9, 3, Phase::Down, (1, 1));
     touch(&mut worker, 1, 1, Phase::Update, (11, 21));
@@ -767,7 +770,16 @@ fn a_contact_goes_to_its_editor_one_at_a_time_and_a_refused_one_ends() {
     touch(&mut worker, 1, 6, Phase::Update, (6, 6));
     assert_eq!(worker.contact, None);
     assert_eq!(touches(&handle)[7..], [t("down", 5, 5), t("cancel", 5, 5)]);
-    assert_eq!(heard.lock().unwrap().as_slice(), [ended(5), ended(6)]);
+    let busy = PlugwinEvent::ContactEnded {
+        session: 2,
+        contact: 2,
+        why: "busy".to_string(),
+    };
+    assert_eq!(
+        heard.lock().unwrap().as_slice(),
+        [busy, ended(5), ended(6)],
+        "a dropped phase of an ended contact says nothing"
+    );
 }
 
 #[test]
