@@ -537,32 +537,103 @@ fn eq_record<'a>(records: &'a [Value], what: &str) -> Option<&'a Value> {
 }
 
 #[test]
-fn a_moved_editor_found_open_once_is_closed_at_its_new_path() {
+fn a_moved_editor_is_closed_where_it_moved() {
     let _serial = serial();
     runtime().block_on(async {
         let (on_track, in_chain, records) = close_after_a_move(false).await;
         assert_eq!((on_track, in_chain), (json!(false), json!(false)));
-        let moved = eq_record(&records, "moved").expect("a moved record");
-        assert_eq!(
-            (moved["path"].as_str(), moved["to"].as_str()),
-            (Some(ON_TRACK), Some(MOVED_ON_TRACK))
-        );
         assert!(eq_record(&records, "problem").is_none(), "{records:?}");
     });
 }
 
 #[test]
-fn a_moved_editor_with_several_open_leaves_live_alone() {
+fn a_moved_editor_is_closed_and_another_open_one_left_alone() {
     let _serial = serial();
     runtime().block_on(async {
+        // The held path names no device; the editor is the same object
+        // where it moved, and the one opened by hand is not the hub's.
         let (on_track, in_chain, records) = close_after_a_move(true).await;
-        assert_eq!((on_track, in_chain), (json!(true), json!(true)));
-        let problem = eq_record(&records, "problem").expect("a problem record");
+        assert_eq!((on_track, in_chain), (json!(false), json!(true)));
+        assert!(eq_record(&records, "problem").is_none(), "{records:?}");
+    });
+}
+
+/// A set whose second and third tracks hold a Pro-Q 4 each (two engineers'
+/// editors on neighbouring tracks), its first track none.
+fn neighbours(dir: &Path) -> std::path::PathBuf {
+    let pro_q = json!({"template": "plugin", "name": "Pro-Q 4", "product": "Pro-Q 4"});
+    let set = json!({"name": "Neighbours", "tracks": [
+        {"name": "Lead #"},
+        {"name": "Kick #", "devices": [pro_q.clone()]},
+        {"name": "Snare #", "devices": [pro_q]},
+    ]});
+    let site = dir.join("neighbours.json");
+    std::fs::write(&site, set.to_string()).unwrap();
+    site
+}
+
+/// The band's track `name` as a strip binds it.
+fn track(name: &str) -> Binding {
+    Binding {
+        instance: "band".into(),
+        anchor: Anchor::Track { name: name.into() },
+        path: None,
+    }
+}
+
+#[test]
+fn a_close_turns_off_its_own_moved_editor_never_the_one_now_at_its_path() {
+    let _serial = serial();
+    runtime().block_on(async {
+        let dir = tempfile::tempdir().unwrap();
+        let mut host = Host::start_site("band", &neighbours(dir.path()), 0, 0.0);
+        let hub = TestHub::start_config(config(dir.path(), &host)).await;
+        let (kick, snare) = ("live_set tracks 1 devices 0", "live_set tracks 2 devices 0");
+        // A holds the Snare's editor, B the Kick's.
+        let mut a = client(&hub).await;
+        a.send(&ClientMsg::EqList {
+            binding: track("Snare #"),
+        })
+        .await;
+        assert_eq!(listed(&mut a).await.0.len(), 1);
+        open(&mut a, snare).await;
+        let mut b = client(&hub).await;
+        b.send(&ClientMsg::EqList {
+            binding: track("Kick #"),
+        })
+        .await;
+        assert_eq!(listed(&mut b).await.0.len(), 1);
+        open(&mut b, kick).await;
+        // The first track deleted: B's held path names A's editor now.
+        assert!(host.delete_track(0) > 0, "Lead # deleted");
+        b.send(&ClientMsg::EqClose).await;
+        let closed = state(&mut b, kick).await;
         assert_eq!(
-            problem["why"].as_str(),
-            Some(fohmixer_hub::eq::close::SEVERAL_OPEN)
+            (closed.0, closed.3.as_deref()),
+            (EqState::Closed, Some(reason::EXIT))
         );
-        assert!(eq_record(&records, "moved").is_none(), "{records:?}");
+        // B's own editor (the Kick's, track 0 now) is off; A's stays open.
+        assert_eq!(
+            b.get("band", "live_set tracks 0 devices 0", "is_editor_open")
+                .await,
+            json!(false),
+            "B's editor"
+        );
+        assert_eq!(
+            b.get("band", "live_set tracks 1 devices 0", "is_editor_open")
+                .await,
+            json!(true),
+            "A's editor"
+        );
+        let records = hub
+            .events_until(WAIT, |records| {
+                eq_whats(records).contains(&"closed".to_string())
+            })
+            .await;
+        let eq: Vec<Value> = records.into_iter().filter(|r| r["ev"] == "eq").collect();
+        assert!(eq_record(&eq, "problem").is_none(), "{eq:?}");
+        hub.stop().await;
+        host.stop();
     });
 }
 
