@@ -20,16 +20,19 @@
 //!   in Live (a value text field may be open: Pro-Q 4.02 crashes Live when
 //!   its editor closes with one). The device turned off is never another
 //!   one's: it is turned off through the `$ref` its open read (the same
-//!   object wherever it moved since). Only when that ref is gone (the
-//!   script answers that it names no object: its registry starts over with
-//!   each connection, or the device was deleted) or none is held does the
-//!   close check (`eq::close`) decide: it re-reads the held path first and,
-//!   when the editor moved, looks for the one open Pro-Q 4 of the set; when
-//!   that is not certain, Live is left alone. A ref turn-off that got no
-//!   answer (offline, a timeout) or failed otherwise leaves Live alone too:
-//!   the ref may still be good. An open whose window was not found turns
-//!   its editor off the same way. The answer comes back as
-//!   `RouterMsg::EqClosed`.
+//!   object wherever it moved since). A ref whose device was deleted
+//!   (`StaleRef`: Live closed its editor with it) leaves Live alone with
+//!   nothing open. Only when the script does not know the ref (its registry
+//!   starts over with each connection) or none is held does the close check
+//!   (`eq::close`) decide: it re-reads the held path first and, when the
+//!   editor moved, looks for the one open Pro-Q 4 of the set; none open is
+//!   nothing to close; when it is not certain, Live is left alone. A ref
+//!   turn-off that got no answer (offline, a timeout) or failed otherwise
+//!   leaves Live alone too: the ref may still be good. An open whose window
+//!   was not found turns its editor off the same way. The answer comes back
+//!   as `RouterMsg::EqClosed` with what the close left in Live
+//!   (`eq::close::Shut`): its holder hears "left open in Live" only when the
+//!   editor may still be open.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -41,7 +44,7 @@ use fohmixer_proto::layout::Binding;
 use serde_json::{Value, json};
 
 use super::{Router, RouterMsg, write_failure};
-use crate::eq::close::{self, Check, CloseCheck, RefOff};
+use crate::eq::close::{self, Check, CloseCheck, RefOff, Shut};
 use crate::eq::open;
 use crate::eq::walk::{Found, MAX_READS, Step, Walk};
 use crate::eq::{Act, EditorKey, Eqs, GUARD_WAIT, Pictures, record};
@@ -146,7 +149,7 @@ async fn check_close(live: &LiveHandle, held: &str) -> Check {
                 }
                 check.walked(outcomes)
             }
-            settled @ (Check::Close { .. } | Check::Leave(_)) => return settled,
+            settled @ (Check::Close { .. } | Check::NoneOpen | Check::Leave(_)) => return settled,
         };
     }
     close::settled(step)
@@ -154,32 +157,38 @@ async fn check_close(live: &LiveHandle, held: &str) -> Check {
 
 /// Turns the editor of `key` (`session`) off in Live, never another
 /// device's: through its `reference` (the device its open read, wherever it
-/// moved since). Only without one, or when the script answers that it is
-/// gone (another script connection, the device deleted), does the close
-/// check decide which one, or none; a turn-off through the ref that got no
-/// answer or failed otherwise leaves Live alone (the ref may still be
-/// good). Its outcome is logged; an editor the check found moved is an
-/// `eq` record `moved` with the path it was found at (`to`).
+/// moved since). A ref whose device was deleted leaves Live alone with
+/// nothing open (Live closed its editor with it; the held path names
+/// another device now, if any). Only without a ref, or when the script does
+/// not know it (another script connection), does the close check decide
+/// which one, or none; a turn-off through the ref that got no answer or
+/// failed otherwise leaves Live alone (the ref may still be good). What it
+/// left in Live is logged; an editor the check found moved is an `eq`
+/// record `moved` with the path it was found at (`to`).
 async fn turn_off(
     live: &LiveHandle,
     key: &EditorKey,
     session: u32,
     reference: Option<&Value>,
     events: &EventLog,
-) -> Result<(), String> {
+) -> Shut {
     if let Some(target) = reference {
         let outcome = live.call(set_command(target.clone(), false)).await;
         match close::ref_off(outcome.as_deref().map_err(ToString::to_string)) {
             RefOff::Done => {
                 tracing::info!(session, instance = %key.instance, path = %key.path, "a Pro-Q 4 editor is turned off through its ref");
-                return Ok(());
+                return Shut::Off;
             }
-            RefOff::Gone(why) => {
-                tracing::info!(session, instance = %key.instance, why = %why, "a Pro-Q 4 editor's ref is gone: its held path is checked");
+            RefOff::Deleted(why) => {
+                tracing::info!(session, instance = %key.instance, why = %why, "a Pro-Q 4 editor's device was deleted: Live closed its editor, nothing is turned off");
+                return Shut::NoneOpen(close::deleted(&why));
+            }
+            RefOff::Unknown(why) => {
+                tracing::info!(session, instance = %key.instance, why = %why, "a Pro-Q 4 editor's ref is unknown to the script: its held path is checked");
             }
             RefOff::Failed(why) => {
                 tracing::warn!(session, instance = %key.instance, path = %key.path, why = %why, "a Pro-Q 4 editor could not be turned off through its ref: it is left open in Live");
-                return Err(close::ref_failed(&why));
+                return Shut::LeftOpen(close::ref_failed(&why));
             }
         }
     }
@@ -193,13 +202,20 @@ async fn turn_off(
             } else {
                 tracing::info!(session, instance = %key.instance, path = %path, "a Pro-Q 4 editor is turned off at its path");
             }
-            set_editor(live, &path, false).await
+            match set_editor(live, &path, false).await {
+                Ok(()) => Shut::Off,
+                Err(why) => Shut::LeftOpen(why),
+            }
+        }
+        Check::NoneOpen => {
+            tracing::warn!(session, instance = %key.instance, path = %key.path, "a Pro-Q 4 editor moved and no open Pro-Q 4 was found: nothing is turned off");
+            Shut::NoneOpen(close::NONE_OPEN.to_string())
         }
         Check::Leave(why) => {
             tracing::warn!(session, instance = %key.instance, path = %key.path, why = %why, "a Pro-Q 4 editor is left open in Live");
-            Err(why)
+            Shut::LeftOpen(why)
         }
-        Check::Read(_) | Check::Walk(_) => Err(close::UNFINISHED.to_string()),
+        Check::Read(_) | Check::Walk(_) => Shut::LeftOpen(close::UNFINISHED.to_string()),
     }
 }
 
@@ -237,7 +253,7 @@ async fn open_editor(
     }
     let taken = plugwin.take(session, before).await;
     if taken.is_err()
-        && let Err(why) = turn_off(&live, &key, session, Some(&reference), &events).await
+        && let Shut::LeftOpen(why) = turn_off(&live, &key, session, Some(&reference), &events).await
     {
         tracing::warn!(session, why = %why, "an editor whose window was not found could not be closed again in Live");
     }
@@ -246,8 +262,8 @@ async fn open_editor(
 
 /// The close sequence: the guard, its wait, the editor turned off in Live
 /// (not when the guard failed; through its `reference` when there is one;
-/// never another device's), the window released; what went wrong, if
-/// anything.
+/// never another device's), the window released (Live closed the editor
+/// unless it may still be open); what it left in Live.
 async fn close_editor(
     live: Option<LiveHandle>,
     plugwin: Plugwin,
@@ -255,16 +271,16 @@ async fn close_editor(
     session: u32,
     reference: Option<Value>,
     events: EventLog,
-) -> Option<String> {
+) -> Shut {
     let guarded = plugwin.guard(session).await;
     tokio::time::sleep(GUARD_WAIT).await;
-    let closed = match (guarded, live) {
+    let shut = match (guarded, live) {
         (Ok(()), Some(live)) => turn_off(&live, &key, session, reference.as_ref(), &events).await,
-        (Ok(()), None) => Err(UNKNOWN_INSTANCE.to_string()),
-        (Err(why), _) => Err(format!("the guard failed, the editor stays open: {why}")),
+        (Ok(()), None) => Shut::LeftOpen(UNKNOWN_INSTANCE.to_string()),
+        (Err(why), _) => Shut::LeftOpen(format!("the guard failed, the editor stays open: {why}")),
     };
-    plugwin.release(session, closed.is_ok()).await;
-    closed.err()
+    plugwin.release(session, !shut.left_open()).await;
+    shut
 }
 
 /// The `eq` record of the capture's minute.
@@ -474,21 +490,22 @@ impl Router {
         }
     }
 
-    /// A close sequence ended (`problem`: what went wrong; the editor is
-    /// then still open in Live, which its holder hears).
-    pub(super) fn eq_closed(&mut self, key: &EditorKey, session: u32, problem: Option<String>) {
+    /// A close sequence ended: what it left in Live. A close that did not
+    /// turn its editor off is recorded (`problem`: it may still be open,
+    /// which its holder hears; `none_open`: nothing is open there any more,
+    /// and its holder hears its own close).
+    pub(super) fn eq_closed(&mut self, key: &EditorKey, session: u32, outcome: Shut) {
         let Some(io) = self.eq.as_mut() else {
             return;
         };
         io.refs.remove(&session);
-        if let Some(problem) = &problem {
-            tracing::warn!(session, instance = %key.instance, path = %key.path, problem = %problem, "a Pro-Q 4 editor's close went wrong");
-            self.io.events.record(
-                "eq",
-                record("problem", key, None, Some(session), Some(problem)),
-            );
+        if let Some((what, why)) = outcome.note() {
+            tracing::warn!(session, instance = %key.instance, path = %key.path, what, why = %why, "a Pro-Q 4 editor's close did not turn it off");
+            self.io
+                .events
+                .record("eq", record(what, key, None, Some(session), Some(why)));
         }
-        let acts = io.state.closed(key, session, problem.is_some());
+        let acts = io.state.closed(key, session, outcome.left_open());
         self.eq_acts(acts);
     }
 
@@ -627,12 +644,12 @@ impl Router {
                     .get(&session)
                     .map(|(_, reference)| reference.clone());
                 tokio::spawn(async move {
-                    let problem =
+                    let outcome =
                         close_editor(live, plugwin, key.clone(), session, reference, events).await;
                     let _ = tx.send(RouterMsg::EqClosed {
                         key,
                         session,
-                        problem,
+                        outcome,
                     });
                 });
             }

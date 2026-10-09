@@ -1,10 +1,13 @@
 //! Which device a close turns off in Live (#71 PR E), pure: never one other
 //! than the editor the hub opened. The close turns it off through the
 //! `$ref` its open read ([`ref_off`] reads the answer): the same object
-//! wherever it moved. Only when that ref is gone (the script answers
-//! [`REF_GONE`]: another connection's registry, the device deleted) or no
-//! ref is held does the path check below decide; a ref turn-off that got
-//! no answer or failed otherwise leaves Live alone (the ref may still be
+//! wherever it moved. A ref the script answers [`STALE_REF`] names a device
+//! that was deleted (or whose pointer holds another class now: the device
+//! went too), and Live closed its editor with it: nothing of the hub's is
+//! open, so Live is left alone ([`Shut::NoneOpen`]). Only when the ref is
+//! unknown to the script ([`UNKNOWN_REF`]: another connection's registry)
+//! or no ref is held does the path check below decide; a ref turn-off that
+//! got no answer or failed otherwise leaves Live alone (the ref may still be
 //! good, and the set may still land). The hub holds an editor by its path in
 //! Live's index form (`live_set tracks 1 devices 0`); a track inserted,
 //! deleted or moved above it, or a device before it, makes that path name
@@ -19,12 +22,16 @@
 //!   bounded as a list's), and their `is_editor_open` read in one batch:
 //!   - **exactly one open:** the moved editor (a client holds one editor,
 //!     and this one's window is the hub's): it closes at its new path;
-//!   - **none, or several,** or a read or walk that failed: Live is left
-//!     alone (the window is handed back, the editor stays open: the router
-//!     records a `problem`).
+//!   - **none:** nothing is open to close ([`Check::NoneOpen`]);
+//!   - **several,** or a read or walk that failed: Live is left alone (the
+//!     window is handed back, the editor may stay open: the router records
+//!     a `problem`).
 //!
-//! The router (`router/eq.rs`) carries the [`Check`]s out: the reads
-//! through the script, the walks, then the close or nothing.
+//! What a close left in Live is a [`Shut`]: the editor turned off, nothing
+//! of the hub's open there any more, or the editor maybe still open (only
+//! then does its holder hear "left open in Live"). The router
+//! (`router/eq.rs`) carries the [`Check`]s out: the reads through the
+//! script, the walks, then the close or nothing.
 
 use fohmixer_proto::eq::PRODUCT;
 use serde_json::Value;
@@ -43,8 +50,9 @@ pub const MASTER: &str = "live_set master_track";
 /// read, the walks, the open states' read.
 pub const STEPS: usize = 4;
 
-/// Why a close leaves Live alone.
+/// Why a close leaves Live alone: nothing is open to close.
 pub const NONE_OPEN: &str = "the editor moved and no open Pro-Q 4 was found: Live is left alone";
+/// Why a close leaves Live alone: the editor may still be open.
 pub const SEVERAL_OPEN: &str =
     "the editor moved and several open Pro-Q 4s were found: Live is left alone";
 pub const TRACKS_UNREAD: &str =
@@ -70,20 +78,31 @@ pub fn ref_failed(why: &str) -> String {
     format!("the editor could not be turned off through its ref, Live is left alone: {why}")
 }
 
-/// The script's `errorType`s of a `$ref` that names no object any more: one
-/// its registry never issued or cleared (`UnknownRef`: each connection
-/// starts a new registry), or whose object was deleted or is another class
-/// now (`StaleRef`).
-pub const REF_GONE: [&str; 2] = ["UnknownRef", "StaleRef"];
+/// Why Live is left alone when the editor's device was deleted (the
+/// script's `StaleRef`): Live closed its editor with it.
+pub fn deleted(why: &str) -> String {
+    format!("the editor's device was deleted (Live closed its editor), nothing to close: {why}")
+}
+
+/// The script's `errorType` of a `$ref` its registry never issued or
+/// cleared: each connection starts a new registry.
+pub const UNKNOWN_REF: &str = "UnknownRef";
+/// The script's `errorType` of a `$ref` whose object was deleted, or whose
+/// pointer holds another class now (the object went too).
+pub const STALE_REF: &str = "StaleRef";
 
 /// What the turn-off through an editor's `$ref` answered.
 #[derive(Debug, Clone, PartialEq)]
 pub enum RefOff {
     /// It went through.
     Done,
-    /// The ref names no object any more (the script's answer): the held
-    /// path is checked.
-    Gone(String),
+    /// The script does not know the ref (another connection's registry):
+    /// the held path is checked.
+    Unknown(String),
+    /// The ref's device was deleted, and Live closed its editor with it:
+    /// nothing to close, Live is left alone (the held path names another
+    /// device now, if any).
+    Deleted(String),
     /// No answer (Live offline, a timeout, a refused request) or another
     /// failure: the ref may still be good and the set may still land, so
     /// Live is left alone.
@@ -102,13 +121,45 @@ pub fn ref_off(answer: Result<&[Value], String>) -> RefOff {
         return RefOff::Done;
     }
     let text = Value::from(slots.to_vec()).to_string();
-    let kind = slot
+    match slot
         .and_then(|s| s.get("errorType"))
-        .and_then(Value::as_str);
-    if kind.is_some_and(|kind| REF_GONE.contains(&kind)) {
-        RefOff::Gone(text)
-    } else {
-        RefOff::Failed(text)
+        .and_then(Value::as_str)
+    {
+        Some(UNKNOWN_REF) => RefOff::Unknown(text),
+        Some(STALE_REF) => RefOff::Deleted(text),
+        _ => RefOff::Failed(text),
+    }
+}
+
+/// What a close left in Live.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Shut {
+    /// `is_editor_open = false` went through.
+    Off,
+    /// Nothing of the hub's is open in Live any more (its device was
+    /// deleted, or no open Pro-Q 4 was found after a move): why.
+    NoneOpen(String),
+    /// The editor may still be open in Live (the guard could not tap, the
+    /// turn-off failed, or the hub could not be sure which device to turn
+    /// off): why.
+    LeftOpen(String),
+}
+
+impl Shut {
+    /// Whether the editor may still be open in Live: its holder hears so.
+    pub fn left_open(&self) -> bool {
+        matches!(self, Self::LeftOpen(_))
+    }
+
+    /// The `eq` record of a close that did not turn its editor off, its
+    /// `what` and why: `problem` (left open in Live) or `none_open`
+    /// (nothing open there any more).
+    pub fn note(&self) -> Option<(&'static str, &str)> {
+        match self {
+            Self::Off => None,
+            Self::NoneOpen(why) => Some(("none_open", why.as_str())),
+            Self::LeftOpen(why) => Some(("problem", why.as_str())),
+        }
     }
 }
 
@@ -123,7 +174,9 @@ pub enum Check {
     Walk(Vec<String>),
     /// `is_editor_open = false` at `path`; `moved`: not the held path.
     Close { path: String, moved: bool },
-    /// Live is left alone: why.
+    /// The editor moved and no open Pro-Q 4 was found: nothing to close.
+    NoneOpen,
+    /// Live is left alone, the editor maybe open: why.
     Leave(String),
 }
 
@@ -166,7 +219,7 @@ fn open_one(paths: &[String], slots: &[Value]) -> Check {
         }
     }
     match open.as_slice() {
-        [] => Check::Leave(NONE_OPEN.to_string()),
+        [] => Check::NoneOpen,
         [path] => Check::Close {
             path: (*path).clone(),
             moved: true,
@@ -248,7 +301,7 @@ impl CloseCheck {
             }
         }
         if paths.is_empty() {
-            return Check::Leave(NONE_OPEN.to_string());
+            return Check::NoneOpen;
         }
         let commands = paths.iter().map(|path| get(path, EDITOR_OPEN)).collect();
         self.stage = Stage::Open(paths);
@@ -391,18 +444,19 @@ mod tests {
     }
 
     #[test]
-    fn a_moved_editor_found_open_nowhere_leaves_live_alone() {
+    fn a_moved_editor_found_open_nowhere_has_nothing_to_close() {
         let mut check = found_two();
         assert_eq!(
             check.answer(&[ok(json!(false)), ok(json!(false))]),
-            Check::Leave(NONE_OPEN.into())
+            Check::NoneOpen
         );
         // No Pro-Q 4 in the whole set: nothing to read.
         let mut check = walking();
         assert_eq!(
             check.walked(vec![Ok(Vec::new()), Ok(Vec::new())]),
-            Check::Leave(NONE_OPEN.into())
+            Check::NoneOpen
         );
+        assert_eq!(settled(Check::NoneOpen), Check::NoneOpen);
     }
 
     #[test]
@@ -487,24 +541,26 @@ mod tests {
     }
 
     #[test]
-    fn a_ref_turn_off_falls_back_to_the_path_only_when_the_ref_is_gone() {
+    fn a_ref_turn_off_falls_back_to_the_path_only_when_the_script_does_not_know_the_ref() {
         let answer = |slot: Value| ref_off(Ok(&[slot][..]));
         assert_eq!(answer(json!({"ok": true, "data": null})), RefOff::Done);
-        // Gone: the registry does not know it, or its object was deleted or
-        // is another class now.
         let gone =
             |error: &str, kind: &str| json!({"ok": false, "error": error, "errorType": kind});
-        for (error, kind) in [
-            ("unknown id: live_7", "UnknownRef"),
-            ("deleted: live_7", "StaleRef"),
-            (
-                "class changed: live_7 is Track, not PluginDevice",
-                "StaleRef",
-            ),
+        // Unknown: another connection's registry; the held path is checked.
+        let unknown = gone("unknown id: live_7", "UnknownRef");
+        assert_eq!(
+            answer(unknown.clone()),
+            RefOff::Unknown(json!([unknown]).to_string())
+        );
+        // Deleted, or its pointer holds another class now: Live closed the
+        // editor with its device.
+        for error in [
+            "deleted: live_7",
+            "class changed: live_7 is Track, not PluginDevice",
         ] {
-            let slot = gone(error, kind);
+            let slot = gone(error, "StaleRef");
             let text = json!([slot.clone()]).to_string();
-            assert_eq!(answer(slot), RefOff::Gone(text), "{kind}");
+            assert_eq!(answer(slot), RefOff::Deleted(text), "{error}");
         }
         // Any other failure of the set: the ref may still be good.
         let live = gone("live error: busy", "OpError");
@@ -526,7 +582,23 @@ mod tests {
                 RefOff::Failed(why.to_string())
             );
         }
-        assert_eq!(REF_GONE, ["UnknownRef", "StaleRef"]);
+        assert_eq!((UNKNOWN_REF, STALE_REF), ("UnknownRef", "StaleRef"));
+    }
+
+    #[test]
+    fn a_close_tells_an_editor_left_open_from_nothing_open() {
+        assert!(!Shut::Off.left_open());
+        assert!(!Shut::NoneOpen("gone".into()).left_open());
+        assert!(Shut::LeftOpen("busy".into()).left_open());
+        assert_eq!(Shut::Off.note(), None);
+        assert_eq!(
+            Shut::NoneOpen("gone".into()).note(),
+            Some(("none_open", "gone"))
+        );
+        assert_eq!(
+            Shut::LeftOpen("busy".into()).note(),
+            Some(("problem", "busy"))
+        );
     }
 
     #[test]
@@ -543,6 +615,11 @@ mod tests {
         assert_eq!(
             walk_failed("busy"),
             "the editor moved and a track could not be walked (busy): Live is left alone"
+        );
+        assert_eq!(
+            deleted("deleted: live_7"),
+            "the editor's device was deleted (Live closed its editor), nothing to close: \
+             deleted: live_7"
         );
     }
 }

@@ -237,11 +237,11 @@ pub enum RouterMsg {
     EqClose {
         client: ClientId,
     },
-    /// An editor's close sequence ended (`problem`: what went wrong).
+    /// An editor's close sequence ended: what it left in Live.
     EqClosed {
         key: crate::eq::EditorKey,
         session: u32,
-        problem: Option<String>,
+        outcome: crate::eq::close::Shut,
     },
     /// An event of the window worker (#71 PR E).
     EqWorker {
@@ -615,8 +615,8 @@ impl Router {
             RouterMsg::EqClosed {
                 key,
                 session,
-                problem,
-            } => self.eq_closed(&key, session, problem),
+                outcome,
+            } => self.eq_closed(&key, session, outcome),
             RouterMsg::EqWorker { event } => self.eq_worker(event),
             RouterMsg::Stop => return false,
         }

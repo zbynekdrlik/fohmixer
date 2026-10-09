@@ -559,15 +559,12 @@ async fn a_closed_socket_closes_its_editor_through_the_guard() {
     });
     rig.router.handle(RouterMsg::Detach { client: 1 });
     let closed = next_of(&mut rig.rx, |m| matches!(m, RouterMsg::EqClosed { .. })).await;
-    let RouterMsg::EqClosed { ref problem, .. } = closed else {
+    let RouterMsg::EqClosed { ref outcome, .. } = closed else {
         unreachable!()
     };
     // The guard tapped; the offline instance could not be read again, so
-    // Live is left alone.
-    assert_eq!(
-        problem.as_deref(),
-        Some(close::unread("instance offline").as_str())
-    );
+    // Live is left alone (the editor may still be open).
+    assert_eq!(outcome, &Shut::LeftOpen(close::unread("instance offline")));
     rig.router.handle(closed);
     let phases: Vec<(String, i64, i64)> = rig
         .sim
@@ -605,6 +602,46 @@ async fn a_closed_socket_closes_its_editor_through_the_guard() {
 }
 
 #[tokio::test]
+async fn a_closes_holder_hears_left_open_only_while_the_editor_may_be_open_in_live() {
+    // Nothing of the hub's open in Live any more (its device deleted, or no
+    // open Pro-Q 4 found after a move): the holder hears its own close. Its
+    // editor maybe still open: the holder hears so.
+    for (outcome, told, what) in [
+        (Shut::NoneOpen("gone".into()), reason::EXIT, "none_open"),
+        (Shut::LeftOpen("busy".into()), reason::LEFT_OPEN, "problem"),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut rig = rig(dir.path());
+        let outbox = held_open(&mut rig).await;
+        rig.router.handle(RouterMsg::EqClose { client: 1 });
+        let _ = rig.records.try_iter().count();
+        outbox.take();
+        let why = outcome.note().map(|(_, why)| why.to_string());
+        rig.router.handle(RouterMsg::EqClosed {
+            key: key(),
+            session: 1,
+            outcome,
+        });
+        assert_eq!(
+            eq_msgs(&outbox),
+            vec![
+                crate::eq::closed_msg(&key(), told, None),
+                ServerMsg::EqLocks { items: Vec::new() },
+            ],
+            "{what}"
+        );
+        let records: Vec<Value> = rig.records.try_iter().filter(|r| r["ev"] == "eq").collect();
+        let whats: Vec<&str> = records
+            .iter()
+            .map(|r| r["what"].as_str().unwrap_or(""))
+            .collect();
+        assert_eq!(whats, [what, "closed"]);
+        assert_eq!(records[0]["why"].as_str(), why.as_deref());
+        assert_eq!(records[1]["why"], reason::EXIT, "the close's own why");
+    }
+}
+
+#[tokio::test]
 async fn the_close_sequence_leaves_an_editor_open_when_its_guard_fails() {
     let (plugwin, sim) = sim_plugwin();
     let live = offline_live();
@@ -613,7 +650,7 @@ async fn the_close_sequence_leaves_an_editor_open_when_its_guard_fails() {
     plugwin.take(1, Vec::new()).await.unwrap();
     assert_eq!(
         close_editor(None, plugwin.clone(), key(), 1, None, events.clone()).await,
-        Some(UNKNOWN_INSTANCE.to_string())
+        Shut::LeftOpen(UNKNOWN_INSTANCE.to_string())
     );
     // The guard cannot tap: the editor stays open (not even asked). The
     // first editor's window stays (no Live closed it): the take's diff
@@ -631,7 +668,7 @@ async fn the_close_sequence_leaves_an_editor_open_when_its_guard_fails() {
             events.clone()
         )
         .await,
-        Some(format!(
+        Shut::LeftOpen(format!(
             "the guard failed, the editor stays open: {REFUSED}"
         ))
     );
@@ -695,7 +732,7 @@ async fn a_close_whose_ref_gets_no_answer_leaves_live_alone_without_a_path_check
     let reference = Some(json!({"$ref": "live_1", "class": "PluginDevice"}));
     assert_eq!(
         close_editor(Some(offline_live()), plugwin, key(), 1, reference, events).await,
-        Some(
+        Shut::LeftOpen(
             "the editor could not be turned off through its ref, Live is left alone: \
              instance offline"
                 .to_string()
@@ -736,7 +773,7 @@ async fn an_opened_editors_ref_is_kept_for_its_close_only() {
     rig.router.handle(RouterMsg::EqClosed {
         key: key(),
         session: 1,
-        problem: None,
+        outcome: Shut::Off,
     });
     assert!(rig.router.eq.as_ref().unwrap().refs.is_empty());
 }
@@ -859,7 +896,7 @@ async fn a_hub_without_the_screen_says_so() {
     router.handle(RouterMsg::EqClosed {
         key: key(),
         session: 1,
-        problem: None,
+        outcome: Shut::Off,
     });
     router.handle(RouterMsg::EqOpened {
         key: key(),
