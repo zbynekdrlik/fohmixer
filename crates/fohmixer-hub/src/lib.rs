@@ -899,6 +899,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_hub_hears_its_clients_only_for_the_stream_deck_or_the_eq_screen() {
+        for (backend, on) in [
+            (config::EqBackend::Off, false),
+            (config::EqBackend::Sim, true),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut config = Config::defaults(dir.path());
+            config.instances.clear();
+            config.companion = None;
+            config.eq = Some(config::EqCfg {
+                backend: Some(backend),
+            });
+            let hub = Hub::start(config).unwrap();
+            assert_eq!((hub.eq, hub.hears_clients()), (on, on), "{backend:?}");
+            hub.stop();
+        }
+    }
+
+    #[tokio::test]
     async fn the_stop_waits_for_the_companion_task_to_remove_its_device() {
         use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

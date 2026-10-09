@@ -257,6 +257,30 @@ fn a_late_window_is_found_by_a_later_poll() {
 }
 
 #[test]
+fn an_open_late_in_the_workers_life_counts_its_own_poll_and_wait() {
+    // Asked for 10 s into the worker's clock: its polls and its wait count
+    // from there, not from the worker's start.
+    let (mut worker, handle, _) = worker();
+    handle.auto_open(false);
+    let (reply, mut answer) = oneshot::channel();
+    worker.command(
+        Command::Take {
+            session: 1,
+            before: Vec::new(),
+            reply,
+        },
+        10_000.0,
+    );
+    worker.step(10_000.0);
+    assert!(answer.try_recv().is_err(), "its wait has just begun");
+    handle.add_window(0);
+    worker.step(10_049.0);
+    assert!(answer.try_recv().is_err(), "the next poll is not due yet");
+    worker.step(10_050.0);
+    assert_eq!(answer.try_recv().unwrap(), Ok((1349, 809)));
+}
+
+#[test]
 fn a_captured_editor_sends_its_pictures_skipping_a_same_one() {
     let (mut worker, handle, heard) = worker();
     handle.still(true);
