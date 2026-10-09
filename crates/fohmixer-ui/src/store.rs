@@ -20,11 +20,13 @@
 //! connection's decisions (reconnect, hello, the watchdog and its pings, the
 //! layout and instance changes), in `intent` the controls' writes waiting
 //! for their ack (#43), in `deck` the Stream Deck's (#52: the key size, the
-//! presses waiting for their ack). `LiveStore` (`live`) is the browser glue that
-//! carries them out.
+//! presses waiting for their ack), in `eq` the Pro-Q 4 screen's (#71 PR E:
+//! the list, the page's editor, when its screen ends). `LiveStore` (`live`)
+//! is the browser glue that carries them out.
 
 mod conn;
 pub mod deck;
+pub mod eq;
 pub mod intent;
 mod live;
 
@@ -34,7 +36,7 @@ use serde_json::{Value, json};
 
 use crate::binding::SubSpec;
 
-pub use live::LiveStore;
+pub use live::{FrameSink, LiveStore};
 
 /// What the surface knows of one subscription.
 #[derive(Debug, Clone, PartialEq)]

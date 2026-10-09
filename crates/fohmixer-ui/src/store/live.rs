@@ -5,13 +5,15 @@
 //! glue (web_sys, JS closures, Leptos signals and timers), driven by the E2E
 //! suite in Chromium and WebKit. The writes' glue is `live/writes.rs`, the
 //! link's (the dropout watch's tick, the counter, the recorder's uploads)
-//! `live/link.rs`.
+//! `live/link.rs`, the Pro-Q 4 screen's (#71 PR E: its messages and the
+//! binary frames) `live/eq.rs`.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::Duration;
 
 use fohmixer_proto::client::{CLOSE_RELOAD, ClientMsg, DeckKey, LiveCommand, ServerMsg};
+use fohmixer_proto::eq::EqLock;
 use fohmixer_proto::layout::Layout;
 use leptos::prelude::*;
 use serde_json::{Value, json};
@@ -20,6 +22,7 @@ use wasm_bindgen::closure::Closure;
 
 use super::conn::{self, Conn, Tick};
 use super::deck::{DeckInfo, DeckWaiting};
+use super::eq::{EqListView, EqView};
 use super::intent::Intents;
 use super::{InstanceView, ResultFn, Slot, TOKEN_KEY, next_range};
 use crate::behave::link::{Counter, DropoutWatch};
@@ -29,8 +32,11 @@ use crate::dom;
 use crate::net::{self, Decision, LayoutFetch};
 
 mod deck;
+mod eq;
 mod link;
 mod writes;
+
+pub use eq::FrameSink;
 
 /// A parameter's range (`min`, `max`) as Live reports it.
 type Range = ArcRwSignal<Option<(f64, f64)>>;
@@ -80,6 +86,9 @@ struct Inner {
     deck: DeckWaiting<FailFn>,
     /// The Stream Deck tab is open (#52): told again after each hello.
     deck_viewing: bool,
+    /// Where the open Pro-Q 4 editor's frames go (#71 PR E): the screen's
+    /// painter while it is mounted.
+    eq_frames: Option<FrameSink>,
 }
 
 impl Inner {
@@ -97,6 +106,7 @@ impl Inner {
             watch: DropoutWatch::default(),
             deck: DeckWaiting::default(),
             deck_viewing: false,
+            eq_frames: None,
         }
     }
 }
@@ -126,6 +136,12 @@ pub struct LiveStore {
     pub deck: RwSignal<Option<DeckInfo>>,
     /// Its keys as Companion drew them (only while this page views the tab).
     pub deck_keys: RwSignal<BTreeMap<u32, DeckKey>>,
+    /// The latest list of a strip's Pro-Q 4 instances (#71 PR E).
+    pub eq_list: RwSignal<Option<EqListView>>,
+    /// The held Pro-Q 4 editors, as the hub last said.
+    pub eq_locks: RwSignal<Vec<EqLock>>,
+    /// This page's Pro-Q 4 editor.
+    pub eq: RwSignal<Option<EqView>>,
 }
 
 impl LiveStore {
@@ -143,6 +159,9 @@ impl LiveStore {
             dropouts: RwSignal::new(Counter::default()),
             deck: RwSignal::new(None),
             deck_keys: RwSignal::new(BTreeMap::new()),
+            eq_list: RwSignal::new(None),
+            eq_locks: RwSignal::new(Vec::new()),
+            eq: RwSignal::new(None),
         }
     }
 
@@ -270,9 +289,14 @@ impl LiveStore {
                 return;
             }
         };
+        // A Pro-Q 4 editor's frames come as binary messages (#71 PR E): an
+        // ArrayBuffer, whose header the page reads at once.
+        ws.set_binary_type(web_sys::BinaryType::Arraybuffer);
         let on_message = Closure::wrap(Box::new(move |event: web_sys::MessageEvent| {
-            if let Some(text) = event.data().as_string() {
-                self.on_text(&text);
+            let data = event.data();
+            match data.as_string() {
+                Some(text) => self.on_text(&text),
+                None => self.on_binary(&data),
             }
         }) as Box<dyn FnMut(web_sys::MessageEvent)>);
         let on_close = Closure::wrap(Box::new(move |event: web_sys::CloseEvent| {
@@ -402,6 +426,7 @@ impl LiveStore {
             }
         });
         self.deck_closed();
+        self.eq_socket_closed();
         // The controls keep Live's last values, stale, and take touches (L2).
         self.mark_stale();
         for done in pending.into_values() {
@@ -417,7 +442,8 @@ impl LiveStore {
         self.retry();
     }
 
-    fn on_text(self, text: &str) {
+    /// Something came from the hub: the socket and the link live.
+    fn heard(self) {
         let (now, epoch) = (dom::now(), dom::epoch_now());
         let _ = self.inner.try_update_value(|i| {
             i.conn.heard(now);
@@ -425,6 +451,16 @@ impl LiveStore {
         });
         self.collect_dropouts();
         self.show_counter();
+    }
+
+    /// A binary message (a Pro-Q 4 frame, #71 PR E).
+    fn on_binary(self, data: &wasm_bindgen::JsValue) {
+        self.heard();
+        self.on_frame(data);
+    }
+
+    fn on_text(self, text: &str) {
+        self.heard();
         let msg = match serde_json::from_str::<ServerMsg>(text) {
             Ok(msg) => msg,
             Err(e) => {
@@ -522,6 +558,30 @@ impl LiveStore {
             }),
             ServerMsg::DeckKeys { items } => self.on_deck_keys(items),
             ServerMsg::DeckAck { seq, ok, error, .. } => self.on_deck_ack(seq, ok, error),
+            ServerMsg::EqList {
+                binding,
+                items,
+                error,
+            } => self.on_eq_list(binding, items, error),
+            ServerMsg::EqLocks { items } => self.on_eq_locks(items),
+            ServerMsg::Eq {
+                instance,
+                path,
+                state,
+                session,
+                width,
+                height,
+                reason,
+                since,
+            } => self.on_eq(EqView {
+                instance,
+                path,
+                state,
+                session,
+                size: width.zip(height),
+                reason,
+                since,
+            }),
             ServerMsg::Link { .. } => {}
         }
     }
