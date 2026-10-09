@@ -19,7 +19,7 @@ use super::buttons::{MuteView, anchor_name};
 use super::detail::DetailStrip;
 use super::fader::{FaderView, Law, Target};
 use super::meter::{MeterView, StatusView};
-use super::{Settings, owns_touches};
+use super::{Settings, owns_touches, trace_touch};
 use crate::behave::db_text::db_text;
 use crate::behave::fader::{UNITY, VolumeLaw};
 use crate::behave::hold::{HINT_MS, HOLD_MS, Hold, Lift};
@@ -64,8 +64,11 @@ pub fn DbView(state: RwSignal<Slot>) -> impl IntoView {
 /// `HOLD_MS` opens the strip's channel detail (`behave::hold`; the button
 /// fills meanwhile, `data-holding`, a CSS transition), a tap shows the hint
 /// for `HINT_MS` (`data-hint`: the stylesheet's text over the name button,
-/// no layout change). It owns its touches and writes no key; a conflicted
-/// strip's is inert like the rest of it (`states.css`).
+/// no layout change), a finger that slides further than `SLIDE_PX` ends
+/// the press with neither (a fader grab that lands on ☰). It owns its
+/// touches and writes no key; its down, up and cancel go to the flight
+/// recorder; a conflicted strip's is inert like the rest of it
+/// (`states.css`).
 #[component]
 fn StripMenu(strip: Strip) -> impl IntoView {
     let detail = use_context::<DetailStrip>();
@@ -115,12 +118,14 @@ fn StripMenu(strip: Strip) -> impl IntoView {
         ev.prevent_default();
         let id = ev.pointer_id();
         let primary = ev.is_primary();
+        let (x, y) = (f64::from(ev.client_x()), f64::from(ev.client_y()));
         let pressed = hold
-            .try_update_value(|h| h.down(id, primary, dom::now()))
+            .try_update_value(|h| h.down(id, primary, x, y, dom::now()))
             .unwrap_or(false);
         if !pressed {
             return;
         }
+        trace_touch("down", &[], id);
         if let Some(el) = dom::current_element(&ev) {
             let _ = el.set_pointer_capture(id);
         }
@@ -145,11 +150,28 @@ fn StripMenu(strip: Strip) -> impl IntoView {
         let _ = check.try_set_value(timer.ok());
         settle();
     };
+    // A finger that slides off the press ends it (`Hold::moved`): the
+    // recorder hears it as a cancel.
+    let on_move = move |ev: web_sys::PointerEvent| {
+        let id = ev.pointer_id();
+        let (x, y) = (f64::from(ev.client_x()), f64::from(ev.client_y()));
+        let ended = hold
+            .try_update_value(|h| h.moved(id, x, y))
+            .unwrap_or(false);
+        if ended {
+            trace_touch("cancel", &[], id);
+            settle();
+        }
+    };
     let on_up = move |ev: web_sys::PointerEvent| {
         let id = ev.pointer_id();
+        let mine = hold.try_with_value(|h| h.drives(id)).unwrap_or(false);
         let lift = hold
             .try_update_value(|h| h.up(id, dom::now()))
             .unwrap_or(Lift::Nothing);
+        if mine {
+            trace_touch("up", &[], id);
+        }
         settle();
         match lift {
             Lift::Open => open(),
@@ -160,7 +182,11 @@ fn StripMenu(strip: Strip) -> impl IntoView {
     // A cancelled pointer, or one whose capture was lost: no tap.
     let on_cancel = move |ev: web_sys::PointerEvent| {
         let id = ev.pointer_id();
+        let mine = hold.try_with_value(|h| h.drives(id)).unwrap_or(false);
         let _ = hold.try_update_value(|h| h.cancel(id));
+        if mine {
+            trace_touch("cancel", &[], id);
+        }
         settle();
     };
     // It owns its touches (#43 PR G); it writes no key.
@@ -175,6 +201,7 @@ fn StripMenu(strip: Strip) -> impl IntoView {
             data-holding=move || holding.try_get().unwrap_or(false).to_string()
             data-hint=move || hint.try_get().unwrap_or(false).to_string()
             on:pointerdown=on_down
+            on:pointermove=on_move
             on:pointerup=on_up
             on:pointercancel=on_cancel
             on:lostpointercapture=on_cancel

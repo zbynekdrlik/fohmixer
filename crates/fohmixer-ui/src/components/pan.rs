@@ -12,7 +12,8 @@
 //! recorder, and each frame that sends from the finger with the pointer moves
 //! it carried (`diag::trace::moves::Trail`, PR D). It lives in the channel
 //! detail (#71, D17), large; its dot's width is the stylesheet's (`--dot`),
-//! measured at each touch's down, never assumed.
+//! measured at each touch's down with the bar's padding box it travels,
+//! never assumed.
 
 use fohmixer_proto::client::set_key;
 use leptos::html;
@@ -80,10 +81,11 @@ pub fn PanView(state: RwSignal<Slot>, spec: SubSpec) -> impl IntoView {
             return;
         };
         ev.prevent_default();
-        // The dot's travel, in screen px: the width less the dot's own, as
-        // drawn (`--dot` in the stylesheet: the detail's dot is large).
+        // The dot's travel, in screen px: the bar's padding box (the
+        // stylesheet moves the dot across it) less the dot's own width, as
+        // drawn (`--dot`: the detail's dot is large).
         let dot = dom::child(&el, ".pan-dot").map_or(0.0, |d| d.get_bounding_client_rect().width());
-        let travel = (el.get_bounding_client_rect().width() - dot).max(1.0);
+        let travel = (f64::from(el.client_width()) - dot).max(1.0);
         let id = ev.pointer_id();
         let x = f64::from(ev.client_x());
         let taken = ctl

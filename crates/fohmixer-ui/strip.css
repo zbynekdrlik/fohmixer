@@ -1,6 +1,6 @@
-/* fohmixer: a strip and its parts, the pan (the channel detail's since
-   #71), the meter, the fader, the name button and the former MIDI fader
-   (split from style.css, #43; linked after buttons.css). */
+/* fohmixer: a strip and its parts, the meter, the fader, the name button
+   and the former MIDI fader (split from style.css, #43; linked after
+   buttons.css). The pan is the channel detail's (#71, detail.css). */
 
 /* --- strips --- */
 
@@ -10,6 +10,7 @@
    at the foot the iPad's home bar waits for a swipe). The instance tag
    only in a group whose strips differ. */
 .strip {
+    --head-w: calc(var(--strip-w, 76px) - 10px);
     position: relative;
     display: grid;
     grid-template-columns: minmax(0, 1fr);
@@ -28,7 +29,10 @@
     grid-template-rows: auto auto minmax(0, 1fr);
 }
 
+/* `--head-w`: the head's width (the strip's less its padding and border;
+   the hint over the name button, detail.css). */
 .strip.wide {
+    --head-w: calc(var(--strip-w, 76px) * 1.1 - 10px);
     width: calc(var(--strip-w, 76px) * 1.1);
 }
 
@@ -117,49 +121,6 @@
 .strip-tag[data-instance="master"] {
     color: var(--master);
     background: rgba(139, 125, 255, 0.16);
-}
-
-/* The pan bar: a fill from the centre and a dot (`--p`, `--lo`, `--w`).
-   The dot is `--dot` wide (the channel detail's is large, #71): it travels
-   the bar's width less its own, and the pan measures it at each touch. */
-.pan {
-    --dot: 12px;
-    position: relative;
-    height: 16px;
-    border: 1px solid var(--line);
-    border-radius: 8px;
-    background: var(--track);
-    cursor: ew-resize;
-    touch-action: none;
-}
-
-.pan-track {
-    position: absolute;
-    top: 3px;
-    bottom: 3px;
-    left: 50%;
-    width: 1px;
-    background: var(--faint);
-}
-
-.pan-fill {
-    position: absolute;
-    top: 4px;
-    bottom: 4px;
-    left: calc(var(--lo, 0.5) * 100%);
-    width: calc(var(--w, 0) * 100%);
-    border-radius: 3px;
-    background: var(--accent-dim);
-}
-
-.pan-dot {
-    position: absolute;
-    top: 1px;
-    left: calc(var(--p, 0.5) * (100% - var(--dot)));
-    width: var(--dot);
-    height: var(--dot);
-    border-radius: 50%;
-    background: #8a8aa0;
 }
 
 /* The fader zone: the dB scale, the meter, the fader, one height. The
@@ -444,75 +405,6 @@
 .strip-readout .db {
     font-size: clamp(7px, calc((var(--strip-w, 76px) - 18px - var(--menu-w)) / 3.3), 12px);
     line-height: 17px;
-}
-
-/* ☰ (#71, F27): a hold opens the channel detail. The button fills from
-   the bottom while the finger stays (`data-holding`: a transition, never
-   an animation); a tap's hint covers the name button for a moment
-   (`data-hint`: no element, no layout change, no touch). */
-.strip-menu {
-    position: relative;
-    display: grid;
-    place-items: center;
-    width: var(--menu-w);
-    height: 20px;
-    margin: 0;
-    padding: 0;
-    overflow: visible;
-    border: 1px solid var(--line);
-    border-radius: 5px;
-    background: #141420;
-    color: var(--muted);
-    font: 700 12px/1 var(--ui);
-    cursor: pointer;
-    touch-action: none;
-}
-
-.strip-menu::before {
-    content: "";
-    position: absolute;
-    inset: 0;
-    border-radius: 4px;
-    background: var(--accent);
-    opacity: 0.55;
-    transform: scaleY(0);
-    transform-origin: bottom;
-    pointer-events: none;
-}
-
-.strip-menu[data-holding="true"]::before {
-    transform: scaleY(1);
-    transition: transform 500ms linear;
-}
-
-/* Over the fill. */
-.strip-menu-icon {
-    position: relative;
-    pointer-events: none;
-}
-
-/* The hint, "podrž ☰ / na detail", exactly over the name button: right
-   1 px inside ☰'s padding box (the line reaches 2 px past the head),
-   4 px above it (the line's 1 px, ☰'s border, the head's 2 px gap), the
-   head's width and the button's 30 px; the text escaped (ž, ☰). */
-.strip-menu[data-hint="true"]::after {
-    content: "podr\17E  \2630\A na detail";
-    position: absolute;
-    right: 1px;
-    bottom: calc(100% + 4px);
-    z-index: 3;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: calc(var(--strip-w, 76px) - 10px);
-    height: 30px;
-    border-radius: 7px;
-    background: var(--accent);
-    color: #0b0b12;
-    font: 700 11px/1.15 var(--ui);
-    text-align: center;
-    white-space: pre;
-    pointer-events: none;
 }
 
 .strip-ret {

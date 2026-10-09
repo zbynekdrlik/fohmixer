@@ -6,7 +6,8 @@
    fader on the left (the left thumb), the pan with Live's display string
    and STRED on the right (the right thumb), the middle free (PR E puts the
    channel's Pro-Q 4 there). Its parts are the strip's components drawn
-   larger. */
+   larger; the pan, which left the strip, and the ☰ that opens the detail
+   from a strip's readout line have their rules here too. */
 
 .detail {
     --bar-h: 52px;
@@ -32,6 +33,15 @@
     z-index: auto;
 }
 
+/* Right after it opens (`data-guard`, OPEN_GUARD_MS), its parts take no
+   touch (a second tap at ☰'s spot would land on MUTE, the fader's cap's
+   own `auto` included); the detail itself takes them, so nothing passes
+   through to the strips below. */
+.detail[data-guard="true"] :is(.detail-bar, .detail-body),
+.detail[data-guard="true"] :is(.detail-bar, .detail-body) * {
+    pointer-events: none;
+}
+
 /* --- the bar --- */
 
 .detail-bar {
@@ -43,6 +53,11 @@
     padding: 6px 8px;
     border-bottom: 1px solid var(--line);
     background: var(--bar);
+}
+
+/* "← SPÄŤ NA MIX"; "← MIX" on a phone upright (the mockup's). */
+.detail-exit-short {
+    display: none;
 }
 
 .detail-exit {
@@ -232,7 +247,10 @@
     width: 60px;
 }
 
-/* --- the pan, large (`--dot`: its dot's width, which the pan measures) --- */
+/* --- the pan (F11; it left the strip, D17): a bar with a fill from the
+   centre and a dot (`--p`, `--lo`, `--w`, written by its frame loop). The
+   dot is `--dot` wide and travels the bar's padding box less its own; the
+   pan measures both at each touch (never assumed). --- */
 
 .detail-title {
     margin: 0;
@@ -241,28 +259,46 @@
     letter-spacing: 0.12em;
 }
 
-.detail .pan {
+.pan {
     --dot: 48px;
+    position: relative;
     flex: none;
     height: 64px;
+    border: 1px solid var(--line);
     border-radius: 10px;
+    background: var(--track);
+    cursor: ew-resize;
+    touch-action: none;
 }
 
-.detail .pan-dot {
-    top: 7px;
-    border-radius: 10px;
-}
-
-.detail .pan-track {
+.pan-track {
+    position: absolute;
     top: 10px;
     bottom: 10px;
+    left: 50%;
     width: 2px;
     margin-left: -1px;
+    background: var(--faint);
 }
 
-.detail .pan-fill {
+.pan-fill {
+    position: absolute;
     top: 28px;
     bottom: 28px;
+    left: calc(var(--lo, 0.5) * 100%);
+    width: calc(var(--w, 0) * 100%);
+    border-radius: 3px;
+    background: var(--accent-dim);
+}
+
+.pan-dot {
+    position: absolute;
+    top: 7px;
+    left: calc(var(--p, 0.5) * (100% - var(--dot)));
+    width: var(--dot);
+    height: var(--dot);
+    border-radius: 10px;
+    background: #8a8aa0;
 }
 
 /* The ends and Live's display string of the pan. */
@@ -297,6 +333,79 @@
     letter-spacing: 0.08em;
     cursor: pointer;
     touch-action: none;
+}
+
+/* --- the way in: ☰ at the end of a strip's readout line --- */
+
+/* A hold opens the channel detail (F27). The button fills from the bottom
+   while the finger stays (`data-holding`: a transition, never an
+   animation); a tap's hint covers the name button for a moment
+   (`data-hint`: no element, no layout change, no touch). Its width
+   `--menu-w` is the readout line's (strip.css). */
+.strip-menu {
+    position: relative;
+    display: grid;
+    place-items: center;
+    width: var(--menu-w);
+    height: 20px;
+    margin: 0;
+    padding: 0;
+    overflow: visible;
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    background: #141420;
+    color: var(--muted);
+    font: 700 12px/1 var(--ui);
+    cursor: pointer;
+    touch-action: none;
+}
+
+.strip-menu::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: 4px;
+    background: var(--accent);
+    opacity: 0.55;
+    transform: scaleY(0);
+    transform-origin: bottom;
+    pointer-events: none;
+}
+
+.strip-menu[data-holding="true"]::before {
+    transform: scaleY(1);
+    transition: transform 500ms linear;
+}
+
+/* Over the fill. */
+.strip-menu-icon {
+    position: relative;
+    pointer-events: none;
+}
+
+/* The hint, "podrž ☰ / na detail", exactly over the name button: right
+   1 px inside ☰'s padding box (the line reaches 2 px past the head),
+   4 px above it (the line's 1 px, ☰'s border, the head's 2 px gap), the
+   head's width (`--head-w`, a wide strip's too) and the button's 30 px;
+   the text escaped (ž, ☰). */
+.strip-menu[data-hint="true"]::after {
+    content: "podr\17E  \2630\A na detail";
+    position: absolute;
+    right: 1px;
+    bottom: calc(100% + 4px);
+    z-index: 3;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: var(--head-w);
+    height: 30px;
+    border-radius: 7px;
+    background: var(--accent);
+    color: #0b0b12;
+    font: 700 11px/1.15 var(--ui);
+    text-align: center;
+    white-space: pre;
+    pointer-events: none;
 }
 
 /* A phone on its side (#63's low screen): a lower bar, narrower columns. */
@@ -364,5 +473,13 @@
 
     .detail-exit {
         padding: 0 10px;
+    }
+
+    .detail-exit-long {
+        display: none;
+    }
+
+    .detail-exit-short {
+        display: inline;
     }
 }

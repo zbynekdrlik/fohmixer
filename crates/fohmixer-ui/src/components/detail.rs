@@ -9,6 +9,8 @@
 //! subscriptions `binding::detail_subs` (the surface's wanted set has them
 //! through `binding::wanted_subs`), its look `detail.css`.
 
+use std::time::Duration;
+
 use fohmixer_proto::layout::{Strip, StripKind};
 use leptos::prelude::*;
 use serde_json::json;
@@ -20,6 +22,7 @@ use super::pan::PanView;
 use super::strip::{DbView, ScaleView};
 use super::{Settings, fail_flash, key_of, owns_touches, readiness, readiness_now, trace_touch};
 use crate::behave::fader::UNITY;
+use crate::behave::hold::OPEN_GUARD_MS;
 use crate::behave::label::shown_label;
 use crate::binding::{SubSpec, detail_subs};
 use crate::store::{LiveStore, Readiness, Slot};
@@ -121,14 +124,35 @@ pub fn DetailView(strip: Strip, group: Option<String>) -> impl IntoView {
     let kind = format!("{:?}", strip.strip_kind).to_lowercase();
     let law = settings.law;
 
-    // Back to the mix: the detail closes (its exit owns its touches; it
-    // writes no key).
+    // Right after it opens, its parts take no touch for OPEN_GUARD_MS
+    // (`data-guard`, `detail.css`): a second tap at ☰'s spot would land on
+    // its MUTE. The detail itself still takes them, so nothing passes
+    // through to the strips below. The timer goes with the detail.
+    let guard = RwSignal::new(true);
+    let guard_off = StoredValue::new(None::<TimeoutHandle>);
+    let timer = set_timeout_with_handle(
+        move || {
+            let _ = guard_off.try_set_value(None);
+            let _ = guard.try_set(false);
+        },
+        Duration::from_millis(OPEN_GUARD_MS as u64),
+    );
+    let _ = guard_off.try_set_value(timer.ok());
+    on_cleanup(move || {
+        if let Some(Some(handle)) = guard_off.try_update_value(Option::take) {
+            handle.clear();
+        }
+    });
+    // Back to the mix: the detail closes (its exit owns its touches, writes
+    // no key, and its tap goes to the flight recorder).
     let close = move |ev: web_sys::PointerEvent| {
         ev.prevent_default();
+        trace_touch("tap", &[], ev.pointer_id());
         if let Some(DetailStrip(open)) = shown {
             let _ = open.try_set(None);
         }
     };
+    // Its two labels: a phone upright shows the short one (`detail.css`).
     let exit_keys: Vec<String> = Vec::new();
     // The name chip in the track's colour, as the strip's name button.
     let chip = move || colour_style(color.and_then(|c| c.try_with(Slot::number).flatten()));
@@ -180,6 +204,7 @@ pub fn DetailView(strip: Strip, group: Option<String>) -> impl IntoView {
             data-label=label_attr
             data-instance=instance
             data-kind=kind
+            data-guard=move || guard.try_get().unwrap_or(false).to_string()
         >
             <div class="detail-bar">
                 <button
@@ -189,7 +214,8 @@ pub fn DetailView(strip: Strip, group: Option<String>) -> impl IntoView {
                     data-testid="detail-exit"
                     on:pointerdown=close
                 >
-                    "← SPÄŤ NA MIX"
+                    <span class="detail-exit-long">"← SPÄŤ NA MIX"</span>
+                    <span class="detail-exit-short">"← MIX"</span>
                 </button>
                 <div class="detail-name">
                     <span class="detail-chip" data-testid="detail-name" style=chip>

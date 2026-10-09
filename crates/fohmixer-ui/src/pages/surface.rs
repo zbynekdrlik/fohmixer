@@ -24,8 +24,8 @@ use crate::app::version_text;
 use crate::arrange::{Arrangement, Cell, Item, LineKey, METRICS, PageModel, Side, arrange, items};
 use crate::behave::solo::soloed;
 use crate::binding::{
-    SubSpec, choose, detail_strip, group_title, page_solos, selected_path, solo_sub, stored_pages,
-    view_tap, wanted_subs,
+    SubSpec, choose, detail_strip, detail_update, group_title, page_solos, selected_path, solo_sub,
+    stored_pages, view_tap, wanted_subs,
 };
 use crate::components::detail::{DetailStrip, DetailView};
 use crate::components::{ControlView, Settings, fail_flash, key_of, owns_surface, owns_touches};
@@ -242,11 +242,14 @@ fn Shell(layout: Arc<Layout>) -> impl IntoView {
         sub,
     });
     let viewport = nav.viewport;
-    // The channel detail (#71): the layout's strip with the held one's
-    // binding (`binding::detail_strip`: its label, guard and mark this
-    // layout's), over the page. A new layout mounts it again with the
-    // shell, as it does the page; one without that strip (or with it only
-    // in conflict) closes it.
+    // The channel detail (#71): the layout's strip that is the held one
+    // (`binding::detail_strip`: a marker strip follows its marker to any
+    // index; its binding, label, guard and mark this layout's), over the
+    // page. A new layout mounts it again with the shell, as it does the
+    // page. The held strip follows what the layout makes of it
+    // (`binding::detail_update`, written only on a difference), so the
+    // wanted set subscribes the keys the detail reads; a layout without
+    // that strip (or with it only in conflict) closes it.
     let held = nav.detail;
     let current = {
         let layout = layout.clone();
@@ -256,13 +259,17 @@ fn Shell(layout: Arc<Layout>) -> impl IntoView {
                 .and_then(|strip| detail_strip(&layout, &strip))
         })
     };
-    Effect::new(move |_| {
-        let open = held.try_with(Option::is_some).unwrap_or(false);
-        let found = current.try_with(Option::is_some).unwrap_or(false);
-        if open && !found {
-            let _ = held.try_set(None);
-        }
-    });
+    {
+        let layout = layout.clone();
+        Effect::new(move |_| {
+            let change = held
+                .try_with(|strip| detail_update(&layout, strip.as_ref()))
+                .flatten();
+            if let Some(next) = change {
+                let _ = held.try_set(next);
+            }
+        });
+    }
     let titles = layout.clone();
     let detail = move || {
         current.try_get().flatten().map(|strip| {

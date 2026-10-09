@@ -6,7 +6,6 @@ import {
   LiveClient,
   centre,
   clipped,
-  dispatchPointer,
   frames,
   harness,
   openDetail,
@@ -63,6 +62,29 @@ async function textsFit(detail: Locator) {
   }
 }
 
+/** ☰'s state as the page draws it: its fill, its hint and the hint's text. */
+type MenuState = { holding: string | null; hint: string | null; after: string };
+
+/**
+ * Dispatches one event of a finger (`pointerId` 21, as `dispatchPointer`) on
+ * ☰ and reads ☰'s state a macrotask later (the page draws in a microtask),
+ * inside the same evaluate: no round trip a slow runner could stretch past
+ * a short state.
+ */
+async function fireAndRead(menu: Locator, type: "pointerdown" | "pointerup"): Promise<MenuState> {
+  const { x, y } = await centre(menu);
+  return menu.evaluate(
+    async (el, { kind, clientX, clientY }) => {
+      el.dispatchEvent(
+        new PointerEvent(kind, { pointerId: 21, pointerType: "touch", isPrimary: true, clientX, clientY, bubbles: true, cancelable: true }),
+      );
+      await new Promise((done) => setTimeout(done, 0));
+      return { holding: el.getAttribute("data-holding"), hint: el.getAttribute("data-hint"), after: getComputedStyle(el, "::after").content };
+    },
+    { kind: type, clientX: x, clientY: y },
+  );
+}
+
 test.describe("The channel detail", () => {
   test("a short touch on ☰ shows the hint and opens nothing; strips show no pan", async ({ page }) => {
     await openSurface(page);
@@ -81,12 +103,33 @@ test.describe("The channel detail", () => {
     // No strip draws a pan any more (D17: it is the detail's).
     await expect(page.getByTestId("strip").first()).toBeVisible();
     await expect(page.getByTestId("pan")).toHaveCount(0);
-    // A short touch: the hint (the stylesheet's text over the name button).
-    await dispatchPointer(menu, [{ type: "pointerdown" }, { wait: 100 }, { type: "pointerup" }]);
-    await expect(menu).toHaveAttribute("data-hint", "true");
-    await expect(menu).toHaveAttribute("data-holding", "false");
-    const hint = await menu.evaluate((el) => getComputedStyle(el, "::after").content);
-    expect(hint).toContain("na detail");
+    // A short touch (100 ms, timed in the page): the button fills while it
+    // lasts, then the hint (the stylesheet's text over the name button),
+    // each read in the page a macrotask after its event.
+    const { x, y } = await centre(menu);
+    const reads = await menu.evaluate(
+      async (el, { clientX, clientY }) => {
+        const fire = (type: string) =>
+          el.dispatchEvent(
+            new PointerEvent(type, { pointerId: 21, pointerType: "touch", isPrimary: true, clientX, clientY, bubbles: true, cancelable: true }),
+          );
+        const read = () => ({ holding: el.getAttribute("data-holding"), hint: el.getAttribute("data-hint"), after: getComputedStyle(el, "::after").content });
+        const after = (ms: number) => new Promise((done) => setTimeout(done, ms));
+        fire("pointerdown");
+        await after(0);
+        const down = read();
+        await after(100);
+        fire("pointerup");
+        await after(0);
+        return { down, up: read() };
+      },
+      { clientX: x, clientY: y },
+    );
+    expect(reads.down.holding, "filling while pressed").toBe("true");
+    expect(reads.down.hint).toBe("false");
+    expect(reads.up.holding).toBe("false");
+    expect(reads.up.hint, "the hint after the tap").toBe("true");
+    expect(reads.up.after).toContain("na detail");
     // Nothing opens, not after the hold's time either, and the hint goes.
     await page.waitForTimeout(700);
     await expect(page.getByTestId("detail")).toHaveCount(0);
@@ -102,14 +145,14 @@ test.describe("The channel detail", () => {
     const surface = page.getByTestId("surface");
     const subs = Number(await surface.getAttribute("data-subs"));
     // A finger down: the button fills; past 500 ms the detail opens while
-    // the finger still holds.
-    await dispatchPointer(menu, [{ type: "pointerdown" }]);
-    await expect(menu).toHaveAttribute("data-holding", "true");
+    // the finger still holds, and its lift is no tap.
+    expect((await fireAndRead(menu, "pointerdown")).holding, "filling while pressed").toBe("true");
     const detail = page.getByTestId("detail");
     await expect(detail).toBeVisible({ timeout: 2000 });
     await expect(menu).toHaveAttribute("data-holding", "false");
-    await dispatchPointer(menu, [{ type: "pointerup" }]);
-    await expect(menu).toHaveAttribute("data-hint", "false");
+    const lifted = await fireAndRead(menu, "pointerup");
+    expect(lifted.hint, "no hint after a hold").toBe("false");
+    expect(lifted.holding).toBe("false");
     await expect(detail).toHaveAttribute("data-track", "Hand2 #");
     await expect(detail).toHaveAttribute("data-instance", "master");
     await expect(surface).toHaveAttribute("data-subs", String(subs + 1));
@@ -194,9 +237,10 @@ test.describe("The channel detail", () => {
       await until(() => shown(pan), (v) => Math.abs(v) < 1e-3, "the pan centred");
       await expect(display).toHaveText("C");
       // A drag right: the first move anchors, the next four move 48 px over
-      // the dot's travel, the pan's width less its 48 px dot (measured, not
-      // the strip's 12 px).
-      const width = (await pan.boundingBox())!.width;
+      // the dot's travel, the bar's padding box (`clientWidth`, which the
+      // stylesheet moves the dot across) less its 48 px dot (measured, not
+      // the strip's old 12 px).
+      const width = await pan.evaluate((el) => el.clientWidth);
       const dot = (await pan.locator(".pan-dot").boundingBox())!.width;
       expect(dot, "the detail's dot").toBe(48);
       const { x, y } = await centre(pan);
@@ -305,6 +349,138 @@ test.describe("The channel detail", () => {
   });
 });
 
+test.describe("The channel detail with real input", () => {
+  /** In the page: what happened since, recorded as it happened (no polling window). */
+  type Seen = {
+    /** ☰ filled, showed its hint, a detail appeared. */
+    holding: boolean;
+    hint: boolean;
+    detail: boolean;
+    /** At the detail's insertion: its guard, and whether a touch at its MUTE's centre would reach the MUTE. */
+    atOpen: { guard: string | null; hitsMute: boolean } | null;
+    /** Every pointerdown (capture phase): trusted, the detail's guard then, landed on the detail / on its MUTE. */
+    downs: { trusted: boolean; guard: string | null; onDetail: boolean; onMute: boolean }[];
+  };
+
+  /** Starts recording ☰'s states, the detail's insertion and every pointerdown. */
+  async function record(menu: Locator) {
+    await menu.evaluate((el) => {
+      const seen: Seen = { holding: false, hint: false, detail: false, atOpen: null, downs: [] };
+      (window as any).e2eSeen = seen;
+      const stage = document.querySelector('[data-testid="stage"]')!;
+      const look = () => {
+        if (el.getAttribute("data-holding") === "true") seen.holding = true;
+        if (el.getAttribute("data-hint") === "true") seen.hint = true;
+        const detail = stage.querySelector(':scope > [data-testid="detail"]');
+        if (!detail) return;
+        seen.detail = true;
+        if (seen.atOpen) return;
+        const mute = detail.querySelector('[data-testid="mute"]')!.getBoundingClientRect();
+        const hit = document.elementFromPoint(mute.left + mute.width / 2, mute.top + mute.height / 2);
+        seen.atOpen = { guard: detail.getAttribute("data-guard"), hitsMute: !!hit?.closest('[data-testid="mute"]') };
+      };
+      const watch = new MutationObserver(look);
+      watch.observe(el, { attributes: true });
+      watch.observe(stage, { childList: true });
+      window.addEventListener(
+        "pointerdown",
+        (e) => {
+          const target = e.target as Element;
+          const detail = document.querySelector('[data-testid="detail"]');
+          seen.downs.push({
+            trusted: e.isTrusted,
+            guard: detail ? detail.getAttribute("data-guard") : null,
+            onDetail: !!target.closest('[data-testid="detail"]'),
+            onMute: !!target.closest('[data-testid="detail"] [data-testid="mute"]'),
+          });
+        },
+        true,
+      );
+    });
+  }
+
+  const seen = (page: Page): Promise<Seen> => page.evaluate(() => (window as any).e2eSeen);
+
+  test("a drag off ☰ opens nothing; a hold opens the detail, whose MUTE takes no click inside its guard and one after it", async ({ page }) => {
+    await live.set("band", HAND2, "mute", false);
+    try {
+      await openSurface(page);
+      const s = strip(page, "Hand2 #");
+      await ready(s.getByTestId("fader"));
+      const menu = s.getByTestId("strip-menu");
+      const at = await centre(menu);
+      const detail = page.getByTestId("detail");
+
+      // A drag that starts on ☰ and slides 30 px (a fader grab that lands on
+      // it): the press ends, held past the hold nothing opens, no hint.
+      await record(menu);
+      await page.mouse.move(at.x, at.y);
+      await page.mouse.down();
+      await page.mouse.move(at.x, at.y + 30);
+      await page.waitForTimeout(700);
+      await page.mouse.up();
+      await page.waitForTimeout(100);
+      const slid = await seen(page);
+      expect(slid.holding, "the press started on ☰").toBe(true);
+      expect(slid.detail, "no detail after a slide").toBe(false);
+      expect(slid.hint, "no hint after a slide").toBe(false);
+      await expect(detail).toHaveCount(0);
+      await expect(menu).toHaveAttribute("data-holding", "false");
+
+      // A real hold: the detail opens while the button is held. At its
+      // insertion its MUTE is guarded (a touch there reaches the detail).
+      // A click on the MUTE at once lands inside the 400 ms guard (tried
+      // again from a fresh hold if a slow runner was later): the detail
+      // takes it, Live's mute stays.
+      let guarded: Seen["downs"][number] | undefined;
+      for (let attempt = 0; attempt < 3 && !guarded; attempt++) {
+        await record(menu);
+        await page.mouse.move(at.x, at.y);
+        await page.mouse.down();
+        const m = await page.waitForFunction(() => {
+          const mute = document.querySelector('[data-testid="detail"] [data-testid="mute"]');
+          if (!mute) return null;
+          const r = mute.getBoundingClientRect();
+          return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+        });
+        const { x, y } = (await m.jsonValue())!;
+        await page.mouse.up();
+        await page.mouse.click(x, y);
+        const after = await seen(page);
+        expect(after.atOpen, "the guard at the detail's insertion").toEqual({ guard: "true", hitsMute: false });
+        const click = after.downs[after.downs.length - 1];
+        expect(click.trusted, "real input").toBe(true);
+        if (click.guard === "true") {
+          guarded = click;
+          break;
+        }
+        // Later than the guard: put the mute back and start over.
+        await expect(detail).toHaveAttribute("data-guard", "false");
+        await live.set("band", HAND2, "mute", false);
+        await detail.getByTestId("detail-exit").click();
+        await expect(detail).toHaveCount(0);
+      }
+      expect(guarded, "a click inside the guard").toBeTruthy();
+      expect(guarded!.onDetail && !guarded!.onMute, "the detail took it, not its MUTE").toBe(true);
+      await expect(detail).toHaveAttribute("data-guard", "false");
+      await page.waitForTimeout(300);
+      expect(await live.get("band", HAND2, "mute"), "the guarded click changed nothing").toBe(false);
+      const mute = detail.getByTestId("mute");
+      await expect(mute).toHaveAttribute("data-muted", "false");
+
+      // After the guard the MUTE takes a click, and another puts it back.
+      const m = await centre(mute);
+      await page.mouse.click(m.x, m.y);
+      await until(() => live.get("band", HAND2, "mute"), (v) => v === true, "muted by a real click");
+      await expect(mute).toHaveAttribute("data-muted", "true");
+      await page.mouse.click(m.x, m.y);
+      await until(() => live.get("band", HAND2, "mute"), (v) => v === false, "audible again");
+    } finally {
+      await live.set("band", HAND2, "mute", false);
+    }
+  });
+});
+
 test.describe("The channel detail on a phone", () => {
   /** The detail at `width` x `height`: on the screen, no horizontal scroll, every text whole. */
   async function fits(page: Page, detail: Locator, width: number, height: number) {
@@ -329,6 +505,9 @@ test.describe("The channel detail on a phone", () => {
     const detail = await openDetail(page, "Hand2 #");
     await ready(detail.getByTestId("pan"));
     await fits(page, detail, 390, 844);
+    // Upright, the exit says "← MIX" (the mockup's); both labels stay in it.
+    await expect(detail.locator(".detail-exit-short")).toBeVisible();
+    await expect(detail.locator(".detail-exit-long")).toBeHidden();
     const left = (await detail.getByTestId("detail-left").boundingBox())!;
     const right = (await detail.getByTestId("detail-right").boundingBox())!;
     expect(right.x, "the pan's box right of the fader's").toBeGreaterThanOrEqual(left.x + left.width);
@@ -336,6 +515,8 @@ test.describe("The channel detail on a phone", () => {
     expect(right.height, "the pan's box shorter than the fader's").toBeLessThan(left.height / 2);
     expect((await detail.getByTestId("fader").boundingBox())!.height, "the fader's travel (px)").toBeGreaterThan(400);
     await fits(page, detail, 844, 390);
+    await expect(detail.locator(".detail-exit-long")).toBeVisible();
+    await expect(detail.locator(".detail-exit-short")).toBeHidden();
     const middle = (await detail.getByTestId("detail-middle").boundingBox())!;
     const side = (await detail.getByTestId("detail-right").boundingBox())!;
     expect(side.x, "the pan on the right").toBeGreaterThanOrEqual(middle.x + middle.width);

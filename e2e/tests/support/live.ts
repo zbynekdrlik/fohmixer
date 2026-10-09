@@ -327,7 +327,9 @@ export async function selectPage(page: Page, id: string) {
 /**
  * Opens the channel detail of `name`'s strip (#71, F27): a hold on its ☰,
  * a touch held 600 ms (the hold is 500 ms) dispatched in the page as
- * `dispatchPointer` times it; the detail, once it shows that strip.
+ * `dispatchPointer` times it; the detail, once it shows that strip and its
+ * opening guard is over (`data-guard`: for 400 ms its parts take no touch,
+ * so a real mouse or finger on them would reach nothing).
  */
 export async function openDetail(page: Page, name: string, instance = "band"): Promise<Locator> {
   const menu = strip(page, name, instance).getByTestId("strip-menu");
@@ -336,6 +338,7 @@ export async function openDetail(page: Page, name: string, instance = "band"): P
   const detail = page.getByTestId("detail");
   await expect(detail).toHaveAttribute("data-track", name);
   await expect(detail).toHaveAttribute("data-instance", instance);
+  await expect(detail).toHaveAttribute("data-guard", "false");
   return detail;
 }
 

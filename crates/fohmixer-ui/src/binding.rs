@@ -7,6 +7,7 @@
 //! listeners.
 
 use std::collections::BTreeMap;
+use std::mem::discriminant;
 
 use fohmixer_proto::client::hub_key;
 use fohmixer_proto::layout::{
@@ -131,22 +132,52 @@ pub fn detail_subs(strip: &Strip, source: MeterSource) -> StripSubs {
     subs
 }
 
+/// Whether a layout's `strip` is the strip an open detail holds (`held`,
+/// #71). A marker strip (one with a label, #68: bound by the index of the
+/// track its marker sits on) is its marker: the same instance, the same
+/// kind of anchor (a track or a return) and the same label, wherever the
+/// track order put it, never another marker at its old index. Any other
+/// strip is its binding.
+fn same_strip(strip: &Strip, held: &Strip) -> bool {
+    match &held.label {
+        Some(label) => {
+            strip.label.as_ref() == Some(label)
+                && strip.binding.instance == held.binding.instance
+                && discriminant(&strip.binding.anchor) == discriminant(&held.binding.anchor)
+        }
+        None => strip.binding == held.binding,
+    }
+}
+
 /// The strip an open detail shows in `layout` (#71): the layout's strip
-/// bound as the one held (`held`), with its label, guard and mark as the
-/// layout has them now; none when the layout has no such strip, or only in
-/// conflict (#68: a conflict disables the strip, so its detail closes).
+/// that is the held one (`same_strip`: a marker strip follows its marker),
+/// with its binding, label, guard and mark as the layout has them now; none
+/// when the layout has no such strip, or only in conflict (#68: a conflict
+/// disables the strip, so its detail closes).
 pub fn detail_strip(layout: &Layout, held: &Strip) -> Option<Strip> {
     layout
         .controls()
         .into_iter()
         .find_map(|control| match control {
             Control::Strip(strip)
-                if strip.binding == held.binding && strip.mark != Some(StripMark::Conflict) =>
+                if same_strip(strip, held) && strip.mark != Some(StripMark::Conflict) =>
             {
                 Some((**strip).clone())
             }
             _ => None,
         })
+}
+
+/// What an open detail's held strip becomes in `layout` (#71): `None` while
+/// it stays as it is; else `Some` of the layout's strip it resolves to
+/// ([`detail_strip`]: a marker strip moved to another index, its label,
+/// guard or mark changed), or `Some(None)` when the layout has no such
+/// strip (the detail closes). The surface writes it back, so its wanted set
+/// subscribes the keys the detail's slots read.
+pub fn detail_update(layout: &Layout, held: Option<&Strip>) -> Option<Option<Strip>> {
+    let held = held?;
+    let found = detail_strip(layout, held);
+    (found.as_ref() != Some(held)).then_some(found)
 }
 
 /// The title of a group that holds a strip bound as `binding` (the
