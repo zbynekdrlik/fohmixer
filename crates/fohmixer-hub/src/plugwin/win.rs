@@ -20,7 +20,8 @@
 //!   `UP`, a cancel `UP|CANCELED`. A down or an update first checks the
 //!   point's root window (`WindowFromPoint` → `GetAncestor(GA_ROOT)`) is the
 //!   editor and its process the editor's. The cursor saved at the down is
-//!   put back (`SetCursorPos`) when the contact ends. A call too soon after
+//!   put back (`SetCursorPos`) when the contact ends and when a phase fails,
+//!   the window gone included. A call too soon after
 //!   the last one (`ERROR_NOT_READY`) is tried again after 1 ms, twice.
 //! - **Release:** the z-order as it was (`HWND_NOTOPMOST`, or topmost again
 //!   when it was).
@@ -221,6 +222,27 @@ impl Win {
     pub fn new() -> Self {
         Self::default()
     }
+
+    /// One phase at picture point `at`: a down or an update only on the
+    /// editor's own window; a down saves the cursor first.
+    fn inject_at(&mut self, taken: &Taken, phase: Phase, at: (i32, i32)) -> Result<(), String> {
+        let point = to_screen(hwnd(taken.picture), at)?;
+        if phase.checked() {
+            // SAFETY: plain queries of the window at a point.
+            let root = unsafe { GetAncestor(WindowFromPoint(point), GA_ROOT) };
+            if root != hwnd(taken.window) || pid_of(root) != taken.pid {
+                return Err("the point is not the editor's window".to_string());
+            }
+        }
+        if phase == Phase::Down {
+            let mut saved = POINT::default();
+            // SAFETY: `saved` outlives the call.
+            if unsafe { GetCursorPos(&mut saved) }.is_ok() {
+                self.cursor = Some(saved);
+            }
+        }
+        inject(&contact(phase, point))
+    }
 }
 
 impl Backend for Win {
@@ -351,23 +373,11 @@ impl Backend for Win {
     }
 
     fn touch(&mut self, taken: &Taken, phase: Phase, at: (i32, i32)) -> Result<(), String> {
-        let point = to_screen(hwnd(taken.picture), at)?;
-        if phase.checked() {
-            // SAFETY: plain queries of the window at a point.
-            let root = unsafe { GetAncestor(WindowFromPoint(point), GA_ROOT) };
-            if root != hwnd(taken.window) || pid_of(root) != taken.pid {
-                return Err("the point is not the editor's window".to_string());
-            }
-        }
-        if phase == Phase::Down {
-            let mut saved = POINT::default();
-            // SAFETY: `saved` outlives the call.
-            if unsafe { GetCursorPos(&mut saved) }.is_ok() {
-                self.cursor = Some(saved);
-            }
-        }
-        let injected = inject(&contact(phase, point));
-        if phase.ends()
+        let injected = self.inject_at(taken, phase, at);
+        // An end puts the cursor back even when it failed (the window gone);
+        // a failed down or update too: the cursor never stays where a
+        // contact left it.
+        if (phase.ends() || injected.is_err())
             && let Some(saved) = self.cursor.take()
         {
             // SAFETY: moves the cursor back where it was.

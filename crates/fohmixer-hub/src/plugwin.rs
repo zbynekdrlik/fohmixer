@@ -487,9 +487,13 @@ impl Worker {
             return;
         };
         if !self.backend.alive(&editor.taken) {
+            let gone = editor.taken.clone();
             self.editors.remove(&session);
-            if self.contact.is_some_and(|(s, _)| s == session) {
+            if let Some((_, last)) = self.contact.filter(|(s, _)| *s == session) {
                 self.contact = None;
+                // The window is gone, so nothing lands: the cancel ends the
+                // backend's contact (the Windows one puts the cursor back).
+                let _ = self.backend.touch(&gone, Phase::Cancel, last);
             }
             (self.events)(PlugwinEvent::Lost { session });
             return;
