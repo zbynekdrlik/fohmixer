@@ -904,7 +904,11 @@ async fn the_worker_thread_serves_its_handle_and_ends_at_the_stop() {
     plugwin.capture(1, sink);
     until("a frame", || !frames.lock().unwrap().is_empty()).await;
     plugwin.touch(1, 1, Phase::Down, (8, 9));
-    until("the touch", || touches(&handle) == vec![t("down", 8, 9)]).await;
+    // The down (a keep-alive may follow it 50 ms later).
+    until("the touch", || {
+        touches(&handle).first() == Some(&t("down", 8, 9))
+    })
+    .await;
     let guarded = tokio::time::timeout(bounded, plugwin.guard(1))
         .await
         .unwrap();

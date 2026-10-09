@@ -532,6 +532,8 @@ async fn a_closed_socket_closes_its_editor_through_the_guard() {
         .records()
         .iter()
         .filter(|r| r["op"] == "touch")
+        // The window worker's keep-alive re-sends the resting point (50 ms).
+        .filter(|r| r["phase"] != "update")
         .map(|r| {
             (
                 r["phase"].as_str().unwrap().to_string(),
