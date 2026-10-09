@@ -61,7 +61,7 @@ pub mod sim;
 #[cfg(windows)]
 pub mod win;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
@@ -436,11 +436,13 @@ struct Encoded {
 
 /// What the worker and its encoder share: the one picture waiting (a newer
 /// one replaces it: the newest wins), what the encoder made since the
-/// worker last looked, and the stop.
+/// worker last looked, the sessions whose frames may still go, and the
+/// stop.
 #[derive(Default)]
 struct Handoff {
     waiting: Option<Job>,
     done: Vec<Encoded>,
+    captured: BTreeSet<u32>,
     stopped: bool,
 }
 
@@ -475,24 +477,38 @@ impl Shared {
 }
 
 /// The encoder thread: each picture handed to it as a JPEG to its sink,
-/// until the stop. What it made is reported before the sink gets it, so the
-/// worker's counts hold every frame a sink got.
+/// until the stop.
 fn encode_frames(shared: &Shared) {
     while let Some(job) = shared.wait_job() {
-        let started = Instant::now();
-        let jpeg = encode(&job.pixels, QUALITY);
-        let ms = millis(started.elapsed());
-        if let Err(why) = &jpeg {
-            tracing::warn!(session = job.session, why = %why, "a plug-in editor's picture could not be encoded");
-        }
-        shared.lock().done.push(Encoded {
-            session: job.session,
-            ms,
-            bytes: jpeg.as_ref().ok().map(Vec::len),
-        });
-        if let Ok(jpeg) = jpeg {
-            (job.sink)(job.session, Bytes::from(jpeg));
-        }
+        deliver(shared, job);
+    }
+}
+
+/// One picture as a JPEG to its sink, while its session is still captured:
+/// one the guard, a release or a lost window forgot while it was encoded
+/// gets no frame, and nothing is counted. What it made is reported before
+/// the sink gets it, so the worker's counts hold every frame a sink got.
+/// The check, the report and the sink run under the hand-off's lock, so a
+/// forget never lands between the check and the frame (the sink only
+/// writes an outbox slot and the card's picture).
+fn deliver(shared: &Shared, job: Job) {
+    let started = Instant::now();
+    let jpeg = encode(&job.pixels, QUALITY);
+    let ms = millis(started.elapsed());
+    if let Err(why) = &jpeg {
+        tracing::warn!(session = job.session, why = %why, "a plug-in editor's picture could not be encoded");
+    }
+    let mut handoff = shared.lock();
+    if !handoff.captured.contains(&job.session) {
+        return;
+    }
+    handoff.done.push(Encoded {
+        session: job.session,
+        ms,
+        bytes: jpeg.as_ref().ok().map(Vec::len),
+    });
+    if let Ok(jpeg) = jpeg {
+        (job.sink)(job.session, Bytes::from(jpeg));
     }
 }
 
@@ -516,6 +532,11 @@ impl Encoder {
         })
     }
 
+    /// `session`'s frames may go to its sink from now on.
+    fn capture(&self, session: u32) {
+        self.shared.lock().captured.insert(session);
+    }
+
     /// `pixels` of `session` to encode for `sink`: it replaces a picture
     /// still waiting (the newest wins).
     fn put(&self, session: u32, pixels: Arc<Pixels>, sink: FrameSink) {
@@ -527,9 +548,11 @@ impl Encoder {
         self.shared.ready.notify_one();
     }
 
-    /// A picture of `session` still waiting is dropped (its frames stop).
+    /// `session`'s frames stop: a picture of it still waiting is dropped,
+    /// and one being encoded never reaches its sink.
     fn forget(&self, session: u32) {
         let mut handoff = self.shared.lock();
+        handoff.captured.remove(&session);
         if handoff
             .waiting
             .as_ref()
@@ -677,6 +700,7 @@ impl Worker {
             Command::Capture { session, sink } => {
                 if let Some(editor) = self.editors.get_mut(&session) {
                     editor.sink = Some(sink);
+                    self.encoder.capture(session);
                 }
             }
             Command::Touch {

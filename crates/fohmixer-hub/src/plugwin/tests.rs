@@ -292,6 +292,7 @@ fn the_encoder_waits_while_no_picture_waits_and_until_the_stop() {
     let none = |waiting: bool, stopped: bool| Handoff {
         waiting: waiting.then(|| job(1, 16, sink().0)),
         done: Vec::new(),
+        captured: BTreeSet::new(),
         stopped,
     };
     assert!(idle(&mut none(false, false)));
@@ -346,6 +347,8 @@ fn the_newest_picture_wins_and_a_forgotten_one_is_dropped() {
 fn the_encoders_thread_sends_each_jpeg_to_its_sink_and_ends_at_the_stop() {
     let mut encoder = Encoder::spawn().unwrap();
     let (sink, frames) = sink();
+    encoder.capture(5);
+    encoder.capture(6);
     encoder.put(5, job(5, 16, sink.clone()).pixels, sink.clone());
     wait_for("a frame", || frames.lock().unwrap().len() == 1);
     let got = frames.lock().unwrap().clone();
@@ -372,6 +375,31 @@ fn the_encoders_thread_sends_each_jpeg_to_its_sink_and_ends_at_the_stop() {
     assert_eq!(frames.lock().unwrap().len(), 1);
     encoder.stop();
     assert!(encoder.thread.is_none(), "joined");
+}
+
+#[test]
+fn a_frame_encoded_while_its_session_was_forgotten_never_reaches_its_sink() {
+    // The guard, a release or a lost window ran while the encoder made the
+    // frame (it had taken the picture already): no frame, nothing counted.
+    let encoder = Encoder {
+        shared: Arc::new(Shared::default()),
+        thread: None,
+    };
+    let (sink, frames) = sink();
+    encoder.capture(3);
+    encoder.put(3, job(3, 16, sink.clone()).pixels, sink.clone());
+    let taken = encoder.shared.wait_job().expect("a picture waits");
+    encoder.forget(3);
+    deliver(&encoder.shared, taken);
+    assert!(frames.lock().unwrap().is_empty());
+    assert_eq!(encoder.done(), Vec::new());
+    // A session still captured gets its frame, reported first.
+    encoder.capture(4);
+    encoder.put(4, job(4, 16, sink.clone()).pixels, sink);
+    let taken = encoder.shared.wait_job().expect("a picture waits");
+    deliver(&encoder.shared, taken);
+    assert_eq!(frames.lock().unwrap().len(), 1);
+    assert_eq!(encoder.done().len(), 1);
 }
 
 #[test]
