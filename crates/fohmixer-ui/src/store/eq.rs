@@ -58,6 +58,31 @@ impl EqView {
     }
 }
 
+/// The page's editor right after it asked to open `path` on `instance`
+/// (`sent`: the socket took the ask).
+pub fn asked(instance: &str, path: &str, _sent: bool) -> EqView {
+    EqView::opening(instance, path)
+}
+
+/// The page's editor as the screen showing the editor at `path` on
+/// `instance` reads it.
+pub fn screen_view<'a>(
+    view: Option<&'a EqView>,
+    _instance: &str,
+    _path: &str,
+) -> Option<&'a EqView> {
+    view
+}
+
+/// The screen's state (its `data-state`).
+pub fn screen_state(view: Option<&EqView>, instance: &str, path: &str) -> &'static str {
+    match screen_view(view, instance, path).map(|v| v.state) {
+        Some(EqState::Open) => "open",
+        Some(EqState::Closed) => "closed",
+        Some(EqState::Opening) | None => "opening",
+    }
+}
+
 /// Why the screen showing the editor at `path` on `instance` ends: the
 /// hub's reason once it closed that editor; none while it opens or is open
 /// (or the page's editor is another one).
@@ -139,6 +164,52 @@ mod tests {
         assert_eq!(ended(Some(&closed), "band", "q"), None, "another editor");
         closed.reason = None;
         assert_eq!(ended(Some(&closed), "band", "p"), Some(String::new()));
+    }
+
+    #[test]
+    fn an_ask_the_socket_did_not_take_closes_at_once() {
+        assert_eq!(asked("band", "p", true), EqView::opening("band", "p"));
+        assert_eq!(
+            asked("band", "p", false),
+            EqView {
+                instance: "band".into(),
+                path: "p".into(),
+                state: EqState::Closed,
+                session: None,
+                size: None,
+                reason: Some("socket".into()),
+                since: None,
+            }
+        );
+        // So the screen ends at once (quietly, as any lost socket).
+        assert_eq!(
+            ended(Some(&asked("band", "p", false)), "band", "p"),
+            Some("socket".into())
+        );
+        assert_eq!(ended(Some(&asked("band", "p", true)), "band", "p"), None);
+    }
+
+    #[test]
+    fn a_screen_reads_only_its_own_editor() {
+        let mut closed = open("q");
+        closed.state = EqState::Closed;
+        closed.reason = Some("switch".into());
+        // A late close of the editor before (a switch from q to p): the
+        // screen on p is still opening, with no session.
+        assert_eq!(screen_view(Some(&closed), "band", "p"), None);
+        assert_eq!(screen_state(Some(&closed), "band", "p"), "opening");
+        assert_eq!(screen_view(Some(&open("q")), "band", "p"), None);
+        assert_eq!(screen_state(Some(&open("q")), "band", "p"), "opening");
+        assert_eq!(screen_view(Some(&open("p")), "master", "p"), None);
+        assert_eq!(screen_state(Some(&open("p")), "master", "p"), "opening");
+        assert_eq!(screen_state(None, "band", "p"), "opening");
+        // Its own editor, in each state.
+        assert_eq!(screen_view(Some(&open("p")), "band", "p"), Some(&open("p")));
+        assert_eq!(screen_state(Some(&open("p")), "band", "p"), "open");
+        let opening = EqView::opening("band", "p");
+        assert_eq!(screen_state(Some(&opening), "band", "p"), "opening");
+        closed.path = "p".into();
+        assert_eq!(screen_state(Some(&closed), "band", "p"), "closed");
     }
 
     #[test]

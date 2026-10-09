@@ -7,7 +7,7 @@
 //! card's lock ([`card_lock`]) and its text, which frames the screen shows
 //! ([`shows_frame`]) and a card's picture URL ([`picture_url`]).
 
-use fohmixer_proto::eq::{EqLock, Touch, reason};
+use fohmixer_proto::eq::{EqLock, PRODUCT, Touch, reason};
 
 /// Where a picture sits fitted into an area: its scale (CSS px a picture
 /// pixel) and its top-left corner in the area (CSS px).
@@ -116,6 +116,11 @@ impl Finger {
         self.cancel(pointer)
     }
 
+    /// The page went hidden (`hidden`) or was shown again.
+    pub fn visibility(&mut self, _hidden: bool) -> Option<Out> {
+        None
+    }
+
     /// Whether a finger is down.
     pub fn held(&self) -> bool {
         self.pointer.is_some()
@@ -142,6 +147,31 @@ pub fn card_lock(locks: &[EqLock], instance: &str, path: &str) -> CardLock {
         Some(lock) if lock.mine => CardLock::Mine,
         Some(lock) => CardLock::Other(lock.since),
     }
+}
+
+/// Whether a card's down opens its editor (`can_send`: the page's socket
+/// takes a message now).
+pub fn can_open(lock: CardLock, _can_send: bool) -> bool {
+    !matches!(lock, CardLock::Other(_))
+}
+
+/// What the cards' list waits on: the page's socket past its hello, and the
+/// strip's instance online.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ListLink {
+    pub connected: bool,
+    pub online: bool,
+}
+
+/// Whether the cards ask the hub for the strip's list now (`before`: the
+/// link the last time they looked; none when the detail opens).
+pub fn lists_now(before: Option<ListLink>, now: ListLink) -> bool {
+    now.connected && before.is_none_or(|b| !b.connected)
+}
+
+/// What names an editor on its card and on its screen.
+pub fn place_text(place: &str, _name: &str) -> String {
+    format!("{PRODUCT} · {place}")
 }
 
 /// `HH:MM` of a clock's hours and minutes.
@@ -341,20 +371,122 @@ mod tests {
 
     #[test]
     fn only_a_failed_open_says_why_under_its_card() {
-        for quiet in ["exit", "switch", "detach", "socket"] {
+        // A close the page or the hub made on purpose, and a lock the card
+        // already shows (ZAMKNUTÉ), say nothing.
+        for quiet in ["exit", "switch", "detach", "socket", "locked"] {
             assert_eq!(failure_text(quiet), None, "{quiet}");
         }
         assert_eq!(
-            failure_text("no window"),
-            Some("Neotvoril sa: no window".to_string())
-        );
-        assert_eq!(
-            failure_text("locked"),
-            Some("Neotvoril sa: locked".to_string())
-        );
-        assert_eq!(
             failure_text("off"),
             Some("EQ je na PC vypnuté.".to_string())
+        );
+    }
+
+    #[test]
+    fn the_hubs_known_reasons_read_in_slovak_under_the_card() {
+        let said = |why: &str| failure_text(why).unwrap_or_default();
+        assert_eq!(said("closing"), "ešte sa zatvára, skús znova");
+        assert_eq!(said("unknown"), "zoznam je starý, otvor kanál znova");
+        assert_eq!(said("moved"), "Pro-Q 4 sa presunul, otvor kanál znova");
+        assert_eq!(
+            said("open on the PC"),
+            "Pro-Q 4 je otvorený priamo na PC, zatvor ho tam"
+        );
+        assert_eq!(said("no window"), "okno Pro-Q 4 sa neotvorilo");
+        assert_eq!(said("window closed"), "okno Pro-Q 4 sa zavrelo");
+        // The protocol's names for them.
+        assert_eq!(said(reason::CLOSING), said("closing"));
+        assert_eq!(said(reason::UNKNOWN), said("unknown"));
+        assert_eq!(said(reason::MOVED), said("moved"));
+        assert_eq!(said(reason::OPEN_ON_PC), said("open on the PC"));
+        assert_eq!(said(reason::GONE), said("window closed"));
+        // Anything else keeps the hub's own words.
+        assert_eq!(
+            failure_text("several windows"),
+            Some("Neotvoril sa: several windows".to_string())
+        );
+        assert_eq!(
+            failure_text("the guard's tap failed"),
+            Some("Neotvoril sa: the guard's tap failed".to_string())
+        );
+    }
+
+    #[test]
+    fn a_hidden_page_lifts_its_finger() {
+        let mut finger = Finger::default();
+        assert_eq!(finger.visibility(true), None, "no finger down");
+        finger.down(4, (10.0, 20.0), true);
+        finger.moved(4, (11.0, 21.0));
+        assert_eq!(finger.visibility(false), None, "shown: it stays down");
+        assert!(finger.held());
+        assert_eq!(
+            finger.visibility(true),
+            Some((Touch::Cancel, 11.0, 21.0)),
+            "hidden: a cancel where it was"
+        );
+        assert!(!finger.held());
+        assert_eq!(finger.frame(), None, "its last move is not sent after");
+        assert_eq!(finger.up(4, (12.0, 22.0)), None, "its lift sends nothing");
+        assert_eq!(finger.visibility(true), None);
+    }
+
+    #[test]
+    fn a_card_opens_only_while_free_or_mine_and_the_socket_takes_it() {
+        assert!(can_open(CardLock::Free, true));
+        assert!(can_open(CardLock::Mine, true));
+        assert!(
+            !can_open(CardLock::Other(1.0), true),
+            "another page holds it"
+        );
+        assert!(!can_open(CardLock::Free, false), "the socket is down");
+        assert!(!can_open(CardLock::Mine, false));
+        assert!(!can_open(CardLock::Other(1.0), false));
+    }
+
+    #[test]
+    fn the_cards_are_listed_at_the_open_and_whenever_the_link_comes_back() {
+        let link = |connected: bool, online: bool| ListLink { connected, online };
+        let up = link(true, true);
+        // The detail opens: listed while connected (an offline instance's
+        // list then says so); not while the socket is down.
+        assert!(lists_now(None, up));
+        assert!(lists_now(None, link(true, false)));
+        assert!(!lists_now(None, link(false, true)));
+        assert!(!lists_now(None, link(false, false)));
+        // Nothing changed: no list (another instance's busy flag, say).
+        assert!(!lists_now(Some(up), up));
+        // Live goes away and comes back (the socket stays): listed again
+        // once it is online.
+        assert!(!lists_now(Some(up), link(true, false)));
+        assert!(lists_now(Some(link(true, false)), up));
+        // The page's socket reconnects: the hello alone (every instance
+        // offline until the hub's states) lists nothing; the instance's
+        // state does.
+        assert!(!lists_now(Some(up), link(false, false)));
+        assert!(!lists_now(Some(link(false, false)), link(true, false)));
+        assert!(lists_now(Some(link(true, false)), up));
+        assert!(lists_now(Some(link(false, true)), up));
+        assert!(lists_now(Some(link(false, false)), up));
+        // Offline or disconnected stays quiet.
+        assert!(!lists_now(Some(link(true, false)), link(true, false)));
+        assert!(!lists_now(Some(link(false, false)), link(false, true)));
+    }
+
+    #[test]
+    fn a_card_and_its_screen_name_the_editor_alike() {
+        assert_eq!(place_text("na tracku", "Pro-Q 4"), "Pro-Q 4 · na tracku");
+        assert_eq!(
+            place_text("Vocal FX › Main", "Pro-Q 4"),
+            "Pro-Q 4 · Vocal FX › Main"
+        );
+        // A renamed device's name after where it sits.
+        assert_eq!(
+            place_text("Vocal FX › Main", "De-ess"),
+            "Pro-Q 4 · Vocal FX › Main · De-ess"
+        );
+        assert_eq!(
+            place_text("na tracku", "Air EQ"),
+            "Pro-Q 4 · na tracku · Air EQ"
         );
     }
 
