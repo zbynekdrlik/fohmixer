@@ -170,9 +170,17 @@ pub struct ListLink {
 }
 
 /// Whether the cards ask the hub for the strip's list now (`before`: the
-/// link the last time they looked; none when the detail opens).
+/// link the last time they looked; none when the detail opens): at the open
+/// while connected (an offline instance's list then says so), and each time
+/// the page is connected with the instance online after either was not: a
+/// reconnect (once the hub's instance states follow its hello) or Live back
+/// online, so a list that failed while Live was away is read again.
 pub fn lists_now(before: Option<ListLink>, now: ListLink) -> bool {
-    now.connected && before.is_none_or(|b| !b.connected)
+    let up = |link: ListLink| link.connected && link.online;
+    match before {
+        None => now.connected,
+        Some(before) => up(now) && !up(before),
+    }
 }
 
 /// What names an editor on its card and on its screen: the product, where

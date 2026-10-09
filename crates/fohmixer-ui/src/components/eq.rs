@@ -3,7 +3,8 @@
 //!
 //! - **The cards** ([`EqCards`], the channel detail's middle): the strip's
 //!   Pro-Q 4 instances as the hub reads them (`eq_list`, asked when the
-//!   detail opens, after every reconnect and once the screen closed), one
+//!   detail opens, after every reconnect, whenever the strip's instance
+//!   comes back online, and once the screen closed), one
 //!   card each: its last picture (fetched with the token into a blob URL;
 //!   a plain field before a first open), where it sits, and `OTVORIŤ EQ NA
 //!   CELÚ OBRAZOVKU`, or `ZAMKNUTÉ` with who holds it since when.
@@ -34,8 +35,8 @@ use wasm_bindgen::JsCast;
 use super::buttons::colour_style;
 use super::{owns_touches, trace_detail};
 use crate::behave::eq::{
-    CardLock, Finger, Fit, can_open, card_lock, failure_text, fit, hh_mm, list_text, locked_text,
-    on_picture, place_text, to_picture,
+    CardLock, Finger, Fit, ListLink, can_open, card_lock, failure_text, fit, hh_mm, list_text,
+    lists_now, locked_text, on_picture, place_text, to_picture,
 };
 use crate::binding::detail_keys;
 use crate::dom;
@@ -255,11 +256,28 @@ pub fn EqCards(strip: Strip, label: String, color: Option<RwSignal<Slot>>) -> im
     let nav = use_context::<EqNav>();
     let binding = StoredValue::new(strip.binding.clone());
     let keys = detail_keys(&strip);
-    // Asked when the detail opens and after every reconnect.
-    Effect::new(move |_| {
-        if store.connected.try_get().unwrap_or(false) {
+    // The strip's instance online, as the hub last said (only its own
+    // flag: another instance's state or a busy flag lists nothing).
+    let online = {
+        let instance = strip.binding.instance.clone();
+        Memo::new(move |_| {
+            store
+                .instances
+                .try_with(|all| all.get(&instance).is_some_and(|v| v.online))
+                .unwrap_or(false)
+        })
+    };
+    // Asked when the detail opens, after every reconnect and whenever Live
+    // comes back online (`lists_now`).
+    Effect::new(move |before: Option<ListLink>| {
+        let now = ListLink {
+            connected: store.connected.try_get().unwrap_or(false),
+            online: online.try_get().unwrap_or(false),
+        };
+        if lists_now(before, now) {
             let _ = binding.try_with_value(|b| store.list_eq(b));
         }
+        now
     });
     // Asked again once the screen closed: a new last picture.
     Effect::new(move |was_open: Option<bool>| {
