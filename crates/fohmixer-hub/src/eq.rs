@@ -23,9 +23,10 @@
 //! - **The contact:** one on the screen at a time (the PC has one cursor),
 //!   on an open editor of the client touching. A move goes on at once; an
 //!   up at a point other than the last one moves there first; a resting
-//!   contact is sent again every [`RESEND_MS`]; a client heard from not at
-//!   all for [`SILENT_MS`] (its pings stop: the page went away) ends its
-//!   contact with a cancel. A down while the client's own contact is still
+//!   contact is kept alive by the window worker on its own clock
+//!   (`plugwin::KEEPALIVE_MS`); a client heard from not at all for
+//!   [`SILENT_MS`] (its pings stop: the page went away) ends its contact
+//!   with a cancel. A down while the client's own contact is still
 //!   down ends that one first. Every contact is numbered: its phases carry
 //!   the number, and the window worker's word that it ended a contact ends
 //!   only that one (a late word never ends a newer contact).
@@ -56,14 +57,10 @@ use serde_json::{Value, json};
 use crate::live::subs::ClientId;
 use crate::plugwin::Phase;
 
-/// A contact resting this long (ms) is sent again at its last point.
-pub const RESEND_MS: f64 = 100.0;
 /// A client heard from not at all for this long (ms): its contact ends.
 pub const SILENT_MS: f64 = 2000.0;
 /// The wait after the close guard's tap before the editor closes.
 pub const GUARD_WAIT: Duration = Duration::from_millis(300);
-/// The router's clock for the contacts.
-pub const TICK: Duration = Duration::from_millis(100);
 
 /// An editor: its Live instance and its device's LOM path.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -79,11 +76,6 @@ impl EditorKey {
             path: path.to_string(),
         }
     }
-}
-
-/// Whether a resting contact last sent `since_ms` ago is due again.
-pub fn resend_due(since_ms: f64) -> bool {
-    since_ms >= RESEND_MS
 }
 
 /// Whether a client last heard `since_ms` ago is silent.
@@ -199,8 +191,6 @@ struct Contact {
     /// Its number (one counter for the hub's contacts).
     number: u32,
     at: (i32, i32),
-    /// When a phase of it last went (router ms).
-    sent: f64,
 }
 
 /// The `eq` message of an editor being opened.
@@ -712,7 +702,6 @@ impl Eqs {
                 session,
                 number,
                 at: *at,
-                sent: now,
             });
             // A contact's start and end are records; its moves are not.
             if touch != Touch::Move {
@@ -735,39 +724,30 @@ impl Eqs {
     }
 
     /// The router's tick at `now`: a silent client's contact ends with a
-    /// cancel, a resting one is sent again.
+    /// cancel (a resting one is the window worker's to keep alive).
     pub fn tick(&mut self, now: f64) -> Vec<Act> {
-        let Some(contact) = self.contact.as_mut() else {
+        let Some(contact) = self.contact.as_ref() else {
             return Vec::new();
         };
         let holder = self.editors.get(&contact.key).map(|e| e.holder);
         let quiet = holder
             .and_then(|c| self.heard.get(&c))
             .is_none_or(|at| silent(now - at));
-        if quiet {
-            let (session, number, at) = (contact.session, contact.number, contact.at);
-            let key = contact.key.clone();
-            self.contact = None;
-            return vec![
-                Act::Record(record("silent", &key, holder, Some(session), None)),
-                Act::Touch {
-                    session,
-                    contact: number,
-                    phase: Phase::Cancel,
-                    at,
-                },
-            ];
+        if !quiet {
+            return Vec::new();
         }
-        if resend_due(now - contact.sent) {
-            contact.sent = now;
-            return vec![Act::Touch {
-                session: contact.session,
-                contact: contact.number,
-                phase: Phase::Update,
-                at: contact.at,
-            }];
-        }
-        Vec::new()
+        let (session, number, at) = (contact.session, contact.number, contact.at);
+        let key = contact.key.clone();
+        self.contact = None;
+        vec![
+            Act::Record(record("silent", &key, holder, Some(session), None)),
+            Act::Touch {
+                session,
+                contact: number,
+                phase: Phase::Cancel,
+                at,
+            },
+        ]
     }
 
     /// The backend ended contact `number` of `session` itself (its point was

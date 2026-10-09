@@ -2,7 +2,7 @@ use serde_json::Value;
 
 use super::*;
 use crate::plugwin::sim::{REFUSED, SimHandle};
-use crate::plugwin::{CAPTURE_MS, WindowId};
+use crate::plugwin::{CAPTURE_MS, KEEPALIVE_MS, WindowId};
 
 fn args(pid: u32) -> Args {
     Args {
@@ -91,7 +91,8 @@ fn the_probes_figures() {
     assert_eq!(points[12], (472, 301));
     assert_eq!(points[24], (511, 281));
     assert_eq!(drag_points((0, 0), (10, 10), 0), vec![(10, 10)]);
-    assert_eq!(RESENDS, 3);
+    assert_eq!((RESENDS, RESEND), (6, Duration::from_millis(50)));
+    assert_eq!(RESEND, Duration::from_millis(KEEPALIVE_MS as u64));
 }
 
 /// A sim with one still window of process `pid`.

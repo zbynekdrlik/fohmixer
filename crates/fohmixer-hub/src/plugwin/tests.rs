@@ -192,6 +192,7 @@ fn a_minutes_counts_are_means_over_the_grabs_and_the_frames() {
         bytes: 1000.0,
         width: 10,
         height: 5,
+        gap_ms: 62.5,
     };
     assert_eq!(
         counts.rate(),
@@ -204,6 +205,7 @@ fn a_minutes_counts_are_means_over_the_grabs_and_the_frames() {
             bytes: 500.0,
             width: 10,
             height: 5,
+            gap_ms: 62.5,
         }
     );
     assert_eq!(Counts::default().rate(), Rate::default());
@@ -217,6 +219,10 @@ fn a_minutes_counts_add_up_the_grabs_and_the_encoder_s_frames() {
     counts.encoded(3.0, Some(1000));
     counts.encoded(5.5, Some(3000));
     counts.encoded(9.0, None);
+    // The largest gap between a contact's injections.
+    counts.injected(30.0);
+    counts.injected(80.0);
+    counts.injected(10.0);
     assert_eq!(
         counts,
         Counts {
@@ -228,6 +234,7 @@ fn a_minutes_counts_add_up_the_grabs_and_the_encoder_s_frames() {
             bytes: 4000.0,
             width: 0,
             height: 0,
+            gap_ms: 80.0,
         }
     );
     assert_eq!(millis(Duration::from_millis(1500)), 1500.0);
@@ -526,6 +533,35 @@ fn a_resting_contact_is_injected_again_50_ms_after_its_last_injection() {
             why: REFUSED.to_string()
         })
     );
+}
+
+#[test]
+fn a_minute_holds_the_largest_gap_between_a_contacts_injections() {
+    let (mut worker, handle, heard) = worker();
+    take(&mut worker, &handle, 1, 0.0);
+    assert!(!keepalive_due(50.0_f64.next_down()));
+    assert!(keepalive_due(50.0));
+    touch_at(&mut worker, 1, 1, Phase::Down, (10, 20), 100.0);
+    touch_at(&mut worker, 1, 1, Phase::Update, (11, 20), 130.0);
+    worker.step(180.0);
+    touch_at(&mut worker, 1, 1, Phase::Update, (12, 20), 260.0);
+    touch_at(&mut worker, 1, 1, Phase::Up, (12, 20), 270.0);
+    assert_eq!(
+        touches(&handle),
+        vec![
+            t("down", 10, 20),
+            t("update", 11, 20),
+            t("update", 11, 20),
+            t("update", 12, 20),
+            t("up", 12, 20),
+        ]
+    );
+    worker.step(60_000.0);
+    let events = heard.lock().unwrap().clone();
+    let [PlugwinEvent::Rate { session: 1, rate }] = events.as_slice() else {
+        panic!("one rate: {events:?}")
+    };
+    assert_eq!(rate.gap_ms, 80.0, "130 to 180 to 260 to 270");
 }
 
 #[test]

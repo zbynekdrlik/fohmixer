@@ -47,9 +47,11 @@ pub const DRAG_STEPS: i32 = 25;
 /// Between two updates of the drag.
 pub const DRAG_STEP: Duration = Duration::from_millis(16);
 /// A finger resting at the drag's end: its point re-sent this many times,
-/// [`RESEND`] apart (the hub re-sends a resting contact every 100 ms).
-pub const RESENDS: u32 = 3;
-pub const RESEND: Duration = Duration::from_millis(100);
+/// [`RESEND`] apart, as the hub's window worker keeps a resting contact
+/// alive (`super::KEEPALIVE_MS`; Windows cancels a contact silent for
+/// 100 ms): a rest of 300 ms.
+pub const RESENDS: u32 = 6;
+pub const RESEND: Duration = Duration::from_millis(50);
 /// A tap's finger down, and the gap between a double tap's two taps.
 pub const TAP: Duration = Duration::from_millis(60);
 pub const TAP_GAP: Duration = Duration::from_millis(120);

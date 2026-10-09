@@ -29,6 +29,11 @@
 //!   contact down ([`accepts`]). A down or an update lands only when the
 //!   point's window is the editor's; else nothing is injected and the
 //!   contact ends ([`PlugwinEvent::ContactEnded`], with its number).
+//! - **The keep-alive:** Windows ends an injected contact that gets no frame
+//!   for 100 ms, so the worker injects a resting contact's last point again
+//!   once [`KEEPALIVE_MS`] passed since its last injection, looking at least
+//!   every [`STEP`] (it blocks only for a grab). The largest gap between two
+//!   injections of a contact goes into the minute's counts ([`Rate`]).
 //! - **The close guard** ([`Plugwin::guard`]): the frames stop, any contact
 //!   ends at its last point, then a tap on the editor's inert spot
 //!   ([`inert_spot`]): a value text field closes on a click elsewhere, and
@@ -60,6 +65,9 @@ pub const FIND_POLL_MS: f64 = 50.0;
 pub const FIND_MS: f64 = 3000.0;
 /// How often a capture's counts are logged (ms).
 pub const RATE_MS: f64 = 60_000.0;
+/// A contact down this long (ms) since its last injection is injected
+/// again at its last point (Windows cancels one silent for 100 ms).
+pub const KEEPALIVE_MS: f64 = 50.0;
 /// The worker's longest sleep between two looks at its clocks.
 pub const STEP: Duration = Duration::from_millis(10);
 /// How long the guard's finger stays on the inert spot.
@@ -201,6 +209,8 @@ pub struct Rate {
     /// The last picture's size.
     pub width: u32,
     pub height: u32,
+    /// The largest gap (ms) between two injections of a contact.
+    pub gap_ms: f64,
 }
 
 /// What the worker tells the router.
@@ -234,6 +244,11 @@ pub fn accepts(held: Option<(u32, u32)>, session: u32, contact: u32, phase: Phas
         None => phase == Phase::Down,
         Some(down) => phase != Phase::Down && down == (session, contact),
     }
+}
+
+/// Whether a contact last injected `since_ms` ago is due again.
+pub fn keepalive_due(since_ms: f64) -> bool {
+    since_ms >= KEEPALIVE_MS
 }
 
 /// Whether a capture last made `since_ms` ago is due.
@@ -315,9 +330,15 @@ struct Counts {
     bytes: f64,
     width: u32,
     height: u32,
+    gap_ms: f64,
 }
 
 impl Counts {
+    /// A contact injected `gap_ms` after its last injection.
+    fn injected(&mut self, gap_ms: f64) {
+        self.gap_ms = self.gap_ms.max(gap_ms);
+    }
+
     /// A grab that took `ms` (`ok`: it gave a picture).
     fn grabbed(&mut self, ms: f64, ok: bool) {
         self.grabs += 1;
@@ -352,6 +373,7 @@ impl Counts {
             bytes: mean(self.bytes, self.sent),
             width: self.width,
             height: self.height,
+            gap_ms: self.gap_ms,
         }
     }
 }
@@ -554,13 +576,14 @@ enum Command {
     Stop,
 }
 
-/// The contact on the screen: its session, its number (the router's) and
-/// its last point.
+/// The contact on the screen: its session, its number (the router's), its
+/// last point and when it was last injected (worker ms).
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Held {
     session: u32,
     contact: u32,
     at: (i32, i32),
+    sent: f64,
 }
 
 /// The worker: its backend, the editors it holds by session, the opens
@@ -631,7 +654,7 @@ impl Worker {
                 contact,
                 phase,
                 at,
-            } => self.touch(session, contact, phase, at),
+            } => self.touch(session, contact, phase, at, now),
             Command::Guard { session, reply } => {
                 let _ = reply.send(self.guard(session));
             }
@@ -648,7 +671,7 @@ impl Worker {
     }
 
     /// The clocks at `now`: the encoder's frames counted, the opens' polls,
-    /// the captures, the minutes.
+    /// the captures, the minutes, the contact's keep-alive.
     fn step(&mut self, now: f64) {
         self.count_encoded();
         self.find(now);
@@ -656,6 +679,16 @@ impl Worker {
         for session in sessions {
             self.capture(session, now);
         }
+        self.keep_alive(now);
+    }
+
+    /// The contact down, injected again at its last point once
+    /// [`KEEPALIVE_MS`] passed since its last injection.
+    fn keep_alive(&mut self, now: f64) {
+        let Some(held) = self.contact.filter(|held| keepalive_due(now - held.sent)) else {
+            return;
+        };
+        self.touch(held.session, held.contact, Phase::Update, held.at, now);
     }
 
     /// What the encoder made since the last look, into its editors' counts.
@@ -768,10 +801,11 @@ impl Worker {
         self.encoder.put(session, pixels, sink);
     }
 
-    /// A phase of contact `contact` on `session`'s window: one contact on
-    /// the screen ([`accepts`]); a refused down or update ends the contact
-    /// and says so.
-    fn touch(&mut self, session: u32, contact: u32, phase: Phase, at: (i32, i32)) {
+    /// A phase of contact `contact` on `session`'s window at `now`: one
+    /// contact on the screen ([`accepts`]); its gap since the contact's last
+    /// injection counted; a refused down or update ends the contact and says
+    /// so.
+    fn touch(&mut self, session: u32, contact: u32, phase: Phase, at: (i32, i32), now: f64) {
         let Some(taken) = self.editors.get(&session).map(|e| e.taken.clone()) else {
             return;
         };
@@ -779,13 +813,20 @@ impl Worker {
         if !accepts(held, session, contact, phase) {
             return;
         }
+        // Accepted: a down has no contact before it, any other phase is of
+        // the contact held.
+        let gap = self.contact.map(|held| now - held.sent);
         match self.backend.touch(&taken, phase, at) {
             Ok(()) => {
                 self.contact = (!phase.ends()).then_some(Held {
                     session,
                     contact,
                     at,
+                    sent: now,
                 });
+                if let (Some(gap), Some(editor)) = (gap, self.editors.get_mut(&session)) {
+                    editor.counts.injected(gap);
+                }
             }
             Err(why) => {
                 if let Some(held) = self.contact.take()

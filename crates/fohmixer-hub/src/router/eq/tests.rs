@@ -158,12 +158,13 @@ fn a_minutes_rate_is_one_record() {
         bytes: 61_000.0,
         width: 1349,
         height: 809,
+        gap_ms: 61.5,
     };
     assert_eq!(
         rate_fields(7, &rate),
         json!({"what": "rate", "session": 7, "grabs": 1500, "sent": 1200, "failed": 2,
                "grab_ms": 4.5, "encode_ms": 9.25, "bytes": 61_000.0,
-               "width": 1349, "height": 809})
+               "width": 1349, "height": 809, "gap_ms": 61.5})
     );
     assert_eq!(EDITOR_OPEN, "is_editor_open");
 }

@@ -242,6 +242,7 @@ pub fn rate_fields(session: u32, rate: &Rate) -> Value {
         "bytes": rate.bytes,
         "width": rate.width,
         "height": rate.height,
+        "gap_ms": rate.gap_ms,
     })
 }
 
@@ -485,7 +486,8 @@ impl Router {
                     bytes = rate.bytes,
                     width = rate.width,
                     height = rate.height,
-                    "a Pro-Q 4 editor's capture over the last minute"
+                    gap_ms = rate.gap_ms,
+                    "a Pro-Q 4 editor's capture and touches over the last minute"
                 );
                 self.io.events.record("eq", rate_fields(session, &rate));
             }
