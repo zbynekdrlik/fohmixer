@@ -2,9 +2,18 @@
 paths:
   - "crates/fohmixer-hub/src/plugwin/**"
   - "crates/fohmixer-hub/src/plugwin.rs"
-  - "crates/fohmixer-hub/src/router/plugwin*.rs"
+  - "crates/fohmixer-hub/src/eq.rs"
+  - "crates/fohmixer-hub/src/eq/**"
+  - "crates/fohmixer-hub/src/router/eq.rs"
+  - "crates/fohmixer-hub/src/router/eq/**"
+  - "crates/fohmixer-hub/tests/eq*.rs"
+  - "crates/fohmixer-proto/src/eq.rs"
+  - "crates/fohmixer-ui/src/behave/eq.rs"
+  - "crates/fohmixer-ui/src/store/eq.rs"
+  - "crates/fohmixer-ui/src/store/live/eq.rs"
   - "crates/fohmixer-ui/src/components/eq*.rs"
-  - "tools/plugwin-probe/**"
+  - "crates/fohmixer-ui/eq.css"
+  - "e2e/tests/eq.spec.ts"
 ---
 
 # A plug-in's editor window on the surface (#71, D17, F28)
@@ -52,3 +61,52 @@ What the PC tests of 2026-10-09 established (details and evidence on #71). Read 
   - A single tap on the curve creates nothing; a double-click creates a band.
   - A touch drag that starts on a band moves it.
   - **A double tap on a band opens its frequency text field**: the close-crash state.
+
+## The Pro-Q 4 screen (#71 PR E)
+
+The surface's side (the cards and the screen) is in `.claude/rules/ui-rust.md`, its E2E in `.claude/rules/e2e.md`. Nothing of it has run against a real window yet: the PC check (the plan's task 7) first runs `eq-probe` against Carla's bridge, then the first open in the band Live.
+
+- **Protocol** (`fohmixer-proto` `client.rs`, `eq.rs`):
+  - The page sends `eq_list {binding}`, `eq_open {instance, path}`, `eq_input {touch: down|move|up|cancel, x, y}` (the picture's pixels, floats) and `eq_close`.
+  - The hub answers `eq_list {binding, items: [{path, place, name, picture}], error}`, `eq_locks {items: [{instance, path, mine, since}]}` (to every page at each change, and at the hello) and `eq {instance, path, state: opening|open|closed, session, width, height, reason, since}` (to the holder).
+  - `reason` is `locked` (with the holder's `since`), `unknown` (not in a list this hub gave), `off`, `exit`, `detach`, `switch`, `window closed`, `closing`, or a failure's text.
+  - **The frames are binary WebSocket messages:** 4 bytes of the session (big-endian), then the JPEG (`eq::frame`, `eq::frame_parts`). The outbox keeps only the newest frame (`Outbox::eq_frame`, one slot), and the writer sends it after each text batch, so a slow link drops frames and never queues them. A closed `eq` forgets a waiting frame. The page drops a frame whose session is not its open editor's.
+  - **A card's last picture:** `GET /api/eq/picture?instance=&path=` with the token (`image/jpeg`, `no-store`; 404 before a first frame). The CSP allows `img-src blob:`.
+- **Discovery** (`eq/walk.rs`): the strip's track is walked through the script's `get_prop`, one batch per level. A device of the script's class `PluginDevice` whose `class_display_name` is `Pro-Q 4` is listed (`PRODUCT`; it holds when renamed). A `RackDevice`'s chains are walked down to 3 racks deep (`MAX_RACKS`), 8 batches a walk at most (`MAX_READS`). The path is Live's index form (`live_set tracks 1 devices 1 chains 0 devices 0`), the place `Vocal FX › Main`, or `na tracku`. A path not in a list the hub gave is refused (`unknown`).
+- **The state** (`eq.rs`, pure, tested):
+  - One holder per editor (the lock) and one open running at a time (a queue); a page opening another editor first closes its own (`switch`).
+  - One finger on the PC at a time: a touch on another editor while one is in contact is dropped (`busy`).
+  - A resting contact is sent again every 100 ms (`RESEND_MS`).
+  - A holder silent for 2 s (`SILENT_MS`: no message at all, pings included) gets its contact cancelled.
+  - A detached page's editor closes (`detach`).
+  - Records go to the event log as `eq` (warn class): `take`, `open`, `opened`, `touch` (down, up, cancel; never a move), `busy`, `silent`, `close` (why), `closed`, `lost`, `failed`, `refused`, `problem`, `contact_ended`, and once a minute per editor `rate` (grabs, sent, failed, grab and encode ms, bytes, size).
+- **The close sequence** (`router/eq.rs` `close_editor`), in this order:
+  1. The guard: the contact ends at its last point, the frames stop, and the inert spot is tapped (down, 30 ms, up). This closes a text field Pro-Q 4.02 may have open.
+  2. A wait of 300 ms (`GUARD_WAIT`).
+  3. `is_editor_open = false`, **only if the guard succeeded.** A failed guard leaves the editor open in Live (`problem`), never closed with a field possibly open.
+  4. The window's z-order put back.
+- **The inert spot:** `plugwin::INERT_X` = 0.405 of the picture's width and `INERT_Y` = 15 px from its top: (546, 15) at 1349 px. This is the top bar's empty middle in the mockup's picture: right of the logo panel (which ends at about 534) and left of the undo icon (about 564). The PC check confirms it (`eq-probe` saves `after-guard.jpg`). If it hits something, try `--inert` at the wide empty area right of Help (about 1100–1300, 15) and change the constant.
+- **The window worker** (`plugwin.rs`): a std thread owning the `Backend`; the router talks to it over a channel.
+  - **Open:** list Live's editor windows, set `is_editor_open = true`, then poll every 50 ms for up to 3 s for the ONE new window. Several new windows fail (`several windows`); none fail (`no window`). If the take fails, `is_editor_open` goes back to false.
+  - **Take:** the window topmost (nothing moved or sized).
+  - **Capture:** every 40 ms. A frame is sent only when the picture changed. JPEG q70 through `jpeg-encoder` (pure Rust, `simd`; its IJG licence part is a `deny.toml` exception).
+  - **Lost:** a window that went away (closed in Live or on the PC) releases the editor (`window closed`).
+- **The Windows backend** (`plugwin/win.rs`, `cfg(windows)`, out of the mutation gate):
+  - Calls run per-monitor aware (`SetThreadDpiAwarenessContext`, PMv2), so every coordinate is a physical pixel.
+  - Editors are Live's top-level `Vst3PlugWindow`s; the picture is the `FF_UIWindow` child, else the client area.
+  - Grab: `BitBlt` of the picture's screen rectangle from the screen DC, then `GetDIBits`. Nothing runs on Live's window thread. This is not `PrintWindow`, and not WGC (its border cannot be switched off on the PC's Windows 10).
+  - Touch: `InitializeTouchInjection(1, TOUCH_FEEDBACK_NONE)`, then the flags above (a cancel is `UP|CANCELED`). The contact area is 4 × 4 px (`TOUCH_MASK_CONTACTAREA`). `ERROR_NOT_READY` is retried after 1 ms, twice.
+  - A down or an update checks the point's root window and its process first. The cursor is put back when the contact ends.
+- **Configuration:** `[eq] backend = "windows" | "sim" | "off"`. The default is `windows` on Windows, else `sim`; `windows` off Windows fails the config check. `off` answers every list with the error `off`. `Install-Fohmixer.ps1` does not write an `[eq]` table, so a deployed hub runs the Windows backend once this ships.
+- **The simulated backend** (`plugwin/sim.rs`): the hub's backend off Windows, in the tests and in the E2E harness.
+  - Asking Live to open an editor opens a window (`live_opened`); the release closes it again.
+  - Its picture is 1349 × 809 with a counter that steps every 250 ms, so frames differ.
+  - Every take, touch (phase, x, y), release and close is recorded in memory and in `<data>/eq-sim.jsonl` (the harness's `GET /sim/eq`).
+  - A test can make it refuse touches (`refuse`) or open no window (`auto_open`).
+- **`eq-probe`** (`plugwin/probe.rs`; `fohmixer-hub eq-probe`): the isolated check on the PC, run against Carla's bridge (above) before any Live.
+  - Command: `fohmixer-hub.exe eq-probe --pid <bridge pid> [--frames 50] [--band 431,321] [--to 511,281] [--inert <x,y>] [--out <folder outside the repo>] [--close]`.
+  - Steps: take the process's first visible top-level window; capture `--frames` frames at the hub's rate; double-tap at `--band` (a new band); drag it to `--to` (25 updates 16 ms apart, then 3 resends 100 ms apart, then the up); double-tap at `--to` (opens the frequency field: the close-crash state); the guard's tap at the inert spot; release; with `--close`, `WM_CLOSE` (Carla's bridge then ends with `0xC0000005`).
+  - Output, one `name=value` line each, no window title: `windows=`, `picture=WxH child= was_topmost=`, `frames= sent= same=`, `grab_ms_mean= grab_ms_max=`, `encode_ms_mean= encode_ms_max= bytes_mean=`, `fps=`, `band=ok at=`, `drag=ok steps= to=`, `field=ok`, `guard=ok at= tap_ms=30`, `release=ok`, `close=sent`.
+  - With `--out`: `frame-NN.jpg`, `after-band.jpg`, `after-drag.jpg`, `field-open.jpg` (the field open), `after-guard.jpg` (the field closed again).
+  - Exit 0 when every step ran; 1 when a step failed (why on stderr); 2 for bad arguments or no backend. `--sim` runs it on the simulated backend (`tests/eq_probe_cli.rs`).
+  - Expect `windows=1` and `child=true`. Another window of the bridge would be taken first.

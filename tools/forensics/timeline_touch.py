@@ -131,8 +131,10 @@ SystemEvent = collections.namedtuple(
 # The gestures the surface prevents: one that was not prevented escaped.
 ESCAPABLE = ("contextmenu", "selectstart", "dragstart")
 # A channel detail's step (#71) on the hub's clock: ``what`` (``press``,
-# ``slid``, ``tap``, ``open``, ``close``), ``why`` (an open's ``check`` or
-# ``lift``, a close's ``exit``, ``layout``, ``placeholder`` or ``conflict``;
+# ``slid``, ``tap``, ``open``, ``close``; the Pro-Q 4 screen's ``eq_open``,
+# ``eq_close`` and ``eq_locked``, PR E), ``why`` (an open's ``check`` or
+# ``lift``, a close's ``exit``, ``layout``, ``placeholder`` or ``conflict``,
+# an ``eq_close``'s ``exit``, ``detail``, ``socket`` or the hub's reason;
 # else None), the
 # strip's ``keys`` (its volume's and mute's, a tuple) and the finger's
 # ``pointer`` (None for a close the page made).

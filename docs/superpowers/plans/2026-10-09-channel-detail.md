@@ -92,11 +92,11 @@ The owner's decisions (#71): the real editor as a live picture; touches as **rea
 
 ### Tasks
 
-1. [ ] Proto messages and their tests (serde shapes, binary frame contract documented).
-2. [ ] Hub pure state `eq.rs` (holders, locks, gestures, the close sequence's steps) with tests; router glue; discovery through the script; logs.
-3. [ ] `plugwin` trait, the Windows backend (window diff, topmost, BitBlt capture, JPEG, touch injection, cursor restore, the guard), the simulated backend; the `eq-probe` CLI.
-4. [ ] SimLive plug-in devices, the harness `/sim/eq`, Python tests.
-5. [ ] The page: cards, the EQ screen, the touch state machine, binary frames; CSS (the mockup's look).
-6. [ ] E2E (both projects): list, open, frames arrive, a drag reaches the simulated backend at the mapped coordinates, exit closes with the guard first, a second context sees the lock, the console clean.
+1. [x] Proto messages and their tests (serde shapes, binary frame contract documented).
+2. [x] Hub pure state `eq.rs` (holders, locks, gestures, the close sequence's steps) with tests; router glue; discovery through the script; logs.
+3. [x] `plugwin` trait, the Windows backend (window diff, topmost, BitBlt capture, JPEG, touch injection, cursor restore, the guard), the simulated backend; the `eq-probe` CLI.
+4. [x] SimLive plug-in devices, the harness `/sim/eq`, Python tests.
+5. [x] The page: cards, the EQ screen, the touch state machine, binary frames; CSS (the mockup's look).
+6. [x] E2E (both projects): list, open, frames arrive, a drag reaches the simulated backend at the mapped coordinates, exit closes with the guard first, a second context sees the lock, the console clean.
 7. [ ] The isolated check on the PC against Carla (the probe CLI), recorded on #71; only then the first open in the band Live, then the owner's demonstration.
-8. [ ] Docs: `plugin-window.md` (the inert spot, the backend), `ui-rust.md`, `e2e.md`, `live-script.md`, the spec's F28.
+8. [x] Docs: `plugin-window.md` (the inert spot, the backend), `ui-rust.md`, `e2e.md`, `live-script.md`, the spec's F28.
