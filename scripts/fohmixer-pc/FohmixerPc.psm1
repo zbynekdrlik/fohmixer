@@ -23,7 +23,7 @@ $script:TaskPath = '\fohmixer\'
 $script:HubTask = 'fohmixer-hub'
 $script:StopTask = 'fohmixer-hub-stop'
 # What a bundle holds besides SHA256SUMS (design note section 2).
-$script:BundleFiles = @('VERSION', 'fohmixer-hub.exe', 'fohmixer-tray.exe', 'Install-Fohmixer.ps1', 'FohmixerPc.psm1',
+$script:BundleFiles = @('VERSION', 'fohmixer-hub.exe', 'fohmixer-tray.exe', 'THIRD-PARTY-NOTICES.md', 'Install-Fohmixer.ps1', 'FohmixerPc.psm1',
     'FohmixerLivePrefs.ps1', 'FohmixerFirewall.ps1', 'FohmixerRemote.ps1', 'FohmixerTray.ps1', 'FohmixerHubProcess.ps1',
     'FohmixerTasks.ps1', 'Start-FohmixerHub.ps1', 'Stop-FohmixerHub.ps1',
     'FohMixer/__init__.py', 'FohMixer/Config.py', 'FohMixer/version.py')
@@ -166,9 +166,10 @@ function New-FohBundleZip {
 
 function New-FohBundle {
     # The Windows release bundle from a repo checkout, a built hub and a built
-    # tray: fohmixer-hub.exe, fohmixer-tray.exe, FohMixer\ (without logs,
-    # caches or compiled files), the PC scripts, VERSION (the workspace
-    # version) and SHA256SUMS, zipped to
+    # tray: fohmixer-hub.exe, fohmixer-tray.exe, THIRD-PARTY-NOTICES.md (the
+    # notices the shipped code asks for: the IJG credit of the hub's JPEG
+    # encoder), FohMixer\ (without logs, caches or compiled files), the PC
+    # scripts, VERSION (the workspace version) and SHA256SUMS, zipped to
     # <OutDir>\fohmixer-windows-<version>-<Sha>.zip. Returns name, version, stage and zip.
     param([Parameter(Mandatory)][string]$RepoRoot, [Parameter(Mandatory)][string]$HubExe,
           [Parameter(Mandatory)][string]$TrayExe, [Parameter(Mandatory)][string]$OutDir, [Parameter(Mandatory)][string]$Sha)
@@ -189,6 +190,9 @@ function New-FohBundle {
     New-Item -ItemType Directory -Force -Path $stage | Out-Null
     Copy-Item -LiteralPath $HubExe -Destination (Join-Path $stage $script:HubExe)
     Copy-Item -LiteralPath $TrayExe -Destination (Join-Path $stage $script:TrayExe)
+    $notices = Join-Path $RepoRoot 'THIRD-PARTY-NOTICES.md'
+    if (-not (Test-Path -LiteralPath $notices -PathType Leaf)) { throw "the checkout has no $notices" }
+    Copy-Item -LiteralPath $notices -Destination (Join-Path $stage 'THIRD-PARTY-NOTICES.md')
     foreach ($f in @(Get-FohRelativeFiles -Root $scriptDir)) {
         if (Test-FohSkipped $f.rel) { continue }
         $target = Join-Path (Join-Path $stage $script:ScriptName) $f.rel.Replace('/', '\')
