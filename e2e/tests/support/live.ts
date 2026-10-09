@@ -79,6 +79,21 @@ export const companion = {
   },
 };
 
+/**
+ * The hub's simulated window backend (#71 PR E, `[eq] backend = "sim"` in the
+ * harness's config): `records()` reads what it did, in order (`GET /sim/eq`:
+ * `{op: "take" | "touch" | "release" | "close", window, phase?, x?, y?}`, a
+ * touch's point in the picture's pixels), `clear()` forgets them.
+ */
+export const simEq = {
+  records: async (): Promise<any[]> => {
+    const response = await fetch(`${HARNESS}/sim/eq`);
+    if (!response.ok) throw new Error(`harness /sim/eq: ${response.status}`);
+    return (await response.json()).records;
+  },
+  clear: () => harness("/sim/eq/clear"),
+};
+
 /** A Stream Deck key of the page by its number (#52). */
 export function deckKey(page: Page, key: number): Locator {
   return page.locator(`[data-testid="deck-key"][data-key="${key}"]`);
