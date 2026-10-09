@@ -281,9 +281,10 @@ impl Eqs {
     /// track's last list, and an editor it names is its own from now on:
     /// another track's older list no longer names it (a track or a device
     /// moved, so a strip not listed since may still hold the path of the
-    /// device another strip has now). The editors the last list named that
-    /// no list names now (their device moved or went) come back: their
-    /// cards' pictures are another device's or none.
+    /// device another strip has now). The editors whose card's picture
+    /// is another device's come back: those it names for another device
+    /// than a list did before, and those the last list named that no list
+    /// names now (their device moved or went).
     pub fn listed(
         &mut self,
         instance: &str,
@@ -291,15 +292,18 @@ impl Eqs {
         found: impl IntoIterator<Item = (EditorKey, String)>,
     ) -> Vec<EditorKey> {
         let found: Listing = found.into_iter().collect();
+        let mut gone: Vec<EditorKey> = found
+            .iter()
+            .filter(|(key, name)| self.name_of(key).is_some_and(|old| old != name.as_str()))
+            .map(|(key, _)| key.clone())
+            .collect();
         for listing in self.lists.values_mut() {
             listing.retain(|key, _| !found.contains_key(key));
         }
         let list = (instance.to_string(), target.to_string());
         let before = self.lists.insert(list, found).unwrap_or_default();
-        before
-            .into_keys()
-            .filter(|key| !self.is_listed(key))
-            .collect()
+        gone.extend(before.into_keys().filter(|key| !self.is_listed(key)));
+        gone
     }
 
     /// Whether a list names `key`.
