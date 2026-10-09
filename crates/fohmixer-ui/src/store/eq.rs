@@ -65,16 +65,16 @@ pub fn asked(instance: &str, path: &str, _sent: bool) -> EqView {
 }
 
 /// The page's editor as the screen showing the editor at `path` on
-/// `instance` reads it.
-pub fn screen_view<'a>(
-    view: Option<&'a EqView>,
-    _instance: &str,
-    _path: &str,
-) -> Option<&'a EqView> {
-    view
+/// `instance` reads it: only when it is that editor. During a switch the
+/// hub's late word about the editor before (its close) is not this
+/// screen's state, session or size.
+pub fn screen_view<'a>(view: Option<&'a EqView>, instance: &str, path: &str) -> Option<&'a EqView> {
+    view.filter(|v| v.is(instance, path))
 }
 
-/// The screen's state (its `data-state`).
+/// The screen's state (its `data-state`): its editor's, and `opening`
+/// until the hub speaks of that editor (the page asked to open it), so
+/// "Otváram Pro-Q 4…" shows until it is open.
 pub fn screen_state(view: Option<&EqView>, instance: &str, path: &str) -> &'static str {
     match screen_view(view, instance, path).map(|v| v.state) {
         Some(EqState::Open) => "open",
@@ -87,7 +87,7 @@ pub fn screen_state(view: Option<&EqView>, instance: &str, path: &str) -> &'stat
 /// hub's reason once it closed that editor; none while it opens or is open
 /// (or the page's editor is another one).
 pub fn ended(view: Option<&EqView>, instance: &str, path: &str) -> Option<String> {
-    let view = view.filter(|v| v.is(instance, path))?;
+    let view = screen_view(view, instance, path)?;
     (view.state == EqState::Closed).then(|| view.reason.clone().unwrap_or_default())
 }
 

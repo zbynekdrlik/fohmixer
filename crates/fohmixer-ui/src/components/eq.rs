@@ -40,7 +40,7 @@ use crate::behave::eq::{
 use crate::binding::detail_keys;
 use crate::dom;
 use crate::raf;
-use crate::store::eq::{EqView, ended};
+use crate::store::eq::{EqView, ended, screen_state, screen_view};
 use crate::store::{FrameSink, LiveStore, Slot};
 
 /// What the screen shows: an editor, its name as its card gives it
@@ -459,12 +459,21 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
             }
         });
     }
+    // The editor this screen shows: the page's editor counts only when it
+    // is this one (a late close of the one before is not this screen's).
+    let editor = StoredValue::new((target.instance.clone(), target.path.clone()));
     // The picture's size: the last frame's, else the hub's word at the open.
     let size = move || {
         painter.try_with_value(|p| p.size).flatten().or_else(|| {
-            store
-                .eq
-                .try_with_untracked(|v| v.as_ref().and_then(|v| v.size))
+            editor
+                .try_with_value(|(instance, path)| {
+                    store
+                        .eq
+                        .try_with_untracked(|v| {
+                            screen_view(v.as_ref(), instance, path).and_then(|v| v.size)
+                        })
+                        .flatten()
+                })
                 .flatten()
         })
     };
@@ -548,15 +557,25 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
         let _ = legend.try_update(|on| *on = !*on);
     };
     let state = move || {
-        store
-            .eq
-            .try_with(|v| v.as_ref().map_or("opening", state_name))
+        editor
+            .try_with_value(|(instance, path)| {
+                store
+                    .eq
+                    .try_with(|v| screen_state(v.as_ref(), instance, path))
+            })
+            .flatten()
             .unwrap_or("opening")
     };
     let session = move || {
-        store
-            .eq
-            .try_with(|v| v.as_ref().and_then(EqView::open_session))
+        editor
+            .try_with_value(|(instance, path)| {
+                store
+                    .eq
+                    .try_with(|v| {
+                        screen_view(v.as_ref(), instance, path).and_then(EqView::open_session)
+                    })
+                    .flatten()
+            })
             .flatten()
             .map(|s| s.to_string())
             .unwrap_or_default()
@@ -623,15 +642,6 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
     }
 }
 
-/// The screen's state as its `data-state`.
-fn state_name(view: &EqView) -> &'static str {
-    match view.state {
-        EqState::Opening => "opening",
-        EqState::Open => "open",
-        EqState::Closed => "closed",
-    }
-}
-
 /// What a finger does on the Pro-Q (`?`): real touches reach the PC.
 #[component]
 fn EqLegend() -> impl IntoView {
@@ -646,20 +656,5 @@ fn EqLegend() -> impl IntoView {
                 <tr><td>"2 prsty"</td><td>"druhý prst sa nepoužije"</td></tr>
             </table>
         </div>
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_screens_state_is_its_editors() {
-        let mut view = EqView::opening("band", "p");
-        assert_eq!(state_name(&view), "opening");
-        view.state = EqState::Open;
-        assert_eq!(state_name(&view), "open");
-        view.state = EqState::Closed;
-        assert_eq!(state_name(&view), "closed");
     }
 }
