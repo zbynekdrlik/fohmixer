@@ -1363,10 +1363,10 @@ impl Worker {
             GuardStep::Wait => self.guarding.push(guard),
             GuardStep::Post => {
                 let taken = &editor.taken;
-                let posting = match self.backend.work(taken) {
-                    Ok(work) => self.backend.resize(taken, known_rect(work, taken)),
-                    Err(why) => Err(why),
-                };
+                let posting = self
+                    .backend
+                    .work(taken)
+                    .and_then(|work| self.backend.resize(taken, known_rect(work, taken)));
                 match posting {
                     Ok(()) => {
                         editor.changed = true;
