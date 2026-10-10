@@ -85,6 +85,11 @@ pub const EDITOR_CLASS: &str = "Vst3PlugWindow";
 pub const PICTURE_CLASS: &str = "FF_UIWindow";
 /// Why the hub's take refuses a window (a reason its page reads).
 pub const NO_PICTURE: &str = fohmixer_proto::eq::reason::NO_PICTURE;
+/// Pro-Q 4's own smallest picture (px), read on the PC with
+/// `eq-probe --min-probe` against Carla's bridge (0.1.0-dev.49, #71): asked
+/// for 160 × 120, it took 760 × 335. Narrower than 760 an upright phone's
+/// shape cannot be: the hub asks no less, so its resize lands.
+pub const PRO_Q_MIN: (u32, u32) = (760, 335);
 /// The half-size of an injected contact's area (px).
 const CONTACT_RADIUS: i32 = 2;
 
@@ -412,6 +417,10 @@ impl Win {
 }
 
 impl Backend for Win {
+    fn min_size(&self) -> (u32, u32) {
+        PRO_Q_MIN
+    }
+
     fn start(&mut self) -> Result<(), String> {
         // SAFETY: changes this thread's DPI awareness only.
         unsafe { SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
@@ -617,6 +626,12 @@ impl Backend for Win {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_hub_asks_no_smaller_picture_than_pro_q_4_takes() {
+        assert_eq!(PRO_Q_MIN, (760, 335));
+        assert_eq!(Win::new().min_size(), PRO_Q_MIN);
+    }
 
     #[test]
     fn the_flags_never_ask_for_primary() {
