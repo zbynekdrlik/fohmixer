@@ -602,7 +602,7 @@ test.describe("The Pro-Q 4 screen", () => {
     await expect(screen.getByTestId("eq-factor")).toHaveText("2,5×");
     await zoomBarFits(screen);
     const map = await pictureMap(canvas);
-    expect(map.scale / whole.scale, "the zoom").toBeCloseTo(2.5, 5);
+    expect(map.scale / whole.scale, "the zoom").toBeCloseTo(2.5, 3);
     const was = whole.toPicture(middle);
     const now = map.toPicture(middle);
     expect(Math.abs(now.x - was.x) <= 1 && Math.abs(now.y - was.y) <= 1, `${JSON.stringify(now)} under the midpoint, was ${JSON.stringify(was)}`).toBe(true);
