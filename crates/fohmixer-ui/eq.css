@@ -198,7 +198,9 @@
 
 /* The zoom group (PR F), only while zoomed: the overview (the latest frame
    drawn small, a frame around the part in sight), the factor and CELÝ EQ.
-   The overview keeps the picture's shape at the bar's height. */
+   The overview keeps the picture's shape at the bar's height: each frame
+   sets its aspect-ratio (`behave::eq::overview_size`, #74 review), which
+   holds for its content inside the 1 px border. */
 .eq-zoom {
     display: flex;
     flex: none;
@@ -214,7 +216,8 @@
 .eq-overview {
     position: relative;
     flex: none;
-    height: 100%;
+    box-sizing: content-box;
+    height: calc(100% - 2px);
     aspect-ratio: 67 / 40;
     overflow: hidden;
     border: 1px solid var(--line);

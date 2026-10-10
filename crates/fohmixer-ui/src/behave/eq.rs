@@ -2,7 +2,8 @@
 //! editor's picture sits fitted into the screen ([`fit`], the stylesheet's
 //! `object-fit: contain`), the page's own view of it (PR F: [`View`], a
 //! zoom of 1 to [`MAX_ZOOM`] and a pan kept by [`placed`]; [`Viewer`], the
-//! pinch that moves it; [`look`], how the screen draws it), a point of the
+//! pinch that moves it; [`look`], how the screen draws it; [`overview_size`],
+//! the overview's shape), a point of the
 //! screen in the picture's pixels ([`to_picture`], [`point`]), the fingers
 //! ([`Finger`]: a first finger waits [`HOLD_MS`] or [`SLOP`] before the
 //! editor gets it, a lift meanwhile is a tap (PR G: its down at once, its
@@ -255,6 +256,27 @@ pub fn look(area: (f64, f64), picture: (u32, u32), view: View) -> Option<Look> {
             (area.1 / shown.scale).min(height) / height,
         ),
     })
+}
+
+/// The overview's drawing height (px of its canvas, PR F): its width
+/// follows the picture's shape ([`overview_size`]).
+pub const OVERVIEW_HEIGHT: u32 = 80;
+
+/// The overview's shape (width over height) stays within this (#74 review):
+/// Pro-Q's own and an upright phone's picture keep theirs; one past it is
+/// bent no further into the bar.
+pub const OVERVIEW_ASPECT: (f64, f64) = (0.4, 2.5);
+
+/// The overview canvas's size for a picture of `picture` px (#74 review:
+/// the picture's shape, so neither it nor the frame around the part in
+/// sight is bent): [`OVERVIEW_HEIGHT`] high, the picture's aspect wide
+/// (within [`OVERVIEW_ASPECT`]); a picture with no height counts as 1 px
+/// high.
+pub fn overview_size(picture: (u32, u32)) -> (u32, u32) {
+    let aspect = f64::from(picture.0) / f64::from(picture.1.max(1));
+    let (least, most) = OVERVIEW_ASPECT;
+    let width = f64::from(OVERVIEW_HEIGHT) * aspect.clamp(least, most);
+    (width.round() as u32, OVERVIEW_HEIGHT)
 }
 
 /// How long a first finger waits before its down reaches the editor (ms):
@@ -1596,6 +1618,24 @@ mod tests {
         assert!(zoomed(4.0));
         assert!(!zoomed(1.0));
         assert_eq!(ZOOMED_FROM, 1.05);
+    }
+
+    #[test]
+    fn the_overview_takes_the_pictures_shape_within_bounds() {
+        assert_eq!((OVERVIEW_HEIGHT, OVERVIEW_ASPECT), (80, (0.4, 2.5)));
+        // Pro-Q's own (1.67), an upright phone's (0.49), a tablet's (1.53).
+        assert_eq!(overview_size((1349, 809)), (133, 80));
+        assert_eq!(overview_size((667, 1361)), (39, 80));
+        assert_eq!(overview_size((1293, 844)), (123, 80));
+        // At the bounds and past them: no further.
+        assert_eq!(overview_size((5, 2)), (200, 80));
+        assert_eq!(overview_size((2, 5)), (32, 80));
+        assert_eq!(overview_size((2544, 400)), (200, 80));
+        assert_eq!(overview_size((100, 3000)), (32, 80));
+        // A picture with no size.
+        assert_eq!(overview_size((0, 0)), (32, 80));
+        assert_eq!(overview_size((40, 0)), (200, 80));
+        assert_eq!(overview_size((2, 0)), (160, 80));
     }
 
     #[test]

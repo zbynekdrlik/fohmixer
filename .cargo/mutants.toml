@@ -209,8 +209,11 @@ exclude_re = [
   # show_look (the tested behave::eq::look written as the canvas's style,
   # the overview frame's style and the bar's signals); eq.spec.ts pinches,
   # drags and taps the zoomed picture and reads the backend's points, the
-  # canvas's box and the bar's group.
-  "fohmixer-ui/src/components/eq\\.rs.*(replace|in) (EqNav::open|EqNav::close|local_hh_mm|blob_url|revoke|load_picture|draw|paint|context_2d|Grip::of|Grip::at|show_look)( |$)",
+  # canvas's box and the bar's group. #74 review: shape_overview (the
+  # tested behave::eq::overview_size as the overview canvas's size and its
+  # box's aspect-ratio); eq.spec.ts's zoomBarFits reads the overview's box
+  # against the picture's shape.
+  "fohmixer-ui/src/components/eq\\.rs.*(replace|in) (EqNav::open|EqNav::close|local_hh_mm|blob_url|revoke|load_picture|draw|paint|context_2d|Grip::of|Grip::at|show_look|shape_overview)( |$)",
   # components (#43 PR G): the directives owns_touches (a control's root:
   # dom::prevent_on with the tested sys::CONTROL_PREVENTS, and its keys as
   # the tested sys::keys_text in sys::KEYS_ATTR) and owns_surface (the

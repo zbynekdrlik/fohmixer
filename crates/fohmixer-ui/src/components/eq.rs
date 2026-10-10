@@ -29,8 +29,8 @@
 //!   this page only (PR F, the approved mockup `docs/mockups/proq-zoom-v1.html`;
 //!   `behave::eq::Viewer`, 1× to 4×, each open at 1×): the canvas gets a
 //!   CSS transform, and while zoomed the bar shows the overview (the latest
-//!   frame small, a frame around the part in sight), the factor and `CELÝ
-//!   EQ`. Leaving it sends `eq_close`; the hub closing it (refused, failed,
+//!   frame small, in the picture's shape, a frame around the part in
+//!   sight), the factor and `CELÝ EQ`. Leaving it sends `eq_close`; the hub closing it (refused, failed,
 //!   its window gone, the socket lost) brings the detail back.
 //!
 //! The screen's open, close and lock refusal go to the flight recorder as
@@ -50,7 +50,7 @@ use super::{owns_touches, trace_detail};
 use crate::behave::eq::{
     AreaWatch, CardLock, Finger, ListLink, Look, Out, Point, Viewer, can_open, card_lock,
     failure_text, hh_mm, in_use_text, list_text, lists_now, lock_refusal, locked, locked_text,
-    look, on_picture, place_text, point, zoom_text,
+    look, on_picture, overview_size, place_text, point, zoom_text,
 };
 use crate::binding::detail_keys;
 use crate::dom;
@@ -379,10 +379,27 @@ fn context_2d(canvas: &web_sys::HtmlCanvasElement) -> Option<web_sys::CanvasRend
         .and_then(|c| c.dyn_into::<web_sys::CanvasRenderingContext2d>().ok())
 }
 
+/// The overview's canvas and box in the shape of a picture of `picture`
+/// px (#74 review, `behave::eq::overview_size`): its drawing size, and the
+/// box's `aspect-ratio` (the bar's height holds it; its width follows).
+fn shape_overview(small: &web_sys::HtmlCanvasElement, picture: (u32, u32)) {
+    let (width, height) = overview_size(picture);
+    if (small.width(), small.height()) == (width, height) {
+        return;
+    }
+    small.set_width(width);
+    small.set_height(height);
+    let parent = small
+        .parent_element()
+        .and_then(|p| p.dyn_into::<web_sys::HtmlElement>().ok());
+    if let Some(parent) = parent {
+        dom::set_style(&parent, "aspect-ratio", &format!("{width} / {height}"));
+    }
+}
+
 /// Draws one frame: decoded off the page's thread (`createImageBitmap`),
-/// then onto the canvas at its own size, and small onto the overview's
-/// (its whole box: the overview shows the picture's shape whatever its
-/// size, PR F).
+/// then onto the canvas at its own size, and small onto the overview's,
+/// whose box takes the picture's shape (PR F; #74 review).
 async fn draw(painter: PainterBox, blob: &web_sys::Blob) {
     let Some(window) = web_sys::window() else {
         return;
@@ -422,6 +439,9 @@ async fn draw(painter: PainterBox, blob: &web_sys::Blob) {
         }
     }
     let small = painter.try_with_value(|p| p.small.clone()).flatten();
+    if let Some(small) = &small {
+        shape_overview(small, (bitmap.width(), bitmap.height()));
+    }
     if let Some(small) = small
         && let Some(context) = context_2d(&small)
     {
