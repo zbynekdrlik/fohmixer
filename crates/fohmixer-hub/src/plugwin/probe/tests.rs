@@ -558,3 +558,64 @@ fn a_resize_says_how_it_settled_or_why_it_was_not_posted() {
     );
     assert_eq!(unlanded.figures(), "client=1349x809 ms=1000");
 }
+
+#[test]
+fn a_probe_taps_only_at_the_size_its_inert_spot_is_known_at() {
+    // The review of PR #74 (I1): the probe's guard as the hub's. A window
+    // taken at 760 × 1271 is put at 1349 × 809 (the size the inert spot was
+    // verified at) before its tap, and its release puts the take's size
+    // back.
+    let (mut sim, handle, window) = one_window(42);
+    handle.resize_window(window, (760, 1271));
+    let mut probe = args(42);
+    probe.frames = 1;
+    let mut out = Vec::new();
+    run(&mut sim, &probe, &mut out).unwrap();
+    let text = String::from_utf8(out).unwrap();
+    assert!(text.contains("\nrestore=ok client=1349x809 ms="), "{text}");
+    assert!(text.contains("\nguard=ok at=546,15 tap_ms=30\n"), "{text}");
+    let sizes: Vec<(u64, u64)> = handle
+        .records()
+        .iter()
+        .filter(|r| r["op"] == "resize")
+        .map(|r| (r["w"].as_u64().unwrap(), r["h"].as_u64().unwrap()))
+        .collect();
+    assert_eq!(sizes, [(1349, 809), (760, 1271)]);
+    assert_eq!(handle.size(window), Some((760, 1271)));
+    let tapped: Vec<_> = ops(&handle)
+        .into_iter()
+        .filter(|o| o.2 == 546 && o.3 == 15)
+        .collect();
+    assert_eq!(
+        tapped,
+        [op("touch", "down", 546, 15), op("touch", "up", 546, 15)]
+    );
+}
+
+#[test]
+fn a_restore_that_does_not_land_keeps_the_size_changed_for_the_hand_back() {
+    // The review of PR #74 (M10): `--min-probe`'s way back cleared
+    // `changed` when it was asked, so a restore that failed left the
+    // editor at Pro-Q's minimum for the rest of the run.
+    let (mut sim, handle, window) = one_window(42);
+    let taken = sim.take(window).unwrap();
+    {
+        let mut held = Held {
+            backend: &mut sim,
+            taken,
+            contact: None,
+            released: false,
+            changed: false,
+        };
+        assert!(held.resize(MIN_PROBE).is_err(), "Pro-Q's minimum instead");
+        handle.resize_refused(true);
+        assert!(held.restore().is_err(), "it never lands");
+        assert!(held.changed, "still changed");
+        handle.resize_refused(false);
+    }
+    // Dropped: the take's size posted again, and handed back.
+    let resizes = ops(&handle).into_iter().filter(|o| o.0 == "resize").count();
+    assert_eq!(resizes, 3);
+    assert_eq!(handle.size(window), Some((1349, 809)));
+    assert_eq!(ops(&handle).last(), Some(&op("release", "", -1, -1)));
+}
