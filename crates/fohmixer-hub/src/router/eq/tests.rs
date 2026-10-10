@@ -1044,6 +1044,17 @@ fn eq_records(records: &Receiver<Value>) -> Vec<Value> {
     records.try_iter().filter(|r| r["ev"] == "eq").collect()
 }
 
+/// A record's fields as the router gave them: without the event log's
+/// stamp (`ev`, `ts`).
+fn unstamped(record: &Value) -> Value {
+    let mut fields = record.clone();
+    if let Some(fields) = fields.as_object_mut() {
+        fields.remove("ev");
+        fields.remove("ts");
+    }
+    fields
+}
+
 /// The sim's records but a resting finger's resends: op, then the point
 /// or the size asked.
 fn sim_steps(sim: &SimHandle) -> Vec<(String, i64, i64)> {
@@ -1106,7 +1117,7 @@ async fn an_open_answer_with_its_resize_records_it_before_the_opened() {
         .map(|r| r["what"].as_str().unwrap())
         .collect();
     assert_eq!(whats, ["resize", "opened"]);
-    assert_eq!(records[0], resize_fields(&key(), 1, &LANDED));
+    assert_eq!(unstamped(&records[0]), resize_fields(&key(), 1, &LANDED));
     // The page hears the resized picture's size.
     assert_eq!(
         eq_msgs(&outbox)[0],
@@ -1198,10 +1209,8 @@ async fn a_picture_grabbed_at_another_size_is_recorded_and_clamps_the_points() {
         width: 800,
         height: 600,
     });
-    assert_eq!(
-        eq_records(&rig.records),
-        [sized_fields(&key(), 1, (800, 600))]
-    );
+    let sized: Vec<Value> = eq_records(&rig.records).iter().map(unstamped).collect();
+    assert_eq!(sized, [sized_fields(&key(), 1, (800, 600))]);
     rig.router.handle(RouterMsg::EqInput {
         client: 1,
         touch: Touch::Down,
