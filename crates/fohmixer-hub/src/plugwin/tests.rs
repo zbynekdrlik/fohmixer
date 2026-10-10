@@ -943,10 +943,12 @@ fn the_guard_ends_the_contact_stops_the_frames_and_taps_the_inert_spot() {
     let (reply, mut answer) = oneshot::channel();
     worker.command_at(Command::Guard { session: 1, reply }, 1.0);
     assert_eq!(worker.contact, None, "ended at once");
-    // Its placement, a pixel aside, then the known rectangle, each seen to
-    // land at a step: then the tap.
-    worker.step_at(10.0);
-    worker.step_at(20.0);
+    // 100 ms after its up, its placement, a pixel aside, then the known
+    // rectangle, each seen to land at a step: then the tap.
+    worker.step_at(101.0);
+    worker.step_at(111.0);
+    assert!(answer.try_recv().is_err(), "read back at the next look");
+    worker.step_at(121.0);
     assert_eq!(answer.try_recv().unwrap(), Ok(()));
     assert_eq!(
         touches(&handle),
@@ -959,7 +961,7 @@ fn the_guard_ends_the_contact_stops_the_frames_and_taps_the_inert_spot() {
     );
     handle.still(false);
     std::thread::sleep(Duration::from_millis(260));
-    worker.step_at(100.0);
+    worker.step_at(200.0);
     // The hand-off is synchronous: no sink, no grab since the guard,
     // nothing handed to the encoder.
     assert!(worker.editors[&1].sink.is_none());
@@ -1764,14 +1766,24 @@ fn a_resize_waits_for_the_finger_on_its_editor_to_lift_the_newest_only() {
     assert!(newest.try_recv().is_err(), "waiting");
     touch_at(&mut worker, 1, 1, Phase::Up, (300, 200), 40.0);
     worker.step_at(50.0);
-    assert_eq!(resizes(&handle), [(667, 1361)], "the newest, once lifted");
-    worker.step_at(60.0);
+    assert_eq!(
+        resizes(&handle),
+        Vec::<(i64, i64)>::new(),
+        "not within 100 ms of the up"
+    );
+    worker.step_at(140.0);
+    assert_eq!(
+        resizes(&handle),
+        [(667, 1361)],
+        "the newest, 100 ms after the up"
+    );
+    worker.step_at(150.0);
     let landed = newest.try_recv().unwrap().expect("a resize");
     assert_eq!((landed.client, landed.ok), ((667, 1361), true));
     // Another session's finger is no reason to wait.
-    take(&mut worker, &handle, 2, 70.0);
-    touch_at(&mut worker, 2, 2, Phase::Down, (10, 10), 70.0);
-    resize_at(&mut worker, 1, area(800.0, 320.0), 80.0);
+    take(&mut worker, &handle, 2, 160.0);
+    touch_at(&mut worker, 2, 2, Phase::Down, (10, 10), 160.0);
+    resize_at(&mut worker, 1, area(800.0, 320.0), 170.0);
     assert_eq!(resizes(&handle), [(667, 1361), (1652, 661)], "at once");
 }
 
@@ -1782,10 +1794,17 @@ fn a_guard_drops_a_resize_that_waits_for_a_finger() {
     touch_at(&mut worker, 1, 1, Phase::Down, (300, 200), 0.0);
     let mut waiting = resize_at(&mut worker, 1, UPRIGHT, 10.0);
     let mut guarded = guard_at(&mut worker, 1, 20.0);
-    worker.step_at(30.0);
-    worker.step_at(40.0);
-    assert_eq!(guarded.try_recv().unwrap(), Ok(()), "at its own size");
     assert_eq!(waiting.try_recv().unwrap(), None, "dropped");
+    worker.step_at(30.0);
+    assert_eq!(
+        resizes(&handle),
+        Vec::<(i64, i64)>::new(),
+        "not within 100 ms of the guard's up"
+    );
+    for now in [120.0, 130.0, 140.0] {
+        worker.step_at(now);
+    }
+    assert_eq!(guarded.try_recv().unwrap(), Ok(()), "at its own size");
     assert_eq!(
         resizes(&handle),
         [(1349, 809), (1349, 809)],
@@ -1835,11 +1854,12 @@ fn a_guard_right_after_a_contact_places_nothing_until_100_ms_after_it() {
 
 #[test]
 fn no_down_reaches_an_editor_while_its_resize_is_on_its_way() {
-    // The review of PR #74, round 2 (N3): a resize that waited for the
-    // finger is posted in the step right after its up, exactly when a
-    // double tap's second down follows. Live lands the posted size before
-    // the injected down, so the down hit the new layout at the old
-    // picture's point (another button of the top bar).
+    // The review of PR #74, round 2 (N3): Live lands a posted size before
+    // an injected down, so a down while a resize was on its way hit the
+    // new layout at the old picture's point (another button of the top
+    // bar). Round 3 (F1): a resize that waited for a finger goes only
+    // 100 ms after its up, so a double tap's second down now comes before
+    // it is posted, and the resize waits for that contact too.
     let (mut worker, handle, heard) = worker();
     let window = take(&mut worker, &handle, 1, 0.0);
     handle.resize_late(true);
@@ -1847,34 +1867,52 @@ fn no_down_reaches_an_editor_while_its_resize_is_on_its_way() {
     let mut resized = resize_at(&mut worker, 1, UPRIGHT, 10.0);
     touch_at(&mut worker, 1, 1, Phase::Up, (300, 200), 20.0);
     worker.step_at(20.0);
-    assert_eq!(resizes(&handle), [(667, 1361)], "posted once lifted");
-    // The second down: refused while the resize is on its way, and the
-    // router hears its contact ended (`busy`); its up is dropped.
-    touch_at(&mut worker, 1, 2, Phase::Down, (300, 200), 21.0);
+    touch_at(&mut worker, 1, 2, Phase::Down, (300, 200), 60.0);
+    assert_eq!(held(&worker), Some((1, 2, (300, 200))), "the second tap");
+    touch_at(&mut worker, 1, 2, Phase::Up, (300, 200), 100.0);
+    worker.step_at(199.9);
+    assert_eq!(
+        resizes(&handle),
+        Vec::<(i64, i64)>::new(),
+        "not within 100 ms of the second up"
+    );
+    worker.step_at(200.0);
+    assert_eq!(resizes(&handle), [(667, 1361)], "on its way");
+    // A down while it is on its way: refused, and the router hears its
+    // contact ended (`busy`); its up is dropped.
+    touch_at(&mut worker, 1, 3, Phase::Down, (300, 200), 210.0);
     assert_eq!(worker.contact, None);
     assert_eq!(
         heard.lock().unwrap().last(),
         Some(&PlugwinEvent::ContactEnded {
             session: 1,
-            contact: 2,
+            contact: 3,
             why: BUSY.to_string()
         })
     );
-    touch_at(&mut worker, 1, 2, Phase::Up, (300, 200), 61.0);
-    assert_eq!(touches(&handle), [t("down", 300, 200), t("up", 300, 200)]);
+    touch_at(&mut worker, 1, 3, Phase::Up, (300, 200), 250.0);
+    assert_eq!(
+        touches(&handle),
+        [
+            t("down", 300, 200),
+            t("up", 300, 200),
+            t("down", 300, 200),
+            t("up", 300, 200)
+        ]
+    );
     // Landed: the next down goes, in the new layout.
     assert!(handle.land_one(window));
-    worker.step_at(70.0);
+    worker.step_at(260.0);
     let landed = resized.try_recv().unwrap().expect("a resize");
     assert_eq!((landed.client, landed.ok), ((667, 1361), true));
-    touch_at(&mut worker, 1, 3, Phase::Down, (300, 900), 80.0);
-    assert_eq!(held(&worker), Some((1, 3, (300, 900))));
-    touch_at(&mut worker, 1, 3, Phase::Up, (300, 900), 90.0);
+    touch_at(&mut worker, 1, 4, Phase::Down, (300, 900), 270.0);
+    assert_eq!(held(&worker), Some((1, 4, (300, 900))));
+    touch_at(&mut worker, 1, 4, Phase::Up, (300, 900), 280.0);
     // Another editor's resize on its way refuses nothing here.
-    take(&mut worker, &handle, 2, 100.0);
-    resize_at(&mut worker, 2, UPRIGHT, 100.0);
-    touch_at(&mut worker, 1, 4, Phase::Down, (10, 10), 110.0);
-    assert_eq!(held(&worker), Some((1, 4, (10, 10))));
+    take(&mut worker, &handle, 2, 290.0);
+    resize_at(&mut worker, 2, UPRIGHT, 290.0);
+    touch_at(&mut worker, 1, 5, Phase::Down, (10, 10), 300.0);
+    assert_eq!(held(&worker), Some((1, 5, (10, 10))));
 }
 
 #[test]
@@ -2058,22 +2096,29 @@ fn the_guard_puts_the_editors_own_size_back_before_its_tap() {
     worker.step_at(0.0);
     touch_at(&mut worker, 1, 1, Phase::Down, (300, 900), 5.0);
     let mut answer = guard_at(&mut worker, 1, 10.0);
-    // The contact ends at once; the tap waits for the editor's own size.
+    // The contact ends at once; the placements wait 100 ms after its up,
+    // and the tap for the editor's own size.
     assert_eq!(touches(&handle), [t("down", 300, 900), t("up", 300, 900)]);
     assert!(answer.try_recv().is_err());
+    assert_eq!(
+        resizes(&handle),
+        [(667, 1361)],
+        "not within 100 ms of the up"
+    );
+    worker.step_at(110.0);
     assert_eq!(
         resizes(&handle),
         [(667, 1361), (1349, 809)],
         "a pixel aside first"
     );
-    worker.step_at(10.0);
+    worker.step_at(120.0);
     assert_eq!(
         resizes(&handle),
         [(667, 1361), (1349, 809), (1349, 809)],
         "seen there: the known rectangle"
     );
     assert!(answer.try_recv().is_err(), "read back at the next look");
-    worker.step_at(20.0);
+    worker.step_at(130.0);
     assert_eq!(answer.try_recv().unwrap(), Ok(()));
     assert_eq!(handle.size(window), Some((1349, 809)));
     // The tap at the inert spot of the editor's own width, after the
@@ -2097,10 +2142,10 @@ fn the_guard_puts_the_editors_own_size_back_before_its_tap() {
     assert_eq!(worker.editors[&1].size, (1349, 809));
     // At its own size again: a guard still places it (its own placement
     // proves nothing else waits), and the release posts no size.
-    let mut answer = guard_at(&mut worker, 1, 30.0);
+    let mut answer = guard_at(&mut worker, 1, 140.0);
     assert!(answer.try_recv().is_err(), "placed first");
-    worker.step_at(40.0);
-    worker.step_at(50.0);
+    worker.step_at(150.0);
+    worker.step_at(160.0);
     assert_eq!(answer.try_recv().unwrap(), Ok(()));
     let (reply, _released) = oneshot::channel();
     worker.command_at(
@@ -2109,7 +2154,7 @@ fn the_guard_puts_the_editors_own_size_back_before_its_tap() {
             closed: false,
             reply,
         },
-        60.0,
+        170.0,
     );
     assert_eq!(resizes(&handle).len(), 5);
 }
