@@ -1732,6 +1732,50 @@ fn a_guard_drops_a_resize_that_waits_for_a_finger() {
 }
 
 #[test]
+fn no_down_reaches_an_editor_while_its_resize_is_on_its_way() {
+    // The review of PR #74, round 2 (N3): a resize that waited for the
+    // finger is posted in the step right after its up, exactly when a
+    // double tap's second down follows. Live lands the posted size before
+    // the injected down, so the down hit the new layout at the old
+    // picture's point (another button of the top bar).
+    let (mut worker, handle, heard) = worker();
+    let window = take(&mut worker, &handle, 1, 0.0);
+    handle.resize_late(true);
+    touch_at(&mut worker, 1, 1, Phase::Down, (300, 200), 0.0);
+    let mut resized = resize_at(&mut worker, 1, UPRIGHT, 10.0);
+    touch_at(&mut worker, 1, 1, Phase::Up, (300, 200), 20.0);
+    worker.step_at(20.0);
+    assert_eq!(resizes(&handle), [(667, 1361)], "posted once lifted");
+    // The second down: refused while the resize is on its way, and the
+    // router hears its contact ended (`busy`); its up is dropped.
+    touch_at(&mut worker, 1, 2, Phase::Down, (300, 200), 21.0);
+    assert_eq!(worker.contact, None);
+    assert_eq!(
+        heard.lock().unwrap().last(),
+        Some(&PlugwinEvent::ContactEnded {
+            session: 1,
+            contact: 2,
+            why: BUSY.to_string()
+        })
+    );
+    touch_at(&mut worker, 1, 2, Phase::Up, (300, 200), 61.0);
+    assert_eq!(touches(&handle), [t("down", 300, 200), t("up", 300, 200)]);
+    // Landed: the next down goes, in the new layout.
+    assert!(handle.land_one(window));
+    worker.step_at(70.0);
+    let landed = resized.try_recv().unwrap().expect("a resize");
+    assert_eq!((landed.client, landed.ok), ((667, 1361), true));
+    touch_at(&mut worker, 1, 3, Phase::Down, (300, 900), 80.0);
+    assert_eq!(held(&worker), Some((1, 3, (300, 900))));
+    touch_at(&mut worker, 1, 3, Phase::Up, (300, 900), 90.0);
+    // Another editor's resize on its way refuses nothing here.
+    take(&mut worker, &handle, 2, 100.0);
+    resize_at(&mut worker, 2, UPRIGHT, 100.0);
+    touch_at(&mut worker, 1, 4, Phase::Down, (10, 10), 110.0);
+    assert_eq!(held(&worker), Some((1, 4, (10, 10))));
+}
+
+#[test]
 fn a_resize_that_does_not_land_settles_after_its_wait_and_a_newer_one_replaces_it() {
     let (mut worker, handle, heard) = worker();
     let window = take(&mut worker, &handle, 1, 0.0);
