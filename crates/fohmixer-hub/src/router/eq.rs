@@ -12,8 +12,18 @@
 //!   closed in Live, else refused `moved` or `open on the PC`), the editor
 //!   windows listed, `is_editor_open = true` through the script, the new
 //!   window taken by the worker; when no window comes, the editor this open
-//!   turned on is closed again in Live. The answer comes back as
-//!   `RouterMsg::EqOpened`.
+//!   turned on is closed again in Live. With its page's picture area (PR G)
+//!   the taken editor gets that aspect before the open answers
+//!   (`Plugwin::resize`): the first frame is the new picture, and the page
+//!   never sees the editor's own shape first. The answer comes back as
+//!   `RouterMsg::EqOpened`, with how the resize settled (an `eq` record
+//!   `resize`).
+//! - **A changed area** (PR G, `eq_area`): its client's open editor is
+//!   resized in a task of its own; the result comes back as
+//!   `RouterMsg::EqResized` (a `resize` record), and the state's picture
+//!   size, which the points are clamped to, follows. A picture the worker
+//!   grabbed at another size is a `sized` record. The page reads the
+//!   picture's size from the frames, so no `eq` message tells it.
 //! - **The close sequence:** the worker's guard (any contact ended, the
 //!   inert spot tapped), [`GUARD_WAIT`], then `is_editor_open = false`, then
 //!   the window released. A guard that could not tap leaves the editor open
@@ -39,7 +49,7 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use fohmixer_proto::client::ServerMsg;
-use fohmixer_proto::eq::{EqItem, EqState, Touch, frame, reason};
+use fohmixer_proto::eq::{Area, EqItem, EqState, Touch, frame, reason};
 use fohmixer_proto::layout::Binding;
 use serde_json::{Value, json};
 
@@ -51,7 +61,7 @@ use crate::eq::{Act, Device, EditorKey, Eqs, GUARD_WAIT, Pictures, record};
 use crate::events::EventLog;
 use crate::live::client::{LiveError, LiveHandle};
 use crate::live::subs::ClientId;
-use crate::plugwin::{Plugwin, PlugwinEvent, Rate};
+use crate::plugwin::{Plugwin, PlugwinEvent, Rate, Resized};
 
 /// The Live property that opens and closes a plug-in's editor.
 pub const EDITOR_OPEN: &str = close::EDITOR_OPEN;
@@ -223,20 +233,27 @@ async fn turn_off(
     }
 }
 
+/// What an open sequence gave: the picture's size, the device's `$ref`,
+/// and how the editor's resize to its page's area settled (PR G; none:
+/// nothing was asked).
+pub type Opened = ((u32, u32), Value, Option<Resized>);
+
 /// The open sequence: the device read (still the Pro-Q 4 the list named
 /// `name`, its editor closed in Live), the windows listed, the editor
-/// opened in Live, the new window taken; its picture's size and the
-/// device's `$ref`. When no window could be taken, the editor (which this
-/// open turned on: the read found it closed) is turned off again through
-/// its ref, never another device's.
+/// opened in Live, the new window taken, and with a page's `area` the
+/// editor given its aspect (PR G); its picture's size (the resized one),
+/// the device's `$ref` and the resize. When no window could be taken, the
+/// editor (which this open turned on: the read found it closed) is turned
+/// off again through its ref, never another device's.
 async fn open_editor(
     live: Option<LiveHandle>,
     plugwin: Plugwin,
     key: EditorKey,
     listed: Option<Device>,
     session: u32,
+    area: Option<Area>,
     events: EventLog,
-) -> Result<((u32, u32), Value), String> {
+) -> Result<Opened, String> {
     let live = live.ok_or(UNKNOWN_INSTANCE)?;
     let listed = listed.ok_or(reason::UNKNOWN)?;
     let slots = live
@@ -261,7 +278,12 @@ async fn open_editor(
     {
         tracing::warn!(session, why = %why, "an editor whose window was not found could not be closed again in Live");
     }
-    taken.map(|size| (size, reference))
+    let size = taken?;
+    let resized = match area {
+        Some(area) => plugwin.resize(session, area).await,
+        None => None,
+    };
+    Ok((resized.map_or(size, |r| r.client), reference, resized))
 }
 
 /// The close sequence: the guard, its wait, the editor turned off in Live
@@ -285,6 +307,28 @@ async fn close_editor(
     };
     plugwin.release(session, !shut.left_open()).await;
     shut
+}
+
+/// The `eq` record of a resize as it settled (PR G): the size asked (`w`,
+/// `h`), the picture's size then, whether it landed, how long it took.
+pub fn resize_fields(key: &EditorKey, session: u32, resized: &Resized) -> Value {
+    let mut fields = record("resize", key, None, Some(session), None);
+    fields["w"] = json!(resized.asked.0);
+    fields["h"] = json!(resized.asked.1);
+    fields["client_w"] = json!(resized.client.0);
+    fields["client_h"] = json!(resized.client.1);
+    fields["ok"] = json!(resized.ok);
+    fields["ms"] = json!(resized.ms);
+    fields
+}
+
+/// The `eq` record of a picture grabbed at another size than the worker
+/// knew (PR G).
+pub fn sized_fields(key: &EditorKey, session: u32, size: (u32, u32)) -> Value {
+    let mut fields = record("sized", key, None, Some(session), None);
+    fields["w"] = json!(size.0);
+    fields["h"] = json!(size.1);
+    fields
 }
 
 /// The `eq` record of the capture's minute.
@@ -441,8 +485,15 @@ impl Router {
         }
     }
 
-    /// `client` opens the editor of the device at `path` on `instance`.
-    pub(super) fn eq_open(&mut self, client: ClientId, instance: &str, path: &str) {
+    /// `client` opens the editor of the device at `path` on `instance`,
+    /// its page's picture area with it (PR G).
+    pub(super) fn eq_open(
+        &mut self,
+        client: ClientId,
+        instance: &str,
+        path: &str,
+        area: Option<Area>,
+    ) {
         let wall = crate::live::wall_ms().unwrap_or(0.0);
         let Some(io) = self.eq.as_mut() else {
             if let Some(outbox) = self.clients.get(&client) {
@@ -451,8 +502,31 @@ impl Router {
             }
             return;
         };
+        io.state.keep_area(client, area);
         let acts = io.state.open(client, &EditorKey::new(instance, path), wall);
         self.eq_acts(acts);
+    }
+
+    /// `client`'s picture area changed (PR G): its open editor follows.
+    pub(super) fn eq_area(&mut self, client: ClientId, area: Area) {
+        if let Some(io) = self.eq.as_mut() {
+            let acts = io.state.area(client, area);
+            self.eq_acts(acts);
+        }
+    }
+
+    /// A resize of `key` (`session`) settled (PR G: the open's, or a
+    /// changed area's): recorded, and the state's picture size follows (an
+    /// editor still opening takes it from its open's answer).
+    pub(super) fn eq_resized(&mut self, key: &EditorKey, session: u32, resized: Option<&Resized>) {
+        let (Some(io), Some(resized)) = (self.eq.as_mut(), resized) else {
+            return;
+        };
+        tracing::info!(session, instance = %key.instance, w = resized.asked.0, h = resized.asked.1, client_w = resized.client.0, client_h = resized.client.1, ok = resized.ok, ms = resized.ms, "a Pro-Q 4 editor's resize settled");
+        io.state.sized(key, session, resized.client);
+        self.io
+            .events
+            .record("eq", resize_fields(key, session, resized));
     }
 
     /// An open sequence ended: the device's `$ref` is kept for its close,
@@ -543,6 +617,25 @@ impl Router {
                     json!({"what": "contact_ended", "session": session, "contact": contact, "why": why}),
                 );
             }
+            PlugwinEvent::Sized {
+                session,
+                width,
+                height,
+            } => {
+                let Some(key) = io.state.key_of(session) else {
+                    return;
+                };
+                io.state.sized(&key, session, (width, height));
+                tracing::info!(
+                    session,
+                    width,
+                    height,
+                    "a Pro-Q 4 editor's picture was grabbed at another size"
+                );
+                self.io
+                    .events
+                    .record("eq", sized_fields(&key, session, (width, height)));
+            }
             PlugwinEvent::Rate { session, rate } => {
                 tracing::info!(
                     session,
@@ -615,6 +708,7 @@ impl Router {
                 key,
                 session,
                 connection,
+                area,
             } => {
                 let (live, plugwin, tx, events) = (
                     self.live.get(&key.instance).cloned(),
@@ -625,10 +719,11 @@ impl Router {
                 let listed = io.state.device_of(&key).cloned();
                 tokio::spawn(async move {
                     let opened =
-                        open_editor(live, plugwin, key.clone(), listed, session, events).await;
-                    let (outcome, reference) = match opened {
-                        Ok((size, reference)) => (Ok(size), Some(reference)),
-                        Err(why) => (Err(why), None),
+                        open_editor(live, plugwin, key.clone(), listed, session, area, events)
+                            .await;
+                    let (outcome, reference, resized) = match opened {
+                        Ok((size, reference, resized)) => (Ok(size), Some(reference), resized),
+                        Err(why) => (Err(why), None, None),
                     };
                     let _ = tx.send(RouterMsg::EqOpened {
                         key,
@@ -636,6 +731,18 @@ impl Router {
                         outcome,
                         reference,
                         connection,
+                        resized,
+                    });
+                });
+            }
+            Act::Resize { key, session, area } => {
+                let (plugwin, tx) = (io.plugwin.clone(), self.io.tx.clone());
+                tokio::spawn(async move {
+                    let resized = plugwin.resize(session, area).await;
+                    let _ = tx.send(RouterMsg::EqResized {
+                        key,
+                        session,
+                        resized,
                     });
                 });
             }

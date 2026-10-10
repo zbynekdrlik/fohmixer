@@ -39,14 +39,24 @@
 //!   again after 1 ms, twice.
 //! - **Release:** the z-order as it was (`HWND_NOTOPMOST`, or topmost again
 //!   when it was), posted as the take's.
+//! - **Size (PR G):** the take keeps the window's rectangle
+//!   (`GetWindowRect`): what it has beyond the picture is added to a picture
+//!   size asked for. A resize is `SetWindowPos` of that size with
+//!   `SWP_ASYNCWINDOWPOS | SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE`
+//!   (posted to Live's thread as the z-order changes are; never a move);
+//!   whether it landed is the picture's client size (`GetClientRect`, a read
+//!   that sends no message). The room is the window's monitor's work area
+//!   (`MonitorFromWindow`, `GetMonitorInfoW` `rcWork`: the screen less the
+//!   taskbar) from where the window stands now (`plugwin::room`).
 
 use std::time::Duration;
 
 use windows::Win32::Foundation::{ERROR_NOT_READY, HANDLE, HWND, LPARAM, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BitBlt, ClientToScreen, CreateCompatibleBitmap,
-    CreateCompatibleDC, DIB_RGB_COLORS, DeleteDC, DeleteObject, GetDC, GetDIBits, RGBQUAD,
-    ReleaseDC, SRCCOPY, SelectObject,
+    CreateCompatibleDC, DIB_RGB_COLORS, DeleteDC, DeleteObject, GetDC, GetDIBits, GetMonitorInfoW,
+    MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow, RGBQUAD, ReleaseDC, SRCCOPY,
+    SelectObject,
 };
 use windows::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetThreadDpiAwarenessContext,
@@ -58,14 +68,14 @@ use windows::Win32::UI::Input::Pointer::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumChildWindows, EnumWindows, GA_ROOT, GWL_EXSTYLE, GetAncestor, GetClassNameW, GetClientRect,
-    GetCursorPos, GetWindowLongW, GetWindowThreadProcessId, HWND_NOTOPMOST, HWND_TOPMOST, IsWindow,
-    IsWindowVisible, PT_TOUCH, PostMessageW, SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOMOVE,
-    SWP_NOSIZE, SetCursorPos, SetWindowPos, TOUCH_FLAG_NONE, TOUCH_MASK_CONTACTAREA, WM_CLOSE,
-    WS_EX_TOPMOST, WindowFromPoint,
+    GetCursorPos, GetWindowLongW, GetWindowRect, GetWindowThreadProcessId, HWND_NOTOPMOST,
+    HWND_TOPMOST, IsWindow, IsWindowVisible, PT_TOUCH, PostMessageW, SWP_ASYNCWINDOWPOS,
+    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetCursorPos, SetWindowPos,
+    TOUCH_FLAG_NONE, TOUCH_MASK_CONTACTAREA, WM_CLOSE, WS_EX_TOPMOST, WindowFromPoint,
 };
 use windows::core::{BOOL, HRESULT};
 
-use super::{Backend, Phase, Pixels, Taken, WindowId};
+use super::{Backend, Phase, Pixels, Rect, Taken, WindowId, room, window_size};
 
 /// The class of Live's top-level plug-in editor windows.
 pub const EDITOR_CLASS: &str = "Vst3PlugWindow";
@@ -153,6 +163,43 @@ fn client_size(window: HWND) -> Result<(i32, i32), String> {
     // SAFETY: `rect` outlives the call.
     unsafe { GetClientRect(window, &mut rect) }.map_err(|e| format!("GetClientRect: {e}"))?;
     Ok((rect.right - rect.left, rect.bottom - rect.top))
+}
+
+/// A Win32 rectangle as the backend's.
+fn rect_of(rect: RECT) -> Rect {
+    Rect {
+        left: rect.left,
+        top: rect.top,
+        width: rect.right - rect.left,
+        height: rect.bottom - rect.top,
+    }
+}
+
+/// A window's rectangle on the screen (its frame included).
+fn window_rect(window: HWND) -> Result<Rect, String> {
+    let mut rect = RECT::default();
+    // SAFETY: `rect` outlives the call.
+    unsafe { GetWindowRect(window, &mut rect) }.map_err(|e| format!("GetWindowRect: {e}"))?;
+    Ok(rect_of(rect))
+}
+
+/// The work area of the monitor `window` is on (the screen less the
+/// taskbar).
+fn work_area(window: HWND) -> Result<Rect, String> {
+    // SAFETY: a plain query of a handle; the nearest monitor always answers.
+    let monitor = unsafe { MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST) };
+    let mut info = MONITORINFO {
+        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+        rcMonitor: RECT::default(),
+        rcWork: RECT::default(),
+        dwFlags: 0,
+    };
+    // SAFETY: `info` outlives the call, its size set as the call needs.
+    if unsafe { GetMonitorInfoW(monitor, &mut info) }.as_bool() {
+        Ok(rect_of(info.rcWork))
+    } else {
+        Err("GetMonitorInfoW failed".to_string())
+    }
 }
 
 /// A point of a window's client area on the screen.
@@ -401,6 +448,7 @@ impl Backend for Win {
         // The picture first: a refused window is left as it was.
         let picture = picture_of(picture_child(handle), handle, self.needs_child)?;
         let was_topmost = topmost(handle);
+        let rect = window_rect(handle)?;
         place(handle, true)?;
         let (width, height) = client_size(picture)?;
         Ok(Taken {
@@ -410,6 +458,7 @@ impl Backend for Win {
             was_topmost,
             width: u32::try_from(width).unwrap_or(0),
             height: u32::try_from(height).unwrap_or(0),
+            rect,
         })
     }
 
@@ -420,6 +469,36 @@ impl Backend for Win {
     fn alive(&mut self, taken: &Taken) -> bool {
         let (window, picture) = (hwnd(taken.window), hwnd(taken.picture));
         exists(window) && exists(picture) && visible(window)
+    }
+
+    fn room(&mut self, taken: &Taken) -> Result<(u32, u32), String> {
+        let window = hwnd(taken.window);
+        Ok(room(work_area(window)?, window_rect(window)?, taken))
+    }
+
+    fn resize(&mut self, taken: &Taken, client: (u32, u32)) -> Result<(), String> {
+        let (width, height) = window_size(taken, client);
+        // SAFETY: a size change of a handle, posted; a stale one fails.
+        unsafe {
+            SetWindowPos(
+                hwnd(taken.window),
+                None,
+                0,
+                0,
+                width,
+                height,
+                SWP_ASYNCWINDOWPOS | SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+            )
+        }
+        .map_err(|e| format!("SetWindowPos: {e}"))
+    }
+
+    fn client(&mut self, taken: &Taken) -> Result<(u32, u32), String> {
+        let (width, height) = client_size(hwnd(taken.picture))?;
+        Ok((
+            u32::try_from(width).unwrap_or(0),
+            u32::try_from(height).unwrap_or(0),
+        ))
     }
 
     fn grab(&mut self, taken: &Taken) -> Result<Pixels, String> {
@@ -573,9 +652,29 @@ mod tests {
             was_topmost: false,
             width: 0,
             height: 0,
+            rect: Rect::default(),
         };
         assert!(!backend.on_top(&none));
         assert!(!topmost(hwnd(WindowId(0))));
+        // No window has no size, room or resize (PR G).
+        assert!(backend.client(&none).is_err());
+        assert!(backend.room(&none).is_err());
+        assert!(backend.resize(&none, (800, 600)).is_err());
+        assert!(window_rect(hwnd(WindowId(0))).is_err());
+        assert_eq!(
+            rect_of(RECT {
+                left: 10,
+                top: 20,
+                right: 1375,
+                bottom: 868
+            }),
+            Rect {
+                left: 10,
+                top: 20,
+                width: 1365,
+                height: 848
+            }
+        );
     }
 
     #[test]

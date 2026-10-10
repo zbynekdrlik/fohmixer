@@ -410,10 +410,19 @@ fn handle_text(hub: &Hub, conn: &mut Conn, text: &str) {
             offset_ms: conn.offset,
         }),
         Ok(ClientMsg::EqList { binding }) => hub.route(RouterMsg::EqList { client, binding }),
-        Ok(ClientMsg::EqOpen { instance, path }) => hub.route(RouterMsg::EqOpen {
+        Ok(ClientMsg::EqOpen {
+            instance,
+            path,
+            area,
+        }) => hub.route(RouterMsg::EqOpen {
             client,
             instance,
             path,
+            area,
+        }),
+        Ok(ClientMsg::EqArea { w, h }) => hub.route(RouterMsg::EqArea {
+            client,
+            area: fohmixer_proto::eq::Area { w, h },
         }),
         Ok(ClientMsg::EqInput { touch, x, y }) => hub.route(RouterMsg::EqInput {
             client,

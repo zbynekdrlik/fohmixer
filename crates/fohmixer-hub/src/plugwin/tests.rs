@@ -47,6 +47,7 @@ fn worker_on(backend: Box<dyn Backend>) -> (Worker, Heard) {
         events: Arc::new(move |event: PlugwinEvent| into.lock().unwrap().push(event)),
         editors: BTreeMap::new(),
         finding: Vec::new(),
+        guarding: Vec::new(),
         contact: None,
         encoder: Encoder::spawn().unwrap(),
         clock: Box::new(|| NOW.with(Cell::get)),
@@ -1136,6 +1137,15 @@ impl Backend for Slow {
     fn alive(&mut self, taken: &Taken) -> bool {
         self.sim.alive(taken)
     }
+    fn room(&mut self, taken: &Taken) -> Result<(u32, u32), String> {
+        self.sim.room(taken)
+    }
+    fn resize(&mut self, taken: &Taken, client: (u32, u32)) -> Result<(), String> {
+        self.sim.resize(taken, client)
+    }
+    fn client(&mut self, taken: &Taken) -> Result<(u32, u32), String> {
+        self.sim.client(taken)
+    }
     fn grab(&mut self, taken: &Taken) -> Result<Pixels, String> {
         NOW.with(|clock| clock.set(clock.get() + self.grab_ms));
         self.sim.grab(taken)
@@ -1330,4 +1340,465 @@ async fn the_worker_thread_serves_its_handle_and_ends_at_the_stop() {
         .await
         .unwrap();
     assert!(heard.lock().unwrap().is_empty());
+}
+
+/// A page's picture area (PR G).
+fn area(w: f64, h: f64) -> Area {
+    Area { w, h }
+}
+
+/// An upright phone's area: the picture 667 × 1361 in the sim's room.
+const UPRIGHT: Area = Area { w: 392.0, h: 800.0 };
+
+/// The sim's resize records: the size asked.
+fn resizes(handle: &SimHandle) -> Vec<(i64, i64)> {
+    handle
+        .records()
+        .iter()
+        .filter(|r| r["op"] == "resize")
+        .map(|r| (r["w"].as_i64().unwrap(), r["h"].as_i64().unwrap()))
+        .collect()
+}
+
+/// A resize of `session` for `area` at `now`: its answer.
+fn resize_at(
+    worker: &mut Worker,
+    session: u32,
+    area: Area,
+    now: f64,
+) -> oneshot::Receiver<Option<Resized>> {
+    let (reply, answer) = oneshot::channel();
+    worker.command_at(
+        Command::Resize {
+            session,
+            area,
+            reply,
+        },
+        now,
+    );
+    answer
+}
+
+/// The guard of `session` at `now`: its answer.
+fn guard_at(worker: &mut Worker, session: u32, now: f64) -> oneshot::Receiver<Result<(), String>> {
+    let (reply, answer) = oneshot::channel();
+    worker.command_at(Command::Guard { session, reply }, now);
+    answer
+}
+
+/// The taken window as the sim takes it: Live's frame around its picture.
+fn taken_at(width: u32, height: u32, rect: Rect) -> Taken {
+    Taken {
+        window: WindowId(1),
+        picture: WindowId(2),
+        pid: 3,
+        was_topmost: false,
+        width,
+        height,
+        rect,
+    }
+}
+
+#[test]
+fn a_size_asked_adds_the_frame_and_the_room_runs_to_the_work_areas_edges() {
+    // Live's window: 1365 × 848 around a 1349 × 809 picture.
+    let rect = Rect {
+        left: 600,
+        top: 296,
+        width: 1365,
+        height: 848,
+    };
+    let taken = taken_at(1349, 809, rect);
+    assert_eq!(window_size(&taken, (760, 1271)), (776, 1310));
+    assert_eq!(window_size(&taken, (1349, 809)), (1365, 848));
+    let work = Rect {
+        left: 0,
+        top: 0,
+        width: 2560,
+        height: 1400,
+    };
+    // From where the window stands to the work area's far edges.
+    assert_eq!(room(work, rect, &taken), (1944, 1065));
+    let corner = Rect {
+        left: 0,
+        top: 0,
+        width: 1365,
+        height: 848,
+    };
+    assert_eq!(room(work, corner, &taken), (2544, 1361));
+    // A second screen right of the first, a window moved since its take.
+    let right = Rect {
+        left: 2560,
+        top: 10,
+        width: 1920,
+        height: 1040,
+    };
+    let moved = Rect {
+        left: 2600,
+        top: 50,
+        width: 1365,
+        height: 848,
+    };
+    assert_eq!(room(right, moved, &taken), (1864, 961));
+    // Past an edge: no room.
+    let past = Rect {
+        left: 2550,
+        top: 1390,
+        width: 1365,
+        height: 848,
+    };
+    assert_eq!(room(work, past, &taken), (0, 0));
+}
+
+#[test]
+fn a_resize_lands_within_2_px_or_settles_unlanded_after_1_s() {
+    assert_eq!((RESIZE_MS, RESIZE_SLACK), (1000.0, 2));
+    assert_eq!(MIN_PICTURE, (600, 400));
+    assert!(lands((667, 1361), (667, 1361)));
+    assert!(lands((669, 1359), (667, 1361)));
+    assert!(lands((665, 1363), (667, 1361)));
+    assert!(!lands((670, 1361), (667, 1361)));
+    assert!(!lands((667, 1358), (667, 1361)));
+    assert!(!lands((664, 1364), (667, 1361)));
+    assert!(!resize_over(1000.0_f64.next_down()));
+    assert!(resize_over(1000.0));
+    assert_eq!(settled((667, 1361), (667, 1361), 0.0), Some(true));
+    assert_eq!(settled((667, 1361), (667, 1361), 5000.0), Some(true));
+    assert_eq!(settled((1349, 809), (667, 1361), 999.0), None);
+    assert_eq!(settled((1349, 809), (667, 1361), 1000.0), Some(false));
+}
+
+#[test]
+fn the_guards_restore_waits_for_a_settling_resize_posts_then_taps_or_fails() {
+    use Restore::{Fail, Post, Tap, Wait};
+    // A resize of the editor still settles: the original goes after it.
+    assert_eq!(restore_step(true, None, true), Wait);
+    assert_eq!(restore_step(true, Some(5000.0), true), Wait);
+    // Not posted yet: posted, even when the size reads back already (a
+    // resize posted before may land after the read).
+    assert_eq!(restore_step(false, None, true), Post);
+    assert_eq!(restore_step(false, None, false), Post);
+    // Posted: back is a tap, whenever it comes; not back in time a failure.
+    assert_eq!(restore_step(false, Some(0.0), true), Tap);
+    assert_eq!(restore_step(false, Some(1000.0), true), Tap);
+    assert_eq!(restore_step(false, Some(999.0), false), Wait);
+    assert_eq!(restore_step(false, Some(1000.0), false), Fail);
+}
+
+#[test]
+fn a_grab_of_another_size_is_news_only_with_no_resize_on_its_way() {
+    assert!(regrown(false, (800, 600), (1349, 809)));
+    assert!(!regrown(false, (1349, 809), (1349, 809)));
+    assert!(!regrown(true, (800, 600), (1349, 809)));
+    assert!(!regrown(true, (1349, 809), (1349, 809)));
+}
+
+#[test]
+fn a_resize_posts_the_areas_size_and_answers_once_it_lands() {
+    let (mut worker, handle, heard) = worker();
+    let window = take(&mut worker, &handle, 1, 0.0);
+    let mut answer = resize_at(&mut worker, 1, UPRIGHT, 10.0);
+    assert_eq!(resizes(&handle), [(667, 1361)], "posted at once");
+    assert!(answer.try_recv().is_err(), "looked at in the step");
+    assert!(worker.editors[&1].changed);
+    worker.step_at(30.0);
+    assert_eq!(
+        answer.try_recv().unwrap(),
+        Some(Resized {
+            asked: (667, 1361),
+            client: (667, 1361),
+            ok: true,
+            ms: 20.0,
+        })
+    );
+    assert_eq!(worker.editors[&1].size, (667, 1361));
+    assert_eq!(handle.size(window), Some((667, 1361)));
+    // A side the minimum holds up: 30:1 is 2544 × 400.
+    let mut answer = resize_at(&mut worker, 1, area(3000.0, 100.0), 40.0);
+    worker.step_at(40.0);
+    let wide = answer.try_recv().unwrap().expect("a resize");
+    assert_eq!(
+        (wide.asked, wide.client, wide.ok),
+        ((2544, 400), (2544, 400), true)
+    );
+    // Nothing asked: no editor, an area with no shape.
+    let mut answer = resize_at(&mut worker, 9, UPRIGHT, 50.0);
+    assert_eq!(answer.try_recv().unwrap(), None);
+    let mut answer = resize_at(&mut worker, 1, area(0.0, 800.0), 50.0);
+    assert_eq!(answer.try_recv().unwrap(), None);
+    assert_eq!(resizes(&handle).len(), 2);
+    // Its frames follow the size, and no event says it again.
+    let (sink, _frames) = sink();
+    worker.command_at(Command::Capture { session: 1, sink }, 60.0);
+    worker.step_at(60.0);
+    assert_eq!(worker.editors[&1].counts.width, 2544);
+    let heard = heard.lock().unwrap().clone();
+    assert!(heard.is_empty(), "{heard:?}");
+}
+
+#[test]
+fn a_resize_that_does_not_land_settles_after_its_wait_and_a_newer_one_replaces_it() {
+    let (mut worker, handle, heard) = worker();
+    let window = take(&mut worker, &handle, 1, 0.0);
+    handle.resize_late(true);
+    let mut first = resize_at(&mut worker, 1, UPRIGHT, 100.0);
+    worker.step_at(100.0);
+    // A newer one replaces it: its caller hears nothing.
+    let mut answer = resize_at(&mut worker, 1, area(800.0, 320.0), 200.0);
+    assert!(first.try_recv().is_err());
+    worker.step_at(1199.0);
+    assert!(answer.try_recv().is_err(), "still waiting");
+    worker.step_at(1200.0);
+    assert_eq!(
+        answer.try_recv().unwrap(),
+        Some(Resized {
+            asked: (1652, 661),
+            client: (1349, 809),
+            ok: false,
+            ms: 1000.0,
+        })
+    );
+    assert!(worker.editors[&1].resizing.is_none());
+    // It lands late: the next grab says so (its points are of that size).
+    handle.resize_late(false);
+    assert_eq!(handle.size(window), Some((1652, 661)));
+    let (sink, _frames) = sink();
+    worker.command_at(Command::Capture { session: 1, sink }, 1300.0);
+    worker.step_at(1300.0);
+    assert_eq!(
+        heard.lock().unwrap().as_slice(),
+        [PlugwinEvent::Sized {
+            session: 1,
+            width: 1652,
+            height: 661
+        }]
+    );
+    assert_eq!(worker.editors[&1].size, (1652, 661));
+    worker.step_at(1340.0);
+    assert_eq!(heard.lock().unwrap().len(), 1, "said once");
+}
+
+#[test]
+fn a_window_resized_on_the_pc_is_reported_and_put_back_by_the_guard() {
+    let (mut worker, handle, heard) = worker();
+    let window = take(&mut worker, &handle, 1, 0.0);
+    let (sink, _frames) = sink();
+    worker.command_at(Command::Capture { session: 1, sink }, 0.0);
+    worker.step_at(0.0);
+    assert!(heard.lock().unwrap().is_empty());
+    handle.resize_window(window, (1000, 700));
+    worker.step_at(40.0);
+    assert_eq!(
+        heard.lock().unwrap().as_slice(),
+        [PlugwinEvent::Sized {
+            session: 1,
+            width: 1000,
+            height: 700
+        }]
+    );
+    let mut answer = guard_at(&mut worker, 1, 50.0);
+    worker.step_at(50.0);
+    worker.step_at(60.0);
+    assert_eq!(answer.try_recv().unwrap(), Ok(()));
+    assert_eq!(resizes(&handle), [(1349, 809)]);
+    assert_eq!(touches(&handle), [t("down", 546, 15), t("up", 546, 15)]);
+}
+
+#[test]
+fn the_guard_puts_the_editors_own_size_back_before_its_tap() {
+    let (mut worker, handle, _) = worker();
+    let window = take(&mut worker, &handle, 1, 0.0);
+    resize_at(&mut worker, 1, UPRIGHT, 0.0);
+    worker.step_at(0.0);
+    touch_at(&mut worker, 1, 1, Phase::Down, (300, 900), 5.0);
+    let mut answer = guard_at(&mut worker, 1, 10.0);
+    // The contact ends at once; the tap waits for the editor's own size.
+    assert_eq!(touches(&handle), [t("down", 300, 900), t("up", 300, 900)]);
+    assert!(answer.try_recv().is_err());
+    worker.step_at(10.0);
+    assert_eq!(resizes(&handle), [(667, 1361), (1349, 809)], "posted");
+    assert!(answer.try_recv().is_err(), "read back at the next look");
+    worker.step_at(20.0);
+    assert_eq!(answer.try_recv().unwrap(), Ok(()));
+    assert_eq!(handle.size(window), Some((1349, 809)));
+    // The tap at the inert spot of the editor's own width, after the
+    // restore.
+    let records = handle.records();
+    let ops: Vec<String> = records
+        .iter()
+        .map(|r| r["op"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        ops,
+        [
+            "take", "resize", "touch", "touch", "resize", "touch", "touch"
+        ]
+    );
+    assert_eq!(
+        touches(&handle)[2..],
+        [t("down", 546, 15), t("up", 546, 15)]
+    );
+    assert!(!worker.editors[&1].changed, "its own size again");
+    assert_eq!(worker.editors[&1].size, (1349, 809));
+    // At its own size again: a guard taps at once, and the release posts
+    // no size.
+    let mut answer = guard_at(&mut worker, 1, 30.0);
+    assert_eq!(answer.try_recv().unwrap(), Ok(()), "not changed: at once");
+    let (reply, _released) = oneshot::channel();
+    worker.command_at(
+        Command::Release {
+            session: 1,
+            closed: false,
+            reply,
+        },
+        40.0,
+    );
+    assert_eq!(resizes(&handle).len(), 2);
+}
+
+#[test]
+fn the_guard_waits_for_a_resize_on_its_way_then_puts_the_size_back() {
+    let (mut worker, handle, _) = worker();
+    take(&mut worker, &handle, 1, 0.0);
+    handle.resize_late(true);
+    let mut resized = resize_at(&mut worker, 1, UPRIGHT, 0.0);
+    let mut answer = guard_at(&mut worker, 1, 10.0);
+    // A resize while the guard runs is not asked.
+    let mut later = resize_at(&mut worker, 1, area(800.0, 320.0), 20.0);
+    assert_eq!(later.try_recv().unwrap(), None);
+    worker.step_at(500.0);
+    assert_eq!(resizes(&handle), [(667, 1361)], "the original waits");
+    worker.step_at(1000.0);
+    // Settled unlanded: the original is posted after it in the same step.
+    assert_eq!(resized.try_recv().unwrap().map(|r| r.ok), Some(false));
+    assert_eq!(resizes(&handle), [(667, 1361), (1349, 809)]);
+    assert!(answer.try_recv().is_err());
+    // The window's thread lands them in order: the original last.
+    handle.resize_late(false);
+    worker.step_at(1010.0);
+    assert_eq!(answer.try_recv().unwrap(), Ok(()));
+    assert_eq!(touches(&handle), [t("down", 546, 15), t("up", 546, 15)]);
+}
+
+#[test]
+fn a_guard_whose_size_never_comes_back_taps_nothing_and_the_release_posts_it_again() {
+    let (mut worker, handle, _) = worker();
+    let window = take(&mut worker, &handle, 1, 0.0);
+    resize_at(&mut worker, 1, UPRIGHT, 0.0);
+    worker.step_at(0.0);
+    handle.resize_refused(true);
+    let mut answer = guard_at(&mut worker, 1, 100.0);
+    worker.step_at(100.0);
+    worker.step_at(1099.0);
+    assert!(answer.try_recv().is_err(), "still waiting");
+    worker.step_at(1100.0);
+    assert_eq!(
+        answer.try_recv().unwrap(),
+        Err(format!(
+            "{NOT_BACK}: the picture is 667x1361, 1349x809 asked"
+        ))
+    );
+    assert_eq!(touches(&handle), Vec::new(), "no tap at an unknown spot");
+    assert!(worker.guarding.is_empty());
+    // The release (the router leaves the editor open) posts it again.
+    handle.resize_refused(false);
+    let (reply, _released) = oneshot::channel();
+    worker.command_at(
+        Command::Release {
+            session: 1,
+            closed: false,
+            reply,
+        },
+        1200.0,
+    );
+    assert_eq!(resizes(&handle), [(667, 1361), (1349, 809), (1349, 809)]);
+    assert_eq!(
+        handle.records().last(),
+        Some(&json!({"op": "release", "window": window.0})),
+        "the size before the z-order"
+    );
+    assert_eq!(handle.size(window), Some((1349, 809)));
+}
+
+#[test]
+fn a_guard_whose_window_goes_while_it_waits_fails() {
+    let (mut worker, handle, _) = worker();
+    let window = take(&mut worker, &handle, 1, 0.0);
+    handle.resize_late(true);
+    resize_at(&mut worker, 1, UPRIGHT, 0.0);
+    let mut answer = guard_at(&mut worker, 1, 10.0);
+    worker.step_at(10.0);
+    handle.remove_window(window);
+    // The step that finds it gone (the captures) comes after the guards'.
+    worker.step_at(20.0);
+    assert!(answer.try_recv().is_err());
+    worker.step_at(30.0);
+    assert_eq!(answer.try_recv().unwrap(), Err(NO_EDITOR.to_string()));
+    assert!(worker.guarding.is_empty());
+}
+
+#[test]
+fn the_stop_posts_a_changed_editors_own_size_before_handing_it_back() {
+    let (mut worker, handle, _) = worker();
+    take(&mut worker, &handle, 1, 0.0);
+    take(&mut worker, &handle, 2, 0.0);
+    resize_at(&mut worker, 2, UPRIGHT, 0.0);
+    worker.step_at(0.0);
+    let _waiting = guard_at(&mut worker, 2, 10.0);
+    worker.shutdown();
+    assert!(worker.guarding.is_empty());
+    let ops: Vec<(String, i64)> = handle
+        .records()
+        .iter()
+        .skip(2)
+        .map(|r| {
+            (
+                r["op"].as_str().unwrap().to_string(),
+                r["w"].as_i64().unwrap_or(0),
+            )
+        })
+        .collect();
+    assert_eq!(
+        ops,
+        [
+            ("resize".to_string(), 667),
+            ("release".to_string(), 0),
+            ("resize".to_string(), 1349),
+            ("release".to_string(), 0),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn the_handle_resizes_through_the_worker_thread() {
+    let (sim, handle) = Sim::new(None);
+    handle.still(true);
+    let plugwin = Plugwin::spawn(Box::new(sim), Arc::new(|_: PlugwinEvent| {})).unwrap();
+    let bounded = Duration::from_secs(5);
+    let size = tokio::time::timeout(bounded, plugwin.take(1, Vec::new()))
+        .await
+        .unwrap();
+    assert_eq!(size, Ok((1349, 809)));
+    let resized = tokio::time::timeout(bounded, plugwin.resize(1, UPRIGHT))
+        .await
+        .unwrap()
+        .expect("a resize");
+    assert_eq!(
+        (resized.asked, resized.client, resized.ok),
+        ((667, 1361), (667, 1361), true)
+    );
+    assert!(resized.ms < RESIZE_MS, "{resized:?}");
+    assert_eq!(plugwin.resize(2, UPRIGHT).await, None, "no such editor");
+    // The guard puts the size back before its tap.
+    assert_eq!(
+        tokio::time::timeout(bounded, plugwin.guard(1))
+            .await
+            .unwrap(),
+        Ok(())
+    );
+    assert_eq!(resizes(&handle), [(667, 1361), (1349, 809)]);
+    assert_eq!(touches(&handle), [t("down", 546, 15), t("up", 546, 15)]);
+    plugwin.stop();
+    assert!(plugwin.stopped().await);
+    assert_eq!(plugwin.resize(1, UPRIGHT).await, None, "stopped");
 }

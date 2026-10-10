@@ -7,7 +7,10 @@
 //! `eq-sim.jsonl`), the close through the guard (the inert spot tapped
 //! before `is_editor_open = false`), a switch to another editor, a closed
 //! socket's editor closed, a resting contact sent again and a silent page's
-//! contact ended, and the stop handing the window back.
+//! contact ended, and the stop handing the window back; PR G: an open with
+//! a page's picture area resizes the editor to its aspect before it answers,
+//! a changed area resizes it again, and the close puts the editor's own size
+//! back before the guard's tap.
 #![cfg(unix)]
 
 mod support;
@@ -17,7 +20,7 @@ use std::time::{Duration, Instant};
 
 use fohmixer_hub::config::{Config, EqBackend, EqCfg};
 use fohmixer_proto::client::{ClientMsg, ServerMsg};
-use fohmixer_proto::eq::{EqItem, EqLock, EqState, Touch, frame_parts, reason};
+use fohmixer_proto::eq::{Area, EqItem, EqLock, EqState, Touch, frame_parts, reason};
 use fohmixer_proto::layout::{Anchor, Binding};
 use serde_json::{Value, json};
 use support::{Client, Host, TestHub, runtime, serial};
@@ -112,6 +115,7 @@ async fn open(client: &mut Client, path: &str) -> u32 {
         .send(&ClientMsg::EqOpen {
             instance: "band".into(),
             path: path.into(),
+            area: None,
         })
         .await;
     let opening = state(client, path).await;
@@ -129,6 +133,7 @@ async fn open_refused(client: &mut Client, path: &str) -> Option<String> {
         .send(&ClientMsg::EqOpen {
             instance: "band".into(),
             path: path.into(),
+            area: None,
         })
         .await;
     let opening = state(client, path).await;
@@ -260,6 +265,7 @@ fn a_strips_pro_q_opens_sends_frames_takes_a_finger_and_closes_through_the_guard
         b.send(&ClientMsg::EqOpen {
             instance: "band".into(),
             path: ON_TRACK.into(),
+            area: None,
         })
         .await;
         let refused = state(&mut b, ON_TRACK).await;
@@ -279,6 +285,7 @@ fn a_strips_pro_q_opens_sends_frames_takes_a_finger_and_closes_through_the_guard
         b.send(&ClientMsg::EqOpen {
             instance: "band".into(),
             path: IN_CHAIN.into(),
+            area: None,
         })
         .await;
         let refused = state(&mut b, IN_CHAIN).await;
@@ -359,6 +366,7 @@ fn only_a_listed_pro_q_opens_and_a_missing_track_says_why() {
         a.send(&ClientMsg::EqOpen {
             instance: "band".into(),
             path: ON_TRACK.into(),
+            area: None,
         })
         .await;
         let refused = state(&mut a, ON_TRACK).await;
@@ -471,6 +479,7 @@ fn another_pro_q_closes_the_first_and_a_closed_socket_closes_its_own() {
         a.send(&ClientMsg::EqOpen {
             instance: "band".into(),
             path: IN_CHAIN.into(),
+            area: None,
         })
         .await;
         let first = state(&mut a, ON_TRACK).await;
@@ -840,6 +849,118 @@ fn a_resting_finger_goes_again_until_its_page_falls_silent() {
         // The stop hands the window back (the editor stays open in Live).
         hub.stop().await;
         sim_until(dir.path(), &[step("release", "", -1, -1)]).await;
+        host.stop();
+    });
+}
+
+/// Opens `path` for `client` with a page's picture `area` (PR G): its
+/// session and the picture's size.
+async fn open_with(client: &mut Client, path: &str, area: Area) -> (u32, (u32, u32)) {
+    client
+        .send(&ClientMsg::EqOpen {
+            instance: "band".into(),
+            path: path.into(),
+            area: Some(area),
+        })
+        .await;
+    let opening = state(client, path).await;
+    assert_eq!(opening.0, EqState::Opening, "{opening:?}");
+    let open = state(client, path).await;
+    assert_eq!(open.0, EqState::Open, "{open:?}");
+    (open.1.expect("a session"), open.2.expect("a size"))
+}
+
+/// The sim's records as op and the size asked or the point.
+fn sized_ops(dir: &Path) -> Vec<(String, String, i64, i64)> {
+    sim_records(dir)
+        .iter()
+        .map(|r| {
+            let (o, phase, x, y) = op(r);
+            let w = r["w"].as_i64().unwrap_or(x);
+            let h = r["h"].as_i64().unwrap_or(y);
+            (o, phase, w, h)
+        })
+        .collect()
+}
+
+#[test]
+fn an_open_with_an_upright_area_gets_its_aspect_and_its_close_puts_its_size_back_first() {
+    let _serial = serial();
+    runtime().block_on(async {
+        let host = Host::start("band");
+        let dir = tempfile::tempdir().unwrap();
+        let hub = TestHub::start_config(config(dir.path(), &host)).await;
+        let mut a = client(&hub).await;
+        a.send(&ClientMsg::EqList { binding: hand2() }).await;
+        listed(&mut a).await;
+        // An upright phone's area (CSS px): the editor gets its aspect at
+        // Pro-Q's pixel count, within the room, before the open answers.
+        let area = Area { w: 390.0, h: 796.0 };
+        let (session, size) = open_with(&mut a, ON_TRACK, area).await;
+        assert_eq!(size, (667, 1361));
+        let aspect = f64::from(size.0) / f64::from(size.1);
+        assert!((aspect - area.w / area.h).abs() < 0.002, "{aspect}");
+        // Its frames are the new picture.
+        let frame = a.frame(WAIT).await.expect("a frame");
+        assert_eq!(frame_parts(&frame).unwrap().0, session);
+        // A finger past the old height lands.
+        input(&mut a, Touch::Down, 300.0, 1200.0).await;
+        input(&mut a, Touch::Up, 300.0, 1200.0).await;
+        // The phone turned: a new area, resized again.
+        a.send(&ClientMsg::EqArea { w: 844.0, h: 346.0 }).await;
+        let resized = |records: &[Value]| {
+            records
+                .iter()
+                .filter(|r| r["ev"] == "eq" && r["what"] == "resize")
+                .count()
+        };
+        hub.events_until(WAIT, |records| resized(records) == 2)
+            .await;
+        // Leaving: the editor's own size first, then the guard's tap.
+        a.send(&ClientMsg::EqClose).await;
+        let closed = state(&mut a, ON_TRACK).await;
+        assert_eq!(
+            (closed.0, closed.3.as_deref()),
+            (EqState::Closed, Some("exit"))
+        );
+        editor_open(&mut a, ON_TRACK, false).await;
+        let ops = sized_ops(dir.path());
+        let want = [
+            step("take", "", -1, -1),
+            step("resize", "", 667, 1361),
+            step("touch", "down", 300, 1200),
+            step("touch", "up", 300, 1200),
+            step("resize", "", 1632, 669),
+            step("resize", "", 1349, 809),
+            step("touch", "down", 546, 15),
+            step("touch", "up", 546, 15),
+            step("release", "", -1, -1),
+        ];
+        let rest: Vec<_> = ops.into_iter().filter(|o| o.1 != "update").collect();
+        assert_eq!(rest, want);
+        // The records: the open's resize before its `opened`, the turn's
+        // after.
+        let want: Vec<String> = [
+            "take", "open", "resize", "opened", "touch", "touch", "resize", "close", "closed",
+        ]
+        .map(String::from)
+        .to_vec();
+        let records = hub
+            .events_until(WAIT, |records| in_order(&eq_whats(records), &want))
+            .await;
+        let resizes: Vec<(Value, Value, Value)> = records
+            .iter()
+            .filter(|r| r["ev"] == "eq" && r["what"] == "resize")
+            .map(|r| (r["w"].clone(), r["h"].clone(), r["ok"].clone()))
+            .collect();
+        assert_eq!(
+            resizes,
+            [
+                (json!(667), json!(1361), json!(true)),
+                (json!(1632), json!(669), json!(true)),
+            ]
+        );
+        hub.stop().await;
         host.stop();
     });
 }

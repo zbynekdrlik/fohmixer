@@ -228,6 +228,7 @@ async fn a_new_client_hears_the_locks_and_an_unlisted_open_is_refused() {
         client: 1,
         instance: "band".into(),
         path: PATH.into(),
+        area: None,
     });
     assert_eq!(
         eq_msgs(&outbox),
@@ -325,6 +326,7 @@ async fn a_listed_editor_is_known_and_says_whether_a_picture_is_kept() {
         client: 1,
         instance: "band".into(),
         path: inner.into(),
+        area: None,
     });
     let opening = eq_msgs(&outbox);
     assert_eq!(
@@ -371,6 +373,7 @@ async fn an_open_after_its_instance_connected_again_is_refused_until_listed() {
         client: 1,
         instance: "band".into(),
         path: PATH.into(),
+        area: None,
     });
     assert_eq!(
         eq_msgs(&outbox),
@@ -470,6 +473,7 @@ async fn an_open_of_an_offline_instance_fails_and_frees_the_editor() {
         client: 1,
         instance: "band".into(),
         path: PATH.into(),
+        area: None,
     });
     outbox.take();
     other.take();
@@ -748,7 +752,16 @@ async fn the_close_sequence_leaves_an_editor_open_when_its_guard_fails() {
         })
     };
     assert_eq!(
-        open_editor(None, plugwin.clone(), key(), name(), 3, events.clone()).await,
+        open_editor(
+            None,
+            plugwin.clone(),
+            key(),
+            name(),
+            3,
+            None,
+            events.clone()
+        )
+        .await,
         Err(UNKNOWN_INSTANCE.to_string())
     );
     assert_eq!(
@@ -758,6 +771,7 @@ async fn the_close_sequence_leaves_an_editor_open_when_its_guard_fails() {
             key(),
             None,
             3,
+            None,
             events.clone()
         )
         .await,
@@ -770,6 +784,7 @@ async fn the_close_sequence_leaves_an_editor_open_when_its_guard_fails() {
             key(),
             name(),
             3,
+            None,
             events.clone()
         )
         .await,
@@ -822,6 +837,7 @@ async fn an_opened_editors_ref_is_kept_for_its_close_only() {
         outcome: Ok((1349, 809)),
         reference: Some(reference.clone()),
         connection: 0,
+        resized: None,
     });
     assert!(rig.router.eq.as_ref().unwrap().refs.is_empty());
     rig.router.handle(RouterMsg::EqOpened {
@@ -830,6 +846,7 @@ async fn an_opened_editors_ref_is_kept_for_its_close_only() {
         outcome: Ok((1349, 809)),
         reference: Some(reference.clone()),
         connection: 0,
+        resized: None,
     });
     assert_eq!(
         rig.router.eq.as_ref().unwrap().refs.get(&1),
@@ -863,6 +880,7 @@ async fn an_open_answered_after_its_instance_connected_again_keeps_no_ref() {
         outcome: Ok((1349, 809)),
         reference: Some(reference.clone()),
         connection,
+        resized: None,
     });
     assert!(rig.router.eq.as_ref().unwrap().refs.is_empty());
     // The same answer from the connection now keeps it.
@@ -874,6 +892,7 @@ async fn an_open_answered_after_its_instance_connected_again_keeps_no_ref() {
         outcome: Ok((1349, 809)),
         reference: Some(reference.clone()),
         connection: now,
+        resized: None,
     });
     assert_eq!(
         rig.router.eq.as_ref().unwrap().refs.get(&1),
@@ -947,6 +966,7 @@ async fn a_hub_without_the_screen_says_so() {
         client: 1,
         instance: "band".into(),
         path: PATH.into(),
+        area: None,
     });
     router.handle(RouterMsg::EqInput {
         client: 1,
@@ -970,11 +990,29 @@ async fn a_hub_without_the_screen_says_so() {
         outcome: Ok((1, 1)),
         reference: Some(json!({"$ref": "live_1"})),
         connection: 0,
+        resized: None,
     });
     router.handle(RouterMsg::EqListed {
         client: 1,
         binding: hand2(),
         outcome: Ok(Vec::new()),
+    });
+    // PR G: an area, a resize's answer and a size are nothing here either.
+    router.handle(RouterMsg::EqArea {
+        client: 1,
+        area: UPRIGHT,
+    });
+    router.handle(RouterMsg::EqResized {
+        key: key(),
+        session: 1,
+        resized: Some(LANDED),
+    });
+    router.handle(RouterMsg::EqWorker {
+        event: PlugwinEvent::Sized {
+            session: 1,
+            width: 800,
+            height: 600,
+        },
     });
     assert_eq!(
         eq_msgs(&outbox),
@@ -988,4 +1026,212 @@ async fn a_hub_without_the_screen_says_so() {
         ]
     );
     router.eq_stop();
+}
+
+/// An upright phone's picture area (PR G): 667 × 1361 in the sim's room.
+const UPRIGHT: Area = Area { w: 392.0, h: 800.0 };
+
+/// A resize to [`UPRIGHT`] that landed.
+const LANDED: Resized = Resized {
+    asked: (667, 1361),
+    client: (667, 1361),
+    ok: true,
+    ms: 12.5,
+};
+
+/// The `eq` records waiting.
+fn eq_records(records: &Receiver<Value>) -> Vec<Value> {
+    records.try_iter().filter(|r| r["ev"] == "eq").collect()
+}
+
+/// The sim's records but a resting finger's resends: op, then the point
+/// or the size asked.
+fn sim_steps(sim: &SimHandle) -> Vec<(String, i64, i64)> {
+    sim.records()
+        .iter()
+        .filter(|r| r["phase"] != "update")
+        .map(|r| {
+            let at = |a: &str, b: &str| r[a].as_i64().or(r[b].as_i64()).unwrap_or(-1);
+            let op = match r["phase"].as_str() {
+                Some(phase) => format!("{} {phase}", r["op"].as_str().unwrap()),
+                None => r["op"].as_str().unwrap().to_string(),
+            };
+            (op, at("x", "w"), at("y", "h"))
+        })
+        .collect()
+}
+
+#[test]
+fn a_resize_and_a_new_size_are_eq_records() {
+    let resized = Resized {
+        asked: (1652, 661),
+        client: (1349, 809),
+        ok: false,
+        ms: 1000.0,
+    };
+    assert_eq!(
+        resize_fields(&key(), 3, &resized),
+        json!({"what": "resize", "instance": "band", "path": PATH, "client": null,
+               "session": 3, "why": null, "w": 1652, "h": 661, "client_w": 1349,
+               "client_h": 809, "ok": false, "ms": 1000.0})
+    );
+    assert_eq!(
+        sized_fields(&key(), 4, (800, 600)),
+        json!({"what": "sized", "instance": "band", "path": PATH, "client": null,
+               "session": 4, "why": null, "w": 800, "h": 600})
+    );
+}
+
+#[tokio::test]
+async fn an_open_answer_with_its_resize_records_it_before_the_opened() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut rig = rig(dir.path());
+    let outbox = attach(&mut rig.router, 1);
+    let io = rig.router.eq.as_mut().unwrap();
+    io.state.listed("band", "live_set tracks 1", [found_key()]);
+    io.state.open(1, &key(), 0.0);
+    let _ = rig.records.try_iter().count();
+    outbox.take();
+    rig.router.handle(RouterMsg::EqOpened {
+        key: key(),
+        session: 1,
+        outcome: Ok((667, 1361)),
+        reference: None,
+        connection: 0,
+        resized: Some(LANDED),
+    });
+    let records = eq_records(&rig.records);
+    let whats: Vec<&str> = records
+        .iter()
+        .map(|r| r["what"].as_str().unwrap())
+        .collect();
+    assert_eq!(whats, ["resize", "opened"]);
+    assert_eq!(records[0], resize_fields(&key(), 1, &LANDED));
+    // The page hears the resized picture's size.
+    assert_eq!(
+        eq_msgs(&outbox)[0],
+        crate::eq::open_msg(&key(), 1, 667, 1361)
+    );
+}
+
+#[tokio::test]
+async fn a_changed_area_resizes_the_open_editor_and_its_close_puts_its_size_back_first() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut rig = rig(dir.path());
+    let _outbox = held_open(&mut rig).await;
+    // Another client's area resizes nothing.
+    rig.router.handle(RouterMsg::EqArea {
+        client: 2,
+        area: UPRIGHT,
+    });
+    rig.router.handle(RouterMsg::EqArea {
+        client: 1,
+        area: UPRIGHT,
+    });
+    let msg = next_of(&mut rig.rx, |m| matches!(m, RouterMsg::EqResized { .. })).await;
+    let RouterMsg::EqResized {
+        session, resized, ..
+    } = &msg
+    else {
+        unreachable!()
+    };
+    assert_eq!(*session, 1);
+    let resized = resized.expect("a resize");
+    assert_eq!(
+        (resized.asked, resized.client, resized.ok),
+        ((667, 1361), (667, 1361), true)
+    );
+    rig.router.handle(msg);
+    let records = eq_records(&rig.records);
+    assert_eq!(records.len(), 1, "{records:?}");
+    assert_eq!(records[0]["what"], "resize");
+    assert_eq!(
+        (records[0]["w"].clone(), records[0]["h"].clone()),
+        (json!(667), json!(1361))
+    );
+    // Its points are of the new size: one below its old height lands.
+    for touch in [Touch::Down, Touch::Up] {
+        rig.router.handle(RouterMsg::EqInput {
+            client: 1,
+            touch,
+            x: 700.0,
+            y: 1300.0,
+        });
+    }
+    sim_until(&rig.sim, "the up", |r| r.iter().any(|r| r["phase"] == "up")).await;
+    // The close: the editor's own size back, then the guard's tap.
+    rig.router.handle(RouterMsg::EqClose { client: 1 });
+    let closed = next_of(&mut rig.rx, |m| matches!(m, RouterMsg::EqClosed { .. })).await;
+    rig.router.handle(closed);
+    let step = |op: &str, a: i64, b: i64| (op.to_string(), a, b);
+    assert_eq!(
+        sim_steps(&rig.sim),
+        [
+            step("take", -1, -1),
+            step("resize", 667, 1361),
+            step("touch down", 666, 1300),
+            step("touch up", 666, 1300),
+            step("resize", 1349, 809),
+            step("touch down", 546, 15),
+            step("touch up", 546, 15),
+            step("release", -1, -1),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_picture_grabbed_at_another_size_is_recorded_and_clamps_the_points() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut rig = rig(dir.path());
+    let _outbox = held_open(&mut rig).await;
+    rig.router.eq_worker(PlugwinEvent::Sized {
+        session: 9,
+        width: 800,
+        height: 600,
+    });
+    assert!(
+        eq_records(&rig.records).is_empty(),
+        "not a session given out"
+    );
+    rig.router.eq_worker(PlugwinEvent::Sized {
+        session: 1,
+        width: 800,
+        height: 600,
+    });
+    assert_eq!(
+        eq_records(&rig.records),
+        [sized_fields(&key(), 1, (800, 600))]
+    );
+    rig.router.handle(RouterMsg::EqInput {
+        client: 1,
+        touch: Touch::Down,
+        x: 900.0,
+        y: 700.0,
+    });
+    sim_until(&rig.sim, "the down", |r| {
+        r.iter()
+            .any(|r| r["phase"] == "down" && r["x"] == 799 && r["y"] == 599)
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_resize_answer_of_no_resize_records_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut rig = rig(dir.path());
+    let _outbox = held_open(&mut rig).await;
+    rig.router.handle(RouterMsg::EqResized {
+        key: key(),
+        session: 1,
+        resized: None,
+    });
+    assert!(eq_records(&rig.records).is_empty());
+    // A page's area with no shape: the worker asks nothing, and says so.
+    rig.router.handle(RouterMsg::EqArea {
+        client: 1,
+        area: Area { w: 0.0, h: 800.0 },
+    });
+    let msg = next_of(&mut rig.rx, |m| matches!(m, RouterMsg::EqResized { .. })).await;
+    assert!(matches!(msg, RouterMsg::EqResized { resized: None, .. }));
+    assert!(rig.sim.records().iter().all(|r| r["op"] != "resize"));
 }

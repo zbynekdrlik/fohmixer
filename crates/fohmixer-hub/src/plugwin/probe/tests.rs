@@ -14,6 +14,8 @@ fn args(pid: u32) -> Args {
         out: None,
         close: false,
         sim: false,
+        size: None,
+        min_probe: false,
     }
 }
 
@@ -34,6 +36,9 @@ fn the_arguments_have_their_defaults_and_every_flag_is_read() {
             "--out",
             "frames",
             "--close",
+            "--size",
+            " 760 x 1271 ",
+            "--min-probe",
             "--pid",
             "7",
         ]),
@@ -46,7 +51,28 @@ fn the_arguments_have_their_defaults_and_every_flag_is_read() {
             out: Some(PathBuf::from("frames")),
             close: true,
             sim: true,
+            size: Some((760, 1271)),
+            min_probe: true,
         })
+    );
+    for bad in [
+        "760",
+        "0x1271",
+        "760x0",
+        "ax1271",
+        "760x",
+        "-760x1271",
+        "760,1271",
+    ] {
+        assert_eq!(
+            parse(&["--pid", "1", "--size", bad]),
+            Err(format!("--size {bad:?}")),
+            "{bad}"
+        );
+    }
+    assert_eq!(
+        parse(&["--pid", "1", "--size", "1x1"]).unwrap().size,
+        Some((1, 1))
     );
     assert_eq!(parse(&[]), Err("--pid is required".to_string()));
     assert_eq!(parse(&["--pid"]), Err("--pid needs a value".to_string()));
@@ -266,6 +292,7 @@ fn a_step_that_fails_ends_its_contact_and_hands_the_window_back() {
             taken,
             contact: None,
             released: false,
+            changed: false,
         };
         held.touch(Phase::Down, (10, 20), "drag").unwrap();
         held.touch(Phase::Update, (11, 21), "drag").unwrap();
@@ -295,6 +322,7 @@ fn a_step_that_fails_ends_its_contact_and_hands_the_window_back() {
             taken,
             contact: None,
             released: false,
+            changed: false,
         };
         held.touch(Phase::Down, (1, 2), "tap").unwrap();
         held.touch(Phase::Up, (1, 2), "tap").unwrap();
@@ -322,6 +350,7 @@ fn a_step_that_fails_ends_its_contact_and_hands_the_window_back() {
             taken,
             contact: Some((5, 6)),
             released: false,
+            changed: false,
         };
         assert_eq!(held.guard_tap((3, 4)), Err(REFUSED.to_string()));
         assert_eq!(
@@ -357,4 +386,175 @@ fn the_probes_backend_is_the_sim_or_the_platforms() {
 /// `backend` without `Debug` on its value.
 fn backend_of(args: &Args) -> Result<(), String> {
     backend(args).map(|_| ())
+}
+
+#[test]
+fn a_point_keeps_its_place_on_a_resized_picture() {
+    assert_eq!(scaled((431, 321), (1349, 809), (760, 1271)), (243, 504));
+    assert_eq!(scaled((511, 281), (1349, 809), (760, 1271)), (288, 441));
+    assert_eq!(scaled((431, 321), (1349, 809), (1349, 809)), (431, 321));
+    assert_eq!(scaled((1349, 809), (1349, 809), (760, 1271)), (760, 1271));
+    // No picture to scale from: as from 1 px (never a division by 0).
+    assert_eq!(scaled((100, 50), (0, 0), (200, 100)), (20_000, 5_000));
+    assert_eq!(MIN_PROBE, (160, 120));
+    assert_eq!(RESIZE_LOOKS, 100);
+}
+
+#[test]
+fn a_probe_resizes_runs_its_gestures_at_the_new_size_and_restores_before_the_guard() {
+    let (mut sim, handle, window) = one_window(42);
+    let dir = tempfile::tempdir().unwrap();
+    let folder = dir.path().join("frames");
+    let mut probe = args(42);
+    probe.frames = 2;
+    probe.size = Some((760, 1271));
+    probe.out = Some(folder.clone());
+    let mut out = Vec::new();
+    run(&mut sim, &probe, &mut out).unwrap();
+    let text = String::from_utf8(out).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines[1], "picture=1349x809 child=false was_topmost=false");
+    assert!(
+        lines[2].starts_with("resize=ok client=760x1271 ms="),
+        "{text}"
+    );
+    assert_eq!(lines[3], "frames=2 sent=1 same=1");
+    assert_eq!(
+        lines[7..],
+        [
+            "band=ok at=243,504",
+            "drag=ok steps=25 to=288,441",
+            "field=ok",
+            lines[10],
+            "guard=ok at=546,15 tap_ms=30",
+            "release=ok",
+        ]
+    );
+    assert!(
+        lines[10].starts_with("restore=ok client=1349x809 ms="),
+        "{text}"
+    );
+    let (band, to) = ((243, 504), (288, 441));
+    let mut want = vec![op("take", "", -1, -1), op("resize", "", -1, -1)];
+    for _ in 0..2 {
+        want.push(op("touch", "down", band.0, band.1));
+        want.push(op("touch", "up", band.0, band.1));
+    }
+    want.push(op("touch", "down", band.0, band.1));
+    for (x, y) in drag_points((243, 504), (288, 441), DRAG_STEPS) {
+        want.push(op("touch", "update", x.into(), y.into()));
+    }
+    for _ in 0..RESENDS {
+        want.push(op("touch", "update", to.0, to.1));
+    }
+    want.push(op("touch", "up", to.0, to.1));
+    for _ in 0..2 {
+        want.push(op("touch", "down", to.0, to.1));
+        want.push(op("touch", "up", to.0, to.1));
+    }
+    want.push(op("resize", "", -1, -1));
+    want.push(op("touch", "down", 546, 15));
+    want.push(op("touch", "up", 546, 15));
+    want.push(op("release", "", -1, -1));
+    assert_eq!(ops(&handle), want);
+    let sizes: Vec<(u64, u64)> = handle
+        .records()
+        .iter()
+        .filter(|r| r["op"] == "resize")
+        .map(|r| (r["w"].as_u64().unwrap(), r["h"].as_u64().unwrap()))
+        .collect();
+    assert_eq!(sizes, [(760, 1271), (1349, 809)]);
+    assert_eq!(handle.size(window), Some((1349, 809)));
+    assert!(folder.join("after-resize.jpg").exists());
+}
+
+#[test]
+fn a_min_probe_reads_the_editors_own_minimum_and_puts_its_size_back() {
+    let (mut sim, handle, window) = one_window(42);
+    let mut probe = args(42);
+    probe.frames = 1;
+    probe.min_probe = true;
+    let mut out = Vec::new();
+    let started = Instant::now();
+    run(&mut sim, &probe, &mut out).unwrap();
+    // It never lands: the probe waits the whole second.
+    assert!(started.elapsed() >= Duration::from_millis(1000));
+    let text = String::from_utf8(out).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines[2], "min=320x240 asked=160x120", "{text}");
+    assert!(
+        lines[3].starts_with("min_restore=ok client=1349x809 ms="),
+        "{text}"
+    );
+    assert_eq!(lines[4], "frames=1 sent=1 same=0");
+    assert!(!text.contains("\nrestore="), "back already: {text}");
+    assert!(text.contains("\nband=ok at=431,321\n"), "{text}");
+    let resizes = ops(&handle).into_iter().filter(|o| o.0 == "resize").count();
+    assert_eq!(resizes, 2);
+    assert_eq!(handle.size(window), Some((1349, 809)));
+}
+
+#[test]
+fn a_resize_that_does_not_land_fails_the_probe_and_its_size_is_put_back() {
+    let (mut sim, handle, _) = one_window(42);
+    handle.resize_refused(true);
+    let mut probe = args(42);
+    probe.frames = 1;
+    probe.size = Some((760, 1271));
+    let mut out = Vec::new();
+    let failed = run(&mut sim, &probe, &mut out).unwrap_err();
+    assert!(
+        failed.starts_with("resize: 760x1271 asked, the picture is 1349x809 after "),
+        "{failed}"
+    );
+    assert_eq!(
+        ops(&handle),
+        vec![
+            op("take", "", -1, -1),
+            op("resize", "", -1, -1),
+            op("resize", "", -1, -1),
+            op("release", "", -1, -1),
+        ],
+        "its own size posted again, then released"
+    );
+}
+
+#[test]
+fn a_resize_says_how_it_settled_or_why_it_was_not_posted() {
+    let (mut sim, handle, window) = one_window(42);
+    let taken = sim.take(window).unwrap();
+    let mut held = Held {
+        backend: &mut sim,
+        taken,
+        contact: None,
+        released: false,
+        changed: false,
+    };
+    let landed = held.resize((760, 1271)).unwrap();
+    assert_eq!((landed.client, landed.why.as_deref()), ((760, 1271), None));
+    assert!(held.changed);
+    assert_eq!(
+        landed.figures(),
+        format!("client=760x1271 ms={:.0}", landed.ms)
+    );
+    let back = held.resize((1349, 809)).unwrap();
+    assert_eq!(back.client, (1349, 809));
+    assert!(!held.changed, "its own size again");
+    handle.remove_window(window);
+    let lost = held.resize((760, 1271)).unwrap_err();
+    assert_eq!(lost.why.as_deref(), Some("no such window"));
+    assert_eq!(
+        lost.failure("resize", (760, 1271)),
+        "resize: 760x1271 could not be posted: no such window"
+    );
+    let unlanded = Settle {
+        client: (1349, 809),
+        ms: 1000.4,
+        why: None,
+    };
+    assert_eq!(
+        unlanded.failure("restore", (1349, 809)),
+        "restore: 1349x809 asked, the picture is 1349x809 after 1000 ms"
+    );
+    assert_eq!(unlanded.figures(), "client=1349x809 ms=1000");
 }

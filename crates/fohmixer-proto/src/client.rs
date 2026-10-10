@@ -11,14 +11,15 @@
 //! the exchange; `link` reports Live's main-thread health. `cmd` stays for
 //! reads and multi-command batches.
 //!
-//! The Pro-Q 4 screen (#71 PR E, F28): `eq_list`, `eq_open`, `eq_input`,
-//! `eq_close` and `eq`, `eq_list`, `eq_locks` (their pieces and the binary
-//! frames the hub sends an open editor's holder: [`crate::eq`]).
+//! The Pro-Q 4 screen (#71 PR E, F28): `eq_list`, `eq_open`, `eq_area`
+//! (PR G), `eq_input`, `eq_close` and `eq`, `eq_list`, `eq_locks` (their
+//! pieces and the binary frames the hub sends an open editor's holder:
+//! [`crate::eq`]).
 
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
-use crate::eq::{EqItem, EqLock, EqState, Touch};
+use crate::eq::{Area, EqItem, EqLock, EqState, Touch};
 use crate::layout::Binding;
 use crate::path::canonical_target;
 
@@ -134,8 +135,20 @@ pub enum ClientMsg {
     /// Opens the editor of the Pro-Q 4 at `path` (an `eq_list` item's) on
     /// `instance` for this client, closing the one it holds first; answered
     /// by `eq` (`opening`, then `open` or `closed` with why: another client
-    /// holds it, `locked`).
-    EqOpen { instance: String, path: String },
+    /// holds it, `locked`). `area` (PR G): the page's picture area, whose
+    /// aspect the hub gives the editor before it answers `open`; none keeps
+    /// the editor's own size.
+    EqOpen {
+        instance: String,
+        path: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        area: Option<Area>,
+    },
+    /// The page's picture area changed while it holds an open editor (PR G:
+    /// a phone turned, a window resized; the page waits for it to settle):
+    /// the hub gives the editor that aspect. Its frames then carry the new
+    /// picture.
+    EqArea { w: f64, h: f64 },
     /// A finger on this client's open editor: `x`, `y` in the picture's
     /// pixels (the hub clamps them to the picture).
     EqInput { touch: Touch, x: f64, y: f64 },

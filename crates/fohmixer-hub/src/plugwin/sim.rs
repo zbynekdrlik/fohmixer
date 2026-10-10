@@ -23,6 +23,16 @@
 //! time (`grab_delay`) as the PC's BitBlt of a 4.3 MB picture does, or hold
 //! a take's place on top back (`topmost_late`: the Windows take posts its
 //! z-order change, and Live's busy thread lands it later).
+//!
+//! **Its windows have a size (PR G):** each one's picture, [`SIM_WIDTH`] ×
+//! [`SIM_HEIGHT`] when it opens, with Live's frame around it
+//! ([`SIM_FRAME`]), in the top-left corner of the PC's screen
+//! ([`SIM_WORK`]). A resize is recorded (`{"op": "resize", "window", "w",
+//! "h"}`, the picture size asked) and lands at once, the picture never below
+//! [`SIM_MIN`] (Pro-Q's own minimum stands in its way); a test can make it
+//! land late (`resize_late`: posted, landing when the switch goes off) or
+//! never (`resize_refused`), or resize a window as the PC would
+//! (`resize_window`). A grab draws the picture at the window's size.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write as _;
@@ -33,7 +43,7 @@ use std::time::{Duration, Instant};
 use fohmixer_proto::eq::reason;
 use serde_json::{Value, json};
 
-use super::{Backend, Phase, Pixels, Taken, WindowId};
+use super::{Backend, Phase, Pixels, Rect, Taken, WindowId, room};
 
 /// The simulated picture's width (Pro-Q 4's at 100 %).
 pub const SIM_WIDTH: u32 = 1349;
@@ -45,6 +55,20 @@ pub const STEP_MS: f64 = 250.0;
 pub const RECORD_FILE: &str = "eq-sim.jsonl";
 /// Why the sim refuses a point.
 pub const REFUSED: &str = "the point is another window's";
+/// What a simulated window has beyond its picture (px): Live's editor
+/// window, 1365 × 848 around Pro-Q's 1349 × 809.
+pub const SIM_FRAME: (i32, i32) = (16, 39);
+/// The work area the simulated windows stand on (px): the PC's 2560 × 1440
+/// screen less a 40 px taskbar. Every window stands in its top-left corner.
+pub const SIM_WORK: Rect = Rect {
+    left: 0,
+    top: 0,
+    width: 2560,
+    height: 1400,
+};
+/// The smallest picture a simulated editor takes (px): a resize below it
+/// lands at it (as Pro-Q's own minimum stops a smaller window).
+pub const SIM_MIN: (u32, u32) = (320, 240);
 
 /// The counter a picture shows `elapsed_ms` after the sim started.
 pub fn counter(elapsed_ms: f64) -> u64 {
@@ -71,11 +95,33 @@ pub fn picture(count: u64, width: u32, height: u32) -> Pixels {
     }
 }
 
-/// A simulated window.
+/// A simulated window: its process, whether it is on top, its picture's
+/// size and a size posted to it that has not landed yet.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SimWindow {
     pid: u32,
     topmost: bool,
+    size: (u32, u32),
+    posted: Option<(u32, u32)>,
+}
+
+impl SimWindow {
+    /// Its rectangle on the screen: in the work area's corner, its picture
+    /// with the frame.
+    fn rect(&self) -> Rect {
+        Rect {
+            left: SIM_WORK.left,
+            top: SIM_WORK.top,
+            width: self.size.0 as i32 + SIM_FRAME.0,
+            height: self.size.1 as i32 + SIM_FRAME.1,
+        }
+    }
+}
+
+/// The picture a simulated editor takes for `asked`: never below
+/// [`SIM_MIN`].
+pub fn takes(asked: (u32, u32)) -> (u32, u32) {
+    (asked.0.max(SIM_MIN.0), asked.1.max(SIM_MIN.1))
 }
 
 #[derive(Debug)]
@@ -97,6 +143,11 @@ struct State {
     /// once the switch is off (`posted` holds the windows waiting).
     topmost_late: bool,
     posted: BTreeSet<WindowId>,
+    /// A resize lands only once the switch goes off (posted to a busy
+    /// window thread).
+    resize_late: bool,
+    /// A resize never lands (the plug-in keeps its size).
+    resize_refused: bool,
     /// The last picture drawn and its count: a grab draws only a new count
     /// or size (drawing one costs the worker tens of ms in a test build).
     drawn: Option<(u64, Pixels)>,
@@ -114,6 +165,8 @@ impl State {
             SimWindow {
                 pid,
                 topmost: false,
+                size: (SIM_WIDTH, SIM_HEIGHT),
+                posted: None,
             },
         );
         window
@@ -160,6 +213,8 @@ impl Sim {
             child_late: false,
             topmost_late: false,
             posted: BTreeSet::new(),
+            resize_late: false,
+            resize_refused: false,
             drawn: None,
             records: Vec::new(),
             file,
@@ -238,6 +293,37 @@ impl SimHandle {
         self.lock().windows.get(&window).map(|w| w.topmost)
     }
 
+    /// Whether a resize waits (posted to a busy window thread); switched
+    /// off, every size waiting lands.
+    pub fn resize_late(&self, on: bool) {
+        let mut state = self.lock();
+        state.resize_late = on;
+        if !on {
+            for window in state.windows.values_mut() {
+                if let Some(size) = window.posted.take() {
+                    window.size = size;
+                }
+            }
+        }
+    }
+
+    /// Whether a resize never lands (the plug-in keeps its size).
+    pub fn resize_refused(&self, on: bool) {
+        self.lock().resize_refused = on;
+    }
+
+    /// `window`'s picture becomes `size` (resized on the PC: no record).
+    pub fn resize_window(&self, window: WindowId, size: (u32, u32)) {
+        if let Some(found) = self.lock().windows.get_mut(&window) {
+            found.size = size;
+        }
+    }
+
+    /// `window`'s picture's size.
+    pub fn size(&self, window: WindowId) -> Option<(u32, u32)> {
+        self.lock().windows.get(&window).map(|w| w.size)
+    }
+
     /// The windows there now.
     pub fn windows(&self) -> Vec<WindowId> {
         self.lock().windows.keys().copied().collect()
@@ -290,7 +376,7 @@ impl Backend for Sim {
         if !late {
             found.topmost = true;
         }
-        let pid = found.pid;
+        let (pid, size, rect) = (found.pid, found.size, found.rect());
         if late {
             state.posted.insert(window);
         }
@@ -300,8 +386,9 @@ impl Backend for Sim {
             picture: window,
             pid,
             was_topmost,
-            width: SIM_WIDTH,
-            height: SIM_HEIGHT,
+            width: size.0,
+            height: size.1,
+            rect,
         })
     }
 
@@ -316,14 +403,51 @@ impl Backend for Sim {
         self.lock().windows.contains_key(&taken.window)
     }
 
+    fn room(&mut self, taken: &Taken) -> Result<(u32, u32), String> {
+        let state = self.lock();
+        let window = state
+            .windows
+            .get(&taken.window)
+            .ok_or_else(|| "no such window".to_string())?;
+        Ok(room(SIM_WORK, window.rect(), taken))
+    }
+
+    fn resize(&mut self, taken: &Taken, client: (u32, u32)) -> Result<(), String> {
+        let mut state = self.lock();
+        let (late, refused) = (state.resize_late, state.resize_refused);
+        let window = state
+            .windows
+            .get_mut(&taken.window)
+            .ok_or_else(|| "no such window".to_string())?;
+        // Posted: it lands at once, once the window's thread takes it, or
+        // never (the plug-in keeps its size).
+        match (refused, late) {
+            (true, _) => {}
+            (false, true) => window.posted = Some(takes(client)),
+            (false, false) => window.size = takes(client),
+        }
+        state.record(
+            json!({"op": "resize", "window": taken.window.0, "w": client.0, "h": client.1}),
+        );
+        Ok(())
+    }
+
+    fn client(&mut self, taken: &Taken) -> Result<(u32, u32), String> {
+        self.lock()
+            .windows
+            .get(&taken.window)
+            .map(|w| w.size)
+            .ok_or_else(|| "no such window".to_string())
+    }
+
     fn grab(&mut self, taken: &Taken) -> Result<Pixels, String> {
         // A slow grab waits without the lock (a test reads the records).
         let delay = self.lock().grab_delay;
         std::thread::sleep(delay);
         let state = self.lock();
-        if !state.windows.contains_key(&taken.window) {
+        let Some(size) = state.windows.get(&taken.window).map(|w| w.size) else {
             return Err("no such window".to_string());
-        }
+        };
         let count = if state.still {
             0
         } else {
@@ -332,13 +456,13 @@ impl Backend for Sim {
         let drawn = state
             .drawn
             .as_ref()
-            .filter(|(n, p)| *n == count && (p.width, p.height) == (taken.width, taken.height))
+            .filter(|(n, p)| *n == count && (p.width, p.height) == size)
             .map(|(_, p)| p.clone());
         drop(state);
         if let Some(pixels) = drawn {
             return Ok(pixels);
         }
-        let pixels = picture(count, taken.width, taken.height);
+        let pixels = picture(count, size.0, size.1);
         self.lock().drawn = Some((count, pixels.clone()));
         Ok(pixels)
     }
@@ -448,6 +572,12 @@ mod tests {
                 was_topmost: false,
                 width: 1349,
                 height: 809,
+                rect: Rect {
+                    left: 0,
+                    top: 0,
+                    width: 1365,
+                    height: 848,
+                },
             }
         );
         assert_eq!(handle.topmost(window), Some(true));
@@ -591,16 +721,10 @@ mod tests {
         let first = sim.grab(&taken).unwrap();
         assert_eq!(first, picture(0, 1349, 809));
         assert_eq!(sim.grab(&taken).unwrap(), first);
-        // Another size: drawn at that size, then the first one again.
-        let small = Taken {
-            window: taken.window,
-            picture: taken.picture,
-            pid: taken.pid,
-            was_topmost: false,
-            width: 16,
-            height: 8,
-        };
-        assert_eq!(sim.grab(&small).unwrap(), picture(0, 16, 8));
+        // Another size: drawn at the window's size, then the first one again.
+        handle.resize_window(taken.window, (16, 8));
+        assert_eq!(sim.grab(&taken).unwrap(), picture(0, 16, 8));
+        handle.resize_window(taken.window, (1349, 809));
         assert_eq!(sim.grab(&taken).unwrap(), first);
         // Another count: drawn anew.
         handle.still(false);
@@ -621,6 +745,78 @@ mod tests {
         let started = Instant::now();
         assert_eq!(sim.grab(&taken).unwrap(), picture(0, 1349, 809));
         assert!(started.elapsed() >= Duration::from_millis(30));
+    }
+
+    #[test]
+    fn a_resize_is_recorded_and_lands_at_once_never_below_the_minimum() {
+        let (mut sim, handle) = Sim::new(None);
+        handle.still(true);
+        sim.live_opened();
+        let taken = sim.take(handle.windows()[0]).unwrap();
+        // The room: the work area less the frame, from the corner.
+        assert_eq!(sim.room(&taken), Ok((2544, 1361)));
+        assert_eq!(sim.client(&taken), Ok((1349, 809)));
+        sim.resize(&taken, (760, 1271)).unwrap();
+        assert_eq!(sim.client(&taken), Ok((760, 1271)));
+        assert_eq!(handle.size(taken.window), Some((760, 1271)));
+        // Its grab is the picture at its size.
+        assert_eq!(sim.grab(&taken).unwrap(), picture(0, 760, 1271));
+        // Too small: the editor takes its minimum.
+        sim.resize(&taken, (100, 50)).unwrap();
+        assert_eq!(sim.client(&taken), Ok((320, 240)));
+        assert_eq!(
+            (takes((319, 241)), takes((321, 239))),
+            ((320, 241), (321, 240))
+        );
+        assert_eq!(
+            handle.records()[1..],
+            [
+                json!({"op": "resize", "window": 1, "w": 760, "h": 1271}),
+                json!({"op": "resize", "window": 1, "w": 100, "h": 50}),
+            ]
+        );
+        // A window gone has no room, size or resize.
+        handle.remove_window(taken.window);
+        assert!(sim.room(&taken).is_err());
+        assert!(sim.client(&taken).is_err());
+        assert!(sim.resize(&taken, (800, 600)).is_err());
+        assert_eq!(handle.records().len(), 3, "nothing recorded");
+        assert_eq!(handle.size(taken.window), None);
+    }
+
+    #[test]
+    fn a_resize_lands_late_or_never_when_a_test_says_so() {
+        let (mut sim, handle) = Sim::new(None);
+        sim.live_opened();
+        sim.live_opened();
+        let windows = handle.windows();
+        let taken = sim.take(windows[0]).unwrap();
+        let other = sim.take(windows[1]).unwrap();
+        handle.resize_late(true);
+        sim.resize(&taken, (800, 1200)).unwrap();
+        sim.resize(&other, (900, 1100)).unwrap();
+        assert_eq!(sim.client(&taken), Ok((1349, 809)), "posted, not landed");
+        // A newer size replaces the one waiting.
+        sim.resize(&taken, (700, 1300)).unwrap();
+        handle.resize_late(false);
+        assert_eq!(sim.client(&taken), Ok((700, 1300)), "landed");
+        assert_eq!(sim.client(&other), Ok((900, 1100)));
+        // Refused: recorded, never landing.
+        handle.resize_refused(true);
+        sim.resize(&taken, (1349, 809)).unwrap();
+        assert_eq!(sim.client(&taken), Ok((700, 1300)));
+        handle.resize_refused(false);
+        sim.resize(&taken, (1349, 809)).unwrap();
+        assert_eq!(sim.client(&taken), Ok((1349, 809)));
+        let resizes = handle
+            .records()
+            .iter()
+            .filter(|r| r["op"] == "resize")
+            .count();
+        assert_eq!(resizes, 5);
+        // The room follows the window's frame (its size is of no matter
+        // in the corner): a window that grew has the same room.
+        assert_eq!(sim.room(&taken), Ok((2544, 1361)));
     }
 
     #[test]
