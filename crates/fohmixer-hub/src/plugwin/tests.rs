@@ -1745,6 +1745,103 @@ fn no_resize_reaches_an_editor_once_its_guard_began() {
     assert_eq!(resizes(&handle), Vec::<(i64, i64)>::new());
 }
 
+/// Takes, as `session` at `now`, a window Live opened at `size` (its last
+/// size, or one given on the PC) at `at`; its window.
+fn take_sized(
+    worker: &mut Worker,
+    handle: &SimHandle,
+    session: u32,
+    size: (u32, u32),
+    at: (i32, i32),
+) -> WindowId {
+    handle.auto_open(false);
+    let window = handle.add_window(0);
+    handle.resize_window(window, size);
+    handle.move_window(window, at);
+    let before: Vec<WindowId> = handle
+        .windows()
+        .into_iter()
+        .filter(|w| *w != window)
+        .collect();
+    let (reply, mut answer) = oneshot::channel();
+    let take = Command::Take {
+        session,
+        before,
+        reply,
+    };
+    worker.command_at(take, 0.0);
+    worker.step_at(0.0);
+    assert_eq!(answer.try_recv().unwrap(), Ok(size));
+    window
+}
+
+#[test]
+fn the_guard_taps_only_at_the_size_its_inert_spot_is_known_at() {
+    // The review of PR #74 (I1): the inert spot (546, 15) was verified at
+    // 1349 × 809 only. An editor taken at another size (Live or Pro-Q kept
+    // its last one, or it was resized on the PC first) was put back to
+    // that size and tapped at 0.405 of its width: next to Undo at 760 px.
+    let (mut worker, handle, _) = worker();
+    let window = take_sized(&mut worker, &handle, 1, (760, 1271), (0, 0));
+    let mut guarded = guard_at(&mut worker, 1, 10.0);
+    assert!(guarded.try_recv().is_err(), "not at the known size: no tap");
+    assert_eq!(touches(&handle), Vec::new());
+    worker.step_at(10.0);
+    assert_eq!(resizes(&handle), [(1349, 809)], "the known size posted");
+    worker.step_at(20.0);
+    assert_eq!(guarded.try_recv().unwrap(), Ok(()));
+    assert_eq!(touches(&handle), [t("down", 546, 15), t("up", 546, 15)]);
+    assert_eq!(handle.size(window), Some((1349, 809)));
+}
+
+#[test]
+fn a_guard_reads_the_editors_size_even_when_no_change_was_seen() {
+    // The review of PR #74 (M5): a window resized on the PC within the last
+    // capture period (no grab saw it) was tapped at once, at the spot of
+    // another layout.
+    let (mut worker, handle, _) = worker();
+    let window = take(&mut worker, &handle, 1, 0.0);
+    handle.resize_window(window, (1000, 700));
+    let mut guarded = guard_at(&mut worker, 1, 5.0);
+    assert!(guarded.try_recv().is_err(), "read, not trusted");
+    worker.step_at(10.0);
+    worker.step_at(20.0);
+    assert_eq!(guarded.try_recv().unwrap(), Ok(()));
+    assert_eq!(resizes(&handle), [(1349, 809)]);
+    assert_eq!(touches(&handle), [t("down", 546, 15), t("up", 546, 15)]);
+}
+
+#[test]
+fn a_guard_whose_known_size_never_comes_taps_nothing_and_the_window_goes_back() {
+    let (mut worker, handle, _) = worker();
+    let window = take_sized(&mut worker, &handle, 1, (760, 1271), (300, 50));
+    handle.resize_refused(true);
+    let mut guarded = guard_at(&mut worker, 1, 10.0);
+    worker.step_at(10.0);
+    worker.step_at(1009.0);
+    assert!(guarded.try_recv().is_err(), "still waiting");
+    worker.step_at(1010.0);
+    assert_eq!(
+        guarded.try_recv().unwrap(),
+        Err(format!(
+            "{NOT_BACK}: the picture is 760x1271, 1349x809 asked"
+        ))
+    );
+    assert_eq!(touches(&handle), Vec::new(), "no tap at an unknown spot");
+    // Handed back while Live keeps it open: its own place and size again.
+    handle.resize_refused(false);
+    let (reply, _released) = oneshot::channel();
+    worker.command_at(
+        Command::Release {
+            session: 1,
+            closed: false,
+            reply,
+        },
+        1100.0,
+    );
+    assert_eq!(handle.rect(window), Some(rect(300, 50, 776, 1310)));
+}
+
 #[test]
 fn the_guard_waits_for_a_resize_on_its_way_then_puts_the_size_back() {
     let (mut worker, handle, _) = worker();
