@@ -24,7 +24,10 @@ pub const PIXELS: f64 = 1349.0 * 809.0;
 /// its size.
 pub fn editor_size(area: Area, room: (u32, u32), min: (u32, u32)) -> Option<(u32, u32)> {
     let aspect = area.w / area.h;
-    let shaped = area.w > 0.0 && area.h > 0.0 && aspect.is_finite();
+    // One check of both sides (`min`, which skips a NaN, leaves it to the
+    // aspect): `area.h > 0.0` beside a finite aspect was a mutant no test
+    // can kill (a zero height gives an infinite aspect anyway).
+    let shaped = area.w.min(area.h) > 0.0 && aspect.is_finite();
     let fits = room.0 >= min.0 && room.1 >= min.1;
     if !(shaped && fits) {
         return None;

@@ -1826,6 +1826,11 @@ mod tests {
         let (wide, tall) = ((1194.0, 790.0), (390.0, 796.0));
         let mut watch = AreaWatch::opened(wide);
         assert_eq!(watch.frame(wide, true, 0.0), None, "the open carried it");
+        assert_eq!(
+            watch.frame(wide, true, 999.0),
+            None,
+            "rested, and still never sent: the hub has it"
+        );
         // A phone turned: once it rested.
         assert_eq!(watch.frame(tall, true, 1000.0), None);
         assert_eq!(watch.frame(tall, true, 1300.0_f64.next_down()), None);
