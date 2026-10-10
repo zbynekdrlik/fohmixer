@@ -198,7 +198,7 @@ async function pinch(area: Locator, at: At, from: number, to: number, ids = [31,
   );
 }
 
-/** A quick tap dispatched on the area at a page point: its down and its up in one task, well inside the 120 ms hold (PR G: the page sends the up 40 ms after the down). */
+/** A quick tap dispatched on the area at a page point: its down and its up in one task, well inside the 120 ms hold (PR G: the page sends its down at once and its up 40 ms later). */
 async function quickTap(area: Locator, at: At, id = 61) {
   await area.evaluate(
     (el, { at, id }) => {
@@ -652,7 +652,7 @@ test.describe("The Pro-Q 4 screen", () => {
     expect((await touches()).filter((r) => r.phase === "up" && !near(r, INERT)), "no lift of the cancelled finger").toEqual([]);
   });
 
-  test("two fingers zoom the page's picture and send the editor nothing; a finger then reaches it where it shows; a quick tap goes down, then up 40 ms later; CELÝ EQ and a new open show it whole", async ({ page }) => {
+  test("two fingers zoom the page's picture and send the editor nothing; a finger then reaches it where it shows; a quick tap goes down, then up; CELÝ EQ and a new open show it whole", async ({ page }) => {
     await openSurface(page);
     const { onTrack, trackPath } = await hand2Cards(page);
     await editorOpen(trackPath, false);
@@ -709,16 +709,15 @@ test.describe("The Pro-Q 4 screen", () => {
     wentFromTo(drag, map.toPicture(from), map.toPicture(to));
     expect(await clipped(screen.getByTestId("eq-factor"))).toEqual([]);
 
-    // A quick tap: its down at once where it landed, its up 40 ms later
-    // (PR G: the editor never gets a contact of no time).
+    // A quick tap: its down where it landed, then its up (PR G: the page
+    // sends the up 40 ms after the down, a unit test of its finger; on the
+    // way to the PC both pass the router and the window worker's steps, so
+    // only their order is checked here, #74 review).
     const tapped = { x: middle.x - 30, y: middle.y + 12 };
     const tapFrom = (await simEq.records()).length;
     await quickTap(area, tapped);
     const tap = await until(() => touchesAfter(tapFrom), (all) => all.some((r) => r.phase === "up"), "the tap's up");
     wentFromTo(tap, map.toPicture(tapped), map.toPicture(tapped));
-    // The page holds its up 40 ms after its down; the way to the PC may
-    // close the gap a little, never to nothing.
-    expect(tap[tap.length - 1].t - tap[0].t, JSON.stringify(tap)).toBeGreaterThanOrEqual(20);
 
     // CELÝ EQ: the whole picture again, the group gone.
     await screen.getByTestId("eq-whole").click();
