@@ -1,7 +1,8 @@
 //! The Pro-Q 4 screen through the hub (#71 PR E, F28): a strip's Pro-Q 4
 //! instances listed from SimLive (`Hand2 #`: one on the track, a renamed one
 //! in a rack chain), an editor opened in Live (`is_editor_open`), its frames
-//! as binary messages, the lock another client sees and is refused by, a
+//! as binary messages, the lock another client sees and is refused by (that
+//! editor `locked`, any other `in use`: one on the PC's screen at a time), a
 //! finger's contact on the simulated window backend (its record file
 //! `eq-sim.jsonl`), the close through the guard (the inert spot tapped
 //! before `is_editor_open = false`), a switch to another editor, a closed
@@ -272,6 +273,26 @@ fn a_strips_pro_q_opens_sends_frames_takes_a_finger_and_closes_through_the_guard
                 Some(held[0].since)
             )
         );
+        // Any other one too: one Pro-Q 4 on the PC's screen at a time.
+        b.send(&ClientMsg::EqList { binding: hand2() }).await;
+        listed(&mut b).await;
+        b.send(&ClientMsg::EqOpen {
+            instance: "band".into(),
+            path: IN_CHAIN.into(),
+        })
+        .await;
+        let refused = state(&mut b, IN_CHAIN).await;
+        assert_eq!(
+            refused,
+            (
+                EqState::Closed,
+                None,
+                None,
+                Some(reason::IN_USE.into()),
+                Some(held[0].since)
+            )
+        );
+        editor_open(&mut b, IN_CHAIN, false).await;
         // A finger on the picture, in its pixels.
         input(&mut a, Touch::Down, 10.4, 20.6).await;
         input(&mut a, Touch::Move, 30.0, 40.0).await;
@@ -316,7 +337,7 @@ fn a_strips_pro_q_opens_sends_frames_takes_a_finger_and_closes_through_the_guard
             [true, false]
         );
         let want: Vec<String> = [
-            "take", "open", "opened", "refused", "touch", "touch", "close", "closed",
+            "take", "open", "opened", "refused", "refused", "touch", "touch", "close", "closed",
         ]
         .map(String::from)
         .to_vec();
@@ -631,14 +652,7 @@ fn a_close_turns_off_its_own_moved_editor_never_the_one_now_at_its_path() {
         let mut host = Host::start_site("band", &neighbours(dir.path()), 0, 0.0);
         let hub = TestHub::start_config(config(dir.path(), &host)).await;
         let (kick, snare) = ("live_set tracks 1 devices 0", "live_set tracks 2 devices 0");
-        // A holds the Snare's editor, B the Kick's.
-        let mut a = client(&hub).await;
-        a.send(&ClientMsg::EqList {
-            binding: track("Snare #"),
-        })
-        .await;
-        assert_eq!(listed(&mut a).await.0.len(), 1);
-        open(&mut a, snare).await;
+        // B holds the Kick's editor; the Snare's is open on the PC by hand.
         let mut b = client(&hub).await;
         b.send(&ClientMsg::EqList {
             binding: track("Kick #"),
@@ -646,7 +660,9 @@ fn a_close_turns_off_its_own_moved_editor_never_the_one_now_at_its_path() {
         .await;
         assert_eq!(listed(&mut b).await.0.len(), 1);
         open(&mut b, kick).await;
-        // The first track deleted: B's held path names A's editor now.
+        b.set("band", snare, "is_editor_open", json!(true)).await;
+        // The first track deleted: B's held path names the Snare's editor
+        // now.
         assert!(host.delete_track(0) > 0, "Lead # deleted");
         b.send(&ClientMsg::EqClose).await;
         let closed = state(&mut b, kick).await;
@@ -654,7 +670,8 @@ fn a_close_turns_off_its_own_moved_editor_never_the_one_now_at_its_path() {
             (closed.0, closed.3.as_deref()),
             (EqState::Closed, Some(reason::EXIT))
         );
-        // B's own editor (the Kick's, track 0 now) is off; A's stays open.
+        // B's own editor (the Kick's, track 0 now) is off; the Snare's
+        // stays open.
         assert_eq!(
             b.get("band", "live_set tracks 0 devices 0", "is_editor_open")
                 .await,
@@ -665,14 +682,9 @@ fn a_close_turns_off_its_own_moved_editor_never_the_one_now_at_its_path() {
             b.get("band", "live_set tracks 1 devices 0", "is_editor_open")
                 .await,
             json!(true),
-            "A's editor"
+            "the Snare's editor"
         );
-        let records = hub
-            .events_until(WAIT, |records| {
-                eq_whats(records).contains(&"closed".to_string())
-            })
-            .await;
-        let eq: Vec<Value> = records.into_iter().filter(|r| r["ev"] == "eq").collect();
+        let eq = closed_records(&hub).await;
         assert!(eq_record(&eq, "problem").is_none(), "{eq:?}");
         hub.stop().await;
         host.stop();

@@ -5,14 +5,19 @@
 //! the steps of an open and a close. The router (`router/eq.rs`) carries the
 //! [`Act`]s out; the platform backend (`plugwin`) does what touches a window.
 //!
-//! - **Locks:** an editor is held by the client that opened it until it
-//!   leaves (`eq_close`), its socket closes or it opens another one; another
-//!   client's open is refused `locked` (with since when). A client holds one
-//!   editor: opening another closes the one it holds first (`switch`), the
-//!   new one waiting for that close.
-//! - **Opens run one at a time:** the hub finds an editor's window by the
-//!   window list before and after `is_editor_open = true`, so two opens at
-//!   once could take each other's window. The others wait in a queue.
+//! - **One editor on the PC's screen at a time** (the round-3 ruling, #71):
+//!   the PC has one screen and one cursor, and two taken editors are both
+//!   on top and overlap (a picture showing the other's pixels, refused
+//!   touches, a covered guard spot). An editor is held by the client that
+//!   opened it until it leaves (`eq_close`), its socket closes or it opens
+//!   another one; while a client holds any editor (waiting, opening, open
+//!   or closing), another client's open is refused: that editor `locked`,
+//!   any other `in use` (both with since when). A client holds one editor:
+//!   opening another closes the one it holds first (`switch`), the new one
+//!   waiting for that close. So opens run one at a time too (the hub finds
+//!   an editor's window by the window list before and after
+//!   `is_editor_open = true`, so two opens at once could take each other's
+//!   window), and one finger is on the screen.
 //! - **Only listed editors open:** a path the hub's `eq_list` reads found
 //!   ([`Eqs::listed`]); never an arbitrary LOM path. The open sequence reads
 //!   the device first ([`open`]): still the listed Pro-Q 4 (its name), its
@@ -21,23 +26,21 @@
 //!   may be loaded). Each listed path names its device by its `$ref`
 //!   ([`Eqs::named`]): a card's last picture is kept only while its path
 //!   names the device it is of ([`Pictures`]).
-//! - **The contact:** one on the screen at a time (the PC has one cursor),
-//!   on an open editor of the client touching. A move goes on at once; an
-//!   up at a point other than the last one moves there first; a resting
-//!   contact is kept alive by the window worker on its own clock
-//!   (`plugwin::KEEPALIVE_MS`); a client heard from not at all for
+//! - **The contact:** on the open editor of the client touching. A move
+//!   goes on at once; an up at a point other than the last one moves there
+//!   first; a resting contact is kept alive by the window worker on its own
+//!   clock (`plugwin::KEEPALIVE_MS`); a client heard from not at all for
 //!   [`SILENT_MS`] (its pings stop: the page went away) ends its contact
-//!   with a cancel. A down while the client's own contact is still
-//!   down ends that one first. Every contact is numbered: its phases carry
+//!   with a cancel. A down while the client's own contact is still down
+//!   ends that one first. Every contact is numbered: its phases carry
 //!   the number, and the window worker's word that it ended a contact ends
 //!   only that one (a late word never ends a newer contact).
 //! - **The close:** never while a contact is down: the close sequence's
 //!   guard ends it first (`plugwin`), then taps the inert spot, waits
 //!   [`GUARD_WAIT`], sets `is_editor_open = false` and releases the window.
-//!   The device it turns off is checked first ([`close`]): the held path's
-//!   device if it is still the open Pro-Q 4, else the one open Pro-Q 4 of
-//!   the set, else none (Live is left alone). An editor still opening
-//!   closes as soon as it is open; one still queued is dropped at once.
+//!   It turns off the device its open read (its `$ref`; [`close`] decides
+//!   when that is gone). An editor still opening closes as soon as it is
+//!   open; one still waiting for its client's switch is dropped at once.
 //!
 //! Times: `now` is the router's clock (ms), `wall` the hub's UTC ms (the
 //! lock's "since", shown on the pages).
@@ -46,7 +49,7 @@ pub mod close;
 pub mod open;
 pub mod walk;
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
@@ -167,8 +170,6 @@ type Listing = BTreeMap<EditorKey, Device>;
 enum Stage {
     /// Its client's previous editor is still closing.
     Waiting,
-    /// Behind another open.
-    Queued,
     /// Its open sequence runs.
     Opening,
     /// Its window is open, its picture this size.
@@ -181,7 +182,6 @@ impl Stage {
     fn name(self) -> &'static str {
         match self {
             Self::Waiting => "waiting",
-            Self::Queued => "queued",
             Self::Opening => "opening",
             Self::Open { .. } => "open",
             Self::Closing => "closing",
@@ -250,6 +250,19 @@ fn state_msg(
     }
 }
 
+/// The answer to `client`'s open of `key` refused for `why` (another
+/// client's editor since `since`, when held): its closed state, and the
+/// `refused` record.
+fn refused(client: ClientId, key: &EditorKey, why: &'static str, since: Option<f64>) -> Vec<Act> {
+    vec![
+        Act::Tell {
+            client,
+            msg: closed_msg(key, why, since),
+        },
+        Act::Record(record("refused", key, Some(client), None, Some(why))),
+    ]
+}
+
 /// The fields of an `eq` record: what happened (`what`) to which editor,
 /// its client and session, and why.
 pub fn record(
@@ -277,9 +290,6 @@ pub struct Eqs {
     held: BTreeMap<ClientId, EditorKey>,
     /// The editor a client opens next, once its held one closed.
     next: BTreeMap<ClientId, EditorKey>,
-    queue: VecDeque<EditorKey>,
-    /// An open sequence runs.
-    opening: bool,
     contact: Option<Contact>,
     heard: HashMap<ClientId, f64>,
     /// What each list found (by its instance and its track's LOM target):
@@ -389,25 +399,25 @@ impl Eqs {
             .map(|(key, _)| key.clone())
     }
 
+    /// Since when another client than `client` holds an editor (waiting,
+    /// opening, open or closing): one editor on the PC's screen at a time.
+    fn in_use(&self, client: ClientId) -> Option<f64> {
+        self.editors
+            .values()
+            .find(|editor| editor.holder != client)
+            .map(|editor| editor.since)
+    }
+
     /// `client` opens `key` at `wall`.
     pub fn open(&mut self, client: ClientId, key: &EditorKey, wall: f64) -> Vec<Act> {
         if !self.is_listed(key) {
-            return vec![
-                Act::Tell {
-                    client,
-                    msg: closed_msg(key, reason::UNKNOWN, None),
-                },
-                Act::Record(record(
-                    "refused",
-                    key,
-                    Some(client),
-                    None,
-                    Some(reason::UNKNOWN),
-                )),
-            ];
+            return refused(client, key, reason::UNKNOWN, None);
         }
         if let Some(editor) = self.editors.get(key) {
             return self.open_taken(client, key, editor.clone());
+        }
+        if let Some(since) = self.in_use(client) {
+            return refused(client, key, reason::IN_USE, Some(since));
         }
         let mut acts = Vec::new();
         // A newer open replaces the one waiting for this client's close.
@@ -415,18 +425,13 @@ impl Eqs {
             self.editors.remove(&waiting);
             acts.push(Act::Locks);
         }
-        let stage = if self.held.contains_key(&client) {
-            Stage::Waiting
-        } else {
-            Stage::Queued
-        };
         self.editors.insert(
             key.clone(),
             Editor {
                 holder: client,
                 since: wall,
                 session: 0,
-                stage,
+                stage: Stage::Waiting,
                 why: None,
             },
         );
@@ -436,13 +441,12 @@ impl Eqs {
         });
         acts.push(Act::Locks);
         acts.push(Act::Record(record("take", key, Some(client), None, None)));
-        if stage == Stage::Waiting {
+        if self.held.contains_key(&client) {
             self.next.insert(client, key.clone());
             acts.extend(self.close(client, reason::SWITCH, false));
         } else {
             self.held.insert(client, key.clone());
-            self.queue.push_back(key.clone());
-            acts.extend(self.start_next());
+            acts.extend(self.start(key));
         }
         acts
     }
@@ -451,54 +455,36 @@ impl Eqs {
     /// own holder hears its state again (or, closing, to try again later).
     fn open_taken(&self, client: ClientId, key: &EditorKey, editor: Editor) -> Vec<Act> {
         if editor.holder != client {
-            return vec![
-                Act::Tell {
-                    client,
-                    msg: closed_msg(key, reason::LOCKED, Some(editor.since)),
-                },
-                Act::Record(record(
-                    "refused",
-                    key,
-                    Some(client),
-                    None,
-                    Some(reason::LOCKED),
-                )),
-            ];
+            return refused(client, key, reason::LOCKED, Some(editor.since));
         }
         let msg = match editor.stage {
             Stage::Open { width, height } => open_msg(key, editor.session, width, height),
             Stage::Closing => closed_msg(key, reason::CLOSING, None),
-            Stage::Waiting | Stage::Queued | Stage::Opening => opening_msg(key),
+            Stage::Waiting | Stage::Opening => opening_msg(key),
         };
         vec![Act::Tell { client, msg }]
     }
 
-    /// The next queued editor's open, when none runs.
-    fn start_next(&mut self) -> Vec<Act> {
-        if self.opening {
-            return Vec::new();
-        }
-        let Some(key) = self.queue.pop_front() else {
-            return Vec::new();
-        };
-        let Some(editor) = self.editors.get_mut(&key) else {
+    /// `key`'s open sequence starts (its client holds nothing else on the
+    /// screen: one open runs at a time).
+    fn start(&mut self, key: &EditorKey) -> Vec<Act> {
+        let connection = self.connection(&key.instance);
+        let Some(editor) = self.editors.get_mut(key) else {
             return Vec::new();
         };
         self.sessions += 1;
         editor.session = self.sessions;
         editor.stage = Stage::Opening;
-        self.opening = true;
-        let connection = self.connections.get(&key.instance).copied().unwrap_or(0);
         vec![
             Act::Record(record(
                 "open",
-                &key,
+                key,
                 Some(editor.holder),
                 Some(self.sessions),
                 None,
             )),
             Act::Open {
-                key,
+                key: key.clone(),
                 session: self.sessions,
                 connection,
             },
@@ -513,7 +499,6 @@ impl Eqs {
         session: u32,
         outcome: Result<(u32, u32), String>,
     ) -> Vec<Act> {
-        self.opening = false;
         let mut acts = Vec::new();
         let ours = self
             .editors
@@ -561,7 +546,6 @@ impl Eqs {
                 }
             }
         }
-        acts.extend(self.start_next());
         acts
     }
 
@@ -586,10 +570,6 @@ impl Eqs {
             return Vec::new();
         };
         match editor.stage {
-            Stage::Queued => {
-                self.queue.retain(|k| k != key);
-                self.release(key, why)
-            }
             Stage::Opening => {
                 editor.why = Some(why);
                 Vec::new()
@@ -686,12 +666,8 @@ impl Eqs {
             Act::Locks,
         ];
         if let Some(next) = self.next.remove(&holder) {
-            if let Some(waiting) = self.editors.get_mut(&next) {
-                waiting.stage = Stage::Queued;
-            }
             self.held.insert(holder, next.clone());
-            self.queue.push_back(next);
-            acts.extend(self.start_next());
+            acts.extend(self.start(&next));
         }
         acts
     }
@@ -716,16 +692,6 @@ impl Eqs {
             return Vec::new();
         };
         let session = editor.session;
-        // One contact on the screen: another editor's keeps it.
-        if self.contact.as_ref().is_some_and(|c| c.key != key) {
-            return vec![Act::Record(record(
-                "busy",
-                &key,
-                Some(client),
-                Some(session),
-                Some(touch.name()),
-            ))];
-        }
         let at = clamp_point(x, y, width, height);
         let last = self.contact.as_ref().map(|c| c.at);
         let steps = phases(touch, last, at);

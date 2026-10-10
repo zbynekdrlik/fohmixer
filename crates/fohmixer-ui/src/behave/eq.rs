@@ -4,11 +4,13 @@
 //! ([`to_picture`]), the one finger the screen takes ([`Finger`]: a second
 //! finger is ignored, a move goes at most once per animation frame, the
 //! newest one, and the end always goes, a lost capture as a cancel, a
-//! hidden page's finger lifted), a card's lock ([`card_lock`]) and its
-//! text, whether its open is offered ([`can_open`]), when the cards are
-//! listed ([`lists_now`]), what names an editor ([`place_text`]), a card's
-//! note in Slovak ([`failure_text`]), which frames the screen shows
-//! ([`shows_frame`]) and a card's picture URL ([`picture_url`]).
+//! hidden page's finger lifted), a card's lock ([`card_lock`]: one editor on
+//! the PC's screen at a time, so another page's editor locks every card)
+//! and its text, whether its open is offered ([`can_open`]), when the cards
+//! are listed ([`lists_now`]), what names an editor ([`place_text`]), a
+//! card's note and the cards' list note in Slovak ([`failure_text`],
+//! [`list_text`]), which frames the screen shows ([`shows_frame`]) and a
+//! card's picture URL ([`picture_url`]).
 
 use fohmixer_proto::eq::{EqLock, PRODUCT, Touch, reason};
 
@@ -141,27 +143,42 @@ pub enum CardLock {
     Mine,
     /// Another page holds it, since the hub's UTC ms.
     Other(f64),
+    /// Another page holds another editor, since the hub's UTC ms: one
+    /// Pro-Q 4 on the PC's screen at a time.
+    InUse(f64),
 }
 
-/// The lock of the editor at `path` on `instance`.
+/// The lock of the editor at `path` on `instance`: its own lock, else
+/// another page's editor anywhere (every card of every instance is locked
+/// then; this page's own editor elsewhere leaves it free: its open
+/// switches).
 pub fn card_lock(locks: &[EqLock], instance: &str, path: &str) -> CardLock {
-    match locks
+    let own = locks
         .iter()
-        .find(|lock| lock.instance == instance && lock.path == path)
-    {
-        None => CardLock::Free,
+        .find(|lock| lock.instance == instance && lock.path == path);
+    match own {
         Some(lock) if lock.mine => CardLock::Mine,
         Some(lock) => CardLock::Other(lock.since),
+        None => locks
+            .iter()
+            .find(|lock| !lock.mine)
+            .map_or(CardLock::Free, |lock| CardLock::InUse(lock.since)),
     }
 }
 
+/// Whether another page's editor locks the card (ZAMKNUTÉ): its own, or
+/// any other.
+pub fn locked(lock: CardLock) -> bool {
+    matches!(lock, CardLock::Other(_) | CardLock::InUse(_))
+}
+
 /// Whether a card's down opens its editor (`can_send`: the page's socket
-/// takes a message now): not while another page holds it (ZAMKNUTÉ), and
-/// only while the socket can take the open, as a Stream Deck press
-/// (`behave::deck::can_press`): an open the socket drops would leave the
-/// screen waiting on "Otváram Pro-Q 4…" for nothing.
+/// takes a message now): not while another page holds an editor
+/// (ZAMKNUTÉ), and only while the socket can take the open, as a Stream
+/// Deck press (`behave::deck::can_press`): an open the socket drops would
+/// leave the screen waiting on "Otváram Pro-Q 4…" for nothing.
 pub fn can_open(lock: CardLock, can_send: bool) -> bool {
-    can_send && !matches!(lock, CardLock::Other(_))
+    can_send && !locked(lock)
 }
 
 /// What the cards' list waits on: the page's socket past its hello, and the
@@ -205,6 +222,18 @@ pub fn hh_mm(hours: u32, minutes: u32) -> String {
 /// A locked card's line: who holds it and since when (`HH:MM`).
 pub fn locked_text(since: &str) -> String {
     format!("Upravuje ho iný zvukár (od {since})")
+}
+
+/// The line of a card locked by another page's editor elsewhere, since
+/// when (`HH:MM`).
+pub fn in_use_text(since: &str) -> String {
+    format!("Pro-Q 4 práve používa iný zvukár (od {since})")
+}
+
+/// Whether the hub refused an open for a lock (`locked`, `in use`): the
+/// screen's `eq_locked` step.
+pub fn lock_refusal(why: &str) -> bool {
+    why == reason::LOCKED || why == reason::IN_USE
 }
 
 /// Whether the screen showing the session `open` (none: not open yet)
@@ -283,12 +312,18 @@ fn reason_text(why: &str) -> Option<&'static str> {
 /// The line under a card after its editor did not open or closed (`why`,
 /// the hub's reason), in Slovak: none for a close the page or the hub made
 /// on purpose (`exit`, `switch`, `detach`, the page's own `socket`) and for
-/// a lock (the card already reads ZAMKNUTÉ); each reason the protocol
+/// a lock, `locked` or `in use` (the card already reads ZAMKNUTÉ with its
+/// line); each reason the protocol
 /// names (`fohmixer_proto::eq::reason`) has its sentence ([`reason_text`]);
 /// only an unexpected failure shows the hub's own words.
 pub fn failure_text(why: &str) -> Option<String> {
     match why {
-        reason::EXIT | reason::SWITCH | reason::DETACH | "socket" | reason::LOCKED => None,
+        reason::EXIT
+        | reason::SWITCH
+        | reason::DETACH
+        | "socket"
+        | reason::LOCKED
+        | reason::IN_USE => None,
         other => Some(
             reason_text(other).map_or_else(|| format!("Neotvoril sa: {other}"), str::to_string),
         ),
@@ -396,17 +431,36 @@ mod tests {
             mine,
             since: 1_790_000_000_000.0,
         };
-        let locks = [lock("a", true), lock("b", false)];
-        assert_eq!(card_lock(&locks, "band", "a"), CardLock::Mine);
+        // This page's switch: the one it leaves and the one it waits for.
+        let mine = [lock("a", true), lock("c", true)];
+        assert_eq!(card_lock(&mine, "band", "a"), CardLock::Mine);
+        assert_eq!(card_lock(&mine, "band", "b"), CardLock::Free);
+        assert_eq!(card_lock(&mine, "master", "a"), CardLock::Free);
+        assert_eq!(card_lock(&[], "band", "a"), CardLock::Free);
+        // Another page holds b: b is its, every other card is in use.
+        let other = [lock("b", false)];
         assert_eq!(
-            card_lock(&locks, "band", "b"),
+            card_lock(&other, "band", "b"),
             CardLock::Other(1_790_000_000_000.0)
         );
-        assert_eq!(card_lock(&locks, "band", "c"), CardLock::Free);
-        assert_eq!(card_lock(&locks, "master", "a"), CardLock::Free);
+        assert_eq!(
+            card_lock(&other, "band", "c"),
+            CardLock::InUse(1_790_000_000_000.0)
+        );
+        assert_eq!(
+            card_lock(&other, "master", "b"),
+            CardLock::InUse(1_790_000_000_000.0),
+            "another instance's card too"
+        );
+        assert!(locked(CardLock::Other(1.0)) && locked(CardLock::InUse(1.0)));
+        assert!(!locked(CardLock::Free) && !locked(CardLock::Mine));
         assert_eq!(hh_mm(9, 5), "09:05");
         assert_eq!(hh_mm(12, 41), "12:41");
         assert_eq!(locked_text("12:41"), "Upravuje ho iný zvukár (od 12:41)");
+        assert_eq!(
+            in_use_text("12:41"),
+            "Pro-Q 4 práve používa iný zvukár (od 12:41)"
+        );
     }
 
     #[test]
@@ -434,9 +488,14 @@ mod tests {
     fn only_a_failed_open_says_why_under_its_card() {
         // A close the page or the hub made on purpose, and a lock the card
         // already shows (ZAMKNUTÉ), say nothing.
-        for quiet in ["exit", "switch", "detach", "socket", "locked"] {
+        for quiet in ["exit", "switch", "detach", "socket", "locked", "in use"] {
             assert_eq!(failure_text(quiet), None, "{quiet}");
         }
+        assert_eq!(failure_text(reason::IN_USE), None);
+        // A lock refusal is the screen's `eq_locked` step.
+        assert!(lock_refusal("locked") && lock_refusal("in use"));
+        assert!(lock_refusal(reason::LOCKED) && lock_refusal(reason::IN_USE));
+        assert!(!lock_refusal("exit") && !lock_refusal("moved"));
         assert_eq!(
             failure_text("off"),
             Some("EQ je na PC vypnuté.".to_string())
@@ -543,6 +602,10 @@ mod tests {
         assert!(
             !can_open(CardLock::Other(1.0), true),
             "another page holds it"
+        );
+        assert!(
+            !can_open(CardLock::InUse(1.0), true),
+            "another page holds another one"
         );
         assert!(!can_open(CardLock::Free, false), "the socket is down");
         assert!(!can_open(CardLock::Mine, false));

@@ -7,7 +7,9 @@
 //!   comes back online, and once the screen closed), one
 //!   card each: its last picture (fetched with the token into a blob URL;
 //!   a plain field before a first open), where it sits, and `OTVORIŤ EQ NA
-//!   CELÚ OBRAZOVKU`, or `ZAMKNUTÉ` with who holds it since when.
+//!   CELÚ OBRAZOVKU`, or `ZAMKNUTÉ` while another page holds an editor (one
+//!   Pro-Q 4 on the PC's screen at a time): this one's holder since when,
+//!   or that another engineer uses Pro-Q 4 since when.
 //! - **The screen** ([`EqScreen`], over the whole surface, mounted while
 //!   [`EqNav`] names an editor; outside the layout's shell, so a new layout
 //!   keeps it): the bar (`← SPÄŤ NA KANÁL`, the chip, `Pro-Q 4 · <where>`,
@@ -35,8 +37,8 @@ use wasm_bindgen::JsCast;
 use super::buttons::colour_style;
 use super::{owns_touches, trace_detail};
 use crate::behave::eq::{
-    CardLock, Finger, Fit, ListLink, can_open, card_lock, failure_text, fit, hh_mm, list_text,
-    lists_now, locked_text, on_picture, place_text, to_picture,
+    CardLock, Finger, Fit, ListLink, can_open, card_lock, failure_text, fit, hh_mm, in_use_text,
+    list_text, lists_now, lock_refusal, locked, locked_text, on_picture, place_text, to_picture,
 };
 use crate::binding::detail_keys;
 use crate::dom;
@@ -158,7 +160,7 @@ fn EqCard(
                 .unwrap_or(CardLock::Free)
         })
     };
-    let other = move || matches!(lock.try_get(), Some(CardLock::Other(_)));
+    let other = move || lock.try_get().is_some_and(locked);
     // Offered while free (or this page's) and the page is connected: an
     // open the socket cannot take is not offered (`can_open`).
     let disabled = move || {
@@ -168,6 +170,7 @@ fn EqCard(
     };
     let since = move || match lock.try_get() {
         Some(CardLock::Other(since)) => Some(locked_text(&local_hh_mm(since))),
+        Some(CardLock::InUse(since)) => Some(in_use_text(&local_hh_mm(since))),
         _ => None,
     };
     let note = {
@@ -486,7 +489,7 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
                 .try_with(|view| ended(view.as_ref(), &instance, &path))
                 .flatten();
             if let Some(why) = why {
-                if why == fohmixer_proto::eq::reason::LOCKED {
+                if lock_refusal(&why) {
                     trace_detail("eq_locked", None, &keys, None);
                 }
                 nav.close(&why, None);

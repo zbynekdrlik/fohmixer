@@ -337,39 +337,60 @@ fn an_open_takes_the_lock_and_another_client_is_refused() {
 }
 
 #[test]
-fn opens_run_one_at_a_time() {
+fn one_editor_is_on_the_pcs_screen_at_a_time() {
+    // The PC has one screen and one cursor: while a client holds any editor
+    // (opening, open, switching, closing), another client's open of any
+    // other editor is refused `in use`, with the holder's since.
     let mut eqs = listed();
+    let in_use = |client: ClientId, n: u32, since: f64| {
+        vec![
+            tell(client, closed_msg(&key(n), reason::IN_USE, Some(since))),
+            rec("refused", &key(n), Some(client), None, Some(reason::IN_USE)),
+        ]
+    };
     eqs.open(1, &key(1), WALL);
     assert_eq!(
-        eqs.open(2, &key(2), WALL),
-        vec![
-            tell(2, opening_msg(&key(2))),
-            Act::Locks,
-            rec("take", &key(2), Some(2), None, None),
-        ],
-        "queued behind the first"
+        eqs.open(2, &key(2), WALL + 9.0),
+        in_use(2, 2, WALL),
+        "opening"
     );
-    assert_eq!(eqs.held_by(2), Some((key(2), 0, "queued")));
-    assert_eq!(eqs.key_of(0), None, "a queued editor has no session");
-    assert_eq!(eqs.locks_for(3).len(), 2);
-    let acts = eqs.opened(&key(1), 1, Ok((100, 50)));
+    eqs.opened(&key(1), 1, Ok((1349, 809)));
+    assert_eq!(eqs.open(2, &key(3), WALL + 9.0), in_use(2, 3, WALL), "open");
+    // Its holder switches: the one it held closes, the next one waits.
+    eqs.open(1, &key(2), WALL + 1.0);
+    assert_eq!(eqs.key_of(0), None, "a waiting editor has no session");
     assert_eq!(
-        acts[3..],
-        [
-            rec("open", &key(2), Some(2), Some(2), None),
-            Act::Open {
-                key: key(2),
-                session: 2,
-                connection: 0
-            },
+        eqs.open(2, &key(3), WALL + 9.0),
+        in_use(2, 3, WALL),
+        "switching"
+    );
+    eqs.closed(&key(1), 1, false);
+    eqs.opened(&key(2), 2, Ok((1349, 809)));
+    eqs.close(1, reason::EXIT, true);
+    assert_eq!(
+        eqs.open(2, &key(3), WALL + 9.0),
+        in_use(2, 3, WALL + 1.0),
+        "closing"
+    );
+    assert_eq!(eqs.held_by(2), None);
+    // The held one itself stays `locked`.
+    assert_eq!(
+        eqs.open(2, &key(2), WALL + 9.0),
+        vec![
+            tell(2, closed_msg(&key(2), reason::LOCKED, Some(WALL + 1.0))),
+            rec("refused", &key(2), Some(2), None, Some(reason::LOCKED)),
         ]
     );
-    // An answer of another session changes nothing but lets the next start.
-    eqs.open(3, &key(3), WALL);
+    // Closed: free for the other client, and the first is refused now.
+    eqs.closed(&key(2), 2, false);
+    assert!(eqs.locks_for(2).is_empty());
     assert_eq!(
-        eqs.opened(&key(2), 9, Ok((1, 1))),
+        eqs.open(2, &key(3), WALL + 9.0),
         vec![
-            rec("open", &key(3), Some(3), Some(3), None),
+            tell(2, opening_msg(&key(3))),
+            Act::Locks,
+            rec("take", &key(3), Some(2), None, None),
+            rec("open", &key(3), Some(2), Some(3), None),
             Act::Open {
                 key: key(3),
                 session: 3,
@@ -377,9 +398,12 @@ fn opens_run_one_at_a_time() {
             },
         ]
     );
-    assert_eq!(eqs.held_by(2), Some((key(2), 2, "opening")));
-    // Nothing queued: no open starts.
-    assert_eq!(eqs.opened(&key(3), 3, Ok((1, 1))).len(), 3);
+    assert_eq!(eqs.held_by(2), Some((key(3), 3, "opening")));
+    assert_eq!(eqs.open(1, &key(1), WALL + 10.0), in_use(1, 1, WALL + 9.0));
+    // An answer of another session changes nothing.
+    assert_eq!(eqs.opened(&key(1), 9, Ok((1, 1))), Vec::new());
+    assert_eq!(eqs.opened(&key(3), 9, Ok((1, 1))), Vec::new());
+    assert_eq!(eqs.held_by(2), Some((key(3), 3, "opening")));
 }
 
 #[test]
@@ -482,30 +506,42 @@ fn an_editor_left_while_it_opens_closes_once_open() {
             },
         ]
     );
-    // A queued one is dropped at once, and never opens; the one queued
-    // after it still does.
-    eqs.open(2, &key(2), WALL);
-    eqs.open(3, &key(3), WALL);
-    eqs.open(4, &key(4), WALL);
+    // A switch while it opens: the next one waits for that close.
+    let mut eqs = listed();
+    eqs.open(1, &key(1), WALL);
+    eqs.open(1, &key(2), WALL);
+    assert_eq!(eqs.held_by(1), Some((key(1), 1, "opening")));
+    let acts = eqs.opened(&key(1), 1, Ok((1349, 809)));
     assert_eq!(
-        eqs.close(3, reason::EXIT, true),
-        vec![tell(3, closed_msg(&key(3), reason::EXIT, None)), Act::Locks]
+        acts[1..],
+        [
+            rec("close", &key(1), Some(1), Some(1), Some(reason::SWITCH)),
+            Act::Close {
+                key: key(1),
+                session: 1,
+                why: reason::SWITCH
+            },
+        ]
     );
-    let acts = eqs.opened(&key(2), 2, Ok((1, 1)));
-    let opens: Vec<&Act> = acts
-        .iter()
-        .filter(|a| matches!(a, Act::Open { .. }))
-        .collect();
+    // A failed open of the one it held starts the next one at once.
+    let mut eqs = listed();
+    eqs.open(1, &key(1), WALL);
+    eqs.open(1, &key(2), WALL);
+    let acts = eqs.opened(&key(1), 1, Err("no window".into()));
     assert_eq!(
-        opens,
-        // Sessions are numbered as editors open: the third one opened.
-        [&Act::Open {
-            key: key(4),
-            session: 3,
-            connection: 0
-        }],
-        "{acts:?}"
+        acts[1..],
+        [
+            tell(1, closed_msg(&key(1), "no window", None)),
+            Act::Locks,
+            rec("open", &key(2), Some(1), Some(2), None),
+            Act::Open {
+                key: key(2),
+                session: 2,
+                connection: 0
+            },
+        ]
     );
+    assert_eq!(eqs.held_by(1), Some((key(2), 2, "opening")));
 }
 
 #[test]
@@ -703,18 +739,11 @@ fn a_finger_makes_one_contact_on_the_open_editor() {
         "a cancel ends it where it was"
     );
     assert_eq!(eqs.input(1, Touch::Cancel, 3.0, 3.0, 11.0), Vec::new());
-    // Another client's editor while this contact is down: busy.
-    eqs.input(1, Touch::Down, 1.0, 1.0, 12.0);
-    eqs.open(2, &key(2), WALL);
-    eqs.opened(&key(2), 2, Ok((100, 50)));
-    assert_eq!(
-        eqs.input(2, Touch::Down, 1.0, 1.0, 13.0),
-        vec![rec("busy", &key(2), Some(2), Some(2), Some("down"))]
-    );
     // A closing editor takes no more touches, and its contact is gone.
+    eqs.input(1, Touch::Down, 1.0, 1.0, 12.0);
     eqs.close(1, reason::EXIT, true);
     assert_eq!(eqs.input(1, Touch::Move, 2.0, 2.0, 14.0), Vec::new());
-    assert_eq!(eqs.input(2, Touch::Down, 1.0, 1.0, 15.0).len(), 2);
+    assert_eq!(eqs.tick(1.0e9), Vec::new(), "no contact left to end");
 }
 
 #[test]

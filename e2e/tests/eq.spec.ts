@@ -330,7 +330,7 @@ test.describe("The Pro-Q 4 screen", () => {
     ]);
   });
 
-  test("another page sees the editor locked and cannot open it; the other one stays free; a closed page frees it", async ({ page, context }) => {
+  test("another page sees every Pro-Q 4 locked while one is held (one on the PC's screen at a time); a closed page frees them", async ({ page, context }) => {
     const holder = await context.newPage();
     const holderConsole = watchConsole(holder);
     await openSurface(holder);
@@ -342,49 +342,60 @@ test.describe("The Pro-Q 4 screen", () => {
 
     await openSurface(page);
     const { onTrack, inRack, rackPath } = await hand2Cards(page);
-    await expect(onTrack).toHaveAttribute("data-locked", "true");
-    const lock = onTrack.getByTestId("eq-card-lock");
-    await expect(lock).toBeVisible();
     // Since when, in the page's local time (the open took a moment: this
     // minute or the next).
     const times = await page.evaluate((t) => {
       const hhmm = (d: Date) => `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
       return [hhmm(new Date(t)), hhmm(new Date(t + 60_000))];
     }, opened);
-    const text = (await lock.textContent())!;
-    expect(text.startsWith("ZAMKNUTÉ"), text).toBe(true);
-    expect(times.map((hm) => text.endsWith(`Upravuje ho iný zvukár (od ${hm})`)), text).toContain(true);
-    expect(await clipped(lock)).toEqual([]);
-    const open = onTrack.getByTestId("eq-open");
-    await expect(open).toHaveText("ZAMKNUTÉ");
-    await expect(open).toHaveAttribute("aria-disabled", "true");
-    await cardFits(onTrack);
-    // A tap on it opens nothing.
-    await open.scrollIntoViewIfNeeded();
-    const { x, y } = await centre(open);
-    await page.mouse.click(x, y);
-    await page.waitForTimeout(500);
-    await expect(page.getByTestId("eq-screen")).toHaveCount(0);
-    // The rack's editor is free: this page opens it beside the other one.
-    await expect(inRack).toHaveAttribute("data-locked", "false");
+    // The held one with its holder, the other one in use: both locked.
+    for (const [c, line] of [
+      [onTrack, "Upravuje ho iný zvukár"],
+      [inRack, "Pro-Q 4 práve používa iný zvukár"],
+    ] as const) {
+      await expect(c).toHaveAttribute("data-locked", "true");
+      const lock = c.getByTestId("eq-card-lock");
+      await expect(lock).toBeVisible();
+      const text = (await lock.textContent())!;
+      expect(text.startsWith("ZAMKNUTÉ"), text).toBe(true);
+      expect(times.map((hm) => text.endsWith(`${line} (od ${hm})`)), text).toContain(true);
+      expect(await clipped(lock)).toEqual([]);
+      const open = c.getByTestId("eq-open");
+      await expect(open).toHaveText("ZAMKNUTÉ");
+      await expect(open).toHaveAttribute("aria-disabled", "true");
+      await cardFits(c);
+      // A tap on it opens nothing.
+      await open.scrollIntoViewIfNeeded();
+      const { x, y } = await centre(open);
+      await page.mouse.click(x, y);
+      await page.waitForTimeout(500);
+      await expect(page.getByTestId("eq-screen")).toHaveCount(0);
+    }
+    await editorOpen(rackPath, false);
+
+    // The holder's page goes: the hub closes its editor (the guard first),
+    // and both cards are free again.
+    const before = (await simEq.records()).length;
+    expect(holderConsole, "the holder's console").toEqual([]);
+    await holder.close();
+    await closedWithGuard(before);
+    await editorOpen(held.trackPath, false);
+    for (const c of [onTrack, inRack]) {
+      await expect(c).toHaveAttribute("data-locked", "false");
+      await expect(c.getByTestId("eq-card-lock")).toHaveCount(0);
+      await expect(c.getByTestId("eq-open")).toHaveText("OTVORIŤ EQ NA CELÚ OBRAZOVKU");
+      await expect(c.getByTestId("eq-open")).toHaveAttribute("aria-disabled", "false");
+    }
+    // The other one opens now.
     await inRack.getByTestId("eq-open").click();
     const screen = await openScreen(page, rackPath);
     await expect(screen.getByTestId("eq-where")).toHaveText(IN_RACK);
     await editorOpen(rackPath, true);
-    await editorOpen(held.trackPath, true);
     const rackBefore = (await simEq.records()).length;
     await screen.getByTestId("eq-exit").click();
     await expect(page.getByTestId("eq-screen")).toHaveCount(0);
-    const before = await closedWithGuard(rackBefore);
+    await closedWithGuard(rackBefore);
     await editorOpen(rackPath, false);
-
-    // The holder's page goes: the hub closes its editor (the guard first).
-    expect(holderConsole, "the holder's console").toEqual([]);
-    await holder.close();
-    await expect(onTrack).toHaveAttribute("data-locked", "false");
-    await expect(onTrack.getByTestId("eq-open")).toHaveText("OTVORIŤ EQ NA CELÚ OBRAZOVKU");
-    await closedWithGuard(before);
-    await editorOpen(held.trackPath, false);
   });
 
   test("an open the hub refuses says why under its card in Slovak, never the hub's English", async ({ page }) => {

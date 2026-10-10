@@ -7,7 +7,10 @@
 //! [`EqState`]: `opening`, then `open` with the picture's session and size,
 //! or `closed` with why), touches it (`eq_input`: [`Touch`] at a point in the
 //! picture's pixels) and leaves it (`eq_close`). Every client hears which
-//! editors are held (`eq_locks`, [`EqLock`]), at once on every change.
+//! editors are held (`eq_locks`, [`EqLock`]), at once on every change. One
+//! editor is on the PC's screen at a time: while a client holds one,
+//! another client's open is refused (`locked` for that one, `in use` for any
+//! other).
 //!
 //! **Binary frames:** while a client holds an open editor, the hub sends its
 //! picture as binary WebSocket messages, the newest frame winning (a slow
@@ -32,6 +35,10 @@ pub const FRAME_HEADER: usize = 4;
 pub mod reason {
     /// Another client holds it (`since` says from when).
     pub const LOCKED: &str = "locked";
+    /// Another client holds another editor (`since` says from when): one
+    /// Pro-Q 4 on the PC's screen at a time (one screen, one cursor; two
+    /// editors on top would overlap).
+    pub const IN_USE: &str = "in use";
     /// The hub did not list this device (an `eq_list` names what it opens).
     pub const UNKNOWN: &str = "unknown";
     /// The hub's Pro-Q screen is off (`[eq] backend = "off"`).
@@ -230,6 +237,7 @@ mod tests {
         );
         assert_eq!(NOT_ON_TOP, "the window did not come on top");
         assert_eq!(TOO_DEEP, "the devices nest too deep");
+        assert_eq!(IN_USE, "in use");
     }
 
     #[test]
