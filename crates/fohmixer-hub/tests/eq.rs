@@ -932,6 +932,7 @@ fn an_open_with_an_upright_area_gets_its_aspect_and_its_close_puts_its_size_back
             step("touch", "up", 300, 1200),
             step("resize", "", 1632, 669),
             step("resize", "", 1349, 809),
+            step("resize", "", 1349, 809),
             step("touch", "down", 546, 15),
             step("touch", "up", 546, 15),
             step("release", "", -1, -1),

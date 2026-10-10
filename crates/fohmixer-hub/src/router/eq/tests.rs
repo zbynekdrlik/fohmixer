@@ -1174,7 +1174,8 @@ async fn a_changed_area_resizes_the_open_editor_and_its_close_puts_its_size_back
         });
     }
     sim_until(&rig.sim, "the up", |r| r.iter().any(|r| r["phase"] == "up")).await;
-    // The close: the editor's own size back, then the guard's tap.
+    // The close: the editor's own size back (a pixel aside first, then
+    // where it goes), then the guard's tap.
     rig.router.handle(RouterMsg::EqClose { client: 1 });
     let closed = next_of(&mut rig.rx, |m| matches!(m, RouterMsg::EqClosed { .. })).await;
     rig.router.handle(closed);
@@ -1186,6 +1187,7 @@ async fn a_changed_area_resizes_the_open_editor_and_its_close_puts_its_size_back
             step("resize", 667, 1361),
             step("touch down", 666, 1300),
             step("touch up", 666, 1300),
+            step("resize", 1349, 809),
             step("resize", 1349, 809),
             step("touch down", 546, 15),
             step("touch up", 546, 15),
@@ -1200,7 +1202,11 @@ async fn a_new_area_and_a_close_reach_the_worker_in_the_routers_order() {
     // one go (a phone turned as the engineer left) were sent to the worker
     // by two tasks, in no set order, and a resize after the guard's tap
     // reached the window. Both go as the router handles them: the resize,
-    // then the guard (the editor's own size back, its tap).
+    // then the guard (the editor's own size back, its tap). This runtime
+    // polls its tasks in spawn order, so the old two tasks passed here too:
+    // the worker-thread test `plugwin::tests::the_handles_commands_reach_the_
+    // worker_in_call_order_whatever_is_awaited_first` is the one that fails
+    // on them (#74 review, round 2).
     let dir = tempfile::tempdir().unwrap();
     let mut rig = rig(dir.path());
     let _outbox = held_open(&mut rig).await;
@@ -1217,6 +1223,7 @@ async fn a_new_area_and_a_close_reach_the_worker_in_the_routers_order() {
         [
             step("take", -1, -1),
             step("resize", 667, 1361),
+            step("resize", 1349, 809),
             step("resize", 1349, 809),
             step("touch down", 546, 15),
             step("touch up", 546, 15),

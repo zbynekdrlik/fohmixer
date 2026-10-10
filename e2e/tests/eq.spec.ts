@@ -282,8 +282,13 @@ function steps(records: any[]): (string | number | null)[][] {
   return records.map((r) => [r.op, r.phase ?? null, r.x ?? r.w ?? null, r.y ?? r.h ?? null]);
 }
 
-/** The close guard and the release, as the simulated backend records them: the editor's own size back first (PR G), then the tap. */
+/**
+ * The close guard and the release, as the simulated backend records them: the
+ * editor's own size back first (PR G), placed a pixel aside, then where it
+ * goes, each seen to land (#74 review, round 2), then the tap.
+ */
 const GUARD_AND_RELEASE = [
+  ["resize", null, WIDTH, HEIGHT],
   ["resize", null, WIDTH, HEIGHT],
   ["touch", "down", INERT.x, INERT.y],
   ["touch", "up", INERT.x, INERT.y],

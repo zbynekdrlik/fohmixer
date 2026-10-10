@@ -2,7 +2,7 @@ use serde_json::Value;
 
 use super::*;
 use crate::plugwin::sim::{REFUSED, SimHandle};
-use crate::plugwin::{CAPTURE_MS, KEEPALIVE_MS, WindowId};
+use crate::plugwin::{CAPTURE_MS, KEEPALIVE_MS, NOT_BACK, WindowId};
 
 fn args(pid: u32) -> Args {
     Args {
@@ -177,10 +177,17 @@ fn a_probe_runs_the_hubs_steps_in_order_and_saves_its_pictures() {
             "band=ok at=431,321",
             "drag=ok steps=25 to=511,281",
             "field=ok",
+            lines[9],
             "guard=ok at=546,15 tap_ms=30",
             "release=ok",
             "close=sent",
         ]
+    );
+    // The guard's placement, at the known size already (#74 review, round
+    // 2: whatever size it has, each placement seen to land).
+    assert!(
+        lines[9].starts_with("restore=ok client=1349x809 ms="),
+        "{text}"
     );
     let ops = ops(&handle);
     let mut want = vec![op("take", "", -1, -1)];
@@ -200,6 +207,10 @@ fn a_probe_runs_the_hubs_steps_in_order_and_saves_its_pictures() {
         want.push(op("touch", "down", 511, 281));
         want.push(op("touch", "up", 511, 281));
     }
+    // A pixel aside, then where it goes (the take's rectangle: the release
+    // posts nothing).
+    want.push(op("resize", "", -1, -1));
+    want.push(op("resize", "", -1, -1));
     want.push(op("touch", "down", 546, 15));
     want.push(op("touch", "up", 546, 15));
     want.push(op("release", "", -1, -1));
@@ -453,6 +464,7 @@ fn a_probe_resizes_runs_its_gestures_at_the_new_size_and_restores_before_the_gua
         want.push(op("touch", "up", to.0, to.1));
     }
     want.push(op("resize", "", -1, -1));
+    want.push(op("resize", "", -1, -1));
     want.push(op("touch", "down", 546, 15));
     want.push(op("touch", "up", 546, 15));
     want.push(op("release", "", -1, -1));
@@ -463,7 +475,7 @@ fn a_probe_resizes_runs_its_gestures_at_the_new_size_and_restores_before_the_gua
         .filter(|r| r["op"] == "resize")
         .map(|r| (r["w"].as_u64().unwrap(), r["h"].as_u64().unwrap()))
         .collect();
-    assert_eq!(sizes, [(760, 1271), (1349, 809)]);
+    assert_eq!(sizes, [(760, 1271), (1349, 809), (1349, 809)]);
     assert_eq!(handle.size(window), Some((1349, 809)));
     assert!(folder.join("after-resize.jpg").exists());
 }
@@ -487,10 +499,13 @@ fn a_min_probe_reads_the_editors_own_minimum_and_puts_its_size_back() {
         "{text}"
     );
     assert_eq!(lines[4], "frames=1 sent=1 same=0");
-    assert!(!text.contains("\nrestore="), "back already: {text}");
     assert!(text.contains("\nband=ok at=431,321\n"), "{text}");
+    // Back already, and the guard still places it (#74 review, round 2: a
+    // restore read at its size may have landed before what was posted
+    // first).
+    assert!(text.contains("\nrestore=ok client=1349x809 ms="), "{text}");
     let resizes = ops(&handle).into_iter().filter(|o| o.0 == "resize").count();
-    assert_eq!(resizes, 2);
+    assert_eq!(resizes, 4);
     assert_eq!(handle.size(window), Some((1349, 809)));
 }
 
@@ -580,7 +595,7 @@ fn a_probe_taps_only_at_the_size_its_inert_spot_is_known_at() {
         .filter(|r| r["op"] == "resize")
         .map(|r| (r["w"].as_u64().unwrap(), r["h"].as_u64().unwrap()))
         .collect();
-    assert_eq!(sizes, [(1349, 809), (760, 1271)]);
+    assert_eq!(sizes, [(1349, 809), (1349, 809), (760, 1271)]);
     assert_eq!(handle.size(window), Some((760, 1271)));
     let tapped: Vec<_> = ops(&handle)
         .into_iter()
@@ -632,4 +647,68 @@ fn a_post_settles_within_the_slack_or_at_the_very_size_for_the_guard() {
     assert_eq!(looked((1350, 808), (1349, 809), 1000.0, true), Some(false));
     assert_eq!(looked((760, 1271), (1349, 809), 1000.0, false), Some(false));
     assert_eq!(looked((760, 1271), (1349, 809), 999.0, false), None);
+}
+
+#[test]
+fn the_probes_guard_places_its_editor_a_pixel_aside_first_then_where_it_goes() {
+    // The review of PR #74, round 2: the probe's guard as the hub's. The
+    // window moved on the PC to exactly where the first placement would go
+    // a pixel to the right, so that one goes a pixel to the left: one the
+    // window does not have before it lands.
+    let (mut sim, handle, window) = one_window(42);
+    let taken = sim.take(window).unwrap();
+    handle.move_window(window, (1, 0));
+    {
+        let mut held = Held {
+            backend: &mut sim,
+            taken,
+            contact: None,
+            released: false,
+            changed: false,
+        };
+        let placed = held.known().unwrap();
+        assert_eq!((placed.client, placed.why), ((1349, 809), None));
+        assert!(!held.changed, "the take's rectangle again");
+        held.release();
+    }
+    let posted: Vec<(i64, i64)> = handle
+        .records()
+        .iter()
+        .filter(|r| r["op"] == "resize")
+        .map(|r| (r["left"].as_i64().unwrap(), r["top"].as_i64().unwrap()))
+        .collect();
+    assert_eq!(posted, [(-1, 0), (0, 0)], "nothing posted at the release");
+}
+
+#[test]
+fn a_probe_whose_guard_placement_does_not_land_taps_nothing_and_puts_its_size_back() {
+    // The review of PR #74, round 2: a placement not seen to land within
+    // its second fails the probe, with no tap.
+    let (mut sim, handle, _) = one_window(42);
+    handle.resize_refused(true);
+    let mut probe = args(42);
+    probe.frames = 1;
+    let mut out = Vec::new();
+    assert_eq!(
+        run(&mut sim, &probe, &mut out),
+        Err(format!(
+            "restore: {NOT_BACK}: its first placement did not land (the window is 1365x848 at 0,0, 1365x848 at 1,0 posted)"
+        ))
+    );
+    let text = String::from_utf8(out).unwrap();
+    assert!(text.ends_with("\nfield=ok\n"), "{text}");
+    let ops = ops(&handle);
+    assert!(
+        ops.iter().all(|o| (o.2, o.3) != (546, 15)),
+        "no tap: {ops:?}"
+    );
+    assert_eq!(
+        ops[ops.len() - 3..],
+        [
+            op("resize", "", -1, -1),
+            op("resize", "", -1, -1),
+            op("release", "", -1, -1),
+        ],
+        "its placement, the take's rectangle again, then released"
+    );
 }

@@ -942,8 +942,12 @@ fn the_guard_ends_the_contact_stops_the_frames_and_taps_the_inert_spot() {
     touch_at(&mut worker, 1, 1, Phase::Down, (10, 20), 0.0);
     let (reply, mut answer) = oneshot::channel();
     worker.command_at(Command::Guard { session: 1, reply }, 1.0);
+    assert_eq!(worker.contact, None, "ended at once");
+    // Its placement, a pixel aside, then the known rectangle, each seen to
+    // land at a step: then the tap.
+    worker.step_at(10.0);
+    worker.step_at(20.0);
     assert_eq!(answer.try_recv().unwrap(), Ok(()));
-    assert_eq!(worker.contact, None);
     assert_eq!(
         touches(&handle),
         vec![
@@ -967,11 +971,13 @@ fn the_guard_ends_the_contact_stops_the_frames_and_taps_the_inert_spot() {
     assert_eq!(frames.lock().unwrap().len(), 1, "no frame after the guard");
     // A guard of no editor, and one whose tap is refused, fail.
     let (reply, mut answer) = oneshot::channel();
-    worker.command_at(Command::Guard { session: 7, reply }, 2.0);
+    worker.command_at(Command::Guard { session: 7, reply }, 200.0);
     assert_eq!(answer.try_recv().unwrap(), Err(NO_EDITOR.to_string()));
     handle.refuse(true);
     let (reply, mut answer) = oneshot::channel();
-    worker.command_at(Command::Guard { session: 1, reply }, 3.0);
+    worker.command_at(Command::Guard { session: 1, reply }, 300.0);
+    worker.step_at(310.0);
+    worker.step_at(320.0);
     assert_eq!(answer.try_recv().unwrap(), Err(REFUSED.to_string()));
 }
 
@@ -986,8 +992,10 @@ fn the_guard_first_cancels_another_sessions_contact() {
     touch_at(&mut worker, 1, 7, Phase::Down, (10, 20), 0.0);
     let (reply, mut answer) = oneshot::channel();
     worker.command_at(Command::Guard { session: 2, reply }, 1.0);
-    assert_eq!(answer.try_recv().unwrap(), Ok(()));
     assert_eq!(worker.contact, None, "the other engineer's contact ended");
+    worker.step_at(10.0);
+    worker.step_at(20.0);
+    assert_eq!(answer.try_recv().unwrap(), Ok(()));
     let on = |r: &serde_json::Value| {
         (
             r["window"].as_u64().unwrap(),
@@ -1732,10 +1740,15 @@ fn a_guard_drops_a_resize_that_waits_for_a_finger() {
     touch_at(&mut worker, 1, 1, Phase::Down, (300, 200), 0.0);
     let mut waiting = resize_at(&mut worker, 1, UPRIGHT, 10.0);
     let mut guarded = guard_at(&mut worker, 1, 20.0);
-    assert_eq!(guarded.try_recv().unwrap(), Ok(()), "at its own size");
     worker.step_at(30.0);
+    worker.step_at(40.0);
+    assert_eq!(guarded.try_recv().unwrap(), Ok(()), "at its own size");
     assert_eq!(waiting.try_recv().unwrap(), None, "dropped");
-    assert_eq!(resizes(&handle), Vec::<(i64, i64)>::new());
+    assert_eq!(
+        resizes(&handle),
+        [(1349, 809), (1349, 809)],
+        "the guard's own placements only"
+    );
 }
 
 #[test]
@@ -1858,7 +1871,7 @@ fn a_window_resized_on_the_pc_is_reported_and_put_back_by_the_guard() {
     worker.step_at(50.0);
     worker.step_at(60.0);
     assert_eq!(answer.try_recv().unwrap(), Ok(()));
-    assert_eq!(resizes(&handle), [(1349, 809)]);
+    assert_eq!(resizes(&handle), [(1349, 809), (1349, 809)]);
     assert_eq!(touches(&handle), [t("down", 546, 15), t("up", 546, 15)]);
 }
 
@@ -1873,8 +1886,17 @@ fn the_guard_puts_the_editors_own_size_back_before_its_tap() {
     // The contact ends at once; the tap waits for the editor's own size.
     assert_eq!(touches(&handle), [t("down", 300, 900), t("up", 300, 900)]);
     assert!(answer.try_recv().is_err());
+    assert_eq!(
+        resizes(&handle),
+        [(667, 1361), (1349, 809)],
+        "a pixel aside first"
+    );
     worker.step_at(10.0);
-    assert_eq!(resizes(&handle), [(667, 1361), (1349, 809)], "posted");
+    assert_eq!(
+        resizes(&handle),
+        [(667, 1361), (1349, 809), (1349, 809)],
+        "seen there: the known rectangle"
+    );
     assert!(answer.try_recv().is_err(), "read back at the next look");
     worker.step_at(20.0);
     assert_eq!(answer.try_recv().unwrap(), Ok(()));
@@ -1889,7 +1911,7 @@ fn the_guard_puts_the_editors_own_size_back_before_its_tap() {
     assert_eq!(
         ops,
         [
-            "take", "resize", "touch", "touch", "resize", "touch", "touch"
+            "take", "resize", "touch", "touch", "resize", "resize", "touch", "touch"
         ]
     );
     assert_eq!(
@@ -1898,10 +1920,13 @@ fn the_guard_puts_the_editors_own_size_back_before_its_tap() {
     );
     assert!(!worker.editors[&1].changed, "its own size again");
     assert_eq!(worker.editors[&1].size, (1349, 809));
-    // At its own size again: a guard taps at once, and the release posts
-    // no size.
+    // At its own size again: a guard still places it (its own placement
+    // proves nothing else waits), and the release posts no size.
     let mut answer = guard_at(&mut worker, 1, 30.0);
-    assert_eq!(answer.try_recv().unwrap(), Ok(()), "not changed: at once");
+    assert!(answer.try_recv().is_err(), "placed first");
+    worker.step_at(40.0);
+    worker.step_at(50.0);
+    assert_eq!(answer.try_recv().unwrap(), Ok(()));
     let (reply, _released) = oneshot::channel();
     worker.command_at(
         Command::Release {
@@ -1909,9 +1934,9 @@ fn the_guard_puts_the_editors_own_size_back_before_its_tap() {
             closed: false,
             reply,
         },
-        40.0,
+        60.0,
     );
-    assert_eq!(resizes(&handle).len(), 2);
+    assert_eq!(resizes(&handle).len(), 5);
 }
 
 #[test]
@@ -1923,16 +1948,18 @@ fn no_resize_reaches_an_editor_once_its_guard_began() {
     let (mut worker, handle, _) = worker();
     take(&mut worker, &handle, 1, 0.0);
     let mut guarded = guard_at(&mut worker, 1, 10.0);
-    assert_eq!(guarded.try_recv().unwrap(), Ok(()), "tapped at once");
     let mut answer = resize_at(&mut worker, 1, UPRIGHT, 20.0);
     assert_eq!(answer.try_recv().unwrap(), None, "refused");
     worker.step_at(30.0);
+    worker.step_at(40.0);
+    assert_eq!(guarded.try_recv().unwrap(), Ok(()));
     worker.step_at(1100.0);
-    assert_eq!(resizes(&handle), Vec::<(i64, i64)>::new(), "nothing posted");
+    let own = [(1349, 809), (1349, 809)];
+    assert_eq!(resizes(&handle), own, "the guard's own placements only");
     // Nor later: the guard's mark stays with the editor.
     let mut again = resize_at(&mut worker, 1, area(800.0, 320.0), 1200.0);
     assert_eq!(again.try_recv().unwrap(), None);
-    assert_eq!(resizes(&handle), Vec::<(i64, i64)>::new());
+    assert_eq!(resizes(&handle), own);
 }
 
 /// Takes, as `session` at `now`, a window Live opened at `size` (its last
@@ -1974,10 +2001,14 @@ fn the_guard_taps_only_at_the_size_its_inert_spot_is_known_at() {
     let (mut worker, handle, _) = worker();
     let window = take_sized(&mut worker, &handle, 1, (760, 1271), (0, 0));
     let mut guarded = guard_at(&mut worker, 1, 10.0);
-    assert!(guarded.try_recv().is_err(), "not at the known size: no tap");
+    assert!(guarded.try_recv().is_err(), "placed first: no tap yet");
     assert_eq!(touches(&handle), Vec::new());
     worker.step_at(10.0);
-    assert_eq!(resizes(&handle), [(1349, 809)], "the known size posted");
+    assert_eq!(
+        resizes(&handle),
+        [(1349, 809), (1349, 809)],
+        "the known size posted, a pixel aside first"
+    );
     worker.step_at(20.0);
     assert_eq!(guarded.try_recv().unwrap(), Ok(()));
     assert_eq!(touches(&handle), [t("down", 546, 15), t("up", 546, 15)]);
@@ -1991,7 +2022,7 @@ fn the_guard_taps_only_at_the_size_its_inert_spot_is_known_at() {
         reply,
     };
     worker.command_at(release, 30.0);
-    assert_eq!(resizes(&handle), [(1349, 809)], "nothing more posted");
+    assert_eq!(resizes(&handle).len(), 2, "nothing more posted");
     assert!(handle.windows().is_empty(), "Live closed it");
 }
 
@@ -2008,7 +2039,7 @@ fn a_guard_reads_the_editors_size_even_when_no_change_was_seen() {
     worker.step_at(10.0);
     worker.step_at(20.0);
     assert_eq!(guarded.try_recv().unwrap(), Ok(()));
-    assert_eq!(resizes(&handle), [(1349, 809)]);
+    assert_eq!(resizes(&handle), [(1349, 809), (1349, 809)]);
     assert_eq!(touches(&handle), [t("down", 546, 15), t("up", 546, 15)]);
 }
 
@@ -2025,7 +2056,7 @@ fn a_guard_whose_known_size_never_comes_taps_nothing_and_the_window_goes_back() 
     assert_eq!(
         guarded.try_recv().unwrap(),
         Err(format!(
-            "{NOT_BACK}: the picture is 760x1271, 1349x809 asked"
+            "{NOT_BACK}: its first placement did not land (the window is 776x1310 at 300,50, 1365x848 at 301,50 posted)"
         ))
     );
     assert_eq!(touches(&handle), Vec::new(), "no tap at an unknown spot");
@@ -2044,13 +2075,14 @@ fn a_guard_whose_known_size_never_comes_taps_nothing_and_the_window_goes_back() 
 }
 
 #[test]
-fn a_resize_that_never_lands_goes_back_and_no_size_is_trusted_until_the_window_moves() {
+fn a_resize_that_never_lands_goes_back_and_the_guard_taps_nothing_while_nothing_lands() {
     // The review of PR #74 (M6): a resize that settled unlanded left the
     // window as it was then (Live's frame resized and Pro-Q not: a clipped
     // picture for the session); its rectangle before is posted back.
-    // (M1): both may still wait in Live's thread while the picture reads
-    // its size before, so a read cannot tell "back" from "nothing landed
-    // yet": the guard taps nothing then.
+    // (M1, round 2): both may still wait in Live's thread while the picture
+    // reads its size before, so a read of the size cannot tell "back" from
+    // "nothing landed yet": the guard waits to see its own placement land
+    // behind them, and taps nothing while nothing lands.
     let (mut worker, handle, _) = worker();
     take(&mut worker, &handle, 1, 0.0);
     handle.resize_late(true);
@@ -2066,16 +2098,16 @@ fn a_resize_that_never_lands_goes_back_and_no_size_is_trusted_until_the_window_m
     let mut guarded = guard_at(&mut worker, 1, 1100.0);
     assert!(
         guarded.try_recv().is_err(),
-        "the known size read, not trusted"
+        "the known size read, placed first"
     );
     worker.step_at(1110.0);
-    worker.step_at(2109.0);
+    worker.step_at(2099.0);
     assert!(guarded.try_recv().is_err(), "still waiting");
-    worker.step_at(2110.0);
+    worker.step_at(2100.0);
     assert_eq!(
         guarded.try_recv().unwrap(),
         Err(format!(
-            "{NOT_BACK}: an earlier resize may still land (the picture reads 1349x809)"
+            "{NOT_BACK}: its first placement did not land (the window is 1365x848 at 0,0, 1365x848 at 1,0 posted)"
         ))
     );
     assert_eq!(touches(&handle), Vec::new(), "no tap");
@@ -2099,15 +2131,17 @@ fn the_guard_waits_for_a_resize_on_its_way_then_puts_the_size_back() {
     assert_eq!(resized.try_recv().unwrap().map(|r| r.ok), Some(false));
     assert_eq!(resizes(&handle), [(667, 1361), (1349, 809), (1349, 809)]);
     assert!(answer.try_recv().is_err());
-    // The window's thread lands them in order: the guard's last. The first
-    // seen to land moves the window: no doubt; once the known size reads
-    // back, the tap.
+    // The window's thread lands them in order: the guard's placement, a
+    // pixel aside, last. Once it is seen, the known rectangle; once that
+    // reads back with the known size, the tap.
     let window = handle.windows()[0];
     assert!(handle.land_one(window));
     worker.step_at(1010.0);
     assert!(answer.try_recv().is_err(), "the upright picture first");
     handle.resize_late(false);
     worker.step_at(1020.0);
+    assert!(answer.try_recv().is_err(), "its placement seen");
+    worker.step_at(1030.0);
     assert_eq!(answer.try_recv().unwrap(), Ok(()));
     assert_eq!(touches(&handle), [t("down", 546, 15), t("up", 546, 15)]);
 }
@@ -2256,7 +2290,7 @@ fn a_guard_whose_size_never_comes_back_taps_nothing_and_the_release_posts_it_aga
     assert_eq!(
         answer.try_recv().unwrap(),
         Err(format!(
-            "{NOT_BACK}: the picture is 667x1361, 1349x809 asked"
+            "{NOT_BACK}: its first placement did not land (the window is 683x1400 at 0,0, 1365x848 at 1,0 posted)"
         ))
     );
     assert_eq!(touches(&handle), Vec::new(), "no tap at an unknown spot");
@@ -2279,6 +2313,55 @@ fn a_guard_whose_size_never_comes_back_taps_nothing_and_the_release_posts_it_aga
         "the size before the z-order"
     );
     assert_eq!(handle.size(window), Some((1349, 809)));
+}
+
+#[test]
+fn a_guard_whose_second_placement_never_lands_taps_nothing() {
+    // The first placement landed, so nothing posted before it waits; the
+    // known rectangle itself never does (Live's thread takes no rectangle
+    // from then on): its own wait from its own post, then no tap.
+    let (mut worker, handle, _) = worker();
+    take_sized(&mut worker, &handle, 1, (760, 1271), (0, 0));
+    let mut guarded = guard_at(&mut worker, 1, 10.0);
+    handle.resize_refused(true);
+    worker.step_at(20.0);
+    assert_eq!(resizes(&handle), [(1349, 809), (1349, 809)], "both posted");
+    worker.step_at(1019.0);
+    assert!(
+        guarded.try_recv().is_err(),
+        "its wait runs from its own post"
+    );
+    worker.step_at(1020.0);
+    assert_eq!(
+        guarded.try_recv().unwrap(),
+        Err(format!(
+            "{NOT_BACK}: its placement did not land (the window is 1365x848 at 1,0 with a 1349x809 picture, 1365x848 at 0,0 posted for 1349x809)"
+        ))
+    );
+    assert_eq!(touches(&handle), Vec::new(), "no tap");
+}
+
+#[test]
+fn a_guard_of_an_editor_live_keeps_at_another_size_taps_nothing() {
+    // Live's window may keep its size (the PC check's): one at another size
+    // never reads the known rectangle a pixel aside, whose size differs, so
+    // the guard taps nothing at a spot of an unknown layout (the editor is
+    // left open in Live).
+    let (mut worker, handle, _) = worker();
+    take_sized(&mut worker, &handle, 1, (760, 1271), (0, 0));
+    handle.size_kept(true);
+    let mut guarded = guard_at(&mut worker, 1, 10.0);
+    worker.step_at(20.0);
+    worker.step_at(1009.0);
+    assert!(guarded.try_recv().is_err(), "still waiting");
+    worker.step_at(1010.0);
+    assert_eq!(
+        guarded.try_recv().unwrap(),
+        Err(format!(
+            "{NOT_BACK}: its first placement did not land (the window is 776x1310 at 1,0, 1365x848 at 1,0 posted)"
+        ))
+    );
+    assert_eq!(touches(&handle), Vec::new(), "no tap");
 }
 
 #[test]
@@ -2323,6 +2406,7 @@ fn the_stop_posts_a_changed_editors_own_size_before_handing_it_back() {
         ops,
         [
             ("resize".to_string(), 667),
+            ("resize".to_string(), 1349),
             ("release".to_string(), 0),
             ("resize".to_string(), 1349),
             ("release".to_string(), 0),
@@ -2357,7 +2441,7 @@ async fn the_handle_resizes_through_the_worker_thread() {
             .unwrap(),
         Ok(())
     );
-    assert_eq!(resizes(&handle), [(667, 1361), (1349, 809)]);
+    assert_eq!(resizes(&handle), [(667, 1361), (1349, 809), (1349, 809)]);
     assert_eq!(touches(&handle), [t("down", 546, 15), t("up", 546, 15)]);
     plugwin.stop();
     assert!(plugwin.stopped().await);
