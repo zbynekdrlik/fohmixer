@@ -1680,6 +1680,50 @@ fn a_resize_moves_a_window_into_the_work_area_and_its_release_puts_it_back() {
 }
 
 #[test]
+fn a_resize_waits_for_the_finger_on_its_editor_to_lift_the_newest_only() {
+    // The review of PR #74 (M4): a page's new area resized the editor under
+    // a resting or dragging finger (iPad Split View, a phone turned with a
+    // finger held), and Pro-Q laid itself out under the injected contact.
+    let (mut worker, handle, _) = worker();
+    take(&mut worker, &handle, 1, 0.0);
+    touch_at(&mut worker, 1, 1, Phase::Down, (300, 200), 0.0);
+    let mut first = resize_at(&mut worker, 1, area(800.0, 320.0), 10.0);
+    let mut newest = resize_at(&mut worker, 1, UPRIGHT, 20.0);
+    worker.step_at(30.0);
+    assert_eq!(
+        resizes(&handle),
+        Vec::<(i64, i64)>::new(),
+        "nothing under the finger"
+    );
+    assert_eq!(first.try_recv().unwrap(), None, "the newest replaced it");
+    assert!(newest.try_recv().is_err(), "waiting");
+    touch_at(&mut worker, 1, 1, Phase::Up, (300, 200), 40.0);
+    worker.step_at(50.0);
+    assert_eq!(resizes(&handle), [(667, 1361)], "the newest, once lifted");
+    worker.step_at(60.0);
+    let landed = newest.try_recv().unwrap().expect("a resize");
+    assert_eq!((landed.client, landed.ok), ((667, 1361), true));
+    // Another session's finger is no reason to wait.
+    take(&mut worker, &handle, 2, 70.0);
+    touch_at(&mut worker, 2, 2, Phase::Down, (10, 10), 70.0);
+    resize_at(&mut worker, 1, area(800.0, 320.0), 80.0);
+    assert_eq!(resizes(&handle), [(667, 1361), (1652, 661)], "at once");
+}
+
+#[test]
+fn a_guard_drops_a_resize_that_waits_for_a_finger() {
+    let (mut worker, handle, _) = worker();
+    take(&mut worker, &handle, 1, 0.0);
+    touch_at(&mut worker, 1, 1, Phase::Down, (300, 200), 0.0);
+    let mut waiting = resize_at(&mut worker, 1, UPRIGHT, 10.0);
+    let mut guarded = guard_at(&mut worker, 1, 20.0);
+    assert_eq!(guarded.try_recv().unwrap(), Ok(()), "at its own size");
+    worker.step_at(30.0);
+    assert_eq!(waiting.try_recv().unwrap(), None, "dropped");
+    assert_eq!(resizes(&handle), Vec::<(i64, i64)>::new());
+}
+
+#[test]
 fn a_resize_that_does_not_land_settles_after_its_wait_and_a_newer_one_replaces_it() {
     let (mut worker, handle, heard) = worker();
     let window = take(&mut worker, &handle, 1, 0.0);
