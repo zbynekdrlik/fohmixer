@@ -388,6 +388,16 @@ fn the_encoders_thread_sends_each_jpeg_to_its_sink_and_ends_at_the_stop() {
 }
 
 #[test]
+fn a_dropped_encoder_stops_its_thread() {
+    let encoder = Encoder::spawn().unwrap();
+    let shared = Arc::clone(&encoder.shared);
+    drop(encoder);
+    assert!(shared.lock().stopped, "the drop stopped the encoder");
+    // The thread ended: only this test's handle is left on the hand-off.
+    assert_eq!(Arc::strong_count(&shared), 1);
+}
+
+#[test]
 fn a_frame_encoded_while_its_session_was_forgotten_never_reaches_its_sink() {
     // The guard, a release or a lost window ran while the encoder made the
     // frame (it had taken the picture already): no frame, nothing counted.
