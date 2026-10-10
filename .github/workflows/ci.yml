@@ -794,12 +794,14 @@ jobs:
         id: count
         env:
           # Mutants one shard tests within its 20-minute budget, setup included:
-          # a mutant costs ~240 s of build since the Stream Deck (#52), two at
-          # a time (it was ~150 s after #17's TLS/ACME dependencies; 12 per
-          # shard ran over then, and 8 per shard ran out of the 20 minutes on
-          # 9 of 45 shards in PR #53). 6 per shard is 3 rounds plus setup,
-          # about 16 minutes.
-          MUTANTS_PER_SHARD: "6"
+          # a mutant costs ~300 s of build since the Pro-Q 4 screen (#71), two
+          # at a time, and the shard's setup ~3.5 minutes (it was ~240 s after
+          # the Stream Deck, #52, and ~150 s after #17's TLS/ACME
+          # dependencies; 12 per shard ran over then, 8 per shard ran out of
+          # the 20 minutes on 9 of 45 shards in PR #53, and 6 per shard on 9
+          # of 136 shards in PR #73: 3 rounds took 17 minutes). 4 per shard
+          # is 2 rounds plus setup, about 15 minutes.
+          MUTANTS_PER_SHARD: "4"
           BASE_REF: ${{ github.base_ref }}
         run: |
           set -euo pipefail
