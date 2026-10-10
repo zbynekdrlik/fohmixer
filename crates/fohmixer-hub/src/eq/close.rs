@@ -22,7 +22,9 @@
 //!   bounded as a list's), and their `is_editor_open` read in one batch:
 //!   - **exactly one open:** the moved editor (a client holds one editor,
 //!     and this one's window is the hub's): it closes at its new path;
-//!   - **none:** nothing is open to close ([`Check::NoneOpen`]);
+//!   - **none:** nothing open where the walk looks ([`Check::NoneOpen`]);
+//!     the router still tells the holder "left open" (the editor may sit
+//!     deeper than the walk looks, still open);
 //!   - **several,** or a read or walk that failed: Live is left alone (the
 //!     window is handed back, the editor may stay open: the router records
 //!     a `problem`).
@@ -51,7 +53,7 @@ pub const MASTER: &str = "live_set master_track";
 pub const STEPS: usize = 4;
 
 /// Why a close leaves Live alone: nothing is open to close.
-pub const NONE_OPEN: &str = "the editor moved and no open Pro-Q 4 was found: Live is left alone";
+pub const NONE_OPEN: &str = "the editor moved and no open Pro-Q 4 was found where the hub looks: Live is left alone, it may still be open";
 /// Why a close leaves Live alone: the editor may still be open.
 pub const SEVERAL_OPEN: &str =
     "the editor moved and several open Pro-Q 4s were found: Live is left alone";

@@ -21,6 +21,7 @@
 use fohmixer_proto::eq::{PRODUCT, reason};
 use serde_json::{Value, json};
 
+use super::Device;
 use super::close::EDITOR_OPEN;
 use super::walk::{DEVICES, DISPLAY_NAME, PLUGIN, answered, get};
 
@@ -69,16 +70,21 @@ pub fn ref_id(target: &Value) -> Option<&str> {
 }
 
 /// What the read says (`slots` in [`read`]'s order) of the device the list
-/// named `name` at `path`: its `$ref` to open and later close it by, or why
-/// the open is refused.
-pub fn ready(slots: &[Value], path: &str, name: &str) -> Result<Value, &'static str> {
+/// found at `path` (`listed`: its name and `$ref`): its `$ref` to open and
+/// later close it by, or why the open is refused. Another device at the
+/// path is refused even when it has the same name (two Pro-Q 4s keeping
+/// their default name after a track moved): its `$ref` differs.
+pub fn ready(slots: &[Value], path: &str, listed: &Device) -> Result<Value, &'static str> {
     let text = |i: usize| slots.get(i).and_then(answered).and_then(Value::as_str);
-    if text(0) != Some(PRODUCT) || text(1) != Some(name) {
+    if text(0) != Some(PRODUCT) || text(1) != Some(listed.name.as_str()) {
         return Err(reason::MOVED);
     }
     let Some(target) = reference(slots.get(3), path) else {
         return Err(reason::MOVED);
     };
+    if ref_id(&target) != Some(listed.id.as_str()) {
+        return Err(reason::MOVED);
+    }
     match slots.get(2).and_then(answered).and_then(Value::as_bool) {
         Some(false) => Ok(target),
         Some(true) => Err(reason::OPEN_ON_PC),
@@ -107,6 +113,19 @@ mod tests {
 
     fn device(path: &str, id: &str) -> Value {
         json!({"$ref": id, "path": path, "class": "PluginDevice", "name": "Vox EQ"})
+    }
+
+    /// The device a list found: its name and `$ref`.
+    fn listed(name: &str, id: &str) -> Device {
+        Device {
+            name: name.to_string(),
+            id: id.to_string(),
+        }
+    }
+
+    /// The list's `Vox EQ` at `ON_TRACK`.
+    fn vox() -> Device {
+        listed("Vox EQ", "live_7")
     }
 
     /// The read's answer: product, name, editor state, parent's devices.
@@ -163,7 +182,7 @@ mod tests {
     #[test]
     fn the_listed_pro_q_with_its_editor_closed_opens_by_its_ref() {
         assert_eq!(
-            ready(&good(), ON_TRACK, "Vox EQ"),
+            ready(&good(), ON_TRACK, &vox()),
             Ok(json!({"$ref": "live_7", "class": "PluginDevice"}))
         );
         // In a chain: the item at its index among the chain's devices.
@@ -179,14 +198,14 @@ mod tests {
             ok(devices),
         );
         assert_eq!(
-            ready(&answer, IN_CHAIN, "Vox EQ"),
+            ready(&answer, IN_CHAIN, &listed("Vox EQ", "live_3")),
             Ok(json!({"$ref": "live_3", "class": "PluginDevice"}))
         );
     }
 
     #[test]
     fn a_targets_ref_id_is_its_ref() {
-        let target = ready(&good(), ON_TRACK, "Vox EQ").unwrap();
+        let target = ready(&good(), ON_TRACK, &vox()).unwrap();
         assert_eq!(ref_id(&target), Some("live_7"));
         assert_eq!(ref_id(&json!({"class": "PluginDevice"})), None);
         assert_eq!(ref_id(&json!({"$ref": 7})), None);
@@ -197,9 +216,12 @@ mod tests {
     fn another_device_at_the_path_is_moved() {
         let mut other = good();
         other[0] = ok(json!("Pro-C 2"));
-        assert_eq!(ready(&other, ON_TRACK, "Vox EQ"), Err(reason::MOVED));
+        assert_eq!(ready(&other, ON_TRACK, &vox()), Err(reason::MOVED));
         // Renamed, or another Pro-Q 4.
-        assert_eq!(ready(&good(), ON_TRACK, "Kick EQ"), Err(reason::MOVED));
+        assert_eq!(
+            ready(&good(), ON_TRACK, &listed("Kick EQ", "live_7")),
+            Err(reason::MOVED)
+        );
         // Nothing there: every read failed.
         let none = slots(
             failed("not found: devices 0"),
@@ -207,13 +229,23 @@ mod tests {
             failed("not found: devices 0"),
             ok(json!([])),
         );
-        assert_eq!(ready(&none, ON_TRACK, "Vox EQ"), Err(reason::MOVED));
+        assert_eq!(ready(&none, ON_TRACK, &vox()), Err(reason::MOVED));
         // A product or a name that is no text, or missing.
         let mut odd = good();
         odd[1] = ok(json!(7));
-        assert_eq!(ready(&odd, ON_TRACK, "Vox EQ"), Err(reason::MOVED));
-        assert_eq!(ready(&good()[..1], ON_TRACK, "Vox EQ"), Err(reason::MOVED));
-        assert_eq!(ready(&[], ON_TRACK, "Vox EQ"), Err(reason::MOVED));
+        assert_eq!(ready(&odd, ON_TRACK, &vox()), Err(reason::MOVED));
+        assert_eq!(ready(&good()[..1], ON_TRACK, &vox()), Err(reason::MOVED));
+        assert_eq!(ready(&[], ON_TRACK, &vox()), Err(reason::MOVED));
+    }
+
+    #[test]
+    fn another_pro_q_of_the_same_name_at_the_path_is_moved() {
+        // A track moved: the path names another Pro-Q 4 with the default
+        // name the listed one had too; its `$ref` gives it away.
+        assert_eq!(
+            ready(&good(), ON_TRACK, &listed("Vox EQ", "live_9")),
+            Err(reason::MOVED)
+        );
     }
 
     #[test]
@@ -227,15 +259,15 @@ mod tests {
             let mut answer = good();
             answer[3] = devices.clone();
             assert_eq!(
-                ready(&answer, ON_TRACK, "Vox EQ"),
+                ready(&answer, ON_TRACK, &vox()),
                 Err(reason::MOVED),
                 "{devices}"
             );
         }
-        assert_eq!(ready(&good()[..3], ON_TRACK, "Vox EQ"), Err(reason::MOVED));
+        assert_eq!(ready(&good()[..3], ON_TRACK, &vox()), Err(reason::MOVED));
         // A path of another form has no ref to read.
         assert_eq!(
-            ready(&good(), "live_set tracks 1", "Vox EQ"),
+            ready(&good(), "live_set tracks 1", &vox()),
             Err(reason::MOVED)
         );
     }
@@ -244,12 +276,12 @@ mod tests {
     fn an_editor_already_open_in_live_is_refused() {
         let mut open = good();
         open[2] = ok(json!(true));
-        assert_eq!(ready(&open, ON_TRACK, "Vox EQ"), Err(reason::OPEN_ON_PC));
+        assert_eq!(ready(&open, ON_TRACK, &vox()), Err(reason::OPEN_ON_PC));
         // Its state not read: neither taken nor turned off.
         for state in [failed("no such property"), ok(json!("yes"))] {
             let mut unread = good();
             unread[2] = state;
-            assert_eq!(ready(&unread, ON_TRACK, "Vox EQ"), Err(UNREAD));
+            assert_eq!(ready(&unread, ON_TRACK, &vox()), Err(UNREAD));
         }
     }
 }

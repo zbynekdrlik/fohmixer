@@ -208,9 +208,12 @@ async fn turn_off(
                 Err(why) => Shut::LeftOpen(why),
             }
         }
+        // The walk sees only where it looks (racks to its depth): the editor
+        // may sit elsewhere, still open, so the holder hears "left open"
+        // (the safe side) and the window is handed back, not taken as closed.
         Check::NoneOpen => {
-            tracing::warn!(session, instance = %key.instance, path = %key.path, "a Pro-Q 4 editor moved and no open Pro-Q 4 was found: nothing is turned off");
-            Shut::NoneOpen(close::NONE_OPEN.to_string())
+            tracing::warn!(session, instance = %key.instance, path = %key.path, "a Pro-Q 4 editor moved and no open Pro-Q 4 was found where the hub looks: nothing is turned off, it may still be open");
+            Shut::LeftOpen(close::NONE_OPEN.to_string())
         }
         Check::Leave(why) => {
             tracing::warn!(session, instance = %key.instance, path = %key.path, why = %why, "a Pro-Q 4 editor is left open in Live");
@@ -230,17 +233,17 @@ async fn open_editor(
     live: Option<LiveHandle>,
     plugwin: Plugwin,
     key: EditorKey,
-    name: Option<String>,
+    listed: Option<Device>,
     session: u32,
     events: EventLog,
 ) -> Result<((u32, u32), Value), String> {
     let live = live.ok_or(UNKNOWN_INSTANCE)?;
-    let name = name.ok_or(reason::UNKNOWN)?;
+    let listed = listed.ok_or(reason::UNKNOWN)?;
     let slots = live
         .call(open::read(&key.path))
         .await
         .map_err(|e| live_reason(&e))?;
-    let reference = match open::ready(&slots, &key.path, &name) {
+    let reference = match open::ready(&slots, &key.path, &listed) {
         Ok(reference) => reference,
         Err(why) => {
             tracing::info!(session, instance = %key.instance, path = %key.path, why, "a Pro-Q 4 open is refused: Live is left alone");
@@ -619,10 +622,10 @@ impl Router {
                     self.io.tx.clone(),
                     self.io.events.clone(),
                 );
-                let name = io.state.name_of(&key).map(str::to_string);
+                let listed = io.state.device_of(&key).cloned();
                 tokio::spawn(async move {
                     let opened =
-                        open_editor(live, plugwin, key.clone(), name, session, events).await;
+                        open_editor(live, plugwin, key.clone(), listed, session, events).await;
                     let (outcome, reference) = match opened {
                         Ok((size, reference)) => (Ok(size), Some(reference)),
                         Err(why) => (Err(why), None),

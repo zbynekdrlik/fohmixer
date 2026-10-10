@@ -741,7 +741,12 @@ async fn the_close_sequence_leaves_an_editor_open_when_its_guard_fails() {
     assert_eq!(released, 2, "both windows handed back");
     assert_eq!(sim.windows().len(), 2, "both editors still open in Live");
     // Opens: no instance, no listed name, an offline instance (its read).
-    let name = || Some("Pro-Q 4".to_string());
+    let name = || {
+        Some(Device {
+            name: "Pro-Q 4".to_string(),
+            id: "live_1".to_string(),
+        })
+    };
     assert_eq!(
         open_editor(None, plugwin.clone(), key(), name(), 3, events.clone()).await,
         Err(UNKNOWN_INSTANCE.to_string())
