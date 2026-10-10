@@ -11,8 +11,9 @@
 //!    `child` (Pro-Q's own child found);
 //! 2. with `--min-probe` (PR G): a picture of [`MIN_PROBE`] asked, far below
 //!    Pro-Q's own minimum, and the size the editor took after
-//!    [`super::RESIZE_MS`] (`min=`: Pro-Q's minimum), then its own size
-//!    back (`min_restore=`);
+//!    [`super::RESIZE_MS`] (`min=`: Pro-Q's minimum), then the take's
+//!    rectangle back (`min_restore=`; the size stays changed until a
+//!    restore landed, #74 review);
 //! 3. with `--size WxH` (PR G): the picture resized to it as the hub does
 //!    (posted, its size read until it lands, at most `RESIZE_MS`; one that
 //!    does not land fails the probe): `resize=ok client= ms=`; the gestures
@@ -25,14 +26,18 @@
 //!    resends, the up at the last point);
 //! 7. a double tap at `--to` (on the band: its frequency text field opens,
 //!    Pro-Q 4.02's close-crash state);
-//! 8. the close guard: a resized picture's own size back first, as the
-//!    hub's guard does (`restore=ok client= ms=`; not back in time: the
-//!    probe fails and taps nothing), then a tap on the inert spot
-//!    (`--inert`, else the hub's own of the original width,
-//!    [`super::inert_spot`]), then the guard's wait;
-//! 9. the release (the z-order as it was) and, with `--close`, a close
-//!    request to the window (Carla's bridge ends with `0xC0000005` on it
-//!    whatever the plug-in's state).
+//! 8. the close guard, as the hub's (#74 review): a picture not at
+//!    [`super::KNOWN_SIZE`] (the size the inert spot was verified at) is
+//!    put there first, at the take's place (moved into the work area when
+//!    it does not fit there), and read back until it is exactly that size
+//!    (`restore=ok client= ms=`; not in time: the probe fails and taps
+//!    nothing), then a tap on the inert spot (`--inert`, else the hub's
+//!    own, [`super::inert_spot`] of the known width), then the guard's
+//!    wait;
+//! 9. the release (the take's rectangle back when it was changed, the
+//!    z-order as it was) and, with `--close`, a close request to the window
+//!    (Carla's bridge ends with `0xC0000005` on it whatever the plug-in's
+//!    state).
 //!
 //! Once the window is taken, a step that fails still ends a contact it left
 //! down (a cancel at its last point), posts a changed window's own
@@ -53,8 +58,8 @@ use super::sim::Sim;
 #[cfg(windows)]
 use super::win::probe_backend as platform;
 use super::{
-    Backend, GUARD_TAP, NOT_ON_TOP, Phase, Pixels, QUALITY, Rect, STEP, Taken, encode, inert_spot,
-    inside, millis, placed, settled, window_size,
+    Backend, GUARD_TAP, KNOWN_SIZE, NOT_ON_TOP, Phase, Pixels, QUALITY, Rect, STEP, Taken, encode,
+    inert_spot, inside, known_rect, millis, placed, resize_over, settled, window_size,
 };
 
 /// The CLI's usage line.
@@ -63,7 +68,7 @@ pub const USAGE: &str = "usage: fohmixer-hub eq-probe --pid <pid> [--frames <n>]
 /// the editor takes its own minimum.
 pub const MIN_PROBE: (u32, u32) = (160, 120);
 /// The looks at a resized picture's size, [`STEP`] apart: past
-/// `RESIZE_MS` (1 s) the last one settles it ([`settled`]).
+/// `RESIZE_MS` (1 s) the last one settles it ([`looked`]).
 pub const RESIZE_LOOKS: u32 = 100;
 /// Captures when `--frames` is not given.
 pub const FRAMES: u32 = 50;
@@ -119,6 +124,17 @@ fn size(text: &str) -> Option<(u32, u32)> {
     let (w, h) = text.split_once('x')?;
     let side = |v: &str| v.trim().parse::<u32>().ok().filter(|v| *v > 0);
     Some((side(w)?, side(h)?))
+}
+
+/// How a post of `asked` settles at a look `waited_ms` after it, the
+/// picture `client` then (`exact`: only that very size counts, the guard's
+/// [`KNOWN_SIZE`]; else within the slack, [`settled`]): landed, over
+/// without it, or not yet.
+pub fn looked(client: (u32, u32), asked: (u32, u32), waited_ms: f64, exact: bool) -> Option<bool> {
+    if exact && client != asked {
+        return resize_over(waited_ms).then_some(false);
+    }
+    settled(client, asked, waited_ms)
 }
 
 /// A point of a picture of `from` at the same place of a picture of `to`
@@ -252,15 +268,17 @@ impl Report<'_> {
 /// The probe's hold on the window it took: every touch goes through it, so
 /// a step that fails, on any path out, leaves no contact down and no window
 /// on top. Dropped, it cancels a contact still down at its last point,
-/// posts a changed picture's own size back and hands the window back (its
-/// z-order as it was), unless the release ran.
+/// posts a changed window's own rectangle back and hands the window back
+/// (its z-order as it was), unless the release ran.
 struct Held<'a> {
     backend: &'a mut dyn Backend,
     taken: Taken,
     /// The contact down, at its last point.
     contact: Option<(i32, i32)>,
     released: bool,
-    /// Whether the picture's size was changed and is not back yet (PR G).
+    /// Whether the window's rectangle was changed and is not the take's
+    /// again (PR G): set at each post, cleared only once one of the take's
+    /// rectangle landed (#74 review).
     changed: bool,
 }
 
@@ -308,19 +326,35 @@ impl Held<'_> {
         let work = self.backend.work(&self.taken).map_err(unread)?;
         let now = self.backend.rect(&self.taken).map_err(unread)?;
         let rect = inside(work, now, window_size(&self.taken, asked));
-        self.post(rect, asked)
+        self.post(rect, asked, false)
     }
 
     /// The window's own rectangle back (the take's: its place and its
     /// size), as [`Held::resize`] waits for it.
     fn restore(&mut self) -> Result<Settle, Settle> {
         let (rect, original) = (self.taken.rect, self.original());
-        self.post(rect, original)
+        self.post(rect, original, false)
     }
 
-    /// `rect` posted to the window and its picture read until it is
-    /// `asked` ([`Held::resize`]).
-    fn post(&mut self, rect: Rect, asked: (u32, u32)) -> Result<Settle, Settle> {
+    /// The picture at [`KNOWN_SIZE`], the guard's (#74 review): the
+    /// window's rectangle for it at the take's place, moved into the work
+    /// area when it does not fit there ([`known_rect`]), read back until it
+    /// is exactly that size.
+    fn known(&mut self) -> Result<Settle, Settle> {
+        let work = self.backend.work(&self.taken).map_err(|why| Settle {
+            client: (0, 0),
+            ms: 0.0,
+            why: Some(why),
+        })?;
+        let rect = known_rect(work, &self.taken);
+        self.post(rect, KNOWN_SIZE, true)
+    }
+
+    /// `rect` posted to the window and its picture read every [`STEP`] until
+    /// it is `asked` (`exact`: that very size; [`looked`]) or `RESIZE_MS`
+    /// passed: the last look's size and time. The window counts as changed
+    /// from the post until one of the take's rectangle landed.
+    fn post(&mut self, rect: Rect, asked: (u32, u32), exact: bool) -> Result<Settle, Settle> {
         self.backend
             .resize(&self.taken, rect)
             .map_err(|why| Settle {
@@ -328,42 +362,46 @@ impl Held<'_> {
                 ms: 0.0,
                 why: Some(why),
             })?;
-        self.changed = asked != self.original();
+        self.changed = true;
         let started = Instant::now();
+        let mut seen = Settle {
+            client: (0, 0),
+            ms: 0.0,
+            why: None,
+        };
         for _ in 0..=RESIZE_LOOKS {
             let ms = millis(started.elapsed());
             let client = self.backend.client(&self.taken).unwrap_or((0, 0));
-            match settled(client, asked, ms) {
+            seen = Settle {
+                client,
+                ms,
+                why: None,
+            };
+            match looked(client, asked, ms, exact) {
                 Some(true) => {
-                    return Ok(Settle {
-                        client,
-                        ms,
-                        why: None,
-                    });
+                    self.changed = rect != self.taken.rect;
+                    return Ok(seen);
                 }
-                Some(false) => {
-                    return Err(Settle {
-                        client,
-                        ms,
-                        why: None,
-                    });
-                }
+                Some(false) => return Err(seen),
                 None => std::thread::sleep(STEP),
             }
         }
-        let client = self.backend.client(&self.taken).unwrap_or((0, 0));
-        let ms = millis(started.elapsed());
-        Err(Settle {
-            client,
-            ms,
-            why: None,
-        })
+        Err(seen)
     }
 
-    /// The window handed back (its z-order as it was).
+    /// The window handed back: the take's rectangle again when it was
+    /// changed (not waited for), its z-order as it was.
+    fn hand_back(&mut self) {
+        if self.changed {
+            let _ = self.backend.resize(&self.taken, self.taken.rect);
+        }
+        self.backend.release(&self.taken);
+    }
+
+    /// The window handed back ([`Held::hand_back`]) at the probe's end.
     fn release(&mut self) {
         self.released = true;
-        self.backend.release(&self.taken);
+        self.hand_back();
     }
 }
 
@@ -372,11 +410,8 @@ impl Drop for Held<'_> {
         if let Some(at) = self.contact.take() {
             let _ = self.backend.touch(&self.taken, Phase::Cancel, at);
         }
-        if self.changed {
-            let _ = self.backend.resize(&self.taken, self.taken.rect);
-        }
         if !self.released {
-            self.backend.release(&self.taken);
+            self.hand_back();
         }
     }
 }
@@ -570,15 +605,15 @@ pub fn run(backend: &mut dyn Backend, args: &Args, out: &mut dyn Write) -> Resul
     double_tap(&mut held, to, "field")?;
     report.line("field=ok")?;
     settle(&mut held, "field-open.jpg", &mut report)?;
-    // The guard: the picture's own size back first, as the hub's guard
-    // does (the inert spot is known only at that size); not back, no tap.
-    if held.changed {
+    // The guard, as the hub's: the picture at the size the inert spot is
+    // known at, exactly (posted where it is not); not so, no tap.
+    if held.backend.client(&held.taken).ok() != Some(KNOWN_SIZE) {
         let back = held
-            .restore()
-            .map_err(|seen| seen.failure("restore", original))?;
+            .known()
+            .map_err(|seen| seen.failure("restore", KNOWN_SIZE))?;
         report.line(&format!("restore=ok {}", back.figures()))?;
     }
-    let spot = args.inert.unwrap_or_else(|| inert_spot(original.0));
+    let spot = args.inert.unwrap_or_else(|| inert_spot(KNOWN_SIZE.0));
     held.guard_tap(spot)
         .map_err(|why| format!("guard at {},{}: {why}", spot.0, spot.1))?;
     report.line(&format!(
