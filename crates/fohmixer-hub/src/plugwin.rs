@@ -50,10 +50,12 @@
 //!   injections of a contact goes into the minute's counts ([`Rate`]).
 //! - **The device's shape (PR G)** ([`Plugwin::resize`]): a page's picture
 //!   area gives the picture a size ([`crate::eq::size::editor_size`] in the
-//!   room the backend gives where the window stands, [`Backend::room`],
-//!   each side at least [`Backend::min_size`]); the window's size for it is
-//!   posted ([`Backend::resize`]: the frame beyond the picture, measured at
-//!   the take, added; no move) and the picture's size is read every step
+//!   room of the window's work area, [`Backend::work`], less its frame,
+//!   [`room`]; each side at least [`Backend::min_size`], none when the room
+//!   is smaller); the window's rectangle for it is posted ([`Backend::resize`]:
+//!   the frame beyond the picture, measured at the take, added, the window
+//!   kept where it stands when it fits there, else moved into the work
+//!   area, [`inside`]; #74 review) and the picture's size is read every step
 //!   ([`Backend::client`], no message) until it lands within
 //!   [`RESIZE_SLACK`] or [`RESIZE_MS`] passed ([`settled`]): the caller hears
 //!   how it settled ([`Resized`]). The capture goes on meanwhile, and the
@@ -238,17 +240,27 @@ pub fn window_size(taken: &Taken, client: (u32, u32)) -> (i32, i32) {
     (client.0 as i32 + width, client.1 as i32 + height)
 }
 
-/// The room for the taken window's picture (px, PR G): from where the
-/// window stands now (`window`: a resize never moves it) to the far edges
-/// of the work area (`work`: its screen less the taskbar), less the frame
-/// beyond the picture; none past an edge.
-pub fn room(work: Rect, window: Rect, taken: &Taken) -> (u32, u32) {
+/// The room for the taken window's picture (px, PR G): its work area
+/// (`work`: its screen less the taskbar) less the frame beyond the picture
+/// (a resize moves the window into the work area when it does not fit
+/// where it stands, [`inside`]); none for a frame larger than the area.
+pub fn room(work: Rect, taken: &Taken) -> (u32, u32) {
     let (width, height) = frame(taken);
-    let side = |far: i32, near: i32, frame: i32| u32::try_from(far - near - frame).unwrap_or(0);
-    (
-        side(work.left + work.width, window.left, width),
-        side(work.top + work.height, window.top, height),
-    )
+    let side = |room: i32, frame: i32| u32::try_from(room - frame).unwrap_or(0);
+    (side(work.width, width), side(work.height, height))
+}
+
+/// The window's rectangle of `size` (px, PR G; #74 review): where `from`
+/// stands when it fits in the work area there, else moved in on each side
+/// it would cross (a window larger than the area at its near edge).
+pub fn inside(work: Rect, from: Rect, size: (i32, i32)) -> Rect {
+    let side = |at: i32, near: i32, room: i32, long: i32| at.min(near + room - long).max(near);
+    Rect {
+        left: side(from.left, work.left, work.width, size.0),
+        top: side(from.top, work.top, work.height, size.1),
+        width: size.0,
+        height: size.1,
+    }
 }
 
 /// Whether a picture of `client` is the size `asked` (PR G), within
@@ -347,18 +359,21 @@ pub trait Backend: Send {
     fn on_top(&mut self, taken: &Taken) -> bool;
     /// Whether the window is still there.
     fn alive(&mut self, taken: &Taken) -> bool;
-    /// The room for the taken window's picture on the screen (px, PR G):
-    /// what it may grow to where it stands ([`room`]).
-    fn room(&mut self, taken: &Taken) -> Result<(u32, u32), String>;
+    /// The work area of the taken window's monitor (px, PR G): its screen
+    /// less the taskbar.
+    fn work(&mut self, taken: &Taken) -> Result<Rect, String>;
+    /// The taken window's rectangle now (px, PR G; #74 review): a read that
+    /// sends the window no message.
+    fn rect(&mut self, taken: &Taken) -> Result<Rect, String>;
     /// The smallest picture the hub asks for (px, PR G).
     fn min_size(&self) -> (u32, u32) {
         MIN_PICTURE
     }
-    /// Asks the taken window for a picture of `client` (PR G): its size
-    /// for it ([`window_size`]) posted to its thread, no move, no z-order
-    /// change, no activation. It lands when that thread takes it
-    /// ([`Backend::client`]).
-    fn resize(&mut self, taken: &Taken, client: (u32, u32)) -> Result<(), String>;
+    /// Asks the taken window for the rectangle `rect` (PR G; #74 review: its
+    /// place and its size, the frame included, [`window_size`], [`inside`]),
+    /// posted to its thread, no z-order change, no activation. It lands
+    /// when that thread takes it ([`Backend::client`]).
+    fn resize(&mut self, taken: &Taken, rect: Rect) -> Result<(), String>;
     /// The picture's size now (PR G): a read that sends the window no
     /// message.
     fn client(&mut self, taken: &Taken) -> Result<(u32, u32), String>;
@@ -1112,21 +1127,26 @@ impl Worker {
     /// Posts the picture size for `area` to `session`'s window: the size
     /// asked. None for no editor, one whose guard began (its tap needs the
     /// size it puts back, and Live closes the editor at the size it has:
-    /// #74 review), an area with no shape, or a size the backend could not
-    /// read the room for or post.
+    /// #74 review), an area with no shape, a room smaller than the minimum,
+    /// or a work area, a window or a size the backend could not read or
+    /// post. The window stays where it stands when it fits there, else it
+    /// moves into the work area ([`inside`]).
     fn post_size(&mut self, session: u32, area: Area) -> Option<(u32, u32)> {
         let editor = self.editors.get_mut(&session)?;
         if editor.guarded {
             return None;
         }
-        let room = self
-            .backend
-            .room(&editor.taken)
-            .map_err(|why| tracing::warn!(session, why = %why, "a Pro-Q 4 editor's room on the screen could not be read: its size stays"))
-            .ok()?;
-        let asked = editor_size(area, room, self.backend.min_size())?;
+        let taken = &editor.taken;
+        let read = |what: Result<Rect, String>| {
+            what.map_err(|why| tracing::warn!(session, why = %why, "a Pro-Q 4 editor's place on the screen could not be read: its size stays"))
+                .ok()
+        };
+        let work = read(self.backend.work(taken))?;
+        let now = read(self.backend.rect(taken))?;
+        let asked = editor_size(area, room(work, taken), self.backend.min_size())?;
+        let rect = inside(work, now, window_size(taken, asked));
         self.backend
-            .resize(&editor.taken, asked)
+            .resize(taken, rect)
             .map_err(|why| tracing::warn!(session, why = %why, "a Pro-Q 4 editor's new size could not be posted"))
             .ok()?;
         editor.changed = true;
@@ -1188,7 +1208,7 @@ impl Worker {
             let settling = editor.resizing.is_some();
             match restore_step(settling, guard.posted.map(|at| now - at), back) {
                 Restore::Wait => self.guarding.push(guard),
-                Restore::Post => match self.backend.resize(&editor.taken, original) {
+                Restore::Post => match self.backend.resize(&editor.taken, editor.taken.rect) {
                     Ok(()) => {
                         guard.posted = Some(now);
                         self.guarding.push(guard);
@@ -1406,9 +1426,8 @@ impl Worker {
         self.end_contact(session);
         self.encoder.forget(session);
         if let Some(editor) = self.editors.remove(&session) {
-            let original = (editor.taken.width, editor.taken.height);
             if editor.changed
-                && let Err(why) = self.backend.resize(&editor.taken, original)
+                && let Err(why) = self.backend.resize(&editor.taken, editor.taken.rect)
             {
                 tracing::warn!(session, why = %why, "a Pro-Q 4 editor's own size could not be posted at its release");
             }

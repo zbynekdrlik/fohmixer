@@ -1137,11 +1137,14 @@ impl Backend for Slow {
     fn alive(&mut self, taken: &Taken) -> bool {
         self.sim.alive(taken)
     }
-    fn room(&mut self, taken: &Taken) -> Result<(u32, u32), String> {
-        self.sim.room(taken)
+    fn work(&mut self, taken: &Taken) -> Result<Rect, String> {
+        self.sim.work(taken)
     }
-    fn resize(&mut self, taken: &Taken, client: (u32, u32)) -> Result<(), String> {
-        self.sim.resize(taken, client)
+    fn rect(&mut self, taken: &Taken) -> Result<Rect, String> {
+        self.sim.rect(taken)
+    }
+    fn resize(&mut self, taken: &Taken, rect: Rect) -> Result<(), String> {
+        self.sim.resize(taken, rect)
     }
     fn client(&mut self, taken: &Taken) -> Result<(u32, u32), String> {
         self.sim.client(taken)
@@ -1400,7 +1403,7 @@ fn taken_at(width: u32, height: u32, rect: Rect) -> Taken {
 }
 
 #[test]
-fn a_size_asked_adds_the_frame_and_the_room_runs_to_the_work_areas_edges() {
+fn a_size_asked_adds_the_frame_and_the_room_is_the_work_area_less_it() {
     // Live's window: 1365 × 848 around a 1349 × 809 picture.
     let rect = Rect {
         left: 600,
@@ -1411,43 +1414,73 @@ fn a_size_asked_adds_the_frame_and_the_room_runs_to_the_work_areas_edges() {
     let taken = taken_at(1349, 809, rect);
     assert_eq!(window_size(&taken, (760, 1271)), (776, 1310));
     assert_eq!(window_size(&taken, (1349, 809)), (1365, 848));
+    // The work area less the frame, wherever the window stands (a resize
+    // moves it in when it does not fit there).
     let work = Rect {
         left: 0,
         top: 0,
         width: 2560,
         height: 1400,
     };
-    // From where the window stands to the work area's far edges.
-    assert_eq!(room(work, rect, &taken), (1944, 1065));
-    let corner = Rect {
-        left: 0,
-        top: 0,
-        width: 1365,
-        height: 848,
-    };
-    assert_eq!(room(work, corner, &taken), (2544, 1361));
-    // A second screen right of the first, a window moved since its take.
+    assert_eq!(room(work, &taken), (2544, 1361));
     let right = Rect {
         left: 2560,
         top: 10,
         width: 1920,
         height: 1040,
     };
-    let moved = Rect {
-        left: 2600,
-        top: 50,
-        width: 1365,
-        height: 848,
+    assert_eq!(room(right, &taken), (1904, 1001));
+    // A frame larger than the area: no room.
+    let tiny = Rect {
+        left: 0,
+        top: 0,
+        width: 10,
+        height: 30,
     };
-    assert_eq!(room(right, moved, &taken), (1864, 961));
-    // Past an edge: no room.
-    let past = Rect {
-        left: 2550,
-        top: 1390,
-        width: 1365,
-        height: 848,
-    };
-    assert_eq!(room(work, past, &taken), (0, 0));
+    assert_eq!(room(tiny, &taken), (0, 0));
+}
+
+/// A rectangle.
+fn rect(left: i32, top: i32, width: i32, height: i32) -> Rect {
+    Rect {
+        left,
+        top,
+        width,
+        height,
+    }
+}
+
+#[test]
+fn a_window_stays_where_it_fits_and_moves_into_the_work_area_where_not() {
+    // #74 review: a window low on the screen grows past the taskbar no more.
+    let work = rect(0, 0, 2560, 1400);
+    let low = rect(600, 600, 1365, 848);
+    // Where it stands when it fits there.
+    assert_eq!(inside(work, low, (1365, 800)), rect(600, 600, 1365, 800));
+    assert_eq!(inside(work, low, (1960, 800)), rect(600, 600, 1960, 800));
+    // An upright picture's window is too high there: up just enough.
+    assert_eq!(inside(work, low, (683, 1400)), rect(600, 0, 683, 1400));
+    assert_eq!(inside(work, low, (683, 1000)), rect(600, 400, 683, 1000));
+    // Too wide there: left just enough.
+    assert_eq!(inside(work, low, (2000, 800)), rect(560, 600, 2000, 800));
+    // Past the near edges (a window partly off the screen): in.
+    let off = rect(-50, -20, 1365, 848);
+    assert_eq!(inside(work, off, (1365, 848)), rect(0, 0, 1365, 848));
+    // Larger than the work area: at its near edges.
+    assert_eq!(inside(work, low, (3000, 1500)), rect(0, 0, 3000, 1500));
+    // On a second screen to the right, its own edges.
+    let right = rect(2560, 10, 1920, 1040);
+    let there = rect(3000, 500, 1365, 848);
+    assert_eq!(inside(right, there, (683, 1000)), rect(3000, 50, 683, 1000));
+    assert_eq!(
+        inside(right, there, (1800, 600)),
+        rect(2680, 450, 1800, 600)
+    );
+    // Exactly at the far edges still fits.
+    assert_eq!(
+        inside(work, rect(1195, 552, 1, 1), (1365, 848)),
+        rect(1195, 552, 1365, 848)
+    );
 }
 
 #[test]
@@ -1534,6 +1567,41 @@ fn a_resize_posts_the_areas_size_and_answers_once_it_lands() {
     assert_eq!(worker.editors[&1].counts.width, 2544);
     let heard = heard.lock().unwrap().clone();
     assert!(heard.is_empty(), "{heard:?}");
+}
+
+#[test]
+fn a_resize_moves_a_window_into_the_work_area_and_its_release_puts_it_back() {
+    // #74 review: a window low on the screen, upright, crossed the taskbar.
+    let (mut worker, handle, _) = worker();
+    handle.auto_open(false);
+    let window = handle.add_window(0);
+    handle.move_window(window, (900, 700));
+    let (reply, mut answer) = oneshot::channel();
+    let take = Command::Take {
+        session: 1,
+        before: Vec::new(),
+        reply,
+    };
+    worker.command_at(take, 0.0);
+    worker.step_at(0.0);
+    assert_eq!(answer.try_recv().unwrap(), Ok((1349, 809)));
+    let mut resized = resize_at(&mut worker, 1, UPRIGHT, 10.0);
+    worker.step_at(20.0);
+    let landed = resized.try_recv().unwrap().expect("a resize");
+    assert_eq!((landed.client, landed.ok), ((667, 1361), true));
+    // Upright it does not fit 700 px down: up to the top, its x kept.
+    assert_eq!(handle.rect(window), Some(rect(900, 0, 683, 1400)));
+    // Handed back while Live keeps it open: its own place and size again.
+    let (reply, _released) = oneshot::channel();
+    worker.command_at(
+        Command::Release {
+            session: 1,
+            closed: false,
+            reply,
+        },
+        30.0,
+    );
+    assert_eq!(handle.rect(window), Some(rect(900, 700, 1365, 848)));
 }
 
 #[test]

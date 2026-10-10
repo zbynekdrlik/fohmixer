@@ -3,8 +3,10 @@
 //! editor lays itself out for the device that opens it (Pro-Q 4 resizes
 //! freely by its window: FabFilter's help; in Carla's bridge on the PC a
 //! 760 × 1271 picture laid itself out upright, `.claude/rules/plugin-window.md`).
-//! Pure: the window worker (`plugwin`) asks the backend for the room and
-//! the minimum, and posts the size.
+//! Pure: the window worker (`plugwin`) asks the backend for the work area
+//! (the room is it less the window's frame) and the minimum, and posts the
+//! window's rectangle for the size (moved into the work area when it does
+//! not fit where it stands).
 
 use fohmixer_proto::eq::Area;
 
@@ -14,14 +16,17 @@ pub const PIXELS: f64 = 1349.0 * 809.0;
 
 /// The picture size (px) for a page's `area` (CSS px): its aspect at
 /// [`PIXELS`], scaled down to fit `room` (the picture's room on the PC's
-/// screen, where the window stands), each side at least `min` (Pro-Q's own
-/// minimum: a side `min` holds up bends the aspect). None for an area with
-/// no shape (a side 0, below 0 or not a number, an aspect past any number):
-/// the editor keeps its size.
+/// screen: its work area less the window's frame), each side at least
+/// `min` (Pro-Q's own minimum: a side `min` holds up bends the aspect).
+/// None for an area with no shape (a side 0, below 0 or not a number, an
+/// aspect past any number) or a room smaller than `min` on a side (#74
+/// review: the window would cross the work area's edge): the editor keeps
+/// its size.
 pub fn editor_size(area: Area, room: (u32, u32), min: (u32, u32)) -> Option<(u32, u32)> {
     let aspect = area.w / area.h;
     let shaped = area.w > 0.0 && area.h > 0.0 && aspect.is_finite();
-    if !shaped {
+    let fits = room.0 >= min.0 && room.1 >= min.1;
+    if !(shaped && fits) {
         return None;
     }
     let width = (PIXELS * aspect).sqrt();
@@ -69,8 +74,8 @@ mod tests {
         // 0.49: 731 × 1492 at Pro-Q's pixel count, too high for the room's
         // 1361: scaled down, the aspect kept.
         assert_eq!(size(392.0, 800.0), Some((667, 1361)));
-        // A window lower on the screen has less room: the width then stops
-        // at the minimum and the aspect bends.
+        // A lower room (a smaller screen): the width then stops at the
+        // minimum and the aspect bends.
         assert_eq!(
             editor_size(Area { w: 392.0, h: 800.0 }, (2544, 1065), MIN),
             Some((600, 1065))
@@ -82,18 +87,18 @@ mod tests {
         // 30:1 fits the room's width; its height 85 stops at 400.
         assert_eq!(size(3000.0, 100.0), Some((2544, 400)));
         assert_eq!(size(100.0, 3000.0), Some((600, 1361)));
-        // A room smaller than the minimum: the minimum.
-        assert_eq!(
-            editor_size(
-                Area {
-                    w: 1349.0,
-                    h: 809.0
-                },
-                (300, 200),
-                MIN
-            ),
-            Some((600, 400))
-        );
+        // A room smaller than the minimum on a side: the editor keeps its
+        // size (#74 review: the window would cross the work area's edge).
+        let pro_q = Area {
+            w: 1349.0,
+            h: 809.0,
+        };
+        assert_eq!(editor_size(pro_q, (300, 200), MIN), None);
+        assert_eq!(editor_size(pro_q, (1065, 300), MIN), None);
+        assert_eq!(editor_size(pro_q, (599, 1361), MIN), None);
+        assert_eq!(editor_size(pro_q, (600, 399), MIN), None);
+        // Just the minimum: it.
+        assert_eq!(editor_size(pro_q, (600, 400), MIN), Some((600, 400)));
     }
 
     #[test]

@@ -35,8 +35,8 @@
 //!    whatever the plug-in's state).
 //!
 //! Once the window is taken, a step that fails still ends a contact it left
-//! down (a cancel at its last point), posts a changed picture's own size
-//! back (not waited for) and hands the window back.
+//! down (a cancel at its last point), posts a changed window's own
+//! rectangle back (not waited for) and hands the window back.
 //!
 //! With `--out` every picture is saved there as a JPEG (`frame-NN.jpg`,
 //! then `after-band.jpg`, `after-drag.jpg`, `field-open.jpg`,
@@ -53,8 +53,8 @@ use super::sim::Sim;
 #[cfg(windows)]
 use super::win::probe_backend as platform;
 use super::{
-    Backend, GUARD_TAP, NOT_ON_TOP, Phase, Pixels, QUALITY, STEP, Taken, encode, inert_spot,
-    millis, placed, settled,
+    Backend, GUARD_TAP, NOT_ON_TOP, Phase, Pixels, QUALITY, Rect, STEP, Taken, encode, inert_spot,
+    inside, millis, placed, settled, window_size,
 };
 
 /// The CLI's usage line.
@@ -294,12 +294,35 @@ impl Held<'_> {
         (self.taken.width, self.taken.height)
     }
 
-    /// The picture resized to `asked` as the hub does (PR G): posted, its
-    /// size read every [`STEP`] until it lands or `RESIZE_MS` passed. Its
-    /// size then and the ms it took; `Err` with them when it did not land.
+    /// The picture resized to `asked` as the hub does (PR G): the window's
+    /// rectangle for it where it stands, else moved into the work area
+    /// (#74 review, [`inside`]), posted, its size read every [`STEP`] until
+    /// it lands or `RESIZE_MS` passed. Its size then and the ms it took;
+    /// `Err` with them when it did not land.
     fn resize(&mut self, asked: (u32, u32)) -> Result<Settle, Settle> {
+        let unread = |why: String| Settle {
+            client: (0, 0),
+            ms: 0.0,
+            why: Some(why),
+        };
+        let work = self.backend.work(&self.taken).map_err(unread)?;
+        let now = self.backend.rect(&self.taken).map_err(unread)?;
+        let rect = inside(work, now, window_size(&self.taken, asked));
+        self.post(rect, asked)
+    }
+
+    /// The window's own rectangle back (the take's: its place and its
+    /// size), as [`Held::resize`] waits for it.
+    fn restore(&mut self) -> Result<Settle, Settle> {
+        let (rect, original) = (self.taken.rect, self.original());
+        self.post(rect, original)
+    }
+
+    /// `rect` posted to the window and its picture read until it is
+    /// `asked` ([`Held::resize`]).
+    fn post(&mut self, rect: Rect, asked: (u32, u32)) -> Result<Settle, Settle> {
         self.backend
-            .resize(&self.taken, asked)
+            .resize(&self.taken, rect)
             .map_err(|why| Settle {
                 client: (0, 0),
                 ms: 0.0,
@@ -350,8 +373,7 @@ impl Drop for Held<'_> {
             let _ = self.backend.touch(&self.taken, Phase::Cancel, at);
         }
         if self.changed {
-            let original = self.original();
-            let _ = self.backend.resize(&self.taken, original);
+            let _ = self.backend.resize(&self.taken, self.taken.rect);
         }
         if !self.released {
             self.backend.release(&self.taken);
@@ -520,7 +542,7 @@ pub fn run(backend: &mut dyn Backend, args: &Args, out: &mut dyn Write) -> Resul
             min.client.0, min.client.1, MIN_PROBE.0, MIN_PROBE.1
         ))?;
         let back = held
-            .resize(original)
+            .restore()
             .map_err(|seen| seen.failure("min_restore", original))?;
         report.line(&format!("min_restore=ok {}", back.figures()))?;
     }
@@ -552,7 +574,7 @@ pub fn run(backend: &mut dyn Backend, args: &Args, out: &mut dyn Write) -> Resul
     // does (the inert spot is known only at that size); not back, no tap.
     if held.changed {
         let back = held
-            .resize(original)
+            .restore()
             .map_err(|seen| seen.failure("restore", original))?;
         report.line(&format!("restore=ok {}", back.figures()))?;
     }

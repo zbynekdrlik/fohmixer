@@ -41,13 +41,15 @@
 //!   when it was), posted as the take's.
 //! - **Size (PR G):** the take keeps the window's rectangle
 //!   (`GetWindowRect`): what it has beyond the picture is added to a picture
-//!   size asked for. A resize is `SetWindowPos` of that size with
-//!   `SWP_ASYNCWINDOWPOS | SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE`
-//!   (posted to Live's thread as the z-order changes are; never a move);
-//!   whether it landed is the picture's client size (`GetClientRect`, a read
-//!   that sends no message). The room is the window's monitor's work area
-//!   (`MonitorFromWindow`, `GetMonitorInfoW` `rcWork`: the screen less the
-//!   taskbar) from where the window stands now (`plugwin::room`).
+//!   size asked for. A resize is `SetWindowPos` of a rectangle, its place
+//!   and its size (#74 review: the window moves into the work area when it
+//!   does not fit where it stands, `plugwin::inside`), with
+//!   `SWP_ASYNCWINDOWPOS | SWP_NOZORDER | SWP_NOACTIVATE` (posted to Live's
+//!   thread as the z-order changes are); whether it landed is the picture's
+//!   client size (`GetClientRect`, a read that sends no message), and the
+//!   window's rectangle now is `GetWindowRect` (no message either). The
+//!   work area is the window's monitor's (`MonitorFromWindow`,
+//!   `GetMonitorInfoW` `rcWork`: the screen less the taskbar).
 
 use std::time::Duration;
 
@@ -75,7 +77,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{BOOL, HRESULT};
 
-use super::{Backend, Phase, Pixels, Rect, Taken, WindowId, room, window_size};
+use super::{Backend, Phase, Pixels, Rect, Taken, WindowId};
 
 /// The class of Live's top-level plug-in editor windows.
 pub const EDITOR_CLASS: &str = "Vst3PlugWindow";
@@ -471,23 +473,31 @@ impl Backend for Win {
         exists(window) && exists(picture) && visible(window)
     }
 
-    fn room(&mut self, taken: &Taken) -> Result<(u32, u32), String> {
+    fn work(&mut self, taken: &Taken) -> Result<Rect, String> {
         let window = hwnd(taken.window);
-        Ok(room(work_area(window)?, window_rect(window)?, taken))
+        // The nearest monitor answers for any handle: a window gone has none.
+        if !exists(window) {
+            return Err("no such window".to_string());
+        }
+        work_area(window)
     }
 
-    fn resize(&mut self, taken: &Taken, client: (u32, u32)) -> Result<(), String> {
-        let (width, height) = window_size(taken, client);
-        // SAFETY: a size change of a handle, posted; a stale one fails.
+    fn rect(&mut self, taken: &Taken) -> Result<Rect, String> {
+        window_rect(hwnd(taken.window))
+    }
+
+    fn resize(&mut self, taken: &Taken, rect: Rect) -> Result<(), String> {
+        // SAFETY: a place and size change of a handle, posted; a stale one
+        // fails.
         unsafe {
             SetWindowPos(
                 hwnd(taken.window),
                 None,
-                0,
-                0,
-                width,
-                height,
-                SWP_ASYNCWINDOWPOS | SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+                rect.left,
+                rect.top,
+                rect.width,
+                rect.height,
+                SWP_ASYNCWINDOWPOS | SWP_NOZORDER | SWP_NOACTIVATE,
             )
         }
         .map_err(|e| format!("SetWindowPos: {e}"))
@@ -656,10 +666,17 @@ mod tests {
         };
         assert!(!backend.on_top(&none));
         assert!(!topmost(hwnd(WindowId(0))));
-        // No window has no size, room or resize (PR G).
+        // No window has no size, work area, place or resize (PR G).
         assert!(backend.client(&none).is_err());
-        assert!(backend.room(&none).is_err());
-        assert!(backend.resize(&none, (800, 600)).is_err());
+        assert!(backend.work(&none).is_err());
+        assert!(backend.rect(&none).is_err());
+        let rect = Rect {
+            left: 0,
+            top: 0,
+            width: 800,
+            height: 600,
+        };
+        assert!(backend.resize(&none, rect).is_err());
         assert!(window_rect(hwnd(WindowId(0))).is_err());
         assert_eq!(
             rect_of(RECT {
