@@ -6,7 +6,8 @@
 //! screen in the picture's pixels ([`to_picture`], [`point`]), the fingers
 //! ([`Finger`]: a first finger waits [`HOLD_MS`] or [`SLOP`] before the
 //! editor gets it, a lift meanwhile is a tap (PR G: its down at once, its
-//! up [`TAP_MS`] later on a frame), a second finger makes a pinch
+//! up [`TAP_MS`] later on a frame; no down goes before a tap's up went),
+//! a second finger makes a pinch
 //! that sends the editor nothing, a move goes at most once per animation
 //! frame, the newest one, and the end always goes, a lost capture as a
 //! cancel, a hidden page's finger lifted), when the page's picture area
@@ -337,6 +338,10 @@ pub struct Finger {
     /// A quick tap's up still to go (PR G): its point, and when its down
     /// went (page ms).
     tap: Option<(Point, f64)>,
+    /// A quick tap that lifted while another tap's up was still to go: its
+    /// down's point and its up's. Its down goes once that up went (#74
+    /// review: never a second down before the first tap's up).
+    next: Option<(Point, Point)>,
 }
 
 impl Finger {
@@ -370,6 +375,7 @@ impl Finger {
                     },
                     fingers: [Some((pointer, at)), None],
                     tap: self.tap,
+                    next: self.next,
                 };
                 Vec::new()
             }
@@ -422,33 +428,46 @@ impl Finger {
         }
     }
 
-    /// A quick tap's up still to go, now (PR G: before another down, or
-    /// when the fingers leave).
+    /// A quick tap's up still to go, now (PR G: when the fingers leave).
     fn tap_up(&mut self) -> Option<Out> {
         self.tap.take().map(|(at, _)| sent(Touch::Up, at))
     }
 
-    /// The frame (`now`: page ms). A quick tap's up goes once [`TAP_MS`]
-    /// passed since its down. A waiting finger that waited [`HOLD_MS`] or
-    /// slid past [`SLOP`] reaches the editor: its down at its first point
-    /// (a tap's up still to go before it), then its move to where it is now
-    /// (nothing when it went down off the picture). A finger on the editor
-    /// sends the move not sent yet, the newest.
-    pub fn frame(&mut self, now: f64) -> Vec<Out> {
-        let mut out = Vec::new();
-        if self.tap.is_some_and(|(_, since)| tapped(since, now)) {
-            out.extend(self.tap_up());
+    /// A quick tap's up once [`TAP_MS`] passed since its down at `now`, and
+    /// then the down of a tap waiting for it (its own up [`TAP_MS`] later):
+    /// the PC never gets a contact shorter than that, nor a down before the
+    /// last tap's up.
+    fn tap_due(&mut self, now: f64) -> Vec<Out> {
+        if !self.tap.is_some_and(|(_, since)| tapped(since, now)) {
+            return Vec::new();
         }
+        let mut out: Vec<Out> = self.tap_up().into_iter().collect();
+        if let Some((down, up)) = self.next.take() {
+            out.push(sent(Touch::Down, down));
+            self.tap = Some((up, now));
+        }
+        out
+    }
+
+    /// The frame (`now`: page ms). A quick tap's up goes once [`TAP_MS`]
+    /// passed since its down, and a tap waiting for it goes down then
+    /// ([`Finger::tap_due`]). A waiting finger that waited [`HOLD_MS`] or
+    /// slid past [`SLOP`] reaches the editor once no tap's up is still to go
+    /// (#74 review): its down at its first point, then its move to where it
+    /// is now (nothing when it went down off the picture). A finger on the
+    /// editor sends the move not sent yet, the newest.
+    pub fn frame(&mut self, now: f64) -> Vec<Out> {
+        let mut out = self.tap_due(now);
+        let free = self.tap.is_none();
         match (self.stage, self.fingers[0]) {
             (Stage::Waiting { first, on, since }, Some((_, at)))
-                if waited(since, now) || slid(first.area, at.area) =>
+                if free && (waited(since, now) || slid(first.area, at.area)) =>
             {
                 if !on {
                     self.stage = Stage::Ignored;
                     return out;
                 }
                 self.stage = Stage::Touching { moved: false };
-                out.extend(self.tap_up());
                 out.push(sent(Touch::Down, first));
                 if at != first {
                     out.push(sent(Touch::Move, at));
@@ -465,8 +484,10 @@ impl Finger {
 
     /// A pointer lifts at `at` (`now`: page ms): a waiting finger's tap
     /// (PR G: its down at its first point at once, its up here on the first
-    /// frame [`TAP_MS`] later, a tap's up still to go before it), the first
-    /// finger's up here; a pinch's fingers send nothing.
+    /// frame [`TAP_MS`] later; a tap's up still to go first: one due goes
+    /// now, one not due yet keeps this tap waiting for its frame, #74
+    /// review, and a third lift meanwhile is dropped), the first finger's up
+    /// here; a pinch's fingers send nothing.
     pub fn up(&mut self, pointer: i32, at: Point, now: f64) -> Vec<Out> {
         let Some(slot) = self.slot(pointer) else {
             return Vec::new();
@@ -476,9 +497,13 @@ impl Finger {
             Stage::Waiting {
                 first, on: true, ..
             } => {
-                let mut out: Vec<Out> = self.tap_up().into_iter().collect();
-                out.push(sent(Touch::Down, first));
-                self.tap = Some((at, now));
+                let mut out = self.tap_due(now);
+                if self.tap.is_none() {
+                    out.push(sent(Touch::Down, first));
+                    self.tap = Some((at, now));
+                } else if self.next.is_none() {
+                    self.next = Some((first, at));
+                }
                 out
             }
             Stage::Touching { .. } => vec![sent(Touch::Up, at)],
@@ -505,8 +530,8 @@ impl Finger {
     }
 
     /// The screen goes away under the fingers: a quick tap's up still to
-    /// go goes now, a cancel for a finger on the editor; every finger is
-    /// forgotten.
+    /// go goes now (a tap waiting for it never went: nothing of it goes), a
+    /// cancel for a finger on the editor; every finger is forgotten.
     pub fn leave(&mut self) -> Vec<Out> {
         let mut out: Vec<Out> = self.tap_up().into_iter().collect();
         if matches!(self.stage, Stage::Touching { .. }) {
