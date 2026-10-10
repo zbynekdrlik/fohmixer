@@ -12,6 +12,13 @@
 //! another client's open is refused (`locked` for that one, `in use` for any
 //! other).
 //!
+//! **The device's shape (PR G):** `eq_open` carries the page's picture
+//! area ([`Area`], CSS px), and the page sends `eq_area` when it changes
+//! while it holds an open editor (a phone turned, a window resized): the hub
+//! gives Live's editor window that aspect (Pro-Q 4 lays itself out for it)
+//! and puts the editor's own size back before its close. The frames carry
+//! the new picture; the page sizes the picture from them.
+//!
 //! **Binary frames:** while a client holds an open editor, the hub sends its
 //! picture as binary WebSocket messages, the newest frame winning (a slow
 //! link gets fewer frames, never old ones): [`FRAME_HEADER`] bytes of the
@@ -87,6 +94,16 @@ pub mod reason {
     /// value field may be open), or the hub could not be sure which device
     /// to turn off. Close it on the PC.
     pub const LEFT_OPEN: &str = "left open in Live";
+}
+
+/// The page's picture area (`eq_open`'s `area`; PR G): the size, in CSS
+/// px, of the part of the page's screen that shows the editor's picture.
+/// The hub gives the editor its aspect; an open without one keeps the
+/// editor's own size.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Area {
+    pub w: f64,
+    pub h: f64,
 }
 
 /// A finger's phase on the picture (`eq_input`).
@@ -294,5 +311,9 @@ mod tests {
                           "mine": true, "since": 1_790_000_000_000.5});
         assert_eq!(serde_json::to_value(&lock).unwrap(), wire);
         assert_eq!(serde_json::from_value::<EqLock>(wire).unwrap(), lock);
+        let area = Area { w: 390.5, h: 765.0 };
+        let wire = json!({"w": 390.5, "h": 765.0});
+        assert_eq!(serde_json::to_value(area).unwrap(), wire);
+        assert_eq!(serde_json::from_value::<Area>(wire).unwrap(), area);
     }
 }

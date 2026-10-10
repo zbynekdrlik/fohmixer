@@ -29,7 +29,8 @@ console_error_panic_hook = "0.1"
 # (#26): display mode, screen, errors, the PWA attributes' changes; the
 # controls' active touchstart listener and the visual viewport's zoom (#43
 # PR G); the Pro-Q 4 screen's binary frames, decoded into a canvas, and a
-# card's last picture as a blob URL (#71 PR E)
+# card's last picture as a blob URL (#71 PR E), its picture area's size
+# watched (#71, the review of PR #74)
 web-sys = { version = "0.3", features = [
     "Window",
     "Document",
@@ -75,6 +76,7 @@ web-sys = { version = "0.3", features = [
     "ImageBitmap",
     "HtmlCanvasElement",
     "CanvasRenderingContext2d",
+    "ResizeObserver",
 ] }
 
 # Serialization (the hub protocol, the panic report, the remembered pages)

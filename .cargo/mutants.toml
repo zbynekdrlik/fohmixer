@@ -164,8 +164,11 @@ exclude_re = [
   # (net::fetch_blob of the tested picture_url). eq.spec.ts drives them in
   # Chromium and WebKit (the cards, the open, the frames drawn, a drag at
   # the mapped pixels, the exit, the lock another page sees, the picture
-  # after the close, no open offered while the socket is down).
-  "fohmixer-ui/src/store/live/eq\\.rs.*(replace|in) LiveStore::(on_eq_list|on_eq_locks|on_eq|on_frame|eq_frames|list_eq|eq_open|eq_input|eq_close|eq_socket_closed|eq_picture)( |$)",
+  # after the close, no open offered while the socket is down). PR G:
+  # eq_opening (the tested asked, before the open goes), eq_area (the
+  # message; the tested behave::eq::AreaWatch decides when), which eq.spec.ts
+  # reads off the page's socket after a viewport change.
+  "fohmixer-ui/src/store/live/eq\\.rs.*(replace|in) LiveStore::(on_eq_list|on_eq_locks|on_eq|on_frame|eq_frames|list_eq|eq_opening|eq_open|eq_area|eq_input|eq_close|eq_socket_closed|eq_picture)( |$)",
   "fohmixer-ui/src/store/live\\.rs.*(replace|in) (Socket::open|Socket::buffered|Socket::close|Inner::new)( |$)",
   # auth.rs: local storage and the login request (login_outcome, login_body
   # and LoginError::message are the tested decisions).
@@ -200,8 +203,19 @@ exclude_re = [
   # signal), draw and paint (createImageBitmap, the canvas drawn, the newest
   # frame kept while one decodes). eq.spec.ts drives them (the frames drawn
   # with data-frames, the card's picture after a close, the records in the
-  # event log).
-  "fohmixer-ui/src/components/eq\\.rs.*(replace|in) (EqNav::open|EqNav::close|local_hh_mm|blob_url|revoke|load_picture|draw|paint)( |$)",
+  # event log). PR F (the page's zoom): context_2d (a canvas's 2D context,
+  # the main picture's and the overview's), Grip::of and Grip::at (the
+  # area's box from getBoundingClientRect, a pointer's clientX/Y on it) and
+  # show_look (the tested behave::eq::look written as the canvas's style,
+  # the overview frame's style and the bar's signals); eq.spec.ts pinches,
+  # drags and taps the zoomed picture and reads the backend's points, the
+  # canvas's box and the bar's group. #74 review: shape_overview (the
+  # tested behave::eq::overview_size as the overview canvas's size and its
+  # box's aspect-ratio); eq.spec.ts's zoomBarFits reads the overview's box
+  # against the picture's shape. watch_area (a ResizeObserver reading the
+  # area's box into the grip); eq.spec.ts changes the bar's height and
+  # reads the page's eq_area.
+  "fohmixer-ui/src/components/eq\\.rs.*(replace|in) (EqNav::open|EqNav::close|local_hh_mm|blob_url|revoke|load_picture|draw|paint|context_2d|Grip::of|Grip::at|show_look|shape_overview|watch_area)( |$)",
   # components (#43 PR G): the directives owns_touches (a control's root:
   # dom::prevent_on with the tested sys::CONTROL_PREVENTS, and its keys as
   # the tested sys::keys_text in sys::KEYS_ATTR) and owns_surface (the

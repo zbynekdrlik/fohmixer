@@ -1,6 +1,6 @@
 //! `fohmixer-hub eq-probe` end to end (#71 PR E): bad arguments are exit 2
 //! with the usage; `--sim` runs every step on the simulated backend and
-//! prints its findings; off Windows the real backend is refused (exit 2), on
+//! prints its findings (PR G: with `--min-probe` and `--size` too); off Windows the real backend is refused (exit 2), on
 //! Windows a process with no window is a failed step (exit 1). Host-free: it
 //! also runs in the `windows` job.
 
@@ -54,6 +54,46 @@ fn a_simulated_probe_runs_every_step() {
         "{stdout}"
     );
     assert!(folder.join("after-guard.jpg").exists());
+    assert!(stderr.is_empty(), "{stderr}");
+}
+
+#[test]
+fn a_simulated_probe_resizes_reads_the_minimum_and_restores_before_its_guard() {
+    // PR G: the PC check's steps (`--min-probe`, `--size`) on the sim.
+    let dir = tempfile::tempdir().unwrap();
+    let folder = dir.path().join("frames");
+    let out = probe(&[
+        "--sim",
+        "--pid",
+        "42",
+        "--frames",
+        "1",
+        "--min-probe",
+        "--size",
+        "760x1271",
+        "--out",
+        folder.to_str().unwrap(),
+    ]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stdout}{stderr}");
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines[2], "min=320x240 asked=160x120", "{stdout}");
+    assert!(
+        lines[3].starts_with("min_restore=ok client=1349x809 ms="),
+        "{stdout}"
+    );
+    assert!(
+        lines[4].starts_with("resize=ok client=760x1271 ms="),
+        "{stdout}"
+    );
+    assert!(stdout.contains("\nband=ok at=243,504\n"), "{stdout}");
+    let restore = lines
+        .iter()
+        .position(|l| l.starts_with("restore=ok client=1349x809 ms="))
+        .expect("the restore");
+    assert_eq!(lines[restore + 1], "guard=ok at=546,15 tap_ms=30");
+    assert!(folder.join("after-resize.jpg").exists());
     assert!(stderr.is_empty(), "{stderr}");
 }
 

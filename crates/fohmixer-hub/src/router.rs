@@ -210,21 +210,37 @@ pub enum RouterMsg {
         binding: Binding,
         outcome: Result<Vec<crate::eq::walk::Found>, String>,
     },
-    /// A page opens a Pro-Q 4 editor (#71 PR E).
+    /// A page opens a Pro-Q 4 editor (#71 PR E), with its picture area
+    /// (PR G).
     EqOpen {
         client: ClientId,
         instance: String,
         path: String,
+        area: Option<fohmixer_proto::eq::Area>,
+    },
+    /// A page's picture area changed (#71 PR G).
+    EqArea {
+        client: ClientId,
+        area: fohmixer_proto::eq::Area,
     },
     /// An editor's open sequence ended: its picture's size, or why not, and
     /// the device's `$ref` the open read (its close turns it off through
-    /// it), of the instance's connection the open started on.
+    /// it), of the instance's connection the open started on; how the
+    /// editor's resize to its page's area settled (PR G).
     EqOpened {
         key: crate::eq::EditorKey,
         session: u32,
         outcome: Result<(u32, u32), String>,
         reference: Option<Value>,
         connection: u32,
+        resized: Option<crate::plugwin::Resized>,
+    },
+    /// An open editor's resize to its page's new area settled (#71 PR G;
+    /// none: nothing was asked).
+    EqResized {
+        key: crate::eq::EditorKey,
+        session: u32,
+        resized: Option<crate::plugwin::Resized>,
     },
     /// A finger on a page's editor.
     EqInput {
@@ -597,14 +613,25 @@ impl Router {
                 client,
                 instance,
                 path,
-            } => self.eq_open(client, &instance, &path),
+                area,
+            } => self.eq_open(client, &instance, &path, area),
+            RouterMsg::EqArea { client, area } => self.eq_area(client, area),
             RouterMsg::EqOpened {
                 key,
                 session,
                 outcome,
                 reference,
                 connection,
-            } => self.eq_opened(&key, session, outcome, reference, connection),
+                resized,
+            } => {
+                self.eq_resized(&key, session, resized.as_ref());
+                self.eq_opened(&key, session, outcome, reference, connection);
+            }
+            RouterMsg::EqResized {
+                key,
+                session,
+                resized,
+            } => self.eq_resized(&key, session, resized.as_ref()),
             RouterMsg::EqInput {
                 client,
                 touch,
