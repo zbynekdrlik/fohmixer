@@ -833,6 +833,47 @@ test.describe("The Pro-Q 4 screen", () => {
     await editorOpen(trackPath, false);
   });
 
+  test("an area that changes size without a window resize (the bar's height) sends its new area, and the editor takes its shape", async ({ page }) => {
+    // #74 review (M9): the page read the area's box only on a window
+    // `resize` and a finger's down, so a layout change of its own (a safe
+    // area, iOS laying out after its `resize`) kept a stale box: no
+    // `eq_area`, and the view mapped against the old box until the next
+    // touch. The bar's height stands in for such a change.
+    const areas: any[] = [];
+    page.on("websocket", (ws) => {
+      ws.on("framesent", ({ payload }) => {
+        if (typeof payload === "string" && payload.includes('"type":"eq_area"')) areas.push(JSON.parse(payload));
+      });
+    });
+    await openSurface(page);
+    const { onTrack, trackPath } = await hand2Cards(page);
+    await editorOpen(trackPath, false);
+    await onTrack.getByTestId("eq-open").click();
+    const screen = await openScreen(page, trackPath);
+    const area = screen.getByTestId("eq-area");
+    const was = (await area.boundingBox())!;
+    expect(areas, "no change yet").toEqual([]);
+    try {
+      await screen.evaluate((el: HTMLElement) => el.style.setProperty("--bar-h", "160px"));
+      await until(async () => areas.length, (n) => n >= 1, "the new area sent");
+      const box = (await area.boundingBox())!;
+      expect(box.height, "the area is lower").toBeLessThan(was.height - 100);
+      const sent = areas[areas.length - 1];
+      expect(Math.abs(sent.w - box.width) < 1 && Math.abs(sent.h - box.height) < 1, `${JSON.stringify(sent)} ${JSON.stringify(box)}`).toBe(true);
+      await shaped(screen);
+    } finally {
+      await screen.evaluate((el: HTMLElement) => el.style.removeProperty("--bar-h"));
+    }
+    // Back: sent again, and the editor in that shape again before the close.
+    await until(async () => areas.length, (n) => n >= 2, "the area sent back");
+    await shaped(screen);
+    const closing = (await simEq.records()).length;
+    await screen.getByTestId("eq-exit").click();
+    await expect(page.getByTestId("eq-screen")).toHaveCount(0);
+    await closedWithGuard(closing);
+    await editorOpen(trackPath, false);
+  });
+
   test("the cards are listed again when Live comes back, and open", async ({ page }) => {
     // What the page's socket carries, watched before the page opens: its
     // `eq_list` asks, and the band instance's states the hub sends it. A
