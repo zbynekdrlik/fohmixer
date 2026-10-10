@@ -1013,7 +1013,8 @@ mod tests {
             "its up where it lifted, 40 ms after its down"
         );
         assert_eq!(finger.frame(500.0), vec![], "nothing after");
-        // A finger reaching the editor sends a tap's up still to go first.
+        // A finger reaching the editor waits for a tap's up still to go:
+        // that up first, 40 ms after its down, then the finger's down.
         finger.down(2, p(10.0, 20.0), true, 600.0);
         assert_eq!(
             finger.up(2, p(10.0, 20.0), 610.0),
@@ -1021,8 +1022,10 @@ mod tests {
         );
         finger.down(3, p(30.0, 20.0), true, 615.0);
         finger.moved(3, p(40.0, 20.0));
+        assert_eq!(finger.frame(620.0), vec![], "slid, the tap's up not due");
+        assert_eq!(finger.frame(650.0_f64.next_down()), vec![]);
         assert_eq!(
-            finger.frame(620.0),
+            finger.frame(650.0),
             vec![
                 (Touch::Up, 20.0, 40.0),
                 (Touch::Down, 60.0, 40.0),
@@ -1034,37 +1037,73 @@ mod tests {
             finger.up(3, p(40.0, 20.0), 701.0),
             vec![(Touch::Up, 80.0, 40.0)]
         );
-        // A second tap while the first one's up waits: that up first.
+        // A second tap while the first one's up waits: its down waits for
+        // that up (the first contact 40 ms long, the second down after it),
+        // and its own up 40 ms after its down.
         finger.down(4, p(1.0, 1.0), true, 800.0);
         assert_eq!(
             finger.up(4, p(1.0, 1.0), 805.0),
             vec![(Touch::Down, 2.0, 2.0)]
         );
         finger.down(5, p(3.0, 3.0), true, 810.0);
+        assert_eq!(finger.up(5, p(3.0, 3.0), 815.0), vec![], "its down waits");
+        assert!(!finger.held());
+        assert_eq!(finger.frame(844.0), vec![]);
         assert_eq!(
-            finger.up(5, p(3.0, 3.0), 815.0),
+            finger.frame(845.0),
             vec![(Touch::Up, 2.0, 2.0), (Touch::Down, 6.0, 6.0)]
         );
-        assert_eq!(finger.frame(854.0), vec![]);
-        assert_eq!(finger.frame(855.0), vec![(Touch::Up, 6.0, 6.0)]);
-        // Leaving the screen, or a hidden page, sends a tap's up at once.
-        finger.down(6, p(1.0, 1.0), true, 900.0);
-        finger.up(6, p(1.0, 1.0), 901.0);
+        assert_eq!(finger.frame(884.0), vec![]);
+        assert_eq!(finger.frame(885.0), vec![(Touch::Up, 6.0, 6.0)]);
+        assert_eq!(finger.frame(900.0), vec![], "each went once");
+        // A third lift while one tap waits (three within 40 ms, no human
+        // hand's) is dropped: the waiting one goes.
+        finger.down(11, p(1.0, 1.0), true, 920.0);
+        finger.up(11, p(1.0, 1.0), 921.0);
+        finger.down(12, p(3.0, 3.0), true, 925.0);
+        assert_eq!(finger.up(12, p(3.0, 3.0), 930.0), vec![]);
+        finger.down(13, p(5.0, 5.0), true, 935.0);
+        assert_eq!(finger.up(13, p(5.0, 5.0), 940.0), vec![]);
+        assert_eq!(
+            finger.frame(961.0),
+            vec![(Touch::Up, 2.0, 2.0), (Touch::Down, 6.0, 6.0)]
+        );
+        assert_eq!(finger.frame(1001.0), vec![(Touch::Up, 6.0, 6.0)]);
+        assert_eq!(finger.frame(1100.0), vec![]);
+        // A lift after the up is due, before a frame sent it: that up,
+        // then the new down, at once.
+        finger.down(14, p(1.0, 1.0), true, 1200.0);
+        finger.up(14, p(1.0, 1.0), 1201.0);
+        finger.down(15, p(3.0, 3.0), true, 1230.0);
+        assert_eq!(
+            finger.up(15, p(3.0, 3.0), 1241.0),
+            vec![(Touch::Up, 2.0, 2.0), (Touch::Down, 6.0, 6.0)]
+        );
+        assert_eq!(finger.frame(1280.0), vec![]);
+        assert_eq!(finger.frame(1281.0), vec![(Touch::Up, 6.0, 6.0)]);
+        // Leaving the screen, or a hidden page, sends a tap's up at once;
+        // a tap still waiting for it never went, so nothing of it goes.
+        finger.down(6, p(1.0, 1.0), true, 1400.0);
+        finger.up(6, p(1.0, 1.0), 1401.0);
+        finger.down(16, p(3.0, 3.0), true, 1405.0);
+        assert_eq!(finger.up(16, p(3.0, 3.0), 1410.0), vec![]);
         assert_eq!(finger.leave(), vec![(Touch::Up, 2.0, 2.0)]);
-        assert_eq!(finger.frame(1000.0), vec![]);
-        finger.down(7, p(1.0, 1.0), true, 1100.0);
-        finger.up(7, p(1.0, 1.0), 1101.0);
+        assert_eq!(finger.frame(1500.0), vec![]);
+        finger.down(7, p(1.0, 1.0), true, 1600.0);
+        finger.up(7, p(1.0, 1.0), 1601.0);
+        finger.down(17, p(3.0, 3.0), true, 1605.0);
+        assert_eq!(finger.up(17, p(3.0, 3.0), 1610.0), vec![]);
         assert_eq!(finger.visibility(true), vec![(Touch::Up, 2.0, 2.0)]);
-        assert_eq!(finger.frame(1200.0), vec![]);
+        assert_eq!(finger.frame(1700.0), vec![]);
         // A pinch that starts meanwhile: the tap's up goes on its time.
-        finger.down(8, p(1.0, 1.0), true, 1300.0);
-        finger.up(8, p(1.0, 1.0), 1301.0);
-        assert_eq!(finger.down(9, p(5.0, 5.0), true, 1305.0), vec![]);
-        assert_eq!(finger.down(10, p(9.0, 9.0), true, 1306.0), vec![]);
-        assert_eq!(finger.frame(1340.0), vec![]);
-        assert_eq!(finger.frame(1341.0), vec![(Touch::Up, 2.0, 2.0)]);
-        assert_eq!(finger.up(9, p(5.0, 5.0), 1350.0), vec![]);
-        assert_eq!(finger.up(10, p(9.0, 9.0), 1351.0), vec![]);
+        finger.down(8, p(1.0, 1.0), true, 1800.0);
+        finger.up(8, p(1.0, 1.0), 1801.0);
+        assert_eq!(finger.down(9, p(5.0, 5.0), true, 1805.0), vec![]);
+        assert_eq!(finger.down(10, p(9.0, 9.0), true, 1806.0), vec![]);
+        assert_eq!(finger.frame(1840.0), vec![]);
+        assert_eq!(finger.frame(1841.0), vec![(Touch::Up, 2.0, 2.0)]);
+        assert_eq!(finger.up(9, p(5.0, 5.0), 1850.0), vec![]);
+        assert_eq!(finger.up(10, p(9.0, 9.0), 1851.0), vec![]);
         assert!(!finger.held());
         // A waiting finger cancelled (or its capture lost) never reached
         // the editor: nothing goes.
