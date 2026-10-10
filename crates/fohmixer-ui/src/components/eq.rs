@@ -44,6 +44,7 @@ use fohmixer_proto::layout::Strip;
 use leptos::html;
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
+use wasm_bindgen::closure::Closure;
 
 use super::buttons::colour_style;
 use super::{owns_touches, trace_detail};
@@ -485,7 +486,8 @@ fn paint(painter: PainterBox, blob: web_sys::Blob) {
 }
 
 /// Where the fingers' area lies on the page and its size (CSS px), read at
-/// each down and on a resize: a move and a frame read no layout.
+/// each down, on a window resize and whenever the area's size changes
+/// ([`watch_area`]): a move and a frame read no layout.
 #[derive(Debug, Clone, Copy)]
 struct Grip {
     left: f64,
@@ -513,6 +515,28 @@ impl Grip {
             f64::from(ev.client_y()) - self.top,
         )
     }
+}
+
+/// The area's size watcher: a `ResizeObserver` and its callback, kept
+/// until the screen goes.
+type AreaObserver = (web_sys::ResizeObserver, Closure<dyn FnMut()>);
+
+/// Watches `area`'s size (#74 review): each change reads its box into
+/// `grip`, so the frame loop's area (`AreaWatch`, the view) never reads a
+/// stale one after a layout change with no window `resize` (the bar's
+/// height, a safe area, iOS laying out after its `resize`). None when the
+/// browser has no `ResizeObserver`.
+fn watch_area(
+    area: &web_sys::HtmlDivElement,
+    grip: StoredValue<Option<Grip>>,
+) -> Option<AreaObserver> {
+    let observed = area.clone();
+    let callback = Closure::wrap(Box::new(move || {
+        let _ = grip.try_set_value(Some(Grip::of(&observed)));
+    }) as Box<dyn FnMut()>);
+    let observer = web_sys::ResizeObserver::new(callback.as_ref().unchecked_ref()).ok()?;
+    observer.observe(area);
+    Some((observer, callback))
 }
 
 /// Draws a view's look (PR F, `behave::eq::look`), only when it changed:
@@ -565,6 +589,8 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
     // The page's own view of the picture (PR F): each open starts at 1×.
     let viewer = StoredValue::new(Viewer::START);
     let grip = StoredValue::new(None::<Grip>);
+    // The area's size watcher (#74 review), from its load to the cleanup.
+    let observer = StoredValue::new_local(None::<AreaObserver>);
     // The picture area the hub knows (PR G): the open's, then each change.
     let watch = StoredValue::new(AreaWatch::default());
     // The look last drawn (none: the stylesheet's, the whole picture).
@@ -608,6 +634,9 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
     on_cleanup(move || {
         hidden.remove();
         resized.remove();
+        if let Some(Some((watcher, _callback))) = observer.try_update_value(Option::take) {
+            watcher.disconnect();
+        }
         send(finger.try_update_value(Finger::leave).unwrap_or_default());
         store.eq_close();
         store.eq_frames(None);
@@ -715,8 +744,8 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
                 .unwrap_or_default(),
         );
     };
-    // Once the area is in the page: its box, and the open with it (PR G:
-    // the editor gets its aspect). Each frame: a waiting finger's down once
+    // Once the area is in the page: its box, its size watched, and the open
+    // with it (PR G: the editor gets its aspect). Each frame: a waiting finger's down once
     // it waited or slid, a quick tap's up once 40 ms passed, a move at most
     // once (the newest); a changed area once it rested while the editor is
     // open; the view follows a pinch, and a changed look is drawn (only
@@ -726,6 +755,7 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
         let opened = Grip::of(&el);
         let area = (opened.width, opened.height);
         let _ = grip.try_set_value(Some(opened));
+        let _ = observer.try_set_value(watch_area(&el, grip));
         let _ = watch.try_set_value(AreaWatch::opened(area));
         store.eq_open(&instance, &path, area);
         Box::new(move |_now: f64, _step: f64| {
