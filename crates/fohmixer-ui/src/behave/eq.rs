@@ -586,8 +586,39 @@ mod tests {
         assert_eq!(list_text("off"), "EQ je na PC vypnuté.");
         assert_eq!(
             list_text("unknown instance"),
-            "Pro-Q 4 sa nedá prečítať: unknown instance"
+            "Pro-Q 4 sa nedá prečítať: neznámy Live"
         );
         assert_eq!(list_text(""), "Pro-Q 4 sa nedá prečítať: ");
+    }
+
+    #[test]
+    fn a_lists_reason_reads_in_slovak_as_a_cards_note_does() {
+        assert_eq!(
+            list_text("instance offline"),
+            "Pro-Q 4 sa nedá prečítať: Live je nedostupný, skús znova"
+        );
+        assert_eq!(
+            list_text("Live did not answer"),
+            "Pro-Q 4 sa nedá prečítať: Live neodpovedá, skús znova"
+        );
+        assert_eq!(
+            list_text("the devices nest too deep"),
+            "Pro-Q 4 sa nedá prečítať: zariadenia sú vnorené príliš hlboko"
+        );
+        // The protocol's names, through the same table as a card's note.
+        for why in [
+            reason::OFFLINE,
+            reason::NO_ANSWER,
+            reason::UNKNOWN_INSTANCE,
+            reason::MOVED,
+        ] {
+            let note = failure_text(why).unwrap_or_default();
+            assert_eq!(list_text(why), format!("Pro-Q 4 sa nedá prečítať: {note}"));
+        }
+        // Only an unexpected reason (the script's own words) stays raw.
+        assert_eq!(
+            list_text("not found: tracks[name=Nobody #]"),
+            "Pro-Q 4 sa nedá prečítať: not found: tracks[name=Nobody #]"
+        );
     }
 }
