@@ -636,20 +636,6 @@ fn a_restore_that_does_not_land_keeps_the_size_changed_for_the_hand_back() {
 }
 
 #[test]
-fn a_post_settles_within_the_slack_or_at_the_very_size_for_the_guard() {
-    // Within 2 px: landed, unless the very size is wanted (the guard's).
-    assert_eq!(looked((1350, 808), (1349, 809), 10.0, false), Some(true));
-    assert_eq!(looked((1350, 808), (1349, 809), 10.0, true), None);
-    assert_eq!(looked((1349, 809), (1349, 809), 10.0, true), Some(true));
-    assert_eq!(looked((1349, 809), (1349, 809), 5000.0, true), Some(true));
-    // Over its wait without it: not landed.
-    assert_eq!(looked((1350, 808), (1349, 809), 999.0, true), None);
-    assert_eq!(looked((1350, 808), (1349, 809), 1000.0, true), Some(false));
-    assert_eq!(looked((760, 1271), (1349, 809), 1000.0, false), Some(false));
-    assert_eq!(looked((760, 1271), (1349, 809), 999.0, false), None);
-}
-
-#[test]
 fn the_probes_guard_places_its_editor_a_pixel_aside_first_then_where_it_goes() {
     // The review of PR #74, round 2: the probe's guard as the hub's. The
     // window moved on the PC to exactly where the first placement would go

@@ -1517,26 +1517,95 @@ fn a_resize_lands_within_2_px_or_settles_unlanded_after_1_s() {
 }
 
 #[test]
-fn the_guard_waits_for_a_settling_resize_taps_at_the_known_size_in_no_doubt_or_posts_it() {
-    use GuardStep::{Fail, Post, Tap, Wait};
+fn the_guard_waits_for_a_settling_resize_then_places_its_editor_in_two_steps_before_its_tap() {
+    use GuardStep::{Aside, Fail, Known, Tap, Wait};
     assert_eq!(KNOWN_SIZE, (1349, 809));
     assert_eq!(inert_spot(KNOWN_SIZE.0), (546, 15));
-    // A resize of the editor still settles: the guard's size goes after it.
-    assert_eq!(guard_step(true, false, None, true), Wait);
-    assert_eq!(guard_step(true, true, Some(5000.0), true), Wait);
-    // At the known size, in no doubt: the tap, posted or not.
-    assert_eq!(guard_step(false, false, None, true), Tap);
-    assert_eq!(guard_step(false, false, Some(0.0), true), Tap);
-    assert_eq!(guard_step(false, false, Some(5000.0), true), Tap);
-    // Another size, or the known one in doubt: posted, then waited for.
-    assert_eq!(guard_step(false, false, None, false), Post);
-    assert_eq!(guard_step(false, true, None, true), Post);
-    assert_eq!(guard_step(false, true, None, false), Post);
-    assert_eq!(guard_step(false, false, Some(999.0), false), Wait);
-    assert_eq!(guard_step(false, true, Some(999.0), true), Wait);
-    // Not so in time: no tap.
-    assert_eq!(guard_step(false, false, Some(1000.0), false), Fail);
-    assert_eq!(guard_step(false, true, Some(1000.0), true), Fail);
+    let known = rect(0, 0, 1365, 848);
+    let first = Placement::Aside(rect(1, 0, 1365, 848));
+    let second = Placement::Known(known);
+    let (there, at_size) = (Some(known), Some(KNOWN_SIZE));
+    // A resize of the editor still settles: its way back goes first.
+    assert_eq!(guard_step(true, None, there, at_size), Wait);
+    assert_eq!(
+        guard_step(true, Some((second, 5000.0)), there, at_size),
+        Wait
+    );
+    // Nothing posted yet: the first placement, whatever the window reads
+    // (at the known rectangle and size too: a rectangle posted before may
+    // still wait).
+    assert_eq!(guard_step(false, None, there, at_size), Aside);
+    assert_eq!(guard_step(false, None, None, None), Aside);
+    // The first seen to land, at any size: the second.
+    let aside_read = Some(first.rect());
+    assert_eq!(
+        guard_step(false, Some((first, 10.0)), aside_read, Some((760, 1271))),
+        Known
+    );
+    // Not seen (the known rectangle read proves nothing then): waited for,
+    // and a failure once its wait is over.
+    assert_eq!(
+        guard_step(false, Some((first, 999.0)), there, at_size),
+        Wait
+    );
+    assert_eq!(
+        guard_step(false, Some((first, 1000.0)), there, at_size),
+        Fail(first)
+    );
+    // The second seen with the picture at exactly the known size: the tap.
+    assert_eq!(guard_step(false, Some((second, 10.0)), there, at_size), Tap);
+    assert_eq!(
+        guard_step(false, Some((second, 5000.0)), there, at_size),
+        Tap
+    );
+    // There at another size, or the size elsewhere: not landed.
+    let off_size = Some((1349, 808));
+    assert_eq!(
+        guard_step(false, Some((second, 999.0)), there, off_size),
+        Wait
+    );
+    assert_eq!(
+        guard_step(false, Some((second, 999.0)), aside_read, at_size),
+        Wait
+    );
+    assert_eq!(
+        guard_step(false, Some((second, 1000.0)), there, off_size),
+        Fail(second)
+    );
+    assert_eq!(
+        guard_step(false, Some((second, 1000.0)), None, None),
+        Fail(second)
+    );
+}
+
+#[test]
+fn a_placement_lands_once_the_window_reads_it_the_known_one_at_the_known_size() {
+    let known = rect(900, 552, 1365, 848);
+    // A pixel to the right, unless the window stands exactly there: then a
+    // pixel to the left.
+    let right = rect(901, 552, 1365, 848);
+    assert_eq!(aside(known, rect(900, 700, 1365, 848)), right);
+    assert_eq!(aside(known, known), right);
+    assert_eq!(aside(known, right), rect(899, 552, 1365, 848));
+    assert_eq!(
+        aside(known, rect(901, 552, 683, 1400)),
+        right,
+        "there at another size"
+    );
+    let first = Placement::Aside(right);
+    assert_eq!(first.rect(), right);
+    assert!(first.landed(Some(right), Some((760, 1271))), "at any size");
+    assert!(first.landed(Some(right), None));
+    assert!(!first.landed(Some(known), Some(KNOWN_SIZE)));
+    assert!(!first.landed(None, Some(KNOWN_SIZE)), "unread");
+    let second = Placement::Known(known);
+    assert_eq!(second.rect(), known);
+    assert!(second.landed(Some(known), Some(KNOWN_SIZE)));
+    assert!(!second.landed(Some(known), Some((1349, 808))));
+    assert!(!second.landed(Some(known), Some((1348, 809))));
+    assert!(!second.landed(Some(known), None));
+    assert!(!second.landed(Some(right), Some(KNOWN_SIZE)));
+    assert!(!second.landed(None, Some(KNOWN_SIZE)));
 }
 
 #[test]
@@ -1548,26 +1617,32 @@ fn a_take_at_another_size_than_the_known_one_is_told() {
 }
 
 #[test]
-fn a_guard_that_cannot_tap_says_what_it_read() {
+fn a_guard_that_cannot_tap_says_what_the_window_read_and_what_it_posted() {
+    let first = Placement::Aside(rect(301, 50, 1365, 848));
     assert_eq!(
-        not_known(Some((760, 1271)), false),
-        format!("{NOT_BACK}: the picture is 760x1271, 1349x809 asked")
+        not_landed(first, Some(rect(300, 50, 776, 1310)), Some((760, 1271))),
+        format!(
+            "{NOT_BACK}: its first placement did not land (the window is 776x1310 at 300,50, 1365x848 at 301,50 posted)"
+        )
     );
     assert_eq!(
-        not_known(Some((760, 1271)), true),
-        format!("{NOT_BACK}: the picture is 760x1271, 1349x809 asked")
+        not_landed(first, None, None),
+        format!(
+            "{NOT_BACK}: its first placement did not land (the window is unread, 1365x848 at 301,50 posted)"
+        )
+    );
+    let second = Placement::Known(rect(300, 50, 1365, 848));
+    assert_eq!(
+        not_landed(second, Some(rect(301, 50, 1365, 848)), Some((1349, 808))),
+        format!(
+            "{NOT_BACK}: its placement did not land (the window is 1365x848 at 301,50 with a 1349x808 picture, 1365x848 at 300,50 posted for 1349x809)"
+        )
     );
     assert_eq!(
-        not_known(None, false),
-        format!("{NOT_BACK}: the picture is 0x0, 1349x809 asked")
-    );
-    assert_eq!(
-        not_known(Some(KNOWN_SIZE), true),
-        format!("{NOT_BACK}: an earlier resize may still land (the picture reads 1349x809)")
-    );
-    assert_eq!(
-        not_known(Some(KNOWN_SIZE), false),
-        format!("{NOT_BACK}: the picture is 1349x809, 1349x809 asked")
+        not_landed(second, None, None),
+        format!(
+            "{NOT_BACK}: its placement did not land (the window is unread with a 0x0 picture, 1365x848 at 300,50 posted for 1349x809)"
+        )
     );
 }
 
@@ -1580,39 +1655,6 @@ fn the_known_size_goes_at_the_takes_place_moved_in_when_it_does_not_fit() {
     // Taken low and right: moved in.
     let low = taken_at(760, 1271, rect(2000, 1000, 776, 1310));
     assert_eq!(known_rect(work, &low), rect(1195, 552, 1365, 848));
-}
-
-#[test]
-fn a_window_moved_on_from_its_reading_once_its_place_or_its_picture_differs() {
-    let then = rect(0, 0, 1365, 848);
-    let reading = Reading {
-        window: Some(then),
-        client: (1349, 809),
-    };
-    assert!(!moved(reading, Some(then), Some((1349, 809))));
-    assert!(moved(
-        reading,
-        Some(rect(0, 0, 683, 1400)),
-        Some((1349, 809))
-    ));
-    assert!(moved(
-        reading,
-        Some(rect(1, 0, 1365, 848)),
-        Some((1349, 809))
-    ));
-    assert!(moved(reading, Some(then), Some((667, 1361))));
-    assert!(moved(reading, Some(then), Some((1349, 808))));
-    // A read that failed tells nothing.
-    assert!(!moved(reading, None, None));
-    assert!(!moved(reading, None, Some((1349, 809))));
-    assert!(moved(reading, None, Some((667, 1361))));
-    // Its own rectangle unread then: only the picture tells.
-    let unread = Reading {
-        window: None,
-        client: (1349, 809),
-    };
-    assert!(!moved(unread, Some(rect(5, 5, 5, 5)), Some((1349, 809))));
-    assert!(moved(unread, Some(then), Some((667, 1361))));
 }
 
 #[test]
@@ -1821,9 +1863,8 @@ fn a_resize_that_does_not_land_settles_after_its_wait_and_a_newer_one_replaces_i
     assert!(worker.editors[&1].resizing.is_none());
     // Its rectangle before goes back, after them (#74 review).
     assert_eq!(resizes(&handle), [(667, 1361), (1652, 661), (1349, 809)]);
-    assert!(worker.editors[&1].doubt.is_some(), "they may land yet");
     // They land late, one at a time: a grab of another size says so (its
-    // points are of that size), and the window moved: no doubt.
+    // points are of that size).
     assert!(handle.land_one(window));
     assert!(handle.land_one(window));
     assert_eq!(handle.size(window), Some((1652, 661)));
@@ -1837,7 +1878,6 @@ fn a_resize_that_does_not_land_settles_after_its_wait_and_a_newer_one_replaces_i
     };
     assert_eq!(heard.lock().unwrap().as_slice(), [sized(1652, 661)]);
     assert_eq!(worker.editors[&1].size, (1652, 661));
-    assert!(worker.editors[&1].doubt.is_none());
     worker.step_at(1340.0);
     assert_eq!(heard.lock().unwrap().len(), 1, "said once");
     // The way back lands: said too.
