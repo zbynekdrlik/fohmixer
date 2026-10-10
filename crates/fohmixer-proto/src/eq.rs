@@ -73,6 +73,9 @@ pub mod reason {
     pub const NOT_ON_TOP: &str = "the window did not come on top";
     /// The hub's window worker stopped: the hub is stopping.
     pub const STOPPED: &str = "the window worker stopped";
+    /// A strip's devices nest deeper than the hub's walk reads (racks in
+    /// racks): no list.
+    pub const TOO_DEEP: &str = "the devices nest too deep";
     /// The close left the editor open in Live: its guard could not tap (a
     /// value field may be open), or the hub could not be sure which device
     /// to turn off. Close it on the PC.
@@ -226,6 +229,7 @@ mod tests {
             ]
         );
         assert_eq!(NOT_ON_TOP, "the window did not come on top");
+        assert_eq!(TOO_DEEP, "the devices nest too deep");
     }
 
     #[test]

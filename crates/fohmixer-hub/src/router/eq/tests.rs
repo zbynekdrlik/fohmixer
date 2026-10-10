@@ -191,6 +191,7 @@ fn an_opens_calls_without_an_answer_read_as_the_protocols_reasons() {
         Some(json!([refused]).to_string())
     );
     assert_eq!(UNKNOWN_INSTANCE, reason::UNKNOWN_INSTANCE);
+    assert_eq!(TOO_DEEP, reason::TOO_DEEP);
 }
 
 #[tokio::test]

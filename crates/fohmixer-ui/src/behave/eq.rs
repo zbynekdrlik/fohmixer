@@ -241,24 +241,23 @@ pub fn picture_url(instance: &str, path: &str) -> String {
 pub const OFF_TEXT: &str = "EQ je na PC vypnuté.";
 
 /// The cards' note when the hub gave no list (`error`, its reason): the
-/// screen off, or why the track's devices could not be read.
+/// screen off, or why the track's devices could not be read, in Slovak
+/// through the same table as a card's note ([`failure_text`]); only an
+/// unexpected reason (the script's own words) shows the hub's text.
 pub fn list_text(error: &str) -> String {
     if error == reason::OFF {
-        OFF_TEXT.to_string()
-    } else {
-        format!("Pro-Q 4 sa nedá prečítať: {error}")
+        return OFF_TEXT.to_string();
     }
+    format!(
+        "Pro-Q 4 sa nedá prečítať: {}",
+        reason_text(error).unwrap_or(error)
+    )
 }
 
-/// The line under a card after its editor did not open or closed (`why`,
-/// the hub's reason), in Slovak: none for a close the page or the hub made
-/// on purpose (`exit`, `switch`, `detach`, the page's own `socket`) and for
-/// a lock (the card already reads ZAMKNUTÉ); each reason the protocol
-/// names (`fohmixer_proto::eq::reason`) has its sentence; only an
-/// unexpected failure shows the hub's own words.
-pub fn failure_text(why: &str) -> Option<String> {
+/// A reason the protocol names (`fohmixer_proto::eq::reason`) as its
+/// Slovak sentence; none for any other text.
+fn reason_text(why: &str) -> Option<&'static str> {
     let text = match why {
-        reason::EXIT | reason::SWITCH | reason::DETACH | "socket" | reason::LOCKED => return None,
         reason::OFF => OFF_TEXT,
         reason::CLOSING => "ešte sa zatvára, skús znova",
         reason::UNKNOWN => "zoznam je starý, otvor kanál znova",
@@ -275,9 +274,25 @@ pub fn failure_text(why: &str) -> Option<String> {
         reason::NOT_ON_TOP => "okno Pro-Q 4 sa nedostalo navrch, skús znova",
         reason::STOPPED => "hub sa zastavuje",
         reason::LEFT_OPEN => "Pro-Q 4 sa nepodarilo bezpečne zavrieť, ostáva otvorený na PC",
-        other => return Some(format!("Neotvoril sa: {other}")),
+        reason::TOO_DEEP => "zariadenia sú vnorené príliš hlboko",
+        _ => return None,
     };
-    Some(text.to_string())
+    Some(text)
+}
+
+/// The line under a card after its editor did not open or closed (`why`,
+/// the hub's reason), in Slovak: none for a close the page or the hub made
+/// on purpose (`exit`, `switch`, `detach`, the page's own `socket`) and for
+/// a lock (the card already reads ZAMKNUTÉ); each reason the protocol
+/// names (`fohmixer_proto::eq::reason`) has its sentence ([`reason_text`]);
+/// only an unexpected failure shows the hub's own words.
+pub fn failure_text(why: &str) -> Option<String> {
+    match why {
+        reason::EXIT | reason::SWITCH | reason::DETACH | "socket" | reason::LOCKED => None,
+        other => Some(
+            reason_text(other).map_or_else(|| format!("Neotvoril sa: {other}"), str::to_string),
+        ),
+    }
 }
 
 #[cfg(test)]

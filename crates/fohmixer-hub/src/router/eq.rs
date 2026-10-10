@@ -58,8 +58,8 @@ pub const EDITOR_OPEN: &str = close::EDITOR_OPEN;
 /// Why a list or an open found no instance of that name (a reason a page
 /// reads).
 pub const UNKNOWN_INSTANCE: &str = reason::UNKNOWN_INSTANCE;
-/// Why a walk did not end.
-pub const TOO_DEEP: &str = "the devices nest too deep";
+/// Why a walk did not end (a reason a page reads).
+pub const TOO_DEEP: &str = reason::TOO_DEEP;
 
 /// The Pro-Q 4 screen's part of the router.
 pub(super) struct EqIo {
@@ -74,11 +74,12 @@ pub(super) struct EqIo {
 }
 
 /// Reads the Pro-Q 4 instances of the track at `target` (a walk of its
-/// devices, at most [`MAX_READS`] reads).
+/// devices, at most [`MAX_READS`] reads). A call that got no answer fails
+/// with the protocol's reason ([`live_reason`]), as an open's does.
 async fn walk(live: LiveHandle, target: String) -> Result<Vec<Found>, String> {
     let (mut walk, mut commands) = Walk::start(&target);
     for _ in 0..MAX_READS {
-        let slots = live.call(commands).await.map_err(|e| e.to_string())?;
+        let slots = live.call(commands).await.map_err(|e| live_reason(&e))?;
         match walk.answer(&slots) {
             Step::Read(next) => commands = next,
             Step::Done(found) => return Ok(found),
