@@ -1594,17 +1594,40 @@ fn the_guard_waits_for_a_settling_resize_then_places_its_editor_in_two_steps_bef
 
 #[test]
 fn a_placement_lands_once_the_window_reads_it_the_known_one_at_the_known_size() {
+    let work = rect(0, 0, 2560, 1400);
     let known = rect(900, 552, 1365, 848);
     // A pixel to the right, unless the window stands exactly there: then a
     // pixel to the left.
     let right = rect(901, 552, 1365, 848);
-    assert_eq!(aside(known, rect(900, 700, 1365, 848)), right);
-    assert_eq!(aside(known, known), right);
-    assert_eq!(aside(known, right), rect(899, 552, 1365, 848));
+    assert_eq!(aside(known, rect(900, 700, 1365, 848), work), right);
+    assert_eq!(aside(known, known, work), right);
+    assert_eq!(aside(known, right, work), rect(899, 552, 1365, 848));
     assert_eq!(
-        aside(known, rect(901, 552, 683, 1400)),
+        aside(known, rect(901, 552, 683, 1400), work),
         right,
         "there at another size"
+    );
+    // Inward (round 3): against the work area's right edge, a pixel to the
+    // left, unless the window stands exactly there: then to the right.
+    let edge = rect(1195, 552, 1365, 848);
+    let left = rect(1194, 552, 1365, 848);
+    assert_eq!(aside(edge, rect(2000, 1000, 776, 1310), work), left);
+    assert_eq!(aside(edge, edge, work), left);
+    assert_eq!(aside(edge, left, work), rect(1196, 552, 1365, 848));
+    // A pixel short of that edge, the right still fits.
+    assert_eq!(
+        aside(rect(1194, 552, 1365, 848), known, work),
+        rect(1195, 552, 1365, 848)
+    );
+    // A second screen's own right edge.
+    let second = rect(2560, 10, 1920, 1040);
+    assert_eq!(
+        aside(rect(3115, 50, 1365, 848), known, second),
+        rect(3114, 50, 1365, 848)
+    );
+    assert_eq!(
+        aside(rect(3114, 50, 1365, 848), known, second),
+        rect(3115, 50, 1365, 848)
     );
     let first = Placement::Aside(right);
     assert_eq!(first.rect(), right);

@@ -347,18 +347,26 @@ impl Placement {
     }
 }
 
-/// The known rectangle `known` a pixel aside (#74 review, round 2): one to
-/// the right, or one to the left when the window reads that one already
-/// (`now`): a rectangle it does not have before the post lands.
-pub fn aside(known: Rect, now: Rect) -> Rect {
+/// The known rectangle `known` a pixel aside (#74 review, round 2), inward
+/// (round 3): one to the right when it still lies inside the work area
+/// `work`'s right edge there, else one to the left (`known` stands against
+/// that edge, moved in by [`known_rect`]); and the other way when the
+/// window reads that one already (`now`): a rectangle it does not have
+/// before the post lands.
+pub fn aside(known: Rect, now: Rect, work: Rect) -> Rect {
     let by = |dx: i32| Rect {
         left: known.left + dx,
         top: known.top,
         width: known.width,
         height: known.height,
     };
-    let right = by(1);
-    if now == right { by(-1) } else { right }
+    let fits = known.left + 1 + known.width <= work.left + work.width;
+    let (inward, other) = if fits {
+        (by(1), by(-1))
+    } else {
+        (by(-1), by(1))
+    };
+    if now == inward { other } else { inward }
 }
 
 /// A step of the close guard (PR G; #74 review).
@@ -1446,13 +1454,14 @@ impl Worker {
     /// round 2): it waits while a resize of the editor settles, and until
     /// [`QUIET_MS`] after a contact of its session ended (round 3: its own
     /// up, injected as it began; the wait passes on its own); posts its
-    /// first placement, the known rectangle ([`known_rect`]) a pixel aside
-    /// from where the window stands ([`aside`]); once the window reads that,
-    /// the known rectangle; once the window reads that with its picture at
-    /// exactly [`KNOWN_SIZE`], it taps the inert spot. A placement not seen
-    /// to land in time, or one that could not be worked out or posted, fails
-    /// the guard (no tap at a spot of an unknown layout: the router then
-    /// leaves the editor open). A guard whose window went meanwhile fails.
+    /// first placement, the known rectangle ([`known_rect`]) a pixel aside,
+    /// inward and never where the window stands ([`aside`]); once the
+    /// window reads that, the known rectangle; once the window reads that
+    /// with its picture at exactly [`KNOWN_SIZE`], it taps the inert spot.
+    /// A placement not seen to land in time, or one that could not be
+    /// worked out or posted, fails the guard (no tap at a spot of an
+    /// unknown layout: the router then leaves the editor open). A guard
+    /// whose window went meanwhile fails.
     fn guard_look(&mut self, mut guard: Guarding, now: f64) {
         let Some(editor) = self.editors.get_mut(&guard.session) else {
             let _ = guard.reply.send(Err(NO_EDITOR.to_string()));
@@ -1471,7 +1480,7 @@ impl Worker {
             }
             GuardStep::Aside => window.and_then(|then| {
                 let work = self.backend.work(taken)?;
-                Ok(Placement::Aside(aside(known_rect(work, taken), then)))
+                Ok(Placement::Aside(aside(known_rect(work, taken), then, work)))
             }),
             GuardStep::Known => self
                 .backend

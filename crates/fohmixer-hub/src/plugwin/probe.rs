@@ -342,7 +342,7 @@ impl Held<'_> {
         let work = self.backend.work(&self.taken)?;
         let now = self.backend.rect(&self.taken)?;
         let known = known_rect(work, &self.taken);
-        self.place(Placement::Aside(aside(known, now)), started)?;
+        self.place(Placement::Aside(aside(known, now, work)), started)?;
         self.place(Placement::Known(known), started)
     }
 
