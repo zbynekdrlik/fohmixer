@@ -1838,6 +1838,101 @@ fn no_down_reaches_an_editor_while_its_resize_is_on_its_way() {
 }
 
 #[test]
+fn a_resize_that_waited_for_a_finger_goes_100_ms_after_its_up() {
+    // The review of PR #74, round 3 (F1): a resize that waited for a finger
+    // was posted in the step right after its injected up. Live's thread
+    // takes posted messages before injected input, so Pro-Q could lay
+    // itself out at the new size before the up landed, which then ended a
+    // band's drag at the old picture's point.
+    let (mut worker, handle, _) = worker();
+    take(&mut worker, &handle, 1, 0.0);
+    touch_at(&mut worker, 1, 1, Phase::Down, (300, 200), 0.0);
+    let mut resized = resize_at(&mut worker, 1, UPRIGHT, 10.0);
+    touch_at(&mut worker, 1, 1, Phase::Up, (300, 200), 20.0);
+    worker.step_at(20.0);
+    worker.step_at(119.9);
+    assert_eq!(
+        resizes(&handle),
+        Vec::<(i64, i64)>::new(),
+        "none within 100 ms of the up"
+    );
+    assert!(resized.try_recv().is_err(), "waiting");
+    worker.step_at(120.0);
+    assert_eq!(resizes(&handle), [(667, 1361)], "100 ms after the up");
+    let landed = resized.try_recv().unwrap().expect("a resize");
+    assert_eq!((landed.client, landed.ok), ((667, 1361), true));
+}
+
+#[test]
+fn every_end_of_a_contact_holds_its_editors_resizes_for_100_ms() {
+    // The review of PR #74, round 3 (F1): each way a contact ends holds the
+    // resizes of its editor for 100 ms, a resize asked in that time too
+    // (Live's thread lands a posted rectangle before injected input).
+    let (mut worker, handle, _) = worker();
+    let first = take(&mut worker, &handle, 1, 0.0);
+    take(&mut worker, &handle, 2, 0.0);
+    let posted = |handle: &SimHandle| -> Vec<(i64, i64)> {
+        handle
+            .records()
+            .iter()
+            .filter(|r| r["op"] == "resize" && r["window"] == first.0)
+            .map(|r| (r["w"].as_i64().unwrap(), r["h"].as_i64().unwrap()))
+            .collect()
+    };
+    // A cancel (the page's pinch), then a new area at once.
+    touch_at(&mut worker, 1, 1, Phase::Down, (300, 200), 0.0);
+    touch_at(&mut worker, 1, 1, Phase::Cancel, (300, 200), 10.0);
+    let mut upright = resize_at(&mut worker, 1, UPRIGHT, 20.0);
+    worker.step_at(109.9);
+    assert_eq!(
+        posted(&handle),
+        Vec::<(i64, i64)>::new(),
+        "none within 100 ms of the cancel"
+    );
+    assert!(upright.try_recv().is_err(), "waiting");
+    worker.step_at(110.0);
+    assert_eq!(posted(&handle), [(667, 1361)]);
+    assert!(upright.try_recv().unwrap().is_some_and(|r| r.ok));
+    // A refused update: its contact ends with a cancel at its last point.
+    touch_at(&mut worker, 1, 2, Phase::Down, (300, 900), 200.0);
+    handle.refuse(true);
+    touch_at(&mut worker, 1, 2, Phase::Update, (310, 900), 210.0);
+    handle.refuse(false);
+    assert_eq!(worker.contact, None);
+    let mut wide = resize_at(&mut worker, 1, area(800.0, 320.0), 220.0);
+    worker.step_at(309.9);
+    assert_eq!(posted(&handle).len(), 1, "none within 100 ms of the cancel");
+    worker.step_at(310.0);
+    assert_eq!(posted(&handle), [(667, 1361), (1652, 661)]);
+    assert!(wide.try_recv().unwrap().is_some_and(|r| r.ok));
+    // Another editor's guard cancels this editor's contact; that guard's
+    // own editor had no contact, so it places it at once.
+    touch_at(&mut worker, 1, 3, Phase::Down, (10, 10), 400.0);
+    let mut guarded = guard_at(&mut worker, 2, 410.0);
+    assert_eq!(worker.contact, None);
+    let mut again = resize_at(&mut worker, 1, UPRIGHT, 420.0);
+    worker.step_at(509.9);
+    assert_eq!(posted(&handle).len(), 2, "none within 100 ms of the cancel");
+    worker.step_at(510.0);
+    assert_eq!(posted(&handle), [(667, 1361), (1652, 661), (667, 1361)]);
+    assert!(again.try_recv().unwrap().is_some_and(|r| r.ok));
+    assert_eq!(guarded.try_recv().unwrap(), Ok(()));
+    assert_eq!(
+        touches(&handle),
+        [
+            t("down", 300, 200),
+            t("cancel", 300, 200),
+            t("down", 300, 900),
+            t("cancel", 300, 900),
+            t("down", 10, 10),
+            t("cancel", 10, 10),
+            t("down", 546, 15),
+            t("up", 546, 15),
+        ]
+    );
+}
+
+#[test]
 fn a_resize_that_does_not_land_settles_after_its_wait_and_a_newer_one_replaces_it() {
     let (mut worker, handle, heard) = worker();
     let window = take(&mut worker, &handle, 1, 0.0);
