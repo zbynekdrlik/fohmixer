@@ -199,8 +199,11 @@
 /* The zoom group (PR F), only while zoomed: the overview (the latest frame
    drawn small, a frame around the part in sight), the factor and CELÝ EQ.
    The overview keeps the picture's shape at the bar's height: each frame
-   sets its aspect-ratio (`behave::eq::overview_size`, #74 review), which
-   holds for its content inside the 1 px border. */
+   sets its aspect-ratio (`behave::eq::overview_size`, #74 review). Its
+   line is drawn over it (`::after`), not as its border: WebKit took the
+   ratio from the border box of a flex item in content-box sizing, 2 px off
+   at the bar's height (5 to 8 % for an upright picture), so the box has no
+   border and padding, and every engine's ratio is the picture's. */
 .eq-zoom {
     display: flex;
     flex: none;
@@ -216,13 +219,21 @@
 .eq-overview {
     position: relative;
     flex: none;
-    box-sizing: content-box;
-    height: calc(100% - 2px);
+    min-width: 0;
+    height: 100%;
     aspect-ratio: 67 / 40;
     overflow: hidden;
-    border: 1px solid var(--line);
     border-radius: 4px;
     background: #1c1a22;
+}
+
+.eq-overview::after {
+    position: absolute;
+    inset: 0;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    content: "";
+    pointer-events: none;
 }
 
 .eq-overview-pic {
