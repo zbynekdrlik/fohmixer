@@ -591,7 +591,10 @@ impl Encoder {
     }
 
     /// The encoder ends (a picture still waiting is dropped) and its thread
-    /// is joined.
+    /// is joined, bounded ([`STOP_POLLS`] looks [`STOP_POLL`] apart): a
+    /// thread that never ends (it should not) cannot hold the worker's end
+    /// nor the hub's stop, and a mutant that keeps it waiting fails its
+    /// tests instead of hanging them.
     fn stop(&mut self) {
         {
             let mut handoff = self.shared.lock();
@@ -599,9 +602,17 @@ impl Encoder {
             handoff.waiting = None;
         }
         self.shared.ready.notify_one();
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
+        let Some(thread) = self.thread.take() else {
+            return;
+        };
+        for _ in 0..STOP_POLLS {
+            if thread.is_finished() {
+                let _ = thread.join();
+                return;
+            }
+            std::thread::sleep(STOP_POLL);
         }
+        tracing::warn!("the JPEG encoder's thread did not end in time: it is left behind");
     }
 }
 
