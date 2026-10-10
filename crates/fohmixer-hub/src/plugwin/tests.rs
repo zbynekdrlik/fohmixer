@@ -157,6 +157,18 @@ fn the_clocks_turn_at_their_bounds() {
 }
 
 #[test]
+fn an_editor_is_quiet_again_100_ms_after_its_last_contact_ended() {
+    assert_eq!(QUIET_MS, 100.0);
+    assert!(!quiet(100.0_f64.next_down()));
+    assert!(quiet(100.0));
+    // No contact ended since the take (`ended` is minus infinity): quiet.
+    assert!(quiet(0.0 - f64::NEG_INFINITY));
+    // A time that is no number, or one before it ended: not.
+    assert!(!quiet(f64::NAN));
+    assert!(!quiet(f64::NEG_INFINITY));
+}
+
+#[test]
 fn the_inert_spot_sits_in_the_top_bars_empty_middle() {
     assert_eq!(inert_spot(1349), (546, 15));
     assert_eq!(inert_spot(1000), (405, 15));

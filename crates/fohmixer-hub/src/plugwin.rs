@@ -68,7 +68,10 @@
 //!   no resize on its way (one that landed late, a window resized on the
 //!   PC) is reported ([`PlugwinEvent::Sized`]). A resize asked while a
 //!   contact of the editor's session is down waits for its end, the newest
-//!   only (#74 review: Pro-Q never lays itself out under a finger).
+//!   only (#74 review: Pro-Q never lays itself out under a finger), and
+//!   then [`QUIET_MS`] more (round 3: Live's thread takes a posted
+//!   rectangle before injected input, so it would land before the
+//!   injected end).
 //! - **The close guard** ([`Plugwin::guard`]): no resize reaches the editor
 //!   from then on; the frames stop, its own contact ends at its last point
 //!   (an up), another session's is cancelled there and reported
@@ -77,7 +80,8 @@
 //!   [`KNOWN_SIZE`] (#74 review, I1), and Live's thread lands a posted
 //!   rectangle before injected input, so the guard places the editor there
 //!   in two steps, each seen to land (#74 review, round 2; [`guard_step`],
-//!   [`Placement`]), once a resize on its way settled: the window's
+//!   [`Placement`]), once a resize on its way settled and [`QUIET_MS`]
+//!   passed since its contact ended (round 3): the window's
 //!   rectangle for that size (at the take's place, moved into the work area
 //!   when it does not fit there, [`known_rect`]) a pixel aside first
 //!   ([`aside`]: a rectangle the window cannot have before it lands, so
@@ -123,6 +127,12 @@ pub const RATE_MS: f64 = 60_000.0;
 /// A contact down this long (ms) since its last injection is injected
 /// again at its last point (Windows cancels one silent for 100 ms).
 pub const KEEPALIVE_MS: f64 = 50.0;
+/// How long (ms) after a contact of an editor's session ended nothing is
+/// posted to that editor's window: no resize, no guard placement (#74
+/// review, round 3). Live's thread takes posted messages before injected
+/// input, so a move posted right after an injected up could lay Pro-Q out
+/// anew before the up lands, at the old screen point.
+pub const QUIET_MS: f64 = 100.0;
 /// How long the hub's stop waits for the worker to hand its windows back
 /// and end ([`Plugwin::stopped`]): [`STOP_POLLS`] looks [`STOP_POLL`] apart.
 pub const STOP_WAIT: Duration = Duration::from_secs(1);
@@ -369,9 +379,12 @@ pub enum GuardStep {
     Fail(Placement),
 }
 
-/// What the guard does at a step (#74 review, round 2): wait while a
-/// resize of its editor still settles (one unlanded posts its way back as
-/// it settles, which must go before the guard's placement); then post its
+/// What the guard does at a step (#74 review, round 2): wait while
+/// `settling`: a resize of its editor still settles (one unlanded posts
+/// its way back as it settles, which must go before the guard's
+/// placement), or a contact of its session ended less than [`QUIET_MS`]
+/// ago (round 3: the guard's own up included; Live's thread would land
+/// the placement before that injected up); then post its
 /// first placement (`posted`: none yet; else its placement posted last and
 /// the ms since); once that is seen to land ([`Placement::landed`] with the
 /// window's rectangle and picture's size read now) the second; once that
@@ -604,6 +617,13 @@ pub fn keepalive_due(since_ms: f64) -> bool {
     since_ms >= KEEPALIVE_MS
 }
 
+/// Whether an editor whose last contact ended `since_ms` ago is quiet
+/// again ([`QUIET_MS`]): something may be posted to its window. One whose
+/// contact never ended is (`+∞`); a time that is no number is not.
+pub fn quiet(since_ms: f64) -> bool {
+    since_ms >= QUIET_MS
+}
+
 /// Whether a capture last made `since_ms` ago is due.
 pub fn capture_due(since_ms: f64) -> bool {
     since_ms >= CAPTURE_MS
@@ -773,9 +793,14 @@ struct Editor {
     /// Whether its close guard began: no resize reaches it any more (#74
     /// review: never cleared, the guard is the editor's last step).
     guarded: bool,
-    /// A resize asked while its session's contact is down, posted once the
-    /// contact ended (#74 review): its area and its caller.
+    /// A resize asked while its session's contact is down, or less than
+    /// [`QUIET_MS`] after one ended, posted once the contact ended and that
+    /// time passed (#74 review; round 3): its area and its caller.
     deferred: Option<(Area, oneshot::Sender<Option<Resized>>)>,
+    /// When the last contact of its session ended (worker ms; minus
+    /// infinity: none since its take): nothing is posted to its window for
+    /// [`QUIET_MS`] after it ([`quiet`]; #74 review, round 3).
+    ended: f64,
 }
 
 /// A resize on its way: the size asked, when it was posted (worker ms),
@@ -1253,6 +1278,7 @@ impl Worker {
                         changed: false,
                         guarded: false,
                         deferred: None,
+                        ended: f64::NEG_INFINITY,
                     },
                 );
                 let _ = finding.reply.send(Ok(size));
@@ -1261,21 +1287,41 @@ impl Worker {
     }
 
     /// A resize of `session`'s picture for a page's `area` (PR G): posted
-    /// ([`Worker::post_size`]), then looked at every step until it settles
-    /// ([`Worker::resizes`]). Nothing posted: its caller hears none at once.
-    /// A resize still on its way is replaced (its caller hears nothing).
-    /// While a contact of `session` is down it waits for its end, and a
-    /// newer one replaces it (its caller hears none; [`Worker::deferred`]).
+    /// ([`Worker::start_resize`]), then looked at every step until it
+    /// settles ([`Worker::resizes`]). While its editor is held off
+    /// ([`Worker::holds_off`]: a contact of `session` down, or ended less
+    /// than [`QUIET_MS`] ago) it waits, and a newer one replaces it (its
+    /// caller hears none; [`Worker::deferred`]).
     fn resize(&mut self, session: u32, area: Area, reply: oneshot::Sender<Option<Resized>>) {
-        let touched = self.contact.is_some_and(|held| held.session == session);
-        if let Some(editor) = self.editors.get_mut(&session)
-            && touched
+        let now = self.now();
+        if self.holds_off(session, now)
+            && let Some(editor) = self.editors.get_mut(&session)
         {
             if let Some((_, older)) = editor.deferred.replace((area, reply)) {
                 let _ = older.send(None);
             }
             return;
         }
+        self.start_resize(session, area, reply);
+    }
+
+    /// Whether nothing may be posted to `session`'s editor at `now` (#74
+    /// review): a contact of `session` is down (Pro-Q never lays itself out
+    /// under a finger), or one ended less than [`QUIET_MS`] ago (round 3:
+    /// Live's thread lands a posted rectangle before the injected end). No
+    /// editor: nothing holds off.
+    fn holds_off(&self, session: u32, now: f64) -> bool {
+        let touched = self.contact.is_some_and(|held| held.session == session);
+        self.editors
+            .get(&session)
+            .is_some_and(|editor| touched || !quiet(now - editor.ended))
+    }
+
+    /// A resize of `session`'s picture for `area` posted now
+    /// ([`Worker::post_size`]) and looked at every step until it settles
+    /// ([`Worker::resizes`]). Nothing posted: its caller hears none at once.
+    /// A resize still on its way is replaced (its caller hears nothing).
+    fn start_resize(&mut self, session: u32, area: Area, reply: oneshot::Sender<Option<Resized>>) {
         let now = self.now();
         let Some((asked, before)) = self.post_size(session, area) else {
             let _ = reply.send(None);
@@ -1362,14 +1408,18 @@ impl Worker {
         }
     }
 
-    /// The resizes waiting for a contact to end, each posted once no
-    /// contact of its session is down ([`Worker::resize`]).
+    /// The resizes waiting for a contact to end, each posted once its
+    /// editor is no longer held off ([`Worker::holds_off`]: no contact of
+    /// its session down, and [`QUIET_MS`] passed since the last one ended;
+    /// #74 review, round 3).
     fn deferred(&mut self) {
-        let held = self.contact.map(|held| held.session);
+        let now = self.now();
         let due: Vec<u32> = self
             .editors
             .iter()
-            .filter(|(session, editor)| editor.deferred.is_some() && held != Some(**session))
+            .filter(|(session, editor)| {
+                editor.deferred.is_some() && !self.holds_off(**session, now)
+            })
             .map(|(session, _)| *session)
             .collect();
         for session in due {
@@ -1378,7 +1428,7 @@ impl Worker {
                 .get_mut(&session)
                 .and_then(|editor| editor.deferred.take());
             if let Some((area, reply)) = waiting {
-                self.resize(session, area, reply);
+                self.start_resize(session, area, reply);
             }
         }
     }
@@ -1393,7 +1443,9 @@ impl Worker {
     }
 
     /// A guard's look at its editor at `now` ([`guard_step`], #74 review,
-    /// round 2): it waits while a resize of the editor settles; posts its
+    /// round 2): it waits while a resize of the editor settles, and until
+    /// [`QUIET_MS`] after a contact of its session ended (round 3: its own
+    /// up, injected as it began; the wait passes on its own); posts its
     /// first placement, the known rectangle ([`known_rect`]) a pixel aside
     /// from where the window stands ([`aside`]); once the window reads that,
     /// the known rectangle; once the window reads that with its picture at
@@ -1411,7 +1463,8 @@ impl Worker {
         let read = window.as_ref().ok().copied();
         let client = self.backend.client(taken).ok();
         let posted = guard.posted.map(|(placement, at)| (placement, now - at));
-        let placement = match guard_step(editor.resizing.is_some(), posted, read, client) {
+        let settling = editor.resizing.is_some() || !quiet(now - editor.ended);
+        let placement = match guard_step(settling, posted, read, client) {
             GuardStep::Wait => {
                 self.guarding.push(guard);
                 return;
@@ -1530,7 +1583,8 @@ impl Worker {
     /// the screen ([`accepts`]), no down while a resize of the editor is
     /// on its way ([`waits_out`]); stamped when it goes, its gap since the
     /// contact's last injection counted; a refused down or update ends the
-    /// contact and says so.
+    /// contact and says so. A contact that ends holds its editor off for
+    /// [`QUIET_MS`] ([`Worker::contact_ended`]).
     fn touch(&mut self, session: u32, contact: u32, phase: Phase, at: (i32, i32)) {
         let Some((taken, resizing)) = self
             .editors
@@ -1570,12 +1624,19 @@ impl Worker {
                 if let (Some(gap), Some(editor)) = (gap, self.editors.get_mut(&session)) {
                     editor.counts.injected(gap);
                 }
+                if phase.ends() {
+                    self.contact_ended(session);
+                }
             }
             Err(why) => {
-                if let Some(held) = self.contact.take()
-                    && phase.checked()
-                {
-                    let _ = self.backend.touch(&taken, Phase::Cancel, held.at);
+                // A failed phase ends the contact held (a down has none
+                // before it): a refused update with a cancel at its last
+                // point.
+                if let Some(held) = self.contact.take() {
+                    if phase.checked() {
+                        let _ = self.backend.touch(&taken, Phase::Cancel, held.at);
+                    }
+                    self.contact_ended(session);
                 }
                 (self.events)(PlugwinEvent::ContactEnded {
                     session,
@@ -1583,6 +1644,15 @@ impl Worker {
                     why,
                 });
             }
+        }
+    }
+
+    /// A contact of `session` ended now: nothing is posted to its editor's
+    /// window for [`QUIET_MS`] ([`Editor::ended`]; #74 review, round 3).
+    fn contact_ended(&mut self, session: u32) {
+        let now = self.now();
+        if let Some(editor) = self.editors.get_mut(&session) {
+            editor.ended = now;
         }
     }
 
@@ -1595,6 +1665,7 @@ impl Worker {
         if let Some(editor) = self.editors.get(&session) {
             let _ = self.backend.touch(&editor.taken, Phase::Up, held.at);
         }
+        self.contact_ended(session);
     }
 
     /// Another session's contact down, cancelled at its last point and
@@ -1607,6 +1678,7 @@ impl Worker {
         if let Some(editor) = self.editors.get(&held.session) {
             let _ = self.backend.touch(&editor.taken, Phase::Cancel, held.at);
         }
+        self.contact_ended(held.session);
         (self.events)(PlugwinEvent::ContactEnded {
             session: held.session,
             contact: held.contact,
@@ -1619,8 +1691,9 @@ impl Worker {
     /// resize reaches it any more), no more frames, its contact ended
     /// (another session's cancelled); then its first look
     /// ([`Worker::guard_look`]): its first placement posted at once unless
-    /// a resize is on its way, and the rest at the steps (each placement
-    /// seen to land, then the tap).
+    /// a resize is on its way or a contact of its session ended less than
+    /// [`QUIET_MS`] ago (its own just did, when one was down), and the rest
+    /// at the steps (each placement seen to land, then the tap).
     fn guard(&mut self, session: u32, reply: oneshot::Sender<Result<(), String>>) {
         let Some(editor) = self.editors.get_mut(&session) else {
             let _ = reply.send(Err(NO_EDITOR.to_string()));
