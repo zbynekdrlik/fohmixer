@@ -200,8 +200,14 @@ exclude_re = [
   # signal), draw and paint (createImageBitmap, the canvas drawn, the newest
   # frame kept while one decodes). eq.spec.ts drives them (the frames drawn
   # with data-frames, the card's picture after a close, the records in the
-  # event log).
-  "fohmixer-ui/src/components/eq\\.rs.*(replace|in) (EqNav::open|EqNav::close|local_hh_mm|blob_url|revoke|load_picture|draw|paint)( |$)",
+  # event log). PR F (the page's zoom): context_2d (a canvas's 2D context,
+  # the main picture's and the overview's), Grip::of and Grip::at (the
+  # area's box from getBoundingClientRect, a pointer's clientX/Y on it) and
+  # show_look (the tested behave::eq::look written as the canvas's style,
+  # the overview frame's style and the bar's signals); eq.spec.ts pinches,
+  # drags and taps the zoomed picture and reads the backend's points, the
+  # canvas's box and the bar's group.
+  "fohmixer-ui/src/components/eq\\.rs.*(replace|in) (EqNav::open|EqNav::close|local_hh_mm|blob_url|revoke|load_picture|draw|paint|context_2d|Grip::of|Grip::at|show_look)( |$)",
   # components (#43 PR G): the directives owns_touches (a control's root:
   # dom::prevent_on with the tested sys::CONTROL_PREVENTS, and its keys as
   # the tested sys::keys_text in sys::KEYS_ATTR) and owns_surface (the

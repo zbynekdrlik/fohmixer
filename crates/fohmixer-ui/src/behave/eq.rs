@@ -1,16 +1,20 @@
-//! The Pro-Q 4 screen's finger and picture (#71 PR E, F28), pure: where the
+//! The Pro-Q 4 screen's fingers and picture (#71 PR E, F28), pure: where the
 //! editor's picture sits fitted into the screen ([`fit`], the stylesheet's
-//! `object-fit: contain`), a point of the screen in the picture's pixels
-//! ([`to_picture`]), the one finger the screen takes ([`Finger`]: a second
-//! finger is ignored, a move goes at most once per animation frame, the
-//! newest one, and the end always goes, a lost capture as a cancel, a
-//! hidden page's finger lifted), a card's lock ([`card_lock`]: one editor on
-//! the PC's screen at a time, so another page's editor locks every card)
-//! and its text, whether its open is offered ([`can_open`]), when the cards
-//! are listed ([`lists_now`]), what names an editor ([`place_text`]), a
-//! card's note and the cards' list note in Slovak ([`failure_text`],
-//! [`list_text`]), which frames the screen shows ([`shows_frame`]) and a
-//! card's picture URL ([`picture_url`]).
+//! `object-fit: contain`), the page's own view of it (PR F: [`View`], a
+//! zoom of 1 to [`MAX_ZOOM`] and a pan kept by [`placed`]; [`Viewer`], the
+//! pinch that moves it; [`look`], how the screen draws it), a point of the
+//! screen in the picture's pixels ([`to_picture`], [`point`]), the fingers
+//! ([`Finger`]: a first finger waits [`HOLD_MS`] or [`SLOP`] before the
+//! editor gets it, a lift meanwhile is a tap, a second finger makes a pinch
+//! that sends the editor nothing, a move goes at most once per animation
+//! frame, the newest one, and the end always goes, a lost capture as a
+//! cancel, a hidden page's finger lifted), a card's lock ([`card_lock`]:
+//! one editor on the PC's screen at a time, so another page's editor locks
+//! every card) and its text, whether its open is offered ([`can_open`]),
+//! when the cards are listed ([`lists_now`]), what names an editor
+//! ([`place_text`]), a card's note and the cards' list note in Slovak
+//! ([`failure_text`], [`list_text`]), which frames the screen shows
+//! ([`shows_frame`]) and a card's picture URL ([`picture_url`]).
 
 use fohmixer_proto::eq::{EqLock, PRODUCT, Touch, reason};
 
@@ -50,88 +54,453 @@ pub fn on_picture(at: (f64, f64), size: (u32, u32)) -> bool {
     inside(at.0, size.0) && inside(at.1, size.1)
 }
 
+/// The closest view of the picture (#71 PR F): 4 × the fitted picture.
+pub const MAX_ZOOM: f64 = 4.0;
+
+/// The zoom from which the screen counts as zoomed (its bar's zoom group
+/// shows, the factor reads `1,1×` or more); a pinch that ends under it goes
+/// back to the whole picture.
+pub const ZOOMED_FROM: f64 = 1.05;
+
+/// The page's own view of the picture (#71 PR F; the editor on the PC never
+/// changes): the zoom over the fitted picture (1 to [`MAX_ZOOM`]) and where
+/// the zoomed picture's top-left corner lies in the area (`pan`, CSS px).
+/// [`placed`] keeps the corner so the picture covers the area where it is
+/// larger than it and stays centred where it is smaller.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct View {
+    pub zoom: f64,
+    pub pan: (f64, f64),
+}
+
+impl View {
+    /// The whole picture, fitted: each open starts here, and `CELÝ EQ`
+    /// comes back to it.
+    pub const WHOLE: Self = Self {
+        zoom: 1.0,
+        pan: (0.0, 0.0),
+    };
+}
+
+/// The picture placed in the area by `view`: the fitted scale times the
+/// zoom, the corner the view's pan kept within the area ([`place`]). None
+/// while the area or the picture is empty.
+pub fn placed(area: (f64, f64), picture: (u32, u32), view: View) -> Option<Fit> {
+    let fitted = fit(area, picture)?;
+    let scale = fitted.scale * view.zoom;
+    Some(Fit {
+        scale,
+        left: place(view.pan.0, f64::from(picture.0) * scale, area.0),
+        top: place(view.pan.1, f64::from(picture.1) * scale, area.1),
+    })
+}
+
+/// One side of a placed picture: the corner from `pan` for a picture `size`
+/// long in an area `room` long. A shorter picture is centred (both bounds
+/// are the middle); a longer one lies within `room − size ..= 0`, so no gap
+/// opens at either end.
+fn place(pan: f64, size: f64, room: f64) -> f64 {
+    let spare = room - size;
+    let middle = spare / 2.0;
+    pan.clamp(spare.min(middle), middle.max(0.0))
+}
+
+/// The fingers' midpoint.
+fn midpoint(a: (f64, f64), b: (f64, f64)) -> (f64, f64) {
+    ((a.0 + b.0) / 2.0, (a.1 + b.1) / 2.0)
+}
+
+/// How far apart two points are.
+fn distance(a: (f64, f64), b: (f64, f64)) -> f64 {
+    (a.0 - b.0).hypot(a.1 - b.1)
+}
+
+/// Two fingers of a pinch: each one's pointer and its point on the area
+/// (CSS px).
+pub type Pair = [(i32, (f64, f64)); 2];
+
+/// A pinch under way: its two pointers, the picture point under their
+/// midpoint when it began, their distance then (at least 1 px) and the zoom
+/// then.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Pinch {
+    pointers: (i32, i32),
+    anchor: (f64, f64),
+    distance: f64,
+    zoom: f64,
+}
+
+/// The screen's view and the pinch that moves it (#71 PR F).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Viewer {
+    view: View,
+    pinch: Option<Pinch>,
+}
+
+impl Viewer {
+    /// The whole picture and no pinch: a screen's start.
+    pub const START: Self = Self {
+        view: View::WHOLE,
+        pinch: None,
+    };
+
+    /// The view shown.
+    pub fn view(&self) -> View {
+        self.view
+    }
+
+    /// The picture placed by the view ([`placed`]).
+    pub fn placed(&self, area: (f64, f64), picture: (u32, u32)) -> Option<Fit> {
+        placed(area, picture, self.view)
+    }
+
+    /// Follows the fingers, each frame. Two fingers new to it start a pinch
+    /// from the view shown: the picture point under their midpoint, their
+    /// distance and the zoom. The same two move it: the zoom is the start's
+    /// times their distance over the start's (1 to [`MAX_ZOOM`]), and the
+    /// start's picture point stays under their midpoint as far as the
+    /// picture still covers the area ([`placed`]). None end it, and a pinch
+    /// that ends under [`ZOOMED_FROM`] goes back to the whole picture.
+    pub fn follow(&mut self, pair: Option<Pair>, area: (f64, f64), picture: (u32, u32)) {
+        let Some([(first, a), (second, b)]) = pair else {
+            if self.pinch.take().is_some() && !zoomed(self.view.zoom) {
+                self.view = View::WHOLE;
+            }
+            return;
+        };
+        let (Some(fitted), Some(shown)) = (fit(area, picture), self.placed(area, picture)) else {
+            return;
+        };
+        let middle = midpoint(a, b);
+        match self.pinch {
+            Some(pinch) if pinch.pointers == (first, second) => {
+                let zoom = (pinch.zoom * distance(a, b) / pinch.distance).clamp(1.0, MAX_ZOOM);
+                let scale = fitted.scale * zoom;
+                let pan = (
+                    middle.0 - pinch.anchor.0 * scale,
+                    middle.1 - pinch.anchor.1 * scale,
+                );
+                if let Some(next) = placed(area, picture, View { zoom, pan }) {
+                    self.view = View {
+                        zoom,
+                        pan: (next.left, next.top),
+                    };
+                }
+            }
+            _ => {
+                self.pinch = Some(Pinch {
+                    pointers: (first, second),
+                    anchor: to_picture(shown, middle),
+                    distance: distance(a, b).max(1.0),
+                    zoom: self.view.zoom,
+                });
+            }
+        }
+    }
+
+    /// Back to the whole picture (`CELÝ EQ`): fingers still pinching start
+    /// a new pinch from there.
+    pub fn whole(&mut self) {
+        *self = Self::START;
+    }
+}
+
+/// Whether the view counts as zoomed ([`ZOOMED_FROM`]).
+pub fn zoomed(zoom: f64) -> bool {
+    zoom >= ZOOMED_FROM
+}
+
+/// The zoom as the bar's factor reads it: one decimal, a decimal comma
+/// (`2,4×`).
+pub fn zoom_text(zoom: f64) -> String {
+    format!("{zoom:.1}×").replace('.', ",")
+}
+
+/// How the screen draws a view (#71 PR F).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Look {
+    /// The canvas's CSS transform. The canvas fills the area and fits the
+    /// picture itself (`object-fit: contain`), so the view is its box
+    /// scaled by the zoom from its corner (`transform-origin: 0 0`) and
+    /// moved so the picture's corner lands where the view places it.
+    pub transform: String,
+    /// Whether the bar's zoom group shows ([`zoomed`]).
+    pub zoomed: bool,
+    /// The bar's factor ([`zoom_text`]).
+    pub factor: String,
+    /// The part of the picture in sight, as fractions of the picture (left,
+    /// top, width, height): the overview's frame.
+    pub seen: (f64, f64, f64, f64),
+}
+
+/// How the screen draws `view` of a picture in an area; none while either
+/// is empty.
+pub fn look(area: (f64, f64), picture: (u32, u32), view: View) -> Option<Look> {
+    let fitted = fit(area, picture)?;
+    let shown = placed(area, picture, view)?;
+    let (width, height) = (f64::from(picture.0), f64::from(picture.1));
+    let dx = shown.left - view.zoom * fitted.left;
+    let dy = shown.top - view.zoom * fitted.top;
+    Some(Look {
+        transform: format!("translate({dx}px, {dy}px) scale({})", view.zoom),
+        zoomed: zoomed(view.zoom),
+        factor: zoom_text(view.zoom),
+        seen: (
+            (-shown.left / shown.scale).max(0.0) / width,
+            (-shown.top / shown.scale).max(0.0) / height,
+            (area.0 / shown.scale).min(width) / width,
+            (area.1 / shown.scale).min(height) / height,
+        ),
+    })
+}
+
+/// How long a first finger waits before its down reaches the editor (ms):
+/// a second finger meanwhile makes a pinch, never a click in the editor.
+pub const HOLD_MS: f64 = 120.0;
+
+/// How far a waiting finger may move (CSS px) before its down goes at once.
+pub const SLOP: f64 = 6.0;
+
+/// Whether a finger down since `since` waited its [`HOLD_MS`] at `now`
+/// (page ms).
+fn waited(since: f64, now: f64) -> bool {
+    now - since >= HOLD_MS
+}
+
+/// Whether a finger moved from `first` to `at` (area px) further than
+/// [`SLOP`].
+fn slid(first: (f64, f64), at: (f64, f64)) -> bool {
+    distance(first, at) > SLOP
+}
+
 /// What a finger sends: its phase and its point (picture pixels).
 pub type Out = (Touch, f64, f64);
 
-/// The one finger on the picture.
+/// A finger's point: on the area (CSS px from its top-left: the slop and
+/// the pinch) and on the picture (its pixels: what the editor gets).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Point {
+    pub area: (f64, f64),
+    pub picture: (f64, f64),
+}
+
+/// A point of the area and its picture pixel through `fit` (the view's).
+pub fn point(fit: Fit, area: (f64, f64)) -> Point {
+    Point {
+        area,
+        picture: to_picture(fit, area),
+    }
+}
+
+/// `touch` at a point's picture pixel.
+fn sent(touch: Touch, at: Point) -> Out {
+    (touch, at.picture.0, at.picture.1)
+}
+
+/// Where the fingers are in their gesture.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+enum Stage {
+    /// No finger down.
+    #[default]
+    Idle,
+    /// The first finger waits ([`HOLD_MS`], [`SLOP`]): its first point,
+    /// whether that lies on the picture, and when it went down (page ms).
+    Waiting { first: Point, on: bool, since: f64 },
+    /// The first finger is on the editor (`moved`: a move not sent yet).
+    Touching { moved: bool },
+    /// The first finger stays off the editor: it went down off the picture.
+    Ignored,
+    /// Two fingers pinch (one may have lifted since): nothing reaches the
+    /// editor until every finger lifted.
+    Pinching,
+}
+
+/// The fingers on the picture (#71 PR E, PR F): the first one reaches the
+/// editor once it waited or slid, two of them pinch.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Finger {
-    pointer: Option<i32>,
-    at: (f64, f64),
-    /// A move not sent yet.
-    moved: bool,
+    stage: Stage,
+    /// The fingers down, at most two: each one's pointer and its last point.
+    fingers: [Option<(i32, Point)>; 2],
 }
 
 impl Finger {
-    /// A pointer's down at `at` (`on`: on the picture): the finger, unless
-    /// one is down already (a second finger) or it missed the picture.
-    pub fn down(&mut self, pointer: i32, at: (f64, f64), on: bool) -> Option<Out> {
-        if self.pointer.is_some() || !on {
-            return None;
+    /// Where `pointer` is among the fingers.
+    fn slot(&self, pointer: i32) -> Option<usize> {
+        self.fingers
+            .iter()
+            .position(|f| matches!(f, Some((id, _)) if *id == pointer))
+    }
+
+    /// Whether `pointer` is one of the fingers (the glue captures it).
+    pub fn has(&self, pointer: i32) -> bool {
+        self.slot(pointer).is_some()
+    }
+
+    /// A pointer's down at `at` (`on`: on the picture; `now`: page ms). A
+    /// first finger waits: nothing goes yet. A second one makes a pinch: a
+    /// first finger already on the editor gets its cancel at its last
+    /// point. A third one, or a pointer already down, is nothing.
+    pub fn down(&mut self, pointer: i32, at: Point, on: bool, now: f64) -> Vec<Out> {
+        if self.has(pointer) {
+            return Vec::new();
         }
-        *self = Self {
-            pointer: Some(pointer),
-            at,
-            moved: false,
+        match self.stage {
+            Stage::Idle => {
+                *self = Self {
+                    stage: Stage::Waiting {
+                        first: at,
+                        on,
+                        since: now,
+                    },
+                    fingers: [Some((pointer, at)), None],
+                };
+                Vec::new()
+            }
+            Stage::Touching { .. } => {
+                let ended = self.last(Touch::Cancel);
+                self.join(pointer, at);
+                ended
+            }
+            Stage::Waiting { .. } | Stage::Ignored | Stage::Pinching => {
+                self.join(pointer, at);
+                Vec::new()
+            }
+        }
+    }
+
+    /// A finger joins the pinch in a free place (a third one finds none).
+    fn join(&mut self, pointer: i32, at: Point) {
+        if let Some(free) = self.fingers.iter_mut().find(|f| f.is_none()) {
+            *free = Some((pointer, at));
+            self.stage = Stage::Pinching;
+        }
+    }
+
+    /// The first finger's last point as `touch`.
+    fn last(&self, touch: Touch) -> Vec<Out> {
+        self.fingers[0]
+            .map(|(_, at)| vec![sent(touch, at)])
+            .unwrap_or_default()
+    }
+
+    /// A finger leaves: its place is free, and the gesture ends with the
+    /// last one.
+    fn lift(&mut self, slot: usize) {
+        self.fingers[slot] = None;
+        if !self.held() {
+            self.stage = Stage::Idle;
+        }
+    }
+
+    /// A pointer moved to `at` (a pointer that is no finger is nothing):
+    /// the first finger's move goes at the next frame, the newest one only;
+    /// a pinch's fingers move the view ([`Finger::pair`]).
+    pub fn moved(&mut self, pointer: i32, at: Point) {
+        let Some(slot) = self.slot(pointer) else {
+            return;
         };
-        Some((Touch::Down, at.0, at.1))
-    }
-
-    /// The finger moved to `at` (another pointer's move is nothing): it goes
-    /// at the next frame, the newest one only.
-    pub fn moved(&mut self, pointer: i32, at: (f64, f64)) {
-        if self.pointer == Some(pointer) {
-            self.at = at;
-            self.moved = true;
+        self.fingers[slot] = Some((pointer, at));
+        if let Stage::Touching { moved } = &mut self.stage {
+            *moved = true;
         }
     }
 
-    /// The frame: the move not sent yet, if any.
-    pub fn frame(&mut self) -> Option<Out> {
-        if !self.moved {
-            return None;
+    /// The frame (`now`: page ms). A waiting finger that waited
+    /// [`HOLD_MS`] or slid past [`SLOP`] reaches the editor: its down at
+    /// its first point, then its move to where it is now (nothing when it
+    /// went down off the picture). A finger on the editor sends the move
+    /// not sent yet, the newest.
+    pub fn frame(&mut self, now: f64) -> Vec<Out> {
+        match (self.stage, self.fingers[0]) {
+            (Stage::Waiting { first, on, since }, Some((_, at)))
+                if waited(since, now) || slid(first.area, at.area) =>
+            {
+                if !on {
+                    self.stage = Stage::Ignored;
+                    return Vec::new();
+                }
+                self.stage = Stage::Touching { moved: false };
+                let mut out = vec![sent(Touch::Down, first)];
+                if at != first {
+                    out.push(sent(Touch::Move, at));
+                }
+                out
+            }
+            (Stage::Touching { moved: true }, Some((_, at))) => {
+                self.stage = Stage::Touching { moved: false };
+                vec![sent(Touch::Move, at)]
+            }
+            _ => Vec::new(),
         }
-        self.moved = false;
-        Some((Touch::Move, self.at.0, self.at.1))
     }
 
-    /// The finger lifts at `at`: its up, there.
-    pub fn up(&mut self, pointer: i32, at: (f64, f64)) -> Option<Out> {
-        if self.pointer != Some(pointer) {
-            return None;
-        }
+    /// A pointer lifts at `at`: a waiting finger's tap (its down at its
+    /// first point and its up here, together), the first finger's up here;
+    /// a pinch's fingers send nothing.
+    pub fn up(&mut self, pointer: i32, at: Point) -> Vec<Out> {
+        let Some(slot) = self.slot(pointer) else {
+            return Vec::new();
+        };
+        let out = match self.stage {
+            Stage::Waiting {
+                first, on: true, ..
+            } => vec![sent(Touch::Down, first), sent(Touch::Up, at)],
+            Stage::Touching { .. } => vec![sent(Touch::Up, at)],
+            _ => Vec::new(),
+        };
+        self.lift(slot);
+        out
+    }
+
+    /// A pointer's touch is cancelled (or its capture lost): the first
+    /// finger on the editor gets a cancel where it was; a waiting one never
+    /// reached it, so nothing goes.
+    pub fn cancel(&mut self, pointer: i32) -> Vec<Out> {
+        let Some(slot) = self.slot(pointer) else {
+            return Vec::new();
+        };
+        let out = if matches!(self.stage, Stage::Touching { .. }) {
+            self.last(Touch::Cancel)
+        } else {
+            Vec::new()
+        };
+        self.lift(slot);
+        out
+    }
+
+    /// The screen goes away under the fingers: a cancel for a finger on the
+    /// editor; every finger is forgotten.
+    pub fn leave(&mut self) -> Vec<Out> {
+        let out = if matches!(self.stage, Stage::Touching { .. }) {
+            self.last(Touch::Cancel)
+        } else {
+            Vec::new()
+        };
         *self = Self::default();
-        Some((Touch::Up, at.0, at.1))
-    }
-
-    /// The finger's touch is cancelled (or its capture lost): a cancel
-    /// where it was.
-    pub fn cancel(&mut self, pointer: i32) -> Option<Out> {
-        if self.pointer != Some(pointer) {
-            return None;
-        }
-        let at = self.at;
-        *self = Self::default();
-        Some((Touch::Cancel, at.0, at.1))
-    }
-
-    /// The screen goes away under the finger: a cancel, if one is down.
-    pub fn leave(&mut self) -> Option<Out> {
-        let pointer = self.pointer?;
-        self.cancel(pointer)
+        out
     }
 
     /// The page went hidden (`hidden`) or was shown again: a hidden page
-    /// lifts its finger (a cancel, if one is down), as the Stream Deck's
-    /// keys go up. A hidden page still pings, so the hub's 2 s silence would
-    /// never end the PC's contact.
-    pub fn visibility(&mut self, hidden: bool) -> Option<Out> {
-        if hidden { self.leave() } else { None }
+    /// lifts its fingers (a cancel for one on the editor), as the Stream
+    /// Deck's keys go up. A hidden page still pings, so the hub's 2 s
+    /// silence would never end the PC's contact.
+    pub fn visibility(&mut self, hidden: bool) -> Vec<Out> {
+        if hidden { self.leave() } else { Vec::new() }
     }
 
     /// Whether a finger is down.
     pub fn held(&self) -> bool {
-        self.pointer.is_some()
+        self.fingers.iter().any(Option::is_some)
+    }
+
+    /// The two fingers of a pinch while both are down (in their places'
+    /// order), on the area: what moves the view ([`Viewer::follow`]).
+    pub fn pair(&self) -> Option<Pair> {
+        match self.fingers {
+            [Some((a, at_a)), Some((b, at_b))] => Some([(a, at_a.area), (b, at_b.area)]),
+            _ => None,
+        }
     }
 }
 
@@ -379,48 +748,257 @@ mod tests {
         assert!(!on_picture((10.0, -0.1), (2000, 1000)));
     }
 
+    /// A point whose picture pixel is twice its area point: a test sees
+    /// which one a finger uses.
+    fn p(x: f64, y: f64) -> Point {
+        Point {
+            area: (x, y),
+            picture: (x * 2.0, y * 2.0),
+        }
+    }
+
+    /// A finger on the editor: down at `at` at 0 ms, the down sent at the
+    /// hold.
+    fn touching(finger: &mut Finger, pointer: i32, at: Point) {
+        assert_eq!(finger.down(pointer, at, true, 0.0), vec![]);
+        assert_eq!(
+            finger.frame(HOLD_MS),
+            vec![(Touch::Down, at.picture.0, at.picture.1)]
+        );
+    }
+
     #[test]
     fn one_finger_moves_once_a_frame_and_always_ends() {
         let mut finger = Finger::default();
-        assert_eq!(finger.down(1, (5.0, 6.0), false), None, "off the picture");
+        touching(&mut finger, 1, p(5.0, 6.0));
+        assert!(finger.held());
+        assert!(finger.has(1));
+        assert!(!finger.has(2));
+        assert_eq!(finger.frame(200.0), vec![], "nothing moved");
+        finger.moved(2, p(9.0, 9.0));
+        assert_eq!(finger.frame(201.0), vec![], "another pointer's move");
+        finger.moved(1, p(7.0, 6.0));
+        finger.moved(1, p(8.0, 6.0));
+        assert_eq!(
+            finger.frame(202.0),
+            vec![(Touch::Move, 16.0, 12.0)],
+            "the newest"
+        );
+        assert_eq!(finger.frame(203.0), vec![], "sent once");
+        assert_eq!(finger.up(2, p(1.0, 1.0)), vec![], "another pointer's up");
+        finger.moved(1, p(9.0, 6.0));
+        assert_eq!(finger.up(1, p(10.0, 6.0)), vec![(Touch::Up, 20.0, 12.0)]);
         assert!(!finger.held());
         assert_eq!(
-            finger.down(1, (5.0, 6.0), true),
-            Some((Touch::Down, 5.0, 6.0))
-        );
-        assert!(finger.held());
-        assert_eq!(finger.down(2, (9.0, 9.0), true), None, "a second finger");
-        assert_eq!(finger.frame(), None, "nothing moved");
-        finger.moved(2, (9.0, 9.0));
-        assert_eq!(finger.frame(), None, "another finger's move");
-        finger.moved(1, (7.0, 6.0));
-        finger.moved(1, (8.0, 6.0));
-        assert_eq!(finger.frame(), Some((Touch::Move, 8.0, 6.0)), "the newest");
-        assert_eq!(finger.frame(), None, "sent once");
-        assert_eq!(finger.up(2, (1.0, 1.0)), None);
-        finger.moved(1, (9.0, 6.0));
-        assert_eq!(finger.up(1, (10.0, 6.0)), Some((Touch::Up, 10.0, 6.0)));
-        assert_eq!(
-            finger.frame(),
-            None,
+            finger.frame(204.0),
+            vec![],
             "a move before the up is not sent after it"
         );
-        assert_eq!(finger.cancel(1), None, "its lost capture after the up");
-        assert_eq!(finger.leave(), None);
+        assert_eq!(finger.cancel(1), vec![], "its lost capture after the up");
+        assert_eq!(finger.leave(), vec![]);
         // A cancel ends it where it was.
-        finger.down(3, (1.0, 2.0), true);
-        finger.moved(3, (4.0, 5.0));
-        assert_eq!(finger.cancel(4), None);
-        assert_eq!(finger.cancel(3), Some((Touch::Cancel, 4.0, 5.0)));
+        touching(&mut finger, 3, p(1.0, 2.0));
+        finger.moved(3, p(4.0, 5.0));
+        assert_eq!(finger.cancel(4), vec![]);
+        assert_eq!(finger.cancel(3), vec![(Touch::Cancel, 8.0, 10.0)]);
         assert!(!finger.held());
-        // Leaving the screen with a finger down cancels it.
-        finger.down(5, (1.0, 1.0), true);
-        assert_eq!(finger.leave(), Some((Touch::Cancel, 1.0, 1.0)));
-        assert_eq!(finger.leave(), None);
+        assert_eq!(finger.frame(300.0), vec![], "its move is not sent after");
+        // Leaving the screen with a finger on the editor cancels it.
+        touching(&mut finger, 5, p(1.0, 1.0));
+        assert_eq!(finger.leave(), vec![(Touch::Cancel, 2.0, 2.0)]);
+        assert!(!finger.held());
+        assert_eq!(finger.leave(), vec![]);
+        touching(&mut finger, 6, p(2.0, 2.0));
+        // A down of a pointer already down is nothing.
+        assert_eq!(finger.down(6, p(3.0, 3.0), true, 400.0), vec![]);
+        assert_eq!(finger.pair(), None);
+        assert_eq!(finger.frame(401.0), vec![]);
+    }
+
+    #[test]
+    fn a_first_finger_waits_then_goes_down_where_it_landed() {
+        let mut finger = Finger::default();
+        assert_eq!(finger.down(1, p(10.0, 20.0), true, 1000.0), vec![]);
+        assert!(finger.held());
+        assert!(finger.has(1));
+        assert_eq!(finger.frame(1119.0), vec![], "it waits");
+        // A move within the slop (4 px on the area, 8 on the picture: the
+        // slop is the area's).
+        finger.moved(1, p(14.0, 20.0));
+        assert_eq!(finger.frame(1120.0_f64.next_down()), vec![], "a hair short");
         assert_eq!(
-            finger.down(6, (2.0, 2.0), true),
-            Some((Touch::Down, 2.0, 2.0))
+            finger.frame(1120.0),
+            vec![(Touch::Down, 20.0, 40.0), (Touch::Move, 28.0, 40.0)],
+            "the hold: its down where it landed, then its move"
         );
+        assert_eq!(finger.frame(1121.0), vec![], "sent once");
+        finger.moved(1, p(15.0, 20.0));
+        assert_eq!(finger.frame(1122.0), vec![(Touch::Move, 30.0, 40.0)]);
+        assert_eq!(finger.up(1, p(16.0, 21.0)), vec![(Touch::Up, 32.0, 42.0)]);
+        // A finger that rests sends only its down.
+        assert_eq!(finger.down(2, p(10.0, 20.0), true, 2000.0), vec![]);
+        assert_eq!(finger.frame(2120.0), vec![(Touch::Down, 20.0, 40.0)]);
+        assert_eq!(finger.frame(2500.0), vec![]);
+        assert_eq!(finger.up(2, p(10.0, 20.0)), vec![(Touch::Up, 20.0, 40.0)]);
+    }
+
+    #[test]
+    fn a_finger_that_slides_past_the_slop_goes_down_at_once() {
+        let mut finger = Finger::default();
+        assert_eq!(finger.down(1, p(10.0, 20.0), true, 0.0), vec![]);
+        finger.moved(1, p(16.0, 20.0));
+        assert_eq!(finger.frame(1.0), vec![], "6 px: still waiting");
+        let past = 16.0_f64.next_up();
+        finger.moved(1, p(past, 20.0));
+        assert_eq!(
+            finger.frame(2.0),
+            vec![(Touch::Down, 20.0, 40.0), (Touch::Move, past * 2.0, 40.0)],
+            "past 6 px: its down where it landed, then its move"
+        );
+        assert_eq!(finger.frame(3.0), vec![]);
+        // Upwards and to the left counts the same.
+        let mut finger = Finger::default();
+        finger.down(2, p(10.0, 20.0), true, 0.0);
+        finger.moved(2, p(10.0, 13.0));
+        assert_eq!(
+            finger.frame(1.0),
+            vec![(Touch::Down, 20.0, 40.0), (Touch::Move, 20.0, 26.0)]
+        );
+        assert!(slid((10.0, 20.0), (3.0, 20.0)));
+        assert!(!slid((10.0, 20.0), (4.0, 20.0)));
+        assert!(!slid((10.0, 20.0), (10.0, 26.0)));
+        assert!(slid((10.0, 20.0), (10.0, 26.0_f64.next_up())));
+    }
+
+    #[test]
+    fn a_hold_counts_from_the_fingers_down() {
+        assert!(waited(1000.0, 1120.0));
+        assert!(!waited(1000.0, 1120.0_f64.next_down()));
+        assert!(waited(1000.0, 5000.0));
+        assert!(!waited(1000.0, 1000.0));
+        assert!(!waited(1000.0, 999.0));
+        assert_eq!(HOLD_MS, 120.0);
+        assert_eq!(SLOP, 6.0);
+    }
+
+    #[test]
+    fn a_quick_lift_is_a_tap_its_down_and_up_together() {
+        let mut finger = Finger::default();
+        finger.down(1, p(10.0, 20.0), true, 0.0);
+        finger.moved(1, p(12.0, 21.0));
+        assert_eq!(
+            finger.up(1, p(12.0, 21.0)),
+            vec![(Touch::Down, 20.0, 40.0), (Touch::Up, 24.0, 42.0)]
+        );
+        assert!(!finger.held());
+        assert_eq!(finger.frame(500.0), vec![], "nothing after");
+        // A waiting finger cancelled (or its capture lost) never reached
+        // the editor: nothing goes.
+        finger.down(2, p(10.0, 20.0), true, 0.0);
+        assert_eq!(finger.cancel(3), vec![], "another pointer");
+        assert!(finger.held());
+        assert_eq!(finger.cancel(2), vec![]);
+        assert!(!finger.held());
+        assert_eq!(finger.frame(500.0), vec![]);
+        assert_eq!(finger.up(2, p(10.0, 20.0)), vec![]);
+        // Nor when the screen goes or the page hides.
+        finger.down(4, p(10.0, 20.0), true, 0.0);
+        assert_eq!(finger.leave(), vec![]);
+        assert!(!finger.held());
+        finger.down(5, p(10.0, 20.0), true, 0.0);
+        assert_eq!(finger.visibility(true), vec![]);
+        assert!(!finger.held());
+        assert_eq!(finger.frame(500.0), vec![]);
+    }
+
+    #[test]
+    fn a_finger_off_the_picture_never_reaches_the_editor_but_pinches() {
+        let mut finger = Finger::default();
+        finger.down(1, p(1.0, 1.0), false, 0.0);
+        assert!(finger.held());
+        assert_eq!(finger.frame(HOLD_MS), vec![], "held: nothing");
+        finger.moved(1, p(50.0, 1.0));
+        assert_eq!(finger.frame(200.0), vec![]);
+        assert_eq!(finger.cancel(1), vec![]);
+        assert!(!finger.held());
+        // Slid off at once: nothing either.
+        finger.down(2, p(1.0, 1.0), false, 0.0);
+        finger.moved(2, p(50.0, 1.0));
+        assert_eq!(finger.frame(1.0), vec![]);
+        assert_eq!(finger.up(2, p(50.0, 1.0)), vec![]);
+        // A tap off the picture: nothing.
+        finger.down(3, p(1.0, 1.0), false, 0.0);
+        assert_eq!(finger.up(3, p(1.0, 1.0)), vec![]);
+        assert!(!finger.held());
+        // Off the picture, then a second finger: a pinch.
+        finger.down(4, p(1.0, 1.0), false, 0.0);
+        assert_eq!(finger.frame(HOLD_MS), vec![]);
+        assert_eq!(finger.down(5, p(9.0, 9.0), true, 130.0), vec![]);
+        assert_eq!(finger.pair(), Some([(4, (1.0, 1.0)), (5, (9.0, 9.0))]));
+    }
+
+    #[test]
+    fn a_second_finger_while_the_first_waits_pinches_and_sends_nothing() {
+        let mut finger = Finger::default();
+        finger.down(1, p(10.0, 20.0), true, 0.0);
+        assert_eq!(finger.pair(), None, "one finger");
+        assert_eq!(finger.down(2, p(30.0, 20.0), true, 50.0), vec![]);
+        assert!(finger.has(2));
+        assert_eq!(finger.pair(), Some([(1, (10.0, 20.0)), (2, (30.0, 20.0))]));
+        assert_eq!(finger.frame(500.0), vec![], "no down after the hold");
+        finger.moved(1, p(0.0, 20.0));
+        finger.moved(2, p(40.0, 21.0));
+        assert_eq!(finger.frame(510.0), vec![], "no move");
+        assert_eq!(finger.pair(), Some([(1, (0.0, 20.0)), (2, (40.0, 21.0))]));
+        // A third finger is nothing.
+        assert_eq!(finger.down(3, p(5.0, 5.0), true, 520.0), vec![]);
+        assert!(!finger.has(3));
+        finger.moved(3, p(6.0, 6.0));
+        assert_eq!(finger.pair(), Some([(1, (0.0, 20.0)), (2, (40.0, 21.0))]));
+        // One lifts: no pair, nothing sent; the other one stays a pinch's.
+        assert_eq!(finger.up(1, p(0.0, 20.0)), vec![]);
+        assert_eq!(finger.pair(), None);
+        assert!(finger.held());
+        finger.moved(2, p(60.0, 20.0));
+        assert_eq!(finger.frame(600.0), vec![], "the finger left sends nothing");
+        assert_eq!(finger.frame(900.0), vec![]);
+        // A finger again: a pair again, in the free place.
+        assert_eq!(finger.down(4, p(7.0, 7.0), true, 610.0), vec![]);
+        assert_eq!(finger.pair(), Some([(4, (7.0, 7.0)), (2, (60.0, 20.0))]));
+        assert_eq!(finger.cancel(2), vec![]);
+        assert_eq!(finger.up(4, p(7.0, 7.0)), vec![]);
+        assert!(!finger.held());
+        // The pinch is over: the next finger is a first finger again.
+        assert_eq!(finger.down(5, p(10.0, 20.0), true, 700.0), vec![]);
+        assert_eq!(finger.frame(820.0), vec![(Touch::Down, 20.0, 40.0)]);
+    }
+
+    #[test]
+    fn a_second_finger_on_a_touch_cancels_it_where_it_was_then_pinches() {
+        let mut finger = Finger::default();
+        touching(&mut finger, 1, p(10.0, 20.0));
+        finger.moved(1, p(11.0, 22.0));
+        assert_eq!(
+            finger.down(2, p(40.0, 20.0), true, 130.0),
+            vec![(Touch::Cancel, 22.0, 44.0)],
+            "the contact's cancel at its last point"
+        );
+        assert_eq!(finger.frame(140.0), vec![], "its move never follows");
+        assert_eq!(finger.pair(), Some([(1, (11.0, 22.0)), (2, (40.0, 20.0))]));
+        assert_eq!(
+            finger.up(1, p(11.0, 22.0)),
+            vec![],
+            "no up after the cancel"
+        );
+        assert_eq!(finger.leave(), vec![], "a pinch's finger left: no cancel");
+        assert!(!finger.held());
+        // While pinching a cancel, a hidden page and an up send nothing.
+        touching(&mut finger, 3, p(10.0, 20.0));
+        finger.down(4, p(40.0, 20.0), true, 130.0);
+        assert_eq!(finger.cancel(3), vec![]);
+        assert_eq!(finger.visibility(true), vec![]);
+        assert!(!finger.held());
+        assert_eq!(finger.up(4, p(40.0, 20.0)), vec![]);
     }
 
     #[test]
@@ -581,20 +1159,282 @@ mod tests {
     #[test]
     fn a_hidden_page_lifts_its_finger() {
         let mut finger = Finger::default();
-        assert_eq!(finger.visibility(true), None, "no finger down");
-        finger.down(4, (10.0, 20.0), true);
-        finger.moved(4, (11.0, 21.0));
-        assert_eq!(finger.visibility(false), None, "shown: it stays down");
+        assert_eq!(finger.visibility(true), vec![], "no finger down");
+        touching(&mut finger, 4, p(10.0, 20.0));
+        finger.moved(4, p(11.0, 21.0));
+        assert_eq!(finger.visibility(false), vec![], "shown: it stays down");
         assert!(finger.held());
         assert_eq!(
             finger.visibility(true),
-            Some((Touch::Cancel, 11.0, 21.0)),
+            vec![(Touch::Cancel, 22.0, 42.0)],
             "hidden: a cancel where it was"
         );
         assert!(!finger.held());
-        assert_eq!(finger.frame(), None, "its last move is not sent after");
-        assert_eq!(finger.up(4, (12.0, 22.0)), None, "its lift sends nothing");
-        assert_eq!(finger.visibility(true), None);
+        assert_eq!(
+            finger.frame(300.0),
+            vec![],
+            "its last move is not sent after"
+        );
+        assert_eq!(
+            finger.up(4, p(12.0, 22.0)),
+            vec![],
+            "its lift sends nothing"
+        );
+        assert_eq!(finger.visibility(true), vec![]);
+    }
+
+    /// The area of the view tests: 1000 × 600, a 2000 × 1000 picture fitted
+    /// at 0.5 (1000 × 500, 50 px above and below).
+    const AREA: (f64, f64) = (1000.0, 600.0);
+    const PICTURE: (u32, u32) = (2000, 1000);
+
+    fn view(zoom: f64, x: f64, y: f64) -> View {
+        View { zoom, pan: (x, y) }
+    }
+
+    #[test]
+    fn a_view_places_the_picture_covering_the_area_or_centred() {
+        let fit = |zoom: f64, x: f64, y: f64| placed(AREA, PICTURE, view(zoom, x, y));
+        let at = |scale: f64, left: f64, top: f64| Some(Fit { scale, left, top });
+        // The whole picture is the fitted one, wherever the pan says.
+        assert_eq!(fit(1.0, 0.0, 0.0), fit_whole());
+        assert_eq!(fit(1.0, 0.0, 0.0), at(0.5, 0.0, 50.0));
+        assert_eq!(fit(1.0, 37.0, 300.0), at(0.5, 0.0, 50.0));
+        assert_eq!(fit(1.0, -37.0, -300.0), at(0.5, 0.0, 50.0));
+        // 2×: 2000 × 1000 covers the area; the corner stays within it.
+        assert_eq!(fit(2.0, -300.0, -100.0), at(1.0, -300.0, -100.0));
+        assert_eq!(fit(2.0, 100.0, 50.0), at(1.0, 0.0, 0.0));
+        assert_eq!(fit(2.0, -5000.0, -5000.0), at(1.0, -1000.0, -400.0));
+        // 1.125×: 1125 × 562.5, wider than the area but not as tall: it
+        // covers the width and is centred in the height.
+        assert_eq!(fit(1.125, -112.5, 120.0), at(0.5625, -112.5, 18.75));
+        assert_eq!(fit(1.125, -30.0, -80.0), at(0.5625, -30.0, 18.75));
+        assert_eq!(fit(1.125, 30.0, 0.0), at(0.5625, 0.0, 18.75));
+        assert_eq!(fit(1.125, -500.0, 0.0), at(0.5625, -125.0, 18.75));
+        assert_eq!(placed((0.0, 600.0), PICTURE, View::WHOLE), None);
+        assert_eq!(placed(AREA, (0, 1000), View::WHOLE), None);
+        // One side alone.
+        assert_eq!(place(0.0, 800.0, 1000.0), 100.0, "centred");
+        assert_eq!(place(120.0, 800.0, 1000.0), 100.0);
+        assert_eq!(place(-120.0, 800.0, 1000.0), 100.0);
+        assert_eq!(place(-500.0, 2000.0, 1000.0), -500.0);
+        assert_eq!(place(10.0, 2000.0, 1000.0), 0.0);
+        assert_eq!(place(-1500.0, 2000.0, 1000.0), -1000.0);
+        assert_eq!(place(-3.0, 1000.0, 1000.0), 0.0, "just fits");
+    }
+
+    fn fit_whole() -> Option<Fit> {
+        fit(AREA, PICTURE)
+    }
+
+    #[test]
+    fn two_points_have_a_midpoint_and_a_distance() {
+        assert_eq!(midpoint((400.0, 300.0), (600.0, 320.0)), (500.0, 310.0));
+        assert_eq!(midpoint((-10.0, 4.0), (30.0, 8.0)), (10.0, 6.0));
+        assert_eq!(distance((1.0, 2.0), (4.0, 6.0)), 5.0);
+        assert_eq!(distance((4.0, 6.0), (1.0, 2.0)), 5.0);
+        assert_eq!(distance((7.0, 7.0), (7.0, 7.0)), 0.0);
+    }
+
+    /// Two fingers 1 and 2 at `a` and `b`.
+    fn pair(a: (f64, f64), b: (f64, f64)) -> Option<Pair> {
+        Some([(1, a), (2, b)])
+    }
+
+    #[test]
+    fn a_pinch_zooms_about_the_fingers_midpoint() {
+        let mut viewer = Viewer::START;
+        assert_eq!(viewer.view(), View::WHOLE);
+        // The start: the picture point under the midpoint (500, 300) is
+        // (1000, 500); nothing moves yet.
+        viewer.follow(pair((400.0, 300.0), (600.0, 300.0)), AREA, PICTURE);
+        assert_eq!(viewer.view(), View::WHOLE);
+        // Twice as far apart: 2×, (1000, 500) still under the midpoint.
+        viewer.follow(pair((300.0, 300.0), (700.0, 300.0)), AREA, PICTURE);
+        assert_eq!(viewer.view(), view(2.0, -500.0, -200.0));
+        // Moved together: the picture follows.
+        viewer.follow(pair((350.0, 350.0), (750.0, 350.0)), AREA, PICTURE);
+        assert_eq!(viewer.view(), view(2.0, -450.0, -150.0));
+        // Three times as far: 3×, the anchor under the new midpoint.
+        viewer.follow(pair((250.0, 320.0), (850.0, 320.0)), AREA, PICTURE);
+        assert_eq!(viewer.view(), view(3.0, -950.0, -430.0));
+        let shown = viewer.placed(AREA, PICTURE).unwrap();
+        assert_eq!(to_picture(shown, (550.0, 320.0)), (1000.0, 500.0));
+        // Five times as far: at most 4×.
+        viewer.follow(pair((0.0, 320.0), (1000.0, 320.0)), AREA, PICTURE);
+        assert_eq!(viewer.view(), view(4.0, -1500.0, -680.0));
+        // Half as far: at least 1×, the whole picture centred.
+        viewer.follow(pair((450.0, 320.0), (550.0, 320.0)), AREA, PICTURE);
+        assert_eq!(viewer.view().zoom, 1.0);
+        assert_eq!(viewer.placed(AREA, PICTURE), fit_whole());
+        // The fingers lift at 1×: the whole picture.
+        viewer.follow(None, AREA, PICTURE);
+        assert_eq!(viewer.view(), View::WHOLE);
+        assert_eq!(MAX_ZOOM, 4.0);
+    }
+
+    #[test]
+    fn a_pinch_keeps_the_picture_covering_the_area() {
+        let mut viewer = Viewer::START;
+        // The midpoint (100, 50) is the picture's (200, 0): at 2× its top
+        // would leave 50 px empty above, so the picture's top stays at the
+        // area's.
+        viewer.follow(pair((0.0, 50.0), (200.0, 50.0)), AREA, PICTURE);
+        viewer.follow(pair((0.0, 50.0), (400.0, 50.0)), AREA, PICTURE);
+        assert_eq!(viewer.view(), view(2.0, 0.0, 0.0));
+        // Two fingers on one point start at 1 px apart.
+        let mut viewer = Viewer::START;
+        viewer.follow(pair((500.0, 300.0), (500.0, 300.0)), AREA, PICTURE);
+        viewer.follow(pair((499.0, 300.0), (501.0, 300.0)), AREA, PICTURE);
+        assert_eq!(viewer.view(), view(2.0, -500.0, -200.0));
+        // No picture yet: no pinch starts.
+        let mut viewer = Viewer::START;
+        viewer.follow(pair((400.0, 300.0), (600.0, 300.0)), AREA, (0, 0));
+        viewer.follow(pair((300.0, 300.0), (700.0, 300.0)), AREA, PICTURE);
+        assert_eq!(viewer.view(), View::WHOLE, "the pinch starts here");
+        viewer.follow(pair((200.0, 300.0), (800.0, 300.0)), AREA, PICTURE);
+        assert_eq!(viewer.view().zoom, 1.5);
+    }
+
+    #[test]
+    fn new_fingers_start_a_new_pinch_from_what_is_shown() {
+        let mut viewer = Viewer::START;
+        viewer.follow(pair((400.0, 300.0), (600.0, 300.0)), AREA, PICTURE);
+        viewer.follow(pair((300.0, 300.0), (700.0, 300.0)), AREA, PICTURE);
+        assert_eq!(viewer.view(), view(2.0, -500.0, -200.0));
+        // Another second finger: a new pinch, nothing jumps; the midpoint
+        // (400, 300) is the picture's (900, 500).
+        viewer.follow(
+            Some([(1, (300.0, 300.0)), (3, (500.0, 300.0))]),
+            AREA,
+            PICTURE,
+        );
+        assert_eq!(viewer.view(), view(2.0, -500.0, -200.0));
+        viewer.follow(
+            Some([(1, (200.0, 300.0)), (3, (600.0, 300.0))]),
+            AREA,
+            PICTURE,
+        );
+        assert_eq!(viewer.view(), view(4.0, -1400.0, -700.0));
+        // The fingers lift zoomed: the view stays.
+        viewer.follow(None, AREA, PICTURE);
+        assert_eq!(viewer.view(), view(4.0, -1400.0, -700.0));
+        viewer.follow(None, AREA, PICTURE);
+        assert_eq!(viewer.view(), view(4.0, -1400.0, -700.0));
+        // The same pointers again are a new pinch too.
+        viewer.follow(
+            Some([(1, (100.0, 100.0)), (3, (300.0, 100.0))]),
+            AREA,
+            PICTURE,
+        );
+        assert_eq!(viewer.view(), view(4.0, -1400.0, -700.0));
+        // CELÝ EQ: the whole picture, and fingers still there start anew.
+        viewer.whole();
+        assert_eq!(viewer, Viewer::START);
+        viewer.follow(
+            Some([(1, (100.0, 100.0)), (3, (300.0, 100.0))]),
+            AREA,
+            PICTURE,
+        );
+        assert_eq!(viewer.view(), View::WHOLE);
+    }
+
+    #[test]
+    fn a_pinch_that_ends_barely_zoomed_shows_the_whole_picture() {
+        let mut viewer = Viewer::START;
+        viewer.follow(pair((400.0, 300.0), (600.0, 300.0)), AREA, PICTURE);
+        viewer.follow(pair((396.0, 300.0), (604.0, 300.0)), AREA, PICTURE);
+        assert_eq!(viewer.view().zoom, 1.04);
+        viewer.follow(None, AREA, PICTURE);
+        assert_eq!(viewer.view(), View::WHOLE);
+        // 1.05× stays.
+        viewer.follow(pair((400.0, 300.0), (600.0, 300.0)), AREA, PICTURE);
+        viewer.follow(pair((395.0, 300.0), (605.0, 300.0)), AREA, PICTURE);
+        assert_eq!(viewer.view().zoom, 1.05);
+        viewer.follow(None, AREA, PICTURE);
+        assert_eq!(viewer.view().zoom, 1.05);
+        assert!(zoomed(1.05));
+        assert!(!zoomed(1.05_f64.next_down()));
+        assert!(zoomed(4.0));
+        assert!(!zoomed(1.0));
+        assert_eq!(ZOOMED_FROM, 1.05);
+    }
+
+    #[test]
+    fn the_factor_reads_with_a_decimal_comma() {
+        assert_eq!(zoom_text(1.0), "1,0×");
+        assert_eq!(zoom_text(2.5), "2,5×");
+        assert_eq!(zoom_text(2.44), "2,4×");
+        assert_eq!(zoom_text(3.96), "4,0×");
+        assert_eq!(zoom_text(4.0), "4,0×");
+    }
+
+    #[test]
+    fn the_screen_draws_a_view_as_the_canvas_transform_and_the_bars_group() {
+        // The whole picture: no transform, no group, all of it in sight.
+        assert_eq!(
+            look(AREA, PICTURE, View::WHOLE),
+            Some(Look {
+                transform: "translate(0px, 0px) scale(1)".into(),
+                zoomed: false,
+                factor: "1,0×".into(),
+                seen: (0.0, 0.0, 1.0, 1.0),
+            })
+        );
+        // 2×, its corner at (−500, −200): the canvas's box (the area, the
+        // picture fitted 50 px down) scaled 2× and moved so the picture's
+        // corner lands there; a quarter in from the left, a fifth down.
+        assert_eq!(
+            look(AREA, PICTURE, view(2.0, -500.0, -200.0)),
+            Some(Look {
+                transform: "translate(-500px, -300px) scale(2)".into(),
+                zoomed: true,
+                factor: "2,0×".into(),
+                seen: (0.25, 0.2, 0.5, 0.6),
+            })
+        );
+        // 1.125×: wider than the area, centred in the height.
+        assert_eq!(
+            look(AREA, PICTURE, view(1.125, -112.5, 0.0)),
+            Some(Look {
+                transform: "translate(-112.5px, -37.5px) scale(1.125)".into(),
+                zoomed: true,
+                factor: "1,1×".into(),
+                seen: (0.1, 0.0, 1000.0 / 0.5625 / 2000.0, 1.0),
+            })
+        );
+        // A low area: the picture fitted at 0.25 (500 × 250, 250 px left
+        // and right). 2×: 1000 × 500 just as wide as the area, its corner
+        // 100 px up.
+        let low = (1000.0, 250.0);
+        assert_eq!(
+            look(low, PICTURE, View::WHOLE).map(|l| l.transform),
+            Some("translate(0px, 0px) scale(1)".to_string())
+        );
+        assert_eq!(
+            look(low, PICTURE, view(2.0, 0.0, -100.0)),
+            Some(Look {
+                transform: "translate(-500px, -100px) scale(2)".into(),
+                zoomed: true,
+                factor: "2,0×".into(),
+                seen: (0.0, 0.2, 1.0, 0.5),
+            })
+        );
+        assert_eq!(look((1000.0, 0.0), PICTURE, View::WHOLE), None);
+    }
+
+    #[test]
+    fn a_point_of_the_area_is_mapped_through_the_view() {
+        let shown = placed(AREA, PICTURE, view(2.0, -500.0, -200.0)).unwrap();
+        assert_eq!(
+            point(shown, (300.0, 100.0)),
+            Point {
+                area: (300.0, 100.0),
+                picture: (800.0, 300.0)
+            }
+        );
+        let whole = fit_whole().unwrap();
+        assert_eq!(point(whole, (500.0, 300.0)).picture, (1000.0, 500.0));
     }
 
     #[test]

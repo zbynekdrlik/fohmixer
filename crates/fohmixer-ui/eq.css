@@ -6,7 +6,9 @@
    whole surface (z-index 25: over the detail's 20, under TechAlert's wash,
    50, which a detail lifts to the page's level), the editor's live picture
    fitted under a bar. Nothing here moves per frame: the canvas is drawn,
-   never restyled. */
+   never restyled; its transform (PR F: the page's own zoom, the approved
+   mockup docs/mockups/proq-zoom-v1.html) changes only while two fingers
+   pinch or the screen turns. */
 
 .surface {
     --eq: #ff8fd0;
@@ -194,6 +196,70 @@
     visibility: hidden;
 }
 
+/* The zoom group (PR F), only while zoomed: the overview (the latest frame
+   drawn small, a frame around the part in sight), the factor and CELÝ EQ.
+   The overview keeps the picture's shape at the bar's height. */
+.eq-zoom {
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: 6px;
+    height: 100%;
+}
+
+.eq-zoom[data-shown="false"] {
+    display: none;
+}
+
+.eq-overview {
+    position: relative;
+    flex: none;
+    height: 100%;
+    aspect-ratio: 67 / 40;
+    overflow: hidden;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    background: #1c1a22;
+}
+
+.eq-overview-pic {
+    display: block;
+    width: 100%;
+    height: 100%;
+}
+
+.eq-overview-view {
+    position: absolute;
+    border: 2px solid var(--eq);
+    border-radius: 2px;
+    background: rgba(255, 143, 208, 0.18);
+    pointer-events: none;
+}
+
+.eq-factor {
+    flex: none;
+    min-width: 46px;
+    color: var(--eq);
+    font: 600 14px/1.4 var(--mono);
+    text-align: center;
+    white-space: nowrap;
+}
+
+.eq-whole {
+    flex: none;
+    height: 100%;
+    padding: 0 14px;
+    border: 1px solid var(--eq);
+    border-radius: 10px;
+    background: #2a1626;
+    color: var(--eq);
+    font: 700 16px/1 var(--display);
+    letter-spacing: 0.06em;
+    white-space: nowrap;
+    cursor: pointer;
+    touch-action: none;
+}
+
 .eq-help {
     flex: none;
     width: 40px;
@@ -222,6 +288,11 @@
     width: 100%;
     height: 100%;
     object-fit: contain;
+    /* The page's zoom (`behave::eq::look`): the box scaled from its
+       corner and moved, so the picture's corner lands where the view puts
+       it. */
+    transform-origin: 0 0;
+    will-change: transform;
 }
 
 .eq-wait {
@@ -280,6 +351,16 @@
     color: var(--warn);
 }
 
+/* The two fingers' lines (PR F), as the mockup marks them. */
+.eq-legend-zoom td:last-child {
+    color: var(--eq);
+}
+
+.eq-legend-note {
+    margin: 6px 0 0;
+    color: var(--muted);
+}
+
 /* A phone on its side: a lower bar, no lock mark's words. */
 @media (max-height: 520px) {
     .eq-screen {
@@ -288,6 +369,17 @@
 
     .eq-mine {
         display: none;
+    }
+
+    /* The legend's two-finger lines (PR F) keep it on a low screen. */
+    .eq-legend {
+        padding: 8px 12px;
+        font-size: 12px;
+        line-height: 1.3;
+    }
+
+    .eq-legend td {
+        padding: 2px 4px;
     }
 }
 
@@ -303,6 +395,24 @@
     }
 
     .eq-mine {
+        display: none;
+    }
+
+    /* Zoomed upright, the bar's room goes to the zoom group (PR F): a
+       tighter group, and the chip and the place step aside. */
+    .eq-zoom {
+        gap: 4px;
+    }
+
+    .eq-factor {
+        min-width: 38px;
+    }
+
+    .eq-whole {
+        padding: 0 8px;
+    }
+
+    .eq-bar:has(> .eq-zoom[data-shown="true"]) .eq-name > * {
         display: none;
     }
 }

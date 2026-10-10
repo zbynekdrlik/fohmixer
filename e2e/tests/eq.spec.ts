@@ -29,6 +29,12 @@ import {
 // The fixture's Hand2 # holds two: `Pro-Q 4` on the track, and `De-ess`
 // inside the rack `Vocal FX`, chain `Main` (its `Pro-C 2` in chain `Air` is
 // no Pro-Q 4 and is not listed). The return B-Main repro # holds none.
+//
+// PR F (the approved mockup docs/mockups/proq-zoom-v1.html): two fingers
+// zoom and pan the picture on the page only, 1× to 4×; a first finger
+// reaches the editor once it waited 120 ms or moved 6 px, a quick lift is a
+// tap (its down and its up together). Two fingers are dispatched pointer
+// events (Playwright has no two-finger input in either engine).
 
 /** The picture's size (Pro-Q 4 at 100 %, the simulated backend's). */
 const WIDTH = 1349;
@@ -93,6 +99,9 @@ async function openScreen(page: Page, path: string): Promise<Locator> {
   await expect.poll(async () => Number(await canvas.getAttribute("data-frames")), { message: "frames drawn" }).toBeGreaterThan(2);
   await expect(canvas).toHaveAttribute("data-width", String(WIDTH));
   await expect(canvas).toHaveAttribute("data-height", String(HEIGHT));
+  // Each open starts with the whole picture (PR F).
+  await expect(screen.getByTestId("eq-zoom")).toHaveAttribute("data-shown", "false");
+  await expect(screen.getByTestId("eq-zoom")).toBeHidden();
   return screen;
 }
 
@@ -100,7 +109,9 @@ async function openScreen(page: Page, path: string): Promise<Locator> {
  * Where the picture lies on the page: the canvas's box with the picture
  * fitted whole and centred (`object-fit: contain`, the page's
  * `behave::eq::fit`). `toPage` gives a picture pixel's page point (whole
- * px, as a pointer event's), `toPicture` a page point's picture pixel.
+ * px, as a pointer event's), `toPicture` a page point's picture pixel. The
+ * box is the transformed one (PR F: the page's zoom scales and moves the
+ * canvas), so this is where the browser draws the picture.
  */
 async function pictureMap(canvas: Locator) {
   const box = (await canvas.boundingBox())!;
@@ -108,9 +119,108 @@ async function pictureMap(canvas: Locator) {
   const left = box.x + (box.width - WIDTH * scale) / 2;
   const top = box.y + (box.height - HEIGHT * scale) / 2;
   return {
+    scale,
+    left,
+    top,
     toPage: (p: { x: number; y: number }) => ({ x: Math.round(left + p.x * scale), y: Math.round(top + p.y * scale) }),
     toPicture: (p: { x: number; y: number }) => ({ x: (p.x - left) / scale, y: (p.y - top) / scale }),
   };
+}
+
+type At = { x: number; y: number };
+
+/**
+ * Two fingers dispatched on the screen's area (PR F): down `from` px left
+ * and right of `at` (page px), two frames (the page starts its pinch at the
+ * first frame both are down), then spread or closed to `to` px in 8 frames
+ * (one move each a frame, as the page follows them), held 2 frames,
+ * lifted. The zoom then is the one before times `to / from`.
+ */
+async function pinch(area: Locator, at: At, from: number, to: number, ids = [31, 32]) {
+  await area.evaluate(
+    async (el, { at, from, to, ids }) => {
+      const frame = () => new Promise<void>((done) => requestAnimationFrame(() => done()));
+      const fire = (type: string, id: number, x: number, primary: boolean) =>
+        el.dispatchEvent(
+          new PointerEvent(type, { pointerId: id, pointerType: "touch", isPrimary: primary, clientX: x, clientY: at.y, bubbles: true, cancelable: true }),
+        );
+      fire("pointerdown", ids[0], at.x - from, true);
+      fire("pointerdown", ids[1], at.x + from, false);
+      await frame();
+      await frame();
+      const steps = 8;
+      for (let i = 1; i <= steps; i++) {
+        const half = Math.round(from + ((to - from) * i) / steps);
+        fire("pointermove", ids[0], at.x - half, true);
+        fire("pointermove", ids[1], at.x + half, false);
+        await frame();
+      }
+      await frame();
+      await frame();
+      fire("pointerup", ids[0], at.x - to, true);
+      fire("pointerup", ids[1], at.x + to, false);
+      await frame();
+      await frame();
+    },
+    { at, from, to, ids },
+  );
+}
+
+/** A quick tap dispatched on the area at a page point: its down and its up in one task, well inside the 120 ms hold. */
+async function quickTap(area: Locator, at: At, id = 61) {
+  await area.evaluate(
+    (el, { at, id }) => {
+      for (const type of ["pointerdown", "pointerup"]) {
+        el.dispatchEvent(
+          new PointerEvent(type, { pointerId: id, pointerType: "touch", isPrimary: true, clientX: at.x, clientY: at.y, bubbles: true, cancelable: true }),
+        );
+      }
+    },
+    { at, id },
+  );
+}
+
+/** The backend's touches after its first `before` records. */
+async function touchesAfter(before: number): Promise<any[]> {
+  return (await simEq.records()).slice(before).filter((r) => r.op === "touch");
+}
+
+/** A finger's touches as the backend got them: a down and an up within 1 px of `from` and `to`, only updates between. */
+function wentFromTo(touches: any[], from: At, to: At) {
+  expect(touches[0].phase, JSON.stringify(touches)).toBe("down");
+  expect(near(touches[0], from), `the down ${JSON.stringify(touches[0])} at ${JSON.stringify(from)}`).toBe(true);
+  const up = touches[touches.length - 1];
+  expect(up.phase, JSON.stringify(touches)).toBe("up");
+  expect(near(up, to), `the up ${JSON.stringify(up)} at ${JSON.stringify(to)}`).toBe(true);
+  for (const m of touches.slice(1, -1)) expect(m.phase).toBe("update");
+}
+
+/** The canvas's box is the area's: the whole picture, no zoom. */
+async function drawnWhole(screen: Locator) {
+  const area = (await screen.getByTestId("eq-area").boundingBox())!;
+  await expect
+    .poll(async () => {
+      const box = (await screen.getByTestId("eq-canvas").boundingBox())!;
+      return Math.max(Math.abs(box.x - area.x), Math.abs(box.y - area.y), Math.abs(box.width - area.width), Math.abs(box.height - area.height));
+    }, { message: "the canvas's box is the area's" })
+    .toBeLessThan(0.5);
+}
+
+/** The bar's zoom group shown, and every part of the bar inside it and the screen, its texts whole. */
+async function zoomBarFits(screen: Locator) {
+  await expect(screen.getByTestId("eq-zoom")).toBeVisible();
+  const bar = screen.getByTestId("eq-bar");
+  const barBox = (await bar.boundingBox())!;
+  const width = screen.page().viewportSize()!.width;
+  expect(await bar.evaluate((el) => el.scrollWidth - el.clientWidth), "the bar's overflow").toBeLessThanOrEqual(0);
+  for (const id of ["eq-exit", "eq-overview", "eq-factor", "eq-whole", "eq-help"]) {
+    const box = (await screen.getByTestId(id).boundingBox())!;
+    const inside = box.x >= barBox.x - 0.5 && box.x + box.width <= Math.min(barBox.x + barBox.width, width) + 0.5 && box.y >= barBox.y - 0.5 && box.y + box.height <= barBox.y + barBox.height + 0.5;
+    expect(inside, `${id} ${JSON.stringify(box)} inside the bar ${JSON.stringify(barBox)}`).toBe(true);
+  }
+  for (const id of ["eq-exit", "eq-factor", "eq-whole"]) {
+    expect(await clipped(screen.getByTestId(id)), id).toEqual([]);
+  }
 }
 
 /** A recorded touch's point within 1 px of `at` (the page's mapping and the hub's rounding). */
@@ -469,6 +579,134 @@ test.describe("The Pro-Q 4 screen", () => {
     await closedWithGuard(closing);
     await editorOpen(trackPath, false);
     expect((await touches()).filter((r) => r.phase === "up" && !near(r, INERT)), "no lift of the cancelled finger").toEqual([]);
+  });
+
+  test("two fingers zoom the page's picture and send the editor nothing; a finger then reaches it where it shows; a quick tap goes down and up; CELÝ EQ and a new open show it whole", async ({ page }) => {
+    await openSurface(page);
+    const { onTrack, trackPath } = await hand2Cards(page);
+    await editorOpen(trackPath, false);
+    await onTrack.getByTestId("eq-open").click();
+    const screen = await openScreen(page, trackPath);
+    const area = screen.getByTestId("eq-area");
+    const canvas = screen.getByTestId("eq-canvas");
+    const zoom = screen.getByTestId("eq-zoom");
+    const areaBox = (await area.boundingBox())!;
+    const middle = await centre(area);
+    const whole = await pictureMap(canvas);
+    const before = (await simEq.records()).length;
+
+    // Two fingers 100 px apart about the area's middle spread to 250: 2,5×,
+    // and the picture point under their midpoint stays under it.
+    await pinch(area, middle, 50, 125);
+    await expect(zoom).toHaveAttribute("data-shown", "true");
+    await expect(screen.getByTestId("eq-factor")).toHaveText("2,5×");
+    await zoomBarFits(screen);
+    const map = await pictureMap(canvas);
+    expect(map.scale / whole.scale, "the zoom").toBeCloseTo(2.5, 5);
+    const was = whole.toPicture(middle);
+    const now = map.toPicture(middle);
+    expect(Math.abs(now.x - was.x) <= 1 && Math.abs(now.y - was.y) <= 1, `${JSON.stringify(now)} under the midpoint, was ${JSON.stringify(was)}`).toBe(true);
+    // The overview's frame: the part of the picture in sight.
+    const frame = await screen.getByTestId("eq-overview-view").evaluate((el: HTMLElement) =>
+      ["left", "top", "width", "height"].map((k) => parseFloat(el.style.getPropertyValue(k)) / 100),
+    );
+    const span = { x: WIDTH * map.scale, y: HEIGHT * map.scale };
+    const seen = [
+      Math.max(0, (areaBox.x - map.left) / span.x),
+      Math.max(0, (areaBox.y - map.top) / span.y),
+      Math.min(1, areaBox.width / span.x),
+      Math.min(1, areaBox.height / span.y),
+    ];
+    frame.forEach((part, i) => expect(Math.abs(part - seen[i]), `the overview's frame ${frame} against ${seen}`).toBeLessThan(0.002));
+    expect(seen[2], "a part of the width").toBeLessThan(1);
+    // Nothing reached the editor.
+    await page.waitForTimeout(300);
+    expect(await touchesAfter(before), "the pinch's touches").toEqual([]);
+
+    // One finger on the zoomed picture: a drag reaches the editor at the
+    // picture's pixels under the finger.
+    const from = middle;
+    const to = { x: middle.x + 40, y: middle.y - 24 };
+    await page.mouse.move(from.x, from.y);
+    await page.mouse.down();
+    for (let i = 1; i <= DRAG_STEPS; i++) {
+      await page.mouse.move(from.x + ((to.x - from.x) * i) / DRAG_STEPS, from.y + ((to.y - from.y) * i) / DRAG_STEPS);
+      await frames(page, 2);
+    }
+    await page.mouse.up();
+    const drag = await until(() => touchesAfter(before), (all) => all.some((r) => r.phase === "up"), "the drag's up");
+    wentFromTo(drag, map.toPicture(from), map.toPicture(to));
+    expect(await clipped(screen.getByTestId("eq-factor"))).toEqual([]);
+
+    // A quick tap: its down and its up together, where it landed.
+    const tapped = { x: middle.x - 30, y: middle.y + 12 };
+    const tapFrom = (await simEq.records()).length;
+    await quickTap(area, tapped);
+    const tap = await until(() => touchesAfter(tapFrom), (all) => all.some((r) => r.phase === "up"), "the tap's up");
+    wentFromTo(tap, map.toPicture(tapped), map.toPicture(tapped));
+
+    // CELÝ EQ: the whole picture again, the group gone.
+    await screen.getByTestId("eq-whole").click();
+    await expect(zoom).toHaveAttribute("data-shown", "false");
+    await expect(zoom).toBeHidden();
+    await drawnWhole(screen);
+
+    // Zoomed again, the exit closes as ever; the next open starts whole.
+    await pinch(area, middle, 50, 100);
+    await expect(screen.getByTestId("eq-factor")).toHaveText("2,0×");
+    const closing = (await simEq.records()).length;
+    await screen.getByTestId("eq-exit").click();
+    await expect(page.getByTestId("eq-screen")).toHaveCount(0);
+    await closedWithGuard(closing);
+    await editorOpen(trackPath, false);
+    await onTrack.getByTestId("eq-open").click();
+    const again = await openScreen(page, trackPath);
+    await drawnWhole(again);
+    const last = (await simEq.records()).length;
+    await again.getByTestId("eq-exit").click();
+    await expect(page.getByTestId("eq-screen")).toHaveCount(0);
+    await closedWithGuard(last);
+    await editorOpen(trackPath, false);
+  });
+
+  test("the zoom's bar fits a phone on its side and upright; a turned screen draws the zoomed picture for its new size", async ({ page }) => {
+    await openSurface(page);
+    const { onTrack, trackPath } = await hand2Cards(page);
+    await editorOpen(trackPath, false);
+    await onTrack.getByTestId("eq-open").click();
+    const screen = await openScreen(page, trackPath);
+    const area = screen.getByTestId("eq-area");
+    const canvas = screen.getByTestId("eq-canvas");
+    for (const size of [
+      { width: 844, height: 390 },
+      { width: 390, height: 844 },
+    ]) {
+      await page.setViewportSize(size);
+      await frames(page, 3);
+      await screen.getByTestId("eq-whole").evaluate((el) =>
+        el.dispatchEvent(new PointerEvent("pointerdown", { pointerId: 71, pointerType: "touch", isPrimary: true, bubbles: true, cancelable: true })),
+      );
+      await expect(screen.getByTestId("eq-zoom")).toHaveAttribute("data-shown", "false");
+      await pinch(area, await centre(area), 50, 100);
+      await expect(screen.getByTestId("eq-factor"), `${size.width}x${size.height}`).toHaveText("2,0×");
+      await zoomBarFits(screen);
+    }
+    // Turned while zoomed: the picture is drawn for the new area, and a tap
+    // lands where it shows.
+    await page.setViewportSize({ width: 844, height: 390 });
+    await frames(page, 3);
+    await expect(screen.getByTestId("eq-zoom")).toHaveAttribute("data-shown", "true");
+    const map = await pictureMap(canvas);
+    const at = await centre(area);
+    const before = (await simEq.records()).length;
+    await quickTap(area, at);
+    const tap = await until(() => touchesAfter(before), (all) => all.some((r) => r.phase === "up"), "the tap's up");
+    wentFromTo(tap, map.toPicture(at), map.toPicture(at));
+    const closing = (await simEq.records()).length;
+    await screen.getByTestId("eq-exit").click();
+    await expect(page.getByTestId("eq-screen")).toHaveCount(0);
+    await closedWithGuard(closing);
+    await editorOpen(trackPath, false);
   });
 
   test("the cards are listed again when Live comes back, and open", async ({ page }) => {

@@ -16,11 +16,17 @@
 //!   the lock mark, `?` with the touch legend) and the live picture: the
 //!   binary frames drawn into a canvas through `createImageBitmap`, fitted
 //!   (`object-fit: contain`), the newest frame winning while one decodes.
-//!   One finger maps to `eq_input` in the picture's pixels
-//!   (`behave::eq::Finger`: a move at most once per animation frame, the up
-//!   and the cancel always, a lost capture as a cancel, a second finger
-//!   ignored). Leaving it sends `eq_close`; the hub closing it (refused,
-//!   failed, its window gone, the socket lost) brings the detail back.
+//!   One finger maps to `eq_input` in the picture's pixels through the
+//!   page's view (`behave::eq::Finger`: the first finger waits 120 ms or
+//!   6 px before its down, a lift meanwhile is a tap; a move at most once
+//!   per animation frame, the up and the cancel always, a lost capture as a
+//!   cancel). Two fingers zoom and pan the picture on this page only (PR F,
+//!   the approved mockup `docs/mockups/proq-zoom-v1.html`;
+//!   `behave::eq::Viewer`, 1× to 4×, each open at 1×): the canvas gets a
+//!   CSS transform, and while zoomed the bar shows the overview (the latest
+//!   frame small, a frame around the part in sight), the factor and `CELÝ
+//!   EQ`. Leaving it sends `eq_close`; the hub closing it (refused, failed,
+//!   its window gone, the socket lost) brings the detail back.
 //!
 //! The screen's open, close and lock refusal go to the flight recorder as
 //! `detail` events (`eq_open`, `eq_close` with why, `eq_locked`) with the
@@ -37,8 +43,9 @@ use wasm_bindgen::JsCast;
 use super::buttons::colour_style;
 use super::{owns_touches, trace_detail};
 use crate::behave::eq::{
-    CardLock, Finger, Fit, ListLink, can_open, card_lock, failure_text, fit, hh_mm, in_use_text,
-    list_text, lists_now, lock_refusal, locked, locked_text, on_picture, place_text, to_picture,
+    CardLock, Finger, ListLink, Look, Out, Point, Viewer, can_open, card_lock, failure_text, hh_mm,
+    in_use_text, list_text, lists_now, lock_refusal, locked, locked_text, look, on_picture,
+    place_text, point, zoom_text,
 };
 use crate::binding::detail_keys;
 use crate::dom;
@@ -340,11 +347,13 @@ pub fn EqCards(strip: Strip, label: String, color: Option<RwSignal<Slot>>) -> im
     }
 }
 
-/// The picture's painter: the canvas, whether a frame decodes, the newest
-/// frame waiting meanwhile, the frames drawn and the picture's size.
+/// The picture's painter: the canvas, the overview's (PR F: the frame
+/// drawn small), whether a frame decodes, the newest frame waiting
+/// meanwhile, the frames drawn and the picture's size.
 #[derive(Default)]
 struct Painter {
     canvas: Option<web_sys::HtmlCanvasElement>,
+    small: Option<web_sys::HtmlCanvasElement>,
     busy: bool,
     next: Option<web_sys::Blob>,
     frames: u32,
@@ -356,8 +365,19 @@ struct Painter {
 /// thread).
 type PainterBox = StoredValue<Painter, LocalStorage>;
 
+/// A canvas's 2D context.
+fn context_2d(canvas: &web_sys::HtmlCanvasElement) -> Option<web_sys::CanvasRenderingContext2d> {
+    canvas
+        .get_context("2d")
+        .ok()
+        .flatten()
+        .and_then(|c| c.dyn_into::<web_sys::CanvasRenderingContext2d>().ok())
+}
+
 /// Draws one frame: decoded off the page's thread (`createImageBitmap`),
-/// then onto the canvas at its own size.
+/// then onto the canvas at its own size, and small onto the overview's
+/// (its whole box: the overview shows the picture's shape whatever its
+/// size, PR F).
 async fn draw(painter: PainterBox, blob: &web_sys::Blob) {
     let Some(window) = web_sys::window() else {
         return;
@@ -384,12 +404,7 @@ async fn draw(painter: PainterBox, blob: &web_sys::Blob) {
             dom::set_attr(&canvas, "data-width", &width.to_string());
             dom::set_attr(&canvas, "data-height", &height.to_string());
         }
-        let context = canvas
-            .get_context("2d")
-            .ok()
-            .flatten()
-            .and_then(|c| c.dyn_into::<web_sys::CanvasRenderingContext2d>().ok());
-        if let Some(context) = context {
+        if let Some(context) = context_2d(&canvas) {
             let _ = context.draw_image_with_image_bitmap(&bitmap, 0.0, 0.0);
             let frames = painter.try_update_value(|p| {
                 p.frames += 1;
@@ -400,6 +415,18 @@ async fn draw(painter: PainterBox, blob: &web_sys::Blob) {
                 dom::set_attr(&canvas, "data-frames", &frames.to_string());
             }
         }
+    }
+    let small = painter.try_with_value(|p| p.small.clone()).flatten();
+    if let Some(small) = small
+        && let Some(context) = context_2d(&small)
+    {
+        let _ = context.draw_image_with_image_bitmap_and_dw_and_dh(
+            &bitmap,
+            0.0,
+            0.0,
+            f64::from(small.width()),
+            f64::from(small.height()),
+        );
     }
     bitmap.close();
 }
@@ -432,13 +459,71 @@ fn paint(painter: PainterBox, blob: web_sys::Blob) {
     });
 }
 
-/// Where the finger's area was when it went down: the picture's fit and
-/// the area's corner on the page (the moves map by it, no layout read).
+/// Where the fingers' area lies on the page and its size (CSS px), read at
+/// each down and on a resize: a move and a frame read no layout.
 #[derive(Debug, Clone, Copy)]
 struct Grip {
-    fit: Fit,
     left: f64,
     top: f64,
+    width: f64,
+    height: f64,
+}
+
+impl Grip {
+    /// The area's box now.
+    fn of(area: &web_sys::HtmlDivElement) -> Self {
+        let rect = area.get_bounding_client_rect();
+        Self {
+            left: rect.left(),
+            top: rect.top(),
+            width: rect.width(),
+            height: rect.height(),
+        }
+    }
+
+    /// A pointer's point on the area.
+    fn at(self, ev: &web_sys::PointerEvent) -> (f64, f64) {
+        (
+            f64::from(ev.client_x()) - self.left,
+            f64::from(ev.client_y()) - self.top,
+        )
+    }
+}
+
+/// Draws a view's look (PR F, `behave::eq::look`), only when it changed:
+/// the canvas's transform, the overview's frame (percentages of the
+/// picture), and the bar's zoom group (shown, its factor), each signal
+/// written only when it differs.
+fn show_look(
+    look: &Look,
+    canvas: NodeRef<html::Canvas>,
+    frame: NodeRef<html::Div>,
+    zoomed: RwSignal<bool>,
+    factor: RwSignal<String>,
+) {
+    if let Some(canvas) = canvas.get_untracked() {
+        dom::set_style(&canvas, "transform", &look.transform);
+    }
+    if let Some(frame) = frame.get_untracked() {
+        let (left, top, width, height) = look.seen;
+        for (name, part) in [
+            ("left", left),
+            ("top", top),
+            ("width", width),
+            ("height", height),
+        ] {
+            dom::set_style(&frame, name, &format!("{}%", part * 100.0));
+        }
+    }
+    if zoomed.try_get_untracked() != Some(look.zoomed) {
+        let _ = zoomed.try_set(look.zoomed);
+    }
+    if factor
+        .try_with_untracked(|f| *f != look.factor)
+        .unwrap_or(false)
+    {
+        let _ = factor.try_set(look.factor.clone());
+    }
 }
 
 /// One Pro-Q 4 editor over the whole surface.
@@ -448,30 +533,54 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
     let nav = expect_context::<EqNav>();
     let painter: PainterBox = StoredValue::new_local(Painter::default());
     let canvas_ref = NodeRef::<html::Canvas>::new();
+    let small_ref = NodeRef::<html::Canvas>::new();
+    let frame_ref = NodeRef::<html::Div>::new();
     let area_ref = NodeRef::<html::Div>::new();
     let finger = StoredValue::new(Finger::default());
+    // The page's own view of the picture (PR F): each open starts at 1×.
+    let viewer = StoredValue::new(Viewer::START);
     let grip = StoredValue::new(None::<Grip>);
+    // The look last drawn (none: the stylesheet's, the whole picture).
+    let drawn = StoredValue::new(None::<Look>);
+    let zoomed = RwSignal::new(false);
+    let factor = RwSignal::new(zoom_text(1.0));
     let legend = RwSignal::new(false);
     canvas_ref.on_load(move |canvas| {
         let _ = painter.try_update_value(|p| p.canvas = Some(canvas));
     });
+    small_ref.on_load(move |small| {
+        let _ = painter.try_update_value(|p| p.small = Some(small));
+    });
+    let send = move |outs: Vec<Out>| {
+        for out in outs {
+            store.eq_input(out);
+        }
+    };
     let sink: FrameSink = Rc::new(move |blob: web_sys::Blob| paint(painter, blob));
     store.eq_frames(Some(sink));
     store.eq_open(&target.instance, &target.path);
     // A hidden page lifts its finger (`Finger::visibility`), as the Stream
     // Deck lifts its keys: `visibilitychange` bubbles to the window.
     let hidden = window_event_listener_untyped("visibilitychange", move |_| {
-        if let Some(Some(out)) = finger.try_update_value(|f| f.visibility(dom::hidden())) {
-            store.eq_input(out);
+        send(
+            finger
+                .try_update_value(|f| f.visibility(dom::hidden()))
+                .unwrap_or_default(),
+        );
+    });
+    // A turned or resized screen: the area's box again (the frame loop
+    // draws the view for it).
+    let resized = window_event_listener_untyped("resize", move |_| {
+        if let Some(area) = area_ref.get_untracked() {
+            let _ = grip.try_set_value(Some(Grip::of(&area)));
         }
     });
     // Leaving the screen: a finger still down ends, the hub closes the
     // editor, the frames stop. (The component's own signals stay untouched.)
     on_cleanup(move || {
         hidden.remove();
-        if let Some(Some(out)) = finger.try_update_value(Finger::leave) {
-            store.eq_input(out);
-        }
+        resized.remove();
+        send(finger.try_update_value(Finger::leave).unwrap_or_default());
         store.eq_close();
         store.eq_frames(None);
     });
@@ -514,74 +623,88 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
                 .flatten()
         })
     };
+    // A pointer's point now: on the area, and on the picture through the
+    // view (it changes only while two fingers pinch, when the editor gets
+    // nothing), with the picture's size.
+    let point_of = move |ev: &web_sys::PointerEvent| -> Option<(Point, (u32, u32))> {
+        let g = grip.try_get_value().flatten()?;
+        let picture = size()?;
+        let shown = viewer
+            .try_with_value(|v| v.placed((g.width, g.height), picture))
+            .flatten()?;
+        Some((point(shown, g.at(ev)), picture))
+    };
     let on_down = move |ev: web_sys::PointerEvent| {
         ev.prevent_default();
-        let (Some(area), Some(canvas)) = (area_ref.get_untracked(), canvas_ref.get_untracked())
-        else {
+        let Some(area) = area_ref.get_untracked() else {
             return;
         };
-        let rect = canvas.get_bounding_client_rect();
-        let Some(picture) = size() else {
-            return;
-        };
-        let Some(fit) = fit((rect.width(), rect.height()), picture) else {
+        let _ = grip.try_set_value(Some(Grip::of(&area)));
+        let Some((at, picture)) = point_of(&ev) else {
             return;
         };
         let id = ev.pointer_id();
-        let at = to_picture(
-            fit,
-            (
-                f64::from(ev.client_x()) - rect.left(),
-                f64::from(ev.client_y()) - rect.top(),
-            ),
-        );
-        let down = finger
-            .try_update_value(|f| f.down(id, at, on_picture(at, picture)))
-            .flatten();
-        if let Some(out) = down {
+        let now = dom::now();
+        let out = finger
+            .try_update_value(|f| f.down(id, at, on_picture(at.picture, picture), now))
+            .unwrap_or_default();
+        if finger.try_with_value(|f| f.has(id)).unwrap_or(false) {
             let _ = area.set_pointer_capture(id);
-            let _ = grip.try_set_value(Some(Grip {
-                fit,
-                left: rect.left(),
-                top: rect.top(),
-            }));
-            store.eq_input(out);
         }
-    };
-    let at_of = move |ev: &web_sys::PointerEvent| {
-        grip.try_get_value().flatten().map(|g| {
-            to_picture(
-                g.fit,
-                (
-                    f64::from(ev.client_x()) - g.left,
-                    f64::from(ev.client_y()) - g.top,
-                ),
-            )
-        })
+        send(out);
     };
     let on_move = move |ev: web_sys::PointerEvent| {
-        if let Some(at) = at_of(&ev) {
+        if let Some((at, _)) = point_of(&ev) {
             let _ = finger.try_update_value(|f| f.moved(ev.pointer_id(), at));
         }
     };
     let on_up = move |ev: web_sys::PointerEvent| {
-        let Some(at) = at_of(&ev) else {
+        let Some((at, _)) = point_of(&ev) else {
             return;
         };
-        if let Some(Some(out)) = finger.try_update_value(|f| f.up(ev.pointer_id(), at)) {
-            store.eq_input(out);
-        }
+        send(
+            finger
+                .try_update_value(|f| f.up(ev.pointer_id(), at))
+                .unwrap_or_default(),
+        );
     };
     let on_cancel = move |ev: web_sys::PointerEvent| {
-        if let Some(Some(out)) = finger.try_update_value(|f| f.cancel(ev.pointer_id())) {
-            store.eq_input(out);
-        }
+        send(
+            finger
+                .try_update_value(|f| f.cancel(ev.pointer_id()))
+                .unwrap_or_default(),
+        );
     };
-    // A move goes at most once per frame, the newest.
+    // Each frame: a waiting finger's down once it waited or slid, a move at
+    // most once (the newest); the view follows a pinch, and a changed look
+    // is drawn (only then: nothing is restyled while the view rests).
     raf::animate(area_ref, move |_el| {
         Box::new(move |_now: f64, _step: f64| {
-            if let Some(Some(out)) = finger.try_update_value(Finger::frame) {
-                store.eq_input(out);
+            send(
+                finger
+                    .try_update_value(|f| f.frame(dom::now()))
+                    .unwrap_or_default(),
+            );
+            let (Some(g), Some(picture)) = (grip.try_get_value().flatten(), size()) else {
+                return;
+            };
+            let area = (g.width, g.height);
+            let pair = finger.try_with_value(Finger::pair).flatten();
+            let wanted = viewer
+                .try_update_value(|v| {
+                    v.follow(pair, area, picture);
+                    look(area, picture, v.view())
+                })
+                .flatten();
+            let Some(wanted) = wanted else {
+                return;
+            };
+            if drawn
+                .try_with_value(|d| d.as_ref() != Some(&wanted))
+                .unwrap_or(false)
+            {
+                show_look(&wanted, canvas_ref, frame_ref, zoomed, factor);
+                let _ = drawn.try_set_value(Some(wanted));
             }
         })
     });
@@ -593,6 +716,13 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
         ev.prevent_default();
         let _ = legend.try_update(|on| *on = !*on);
     };
+    // `CELÝ EQ`: the whole picture again (the frame loop draws it).
+    let whole = move |ev: web_sys::PointerEvent| {
+        ev.prevent_default();
+        let _ = viewer.try_update_value(Viewer::whole);
+    };
+    let shown_zoom = move || zoomed.try_get().unwrap_or(false).to_string();
+    let factor_text = move || factor.try_get().unwrap_or_default();
     let state = move || {
         editor
             .try_with_value(|(instance, path)| {
@@ -621,6 +751,7 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
     let open = move || state() == "open";
     let exit_keys: Vec<String> = Vec::new();
     let help_keys: Vec<String> = Vec::new();
+    let whole_keys: Vec<String> = Vec::new();
     let area_keys: Vec<String> = Vec::new();
     let where_text = target.title.clone();
     let chip = target.chip.clone();
@@ -632,7 +763,7 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
             data-session=session
             data-path=target.path.clone()
         >
-            <div class="eq-bar">
+            <div class="eq-bar" data-testid="eq-bar">
                 <button
                     type="button"
                     class="detail-exit eq-exit"
@@ -646,6 +777,22 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
                 <div class="eq-name">
                     <span class="detail-chip" style=chip>{target.label.clone()}</span>
                     <span class="eq-where" data-testid="eq-where">{where_text}</span>
+                </div>
+                <div class="eq-zoom" data-testid="eq-zoom" data-shown=shown_zoom>
+                    <div class="eq-overview" data-testid="eq-overview">
+                        <canvas class="eq-overview-pic" width="134" height="80" node_ref=small_ref></canvas>
+                        <div class="eq-overview-view" data-testid="eq-overview-view" node_ref=frame_ref></div>
+                    </div>
+                    <span class="eq-factor" data-testid="eq-factor">{factor_text}</span>
+                    <button
+                        type="button"
+                        class="eq-whole"
+                        data-testid="eq-whole"
+                        use:owns_touches=whole_keys
+                        on:pointerdown=whole
+                    >
+                        "CELÝ EQ"
+                    </button>
                 </div>
                 <span class="eq-mine" data-testid="eq-mine" data-shown=move || open().to_string()>
                     "zamknuté pre teba"
@@ -679,7 +826,8 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
     }
 }
 
-/// What a finger does on the Pro-Q (`?`): real touches reach the PC.
+/// What a finger does on the Pro-Q (`?`): real touches reach the PC; two
+/// fingers zoom this page's picture only (PR F, the mockup's lines).
 #[component]
 fn EqLegend() -> impl IntoView {
     view! {
@@ -690,8 +838,13 @@ fn EqLegend() -> impl IntoView {
                 <tr><td>"1 prst ťah"</td><td>"ťahanie (pásmo, gombík); kurzor na PC počas ťahu skočí"</td></tr>
                 <tr><td>"dvojťuk"</td><td>"dvojklik (nové pásmo v krivke; na pásme jeho frekvencia)"</td></tr>
                 <tr><td>"podržať"</td><td>"pravé tlačidlo (menu pásma) "<span class="eq-tbd">"· ešte overiť na PC"</span></td></tr>
-                <tr><td>"2 prsty"</td><td>"druhý prst sa nepoužije"</td></tr>
+                <tr class="eq-legend-zoom"><td>"2 prsty od seba / k sebe"</td><td>"priblížiť / oddialiť (1× až 4×)"</td></tr>
+                <tr class="eq-legend-zoom"><td>"2 prsty spolu"</td><td>"posúvať priblížený obraz"</td></tr>
+                <tr class="eq-legend-zoom"><td>"CELÝ EQ"</td><td>"späť na celý obraz"</td></tr>
             </table>
+            <p class="eq-legend-note">
+                "Pri priblížení obraz na PC zostáva rovnaký: mení sa len pohľad na tomto zariadení."
+            </p>
         </div>
     }
 }
