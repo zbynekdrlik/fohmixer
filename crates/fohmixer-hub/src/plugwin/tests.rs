@@ -1843,6 +1843,44 @@ fn a_guard_whose_known_size_never_comes_taps_nothing_and_the_window_goes_back() 
 }
 
 #[test]
+fn a_resize_that_never_lands_goes_back_and_no_size_is_trusted_until_the_window_moves() {
+    // The review of PR #74 (M6): a resize that settled unlanded left the
+    // window as it was then (Live's frame resized and Pro-Q not: a clipped
+    // picture for the session); its rectangle before is posted back.
+    // (M1): both may still wait in Live's thread while the picture reads
+    // its size before, so a read cannot tell "back" from "nothing landed
+    // yet": the guard taps nothing then.
+    let (mut worker, handle, _) = worker();
+    take(&mut worker, &handle, 1, 0.0);
+    handle.resize_late(true);
+    let mut resized = resize_at(&mut worker, 1, UPRIGHT, 0.0);
+    worker.step_at(1000.0);
+    let settled = resized.try_recv().unwrap().expect("a resize");
+    assert_eq!((settled.ok, settled.client), (false, (1349, 809)));
+    assert_eq!(
+        resizes(&handle),
+        [(667, 1361), (1349, 809)],
+        "its rectangle before posted back"
+    );
+    let mut guarded = guard_at(&mut worker, 1, 1100.0);
+    assert!(
+        guarded.try_recv().is_err(),
+        "the known size read, not trusted"
+    );
+    worker.step_at(1110.0);
+    worker.step_at(2109.0);
+    assert!(guarded.try_recv().is_err(), "still waiting");
+    worker.step_at(2110.0);
+    assert_eq!(
+        guarded.try_recv().unwrap(),
+        Err(format!(
+            "{NOT_BACK}: an earlier resize may still land (the picture reads 1349x809)"
+        ))
+    );
+    assert_eq!(touches(&handle), Vec::new(), "no tap");
+}
+
+#[test]
 fn the_guard_waits_for_a_resize_on_its_way_then_puts_the_size_back() {
     let (mut worker, handle, _) = worker();
     take(&mut worker, &handle, 1, 0.0);
