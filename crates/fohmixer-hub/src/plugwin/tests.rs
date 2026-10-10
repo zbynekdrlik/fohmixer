@@ -1657,6 +1657,27 @@ fn the_guard_puts_the_editors_own_size_back_before_its_tap() {
 }
 
 #[test]
+fn no_resize_reaches_an_editor_once_its_guard_began() {
+    // The review of PR #74 (I2): an editor at its own size is tapped at
+    // once, so its guard never waits; a resize that reached the worker
+    // after that tap posted the page's shape during the guard's wait, and
+    // Live closed Pro-Q at it.
+    let (mut worker, handle, _) = worker();
+    take(&mut worker, &handle, 1, 0.0);
+    let mut guarded = guard_at(&mut worker, 1, 10.0);
+    assert_eq!(guarded.try_recv().unwrap(), Ok(()), "tapped at once");
+    let mut answer = resize_at(&mut worker, 1, UPRIGHT, 20.0);
+    assert_eq!(answer.try_recv().unwrap(), None, "refused");
+    worker.step_at(30.0);
+    worker.step_at(1100.0);
+    assert_eq!(resizes(&handle), Vec::<(i64, i64)>::new(), "nothing posted");
+    // Nor later: the guard's mark stays with the editor.
+    let mut again = resize_at(&mut worker, 1, area(800.0, 320.0), 1200.0);
+    assert_eq!(again.try_recv().unwrap(), None);
+    assert_eq!(resizes(&handle), Vec::<(i64, i64)>::new());
+}
+
+#[test]
 fn the_guard_waits_for_a_resize_on_its_way_then_puts_the_size_back() {
     let (mut worker, handle, _) = worker();
     take(&mut worker, &handle, 1, 0.0);
