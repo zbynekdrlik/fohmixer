@@ -49,6 +49,7 @@ pub mod close;
 pub mod open;
 pub mod walk;
 
+use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
@@ -343,10 +344,13 @@ impl Eqs {
     /// The device name a list found at `key` (the open checks it): the
     /// newest list's, the only one that names it ([`Eqs::listed`]).
     pub fn name_of(&self, key: &EditorKey) -> Option<&str> {
-        self.lists
-            .values()
-            .find_map(|listing| listing.get(key))
-            .map(|device| device.name.as_str())
+        self.device_of(key).map(|device| device.name.as_str())
+    }
+
+    /// The device the newest list found at `key` (its name and `$ref`):
+    /// what an open of it must still find there.
+    pub fn device_of(&self, key: &EditorKey) -> Option<&Device> {
+        self.lists.values().find_map(|listing| listing.get(key))
     }
 
     /// An instance connected again: its lists may name other devices now
@@ -441,12 +445,12 @@ impl Eqs {
         });
         acts.push(Act::Locks);
         acts.push(Act::Record(record("take", key, Some(client), None, None)));
-        if self.held.contains_key(&client) {
+        if let Entry::Vacant(free) = self.held.entry(client) {
+            free.insert(key.clone());
+            acts.extend(self.start(key));
+        } else {
             self.next.insert(client, key.clone());
             acts.extend(self.close(client, reason::SWITCH, false));
-        } else {
-            self.held.insert(client, key.clone());
-            acts.extend(self.start(key));
         }
         acts
     }
