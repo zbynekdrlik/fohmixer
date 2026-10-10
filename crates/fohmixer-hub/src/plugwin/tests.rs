@@ -2259,6 +2259,31 @@ fn the_guard_taps_only_at_the_size_its_inert_spot_is_known_at() {
 }
 
 #[test]
+fn a_guards_first_placement_at_the_work_areas_right_edge_goes_a_pixel_inward() {
+    // The review of PR #74, round 3: a window taken low and right gets its
+    // known rectangle moved in against the work area's right edge, and its
+    // first placement went a pixel to the right, past that edge.
+    let (mut worker, handle, _) = worker();
+    let window = take_sized(&mut worker, &handle, 1, (760, 1271), (2000, 1000));
+    let mut guarded = guard_at(&mut worker, 1, 10.0);
+    let lefts = |handle: &SimHandle| -> Vec<(i64, i64)> {
+        handle
+            .records()
+            .iter()
+            .filter(|r| r["op"] == "resize")
+            .map(|r| (r["left"].as_i64().unwrap(), r["top"].as_i64().unwrap()))
+            .collect()
+    };
+    assert_eq!(lefts(&handle), [(1194, 552)], "a pixel to the left");
+    worker.step_at(20.0);
+    worker.step_at(30.0);
+    assert_eq!(guarded.try_recv().unwrap(), Ok(()));
+    assert_eq!(lefts(&handle), [(1194, 552), (1195, 552)]);
+    assert_eq!(handle.rect(window), Some(rect(1195, 552, 1365, 848)));
+    assert_eq!(touches(&handle), [t("down", 546, 15), t("up", 546, 15)]);
+}
+
+#[test]
 fn a_guard_reads_the_editors_size_even_when_no_change_was_seen() {
     // The review of PR #74 (M5): a window resized on the PC within the last
     // capture period (no grab saw it) was tapped at once, at the spot of
