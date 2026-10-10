@@ -66,7 +66,9 @@
 //!   and the guard trusts no size it reads. The capture goes on meanwhile,
 //!   and the frames carry the picture's size. A grab of another size with
 //!   no resize on its way (one that landed late, a window resized on the
-//!   PC) is reported ([`PlugwinEvent::Sized`]).
+//!   PC) is reported ([`PlugwinEvent::Sized`]). A resize asked while a
+//!   contact of the editor's session is down waits for its end, the newest
+//!   only (#74 review: Pro-Q never lays itself out under a finger).
 //! - **The close guard** ([`Plugwin::guard`]): no resize reaches the editor
 //!   from then on; the frames stop, its own contact ends at its last point
 //!   (an up), another session's is cancelled there and reported
@@ -697,6 +699,9 @@ struct Editor {
     /// moves on from it (#74 review): meanwhile no size it reads is
     /// trusted.
     doubt: Option<Reading>,
+    /// A resize asked while its session's contact is down, posted once the
+    /// contact ended (#74 review): its area and its caller.
+    deferred: Option<(Area, oneshot::Sender<Option<Resized>>)>,
 }
 
 /// A resize on its way: the size asked, when it was posted (worker ms),
@@ -1058,6 +1063,7 @@ impl Worker {
         self.count_encoded();
         self.keep_alive();
         self.find();
+        self.deferred();
         self.resizes();
         self.doubts();
         self.guards();
@@ -1166,6 +1172,7 @@ impl Worker {
                         changed: false,
                         guarded: false,
                         doubt: None,
+                        deferred: None,
                     },
                 );
                 let _ = finding.reply.send(Ok(size));
@@ -1177,7 +1184,18 @@ impl Worker {
     /// ([`Worker::post_size`]), then looked at every step until it settles
     /// ([`Worker::resizes`]). Nothing posted: its caller hears none at once.
     /// A resize still on its way is replaced (its caller hears nothing).
+    /// While a contact of `session` is down it waits for its end, and a
+    /// newer one replaces it (its caller hears none; [`Worker::deferred`]).
     fn resize(&mut self, session: u32, area: Area, reply: oneshot::Sender<Option<Resized>>) {
+        let touched = self.contact.is_some_and(|held| held.session == session);
+        if let Some(editor) = self.editors.get_mut(&session)
+            && touched
+        {
+            if let Some((_, older)) = editor.deferred.replace((area, reply)) {
+                let _ = older.send(None);
+            }
+            return;
+        }
         let now = self.now();
         let Some((asked, before)) = self.post_size(session, area) else {
             let _ = reply.send(None);
@@ -1261,6 +1279,27 @@ impl Worker {
                     ms: waited,
                     reverted,
                 }));
+            }
+        }
+    }
+
+    /// The resizes waiting for a contact to end, each posted once no
+    /// contact of its session is down ([`Worker::resize`]).
+    fn deferred(&mut self) {
+        let held = self.contact.map(|held| held.session);
+        let due: Vec<u32> = self
+            .editors
+            .iter()
+            .filter(|(session, editor)| editor.deferred.is_some() && held != Some(**session))
+            .map(|(session, _)| *session)
+            .collect();
+        for session in due {
+            let waiting = self
+                .editors
+                .get_mut(&session)
+                .and_then(|editor| editor.deferred.take());
+            if let Some((area, reply)) = waiting {
+                self.resize(session, area, reply);
             }
         }
     }
@@ -1505,6 +1544,9 @@ impl Worker {
         };
         editor.guarded = true;
         editor.sink = None;
+        if let Some((_, waiting)) = editor.deferred.take() {
+            let _ = waiting.send(None);
+        }
         self.encoder.forget(session);
         self.end_contact(session);
         self.cancel_other(session);
