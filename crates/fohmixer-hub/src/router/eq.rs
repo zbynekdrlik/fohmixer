@@ -26,7 +26,10 @@
 //!   picture's size from the frames, so no `eq` message tells it.
 //! - **The close sequence:** the worker's guard (any contact ended, the
 //!   inert spot tapped), [`GUARD_WAIT`], then `is_editor_open = false`, then
-//!   the window released. A guard that could not tap leaves the editor open
+//!   the window released. The worker hears a resize's and a guard's
+//!   commands in the router's order (#74 review: sent as the router
+//!   handles them, their answers awaited in tasks), and refuses any resize
+//!   once an editor's guard began. A guard that could not tap leaves the editor open
 //!   in Live (a value text field may be open: Pro-Q 4.02 crashes Live when
 //!   its editor closes with one). The device turned off is never another
 //!   one's: it is turned off through the `$ref` its open read (the same
@@ -45,6 +48,7 @@
 //!   editor may still be open.
 
 use std::collections::BTreeMap;
+use std::future::Future;
 use std::sync::Arc;
 
 use bytes::Bytes;
@@ -289,24 +293,34 @@ async fn open_editor(
 /// The close sequence: the guard, its wait, the editor turned off in Live
 /// (not when the guard failed; through its `reference` when there is one;
 /// never another device's), the window released (Live closed the editor
-/// unless it may still be open); what it left in Live.
-async fn close_editor(
+/// unless it may still be open); what it left in Live. The guard's command
+/// goes to the window worker at the call, in the router's order (#74
+/// review: a resize the router handled before the close reaches the worker
+/// first, and the worker refuses any after it); the rest runs when awaited.
+fn close_editor(
     live: Option<LiveHandle>,
     plugwin: Plugwin,
     key: EditorKey,
     session: u32,
     reference: Option<Value>,
     events: EventLog,
-) -> Shut {
-    let guarded = plugwin.guard(session).await;
-    tokio::time::sleep(GUARD_WAIT).await;
-    let shut = match (guarded, live) {
-        (Ok(()), Some(live)) => turn_off(&live, &key, session, reference.as_ref(), &events).await,
-        (Ok(()), None) => Shut::LeftOpen(UNKNOWN_INSTANCE.to_string()),
-        (Err(why), _) => Shut::LeftOpen(format!("the guard failed, the editor stays open: {why}")),
-    };
-    plugwin.release(session, !shut.left_open()).await;
-    shut
+) -> impl Future<Output = Shut> + Send + 'static {
+    let guarded = plugwin.guard(session);
+    async move {
+        let guarded = guarded.await;
+        tokio::time::sleep(GUARD_WAIT).await;
+        let shut = match (guarded, live) {
+            (Ok(()), Some(live)) => {
+                turn_off(&live, &key, session, reference.as_ref(), &events).await
+            }
+            (Ok(()), None) => Shut::LeftOpen(UNKNOWN_INSTANCE.to_string()),
+            (Err(why), _) => {
+                Shut::LeftOpen(format!("the guard failed, the editor stays open: {why}"))
+            }
+        };
+        plugwin.release(session, !shut.left_open()).await;
+        shut
+    }
 }
 
 /// The `eq` record of a resize as it settled (PR G): the size asked (`w`,
@@ -736,9 +750,12 @@ impl Router {
                 });
             }
             Act::Resize { key, session, area } => {
-                let (plugwin, tx) = (io.plugwin.clone(), self.io.tx.clone());
+                // Sent now, in the router's order (#74 review); the answer
+                // in a task.
+                let resizing = io.plugwin.resize(session, area);
+                let tx = self.io.tx.clone();
                 tokio::spawn(async move {
-                    let resized = plugwin.resize(session, area).await;
+                    let resized = resizing.await;
                     let _ = tx.send(RouterMsg::EqResized {
                         key,
                         session,
@@ -757,9 +774,10 @@ impl Router {
                     .refs
                     .get(&session)
                     .map(|(_, reference)| reference.clone());
+                // The guard is sent now, in the router's order (#74 review).
+                let closing = close_editor(live, plugwin, key.clone(), session, reference, events);
                 tokio::spawn(async move {
-                    let outcome =
-                        close_editor(live, plugwin, key.clone(), session, reference, events).await;
+                    let outcome = closing.await;
                     let _ = tx.send(RouterMsg::EqClosed {
                         key,
                         session,

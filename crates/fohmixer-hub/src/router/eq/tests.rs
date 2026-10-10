@@ -1191,6 +1191,37 @@ async fn a_changed_area_resizes_the_open_editor_and_its_close_puts_its_size_back
 }
 
 #[tokio::test]
+async fn a_new_area_and_a_close_reach_the_worker_in_the_routers_order() {
+    // The review of PR #74 (I2): a page's new area and its close handled in
+    // one go (a phone turned as the engineer left) were sent to the worker
+    // by two tasks, in no set order, and a resize after the guard's tap
+    // reached the window. Both go as the router handles them: the resize,
+    // then the guard (the editor's own size back, its tap).
+    let dir = tempfile::tempdir().unwrap();
+    let mut rig = rig(dir.path());
+    let _outbox = held_open(&mut rig).await;
+    rig.router.handle(RouterMsg::EqArea {
+        client: 1,
+        area: UPRIGHT,
+    });
+    rig.router.handle(RouterMsg::EqClose { client: 1 });
+    let closed = next_of(&mut rig.rx, |m| matches!(m, RouterMsg::EqClosed { .. })).await;
+    rig.router.handle(closed);
+    let step = |op: &str, a: i64, b: i64| (op.to_string(), a, b);
+    assert_eq!(
+        sim_steps(&rig.sim),
+        [
+            step("take", -1, -1),
+            step("resize", 667, 1361),
+            step("resize", 1349, 809),
+            step("touch down", 546, 15),
+            step("touch up", 546, 15),
+            step("release", -1, -1),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn a_picture_grabbed_at_another_size_is_recorded_and_clamps_the_points() {
     let dir = tempfile::tempdir().unwrap();
     let mut rig = rig(dir.path());

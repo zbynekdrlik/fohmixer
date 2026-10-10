@@ -85,6 +85,7 @@ pub mod sim;
 pub mod win;
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::future::Future;
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
@@ -615,6 +616,9 @@ struct Editor {
     /// Whether its size was changed since its take (a resize posted, a grab
     /// of another size): the guard and the release put it back.
     changed: bool,
+    /// Whether its close guard began: no resize reaches it any more (#74
+    /// review: never cleared, the guard is the editor's last step).
+    guarded: bool,
 }
 
 /// A resize on its way: the size asked, when it was posted (worker ms),
@@ -1078,6 +1082,7 @@ impl Worker {
                         size,
                         resizing: None,
                         changed: false,
+                        guarded: false,
                     },
                 );
                 let _ = finding.reply.send(Ok(size));
@@ -1105,14 +1110,15 @@ impl Worker {
     }
 
     /// Posts the picture size for `area` to `session`'s window: the size
-    /// asked. None for no editor, one whose guard runs (its restore needs
-    /// the size), an area with no shape, or a size the backend could not
+    /// asked. None for no editor, one whose guard began (its tap needs the
+    /// size it puts back, and Live closes the editor at the size it has:
+    /// #74 review), an area with no shape, or a size the backend could not
     /// read the room for or post.
     fn post_size(&mut self, session: u32, area: Area) -> Option<(u32, u32)> {
-        if self.guarding.iter().any(|guard| guard.session == session) {
+        let editor = self.editors.get_mut(&session)?;
+        if editor.guarded {
             return None;
         }
-        let editor = self.editors.get_mut(&session)?;
         let room = self
             .backend
             .room(&editor.taken)
@@ -1362,15 +1368,17 @@ impl Worker {
     }
 
     /// The close guard of `session`: its editor looked up first (a guard
-    /// of a window already lost fails and ends no contact), then no more
-    /// frames, its contact ended (another session's cancelled); an editor
-    /// at its own size gets the tap on the inert spot at once, one whose
-    /// size was changed waits for its restore ([`Worker::guards`]).
+    /// of a window already lost fails and ends no contact), then marked (no
+    /// resize reaches it any more), no more frames, its contact ended
+    /// (another session's cancelled); an editor at its own size gets the
+    /// tap on the inert spot at once, one whose size was changed waits for
+    /// its restore ([`Worker::guards`]).
     fn guard(&mut self, session: u32, reply: oneshot::Sender<Result<(), String>>) {
         let Some(editor) = self.editors.get_mut(&session) else {
             let _ = reply.send(Err(NO_EDITOR.to_string()));
             return;
         };
+        editor.guarded = true;
         editor.sink = None;
         let (taken, changed) = (editor.taken.clone(), editor.changed);
         self.encoder.forget(session);
@@ -1520,18 +1528,23 @@ impl Plugwin {
 
     /// Gives `session`'s editor the shape of a page's `area` (PR G): how
     /// the resize settled. None when nothing was asked (no such editor, its
-    /// guard runs, an area with no shape, a size the backend could not
+    /// guard began, an area with no shape, a size the backend could not
     /// post), when a newer resize replaced it, or when the worker stopped.
-    pub async fn resize(&self, session: u32, area: Area) -> Option<Resized> {
+    /// The command goes to the worker now, in the caller's order (#74
+    /// review: the router's resize and close reach it as it handled them);
+    /// the answer is awaited.
+    pub fn resize(
+        &self,
+        session: u32,
+        area: Area,
+    ) -> impl Future<Output = Option<Resized>> + Send + 'static {
         let (reply, answer) = oneshot::channel();
-        self.tx
-            .send(Command::Resize {
-                session,
-                area,
-                reply,
-            })
-            .ok()?;
-        answer.await.ok().flatten()
+        let _ = self.tx.send(Command::Resize {
+            session,
+            area,
+            reply,
+        });
+        async move { answer.await.ok().flatten() }
     }
 
     /// A phase of contact `contact` on `session`'s window.
@@ -1544,13 +1557,13 @@ impl Plugwin {
         });
     }
 
-    /// The close guard of `session`.
-    pub async fn guard(&self, session: u32) -> Result<(), String> {
+    /// The close guard of `session`: the command goes to the worker now,
+    /// in the caller's order (as [`Plugwin::resize`]); its answer is
+    /// awaited (a stopped worker's: [`STOPPED`]).
+    pub fn guard(&self, session: u32) -> impl Future<Output = Result<(), String>> + Send + 'static {
         let (reply, answer) = oneshot::channel();
-        self.tx
-            .send(Command::Guard { session, reply })
-            .map_err(|_| STOPPED.to_string())?;
-        answer.await.map_err(|_| STOPPED.to_string())?
+        let _ = self.tx.send(Command::Guard { session, reply });
+        async move { answer.await.map_err(|_| STOPPED.to_string())? }
     }
 
     /// `session`'s window handed back; `closed`: Live closed the editor.
