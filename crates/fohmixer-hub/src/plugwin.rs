@@ -1746,7 +1746,7 @@ impl Plugwin {
         &self,
         session: u32,
         area: Area,
-    ) -> impl Future<Output = Option<Resized>> + Send + 'static {
+    ) -> impl Future<Output = Option<Resized>> + Send + 'static + use<> {
         let (reply, answer) = oneshot::channel();
         let _ = self.tx.send(Command::Resize {
             session,
@@ -1769,7 +1769,10 @@ impl Plugwin {
     /// The close guard of `session`: the command goes to the worker now,
     /// in the caller's order (as [`Plugwin::resize`]); its answer is
     /// awaited (a stopped worker's: [`STOPPED`]).
-    pub fn guard(&self, session: u32) -> impl Future<Output = Result<(), String>> + Send + 'static {
+    pub fn guard(
+        &self,
+        session: u32,
+    ) -> impl Future<Output = Result<(), String>> + Send + 'static + use<> {
         let (reply, answer) = oneshot::channel();
         let _ = self.tx.send(Command::Guard { session, reply });
         async move { answer.await.map_err(|_| STOPPED.to_string())? }
