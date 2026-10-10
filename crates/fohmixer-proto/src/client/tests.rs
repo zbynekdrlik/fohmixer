@@ -675,8 +675,24 @@ fn eq_messages_round_trip() {
         ClientMsg::EqOpen {
             instance: "band".into(),
             path: "live_set tracks 1 devices 0".into(),
+            area: None,
         },
         json!({"type": "eq_open", "instance": "band", "path": "live_set tracks 1 devices 0"}),
+    );
+    // PR G: the page's picture area (CSS px) with the open, and again when
+    // it changes.
+    round_trip_client(
+        ClientMsg::EqOpen {
+            instance: "band".into(),
+            path: "live_set tracks 1 devices 0".into(),
+            area: Some(crate::eq::Area { w: 390.0, h: 765.5 }),
+        },
+        json!({"type": "eq_open", "instance": "band", "path": "live_set tracks 1 devices 0",
+               "area": {"w": 390.0, "h": 765.5}}),
+    );
+    round_trip_client(
+        ClientMsg::EqArea { w: 844.0, h: 346.0 },
+        json!({"type": "eq_area", "w": 844.0, "h": 346.0}),
     );
     round_trip_client(
         ClientMsg::EqInput {

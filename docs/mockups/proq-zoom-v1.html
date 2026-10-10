@@ -1,0 +1,563 @@
+<!doctype html>
+<html lang="sk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Pro-Q zoom v1</title>
+<!-- #71: pinch zoom on the Pro-Q 4 screen, for the owner's approval.
+     The picture is a drawn stand-in for the editor (no real plug-in
+     picture, no site data). One finger reaches the "editor" (a band point
+     can be dragged); two fingers zoom and pan the picture on the tablet
+     only. -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@700&family=Barlow:wght@600;700&family=JetBrains+Mono:wght@500;600&display=swap">
+<style>
+:root {
+    --bg: #07070c;
+    --bar: #11111b;
+    --panel: #1a1a28;
+    --line: #2a2a44;
+    --text: #eaeaf0;
+    --muted: #9a9ab4;
+    --eq: #ff8fd0;
+    --display: "Barlow Condensed", "Arial Narrow", sans-serif;
+    --ui: "Barlow", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --mono: "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+}
+* { box-sizing: border-box; }
+html, body {
+    margin: 0;
+    background: #000;
+    color: var(--text);
+    font-family: var(--ui);
+    -webkit-text-size-adjust: 100%;
+}
+.page {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 18px;
+    padding: 12px 16px 40px;
+}
+/* The tablet: 1194 x 834, scaled to the page's width. */
+.fit {
+    position: relative;
+    width: 100%;
+    max-width: 1194px;
+}
+.fit::before {
+    content: "";
+    display: block;
+    padding-top: calc(834 / 1194 * 100%);
+}
+.tablet {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 1194px;
+    height: 834px;
+    transform-origin: 0 0;
+    border: 1px solid var(--line);
+    background: #000;
+    overflow: hidden;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+}
+.screen {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+}
+.bar {
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: 8px;
+    height: 52px;
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--line);
+    background: var(--bar);
+}
+.btn {
+    height: 100%;
+    padding: 0 14px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--panel);
+    color: var(--text);
+    font: 700 16px/1 var(--display);
+    letter-spacing: 0.06em;
+    cursor: pointer;
+}
+.exit { color: #5fe0d8; border-color: #2c5f5c; }
+.name {
+    display: flex;
+    flex: 1;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    min-width: 0;
+}
+.chip {
+    padding: 4px 10px;
+    border-radius: 6px;
+    background: #6be06b;
+    color: #07070c;
+    font: 700 18px/1 var(--display);
+    letter-spacing: 0.04em;
+}
+.where {
+    color: var(--eq);
+    font: 600 12px/1.4 var(--mono);
+    white-space: nowrap;
+}
+.mine {
+    padding: 3px 8px;
+    border: 1px solid var(--eq);
+    border-radius: 6px;
+    color: var(--eq);
+    font: 600 11px/1.3 var(--mono);
+    white-space: nowrap;
+}
+/* New: the zoom group, shown only while zoomed. */
+.zoom {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    height: 100%;
+}
+.zoom[hidden] { display: none; }
+.overview {
+    position: relative;
+    width: 67px;
+    height: 40px;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    background: #1c1a22;
+    overflow: hidden;
+}
+.overview svg { position: absolute; inset: 0; }
+.overview .view {
+    position: absolute;
+    border: 2px solid var(--eq);
+    border-radius: 2px;
+    background: rgba(255, 143, 208, 0.18);
+}
+.factor {
+    min-width: 46px;
+    color: var(--eq);
+    font: 600 14px/1 var(--mono);
+    text-align: center;
+}
+.whole {
+    color: var(--eq);
+    border-color: var(--eq);
+    background: #2a1626;
+}
+.help { width: 40px; padding: 0; font-size: 18px; }
+.area {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+    background: #000;
+    touch-action: none;
+}
+.picture {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 1349px;
+    height: 809px;
+    transform-origin: 0 0;
+}
+.picture svg { display: block; }
+.ring {
+    position: absolute;
+    width: 56px;
+    height: 56px;
+    margin: -28px 0 0 -28px;
+    border: 2px solid rgba(255, 255, 255, 0.55);
+    border-radius: 50%;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.15s;
+}
+.ring.on { opacity: 1; }
+.ring.pinch { border-color: var(--eq); }
+.legend {
+    position: absolute;
+    top: 60px;
+    right: 8px;
+    width: 420px;
+    padding: 10px 14px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: rgba(11, 11, 18, 0.96);
+    font: 600 13px/1.45 var(--ui);
+    pointer-events: none;
+}
+.legend[hidden] { display: none; }
+.legend h3 {
+    margin: 0 0 6px;
+    color: var(--eq);
+    font: 700 16px/1.2 var(--display);
+    letter-spacing: 0.06em;
+}
+.legend p { margin: 0 0 4px; }
+.legend .new { color: var(--eq); }
+.notes {
+    width: 100%;
+    max-width: 1194px;
+    color: var(--text);
+    font: 600 15px/1.5 var(--ui);
+}
+.notes h1 {
+    margin: 0 0 6px;
+    color: var(--eq);
+    font: 700 26px/1.2 var(--display);
+    letter-spacing: 0.04em;
+}
+.notes h2 {
+    margin: 18px 0 6px;
+    font: 700 19px/1.2 var(--display);
+    letter-spacing: 0.04em;
+}
+.notes ul { margin: 0; padding-left: 20px; }
+.notes li { margin: 3px 0; }
+.notes .muted { color: var(--muted); }
+.status {
+    color: var(--muted);
+    font: 600 13px/1.4 var(--mono);
+}
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="notes">
+    <h1>Pro-Q 4 na tablete: priblíženie dvoma prstami (návrh v1)</h1>
+    <div class="muted">Vyskúšaj priamo v tomto okne: jedným prstom chytíš a ťaháš bod pásma, dvoma prstami priblížiš a posunieš obraz. Obraz EQ je tu len nakreslená náhrada.</div>
+  </div>
+
+  <div class="fit" id="fit">
+    <div class="tablet" id="tablet">
+      <div class="screen">
+        <div class="bar">
+          <button class="btn exit" type="button">← SPÄŤ NA KANÁL</button>
+          <div class="name">
+            <span class="chip">Vox 1</span>
+            <span class="where">Pro-Q 4 · na tracku</span>
+          </div>
+          <div class="zoom" id="zoom" hidden>
+            <div class="overview" id="overview"><svg id="mini" width="67" height="40" viewBox="0 0 1349 809" preserveAspectRatio="none"></svg><div class="view" id="view"></div></div>
+            <span class="factor" id="factor">1,0×</span>
+            <button class="btn whole" id="whole" type="button">CELÝ EQ</button>
+          </div>
+          <span class="mine">zamknuté pre teba</span>
+          <button class="btn help" id="help" type="button">?</button>
+        </div>
+        <div class="area" id="area">
+          <div class="picture" id="picture">
+            <svg id="eq" width="1349" height="809" viewBox="0 0 1349 809" xmlns="http://www.w3.org/2000/svg"></svg>
+          </div>
+          <div class="ring" id="ring"></div>
+          <div class="ring pinch" id="ring2"></div>
+          <div class="legend" id="legend" hidden>
+            <h3>OVLÁDANIE</h3>
+            <p>Jeden prst: ako myš v Pro-Q (ťuk = klik, ťah = ťah, dvojťuk = dvojklik).</p>
+            <p class="new">Dva prsty od seba / k sebe: priblížiť / oddialiť (1× až 4×).</p>
+            <p class="new">Dva prsty spolu: posúvať priblížený obraz.</p>
+            <p class="new">CELÝ EQ: späť na celý obraz.</p>
+            <p>Pri priblížení obraz na PC zostáva rovnaký: mení sa len pohľad na tablete.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="status" id="status">Pohľad: celý EQ</div>
+
+  <div class="notes">
+    <h2>Ako to funguje</h2>
+    <ul>
+      <li><b>Dva prsty</b> od seba priblížia obraz okolo miesta medzi prstami (až 4×), k sebe ho oddialia. Ťahanie dvoma prstami posúva priblížený obraz.</li>
+      <li><b>Jeden prst</b> ide do Pro-Q ako doteraz, vždy na to miesto obrazu, kde ho vidíš. Pri priblížení sú body pásiem väčšie: pri 3× má bod asi 6 mm namiesto 2 mm.</li>
+      <li>Aby priblíženie neklikalo do Pro-Q, prvý prst sa do Pro-Q pošle až po 0,12 s alebo keď sa pohne. Ak medzitým pribudne druhý prst, je to priblíženie a do Pro-Q nejde nič.</li>
+      <li>Pri priblížení sa v hornej lište ukáže <b>malý náhľad</b> s rámikom (ktorá časť EQ je vidieť), <b>koľkokrát</b> je obraz zväčšený a tlačidlo <b>CELÝ EQ</b>. Pri celom obraze tam nie je nič nové.</li>
+      <li>Priblíženie je len na tablete: okno Pro-Q na PC sa nemení a druhý zvukár ani PC ho nevidia. Po zatvorení a novom otvorení EQ sa začína znova od celého obrazu.</li>
+      <li>Na PC (myšou) v tomto návrhu približuje koliesko; na tablete ho netreba.</li>
+    </ul>
+  </div>
+</div>
+
+<script>
+"use strict";
+const W = 1349, H = 809, TAB_W = 1194, TAB_H = 834, BAR = 52;
+const AREA_W = TAB_W, AREA_H = TAB_H - BAR - 1;
+const MAX_ZOOM = 4, HOLD_MS = 120, SLOP = 6;
+const svg = document.getElementById("eq");
+const NS = "http://www.w3.org/2000/svg";
+const el = (name, attrs, parent) => {
+    const e = document.createElementNS(NS, name);
+    for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+    (parent || svg).appendChild(e);
+    return e;
+};
+
+// --- the drawn stand-in for the editor ---
+const ZERO = 321;
+const bands = [
+    { x: 150, y: 300, w: 40, c: "#6be06b" },
+    { x: 330, y: 360, w: 45, c: "#5aa9f0" },
+    { x: 395, y: 352, w: 12, c: "#ff6b6b" },
+    { x: 418, y: 395, w: 8, c: "#7fd0f0" },
+    { x: 446, y: 470, w: 7, c: "#a0e0a0" },
+    { x: 470, y: 470, w: 7, c: "#50e0c0" },
+    { x: 493, y: 420, w: 9, c: "#a090f0" },
+    { x: 560, y: 340, w: 40, c: "#d070f0" },
+    { x: 760, y: 352, w: 30, c: "#5aa9f0" },
+    { x: 790, y: 325, w: 6, c: "#e0e090" },
+    { x: 850, y: 352, w: 35, c: "#d0e050" },
+    { x: 1005, y: 420, w: 10, c: "#d070c0" },
+    { x: 1110, y: 262, w: 70, c: "#9060f0" },
+];
+function draw() {
+    svg.textContent = "";
+    const g = el("linearGradient", { id: "bg", x1: 0, y1: 0, x2: 0, y2: 1 }, el("defs", {}));
+    el("stop", { offset: "0", "stop-color": "#221f2a" }, g);
+    el("stop", { offset: "1", "stop-color": "#15131b" }, g);
+    el("rect", { x: 0, y: 0, width: W, height: H, fill: "url(#bg)" });
+    for (let i = 0; i < 30; i++) {
+        const x = 40 + i * 42;
+        el("line", { x1: x, y1: 40, x2: x, y2: 770, stroke: i % 3 ? "#262330" : "#33303e", "stroke-width": 1 });
+    }
+    for (let i = -4; i <= 4; i++) {
+        const y = ZERO - i * 67;
+        el("line", { x1: 0, y1: y, x2: 1290, y2: y, stroke: i ? "#2c2936" : "#5a5560", "stroke-width": 1 });
+        const t = el("text", { x: 1296, y: y + 4, fill: "#e0a040", "font-size": 12, "font-family": "Barlow" });
+        t.textContent = i ? (i > 0 ? "+" : "") + i * 3 : "0";
+    }
+    // The bar at the top and the one at the foot.
+    el("rect", { x: 0, y: 0, width: W, height: 36, fill: "#121017" });
+    const title = el("text", { x: 30, y: 25, fill: "#f0a030", "font-size": 22, "font-family": "Barlow", "font-weight": 700 });
+    title.textContent = "Pro·Q 4";
+    const top = el("text", { x: 640, y: 23, fill: "#c8c4d0", "font-size": 13, "font-family": "Barlow" });
+    top.textContent = "A/B   Copy      ‹      Default Setting      ›          Help";
+    el("rect", { x: 0, y: 785, width: W, height: 24, fill: "#121017" });
+    const foot = el("text", { x: 250, y: 802, fill: "#b0acb8", "font-size": 12, "font-family": "Barlow" });
+    foot.textContent = "MIDI Learn          Zero Latency                Pro-Q                Analyzer: Pre+Post          100%   0.0 dB";
+    // The curve: a sum of bells.
+    let d = "";
+    for (let x = 0; x <= 1290; x += 1) {
+        let y = ZERO;
+        for (const b of bands) y += (b.y - ZERO) * Math.exp(-(((x - b.x) / b.w) ** 2));
+        d += (x ? " L " : "M ") + x + " " + y.toFixed(1);
+    }
+    el("path", { d: d + " L 1290 " + ZERO + " L 0 " + ZERO + " Z", fill: "rgba(240,180,40,0.10)" });
+    el("path", { d, fill: "none", stroke: "#f0b828", "stroke-width": 2.5 });
+    const mini = document.getElementById("mini");
+    mini.textContent = "";
+    el("path", { d, fill: "none", stroke: "#f0b828", "stroke-width": 24 }, mini);
+    for (const b of bands) el("circle", { cx: b.x, cy: b.y, r: 28, fill: b.c }, mini);
+    for (const [i, b] of bands.entries()) {
+        el("circle", { cx: b.x, cy: b.y, r: 6, fill: b.c, stroke: i === selected ? "#fff" : "#00000088", "stroke-width": i === selected ? 2.5 : 1.5 });
+    }
+    // The selected band's panel.
+    if (selected >= 0) {
+        el("rect", { x: 290, y: 640, width: 440, height: 110, rx: 14, fill: "#2a2832", stroke: "#3a3744" });
+        ["FREQ", "GAIN", "Q"].forEach((name, k) => {
+            const cx = 420 + k * 90;
+            el("circle", { cx, cy: 685, r: 28, fill: "#1a1820", stroke: "#4a4654", "stroke-width": 2 });
+            const t = el("text", { x: cx, y: 735, fill: "#e0dce8", "font-size": 12, "font-family": "Barlow", "font-weight": 700, "text-anchor": "middle" });
+            t.textContent = name;
+        });
+        const b = bands[selected];
+        const info = el("text", { x: 320, y: 668, fill: "#c8c4d0", "font-size": 12, "font-family": "JetBrains Mono" });
+        info.textContent = (20 * Math.pow(1000, b.x / 1290)).toFixed(0) + " Hz";
+        const gain = el("text", { x: 320, y: 686, fill: "#c8c4d0", "font-size": 12, "font-family": "JetBrains Mono" });
+        gain.textContent = (((ZERO - b.y) / 67) * 3).toFixed(1) + " dB";
+    }
+}
+let selected = -1;
+
+// --- the view: the fitted picture times the zoom, panned ---
+const fitScale = Math.min(AREA_W / W, AREA_H / H);
+let zoom = 1, panX = 0, panY = 0;
+const picture = document.getElementById("picture");
+function clampView() {
+    zoom = Math.min(MAX_ZOOM, Math.max(1, zoom));
+    const s = fitScale * zoom, w = W * s, h = H * s;
+    panX = w <= AREA_W ? (AREA_W - w) / 2 : Math.min(0, Math.max(AREA_W - w, panX));
+    panY = h <= AREA_H ? (AREA_H - h) / 2 : Math.min(0, Math.max(AREA_H - h, panY));
+}
+function render() {
+    clampView();
+    const s = fitScale * zoom;
+    picture.style.transform = `translate(${panX}px, ${panY}px) scale(${s})`;
+    const zoomed = zoom > 1.01;
+    document.getElementById("zoom").hidden = !zoomed;
+    document.getElementById("factor").textContent = zoom.toFixed(1).replace(".", ",") + "×";
+    const view = document.getElementById("view");
+    const ox = 67 / W, oy = 40 / H;
+    const vx = Math.max(0, -panX / s), vy = Math.max(0, -panY / s);
+    const vw = Math.min(W, AREA_W / s), vh = Math.min(H, AREA_H / s);
+    view.style.left = vx * ox + "px";
+    view.style.top = vy * oy + "px";
+    view.style.width = vw * ox + "px";
+    view.style.height = vh * oy + "px";
+    document.getElementById("status").textContent = zoomed
+        ? `Pohľad: ${zoom.toFixed(1).replace(".", ",")}× · bod pásma ≈ ${(2 * zoom).toFixed(0)} mm`
+        : "Pohľad: celý EQ · bod pásma ≈ 2 mm";
+}
+/** A point of the area (tablet px) in the picture's pixels. */
+function toPicture(ax, ay) {
+    const s = fitScale * zoom;
+    return { x: (ax - panX) / s, y: (ay - panY) / s };
+}
+function zoomAt(ax, ay, factor) {
+    const p = toPicture(ax, ay);
+    zoom *= factor;
+    clampView();
+    const s = fitScale * zoom;
+    panX = ax - p.x * s;
+    panY = ay - p.y * s;
+    render();
+}
+
+// --- the tablet's own scale on this page ---
+const tablet = document.getElementById("tablet");
+let pageScale = 1;
+function fitTablet() {
+    pageScale = document.getElementById("fit").clientWidth / TAB_W;
+    tablet.style.transform = `scale(${pageScale})`;
+}
+window.addEventListener("resize", fitTablet);
+
+// --- fingers: one goes to the editor, two zoom and pan ---
+const area = document.getElementById("area");
+const ring = document.getElementById("ring"), ring2 = document.getElementById("ring2");
+const pointers = new Map();
+let mode = "none"; // none | wait | touch | pinch
+let holdTimer = 0, dragging = -1, pinchStart = null;
+function local(e) {
+    const r = area.getBoundingClientRect();
+    return { x: (e.clientX - r.left) / pageScale, y: (e.clientY - r.top) / pageScale };
+}
+function showRing(r, at, on) {
+    r.style.left = at.x + "px";
+    r.style.top = at.y + "px";
+    r.classList.toggle("on", on);
+}
+function hitBand(p) {
+    // The editor's own hit area: about 9 px around a point at 100 %.
+    let best = -1, bestD = 9;
+    bands.forEach((b, i) => {
+        const d = Math.hypot(b.x - p.x, b.y - p.y);
+        if (d < bestD) { best = i; bestD = d; }
+    });
+    return best;
+}
+function touchStart(at) {
+    mode = "touch";
+    const p = toPicture(at.x, at.y);
+    dragging = hitBand(p);
+    if (dragging >= 0) selected = dragging;
+    draw();
+    showRing(ring, at, true);
+}
+function touchMove(at) {
+    showRing(ring, at, true);
+    if (dragging < 0) return;
+    const p = toPicture(at.x, at.y);
+    bands[dragging].x = Math.max(10, Math.min(1280, p.x));
+    bands[dragging].y = Math.max(60, Math.min(600, p.y));
+    draw();
+}
+function pinchState() {
+    const [a, b] = [...pointers.values()];
+    return { mid: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }, dist: Math.hypot(a.x - b.x, a.y - b.y) };
+}
+area.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    area.setPointerCapture(e.pointerId);
+    const at = local(e);
+    pointers.set(e.pointerId, at);
+    if (pointers.size === 1) {
+        mode = "wait";
+        pointers.get(e.pointerId).start = at;
+        clearTimeout(holdTimer);
+        holdTimer = setTimeout(() => { if (mode === "wait") touchStart(at); }, HOLD_MS);
+        showRing(ring, at, true);
+    } else if (pointers.size === 2 && (mode === "wait" || mode === "touch")) {
+        clearTimeout(holdTimer);
+        // A touch already on the editor would be cancelled there.
+        mode = "pinch";
+        dragging = -1;
+        pinchStart = { ...pinchState(), zoom, panX, panY };
+        ring.classList.remove("on");
+    }
+});
+area.addEventListener("pointermove", (e) => {
+    if (!pointers.has(e.pointerId)) return;
+    const at = local(e);
+    const start = pointers.get(e.pointerId).start;
+    pointers.set(e.pointerId, Object.assign(at, start ? { start } : {}));
+    if (mode === "wait" && start && Math.hypot(at.x - start.x, at.y - start.y) > SLOP) {
+        clearTimeout(holdTimer);
+        touchStart(start);
+        touchMove(at);
+    } else if (mode === "touch") {
+        touchMove(at);
+    } else if (mode === "pinch" && pointers.size === 2) {
+        const now = pinchState();
+        const p = { x: (pinchStart.mid.x - pinchStart.panX) / (fitScale * pinchStart.zoom), y: (pinchStart.mid.y - pinchStart.panY) / (fitScale * pinchStart.zoom) };
+        zoom = pinchStart.zoom * (now.dist / Math.max(1, pinchStart.dist));
+        clampView();
+        const s = fitScale * zoom;
+        panX = now.mid.x - p.x * s;
+        panY = now.mid.y - p.y * s;
+        render();
+        showRing(ring2, now.mid, true);
+    }
+});
+function lift(e) {
+    if (!pointers.has(e.pointerId)) return;
+    const at = local(e);
+    pointers.delete(e.pointerId);
+    if (mode === "wait") {
+        // A quick tap: the editor gets its down and up together.
+        clearTimeout(holdTimer);
+        touchStart(at);
+    }
+    if (pointers.size === 0) {
+        mode = "none";
+        dragging = -1;
+        ring.classList.remove("on");
+        ring2.classList.remove("on");
+    } else if (mode === "pinch" && pointers.size === 1) {
+        // The other finger stays: it does nothing until it lifts.
+        ring2.classList.remove("on");
+    }
+}
+area.addEventListener("pointerup", lift);
+area.addEventListener("pointercancel", lift);
+area.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    const at = local(e);
+    zoomAt(at.x, at.y, Math.exp(-e.deltaY / 400));
+}, { passive: false });
+document.getElementById("whole").addEventListener("click", () => { zoom = 1; render(); });
+document.getElementById("help").addEventListener("click", () => {
+    const l = document.getElementById("legend");
+    l.hidden = !l.hidden;
+});
+
+fitTablet();
+draw();
+render();
+</script>
+</body>
+</html>

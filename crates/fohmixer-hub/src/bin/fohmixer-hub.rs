@@ -16,14 +16,16 @@
 //!   fohmixer-hub markers frame <layout> <out>
 //!                                       write <layout> converted to tags groups to <out>, a new
 //!                                       file: exit 0, or 2 with why
-//!   fohmixer-hub eq-probe --pid <pid> [--frames <n>] [--band <x,y>] [--to <x,y>]
-//!                         [--inert <x,y>] [--out <folder>] [--close] [--sim]
+//!   fohmixer-hub eq-probe --pid <pid> [--frames <n>] [--size <w>x<h>] [--min-probe]
+//!                         [--band <x,y>] [--to <x,y>] [--inert <x,y>] [--out <folder>]
+//!                         [--close] [--sim]
 //!                                       drive the plug-in window backend against a window of
 //!                                       process <pid> (#71: Carla's bridge with Pro-Q 4, never
-//!                                       Live): capture, a band made and dragged, its text field
-//!                                       opened, the close guard, the release; one name=value
-//!                                       line per finding; exit 0, 1 when a step failed, 2 for
-//!                                       bad arguments (`plugwin::probe`)
+//!                                       Live): Pro-Q's minimum size, a resize, capture, a band
+//!                                       made and dragged, its text field opened, the editor's
+//!                                       own size back, the close guard, the release; one
+//!                                       name=value line per finding; exit 0, 1 when a step
+//!                                       failed, 2 for bad arguments (`plugwin::probe`)
 //!
 //! `pin` and `cloudflare` run as the hub's user: what they store is sealed
 //! (DPAPI) for that account.

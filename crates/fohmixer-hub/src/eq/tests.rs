@@ -268,6 +268,7 @@ fn an_instances_connections_are_counted_and_ride_its_opens() {
         key: key(1),
         session: 1,
         connection: 2,
+        area: None,
     };
     assert!(acts.contains(&open), "{acts:?}");
 }
@@ -285,7 +286,8 @@ fn an_open_takes_the_lock_and_another_client_is_refused() {
             Act::Open {
                 key: key(1),
                 session: 1,
-                connection: 0
+                connection: 0,
+                area: None
             },
         ]
     );
@@ -394,7 +396,8 @@ fn one_editor_is_on_the_pcs_screen_at_a_time() {
             Act::Open {
                 key: key(3),
                 session: 3,
-                connection: 0
+                connection: 0,
+                area: None
             },
         ]
     );
@@ -537,7 +540,8 @@ fn an_editor_left_while_it_opens_closes_once_open() {
             Act::Open {
                 key: key(2),
                 session: 2,
-                connection: 0
+                connection: 0,
+                area: None
             },
         ]
     );
@@ -581,7 +585,8 @@ fn opening_another_editor_closes_the_held_one_first() {
             Act::Open {
                 key: key(2),
                 session: 2,
-                connection: 0
+                connection: 0,
+                area: None
             },
         ]
     );
@@ -856,4 +861,106 @@ fn a_cards_picture_is_kept_only_while_its_path_names_its_device() {
     );
     pictures.named(names(&[(1, "live_2"), (4, "live_4")]));
     assert_eq!(pictures.get(&key(4)), Some(jpeg(b"four's")), "kept");
+}
+
+/// A page's picture area (PR G).
+fn area(w: f64, h: f64) -> Area {
+    Area { w, h }
+}
+
+/// The areas the opens among `acts` carry.
+fn opens(acts: &[Act]) -> Vec<Option<Area>> {
+    acts.iter()
+        .filter_map(|a| match a {
+            Act::Open { area, .. } => Some(*area),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn an_open_carries_its_clients_area_and_a_changed_one_resizes_the_open_editor() {
+    let mut eqs = listed();
+    let (upright, turned) = (area(392.0, 800.0), area(800.0, 392.0));
+    eqs.keep_area(1, Some(upright));
+    assert_eq!(opens(&eqs.open(1, &key(1), WALL)), [Some(upright)]);
+    // Still opening: kept for later, nothing resized.
+    assert_eq!(eqs.area(1, turned), Vec::new());
+    eqs.opened(&key(1), 1, Ok((667, 1361)));
+    // Open: a changed area resizes it; another client holds nothing.
+    assert_eq!(
+        eqs.area(1, upright),
+        vec![Act::Resize {
+            key: key(1),
+            session: 1,
+            area: upright,
+        }]
+    );
+    assert_eq!(eqs.area(2, turned), Vec::new());
+    // A switch opens the next one with the newest area.
+    eqs.area(1, turned);
+    let switch = eqs.open(1, &key(2), WALL);
+    assert_eq!(
+        opens(&switch),
+        Vec::<Option<Area>>::new(),
+        "it waits for the close"
+    );
+    assert_eq!(eqs.area(1, upright), Vec::new(), "closing: nothing resized");
+    let next = eqs.closed(&key(1), 1, false);
+    assert_eq!(opens(&next), [Some(upright)]);
+    // An open without an area keeps the editor's own size.
+    eqs.opened(&key(2), 2, Ok((1349, 809)));
+    eqs.close(1, reason::EXIT, true);
+    eqs.closed(&key(2), 2, false);
+    eqs.keep_area(1, None);
+    assert_eq!(opens(&eqs.open(1, &key(3), WALL)), [None]);
+    // The other client's area rides its own open only.
+    eqs.keep_area(2, Some(turned));
+    eqs.opened(&key(3), 3, Ok((1349, 809)));
+    eqs.detach(1);
+    eqs.closed(&key(3), 3, false);
+    assert_eq!(opens(&eqs.open(2, &key(4), WALL)), [Some(turned)]);
+    // A detached client's area is forgotten.
+    eqs.keep_area(3, Some(upright));
+    eqs.detach(3);
+    eqs.opened(&key(4), 4, Ok((1652, 661)));
+    eqs.close(2, reason::EXIT, true);
+    eqs.closed(&key(4), 4, false);
+    assert_eq!(opens(&eqs.open(3, &key(1), WALL)), [None]);
+}
+
+#[test]
+fn a_resized_picture_clamps_the_points_from_then_on() {
+    let mut eqs = listed();
+    let session = open_one(&mut eqs);
+    let down = |eqs: &mut Eqs, x: f64, y: f64| -> Option<(i32, i32)> {
+        let acts = eqs.input(1, Touch::Down, x, y, 0.0);
+        eqs.input(1, Touch::Cancel, x, y, 0.0);
+        acts.iter().find_map(|a| match a {
+            Act::Touch {
+                phase: Phase::Down,
+                at,
+                ..
+            } => Some(*at),
+            _ => None,
+        })
+    };
+    assert_eq!(down(&mut eqs, 700.0, 1300.0), Some((700, 808)));
+    // Another session's size, or another editor's, changes nothing.
+    eqs.sized(&key(1), session + 1, (667, 1361));
+    eqs.sized(&key(2), session, (667, 1361));
+    assert_eq!(down(&mut eqs, 700.0, 1300.0), Some((700, 808)));
+    eqs.sized(&key(1), session, (667, 1361));
+    assert_eq!(down(&mut eqs, 700.0, 1300.0), Some((666, 1300)));
+    // A closing editor keeps its size (nothing touches it any more).
+    eqs.close(1, reason::EXIT, true);
+    eqs.sized(&key(1), session, (100, 100));
+    assert_eq!(eqs.held_by(1), Some((key(1), session, "closing")));
+    eqs.closed(&key(1), session, false);
+    assert_eq!(open_one(&mut eqs), session + 1);
+    assert_eq!(
+        down(&mut eqs, 1348.0, 808.0),
+        Some((1348, 808)),
+        "its own take's size"
+    );
 }

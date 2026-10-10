@@ -1,6 +1,7 @@
 //! The Pro-Q 4 screen's glue in the store (#71 PR E): the hub's `eq_list`,
 //! `eq_locks` and `eq` into the signals (`store/eq.rs`, tested), the page's
-//! `eq_list`, `eq_open`, `eq_input` and `eq_close`, a card's last picture
+//! `eq_list`, `eq_open` (with its picture area, PR G), `eq_area`,
+//! `eq_input` and `eq_close`, a card's last picture
 //! fetched with the token, and the binary frames: the session in their
 //! header (`fohmixer_proto::eq::frame_parts`) checked against the page's
 //! open editor (`behave::eq::shows_frame`) and the JPEG handed as a blob to
@@ -10,7 +11,7 @@
 use std::rc::Rc;
 
 use fohmixer_proto::client::ClientMsg;
-use fohmixer_proto::eq::{EqItem, EqLock, frame_parts};
+use fohmixer_proto::eq::{Area, EqItem, EqLock, frame_parts};
 use fohmixer_proto::layout::Binding;
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
@@ -98,16 +99,30 @@ impl LiveStore {
         });
     }
 
-    /// Opens the editor at `path` on `instance`: opening from now on, or
+    /// The screen of the editor at `path` on `instance` mounts: opening from
+    /// now on (a closed state of it from before is not this screen's end);
+    /// its `eq_open` goes once its picture area is in the page (PR G).
+    pub fn eq_opening(self, instance: &str, path: &str) {
+        let _ = self.eq.try_set(Some(asked(instance, path, true)));
+    }
+
+    /// Opens the editor at `path` on `instance` for a picture `area` (CSS
+    /// px, PR G: the editor gets its aspect): opening from now on, or
     /// closed at once (`socket`) when the socket could not take the ask
     /// (`store::eq::asked`; the hub's answer comes in a later task either
     /// way).
-    pub fn eq_open(self, instance: &str, path: &str) {
+    pub fn eq_open(self, instance: &str, path: &str, (w, h): (f64, f64)) {
         let sent = self.send(&ClientMsg::EqOpen {
             instance: instance.to_string(),
             path: path.to_string(),
+            area: Some(Area { w, h }),
         });
         let _ = self.eq.try_set(Some(asked(instance, path, sent)));
+    }
+
+    /// The open editor's picture area changed (CSS px, PR G).
+    pub fn eq_area(self, (w, h): (f64, f64)) {
+        self.send(&ClientMsg::EqArea { w, h });
     }
 
     /// A finger on the open editor.

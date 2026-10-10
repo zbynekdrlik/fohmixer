@@ -35,8 +35,15 @@
 //!   ends that one first. Every contact is numbered: its phases carry
 //!   the number, and the window worker's word that it ended a contact ends
 //!   only that one (a late word never ends a newer contact).
+//! - **The device's shape (PR G):** each client's picture area as its page
+//!   last gave it (`eq_open`'s, then `eq_area`'s; [`Eqs::keep_area`]): an
+//!   open carries it ([`Act::Open`]: the open sequence gives the editor its
+//!   aspect before it answers), and a changed one resizes the client's open
+//!   editor ([`Eqs::area`], [`Act::Resize`]). The picture's size the points
+//!   are clamped to follows ([`Eqs::sized`]).
 //! - **The close:** never while a contact is down: the close sequence's
-//!   guard ends it first (`plugwin`), then taps the inert spot, waits
+//!   guard ends it first (`plugwin`; an editor whose size was changed gets
+//!   its own size back before the tap), then taps the inert spot, waits
 //!   [`GUARD_WAIT`], sets `is_editor_open = false` and releases the window.
 //!   It turns off the device its open read (its `$ref`; [`close`] decides
 //!   when that is gone). An editor still opening closes as soon as it is
@@ -47,6 +54,7 @@
 
 pub mod close;
 pub mod open;
+pub mod size;
 pub mod walk;
 
 use std::collections::btree_map::Entry;
@@ -56,7 +64,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use fohmixer_proto::client::ServerMsg;
-use fohmixer_proto::eq::{EqLock, EqState, Touch, reason};
+use fohmixer_proto::eq::{Area, EqLock, EqState, Touch, reason};
 use serde_json::{Value, json};
 
 use crate::live::subs::ClientId;
@@ -119,11 +127,21 @@ pub enum Act {
     /// The open sequence of `key` as `session`: the window list, `is_editor_open
     /// = true`, the new window taken. `connection`: its instance's connection
     /// it starts on ([`Eqs::connection`]); the device's `$ref` the open reads
-    /// holds for that connection only.
+    /// holds for that connection only. `area` (PR G): its client's picture
+    /// area, whose aspect the editor gets before the open answers (none:
+    /// its own size).
     Open {
         key: EditorKey,
         session: u32,
         connection: u32,
+        area: Option<Area>,
+    },
+    /// The open editor of `session` gets the aspect of its client's new
+    /// picture `area` (PR G).
+    Resize {
+        key: EditorKey,
+        session: u32,
+        area: Area,
     },
     /// The close sequence: the guard (any contact ended, the inert spot
     /// tapped), [`GUARD_WAIT`], `is_editor_open = false`, the window released.
@@ -303,6 +321,8 @@ pub struct Eqs {
     /// How often each instance connected again since the hub started (its
     /// connection's number: a `$ref` holds for one connection only).
     connections: BTreeMap<String, u32>,
+    /// Each client's picture area, as its page last gave it (PR G).
+    areas: BTreeMap<ClientId, Area>,
 }
 
 impl Eqs {
@@ -371,6 +391,44 @@ impl Eqs {
     /// Something came from `client` at `now`.
     pub fn heard(&mut self, client: ClientId, now: f64) {
         self.heard.insert(client, now);
+    }
+
+    /// `client`'s picture area as its open gave it (PR G; none: the open
+    /// keeps the editor's own size), for the editor it opens next.
+    pub fn keep_area(&mut self, client: ClientId, area: Option<Area>) {
+        match area {
+            Some(area) => self.areas.insert(client, area),
+            None => self.areas.remove(&client),
+        };
+    }
+
+    /// `client`'s picture area changed (PR G): kept, and its open editor
+    /// (none opening, waiting or closing) gets its aspect.
+    pub fn area(&mut self, client: ClientId, area: Area) -> Vec<Act> {
+        self.keep_area(client, Some(area));
+        let Some(key) = self.held.get(&client) else {
+            return Vec::new();
+        };
+        match self.editors.get(key) {
+            Some(editor) if matches!(editor.stage, Stage::Open { .. }) => vec![Act::Resize {
+                key: key.clone(),
+                session: editor.session,
+                area,
+            }],
+            _ => Vec::new(),
+        }
+    }
+
+    /// The picture of `key` (`session`) is `size` now (PR G: a resize
+    /// settled, or the window grabbed at another size): an open editor's
+    /// points are clamped to it from now on.
+    pub fn sized(&mut self, key: &EditorKey, session: u32, size: (u32, u32)) {
+        if let Some(editor) = self.editors.get_mut(key)
+            && editor.session == session
+            && let Stage::Open { width, height } = &mut editor.stage
+        {
+            (*width, *height) = size;
+        }
     }
 
     /// The locks as `client` sees them: every taken editor, its own marked.
@@ -479,6 +537,7 @@ impl Eqs {
         self.sessions += 1;
         editor.session = self.sessions;
         editor.stage = Stage::Opening;
+        let area = self.areas.get(&editor.holder).copied();
         vec![
             Act::Record(record(
                 "open",
@@ -491,6 +550,7 @@ impl Eqs {
                 key: key.clone(),
                 session: self.sessions,
                 connection,
+                area,
             },
         ]
     }
@@ -680,6 +740,7 @@ impl Eqs {
     /// is dropped, and it is forgotten.
     pub fn detach(&mut self, client: ClientId) -> Vec<Act> {
         self.heard.remove(&client);
+        self.areas.remove(&client);
         self.close(client, reason::DETACH, true)
     }
 

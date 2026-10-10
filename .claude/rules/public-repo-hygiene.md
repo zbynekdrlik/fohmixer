@@ -17,6 +17,7 @@ What is public: the code, the import tool, and a **synthetic** `.tosc` fixture a
 
 - `.mcp.json` is git-ignored (it carries the MCP servers' auth); never commit it or paste its values.
 - Live checks on the Ableton PC (spec §5.3, "L") record their results on the tickets without host names, IPs or user paths.
+- **No repo URLs in ticket texts** (#71, 2026-10-10): a GitHub or raw.githack URL of this repo carries the account's name, which is on the private list. Name a file by its path and commit instead; the owner gets a mockup's githack link in the session only. Gate every post on the count: `[ "$(grep -c … <file>)" = 0 ] && gh issue comment …` — never `;` (a `;` posted a hit once, deleted at once).
 - CI runs gitleaks over the full history (`secrets` job, `.gitleaks.toml`: the default rules; an allowlist entry needs a comment naming the fixture and why it is not a secret, a real secret is never allowlisted).
 - Commits use the GitHub noreply identity: every clone sets it locally (`git config user.name` / `user.email` to the account's `…@users.noreply.github.com`), never the box's global identity. The commits before the S0 merge were made with a personal identity; the owner decided to keep them as they are (#3, 2026-09-29): history is never rewritten to remove it. Merge with plain `gh pr merge --merge` (GitHub then authors the merge with the noreply address).
 - This follows the rule the owner set for the sibling public repo iemmixer.
