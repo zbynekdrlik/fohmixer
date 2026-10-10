@@ -1502,20 +1502,94 @@ fn a_resize_lands_within_2_px_or_settles_unlanded_after_1_s() {
 }
 
 #[test]
-fn the_guards_restore_waits_for_a_settling_resize_posts_then_taps_or_fails() {
-    use Restore::{Fail, Post, Tap, Wait};
-    // A resize of the editor still settles: the original goes after it.
-    assert_eq!(restore_step(true, None, true), Wait);
-    assert_eq!(restore_step(true, Some(5000.0), true), Wait);
-    // Not posted yet: posted, even when the size reads back already (a
-    // resize posted before may land after the read).
-    assert_eq!(restore_step(false, None, true), Post);
-    assert_eq!(restore_step(false, None, false), Post);
-    // Posted: back is a tap, whenever it comes; not back in time a failure.
-    assert_eq!(restore_step(false, Some(0.0), true), Tap);
-    assert_eq!(restore_step(false, Some(1000.0), true), Tap);
-    assert_eq!(restore_step(false, Some(999.0), false), Wait);
-    assert_eq!(restore_step(false, Some(1000.0), false), Fail);
+fn the_guard_waits_for_a_settling_resize_taps_at_the_known_size_in_no_doubt_or_posts_it() {
+    use GuardStep::{Fail, Post, Tap, Wait};
+    assert_eq!(KNOWN_SIZE, (1349, 809));
+    assert_eq!(inert_spot(KNOWN_SIZE.0), (546, 15));
+    // A resize of the editor still settles: the guard's size goes after it.
+    assert_eq!(guard_step(true, false, None, true), Wait);
+    assert_eq!(guard_step(true, true, Some(5000.0), true), Wait);
+    // At the known size, in no doubt: the tap, posted or not.
+    assert_eq!(guard_step(false, false, None, true), Tap);
+    assert_eq!(guard_step(false, false, Some(0.0), true), Tap);
+    assert_eq!(guard_step(false, false, Some(5000.0), true), Tap);
+    // Another size, or the known one in doubt: posted, then waited for.
+    assert_eq!(guard_step(false, false, None, false), Post);
+    assert_eq!(guard_step(false, true, None, true), Post);
+    assert_eq!(guard_step(false, true, None, false), Post);
+    assert_eq!(guard_step(false, false, Some(999.0), false), Wait);
+    assert_eq!(guard_step(false, true, Some(999.0), true), Wait);
+    // Not so in time: no tap.
+    assert_eq!(guard_step(false, false, Some(1000.0), false), Fail);
+    assert_eq!(guard_step(false, true, Some(1000.0), true), Fail);
+}
+
+#[test]
+fn a_guard_that_cannot_tap_says_what_it_read() {
+    assert_eq!(
+        not_known(Some((760, 1271)), false),
+        format!("{NOT_BACK}: the picture is 760x1271, 1349x809 asked")
+    );
+    assert_eq!(
+        not_known(Some((760, 1271)), true),
+        format!("{NOT_BACK}: the picture is 760x1271, 1349x809 asked")
+    );
+    assert_eq!(
+        not_known(None, false),
+        format!("{NOT_BACK}: the picture is 0x0, 1349x809 asked")
+    );
+    assert_eq!(
+        not_known(Some(KNOWN_SIZE), true),
+        format!("{NOT_BACK}: an earlier resize may still land (the picture reads 1349x809)")
+    );
+    assert_eq!(
+        not_known(Some(KNOWN_SIZE), false),
+        format!("{NOT_BACK}: the picture is 1349x809, 1349x809 asked")
+    );
+}
+
+#[test]
+fn the_known_size_goes_at_the_takes_place_moved_in_when_it_does_not_fit() {
+    let work = rect(0, 0, 2560, 1400);
+    // Taken at 760 × 1271 in the corner: the known size there.
+    let corner = taken_at(760, 1271, rect(0, 0, 776, 1310));
+    assert_eq!(known_rect(work, &corner), rect(0, 0, 1365, 848));
+    // Taken low and right: moved in.
+    let low = taken_at(760, 1271, rect(2000, 1000, 776, 1310));
+    assert_eq!(known_rect(work, &low), rect(1195, 552, 1365, 848));
+}
+
+#[test]
+fn a_window_moved_on_from_its_reading_once_its_place_or_its_picture_differs() {
+    let then = rect(0, 0, 1365, 848);
+    let reading = Reading {
+        window: Some(then),
+        client: (1349, 809),
+    };
+    assert!(!moved(reading, Some(then), Some((1349, 809))));
+    assert!(moved(
+        reading,
+        Some(rect(0, 0, 683, 1400)),
+        Some((1349, 809))
+    ));
+    assert!(moved(
+        reading,
+        Some(rect(1, 0, 1365, 848)),
+        Some((1349, 809))
+    ));
+    assert!(moved(reading, Some(then), Some((667, 1361))));
+    assert!(moved(reading, Some(then), Some((1349, 808))));
+    // A read that failed tells nothing.
+    assert!(!moved(reading, None, None));
+    assert!(!moved(reading, None, Some((1349, 809))));
+    assert!(moved(reading, None, Some((667, 1361))));
+    // Its own rectangle unread then: only the picture tells.
+    let unread = Reading {
+        window: None,
+        client: (1349, 809),
+    };
+    assert!(!moved(unread, Some(rect(5, 5, 5, 5)), Some((1349, 809))));
+    assert!(moved(unread, Some(then), Some((667, 1361))));
 }
 
 #[test]
@@ -1542,6 +1616,7 @@ fn a_resize_posts_the_areas_size_and_answers_once_it_lands() {
             client: (667, 1361),
             ok: true,
             ms: 20.0,
+            reverted: false,
         })
     );
     assert_eq!(worker.editors[&1].size, (667, 1361));
@@ -1624,26 +1699,38 @@ fn a_resize_that_does_not_land_settles_after_its_wait_and_a_newer_one_replaces_i
             client: (1349, 809),
             ok: false,
             ms: 1000.0,
+            reverted: true,
         })
     );
     assert!(worker.editors[&1].resizing.is_none());
-    // It lands late: the next grab says so (its points are of that size).
-    handle.resize_late(false);
+    // Its rectangle before goes back, after them (#74 review).
+    assert_eq!(resizes(&handle), [(667, 1361), (1652, 661), (1349, 809)]);
+    assert!(worker.editors[&1].doubt.is_some(), "they may land yet");
+    // They land late, one at a time: a grab of another size says so (its
+    // points are of that size), and the window moved: no doubt.
+    assert!(handle.land_one(window));
+    assert!(handle.land_one(window));
     assert_eq!(handle.size(window), Some((1652, 661)));
     let (sink, _frames) = sink();
     worker.command_at(Command::Capture { session: 1, sink }, 1300.0);
     worker.step_at(1300.0);
-    assert_eq!(
-        heard.lock().unwrap().as_slice(),
-        [PlugwinEvent::Sized {
-            session: 1,
-            width: 1652,
-            height: 661
-        }]
-    );
+    let sized = |width: u32, height: u32| PlugwinEvent::Sized {
+        session: 1,
+        width,
+        height,
+    };
+    assert_eq!(heard.lock().unwrap().as_slice(), [sized(1652, 661)]);
     assert_eq!(worker.editors[&1].size, (1652, 661));
+    assert!(worker.editors[&1].doubt.is_none());
     worker.step_at(1340.0);
     assert_eq!(heard.lock().unwrap().len(), 1, "said once");
+    // The way back lands: said too.
+    assert!(handle.land_one(window));
+    worker.step_at(1380.0);
+    assert_eq!(
+        heard.lock().unwrap().as_slice(),
+        [sized(1652, 661), sized(1349, 809)]
+    );
 }
 
 #[test]
@@ -1792,6 +1879,17 @@ fn the_guard_taps_only_at_the_size_its_inert_spot_is_known_at() {
     assert_eq!(guarded.try_recv().unwrap(), Ok(()));
     assert_eq!(touches(&handle), [t("down", 546, 15), t("up", 546, 15)]);
     assert_eq!(handle.size(window), Some((1349, 809)));
+    // Live closes it at that size: the release posts nothing (its window
+    // is gone).
+    let (reply, _released) = oneshot::channel();
+    let release = Command::Release {
+        session: 1,
+        closed: true,
+        reply,
+    };
+    worker.command_at(release, 30.0);
+    assert_eq!(resizes(&handle), [(1349, 809)], "nothing more posted");
+    assert!(handle.windows().is_empty(), "Live closed it");
 }
 
 #[test]
@@ -1891,17 +1989,46 @@ fn the_guard_waits_for_a_resize_on_its_way_then_puts_the_size_back() {
     let mut later = resize_at(&mut worker, 1, area(800.0, 320.0), 20.0);
     assert_eq!(later.try_recv().unwrap(), None);
     worker.step_at(500.0);
-    assert_eq!(resizes(&handle), [(667, 1361)], "the original waits");
+    assert_eq!(resizes(&handle), [(667, 1361)], "the guard's size waits");
     worker.step_at(1000.0);
-    // Settled unlanded: the original is posted after it in the same step.
+    // Settled unlanded: its way back posted, then the guard's known size,
+    // in the same step.
     assert_eq!(resized.try_recv().unwrap().map(|r| r.ok), Some(false));
-    assert_eq!(resizes(&handle), [(667, 1361), (1349, 809)]);
+    assert_eq!(resizes(&handle), [(667, 1361), (1349, 809), (1349, 809)]);
     assert!(answer.try_recv().is_err());
-    // The window's thread lands them in order: the original last.
-    handle.resize_late(false);
+    // The window's thread lands them in order: the guard's last. The first
+    // seen to land moves the window: no doubt; once the known size reads
+    // back, the tap.
+    let window = handle.windows()[0];
+    assert!(handle.land_one(window));
     worker.step_at(1010.0);
+    assert!(answer.try_recv().is_err(), "the upright picture first");
+    handle.resize_late(false);
+    worker.step_at(1020.0);
     assert_eq!(answer.try_recv().unwrap(), Ok(()));
     assert_eq!(touches(&handle), [t("down", 546, 15), t("up", 546, 15)]);
+}
+
+#[test]
+fn a_guard_that_saw_nothing_move_since_an_unlanded_resize_taps_nothing() {
+    // The window's thread lands the resize and its way back between two of
+    // the worker's looks: nothing it reads moved, so it cannot tell that
+    // from nothing landed yet. The guard taps nothing (left open in Live,
+    // the safe side).
+    let (mut worker, handle, _) = worker();
+    take(&mut worker, &handle, 1, 0.0);
+    handle.resize_late(true);
+    resize_at(&mut worker, 1, UPRIGHT, 0.0);
+    worker.step_at(1000.0);
+    handle.resize_late(false);
+    worker.step_at(1010.0);
+    let mut guarded = guard_at(&mut worker, 1, 1020.0);
+    worker.step_at(1030.0);
+    worker.step_at(2029.0);
+    assert!(guarded.try_recv().is_err());
+    worker.step_at(2030.0);
+    assert!(guarded.try_recv().unwrap().is_err());
+    assert_eq!(touches(&handle), Vec::new());
 }
 
 #[test]

@@ -31,12 +31,13 @@
 //! (`{"op": "resize", "window", "w", "h", "left", "top"}`: the picture size
 //! asked, the rectangle less the frame, and the place) and lands at once,
 //! the picture never below [`SIM_MIN`] (Pro-Q's own minimum stands in its
-//! way); a test can make it land late (`resize_late`: posted, landing when
-//! the switch goes off) or never (`resize_refused`), or resize or move a
-//! window as the PC would (`resize_window`, `move_window`). A grab draws
-//! the picture at the window's size.
+//! way); a test can make it land late (`resize_late`: posted, in order,
+//! landing one at a time with `land_one` or all when the switch goes off)
+//! or never (`resize_refused`), or resize or move a window as the PC would
+//! (`resize_window`, `move_window`). A grab draws the picture at the
+//! window's size.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io::Write as _;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -98,15 +99,16 @@ pub fn picture(count: u64, width: u32, height: u32) -> Pixels {
 }
 
 /// A simulated window: its process, whether it is on top, its picture's
-/// size, its top-left corner on the screen and a rectangle posted to it
-/// that has not landed yet.
+/// size, its top-left corner on the screen and the rectangles posted to it
+/// that have not landed yet, in order (a window's thread takes its posted
+/// messages one after the other).
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SimWindow {
     pid: u32,
     topmost: bool,
     size: (u32, u32),
     at: (i32, i32),
-    posted: Option<Rect>,
+    posted: VecDeque<Rect>,
 }
 
 impl SimWindow {
@@ -187,7 +189,7 @@ impl State {
                 topmost: false,
                 size: (SIM_WIDTH, SIM_HEIGHT),
                 at: (SIM_WORK.left, SIM_WORK.top),
-                posted: None,
+                posted: VecDeque::new(),
             },
         );
         window
@@ -315,16 +317,32 @@ impl SimHandle {
     }
 
     /// Whether a resize waits (posted to a busy window thread); switched
-    /// off, every rectangle waiting lands.
+    /// off, every rectangle waiting lands, in order.
     pub fn resize_late(&self, on: bool) {
         let mut state = self.lock();
         state.resize_late = on;
         if !on {
             for window in state.windows.values_mut() {
-                if let Some(rect) = window.posted.take() {
+                for rect in std::mem::take(&mut window.posted) {
                     window.land(rect);
                 }
             }
+        }
+    }
+
+    /// The oldest rectangle waiting for `window` lands (its busy thread
+    /// takes one message): whether one waited.
+    pub fn land_one(&self, window: WindowId) -> bool {
+        let mut state = self.lock();
+        let Some(found) = state.windows.get_mut(&window) else {
+            return false;
+        };
+        match found.posted.pop_front() {
+            Some(rect) => {
+                found.land(rect);
+                true
+            }
+            None => false,
         }
     }
 
@@ -464,7 +482,7 @@ impl Backend for Sim {
         // never (the plug-in keeps its size and place).
         match (refused, late) {
             (true, _) => {}
-            (false, true) => window.posted = Some(rect),
+            (false, true) => window.posted.push_back(rect),
             (false, false) => window.land(rect),
         }
         let (w, h) = picture_of(rect);
@@ -873,10 +891,14 @@ mod tests {
         sim.resize(&other, around((900, 1100), (10, 20))).unwrap();
         assert_eq!(sim.client(&taken), Ok((1349, 809)), "posted, not landed");
         assert_eq!(sim.rect(&other), Ok(around((1349, 809), (0, 0))));
-        // A newer rectangle replaces the one waiting.
+        // A newer rectangle waits after it; one at a time, in order.
         sim.resize(&taken, around((700, 1300), (0, 0))).unwrap();
+        assert!(handle.land_one(taken.window));
+        assert_eq!(sim.client(&taken), Ok((800, 1200)), "the oldest first");
         handle.resize_late(false);
         assert_eq!(sim.client(&taken), Ok((700, 1300)), "landed");
+        assert!(!handle.land_one(taken.window), "nothing waits");
+        assert!(!handle.land_one(WindowId(99)), "no such window");
         assert_eq!(sim.client(&other), Ok((900, 1100)));
         assert_eq!(sim.rect(&other), Ok(around((900, 1100), (10, 20))));
         // Refused: recorded, never landing.

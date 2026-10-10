@@ -1037,6 +1037,7 @@ const LANDED: Resized = Resized {
     client: (667, 1361),
     ok: true,
     ms: 12.5,
+    reverted: false,
 };
 
 /// The `eq` records waiting.
@@ -1079,13 +1080,16 @@ fn a_resize_and_a_new_size_are_eq_records() {
         client: (1349, 809),
         ok: false,
         ms: 1000.0,
+        reverted: true,
     };
     assert_eq!(
         resize_fields(&key(), 3, &resized),
         json!({"what": "resize", "instance": "band", "path": PATH, "client": null,
                "session": 3, "why": null, "w": 1652, "h": 661, "client_w": 1349,
-               "client_h": 809, "ok": false, "ms": 1000.0})
+               "client_h": 809, "ok": false, "ms": 1000.0, "reverted": true})
     );
+    let landed = resize_fields(&key(), 3, &LANDED);
+    assert_eq!(landed["reverted"], false);
     assert_eq!(
         sized_fields(&key(), 4, (800, 600)),
         json!({"what": "sized", "instance": "band", "path": PATH, "client": null,

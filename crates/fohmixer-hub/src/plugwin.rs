@@ -58,28 +58,36 @@
 //!   area, [`inside`]; #74 review) and the picture's size is read every step
 //!   ([`Backend::client`], no message) until it lands within
 //!   [`RESIZE_SLACK`] or [`RESIZE_MS`] passed ([`settled`]): the caller hears
-//!   how it settled ([`Resized`]). The capture goes on meanwhile, and the
-//!   frames carry the picture's size. A grab of another size with no resize
-//!   on its way (one that landed late, a window resized on the PC) is
-//!   reported ([`PlugwinEvent::Sized`]).
-//! - **The close guard** ([`Plugwin::guard`]): the frames stop, its own
-//!   contact ends at its last point (an up), another session's is cancelled
-//!   there and reported ([`GUARD_CANCEL`]: the PC injects one contact, so
-//!   the tap would fail or end the other engineer's drag); an editor whose
-//!   size was changed gets its original size back first (posted once a
-//!   resize on its way settled, then read every step until it is back,
-//!   [`restore_step`]; not back within [`RESIZE_MS`]: the guard fails, as
-//!   the inert spot is known only at the original size), then a tap on
-//!   the editor's inert spot of its original width
-//!   ([`inert_spot`]): a value text field closes on a click elsewhere, and
-//!   Pro-Q 4.02 crashes Live when its editor closes with one open. A guard
-//!   that cannot tap fails: the router then leaves the editor open.
-//! - **The release** ([`Plugwin::release`]): an editor's original size
-//!   posted again when it was changed (best effort, not waited for), the
-//!   window's z-order as it was, and, when Live closed the editor,
-//!   [`Backend::live_closed`]. The stop ends the contact and releases every
-//!   window (the editors stay open in Live); the hub's stop waits for that,
-//!   bounded ([`Plugwin::stopped`]).
+//!   how it settled ([`Resized`]). One that settled unlanded gets the
+//!   window's rectangle before it posted back at once (#74 review: Live's
+//!   frame may have taken it and Pro-Q not), and both may still wait in
+//!   Live's thread: until a read sees the window or its picture move from
+//!   what they read then ([`Reading`], [`moved`]), the editor is in doubt
+//!   and the guard trusts no size it reads. The capture goes on meanwhile,
+//!   and the frames carry the picture's size. A grab of another size with
+//!   no resize on its way (one that landed late, a window resized on the
+//!   PC) is reported ([`PlugwinEvent::Sized`]).
+//! - **The close guard** ([`Plugwin::guard`]): no resize reaches the editor
+//!   from then on; the frames stop, its own contact ends at its last point
+//!   (an up), another session's is cancelled there and reported
+//!   ([`GUARD_CANCEL`]: the PC injects one contact, so the tap would fail or
+//!   end the other engineer's drag). The inert spot is known only at
+//!   [`KNOWN_SIZE`] (#74 review, I1): the guard reads the picture's size,
+//!   posts the window's rectangle for that size where none is (once a
+//!   resize on its way settled; at the take's place, moved into the work
+//!   area when it does not fit there), and taps the inert spot only once
+//!   the picture reads exactly that size and the editor is in no doubt
+//!   ([`guard_step`]); not so within [`RESIZE_MS`] of its post, the guard
+//!   fails and taps nothing (the router then leaves the editor open in
+//!   Live). A value text field closes on a click elsewhere, and Pro-Q 4.02
+//!   crashes Live when its editor closes with one open. A guard that cannot
+//!   tap fails too.
+//! - **The release** ([`Plugwin::release`]): the window's z-order as it
+//!   was; unless Live closed the editor, its rectangle at the take (place
+//!   and size) posted again when it was changed (best effort, not waited
+//!   for); when Live closed it, [`Backend::live_closed`]. The stop ends the
+//!   contact and releases every window (the editors stay open in Live); the
+//!   hub's stop waits for that, bounded ([`Plugwin::stopped`]).
 
 pub mod probe;
 pub mod sim;
@@ -120,9 +128,13 @@ pub const STEP: Duration = Duration::from_millis(10);
 pub const GUARD_TAP: Duration = Duration::from_millis(30);
 /// The frames' JPEG quality.
 pub const QUALITY: u8 = 70;
+/// The picture size (px) at which the inert spot was verified on the PC
+/// (Pro-Q 4 at 100 %, #71): the guard taps only at exactly this size (#74
+/// review: at 760 px wide the same share of the width lies by Undo).
+pub const KNOWN_SIZE: (u32, u32) = (1349, 809);
 /// The inert spot: this share of the picture's width, in the top bar's empty
 /// middle (Pro-Q 4 at 100 %: x 546 of 1349, right of the logo's panel, left
-/// of the undo arrows; the main session confirms it on the PC, #71).
+/// of the undo arrows; confirmed on the PC, #71), at [`KNOWN_SIZE`] only.
 pub const INERT_X: f64 = 0.405;
 /// The inert spot's height in the picture (px): the top bar's middle.
 pub const INERT_Y: i32 = 15;
@@ -152,9 +164,10 @@ pub const STOPPED: &str = reason::STOPPED;
 pub const GUARD_CANCEL: &str = "the close guard of another editor";
 /// Why a down never went: another contact was still down.
 pub const BUSY: &str = "busy";
-/// Why a guard did not tap: its editor's original size did not come back
-/// in time (the inert spot is known only at that size).
-pub const NOT_BACK: &str = "the editor's own size did not come back";
+/// Why a guard did not tap: its editor did not read [`KNOWN_SIZE`] in time,
+/// or a resize might still land (the inert spot is known only at that
+/// size).
+pub const NOT_BACK: &str = "the editor is not at the size its inert spot is known at";
 
 /// A window's handle as a number (a Win32 `HWND` is a pointer, not `Send`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -285,43 +298,89 @@ pub fn settled(client: (u32, u32), asked: (u32, u32), waited_ms: f64) -> Option<
     }
 }
 
-/// A step of the guard's restore of an editor whose size was changed (PR G).
+/// A step of the close guard (PR G; #74 review).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Restore {
+pub enum GuardStep {
     /// Look again at the next step.
     Wait,
-    /// Post the editor's original size.
+    /// Post the window's rectangle for [`KNOWN_SIZE`].
     Post,
-    /// The picture is back to it: tap the inert spot.
+    /// The picture is at that size, nothing else on its way: tap the inert
+    /// spot.
     Tap,
-    /// Not back in time: no tap (the editor is left open).
+    /// Not so in time: no tap (the editor is left open).
     Fail,
 }
 
-/// What the guard's restore does at a step: wait while a resize of its
-/// editor still settles (posted sizes land in order, so the original goes
-/// after it), post the original size (`posted`: none yet; else the ms since
-/// it was posted), tap once the picture is back to it (`back`), fail once
-/// [`RESIZE_MS`] passed since the post without it.
-pub fn restore_step(settling: bool, posted: Option<f64>, back: bool) -> Restore {
+/// What the guard does at a step: wait while a resize of its editor still
+/// settles (posted sizes land in order, so its own goes after it); tap once
+/// the picture reads exactly [`KNOWN_SIZE`] (`known`) and the editor is in
+/// no doubt (`doubt`: a resize that settled unlanded may still land, and
+/// nothing has moved since); else post that size (`posted`: none yet; else
+/// the ms since it was posted) and fail once [`RESIZE_MS`] passed since
+/// the post.
+pub fn guard_step(settling: bool, doubt: bool, posted: Option<f64>, known: bool) -> GuardStep {
+    let ready = known && !doubt;
     match posted {
-        _ if settling => Restore::Wait,
-        None => Restore::Post,
-        Some(_) if back => Restore::Tap,
-        Some(waited) if resize_over(waited) => Restore::Fail,
-        Some(_) => Restore::Wait,
+        _ if settling => GuardStep::Wait,
+        _ if ready => GuardStep::Tap,
+        None => GuardStep::Post,
+        Some(waited) if resize_over(waited) => GuardStep::Fail,
+        Some(_) => GuardStep::Wait,
     }
 }
 
+/// Why a guard that waited its [`RESIZE_MS`] taps nothing ([`NOT_BACK`]):
+/// the picture's size it read (none: unread), or that it read
+/// [`KNOWN_SIZE`] in doubt.
+pub fn not_known(client: Option<(u32, u32)>, doubt: bool) -> String {
+    let (width, height) = client.unwrap_or((0, 0));
+    if doubt && client == Some(KNOWN_SIZE) {
+        format!("{NOT_BACK}: an earlier resize may still land (the picture reads {width}x{height})")
+    } else {
+        format!(
+            "{NOT_BACK}: the picture is {width}x{height}, {}x{} asked",
+            KNOWN_SIZE.0, KNOWN_SIZE.1
+        )
+    }
+}
+
+/// The window's rectangle for [`KNOWN_SIZE`] (#74 review): at the take's
+/// place, moved into the work area `work` when it does not fit there.
+pub fn known_rect(work: Rect, taken: &Taken) -> Rect {
+    inside(work, taken.rect, window_size(taken, KNOWN_SIZE))
+}
+
+/// What an editor's window read when a resize settled unlanded (#74
+/// review): its rectangle (none: unread) and its picture's size. Until a
+/// read differs from it, the resize and its way back may both still wait
+/// in the window's thread.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Reading {
+    pub window: Option<Rect>,
+    pub client: (u32, u32),
+}
+
+/// Whether the window moved on from `reading`: its rectangle or its
+/// picture's size read now differ (a read that failed tells nothing).
+pub fn moved(reading: Reading, window: Option<Rect>, client: Option<(u32, u32)>) -> bool {
+    let rect_moved = window
+        .zip(reading.window)
+        .is_some_and(|(now, then)| now != then);
+    rect_moved || client.is_some_and(|now| now != reading.client)
+}
+
 /// How a resize of an editor's picture settled (PR G): the size asked, the
-/// picture's size then, whether it landed ([`lands`]) and how long it took
-/// (ms).
+/// picture's size then, whether it landed ([`lands`]), how long it took
+/// (ms), and whether, unlanded, the window's rectangle before it was posted
+/// back (#74 review).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Resized {
     pub asked: (u32, u32),
     pub client: (u32, u32),
     pub ok: bool,
     pub ms: f64,
+    pub reverted: bool,
 }
 
 /// One picture: top-down BGRA rows, 4 bytes a pixel.
@@ -634,18 +693,25 @@ struct Editor {
     /// Whether its close guard began: no resize reaches it any more (#74
     /// review: never cleared, the guard is the editor's last step).
     guarded: bool,
+    /// What its window read when a resize settled unlanded, until a read
+    /// moves on from it (#74 review): meanwhile no size it reads is
+    /// trusted.
+    doubt: Option<Reading>,
 }
 
 /// A resize on its way: the size asked, when it was posted (worker ms),
-/// and its caller, who hears how it settled.
+/// the window's rectangle before it, and its caller, who hears how it
+/// settled.
 struct Resizing {
     asked: (u32, u32),
     posted: f64,
+    before: Rect,
     reply: oneshot::Sender<Option<Resized>>,
 }
 
-/// A close guard waiting for its editor's original size (PR G): when that
-/// was posted (worker ms; none: not yet), and its caller.
+/// A close guard waiting for its editor at [`KNOWN_SIZE`] (PR G; #74
+/// review): when that size was posted (worker ms; none: not yet), and its
+/// caller.
 struct Guarding {
     session: u32,
     posted: Option<f64>,
@@ -983,16 +1049,17 @@ impl Worker {
     }
 
     /// The clocks, each read afresh: the encoder's frames counted, the
-    /// contact's keep-alive, the opens' polls, the resizes and the guards'
-    /// restores, the captures and their minutes. The keep-alive is looked at
-    /// first, after the polls (a list of the windows, a take, the pictures'
-    /// sizes) and after each capture (a grab blocks for its time): it never
-    /// waits for a whole step.
+    /// contact's keep-alive, the opens' polls, the resizes, the editors in
+    /// doubt and the guards, the captures and their minutes. The keep-alive
+    /// is looked at first, after the polls (a list of the windows, a take,
+    /// the pictures' sizes) and after each capture (a grab blocks for its
+    /// time): it never waits for a whole step.
     fn step(&mut self) {
         self.count_encoded();
         self.keep_alive();
         self.find();
         self.resizes();
+        self.doubts();
         self.guards();
         self.keep_alive();
         let sessions: Vec<u32> = self.editors.keys().copied().collect();
@@ -1098,6 +1165,7 @@ impl Worker {
                         resizing: None,
                         changed: false,
                         guarded: false,
+                        doubt: None,
                     },
                 );
                 let _ = finding.reply.send(Ok(size));
@@ -1111,7 +1179,7 @@ impl Worker {
     /// A resize still on its way is replaced (its caller hears nothing).
     fn resize(&mut self, session: u32, area: Area, reply: oneshot::Sender<Option<Resized>>) {
         let now = self.now();
-        let Some(asked) = self.post_size(session, area) else {
+        let Some((asked, before)) = self.post_size(session, area) else {
             let _ = reply.send(None);
             return;
         };
@@ -1119,19 +1187,21 @@ impl Worker {
             editor.resizing = Some(Resizing {
                 asked,
                 posted: now,
+                before,
                 reply,
             });
         }
     }
 
     /// Posts the picture size for `area` to `session`'s window: the size
-    /// asked. None for no editor, one whose guard began (its tap needs the
-    /// size it puts back, and Live closes the editor at the size it has:
-    /// #74 review), an area with no shape, a room smaller than the minimum,
-    /// or a work area, a window or a size the backend could not read or
-    /// post. The window stays where it stands when it fits there, else it
-    /// moves into the work area ([`inside`]).
-    fn post_size(&mut self, session: u32, area: Area) -> Option<(u32, u32)> {
+    /// asked and the window's rectangle before. None for no editor, one
+    /// whose guard began (its tap needs the size it puts back, and Live
+    /// closes the editor at the size it has: #74 review), an area with no
+    /// shape, a room smaller than the minimum, or a work area, a window or a
+    /// size the backend could not read or post. The window stays where it
+    /// stands when it fits there, else it moves into the work area
+    /// ([`inside`]).
+    fn post_size(&mut self, session: u32, area: Area) -> Option<((u32, u32), Rect)> {
         let editor = self.editors.get_mut(&session)?;
         if editor.guarded {
             return None;
@@ -1150,12 +1220,14 @@ impl Worker {
             .map_err(|why| tracing::warn!(session, why = %why, "a Pro-Q 4 editor's new size could not be posted"))
             .ok()?;
         editor.changed = true;
-        Some(asked)
+        Some((asked, now))
     }
 
     /// The resizes on their way, each looked at: one whose picture is the
     /// size asked, or whose wait is over, settles ([`settled`]): its
-    /// picture's size is the editor's, and its caller hears how.
+    /// picture's size is the editor's, and its caller hears how. One that
+    /// settled unlanded gets the window's rectangle before it posted back
+    /// ([`revert`]; #74 review).
     fn resizes(&mut self) {
         let now = self.now();
         for (session, editor) in &mut self.editors {
@@ -1169,6 +1241,8 @@ impl Worker {
             };
             editor.size = client;
             if let Some(resizing) = editor.resizing.take() {
+                let reverted =
+                    !ok && revert(self.backend.as_mut(), editor, resizing.before, client);
                 tracing::info!(
                     session = *session,
                     asked_w = resizing.asked.0,
@@ -1176,6 +1250,7 @@ impl Worker {
                     width = client.0,
                     height = client.1,
                     ok,
+                    reverted,
                     ms = waited,
                     "a Pro-Q 4 editor's resize settled"
                 );
@@ -1184,57 +1259,86 @@ impl Worker {
                     client,
                     ok,
                     ms: waited,
+                    reverted,
                 }));
             }
         }
     }
 
-    /// The guards waiting for their editor's original size, each looked at
-    /// ([`restore_step`]): it waits while a resize of the editor settles,
-    /// posts the original size, taps the inert spot of the original width
-    /// once the picture is back to it, or fails once the restore's wait is
-    /// over (no tap at a spot of an unknown layout: the router then leaves
-    /// the editor open). A guard whose window went meanwhile fails.
-    fn guards(&mut self) {
-        let now = self.now();
-        for mut guard in std::mem::take(&mut self.guarding) {
-            let Some(editor) = self.editors.get_mut(&guard.session) else {
-                let _ = guard.reply.send(Err(NO_EDITOR.to_string()));
+    /// The editors in doubt, each looked at: one whose window or picture
+    /// reads otherwise than when its resize settled unlanded is in doubt no
+    /// more ([`moved`]: Live's thread took what waited for it).
+    fn doubts(&mut self) {
+        for editor in self.editors.values_mut() {
+            let Some(reading) = editor.doubt else {
                 continue;
             };
-            let original = (editor.taken.width, editor.taken.height);
+            let window = self.backend.rect(&editor.taken).ok();
             let client = self.backend.client(&editor.taken).ok();
-            let back = client.is_some_and(|client| lands(client, original));
-            let settling = editor.resizing.is_some();
-            match restore_step(settling, guard.posted.map(|at| now - at), back) {
-                Restore::Wait => self.guarding.push(guard),
-                Restore::Post => match self.backend.resize(&editor.taken, editor.taken.rect) {
+            if moved(reading, window, client) {
+                editor.doubt = None;
+            }
+        }
+    }
+
+    /// The guards waiting for their editor at [`KNOWN_SIZE`], each looked
+    /// at ([`Worker::guard_look`]).
+    fn guards(&mut self) {
+        let now = self.now();
+        for guard in std::mem::take(&mut self.guarding) {
+            self.guard_look(guard, now);
+        }
+    }
+
+    /// A guard's look at its editor at `now` ([`guard_step`]): it waits
+    /// while a resize of the editor settles; taps the inert spot once the
+    /// picture reads exactly [`KNOWN_SIZE`] with the editor in no doubt;
+    /// else posts that size ([`known_rect`]) and fails once its wait is over
+    /// (no tap at a spot of an unknown layout: the router then leaves the
+    /// editor open). A guard whose window went meanwhile fails.
+    fn guard_look(&mut self, mut guard: Guarding, now: f64) {
+        let Some(editor) = self.editors.get_mut(&guard.session) else {
+            let _ = guard.reply.send(Err(NO_EDITOR.to_string()));
+            return;
+        };
+        let client = self.backend.client(&editor.taken).ok();
+        let (settling, doubt) = (editor.resizing.is_some(), editor.doubt.is_some());
+        let posted = guard.posted.map(|at| now - at);
+        match guard_step(settling, doubt, posted, client == Some(KNOWN_SIZE)) {
+            GuardStep::Wait => self.guarding.push(guard),
+            GuardStep::Post => {
+                let taken = &editor.taken;
+                let posting = match self.backend.work(taken) {
+                    Ok(work) => self.backend.resize(taken, known_rect(work, taken)),
+                    Err(why) => Err(why),
+                };
+                match posting {
                     Ok(()) => {
+                        editor.changed = true;
                         guard.posted = Some(now);
                         self.guarding.push(guard);
                     }
                     Err(why) => {
                         let _ = guard.reply.send(Err(format!("{NOT_BACK}: {why}")));
                     }
-                },
-                Restore::Tap => {
-                    editor.size = original;
-                    editor.changed = false;
-                    let taken = editor.taken.clone();
-                    tracing::info!(
-                        session = guard.session,
-                        "a Pro-Q 4 editor has its own size back: the guard taps"
-                    );
-                    let tapped = guard_tap(self.backend.as_mut(), &taken, inert_spot(taken.width));
-                    let _ = guard.reply.send(tapped);
                 }
-                Restore::Fail => {
-                    let (width, height) = client.unwrap_or((0, 0));
-                    let _ = guard.reply.send(Err(format!(
-                        "{NOT_BACK}: the picture is {width}x{height}, {}x{} asked",
-                        original.0, original.1
-                    )));
-                }
+            }
+            GuardStep::Tap => {
+                editor.size = KNOWN_SIZE;
+                // Its rectangle at the take again (an editor taken at the
+                // known size where it stands): nothing for the release to
+                // put back.
+                editor.changed = self.backend.rect(&editor.taken).ok() != Some(editor.taken.rect);
+                let taken = editor.taken.clone();
+                tracing::info!(
+                    session = guard.session,
+                    "a Pro-Q 4 editor is at the size its inert spot is known at: the guard taps"
+                );
+                let tapped = guard_tap(self.backend.as_mut(), &taken, inert_spot(KNOWN_SIZE.0));
+                let _ = guard.reply.send(tapped);
+            }
+            GuardStep::Fail => {
+                let _ = guard.reply.send(Err(not_known(client, doubt)));
             }
         }
     }
@@ -1390,9 +1494,10 @@ impl Worker {
     /// The close guard of `session`: its editor looked up first (a guard
     /// of a window already lost fails and ends no contact), then marked (no
     /// resize reaches it any more), no more frames, its contact ended
-    /// (another session's cancelled); an editor at its own size gets the
-    /// tap on the inert spot at once, one whose size was changed waits for
-    /// its restore ([`Worker::guards`]).
+    /// (another session's cancelled); then its first look
+    /// ([`Worker::guard_look`]): an editor that reads [`KNOWN_SIZE`] in no
+    /// doubt with no resize on its way gets the tap at once, any other
+    /// waits for the steps (the size posted, read back).
     fn guard(&mut self, session: u32, reply: oneshot::Sender<Result<(), String>>) {
         let Some(editor) = self.editors.get_mut(&session) else {
             let _ = reply.send(Err(NO_EDITOR.to_string()));
@@ -1400,33 +1505,37 @@ impl Worker {
         };
         editor.guarded = true;
         editor.sink = None;
-        let (taken, changed) = (editor.taken.clone(), editor.changed);
         self.encoder.forget(session);
         self.end_contact(session);
         self.cancel_other(session);
-        if changed {
-            self.guarding.push(Guarding {
-                session,
-                posted: None,
-                reply,
-            });
-        } else {
-            let _ = reply.send(guard_tap(
-                self.backend.as_mut(),
-                &taken,
-                inert_spot(taken.width),
-            ));
+        let guard = Guarding {
+            session,
+            posted: None,
+            reply,
+        };
+        let client = self.editors.get(&session).map(|editor| {
+            let settling = editor.resizing.is_some() || editor.doubt.is_some();
+            (settling, self.backend.client(&editor.taken).ok())
+        });
+        match client {
+            Some((false, Some(KNOWN_SIZE))) => {
+                let now = self.now();
+                self.guard_look(guard, now);
+            }
+            _ => self.guarding.push(guard),
         }
     }
 
-    /// `session`'s window handed back: its contact ended, its original size
-    /// posted again when it was changed (best effort: a guard that failed,
-    /// the stop), its z-order as it was; `closed`: Live closed the editor.
+    /// `session`'s window handed back: its contact ended, its rectangle at
+    /// the take (place and size) posted again when it was changed and Live
+    /// keeps the editor open (best effort: a guard that failed, the stop;
+    /// #74 review), its z-order as it was; `closed`: Live closed the editor.
     fn release(&mut self, session: u32, closed: bool) {
         self.end_contact(session);
         self.encoder.forget(session);
         if let Some(editor) = self.editors.remove(&session) {
             if editor.changed
+                && !closed
                 && let Err(why) = self.backend.resize(&editor.taken, editor.taken.rect)
             {
                 tracing::warn!(session, why = %why, "a Pro-Q 4 editor's own size could not be posted at its release");
@@ -1454,6 +1563,29 @@ impl Worker {
             self.release(session, false);
         }
         self.encoder.stop();
+    }
+}
+
+/// A resize of `editor` that settled unlanded (#74 review): what its
+/// window reads now is kept (its doubt, until a read moves on from it), and
+/// its rectangle `before` the resize is posted back, which Live's thread
+/// lands after the resize if that still waits there. Whether it went.
+fn revert(
+    backend: &mut dyn Backend,
+    editor: &mut Editor,
+    before: Rect,
+    client: (u32, u32),
+) -> bool {
+    editor.doubt = Some(Reading {
+        window: backend.rect(&editor.taken).ok(),
+        client,
+    });
+    match backend.resize(&editor.taken, before) {
+        Ok(()) => true,
+        Err(why) => {
+            tracing::warn!(why = %why, "a Pro-Q 4 editor's size before an unlanded resize could not be posted back");
+            false
+        }
     }
 }
 

@@ -324,7 +324,9 @@ fn close_editor(
 }
 
 /// The `eq` record of a resize as it settled (PR G): the size asked (`w`,
-/// `h`), the picture's size then, whether it landed, how long it took.
+/// `h`), the picture's size then, whether it landed, how long it took, and
+/// whether, unlanded, the window's size before was posted back (#74
+/// review).
 pub fn resize_fields(key: &EditorKey, session: u32, resized: &Resized) -> Value {
     let mut fields = record("resize", key, None, Some(session), None);
     fields["w"] = json!(resized.asked.0);
@@ -333,6 +335,7 @@ pub fn resize_fields(key: &EditorKey, session: u32, resized: &Resized) -> Value 
     fields["client_h"] = json!(resized.client.1);
     fields["ok"] = json!(resized.ok);
     fields["ms"] = json!(resized.ms);
+    fields["reverted"] = json!(resized.reverted);
     fields
 }
 
@@ -536,7 +539,7 @@ impl Router {
         let (Some(io), Some(resized)) = (self.eq.as_mut(), resized) else {
             return;
         };
-        tracing::info!(session, instance = %key.instance, w = resized.asked.0, h = resized.asked.1, client_w = resized.client.0, client_h = resized.client.1, ok = resized.ok, ms = resized.ms, "a Pro-Q 4 editor's resize settled");
+        tracing::info!(session, instance = %key.instance, w = resized.asked.0, h = resized.asked.1, client_w = resized.client.0, client_h = resized.client.1, ok = resized.ok, reverted = resized.reverted, ms = resized.ms, "a Pro-Q 4 editor's resize settled");
         io.state.sized(key, session, resized.client);
         self.io
             .events
