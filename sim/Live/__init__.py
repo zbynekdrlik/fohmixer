@@ -46,6 +46,7 @@ MixerDevice = _submodule("MixerDevice")
 DeviceParameter = _submodule("DeviceParameter")
 Device = _submodule("Device")
 RackDevice = _submodule("RackDevice")
+PluginDevice = _submodule("PluginDevice")
 Chain = _submodule("Chain")
 ChainMixerDevice = _submodule("ChainMixerDevice")
 
@@ -593,6 +594,22 @@ class _RackDeviceClass(_DeviceClass):
 
 
 _export(RackDevice, _RackDeviceClass, "RackDevice")
+
+
+class _PluginDeviceClass(_DeviceClass):
+    """A plug-in (#71): ``class_display_name`` is the plug-in's product name
+    (it holds when the device is renamed), ``is_editor_open`` opens and closes
+    its editor (get, set and observe, as Live 12.4.3+ on the PC). SimLive
+    opens no window: the hub's simulated window backend stands in for it."""
+
+    is_editor_open = _Prop(coerce=_bool)
+
+    def __init__(self, name, product, parameters=()):
+        super().__init__(name, "PluginDevice", parameters, display_name=product)
+        self._v["is_editor_open"] = False
+
+
+_export(PluginDevice, _PluginDeviceClass, "PluginDevice")
 
 
 def _delete_from(owner, items, index, prop):

@@ -10,10 +10,16 @@
 //! clock, answered by a coalesced `ack`; `ping` / `pong` carry the times of
 //! the exchange; `link` reports Live's main-thread health. `cmd` stays for
 //! reads and multi-command batches.
+//!
+//! The Pro-Q 4 screen (#71 PR E, F28): `eq_list`, `eq_open`, `eq_input`,
+//! `eq_close` and `eq`, `eq_list`, `eq_locks` (their pieces and the binary
+//! frames the hub sends an open editor's holder: [`crate::eq`]).
 
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
+use crate::eq::{EqItem, EqLock, EqState, Touch};
+use crate::layout::Binding;
 use crate::path::canonical_target;
 
 /// The client protocol this build speaks.
@@ -121,6 +127,21 @@ pub enum ClientMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         why: Option<String>,
     },
+    /// The Pro-Q 4 instances of a strip's track (#71 PR E): `binding` is the
+    /// strip's (its track by name or by index); answered by `eq_list`. Read
+    /// when asked (a detail opening), never followed.
+    EqList { binding: Binding },
+    /// Opens the editor of the Pro-Q 4 at `path` (an `eq_list` item's) on
+    /// `instance` for this client, closing the one it holds first; answered
+    /// by `eq` (`opening`, then `open` or `closed` with why: another client
+    /// holds it, `locked`).
+    EqOpen { instance: String, path: String },
+    /// A finger on this client's open editor: `x`, `y` in the picture's
+    /// pixels (the hub clamps them to the picture).
+    EqInput { touch: Touch, x: f64, y: f64 },
+    /// This client leaves its editor: the hub closes it (the close guard
+    /// first) and releases the lock.
+    EqClose,
 }
 
 /// One write's outcome (#43, an `ack` item): Live ran it (`value`: what
@@ -312,6 +333,37 @@ pub enum ServerMsg {
         error: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         rtt_ms: Option<f64>,
+    },
+    /// The answer to `eq_list` (#71 PR E): the strip's binding as asked, the
+    /// Pro-Q 4 instances found on its track (on it and in its racks' chains),
+    /// or why none could be read (`error`: the instance offline, the track
+    /// not found, the screen off).
+    EqList {
+        binding: Binding,
+        items: Vec<EqItem>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+    /// Every held editor, to every client, at once on each change (a held
+    /// one shows locked on every other device).
+    EqLocks { items: Vec<EqLock> },
+    /// This client's editor: `opening`; `open` with the picture's `session`
+    /// (its binary frames carry it) and size; `closed` with `reason` (and,
+    /// when another client holds it, `since`: the hub's UTC ms).
+    Eq {
+        instance: String,
+        path: String,
+        state: EqState,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        width: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        height: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        since: Option<f64>,
     },
 }
 

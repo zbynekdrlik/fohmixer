@@ -4,8 +4,8 @@
 //! the mix, the name chip in the track's colour, its group and instance),
 //! then on the left (the left thumb) the mute, Live's dB and a tall fader
 //! with its scale and meter, on the right (the right thumb) the pan with
-//! Live's display string and STRED; the middle stays free (PR E puts the
-//! channel's Pro-Q 4 there). Its parts are the strip's components, its
+//! Live's display string and STRED; in the middle the channel's Pro-Q 4
+//! instances (#71 PR E, `components/eq.rs`). Its parts are the strip's components, its
 //! subscriptions `binding::detail_subs` (the surface's wanted set has them
 //! through `binding::wanted_subs`), its look `detail.css`.
 
@@ -16,6 +16,7 @@ use leptos::prelude::*;
 use serde_json::json;
 
 use super::buttons::{MuteView, anchor_name, colour_style};
+use super::eq::EqCards;
 use super::fader::{FaderView, Law, Target};
 use super::meter::{MeterView, StatusView};
 use super::pan::PanView;
@@ -151,6 +152,8 @@ pub fn DetailView(strip: Strip, group: Option<String>) -> impl IntoView {
     let name = anchor_name(&strip.binding);
     let label = shown_label(strip.label.as_deref(), &name);
     let label_attr = label.clone();
+    let cards_label = label.clone();
+    let cards_strip = strip.clone();
     let instance = strip.binding.instance.clone();
     let ret = strip.strip_kind == StripKind::Return;
     let sub = bar_text(group.as_deref(), &instance, ret);
@@ -278,7 +281,9 @@ pub fn DetailView(strip: Strip, group: Option<String>) -> impl IntoView {
                         {fader}
                     </div>
                 </section>
-                <div class="detail-middle" data-testid="detail-middle"></div>
+                <section class="detail-box detail-middle" data-testid="detail-middle">
+                    <EqCards strip=cards_strip label=cards_label color=color />
+                </section>
                 <section class="detail-box detail-right" data-testid="detail-right">
                     <h2 class="detail-title">"PANORÁMA"</h2>
                     {pan_view}

@@ -34,6 +34,15 @@
 //! rows = 4               # 1..=8
 //! bitmap_px = 144        # 32..=512, the keys' image size
 //! title = "Stream Deck"  # 1..=24 characters, the tab's title
+//!
+//! # The Pro-Q 4 screen (#71 PR E), optional: which window backend shows the
+//! # editors. "off" (the default on Windows: no Pro-Q screen, the detail
+//! # says so), "windows" (Live's editor windows: written by hand on the PC
+//! # only after `eq-probe` passed against Carla's bridge,
+//! # `.claude/rules/plugin-window.md`) or "sim" (a synthetic picture: the
+//! # default elsewhere, the tests and the E2E harness).
+//! [eq]
+//! backend = "windows"
 //! ```
 //!
 //! Every key is optional; a missing file is the defaults. `allowed_hosts`
@@ -247,6 +256,39 @@ impl CompanionCfg {
     }
 }
 
+/// `[eq]`'s window backend (#71 PR E).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EqBackend {
+    /// Live's editor windows on the PC (Windows only).
+    Windows,
+    /// A synthetic picture (`plugwin::sim`).
+    Sim,
+    /// No Pro-Q screen.
+    Off,
+}
+
+/// `[eq]` (#71 PR E): the Pro-Q 4 screen's backend.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EqCfg {
+    #[serde(default)]
+    pub backend: Option<EqBackend>,
+}
+
+/// The backend when `[eq]` names none: never Live's windows. On Windows
+/// the screen is off until the PC's `fohmixer-hub.toml` says `backend =
+/// "windows"` (written by hand once `eq-probe` passed against Carla's
+/// bridge: nothing touches a plug-in's window in a running Live before);
+/// elsewhere the simulated one (the tests, the E2E harness).
+pub fn default_eq_backend() -> EqBackend {
+    if cfg!(windows) {
+        EqBackend::Off
+    } else {
+        EqBackend::Sim
+    }
+}
+
 /// Whether `name` is a DNS name with at least two labels (a public name,
 /// never an IP address): labels of letters, digits and inner hyphens, 1–63
 /// characters, the last one with a letter.
@@ -336,6 +378,9 @@ pub struct Config {
     /// The Stream Deck tab (#52); none: no tab.
     #[serde(default)]
     pub companion: Option<CompanionCfg>,
+    /// The Pro-Q 4 screen (#71 PR E); none: the platform's backend.
+    #[serde(default)]
+    pub eq: Option<EqCfg>,
     /// The data folder (where the file was read from).
     #[serde(skip)]
     pub data_dir: PathBuf,
@@ -355,6 +400,7 @@ impl Config {
             access: None,
             tunnel: None,
             companion: None,
+            eq: None,
             data_dir: data_dir.to_path_buf(),
         }
     }
@@ -427,7 +473,19 @@ impl Config {
             );
         }
         self.validate_companion()?;
+        if self.eq_backend() == EqBackend::Windows && !cfg!(windows) {
+            bail!("[eq] backend \"windows\" runs on Windows only");
+        }
         self.validate_remote()
+    }
+
+    /// The Pro-Q 4 screen's backend (#71 PR E): `[eq]`'s, else the
+    /// platform's.
+    pub fn eq_backend(&self) -> EqBackend {
+        self.eq
+            .as_ref()
+            .and_then(|eq| eq.backend)
+            .unwrap_or_else(default_eq_backend)
     }
 
     /// `[companion]` (#52): a host without spaces or quotes, a port, the
@@ -1006,5 +1064,51 @@ mod tests {
         ] {
             assert!(Config::parse(&table(ok), &data()).is_ok(), "{ok}");
         }
+    }
+
+    /// A config's `[eq]` backend.
+    fn eq_backend_of(text: &str) -> EqBackend {
+        Config::parse(text, &data()).unwrap().eq_backend()
+    }
+
+    /// Why a config is refused.
+    fn eq_refused(text: &str) -> String {
+        format!("{:#}", Config::parse(text, &data()).unwrap_err())
+    }
+
+    #[test]
+    fn eq_backend_is_the_tables_or_the_platforms() {
+        assert_eq!(eq_backend_of("[eq]\nbackend = \"sim\"\n"), EqBackend::Sim);
+        assert_eq!(eq_backend_of("[eq]\nbackend = \"off\"\n"), EqBackend::Off);
+        assert_eq!(eq_backend_of(""), default_eq_backend());
+        assert_eq!(eq_backend_of("[eq]\n"), default_eq_backend());
+        assert!(eq_refused("[eq]\nbackend = \"mac\"\n").contains("unknown variant"));
+        assert!(eq_refused("[eq]\nscreen = 1\n").contains("unknown field"));
+    }
+
+    // Live's windows are never the default: on Windows the screen is off
+    // until the PC's config names them (the `windows` CI job runs this one).
+    #[cfg(windows)]
+    #[test]
+    fn eq_backend_defaults_to_off_on_windows_and_takes_windows_when_named() {
+        assert_eq!(default_eq_backend(), EqBackend::Off);
+        assert_eq!(eq_backend_of(""), EqBackend::Off);
+        assert_eq!(
+            eq_backend_of("[eq]\nbackend = \"windows\"\n"),
+            EqBackend::Windows
+        );
+    }
+
+    // Off Windows the default is the simulated backend, and `windows` is
+    // refused.
+    #[cfg(not(windows))]
+    #[test]
+    fn eq_backend_defaults_to_sim_off_windows_and_refuses_windows() {
+        assert_eq!(default_eq_backend(), EqBackend::Sim);
+        assert_eq!(eq_backend_of(""), EqBackend::Sim);
+        assert_eq!(
+            eq_refused("[eq]\nbackend = \"windows\"\n"),
+            "[eq] backend \"windows\" runs on Windows only"
+        );
     }
 }

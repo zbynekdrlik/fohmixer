@@ -652,3 +652,103 @@ fn a_report_body_keeps_its_known_fields_only() {
         ReportFields::default()
     );
 }
+
+#[test]
+fn eq_messages_round_trip() {
+    use crate::eq::{EqItem, EqLock, EqState, Touch};
+    use crate::layout::{Anchor, Binding};
+    let binding = Binding {
+        instance: "band".into(),
+        anchor: Anchor::Track {
+            name: "Hand2 #".into(),
+        },
+        path: None,
+    };
+    let binding_wire = json!({"instance": "band", "anchor": {"kind": "track", "name": "Hand2 #"}});
+    round_trip_client(
+        ClientMsg::EqList {
+            binding: binding.clone(),
+        },
+        json!({"type": "eq_list", "binding": binding_wire.clone()}),
+    );
+    round_trip_client(
+        ClientMsg::EqOpen {
+            instance: "band".into(),
+            path: "live_set tracks 1 devices 0".into(),
+        },
+        json!({"type": "eq_open", "instance": "band", "path": "live_set tracks 1 devices 0"}),
+    );
+    round_trip_client(
+        ClientMsg::EqInput {
+            touch: Touch::Down,
+            x: 431.5,
+            y: 315.0,
+        },
+        json!({"type": "eq_input", "touch": "down", "x": 431.5, "y": 315.0}),
+    );
+    round_trip_client(ClientMsg::EqClose, json!({"type": "eq_close"}));
+    round_trip_server(
+        ServerMsg::EqList {
+            binding: binding.clone(),
+            items: vec![EqItem {
+                path: "live_set tracks 1 devices 1 chains 0 devices 0".into(),
+                place: "Vocal FX › Main".into(),
+                name: "Pro-Q 4".into(),
+                picture: true,
+            }],
+            error: None,
+        },
+        json!({"type": "eq_list", "binding": binding_wire.clone(), "items": [
+            {"path": "live_set tracks 1 devices 1 chains 0 devices 0", "place": "Vocal FX › Main",
+             "name": "Pro-Q 4", "picture": true}]}),
+    );
+    round_trip_server(
+        ServerMsg::EqList {
+            binding,
+            items: Vec::new(),
+            error: Some("instance offline".into()),
+        },
+        json!({"type": "eq_list", "binding": binding_wire, "items": [], "error": "instance offline"}),
+    );
+    round_trip_server(
+        ServerMsg::EqLocks {
+            items: vec![EqLock {
+                instance: "band".into(),
+                path: "live_set tracks 1 devices 0".into(),
+                mine: false,
+                since: 1_790_000_000_000.0,
+            }],
+        },
+        json!({"type": "eq_locks", "items": [{"instance": "band", "path": "live_set tracks 1 devices 0",
+                                              "mine": false, "since": 1_790_000_000_000.0}]}),
+    );
+    round_trip_server(
+        ServerMsg::Eq {
+            instance: "band".into(),
+            path: "live_set tracks 1 devices 0".into(),
+            state: EqState::Open,
+            session: Some(3),
+            width: Some(1349),
+            height: Some(809),
+            reason: None,
+            since: None,
+        },
+        json!({"type": "eq", "instance": "band", "path": "live_set tracks 1 devices 0",
+               "state": "open", "session": 3, "width": 1349, "height": 809}),
+    );
+    // A refusal names why and, for a lock, since when.
+    round_trip_server(
+        ServerMsg::Eq {
+            instance: "band".into(),
+            path: "live_set tracks 1 devices 0".into(),
+            state: EqState::Closed,
+            session: None,
+            width: None,
+            height: None,
+            reason: Some("locked".into()),
+            since: Some(1_790_000_000_000.0),
+        },
+        json!({"type": "eq", "instance": "band", "path": "live_set tracks 1 devices 0",
+               "state": "closed", "reason": "locked", "since": 1_790_000_000_000.0}),
+    );
+}

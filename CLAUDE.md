@@ -22,6 +22,7 @@ Two branches: `master` (production) and `dev`. Work on `dev`; open a PR `dev` �
 - TouchOSC import tool and its synthetic fixtures → `.claude/rules/import-tosc.md` (auto-loads on `tools/import-tosc/**`)
 - Live probe (K1/K2 timing of a FohMixer script on the Ableton PC, the PC's clocks, safe read rates) → `.claude/rules/live-probe.md` (auto-loads on `tools/live-probe/**`)
 - Forensics timeline (#43: reading the event log and the page's flight recorder back for a time window, its CLI, its summary, running it on the Ableton PC) → `.claude/rules/forensics.md` (auto-loads on `tools/forensics/**`)
+- A plug-in's editor on the surface (#71: Live's `is_editor_open`, the window, capture, injected touch, the isolated Carla host, never in a running Live first; PR E's Pro-Q 4 screen: the protocol and binary frames, the close guard and its inert spot, the window backends, `eq-probe`) → `.claude/rules/plugin-window.md` (auto-loads on the hub's, proto's and UI's eq and plug-in-window files)
 
 ## Always-apply rules
 

@@ -7,6 +7,7 @@
 
 pub mod buttons;
 pub mod detail;
+pub mod eq;
 pub mod fader;
 pub mod meter;
 pub mod overlay;

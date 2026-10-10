@@ -2,13 +2,15 @@
 //!
 //! WASM-safe (no config, no I/O): the build and version info (copied from
 //! iemmixer's `iem-core` @ 22372bc), the hub ⇄ client protocol
-//! ([`client`], spec §2.4), the layout document ([`layout`], spec §2.5), the
-//! Tuner markers that fill it ([`markers`], D16) and the LOM path grammar
-//! both use ([`path`], S2 design note §3.1).
+//! ([`client`], spec §2.4; the Pro-Q 4 screen's pieces, [`eq`], F28), the
+//! layout document ([`layout`], spec §2.5), the Tuner markers that fill it
+//! ([`markers`], D16) and the LOM path grammar both use ([`path`], S2 design
+//! note §3.1).
 
 use serde::{Deserialize, Serialize};
 
 pub mod client;
+pub mod eq;
 pub mod layout;
 pub mod markers;
 pub mod path;

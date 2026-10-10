@@ -16,6 +16,14 @@
 //!   fohmixer-hub markers frame <layout> <out>
 //!                                       write <layout> converted to tags groups to <out>, a new
 //!                                       file: exit 0, or 2 with why
+//!   fohmixer-hub eq-probe --pid <pid> [--frames <n>] [--band <x,y>] [--to <x,y>]
+//!                         [--inert <x,y>] [--out <folder>] [--close] [--sim]
+//!                                       drive the plug-in window backend against a window of
+//!                                       process <pid> (#71: Carla's bridge with Pro-Q 4, never
+//!                                       Live): capture, a band made and dragged, its text field
+//!                                       opened, the close guard, the release; one name=value
+//!                                       line per finding; exit 0, 1 when a step failed, 2 for
+//!                                       bad arguments (`plugwin::probe`)
 //!
 //! `pin` and `cloudflare` run as the hub's user: what they store is sealed
 //! (DPAPI) for that account.
@@ -37,7 +45,7 @@ use fohmixer_hub::config::Config;
 use fohmixer_hub::provision::{self, ProvisionError};
 use tokio::sync::oneshot;
 
-const USAGE: &str = "usage: fohmixer-hub [pin set-engineer | cloudflare set-token | config check <file> | layout check <layout> <config> | markers plan <layout> | markers frame <layout> <out>]   (the PIN or the token is read from stdin)";
+const USAGE: &str = "usage: fohmixer-hub [pin set-engineer | cloudflare set-token | config check <file> | layout check <layout> <config> | markers plan <layout> | markers frame <layout> <out> | eq-probe --pid <pid> ...]   (the PIN or the token is read from stdin)";
 
 fn data_dir() -> PathBuf {
     PathBuf::from(std::env::var("FOHMIXER_DATA").unwrap_or_else(|_| ".".to_string()))
@@ -61,6 +69,7 @@ fn main() -> ExitCode {
         ["layout", "check", layout, config] => layout_command(layout, config),
         ["markers", "plan", layout] => plan_command(layout),
         ["markers", "frame", layout, out] => frame_command(layout, out),
+        ["eq-probe", rest @ ..] => probe_command(rest),
         _ => {
             eprintln!("{USAGE}");
             ExitCode::from(2)
@@ -176,6 +185,38 @@ fn frame_command(layout: &str, out: &str) -> ExitCode {
         Err(e) => {
             eprintln!("fohmixer-hub: {e:#}");
             ExitCode::from(2)
+        }
+    }
+}
+
+/// `eq-probe …`: exit 0 when every step ran, 1 when one failed (why on
+/// stderr), 2 for bad arguments or no backend here.
+fn probe_command(args: &[&str]) -> ExitCode {
+    use fohmixer_hub::plugwin::probe;
+    let parsed = match probe::parse(args) {
+        Ok(parsed) => parsed,
+        Err(why) => {
+            eprintln!("fohmixer-hub: eq-probe: {why}\n{}", probe::USAGE);
+            return ExitCode::from(2);
+        }
+    };
+    let mut backend = match probe::backend(&parsed) {
+        Ok(backend) => backend,
+        Err(why) => {
+            eprintln!("fohmixer-hub: eq-probe: {why}");
+            return ExitCode::from(2);
+        }
+    };
+    if let Err(why) = backend.start() {
+        eprintln!("fohmixer-hub: eq-probe: {why}");
+        return ExitCode::FAILURE;
+    }
+    let stdout = std::io::stdout();
+    match probe::run(backend.as_mut(), &parsed, &mut stdout.lock()) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(why) => {
+            eprintln!("fohmixer-hub: eq-probe: {why}");
+            ExitCode::FAILURE
         }
     }
 }

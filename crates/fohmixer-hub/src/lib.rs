@@ -29,6 +29,12 @@
 //! (`deck.rs`, `router/deck.rs`), its link in `/api/status`. The stop
 //! releases the held keys and waits (bounded) for the Companion task's
 //! `REMOVE-DEVICE`.
+//!
+//! The Pro-Q 4 screen (#71 PR E, `[eq]`): a window worker (`plugwin.rs`:
+//! the Windows backend on the PC, the simulated one elsewhere) opens,
+//! captures and touches a plug-in's editor; the router holds who holds which
+//! (`eq.rs`, `router/eq.rs`); the editors' last pictures are kept for
+//! `GET /api/eq/picture`.
 
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -58,6 +64,7 @@ pub mod config;
 pub mod deck;
 #[cfg(windows)]
 mod dpapi;
+pub mod eq;
 pub mod events;
 pub mod http_client;
 pub mod https;
@@ -68,6 +75,7 @@ pub mod outbox;
 pub mod pepper;
 pub mod pin_hash;
 pub mod pin_store;
+pub mod plugwin;
 pub mod provision;
 pub mod remote;
 pub mod router;
@@ -144,6 +152,13 @@ pub struct HubInner {
     pub(crate) companion: Option<CompanionHandle>,
     /// Its task, awaited after the stop so its `REMOVE-DEVICE` goes out.
     companion_task: Mutex<Option<JoinHandle<()>>>,
+    /// The Pro-Q 4 editors' last pictures (#71 PR E, `GET /api/eq/picture`).
+    pub pictures: Arc<eq::Pictures>,
+    /// The Pro-Q 4 screen is on (`[eq] backend` is not `off`).
+    pub eq: bool,
+    /// Its window worker, awaited after the stop so its windows are handed
+    /// back and its contact ended before the process ends.
+    plugwin: Option<plugwin::Plugwin>,
     live: BTreeMap<String, LiveHandle>,
     router: mpsc::UnboundedSender<RouterMsg>,
     next_client: AtomicU64,
@@ -186,6 +201,13 @@ impl HubInner {
         self.live.get(name)
     }
 
+    /// Whether every client message tells the router the page was heard:
+    /// a silent page's Stream Deck keys are released (#52) and its Pro-Q
+    /// contact ends (#71 PR E).
+    pub fn hears_clients(&self) -> bool {
+        self.companion.is_some() || self.eq
+    }
+
     /// Sends a message to the router.
     pub fn route(&self, msg: RouterMsg) {
         let _ = self.router.send(msg);
@@ -223,6 +245,17 @@ impl HubInner {
                 "the Companion task did not end within the stop's wait: ending it"
             );
             task.abort();
+        }
+    }
+
+    /// Waits up to [`plugwin::STOP_WAIT`] for the Pro-Q 4 window worker to
+    /// end after a stop (the router tells it to, at its end): its windows
+    /// handed back (their z-order as it was), its contact ended.
+    pub async fn plugwin_stopped(&self) {
+        if let Some(plugwin) = &self.plugwin
+            && let Some(warning) = plugwin_stop_warning(plugwin.stopped().await)
+        {
+            tracing::warn!(wait_ms = plugwin::STOP_WAIT.as_millis() as u64, "{warning}");
         }
     }
 
@@ -340,7 +373,22 @@ impl Hub {
             });
             CompanionHandle::spawn(cfg, events)
         });
-        if config.companion.is_some() {
+        // The Pro-Q 4 screen (#71 PR E): the window worker, its events to
+        // the router.
+        let plugwin = match plugwin_backend(&config)? {
+            Some(backend) => {
+                let tx = router_tx.clone();
+                let events: plugwin::Events = Arc::new(move |event: plugwin::PlugwinEvent| {
+                    let _ = tx.send(RouterMsg::EqWorker { event });
+                });
+                Some(
+                    plugwin::Plugwin::spawn(backend, events)
+                        .context("starting the plug-in window worker")?,
+                )
+            }
+            None => None,
+        };
+        if config.companion.is_some() || plugwin.is_some() {
             tasks.push(tokio::spawn(deck_ticks(router_tx.clone(), deck::TICK)));
         }
         let names: Vec<String> = config.instances.iter().map(|i| i.name.clone()).collect();
@@ -353,6 +401,7 @@ impl Hub {
             public_name = config.tls.as_ref().map(|t| t.name.as_str()).unwrap_or("-"),
             access = config.access.is_some(),
             companion = config.companion.is_some(),
+            eq = ?config.eq_backend(),
             "hub started"
         );
         let mut router = router::Router::new(
@@ -366,6 +415,11 @@ impl Hub {
         );
         if let (Some(cfg), Some((handle, _))) = (&config.companion, &companion) {
             router = router.with_deck(cfg.clone(), handle.clone());
+        }
+        let pictures = Arc::new(eq::Pictures::default());
+        let eq = plugwin.is_some();
+        if let Some(plugwin) = plugwin.clone() {
+            router = router.with_eq(plugwin, Arc::clone(&pictures));
         }
         // The Tuner markers (#68) go to the layout store.
         router = router.with_layout(Arc::clone(&layout));
@@ -389,12 +443,37 @@ impl Hub {
             events,
             companion,
             companion_task: Mutex::new(companion_task),
+            pictures,
+            eq,
+            plugwin,
             live,
             router: router_tx,
             next_client: AtomicU64::new(1),
             tasks: Mutex::new(tasks),
         })))
     }
+}
+
+/// The window backend of `[eq]` (#71 PR E): none when it is `off`; the
+/// simulated one records into the data folder (`eq-sim.jsonl`, the E2E
+/// harness's `/sim/eq`).
+fn plugwin_backend(config: &Config) -> anyhow::Result<Option<Box<dyn plugwin::Backend>>> {
+    match config.eq_backend() {
+        config::EqBackend::Off => Ok(None),
+        config::EqBackend::Sim => {
+            let file = config.data_dir.join(plugwin::sim::RECORD_FILE);
+            Ok(Some(Box::new(plugwin::sim::Sim::new(Some(file)).0)))
+        }
+        config::EqBackend::Windows => windows_backend().map(Some),
+    }
+}
+
+#[cfg(windows)]
+use crate::plugwin::win::hub_backend as windows_backend;
+
+#[cfg(not(windows))]
+fn windows_backend() -> anyhow::Result<Box<dyn plugwin::Backend>> {
+    anyhow::bail!("[eq] backend \"windows\" runs on Windows only")
 }
 
 /// The HTTP client of the remote-access tasks, on rustls with ring.
@@ -468,11 +547,12 @@ fn router(hub: Hub, redirect: bool) -> Router {
     );
     // CSP allows WASM + inline scripts (Trunk's loader) and inline styles
     // (Leptos); connections go to this server only (the client WebSocket is
-    // same-origin, which 'self' covers).
+    // same-origin, which 'self' covers); images may also be the page's own
+    // blobs (a Pro-Q 4 card's last picture, fetched with the token, #71).
     let csp = SetResponseHeaderLayer::overriding(
         HeaderName::from_static("content-security-policy"),
         HeaderValue::from_static(
-            "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; font-src 'self'",
+            "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data: blob:; font-src 'self'",
         ),
     );
 
@@ -538,8 +618,9 @@ pub fn port_from(value: Option<&str>, default: u16) -> anyhow::Result<u16> {
 /// and the hub started; at the stop the clients' WebSockets close, the
 /// listener closes at once (the port is free), idle connections close, open
 /// requests get up to [`STOP_DRAIN`] to finish, the Stream Deck's Companion
-/// task gets up to [`COMPANION_STOP_WAIT`] to remove the device (#52), and it
-/// returns `Ok`.
+/// task gets up to [`COMPANION_STOP_WAIT`] to remove the device (#52), the
+/// Pro-Q 4 window worker up to [`plugwin::STOP_WAIT`] to hand its windows
+/// back (#71), and it returns `Ok`.
 ///
 /// With `[tls]` the HTTPS listener binds `addr`'s IP on its port next to
 /// it, serves the stored certificate or waits for the ACME client's first
@@ -614,6 +695,7 @@ where
     hub.stop();
     tracing::info!("HTTP server stopped");
     hub.companion_stopped().await;
+    hub.plugwin_stopped().await;
     if let Some(https) = hub.https.get() {
         // It took the stop with the HTTP server and ends its connections
         // STOP_DRAIN after it; this bound is only the backstop.
@@ -623,6 +705,12 @@ where
         }
     }
     Ok(())
+}
+
+/// The warning when the window worker had not ended within the stop's wait
+/// (`ended`: whether it had).
+fn plugwin_stop_warning(ended: bool) -> Option<&'static str> {
+    (!ended).then_some("the plug-in window worker did not end within the stop's wait")
 }
 
 /// The warning when the HTTPS listener had not ended within the backstop
@@ -798,6 +886,12 @@ mod tests {
         assert!(https_drain_warning(false).unwrap().contains("still open"));
     }
 
+    #[test]
+    fn only_a_window_worker_still_running_is_warned_about() {
+        assert_eq!(plugwin_stop_warning(true), None);
+        assert!(plugwin_stop_warning(false).unwrap().contains("did not end"));
+    }
+
     #[tokio::test]
     async fn a_task_added_to_the_hub_ends_with_it() {
         let dir = tempfile::tempdir().unwrap();
@@ -829,6 +923,74 @@ mod tests {
         // After the stop the router is gone: the status still answers.
         let status = hub.status().await;
         assert_eq!(status.clients, 0);
+    }
+
+    #[tokio::test]
+    async fn a_hub_hears_its_clients_only_for_the_stream_deck_or_the_eq_screen() {
+        for (backend, on) in [
+            (config::EqBackend::Off, false),
+            (config::EqBackend::Sim, true),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut config = Config::defaults(dir.path());
+            config.instances.clear();
+            config.companion = None;
+            config.eq = Some(config::EqCfg {
+                backend: Some(backend),
+            });
+            let hub = Hub::start(config).unwrap();
+            assert_eq!((hub.eq, hub.hears_clients()), (on, on), "{backend:?}");
+            hub.stop();
+        }
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn the_windows_window_backend_is_refused_off_windows() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = Config::defaults(dir.path());
+        config.eq = Some(config::EqCfg {
+            backend: Some(config::EqBackend::Windows),
+        });
+        let refused = plugwin_backend(&config)
+            .err()
+            .expect("the Windows backend off Windows");
+        assert!(
+            refused.to_string().contains("runs on Windows only"),
+            "{refused}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_stop_waits_for_the_window_worker_to_end() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = Config::defaults(dir.path());
+        config.instances.clear();
+        config.eq = Some(config::EqCfg {
+            backend: Some(config::EqBackend::Sim),
+        });
+        let hub = Hub::start(config).unwrap();
+        let plugwin = hub
+            .plugwin
+            .clone()
+            .expect("a hub with the screen has its worker");
+        assert_eq!(plugwin.list().await, Ok(Vec::new()), "serving");
+        hub.stop();
+        hub.plugwin_stopped().await;
+        // Its thread ended: nothing serves its channel any more.
+        assert_eq!(plugwin.list().await, Err(plugwin::STOPPED.to_string()));
+        assert!(plugwin.stopped().await);
+        // A hub without the screen has nothing to wait for.
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = Config::defaults(dir.path());
+        config.instances.clear();
+        config.eq = Some(config::EqCfg {
+            backend: Some(config::EqBackend::Off),
+        });
+        let hub = Hub::start(config).unwrap();
+        assert!(hub.plugwin.is_none());
+        hub.stop();
+        hub.plugwin_stopped().await;
     }
 
     #[tokio::test]

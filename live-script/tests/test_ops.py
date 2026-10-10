@@ -55,6 +55,37 @@ class OpsTest(unittest.TestCase):
         state = self.run_cmd("live_set tracks 0", "get_prop", {"prop": "current_monitoring_state"})
         self.assertEqual(state, {"$enum": "AUTO", "value": 1})
 
+    def test_a_tracks_devices_and_a_racks_chains_name_their_class_and_path(self):
+        # What the hub's walk for the Pro-Q 4 screen reads (#71).
+        devices = self.run_cmd("live_set tracks[name=Hand2 #]", "get_prop", {"prop": "devices"})
+        self.assertEqual(
+            [(d["class"], d["path"], d["name"]) for d in devices],
+            [
+                ("PluginDevice", "live_set tracks 1 devices 0", "Pro-Q 4"),
+                ("RackDevice", "live_set tracks 1 devices 1", "Vocal FX"),
+            ],
+        )
+        chains = self.run_cmd(devices[1]["path"], "get_prop", {"prop": "chains"})
+        self.assertEqual(
+            [(c["class"], c["path"], c["name"]) for c in chains],
+            [
+                ("Chain", "live_set tracks 1 devices 1 chains 0", "Main"),
+                ("Chain", "live_set tracks 1 devices 1 chains 1", "Air"),
+            ],
+        )
+        inner = self.run_cmd(chains[0]["path"], "get_prop", {"prop": "devices"})
+        self.assertEqual(inner[0]["path"], "live_set tracks 1 devices 1 chains 0 devices 0")
+        product = self.run_cmd(inner[0]["path"], "get_prop", {"prop": "class_display_name"})
+        self.assertEqual(product, "Pro-Q 4")
+
+    def test_a_plug_ins_editor_opens_and_closes_through_set_prop(self):
+        target = "live_set tracks 1 devices 1 chains 0 devices 0"
+        self.assertIs(self.run_cmd(target, "get_prop", {"prop": "is_editor_open"}), False)
+        self.run_cmd(target, "set_prop", {"prop": "is_editor_open", "value": True})
+        self.assertIs(self.run_cmd(target, "get_prop", {"prop": "is_editor_open"}), True)
+        self.run_cmd(target, "set_prop", {"prop": "is_editor_open", "value": False})
+        self.assertIs(self.run_cmd(target, "get_prop", {"prop": "is_editor_open"}), False)
+
     def test_get_prop_by_ref(self):
         tracks = self.run_cmd("live_set", "get_prop", {"prop": "tracks"})
         ref = {"$ref": tracks[2]["$ref"], "class": "Track"}

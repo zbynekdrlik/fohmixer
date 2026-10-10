@@ -11,6 +11,9 @@
 //! subscriptions are the selected path's with an open channel detail's
 //! (`binding::wanted_subs`, #71); the selected page and sub-page are
 //! remembered on the device, the Stream Deck tab and the detail never are.
+//! A Pro-Q 4 screen opened from the detail (#71 PR E) lies over everything,
+//! outside the layout's shell: a new layout keeps it; the detail closing
+//! closes it.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -28,6 +31,7 @@ use crate::binding::{
     selected_path, solo_sub, stored_pages, view_tap, wanted_subs,
 };
 use crate::components::detail::{DetailStrip, DetailView};
+use crate::components::eq::{EqNav, EqScreen, EqTarget};
 use crate::components::{ControlView, Settings, fail_flash, key_of, owns_surface, owns_touches};
 use crate::dom;
 use crate::flow::{is_column, shared_instance};
@@ -161,6 +165,17 @@ pub fn Surface(token: String, session: RwSignal<Option<String>>) -> impl IntoVie
         strip: nav.detail,
         opened_at: nav.detail_opened,
     });
+    // A Pro-Q 4 screen (#71 PR E): opened from the detail's cards; closed
+    // with the detail.
+    let eq = EqNav {
+        target: RwSignal::new(None::<EqTarget>),
+    };
+    provide_context(eq);
+    Effect::new(move |_| {
+        if nav.detail.try_with(Option::is_none).unwrap_or(false) {
+            eq.close("detail", None);
+        }
+    });
     on_cleanup(move || store.stop());
     store.start();
 
@@ -207,6 +222,13 @@ pub fn Surface(token: String, session: RwSignal<Option<String>>) -> impl IntoVie
     };
     // The tag manual (#68) stays open through a new layout.
     let manual_view = move || nav.manual.get().then(|| view! { <ManualView /> });
+    // The Pro-Q 4 screen too (#71 PR E).
+    let eq_view = move || {
+        eq.target
+            .try_get()
+            .flatten()
+            .map(|target| view! { <EqScreen target=target /> })
+    };
     // No context menu, selection or drag starts on the surface (#43 PR G).
     view! {
         <div
@@ -218,6 +240,7 @@ pub fn Surface(token: String, session: RwSignal<Option<String>>) -> impl IntoVie
         >
             {content}
             {manual_view}
+            {eq_view}
         </div>
     }
 }

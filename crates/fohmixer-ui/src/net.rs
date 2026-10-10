@@ -145,6 +145,35 @@ pub async fn fetch_text(
     Ok((status, text.as_string().unwrap_or_default()))
 }
 
+/// A GET of a binary answer with the token (a Pro-Q 4 card's last picture,
+/// #71 PR E): its status and, for a 200, its body as a blob; the error of a
+/// request that never got an answer.
+pub async fn fetch_blob(url: &str, token: &str) -> Result<(u16, Option<web_sys::Blob>), String> {
+    let window = web_sys::window().ok_or("no window")?;
+    let opts = web_sys::RequestInit::new();
+    opts.set_method("GET");
+    let headers = web_sys::Headers::new().map_err(|e| format!("{e:?}"))?;
+    headers
+        .set("authorization", &format!("Bearer {token}"))
+        .map_err(|e| format!("{e:?}"))?;
+    opts.set_headers(&headers);
+    let request =
+        web_sys::Request::new_with_str_and_init(url, &opts).map_err(|e| format!("{e:?}"))?;
+    let answer = wasm_bindgen_futures::JsFuture::from(window.fetch_with_request(&request))
+        .await
+        .map_err(|e| format!("{e:?}"))?;
+    let response: web_sys::Response = answer.dyn_into().map_err(|e| format!("{e:?}"))?;
+    let status = response.status();
+    if status != 200 {
+        return Ok((status, None));
+    }
+    let blob = response.blob().map_err(|e| format!("{e:?}"))?;
+    let blob = wasm_bindgen_futures::JsFuture::from(blob)
+        .await
+        .map_err(|e| format!("{e:?}"))?;
+    Ok((status, blob.dyn_into().ok()))
+}
+
 /// The last handshake reload time (local storage; wall clock ms,
 /// `dom::wall_now`, so it compares across page loads).
 pub fn last_reload() -> Option<f64> {

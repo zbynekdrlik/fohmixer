@@ -29,6 +29,11 @@ what only the harness can do:
     GET  /hub/events                     {"events": [...]}: every record of the
                                          hub's event log (#43, ``logs/events-*.jsonl``
                                          in the data folder), oldest day first
+    GET  /sim/eq                         {"records": [...]}: what the hub's simulated
+                                         window backend did (#71 PR E, ``eq-sim.jsonl``
+                                         in the data folder: each take, touch with its
+                                         phase and point, release), in order
+    POST /sim/eq/clear                   those records forgotten
     POST /forensics/timeline {"from_ms", "to_ms", "key"}
                                          ``tools/forensics/timeline.py`` over the
                                          data folder's ``logs`` from ``from_ms`` to
@@ -78,6 +83,9 @@ The Stream Deck (#52): with ``--fake-companion-port`` the harness starts
 ``fake_companion.py`` there (0: any free port) and the hub's config gets
 ``[companion]`` on it; with ``--companion HOST:PORT`` it names a real Companion
 (the ``companion`` CI job) and starts no fake.
+
+The Pro-Q 4 screen (#71 PR E): the hub's config gets ``[eq] backend = "sim"``,
+the simulated window backend, whose records the tests read through ``/sim/eq``.
 
 Every process is stopped with SIGTERM and a bounded wait (spec I7). Prints
 ``HARNESS READY`` once everything answers; SIGTERM or SIGINT stops it all.
@@ -132,10 +140,11 @@ ANSWERS = {
 
 
 def hub_config(http_port, band_port, master_port, remote=None, companion=None):
-    """The hub's ``fohmixer-hub.toml`` for the two hosts (layout polled fast), with
-    the Stream Deck's ``[companion]`` on ``companion`` (host, port) when given
-    (#52), then the remote-access tables of ``remote`` (``name``, ``https_port``,
-    and ``team``, ``aud``, ``jwks_url`` for ``[access]``) when given."""
+    """The hub's ``fohmixer-hub.toml`` for the two hosts (layout polled fast) and
+    the Pro-Q 4 screen on the simulated window backend (#71 PR E), with the
+    Stream Deck's ``[companion]`` on ``companion`` (host, port) when given (#52),
+    then the remote-access tables of ``remote`` (``name``, ``https_port``, and
+    ``team``, ``aud``, ``jwks_url`` for ``[access]``) when given."""
     text = (
         f"http_port = {http_port}\n"
         'layout = "layout.json"\n'
@@ -146,6 +155,8 @@ def hub_config(http_port, band_port, master_port, remote=None, companion=None):
         "[[instances]]\n"
         'name = "master"\n'
         f"port = {master_port}\n"
+        "[eq]\n"
+        'backend = "sim"\n'
     )
     if companion:
         host, port = companion
@@ -212,6 +223,37 @@ def event_records(data):
                 except json.JSONDecodeError:
                     continue
     return records
+
+
+# The simulated window backend's record file in the data folder (#71 PR E,
+# the hub's ``plugwin::sim::RECORD_FILE``).
+SIM_EQ = "eq-sim.jsonl"
+
+
+def sim_eq_records(data):
+    """What the hub's simulated window backend recorded in the data folder
+    ``data``: one JSON object a line, in order (a line cut short by a write in
+    progress is left out); none before its first record."""
+    path = os.path.join(data, SIM_EQ)
+    if not os.path.exists(path):
+        return []
+    records = []
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            try:
+                records.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    return records
+
+
+def clear_sim_eq(data):
+    """Forgets the simulated window backend's records (the hub appends to the
+    file line by line, opening it each time)."""
+    path = os.path.join(data, SIM_EQ)
+    if os.path.exists(path):
+        with open(path, "w", encoding="utf-8"):
+            pass
 
 
 class BadRequest(Exception):
@@ -541,6 +583,8 @@ class Harness:
             return 200, {"ok": True}
         if method == "GET" and parts == ["hub", "events"]:
             return 200, {"events": event_records(self.data)}
+        if method == "GET" and parts == ["sim", "eq"]:
+            return 200, {"records": sim_eq_records(self.data)}
         if method == "GET" and parts == ["link"]:
             return 200, dict(self.link.state(), port=self.link.port)
         if method == "GET" and parts == ["companion"]:
@@ -561,6 +605,9 @@ class Harness:
             return 200, {"ok": True}
         if parts == ["hub", "layout"]:
             self.write_layout(body["layout"])
+            return 200, {"ok": True}
+        if parts == ["sim", "eq", "clear"]:
+            clear_sim_eq(self.data)
             return 200, {"ok": True}
         if parts == ["hub", "layout", "reset"]:
             self.reset_layout()

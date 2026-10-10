@@ -168,6 +168,7 @@ pub fn expired(file: NaiveDate, today: NaiveDate, keep_days: i64) -> bool {
 /// link change, the Stream Deck's link changes, its presses with
 /// Companion's answers, its tab opened or closed and the releases the hub
 /// made itself (#52: rare, tiny, and the most consequential deck records),
+/// the Pro-Q 4 editors' opens, closes, locks and contacts (#71 PR E, `eq`),
 /// a page's `trace` that holds a dropout or a counter reset (the owner's
 /// priority on #43), the cap and dropped notes, and anything that carries
 /// an error. The flight recorder's other batches stop at the cap like the
@@ -193,6 +194,7 @@ pub fn is_warn(record: &Value) -> bool {
                 | "deck_press"
                 | "deck_ok"
                 | "deck_view"
+                | "eq"
         )
         || (ev == "trace" && holds_dropout(record))
 }

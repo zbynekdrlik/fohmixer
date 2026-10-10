@@ -11,8 +11,9 @@ Fixture shape::
     TRACK  = {"name", "color"?, "mute"?, "solo"?, "volume"?, "panning"?,
               "devices"?: [DEVICE...], "children"?: [TRACK...] (makes a group),
               "fold_state"?: 0|1 (groups)}
-    DEVICE = {"template": "plain"|"eq8"|"rack", "name", "class_name"?,
-              "parameters"?: [PARAM...], "chains"?: [{"name", "devices"?}]}
+    DEVICE = {"template": "plain"|"eq8"|"rack"|"plugin", "name", "class_name"?,
+              "parameters"?: [PARAM...], "chains"?: [{"name", "devices"?}],
+              "product"?: str (a plugin's class_display_name, #71)}
     PARAM  = {"name", "value"?, "min"?, "max"?, "display"?, "items"?}
 
 ``display`` is one of volume, pan, items, db, hz, percent, int, plain.
@@ -109,6 +110,10 @@ def _make_device(spec):
         )
     if template == "plain":
         return Live.Device.Device(spec["name"], spec.get("class_name", spec["name"]), params)
+    if template == "plugin":
+        return Live.PluginDevice.PluginDevice(
+            spec["name"], spec.get("product", spec["name"]), params
+        )
     raise ValueError(f"unknown device template {template!r}")
 
 

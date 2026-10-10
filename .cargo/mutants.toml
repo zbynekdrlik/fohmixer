@@ -14,6 +14,13 @@ exclude_globs = [
   # Linux runners; the `windows` CI job builds them and runs the `pepper::`,
   # `sealed::` and `cf_token::` tests against them.
   "crates/fohmixer-hub/src/dpapi.rs",
+  # The Pro-Q 4 screen's Windows window backend (#71 PR E, as dpapi.rs): not
+  # compiled on the Linux runners; the `windows` CI job lints it and runs
+  # its `plugwin::win::` tests and the eq-probe CLI test against it, and the
+  # PC run of `fohmixer-hub eq-probe` against Carla's bridge drives every
+  # call (.claude/rules/plugin-window.md). Its decisions (the phases' flags
+  # aside, pinned by its own test) are the tested plugwin.rs and eq.rs.
+  "crates/fohmixer-hub/src/plugwin/win.rs",
   # The tray's Windows-only Tauri glue (#39, as iemmixer excludes iem-tray):
   # not compiled on the Linux runners; the `windows` CI job builds and lints
   # it, and Test-Fohmixer.ps1 runs the exe (start, `--exit`, the log). Its
@@ -57,8 +64,10 @@ exclude_re = [
   # touchstart, contextmenu, selectstart and dragstart read back as
   # defaultPrevented, and the page's records of them).
   "fohmixer-ui/src/dom\\.rs.*(replace|in) (now|epoch_now|event_epoch|hidden|wall_now|log|error|set_style|set_attr|remove_attr|viewport|current_element|child|storage|storage_get|storage_set|storage_remove|prevent_on|event_element)( |$)",
-  # net.rs: the fetch wrapper and the handshake reload (location.reload).
-  "fohmixer-ui/src/net\\.rs.*(replace|in) (fetch_text|last_reload|reload)( |$)",
+  # net.rs: the fetch wrapper and the handshake reload (location.reload);
+  # #71 PR E added fetch_blob (a Pro-Q 4 card's last picture with the
+  # token; eq.spec.ts reads the card's picture after a close).
+  "fohmixer-ui/src/net\\.rs.*(replace|in) (fetch_text|fetch_blob|last_reload|reload)( |$)",
   # raf.rs: requestAnimationFrame scheduling around the tested Registry, and
   # a component's registration of its frame function.
   "fohmixer-ui/src/raf\\.rs.*(replace|in) (register|unregister|schedule|tick|animate)( |$)",
@@ -82,7 +91,10 @@ exclude_re = [
   # PR C moved tick_link to store/live/link.rs (below), replaced
   # send_reports with the flight recorder's upload there, and split send's
   # socket write into send_text (also the recorder's batches).
-  "fohmixer-ui/src/store/live\\.rs.*(replace|in) LiveStore::(new|start|stop|stopped|token|logout|connect|retry|show_layout|open_socket|watch|drop_socket|on_close|on_text|on_hello|on_instance|on_layout|apply|mark_pending|mark_stale|forget_unwanted|send|send_text|send_sub|slot|slot_signal|set_wanted|cmd|finish|set_hub|range|fetch_ranges|fetch_range)( |$)",
+  # #71 PR E split on_text's liveness stamp into heard (also a binary
+  # message's) and added on_binary (a Pro-Q 4 frame: heard, then on_frame);
+  # eq.spec.ts draws the frames.
+  "fohmixer-ui/src/store/live\\.rs.*(replace|in) LiveStore::(new|start|stop|stopped|token|logout|connect|retry|show_layout|open_socket|watch|drop_socket|on_close|heard|on_text|on_binary|on_hello|on_instance|on_layout|apply|mark_pending|mark_stale|forget_unwanted|send|send_text|send_sub|slot|slot_signal|set_wanted|cmd|finish|set_hub|range|fetch_ranges|fetch_range)( |$)",
   # store/live/link.rs (#43 PR C): the link's glue, one function at a time:
   # tick_link (the dropout watch's 100 ms timer), collect_dropouts (the
   # watch's finished reports into the flight recorder), upload (the
@@ -141,6 +153,19 @@ exclude_re = [
   # socket down, a refused press's flash, a down during a dropout flashed
   # and never sent, the tab and the page kept through a reconnect).
   "fohmixer-ui/src/store/live/deck\\.rs.*(replace|in) LiveStore::(on_deck|on_deck_keys|on_deck_ack|deck_view|deck_hello|deck_closed|can_send|dropping_out|deck_press)( |$)",
+  # store/live/eq.rs (#71 PR E): the Pro-Q 4 screen's glue, one function at
+  # a time: on_eq_list, on_eq_locks and on_eq (the hub's messages into the
+  # signals, the list numbered), on_frame (a binary message's header read
+  # with the tested frame_parts, the session checked with the tested
+  # shows_frame, the JPEG as a Blob to the screen's sink), eq_frames (the
+  # sink kept), list_eq, eq_open (the message, then the tested asked: an ask
+  # the socket did not take closes at once), eq_input, eq_close (the
+  # messages), eq_socket_closed (the tested socket_closed) and eq_picture
+  # (net::fetch_blob of the tested picture_url). eq.spec.ts drives them in
+  # Chromium and WebKit (the cards, the open, the frames drawn, a drag at
+  # the mapped pixels, the exit, the lock another page sees, the picture
+  # after the close, no open offered while the socket is down).
+  "fohmixer-ui/src/store/live/eq\\.rs.*(replace|in) LiveStore::(on_eq_list|on_eq_locks|on_eq|on_frame|eq_frames|list_eq|eq_open|eq_input|eq_close|eq_socket_closed|eq_picture)( |$)",
   "fohmixer-ui/src/store/live\\.rs.*(replace|in) (Socket::open|Socket::buffered|Socket::close|Inner::new)( |$)",
   # auth.rs: local storage and the login request (login_outcome, login_body
   # and LoginError::message are the tested decisions).
@@ -167,6 +192,16 @@ exclude_re = [
   # the event log and drives the open, the exit and a layout's close.
   "fohmixer-ui/src/components/mod\\.rs.*(replace|in) (trace_touch|trace_start|trace_move|intent_look|trace_detail)( |$)",
   "fohmixer-ui/src/components/detail\\.rs.*(replace|in) DetailStrip::(open|close)( |$)",
+  # components/eq.rs (#71 PR E): EqNav::open and EqNav::close (the screen's
+  # signal written, the step recorded with the tested trace::detail),
+  # local_hh_mm (js_sys::Date's local hours and minutes into the tested
+  # hh_mm), blob_url and revoke (URL.createObjectURL / revokeObjectURL),
+  # load_picture (a card's picture through LiveStore::eq_picture into its
+  # signal), draw and paint (createImageBitmap, the canvas drawn, the newest
+  # frame kept while one decodes). eq.spec.ts drives them (the frames drawn
+  # with data-frames, the card's picture after a close, the records in the
+  # event log).
+  "fohmixer-ui/src/components/eq\\.rs.*(replace|in) (EqNav::open|EqNav::close|local_hh_mm|blob_url|revoke|load_picture|draw|paint)( |$)",
   # components (#43 PR G): the directives owns_touches (a control's root:
   # dom::prevent_on with the tested sys::CONTROL_PREVENTS, and its keys as
   # the tested sys::keys_text in sys::KEYS_ATTR) and owns_surface (the

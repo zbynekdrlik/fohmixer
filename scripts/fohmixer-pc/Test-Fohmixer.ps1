@@ -525,9 +525,12 @@ try {
     try { $entries = @($zip.Entries | ForEach-Object { $_.FullName }) } finally { $zip.Dispose() }
     foreach ($n in @('VERSION', 'SHA256SUMS', 'fohmixer-hub.exe', 'Install-Fohmixer.ps1', 'FohmixerPc.psm1', 'FohmixerLivePrefs.ps1', 'FohmixerFirewall.ps1', 'FohmixerRemote.ps1', 'Start-FohmixerHub.ps1',
             'Stop-FohmixerHub.ps1', 'FohMixer/__init__.py', 'FohMixer/Config.py', 'FohMixer/version.py', 'FohMixer/transport/server.py',
-            'fohmixer-tray.exe', 'FohmixerTray.ps1', 'FohmixerHubProcess.ps1', 'FohmixerTasks.ps1')) {
+            'fohmixer-tray.exe', 'FohmixerTray.ps1', 'FohmixerHubProcess.ps1', 'FohmixerTasks.ps1', 'THIRD-PARTY-NOTICES.md')) {
         Assert ($entries -ccontains $n) "bundle-holds-$n"
     }
+    # The IJG credit jpeg-encoder's licence asks of the shipped hub's documentation (#71).
+    $noticeText = [IO.File]::ReadAllText((Join-Path $b1.stage 'THIRD-PARTY-NOTICES.md'))
+    Assert ($noticeText.Contains('This software is based in part on the work of the Independent JPEG Group.')) 'bundle-notices-credit-the-ijg'
     Assert (@($entries | Where-Object { $_ -match '(^|/)(__pycache__|logs|tests)/|\.pyc$' }).Count -eq 0) 'bundle-without-tests-caches-or-logs'
     Assert (@($entries | Where-Object { $_.Contains('\') }).Count -eq 0) 'bundle-entries-use-forward-slashes'
     Assert ((Test-FohBundle -Root $b1.stage) -ceq $v1) 'bundle-reads-back-against-its-sums'

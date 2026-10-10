@@ -168,8 +168,10 @@ jobs:
     name: windows
     # The hub runs on the Ableton PC (Windows): build and lint it there, run
     # the PIN pepper's tests against real DPAPI (pepper/dpapi.rs is not
-    # compiled on Linux, so the mutation gate excludes it), and the hub's
-    # host-free integration tests (the layout file handling, auth).
+    # compiled on Linux, so the mutation gate excludes it), the Pro-Q 4
+    # screen's Windows window backend's tests (plugwin/win.rs, excluded the
+    # same way; #71 PR E), and the hub's host-free integration tests (the
+    # layout file handling, auth, the eq-probe CLI).
     runs-on: windows-2025
     timeout-minutes: 40
     steps:
@@ -190,10 +192,10 @@ jobs:
         run: mkdir -p crates/fohmixer-ui/dist && echo placeholder > crates/fohmixer-ui/dist/index.html
       - name: Clippy (hub and tray, Windows-only code included)
         run: cargo clippy --locked -p fohmixer-hub -p fohmixer-tray --all-targets -- -D warnings
-      - name: Sealed-secret tests (DPAPI; the PIN pepper, the Cloudflare token)
-        run: cargo test --locked -p fohmixer-hub --lib -- "pepper::" "sealed::" "cf_token::"
-      - name: Hub API tests on Windows (the layout, auth, the installer's config check, the Stream Deck's Companion link; no Live host needed)
-        run: cargo test --locked -p fohmixer-hub --test layout --test auth --test config_cli --test companion_client --test deck
+      - name: Sealed-secret and window-backend tests (DPAPI; the PIN pepper, the Cloudflare token; the Pro-Q 4 screen's Win32 calls and its default backend, off on Windows)
+        run: cargo test --locked -p fohmixer-hub --lib -- "pepper::" "sealed::" "cf_token::" "plugwin::win::" "config::tests::eq_backend"
+      - name: Hub API tests on Windows (the layout, auth, the installer's config check, the Stream Deck's Companion link, the eq-probe CLI; no Live host needed)
+        run: cargo test --locked -p fohmixer-hub --test layout --test auth --test config_cli --test companion_client --test deck --test eq_probe_cli
       - name: PC install self-test (Windows PowerShell 5.1 as on the PC; the debug hub started and stopped by Ctrl-Break, the debug tray started and ended by --exit)
         run: |
           cargo build --locked -p fohmixer-hub -p fohmixer-tray
@@ -792,12 +794,14 @@ jobs:
         id: count
         env:
           # Mutants one shard tests within its 20-minute budget, setup included:
-          # a mutant costs ~240 s of build since the Stream Deck (#52), two at
-          # a time (it was ~150 s after #17's TLS/ACME dependencies; 12 per
-          # shard ran over then, and 8 per shard ran out of the 20 minutes on
-          # 9 of 45 shards in PR #53). 6 per shard is 3 rounds plus setup,
-          # about 16 minutes.
-          MUTANTS_PER_SHARD: "6"
+          # a mutant costs ~300 s of build since the Pro-Q 4 screen (#71), two
+          # at a time, and the shard's setup ~3.5 minutes (it was ~240 s after
+          # the Stream Deck, #52, and ~150 s after #17's TLS/ACME
+          # dependencies; 12 per shard ran over then, 8 per shard ran out of
+          # the 20 minutes on 9 of 45 shards in PR #53, and 6 per shard on 9
+          # of 136 shards in PR #73: 3 rounds took 17 minutes). 4 per shard
+          # is 2 rounds plus setup, about 15 minutes.
+          MUTANTS_PER_SHARD: "4"
           BASE_REF: ${{ github.base_ref }}
         run: |
           set -euo pipefail

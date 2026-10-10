@@ -3,7 +3,28 @@
   "live_version": [12, 2, 5],
   "tracks": [
     {"name": "Hand1 #", "color": 16725558, "volume": 0.85},
-    {"name": "Hand2 #", "color": 16725558, "volume": 0.8},
+    {
+      "name": "Hand2 #",
+      "color": 16725558,
+      "volume": 0.8,
+      "devices": [
+        {"template": "plugin", "name": "Pro-Q 4", "product": "Pro-Q 4"},
+        {
+          "template": "rack",
+          "name": "Vocal FX",
+          "chains": [
+            {
+              "name": "Main",
+              "devices": [{"template": "plugin", "name": "De-ess", "product": "Pro-Q 4"}]
+            },
+            {
+              "name": "Air",
+              "devices": [{"template": "plugin", "name": "Pro-C 2", "product": "Pro-C 2"}]
+            }
+          ]
+        }
+      ]
+    },
     {"name": "Hand3 #", "color": 16725558, "volume": 0.75},
     {"name": "Hand4 #", "color": 16725558, "volume": 0.7, "mute": true},
     {

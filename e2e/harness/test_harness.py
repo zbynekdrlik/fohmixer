@@ -179,6 +179,32 @@ class HarnessTest(unittest.TestCase):
             shutil.rmtree(logs)
         self.assertEqual(harness.event_records(self.data), [], "no logs folder: none")
 
+    def test_the_simulated_window_backends_records_are_read_and_cleared(self):
+        path = os.path.join(self.data, harness.SIM_EQ)
+        self.assertEqual(self.harness.handle("GET", "/sim/eq", {}), (200, {"records": []}))
+        with open(path, "w", encoding="utf-8") as f:
+            f.write('{"op": "take", "window": 1}\n')
+            f.write('{"op": "touch", "phase": "down", "x": 10, "y": 21}\n{"op": "rel')
+        self.assertEqual(
+            self.harness.handle("GET", "/sim/eq", {}),
+            (
+                200,
+                {
+                    "records": [
+                        {"op": "take", "window": 1},
+                        {"op": "touch", "phase": "down", "x": 10, "y": 21},
+                    ]
+                },
+            ),
+            "a half-written line is left out",
+        )
+        self.assertEqual(self.post("/sim/eq/clear"), (200, {"ok": True}))
+        self.assertEqual(harness.sim_eq_records(self.data), [])
+        self.assertTrue(os.path.exists(path), "emptied, not removed")
+        os.remove(path)
+        self.assertEqual(self.post("/sim/eq/clear"), (200, {"ok": True}), "nothing to clear")
+        self.assertFalse(os.path.exists(path))
+
     def test_a_control_line_reaches_the_host_and_brings_its_answer(self):
         status, answer = self.post("/host/band/line", {"line": "listeners mute live_set tracks 0"})
         self.assertEqual((status, answer), (200, {"answer": "LISTENERS 0"}))
@@ -233,7 +259,8 @@ class HarnessTest(unittest.TestCase):
             harness.hub_config(8480, 1, 2),
             'http_port = 8480\nlayout = "layout.json"\nlayout_poll_ms = 200\n'
             '[[instances]]\nname = "band"\nport = 1\n'
-            '[[instances]]\nname = "master"\nport = 2\n',
+            '[[instances]]\nname = "master"\nport = 2\n'
+            '[eq]\nbackend = "sim"\n',
         )
 
     def test_the_remote_tables_of_the_hub_config(self):
