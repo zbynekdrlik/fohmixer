@@ -721,6 +721,48 @@ fn a_deleted_editors_close_never_turns_off_the_editor_now_at_its_path() {
 }
 
 #[test]
+fn a_path_whose_device_changed_shows_no_picture_of_the_device_before() {
+    let _serial = serial();
+    runtime().block_on(async {
+        let dir = tempfile::tempdir().unwrap();
+        let mut host = Host::start_site("band", &neighbours(dir.path()), 0, 0.0);
+        let hub = TestHub::start_config(config(dir.path(), &host)).await;
+        let kick = "live_set tracks 1 devices 0";
+        let picture = "/api/eq/picture?instance=band&path=live_set%20tracks%201%20devices%200";
+        let mut a = client(&hub).await;
+        a.send(&ClientMsg::EqList {
+            binding: track("Kick #"),
+        })
+        .await;
+        assert_eq!(listed(&mut a).await.0.len(), 1);
+        let session = open(&mut a, kick).await;
+        let frame = a.frame(WAIT).await.expect("a frame");
+        assert_eq!(frame_parts(&frame).unwrap().0, session);
+        a.send(&ClientMsg::EqClose).await;
+        assert_eq!(state(&mut a, kick).await.0, EqState::Closed);
+        assert_eq!(hub.get(picture).await.0, 200, "the Kick's last picture");
+        // The first track deleted: both Pro-Q 4s keep their default name,
+        // and the Kick's path names the Snare's device now. Its list must
+        // not show the Kick's picture on the Snare's card.
+        assert!(host.delete_track(0) > 0, "Lead # deleted");
+        a.send(&ClientMsg::EqList {
+            binding: track("Snare #"),
+        })
+        .await;
+        let (items, error) = listed(&mut a).await;
+        assert_eq!(error, None);
+        let seen: Vec<(&str, &str, bool)> = items
+            .iter()
+            .map(|i| (i.path.as_str(), i.name.as_str(), i.picture))
+            .collect();
+        assert_eq!(seen, [(kick, "Pro-Q 4", false)]);
+        assert_eq!(hub.get(picture).await.0, 404, "no Kick's picture there");
+        hub.stop().await;
+        host.stop();
+    });
+}
+
+#[test]
 fn a_resting_finger_goes_again_until_its_page_falls_silent() {
     let _serial = serial();
     runtime().block_on(async {
