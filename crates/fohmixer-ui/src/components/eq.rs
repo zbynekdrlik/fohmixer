@@ -30,8 +30,9 @@
 //!   `behave::eq::Viewer`, 1× to 4×, each open at 1×): the canvas gets a
 //!   CSS transform, and while zoomed the bar shows the overview (the latest
 //!   frame small, in the picture's shape, a frame around the part in
-//!   sight), the factor and `CELÝ EQ`. Leaving it sends `eq_close`; the hub closing it (refused, failed,
-//!   its window gone, the socket lost) brings the detail back.
+//!   sight), the factor and `CELÝ EQ`. Leaving it sends `eq_close`; the hub
+//!   closing it (refused, failed, its window gone, the socket lost) brings
+//!   the detail back.
 //!
 //! The screen's open, close and lock refusal go to the flight recorder as
 //! `detail` events (`eq_open`, `eq_close` with why, `eq_locked`) with the
@@ -745,11 +746,12 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
         );
     };
     // Once the area is in the page: its box, its size watched, and the open
-    // with it (PR G: the editor gets its aspect). Each frame: a waiting finger's down once
-    // it waited or slid, a quick tap's up once 40 ms passed, a move at most
-    // once (the newest); a changed area once it rested while the editor is
-    // open; the view follows a pinch, and a changed look is drawn (only
-    // then: nothing is restyled while the view rests).
+    // with it (PR G: the editor gets its aspect). Each frame: a waiting
+    // finger's down once it waited or slid, a quick tap's up once 40 ms
+    // passed, a move at most once (the newest); a changed area once it
+    // rested while the editor is open; the view follows a pinch, and a
+    // changed look is drawn (only then: nothing is restyled while the view
+    // rests).
     let (instance, path) = (target.instance.clone(), target.path.clone());
     raf::animate(area_ref, move |el| {
         let opened = Grip::of(&el);
