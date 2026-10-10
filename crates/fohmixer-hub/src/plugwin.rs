@@ -35,8 +35,9 @@
 //!   hub's log once a minute ([`Rate`]). A window that went away is
 //!   reported [`PlugwinEvent::Lost`].
 //! - **A contact:** one on the screen at a time, numbered by the router. A
-//!   down goes only when no contact is down (else it ends at once, [`BUSY`]);
-//!   any other phase only of the contact down ([`accepts`]). A down or an
+//!   down goes only when no contact is down and no resize of its editor is
+//!   on its way (else it ends at once, [`BUSY`]; [`waits_out`]); any other
+//!   phase only of the contact down ([`accepts`]). A down or an
 //!   update lands only when the point's window is the editor's; else
 //!   nothing is injected and the contact ends
 //!   ([`PlugwinEvent::ContactEnded`], with its number).
@@ -164,7 +165,8 @@ pub const NO_EDITOR: &str = "no such editor";
 pub const STOPPED: &str = reason::STOPPED;
 /// Why the close guard ended another session's contact.
 pub const GUARD_CANCEL: &str = "the close guard of another editor";
-/// Why a down never went: another contact was still down.
+/// Why a down never went: another contact was still down, or a resize of
+/// its editor was on its way.
 pub const BUSY: &str = "busy";
 /// Why a guard did not tap: its editor did not read [`KNOWN_SIZE`] in time,
 /// or a resize might still land (the inert spot is known only at that
@@ -527,6 +529,15 @@ pub fn accepts(held: Option<(u32, u32)>, session: u32, contact: u32, phase: Phas
         None => phase == Phase::Down,
         Some(down) => phase != Phase::Down && down == (session, contact),
     }
+}
+
+/// Whether a phase waits out a resize of its editor on its way
+/// (`resizing`: posted, not yet settled; #74 review, round 2): a down does
+/// (Live lands the posted size before injected input, so Pro-Q would lay
+/// itself out under it); any other phase is of a contact already down and
+/// goes.
+pub fn waits_out(phase: Phase, resizing: bool) -> bool {
+    phase == Phase::Down && resizing
 }
 
 /// Whether a contact last injected `since_ms` ago is due again.
@@ -1465,19 +1476,25 @@ impl Worker {
     }
 
     /// A phase of contact `contact` on `session`'s window: one contact on
-    /// the screen ([`accepts`]); stamped when it goes, its gap since the
+    /// the screen ([`accepts`]), no down while a resize of the editor is
+    /// on its way ([`waits_out`]); stamped when it goes, its gap since the
     /// contact's last injection counted; a refused down or update ends the
     /// contact and says so.
     fn touch(&mut self, session: u32, contact: u32, phase: Phase, at: (i32, i32)) {
-        let Some(taken) = self.editors.get(&session).map(|e| e.taken.clone()) else {
+        let Some((taken, resizing)) = self
+            .editors
+            .get(&session)
+            .map(|e| (e.taken.clone(), e.resizing.is_some()))
+        else {
             return;
         };
         let held = self.contact.map(|held| (held.session, held.contact));
-        if !accepts(held, session, contact, phase) {
+        if !accepts(held, session, contact, phase) || waits_out(phase, resizing) {
             // A down while another contact is still down (the router let it
-            // go after it ended that one, before this worker did): it never
-            // goes, and the router hears its contact ended. Any other phase
-            // dropped is of a contact already ended.
+            // go after it ended that one, before this worker did), or while
+            // its editor's resize is on its way (#74 review, round 2): it
+            // never goes, and the router hears its contact ended. Any other
+            // phase dropped is of a contact already ended.
             if phase == Phase::Down {
                 (self.events)(PlugwinEvent::ContactEnded {
                     session,

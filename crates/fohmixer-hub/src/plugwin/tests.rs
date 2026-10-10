@@ -924,6 +924,13 @@ fn a_down_goes_when_no_contact_is_down_and_the_rest_only_to_the_one_down() {
 }
 
 #[test]
+fn a_down_waits_out_its_editors_resize_and_the_rest_go() {
+    let all = [Phase::Down, Phase::Update, Phase::Up, Phase::Cancel];
+    assert_eq!(all.map(|p| waits_out(p, true)), [true, false, false, false]);
+    assert_eq!(all.map(|p| waits_out(p, false)), [false; 4]);
+}
+
+#[test]
 fn the_guard_ends_the_contact_stops_the_frames_and_taps_the_inert_spot() {
     let (mut worker, handle, _) = worker();
     handle.still(true);
