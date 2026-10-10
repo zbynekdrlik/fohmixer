@@ -18,10 +18,15 @@
 //!   (`object-fit: contain`), the newest frame winning while one decodes.
 //!   One finger maps to `eq_input` in the picture's pixels through the
 //!   page's view (`behave::eq::Finger`: the first finger waits 120 ms or
-//!   6 px before its down, a lift meanwhile is a tap; a move at most once
-//!   per animation frame, the up and the cancel always, a lost capture as a
-//!   cancel). Two fingers zoom and pan the picture on this page only (PR F,
-//!   the approved mockup `docs/mockups/proq-zoom-v1.html`;
+//!   6 px before its down, a lift meanwhile is a tap, its up 40 ms after its
+//!   down on a frame (PR G); a move at most once per animation frame, the up
+//!   and the cancel always, a lost capture as a cancel). The open carries
+//!   the picture area (PR G: the editor on the PC gets its aspect), sent
+//!   once the area is in the page; a changed area (a phone turned, a
+//!   window resized) goes as `eq_area` once it rested 300 ms while the
+//!   editor is open (`behave::eq::AreaWatch`, on the frame loop). The
+//!   picture's size is the frames'. Two fingers zoom and pan the picture on
+//!   this page only (PR F, the approved mockup `docs/mockups/proq-zoom-v1.html`;
 //!   `behave::eq::Viewer`, 1× to 4×, each open at 1×): the canvas gets a
 //!   CSS transform, and while zoomed the bar shows the overview (the latest
 //!   frame small, a frame around the part in sight), the factor and `CELÝ
@@ -43,9 +48,9 @@ use wasm_bindgen::JsCast;
 use super::buttons::colour_style;
 use super::{owns_touches, trace_detail};
 use crate::behave::eq::{
-    CardLock, Finger, ListLink, Look, Out, Point, Viewer, can_open, card_lock, failure_text, hh_mm,
-    in_use_text, list_text, lists_now, lock_refusal, locked, locked_text, look, on_picture,
-    place_text, point, zoom_text,
+    AreaWatch, CardLock, Finger, ListLink, Look, Out, Point, Viewer, can_open, card_lock,
+    failure_text, hh_mm, in_use_text, list_text, lists_now, lock_refusal, locked, locked_text,
+    look, on_picture, place_text, point, zoom_text,
 };
 use crate::binding::detail_keys;
 use crate::dom;
@@ -540,6 +545,8 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
     // The page's own view of the picture (PR F): each open starts at 1×.
     let viewer = StoredValue::new(Viewer::START);
     let grip = StoredValue::new(None::<Grip>);
+    // The picture area the hub knows (PR G): the open's, then each change.
+    let watch = StoredValue::new(AreaWatch::default());
     // The look last drawn (none: the stylesheet's, the whole picture).
     let drawn = StoredValue::new(None::<Look>);
     let zoomed = RwSignal::new(false);
@@ -558,7 +565,8 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
     };
     let sink: FrameSink = Rc::new(move |blob: web_sys::Blob| paint(painter, blob));
     store.eq_frames(Some(sink));
-    store.eq_open(&target.instance, &target.path);
+    // Opening from now on; the open itself goes with the area, at its load.
+    store.eq_opening(&target.instance, &target.path);
     // A hidden page lifts its finger (`Finger::visibility`), as the Stream
     // Deck lifts its keys: `visibilitychange` bubbles to the window.
     let hidden = window_event_listener_untyped("visibilitychange", move |_| {
@@ -608,6 +616,17 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
     // The editor this screen shows: the page's editor counts only when it
     // is this one (a late close of the one before is not this screen's).
     let editor = StoredValue::new((target.instance.clone(), target.path.clone()));
+    // Whether it is open now (the frame loop's look, untracked).
+    let editor_open = move || {
+        editor
+            .try_with_value(|(instance, path)| {
+                store
+                    .eq
+                    .try_with_untracked(|v| screen_state(v.as_ref(), instance, path) == "open")
+            })
+            .flatten()
+            .unwrap_or(false)
+    };
     // The picture's size: the last frame's, else the hub's word at the open.
     let size = move || {
         painter.try_with_value(|p| p.size).flatten().or_else(|| {
@@ -662,9 +681,10 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
         let Some((at, _)) = point_of(&ev) else {
             return;
         };
+        let now = dom::now();
         send(
             finger
-                .try_update_value(|f| f.up(ev.pointer_id(), at))
+                .try_update_value(|f| f.up(ev.pointer_id(), at, now))
                 .unwrap_or_default(),
         );
     };
@@ -675,20 +695,40 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
                 .unwrap_or_default(),
         );
     };
-    // Each frame: a waiting finger's down once it waited or slid, a move at
-    // most once (the newest); the view follows a pinch, and a changed look
-    // is drawn (only then: nothing is restyled while the view rests).
-    raf::animate(area_ref, move |_el| {
+    // Once the area is in the page: its box, and the open with it (PR G:
+    // the editor gets its aspect). Each frame: a waiting finger's down once
+    // it waited or slid, a quick tap's up once 40 ms passed, a move at most
+    // once (the newest); a changed area once it rested while the editor is
+    // open; the view follows a pinch, and a changed look is drawn (only
+    // then: nothing is restyled while the view rests).
+    let (instance, path) = (target.instance.clone(), target.path.clone());
+    raf::animate(area_ref, move |el| {
+        let opened = Grip::of(&el);
+        let area = (opened.width, opened.height);
+        let _ = grip.try_set_value(Some(opened));
+        let _ = watch.try_set_value(AreaWatch::opened(area));
+        store.eq_open(&instance, &path, area);
         Box::new(move |_now: f64, _step: f64| {
+            let now = dom::now();
             send(
                 finger
-                    .try_update_value(|f| f.frame(dom::now()))
+                    .try_update_value(|f| f.frame(now))
                     .unwrap_or_default(),
             );
-            let (Some(g), Some(picture)) = (grip.try_get_value().flatten(), size()) else {
+            let Some(g) = grip.try_get_value().flatten() else {
                 return;
             };
             let area = (g.width, g.height);
+            let open = editor_open();
+            if let Some(changed) = watch
+                .try_update_value(|w| w.frame(area, open, now))
+                .flatten()
+            {
+                store.eq_area(changed);
+            }
+            let Some(picture) = size() else {
+                return;
+            };
             let pair = finger.try_with_value(Finger::pair).flatten();
             let wanted = viewer
                 .try_update_value(|v| {

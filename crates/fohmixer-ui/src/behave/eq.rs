@@ -5,10 +5,12 @@
 //! pinch that moves it; [`look`], how the screen draws it), a point of the
 //! screen in the picture's pixels ([`to_picture`], [`point`]), the fingers
 //! ([`Finger`]: a first finger waits [`HOLD_MS`] or [`SLOP`] before the
-//! editor gets it, a lift meanwhile is a tap, a second finger makes a pinch
+//! editor gets it, a lift meanwhile is a tap (PR G: its down at once, its
+//! up [`TAP_MS`] later on a frame), a second finger makes a pinch
 //! that sends the editor nothing, a move goes at most once per animation
 //! frame, the newest one, and the end always goes, a lost capture as a
-//! cancel, a hidden page's finger lifted), a card's lock ([`card_lock`]:
+//! cancel, a hidden page's finger lifted), when the page's picture area
+//! goes to the hub (PR G: [`AreaWatch`]), a card's lock ([`card_lock`]:
 //! one editor on the PC's screen at a time, so another page's editor locks
 //! every card) and its text, whether its open is offered ([`can_open`]),
 //! when the cards are listed ([`lists_now`]), what names an editor
@@ -261,6 +263,16 @@ pub const HOLD_MS: f64 = 120.0;
 /// How far a waiting finger may move (CSS px) before its down goes at once.
 pub const SLOP: f64 = 6.0;
 
+/// The shortest contact the PC gets (ms, PR G): a quick tap's up goes on the
+/// first frame this long after its down, never with it (the editor never
+/// gets a contact of no time).
+pub const TAP_MS: f64 = 40.0;
+
+/// Whether a tap whose down went at `since` may lift at `now` (page ms).
+fn tapped(since: f64, now: f64) -> bool {
+    now - since >= TAP_MS
+}
+
 /// Whether a finger down since `since` waited its [`HOLD_MS`] at `now`
 /// (page ms).
 fn waited(since: f64, now: f64) -> bool {
@@ -322,6 +334,9 @@ pub struct Finger {
     stage: Stage,
     /// The fingers down, at most two: each one's pointer and its last point.
     fingers: [Option<(i32, Point)>; 2],
+    /// A quick tap's up still to go (PR G): its point, and when its down
+    /// went (page ms).
+    tap: Option<(Point, f64)>,
 }
 
 impl Finger {
@@ -354,6 +369,7 @@ impl Finger {
                         since: now,
                     },
                     fingers: [Some((pointer, at)), None],
+                    tap: self.tap,
                 };
                 Vec::new()
             }
@@ -406,46 +422,65 @@ impl Finger {
         }
     }
 
-    /// The frame (`now`: page ms). A waiting finger that waited
-    /// [`HOLD_MS`] or slid past [`SLOP`] reaches the editor: its down at
-    /// its first point, then its move to where it is now (nothing when it
-    /// went down off the picture). A finger on the editor sends the move
-    /// not sent yet, the newest.
+    /// A quick tap's up still to go, now (PR G: before another down, or
+    /// when the fingers leave).
+    fn tap_up(&mut self) -> Option<Out> {
+        self.tap.take().map(|(at, _)| sent(Touch::Up, at))
+    }
+
+    /// The frame (`now`: page ms). A quick tap's up goes once [`TAP_MS`]
+    /// passed since its down. A waiting finger that waited [`HOLD_MS`] or
+    /// slid past [`SLOP`] reaches the editor: its down at its first point
+    /// (a tap's up still to go before it), then its move to where it is now
+    /// (nothing when it went down off the picture). A finger on the editor
+    /// sends the move not sent yet, the newest.
     pub fn frame(&mut self, now: f64) -> Vec<Out> {
+        let mut out = Vec::new();
+        if self.tap.is_some_and(|(_, since)| tapped(since, now)) {
+            out.extend(self.tap_up());
+        }
         match (self.stage, self.fingers[0]) {
             (Stage::Waiting { first, on, since }, Some((_, at)))
                 if waited(since, now) || slid(first.area, at.area) =>
             {
                 if !on {
                     self.stage = Stage::Ignored;
-                    return Vec::new();
+                    return out;
                 }
                 self.stage = Stage::Touching { moved: false };
-                let mut out = vec![sent(Touch::Down, first)];
+                out.extend(self.tap_up());
+                out.push(sent(Touch::Down, first));
                 if at != first {
                     out.push(sent(Touch::Move, at));
                 }
-                out
             }
             (Stage::Touching { moved: true }, Some((_, at))) => {
                 self.stage = Stage::Touching { moved: false };
-                vec![sent(Touch::Move, at)]
+                out.push(sent(Touch::Move, at));
             }
-            _ => Vec::new(),
+            _ => {}
         }
+        out
     }
 
-    /// A pointer lifts at `at`: a waiting finger's tap (its down at its
-    /// first point and its up here, together), the first finger's up here;
-    /// a pinch's fingers send nothing.
-    pub fn up(&mut self, pointer: i32, at: Point) -> Vec<Out> {
+    /// A pointer lifts at `at` (`now`: page ms): a waiting finger's tap
+    /// (PR G: its down at its first point at once, its up here on the first
+    /// frame [`TAP_MS`] later, a tap's up still to go before it), the first
+    /// finger's up here; a pinch's fingers send nothing.
+    pub fn up(&mut self, pointer: i32, at: Point, now: f64) -> Vec<Out> {
         let Some(slot) = self.slot(pointer) else {
             return Vec::new();
         };
-        let out = match self.stage {
+        let stage = self.stage;
+        let out = match stage {
             Stage::Waiting {
                 first, on: true, ..
-            } => vec![sent(Touch::Down, first), sent(Touch::Up, at)],
+            } => {
+                let mut out: Vec<Out> = self.tap_up().into_iter().collect();
+                out.push(sent(Touch::Down, first));
+                self.tap = Some((at, now));
+                out
+            }
             Stage::Touching { .. } => vec![sent(Touch::Up, at)],
             _ => Vec::new(),
         };
@@ -469,14 +504,14 @@ impl Finger {
         out
     }
 
-    /// The screen goes away under the fingers: a cancel for a finger on the
-    /// editor; every finger is forgotten.
+    /// The screen goes away under the fingers: a quick tap's up still to
+    /// go goes now, a cancel for a finger on the editor; every finger is
+    /// forgotten.
     pub fn leave(&mut self) -> Vec<Out> {
-        let out = if matches!(self.stage, Stage::Touching { .. }) {
-            self.last(Touch::Cancel)
-        } else {
-            Vec::new()
-        };
+        let mut out: Vec<Out> = self.tap_up().into_iter().collect();
+        if matches!(self.stage, Stage::Touching { .. }) {
+            out.extend(self.last(Touch::Cancel));
+        }
         *self = Self::default();
         out
     }
@@ -501,6 +536,68 @@ impl Finger {
             [Some((a, at_a)), Some((b, at_b))] => Some([(a, at_a.area), (b, at_b.area)]),
             _ => None,
         }
+    }
+}
+
+/// How far a picture area's side must change (CSS px, PR G) for the hub to
+/// hear it: a sub-pixel layout wobble is no new shape.
+pub const AREA_STEP: f64 = 1.0;
+
+/// How long a changed picture area rests before the hub hears it (ms, PR
+/// G): a phone turning or a window being resized changes it many times,
+/// and the editor is resized once, for the last.
+pub const AREA_SETTLE_MS: f64 = 300.0;
+
+/// Whether two areas differ by [`AREA_STEP`] or more on a side.
+fn reshaped(a: (f64, f64), b: (f64, f64)) -> bool {
+    (a.0 - b.0).abs() >= AREA_STEP || (a.1 - b.1).abs() >= AREA_STEP
+}
+
+/// Whether an area changed at `since` rested its [`AREA_SETTLE_MS`] at
+/// `now` (page ms).
+fn rested(since: f64, now: f64) -> bool {
+    now - since >= AREA_SETTLE_MS
+}
+
+/// The page's picture area as the hub knows it (PR G): the one it last
+/// sent (`eq_open`'s, then `eq_area`'s) and a changed one resting, looked
+/// at each frame (no timer).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct AreaWatch {
+    sent: Option<(f64, f64)>,
+    /// The newest area and when it changed (page ms).
+    resting: Option<((f64, f64), f64)>,
+}
+
+impl AreaWatch {
+    /// The area an open carried: the hub has it.
+    pub fn opened(area: (f64, f64)) -> Self {
+        Self {
+            sent: Some(area),
+            resting: None,
+        }
+    }
+
+    /// The frame's look at the area (`area`: CSS px; `open`: the page's
+    /// editor is open; `now`: page ms): an area that changed since the one
+    /// sent, by [`AREA_STEP`] or more, goes once it rested
+    /// [`AREA_SETTLE_MS`] while the editor is open (each change starts the
+    /// rest again; one back where it was sends nothing).
+    pub fn frame(&mut self, area: (f64, f64), open: bool, now: f64) -> Option<(f64, f64)> {
+        let newest = self.resting.map(|(at, _)| at).or(self.sent);
+        if newest.is_none_or(|at| reshaped(at, area)) {
+            self.resting = Some((area, now));
+        }
+        let (at, since) = self.resting?;
+        if !(open && rested(since, now)) {
+            return None;
+        }
+        self.resting = None;
+        let news = self.sent.is_none_or(|sent| reshaped(sent, at));
+        news.then(|| {
+            self.sent = Some(at);
+            at
+        })
     }
 }
 
@@ -785,9 +882,16 @@ mod tests {
             "the newest"
         );
         assert_eq!(finger.frame(203.0), vec![], "sent once");
-        assert_eq!(finger.up(2, p(1.0, 1.0)), vec![], "another pointer's up");
+        assert_eq!(
+            finger.up(2, p(1.0, 1.0), 0.0),
+            vec![],
+            "another pointer's up"
+        );
         finger.moved(1, p(9.0, 6.0));
-        assert_eq!(finger.up(1, p(10.0, 6.0)), vec![(Touch::Up, 20.0, 12.0)]);
+        assert_eq!(
+            finger.up(1, p(10.0, 6.0), 0.0),
+            vec![(Touch::Up, 20.0, 12.0)]
+        );
         assert!(!finger.held());
         assert_eq!(
             finger.frame(204.0),
@@ -834,12 +938,18 @@ mod tests {
         assert_eq!(finger.frame(1121.0), vec![], "sent once");
         finger.moved(1, p(15.0, 20.0));
         assert_eq!(finger.frame(1122.0), vec![(Touch::Move, 30.0, 40.0)]);
-        assert_eq!(finger.up(1, p(16.0, 21.0)), vec![(Touch::Up, 32.0, 42.0)]);
+        assert_eq!(
+            finger.up(1, p(16.0, 21.0), 0.0),
+            vec![(Touch::Up, 32.0, 42.0)]
+        );
         // A finger that rests sends only its down.
         assert_eq!(finger.down(2, p(10.0, 20.0), true, 2000.0), vec![]);
         assert_eq!(finger.frame(2120.0), vec![(Touch::Down, 20.0, 40.0)]);
         assert_eq!(finger.frame(2500.0), vec![]);
-        assert_eq!(finger.up(2, p(10.0, 20.0)), vec![(Touch::Up, 20.0, 40.0)]);
+        assert_eq!(
+            finger.up(2, p(10.0, 20.0), 0.0),
+            vec![(Touch::Up, 20.0, 40.0)]
+        );
     }
 
     #[test]
@@ -882,16 +992,80 @@ mod tests {
     }
 
     #[test]
-    fn a_quick_lift_is_a_tap_its_down_and_up_together() {
+    fn a_quick_lift_is_a_tap_its_down_at_once_its_up_40_ms_later() {
+        assert_eq!(TAP_MS, 40.0);
+        assert!(tapped(1000.0, 1040.0));
+        assert!(!tapped(1000.0, 1040.0_f64.next_down()));
+        assert!(tapped(1000.0, 5000.0));
         let mut finger = Finger::default();
         finger.down(1, p(10.0, 20.0), true, 0.0);
         finger.moved(1, p(12.0, 21.0));
         assert_eq!(
-            finger.up(1, p(12.0, 21.0)),
-            vec![(Touch::Down, 20.0, 40.0), (Touch::Up, 24.0, 42.0)]
+            finger.up(1, p(12.0, 21.0), 50.0),
+            vec![(Touch::Down, 20.0, 40.0)],
+            "its down at once, where it landed"
         );
         assert!(!finger.held());
+        assert_eq!(finger.frame(89.0), vec![], "under 40 ms: the PC holds it");
+        assert_eq!(
+            finger.frame(90.0),
+            vec![(Touch::Up, 24.0, 42.0)],
+            "its up where it lifted, 40 ms after its down"
+        );
         assert_eq!(finger.frame(500.0), vec![], "nothing after");
+        // A finger reaching the editor sends a tap's up still to go first.
+        finger.down(2, p(10.0, 20.0), true, 600.0);
+        assert_eq!(
+            finger.up(2, p(10.0, 20.0), 610.0),
+            vec![(Touch::Down, 20.0, 40.0)]
+        );
+        finger.down(3, p(30.0, 20.0), true, 615.0);
+        finger.moved(3, p(40.0, 20.0));
+        assert_eq!(
+            finger.frame(620.0),
+            vec![
+                (Touch::Up, 20.0, 40.0),
+                (Touch::Down, 60.0, 40.0),
+                (Touch::Move, 80.0, 40.0)
+            ]
+        );
+        assert_eq!(finger.frame(700.0), vec![], "the tap's up went once");
+        assert_eq!(
+            finger.up(3, p(40.0, 20.0), 701.0),
+            vec![(Touch::Up, 80.0, 40.0)]
+        );
+        // A second tap while the first one's up waits: that up first.
+        finger.down(4, p(1.0, 1.0), true, 800.0);
+        assert_eq!(
+            finger.up(4, p(1.0, 1.0), 805.0),
+            vec![(Touch::Down, 2.0, 2.0)]
+        );
+        finger.down(5, p(3.0, 3.0), true, 810.0);
+        assert_eq!(
+            finger.up(5, p(3.0, 3.0), 815.0),
+            vec![(Touch::Up, 2.0, 2.0), (Touch::Down, 6.0, 6.0)]
+        );
+        assert_eq!(finger.frame(854.0), vec![]);
+        assert_eq!(finger.frame(855.0), vec![(Touch::Up, 6.0, 6.0)]);
+        // Leaving the screen, or a hidden page, sends a tap's up at once.
+        finger.down(6, p(1.0, 1.0), true, 900.0);
+        finger.up(6, p(1.0, 1.0), 901.0);
+        assert_eq!(finger.leave(), vec![(Touch::Up, 2.0, 2.0)]);
+        assert_eq!(finger.frame(1000.0), vec![]);
+        finger.down(7, p(1.0, 1.0), true, 1100.0);
+        finger.up(7, p(1.0, 1.0), 1101.0);
+        assert_eq!(finger.visibility(true), vec![(Touch::Up, 2.0, 2.0)]);
+        assert_eq!(finger.frame(1200.0), vec![]);
+        // A pinch that starts meanwhile: the tap's up goes on its time.
+        finger.down(8, p(1.0, 1.0), true, 1300.0);
+        finger.up(8, p(1.0, 1.0), 1301.0);
+        assert_eq!(finger.down(9, p(5.0, 5.0), true, 1305.0), vec![]);
+        assert_eq!(finger.down(10, p(9.0, 9.0), true, 1306.0), vec![]);
+        assert_eq!(finger.frame(1340.0), vec![]);
+        assert_eq!(finger.frame(1341.0), vec![(Touch::Up, 2.0, 2.0)]);
+        assert_eq!(finger.up(9, p(5.0, 5.0), 1350.0), vec![]);
+        assert_eq!(finger.up(10, p(9.0, 9.0), 1351.0), vec![]);
+        assert!(!finger.held());
         // A waiting finger cancelled (or its capture lost) never reached
         // the editor: nothing goes.
         finger.down(2, p(10.0, 20.0), true, 0.0);
@@ -900,7 +1074,7 @@ mod tests {
         assert_eq!(finger.cancel(2), vec![]);
         assert!(!finger.held());
         assert_eq!(finger.frame(500.0), vec![]);
-        assert_eq!(finger.up(2, p(10.0, 20.0)), vec![]);
+        assert_eq!(finger.up(2, p(10.0, 20.0), 500.0), vec![]);
         // Nor when the screen goes or the page hides.
         finger.down(4, p(10.0, 20.0), true, 0.0);
         assert_eq!(finger.leave(), vec![]);
@@ -925,10 +1099,10 @@ mod tests {
         finger.down(2, p(1.0, 1.0), false, 0.0);
         finger.moved(2, p(50.0, 1.0));
         assert_eq!(finger.frame(1.0), vec![]);
-        assert_eq!(finger.up(2, p(50.0, 1.0)), vec![]);
+        assert_eq!(finger.up(2, p(50.0, 1.0), 0.0), vec![]);
         // A tap off the picture: nothing.
         finger.down(3, p(1.0, 1.0), false, 0.0);
-        assert_eq!(finger.up(3, p(1.0, 1.0)), vec![]);
+        assert_eq!(finger.up(3, p(1.0, 1.0), 0.0), vec![]);
         assert!(!finger.held());
         // Off the picture, then a second finger: a pinch.
         finger.down(4, p(1.0, 1.0), false, 0.0);
@@ -956,7 +1130,7 @@ mod tests {
         finger.moved(3, p(6.0, 6.0));
         assert_eq!(finger.pair(), Some([(1, (0.0, 20.0)), (2, (40.0, 21.0))]));
         // One lifts: no pair, nothing sent; the other one stays a pinch's.
-        assert_eq!(finger.up(1, p(0.0, 20.0)), vec![]);
+        assert_eq!(finger.up(1, p(0.0, 20.0), 0.0), vec![]);
         assert_eq!(finger.pair(), None);
         assert!(finger.held());
         finger.moved(2, p(60.0, 20.0));
@@ -966,7 +1140,7 @@ mod tests {
         assert_eq!(finger.down(4, p(7.0, 7.0), true, 610.0), vec![]);
         assert_eq!(finger.pair(), Some([(4, (7.0, 7.0)), (2, (60.0, 20.0))]));
         assert_eq!(finger.cancel(2), vec![]);
-        assert_eq!(finger.up(4, p(7.0, 7.0)), vec![]);
+        assert_eq!(finger.up(4, p(7.0, 7.0), 0.0), vec![]);
         assert!(!finger.held());
         // The pinch is over: the next finger is a first finger again.
         assert_eq!(finger.down(5, p(10.0, 20.0), true, 700.0), vec![]);
@@ -986,7 +1160,7 @@ mod tests {
         assert_eq!(finger.frame(140.0), vec![], "its move never follows");
         assert_eq!(finger.pair(), Some([(1, (11.0, 22.0)), (2, (40.0, 20.0))]));
         assert_eq!(
-            finger.up(1, p(11.0, 22.0)),
+            finger.up(1, p(11.0, 22.0), 0.0),
             vec![],
             "no up after the cancel"
         );
@@ -998,7 +1172,7 @@ mod tests {
         assert_eq!(finger.cancel(3), vec![]);
         assert_eq!(finger.visibility(true), vec![]);
         assert!(!finger.held());
-        assert_eq!(finger.up(4, p(40.0, 20.0)), vec![]);
+        assert_eq!(finger.up(4, p(40.0, 20.0), 0.0), vec![]);
     }
 
     #[test]
@@ -1176,7 +1350,7 @@ mod tests {
             "its last move is not sent after"
         );
         assert_eq!(
-            finger.up(4, p(12.0, 22.0)),
+            finger.up(4, p(12.0, 22.0), 0.0),
             vec![],
             "its lift sends nothing"
         );
@@ -1539,6 +1713,67 @@ mod tests {
         assert_eq!(
             list_text("not found: tracks[name=Nobody #]"),
             "Pro-Q 4 sa nedá prečítať: not found: tracks[name=Nobody #]"
+        );
+    }
+
+    #[test]
+    fn a_changed_area_goes_once_it_rested_300_ms_while_the_editor_is_open() {
+        assert_eq!((AREA_STEP, AREA_SETTLE_MS), (1.0, 300.0));
+        let (wide, tall) = ((1194.0, 790.0), (390.0, 796.0));
+        let mut watch = AreaWatch::opened(wide);
+        assert_eq!(watch.frame(wide, true, 0.0), None, "the open carried it");
+        // A phone turned: once it rested.
+        assert_eq!(watch.frame(tall, true, 1000.0), None);
+        assert_eq!(watch.frame(tall, true, 1300.0_f64.next_down()), None);
+        assert_eq!(watch.frame(tall, true, 1300.0), Some(tall));
+        assert_eq!(watch.frame(tall, true, 2000.0), None, "sent once");
+        // Each change starts the rest again; the last one goes.
+        assert_eq!(watch.frame((500.0, 700.0), true, 3000.0), None);
+        assert_eq!(watch.frame(wide, true, 3200.0), None);
+        assert_eq!(watch.frame(wide, true, 3499.0), None);
+        assert_eq!(watch.frame(wide, true, 3500.0), Some(wide));
+        // Back where it was before it rested: nothing.
+        assert_eq!(watch.frame(tall, true, 4000.0), None);
+        assert_eq!(watch.frame(wide, true, 4100.0), None);
+        assert_eq!(watch.frame(wide, true, 4400.0), None);
+        assert_eq!(watch.frame(wide, true, 9000.0), None);
+    }
+
+    #[test]
+    fn an_area_waits_for_the_open_editor_and_a_sub_pixel_wobble_is_no_change() {
+        let mut watch = AreaWatch::opened((1194.0, 790.0));
+        // Opening: kept, sent once the editor is open.
+        assert_eq!(watch.frame((390.0, 796.0), false, 0.0), None);
+        assert_eq!(watch.frame((390.0, 796.0), false, 500.0), None);
+        assert_eq!(
+            watch.frame((390.0, 796.0), true, 501.0),
+            Some((390.0, 796.0))
+        );
+        // Under a pixel on each side: no change; a pixel on either: one.
+        let wobble = (390.0 + 1.0_f64.next_down(), 796.0 - 1.0_f64.next_down());
+        assert_eq!(watch.frame(wobble, true, 600.0), None);
+        assert_eq!(watch.frame(wobble, true, 1000.0), None);
+        assert_eq!(watch.frame((391.0, 796.0), true, 1100.0), None);
+        assert_eq!(
+            watch.frame((391.0, 796.0), true, 1400.0),
+            Some((391.0, 796.0))
+        );
+        assert_eq!(watch.frame((391.0, 795.0), true, 1500.0), None);
+        assert_eq!(
+            watch.frame((391.0, 795.0), true, 1800.0),
+            Some((391.0, 795.0))
+        );
+        assert!(reshaped((10.0, 10.0), (9.0, 10.0)));
+        assert!(reshaped((10.0, 10.0), (10.0, 11.0)));
+        assert!(!reshaped((10.0, 10.0), (10.5, 9.5)));
+        assert!(rested(0.0, 300.0));
+        assert!(!rested(0.0, 300.0_f64.next_down()));
+        // Nothing sent yet (no open): the first area waits its rest too.
+        let mut fresh = AreaWatch::default();
+        assert_eq!(fresh.frame((800.0, 600.0), true, 0.0), None);
+        assert_eq!(
+            fresh.frame((800.0, 600.0), true, 300.0),
+            Some((800.0, 600.0))
         );
     }
 }

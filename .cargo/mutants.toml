@@ -164,8 +164,11 @@ exclude_re = [
   # (net::fetch_blob of the tested picture_url). eq.spec.ts drives them in
   # Chromium and WebKit (the cards, the open, the frames drawn, a drag at
   # the mapped pixels, the exit, the lock another page sees, the picture
-  # after the close, no open offered while the socket is down).
-  "fohmixer-ui/src/store/live/eq\\.rs.*(replace|in) LiveStore::(on_eq_list|on_eq_locks|on_eq|on_frame|eq_frames|list_eq|eq_open|eq_input|eq_close|eq_socket_closed|eq_picture)( |$)",
+  # after the close, no open offered while the socket is down). PR G:
+  # eq_opening (the tested asked, before the open goes), eq_area (the
+  # message; the tested behave::eq::AreaWatch decides when), which eq.spec.ts
+  # reads off the page's socket after a viewport change.
+  "fohmixer-ui/src/store/live/eq\\.rs.*(replace|in) LiveStore::(on_eq_list|on_eq_locks|on_eq|on_frame|eq_frames|list_eq|eq_opening|eq_open|eq_area|eq_input|eq_close|eq_socket_closed|eq_picture)( |$)",
   "fohmixer-ui/src/store/live\\.rs.*(replace|in) (Socket::open|Socket::buffered|Socket::close|Inner::new)( |$)",
   # auth.rs: local storage and the login request (login_outcome, login_body
   # and LoginError::message are the tested decisions).
