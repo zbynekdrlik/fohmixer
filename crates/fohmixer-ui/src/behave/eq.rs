@@ -1750,7 +1750,9 @@ mod tests {
             Some((390.0, 796.0))
         );
         // Under a pixel on each side: no change; a pixel on either: one.
-        let wobble = (390.0 + 1.0_f64.next_down(), 796.0 - 1.0_f64.next_down());
+        // (A side 0.9 px off: `390.0 + 1.0_f64.next_down()` rounds to
+        // 391.0 itself, a whole pixel.)
+        let wobble = (390.9, 795.1);
         assert_eq!(watch.frame(wobble, true, 600.0), None);
         assert_eq!(watch.frame(wobble, true, 1000.0), None);
         assert_eq!(watch.frame((391.0, 796.0), true, 1100.0), None);
@@ -1766,6 +1768,8 @@ mod tests {
         assert!(reshaped((10.0, 10.0), (9.0, 10.0)));
         assert!(reshaped((10.0, 10.0), (10.0, 11.0)));
         assert!(!reshaped((10.0, 10.0), (10.5, 9.5)));
+        assert!(!reshaped((0.0, 0.0), (1.0_f64.next_down(), 0.0)));
+        assert!(!reshaped((0.0, 0.0), (0.0, -1.0_f64.next_down())));
         assert!(rested(0.0, 300.0));
         assert!(!rested(0.0, 300.0_f64.next_down()));
         // Nothing sent yet (no open): the first area waits its rest too.
