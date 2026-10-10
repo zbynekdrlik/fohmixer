@@ -238,9 +238,26 @@ async function drawnWhole(screen: Locator) {
     .toBeLessThan(0.5);
 }
 
-/** The bar's zoom group shown, and every part of the bar inside it and the screen, its texts whole. */
+/**
+ * How far the overview's shape lies from the picture's (a ratio, 0 for the
+ * same; #74 review: an upright picture was drawn squashed into a fixed
+ * landscape box): its box inside its border against the picture's aspect,
+ * which the page bends no further than 0.4 to 2.5.
+ */
+async function overviewGap(screen: Locator): Promise<number> {
+  const { width, height } = await pictureSize(screen.getByTestId("eq-canvas"));
+  const want = Math.min(2.5, Math.max(0.4, width / height));
+  const shape = await screen.getByTestId("eq-overview").evaluate((el: HTMLElement) => {
+    const box = el.getBoundingClientRect();
+    return (box.width - 2 * el.clientLeft) / (box.height - 2 * el.clientTop);
+  });
+  return Math.abs(shape / want - 1);
+}
+
+/** The bar's zoom group shown, the overview in the picture's shape, and every part of the bar inside it and the screen, its texts whole. */
 async function zoomBarFits(screen: Locator) {
   await expect(screen.getByTestId("eq-zoom")).toBeVisible();
+  await expect.poll(() => overviewGap(screen), { message: "the overview in the picture's shape" }).toBeLessThan(0.02);
   const bar = screen.getByTestId("eq-bar");
   const barBox = (await bar.boundingBox())!;
   const width = screen.page().viewportSize()!.width;
