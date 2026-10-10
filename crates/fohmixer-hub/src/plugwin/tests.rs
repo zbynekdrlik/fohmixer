@@ -1525,6 +1525,14 @@ fn the_guard_waits_for_a_settling_resize_taps_at_the_known_size_in_no_doubt_or_p
 }
 
 #[test]
+fn a_take_at_another_size_than_the_known_one_is_told() {
+    assert_eq!(other_size((1349, 809)), None);
+    assert_eq!(other_size((760, 1271)), Some((760, 1271)));
+    assert_eq!(other_size((1349, 808)), Some((1349, 808)));
+    assert_eq!(other_size((1348, 809)), Some((1348, 809)));
+}
+
+#[test]
 fn a_guard_that_cannot_tap_says_what_it_read() {
     assert_eq!(
         not_known(Some((760, 1271)), false),

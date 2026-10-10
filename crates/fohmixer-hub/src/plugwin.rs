@@ -347,6 +347,14 @@ pub fn not_known(client: Option<(u32, u32)>, doubt: bool) -> String {
     }
 }
 
+/// A taken editor's picture size when it is not [`KNOWN_SIZE`] (#74
+/// review: Live or Pro-Q kept its last size, or it was given one on the
+/// PC; the guard puts it at the known size before its tap): the hub's log
+/// says so at the take.
+pub fn other_size(size: (u32, u32)) -> Option<(u32, u32)> {
+    (size != KNOWN_SIZE).then_some(size)
+}
+
 /// The window's rectangle for [`KNOWN_SIZE`] (#74 review): at the take's
 /// place, moved into the work area `work` when it does not fit there.
 pub fn known_rect(work: Rect, taken: &Taken) -> Rect {
@@ -1158,6 +1166,14 @@ impl Worker {
             }
             Some(Ok(())) => {
                 let size = (taken.width, taken.height);
+                if let Some((width, height)) = other_size(size) {
+                    tracing::info!(
+                        session = finding.session,
+                        width,
+                        height,
+                        "a Pro-Q 4 editor was taken at another size than its inert spot's: its guard puts it at 1349 x 809 first"
+                    );
+                }
                 self.editors.insert(
                     finding.session,
                     Editor {
