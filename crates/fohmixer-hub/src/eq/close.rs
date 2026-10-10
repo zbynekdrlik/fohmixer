@@ -139,7 +139,7 @@ pub enum Shut {
     /// `is_editor_open = false` went through.
     Off,
     /// Nothing of the hub's is open in Live any more (its device was
-    /// deleted, or no open Pro-Q 4 was found after a move): why.
+    /// deleted): why.
     NoneOpen(String),
     /// The editor may still be open in Live (the guard could not tap, the
     /// turn-off failed, or the hub could not be sure which device to turn
@@ -176,7 +176,8 @@ pub enum Check {
     Walk(Vec<String>),
     /// `is_editor_open = false` at `path`; `moved`: not the held path.
     Close { path: String, moved: bool },
-    /// The editor moved and no open Pro-Q 4 was found: nothing to close.
+    /// The editor moved and no open Pro-Q 4 was found where the walk looks:
+    /// nothing to turn off, though it may sit deeper, still open.
     NoneOpen,
     /// Live is left alone, the editor maybe open: why.
     Leave(String),
