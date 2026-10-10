@@ -2205,3 +2205,41 @@ async fn the_handle_resizes_through_the_worker_thread() {
     assert!(plugwin.stopped().await);
     assert_eq!(plugwin.resize(1, UPRIGHT).await, None, "stopped");
 }
+
+#[tokio::test]
+async fn the_handles_commands_reach_the_worker_in_call_order_whatever_is_awaited_first() {
+    // The review of PR #74, round 2 (N4): the router's order test runs on
+    // the current-thread runtime, which polls its tasks in spawn order, so
+    // the old `async fn`s (sent at their first poll) passed it too. Here the
+    // guard's future is made first and the resize's second, and the resize's
+    // is awaited first: sent at the call, the guard reaches the worker first
+    // and the resize is refused; sent at the first poll, the resize went
+    // first and the upright size was posted before the guard.
+    let (sim, handle) = Sim::new(None);
+    handle.still(true);
+    let plugwin = Plugwin::spawn(Box::new(sim), Arc::new(|_: PlugwinEvent| {})).unwrap();
+    let bounded = Duration::from_secs(5);
+    let size = tokio::time::timeout(bounded, plugwin.take(1, Vec::new()))
+        .await
+        .unwrap();
+    assert_eq!(size, Ok((1349, 809)));
+    let guarded = plugwin.guard(1);
+    let resized = plugwin.resize(1, UPRIGHT);
+    assert_eq!(
+        tokio::time::timeout(bounded, resized).await.unwrap(),
+        None,
+        "refused: its guard began first"
+    );
+    assert_eq!(
+        tokio::time::timeout(bounded, guarded).await.unwrap(),
+        Ok(())
+    );
+    let posted = resizes(&handle);
+    assert!(
+        posted.iter().all(|size| *size == (1349, 809)),
+        "only the guard's own size: {posted:?}"
+    );
+    assert_eq!(touches(&handle), [t("down", 546, 15), t("up", 546, 15)]);
+    plugwin.stop();
+    assert!(plugwin.stopped().await);
+}
