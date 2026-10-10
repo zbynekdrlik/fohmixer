@@ -33,8 +33,9 @@
 //! the picture never below [`SIM_MIN`] (Pro-Q's own minimum stands in its
 //! way); a test can make it land late (`resize_late`: posted, in order,
 //! landing one at a time with `land_one` or all when the switch goes off)
-//! or never (`resize_refused`), or resize or move a window as the PC would
-//! (`resize_window`, `move_window`). A grab draws the picture at the
+//! or never (`resize_refused`), move the window and keep its size
+//! (`size_kept`: Live's window keeping its size), or resize or move a window
+//! as the PC would (`resize_window`, `move_window`). A grab draws the picture at the
 //! window's size.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -123,10 +124,13 @@ impl SimWindow {
         }
     }
 
-    /// `rect` lands: its place, and the picture it takes.
-    fn land(&mut self, rect: Rect) {
+    /// `rect` lands: its place, and the picture it takes (none when
+    /// `kept`: the window keeps its size).
+    fn land(&mut self, rect: Rect, kept: bool) {
         self.at = (rect.left, rect.top);
-        self.size = takes(picture_of(rect));
+        if !kept {
+            self.size = takes(picture_of(rect));
+        }
     }
 }
 
@@ -170,6 +174,9 @@ struct State {
     resize_late: bool,
     /// A resize never lands (the plug-in keeps its size).
     resize_refused: bool,
+    /// A resize moves the window and leaves its size (Live's window keeps
+    /// it; whether Live passes a resize on is the PC check's).
+    size_kept: bool,
     /// The last picture drawn and its count: a grab draws only a new count
     /// or size (drawing one costs the worker tens of ms in a test build).
     drawn: Option<(u64, Pixels)>,
@@ -238,6 +245,7 @@ impl Sim {
             posted: BTreeSet::new(),
             resize_late: false,
             resize_refused: false,
+            size_kept: false,
             drawn: None,
             records: Vec::new(),
             file,
@@ -322,9 +330,10 @@ impl SimHandle {
         let mut state = self.lock();
         state.resize_late = on;
         if !on {
+            let kept = state.size_kept;
             for window in state.windows.values_mut() {
                 for rect in std::mem::take(&mut window.posted) {
-                    window.land(rect);
+                    window.land(rect, kept);
                 }
             }
         }
@@ -334,12 +343,13 @@ impl SimHandle {
     /// takes one message): whether one waited.
     pub fn land_one(&self, window: WindowId) -> bool {
         let mut state = self.lock();
+        let kept = state.size_kept;
         let Some(found) = state.windows.get_mut(&window) else {
             return false;
         };
         match found.posted.pop_front() {
             Some(rect) => {
-                found.land(rect);
+                found.land(rect, kept);
                 true
             }
             None => false,
@@ -358,6 +368,12 @@ impl SimHandle {
     /// Whether a resize never lands (the plug-in keeps its size).
     pub fn resize_refused(&self, on: bool) {
         self.lock().resize_refused = on;
+    }
+
+    /// Whether a resize moves the window and leaves its size (Live's
+    /// window keeping it).
+    pub fn size_kept(&self, on: bool) {
+        self.lock().size_kept = on;
     }
 
     /// `window`'s picture becomes `size` (resized on the PC: no record).
@@ -482,7 +498,7 @@ impl Backend for Sim {
 
     fn resize(&mut self, taken: &Taken, rect: Rect) -> Result<(), String> {
         let mut state = self.lock();
-        let (late, refused) = (state.resize_late, state.resize_refused);
+        let (late, refused, kept) = (state.resize_late, state.resize_refused, state.size_kept);
         let window = state
             .windows
             .get_mut(&taken.window)
@@ -492,7 +508,7 @@ impl Backend for Sim {
         match (refused, late) {
             (true, _) => {}
             (false, true) => window.posted.push_back(rect),
-            (false, false) => window.land(rect),
+            (false, false) => window.land(rect, kept),
         }
         let (w, h) = picture_of(rect);
         state.record(json!({
@@ -927,6 +943,29 @@ mod tests {
             .filter(|r| r["op"] == "resize")
             .count();
         assert_eq!(resizes, 5);
+    }
+
+    #[test]
+    fn a_window_that_keeps_its_size_still_moves() {
+        let (mut sim, handle) = Sim::new(None);
+        sim.live_opened();
+        let taken = sim.take(handle.windows()[0]).unwrap();
+        handle.size_kept(true);
+        sim.resize(&taken, around((760, 1271), (5, 6))).unwrap();
+        assert_eq!(sim.client(&taken), Ok((1349, 809)), "its size kept");
+        assert_eq!(sim.rect(&taken), Ok(around((1349, 809), (5, 6))), "moved");
+        // Late, they land the same way, one at a time or all at once.
+        handle.resize_late(true);
+        sim.resize(&taken, around((800, 600), (7, 8))).unwrap();
+        sim.resize(&taken, around((800, 600), (9, 10))).unwrap();
+        assert!(handle.land_one(taken.window));
+        assert_eq!(sim.rect(&taken), Ok(around((1349, 809), (7, 8))));
+        handle.resize_late(false);
+        assert_eq!(sim.rect(&taken), Ok(around((1349, 809), (9, 10))));
+        // Switched off: the size lands again.
+        handle.size_kept(false);
+        sim.resize(&taken, around((800, 600), (0, 0))).unwrap();
+        assert_eq!(sim.client(&taken), Ok((800, 600)));
     }
 
     #[test]

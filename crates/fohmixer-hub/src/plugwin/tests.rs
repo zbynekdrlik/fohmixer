@@ -2194,11 +2194,12 @@ fn a_resize_that_reads_its_size_at_once_proves_nothing_to_the_guard() {
 }
 
 #[test]
-fn a_guard_that_saw_nothing_move_since_an_unlanded_resize_taps_nothing() {
-    // The window's thread lands the resize and its way back between two of
-    // the worker's looks: nothing it reads moved, so it cannot tell that
-    // from nothing landed yet. The guard taps nothing (left open in Live,
-    // the safe side).
+fn a_guard_taps_once_its_own_placement_lands_though_nothing_was_seen_to_move() {
+    // The review of PR #74, round 2 (N2): the window's thread landed the
+    // resize and its way back between two of the worker's looks, so
+    // nothing it read moved: the doubt never cleared and the close was
+    // left open in Live. The guard's own placement, a pixel aside first,
+    // is seen to land, and with it everything posted before it.
     let (mut worker, handle, _) = worker();
     take(&mut worker, &handle, 1, 0.0);
     handle.resize_late(true);
@@ -2208,11 +2209,36 @@ fn a_guard_that_saw_nothing_move_since_an_unlanded_resize_taps_nothing() {
     worker.step_at(1010.0);
     let mut guarded = guard_at(&mut worker, 1, 1020.0);
     worker.step_at(1030.0);
-    worker.step_at(2029.0);
-    assert!(guarded.try_recv().is_err());
-    worker.step_at(2030.0);
-    assert!(guarded.try_recv().unwrap().is_err());
-    assert_eq!(touches(&handle), Vec::new());
+    worker.step_at(1040.0);
+    assert_eq!(guarded.try_recv().unwrap(), Ok(()));
+    assert_eq!(touches(&handle), [t("down", 546, 15), t("up", 546, 15)]);
+}
+
+#[test]
+fn a_guard_taps_once_its_own_placement_lands_though_live_keeps_the_editors_size() {
+    // The review of PR #74, round 2 (N2): Live's window may keep its size
+    // (whether it passes a resize on is the PC check's). An upright resize
+    // then never lands, its way back changes nothing, and the guard's
+    // known rectangle is where the window stands: nothing ever moved, the
+    // doubt never cleared, and every close was left open in Live. The
+    // guard's placement moves the window a pixel first: that lands, seen.
+    let (mut worker, handle, _) = worker();
+    let window = take(&mut worker, &handle, 1, 0.0);
+    handle.size_kept(true);
+    let mut resized = resize_at(&mut worker, 1, UPRIGHT, 0.0);
+    worker.step_at(1000.0);
+    let settled = resized.try_recv().unwrap().expect("a resize");
+    assert_eq!(
+        (settled.ok, settled.client, settled.reverted),
+        (false, (1349, 809), true)
+    );
+    let mut guarded = guard_at(&mut worker, 1, 1010.0);
+    for now in [1020.0, 1030.0, 1040.0] {
+        worker.step_at(now);
+    }
+    assert_eq!(guarded.try_recv().unwrap(), Ok(()));
+    assert_eq!(touches(&handle), [t("down", 546, 15), t("up", 546, 15)]);
+    assert_eq!(handle.rect(window), Some(rect(0, 0, 1365, 848)));
 }
 
 #[test]
