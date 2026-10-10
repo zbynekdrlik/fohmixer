@@ -1794,6 +1794,46 @@ fn a_guard_drops_a_resize_that_waits_for_a_finger() {
 }
 
 #[test]
+fn a_guard_right_after_a_contact_places_nothing_until_100_ms_after_it() {
+    // The review of PR #74, round 3 (F1): a page gone mid-drag closes its
+    // editor, and the guard posted its first placement microseconds after
+    // the up it injects itself. Live's thread takes posted messages before
+    // injected input, so the editor could move and Pro-Q lay itself out
+    // before that up landed, at the old screen point.
+    let (mut worker, handle, _) = worker();
+    take(&mut worker, &handle, 1, 0.0);
+    touch_at(&mut worker, 1, 1, Phase::Down, (300, 200), 0.0);
+    touch_at(&mut worker, 1, 1, Phase::Update, (320, 210), 10.0);
+    let mut guarded = guard_at(&mut worker, 1, 20.0);
+    assert_eq!(
+        touches(&handle),
+        [
+            t("down", 300, 200),
+            t("update", 320, 210),
+            t("up", 320, 210)
+        ]
+    );
+    worker.step_at(119.9);
+    assert_eq!(
+        resizes(&handle),
+        Vec::<(i64, i64)>::new(),
+        "nothing within 100 ms of its up"
+    );
+    assert!(guarded.try_recv().is_err());
+    worker.step_at(120.0);
+    assert_eq!(resizes(&handle), [(1349, 809)], "its first placement");
+    worker.step_at(130.0);
+    assert_eq!(resizes(&handle), [(1349, 809), (1349, 809)]);
+    assert!(guarded.try_recv().is_err(), "read back at the next look");
+    worker.step_at(140.0);
+    assert_eq!(guarded.try_recv().unwrap(), Ok(()));
+    assert_eq!(
+        touches(&handle)[3..],
+        [t("down", 546, 15), t("up", 546, 15)]
+    );
+}
+
+#[test]
 fn no_down_reaches_an_editor_while_its_resize_is_on_its_way() {
     // The review of PR #74, round 2 (N3): a resize that waited for the
     // finger is posted in the step right after its up, exactly when a
