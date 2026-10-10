@@ -453,7 +453,8 @@ mod tests {
             "another instance's card too"
         );
         assert!(locked(CardLock::Other(1.0)) && locked(CardLock::InUse(1.0)));
-        assert!(!locked(CardLock::Free) && !locked(CardLock::Mine));
+        assert!(!locked(CardLock::Free));
+        assert!(!locked(CardLock::Mine));
         assert_eq!(hh_mm(9, 5), "09:05");
         assert_eq!(hh_mm(12, 41), "12:41");
         assert_eq!(locked_text("12:41"), "Upravuje ho iný zvukár (od 12:41)");
@@ -495,7 +496,8 @@ mod tests {
         // A lock refusal is the screen's `eq_locked` step.
         assert!(lock_refusal("locked") && lock_refusal("in use"));
         assert!(lock_refusal(reason::LOCKED) && lock_refusal(reason::IN_USE));
-        assert!(!lock_refusal("exit") && !lock_refusal("moved"));
+        assert!(!lock_refusal("exit"));
+        assert!(!lock_refusal("moved"));
         assert_eq!(
             failure_text("off"),
             Some("EQ je na PC vypnuté.".to_string())
