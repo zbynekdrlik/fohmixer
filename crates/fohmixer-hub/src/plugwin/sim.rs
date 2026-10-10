@@ -346,6 +346,15 @@ impl SimHandle {
         }
     }
 
+    /// How many rectangles posted to `window` wait to land (none for no
+    /// such window).
+    pub fn waiting(&self, window: WindowId) -> usize {
+        self.lock()
+            .windows
+            .get(&window)
+            .map_or(0, |found| found.posted.len())
+    }
+
     /// Whether a resize never lands (the plug-in keeps its size).
     pub fn resize_refused(&self, on: bool) {
         self.lock().resize_refused = on;
@@ -893,10 +902,14 @@ mod tests {
         assert_eq!(sim.rect(&other), Ok(around((1349, 809), (0, 0))));
         // A newer rectangle waits after it; one at a time, in order.
         sim.resize(&taken, around((700, 1300), (0, 0))).unwrap();
+        assert_eq!(handle.waiting(taken.window), 2);
+        assert_eq!(handle.waiting(WindowId(99)), 0, "no such window");
         assert!(handle.land_one(taken.window));
+        assert_eq!(handle.waiting(taken.window), 1);
         assert_eq!(sim.client(&taken), Ok((800, 1200)), "the oldest first");
         handle.resize_late(false);
         assert_eq!(sim.client(&taken), Ok((700, 1300)), "landed");
+        assert_eq!(handle.waiting(taken.window), 0);
         assert!(!handle.land_one(taken.window), "nothing waits");
         assert!(!handle.land_one(WindowId(99)), "no such window");
         assert_eq!(sim.client(&other), Ok((900, 1100)));

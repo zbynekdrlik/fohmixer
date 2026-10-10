@@ -2112,6 +2112,87 @@ fn the_guard_waits_for_a_resize_on_its_way_then_puts_the_size_back() {
     assert_eq!(touches(&handle), [t("down", 546, 15), t("up", 546, 15)]);
 }
 
+/// Lands the rectangles posted to `window` one at a time, with a step
+/// 10 ms after each from `now` on (8 rounds), and checks after every step
+/// that no tap came while a rectangle posted before it still waited: the
+/// PC's window thread takes its posted messages before injected input, so
+/// the tap would land in the layout of the last of them.
+fn land_in_turn(worker: &mut Worker, handle: &SimHandle, window: WindowId, now: f64) {
+    for round in 1..=8 {
+        handle.land_one(window);
+        worker.step_at(now + 10.0 * f64::from(round));
+        if !touches(handle).is_empty() {
+            assert_eq!(
+                handle.waiting(window),
+                0,
+                "tapped while a posted rectangle waited: {:?}",
+                resizes(handle)
+            );
+        }
+    }
+}
+
+#[test]
+fn the_guard_taps_only_once_every_rectangle_posted_before_its_own_landed() {
+    // The review of PR #74, round 2 (N1): the guard trusted the picture's
+    // size alone. A window at 1349 × 809 that crossed the work area (Live
+    // reopened it there) got an upright resize while Live's thread was
+    // busy: it settled unlanded and its rectangle before went back. The
+    // guard's known rectangle (moved into the work area) waited behind
+    // both; once the upright one landed (the window moved: no doubt) and
+    // the one before it, the picture read 1349 × 809 and the guard tapped
+    // with its own still waiting. Live lands that before the injected
+    // down, which then met the EQ display 148 px below the inert spot.
+    let (mut worker, handle, _) = worker();
+    let window = take_sized(&mut worker, &handle, 1, KNOWN_SIZE, (900, 700));
+    handle.resize_late(true);
+    resize_at(&mut worker, 1, UPRIGHT, 0.0);
+    worker.step_at(1000.0);
+    assert_eq!(
+        resizes(&handle),
+        [(667, 1361), (1349, 809)],
+        "upright, then its way back"
+    );
+    let mut guarded = guard_at(&mut worker, 1, 1010.0);
+    worker.step_at(1010.0);
+    land_in_turn(&mut worker, &handle, window, 1010.0);
+    assert_eq!(guarded.try_recv().unwrap(), Ok(()));
+    assert_eq!(touches(&handle), [t("down", 546, 15), t("up", 546, 15)]);
+    assert_eq!(
+        handle.rect(window),
+        Some(rect(900, 552, 1365, 848)),
+        "the known size, moved into the work area"
+    );
+}
+
+#[test]
+fn a_resize_that_reads_its_size_at_once_proves_nothing_to_the_guard() {
+    // The review of PR #74, round 2 (N1): a resize that asks the size the
+    // picture already reads lands at its first look. A newer area (Pro-Q's
+    // own shape) replaced an upright resize still on its way, so the
+    // upright one still waited in Live's thread while the picture read
+    // 1349 × 809: the guard tapped at once, before it landed.
+    let (mut worker, handle, _) = worker();
+    let window = take(&mut worker, &handle, 1, 0.0);
+    handle.resize_late(true);
+    resize_at(&mut worker, 1, UPRIGHT, 10.0);
+    let mut own = resize_at(&mut worker, 1, area(1349.0, 809.0), 20.0);
+    worker.step_at(20.0);
+    let landed = own.try_recv().unwrap().expect("a resize");
+    assert_eq!(
+        (landed.client, landed.ok),
+        ((1349, 809), true),
+        "read at once"
+    );
+    assert_eq!(handle.waiting(window), 2, "both still on their way");
+    let mut guarded = guard_at(&mut worker, 1, 30.0);
+    worker.step_at(30.0);
+    land_in_turn(&mut worker, &handle, window, 30.0);
+    assert_eq!(guarded.try_recv().unwrap(), Ok(()));
+    assert_eq!(touches(&handle), [t("down", 546, 15), t("up", 546, 15)]);
+    assert_eq!(handle.size(window), Some(KNOWN_SIZE));
+}
+
 #[test]
 fn a_guard_that_saw_nothing_move_since_an_unlanded_resize_taps_nothing() {
     // The window's thread lands the resize and its way back between two of
