@@ -19,9 +19,26 @@ fn key() -> EditorKey {
     EditorKey::new("band", PATH)
 }
 
-/// `key()` as a list found it, with its device's name.
-fn found_key() -> (EditorKey, String) {
-    (key(), "Pro-Q 4".to_string())
+/// The `$ref` of the device at `key()`.
+const REF: &str = "live_1";
+
+/// `key()` as a list found it, with its device.
+fn found_key() -> (EditorKey, Device) {
+    let device = Device {
+        name: "Pro-Q 4".to_string(),
+        id: REF.to_string(),
+    };
+    (key(), device)
+}
+
+/// A Pro-Q 4 a walk found at `path`, in `place`, its `$ref` `id`.
+fn found_at(path: &str, place: &str, id: &str) -> Found {
+    Found {
+        path: path.into(),
+        place: place.into(),
+        name: "Pro-Q 4".into(),
+        id: id.into(),
+    }
 }
 
 /// The `band` instance on a port nothing listens on: every call answers
@@ -270,43 +287,39 @@ async fn a_listed_editor_is_known_and_says_whether_a_picture_is_kept() {
     } = rig(dir.path());
     let outbox = attach(&mut router, 1);
     outbox.take();
-    let found = |path: &str, place: &str| Found {
-        path: path.into(),
-        place: place.into(),
-        name: "Pro-Q 4".into(),
-    };
     let inner = "live_set tracks 1 devices 1 chains 0 devices 0";
-    router
-        .eq
-        .as_ref()
-        .unwrap()
-        .pictures
-        .put(&EditorKey::new("band", inner), Bytes::from_static(b"jpeg"));
-    router.handle(RouterMsg::EqListed {
+    let listed = || RouterMsg::EqListed {
         client: 1,
         binding: hand2(),
         outcome: Ok(vec![
-            found(PATH, "na tracku"),
-            found(inner, "Vocal FX › Main"),
+            found_at(PATH, "na tracku", REF),
+            found_at(inner, "Vocal FX › Main", "live_2"),
         ]),
-    });
+    };
     let item = |path: &str, place: &str, picture: bool| EqItem {
         path: path.into(),
         place: place.into(),
         name: "Pro-Q 4".into(),
         picture,
     };
-    assert_eq!(
-        eq_msgs(&outbox),
-        vec![ServerMsg::EqList {
-            binding: hand2(),
-            items: vec![
-                item(PATH, "na tracku", false),
-                item(inner, "Vocal FX › Main", true)
-            ],
-            error: None,
-        }]
+    let list = |inner_picture: bool| ServerMsg::EqList {
+        binding: hand2(),
+        items: vec![
+            item(PATH, "na tracku", false),
+            item(inner, "Vocal FX › Main", inner_picture),
+        ],
+        error: None,
+    };
+    router.handle(listed());
+    assert_eq!(eq_msgs(&outbox), vec![list(false)]);
+    // The chain's editor showed its picture since: the next list says so.
+    router.eq.as_ref().unwrap().pictures.put(
+        &EditorKey::new("band", inner),
+        "live_2",
+        Bytes::from_static(b"jpeg"),
     );
+    router.handle(listed());
+    assert_eq!(eq_msgs(&outbox), vec![list(true)]);
     // Both may be opened now (here the open fails: the instance is offline).
     router.handle(RouterMsg::EqOpen {
         client: 1,
@@ -347,11 +360,7 @@ async fn an_open_after_its_instance_connected_again_is_refused_until_listed() {
     router.handle(RouterMsg::EqListed {
         client: 1,
         binding: hand2(),
-        outcome: Ok(vec![Found {
-            path: PATH.into(),
-            place: "na tracku".into(),
-            name: "Pro-Q 4".into(),
-        }]),
+        outcome: Ok(vec![found_at(PATH, "na tracku", REF)]),
     });
     // The instance connects again: another set may be loaded, so the path
     // listed before may name another device.
@@ -371,50 +380,57 @@ async fn an_open_after_its_instance_connected_again_is_refused_until_listed() {
 }
 
 #[tokio::test]
-async fn a_new_list_and_a_connect_drop_the_pictures_they_no_longer_name() {
+async fn a_new_list_and_a_connect_drop_the_pictures_whose_path_names_another_device() {
     let dir = tempfile::tempdir().unwrap();
     let mut rig = rig(dir.path());
     let _outbox = attach(&mut rig.router, 1);
     let pictures = Arc::clone(&rig.router.eq.as_ref().unwrap().pictures);
     let inner = EditorKey::new("band", "live_set tracks 1 devices 1 chains 0 devices 0");
     let drums = EditorKey::new("drums", PATH);
-    for k in [key(), inner.clone(), drums.clone()] {
-        pictures.put(&k, Bytes::from_static(b"jpeg"));
-    }
-    let found = |key: &EditorKey| Found {
-        path: key.path.clone(),
-        place: "na tracku".into(),
-        name: "Pro-Q 4".into(),
-    };
-    rig.router.handle(RouterMsg::EqListed {
+    let mut drums_strip = hand2();
+    drums_strip.instance = "drums".into();
+    let list = |binding: Binding, found: Vec<Found>| RouterMsg::EqListed {
         client: 1,
-        binding: hand2(),
-        outcome: Ok(vec![found(&key()), found(&inner)]),
-    });
+        binding,
+        outcome: Ok(found),
+    };
+    rig.router.handle(list(
+        hand2(),
+        vec![
+            found_at(PATH, "na tracku", REF),
+            found_at(&inner.path, "Vocal FX › Main", "live_2"),
+        ],
+    ));
+    rig.router.handle(list(
+        drums_strip,
+        vec![found_at(PATH, "na tracku", "live_9")],
+    ));
+    for (k, id) in [
+        (key(), REF),
+        (inner.clone(), "live_2"),
+        (drums.clone(), "live_9"),
+    ] {
+        pictures.put(&k, id, Bytes::from_static(b"jpeg"));
+    }
+    assert_eq!(
+        [&key(), &inner, &drums].map(|k| pictures.has(k)),
+        [true, true, true]
+    );
     // The track lists again without the chain's Pro-Q 4: its card's
     // picture goes; the other stays.
-    rig.router.handle(RouterMsg::EqListed {
-        client: 1,
-        binding: hand2(),
-        outcome: Ok(vec![found(&key())]),
-    });
+    rig.router
+        .handle(list(hand2(), vec![found_at(PATH, "na tracku", REF)]));
     assert_eq!(
         [&key(), &inner, &drums].map(|k| pictures.has(k)),
         [true, false, true]
     );
-    // The track lists its path for another device now (renamed, or
-    // another device moved there): the old device's picture goes.
-    rig.router.handle(RouterMsg::EqListed {
-        client: 1,
-        binding: hand2(),
-        outcome: Ok(vec![Found {
-            path: key().path,
-            place: "na tracku".into(),
-            name: "De-ess".into(),
-        }]),
-    });
+    // Another Pro-Q 4 of the same name at the path now (two default-named
+    // ones changed places): the device before's picture goes.
+    rig.router
+        .handle(list(hand2(), vec![found_at(PATH, "na tracku", "live_3")]));
     assert!(!pictures.has(&key()), "another device's picture");
-    pictures.put(&key(), Bytes::from_static(b"jpeg"));
+    pictures.put(&key(), "live_3", Bytes::from_static(b"jpeg"));
+    assert!(pictures.has(&key()));
     // The band instance connects again: its pictures and refs go.
     let refs = &mut rig.router.eq.as_mut().unwrap().refs;
     refs.insert(1, ("band".to_string(), json!({"$ref": "a"})));
@@ -478,13 +494,17 @@ async fn an_open_of_an_offline_instance_fails_and_frees_the_editor() {
 }
 
 /// Client 1 holds `key()` open as session 1, its window taken by the
-/// worker (the router's state driven directly: the instance is offline).
+/// worker, its device's ref (`REF`) the one the list named (the router's
+/// state driven directly: the instance is offline).
 async fn held_open(rig: &mut Rig) -> Arc<Outbox> {
     let outbox = attach(&mut rig.router, 1);
     assert_eq!(rig.plugwin.take(1, Vec::new()).await, Ok((1349, 809)));
     let io = rig.router.eq.as_mut().unwrap();
     io.state.listed("band", "live_set tracks 1", [found_key()]);
+    io.pictures.named(io.state.named());
     io.state.open(1, &key(), 0.0);
+    let reference = json!({"$ref": REF, "class": "PluginDevice"});
+    io.refs.insert(1, ("band".to_string(), reference));
     let acts = io.state.opened(&key(), 1, Ok((1349, 809)));
     rig.router.eq_acts(acts);
     let _ = rig.records.try_iter().count();
@@ -511,6 +531,43 @@ async fn an_open_editors_frames_reach_its_holder_and_its_picture_is_kept() {
     assert_eq!(jpeg[..2], [0xFF_u8, 0xD8]);
     let pictures = &rig.router.eq.as_ref().unwrap().pictures;
     assert!(pictures.has(&key()));
+}
+
+#[tokio::test]
+async fn an_editors_frames_keep_no_picture_once_its_path_names_another_device() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut rig = rig(dir.path());
+    let outbox = held_open(&mut rig).await;
+    let pictures = Arc::clone(&rig.router.eq.as_ref().unwrap().pictures);
+    for _ in 0..300 {
+        if pictures.has(&key()) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(pictures.has(&key()), "its picture");
+    // The track lists the path for another device now (the editor's own
+    // device moved away while it stays captured): its picture goes, and
+    // the editor's next frames keep none there.
+    rig.router.handle(RouterMsg::EqListed {
+        client: 1,
+        binding: hand2(),
+        outcome: Ok(vec![found_at(PATH, "na tracku", "live_3")]),
+    });
+    assert!(!pictures.has(&key()));
+    outbox.take_frame();
+    let mut frames = 0;
+    for _ in 0..300 {
+        if outbox.take_frame().is_some() {
+            frames += 1;
+            if frames == 2 {
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(frames, 2, "the editor's frames go on to its holder");
+    assert!(!pictures.has(&key()), "no picture of the device before");
 }
 
 #[tokio::test]
@@ -563,9 +620,12 @@ async fn a_closed_socket_closes_its_editor_through_the_guard() {
     let RouterMsg::EqClosed { ref outcome, .. } = closed else {
         unreachable!()
     };
-    // The guard tapped; the offline instance could not be read again, so
-    // Live is left alone (the editor may still be open).
-    assert_eq!(outcome, &Shut::LeftOpen(close::unread("instance offline")));
+    // The guard tapped; the ref's turn-off got no answer (the instance is
+    // offline), so Live is left alone (the editor may still be open).
+    assert_eq!(
+        outcome,
+        &Shut::LeftOpen(close::ref_failed("instance offline"))
+    );
     rig.router.handle(closed);
     let phases: Vec<(String, i64, i64)> = rig
         .sim

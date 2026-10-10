@@ -16,10 +16,11 @@
 //! - **Only listed editors open:** a path the hub's `eq_list` reads found
 //!   ([`Eqs::listed`]); never an arbitrary LOM path. The open sequence reads
 //!   the device first ([`open`]): still the listed Pro-Q 4 (its name), its
-//!   editor closed in Live. A track's new list replaces its last one (the
-//!   cards' pictures of what it no longer names are dropped), and an
-//!   instance that connects again has its lists forgotten (another set may
-//!   be loaded).
+//!   editor closed in Live. A track's new list replaces its last one, and
+//!   an instance that connects again has its lists forgotten (another set
+//!   may be loaded). Each listed path names its device by its `$ref`
+//!   ([`Eqs::named`]): a card's last picture is kept only while its path
+//!   names the device it is of ([`Pictures`]).
 //! - **The contact:** one on the screen at a time (the PC has one cursor),
 //!   on an open editor of the client touching. A move goes on at once; an
 //!   up at a point other than the last one moves there first; a resting
@@ -149,8 +150,17 @@ pub enum Act {
     Record(Value),
 }
 
-/// What one list found: each editor with its device's name.
-type Listing = BTreeMap<EditorKey, String>;
+/// A device a list found at a path: its name and its `$ref` (the script's
+/// registry id: the same device for as long as the script's connection
+/// lasts, wherever it moves; another device at the path has another).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Device {
+    pub name: String,
+    pub id: String,
+}
+
+/// What one list found: each editor with its device.
+type Listing = BTreeMap<EditorKey, Device>;
 
 /// An editor's stage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -273,7 +283,7 @@ pub struct Eqs {
     contact: Option<Contact>,
     heard: HashMap<ClientId, f64>,
     /// What each list found (by its instance and its track's LOM target):
-    /// the editors that may be opened, with their device's name.
+    /// the editors that may be opened, with their device.
     lists: BTreeMap<(String, String), Listing>,
     /// The last session number given out.
     sessions: u32,
@@ -286,33 +296,33 @@ pub struct Eqs {
 
 impl Eqs {
     /// The list of the track at `target` on `instance` found these editors
-    /// (each with its device's name): they may be opened. It replaces that
-    /// track's last list, and an editor it names is its own from now on:
-    /// another track's older list no longer names it (a track or a device
-    /// moved, so a strip not listed since may still hold the path of the
-    /// device another strip has now). The editors whose card's picture
-    /// is another device's come back: those it names for another device
-    /// than a list did before, and those the last list named that no list
-    /// names now (their device moved or went).
+    /// (each with its device): they may be opened. It replaces that track's
+    /// last list, and an editor it names is its own from now on: another
+    /// track's older list no longer names it (a track or a device moved, so
+    /// a strip not listed since may still hold the path of the device
+    /// another strip has now).
     pub fn listed(
         &mut self,
         instance: &str,
         target: &str,
-        found: impl IntoIterator<Item = (EditorKey, String)>,
-    ) -> Vec<EditorKey> {
+        found: impl IntoIterator<Item = (EditorKey, Device)>,
+    ) {
         let found: Listing = found.into_iter().collect();
-        let mut gone: Vec<EditorKey> = found
-            .iter()
-            .filter(|(key, name)| self.name_of(key).is_some_and(|old| old != name.as_str()))
-            .map(|(key, _)| key.clone())
-            .collect();
         for listing in self.lists.values_mut() {
             listing.retain(|key, _| !found.contains_key(key));
         }
-        let list = (instance.to_string(), target.to_string());
-        let before = self.lists.insert(list, found).unwrap_or_default();
-        gone.extend(before.into_keys().filter(|key| !self.is_listed(key)));
-        gone
+        self.lists
+            .insert((instance.to_string(), target.to_string()), found);
+    }
+
+    /// The device each listed path names now, by its `$ref` ([`Pictures`]
+    /// keeps a card's picture only while its path names its device).
+    pub fn named(&self) -> BTreeMap<EditorKey, String> {
+        self.lists
+            .values()
+            .flatten()
+            .map(|(key, device)| (key.clone(), device.id.clone()))
+            .collect()
     }
 
     /// Whether a list names `key`.
@@ -326,7 +336,7 @@ impl Eqs {
         self.lists
             .values()
             .find_map(|listing| listing.get(key))
-            .map(String::as_str)
+            .map(|device| device.name.as_str())
     }
 
     /// An instance connected again: its lists may name other devices now
@@ -809,54 +819,58 @@ impl Eqs {
     }
 }
 
+/// What [`Pictures`] holds: the device each listed path names (its `$ref`)
+/// and each path's last picture, with the device it is of.
+#[derive(Debug, Default)]
+struct Kept {
+    names: BTreeMap<EditorKey, String>,
+    jpegs: BTreeMap<EditorKey, (String, Bytes)>,
+}
+
 /// The last picture of each editor (`GET /api/eq/picture`), kept for the
-/// detail's card: the frames' JPEG as the capture sent it.
+/// detail's card: the frames' JPEG as the capture sent it, only while the
+/// lists name its path for the device it is of. Two Pro-Q 4s that keep
+/// their default name change places when a track moves above them: the
+/// path then names the other device ([`Eqs::named`], by `$ref`), so the
+/// picture goes, and a frame of the editor opened there before is no
+/// longer kept.
 #[derive(Debug, Default)]
 pub struct Pictures {
-    inner: Mutex<BTreeMap<EditorKey, Bytes>>,
+    inner: Mutex<Kept>,
 }
 
 impl Pictures {
-    /// The newest picture of `key`.
-    pub fn put(&self, key: &EditorKey, jpeg: Bytes) {
-        self.inner
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(key.clone(), jpeg);
+    fn lock(&self) -> std::sync::MutexGuard<'_, Kept> {
+        self.inner.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The newest picture of `key`, of the device `id`: kept while the
+    /// lists name `key` for that device.
+    pub fn put(&self, key: &EditorKey, id: &str, jpeg: Bytes) {
+        let mut kept = self.lock();
+        if kept.names.get(key).map(String::as_str) == Some(id) {
+            kept.jpegs.insert(key.clone(), (id.to_string(), jpeg));
+        }
     }
 
     /// The last picture of `key`, if any.
     pub fn get(&self, key: &EditorKey) -> Option<Bytes> {
-        self.inner
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(key)
-            .cloned()
+        self.lock().jpegs.get(key).map(|(_, jpeg)| jpeg.clone())
     }
 
     /// Whether a picture of `key` is kept.
     pub fn has(&self, key: &EditorKey) -> bool {
-        self.inner
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .contains_key(key)
+        self.lock().jpegs.contains_key(key)
     }
 
-    /// The pictures of `keys` are forgotten (a new list no longer names
-    /// them).
-    pub fn remove(&self, keys: &[EditorKey]) {
-        let mut inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
-        for key in keys {
-            inner.remove(key);
-        }
-    }
-
-    /// Every picture of `instance` is forgotten (it connected again).
-    pub fn forget(&self, instance: &str) {
-        self.inner
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .retain(|key, _| key.instance != instance);
+    /// The device each listed path names now ([`Eqs::named`], after every
+    /// list and connect): a picture whose path names another device, or
+    /// none, goes.
+    pub fn named(&self, names: BTreeMap<EditorKey, String>) {
+        let mut kept = self.lock();
+        kept.jpegs
+            .retain(|key, entry| names.get(key) == Some(&entry.0));
+        kept.names = names;
     }
 }
 

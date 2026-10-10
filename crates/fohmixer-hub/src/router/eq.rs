@@ -47,7 +47,7 @@ use super::{Router, RouterMsg, write_failure};
 use crate::eq::close::{self, Check, CloseCheck, RefOff, Shut};
 use crate::eq::open;
 use crate::eq::walk::{Found, MAX_READS, Step, Walk};
-use crate::eq::{Act, EditorKey, Eqs, GUARD_WAIT, Pictures, record};
+use crate::eq::{Act, Device, EditorKey, Eqs, GUARD_WAIT, Pictures, record};
 use crate::events::EventLog;
 use crate::live::client::{LiveError, LiveHandle};
 use crate::live::subs::ClientId;
@@ -399,14 +399,17 @@ impl Router {
             .collect();
         // The walk ran on this target (`eq_list` checked it).
         let target = binding.target().unwrap_or_default();
-        let gone = io.state.listed(
+        let devices = found.iter().map(|f| Device {
+            name: f.name.clone(),
+            id: f.id.clone(),
+        });
+        io.state.listed(
             &binding.instance,
             &target,
-            keys.iter()
-                .cloned()
-                .zip(found.iter().map(|f| f.name.clone())),
+            keys.iter().cloned().zip(devices),
         );
-        io.pictures.remove(&gone);
+        // A card's picture whose path names another device now goes.
+        io.pictures.named(io.state.named());
         let items = found
             .into_iter()
             .zip(&keys)
@@ -430,7 +433,7 @@ impl Router {
     pub(super) fn eq_connected(&mut self, instance: &str) {
         if let Some(io) = self.eq.as_mut() {
             io.state.forget(instance);
-            io.pictures.forget(instance);
+            io.pictures.named(io.state.named());
             io.refs.retain(|_, (of, _)| of.as_str() != instance);
         }
     }
@@ -663,11 +666,20 @@ impl Router {
                     return;
                 };
                 let pictures = Arc::clone(&io.pictures);
+                // The card's picture is the device the open read (its
+                // `$ref`): kept only while its path names that device.
+                let device = io
+                    .refs
+                    .get(&session)
+                    .and_then(|(_, reference)| open::ref_id(reference))
+                    .map(str::to_string);
                 io.plugwin.capture(
                     session,
                     Arc::new(move |session: u32, jpeg: Bytes| {
                         outbox.eq_frame(Bytes::from(frame(session, &jpeg)));
-                        pictures.put(&key, jpeg);
+                        if let Some(device) = &device {
+                            pictures.put(&key, device, jpeg);
+                        }
                     }),
                 );
             }

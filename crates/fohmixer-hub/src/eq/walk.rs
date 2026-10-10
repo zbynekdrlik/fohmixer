@@ -4,7 +4,9 @@
 //!
 //! The first read is the track's `devices` (by its strip's target: a name or
 //! an index). The script encodes each device as `{"$ref", "path", "class",
-//! "name"}`, its `path` in index form: a `PluginDevice` gets its
+//! "name"}`, its `path` in index form (its `$ref` names the device for as
+//! long as the script's connection lasts, wherever it moves): a
+//! `PluginDevice` gets its
 //! `class_display_name` read (a Pro-Q 4 says [`PRODUCT`] even when it is
 //! renamed), a `RackDevice` its `chains`, and each chain its `devices` again,
 //! [`MAX_RACKS`] racks deep at most. A slot that failed (a device deleted
@@ -30,12 +32,14 @@ pub const MAX_RACKS: usize = 3;
 /// the chains, then their devices; then the last level's plug-ins' names.
 pub const MAX_READS: usize = 2 * MAX_RACKS + 2;
 
-/// One Pro-Q 4 found: its path (index form), where it sits and its name.
+/// One Pro-Q 4 found: its path (index form), where it sits, its name and
+/// its `$ref` (the device: another one at the same path has another).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Found {
     pub path: String,
     pub place: String,
     pub name: String,
+    pub id: String,
 }
 
 /// One thing a read asks: its path, and the racks and chains above it.
@@ -50,6 +54,7 @@ enum Ask {
     Name {
         path: String,
         name: String,
+        id: String,
         within: Vec<(String, String)>,
     },
     /// A rack's chains.
@@ -99,17 +104,28 @@ fn refused(slot: Option<&Value>) -> Option<String> {
     )
 }
 
-/// The objects of a list answer: each one's class, path and name (one
-/// without a path is left out).
-pub(super) fn items(data: &Value) -> Vec<(&str, &str, &str)> {
+/// One object of a list answer: its class, path, name and `$ref`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Item<'a> {
+    pub class: &'a str,
+    pub path: &'a str,
+    pub name: &'a str,
+    pub id: &'a str,
+}
+
+/// The objects of a list answer (one without a path is left out; a missing
+/// class, name or `$ref` reads empty).
+pub(super) fn items(data: &Value) -> Vec<Item<'_>> {
     data.as_array()
         .into_iter()
         .flatten()
         .filter_map(|item| {
-            let path = item.get("path").and_then(Value::as_str)?;
-            let class = item.get("class").and_then(Value::as_str).unwrap_or("");
-            let name = item.get("name").and_then(Value::as_str).unwrap_or("");
-            Some((class, path, name))
+            Some(Item {
+                class: item.get("class").and_then(Value::as_str).unwrap_or(""),
+                path: item.get("path").and_then(Value::as_str)?,
+                name: item.get("name").and_then(Value::as_str).unwrap_or(""),
+                id: item.get("$ref").and_then(Value::as_str).unwrap_or(""),
+            })
         })
         .collect()
 }
@@ -167,38 +183,45 @@ impl Walk {
             };
             match ask {
                 Ask::Devices { within, .. } => {
-                    for (class, path, name) in items(data) {
-                        if class == PLUGIN {
+                    for item in items(data) {
+                        if item.class == PLUGIN {
                             next.push(Ask::Name {
-                                path: path.to_string(),
-                                name: name.to_string(),
+                                path: item.path.to_string(),
+                                name: item.name.to_string(),
+                                id: item.id.to_string(),
                                 within: within.clone(),
                             });
-                        } else if class == RACK && within.len() < MAX_RACKS {
+                        } else if item.class == RACK && within.len() < MAX_RACKS {
                             next.push(Ask::Chains {
-                                path: path.to_string(),
-                                rack: name.to_string(),
+                                path: item.path.to_string(),
+                                rack: item.name.to_string(),
                                 within: within.clone(),
                             });
                         }
                     }
                 }
                 Ask::Chains { rack, within, .. } => {
-                    for (_, path, chain) in items(data) {
+                    for item in items(data) {
                         let mut inside = within.clone();
-                        inside.push((rack.clone(), chain.to_string()));
+                        inside.push((rack.clone(), item.name.to_string()));
                         next.push(Ask::Devices {
-                            path: path.to_string(),
+                            path: item.path.to_string(),
                             within: inside,
                         });
                     }
                 }
-                Ask::Name { path, name, within } => {
+                Ask::Name {
+                    path,
+                    name,
+                    id,
+                    within,
+                } => {
                     if data.as_str() == Some(PRODUCT) {
                         self.found.push(Found {
                             path,
                             place: place(&within),
                             name,
+                            id,
                         });
                     }
                 }
@@ -292,11 +315,12 @@ mod tests {
             ]
         );
         let step = walk.answer(&[
-            ok(json!([device(
-                "PluginDevice",
-                "live_set tracks 1 devices 2 chains 0 devices 0",
-                "De-ess"
-            )])),
+            ok(json!([{
+                "$ref": "live_9",
+                "path": "live_set tracks 1 devices 2 chains 0 devices 0",
+                "class": "PluginDevice",
+                "name": "De-ess",
+            }])),
             // A failed slot (the chain deleted meanwhile) is skipped.
             json!({"ok": false, "error": "not found: chains 1", "errorType": "PathError"}),
         ]);
@@ -316,11 +340,13 @@ mod tests {
                     path: "live_set tracks 1 devices 0".into(),
                     place: "na tracku".into(),
                     name: "Pro-Q 4".into(),
+                    id: "r".into(),
                 },
                 Found {
                     path: "live_set tracks 1 devices 2 chains 0 devices 0".into(),
                     place: "Vocal FX › Main".into(),
                     name: "De-ess".into(),
+                    id: "live_9".into(),
                 },
             ])
         );
@@ -361,6 +387,33 @@ mod tests {
             walk.answer(&[json!({"ok": false, "error": "gone"})]),
             Step::Done(Vec::new())
         );
+    }
+
+    #[test]
+    fn a_list_answers_objects_are_their_class_path_name_and_ref() {
+        let data = json!([
+            {"$ref": "live_7", "path": "p", "class": "PluginDevice", "name": "Vox"},
+            {"path": "q"},
+            {"$ref": "live_8", "class": "Chain", "name": "no path"},
+        ]);
+        assert_eq!(
+            items(&data),
+            vec![
+                Item {
+                    class: "PluginDevice",
+                    path: "p",
+                    name: "Vox",
+                    id: "live_7",
+                },
+                Item {
+                    class: "",
+                    path: "q",
+                    name: "",
+                    id: "",
+                },
+            ]
+        );
+        assert_eq!(items(&json!("no list")), Vec::new());
     }
 
     /// A list answer of one chain.
@@ -435,11 +488,13 @@ mod tests {
                     path: "q2".into(),
                     place: "R1 › C1 › R2 › C2".into(),
                     name: "Low".into(),
+                    id: "r".into(),
                 },
                 Found {
                     path: "q3".into(),
                     place: "R1 › C1 › R2 › C2 › R3 › C3".into(),
                     name: "High".into(),
+                    id: "r".into(),
                 },
             ])
         );

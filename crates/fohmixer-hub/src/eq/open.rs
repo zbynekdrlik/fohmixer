@@ -62,6 +62,12 @@ fn reference(slot: Option<&Value>, path: &str) -> Option<Value> {
     Some(json!({"$ref": id, "class": PLUGIN}))
 }
 
+/// The `$ref` id a device target names (the target [`ready`] gives): the id
+/// the lists name its path with while it sits there.
+pub fn ref_id(target: &Value) -> Option<&str> {
+    target.get("$ref").and_then(Value::as_str)
+}
+
 /// What the read says (`slots` in [`read`]'s order) of the device the list
 /// named `name` at `path`: its `$ref` to open and later close it by, or why
 /// the open is refused.
@@ -176,6 +182,15 @@ mod tests {
             ready(&answer, IN_CHAIN, "Vox EQ"),
             Ok(json!({"$ref": "live_3", "class": "PluginDevice"}))
         );
+    }
+
+    #[test]
+    fn a_targets_ref_id_is_its_ref() {
+        let target = ready(&good(), ON_TRACK, "Vox EQ").unwrap();
+        assert_eq!(ref_id(&target), Some("live_7"));
+        assert_eq!(ref_id(&json!({"class": "PluginDevice"})), None);
+        assert_eq!(ref_id(&json!({"$ref": 7})), None);
+        assert_eq!(ref_id(&json!(ON_TRACK)), None);
     }
 
     #[test]

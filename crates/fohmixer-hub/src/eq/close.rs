@@ -277,7 +277,7 @@ impl CloseCheck {
         let mut targets: Vec<String> = items(tracks)
             .into_iter()
             .chain(items(returns))
-            .map(|(_, path, _)| path.to_string())
+            .map(|item| item.path.to_string())
             .collect();
         targets.push(MASTER.to_string());
         self.stage = Stage::Walking;

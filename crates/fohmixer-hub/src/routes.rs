@@ -618,10 +618,13 @@ mod tests {
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
         let body: serde_json::Value = serde_json::from_slice(&body_bytes(response).await).unwrap();
         assert_eq!(body["code"], "NO_PICTURE");
-        hub.pictures.put(
-            &crate::eq::EditorKey::new("band", "live_set tracks 1 devices 0"),
-            bytes::Bytes::from_static(b"\xFF\xD8jpeg"),
-        );
+        let key = crate::eq::EditorKey::new("band", "live_set tracks 1 devices 0");
+        hub.pictures.named(std::collections::BTreeMap::from([(
+            key.clone(),
+            "live_1".to_string(),
+        )]));
+        hub.pictures
+            .put(&key, "live_1", bytes::Bytes::from_static(b"\xFF\xD8jpeg"));
         let response = get_with_token(&hub, path).await;
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(header_of(&response, "content-type"), "image/jpeg");

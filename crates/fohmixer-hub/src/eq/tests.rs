@@ -10,9 +10,19 @@ fn key(n: u32) -> EditorKey {
 /// The device name the lists found.
 const NAME: &str = "Vox EQ";
 
-/// `key` as a list found it, with its device's name.
-fn found(key: EditorKey) -> (EditorKey, String) {
-    (key, NAME.to_string())
+/// A device named `name` whose `$ref` is `id`.
+fn device(name: &str, id: &str) -> Device {
+    Device {
+        name: name.to_string(),
+        id: id.to_string(),
+    }
+}
+
+/// `key` as a list found it: its device named [`NAME`], its `$ref` named
+/// after its path.
+fn found(key: EditorKey) -> (EditorKey, Device) {
+    let id = format!("ref of {}", key.path);
+    (key, device(NAME, &id))
 }
 
 /// The LOM target of the track the tests list.
@@ -129,7 +139,7 @@ fn only_a_listed_editor_opens() {
     eqs.listed(
         "band",
         TRACK,
-        [found(key(1)), (key(2), "Kick EQ".to_string())],
+        [found(key(1)), (key(2), device("Kick EQ", "live_2"))],
     );
     assert_eq!(eqs.name_of(&key(1)), Some(NAME));
     assert_eq!(eqs.name_of(&key(2)), Some("Kick EQ"));
@@ -152,14 +162,14 @@ fn only_a_listed_editor_opens() {
 fn a_tracks_new_list_replaces_its_last_one() {
     let mut eqs = Eqs::default();
     let other = "live_set tracks 7";
-    assert_eq!(
-        eqs.listed("band", TRACK, [found(key(1)), found(key(2))]),
-        Vec::new()
-    );
-    // The same track by another binding names editor 2 too.
-    assert_eq!(eqs.listed("band", other, [found(key(2))]), Vec::new());
-    // Editor 1 went, editor 3 came: only 1 is no list's now.
-    assert_eq!(eqs.listed("band", TRACK, [found(key(3))]), vec![key(1)]);
+    eqs.listed("band", TRACK, [found(key(1)), found(key(2))]);
+    // The same track by another binding names editor 2 too: that list's
+    // now; editor 1 stays the first list's.
+    eqs.listed("band", other, [found(key(2))]);
+    assert_eq!(eqs.name_of(&key(1)), Some(NAME));
+    assert_eq!(eqs.name_of(&key(2)), Some(NAME));
+    // Editor 1 went, editor 3 came: editor 1 is no list's now.
+    eqs.listed("band", TRACK, [found(key(3))]);
     assert_eq!(eqs.name_of(&key(1)), None);
     assert_eq!(
         eqs.open(1, &key(1), WALL),
@@ -170,12 +180,10 @@ fn a_tracks_new_list_replaces_its_last_one() {
     );
     assert_eq!(eqs.name_of(&key(2)), Some(NAME));
     assert_eq!(eqs.name_of(&key(3)), Some(NAME));
-    // The same answer again drops nothing.
-    assert_eq!(eqs.listed("band", TRACK, [found(key(3))]), Vec::new());
     // Another instance's list of the same target is its own; a connect
     // forgets only its own instance's lists.
     let drums = EditorKey::new("drums", "live_set tracks 0 devices 0");
-    eqs.listed("drums", TRACK, [(drums.clone(), "Snare EQ".to_string())]);
+    eqs.listed("drums", TRACK, [(drums.clone(), device("Snare EQ", "d1"))]);
     assert_eq!(eqs.name_of(&key(3)), Some(NAME));
     eqs.forget("band");
     assert_eq!((eqs.name_of(&key(2)), eqs.name_of(&key(3))), (None, None));
@@ -190,38 +198,59 @@ fn a_path_two_tracks_lists_name_belongs_to_the_newest_list() {
     let mut eqs = Eqs::default();
     let (x, y) = ("live_set tracks 1", "live_set tracks 0");
     let p = key(5);
-    let named = |name: &str| [(p.clone(), name.to_string())];
-    eqs.listed("band", y, named("De-ess"));
-    eqs.listed("band", x, named("Vox EQ"));
+    let named = |name: &str, id: &str| [(p.clone(), device(name, id))];
+    eqs.listed("band", y, named("De-ess", "live_y"));
+    eqs.listed("band", x, named("Vox EQ", "live_x"));
     assert_eq!(eqs.name_of(&p), Some("Vox EQ"), "the newer list's");
     // Y listed again names P (its device back there): Y's name now.
-    eqs.listed("band", y, named("De-ess"));
+    eqs.listed("band", y, named("De-ess", "live_y"));
     assert_eq!(eqs.name_of(&p), Some("De-ess"));
     // Listing X again mends what Y's list said.
-    eqs.listed("band", x, named("Vox EQ"));
+    eqs.listed("band", x, named("Vox EQ", "live_x"));
     assert_eq!(eqs.name_of(&p), Some("Vox EQ"));
     // X's track loses its device: no list names P any more (Y's gave it up).
-    let none: Vec<(EditorKey, String)> = Vec::new();
-    assert_eq!(eqs.listed("band", x, none), vec![p.clone()]);
+    let none: Vec<(EditorKey, Device)> = Vec::new();
+    eqs.listed("band", x, none);
     assert_eq!(eqs.name_of(&p), None);
+    assert!(eqs.named().is_empty());
 }
 
 #[test]
-fn a_path_named_for_another_device_than_before_comes_back_too() {
-    // Its card's picture is the device it was listed for before.
+fn the_lists_name_each_paths_device_by_its_ref() {
     let mut eqs = Eqs::default();
     let (x, y) = ("live_set tracks 1", "live_set tracks 0");
-    let p = key(5);
-    let named = |name: &str| [(p.clone(), name.to_string())];
-    assert_eq!(eqs.listed("band", y, named("De-ess")), Vec::new());
-    // Another track's list names P for its own device now.
-    assert_eq!(eqs.listed("band", x, named("Vox EQ")), vec![p.clone()]);
-    // The same again: nothing comes back.
-    assert_eq!(eqs.listed("band", x, named("Vox EQ")), Vec::new());
-    // Its own track's list names P for another device (renamed, or another
-    // device moved in): it comes back too.
-    assert_eq!(eqs.listed("band", x, named("Air EQ")), vec![p.clone()]);
-    assert_eq!(eqs.name_of(&p), Some("Air EQ"));
+    let names = |pairs: &[(&EditorKey, &str)]| -> BTreeMap<EditorKey, String> {
+        pairs
+            .iter()
+            .map(|(key, id)| ((*key).clone(), (*id).to_string()))
+            .collect()
+    };
+    let drums = EditorKey::new("drums", "live_set tracks 0 devices 0");
+    eqs.listed("band", y, [(key(5), device("Pro-Q 4", "live_1"))]);
+    eqs.listed("band", x, [(key(6), device("Pro-Q 4", "live_2"))]);
+    eqs.listed("drums", x, [(drums.clone(), device("Pro-Q 4", "live_1"))]);
+    assert_eq!(
+        eqs.named(),
+        names(&[(&key(5), "live_1"), (&key(6), "live_2"), (&drums, "live_1")])
+    );
+    // Two Pro-Q 4s that keep their default name change places: the paths
+    // name the other devices now, the names alike.
+    eqs.listed(
+        "band",
+        x,
+        [
+            (key(5), device("Pro-Q 4", "live_2")),
+            (key(6), device("Pro-Q 4", "live_1")),
+        ],
+    );
+    assert_eq!(eqs.name_of(&key(5)), Some("Pro-Q 4"));
+    assert_eq!(
+        eqs.named(),
+        names(&[(&key(5), "live_2"), (&key(6), "live_1"), (&drums, "live_1")])
+    );
+    // A connect forgets its instance's.
+    eqs.forget("band");
+    assert_eq!(eqs.named(), names(&[(&drums, "live_1")]));
 }
 
 #[test]
@@ -757,26 +786,45 @@ fn a_contact_the_worker_ended_is_forgotten_never_a_newer_one() {
 }
 
 #[test]
-fn the_last_pictures_are_kept_per_editor() {
+fn a_cards_picture_is_kept_only_while_its_path_names_its_device() {
     let pictures = Pictures::default();
+    let names = |pairs: &[(u32, &str)]| -> BTreeMap<EditorKey, String> {
+        pairs
+            .iter()
+            .map(|(n, id)| (key(*n), (*id).to_string()))
+            .collect()
+    };
+    let jpeg = Bytes::from_static;
+    // No list names the path: nothing kept.
+    pictures.put(&key(1), "live_1", jpeg(b"one"));
     assert!(!pictures.has(&key(1)));
     assert_eq!(pictures.get(&key(1)), None);
-    pictures.put(&key(1), Bytes::from_static(b"one"));
-    pictures.put(&key(1), Bytes::from_static(b"two"));
-    assert!(pictures.has(&key(1)));
+    pictures.named(names(&[(1, "live_1"), (2, "live_2"), (3, "live_3")]));
+    pictures.put(&key(1), "live_1", jpeg(b"one"));
+    pictures.put(&key(1), "live_1", jpeg(b"two"));
+    assert_eq!(pictures.get(&key(1)), Some(jpeg(b"two")), "the newest");
+    // A frame of another device than the path names (its editor opened
+    // there before the devices moved): not this card's picture.
+    pictures.put(&key(2), "live_1", jpeg(b"other"));
     assert!(!pictures.has(&key(2)));
-    assert_eq!(pictures.get(&key(1)), Some(Bytes::from_static(b"two")));
-    // Dropped by key, and by instance.
-    let drums = EditorKey::new("drums", "live_set tracks 0 devices 0");
-    for k in [key(2), key(3), drums.clone()] {
-        pictures.put(&k, Bytes::from_static(b"jpeg"));
-    }
-    pictures.remove(&[key(1), key(2)]);
+    pictures.put(&key(2), "live_2", jpeg(b"two's"));
+    pictures.put(&key(3), "live_3", jpeg(b"three's"));
+    assert!(pictures.has(&key(2)) && pictures.has(&key(3)));
+    // The devices at 1 and 2 change places, 3 is no list's any more: those
+    // pictures go; a path still naming its device keeps its picture.
+    pictures.put(&key(4), "live_4", jpeg(b"four's"));
+    pictures.named(names(&[(1, "live_2"), (2, "live_1"), (4, "live_4")]));
     assert_eq!(
-        [key(1), key(2), key(3)].map(|k| pictures.has(&k)),
+        [1, 2, 3, 4].map(|n| pictures.has(&key(n))),
+        [false, false, false, false],
+        "4 was not named when its frame came"
+    );
+    pictures.put(&key(4), "live_4", jpeg(b"four's"));
+    pictures.put(&key(1), "live_1", jpeg(b"one"));
+    assert_eq!(
+        [1, 2, 4].map(|n| pictures.has(&key(n))),
         [false, false, true]
     );
-    pictures.forget("band");
-    assert!(!pictures.has(&key(3)));
-    assert!(pictures.has(&drums));
+    pictures.named(names(&[(1, "live_2"), (4, "live_4")]));
+    assert_eq!(pictures.get(&key(4)), Some(jpeg(b"four's")), "kept");
 }
