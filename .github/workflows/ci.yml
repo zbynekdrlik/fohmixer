@@ -520,10 +520,14 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: e2e-failure
+          # The hub's event log (#71 PR Q): the pages' flight recorders
+          # (a refused finger's eq_touch, a dropout) and the hub's records,
+          # which hub.log does not hold.
           path: |
             e2e/test-results/
             e2e/playwright-report/
             ${{ runner.temp }}/e2e-logs/
+            ${{ runner.temp }}/hub-data/logs/events-*.jsonl
           retention-days: 7
 
   companion:
@@ -695,10 +699,12 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: companion-failure
+          # The hub's event log too (#71 PR Q), as the e2e job's.
           path: |
             e2e/test-results/
             e2e/playwright-report/
             ${{ runner.temp }}/e2e-logs/
+            ${{ runner.temp }}/hub-data/logs/events-*.jsonl
           retention-days: 7
 
   supply-chain:
