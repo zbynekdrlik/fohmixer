@@ -291,7 +291,7 @@ pub fn control_subs(control: &Control, source: MeterSource) -> Vec<SubSpec> {
         Control::ParamFader { targets, .. } => {
             param_subs(targets, true).into_iter().flatten().collect()
         }
-        Control::HubToggle { .. } | Control::Text { .. } => Vec::new(),
+        Control::HubToggle { .. } => Vec::new(),
     }
 }
 

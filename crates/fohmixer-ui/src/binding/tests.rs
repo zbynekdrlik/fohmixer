@@ -99,8 +99,8 @@ fn sample() -> Layout {
                     {"kind": "group", "controls": [
                         {"kind": "strip", "binding": tr("C"), "strip_kind": "standard"},
                         {"kind": "strip", "binding": tr("A"), "strip_kind": "standard"}]}]}]},
-            {"id": "conf", "title": "Conf", "rows": [{"sections": [{"kind": "group", "controls": [
-                {"kind": "text", "text": "unfold_band: 'Vocals grp'"}]}]}]}
+            {"id": "more", "title": "More", "rows": [{"sections": [{"kind": "group", "controls": [
+                {"kind": "hub_toggle", "key": "stage_aut", "label": "STAGE AUT"}]}]}]}
         ],
         "global": [
             {"kind": "alert", "binding": tr("TechAlert #"), "period_ms": 300}
@@ -280,15 +280,11 @@ fn every_control_kind_subscribes_what_it_shows() {
         4,
         "a strip: volume, mute, one meter, colour (#71: its pan is the detail's)"
     );
-    for none in [
-        Control::HubToggle {
-            key: "stage_aut".into(),
-            label: "A".into(),
-        },
-        Control::Text { text: "x".into() },
-    ] {
-        assert_eq!(sub(&none), Vec::<String>::new());
-    }
+    let none = Control::HubToggle {
+        key: "stage_aut".into(),
+        label: "A".into(),
+    };
+    assert_eq!(sub(&none), Vec::<String>::new());
 }
 
 /// The names of the strips and the kinds of the other controls on screen.
@@ -306,7 +302,6 @@ fn shown(layout: &Layout, path: &[usize]) -> Vec<String> {
             Control::ParamToggle { label, .. } => label.clone(),
             Control::ParamFader { .. } => "fader".into(),
             Control::Alert { .. } => "alert".into(),
-            Control::Text { .. } => "text".into(),
         })
         .collect()
 }
@@ -329,7 +324,7 @@ fn the_controls_on_screen_are_the_rail_the_rows_with_the_sub_page_and_the_global
     );
     assert_eq!(shown(&layout, &[1, 7]), shown(&layout, &[1]));
     assert_eq!(shown(&layout, &[0]), vec!["Vox 1 TU", "alert"]);
-    assert_eq!(shown(&layout, &[2]), vec!["text", "alert"]);
+    assert_eq!(shown(&layout, &[2]), vec!["hub", "alert"]);
     // No page: the global controls only.
     assert_eq!(shown(&layout, &[]), vec!["alert"]);
     assert_eq!(shown(&layout, &[9]), vec!["alert"]);
@@ -424,7 +419,7 @@ fn the_selected_pages_are_the_remembered_ones_or_the_defaults() {
     assert_eq!(selected_path(&layout, &remembered), vec![1, 0]);
     remembered.insert(String::new(), "cue".to_string());
     assert_eq!(selected_path(&layout, &remembered), vec![0]);
-    remembered.insert(String::new(), "conf".to_string());
+    remembered.insert(String::new(), "more".to_string());
     assert_eq!(selected_path(&layout, &remembered), vec![2]);
     // Remembered pages that are gone fall back to the defaults.
     remembered.insert(String::new(), "worship".to_string());
@@ -454,7 +449,7 @@ fn choosing_a_tab_remembers_it_for_its_pager() {
     let layout = sample();
     let mut remembered = BTreeMap::new();
     choose(&layout, &mut remembered, &[1, 1], 0, 2);
-    assert_eq!(remembered.get(""), Some(&"conf".to_string()));
+    assert_eq!(remembered.get(""), Some(&"more".to_string()));
     choose(&layout, &mut remembered, &[1, 1], 1, 0);
     assert_eq!(remembered.get("foh"), Some(&"stage".to_string()));
     assert_eq!(selected_path(&layout, &remembered), vec![2]);

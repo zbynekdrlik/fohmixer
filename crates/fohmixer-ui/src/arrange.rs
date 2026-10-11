@@ -34,7 +34,7 @@ pub struct Metrics {
     pub max: f64,
     /// A wide strip's width, in strips.
     pub wide: f64,
-    /// A group of buttons or texts, in strips.
+    /// A group of buttons, in strips.
     pub block: f64,
     /// The least height of a line while each row is a line of its own.
     pub line_min: f64,
@@ -66,7 +66,7 @@ pub struct At {
 pub enum Cell {
     /// A control, `units` strips wide; `pinned` never leaves the screen.
     Control { at: At, units: f64, pinned: bool },
-    /// A group of buttons or texts, as one block `units` strips wide.
+    /// A group of buttons, as one block `units` strips wide.
     Block { group: usize, units: f64 },
     /// A pager slot the shown sub-page leaves empty.
     Blank { slot: usize },

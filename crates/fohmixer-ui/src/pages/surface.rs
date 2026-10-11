@@ -857,7 +857,7 @@ fn ItemView(list: Memo<Vec<Item>>, model: Arc<PageModel>, item: Item) -> impl In
 }
 
 /// One cell: a control (in a pager's slot a wide strip is one strip wide),
-/// a group of buttons or texts as one block, or an empty slot.
+/// a group of buttons as one block, or an empty slot.
 #[component]
 fn CellView(model: Arc<PageModel>, cell: Cell) -> impl IntoView {
     match cell {
@@ -893,13 +893,12 @@ fn CellView(model: Arc<PageModel>, cell: Cell) -> impl IntoView {
                 .get(group)
                 .map(|g| g.controls.clone())
                 .unwrap_or_default();
-            let texts = controls.iter().all(|c| matches!(c, Control::Text { .. }));
             let views = controls
                 .into_iter()
                 .map(|control| view! { <ControlView control=control /> })
                 .collect_view();
             let width = format!("--units:{units};");
-            view! { <div class="block" class:texts=texts style=width>{views}</div> }.into_any()
+            view! { <div class="block" style=width>{views}</div> }.into_any()
         }
         Cell::Blank { .. } => {
             view! { <div class="strip blank" data-testid="blank"></div> }.into_any()

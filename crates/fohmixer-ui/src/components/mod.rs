@@ -252,9 +252,6 @@ pub fn ControlView(
             <AlertView binding=binding period_ms=period_ms label=label guarded=mute_guard />
         }
         .into_any(),
-        Control::Text { text } => {
-            view! { <div class="text" data-testid="label">{text}</div> }.into_any()
-        }
     }
 }
 

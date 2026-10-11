@@ -611,6 +611,16 @@ mod tests {
         v["config"] = json!({"unfold": [{"instance": "band", "name": "Kit grp#"}]});
         let error = check(&serde_json::to_vec(&v).unwrap(), &["band".into()]).unwrap_err();
         assert!(error.contains("unknown field `unfold`"), "{error}");
+        // So is the static text (#58): it showed the TouchOSC Conf page's
+        // lines, and that page is gone.
+        let mut v: serde_json::Value = serde_json::from_slice(&layout_json("X", "band")).unwrap();
+        v["pages"][0]["rail"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"kind": "text", "text": "unfold_band: 'Kit grp#'"}));
+        let error = check(&serde_json::to_vec(&v).unwrap(), &["band".into()]).unwrap_err();
+        assert!(error.starts_with("layout does not parse: "), "{error}");
+        assert!(error.contains("unknown variant `text`"), "{error}");
     }
 
     fn backup_of(dir: &Path, stamp: &str, text: &[u8]) {

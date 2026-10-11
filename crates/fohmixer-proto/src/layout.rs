@@ -182,8 +182,6 @@ pub enum Control {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         mute_guard: bool,
     },
-    /// A static text (one line).
-    Text { text: String },
 }
 
 /// A strip: its binding, its kind, and how it is drawn and guarded.
@@ -288,7 +286,7 @@ impl Control {
             Control::ParamToggle { targets, .. } | Control::ParamFader { targets, .. } => {
                 targets.iter().map(|t| &t.binding).collect()
             }
-            Control::HubToggle { .. } | Control::Text { .. } => vec![],
+            Control::HubToggle { .. } => vec![],
         }
     }
 }
@@ -696,7 +694,6 @@ impl Validator {
                 self.targets(at, targets, true);
             }
             Control::ParamFader { targets, .. } => self.targets(at, targets, false),
-            Control::Text { .. } => {}
         }
     }
 
