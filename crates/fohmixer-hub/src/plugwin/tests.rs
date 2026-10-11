@@ -510,10 +510,64 @@ fn the_worker_lists_and_takes_the_window_live_opens() {
     let window = take(&mut worker, &handle, 1, 0.0);
     assert_eq!(handle.topmost(window), Some(true));
     assert_eq!(worker.editors[&1].taken.window, window);
+    // #71 PR O: press-and-hold off once it is taken (a still finger never
+    // becomes a right click: Pro-Q's menu).
     assert_eq!(
         handle.records(),
-        vec![json!({"op": "take", "window": window.0})]
+        vec![
+            json!({"op": "take", "window": window.0}),
+            json!({"op": "press_and_hold", "window": window.0, "quiet": true}),
+        ]
     );
+    // At the release: on again, then the window back.
+    let (reply, _released) = oneshot::channel();
+    worker.command_at(
+        Command::Release {
+            session: 1,
+            closed: false,
+            reply,
+        },
+        10.0,
+    );
+    assert_eq!(
+        handle.records()[2..],
+        [
+            json!({"op": "press_and_hold", "window": window.0, "quiet": false}),
+            json!({"op": "release", "window": window.0}),
+        ]
+    );
+}
+
+#[test]
+fn an_editor_whose_press_and_hold_stays_on_is_handed_back_not_opened() {
+    // #71 PR O: Windows refusing the property leaves a still finger able to
+    // become a right click: the hub opens no such editor.
+    let (mut worker, handle, _) = worker();
+    handle.refuse_quiet(true);
+    let (reply, mut answer) = oneshot::channel();
+    worker.command_at(
+        Command::Take {
+            session: 1,
+            before: handle.windows(),
+            reply,
+        },
+        0.0,
+    );
+    worker.step_at(0.0);
+    assert_eq!(answer.try_recv().unwrap(), Err(reason::HOLD_ON.to_string()));
+    assert!(worker.editors.is_empty());
+    let window = handle.windows()[0];
+    // A part set put back (the window, not its picture), then the window.
+    assert_eq!(
+        handle.records(),
+        vec![
+            json!({"op": "take", "window": window.0}),
+            json!({"op": "press_and_hold", "window": window.0, "quiet": true}),
+            json!({"op": "press_and_hold", "window": window.0, "quiet": false}),
+            json!({"op": "release", "window": window.0}),
+        ]
+    );
+    assert_eq!(handle.topmost(window), Some(false), "its z-order as it was");
 }
 
 #[test]
@@ -778,17 +832,18 @@ fn an_editor_let_go_reports_the_counts_of_its_last_minute() {
 
 #[test]
 fn a_picture_shows_the_last_input_handled_a_paint_before_its_grab() {
-    // PR J: Pro-Q gets PAINT_MS (40 ms) to paint an input.
-    assert!(!painted(100.0, 140.0_f64.next_down()));
-    assert!(painted(100.0, 140.0));
+    // PR J: Pro-Q gets PAINT_MS (20 ms since PR O's measure) to paint an
+    // input.
+    assert!(!painted(100.0, 120.0_f64.next_down()));
+    assert!(painted(100.0, 120.0));
     let mut shown = Shown::default();
     assert_eq!(shown.at_grab(0.0), 0, "none yet");
     shown.handled(1, 100.0);
     shown.handled(2, 110.0);
-    assert_eq!(shown.at_grab(139.0), 0);
-    assert_eq!(shown.at_grab(140.0), 1);
-    assert_eq!(shown.at_grab(149.9), 1);
-    assert_eq!(shown.at_grab(150.0), 2);
+    assert_eq!(shown.at_grab(119.0), 0);
+    assert_eq!(shown.at_grab(120.0), 1);
+    assert_eq!(shown.at_grab(129.9), 1);
+    assert_eq!(shown.at_grab(130.0), 2);
     assert_eq!(shown.at_grab(500.0), 2, "it stays");
     // Past SHOWN_KEPT waiting, the newest waiting gives way: nothing counts
     // as painted before its time (the PR J review).
@@ -798,11 +853,11 @@ fn a_picture_shows_the_last_input_handled_a_paint_before_its_grab() {
         many.handled(n, 1000.0 + f64::from(n));
     }
     many.handled(65, 1100.0);
-    assert_eq!(many.at_grab(1040.0), 0, "none painted yet");
-    assert_eq!(many.at_grab(1041.0), 1);
-    assert_eq!(many.at_grab(1104.0), 63, "64 gave way to 65");
-    assert_eq!(many.at_grab(1139.0), 63);
-    assert_eq!(many.at_grab(1140.0), 65);
+    assert_eq!(many.at_grab(1020.0), 0, "none painted yet");
+    assert_eq!(many.at_grab(1021.0), 1);
+    assert_eq!(many.at_grab(1084.0), 63, "64 gave way to 65");
+    assert_eq!(many.at_grab(1119.0), 63);
+    assert_eq!(many.at_grab(1120.0), 65);
 }
 
 #[test]
@@ -1322,6 +1377,16 @@ fn a_captured_editor_sends_its_pictures_skipping_a_same_one() {
     };
     assert_eq!(rate.grabs, 1);
     assert!(worker.editors.is_empty());
+    // PR O review: a window hidden, not gone, stays Live's: press-and-hold
+    // on again and its z-order as it was (nothing on a dead handle).
+    let records = handle.records();
+    assert_eq!(
+        records[records.len() - 2..],
+        [
+            json!({"op": "press_and_hold", "window": window.0, "quiet": false}),
+            json!({"op": "release", "window": window.0}),
+        ]
+    );
 }
 
 #[test]
@@ -1572,6 +1637,57 @@ fn the_guard_ends_the_contact_stops_the_frames_and_taps_the_inert_spot() {
     worker.step_at(310.0);
     worker.step_at(320.0);
     assert_eq!(answer.try_recv().unwrap(), Err(REFUSED.to_string()));
+}
+
+#[test]
+fn press_and_hold_comes_back_once_whichever_way_the_window_goes() {
+    // The PR #84 re-review: a guard whose tap is refused leaves it off (the
+    // editor stays open in Live; its release puts it back, once), and a
+    // window lost after a guard put it back gets nothing more.
+    let (mut worker, handle, _) = worker();
+    take(&mut worker, &handle, 1, 0.0);
+    let back = |handle: &SimHandle| {
+        handle
+            .records()
+            .iter()
+            .filter(|r| r["op"] == "press_and_hold" && r["quiet"] == json!(false))
+            .count()
+    };
+    handle.refuse(true);
+    let (reply, mut answer) = oneshot::channel();
+    worker.command_at(Command::Guard { session: 1, reply }, 10.0);
+    worker.step_at(20.0);
+    worker.step_at(30.0);
+    assert_eq!(answer.try_recv().unwrap(), Err(REFUSED.to_string()));
+    assert!(worker.editors[&1].quiet, "still off");
+    assert_eq!(back(&handle), 0);
+    handle.refuse(false);
+    let (reply, _released) = oneshot::channel();
+    worker.command_at(
+        Command::Release {
+            session: 1,
+            closed: false,
+            reply,
+        },
+        40.0,
+    );
+    assert_eq!(back(&handle), 1, "the release put it back");
+    // A guard that tapped puts it back; its window lost after: nothing more.
+    let second = take(&mut worker, &handle, 2, 100.0);
+    let (reply, mut answer) = oneshot::channel();
+    worker.command_at(Command::Guard { session: 2, reply }, 110.0);
+    worker.step_at(120.0);
+    worker.step_at(130.0);
+    assert_eq!(answer.try_recv().unwrap(), Ok(()));
+    assert_eq!(back(&handle), 2, "the guard put it back");
+    handle.remove_window(second);
+    worker.step_at(200.0);
+    assert!(worker.editors.is_empty(), "lost");
+    assert_eq!(back(&handle), 2, "nothing more");
+    assert_eq!(
+        handle.records().last(),
+        Some(&json!({"op": "release", "window": second.0}))
+    );
 }
 
 #[test]
@@ -2756,12 +2872,26 @@ fn the_guard_puts_the_editors_own_size_back_before_its_tap() {
         .iter()
         .map(|r| r["op"].as_str().unwrap().to_string())
         .collect();
+    // Press-and-hold off once taken, on again after the guard's tap (PR O:
+    // Live closes the editor next, its window still there).
     assert_eq!(
         ops,
         [
-            "take", "resize", "touch", "touch", "resize", "resize", "touch", "touch"
+            "take",
+            "press_and_hold",
+            "resize",
+            "touch",
+            "touch",
+            "resize",
+            "resize",
+            "touch",
+            "touch",
+            "press_and_hold"
         ]
     );
+    assert_eq!(records[1]["quiet"], json!(true));
+    assert_eq!(records[9]["quiet"], json!(false));
+    assert!(!worker.editors[&1].quiet);
     assert_eq!(
         touches(&handle)[2..],
         [t("down", 546, 15), t("up", 546, 15)]
@@ -3264,10 +3394,12 @@ fn the_stop_posts_a_changed_editors_own_size_before_handing_it_back() {
     let _waiting = guard_at(&mut worker, 2, 10.0);
     worker.shutdown();
     assert!(worker.guarding.is_empty());
+    // Past both takes and their press-and-hold (PR O): each editor's
+    // press-and-hold on again just before its window goes back.
     let ops: Vec<(String, i64)> = handle
         .records()
         .iter()
-        .skip(2)
+        .skip(4)
         .map(|r| {
             (
                 r["op"].as_str().unwrap().to_string(),
@@ -3280,8 +3412,10 @@ fn the_stop_posts_a_changed_editors_own_size_before_handing_it_back() {
         [
             ("resize".to_string(), 667),
             ("resize".to_string(), 1349),
+            ("press_and_hold".to_string(), 0),
             ("release".to_string(), 0),
             ("resize".to_string(), 1349),
+            ("press_and_hold".to_string(), 0),
             ("release".to_string(), 0),
         ]
     );

@@ -1482,6 +1482,8 @@ async fn a_changed_area_resizes_the_open_editor_and_its_close_puts_its_size_back
         sim_steps(&rig.sim),
         [
             step("take", -1, -1),
+            // Press-and-hold off for the editor (#71 PR O).
+            step("press_and_hold", -1, -1),
             step("resize", 667, 1361),
             step("touch down", 666, 1300),
             step("touch up", 666, 1300),
@@ -1489,6 +1491,8 @@ async fn a_changed_area_resizes_the_open_editor_and_its_close_puts_its_size_back
             step("resize", 1349, 809),
             step("touch down", 546, 15),
             step("touch up", 546, 15),
+            // On again, then the window back.
+            step("press_and_hold", -1, -1),
             step("release", -1, -1),
         ]
     );
@@ -1520,11 +1524,14 @@ async fn a_new_area_and_a_close_reach_the_worker_in_the_routers_order() {
         sim_steps(&rig.sim),
         [
             step("take", -1, -1),
+            step("press_and_hold", -1, -1),
             step("resize", 667, 1361),
             step("resize", 1349, 809),
             step("resize", 1349, 809),
             step("touch down", 546, 15),
             step("touch up", 546, 15),
+            // On again, then the window back.
+            step("press_and_hold", -1, -1),
             step("release", -1, -1),
         ]
     );

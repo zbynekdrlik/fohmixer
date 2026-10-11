@@ -37,12 +37,14 @@
 //!   worker's cancel at the last point follows and moves the cursor there
 //!   again. A call too soon after the last one (`ERROR_NOT_READY`) is tried
 //!   again after 1 ms, twice.
-//! - **Press-and-hold (#71 PR N, the probe's `--hold` only):** the
+//! - **Press-and-hold (#71 PR N/O):** the
 //!   `MicrosoftTabletPenServiceProperty` property with
 //!   `TABLET_DISABLE_PRESSANDHOLD` set on the window and its picture
-//!   (`SetPropW`; `RemovePropW` puts it back), which is to stop Windows
-//!   making a still contact's up a right click. Whether it does on the PC
-//!   is what the probe measures.
+//!   (`SetPropW`, read back with `GetPropW`; `RemovePropW` puts it back),
+//!   which stops Windows making a still contact's up a right click
+//!   (measured in Carla's bridge, 0.1.0-dev.58: a still contact held 2.4 s
+//!   with it opened no menu, one held 800 ms without it did). The hub's
+//!   worker sets it once an editor is taken and removes it at the release.
 //! - **Release:** the z-order as it was (`HWND_NOTOPMOST`, or topmost again
 //!   when it was), posted as the take's.
 //! - **Size (PR G):** the take keeps the window's rectangle
@@ -57,6 +59,7 @@
 //!   work area is the window's monitor's (`MonitorFromWindow`,
 //!   `GetMonitorInfoW` `rcWork`: the screen less the taskbar).
 
+use std::collections::HashMap;
 use std::time::Duration;
 
 use windows::Win32::Foundation::{ERROR_NOT_READY, HANDLE, HWND, LPARAM, POINT, RECT, WPARAM};
@@ -76,8 +79,8 @@ use windows::Win32::UI::Input::Pointer::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumChildWindows, EnumWindows, GA_ROOT, GWL_EXSTYLE, GetAncestor, GetClassNameW, GetClientRect,
-    GetCursorPos, GetWindowLongW, GetWindowRect, GetWindowThreadProcessId, HWND_NOTOPMOST,
-    HWND_TOPMOST, IsWindow, IsWindowVisible, PT_TOUCH, PostMessageW, RemovePropW,
+    GetCursorPos, GetPropW, GetWindowLongW, GetWindowRect, GetWindowThreadProcessId,
+    HWND_NOTOPMOST, HWND_TOPMOST, IsWindow, IsWindowVisible, PT_TOUCH, PostMessageW, RemovePropW,
     SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetCursorPos,
     SetPropW, SetWindowPos, TOUCH_FLAG_NONE, TOUCH_MASK_CONTACTAREA, WM_CLOSE, WS_EX_TOPMOST,
     WindowFromPoint,
@@ -369,6 +372,9 @@ pub struct Win {
     cursor: Option<POINT>,
     last: Option<POINT>,
     needs_child: bool,
+    /// Each window's press-and-hold property before the hub set it (0:
+    /// none), put back when it is turned on again (PR O review).
+    held_props: HashMap<usize, usize>,
 }
 
 /// The `eq-probe` backend: it takes any window of the process it is given.
@@ -395,6 +401,7 @@ impl Win {
             cursor: None,
             last: None,
             needs_child: true,
+            held_props: HashMap::new(),
         }
     }
 
@@ -634,18 +641,39 @@ impl Backend for Win {
 
     fn press_and_hold(&mut self, taken: &Taken, quiet: bool) -> Result<(), String> {
         let name = w!("MicrosoftTabletPenServiceProperty");
-        for window in [taken.window, taken.picture] {
+        let mut windows = vec![taken.window];
+        if taken.picture != taken.window {
+            windows.push(taken.picture);
+        }
+        for window in windows {
             let handle = hwnd(window);
+            let key = window.0 as usize;
             if quiet {
-                let flags = HANDLE(TABLET_DISABLE_PRESSANDHOLD as *mut core::ffi::c_void);
-                // SAFETY: sets a property of a window handle (an atom and a
-                // value, no pointer is kept); a stale handle fails.
-                unsafe { SetPropW(handle, name, Some(flags)) }
+                // SAFETY: reads a property of a window handle (no message).
+                let before = unsafe { GetPropW(handle, name) }.0 as usize;
+                self.held_props.entry(key).or_insert(before);
+                let value =
+                    HANDLE((before | TABLET_DISABLE_PRESSANDHOLD) as *mut core::ffi::c_void);
+                // SAFETY: sets that property (an atom and a value, no
+                // pointer is kept); a stale handle fails.
+                unsafe { SetPropW(handle, name, Some(value)) }
                     .map_err(|e| format!("SetPropW: {e}"))?;
+                // SAFETY: reads it back (no message is sent).
+                if unsafe { GetPropW(handle, name) } != value {
+                    return Err("the press-and-hold property did not read back".to_string());
+                }
             } else {
-                // SAFETY: removes that property; a handle without it fails,
+                // The value it had back, or none: a stale handle fails,
                 // which leaves nothing to undo.
-                let _ = unsafe { RemovePropW(handle, name) };
+                let before = self.held_props.remove(&key).unwrap_or(0);
+                if before == 0 {
+                    // SAFETY: removes that property of a window handle.
+                    let _ = unsafe { RemovePropW(handle, name) };
+                } else {
+                    let value = HANDLE(before as *mut core::ffi::c_void);
+                    // SAFETY: sets it back to the value it had.
+                    let _ = unsafe { SetPropW(handle, name, Some(value)) };
+                }
             }
         }
         Ok(())

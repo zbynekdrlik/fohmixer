@@ -326,6 +326,8 @@ const GUARD_AND_RELEASE = [
   ["resize", null, WIDTH, HEIGHT],
   ["touch", "down", INERT.x, INERT.y],
   ["touch", "up", INERT.x, INERT.y],
+  // Press-and-hold on again (#71 PR O), then the window back.
+  ["press_and_hold", null, null, null],
   ["release", null, null, null],
 ];
 
@@ -340,6 +342,7 @@ async function closedWithGuard(before: number): Promise<number> {
   const all = await until(simEq.records, (r) => r.some((x, i) => i >= before && x.op === "release"), "the editor's release");
   const close = all.slice(before);
   expect(steps(close), "the guard's tap, then the release").toEqual(GUARD_AND_RELEASE);
+  expect(close[close.length - 2].quiet, "press-and-hold on again").toBe(false);
   expect(close.every((r) => r.window === close[0].window), "one window").toBe(true);
   return all.length;
 }
@@ -453,10 +456,15 @@ test.describe("The Pro-Q 4 screen", () => {
     expect(Math.abs(opens[0].area.w - areaBox.width), JSON.stringify(opens[0])).toBeLessThan(1);
     expect(Math.abs(opens[0].area.h - areaBox.height), JSON.stringify(opens[0])).toBeLessThan(1);
     const picture = await pictureSize(screen.getByTestId("eq-canvas"));
-    expect(steps((await simEq.records()).slice(0, 2))).toEqual([
+    // Taken, press-and-hold off for it (#71 PR O: a still finger never
+    // becomes a right click), then resized.
+    const opened = (await simEq.records()).slice(0, 3);
+    expect(steps(opened)).toEqual([
       ["take", null, null, null],
+      ["press_and_hold", null, null, null],
       ["resize", null, picture.width, picture.height],
     ]);
+    expect(opened[1].quiet).toBe(true);
     // About Pro-Q's own pixel count (the room allows it at this size).
     expect(Math.abs((picture.width * picture.height) / (WIDTH * HEIGHT) - 1)).toBeLessThan(0.01);
     // The bar: the exit, the strip's chip, where the editor sits, the lock mark.
@@ -1615,15 +1623,36 @@ test.describe("The Pro-Q 4 screen on a slow link", () => {
         await page.mouse.move(from.x + 4 * i, from.y);
         await frames(page, 2);
       }
+      // The drag shown, then left the moment its up goes, while the picture
+      // cannot show it yet (#71 PR O: with PAINT_MS 20 the picture catches
+      // up within a frame or two, quicker than a poll of the attribute; an
+      // observer in the page leaves in the same task).
+      await caughtUp(screen);
       const dragFrom = (await simEq.records()).length;
+      // The observer is in place before the up (a locator's evaluate
+      // resolves the element first, and the up could pass it).
+      await screen.getByTestId("eq-canvas").evaluate((canvas) => {
+        (window as any).__leftBehind = new Promise<string>((done) => {
+          const exit = document.querySelector('[data-testid="eq-exit"]')!;
+          const observer = new MutationObserver(() => {
+            if (canvas.getAttribute("data-caught-up") === "false") {
+              observer.disconnect();
+              exit.dispatchEvent(new PointerEvent("pointerdown", { pointerId: 99, pointerType: "touch", isPrimary: true, bubbles: true, cancelable: true }));
+              done("left behind its up");
+            }
+          });
+          observer.observe(canvas, { attributes: true, attributeFilter: ["data-caught-up"] });
+        });
+      });
       await page.mouse.up();
-      // Left at once: the picture does not show the up yet.
-      await expect(screen.getByTestId("eq-canvas")).toHaveAttribute("data-caught-up", "false");
-      await until(() => touchesAfter(dragFrom), (all) => all.some((r) => r.phase === "up"), "the drag's up at the editor");
-      let closing = (await simEq.records()).length;
-      await screen.getByTestId("eq-exit").click();
+      expect(await page.evaluate(() => (window as any).__leftBehind)).toBe("left behind its up");
       await expect(page.getByTestId("eq-screen")).toHaveCount(0);
-      await closedWithGuard(closing);
+      // The drag's up reached the editor before the close (one socket, in
+      // order); the guard's sequence follows it.
+      const all = await until(simEq.records, (r) => r.some((x, i) => i >= dragFrom && x.op === "release"), "the editor's release");
+      const up = all.findIndex((r, i) => i >= dragFrom && r.op === "touch" && r.phase === "up");
+      expect(up, JSON.stringify(all.slice(dragFrom))).toBeGreaterThanOrEqual(dragFrom);
+      await closedWithGuard(up + 1);
       await editorOpen(trackPath, false);
       // The next screen: its first tap edits.
       await onTrack.getByTestId("eq-open").click();
@@ -1636,7 +1665,7 @@ test.describe("The Pro-Q 4 screen on a slow link", () => {
       const tap = await until(() => touchesAfter(tapFrom), (all) => all.some((r) => r.phase === "up"), "the next screen's tap");
       expect(tap[0].phase, JSON.stringify(tap)).toBe("down");
       await expect(screen.getByTestId("eq-stale")).toHaveAttribute("data-shown", "false");
-      closing = (await simEq.records()).length;
+      const closing = (await simEq.records()).length;
       await screen.getByTestId("eq-exit").click();
       await expect(page.getByTestId("eq-screen")).toHaveCount(0);
       await closedWithGuard(closing);

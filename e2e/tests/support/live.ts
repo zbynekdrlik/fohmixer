@@ -84,7 +84,7 @@ export const companion = {
 /**
  * The hub's simulated window backend (#71 PR E, `[eq] backend = "sim"` in the
  * harness's config): `records()` reads what it did, in order (`GET /sim/eq`:
- * `{op: "take" | "touch" | "release" | "close", window, phase?, x?, y?}`, a
+ * `{op: "take" | "press_and_hold" | "touch" | "resize" | "release" | "close", window, phase?, x?, y?, quiet?}`, a
  * touch's point in the picture's pixels), `clear()` forgets them.
  */
 export const simEq = {

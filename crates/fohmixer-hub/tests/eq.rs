@@ -942,6 +942,9 @@ fn an_open_with_an_upright_area_gets_its_aspect_and_its_close_puts_its_size_back
         let ops = sized_ops(dir.path());
         let want = [
             step("take", "", -1, -1),
+            // Press-and-hold off once taken, on again after the guard's
+            // tap (#71 PR O).
+            step("press_and_hold", "", -1, -1),
             step("resize", "", 667, 1361),
             step("touch", "down", 300, 1200),
             step("touch", "up", 300, 1200),
@@ -950,6 +953,7 @@ fn an_open_with_an_upright_area_gets_its_aspect_and_its_close_puts_its_size_back
             step("resize", "", 1349, 809),
             step("touch", "down", 546, 15),
             step("touch", "up", 546, 15),
+            step("press_and_hold", "", -1, -1),
             step("release", "", -1, -1),
         ];
         let rest: Vec<_> = ops.into_iter().filter(|o| o.1 != "update").collect();
