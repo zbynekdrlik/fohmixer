@@ -309,6 +309,30 @@
     will-change: transform;
 }
 
+/* The overview's hint (the owner's ruling of 2026-10-11): on the whole
+   picture one finger never reaches the editor, a tap zooms in. Over the
+   picture's top, never in the way of a touch. */
+.eq-hint {
+    position: absolute;
+    top: 10px;
+    left: 50%;
+    transform: translateX(-50%);
+    max-width: calc(100% - 20px);
+    padding: 6px 14px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: rgba(10, 10, 20, 0.82);
+    color: var(--eq);
+    font: 700 15px/1.2 var(--display);
+    letter-spacing: 0.04em;
+    text-align: center;
+    pointer-events: none;
+}
+
+.eq-hint[data-shown="false"] {
+    display: none;
+}
+
 .eq-wait {
     position: absolute;
     inset: 0;
