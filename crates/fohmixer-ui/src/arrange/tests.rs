@@ -768,6 +768,17 @@ fn each_line_moves_its_own_window() {
 fn a_line_with_a_window_takes_the_narrowest_strip_wherever_its_window_stands() {
     // Ten strips, three wide, on sides of 336 px: from the third on eight
     // would fit at 77 px, but the strips stay at 64 px.
+    let model = ten_with_three_wide();
+    for offset in [0, 2] {
+        let a = arrange(&model, None, 336.0, 378.0, |_| offset, &METRICS);
+        assert_eq!(a.width, 64.0, "offset {offset}");
+        assert_eq!(a.lines[0].shift.map(|s| s.offset), Some(offset));
+    }
+}
+
+/// Ten strips, three of them wide, in one group: the FOH page's first row
+/// on a phone on its side.
+fn ten_with_three_wide() -> PageModel {
     let strips = (0..10)
         .map(|i| {
             if i == 2 || i == 3 || i == 9 {
@@ -777,11 +788,103 @@ fn a_line_with_a_window_takes_the_narrowest_strip_wherever_its_window_stands() {
             }
         })
         .collect();
-    let model = PageModel::of(&page(vec![vec![group("g", strips)]]));
+    PageModel::of(&page(vec![vec![group("g", strips)]]))
+}
+
+#[test]
+fn a_phones_thin_strip_widens_the_strips_and_keeps_the_windows() {
+    // #63, the approved mockup phone-burger-v1: on a phone on its side the
+    // column (148 px) leaves sides of 336 px, the thin strip (34 px) 393.
+    // The same strips show, the same windows, 64 × 393 / 336 px wide
+    // wherever the window stands.
+    let model = ten_with_three_wide();
+    let sides = Sides {
+        count: 336.0,
+        width: 393.0,
+    };
     for offset in [0, 2] {
-        let a = arrange(&model, None, 336.0, 378.0, |_| offset, &METRICS);
-        assert_eq!(a.width, 64.0, "offset {offset}");
-        assert_eq!(a.lines[0].shift.map(|s| s.offset), Some(offset));
+        let column = arrange(&model, None, 336.0, 378.0, |_| offset, &METRICS);
+        let thin = arrange_in(&model, None, sides, 378.0, |_| offset, &METRICS);
+        assert_eq!(thin.width, 64.0 * 393.0 / 336.0, "offset {offset}");
+        assert!((74.8..74.9).contains(&thin.width));
+        assert_eq!(thin.lines, column.lines, "offset {offset}");
+    }
+    // Upright (the column 96 px: sides of 135; the thin strip: 166): two
+    // strips a side, 78.7 px wide.
+    let model = PageModel::of(&foh());
+    let offset = |k: &LineKey| if k.rows == [1] { 2 } else { 0 };
+    let column = arrange(&model, Some(0), 135.0, 832.0, offset, &METRICS);
+    let sides = Sides {
+        count: 135.0,
+        width: 166.0,
+    };
+    let thin = arrange_in(&model, Some(0), sides, 832.0, offset, &METRICS);
+    assert_eq!(thin.lines, column.lines);
+    assert_eq!(thin.width, 64.0 * 166.0 / 135.0);
+}
+
+#[test]
+fn a_line_without_a_window_fills_the_wider_side() {
+    // Eight strips, four a side: 81 px on sides of 336, 95.25 on 393.
+    let strips = (0..8).map(|i| strip(&format!("S{i}"))).collect();
+    let model = PageModel::of(&page(vec![vec![group("g", strips)]]));
+    let column = arrange(&model, None, 336.0, 378.0, |_| 0, &METRICS);
+    assert_eq!(column.width, 81.0);
+    assert_eq!(column.lines[0].shift, None);
+    let sides = Sides {
+        count: 336.0,
+        width: 393.0,
+    };
+    let thin = arrange_in(&model, None, sides, 378.0, |_| 0, &METRICS);
+    assert_eq!(thin.width, 95.25);
+    assert_eq!(thin.lines, column.lines);
+    // One side for both is `arrange`.
+    assert_eq!(
+        arrange_in(&model, None, Sides::both(336.0), 378.0, |_| 0, &METRICS),
+        column
+    );
+}
+
+#[test]
+fn a_strip_stretches_by_the_wider_side_over_the_counted_one() {
+    let sides = |count, width| Sides { count, width };
+    assert_eq!(stretch(sides(336.0, 393.0)), 393.0 / 336.0);
+    assert_eq!(stretch(sides(336.0, 336.0)), 1.0);
+    // Never narrower, and 1 for a side not laid out yet.
+    assert_eq!(stretch(sides(400.0, 300.0)), 1.0);
+    assert_eq!(stretch(sides(0.0, 393.0)), 1.0);
+    assert_eq!(stretch(sides(-1.0, 393.0)), 1.0);
+}
+
+#[test]
+fn the_thin_strip_moves_the_first_line_with_a_window() {
+    let model = PageModel::of(&foh());
+    // Upright: both lines have a window.
+    let upright = arrange(&model, Some(0), 135.0, 832.0, |_| 0, &METRICS);
+    assert_eq!(thin_line(&upright), Some(0));
+    // What a line's arrows move: its window and its key.
+    let lower = &upright.lines[1];
+    assert_eq!(
+        upright.shift_of(1),
+        Some((lower.key.clone(), lower.shift.unwrap()))
+    );
+    assert_eq!(upright.shift_of(2), None, "no such line");
+    let mut lower_only = upright.clone();
+    lower_only.lines[0].shift = None;
+    assert_eq!(thin_line(&lower_only), Some(1));
+    lower_only.lines[1].shift = None;
+    assert_eq!(thin_line(&lower_only), None);
+    assert_eq!(lower_only.shift_of(1), None, "it fits");
+}
+
+#[test]
+fn a_css_length_in_px_is_read_from_a_custom_property() {
+    assert_eq!(px_value(" 148px"), Some(148.0));
+    assert_eq!(px_value("96px"), Some(96.0));
+    assert_eq!(px_value(" 34.5 px "), Some(34.5));
+    assert_eq!(px_value("0px"), Some(0.0));
+    for none in ["", "  ", "3em", "px", "-2px", "NaNpx", "infpx", "148"] {
+        assert_eq!(px_value(none), None, "{none:?}");
     }
 }
 

@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Page } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
 import { test, expect } from "./support/fixtures";
 import { LiveClient, clipped, harness, openSurface, ready, selectPage, strip, track, until } from "./support/live";
 
@@ -33,6 +33,47 @@ async function headFirst(page: Page): Promise<string[]> {
       return Math.abs(h - 30) > 0.5 ? [`${s.getAttribute("data-track")}: a ${h} px name button`] : [];
     }),
   );
+}
+
+/**
+ * The phone's column over the faders (#63, the approved mockup
+ * phone-burger-v1): ☰ in the thin strip opens it.
+ */
+async function openColumn(page: Page) {
+  await page.getByTestId("thin-burger").dispatchEvent("pointerdown");
+  await expect(page.getByTestId("page")).toHaveAttribute("data-column-open", "true");
+  await expect(page.getByTestId("column")).toBeVisible();
+}
+
+/** A page's tab on a phone: ☰ first (its tab is in the column), then the tab, which closes the column. */
+async function phonePage(page: Page, id: string) {
+  await openColumn(page);
+  const tab = page.locator(`[data-testid="tab"][data-page="${id}"]`);
+  await tab.dispatchEvent("pointerdown");
+  await expect(tab).toHaveAttribute("data-selected", "true");
+  await expect(page.getByTestId("column")).toBeHidden();
+}
+
+/** Dispatches a cancelable, bubbling `type` event on `el`: whether something prevented it. */
+async function prevented(el: Locator, type: string): Promise<boolean> {
+  return el.evaluate((node: Element, name: string) => {
+    const event = new Event(name, { bubbles: true, cancelable: true });
+    node.dispatchEvent(event);
+    return event.defaultPrevented;
+  }, type);
+}
+
+/** The strip width every line shares (`--strip-w`, px). */
+async function stripWidth(page: Page): Promise<number> {
+  return page.getByTestId("page").evaluate((el) => parseFloat((el as HTMLElement).style.getPropertyValue("--strip-w")));
+}
+
+/** The thin strip in the middle of a phone `width` px wide: 34 px, centred. */
+async function thinInTheMiddle(page: Page, width: number) {
+  const thin = (await page.getByTestId("thin").boundingBox())!;
+  expect(Math.abs(thin.x + thin.width / 2 - width / 2), "the thin strip's centre (px off the screen's)").toBeLessThan(1);
+  expect(thin.width).toBe(34);
+  await expect(page.getByTestId("column")).toBeHidden();
 }
 
 test.describe("At the tablet's and the desktop's own size", () => {
@@ -115,6 +156,11 @@ test.describe("On a phone on its side", () => {
 
   test("both rows share one line with the column in the middle; its arrows move the strips", async ({ page }) => {
     await openSurface(page);
+    // #63: a thin strip in the middle, the same strips as beside the
+    // column (148 px: sides of 336 px), wider: 64 × 393 / 336 px.
+    await thinInTheMiddle(page, 844);
+    await expect.poll(() => stripWidth(page)).toBeCloseTo((64 * 393) / 336, 1);
+    await openColumn(page);
     const column = (await page.getByTestId("column").boundingBox())!;
     expect(Math.abs(column.x + column.width / 2 - 422), "the column's centre (px off the screen's)").toBeLessThan(1);
     expect(column.y + column.height).toBeLessThanOrEqual(390);
@@ -156,6 +202,62 @@ test.describe("On a phone on its side", () => {
     }
   });
 
+  test("☰ opens the column over the dimmed faders, nothing under it moves; ✕, the shade and a page's tab close it; the thin strip's arrows move the line", async ({ page }) => {
+    // #63, the approved mockup phone-burger-v1.
+    await openSurface(page);
+    const column = page.getByTestId("column");
+    const fader = strip(page, "Vocal 1 repro#").getByTestId("fader");
+    await ready(fader);
+    const before = (await fader.boundingBox())!;
+    await openColumn(page);
+    const box = (await column.boundingBox())!;
+    expect(Math.abs(box.x + box.width / 2 - 422), "the column's centre (px off the screen's)").toBeLessThan(1);
+    expect(box.width).toBe(150);
+    await expect(page.getByTestId("column-shade")).toBeVisible();
+    expect(await fader.boundingBox(), "the fader under the shade").toEqual(before);
+    // ✕ closes it.
+    await page.getByTestId("column-close").dispatchEvent("pointerdown");
+    await expect(page.getByTestId("page")).toHaveAttribute("data-column-open", "false");
+    await expect(column).toBeHidden();
+    await expect(page.getByTestId("column-shade")).toHaveCount(0);
+    // A tap on the shade closes it.
+    await openColumn(page);
+    await page.getByTestId("column-shade").dispatchEvent("pointerdown");
+    await expect(column).toBeHidden();
+    // Choosing a page closes it (and coming back).
+    await openColumn(page);
+    await page.locator('[data-testid="tab"][data-page="cue"]').dispatchEvent("pointerdown");
+    await expect(page.locator('[data-testid="tab"][data-page="cue"]')).toHaveAttribute("data-selected", "true");
+    await expect(page.getByTestId("page")).toHaveAttribute("data-column-open", "false");
+    await expect(column).toBeHidden();
+    await openColumn(page);
+    await page.locator('[data-testid="tab"][data-page="foh"]').dispatchEvent("pointerdown");
+    await expect(column).toBeHidden();
+    // The thin strip's ◀ ▶ move the line's window, the column closed.
+    const where = page.getByTestId("shift").getByTestId("shift-where");
+    await expect(where).toHaveText("1–9/10");
+    const next = page.getByTestId("thin-next");
+    await expect(page.getByTestId("thin-back")).toHaveClass(/\bend\b/);
+    for (let i = 0; i < 6; i++) await next.dispatchEvent("pointerdown");
+    await expect(next).toHaveClass(/\bend\b/);
+    await expect(strip(page, "A-Echo", "master")).toBeVisible();
+    await expect(strip(page, "Vocal 1 repro#")).toHaveCount(0);
+    await page.getByTestId("thin-back").dispatchEvent("pointerdown");
+    await expect(where).toHaveText("1–9/10");
+    await expect(page.getByTestId("thin-live")).toHaveAttribute("data-connected", "true");
+    // Each new tap target owns its touches (#43 PR G), the shade too: it is
+    // the faders' cover while the column is open, no control's ancestor.
+    for (const id of ["thin-back", "thin-burger", "thin-next"]) {
+      expect(await prevented(page.getByTestId(id), "touchstart"), `a touchstart on ${id}`).toBe(true);
+    }
+    await openColumn(page);
+    for (const id of ["column-close", "column-shade"]) {
+      expect(await prevented(page.getByTestId(id), "touchstart"), `a touchstart on ${id}`).toBe(true);
+    }
+    expect(await prevented(page.getByTestId("thin"), "touchstart"), "a touchstart on the thin strip's background").toBe(false);
+    await page.getByTestId("column-close").dispatchEvent("pointerdown");
+  });
+
   test("a group of nine buttons shares its block's height: every button whole and on screen", async ({ page }) => {
     // The cue page's group of toggles grown to nine (spec F17's count): a
     // block is one cell 2.4 strips wide, so its buttons share its height.
@@ -167,7 +269,7 @@ test.describe("On a phone on its side", () => {
     await openSurface(page);
     try {
       await harness("/hub/layout", { layout: changed });
-      await selectPage(page, "cue");
+      await phonePage(page, "cue");
       const block = page.locator(".block");
       await expect(block.getByTestId("param-toggle")).toHaveCount(9, { timeout: 10_000 });
       const area = (await block.boundingBox())!;
@@ -180,7 +282,7 @@ test.describe("On a phone on its side", () => {
         expect(await clipped(button), `${name}`).toEqual([]);
       }
     } finally {
-      await selectPage(page, "foh");
+      await phonePage(page, "foh");
       await harness("/hub/layout/reset");
     }
   });
@@ -196,6 +298,8 @@ test.describe("On a phone on its side", () => {
       const overlay = page.getByTestId("alert");
       await live.set("band", alert, "mute", false);
       await expect(overlay).toHaveAttribute("data-active", "true");
+      // #63: from the column closed behind ☰.
+      await expect(page.getByTestId("page")).toHaveAttribute("data-column-open", "false");
       // Sampled in the page every 15 ms for 900 ms (the blink is 300 ms).
       const drawn = await overlay.evaluate(async (el) => {
         let seen = false;
@@ -241,8 +345,25 @@ test.describe("On a phone on its side", () => {
 test.describe("On a phone upright", () => {
   test.use({ viewport: { width: 390, height: 844 } });
 
-  test("each row is a line of two strips a side, the column narrow, its tabs and buttons whole", async ({ page }) => {
+  test("each row is a line of two strips a side, the column over the faders, its tabs and buttons whole", async ({ page }) => {
     await openSurface(page);
+    // #63: the thin strip; the strips counted as beside the column (96 px:
+    // sides of 135 px), 64 × 166 / 135 px wide.
+    await thinInTheMiddle(page, 390);
+    await expect.poll(() => stripWidth(page)).toBeCloseTo((64 * 166) / 135, 1);
+    // The thin strip's arrows move the upper line only.
+    const upper = page.locator('[data-testid="shift"][data-line="0"]').getByTestId("shift-where");
+    const lowerWhere = page.locator('[data-testid="shift"][data-line="1"]').getByTestId("shift-where");
+    await expect(upper).toHaveText(/\//);
+    await expect(lowerWhere).toHaveText(/\//);
+    const upperAt = await upper.textContent();
+    const lowerAt = await lowerWhere.textContent();
+    await page.getByTestId("thin-next").dispatchEvent("pointerdown");
+    await expect(upper).not.toHaveText(upperAt!);
+    await expect(lowerWhere).toHaveText(lowerAt!);
+    await page.getByTestId("thin-back").dispatchEvent("pointerdown");
+    await expect(upper).toHaveText(upperAt!);
+    await openColumn(page);
     const column = (await page.getByTestId("column").boundingBox())!;
     expect(Math.abs(column.x + column.width / 2 - 195), "the column's centre (px off the screen's)").toBeLessThan(1);
     await expect(page.getByTestId("line")).toHaveCount(2);

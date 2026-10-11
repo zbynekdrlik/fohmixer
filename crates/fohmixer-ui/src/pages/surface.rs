@@ -24,7 +24,10 @@ use leptos::prelude::*;
 use serde_json::json;
 
 use crate::app::version_text;
-use crate::arrange::{Arrangement, Cell, Item, LineKey, METRICS, PageModel, Side, arrange, items};
+use crate::arrange::{
+    Arrangement, Cell, Item, LineKey, METRICS, PageModel, Shift, Side, Sides, arrange_in, items,
+    px_value, thin_line,
+};
 use crate::behave::solo::soloed;
 use crate::binding::{
     DetailChange, SubSpec, choose, detail_strip, detail_update, group_title, page_solos,
@@ -77,11 +80,24 @@ struct Nav {
     /// When a hold opened the detail (the page clock): its opening guard
     /// counts from it, so a new layout's remount does not guard again.
     detail_opened: StoredValue<f64>,
+    /// The column is open over the faders (#63: on a phone, ☰ in the thin
+    /// strip opens it; the tablet's column is always there and this does
+    /// nothing to it). Written only on a change.
+    column_open: RwSignal<bool>,
 }
 
 impl Nav {
-    /// The page `index` of level `level` was tapped.
+    /// The phone's column opens over the faders, or closes (#63).
+    fn open_column(self, open: bool) {
+        if self.column_open.try_get_untracked() == Some(!open) {
+            let _ = self.column_open.try_set(open);
+        }
+    }
+
+    /// The page `index` of level `level` was tapped: on a phone the column
+    /// closes too (#63, the approved mockup).
     fn select(self, level: usize, index: usize) {
+        self.open_column(false);
         // A layout tab leaves the deck; the page shown is selected as before.
         if self.deck.try_get_untracked() == Some(true) {
             let _ = self.deck.try_set(false);
@@ -127,6 +143,7 @@ impl Nav {
 
     /// The Stream Deck tab was tapped (#52).
     fn show_deck(self) {
+        self.open_column(false);
         if self.deck.try_get_untracked() == Some(false) {
             let _ = self.deck.try_set(true);
         }
@@ -158,6 +175,7 @@ pub fn Surface(token: String, session: RwSignal<Option<String>>) -> impl IntoVie
         manual: RwSignal::new(false),
         detail: RwSignal::new(None),
         detail_opened: StoredValue::new(f64::NEG_INFINITY),
+        column_open: RwSignal::new(false),
     };
     provide_context(nav);
     // A strip's ☰ opens the channel detail, its exit closes it (#71).
@@ -611,17 +629,32 @@ fn PageView(page: Page, global: Vec<Control>, sub: Memo<Option<usize>>) -> impl 
     let weights: Vec<f64> = page.rows.iter().map(|r| r.weight).collect();
     let body_ref = NodeRef::<html::Div>::new();
     let column_ref = NodeRef::<html::Nav>::new();
-    // A side's width and the lines' height: measured once laid out and on
-    // every resize.
-    let room = RwSignal::new((0.0_f64, 0.0_f64));
+    let thin_ref = NodeRef::<html::Div>::new();
+    // A side's widths and the lines' height: measured once laid out and on
+    // every resize. The middle is the column, or on a phone the thin strip
+    // (#63, shown there only), the strips then counted as with the column
+    // (`--count-col`, the phone's column width in `page.css`).
+    let room = RwSignal::new((Sides::both(0.0), 0.0_f64));
     Effect::new(move |_| {
         let _ = nav.viewport.get();
         if let (Some(body), Some(column)) = (body_ref.get(), column_ref.get()) {
             let width = f64::from(body.client_width());
-            let column = f64::from(column.offset_width());
-            let side = (width - BODY_PAD - column - 2.0 * BODY_GAP) / 2.0;
+            let thin = thin_ref
+                .get()
+                .map(|thin| f64::from(thin.offset_width()))
+                .filter(|thin| *thin > 0.0);
+            let middle = thin.unwrap_or_else(|| f64::from(column.offset_width()));
+            let counted = thin
+                .and_then(|_| dom::computed(&body, "--count-col"))
+                .and_then(|text| px_value(&text))
+                .unwrap_or(middle);
+            let side = |middle: f64| ((width - BODY_PAD - middle - 2.0 * BODY_GAP) / 2.0).max(0.0);
+            let sides = Sides {
+                count: side(counted),
+                width: side(middle),
+            };
             let height = f64::from(body.client_height()) - BODY_PAD;
-            let _ = room.try_set((side.max(0.0), height.max(0.0)));
+            let _ = room.try_set((sides, height.max(0.0)));
         }
     });
     // Each line's window (a line that does not fit), from the column's
@@ -636,14 +669,14 @@ fn PageView(page: Page, global: Vec<Control>, sub: Memo<Option<usize>>) -> impl 
     let arranged = {
         let model = model.clone();
         Memo::new(move |_| {
-            let (side, height) = room.try_get()?;
+            let (sides, height) = room.try_get()?;
             let sub = sub.try_get()?;
-            if side <= 0.0 {
+            if sides.count <= 0.0 {
                 return None;
             }
             offsets.try_with(|offsets| {
                 let offset = |key: &LineKey| offsets.get(key).copied().unwrap_or(0);
-                arrange(&model, sub, side, height, offset, &METRICS)
+                arrange_in(&model, sub, sides, height, offset, &METRICS)
             })
         })
     };
@@ -717,10 +750,49 @@ fn PageView(page: Page, global: Vec<Control>, sub: Memo<Option<usize>>) -> impl 
     };
     let shift =
         move |line: usize| view! { <ShiftView arranged=arranged offsets=offsets line=line /> };
+    // The phone's column over the faders (#63): its ✕ and the shade under
+    // it close it; the faders under the shade take no touch meanwhile.
+    let close = move |ev: web_sys::PointerEvent| {
+        ev.prevent_default();
+        nav.open_column(false);
+    };
+    let close_keys: Vec<String> = Vec::new();
+    let open = move || nav.column_open.try_get().unwrap_or(false);
+    let shade = move || {
+        open().then(|| {
+            let shade_keys: Vec<String> = Vec::new();
+            view! {
+                <div
+                    class="column-shade"
+                    use:owns_touches=shade_keys
+                    data-testid="column-shade"
+                    on:pointerdown=close
+                ></div>
+            }
+        })
+    };
     view! {
-        <div class="body" data-testid="page" data-page=page.id node_ref=body_ref style=body_style>
+        <div
+            class="body"
+            data-testid="page"
+            data-page=page.id
+            data-column-open=move || open().to_string()
+            node_ref=body_ref
+            style=body_style
+        >
             <For each=move || 0..count.try_get().unwrap_or(0) key=|line| *line children=line_view />
+            <ThinStrip arranged=arranged offsets=offsets node=thin_ref />
+            {shade}
             <nav class="column" data-testid="column" node_ref=column_ref>
+                <button
+                    type="button"
+                    class="column-close"
+                    use:owns_touches=close_keys
+                    data-testid="column-close"
+                    on:pointerdown=close
+                >
+                    "✕ ZAVRIEŤ"
+                </button>
                 <ColumnHead />
                 <div class="shifts">
                     <For
@@ -906,6 +978,21 @@ fn CellView(model: Arc<PageModel>, cell: Cell) -> impl IntoView {
     }
 }
 
+/// A window moved a step (`forward` or back), kept by its line's key.
+fn step_window(
+    offsets: RwSignal<BTreeMap<LineKey, usize>>,
+    shift: Option<(LineKey, Shift)>,
+    forward: bool,
+) {
+    let Some((key, now)) = shift else {
+        return;
+    };
+    let next = now.moved(forward);
+    let _ = offsets.try_update(|all| {
+        all.insert(key, next);
+    });
+}
+
 /// A line's arrows in the column (a line that does not fit): ◀ and ▶ move
 /// its window a step, and between them where it stands.
 #[component]
@@ -916,21 +1003,11 @@ fn ShiftView(
 ) -> impl IntoView {
     let shift = Memo::new(move |_| {
         arranged
-            .try_with(|a| {
-                a.as_ref()
-                    .and_then(|a| a.lines.get(line))
-                    .and_then(|l| l.shift.map(|s| (l.key.clone(), s)))
-            })
+            .try_with(|a| a.as_ref().and_then(|a| a.shift_of(line)))
             .flatten()
     });
     let step = move |forward: bool| {
-        let Some(Some((key, now))) = shift.try_get_untracked() else {
-            return;
-        };
-        let next = now.moved(forward);
-        let _ = offsets.try_update(|all| {
-            all.insert(key, next);
-        });
+        step_window(offsets, shift.try_get_untracked().flatten(), forward);
     };
     let on_back = move |ev: web_sys::PointerEvent| {
         ev.prevent_default();
@@ -966,6 +1043,88 @@ fn ShiftView(
                 use:owns_touches=next_keys
                 class:end=at_end
                 data-testid="shift-next"
+                on:pointerdown=on_next
+            >
+                "▶"
+            </button>
+        </div>
+    }
+}
+
+/// The phone's thin strip in the column's place (#63, the approved mockup
+/// phone-burger-v1; `page.css` shows it on a phone only): the link's dot,
+/// ◀ and ▶ for the first line with a window (`arrange::thin_line`; hidden
+/// while no line has one) and ☰, which opens the column over the faders.
+#[component]
+fn ThinStrip(
+    arranged: Memo<Option<Arrangement>>,
+    offsets: RwSignal<BTreeMap<LineKey, usize>>,
+    node: NodeRef<html::Div>,
+) -> impl IntoView {
+    let nav = expect_context::<Nav>();
+    let store = nav.store;
+    let shift = Memo::new(move |_| {
+        arranged
+            .try_with(|a| {
+                let a = a.as_ref()?;
+                a.shift_of(thin_line(a)?)
+            })
+            .flatten()
+    });
+    let step = move |forward: bool| {
+        step_window(offsets, shift.try_get_untracked().flatten(), forward);
+    };
+    let on_back = move |ev: web_sys::PointerEvent| {
+        ev.prevent_default();
+        step(false);
+    };
+    let on_next = move |ev: web_sys::PointerEvent| {
+        ev.prevent_default();
+        step(true);
+    };
+    let on_burger = move |ev: web_sys::PointerEvent| {
+        ev.prevent_default();
+        nav.open_column(true);
+    };
+    let now = move || shift.try_get().flatten().map(|(_, s)| s);
+    let arrows = move || if now().is_some() { "visible" } else { "hidden" };
+    let at_start = move || now().is_none_or(|s| s.offset == 0);
+    let at_end = move || now().is_none_or(|s| s.offset >= s.last);
+    let connected = move || store.connected.try_get().unwrap_or(false).to_string();
+    // Each button owns its touches (#43 PR G); none writes a key.
+    let back_keys: Vec<String> = Vec::new();
+    let burger_keys: Vec<String> = Vec::new();
+    let next_keys: Vec<String> = Vec::new();
+    view! {
+        <div class="thin" data-testid="thin" node_ref=node>
+            <span class="thin-live" data-testid="thin-live" data-connected=connected></span>
+            <button
+                type="button"
+                class="btn thin-btn"
+                use:owns_touches=back_keys
+                class:end=at_start
+                style:visibility=arrows
+                data-testid="thin-back"
+                on:pointerdown=on_back
+            >
+                "◀"
+            </button>
+            <button
+                type="button"
+                class="btn thin-btn thin-burger"
+                use:owns_touches=burger_keys
+                data-testid="thin-burger"
+                on:pointerdown=on_burger
+            >
+                "☰"
+            </button>
+            <button
+                type="button"
+                class="btn thin-btn"
+                use:owns_touches=next_keys
+                class:end=at_end
+                style:visibility=arrows
+                data-testid="thin-next"
                 on:pointerdown=on_next
             >
                 "▶"

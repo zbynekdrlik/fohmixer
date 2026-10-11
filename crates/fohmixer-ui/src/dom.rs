@@ -111,6 +111,16 @@ pub fn remove_attr(element: &web_sys::Element, name: &str) {
     let _ = element.remove_attribute(name);
 }
 
+/// A property's value in `element`'s computed style (a custom property's
+/// text as written, `""` when it is not set); none without a window.
+pub fn computed(element: &web_sys::Element, name: &str) -> Option<String> {
+    web_sys::window()?
+        .get_computed_style(element)
+        .ok()??
+        .get_property_value(name)
+        .ok()
+}
+
 /// The viewport's size in CSS px.
 pub fn viewport() -> (f64, f64) {
     let Some(window) = web_sys::window() else {
