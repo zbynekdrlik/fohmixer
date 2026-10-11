@@ -923,7 +923,11 @@ test.describe("The Pro-Q 4 screen", () => {
     const settled = (await simEq.records()).length;
     await quickTap(area, await centre(area), 63);
     const edit = await until(() => touchesAfter(settled), (all) => all.some((r) => r.phase === "up"), "the tap after the settle");
-    expect(edit.map((r) => r.phase), JSON.stringify(edit)).toEqual(["down", "up"]);
+    // Its down and its up (a keep-alive update between when the up came
+    // more than 50 ms after the down at the hub).
+    const phases = edit.map((r) => r.phase);
+    expect([phases[0], phases[phases.length - 1]], JSON.stringify(edit)).toEqual(["down", "up"]);
+    expect(phases.slice(1, -1).every((p) => p === "update"), JSON.stringify(edit)).toBe(true);
     // A drag started right after a tap's zoom (the PR I re-review) goes once
     // the settle is over, its down where it landed.
     await screen.getByTestId("eq-whole").click();
