@@ -386,6 +386,7 @@ mod tests {
         );
         assert_eq!(NOT_ON_TOP, "the window did not come on top");
         assert_eq!(TOO_DEEP, "the devices nest too deep");
+        assert_eq!(HOLD_ON, "press-and-hold could not be turned off");
         assert_eq!(IN_USE, "in use");
     }
 

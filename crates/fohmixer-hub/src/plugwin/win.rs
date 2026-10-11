@@ -59,6 +59,7 @@
 //!   work area is the window's monitor's (`MonitorFromWindow`,
 //!   `GetMonitorInfoW` `rcWork`: the screen less the taskbar).
 
+use std::collections::HashMap;
 use std::time::Duration;
 
 use windows::Win32::Foundation::{ERROR_NOT_READY, HANDLE, HWND, LPARAM, POINT, RECT, WPARAM};
@@ -371,6 +372,9 @@ pub struct Win {
     cursor: Option<POINT>,
     last: Option<POINT>,
     needs_child: bool,
+    /// Each window's press-and-hold property before the hub set it (0:
+    /// none), put back when it is turned on again (PR O review).
+    held_props: HashMap<usize, usize>,
 }
 
 /// The `eq-probe` backend: it takes any window of the process it is given.
@@ -397,6 +401,7 @@ impl Win {
             cursor: None,
             last: None,
             needs_child: true,
+            held_props: HashMap::new(),
         }
     }
 
@@ -636,23 +641,39 @@ impl Backend for Win {
 
     fn press_and_hold(&mut self, taken: &Taken, quiet: bool) -> Result<(), String> {
         let name = w!("MicrosoftTabletPenServiceProperty");
-        for window in [taken.window, taken.picture] {
+        let mut windows = vec![taken.window];
+        if taken.picture != taken.window {
+            windows.push(taken.picture);
+        }
+        for window in windows {
             let handle = hwnd(window);
+            let key = window.0 as usize;
             if quiet {
-                let flags = HANDLE(TABLET_DISABLE_PRESSANDHOLD as *mut core::ffi::c_void);
-                // SAFETY: sets a property of a window handle (an atom and a
-                // value, no pointer is kept); a stale handle fails.
-                unsafe { SetPropW(handle, name, Some(flags)) }
+                // SAFETY: reads a property of a window handle (no message).
+                let before = unsafe { GetPropW(handle, name) }.0 as usize;
+                self.held_props.entry(key).or_insert(before);
+                let value =
+                    HANDLE((before | TABLET_DISABLE_PRESSANDHOLD) as *mut core::ffi::c_void);
+                // SAFETY: sets that property (an atom and a value, no
+                // pointer is kept); a stale handle fails.
+                unsafe { SetPropW(handle, name, Some(value)) }
                     .map_err(|e| format!("SetPropW: {e}"))?;
-                // SAFETY: reads that property back (no message is sent).
-                let read = unsafe { GetPropW(handle, name) };
-                if read != flags {
+                // SAFETY: reads it back (no message is sent).
+                if unsafe { GetPropW(handle, name) } != value {
                     return Err("the press-and-hold property did not read back".to_string());
                 }
             } else {
-                // SAFETY: removes that property; a handle without it fails,
+                // The value it had back, or none: a stale handle fails,
                 // which leaves nothing to undo.
-                let _ = unsafe { RemovePropW(handle, name) };
+                let before = self.held_props.remove(&key).unwrap_or(0);
+                if before == 0 {
+                    // SAFETY: removes that property of a window handle.
+                    let _ = unsafe { RemovePropW(handle, name) };
+                } else {
+                    let value = HANDLE(before as *mut core::ffi::c_void);
+                    // SAFETY: sets it back to the value it had.
+                    let _ = unsafe { SetPropW(handle, name, Some(value)) };
+                }
             }
         }
         Ok(())

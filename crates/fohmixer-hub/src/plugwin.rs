@@ -983,6 +983,9 @@ struct Editor {
     put: f64,
     /// The page's inputs its pictures show (PR J).
     shown: Shown,
+    /// Press-and-hold is off for it (PR O): on again before Live closes it
+    /// (the guard's tap done) or before its release.
+    quiet: bool,
     /// The part of the picture its page shows (PR L; none: the whole), the
     /// part the last frame carried (a new part of equal pixels goes), and
     /// whether a part ever went to the encoder (its guard sends the whole
@@ -1506,6 +1509,8 @@ impl Worker {
                 // where a still finger could become one.
                 if let Err(why) = self.backend.press_and_hold(&taken, true) {
                     tracing::warn!(session = finding.session, why = %why, "press-and-hold could not be turned off for a Pro-Q 4 editor: it is handed back, not opened");
+                    // A part set (the window, not its picture) put back.
+                    let _ = self.backend.press_and_hold(&taken, false);
                     self.backend.release(&taken);
                     let _ = finding.reply.send(Err(reason::HOLD_ON.to_string()));
                     return;
@@ -1528,6 +1533,7 @@ impl Worker {
                         last_shown: 0,
                         put: f64::NEG_INFINITY,
                         shown: Shown::default(),
+                        quiet: true,
                         part: None,
                         last_crop: None,
                         parted: false,
@@ -1752,6 +1758,15 @@ impl Worker {
                     "a Pro-Q 4 editor is at the size its inert spot is known at, nothing posted before it waits: the guard taps"
                 );
                 let tapped = guard_tap(self.backend.as_mut(), &taken, inert_spot(KNOWN_SIZE.0));
+                // Live closes the editor next: press-and-hold on again while
+                // its window is still there (PR O review; no contact comes
+                // after a guard).
+                if tapped.is_ok() && editor.quiet {
+                    editor.quiet = false;
+                    if let Err(why) = self.backend.press_and_hold(&taken, false) {
+                        tracing::warn!(session = guard.session, why = %why, "press-and-hold could not be turned on again for a Pro-Q 4 editor before its close");
+                    }
+                }
                 let _ = guard.reply.send(tapped);
                 return;
             }
@@ -1786,8 +1801,10 @@ impl Worker {
         };
         if !self.backend.alive(&editor.taken) {
             let gone = editor.taken.clone();
+            let mut quiet = false;
             if let Some(editor) = self.editors.remove(&session) {
                 self.last_rate(session, &editor.counts);
+                quiet = editor.quiet;
             }
             self.encoder.forget(session);
             if let Some(held) = self.contact.filter(|held| held.session == session) {
@@ -1796,6 +1813,13 @@ impl Worker {
                 // backend's contact (the Windows one puts the cursor back).
                 let _ = self.backend.touch(&gone, Phase::Cancel, held.at);
             }
+            // A window hidden, not gone, stays Live's (PR O review):
+            // press-and-hold on again and its z-order as it was; on a dead
+            // handle both do nothing.
+            if quiet && let Err(why) = self.backend.press_and_hold(&gone, false) {
+                tracing::debug!(session, why = %why, "press-and-hold not turned on again for a lost Pro-Q 4 window");
+            }
+            self.backend.release(&gone);
             (self.events)(PlugwinEvent::Lost { session });
             return;
         }
@@ -2081,8 +2105,11 @@ impl Worker {
                 ),
                 Repost::Nothing => {}
             }
-            // Press-and-hold as Live had it, then the window (PR O).
-            if let Err(why) = self.backend.press_and_hold(&editor.taken, false) {
+            // Press-and-hold as Live had it (unless the guard put it back
+            // before Live's close), then the window (PR O).
+            if editor.quiet
+                && let Err(why) = self.backend.press_and_hold(&editor.taken, false)
+            {
                 tracing::warn!(session, why = %why, "press-and-hold could not be turned on again for a Pro-Q 4 editor at its release");
             }
             self.backend.release(&editor.taken);

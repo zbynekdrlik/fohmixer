@@ -342,6 +342,7 @@ async function closedWithGuard(before: number): Promise<number> {
   const all = await until(simEq.records, (r) => r.some((x, i) => i >= before && x.op === "release"), "the editor's release");
   const close = all.slice(before);
   expect(steps(close), "the guard's tap, then the release").toEqual(GUARD_AND_RELEASE);
+  expect(close[close.length - 2].quiet, "press-and-hold on again").toBe(false);
   expect(close.every((r) => r.window === close[0].window), "one window").toBe(true);
   return all.length;
 }

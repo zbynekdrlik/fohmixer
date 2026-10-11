@@ -557,11 +557,13 @@ fn an_editor_whose_press_and_hold_stays_on_is_handed_back_not_opened() {
     assert_eq!(answer.try_recv().unwrap(), Err(reason::HOLD_ON.to_string()));
     assert!(worker.editors.is_empty());
     let window = handle.windows()[0];
+    // A part set put back (the window, not its picture), then the window.
     assert_eq!(
         handle.records(),
         vec![
             json!({"op": "take", "window": window.0}),
             json!({"op": "press_and_hold", "window": window.0, "quiet": true}),
+            json!({"op": "press_and_hold", "window": window.0, "quiet": false}),
             json!({"op": "release", "window": window.0}),
         ]
     );
@@ -1375,6 +1377,16 @@ fn a_captured_editor_sends_its_pictures_skipping_a_same_one() {
     };
     assert_eq!(rate.grabs, 1);
     assert!(worker.editors.is_empty());
+    // PR O review: a window hidden, not gone, stays Live's: press-and-hold
+    // on again and its z-order as it was (nothing on a dead handle).
+    let records = handle.records();
+    assert_eq!(
+        records[records.len() - 2..],
+        [
+            json!({"op": "press_and_hold", "window": window.0, "quiet": false}),
+            json!({"op": "release", "window": window.0}),
+        ]
+    );
 }
 
 #[test]
@@ -2809,12 +2821,26 @@ fn the_guard_puts_the_editors_own_size_back_before_its_tap() {
         .iter()
         .map(|r| r["op"].as_str().unwrap().to_string())
         .collect();
+    // Press-and-hold off once taken, on again after the guard's tap (PR O:
+    // Live closes the editor next, its window still there).
     assert_eq!(
         ops,
         [
-            "take", "resize", "touch", "touch", "resize", "resize", "touch", "touch"
+            "take",
+            "press_and_hold",
+            "resize",
+            "touch",
+            "touch",
+            "resize",
+            "resize",
+            "touch",
+            "touch",
+            "press_and_hold"
         ]
     );
+    assert_eq!(records[1]["quiet"], json!(true));
+    assert_eq!(records[9]["quiet"], json!(false));
+    assert!(!worker.editors[&1].quiet);
     assert_eq!(
         touches(&handle)[2..],
         [t("down", 546, 15), t("up", 546, 15)]
@@ -3317,10 +3343,12 @@ fn the_stop_posts_a_changed_editors_own_size_before_handing_it_back() {
     let _waiting = guard_at(&mut worker, 2, 10.0);
     worker.shutdown();
     assert!(worker.guarding.is_empty());
+    // Past both takes and their press-and-hold (PR O): each editor's
+    // press-and-hold on again just before its window goes back.
     let ops: Vec<(String, i64)> = handle
         .records()
         .iter()
-        .skip(2)
+        .skip(4)
         .map(|r| {
             (
                 r["op"].as_str().unwrap().to_string(),
@@ -3333,8 +3361,10 @@ fn the_stop_posts_a_changed_editors_own_size_before_handing_it_back() {
         [
             ("resize".to_string(), 667),
             ("resize".to_string(), 1349),
+            ("press_and_hold".to_string(), 0),
             ("release".to_string(), 0),
             ("resize".to_string(), 1349),
+            ("press_and_hold".to_string(), 0),
             ("release".to_string(), 0),
         ]
     );
