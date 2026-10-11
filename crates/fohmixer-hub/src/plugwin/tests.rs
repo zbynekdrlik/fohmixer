@@ -169,6 +169,30 @@ fn an_editor_is_quiet_again_100_ms_after_its_last_contact_ended() {
 }
 
 #[test]
+fn a_release_posts_the_takes_rectangle_only_when_changed_open_and_quiet() {
+    assert_eq!(repost(true, false, QUIET_MS), Repost::Take);
+    assert_eq!(
+        repost(true, false, f64::INFINITY),
+        Repost::Take,
+        "no contact ended since the take"
+    );
+    assert_eq!(repost(true, false, QUIET_MS.next_down()), Repost::NotQuiet);
+    assert_eq!(repost(true, false, 0.0), Repost::NotQuiet, "its own up");
+    assert_eq!(
+        repost(false, false, QUIET_MS),
+        Repost::Nothing,
+        "never changed"
+    );
+    assert_eq!(repost(false, false, 0.0), Repost::Nothing);
+    assert_eq!(
+        repost(true, true, QUIET_MS),
+        Repost::Nothing,
+        "Live closed it"
+    );
+    assert_eq!(repost(true, true, 0.0), Repost::Nothing);
+}
+
+#[test]
 fn the_inert_spot_sits_in_the_top_bars_empty_middle() {
     assert_eq!(inert_spot(1349), (546, 15));
     assert_eq!(inert_spot(1000), (405, 15));
