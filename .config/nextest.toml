@@ -50,6 +50,18 @@ slow-timeout = { period = "5s", terminate-after = 2, grace-period = "2s" }
 filter = 'test(=serve_until_answers_then_stops_within_six_seconds)'
 priority = 100
 
+# #71 PR N: the probe's --hold tests sleep through their real holds and
+# Windows' double-click gaps on the sim (about 25 s and 13 s; a mutant that
+# hides every menu runs the second through all its moves, about 30 s): 50 s,
+# so such a mutant fails an assertion instead of a timeout (a timeout's
+# recheck ran a shard past its 20 minutes, PR #83), under the recheck
+# profile's 60 s and cargo-mutants' timeout. Before the package's override
+# below, which would win otherwise (the first override that sets a value
+# wins).
+[[profile.mutants.overrides]]
+filter = 'test(~plugwin::probe::tests::a_hold_probe_)'
+slow-timeout = { period = "25s", terminate-after = 2, grace-period = "2s" }
+
 # fohmixer-hub: its graceful-stop tests start the real binary and one holds
 # the 5 s stop drain on purpose, so a single test needs more than 10 s of
 # headroom on a loaded mutation shard. 30 s stays well inside cargo-mutants'

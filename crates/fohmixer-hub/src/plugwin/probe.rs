@@ -24,8 +24,31 @@
 //! 5. a double tap at `--band` (on a fresh Pro-Q's curve: a new band);
 //! 6. a drag from `--band` to `--to` (updates every 16 ms, a rest with the
 //!    resends, the up at the last point);
-//! 7. with `--paint <n>` (#71 PR M): how long Pro-Q takes to paint an
-//!    input. A contact down on the band at `--to`, then `n` trials. Each
+//! 7. with `--hold` (#71 PR N): what Windows makes of a contact on the
+//!    band at `--to` (the first PR M run found a still contact's up made a
+//!    right click: Pro-Q's context menu). A still contact held each of
+//!    [`HOLDS`] in turn, lifted, then a look for a new window of the
+//!    editor's process within [`HOLD_SHOW`] (the menu): `hold=` each hold
+//!    and `no` or `menu`, up to the first `menu`, which the inert spot's tap
+//!    closes (`menu_closed=ok`; the picture at its known size only); the
+//!    drag threshold, a down, one update [`DRAG_PXS`] px up, a rest, the up,
+//!    and whether the picture changed (`drag_px=`, the band then dragged
+//!    back); a contact that dragged 32 px then held still [`HOLD_LONG`]
+//!    (`hold_after_drag=`); and a still contact held [`HOLD_LONG`] with
+//!    press-and-hold off for the window (`hold_quiet=`,
+//!    [`Backend::press_and_hold`], on again after). Every two contacts are
+//!    [`TAP_APART`] apart (never a double click). The picture after each
+//!    hold is saved (`hold-<ms>.jpg`, `hold-dragged.jpg`,
+//!    `hold-quiet.jpg`: a menu over it shows); `hold_windows=` the count
+//!    the menu is looked for beyond, `band_back=same|moved` the picture
+//!    after the band's way back against the one before the threshold's
+//!    moves, `drag_px=menu` when a threshold move's rest opened a menu,
+//!    `hold_quiet=refused:<why>` when Windows refused the property. Only at
+//!    the editor's known size (no `--size`);
+//! 8. with `--paint <n>` (#71 PR M): how long Pro-Q takes to paint an
+//!    input. A contact down on the band at `--to`, dragged past the drag
+//!    threshold and back ([`PAINT_ENTER`]: a contact that never left it is
+//!    no drag, PR N), then `n` trials. Each
 //!    trial rests [`PAINT_REST`], then waits for a still picture (two
 //!    grabs [`PAINT_GAP`] apart equal; none within [`PAINT_WAIT`]: the
 //!    trial is `unsettled`), injects one update ([`paint_point`]: 8 px up
@@ -40,20 +63,20 @@
 //!    `--to` and its up. Its figure sets `fohmixer_proto::eq::PAINT_MS`;
 //!    Carla's bridge runs on the dummy engine, so no analyzer moves the
 //!    picture meanwhile;
-//! 8. a double tap at `--to` (on the band: its frequency text field opens,
+//! 9. a double tap at `--to` (on the band: its frequency text field opens,
 //!    Pro-Q 4.02's close-crash state);
-//! 9. the close guard, as the hub's (#74 review, round 2): the picture put
-//!    at [`super::KNOWN_SIZE`] (the size the inert spot was verified at),
-//!    whatever size it has, in two placements each seen to land (the
-//!    window's rectangle for it at the take's place, moved into the work
-//!    area when it does not fit there, a pixel aside first, read back until
-//!    the window is there; then that rectangle, read back until the window
-//!    is there with its picture at exactly that size: `restore=ok client=
-//!    ms=`; a placement not seen in time: the probe fails and taps
-//!    nothing), then a tap on the inert spot (`--inert`, else the hub's
-//!    own, [`super::inert_spot`] of the known width), then the guard's
-//!    wait;
-//! 10. the release (the take's rectangle back when it was changed, the
+//! 10. the close guard, as the hub's (#74 review, round 2): the picture put
+//!     at [`super::KNOWN_SIZE`] (the size the inert spot was verified at),
+//!     whatever size it has, in two placements each seen to land (the
+//!     window's rectangle for it at the take's place, moved into the work
+//!     area when it does not fit there, a pixel aside first, read back until
+//!     the window is there; then that rectangle, read back until the window
+//!     is there with its picture at exactly that size: `restore=ok client=
+//!     ms=`; a placement not seen in time: the probe fails and taps
+//!     nothing), then a tap on the inert spot (`--inert`, else the hub's
+//!     own, [`super::inert_spot`] of the known width), then the guard's
+//!     wait;
+//! 11. the release (the take's rectangle back when it was changed, the
 //!     z-order as it was) and, with `--close`, a close request to the window
 //!     (Carla's bridge ends with `0xC0000005` on it whatever the plug-in's
 //!     state).
@@ -65,7 +88,8 @@
 //! With `--out` every picture is saved there as a JPEG (`frame-NN.jpg`,
 //! then `after-band.jpg`, `after-drag.jpg`, `field-open.jpg`,
 //! `after-guard.jpg`; with `--size` first `after-resize.jpg`, with
-//! `--paint` `after-paint.jpg` after `after-drag.jpg`): the field
+//! `--hold` the holds' and `after-hold.jpg` after `after-drag.jpg`, with
+//! `--paint` `after-paint.jpg` after those): the field
 //! must be open in `field-open` and closed in `after-guard`. `--sim` runs
 //! it on the simulated backend (the CLI's tests). Exit 0, 1 when a step
 //! failed (its line says which), 2 for bad arguments.
@@ -84,7 +108,7 @@ use super::{
 };
 
 /// The CLI's usage line.
-pub const USAGE: &str = "usage: fohmixer-hub eq-probe --pid <pid> [--frames <n>] [--size <w>x<h>] [--min-probe] [--paint <n>] [--band <x,y>] [--to <x,y>] [--inert <x,y>] [--out <folder>] [--close] [--sim]";
+pub const USAGE: &str = "usage: fohmixer-hub eq-probe --pid <pid> [--frames <n>] [--size <w>x<h>] [--min-probe] [--hold] [--paint <n>] [--band <x,y>] [--to <x,y>] [--inert <x,y>] [--out <folder>] [--close] [--sim]";
 /// The picture `--min-probe` asks for (px): far below any Pro-Q size, so
 /// the editor takes its own minimum.
 pub const MIN_PROBE: (u32, u32) = (160, 120);
@@ -130,6 +154,30 @@ pub const PAINT_REST: Duration = Duration::from_millis(150);
 /// Two grabs this far apart that are equal: the picture before a trial
 /// is still (no animation or late paint left, the PR M review).
 pub const PAINT_GAP: Duration = Duration::from_millis(20);
+/// How far the paint contact goes up and back before its trials (px, PR
+/// N): past the touch drag threshold (as `--hold`'s `drag_px=` measures
+/// it; a threshold beyond this loses every trial), so Windows makes it a
+/// drag, in
+/// [`PAINT_ENTER_STEPS`] updates each way, [`DRAG_STEP`] apart (never
+/// through a trial's point).
+pub const PAINT_ENTER: i32 = 24;
+pub const PAINT_ENTER_STEPS: i32 = 4;
+/// `--hold` (#71 PR N): the still holds tried in turn (ms), up to the
+/// first that opens a menu.
+pub const HOLDS: [u64; 5] = [400, 800, 1200, 1600, 2400];
+/// The hold after a drag, and with press-and-hold off (ms).
+pub const HOLD_LONG: u64 = 2400;
+/// How far the contact that drags first goes (px).
+pub const HOLD_DRAG: i32 = 32;
+/// How long after a contact's up a menu may take to show.
+pub const HOLD_SHOW: Duration = Duration::from_millis(500);
+/// Between two contacts: longer than Windows' double-click time (500 ms
+/// by default), so two never make a double click (a band's text field).
+pub const TAP_APART: Duration = Duration::from_millis(700);
+/// The single moves tried for the drag threshold (px up), and the rest
+/// after each before its up.
+pub const DRAG_PXS: [i32; 8] = [2, 4, 6, 8, 12, 16, 24, 32];
+pub const DRAG_REST: Duration = Duration::from_millis(300);
 
 /// The probe's arguments.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -148,6 +196,8 @@ pub struct Args {
     pub min_probe: bool,
     /// The paint trials (#71 PR M; 0: none).
     pub paint: u32,
+    /// Whether to see what Windows makes of a held contact (#71 PR N).
+    pub hold: bool,
 }
 
 /// `x,y` as a point.
@@ -186,6 +236,7 @@ pub fn parse(args: &[&str]) -> Result<Args, String> {
         size: None,
         min_probe: false,
         paint: 0,
+        hold: false,
     };
     let mut pid = None;
     let mut rest = args.iter();
@@ -198,6 +249,7 @@ pub fn parse(args: &[&str]) -> Result<Args, String> {
             "--close" => parsed.close = true,
             "--sim" => parsed.sim = true,
             "--min-probe" => parsed.min_probe = true,
+            "--hold" => parsed.hold = true,
             "--pid" | "--frames" | "--band" | "--to" | "--inert" | "--out" | "--size"
             | "--paint" => {
                 let value = rest.next().ok_or(format!("{flag} needs a value"))?;
@@ -272,6 +324,33 @@ pub fn paint_point(at: (i32, i32), n: u32) -> (i32, i32) {
     } else {
         at
     }
+}
+
+/// The points of the paint contact's way past the drag threshold and back
+/// (PR N): [`PAINT_ENTER`] px up from `at` in [`PAINT_ENTER_STEPS`]
+/// updates, then back to `at`.
+pub fn enter_points(at: (i32, i32)) -> Vec<(i32, i32)> {
+    let step = PAINT_ENTER / PAINT_ENTER_STEPS;
+    let up = (1..=PAINT_ENTER_STEPS).map(|i| (at.0, at.1 - step * i));
+    let back = (0..PAINT_ENTER_STEPS)
+        .rev()
+        .map(|i| (at.0, at.1 - step * i));
+    up.chain(back).collect()
+}
+
+/// `--hold`'s line of holds tried: `<ms>:no` or `<ms>:menu` each.
+pub fn hold_text(holds: &[(u64, bool)]) -> String {
+    holds
+        .iter()
+        .map(|(ms, menu)| format!("{ms}:{}", if *menu { "menu" } else { "no" }))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// Whether a wait `since_ms` along has lasted `long` (PR N: every wait of
+/// `--hold`).
+pub fn over(since_ms: f64, long: Duration) -> bool {
+    since_ms >= millis(long)
 }
 
 /// Whether a paint trial `since_ms` after its update is over
@@ -716,6 +795,11 @@ fn paint(
     report: &mut Report<'_>,
 ) -> Result<(), String> {
     held.touch(Phase::Down, at, "paint")?;
+    // Past the drag threshold and back: only a drag moves the band (PR N).
+    for point in enter_points(at) {
+        std::thread::sleep(DRAG_STEP);
+        held.touch(Phase::Update, point, "paint")?;
+    }
     let mut sent = Instant::now();
     let (mut samples, mut grabs) = (Vec::new(), Vec::new());
     let (mut lost, mut unsettled) = (0_u32, 0_u32);
@@ -751,6 +835,225 @@ fn paint(
         ms_text(percentile(&samples, 1.0)),
         ms_text(grab_mean),
     ))
+}
+
+/// The editor's process's visible top-level windows now (a menu of its is
+/// one more).
+fn windows_now(held: &mut Held<'_>) -> Result<usize, String> {
+    let pid = held.taken.pid;
+    Ok(held.backend.windows_of(pid)?.len())
+}
+
+/// A contact at `at` held `hold_ms`: still, or first dragged [`HOLD_DRAG`]
+/// px up and back (`drag`), kept alive throughout, then lifted. Whether a
+/// window of the editor's process came beyond `base` within [`HOLD_SHOW`]
+/// of the up (Windows made it a right click: a menu); the picture then is
+/// saved as `name` (a menu over the picture shows in it).
+fn held_contact(
+    held: &mut Held<'_>,
+    at: (i32, i32),
+    hold_ms: u64,
+    drag: bool,
+    base: usize,
+    name: &str,
+    report: &mut Report<'_>,
+) -> Result<bool, String> {
+    held.touch(Phase::Down, at, "hold")?;
+    let mut sent = Instant::now();
+    let top = (at.0, at.1 - HOLD_DRAG);
+    if drag {
+        for point in drag_points(at, top, DRAG_STEPS / 4) {
+            std::thread::sleep(DRAG_STEP);
+            held.touch(Phase::Update, point, "hold")?;
+            sent = Instant::now();
+        }
+    }
+    let rest = if drag { top } else { at };
+    let started = Instant::now();
+    while !over(millis(started.elapsed()), Duration::from_millis(hold_ms)) {
+        sleep_kept(held, rest, PAINT_POLL, &mut sent)?;
+    }
+    if drag {
+        for point in drag_points(top, at, DRAG_STEPS / 4) {
+            std::thread::sleep(DRAG_STEP);
+            held.touch(Phase::Update, point, "hold")?;
+        }
+    }
+    held.touch(Phase::Up, at, "hold")?;
+    let lifted = Instant::now();
+    let mut menu = false;
+    while !over(millis(lifted.elapsed()), HOLD_SHOW) {
+        if windows_now(held)? > base {
+            menu = true;
+            break;
+        }
+        std::thread::sleep(PAINT_POLL);
+    }
+    let pixels = held.grab().map_err(|why| format!("hold: {why}"))?;
+    report.save(name, &pixels)?;
+    Ok(menu)
+}
+
+/// A menu opened by a hold closed: a tap on the inert spot `spot` (the
+/// picture at the size it is known at; a menu takes that tap and closes),
+/// then the editor's process back to `base` windows.
+fn close_menu(held: &mut Held<'_>, base: usize, spot: (i32, i32)) -> Result<(), String> {
+    std::thread::sleep(TAP_APART);
+    held.guard_tap(spot)
+        .map_err(|why| format!("hold: closing the menu: {why}"))?;
+    let tapped = Instant::now();
+    while !over(millis(tapped.elapsed()), HOLD_SHOW) {
+        if windows_now(held)? <= base {
+            return Ok(());
+        }
+        std::thread::sleep(PAINT_POLL);
+    }
+    Err("hold: the menu stayed open".to_string())
+}
+
+/// What the drag threshold's moves found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Threshold {
+    /// The first move that moved the band, and where the band is then.
+    Moved(i32, (i32, i32)),
+    /// None of [`DRAG_PXS`] moved it.
+    Still,
+    /// A move's contact opened a menu (its rest was a hold; the review of
+    /// PR N): closed, and nothing is measured.
+    Menu,
+}
+
+/// The drag threshold: for each of [`DRAG_PXS`] a down at `at`, one update
+/// that far up, [`DRAG_REST`], the up, and the picture after it against
+/// the one before (the system cursor is back where it was both times).
+fn drag_threshold(
+    held: &mut Held<'_>,
+    at: (i32, i32),
+    base: usize,
+    spot: (i32, i32),
+) -> Result<Threshold, String> {
+    for px in DRAG_PXS {
+        std::thread::sleep(TAP_APART);
+        let before = held.grab().map_err(|why| format!("hold: {why}"))?;
+        let to = (at.0, at.1 - px);
+        held.touch(Phase::Down, at, "drag threshold")?;
+        let mut sent = Instant::now();
+        held.touch(Phase::Update, to, "drag threshold")?;
+        let started = Instant::now();
+        while !over(millis(started.elapsed()), DRAG_REST) {
+            sleep_kept(held, to, PAINT_POLL, &mut sent)?;
+        }
+        held.touch(Phase::Up, to, "drag threshold")?;
+        std::thread::sleep(SETTLE);
+        if windows_now(held)? > base {
+            close_menu(held, base, spot)?;
+            return Ok(Threshold::Menu);
+        }
+        let after = held.grab().map_err(|why| format!("hold: {why}"))?;
+        if after != before {
+            return Ok(Threshold::Moved(px, to));
+        }
+    }
+    Ok(Threshold::Still)
+}
+
+/// The threshold's line: `drag_px=<px>`, `-` (none moved) or `menu`.
+fn threshold_text(threshold: Threshold) -> String {
+    match threshold {
+        Threshold::Moved(px, _) => format!("drag_px={px}"),
+        Threshold::Still => "drag_px=-".to_string(),
+        Threshold::Menu => "drag_px=menu".to_string(),
+    }
+}
+
+/// The band dragged from `from` back to `at`.
+fn drag_back(held: &mut Held<'_>, from: (i32, i32), at: (i32, i32)) -> Result<(), String> {
+    if from == at {
+        return Ok(());
+    }
+    std::thread::sleep(TAP_APART);
+    held.touch(Phase::Down, from, "hold")?;
+    for point in drag_points(from, at, DRAG_STEPS / 4) {
+        std::thread::sleep(DRAG_STEP);
+        held.touch(Phase::Update, point, "hold")?;
+    }
+    held.touch(Phase::Up, at, "hold")
+}
+
+/// `--hold` (#71 PR N) on the band at `at`, the inert spot `spot` closing
+/// a menu, its figures to `report`. A step that fails (a touch refused)
+/// ends the probe there: the window and any contact are handed back, but
+/// a menu that step opened stays open (the probe's line says which step).
+fn hold(
+    held: &mut Held<'_>,
+    at: (i32, i32),
+    spot: (i32, i32),
+    report: &mut Report<'_>,
+) -> Result<(), String> {
+    let base = windows_now(held)?;
+    report.line(&format!("hold_windows={base}"))?;
+    let mut tried = Vec::new();
+    for ms in HOLDS {
+        std::thread::sleep(TAP_APART);
+        let menu = held_contact(held, at, ms, false, base, &format!("hold-{ms}.jpg"), report)?;
+        tried.push((ms, menu));
+        if menu {
+            break;
+        }
+    }
+    report.line(&format!("hold={}", hold_text(&tried)))?;
+    if tried.iter().any(|(_, menu)| *menu) {
+        close_menu(held, base, spot)?;
+        report.line("menu_closed=ok")?;
+    }
+    // The band where it was is the picture before the threshold's moves.
+    std::thread::sleep(SETTLE);
+    let start = held.grab().map_err(|why| format!("hold: {why}"))?;
+    let threshold = drag_threshold(held, at, base, spot)?;
+    report.line(&threshold_text(threshold))?;
+    if let Threshold::Moved(_, band) = threshold {
+        drag_back(held, band, at)?;
+    }
+    std::thread::sleep(SETTLE);
+    let back = held.grab().map_err(|why| format!("hold: {why}"))?;
+    report.line(if back == start {
+        "band_back=same"
+    } else {
+        "band_back=moved"
+    })?;
+    std::thread::sleep(TAP_APART);
+    let dragged = held_contact(held, at, HOLD_LONG, true, base, "hold-dragged.jpg", report)?;
+    report.line(&format!(
+        "hold_after_drag={}",
+        hold_text(&[(HOLD_LONG, dragged)])
+    ))?;
+    if dragged {
+        close_menu(held, base, spot)?;
+    }
+    // Press-and-hold off (a property Windows may refuse to set on another
+    // process's window): the same still hold, then on again.
+    if let Err(why) = held.backend.press_and_hold(&held.taken, true) {
+        let _ = held.backend.press_and_hold(&held.taken, false);
+        report.line(&format!("hold_quiet=refused:{why}"))?;
+    } else {
+        std::thread::sleep(TAP_APART);
+        let quiet = held_contact(held, at, HOLD_LONG, false, base, "hold-quiet.jpg", report);
+        let on = held.backend.press_and_hold(&held.taken, false);
+        let quiet = match (quiet, on) {
+            (Ok(quiet), Ok(())) => quiet,
+            (Err(why), Ok(())) => return Err(why),
+            (Ok(_), Err(on)) => return Err(format!("hold: press-and-hold back on: {on}")),
+            (Err(why), Err(on)) => {
+                return Err(format!("{why}; hold: press-and-hold back on: {on}"));
+            }
+        };
+        report.line(&format!("hold_quiet={}", hold_text(&[(HOLD_LONG, quiet)])))?;
+        if quiet {
+            close_menu(held, base, spot)?;
+        }
+    }
+    std::thread::sleep(TAP_APART);
+    Ok(())
 }
 
 /// After a gesture: the editor's wait to draw it, then its picture saved.
@@ -819,6 +1122,14 @@ pub fn run(backend: &mut dyn Backend, args: &Args, out: &mut dyn Write) -> Resul
         now = landed.client;
         settle(&mut held, "after-resize.jpg", &mut report)?;
     }
+    // `--hold` closes a menu with the inert spot's tap, known at one size:
+    // refused before any gesture.
+    if args.hold && now != KNOWN_SIZE {
+        return Err(format!(
+            "hold: at the editor's known size only ({}x{}, no --size)",
+            KNOWN_SIZE.0, KNOWN_SIZE.1
+        ));
+    }
     let (band, to) = (
         scaled(args.band, original, now),
         scaled(args.to, original, now),
@@ -830,6 +1141,11 @@ pub fn run(backend: &mut dyn Backend, args: &Args, out: &mut dyn Write) -> Resul
     let steps = drag(&mut held, band, to)?;
     report.line(&format!("drag=ok steps={steps} to={},{}", to.0, to.1))?;
     settle(&mut held, "after-drag.jpg", &mut report)?;
+    if args.hold {
+        let spot = args.inert.unwrap_or_else(|| inert_spot(KNOWN_SIZE.0));
+        hold(&mut held, to, spot, &mut report)?;
+        settle(&mut held, "after-hold.jpg", &mut report)?;
+    }
     if args.paint > 0 {
         paint(&mut held, to, args.paint, &mut report)?;
         settle(&mut held, "after-paint.jpg", &mut report)?;

@@ -59,6 +59,8 @@ pub const STEP_MS: f64 = 250.0;
 pub const RECORD_FILE: &str = "eq-sim.jsonl";
 /// Why the sim refuses a point.
 pub const REFUSED: &str = "the point is another window's";
+/// Why the sim refuses to turn press-and-hold off (#71 PR N).
+pub const REFUSED_QUIET: &str = "the property is refused";
 /// What a simulated window has beyond its picture (px): Live's editor
 /// window, 1365 × 848 around Pro-Q's 1349 × 809.
 pub const SIM_FRAME: (i32, i32) = (16, 39);
@@ -150,6 +152,28 @@ pub fn picture_of(rect: Rect) -> (u32, u32) {
     )
 }
 
+/// How far a contact goes from where it went down before Windows makes it a
+/// drag in the sim (px, #71 PR N): a contact that never went that far is a
+/// tap, or held still a right click (press-and-hold).
+pub const SIM_DRAG_PX: i32 = 10;
+
+/// Whether a contact down at `start` is at `at` beyond [`SIM_DRAG_PX`]
+/// (on either axis).
+pub fn drags(start: (i32, i32), at: (i32, i32)) -> bool {
+    (at.0 - start.0).abs().max((at.1 - start.1).abs()) > SIM_DRAG_PX
+}
+
+/// A contact as Windows' gestures see it (#71 PR N): where and when (sim
+/// ms) it went down, whether it became a drag, and whether it closed a
+/// menu (a tap while a menu is open goes to the menu).
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct SimContact {
+    start: (i32, i32),
+    down: f64,
+    dragged: bool,
+    to_menu: bool,
+}
+
 /// The picture a simulated editor takes for `asked`: never below
 /// [`SIM_MIN`].
 pub fn takes(asked: (u32, u32)) -> (u32, u32) {
@@ -167,13 +191,27 @@ struct State {
     /// The picture never changes (its counter stays 0), unless it paints
     /// the editor's points (`paint_after`).
     still: bool,
-    /// A still picture changes once per down, and per update that moves,
-    /// this long after it (#71 PR M: Pro-Q painting an input; a contact
-    /// resent where it is changes nothing), the injections' times (sim ms)
-    /// and the last point injected.
+    /// A still picture changes once per update of a drag that moves, this
+    /// long after it (#71 PR M: Pro-Q painting an input; PR N: only once
+    /// Windows made the contact a drag, and a contact resent where it is
+    /// changes nothing), the injections' times (sim ms) and the last point
+    /// injected.
     paint_after: Option<f64>,
     injected: Vec<f64>,
     last_point: Option<(i32, i32)>,
+    /// The contact down (#71 PR N).
+    contact: Option<SimContact>,
+    /// A contact that never became a drag, lifted this long (sim ms) or
+    /// more after its down, is a right click (Windows' press-and-hold):
+    /// Pro-Q's context menu opens, a window of the editor's process, which
+    /// the next down closes. None: never.
+    hold_menu: Option<f64>,
+    /// Press-and-hold is off for the editor's window (its property, PR N),
+    /// and whether turning it off is refused (Windows refusing the property
+    /// on another process's window).
+    quiet: bool,
+    quiet_refused: bool,
+    menu: Option<WindowId>,
     /// The picture changes at every grab (an animation that never stops:
     /// the probe's paint trial never finds it still), and the grabs so far.
     restless: bool,
@@ -260,6 +298,11 @@ impl Sim {
             paint_after: None,
             injected: Vec::new(),
             last_point: None,
+            contact: None,
+            hold_menu: None,
+            quiet: false,
+            quiet_refused: false,
+            menu: None,
             restless: false,
             grabs: 0,
             grab_delay: Duration::ZERO,
@@ -317,10 +360,22 @@ impl SimHandle {
         self.lock().still = on;
     }
 
-    /// Whether, and how long after, a still picture shows each down and
-    /// each update that moves (#71 PR M: the probe's paint measure).
+    /// Whether, and how long after, a still picture shows each update of a
+    /// drag that moves (#71 PR M: the probe's paint measure; PR N: a down,
+    /// an up, a cancel or a move inside the drag threshold paints nothing).
     pub fn paint_after(&self, delay: Option<Duration>) {
         self.lock().paint_after = delay.map(|d| d.as_secs_f64() * 1000.0);
+    }
+
+    /// Whether, and after how long a still contact's hold, its up is a
+    /// right click that opens a menu (#71 PR N: Windows' press-and-hold).
+    pub fn hold_menu(&self, after: Option<Duration>) {
+        self.lock().hold_menu = after.map(|d| d.as_secs_f64() * 1000.0);
+    }
+
+    /// Whether turning press-and-hold off is refused (#71 PR N).
+    pub fn refuse_quiet(&self, on: bool) {
+        self.lock().quiet_refused = on;
     }
 
     /// Whether the picture changes at every grab (#71 PR M).
@@ -605,9 +660,46 @@ impl Backend for Sim {
             return Err(REFUSED.to_string());
         }
         let t = state.started.elapsed().as_secs_f64() * 1000.0;
-        let moved = phase == Phase::Down || state.last_point != Some(at);
-        if phase.checked() && moved && state.paint_after.is_some() {
-            state.injected.push(t);
+        match phase {
+            Phase::Down => {
+                // A down while a menu is open goes to the menu: it closes.
+                let menu = state.menu.take();
+                if let Some(menu) = menu {
+                    state.windows.remove(&menu);
+                }
+                state.contact = Some(SimContact {
+                    start: at,
+                    down: t,
+                    dragged: false,
+                    to_menu: menu.is_some(),
+                });
+            }
+            Phase::Update => {
+                let last = state.last_point;
+                let painting = state.paint_after.is_some();
+                if let Some(contact) = state.contact.as_mut() {
+                    contact.dragged |= drags(contact.start, at);
+                    let paints = contact.dragged && !contact.to_menu && last != Some(at);
+                    if paints && painting {
+                        state.injected.push(t);
+                    }
+                }
+            }
+            Phase::Up => {
+                let contact = state.contact.take();
+                let right_click = contact.is_some_and(|c| {
+                    !c.dragged
+                        && !c.to_menu
+                        && !state.quiet
+                        && state.hold_menu.is_some_and(|after| t - c.down >= after)
+                });
+                let pid = state.windows.get(&taken.window).map(|w| w.pid);
+                if let (true, Some(pid)) = (right_click, pid) {
+                    let menu = state.add(pid);
+                    state.menu = Some(menu);
+                }
+            }
+            Phase::Cancel => state.contact = None,
         }
         if phase.checked() {
             state.last_point = Some(at);
@@ -644,6 +736,16 @@ impl Backend for Sim {
         let mut state = self.lock();
         state.windows.remove(&taken.window);
         state.record(json!({"op": "close", "window": taken.window.0}));
+    }
+
+    fn press_and_hold(&mut self, taken: &Taken, quiet: bool) -> Result<(), String> {
+        let mut state = self.lock();
+        state.record(json!({"op": "press_and_hold", "window": taken.window.0, "quiet": quiet}));
+        if quiet && state.quiet_refused {
+            return Err(REFUSED_QUIET.to_string());
+        }
+        state.quiet = quiet;
+        Ok(())
     }
 }
 
@@ -1030,7 +1132,7 @@ mod tests {
     }
 
     #[test]
-    fn a_still_sim_paints_each_down_and_update_after_its_delay() {
+    fn a_still_sim_paints_each_move_of_a_drag_after_its_delay() {
         assert_eq!(painted(&[], 30.0, 100.0), 0);
         assert_eq!(painted(&[10.0, 50.0, 80.0], 30.0, 80.0), 2);
         assert_eq!(painted(&[50.0], 30.0, 80.0_f64.next_down()), 0);
@@ -1043,23 +1145,98 @@ mod tests {
         let taken = sim.take(handle.windows()[0]).unwrap();
         let shows = |sim: &mut Sim, n: u64| sim.grab(&taken).unwrap() == picture(n, 1349, 809);
         assert!(shows(&mut sim, 0));
-        sim.touch(&taken, Phase::Down, (10, 10)).unwrap();
-        // An up or a cancel, even at another point, paints nothing.
+        // A down, and a move within the drag threshold: no drag yet.
+        sim.touch(&taken, Phase::Down, (100, 100)).unwrap();
+        sim.touch(&taken, Phase::Update, (100, 90)).unwrap();
+        std::thread::sleep(wait);
+        assert!(shows(&mut sim, 0), "within the threshold");
+        // Past it: a drag; its moves paint, a resend where it is does not.
+        sim.touch(&taken, Phase::Update, (100, 89)).unwrap();
+        std::thread::sleep(wait);
+        assert!(shows(&mut sim, 1), "the drag");
+        sim.touch(&taken, Phase::Update, (100, 95)).unwrap();
+        sim.touch(&taken, Phase::Update, (100, 95)).unwrap();
+        std::thread::sleep(wait);
+        assert!(
+            shows(&mut sim, 2),
+            "back within it: still a drag; resent: nothing"
+        );
+        // An up or a cancel, even at another point, paints nothing; nor
+        // does a new down.
         sim.touch(&taken, Phase::Up, (20, 20)).unwrap();
-        sim.touch(&taken, Phase::Cancel, (30, 30)).unwrap();
-        assert!(shows(&mut sim, 0), "not yet");
+        sim.touch(&taken, Phase::Down, (30, 30)).unwrap();
+        sim.touch(&taken, Phase::Cancel, (40, 40)).unwrap();
         std::thread::sleep(wait);
-        assert!(shows(&mut sim, 1), "the down only");
-        sim.touch(&taken, Phase::Update, (12, 10)).unwrap();
-        std::thread::sleep(wait);
-        assert!(shows(&mut sim, 2), "the update");
-        // Resent where it is, an update changes nothing; a down always does.
-        sim.touch(&taken, Phase::Update, (12, 10)).unwrap();
-        std::thread::sleep(wait);
-        assert!(shows(&mut sim, 2), "resent");
-        sim.touch(&taken, Phase::Down, (12, 10)).unwrap();
-        std::thread::sleep(wait);
-        assert!(shows(&mut sim, 3), "a down");
+        assert!(shows(&mut sim, 2), "an up, a down, a cancel");
+    }
+
+    #[test]
+    fn a_contact_drags_beyond_ten_px_on_either_axis() {
+        assert_eq!(SIM_DRAG_PX, 10);
+        assert!(!drags((100, 100), (110, 90)));
+        assert!(drags((100, 100), (111, 100)));
+        assert!(drags((100, 100), (100, 89)));
+        assert!(drags((100, 100), (89, 100)));
+        assert!(!drags((100, 100), (100, 100)));
+    }
+
+    #[test]
+    fn a_still_contact_held_long_enough_opens_a_menu_unless_press_and_hold_is_off() {
+        let (mut sim, handle) = Sim::new(None);
+        handle.hold_menu(Some(Duration::from_millis(300)));
+        sim.live_opened();
+        let editor = handle.windows()[0];
+        let taken = sim.take(editor).unwrap();
+        let held = |sim: &mut Sim, at: (i32, i32), ms: u64, moves: &[(i32, i32)]| {
+            sim.touch(&taken, Phase::Down, at).unwrap();
+            for to in moves {
+                sim.touch(&taken, Phase::Update, *to).unwrap();
+            }
+            std::thread::sleep(Duration::from_millis(ms));
+            sim.touch(&taken, Phase::Up, at).unwrap();
+        };
+        // Shorter than the hold: a tap.
+        held(&mut sim, (100, 100), 20, &[]);
+        assert_eq!(handle.windows(), [editor]);
+        // A drag held long: no menu.
+        held(&mut sim, (100, 100), 400, &[(100, 70), (100, 100)]);
+        assert_eq!(handle.windows(), [editor]);
+        // Still a drag after a move past the threshold resent there (never
+        // a toggle).
+        held(
+            &mut sim,
+            (100, 100),
+            400,
+            &[(100, 70), (100, 70), (100, 100)],
+        );
+        assert_eq!(handle.windows(), [editor]);
+        // Held still long enough (resends where it is too): a menu, a window
+        // of the editor's process.
+        held(&mut sim, (100, 100), 400, &[(100, 100), (103, 100)]);
+        let windows = handle.windows();
+        assert_eq!(windows.len(), 2);
+        assert_eq!(
+            sim.windows_of(0).unwrap().len(),
+            2,
+            "of the editor's process"
+        );
+        // The next down closes it, and its own hold opens none.
+        held(&mut sim, (500, 15), 400, &[]);
+        assert_eq!(handle.windows(), [editor]);
+        // Press-and-hold off: none.
+        sim.press_and_hold(&taken, true).unwrap();
+        held(&mut sim, (100, 100), 400, &[]);
+        assert_eq!(handle.windows(), [editor]);
+        sim.press_and_hold(&taken, false).unwrap();
+        held(&mut sim, (100, 100), 400, &[]);
+        assert_eq!(handle.windows().len(), 2, "on again");
+        let quiet: Vec<Value> = handle
+            .records()
+            .into_iter()
+            .filter(|r| r["op"] == "press_and_hold")
+            .map(|r| r["quiet"].clone())
+            .collect();
+        assert_eq!(quiet, [json!(true), json!(false)]);
     }
 
     #[test]
