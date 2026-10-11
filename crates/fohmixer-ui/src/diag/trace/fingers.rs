@@ -61,6 +61,15 @@ struct Run {
 }
 
 impl Run {
+    /// A run of one move at `t` to `at`.
+    fn start(t: f64, at: (f64, f64)) -> Self {
+        Self {
+            n: 1,
+            first: (t, at),
+            last: (t, at),
+        }
+    }
+
     /// The `eq_mv` summary of `pointer`'s run: at its first move's time,
     /// `n` moves from `a` to `b` in `ms`.
     fn summary(&self, pointer: i32) -> Value {
@@ -112,30 +121,18 @@ impl EqFingers {
     pub fn moved(&mut self, t: f64, pointer: i32, at: (f64, f64)) -> Option<Value> {
         let down = self.down.get_mut(&pointer)?;
         down.last = at;
-        match &mut down.run {
-            Some(run) if spans(run.first.0, t) => {
-                let summary = run.summary(pointer);
-                *run = Run {
-                    n: 1,
-                    first: (t, at),
-                    last: (t, at),
-                };
-                Some(summary)
-            }
-            Some(run) => {
-                run.n += 1;
-                run.last = (t, at);
-                None
-            }
-            None => {
-                down.run = Some(Run {
-                    n: 1,
-                    first: (t, at),
-                    last: (t, at),
-                });
-                None
-            }
+        let Some(run) = down.run.as_mut() else {
+            down.run = Some(Run::start(t, at));
+            return None;
+        };
+        if spans(run.first.0, t) {
+            let summary = run.summary(pointer);
+            *run = Run::start(t, at);
+            return Some(summary);
         }
+        run.n += 1;
+        run.last = (t, at);
+        None
     }
 
     /// `pointer`'s touch ended (`what`: `up`, `cancel`) at picture point
