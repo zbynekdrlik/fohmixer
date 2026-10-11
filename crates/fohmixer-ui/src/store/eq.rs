@@ -7,7 +7,11 @@
 //! screen showing an editor ends ([`ended`]) and what a closed socket does
 //! to it ([`socket_closed`]: the hub closes the editor of a socket it lost),
 //! and a frame's ack ([`frame_ack`], PR I: one frame in flight, the hub
-//! sends the next once the page acked). `store/live/eq.rs` carries them out.
+//! sends the next once the page acked); the page's numbered inputs and what
+//! its picture shows ([`inputs`], PR J). `store/live/eq.rs` carries them
+//! out.
+
+pub mod inputs;
 
 use fohmixer_proto::client::ClientMsg;
 use fohmixer_proto::eq::{EqItem, EqState, FrameHead};
@@ -141,7 +145,11 @@ mod tests {
 
     #[test]
     fn a_frame_of_the_open_editor_is_acked_with_its_session_and_number() {
-        let head = |session| FrameHead { session, seq: 41 };
+        let head = |session| FrameHead {
+            session,
+            seq: 41,
+            shown: 7,
+        };
         assert_eq!(
             frame_ack(head(3), Some(3)),
             Some(ClientMsg::EqFrameAck {

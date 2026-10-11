@@ -699,8 +699,21 @@ fn eq_messages_round_trip() {
             touch: Touch::Down,
             x: 431.5,
             y: 315.0,
+            n: 12,
+            seen: Some(11),
         },
-        json!({"type": "eq_input", "touch": "down", "x": 431.5, "y": 315.0}),
+        json!({"type": "eq_input", "touch": "down", "x": 431.5, "y": 315.0, "n": 12, "seen": 11}),
+    );
+    // PR J: a move has no `seen`.
+    round_trip_client(
+        ClientMsg::EqInput {
+            touch: Touch::Move,
+            x: 432.0,
+            y: 316.0,
+            n: 13,
+            seen: None,
+        },
+        json!({"type": "eq_input", "touch": "move", "x": 432.0, "y": 316.0, "n": 13}),
     );
     round_trip_client(ClientMsg::EqClose, json!({"type": "eq_close"}));
     // PR I: the page got a frame of its open editor.

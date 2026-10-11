@@ -113,6 +113,27 @@ pub enum Spot {
     Edit,
 }
 
+/// Whether a first finger landing on `spot` lands on an old picture (#71
+/// PR J): on the zoomed picture (the editor's) while the picture shown does
+/// not show every input the page sent (`caught_up`), or while the link
+/// drops out (the down would wait in a stalled link, as a Stream Deck press
+/// that cannot go). Such a finger reaches nothing; the screen says so.
+pub fn stale_landing(spot: Spot, caught_up: bool, dropping_out: bool) -> bool {
+    spot == Spot::Edit && (!caught_up || dropping_out)
+}
+
+/// How long the screen says a finger landed on an old picture (ms, PR J).
+pub const STALE_NOTE_MS: f64 = 1500.0;
+
+/// Whether the note of a finger refused at `at` still shows at `now` (page
+/// ms; none: no refusal).
+pub fn stale_note(at: Option<f64>, now: f64) -> bool {
+    at.is_some_and(|at| now - at < STALE_NOTE_MS)
+}
+
+/// The note's words.
+pub const STALE_TEXT: &str = "Obraz ešte dobieha, polož prst znova";
+
 /// Where a first finger lands `on` the picture or off it, the view at
 /// `zoom`.
 pub fn spot(on: bool, zoom: f64) -> Spot {
@@ -725,12 +746,38 @@ impl Finger {
         out
     }
 
-    /// The view goes back to the whole picture under the fingers (`CELÝ EQ`,
-    /// the PR I review): a finger on the editor ends with its cancel where
-    /// it was, and one still waiting or settling never reaches it (its
-    /// moves would map through another view); a pinch's fingers go on
-    /// pinching, from the whole picture, and a quick tap's up still goes.
-    pub fn whole(&mut self) -> Vec<Out> {
+    /// Whether a quick tap's up is still to go (PR J re-review: a finger
+    /// landing then lands on a picture that cannot show that up yet).
+    pub fn tap_pending(&self) -> bool {
+        self.tap.is_some()
+    }
+
+    /// The pointer of a first finger on the editor or on its way there
+    /// ([`Finger::on_editor`]).
+    pub fn editor_pointer(&self) -> Option<i32> {
+        self.fingers[0]
+            .map(|(pointer, _)| pointer)
+            .filter(|_| self.on_editor())
+    }
+
+    /// Whether a first finger is on the editor or on its way there
+    /// (touching, waiting on the picture, settling): what [`Finger::off_editor`]
+    /// would end.
+    pub fn on_editor(&self) -> bool {
+        matches!(
+            self.stage,
+            Stage::Touching { .. } | Stage::Waiting { on: true, .. } | Stage::Settling { .. }
+        )
+    }
+
+    /// The fingers lose the editor under them: the view goes back to the
+    /// whole picture (`CELÝ EQ`, the PR I review: its moves would map
+    /// through another view), or the link drops out mid-drag (PR J review:
+    /// the moves queued in a stalled socket would come in a burst). A finger
+    /// on the editor ends with its cancel where it was, and one still
+    /// waiting or settling never reaches it; a pinch's fingers go on
+    /// pinching, and a quick tap's up still goes.
+    pub fn off_editor(&mut self) -> Vec<Out> {
         match self.stage {
             Stage::Touching { .. } => {
                 let out = self.last(Touch::Cancel);
@@ -1647,6 +1694,23 @@ mod tests {
     }
 
     #[test]
+    fn a_finger_on_an_old_picture_or_a_stalled_link_is_refused_and_the_screen_says_so() {
+        // PR J: only a finger that would edit.
+        assert!(!stale_landing(Spot::Edit, true, false));
+        assert!(stale_landing(Spot::Edit, false, false), "an old picture");
+        assert!(stale_landing(Spot::Edit, true, true), "a stalled link");
+        for spot in [Spot::Off, Spot::Overview] {
+            assert!(!stale_landing(spot, false, true), "{spot:?}");
+        }
+        assert_eq!(STALE_NOTE_MS, 1500.0);
+        assert!(!stale_note(None, 0.0));
+        assert!(stale_note(Some(100.0), 100.0));
+        assert!(stale_note(Some(100.0), 1600.0_f64.next_down()));
+        assert!(!stale_note(Some(100.0), 1600.0));
+        assert_eq!(STALE_TEXT, "Obraz ešte dobieha, polož prst znova");
+    }
+
+    #[test]
     fn a_tap_on_the_overview_zooms_in_and_sends_the_editor_nothing() {
         let mut finger = Finger::default();
         assert_eq!(finger.take_zoom(0.0), None);
@@ -1751,36 +1815,51 @@ mod tests {
         // The PR I review: CELÝ EQ during a drag went on with the drag at
         // 1×, its points remapped.
         let mut finger = Finger::default();
-        assert_eq!(finger.whole(), vec![], "no finger");
+        assert_eq!(finger.off_editor(), vec![], "no finger");
+        assert!(!finger.on_editor());
+        assert_eq!(finger.editor_pointer(), None);
         finger.down(1, p(10.0, 10.0), Spot::Edit, 0.0);
+        assert!(finger.on_editor(), "waiting on the picture");
+        assert_eq!(finger.editor_pointer(), Some(1));
         assert_eq!(finger.frame(120.0), vec![(Touch::Down, 20.0, 20.0)]);
+        assert!(finger.on_editor(), "touching");
         finger.moved(1, p(12.0, 10.0));
         // Its cancel where it was; the move not sent yet never goes.
-        assert_eq!(finger.whole(), vec![(Touch::Cancel, 24.0, 20.0)]);
+        assert_eq!(finger.off_editor(), vec![(Touch::Cancel, 24.0, 20.0)]);
+        assert!(!finger.on_editor(), "off it now");
+        assert_eq!(finger.editor_pointer(), None);
         finger.moved(1, p(20.0, 10.0));
         assert_eq!(finger.frame(140.0), vec![]);
         assert_eq!(finger.up(1, p(20.0, 10.0), 150.0), vec![]);
         assert!(!finger.held());
         // A waiting finger never reaches it.
         finger.down(2, p(10.0, 10.0), Spot::Edit, 200.0);
-        assert_eq!(finger.whole(), vec![]);
+        assert_eq!(finger.off_editor(), vec![]);
         assert_eq!(finger.frame(400.0), vec![]);
         assert_eq!(finger.up(2, p(10.0, 10.0), 410.0), vec![]);
+        // A finger off the picture is not on the editor.
+        finger.down(8, p(10.0, 10.0), Spot::Off, 450.0);
+        assert!(!finger.on_editor());
+        finger.up(8, p(10.0, 10.0), 460.0);
         // A pinch goes on pinching.
         finger.down(3, p(10.0, 10.0), Spot::Edit, 500.0);
         finger.down(4, p(50.0, 10.0), Spot::Edit, 510.0);
-        assert_eq!(finger.whole(), vec![]);
+        assert!(!finger.on_editor(), "a pinch");
+        assert_eq!(finger.off_editor(), vec![]);
         assert_eq!(finger.pair(), Some([(3, (10.0, 10.0)), (4, (50.0, 10.0))]));
         finger.up(3, p(10.0, 10.0), 600.0);
         finger.up(4, p(50.0, 10.0), 600.0);
         // A quick tap's up still goes.
+        assert!(!finger.tap_pending());
         finger.down(5, p(10.0, 10.0), Spot::Edit, 700.0);
         assert_eq!(
             finger.up(5, p(10.0, 10.0), 710.0),
             vec![(Touch::Down, 20.0, 20.0)]
         );
-        assert_eq!(finger.whole(), vec![]);
+        assert!(finger.tap_pending(), "its up still to go");
+        assert_eq!(finger.off_editor(), vec![]);
         assert_eq!(finger.frame(750.0), vec![(Touch::Up, 20.0, 20.0)]);
+        assert!(!finger.tap_pending());
     }
 
     #[test]

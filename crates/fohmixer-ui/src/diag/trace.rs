@@ -74,6 +74,7 @@ use std::collections::{BTreeMap, VecDeque};
 use fohmixer_proto::client::ClientMsg;
 use serde_json::{Map, Value, json};
 
+pub mod eq_lat;
 pub mod fingers;
 pub mod moves;
 pub mod rtt;
@@ -137,7 +138,7 @@ pub fn takes_batch(buffered: u32) -> bool {
 pub fn drop_rank(ev: &str) -> Option<u8> {
     match ev {
         "touch" | "dropout" | "reset" | "sock" | "visibility" | "overflow" | "intent" | "sys"
-        | "zoom" | "deck" | "detail" | "eq_touch" | "eq_mv" => None,
+        | "zoom" | "deck" | "detail" | "eq_touch" | "eq_mv" | "eq_lat" => None,
         "mv" => Some(1),
         _ => Some(0),
     }

@@ -167,8 +167,13 @@ exclude_re = [
   # after the close, no open offered while the socket is down). PR G:
   # eq_opening (the tested asked, before the open goes), eq_area (the
   # message; the tested behave::eq::AreaWatch decides when), which eq.spec.ts
-  # reads off the page's socket after a viewport change.
-  "fohmixer-ui/src/store/live/eq\\.rs.*(replace|in) LiveStore::(on_eq_list|on_eq_locks|on_eq|on_frame|eq_frames|list_eq|eq_opening|eq_open|eq_area|eq_input|eq_close|eq_socket_closed|eq_picture)( |$)",
+  # reads off the page's socket after a viewport change. PR J: eq_input
+  # numbers each input through the tested Inputs::send; eq_session reads
+  # the open editor's session (EqView::open_session, tested); eq_land,
+  # eq_caught_up and eq_drawn are the tested Inputs::land, caught_up and
+  # drawn on the store's inputs; eq.spec.ts reads the numbered inputs, the
+  # refused landing on an old picture and the eq_lat records.
+  "fohmixer-ui/src/store/live/eq\\.rs.*(replace|in) LiveStore::(on_eq_list|on_eq_locks|on_eq|on_frame|eq_frames|list_eq|eq_opening|eq_open|eq_area|eq_input|eq_session|eq_land|eq_caught_up|eq_drawn|eq_close|eq_socket_closed|eq_picture)( |$)",
   "fohmixer-ui/src/store/live\\.rs.*(replace|in) (Socket::open|Socket::buffered|Socket::close|Inner::new)( |$)",
   # auth.rs: local storage and the login request (login_outcome, login_body
   # and LoginError::message are the tested decisions).

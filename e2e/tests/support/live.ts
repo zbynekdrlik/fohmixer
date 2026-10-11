@@ -43,6 +43,8 @@ export const impair = {
   drop: () => harness("/link/drop"),
   block: (on: boolean) => harness("/link/block", { on }),
   rate: (bytesPerS: number) => harness("/link/rate", { bytes_per_s: bytesPerS }),
+  /** The hub's bytes to the pages at most this fast (#71 PR J; 0 lifts it). */
+  downRate: (bytesPerS: number) => harness("/link/down_rate", { bytes_per_s: bytesPerS }),
 };
 
 /** The fake Companion's state (#52): `connections`, `devices`, `presses`, `down`, `failing`. */

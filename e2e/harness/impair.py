@@ -8,6 +8,7 @@ link is deterministic (random ``tc netem`` stays out of CI).
     proxy.drop()             # close every proxied socket with a reset
     proxy.block(True)        # hold new connections until block(False)
     proxy.rate(24576)        # a slow link: the page's bytes to the hub at 24 KB/s
+    proxy.down_rate(131072)  # a slow link the other way: the hub's bytes at 128 KB/s
     proxy.stop()
 
 It is a plain byte pipe (stdlib asyncio, one event loop in a thread of its own),
@@ -29,8 +30,11 @@ so the page and the hub talk HTTP and WebSocket through it unchanged: the page's
   every connection together, pass at most ``bytes_per_s``, first in first out,
   in pieces of ``PIECE`` bytes, each delivered when a link of that rate would
   have carried it (no loss, no reordering; the kernel buffers queue what waits,
-  so a page's socket never sees the pressure). The hub's bytes to the browser
-  are not limited. 0 lifts it.
+  so a page's socket never sees the pressure). 0 lifts it.
+- **Down rate** (#71 PR J, the Pro-Q 4 screen's frames on the iPad's Wi-Fi):
+  the same for the hub's bytes to the browser, on every connection together;
+  the hub's socket meets the slow link as on a real one (its frames wait in
+  its send buffer). 0 lifts it.
 
 Every control call and every failure is printed (``impair: …``) on stderr,
 the harness's log.
@@ -43,8 +47,8 @@ On its own (a degraded-link check of a deployed hub, from another machine):
 prints ``IMPAIR <port>`` once it listens (on 127.0.0.1 unless
 ``--listen-host`` names another address, e.g. a LAN one for a real tablet)
 and then takes one control line per stdin line — ``stall <ms>``, ``drop``, ``block on|off``,
-``rate <bytes per s>``, ``state`` — answering each with one JSON line; the end of
-stdin stops it.
+``rate <bytes per s>``, ``down <bytes per s>``, ``state`` — answering each with one JSON
+line; the end of stdin stops it.
 """
 
 import argparse
@@ -123,10 +127,11 @@ class Impair:
         self.stall_until = 0.0
         self.blocked = False
         self.unblocked = None
-        # The browser-to-hub rate (bytes/s, 0: none) and when that link is
-        # free again (loop time).
-        self.rate_up = 0.0
-        self.up_free_at = 0.0
+        # Each way's rate (bytes/s, 0: none) and when that link is free
+        # again (loop time): "up" the browser's bytes to the hub, "down" the
+        # hub's to the browser.
+        self.rates = {"up": 0.0, "down": 0.0}
+        self.free_at = {"up": 0.0, "down": 0.0}
 
     def start(self):
         """Starts the loop and the listener; raises when it cannot listen."""
@@ -190,16 +195,24 @@ class Impair:
     def rate(self, bytes_per_s):
         """Limits the browser-to-hub bytes of every connection together to
         ``bytes_per_s`` (a finite number, 0 or more; 0 lifts the limit)."""
+        return self._set_rate("up", bytes_per_s)
+
+    def down_rate(self, bytes_per_s):
+        """Limits the hub-to-browser bytes of every connection together to
+        ``bytes_per_s`` (as ``rate``)."""
+        return self._set_rate("down", bytes_per_s)
+
+    def _set_rate(self, way, bytes_per_s):
         rate = float(bytes_per_s)
         if not math.isfinite(rate) or rate < 0:
             raise ValueError(f"a rate is a finite number of bytes/s, 0 or more, not {rate!r}")
-        answer = self._call(self._rate, rate)
-        log(f"rate {rate} bytes/s: {answer}")
+        answer = self._call(self._rate, way, rate)
+        log(f"{way} rate {rate} bytes/s: {answer}")
         return answer
 
     def state(self):
         """What the proxy does now: ``connections``, ``held``, ``blocked``,
-        ``stall_ms``, ``rate`` (bytes/s, 0: none)."""
+        ``stall_ms``, ``rate`` and ``down_rate`` (bytes/s, 0: none)."""
         return self._call(self._state)
 
     def stop(self):
@@ -241,9 +254,9 @@ class Impair:
             self.unblocked.set()
         return self._state()
 
-    def _rate(self, rate):
-        self.rate_up = rate
-        self.up_free_at = self.loop.time()
+    def _rate(self, way, rate):
+        self.rates[way] = rate
+        self.free_at[way] = self.loop.time()
         return self._state()
 
     def _state(self):
@@ -253,7 +266,8 @@ class Impair:
             "held": held,
             "blocked": self.blocked,
             "stall_ms": self._stall_left_ms(),
-            "rate": self.rate_up,
+            "rate": self.rates["up"],
+            "down_rate": self.rates["down"],
         }
 
     async def _accept(self, reader, writer):
@@ -276,9 +290,8 @@ class Impair:
 
     async def _pipe_both(self, link):
         up_reader, up_writer = link.upstream
-        # The browser's bytes go up to the hub (the rate-limited way).
-        to_hub = asyncio.ensure_future(self._pipe(link.reader, up_writer, limited=True))
-        to_page = asyncio.ensure_future(self._pipe(up_reader, link.writer, limited=False))
+        to_hub = asyncio.ensure_future(self._pipe(link.reader, up_writer, "up"))
+        to_page = asyncio.ensure_future(self._pipe(up_reader, link.writer, "down"))
         try:
             await asyncio.gather(to_hub, to_page)
         finally:
@@ -287,19 +300,20 @@ class Impair:
         for writer in (link.writer, up_writer):
             writer.close()
 
-    async def _pipe(self, reader, writer, limited):
+    async def _pipe(self, reader, writer, way):
         """Copies ``reader`` to ``writer`` until its end, through the stall
-        (and the rate, when ``limited``); an end is passed on as a half-close."""
+        and ``way``'s rate (``up``, ``down``); an end is passed on as a
+        half-close."""
         while True:
             data = await reader.read(CHUNK)
             if not data:
                 break
             await self._through_stall()
-            if not limited or self.rate_up <= 0:
+            if self.rates[way] <= 0:
                 writer.write(data)
                 await writer.drain()
                 continue
-            for piece, done in self._paced(data):
+            for piece, done in self._paced(data, way):
                 left = done - self.loop.time()
                 if left > 0:
                     await asyncio.sleep(left)
@@ -308,16 +322,16 @@ class Impair:
         if writer.can_write_eof():
             writer.write_eof()
 
-    def _paced(self, data):
+    def _paced(self, data, way):
         """``data``'s pieces of ``PIECE`` bytes, each with the loop time a link
-        of the browser-to-hub rate has carried it by: after every byte queued
-        before it, on any connection (first in first out)."""
+        of ``way``'s rate has carried it by: after every byte queued before it
+        that way, on any connection (first in first out)."""
         pieces = []
         for start in range(0, len(data), PIECE):
             piece = data[start : start + PIECE]
-            begin = max(self.loop.time(), self.up_free_at)
-            self.up_free_at = begin + len(piece) / self.rate_up
-            pieces.append((piece, self.up_free_at))
+            begin = max(self.loop.time(), self.free_at[way])
+            self.free_at[way] = begin + len(piece) / self.rates[way]
+            pieces.append((piece, self.free_at[way]))
         return pieces
 
     async def _through_stall(self):
@@ -341,6 +355,8 @@ def command(proxy, line):
             return proxy.block(words[1] == "on")
         if len(words) == 2 and words[0] == "rate":
             return proxy.rate(float(words[1]))
+        if len(words) == 2 and words[0] == "down":
+            return proxy.down_rate(float(words[1]))
         if words == ["state"]:
             return proxy.state()
     except ValueError as e:
@@ -349,7 +365,7 @@ def command(proxy, line):
     log(f"unknown line {line.strip()!r}")
     return {
         "error": f"unknown line {line.strip()!r}: "
-        "stall <ms> | drop | block on|off | rate <bytes per s> | state"
+        "stall <ms> | drop | block on|off | rate <bytes per s> | down <bytes per s> | state"
     }
 
 

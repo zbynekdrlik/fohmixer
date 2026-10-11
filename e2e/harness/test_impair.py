@@ -234,11 +234,48 @@ class ImpairTest(unittest.TestCase):
         self.assertEqual(read_exactly(client, len(payload)), payload)
         self.assertLess(time.monotonic() - start, 0.3)
 
+    def test_a_down_rate_paces_the_hubs_bytes_first_in_first_out(self):
+        # #71 PR J: the Pro-Q 4 screen's frames on a slow Wi-Fi.
+        client = self.connect()
+        client.sendall(b"warm")
+        self.assertEqual(read_exactly(client, 4), b"warm")
+        self.assertEqual(self.proxy.down_rate(20_000)["down_rate"], 20_000.0)
+        self.assertEqual(self.proxy.state()["rate"], 0.0, "the other way stays free")
+        # 10 000 bytes echoed at 20 000 a second take half a second.
+        payload = bytes(range(250)) * 40
+        start = time.monotonic()
+        client.sendall(payload)
+        self.assertEqual(read_exactly(client, len(payload)), payload, "in order, unchanged")
+        took = time.monotonic() - start
+        self.assertGreaterEqual(took, 0.45, "paced")
+        self.assertLess(took, 2.0)
+        # A second connection shares the one link: its bytes wait behind the
+        # first one's.
+        other = self.connect()
+        other.sendall(b"go")
+        self.assertEqual(read_exactly(other, 2), b"go")
+        start = time.monotonic()
+        client.sendall(payload)
+        time.sleep(0.05)
+        other.sendall(b"late")
+        self.assertEqual(read_exactly(other, 4), b"late")
+        self.assertGreaterEqual(time.monotonic() - start, 0.4, "behind the first one's bytes")
+        self.assertEqual(read_exactly(client, len(payload)), payload)
+        # 0 lifts it.
+        self.assertEqual(self.proxy.down_rate(0)["down_rate"], 0.0)
+        start = time.monotonic()
+        client.sendall(payload)
+        self.assertEqual(read_exactly(client, len(payload)), payload)
+        self.assertLess(time.monotonic() - start, 0.3)
+
     def test_a_rate_is_a_finite_number_of_bytes_a_second(self):
         for bad in (float("inf"), float("nan"), -1, "x"):
             with self.assertRaises(ValueError, msg=repr(bad)):
                 self.proxy.rate(bad)
+            with self.assertRaises(ValueError, msg=repr(bad)):
+                self.proxy.down_rate(bad)
         self.assertEqual(self.proxy.state()["rate"], 0.0, "no limit")
+        self.assertEqual(self.proxy.state()["down_rate"], 0.0, "no limit")
 
     def test_a_stall_is_a_finite_number_of_ms(self):
         for bad in (float("inf"), float("nan"), -1, "x"):
@@ -257,6 +294,8 @@ class ImpairTest(unittest.TestCase):
         self.assertEqual(impair.command(self.proxy, "block off")["blocked"], False)
         self.assertEqual(impair.command(self.proxy, "rate 4096")["rate"], 4096.0)
         self.assertEqual(impair.command(self.proxy, "rate 0")["rate"], 0.0)
+        self.assertEqual(impair.command(self.proxy, "down 8192")["down_rate"], 8192.0)
+        self.assertEqual(impair.command(self.proxy, "down 0")["down_rate"], 0.0)
         self.assertEqual(impair.command(self.proxy, "drop"), {"dropped": 1})
         for bad in (
             "stall inf",
@@ -266,6 +305,8 @@ class ImpairTest(unittest.TestCase):
             "drop all",
             "rate -1",
             "rate fast",
+            "down -1",
+            "down slow",
             "nap",
         ):
             self.assertIn("error", impair.command(self.proxy, bad), bad)

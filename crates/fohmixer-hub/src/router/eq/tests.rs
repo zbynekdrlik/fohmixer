@@ -2,6 +2,8 @@ use std::collections::BTreeMap;
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
+use bytes::Bytes;
+use fohmixer_proto::eq::Touch;
 use fohmixer_proto::layout::Anchor;
 use tokio::sync::mpsc;
 
@@ -55,6 +57,18 @@ fn offline_live() -> LiveHandle {
         Arc::new(|_: &str, _: LiveEvent| {}),
     );
     live
+}
+
+/// A page's finger on its editor (PR J: numbered, its down on a picture
+/// that shows every input before it).
+fn finger(touch: Touch, x: f64, y: f64) -> Input {
+    Input {
+        touch,
+        x,
+        y,
+        n: 1,
+        seen: (touch == Touch::Down).then_some(0),
+    }
 }
 
 /// The window worker on a sim.
@@ -250,12 +264,12 @@ async fn a_minutes_rate_takes_its_holders_frame_round_trips_since_the_last_one()
     // Its page acks a frame 30 ms after it went (#71 PR I); the next one's
     // ack never comes, so a third goes once the wait ran out.
     let t = Instant::now();
-    outbox.eq_frame(1, Bytes::from_static(b"one"));
+    outbox.eq_frame(1, 0, Bytes::from_static(b"one"));
     assert!(outbox.take_frame(t).is_some());
     outbox.frame_acked(1, 1, t + Duration::from_millis(30));
-    outbox.eq_frame(1, Bytes::from_static(b"two"));
+    outbox.eq_frame(1, 0, Bytes::from_static(b"two"));
     assert!(outbox.take_frame(t + Duration::from_millis(40)).is_some());
-    outbox.eq_frame(1, Bytes::from_static(b"three"));
+    outbox.eq_frame(1, 0, Bytes::from_static(b"three"));
     assert_eq!(outbox.take_frame(t + Duration::from_millis(1039)), None);
     assert!(outbox.take_frame(t + Duration::from_millis(1040)).is_some());
     let _ = rig.records.try_iter().count();
@@ -298,7 +312,7 @@ async fn a_closed_editor_records_its_frames_round_trips_since_the_last_minute() 
     let outbox = attach(&mut rig.router, 1);
     outbox.take();
     let t = Instant::now();
-    outbox.eq_frame(1, Bytes::from_static(b"one"));
+    outbox.eq_frame(1, 0, Bytes::from_static(b"one"));
     assert!(outbox.take_frame(t).is_some());
     outbox.frame_acked(1, 1, t + Duration::from_millis(25));
     let _ = rig.records.try_iter().count();
@@ -698,7 +712,14 @@ async fn an_open_editors_frames_reach_its_holder_and_its_picture_is_kept() {
     }
     let frame = frame.expect("a frame");
     let (head, jpeg) = fohmixer_proto::eq::frame_parts(&frame).unwrap();
-    assert_eq!(head, fohmixer_proto::eq::FrameHead { session: 1, seq: 1 });
+    assert_eq!(
+        head,
+        fohmixer_proto::eq::FrameHead {
+            session: 1,
+            seq: 1,
+            shown: 0
+        }
+    );
     assert_eq!(jpeg[..2], [0xFF_u8, 0xD8]);
     let pictures = &rig.router.eq.as_ref().unwrap().pictures;
     assert!(pictures.has(&key()));
@@ -777,15 +798,49 @@ async fn a_dropped_socket_records_its_editors_frame_round_trips() {
 }
 
 #[tokio::test]
+async fn a_numbered_input_is_shown_by_a_later_frame() {
+    // PR J: the router hands every input of an open editor to the window
+    // worker, whose pictures then say they show it.
+    let dir = tempfile::tempdir().unwrap();
+    let mut rig = rig(dir.path());
+    let outbox = held_open(&mut rig).await;
+    rig.router.handle(RouterMsg::EqInput {
+        client: 1,
+        input: finger(Touch::Down, 10.0, 20.0),
+    });
+    rig.router.handle(RouterMsg::EqInput {
+        client: 1,
+        input: Input {
+            touch: Touch::Up,
+            x: 10.0,
+            y: 20.0,
+            n: 2,
+            seen: None,
+        },
+    });
+    let mut shown = 0;
+    for _ in 0..300 {
+        if let Some(frame) = outbox.take_frame(Instant::now()) {
+            let (head, _) = fohmixer_proto::eq::frame_parts(&frame).expect("a frame's header");
+            outbox.frame_acked(head.session, head.seq, Instant::now());
+            shown = head.shown;
+            if shown == 2 {
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(shown, 2, "a later frame shows the page's input 2");
+}
+
+#[tokio::test]
 async fn a_finger_reaches_the_window_and_a_resting_one_goes_again() {
     let dir = tempfile::tempdir().unwrap();
     let mut rig = rig(dir.path());
     let _outbox = held_open(&mut rig).await;
     rig.router.handle(RouterMsg::EqInput {
         client: 1,
-        touch: Touch::Down,
-        x: 10.4,
-        y: 20.6,
+        input: finger(Touch::Down, 10.4, 20.6),
     });
     sim_until(&rig.sim, "the down", |r| {
         r.iter()
@@ -803,9 +858,7 @@ async fn a_finger_reaches_the_window_and_a_resting_one_goes_again() {
     .await;
     rig.router.handle(RouterMsg::EqInput {
         client: 1,
-        touch: Touch::Up,
-        x: 10.0,
-        y: 21.0,
+        input: finger(Touch::Up, 10.0, 21.0),
     });
     sim_until(&rig.sim, "the up", |r| r.iter().any(|r| r["phase"] == "up")).await;
 }
@@ -817,9 +870,7 @@ async fn a_closed_socket_closes_its_editor_through_the_guard() {
     let _outbox = held_open(&mut rig).await;
     rig.router.handle(RouterMsg::EqInput {
         client: 1,
-        touch: Touch::Down,
-        x: 5.0,
-        y: 5.0,
+        input: finger(Touch::Down, 5.0, 5.0),
     });
     rig.router.handle(RouterMsg::Detach { client: 1 });
     let closed = next_of(&mut rig.rx, |m| matches!(m, RouterMsg::EqClosed { .. })).await;
@@ -1172,9 +1223,7 @@ async fn a_hub_without_the_screen_says_so() {
     });
     router.handle(RouterMsg::EqInput {
         client: 1,
-        touch: Touch::Down,
-        x: 1.0,
-        y: 1.0,
+        input: finger(Touch::Down, 1.0, 1.0),
     });
     router.handle(RouterMsg::EqClose { client: 1 });
     router.handle(RouterMsg::Tick);
@@ -1370,9 +1419,7 @@ async fn a_changed_area_resizes_the_open_editor_and_its_close_puts_its_size_back
     for touch in [Touch::Down, Touch::Up] {
         rig.router.handle(RouterMsg::EqInput {
             client: 1,
-            touch,
-            x: 700.0,
-            y: 1300.0,
+            input: finger(touch, 700.0, 1300.0),
         });
     }
     sim_until(&rig.sim, "the up", |r| r.iter().any(|r| r["phase"] == "up")).await;
@@ -1457,9 +1504,7 @@ async fn a_picture_grabbed_at_another_size_is_recorded_and_clamps_the_points() {
     assert_eq!(sized, [sized_fields(&key(), 1, (800, 600))]);
     rig.router.handle(RouterMsg::EqInput {
         client: 1,
-        touch: Touch::Down,
-        x: 900.0,
-        y: 700.0,
+        input: finger(Touch::Down, 900.0, 700.0),
     });
     sim_until(&rig.sim, "the down", |r| {
         r.iter()

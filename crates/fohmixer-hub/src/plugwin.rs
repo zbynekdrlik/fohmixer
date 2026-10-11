@@ -24,8 +24,10 @@
 //!   meet that window. One not on top within [`FIND_MS`] of its take is
 //!   handed back, and the open fails ([`NOT_ON_TOP`], [`placed`]).
 //! - **The capture:** every [`CAPTURE_MS`] (25 fps) while its holder views
-//!   it: a picture equal to the last one is skipped, another goes to the
-//!   encoder, a thread of its own: it makes the JPEG ([`QUALITY`]) and hands
+//!   it: a picture equal to the last one is skipped (unless it shows a newer
+//!   input of the page, PR J: [`Shown`], the input the router last handed
+//!   over as handled at least `PAINT_MS` before the grab), another goes to
+//!   the encoder, a thread of its own: it makes the JPEG ([`QUALITY`]) and hands
 //!   it to its [`FrameSink`] (the holder's socket, newest wins, and the
 //!   card's last picture). One picture waits for the encoder at most, the
 //!   newest (a slow encode drops pictures, never queues them), so its
@@ -104,14 +106,14 @@ pub mod sim;
 #[cfg(windows)]
 pub mod win;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::future::Future;
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use fohmixer_proto::eq::{Area, reason};
+use fohmixer_proto::eq::{Area, PAINT_MS, reason};
 use tokio::sync::oneshot;
 
 use crate::eq::size::editor_size;
@@ -563,8 +565,70 @@ pub trait Backend: Send {
     fn close_window(&mut self, taken: &Taken);
 }
 
-/// Where a frame goes: its session and its JPEG.
-pub type FrameSink = Arc<dyn Fn(u32, Bytes) + Send + Sync>;
+/// A frame the encoder made: its session, the last of the page's inputs
+/// its picture shows (PR J, [`Shown`]) and its JPEG.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Frame {
+    pub session: u32,
+    pub shown: u32,
+    pub jpeg: Bytes,
+}
+
+/// Where a frame goes.
+pub type FrameSink = Arc<dyn Fn(Frame) + Send + Sync>;
+
+/// The handled inputs a [`Shown`] keeps waiting for their paint at most: a
+/// page sends one a frame, so far fewer wait; past it the newest waiting
+/// gives way to the next (its picture counts as showing it only later).
+pub const SHOWN_KEPT: usize = 64;
+
+/// How long an equal picture waits before it goes again anyway (ms, the PR
+/// J re-review): a page whose last frame did not decode would otherwise
+/// keep a still picture that does not show its last input, refusing every
+/// finger.
+pub const REFRESH_MS: f64 = 1000.0;
+
+/// Whether an input handled at `at` is painted in a picture grabbed at `t`
+/// (worker ms): Pro-Q had [`PAINT_MS`] for it.
+pub fn painted(at: f64, t: f64) -> bool {
+    t - at >= PAINT_MS
+}
+
+/// The page's inputs an editor's pictures show (PR J): each input the
+/// router handed over as handled, with when; a picture grabbed at `t` shows
+/// the last one handled at least [`PAINT_MS`] before (0: none yet).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Shown {
+    waiting: VecDeque<(u32, f64)>,
+    shown: u32,
+}
+
+impl Shown {
+    /// The page's input `n` handled at `at` (worker ms). With
+    /// [`SHOWN_KEPT`] waiting, the newest waiting one gives way to it: a
+    /// picture then counts as showing it only once `n` is painted (the
+    /// later time; the PR J review: counting the oldest as painted was not
+    /// conservative).
+    pub fn handled(&mut self, n: u32, at: f64) {
+        if self.waiting.len() >= SHOWN_KEPT {
+            self.waiting.pop_back();
+        }
+        self.waiting.push_back((n, at));
+    }
+
+    /// The last input a picture grabbed at `t` shows.
+    pub fn at_grab(&mut self, t: f64) -> u32 {
+        let done = self
+            .waiting
+            .iter()
+            .take_while(|(_, at)| painted(*at, t))
+            .count();
+        if let Some((n, _)) = self.waiting.drain(..done).next_back() {
+            self.shown = n;
+        }
+        self.shown
+    }
+}
 /// What hears the worker.
 pub type Events = Arc<dyn Fn(PlugwinEvent) + Send + Sync>;
 
@@ -683,6 +747,12 @@ pub fn repost(changed: bool, closed: bool, since_ms: f64) -> Repost {
 /// Whether a capture last made `since_ms` ago is due.
 pub fn capture_due(since_ms: f64) -> bool {
     since_ms >= CAPTURE_MS
+}
+
+/// Whether an equal picture last handed to the encoder `since_ms` ago goes
+/// again ([`REFRESH_MS`]).
+pub fn refresh_due(since_ms: f64) -> bool {
+    since_ms >= REFRESH_MS
 }
 
 /// Whether the windows last listed `since_ms` ago for an open are due.
@@ -832,8 +902,16 @@ struct Editor {
     taken: Taken,
     /// Where its frames go (none: not captured).
     sink: Option<FrameSink>,
-    /// The last picture handed to the encoder, to skip an equal one.
+    /// The last picture handed to the encoder, to skip an equal one, and
+    /// the input it showed (PR J: an equal picture that shows a newer input
+    /// goes again, so the page learns its picture caught up).
     last: Option<Arc<Pixels>>,
+    last_shown: u32,
+    /// When the last picture went to the encoder (worker ms): an equal one
+    /// goes again [`REFRESH_MS`] after it.
+    put: f64,
+    /// The page's inputs its pictures show (PR J).
+    shown: Shown,
     /// When it was last grabbed and when its minute began (worker ms).
     grabbed: f64,
     minute: f64,
@@ -883,6 +961,7 @@ struct Guarding {
 /// A picture on its way to its JPEG: its session, its pixels, its sink.
 struct Job {
     session: u32,
+    shown: u32,
     pixels: Arc<Pixels>,
     sink: FrameSink,
 }
@@ -970,7 +1049,11 @@ fn deliver(shared: &Shared, job: Job) {
         bytes: jpeg.as_ref().ok().map(Vec::len),
     });
     if let Ok(jpeg) = jpeg {
-        (job.sink)(job.session, Bytes::from(jpeg));
+        (job.sink)(Frame {
+            session: job.session,
+            shown: job.shown,
+            jpeg: Bytes::from(jpeg),
+        });
     }
 }
 
@@ -999,11 +1082,13 @@ impl Encoder {
         self.shared.lock().captured.insert(session);
     }
 
-    /// `pixels` of `session` to encode for `sink`: it replaces a picture
-    /// still waiting (the newest wins).
-    fn put(&self, session: u32, pixels: Arc<Pixels>, sink: FrameSink) {
+    /// `pixels` of `session`, which show the page's input `shown`, to
+    /// encode for `sink`: it replaces a picture still waiting (the newest
+    /// wins).
+    fn put(&self, session: u32, shown: u32, pixels: Arc<Pixels>, sink: FrameSink) {
         self.shared.lock().waiting = Some(Job {
             session,
+            shown,
             pixels,
             sink,
         });
@@ -1094,6 +1179,10 @@ enum Command {
         contact: u32,
         phase: Phase,
         at: (i32, i32),
+    },
+    Handled {
+        session: u32,
+        n: u32,
     },
     Guard {
         session: u32,
@@ -1197,6 +1286,12 @@ impl Worker {
                 phase,
                 at,
             } => self.touch(session, contact, phase, at),
+            Command::Handled { session, n } => {
+                let now = self.now();
+                if let Some(editor) = self.editors.get_mut(&session) {
+                    editor.shown.handled(n, now);
+                }
+            }
             Command::Guard { session, reply } => self.guard(session, reply),
             Command::Release {
                 session,
@@ -1246,6 +1341,11 @@ impl Worker {
         for done in self.encoder.done() {
             if let Some(editor) = self.editors.get_mut(&done.session) {
                 editor.counts.encoded(done.ms, done.bytes);
+                // A picture that never became a frame is no last picture:
+                // the next grab goes again, with what it shows (PR J review).
+                if done.bytes.is_none() {
+                    editor.last = None;
+                }
             }
         }
     }
@@ -1328,6 +1428,9 @@ impl Worker {
                         taken,
                         sink: None,
                         last: None,
+                        last_shown: 0,
+                        put: f64::NEG_INFINITY,
+                        shown: Shown::default(),
                         grabbed: f64::NEG_INFINITY,
                         minute: now,
                         counts: Counts::default(),
@@ -1633,12 +1736,18 @@ impl Worker {
                 height: size.1,
             });
         }
-        if editor.last.as_deref() == Some(&pixels) {
+        let shown = editor.shown.at_grab(now);
+        if editor.last.as_deref() == Some(&pixels)
+            && shown == editor.last_shown
+            && !refresh_due(now - editor.put)
+        {
             return;
         }
         let pixels = Arc::new(pixels);
         editor.last = Some(Arc::clone(&pixels));
-        self.encoder.put(session, pixels, sink);
+        editor.last_shown = shown;
+        editor.put = now;
+        self.encoder.put(session, shown, pixels, sink);
     }
 
     /// A phase of contact `contact` on `session`'s window: one contact on
@@ -1973,6 +2082,12 @@ impl Plugwin {
             phase,
             at,
         });
+    }
+
+    /// The page's input `n` on `session` was handled (PR J): after the
+    /// phases it made, in the router's order.
+    pub fn handled(&self, session: u32, n: u32) {
+        let _ = self.tx.send(Command::Handled { session, n });
     }
 
     /// The close guard of `session`: the command goes to the worker now,

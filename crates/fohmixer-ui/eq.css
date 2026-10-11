@@ -333,6 +333,13 @@
     display: none;
 }
 
+/* #71 PR J: a finger refused on an old picture (the hint's place: the hint
+   shows only under 2x, a refusal only from 2x). */
+.eq-stale {
+    border-color: var(--warn);
+    color: var(--warn);
+}
+
 .eq-wait {
     position: absolute;
     inset: 0;

@@ -35,6 +35,13 @@
 //!   ends that one first. Every contact is numbered: its phases carry
 //!   the number, and the window worker's word that it ended a contact ends
 //!   only that one (a late word never ends a newer contact).
+//! - **An old picture never acts (PR J):** a page numbers its inputs, and a
+//!   down carries the `shown` of the picture it landed on; a down on a
+//!   picture that did not show the page's earlier inputs ([`stale_down`]) is
+//!   dropped ([`Eqs::numbered`]: a contact of that client still down ends
+//!   with its cancel, the step recorded `stale`). Every input of an open
+//!   editor goes to the window worker as handled ([`Act::Handled`]), whose
+//!   pictures then say they show it.
 //! - **The device's shape (PR G):** each client's picture area as its page
 //!   last gave it (`eq_open`'s, then `eq_area`'s; [`Eqs::keep_area`]): an
 //!   open carries it ([`Act::Open`]: the open sequence gives the editor its
@@ -64,7 +71,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use fohmixer_proto::client::ServerMsg;
-use fohmixer_proto::eq::{Area, EqLock, EqState, Touch, reason};
+use fohmixer_proto::eq::{Area, EqLock, EqState, Touch, caught_up, reason};
 use serde_json::{Value, json};
 
 use crate::live::subs::ClientId;
@@ -74,6 +81,34 @@ use crate::plugwin::Phase;
 pub const SILENT_MS: f64 = 2000.0;
 /// The wait after the close guard's tap before the editor closes.
 pub const GUARD_WAIT: Duration = Duration::from_millis(300);
+
+/// A page's numbered finger on its editor (`eq_input`, PR J): its phase,
+/// its point in the picture's pixels, its number `n` in the page's open
+/// session and, on a down, the `shown` of the picture it landed on.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Input {
+    pub touch: Touch,
+    pub x: f64,
+    pub y: f64,
+    pub n: u32,
+    pub seen: Option<u32>,
+}
+
+/// Whether a page's down numbered `n` landed on an old picture (PR J): the
+/// picture it landed on (`seen`; none: no picture yet, which shows no
+/// input) does not show every input of the page before it.
+pub fn stale_down(n: u32, seen: Option<u32>) -> bool {
+    !caught_up(seen.unwrap_or(0), n.saturating_sub(1))
+}
+
+/// The `eq` record of a stale down the hub dropped (PR J): the page's
+/// input number and the input its picture showed.
+pub fn stale_fields(key: &EditorKey, client: ClientId, session: u32, input: Input) -> Value {
+    let mut fields = record("stale", key, Some(client), Some(session), None);
+    fields["n"] = json!(input.n);
+    fields["seen"] = json!(input.seen);
+    fields
+}
 
 /// An editor: its Live instance and its device's LOM path.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -164,6 +199,9 @@ pub enum Act {
         phase: Phase,
         at: (i32, i32),
     },
+    /// The page's input `n` on `session` was handled (PR J): the window
+    /// worker's pictures say they show it once Pro-Q had time to paint it.
+    Handled { session: u32, n: u32 },
     /// A client's editor state (`eq`).
     Tell { client: ClientId, msg: ServerMsg },
     /// The locks changed: every client gets them.
@@ -803,6 +841,34 @@ impl Eqs {
             at,
         }));
         acts
+    }
+
+    /// A numbered finger of `client` (PR J): a down on an old picture
+    /// ([`stale_down`]) never reaches the editor (a contact of the client
+    /// still down ends with its cancel, and the step is recorded `stale`);
+    /// any other input goes as [`Eqs::input`]. Every input of the client's
+    /// open editor is handed to the window worker as handled.
+    pub fn numbered(&mut self, client: ClientId, input: Input, now: f64) -> Vec<Act> {
+        let stale = input.touch == Touch::Down && stale_down(input.n, input.seen);
+        let touch = if stale { Touch::Cancel } else { input.touch };
+        let mut acts = self.input(client, touch, input.x, input.y, now);
+        if let Some((key, session)) = self.open_of(client) {
+            if stale {
+                acts.push(Act::Record(stale_fields(&key, client, session, input)));
+            }
+            acts.push(Act::Handled {
+                session,
+                n: input.n,
+            });
+        }
+        acts
+    }
+
+    /// The editor `client` holds open, and its session.
+    fn open_of(&self, client: ClientId) -> Option<(EditorKey, u32)> {
+        let key = self.held.get(&client)?;
+        let editor = self.editors.get(key)?;
+        matches!(editor.stage, Stage::Open { .. }).then(|| (key.clone(), editor.session))
     }
 
     /// The router's tick at `now`: a silent client's contact ends with a

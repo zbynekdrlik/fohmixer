@@ -8,7 +8,7 @@ import html
 import json
 import math
 
-from timeline_model import ROWS, Span, ms_text, no_data_text
+from timeline_model import ROWS, Span, ms_text, no_data_text, percentile
 from timeline_read import key_hash, key_scale, local_text, number, to_live, utc_text, value2db
 from timeline_touch import OFFLINE
 
@@ -659,6 +659,81 @@ def _detail_table(t):
     return f"<p>{esc(DETAIL_LEGEND)}</p>{table}"
 
 
+EQ_LEGEND = (
+    "Pro-Q 4 screen (#71): each finger on the editor's picture as the page recorded it "
+    "(down, up, cancel, and stale: a finger refused because the picture did not yet show "
+    "the page's last input), at the editor's picture pixels with the page's zoom; then each "
+    "second of drawing: the frames drawn, the latency samples (from an input's send to the "
+    "draw of the first picture that shows it), the inputs shown whose send time the page no "
+    "longer kept (lost) and the longest decode."
+)
+
+
+def _eq_table(t):
+    if not t.eq_fingers and not t.eq_latency:
+        return "<p>No Pro-Q 4 finger or picture in the window.</p>"
+    head = "".join(f"<th>{h}</th>" for h in ("time (local)", "what", "pointer", "x", "y", "zoom"))
+    rows = []
+    for f in t.eq_fingers:
+        cells = (
+            local_text(f.time),
+            f.what,
+            "n/a" if f.pointer is None else str(f.pointer),
+            *("n/a" if v is None else f"{v:.1f}" for v in (f.x, f.y)),
+            "n/a" if f.zoom is None else f"{f.zoom:.2f}",
+        )
+        content = "".join(f"<td>{esc(c)}</td>" for c in cells)
+        rows.append(
+            tag(
+                "tr",
+                content,
+                class_="eq-finger",
+                data_time=num(f.time),
+                data_what=f.what,
+                data_pointer=None if f.pointer is None else str(f.pointer),
+            )
+        )
+    fingers = f'<table class="eq-fingers"><tr>{head}</tr>{"".join(rows)}</table>'
+    head = "".join(
+        f"<th>{h}</th>"
+        for h in (
+            "time (local)",
+            "frames",
+            "samples",
+            "lost",
+            "median ms",
+            "max ms",
+            "decode max ms",
+        )
+    )
+    rows = []
+    for lat in t.eq_latency:
+        ordered = sorted(lat.samples)
+        median = percentile(ordered, 0.50)
+        cells = (
+            local_text(lat.time),
+            str(lat.frames),
+            str(len(ordered)),
+            str(lat.lost),
+            ms_text(median),
+            ms_text(ordered[-1] if ordered else None),
+            ms_text(lat.decode_ms),
+        )
+        content = "".join(f"<td>{esc(c)}</td>" for c in cells)
+        rows.append(
+            tag(
+                "tr",
+                content,
+                class_="eq-lat",
+                data_time=num(lat.time),
+                data_samples=str(len(ordered)),
+                data_lost=str(lat.lost),
+            )
+        )
+    latency = f'<table class="eq-lat"><tr>{head}</tr>{"".join(rows)}</table>'
+    return f"<p>{esc(EQ_LEGEND)}</p>{fingers}{latency}"
+
+
 DECK_LEGEND = (
     "Stream Deck (#52): each press with the hub's delay (the page's send to the hub), "
     "Companion's round trip, the hold as the page measured it and as the hub forwarded "
@@ -880,6 +955,7 @@ def render(t, pairs, files):
         f"<h2>Touches of single volume faders</h2>{_touches_table(t)}"
         f"<h2>System gestures</h2>{_system_table(t)}"
         f"<h2>Channel detail</h2>{_detail_table(t)}"
+        f"<h2>Pro-Q 4 screen</h2>{_eq_table(t)}"
         f"<h2>Stream Deck</h2>{_deck_table(t)}"
         "</body></html>\n"
     )
