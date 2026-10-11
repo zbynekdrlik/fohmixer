@@ -137,6 +137,10 @@ fn the_probes_figures() {
             Duration::from_millis(150)
         )
     );
+    assert!(paint_over(500.0));
+    assert!(!paint_over(500.0_f64.next_down()));
+    assert!(rested(150.0));
+    assert!(!rested(150.0_f64.next_down()));
     assert_eq!(paint_point((511, 281), 0), (511, 273));
     assert_eq!(paint_point((511, 281), 1), (511, 281));
     assert_eq!(paint_point((511, 281), 2), (511, 273));

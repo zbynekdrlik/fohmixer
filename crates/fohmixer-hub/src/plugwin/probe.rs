@@ -267,6 +267,18 @@ pub fn paint_point(at: (i32, i32), n: u32) -> (i32, i32) {
     }
 }
 
+/// Whether a paint trial `since_ms` after its update is over
+/// ([`PAINT_WAIT`]).
+pub fn paint_over(since_ms: f64) -> bool {
+    since_ms >= millis(PAINT_WAIT)
+}
+
+/// Whether a contact `since_ms` into its rest before a trial rested
+/// [`PAINT_REST`].
+pub fn rested(since_ms: f64) -> bool {
+    since_ms >= millis(PAINT_REST)
+}
+
 /// The value at quantile `q` (0 to 1) of `values`, by nearest rank (0 for
 /// none).
 pub fn percentile(values: &[f64], q: f64) -> f64 {
@@ -603,16 +615,11 @@ fn capture(held: &mut Held<'_>, frames: u32, report: &mut Report<'_>) -> Result<
     Ok(())
 }
 
-/// The contact at `at` kept alive for `long` (resent once
+/// The contact at `at` kept alive for [`PAINT_REST`] (resent once
 /// `KEEPALIVE_MS` passed since `sent`, its last injection).
-fn rest(
-    held: &mut Held<'_>,
-    at: (i32, i32),
-    long: Duration,
-    sent: &mut Instant,
-) -> Result<(), String> {
+fn rest(held: &mut Held<'_>, at: (i32, i32), sent: &mut Instant) -> Result<(), String> {
     let started = Instant::now();
-    while started.elapsed() < long {
+    while !rested(millis(started.elapsed())) {
         if keepalive_due(millis(sent.elapsed())) {
             held.touch(Phase::Update, at, "paint")?;
             *sent = Instant::now();
@@ -636,7 +643,7 @@ fn paint_trial(
     held.touch(Phase::Update, at, "paint")?;
     let injected = Instant::now();
     *sent = injected;
-    while injected.elapsed() < PAINT_WAIT {
+    while !paint_over(millis(injected.elapsed())) {
         let since = millis(injected.elapsed());
         let grabbed = Instant::now();
         let pixels = held.grab().map_err(|why| format!("paint: {why}"))?;
@@ -666,7 +673,7 @@ fn paint(
     let (mut samples, mut grabs, mut lost) = (Vec::new(), Vec::new(), 0_u32);
     let mut last = at;
     for n in 0..trials {
-        rest(held, last, PAINT_REST, &mut sent)?;
+        rest(held, last, &mut sent)?;
         let before = held.grab().map_err(|why| format!("paint: {why}"))?;
         last = paint_point(at, n);
         match paint_trial(held, last, &before, &mut sent, &mut grabs)? {
