@@ -16,7 +16,13 @@ fn probe(args: &[&str]) -> Output {
 
 #[test]
 fn bad_arguments_are_exit_2_with_the_usage() {
-    for args in [&[][..], &["--pid"][..], &["--pid", "1", "--loud"][..]] {
+    // #71 PR P: `--undo` with `--hold` is a bad argument too.
+    for args in [
+        &[][..],
+        &["--pid"][..],
+        &["--pid", "1", "--loud"][..],
+        &["--pid", "1", "--undo", "--hold"][..],
+    ] {
         let out = probe(args);
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert_eq!(out.status.code(), Some(2), "{args:?}: {stderr}");

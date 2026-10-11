@@ -24,7 +24,18 @@
 //! 5. a double tap at `--band` (on a fresh Pro-Q's curve: a new band);
 //! 6. a drag from `--band` to `--to` (updates every 16 ms, a rest with the
 //!    resends, the up at the last point);
-//! 7. with `--hold` (#71 PR N): what Windows makes of a contact on the
+//! 7. with `--undo` (#71 PR P): Pro-Q's own undo, in up to [`UNDO_TAPS`]
+//!    rounds. Each grabs the picture and reads its ↶ ([`undo::read`], at
+//!    the spot measured for the picture's width): lit, a line `undo=<i>:lit
+//!    at=<x>,<y>` and a tap at the run the read found (down, `GUARD_TAP`,
+//!    up), [`TAP_APART`] (two taps never a double click), then
+//!    `after-undo-<i>.jpg`; grey or missing, a line `undo_end=grey taps=`
+//!    or `undo_end=missing taps=` and no tap; [`UNDO_TAPS`] lit rounds end
+//!    `undo_end=lit taps=4`. After a fresh Pro-Q's band and drag the first
+//!    undo takes the drag back, the second the band, then the ↶ reads grey.
+//!    The band is gone, so the field's step (10) is left out. Never with
+//!    `--hold` or `--paint` (bad arguments: each makes changes of its own);
+//! 8. with `--hold` (#71 PR N): what Windows makes of a contact on the
 //!    band at `--to` (the first PR M run found a still contact's up made a
 //!    right click: Pro-Q's context menu). A still contact held each of
 //!    [`HOLDS`] in turn, lifted, then a look for a new window of the
@@ -45,7 +56,7 @@
 //!    moves, `drag_px=menu` when a threshold move's rest opened a menu,
 //!    `hold_quiet=refused:<why>` when Windows refused the property. Only at
 //!    the editor's known size (no `--size`);
-//! 8. with `--paint <n>` (#71 PR M): how long Pro-Q takes to paint an
+//! 9. with `--paint <n>` (#71 PR M): how long Pro-Q takes to paint an
 //!    input. A contact down on the band at `--to`, dragged past the drag
 //!    threshold and back ([`PAINT_ENTER`]: a contact that never left it is
 //!    no drag, PR N), then `n` trials. Each
@@ -63,9 +74,9 @@
 //!    `--to` and its up. Its figure sets `fohmixer_proto::eq::PAINT_MS`;
 //!    Carla's bridge runs on the dummy engine, so no analyzer moves the
 //!    picture meanwhile;
-//! 9. a double tap at `--to` (on the band: its frequency text field opens,
-//!    Pro-Q 4.02's close-crash state);
-//! 10. the close guard, as the hub's (#74 review, round 2): the picture put
+//! 10. a double tap at `--to` (on the band: its frequency text field opens,
+//!     Pro-Q 4.02's close-crash state), unless `--undo` took the band away;
+//! 11. the close guard, as the hub's (#74 review, round 2): the picture put
 //!     at [`super::KNOWN_SIZE`] (the size the inert spot was verified at),
 //!     whatever size it has, in two placements each seen to land (the
 //!     window's rectangle for it at the take's place, moved into the work
@@ -76,7 +87,7 @@
 //!     nothing), then a tap on the inert spot (`--inert`, else the hub's
 //!     own, [`super::inert_spot`] of the known width), then the guard's
 //!     wait;
-//! 11. the release (the take's rectangle back when it was changed, the
+//! 12. the release (the take's rectangle back when it was changed, the
 //!     z-order as it was) and, with `--close`, a close request to the window
 //!     (Carla's bridge ends with `0xC0000005` on it whatever the plug-in's
 //!     state).
@@ -89,16 +100,18 @@
 //! then `after-band.jpg`, `after-drag.jpg`, `field-open.jpg`,
 //! `after-guard.jpg`; with `--size` first `after-resize.jpg`, with
 //! `--hold` the holds' and `after-hold.jpg` after `after-drag.jpg`, with
-//! `--paint` `after-paint.jpg` after those): the field
-//! must be open in `field-open` and closed in `after-guard`. `--sim` runs
-//! it on the simulated backend (the CLI's tests). Exit 0, 1 when a step
-//! failed (its line says which), 2 for bad arguments.
+//! `--paint` `after-paint.jpg` after those, with `--undo`
+//! `after-undo-<i>.jpg` after `after-drag.jpg` and no `field-open.jpg`):
+//! the field must be open in `field-open` and closed in `after-guard`.
+//! `--sim` runs it on the simulated backend (the CLI's tests). Exit 0, 1
+//! when a step failed (its line says which), 2 for bad arguments.
 
 use std::io::Write;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use super::sim::Sim;
+use super::undo::{self, Undo};
 #[cfg(windows)]
 use super::win::probe_backend as platform;
 use super::{
@@ -108,7 +121,10 @@ use super::{
 };
 
 /// The CLI's usage line.
-pub const USAGE: &str = "usage: fohmixer-hub eq-probe --pid <pid> [--frames <n>] [--size <w>x<h>] [--min-probe] [--hold] [--paint <n>] [--band <x,y>] [--to <x,y>] [--inert <x,y>] [--out <folder>] [--close] [--sim]";
+pub const USAGE: &str = "usage: fohmixer-hub eq-probe --pid <pid> [--frames <n>] [--size <w>x<h>] [--min-probe] [--hold] [--paint <n>] [--undo] [--band <x,y>] [--to <x,y>] [--inert <x,y>] [--out <folder>] [--close] [--sim]";
+/// Why `--undo` was refused with `--hold` or `--paint` (#71 PR P): each
+/// makes changes of its own, which the undo would count.
+pub const UNDO_ALONE: &str = "--undo cannot run with --hold or --paint";
 /// The picture `--min-probe` asks for (px): far below any Pro-Q size, so
 /// the editor takes its own minimum.
 pub const MIN_PROBE: (u32, u32) = (160, 120);
@@ -178,6 +194,10 @@ pub const TAP_APART: Duration = Duration::from_millis(700);
 /// after each before its up.
 pub const DRAG_PXS: [i32; 8] = [2, 4, 6, 8, 12, 16, 24, 32];
 pub const DRAG_REST: Duration = Duration::from_millis(300);
+/// `--undo` (#71 PR P): the most taps on Pro-Q's ↶. The band and the drag
+/// make two changes, so a third lit read means the history holds more than
+/// the probe made; the fourth tap is the last.
+pub const UNDO_TAPS: u32 = 4;
 
 /// The probe's arguments.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -198,6 +218,8 @@ pub struct Args {
     pub paint: u32,
     /// Whether to see what Windows makes of a held contact (#71 PR N).
     pub hold: bool,
+    /// Whether to tap Pro-Q's own undo until it reads grey (#71 PR P).
+    pub undo: bool,
 }
 
 /// `x,y` as a point.
@@ -237,6 +259,7 @@ pub fn parse(args: &[&str]) -> Result<Args, String> {
         min_probe: false,
         paint: 0,
         hold: false,
+        undo: false,
     };
     let mut pid = None;
     let mut rest = args.iter();
@@ -250,6 +273,7 @@ pub fn parse(args: &[&str]) -> Result<Args, String> {
             "--sim" => parsed.sim = true,
             "--min-probe" => parsed.min_probe = true,
             "--hold" => parsed.hold = true,
+            "--undo" => parsed.undo = true,
             "--pid" | "--frames" | "--band" | "--to" | "--inert" | "--out" | "--size"
             | "--paint" => {
                 let value = rest.next().ok_or(format!("{flag} needs a value"))?;
@@ -269,6 +293,9 @@ pub fn parse(args: &[&str]) -> Result<Args, String> {
         }
     }
     parsed.pid = pid.ok_or("--pid is required")?;
+    if parsed.undo && (parsed.hold || parsed.paint > 0) {
+        return Err(UNDO_ALONE.to_string());
+    }
     Ok(parsed)
 }
 
@@ -1063,6 +1090,27 @@ fn settle(held: &mut Held<'_>, name: &str, report: &mut Report<'_>) -> Result<()
     report.save(name, &pixels)
 }
 
+/// `--undo` (#71 PR P): Pro-Q's own ↶ read and, while it reads lit, tapped
+/// at the run the read found, at most [`UNDO_TAPS`] times, each tap's
+/// picture saved (`after-undo-<i>.jpg`); its lines to `report`.
+fn undo_taps(held: &mut Held<'_>, report: &mut Report<'_>) -> Result<(), String> {
+    for i in 1..=UNDO_TAPS {
+        let pixels = held.grab().map_err(|why| format!("undo: {why}"))?;
+        let (x, y) = match undo::read(&pixels) {
+            Undo::Lit(x, y) => (x, y),
+            Undo::Grey => return report.line(&format!("undo_end=grey taps={}", i - 1)),
+            Undo::Missing => return report.line(&format!("undo_end=missing taps={}", i - 1)),
+        };
+        report.line(&format!("undo={i}:lit at={x},{y}"))?;
+        held.guard_tap((x, y))
+            .map_err(|why| format!("undo at {x},{y}: {why}"))?;
+        // Two taps never make a double click.
+        std::thread::sleep(TAP_APART);
+        settle(held, &format!("after-undo-{i}.jpg"), report)?;
+    }
+    report.line(&format!("undo_end=lit taps={UNDO_TAPS}"))
+}
+
 /// The probe's steps on `backend` (its thread started), the findings to
 /// `out`; the first step that failed, if one did. Once the window is taken,
 /// every way out ends a contact still down and hands the window back.
@@ -1141,6 +1189,9 @@ pub fn run(backend: &mut dyn Backend, args: &Args, out: &mut dyn Write) -> Resul
     let steps = drag(&mut held, band, to)?;
     report.line(&format!("drag=ok steps={steps} to={},{}", to.0, to.1))?;
     settle(&mut held, "after-drag.jpg", &mut report)?;
+    if args.undo {
+        undo_taps(&mut held, &mut report)?;
+    }
     if args.hold {
         let spot = args.inert.unwrap_or_else(|| inert_spot(KNOWN_SIZE.0));
         hold(&mut held, to, spot, &mut report)?;
@@ -1150,9 +1201,13 @@ pub fn run(backend: &mut dyn Backend, args: &Args, out: &mut dyn Write) -> Resul
         paint(&mut held, to, args.paint, &mut report)?;
         settle(&mut held, "after-paint.jpg", &mut report)?;
     }
-    double_tap(&mut held, to, "field")?;
-    report.line("field=ok")?;
-    settle(&mut held, "field-open.jpg", &mut report)?;
+    // After `--undo` the band is gone: no field to open (the guard and the
+    // release run as always).
+    if !args.undo {
+        double_tap(&mut held, to, "field")?;
+        report.line("field=ok")?;
+        settle(&mut held, "field-open.jpg", &mut report)?;
+    }
     // The guard, as the hub's: the picture placed at the size the inert
     // spot is known at, whatever size it has, each placement seen to land
     // (#74 review, round 2); not so, no tap.
