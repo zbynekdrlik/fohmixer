@@ -113,7 +113,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use fohmixer_proto::eq::{Area, PAINT_MS, reason};
+use fohmixer_proto::eq::{Area, Crop, FrameHead, PAINT_MS, reason};
 use tokio::sync::oneshot;
 
 use crate::eq::size::editor_size;
@@ -571,7 +571,69 @@ pub trait Backend: Send {
 pub struct Frame {
     pub session: u32,
     pub shown: u32,
+    /// The part of the picture its JPEG holds (PR L; none: the whole
+    /// picture), and the whole picture's size.
+    pub crop: Option<Crop>,
+    pub size: (u32, u32),
     pub jpeg: Bytes,
+}
+
+impl Frame {
+    /// Its header for the page (PR L: the part's corner, the whole
+    /// picture's size); the flight numbers it as it goes (`seq` 0 here).
+    pub fn head(&self) -> FrameHead {
+        let (x, y) = self.crop.map_or((0, 0), |crop| (crop.x, crop.y));
+        FrameHead {
+            session: self.session,
+            seq: 0,
+            shown: self.shown,
+            x,
+            y,
+            width: self.size.0,
+            height: self.size.1,
+        }
+    }
+
+    /// Whether it holds the whole picture (a card's last picture is only
+    /// that).
+    pub fn whole(&self) -> bool {
+        self.crop.is_none()
+    }
+}
+
+/// The part `crop` of a picture of `size` a frame carries (PR L): clamped
+/// to the picture; none when that holds the whole picture or nothing.
+pub fn crop_within(crop: Crop, size: (u32, u32)) -> Option<Crop> {
+    let x = crop.x.min(size.0);
+    let y = crop.y.min(size.1);
+    let within = Crop {
+        x,
+        y,
+        w: crop.w.min(size.0 - x),
+        h: crop.h.min(size.1 - y),
+    };
+    let whole = (x, y, within.w, within.h) == (0, 0, size.0, size.1);
+    (within.w.min(within.h) > 0 && !whole).then_some(within)
+}
+
+/// The pixels of `crop` (one [`crop_within`] gave) of `pixels`.
+pub fn cropped(pixels: &Pixels, crop: Crop) -> Pixels {
+    let stride = pixels.width as usize * 4;
+    let from = crop.x as usize * 4;
+    let to = from + crop.w as usize * 4;
+    let bgra = pixels
+        .bgra
+        .chunks_exact(stride)
+        .skip(crop.y as usize)
+        .take(crop.h as usize)
+        .flat_map(|row| &row[from..to])
+        .copied()
+        .collect();
+    Pixels {
+        width: crop.w,
+        height: crop.h,
+        bgra,
+    }
 }
 
 /// Where a frame goes.
@@ -912,6 +974,8 @@ struct Editor {
     put: f64,
     /// The page's inputs its pictures show (PR J).
     shown: Shown,
+    /// The part of the picture its page shows (PR L; none: the whole).
+    crop: Option<Crop>,
     /// When it was last grabbed and when its minute began (worker ms).
     grabbed: f64,
     minute: f64,
@@ -962,6 +1026,9 @@ struct Guarding {
 struct Job {
     session: u32,
     shown: u32,
+    /// The part of the picture it is (PR L), and the whole picture's size.
+    crop: Option<Crop>,
+    size: (u32, u32),
     pixels: Arc<Pixels>,
     sink: FrameSink,
 }
@@ -1052,6 +1119,8 @@ fn deliver(shared: &Shared, job: Job) {
         (job.sink)(Frame {
             session: job.session,
             shown: job.shown,
+            crop: job.crop,
+            size: job.size,
             jpeg: Bytes::from(jpeg),
         });
     }
@@ -1082,16 +1151,10 @@ impl Encoder {
         self.shared.lock().captured.insert(session);
     }
 
-    /// `pixels` of `session`, which show the page's input `shown`, to
-    /// encode for `sink`: it replaces a picture still waiting (the newest
-    /// wins).
-    fn put(&self, session: u32, shown: u32, pixels: Arc<Pixels>, sink: FrameSink) {
-        self.shared.lock().waiting = Some(Job {
-            session,
-            shown,
-            pixels,
-            sink,
-        });
+    /// A picture to encode for its sink: it replaces one still waiting
+    /// (the newest wins).
+    fn put(&self, job: Job) {
+        self.shared.lock().waiting = Some(job);
         self.shared.ready.notify_one();
     }
 
@@ -1183,6 +1246,10 @@ enum Command {
     Handled {
         session: u32,
         n: u32,
+    },
+    View {
+        session: u32,
+        crop: Option<Crop>,
     },
     Guard {
         session: u32,
@@ -1290,6 +1357,11 @@ impl Worker {
                 let now = self.now();
                 if let Some(editor) = self.editors.get_mut(&session) {
                     editor.shown.handled(n, now);
+                }
+            }
+            Command::View { session, crop } => {
+                if let Some(editor) = self.editors.get_mut(&session) {
+                    editor.crop = crop;
                 }
             }
             Command::Guard { session, reply } => self.guard(session, reply),
@@ -1431,6 +1503,7 @@ impl Worker {
                         last_shown: 0,
                         put: f64::NEG_INFINITY,
                         shown: Shown::default(),
+                        crop: None,
                         grabbed: f64::NEG_INFINITY,
                         minute: now,
                         counts: Counts::default(),
@@ -1736,6 +1809,9 @@ impl Worker {
                 height: size.1,
             });
         }
+        // The part the page shows (PR L), or the whole picture.
+        let crop = editor.crop.and_then(|crop| crop_within(crop, size));
+        let pixels = crop.map_or(pixels, |crop| cropped(&pixels, crop));
         let shown = editor.shown.at_grab(now);
         if editor.last.as_deref() == Some(&pixels)
             && shown == editor.last_shown
@@ -1747,7 +1823,14 @@ impl Worker {
         editor.last = Some(Arc::clone(&pixels));
         editor.last_shown = shown;
         editor.put = now;
-        self.encoder.put(session, shown, pixels, sink);
+        self.encoder.put(Job {
+            session,
+            shown,
+            crop,
+            size,
+            pixels,
+            sink,
+        });
     }
 
     /// A phase of contact `contact` on `session`'s window: one contact on
@@ -2088,6 +2171,12 @@ impl Plugwin {
     /// phases it made, in the router's order.
     pub fn handled(&self, session: u32, n: u32) {
         let _ = self.tx.send(Command::Handled { session, n });
+    }
+
+    /// The part of `session`'s picture its page shows (PR L; none: the
+    /// whole picture): its frames carry only that from the next grab.
+    pub fn view(&self, session: u32, crop: Option<Crop>) {
+        let _ = self.tx.send(Command::View { session, crop });
     }
 
     /// The close guard of `session`: the command goes to the worker now,

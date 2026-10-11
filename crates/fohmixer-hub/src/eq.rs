@@ -71,7 +71,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use fohmixer_proto::client::ServerMsg;
-use fohmixer_proto::eq::{Area, EqLock, EqState, Touch, caught_up, reason};
+use fohmixer_proto::eq::{Area, Crop, EqLock, EqState, Touch, caught_up, reason};
 use serde_json::{Value, json};
 
 use crate::live::subs::ClientId;
@@ -202,6 +202,9 @@ pub enum Act {
     /// The page's input `n` on `session` was handled (PR J): the window
     /// worker's pictures say they show it once Pro-Q had time to paint it.
     Handled { session: u32, n: u32 },
+    /// The part of `session`'s picture its page shows (PR L; none: the
+    /// whole): the worker's frames carry only that.
+    View { session: u32, crop: Option<Crop> },
     /// A client's editor state (`eq`).
     Tell { client: ClientId, msg: ServerMsg },
     /// The locks changed: every client gets them.
@@ -862,6 +865,16 @@ impl Eqs {
             });
         }
         acts
+    }
+
+    /// The part of its open editor's picture `client` shows (PR L): the
+    /// worker crops that editor's frames to it; nothing without an open
+    /// editor (a new one starts whole).
+    pub fn view(&mut self, client: ClientId, crop: Option<Crop>) -> Vec<Act> {
+        self.open_of(client)
+            .map(|(_, session)| Act::View { session, crop })
+            .into_iter()
+            .collect()
     }
 
     /// The editor `client` holds open, and its session.

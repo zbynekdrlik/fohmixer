@@ -655,7 +655,7 @@ fn a_report_body_keeps_its_known_fields_only() {
 
 #[test]
 fn eq_messages_round_trip() {
-    use crate::eq::{EqItem, EqLock, EqState, Touch};
+    use crate::eq::{Crop, EqItem, EqLock, EqState, Touch};
     use crate::layout::{Anchor, Binding};
     let binding = Binding {
         instance: "band".into(),
@@ -716,6 +716,19 @@ fn eq_messages_round_trip() {
         json!({"type": "eq_input", "touch": "move", "x": 432.0, "y": 316.0, "n": 13}),
     );
     round_trip_client(ClientMsg::EqClose, json!({"type": "eq_close"}));
+    // PR L: the part of the picture the page shows, or the whole picture.
+    round_trip_client(
+        ClientMsg::EqView {
+            crop: Some(Crop {
+                x: 320,
+                y: 160,
+                w: 640,
+                h: 400,
+            }),
+        },
+        json!({"type": "eq_view", "crop": {"x": 320, "y": 160, "w": 640, "h": 400}}),
+    );
+    round_trip_client(ClientMsg::EqView { crop: None }, json!({"type": "eq_view"}));
     // PR I: the page got a frame of its open editor.
     round_trip_client(
         ClientMsg::EqFrameAck {

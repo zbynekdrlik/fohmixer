@@ -353,6 +353,8 @@ fn job(session: u32, width: u32, sink: FrameSink) -> Job {
     Job {
         session,
         shown: 0,
+        crop: None,
+        size: (width, 8),
         pixels: Arc::new(sim::picture(1, width, 8)),
         sink,
     }
@@ -387,15 +389,15 @@ fn the_newest_picture_wins_and_a_forgotten_one_is_dropped() {
             .as_ref()
             .map(|job| (job.session, job.pixels.width))
     };
-    encoder.put(1, 0, job(1, 16, sink().0).pixels, sink().0);
-    encoder.put(2, 0, job(2, 24, sink().0).pixels, sink().0);
+    encoder.put(job(1, 16, sink().0));
+    encoder.put(job(2, 24, sink().0));
     assert_eq!(waiting(&encoder), Some((2, 24)), "the newest wins");
     encoder.forget(1);
     assert_eq!(waiting(&encoder), Some((2, 24)), "another session's");
     let next = encoder.shared.wait_job().expect("a picture waits");
     assert_eq!((next.session, next.pixels.width), (2, 24));
     assert_eq!(waiting(&encoder), None, "taken");
-    encoder.put(3, 0, job(3, 16, sink().0).pixels, sink().0);
+    encoder.put(job(3, 16, sink().0));
     encoder.forget(3);
     assert_eq!(waiting(&encoder), None, "forgotten");
     // What it made is handed over once.
@@ -408,7 +410,7 @@ fn the_newest_picture_wins_and_a_forgotten_one_is_dropped() {
     assert_eq!(encoder.done(), vec![made]);
     assert_eq!(encoder.done(), Vec::new());
     // Stopped: a waiting picture is dropped, and there is no next one.
-    encoder.put(4, 0, job(4, 16, sink().0).pixels, sink().0);
+    encoder.put(job(4, 16, sink().0));
     encoder.stop();
     assert_eq!(waiting(&encoder), None);
     assert!(encoder.shared.wait_job().is_none());
@@ -420,7 +422,7 @@ fn the_encoders_thread_sends_each_jpeg_to_its_sink_and_ends_at_the_stop() {
     let (sink, frames) = sink();
     encoder.capture(5);
     encoder.capture(6);
-    encoder.put(5, 0, job(5, 16, sink.clone()).pixels, sink.clone());
+    encoder.put(job(5, 16, sink.clone()));
     wait_for("a frame", || frames.lock().unwrap().len() == 1);
     let got = frames.lock().unwrap().clone();
     let [(session, size, shown)] = got.as_slice() else {
@@ -439,7 +441,14 @@ fn the_encoders_thread_sends_each_jpeg_to_its_sink_and_ends_at_the_stop() {
         height: 8,
         bgra: vec![0; 10],
     });
-    encoder.put(6, 0, broken, sink);
+    encoder.put(Job {
+        session: 6,
+        shown: 0,
+        crop: None,
+        size: (16, 8),
+        pixels: broken,
+        sink,
+    });
     wait_for("its report", || {
         encoder.shared.lock().done.iter().any(|e| e.session == 6)
     });
@@ -469,7 +478,7 @@ fn a_frame_encoded_while_its_session_was_forgotten_never_reaches_its_sink() {
     };
     let (sink, frames) = sink();
     encoder.capture(3);
-    encoder.put(3, 0, job(3, 16, sink.clone()).pixels, sink.clone());
+    encoder.put(job(3, 16, sink.clone()));
     let taken = encoder.shared.wait_job().expect("a picture waits");
     encoder.forget(3);
     deliver(&encoder.shared, taken);
@@ -477,7 +486,7 @@ fn a_frame_encoded_while_its_session_was_forgotten_never_reaches_its_sink() {
     assert_eq!(encoder.done(), Vec::new());
     // A session still captured gets its frame, reported first.
     encoder.capture(4);
-    encoder.put(4, 0, job(4, 16, sink.clone()).pixels, sink);
+    encoder.put(job(4, 16, sink.clone()));
     let taken = encoder.shared.wait_job().expect("a picture waits");
     deliver(&encoder.shared, taken);
     assert_eq!(frames.lock().unwrap().len(), 1);
@@ -860,6 +869,159 @@ fn a_picture_whose_encode_failed_is_no_last_picture() {
     wait_for("the same picture again", || {
         frames.lock().unwrap().len() == 2
     });
+}
+
+#[test]
+fn a_crop_is_the_part_within_the_picture_and_none_for_the_whole() {
+    // PR L.
+    let crop = |x, y, w, h| Crop { x, y, w, h };
+    assert_eq!(
+        crop_within(crop(10, 20, 30, 40), (100, 80)),
+        Some(crop(10, 20, 30, 40))
+    );
+    // Clamped to the picture.
+    assert_eq!(
+        crop_within(crop(90, 60, 30, 40), (100, 80)),
+        Some(crop(90, 60, 10, 20))
+    );
+    assert_eq!(
+        crop_within(crop(0, 0, 100, 79), (100, 80)),
+        Some(crop(0, 0, 100, 79))
+    );
+    // The whole picture, or nothing: none.
+    assert_eq!(crop_within(crop(0, 0, 100, 80), (100, 80)), None);
+    assert_eq!(crop_within(crop(0, 0, 500, 500), (100, 80)), None);
+    assert_eq!(crop_within(crop(100, 10, 30, 40), (100, 80)), None);
+    assert_eq!(crop_within(crop(10, 80, 30, 40), (100, 80)), None);
+    assert_eq!(crop_within(crop(10, 10, 0, 40), (100, 80)), None);
+    assert_eq!(crop_within(crop(10, 10, 30, 0), (100, 80)), None);
+    assert_eq!(crop_within(crop(0, 0, 4, 4), (0, 0)), None);
+}
+
+#[test]
+fn a_crop_takes_its_rows_and_columns_of_the_picture() {
+    // A 4 × 3 picture whose pixel (x, y) is [x, y, 7, 255].
+    let bgra = (0..3_u8)
+        .flat_map(|y| (0..4_u8).flat_map(move |x| [x, y, 7, 255]))
+        .collect();
+    let picture = Pixels {
+        width: 4,
+        height: 3,
+        bgra,
+    };
+    let part = cropped(
+        &picture,
+        Crop {
+            x: 1,
+            y: 1,
+            w: 2,
+            h: 2,
+        },
+    );
+    assert_eq!((part.width, part.height), (2, 2));
+    assert_eq!(
+        part.bgra,
+        vec![1, 1, 7, 255, 2, 1, 7, 255, 1, 2, 7, 255, 2, 2, 7, 255]
+    );
+}
+
+#[test]
+fn a_frame_says_where_its_part_lies_and_whether_it_is_whole() {
+    let part = Frame {
+        session: 4,
+        shown: 9,
+        crop: Some(Crop {
+            x: 320,
+            y: 160,
+            w: 640,
+            h: 400,
+        }),
+        size: (1349, 809),
+        jpeg: Bytes::from_static(b"jpeg"),
+    };
+    assert_eq!(
+        part.head(),
+        FrameHead {
+            session: 4,
+            seq: 0,
+            shown: 9,
+            x: 320,
+            y: 160,
+            width: 1349,
+            height: 809,
+        }
+    );
+    assert!(!part.whole());
+    let whole = Frame {
+        session: 4,
+        shown: 9,
+        crop: None,
+        size: (1349, 809),
+        jpeg: Bytes::from_static(b"jpeg"),
+    };
+    assert_eq!((whole.head().x, whole.head().y), (0, 0));
+    assert!(whole.whole());
+}
+
+#[test]
+fn a_view_crops_the_frames_until_the_whole_picture_again() {
+    // PR L: the page shows a part at 2× and more; its frames carry it.
+    let (mut worker, handle, _) = worker();
+    take(&mut worker, &handle, 1, 0.0);
+    let (sink, frames) = sink();
+    worker.command_at(Command::Capture { session: 1, sink }, 0.0);
+    worker.step_at(0.0);
+    wait_for("the whole picture", || frames.lock().unwrap().len() == 1);
+    let crop = Crop {
+        x: 100,
+        y: 50,
+        w: 300,
+        h: 200,
+    };
+    worker.command_at(
+        Command::View {
+            session: 1,
+            crop: Some(crop),
+        },
+        10.0,
+    );
+    assert_eq!(worker.editors[&1].crop, Some(crop));
+    std::thread::sleep(Duration::from_millis(260));
+    worker.step_at(40.0);
+    assert_eq!(
+        worker.editors[&1]
+            .last
+            .as_ref()
+            .map(|p| (p.width, p.height)),
+        Some((300, 200)),
+        "the part only"
+    );
+    wait_for("the part", || frames.lock().unwrap().len() == 2);
+    // A view of another session is nothing; none is the whole picture.
+    worker.command_at(
+        Command::View {
+            session: 9,
+            crop: None,
+        },
+        50.0,
+    );
+    assert_eq!(worker.editors[&1].crop, Some(crop));
+    worker.command_at(
+        Command::View {
+            session: 1,
+            crop: None,
+        },
+        60.0,
+    );
+    std::thread::sleep(Duration::from_millis(260));
+    worker.step_at(80.0);
+    assert_eq!(
+        worker.editors[&1]
+            .last
+            .as_ref()
+            .map(|p| (p.width, p.height)),
+        Some((1349, 809))
+    );
 }
 
 #[test]

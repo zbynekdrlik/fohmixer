@@ -858,6 +858,31 @@ fn a_numbered_finger_is_handled_and_a_stale_down_never_reaches_the_editor() {
 }
 
 #[test]
+fn a_view_crops_the_open_editors_frames_only() {
+    // PR L: the part of the picture the page shows at 2× and more.
+    let mut eqs = listed();
+    let crop = Some(Crop {
+        x: 10,
+        y: 20,
+        w: 300,
+        h: 200,
+    });
+    assert_eq!(eqs.view(1, crop), Vec::new(), "none held");
+    eqs.open(1, &key(1), WALL);
+    assert_eq!(eqs.view(1, crop), Vec::new(), "not open yet");
+    eqs.opened(&key(1), 1, Ok((1349, 809)));
+    assert_eq!(eqs.view(1, crop), vec![Act::View { session: 1, crop }]);
+    assert_eq!(
+        eqs.view(1, None),
+        vec![Act::View {
+            session: 1,
+            crop: None
+        }]
+    );
+    assert_eq!(eqs.view(2, crop), Vec::new(), "another client holds none");
+}
+
+#[test]
 fn a_resting_contact_is_left_to_the_worker_and_a_silent_pages_ends() {
     let mut eqs = listed();
     open_one(&mut eqs);

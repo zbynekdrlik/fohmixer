@@ -28,6 +28,13 @@
 //! frame only when its session is the one it opened: a frame of an editor
 //! it already left is dropped.
 //!
+//! **The part the page shows (PR L):** at 2× and more the page tells the
+//! hub the part of the picture it shows, with a margin ([`Crop`],
+//! `eq_view`), and the hub sends only that part: a frame's header names its
+//! corner in the picture and the whole picture's size, and the page draws
+//! it there (outside it, the page keeps what it drew; out of sight). Under
+//! 2×, or with no crop, frames carry the whole picture (corner 0, 0).
+//!
 //! **Which input a picture shows (PR J):** a page numbers its inputs of an
 //! open editor (`eq_input`'s `n`, from 1, every phase), and each frame says
 //! the last of them the hub handled at least [`PAINT_MS`] before it grabbed
@@ -59,7 +66,17 @@ pub const ON_TRACK: &str = "na tracku";
 /// Between a rack's and its chain's names in a place.
 pub const PLACE_SEP: &str = " › ";
 /// The bytes before a frame's JPEG: its [`FrameHead`].
-pub const FRAME_HEADER: usize = 12;
+pub const FRAME_HEADER: usize = 28;
+
+/// A part of the picture (PR L): its corner and size, in the editor's
+/// picture pixels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Crop {
+    pub x: u32,
+    pub y: u32,
+    pub w: u32,
+    pub h: u32,
+}
 
 /// How long Pro-Q gets to paint an input before a picture counts as
 /// showing it (ms, PR J): a picture grabbed less than this after the hub
@@ -68,13 +85,19 @@ pub const FRAME_HEADER: usize = 12;
 pub const PAINT_MS: f64 = 40.0;
 
 /// A binary frame's header (PR I): the session it shows, its number in
-/// that session (from 1), which the page's ack names, and the last of the
-/// page's inputs it shows (PR J, 0: none yet).
+/// that session (from 1), which the page's ack names, the last of the
+/// page's inputs it shows (PR J, 0: none yet), and (PR L) where its JPEG
+/// lies in the picture (`x`, `y`) and the whole picture's size (`width`,
+/// `height`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FrameHead {
     pub session: u32,
     pub seq: u32,
     pub shown: u32,
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
 }
 
 /// Whether a picture that shows the page's input `shown` shows every input
@@ -228,6 +251,10 @@ pub fn frame(head: FrameHead, jpeg: &[u8]) -> Vec<u8> {
         &head.session.to_be_bytes()[..],
         &head.seq.to_be_bytes()[..],
         &head.shown.to_be_bytes()[..],
+        &head.x.to_be_bytes()[..],
+        &head.y.to_be_bytes()[..],
+        &head.width.to_be_bytes()[..],
+        &head.height.to_be_bytes()[..],
         jpeg,
     ]
     .concat()
@@ -237,13 +264,17 @@ pub fn frame(head: FrameHead, jpeg: &[u8]) -> Vec<u8> {
 /// header.
 pub fn frame_parts(bytes: &[u8]) -> Option<(FrameHead, &[u8])> {
     let (head, jpeg) = bytes.split_at_checked(FRAME_HEADER)?;
-    let ([session, seq, shown], _) = head.as_chunks::<4>() else {
+    let ([session, seq, shown, x, y, width, height], _) = head.as_chunks::<4>() else {
         return None;
     };
     let head = FrameHead {
         session: u32::from_be_bytes(*session),
         seq: u32::from_be_bytes(*seq),
         shown: u32::from_be_bytes(*shown),
+        x: u32::from_be_bytes(*x),
+        y: u32::from_be_bytes(*y),
+        width: u32::from_be_bytes(*width),
+        height: u32::from_be_bytes(*height),
     };
     Some((head, jpeg))
 }
@@ -254,36 +285,27 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn a_frame_carries_its_session_number_and_shown_input_then_the_jpeg() {
+    fn a_frame_carries_its_head_then_the_jpeg() {
         let jpeg = [0xFF, 0xD8, 0xFF, 0xD9];
         let head = FrameHead {
             session: 0x0102_0304,
             seq: 0x0506_0708,
             shown: 0x090A_0B0C,
+            x: 0x0D0E_0F10,
+            y: 0x1112_1314,
+            width: 0x1516_1718,
+            height: 0x191A_1B1C,
         };
         let bytes = frame(head, &jpeg);
-        assert_eq!(
-            bytes,
-            vec![
-                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 0xFF, 0xD8, 0xFF, 0xD9
-            ]
-        );
+        let mut expected: Vec<u8> = (1..=28).collect();
+        expected.extend_from_slice(&jpeg);
+        assert_eq!(bytes, expected);
         assert_eq!(frame_parts(&bytes), Some((head, &jpeg[..])));
-        assert_eq!(FRAME_HEADER, 12);
+        assert_eq!(FRAME_HEADER, 28);
         // A header alone is an empty picture; less is no frame.
-        assert_eq!(
-            frame_parts(&[0, 0, 0, 7, 0, 0, 0, 9, 0, 0, 0, 3]),
-            Some((
-                FrameHead {
-                    session: 7,
-                    seq: 9,
-                    shown: 3
-                },
-                &[][..]
-            ))
-        );
-        assert_eq!(frame_parts(&[0, 0, 0, 7, 0, 0, 0, 9, 0, 0, 3]), None);
-        assert_eq!(frame_parts(&[0, 0, 0, 7, 0, 0, 0, 9]), None);
+        assert_eq!(frame_parts(&bytes[..28]), Some((head, &[][..])));
+        assert_eq!(frame_parts(&bytes[..27]), None);
+        assert_eq!(frame_parts(&bytes[..12]), None);
         assert_eq!(frame_parts(&[]), None);
     }
 

@@ -1167,6 +1167,75 @@ test.describe("The Pro-Q 4 screen", () => {
   });
 });
 
+test.describe("The Pro-Q 4 screen's part in sight", () => {
+  // #71 PR L: at 2× and more the hub sends only the part of the picture in
+  // sight, with a margin; the page draws it at its corner, and the picture
+  // under the fingers stays the whole picture's.
+  test("at 3× the frames are the part in sight, smaller; the whole picture again at 1×", async ({ page }) => {
+    const frames_: { x: number; y: number; width: number; height: number; bytes: number }[] = [];
+    page.on("websocket", (ws) => {
+      ws.on("framereceived", ({ payload }) => {
+        if (typeof payload === "string" || payload.length < 28) return;
+        frames_.push({
+          x: payload.readUInt32BE(12),
+          y: payload.readUInt32BE(16),
+          width: payload.readUInt32BE(20),
+          height: payload.readUInt32BE(24),
+          bytes: payload.length,
+        });
+      });
+    });
+    await openSurface(page);
+    const { onTrack, trackPath } = await hand2Cards(page);
+    await editorOpen(trackPath, false);
+    await onTrack.getByTestId("eq-open").click();
+    const screen = await openScreen(page, trackPath);
+    const canvas = screen.getByTestId("eq-canvas");
+    // The editor in the screen's shape (PR G): the picture's size.
+    const size = await pictureSize(canvas);
+    const start = frames_.length;
+    const whole = await until(
+      async () => frames_.slice(start).filter((f) => f.x === 0 && f.y === 0 && f.width === size.width),
+      (found) => found.length >= 2,
+      "whole frames",
+    );
+    expect([whole[0].width, whole[0].height]).toEqual([size.width, size.height]);
+    // Zoomed to 3× on the picture's middle: once the view rested, parts.
+    const map = await zoomIn(screen, { x: size.width / 2, y: size.height / 2 });
+    const from = frames_.length;
+    const parts = await until(
+      async () => frames_.slice(from).filter((f) => f.x > 0 && f.y > 0),
+      (found) => found.length >= 2,
+      "frames of the part in sight",
+    );
+    expect([parts[0].width, parts[0].height], "the whole picture's size in each").toEqual([size.width, size.height]);
+    const wholeBytes = Math.min(...whole.map((f) => f.bytes));
+    expect(Math.max(...parts.map((f) => f.bytes)), JSON.stringify({ whole: whole.map((f) => f.bytes), parts: parts.map((f) => f.bytes) })).toBeLessThan(wholeBytes);
+    // The canvas still draws the whole picture: a tap lands where it shows.
+    await expect(canvas).toHaveAttribute("data-width", String(size.width));
+    const area = screen.getByTestId("eq-area");
+    const at = await centre(area);
+    const tapFrom = (await simEq.records()).length;
+    await quickTap(area, at, 91);
+    const tap = await until(() => touchesAfter(tapFrom), (all) => all.some((r) => r.phase === "up"), "the tap on the part");
+    wentFromTo(tap, map.toPicture(at), map.toPicture(at));
+    // CELÝ EQ: the whole picture again.
+    await caughtUp(screen);
+    await screen.getByTestId("eq-whole").click();
+    const back = frames_.length;
+    await until(
+      async () => frames_.slice(back).filter((f) => f.x === 0 && f.y === 0),
+      (found) => found.length >= 2,
+      "whole frames again",
+    );
+    const closing = (await simEq.records()).length;
+    await screen.getByTestId("eq-exit").click();
+    await expect(page.getByTestId("eq-screen")).toHaveCount(0);
+    await closedWithGuard(closing);
+    await editorOpen(trackPath, false);
+  });
+});
+
 test.describe("The Pro-Q 4 screen and a lost link", () => {
   // The dropped link resets the page's socket: WebKit logs the reset.
   test.use({ allowedConsole: [/^WebSocket connection to '.*' failed/] });
