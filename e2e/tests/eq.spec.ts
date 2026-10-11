@@ -1629,22 +1629,23 @@ test.describe("The Pro-Q 4 screen on a slow link", () => {
       // observer in the page leaves in the same task).
       await caughtUp(screen);
       const dragFrom = (await simEq.records()).length;
-      const left = screen.getByTestId("eq-canvas").evaluate(
-        (canvas) =>
-          new Promise<string>((done) => {
-            const exit = document.querySelector('[data-testid="eq-exit"]')!;
-            const observer = new MutationObserver(() => {
-              if (canvas.getAttribute("data-caught-up") === "false") {
-                observer.disconnect();
-                exit.dispatchEvent(new PointerEvent("pointerdown", { pointerId: 99, pointerType: "touch", isPrimary: true, bubbles: true, cancelable: true }));
-                done("left behind its up");
-              }
-            });
-            observer.observe(canvas, { attributes: true, attributeFilter: ["data-caught-up"] });
-          }),
-      );
+      // The observer is in place before the up (a locator's evaluate
+      // resolves the element first, and the up could pass it).
+      await screen.getByTestId("eq-canvas").evaluate((canvas) => {
+        (window as any).__leftBehind = new Promise<string>((done) => {
+          const exit = document.querySelector('[data-testid="eq-exit"]')!;
+          const observer = new MutationObserver(() => {
+            if (canvas.getAttribute("data-caught-up") === "false") {
+              observer.disconnect();
+              exit.dispatchEvent(new PointerEvent("pointerdown", { pointerId: 99, pointerType: "touch", isPrimary: true, bubbles: true, cancelable: true }));
+              done("left behind its up");
+            }
+          });
+          observer.observe(canvas, { attributes: true, attributeFilter: ["data-caught-up"] });
+        });
+      });
       await page.mouse.up();
-      expect(await left).toBe("left behind its up");
+      expect(await page.evaluate(() => (window as any).__leftBehind)).toBe("left behind its up");
       await expect(page.getByTestId("eq-screen")).toHaveCount(0);
       // The drag's up reached the editor before the close (one socket, in
       // order); the guard's sequence follows it.
