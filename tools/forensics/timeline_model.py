@@ -12,6 +12,7 @@ import itertools
 import json
 import math
 
+import timeline_eq
 import timeline_touch
 from timeline_read import TAIL_KINDS, is_volume, key_hash, local_text, number, value2db
 
@@ -371,6 +372,28 @@ class Timeline:
             timeline_touch.detail_event(e.hub, e.data)
             for e in self.page
             if e.ev == "detail" and self.in_window(e.hub)
+        ]
+        # The Pro-Q 4 screen (#71): the page's fingers on the editor's
+        # picture and its picture's latency, the hub's dropped downs and
+        # the frames' round trips; whatever the key filter.
+        self.eq_fingers = [
+            timeline_eq.eq_finger(e.hub, e.data)
+            for e in self.page
+            if e.ev == "eq_touch" and self.in_window(e.hub)
+        ]
+        self.eq_latency = [
+            timeline_eq.eq_latency(e.hub, e.data)
+            for e in self.page
+            if e.ev == "eq_lat" and self.in_window(e.hub)
+        ]
+        eq_records = self._within(kinds["eq"])
+        self.eq_hub_stale = sum(r.get("what") == "stale" for r in eq_records)
+        self.eq_links = [
+            link
+            for link in (
+                timeline_eq.eq_link(r) for r in eq_records if r.get("what") in ("rate", "frames")
+            )
+            if link is not None
         ]
         # The Stream Deck (#52): presses with Companion's answers, the hub's
         # own releases with theirs, the red flashes, Companion's link
@@ -857,6 +880,9 @@ def summary(timeline):
     first_moves = [t.first_move_ms for t in touches if t.first_move_ms is not None]
     first_sends = [t.first_send_ms for t in touches if t.first_send_ms is not None]
     move_gaps = [g.ms for t in touches for g in t.move_gaps]
+    eq_samples = timeline_eq.samples_of(timeline.eq_latency)
+    eq_decodes = [lat.decode_ms for lat in timeline.eq_latency if lat.decode_ms is not None]
+    eq_trips = [link.rtt_max_ms for link in timeline.eq_links if link.rtt_max_ms is not None]
 
     def gap_max(row):
         gaps = [g[2] for lane in timeline.lanes.values() for g in lane["gaps"][row]]
@@ -911,6 +937,17 @@ def summary(timeline):
         ("detail_presses", detail_count(timeline, "press")),
         ("detail_opens", detail_count(timeline, "open")),
         ("detail_slid", detail_count(timeline, "slid")),
+        ("eq_fingers", str(sum(f.what == "down" for f in timeline.eq_fingers))),
+        ("eq_stale", str(sum(f.what == "stale" for f in timeline.eq_fingers))),
+        ("eq_hub_stale", str(timeline.eq_hub_stale)),
+        ("eq_lat_n", str(len(eq_samples))),
+        ("eq_lat_p50_ms", ms_text(percentile(eq_samples, 0.50))),
+        ("eq_lat_p95_ms", ms_text(percentile(eq_samples, 0.95))),
+        ("eq_lat_max_ms", ms_text(max(eq_samples, default=None))),
+        ("eq_frames_drawn", str(sum(lat.frames for lat in timeline.eq_latency))),
+        ("eq_decode_max_ms", ms_text(max(eq_decodes, default=None))),
+        ("eq_ack_waits", str(sum(link.ack_waits for link in timeline.eq_links))),
+        ("eq_frame_rtt_max_ms", ms_text(max(eq_trips, default=None))),
         ("deck_presses", str(sum(p.down for p in timeline.deck_presses))),
         ("deck_unsent", str(len(timeline.deck_unsent))),
         ("deck_forced_releases", str(len(timeline.deck_releases))),
