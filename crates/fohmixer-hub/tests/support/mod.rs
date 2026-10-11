@@ -28,6 +28,7 @@ mod host;
 #[allow(unused_imports)] // the host-free test binaries do not use it
 pub use host::Host;
 pub mod companion;
+pub mod throttle;
 
 /// One host-backed test at a time within a test binary (`cargo test` runs
 /// a binary's tests on parallel threads; nextest runs them in the
@@ -253,6 +254,14 @@ pub async fn http(
 
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
+/// A message of either kind, as it arrived ([`Client::next_any`]).
+#[derive(Debug)]
+pub enum Incoming {
+    Text(ServerMsg),
+    /// A Pro-Q 4 frame (#71 PR E).
+    Binary(Vec<u8>),
+}
+
 /// A client of the client protocol that keeps every message it received.
 pub struct Client {
     ws: Socket,
@@ -344,6 +353,29 @@ impl Client {
                 Ok(Some(Ok(Message::Text(text)))) => self
                     .pending
                     .push(serde_json::from_str(text.as_str()).expect("a protocol message")),
+                Ok(Some(Ok(_))) => {}
+                Ok(Some(Err(_)) | None) | Err(_) => return None,
+            }
+        }
+    }
+
+    /// The next message of either kind within `limit`, in arrival order (#71
+    /// PR I: a frame's place among the pongs); none when nothing came or the
+    /// socket closed. The text messages kept for `wait` are not looked at:
+    /// `clear` them first.
+    pub async fn next_any(&mut self, limit: Duration) -> Option<Incoming> {
+        let deadline = Instant::now() + limit;
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            match tokio::time::timeout(left, self.ws.next()).await {
+                Ok(Some(Ok(Message::Text(text)))) => {
+                    return Some(Incoming::Text(
+                        serde_json::from_str(text.as_str()).expect("a protocol message"),
+                    ));
+                }
+                Ok(Some(Ok(Message::Binary(bytes)))) => {
+                    return Some(Incoming::Binary(bytes.to_vec()));
+                }
                 Ok(Some(Ok(_))) => {}
                 Ok(Some(Err(_)) | None) | Err(_) => return None,
             }

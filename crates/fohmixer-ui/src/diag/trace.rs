@@ -18,7 +18,9 @@
 //! selection, a drag, a pinch's start, a cancelled pointer, a capture lost
 //! while the finger is down, and the visual viewport's zoom); a Stream Deck
 //! press ([`deck`], #52, essential) and the tab's opening and closing
-//! ([`deck_view`]). No `send` and
+//! ([`deck_view`]); the Pro-Q 4 screen's fingers ([`fingers`], #71 PR I,
+//! essential: each one's down, up and cancel with its picture point and the
+//! zoom, its moves summarized). No `send` and
 //! no `ack` (PR E): the hub's own `set`
 //! record holds each write with the page's `t` and `seq`, and the hub
 //! writes each ack; a frame's `mv` names its set. No page event has a field
@@ -72,6 +74,7 @@ use std::collections::{BTreeMap, VecDeque};
 use fohmixer_proto::client::ClientMsg;
 use serde_json::{Map, Value, json};
 
+pub mod fingers;
 pub mod moves;
 pub mod rtt;
 pub mod sys;
@@ -126,14 +129,15 @@ pub fn takes_batch(buffered: u32) -> bool {
 /// for an essential one, what the forensics need of every touch and outage
 /// (touches, dropouts, resets, socket transitions, visibility, the notes of
 /// what went, a write's intent changes, PR G's system gestures and zooms,
-/// #52's Stream Deck presses, #71's channel detail steps); rank 0, first, for the round-trip summaries,
+/// #52's Stream Deck presses, #71's channel detail steps and the Pro-Q 4
+/// screen's fingers); rank 0, first, for the round-trip summaries,
 /// long frames and any other kind; rank 1, last, for the moves (the only
 /// per-frame data of a drag the hub cannot see). A touch's first moves are
 /// pushed as essential ([`Recorder::push_essential`]).
 pub fn drop_rank(ev: &str) -> Option<u8> {
     match ev {
         "touch" | "dropout" | "reset" | "sock" | "visibility" | "overflow" | "intent" | "sys"
-        | "zoom" | "deck" | "detail" => None,
+        | "zoom" | "deck" | "detail" | "eq_touch" | "eq_mv" => None,
         "mv" => Some(1),
         _ => Some(0),
     }

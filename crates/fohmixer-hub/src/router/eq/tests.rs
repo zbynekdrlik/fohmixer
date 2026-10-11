@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::sync::mpsc::Receiver;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use fohmixer_proto::layout::Anchor;
 use tokio::sync::mpsc;
@@ -177,13 +177,169 @@ fn a_minutes_rate_is_one_record() {
         height: 809,
         gap_ms: 61.5,
     };
+    // PR I: its holder's frames on the link.
+    let trips = Trips {
+        n: 4,
+        total_ms: 130.0,
+        max_ms: 61.0,
+        waited_out: 3,
+    };
     assert_eq!(
-        rate_fields(7, &rate),
+        rate_fields(7, &rate, Some(&trips)),
+        json!({"what": "rate", "session": 7, "grabs": 1500, "sent": 1200, "failed": 2,
+               "grab_ms": 4.5, "encode_ms": 9.25, "bytes": 61_000.0,
+               "width": 1349, "height": 809, "gap_ms": 61.5,
+               "frame_trips": 4, "frame_rtt_ms": 32.5, "frame_rtt_max_ms": 61.0,
+               "ack_waits": 3})
+    );
+    // No holder known (the editor closed: its close recorded the trips).
+    assert_eq!(
+        rate_fields(7, &rate, None),
         json!({"what": "rate", "session": 7, "grabs": 1500, "sent": 1200, "failed": 2,
                "grab_ms": 4.5, "encode_ms": 9.25, "bytes": 61_000.0,
                "width": 1349, "height": 809, "gap_ms": 61.5})
     );
+    // The close's record of the trips (the PR I review).
+    assert_eq!(
+        frames_fields(&key(), 3, Some(7), &trips),
+        Some(
+            json!({"what": "frames", "instance": "band", "path": key().path,
+                    "client": 3, "session": 7, "why": null,
+                    "frame_trips": 4, "frame_rtt_ms": 32.5, "frame_rtt_max_ms": 61.0,
+                    "ack_waits": 3})
+        )
+    );
+    assert_eq!(frames_fields(&key(), 3, Some(7), &Trips::default()), None);
     assert_eq!(EDITOR_OPEN, "is_editor_open");
+}
+
+/// A minute's capture counts of an editor.
+fn a_rate() -> Rate {
+    Rate {
+        grabs: 10,
+        sent: 8,
+        failed: 0,
+        grab_ms: 3.0,
+        encode_ms: 5.0,
+        bytes: 30_000.0,
+        width: 1349,
+        height: 809,
+        gap_ms: 0.0,
+    }
+}
+
+/// The `rate` records waiting.
+fn rates(records: &Receiver<Value>) -> Vec<Value> {
+    records
+        .try_iter()
+        .filter(|r| r["ev"] == "eq" && r["what"] == "rate")
+        .collect()
+}
+
+#[tokio::test]
+async fn a_minutes_rate_takes_its_holders_frame_round_trips_since_the_last_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut rig = rig(dir.path());
+    let outbox = attach(&mut rig.router, 1);
+    // Client 1 holds `key()` open as session 1 (its acts not carried out:
+    // no capture, the test's frames alone reach the outbox).
+    let io = rig.router.eq.as_mut().unwrap();
+    io.state.listed("band", "live_set tracks 1", [found_key()]);
+    let _ = io.state.open(1, &key(), 0.0);
+    let _ = io.state.opened(&key(), 1, Ok((1349, 809)));
+    // Its page acks a frame 30 ms after it went (#71 PR I); the next one's
+    // ack never comes, so a third goes once the wait ran out.
+    let t = Instant::now();
+    outbox.eq_frame(1, Bytes::from_static(b"one"));
+    assert!(outbox.take_frame(t).is_some());
+    outbox.frame_acked(1, 1, t + Duration::from_millis(30));
+    outbox.eq_frame(1, Bytes::from_static(b"two"));
+    assert!(outbox.take_frame(t + Duration::from_millis(40)).is_some());
+    outbox.eq_frame(1, Bytes::from_static(b"three"));
+    assert_eq!(outbox.take_frame(t + Duration::from_millis(1039)), None);
+    assert!(outbox.take_frame(t + Duration::from_millis(1040)).is_some());
+    let _ = rig.records.try_iter().count();
+    rig.router.eq_worker(PlugwinEvent::Rate {
+        session: 1,
+        rate: a_rate(),
+    });
+    let got = rates(&rig.records);
+    assert_eq!(got.len(), 1, "{got:?}");
+    assert_eq!(
+        (
+            got[0]["session"].clone(),
+            got[0]["frame_trips"].clone(),
+            got[0]["frame_rtt_ms"].clone(),
+            got[0]["frame_rtt_max_ms"].clone(),
+            got[0]["ack_waits"].clone()
+        ),
+        (json!(1), json!(1), json!(30.0), json!(30.0), json!(1))
+    );
+    // Taken: the next minute starts from none.
+    assert_eq!(outbox.take_trips(), Trips::default());
+    // A session no client holds counts none.
+    rig.router.eq_worker(PlugwinEvent::Rate {
+        session: 9,
+        rate: a_rate(),
+    });
+    let got = rates(&rig.records);
+    assert_eq!(
+        (got[0]["frame_trips"].clone(), got[0]["ack_waits"].clone()),
+        (Value::Null, Value::Null)
+    );
+}
+
+#[tokio::test]
+async fn a_closed_editor_records_its_frames_round_trips_since_the_last_minute() {
+    // The PR I review: a session's frames after its last `rate` were lost
+    // at its close.
+    let dir = tempfile::tempdir().unwrap();
+    let mut rig = rig(dir.path());
+    let outbox = attach(&mut rig.router, 1);
+    outbox.take();
+    let t = Instant::now();
+    outbox.eq_frame(1, Bytes::from_static(b"one"));
+    assert!(outbox.take_frame(t).is_some());
+    outbox.frame_acked(1, 1, t + Duration::from_millis(25));
+    let _ = rig.records.try_iter().count();
+    let closed = ServerMsg::Eq {
+        instance: "band".into(),
+        path: key().path,
+        state: EqState::Closed,
+        session: Some(1),
+        width: None,
+        height: None,
+        reason: Some(reason::EXIT.into()),
+        since: None,
+    };
+    rig.router.eq_act(Act::Tell {
+        client: 1,
+        msg: closed.clone(),
+    });
+    let frames: Vec<Value> = rig
+        .records
+        .try_iter()
+        .filter(|r| r["ev"] == "eq" && r["what"] == "frames")
+        .collect();
+    assert_eq!(frames.len(), 1, "{frames:?}");
+    assert_eq!(
+        (
+            frames[0]["session"].clone(),
+            frames[0]["client"].clone(),
+            frames[0]["frame_trips"].clone(),
+            frames[0]["frame_rtt_ms"].clone(),
+            frames[0]["ack_waits"].clone()
+        ),
+        (json!(1), json!(1), json!(1), json!(25.0), json!(0))
+    );
+    // The page hears the close.
+    assert_eq!(eq_msgs(&outbox), vec![closed.clone()]);
+    // Nothing measured since: no record.
+    rig.router.eq_act(Act::Tell {
+        client: 1,
+        msg: closed,
+    });
+    assert_eq!(whats(&rig.records), Vec::<String>::new());
 }
 
 #[test]
@@ -516,6 +672,17 @@ async fn held_open(rig: &mut Rig) -> Arc<Outbox> {
     outbox
 }
 
+/// Takes the frame that may go and acks it as the page does (#71 PR I);
+/// whether one went.
+fn take_and_ack(outbox: &Outbox) -> bool {
+    let Some(frame) = outbox.take_frame(Instant::now()) else {
+        return false;
+    };
+    let (head, _) = fohmixer_proto::eq::frame_parts(&frame).expect("a frame's header");
+    outbox.frame_acked(head.session, head.seq, Instant::now());
+    true
+}
+
 #[tokio::test]
 async fn an_open_editors_frames_reach_its_holder_and_its_picture_is_kept() {
     let dir = tempfile::tempdir().unwrap();
@@ -523,15 +690,15 @@ async fn an_open_editors_frames_reach_its_holder_and_its_picture_is_kept() {
     let outbox = held_open(&mut rig).await;
     let mut frame = None;
     for _ in 0..300 {
-        frame = outbox.take_frame();
+        frame = outbox.take_frame(Instant::now());
         if frame.is_some() {
             break;
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     let frame = frame.expect("a frame");
-    let (session, jpeg) = fohmixer_proto::eq::frame_parts(&frame).unwrap();
-    assert_eq!(session, 1);
+    let (head, jpeg) = fohmixer_proto::eq::frame_parts(&frame).unwrap();
+    assert_eq!(head, fohmixer_proto::eq::FrameHead { session: 1, seq: 1 });
     assert_eq!(jpeg[..2], [0xFF_u8, 0xD8]);
     let pictures = &rig.router.eq.as_ref().unwrap().pictures;
     assert!(pictures.has(&key()));
@@ -559,10 +726,11 @@ async fn an_editors_frames_keep_no_picture_once_its_path_names_another_device() 
         outcome: Ok(vec![found_at(PATH, "na tracku", "live_3")]),
     });
     assert!(!pictures.has(&key()));
-    outbox.take_frame();
+    // The page acks each frame it gets (#71 PR I: the next one goes then).
+    take_and_ack(&outbox);
     let mut frames = 0;
     for _ in 0..300 {
-        if outbox.take_frame().is_some() {
+        if take_and_ack(&outbox) {
             frames += 1;
             if frames == 2 {
                 break;
@@ -572,6 +740,40 @@ async fn an_editors_frames_keep_no_picture_once_its_path_names_another_device() 
     }
     assert_eq!(frames, 2, "the editor's frames go on to its holder");
     assert!(!pictures.has(&key()), "no picture of the device before");
+}
+
+#[tokio::test]
+async fn a_dropped_socket_records_its_editors_frame_round_trips() {
+    // The PR I re-review: a dropped socket took its outbox, and the round
+    // trips of its last minute, with it.
+    let dir = tempfile::tempdir().unwrap();
+    let mut rig = rig(dir.path());
+    let outbox = held_open(&mut rig).await;
+    let mut acked = false;
+    for _ in 0..300 {
+        if take_and_ack(&outbox) {
+            acked = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(acked, "a frame went and its page acked it");
+    let _ = rig.records.try_iter().count();
+    rig.router.handle(RouterMsg::Detach { client: 1 });
+    let frames: Vec<Value> = rig
+        .records
+        .try_iter()
+        .filter(|r| r["ev"] == "eq" && r["what"] == "frames")
+        .collect();
+    assert_eq!(frames.len(), 1, "{frames:?}");
+    assert_eq!(
+        (
+            frames[0]["session"].clone(),
+            frames[0]["client"].clone(),
+            frames[0]["frame_trips"].clone()
+        ),
+        (json!(1), json!(1), json!(1))
+    );
 }
 
 #[tokio::test]

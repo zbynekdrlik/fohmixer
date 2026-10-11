@@ -153,7 +153,7 @@ fn the_clocks_turn_at_their_bounds() {
     assert!(rate_due(60_000.0));
     assert_eq!(STEP, Duration::from_millis(10));
     assert_eq!(GUARD_TAP, Duration::from_millis(30));
-    assert_eq!(QUALITY, 70);
+    assert_eq!(QUALITY, 60);
 }
 
 #[test]
@@ -262,6 +262,24 @@ fn a_picture_is_encoded_as_a_jpeg() {
         bgra: vec![0; 10],
     };
     assert!(encode(&short, QUALITY).is_err(), "too few pixels");
+}
+
+#[test]
+fn a_whole_sim_picture_at_the_frames_quality_is_under_24_kb_and_smaller_than_at_70() {
+    // #71 PR I: the frames' bytes, measured. The sim's picture (Pro-Q 4's
+    // 1349 x 809, a dark field and a bar) is far flatter than Pro-Q's, whose
+    // real frames ran ~64 KB at q70 on the owner's iPad session; a q60 frame
+    // of a real Pro-Q screenshot measured ~15 % smaller than at q70.
+    let pixels = sim::picture(5, sim::SIM_WIDTH, sim::SIM_HEIGHT);
+    let frame = encode(&pixels, QUALITY).unwrap();
+    let at_70 = encode(&pixels, 70).unwrap();
+    assert!(frame.len() <= 24 * 1024, "{} bytes", frame.len());
+    assert!(
+        frame.len() < at_70.len(),
+        "{} bytes, {} at q70",
+        frame.len(),
+        at_70.len()
+    );
 }
 
 #[test]
@@ -702,6 +720,47 @@ fn a_minutes_rate_counts_from_the_editors_take() {
 }
 
 #[test]
+fn an_editor_let_go_reports_the_counts_of_its_last_minute() {
+    // The PR I review: an editor released before its minute was over left
+    // no `rate` of that minute at all.
+    let (mut worker, handle, heard) = worker();
+    take(&mut worker, &handle, 1, 0.0);
+    let (sink, frames) = sink();
+    worker.command_at(Command::Capture { session: 1, sink }, 10.0);
+    worker.step_at(10.0);
+    wait_for("its frame", || frames.lock().unwrap().len() == 1);
+    // The worker counts what the encoder made at its next step.
+    worker.step_at(20.0);
+    let (reply, _released) = oneshot::channel();
+    worker.command_at(
+        Command::Release {
+            session: 1,
+            closed: false,
+            reply,
+        },
+        30_000.0,
+    );
+    let events = heard.lock().unwrap().clone();
+    let [PlugwinEvent::Rate { session: 1, rate }] = events.as_slice() else {
+        panic!("its last rate: {events:?}")
+    };
+    assert_eq!((rate.grabs, rate.sent, rate.failed), (1, 1, 0));
+    // One that grabbed nothing since its last minute reports nothing.
+    let (mut quiet, quiet_handle, quiet_heard) = self::worker();
+    take(&mut quiet, &quiet_handle, 1, 0.0);
+    let (reply, _released) = oneshot::channel();
+    quiet.command_at(
+        Command::Release {
+            session: 1,
+            closed: false,
+            reply,
+        },
+        30_000.0,
+    );
+    assert!(quiet_heard.lock().unwrap().is_empty());
+}
+
+#[test]
 fn a_captured_editor_sends_its_pictures_skipping_a_same_one() {
     let (mut worker, handle, heard) = worker();
     handle.still(true);
@@ -758,14 +817,21 @@ fn a_captured_editor_sends_its_pictures_skipping_a_same_one() {
     assert_eq!((rate.grabs, rate.sent, rate.failed), (4, 3, 0));
     assert_eq!((rate.width, rate.height), (1349, 809));
     assert!(rate.bytes > 0.0);
-    // The window goes away: lost.
+    // The window goes away: lost, after the counts of its last minute
+    // (the grab at 60 000 ms, after the minute's rate).
     let window = handle.windows()[0];
     handle.remove_window(window);
     worker.step_at(60_100.0);
-    assert_eq!(
-        heard.lock().unwrap().last(),
-        Some(&PlugwinEvent::Lost { session: 1 })
-    );
+    let events = heard.lock().unwrap().clone();
+    let [
+        _,
+        PlugwinEvent::Rate { session: 1, rate },
+        PlugwinEvent::Lost { session: 1 },
+    ] = events.as_slice()
+    else {
+        panic!("its last rate, then lost: {events:?}")
+    };
+    assert_eq!(rate.grabs, 1);
     assert!(worker.editors.is_empty());
 }
 
@@ -1395,7 +1461,13 @@ async fn the_worker_thread_serves_its_handle_and_ends_at_the_stop() {
     tokio::time::timeout(bounded, plugwin.release(2, false))
         .await
         .unwrap();
-    assert!(heard.lock().unwrap().is_empty());
+    // Its editor's last part of a minute, at its release (the PR I review),
+    // and nothing else.
+    let heard = heard.lock().unwrap().clone();
+    assert!(
+        matches!(heard.as_slice(), [PlugwinEvent::Rate { session: 1, .. }]),
+        "{heard:?}"
+    );
 }
 
 /// A page's picture area (PR G).

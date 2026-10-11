@@ -35,17 +35,33 @@
 //!
 //! The picture of the client's open Pro-Q 4 editor (#71 PR E) waits in one
 //! slot, the newest frame replacing one not yet written (a slow link gets
-//! fewer frames, never old ones), and goes as a binary message after each
-//! batch ([`Outbox::take_frame`]): a frame never holds up a pong or an ack
-//! for longer than one frame's write.
+//! fewer frames, never old ones), and goes as a binary message after the
+//! batch it is taken with ([`Batch`]: taken together, so a message put
+//! before a frame is always written before it; the PR I review found the
+//! session's `eq` open written after its first frame when the frame was
+//! taken after the batch's write). One frame is in flight at a time (PR I,
+//! [`flow`]): the next one goes only once the page acked the one before
+//! (`eq_frame_ack`, [`Outbox::frame_acked`]) or, with one in flight, the
+//! ack's wait ran out, so frames never pile up in the socket's send buffer,
+//! and a pong, an ack or a value waits behind one frame at most (two after
+//! a lost ack). The frames are numbered in their header
+//! (`fohmixer_proto::eq::FrameHead`, written as the frame is taken). Meanwhile the
+//! newest frame waits in its slot, and the writer wakes for the ack, for
+//! anything else, or when the wait runs out ([`Outbox::next_batch`]).
+
+pub mod flow;
 
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::time::Instant;
 
 use bytes::Bytes;
 use fohmixer_proto::client::{AckItem, DeckKey, ServerMsg, ValueItem};
+use fohmixer_proto::eq::{FrameHead, frame};
 use serde_json::Value;
 use tokio::sync::Notify;
+
+use flow::{Flight, Trips};
 
 /// Replies waiting for one client before it counts as stuck.
 pub const MAX_REPLIES: usize = 1024;
@@ -64,9 +80,34 @@ struct Inner {
     /// The key the next batch's deck keys start from (the one after the
     /// last written; the round wraps to the lowest).
     deck_next: u32,
-    /// The newest frame of the client's Pro-Q 4 editor (#71 PR E).
-    frame: Option<Bytes>,
+    /// The newest picture of the client's Pro-Q 4 editor (#71 PR E), its
+    /// session and its JPEG.
+    frame: Option<(u32, Bytes)>,
+    /// Its frames on their way (PR I): the next goes once acked.
+    flight: Flight,
+    /// The frames' round trips since the last `rate` record (PR I).
+    trips: Trips,
     closed: bool,
+}
+
+/// What the writer writes next (#71 PR I): the messages, then the frame
+/// that may go with them.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Batch {
+    pub messages: Vec<ServerMsg>,
+    pub frame: Option<Bytes>,
+}
+
+/// When the writer has something to write (#71 PR I).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Wake {
+    /// Now: a message, a frame that may go, or the close.
+    Now,
+    /// When the ack's wait of the frame waiting runs out (or something
+    /// comes first).
+    At(Instant),
+    /// When something comes.
+    Woken,
 }
 
 impl Inner {
@@ -104,15 +145,87 @@ impl Inner {
             .collect()
     }
 
-    fn is_empty(&self) -> bool {
-        self.replies.is_empty()
+    /// Whether a message waits (anything but the frame).
+    fn has_messages(&self) -> bool {
+        !(self.replies.is_empty()
             && self.hub.is_empty()
             && self.layout.is_none()
             && self.links.is_empty()
             && self.values.is_empty()
             && self.acks.is_empty()
-            && self.deck.is_empty()
-            && self.frame.is_none()
+            && self.deck.is_empty())
+    }
+
+    /// Whether nothing waits at all (the tests' view).
+    #[cfg(test)]
+    fn is_empty(&self) -> bool {
+        !self.has_messages() && self.frame.is_none()
+    }
+
+    /// When the writer has something to write at `now`: a message or the
+    /// close at once; a frame waiting at once when it may go
+    /// ([`Flight::due`]), else when its ack's wait runs out; nothing until
+    /// woken (a frame that may not go with no wait to count, which the
+    /// flight never gives, waits for the next ack or message: the writer
+    /// never loops without awaiting).
+    fn wake(&self, now: Instant) -> Wake {
+        if self.closed || self.has_messages() {
+            return Wake::Now;
+        }
+        match &self.frame {
+            None => Wake::Woken,
+            Some((session, _)) if self.flight.due(*session, now) => Wake::Now,
+            Some((session, _)) => self
+                .flight
+                .wait_until(*session)
+                .map_or(Wake::Woken, Wake::At),
+        }
+    }
+
+    /// The messages waiting, in write order (see [`Outbox::take`]).
+    fn take_messages(&mut self) -> Vec<ServerMsg> {
+        let mut out: Vec<ServerMsg> = self.replies.drain(..).collect();
+        out.extend(
+            std::mem::take(&mut self.hub)
+                .into_iter()
+                .map(|(key, value)| ServerMsg::Hub { key, value }),
+        );
+        if let Some(rev) = self.layout.take() {
+            out.push(ServerMsg::Layout { rev });
+        }
+        out.extend(std::mem::take(&mut self.links).into_values());
+        if !self.values.is_empty() {
+            out.push(ServerMsg::Values {
+                items: std::mem::take(&mut self.values).into_values().collect(),
+            });
+        }
+        if !self.acks.is_empty() {
+            out.push(ServerMsg::Ack {
+                items: std::mem::take(&mut self.acks).into_values().collect(),
+            });
+        }
+        let keys = self.take_deck();
+        if !keys.is_empty() {
+            out.push(ServerMsg::DeckKeys { items: keys });
+        }
+        out
+    }
+
+    /// The frame waiting, if it may go at `now` (PR I: one in flight, two
+    /// after a lost ack), with its header (the session and the frame's
+    /// number); none once closed. Taking it counts it in flight, and one
+    /// that went without the ack before it counts as a wait that ran out.
+    fn take_frame(&mut self, now: Instant) -> Option<Bytes> {
+        let &(session, _) = self.frame.as_ref()?;
+        if self.closed || !self.flight.due(session, now) {
+            return None;
+        }
+        let (_, jpeg) = self.frame.take()?;
+        let (seq, waited_out) = self.flight.sent(session, now);
+        if waited_out {
+            self.trips.waited_out += 1;
+        }
+        Some(Bytes::from(frame(FrameHead { session, seq }, &jpeg)))
     }
 }
 
@@ -190,25 +303,48 @@ impl Outbox {
         });
     }
 
-    /// The newest frame of the client's Pro-Q 4 editor (#71 PR E): it
-    /// replaces one still waiting.
-    pub fn eq_frame(&self, frame: Bytes) {
-        self.put(|inner| inner.frame = Some(frame));
+    /// The newest picture of the client's Pro-Q 4 editor (#71 PR E) of
+    /// `session`, a JPEG: it replaces one still waiting. Its header goes on
+    /// as it is taken ([`Batch`]).
+    pub fn eq_frame(&self, session: u32, jpeg: Bytes) {
+        self.put(|inner| inner.frame = Some((session, jpeg)));
     }
 
-    /// The client's editor closed: a frame still waiting is dropped.
-    pub fn forget_eq(&self) {
-        self.lock().frame = None;
-    }
-
-    /// The frame waiting, if any (the writer sends it after each batch);
-    /// none once closed.
-    pub fn take_frame(&self) -> Option<Bytes> {
+    /// The client's editor closed: a frame still waiting is dropped, and
+    /// its frames' flight is forgotten (PR I: a late ack of them is nothing,
+    /// the next editor's first frame goes at once). Its round trips since
+    /// the last `rate` record are handed back, for the close's record (the
+    /// PR I review: a session's last minute was lost).
+    pub fn forget_eq(&self) -> Trips {
         let mut inner = self.lock();
-        if inner.closed {
-            return None;
+        inner.frame = None;
+        inner.flight = Flight::default();
+        std::mem::take(&mut inner.trips)
+    }
+
+    /// The frame that may go at `now`, taken alone (the tests' view: the
+    /// writer takes it with its batch, [`Outbox::next_batch`]).
+    #[cfg(test)]
+    pub fn take_frame(&self, now: Instant) -> Option<Bytes> {
+        self.lock().take_frame(now)
+    }
+
+    /// The page acked the frames of `session` up to `seq` at `now` (PR I):
+    /// a round trip is counted, and the writer wakes (the next frame may
+    /// go).
+    pub fn frame_acked(&self, session: u32, seq: u32, now: Instant) {
+        let mut inner = self.lock();
+        if let Some(trip) = inner.flight.acked(session, seq, now) {
+            inner.trips.trip(crate::plugwin::millis(trip));
         }
-        inner.frame.take()
+        drop(inner);
+        self.ready.notify_one();
+    }
+
+    /// The frames' round trips since the last call (PR I: the editor's
+    /// `rate` record).
+    pub fn take_trips(&self) -> Trips {
+        std::mem::take(&mut self.lock().trips)
     }
 
     /// The client closed the tab: the keys waiting for it are dropped.
@@ -262,54 +398,41 @@ impl Outbox {
     /// hub values, the layout revision, the instances' links, one `values`
     /// message, one `ack` message, then one `deck_keys` message of at most
     /// [`DECK_KEYS_PER_TAKE`] keys, the others left for the next take);
-    /// `None` once closed.
+    /// `None` once closed. The frame stays.
     pub fn take(&self) -> Option<Vec<ServerMsg>> {
+        let mut inner = self.lock();
+        (!inner.closed).then(|| inner.take_messages())
+    }
+
+    /// Everything waiting at `now`, the frame that may go with the messages
+    /// ([`Batch`]); `None` once closed.
+    pub fn take_batch(&self, now: Instant) -> Option<Batch> {
         let mut inner = self.lock();
         if inner.closed {
             return None;
         }
-        let mut out: Vec<ServerMsg> = inner.replies.drain(..).collect();
-        out.extend(
-            std::mem::take(&mut inner.hub)
-                .into_iter()
-                .map(|(key, value)| ServerMsg::Hub { key, value }),
-        );
-        if let Some(rev) = inner.layout.take() {
-            out.push(ServerMsg::Layout { rev });
-        }
-        out.extend(std::mem::take(&mut inner.links).into_values());
-        if !inner.values.is_empty() {
-            out.push(ServerMsg::Values {
-                items: std::mem::take(&mut inner.values).into_values().collect(),
-            });
-        }
-        if !inner.acks.is_empty() {
-            out.push(ServerMsg::Ack {
-                items: std::mem::take(&mut inner.acks).into_values().collect(),
-            });
-        }
-        let keys = inner.take_deck();
-        if !keys.is_empty() {
-            out.push(ServerMsg::DeckKeys { items: keys });
-        }
-        Some(out)
+        let messages = inner.take_messages();
+        let frame = inner.take_frame(now);
+        Some(Batch { messages, frame })
     }
 
     /// Waits until something is waiting (or the outbox closed) and takes it;
     /// deck keys left by the last take are something waiting, so the writer
     /// takes them at once, after what came meanwhile. A frame alone is
-    /// something waiting too: the batch is then empty, and the writer takes
-    /// the frame after it ([`Outbox::take_frame`]).
-    pub async fn next_batch(&self) -> Option<Vec<ServerMsg>> {
+    /// something waiting too once it may go (PR I: its predecessor acked, or
+    /// the ack's wait over, which wakes the writer by itself): the batch's
+    /// messages are then none.
+    pub async fn next_batch(&self) -> Option<Batch> {
         loop {
-            {
-                let inner = self.lock();
-                if inner.closed || !inner.is_empty() {
-                    drop(inner);
-                    return self.take();
+            let wake = self.lock().wake(Instant::now());
+            match wake {
+                Wake::Now => return self.take_batch(Instant::now()),
+                Wake::At(at) => {
+                    let at = tokio::time::Instant::from_std(at);
+                    let _ = tokio::time::timeout_at(at, self.ready.notified()).await;
                 }
+                Wake::Woken => self.ready.notified().await,
             }
-            self.ready.notified().await;
         }
     }
 }
@@ -647,12 +770,13 @@ mod tests {
         for key in 0..6 {
             outbox.deck_key(deck_key(key, "data:a"));
         }
-        let first = outbox.next_batch().await.unwrap();
+        let first = outbox.next_batch().await.unwrap().messages;
         assert_eq!(deck_part(first).1, vec![0, 1, 2, 3]);
         let second = tokio::time::timeout(Duration::from_millis(500), outbox.next_batch())
             .await
             .expect("keys left: no wait for a wake-up")
-            .unwrap();
+            .unwrap()
+            .messages;
         assert_eq!(deck_part(second).1, vec![4, 5]);
     }
 
@@ -700,7 +824,8 @@ mod tests {
             .await
             .unwrap()
             .unwrap()
-            .unwrap();
+            .unwrap()
+            .messages;
         assert_eq!(
             batch,
             vec![ServerMsg::DeckKeys {
@@ -790,11 +915,17 @@ mod tests {
             .await
             .expect("woken")
             .unwrap();
-        assert_eq!(got, Some(vec![ServerMsg::Layout { rev: 4 }]));
+        assert_eq!(
+            got,
+            Some(Batch {
+                messages: vec![ServerMsg::Layout { rev: 4 }],
+                frame: None,
+            })
+        );
         // Something already waiting is taken at once.
         outbox.layout(5);
         assert_eq!(
-            outbox.next_batch().await,
+            outbox.next_batch().await.map(|b| b.messages),
             Some(vec![ServerMsg::Layout { rev: 5 }])
         );
         let waiting = {
@@ -811,43 +942,283 @@ mod tests {
         assert_eq!(outbox.next_batch().await, None);
     }
 
+    /// A frame of `session` numbered `seq` with `jpeg`, as the writer sends it.
+    fn framed(session: u32, seq: u32, jpeg: &[u8]) -> Option<Bytes> {
+        Some(Bytes::from(frame(FrameHead { session, seq }, jpeg)))
+    }
+
+    /// A batch of no messages with `frame`.
+    fn frame_only(frame: Option<Bytes>) -> Option<Batch> {
+        Some(Batch {
+            messages: vec![],
+            frame,
+        })
+    }
+
     #[tokio::test]
     async fn the_newest_frame_waits_alone_and_wakes_the_writer() {
         let outbox = Arc::new(Outbox::new());
-        assert_eq!(outbox.take_frame(), None);
+        let t = Instant::now();
+        assert_eq!(outbox.take_frame(t), None);
         let writer = Arc::clone(&outbox);
         let batch = tokio::spawn(async move { writer.next_batch().await });
         tokio::time::sleep(Duration::from_millis(20)).await;
         assert!(!batch.is_finished(), "nothing to write yet");
-        outbox.eq_frame(Bytes::from_static(b"old"));
-        outbox.eq_frame(Bytes::from_static(b"new"));
-        // A frame alone wakes the writer with an empty batch.
+        outbox.eq_frame(1, Bytes::from_static(b"old"));
+        outbox.eq_frame(1, Bytes::from_static(b"new"));
+        // A frame alone wakes the writer: a batch of it alone, numbered 1.
         let batch = tokio::time::timeout(Duration::from_secs(2), batch)
             .await
             .expect("woken by a frame")
             .unwrap();
-        assert_eq!(batch, Some(vec![]));
-        assert_eq!(outbox.take_frame(), Some(Bytes::from_static(b"new")));
-        assert_eq!(outbox.take_frame(), None, "taken once");
+        assert_eq!(batch, frame_only(framed(1, 1, b"new")));
+        assert_eq!(outbox.take_frame(t), None, "taken once");
         assert!(outbox.lock().is_empty());
-        // The batch's messages first; the frame stays for take_frame.
-        outbox.eq_frame(Bytes::from_static(b"next"));
+        // The messages and the frame go together, the messages first.
+        outbox.frame_acked(1, 1, t);
+        outbox.eq_frame(1, Bytes::from_static(b"next"));
         outbox.layout(3);
-        assert_eq!(outbox.take().unwrap(), vec![ServerMsg::Layout { rev: 3 }]);
-        assert!(!outbox.lock().is_empty(), "the frame still waits");
+        assert_eq!(
+            outbox.take_batch(t),
+            Some(Batch {
+                messages: vec![ServerMsg::Layout { rev: 3 }],
+                frame: framed(1, 2, b"next"),
+            })
+        );
         // A closed editor's frame is dropped.
+        outbox.eq_frame(1, Bytes::from_static(b"gone"));
         outbox.forget_eq();
         assert!(outbox.lock().is_empty());
-        assert_eq!(outbox.take_frame(), None);
+        assert_eq!(outbox.take_frame(t), None);
         // A closed outbox writes no frame.
-        outbox.eq_frame(Bytes::from_static(b"late"));
+        outbox.eq_frame(1, Bytes::from_static(b"late"));
         outbox.close();
-        assert_eq!(outbox.take_frame(), None);
-        outbox.eq_frame(Bytes::from_static(b"after"));
+        assert_eq!(outbox.take_frame(t), None);
+        assert_eq!(outbox.take_batch(t), None);
+        outbox.eq_frame(1, Bytes::from_static(b"after"));
         assert_eq!(
-            outbox.lock().frame.as_deref(),
+            outbox.lock().frame.as_ref().map(|(_, f)| &f[..]),
             Some(&b"late"[..]),
             "a closed outbox takes nothing new"
         );
+    }
+
+    #[test]
+    fn a_message_put_before_a_frame_is_written_before_it() {
+        // The PR I review: the writer took the frame after writing its
+        // batch, so the `eq` open put during that write went after the
+        // session's first frame, and the page, still opening, dropped it.
+        let outbox = Outbox::new();
+        let t = Instant::now();
+        outbox.layout(1);
+        assert_eq!(
+            outbox.take_batch(t),
+            Some(Batch {
+                messages: vec![ServerMsg::Layout { rev: 1 }],
+                frame: None,
+            })
+        );
+        // While that batch is written: a reply, then a frame.
+        outbox.reply(result("open"));
+        outbox.eq_frame(1, Bytes::from_static(b"a"));
+        assert_eq!(
+            outbox.take_batch(t),
+            Some(Batch {
+                messages: vec![result("open")],
+                frame: framed(1, 1, b"a"),
+            })
+        );
+        // A frame that may not go stays for a later batch.
+        outbox.eq_frame(1, Bytes::from_static(b"b"));
+        outbox.layout(2);
+        assert_eq!(
+            outbox.take_batch(t),
+            Some(Batch {
+                messages: vec![ServerMsg::Layout { rev: 2 }],
+                frame: None,
+            })
+        );
+        assert!(!outbox.lock().is_empty(), "the frame still waits");
+        // `take` leaves the frame too.
+        outbox.frame_acked(1, 1, t);
+        assert_eq!(outbox.take(), Some(vec![]));
+        assert_eq!(outbox.take_frame(t), framed(1, 2, b"b"));
+    }
+
+    /// `n` ms after `t`.
+    fn at(t: Instant, n: u64) -> Instant {
+        t + Duration::from_millis(n)
+    }
+
+    #[test]
+    fn a_frame_goes_only_once_the_one_before_was_acked_or_its_wait_ran_out() {
+        let outbox = Outbox::new();
+        let t = Instant::now();
+        outbox.eq_frame(1, Bytes::from_static(b"a"));
+        assert_eq!(outbox.take_frame(t), framed(1, 1, b"a"));
+        // The next waits for the ack; a newer one replaces it meanwhile.
+        outbox.eq_frame(1, Bytes::from_static(b"b"));
+        assert_eq!(outbox.take_frame(at(t, 10)), None);
+        outbox.eq_frame(1, Bytes::from_static(b"c"));
+        assert_eq!(outbox.take_frame(at(t, 20)), None);
+        // An ack of another session is nothing; the page's ack lets it go.
+        outbox.frame_acked(2, 1, at(t, 25));
+        assert_eq!(outbox.take_frame(at(t, 26)), None);
+        outbox.frame_acked(1, 1, at(t, 30));
+        assert_eq!(outbox.take_frame(at(t, 31)), framed(1, 2, b"c"));
+        // No ack: the next goes once the wait (1 s) ran out, counted.
+        outbox.eq_frame(1, Bytes::from_static(b"d"));
+        assert_eq!(outbox.take_frame(at(t, 1030)), None);
+        assert_eq!(outbox.take_frame(at(t, 1031)), framed(1, 3, b"d"));
+        // Two in flight: the next waits for an ack, however long.
+        outbox.eq_frame(1, Bytes::from_static(b"e"));
+        assert_eq!(outbox.take_frame(at(t, 5000)), None);
+        assert_eq!(
+            outbox.take_trips(),
+            flow::Trips {
+                n: 1,
+                total_ms: 30.0,
+                max_ms: 30.0,
+                waited_out: 1,
+            }
+        );
+        assert_eq!(outbox.take_trips(), flow::Trips::default(), "taken");
+        // The ack of the newest acks both: the next goes at once.
+        outbox.frame_acked(1, 3, at(t, 5010));
+        assert_eq!(outbox.take_frame(at(t, 5011)), framed(1, 4, b"e"));
+        // Another session's frame goes at once (a new editor), numbered 1.
+        outbox.eq_frame(2, Bytes::from_static(b"f"));
+        assert_eq!(outbox.take_frame(at(t, 5012)), framed(2, 1, b"f"));
+    }
+
+    #[test]
+    fn a_closed_editor_forgets_its_frames_flight_and_hands_back_its_round_trips() {
+        let outbox = Outbox::new();
+        let t = Instant::now();
+        outbox.eq_frame(1, Bytes::from_static(b"a"));
+        outbox.take_frame(t);
+        outbox.frame_acked(1, 1, at(t, 20));
+        outbox.eq_frame(1, Bytes::from_static(b"b"));
+        outbox.take_frame(at(t, 30));
+        outbox.eq_frame(1, Bytes::from_static(b"c"));
+        // The round trips of the last minute go to the close's record.
+        assert_eq!(
+            outbox.forget_eq(),
+            flow::Trips {
+                n: 1,
+                total_ms: 20.0,
+                max_ms: 20.0,
+                waited_out: 0,
+            }
+        );
+        assert_eq!(outbox.take_trips(), flow::Trips::default());
+        assert_eq!(outbox.lock().flight, flow::Flight::default());
+        assert_eq!(outbox.forget_eq(), flow::Trips::default(), "handed once");
+        // The same session's next frame goes at once (nothing in flight).
+        outbox.eq_frame(1, Bytes::from_static(b"d"));
+        assert_eq!(outbox.take_frame(at(t, 40)), framed(1, 1, b"d"));
+    }
+
+    #[test]
+    fn only_a_message_is_a_message_the_frame_is_not() {
+        let outbox = Outbox::new();
+        assert!(!outbox.lock().has_messages());
+        outbox.eq_frame(1, Bytes::from_static(b"a"));
+        assert!(!outbox.lock().has_messages(), "a frame alone");
+        let kinds: [fn(&Outbox); 7] = [
+            |o: &Outbox| o.reply(result("1")),
+            |o: &Outbox| o.hub("stage_aut", json!(true)),
+            |o: &Outbox| o.layout(1),
+            |o: &Outbox| o.link(link("band", 1.0)),
+            |o: &Outbox| o.value(ValueItem::value("a", json!(1), None)),
+            |o: &Outbox| o.ack(AckItem::applied("k", 1, None)),
+            |o: &Outbox| o.deck_key(deck_key(1, "data:a")),
+        ];
+        for (i, put) in kinds.iter().enumerate() {
+            let outbox = Outbox::new();
+            put(&outbox);
+            assert!(outbox.lock().has_messages(), "kind {i}");
+        }
+    }
+
+    #[test]
+    fn the_writer_wakes_for_a_message_a_frame_that_may_go_or_its_wait() {
+        let t = Instant::now();
+        let outbox = Outbox::new();
+        assert_eq!(outbox.lock().wake(t), Wake::Woken, "nothing");
+        outbox.eq_frame(1, Bytes::from_static(b"a"));
+        assert_eq!(outbox.lock().wake(t), Wake::Now, "a frame that may go");
+        outbox.take_frame(t);
+        assert_eq!(outbox.lock().wake(t), Wake::Woken, "nothing waits");
+        outbox.eq_frame(1, Bytes::from_static(b"b"));
+        assert_eq!(
+            outbox.lock().wake(at(t, 10)),
+            Wake::At(at(t, 1000)),
+            "a frame waiting for the ack"
+        );
+        assert_eq!(
+            outbox.lock().wake(at(t, 1000)),
+            Wake::Now,
+            "its wait ran out"
+        );
+        // A message goes at once whatever the frame does.
+        outbox.layout(2);
+        assert_eq!(outbox.lock().wake(at(t, 10)), Wake::Now);
+        outbox.take();
+        // Two in flight: only an ack or a message wakes the writer.
+        outbox.take_frame(at(t, 1000));
+        outbox.eq_frame(1, Bytes::from_static(b"c"));
+        assert_eq!(
+            outbox.lock().wake(at(t, 9000)),
+            Wake::Woken,
+            "two in flight"
+        );
+        outbox.frame_acked(1, 2, at(t, 9010));
+        assert_eq!(outbox.lock().wake(at(t, 9010)), Wake::Now, "acked");
+        // Closed: at once (the writer ends).
+        let closed = Outbox::new();
+        closed.close();
+        assert_eq!(closed.lock().wake(t), Wake::Now);
+    }
+
+    #[tokio::test]
+    async fn the_writer_sleeps_while_a_frame_waits_for_its_ack_and_wakes_for_the_ack() {
+        let outbox = Arc::new(Outbox::new());
+        outbox.eq_frame(1, Bytes::from_static(b"a"));
+        assert_eq!(outbox.next_batch().await, frame_only(framed(1, 1, b"a")));
+        outbox.eq_frame(1, Bytes::from_static(b"b"));
+        let writer = Arc::clone(&outbox);
+        let batch = tokio::spawn(async move { writer.next_batch().await });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(!batch.is_finished(), "the frame waits for its ack");
+        outbox.frame_acked(1, 1, Instant::now());
+        // Woken by the ack, well before the 1 s wait would wake it (the PR
+        // I review: a 2 s timeout let the wait's end pass for the ack).
+        let batch = tokio::time::timeout(Duration::from_millis(300), batch)
+            .await
+            .expect("woken by the ack")
+            .unwrap();
+        assert_eq!(batch, frame_only(framed(1, 2, b"b")));
+    }
+
+    #[tokio::test]
+    async fn the_writer_wakes_by_itself_once_a_frames_wait_ran_out() {
+        let outbox = Arc::new(Outbox::new());
+        outbox.eq_frame(1, Bytes::from_static(b"a"));
+        let sent = Instant::now();
+        assert!(outbox.take_frame(sent).is_some());
+        outbox.eq_frame(1, Bytes::from_static(b"b"));
+        let writer = Arc::clone(&outbox);
+        let batch = tokio::spawn(async move { writer.next_batch().await });
+        let batch = tokio::time::timeout(Duration::from_secs(3), batch)
+            .await
+            .expect("woken when the wait ran out")
+            .unwrap();
+        assert!(
+            sent.elapsed() >= flow::FRAME_ACK_WAIT,
+            "not before the wait: {:?}",
+            sent.elapsed()
+        );
+        assert_eq!(batch, frame_only(framed(1, 2, b"b")));
     }
 }

@@ -461,6 +461,13 @@ impl Eqs {
             .map(|(key, _)| key.clone())
     }
 
+    /// The client holding the editor of `session` (#71 PR I: its frames'
+    /// round trips go into the editor's `rate` record).
+    pub fn holder_of(&self, session: u32) -> Option<ClientId> {
+        let key = self.key_of(session)?;
+        self.editors.get(&key).map(|editor| editor.holder)
+    }
+
     /// Since when another client than `client` holds an editor (waiting,
     /// opening, open or closing): one editor on the PC's screen at a time.
     fn in_use(&self, client: ClientId) -> Option<f64> {

@@ -335,6 +335,10 @@ fn an_open_takes_the_lock_and_another_client_is_refused() {
     );
     assert_eq!(eqs.key_of(1), Some(key(1)));
     assert_eq!(eqs.key_of(2), None);
+    // PR I: its holder (whose frames' round trips its `rate` record reads).
+    assert_eq!(eqs.holder_of(1), Some(1));
+    assert_eq!(eqs.holder_of(2), None);
+    assert_eq!(eqs.holder_of(0), None);
     assert_eq!(eqs.taken(), vec![(key(1), 1)]);
 }
 

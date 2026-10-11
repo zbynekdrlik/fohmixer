@@ -27,7 +27,10 @@
 //!   editor is open (`behave::eq::AreaWatch`, on the frame loop). The
 //!   picture's size is the frames'. Two fingers zoom and pan the picture on
 //!   this page only (PR F, the approved mockup `docs/mockups/proq-zoom-v1.html`;
-//!   `behave::eq::Viewer`, 1× to 4×, each open at 1×): the canvas gets a
+//!   `behave::eq::Viewer`, 1× to 4×, each open at 1×). Under 2× one finger
+//!   never reaches the editor (the owner's ruling of 2026-10-11): a tap
+//!   there zooms to 3× on its point (`Viewer::zoom_on`), a drag does
+//!   nothing, and a hint over the picture says so. The canvas gets a
 //!   CSS transform, and while zoomed the bar shows the overview (the latest
 //!   frame small, in the picture's shape, a frame around the part in
 //!   sight), the factor and `CELÝ EQ`. Leaving it sends `eq_close`; the hub
@@ -36,7 +39,10 @@
 //!
 //! The screen's open, close and lock refusal go to the flight recorder as
 //! `detail` events (`eq_open`, `eq_close` with why, `eq_locked`) with the
-//! strip's keys. Every tap target owns its touches.
+//! strip's keys, and every finger on the picture as `eq_touch` (its down, up
+//! or cancel: the picture point and the zoom) and `eq_mv` (its moves
+//! summarized; #71 PR I, `diag::trace::fingers`). Every tap target owns its
+//! touches.
 
 use std::rc::Rc;
 
@@ -52,9 +58,10 @@ use super::{owns_touches, trace_detail};
 use crate::behave::eq::{
     AreaWatch, CardLock, Finger, ListLink, Look, Out, Point, Viewer, can_open, card_lock,
     failure_text, hh_mm, in_use_text, list_text, lists_now, lock_refusal, locked, locked_text,
-    look, on_picture, overview_size, place_text, point, zoom_text,
+    look, on_picture, overview_size, place_text, point, spot, zoom_text,
 };
 use crate::binding::detail_keys;
+use crate::diag::trace::fingers::EqFingers;
 use crate::dom;
 use crate::raf;
 use crate::store::eq::{EqView, ended, screen_state, screen_view};
@@ -542,14 +549,16 @@ fn watch_area(
 
 /// Draws a view's look (PR F, `behave::eq::look`), only when it changed:
 /// the canvas's transform, the overview's frame (percentages of the
-/// picture), and the bar's zoom group (shown, its factor), each signal
-/// written only when it differs.
+/// picture), the bar's zoom group (shown, its factor) and whether one
+/// finger edits (the overview's hint), each signal written only when it
+/// differs.
 fn show_look(
     look: &Look,
     canvas: NodeRef<html::Canvas>,
     frame: NodeRef<html::Div>,
     zoomed: RwSignal<bool>,
     factor: RwSignal<String>,
+    editing: RwSignal<bool>,
 ) {
     if let Some(canvas) = canvas.get_untracked() {
         dom::set_style(&canvas, "transform", &look.transform);
@@ -567,6 +576,9 @@ fn show_look(
     }
     if zoomed.try_get_untracked() != Some(look.zoomed) {
         let _ = zoomed.try_set(look.zoomed);
+    }
+    if editing.try_get_untracked() != Some(look.edits) {
+        let _ = editing.try_set(look.edits);
     }
     if factor
         .try_with_untracked(|f| *f != look.factor)
@@ -587,6 +599,8 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
     let frame_ref = NodeRef::<html::Div>::new();
     let area_ref = NodeRef::<html::Div>::new();
     let finger = StoredValue::new(Finger::default());
+    // The fingers as the flight recorder keeps them (PR I).
+    let fingers = StoredValue::new(EqFingers::default());
     // The page's own view of the picture (PR F): each open starts at 1×.
     let viewer = StoredValue::new(Viewer::START);
     let grip = StoredValue::new(None::<Grip>);
@@ -598,6 +612,8 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
     let drawn = StoredValue::new(None::<Look>);
     let zoomed = RwSignal::new(false);
     let factor = RwSignal::new(zoom_text(1.0));
+    // Whether one finger edits (2× or more); else the overview's hint.
+    let editing = RwSignal::new(false);
     let legend = RwSignal::new(false);
     canvas_ref.on_load(move |canvas| {
         let _ = painter.try_update_value(|p| p.canvas = Some(canvas));
@@ -610,6 +626,22 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
             store.eq_input(out);
         }
     };
+    // The view's zoom now, and the fingers' events into the flight recorder
+    // (PR I).
+    let zoom_now = move || viewer.try_with_value(|v| v.view().zoom).unwrap_or(1.0);
+    let record = move |events: Vec<serde_json::Value>| {
+        for event in &events {
+            crate::diag::record(event);
+        }
+    };
+    // Every finger goes: each one's moves and its cancel where it was.
+    let fingers_leave = move || {
+        record(
+            fingers
+                .try_update_value(|f| f.leave(dom::epoch_now(), zoom_now()))
+                .unwrap_or_default(),
+        );
+    };
     let sink: FrameSink = Rc::new(move |blob: web_sys::Blob| paint(painter, blob));
     store.eq_frames(Some(sink));
     // Opening from now on; the open itself goes with the area, at its load.
@@ -617,11 +649,15 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
     // A hidden page lifts its finger (`Finger::visibility`), as the Stream
     // Deck lifts its keys: `visibilitychange` bubbles to the window.
     let hidden = window_event_listener_untyped("visibilitychange", move |_| {
+        let hidden = dom::hidden();
         send(
             finger
-                .try_update_value(|f| f.visibility(dom::hidden()))
+                .try_update_value(|f| f.visibility(hidden))
                 .unwrap_or_default(),
         );
+        if hidden {
+            fingers_leave();
+        }
     });
     // A turned or resized screen: the area's box again (the frame loop
     // draws the view for it).
@@ -639,6 +675,7 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
             watcher.disconnect();
         }
         send(finger.try_update_value(Finger::leave).unwrap_or_default());
+        fingers_leave();
         store.eq_close();
         store.eq_frames(None);
     });
@@ -714,8 +751,14 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
         };
         let id = ev.pointer_id();
         let now = dom::now();
+        // The finger's own time (the PR I review: the handler's time shifts
+        // with a long frame).
+        let t = dom::event_epoch(&ev);
+        let down = fingers.try_update_value(|f| f.down(t, id, at.picture, zoom_now()));
+        record(down.into_iter().collect());
+        let lands = spot(on_picture(at.picture, picture), zoom_now());
         let out = finger
-            .try_update_value(|f| f.down(id, at, on_picture(at.picture, picture), now))
+            .try_update_value(|f| f.down(id, at, lands, now))
             .unwrap_or_default();
         if finger.try_with_value(|f| f.has(id)).unwrap_or(false) {
             let _ = area.set_pointer_capture(id);
@@ -724,7 +767,13 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
     };
     let on_move = move |ev: web_sys::PointerEvent| {
         if let Some((at, _)) = point_of(&ev) {
-            let _ = finger.try_update_value(|f| f.moved(ev.pointer_id(), at));
+            let id = ev.pointer_id();
+            let _ = finger.try_update_value(|f| f.moved(id, at));
+            let t = dom::event_epoch(&ev);
+            let summary = fingers
+                .try_update_value(|f| f.moved(t, id, at.picture))
+                .flatten();
+            record(summary.into_iter().collect());
         }
     };
     let on_up = move |ev: web_sys::PointerEvent| {
@@ -732,16 +781,30 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
             return;
         };
         let now = dom::now();
+        let id = ev.pointer_id();
+        let t = dom::event_epoch(&ev);
+        record(
+            fingers
+                .try_update_value(|f| f.end(t, "up", id, Some(at.picture), zoom_now()))
+                .unwrap_or_default(),
+        );
         send(
             finger
-                .try_update_value(|f| f.up(ev.pointer_id(), at, now))
+                .try_update_value(|f| f.up(id, at, now))
                 .unwrap_or_default(),
         );
     };
     let on_cancel = move |ev: web_sys::PointerEvent| {
+        let id = ev.pointer_id();
+        let t = dom::event_epoch(&ev);
+        record(
+            fingers
+                .try_update_value(|f| f.end(t, "cancel", id, None, zoom_now()))
+                .unwrap_or_default(),
+        );
         send(
             finger
-                .try_update_value(|f| f.cancel(ev.pointer_id()))
+                .try_update_value(|f| f.cancel(id))
                 .unwrap_or_default(),
         );
     };
@@ -782,8 +845,14 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
                 return;
             };
             let pair = finger.try_with_value(Finger::pair).flatten();
+            // An overview tap's zoom on its point (taken once the picture
+            // and the area are known).
+            let tapped = finger.try_update_value(|f| f.take_zoom(now)).flatten();
             let wanted = viewer
                 .try_update_value(|v| {
+                    if let Some(at) = tapped {
+                        v.zoom_on(at, area, picture);
+                    }
                     v.follow(pair, area, picture);
                     look(area, picture, v.view())
                 })
@@ -795,7 +864,7 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
                 .try_with_value(|d| d.as_ref() != Some(&wanted))
                 .unwrap_or(false)
             {
-                show_look(&wanted, canvas_ref, frame_ref, zoomed, factor);
+                show_look(&wanted, canvas_ref, frame_ref, zoomed, factor, editing);
                 let _ = drawn.try_set_value(Some(wanted));
             }
         })
@@ -808,9 +877,12 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
         ev.prevent_default();
         let _ = legend.try_update(|on| *on = !*on);
     };
-    // `CELÝ EQ`: the whole picture again (the frame loop draws it).
+    // `CELÝ EQ`: the whole picture again (the frame loop draws it). A finger
+    // on the editor ends first, with its cancel where it was (the PR I
+    // review: a drag went on at 1×, its points remapped); a pinch goes on.
     let whole = move |ev: web_sys::PointerEvent| {
         ev.prevent_default();
+        send(finger.try_update_value(Finger::whole).unwrap_or_default());
         let _ = viewer.try_update_value(Viewer::whole);
     };
     let shown_zoom = move || zoomed.try_get().unwrap_or(false).to_string();
@@ -841,6 +913,7 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
     };
     let opening = move || state() == "opening";
     let open = move || state() == "open";
+    let hint_shown = move || (open() && !editing.try_get().unwrap_or(false)).to_string();
     let exit_keys: Vec<String> = Vec::new();
     let help_keys: Vec<String> = Vec::new();
     let whole_keys: Vec<String> = Vec::new();
@@ -911,6 +984,9 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
                 on:lostpointercapture=on_cancel
             >
                 <canvas class="eq-canvas" data-testid="eq-canvas" data-frames="0" node_ref=canvas_ref></canvas>
+                <div class="eq-hint" data-testid="eq-hint" data-shown=hint_shown>
+                    "Ťukni na miesto, ktoré chceš upraviť"
+                </div>
                 {move || opening().then(|| view! { <div class="eq-wait">"Otváram Pro-Q 4…"</div> })}
             </div>
             {move || legend.try_get().unwrap_or(false).then(|| view! { <EqLegend /> })}
@@ -918,14 +994,20 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
     }
 }
 
-/// What a finger does on the Pro-Q (`?`): real touches reach the PC; two
-/// fingers zoom this page's picture only (PR F, the mockup's lines).
+/// What a finger does on the Pro-Q (`?`): on the whole picture a tap zooms
+/// in (the owner's ruling of 2026-10-11); zoomed 2× or more real touches
+/// reach the PC; two fingers zoom this page's picture only (PR F, the
+/// mockup's lines).
 #[component]
 fn EqLegend() -> impl IntoView {
     view! {
         <div class="eq-legend" data-testid="eq-legend">
             <h3>"DOTYK V PRO-Q"</h3>
             <table>
+                <tr class="eq-legend-zoom" data-testid="eq-legend-overview">
+                    <td>"ťuk na celý EQ"</td>
+                    <td>"Ťukni na miesto, ktoré chceš upraviť: priblíži sa 3×. Upravuje sa až pri priblížení 2× a viac."</td>
+                </tr>
                 <tr><td>"1 prst ťuk"</td><td>"klik (tlačidlá, výber pásma)"</td></tr>
                 <tr><td>"1 prst ťah"</td><td>"ťahanie (pásmo, gombík); kurzor na PC počas ťahu skočí"</td></tr>
                 <tr><td>"dvojťuk"</td><td>"dvojklik (nové pásmo v krivke; na pásme jeho frekvencia)"</td></tr>

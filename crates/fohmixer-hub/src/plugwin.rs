@@ -142,8 +142,13 @@ pub const STOP_POLLS: u32 = 100;
 pub const STEP: Duration = Duration::from_millis(10);
 /// How long the guard's finger stays on the inert spot.
 pub const GUARD_TAP: Duration = Duration::from_millis(30);
-/// The frames' JPEG quality.
-pub const QUALITY: u8 = 70;
+/// The frames' JPEG quality (#71 PR I: 70 before). A real Pro-Q 4
+/// screenshot re-encoded at 60 is about 15 % smaller than at 70 (42.7 →
+/// 36.4 KB, 44.6 → 38.1 KB, 4:2:0 as this encoder) with its scale labels,
+/// curve and grid lines as readable when magnified twice (the page zooms
+/// up to 4×); at 55 the faint grid lines start to fade. The picture keeps its size: a finger maps to
+/// its pixels.
+pub const QUALITY: u8 = 60;
 /// The picture size (px) at which the inert spot was verified on the PC
 /// (Pro-Q 4 at 100 %, #71): the guard taps only at exactly this size (#74
 /// review: at 760 px wide the same share of the width lies by Undo).
@@ -1578,7 +1583,9 @@ impl Worker {
         };
         if !self.backend.alive(&editor.taken) {
             let gone = editor.taken.clone();
-            self.editors.remove(&session);
+            if let Some(editor) = self.editors.remove(&session) {
+                self.last_rate(session, &editor.counts);
+            }
             self.encoder.forget(session);
             if let Some(held) = self.contact.filter(|held| held.session == session) {
                 self.contact = None;
@@ -1771,6 +1778,19 @@ impl Worker {
         self.guard_look(guard, now);
     }
 
+    /// The counts of an editor the worker lets go (released, its window
+    /// gone) since its last minute, as its last `rate` (the PR I review: a
+    /// session's last minute was lost); nothing when it grabbed nothing
+    /// since.
+    fn last_rate(&self, session: u32, counts: &Counts) {
+        if counts.grabs > 0 {
+            (self.events)(PlugwinEvent::Rate {
+                session,
+                rate: counts.rate(),
+            });
+        }
+    }
+
     /// `session`'s window handed back: its contact ended, its rectangle at
     /// the take (place and size) posted again when it was changed and Live
     /// keeps the editor open (best effort: a guard that failed, the stop;
@@ -1783,6 +1803,7 @@ impl Worker {
         self.encoder.forget(session);
         let now = self.now();
         if let Some(editor) = self.editors.remove(&session) {
+            self.last_rate(session, &editor.counts);
             match repost(editor.changed, closed, now - editor.ended) {
                 Repost::Take => {
                     if let Err(why) = self.backend.resize(&editor.taken, editor.taken.rect) {

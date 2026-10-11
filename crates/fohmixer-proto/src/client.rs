@@ -12,9 +12,9 @@
 //! reads and multi-command batches.
 //!
 //! The Pro-Q 4 screen (#71 PR E, F28): `eq_list`, `eq_open`, `eq_area`
-//! (PR G), `eq_input`, `eq_close` and `eq`, `eq_list`, `eq_locks` (their
-//! pieces and the binary frames the hub sends an open editor's holder:
-//! [`crate::eq`]).
+//! (PR G), `eq_input`, `eq_close`, `eq_frame_ack` (PR I) and `eq`,
+//! `eq_list`, `eq_locks` (their pieces and the binary frames the hub sends
+//! an open editor's holder: [`crate::eq`]).
 
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
@@ -155,6 +155,13 @@ pub enum ClientMsg {
     /// This client leaves its editor: the hub closes it (the close guard
     /// first) and releases the lock.
     EqClose,
+    /// The page got the binary frame `seq` of its open editor's `session`
+    /// (PR I): it acks every frame of that session up to `seq`. The hub
+    /// sends that page's next frame only after this ack, or once its wait
+    /// for it ran out (one frame in flight per page, two after a lost ack,
+    /// so its pongs, acks and values never wait behind a backlog of
+    /// pictures).
+    EqFrameAck { session: u32, seq: u32 },
 }
 
 /// One write's outcome (#43, an `ack` item): Live ran it (`value`: what
