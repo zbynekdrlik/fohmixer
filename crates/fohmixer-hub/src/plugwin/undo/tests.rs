@@ -247,3 +247,14 @@ fn each_colour_is_weighed() {
         "green: 149"
     );
 }
+
+#[test]
+fn a_read_has_its_name_in_the_log_and_the_records() {
+    // #71 PR P2a: the `undo_read` record's `state`.
+    assert_eq!(Undo::Lit(570, 18).name(), "lit");
+    assert_eq!(Undo::Grey.name(), "grey");
+    assert_eq!(Undo::Missing.name(), "missing");
+    assert_eq!(Undo::Lit(570, 18).x(), Some(570));
+    assert_eq!(Undo::Grey.x(), None);
+    assert_eq!(Undo::Missing.x(), None);
+}

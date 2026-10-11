@@ -100,6 +100,20 @@
 //!   for); when Live closed it, [`Backend::live_closed`]. The stop ends the
 //!   contact and releases every window (the editors stay open in Live); the
 //!   hub's stop waits for that, bounded ([`Plugwin::stopped`]).
+//! - **Pro-Q's own undo (#71 PR P2a)** ([`Plugwin::undo`]): a page's undo
+//!   of its editor, in this order: no editor of its session
+//!   ([`NO_EDITOR`]); the editor busy (a contact down, a resize on its way,
+//!   its guard begun: [`reason::UNDO_BUSY`]); its last undo tap less than
+//!   [`UNDO_APART_MS`] ago ([`reason::UNDO_SOON`]: two taps never make a
+//!   double click); else a fresh grab and its ↶ read ([`undo::read`]): lit,
+//!   one tap at the run's own centre as the guard taps ([`guard_tap`]),
+//!   then [`QUIET_MS`] before anything is posted to the window; grey,
+//!   nothing to undo, no tap; missing, no tap ([`reason::UNDO_MISSING`]).
+//!   The page's input number of the undo is handled after it, whatever
+//!   came of it (its pictures say they show it, [`Shown`]). The ↶ is also
+//!   read, never tapped, at the first grab [`PAINT_MS`] after an editor's
+//!   take and after each settled resize ([`PlugwinEvent::UndoRead`]: the
+//!   band Live's check that the read finds it).
 
 pub mod probe;
 pub mod sim;
@@ -114,9 +128,10 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use fohmixer_proto::eq::{Area, Crop, FrameHead, PAINT_MS, Part, reason};
+use fohmixer_proto::eq::{Area, Crop, FrameHead, PAINT_MS, Part, UNDO_APART_MS, reason};
 use tokio::sync::oneshot;
 
+use self::undo::Undo;
 use crate::eq::size::editor_size;
 
 /// The capture's period (ms): 25 frames a second at most.
@@ -180,8 +195,9 @@ pub const SEVERAL: &str = reason::SEVERAL;
 /// Why an open failed when its window never came on top (a reason its
 /// page reads).
 pub const NOT_ON_TOP: &str = reason::NOT_ON_TOP;
-/// Why a command found no editor of its session.
-pub const NO_EDITOR: &str = "no such editor";
+/// Why a command found no editor of its session (a reason a page reads:
+/// an undo's, PR P2a).
+pub const NO_EDITOR: &str = reason::NO_EDITOR;
 /// Why a command found no worker (a reason a page reads).
 pub const STOPPED: &str = reason::STOPPED;
 /// Why the close guard ended another session's contact.
@@ -746,6 +762,47 @@ pub enum PlugwinEvent {
         width: u32,
         height: u32,
     },
+    /// Pro-Q's ↶ as the first grab of `session` at least [`PAINT_MS`]
+    /// after its take, or after a resize of it settled, read it (#71 PR
+    /// P2a; never tapped): the picture's size then. The band Live's check
+    /// that the read finds it at the tablet's size.
+    UndoRead {
+        session: u32,
+        read: Undo,
+        width: u32,
+        height: u32,
+    },
+}
+
+/// What a page's undo did (#71 PR P2a, [`Plugwin::undo`]): Pro-Q's ↶ read
+/// lit and was tapped at this point, or it read grey (nothing to undo, no
+/// tap).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UndoDone {
+    Done(i32, i32),
+    Nothing,
+}
+
+/// Whether an undo tap `since_ms` after the editor's last one is far
+/// enough from it ([`UNDO_APART_MS`], #71 PR P2a): two taps never make a
+/// double click. One with none before it is (`+∞`); a time that is no
+/// number is not.
+pub fn undo_apart(since_ms: f64) -> bool {
+    since_ms >= UNDO_APART_MS
+}
+
+/// Why a page's undo is refused before its read (#71 PR P2a): its editor
+/// `busy` (a contact down, a resize on its way, its guard begun), or its
+/// last undo tap `since_ms` ago too close ([`undo_apart`]); none: its ↶ is
+/// read.
+pub fn undo_refused(busy: bool, since_ms: f64) -> Option<&'static str> {
+    if busy {
+        Some(reason::UNDO_BUSY)
+    } else if undo_apart(since_ms) {
+        None
+    } else {
+        Some(reason::UNDO_SOON)
+    }
 }
 
 /// `elapsed` in milliseconds.
@@ -1017,6 +1074,14 @@ struct Editor {
     /// infinity: none since its take): nothing is posted to its window for
     /// [`QUIET_MS`] after it ([`quiet`]; #74 review, round 3).
     ended: f64,
+    /// When the worker last tapped its ↶ for a page's undo (worker ms;
+    /// minus infinity: never): the next undo waits [`UNDO_APART_MS`] (#71
+    /// PR P2a).
+    undone: f64,
+    /// Since when its ↶ is to be read (worker ms, its take or a settled
+    /// resize; none: read): at the first grab [`PAINT_MS`] after it (#71
+    /// PR P2a, [`PlugwinEvent::UndoRead`]).
+    read_undo: Option<f64>,
 }
 
 /// A resize on its way: the size asked, when it was posted (worker ms),
@@ -1273,6 +1338,11 @@ enum Command {
         session: u32,
         reply: oneshot::Sender<Result<(), String>>,
     },
+    Undo {
+        session: u32,
+        n: u32,
+        reply: oneshot::Sender<Result<UndoDone, String>>,
+    },
     Release {
         session: u32,
         closed: bool,
@@ -1383,6 +1453,7 @@ impl Worker {
                 }
             }
             Command::Guard { session, reply } => self.guard(session, reply),
+            Command::Undo { session, n, reply } => self.undo(session, n, reply),
             Command::Release {
                 session,
                 closed,
@@ -1547,6 +1618,8 @@ impl Worker {
                         guarded: false,
                         deferred: None,
                         ended: f64::NEG_INFINITY,
+                        undone: f64::NEG_INFINITY,
+                        read_undo: Some(now),
                     },
                 );
                 let _ = finding.reply.send(Ok(size));
@@ -1653,6 +1726,8 @@ impl Worker {
                 continue;
             };
             editor.size = client;
+            // Its ↶ read again at the new size (#71 PR P2a).
+            editor.read_undo = Some(now);
             if let Some(resizing) = editor.resizing.take() {
                 let reverted = !ok && revert(self.backend.as_mut(), &editor.taken, resizing.before);
                 tracing::info!(
@@ -1857,6 +1932,18 @@ impl Worker {
             editor.changed = true;
             (self.events)(PlugwinEvent::Sized {
                 session,
+                width: size.0,
+                height: size.1,
+            });
+        }
+        // Pro-Q's ↶ read once after the take and after each settled
+        // resize, once Pro-Q had its paint time (#71 PR P2a: the band Live's
+        // check; never tapped), on the whole picture.
+        if editor.read_undo.is_some_and(|at| painted(at, now)) {
+            editor.read_undo = None;
+            (self.events)(PlugwinEvent::UndoRead {
+                session,
+                read: undo::read(&pixels),
                 width: size.0,
                 height: size.1,
             });
@@ -2066,6 +2153,72 @@ impl Worker {
         };
         let now = self.now();
         self.guard_look(guard, now);
+    }
+
+    /// A page's undo of `session`'s editor, its input `n` (#71 PR P2a), in
+    /// this order: no editor ([`NO_EDITOR`]); a contact down (the PC injects
+    /// one), a resize on its way or its guard begun ([`reason::UNDO_BUSY`]);
+    /// its last undo tap less than [`UNDO_APART_MS`] ago
+    /// ([`reason::UNDO_SOON`]); else its ↶ read and, lit, tapped
+    /// ([`Worker::undo_tap`]). `n` is handled after it whatever came of it
+    /// (its pictures then say they show it, as a dropped input's), and the
+    /// caller hears what came of it.
+    fn undo(&mut self, session: u32, n: u32, reply: oneshot::Sender<Result<UndoDone, String>>) {
+        let now = self.now();
+        let Some(editor) = self.editors.get(&session) else {
+            let _ = reply.send(Err(NO_EDITOR.to_string()));
+            return;
+        };
+        let busy = editor.guarded || editor.resizing.is_some() || self.contact.is_some();
+        let outcome = match undo_refused(busy, now - editor.undone) {
+            Some(why) => Err(why.to_string()),
+            None => {
+                let taken = editor.taken.clone();
+                self.undo_tap(session, &taken)
+            }
+        };
+        let now = self.now();
+        if let Some(editor) = self.editors.get_mut(&session) {
+            editor.shown.handled(n, now);
+        }
+        let _ = reply.send(outcome);
+    }
+
+    /// Pro-Q's ↶ of `session`'s editor (`taken`) read on a fresh grab
+    /// ([`undo::read`]): lit, tapped at the run's own centre as the guard
+    /// taps ([`guard_tap`]: down, [`GUARD_TAP`], up), the time kept, and
+    /// nothing posted to the window for [`QUIET_MS`] after it (as after any
+    /// contact); grey, nothing to undo; missing, no tap and a warn line
+    /// ([`reason::UNDO_MISSING`]). A grab or a tap that failed: its error,
+    /// in a warn line, and no time kept.
+    fn undo_tap(&mut self, session: u32, taken: &Taken) -> Result<UndoDone, String> {
+        let pixels = self.backend.grab(taken).inspect_err(|why| {
+            tracing::warn!(session, why = %why, "a Pro-Q 4 editor's picture for an undo could not be grabbed: nothing tapped");
+        })?;
+        match undo::read(&pixels) {
+            Undo::Lit(x, y) => {
+                let tapped = guard_tap(self.backend.as_mut(), taken, (x, y));
+                self.contact_ended(session);
+                tapped.inspect_err(|why| {
+                    tracing::warn!(session, x, y, why = %why, "Pro-Q 4's undo could not be tapped");
+                })?;
+                let now = self.now();
+                if let Some(editor) = self.editors.get_mut(&session) {
+                    editor.undone = now;
+                }
+                Ok(UndoDone::Done(x, y))
+            }
+            Undo::Grey => Ok(UndoDone::Nothing),
+            Undo::Missing => {
+                tracing::warn!(
+                    session,
+                    width = pixels.width,
+                    height = pixels.height,
+                    "Pro-Q 4's undo is not where it was measured: nothing tapped"
+                );
+                Err(reason::UNDO_MISSING.to_string())
+            }
+        }
     }
 
     /// The counts of an editor the worker lets go (released, its window
@@ -2294,6 +2447,21 @@ impl Plugwin {
     ) -> impl Future<Output = Result<(), String>> + Send + 'static + use<> {
         let (reply, answer) = oneshot::channel();
         let _ = self.tx.send(Command::Guard { session, reply });
+        async move { answer.await.map_err(|_| STOPPED.to_string())? }
+    }
+
+    /// A page's undo of `session`'s editor, its input `n` (#71 PR P2a):
+    /// Pro-Q's ↶ read and, lit, tapped ([`UndoDone`]), or why not. The
+    /// command goes to the worker now, in the caller's order (as
+    /// [`Plugwin::resize`]); its answer is awaited (a stopped worker's:
+    /// [`STOPPED`]).
+    pub fn undo(
+        &self,
+        session: u32,
+        n: u32,
+    ) -> impl Future<Output = Result<UndoDone, String>> + Send + 'static + use<> {
+        let (reply, answer) = oneshot::channel();
+        let _ = self.tx.send(Command::Undo { session, n, reply });
         async move { answer.await.map_err(|_| STOPPED.to_string())? }
     }
 

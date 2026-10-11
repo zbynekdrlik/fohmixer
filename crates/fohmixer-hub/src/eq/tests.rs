@@ -1115,3 +1115,150 @@ fn a_resized_picture_clamps_the_points_from_then_on() {
         "its own take's size"
     );
 }
+
+#[test]
+fn an_undo_ends_as_its_pages_answer_and_an_eq_record() {
+    // #71 PR P2a.
+    let done = Undid {
+        client: 3,
+        key: Some(key(1)),
+        session: 2,
+        n: 9,
+        outcome: Ok(UndoDone::Done(570, 18)),
+        size: Some((1349, 809)),
+    };
+    assert_eq!(done.result(), "done");
+    assert_eq!(done.tapped(), Some((570, 18)));
+    assert_eq!(
+        serde_json::to_value(done.msg()).unwrap(),
+        json!({"type": "eq_undo", "session": 2, "n": 9, "result": "done"})
+    );
+    assert_eq!(
+        done.fields(),
+        json!({"what": "undo", "instance": "band", "path": "live_set tracks 1 devices 0",
+               "client": 3, "session": 2, "why": null, "n": 9, "result": "done",
+               "x": 570, "y": 18, "w": 1349, "h": 809})
+    );
+    let nothing = Undid {
+        client: 3,
+        key: Some(key(1)),
+        session: 2,
+        n: 10,
+        outcome: Ok(UndoDone::Nothing),
+        size: Some((760, 1271)),
+    };
+    assert_eq!(nothing.result(), "nothing");
+    assert_eq!(nothing.tapped(), None);
+    assert_eq!(
+        nothing.fields(),
+        json!({"what": "undo", "instance": "band", "path": "live_set tracks 1 devices 0",
+               "client": 3, "session": 2, "why": null, "n": 10, "result": "nothing",
+               "x": null, "y": null, "w": 760, "h": 1271})
+    );
+    // Refused before the worker: no editor, no size.
+    let refused = Undid::refused(4, None, 0, 1, reason::NO_EDITOR);
+    assert_eq!(
+        refused,
+        Undid {
+            client: 4,
+            key: None,
+            session: 0,
+            n: 1,
+            outcome: Err("no such editor".to_string()),
+            size: None,
+        }
+    );
+    assert_eq!(refused.result(), "no such editor");
+    assert_eq!(refused.tapped(), None);
+    assert_eq!(
+        refused.msg(),
+        ServerMsg::EqUndo {
+            session: 0,
+            n: 1,
+            result: "no such editor".to_string()
+        }
+    );
+    assert_eq!(
+        refused.fields(),
+        json!({"what": "undo", "instance": null, "path": null, "client": 4,
+               "session": 0, "why": "no such editor", "n": 1,
+               "result": "no such editor", "x": null, "y": null, "w": null, "h": null})
+    );
+}
+
+#[test]
+fn only_an_open_editors_undo_reaches_the_worker() {
+    // #71 PR P2a.
+    let mut eqs = listed();
+    let refused = |client: ClientId, key: Option<EditorKey>, session: u32, n: u32, why: &str| {
+        Act::Undone(Undid {
+            client,
+            key,
+            session,
+            n,
+            outcome: Err(why.to_string()),
+            size: None,
+        })
+    };
+    // None held.
+    assert_eq!(
+        eqs.undo(1, 4),
+        vec![refused(1, None, 0, 4, reason::NO_EDITOR)]
+    );
+    // Opening: busy.
+    eqs.open(1, &key(1), WALL);
+    assert_eq!(
+        eqs.undo(1, 1),
+        vec![refused(1, Some(key(1)), 1, 1, reason::UNDO_BUSY)]
+    );
+    eqs.opened(&key(1), 1, Ok((1349, 809)));
+    let undo = |n: u32, size: (u32, u32)| Act::Undo {
+        client: 1,
+        key: key(1),
+        session: 1,
+        n,
+        size,
+    };
+    assert_eq!(eqs.undo(1, 2), vec![undo(2, (1349, 809))]);
+    // Another client holds none.
+    assert_eq!(
+        eqs.undo(2, 1),
+        vec![refused(2, None, 0, 1, reason::NO_EDITOR)]
+    );
+    // The picture's size follows the editor's.
+    eqs.sized(&key(1), 1, (760, 1271));
+    assert_eq!(eqs.undo(1, 3), vec![undo(3, (760, 1271))]);
+    // The undo needs no bookkeeping: a later down whose picture does not
+    // show it (`seen` older than its number) is stale by its own numbers.
+    let down = |n: u32, seen: u32| Input {
+        touch: Touch::Down,
+        x: 10.0,
+        y: 20.0,
+        n,
+        seen: Some(seen),
+    };
+    let acts = eqs.numbered(1, down(4, 2), 4.0);
+    assert!(
+        acts.iter()
+            .any(|a| matches!(a, Act::Record(r) if r["what"] == "stale")),
+        "{acts:?}"
+    );
+    assert!(!acts.iter().any(|a| matches!(a, Act::Touch { .. })));
+    let acts = eqs.numbered(1, down(5, 4), 5.0);
+    assert!(
+        acts.iter().any(|a| matches!(
+            a,
+            Act::Touch {
+                phase: Phase::Down,
+                ..
+            }
+        )),
+        "{acts:?}"
+    );
+    // Closing: busy.
+    eqs.close(1, reason::EXIT, true);
+    assert_eq!(
+        eqs.undo(1, 6),
+        vec![refused(1, Some(key(1)), 1, 6, reason::UNDO_BUSY)]
+    );
+}

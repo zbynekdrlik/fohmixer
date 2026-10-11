@@ -456,13 +456,17 @@ impl Hub {
 
 /// The window backend of `[eq]` (#71 PR E): none when it is `off`; the
 /// simulated one records into the data folder (`eq-sim.jsonl`, the E2E
-/// harness's `/sim/eq`).
+/// harness's `/sim/eq`) and keeps Pro-Q's undo history from the start (PR
+/// P2a: its pictures show a grey ↶, which a band or a drag lights, so a
+/// page's undo reads and taps it as on the PC).
 fn plugwin_backend(config: &Config) -> anyhow::Result<Option<Box<dyn plugwin::Backend>>> {
     match config.eq_backend() {
         config::EqBackend::Off => Ok(None),
         config::EqBackend::Sim => {
             let file = config.data_dir.join(plugwin::sim::RECORD_FILE);
-            Ok(Some(Box::new(plugwin::sim::Sim::new(Some(file)).0)))
+            let (sim, handle) = plugwin::sim::Sim::new(Some(file));
+            handle.undo_history(0);
+            Ok(Some(Box::new(sim)))
         }
         config::EqBackend::Windows => windows_backend().map(Some),
     }

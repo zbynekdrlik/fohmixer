@@ -1325,6 +1325,25 @@ async fn a_hub_without_the_screen_says_so() {
             crate::eq::closed_msg(&key(), reason::OFF, None),
         ]
     );
+    // PR P2a: an undo is refused `off`, and a read of the worker's is
+    // nothing here.
+    router.handle(RouterMsg::EqUndo { client: 1, n: 1 });
+    router.handle(RouterMsg::EqWorker {
+        event: PlugwinEvent::UndoRead {
+            session: 1,
+            read: Undo::Grey,
+            width: 1349,
+            height: 809,
+        },
+    });
+    assert_eq!(
+        undo_msgs(&outbox),
+        [ServerMsg::EqUndo {
+            session: 0,
+            n: 1,
+            result: reason::OFF.to_string()
+        }]
+    );
     router.eq_stop();
 }
 
@@ -1588,4 +1607,140 @@ async fn a_resize_answer_of_no_resize_records_nothing() {
     let msg = next_of(&mut rig.rx, |m| matches!(m, RouterMsg::EqResized { .. })).await;
     assert!(matches!(msg, RouterMsg::EqResized { resized: None, .. }));
     assert!(rig.sim.records().iter().all(|r| r["op"] != "resize"));
+}
+
+/// The `eq_undo` answers waiting in an outbox (#71 PR P2a).
+fn undo_msgs(outbox: &Outbox) -> Vec<ServerMsg> {
+    outbox
+        .take()
+        .unwrap()
+        .into_iter()
+        .filter(|m| matches!(m, ServerMsg::EqUndo { .. }))
+        .collect()
+}
+
+#[test]
+fn a_read_of_pro_qs_undo_is_an_eq_record() {
+    // #71 PR P2a: the session as the worker's own `rate` record names it.
+    assert_eq!(
+        undo_read_fields(4, Undo::Lit(570, 18), (1349, 809)),
+        json!({"what": "undo_read", "session": 4, "state": "lit", "x": 570,
+               "w": 1349, "h": 809})
+    );
+    assert_eq!(
+        undo_read_fields(5, Undo::Grey, (760, 1271)),
+        json!({"what": "undo_read", "session": 5, "state": "grey", "x": null,
+               "w": 760, "h": 1271})
+    );
+    assert_eq!(
+        undo_read_fields(6, Undo::Missing, (667, 1361)),
+        json!({"what": "undo_read", "session": 6, "state": "missing", "x": null,
+               "w": 667, "h": 1361})
+    );
+}
+
+#[tokio::test]
+async fn the_workers_read_of_the_undo_is_recorded() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut rig = rig(dir.path());
+    let _outbox = held_open(&mut rig).await;
+    rig.router.eq_worker(PlugwinEvent::UndoRead {
+        session: 1,
+        read: Undo::Lit(570, 18),
+        width: 1349,
+        height: 809,
+    });
+    let records: Vec<Value> = eq_records(&rig.records).iter().map(unstamped).collect();
+    assert_eq!(
+        records,
+        [undo_read_fields(1, Undo::Lit(570, 18), (1349, 809))]
+    );
+    assert!(
+        rig.sim.records().iter().all(|r| r["op"] != "touch"),
+        "never tapped"
+    );
+}
+
+#[tokio::test]
+async fn an_undo_goes_to_the_worker_for_an_open_editor_only_and_answers_its_page_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut rig = rig(dir.path());
+    let outbox = held_open(&mut rig).await;
+    let other = attach(&mut rig.router, 2);
+    other.take();
+    rig.sim.undo_history(1);
+    // A page with no editor: refused at once, nothing reaches the worker.
+    rig.router.handle(RouterMsg::EqUndo { client: 2, n: 1 });
+    assert_eq!(
+        undo_msgs(&other),
+        [ServerMsg::EqUndo {
+            session: 0,
+            n: 1,
+            result: reason::NO_EDITOR.to_string()
+        }]
+    );
+    let refused: Vec<Value> = eq_records(&rig.records).iter().map(unstamped).collect();
+    assert_eq!(
+        refused,
+        [Undid::refused(2, None, 0, 1, reason::NO_EDITOR).fields()]
+    );
+    assert!(rig.sim.records().iter().all(|r| r["op"] != "touch"));
+    // The open editor's: the worker reads the ↶ lit and taps it.
+    rig.router.handle(RouterMsg::EqUndo { client: 1, n: 3 });
+    let msg = next_of(&mut rig.rx, |m| matches!(m, RouterMsg::EqUndone { .. })).await;
+    rig.router.handle(msg);
+    assert_eq!(
+        undo_msgs(&outbox),
+        [ServerMsg::EqUndo {
+            session: 1,
+            n: 3,
+            result: "done".to_string()
+        }]
+    );
+    assert!(undo_msgs(&other).is_empty(), "its page alone");
+    let records: Vec<Value> = eq_records(&rig.records).iter().map(unstamped).collect();
+    assert_eq!(
+        records,
+        [
+            json!({"what": "undo", "instance": "band", "path": PATH, "client": 1,
+                "session": 1, "why": null, "n": 3, "result": "done",
+                "x": 570, "y": 18, "w": 1349, "h": 809})
+        ]
+    );
+    let taps: Vec<(String, i64, i64)> = sim_steps(&rig.sim)
+        .into_iter()
+        .filter(|(op, ..)| op.starts_with("touch") || op == "undo")
+        .collect();
+    let step = |op: &str, a: i64, b: i64| (op.to_string(), a, b);
+    assert_eq!(
+        taps,
+        [
+            step("touch down", 570, 18),
+            step("touch up", 570, 18),
+            step("undo", -1, -1),
+        ]
+    );
+    assert_eq!(rig.sim.undo_left(), Some(0));
+    // A down on a picture from before the undo (`seen` older than its
+    // number) is dropped as stale: nothing reaches the editor.
+    rig.router.handle(RouterMsg::EqInput {
+        client: 1,
+        input: Input {
+            touch: Touch::Down,
+            x: 10.0,
+            y: 20.0,
+            n: 4,
+            seen: Some(2),
+        },
+    });
+    assert_eq!(whats(&rig.records), vec!["stale"]);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        rig.sim
+            .records()
+            .iter()
+            .all(|r| !(r["op"] == "touch" && r["x"] == 10)),
+        "{:?}",
+        rig.sim.records()
+    );
 }

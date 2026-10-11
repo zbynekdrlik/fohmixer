@@ -68,6 +68,26 @@ pub enum Undo {
     Missing,
 }
 
+impl Undo {
+    /// Its name in the hub log and the `eq` records (#71 PR P2a): `lit`,
+    /// `grey` or `missing`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Lit(..) => "lit",
+            Self::Grey => "grey",
+            Self::Missing => "missing",
+        }
+    }
+
+    /// The column the read found a lit ↶ centred on (none: not lit).
+    pub fn x(self) -> Option<i32> {
+        match self {
+            Self::Lit(x, _) => Some(x),
+            Self::Grey | Self::Missing => None,
+        }
+    }
+}
+
 /// The ↶'s spot (x, y) in a picture `width` px wide: linear between the
 /// [`TABLE`]'s points (exact at each), x rounded; none outside the table
 /// (760 to 2400 px).

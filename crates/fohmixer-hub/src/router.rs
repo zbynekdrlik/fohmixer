@@ -256,6 +256,15 @@ pub enum RouterMsg {
     EqClose {
         client: ClientId,
     },
+    /// A page's undo of its open editor, its input `n` (#71 PR P2a).
+    EqUndo {
+        client: ClientId,
+        n: u32,
+    },
+    /// The window worker answered a page's undo (#71 PR P2a).
+    EqUndone {
+        undid: crate::eq::Undid,
+    },
     /// An editor's close sequence ended: what it left in Live.
     EqClosed {
         key: crate::eq::EditorKey,
@@ -638,6 +647,8 @@ impl Router {
             RouterMsg::EqInput { client, input } => self.eq_input(client, input),
             RouterMsg::EqView { client, part } => self.eq_view(client, part),
             RouterMsg::EqClose { client } => self.eq_close(client),
+            RouterMsg::EqUndo { client, n } => self.eq_undo(client, n),
+            RouterMsg::EqUndone { undid } => self.eq_undone(&undid),
             RouterMsg::EqClosed {
                 key,
                 session,
