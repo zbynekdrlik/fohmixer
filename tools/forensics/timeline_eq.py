@@ -1,6 +1,8 @@
 """The forensics timeline's Pro-Q 4 screen (#71, acceptance point 6): what
 the page recorded of each finger on the editor's picture (``eq_touch``:
-down, up, cancel, and ``stale``, a finger refused on an old picture, PR J)
+down, up, cancel, ``stale``, a finger refused on an old picture, PR J, and
+``uncovered``, one refused on the strip a pan brought into sight before its
+part was drawn, PR L)
 and of the picture's latency (``eq_lat``, once a second of drawing: the
 frames drawn, every input-to-draw sample in ms, the inputs shown whose
 send time the page no longer kept, the longest decode), and

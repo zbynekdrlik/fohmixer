@@ -247,6 +247,11 @@ pub enum RouterMsg {
         client: ClientId,
         input: crate::eq::Input,
     },
+    /// The part of its editor's picture a page shows (PR L).
+    EqView {
+        client: ClientId,
+        part: Option<fohmixer_proto::eq::Part>,
+    },
     /// A page leaves its editor.
     EqClose {
         client: ClientId,
@@ -631,6 +636,7 @@ impl Router {
                 resized,
             } => self.eq_resized(&key, session, resized.as_ref()),
             RouterMsg::EqInput { client, input } => self.eq_input(client, input),
+            RouterMsg::EqView { client, part } => self.eq_view(client, part),
             RouterMsg::EqClose { client } => self.eq_close(client),
             RouterMsg::EqClosed {
                 key,

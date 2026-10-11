@@ -1,4 +1,5 @@
 use super::*;
+use fohmixer_proto::eq::Crop;
 use serde_json::json;
 
 const WALL: f64 = 1_790_000_000_000.0;
@@ -855,6 +856,50 @@ fn a_numbered_finger_is_handled_and_a_stale_down_never_reaches_the_editor() {
         eqs.numbered(1, finger(Touch::Down, 8, Some(7)), 8.0),
         Vec::new()
     );
+}
+
+#[test]
+fn a_view_crops_the_open_editors_frames_only() {
+    // PR L: the part of the picture the page shows at 2× and more.
+    let mut eqs = listed();
+    let part = Some(Part {
+        crop: Crop {
+            x: 10,
+            y: 20,
+            w: 300,
+            h: 200,
+        },
+        picture: (1349, 809),
+    });
+    assert_eq!(eqs.view(1, part), Vec::new(), "none held");
+    eqs.open(1, &key(1), WALL);
+    assert_eq!(eqs.view(1, part), Vec::new(), "not open yet");
+    eqs.opened(&key(1), 1, Ok((1349, 809)));
+    // Each view is a record too (the PR L review: the timeline tells whole
+    // frames from parts).
+    let viewed = |part: Option<Part>| {
+        let mut fields = rec("view", &key(1), Some(1), Some(1), None);
+        let Act::Record(record) = &mut fields else {
+            unreachable!()
+        };
+        record["part"] = json!(part);
+        fields
+    };
+    assert_eq!(
+        eqs.view(1, part),
+        vec![Act::View { session: 1, part }, viewed(part)]
+    );
+    assert_eq!(
+        eqs.view(1, None),
+        vec![
+            Act::View {
+                session: 1,
+                part: None
+            },
+            viewed(None)
+        ]
+    );
+    assert_eq!(eqs.view(2, part), Vec::new(), "another client holds none");
 }
 
 #[test]

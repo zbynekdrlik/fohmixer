@@ -12,6 +12,7 @@ pub mod colour;
 pub mod db_text;
 pub mod deck;
 pub mod eq;
+pub mod eq_view;
 pub mod fader;
 pub mod hold;
 pub mod label;

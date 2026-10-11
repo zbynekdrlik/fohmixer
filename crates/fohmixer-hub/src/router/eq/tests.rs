@@ -71,6 +71,19 @@ fn finger(touch: Touch, x: f64, y: f64) -> Input {
     }
 }
 
+/// The header of a whole picture of `session` (PR L).
+fn whole_head(session: u32) -> fohmixer_proto::eq::FrameHead {
+    fohmixer_proto::eq::FrameHead {
+        session,
+        seq: 0,
+        shown: 0,
+        x: 0,
+        y: 0,
+        width: 1349,
+        height: 809,
+    }
+}
+
 /// The window worker on a sim.
 fn sim_plugwin() -> (Plugwin, SimHandle) {
     let (sim, handle) = Sim::new(None);
@@ -264,12 +277,12 @@ async fn a_minutes_rate_takes_its_holders_frame_round_trips_since_the_last_one()
     // Its page acks a frame 30 ms after it went (#71 PR I); the next one's
     // ack never comes, so a third goes once the wait ran out.
     let t = Instant::now();
-    outbox.eq_frame(1, 0, Bytes::from_static(b"one"));
+    outbox.eq_frame(whole_head(1), Bytes::from_static(b"one"));
     assert!(outbox.take_frame(t).is_some());
     outbox.frame_acked(1, 1, t + Duration::from_millis(30));
-    outbox.eq_frame(1, 0, Bytes::from_static(b"two"));
+    outbox.eq_frame(whole_head(1), Bytes::from_static(b"two"));
     assert!(outbox.take_frame(t + Duration::from_millis(40)).is_some());
-    outbox.eq_frame(1, 0, Bytes::from_static(b"three"));
+    outbox.eq_frame(whole_head(1), Bytes::from_static(b"three"));
     assert_eq!(outbox.take_frame(t + Duration::from_millis(1039)), None);
     assert!(outbox.take_frame(t + Duration::from_millis(1040)).is_some());
     let _ = rig.records.try_iter().count();
@@ -312,7 +325,7 @@ async fn a_closed_editor_records_its_frames_round_trips_since_the_last_minute() 
     let outbox = attach(&mut rig.router, 1);
     outbox.take();
     let t = Instant::now();
-    outbox.eq_frame(1, 0, Bytes::from_static(b"one"));
+    outbox.eq_frame(whole_head(1), Bytes::from_static(b"one"));
     assert!(outbox.take_frame(t).is_some());
     outbox.frame_acked(1, 1, t + Duration::from_millis(25));
     let _ = rig.records.try_iter().count();
@@ -715,9 +728,8 @@ async fn an_open_editors_frames_reach_its_holder_and_its_picture_is_kept() {
     assert_eq!(
         head,
         fohmixer_proto::eq::FrameHead {
-            session: 1,
             seq: 1,
-            shown: 0
+            ..whole_head(1)
         }
     );
     assert_eq!(jpeg[..2], [0xFF_u8, 0xD8]);
@@ -795,6 +807,43 @@ async fn a_dropped_socket_records_its_editors_frame_round_trips() {
         ),
         (json!(1), json!(1), json!(1))
     );
+}
+
+#[tokio::test]
+async fn a_view_brings_the_part_in_sight_in_later_frames() {
+    // PR L: the page's eq_view reaches the window worker through the
+    // router, and the frames carry the part at its corner.
+    let dir = tempfile::tempdir().unwrap();
+    let mut rig = rig(dir.path());
+    let outbox = held_open(&mut rig).await;
+    let part = fohmixer_proto::eq::Part {
+        crop: fohmixer_proto::eq::Crop {
+            x: 96,
+            y: 48,
+            w: 320,
+            h: 160,
+        },
+        picture: (1349, 809),
+    };
+    rig.router.handle(RouterMsg::EqView {
+        client: 1,
+        part: Some(part),
+    });
+    assert_eq!(whats(&rig.records), vec!["view"]);
+    let mut corner = (0, 0);
+    for _ in 0..300 {
+        if let Some(frame) = outbox.take_frame(Instant::now()) {
+            let (head, _) = fohmixer_proto::eq::frame_parts(&frame).expect("a frame's header");
+            outbox.frame_acked(head.session, head.seq, Instant::now());
+            corner = (head.x, head.y);
+            if corner == (96, 48) {
+                assert_eq!((head.width, head.height), (1349, 809), "the whole size");
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(corner, (96, 48), "a later frame is the part");
 }
 
 #[tokio::test]

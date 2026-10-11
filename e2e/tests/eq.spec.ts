@@ -536,7 +536,12 @@ test.describe("The Pro-Q 4 screen", () => {
       (all) => all.some((r: any) => r.what === "closed"),
       "the hub's eq records",
     );
-    expect(eq.map((r: any) => r.what)).toEqual(["take", "open", "resize", "opened", "touch", "touch", "close", "closed"]);
+    // At 3× the page asked for the part in sight (PR L), once the view
+    // rested: its `view`, of the picture's size it drew.
+    const views = eq.filter((r: any) => r.what === "view");
+    expect(views.length, JSON.stringify(views)).toBeGreaterThanOrEqual(1);
+    expect(views[views.length - 1].part.picture).toEqual([picture.width, picture.height]);
+    expect(eq.filter((r: any) => r.what !== "view").map((r: any) => r.what)).toEqual(["take", "open", "resize", "opened", "touch", "touch", "close", "closed"]);
     const resize = eq.find((r: any) => r.what === "resize");
     expect([resize.w, resize.h, resize.client_w, resize.client_h, resize.ok]).toEqual([picture.width, picture.height, picture.width, picture.height, true]);
     expect(eq.filter((r: any) => r.what === "touch").map((r: any) => r.why)).toEqual(["down", "up"]);
@@ -1163,6 +1168,197 @@ test.describe("The Pro-Q 4 screen", () => {
     await screen.getByTestId("eq-exit").click();
     await expect(page.getByTestId("eq-screen")).toHaveCount(0);
     await closedWithGuard(before);
+    await editorOpen(trackPath, false);
+  });
+});
+
+test.describe("The Pro-Q 4 screen's part in sight", () => {
+  // #71 PR L: at 2× and more the hub sends only the part of the picture in
+  // sight, with a margin; the page draws it at its corner, and the picture
+  // under the fingers stays the whole picture's.
+  test("at 3× the frames are the part in sight, smaller; the whole picture again at 1×", async ({ page }) => {
+    const frames_: { x: number; y: number; width: number; height: number; bytes: number }[] = [];
+    page.on("websocket", (ws) => {
+      ws.on("framereceived", ({ payload }) => {
+        if (typeof payload === "string" || payload.length < 28) return;
+        frames_.push({
+          x: payload.readUInt32BE(12),
+          y: payload.readUInt32BE(16),
+          width: payload.readUInt32BE(20),
+          height: payload.readUInt32BE(24),
+          bytes: payload.length,
+        });
+      });
+    });
+    await openSurface(page);
+    const { onTrack, trackPath } = await hand2Cards(page);
+    await editorOpen(trackPath, false);
+    await onTrack.getByTestId("eq-open").click();
+    const screen = await openScreen(page, trackPath);
+    const canvas = screen.getByTestId("eq-canvas");
+    // The editor in the screen's shape (PR G): the picture's size.
+    const size = await pictureSize(canvas);
+    const start = frames_.length;
+    const whole = await until(
+      async () => frames_.slice(start).filter((f) => f.x === 0 && f.y === 0 && f.width === size.width),
+      (found) => found.length >= 2,
+      "whole frames",
+    );
+    expect([whole[0].width, whole[0].height]).toEqual([size.width, size.height]);
+    // Zoomed to 3× on the picture's middle: once the view rested, parts.
+    const map = await zoomIn(screen, { x: size.width / 2, y: size.height / 2 });
+    const from = frames_.length;
+    const parts = await until(
+      async () => frames_.slice(from).filter((f) => f.x > 0 && f.y > 0),
+      (found) => found.length >= 2,
+      "frames of the part in sight",
+    );
+    expect([parts[0].width, parts[0].height], "the whole picture's size in each").toEqual([size.width, size.height]);
+    const wholeBytes = Math.min(...whole.map((f) => f.bytes));
+    expect(Math.max(...parts.map((f) => f.bytes)), JSON.stringify({ whole: whole.map((f) => f.bytes), parts: parts.map((f) => f.bytes) })).toBeLessThan(wholeBytes);
+    // The canvas still draws the whole picture, the part at its corner
+    // inside it: a tap lands where it shows.
+    await expect(canvas).toHaveAttribute("data-width", String(size.width));
+    const part = await until(
+      async () => (await canvas.getAttribute("data-part"))!.split(",").map(Number),
+      ([x, y]) => x > 0 && y > 0,
+      "a part drawn",
+    );
+    expect(part[0] + part[2] <= size.width && part[1] + part[3] <= size.height, JSON.stringify(part)).toBe(true);
+    expect(part[2] < size.width && part[3] < size.height, JSON.stringify(part)).toBe(true);
+    // The part drawn is the frames' (its corner, x before y: the PR L
+    // re-review) and holds the point the tap zoomed on.
+    const last = frames_.filter((f) => f.x > 0 && f.y > 0).pop()!;
+    expect([part[0], part[1]], JSON.stringify({ part, last })).toEqual([last.x, last.y]);
+    const middle = { x: size.width / 2, y: size.height / 2 };
+    expect(part[0] <= middle.x && middle.x <= part[0] + part[2] && part[1] <= middle.y && middle.y <= part[1] + part[3], JSON.stringify(part)).toBe(true);
+    const area = screen.getByTestId("eq-area");
+    const at = await centre(area);
+    const tapFrom = (await simEq.records()).length;
+    await quickTap(area, at, 91);
+    const tap = await until(() => touchesAfter(tapFrom), (all) => all.some((r) => r.phase === "up"), "the tap on the part");
+    wentFromTo(tap, map.toPicture(at), map.toPicture(at));
+    // CELÝ EQ: the whole picture again.
+    await caughtUp(screen);
+    await screen.getByTestId("eq-whole").click();
+    const back = frames_.length;
+    await until(
+      async () => frames_.slice(back).filter((f) => f.x === 0 && f.y === 0),
+      (found) => found.length >= 2,
+      "whole frames again",
+    );
+    const closing = (await simEq.records()).length;
+    await screen.getByTestId("eq-exit").click();
+    await expect(page.getByTestId("eq-screen")).toHaveCount(0);
+    await closedWithGuard(closing);
+    await editorOpen(trackPath, false);
+  });
+
+  test("after a pan past the margin a finger on the strip not drawn yet waits; one on the part drawn reaches the editor, and one on the strip once its part landed", async ({ page }) => {
+    // The PR L re-review: only a finger landing on old pixels waits (the
+    // page's `lands_on`), never one on the part drawn last.
+    const since = Date.now();
+    await openSurface(page);
+    const { onTrack, trackPath } = await hand2Cards(page);
+    await editorOpen(trackPath, false);
+    await onTrack.getByTestId("eq-open").click();
+    const screen = await openScreen(page, trackPath);
+    const canvas = screen.getByTestId("eq-canvas");
+    const area = screen.getByTestId("eq-area");
+    const stale = screen.getByTestId("eq-stale");
+    const size = await pictureSize(canvas);
+    const map = await zoomIn(screen, { x: size.width / 2, y: size.height / 2 });
+    const drawnPart = async () => (await canvas.getAttribute("data-part"))!.split(",").map(Number);
+    const old = await until(drawnPart, ([x, y]) => x > 0 && y > 0, "the part in sight drawn");
+    await caughtUp(screen);
+    // Two fingers move the view half the area to the right (a pan at 3×):
+    // the picture slides left by that many page px.
+    const box = (await area.boundingBox())!;
+    const shift = Math.round(box.width / 2);
+    const mid = { x: Math.round(box.x + box.width * 0.75), y: Math.round(box.y + box.height / 2) };
+    const panned = (p: At) => {
+      const at = map.toPage(p);
+      return { x: at.x - shift, y: at.y };
+    };
+    // On the strip the pan brought into sight (beyond the part drawn), and
+    // on the part drawn (current pixels), at the picture's middle height.
+    const right = old[0] + old[2];
+    const strip = panned({ x: right + 40, y: size.height / 2 });
+    const onPart = panned({ x: right - 60, y: size.height / 2 });
+    expect(strip.x, JSON.stringify({ strip, box })).toBeLessThan(box.x + box.width - 20);
+    const before = (await simEq.records()).length;
+    await area.evaluate(
+      async (el, { mid, half, shift, taps }) => {
+        const frame = () => new Promise<void>((done) => requestAnimationFrame(() => done()));
+        const fire = (type: string, id: number, x: number, y: number, primary: boolean) =>
+          el.dispatchEvent(
+            new PointerEvent(type, { pointerId: id, pointerType: "touch", isPrimary: primary, clientX: x, clientY: y, bubbles: true, cancelable: true }),
+          );
+        fire("pointerdown", 41, mid.x - half, mid.y, true);
+        fire("pointerdown", 42, mid.x + half, mid.y, false);
+        await frame();
+        await frame();
+        const steps = 8;
+        for (let i = 1; i <= steps; i++) {
+          const dx = Math.round((shift * i) / steps);
+          fire("pointermove", 41, mid.x - half - dx, mid.y, true);
+          fire("pointermove", 42, mid.x + half - dx, mid.y, false);
+          await frame();
+        }
+        await frame();
+        fire("pointerup", 41, mid.x - half - shift, mid.y, true);
+        fire("pointerup", 42, mid.x + half - shift, mid.y, false);
+        await frame();
+        // At once (the view rests 150 ms before the hub hears of it, so the
+        // strip's part is not drawn yet): a tap on the strip, then one on
+        // the part drawn.
+        for (const [id, at] of taps) {
+          fire("pointerdown", id, at.x, at.y, true);
+          fire("pointerup", id, at.x, at.y, true);
+        }
+      },
+      { mid, half: 40, shift, taps: [[81, strip], [82, onPart]] as [number, At][] },
+    );
+    // The view as panned: the strip's point lies beyond the old part's
+    // side, the other point inside it (the test's own geometry).
+    const moved = await pictureMap(canvas);
+    const stripAt = moved.toPicture(strip);
+    const onPartAt = moved.toPicture(onPart);
+    expect(stripAt.x, JSON.stringify({ old, stripAt })).toBeGreaterThan(right + 16);
+    expect(onPartAt.x, JSON.stringify({ old, onPartAt })).toBeLessThan(right - 16);
+    expect(onPartAt.x, JSON.stringify({ old, onPartAt })).toBeGreaterThan(old[0] + 16);
+    for (const at of [stripAt, onPartAt]) {
+      expect(at.y, JSON.stringify({ old, at })).toBeGreaterThan(old[1] + 16);
+      expect(at.y, JSON.stringify({ old, at })).toBeLessThan(old[1] + old[3] - 16);
+    }
+    // The strip's finger waits: the note, its record, nothing to the editor.
+    await expect(stale).toHaveAttribute("data-shown", "true");
+    const refused = await until(
+      async () => pageEvents(await hubEvents()).filter((e: any) => e.ev === "eq_touch" && e.what === "uncovered" && e.t >= since),
+      (all) => all.length >= 1,
+      "the finger on the strip in the recorder",
+      15_000,
+    );
+    expect(refused.map((e: any) => e.p)).toEqual([81]);
+    // The finger on the part drawn reached the editor where it showed.
+    const tap = await until(() => touchesAfter(before), (all) => all.some((r) => r.phase === "up"), "the tap on the part drawn");
+    wentFromTo(tap, onPartAt, onPartAt);
+    // The strip's part lands (the hub heard the view once it rested); a
+    // finger there now reaches the editor.
+    await until(
+      drawnPart,
+      ([x, y, w, h]) => x + 16 <= stripAt.x && stripAt.x <= x + w - 16 && y + 16 <= stripAt.y && stripAt.y <= y + h - 16,
+      "the strip's part drawn",
+    );
+    await caughtUp(screen);
+    const tapFrom = (await simEq.records()).length;
+    await quickTap(area, strip, 83);
+    const second = await until(() => touchesAfter(tapFrom), (all) => all.some((r) => r.phase === "up"), "the tap on the strip");
+    wentFromTo(second, stripAt, stripAt);
+    const closing = (await simEq.records()).length;
+    await screen.getByTestId("eq-exit").click();
+    await expect(page.getByTestId("eq-screen")).toHaveCount(0);
+    await closedWithGuard(closing);
     await editorOpen(trackPath, false);
   });
 });

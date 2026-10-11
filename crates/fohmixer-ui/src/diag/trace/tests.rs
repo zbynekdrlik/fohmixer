@@ -92,6 +92,7 @@ fn what_a_touch_and_an_outage_need_is_essential_moves_round_trips_and_long_frame
         "eq_touch",
         "eq_mv",
         "eq_lat",
+        "eq_view",
     ] {
         assert!(is_essential(ev), "{ev}");
     }

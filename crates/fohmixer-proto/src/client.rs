@@ -19,7 +19,7 @@
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
-use crate::eq::{Area, EqItem, EqLock, EqState, Touch};
+use crate::eq::{Area, EqItem, EqLock, EqState, Part, Touch};
 use crate::layout::Binding;
 use crate::path::canonical_target;
 
@@ -162,6 +162,13 @@ pub enum ClientMsg {
         n: u32,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         seen: Option<u32>,
+    },
+    /// The part of the picture the page shows at 2× and more, with a margin
+    /// (PR L): the hub sends only that part of its frames of that size.
+    /// None: the whole picture.
+    EqView {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        part: Option<Part>,
     },
     /// This client leaves its editor: the hub closes it (the close guard
     /// first) and releases the lock.

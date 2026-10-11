@@ -52,7 +52,7 @@ use std::future::Future;
 use std::sync::Arc;
 
 use fohmixer_proto::client::ServerMsg;
-use fohmixer_proto::eq::{Area, EqItem, EqState, reason};
+use fohmixer_proto::eq::{Area, EqItem, EqState, Part, reason};
 use fohmixer_proto::layout::Binding;
 use serde_json::{Value, json};
 
@@ -637,6 +637,14 @@ impl Router {
         }
     }
 
+    /// The part of its editor's picture `client` shows (PR L).
+    pub(super) fn eq_view(&mut self, client: ClientId, part: Option<Part>) {
+        if let Some(io) = self.eq.as_mut() {
+            let acts = io.state.view(client, part);
+            self.eq_acts(acts);
+        }
+    }
+
     /// `client` left its editor.
     pub(super) fn eq_close(&mut self, client: ClientId) {
         if let Some(io) = self.eq.as_mut() {
@@ -893,8 +901,9 @@ impl Router {
                 io.plugwin.capture(
                     session,
                     Arc::new(move |frame: Frame| {
-                        outbox.eq_frame(frame.session, frame.shown, frame.jpeg.clone());
-                        if let Some(device) = &device {
+                        outbox.eq_frame(frame.head(), frame.jpeg.clone());
+                        // A card's last picture is a whole one (PR L).
+                        if let Some(device) = device.as_ref().filter(|_| frame.whole()) {
                             pictures.put(&key, device, frame.jpeg);
                         }
                     }),
@@ -907,6 +916,7 @@ impl Router {
                 at,
             } => io.plugwin.touch(session, contact, phase, at),
             Act::Handled { session, n } => io.plugwin.handled(session, n),
+            Act::View { session, part } => io.plugwin.view(session, part),
             Act::Tell { client, msg } => {
                 if let Some(outbox) = self.clients.get(&client) {
                     if let ServerMsg::Eq {

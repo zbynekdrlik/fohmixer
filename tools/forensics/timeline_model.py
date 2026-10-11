@@ -939,6 +939,7 @@ def summary(timeline):
         ("detail_slid", detail_count(timeline, "slid")),
         ("eq_fingers", str(sum(f.what == "down" for f in timeline.eq_fingers))),
         ("eq_stale", str(sum(f.what == "stale" for f in timeline.eq_fingers))),
+        ("eq_uncovered", str(sum(f.what == "uncovered" for f in timeline.eq_fingers))),
         ("eq_hub_stale", str(timeline.eq_hub_stale)),
         ("eq_lat_n", str(len(eq_samples))),
         ("eq_lat_lost", str(sum(lat.lost for lat in timeline.eq_latency))),

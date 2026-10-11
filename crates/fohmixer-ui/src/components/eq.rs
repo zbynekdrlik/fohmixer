@@ -46,7 +46,7 @@
 
 use std::rc::Rc;
 
-use fohmixer_proto::eq::{EqItem, EqState, FrameHead, PRODUCT};
+use fohmixer_proto::eq::{Crop, EqItem, EqState, FrameHead, PRODUCT};
 use fohmixer_proto::layout::Strip;
 use leptos::html;
 use leptos::prelude::*;
@@ -61,9 +61,10 @@ use crate::behave::eq::{
     locked_text, look, on_picture, overview_size, place_text, point, spot, stale_landing,
     stale_note, zoom_text,
 };
+use crate::behave::eq_view::{ViewWatch, lands_on, part_of, scaled_part};
 use crate::binding::detail_keys;
 use crate::diag::trace::eq_lat::EqLat;
-use crate::diag::trace::fingers::{EqFingers, eq_touch};
+use crate::diag::trace::fingers::{EqFingers, eq_touch, eq_view};
 use crate::dom;
 use crate::raf;
 use crate::store::eq::{EqView, ended, screen_state, screen_view};
@@ -374,6 +375,8 @@ struct Painter {
     next: Option<(FrameHead, web_sys::Blob)>,
     frames: u32,
     size: Option<(u32, u32)>,
+    /// The part of the picture the last frame drawn held (PR L).
+    part: Option<Crop>,
 }
 
 /// Where a drawn frame is told (#71 PR J): the store, which knows the input
@@ -440,8 +443,12 @@ async fn draw(painter: PainterBox, drawn: Drawn, head: FrameHead, blob: &web_sys
         return;
     };
     let canvas = painter.try_with_value(|p| p.canvas.clone()).flatten();
+    // The whole picture's size (PR L: a frame may hold a part of it, at its
+    // corner in the header; the canvas keeps the rest it drew, out of
+    // sight at that zoom).
+    let (width, height) = (head.width, head.height);
+    let corner = (head.x, head.y);
     if let Some(canvas) = canvas {
-        let (width, height) = (bitmap.width(), bitmap.height());
         if (canvas.width(), canvas.height()) != (width, height) {
             canvas.set_width(width);
             canvas.set_height(height);
@@ -449,15 +456,31 @@ async fn draw(painter: PainterBox, drawn: Drawn, head: FrameHead, blob: &web_sys
             dom::set_attr(&canvas, "data-height", &height.to_string());
         }
         if let Some(context) = context_2d(&canvas) {
-            let _ = context.draw_image_with_image_bitmap(&bitmap, 0.0, 0.0);
+            let _ = context.draw_image_with_image_bitmap(
+                &bitmap,
+                f64::from(corner.0),
+                f64::from(corner.1),
+            );
+            let part = Crop {
+                x: corner.0,
+                y: corner.1,
+                w: bitmap.width(),
+                h: bitmap.height(),
+            };
             let frames = painter.try_update_value(|p| {
                 p.frames += 1;
                 p.size = Some((width, height));
+                p.part = Some(part);
                 p.frames
             });
             if let Some(frames) = frames {
                 dom::set_attr(&canvas, "data-frames", &frames.to_string());
             }
+            dom::set_attr(
+                &canvas,
+                "data-part",
+                &format!("{},{},{},{}", part.x, part.y, part.w, part.h),
+            );
             let now = dom::epoch_now();
             let measured = drawn.store.eq_drawn(head, now);
             let decode_ms = dom::now() - started;
@@ -472,18 +495,18 @@ async fn draw(painter: PainterBox, drawn: Drawn, head: FrameHead, blob: &web_sys
     }
     let small = painter.try_with_value(|p| p.small.clone()).flatten();
     if let Some(small) = &small {
-        shape_overview(small, (bitmap.width(), bitmap.height()));
+        shape_overview(small, (width, height));
     }
     if let Some(small) = small
         && let Some(context) = context_2d(&small)
     {
-        let _ = context.draw_image_with_image_bitmap_and_dw_and_dh(
-            &bitmap,
-            0.0,
-            0.0,
-            f64::from(small.width()),
-            f64::from(small.height()),
+        let (left, top, w, h) = scaled_part(
+            corner,
+            (bitmap.width(), bitmap.height()),
+            (width, height),
+            (small.width(), small.height()),
         );
+        let _ = context.draw_image_with_image_bitmap_and_dw_and_dh(&bitmap, left, top, w, h);
     }
     bitmap.close();
 }
@@ -631,6 +654,8 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
     let observer = StoredValue::new_local(None::<AreaObserver>);
     // The picture area the hub knows (PR G): the open's, then each change.
     let watch = StoredValue::new(AreaWatch::default());
+    // The part of the picture the hub sends (PR L): the whole one at first.
+    let views = StoredValue::new(ViewWatch::default());
     // The look last drawn (none: the stylesheet's, the whole picture).
     let drawn = StoredValue::new(None::<Look>);
     let zoomed = RwSignal::new(false);
@@ -800,11 +825,26 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
         let first = !finger.try_with_value(Finger::held).unwrap_or(false);
         // A quick tap's up still to go: the picture cannot show it yet.
         let tap_pending = finger.try_with_value(Finger::tap_pending).unwrap_or(false);
+        // It lands on the part drawn last (the PR L re-review: after a pan
+        // past the margin, the strip that came into sight is old until the
+        // new part is drawn; a finger elsewhere is on current pixels).
+        let on_part = painter
+            .try_with_value(|p| p.part)
+            .flatten()
+            .is_none_or(|part| lands_on(part, picture, at.picture));
         let caught = store.eq_caught_up() && !tap_pending;
-        let stale = first && stale_landing(lands, caught, store.dropping_out());
+        let dropping = store.dropping_out();
+        let stale = first && stale_landing(lands, caught && on_part, dropping);
         if stale {
             let _ = stale_at.try_set_value(Some(now));
-            record(vec![eq_touch(t, "stale", id, at.picture, zoom_now())]);
+            // The recorder tells a finger on the old strip from one on a
+            // picture behind the page's inputs.
+            let what = if caught && !dropping {
+                "uncovered"
+            } else {
+                "stale"
+            };
+            record(vec![eq_touch(t, what, id, at.picture, zoom_now())]);
         } else if first && lands == Spot::Edit {
             store.eq_land();
         }
@@ -942,6 +982,15 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
             let Some(wanted) = wanted else {
                 return;
             };
+            // At 2× and more, only the part in sight goes (PR L), once the
+            // view rested; a part names the picture's size it is of.
+            let changed = views
+                .try_update_value(|w| w.frame(part_of(picture, &wanted), open, now))
+                .flatten();
+            if let Some(part) = changed {
+                store.eq_view(part);
+                record(vec![eq_view(dom::epoch_now(), part)]);
+            }
             if drawn
                 .try_with_value(|d| d.as_ref() != Some(&wanted))
                 .unwrap_or(false)
