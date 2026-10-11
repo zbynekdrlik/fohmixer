@@ -590,6 +590,10 @@ impl LiveStore {
                 since,
             }),
             ServerMsg::Link { .. } => {}
+            // Pro-Q 4's own undo (#71 PR P2a): this page sends no
+            // `eq_undo` yet (its control comes once the owner approved its
+            // look), so no answer is awaited.
+            ServerMsg::EqUndo { .. } => {}
         }
     }
 
