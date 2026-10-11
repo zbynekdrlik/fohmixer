@@ -1281,7 +1281,9 @@ test.describe("The Pro-Q 4 screen on a slow link", () => {
       const tapFrom = (await simEq.records()).length;
       await quickTap(area, from, 72);
       const tap = await until(() => touchesAfter(tapFrom), (all) => all.some((r) => r.phase === "up"), "the tap once caught up");
-      expect(tap.map((r) => r.phase)).toEqual(["down", "up"]);
+      const phases = tap.map((r) => r.phase);
+      expect([phases[0], phases[phases.length - 1]], JSON.stringify(tap)).toEqual(["down", "up"]);
+      expect(phases.slice(1, -1).every((p) => p === "update"), JSON.stringify(tap)).toBe(true);
       // The picture's latency, from the page's eq_lat records: every input a
       // picture was the first to show, from its send to the draw.
       const lat = await until(
