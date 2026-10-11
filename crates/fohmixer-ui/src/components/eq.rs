@@ -36,7 +36,10 @@
 //!
 //! The screen's open, close and lock refusal go to the flight recorder as
 //! `detail` events (`eq_open`, `eq_close` with why, `eq_locked`) with the
-//! strip's keys. Every tap target owns its touches.
+//! strip's keys, and every finger on the picture as `eq_touch` (its down, up
+//! or cancel: the picture point and the zoom) and `eq_mv` (its moves
+//! summarized; #71 PR I, `diag::trace::fingers`). Every tap target owns its
+//! touches.
 
 use std::rc::Rc;
 
@@ -55,6 +58,7 @@ use crate::behave::eq::{
     look, on_picture, overview_size, place_text, point, zoom_text,
 };
 use crate::binding::detail_keys;
+use crate::diag::trace::fingers::EqFingers;
 use crate::dom;
 use crate::raf;
 use crate::store::eq::{EqView, ended, screen_state, screen_view};
@@ -587,6 +591,8 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
     let frame_ref = NodeRef::<html::Div>::new();
     let area_ref = NodeRef::<html::Div>::new();
     let finger = StoredValue::new(Finger::default());
+    // The fingers as the flight recorder keeps them (PR I).
+    let fingers = StoredValue::new(EqFingers::default());
     // The page's own view of the picture (PR F): each open starts at 1×.
     let viewer = StoredValue::new(Viewer::START);
     let grip = StoredValue::new(None::<Grip>);
@@ -610,6 +616,22 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
             store.eq_input(out);
         }
     };
+    // The view's zoom now, and the fingers' events into the flight recorder
+    // (PR I).
+    let zoom_now = move || viewer.try_with_value(|v| v.view().zoom).unwrap_or(1.0);
+    let record = move |events: Vec<serde_json::Value>| {
+        for event in &events {
+            crate::diag::record(event);
+        }
+    };
+    // Every finger goes: each one's moves and its cancel where it was.
+    let fingers_leave = move || {
+        record(
+            fingers
+                .try_update_value(|f| f.leave(dom::epoch_now(), zoom_now()))
+                .unwrap_or_default(),
+        );
+    };
     let sink: FrameSink = Rc::new(move |blob: web_sys::Blob| paint(painter, blob));
     store.eq_frames(Some(sink));
     // Opening from now on; the open itself goes with the area, at its load.
@@ -617,11 +639,15 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
     // A hidden page lifts its finger (`Finger::visibility`), as the Stream
     // Deck lifts its keys: `visibilitychange` bubbles to the window.
     let hidden = window_event_listener_untyped("visibilitychange", move |_| {
+        let hidden = dom::hidden();
         send(
             finger
-                .try_update_value(|f| f.visibility(dom::hidden()))
+                .try_update_value(|f| f.visibility(hidden))
                 .unwrap_or_default(),
         );
+        if hidden {
+            fingers_leave();
+        }
     });
     // A turned or resized screen: the area's box again (the frame loop
     // draws the view for it).
@@ -639,6 +665,7 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
             watcher.disconnect();
         }
         send(finger.try_update_value(Finger::leave).unwrap_or_default());
+        fingers_leave();
         store.eq_close();
         store.eq_frames(None);
     });
@@ -714,6 +741,9 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
         };
         let id = ev.pointer_id();
         let now = dom::now();
+        let down =
+            fingers.try_update_value(|f| f.down(dom::epoch_now(), id, at.picture, zoom_now()));
+        record(down.into_iter().collect());
         let out = finger
             .try_update_value(|f| f.down(id, at, on_picture(at.picture, picture), now))
             .unwrap_or_default();
@@ -724,7 +754,12 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
     };
     let on_move = move |ev: web_sys::PointerEvent| {
         if let Some((at, _)) = point_of(&ev) {
-            let _ = finger.try_update_value(|f| f.moved(ev.pointer_id(), at));
+            let id = ev.pointer_id();
+            let _ = finger.try_update_value(|f| f.moved(id, at));
+            let summary = fingers
+                .try_update_value(|f| f.moved(dom::epoch_now(), id, at.picture))
+                .flatten();
+            record(summary.into_iter().collect());
         }
     };
     let on_up = move |ev: web_sys::PointerEvent| {
@@ -732,16 +767,30 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
             return;
         };
         let now = dom::now();
+        let id = ev.pointer_id();
+        record(
+            fingers
+                .try_update_value(|f| {
+                    f.end(dom::epoch_now(), "up", id, Some(at.picture), zoom_now())
+                })
+                .unwrap_or_default(),
+        );
         send(
             finger
-                .try_update_value(|f| f.up(ev.pointer_id(), at, now))
+                .try_update_value(|f| f.up(id, at, now))
                 .unwrap_or_default(),
         );
     };
     let on_cancel = move |ev: web_sys::PointerEvent| {
+        let id = ev.pointer_id();
+        record(
+            fingers
+                .try_update_value(|f| f.end(dom::epoch_now(), "cancel", id, None, zoom_now()))
+                .unwrap_or_default(),
+        );
         send(
             finger
-                .try_update_value(|f| f.cancel(ev.pointer_id()))
+                .try_update_value(|f| f.cancel(id))
                 .unwrap_or_default(),
         );
     };

@@ -516,6 +516,70 @@ test.describe("The Pro-Q 4 screen", () => {
     ]);
   });
 
+  test("the page acks each frame and the frames keep coming; its fingers on the picture reach the flight recorder", async ({ page }) => {
+    // #71 PR I: one frame in flight per page. The hub sends the next frame
+    // only once the page acked the one before (or 1 s passed), so without
+    // the page's acks the sim's four frames a second would come one a
+    // second.
+    const since = Date.now();
+    const acks: any[] = [];
+    page.on("websocket", (ws) => {
+      ws.on("framesent", ({ payload }) => {
+        if (typeof payload === "string" && payload.includes('"type":"eq_frame_ack"')) acks.push(JSON.parse(payload));
+      });
+    });
+    await openSurface(page);
+    const { onTrack, trackPath } = await hand2Cards(page);
+    await editorOpen(trackPath, false);
+    await onTrack.getByTestId("eq-open").click();
+    const screen = await openScreen(page, trackPath);
+    const session = Number(await screen.getAttribute("data-session"));
+    const canvas = screen.getByTestId("eq-canvas");
+    const drawn = async () => Number(await canvas.getAttribute("data-frames"));
+    const first = await drawn();
+    const acked = acks.length;
+    await page.waitForTimeout(4_000);
+    const frameCount = (await drawn()) - first;
+    expect(frameCount, "frames drawn in 4 s (one a second without acks)").toBeGreaterThanOrEqual(8);
+    expect(acks.length - acked, "the page's acks").toBeGreaterThanOrEqual(8);
+    expect(acks.every((a) => a.session === session), JSON.stringify(acks.slice(0, 3))).toBe(true);
+
+    // A real drag on the picture: its down, its moves summarized and its
+    // up, at the picture's pixels, with the view's zoom.
+    const map = await pictureMap(canvas);
+    const from = map.toPage(FROM);
+    const to = map.toPage(TO);
+    await page.mouse.move(from.x, from.y);
+    await page.mouse.down();
+    for (let i = 1; i <= DRAG_STEPS; i++) {
+      await page.mouse.move(from.x + ((to.x - from.x) * i) / DRAG_STEPS, from.y + ((to.y - from.y) * i) / DRAG_STEPS);
+      await frames(page, 2);
+    }
+    await page.mouse.up();
+    const fingers = await until(
+      async () => pageEvents(await hubEvents()).filter((e: any) => (e.ev === "eq_touch" || e.ev === "eq_mv") && e.t >= since),
+      (all) => all.some((e: any) => e.ev === "eq_touch" && e.what === "up"),
+      "the finger's events in the event log",
+      15_000,
+    );
+    const touches = fingers.filter((e: any) => e.ev === "eq_touch");
+    expect(touches.map((e: any) => e.what), JSON.stringify(fingers)).toEqual(["down", "up"]);
+    expect(touches.every((e: any) => e.p === touches[0].p && e.z === 1), JSON.stringify(touches)).toBe(true);
+    expect(near(touches[0], map.toPicture(from)), `the down ${JSON.stringify(touches[0])} at ${JSON.stringify(map.toPicture(from))}`).toBe(true);
+    expect(near(touches[1], map.toPicture(to)), `the up ${JSON.stringify(touches[1])} at ${JSON.stringify(map.toPicture(to))}`).toBe(true);
+    const moves = fingers.filter((e: any) => e.ev === "eq_mv");
+    expect(moves.length, JSON.stringify(fingers)).toBeGreaterThanOrEqual(1);
+    expect(moves.reduce((n: number, m: any) => n + m.n, 0), JSON.stringify(moves)).toBeGreaterThanOrEqual(DRAG_STEPS / 2);
+    const last = moves[moves.length - 1];
+    expect(Math.abs(last.b[0] - touches[1].x) <= 1 && Math.abs(last.b[1] - touches[1].y) <= 1, JSON.stringify(last)).toBe(true);
+
+    const closing = (await simEq.records()).length;
+    await screen.getByTestId("eq-exit").click();
+    await expect(page.getByTestId("eq-screen")).toHaveCount(0);
+    await closedWithGuard(closing);
+    await editorOpen(trackPath, false);
+  });
+
   test("another page sees every Pro-Q 4 locked while one is held (one on the PC's screen at a time); a closed page frees them", async ({ page, context }) => {
     const holder = await context.newPage();
     const holderConsole = watchConsole(holder);
