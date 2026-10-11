@@ -151,8 +151,19 @@ async fn open_refused(client: &mut Client, path: &str) -> Option<String> {
     refused.3
 }
 
-async fn input(client: &mut Client, touch: Touch, x: f64, y: f64) {
-    client.send(&ClientMsg::EqInput { touch, x, y }).await;
+/// The page's input `n` of its open editor (PR J); a down on a picture
+/// that shows every input before it.
+async fn input(client: &mut Client, touch: Touch, x: f64, y: f64, n: u32) {
+    let seen = (touch == Touch::Down).then_some(n.saturating_sub(1));
+    client
+        .send(&ClientMsg::EqInput {
+            touch,
+            x,
+            y,
+            n,
+            seen,
+        })
+        .await;
 }
 
 /// The simulated backend's records so far.
@@ -305,9 +316,9 @@ fn a_strips_pro_q_opens_sends_frames_takes_a_finger_and_closes_through_the_guard
         );
         editor_open(&mut b, IN_CHAIN, false).await;
         // A finger on the picture, in its pixels.
-        input(&mut a, Touch::Down, 10.4, 20.6).await;
-        input(&mut a, Touch::Move, 30.0, 40.0).await;
-        input(&mut a, Touch::Up, 30.0, 40.0).await;
+        input(&mut a, Touch::Down, 10.4, 20.6, 1).await;
+        input(&mut a, Touch::Move, 30.0, 40.0, 2).await;
+        input(&mut a, Touch::Up, 30.0, 40.0, 3).await;
         sim_until(
             dir.path(),
             &[
@@ -798,7 +809,7 @@ fn a_resting_finger_goes_again_until_its_page_falls_silent() {
         a.send(&ClientMsg::EqList { binding: hand2() }).await;
         listed(&mut a).await;
         open(&mut a, ON_TRACK).await;
-        input(&mut a, Touch::Down, 100.0, 100.0).await;
+        input(&mut a, Touch::Down, 100.0, 100.0, 1).await;
         // The page pings (heard) for 2.4 s: the contact rests, sent again.
         let started = Instant::now();
         let mut last_ping = Instant::now();
@@ -908,8 +919,8 @@ fn an_open_with_an_upright_area_gets_its_aspect_and_its_close_puts_its_size_back
         let frame = a.frame(WAIT).await.expect("a frame");
         assert_eq!(frame_parts(&frame).unwrap().0.session, session);
         // A finger past the old height lands.
-        input(&mut a, Touch::Down, 300.0, 1200.0).await;
-        input(&mut a, Touch::Up, 300.0, 1200.0).await;
+        input(&mut a, Touch::Down, 300.0, 1200.0, 1).await;
+        input(&mut a, Touch::Up, 300.0, 1200.0, 2).await;
         // The phone turned: a new area, resized again.
         a.send(&ClientMsg::EqArea { w: 844.0, h: 346.0 }).await;
         let resized = |records: &[Value]| {

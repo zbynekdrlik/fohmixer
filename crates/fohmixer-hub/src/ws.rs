@@ -428,11 +428,21 @@ fn handle_text(hub: &Hub, conn: &mut Conn, text: &str) {
             client,
             area: fohmixer_proto::eq::Area { w, h },
         }),
-        Ok(ClientMsg::EqInput { touch, x, y }) => hub.route(RouterMsg::EqInput {
-            client,
+        Ok(ClientMsg::EqInput {
             touch,
             x,
             y,
+            n,
+            seen,
+        }) => hub.route(RouterMsg::EqInput {
+            client,
+            input: crate::eq::Input {
+                touch,
+                x,
+                y,
+                n,
+                seen,
+            },
         }),
         Ok(ClientMsg::EqClose) => hub.route(RouterMsg::EqClose { client }),
         // Straight to the outbox (PR I): the writer's next frame may go.

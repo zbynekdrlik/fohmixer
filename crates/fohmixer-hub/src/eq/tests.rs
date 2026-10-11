@@ -756,6 +756,99 @@ fn a_finger_makes_one_contact_on_the_open_editor() {
 }
 
 #[test]
+fn a_down_is_stale_when_its_picture_did_not_show_the_pages_inputs_before_it() {
+    // PR J: the down numbered n landed on a picture that shows input seen.
+    assert!(!stale_down(1, None), "the first input: no picture needed");
+    assert!(!stale_down(1, Some(0)));
+    assert!(!stale_down(5, Some(4)));
+    assert!(!stale_down(5, Some(7)));
+    assert!(stale_down(5, Some(3)));
+    assert!(stale_down(5, None));
+    assert!(stale_down(2, None));
+    // A page's own bad number never underflows.
+    assert!(!stale_down(0, None));
+}
+
+#[test]
+fn a_numbered_finger_is_handled_and_a_stale_down_never_reaches_the_editor() {
+    let mut eqs = listed();
+    let finger = |touch: Touch, n: u32, seen: Option<u32>| Input {
+        touch,
+        x: 10.0,
+        y: 20.0,
+        n,
+        seen,
+    };
+    // Nothing held, nothing open yet: no editor hears of it.
+    assert_eq!(
+        eqs.numbered(1, finger(Touch::Down, 1, None), 0.0),
+        Vec::new()
+    );
+    eqs.open(1, &key(1), WALL);
+    assert_eq!(
+        eqs.numbered(1, finger(Touch::Down, 1, None), 0.0),
+        Vec::new()
+    );
+    eqs.opened(&key(1), 1, Ok((100, 50)));
+    let touch = |contact: u32, phase: Phase| Act::Touch {
+        session: 1,
+        contact,
+        phase,
+        at: (10, 20),
+    };
+    let handled = |n: u32| Act::Handled { session: 1, n };
+    // A down on a picture that shows every input before it.
+    assert_eq!(
+        eqs.numbered(1, finger(Touch::Down, 1, Some(0)), 1.0),
+        vec![
+            rec("touch", &key(1), Some(1), Some(1), Some("down")),
+            touch(1, Phase::Down),
+            handled(1),
+        ]
+    );
+    assert_eq!(
+        eqs.numbered(1, finger(Touch::Up, 2, None), 2.0),
+        vec![
+            rec("touch", &key(1), Some(1), Some(1), Some("up")),
+            touch(1, Phase::Up),
+            handled(2),
+        ]
+    );
+    // A down on a picture that does not show the up yet: dropped.
+    assert_eq!(
+        eqs.numbered(1, finger(Touch::Down, 3, Some(1)), 3.0),
+        vec![rec("stale", &key(1), Some(1), Some(1), None), handled(3)]
+    );
+    // Its moves and its up find no contact: nothing reaches the editor.
+    assert_eq!(
+        eqs.numbered(1, finger(Touch::Move, 4, None), 4.0),
+        vec![handled(4)]
+    );
+    assert_eq!(
+        eqs.numbered(1, finger(Touch::Up, 5, None), 5.0),
+        vec![handled(5)]
+    );
+    // A stale down while a contact of the page is down ends it with its
+    // cancel (a page that let a second down go).
+    eqs.numbered(1, finger(Touch::Down, 6, Some(5)), 6.0);
+    assert_eq!(
+        eqs.numbered(1, finger(Touch::Down, 7, Some(5)), 7.0),
+        vec![
+            rec("touch", &key(1), Some(1), Some(1), Some("cancel")),
+            touch(2, Phase::Cancel),
+            rec("stale", &key(1), Some(1), Some(1), None),
+            handled(7),
+        ]
+    );
+    // A closing editor hears nothing more.
+    eqs.close(1, reason::EXIT, true);
+    assert_eq!(
+        eqs.numbered(1, finger(Touch::Down, 8, Some(7)), 8.0),
+        Vec::new()
+    );
+}
+
+#[test]
 fn a_resting_contact_is_left_to_the_worker_and_a_silent_pages_ends() {
     let mut eqs = listed();
     open_one(&mut eqs);

@@ -150,8 +150,19 @@ pub enum ClientMsg {
     /// picture.
     EqArea { w: f64, h: f64 },
     /// A finger on this client's open editor: `x`, `y` in the picture's
-    /// pixels (the hub clamps them to the picture).
-    EqInput { touch: Touch, x: f64, y: f64 },
+    /// pixels (the hub clamps them to the picture). `n` (PR J): the page's
+    /// number of this input in its open session, from 1, every phase; the
+    /// frames say the last one they show. `seen`, on a down: the `shown` of
+    /// the picture the finger landed on (the hub drops a down whose picture
+    /// did not show the page's earlier inputs).
+    EqInput {
+        touch: Touch,
+        x: f64,
+        y: f64,
+        n: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seen: Option<u32>,
+    },
     /// This client leaves its editor: the hub closes it (the close guard
     /// first) and releases the lock.
     EqClose,

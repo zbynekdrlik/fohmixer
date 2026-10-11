@@ -128,15 +128,18 @@ fn t(phase: &str, x: i64, y: i64) -> (String, i64, i64) {
     (phase.to_string(), x, y)
 }
 
-/// The frames a test sink kept: each one's session and size.
-type Kept = Arc<Mutex<Vec<(u32, usize)>>>;
+/// The frames a test sink kept: each one's session, size and the input it
+/// shows (PR J).
+type Kept = Arc<Mutex<Vec<(u32, usize, u32)>>>;
 
-/// A sink that keeps each frame's session and size.
+/// A sink that keeps each frame's session, size and shown input.
 fn sink() -> (FrameSink, Kept) {
     let frames = Arc::new(Mutex::new(Vec::new()));
     let into = Arc::clone(&frames);
-    let sink: FrameSink = Arc::new(move |session: u32, jpeg: Bytes| {
-        into.lock().unwrap().push((session, jpeg.len()));
+    let sink: FrameSink = Arc::new(move |frame: Frame| {
+        into.lock()
+            .unwrap()
+            .push((frame.session, frame.jpeg.len(), frame.shown));
     });
     (sink, frames)
 }
@@ -347,6 +350,7 @@ fn a_minutes_counts_add_up_the_grabs_and_the_encoder_s_frames() {
 fn job(session: u32, width: u32, sink: FrameSink) -> Job {
     Job {
         session,
+        shown: 0,
         pixels: Arc::new(sim::picture(1, width, 8)),
         sink,
     }
@@ -381,15 +385,15 @@ fn the_newest_picture_wins_and_a_forgotten_one_is_dropped() {
             .as_ref()
             .map(|job| (job.session, job.pixels.width))
     };
-    encoder.put(1, job(1, 16, sink().0).pixels, sink().0);
-    encoder.put(2, job(2, 24, sink().0).pixels, sink().0);
+    encoder.put(1, 0, job(1, 16, sink().0).pixels, sink().0);
+    encoder.put(2, 0, job(2, 24, sink().0).pixels, sink().0);
     assert_eq!(waiting(&encoder), Some((2, 24)), "the newest wins");
     encoder.forget(1);
     assert_eq!(waiting(&encoder), Some((2, 24)), "another session's");
     let next = encoder.shared.wait_job().expect("a picture waits");
     assert_eq!((next.session, next.pixels.width), (2, 24));
     assert_eq!(waiting(&encoder), None, "taken");
-    encoder.put(3, job(3, 16, sink().0).pixels, sink().0);
+    encoder.put(3, 0, job(3, 16, sink().0).pixels, sink().0);
     encoder.forget(3);
     assert_eq!(waiting(&encoder), None, "forgotten");
     // What it made is handed over once.
@@ -402,7 +406,7 @@ fn the_newest_picture_wins_and_a_forgotten_one_is_dropped() {
     assert_eq!(encoder.done(), vec![made]);
     assert_eq!(encoder.done(), Vec::new());
     // Stopped: a waiting picture is dropped, and there is no next one.
-    encoder.put(4, job(4, 16, sink().0).pixels, sink().0);
+    encoder.put(4, 0, job(4, 16, sink().0).pixels, sink().0);
     encoder.stop();
     assert_eq!(waiting(&encoder), None);
     assert!(encoder.shared.wait_job().is_none());
@@ -414,13 +418,14 @@ fn the_encoders_thread_sends_each_jpeg_to_its_sink_and_ends_at_the_stop() {
     let (sink, frames) = sink();
     encoder.capture(5);
     encoder.capture(6);
-    encoder.put(5, job(5, 16, sink.clone()).pixels, sink.clone());
+    encoder.put(5, 0, job(5, 16, sink.clone()).pixels, sink.clone());
     wait_for("a frame", || frames.lock().unwrap().len() == 1);
     let got = frames.lock().unwrap().clone();
-    let [(session, size)] = got.as_slice() else {
+    let [(session, size, shown)] = got.as_slice() else {
         panic!("one frame: {got:?}")
     };
     let (session, size) = (*session, *size);
+    assert_eq!(*shown, 0, "the picture's input, as put");
     assert_eq!(session, 5);
     let done = encoder.done();
     assert_eq!(done.len(), 1, "reported before the sink got it");
@@ -432,7 +437,7 @@ fn the_encoders_thread_sends_each_jpeg_to_its_sink_and_ends_at_the_stop() {
         height: 8,
         bgra: vec![0; 10],
     });
-    encoder.put(6, broken, sink);
+    encoder.put(6, 0, broken, sink);
     wait_for("its report", || {
         encoder.shared.lock().done.iter().any(|e| e.session == 6)
     });
@@ -462,7 +467,7 @@ fn a_frame_encoded_while_its_session_was_forgotten_never_reaches_its_sink() {
     };
     let (sink, frames) = sink();
     encoder.capture(3);
-    encoder.put(3, job(3, 16, sink.clone()).pixels, sink.clone());
+    encoder.put(3, 0, job(3, 16, sink.clone()).pixels, sink.clone());
     let taken = encoder.shared.wait_job().expect("a picture waits");
     encoder.forget(3);
     deliver(&encoder.shared, taken);
@@ -470,7 +475,7 @@ fn a_frame_encoded_while_its_session_was_forgotten_never_reaches_its_sink() {
     assert_eq!(encoder.done(), Vec::new());
     // A session still captured gets its frame, reported first.
     encoder.capture(4);
-    encoder.put(4, job(4, 16, sink.clone()).pixels, sink);
+    encoder.put(4, 0, job(4, 16, sink.clone()).pixels, sink);
     let taken = encoder.shared.wait_job().expect("a picture waits");
     deliver(&encoder.shared, taken);
     assert_eq!(frames.lock().unwrap().len(), 1);
@@ -758,6 +763,59 @@ fn an_editor_let_go_reports_the_counts_of_its_last_minute() {
         30_000.0,
     );
     assert!(quiet_heard.lock().unwrap().is_empty());
+}
+
+#[test]
+fn a_picture_shows_the_last_input_handled_a_paint_before_its_grab() {
+    // PR J: Pro-Q gets PAINT_MS (40 ms) to paint an input.
+    assert!(!painted(100.0, 140.0_f64.next_down()));
+    assert!(painted(100.0, 140.0));
+    let mut shown = Shown::default();
+    assert_eq!(shown.at_grab(0.0), 0, "none yet");
+    shown.handled(1, 100.0);
+    shown.handled(2, 110.0);
+    assert_eq!(shown.at_grab(139.0), 0);
+    assert_eq!(shown.at_grab(140.0), 1);
+    assert_eq!(shown.at_grab(149.9), 1);
+    assert_eq!(shown.at_grab(150.0), 2);
+    assert_eq!(shown.at_grab(500.0), 2, "it stays");
+    // Past SHOWN_KEPT waiting, the oldest counts as painted.
+    assert_eq!(SHOWN_KEPT, 64);
+    let mut many = Shown::default();
+    for n in 1..=64 {
+        many.handled(n, 1000.0);
+    }
+    assert_eq!(many.at_grab(1000.0), 0, "64 wait");
+    many.handled(65, 1000.0);
+    assert_eq!(many.at_grab(1000.0), 1, "the oldest gave way");
+    assert_eq!(many.at_grab(1040.0), 65);
+}
+
+#[test]
+fn an_equal_picture_goes_again_once_it_shows_a_newer_input() {
+    // PR J: a tap on an inert spot changes no pixel, but the page must
+    // learn that its picture caught up.
+    let (mut worker, handle, _) = worker();
+    handle.still(true);
+    take(&mut worker, &handle, 1, 0.0);
+    let (sink, frames) = sink();
+    worker.command_at(Command::Capture { session: 1, sink }, 0.0);
+    worker.step_at(0.0);
+    wait_for("the first frame", || frames.lock().unwrap().len() == 1);
+    worker.command_at(Command::Handled { session: 1, n: 1 }, 50.0);
+    // Grabbed 10 ms after: not painted yet, the same picture is skipped.
+    worker.step_at(60.0);
+    assert_eq!(worker.editors[&1].counts.grabs, 2);
+    assert_eq!(worker.editors[&1].last_shown, 0);
+    // Grabbed 50 ms after: it shows input 1 and goes again.
+    worker.step_at(100.0);
+    assert_eq!(worker.editors[&1].last_shown, 1);
+    wait_for("the picture again", || frames.lock().unwrap().len() == 2);
+    assert_eq!(frames.lock().unwrap()[1].2, 1);
+    // An input of another session is nothing.
+    worker.command_at(Command::Handled { session: 9, n: 5 }, 110.0);
+    worker.step_at(150.0);
+    assert_eq!(worker.editors[&1].last_shown, 1);
 }
 
 #[test]

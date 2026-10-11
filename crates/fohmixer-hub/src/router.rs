@@ -242,12 +242,10 @@ pub enum RouterMsg {
         session: u32,
         resized: Option<crate::plugwin::Resized>,
     },
-    /// A finger on a page's editor.
+    /// A numbered finger on a page's editor (PR J).
     EqInput {
         client: ClientId,
-        touch: fohmixer_proto::eq::Touch,
-        x: f64,
-        y: f64,
+        input: crate::eq::Input,
     },
     /// A page leaves its editor.
     EqClose {
@@ -632,12 +630,7 @@ impl Router {
                 session,
                 resized,
             } => self.eq_resized(&key, session, resized.as_ref()),
-            RouterMsg::EqInput {
-                client,
-                touch,
-                x,
-                y,
-            } => self.eq_input(client, touch, x, y),
+            RouterMsg::EqInput { client, input } => self.eq_input(client, input),
             RouterMsg::EqClose { client } => self.eq_close(client),
             RouterMsg::EqClosed {
                 key,

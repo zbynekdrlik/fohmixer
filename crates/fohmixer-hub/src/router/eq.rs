@@ -51,9 +51,8 @@ use std::collections::BTreeMap;
 use std::future::Future;
 use std::sync::Arc;
 
-use bytes::Bytes;
 use fohmixer_proto::client::ServerMsg;
-use fohmixer_proto::eq::{Area, EqItem, EqState, Touch, reason};
+use fohmixer_proto::eq::{Area, EqItem, EqState, reason};
 use fohmixer_proto::layout::Binding;
 use serde_json::{Value, json};
 
@@ -61,12 +60,12 @@ use super::{Router, RouterMsg, write_failure};
 use crate::eq::close::{self, Check, CloseCheck, RefOff, Shut};
 use crate::eq::open;
 use crate::eq::walk::{Found, MAX_READS, Step, Walk};
-use crate::eq::{Act, Device, EditorKey, Eqs, GUARD_WAIT, Pictures, record};
+use crate::eq::{Act, Device, EditorKey, Eqs, GUARD_WAIT, Input, Pictures, record};
 use crate::events::EventLog;
 use crate::live::client::{LiveError, LiveHandle};
 use crate::live::subs::ClientId;
 use crate::outbox::flow::Trips;
-use crate::plugwin::{Plugwin, PlugwinEvent, Rate, Resized};
+use crate::plugwin::{Frame, Plugwin, PlugwinEvent, Rate, Resized};
 
 /// The Live property that opens and closes a plug-in's editor.
 pub const EDITOR_OPEN: &str = close::EDITOR_OPEN;
@@ -629,11 +628,11 @@ impl Router {
         }
     }
 
-    /// A finger of `client` on its editor.
-    pub(super) fn eq_input(&mut self, client: ClientId, touch: Touch, x: f64, y: f64) {
+    /// A numbered finger of `client` on its editor (PR J).
+    pub(super) fn eq_input(&mut self, client: ClientId, input: Input) {
         let now = self.now_ms();
         if let Some(io) = self.eq.as_mut() {
-            let acts = io.state.input(client, touch, x, y, now);
+            let acts = io.state.numbered(client, input, now);
             self.eq_acts(acts);
         }
     }
@@ -893,10 +892,10 @@ impl Router {
                     .map(str::to_string);
                 io.plugwin.capture(
                     session,
-                    Arc::new(move |session: u32, jpeg: Bytes| {
-                        outbox.eq_frame(session, jpeg.clone());
+                    Arc::new(move |frame: Frame| {
+                        outbox.eq_frame(frame.session, frame.shown, frame.jpeg.clone());
                         if let Some(device) = &device {
-                            pictures.put(&key, device, jpeg);
+                            pictures.put(&key, device, frame.jpeg);
                         }
                     }),
                 );
@@ -907,6 +906,7 @@ impl Router {
                 phase,
                 at,
             } => io.plugwin.touch(session, contact, phase, at),
+            Act::Handled { session, n } => io.plugwin.handled(session, n),
             Act::Tell { client, msg } => {
                 if let Some(outbox) = self.clients.get(&client) {
                     if let ServerMsg::Eq {

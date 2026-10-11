@@ -23,10 +23,22 @@
 //! picture as binary WebSocket messages, the newest frame winning (a slow
 //! link gets fewer frames, never old ones): a [`FrameHead`] of
 //! [`FRAME_HEADER`] bytes (the session number, the `session` of the `eq`
-//! message that opened it, then the frame's number in that session, from
-//! 1; each a big-endian `u32`), then one JPEG. A page shows a frame only
-//! when its session is the one it opened: a frame of an editor it already
-//! left is dropped.
+//! message that opened it, the frame's number in that session, from 1, and
+//! `shown`, PR J; each a big-endian `u32`), then one JPEG. A page shows a
+//! frame only when its session is the one it opened: a frame of an editor
+//! it already left is dropped.
+//!
+//! **Which input a picture shows (PR J):** a page numbers its inputs of an
+//! open editor (`eq_input`'s `n`, from 1, every phase), and each frame says
+//! the last of them the hub handled at least [`PAINT_MS`] before it grabbed
+//! the picture (`shown`: Pro-Q had that long to paint it). One number
+//! answers two questions on one clock, the page's: how long a finger's move
+//! took to reach the iPad's screen (from the input's send to the draw of the
+//! first picture that shows it), and whether a picture is old (it does not
+//! show every input the page sent, [`caught_up`]). A finger landing on an
+//! old picture never acts: the page refuses it, and the hub drops a down
+//! whose `seen` (the `shown` of the picture it landed on) is not caught up
+//! with the page's earlier inputs.
 //!
 //! **One frame in flight (PR I):** the page acks each frame of its open
 //! editor as it arrives (`eq_frame_ack` with the session and the frame's
@@ -47,14 +59,29 @@ pub const ON_TRACK: &str = "na tracku";
 /// Between a rack's and its chain's names in a place.
 pub const PLACE_SEP: &str = " › ";
 /// The bytes before a frame's JPEG: its [`FrameHead`].
-pub const FRAME_HEADER: usize = 8;
+pub const FRAME_HEADER: usize = 12;
 
-/// A binary frame's header (PR I): the session it shows and its number in
-/// that session (from 1), which the page's ack names.
+/// How long Pro-Q gets to paint an input before a picture counts as
+/// showing it (ms, PR J): a picture grabbed less than this after the hub
+/// handled an input may not show it yet. Conservative until measured in
+/// Carla's bridge (#71).
+pub const PAINT_MS: f64 = 40.0;
+
+/// A binary frame's header (PR I): the session it shows, its number in
+/// that session (from 1), which the page's ack names, and the last of the
+/// page's inputs it shows (PR J, 0: none yet).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FrameHead {
     pub session: u32,
     pub seq: u32,
+    pub shown: u32,
+}
+
+/// Whether a picture that shows the page's input `shown` shows every input
+/// up to `sent` (PR J): one that does not is old, and a finger on it never
+/// acts.
+pub fn caught_up(shown: u32, sent: u32) -> bool {
+    shown >= sent
 }
 
 /// Why an editor did not open or closed (`eq` `reason`).
@@ -200,6 +227,7 @@ pub fn frame(head: FrameHead, jpeg: &[u8]) -> Vec<u8> {
     [
         &head.session.to_be_bytes()[..],
         &head.seq.to_be_bytes()[..],
+        &head.shown.to_be_bytes()[..],
         jpeg,
     ]
     .concat()
@@ -209,12 +237,13 @@ pub fn frame(head: FrameHead, jpeg: &[u8]) -> Vec<u8> {
 /// header.
 pub fn frame_parts(bytes: &[u8]) -> Option<(FrameHead, &[u8])> {
     let (head, jpeg) = bytes.split_at_checked(FRAME_HEADER)?;
-    let ([session, seq], _) = head.as_chunks::<4>() else {
+    let ([session, seq, shown], _) = head.as_chunks::<4>() else {
         return None;
     };
     let head = FrameHead {
         session: u32::from_be_bytes(*session),
         seq: u32::from_be_bytes(*seq),
+        shown: u32::from_be_bytes(*shown),
     };
     Some((head, jpeg))
 }
@@ -225,24 +254,47 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn a_frame_carries_its_session_and_number_then_the_jpeg() {
+    fn a_frame_carries_its_session_number_and_shown_input_then_the_jpeg() {
         let jpeg = [0xFF, 0xD8, 0xFF, 0xD9];
         let head = FrameHead {
             session: 0x0102_0304,
             seq: 0x0506_0708,
+            shown: 0x090A_0B0C,
         };
         let bytes = frame(head, &jpeg);
-        assert_eq!(bytes, vec![1, 2, 3, 4, 5, 6, 7, 8, 0xFF, 0xD8, 0xFF, 0xD9]);
+        assert_eq!(
+            bytes,
+            vec![
+                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 0xFF, 0xD8, 0xFF, 0xD9
+            ]
+        );
         assert_eq!(frame_parts(&bytes), Some((head, &jpeg[..])));
-        assert_eq!(FRAME_HEADER, 8);
+        assert_eq!(FRAME_HEADER, 12);
         // A header alone is an empty picture; less is no frame.
         assert_eq!(
-            frame_parts(&[0, 0, 0, 7, 0, 0, 0, 9]),
-            Some((FrameHead { session: 7, seq: 9 }, &[][..]))
+            frame_parts(&[0, 0, 0, 7, 0, 0, 0, 9, 0, 0, 0, 3]),
+            Some((
+                FrameHead {
+                    session: 7,
+                    seq: 9,
+                    shown: 3
+                },
+                &[][..]
+            ))
         );
-        assert_eq!(frame_parts(&[0, 0, 0, 7, 0, 0, 9]), None);
-        assert_eq!(frame_parts(&[0, 0, 0, 7]), None);
+        assert_eq!(frame_parts(&[0, 0, 0, 7, 0, 0, 0, 9, 0, 0, 3]), None);
+        assert_eq!(frame_parts(&[0, 0, 0, 7, 0, 0, 0, 9]), None);
         assert_eq!(frame_parts(&[]), None);
+    }
+
+    #[test]
+    fn a_picture_is_caught_up_when_it_shows_every_input_sent() {
+        assert_eq!(PAINT_MS, 40.0);
+        assert!(caught_up(0, 0), "no input yet");
+        assert!(caught_up(5, 5));
+        assert!(caught_up(6, 5));
+        assert!(!caught_up(4, 5));
+        assert!(!caught_up(0, 1));
     }
 
     #[test]
