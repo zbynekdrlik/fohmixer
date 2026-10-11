@@ -467,6 +467,9 @@
 @media (max-width: 520px) {
     .body:not(.deck-page) {
         --count-col: 96px;
+        /* The open column is 150 px wide: a rail button's words get its
+           text width, not the narrow column's. */
+        --tw: 118px;
     }
 }
 
@@ -477,7 +480,11 @@
         position: relative;
     }
 
+    /* Above a pinned strip that overflows a side (its layers end at 2), as
+       the column was; under the shade. */
     .body:not(.deck-page) > .thin {
+        position: relative;
+        z-index: 3;
         grid-column: 2;
         grid-row: 1 / -1;
         display: flex;
@@ -531,9 +538,11 @@
         background: var(--ok);
     }
 
-    /* The column over the faders: its own grid cell is the thin strip's,
-       so 50 % is the screen's middle. */
+    /* The column over the faders: its own grid cell is the thin strip's
+       (both lines given: an absolute grid child with no end line spans to
+       the grid's edge), so 50 % is the screen's middle. */
     .body:not(.deck-page) > .column {
+        grid-column: 2 / 3;
         position: absolute;
         top: 0;
         bottom: 0;
@@ -552,7 +561,7 @@
     .body:not(.deck-page) > .column > .column-close {
         display: block;
         flex: none;
-        min-height: 36px;
+        min-height: 28px;
         border: 1px solid var(--accent);
         border-radius: 7px;
         background: var(--accent-dim);

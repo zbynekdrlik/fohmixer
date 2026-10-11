@@ -859,7 +859,7 @@ fn a_strip_stretches_by_the_wider_side_over_the_counted_one() {
 #[test]
 fn the_thin_strip_moves_the_first_line_with_a_window() {
     let model = PageModel::of(&foh());
-    // Upright: both lines have a window; on a tablet's sides none does.
+    // Upright: both lines have a window.
     let upright = arrange(&model, Some(0), 135.0, 832.0, |_| 0, &METRICS);
     assert_eq!(thin_line(&upright), Some(0));
     // What a line's arrows move: its window and its key.
