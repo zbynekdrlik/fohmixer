@@ -798,7 +798,10 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
         // nothing (PR J): the screen says so, the recorder too; one that may
         // edit marks the picture it landed on (its down's `seen`).
         let first = !finger.try_with_value(Finger::held).unwrap_or(false);
-        let stale = first && stale_landing(lands, store.eq_caught_up(), store.dropping_out());
+        // A quick tap's up still to go: the picture cannot show it yet.
+        let tap_pending = finger.try_with_value(Finger::tap_pending).unwrap_or(false);
+        let caught = store.eq_caught_up() && !tap_pending;
+        let stale = first && stale_landing(lands, caught, store.dropping_out());
         if stale {
             let _ = stale_at.try_set_value(Some(now));
             record(vec![eq_touch(t, "stale", id, at.picture, zoom_now())]);
@@ -874,22 +877,33 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
         store.eq_open(&instance, &path, area);
         Box::new(move |_now: f64, _step: f64| {
             let now = dom::now();
-            send(
-                finger
-                    .try_update_value(|f| f.frame(now))
-                    .unwrap_or_default(),
-            );
             // The link drops out under a finger on the editor (PR J
             // review): its contact ends with its cancel, as for an old
-            // picture, so no move queued in a stalled socket comes later.
-            if store.dropping_out() && finger.try_with_value(Finger::on_editor).unwrap_or(false) {
+            // picture, so no move queued in a stalled socket comes later;
+            // before the frame's own sends (the re-review: a waiting finger
+            // would first send its down into the stalled link). The recorder
+            // gets the finger's cancel.
+            let stalled = finger.try_with_value(Finger::editor_pointer).flatten();
+            if let Some(pointer) = stalled.filter(|_| store.dropping_out()) {
                 send(
                     finger
                         .try_update_value(Finger::off_editor)
                         .unwrap_or_default(),
                 );
                 let _ = stale_at.try_set_value(Some(now));
+                record(
+                    fingers
+                        .try_update_value(|f| {
+                            f.end(dom::epoch_now(), "cancel", pointer, None, zoom_now())
+                        })
+                        .unwrap_or_default(),
+                );
             }
+            send(
+                finger
+                    .try_update_value(|f| f.frame(now))
+                    .unwrap_or_default(),
+            );
             let caught = store.eq_caught_up();
             if caught_up.try_get_untracked() != Some(caught) {
                 let _ = caught_up.try_set(caught);

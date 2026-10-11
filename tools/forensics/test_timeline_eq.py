@@ -74,7 +74,9 @@ class EqScreen(ReportCase):
                     "ms": 180,
                 },
                 finger(p0 + 220, "up", 3, x=470.0),
+                finger(p0 + 230, "down", 4),
                 finger(p0 + 230, "stale", 4),
+                finger(p0 + 260, "up", 4),
                 finger(p0 + 1200, "down", 5),
                 finger(p0 + 1240, "up", 5),
                 lat(p0 + 100, 22, [80.0, 120.5, 95.0], 9.5),
@@ -141,7 +143,7 @@ class EqScreen(ReportCase):
                 )
             },
             {
-                "eq_fingers": "2",
+                "eq_fingers": "3",
                 "eq_stale": "1",
                 "eq_hub_stale": "1",
                 "eq_lat_n": "5",
@@ -158,7 +160,15 @@ class EqScreen(ReportCase):
         rows = finger_rows(page)
         self.assertEqual(
             [(r["data-what"], r.get("data-pointer")) for r in rows],
-            [("down", "3"), ("up", "3"), ("stale", "4"), ("down", "5"), ("up", "5")],
+            [
+                ("down", "3"),
+                ("up", "3"),
+                ("down", "4"),
+                ("stale", "4"),
+                ("up", "4"),
+                ("down", "5"),
+                ("up", "5"),
+            ],
             "in time order",
         )
         # On the hub's clock: the page time plus the socket's offset.
@@ -179,9 +189,11 @@ class EqScreen(ReportCase):
                 summary["eq_lat_n"],
                 summary["eq_hub_stale"],
             ),
-            ("1", "1", "3", "1"),
+            ("2", "1", "3", "1"),
         )
-        self.assertEqual([r["data-what"] for r in finger_rows(page)], ["down", "up", "stale"])
+        self.assertEqual(
+            [r["data-what"] for r in finger_rows(page)], ["down", "up", "down", "stale", "up"]
+        )
         self.assertEqual(summary["eq_ack_waits"], "0")
 
     def test_without_the_screen_the_counts_are_0_and_the_report_says_so(self):

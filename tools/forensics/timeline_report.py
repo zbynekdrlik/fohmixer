@@ -8,7 +8,7 @@ import html
 import json
 import math
 
-from timeline_model import ROWS, Span, ms_text, no_data_text
+from timeline_model import ROWS, Span, ms_text, no_data_text, percentile
 from timeline_read import key_hash, key_scale, local_text, number, to_live, utc_text, value2db
 from timeline_touch import OFFLINE
 
@@ -664,7 +664,8 @@ EQ_LEGEND = (
     "(down, up, cancel, and stale: a finger refused because the picture did not yet show "
     "the page's last input), at the editor's picture pixels with the page's zoom; then each "
     "second of drawing: the frames drawn, the latency samples (from an input's send to the "
-    "draw of the first picture that shows it) and the longest decode."
+    "draw of the first picture that shows it), the inputs shown whose send time the page no "
+    "longer kept (lost) and the longest decode."
 )
 
 
@@ -708,7 +709,7 @@ def _eq_table(t):
     rows = []
     for lat in t.eq_latency:
         ordered = sorted(lat.samples)
-        median = ordered[len(ordered) // 2] if ordered else None
+        median = percentile(ordered, 0.50)
         cells = (
             local_text(lat.time),
             str(lat.frames),

@@ -578,9 +578,15 @@ pub struct Frame {
 pub type FrameSink = Arc<dyn Fn(Frame) + Send + Sync>;
 
 /// The handled inputs a [`Shown`] keeps waiting for their paint at most: a
-/// page sends one a frame, so far fewer wait; past it the oldest counts as
-/// painted.
+/// page sends one a frame, so far fewer wait; past it the newest waiting
+/// gives way to the next (its picture counts as showing it only later).
 pub const SHOWN_KEPT: usize = 64;
+
+/// How long an equal picture waits before it goes again anyway (ms, the PR
+/// J re-review): a page whose last frame did not decode would otherwise
+/// keep a still picture that does not show its last input, refusing every
+/// finger.
+pub const REFRESH_MS: f64 = 1000.0;
 
 /// Whether an input handled at `at` is painted in a picture grabbed at `t`
 /// (worker ms): Pro-Q had [`PAINT_MS`] for it.
@@ -743,6 +749,12 @@ pub fn capture_due(since_ms: f64) -> bool {
     since_ms >= CAPTURE_MS
 }
 
+/// Whether an equal picture last handed to the encoder `since_ms` ago goes
+/// again ([`REFRESH_MS`]).
+pub fn refresh_due(since_ms: f64) -> bool {
+    since_ms >= REFRESH_MS
+}
+
 /// Whether the windows last listed `since_ms` ago for an open are due.
 pub fn poll_due(since_ms: f64) -> bool {
     since_ms >= FIND_POLL_MS
@@ -895,6 +907,9 @@ struct Editor {
     /// goes again, so the page learns its picture caught up).
     last: Option<Arc<Pixels>>,
     last_shown: u32,
+    /// When the last picture went to the encoder (worker ms): an equal one
+    /// goes again [`REFRESH_MS`] after it.
+    put: f64,
     /// The page's inputs its pictures show (PR J).
     shown: Shown,
     /// When it was last grabbed and when its minute began (worker ms).
@@ -1414,6 +1429,7 @@ impl Worker {
                         sink: None,
                         last: None,
                         last_shown: 0,
+                        put: f64::NEG_INFINITY,
                         shown: Shown::default(),
                         grabbed: f64::NEG_INFINITY,
                         minute: now,
@@ -1721,12 +1737,16 @@ impl Worker {
             });
         }
         let shown = editor.shown.at_grab(now);
-        if editor.last.as_deref() == Some(&pixels) && shown == editor.last_shown {
+        if editor.last.as_deref() == Some(&pixels)
+            && shown == editor.last_shown
+            && !refresh_due(now - editor.put)
+        {
             return;
         }
         let pixels = Arc::new(pixels);
         editor.last = Some(Arc::clone(&pixels));
         editor.last_shown = shown;
+        editor.put = now;
         self.encoder.put(session, shown, pixels, sink);
     }
 

@@ -1332,6 +1332,64 @@ test.describe("The Pro-Q 4 screen on a slow link", () => {
     await editorOpen(trackPath, false);
   });
 
+  test("a link that stalls under a drag ends its contact with a cancel: no move of the stall reaches the editor after it", async ({ page }) => {
+    // PR J review (point 5): the moves queued in a stalled socket came in a
+    // burst once the link was back. The page's dropout counter turns active
+    // after ~300 ms of silence; the page then cancels the contact and sends
+    // nothing more of that finger.
+    test.setTimeout(60_000);
+    await openSurface(page);
+    const { onTrack, trackPath } = await hand2Cards(page);
+    await editorOpen(trackPath, false);
+    await onTrack.getByTestId("eq-open").click();
+    const screen = await openScreen(page, trackPath);
+    const area = screen.getByTestId("eq-area");
+    await zoomIn(screen, FROM);
+    const before = (await simEq.records()).length;
+    const from = await centre(area);
+    await page.mouse.move(from.x, from.y);
+    await page.mouse.down();
+    for (let i = 1; i <= 4; i++) {
+      await page.mouse.move(from.x + 3 * i, from.y);
+      await frames(page, 2);
+    }
+    await until(() => touchesAfter(before), (all) => all.some((r) => r.phase === "update"), "the drag's moves");
+    await impair.stall(2_000);
+    // The finger goes on moving through the stall.
+    for (let i = 5; i <= 30; i++) {
+      await page.mouse.move(from.x + 3 * i, from.y);
+      await frames(page, 2);
+    }
+    await expect(screen.getByTestId("eq-stale")).toHaveAttribute("data-shown", "true");
+    await page.mouse.up();
+    // The link is back: what came in it ends with the cancel.
+    const touches = await until(
+      () => touchesAfter(before),
+      (all) => all.some((r) => r.phase === "cancel"),
+      "the stalled drag's cancel",
+      10_000,
+    );
+    await page.waitForTimeout(500);
+    const all = await touchesAfter(before);
+    expect(all[all.length - 1].phase, JSON.stringify(all)).toBe("cancel");
+    expect(all.some((r) => r.phase === "up"), "no up after it").toBe(false);
+    expect(all.length, JSON.stringify(all)).toBe(touches.length);
+    // The recorder says it too: the finger's cancel.
+    const cancels = await until(
+      async () => pageEvents(await hubEvents()).filter((e: any) => e.ev === "eq_touch" && e.what === "cancel"),
+      (found) => found.length >= 1,
+      "the finger's cancel in the recorder",
+      15_000,
+    );
+    expect(cancels.length).toBeGreaterThanOrEqual(1);
+    await caughtUp(screen);
+    const closing = (await simEq.records()).length;
+    await screen.getByTestId("eq-exit").click();
+    await expect(page.getByTestId("eq-screen")).toHaveCount(0);
+    await closedWithGuard(closing);
+    await editorOpen(trackPath, false);
+  });
+
   test("a screen left right after a drag holds no finger of the next screen back", async ({ page }) => {
     // The PR J review: the page's inputs of a screen left before its
     // picture showed them refused every finger of the next one, until a
@@ -1351,9 +1409,11 @@ test.describe("The Pro-Q 4 screen on a slow link", () => {
         await page.mouse.move(from.x + 4 * i, from.y);
         await frames(page, 2);
       }
+      const dragFrom = (await simEq.records()).length;
       await page.mouse.up();
       // Left at once: the picture does not show the up yet.
       await expect(screen.getByTestId("eq-canvas")).toHaveAttribute("data-caught-up", "false");
+      await until(() => touchesAfter(dragFrom), (all) => all.some((r) => r.phase === "up"), "the drag's up at the editor");
       let closing = (await simEq.records()).length;
       await screen.getByTestId("eq-exit").click();
       await expect(page.getByTestId("eq-screen")).toHaveCount(0);

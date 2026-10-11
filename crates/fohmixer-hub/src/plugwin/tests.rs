@@ -154,6 +154,8 @@ fn the_clocks_turn_at_their_bounds() {
     assert!(find_over(3000.0));
     assert!(!rate_due(60_000.0_f64.next_down()));
     assert!(rate_due(60_000.0));
+    assert!(!refresh_due(1000.0_f64.next_down()));
+    assert!(refresh_due(1000.0));
     assert_eq!(STEP, Duration::from_millis(10));
     assert_eq!(GUARD_TAP, Duration::from_millis(30));
     assert_eq!(QUALITY, 60);
@@ -819,6 +821,16 @@ fn an_equal_picture_goes_again_once_it_shows_a_newer_input() {
     worker.command_at(Command::Handled { session: 9, n: 5 }, 110.0);
     worker.step_at(150.0);
     assert_eq!(worker.editors[&1].last_shown, 1);
+    // The same picture showing the same input goes again a second after
+    // the last one went (the PR J re-review: a frame the page could not
+    // decode must not leave it behind for good).
+    worker.step_at(1099.0);
+    assert_eq!(worker.editors[&1].put, 100.0, "not yet");
+    worker.step_at(1140.0);
+    assert_eq!(worker.editors[&1].put, 1140.0);
+    wait_for("the same picture again", || {
+        frames.lock().unwrap().len() == 3
+    });
 }
 
 #[test]

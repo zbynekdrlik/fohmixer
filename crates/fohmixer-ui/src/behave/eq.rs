@@ -746,6 +746,20 @@ impl Finger {
         out
     }
 
+    /// Whether a quick tap's up is still to go (PR J re-review: a finger
+    /// landing then lands on a picture that cannot show that up yet).
+    pub fn tap_pending(&self) -> bool {
+        self.tap.is_some()
+    }
+
+    /// The pointer of a first finger on the editor or on its way there
+    /// ([`Finger::on_editor`]).
+    pub fn editor_pointer(&self) -> Option<i32> {
+        self.fingers[0]
+            .map(|(pointer, _)| pointer)
+            .filter(|_| self.on_editor())
+    }
+
     /// Whether a first finger is on the editor or on its way there
     /// (touching, waiting on the picture, settling): what [`Finger::off_editor`]
     /// would end.
@@ -1803,14 +1817,17 @@ mod tests {
         let mut finger = Finger::default();
         assert_eq!(finger.off_editor(), vec![], "no finger");
         assert!(!finger.on_editor());
+        assert_eq!(finger.editor_pointer(), None);
         finger.down(1, p(10.0, 10.0), Spot::Edit, 0.0);
         assert!(finger.on_editor(), "waiting on the picture");
+        assert_eq!(finger.editor_pointer(), Some(1));
         assert_eq!(finger.frame(120.0), vec![(Touch::Down, 20.0, 20.0)]);
         assert!(finger.on_editor(), "touching");
         finger.moved(1, p(12.0, 10.0));
         // Its cancel where it was; the move not sent yet never goes.
         assert_eq!(finger.off_editor(), vec![(Touch::Cancel, 24.0, 20.0)]);
         assert!(!finger.on_editor(), "off it now");
+        assert_eq!(finger.editor_pointer(), None);
         finger.moved(1, p(20.0, 10.0));
         assert_eq!(finger.frame(140.0), vec![]);
         assert_eq!(finger.up(1, p(20.0, 10.0), 150.0), vec![]);
@@ -1833,13 +1850,16 @@ mod tests {
         finger.up(3, p(10.0, 10.0), 600.0);
         finger.up(4, p(50.0, 10.0), 600.0);
         // A quick tap's up still goes.
+        assert!(!finger.tap_pending());
         finger.down(5, p(10.0, 10.0), Spot::Edit, 700.0);
         assert_eq!(
             finger.up(5, p(10.0, 10.0), 710.0),
             vec![(Touch::Down, 20.0, 20.0)]
         );
+        assert!(finger.tap_pending(), "its up still to go");
         assert_eq!(finger.off_editor(), vec![]);
         assert_eq!(finger.frame(750.0), vec![(Touch::Up, 20.0, 20.0)]);
+        assert!(!finger.tap_pending());
     }
 
     #[test]

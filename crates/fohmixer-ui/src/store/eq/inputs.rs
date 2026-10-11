@@ -88,10 +88,13 @@ impl Inputs {
 
     /// A picture of `session` that shows input `shown` was drawn at `now`
     /// (page epoch ms): the latency of each input it is the first to show.
+    /// A picture of another session than the inputs' is nothing (the PR J
+    /// re-review: it must never pass the open session's inputs as shown),
+    /// and none counts as showing more than was sent.
     pub fn drawn(&mut self, session: u32, shown: u32, now: f64) -> Drawn {
-        self.of(session);
         let mut drawn = Drawn::default();
-        if shown <= self.drawn {
+        let shown = shown.min(self.sent);
+        if session != self.session || shown <= self.drawn {
             return drawn;
         }
         let first = self.drawn;
@@ -101,11 +104,9 @@ impl Inputs {
                 drawn.samples.push(now - sent);
             }
         }
-        // The inputs it shows whose send time is gone (never more than it
-        // shows: a picture of inputs this page never sent measures none).
+        // The inputs it shows whose send time is gone.
         let measured = u32::try_from(drawn.samples.len()).unwrap_or(u32::MAX);
-        let newly = shown.min(self.sent).saturating_sub(first);
-        drawn.lost = newly.saturating_sub(measured);
+        drawn.lost = (shown - first).saturating_sub(measured);
         drawn
     }
 }
@@ -152,15 +153,18 @@ mod tests {
         assert!(!inputs.caught_up(3));
         // The next screen's session: nothing sent on it yet.
         assert!(inputs.caught_up(4));
-        // Its first picture starts it afresh; a finger lands on it.
+        // Its first picture is nothing before an input of it; a finger
+        // lands on it.
         assert_eq!(inputs.drawn(4, 0, 50.0), Drawn::default());
         inputs.land(4);
         assert!(inputs.caught_up(4));
         assert_eq!(inputs.send(4, Touch::Down, 60.0), (1, Some(0)));
-        // A late picture of the old session starts that one afresh too,
-        // measuring nothing of the new one's inputs.
+        // A late picture of the old session is nothing: it never passes
+        // the new one's input as shown.
         assert_eq!(inputs.drawn(3, 2, 70.0), Drawn::default());
-        assert!(inputs.caught_up(4), "none sent on it now");
+        assert!(!inputs.caught_up(4), "input 1 not shown yet");
+        assert_eq!(inputs.drawn(4, 1, 80.0).samples, vec![20.0]);
+        assert!(inputs.caught_up(4));
         // A landing on a session never seen before: seen 0.
         let mut fresh = Inputs::default();
         fresh.land(7);
@@ -184,7 +188,8 @@ mod tests {
         let mut fresh = Inputs::default();
         fresh.send(1, Touch::Down, 0.0);
         assert_eq!(fresh.drawn(1, 0, 50.0), Drawn::default());
-        // One that says more than the page sent measures what it sent.
+        // One that says more than the page sent measures what it sent, and
+        // counts as showing no more.
         assert_eq!(
             fresh.drawn(1, 5, 60.0),
             Drawn {
@@ -192,6 +197,8 @@ mod tests {
                 lost: 0
             }
         );
+        fresh.send(1, Touch::Up, 70.0);
+        assert!(!fresh.caught_up(1), "input 2 sent after it");
     }
 
     #[test]

@@ -2,7 +2,8 @@
 the page recorded of each finger on the editor's picture (``eq_touch``:
 down, up, cancel, and ``stale``, a finger refused on an old picture, PR J)
 and of the picture's latency (``eq_lat``, once a second of drawing: the
-frames drawn, every input-to-draw sample in ms, the longest decode), and
+frames drawn, every input-to-draw sample in ms, the inputs shown whose
+send time the page no longer kept, the longest decode), and
 what the hub recorded (``eq`` records: ``stale``, a down it dropped; the
 ``rate`` and ``frames`` records' frame round trips and the frames that went
 because an ack did not come). Pure: the model reads them, the report draws
