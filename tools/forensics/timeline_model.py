@@ -941,6 +941,7 @@ def summary(timeline):
         ("eq_stale", str(sum(f.what == "stale" for f in timeline.eq_fingers))),
         ("eq_hub_stale", str(timeline.eq_hub_stale)),
         ("eq_lat_n", str(len(eq_samples))),
+        ("eq_lat_lost", str(sum(lat.lost for lat in timeline.eq_latency))),
         ("eq_lat_p50_ms", ms_text(percentile(eq_samples, 0.50))),
         ("eq_lat_p95_ms", ms_text(percentile(eq_samples, 0.95))),
         ("eq_lat_max_ms", ms_text(max(eq_samples, default=None))),

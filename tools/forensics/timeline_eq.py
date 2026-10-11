@@ -13,7 +13,7 @@ import collections
 from timeline_read import number
 
 EqFinger = collections.namedtuple("EqFinger", ("time", "what", "pointer", "x", "y", "zoom"))
-EqLatency = collections.namedtuple("EqLatency", ("time", "frames", "samples", "decode_ms"))
+EqLatency = collections.namedtuple("EqLatency", ("time", "frames", "samples", "lost", "decode_ms"))
 EqLink = collections.namedtuple("EqLink", ("time", "what", "trips", "rtt_max_ms", "ack_waits"))
 
 
@@ -38,7 +38,8 @@ def eq_finger(hub, data):
 
 def eq_latency(hub, data):
     """The ``EqLatency`` of a page ``eq_lat`` event at hub time ``hub``: its
-    samples are its numbers in ``ms`` (anything else is left out)."""
+    samples are its numbers in ``ms`` (anything else is left out), ``lost``
+    the inputs it showed whose send time was gone (0 when missing)."""
     samples = data.get("ms")
     return EqLatency(
         hub,
@@ -46,6 +47,7 @@ def eq_latency(hub, data):
         tuple(s for s in (number(v) for v in samples) if s is not None)
         if isinstance(samples, list)
         else (),
+        _int(data.get("lost")) or 0,
         number(data.get("dec")),
     )
 

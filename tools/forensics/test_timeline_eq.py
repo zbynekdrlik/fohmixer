@@ -32,9 +32,9 @@ def finger(t, what, p, x=431.0, y=321.0, z=3.0):
     return {"ev": "eq_touch", "t": t, "what": what, "p": p, "x": x, "y": y, "z": z}
 
 
-def lat(t, frames, ms, dec):
+def lat(t, frames, ms, dec, lost=0):
     """A page ``eq_lat`` event as ``diag/trace/eq_lat.rs`` writes it."""
-    return {"ev": "eq_lat", "t": t, "span": 1000.0, "f": frames, "ms": ms, "dec": dec}
+    return {"ev": "eq_lat", "t": t, "span": 1000.0, "f": frames, "ms": ms, "lost": lost, "dec": dec}
 
 
 def finger_rows(page):
@@ -78,7 +78,7 @@ class EqScreen(ReportCase):
                 finger(p0 + 1200, "down", 5),
                 finger(p0 + 1240, "up", 5),
                 lat(p0 + 100, 22, [80.0, 120.5, 95.0], 9.5),
-                lat(p0 + 1100, 18, [70.0, 210.0], 14.0),
+                lat(p0 + 1100, 18, [70.0, 210.0], 14.0, lost=2),
             ],
         )
         log.add(
@@ -130,6 +130,7 @@ class EqScreen(ReportCase):
                     "eq_stale",
                     "eq_hub_stale",
                     "eq_lat_n",
+                    "eq_lat_lost",
                     "eq_lat_p50_ms",
                     "eq_lat_p95_ms",
                     "eq_lat_max_ms",
@@ -144,6 +145,7 @@ class EqScreen(ReportCase):
                 "eq_stale": "1",
                 "eq_hub_stale": "1",
                 "eq_lat_n": "5",
+                "eq_lat_lost": "2",
                 "eq_lat_p50_ms": "95.0",
                 "eq_lat_p95_ms": "210.0",
                 "eq_lat_max_ms": "210.0",
@@ -202,7 +204,7 @@ class EqRecordsOf(unittest.TestCase):
         )
         self.assertEqual(
             eq_latency(1000.0, lat(5.0, 12, [80.0, 90], 7.5)),
-            EqLatency(1000.0, 12, (80.0, 90.0), 7.5),
+            EqLatency(1000.0, 12, (80.0, 90.0), 0, 7.5),
         )
         self.assertEqual(
             eq_link(
@@ -218,7 +220,9 @@ class EqRecordsOf(unittest.TestCase):
         )
         self.assertIsNone(eq_link({"ts": 2000.0, "what": "rate"}), "no trips: the holder was gone")
         self.assertEqual(
-            samples_of([EqLatency(0.0, 1, (1.0, 2.0), None), EqLatency(1.0, 1, (3.0,), None)]),
+            samples_of(
+                [EqLatency(0.0, 1, (1.0, 2.0), 0, None), EqLatency(1.0, 1, (3.0,), 0, None)]
+            ),
             [1.0, 2.0, 3.0],
         )
 
@@ -229,7 +233,7 @@ class EqRecordsOf(unittest.TestCase):
             eq_latency(
                 1000.0, {"ev": "eq_lat", "t": 5.0, "f": "x", "ms": [1.0, "2", None, 3], "dec": "9"}
             ),
-            EqLatency(1000.0, 0, (1.0, 3.0), None),
+            EqLatency(1000.0, 0, (1.0, 3.0), 0, None),
         )
         self.assertEqual(eq_latency(1000.0, {"ev": "eq_lat", "t": 5.0, "ms": 7}).samples, ())
         self.assertEqual(

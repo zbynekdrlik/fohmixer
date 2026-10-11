@@ -444,6 +444,7 @@ class Stall(ReportCase):
                 "eq_stale",
                 "eq_hub_stale",
                 "eq_lat_n",
+                "eq_lat_lost",
                 "eq_lat_p50_ms",
                 "eq_lat_p95_ms",
                 "eq_lat_max_ms",
