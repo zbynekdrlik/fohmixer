@@ -673,9 +673,9 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
     // Whether the picture shows every input sent (the canvas says it: an
     // E2E waits for it before a new first finger).
     let caught_up = RwSignal::new(true);
-    let drawn = Drawn { store, lat };
+    let told = Drawn { store, lat };
     let sink: FrameSink = Rc::new(move |head: FrameHead, blob: web_sys::Blob| {
-        paint(painter, drawn, head, blob);
+        paint(painter, told, head, blob);
     });
     store.eq_frames(Some(sink));
     // Opening from now on; the open itself goes with the area, at its load.
