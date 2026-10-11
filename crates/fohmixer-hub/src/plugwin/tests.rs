@@ -746,10 +746,10 @@ fn an_editor_let_go_reports_the_counts_of_its_last_minute() {
     };
     assert_eq!((rate.grabs, rate.sent, rate.failed), (1, 1, 0));
     // One that grabbed nothing since its last minute reports nothing.
-    let (mut worker, handle, heard) = worker();
-    take(&mut worker, &handle, 1, 0.0);
+    let (mut quiet, quiet_handle, quiet_heard) = self::worker();
+    take(&mut quiet, &quiet_handle, 1, 0.0);
     let (reply, _released) = oneshot::channel();
-    worker.command_at(
+    quiet.command_at(
         Command::Release {
             session: 1,
             closed: false,
@@ -757,7 +757,7 @@ fn an_editor_let_go_reports_the_counts_of_its_last_minute() {
         },
         30_000.0,
     );
-    assert!(heard.lock().unwrap().is_empty());
+    assert!(quiet_heard.lock().unwrap().is_empty());
 }
 
 #[test]

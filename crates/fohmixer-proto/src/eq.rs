@@ -199,7 +199,7 @@ pub fn place(steps: &[(String, String)]) -> String {
 pub fn frame(head: FrameHead, jpeg: &[u8]) -> Vec<u8> {
     [
         &head.session.to_be_bytes()[..],
-        &head.seq.to_be_bytes(),
+        &head.seq.to_be_bytes()[..],
         jpeg,
     ]
     .concat()
