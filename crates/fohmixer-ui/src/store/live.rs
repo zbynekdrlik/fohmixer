@@ -22,6 +22,7 @@ use wasm_bindgen::closure::Closure;
 
 use super::conn::{self, Conn, Tick};
 use super::deck::{DeckInfo, DeckWaiting};
+use super::eq::inputs::Inputs;
 use super::eq::{EqListView, EqView};
 use super::intent::Intents;
 use super::{InstanceView, ResultFn, Slot, TOKEN_KEY, next_range};
@@ -89,6 +90,9 @@ struct Inner {
     /// Where the open Pro-Q 4 editor's frames go (#71 PR E): the screen's
     /// painter while it is mounted.
     eq_frames: Option<FrameSink>,
+    /// The page's inputs of its open editor (#71 PR J): numbered, timed,
+    /// and what the picture drawn last shows.
+    eq_inputs: Inputs,
 }
 
 impl Inner {
@@ -107,6 +111,7 @@ impl Inner {
             deck: DeckWaiting::default(),
             deck_viewing: false,
             eq_frames: None,
+            eq_inputs: Inputs::default(),
         }
     }
 }

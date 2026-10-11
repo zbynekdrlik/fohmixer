@@ -113,6 +113,27 @@ pub enum Spot {
     Edit,
 }
 
+/// Whether a first finger landing on `spot` lands on an old picture (#71
+/// PR J): on the zoomed picture (the editor's) while the picture shown does
+/// not show every input the page sent (`caught_up`), or while the link
+/// drops out (the down would wait in a stalled link, as a Stream Deck press
+/// that cannot go). Such a finger reaches nothing; the screen says so.
+pub fn stale_landing(spot: Spot, caught_up: bool, dropping_out: bool) -> bool {
+    spot == Spot::Edit && (!caught_up || dropping_out)
+}
+
+/// How long the screen says a finger landed on an old picture (ms, PR J).
+pub const STALE_NOTE_MS: f64 = 1500.0;
+
+/// Whether the note of a finger refused at `at` still shows at `now` (page
+/// ms; none: no refusal).
+pub fn stale_note(at: Option<f64>, now: f64) -> bool {
+    at.is_some_and(|at| now - at < STALE_NOTE_MS)
+}
+
+/// The note's words.
+pub const STALE_TEXT: &str = "Obraz ešte dobieha, polož prst znova";
+
 /// Where a first finger lands `on` the picture or off it, the view at
 /// `zoom`.
 pub fn spot(on: bool, zoom: f64) -> Spot {
@@ -1644,6 +1665,23 @@ mod tests {
         assert_eq!(spot(true, 2.0), Spot::Edit);
         assert_eq!(spot(false, 1.0), Spot::Off);
         assert_eq!(spot(false, 3.0), Spot::Off);
+    }
+
+    #[test]
+    fn a_finger_on_an_old_picture_or_a_stalled_link_is_refused_and_the_screen_says_so() {
+        // PR J: only a finger that would edit.
+        assert!(!stale_landing(Spot::Edit, true, false));
+        assert!(stale_landing(Spot::Edit, false, false), "an old picture");
+        assert!(stale_landing(Spot::Edit, true, true), "a stalled link");
+        for spot in [Spot::Off, Spot::Overview] {
+            assert!(!stale_landing(spot, false, true), "{spot:?}");
+        }
+        assert_eq!(STALE_NOTE_MS, 1500.0);
+        assert!(!stale_note(None, 0.0));
+        assert!(stale_note(Some(100.0), 100.0));
+        assert!(stale_note(Some(100.0), 1600.0_f64.next_down()));
+        assert!(!stale_note(Some(100.0), 1600.0));
+        assert_eq!(STALE_TEXT, "Obraz ešte dobieha, polož prst znova");
     }
 
     #[test]

@@ -46,7 +46,7 @@
 
 use std::rc::Rc;
 
-use fohmixer_proto::eq::{EqItem, EqState, PRODUCT};
+use fohmixer_proto::eq::{EqItem, EqState, FrameHead, PRODUCT};
 use fohmixer_proto::layout::Strip;
 use leptos::html;
 use leptos::prelude::*;
@@ -56,12 +56,14 @@ use wasm_bindgen::closure::Closure;
 use super::buttons::colour_style;
 use super::{owns_touches, trace_detail};
 use crate::behave::eq::{
-    AreaWatch, CardLock, Finger, ListLink, Look, Out, Point, Viewer, can_open, card_lock,
-    failure_text, hh_mm, in_use_text, list_text, lists_now, lock_refusal, locked, locked_text,
-    look, on_picture, overview_size, place_text, point, spot, zoom_text,
+    AreaWatch, CardLock, Finger, ListLink, Look, Out, Point, STALE_TEXT, Spot, Viewer, can_open,
+    card_lock, failure_text, hh_mm, in_use_text, list_text, lists_now, lock_refusal, locked,
+    locked_text, look, on_picture, overview_size, place_text, point, spot, stale_landing,
+    stale_note, zoom_text,
 };
 use crate::binding::detail_keys;
-use crate::diag::trace::fingers::EqFingers;
+use crate::diag::trace::eq_lat::EqLat;
+use crate::diag::trace::fingers::{EqFingers, eq_touch};
 use crate::dom;
 use crate::raf;
 use crate::store::eq::{EqView, ended, screen_state, screen_view};
@@ -369,9 +371,17 @@ struct Painter {
     canvas: Option<web_sys::HtmlCanvasElement>,
     small: Option<web_sys::HtmlCanvasElement>,
     busy: bool,
-    next: Option<web_sys::Blob>,
+    next: Option<(FrameHead, web_sys::Blob)>,
     frames: u32,
     size: Option<(u32, u32)>,
+}
+
+/// Where a drawn frame is told (#71 PR J): the store, which knows the input
+/// the picture is the first to show, and the screen's latency window.
+#[derive(Clone, Copy)]
+struct Drawn {
+    store: LiveStore,
+    lat: StoredValue<EqLat>,
 }
 
 /// The painter, kept with the screen (its handle is `Copy` and `Send`, as
@@ -408,14 +418,17 @@ fn shape_overview(small: &web_sys::HtmlCanvasElement, picture: (u32, u32)) {
 
 /// Draws one frame: decoded off the page's thread (`createImageBitmap`),
 /// then onto the canvas at its own size, and small onto the overview's,
-/// whose box takes the picture's shape (PR F; #74 review).
-async fn draw(painter: PainterBox, blob: &web_sys::Blob) {
+/// whose box takes the picture's shape (PR F; #74 review). PR J: the draw
+/// is told (the latency of the input the picture is the first to show, the
+/// decode's time), and each second of them goes to the flight recorder.
+async fn draw(painter: PainterBox, drawn: Drawn, head: FrameHead, blob: &web_sys::Blob) {
     let Some(window) = web_sys::window() else {
         return;
     };
     let Ok(promise) = window.create_image_bitmap_with_blob(blob) else {
         return;
     };
+    let started = dom::now();
     let bitmap = match wasm_bindgen_futures::JsFuture::from(promise).await {
         Ok(value) => value.dyn_into::<web_sys::ImageBitmap>().ok(),
         Err(e) => {
@@ -445,6 +458,16 @@ async fn draw(painter: PainterBox, blob: &web_sys::Blob) {
             if let Some(frames) = frames {
                 dom::set_attr(&canvas, "data-frames", &frames.to_string());
             }
+            let now = dom::epoch_now();
+            let sample = drawn.store.eq_drawn(head, now);
+            let decode_ms = dom::now() - started;
+            let second = drawn
+                .lat
+                .try_update_value(|lat| lat.drawn(now, decode_ms, sample))
+                .flatten();
+            if let Some(event) = second {
+                crate::diag::record(&event);
+            }
         }
     }
     let small = painter.try_with_value(|p| p.small.clone()).flatten();
@@ -467,25 +490,25 @@ async fn draw(painter: PainterBox, blob: &web_sys::Blob) {
 
 /// A frame for the painter: drawn now, or kept as the newest while one
 /// decodes (an older waiting one is dropped).
-fn paint(painter: PainterBox, blob: web_sys::Blob) {
+fn paint(painter: PainterBox, drawn: Drawn, head: FrameHead, blob: web_sys::Blob) {
     let waiting = painter.try_update_value(|p| {
         if p.busy {
-            p.next = Some(blob);
+            p.next = Some((head, blob));
             None
         } else {
             p.busy = true;
-            Some(blob)
+            Some((head, blob))
         }
     });
-    let Some(Some(blob)) = waiting else {
+    let Some(Some(frame)) = waiting else {
         return;
     };
     leptos::task::spawn_local(async move {
-        let mut blob = blob;
+        let mut frame = frame;
         loop {
-            draw(painter, &blob).await;
+            draw(painter, drawn, frame.0, &frame.1).await;
             match painter.try_update_value(|p| p.next.take()).flatten() {
-                Some(newer) => blob = newer,
+                Some(newer) => frame = newer,
                 None => break,
             }
         }
@@ -642,7 +665,15 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
                 .unwrap_or_default(),
         );
     };
-    let sink: FrameSink = Rc::new(move |blob: web_sys::Blob| paint(painter, blob));
+    // The latency of each second of frames drawn (PR J), and when a finger
+    // last landed on an old picture (its note shows for a while).
+    let lat = StoredValue::new(EqLat::default());
+    let stale_at = StoredValue::new(None::<f64>);
+    let stale_shown = RwSignal::new(false);
+    let drawn = Drawn { store, lat };
+    let sink: FrameSink = Rc::new(move |head: FrameHead, blob: web_sys::Blob| {
+        paint(painter, drawn, head, blob);
+    });
     store.eq_frames(Some(sink));
     // Opening from now on; the open itself goes with the area, at its load.
     store.eq_opening(&target.instance, &target.path);
@@ -676,6 +707,9 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
         }
         send(finger.try_update_value(Finger::leave).unwrap_or_default());
         fingers_leave();
+        if let Some(Some(event)) = lat.try_update_value(|l| l.leave(dom::epoch_now())) {
+            crate::diag::record(&event);
+        }
         store.eq_close();
         store.eq_frames(None);
     });
@@ -757,6 +791,18 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
         let down = fingers.try_update_value(|f| f.down(t, id, at.picture, zoom_now()));
         record(down.into_iter().collect());
         let lands = spot(on_picture(at.picture, picture), zoom_now());
+        // A first finger on an old picture, or in a stalled link, reaches
+        // nothing (PR J): the screen says so, the recorder too; one that may
+        // edit marks the picture it landed on (its down's `seen`).
+        let first = !finger.try_with_value(Finger::held).unwrap_or(false);
+        let stale = first && stale_landing(lands, store.eq_caught_up(), store.dropping_out());
+        if stale {
+            let _ = stale_at.try_set_value(Some(now));
+            record(vec![eq_touch(t, "stale", id, at.picture, zoom_now())]);
+        } else if first && lands == Spot::Edit {
+            store.eq_land();
+        }
+        let lands = if stale { Spot::Off } else { lands };
         let out = finger
             .try_update_value(|f| f.down(id, at, lands, now))
             .unwrap_or_default();
@@ -830,6 +876,10 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
                     .try_update_value(|f| f.frame(now))
                     .unwrap_or_default(),
             );
+            let noted = stale_note(stale_at.try_get_value().flatten(), now);
+            if stale_shown.try_get_untracked() != Some(noted) {
+                let _ = stale_shown.try_set(noted);
+            }
             let Some(g) = grip.try_get_value().flatten() else {
                 return;
             };
@@ -914,6 +964,7 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
     let opening = move || state() == "opening";
     let open = move || state() == "open";
     let hint_shown = move || (open() && !editing.try_get().unwrap_or(false)).to_string();
+    let stale_text_shown = move || stale_shown.try_get().unwrap_or(false).to_string();
     let exit_keys: Vec<String> = Vec::new();
     let help_keys: Vec<String> = Vec::new();
     let whole_keys: Vec<String> = Vec::new();
@@ -986,6 +1037,9 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
                 <canvas class="eq-canvas" data-testid="eq-canvas" data-frames="0" node_ref=canvas_ref></canvas>
                 <div class="eq-hint" data-testid="eq-hint" data-shown=hint_shown>
                     "Ťukni na miesto, ktoré chceš upraviť"
+                </div>
+                <div class="eq-hint eq-stale" data-testid="eq-stale" data-shown=stale_text_shown>
+                    {STALE_TEXT}
                 </div>
                 {move || opening().then(|| view! { <div class="eq-wait">"Otváram Pro-Q 4…"</div> })}
             </div>

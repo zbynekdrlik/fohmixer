@@ -7,7 +7,11 @@
 //! screen showing an editor ends ([`ended`]) and what a closed socket does
 //! to it ([`socket_closed`]: the hub closes the editor of a socket it lost),
 //! and a frame's ack ([`frame_ack`], PR I: one frame in flight, the hub
-//! sends the next once the page acked). `store/live/eq.rs` carries them out.
+//! sends the next once the page acked); the page's numbered inputs and what
+//! its picture shows ([`inputs`], PR J). `store/live/eq.rs` carries them
+//! out.
+
+pub mod inputs;
 
 use fohmixer_proto::client::ClientMsg;
 use fohmixer_proto::eq::{EqItem, EqState, FrameHead};

@@ -9,12 +9,16 @@
 //! the screen's sink, each frame of the open editor acked as it arrives
 //! (PR I, `store::eq::frame_ack`: the hub sends the next frame then). A
 //! closed socket closes the page's editor (`store::eq::socket_closed`): the
-//! hub closes it with the socket.
+//! hub closes it with the socket. PR J: each input of the open editor goes
+//! numbered (`store::eq::inputs::Inputs`), a down with the input its picture
+//! showed; the screen tells what it drew (`eq_drawn`: the latency of the
+//! input a picture is the first to show) and asks whether its picture is
+//! caught up (`eq_caught_up`).
 
 use std::rc::Rc;
 
 use fohmixer_proto::client::ClientMsg;
-use fohmixer_proto::eq::{Area, EqItem, EqLock, frame_parts};
+use fohmixer_proto::eq::{Area, EqItem, EqLock, FrameHead, frame_parts};
 use fohmixer_proto::layout::Binding;
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
@@ -25,8 +29,9 @@ use crate::dom;
 use crate::net;
 use crate::store::eq::{EqListView, EqView, asked, frame_ack, socket_closed};
 
-/// Where the open editor's frames go: the screen's painter.
-pub type FrameSink = Rc<dyn Fn(web_sys::Blob)>;
+/// Where the open editor's frames go: the screen's painter, with each
+/// frame's header (PR J: what its picture shows).
+pub type FrameSink = Rc<dyn Fn(FrameHead, web_sys::Blob)>;
 
 impl LiveStore {
     /// The hub's `eq_list`: the latest list, numbered.
@@ -87,7 +92,7 @@ impl LiveStore {
             &js_sys::Array::of1(&jpeg),
             &options,
         ) {
-            Ok(blob) => sink(blob),
+            Ok(blob) => sink(head, blob),
             Err(e) => dom::log(&format!("a Pro-Q frame could not be read: {e:?}")),
         }
     }
@@ -130,9 +135,51 @@ impl LiveStore {
         self.send(&ClientMsg::EqArea { w, h });
     }
 
-    /// A finger on the open editor.
+    /// A finger on the open editor, numbered (PR J; nothing without an
+    /// open editor: the hub would drop it).
     pub fn eq_input(self, (touch, x, y): Out) {
-        self.send(&ClientMsg::EqInput { touch, x, y });
+        let open = self
+            .eq
+            .try_with_untracked(|v| v.as_ref().and_then(EqView::open_session))
+            .flatten();
+        let Some(session) = open else {
+            return;
+        };
+        let numbered = self
+            .inner
+            .try_update_value(|i| i.eq_inputs.send(session, touch, dom::epoch_now()));
+        let Some((n, seen)) = numbered else {
+            return;
+        };
+        self.send(&ClientMsg::EqInput {
+            touch,
+            x,
+            y,
+            n,
+            seen,
+        });
+    }
+
+    /// A first finger lands on the editor's picture (PR J): its down will
+    /// say what the picture drawn last shows.
+    pub fn eq_land(self) {
+        let _ = self.inner.try_update_value(|i| i.eq_inputs.land());
+    }
+
+    /// Whether the picture drawn last shows every input the page sent (PR
+    /// J): a finger on an older one never acts.
+    pub fn eq_caught_up(self) -> bool {
+        self.inner
+            .try_with_value(|i| i.eq_inputs.caught_up())
+            .unwrap_or(true)
+    }
+
+    /// The screen drew the frame `head` at `now` (page epoch ms, PR J): the
+    /// latency of the input it is the first to show (ms).
+    pub fn eq_drawn(self, head: FrameHead, now: f64) -> Option<f64> {
+        self.inner
+            .try_update_value(|i| i.eq_inputs.drawn(head.session, head.shown, now))
+            .flatten()
     }
 
     /// The page leaves its editor.
