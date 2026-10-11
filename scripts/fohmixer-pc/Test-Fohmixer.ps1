@@ -487,6 +487,9 @@ try {
     Assert ((Get-FohInstalledEqToml -Text ($baseToml + "`r`n[eq]  `r`nbackend = `"windows`"  ")) -ceq $wantEq) 'installed-eq-table-with-trailing-blanks-at-the-end-of-the-file'
     $offEq = "`r`n[eq]`r`n# off until the next probe`r`nbackend = `"off`"`r`n"
     Assert ((Get-FohInstalledEqToml -Text ($baseToml + $offEq + $wantCompanion)) -ceq $offEq) 'installed-eq-table-keeps-its-lines-and-backend-as-they-are'
+    $commented = "`r`n[eq] # on since the probe`r`nbackend = `"windows`"`r`n"
+    Assert ((Get-FohInstalledEqToml -Text ($baseToml + $commented + $wantCompanion)) -ceq $commented) 'installed-eq-header-with-a-comment-is-kept'
+    Assert ((Get-FohInstalledEqToml -Text ($baseToml + "`r`n[eq]")) -ceq "`r`n[eq]`r`n") 'installed-eq-header-ending-the-file-is-kept'
     Assert ((Get-FohInstalledEqToml -Text ($baseToml + $wantCompanion + $gotRemote)) -ceq '') 'installed-eq-none-without-the-table'
     Assert ((Get-FohInstalledEqToml -Text ($baseToml + $gotRemote + $wantEq)) -ceq '') 'installed-eq-after-tls-is-left-to-the-remote-tables'
     Assert ((Get-FohInstalledEqToml -Text ($baseToml + "`r`n[equalizer]`r`nbackend = `"windows`"`r`n")) -ceq '') 'installed-eq-another-table-name-is-not-eq'

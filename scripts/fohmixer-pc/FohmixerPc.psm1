@@ -343,7 +343,8 @@ function Get-FohInstalledEqToml {
     $head = $Text
     $tls = [regex]::Match($Text, '\r?\n\[tls\]\r?\n')
     if ($tls.Success) { $head = $Text.Substring(0, $tls.Index) }
-    $m = [regex]::Match($head, '(?s)\r?\n\[eq\][ \t]*\r?\n.*?(?=\r?\n\[|\z)')
+    # The header may carry a comment, or end the file (#77 review).
+    $m = [regex]::Match($head, '(?s)\r?\n\[eq\][ \t]*(?:#[^\r\n]*)?(?:\r?\n.*?(?=\r?\n\[|\z)|\z)')
     if (-not $m.Success) { return '' }
     $lines = @($m.Value -split '\r?\n' | ForEach-Object { $_.TrimEnd() } | Where-Object { $_ })
     return ("`r`n" + ($lines -join "`r`n") + "`r`n")
