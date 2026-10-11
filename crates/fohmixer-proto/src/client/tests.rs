@@ -744,6 +744,28 @@ fn eq_messages_round_trip() {
         },
         json!({"type": "eq_frame_ack", "session": 7, "seq": 12}),
     );
+    // PR P2a: Pro-Q's own undo, numbered with the page's inputs, and its
+    // answer to that page.
+    round_trip_client(
+        ClientMsg::EqUndo { n: 14 },
+        json!({"type": "eq_undo", "n": 14}),
+    );
+    round_trip_server(
+        ServerMsg::EqUndo {
+            session: 3,
+            n: 14,
+            result: "done".into(),
+        },
+        json!({"type": "eq_undo", "session": 3, "n": 14, "result": "done"}),
+    );
+    round_trip_server(
+        ServerMsg::EqUndo {
+            session: 0,
+            n: 2,
+            result: crate::eq::reason::NO_EDITOR.into(),
+        },
+        json!({"type": "eq_undo", "session": 0, "n": 2, "result": "no such editor"}),
+    );
     round_trip_server(
         ServerMsg::EqList {
             binding: binding.clone(),

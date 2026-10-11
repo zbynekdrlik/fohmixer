@@ -12,9 +12,9 @@
 //! reads and multi-command batches.
 //!
 //! The Pro-Q 4 screen (#71 PR E, F28): `eq_list`, `eq_open`, `eq_area`
-//! (PR G), `eq_input`, `eq_close`, `eq_frame_ack` (PR I) and `eq`,
-//! `eq_list`, `eq_locks` (their pieces and the binary frames the hub sends
-//! an open editor's holder: [`crate::eq`]).
+//! (PR G), `eq_input`, `eq_close`, `eq_frame_ack` (PR I), `eq_undo` (PR
+//! P2a) and `eq`, `eq_list`, `eq_locks`, `eq_undo` (their pieces and the
+//! binary frames the hub sends an open editor's holder: [`crate::eq`]).
 
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
@@ -180,6 +180,13 @@ pub enum ClientMsg {
     /// so its pongs, acks and values never wait behind a backlog of
     /// pictures).
     EqFrameAck { session: u32, seq: u32 },
+    /// Pro-Q 4's own undo of this client's open editor (PR P2a): the hub
+    /// reads the ↶ in a fresh picture and taps it when it reads lit (one
+    /// change undone); answered by `eq_undo`, to this client only. `n`: the
+    /// page's next input number of its open session (`eq_input`'s
+    /// sequence), so a picture's `shown` covers the undo and a down on a
+    /// picture from before it is refused as stale.
+    EqUndo { n: u32 },
 }
 
 /// One write's outcome (#43, an `ack` item): Live ran it (`value`: what
@@ -402,6 +409,17 @@ pub enum ServerMsg {
         reason: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         since: Option<f64>,
+    },
+    /// The answer to this client's `eq_undo` (PR P2a): its editor's
+    /// `session` (0: it holds none), the undo's input number `n`, and
+    /// `result`: `done` (Pro-Q's ↶ read lit and was tapped), `nothing` (it
+    /// read grey: nothing to undo, no tap; [`crate::eq::UNDO_NOTHING`]), or
+    /// why not (no tap; a [`crate::eq::reason`] such as `UNDO_BUSY`,
+    /// `UNDO_SOON`, `UNDO_MISSING`).
+    EqUndo {
+        session: u32,
+        n: u32,
+        result: String,
     },
 }
 

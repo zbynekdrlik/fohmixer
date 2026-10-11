@@ -13,7 +13,9 @@
 //! back before the guard's tap; PR I: one frame in flight per page, the next
 //! one only after the page's ack (or the ack's wait, never a third), so a
 //! pong never waits behind more than one frame, also on a link slower than
-//! the frames (a throttled proxy, `support::throttle`).
+//! the frames (a throttled proxy, `support::throttle`); PR P2a: Pro-Q's own
+//! undo read at the open and tapped for its page alone, a down on a picture
+//! from before it dropped as stale.
 #![cfg(unix)]
 
 mod support;
@@ -1186,6 +1188,176 @@ fn on_a_link_slower_than_the_frames_a_pong_waits_behind_one_frame_at_most() {
         a.send(&ClientMsg::EqClose).await;
         let closed = state(&mut a, ON_TRACK).await;
         assert_eq!(closed.0, EqState::Closed);
+        hub.stop().await;
+        host.stop();
+    });
+}
+
+/// The client's next `eq_undo` answer (#71 PR P2a): its session, input
+/// number and result.
+async fn undone(client: &mut Client) -> (u32, u32, String) {
+    client
+        .wait(WAIT, |m| match m {
+            ServerMsg::EqUndo { session, n, result } => Some((*session, *n, result.clone())),
+            _ => None,
+        })
+        .await
+}
+
+/// The `eq` records of `what`.
+fn eq_records_of<'a>(records: &'a [Value], what: &str) -> Vec<&'a Value> {
+    records
+        .iter()
+        .filter(|r| r["ev"] == "eq" && r["what"] == what)
+        .collect()
+}
+
+#[test]
+fn pro_qs_own_undo_is_read_at_the_open_and_tapped_for_its_page_alone() {
+    // #71 PR P2a: the hub's sim keeps Pro-Q's undo history from the start.
+    let _serial = serial();
+    runtime().block_on(async {
+        let host = Host::start("band");
+        let dir = tempfile::tempdir().unwrap();
+        let hub = TestHub::start_config(config(dir.path(), &host)).await;
+        let mut a = client(&hub).await;
+        let mut b = client(&hub).await;
+        a.send(&ClientMsg::EqList { binding: hand2() }).await;
+        listed(&mut a).await;
+        // A page with no editor: refused, nothing reaches the window.
+        b.send(&ClientMsg::EqUndo { n: 1 }).await;
+        assert_eq!(undone(&mut b).await, (0, 1, reason::NO_EDITOR.to_string()));
+        let session = open(&mut a, ON_TRACK).await;
+        // The ↶ read once the editor is open (never tapped): grey, nothing
+        // to undo in a fresh Pro-Q.
+        let records = hub
+            .events_until(WAIT, |records| {
+                !eq_records_of(records, "undo_read").is_empty()
+            })
+            .await;
+        let read = eq_records_of(&records, "undo_read");
+        assert_eq!(
+            (
+                read[0]["session"].clone(),
+                read[0]["state"].clone(),
+                read[0]["w"].clone(),
+                read[0]["h"].clone()
+            ),
+            (json!(session), json!("grey"), json!(1349), json!(809))
+        );
+        a.send(&ClientMsg::EqUndo { n: 1 }).await;
+        assert_eq!(undone(&mut a).await, (session, 1, "nothing".to_string()));
+        assert!(
+            sim_records(dir.path()).iter().all(|r| r["op"] != "touch"),
+            "no tap"
+        );
+        // A drag is a change in Pro-Q: its ↶ lights, and the undo taps it.
+        input(&mut a, Touch::Down, 400.0, 300.0, 2).await;
+        input(&mut a, Touch::Move, 440.0, 300.0, 3).await;
+        input(&mut a, Touch::Up, 440.0, 300.0, 4).await;
+        sim_until(
+            dir.path(),
+            &[
+                step("touch", "down", 400, 300),
+                step("touch", "up", 440, 300),
+            ],
+        )
+        .await;
+        a.send(&ClientMsg::EqUndo { n: 5 }).await;
+        assert_eq!(undone(&mut a).await, (session, 5, "done".to_string()));
+        sim_until(
+            dir.path(),
+            &[
+                step("touch", "up", 440, 300),
+                step("touch", "down", 570, 18),
+                step("touch", "up", 570, 18),
+                step("undo", "", -1, -1),
+            ],
+        )
+        .await;
+        let undo = sim_records(dir.path())
+            .into_iter()
+            .find(|r| r["op"] == "undo")
+            .expect("Pro-Q's undo");
+        assert_eq!(undo["left"], 0, "the drag undone");
+        // The other page heard nothing of it.
+        assert_eq!(
+            b.gets(Duration::from_millis(200), |m| {
+                matches!(m, ServerMsg::EqUndo { .. }).then_some(())
+            })
+            .await,
+            None
+        );
+        // A down on a picture from before the undo (it shows input 4, not
+        // the undo's 5) is stale: it never reaches the editor.
+        a.send(&ClientMsg::EqInput {
+            touch: Touch::Down,
+            x: 100.0,
+            y: 100.0,
+            n: 6,
+            seen: Some(4),
+        })
+        .await;
+        let records = hub
+            .events_until(WAIT, |records| !eq_records_of(records, "stale").is_empty())
+            .await;
+        let stale = eq_records_of(&records, "stale");
+        assert_eq!(
+            (stale[0]["n"].clone(), stale[0]["seen"].clone()),
+            (json!(6), json!(4))
+        );
+        assert!(
+            sim_records(dir.path())
+                .iter()
+                .all(|r| !(r["op"] == "touch" && r["x"] == 100)),
+            "never on the editor"
+        );
+        // The records: each undo's result, the tap's point and the
+        // picture's size; one read of the ↶, at the open.
+        let undos: Vec<(Value, Value, Value, Value, Value, Value)> =
+            eq_records_of(&records, "undo")
+                .iter()
+                .map(|r| {
+                    (
+                        r["session"].clone(),
+                        r["n"].clone(),
+                        r["result"].clone(),
+                        r["x"].clone(),
+                        r["y"].clone(),
+                        r["w"].clone(),
+                    )
+                })
+                .collect();
+        assert_eq!(
+            undos,
+            [
+                (
+                    json!(0),
+                    json!(1),
+                    json!(reason::NO_EDITOR),
+                    Value::Null,
+                    Value::Null,
+                    Value::Null
+                ),
+                (
+                    json!(session),
+                    json!(1),
+                    json!("nothing"),
+                    Value::Null,
+                    Value::Null,
+                    json!(1349)
+                ),
+                (
+                    json!(session),
+                    json!(5),
+                    json!("done"),
+                    json!(570),
+                    json!(18),
+                    json!(1349)
+                ),
+            ]
+        );
+        assert_eq!(eq_records_of(&records, "undo_read").len(), 1);
         hub.stop().await;
         host.stop();
     });

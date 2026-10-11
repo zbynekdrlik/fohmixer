@@ -48,6 +48,14 @@
 //!   aspect before it answers), and a changed one resizes the client's open
 //!   editor ([`Eqs::area`], [`Act::Resize`]). The picture's size the points
 //!   are clamped to follows ([`Eqs::sized`]).
+//! - **Pro-Q's own undo (PR P2a):** a page's undo (`eq_undo`, numbered
+//!   with its inputs) of its open editor goes to the window worker
+//!   ([`Act::Undo`]: its ↶ read, tapped when lit, the undo's number handled
+//!   there after it); any other's is refused at once ([`Eqs::undo`]: busy
+//!   while opening or closing, none held). Its number needs no bookkeeping
+//!   here: a later down whose `seen` is older than it is stale by its own
+//!   numbers ([`stale_down`]). Every undo ends as an [`Undid`]: the answer
+//!   to its page alone, an `eq` record `undo` and the hub log's line.
 //! - **The close:** never while a contact is down: the close sequence's
 //!   guard ends it first (`plugwin`; an editor whose size was changed gets
 //!   its own size back before the tap), then taps the inert spot, waits
@@ -71,11 +79,13 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use fohmixer_proto::client::ServerMsg;
-use fohmixer_proto::eq::{Area, EqLock, EqState, Part, Touch, caught_up, reason};
+use fohmixer_proto::eq::{
+    Area, EqLock, EqState, Part, Touch, UNDO_DONE, UNDO_NOTHING, caught_up, reason,
+};
 use serde_json::{Value, json};
 
 use crate::live::subs::ClientId;
-use crate::plugwin::Phase;
+use crate::plugwin::{Phase, UndoDone};
 
 /// A client heard from not at all for this long (ms): its contact ends.
 pub const SILENT_MS: f64 = 2000.0;
@@ -108,6 +118,89 @@ pub fn stale_fields(key: &EditorKey, client: ClientId, session: u32, input: Inpu
     fields["n"] = json!(input.n);
     fields["seen"] = json!(input.seen);
     fields
+}
+
+/// A page's undo as it ended (PR P2a): its client, its editor (none: it
+/// held none) and session (0: none), the page's input number `n`, what
+/// came of it (Pro-Q's ↶ tapped at a point, nothing to undo, or why not)
+/// and the picture's size the router knew (none: not open).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Undid {
+    pub client: ClientId,
+    pub key: Option<EditorKey>,
+    pub session: u32,
+    pub n: u32,
+    pub outcome: Result<UndoDone, String>,
+    pub size: Option<(u32, u32)>,
+}
+
+impl Undid {
+    /// An undo refused for `why` before it reached the window worker.
+    pub fn refused(
+        client: ClientId,
+        key: Option<EditorKey>,
+        session: u32,
+        n: u32,
+        why: &str,
+    ) -> Self {
+        Self {
+            client,
+            key,
+            session,
+            n,
+            outcome: Err(why.to_string()),
+            size: None,
+        }
+    }
+
+    /// Its result's word (`eq_undo`'s `result`): `done`, `nothing`, or why
+    /// not.
+    pub fn result(&self) -> &str {
+        match &self.outcome {
+            Ok(UndoDone::Done(..)) => UNDO_DONE,
+            Ok(UndoDone::Nothing) => UNDO_NOTHING,
+            Err(why) => why.as_str(),
+        }
+    }
+
+    /// Where Pro-Q's ↶ was tapped (none: no tap).
+    pub fn tapped(&self) -> Option<(i32, i32)> {
+        match self.outcome {
+            Ok(UndoDone::Done(x, y)) => Some((x, y)),
+            Ok(UndoDone::Nothing) | Err(_) => None,
+        }
+    }
+
+    /// The answer to its page (`eq_undo`), that page's alone.
+    pub fn msg(&self) -> ServerMsg {
+        ServerMsg::EqUndo {
+            session: self.session,
+            n: self.n,
+            result: self.result().to_string(),
+        }
+    }
+
+    /// Its `eq` record `undo`: the editor, client and session as every
+    /// record names them (`why`: a refusal's reason), the page's input
+    /// number, the result, where it tapped and the picture's size (null
+    /// when none).
+    pub fn fields(&self) -> Value {
+        let tapped = self.tapped();
+        json!({
+            "what": "undo",
+            "instance": self.key.as_ref().map(|key| key.instance.as_str()),
+            "path": self.key.as_ref().map(|key| key.path.as_str()),
+            "client": self.client,
+            "session": self.session,
+            "why": self.outcome.as_ref().err(),
+            "n": self.n,
+            "result": self.result(),
+            "x": tapped.map(|(x, _)| x),
+            "y": tapped.map(|(_, y)| y),
+            "w": self.size.map(|(w, _)| w),
+            "h": self.size.map(|(_, h)| h),
+        })
+    }
 }
 
 /// An editor: its Live instance and its device's LOM path.
@@ -205,6 +298,18 @@ pub enum Act {
     /// The part of `session`'s picture its page shows (PR L; none: the
     /// whole): the worker's frames carry only that.
     View { session: u32, part: Option<Part> },
+    /// `client`'s undo (PR P2a, its input `n`) of its open editor `key`
+    /// (`session`, its picture `size`): the window worker reads Pro-Q's ↶
+    /// and taps it when lit; its answer ends it ([`Undid`]).
+    Undo {
+        client: ClientId,
+        key: EditorKey,
+        session: u32,
+        n: u32,
+        size: (u32, u32),
+    },
+    /// An undo ended (refused here, PR P2a): its answer, record and line.
+    Undone(Undid),
     /// A client's editor state (`eq`).
     Tell { client: ClientId, msg: ServerMsg },
     /// The locks changed: every client gets them.
@@ -877,6 +982,40 @@ impl Eqs {
         let mut fields = record("view", &key, Some(client), Some(session), None);
         fields["part"] = json!(part);
         vec![Act::View { session, part }, Act::Record(fields)]
+    }
+
+    /// `client`'s undo, its input `n` (PR P2a): its open editor's goes to
+    /// the window worker ([`Act::Undo`], with its picture's size); one
+    /// still opening or already closing is refused busy, and none held
+    /// refused [`reason::NO_EDITOR`] ([`Act::Undone`]: nothing reaches the
+    /// worker).
+    pub fn undo(&self, client: ClientId, n: u32) -> Vec<Act> {
+        let held = self
+            .held
+            .get(&client)
+            .and_then(|key| self.editors.get(key).map(|editor| (key, editor)));
+        let undid = match held {
+            Some((key, editor)) => match editor.stage {
+                Stage::Open { width, height } => {
+                    return vec![Act::Undo {
+                        client,
+                        key: key.clone(),
+                        session: editor.session,
+                        n,
+                        size: (width, height),
+                    }];
+                }
+                Stage::Waiting | Stage::Opening | Stage::Closing => Undid::refused(
+                    client,
+                    Some(key.clone()),
+                    editor.session,
+                    n,
+                    reason::UNDO_BUSY,
+                ),
+            },
+            None => Undid::refused(client, None, 0, n, reason::NO_EDITOR),
+        };
+        vec![Act::Undone(undid)]
     }
 
     /// The editor `client` holds open, and its session.

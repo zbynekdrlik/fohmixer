@@ -46,6 +46,15 @@
 //!   as `RouterMsg::EqClosed` with what the close left in Live
 //!   (`eq::close::Shut`): its holder hears "left open in Live" only when the
 //!   editor may still be open.
+//! - **Pro-Q's own undo (PR P2a, `eq_undo`):** a page's undo of its open
+//!   editor goes to the window worker as the router handles it
+//!   (`Plugwin::undo`: the command in the router's order, its answer
+//!   awaited in a task and back as `RouterMsg::EqUndone`); any other is
+//!   refused at once (`Eqs::undo`). Every undo ends in [`Router::eq_undone`]:
+//!   the answer to its page alone (`eq_undo`), an `eq` record `undo` and a
+//!   hub log line. The worker's read of the ↶ after an editor's take and
+//!   each settled resize (never tapped) is an `eq` record `undo_read`
+//!   ([`undo_read_fields`]) and a log line: the band Live's check.
 
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -60,11 +69,12 @@ use super::{Router, RouterMsg, write_failure};
 use crate::eq::close::{self, Check, CloseCheck, RefOff, Shut};
 use crate::eq::open;
 use crate::eq::walk::{Found, MAX_READS, Step, Walk};
-use crate::eq::{Act, Device, EditorKey, Eqs, GUARD_WAIT, Input, Pictures, record};
+use crate::eq::{Act, Device, EditorKey, Eqs, GUARD_WAIT, Input, Pictures, Undid, record};
 use crate::events::EventLog;
 use crate::live::client::{LiveError, LiveHandle};
 use crate::live::subs::ClientId;
 use crate::outbox::flow::Trips;
+use crate::plugwin::undo::Undo;
 use crate::plugwin::{Frame, Plugwin, PlugwinEvent, Rate, Resized};
 
 /// The Live property that opens and closes a plug-in's editor.
@@ -346,6 +356,22 @@ pub fn sized_fields(key: &EditorKey, session: u32, size: (u32, u32)) -> Value {
     fields["w"] = json!(size.0);
     fields["h"] = json!(size.1);
     fields
+}
+
+/// The `eq` record of Pro-Q's ↶ as the window worker read it after an
+/// editor's take or a settled resize (#71 PR P2a; never tapped): the
+/// session (as the worker's own `rate` record), the read's state (`lit`,
+/// `grey`, `missing`), the x it found the ↶ at (lit only) and the
+/// picture's size.
+pub fn undo_read_fields(session: u32, read: Undo, size: (u32, u32)) -> Value {
+    json!({
+        "what": "undo_read",
+        "session": session,
+        "state": read.name(),
+        "x": read.x(),
+        "w": size.0,
+        "h": size.1,
+    })
 }
 
 /// The `eq` record of the capture's minute (or of its last part, when the
@@ -645,6 +671,38 @@ impl Router {
         }
     }
 
+    /// `client`'s undo of its open editor, its input `n` (#71 PR P2a): to
+    /// the window worker, or refused at once (`off` without the screen).
+    pub(super) fn eq_undo(&self, client: ClientId, n: u32) {
+        match self.eq.as_ref() {
+            Some(io) => {
+                let acts = io.state.undo(client, n);
+                self.eq_acts(acts);
+            }
+            None => self.eq_undone(&Undid::refused(client, None, 0, n, reason::OFF)),
+        }
+    }
+
+    /// A page's undo ended (#71 PR P2a): the answer to that page alone, its
+    /// `eq` record `undo` and the hub log's line.
+    pub(super) fn eq_undone(&self, undid: &Undid) {
+        let (x, y) = undid.tapped().unzip();
+        tracing::info!(
+            client = undid.client,
+            session = undid.session,
+            instance = ?undid.key.as_ref().map(|key| key.instance.as_str()),
+            n = undid.n,
+            result = %undid.result(),
+            x = ?x,
+            y = ?y,
+            "a page's undo of its Pro-Q 4 editor"
+        );
+        self.io.events.record("eq", undid.fields());
+        if let Some(outbox) = self.clients.get(&undid.client) {
+            outbox.reply(undid.msg());
+        }
+    }
+
     /// `client` left its editor.
     pub(super) fn eq_close(&mut self, client: ClientId) {
         if let Some(io) = self.eq.as_mut() {
@@ -717,6 +775,24 @@ impl Router {
                 self.io
                     .events
                     .record("eq", sized_fields(&key, session, (width, height)));
+            }
+            PlugwinEvent::UndoRead {
+                session,
+                read,
+                width,
+                height,
+            } => {
+                tracing::info!(
+                    session,
+                    state = read.name(),
+                    x = ?read.x(),
+                    width,
+                    height,
+                    "a Pro-Q 4 editor's undo reads"
+                );
+                self.io
+                    .events
+                    .record("eq", undo_read_fields(session, read, (width, height)));
             }
             PlugwinEvent::Rate { session, rate } => {
                 // Its holder's frames on the link (PR I): their round trips
@@ -917,6 +993,31 @@ impl Router {
             } => io.plugwin.touch(session, contact, phase, at),
             Act::Handled { session, n } => io.plugwin.handled(session, n),
             Act::View { session, part } => io.plugwin.view(session, part),
+            Act::Undo {
+                client,
+                key,
+                session,
+                n,
+                size,
+            } => {
+                // Sent now, in the router's order (a close after it reaches
+                // the worker after it); the answer in a task.
+                let undoing = io.plugwin.undo(session, n);
+                let tx = self.io.tx.clone();
+                tokio::spawn(async move {
+                    let outcome = undoing.await;
+                    let undid = Undid {
+                        client,
+                        key: Some(key),
+                        session,
+                        n,
+                        outcome,
+                        size: Some(size),
+                    };
+                    let _ = tx.send(RouterMsg::EqUndone { undid });
+                });
+            }
+            Act::Undone(undid) => self.eq_undone(&undid),
             Act::Tell { client, msg } => {
                 if let Some(outbox) = self.clients.get(&client) {
                     if let ServerMsg::Eq {

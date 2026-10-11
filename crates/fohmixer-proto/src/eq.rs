@@ -59,6 +59,15 @@
 //! third frame in flight). On a slow link the frames then never pile up in
 //! the socket's send buffer, and a pong, an ack or a value waits behind one
 //! frame at most.
+//!
+//! **Pro-Q's own undo (PR P2a):** the page asks the hub to undo the last
+//! change of its open editor (`eq_undo`, numbered with its inputs: a
+//! picture's `shown` covers it, and a finger on a picture from before it
+//! is refused). The hub reads Pro-Q 4's ↶ in a fresh picture and taps it
+//! only when it reads lit (something to undo), never twice within
+//! [`UNDO_APART_MS`]; it answers the page alone (`eq_undo`):
+//! [`UNDO_DONE`], [`UNDO_NOTHING`] (it read grey) or why not (a
+//! [`reason`]).
 
 use serde::{Deserialize, Serialize};
 
@@ -100,6 +109,17 @@ pub struct Part {
 /// started after p50 17.6 ms, p95 19.0, max 21.3, a grab taking 16.5): the
 /// p95 rounded up to 5 ms.
 pub const PAINT_MS: f64 = 20.0;
+
+/// The least time (ms, PR P2a) from one undo tap the hub makes on an
+/// editor to its next: two taps closer than Windows' double-click time (500
+/// ms by default) would be a double click on Pro-Q's ↶, and the page keeps
+/// its control disabled that long. The hub refuses a sooner undo
+/// ([`reason::UNDO_SOON`]).
+pub const UNDO_APART_MS: f64 = 700.0;
+/// An undo's result (`eq_undo`, PR P2a): Pro-Q's ↶ read lit and was tapped.
+pub const UNDO_DONE: &str = "done";
+/// An undo's result: Pro-Q's ↶ read grey, nothing to undo (no tap).
+pub const UNDO_NOTHING: &str = "nothing";
 
 /// A binary frame's header (PR I): the session it shows, its number in
 /// that session (from 1), which the page's ack names, the last of the
@@ -184,6 +204,19 @@ pub mod reason {
     /// window (#71 PR O): a still finger could become a right click (Pro-Q's
     /// menu, with Delete), so the hub does not open it.
     pub const HOLD_ON: &str = "press-and-hold could not be turned off";
+    /// The hub has no editor of the page's (an undo, PR P2a, of an editor
+    /// it does not hold, or one whose window just went).
+    pub const NO_EDITOR: &str = "no such editor";
+    /// An undo refused (PR P2a): a finger is on the picture, or the editor
+    /// is opening, resizing or closing. Try again once it rests.
+    pub const UNDO_BUSY: &str = "the editor is busy";
+    /// An undo refused (PR P2a): sooner than [`super::UNDO_APART_MS`] after
+    /// the hub's last undo tap on that editor (two taps would be a double
+    /// click).
+    pub const UNDO_SOON: &str = "too soon after the last undo";
+    /// An undo refused (PR P2a): Pro-Q 4's ↶ is not where it was measured
+    /// (a size the table does not know, a Pro-Q update): nothing tapped.
+    pub const UNDO_MISSING: &str = "Pro-Q's undo is not where it was measured";
 }
 
 /// The page's picture area (`eq_open`'s `area`; PR G): the size, in CSS
@@ -388,6 +421,23 @@ mod tests {
         assert_eq!(TOO_DEEP, "the devices nest too deep");
         assert_eq!(HOLD_ON, "press-and-hold could not be turned off");
         assert_eq!(IN_USE, "in use");
+        // PR P2a: an undo's refusals.
+        assert_eq!(
+            [NO_EDITOR, UNDO_BUSY, UNDO_SOON, UNDO_MISSING],
+            [
+                "no such editor",
+                "the editor is busy",
+                "too soon after the last undo",
+                "Pro-Q's undo is not where it was measured"
+            ]
+        );
+    }
+
+    #[test]
+    fn an_undo_is_done_or_nothing_and_two_taps_are_700_ms_apart() {
+        // PR P2a: Windows' double-click time is 500 ms by default.
+        assert_eq!(UNDO_APART_MS, 700.0);
+        assert_eq!([UNDO_DONE, UNDO_NOTHING], ["done", "nothing"]);
     }
 
     #[test]

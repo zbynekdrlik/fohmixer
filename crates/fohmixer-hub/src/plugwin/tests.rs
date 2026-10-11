@@ -55,6 +55,19 @@ fn worker_on(backend: Box<dyn Backend>) -> (Worker, Heard) {
     (worker, heard)
 }
 
+/// What the worker told, but its reads of Pro-Q's ↶ (#71 PR P2a: one at
+/// the first grab a paint after a take and after each settled resize; the
+/// tests of the read look at every event).
+fn told(heard: &Heard) -> Vec<PlugwinEvent> {
+    heard
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|event| !matches!(event, PlugwinEvent::UndoRead { .. }))
+        .cloned()
+        .collect()
+}
+
 /// Waits (bounded, 5 s) on the test's own thread for `check`.
 fn wait_for(what: &str, check: impl Fn() -> bool) {
     for _ in 0..500 {
@@ -1354,7 +1367,7 @@ fn a_captured_editor_sends_its_pictures_skipping_a_same_one() {
     wait_for("the picture after it", || frames.lock().unwrap().len() == 3);
     // The minute's counts: four grabs, three frames sent.
     worker.step_at(60_000.0);
-    let events = heard.lock().unwrap().clone();
+    let events = told(&heard);
     let [PlugwinEvent::Rate { session: 1, rate }] = events.as_slice() else {
         panic!("one rate: {events:?}")
     };
@@ -1366,7 +1379,7 @@ fn a_captured_editor_sends_its_pictures_skipping_a_same_one() {
     let window = handle.windows()[0];
     handle.remove_window(window);
     worker.step_at(60_100.0);
-    let events = heard.lock().unwrap().clone();
+    let events = told(&heard);
     let [
         _,
         PlugwinEvent::Rate { session: 1, rate },
@@ -2063,12 +2076,13 @@ async fn the_worker_thread_serves_its_handle_and_ends_at_the_stop() {
     assert_eq!(plugwin.list().await, Err(STOPPED.to_string()));
     assert_eq!(plugwin.take(2, Vec::new()).await, Err(STOPPED.to_string()));
     assert_eq!(plugwin.guard(2).await, Err(STOPPED.to_string()));
+    assert_eq!(plugwin.undo(2, 1).await, Err(STOPPED.to_string()));
     tokio::time::timeout(bounded, plugwin.release(2, false))
         .await
         .unwrap();
     // Its editor's last part of a minute, at its release (the PR I review),
     // and nothing else.
-    let heard = heard.lock().unwrap().clone();
+    let heard = told(&heard);
     assert!(
         matches!(heard.as_slice(), [PlugwinEvent::Rate { session: 1, .. }]),
         "{heard:?}"
@@ -2451,7 +2465,7 @@ fn a_resize_posts_the_areas_size_and_answers_once_it_lands() {
     worker.command_at(Command::Capture { session: 1, sink }, 60.0);
     worker.step_at(60.0);
     assert_eq!(worker.editors[&1].counts.width, 2544);
-    let heard = heard.lock().unwrap().clone();
+    let heard = told(&heard);
     assert!(heard.is_empty(), "{heard:?}");
 }
 
@@ -2793,17 +2807,14 @@ fn a_resize_that_does_not_land_settles_after_its_wait_and_a_newer_one_replaces_i
         width,
         height,
     };
-    assert_eq!(heard.lock().unwrap().as_slice(), [sized(1652, 661)]);
+    assert_eq!(told(&heard), [sized(1652, 661)]);
     assert_eq!(worker.editors[&1].size, (1652, 661));
     worker.step_at(1340.0);
-    assert_eq!(heard.lock().unwrap().len(), 1, "said once");
+    assert_eq!(told(&heard).len(), 1, "said once");
     // The way back lands: said too.
     assert!(handle.land_one(window));
     worker.step_at(1380.0);
-    assert_eq!(
-        heard.lock().unwrap().as_slice(),
-        [sized(1652, 661), sized(1349, 809)]
-    );
+    assert_eq!(told(&heard), [sized(1652, 661), sized(1349, 809)]);
 }
 
 #[test]
@@ -2817,7 +2828,7 @@ fn a_window_resized_on_the_pc_is_reported_and_put_back_by_the_guard() {
     handle.resize_window(window, (1000, 700));
     worker.step_at(40.0);
     assert_eq!(
-        heard.lock().unwrap().as_slice(),
+        told(&heard),
         [PlugwinEvent::Sized {
             session: 1,
             width: 1000,
@@ -3555,4 +3566,255 @@ async fn the_handles_commands_reach_the_worker_in_call_order_whatever_is_awaited
     assert_eq!(touches(&handle), [t("down", 546, 15), t("up", 546, 15)]);
     plugwin.stop();
     assert!(plugwin.stopped().await);
+}
+
+/// A page's undo of `session` (its input `n`) at `now`: the worker's
+/// answer, given at once (#71 PR P2a).
+fn undo_at(worker: &mut Worker, session: u32, n: u32, now: f64) -> Result<UndoDone, String> {
+    let (reply, mut answer) = oneshot::channel();
+    worker.command_at(Command::Undo { session, n, reply }, now);
+    answer.try_recv().expect("an answer at once")
+}
+
+/// The sim's `undo` records: the changes left after each tap on the ↶.
+fn undo_records(handle: &SimHandle) -> Vec<i64> {
+    handle
+        .records()
+        .iter()
+        .filter(|r| r["op"] == "undo")
+        .map(|r| r["left"].as_i64().unwrap())
+        .collect()
+}
+
+/// The last input `session`'s pictures show once Pro-Q painted what was
+/// handled up to `now` (it drains them).
+fn shown_by(worker: &mut Worker, session: u32, now: f64) -> u32 {
+    let editor = worker.editors.get_mut(&session).expect("its editor");
+    editor.shown.at_grab(now + PAINT_MS)
+}
+
+#[test]
+fn two_undo_taps_are_700_ms_apart_and_a_busy_editor_refuses_one() {
+    assert!(!undo_apart(700.0_f64.next_down()));
+    assert!(undo_apart(700.0));
+    assert!(undo_apart(f64::INFINITY), "no tap before");
+    assert!(!undo_apart(f64::NAN));
+    assert_eq!(undo_refused(true, f64::INFINITY), Some(reason::UNDO_BUSY));
+    assert_eq!(undo_refused(true, 0.0), Some(reason::UNDO_BUSY));
+    assert_eq!(undo_refused(false, 699.0), Some(reason::UNDO_SOON));
+    assert_eq!(undo_refused(false, 700.0), None);
+    assert_eq!(undo_refused(false, f64::INFINITY), None);
+}
+
+#[test]
+fn a_lit_undo_is_tapped_once_at_its_own_centre_and_a_later_picture_shows_it() {
+    let (mut worker, handle, _) = self::worker();
+    handle.undo_history(2);
+    let window = take(&mut worker, &handle, 1, 0.0);
+    let (sink, frames) = sink();
+    worker.command_at(Command::Capture { session: 1, sink }, 0.0);
+    worker.step_at(0.0);
+    wait_for("the first frame", || frames.lock().unwrap().len() == 1);
+    assert_eq!(
+        undo_at(&mut worker, 1, 7, 1000.0),
+        Ok(UndoDone::Done(570, 18))
+    );
+    // One tap at the ↶'s own centre, as the guard's (down, up), and Pro-Q
+    // undid one change.
+    assert_eq!(touches(&handle), [t("down", 570, 18), t("up", 570, 18)]);
+    assert_eq!(handle.undo_left(), Some(1));
+    assert_eq!(undo_records(&handle), [1]);
+    assert_eq!(handle.records().last().unwrap()["window"], window.0);
+    assert_eq!(worker.editors[&1].undone, 1000.0, "the tap's time kept");
+    assert!(worker.contact.is_none(), "no contact left down");
+    // The page's input 7 is handled after the tap: the next picture a
+    // paint later says it shows it.
+    worker.step_at(1020.0);
+    assert_eq!(worker.editors[&1].last_shown, 7);
+    wait_for("a frame that shows it", || {
+        frames.lock().unwrap().last().map(|f| f.2) == Some(7)
+    });
+}
+
+#[test]
+fn a_grey_undo_taps_nothing_and_answers_nothing_to_undo() {
+    let (mut worker, handle, _) = self::worker();
+    handle.undo_history(0);
+    take(&mut worker, &handle, 1, 0.0);
+    assert_eq!(undo_at(&mut worker, 1, 3, 1000.0), Ok(UndoDone::Nothing));
+    assert!(touches(&handle).is_empty());
+    assert!(undo_records(&handle).is_empty());
+    assert_eq!(handle.undo_left(), Some(0));
+    assert_eq!(worker.editors[&1].undone, f64::NEG_INFINITY, "no tap");
+    assert_eq!(shown_by(&mut worker, 1, 1000.0), 3, "handled all the same");
+}
+
+#[test]
+fn an_undo_not_where_it_was_measured_taps_nothing() {
+    // No ↶ drawn (no history, a still picture: nothing bright near the
+    // spot).
+    let (mut worker, handle, _) = self::worker();
+    handle.still(true);
+    take(&mut worker, &handle, 1, 0.0);
+    assert_eq!(
+        undo_at(&mut worker, 1, 1, 1000.0),
+        Err(reason::UNDO_MISSING.to_string())
+    );
+    assert!(touches(&handle).is_empty());
+    assert_eq!(shown_by(&mut worker, 1, 1000.0), 1);
+    // A size the table does not know (667 px wide), with a ↶ to undo.
+    let (mut worker, handle, _) = self::worker();
+    handle.undo_history(1);
+    take(&mut worker, &handle, 1, 0.0);
+    let mut answer = resize_at(&mut worker, 1, UPRIGHT, 10.0);
+    worker.step_at(10.0);
+    assert!(answer.try_recv().unwrap().is_some(), "the resize settled");
+    assert_eq!(
+        undo_at(&mut worker, 1, 1, 1000.0),
+        Err(reason::UNDO_MISSING.to_string())
+    );
+    assert!(touches(&handle).is_empty());
+    assert_eq!(handle.undo_left(), Some(1), "nothing undone");
+}
+
+#[test]
+fn an_undo_waits_out_a_finger_a_resize_and_the_guard() {
+    // A contact down, of its editor or of another one (the PC injects one):
+    // busy, nothing tapped, the input handled.
+    for of in [1, 2] {
+        let (mut worker, handle, _) = self::worker();
+        handle.undo_history(1);
+        take(&mut worker, &handle, 1, 0.0);
+        take(&mut worker, &handle, 2, 0.0);
+        touch_at(&mut worker, of, 1, Phase::Down, (10, 20), 10.0);
+        assert_eq!(
+            undo_at(&mut worker, 1, 4, 20.0),
+            Err(reason::UNDO_BUSY.to_string()),
+            "a contact on editor {of}"
+        );
+        assert_eq!(touches(&handle), [t("down", 10, 20)]);
+        assert_eq!(handle.undo_left(), Some(1));
+        assert_eq!(shown_by(&mut worker, 1, 20.0), 4);
+    }
+    // A resize on its way.
+    let (mut worker, handle, _) = self::worker();
+    handle.undo_history(1);
+    take(&mut worker, &handle, 1, 0.0);
+    handle.resize_late(true);
+    resize_at(&mut worker, 1, UPRIGHT, 10.0);
+    assert!(worker.editors[&1].resizing.is_some());
+    assert_eq!(
+        undo_at(&mut worker, 1, 1, 20.0),
+        Err(reason::UNDO_BUSY.to_string())
+    );
+    assert!(touches(&handle).is_empty());
+    // Its guard begun (still placing the editor): no undo any more.
+    let (mut worker, handle, _) = self::worker();
+    handle.undo_history(1);
+    take(&mut worker, &handle, 1, 0.0);
+    let _guarding = guard_at(&mut worker, 1, 10.0);
+    assert!(worker.editors[&1].guarded);
+    assert!(worker.editors[&1].resizing.is_none());
+    assert_eq!(
+        undo_at(&mut worker, 1, 1, 20.0),
+        Err(reason::UNDO_BUSY.to_string())
+    );
+    assert!(touches(&handle).is_empty());
+    assert_eq!(handle.undo_left(), Some(1));
+    // No editor of that session.
+    assert_eq!(undo_at(&mut worker, 9, 1, 30.0), Err(NO_EDITOR.to_string()));
+}
+
+#[test]
+fn a_second_undo_within_700_ms_of_the_last_tap_is_refused() {
+    let (mut worker, handle, _) = self::worker();
+    handle.undo_history(3);
+    take(&mut worker, &handle, 1, 0.0);
+    assert_eq!(
+        undo_at(&mut worker, 1, 1, 1000.0),
+        Ok(UndoDone::Done(570, 18))
+    );
+    assert_eq!(
+        undo_at(&mut worker, 1, 2, 1699.0),
+        Err(reason::UNDO_SOON.to_string())
+    );
+    assert_eq!(touches(&handle).len(), 2, "one tap");
+    assert_eq!(worker.editors[&1].undone, 1000.0, "a refusal keeps no time");
+    assert_eq!(
+        undo_at(&mut worker, 1, 3, 1700.0),
+        Ok(UndoDone::Done(570, 18))
+    );
+    assert_eq!(touches(&handle).len(), 4, "two taps, 700 ms apart");
+    assert_eq!(undo_records(&handle), [2, 1]);
+    assert_eq!(shown_by(&mut worker, 1, 1700.0), 3);
+}
+
+#[test]
+fn nothing_is_posted_to_the_window_for_100_ms_after_an_undo_tap() {
+    // As after any contact (#74 review, round 3): Live's thread would land a
+    // rectangle before the injected up.
+    let (mut worker, handle, _) = self::worker();
+    handle.undo_history(1);
+    take(&mut worker, &handle, 1, 0.0);
+    assert_eq!(
+        undo_at(&mut worker, 1, 1, 1000.0),
+        Ok(UndoDone::Done(570, 18))
+    );
+    let _answer = resize_at(&mut worker, 1, UPRIGHT, 1050.0);
+    worker.step_at(1099.0);
+    assert!(resizes(&handle).is_empty(), "held off");
+    worker.step_at(1100.0);
+    assert_eq!(resizes(&handle), [(667, 1361)]);
+}
+
+#[test]
+fn the_undo_is_read_a_paint_after_the_take_and_each_settled_resize_never_tapped() {
+    let (mut worker, handle, heard) = self::worker();
+    handle.undo_history(1);
+    take(&mut worker, &handle, 1, 0.0);
+    let reads = |heard: &Heard| -> Vec<PlugwinEvent> {
+        heard
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|event| matches!(event, PlugwinEvent::UndoRead { .. }))
+            .cloned()
+            .collect()
+    };
+    let read = |read: Undo, width: u32, height: u32| PlugwinEvent::UndoRead {
+        session: 1,
+        read,
+        width,
+        height,
+    };
+    // The first grab comes before Pro-Q's paint time after the take.
+    let (sink, _frames) = sink();
+    worker.command_at(Command::Capture { session: 1, sink }, 19.0);
+    worker.step_at(19.0);
+    assert_eq!(worker.editors[&1].counts.grabs, 1);
+    assert!(reads(&heard).is_empty(), "not painted yet");
+    worker.step_at(59.0);
+    assert_eq!(reads(&heard), [read(Undo::Lit(570, 18), 1349, 809)]);
+    worker.step_at(99.0);
+    worker.step_at(139.0);
+    assert_eq!(worker.editors[&1].counts.grabs, 4);
+    assert_eq!(reads(&heard).len(), 1, "once, not per frame");
+    // A resize settles at 160: read again a paint after it, at its size.
+    let mut answer = resize_at(&mut worker, 1, UPRIGHT, 150.0);
+    worker.step_at(160.0);
+    assert!(answer.try_recv().unwrap().is_some(), "settled");
+    worker.step_at(179.0);
+    assert_eq!(worker.editors[&1].counts.grabs, 5);
+    assert_eq!(reads(&heard).len(), 1, "not painted yet");
+    worker.step_at(219.0);
+    assert_eq!(
+        reads(&heard),
+        [
+            read(Undo::Lit(570, 18), 1349, 809),
+            read(Undo::Missing, 667, 1361)
+        ]
+    );
+    // Never tapped.
+    assert!(touches(&handle).is_empty());
+    assert_eq!(handle.undo_left(), Some(1));
 }

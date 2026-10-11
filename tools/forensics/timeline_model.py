@@ -395,6 +395,10 @@ class Timeline:
             )
             if link is not None
         ]
+        # PR P2a: the pages' undos of Pro-Q's own ↶ and the hub's reads of it.
+        self.eq_undos = [
+            timeline_eq.eq_undo(r) for r in eq_records if r.get("what") in timeline_eq.UNDO_RECORDS
+        ]
         # The Stream Deck (#52): presses with Companion's answers, the hub's
         # own releases with theirs, the red flashes, Companion's link
         # outages, and Companion's key changes after a press.
