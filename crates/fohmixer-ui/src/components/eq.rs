@@ -751,8 +751,10 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
         };
         let id = ev.pointer_id();
         let now = dom::now();
-        let down =
-            fingers.try_update_value(|f| f.down(dom::epoch_now(), id, at.picture, zoom_now()));
+        // The finger's own time (the PR I review: the handler's time shifts
+        // with a long frame).
+        let t = dom::event_epoch(&ev);
+        let down = fingers.try_update_value(|f| f.down(t, id, at.picture, zoom_now()));
         record(down.into_iter().collect());
         let lands = spot(on_picture(at.picture, picture), zoom_now());
         let out = finger
@@ -767,8 +769,9 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
         if let Some((at, _)) = point_of(&ev) {
             let id = ev.pointer_id();
             let _ = finger.try_update_value(|f| f.moved(id, at));
+            let t = dom::event_epoch(&ev);
             let summary = fingers
-                .try_update_value(|f| f.moved(dom::epoch_now(), id, at.picture))
+                .try_update_value(|f| f.moved(t, id, at.picture))
                 .flatten();
             record(summary.into_iter().collect());
         }
@@ -779,11 +782,10 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
         };
         let now = dom::now();
         let id = ev.pointer_id();
+        let t = dom::event_epoch(&ev);
         record(
             fingers
-                .try_update_value(|f| {
-                    f.end(dom::epoch_now(), "up", id, Some(at.picture), zoom_now())
-                })
+                .try_update_value(|f| f.end(t, "up", id, Some(at.picture), zoom_now()))
                 .unwrap_or_default(),
         );
         send(
@@ -794,9 +796,10 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
     };
     let on_cancel = move |ev: web_sys::PointerEvent| {
         let id = ev.pointer_id();
+        let t = dom::event_epoch(&ev);
         record(
             fingers
-                .try_update_value(|f| f.end(dom::epoch_now(), "cancel", id, None, zoom_now()))
+                .try_update_value(|f| f.end(t, "cancel", id, None, zoom_now()))
                 .unwrap_or_default(),
         );
         send(
@@ -844,7 +847,7 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
             let pair = finger.try_with_value(Finger::pair).flatten();
             // An overview tap's zoom on its point (taken once the picture
             // and the area are known).
-            let tapped = finger.try_update_value(Finger::take_zoom).flatten();
+            let tapped = finger.try_update_value(|f| f.take_zoom(now)).flatten();
             let wanted = viewer
                 .try_update_value(|v| {
                     if let Some(at) = tapped {
@@ -874,9 +877,13 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
         ev.prevent_default();
         let _ = legend.try_update(|on| *on = !*on);
     };
-    // `CELÝ EQ`: the whole picture again (the frame loop draws it).
+    // `CELÝ EQ`: the whole picture again (the frame loop draws it). A finger
+    // on the picture ends first, with its cancel where it was (the PR I
+    // review: a drag went on at 1×, its points remapped).
     let whole = move |ev: web_sys::PointerEvent| {
         ev.prevent_default();
+        send(finger.try_update_value(Finger::leave).unwrap_or_default());
+        fingers_leave();
         let _ = viewer.try_update_value(Viewer::whole);
     };
     let shown_zoom = move || zoomed.try_get().unwrap_or(false).to_string();

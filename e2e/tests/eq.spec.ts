@@ -217,10 +217,14 @@ async function quickTap(area: Locator, at: At, id = 61) {
   );
 }
 
+/** How long after a tap's zoom a first finger reaches nothing (ms, `behave::eq::ZOOM_SETTLE_MS`). */
+const ZOOM_SETTLE_MS = 500;
+
 /**
  * A real tap on the whole picture at its pixel `at` (the owner's ruling of
  * 2026-10-11): the view zooms to 3× with that point in the area's middle,
- * and the editor gets nothing. The picture's map once the zoom is drawn.
+ * and the editor gets nothing. The picture's map once the zoom is drawn
+ * and its settle is over (a finger then edits).
  */
 async function zoomIn(screen: Locator, at: At) {
   const canvas = screen.getByTestId("eq-canvas");
@@ -229,6 +233,7 @@ async function zoomIn(screen: Locator, at: At) {
   await expect(screen.getByTestId("eq-factor")).toHaveText("3,0×");
   await expect(screen.getByTestId("eq-hint")).toHaveAttribute("data-shown", "false");
   await frames(screen.page(), 2);
+  await screen.page().waitForTimeout(ZOOM_SETTLE_MS + 50);
   return pictureMap(canvas);
 }
 
@@ -564,6 +569,10 @@ test.describe("The Pro-Q 4 screen", () => {
     expect(frameCount, "frames drawn in 4 s (one a second without acks)").toBeGreaterThanOrEqual(8);
     expect(acks.length - acked, "the page's acks").toBeGreaterThanOrEqual(8);
     expect(acks.every((a) => a.session === session), JSON.stringify(acks.slice(0, 3))).toBe(true);
+    // Each ack names its frame (the PR I review): the hub numbers a
+    // session's frames from 1, and the page acks every one in order.
+    expect(acks[0].seq, JSON.stringify(acks.slice(0, 3))).toBe(1);
+    expect(acks.every((a, i) => i === 0 || a.seq === acks[i - 1].seq + 1), JSON.stringify(acks.map((a) => a.seq))).toBe(true);
 
     // A real drag on the picture: its down, its moves summarized and its
     // up, at the picture's pixels, with the view's zoom.
@@ -809,11 +818,33 @@ test.describe("The Pro-Q 4 screen", () => {
     const tap = await until(() => touchesAfter(tapFrom), (all) => all.some((r) => r.phase === "up"), "the tap's up");
     wentFromTo(tap, map.toPicture(tapped), map.toPicture(tapped));
 
-    // CELÝ EQ: the whole picture again, the group gone.
-    await screen.getByTestId("eq-whole").click();
+    // CELÝ EQ while a finger drags (the PR I review): the whole picture
+    // again, the group gone, and the finger's contact ends with its cancel
+    // where it was; the drag goes no further (it would go on at 1×, its
+    // points remapped).
+    const held = (await simEq.records()).length;
+    const start = { x: middle.x + 20, y: middle.y + 10 };
+    await page.mouse.move(start.x, start.y);
+    await page.mouse.down();
+    for (let i = 1; i <= 4; i++) {
+      await page.mouse.move(start.x + 5 * i, start.y);
+      await frames(page, 2);
+    }
+    await until(() => touchesAfter(held), (all) => all.some((r) => r.phase === "update"), "the drag's moves");
+    await screen.getByTestId("eq-whole").dispatchEvent("pointerdown", { pointerId: 71, pointerType: "touch", isPrimary: false, bubbles: true, cancelable: true });
     await expect(zoom).toHaveAttribute("data-shown", "false");
     await expect(zoom).toBeHidden();
     await drawnWhole(screen);
+    const cancelled = await until(() => touchesAfter(held), (all) => all.some((r) => r.phase === "cancel"), "the drag's cancel");
+    for (let i = 1; i <= 4; i++) {
+      await page.mouse.move(start.x + 20 + 10 * i, start.y + 5 * i);
+      await frames(page, 2);
+    }
+    await page.mouse.up();
+    await page.waitForTimeout(300);
+    const after = await touchesAfter(held);
+    expect(after[after.length - 1].phase, JSON.stringify(after)).toBe("cancel");
+    expect(after.length, JSON.stringify(after)).toBe(cancelled.length);
 
     // Zoomed again, the exit closes as ever; the next open starts whole.
     await pinch(area, middle, 50, 100);
@@ -871,6 +902,9 @@ test.describe("The Pro-Q 4 screen", () => {
     const tapped = whole.toPage(FROM);
     await page.mouse.click(tapped.x, tapped.y);
     await expect(screen.getByTestId("eq-factor")).toHaveText("3,0×");
+    // The iPad's double tap to zoom (the PR I review): a second tap right
+    // after the zoom reaches nothing (checked with the tap's touches below).
+    await quickTap(area, tapped, 62);
     await expect(screen.getByTestId("eq-zoom")).toHaveAttribute("data-shown", "true");
     await expect(hint).toHaveAttribute("data-shown", "false");
     await expect(hint).toBeHidden();
@@ -882,6 +916,12 @@ test.describe("The Pro-Q 4 screen", () => {
     expect(Math.abs(now.x - was.x) <= 1 && Math.abs(now.y - was.y) <= 1, `${JSON.stringify(now)} in the middle, tapped ${JSON.stringify(was)}`).toBe(true);
     await page.waitForTimeout(400);
     expect(await touchesAfter(before), "the tap's touches").toEqual([]);
+    // Once the settle is over, a tap edits.
+    await page.waitForTimeout(ZOOM_SETTLE_MS);
+    const settled = (await simEq.records()).length;
+    await quickTap(area, await centre(area), 63);
+    const edit = await until(() => touchesAfter(settled), (all) => all.some((r) => r.phase === "up"), "the tap after the settle");
+    expect(edit.map((r) => r.phase), JSON.stringify(edit)).toEqual(["down", "up"]);
 
     // The legend says it too.
     await screen.getByTestId("eq-help").click();

@@ -78,6 +78,17 @@ pub const EDIT_ZOOM_MIN: f64 = 2.0;
 /// The zoom a tap on the overview goes to, its point in the area's middle.
 pub const TAP_ZOOM: f64 = 3.0;
 
+/// How long after a tap zoomed in a first finger reaches nothing (ms; the
+/// PR I review): the iPad's habit of a double tap to zoom would edit with
+/// its second tap, at a point the finger aimed at on the whole picture.
+pub const ZOOM_SETTLE_MS: f64 = 500.0;
+
+/// Whether a finger down at `now` falls within the settle after a tap's
+/// zoom taken at `zoomed` (page ms; none: no tap zoomed yet).
+pub fn settling(zoomed: Option<f64>, now: f64) -> bool {
+    zoomed.is_some_and(|at| now - at < ZOOM_SETTLE_MS)
+}
+
 /// Whether one finger edits at `zoom` ([`EDIT_ZOOM_MIN`]).
 pub fn edits(zoom: f64) -> bool {
     zoom >= EDIT_ZOOM_MIN
@@ -284,9 +295,15 @@ pub fn zoomed(zoom: f64) -> bool {
 }
 
 /// The zoom as the bar's factor reads it: one decimal, a decimal comma
-/// (`2,4×`).
+/// (`2,4×`). Under [`EDIT_ZOOM_MIN`] it never reads `2,0×` (the PR I review:
+/// a pinch to 1.97× read as editing while one finger did not edit).
 pub fn zoom_text(zoom: f64) -> String {
-    format!("{zoom:.1}×").replace('.', ",")
+    let shown = if edits(zoom) {
+        zoom
+    } else {
+        zoom.min(EDIT_ZOOM_MIN - 0.1)
+    };
+    format!("{shown:.1}×").replace('.', ",")
 }
 
 /// How the screen draws a view (#71 PR F).
@@ -444,6 +461,9 @@ pub struct Finger {
     /// The picture point an overview tap zooms in on, until the frame loop
     /// takes it.
     zoom_on: Option<(f64, f64)>,
+    /// When the frame loop took the last tap's zoom (page ms): a first
+    /// finger reaches nothing for [`ZOOM_SETTLE_MS`] after it.
+    zoomed: Option<f64>,
 }
 
 impl Finger {
@@ -462,15 +482,21 @@ impl Finger {
     /// A pointer's down at `at` where it lands (`spot`: off the picture, on
     /// the overview, on the zoomed picture; `now`: page ms). A first finger
     /// on the zoomed picture waits: nothing goes yet; one on the overview
-    /// never reaches the editor. A second one makes a pinch: a first finger
-    /// already on the editor gets its cancel at its last point. A third
-    /// one, or a pointer already down, is nothing.
+    /// never reaches the editor, nor one within the settle after a tap's
+    /// zoom ([`settling`]: it counts as off the picture). A second one makes
+    /// a pinch: a first finger already on the editor gets its cancel at its
+    /// last point. A third one, or a pointer already down, is nothing.
     pub fn down(&mut self, pointer: i32, at: Point, spot: Spot, now: f64) -> Vec<Out> {
         if self.has(pointer) {
             return Vec::new();
         }
         match self.stage {
             Stage::Idle => {
+                let spot = if settling(self.zoomed, now) {
+                    Spot::Off
+                } else {
+                    spot
+                };
                 let stage = match spot {
                     Spot::Overview => Stage::Overview { first: at },
                     Spot::Edit | Spot::Off => Stage::Waiting {
@@ -485,6 +511,7 @@ impl Finger {
                     tap: self.tap,
                     next: self.next,
                     zoom_on: self.zoom_on,
+                    zoomed: self.zoomed,
                 };
                 Vec::new()
             }
@@ -544,9 +571,14 @@ impl Finger {
     }
 
     /// The picture point an overview tap asked to zoom in on, once (the
-    /// frame loop's [`Viewer::zoom_on`]).
-    pub fn take_zoom(&mut self) -> Option<(f64, f64)> {
-        self.zoom_on.take()
+    /// frame loop's [`Viewer::zoom_on`], at `now`: page ms); the settle
+    /// counts from here.
+    pub fn take_zoom(&mut self, now: f64) -> Option<(f64, f64)> {
+        let at = self.zoom_on.take();
+        if at.is_some() {
+            self.zoomed = Some(now);
+        }
+        at
     }
 
     /// A quick tap's up still to go, now (PR G: when the fingers leave).
@@ -1554,6 +1586,11 @@ mod tests {
     fn one_finger_edits_from_twice_the_whole_picture_on() {
         assert_eq!(EDIT_ZOOM_MIN, 2.0);
         assert_eq!(TAP_ZOOM, 3.0);
+        assert_eq!(ZOOM_SETTLE_MS, 500.0);
+        assert!(!settling(None, 0.0));
+        assert!(settling(Some(1000.0), 1000.0));
+        assert!(settling(Some(1000.0), 1500.0_f64.next_down()));
+        assert!(!settling(Some(1000.0), 1500.0));
         assert!(edits(2.0));
         assert!(!edits(2.0_f64.next_down()));
         assert!(!edits(1.99));
@@ -1569,7 +1606,7 @@ mod tests {
     #[test]
     fn a_tap_on_the_overview_zooms_in_and_sends_the_editor_nothing() {
         let mut finger = Finger::default();
-        assert_eq!(finger.take_zoom(), None);
+        assert_eq!(finger.take_zoom(0.0), None);
         assert_eq!(finger.down(1, p(10.0, 20.0), Spot::Overview, 0.0), vec![]);
         // Its hold runs out and it moves within the slop: nothing goes.
         assert_eq!(finger.frame(200.0), vec![]);
@@ -1579,14 +1616,49 @@ mod tests {
         // landed, its picture point; once.
         assert_eq!(finger.up(1, p(16.0, 20.0), 900.0), vec![]);
         assert_eq!(finger.frame(950.0), vec![], "no tap's up to send");
-        assert_eq!(finger.take_zoom(), Some((20.0, 40.0)));
-        assert_eq!(finger.take_zoom(), None);
+        assert_eq!(finger.take_zoom(0.0), Some((20.0, 40.0)));
+        assert_eq!(finger.take_zoom(0.0), None);
         assert!(!finger.held());
         // A quick one lifted at once: the same.
         finger.down(2, p(30.0, 30.0), Spot::Overview, 1000.0);
         assert_eq!(finger.up(2, p(30.0, 30.0), 1010.0), vec![]);
         assert_eq!(finger.frame(1060.0), vec![]);
-        assert_eq!(finger.take_zoom(), Some((60.0, 60.0)));
+        assert_eq!(finger.take_zoom(0.0), Some((60.0, 60.0)));
+    }
+
+    #[test]
+    fn a_first_finger_within_the_settle_after_a_tap_zoomed_in_reaches_nothing() {
+        // The PR I review: the iPad's double tap to zoom. Its first tap
+        // zooms in; its second, about 250 ms later, edited at a point it
+        // aimed at on the whole picture.
+        let mut finger = Finger::default();
+        finger.down(1, p(10.0, 20.0), Spot::Overview, 0.0);
+        assert_eq!(finger.up(1, p(10.0, 20.0), 30.0), vec![]);
+        assert_eq!(finger.take_zoom(40.0), Some((20.0, 40.0)));
+        // The second tap lands on the zoomed picture 250 ms later: nothing
+        // goes, neither at the hold nor at its lift.
+        assert_eq!(finger.down(2, p(30.0, 30.0), Spot::Edit, 290.0), vec![]);
+        assert_eq!(finger.frame(420.0), vec![]);
+        assert_eq!(finger.up(2, p(30.0, 30.0), 430.0), vec![]);
+        assert_eq!(finger.frame(480.0), vec![]);
+        // A quick tap within the settle: nothing either.
+        assert_eq!(finger.down(3, p(30.0, 30.0), Spot::Edit, 539.0), vec![]);
+        assert_eq!(finger.up(3, p(30.0, 30.0), 539.5), vec![]);
+        assert_eq!(finger.frame(600.0), vec![]);
+        // From the settle's end a finger edits again.
+        assert_eq!(finger.down(4, p(5.0, 5.0), Spot::Edit, 540.0), vec![]);
+        assert_eq!(finger.frame(660.0), vec![(Touch::Down, 10.0, 10.0)]);
+        assert_eq!(
+            finger.up(4, p(5.0, 5.0), 670.0),
+            vec![(Touch::Up, 10.0, 10.0)]
+        );
+        // A drag on the overview zooms nothing, and starts no settle.
+        finger.down(5, p(10.0, 20.0), Spot::Overview, 700.0);
+        finger.moved(5, p(30.0, 20.0));
+        finger.up(5, p(30.0, 20.0), 720.0);
+        assert_eq!(finger.take_zoom(730.0), None);
+        finger.down(6, p(5.0, 5.0), Spot::Edit, 740.0);
+        assert_eq!(finger.frame(860.0), vec![(Touch::Down, 10.0, 10.0)]);
     }
 
     #[test]
@@ -1598,15 +1670,15 @@ mod tests {
         finger.moved(1, p(10.0, 20.0));
         assert_eq!(finger.frame(300.0), vec![], "back where it landed");
         assert_eq!(finger.up(1, p(10.0, 20.0), 400.0), vec![]);
-        assert_eq!(finger.take_zoom(), None, "it slid: no tap");
+        assert_eq!(finger.take_zoom(0.0), None, "it slid: no tap");
         // A lift past the slop with no move seen: no tap either.
         finger.down(2, p(10.0, 20.0), Spot::Overview, 500.0);
         assert_eq!(finger.up(2, p(10.0, 26.5), 520.0), vec![]);
-        assert_eq!(finger.take_zoom(), None);
+        assert_eq!(finger.take_zoom(0.0), None);
         // A cancel: nothing.
         finger.down(3, p(10.0, 20.0), Spot::Overview, 600.0);
         assert_eq!(finger.cancel(3), vec![]);
-        assert_eq!(finger.take_zoom(), None);
+        assert_eq!(finger.take_zoom(0.0), None);
         assert!(!finger.held());
     }
 
@@ -1618,7 +1690,7 @@ mod tests {
         assert_eq!(finger.pair(), Some([(1, (10.0, 20.0)), (2, (40.0, 20.0))]));
         assert_eq!(finger.up(1, p(10.0, 20.0), 300.0), vec![]);
         assert_eq!(finger.up(2, p(40.0, 20.0), 310.0), vec![]);
-        assert_eq!(finger.take_zoom(), None);
+        assert_eq!(finger.take_zoom(0.0), None);
         // Once zoomed, one finger edits again: its down after the hold.
         finger.down(3, p(5.0, 5.0), Spot::Edit, 400.0);
         assert_eq!(finger.frame(520.0), vec![(Touch::Down, 10.0, 10.0)]);
@@ -1861,6 +1933,14 @@ mod tests {
         assert_eq!(zoom_text(2.44), "2,4×");
         assert_eq!(zoom_text(3.96), "4,0×");
         assert_eq!(zoom_text(4.0), "4,0×");
+        // Under 2× (one finger does not edit) it never reads 2,0× (the PR I
+        // review).
+        assert_eq!(zoom_text(1.97), "1,9×");
+        assert_eq!(zoom_text(2.0_f64.next_down()), "1,9×");
+        assert_eq!(zoom_text(1.86), "1,9×");
+        assert_eq!(zoom_text(1.84), "1,8×");
+        assert_eq!(zoom_text(2.0), "2,0×");
+        assert_eq!(zoom_text(2.04), "2,0×");
     }
 
     #[test]
