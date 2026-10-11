@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::sync::mpsc::Receiver;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use fohmixer_proto::layout::Anchor;
 use tokio::sync::mpsc;
@@ -177,13 +177,98 @@ fn a_minutes_rate_is_one_record() {
         height: 809,
         gap_ms: 61.5,
     };
+    // PR I: its holder's frames on the link.
+    let trips = Trips {
+        n: 4,
+        total_ms: 130.0,
+        max_ms: 61.0,
+        waited_out: 3,
+    };
     assert_eq!(
-        rate_fields(7, &rate),
+        rate_fields(7, &rate, &trips),
         json!({"what": "rate", "session": 7, "grabs": 1500, "sent": 1200, "failed": 2,
                "grab_ms": 4.5, "encode_ms": 9.25, "bytes": 61_000.0,
-               "width": 1349, "height": 809, "gap_ms": 61.5})
+               "width": 1349, "height": 809, "gap_ms": 61.5,
+               "frame_trips": 4, "frame_rtt_ms": 32.5, "frame_rtt_max_ms": 61.0,
+               "ack_waits": 3})
     );
     assert_eq!(EDITOR_OPEN, "is_editor_open");
+}
+
+/// A minute's capture counts of an editor.
+fn a_rate() -> Rate {
+    Rate {
+        grabs: 10,
+        sent: 8,
+        failed: 0,
+        grab_ms: 3.0,
+        encode_ms: 5.0,
+        bytes: 30_000.0,
+        width: 1349,
+        height: 809,
+        gap_ms: 0.0,
+    }
+}
+
+/// The `rate` records waiting.
+fn rates(records: &Receiver<Value>) -> Vec<Value> {
+    records
+        .try_iter()
+        .filter(|r| r["ev"] == "eq" && r["what"] == "rate")
+        .collect()
+}
+
+#[tokio::test]
+async fn a_minutes_rate_takes_its_holders_frame_round_trips_since_the_last_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut rig = rig(dir.path());
+    let outbox = attach(&mut rig.router, 1);
+    // Client 1 holds `key()` open as session 1 (its acts not carried out:
+    // no capture, the test's frames alone reach the outbox).
+    let io = rig.router.eq.as_mut().unwrap();
+    io.state.listed("band", "live_set tracks 1", [found_key()]);
+    let _ = io.state.open(1, &key(), 0.0);
+    let _ = io.state.opened(&key(), 1, Ok((1349, 809)));
+    // Its page acks a frame 30 ms after it went (#71 PR I); the next one's
+    // ack never comes, so a third goes once the wait ran out.
+    let t = Instant::now();
+    outbox.eq_frame(1, Bytes::from_static(b"one"));
+    assert!(outbox.take_frame(t).is_some());
+    outbox.frame_acked(1, t + Duration::from_millis(30));
+    outbox.eq_frame(1, Bytes::from_static(b"two"));
+    assert!(outbox.take_frame(t + Duration::from_millis(40)).is_some());
+    outbox.eq_frame(1, Bytes::from_static(b"three"));
+    assert_eq!(outbox.take_frame(t + Duration::from_millis(1039)), None);
+    assert!(outbox.take_frame(t + Duration::from_millis(1040)).is_some());
+    let _ = rig.records.try_iter().count();
+    rig.router.eq_worker(PlugwinEvent::Rate {
+        session: 1,
+        rate: a_rate(),
+    });
+    let got = rates(&rig.records);
+    assert_eq!(got.len(), 1, "{got:?}");
+    assert_eq!(
+        (
+            got[0]["session"].clone(),
+            got[0]["frame_trips"].clone(),
+            got[0]["frame_rtt_ms"].clone(),
+            got[0]["frame_rtt_max_ms"].clone(),
+            got[0]["ack_waits"].clone()
+        ),
+        (json!(1), json!(1), json!(30.0), json!(30.0), json!(1))
+    );
+    // Taken: the next minute starts from none.
+    assert_eq!(outbox.take_trips(), Trips::default());
+    // A session no client holds counts none.
+    rig.router.eq_worker(PlugwinEvent::Rate {
+        session: 9,
+        rate: a_rate(),
+    });
+    let got = rates(&rig.records);
+    assert_eq!(
+        (got[0]["frame_trips"].clone(), got[0]["ack_waits"].clone()),
+        (json!(0), json!(0))
+    );
 }
 
 #[test]
@@ -523,7 +608,7 @@ async fn an_open_editors_frames_reach_its_holder_and_its_picture_is_kept() {
     let outbox = held_open(&mut rig).await;
     let mut frame = None;
     for _ in 0..300 {
-        frame = outbox.take_frame();
+        frame = outbox.take_frame(Instant::now());
         if frame.is_some() {
             break;
         }
@@ -559,10 +644,14 @@ async fn an_editors_frames_keep_no_picture_once_its_path_names_another_device() 
         outcome: Ok(vec![found_at(PATH, "na tracku", "live_3")]),
     });
     assert!(!pictures.has(&key()));
-    outbox.take_frame();
+    // The page acks each frame it gets (#71 PR I: the next one goes then).
+    if outbox.take_frame(Instant::now()).is_some() {
+        outbox.frame_acked(1, Instant::now());
+    }
     let mut frames = 0;
     for _ in 0..300 {
-        if outbox.take_frame().is_some() {
+        if outbox.take_frame(Instant::now()).is_some() {
+            outbox.frame_acked(1, Instant::now());
             frames += 1;
             if frames == 2 {
                 break;

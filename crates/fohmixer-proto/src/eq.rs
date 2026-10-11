@@ -25,6 +25,13 @@
 //! session number (big-endian `u32`, the `session` of the `eq` message that
 //! opened it), then one JPEG. A page shows a frame only when its session is
 //! the one it opened: a frame of an editor it already left is dropped.
+//!
+//! **One frame in flight (PR I):** the page acks each frame of its open
+//! editor as it arrives (`eq_frame_ack` with the session), and the hub
+//! sends that page's next frame only after the ack, or once its wait for
+//! the ack ran out (a lost ack never stalls the picture for good). On a
+//! slow link the frames then never pile up in the socket's send buffer,
+//! and a pong, an ack or a value waits behind one frame at most.
 
 use serde::{Deserialize, Serialize};
 

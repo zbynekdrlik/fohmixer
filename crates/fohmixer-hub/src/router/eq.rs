@@ -65,6 +65,7 @@ use crate::eq::{Act, Device, EditorKey, Eqs, GUARD_WAIT, Pictures, record};
 use crate::events::EventLog;
 use crate::live::client::{LiveError, LiveHandle};
 use crate::live::subs::ClientId;
+use crate::outbox::flow::Trips;
 use crate::plugwin::{Plugwin, PlugwinEvent, Rate, Resized};
 
 /// The Live property that opens and closes a plug-in's editor.
@@ -348,8 +349,11 @@ pub fn sized_fields(key: &EditorKey, session: u32, size: (u32, u32)) -> Value {
     fields
 }
 
-/// The `eq` record of the capture's minute.
-pub fn rate_fields(session: u32, rate: &Rate) -> Value {
+/// The `eq` record of the capture's minute, with its holder's frame round
+/// trips (#71 PR I: `frame_trips` measured, their mean and largest in ms,
+/// and `ack_waits`, the frames that went because the page's ack did not
+/// come within the wait).
+pub fn rate_fields(session: u32, rate: &Rate, trips: &Trips) -> Value {
     json!({
         "what": "rate",
         "session": session,
@@ -362,6 +366,10 @@ pub fn rate_fields(session: u32, rate: &Rate) -> Value {
         "width": rate.width,
         "height": rate.height,
         "gap_ms": rate.gap_ms,
+        "frame_trips": trips.n,
+        "frame_rtt_ms": trips.mean_ms(),
+        "frame_rtt_max_ms": trips.max_ms,
+        "ack_waits": trips.waited_out,
     })
 }
 
@@ -654,6 +662,14 @@ impl Router {
                     .record("eq", sized_fields(&key, session, (width, height)));
             }
             PlugwinEvent::Rate { session, rate } => {
+                // Its holder's frames on the link (PR I): their round trips
+                // since the last minute.
+                let trips = io
+                    .state
+                    .holder_of(session)
+                    .and_then(|holder| self.clients.get(&holder))
+                    .map(|outbox| outbox.take_trips())
+                    .unwrap_or_default();
                 tracing::info!(
                     session,
                     grabs = rate.grabs,
@@ -665,9 +681,15 @@ impl Router {
                     width = rate.width,
                     height = rate.height,
                     gap_ms = rate.gap_ms,
-                    "a Pro-Q 4 editor's capture and touches over the last minute"
+                    frame_trips = trips.n,
+                    frame_rtt_ms = trips.mean_ms(),
+                    frame_rtt_max_ms = trips.max_ms,
+                    ack_waits = trips.waited_out,
+                    "a Pro-Q 4 editor's capture, frames and touches over the last minute"
                 );
-                self.io.events.record("eq", rate_fields(session, &rate));
+                self.io
+                    .events
+                    .record("eq", rate_fields(session, &rate, &trips));
             }
         }
     }
@@ -807,7 +829,7 @@ impl Router {
                 io.plugwin.capture(
                     session,
                     Arc::new(move |session: u32, jpeg: Bytes| {
-                        outbox.eq_frame(Bytes::from(frame(session, &jpeg)));
+                        outbox.eq_frame(session, Bytes::from(frame(session, &jpeg)));
                         if let Some(device) = &device {
                             pictures.put(&key, device, jpeg);
                         }

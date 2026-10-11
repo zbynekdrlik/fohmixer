@@ -5,8 +5,10 @@
 //! fetched with the token, and the binary frames: the session in their
 //! header (`fohmixer_proto::eq::frame_parts`) checked against the page's
 //! open editor (`behave::eq::shows_frame`) and the JPEG handed as a blob to
-//! the screen's sink. A closed socket closes the page's editor
-//! (`store::eq::socket_closed`): the hub closes it with the socket.
+//! the screen's sink, each frame of the open editor acked as it arrives
+//! (PR I, `store::eq::frame_ack`: the hub sends the next frame then). A
+//! closed socket closes the page's editor (`store::eq::socket_closed`): the
+//! hub closes it with the socket.
 
 use std::rc::Rc;
 
@@ -17,10 +19,10 @@ use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 
 use super::LiveStore;
-use crate::behave::eq::{Out, picture_url, shows_frame};
+use crate::behave::eq::{Out, picture_url};
 use crate::dom;
 use crate::net;
-use crate::store::eq::{EqListView, EqView, asked, socket_closed};
+use crate::store::eq::{EqListView, EqView, asked, frame_ack, socket_closed};
 
 /// Where the open editor's frames go: the screen's painter.
 pub type FrameSink = Rc<dyn Fn(web_sys::Blob)>;
@@ -49,8 +51,9 @@ impl LiveStore {
         let _ = self.eq.try_set(Some(view));
     }
 
-    /// A binary message: a frame of the page's open editor goes to the
-    /// screen's sink; another one (an editor already left) is dropped.
+    /// A binary message: a frame of the page's open editor is acked at once
+    /// (PR I: the hub's next frame waits for it) and goes to the screen's
+    /// sink; another one (an editor already left) is dropped.
     pub(super) fn on_frame(self, data: &wasm_bindgen::JsValue) {
         let Some(buffer) = data.dyn_ref::<js_sys::ArrayBuffer>() else {
             return;
@@ -68,9 +71,10 @@ impl LiveStore {
             .eq
             .try_with_untracked(|v| v.as_ref().and_then(EqView::open_session))
             .flatten();
-        if !shows_frame(session, open) {
+        let Some(ack) = frame_ack(session, open) else {
             return;
-        }
+        };
+        self.send(&ack);
         let sink = self.inner.try_with_value(|i| i.eq_frames.clone()).flatten();
         let Some(sink) = sink else {
             return;

@@ -703,6 +703,11 @@ fn eq_messages_round_trip() {
         json!({"type": "eq_input", "touch": "down", "x": 431.5, "y": 315.0}),
     );
     round_trip_client(ClientMsg::EqClose, json!({"type": "eq_close"}));
+    // PR I: the page got a frame of its open editor.
+    round_trip_client(
+        ClientMsg::EqFrameAck { session: 7 },
+        json!({"type": "eq_frame_ack", "session": 7}),
+    );
     round_trip_server(
         ServerMsg::EqList {
             binding: binding.clone(),
