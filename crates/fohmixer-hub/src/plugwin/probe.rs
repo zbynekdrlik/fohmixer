@@ -720,12 +720,16 @@ fn paint(
     let (mut samples, mut grabs) = (Vec::new(), Vec::new());
     let (mut lost, mut unsettled) = (0_u32, 0_u32);
     let mut last = at;
-    for n in 0..trials {
+    // The updates injected: each one goes to the other point (a skipped
+    // trial injects none, so the next one still moves the band).
+    let mut injected = 0_u32;
+    for _ in 0..trials {
         let Some(before) = still_picture(held, last, &mut sent)? else {
             unsettled += 1;
             continue;
         };
-        last = paint_point(at, n);
+        last = paint_point(at, injected);
+        injected += 1;
         match paint_trial(held, last, &before, &mut sent, &mut grabs)? {
             Some(ms) => samples.push(ms),
             None => lost += 1,
@@ -735,16 +739,17 @@ fn paint(
         held.touch(Phase::Update, at, "paint")?;
     }
     held.touch(Phase::Up, at, "paint")?;
-    let (grab_mean, _) = stats(&grabs);
+    let grab_mean = (!grabs.is_empty()).then(|| stats(&grabs).0);
     report.line(&format!(
         "paint=ok n={trials} lost={lost} unsettled={unsettled}"
     ))?;
     report.line(&format!(
-        "paint_ms_min={} paint_ms_p50={} paint_ms_p95={} paint_ms_max={} grab_ms_mean={grab_mean:.1}",
+        "paint_ms_min={} paint_ms_p50={} paint_ms_p95={} paint_ms_max={} grab_ms_mean={}",
         ms_text(percentile(&samples, 0.0)),
         ms_text(percentile(&samples, 0.5)),
         ms_text(percentile(&samples, 0.95)),
         ms_text(percentile(&samples, 1.0)),
+        ms_text(grab_mean),
     ))
 }
 

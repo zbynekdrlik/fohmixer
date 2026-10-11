@@ -328,6 +328,11 @@ impl SimHandle {
         self.lock().restless = on;
     }
 
+    /// The grabs so far.
+    pub fn grabs(&self) -> u64 {
+        self.lock().grabs
+    }
+
     /// How long each grab takes from now on (the worker waits for it).
     pub fn grab_delay(&self, delay: Duration) {
         self.lock().grab_delay = delay;
@@ -1066,6 +1071,7 @@ mod tests {
         let taken = sim.take(handle.windows()[0]).unwrap();
         let first = sim.grab(&taken).unwrap();
         assert_ne!(sim.grab(&taken).unwrap(), first);
+        assert_eq!(handle.grabs(), 2);
         handle.restless(false);
         assert_eq!(sim.grab(&taken).unwrap(), picture(0, 1349, 809), "still");
     }

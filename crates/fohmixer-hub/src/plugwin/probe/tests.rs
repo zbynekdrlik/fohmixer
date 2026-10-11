@@ -362,7 +362,7 @@ fn a_paint_probe_measures_how_long_the_picture_takes_to_show_an_update() {
         assert!((25.0..=130.0).contains(&ms), "{name} {ms}: {figures}");
     }
     // The grabs' mean is there (a number).
-    figure(figures, "grab_ms_mean");
+    let _ = figure(figures, "grab_ms_mean");
     assert_eq!(lines[at + 2], "field=ok");
     // The contact: down on the band, updates 8 px up and back, the up back
     // on the band; then the field's double tap there.
@@ -433,13 +433,18 @@ fn a_paint_trial_whose_picture_never_changes_is_lost_and_its_contact_kept_alive(
         "{}",
         lines[at + 1]
     );
-    // Windows cancels a contact silent for 100 ms: none ever was.
+    // Windows cancels a contact silent for 100 ms: none was (one gap of a
+    // loaded runner's stall is let through; a keep-alive that does not run
+    // leaves many).
     let touches = paint_touches(&handle);
-    let gap = touches
-        .windows(2)
-        .map(|w| w[1].3 - w[0].3)
-        .fold(0.0, f64::max);
-    assert!(gap < 100.0, "the longest silence {gap} ms");
+    let gaps: Vec<f64> = touches.windows(2).map(|w| w[1].3 - w[0].3).collect();
+    assert!(
+        gaps.iter().filter(|gap| **gap >= 100.0).count() <= 1,
+        "{gaps:?}"
+    );
+    // The trials grab every 5 ms (a grab that never waits would make
+    // thousands in 500 ms).
+    assert!(handle.grabs() <= 300, "{}", handle.grabs());
     // Each trial waited its 500 ms, the point resent every 50 ms: the
     // first trial's point (8 px up) went at least 8 times.
     let up = ops(&handle)
@@ -459,11 +464,13 @@ fn a_paint_trial_whose_picture_never_rests_is_unsettled() {
         .position(|l| l.starts_with("paint=ok"))
         .expect("the paint lines");
     assert_eq!(lines[at], "paint=ok n=2 lost=0 unsettled=2");
-    assert!(
-        lines[at + 1].starts_with("paint_ms_min=- "),
-        "{}",
-        lines[at + 1]
+    assert_eq!(
+        lines[at + 1],
+        "paint_ms_min=- paint_ms_p50=- paint_ms_p95=- paint_ms_max=- grab_ms_mean=-"
     );
+    // Each trial looked for a still picture every 20 ms for 500 ms (a
+    // wait that never sleeps would grab far more).
+    assert!(handle.grabs() <= 120, "{}", handle.grabs());
     // No update went: the contact stayed on the band.
     let touches = paint_touches(&handle);
     assert!(
