@@ -1354,13 +1354,23 @@ test.describe("The Pro-Q 4 screen on a slow link", () => {
       await frames(page, 2);
     }
     await until(() => touchesAfter(before), (all) => all.some((r) => r.phase === "update"), "the drag's moves");
+    // The note shows for 1.5 s: an observer remembers it (WebKit on the
+    // runner draws slowly enough to miss it with a later look).
+    await screen.getByTestId("eq-stale").evaluate((el) => {
+      (window as any).staleSeen = false;
+      new MutationObserver(() => {
+        if (el.getAttribute("data-shown") === "true") (window as any).staleSeen = true;
+      }).observe(el, { attributes: true });
+    });
     await impair.stall(2_000);
-    // The finger goes on moving through the stall.
-    for (let i = 5; i <= 30; i++) {
+    // The finger goes on moving into the stall, and stays down until the
+    // page's dropout counter is surely active (~300 ms of silence).
+    for (let i = 5; i <= 14; i++) {
       await page.mouse.move(from.x + 3 * i, from.y);
-      await frames(page, 2);
+      await frames(page, 1);
     }
-    await expect(screen.getByTestId("eq-stale")).toHaveAttribute("data-shown", "true");
+    await page.waitForTimeout(700);
+    await expect.poll(() => page.evaluate(() => (window as any).staleSeen), { message: "the note showed" }).toBe(true);
     await page.mouse.up();
     // The link is back: what came in it ends with the cancel.
     const touches = await until(
