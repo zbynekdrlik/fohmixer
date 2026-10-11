@@ -178,6 +178,23 @@ mod tests {
     }
 
     #[test]
+    fn a_stalled_link_never_has_more_than_two_frames_in_flight() {
+        // PR I review: the wait let one frame out per second of a stall, so
+        // after a 3 s stall the pongs waited behind 3–4 frames again.
+        let t = Instant::now();
+        let mut flight = Flight::default();
+        flight.sent(1, t);
+        assert!(flight.due(1, t + ms(1000)), "the ack's wait ran out");
+        flight.sent(1, t + ms(1000));
+        assert_eq!(flight.unacked(), 2);
+        // However long the stall, a third waits for an ack, and no wait's
+        // end would let it out.
+        assert!(!flight.due(1, t + ms(2000)));
+        assert!(!flight.due(1, t + ms(60_000)));
+        assert_eq!(flight.wait_until(1), None);
+    }
+
+    #[test]
     fn a_frame_sent_waits_for_its_ack_and_the_ack_brings_the_next_at_once() {
         let t = Instant::now();
         let mut flight = Flight::default();
