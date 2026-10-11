@@ -20,7 +20,9 @@ to make in Live (it never edits Live's preferences). Then, in order:
   2. installs the bundle as <DataDir>\app\<version> and points
      <DataDir>\app\current.txt at it;
   3. writes <DataDir>\fohmixer-hub.toml (HTTP port, the band and master
-     instances, layout.json);
+     instances, layout.json; an [eq] table the installed file has before
+     [tls], the Pro-Q 4 screen turned on by hand, is kept after the
+     instances; a first install writes none, the screen stays off);
   4. copies -Layout (the import's output) to <DataDir>\layout.json;
   5. installs FohMixer into each Live user's User Library\Remote Scripts with
      that user's INSTANCE and PORT in Config.py (replaced only when version.py
@@ -127,10 +129,13 @@ try {
         -MasterPort $MasterPort @remoteArgs
     # The Stream Deck tab (#52): checked before any change, kept when not given.
     $companion = Resolve-FohCompanion -DataDir $DataDir -CompanionHost $CompanionHost
+    # The Pro-Q 4 screen (#71): an installed [eq] table is kept as it is.
+    $eq = Resolve-FohEq -DataDir $DataDir
     $result = Invoke-FohInstall -BundleZip $BundleZip -BandUser $BandUser -MasterUser $MasterUser -DataDir $DataDir `
         -HttpPort $HttpPort -BandPort $BandPort -MasterPort $MasterPort -Layout $Layout `
         -BandUserLibrary $BandUserLibrary -MasterUserLibrary $MasterUserLibrary `
-        -BandAbletonPrefs $BandAbletonPrefs -MasterAbletonPrefs $MasterAbletonPrefs -NoTask:$NoTask -Companion $companion -Remote $remote
+        -BandAbletonPrefs $BandAbletonPrefs -MasterAbletonPrefs $MasterAbletonPrefs -NoTask:$NoTask -Companion $companion `
+        -Eq $eq -Remote $remote
     ConvertTo-Json -InputObject $result -Depth 5
 } catch {
     # One unwrapped line (a 5.1 error record wraps at the console width), then where it failed.

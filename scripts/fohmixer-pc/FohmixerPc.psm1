@@ -305,12 +305,14 @@ function Install-FohAppDir {
 function New-FohHubToml {
     # <DataDir>\fohmixer-hub.toml as the hub's config.rs reads it: the HTTP
     # port, the two instances and the layout file (relative to the data folder),
-    # then $Companion (Get-FohCompanionToml: the Stream Deck tab, #52), then
+    # then $Eq (Get-FohInstalledEqToml: the Pro-Q 4 screen's table, #71, kept
+    # from the installed file, never written by the install itself), then
+    # $Companion (Get-FohCompanionToml: the Stream Deck tab, #52), then
     # $Remote (Get-FohRemoteToml: the remote-access tables, #17, always last:
     # Get-FohInstalledRemoteToml reads from [tls] to the end).
     # There is no data_dir key: the hub's data folder is FOHMIXER_DATA.
     param([Parameter(Mandatory)][int]$HttpPort, [Parameter(Mandatory)][int]$BandPort, [Parameter(Mandatory)][int]$MasterPort,
-          [AllowEmptyString()][string]$Companion = '', [AllowEmptyString()][string]$Remote = '')
+          [AllowEmptyString()][string]$Eq = '', [AllowEmptyString()][string]$Companion = '', [AllowEmptyString()][string]$Remote = '')
     $lines = @(
         '# fohmixer-hub configuration, written by Install-Fohmixer.ps1: run the install again to change it.',
         ('http_port = {0}' -f $HttpPort),
@@ -323,7 +325,38 @@ function New-FohHubToml {
         '[[instances]]',
         'name = "master"',
         ('port = {0}' -f $MasterPort))
-    return (($lines -join "`r`n") + "`r`n" + $Companion + $Remote)
+    return (($lines -join "`r`n") + "`r`n" + $Eq + $Companion + $Remote)
+}
+
+function Get-FohInstalledEqToml {
+    # The [eq] table of an installed fohmixer-hub.toml's text (#71): the Pro-Q
+    # 4 screen, turned on by hand (.claude/rules/deploy-pc.md), so an update
+    # keeps it as it is (its backend value included; the new hub checks it).
+    # Its lines from [eq] to the next table or the end, looked for only
+    # before [tls]: from there on the text is the remote tables, kept or
+    # rewritten as a whole (Get-FohInstalledRemoteToml), so an [eq] there is
+    # never taken twice. Written by hand, it may have no blank line before
+    # it, LF line ends or trailing blanks: it comes back as New-FohHubToml
+    # writes a table (a blank line before it, CRLF lines, blank lines
+    # dropped); '' without one.
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Text)
+    $head = $Text
+    $tls = [regex]::Match($Text, '\r?\n\[tls\]\r?\n')
+    if ($tls.Success) { $head = $Text.Substring(0, $tls.Index) }
+    $m = [regex]::Match($head, '(?s)\r?\n\[eq\][ \t]*\r?\n.*?(?=\r?\n\[|\z)')
+    if (-not $m.Success) { return '' }
+    $lines = @($m.Value -split '\r?\n' | ForEach-Object { $_.TrimEnd() } | Where-Object { $_ })
+    return ("`r`n" + ($lines -join "`r`n") + "`r`n")
+}
+
+function Resolve-FohEq {
+    # The [eq] table of an install (#71): the installed toml's as it is
+    # (Get-FohInstalledEqToml: an update keeps the Pro-Q 4 screen on), else
+    # '' (a first install: the screen stays off until it is turned on by hand).
+    param([Parameter(Mandatory)][string]$DataDir)
+    $toml = Join-Path (Resolve-FohPath $DataDir) 'fohmixer-hub.toml'
+    if (-not (Test-Path -LiteralPath $toml -PathType Leaf)) { return '' }
+    return (Get-FohInstalledEqToml -Text ([IO.File]::ReadAllText($toml)))
 }
 
 function Get-FohCompanionToml {
@@ -597,7 +630,8 @@ function Invoke-FohInstall {
     # self-test) leaves out what needs the real accounts: the DACL, the stop,
     # the tasks, the firewall rule, the start and the readiness poll. $Remote
     # is Resolve-FohRemote's plan (#17), resolved and checked by the caller;
-    # $Companion is the [companion] table (#52, Resolve-FohCompanion).
+    # $Companion is the [companion] table (#52, Resolve-FohCompanion); $Eq the
+    # installed [eq] table kept (#71, Resolve-FohEq).
     param(
         [Parameter(Mandatory)][string]$BundleZip,
         [Parameter(Mandatory)][string]$BandUser,
@@ -615,6 +649,7 @@ function Invoke-FohInstall {
         [string]$TaskPath = $script:TaskPath,
         [int]$ReadyTimeoutSeconds = 20,
         [AllowEmptyString()][string]$Companion = '',
+        [AllowEmptyString()][string]$Eq = '',
         $Remote = $null
     )
     # ---- checks ----
@@ -665,7 +700,7 @@ function Invoke-FohInstall {
     $trayWasRunning = $false
     try {
         # The new config, checked by the new hub before anything else changes.
-        $tomlText = New-FohHubToml -HttpPort $HttpPort -BandPort $BandPort -MasterPort $MasterPort -Companion $Companion -Remote $remoteToml
+        $tomlText = New-FohHubToml -HttpPort $HttpPort -BandPort $BandPort -MasterPort $MasterPort -Eq $Eq -Companion $Companion -Remote $remoteToml
         $accepted = Test-FohHubToml -Exe (Join-Path $unpacked.dir $script:HubExe) -Text $tomlText -Dir (Split-Path -Parent $unpacked.dir)
         Write-Host "fohmixer install: the new hub accepts the config ($accepted)"
         # The layout it will serve (the new one, else the one in place), checked by
@@ -692,6 +727,7 @@ function Invoke-FohInstall {
         # 3. the config (checked above)
         $toml = Write-FohText -Path (Join-Path $DataDir 'fohmixer-hub.toml') -Text $tomlText
         Write-Host "fohmixer install: fohmixer-hub.toml (changed: $toml)"
+        if ($Eq) { Write-Host 'fohmixer install: the [eq] table kept as installed (the Pro-Q 4 screen)' }
         # 4. the layout
         $layoutChanged = $false
         if ($Layout) {
@@ -772,5 +808,6 @@ function Invoke-FohInstall {
     return [pscustomobject]@{
         version = $unpacked.version; app = $app.dir; app_changed = $app.changed; config_changed = $toml
         layout_changed = $layoutChanged; copies = $copies; hub = $answer; tray = $trayPid; remote = $remoteResult; companion = [bool]$Companion
+        eq = [bool]$Eq
     }
 }
