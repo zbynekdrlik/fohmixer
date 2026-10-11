@@ -164,6 +164,7 @@ class EqScreen(ReportCase):
         # On the hub's clock: the page time plus the socket's offset.
         self.assertEqual(rows[0]["data-time"], f"{BASE + 1000:.1f}")
         self.assertEqual([r["data-samples"] for r in lat_rows(page)], ["3", "2"])
+        self.assertEqual([r["data-lost"] for r in lat_rows(page)], ["0", "2"])
         self.assertIn("eq_lat_p95_ms=210.0\n", stdout)
 
     def test_outside_the_window_is_left_out(self):

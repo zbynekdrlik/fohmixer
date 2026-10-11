@@ -695,7 +695,15 @@ def _eq_table(t):
     fingers = f'<table class="eq-fingers"><tr>{head}</tr>{"".join(rows)}</table>'
     head = "".join(
         f"<th>{h}</th>"
-        for h in ("time (local)", "frames", "samples", "median ms", "max ms", "decode max ms")
+        for h in (
+            "time (local)",
+            "frames",
+            "samples",
+            "lost",
+            "median ms",
+            "max ms",
+            "decode max ms",
+        )
     )
     rows = []
     for lat in t.eq_latency:
@@ -705,6 +713,7 @@ def _eq_table(t):
             local_text(lat.time),
             str(lat.frames),
             str(len(ordered)),
+            str(lat.lost),
             ms_text(median),
             ms_text(ordered[-1] if ordered else None),
             ms_text(lat.decode_ms),
@@ -717,6 +726,7 @@ def _eq_table(t):
                 class_="eq-lat",
                 data_time=num(lat.time),
                 data_samples=str(len(ordered)),
+                data_lost=str(lat.lost),
             )
         )
     latency = f'<table class="eq-lat"><tr>{head}</tr>{"".join(rows)}</table>'
