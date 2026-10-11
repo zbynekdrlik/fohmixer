@@ -462,6 +462,12 @@
     .body:not(.deck-page) {
         --count-col: 148px;
     }
+
+    /* A low screen holds one line, whose ◀ ▶ are the thin strip's: the
+       open column leaves them out, so its ✕ costs the rail nothing. */
+    .body:not(.deck-page) > .column > .shifts {
+        display: none;
+    }
 }
 
 @media (max-width: 520px) {
