@@ -303,14 +303,22 @@ pub fn resize_over(waited_ms: f64) -> bool {
     waited_ms >= RESIZE_MS
 }
 
-/// How a resize to `asked`, posted `waited_ms` ago, its picture now
-/// `client`, settles: landed (`true`), over without landing (`false`), or
-/// not yet.
-pub fn settled(client: (u32, u32), asked: (u32, u32), waited_ms: f64) -> Option<bool> {
+/// How a resize to `asked` from a picture of `from`, posted `waited_ms`
+/// ago, its picture now `client`, settles: landed (`true`), over without
+/// landing (`false`), or not yet. Over its [`RESIZE_MS`], a picture that
+/// left `from` landed at the size the editor took (Live keeps a plug-in's
+/// window within its own bounds: on the PC an upright phone's 760 × 1361
+/// came as 760 × 1275, 0.1.0-dev.50); one still at `from` never landed.
+pub fn settled(
+    client: (u32, u32),
+    asked: (u32, u32),
+    from: (u32, u32),
+    waited_ms: f64,
+) -> Option<bool> {
     if lands(client, asked) {
         Some(true)
     } else {
-        resize_over(waited_ms).then_some(false)
+        resize_over(waited_ms).then(|| !lands(client, from))
     }
 }
 
@@ -816,6 +824,8 @@ struct Editor {
 /// settled.
 struct Resizing {
     asked: (u32, u32),
+    /// The picture's size when it was posted.
+    from: (u32, u32),
     posted: f64,
     before: Rect,
     reply: oneshot::Sender<Option<Resized>>,
@@ -1338,6 +1348,7 @@ impl Worker {
         if let Some(editor) = self.editors.get_mut(&session) {
             editor.resizing = Some(Resizing {
                 asked,
+                from: editor.size,
                 posted: now,
                 before,
                 reply,
@@ -1388,7 +1399,7 @@ impl Worker {
             };
             let client = self.backend.client(&editor.taken).unwrap_or(editor.size);
             let waited = now - resizing.posted;
-            let Some(ok) = settled(client, resizing.asked, waited) else {
+            let Some(ok) = settled(client, resizing.asked, resizing.from, waited) else {
                 continue;
             };
             editor.size = client;

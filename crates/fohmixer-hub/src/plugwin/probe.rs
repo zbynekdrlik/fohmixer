@@ -403,7 +403,9 @@ impl Held<'_> {
                 ms,
                 why: None,
             };
-            match settled(client, asked, ms) {
+            // Strict: the probe reports a size the editor would not take
+            // (`--min-probe`), so only `asked` lands here.
+            match settled(client, asked, client, ms) {
                 Some(true) => {
                     self.changed = rect != self.taken.rect;
                     return Ok(seen);

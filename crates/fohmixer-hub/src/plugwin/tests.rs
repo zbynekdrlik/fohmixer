@@ -1524,10 +1524,18 @@ fn a_resize_lands_within_2_px_or_settles_unlanded_after_1_s() {
     assert!(!lands((664, 1364), (667, 1361)));
     assert!(!resize_over(1000.0_f64.next_down()));
     assert!(resize_over(1000.0));
-    assert_eq!(settled((667, 1361), (667, 1361), 0.0), Some(true));
-    assert_eq!(settled((667, 1361), (667, 1361), 5000.0), Some(true));
-    assert_eq!(settled((1349, 809), (667, 1361), 999.0), None);
-    assert_eq!(settled((1349, 809), (667, 1361), 1000.0), Some(false));
+    const FROM: (u32, u32) = (1349, 809);
+    assert_eq!(settled((667, 1361), (667, 1361), FROM, 0.0), Some(true));
+    assert_eq!(settled((667, 1361), (667, 1361), FROM, 5000.0), Some(true));
+    assert_eq!(settled((1349, 809), (667, 1361), FROM, 999.0), None);
+    assert_eq!(settled((1349, 809), (667, 1361), FROM, 1000.0), Some(false));
+    // Over its wait, a picture that left its size landed at the size the
+    // editor took (the PC's Live: 760 x 1361 asked, 760 x 1275 came).
+    assert_eq!(settled((760, 1275), (760, 1361), FROM, 999.0), None);
+    assert_eq!(settled((760, 1275), (760, 1361), FROM, 1000.0), Some(true));
+    // Within the slack of where it was: it never left.
+    assert_eq!(settled((1351, 807), (760, 1361), FROM, 1000.0), Some(false));
+    assert_eq!(settled((1352, 809), (760, 1361), FROM, 1000.0), Some(true));
 }
 
 #[test]
