@@ -1046,6 +1046,7 @@ fn reason_text(why: &str) -> Option<&'static str> {
         reason::STOPPED => "hub sa zastavuje",
         reason::LEFT_OPEN => "Pro-Q 4 sa nepodarilo bezpečne zavrieť, ostáva otvorený na PC",
         reason::TOO_DEEP => "zariadenia sú vnorené príliš hlboko",
+        reason::HOLD_ON => "na PC sa nedá vypnúť podržanie prsta, Pro-Q 4 sa preto neotvorí",
         _ => return None,
     };
     Some(text)

@@ -37,12 +37,14 @@
 //!   worker's cancel at the last point follows and moves the cursor there
 //!   again. A call too soon after the last one (`ERROR_NOT_READY`) is tried
 //!   again after 1 ms, twice.
-//! - **Press-and-hold (#71 PR N, the probe's `--hold` only):** the
+//! - **Press-and-hold (#71 PR N/O):** the
 //!   `MicrosoftTabletPenServiceProperty` property with
 //!   `TABLET_DISABLE_PRESSANDHOLD` set on the window and its picture
-//!   (`SetPropW`; `RemovePropW` puts it back), which is to stop Windows
-//!   making a still contact's up a right click. Whether it does on the PC
-//!   is what the probe measures.
+//!   (`SetPropW`, read back with `GetPropW`; `RemovePropW` puts it back),
+//!   which stops Windows making a still contact's up a right click
+//!   (measured in Carla's bridge, 0.1.0-dev.58: a still contact held 2.4 s
+//!   with it opened no menu, one held 800 ms without it did). The hub's
+//!   worker sets it once an editor is taken and removes it at the release.
 //! - **Release:** the z-order as it was (`HWND_NOTOPMOST`, or topmost again
 //!   when it was), posted as the take's.
 //! - **Size (PR G):** the take keeps the window's rectangle
@@ -76,8 +78,8 @@ use windows::Win32::UI::Input::Pointer::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumChildWindows, EnumWindows, GA_ROOT, GWL_EXSTYLE, GetAncestor, GetClassNameW, GetClientRect,
-    GetCursorPos, GetWindowLongW, GetWindowRect, GetWindowThreadProcessId, HWND_NOTOPMOST,
-    HWND_TOPMOST, IsWindow, IsWindowVisible, PT_TOUCH, PostMessageW, RemovePropW,
+    GetCursorPos, GetPropW, GetWindowLongW, GetWindowRect, GetWindowThreadProcessId,
+    HWND_NOTOPMOST, HWND_TOPMOST, IsWindow, IsWindowVisible, PT_TOUCH, PostMessageW, RemovePropW,
     SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetCursorPos,
     SetPropW, SetWindowPos, TOUCH_FLAG_NONE, TOUCH_MASK_CONTACTAREA, WM_CLOSE, WS_EX_TOPMOST,
     WindowFromPoint,
@@ -642,6 +644,11 @@ impl Backend for Win {
                 // value, no pointer is kept); a stale handle fails.
                 unsafe { SetPropW(handle, name, Some(flags)) }
                     .map_err(|e| format!("SetPropW: {e}"))?;
+                // SAFETY: reads that property back (no message is sent).
+                let read = unsafe { GetPropW(handle, name) };
+                if read != flags {
+                    return Err("the press-and-hold property did not read back".to_string());
+                }
             } else {
                 // SAFETY: removes that property; a handle without it fails,
                 // which leaves nothing to undo.
