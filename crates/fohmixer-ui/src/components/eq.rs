@@ -878,12 +878,11 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
         let _ = legend.try_update(|on| *on = !*on);
     };
     // `CELÝ EQ`: the whole picture again (the frame loop draws it). A finger
-    // on the picture ends first, with its cancel where it was (the PR I
-    // review: a drag went on at 1×, its points remapped).
+    // on the editor ends first, with its cancel where it was (the PR I
+    // review: a drag went on at 1×, its points remapped); a pinch goes on.
     let whole = move |ev: web_sys::PointerEvent| {
         ev.prevent_default();
-        send(finger.try_update_value(Finger::leave).unwrap_or_default());
-        fingers_leave();
+        send(finger.try_update_value(Finger::whole).unwrap_or_default());
         let _ = viewer.try_update_value(Viewer::whole);
     };
     let shown_zoom = move || zoomed.try_get().unwrap_or(false).to_string();

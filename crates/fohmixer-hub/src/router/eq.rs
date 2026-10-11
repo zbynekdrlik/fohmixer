@@ -400,6 +400,29 @@ pub fn frames_fields(
     Some(fields)
 }
 
+/// The `frames` record of `client`'s editor whose outbox handed back
+/// `trips` (a close, a dropped socket), and the hub log's line; nothing
+/// when there are none.
+fn record_frames(
+    events: &EventLog,
+    key: &EditorKey,
+    client: ClientId,
+    session: Option<u32>,
+    trips: &Trips,
+) {
+    if let Some(fields) = frames_fields(key, client, session, trips) {
+        tracing::info!(
+            session = ?session,
+            frame_trips = trips.n,
+            frame_rtt_ms = trips.mean_ms(),
+            frame_rtt_max_ms = trips.max_ms,
+            ack_waits = trips.waited_out,
+            "a closed Pro-Q 4 editor's frames on the link since its last minute"
+        );
+        events.record("eq", fields);
+    }
+}
+
 impl Router {
     /// The router of a hub with the Pro-Q 4 screen (#71 PR E): the window
     /// worker and the editors' last pictures.
@@ -746,10 +769,19 @@ impl Router {
 
     /// `client`'s socket closed: its editor closes.
     pub(super) fn eq_detach(&mut self, client: ClientId) {
-        if let Some(io) = self.eq.as_mut() {
-            let acts = io.state.detach(client);
-            self.eq_acts(acts);
+        let Some(io) = self.eq.as_mut() else {
+            return;
+        };
+        // Its editor's frame round trips go before its outbox does (the PR
+        // I re-review: a dropped socket lost those of its last minute).
+        if let Some((key, session, _)) = io.state.held_by(client)
+            && let Some(outbox) = self.clients.get(&client)
+        {
+            let trips = outbox.forget_eq();
+            record_frames(&self.io.events, &key, client, Some(session), &trips);
         }
+        let acts = io.state.detach(client);
+        self.eq_acts(acts);
     }
 
     /// The hub stops: the worker ends any contact and hands every window
@@ -887,19 +919,9 @@ impl Router {
                     {
                         // Its frames' round trips since the last minute go
                         // into the close's record (the PR I review).
-                        let trips = outbox.forget_eq();
                         let key = EditorKey::new(instance, path);
-                        if let Some(fields) = frames_fields(&key, client, *session, &trips) {
-                            tracing::info!(
-                                session = ?session,
-                                frame_trips = trips.n,
-                                frame_rtt_ms = trips.mean_ms(),
-                                frame_rtt_max_ms = trips.max_ms,
-                                ack_waits = trips.waited_out,
-                                "a closed Pro-Q 4 editor's frames on the link since its last minute"
-                            );
-                            self.io.events.record("eq", fields);
-                        }
+                        let trips = outbox.forget_eq();
+                        record_frames(&self.io.events, &key, client, *session, &trips);
                     }
                     outbox.reply(msg);
                 }

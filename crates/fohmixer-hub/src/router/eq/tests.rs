@@ -743,6 +743,40 @@ async fn an_editors_frames_keep_no_picture_once_its_path_names_another_device() 
 }
 
 #[tokio::test]
+async fn a_dropped_socket_records_its_editors_frame_round_trips() {
+    // The PR I re-review: a dropped socket took its outbox, and the round
+    // trips of its last minute, with it.
+    let dir = tempfile::tempdir().unwrap();
+    let mut rig = rig(dir.path());
+    let outbox = held_open(&mut rig).await;
+    let mut acked = false;
+    for _ in 0..300 {
+        if take_and_ack(&outbox) {
+            acked = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(acked, "a frame went and its page acked it");
+    let _ = rig.records.try_iter().count();
+    rig.router.handle(RouterMsg::Detach { client: 1 });
+    let frames: Vec<Value> = rig
+        .records
+        .try_iter()
+        .filter(|r| r["ev"] == "eq" && r["what"] == "frames")
+        .collect();
+    assert_eq!(frames.len(), 1, "{frames:?}");
+    assert_eq!(
+        (
+            frames[0]["session"].clone(),
+            frames[0]["client"].clone(),
+            frames[0]["frame_trips"].clone()
+        ),
+        (json!(1), json!(1), json!(1))
+    );
+}
+
+#[tokio::test]
 async fn a_finger_reaches_the_window_and_a_resting_one_goes_again() {
     let dir = tempfile::tempdir().unwrap();
     let mut rig = rig(dir.path());

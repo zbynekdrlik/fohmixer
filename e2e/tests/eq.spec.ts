@@ -521,7 +521,9 @@ test.describe("The Pro-Q 4 screen", () => {
 
     // The hub's records of the session and the page's steps.
     const eq = await until(
-      async () => (await hubEvents()).filter((r: any) => r.ev === "eq" && r.path === trackPath && r.ts >= since),
+      // A close's `frames` record (its round trips since the last `rate`)
+      // comes only when the link acked frames after that rate: not listed.
+      async () => (await hubEvents()).filter((r: any) => r.ev === "eq" && r.path === trackPath && r.ts >= since && r.what !== "frames"),
       (all) => all.some((r: any) => r.what === "closed"),
       "the hub's eq records",
     );
@@ -922,6 +924,27 @@ test.describe("The Pro-Q 4 screen", () => {
     await quickTap(area, await centre(area), 63);
     const edit = await until(() => touchesAfter(settled), (all) => all.some((r) => r.phase === "up"), "the tap after the settle");
     expect(edit.map((r) => r.phase), JSON.stringify(edit)).toEqual(["down", "up"]);
+    // A drag started right after a tap's zoom (the PR I re-review) goes once
+    // the settle is over, its down where it landed.
+    await screen.getByTestId("eq-whole").click();
+    await expect(hint).toHaveAttribute("data-shown", "true");
+    const again = (await pictureMap(canvas)).toPage(FROM);
+    await page.mouse.click(again.x, again.y);
+    await expect(screen.getByTestId("eq-factor")).toHaveText("3,0×");
+    const zoomedAgain = await pictureMap(canvas);
+    const heldFrom = (await simEq.records()).length;
+    const start = await centre(area);
+    await page.mouse.move(start.x, start.y);
+    await page.mouse.down();
+    for (let i = 1; i <= 4; i++) {
+      await page.mouse.move(start.x + 8 * i, start.y);
+      await frames(page, 2);
+    }
+    await page.waitForTimeout(ZOOM_SETTLE_MS);
+    await page.mouse.up();
+    const held = await until(() => touchesAfter(heldFrom), (all) => all.some((r) => r.phase === "up"), "the drag after the settle");
+    expect(held[0].phase, JSON.stringify(held)).toBe("down");
+    expect(near(held[0], zoomedAgain.toPicture(start)), `the down ${JSON.stringify(held[0])} at ${JSON.stringify(zoomedAgain.toPicture(start))}`).toBe(true);
 
     // The legend says it too.
     await screen.getByTestId("eq-help").click();
