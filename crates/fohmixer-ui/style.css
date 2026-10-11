@@ -407,12 +407,3 @@ body {
     font-variant-numeric: tabular-nums;
 }
 
-/* --- a text --- */
-
-.text {
-    padding: 8px;
-    color: var(--muted);
-    font: 500 13px/1.5 var(--mono);
-    white-space: pre-wrap;
-}
-

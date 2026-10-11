@@ -362,7 +362,7 @@
 
 /* A group of buttons (the cue page) as one block, `--units` strips wide
    (arrange.rs: METRICS.block, one in a pager's region); its buttons share
-   its height, up to 72 px each. A group of texts: one line each. */
+   its height, up to 72 px each. */
 .block {
     display: grid;
     grid-auto-rows: minmax(0, 72px);
@@ -382,11 +382,6 @@
     padding-left: 20px;
     font-size: 14px;
     text-align: center;
-}
-
-.block.texts {
-    display: block;
-    overflow-y: auto;
 }
 
 /* A low screen (a phone on its side): the column's parts closer together,

@@ -11,8 +11,18 @@ fn strip(instance: &str, kind: &str, name: &str, pinned: bool, mute_guard: bool)
            "pinned": pinned, "mute_guard": mute_guard})
 }
 
+/// A former MIDI fader of invented names: a group's control that is no
+/// strip.
+fn fader() -> Value {
+    json!({"kind": "param_fader", "label": "FX All",
+           "targets": [{"binding": {"instance": "band", "anchor": {"kind": "track", "name": "FX grp#"},
+                                    "path": "mixer_device volume"},
+                        "prop": "value", "scale": "cc_linear"}]})
+}
+
 /// A frame of invented names: a pager of two sub-pages, a group ending with
-/// a text, two groups titled alike, and a group of the master strip.
+/// a parameter fader, two groups titled alike, and a group of the master
+/// strip.
 fn frame() -> Layout {
     serde_json::from_value(json!({
         "schema": 2,
@@ -29,7 +39,7 @@ fn frame() -> Layout {
                             strip("band", "track", "Keys #", false, false)]}]}]},
                 {"kind": "group", "id": "fx", "title": "EFFECTS", "controls": [
                     strip("band", "return", "A-Reverb #", false, false),
-                    {"kind": "text", "text": "t"}]}]},
+                    fader()]}]},
             {"sections": [
                 {"kind": "group", "id": "hands", "title": "HANDS", "controls": [
                     strip("master", "track", "Hand1 #", true, true),
@@ -86,15 +96,15 @@ fn every_group_of_strips_by_name_becomes_a_tags_group() {
     // Its strips go; its other controls and its title stay.
     assert_eq!(
         group(&m.frame, "fx").controls,
-        vec![Control::Text { text: "t".into() }]
+        vec![serde_json::from_value::<Control>(fader()).unwrap()]
     );
     assert_eq!(group(&m.frame, "stage-1").controls, vec![]);
     assert_eq!(group(&m.frame, "stage-1").title.as_deref(), Some("Štage"));
     // The converted frame passes the markers' rules and the layout's own.
     assert!(frame_problems(&m.frame).is_empty());
     assert_eq!(m.frame.validate(), vec![]);
-    // A text after its strips, a track pinned and guarded in both of its
-    // groups: nothing a marker cannot carry.
+    // A parameter fader after its strips, a track pinned and guarded in both
+    // of its groups: nothing a marker cannot carry.
     assert_eq!(m.problems, Vec::<String>::new());
 }
 
@@ -283,7 +293,7 @@ fn a_group_with_a_strip_not_bound_by_name_or_with_tags_or_no_strip_stays() {
                 {"kind": "strip", "binding": {"instance": "band", "anchor": {"kind": "track_at", "index": 3}},
                  "strip_kind": "standard"}]},
             {"kind": "group", "id": "tagged", "tags": "X"},
-            {"kind": "group", "id": "texts", "controls": [{"kind": "text", "text": "t"}]}]}]}]
+            {"kind": "group", "id": "faders", "controls": [fader()]}]}]}]
     }))
     .unwrap();
     let m = migration(&frame);
@@ -387,22 +397,22 @@ fn problems_of(controls: Value) -> Vec<String> {
 
 #[test]
 fn what_a_marker_cannot_carry_is_a_problem() {
-    let text = json!({"kind": "text", "text": "t"});
+    let other = fader();
     let plain = strip("band", "track", "Bass #", false, false);
     // A control before or between the strips would move after them.
     assert_eq!(
-        problems_of(json!([text, plain])),
+        problems_of(json!([other, plain])),
         vec!["group G: a control before or between its strips would move after them"]
     );
     assert_eq!(
         problems_of(json!([
             plain,
-            text,
+            other,
             strip("band", "track", "Kick #", false, false)
         ])),
         vec!["group G: a control before or between its strips would move after them"]
     );
-    assert_eq!(problems_of(json!([plain, text])), Vec::<String>::new());
+    assert_eq!(problems_of(json!([plain, other])), Vec::<String>::new());
     // A track twice in one group shows once.
     assert_eq!(
         problems_of(json!([plain, plain])),

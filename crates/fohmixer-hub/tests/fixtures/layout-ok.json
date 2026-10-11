@@ -71,26 +71,6 @@
           ]
         }
       ]
-    },
-    {
-      "id": "conf",
-      "title": "Conf",
-      "rows": [
-        {
-          "sections": [
-            {
-              "kind": "group",
-              "id": "conf-1",
-              "controls": [
-                {
-                  "kind": "text",
-                  "text": "unfold_band: 'Stems grp#'"
-                }
-              ]
-            }
-          ]
-        }
-      ]
     }
   ],
   "global": [

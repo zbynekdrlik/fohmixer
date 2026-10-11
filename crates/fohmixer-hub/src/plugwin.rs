@@ -360,7 +360,12 @@ impl Placement {
 /// `work`'s right edge there, else one to the left (`known` stands against
 /// that edge, moved in by [`known_rect`]); and the other way when the
 /// window reads that one already (`now`): a rectangle it does not have
-/// before the post lands.
+/// before the post lands. That other way may lie one pixel past the work
+/// area's edge (`known` against the left edge and the window a pixel to
+/// its right, or against the right edge and the window a pixel to its
+/// left; #74's final review, its second note): harmless, it is only the
+/// proof that what was posted before it landed, the known rectangle
+/// follows it before the tap, and no input goes in between.
 pub fn aside(known: Rect, now: Rect, work: Rect) -> Rect {
     let by = |dx: i32| Rect {
         left: known.left + dx,
@@ -638,6 +643,36 @@ pub fn keepalive_due(since_ms: f64) -> bool {
 /// contact never ended is (`+∞`); a time that is no number is not.
 pub fn quiet(since_ms: f64) -> bool {
     since_ms >= QUIET_MS
+}
+
+/// What the release of an editor posts to its window (#74's final review,
+/// its first note).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Repost {
+    /// Nothing: its rectangle was never changed, or Live closed the editor.
+    Nothing,
+    /// The take's rectangle, its place and its size.
+    Take,
+    /// Nothing, although its rectangle was changed: a contact of its
+    /// session ended less than [`QUIET_MS`] ago (the release's own end of a
+    /// contact down included), and Live's thread would land the rectangle
+    /// before that injected up. The editor stays where it is (a stop or a
+    /// failed guard with a finger down: this path leaves it open in Live
+    /// already).
+    NotQuiet,
+}
+
+/// What the release of an editor whose rectangle was `changed` since its
+/// take posts, `closed`: Live closed the editor; `since_ms`: since the
+/// last contact of its session ended ([`quiet`]).
+pub fn repost(changed: bool, closed: bool, since_ms: f64) -> Repost {
+    if !changed || closed {
+        Repost::Nothing
+    } else if quiet(since_ms) {
+        Repost::Take
+    } else {
+        Repost::NotQuiet
+    }
 }
 
 /// Whether a capture last made `since_ms` ago is due.
@@ -1739,16 +1774,26 @@ impl Worker {
     /// `session`'s window handed back: its contact ended, its rectangle at
     /// the take (place and size) posted again when it was changed and Live
     /// keeps the editor open (best effort: a guard that failed, the stop;
-    /// #74 review), its z-order as it was; `closed`: Live closed the editor.
+    /// #74 review), unless a contact of its session ended less than
+    /// [`QUIET_MS`] ago (its own just did, when one was down: nothing is
+    /// posted then, [`repost`]), its z-order as it was; `closed`: Live
+    /// closed the editor.
     fn release(&mut self, session: u32, closed: bool) {
         self.end_contact(session);
         self.encoder.forget(session);
+        let now = self.now();
         if let Some(editor) = self.editors.remove(&session) {
-            if editor.changed
-                && !closed
-                && let Err(why) = self.backend.resize(&editor.taken, editor.taken.rect)
-            {
-                tracing::warn!(session, why = %why, "a Pro-Q 4 editor's own size could not be posted at its release");
+            match repost(editor.changed, closed, now - editor.ended) {
+                Repost::Take => {
+                    if let Err(why) = self.backend.resize(&editor.taken, editor.taken.rect) {
+                        tracing::warn!(session, why = %why, "a Pro-Q 4 editor's own size could not be posted at its release");
+                    }
+                }
+                Repost::NotQuiet => tracing::warn!(
+                    session,
+                    "a Pro-Q 4 editor's own size was not posted at its release: a contact of its session ended less than 100 ms before (the editor stays where it is)"
+                ),
+                Repost::Nothing => {}
             }
             self.backend.release(&editor.taken);
             if closed {

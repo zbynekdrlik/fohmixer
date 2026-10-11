@@ -253,7 +253,8 @@ fn the_migration_names_the_owners_plain_tuners_with_their_planned_markers() {
                 {"kind": "group", "id": "hands", "title": "Hands", "controls": [
                     strip("track", "Hand1 #", true), strip("track", "Hand2 #", false)]},
                 {"kind": "group", "id": "fx", "title": "FX", "controls": [
-                    strip("return", "A-Reverb #", false), {"kind": "text", "text": "t"}]},
+                    strip("return", "A-Reverb #", false),
+                    {"kind": "hub_toggle", "key": "stage_aut", "label": "STAGE AUT"}]},
                 {"kind": "group", "id": "keys", "title": "Keys", "controls": [
                     strip("track", "Keys 1", false)]}]}]}]
         });
@@ -340,7 +341,7 @@ fn the_migration_names_the_owners_plain_tuners_with_their_planned_markers() {
 
 #[test]
 fn a_frame_with_a_problem_renames_nothing() {
-    // #68 PR C: a text before the group's strip would move after it: the
+    // #68 PR C: a toggle before the group's strip would move after it: the
     // migration stops, the ready Tuner keeps its plain name.
     let _serial = serial();
     runtime().block_on(async {
@@ -351,7 +352,7 @@ fn a_frame_with_a_problem_renames_nothing() {
             "default_page": "p",
             "pages": [{"id": "p", "title": "P", "rows": [{"sections": [
                 {"kind": "group", "id": "hands", "title": "Hands", "controls": [
-                    {"kind": "text", "text": "t"},
+                    {"kind": "hub_toggle", "key": "stage_aut", "label": "STAGE AUT"},
                     {"kind": "strip", "strip_kind": "standard",
                      "binding": {"instance": "band", "anchor": {"kind": "track", "name": "Hand1 #"}}}]}]}]}]
         });

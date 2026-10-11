@@ -6,8 +6,8 @@ fn track(name: &str) -> Value {
 }
 
 /// A small valid layout: a cue page of toggles; the FOH page with a rail,
-/// a nested pager beside fixed strips and a second row; the Conf page's
-/// text; TechAlert on every page.
+/// a nested pager beside fixed strips and a second row; a third page of
+/// one STAGE AUT toggle; TechAlert on every page.
 fn sample() -> Value {
     json!({
         "schema": 2,
@@ -43,8 +43,8 @@ fn sample() -> Value {
                                                   "path": "mixer_device volume"},
                                       "prop": "value", "scale": "cc_linear"}]}]}],
                  "weight": 0.8}]},
-            {"id": "conf", "title": "Conf", "rows": [{"sections": [
-                {"kind": "group", "id": "conf-1", "controls": [{"kind": "text", "text": "unfold_band: 'Vocals Repro grp#'"}]}]}]}
+            {"id": "more", "title": "More", "rows": [{"sections": [
+                {"kind": "group", "id": "more-1", "controls": [{"kind": "hub_toggle", "key": "stage_aut", "label": "STAGE AUT"}]}]}]}
         ],
         "global": [
             {"kind": "alert", "binding": track("TechAlert #"), "period_ms": 300, "label": "TechAlert"}
@@ -195,6 +195,17 @@ fn an_unknown_kind_does_not_parse() {
         refused.to_string().contains("unknown variant `refresh`"),
         "{refused}"
     );
+    // So is the static text (#58): it held the TouchOSC Conf page's lines.
+    let mut v = sample();
+    v["pages"][2]["rows"][0]["sections"][0]["controls"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"kind": "text", "text": "unfold_band: 'Vocals Repro grp#'"}));
+    let refused = serde_json::from_value::<Layout>(v).unwrap_err();
+    assert!(
+        refused.to_string().contains("unknown variant `text`"),
+        "{refused}"
+    );
     let mut v = sample();
     foh_row(&mut v, 1)[0]["kind"] = json!("area");
     assert!(serde_json::from_value::<Layout>(v).is_err());
@@ -263,10 +274,10 @@ fn the_schema_pages_and_default_pages_are_checked() {
 fn ids_are_unique_across_pages_sub_pages_and_sections() {
     // A sub-page named like a top-level page.
     let mut v = sample();
-    foh_row(&mut v, 0)[0]["pages"][1]["id"] = json!("conf");
+    foh_row(&mut v, 0)[0]["pages"][1]["id"] = json!("more");
     assert_eq!(
         errors(v),
-        vec![r#"pages[2]: duplicate id "conf""#.to_string()]
+        vec![r#"pages[2]: duplicate id "more""#.to_string()]
     );
     // Two groups, and a group named like the pager.
     let mut v = sample();
@@ -581,7 +592,6 @@ fn a_page_lists_its_controls_rail_first() {
             Control::ParamToggle { .. } => "param_toggle",
             Control::ParamFader { .. } => "param_fader",
             Control::Alert { .. } => "alert",
-            Control::Text { .. } => "text",
         })
         .collect();
     assert_eq!(

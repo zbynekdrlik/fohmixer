@@ -169,6 +169,30 @@ fn an_editor_is_quiet_again_100_ms_after_its_last_contact_ended() {
 }
 
 #[test]
+fn a_release_posts_the_takes_rectangle_only_when_changed_open_and_quiet() {
+    assert_eq!(repost(true, false, QUIET_MS), Repost::Take);
+    assert_eq!(
+        repost(true, false, f64::INFINITY),
+        Repost::Take,
+        "no contact ended since the take"
+    );
+    assert_eq!(repost(true, false, QUIET_MS.next_down()), Repost::NotQuiet);
+    assert_eq!(repost(true, false, 0.0), Repost::NotQuiet, "its own up");
+    assert_eq!(
+        repost(false, false, QUIET_MS),
+        Repost::Nothing,
+        "never changed"
+    );
+    assert_eq!(repost(false, false, 0.0), Repost::Nothing);
+    assert_eq!(
+        repost(true, true, QUIET_MS),
+        Repost::Nothing,
+        "Live closed it"
+    );
+    assert_eq!(repost(true, true, 0.0), Repost::Nothing);
+}
+
+#[test]
 fn the_inert_spot_sits_in_the_top_bars_empty_middle() {
     assert_eq!(inert_spot(1349), (546, 15));
     assert_eq!(inert_spot(1000), (405, 15));
@@ -2700,6 +2724,70 @@ fn the_stop_posts_a_changed_editors_own_size_before_handing_it_back() {
             ("release".to_string(), 0),
         ]
     );
+}
+
+#[test]
+fn a_release_within_100_ms_of_a_contacts_end_leaves_the_editor_where_it_is() {
+    // The final review of PR #74 (its first note): the release ended a
+    // contact and posted the take's rectangle at once. Live's thread takes
+    // posted messages before injected input, so the editor could move
+    // before that up landed (a stop, or a failed guard, with a finger
+    // down). Within 100 ms of a contact's end the release posts nothing:
+    // the editor stays where it is (this path leaves it open in Live).
+    let (mut worker, handle, _) = worker();
+    let release = |worker: &mut Worker, session: u32, now: f64| {
+        let (reply, mut answer) = oneshot::channel();
+        let command = Command::Release {
+            session,
+            closed: false,
+            reply,
+        };
+        worker.command_at(command, now);
+        assert_eq!(answer.try_recv(), Ok(()));
+    };
+    // A finger down at the release: its own up, and nothing posted.
+    let first = take(&mut worker, &handle, 1, 0.0);
+    resize_at(&mut worker, 1, UPRIGHT, 0.0);
+    worker.step_at(0.0);
+    assert_eq!(resizes(&handle), [(667, 1361)]);
+    touch_at(&mut worker, 1, 1, Phase::Down, (300, 200), 10.0);
+    release(&mut worker, 1, 20.0);
+    assert_eq!(touches(&handle), [t("down", 300, 200), t("up", 300, 200)]);
+    assert_eq!(
+        resizes(&handle),
+        [(667, 1361)],
+        "nothing right after its own up"
+    );
+    assert_eq!(
+        handle.records().last(),
+        Some(&json!({"op": "release", "window": first.0}))
+    );
+    assert_eq!(handle.size(first), Some((667, 1361)), "where it is");
+    // An up 99.9 ms before the release: nothing either.
+    let second = take(&mut worker, &handle, 2, 100.0);
+    resize_at(&mut worker, 2, UPRIGHT, 100.0);
+    worker.step_at(100.0);
+    touch_at(&mut worker, 2, 2, Phase::Down, (300, 200), 110.0);
+    touch_at(&mut worker, 2, 2, Phase::Up, (300, 200), 120.0);
+    release(&mut worker, 2, 219.9);
+    assert_eq!(
+        resizes(&handle),
+        [(667, 1361), (667, 1361)],
+        "not within 100 ms of the up"
+    );
+    assert_eq!(handle.size(second), Some((667, 1361)));
+    // 100 ms after it: the take's rectangle again.
+    let third = take(&mut worker, &handle, 3, 300.0);
+    resize_at(&mut worker, 3, UPRIGHT, 300.0);
+    worker.step_at(300.0);
+    touch_at(&mut worker, 3, 3, Phase::Down, (300, 200), 310.0);
+    touch_at(&mut worker, 3, 3, Phase::Up, (300, 200), 320.0);
+    release(&mut worker, 3, 420.0);
+    assert_eq!(
+        resizes(&handle),
+        [(667, 1361), (667, 1361), (667, 1361), (1349, 809)]
+    );
+    assert_eq!(handle.size(third), Some((1349, 809)), "its own size again");
 }
 
 #[tokio::test]

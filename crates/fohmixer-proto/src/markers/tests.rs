@@ -178,6 +178,15 @@ fn frame() -> Layout {
     .expect("the frame parses")
 }
 
+/// A former MIDI fader of invented names: a control a tags group keeps
+/// after its marker strips (PR C).
+fn fader() -> serde_json::Value {
+    json!({"kind": "param_fader", "label": "Hands All",
+           "targets": [{"binding": {"instance": "master", "anchor": {"kind": "track", "name": "Hands grp#"},
+                                    "path": "mixer_device volume"},
+                        "prop": "value", "scale": "cc_linear"}]})
+}
+
 fn strips(controls: &[Control]) -> Vec<&Strip> {
     controls
         .iter()
@@ -252,22 +261,19 @@ fn a_frame_group_shows_its_tag_group_by_place_then_in_lives_order() {
 fn a_tags_groups_own_controls_follow_its_marker_strips() {
     // PR C: a migrated group that ended with a parameter fader keeps it.
     let mut frame = serde_json::to_value(frame()).unwrap();
-    frame["pages"][0]["rows"][1]["sections"][0]["controls"] =
-        json!([{"kind": "text", "text": "t"}]);
+    frame["pages"][0]["rows"][1]["sections"][0]["controls"] = json!([fader()]);
     let frame: Layout = serde_json::from_value(frame).unwrap();
     assert_eq!(frame_problems(&frame), vec![]);
+    let own: Control = serde_json::from_value(fader()).unwrap();
     let composed = compose(&frame, &sample());
     let hands = group(&composed.layout, "hands");
     assert_eq!(labels(&hands.controls), ["Hand 1"]);
     assert_eq!(hands.controls.len(), 2);
     assert!(matches!(hands.controls[0], Control::Strip(_)));
-    assert_eq!(hands.controls[1], Control::Text { text: "t".into() });
+    assert_eq!(hands.controls[1], own);
     // Without markers it shows its own controls alone.
     let bare = compose(&frame, &[]);
-    assert_eq!(
-        group(&bare.layout, "hands").controls,
-        vec![Control::Text { text: "t".into() }]
-    );
+    assert_eq!(group(&bare.layout, "hands").controls, vec![own]);
 }
 
 #[test]
@@ -558,13 +564,13 @@ fn a_frame_holds_no_view_no_view_id_and_no_strip_in_a_tags_group() {
         "pages": [
             {"id": "p", "title": "P", "rows": [{"sections": [
                 {"kind": "group", "id": "view-x", "tags": "A", "controls": [
-                    {"kind": "text", "text": "t"},
+                    fader(),
                     {"kind": "strip", "binding": {"instance": "band", "anchor": {"kind": "track", "name": "Bass #"}},
                      "strip_kind": "standard"}]},
                 {"kind": "pager", "id": "view-pager", "default_page": "view-sub", "pages": [
                     {"id": "view-sub", "title": "S"}]},
                 {"kind": "group", "id": "own", "tags": "B", "controls": [
-                    {"kind": "text", "text": "t"}]}]}]},
+                    fader()]}]}]},
             {"id": "view-A", "title": "A", "view": true}
         ]
     }))

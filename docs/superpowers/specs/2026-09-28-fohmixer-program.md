@@ -279,7 +279,7 @@ This is a **one-shot tool**, `tools/import-tosc`, outside the hub. It is re-run 
   - strips of kind `standard` or `return`, `wide` for the wider bus strips;
   - solo buttons, the stage-mic group and STAGE AUT;
   - MIDI controls, with type, channel, number, value/velocity scaling, press and release trigger flags, button type, send/receive flags, and fader response mode and grid;
-  - the `Conf` text (`double_click_mute`; `unfold_*` is dropped and reported since #58).
+  - from the `Conf` text, only the strips' `mute_guard` (`double_click_mute`; `unfold_*` is dropped and reported, #58). The text itself is read, never shown: the layout has no text control since #58, and the hub refuses a layout that holds one.
 - **It reports and skips** invisible and off-canvas nodes. It also reports stale config: a `double_click_mute` entry that matches no strip, and a binding whose track lost its `#`. It never fixes them silently.
 - **For D10**, it also reads the band set's MIDI mappings (`KeyMidi` with their ranges), writes each MIDI control's target parameters into the layout, and triages each control as clean or dropped (§3.2). Nothing is retyped.
 
