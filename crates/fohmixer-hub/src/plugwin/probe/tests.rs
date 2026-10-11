@@ -17,6 +17,7 @@ fn args(pid: u32) -> Args {
         size: None,
         min_probe: false,
         paint: 0,
+        hold: false,
     }
 }
 
@@ -42,6 +43,7 @@ fn the_arguments_have_their_defaults_and_every_flag_is_read() {
             "--min-probe",
             "--paint",
             "20",
+            "--hold",
             "--pid",
             "7",
         ]),
@@ -57,6 +59,7 @@ fn the_arguments_have_their_defaults_and_every_flag_is_read() {
             size: Some((760, 1271)),
             min_probe: true,
             paint: 20,
+            hold: true,
         })
     );
     assert_eq!(
@@ -155,6 +158,38 @@ fn the_probes_figures() {
     assert_eq!(ms_text(None), "-");
     assert_eq!(ms_text(Some(12.345)), "12.3");
     assert_eq!(PAINT_GAP, Duration::from_millis(20));
+    // PR N: the paint contact's way past the drag threshold, never through
+    // a trial's point (8 px up).
+    assert_eq!((PAINT_ENTER, PAINT_ENTER_STEPS), (24, 4));
+    assert_eq!(
+        enter_points((511, 281)),
+        [
+            (511, 275),
+            (511, 269),
+            (511, 263),
+            (511, 257),
+            (511, 263),
+            (511, 269),
+            (511, 275),
+            (511, 281)
+        ]
+    );
+    // `--hold`'s figures.
+    assert_eq!(HOLDS, [400, 800, 1200, 1600, 2400]);
+    assert_eq!((HOLD_LONG, HOLD_DRAG), (2400, 32));
+    assert_eq!(
+        (HOLD_SHOW, TAP_APART, DRAG_REST),
+        (
+            Duration::from_millis(500),
+            Duration::from_millis(700),
+            Duration::from_millis(300)
+        )
+    );
+    assert_eq!(DRAG_PXS, [2, 4, 6, 8, 12, 16, 24, 32]);
+    assert_eq!(hold_text(&[(400, false), (800, true)]), "400:no,800:menu");
+    assert_eq!(hold_text(&[]), "");
+    assert!(over(500.0, Duration::from_millis(500)));
+    assert!(!over(500.0_f64.next_down(), Duration::from_millis(500)));
 }
 
 /// A sim with one still window of process `pid`.
@@ -381,8 +416,17 @@ fn a_paint_probe_measures_how_long_the_picture_takes_to_show_an_update() {
     assert_eq!(contact[0], op("touch", "down", 511, 281));
     assert_eq!(contact[contact.len() - 1], op("touch", "up", 511, 281));
     let moves = &contact[1..contact.len() - 1];
+    // Past the drag threshold first (24 px up and back, PR N), then the
+    // trials.
+    assert_eq!(
+        moves[..8].iter().map(|o| (o.2, o.3)).collect::<Vec<_>>(),
+        enter_points((511, 281))
+            .into_iter()
+            .map(|(x, y)| (i64::from(x), i64::from(y)))
+            .collect::<Vec<_>>()
+    );
     assert!(
-        moves
+        moves[8..]
             .iter()
             .all(|o| o.1 == "update" && o.2 == 511 && (o.3 == 273 || o.3 == 281)),
         "{moves:?}"
@@ -393,7 +437,9 @@ fn a_paint_probe_measures_how_long_the_picture_takes_to_show_an_update() {
     );
     // Three trials end 8 px up: the contact goes back to the band first.
     assert_eq!(moves[moves.len() - 1], op("touch", "update", 511, 281));
-    // The contact rested its 150 ms before the first trial's update.
+    // The contact rested its 150 ms before the first trial's update, from
+    // the last move of its way past the drag threshold (the down's eighth
+    // touch after it).
     let times: Vec<(i64, i64, f64)> = handle
         .records()
         .iter()
@@ -407,7 +453,7 @@ fn a_paint_probe_measures_how_long_the_picture_takes_to_show_an_update() {
         })
         .collect();
     let touches_before = ops[..paint_down].iter().filter(|o| o.0 == "touch").count();
-    let down_t = times[touches_before].2;
+    let down_t = times[touches_before + 8].2;
     let first_up = times
         .iter()
         .find(|(x, y, t)| (*x, *y) == (511, 273) && *t > down_t)
@@ -471,12 +517,139 @@ fn a_paint_trial_whose_picture_never_rests_is_unsettled() {
     // Each trial looked for a still picture every 20 ms for 500 ms (a
     // wait that never sleeps would grab far more).
     assert!(handle.grabs() <= 120, "{}", handle.grabs());
-    // No update went: the contact stayed on the band.
+    // No trial's update went: after its way past the drag threshold (the
+    // down and eight moves) the contact stayed on the band.
     let touches = paint_touches(&handle);
     assert!(
-        touches.iter().all(|t| (t.1, t.2) == (511, 281)),
+        touches[9..].iter().all(|t| (t.1, t.2) == (511, 281)),
         "{touches:?}"
     );
+}
+
+/// A probe's `--hold` lines on a still sim set up by `setup`, its handle
+/// and the pictures it saved.
+fn hold_probe(setup: impl Fn(&SimHandle)) -> (Vec<String>, SimHandle, Vec<String>) {
+    let (mut sim, handle, _) = one_window(42);
+    setup(&handle);
+    let dir = tempfile::tempdir().unwrap();
+    let mut probe = args(42);
+    probe.frames = 1;
+    probe.hold = true;
+    probe.out = Some(dir.path().to_path_buf());
+    let mut out = Vec::new();
+    run(&mut sim, &probe, &mut out).unwrap();
+    let lines = String::from_utf8(out)
+        .unwrap()
+        .lines()
+        .map(str::to_string)
+        .collect();
+    let mut saved: Vec<String> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    saved.sort();
+    (lines, handle, saved)
+}
+
+#[test]
+fn a_hold_probe_finds_the_hold_that_makes_a_menu_closes_it_and_the_drag_threshold() {
+    // #71 PR N: the sim makes a still contact held 1.1 s or more a right click
+    // (a menu, a window of the editor's process), a contact past 10 px a
+    // drag (its moves paint 30 ms after), and press-and-hold off opens no
+    // menu.
+    let (lines, handle, saved) = hold_probe(|h| {
+        h.hold_menu(Some(Duration::from_millis(1100)));
+        h.paint_after(Some(Duration::from_millis(30)));
+    });
+    let at = lines
+        .iter()
+        .position(|l| l.starts_with("hold="))
+        .expect("the hold lines");
+    assert!(at >= 2);
+    assert_eq!(
+        lines[at - 2..at + 7],
+        [
+            "drag=ok steps=25 to=511,281",
+            "hold_windows=1",
+            "hold=400:no,800:no,1200:menu",
+            "menu_closed=ok",
+            "drag_px=12",
+            // The sim's picture counts the drags' paints: never the same.
+            "band_back=moved",
+            "hold_after_drag=2400:no",
+            "hold_quiet=2400:no",
+            "field=ok",
+        ]
+    );
+    for name in [
+        "after-hold.jpg",
+        "hold-400.jpg",
+        "hold-800.jpg",
+        "hold-1200.jpg",
+        "hold-dragged.jpg",
+        "hold-quiet.jpg",
+    ] {
+        assert!(saved.contains(&name.to_string()), "{name}: {saved:?}");
+    }
+    assert_eq!(handle.windows().len(), 1, "the menu closed");
+    let ops = ops(&handle);
+    let first = |want: &(String, String, i64, i64)| ops.iter().position(|o| o == want);
+    // The menu closed by the inert spot's tap, before the threshold's first
+    // move (2 px up).
+    let tap = first(&op("touch", "down", 546, 15)).expect("the inert spot's tap");
+    assert_eq!(ops[tap + 1], op("touch", "up", 546, 15));
+    assert!(tap < first(&op("touch", "update", 511, 279)).expect("the 2 px move"));
+    // The band, moved 12 px up, dragged back in six moves.
+    let back = first(&op("touch", "down", 511, 269)).expect("the drag back's down");
+    let up = back + ops[back..].iter().position(|o| o.1 == "up").unwrap();
+    assert_eq!(ops[up], op("touch", "up", 511, 281));
+    assert_eq!(up - back, 7);
+    assert!(ops[back + 1..up].iter().all(|o| o.1 == "update"));
+    // The hold after a drag: six moves 32 px up, held there, six back.
+    let updates = |from: (i32, i32), to: (i32, i32)| -> Vec<(String, String, i64, i64)> {
+        drag_points(from, to, 6)
+            .into_iter()
+            .map(|(x, y)| op("touch", "update", x.into(), y.into()))
+            .collect()
+    };
+    let top = first(&op("touch", "update", 511, 249)).expect("the hold after a drag's top");
+    assert_eq!(ops[top - 6], op("touch", "down", 511, 281));
+    assert_eq!(ops[top - 5..=top], updates((511, 281), (511, 249)));
+    let lift = top + ops[top..].iter().position(|o| o.1 == "up").unwrap();
+    assert_eq!(ops[lift - 6..lift], updates((511, 249), (511, 281)));
+    assert!(
+        ops[top..lift - 6]
+            .iter()
+            .all(|o| *o == op("touch", "update", 511, 249))
+    );
+    // Each move of the threshold rested its 300 ms before its up.
+    let touches: Vec<(String, i64, i64, f64)> = handle
+        .records()
+        .iter()
+        .filter(|r| r["op"] == "touch")
+        .map(|r| {
+            (
+                r["phase"].as_str().unwrap().to_string(),
+                r["x"].as_i64().unwrap(),
+                r["y"].as_i64().unwrap(),
+                r["t"].as_f64().unwrap(),
+            )
+        })
+        .collect();
+    let moved = touches
+        .iter()
+        .position(|t| t.0 == "update" && (t.1, t.2) == (511, 269))
+        .unwrap();
+    let lifted = moved + touches[moved..].iter().position(|t| t.0 == "up").unwrap();
+    assert!(touches[lifted].3 - touches[moved].3 >= 290.0, "{touches:?}");
+    // Press-and-hold off for the quiet hold, on again after.
+    let quiet: Vec<Value> = handle
+        .records()
+        .into_iter()
+        .filter(|r| r["op"] == "press_and_hold")
+        .map(|r| r["quiet"].clone())
+        .collect();
+    assert_eq!(quiet, [serde_json::json!(true), serde_json::json!(false)]);
 }
 
 #[test]

@@ -563,6 +563,13 @@ pub trait Backend: Send {
     fn live_closed(&mut self, _taken: &Taken) {}
     /// Asks the window to close (the probe's `--close` only).
     fn close_window(&mut self, taken: &Taken);
+    /// Turns Windows' press-and-hold (a still contact's up made a right
+    /// click) off (`quiet`) or back on for the taken window and its
+    /// picture (#71 PR N, the probe's `--hold`: the
+    /// `MicrosoftTabletPenServiceProperty` window property).
+    fn press_and_hold(&mut self, _taken: &Taken, _quiet: bool) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 /// A frame the encoder made: its session, the last of the page's inputs

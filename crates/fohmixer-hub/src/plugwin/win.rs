@@ -37,6 +37,12 @@
 //!   worker's cancel at the last point follows and moves the cursor there
 //!   again. A call too soon after the last one (`ERROR_NOT_READY`) is tried
 //!   again after 1 ms, twice.
+//! - **Press-and-hold (#71 PR N, the probe's `--hold` only):** the
+//!   `MicrosoftTabletPenServiceProperty` property with
+//!   `TABLET_DISABLE_PRESSANDHOLD` set on the window and its picture
+//!   (`SetPropW`; `RemovePropW` puts it back), which is to stop Windows
+//!   making a still contact's up a right click. Whether it does on the PC
+//!   is what the probe measures.
 //! - **Release:** the z-order as it was (`HWND_NOTOPMOST`, or topmost again
 //!   when it was), posted as the take's.
 //! - **Size (PR G):** the take keeps the window's rectangle
@@ -71,11 +77,12 @@ use windows::Win32::UI::Input::Pointer::{
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumChildWindows, EnumWindows, GA_ROOT, GWL_EXSTYLE, GetAncestor, GetClassNameW, GetClientRect,
     GetCursorPos, GetWindowLongW, GetWindowRect, GetWindowThreadProcessId, HWND_NOTOPMOST,
-    HWND_TOPMOST, IsWindow, IsWindowVisible, PT_TOUCH, PostMessageW, SWP_ASYNCWINDOWPOS,
-    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetCursorPos, SetWindowPos,
-    TOUCH_FLAG_NONE, TOUCH_MASK_CONTACTAREA, WM_CLOSE, WS_EX_TOPMOST, WindowFromPoint,
+    HWND_TOPMOST, IsWindow, IsWindowVisible, PT_TOUCH, PostMessageW, RemovePropW,
+    SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetCursorPos,
+    SetPropW, SetWindowPos, TOUCH_FLAG_NONE, TOUCH_MASK_CONTACTAREA, WM_CLOSE, WS_EX_TOPMOST,
+    WindowFromPoint,
 };
-use windows::core::{BOOL, HRESULT};
+use windows::core::{BOOL, HRESULT, w};
 
 use super::{Backend, Phase, Pixels, Rect, Taken, WindowId};
 
@@ -92,6 +99,9 @@ pub const NO_PICTURE: &str = fohmixer_proto::eq::reason::NO_PICTURE;
 pub const PRO_Q_MIN: (u32, u32) = (760, 335);
 /// The half-size of an injected contact's area (px).
 const CONTACT_RADIUS: i32 = 2;
+/// The pen and touch service's window property's flag that turns
+/// press-and-hold off (`TABLET_DISABLE_PRESSANDHOLD`, tpcshrd.h).
+const TABLET_DISABLE_PRESSANDHOLD: usize = 0x0000_0001;
 
 fn hwnd(id: WindowId) -> HWND {
     HWND(id.0 as usize as *mut core::ffi::c_void)
@@ -620,6 +630,25 @@ impl Backend for Win {
     fn close_window(&mut self, taken: &Taken) {
         // SAFETY: posts a close request to a handle; a stale one fails.
         let _ = unsafe { PostMessageW(Some(hwnd(taken.window)), WM_CLOSE, WPARAM(0), LPARAM(0)) };
+    }
+
+    fn press_and_hold(&mut self, taken: &Taken, quiet: bool) -> Result<(), String> {
+        let name = w!("MicrosoftTabletPenServiceProperty");
+        for window in [taken.window, taken.picture] {
+            let handle = hwnd(window);
+            if quiet {
+                let flags = HANDLE(TABLET_DISABLE_PRESSANDHOLD as *mut core::ffi::c_void);
+                // SAFETY: sets a property of a window handle (an atom and a
+                // value, no pointer is kept); a stale handle fails.
+                unsafe { SetPropW(handle, name, Some(flags)) }
+                    .map_err(|e| format!("SetPropW: {e}"))?;
+            } else {
+                // SAFETY: removes that property; a handle without it fails,
+                // which leaves nothing to undo.
+                let _ = unsafe { RemovePropW(handle, name) };
+            }
+        }
+        Ok(())
     }
 }
 
