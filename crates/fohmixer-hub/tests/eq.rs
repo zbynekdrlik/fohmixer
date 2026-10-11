@@ -10,7 +10,9 @@
 //! contact ended, and the stop handing the window back; PR G: an open with
 //! a page's picture area resizes the editor to its aspect before it answers,
 //! a changed area resizes it again, and the close puts the editor's own size
-//! back before the guard's tap.
+//! back before the guard's tap; PR I: one frame in flight per page, the next
+//! one only after the page's ack (or the ack's wait), so a pong never waits
+//! behind more than one frame.
 #![cfg(unix)]
 
 mod support;
@@ -23,7 +25,7 @@ use fohmixer_proto::client::{ClientMsg, ServerMsg};
 use fohmixer_proto::eq::{Area, EqItem, EqLock, EqState, Touch, frame_parts, reason};
 use fohmixer_proto::layout::{Anchor, Binding};
 use serde_json::{Value, json};
-use support::{Client, Host, TestHub, runtime, serial};
+use support::{Client, Host, Incoming, TestHub, runtime, serial};
 
 const WAIT: Duration = Duration::from_secs(5);
 const ON_TRACK: &str = "live_set tracks 1 devices 0";
@@ -961,6 +963,168 @@ fn an_open_with_an_upright_area_gets_its_aspect_and_its_close_puts_its_size_back
                 (json!(1632), json!(669), json!(true)),
             ]
         );
+        hub.stop().await;
+        host.stop();
+    });
+}
+
+/// What a page saw on its socket, in order (#71 PR I): a ping it sent, a
+/// frame of a session, a pong.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Seen {
+    Ping(u32),
+    Frame(u32),
+    Pong(u32),
+}
+
+/// How often the watching page pings (its watchdog's rate while visible).
+const PING_EVERY: Duration = Duration::from_millis(100);
+
+/// The page's ack of a frame of `session` (#71 PR I), as the page writes it.
+async fn ack(client: &mut Client, session: u32) {
+    client
+        .send_text(&json!({"type": "eq_frame_ack", "session": session}).to_string())
+        .await;
+}
+
+/// Reads `client` for `span`: a ping every [`PING_EVERY`] (numbered on from
+/// `pings`), each frame acked at once when `acks`; what it saw, each with its
+/// time since the start.
+async fn watch(
+    client: &mut Client,
+    span: Duration,
+    acks: bool,
+    pings: &mut u32,
+) -> Vec<(Duration, Seen)> {
+    client.clear();
+    let started = Instant::now();
+    let end = started + span;
+    let mut next_ping = started;
+    let mut seen = Vec::new();
+    while Instant::now() < end {
+        if Instant::now() >= next_ping {
+            *pings += 1;
+            client
+                .send(&ClientMsg::Ping {
+                    n: *pings,
+                    t: 1_000.0,
+                    rtt: None,
+                    rtt_n: None,
+                })
+                .await;
+            seen.push((started.elapsed(), Seen::Ping(*pings)));
+            next_ping += PING_EVERY;
+        }
+        let left = next_ping.min(end).saturating_duration_since(Instant::now());
+        match client.next_any(left).await {
+            Some(Incoming::Binary(bytes)) => {
+                let (session, _) = frame_parts(&bytes).expect("a frame's header");
+                seen.push((started.elapsed(), Seen::Frame(session)));
+                if acks {
+                    ack(client, session).await;
+                }
+            }
+            Some(Incoming::Text(ServerMsg::Pong { n, .. })) => {
+                seen.push((started.elapsed(), Seen::Pong(n)));
+            }
+            Some(Incoming::Text(_)) | None => {}
+        }
+    }
+    seen
+}
+
+/// The times the frames of `session` came at, and how many others came.
+fn frame_times(seen: &[(Duration, Seen)], session: u32) -> (Vec<Duration>, usize) {
+    let mine = seen
+        .iter()
+        .filter(|(_, s)| *s == Seen::Frame(session))
+        .map(|(at, _)| *at)
+        .collect();
+    let others = seen
+        .iter()
+        .filter(|(_, s)| matches!(s, Seen::Frame(of) if *of != session))
+        .count();
+    (mine, others)
+}
+
+/// The gaps between consecutive times.
+fn gaps(times: &[Duration]) -> Vec<Duration> {
+    times.windows(2).map(|pair| pair[1] - pair[0]).collect()
+}
+
+/// Every pong in the order of its ping, and at most one frame between its
+/// ping going and it coming back (a pong of a ping sent before `seen` began
+/// is checked for its order only).
+fn pongs_kept_up(seen: &[(Duration, Seen)]) {
+    let mut last = 0;
+    let mut pongs = 0;
+    for (at, (_, s)) in seen.iter().enumerate() {
+        let Seen::Pong(n) = *s else {
+            continue;
+        };
+        assert!(n > last, "pong {n} after pong {last}: {seen:?}");
+        last = n;
+        pongs += 1;
+        let Some(sent) = seen.iter().position(|(_, s)| *s == Seen::Ping(n)) else {
+            continue;
+        };
+        let frames = seen[sent..at]
+            .iter()
+            .filter(|(_, s)| matches!(s, Seen::Frame(_)))
+            .count();
+        assert!(frames <= 1, "{frames} frames before pong {n}: {seen:?}");
+    }
+    assert!(pongs >= 10, "the pongs came: {seen:?}");
+}
+
+#[test]
+fn a_frame_waits_for_the_pages_ack_of_the_one_before_or_a_second_and_pongs_never_wait_behind_more_than_one()
+ {
+    let _serial = serial();
+    runtime().block_on(async {
+        let host = Host::start("band");
+        let dir = tempfile::tempdir().unwrap();
+        let hub = TestHub::start_config(config(dir.path(), &host)).await;
+        let mut a = client(&hub).await;
+        a.send(&ClientMsg::EqList { binding: hand2() }).await;
+        listed(&mut a).await;
+        let session = open(&mut a, ON_TRACK).await;
+        let mut pings = 0;
+        // The page acks each frame: they keep coming (the sim's picture
+        // changes four times a second), none held back by an ack's wait.
+        let acked = watch(&mut a, Duration::from_secs(3), true, &mut pings).await;
+        let (times, others) = frame_times(&acked, session);
+        assert_eq!(others, 0, "{acked:?}");
+        assert!(times.len() >= 6, "frames while acked: {acked:?}");
+        assert!(
+            gaps(&times)
+                .iter()
+                .all(|gap| *gap < Duration::from_millis(900)),
+            "no ack's wait ran out: {:?}",
+            gaps(&times)
+        );
+        pongs_kept_up(&acked);
+        // The page stops acking: one frame, then the next only once the
+        // ack's wait (1 s) ran out; the picture never stalls for good.
+        let silent = watch(&mut a, Duration::from_millis(3500), false, &mut pings).await;
+        let (times, others) = frame_times(&silent, session);
+        assert_eq!(others, 0, "{silent:?}");
+        assert!(
+            (2..=5).contains(&times.len()),
+            "one frame a second without acks: {silent:?}"
+        );
+        assert!(
+            gaps(&times)
+                .iter()
+                .all(|gap| *gap >= Duration::from_millis(900)),
+            "each after the ack's wait: {:?}",
+            gaps(&times)
+        );
+        pongs_kept_up(&silent);
+        a.send(&ClientMsg::EqClose).await;
+        let closed = state(&mut a, ON_TRACK).await;
+        assert_eq!(closed.0, EqState::Closed);
+        editor_open(&mut a, ON_TRACK, false).await;
         hub.stop().await;
         host.stop();
     });
