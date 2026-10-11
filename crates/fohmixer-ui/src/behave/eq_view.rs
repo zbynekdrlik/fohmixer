@@ -18,7 +18,7 @@ pub const CROP_MARGIN: f64 = 0.25;
 /// a small pan within the margin asks for nothing new).
 pub const CROP_GRID: f64 = 16.0;
 
-/// How long a changed view rests before the hub hears its crop (ms).
+/// How long a changed view rests before the hub hears its part (ms).
 pub const VIEW_SETTLE_MS: f64 = 150.0;
 
 /// How far inside the part drawn last a first finger lands to reach the

@@ -1167,29 +1167,33 @@ fn a_cropped_editors_guard_sends_its_whole_picture_first() {
     worker.step_at(0.0);
     wait_for("a part", || got.lock().unwrap().len() == 1);
     assert!(!got.lock().unwrap()[0].whole());
-    // The page went back to the whole picture, with no grab since: the
-    // last frame was still a part, so the card's picture is old.
+    // CELÝ EQ: the page went back to the whole picture, and the guard comes
+    // while that grab's whole frame may still be encoded (the PR L
+    // re-review: forgotten, it would leave the card without the edits).
     worker.command_at(
         Command::View {
             session: 1,
             part: None,
         },
-        5.0,
+        45.0,
     );
-    let _answer = guard_at(&mut worker, 1, 10.0);
+    worker.step_at(45.0);
+    assert_eq!(worker.editors[&1].last_crop, None, "a whole frame put");
+    let _answer = guard_at(&mut worker, 1, 50.0);
     let frames = got.lock().unwrap().clone();
-    assert_eq!(frames.len(), 2, "its whole picture at the guard");
-    assert!(frames[1].whole());
-    assert_eq!(frames[1].size, (1349, 809));
+    assert!(matches!(frames.len(), 2 | 3), "{}", frames.len());
+    let last = frames.last().unwrap();
+    assert!(last.whole(), "the guard's whole picture is the last frame");
+    assert_eq!(last.size, (1349, 809));
     assert_eq!(*captured.lock().unwrap(), [false], "forgotten first");
-    // Counted as a grab and a frame sent (its last rate holds it).
+    // Counted as a grab and a frame sent (its last rate holds it): the
+    // part's frame was counted at the step, the step's own is not yet.
     assert_eq!(
         (
             worker.editors[&1].counts.grabs,
             worker.editors[&1].counts.sent
         ),
-        (2, 1),
-        "the encoder's frame is counted at a step"
+        (3, 2)
     );
     // An editor that was whole sends nothing more at its guard.
     let (mut worker, handle, _) = self::worker();

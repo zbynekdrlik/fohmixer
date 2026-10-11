@@ -1327,6 +1327,10 @@ test.describe("The Pro-Q 4 screen's part in sight", () => {
     expect(stripAt.x, JSON.stringify({ old, stripAt })).toBeGreaterThan(right + 16);
     expect(onPartAt.x, JSON.stringify({ old, onPartAt })).toBeLessThan(right - 16);
     expect(onPartAt.x, JSON.stringify({ old, onPartAt })).toBeGreaterThan(old[0] + 16);
+    for (const at of [stripAt, onPartAt]) {
+      expect(at.y, JSON.stringify({ old, at })).toBeGreaterThan(old[1] + 16);
+      expect(at.y, JSON.stringify({ old, at })).toBeLessThan(old[1] + old[3] - 16);
+    }
     // The strip's finger waits: the note, its record, nothing to the editor.
     await expect(stale).toHaveAttribute("data-shown", "true");
     const refused = await until(

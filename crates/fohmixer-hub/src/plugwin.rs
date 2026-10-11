@@ -974,10 +974,13 @@ struct Editor {
     put: f64,
     /// The page's inputs its pictures show (PR J).
     shown: Shown,
-    /// The part of the picture its page shows (PR L; none: the whole) and
-    /// the part the last frame carried (a new part of equal pixels goes).
+    /// The part of the picture its page shows (PR L; none: the whole), the
+    /// part the last frame carried (a new part of equal pixels goes), and
+    /// whether a part ever went to the encoder (its guard sends the whole
+    /// picture for its card).
     part: Option<Part>,
     last_crop: Option<Crop>,
+    parted: bool,
     /// When it was last grabbed and when its minute began (worker ms).
     grabbed: f64,
     minute: f64,
@@ -1507,6 +1510,7 @@ impl Worker {
                         shown: Shown::default(),
                         part: None,
                         last_crop: None,
+                        parted: false,
                         grabbed: f64::NEG_INFINITY,
                         minute: now,
                         counts: Counts::default(),
@@ -1837,6 +1841,7 @@ impl Worker {
         editor.last = Some(Arc::clone(&pixels));
         editor.last_shown = shown;
         editor.last_crop = crop;
+        editor.parted |= crop.is_some();
         editor.put = now;
         self.encoder.put(Job {
             session,
@@ -1976,11 +1981,12 @@ impl Worker {
         self.encoder.forget(session);
         // A cropped editor's card gets its whole picture now, before the
         // guard moves it (PR L review: the edits at 2× and more were only
-        // ever in parts, so the card kept the picture from before them).
+        // ever in parts, so the card kept the picture from before them; and
+        // the whole frame after CELÝ EQ may be the one just forgotten).
         // Counted as the worker's frames are (its last rate holds it). One
         // that was whole all along sends nothing more: under 2× nothing
         // edits it, so the frame just forgotten showed no edit.
-        let cropped = editor.part.is_some() || editor.last_crop.is_some();
+        let cropped = editor.part.is_some() || editor.parted;
         if let Some(sink) = editor.sink.take().filter(|_| cropped) {
             let started = Instant::now();
             let grabbed = self.backend.grab(&editor.taken);
