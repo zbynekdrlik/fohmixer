@@ -1461,7 +1461,13 @@ async fn the_worker_thread_serves_its_handle_and_ends_at_the_stop() {
     tokio::time::timeout(bounded, plugwin.release(2, false))
         .await
         .unwrap();
-    assert!(heard.lock().unwrap().is_empty());
+    // Its editor's last part of a minute, at its release (the PR I review),
+    // and nothing else.
+    let heard = heard.lock().unwrap().clone();
+    assert!(
+        matches!(heard.as_slice(), [PlugwinEvent::Rate { session: 1, .. }]),
+        "{heard:?}"
+    );
 }
 
 /// A page's picture area (PR G).
