@@ -98,7 +98,7 @@ The owner's decisions (#71): the real editor as a live picture; touches as **rea
 4. [x] SimLive plug-in devices, the harness `/sim/eq`, Python tests.
 5. [x] The page: cards, the EQ screen, the touch state machine, binary frames; CSS (the mockup's look).
 6. [x] E2E (both projects): list, open, frames arrive, a drag reaches the simulated backend at the mapped coordinates, exit closes with the guard first, a second context sees the lock, the console clean.
-7. [ ] The isolated check on the PC against Carla (the probe CLI), recorded on #71; only then the first open in the band Live, then the owner's demonstration.
+7. [ ] The isolated check on the PC against Carla (the probe CLI), recorded on #71; only then the first open in the band Live, then the owner's demonstration. Done except the owner's demonstration: on 0.1.0-dev.48 (2026-10-10) `eq-probe` passed against Carla's bridge and the first open in the band Live passed (`take` → `opened`, the close's `closed` with no `problem`), recorded on #71.
 8. [x] Docs: `plugin-window.md` (the inert spot, the backend), `ui-rust.md`, `e2e.md`, `live-script.md`, the spec's F28.
 
 ## PR F: pinch zoom on the Pro-Q 4 screen (page only)
@@ -142,7 +142,7 @@ The owner asked for Pro-Q 4 in the aspect ratio of the device that opens it (#71
 2. [x] Hub: `eq/size.rs`; the backend's `room` / `resize` / `client` and `Taken::rect` (`win.rs`, `sim.rs`); the worker's resize, `Sized`, the guard's restore and the release's; the state's areas and size; the router's open with its resize, `eq_area`, the records; `eq-probe --size` and `--min-probe`; tests.
 3. [x] Page: the open with its area at load, `AreaWatch` and `eq_area`, the tap's up 40 ms later; `.cargo/mutants.toml` (the glue).
 4. [x] E2E: `eq.spec.ts` (both projects).
-5. [ ] The PC check against Carla's bridge with the new build: `eq-probe --pid <bridge> --min-probe --size 760x1271 --out <folder outside the repo>` (the `min=` line is Pro-Q's minimum: `MIN_PICTURE` follows it; `after-resize.jpg` shows Pro-Q upright, `field-open.jpg` the field open at the new size, `after-guard.jpg` the field closed at 1349 × 809), recorded on #71 without host names or paths; only then an open in the band Live.
+5. [x] The PC check against Carla's bridge with the new build: `eq-probe --pid <bridge> --min-probe --size 760x1271 --out <folder outside the repo>` (the `min=` line is Pro-Q's minimum: `MIN_PICTURE` follows it; `after-resize.jpg` shows Pro-Q upright, `field-open.jpg` the field open at the new size, `after-guard.jpg` the field closed at 1349 × 809), recorded on #71 without host names or paths; only then an open in the band Live. Done on 0.1.0-dev.49 to .51: Pro-Q 4's minimum is 760 × 335 (`win::PRO_Q_MIN`), Live's window caps an upright picture at 1275 px high (an upright phone's 760 × 1361 came as 760 × 1275), and a resize now lands at the size the editor took (`plugwin::settled`, 0.1.0-dev.51).
 6. [x] Docs: this section, `.claude/rules/plugin-window.md`, `.claude/rules/hub-rust.md`, `.claude/rules/ui-rust.md`, `.claude/rules/e2e.md`, the spec's F28.
 
 ### Review round 1 of PR #74 (the rulings, fixed before the merge)

@@ -360,7 +360,12 @@ impl Placement {
 /// `work`'s right edge there, else one to the left (`known` stands against
 /// that edge, moved in by [`known_rect`]); and the other way when the
 /// window reads that one already (`now`): a rectangle it does not have
-/// before the post lands.
+/// before the post lands. That other way may lie one pixel past the work
+/// area's edge (`known` against the left edge and the window a pixel to
+/// its right, or against the right edge and the window a pixel to its
+/// left; #74's final review, its second note): harmless, it is only the
+/// proof that what was posted before it landed, the known rectangle
+/// follows it before the tap, and no input goes in between.
 pub fn aside(known: Rect, now: Rect, work: Rect) -> Rect {
     let by = |dx: i32| Rect {
         left: known.left + dx,
