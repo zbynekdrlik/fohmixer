@@ -24,9 +24,25 @@
 //! 5. a double tap at `--band` (on a fresh Pro-Q's curve: a new band);
 //! 6. a drag from `--band` to `--to` (updates every 16 ms, a rest with the
 //!    resends, the up at the last point);
-//! 7. a double tap at `--to` (on the band: its frequency text field opens,
+//! 7. with `--paint <n>` (#71 PR M): how long Pro-Q takes to paint an
+//!    input. A contact down on the band at `--to`, then `n` trials. Each
+//!    trial rests [`PAINT_REST`], then waits for a still picture (two
+//!    grabs [`PAINT_GAP`] apart equal; none within [`PAINT_WAIT`]: the
+//!    trial is `unsettled`), injects one update ([`paint_point`]: 8 px up
+//!    and back in turn) and grabs every [`PAINT_POLL`] until the picture
+//!    differs (none within [`PAINT_WAIT`]: `lost`): the time from the
+//!    update to the start of the first grab that differs. The point is
+//!    resent once `KEEPALIVE_MS` passed, checked around every sleep and
+//!    grab (Windows cancels a contact silent for 100 ms). Output:
+//!    `paint=ok n= lost= unsettled=`, `paint_ms_min= paint_ms_p50=
+//!    paint_ms_p95= paint_ms_max= grab_ms_mean=` (`-` with no sample; the
+//!    grabs' mean is the measure's resolution); then the contact back at
+//!    `--to` and its up. Its figure sets `fohmixer_proto::eq::PAINT_MS`;
+//!    Carla's bridge runs on the dummy engine, so no analyzer moves the
+//!    picture meanwhile;
+//! 8. a double tap at `--to` (on the band: its frequency text field opens,
 //!    Pro-Q 4.02's close-crash state);
-//! 8. the close guard, as the hub's (#74 review, round 2): the picture put
+//! 9. the close guard, as the hub's (#74 review, round 2): the picture put
 //!    at [`super::KNOWN_SIZE`] (the size the inert spot was verified at),
 //!    whatever size it has, in two placements each seen to land (the
 //!    window's rectangle for it at the take's place, moved into the work
@@ -37,10 +53,10 @@
 //!    nothing), then a tap on the inert spot (`--inert`, else the hub's
 //!    own, [`super::inert_spot`] of the known width), then the guard's
 //!    wait;
-//! 9. the release (the take's rectangle back when it was changed, the
-//!    z-order as it was) and, with `--close`, a close request to the window
-//!    (Carla's bridge ends with `0xC0000005` on it whatever the plug-in's
-//!    state).
+//! 10. the release (the take's rectangle back when it was changed, the
+//!     z-order as it was) and, with `--close`, a close request to the window
+//!     (Carla's bridge ends with `0xC0000005` on it whatever the plug-in's
+//!     state).
 //!
 //! Once the window is taken, a step that fails still ends a contact it left
 //! down (a cancel at its last point), posts a changed window's own
@@ -48,7 +64,8 @@
 //!
 //! With `--out` every picture is saved there as a JPEG (`frame-NN.jpg`,
 //! then `after-band.jpg`, `after-drag.jpg`, `field-open.jpg`,
-//! `after-guard.jpg`; with `--size` first `after-resize.jpg`): the field
+//! `after-guard.jpg`; with `--size` first `after-resize.jpg`, with
+//! `--paint` `after-paint.jpg` after `after-drag.jpg`): the field
 //! must be open in `field-open` and closed in `after-guard`. `--sim` runs
 //! it on the simulated backend (the CLI's tests). Exit 0, 1 when a step
 //! failed (its line says which), 2 for bad arguments.
@@ -62,12 +79,12 @@ use super::sim::Sim;
 use super::win::probe_backend as platform;
 use super::{
     Backend, GUARD_TAP, KNOWN_SIZE, NOT_ON_TOP, Phase, Pixels, Placement, QUALITY, Rect, STEP,
-    Taken, aside, encode, inert_spot, inside, known_rect, millis, not_landed, placed, resize_over,
-    settled, window_size,
+    Taken, aside, encode, inert_spot, inside, keepalive_due, known_rect, millis, not_landed,
+    placed, resize_over, settled, window_size,
 };
 
 /// The CLI's usage line.
-pub const USAGE: &str = "usage: fohmixer-hub eq-probe --pid <pid> [--frames <n>] [--size <w>x<h>] [--min-probe] [--band <x,y>] [--to <x,y>] [--inert <x,y>] [--out <folder>] [--close] [--sim]";
+pub const USAGE: &str = "usage: fohmixer-hub eq-probe --pid <pid> [--frames <n>] [--size <w>x<h>] [--min-probe] [--paint <n>] [--band <x,y>] [--to <x,y>] [--inert <x,y>] [--out <folder>] [--close] [--sim]";
 /// The picture `--min-probe` asks for (px): far below any Pro-Q size, so
 /// the editor takes its own minimum.
 pub const MIN_PROBE: (u32, u32) = (160, 120);
@@ -100,6 +117,19 @@ pub const SETTLE: Duration = Duration::from_millis(400);
 /// The looks at the taken window's place on top, [`STEP`] apart: past
 /// `FIND_MS` (3 s) the last one fails ([`placed`]).
 pub const TOP_LOOKS: u32 = 300;
+/// `--paint` (#71 PR M): between two grabs of a trial (a grab that takes
+/// longer is followed by the next at once).
+pub const PAINT_POLL: Duration = Duration::from_millis(5);
+/// A trial whose picture did not change within this is lost.
+pub const PAINT_WAIT: Duration = Duration::from_millis(500);
+/// How far an update moves the band (px up, then back).
+pub const PAINT_STEP: i32 = 8;
+/// The rest before each trial (the contact kept alive), so the picture
+/// before it shows the last update.
+pub const PAINT_REST: Duration = Duration::from_millis(150);
+/// Two grabs this far apart that are equal: the picture before a trial
+/// is still (no animation or late paint left, the PR M review).
+pub const PAINT_GAP: Duration = Duration::from_millis(20);
 
 /// The probe's arguments.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -116,6 +146,8 @@ pub struct Args {
     pub size: Option<(u32, u32)>,
     /// Whether to read Pro-Q's own minimum size (PR G).
     pub min_probe: bool,
+    /// The paint trials (#71 PR M; 0: none).
+    pub paint: u32,
 }
 
 /// `x,y` as a point.
@@ -153,6 +185,7 @@ pub fn parse(args: &[&str]) -> Result<Args, String> {
         sim: false,
         size: None,
         min_probe: false,
+        paint: 0,
     };
     let mut pid = None;
     let mut rest = args.iter();
@@ -165,12 +198,14 @@ pub fn parse(args: &[&str]) -> Result<Args, String> {
             "--close" => parsed.close = true,
             "--sim" => parsed.sim = true,
             "--min-probe" => parsed.min_probe = true,
-            "--pid" | "--frames" | "--band" | "--to" | "--inert" | "--out" | "--size" => {
+            "--pid" | "--frames" | "--band" | "--to" | "--inert" | "--out" | "--size"
+            | "--paint" => {
                 let value = rest.next().ok_or(format!("{flag} needs a value"))?;
                 let bad = || format!("{flag} {value:?}");
                 match *flag {
                     "--pid" => pid = Some(value.parse::<u32>().map_err(|_| bad())?),
                     "--frames" => parsed.frames = value.parse().map_err(|_| bad())?,
+                    "--paint" => parsed.paint = value.parse().map_err(|_| bad())?,
                     "--band" => parsed.band = point(value).ok_or_else(bad)?,
                     "--to" => parsed.to = point(value).ok_or_else(bad)?,
                     "--inert" => parsed.inert = Some(point(value).ok_or_else(bad)?),
@@ -227,6 +262,44 @@ pub fn rate(frames: u32, seconds: f64) -> f64 {
     } else {
         0.0
     }
+}
+
+/// The point of paint trial `n` (from 0) on a band at `at`: [`PAINT_STEP`]
+/// px above it, then back at it, in turn (each update moves the curve).
+pub fn paint_point(at: (i32, i32), n: u32) -> (i32, i32) {
+    if n.is_multiple_of(2) {
+        (at.0, at.1 - PAINT_STEP)
+    } else {
+        at
+    }
+}
+
+/// Whether a paint trial `since_ms` after its update is over
+/// ([`PAINT_WAIT`]).
+pub fn paint_over(since_ms: f64) -> bool {
+    since_ms >= millis(PAINT_WAIT)
+}
+
+/// Whether a contact `since_ms` into its rest before a trial rested
+/// [`PAINT_REST`].
+pub fn rested(since_ms: f64) -> bool {
+    since_ms >= millis(PAINT_REST)
+}
+
+/// The value at quantile `q` (0 to 1) of `values`, by nearest rank (none
+/// for no value).
+pub fn percentile(values: &[f64], q: f64) -> Option<f64> {
+    let mut sorted = values.to_vec();
+    sorted.sort_by(f64::total_cmp);
+    let rank = (q * sorted.len() as f64).ceil() as usize;
+    sorted
+        .get(rank.saturating_sub(1).min(sorted.len().saturating_sub(1)))
+        .copied()
+}
+
+/// A paint figure: ms to a tenth, `-` for none (no sample: never 0).
+pub fn ms_text(ms: Option<f64>) -> String {
+    ms.map_or_else(|| "-".to_string(), |ms| format!("{ms:.1}"))
 }
 
 /// The points of a drag from `from` to `to` in `steps` updates, the last
@@ -553,6 +626,133 @@ fn capture(held: &mut Held<'_>, frames: u32, report: &mut Report<'_>) -> Result<
     Ok(())
 }
 
+/// The contact at `at` resent when `KEEPALIVE_MS` passed since `sent`,
+/// its last injection (a silent contact is cancelled after 100 ms).
+fn keep(held: &mut Held<'_>, at: (i32, i32), sent: &mut Instant) -> Result<(), String> {
+    if keepalive_due(millis(sent.elapsed())) {
+        held.touch(Phase::Update, at, "paint")?;
+        *sent = Instant::now();
+    }
+    Ok(())
+}
+
+/// A sleep of `long` with the contact at `at` kept alive.
+fn sleep_kept(
+    held: &mut Held<'_>,
+    at: (i32, i32),
+    long: Duration,
+    sent: &mut Instant,
+) -> Result<(), String> {
+    keep(held, at, sent)?;
+    std::thread::sleep(long);
+    keep(held, at, sent)
+}
+
+/// The picture with the contact at `at` kept alive.
+fn grab_kept(held: &mut Held<'_>, at: (i32, i32), sent: &mut Instant) -> Result<Pixels, String> {
+    let pixels = held.grab().map_err(|why| format!("paint: {why}"))?;
+    keep(held, at, sent)?;
+    Ok(pixels)
+}
+
+/// The contact at `at` kept alive for [`PAINT_REST`], then the picture
+/// once two grabs [`PAINT_GAP`] apart are equal; none within
+/// [`PAINT_WAIT`] (the picture never came to rest).
+fn still_picture(
+    held: &mut Held<'_>,
+    at: (i32, i32),
+    sent: &mut Instant,
+) -> Result<Option<Pixels>, String> {
+    let started = Instant::now();
+    while !rested(millis(started.elapsed())) {
+        sleep_kept(held, at, PAINT_POLL, sent)?;
+    }
+    let waited = Instant::now();
+    let mut last = grab_kept(held, at, sent)?;
+    while !paint_over(millis(waited.elapsed())) {
+        sleep_kept(held, at, PAINT_GAP, sent)?;
+        let now = grab_kept(held, at, sent)?;
+        if now == last {
+            return Ok(Some(now));
+        }
+        last = now;
+    }
+    Ok(None)
+}
+
+/// One paint trial: the update to `at` (the contact down), then the
+/// picture grabbed every [`PAINT_POLL`] until it differs from `before`:
+/// the ms from the update to the start of that grab; none within
+/// [`PAINT_WAIT`]. Each grab's own ms goes to `grabs`.
+fn paint_trial(
+    held: &mut Held<'_>,
+    at: (i32, i32),
+    before: &Pixels,
+    sent: &mut Instant,
+    grabs: &mut Vec<f64>,
+) -> Result<Option<f64>, String> {
+    held.touch(Phase::Update, at, "paint")?;
+    let injected = Instant::now();
+    *sent = injected;
+    while !paint_over(millis(injected.elapsed())) {
+        let since = millis(injected.elapsed());
+        let grabbed = Instant::now();
+        let pixels = grab_kept(held, at, sent)?;
+        grabs.push(millis(grabbed.elapsed()));
+        if pixels != *before {
+            return Ok(Some(since));
+        }
+        sleep_kept(held, at, PAINT_POLL.saturating_sub(grabbed.elapsed()), sent)?;
+    }
+    Ok(None)
+}
+
+/// `--paint`: `trials` paint trials on the band at `at` and their figures;
+/// the contact ends back at `at`.
+fn paint(
+    held: &mut Held<'_>,
+    at: (i32, i32),
+    trials: u32,
+    report: &mut Report<'_>,
+) -> Result<(), String> {
+    held.touch(Phase::Down, at, "paint")?;
+    let mut sent = Instant::now();
+    let (mut samples, mut grabs) = (Vec::new(), Vec::new());
+    let (mut lost, mut unsettled) = (0_u32, 0_u32);
+    let mut last = at;
+    // The updates injected: each one goes to the other point (a skipped
+    // trial injects none, so the next one still moves the band).
+    let mut injected = 0_u32;
+    for _ in 0..trials {
+        let Some(before) = still_picture(held, last, &mut sent)? else {
+            unsettled += 1;
+            continue;
+        };
+        last = paint_point(at, injected);
+        injected += 1;
+        match paint_trial(held, last, &before, &mut sent, &mut grabs)? {
+            Some(ms) => samples.push(ms),
+            None => lost += 1,
+        }
+    }
+    if last != at {
+        held.touch(Phase::Update, at, "paint")?;
+    }
+    held.touch(Phase::Up, at, "paint")?;
+    let grab_mean = (!grabs.is_empty()).then(|| stats(&grabs).0);
+    report.line(&format!(
+        "paint=ok n={trials} lost={lost} unsettled={unsettled}"
+    ))?;
+    report.line(&format!(
+        "paint_ms_min={} paint_ms_p50={} paint_ms_p95={} paint_ms_max={} grab_ms_mean={}",
+        ms_text(percentile(&samples, 0.0)),
+        ms_text(percentile(&samples, 0.5)),
+        ms_text(percentile(&samples, 0.95)),
+        ms_text(percentile(&samples, 1.0)),
+        ms_text(grab_mean),
+    ))
+}
+
 /// After a gesture: the editor's wait to draw it, then its picture saved.
 fn settle(held: &mut Held<'_>, name: &str, report: &mut Report<'_>) -> Result<(), String> {
     std::thread::sleep(SETTLE);
@@ -630,6 +830,10 @@ pub fn run(backend: &mut dyn Backend, args: &Args, out: &mut dyn Write) -> Resul
     let steps = drag(&mut held, band, to)?;
     report.line(&format!("drag=ok steps={steps} to={},{}", to.0, to.1))?;
     settle(&mut held, "after-drag.jpg", &mut report)?;
+    if args.paint > 0 {
+        paint(&mut held, to, args.paint, &mut report)?;
+        settle(&mut held, "after-paint.jpg", &mut report)?;
+    }
     double_tap(&mut held, to, "field")?;
     report.line("field=ok")?;
     settle(&mut held, "field-open.jpg", &mut report)?;

@@ -79,6 +79,12 @@ pub fn counter(elapsed_ms: f64) -> u64 {
     (elapsed_ms / STEP_MS).floor() as u64
 }
 
+/// How many of the injections at `injected` (sim ms) a still picture
+/// shows at `now`: those at least `after` ms old (#71 PR M).
+pub fn painted(injected: &[f64], after: f64, now: f64) -> u64 {
+    injected.iter().filter(|t| now - **t >= after).count() as u64
+}
+
 /// The synthetic picture of `count`: a dark field, a bar whose x moves with
 /// the count, and the count's low bits as blocks in the top-left corner.
 pub fn picture(count: u64, width: u32, height: u32) -> Pixels {
@@ -158,8 +164,20 @@ struct State {
     auto_open: bool,
     /// The editor's points are refused.
     refuse: bool,
-    /// The picture never changes (its counter stays 0).
+    /// The picture never changes (its counter stays 0), unless it paints
+    /// the editor's points (`paint_after`).
     still: bool,
+    /// A still picture changes once per down, and per update that moves,
+    /// this long after it (#71 PR M: Pro-Q painting an input; a contact
+    /// resent where it is changes nothing), the injections' times (sim ms)
+    /// and the last point injected.
+    paint_after: Option<f64>,
+    injected: Vec<f64>,
+    last_point: Option<(i32, i32)>,
+    /// The picture changes at every grab (an animation that never stops:
+    /// the probe's paint trial never finds it still), and the grabs so far.
+    restless: bool,
+    grabs: u64,
     /// How long a grab takes.
     grab_delay: Duration,
     /// Pro-Q's own child window is not there yet (Live shows the editor's
@@ -239,6 +257,11 @@ impl Sim {
             auto_open: true,
             refuse: false,
             still: false,
+            paint_after: None,
+            injected: Vec::new(),
+            last_point: None,
+            restless: false,
+            grabs: 0,
             grab_delay: Duration::ZERO,
             child_late: false,
             topmost_late: false,
@@ -292,6 +315,22 @@ impl SimHandle {
     /// Whether the picture stays the same.
     pub fn still(&self, on: bool) {
         self.lock().still = on;
+    }
+
+    /// Whether, and how long after, a still picture shows each down and
+    /// each update that moves (#71 PR M: the probe's paint measure).
+    pub fn paint_after(&self, delay: Option<Duration>) {
+        self.lock().paint_after = delay.map(|d| d.as_secs_f64() * 1000.0);
+    }
+
+    /// Whether the picture changes at every grab (#71 PR M).
+    pub fn restless(&self, on: bool) {
+        self.lock().restless = on;
+    }
+
+    /// The grabs so far.
+    pub fn grabs(&self) -> u64 {
+        self.lock().grabs
     }
 
     /// How long each grab takes from now on (the worker waits for it).
@@ -534,14 +573,17 @@ impl Backend for Sim {
         // A slow grab waits without the lock (a test reads the records).
         let delay = self.lock().grab_delay;
         std::thread::sleep(delay);
-        let state = self.lock();
+        let mut state = self.lock();
         let Some(size) = state.windows.get(&taken.window).map(|w| w.size) else {
             return Err("no such window".to_string());
         };
-        let count = if state.still {
-            0
-        } else {
-            counter(state.started.elapsed().as_secs_f64() * 1000.0)
+        let now = state.started.elapsed().as_secs_f64() * 1000.0;
+        state.grabs += 1;
+        let count = match (state.restless, state.still, state.paint_after) {
+            (true, _, _) => state.grabs,
+            (false, false, _) => counter(now),
+            (false, true, None) => 0,
+            (false, true, Some(after)) => painted(&state.injected, after, now),
         };
         let drawn = state
             .drawn
@@ -563,6 +605,13 @@ impl Backend for Sim {
             return Err(REFUSED.to_string());
         }
         let t = state.started.elapsed().as_secs_f64() * 1000.0;
+        let moved = phase == Phase::Down || state.last_point != Some(at);
+        if phase.checked() && moved && state.paint_after.is_some() {
+            state.injected.push(t);
+        }
+        if phase.checked() {
+            state.last_point = Some(at);
+        }
         state.record(json!({
             "op": "touch",
             "window": taken.window.0,
@@ -975,5 +1024,55 @@ mod tests {
         sim.live_opened();
         let taken = sim.take(handle.windows()[0]).unwrap();
         assert_eq!(sim.grab(&taken).unwrap(), picture(0, 1349, 809));
+        // A touch changes nothing unless it paints.
+        sim.touch(&taken, Phase::Update, (10, 10)).unwrap();
+        assert_eq!(sim.grab(&taken).unwrap(), picture(0, 1349, 809));
+    }
+
+    #[test]
+    fn a_still_sim_paints_each_down_and_update_after_its_delay() {
+        assert_eq!(painted(&[], 30.0, 100.0), 0);
+        assert_eq!(painted(&[10.0, 50.0, 80.0], 30.0, 80.0), 2);
+        assert_eq!(painted(&[50.0], 30.0, 80.0_f64.next_down()), 0);
+        // 300 ms: a loaded runner's stall never reaches it.
+        let wait = Duration::from_millis(350);
+        let (mut sim, handle) = Sim::new(None);
+        handle.still(true);
+        handle.paint_after(Some(Duration::from_millis(300)));
+        sim.live_opened();
+        let taken = sim.take(handle.windows()[0]).unwrap();
+        let shows = |sim: &mut Sim, n: u64| sim.grab(&taken).unwrap() == picture(n, 1349, 809);
+        assert!(shows(&mut sim, 0));
+        sim.touch(&taken, Phase::Down, (10, 10)).unwrap();
+        // An up or a cancel, even at another point, paints nothing.
+        sim.touch(&taken, Phase::Up, (20, 20)).unwrap();
+        sim.touch(&taken, Phase::Cancel, (30, 30)).unwrap();
+        assert!(shows(&mut sim, 0), "not yet");
+        std::thread::sleep(wait);
+        assert!(shows(&mut sim, 1), "the down only");
+        sim.touch(&taken, Phase::Update, (12, 10)).unwrap();
+        std::thread::sleep(wait);
+        assert!(shows(&mut sim, 2), "the update");
+        // Resent where it is, an update changes nothing; a down always does.
+        sim.touch(&taken, Phase::Update, (12, 10)).unwrap();
+        std::thread::sleep(wait);
+        assert!(shows(&mut sim, 2), "resent");
+        sim.touch(&taken, Phase::Down, (12, 10)).unwrap();
+        std::thread::sleep(wait);
+        assert!(shows(&mut sim, 3), "a down");
+    }
+
+    #[test]
+    fn a_restless_sim_changes_its_picture_at_every_grab() {
+        let (mut sim, handle) = Sim::new(None);
+        handle.still(true);
+        handle.restless(true);
+        sim.live_opened();
+        let taken = sim.take(handle.windows()[0]).unwrap();
+        let first = sim.grab(&taken).unwrap();
+        assert_ne!(sim.grab(&taken).unwrap(), first);
+        assert_eq!(handle.grabs(), 2);
+        handle.restless(false);
+        assert_eq!(sim.grab(&taken).unwrap(), picture(0, 1349, 809), "still");
     }
 }
