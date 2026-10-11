@@ -1,7 +1,7 @@
 use serde_json::Value;
 
 use super::*;
-use crate::plugwin::sim::{REFUSED, SimHandle};
+use crate::plugwin::sim::{REFUSED, REFUSED_QUIET, SimHandle};
 use crate::plugwin::{CAPTURE_MS, KEEPALIVE_MS, NOT_BACK, WindowId};
 
 fn args(pid: u32) -> Args {
@@ -650,6 +650,75 @@ fn a_hold_probe_finds_the_hold_that_makes_a_menu_closes_it_and_the_drag_threshol
         .map(|r| r["quiet"].clone())
         .collect();
     assert_eq!(quiet, [serde_json::json!(true), serde_json::json!(false)]);
+}
+
+#[test]
+fn a_hold_probe_closes_a_menu_a_threshold_move_opened_and_goes_on_when_the_property_is_refused() {
+    // The PR N re-review: a hold shorter than the threshold's rest makes
+    // its 2 px move (no drag) a right click too; and Windows may refuse the
+    // property on another process's window.
+    let (lines, handle, _) = hold_probe(|h| {
+        h.hold_menu(Some(Duration::from_millis(250)));
+        h.refuse_quiet(true);
+    });
+    let at = lines
+        .iter()
+        .position(|l| l.starts_with("hold="))
+        .expect("the hold lines");
+    assert_eq!(
+        lines[at..at + 7],
+        [
+            "hold=400:menu",
+            "menu_closed=ok",
+            "drag_px=menu",
+            "band_back=same",
+            "hold_after_drag=2400:no",
+            &format!("hold_quiet=refused:{REFUSED_QUIET}"),
+            "field=ok",
+        ]
+    );
+    assert_eq!(handle.windows().len(), 1, "both menus closed");
+    // Two inert-spot taps closed them: after the hold, after the 2 px move.
+    let ops = ops(&handle);
+    let taps: Vec<usize> = ops
+        .iter()
+        .enumerate()
+        .filter(|(_, o)| **o == op("touch", "down", 546, 15))
+        .map(|(i, _)| i)
+        .collect();
+    let two_px = ops
+        .iter()
+        .position(|o| *o == op("touch", "update", 511, 279))
+        .expect("the 2 px move");
+    assert_eq!(taps.len(), 3, "two menus and the guard: {taps:?}");
+    assert!(taps[0] < two_px && two_px < taps[1], "{taps:?} {two_px}");
+    // Turned off (refused), then on again.
+    let quiet: Vec<Value> = handle
+        .records()
+        .into_iter()
+        .filter(|r| r["op"] == "press_and_hold")
+        .map(|r| r["quiet"].clone())
+        .collect();
+    assert_eq!(quiet, [serde_json::json!(true), serde_json::json!(false)]);
+}
+
+#[test]
+fn a_hold_probe_is_refused_at_another_size_before_any_gesture() {
+    let (mut sim, handle, _) = one_window(42);
+    let mut probe = args(42);
+    probe.frames = 1;
+    probe.hold = true;
+    probe.size = Some((1000, 700));
+    let mut out = Vec::new();
+    assert_eq!(
+        run(&mut sim, &probe, &mut out),
+        Err("hold: at the editor's known size only (1349x809, no --size)".to_string())
+    );
+    assert!(
+        ops(&handle).iter().all(|o| o.0 != "touch"),
+        "no gesture: {:?}",
+        ops(&handle)
+    );
 }
 
 #[test]

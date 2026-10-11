@@ -59,6 +59,8 @@ pub const STEP_MS: f64 = 250.0;
 pub const RECORD_FILE: &str = "eq-sim.jsonl";
 /// Why the sim refuses a point.
 pub const REFUSED: &str = "the point is another window's";
+/// Why the sim refuses to turn press-and-hold off (#71 PR N).
+pub const REFUSED_QUIET: &str = "the property is refused";
 /// What a simulated window has beyond its picture (px): Live's editor
 /// window, 1365 × 848 around Pro-Q's 1349 × 809.
 pub const SIM_FRAME: (i32, i32) = (16, 39);
@@ -204,8 +206,11 @@ struct State {
     /// Pro-Q's context menu opens, a window of the editor's process, which
     /// the next down closes. None: never.
     hold_menu: Option<f64>,
-    /// Press-and-hold is off for the editor's window (its property, PR N).
+    /// Press-and-hold is off for the editor's window (its property, PR N),
+    /// and whether turning it off is refused (Windows refusing the property
+    /// on another process's window).
     quiet: bool,
+    quiet_refused: bool,
     menu: Option<WindowId>,
     /// The picture changes at every grab (an animation that never stops:
     /// the probe's paint trial never finds it still), and the grabs so far.
@@ -296,6 +301,7 @@ impl Sim {
             contact: None,
             hold_menu: None,
             quiet: false,
+            quiet_refused: false,
             menu: None,
             restless: false,
             grabs: 0,
@@ -365,6 +371,11 @@ impl SimHandle {
     /// right click that opens a menu (#71 PR N: Windows' press-and-hold).
     pub fn hold_menu(&self, after: Option<Duration>) {
         self.lock().hold_menu = after.map(|d| d.as_secs_f64() * 1000.0);
+    }
+
+    /// Whether turning press-and-hold off is refused (#71 PR N).
+    pub fn refuse_quiet(&self, on: bool) {
+        self.lock().quiet_refused = on;
     }
 
     /// Whether the picture changes at every grab (#71 PR M).
@@ -729,8 +740,11 @@ impl Backend for Sim {
 
     fn press_and_hold(&mut self, taken: &Taken, quiet: bool) -> Result<(), String> {
         let mut state = self.lock();
-        state.quiet = quiet;
         state.record(json!({"op": "press_and_hold", "window": taken.window.0, "quiet": quiet}));
+        if quiet && state.quiet_refused {
+            return Err(REFUSED_QUIET.to_string());
+        }
+        state.quiet = quiet;
         Ok(())
     }
 }

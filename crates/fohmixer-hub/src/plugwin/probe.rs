@@ -981,7 +981,9 @@ fn drag_back(held: &mut Held<'_>, from: (i32, i32), at: (i32, i32)) -> Result<()
 }
 
 /// `--hold` (#71 PR N) on the band at `at`, the inert spot `spot` closing
-/// a menu, its figures to `report`.
+/// a menu, its figures to `report`. A step that fails (a touch refused)
+/// ends the probe there: the window and any contact are handed back, but
+/// a menu that step opened stays open (the probe's line says which step).
 fn hold(
     held: &mut Held<'_>,
     at: (i32, i32),
@@ -1037,8 +1039,14 @@ fn hold(
         std::thread::sleep(TAP_APART);
         let quiet = held_contact(held, at, HOLD_LONG, false, base, "hold-quiet.jpg", report);
         let on = held.backend.press_and_hold(&held.taken, false);
-        let quiet = quiet?;
-        on?;
+        let quiet = match (quiet, on) {
+            (Ok(quiet), Ok(())) => quiet,
+            (Err(why), Ok(())) => return Err(why),
+            (Ok(_), Err(on)) => return Err(format!("hold: press-and-hold back on: {on}")),
+            (Err(why), Err(on)) => {
+                return Err(format!("{why}; hold: press-and-hold back on: {on}"));
+            }
+        };
         report.line(&format!("hold_quiet={}", hold_text(&[(HOLD_LONG, quiet)])))?;
         if quiet {
             close_menu(held, base, spot)?;
@@ -1114,6 +1122,14 @@ pub fn run(backend: &mut dyn Backend, args: &Args, out: &mut dyn Write) -> Resul
         now = landed.client;
         settle(&mut held, "after-resize.jpg", &mut report)?;
     }
+    // `--hold` closes a menu with the inert spot's tap, known at one size:
+    // refused before any gesture.
+    if args.hold && now != KNOWN_SIZE {
+        return Err(format!(
+            "hold: at the editor's known size only ({}x{}, no --size)",
+            KNOWN_SIZE.0, KNOWN_SIZE.1
+        ));
+    }
     let (band, to) = (
         scaled(args.band, original, now),
         scaled(args.to, original, now),
@@ -1126,13 +1142,6 @@ pub fn run(backend: &mut dyn Backend, args: &Args, out: &mut dyn Write) -> Resul
     report.line(&format!("drag=ok steps={steps} to={},{}", to.0, to.1))?;
     settle(&mut held, "after-drag.jpg", &mut report)?;
     if args.hold {
-        // A menu is closed with the inert spot's tap, known at one size.
-        if now != KNOWN_SIZE {
-            return Err(format!(
-                "hold: at the editor's known size only ({}x{}, no --size)",
-                KNOWN_SIZE.0, KNOWN_SIZE.1
-            ));
-        }
         let spot = args.inert.unwrap_or_else(|| inert_spot(KNOWN_SIZE.0));
         hold(&mut held, to, spot, &mut report)?;
         settle(&mut held, "after-hold.jpg", &mut report)?;
