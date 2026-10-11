@@ -816,15 +816,18 @@ async fn a_view_brings_the_part_in_sight_in_later_frames() {
     let dir = tempfile::tempdir().unwrap();
     let mut rig = rig(dir.path());
     let outbox = held_open(&mut rig).await;
-    let crop = fohmixer_proto::eq::Crop {
-        x: 96,
-        y: 48,
-        w: 320,
-        h: 160,
+    let part = fohmixer_proto::eq::Part {
+        crop: fohmixer_proto::eq::Crop {
+            x: 96,
+            y: 48,
+            w: 320,
+            h: 160,
+        },
+        picture: (1349, 809),
     };
     rig.router.handle(RouterMsg::EqView {
         client: 1,
-        crop: Some(crop),
+        part: Some(part),
     });
     assert_eq!(whats(&rig.records), vec!["view"]);
     let mut corner = (0, 0);

@@ -31,11 +31,13 @@
 //! it already left is dropped.
 //!
 //! **The part the page shows (PR L):** at 2× and more the page tells the
-//! hub the part of the picture it shows, with a margin ([`Crop`],
-//! `eq_view`), and the hub sends only that part: a frame's header names its
-//! corner in the picture and the whole picture's size, and the page draws
-//! it there (outside it, the page keeps what it drew; out of sight). Under
-//! 2×, or with no crop, frames carry the whole picture (corner 0, 0).
+//! hub the part of the picture it shows, with a margin, and the picture's
+//! size it drew ([`Part`], `eq_view`), and the hub sends only that part of
+//! a picture of that size: a frame's header names its corner in the
+//! picture and the whole picture's size, and the page draws it there
+//! (outside it, the page keeps what it drew; out of sight). Under 2×, with
+//! no part, or for a picture of another size, frames carry the whole
+//! picture (corner 0, 0).
 //!
 //! **Which input a picture shows (PR J):** a page numbers its inputs of an
 //! open editor (`eq_input`'s `n`, from 1, every phase), and each frame says
@@ -78,6 +80,17 @@ pub struct Crop {
     pub y: u32,
     pub w: u32,
     pub h: u32,
+}
+
+/// The part of the picture a page asks for (PR L): `crop` of a picture of
+/// `picture` px, the size the page drew. The hub cuts only a grab of that
+/// size (the PR L re-review): a picture of another size goes whole until
+/// the page's part for it lands, and one back at that size is cut again,
+/// so the page and the hub never disagree about which part goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Part {
+    pub crop: Crop,
+    pub picture: (u32, u32),
 }
 
 /// How long Pro-Q gets to paint an input before a picture counts as

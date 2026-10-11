@@ -19,7 +19,7 @@
 
 use std::collections::BTreeMap;
 
-use fohmixer_proto::eq::Crop;
+use fohmixer_proto::eq::Part;
 use serde_json::{Value, json};
 
 use super::moves::round1;
@@ -53,10 +53,11 @@ pub fn eq_touch(t: f64, what: &str, pointer: i32, at: (f64, f64), zoom: f64) -> 
 }
 
 /// The part of the picture the page asked the hub for at `t` (#71 PR L):
-/// `crop` its corner and size, none for the whole picture. Essential: the
-/// timeline tells whole frames from parts.
-pub fn eq_view(t: f64, crop: Option<Crop>) -> Value {
-    json!({"ev": "eq_view", "t": t, "crop": crop.map(|c| [c.x, c.y, c.w, c.h])})
+/// its crop and the picture's size it is of, none for the whole picture,
+/// in the shape of the hub's `view` record. Essential: the timeline tells
+/// whole frames from parts.
+pub fn eq_view(t: f64, part: Option<Part>) -> Value {
+    json!({"ev": "eq_view", "t": t, "part": part})
 }
 
 /// A finger's moves since its last summary: how many, the first and the
@@ -188,19 +189,26 @@ mod tests {
 
     #[test]
     fn a_view_is_its_part_or_the_whole_picture() {
-        let crop = Crop {
-            x: 96,
-            y: 48,
-            w: 320,
-            h: 160,
+        let part = Part {
+            crop: fohmixer_proto::eq::Crop {
+                x: 96,
+                y: 48,
+                w: 320,
+                h: 160,
+            },
+            picture: (1349, 809),
         };
         assert_eq!(
-            eq_view(5.0, Some(crop)),
-            json!({"ev": "eq_view", "t": 5.0, "crop": [96, 48, 320, 160]})
+            eq_view(5.0, Some(part)),
+            json!({
+                "ev": "eq_view",
+                "t": 5.0,
+                "part": {"crop": {"x": 96, "y": 48, "w": 320, "h": 160}, "picture": [1349, 809]}
+            })
         );
         assert_eq!(
             eq_view(6.0, None),
-            json!({"ev": "eq_view", "t": 6.0, "crop": null})
+            json!({"ev": "eq_view", "t": 6.0, "part": null})
         );
     }
 

@@ -54,9 +54,9 @@ def lat_rows(page):
 class EqScreen(ReportCase):
     def session(self, log):
         """Socket 7's pings and one trace of its EQ screen from page time p0
-        (hub BASE + 1000): a drag, a finger refused on an old picture, a tap
-        and two seconds of drawing; the hub's stale down, a rate and a close's
-        frames record."""
+        (hub BASE + 1000): a drag, a finger refused on an old picture, a tap,
+        a finger refused on a strip not drawn yet and two seconds of drawing;
+        the hub's stale down, a rate and a close's frames record."""
         log.pings(7, BASE, BASE + 5000)
         p0 = BASE + 1000 - OFFSET
         log.trace(
@@ -79,6 +79,9 @@ class EqScreen(ReportCase):
                 finger(p0 + 260, "up", 4),
                 finger(p0 + 1200, "down", 5),
                 finger(p0 + 1240, "up", 5),
+                finger(p0 + 1400, "down", 6),
+                finger(p0 + 1400, "uncovered", 6),
+                finger(p0 + 1430, "up", 6),
                 lat(p0 + 100, 22, [80.0, 120.5, 95.0], 9.5),
                 lat(p0 + 1100, 18, [70.0, 210.0], 14.0, lost=2),
             ],
@@ -130,6 +133,7 @@ class EqScreen(ReportCase):
                 for name in (
                     "eq_fingers",
                     "eq_stale",
+                    "eq_uncovered",
                     "eq_hub_stale",
                     "eq_lat_n",
                     "eq_lat_lost",
@@ -143,8 +147,9 @@ class EqScreen(ReportCase):
                 )
             },
             {
-                "eq_fingers": "3",
+                "eq_fingers": "4",
                 "eq_stale": "1",
+                "eq_uncovered": "1",
                 "eq_hub_stale": "1",
                 "eq_lat_n": "5",
                 "eq_lat_lost": "2",
@@ -168,6 +173,9 @@ class EqScreen(ReportCase):
                 ("up", "4"),
                 ("down", "5"),
                 ("up", "5"),
+                ("down", "6"),
+                ("uncovered", "6"),
+                ("up", "6"),
             ],
             "in time order",
         )
@@ -201,8 +209,17 @@ class EqScreen(ReportCase):
         log.pings(7, BASE, BASE + 2000)
         summary, page, _ = self.report(log, BASE, BASE + 5000)
         self.assertEqual(
-            [summary[name] for name in ("eq_fingers", "eq_stale", "eq_lat_n", "eq_frames_drawn")],
-            ["0", "0", "0", "0"],
+            [
+                summary[name]
+                for name in (
+                    "eq_fingers",
+                    "eq_stale",
+                    "eq_uncovered",
+                    "eq_lat_n",
+                    "eq_frames_drawn",
+                )
+            ],
+            ["0", "0", "0", "0", "0"],
         )
         self.assertEqual(summary["eq_lat_p50_ms"], "n/a")
         self.assertEqual(finger_rows(page), [])

@@ -18,7 +18,7 @@
 use std::rc::Rc;
 
 use fohmixer_proto::client::ClientMsg;
-use fohmixer_proto::eq::{Area, Crop, EqItem, EqLock, FrameHead, frame_parts};
+use fohmixer_proto::eq::{Area, EqItem, EqLock, FrameHead, Part, frame_parts};
 use fohmixer_proto::layout::Binding;
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
@@ -132,9 +132,10 @@ impl LiveStore {
         let _ = self.eq.try_set(Some(asked(instance, path, sent)));
     }
 
-    /// The part of the picture the page shows (PR L; none: the whole).
-    pub fn eq_view(self, crop: Option<Crop>) {
-        self.send(&ClientMsg::EqView { crop });
+    /// The part of the picture the page shows (PR L; none: the whole), of
+    /// the picture's size it drew.
+    pub fn eq_view(self, part: Option<Part>) {
+        self.send(&ClientMsg::EqView { part });
     }
 
     /// The open editor's picture area changed (CSS px, PR G).

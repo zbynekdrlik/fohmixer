@@ -442,6 +442,7 @@ class Stall(ReportCase):
                 "detail_slid",
                 "eq_fingers",
                 "eq_stale",
+                "eq_uncovered",
                 "eq_hub_stale",
                 "eq_lat_n",
                 "eq_lat_lost",

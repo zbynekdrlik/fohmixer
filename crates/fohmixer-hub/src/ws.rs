@@ -444,7 +444,7 @@ fn handle_text(hub: &Hub, conn: &mut Conn, text: &str) {
                 seen,
             },
         }),
-        Ok(ClientMsg::EqView { crop }) => hub.route(RouterMsg::EqView { client, crop }),
+        Ok(ClientMsg::EqView { part }) => hub.route(RouterMsg::EqView { client, part }),
         Ok(ClientMsg::EqClose) => hub.route(RouterMsg::EqClose { client }),
         // Straight to the outbox (PR I): the writer's next frame may go.
         Ok(ClientMsg::EqFrameAck { session, seq }) => {

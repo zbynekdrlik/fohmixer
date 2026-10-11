@@ -250,7 +250,7 @@ pub enum RouterMsg {
     /// The part of its editor's picture a page shows (PR L).
     EqView {
         client: ClientId,
-        crop: Option<fohmixer_proto::eq::Crop>,
+        part: Option<fohmixer_proto::eq::Part>,
     },
     /// A page leaves its editor.
     EqClose {
@@ -636,7 +636,7 @@ impl Router {
                 resized,
             } => self.eq_resized(&key, session, resized.as_ref()),
             RouterMsg::EqInput { client, input } => self.eq_input(client, input),
-            RouterMsg::EqView { client, crop } => self.eq_view(client, crop),
+            RouterMsg::EqView { client, part } => self.eq_view(client, part),
             RouterMsg::EqClose { client } => self.eq_close(client),
             RouterMsg::EqClosed {
                 key,

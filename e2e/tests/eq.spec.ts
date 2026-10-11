@@ -536,7 +536,12 @@ test.describe("The Pro-Q 4 screen", () => {
       (all) => all.some((r: any) => r.what === "closed"),
       "the hub's eq records",
     );
-    expect(eq.map((r: any) => r.what)).toEqual(["take", "open", "resize", "opened", "touch", "touch", "close", "closed"]);
+    // At 3× the page asked for the part in sight (PR L), once the view
+    // rested: its `view`, of the picture's size it drew.
+    const views = eq.filter((r: any) => r.what === "view");
+    expect(views.length, JSON.stringify(views)).toBeGreaterThanOrEqual(1);
+    expect(views[views.length - 1].part.picture).toEqual([picture.width, picture.height]);
+    expect(eq.filter((r: any) => r.what !== "view").map((r: any) => r.what)).toEqual(["take", "open", "resize", "opened", "touch", "touch", "close", "closed"]);
     const resize = eq.find((r: any) => r.what === "resize");
     expect([resize.w, resize.h, resize.client_w, resize.client_h, resize.ok]).toEqual([picture.width, picture.height, picture.width, picture.height, true]);
     expect(eq.filter((r: any) => r.what === "touch").map((r: any) => r.why)).toEqual(["down", "up"]);
@@ -1221,6 +1226,12 @@ test.describe("The Pro-Q 4 screen's part in sight", () => {
     );
     expect(part[0] + part[2] <= size.width && part[1] + part[3] <= size.height, JSON.stringify(part)).toBe(true);
     expect(part[2] < size.width && part[3] < size.height, JSON.stringify(part)).toBe(true);
+    // The part drawn is the frames' (its corner, x before y: the PR L
+    // re-review) and holds the point the tap zoomed on.
+    const last = frames_.filter((f) => f.x > 0 && f.y > 0).pop()!;
+    expect([part[0], part[1]], JSON.stringify({ part, last })).toEqual([last.x, last.y]);
+    const middle = { x: size.width / 2, y: size.height / 2 };
+    expect(part[0] <= middle.x && middle.x <= part[0] + part[2] && part[1] <= middle.y && middle.y <= part[1] + part[3], JSON.stringify(part)).toBe(true);
     const area = screen.getByTestId("eq-area");
     const at = await centre(area);
     const tapFrom = (await simEq.records()).length;
@@ -1236,6 +1247,110 @@ test.describe("The Pro-Q 4 screen's part in sight", () => {
       (found) => found.length >= 2,
       "whole frames again",
     );
+    const closing = (await simEq.records()).length;
+    await screen.getByTestId("eq-exit").click();
+    await expect(page.getByTestId("eq-screen")).toHaveCount(0);
+    await closedWithGuard(closing);
+    await editorOpen(trackPath, false);
+  });
+
+  test("after a pan past the margin a finger on the strip not drawn yet waits; one on the part drawn reaches the editor, and one on the strip once its part landed", async ({ page }) => {
+    // The PR L re-review: only a finger landing on old pixels waits (the
+    // page's `lands_on`), never one on the part drawn last.
+    const since = Date.now();
+    await openSurface(page);
+    const { onTrack, trackPath } = await hand2Cards(page);
+    await editorOpen(trackPath, false);
+    await onTrack.getByTestId("eq-open").click();
+    const screen = await openScreen(page, trackPath);
+    const canvas = screen.getByTestId("eq-canvas");
+    const area = screen.getByTestId("eq-area");
+    const stale = screen.getByTestId("eq-stale");
+    const size = await pictureSize(canvas);
+    const map = await zoomIn(screen, { x: size.width / 2, y: size.height / 2 });
+    const drawnPart = async () => (await canvas.getAttribute("data-part"))!.split(",").map(Number);
+    const old = await until(drawnPart, ([x, y]) => x > 0 && y > 0, "the part in sight drawn");
+    await caughtUp(screen);
+    // Two fingers move the view half the area to the right (a pan at 3×):
+    // the picture slides left by that many page px.
+    const box = (await area.boundingBox())!;
+    const shift = Math.round(box.width / 2);
+    const mid = { x: Math.round(box.x + box.width * 0.75), y: Math.round(box.y + box.height / 2) };
+    const panned = (p: At) => {
+      const at = map.toPage(p);
+      return { x: at.x - shift, y: at.y };
+    };
+    // On the strip the pan brought into sight (beyond the part drawn), and
+    // on the part drawn (current pixels), at the picture's middle height.
+    const right = old[0] + old[2];
+    const strip = panned({ x: right + 40, y: size.height / 2 });
+    const onPart = panned({ x: right - 60, y: size.height / 2 });
+    expect(strip.x, JSON.stringify({ strip, box })).toBeLessThan(box.x + box.width - 20);
+    const before = (await simEq.records()).length;
+    await area.evaluate(
+      async (el, { mid, half, shift, taps }) => {
+        const frame = () => new Promise<void>((done) => requestAnimationFrame(() => done()));
+        const fire = (type: string, id: number, x: number, y: number, primary: boolean) =>
+          el.dispatchEvent(
+            new PointerEvent(type, { pointerId: id, pointerType: "touch", isPrimary: primary, clientX: x, clientY: y, bubbles: true, cancelable: true }),
+          );
+        fire("pointerdown", 41, mid.x - half, mid.y, true);
+        fire("pointerdown", 42, mid.x + half, mid.y, false);
+        await frame();
+        await frame();
+        const steps = 8;
+        for (let i = 1; i <= steps; i++) {
+          const dx = Math.round((shift * i) / steps);
+          fire("pointermove", 41, mid.x - half - dx, mid.y, true);
+          fire("pointermove", 42, mid.x + half - dx, mid.y, false);
+          await frame();
+        }
+        await frame();
+        fire("pointerup", 41, mid.x - half - shift, mid.y, true);
+        fire("pointerup", 42, mid.x + half - shift, mid.y, false);
+        await frame();
+        // At once (the view rests 150 ms before the hub hears of it, so the
+        // strip's part is not drawn yet): a tap on the strip, then one on
+        // the part drawn.
+        for (const [id, at] of taps) {
+          fire("pointerdown", id, at.x, at.y, true);
+          fire("pointerup", id, at.x, at.y, true);
+        }
+      },
+      { mid, half: 40, shift, taps: [[81, strip], [82, onPart]] as [number, At][] },
+    );
+    // The view as panned: the strip's point lies beyond the old part's
+    // side, the other point inside it (the test's own geometry).
+    const moved = await pictureMap(canvas);
+    const stripAt = moved.toPicture(strip);
+    const onPartAt = moved.toPicture(onPart);
+    expect(stripAt.x, JSON.stringify({ old, stripAt })).toBeGreaterThan(right + 16);
+    expect(onPartAt.x, JSON.stringify({ old, onPartAt })).toBeLessThan(right - 16);
+    expect(onPartAt.x, JSON.stringify({ old, onPartAt })).toBeGreaterThan(old[0] + 16);
+    // The strip's finger waits: the note, its record, nothing to the editor.
+    await expect(stale).toHaveAttribute("data-shown", "true");
+    const refused = await until(
+      async () => pageEvents(await hubEvents()).filter((e: any) => e.ev === "eq_touch" && e.what === "uncovered" && e.t >= since),
+      (all) => all.length >= 1,
+      "the finger on the strip in the recorder",
+      15_000,
+    );
+    expect(refused.map((e: any) => e.p)).toEqual([81]);
+    // The finger on the part drawn reached the editor where it showed.
+    const tap = await until(() => touchesAfter(before), (all) => all.some((r) => r.phase === "up"), "the tap on the part drawn");
+    wentFromTo(tap, onPartAt, onPartAt);
+    // The strip's part lands (the hub heard the view once it rested); a
+    // finger there now reaches the editor.
+    await until(
+      drawnPart,
+      ([x, y, w, h]) => x + 16 <= stripAt.x && stripAt.x <= x + w - 16 && y + 16 <= stripAt.y && stripAt.y <= y + h - 16,
+      "the strip's part drawn",
+    );
+    await caughtUp(screen);
+    const tapFrom = (await simEq.records()).length;
+    await quickTap(area, strip, 83);
+    const second = await until(() => touchesAfter(tapFrom), (all) => all.some((r) => r.phase === "up"), "the tap on the strip");
+    wentFromTo(second, stripAt, stripAt);
     const closing = (await simEq.records()).length;
     await screen.getByTestId("eq-exit").click();
     await expect(page.getByTestId("eq-screen")).toHaveCount(0);

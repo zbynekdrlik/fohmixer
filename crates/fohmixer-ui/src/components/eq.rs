@@ -61,7 +61,7 @@ use crate::behave::eq::{
     locked_text, look, on_picture, overview_size, place_text, point, spot, stale_landing,
     stale_note, zoom_text,
 };
-use crate::behave::eq_view::{ViewWatch, covers, crop_of, scaled_part, sight};
+use crate::behave::eq_view::{ViewWatch, lands_on, part_of, scaled_part};
 use crate::binding::detail_keys;
 use crate::diag::trace::eq_lat::EqLat;
 use crate::diag::trace::fingers::{EqFingers, eq_touch, eq_view};
@@ -654,10 +654,8 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
     let observer = StoredValue::new_local(None::<AreaObserver>);
     // The picture area the hub knows (PR G): the open's, then each change.
     let watch = StoredValue::new(AreaWatch::default());
-    // The part of the picture the hub sends (PR L): the whole one at first,
-    // again whenever the picture takes another size.
+    // The part of the picture the hub sends (PR L): the whole one at first.
     let views = StoredValue::new(ViewWatch::default());
-    let seen_size = StoredValue::new(None::<(u32, u32)>);
     // The look last drawn (none: the stylesheet's, the whole picture).
     let drawn = StoredValue::new(None::<Look>);
     let zoomed = RwSignal::new(false);
@@ -827,18 +825,26 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
         let first = !finger.try_with_value(Finger::held).unwrap_or(false);
         // A quick tap's up still to go: the picture cannot show it yet.
         let tap_pending = finger.try_with_value(Finger::tap_pending).unwrap_or(false);
-        // The part drawn last covers the part in sight (PR L review: after a
-        // pan past the margin, the strip that came into sight is old).
-        let covered = painter
+        // It lands on the part drawn last (the PR L re-review: after a pan
+        // past the margin, the strip that came into sight is old until the
+        // new part is drawn; a finger elsewhere is on current pixels).
+        let on_part = painter
             .try_with_value(|p| p.part)
             .flatten()
-            .zip(drawn.try_get_value().flatten())
-            .is_none_or(|(part, look)| covers(part, sight(picture, &look)));
-        let caught = store.eq_caught_up() && !tap_pending && covered;
-        let stale = first && stale_landing(lands, caught, store.dropping_out());
+            .is_none_or(|part| lands_on(part, picture, at.picture));
+        let caught = store.eq_caught_up() && !tap_pending;
+        let dropping = store.dropping_out();
+        let stale = first && stale_landing(lands, caught && on_part, dropping);
         if stale {
             let _ = stale_at.try_set_value(Some(now));
-            record(vec![eq_touch(t, "stale", id, at.picture, zoom_now())]);
+            // The recorder tells a finger on the old strip from one on a
+            // picture behind the page's inputs.
+            let what = if caught && !dropping {
+                "uncovered"
+            } else {
+                "stale"
+            };
+            record(vec![eq_touch(t, what, id, at.picture, zoom_now())]);
         } else if first && lands == Spot::Edit {
             store.eq_land();
         }
@@ -977,19 +983,13 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
                 return;
             };
             // At 2× and more, only the part in sight goes (PR L), once the
-            // view rested.
-            // A picture of another size: the hub dropped its crop (PR L
-            // review), so the crop for the new size goes once it rests.
-            if seen_size.try_get_value() != Some(Some(picture)) {
-                let _ = seen_size.try_set_value(Some(picture));
-                let _ = views.try_update_value(ViewWatch::resized);
-            }
+            // view rested; a part names the picture's size it is of.
             let changed = views
-                .try_update_value(|w| w.frame(crop_of(picture, &wanted), open, now))
+                .try_update_value(|w| w.frame(part_of(picture, &wanted), open, now))
                 .flatten();
-            if let Some(crop) = changed {
-                store.eq_view(crop);
-                record(vec![eq_view(dom::epoch_now(), crop)]);
+            if let Some(part) = changed {
+                store.eq_view(part);
+                record(vec![eq_view(dom::epoch_now(), part)]);
             }
             if drawn
                 .try_with_value(|d| d.as_ref() != Some(&wanted))

@@ -52,7 +52,7 @@ use std::future::Future;
 use std::sync::Arc;
 
 use fohmixer_proto::client::ServerMsg;
-use fohmixer_proto::eq::{Area, Crop, EqItem, EqState, reason};
+use fohmixer_proto::eq::{Area, EqItem, EqState, Part, reason};
 use fohmixer_proto::layout::Binding;
 use serde_json::{Value, json};
 
@@ -638,9 +638,9 @@ impl Router {
     }
 
     /// The part of its editor's picture `client` shows (PR L).
-    pub(super) fn eq_view(&mut self, client: ClientId, crop: Option<Crop>) {
+    pub(super) fn eq_view(&mut self, client: ClientId, part: Option<Part>) {
         if let Some(io) = self.eq.as_mut() {
-            let acts = io.state.view(client, crop);
+            let acts = io.state.view(client, part);
             self.eq_acts(acts);
         }
     }
@@ -916,7 +916,7 @@ impl Router {
                 at,
             } => io.plugwin.touch(session, contact, phase, at),
             Act::Handled { session, n } => io.plugwin.handled(session, n),
-            Act::View { session, crop } => io.plugwin.view(session, crop),
+            Act::View { session, part } => io.plugwin.view(session, part),
             Act::Tell { client, msg } => {
                 if let Some(outbox) = self.clients.get(&client) {
                     if let ServerMsg::Eq {

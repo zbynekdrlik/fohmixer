@@ -963,6 +963,14 @@ fn a_frame_says_where_its_part_lies_and_whether_it_is_whole() {
     assert!(whole.whole());
 }
 
+/// A view of the part `crop` of the sim's picture (1349 × 809).
+fn part(crop: Crop) -> Option<Part> {
+    Some(Part {
+        crop,
+        picture: (1349, 809),
+    })
+}
+
 #[test]
 fn a_view_crops_the_frames_until_the_whole_picture_again() {
     // PR L: the page shows a part at 2× and more; its frames carry it.
@@ -981,11 +989,11 @@ fn a_view_crops_the_frames_until_the_whole_picture_again() {
     worker.command_at(
         Command::View {
             session: 1,
-            crop: Some(crop),
+            part: part(crop),
         },
         10.0,
     );
-    assert_eq!(worker.editors[&1].crop, Some(crop));
+    assert_eq!(worker.editors[&1].part, part(crop));
     std::thread::sleep(Duration::from_millis(260));
     worker.step_at(40.0);
     assert_eq!(
@@ -1001,15 +1009,15 @@ fn a_view_crops_the_frames_until_the_whole_picture_again() {
     worker.command_at(
         Command::View {
             session: 9,
-            crop: None,
+            part: None,
         },
         50.0,
     );
-    assert_eq!(worker.editors[&1].crop, Some(crop));
+    assert_eq!(worker.editors[&1].part, part(crop));
     worker.command_at(
         Command::View {
             session: 1,
-            crop: None,
+            part: None,
         },
         60.0,
     );
@@ -1025,12 +1033,11 @@ fn a_view_crops_the_frames_until_the_whole_picture_again() {
 }
 
 #[test]
-fn a_picture_of_another_size_drops_the_crop() {
-    // PR L review: a crop of the old picture would cut the new one wrong.
-    assert!(!resized_under(None, (100, 80)), "no frame yet");
-    assert!(!resized_under(Some((100, 80)), (100, 80)));
-    assert!(resized_under(Some((100, 80)), (101, 80)));
-    assert!(resized_under(Some((100, 80)), (100, 79)));
+fn a_part_cuts_only_a_picture_of_its_size() {
+    // The PR L re-review: a part is of the picture's size the page drew.
+    // One of another size goes whole until the page's part for it lands,
+    // and one back at that size is cut again (the page may never have seen
+    // the size between, and still thinks its part goes).
     let (mut worker, handle, _) = worker();
     let window = take(&mut worker, &handle, 1, 0.0);
     let (sink, frames) = sink();
@@ -1043,21 +1050,37 @@ fn a_picture_of_another_size_drops_the_crop() {
         w: 300,
         h: 200,
     };
+    // A part of another picture's size: the whole picture.
     worker.command_at(
         Command::View {
             session: 1,
-            crop: Some(crop),
+            part: Some(Part {
+                crop,
+                picture: (1000, 700),
+            }),
         },
         10.0,
     );
     worker.step_at(40.0);
+    assert_eq!(worker.editors[&1].last_crop, None, "not of this size");
+    worker.command_at(
+        Command::View {
+            session: 1,
+            part: part(crop),
+        },
+        50.0,
+    );
+    worker.step_at(80.0);
     assert_eq!(worker.editors[&1].last_crop, Some(crop));
     // The window takes another size on the PC: the next frame is whole.
     handle.resize_window(window, (1000, 700));
-    worker.step_at(80.0);
-    assert_eq!(worker.editors[&1].crop, None);
+    worker.step_at(120.0);
     assert_eq!(worker.editors[&1].last_crop, None);
-    assert_eq!(worker.editors[&1].put_size, Some((1000, 700)));
+    // Back at the part's size: cut again, with no new view.
+    handle.resize_window(window, (1349, 809));
+    worker.step_at(160.0);
+    assert_eq!(worker.editors[&1].last_crop, Some(crop));
+    assert_eq!(worker.editors[&1].part, part(crop));
 }
 
 #[test]
@@ -1077,7 +1100,7 @@ fn a_new_part_of_equal_pixels_still_goes() {
         .find(|x| whole.bgra[(20 * whole.width as usize + x) * 4] == 0xF0)
         .expect("the bar") as u32;
     let x = if bar > 400 { 100 } else { 600 };
-    let part = |x: u32| Crop {
+    let square = |x: u32| Crop {
         x,
         y: 100,
         w: 64,
@@ -1086,7 +1109,7 @@ fn a_new_part_of_equal_pixels_still_goes() {
     worker.command_at(
         Command::View {
             session: 1,
-            crop: Some(part(x)),
+            part: part(square(x)),
         },
         10.0,
     );
@@ -1095,12 +1118,12 @@ fn a_new_part_of_equal_pixels_still_goes() {
     worker.command_at(
         Command::View {
             session: 1,
-            crop: Some(part(x + 64)),
+            part: part(square(x + 64)),
         },
         50.0,
     );
     worker.step_at(80.0);
-    assert_eq!(worker.editors[&1].last_crop, Some(part(x + 64)));
+    assert_eq!(worker.editors[&1].last_crop, Some(square(x + 64)));
     wait_for("the second part, of equal pixels", || {
         frames.lock().unwrap().len() == 3
     });
@@ -1114,12 +1137,25 @@ fn a_cropped_editors_guard_sends_its_whole_picture_first() {
     take(&mut worker, &handle, 1, 0.0);
     let got = Arc::new(Mutex::new(Vec::<Frame>::new()));
     let into = Arc::clone(&got);
-    let sink: FrameSink = Arc::new(move |frame: Frame| into.lock().unwrap().push(frame));
+    // The PR L re-review: when the guard's own frame goes (on the worker's
+    // thread; the encoder's calls its sink holding the hand-off), no
+    // picture of its session can reach the sink any more, or an older one
+    // would land over the card's.
+    let shared = Arc::clone(&worker.encoder.shared);
+    let captured = Arc::new(Mutex::new(Vec::<bool>::new()));
+    let at_guard = Arc::clone(&captured);
+    let sink: FrameSink = Arc::new(move |frame: Frame| {
+        if std::thread::current().name() != Some("plugwin-jpeg") {
+            let still = shared.lock().captured.contains(&frame.session);
+            at_guard.lock().unwrap().push(still);
+        }
+        into.lock().unwrap().push(frame);
+    });
     worker.command_at(Command::Capture { session: 1, sink }, 0.0);
     worker.command_at(
         Command::View {
             session: 1,
-            crop: Some(Crop {
+            part: part(Crop {
                 x: 100,
                 y: 50,
                 w: 300,
@@ -1131,11 +1167,30 @@ fn a_cropped_editors_guard_sends_its_whole_picture_first() {
     worker.step_at(0.0);
     wait_for("a part", || got.lock().unwrap().len() == 1);
     assert!(!got.lock().unwrap()[0].whole());
+    // The page went back to the whole picture, with no grab since: the
+    // last frame was still a part, so the card's picture is old.
+    worker.command_at(
+        Command::View {
+            session: 1,
+            part: None,
+        },
+        5.0,
+    );
     let _answer = guard_at(&mut worker, 1, 10.0);
     let frames = got.lock().unwrap().clone();
     assert_eq!(frames.len(), 2, "its whole picture at the guard");
     assert!(frames[1].whole());
     assert_eq!(frames[1].size, (1349, 809));
+    assert_eq!(*captured.lock().unwrap(), [false], "forgotten first");
+    // Counted as a grab and a frame sent (its last rate holds it).
+    assert_eq!(
+        (
+            worker.editors[&1].counts.grabs,
+            worker.editors[&1].counts.sent
+        ),
+        (2, 1),
+        "the encoder's frame is counted at a step"
+    );
     // An editor that was whole sends nothing more at its guard.
     let (mut worker, handle, _) = self::worker();
     take(&mut worker, &handle, 1, 0.0);

@@ -1,12 +1,12 @@
 //! The part of the Pro-Q 4 picture the page asks the hub for (#71 PR L),
 //! pure: at 2× and more ([`super::eq::edits`]) the screen shows a part of
 //! the picture, so the hub needs to send only that part, with a margin for
-//! a small pan ([`crop_of`]); the page tells the hub once the view rested
+//! a small pan ([`part_of`]); the page tells the hub once the view rested
 //! ([`ViewWatch`]). On a link slower than the frames, a part a quarter of
 //! the picture is a quarter of each frame's transmit time, and of a pong's
 //! wait behind it (the design on #71, comment 6107067321).
 
-use fohmixer_proto::eq::Crop;
+use fohmixer_proto::eq::{Crop, Part};
 
 use super::eq::Look;
 
@@ -20,6 +20,10 @@ pub const CROP_GRID: f64 = 16.0;
 
 /// How long a changed view rests before the hub hears its crop (ms).
 pub const VIEW_SETTLE_MS: f64 = 150.0;
+
+/// How far inside the part drawn last a first finger lands to reach the
+/// editor (picture px; a finger's contact is wider than its point).
+pub const LAND_SLOP: f64 = 16.0;
 
 /// A side's part from `start`, `size` px long, with the margin, on the
 /// grid, within `0..=whole` (px): its first and its end pixel.
@@ -35,7 +39,7 @@ fn span(start: f64, size: f64, whole: f64) -> (u32, u32) {
 /// under 2× (the whole picture: one finger does not edit there, and the
 /// overview shows it all) and when the part with its margin is the whole
 /// picture.
-pub fn crop_of(picture: (u32, u32), look: &Look) -> Option<Crop> {
+pub fn part_of(picture: (u32, u32), look: &Look) -> Option<Part> {
     if !look.edits {
         return None;
     }
@@ -50,34 +54,31 @@ pub fn crop_of(picture: (u32, u32), look: &Look) -> Option<Crop> {
         h: bottom.saturating_sub(y),
     };
     let whole = (crop.w, crop.h) == picture;
-    (!whole && crop.w.min(crop.h) > 0).then_some(crop)
+    (!whole && crop.w.min(crop.h) > 0).then_some(Part { crop, picture })
 }
 
-/// The part of a picture of `picture` px in sight for `look` (no margin, on
-/// whole pixels: its start floored, its end ceiled; within the picture).
-pub fn sight(picture: (u32, u32), look: &Look) -> Crop {
-    let (width, height) = (f64::from(picture.0), f64::from(picture.1));
-    let (left, top, seen_w, seen_h) = look.seen;
-    let side = |start: f64, size: f64, whole: f64| {
-        let from = start.floor().clamp(0.0, whole);
-        let to = (start + size).ceil().clamp(from, whole);
-        // `as` saturates; both lie within 0..=whole.
-        (from as u32, (to - from) as u32)
+/// Whether a first finger at `at` (picture px) lands on the part of a
+/// picture of `picture` px the last frame drew (the PR L re-review: after
+/// a pan past the margin, the strip that came into sight is old until the
+/// hub's new part is drawn, and only a finger there must wait): at least
+/// [`LAND_SLOP`] inside each of the part's sides that lies within the
+/// picture (beyond a side on the picture's edge there is nothing old).
+pub fn lands_on(part: Crop, picture: (u32, u32), at: (f64, f64)) -> bool {
+    let side = |at: f64, from: u32, size: u32, whole: u32| {
+        let end = from.saturating_add(size);
+        let low = if from == 0 {
+            f64::NEG_INFINITY
+        } else {
+            f64::from(from) + LAND_SLOP
+        };
+        let high = if end >= whole {
+            f64::INFINITY
+        } else {
+            f64::from(end) - LAND_SLOP
+        };
+        low <= at && at <= high
     };
-    let (x, w) = side(left * width, seen_w * width, width);
-    let (y, h) = side(top * height, seen_h * height, height);
-    Crop { x, y, w, h }
-}
-
-/// Whether a frame's `part` (the picture drawn last) covers the part in
-/// `sight` (PR L review: after a pan past the margin, the strip that came
-/// into sight is old until the hub's new part is drawn, and a finger there
-/// must not act).
-pub fn covers(part: Crop, sight: Crop) -> bool {
-    part.x <= sight.x
-        && part.y <= sight.y
-        && sight.x + sight.w <= part.x + part.w
-        && sight.y + sight.h <= part.y + part.h
+    side(at.0, part.x, part.w, picture.0) && side(at.1, part.y, part.h, picture.1)
 }
 
 /// Where a frame's part lands on a canvas of `canvas` px that draws the
@@ -104,31 +105,26 @@ fn settled(since: f64, now: f64) -> bool {
     now - since >= VIEW_SETTLE_MS
 }
 
-/// The crop as the hub knows it (none: the whole picture, as every open
-/// starts) and a changed one resting, looked at each frame (no timer).
+/// The part as the hub knows it (none: the whole picture, as every open
+/// starts) and a changed one resting, looked at each frame (no timer). A
+/// part names its picture's size, so a picture of another size needs no
+/// reset here: its part differs, and the hub cuts a part only from a
+/// picture of its size.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct ViewWatch {
-    sent: Option<Crop>,
-    resting: Option<(Option<Crop>, f64)>,
+    sent: Option<Part>,
+    resting: Option<(Option<Part>, f64)>,
 }
 
 impl ViewWatch {
-    /// The frame's crop (`open`: the page's editor is open; `now`: page
+    /// The frame's part (`open`: the page's editor is open; `now`: page
     /// ms): one that differs from the one sent goes once it rested
     /// [`VIEW_SETTLE_MS`] while the editor is open (each change starts the
     /// rest again; one back where it was sends nothing).
-    /// The picture took another size (PR L review): the hub dropped its crop,
-    /// so the whole picture is what it sends now; a crop for the new size
-    /// goes once the view rests.
-    pub fn resized(&mut self) {
-        self.sent = None;
-        self.resting = None;
-    }
-
-    pub fn frame(&mut self, crop: Option<Crop>, open: bool, now: f64) -> Option<Option<Crop>> {
+    pub fn frame(&mut self, part: Option<Part>, open: bool, now: f64) -> Option<Option<Part>> {
         let newest = self.resting.map_or(self.sent, |(resting, _)| resting);
-        if newest != crop {
-            self.resting = Some((crop, now));
+        if newest != part {
+            self.resting = Some((part, now));
         }
         let (want, since) = self.resting?;
         if !(open && settled(since, now)) {
@@ -161,8 +157,16 @@ mod tests {
         Crop { x, y, w, h }
     }
 
+    /// The part `crop` of a picture of 1600 × 800.
+    fn of_1600(crop: Crop) -> Option<Part> {
+        Some(Part {
+            crop,
+            picture: (1600, 800),
+        })
+    }
+
     #[test]
-    fn a_crop_is_the_part_in_sight_with_its_margin_on_the_grid() {
+    fn a_part_is_the_part_in_sight_with_its_margin_on_the_grid() {
         assert_eq!(
             (CROP_MARGIN, CROP_GRID, VIEW_SETTLE_MS),
             (0.25, 16.0, 150.0)
@@ -172,31 +176,31 @@ mod tests {
         // 160..576 on the grid.
         let third = 1.0 / 3.0;
         assert_eq!(
-            crop_of((1600, 800), &look(true, (0.4, 0.3, 0.4, third))),
-            Some(crop(480, 160, 960, 416))
+            part_of((1600, 800), &look(true, (0.4, 0.3, 0.4, third))),
+            of_1600(crop(480, 160, 960, 416))
         );
         // Under 2×: the whole picture.
         assert_eq!(
-            crop_of((1600, 800), &look(false, (0.4, 0.3, 0.4, third))),
+            part_of((1600, 800), &look(false, (0.4, 0.3, 0.4, third))),
             None
         );
         // At an edge: clamped to the picture.
         assert_eq!(
-            crop_of((1600, 800), &look(true, (0.0, 0.75, 0.25, 0.25))),
-            Some(crop(0, 544, 512, 256))
+            part_of((1600, 800), &look(true, (0.0, 0.75, 0.25, 0.25))),
+            of_1600(crop(0, 544, 512, 256))
         );
         // A part whose margin covers the whole picture: none.
         assert_eq!(
-            crop_of((1600, 800), &look(true, (0.1, 0.1, 0.8, 0.8))),
+            part_of((1600, 800), &look(true, (0.1, 0.1, 0.8, 0.8))),
             None
         );
         // Nothing in sight on a side: none.
         assert_eq!(
-            crop_of((1600, 800), &look(true, (0.4, 0.3, 0.0, 0.25))),
+            part_of((1600, 800), &look(true, (0.4, 0.3, 0.0, 0.25))),
             None
         );
         // An empty picture: none.
-        assert_eq!(crop_of((0, 0), &look(true, (0.0, 0.0, 1.0, 1.0))), None);
+        assert_eq!(part_of((0, 0), &look(true, (0.0, 0.0, 1.0, 1.0))), None);
     }
 
     #[test]
@@ -208,29 +212,30 @@ mod tests {
     }
 
     #[test]
-    fn the_part_in_sight_and_whether_a_drawn_part_covers_it() {
-        // 1600 × 800, a quarter of each side from (0.5, 0.25): 400 × 200
-        // from (800, 200).
-        assert_eq!(
-            sight((1600, 800), &look(true, (0.5, 0.25, 0.25, 0.25))),
-            crop(800, 200, 400, 200)
-        );
-        // Fractions of a pixel widen it outwards; it stays in the picture.
-        assert_eq!(
-            sight((1349, 809), &look(true, (0.1, 0.1, 0.5, 0.5))),
-            crop(134, 80, 676, 406)
-        );
-        assert_eq!(
-            sight((100, 80), &look(true, (0.9, 0.9, 0.5, 0.5))),
-            crop(90, 72, 10, 8)
-        );
+    fn a_finger_lands_on_the_drawn_part_inside_its_inner_sides() {
+        assert_eq!(LAND_SLOP, 16.0);
+        // 100..400 × 50..250 of 1600 × 800: 116..384 × 66..234 lands.
         let part = crop(100, 50, 300, 200);
-        assert!(covers(part, crop(100, 50, 300, 200)), "exactly");
-        assert!(covers(part, crop(150, 100, 100, 100)));
-        assert!(!covers(part, crop(99, 100, 100, 100)), "left");
-        assert!(!covers(part, crop(150, 49, 100, 100)), "top");
-        assert!(!covers(part, crop(301, 100, 100, 100)), "right");
-        assert!(!covers(part, crop(150, 151, 100, 100)), "bottom");
+        let picture = (1600, 800);
+        assert!(lands_on(part, picture, (200.0, 150.0)));
+        assert!(lands_on(part, picture, (116.0, 66.0)), "the inner corner");
+        assert!(lands_on(part, picture, (384.0, 234.0)), "the far corner");
+        assert!(!lands_on(part, picture, (115.9, 150.0)), "left");
+        assert!(!lands_on(part, picture, (200.0, 65.9)), "top");
+        assert!(!lands_on(part, picture, (384.1, 150.0)), "right");
+        assert!(!lands_on(part, picture, (200.0, 234.1)), "bottom");
+        // Old pixels away from the finger do not matter: one in the middle
+        // of a part that misses a strip of the sight lands.
+        assert!(lands_on(crop(0, 0, 1000, 800), picture, (500.0, 400.0)));
+        // A side on the picture's edge has no slop, even beyond it.
+        let corner = crop(0, 0, 400, 300);
+        assert!(lands_on(corner, picture, (0.0, 0.0)));
+        assert!(lands_on(corner, picture, (-3.0, 2.0)));
+        let far = crop(1200, 500, 400, 300);
+        assert!(lands_on(far, picture, (1600.0, 800.0)));
+        assert!(!lands_on(far, picture, (1215.0, 700.0)), "its inner side");
+        // A whole frame: everywhere.
+        assert!(lands_on(crop(0, 0, 1600, 800), picture, (1.0, 799.0)));
     }
 
     #[test]
@@ -252,13 +257,13 @@ mod tests {
     }
 
     #[test]
-    fn a_changed_crop_goes_once_it_rested_while_the_editor_is_open() {
+    fn a_changed_part_goes_once_it_rested_while_the_editor_is_open() {
         let mut watch = ViewWatch::default();
-        let a = Some(crop(0, 0, 320, 160));
-        let b = Some(crop(16, 0, 320, 160));
+        let a = of_1600(crop(0, 0, 320, 160));
+        let b = of_1600(crop(16, 0, 320, 160));
         // The whole picture is what the hub has: nothing to send.
         assert_eq!(watch.frame(None, true, 0.0), None);
-        // A crop: once it rested 150 ms.
+        // A part: once it rested 150 ms.
         assert_eq!(watch.frame(a, true, 10.0), None);
         assert_eq!(watch.frame(a, true, 160.0_f64.next_down()), None);
         assert_eq!(watch.frame(a, true, 160.0), Some(a));
@@ -277,12 +282,14 @@ mod tests {
         assert_eq!(watch.frame(None, false, 3000.0), None);
         assert_eq!(watch.frame(None, false, 3500.0), None);
         assert_eq!(watch.frame(None, true, 3600.0), Some(None));
-        // A picture of another size: the hub sends it whole, so the same
-        // crop goes again once it rests.
+        // The same crop of a picture of another size is another part.
+        let other = Some(Part {
+            crop: crop(0, 0, 320, 160),
+            picture: (1349, 809),
+        });
         assert_eq!(watch.frame(a, true, 4000.0), None);
         assert_eq!(watch.frame(a, true, 4150.0), Some(a));
-        watch.resized();
-        assert_eq!(watch.frame(a, true, 4200.0), None);
-        assert_eq!(watch.frame(a, true, 4350.0), Some(a));
+        assert_eq!(watch.frame(other, true, 4200.0), None);
+        assert_eq!(watch.frame(other, true, 4350.0), Some(other));
     }
 }
