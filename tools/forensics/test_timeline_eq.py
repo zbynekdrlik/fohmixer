@@ -1,9 +1,11 @@
 """The forensics timeline's Pro-Q 4 screen (#71, acceptance point 6): the
 page's ``eq_touch`` fingers (down, up, cancel, stale) and ``eq_lat``
 latency windows, the hub's ``eq`` records of a dropped stale down and of
-the frames' round trips. The report lists the fingers and the windows;
-stdout counts them and gives the latency's median, p95 and largest. The
-synthetic logs and the report reader come from ``test_timeline.py``."""
+the frames' round trips; PR P2a's ``undo`` (a page's undo of Pro-Q's own
+↶) and ``undo_read`` (the hub's read of it, never tapped). The report lists
+the fingers, the windows and the undos; stdout counts them and gives the
+latency's median, p95 and largest. The synthetic logs and the report
+reader come from ``test_timeline.py``."""
 
 import os
 import sys
@@ -18,9 +20,11 @@ from timeline_eq import (  # noqa: E402
     EqFinger,
     EqLatency,
     EqLink,
+    EqUndo,
     eq_finger,
     eq_latency,
     eq_link,
+    eq_undo,
     samples_of,
 )
 
@@ -49,6 +53,32 @@ def lat_rows(page):
     return [
         a for tag, a in page.elements if tag == "tr" and "eq-lat" in (a.get("class") or "").split()
     ]
+
+
+def undo_rows(page):
+    return [
+        a for tag, a in page.elements if tag == "tr" and "eq-undo" in (a.get("class") or "").split()
+    ]
+
+
+def undo(log, ts, n, result, why=None, x=None, y=None):
+    """A hub ``eq`` ``undo`` record as ``eq::Undid::fields`` writes it."""
+    log.add(
+        "eq",
+        ts,
+        what="undo",
+        instance="band",
+        path=PATH,
+        client=7,
+        session=1,
+        why=why,
+        n=n,
+        result=result,
+        x=x,
+        y=y,
+        w=1349,
+        h=809,
+    )
 
 
 class EqScreen(ReportCase):
@@ -223,7 +253,41 @@ class EqScreen(ReportCase):
         )
         self.assertEqual(summary["eq_lat_p50_ms"], "n/a")
         self.assertEqual(finger_rows(page), [])
+        self.assertEqual(undo_rows(page), [])
         self.assertIn("No Pro-Q 4 finger or picture", page.text)
+
+    def test_each_undo_and_each_read_of_the_undo_is_a_row_with_its_result(self):
+        # PR P2a: the read at the open, a page's undo with nothing to undo,
+        # one done, one refused, the read after a resize; one outside the
+        # window.
+        log = Log()
+        log.pings(7, BASE, BASE + 5000)
+        log.add("eq", BASE + 1000, what="undo_read", session=1, state="grey", x=None, w=1349, h=809)
+        undo(log, BASE + 1500, 3, "nothing")
+        undo(log, BASE + 2500, 6, "done", x=570, y=18)
+        soon = "too soon after the last undo"
+        undo(log, BASE + 2800, 7, soon, why=soon)
+        log.add(
+            "eq", BASE + 3500, what="undo_read", session=1, state="missing", x=None, w=667, h=1361
+        )
+        undo(log, BASE + 6000, 8, "done", x=570, y=18)
+        _, page, _ = self.report(log, BASE, BASE + 5000)
+        rows = undo_rows(page)
+        self.assertEqual(
+            [(r["data-what"], r["data-result"]) for r in rows],
+            [
+                ("undo_read", "grey"),
+                ("undo", "nothing"),
+                ("undo", "done"),
+                ("undo", soon),
+                ("undo_read", "missing"),
+            ],
+        )
+        self.assertEqual(rows[2]["data-time"], f"{BASE + 2500:.1f}")
+        # The tap's point and the picture's size; none where it did not tap.
+        self.assertIn("<td>done</td><td>570</td><td>18</td><td>1349x809</td>", page.text)
+        self.assertIn("<td>missing</td><td>n/a</td><td>n/a</td><td>667x1361</td>", page.text)
+        self.assertNotIn("No Pro-Q 4 finger or picture", page.text)
 
 
 class EqRecordsOf(unittest.TestCase):
@@ -254,6 +318,56 @@ class EqRecordsOf(unittest.TestCase):
                 [EqLatency(0.0, 1, (1.0, 2.0), 0, None), EqLatency(1.0, 1, (3.0,), 0, None)]
             ),
             [1.0, 2.0, 3.0],
+        )
+
+    def test_an_undo_and_a_read_read_their_fields(self):
+        self.assertEqual(
+            eq_undo(
+                {
+                    "ts": 3000.0,
+                    "what": "undo",
+                    "session": 2,
+                    "n": 9,
+                    "result": "done",
+                    "x": 570,
+                    "y": 18,
+                    "w": 1349,
+                    "h": 809,
+                }
+            ),
+            EqUndo(3000.0, "undo", 2, "done", 570, 18, 1349, 809),
+        )
+        # A read's state is its result.
+        self.assertEqual(
+            eq_undo(
+                {
+                    "ts": 1000.0,
+                    "what": "undo_read",
+                    "session": 2,
+                    "state": "lit",
+                    "result": "x",
+                    "x": 570,
+                    "w": 1349,
+                    "h": 809,
+                }
+            ),
+            EqUndo(1000.0, "undo_read", 2, "lit", 570, None, 1349, 809),
+        )
+        # Malformed fields read as missing.
+        self.assertEqual(
+            eq_undo(
+                {
+                    "ts": 1.0,
+                    "what": "undo",
+                    "session": "2",
+                    "state": "lit",
+                    "result": 5,
+                    "x": True,
+                    "y": 1.5,
+                    "w": None,
+                }
+            ),
+            EqUndo(1.0, "undo", None, "?", None, None, None, None),
         )
 
     def test_malformed_fields_read_as_missing(self):

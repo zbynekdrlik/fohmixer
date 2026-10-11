@@ -8,8 +8,10 @@ frames drawn, every input-to-draw sample in ms, the inputs shown whose
 send time the page no longer kept, the longest decode), and
 what the hub recorded (``eq`` records: ``stale``, a down it dropped; the
 ``rate`` and ``frames`` records' frame round trips and the frames that went
-because an ack did not come). Pure: the model reads them, the report draws
-a table, stdout counts them."""
+because an ack did not come; PR P2a's ``undo``, a page's undo of Pro-Q's
+own ↶, and ``undo_read``, the hub's read of the ↶ after an open or a
+resize, never tapped). Pure: the model reads them, the report draws a
+table, stdout counts them."""
 
 import collections
 
@@ -18,6 +20,11 @@ from timeline_read import number
 EqFinger = collections.namedtuple("EqFinger", ("time", "what", "pointer", "x", "y", "zoom"))
 EqLatency = collections.namedtuple("EqLatency", ("time", "frames", "samples", "lost", "decode_ms"))
 EqLink = collections.namedtuple("EqLink", ("time", "what", "trips", "rtt_max_ms", "ack_waits"))
+EqUndo = collections.namedtuple(
+    "EqUndo", ("time", "what", "session", "result", "x", "y", "width", "height")
+)
+
+UNDO_RECORDS = ("undo", "undo_read")
 
 
 def _int(value):
@@ -73,3 +80,25 @@ def eq_link(record):
 def samples_of(latencies):
     """Every latency sample of the windows, in order."""
     return [s for lat in latencies for s in lat.samples]
+
+
+def eq_undo(record):
+    """The ``EqUndo`` of a hub ``eq`` ``undo`` record (#71 PR P2a: a page's
+    undo, its ``result`` ``done``, ``nothing`` or why the hub refused it, the
+    tap's ``x``, ``y`` when it tapped, the picture's ``w``, ``h``) or
+    ``undo_read`` record (the hub's read of the ↶ after an open or a
+    resize, never tapped: its ``state`` ``lit``, ``grey`` or ``missing`` as
+    the result, the ``x`` it found). A field of the wrong type reads as
+    missing (the result as ``?``)."""
+    what = record.get("what")
+    result = record.get("state" if what == "undo_read" else "result")
+    return EqUndo(
+        record["ts"],
+        what,
+        _int(record.get("session")),
+        result if isinstance(result, str) else "?",
+        _int(record.get("x")),
+        _int(record.get("y")),
+        _int(record.get("w")),
+        _int(record.get("h")),
+    )

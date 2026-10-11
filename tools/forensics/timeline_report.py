@@ -665,12 +665,15 @@ EQ_LEGEND = (
     "the page's last input), at the editor's picture pixels with the page's zoom; then each "
     "second of drawing: the frames drawn, the latency samples (from an input's send to the "
     "draw of the first picture that shows it), the inputs shown whose send time the page no "
-    "longer kept (lost) and the longest decode."
+    "longer kept (lost) and the longest decode; then Pro-Q's own undo (PR P2a): each page's "
+    "undo (done: its ↶ read lit and was tapped at x, y; nothing: it read grey, nothing to "
+    "undo; else why the hub refused it) and each read of the ↶ the hub makes after an open "
+    "or a resize, never tapped (lit, grey or missing), with the picture's size."
 )
 
 
 def _eq_table(t):
-    if not t.eq_fingers and not t.eq_latency:
+    if not t.eq_fingers and not t.eq_latency and not t.eq_undos:
         return "<p>No Pro-Q 4 finger or picture in the window.</p>"
     head = "".join(f"<th>{h}</th>" for h in ("time (local)", "what", "pointer", "x", "y", "zoom"))
     rows = []
@@ -731,7 +734,38 @@ def _eq_table(t):
             )
         )
     latency = f'<table class="eq-lat"><tr>{head}</tr>{"".join(rows)}</table>'
-    return f"<p>{esc(EQ_LEGEND)}</p>{fingers}{latency}"
+    return f"<p>{esc(EQ_LEGEND)}</p>{fingers}{latency}{_eq_undo_table(t)}"
+
+
+def _eq_undo_table(t):
+    """Pro-Q's own undo (PR P2a): one row per page's undo and per read of the
+    ↶, with its result."""
+    head = "".join(
+        f"<th>{h}</th>" for h in ("time (local)", "what", "session", "result", "x", "y", "picture")
+    )
+    rows = []
+    for u in t.eq_undos:
+        size = "n/a" if u.width is None or u.height is None else f"{u.width}x{u.height}"
+        cells = (
+            local_text(u.time),
+            u.what,
+            "n/a" if u.session is None else str(u.session),
+            u.result,
+            *("n/a" if v is None else str(v) for v in (u.x, u.y)),
+            size,
+        )
+        content = "".join(f"<td>{esc(c)}</td>" for c in cells)
+        rows.append(
+            tag(
+                "tr",
+                content,
+                class_="eq-undo",
+                data_time=num(u.time),
+                data_what=u.what,
+                data_result=u.result,
+            )
+        )
+    return f'<table class="eq-undo"><tr>{head}</tr>{"".join(rows)}</table>'
 
 
 DECK_LEGEND = (
