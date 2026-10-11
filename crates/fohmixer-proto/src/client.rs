@@ -155,11 +155,13 @@ pub enum ClientMsg {
     /// This client leaves its editor: the hub closes it (the close guard
     /// first) and releases the lock.
     EqClose,
-    /// The page got a binary frame of its open editor's `session` (PR I):
-    /// the hub sends that page's next frame only after this ack, or once
-    /// its wait for it ran out (one frame in flight per page, so its pongs,
-    /// acks and values never wait behind a backlog of pictures).
-    EqFrameAck { session: u32 },
+    /// The page got the binary frame `seq` of its open editor's `session`
+    /// (PR I): it acks every frame of that session up to `seq`. The hub
+    /// sends that page's next frame only after this ack, or once its wait
+    /// for it ran out (one frame in flight per page, two after a lost ack,
+    /// so its pongs, acks and values never wait behind a backlog of
+    /// pictures).
+    EqFrameAck { session: u32, seq: u32 },
 }
 
 /// One write's outcome (#43, an `ack` item): Live ran it (`value`: what

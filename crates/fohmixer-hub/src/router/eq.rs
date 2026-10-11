@@ -53,7 +53,7 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use fohmixer_proto::client::ServerMsg;
-use fohmixer_proto::eq::{Area, EqItem, EqState, Touch, frame, reason};
+use fohmixer_proto::eq::{Area, EqItem, EqState, Touch, reason};
 use fohmixer_proto::layout::Binding;
 use serde_json::{Value, json};
 
@@ -349,12 +349,14 @@ pub fn sized_fields(key: &EditorKey, session: u32, size: (u32, u32)) -> Value {
     fields
 }
 
-/// The `eq` record of the capture's minute, with its holder's frame round
-/// trips (#71 PR I: `frame_trips` measured, their mean and largest in ms,
-/// and `ack_waits`, the frames that went because the page's ack did not
-/// come within the wait).
-pub fn rate_fields(session: u32, rate: &Rate, trips: &Trips) -> Value {
-    json!({
+/// The `eq` record of the capture's minute (or of its last part, when the
+/// worker let the editor go), with its holder's frame round trips when the
+/// holder is known (#71 PR I: `frame_trips` measured, their mean and
+/// largest in ms, and `ack_waits`, the frames that went because the page's
+/// ack did not come within the wait; once the editor closed they went into
+/// its `frames` record).
+pub fn rate_fields(session: u32, rate: &Rate, trips: Option<&Trips>) -> Value {
+    let mut fields = json!({
         "what": "rate",
         "session": session,
         "grabs": rate.grabs,
@@ -366,11 +368,36 @@ pub fn rate_fields(session: u32, rate: &Rate, trips: &Trips) -> Value {
         "width": rate.width,
         "height": rate.height,
         "gap_ms": rate.gap_ms,
-        "frame_trips": trips.n,
-        "frame_rtt_ms": trips.mean_ms(),
-        "frame_rtt_max_ms": trips.max_ms,
-        "ack_waits": trips.waited_out,
-    })
+    });
+    if let Some(trips) = trips {
+        add_trips(&mut fields, trips);
+    }
+    fields
+}
+
+/// The frame round trips' fields of a record.
+fn add_trips(fields: &mut Value, trips: &Trips) {
+    fields["frame_trips"] = json!(trips.n);
+    fields["frame_rtt_ms"] = json!(trips.mean_ms());
+    fields["frame_rtt_max_ms"] = json!(trips.max_ms);
+    fields["ack_waits"] = json!(trips.waited_out);
+}
+
+/// The `eq` record of the frames' round trips an editor's close handed back
+/// (the PR I review: the part of a minute before a close was lost); none
+/// when nothing was measured or waited out since the last `rate`.
+pub fn frames_fields(
+    key: &EditorKey,
+    client: ClientId,
+    session: Option<u32>,
+    trips: &Trips,
+) -> Option<Value> {
+    if trips.is_empty() {
+        return None;
+    }
+    let mut fields = record("frames", key, Some(client), session, None);
+    add_trips(&mut fields, trips);
+    Some(fields)
 }
 
 impl Router {
@@ -663,13 +690,13 @@ impl Router {
             }
             PlugwinEvent::Rate { session, rate } => {
                 // Its holder's frames on the link (PR I): their round trips
-                // since the last minute.
+                // since the last minute (none once the editor closed: its
+                // close recorded them).
                 let trips = io
                     .state
                     .holder_of(session)
                     .and_then(|holder| self.clients.get(&holder))
-                    .map(|outbox| outbox.take_trips())
-                    .unwrap_or_default();
+                    .map(|outbox| outbox.take_trips());
                 tracing::info!(
                     session,
                     grabs = rate.grabs,
@@ -681,15 +708,21 @@ impl Router {
                     width = rate.width,
                     height = rate.height,
                     gap_ms = rate.gap_ms,
-                    frame_trips = trips.n,
-                    frame_rtt_ms = trips.mean_ms(),
-                    frame_rtt_max_ms = trips.max_ms,
-                    ack_waits = trips.waited_out,
-                    "a Pro-Q 4 editor's capture, frames and touches over the last minute"
+                    "a Pro-Q 4 editor's capture and touches over the last minute"
                 );
+                if let Some(trips) = &trips {
+                    tracing::info!(
+                        session,
+                        frame_trips = trips.n,
+                        frame_rtt_ms = trips.mean_ms(),
+                        frame_rtt_max_ms = trips.max_ms,
+                        ack_waits = trips.waited_out,
+                        "a Pro-Q 4 editor's frames on the link over the last minute"
+                    );
+                }
                 self.io
                     .events
-                    .record("eq", rate_fields(session, &rate, &trips));
+                    .record("eq", rate_fields(session, &rate, trips.as_ref()));
             }
         }
     }
@@ -829,7 +862,7 @@ impl Router {
                 io.plugwin.capture(
                     session,
                     Arc::new(move |session: u32, jpeg: Bytes| {
-                        outbox.eq_frame(session, Bytes::from(frame(session, &jpeg)));
+                        outbox.eq_frame(session, jpeg.clone());
                         if let Some(device) = &device {
                             pictures.put(&key, device, jpeg);
                         }
@@ -844,14 +877,29 @@ impl Router {
             } => io.plugwin.touch(session, contact, phase, at),
             Act::Tell { client, msg } => {
                 if let Some(outbox) = self.clients.get(&client) {
-                    if matches!(
-                        msg,
-                        ServerMsg::Eq {
-                            state: EqState::Closed,
-                            ..
+                    if let ServerMsg::Eq {
+                        state: EqState::Closed,
+                        instance,
+                        path,
+                        session,
+                        ..
+                    } = &msg
+                    {
+                        // Its frames' round trips since the last minute go
+                        // into the close's record (the PR I review).
+                        let trips = outbox.forget_eq();
+                        let key = EditorKey::new(instance, path);
+                        if let Some(fields) = frames_fields(&key, client, *session, &trips) {
+                            tracing::info!(
+                                session = ?session,
+                                frame_trips = trips.n,
+                                frame_rtt_ms = trips.mean_ms(),
+                                frame_rtt_max_ms = trips.max_ms,
+                                ack_waits = trips.waited_out,
+                                "a closed Pro-Q 4 editor's frames on the link since its last minute"
+                            );
+                            self.io.events.record("eq", fields);
                         }
-                    ) {
-                        outbox.forget_eq();
                     }
                     outbox.reply(msg);
                 }

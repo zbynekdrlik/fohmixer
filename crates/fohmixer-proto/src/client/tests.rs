@@ -705,8 +705,11 @@ fn eq_messages_round_trip() {
     round_trip_client(ClientMsg::EqClose, json!({"type": "eq_close"}));
     // PR I: the page got a frame of its open editor.
     round_trip_client(
-        ClientMsg::EqFrameAck { session: 7 },
-        json!({"type": "eq_frame_ack", "session": 7}),
+        ClientMsg::EqFrameAck {
+            session: 7,
+            seq: 12,
+        },
+        json!({"type": "eq_frame_ack", "session": 7, "seq": 12}),
     );
     round_trip_server(
         ServerMsg::EqList {

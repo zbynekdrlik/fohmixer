@@ -720,6 +720,47 @@ fn a_minutes_rate_counts_from_the_editors_take() {
 }
 
 #[test]
+fn an_editor_let_go_reports_the_counts_of_its_last_minute() {
+    // The PR I review: an editor released before its minute was over left
+    // no `rate` of that minute at all.
+    let (mut worker, handle, heard) = worker();
+    take(&mut worker, &handle, 1, 0.0);
+    let (sink, frames) = sink();
+    worker.command_at(Command::Capture { session: 1, sink }, 10.0);
+    worker.step_at(10.0);
+    wait_for("its frame", || frames.lock().unwrap().len() == 1);
+    // The worker counts what the encoder made at its next step.
+    worker.step_at(20.0);
+    let (reply, _released) = oneshot::channel();
+    worker.command_at(
+        Command::Release {
+            session: 1,
+            closed: false,
+            reply,
+        },
+        30_000.0,
+    );
+    let events = heard.lock().unwrap().clone();
+    let [PlugwinEvent::Rate { session: 1, rate }] = events.as_slice() else {
+        panic!("its last rate: {events:?}")
+    };
+    assert_eq!((rate.grabs, rate.sent, rate.failed), (1, 1, 0));
+    // One that grabbed nothing since its last minute reports nothing.
+    let (mut worker, handle, heard) = worker();
+    take(&mut worker, &handle, 1, 0.0);
+    let (reply, _released) = oneshot::channel();
+    worker.command_at(
+        Command::Release {
+            session: 1,
+            closed: false,
+            reply,
+        },
+        30_000.0,
+    );
+    assert!(heard.lock().unwrap().is_empty());
+}
+
+#[test]
 fn a_captured_editor_sends_its_pictures_skipping_a_same_one() {
     let (mut worker, handle, heard) = worker();
     handle.still(true);
@@ -776,14 +817,21 @@ fn a_captured_editor_sends_its_pictures_skipping_a_same_one() {
     assert_eq!((rate.grabs, rate.sent, rate.failed), (4, 3, 0));
     assert_eq!((rate.width, rate.height), (1349, 809));
     assert!(rate.bytes > 0.0);
-    // The window goes away: lost.
+    // The window goes away: lost, after the counts of its last minute
+    // (the grab at 60 000 ms, after the minute's rate).
     let window = handle.windows()[0];
     handle.remove_window(window);
     worker.step_at(60_100.0);
-    assert_eq!(
-        heard.lock().unwrap().last(),
-        Some(&PlugwinEvent::Lost { session: 1 })
-    );
+    let events = heard.lock().unwrap().clone();
+    let [
+        _,
+        PlugwinEvent::Rate { session: 1, rate },
+        PlugwinEvent::Lost { session: 1 },
+    ] = events.as_slice()
+    else {
+        panic!("its last rate, then lost: {events:?}")
+    };
+    assert_eq!(rate.grabs, 1);
     assert!(worker.editors.is_empty());
 }
 

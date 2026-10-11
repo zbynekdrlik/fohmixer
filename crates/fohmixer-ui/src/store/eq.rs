@@ -10,7 +10,7 @@
 //! sends the next once the page acked). `store/live/eq.rs` carries them out.
 
 use fohmixer_proto::client::ClientMsg;
-use fohmixer_proto::eq::{EqItem, EqState};
+use fohmixer_proto::eq::{EqItem, EqState, FrameHead};
 use fohmixer_proto::layout::Binding;
 
 use crate::behave::eq::shows_frame;
@@ -123,12 +123,16 @@ pub fn socket_closed(view: Option<EqView>) -> Option<EqView> {
     })
 }
 
-/// The page's answer to a binary frame of `session` while its open editor
-/// is `open` (#71 PR I): the ack of a frame of that editor, sent as it
-/// arrives (before its picture is decoded), so the hub sends the next one;
-/// a frame of an editor the page left gets none (its frames stop).
-pub fn frame_ack(session: u32, open: Option<u32>) -> Option<ClientMsg> {
-    shows_frame(session, open).then_some(ClientMsg::EqFrameAck { session })
+/// The page's answer to a binary frame `head` while its open editor is
+/// `open` (#71 PR I): the ack of a frame of that editor with its number,
+/// sent as it arrives (before its picture is decoded), so the hub sends the
+/// next one; a frame of an editor the page left gets none (its frames
+/// stop).
+pub fn frame_ack(head: FrameHead, open: Option<u32>) -> Option<ClientMsg> {
+    shows_frame(head.session, open).then_some(ClientMsg::EqFrameAck {
+        session: head.session,
+        seq: head.seq,
+    })
 }
 
 #[cfg(test)]
@@ -136,13 +140,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_frame_of_the_open_editor_is_acked_with_its_session() {
+    fn a_frame_of_the_open_editor_is_acked_with_its_session_and_number() {
+        let head = |session| FrameHead { session, seq: 41 };
         assert_eq!(
-            frame_ack(3, Some(3)),
-            Some(ClientMsg::EqFrameAck { session: 3 })
+            frame_ack(head(3), Some(3)),
+            Some(ClientMsg::EqFrameAck {
+                session: 3,
+                seq: 41
+            })
         );
-        assert_eq!(frame_ack(2, Some(3)), None, "an editor the page left");
-        assert_eq!(frame_ack(3, None), None, "none open");
+        assert_eq!(frame_ack(head(2), Some(3)), None, "an editor the page left");
+        assert_eq!(frame_ack(head(3), None), None, "none open");
     }
 
     fn open(path: &str) -> EqView {

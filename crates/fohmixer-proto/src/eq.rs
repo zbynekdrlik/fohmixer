@@ -21,17 +21,21 @@
 //!
 //! **Binary frames:** while a client holds an open editor, the hub sends its
 //! picture as binary WebSocket messages, the newest frame winning (a slow
-//! link gets fewer frames, never old ones): [`FRAME_HEADER`] bytes of the
-//! session number (big-endian `u32`, the `session` of the `eq` message that
-//! opened it), then one JPEG. A page shows a frame only when its session is
-//! the one it opened: a frame of an editor it already left is dropped.
+//! link gets fewer frames, never old ones): a [`FrameHead`] of
+//! [`FRAME_HEADER`] bytes (the session number, the `session` of the `eq`
+//! message that opened it, then the frame's number in that session, from
+//! 1; each a big-endian `u32`), then one JPEG. A page shows a frame only
+//! when its session is the one it opened: a frame of an editor it already
+//! left is dropped.
 //!
 //! **One frame in flight (PR I):** the page acks each frame of its open
-//! editor as it arrives (`eq_frame_ack` with the session), and the hub
-//! sends that page's next frame only after the ack, or once its wait for
-//! the ack ran out (a lost ack never stalls the picture for good). On a
-//! slow link the frames then never pile up in the socket's send buffer,
-//! and a pong, an ack or a value waits behind one frame at most.
+//! editor as it arrives (`eq_frame_ack` with the session and the frame's
+//! number: it acks every frame up to it), and the hub sends that page's
+//! next frame only after the ack, or, with one frame in flight, once its
+//! wait for the ack ran out (a lost ack never stalls the picture; never a
+//! third frame in flight). On a slow link the frames then never pile up in
+//! the socket's send buffer, and a pong, an ack or a value waits behind one
+//! frame at most.
 
 use serde::{Deserialize, Serialize};
 
@@ -42,8 +46,16 @@ pub const PRODUCT: &str = "Pro-Q 4";
 pub const ON_TRACK: &str = "na tracku";
 /// Between a rack's and its chain's names in a place.
 pub const PLACE_SEP: &str = " › ";
-/// The bytes before a frame's JPEG: its session number.
-pub const FRAME_HEADER: usize = 4;
+/// The bytes before a frame's JPEG: its [`FrameHead`].
+pub const FRAME_HEADER: usize = 8;
+
+/// A binary frame's header (PR I): the session it shows and its number in
+/// that session (from 1), which the page's ack names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FrameHead {
+    pub session: u32,
+    pub seq: u32,
+}
 
 /// Why an editor did not open or closed (`eq` `reason`).
 pub mod reason {
@@ -183,18 +195,28 @@ pub fn place(steps: &[(String, String)]) -> String {
         .join(PLACE_SEP)
 }
 
-/// A binary frame: `session` (big-endian) and the JPEG.
-pub fn frame(session: u32, jpeg: &[u8]) -> Vec<u8> {
-    let mut bytes = session.to_be_bytes().to_vec();
-    bytes.extend_from_slice(jpeg);
-    bytes
+/// A binary frame: its header (big-endian) and the JPEG.
+pub fn frame(head: FrameHead, jpeg: &[u8]) -> Vec<u8> {
+    [
+        &head.session.to_be_bytes()[..],
+        &head.seq.to_be_bytes(),
+        jpeg,
+    ]
+    .concat()
 }
 
-/// A binary frame's session and JPEG; none for a message shorter than its
+/// A binary frame's header and JPEG; none for a message shorter than its
 /// header.
-pub fn frame_parts(bytes: &[u8]) -> Option<(u32, &[u8])> {
-    let head: [u8; FRAME_HEADER] = bytes.get(..FRAME_HEADER)?.try_into().ok()?;
-    Some((u32::from_be_bytes(head), &bytes[FRAME_HEADER..]))
+pub fn frame_parts(bytes: &[u8]) -> Option<(FrameHead, &[u8])> {
+    let (head, jpeg) = bytes.split_at_checked(FRAME_HEADER)?;
+    let ([session, seq], _) = head.as_chunks::<4>() else {
+        return None;
+    };
+    let head = FrameHead {
+        session: u32::from_be_bytes(*session),
+        seq: u32::from_be_bytes(*seq),
+    };
+    Some((head, jpeg))
 }
 
 #[cfg(test)]
@@ -203,15 +225,23 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn a_frame_carries_its_session_then_the_jpeg() {
+    fn a_frame_carries_its_session_and_number_then_the_jpeg() {
         let jpeg = [0xFF, 0xD8, 0xFF, 0xD9];
-        let bytes = frame(0x0102_0304, &jpeg);
-        assert_eq!(bytes, vec![1, 2, 3, 4, 0xFF, 0xD8, 0xFF, 0xD9]);
-        assert_eq!(frame_parts(&bytes), Some((0x0102_0304, &jpeg[..])));
-        assert_eq!(FRAME_HEADER, 4);
+        let head = FrameHead {
+            session: 0x0102_0304,
+            seq: 0x0506_0708,
+        };
+        let bytes = frame(head, &jpeg);
+        assert_eq!(bytes, vec![1, 2, 3, 4, 5, 6, 7, 8, 0xFF, 0xD8, 0xFF, 0xD9]);
+        assert_eq!(frame_parts(&bytes), Some((head, &jpeg[..])));
+        assert_eq!(FRAME_HEADER, 8);
         // A header alone is an empty picture; less is no frame.
-        assert_eq!(frame_parts(&[0, 0, 0, 7]), Some((7, &[][..])));
-        assert_eq!(frame_parts(&[0, 0, 7]), None);
+        assert_eq!(
+            frame_parts(&[0, 0, 0, 7, 0, 0, 0, 9]),
+            Some((FrameHead { session: 7, seq: 9 }, &[][..]))
+        );
+        assert_eq!(frame_parts(&[0, 0, 0, 7, 0, 0, 9]), None);
+        assert_eq!(frame_parts(&[0, 0, 0, 7]), None);
         assert_eq!(frame_parts(&[]), None);
     }
 

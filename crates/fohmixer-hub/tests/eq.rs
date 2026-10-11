@@ -11,8 +11,9 @@
 //! a page's picture area resizes the editor to its aspect before it answers,
 //! a changed area resizes it again, and the close puts the editor's own size
 //! back before the guard's tap; PR I: one frame in flight per page, the next
-//! one only after the page's ack (or the ack's wait), so a pong never waits
-//! behind more than one frame.
+//! one only after the page's ack (or the ack's wait, never a third), so a
+//! pong never waits behind more than one frame, also on a link slower than
+//! the frames (a throttled proxy, `support::throttle`).
 #![cfg(unix)]
 
 mod support;
@@ -25,6 +26,7 @@ use fohmixer_proto::client::{ClientMsg, ServerMsg};
 use fohmixer_proto::eq::{Area, EqItem, EqLock, EqState, Touch, frame_parts, reason};
 use fohmixer_proto::layout::{Anchor, Binding};
 use serde_json::{Value, json};
+use support::throttle::Throttle;
 use support::{Client, Host, Incoming, TestHub, runtime, serial};
 
 const WAIT: Duration = Duration::from_secs(5);
@@ -249,8 +251,8 @@ fn a_strips_pro_q_opens_sends_frames_takes_a_finger_and_closes_through_the_guard
         assert_eq!(session, 1);
         editor_open(&mut a, ON_TRACK, true).await;
         let frame = a.frame(WAIT).await.expect("a frame");
-        let (of, jpeg) = frame_parts(&frame).unwrap();
-        assert_eq!(of, session);
+        let (head, jpeg) = frame_parts(&frame).unwrap();
+        assert_eq!(head.session, session);
         assert_eq!(jpeg[..2], [0xFF_u8, 0xD8]);
         // Another client sees the lock and is refused.
         let mut b = client(&hub).await;
@@ -760,7 +762,7 @@ fn a_path_whose_device_changed_shows_no_picture_of_the_device_before() {
         assert_eq!(listed(&mut a).await.0.len(), 1);
         let session = open(&mut a, kick).await;
         let frame = a.frame(WAIT).await.expect("a frame");
-        assert_eq!(frame_parts(&frame).unwrap().0, session);
+        assert_eq!(frame_parts(&frame).unwrap().0.session, session);
         a.send(&ClientMsg::EqClose).await;
         assert_eq!(state(&mut a, kick).await.0, EqState::Closed);
         assert_eq!(hub.get(picture).await.0, 200, "the Kick's last picture");
@@ -904,7 +906,7 @@ fn an_open_with_an_upright_area_gets_its_aspect_and_its_close_puts_its_size_back
         assert!((aspect - area.w / area.h).abs() < 0.002, "{aspect}");
         // Its frames are the new picture.
         let frame = a.frame(WAIT).await.expect("a frame");
-        assert_eq!(frame_parts(&frame).unwrap().0, session);
+        assert_eq!(frame_parts(&frame).unwrap().0.session, session);
         // A finger past the old height lands.
         input(&mut a, Touch::Down, 300.0, 1200.0).await;
         input(&mut a, Touch::Up, 300.0, 1200.0).await;
@@ -980,10 +982,11 @@ enum Seen {
 /// How often the watching page pings (its watchdog's rate while visible).
 const PING_EVERY: Duration = Duration::from_millis(100);
 
-/// The page's ack of a frame of `session` (#71 PR I), as the page writes it.
-async fn ack(client: &mut Client, session: u32) {
+/// The page's ack of the frame `seq` of `session` (#71 PR I), as the page
+/// writes it.
+async fn ack(client: &mut Client, session: u32, seq: u32) {
     client
-        .send_text(&json!({"type": "eq_frame_ack", "session": session}).to_string())
+        .send_text(&json!({"type": "eq_frame_ack", "session": session, "seq": seq}).to_string())
         .await;
 }
 
@@ -1018,10 +1021,10 @@ async fn watch(
         let left = next_ping.min(end).saturating_duration_since(Instant::now());
         match client.next_any(left).await {
             Some(Incoming::Binary(bytes)) => {
-                let (session, _) = frame_parts(&bytes).expect("a frame's header");
-                seen.push((started.elapsed(), Seen::Frame(session)));
+                let (head, _) = frame_parts(&bytes).expect("a frame's header");
+                seen.push((started.elapsed(), Seen::Frame(head.session)));
                 if acks {
-                    ack(client, session).await;
+                    ack(client, head.session, head.seq).await;
                 }
             }
             Some(Incoming::Text(ServerMsg::Pong { n, .. })) => {
@@ -1104,14 +1107,15 @@ fn a_frame_waits_for_the_pages_ack_of_the_one_before_or_a_second_and_pongs_never
             gaps(&times)
         );
         pongs_kept_up(&acked);
-        // The page stops acking: one frame, then the next only once the
-        // ack's wait (1 s) ran out; the picture never stalls for good.
+        // The page stops acking: one frame, then a second once the ack's
+        // wait (1 s) ran out, never a third (the PR I review: one a second
+        // went into a stalled link).
         let silent = watch(&mut a, Duration::from_millis(3500), false, &mut pings).await;
         let (times, others) = frame_times(&silent, session);
         assert_eq!(others, 0, "{silent:?}");
         assert!(
-            (2..=5).contains(&times.len()),
-            "one frame a second without acks: {silent:?}"
+            (1..=2).contains(&times.len()),
+            "two frames at most without acks: {silent:?}"
         );
         assert!(
             gaps(&times)
@@ -1125,6 +1129,48 @@ fn a_frame_waits_for_the_pages_ack_of_the_one_before_or_a_second_and_pongs_never
         let closed = state(&mut a, ON_TRACK).await;
         assert_eq!(closed.0, EqState::Closed);
         editor_open(&mut a, ON_TRACK, false).await;
+        hub.stop().await;
+        host.stop();
+    });
+}
+
+#[test]
+fn on_a_link_slower_than_the_frames_a_pong_waits_behind_one_frame_at_most() {
+    // The PR I review: on loopback no frame ever queues, so the test above
+    // holds with or without the flow control. Here the page's link carries
+    // two frames a second while the sim's picture changes four times a
+    // second: without the flow control the hub would write every frame and
+    // the pongs would queue behind a growing backlog of them.
+    let _serial = serial();
+    runtime().block_on(async {
+        let host = Host::start("band");
+        let dir = tempfile::tempdir().unwrap();
+        let hub = TestHub::start_config(config(dir.path(), &host)).await;
+        let link = Throttle::start(hub.addr).await;
+        let mut a = Client::connect(&link.ws_url(&hub.token)).await;
+        a.instance_state("band", true, None, Duration::from_secs(10))
+            .await;
+        a.send(&ClientMsg::EqList { binding: hand2() }).await;
+        listed(&mut a).await;
+        let session = open(&mut a, ON_TRACK).await;
+        // One frame's size sets the link's rate.
+        let frame = a.frame(WAIT).await.expect("a frame");
+        let (head, _) = frame_parts(&frame).unwrap();
+        ack(&mut a, head.session, head.seq).await;
+        link.rate(2 * frame.len() as u64);
+        let mut pings = 0;
+        let seen = watch(&mut a, Duration::from_secs(4), true, &mut pings).await;
+        let (times, others) = frame_times(&seen, session);
+        assert_eq!(others, 0, "{seen:?}");
+        assert!(
+            times.len() >= 4,
+            "the frames went on at the link's pace: {seen:?}"
+        );
+        pongs_kept_up(&seen);
+        link.rate(0);
+        a.send(&ClientMsg::EqClose).await;
+        let closed = state(&mut a, ON_TRACK).await;
+        assert_eq!(closed.0, EqState::Closed);
         hub.stop().await;
         host.stop();
     });

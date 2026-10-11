@@ -28,6 +28,7 @@ mod host;
 #[allow(unused_imports)] // the host-free test binaries do not use it
 pub use host::Host;
 pub mod companion;
+pub mod throttle;
 
 /// One host-backed test at a time within a test binary (`cargo test` runs
 /// a binary's tests on parallel threads; nextest runs them in the

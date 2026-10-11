@@ -1583,7 +1583,9 @@ impl Worker {
         };
         if !self.backend.alive(&editor.taken) {
             let gone = editor.taken.clone();
-            self.editors.remove(&session);
+            if let Some(editor) = self.editors.remove(&session) {
+                self.last_rate(session, &editor.counts);
+            }
             self.encoder.forget(session);
             if let Some(held) = self.contact.filter(|held| held.session == session) {
                 self.contact = None;
@@ -1776,6 +1778,19 @@ impl Worker {
         self.guard_look(guard, now);
     }
 
+    /// The counts of an editor the worker lets go (released, its window
+    /// gone) since its last minute, as its last `rate` (the PR I review: a
+    /// session's last minute was lost); nothing when it grabbed nothing
+    /// since.
+    fn last_rate(&self, session: u32, counts: &Counts) {
+        if counts.grabs > 0 {
+            (self.events)(PlugwinEvent::Rate {
+                session,
+                rate: counts.rate(),
+            });
+        }
+    }
+
     /// `session`'s window handed back: its contact ended, its rectangle at
     /// the take (place and size) posted again when it was changed and Live
     /// keeps the editor open (best effort: a guard that failed, the stop;
@@ -1788,6 +1803,7 @@ impl Worker {
         self.encoder.forget(session);
         let now = self.now();
         if let Some(editor) = self.editors.remove(&session) {
+            self.last_rate(session, &editor.counts);
             match repost(editor.changed, closed, now - editor.ended) {
                 Repost::Take => {
                     if let Err(why) = self.backend.resize(&editor.taken, editor.taken.rect) {

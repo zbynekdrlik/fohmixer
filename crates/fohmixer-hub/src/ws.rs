@@ -19,7 +19,8 @@
 //! writer sends the client's newest Pro-Q 4 frame waiting, if any, as a
 //! binary message (`fohmixer_proto::eq::frame`), one in flight at a time
 //! (#71 PR I): the page's `eq_frame_ack` goes straight to its outbox
-//! (`Outbox::frame_acked`), which lets the next frame go.
+//! (`Outbox::frame_acked`), which lets the next frame go. The writer takes
+//! the frame together with the batch's messages and writes it after them.
 //!
 //! A socket's connect and disconnect lines name who opened it (#9, an
 //! [`Opener`]): the peer, the address Cloudflare forwarded (through the
@@ -194,20 +195,13 @@ async fn session(mut socket: WebSocket, hub: Hub, proto: Option<u32>, who: Opene
         let outbox = Arc::clone(&outbox);
         tokio::spawn(async move {
             while let Some(batch) = outbox.next_batch().await {
-                for message in batch.iter().map(text) {
+                // The messages, then the frame taken with them (PR I).
+                let frame = batch.frame.map(Message::Binary);
+                for message in batch.messages.iter().map(text).chain(frame) {
                     if let Err(why) = deliver(&mut sink, message, client).await {
                         outbox.close();
                         return why;
                     }
-                }
-                // The newest frame, once the page acked the one before (PR
-                // I): taken after the batch went, so it is the newest.
-                let Some(frame) = outbox.take_frame(std::time::Instant::now()) else {
-                    continue;
-                };
-                if let Err(why) = deliver(&mut sink, Message::Binary(frame), client).await {
-                    outbox.close();
-                    return why;
                 }
             }
             let _ = sink.close().await;
@@ -442,8 +436,8 @@ fn handle_text(hub: &Hub, conn: &mut Conn, text: &str) {
         }),
         Ok(ClientMsg::EqClose) => hub.route(RouterMsg::EqClose { client }),
         // Straight to the outbox (PR I): the writer's next frame may go.
-        Ok(ClientMsg::EqFrameAck { session }) => {
-            outbox.frame_acked(session, std::time::Instant::now());
+        Ok(ClientMsg::EqFrameAck { session, seq }) => {
+            outbox.frame_acked(session, seq, std::time::Instant::now());
         }
         // Through the outbox like every answer: a pong proves the writer
         // still reaches the client.

@@ -2,8 +2,9 @@
 //! `eq_locks` and `eq` into the signals (`store/eq.rs`, tested), the page's
 //! `eq_list`, `eq_open` (with its picture area, PR G), `eq_area`,
 //! `eq_input` and `eq_close`, a card's last picture
-//! fetched with the token, and the binary frames: the session in their
-//! header (`fohmixer_proto::eq::frame_parts`) checked against the page's
+//! fetched with the token, and the binary frames: the session and the
+//! frame's number in their header (`fohmixer_proto::eq::frame_parts`), the
+//! session checked against the page's
 //! open editor (`behave::eq::shows_frame`) and the JPEG handed as a blob to
 //! the screen's sink, each frame of the open editor acked as it arrives
 //! (PR I, `store::eq::frame_ack`: the hub sends the next frame then). A
@@ -59,19 +60,19 @@ impl LiveStore {
             return;
         };
         let bytes = js_sys::Uint8Array::new(buffer);
-        let mut head = [0_u8; fohmixer_proto::eq::FRAME_HEADER];
-        if bytes.length() < head.len() as u32 {
+        let mut header = [0_u8; fohmixer_proto::eq::FRAME_HEADER];
+        if bytes.length() < header.len() as u32 {
             return;
         }
-        bytes.subarray(0, head.len() as u32).copy_to(&mut head);
-        let Some((session, _)) = frame_parts(&head) else {
+        bytes.subarray(0, header.len() as u32).copy_to(&mut header);
+        let Some((head, _)) = frame_parts(&header) else {
             return;
         };
         let open = self
             .eq
             .try_with_untracked(|v| v.as_ref().and_then(EqView::open_session))
             .flatten();
-        let Some(ack) = frame_ack(session, open) else {
+        let Some(ack) = frame_ack(head, open) else {
             return;
         };
         self.send(&ack);
@@ -79,7 +80,7 @@ impl LiveStore {
         let Some(sink) = sink else {
             return;
         };
-        let jpeg = bytes.subarray(head.len() as u32, bytes.length());
+        let jpeg = bytes.subarray(header.len() as u32, bytes.length());
         let options = web_sys::BlobPropertyBag::new();
         options.set_type("image/jpeg");
         match web_sys::Blob::new_with_u8_array_sequence_and_options(
