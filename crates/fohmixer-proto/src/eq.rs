@@ -178,6 +178,10 @@ pub mod reason {
     /// value field may be open), or the hub could not be sure which device
     /// to turn off. Close it on the PC.
     pub const LEFT_OPEN: &str = "left open in Live";
+    /// Windows' press-and-hold could not be turned off for the editor's
+    /// window (#71 PR O): a still finger could become a right click (Pro-Q's
+    /// menu, with Delete), so the hub does not open it.
+    pub const HOLD_ON: &str = "press-and-hold could not be turned off";
 }
 
 /// The page's picture area (`eq_open`'s `area`; PR G): the size, in CSS

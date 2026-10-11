@@ -510,10 +510,62 @@ fn the_worker_lists_and_takes_the_window_live_opens() {
     let window = take(&mut worker, &handle, 1, 0.0);
     assert_eq!(handle.topmost(window), Some(true));
     assert_eq!(worker.editors[&1].taken.window, window);
+    // #71 PR O: press-and-hold off once it is taken (a still finger never
+    // becomes a right click: Pro-Q's menu).
     assert_eq!(
         handle.records(),
-        vec![json!({"op": "take", "window": window.0})]
+        vec![
+            json!({"op": "take", "window": window.0}),
+            json!({"op": "press_and_hold", "window": window.0, "quiet": true}),
+        ]
     );
+    // At the release: on again, then the window back.
+    let (reply, _released) = oneshot::channel();
+    worker.command_at(
+        Command::Release {
+            session: 1,
+            closed: false,
+            reply,
+        },
+        10.0,
+    );
+    assert_eq!(
+        handle.records()[2..],
+        [
+            json!({"op": "press_and_hold", "window": window.0, "quiet": false}),
+            json!({"op": "release", "window": window.0}),
+        ]
+    );
+}
+
+#[test]
+fn an_editor_whose_press_and_hold_stays_on_is_handed_back_not_opened() {
+    // #71 PR O: Windows refusing the property leaves a still finger able to
+    // become a right click: the hub opens no such editor.
+    let (mut worker, handle, _) = worker();
+    handle.refuse_quiet(true);
+    let (reply, mut answer) = oneshot::channel();
+    worker.command_at(
+        Command::Take {
+            session: 1,
+            before: handle.windows(),
+            reply,
+        },
+        0.0,
+    );
+    worker.step_at(0.0);
+    assert_eq!(answer.try_recv().unwrap(), Err(reason::HOLD_ON.to_string()));
+    assert!(worker.editors.is_empty());
+    let window = handle.windows()[0];
+    assert_eq!(
+        handle.records(),
+        vec![
+            json!({"op": "take", "window": window.0}),
+            json!({"op": "press_and_hold", "window": window.0, "quiet": true}),
+            json!({"op": "release", "window": window.0}),
+        ]
+    );
+    assert_eq!(handle.topmost(window), Some(false), "its z-order as it was");
 }
 
 #[test]

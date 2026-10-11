@@ -1626,6 +1626,10 @@ mod tests {
             said("left open in Live"),
             "Pro-Q 4 sa nepodarilo bezpečne zavrieť, ostáva otvorený na PC"
         );
+        assert_eq!(
+            said("press-and-hold could not be turned off"),
+            "na PC sa nedá vypnúť podržanie prsta, Pro-Q 4 sa preto neotvorí"
+        );
         // The protocol's names for them.
         for (named, word) in [
             (reason::OFFLINE, "instance offline"),
@@ -1639,6 +1643,7 @@ mod tests {
             (reason::STOPPED, "the window worker stopped"),
             (reason::NOT_ON_TOP, "the window did not come on top"),
             (reason::LEFT_OPEN, "left open in Live"),
+            (reason::HOLD_ON, "press-and-hold could not be turned off"),
         ] {
             assert_eq!(said(named), said(word), "{word}");
             assert!(!said(named).starts_with("Neotvoril sa"), "{word}");

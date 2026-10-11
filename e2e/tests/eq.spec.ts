@@ -326,6 +326,8 @@ const GUARD_AND_RELEASE = [
   ["resize", null, WIDTH, HEIGHT],
   ["touch", "down", INERT.x, INERT.y],
   ["touch", "up", INERT.x, INERT.y],
+  // Press-and-hold on again (#71 PR O), then the window back.
+  ["press_and_hold", null, null, null],
   ["release", null, null, null],
 ];
 
@@ -453,10 +455,15 @@ test.describe("The Pro-Q 4 screen", () => {
     expect(Math.abs(opens[0].area.w - areaBox.width), JSON.stringify(opens[0])).toBeLessThan(1);
     expect(Math.abs(opens[0].area.h - areaBox.height), JSON.stringify(opens[0])).toBeLessThan(1);
     const picture = await pictureSize(screen.getByTestId("eq-canvas"));
-    expect(steps((await simEq.records()).slice(0, 2))).toEqual([
+    // Taken, press-and-hold off for it (#71 PR O: a still finger never
+    // becomes a right click), then resized.
+    const opened = (await simEq.records()).slice(0, 3);
+    expect(steps(opened)).toEqual([
       ["take", null, null, null],
+      ["press_and_hold", null, null, null],
       ["resize", null, picture.width, picture.height],
     ]);
+    expect(opened[1].quiet).toBe(true);
     // About Pro-Q's own pixel count (the room allows it at this size).
     expect(Math.abs((picture.width * picture.height) / (WIDTH * HEIGHT) - 1)).toBeLessThan(0.01);
     // The bar: the exit, the strip's chip, where the editor sits, the lock mark.
