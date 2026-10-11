@@ -440,3 +440,137 @@
         text-align: center;
     }
 }
+
+/* --- a phone: the column behind ☰ (#63, the approved mockup
+   phone-burger-v1) ---
+   In the column's place a thin strip (34 px: the link's dot, ◀ ☰ ▶, where
+   two thumbs holding the phone do not reach); ☰ opens the column over the
+   faders, 150 px wide and centred, a shade dimming the faders under it
+   (✕, the shade and a page's tab close it: surface.rs). `--count-col` is
+   the phone's column width, by which surface.rs still counts the strips
+   (the same strips show, wider: `arrange::arrange_in`). The deck page keeps
+   its column. TechAlert's wash sets its own visibility, so it still covers
+   the screen with the column closed; no `transform` here, which would hold
+   its `position: fixed`. */
+.thin,
+.column-close,
+.column-shade {
+    display: none;
+}
+
+@media (max-height: 520px) {
+    .body:not(.deck-page) {
+        --count-col: 148px;
+    }
+}
+
+@media (max-width: 520px) {
+    .body:not(.deck-page) {
+        --count-col: 96px;
+    }
+}
+
+@media (max-height: 520px), (max-width: 520px) {
+    .body:not(.deck-page) {
+        --col: 34px;
+        --overlay: 150px;
+        position: relative;
+    }
+
+    .body:not(.deck-page) > .thin {
+        grid-column: 2;
+        grid-row: 1 / -1;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        min-width: 0;
+        min-height: 0;
+        padding: 4px 2px;
+        background: var(--bar);
+        border: 1px solid var(--line-soft);
+        border-radius: 10px;
+    }
+
+    .thin .btn.thin-btn {
+        flex: none;
+        width: 100%;
+        min-height: 44px;
+        padding: 0;
+        justify-content: center;
+        color: var(--text);
+        font-size: 15px;
+        text-align: center;
+    }
+
+    .thin .btn.thin-btn::before {
+        display: none;
+    }
+
+    .thin .btn.thin-btn.end {
+        opacity: 0.35;
+    }
+
+    .thin .btn.thin-burger {
+        min-height: 64px;
+        border-color: var(--accent);
+        color: var(--accent);
+        font-size: 22px;
+    }
+
+    .thin-live {
+        flex: none;
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--mute);
+    }
+
+    .thin-live[data-connected="true"] {
+        background: var(--ok);
+    }
+
+    /* The column over the faders: its own grid cell is the thin strip's,
+       so 50 % is the screen's middle. */
+    .body:not(.deck-page) > .column {
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        left: calc(50% - var(--overlay) / 2);
+        width: var(--overlay);
+        visibility: hidden;
+        box-shadow:
+            0 0 0 1px var(--accent),
+            0 10px 40px rgba(0, 0, 0, 0.6);
+    }
+
+    .body[data-column-open="true"] > .column {
+        visibility: visible;
+    }
+
+    .body:not(.deck-page) > .column > .column-close {
+        display: block;
+        flex: none;
+        min-height: 36px;
+        border: 1px solid var(--accent);
+        border-radius: 7px;
+        background: var(--accent-dim);
+        color: var(--accent);
+        font: 700 12px/1.15 var(--ui);
+        letter-spacing: 0.08em;
+        touch-action: none;
+    }
+
+    /* Under the column (the page's top layer, z-index 10), over the
+       strips (their layers end at 2). */
+    .body:not(.deck-page) > .column-shade {
+        display: block;
+        position: absolute;
+        inset: 0;
+        grid-column: 1 / -1;
+        grid-row: 1 / -1;
+        z-index: 5;
+        background: rgba(5, 5, 8, 0.55);
+    }
+}

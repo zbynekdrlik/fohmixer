@@ -454,10 +454,38 @@ pub struct Arrangement {
     pub lines: Vec<LineArrangement>,
 }
 
+impl Arrangement {
+    /// Line `line`'s window and the key it is kept by (none: no such line,
+    /// or it fits): what its arrows move.
+    pub fn shift_of(&self, line: usize) -> Option<(LineKey, Shift)> {
+        let line = self.lines.get(line)?;
+        line.shift.map(|shift| (line.key.clone(), shift))
+    }
+}
+
+/// A side's two widths (px, #63's phone): `count`, with the column in the
+/// middle, decides which strips a line shows and its window; `width`, with
+/// what the middle holds now (the phone's thin strip, the column closed),
+/// how wide they are. On a tablet both are the side with the column.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Sides {
+    pub count: f64,
+    pub width: f64,
+}
+
+impl Sides {
+    /// One side for both.
+    pub fn both(side: f64) -> Self {
+        Self {
+            count: side,
+            width: side,
+        }
+    }
+}
+
 /// The page arranged with its pager on sub-page `sub`, a side `side` px
 /// wide and the lines `height` px high together, each line's window at
-/// `offset(its key)`. A block wider than a side at the narrowest strip is
-/// narrowed to the side.
+/// `offset(its key)` ([`arrange_in`] with one side for both).
 pub fn arrange(
     model: &PageModel,
     sub: Option<usize>,
@@ -466,6 +494,24 @@ pub fn arrange(
     offset: impl Fn(&LineKey) -> usize,
     m: &Metrics,
 ) -> Arrangement {
+    arrange_in(model, sub, Sides::both(side), height, offset, m)
+}
+
+/// The page arranged on `sides` (#63): which strips each line shows and its
+/// window as on a side `sides.count` wide, their width filling
+/// `sides.width`. A line with a window takes the narrowest strip scaled by
+/// `width / count` (the same width wherever the window stands); one
+/// without fills the side. A block wider than a side at the narrowest
+/// strip is narrowed to the side.
+pub fn arrange_in(
+    model: &PageModel,
+    sub: Option<usize>,
+    sides: Sides,
+    height: f64,
+    offset: impl Fn(&LineKey) -> usize,
+    m: &Metrics,
+) -> Arrangement {
+    let side = sides.count;
     let mut width = m.max;
     let mut out = Vec::new();
     let widest = (side / m.min).max(1.0);
@@ -485,12 +531,12 @@ pub fn arrange(
         let offset = offset(&key);
         let (cells, shift) = shown(&cells, side, offset, m);
         let at = split(&cells, m);
-        // A line with a window takes the narrowest strip: its window moves,
-        // the strips keep their width.
+        // A line with a window takes the narrowest strip (scaled to the
+        // side it fills): its window moves, the strips keep their width.
         let line_width = if shift.is_some() {
-            m.min
+            m.min * stretch(sides)
         } else {
-            fit(&cells[..at], &cells[at..], side, m)
+            fit(&cells[..at], &cells[at..], sides.width, m)
         };
         width = width.min(line_width);
         out.push(LineArrangement {
@@ -505,6 +551,31 @@ pub fn arrange(
         width: width.clamp(m.min, m.max),
         lines: out,
     }
+}
+
+/// How much wider a strip is on `sides.width` than on `sides.count` (1 on
+/// a tablet, and for a side not laid out yet).
+pub fn stretch(sides: Sides) -> f64 {
+    if sides.count > 0.0 {
+        (sides.width / sides.count).max(1.0)
+    } else {
+        1.0
+    }
+}
+
+/// The line the phone's thin strip moves with its ◀ ▶ (#63, the approved
+/// mockup): the first one with a window.
+pub fn thin_line(arranged: &Arrangement) -> Option<usize> {
+    arranged.lines.iter().position(|line| line.shift.is_some())
+}
+
+/// A CSS length in px as `getComputedStyle` gives a custom property
+/// (`" 148px"`); none for another unit or no value.
+pub fn px_value(text: &str) -> Option<f64> {
+    text.trim()
+        .strip_suffix("px")
+        .and_then(|v| v.trim().parse::<f64>().ok())
+        .filter(|v| v.is_finite() && *v >= 0.0)
 }
 
 /// A half's cells of one group side by side; blanks are a run of their own.

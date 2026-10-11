@@ -63,7 +63,10 @@ exclude_re = [
   # parent element); touch-guard.spec.ts drives both (a dispatched
   # touchstart, contextmenu, selectstart and dragstart read back as
   # defaultPrevented, and the page's records of them).
-  "fohmixer-ui/src/dom\\.rs.*(replace|in) (now|epoch_now|event_epoch|hidden|wall_now|log|error|set_style|set_attr|remove_attr|viewport|current_element|child|storage|storage_get|storage_set|storage_remove|prevent_on|event_element)( |$)",
+  # #63 added computed (a computed style's property: the phone's
+  # --count-col, parsed by the tested arrange::px_value; column.spec.ts
+  # reads the strips' width it gives on both phone sizes).
+  "fohmixer-ui/src/dom\\.rs.*(replace|in) (now|epoch_now|event_epoch|hidden|wall_now|log|error|set_style|set_attr|remove_attr|viewport|current_element|child|storage|storage_get|storage_set|storage_remove|prevent_on|event_element|computed)( |$)",
   # net.rs: the fetch wrapper and the handshake reload (location.reload);
   # #71 PR E added fetch_blob (a Pro-Q 4 card's last picture with the
   # token; eq.spec.ts reads the card's picture after a close).
@@ -235,8 +238,11 @@ exclude_re = [
   # reload never restores it), a view's button (#68: Nav::tap_view carries
   # out the tested view_tap through Nav::select; markers.spec.ts taps it)
   # and the remembered pages' read; choose and selected_path are the tested
-  # decisions.
-  "fohmixer-ui/src/pages/surface\\.rs.*(replace|in) (Nav::select|Nav::show_deck|Nav::tap_view|remembered_pages)( |$)",
+  # decisions. #63: Nav::open_column (the phone's column signal, written only
+  # on a change) and step_window (a line's window moved through the tested
+  # Shift::moved into the offsets' signal); column.spec.ts opens, closes and
+  # steps them on both phone sizes.
+  "fohmixer-ui/src/pages/surface\\.rs.*(replace|in) (Nav::select|Nav::show_deck|Nav::tap_view|Nav::open_column|step_window|remembered_pages)( |$)",
   # pages/deck.rs (#52): the Stream Deck page's glue, one function at a
   # time: carry (a press decision of the tested behave::deck::Presses onto
   # the socket through LiveStore::deck_press, into the recorder through the
