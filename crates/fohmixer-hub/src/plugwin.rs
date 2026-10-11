@@ -103,6 +103,7 @@
 
 pub mod probe;
 pub mod sim;
+pub mod undo;
 #[cfg(windows)]
 pub mod win;
 

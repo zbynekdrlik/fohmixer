@@ -18,6 +18,7 @@ fn args(pid: u32) -> Args {
         min_probe: false,
         paint: 0,
         hold: false,
+        undo: false,
     }
 }
 
@@ -60,8 +61,24 @@ fn the_arguments_have_their_defaults_and_every_flag_is_read() {
             min_probe: true,
             paint: 20,
             hold: true,
+            undo: false,
         })
     );
+    // `--undo` (#71 PR P): alone, or with no paint trial; never with
+    // `--hold` or `--paint`, which make changes of their own.
+    let with_undo = |extra: &[&str]| parse(&[["--pid", "3", "--undo"].as_slice(), extra].concat());
+    let mut alone = args(3);
+    alone.undo = true;
+    assert_eq!(with_undo(&[]), Ok(alone.clone()));
+    assert_eq!(with_undo(&["--paint", "0"]), Ok(alone));
+    assert_eq!(with_undo(&["--hold"]), Err(UNDO_ALONE.to_string()));
+    assert_eq!(with_undo(&["--paint", "1"]), Err(UNDO_ALONE.to_string()));
+    assert_eq!(
+        parse(&["--undo", "--paint", "2", "--hold", "--pid", "3"]),
+        Err(UNDO_ALONE.to_string())
+    );
+    assert_eq!(UNDO_ALONE, "--undo cannot run with --hold or --paint");
+    assert!(USAGE.contains(" [--undo] "), "{USAGE}");
     assert_eq!(
         parse(&["--pid", "1", "--paint", "x"]),
         Err("--paint \"x\"".to_string())
@@ -1177,5 +1194,221 @@ fn a_probe_whose_guard_placement_does_not_land_taps_nothing_and_puts_its_size_ba
             op("release", "", -1, -1),
         ],
         "its placement, the take's rectangle again, then released"
+    );
+}
+
+/// A probe's `--undo` lines (#71 PR P) on a still sim whose Pro-Q keeps an
+/// undo history of `history` changes before the probe's own (none: no
+/// history, no ↶), its handle and the pictures saved.
+fn undo_probe(history: Option<u32>) -> (Vec<String>, SimHandle, Vec<String>) {
+    let (mut sim, handle, _) = one_window(42);
+    if let Some(changes) = history {
+        handle.undo_history(changes);
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let mut probe = args(42);
+    probe.frames = 1;
+    probe.undo = true;
+    probe.out = Some(dir.path().to_path_buf());
+    let mut out = Vec::new();
+    run(&mut sim, &probe, &mut out).unwrap();
+    let lines = String::from_utf8(out)
+        .unwrap()
+        .lines()
+        .map(str::to_string)
+        .collect();
+    let mut saved: Vec<String> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    saved.sort();
+    (lines, handle, saved)
+}
+
+/// The lines from the drag's on, the restore's figures left out.
+fn after_drag(lines: &[String]) -> Vec<String> {
+    let drag = lines
+        .iter()
+        .position(|l| l.starts_with("drag=ok"))
+        .expect("the drag's line");
+    lines[drag..]
+        .iter()
+        .map(|l| {
+            if l.starts_with("restore=ok client=1349x809 ms=") {
+                "restore=ok".to_string()
+            } else {
+                l.clone()
+            }
+        })
+        .collect()
+}
+
+#[test]
+fn an_undo_probe_taps_pro_qs_undo_until_it_reads_grey_and_opens_no_field() {
+    assert_eq!(UNDO_TAPS, 4);
+    // The band's double tap and the drag make two changes: the drag goes
+    // back first, then the band, then the ↶ reads grey.
+    let (lines, handle, saved) = undo_probe(Some(0));
+    assert_eq!(
+        after_drag(&lines),
+        [
+            "drag=ok steps=25 to=511,281",
+            "undo=1:lit at=570,18",
+            "undo=2:lit at=570,18",
+            "undo_end=grey taps=2",
+            "restore=ok",
+            "guard=ok at=546,15 tap_ms=30",
+            "release=ok",
+        ]
+    );
+    assert_eq!(handle.undo_left(), Some(0));
+    // The taps went where the read found the ↶, each recorded with the
+    // changes left; no double tap at the band's place after the drag.
+    let ops = ops(&handle);
+    let drag_up = ops
+        .iter()
+        .position(|o| *o == op("touch", "up", 511, 281))
+        .expect("the drag's up");
+    let guard = ops
+        .iter()
+        .position(|o| *o == op("touch", "down", 546, 15))
+        .expect("the guard's tap");
+    let mut want = Vec::new();
+    for _ in 0..2 {
+        want.push(op("touch", "down", 570, 18));
+        want.push(op("touch", "up", 570, 18));
+        want.push(op("undo", "", -1, -1));
+    }
+    // The guard's placement.
+    want.push(op("resize", "", -1, -1));
+    want.push(op("resize", "", -1, -1));
+    assert_eq!(ops[drag_up + 1..guard], want);
+    let left: Vec<Value> = handle
+        .records()
+        .into_iter()
+        .filter(|r| r["op"] == "undo")
+        .map(|r| r["left"].clone())
+        .collect();
+    assert_eq!(left, [serde_json::json!(1), serde_json::json!(0)]);
+    // Two taps never a double click.
+    let downs: Vec<f64> = handle
+        .records()
+        .iter()
+        .filter(|r| r["op"] == "touch" && r["phase"] == "down" && r["x"] == 570)
+        .map(|r| r["t"].as_f64().unwrap())
+        .collect();
+    assert_eq!(downs.len(), 2);
+    assert!(downs[1] - downs[0] >= 700.0, "{downs:?}");
+    assert_eq!(
+        saved,
+        [
+            "after-band.jpg",
+            "after-drag.jpg",
+            "after-guard.jpg",
+            "after-undo-1.jpg",
+            "after-undo-2.jpg",
+            "frame-00.jpg",
+        ]
+    );
+}
+
+#[test]
+fn an_undo_probe_stops_after_four_taps_while_the_undo_still_reads_lit() {
+    let (lines, handle, saved) = undo_probe(Some(3));
+    assert_eq!(
+        after_drag(&lines)[1..6],
+        [
+            "undo=1:lit at=570,18",
+            "undo=2:lit at=570,18",
+            "undo=3:lit at=570,18",
+            "undo=4:lit at=570,18",
+            "undo_end=lit taps=4",
+        ]
+    );
+    assert_eq!(handle.undo_left(), Some(1), "five changes, four undone");
+    assert!(saved.contains(&"after-undo-4.jpg".to_string()), "{saved:?}");
+    assert!(
+        !saved.contains(&"after-undo-5.jpg".to_string()),
+        "{saved:?}"
+    );
+}
+
+#[test]
+fn an_undo_probe_taps_nothing_where_no_undo_reads() {
+    let (lines, handle, saved) = undo_probe(None);
+    assert_eq!(
+        after_drag(&lines),
+        [
+            "drag=ok steps=25 to=511,281",
+            "undo_end=missing taps=0",
+            "restore=ok",
+            "guard=ok at=546,15 tap_ms=30",
+            "release=ok",
+        ]
+    );
+    let ops = ops(&handle);
+    let drag_up = ops
+        .iter()
+        .position(|o| *o == op("touch", "up", 511, 281))
+        .expect("the drag's up");
+    assert_eq!(
+        ops[drag_up + 1],
+        op("resize", "", -1, -1),
+        "no tap before the guard's placement: {ops:?}"
+    );
+    assert!(
+        saved.iter().all(|name| !name.starts_with("after-undo")),
+        "{saved:?}"
+    );
+}
+
+#[test]
+fn an_undo_probe_at_another_size_taps_the_undo_where_that_size_has_it() {
+    // At 760 px wide (an upright phone's picture) Pro-Q's ↶ lies at x 312.
+    let (mut sim, handle, _) = one_window(42);
+    handle.undo_history(0);
+    let mut probe = args(42);
+    probe.frames = 1;
+    probe.undo = true;
+    probe.size = Some((760, 1271));
+    let mut out = Vec::new();
+    run(&mut sim, &probe, &mut out).unwrap();
+    let text = String::from_utf8(out).unwrap();
+    assert!(
+        text.contains("\nundo=1:lit at=312,18\nundo=2:lit at=312,18\nundo_end=grey taps=2\n"),
+        "{text}"
+    );
+    assert_eq!(handle.undo_left(), Some(0));
+}
+
+#[test]
+fn an_undo_tap_that_fails_fails_the_probe_and_hands_the_window_back() {
+    let (mut sim, handle, window) = one_window(42);
+    handle.undo_history(1);
+    let taken = sim.take(window).unwrap();
+    let mut out = Vec::new();
+    {
+        let mut held = Held {
+            backend: &mut sim,
+            taken,
+            contact: None,
+            released: false,
+            changed: false,
+        };
+        let mut report = Report {
+            out: &mut out,
+            folder: None,
+        };
+        handle.refuse(true);
+        assert_eq!(
+            undo_taps(&mut held, &mut report),
+            Err(format!("undo at 570,18: {REFUSED}"))
+        );
+    }
+    assert_eq!(String::from_utf8(out).unwrap(), "undo=1:lit at=570,18\n");
+    assert_eq!(handle.undo_left(), Some(1), "nothing undone");
+    assert_eq!(
+        ops(&handle),
+        vec![op("take", "", -1, -1), op("release", "", -1, -1)]
     );
 }

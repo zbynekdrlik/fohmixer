@@ -37,9 +37,20 @@
 //! (`size_kept`: Live's window keeping its size), or resize or move a window
 //! as the PC would (`resize_window`, `move_window`). A grab draws the picture at the
 //! window's size.
+//!
+//! **Pro-Q's own undo (#71 PR P):** once a test gives the sim an undo
+//! history (`undo_history`), each grab draws Pro-Q's ↶ at its measured spot
+//! for the picture's width ([`undo::spot`], on the top bar's dark: the
+//! moving bar never lies beside it), lit while the history holds a change
+//! and grey when it holds none. A drag's up, and a double tap's second up
+//! (Pro-Q's new band), make one change; a tap on the ↶ undoes one and is
+//! recorded (`{"op": "undo", "window", "left"}`, the changes left). Without
+//! a history no ↶ is drawn and nothing is kept, so the pictures are as
+//! before.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io::Write as _;
+use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
@@ -47,7 +58,7 @@ use std::time::{Duration, Instant};
 use fohmixer_proto::eq::reason;
 use serde_json::{Value, json};
 
-use super::{Backend, Phase, Pixels, Rect, Taken, WindowId};
+use super::{Backend, Phase, Pixels, Rect, Taken, WindowId, undo};
 
 /// The simulated picture's width (Pro-Q 4's at 100 %).
 pub const SIM_WIDTH: u32 = 1349;
@@ -174,6 +185,73 @@ struct SimContact {
     to_menu: bool,
 }
 
+/// The simulated Pro-Q's ↶ (#71 PR P): its size (px) and its top row, as
+/// Pro-Q 4's own in Carla's bridge (12 × 7, rows 15 to 21).
+pub const SIM_UNDO_SIZE: (i32, i32) = (12, 7);
+pub const SIM_UNDO_TOP: i32 = 15;
+/// Its shade lit (a change to undo) and grey (none): Pro-Q's own brightest
+/// pixel reads about 225 to 250 and 99.
+pub const SIM_UNDO_LIT: u8 = 240;
+pub const SIM_UNDO_GREY: u8 = 100;
+/// The top bar's dark around it: the picture's own field.
+pub const SIM_BAR: [u8; 4] = [0x20, 0x10, 0x20, 0xFF];
+/// How far from the ↶'s spot (px, on either axis) a tap undoes.
+pub const SIM_UNDO_SLOP: i32 = 6;
+/// Windows' double-click time (ms, its default): a tap whose down comes this
+/// soon after the last tap's up is a double tap.
+pub const SIM_DOUBLE_MS: f64 = 500.0;
+
+/// Whether a tap at `at` lands on the ↶ at `spot` (#71 PR P): within
+/// [`SIM_UNDO_SLOP`] on either axis.
+pub fn on_undo(spot: (i32, i32), at: (i32, i32)) -> bool {
+    (at.0 - spot.0).abs().max((at.1 - spot.1).abs()) <= SIM_UNDO_SLOP
+}
+
+/// Whether a tap whose down came at `down` (sim ms) is a double tap's
+/// second (#71 PR P): the tap before it lifted at `last`, at most
+/// [`SIM_DOUBLE_MS`] earlier (none: no tap before it counts).
+pub fn second_tap(last: Option<f64>, down: f64) -> bool {
+    last.is_some_and(|up| down - up <= SIM_DOUBLE_MS)
+}
+
+/// The simulated Pro-Q's ↶ drawn over `pixels` (#71 PR P): where the read
+/// looks ([`undo::REACH`] columns on each side of [`undo::spot`] of the
+/// picture's width, rows [`undo::ROWS`]) the top bar's dark first
+/// ([`SIM_BAR`]: the picture's moving bar never lies beside the ↶, as
+/// nothing does in Pro-Q's bar), then the glyph, [`SIM_UNDO_SIZE`] from row
+/// [`SIM_UNDO_TOP`] with its centre on the spot, lit or grey. Nothing at a
+/// width the table does not know.
+pub fn draw_undo(pixels: &mut Pixels, lit: bool) {
+    let Some((x, _)) = undo::spot(pixels.width) else {
+        return;
+    };
+    let bar = undo::ROWS.0..undo::ROWS.1 + 1;
+    fill(pixels, x - undo::REACH..x + undo::REACH + 1, bar, SIM_BAR);
+    let (w, h) = SIM_UNDO_SIZE;
+    let shade = if lit { SIM_UNDO_LIT } else { SIM_UNDO_GREY };
+    let glyph = [shade, shade, shade, 0xFF];
+    fill(
+        pixels,
+        x - w / 2..x + w / 2,
+        SIM_UNDO_TOP..SIM_UNDO_TOP + h,
+        glyph,
+    );
+}
+
+/// The pixels of `columns` × `rows` of `pixels` set to `bgra` (rows below
+/// the picture are left out).
+fn fill(pixels: &mut Pixels, columns: Range<i32>, rows: Range<i32>, bgra: [u8; 4]) {
+    let stride = pixels.width as usize;
+    for row in rows {
+        for column in columns.clone() {
+            let at = (row as usize * stride + column as usize) * 4;
+            if let Some(pixel) = pixels.bgra.get_mut(at..at + 4) {
+                pixel.copy_from_slice(&bgra);
+            }
+        }
+    }
+}
+
 /// The picture a simulated editor takes for `asked`: never below
 /// [`SIM_MIN`].
 pub fn takes(asked: (u32, u32)) -> (u32, u32) {
@@ -233,9 +311,15 @@ struct State {
     /// A resize moves the window and leaves its size (Live's window keeps
     /// it; whether Live passes a resize on is the PC check's).
     size_kept: bool,
-    /// The last picture drawn and its count: a grab draws only a new count
-    /// or size (drawing one costs the worker tens of ms in a test build).
-    drawn: Option<(u64, Pixels)>,
+    /// Pro-Q's undo history (#71 PR P): the changes it holds (none: no ↶
+    /// drawn, nothing kept), and when the last tap that made no change
+    /// lifted (sim ms; none: the next tap is no double tap's second).
+    undo: Option<u32>,
+    last_tap: Option<f64>,
+    /// The last picture drawn, its count and its ↶ (lit, grey, or none): a
+    /// grab draws only a new count, ↶ or size (drawing one costs the worker
+    /// tens of ms in a test build).
+    drawn: Option<(u64, Option<bool>, Pixels)>,
     records: Vec<Value>,
     file: Option<PathBuf>,
     started: Instant,
@@ -271,6 +355,43 @@ impl State {
             }
         }
         self.records.push(record);
+    }
+
+    /// A contact's up as the simulated Pro-Q's undo history sees it (#71 PR
+    /// P), when the sim keeps one (else nothing): a contact the menu took,
+    /// or a right click, changes nothing; a drag makes one change; a tap
+    /// within [`SIM_UNDO_SLOP`] of the ↶ at `spot` undoes one (none left:
+    /// nothing) and gives the changes left, for its record; a double tap's
+    /// second ([`second_tap`]) makes one (Pro-Q's new band); any other tap
+    /// is a first tap, its up's time `t` kept.
+    fn undo_up(
+        &mut self,
+        contact: SimContact,
+        right_click: bool,
+        at: (i32, i32),
+        t: f64,
+        spot: Option<(i32, i32)>,
+    ) -> Option<u32> {
+        let left = self.undo?;
+        let last = self.last_tap.take();
+        if contact.to_menu || right_click {
+            return None;
+        }
+        if contact.dragged {
+            self.undo = Some(left + 1);
+            return None;
+        }
+        if spot.is_some_and(|spot| on_undo(spot, at)) {
+            let left = left.saturating_sub(1);
+            self.undo = Some(left);
+            return Some(left);
+        }
+        if second_tap(last, contact.down) {
+            self.undo = Some(left + 1);
+        } else {
+            self.last_tap = Some(t);
+        }
+        None
     }
 }
 
@@ -312,6 +433,8 @@ impl Sim {
             resize_late: false,
             resize_refused: false,
             size_kept: false,
+            undo: None,
+            last_tap: None,
             drawn: None,
             records: Vec::new(),
             file,
@@ -500,6 +623,17 @@ impl SimHandle {
         self.lock().windows.keys().copied().collect()
     }
 
+    /// Gives the simulated Pro-Q an undo history holding `changes` (#71 PR
+    /// P): its ↶ is drawn from then on, lit while it holds a change.
+    pub fn undo_history(&self, changes: u32) {
+        self.lock().undo = Some(changes);
+    }
+
+    /// The changes the undo history holds (none: no history).
+    pub fn undo_left(&self) -> Option<u32> {
+        self.lock().undo
+    }
+
     /// Everything recorded so far.
     pub fn records(&self) -> Vec<Value> {
         self.lock().records.clone()
@@ -640,17 +774,22 @@ impl Backend for Sim {
             (false, true, None) => 0,
             (false, true, Some(after)) => painted(&state.injected, after, now),
         };
+        // Pro-Q's ↶ (#71 PR P): lit while the history holds a change.
+        let glyph = state.undo.map(|left| left > 0);
         let drawn = state
             .drawn
             .as_ref()
-            .filter(|(n, p)| *n == count && (p.width, p.height) == size)
-            .map(|(_, p)| p.clone());
+            .filter(|(n, g, p)| *n == count && *g == glyph && (p.width, p.height) == size)
+            .map(|(_, _, p)| p.clone());
         drop(state);
         if let Some(pixels) = drawn {
             return Ok(pixels);
         }
-        let pixels = picture(count, size.0, size.1);
-        self.lock().drawn = Some((count, pixels.clone()));
+        let mut pixels = picture(count, size.0, size.1);
+        if let Some(lit) = glyph {
+            draw_undo(&mut pixels, lit);
+        }
+        self.lock().drawn = Some((count, glyph, pixels.clone()));
         Ok(pixels)
     }
 
@@ -660,6 +799,9 @@ impl Backend for Sim {
             return Err(REFUSED.to_string());
         }
         let t = state.started.elapsed().as_secs_f64() * 1000.0;
+        // What an up did to Pro-Q's undo history: the changes left after an
+        // undo (#71 PR P), recorded after the touch.
+        let mut undone = None;
         match phase {
             Phase::Down => {
                 // A down while a menu is open goes to the menu: it closes.
@@ -698,6 +840,11 @@ impl Backend for Sim {
                     let menu = state.add(pid);
                     state.menu = Some(menu);
                 }
+                let spot = state
+                    .windows
+                    .get(&taken.window)
+                    .and_then(|w| undo::spot(w.size.0));
+                undone = contact.and_then(|c| state.undo_up(c, right_click, at, t, spot));
             }
             Phase::Cancel => state.contact = None,
         }
@@ -712,6 +859,9 @@ impl Backend for Sim {
             "y": at.1,
             "t": t,
         }));
+        if let Some(left) = undone {
+            state.record(json!({"op": "undo", "window": taken.window.0, "left": left}));
+        }
         Ok(())
     }
 
@@ -751,6 +901,7 @@ impl Backend for Sim {
 
 #[cfg(test)]
 mod tests {
+    use super::undo::Undo;
     use super::*;
 
     #[test]
@@ -1251,5 +1402,206 @@ mod tests {
         assert_eq!(handle.grabs(), 2);
         handle.restless(false);
         assert_eq!(sim.grab(&taken).unwrap(), picture(0, 1349, 809), "still");
+    }
+
+    #[test]
+    fn a_sim_draws_pro_qs_undo_lit_or_grey_once_it_keeps_a_history() {
+        let (mut sim, handle) = Sim::new(None);
+        handle.still(true);
+        sim.live_opened();
+        let taken = sim.take(handle.windows()[0]).unwrap();
+        // No history: no ↶, the picture as before.
+        assert_eq!(handle.undo_left(), None);
+        assert_eq!(sim.grab(&taken).unwrap(), picture(0, 1349, 809));
+        handle.undo_history(2);
+        assert_eq!(handle.undo_left(), Some(2));
+        let lit = sim.grab(&taken).unwrap();
+        let mut want = picture(0, 1349, 809);
+        draw_undo(&mut want, true);
+        assert_eq!(lit, want);
+        assert_eq!(undo::read(&lit), Undo::Lit(570, 18));
+        // The same count and size, another ↶: drawn anew.
+        handle.undo_history(0);
+        assert_eq!(undo::read(&sim.grab(&taken).unwrap()), Undo::Grey);
+        handle.undo_history(1);
+        assert_eq!(undo::read(&sim.grab(&taken).unwrap()), Undo::Lit(570, 18));
+        // At another width, at its own spot; none where the table ends.
+        handle.resize_window(taken.window, (760, 1271));
+        assert_eq!(undo::read(&sim.grab(&taken).unwrap()), Undo::Lit(312, 18));
+        handle.resize_window(taken.window, (700, 400));
+        assert_eq!(sim.grab(&taken).unwrap(), picture(0, 700, 400));
+    }
+
+    /// A white picture `width` × `height` px.
+    fn white(width: u32, height: u32) -> Pixels {
+        Pixels {
+            width,
+            height,
+            bgra: vec![0xFF; (width * height * 4) as usize],
+        }
+    }
+
+    /// The pixel of `pixels` at `x`, `y`.
+    fn pixel(pixels: &Pixels, x: i32, y: i32) -> [u8; 4] {
+        let at = (y as usize * pixels.width as usize + x as usize) * 4;
+        pixels.bgra[at..at + 4].try_into().unwrap()
+    }
+
+    #[test]
+    fn the_undo_is_twelve_by_seven_px_on_the_top_bars_dark() {
+        let mut pixels = white(1349, 40);
+        draw_undo(&mut pixels, false);
+        // The read's area dark: columns 554 to 586 (570 ± 16), rows 12 to
+        // 24; the glyph's surround too.
+        for (x, y) in [
+            (554, 12),
+            (586, 24),
+            (554, 24),
+            (586, 12),
+            (563, 15),
+            (576, 21),
+            (570, 14),
+            (570, 22),
+        ] {
+            assert_eq!(pixel(&pixels, x, y), SIM_BAR, "{x},{y}");
+        }
+        // Nothing beyond it.
+        for (x, y) in [(553, 12), (587, 24), (570, 11), (570, 25)] {
+            assert_eq!(pixel(&pixels, x, y), [0xFF; 4], "{x},{y}");
+        }
+        // The glyph: columns 564 to 575, rows 15 to 21.
+        for (x, y) in [(564, 15), (575, 21), (564, 21), (575, 15), (570, 18)] {
+            assert_eq!(pixel(&pixels, x, y), [100, 100, 100, 0xFF], "{x},{y}");
+        }
+        assert_eq!(undo::read(&pixels), Undo::Grey);
+        draw_undo(&mut pixels, true);
+        assert_eq!(pixel(&pixels, 570, 18), [240, 240, 240, 0xFF]);
+        assert_eq!(undo::read(&pixels), Undo::Lit(570, 18));
+        // No spot: nothing drawn.
+        let mut narrow = white(700, 40);
+        draw_undo(&mut narrow, true);
+        assert_eq!(narrow, white(700, 40));
+        // A picture shorter than the bar: the part of it that lies in it.
+        let mut short = white(1349, 16);
+        draw_undo(&mut short, true);
+        assert_eq!(pixel(&short, 570, 15), [240, 240, 240, 0xFF]);
+        assert_eq!(pixel(&short, 554, 12), SIM_BAR);
+        assert_eq!(pixel(&short, 570, 11), [0xFF; 4]);
+    }
+
+    #[test]
+    fn a_tap_lands_on_the_undo_within_six_px_and_a_double_tap_within_half_a_second() {
+        assert_eq!(SIM_UNDO_SIZE, (12, 7));
+        assert_eq!(SIM_UNDO_TOP, 15);
+        assert_eq!((SIM_UNDO_LIT, SIM_UNDO_GREY), (240, 100));
+        assert_eq!((SIM_UNDO_SLOP, SIM_DOUBLE_MS), (6, 500.0));
+        for (at, on) in [
+            ((570, 18), true),
+            ((576, 18), true),
+            ((564, 18), true),
+            ((570, 24), true),
+            ((570, 12), true),
+            ((576, 24), true),
+            ((577, 18), false),
+            ((563, 18), false),
+            ((570, 25), false),
+            ((570, 11), false),
+        ] {
+            assert_eq!(on_undo((570, 18), at), on, "{at:?}");
+        }
+        assert!(second_tap(Some(100.0), 600.0));
+        assert!(second_tap(Some(100.0), 100.0));
+        assert!(!second_tap(Some(100.0), 600.0_f64.next_up()));
+        assert!(!second_tap(None, 0.0));
+    }
+
+    #[test]
+    fn a_tap_on_the_undo_undoes_a_change_and_a_drag_or_a_double_tap_makes_one() {
+        let (mut sim, handle) = Sim::new(None);
+        handle.still(true);
+        sim.live_opened();
+        let taken = sim.take(handle.windows()[0]).unwrap();
+        let tap = |sim: &mut Sim, at: (i32, i32)| {
+            sim.touch(&taken, Phase::Down, at).unwrap();
+            sim.touch(&taken, Phase::Up, at).unwrap();
+        };
+        // No history: a tap on the spot undoes nothing.
+        tap(&mut sim, (570, 18));
+        assert_eq!(handle.undo_left(), None);
+        handle.undo_history(1);
+        tap(&mut sim, (570, 18));
+        assert_eq!(handle.undo_left(), Some(0));
+        let records = untimed(&handle.records());
+        assert_eq!(
+            records[records.len() - 3..],
+            [
+                json!({"op": "touch", "window": 1, "phase": "down", "x": 570, "y": 18}),
+                json!({"op": "touch", "window": 1, "phase": "up", "x": 570, "y": 18}),
+                json!({"op": "undo", "window": 1, "left": 0}),
+            ]
+        );
+        // Nothing left: the tap is recorded, nothing undone.
+        tap(&mut sim, (576, 24));
+        assert_eq!(handle.undo_left(), Some(0));
+        assert_eq!(
+            handle.records().last(),
+            Some(&json!({"op": "undo", "window": 1, "left": 0}))
+        );
+        // A drag makes a change.
+        sim.touch(&taken, Phase::Down, (100, 100)).unwrap();
+        sim.touch(&taken, Phase::Update, (100, 70)).unwrap();
+        sim.touch(&taken, Phase::Up, (100, 70)).unwrap();
+        assert_eq!(handle.undo_left(), Some(1));
+        // 7 px beside the ↶: no undo, a first tap; its second makes a
+        // change (a double tap: Pro-Q's new band); a third is a first tap
+        // again, and a fourth after the double-click time too.
+        tap(&mut sim, (577, 18));
+        assert_eq!(handle.undo_left(), Some(1), "a first tap");
+        tap(&mut sim, (577, 18));
+        assert_eq!(handle.undo_left(), Some(2), "its second");
+        tap(&mut sim, (577, 18));
+        assert_eq!(handle.undo_left(), Some(2), "a first tap again");
+        std::thread::sleep(Duration::from_millis(550));
+        tap(&mut sim, (577, 18));
+        assert_eq!(handle.undo_left(), Some(2), "too late for a double tap");
+        let undos: Vec<Value> = handle
+            .records()
+            .into_iter()
+            .filter(|r| r["op"] == "undo")
+            .collect();
+        assert_eq!(undos.len(), 2, "{undos:?}");
+        // Lit again: the grab shows it.
+        assert_eq!(undo::read(&sim.grab(&taken).unwrap()), Undo::Lit(570, 18));
+    }
+
+    #[test]
+    fn a_contact_the_menu_takes_or_a_right_click_undoes_nothing() {
+        let (mut sim, handle) = Sim::new(None);
+        handle.hold_menu(Some(Duration::from_millis(300)));
+        handle.undo_history(1);
+        sim.live_opened();
+        let editor = handle.windows()[0];
+        let taken = sim.take(editor).unwrap();
+        // Held still on the ↶: a right click (the menu), no undo.
+        sim.touch(&taken, Phase::Down, (570, 18)).unwrap();
+        std::thread::sleep(Duration::from_millis(350));
+        sim.touch(&taken, Phase::Up, (570, 18)).unwrap();
+        assert_eq!(handle.windows().len(), 2, "the menu");
+        assert_eq!(handle.undo_left(), Some(1));
+        // A tap there now goes to the menu: it closes, nothing undone.
+        sim.touch(&taken, Phase::Down, (570, 18)).unwrap();
+        sim.touch(&taken, Phase::Up, (570, 18)).unwrap();
+        assert_eq!(handle.windows(), [editor]);
+        assert_eq!(handle.undo_left(), Some(1));
+        // The next tap undoes.
+        sim.touch(&taken, Phase::Down, (570, 18)).unwrap();
+        sim.touch(&taken, Phase::Up, (570, 18)).unwrap();
+        assert_eq!(handle.undo_left(), Some(0));
+        let undos = handle
+            .records()
+            .into_iter()
+            .filter(|r| r["op"] == "undo")
+            .count();
+        assert_eq!(undos, 1);
     }
 }
