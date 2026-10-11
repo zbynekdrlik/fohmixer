@@ -44,7 +44,7 @@ what only the harness can do:
                                          report, or null when none was written>}
     GET  /link                           the impair proxy's state: ``port``,
                                          ``connections``, ``held``, ``blocked``,
-                                         ``stall_ms``, ``rate``
+                                         ``stall_ms``, ``rate``, ``down_rate``
     POST /link/stall {"ms": <ms>}        both directions of every connection
                                          held for ``ms`` (a running stall is
                                          extended, never shortened)
@@ -54,6 +54,10 @@ what only the harness can do:
     POST /link/rate {"bytes_per_s": <n>} the pages' bytes to the hub at most
                                          ``n`` a second, first in first out (a
                                          slow link, #43 PR D; 0 lifts it)
+    POST /link/down_rate {"bytes_per_s": <n>}
+                                         the hub's bytes to the pages the same
+                                         way (#71 PR J: the Pro-Q frames on a
+                                         slow Wi-Fi; 0 lifts it)
     GET  /companion                      the fake Companion's state (#52,
                                          ``--fake-companion-port``): ``connections``,
                                          ``presses`` [{key, pressed, at}], ``down``,
@@ -278,13 +282,13 @@ def block_on(body):
     return on
 
 
-def rate_of(body):
-    """The ``bytes_per_s`` of a ``/link/rate`` body: a finite number, 0 or more
-    (0 lifts the limit)."""
+def rate_of(body, route="/link/rate"):
+    """The ``bytes_per_s`` of a ``/link/rate`` or ``/link/down_rate`` body: a
+    finite number, 0 or more (0 lifts the limit)."""
     rate = body.get("bytes_per_s")
     finite = isinstance(rate, (int, float)) and not isinstance(rate, bool) and math.isfinite(rate)
     if not finite or rate < 0:
-        raise BadRequest(f'/link/rate wants {{"bytes_per_s": <0 or more>}}, not {body!r}')
+        raise BadRequest(f'{route} wants {{"bytes_per_s": <0 or more>}}, not {body!r}')
     return rate
 
 
@@ -640,6 +644,8 @@ class Harness:
             return 200, self.link.block(block_on(body))
         if parts == ["link", "rate"]:
             return 200, self.link.rate(rate_of(body))
+        if parts == ["link", "down_rate"]:
+            return 200, self.link.down_rate(rate_of(body, "/link/down_rate"))
         return 404, {"error": f"no {method} {path}"}
 
     def stop(self):

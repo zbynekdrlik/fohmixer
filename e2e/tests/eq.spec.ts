@@ -1212,3 +1212,103 @@ test.describe("The Pro-Q 4 screen and a lost link", () => {
     await editorOpen(trackPath, false);
   });
 });
+
+test.describe("The Pro-Q 4 screen on a slow link", () => {
+  // #71 PR J (acceptance points 1, 3 and 5): the hub's bytes to the page
+  // are slowed below what the frames would take; the picture keeps up with a
+  // drag at 3×, no pong waits behind a backlog of frames, and a finger on a
+  // picture that does not show the page's last input yet never acts.
+  /** The page's downlink (bytes/s): ~20 frames a second of the sim's ~21 KB picture would need ~420 KB/s. */
+  const DOWN_RATE = 150_000;
+  /** The bounds of the latency on that link, until the real iPad's numbers set them (#71). */
+  const LAT_MEDIAN_MAX = 400;
+  const LAT_P95_MAX = 800;
+
+  test("a drag at 3× is numbered and measured, no pong waits behind frames, and a finger on a picture behind its last input is refused", async ({ page }) => {
+    const sent: any[] = [];
+    page.on("websocket", (ws) => {
+      ws.on("framesent", ({ payload }) => {
+        if (typeof payload === "string" && payload.includes('"type":"eq_input"')) sent.push(JSON.parse(payload));
+      });
+    });
+    await openSurface(page);
+    const { onTrack, trackPath } = await hand2Cards(page);
+    await editorOpen(trackPath, false);
+    await onTrack.getByTestId("eq-open").click();
+    const screen = await openScreen(page, trackPath);
+    const area = screen.getByTestId("eq-area");
+    const stale = screen.getByTestId("eq-stale");
+    await expect(stale).toHaveAttribute("data-shown", "false");
+    await zoomIn(screen, FROM);
+    const since = Date.now();
+    await impair.downRate(DOWN_RATE);
+    try {
+      // A drag at 3×: every input numbered from 1, the down with the input
+      // its picture showed (none yet).
+      const before = (await simEq.records()).length;
+      const from = await centre(area);
+      await page.mouse.move(from.x, from.y);
+      await page.mouse.down();
+      for (let i = 1; i <= 3 * DRAG_STEPS; i++) {
+        await page.mouse.move(from.x + 3 * i, from.y);
+        await frames(page, 2);
+      }
+      await page.mouse.up();
+      // At once: a finger on the picture, which does not show the up yet.
+      await quickTap(area, from, 71);
+      await expect(stale).toHaveAttribute("data-shown", "true");
+      await expect(stale).toHaveText("Obraz ešte dobieha, polož prst znova");
+      const drag = await until(() => touchesAfter(before), (all) => all.some((r) => r.phase === "up"), "the drag's up");
+      expect(drag[0].phase).toBe("down");
+      expect(sent.map((m) => m.n), JSON.stringify(sent)).toEqual(sent.map((_, i) => i + 1));
+      expect([sent[0].touch, sent[0].seen]).toEqual(["down", 0]);
+      expect(sent.slice(1).every((m) => m.seen === undefined), JSON.stringify(sent.slice(0, 3))).toBe(true);
+      // The refused finger reached nothing: the drag's up is the last touch,
+      // and the recorder says why.
+      await page.waitForTimeout(500);
+      const touches = await touchesAfter(before);
+      expect(touches[touches.length - 1].phase, JSON.stringify(touches)).toBe("up");
+      expect(sent[sent.length - 1].touch, "nothing sent for it").toBe("up");
+      const refused = await until(
+        async () => pageEvents(await hubEvents()).filter((e: any) => e.ev === "eq_touch" && e.what === "stale" && e.t >= since),
+        (all) => all.length >= 1,
+        "the refused finger in the recorder",
+        15_000,
+      );
+      expect(refused[0].p).toBe(71);
+      // The note goes, and a finger now edits.
+      await expect(stale).toHaveAttribute("data-shown", "false", { timeout: 3_000 });
+      const tapFrom = (await simEq.records()).length;
+      await quickTap(area, from, 72);
+      const tap = await until(() => touchesAfter(tapFrom), (all) => all.some((r) => r.phase === "up"), "the tap once caught up");
+      expect(tap.map((r) => r.phase)).toEqual(["down", "up"]);
+      // The picture's latency, from the page's eq_lat records: every input a
+      // picture was the first to show, from its send to the draw.
+      const lat = await until(
+        async () => pageEvents(await hubEvents()).filter((e: any) => e.ev === "eq_lat" && e.t >= since),
+        (all) => all.flatMap((e: any) => e.ms).length >= 5,
+        "the latency samples",
+        20_000,
+      );
+      const ms = lat.flatMap((e: any) => e.ms).sort((a: number, b: number) => a - b);
+      const median = ms[Math.floor(ms.length / 2)];
+      const p95 = ms[Math.min(ms.length - 1, Math.floor(ms.length * 0.95))];
+      console.log(`eq latency on a ${DOWN_RATE} B/s downlink: n=${ms.length} median=${median} ms p95=${p95} ms`);
+      expect(median, JSON.stringify(ms)).toBeLessThan(LAT_MEDIAN_MAX);
+      expect(p95, JSON.stringify(ms)).toBeLessThan(LAT_P95_MAX);
+      // No pong waited behind frames: each ping's measured round trip is of
+      // the ping before it or the one before that.
+      const pings = (await hubEvents()).filter((r: any) => r.ev === "ping" && r.ts >= since && r.rtt_n != null);
+      expect(pings.length, "the page pinged").toBeGreaterThan(10);
+      const lag = Math.max(...pings.map((p: any) => p.n - p.rtt_n));
+      expect(lag, JSON.stringify(pings.map((p: any) => p.n - p.rtt_n))).toBeLessThanOrEqual(2);
+    } finally {
+      await impair.downRate(0);
+    }
+    const closing = (await simEq.records()).length;
+    await screen.getByTestId("eq-exit").click();
+    await expect(page.getByTestId("eq-screen")).toHaveCount(0);
+    await closedWithGuard(closing);
+    await editorOpen(trackPath, false);
+  });
+});

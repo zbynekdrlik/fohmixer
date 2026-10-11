@@ -397,6 +397,11 @@ class HarnessTest(unittest.TestCase):
         self.assertEqual((status, state["rate"]), (200, 24576.0))
         self.assertEqual(self.harness.handle("GET", "/link", {})[1]["rate"], 24576.0)
         self.assertEqual(self.post("/link/rate", {"bytes_per_s": 0})[1]["rate"], 0.0)
+        # #71 PR J: the other way.
+        self.assertEqual(self.harness.handle("GET", "/link", {})[1]["down_rate"], 0.0)
+        status, state = self.post("/link/down_rate", {"bytes_per_s": 131072})
+        self.assertEqual((status, state["down_rate"], state["rate"]), (200, 131072.0, 0.0))
+        self.assertEqual(self.post("/link/down_rate", {"bytes_per_s": 0})[1]["down_rate"], 0.0)
 
     def test_a_link_request_without_its_value_is_refused(self):
         for bad in (
@@ -421,6 +426,8 @@ class HarnessTest(unittest.TestCase):
         ):
             with self.assertRaises(harness.BadRequest, msg=repr(bad)):
                 self.post("/link/rate", bad)
+            with self.assertRaises(harness.BadRequest, msg=repr(bad)):
+                self.post("/link/down_rate", bad)
         self.assertEqual(harness.rate_of({"bytes_per_s": 0}), 0)
         self.assertEqual(harness.rate_of({"bytes_per_s": 24576}), 24576)
         self.assertEqual(harness.stall_ms({"ms": 0}), 0)
