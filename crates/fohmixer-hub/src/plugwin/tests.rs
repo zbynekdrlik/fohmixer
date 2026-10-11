@@ -779,16 +779,19 @@ fn a_picture_shows_the_last_input_handled_a_paint_before_its_grab() {
     assert_eq!(shown.at_grab(149.9), 1);
     assert_eq!(shown.at_grab(150.0), 2);
     assert_eq!(shown.at_grab(500.0), 2, "it stays");
-    // Past SHOWN_KEPT waiting, the oldest counts as painted.
+    // Past SHOWN_KEPT waiting, the newest waiting gives way: nothing counts
+    // as painted before its time (the PR J review).
     assert_eq!(SHOWN_KEPT, 64);
     let mut many = Shown::default();
     for n in 1..=64 {
-        many.handled(n, 1000.0);
+        many.handled(n, 1000.0 + f64::from(n));
     }
-    assert_eq!(many.at_grab(1000.0), 0, "64 wait");
-    many.handled(65, 1000.0);
-    assert_eq!(many.at_grab(1000.0), 1, "the oldest gave way");
-    assert_eq!(many.at_grab(1040.0), 65);
+    many.handled(65, 1100.0);
+    assert_eq!(many.at_grab(1040.0), 0, "none painted yet");
+    assert_eq!(many.at_grab(1041.0), 1);
+    assert_eq!(many.at_grab(1104.0), 63, "64 gave way to 65");
+    assert_eq!(many.at_grab(1139.0), 63);
+    assert_eq!(many.at_grab(1140.0), 65);
 }
 
 #[test]
@@ -816,6 +819,35 @@ fn an_equal_picture_goes_again_once_it_shows_a_newer_input() {
     worker.command_at(Command::Handled { session: 9, n: 5 }, 110.0);
     worker.step_at(150.0);
     assert_eq!(worker.editors[&1].last_shown, 1);
+}
+
+#[test]
+fn a_picture_whose_encode_failed_is_no_last_picture() {
+    // PR J review: an equal picture showing a newer input was never sent
+    // again when its encode failed.
+    let (mut worker, handle, _) = worker();
+    handle.still(true);
+    take(&mut worker, &handle, 1, 0.0);
+    let (sink, frames) = sink();
+    worker.command_at(Command::Capture { session: 1, sink }, 0.0);
+    worker.step_at(0.0);
+    wait_for("the first frame", || frames.lock().unwrap().len() == 1);
+    worker.step_at(1.0);
+    assert!(worker.editors[&1].last.is_some(), "a frame went");
+    // The encoder reports a failure of that session: its picture is
+    // forgotten, so the next grab of the same pixels goes again.
+    worker.encoder.shared.lock().done.push(Encoded {
+        session: 1,
+        ms: 3.0,
+        bytes: None,
+    });
+    worker.step_at(2.0);
+    assert!(worker.editors[&1].last.is_none());
+    assert_eq!(worker.editors[&1].counts.failed, 1);
+    worker.step_at(40.0);
+    wait_for("the same picture again", || {
+        frames.lock().unwrap().len() == 2
+    });
 }
 
 #[test]

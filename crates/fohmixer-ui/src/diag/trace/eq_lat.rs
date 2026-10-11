@@ -2,10 +2,12 @@
 //! one `eq_lat` event per [`LAT_WINDOW_MS`] of drawing, essential, with the
 //! frames drawn (`f`), every latency sample in that window (`ms`: from an
 //! input's send to the draw of the first picture that shows it, on the
-//! page's clock, `store::eq::inputs::Inputs::drawn`), and the longest
-//! decode (`dec`). Every sample is kept, so the median and the p95 of a
-//! session come exactly from the event log (acceptance point 1: median
-//! ≤ 100 ms, p95 ≤ 200 ms while dragging a band at 3×).
+//! page's clock, each input a picture is the first to show,
+//! `store::eq::inputs::Inputs::drawn`), the inputs shown whose send time
+//! was no longer kept (`lost`: a stall's slowest), and the longest decode
+//! (`dec`). Every sample is kept, so the median and the p95 of a session
+//! come exactly from the event log (acceptance point 1: median ≤ 100 ms,
+//! p95 ≤ 200 ms while dragging a band at 3×).
 //!
 //! Pure, tested natively; `components/eq.rs` records them through
 //! `diag::record`.
@@ -33,19 +35,23 @@ pub struct EqLat {
     frames: u32,
     /// Their latency samples (ms, to 0.1).
     ms: Vec<f64>,
+    /// Inputs shown whose send time was gone.
+    lost: u32,
     /// The longest decode (ms).
     decode_ms: f64,
 }
 
 impl EqLat {
     /// A frame drawn at `t` (page epoch ms) after `decode_ms` of decode,
-    /// with its latency `sample` when it is the first to show an input:
-    /// the window's event once it spans [`LAT_WINDOW_MS`].
-    pub fn drawn(&mut self, t: f64, decode_ms: f64, sample: Option<f64>) -> Option<Value> {
+    /// with the latency `samples` of the inputs it is the first to show and
+    /// those it could not measure (`lost`): the window's event once it spans
+    /// [`LAT_WINDOW_MS`].
+    pub fn drawn(&mut self, t: f64, decode_ms: f64, samples: &[f64], lost: u32) -> Option<Value> {
         let since = *self.since.get_or_insert(t);
         self.frames += 1;
         self.decode_ms = self.decode_ms.max(decode_ms);
-        self.ms.extend(sample.map(round1));
+        self.ms.extend(samples.iter().copied().map(round1));
+        self.lost = self.lost.saturating_add(lost);
         full(since, t).then(|| self.take(since, t))
     }
 
@@ -64,6 +70,7 @@ impl EqLat {
             "span": round1(t - since),
             "f": self.frames,
             "ms": self.ms,
+            "lost": self.lost,
             "dec": round1(self.decode_ms),
         });
         *self = Self::default();
@@ -82,20 +89,20 @@ mod tests {
         assert!(full(100.0, 1100.0));
         let mut lat = EqLat::default();
         assert_eq!(lat.leave(50.0), None, "nothing drawn");
-        assert_eq!(lat.drawn(100.0, 8.04, Some(83.26)), None);
-        assert_eq!(lat.drawn(140.0, 12.5, None), None);
-        assert_eq!(lat.drawn(600.0, 3.0, Some(120.0)), None);
+        assert_eq!(lat.drawn(100.0, 8.04, &[83.26, 70.0], 0), None);
+        assert_eq!(lat.drawn(140.0, 12.5, &[], 2), None);
+        assert_eq!(lat.drawn(600.0, 3.0, &[120.0], 1), None);
         assert_eq!(
-            lat.drawn(1100.0, 9.0, Some(95.0)),
+            lat.drawn(1100.0, 9.0, &[95.0], 0),
             Some(json!({"ev": "eq_lat", "t": 100.0, "span": 1000.0, "f": 4,
-                        "ms": [83.3, 120.0, 95.0], "dec": 12.5}))
+                        "ms": [83.3, 70.0, 120.0, 95.0], "lost": 3, "dec": 12.5}))
         );
         // The next window starts with the next frame.
-        assert_eq!(lat.drawn(1150.0, 4.0, None), None);
+        assert_eq!(lat.drawn(1150.0, 4.0, &[], 0), None);
         assert_eq!(
             lat.leave(1400.0),
             Some(json!({"ev": "eq_lat", "t": 1150.0, "span": 250.0, "f": 1,
-                        "ms": [], "dec": 4.0}))
+                        "ms": [], "lost": 0, "dec": 4.0}))
         );
         assert_eq!(lat.leave(1500.0), None, "left already");
     }

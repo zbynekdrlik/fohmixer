@@ -217,6 +217,15 @@ async function quickTap(area: Locator, at: At, id = 61) {
   );
 }
 
+/**
+ * The picture shows every input the page sent (#71 PR J): a new first finger
+ * before that is refused (the old-picture guard), so a test waits for it
+ * between two edits.
+ */
+async function caughtUp(screen: Locator) {
+  await expect(screen.getByTestId("eq-canvas")).toHaveAttribute("data-caught-up", "true");
+}
+
 /** How long after a tap's zoom a first finger reaches nothing (ms, `behave::eq::ZOOM_SETTLE_MS`). */
 const ZOOM_SETTLE_MS = 500;
 
@@ -816,6 +825,7 @@ test.describe("The Pro-Q 4 screen", () => {
     // only their order is checked here, #74 review).
     const tapped = { x: middle.x - 30, y: middle.y + 12 };
     const tapFrom = (await simEq.records()).length;
+    await caughtUp(screen);
     await quickTap(area, tapped);
     const tap = await until(() => touchesAfter(tapFrom), (all) => all.some((r) => r.phase === "up"), "the tap's up");
     wentFromTo(tap, map.toPicture(tapped), map.toPicture(tapped));
@@ -826,6 +836,7 @@ test.describe("The Pro-Q 4 screen", () => {
     // points remapped).
     const held = (await simEq.records()).length;
     const start = { x: middle.x + 20, y: middle.y + 10 };
+    await caughtUp(screen);
     await page.mouse.move(start.x, start.y);
     await page.mouse.down();
     for (let i = 1; i <= 4; i++) {
@@ -930,6 +941,7 @@ test.describe("The Pro-Q 4 screen", () => {
     expect(phases.slice(1, -1).every((p) => p === "update"), JSON.stringify(edit)).toBe(true);
     // A drag started right after a tap's zoom (the PR I re-review) goes once
     // the settle is over, its down where it landed.
+    await caughtUp(screen);
     await screen.getByTestId("eq-whole").click();
     await expect(hint).toHaveAttribute("data-shown", "true");
     const again = (await pictureMap(canvas)).toPage(FROM);
@@ -1218,8 +1230,13 @@ test.describe("The Pro-Q 4 screen on a slow link", () => {
   // are slowed below what the frames would take; the picture keeps up with a
   // drag at 3×, no pong waits behind a backlog of frames, and a finger on a
   // picture that does not show the page's last input yet never acts.
-  /** The page's downlink (bytes/s): ~20 frames a second of the sim's ~21 KB picture would need ~420 KB/s. */
-  const DOWN_RATE = 150_000;
+  /**
+   * The page's downlink (bytes/s): ~20 frames a second of the sim's ~21 KB
+   * picture would need ~420 KB/s; at this rate one frame holds a pong about
+   * 70 ms, under the pings' 100 ms (the PR J review: at 150 KB/s a pong
+   * could wait past the next ping).
+   */
+  const DOWN_RATE = 300_000;
   /** The bounds of the latency on that link, until the real iPad's numbers set them (#71). */
   const LAT_MEDIAN_MAX = 400;
   const LAT_P95_MAX = 800;
@@ -1278,6 +1295,7 @@ test.describe("The Pro-Q 4 screen on a slow link", () => {
       expect(refused[0].p).toBe(71);
       // The note goes, and a finger now edits.
       await expect(stale).toHaveAttribute("data-shown", "false", { timeout: 3_000 });
+      await caughtUp(screen);
       const tapFrom = (await simEq.records()).length;
       await quickTap(area, from, 72);
       const tap = await until(() => touchesAfter(tapFrom), (all) => all.some((r) => r.phase === "up"), "the tap once caught up");
@@ -1312,5 +1330,53 @@ test.describe("The Pro-Q 4 screen on a slow link", () => {
     await expect(page.getByTestId("eq-screen")).toHaveCount(0);
     await closedWithGuard(closing);
     await editorOpen(trackPath, false);
+  });
+
+  test("a screen left right after a drag holds no finger of the next screen back", async ({ page }) => {
+    // The PR J review: the page's inputs of a screen left before its
+    // picture showed them refused every finger of the next one, until a
+    // reload.
+    await openSurface(page);
+    const { onTrack, trackPath } = await hand2Cards(page);
+    await editorOpen(trackPath, false);
+    await impair.downRate(DOWN_RATE);
+    try {
+      await onTrack.getByTestId("eq-open").click();
+      let screen = await openScreen(page, trackPath);
+      await zoomIn(screen, FROM);
+      const from = await centre(screen.getByTestId("eq-area"));
+      await page.mouse.move(from.x, from.y);
+      await page.mouse.down();
+      for (let i = 1; i <= DRAG_STEPS; i++) {
+        await page.mouse.move(from.x + 4 * i, from.y);
+        await frames(page, 2);
+      }
+      await page.mouse.up();
+      // Left at once: the picture does not show the up yet.
+      await expect(screen.getByTestId("eq-canvas")).toHaveAttribute("data-caught-up", "false");
+      let closing = (await simEq.records()).length;
+      await screen.getByTestId("eq-exit").click();
+      await expect(page.getByTestId("eq-screen")).toHaveCount(0);
+      await closedWithGuard(closing);
+      await editorOpen(trackPath, false);
+      // The next screen: its first tap edits.
+      await onTrack.getByTestId("eq-open").click();
+      screen = await openScreen(page, trackPath);
+      await zoomIn(screen, FROM);
+      const area = screen.getByTestId("eq-area");
+      const at = await centre(area);
+      const tapFrom = (await simEq.records()).length;
+      await quickTap(area, at, 81);
+      const tap = await until(() => touchesAfter(tapFrom), (all) => all.some((r) => r.phase === "up"), "the next screen's tap");
+      expect(tap[0].phase, JSON.stringify(tap)).toBe("down");
+      await expect(screen.getByTestId("eq-stale")).toHaveAttribute("data-shown", "false");
+      closing = (await simEq.records()).length;
+      await screen.getByTestId("eq-exit").click();
+      await expect(page.getByTestId("eq-screen")).toHaveCount(0);
+      await closedWithGuard(closing);
+      await editorOpen(trackPath, false);
+    } finally {
+      await impair.downRate(0);
+    }
   });
 });

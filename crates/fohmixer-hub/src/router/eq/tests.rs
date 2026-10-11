@@ -712,7 +712,14 @@ async fn an_open_editors_frames_reach_its_holder_and_its_picture_is_kept() {
     }
     let frame = frame.expect("a frame");
     let (head, jpeg) = fohmixer_proto::eq::frame_parts(&frame).unwrap();
-    assert_eq!(head, fohmixer_proto::eq::FrameHead { session: 1, seq: 1 });
+    assert_eq!(
+        head,
+        fohmixer_proto::eq::FrameHead {
+            session: 1,
+            seq: 1,
+            shown: 0
+        }
+    );
     assert_eq!(jpeg[..2], [0xFF_u8, 0xD8]);
     let pictures = &rig.router.eq.as_ref().unwrap().pictures;
     assert!(pictures.has(&key()));
@@ -788,6 +795,42 @@ async fn a_dropped_socket_records_its_editors_frame_round_trips() {
         ),
         (json!(1), json!(1), json!(1))
     );
+}
+
+#[tokio::test]
+async fn a_numbered_input_is_shown_by_a_later_frame() {
+    // PR J: the router hands every input of an open editor to the window
+    // worker, whose pictures then say they show it.
+    let dir = tempfile::tempdir().unwrap();
+    let mut rig = rig(dir.path());
+    let outbox = held_open(&mut rig).await;
+    rig.router.handle(RouterMsg::EqInput {
+        client: 1,
+        input: finger(Touch::Down, 10.0, 20.0),
+    });
+    rig.router.handle(RouterMsg::EqInput {
+        client: 1,
+        input: Input {
+            touch: Touch::Up,
+            x: 10.0,
+            y: 20.0,
+            n: 2,
+            seen: None,
+        },
+    });
+    let mut shown = 0;
+    for _ in 0..300 {
+        if let Some(frame) = outbox.take_frame(Instant::now()) {
+            let (head, _) = fohmixer_proto::eq::frame_parts(&frame).expect("a frame's header");
+            outbox.frame_acked(head.session, head.seq, Instant::now());
+            shown = head.shown;
+            if shown == 2 {
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(shown, 2, "a later frame shows the page's input 2");
 }
 
 #[tokio::test]

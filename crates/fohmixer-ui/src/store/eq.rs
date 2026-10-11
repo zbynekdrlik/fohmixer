@@ -145,7 +145,11 @@ mod tests {
 
     #[test]
     fn a_frame_of_the_open_editor_is_acked_with_its_session_and_number() {
-        let head = |session| FrameHead { session, seq: 41 };
+        let head = |session| FrameHead {
+            session,
+            seq: 41,
+            shown: 7,
+        };
         assert_eq!(
             frame_ack(head(3), Some(3)),
             Some(ClientMsg::EqFrameAck {

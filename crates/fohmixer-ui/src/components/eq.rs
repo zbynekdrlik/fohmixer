@@ -459,11 +459,11 @@ async fn draw(painter: PainterBox, drawn: Drawn, head: FrameHead, blob: &web_sys
                 dom::set_attr(&canvas, "data-frames", &frames.to_string());
             }
             let now = dom::epoch_now();
-            let sample = drawn.store.eq_drawn(head, now);
+            let measured = drawn.store.eq_drawn(head, now);
             let decode_ms = dom::now() - started;
             let second = drawn
                 .lat
-                .try_update_value(|lat| lat.drawn(now, decode_ms, sample))
+                .try_update_value(|lat| lat.drawn(now, decode_ms, &measured.samples, measured.lost))
                 .flatten();
             if let Some(event) = second {
                 crate::diag::record(&event);
@@ -670,6 +670,9 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
     let lat = StoredValue::new(EqLat::default());
     let stale_at = StoredValue::new(None::<f64>);
     let stale_shown = RwSignal::new(false);
+    // Whether the picture shows every input sent (the canvas says it: an
+    // E2E waits for it before a new first finger).
+    let caught_up = RwSignal::new(true);
     let drawn = Drawn { store, lat };
     let sink: FrameSink = Rc::new(move |head: FrameHead, blob: web_sys::Blob| {
         paint(painter, drawn, head, blob);
@@ -876,6 +879,21 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
                     .try_update_value(|f| f.frame(now))
                     .unwrap_or_default(),
             );
+            // The link drops out under a finger on the editor (PR J
+            // review): its contact ends with its cancel, as for an old
+            // picture, so no move queued in a stalled socket comes later.
+            if store.dropping_out() && finger.try_with_value(Finger::on_editor).unwrap_or(false) {
+                send(
+                    finger
+                        .try_update_value(Finger::off_editor)
+                        .unwrap_or_default(),
+                );
+                let _ = stale_at.try_set_value(Some(now));
+            }
+            let caught = store.eq_caught_up();
+            if caught_up.try_get_untracked() != Some(caught) {
+                let _ = caught_up.try_set(caught);
+            }
             let noted = stale_note(stale_at.try_get_value().flatten(), now);
             if stale_shown.try_get_untracked() != Some(noted) {
                 let _ = stale_shown.try_set(noted);
@@ -932,7 +950,11 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
     // review: a drag went on at 1×, its points remapped); a pinch goes on.
     let whole = move |ev: web_sys::PointerEvent| {
         ev.prevent_default();
-        send(finger.try_update_value(Finger::whole).unwrap_or_default());
+        send(
+            finger
+                .try_update_value(Finger::off_editor)
+                .unwrap_or_default(),
+        );
         let _ = viewer.try_update_value(Viewer::whole);
     };
     let shown_zoom = move || zoomed.try_get().unwrap_or(false).to_string();
@@ -965,6 +987,7 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
     let open = move || state() == "open";
     let hint_shown = move || (open() && !editing.try_get().unwrap_or(false)).to_string();
     let stale_text_shown = move || stale_shown.try_get().unwrap_or(false).to_string();
+    let caught_up_text = move || caught_up.try_get().unwrap_or(true).to_string();
     let exit_keys: Vec<String> = Vec::new();
     let help_keys: Vec<String> = Vec::new();
     let whole_keys: Vec<String> = Vec::new();
@@ -1034,7 +1057,13 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
                 on:pointercancel=on_cancel
                 on:lostpointercapture=on_cancel
             >
-                <canvas class="eq-canvas" data-testid="eq-canvas" data-frames="0" node_ref=canvas_ref></canvas>
+                <canvas
+                    class="eq-canvas"
+                    data-testid="eq-canvas"
+                    data-frames="0"
+                    data-caught-up=caught_up_text
+                    node_ref=canvas_ref
+                ></canvas>
                 <div class="eq-hint" data-testid="eq-hint" data-shown=hint_shown>
                     "Ťukni na miesto, ktoré chceš upraviť"
                 </div>

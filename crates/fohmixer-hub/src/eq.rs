@@ -101,6 +101,15 @@ pub fn stale_down(n: u32, seen: Option<u32>) -> bool {
     !caught_up(seen.unwrap_or(0), n.saturating_sub(1))
 }
 
+/// The `eq` record of a stale down the hub dropped (PR J): the page's
+/// input number and the input its picture showed.
+pub fn stale_fields(key: &EditorKey, client: ClientId, session: u32, input: Input) -> Value {
+    let mut fields = record("stale", key, Some(client), Some(session), None);
+    fields["n"] = json!(input.n);
+    fields["seen"] = json!(input.seen);
+    fields
+}
+
 /// An editor: its Live instance and its device's LOM path.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct EditorKey {
@@ -845,13 +854,7 @@ impl Eqs {
         let mut acts = self.input(client, touch, input.x, input.y, now);
         if let Some((key, session)) = self.open_of(client) {
             if stale {
-                acts.push(Act::Record(record(
-                    "stale",
-                    &key,
-                    Some(client),
-                    Some(session),
-                    None,
-                )));
+                acts.push(Act::Record(stale_fields(&key, client, session, input)));
             }
             acts.push(Act::Handled {
                 session,

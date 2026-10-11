@@ -27,6 +27,7 @@ use super::LiveStore;
 use crate::behave::eq::{Out, picture_url};
 use crate::dom;
 use crate::net;
+use crate::store::eq::inputs::{Drawn, Inputs};
 use crate::store::eq::{EqListView, EqView, asked, frame_ack, socket_closed};
 
 /// Where the open editor's frames go: the screen's painter, with each
@@ -73,11 +74,7 @@ impl LiveStore {
         let Some((head, _)) = frame_parts(&header) else {
             return;
         };
-        let open = self
-            .eq
-            .try_with_untracked(|v| v.as_ref().and_then(EqView::open_session))
-            .flatten();
-        let Some(ack) = frame_ack(head, open) else {
+        let Some(ack) = frame_ack(head, self.eq_session()) else {
             return;
         };
         self.send(&ack);
@@ -114,6 +111,11 @@ impl LiveStore {
     /// its `eq_open` goes once its picture area is in the page (PR G).
     pub fn eq_opening(self, instance: &str, path: &str) {
         let _ = self.eq.try_set(Some(asked(instance, path, true)));
+        // A screen's inputs start afresh (PR J review: never another
+        // screen's, nor a restarted hub's session of the same number).
+        let _ = self
+            .inner
+            .try_update_value(|i| i.eq_inputs = Inputs::default());
     }
 
     /// Opens the editor at `path` on `instance` for a picture `area` (CSS
@@ -138,11 +140,7 @@ impl LiveStore {
     /// A finger on the open editor, numbered (PR J; nothing without an
     /// open editor: the hub would drop it).
     pub fn eq_input(self, (touch, x, y): Out) {
-        let open = self
-            .eq
-            .try_with_untracked(|v| v.as_ref().and_then(EqView::open_session))
-            .flatten();
-        let Some(session) = open else {
+        let Some(session) = self.eq_session() else {
             return;
         };
         let numbered = self
@@ -160,26 +158,38 @@ impl LiveStore {
         });
     }
 
+    /// The page's open editor's session (none: none open).
+    fn eq_session(self) -> Option<u32> {
+        self.eq
+            .try_with_untracked(|v| v.as_ref().and_then(EqView::open_session))
+            .flatten()
+    }
+
     /// A first finger lands on the editor's picture (PR J): its down will
     /// say what the picture drawn last shows.
     pub fn eq_land(self) {
-        let _ = self.inner.try_update_value(|i| i.eq_inputs.land());
+        if let Some(session) = self.eq_session() {
+            let _ = self.inner.try_update_value(|i| i.eq_inputs.land(session));
+        }
     }
 
-    /// Whether the picture drawn last shows every input the page sent (PR
-    /// J): a finger on an older one never acts.
+    /// Whether the picture drawn last shows every input the page sent on
+    /// its open editor (PR J): a finger on an older one never acts.
     pub fn eq_caught_up(self) -> bool {
+        let Some(session) = self.eq_session() else {
+            return true;
+        };
         self.inner
-            .try_with_value(|i| i.eq_inputs.caught_up())
+            .try_with_value(|i| i.eq_inputs.caught_up(session))
             .unwrap_or(true)
     }
 
     /// The screen drew the frame `head` at `now` (page epoch ms, PR J): the
-    /// latency of the input it is the first to show (ms).
-    pub fn eq_drawn(self, head: FrameHead, now: f64) -> Option<f64> {
+    /// latency of each input it is the first to show (ms).
+    pub fn eq_drawn(self, head: FrameHead, now: f64) -> Drawn {
         self.inner
             .try_update_value(|i| i.eq_inputs.drawn(head.session, head.shown, now))
-            .flatten()
+            .unwrap_or_default()
     }
 
     /// The page leaves its editor.

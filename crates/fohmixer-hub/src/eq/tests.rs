@@ -815,9 +815,18 @@ fn a_numbered_finger_is_handled_and_a_stale_down_never_reaches_the_editor() {
         ]
     );
     // A down on a picture that does not show the up yet: dropped.
+    let stale = |n: u32, seen: u32| {
+        let mut fields = rec("stale", &key(1), Some(1), Some(1), None);
+        let Act::Record(record) = &mut fields else {
+            unreachable!()
+        };
+        record["n"] = json!(n);
+        record["seen"] = json!(seen);
+        fields
+    };
     assert_eq!(
         eqs.numbered(1, finger(Touch::Down, 3, Some(1)), 3.0),
-        vec![rec("stale", &key(1), Some(1), Some(1), None), handled(3)]
+        vec![stale(3, 1), handled(3)]
     );
     // Its moves and its up find no contact: nothing reaches the editor.
     assert_eq!(
@@ -836,7 +845,7 @@ fn a_numbered_finger_is_handled_and_a_stale_down_never_reaches_the_editor() {
         vec![
             rec("touch", &key(1), Some(1), Some(1), Some("cancel")),
             touch(2, Phase::Cancel),
-            rec("stale", &key(1), Some(1), Some(1), None),
+            stale(7, 5),
             handled(7),
         ]
     );

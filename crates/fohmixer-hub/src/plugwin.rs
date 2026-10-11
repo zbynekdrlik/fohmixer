@@ -598,12 +598,14 @@ pub struct Shown {
 }
 
 impl Shown {
-    /// The page's input `n` handled at `at` (worker ms).
+    /// The page's input `n` handled at `at` (worker ms). With
+    /// [`SHOWN_KEPT`] waiting, the newest waiting one gives way to it: a
+    /// picture then counts as showing it only once `n` is painted (the
+    /// later time; the PR J review: counting the oldest as painted was not
+    /// conservative).
     pub fn handled(&mut self, n: u32, at: f64) {
-        if self.waiting.len() >= SHOWN_KEPT
-            && let Some((oldest, _)) = self.waiting.pop_front()
-        {
-            self.shown = oldest;
+        if self.waiting.len() >= SHOWN_KEPT {
+            self.waiting.pop_back();
         }
         self.waiting.push_back((n, at));
     }
@@ -615,7 +617,7 @@ impl Shown {
             .iter()
             .take_while(|(_, at)| painted(*at, t))
             .count();
-        if let Some((n, _)) = self.waiting.drain(..done).last() {
+        if let Some((n, _)) = self.waiting.drain(..done).next_back() {
             self.shown = n;
         }
         self.shown
@@ -1324,6 +1326,11 @@ impl Worker {
         for done in self.encoder.done() {
             if let Some(editor) = self.editors.get_mut(&done.session) {
                 editor.counts.encoded(done.ms, done.bytes);
+                // A picture that never became a frame is no last picture:
+                // the next grab goes again, with what it shows (PR J review).
+                if done.bytes.is_none() {
+                    editor.last = None;
+                }
             }
         }
     }
