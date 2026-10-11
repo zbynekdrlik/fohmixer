@@ -151,7 +151,9 @@ impl Inner {
     /// When the writer has something to write at `now`: a message or the
     /// close at once; a frame waiting at once when it may go
     /// ([`Flight::due`]), else when its ack's wait runs out; nothing until
-    /// woken.
+    /// woken (a frame that may not go with no wait to count, which the
+    /// flight never gives, waits for the next ack or message: the writer
+    /// never loops without awaiting).
     fn wake(&self, now: Instant) -> Wake {
         if self.closed || self.has_messages() {
             return Wake::Now;
@@ -159,7 +161,10 @@ impl Inner {
         match &self.frame {
             None => Wake::Woken,
             Some((session, _)) if self.flight.due(*session, now) => Wake::Now,
-            Some((session, _)) => self.flight.wait_until(*session).map_or(Wake::Now, Wake::At),
+            Some((session, _)) => self
+                .flight
+                .wait_until(*session)
+                .map_or(Wake::Woken, Wake::At),
         }
     }
 }
