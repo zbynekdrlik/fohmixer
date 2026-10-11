@@ -122,6 +122,17 @@ pub fn stale_landing(spot: Spot, caught_up: bool, dropping_out: bool) -> bool {
     spot == Spot::Edit && (!caught_up || dropping_out)
 }
 
+/// Whether a first finger landing on the zoomed picture is taken now (#71
+/// PR Q): the picture shows every input the page sent (`caught_up`), no
+/// quick tap's up is still to go (`tap_pending`: the picture cannot show
+/// it yet) and the link does not drop out (`dropping_out`). The screen's
+/// pointer down decides with it (the part drawn last under the finger
+/// checked as well) and its canvas says it as `data-takes-finger`, so a
+/// test that waits for the attribute and the page never disagree.
+pub fn takes_finger(caught_up: bool, tap_pending: bool, dropping_out: bool) -> bool {
+    caught_up && !tap_pending && !dropping_out
+}
+
 /// How long the screen says a finger landed on an old picture (ms, PR J).
 pub const STALE_NOTE_MS: f64 = 1500.0;
 
@@ -1714,6 +1725,31 @@ mod tests {
         assert!(stale_note(Some(100.0), 1600.0_f64.next_down()));
         assert!(!stale_note(Some(100.0), 1600.0));
         assert_eq!(STALE_TEXT, "Obraz ešte dobieha, polož prst znova");
+    }
+
+    #[test]
+    fn a_first_finger_is_taken_only_caught_up_with_no_taps_up_to_go_and_no_dropout() {
+        // PR Q: every combination; only the one with all three holding.
+        assert!(
+            takes_finger(true, false, false),
+            "caught up, nothing to go, the link up"
+        );
+        assert!(!takes_finger(false, false, false), "an old picture");
+        assert!(!takes_finger(true, true, false), "a quick tap's up to go");
+        assert!(!takes_finger(true, false, true), "a dropout");
+        assert!(
+            !takes_finger(false, true, false),
+            "an old picture, a tap's up to go"
+        );
+        assert!(
+            !takes_finger(false, false, true),
+            "an old picture, a dropout"
+        );
+        assert!(
+            !takes_finger(true, true, true),
+            "a tap's up to go, a dropout"
+        );
+        assert!(!takes_finger(false, true, true), "none holds");
     }
 
     #[test]

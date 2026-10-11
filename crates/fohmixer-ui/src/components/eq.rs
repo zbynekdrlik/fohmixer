@@ -59,7 +59,7 @@ use crate::behave::eq::{
     AreaWatch, CardLock, Finger, ListLink, Look, Out, Point, STALE_TEXT, Spot, Viewer, can_open,
     card_lock, failure_text, hh_mm, in_use_text, list_text, lists_now, lock_refusal, locked,
     locked_text, look, on_picture, overview_size, place_text, point, spot, stale_landing,
-    stale_note, zoom_text,
+    stale_note, takes_finger, zoom_text,
 };
 use crate::behave::eq_view::{ViewWatch, lands_on, part_of, scaled_part};
 use crate::binding::detail_keys;
@@ -695,9 +695,28 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
     let lat = StoredValue::new(EqLat::default());
     let stale_at = StoredValue::new(None::<f64>);
     let stale_shown = RwSignal::new(false);
-    // Whether the picture shows every input sent (the canvas says it: an
-    // E2E waits for it before a new first finger).
+    // Whether the picture shows every input sent, and whether a quick tap's
+    // up is still to go: with the store's dropout counter, what a first
+    // finger meets (`behave::eq::takes_finger`). The canvas says both
+    // (`data-caught-up`, `data-takes-finger`): an E2E waits for them before
+    // a new first finger.
     let caught_up = RwSignal::new(true);
+    let tap_pending = RwSignal::new(false);
+    // Both follow the store and the finger right after every send (#71
+    // PR Q: written by the frame loop alone, the canvas still read caught
+    // up a frame after a drag's up went, and a tap then was refused) and
+    // on every frame (a frame drawn catches the picture up). Never from the
+    // cleanup: the screen's own signals stay untouched there.
+    let note_takes = move || {
+        let caught = store.eq_caught_up();
+        if caught_up.try_get_untracked() != Some(caught) {
+            let _ = caught_up.try_set(caught);
+        }
+        let pending = finger.try_with_value(Finger::tap_pending).unwrap_or(false);
+        if tap_pending.try_get_untracked() != Some(pending) {
+            let _ = tap_pending.try_set(pending);
+        }
+    };
     let told = Drawn { store, lat };
     let sink: FrameSink = Rc::new(move |head: FrameHead, blob: web_sys::Blob| {
         paint(painter, told, head, blob);
@@ -714,6 +733,7 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
                 .try_update_value(|f| f.visibility(hidden))
                 .unwrap_or_default(),
         );
+        note_takes();
         if hidden {
             fingers_leave();
         }
@@ -824,7 +844,7 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
         // edit marks the picture it landed on (its down's `seen`).
         let first = !finger.try_with_value(Finger::held).unwrap_or(false);
         // A quick tap's up still to go: the picture cannot show it yet.
-        let tap_pending = finger.try_with_value(Finger::tap_pending).unwrap_or(false);
+        let pending = finger.try_with_value(Finger::tap_pending).unwrap_or(false);
         // It lands on the part drawn last (the PR L re-review: after a pan
         // past the margin, the strip that came into sight is old until the
         // new part is drawn; a finger elsewhere is on current pixels).
@@ -832,18 +852,17 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
             .try_with_value(|p| p.part)
             .flatten()
             .is_none_or(|part| lands_on(part, picture, at.picture));
-        let caught = store.eq_caught_up() && !tap_pending;
-        let dropping = store.dropping_out();
-        let stale = first && stale_landing(lands, caught && on_part, dropping);
+        // The page's one rule for a first finger (PR Q), which the canvas
+        // says as `data-takes-finger`; the dropout is in it, so none is
+        // passed again.
+        let takes = takes_finger(store.eq_caught_up(), pending, store.dropping_out());
+        let stale = first && stale_landing(lands, takes && on_part, false);
         if stale {
             let _ = stale_at.try_set_value(Some(now));
-            // The recorder tells a finger on the old strip from one on a
-            // picture behind the page's inputs.
-            let what = if caught && !dropping {
-                "uncovered"
-            } else {
-                "stale"
-            };
+            // The recorder tells a finger on the old strip from one the
+            // rule refused (a picture behind the page's inputs, a quick
+            // tap's up to go, a dropout).
+            let what = if takes { "uncovered" } else { "stale" };
             record(vec![eq_touch(t, what, id, at.picture, zoom_now())]);
         } else if first && lands == Spot::Edit {
             store.eq_land();
@@ -856,6 +875,7 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
             let _ = area.set_pointer_capture(id);
         }
         send(out);
+        note_takes();
     };
     let on_move = move |ev: web_sys::PointerEvent| {
         if let Some((at, _)) = point_of(&ev) {
@@ -885,6 +905,7 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
                 .try_update_value(|f| f.up(id, at, now))
                 .unwrap_or_default(),
         );
+        note_takes();
     };
     let on_cancel = move |ev: web_sys::PointerEvent| {
         let id = ev.pointer_id();
@@ -899,6 +920,7 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
                 .try_update_value(|f| f.cancel(id))
                 .unwrap_or_default(),
         );
+        note_takes();
     };
     // Once the area is in the page: its box, its size watched, and the open
     // with it (PR G: the editor gets its aspect). Each frame: a waiting
@@ -944,10 +966,7 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
                     .try_update_value(|f| f.frame(now))
                     .unwrap_or_default(),
             );
-            let caught = store.eq_caught_up();
-            if caught_up.try_get_untracked() != Some(caught) {
-                let _ = caught_up.try_set(caught);
-            }
+            note_takes();
             let noted = stale_note(stale_at.try_get_value().flatten(), now);
             if stale_shown.try_get_untracked() != Some(noted) {
                 let _ = stale_shown.try_set(noted);
@@ -1018,6 +1037,7 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
                 .try_update_value(Finger::off_editor)
                 .unwrap_or_default(),
         );
+        note_takes();
         let _ = viewer.try_update_value(Viewer::whole);
     };
     let shown_zoom = move || zoomed.try_get().unwrap_or(false).to_string();
@@ -1051,6 +1071,17 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
     let hint_shown = move || (open() && !editing.try_get().unwrap_or(false)).to_string();
     let stale_text_shown = move || stale_shown.try_get().unwrap_or(false).to_string();
     let caught_up_text = move || caught_up.try_get().unwrap_or(true).to_string();
+    // Whether a first finger is taken now (PR Q): the down's own rule over
+    // the signals above and the dropout counter's (`LiveStore::dropping_out`
+    // reads the same watch the counter's signal shows).
+    let takes_text = move || {
+        takes_finger(
+            caught_up.try_get().unwrap_or(true),
+            tap_pending.try_get().unwrap_or(false),
+            store.dropouts.try_with(|c| c.active).unwrap_or(false),
+        )
+        .to_string()
+    };
     let exit_keys: Vec<String> = Vec::new();
     let help_keys: Vec<String> = Vec::new();
     let whole_keys: Vec<String> = Vec::new();
@@ -1125,6 +1156,7 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
                     data-testid="eq-canvas"
                     data-frames="0"
                     data-caught-up=caught_up_text
+                    data-takes-finger=takes_text
                     node_ref=canvas_ref
                 ></canvas>
                 <div class="eq-hint" data-testid="eq-hint" data-shown=hint_shown>
