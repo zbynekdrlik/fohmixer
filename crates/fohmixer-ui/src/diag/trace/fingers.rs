@@ -213,7 +213,10 @@ mod tests {
             ]
         );
         // The capture it loses after its lift ends nothing.
-        assert_eq!(fingers.end(1_041.0, "cancel", 3, None, 3.0), vec![]);
+        assert_eq!(
+            fingers.end(1_041.0, "cancel", 3, None, 3.0),
+            Vec::<Value>::new()
+        );
         // A tap: no moves, its down and its up.
         fingers.down(2_000.0, 5, (1.0, 2.0), 1.0);
         assert_eq!(
@@ -262,7 +265,7 @@ mod tests {
                 eq_touch(30.0, "cancel", 2, (5.0, 5.0), 1.5),
             ]
         );
-        assert_eq!(fingers.leave(40.0, 1.0), vec![], "none left");
+        assert_eq!(fingers.leave(40.0, 1.0), Vec::<Value>::new(), "none left");
         assert_eq!(fingers.moved(50.0, 1, (1.0, 1.0)), None);
     }
 }
