@@ -1640,6 +1640,57 @@ fn the_guard_ends_the_contact_stops_the_frames_and_taps_the_inert_spot() {
 }
 
 #[test]
+fn press_and_hold_comes_back_once_whichever_way_the_window_goes() {
+    // The PR #84 re-review: a guard whose tap is refused leaves it off (the
+    // editor stays open in Live; its release puts it back, once), and a
+    // window lost after a guard put it back gets nothing more.
+    let (mut worker, handle, _) = worker();
+    take(&mut worker, &handle, 1, 0.0);
+    let back = |handle: &SimHandle| {
+        handle
+            .records()
+            .iter()
+            .filter(|r| r["op"] == "press_and_hold" && r["quiet"] == json!(false))
+            .count()
+    };
+    handle.refuse(true);
+    let (reply, mut answer) = oneshot::channel();
+    worker.command_at(Command::Guard { session: 1, reply }, 10.0);
+    worker.step_at(20.0);
+    worker.step_at(30.0);
+    assert_eq!(answer.try_recv().unwrap(), Err(REFUSED.to_string()));
+    assert!(worker.editors[&1].quiet, "still off");
+    assert_eq!(back(&handle), 0);
+    handle.refuse(false);
+    let (reply, _released) = oneshot::channel();
+    worker.command_at(
+        Command::Release {
+            session: 1,
+            closed: false,
+            reply,
+        },
+        40.0,
+    );
+    assert_eq!(back(&handle), 1, "the release put it back");
+    // A guard that tapped puts it back; its window lost after: nothing more.
+    let second = take(&mut worker, &handle, 2, 100.0);
+    let (reply, mut answer) = oneshot::channel();
+    worker.command_at(Command::Guard { session: 2, reply }, 110.0);
+    worker.step_at(120.0);
+    worker.step_at(130.0);
+    assert_eq!(answer.try_recv().unwrap(), Ok(()));
+    assert_eq!(back(&handle), 2, "the guard put it back");
+    handle.remove_window(second);
+    worker.step_at(200.0);
+    assert!(worker.editors.is_empty(), "lost");
+    assert_eq!(back(&handle), 2, "nothing more");
+    assert_eq!(
+        handle.records().last(),
+        Some(&json!({"op": "release", "window": second.0}))
+    );
+}
+
+#[test]
 fn the_guard_first_cancels_another_sessions_contact() {
     // Two engineers: one drags on the first editor while the other's
     // editor closes. The PC injects one contact: the guard's tap would
