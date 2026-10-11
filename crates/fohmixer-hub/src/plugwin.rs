@@ -142,8 +142,13 @@ pub const STOP_POLLS: u32 = 100;
 pub const STEP: Duration = Duration::from_millis(10);
 /// How long the guard's finger stays on the inert spot.
 pub const GUARD_TAP: Duration = Duration::from_millis(30);
-/// The frames' JPEG quality.
-pub const QUALITY: u8 = 70;
+/// The frames' JPEG quality (#71 PR I: 70 before). A real Pro-Q 4
+/// screenshot re-encoded at 60 is about 15 % smaller than at 70 (42.7 →
+/// 36.4 KB, 44.6 → 38.1 KB, 4:2:0 as this encoder) with its scale labels,
+/// curve and grid lines as readable when magnified twice (the page zooms
+/// up to 4×); at 55 the faint grid lines start to fade. The picture keeps its size: a finger maps to
+/// its pixels.
+pub const QUALITY: u8 = 60;
 /// The picture size (px) at which the inert spot was verified on the PC
 /// (Pro-Q 4 at 100 %, #71): the guard taps only at exactly this size (#74
 /// review: at 760 px wide the same share of the width lies by Undo).

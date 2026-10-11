@@ -153,7 +153,7 @@ fn the_clocks_turn_at_their_bounds() {
     assert!(rate_due(60_000.0));
     assert_eq!(STEP, Duration::from_millis(10));
     assert_eq!(GUARD_TAP, Duration::from_millis(30));
-    assert_eq!(QUALITY, 70);
+    assert_eq!(QUALITY, 60);
 }
 
 #[test]
@@ -262,6 +262,24 @@ fn a_picture_is_encoded_as_a_jpeg() {
         bgra: vec![0; 10],
     };
     assert!(encode(&short, QUALITY).is_err(), "too few pixels");
+}
+
+#[test]
+fn a_whole_sim_picture_at_the_frames_quality_is_under_24_kb_and_smaller_than_at_70() {
+    // #71 PR I: the frames' bytes, measured. The sim's picture (Pro-Q 4's
+    // 1349 x 809, a dark field and a bar) is far flatter than Pro-Q's, whose
+    // real frames ran ~64 KB at q70 on the owner's iPad session; a q60 frame
+    // of a real Pro-Q screenshot measured ~15 % smaller than at q70.
+    let pixels = sim::picture(5, sim::SIM_WIDTH, sim::SIM_HEIGHT);
+    let frame = encode(&pixels, QUALITY).unwrap();
+    let at_70 = encode(&pixels, 70).unwrap();
+    assert!(frame.len() <= 24 * 1024, "{} bytes", frame.len());
+    assert!(
+        frame.len() < at_70.len(),
+        "{} bytes, {} at q70",
+        frame.len(),
+        at_70.len()
+    );
 }
 
 #[test]
