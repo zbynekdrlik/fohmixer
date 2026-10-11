@@ -810,6 +810,40 @@ async fn a_dropped_socket_records_its_editors_frame_round_trips() {
 }
 
 #[tokio::test]
+async fn a_view_brings_the_part_in_sight_in_later_frames() {
+    // PR L: the page's eq_view reaches the window worker through the
+    // router, and the frames carry the part at its corner.
+    let dir = tempfile::tempdir().unwrap();
+    let mut rig = rig(dir.path());
+    let outbox = held_open(&mut rig).await;
+    let crop = fohmixer_proto::eq::Crop {
+        x: 96,
+        y: 48,
+        w: 320,
+        h: 160,
+    };
+    rig.router.handle(RouterMsg::EqView {
+        client: 1,
+        crop: Some(crop),
+    });
+    assert_eq!(whats(&rig.records), vec!["view"]);
+    let mut corner = (0, 0);
+    for _ in 0..300 {
+        if let Some(frame) = outbox.take_frame(Instant::now()) {
+            let (head, _) = fohmixer_proto::eq::frame_parts(&frame).expect("a frame's header");
+            outbox.frame_acked(head.session, head.seq, Instant::now());
+            corner = (head.x, head.y);
+            if corner == (96, 48) {
+                assert_eq!((head.width, head.height), (1349, 809), "the whole size");
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(corner, (96, 48), "a later frame is the part");
+}
+
+#[tokio::test]
 async fn a_numbered_input_is_shown_by_a_later_frame() {
     // PR J: the router hands every input of an open editor to the window
     // worker, whose pictures then say they show it.

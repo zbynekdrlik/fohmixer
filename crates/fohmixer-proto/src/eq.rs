@@ -23,8 +23,10 @@
 //! picture as binary WebSocket messages, the newest frame winning (a slow
 //! link gets fewer frames, never old ones): a [`FrameHead`] of
 //! [`FRAME_HEADER`] bytes (the session number, the `session` of the `eq`
-//! message that opened it, the frame's number in that session, from 1, and
-//! `shown`, PR J; each a big-endian `u32`), then one JPEG. A page shows a
+//! message that opened it, the frame's number in that session, from 1,
+//! `shown` (PR J), and the part's corner `x`, `y` and the whole picture's
+//! `width`, `height` (PR L); each a big-endian `u32`, 28 bytes), then one
+//! JPEG. A page shows a
 //! frame only when its session is the one it opened: a frame of an editor
 //! it already left is dropped.
 //!

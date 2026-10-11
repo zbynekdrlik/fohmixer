@@ -46,7 +46,7 @@
 
 use std::rc::Rc;
 
-use fohmixer_proto::eq::{EqItem, EqState, FrameHead, PRODUCT};
+use fohmixer_proto::eq::{Crop, EqItem, EqState, FrameHead, PRODUCT};
 use fohmixer_proto::layout::Strip;
 use leptos::html;
 use leptos::prelude::*;
@@ -61,10 +61,10 @@ use crate::behave::eq::{
     locked_text, look, on_picture, overview_size, place_text, point, spot, stale_landing,
     stale_note, zoom_text,
 };
-use crate::behave::eq_view::{ViewWatch, crop_of, scaled_part};
+use crate::behave::eq_view::{ViewWatch, covers, crop_of, scaled_part, sight};
 use crate::binding::detail_keys;
 use crate::diag::trace::eq_lat::EqLat;
-use crate::diag::trace::fingers::{EqFingers, eq_touch};
+use crate::diag::trace::fingers::{EqFingers, eq_touch, eq_view};
 use crate::dom;
 use crate::raf;
 use crate::store::eq::{EqView, ended, screen_state, screen_view};
@@ -375,6 +375,8 @@ struct Painter {
     next: Option<(FrameHead, web_sys::Blob)>,
     frames: u32,
     size: Option<(u32, u32)>,
+    /// The part of the picture the last frame drawn held (PR L).
+    part: Option<Crop>,
 }
 
 /// Where a drawn frame is told (#71 PR J): the store, which knows the input
@@ -459,14 +461,26 @@ async fn draw(painter: PainterBox, drawn: Drawn, head: FrameHead, blob: &web_sys
                 f64::from(corner.0),
                 f64::from(corner.1),
             );
+            let part = Crop {
+                x: corner.0,
+                y: corner.1,
+                w: bitmap.width(),
+                h: bitmap.height(),
+            };
             let frames = painter.try_update_value(|p| {
                 p.frames += 1;
                 p.size = Some((width, height));
+                p.part = Some(part);
                 p.frames
             });
             if let Some(frames) = frames {
                 dom::set_attr(&canvas, "data-frames", &frames.to_string());
             }
+            dom::set_attr(
+                &canvas,
+                "data-part",
+                &format!("{},{},{},{}", part.x, part.y, part.w, part.h),
+            );
             let now = dom::epoch_now();
             let measured = drawn.store.eq_drawn(head, now);
             let decode_ms = dom::now() - started;
@@ -640,8 +654,10 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
     let observer = StoredValue::new_local(None::<AreaObserver>);
     // The picture area the hub knows (PR G): the open's, then each change.
     let watch = StoredValue::new(AreaWatch::default());
-    // The part of the picture the hub sends (PR L): the whole one at first.
+    // The part of the picture the hub sends (PR L): the whole one at first,
+    // again whenever the picture takes another size.
     let views = StoredValue::new(ViewWatch::default());
+    let seen_size = StoredValue::new(None::<(u32, u32)>);
     // The look last drawn (none: the stylesheet's, the whole picture).
     let drawn = StoredValue::new(None::<Look>);
     let zoomed = RwSignal::new(false);
@@ -811,7 +827,14 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
         let first = !finger.try_with_value(Finger::held).unwrap_or(false);
         // A quick tap's up still to go: the picture cannot show it yet.
         let tap_pending = finger.try_with_value(Finger::tap_pending).unwrap_or(false);
-        let caught = store.eq_caught_up() && !tap_pending;
+        // The part drawn last covers the part in sight (PR L review: after a
+        // pan past the margin, the strip that came into sight is old).
+        let covered = painter
+            .try_with_value(|p| p.part)
+            .flatten()
+            .zip(drawn.try_get_value().flatten())
+            .is_none_or(|(part, look)| covers(part, sight(picture, &look)));
+        let caught = store.eq_caught_up() && !tap_pending && covered;
         let stale = first && stale_landing(lands, caught, store.dropping_out());
         if stale {
             let _ = stale_at.try_set_value(Some(now));
@@ -955,11 +978,18 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
             };
             // At 2× and more, only the part in sight goes (PR L), once the
             // view rested.
+            // A picture of another size: the hub dropped its crop (PR L
+            // review), so the crop for the new size goes once it rests.
+            if seen_size.try_get_value() != Some(Some(picture)) {
+                let _ = seen_size.try_set_value(Some(picture));
+                let _ = views.try_update_value(ViewWatch::resized);
+            }
             let changed = views
                 .try_update_value(|w| w.frame(crop_of(picture, &wanted), open, now))
                 .flatten();
             if let Some(crop) = changed {
                 store.eq_view(crop);
+                record(vec![eq_view(dom::epoch_now(), crop)]);
             }
             if drawn
                 .try_with_value(|d| d.as_ref() != Some(&wanted))

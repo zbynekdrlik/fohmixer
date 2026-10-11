@@ -177,7 +177,7 @@ impl Inner {
             Some((head, _)) if self.flight.due(head.session, now) => Wake::Now,
             Some((head, _)) => self
                 .flight
-                .wait_until(*session)
+                .wait_until(head.session)
                 .map_or(Wake::Woken, Wake::At),
         }
     }

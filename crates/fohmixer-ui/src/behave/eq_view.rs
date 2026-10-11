@@ -53,6 +53,33 @@ pub fn crop_of(picture: (u32, u32), look: &Look) -> Option<Crop> {
     (!whole && crop.w.min(crop.h) > 0).then_some(crop)
 }
 
+/// The part of a picture of `picture` px in sight for `look` (no margin, on
+/// whole pixels: its start floored, its end ceiled; within the picture).
+pub fn sight(picture: (u32, u32), look: &Look) -> Crop {
+    let (width, height) = (f64::from(picture.0), f64::from(picture.1));
+    let (left, top, seen_w, seen_h) = look.seen;
+    let side = |start: f64, size: f64, whole: f64| {
+        let from = start.floor().clamp(0.0, whole);
+        let to = (start + size).ceil().clamp(from, whole);
+        // `as` saturates; both lie within 0..=whole.
+        (from as u32, (to - from) as u32)
+    };
+    let (x, w) = side(left * width, seen_w * width, width);
+    let (y, h) = side(top * height, seen_h * height, height);
+    Crop { x, y, w, h }
+}
+
+/// Whether a frame's `part` (the picture drawn last) covers the part in
+/// `sight` (PR L review: after a pan past the margin, the strip that came
+/// into sight is old until the hub's new part is drawn, and a finger there
+/// must not act).
+pub fn covers(part: Crop, sight: Crop) -> bool {
+    part.x <= sight.x
+        && part.y <= sight.y
+        && sight.x + sight.w <= part.x + part.w
+        && sight.y + sight.h <= part.y + part.h
+}
+
 /// Where a frame's part lands on a canvas of `canvas` px that draws the
 /// whole picture of `whole` px (the overview): the part's corner `at` and
 /// size `part` in picture px, scaled (left, top, width, height).
@@ -90,6 +117,14 @@ impl ViewWatch {
     /// ms): one that differs from the one sent goes once it rested
     /// [`VIEW_SETTLE_MS`] while the editor is open (each change starts the
     /// rest again; one back where it was sends nothing).
+    /// The picture took another size (PR L review): the hub dropped its crop,
+    /// so the whole picture is what it sends now; a crop for the new size
+    /// goes once the view rests.
+    pub fn resized(&mut self) {
+        self.sent = None;
+        self.resting = None;
+    }
+
     pub fn frame(&mut self, crop: Option<Crop>, open: bool, now: f64) -> Option<Option<Crop>> {
         let newest = self.resting.map_or(self.sent, |(resting, _)| resting);
         if newest != crop {
@@ -173,6 +208,32 @@ mod tests {
     }
 
     #[test]
+    fn the_part_in_sight_and_whether_a_drawn_part_covers_it() {
+        // 1600 × 800, a quarter of each side from (0.5, 0.25): 400 × 200
+        // from (800, 200).
+        assert_eq!(
+            sight((1600, 800), &look(true, (0.5, 0.25, 0.25, 0.25))),
+            crop(800, 200, 400, 200)
+        );
+        // Fractions of a pixel widen it outwards; it stays in the picture.
+        assert_eq!(
+            sight((1349, 809), &look(true, (0.1, 0.1, 0.5, 0.5))),
+            crop(134, 80, 676, 406)
+        );
+        assert_eq!(
+            sight((100, 80), &look(true, (0.9, 0.9, 0.5, 0.5))),
+            crop(90, 72, 10, 8)
+        );
+        let part = crop(100, 50, 300, 200);
+        assert!(covers(part, crop(100, 50, 300, 200)), "exactly");
+        assert!(covers(part, crop(150, 100, 100, 100)));
+        assert!(!covers(part, crop(99, 100, 100, 100)), "left");
+        assert!(!covers(part, crop(150, 49, 100, 100)), "top");
+        assert!(!covers(part, crop(301, 100, 100, 100)), "right");
+        assert!(!covers(part, crop(150, 151, 100, 100)), "bottom");
+    }
+
+    #[test]
     fn a_part_lands_scaled_on_the_overview() {
         assert_eq!(
             scaled_part((400, 200), (800, 400), (1600, 800), (160, 80)),
@@ -216,5 +277,12 @@ mod tests {
         assert_eq!(watch.frame(None, false, 3000.0), None);
         assert_eq!(watch.frame(None, false, 3500.0), None);
         assert_eq!(watch.frame(None, true, 3600.0), Some(None));
+        // A picture of another size: the hub sends it whole, so the same
+        // crop goes again once it rests.
+        assert_eq!(watch.frame(a, true, 4000.0), None);
+        assert_eq!(watch.frame(a, true, 4150.0), Some(a));
+        watch.resized();
+        assert_eq!(watch.frame(a, true, 4200.0), None);
+        assert_eq!(watch.frame(a, true, 4350.0), Some(a));
     }
 }

@@ -1025,6 +1025,131 @@ fn a_view_crops_the_frames_until_the_whole_picture_again() {
 }
 
 #[test]
+fn a_picture_of_another_size_drops_the_crop() {
+    // PR L review: a crop of the old picture would cut the new one wrong.
+    assert!(!resized_under(None, (100, 80)), "no frame yet");
+    assert!(!resized_under(Some((100, 80)), (100, 80)));
+    assert!(resized_under(Some((100, 80)), (101, 80)));
+    assert!(resized_under(Some((100, 80)), (100, 79)));
+    let (mut worker, handle, _) = worker();
+    let window = take(&mut worker, &handle, 1, 0.0);
+    let (sink, frames) = sink();
+    worker.command_at(Command::Capture { session: 1, sink }, 0.0);
+    worker.step_at(0.0);
+    wait_for("the whole picture", || frames.lock().unwrap().len() == 1);
+    let crop = Crop {
+        x: 100,
+        y: 50,
+        w: 300,
+        h: 200,
+    };
+    worker.command_at(
+        Command::View {
+            session: 1,
+            crop: Some(crop),
+        },
+        10.0,
+    );
+    worker.step_at(40.0);
+    assert_eq!(worker.editors[&1].last_crop, Some(crop));
+    // The window takes another size on the PC: the next frame is whole.
+    handle.resize_window(window, (1000, 700));
+    worker.step_at(80.0);
+    assert_eq!(worker.editors[&1].crop, None);
+    assert_eq!(worker.editors[&1].last_crop, None);
+    assert_eq!(worker.editors[&1].put_size, Some((1000, 700)));
+}
+
+#[test]
+fn a_new_part_of_equal_pixels_still_goes() {
+    // PR L review: a pan over a flat region gave equal pixels, and the page
+    // never learnt the part's new corner.
+    let (mut worker, handle, _) = worker();
+    handle.still(true);
+    take(&mut worker, &handle, 1, 0.0);
+    let (sink, frames) = sink();
+    worker.command_at(Command::Capture { session: 1, sink }, 0.0);
+    worker.step_at(0.0);
+    wait_for("the whole picture", || frames.lock().unwrap().len() == 1);
+    // The sim's bar: a bright column; two parts of the dark field beside it.
+    let whole = worker.editors[&1].last.clone().expect("a picture");
+    let bar = (0..whole.width as usize)
+        .find(|x| whole.bgra[(20 * whole.width as usize + x) * 4] == 0xF0)
+        .expect("the bar") as u32;
+    let x = if bar > 400 { 100 } else { 600 };
+    let part = |x: u32| Crop {
+        x,
+        y: 100,
+        w: 64,
+        h: 64,
+    };
+    worker.command_at(
+        Command::View {
+            session: 1,
+            crop: Some(part(x)),
+        },
+        10.0,
+    );
+    worker.step_at(40.0);
+    wait_for("the first part", || frames.lock().unwrap().len() == 2);
+    worker.command_at(
+        Command::View {
+            session: 1,
+            crop: Some(part(x + 64)),
+        },
+        50.0,
+    );
+    worker.step_at(80.0);
+    assert_eq!(worker.editors[&1].last_crop, Some(part(x + 64)));
+    wait_for("the second part, of equal pixels", || {
+        frames.lock().unwrap().len() == 3
+    });
+}
+
+#[test]
+fn a_cropped_editors_guard_sends_its_whole_picture_first() {
+    // PR L review: the card's last picture is a whole one, and the edits
+    // at 2× and more were only ever in parts.
+    let (mut worker, handle, _) = worker();
+    take(&mut worker, &handle, 1, 0.0);
+    let got = Arc::new(Mutex::new(Vec::<Frame>::new()));
+    let into = Arc::clone(&got);
+    let sink: FrameSink = Arc::new(move |frame: Frame| into.lock().unwrap().push(frame));
+    worker.command_at(Command::Capture { session: 1, sink }, 0.0);
+    worker.command_at(
+        Command::View {
+            session: 1,
+            crop: Some(Crop {
+                x: 100,
+                y: 50,
+                w: 300,
+                h: 200,
+            }),
+        },
+        0.0,
+    );
+    worker.step_at(0.0);
+    wait_for("a part", || got.lock().unwrap().len() == 1);
+    assert!(!got.lock().unwrap()[0].whole());
+    let _answer = guard_at(&mut worker, 1, 10.0);
+    let frames = got.lock().unwrap().clone();
+    assert_eq!(frames.len(), 2, "its whole picture at the guard");
+    assert!(frames[1].whole());
+    assert_eq!(frames[1].size, (1349, 809));
+    // An editor that was whole sends nothing more at its guard.
+    let (mut worker, handle, _) = self::worker();
+    take(&mut worker, &handle, 1, 0.0);
+    let got = Arc::new(Mutex::new(Vec::<Frame>::new()));
+    let into = Arc::clone(&got);
+    let sink: FrameSink = Arc::new(move |frame: Frame| into.lock().unwrap().push(frame));
+    worker.command_at(Command::Capture { session: 1, sink }, 0.0);
+    worker.step_at(0.0);
+    wait_for("a whole frame", || got.lock().unwrap().len() == 1);
+    let _answer = guard_at(&mut worker, 1, 10.0);
+    assert_eq!(got.lock().unwrap().len(), 1);
+}
+
+#[test]
 fn a_captured_editor_sends_its_pictures_skipping_a_same_one() {
     let (mut worker, handle, heard) = worker();
     handle.still(true);

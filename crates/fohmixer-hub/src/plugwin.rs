@@ -601,6 +601,13 @@ impl Frame {
     }
 }
 
+/// Whether a picture grabbed at `size` is of another size than the last
+/// frame's (`put`; none: no frame yet): a crop of the old one is dropped
+/// (PR L review).
+pub fn resized_under(put: Option<(u32, u32)>, size: (u32, u32)) -> bool {
+    put.is_some_and(|put| put != size)
+}
+
 /// The part `crop` of a picture of `size` a frame carries (PR L): clamped
 /// to the picture; none when that holds the whole picture or nothing.
 pub fn crop_within(crop: Crop, size: (u32, u32)) -> Option<Crop> {
@@ -974,8 +981,12 @@ struct Editor {
     put: f64,
     /// The page's inputs its pictures show (PR J).
     shown: Shown,
-    /// The part of the picture its page shows (PR L; none: the whole).
+    /// The part of the picture its page shows (PR L; none: the whole), the
+    /// part the last frame carried and the whole picture's size then (a
+    /// new part of equal pixels goes; another size drops the crop).
     crop: Option<Crop>,
+    last_crop: Option<Crop>,
+    put_size: Option<(u32, u32)>,
     /// When it was last grabbed and when its minute began (worker ms).
     grabbed: f64,
     minute: f64,
@@ -1504,6 +1515,8 @@ impl Worker {
                         put: f64::NEG_INFINITY,
                         shown: Shown::default(),
                         crop: None,
+                        last_crop: None,
+                        put_size: None,
                         grabbed: f64::NEG_INFINITY,
                         minute: now,
                         counts: Counts::default(),
@@ -1809,11 +1822,18 @@ impl Worker {
                 height: size.1,
             });
         }
-        // The part the page shows (PR L), or the whole picture.
+        // The part the page shows (PR L), or the whole picture. A picture
+        // of another size than the last frame's (a turned screen, a new
+        // area, Pro-Q's own resize) drops the crop: it was the old
+        // picture's, and the page asks again for the new one (PR L review).
+        if resized_under(editor.put_size, size) {
+            editor.crop = None;
+        }
         let crop = editor.crop.and_then(|crop| crop_within(crop, size));
         let pixels = crop.map_or(pixels, |crop| cropped(&pixels, crop));
         let shown = editor.shown.at_grab(now);
         if editor.last.as_deref() == Some(&pixels)
+            && crop == editor.last_crop
             && shown == editor.last_shown
             && !refresh_due(now - editor.put)
         {
@@ -1822,6 +1842,8 @@ impl Worker {
         let pixels = Arc::new(pixels);
         editor.last = Some(Arc::clone(&pixels));
         editor.last_shown = shown;
+        editor.last_crop = crop;
+        editor.put_size = Some(size);
         editor.put = now;
         self.encoder.put(Job {
             session,
@@ -1954,6 +1976,22 @@ impl Worker {
             return;
         };
         editor.guarded = true;
+        // A cropped editor's card gets its whole picture now, before the
+        // guard moves it (PR L review: the edits at 2× and more were only
+        // ever in crops, so the card kept the picture from before them).
+        if editor.crop.is_some()
+            && let Some(sink) = editor.sink.clone()
+            && let Ok(pixels) = self.backend.grab(&editor.taken)
+            && let Ok(jpeg) = encode(&pixels, QUALITY)
+        {
+            sink(Frame {
+                session,
+                shown: editor.last_shown,
+                crop: None,
+                size: (pixels.width, pixels.height),
+                jpeg: Bytes::from(jpeg),
+            });
+        }
         editor.sink = None;
         if let Some((_, waiting)) = editor.deferred.take() {
             let _ = waiting.send(None);

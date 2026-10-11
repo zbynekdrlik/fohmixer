@@ -19,6 +19,7 @@
 
 use std::collections::BTreeMap;
 
+use fohmixer_proto::eq::Crop;
 use serde_json::{Value, json};
 
 use super::moves::round1;
@@ -49,6 +50,13 @@ pub fn eq_touch(t: f64, what: &str, pointer: i32, at: (f64, f64), zoom: f64) -> 
         "y": round1(at.1),
         "z": round2(zoom),
     })
+}
+
+/// The part of the picture the page asked the hub for at `t` (#71 PR L):
+/// `crop` its corner and size, none for the whole picture. Essential: the
+/// timeline tells whole frames from parts.
+pub fn eq_view(t: f64, crop: Option<Crop>) -> Value {
+    json!({"ev": "eq_view", "t": t, "crop": crop.map(|c| [c.x, c.y, c.w, c.h])})
 }
 
 /// A finger's moves since its last summary: how many, the first and the
@@ -177,6 +185,24 @@ impl EqFingers {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_view_is_its_part_or_the_whole_picture() {
+        let crop = Crop {
+            x: 96,
+            y: 48,
+            w: 320,
+            h: 160,
+        };
+        assert_eq!(
+            eq_view(5.0, Some(crop)),
+            json!({"ev": "eq_view", "t": 5.0, "crop": [96, 48, 320, 160]})
+        );
+        assert_eq!(
+            eq_view(6.0, None),
+            json!({"ev": "eq_view", "t": 6.0, "crop": null})
+        );
+    }
 
     #[test]
     fn a_fingers_touch_is_its_pointer_picture_point_and_zoom() {

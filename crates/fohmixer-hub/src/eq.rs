@@ -871,10 +871,12 @@ impl Eqs {
     /// worker crops that editor's frames to it; nothing without an open
     /// editor (a new one starts whole).
     pub fn view(&mut self, client: ClientId, crop: Option<Crop>) -> Vec<Act> {
-        self.open_of(client)
-            .map(|(_, session)| Act::View { session, crop })
-            .into_iter()
-            .collect()
+        let Some((key, session)) = self.open_of(client) else {
+            return Vec::new();
+        };
+        let mut fields = record("view", &key, Some(client), Some(session), None);
+        fields["crop"] = json!(crop);
+        vec![Act::View { session, crop }, Act::Record(fields)]
     }
 
     /// The editor `client` holds open, and its session.

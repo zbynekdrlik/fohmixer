@@ -871,13 +871,29 @@ fn a_view_crops_the_open_editors_frames_only() {
     eqs.open(1, &key(1), WALL);
     assert_eq!(eqs.view(1, crop), Vec::new(), "not open yet");
     eqs.opened(&key(1), 1, Ok((1349, 809)));
-    assert_eq!(eqs.view(1, crop), vec![Act::View { session: 1, crop }]);
+    // Each view is a record too (the PR L review: the timeline tells whole
+    // frames from parts).
+    let viewed = |crop: Option<Crop>| {
+        let mut fields = rec("view", &key(1), Some(1), Some(1), None);
+        let Act::Record(record) = &mut fields else {
+            unreachable!()
+        };
+        record["crop"] = json!(crop);
+        fields
+    };
+    assert_eq!(
+        eqs.view(1, crop),
+        vec![Act::View { session: 1, crop }, viewed(crop)]
+    );
     assert_eq!(
         eqs.view(1, None),
-        vec![Act::View {
-            session: 1,
-            crop: None
-        }]
+        vec![
+            Act::View {
+                session: 1,
+                crop: None
+            },
+            viewed(None)
+        ]
     );
     assert_eq!(eqs.view(2, crop), Vec::new(), "another client holds none");
 }

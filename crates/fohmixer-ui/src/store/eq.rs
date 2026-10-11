@@ -149,6 +149,10 @@ mod tests {
             session,
             seq: 41,
             shown: 7,
+            x: 0,
+            y: 0,
+            width: 1349,
+            height: 809,
         };
         assert_eq!(
             frame_ack(head(3), Some(3)),

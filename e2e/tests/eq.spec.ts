@@ -1211,8 +1211,16 @@ test.describe("The Pro-Q 4 screen's part in sight", () => {
     expect([parts[0].width, parts[0].height], "the whole picture's size in each").toEqual([size.width, size.height]);
     const wholeBytes = Math.min(...whole.map((f) => f.bytes));
     expect(Math.max(...parts.map((f) => f.bytes)), JSON.stringify({ whole: whole.map((f) => f.bytes), parts: parts.map((f) => f.bytes) })).toBeLessThan(wholeBytes);
-    // The canvas still draws the whole picture: a tap lands where it shows.
+    // The canvas still draws the whole picture, the part at its corner
+    // inside it: a tap lands where it shows.
     await expect(canvas).toHaveAttribute("data-width", String(size.width));
+    const part = await until(
+      async () => (await canvas.getAttribute("data-part"))!.split(",").map(Number),
+      ([x, y]) => x > 0 && y > 0,
+      "a part drawn",
+    );
+    expect(part[0] + part[2] <= size.width && part[1] + part[3] <= size.height, JSON.stringify(part)).toBe(true);
+    expect(part[2] < size.width && part[3] < size.height, JSON.stringify(part)).toBe(true);
     const area = screen.getByTestId("eq-area");
     const at = await centre(area);
     const tapFrom = (await simEq.records()).length;
