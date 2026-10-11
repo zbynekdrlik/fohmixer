@@ -95,9 +95,11 @@ pub struct Part {
 
 /// How long Pro-Q gets to paint an input before a picture counts as
 /// showing it (ms, PR J): a picture grabbed less than this after the hub
-/// handled an input may not show it yet. Conservative until measured in
-/// Carla's bridge (#71).
-pub const PAINT_MS: f64 = 40.0;
+/// handled an input may not show it yet. Measured in Carla's bridge (#71 PR
+/// M/N, 0.1.0-dev.58: 40 injected moves, the first grab that showed each
+/// started after p50 17.6 ms, p95 19.0, max 21.3, a grab taking 16.5): the
+/// p95 rounded up to 5 ms.
+pub const PAINT_MS: f64 = 20.0;
 
 /// A binary frame's header (PR I): the session it shows, its number in
 /// that session (from 1), which the page's ack names, the last of the
@@ -330,7 +332,7 @@ mod tests {
 
     #[test]
     fn a_picture_is_caught_up_when_it_shows_every_input_sent() {
-        assert_eq!(PAINT_MS, 40.0);
+        assert_eq!(PAINT_MS, 20.0);
         assert!(caught_up(0, 0), "no input yet");
         assert!(caught_up(5, 5));
         assert!(caught_up(6, 5));

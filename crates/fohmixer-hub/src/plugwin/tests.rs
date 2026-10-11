@@ -830,17 +830,18 @@ fn an_editor_let_go_reports_the_counts_of_its_last_minute() {
 
 #[test]
 fn a_picture_shows_the_last_input_handled_a_paint_before_its_grab() {
-    // PR J: Pro-Q gets PAINT_MS (40 ms) to paint an input.
-    assert!(!painted(100.0, 140.0_f64.next_down()));
-    assert!(painted(100.0, 140.0));
+    // PR J: Pro-Q gets PAINT_MS (20 ms since PR O's measure) to paint an
+    // input.
+    assert!(!painted(100.0, 120.0_f64.next_down()));
+    assert!(painted(100.0, 120.0));
     let mut shown = Shown::default();
     assert_eq!(shown.at_grab(0.0), 0, "none yet");
     shown.handled(1, 100.0);
     shown.handled(2, 110.0);
-    assert_eq!(shown.at_grab(139.0), 0);
-    assert_eq!(shown.at_grab(140.0), 1);
-    assert_eq!(shown.at_grab(149.9), 1);
-    assert_eq!(shown.at_grab(150.0), 2);
+    assert_eq!(shown.at_grab(119.0), 0);
+    assert_eq!(shown.at_grab(120.0), 1);
+    assert_eq!(shown.at_grab(129.9), 1);
+    assert_eq!(shown.at_grab(130.0), 2);
     assert_eq!(shown.at_grab(500.0), 2, "it stays");
     // Past SHOWN_KEPT waiting, the newest waiting gives way: nothing counts
     // as painted before its time (the PR J review).
@@ -850,11 +851,11 @@ fn a_picture_shows_the_last_input_handled_a_paint_before_its_grab() {
         many.handled(n, 1000.0 + f64::from(n));
     }
     many.handled(65, 1100.0);
-    assert_eq!(many.at_grab(1040.0), 0, "none painted yet");
-    assert_eq!(many.at_grab(1041.0), 1);
-    assert_eq!(many.at_grab(1104.0), 63, "64 gave way to 65");
-    assert_eq!(many.at_grab(1139.0), 63);
-    assert_eq!(many.at_grab(1140.0), 65);
+    assert_eq!(many.at_grab(1020.0), 0, "none painted yet");
+    assert_eq!(many.at_grab(1021.0), 1);
+    assert_eq!(many.at_grab(1084.0), 63, "64 gave way to 65");
+    assert_eq!(many.at_grab(1119.0), 63);
+    assert_eq!(many.at_grab(1120.0), 65);
 }
 
 #[test]
