@@ -587,6 +587,8 @@ try {
     Assert (Test-FohSameTree -A $b1.stage -B $appV1) 'install-1-app-folder-is-the-bundle'
     Assert ([IO.File]::ReadAllText((Join-Path $data 'app\current.txt')) -ceq ($appV1 + "`r`n")) 'install-1-current-txt-points-at-the-version'
     Assert ([IO.File]::ReadAllText((Join-Path $data 'fohmixer-hub.toml')) -ceq $wantToml) 'install-1-writes-the-toml'
+    # (#71) A first install leaves the Pro-Q 4 screen off: no [eq] table.
+    Assert (-not ([IO.File]::ReadAllText((Join-Path $data 'fohmixer-hub.toml'))).Contains('[eq]')) 'install-1-writes-no-eq-table'
     Assert ((Get-FohSha256 (Join-Path $data 'layout.json')) -ceq (Get-FohSha256 $layout)) 'install-1-copies-the-layout'
     $bandCopy = Join-Path $bandLib 'Remote Scripts\FohMixer'
     $masterCopy = Join-Path $masterLib 'Remote Scripts\FohMixer'
@@ -810,6 +812,25 @@ try {
     $noneC = Join-Path $base 'data-companion-refused'
     $res = Invoke-Ps $install (Get-InstallArgs @{ DataDir = $noneC; CompanionHost = 'host:0' })
     Assert ($res.code -ne 0 -and $res.out -like '*Companion endpoint refused*' -and -not (Test-Path -LiteralPath $noneC)) 'install-refuses-a-bad-companion-host-before-any-change'
+    # ---- install 10 (#71): an [eq] table written by hand, as the deploy rule's steps do, is kept ----
+    $tomlC = Join-Path $dataC 'fohmixer-hub.toml'
+    $instancesEnd = "port = 39182`r`n"
+    Assert ($wantC.Contains($instancesEnd + "`r`n[companion]")) 'install-10-the-companion-table-follows-the-instances'
+    $handC = $wantC.Replace($instancesEnd, $instancesEnd + "[eq]`r`nbackend = `"windows`"`r`n")
+    # Windows PowerShell 5.1's own UTF-8 (Set-Content -Encoding UTF8) has a byte order mark.
+    [IO.File]::WriteAllText($tomlC, $handC, (New-Object System.Text.UTF8Encoding $true))
+    $r10 = Invoke-Ps $install (Get-InstallArgs @{ DataDir = $dataC })
+    Assert ($r10.code -eq 0 -and $r10.out.Contains('the [eq] table kept as installed')) "install-10-with-an-eq-table-exits-0 ($($r10.out))"
+    # Kept as the install writes a table: a blank line before it, after the instances, before [companion].
+    $wantEqC = $wantC.Replace($instancesEnd, $instancesEnd + "`r`n[eq]`r`nbackend = `"windows`"`r`n")
+    Assert ([IO.File]::ReadAllText($tomlC) -ceq $wantEqC) 'install-10-keeps-eq-backend-windows-after-the-instances'
+    $watchE = @{}
+    $watchE[$tomlC] = $old
+    Set-Stamps $watchE
+    $r11 = Invoke-Ps $install (Get-InstallArgs @{ DataDir = $dataC })
+    Assert ($r11.code -eq 0) 'install-11-again-exits-0'
+    $newer = @(Get-ChangedFiles $watchE)
+    Assert ($newer.Count -eq 0 -and [IO.File]::ReadAllText($tomlC) -ceq $wantEqC) "install-11-again-keeps-the-eq-table-writing-nothing ($($newer -join ', '))"
     # A config the hub refuses stops the install before any change: checked
     # by the new hub itself (the kept [tls] on the new HTTP port included).
     foreach ($r in @(
