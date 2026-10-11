@@ -1167,6 +1167,22 @@ fn a_cropped_editors_guard_sends_its_whole_picture_first() {
     worker.step_at(0.0);
     wait_for("a part", || got.lock().unwrap().len() == 1);
     assert!(!got.lock().unwrap()[0].whole());
+    // A pan: a second part (every part keeps the editor parted).
+    worker.command_at(
+        Command::View {
+            session: 1,
+            part: part(Crop {
+                x: 116,
+                y: 50,
+                w: 300,
+                h: 200,
+            }),
+        },
+        40.0,
+    );
+    worker.step_at(40.0);
+    wait_for("a second part", || got.lock().unwrap().len() == 2);
+    assert!(!got.lock().unwrap()[1].whole());
     // CELÝ EQ: the page went back to the whole picture, and the guard comes
     // while that grab's whole frame may still be encoded (the PR L
     // re-review: forgotten, it would leave the card without the edits).
@@ -1175,26 +1191,51 @@ fn a_cropped_editors_guard_sends_its_whole_picture_first() {
             session: 1,
             part: None,
         },
-        45.0,
+        85.0,
     );
-    worker.step_at(45.0);
+    worker.step_at(85.0);
     assert_eq!(worker.editors[&1].last_crop, None, "a whole frame put");
-    let _answer = guard_at(&mut worker, 1, 50.0);
+    let _answer = guard_at(&mut worker, 1, 90.0);
     let frames = got.lock().unwrap().clone();
-    assert!(matches!(frames.len(), 2 | 3), "{}", frames.len());
+    assert!(matches!(frames.len(), 3 | 4), "{}", frames.len());
     let last = frames.last().unwrap();
     assert!(last.whole(), "the guard's whole picture is the last frame");
     assert_eq!(last.size, (1349, 809));
     assert_eq!(*captured.lock().unwrap(), [false], "forgotten first");
     // Counted as a grab and a frame sent (its last rate holds it): the
-    // part's frame was counted at the step, the step's own is not yet.
+    // parts' frames were counted at the steps, the last step's own is not
+    // yet.
     assert_eq!(
         (
             worker.editors[&1].counts.grabs,
             worker.editors[&1].counts.sent
         ),
-        (3, 2)
+        (4, 3)
     );
+    // A part asked for and no grab yet: the guard sends the whole picture
+    // all the same (the page shows a part of an older picture).
+    let (mut worker, handle, _) = self::worker();
+    take(&mut worker, &handle, 1, 0.0);
+    let got = Arc::new(Mutex::new(Vec::<Frame>::new()));
+    let into = Arc::clone(&got);
+    let sink: FrameSink = Arc::new(move |frame: Frame| into.lock().unwrap().push(frame));
+    worker.command_at(Command::Capture { session: 1, sink }, 0.0);
+    worker.command_at(
+        Command::View {
+            session: 1,
+            part: part(Crop {
+                x: 100,
+                y: 50,
+                w: 300,
+                h: 200,
+            }),
+        },
+        0.0,
+    );
+    let _answer = guard_at(&mut worker, 1, 0.0);
+    let frames = got.lock().unwrap().clone();
+    assert_eq!(frames.len(), 1);
+    assert!(frames[0].whole());
     // An editor that was whole sends nothing more at its guard.
     let (mut worker, handle, _) = self::worker();
     take(&mut worker, &handle, 1, 0.0);
