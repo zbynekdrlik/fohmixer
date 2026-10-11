@@ -1830,7 +1830,10 @@ impl Worker {
             editor.crop = None;
         }
         let crop = editor.crop.and_then(|crop| crop_within(crop, size));
-        let pixels = crop.map_or(pixels, |crop| cropped(&pixels, crop));
+        let pixels = match crop {
+            Some(crop) => cropped(&pixels, crop),
+            None => pixels,
+        };
         let shown = editor.shown.at_grab(now);
         if editor.last.as_deref() == Some(&pixels)
             && crop == editor.last_crop
