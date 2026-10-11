@@ -16,6 +16,7 @@ fn args(pid: u32) -> Args {
         sim: false,
         size: None,
         min_probe: false,
+        paint: 0,
     }
 }
 
@@ -39,6 +40,8 @@ fn the_arguments_have_their_defaults_and_every_flag_is_read() {
             "--size",
             " 760 x 1271 ",
             "--min-probe",
+            "--paint",
+            "20",
             "--pid",
             "7",
         ]),
@@ -53,7 +56,12 @@ fn the_arguments_have_their_defaults_and_every_flag_is_read() {
             sim: true,
             size: Some((760, 1271)),
             min_probe: true,
+            paint: 20,
         })
+    );
+    assert_eq!(
+        parse(&["--pid", "1", "--paint", "x"]),
+        Err("--paint \"x\"".to_string())
     );
     for bad in [
         "760",
@@ -119,6 +127,27 @@ fn the_probes_figures() {
     assert_eq!(drag_points((0, 0), (10, 10), 0), vec![(10, 10)]);
     assert_eq!((RESENDS, RESEND), (6, Duration::from_millis(50)));
     assert_eq!(RESEND, Duration::from_millis(KEEPALIVE_MS as u64));
+    // PR M: the paint trials' points and figures.
+    assert_eq!(
+        (PAINT_POLL, PAINT_WAIT, PAINT_STEP, PAINT_REST),
+        (
+            Duration::from_millis(5),
+            Duration::from_millis(500),
+            8,
+            Duration::from_millis(150)
+        )
+    );
+    assert_eq!(paint_point((511, 281), 0), (511, 273));
+    assert_eq!(paint_point((511, 281), 1), (511, 281));
+    assert_eq!(paint_point((511, 281), 2), (511, 273));
+    assert_eq!(percentile(&[], 0.5), 0.0);
+    assert_eq!(percentile(&[3.0, 1.0, 2.0], 0.5), 2.0);
+    assert_eq!(percentile(&[4.0, 1.0, 3.0, 2.0], 0.5), 2.0);
+    let twenty: Vec<f64> = (1..=20).map(f64::from).collect();
+    assert_eq!(percentile(&twenty, 0.95), 19.0);
+    assert_eq!(percentile(&twenty, 1.0), 20.0);
+    assert_eq!(percentile(&twenty, 0.0), 1.0);
+    assert_eq!(percentile(&[5.0], 0.95), 5.0);
 }
 
 /// A sim with one still window of process `pid`.
@@ -238,6 +267,132 @@ fn a_probe_runs_the_hubs_steps_in_order_and_saves_its_pictures() {
     );
     let jpeg = std::fs::read(folder.join("after-guard.jpg")).unwrap();
     assert_eq!(jpeg[..2], [0xFF_u8, 0xD8]);
+}
+
+/// A probe's `--paint` lines on a still sim whose picture shows each
+/// update `paint` after it (none: never), and the sim's records.
+fn painted(trials: u32, paint: Option<Duration>) -> (Vec<String>, SimHandle, Vec<String>) {
+    let (mut sim, handle, _) = one_window(42);
+    handle.paint_after(paint);
+    let dir = tempfile::tempdir().unwrap();
+    let mut probe = args(42);
+    probe.frames = 1;
+    probe.paint = trials;
+    probe.out = Some(dir.path().to_path_buf());
+    let mut out = Vec::new();
+    run(&mut sim, &probe, &mut out).unwrap();
+    let lines = String::from_utf8(out)
+        .unwrap()
+        .lines()
+        .map(str::to_string)
+        .collect();
+    let mut saved: Vec<String> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    saved.sort();
+    (lines, handle, saved)
+}
+
+/// The figure `name=` of a probe's line.
+fn figure(line: &str, name: &str) -> f64 {
+    line.split(' ')
+        .find_map(|part| part.strip_prefix(&format!("{name}=")))
+        .and_then(|v| v.parse().ok())
+        .unwrap_or_else(|| panic!("{name} in {line}"))
+}
+
+#[test]
+fn a_paint_probe_measures_how_long_the_picture_takes_to_show_an_update() {
+    // #71 PR M: the sim shows each update 30 ms after it.
+    let (lines, handle, saved) = painted(3, Some(Duration::from_millis(30)));
+    let at = lines
+        .iter()
+        .position(|l| l.starts_with("paint=ok"))
+        .expect("the paint lines");
+    assert_eq!(lines[at - 1], "drag=ok steps=25 to=511,281");
+    assert_eq!(lines[at], "paint=ok n=3 lost=0");
+    let figures = &lines[at + 1];
+    for name in ["paint_ms_p50", "paint_ms_p95", "paint_ms_max"] {
+        let ms = figure(figures, name);
+        assert!((25.0..=130.0).contains(&ms), "{name} {ms}: {figures}");
+    }
+    assert!(figure(figures, "grab_ms_mean") >= 0.0, "{figures}");
+    assert_eq!(lines[at + 2], "field=ok");
+    // The contact: down on the band, updates 8 px up and back, the up back
+    // on the band; then the field's double tap there.
+    let ops = ops(&handle);
+    let paint_down = ops
+        .windows(2)
+        .position(|w| w[0] == op("touch", "up", 511, 281) && w[1] == op("touch", "down", 511, 281))
+        .expect("the paint contact's down after the drag's up")
+        + 1;
+    let field = ops
+        .iter()
+        .rposition(|o| o.0 == "touch" && o.1 == "down" && (o.2, o.3) == (511, 281))
+        .unwrap();
+    // The field's double tap: down, up, down (the last down), up.
+    let contact = &ops[paint_down..field - 2];
+    assert_eq!(contact[0], op("touch", "down", 511, 281));
+    assert_eq!(contact[contact.len() - 1], op("touch", "up", 511, 281));
+    let moves = &contact[1..contact.len() - 1];
+    assert!(
+        moves
+            .iter()
+            .all(|o| o.1 == "update" && o.2 == 511 && (o.3 == 273 || o.3 == 281)),
+        "{moves:?}"
+    );
+    assert!(
+        moves.iter().filter(|o| o.3 == 273).count() >= 2,
+        "{moves:?}"
+    );
+    // Three trials end 8 px up: the contact goes back to the band first.
+    assert_eq!(moves[moves.len() - 1], op("touch", "update", 511, 281));
+    // The contact rested its 150 ms before the first trial's update.
+    let times: Vec<(i64, i64, f64)> = handle
+        .records()
+        .iter()
+        .filter(|r| r["op"] == "touch")
+        .map(|r| {
+            (
+                r["x"].as_i64().unwrap(),
+                r["y"].as_i64().unwrap(),
+                r["t"].as_f64().unwrap(),
+            )
+        })
+        .collect();
+    let touches_before = ops[..paint_down].iter().filter(|o| o.0 == "touch").count();
+    let down_t = times[touches_before].2;
+    let first_up = times
+        .iter()
+        .find(|(x, y, t)| (*x, *y) == (511, 273) && *t > down_t)
+        .unwrap()
+        .2;
+    assert!(first_up - down_t >= 145.0, "{}", first_up - down_t);
+    assert!(saved.contains(&"after-paint.jpg".to_string()), "{saved:?}");
+}
+
+#[test]
+fn a_paint_trial_whose_picture_never_changes_is_lost_and_its_contact_kept_alive() {
+    let (lines, handle, _) = painted(2, None);
+    let at = lines
+        .iter()
+        .position(|l| l.starts_with("paint=ok"))
+        .expect("the paint lines");
+    assert_eq!(lines[at], "paint=ok n=2 lost=2");
+    assert!(
+        lines[at + 1]
+            .starts_with("paint_ms_p50=0.0 paint_ms_p95=0.0 paint_ms_max=0.0 grab_ms_mean="),
+        "{}",
+        lines[at + 1]
+    );
+    // Each trial waited its 500 ms, the point resent every 50 ms: the
+    // first trial's point (8 px up) went at least 8 times.
+    let up = ops(&handle)
+        .iter()
+        .filter(|o| *o == &op("touch", "update", 511, 273))
+        .count();
+    assert!(up >= 8, "{up}");
 }
 
 #[test]
