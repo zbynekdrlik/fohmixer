@@ -1,17 +1,42 @@
 import type { Locator, Page, WebSocketRoute } from "@playwright/test";
 import { test, expect } from "./support/fixtures";
-import { HUB_SOCKET, LiveClient, hubEvents, impair, openSurface, pageEvents, track, until, volume } from "./support/live";
+import {
+  HUB_SOCKET,
+  LiveClient,
+  type PointerStep,
+  dispatchPointer,
+  hubEvents,
+  impair,
+  openSurface,
+  pageEvents,
+  ready,
+  resetLayout,
+  servedLayout,
+  setIdleAfter,
+  shown,
+  strip,
+  track,
+  until,
+  volume,
+} from "./support/live";
 
-// The page's idle state (#51, PR 2a: the hidden case; touch-idle follows in
-// its own PR). A hidden page (a locked iPad, the app in the background) is
-// idle at once: its `visibilitychange` handler sends `idle {on: true,
-// meter_ms: 0}`, and the hub holds every meter value for it while every
-// other value goes at once. Shown again, it wakes (`idle {on: false}` and a
-// ping) and the meters come back at once. While idle the link waits longer
-// (pings a second apart, a dropout only after 2.5 s of silence), and the
-// wake starts the silence over, so an idle ping is never a dropout under the
-// finger. SimLive animates every meter at 30 Hz, so a page that gets meters
-// gets many.
+// The page's idle state (#51). A hidden page (a locked iPad, the app in the
+// background) is idle at once (PR 2a): its `visibilitychange` handler sends
+// `idle {on: true, meter_ms: 0}`, and the hub holds every meter value for it
+// while every other value goes at once. Shown again, it wakes (`idle {on:
+// false}` and a ping) and the meters come back at once. While idle the link
+// waits longer (pings a second apart, a dropout only after 2.5 s of
+// silence), and the wake starts the silence over, so an idle ping is never a
+// dropout under the finger. SimLive animates every meter at 30 Hz, so a
+// page that gets meters gets many.
+//
+// Touch-idle (PR 2b): a page left untouched for the layout's
+// `idle_after_s` (absent or 0, the fixture's default: never) is idle with
+// its meters paced (250 ms); any pointer down wakes it, in a capture-phase
+// listener on the window, before the control's own handler. The tests set
+// a short `idle_after_s` through `/hub/layout` (never Playwright's fake
+// clock: it fakes the page's timers and `performance.now`, and the pings'
+// `t` would leave the hub's clock pairing).
 
 const HAND2 = track("Hand2 #");
 /** The hub key of Hand2's volume, without its `display` flag. */
@@ -111,6 +136,21 @@ const everRed = (page: Page) => page.evaluate(() => (window as unknown as { coun
 /** The hub's `idle` records since `since` (test clock), oldest first. */
 const idleRecords = async (since: number) => (await hubEvents()).filter((r) => r.ev === "idle" && r.ts >= since);
 
+/** Touch-idle's seconds in the tests' layout. */
+const IDLE_AFTER_S = 2;
+
+/** How many values of each meter key reached the page from `from` to `to` (test clock). */
+function meterCounts(link: Link, from: number, to: number): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const f of link.received.filter((f) => f.at >= from && f.at < to)) {
+    for (const i of items(f.msg).filter((i) => isMeter(i.sub))) counts.set(i.sub, (counts.get(i.sub) ?? 0) + 1);
+  }
+  return counts;
+}
+
+/** The page's pings sent from `from` to `to` (test clock). */
+const pingsBetween = (link: Link, from: number, to: number) => link.sent.filter((f) => f.msg.type === "ping" && f.at >= from && f.at < to);
+
 let live: LiveClient;
 test.beforeEach(async () => {
   live = await LiveClient.open();
@@ -197,17 +237,151 @@ test.describe("A hidden page", () => {
     await setHidden(page, true);
     await expect(surface).toHaveAttribute("data-idle", "true");
 
-    // A 2 s stall: the pings, a second apart, wait for it under the 2.5 s an
-    // idle page allows (300 ms while active, so the old rule counted it).
-    // The page is shown 1.9 s into it with a ping unanswered: the silence
-    // starts over at the wake, and the stall ends inside the 300 ms an
-    // active page allows (without the restart, the wake counted at once).
-    await impair.stall(2000);
-    await page.waitForTimeout(1900);
+    // A 1.5 s stall while idle: the pings, a second apart, wait for it
+    // under the 2.5 s an idle page allows. One goes out within the stall
+    // and its pong waits for its end, so an active page's 300 ms rule would
+    // count it. The page is shown about 800 ms after the stall ended (PR 2a's
+    // review: a wake 1.9 s into a 2 s stall left a slow runner 100-200 ms),
+    // so the wake comes on a quiet link. The wake's own rule (the silence
+    // starts over at the wake, so an idle ping never becomes a dropout under
+    // the finger) is pinned by the native tests in behave/link/tests.rs.
+    const stalledAt = Date.now();
+    await impair.stall(1500);
+    await page.waitForTimeout(Math.max(0, stalledAt + 2300 - Date.now()));
     await setHidden(page, false);
     await expect(surface).toHaveAttribute("data-idle", "false");
     await page.waitForTimeout(1500);
     expect(await everRed(page), "never red").toBe(false);
     await expect(counter).toHaveText("0");
+  });
+});
+
+test.describe("Touch-idle", () => {
+  test("an untouched page goes idle after the layout's seconds with its meters paced; a fader's touch wakes it before the fader sees it, and its sets reach Live at once", async ({
+    page,
+  }) => {
+    const start = await live.get("band", volume(HAND2), "value");
+    await live.set("band", volume(HAND2), "value", 0.5);
+    const link = await recordLink(page);
+    try {
+      await setIdleAfter(IDLE_AFTER_S);
+      const opened = Date.now();
+      await openSurface(page);
+      const surface = page.getByTestId("surface");
+      const fader = strip(page, "Hand2 #").getByTestId("fader");
+      await ready(fader);
+      await until(() => shown(fader), (v) => Math.abs(v - 0.5) < 0.001, "the fader at 0.5");
+
+      // Untouched for the layout's 2 s: idle, its meters paced at 250 ms.
+      await expect(surface).toHaveAttribute("data-idle", "true", { timeout: 10_000 });
+      await expect.poll(() => sentOf(link, "idle")).toEqual([{ type: "idle", on: true, meter_ms: 250 }]);
+      const slept = link.sent.find((f) => f.msg.type === "idle")!;
+      expect(slept.at - opened, "not before the layout's seconds").toBeGreaterThanOrEqual(IDLE_AFTER_S * 1000 - 100);
+      const records = await until(() => idleRecords(opened), (r) => r.length >= 1, "the hub's idle record");
+      expect(records).toMatchObject([{ on: true, meter_ms: 250 }]);
+      // While idle: a ping a second, every meter key at most 4 values a
+      // second (SimLive's go at 30), none paused.
+      await page.waitForTimeout(2500);
+      const quiet = { from: slept.at + 300, to: Date.now() };
+      expect(pingsBetween(link, quiet.from, quiet.to).length, "pings a second apart").toBeLessThanOrEqual(3);
+      const counts = meterCounts(link, quiet.from, quiet.to);
+      expect(counts.size, "the meters still come").toBeGreaterThan(0);
+      const most = Math.max(...counts.values());
+      expect(most, "the most values of one meter key in 2.2 s").toBeLessThanOrEqual(10);
+
+      // A finger on Hand2's fader. A listener on the fader itself notes the
+      // page clock at the down: the wake's ping (sent right after its
+      // `idle` off) already carries an earlier time, so the window's
+      // capture-phase wake ran before anything on the fader.
+      await fader.evaluate((el) => {
+        el.addEventListener(
+          "pointerdown",
+          () => {
+            (window as any).__faderDownT = performance.timeOrigin + performance.now();
+          },
+          { once: true },
+        );
+      });
+      const touchedAt = Date.now();
+      const drag: PointerStep[] = [{ type: "pointerdown" }, { wait: 30 }, { type: "pointermove", dy: 0 }];
+      for (let i = 1; i <= 6; i++) drag.push({ wait: 30 }, { type: "pointermove", dy: 15 * i });
+      drag.push({ wait: 30 }, { type: "pointerup", dy: 90 });
+      await dispatchPointer(fader, drag);
+      const liftedAt = Date.now();
+      await expect(surface).toHaveAttribute("data-idle", "false");
+      const isSet = (f: Frame) => f.msg.type === "set" && `${f.msg.instance}|${f.msg.target}|${f.msg.prop}` === VOLUME_KEY;
+      const after = await until(async () => link.sent.filter((f) => f.at >= touchedAt), (a) => a.some(isSet), "the drag's sets");
+      const off = after.findIndex((f) => f.msg.type === "idle");
+      expect(after[off]?.msg).toEqual({ type: "idle", on: false });
+      const wakePing = after[off + 1]?.msg;
+      expect(wakePing?.type, "a ping right after it").toBe("ping");
+      const downT = await page.evaluate(() => (window as any).__faderDownT as number);
+      expect(wakePing.t, "the wake ran before the fader's own listener").toBeLessThanOrEqual(downT);
+      expect(after.findIndex(isSet), "the first set after the wake's idle and ping").toBeGreaterThan(off + 1);
+      // All of the drag's sets (the last goes at the lift).
+      await page.waitForTimeout(300);
+      const sets = link.sent.filter((f) => f.at >= touchedAt && isSet(f));
+
+      // The sets reach Live at once: the first is acked well inside the 1 s
+      // that would make it unconfirmed, and Live ends at the last one.
+      const ackOf = (f: Frame) => f.msg.type === "ack" && f.msg.items.some((i: any) => i.key === VOLUME_KEY && i.seq >= sets[0].msg.seq);
+      const acked = await until(async () => link.received.find(ackOf), (f) => f !== undefined, "the first set's ack");
+      expect(acked!.at - sets[0].at, "the first set's ack (ms)").toBeLessThan(500);
+      const last = sets[sets.length - 1].msg;
+      expect(last.value).toBeGreaterThan(0.52);
+      await until(() => live.get("band", volume(HAND2), "value"), (v) => Math.abs(v - last.value) < 1e-9, "Live at the last set's value", 2000);
+      await expect(fader).toHaveAttribute("data-intent", "confirmed");
+      // Awake: pings every 100 ms again.
+      await page.waitForTimeout(Math.max(0, liftedAt + 1000 - Date.now()));
+      expect(pingsBetween(link, liftedAt, liftedAt + 1000).length, "pings in the second after the lift").toBeGreaterThanOrEqual(5);
+
+      // Untouched again, it goes idle the layout's seconds after the lift
+      // (the finger held it awake until then).
+      await expect(surface).toHaveAttribute("data-idle", "true", { timeout: 10_000 });
+      const again = await until(
+        async () => link.sent.filter((f) => f.msg.type === "idle" && f.at >= liftedAt),
+        (a) => a.length >= 1,
+        "the second idle",
+      );
+      expect(again.map((f) => f.msg)).toEqual([{ type: "idle", on: true, meter_ms: 250 }]);
+      expect(again[0].at - liftedAt, "counted from the lift").toBeGreaterThanOrEqual(IDLE_AFTER_S * 1000 - 300);
+      expect(again[0].at - liftedAt, "and not much later").toBeLessThan(IDLE_AFTER_S * 1000 + 1500);
+
+      // The hub's records and the page's own events of the sleep and the wake.
+      const all = await until(() => idleRecords(opened), (r) => r.length >= 3, "the hub's idle records");
+      expect(all).toMatchObject([
+        { on: true, meter_ms: 250 },
+        { on: false, meter_ms: null },
+        { on: true, meter_ms: 250 },
+      ]);
+      const events = await until(
+        async () => pageEvents(await hubEvents()).filter((e) => e.ev === "idle" && e.t >= opened),
+        (e) => e.length >= 2,
+        "the page's idle events",
+        10_000,
+      );
+      expect(events.slice(0, 2)).toMatchObject([
+        { on: true, why: "touch" },
+        { on: false, why: "touch" },
+      ]);
+      expect(events[1].ms, "how long it was idle").toBeGreaterThan(2000);
+    } finally {
+      await resetLayout();
+      await live.set("band", volume(HAND2), "value", start);
+    }
+  });
+
+  test("the fixture's layout, with no idle_after_s, never makes an untouched page idle", async ({ page }) => {
+    expect((await servedLayout()).config.idle_after_s, "the fixture sets no touch-idle").toBeUndefined();
+    const link = await recordLink(page);
+    const since = Date.now();
+    await openSurface(page);
+    // Twice the tests' touch-idle seconds, untouched.
+    await page.waitForTimeout(2 * IDLE_AFTER_S * 1000);
+    await expect(page.getByTestId("surface")).toHaveAttribute("data-idle", "false");
+    expect(sentOf(link, "idle"), "no idle sent").toEqual([]);
+    expect(await idleRecords(since), "no idle record at the hub").toEqual([]);
+    const now = Date.now();
+    expect(pingsBetween(link, now - 1000, now).length, "pings every 100 ms").toBeGreaterThanOrEqual(6);
   });
 });

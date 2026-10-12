@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { expect, type Locator, type Page } from "@playwright/test";
 
 // The E2E world: the hub (E2E_BASE_URL) with two SimLive hosts (band, master)
@@ -154,6 +156,34 @@ export function pageEvents(records: any[]): any[] {
     }
   }
   return events;
+}
+
+/** The layout the hub serves now (`GET /api/layout`). */
+export async function servedLayout(): Promise<any> {
+  const response = await fetch(`${BASE}/api/layout`, { headers: { authorization: `Bearer ${await token()}` } });
+  if (!response.ok) throw new Error(`layout: ${response.status}`);
+  return (await response.json()).layout;
+}
+
+/** The harness's layout: the import tool's synthetic fixture. */
+const FIXTURE_LAYOUT = join(__dirname, "..", "..", "..", "tools", "import-tosc", "fixtures", "expected-layout.json");
+
+/**
+ * The fixture layout with touch-idle after `seconds` (#51: its
+ * `config.idle_after_s`), served by the hub when this returns. A test that
+ * sets it puts the fixture back with `resetLayout` in its `finally`.
+ */
+export async function setIdleAfter(seconds: number) {
+  const layout = JSON.parse(readFileSync(FIXTURE_LAYOUT, "utf-8"));
+  layout.config = { ...layout.config, idle_after_s: seconds };
+  await harness("/hub/layout", { layout });
+  await until(servedLayout, (l) => l.config?.idle_after_s === seconds, "the hub serving the touch-idle layout");
+}
+
+/** The fixture layout back, served by the hub when this returns (no touch-idle). */
+export async function resetLayout() {
+  await harness("/hub/layout/reset");
+  await until(servedLayout, (l) => l.config?.idle_after_s === undefined, "the hub serving the fixture layout again");
 }
 
 /** A control line on a host's stdin (`stall <ms>`, `rename "<a>" "<b>"`): its answer. */

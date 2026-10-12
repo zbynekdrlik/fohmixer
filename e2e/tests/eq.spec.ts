@@ -12,6 +12,8 @@ import {
   openDetail,
   openSurface,
   pageEvents,
+  resetLayout,
+  setIdleAfter,
   simEq,
   until,
 } from "./support/live";
@@ -1641,6 +1643,61 @@ test.describe("The Pro-Q 4 screen's part in sight", () => {
     await expect(page.getByTestId("eq-screen")).toHaveCount(0);
     await closedWithGuard(closing);
     await editorOpen(trackPath, false);
+  });
+});
+
+test.describe("The Pro-Q 4 screen and touch-idle (#51)", () => {
+  test("an open Pro-Q 4 screen never lets the page go idle; closed, the page goes idle the layout's seconds after the exit", async ({ page }) => {
+    // Touch-idle after 2 s (the fixture has none). The screen holds the
+    // page awake: its first-finger rules were tuned for the live frames,
+    // and it holds the PC's one Pro-Q 4 editor.
+    const idle: { at: number; msg: any }[] = [];
+    page.on("websocket", (ws) => {
+      ws.on("framesent", ({ payload }) => {
+        if (typeof payload === "string" && payload.includes('"type":"idle"')) idle.push({ at: Date.now(), msg: JSON.parse(payload) });
+      });
+    });
+    try {
+      await setIdleAfter(2);
+      await openSurface(page);
+      const surface = page.getByTestId("surface");
+      // The page has touch-idle: untouched, it goes idle (the touches that
+      // open the screen wake it).
+      await expect(surface).toHaveAttribute("data-idle", "true", { timeout: 10_000 });
+      const { onTrack, trackPath } = await hand2Cards(page);
+      await editorOpen(trackPath, false);
+      await onTrack.getByTestId("eq-open").click();
+      const screen = await openScreen(page, trackPath);
+      await expect(surface).toHaveAttribute("data-idle", "false");
+      // Open and untouched for twice the layout's seconds: never idle, and
+      // the frames keep coming.
+      const canvas = screen.getByTestId("eq-canvas");
+      const drawn = async () => Number(await canvas.getAttribute("data-frames"));
+      const first = await drawn();
+      const openedAt = Date.now();
+      await page.waitForTimeout(4_000);
+      expect(
+        idle.filter((f) => f.at >= openedAt).map((f) => f.msg),
+        "no idle while the screen is open",
+      ).toEqual([]);
+      await expect(surface).toHaveAttribute("data-idle", "false");
+      expect((await drawn()) - first, "frames drawn in 4 s").toBeGreaterThanOrEqual(8);
+
+      // Closed: the page goes idle the layout's seconds after the exit's
+      // touch, its meters paced.
+      const closing = (await simEq.records()).length;
+      const exitAt = Date.now();
+      await screen.getByTestId("eq-exit").click();
+      await expect(page.getByTestId("eq-screen")).toHaveCount(0);
+      await closedWithGuard(closing);
+      await editorOpen(trackPath, false);
+      await expect(surface).toHaveAttribute("data-idle", "true", { timeout: 10_000 });
+      const slept = await until(async () => idle.filter((f) => f.at >= exitAt), (a) => a.length >= 1, "the idle after the exit");
+      expect(slept.map((f) => f.msg)).toEqual([{ type: "idle", on: true, meter_ms: 250 }]);
+      expect(slept[0].at - exitAt, "counted from the exit").toBeGreaterThanOrEqual(1_900);
+    } finally {
+      await resetLayout();
+    }
   });
 });
 
