@@ -12,21 +12,36 @@
 //! (`diag::frame`, #5 K4: the `perf` report's frame rate and longest
 //! frame): one more reader of this loop, not a second loop. A loop that
 //! starts again counts its first gap from its start, not from the last
-//! frame before it went idle.
+//! frame before it stopped.
+//!
+//! An idle page (#51, [`set_idle`]) draws at most one frame per
+//! [`IDLE_FRAME_MS`]: each next frame waits a timer, then asks
+//! `requestAnimationFrame` (drawing stays on the display's frames), and says
+//! it was paced (`diag::frame`: no frame rate counts it, and it is a long
+//! frame only for what lies beyond the pace). The wake clears a pending
+//! timer and asks for a frame at once; the store's stop puts the loop back
+//! to full rate. One chain of frames exists at any time: a timer, a frame
+//! asked for or a frame running.
 
 use std::cell::{Cell, RefCell};
+use std::time::Duration;
 
 use leptos::html;
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 
+use crate::behave::idle::IDLE_FRAME_MS;
+
 /// A frame function: called with the frame's time and the time since the
 /// previous frame (ms, at most 100).
 pub type FrameFn = Box<dyn FnMut(f64, f64)>;
 
 /// The longest frame step handed to the frame functions (a tab that was
-/// hidden resumes without a jump).
+/// hidden resumes without a jump). An idle page's frames come a little more
+/// than [`IDLE_FRAME_MS`] apart (the timer, then the next display frame), so
+/// its meters still fall at nearly their real speed; raise this cap with
+/// that pace.
 const MAX_STEP_MS: f64 = 100.0;
 
 /// The registry of frame functions, by id.
@@ -100,9 +115,29 @@ thread_local! {
     static REGISTRY: RefCell<Registry<FrameFn>> = const { RefCell::new(Registry::new()) };
     static RUNNING: Cell<bool> = const { Cell::new(false) };
     static LAST: Cell<f64> = const { Cell::new(0.0) };
+    /// The page is idle (#51): the next frame waits [`IDLE_FRAME_MS`].
+    static IDLE: Cell<bool> = const { Cell::new(false) };
+    /// An idle page's pending timer before its next frame.
+    static TIMER: Cell<Option<TimeoutHandle>> = const { Cell::new(None) };
+    /// The frame asked for came through that timer.
+    static PACED: Cell<bool> = const { Cell::new(false) };
 }
 
-/// Registers a frame function and starts the loop if it is idle: its id.
+/// The page went idle (`on`) or woke (#51): idle, each next frame waits
+/// [`IDLE_FRAME_MS`]; awake, a pending wait ends and the next frame is asked
+/// for at once (a frame already asked for comes within one display frame).
+pub fn set_idle(on: bool) {
+    IDLE.set(on);
+    if on {
+        return;
+    }
+    if let Some(timer) = TIMER.take() {
+        timer.clear();
+        request();
+    }
+}
+
+/// Registers a frame function and starts the loop if it is stopped: its id.
 pub fn register(frame: FrameFn) -> usize {
     let id = REGISTRY.with_borrow_mut(|r| r.add(frame));
     if !RUNNING.get() {
@@ -137,7 +172,26 @@ pub fn unregister(id: usize) {
     REGISTRY.with_borrow_mut(|r| r.remove(id));
 }
 
+/// The loop's next frame: at once, or after an idle page's pace.
 fn schedule() {
+    if !IDLE.get() {
+        request();
+        return;
+    }
+    let wait = Duration::from_millis(IDLE_FRAME_MS as u64);
+    let paced = || {
+        TIMER.set(None);
+        PACED.set(true);
+        request();
+    };
+    match set_timeout_with_handle(paced, wait) {
+        Ok(timer) => TIMER.set(Some(timer)),
+        Err(_) => RUNNING.set(false),
+    }
+}
+
+/// Asks for the next frame (`requestAnimationFrame`).
+fn request() {
     let callback = Closure::once_into_js(move |time: f64| {
         tick(time);
     });
@@ -152,19 +206,20 @@ fn schedule() {
 /// One frame: the page's frame count, every registered function, then the
 /// next frame while any is left.
 fn tick(time: f64) {
+    let paced = PACED.replace(false);
     let gap = time - LAST.get();
     let step = gap.clamp(0.0, MAX_STEP_MS);
     LAST.set(time);
-    crate::diag::frame(gap);
+    crate::diag::frame(gap, paced);
     let mut items = REGISTRY.with_borrow_mut(Registry::take);
     for (_, frame) in &mut items {
         frame(time, step);
     }
-    let idle = REGISTRY.with_borrow_mut(|r| {
+    let empty = REGISTRY.with_borrow_mut(|r| {
         r.restore(items);
         r.is_empty()
     });
-    if idle {
+    if empty {
         RUNNING.set(false);
     } else {
         schedule();

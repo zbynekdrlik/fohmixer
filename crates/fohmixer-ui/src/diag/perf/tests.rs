@@ -43,7 +43,7 @@ fn frames(perf: &mut Perf, start: f64, count: usize, gap: f64) -> Vec<f64> {
     let mut due = Vec::new();
     for n in 1..=count {
         let now = start + gap * n as f64;
-        if perf.frame(now, gap) {
+        if perf.frame(now, gap, false) {
             due.push(now);
         }
     }
@@ -58,7 +58,7 @@ fn ten_seconds_of_frames_give_their_rate_and_their_longest_gap() {
     assert_eq!(perf.clone().report(0.0).window, None);
     // A 416 ms stall fills it: 600 frames in 10 s.
     assert!(
-        perf.frame(10_000.0, 416.0),
+        perf.frame(10_000.0, 416.0, false),
         "the first window: a report is due"
     );
     assert_eq!(
@@ -73,7 +73,7 @@ fn ten_seconds_of_frames_give_their_rate_and_their_longest_gap() {
 #[test]
 fn the_longest_gap_is_the_longest_not_the_last() {
     let mut perf = Perf::default();
-    assert!(!perf.frame(250.0, 250.0));
+    assert!(!perf.frame(250.0, 250.0, false));
     // 375 more frames 26 ms apart: 250 + 9750 = 10_000 ms.
     let due = frames(&mut perf, 250.0, 375, 26.0);
     assert_eq!(due, [10_000.0]);
@@ -106,8 +106,8 @@ fn a_negative_gap_counts_as_none() {
     // The loop's first frame can carry a time a little before the moment
     // the loop started (the frame's own start).
     let mut perf = Perf::default();
-    assert!(!perf.frame(0.0, -5.0));
-    assert!(perf.frame(10_000.0, 10_000.0));
+    assert!(!perf.frame(0.0, -5.0, false));
+    assert!(perf.frame(10_000.0, 10_000.0, false));
     assert_eq!(
         perf.report(10_000.0).window,
         Some(Window {
@@ -131,14 +131,14 @@ fn a_hidden_page_s_pause_is_no_frame_gap() {
     );
     // The first frame after the pause carries the minute the page was
     // hidden: not counted.
-    assert!(!perf.frame(74_800.0, 60_000.0));
+    assert!(!perf.frame(74_800.0, 60_000.0, false));
     // Then a whole window of its own (the open half was dropped).
     frames(&mut perf, 74_800.0, 624, 16.0);
     assert!(
         perf.clone().report(0.0).window.is_none(),
         "624 frames: 9984 ms"
     );
-    assert!(perf.frame(84_800.0, 16.0));
+    assert!(perf.frame(84_800.0, 16.0, false));
     assert_eq!(
         perf.report(84_800.0).window,
         Some(Window {
@@ -155,7 +155,7 @@ fn the_periodic_report_goes_once_a_minute_as_windows_close() {
     let mut due = Vec::new();
     for n in 1..=140 {
         let now = 1_000.0 * f64::from(n);
-        if perf.frame(now, 1_000.0) {
+        if perf.frame(now, 1_000.0, false) {
             due.push(now);
             perf.report(now);
         }
@@ -380,6 +380,61 @@ fn a_pointer_is_down_from_its_down_to_its_up_a_primary_one_or_a_pause() {
     assert!(perf.is_down(7));
     perf.pause();
     assert!(!perf.is_down(7), "hidden or shown: none down");
+}
+
+#[test]
+fn an_idle_page_s_paced_frames_are_not_counted() {
+    // #51: half a window, then a minute of an idle page's frames 100 ms
+    // apart: they fill nothing.
+    let mut perf = Perf::default();
+    frames(&mut perf, 0.0, 300, 16.0);
+    for n in 1..=600 {
+        let now = 4_800.0 + 100.0 * f64::from(n);
+        assert!(!perf.frame(now, 100.0, true), "paced at {now}");
+    }
+    // The open half goes on: 624 frames are 9984 ms, the 625th closes it.
+    assert_eq!(frames(&mut perf, 64_800.0, 324, 16.0), Vec::<f64>::new());
+    assert!(perf.frame(70_000.0, 16.0, false));
+    assert_eq!(
+        perf.report(70_000.0).window,
+        Some(Window {
+            fps: 62.5,
+            long_ms: 16.0
+        }),
+        "no paced frame and no 100 ms gap in it"
+    );
+}
+
+#[test]
+fn an_idle_turn_drops_the_open_window_and_the_gap_after_it_and_keeps_the_rest() {
+    let mut perf = Perf::default();
+    perf.down(1, "touch", true);
+    // A closed window, then part of the next.
+    assert_eq!(frames(&mut perf, 0.0, 625, 16.0), [10_000.0]);
+    frames(&mut perf, 10_000.0, 100, 16.0);
+    perf.turn();
+    assert!(perf.any_down(), "the finger stays down");
+    assert_eq!(
+        perf.clone().report(0.0).window,
+        Some(Window {
+            fps: 62.5,
+            long_ms: 16.0
+        }),
+        "the last window stays"
+    );
+    // The wake's first frame comes up to a pace after a paced one: not
+    // counted.
+    assert!(!perf.frame(20_000.0, 150.0, false));
+    // Then a whole window of its own (the open 100 frames were dropped).
+    assert_eq!(frames(&mut perf, 20_000.0, 624, 16.0), Vec::<f64>::new());
+    assert!(perf.frame(30_000.0, 16.0, false));
+    assert_eq!(
+        perf.report(30_000.0).window,
+        Some(Window {
+            fps: 62.5,
+            long_ms: 16.0
+        })
+    );
 }
 
 #[test]

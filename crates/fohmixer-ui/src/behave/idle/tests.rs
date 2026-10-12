@@ -31,6 +31,11 @@ fn a_hidden_page_asks_for_no_meters_an_untouched_one_for_paced_ones() {
 }
 
 #[test]
+fn an_idle_page_draws_ten_frames_a_second() {
+    assert_eq!(IDLE_FRAME_MS, 100.0);
+}
+
+#[test]
 fn a_finger_an_open_eq_screen_or_an_eq_input_not_shown_holds_the_page() {
     assert!(!holds(false, false, true), "nothing holds it");
     assert!(holds(true, false, true), "a finger down");

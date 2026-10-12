@@ -72,8 +72,13 @@ exclude_re = [
   # token; eq.spec.ts reads the card's picture after a close).
   "fohmixer-ui/src/net\\.rs.*(replace|in) (fetch_text|fetch_blob|last_reload|reload)( |$)",
   # raf.rs: requestAnimationFrame scheduling around the tested Registry, and
-  # a component's registration of its frame function.
-  "fohmixer-ui/src/raf\\.rs.*(replace|in) (register|unregister|schedule|tick|animate)( |$)",
+  # a component's registration of its frame function. #51 PR 2c: set_idle
+  # (an idle page's pace on or off: a pending timer cleared and a frame
+  # asked for at the wake), schedule's 100 ms timer (behave::idle's tested
+  # IDLE_FRAME_MS) before request (requestAnimationFrame); idle.spec.ts
+  # counts the app's own frames: 100 ms or more apart while idle, and in
+  # every frame the browser draws from the wake on.
+  "fohmixer-ui/src/raf\\.rs.*(replace|in) (register|unregister|schedule|request|set_idle|tick|animate)( |$)",
   # store/live.rs: the WebSocket, its handlers and the timers, the signals and
   # the fetches that carry out Conn's decisions, one function at a time. #43
   # added set (a control's write through the tested Intents), on_ack (an ack
@@ -206,12 +211,17 @@ exclude_re = [
   # and tick_idle (the layout's idle_after_s through the tested
   # idle_after_ms, the tested holds of Perf::any_down, the open Pro-Q 4
   # screen and the tested Inputs::caught_up, into the tested
-  # IdleWatch::tick).
+  # IdleWatch::tick). PR 2c: turn_idle also sets raf::set_idle and
+  # diag::idle (the tested Perf::turn and Recorder::idle), and end_idle (the
+  # store's stop: the frame loop back to full rate, and diag::idle off when
+  # the tested IdleWatch::is_idle says the page was idle) leaves no idle
+  # pace behind a logout; idle.spec.ts counts the frames of a page idle and
+  # woken (the stop itself has no E2E: it unmounts the surface).
   # idle.spec.ts: a page left untouched goes idle (the hub's record with
   # 250), a fader touch wakes it before the fader's own handler and its set
   # reaches Live, the default layout never goes idle; eq.spec.ts: an open
   # Pro-Q 4 screen never does, closed it does.
-  "fohmixer-ui/src/store/live/idle\\.rs.*(replace|in) LiveStore::(listen_idle|unlisten_idle|touched|tick_idle|sync_visibility|turn_idle|meter_ms|send_idle|idle_hello|ping_now)( |$)",
+  "fohmixer-ui/src/store/live/idle\\.rs.*(replace|in) LiveStore::(listen_idle|unlisten_idle|end_idle|touched|tick_idle|sync_visibility|turn_idle|meter_ms|send_idle|idle_hello|ping_now)( |$)",
   "fohmixer-ui/src/store/live\\.rs.*(replace|in) (Socket::open|Socket::buffered|Socket::close|Inner::new|Inner::ping)( |$)",
   # auth.rs: local storage and the login request (login_outcome, login_body
   # and LoginError::message are the tested decisions).
@@ -335,9 +345,12 @@ exclude_re = [
   # has no frame rate yet; dispatched touch pointers report at once, a
   # cancelled and a lifted one are not counted: touches_max 3, then 4).
   # #51 PR 2b: finger_down (the tested Perf::any_down of the thread-local
-  # Perf); idle.spec.ts and eq.spec.ts drive it (a page idle while
-  # untouched, never while a finger or the Pro-Q 4 screen holds it).
-  "fohmixer-ui/src/diag\\.rs.*(replace|in) (listen_pointers|pointer_down|pointer_up|pause_perf|frame|finger_down)( |$)",
+  # Perf); PR 2c: frame also hands raf::tick's paced flag to the tested
+  # Perf::frame and Recorder::frame, and idle (an idle turn into the tested
+  # Perf::turn and Recorder::idle); idle.spec.ts and eq.spec.ts drive them
+  # (a page idle while untouched, never while a finger or the Pro-Q 4
+  # screen holds it; its frames counted while idle and after the wake).
+  "fohmixer-ui/src/diag\\.rs.*(replace|in) (listen_pointers|pointer_down|pointer_up|pause_perf|frame|idle|finger_down)( |$)",
   # diag.rs, the flight recorder's glue (#43 PR C): record and with_trace
   # (the page's one Recorder in a thread-local) and trace_visibility (the
   # visibilitychange listener's call with the page clock and

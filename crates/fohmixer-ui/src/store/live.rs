@@ -217,9 +217,10 @@ impl LiveStore {
 
     /// Ends the store (the surface unmounts): closes the socket, stops
     /// reconnecting, stops listening for the page hidden or shown and for
-    /// its touches.
+    /// its touches, and leaves no idle pace behind (#51, `end_idle`).
     pub fn stop(self) {
         self.unlisten_idle();
+        self.end_idle();
         let socket = self
             .inner
             .try_update_value(|i| {
