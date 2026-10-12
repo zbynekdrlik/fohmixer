@@ -1,0 +1,267 @@
+name: wasm-stress
+
+# The WebKit wasm trap at page load (#43), on demand: `workflow_dispatch`
+# only, never on a push or a pull request. It builds what the e2e job runs
+# (the UI with its function names, the hub with it embedded: ci.yml's wasm
+# and e2e steps, pinned the same) once, then loads the surface `loads` times
+# in the iPad project's WebKit (playwright.stress.config.ts, e2e/stress/)
+# under each leg's JavaScriptCore options (JSC_* environment variables,
+# scripts/wasm_stress_legs.py), with the e2e job's harness. Each leg reports
+# its traps, their load numbers and stacks, and its other faults, and uploads
+# the report for 7 days. Run it with:
+#
+#   gh workflow run wasm-stress.yml --ref dev -f loads=1500 [-f jsc="JSC_<option>=<value> ..."]
+
+on:
+  workflow_dispatch:
+    inputs:
+      loads:
+        description: "Surface loads per leg (1 to 4000)"
+        required: true
+        default: "500"
+        type: string
+      jsc:
+        description: "One more leg's JavaScriptCore options, space-separated JSC_<option>=<value> (empty: no extra leg)"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  legs:
+    name: legs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      legs: ${{ steps.legs.outputs.legs }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: The legs (the fixed ones, and the jsc input's when given), the inputs checked
+        id: legs
+        env:
+          LOADS: ${{ inputs.loads }}
+          JSC: ${{ inputs.jsc }}
+        run: |
+          set -euo pipefail
+          legs="$(python3 scripts/wasm_stress_legs.py legs --loads="$LOADS" --extra="$JSC")"
+          echo "loads per leg: $LOADS"
+          echo "$legs"
+          echo "legs=$legs" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Rust toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: taiki-e/install-action@7623a79cdfecb99d681017af368ca353d9f49bb5 # v2.87.19
+        with:
+          tool: trunk@0.21.14
+      - name: Build the UI (release, its function names kept, as ci.yml's wasm job)
+        working-directory: crates/fohmixer-ui
+        env:
+          CARGO_PROFILE_RELEASE_STRIP: debuginfo
+        run: trunk build --release --locked
+      - name: The module names its functions (a trap's wasm frames are named)
+        run: python3 scripts/wasm_names.py check crates/fohmixer-ui/dist/*_bg.wasm --min 1000 --name 'fohmixer_ui'
+      - name: Build the hub (release, the real UI embedded)
+        run: cargo build --locked --release -p fohmixer-hub
+      # A stack's unnamed wasm-function[N] frames are named from it (scripts/wasm_names.py lookup).
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: wasm-dist
+          path: crates/fohmixer-ui/dist/
+          retention-days: 7
+          if-no-files-found: error
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: hub
+          path: target/release/fohmixer-hub
+          retention-days: 7
+          if-no-files-found: error
+
+  stress:
+    name: stress ${{ matrix.leg }}
+    needs: [legs, build]
+    runs-on: ubuntu-24.04
+    # A load takes ~1-2 s; the spec's own bound is 4 s a load, so 4000 loads
+    # (the most a leg takes) end within 272 minutes.
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.legs.outputs.legs) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: hub
+          path: target/release
+      - name: The hub's executable bit (an artifact keeps no file mode)
+        run: chmod +x target/release/fohmixer-hub
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: e2e/package-lock.json
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ hashFiles('e2e/package-lock.json') }}
+      # Both browsers, as the e2e job: the cache above is that job's too.
+      - name: Install Playwright (Chromium and WebKit)
+        working-directory: e2e
+        run: |
+          set -euo pipefail
+          npm ci
+          npx playwright install --with-deps chromium webkit
+      - name: Remote access (#17) - a per-run test CA and certificate for foh.e2e.test that both browsers trust, the name in /etc/hosts, the Access test key
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/e2e-remote"
+          mkdir -p "$dir"
+          openssl req -x509 -newkey rsa:2048 -nodes -keyout "$dir/ca.key" -out "$dir/ca.pem" -days 2 \
+            -subj "/CN=fohmixer E2E test CA" -addext "basicConstraints=critical,CA:TRUE" -addext "keyUsage=critical,keyCertSign,cRLSign"
+          openssl req -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -keyout "$dir/key.pem" -out "$dir/leaf.csr" -subj "/CN=foh.e2e.test"
+          printf 'subjectAltName=DNS:foh.e2e.test\nextendedKeyUsage=serverAuth\nbasicConstraints=CA:FALSE\nkeyUsage=critical,digitalSignature\n' > "$dir/leaf.ext"
+          openssl x509 -req -in "$dir/leaf.csr" -CA "$dir/ca.pem" -CAkey "$dir/ca.key" -CAcreateserial -days 2 -extfile "$dir/leaf.ext" -out "$dir/cert.pem"
+          echo "127.0.0.1 foh.e2e.test" | sudo tee -a /etc/hosts
+          sudo cp "$dir/ca.pem" /usr/local/share/ca-certificates/fohmixer-e2e.crt
+          sudo update-ca-certificates
+          command -v certutil || sudo apt-get install -y --no-install-recommends libnss3-tools
+          mkdir -p "$HOME/.pki/nssdb"
+          if [ ! -f "$HOME/.pki/nssdb/cert9.db" ]; then certutil -d "sql:$HOME/.pki/nssdb" -N --empty-password; fi
+          certutil -d "sql:$HOME/.pki/nssdb" -A -t "C,," -n fohmixer-e2e -i "$dir/ca.pem"
+          openssl genrsa -out "$dir/access.pem" 2048
+          echo "E2E_REMOTE_DIR=$dir" >> "$GITHUB_ENV"
+      - name: Engineer PIN (random per run, masked)
+        run: |
+          set -euo pipefail
+          export FOHMIXER_DATA="$RUNNER_TEMP/hub-data"
+          mkdir -p "$FOHMIXER_DATA"
+          pin="$(python3 -c 'import secrets; print(f"{secrets.randbelow(10000):04d}")')"
+          echo "::add-mask::$pin"
+          printf '%s\n' "$pin" | ./target/release/fohmixer-hub pin set-engineer
+          echo "E2E_PIN=$pin" >> "$GITHUB_ENV"
+      - name: Start the hub with two SimLive hosts (e2e/harness/harness.py, as the e2e job)
+        env:
+          RUST_LOG: info
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/e2e-logs"
+          nohup python3 e2e/harness/harness.py --hub ./target/release/fohmixer-hub \
+            --data "$RUNNER_TEMP/hub-data" --link-port 8481 \
+            --fake-companion-port 39192 \
+            --layout tools/import-tosc/fixtures/expected-layout.json \
+            --public-name foh.e2e.test --https-port 8443 \
+            --tls-cert "$E2E_REMOTE_DIR/cert.pem" --tls-key "$E2E_REMOTE_DIR/key.pem" \
+            --access-team fohmixer-e2e.cloudflareaccess.com --access-aud fohmixer-e2e-aud \
+            --access-key "$E2E_REMOTE_DIR/access.pem" \
+            --log-dir "$RUNNER_TEMP/e2e-logs" > "$RUNNER_TEMP/e2e-logs/harness.log" 2>&1 &
+          for i in $(seq 1 60); do
+            if curl -sf http://127.0.0.1:39190/health > /dev/null \
+              && curl -sf http://127.0.0.1:8480/api/version > /dev/null \
+              && curl -sf http://127.0.0.1:8481/api/version > /dev/null \
+              && curl -sf https://foh.e2e.test:8443/api/version > /dev/null; then
+              echo "harness ready after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          cat "$RUNNER_TEMP/e2e-logs/harness.log"
+          exit 1
+      - name: Core dumps off for the test browsers (#9) - a crashed page process is reported at once, not after its dump
+        run: |
+          set -euo pipefail
+          echo "runner core_pattern: $(cat /proc/sys/kernel/core_pattern)"
+          sudo sysctl -w kernel.core_pattern=core
+      - name: Playwright stress (WebKit iPad, leg ${{ matrix.leg }})
+        working-directory: e2e
+        env:
+          CI: "true"
+          E2E_BASE_URL: http://127.0.0.1:8480
+          E2E_LINK_URL: http://127.0.0.1:8481
+          E2E_HARNESS_URL: http://127.0.0.1:39190
+          E2E_HTTPS_URL: https://foh.e2e.test:8443
+          E2E_ACCESS_TEAM: fohmixer-e2e.cloudflareaccess.com
+          E2E_ACCESS_AUD: fohmixer-e2e-aud
+          STRESS_LOADS: ${{ inputs.loads }}
+          STRESS_LEG: ${{ matrix.leg }}
+          STRESS_REPORT: ${{ runner.temp }}/wasm-stress/report.json
+          LEG_JSC: ${{ matrix.jsc }}
+        run: |
+          set -euo pipefail
+          ulimit -c 0
+          pattern="$(cat /proc/sys/kernel/core_pattern)"
+          echo "core dumps: core_pattern ${pattern}, ulimit -c $(ulimit -c)"
+          if [ "${pattern#|}" != "$pattern" ]; then
+            echo "::error::core_pattern pipes core dumps (${pattern}): a crashed test browser would hang in its dump"
+            exit 1
+          fi
+          # The leg's JavaScriptCore options, checked again (JSC_<option>=<value>
+          # words only), for this step's processes alone: WebKit's page
+          # processes inherit them (e2e/stress/jsc-env.spec.ts proves it).
+          settings="$(python3 ../scripts/wasm_stress_legs.py env -- "$LEG_JSC")"
+          for setting in $settings; do export "${setting:?}"; done
+          echo "leg ${STRESS_LEG}: ${STRESS_LOADS} loads, JavaScriptCore options: ${settings:-none}"
+          E2E_ACCESS_KEY="$E2E_REMOTE_DIR/access.pem" NODE_EXTRA_CA_CERTS="$E2E_REMOTE_DIR/ca.pem" \
+            npx playwright test --config playwright.stress.config.ts --reporter=list,html
+      - name: The leg's numbers (the run's summary)
+        if: ${{ !cancelled() }}
+        env:
+          LEG: ${{ matrix.leg }}
+          REPORT: ${{ runner.temp }}/wasm-stress/report.json
+        run: |
+          set -euo pipefail
+          python3 scripts/wasm_stress_legs.py summary "$REPORT" --leg "$LEG" > "$RUNNER_TEMP/leg-summary.md"
+          cat "$RUNNER_TEMP/leg-summary.md"
+          cat "$RUNNER_TEMP/leg-summary.md" >> "$GITHUB_STEP_SUMMARY"
+      - name: Kernel crash evidence (#9) - the core pattern, the kernel's segfault and trap lines, the core dumps
+        if: failure()
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/e2e-logs/kernel"
+          mkdir -p "$dir"
+          cat /proc/sys/kernel/core_pattern > "$dir/core_pattern.txt"
+          sudo dmesg --ctime | tee "$dir/dmesg.txt" > /dev/null
+          status=0
+          grep -i -E 'segfault|traps:|general protection' "$dir/dmesg.txt" > "$dir/crashes.txt" || status=$?
+          if [ "$status" -eq 1 ]; then
+            echo "(no segfault, trap or general protection line in the kernel log)" > "$dir/crashes.txt"
+          elif [ "$status" -ne 0 ]; then
+            exit "$status"
+          fi
+          if command -v coredumpctl > /dev/null; then
+            status=0
+            sudo coredumpctl list --no-pager 2>&1 | tee "$dir/coredumpctl.txt" > /dev/null || status=$?
+            echo "(coredumpctl list exit ${status})" >> "$dir/coredumpctl.txt"
+          else
+            echo "(coredumpctl not installed)" > "$dir/coredumpctl.txt"
+          fi
+          cat "$dir/core_pattern.txt" "$dir/crashes.txt" "$dir/coredumpctl.txt"
+      # The report (every trap's load, time, message and stack), Playwright's
+      # report and the harness's and hub's logs; the hub's event log stays
+      # out (thousands of loads' flight recorders).
+      - name: Upload the leg's report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: wasm-stress-${{ matrix.leg }}
+          path: |
+            ${{ runner.temp }}/wasm-stress/
+            e2e/playwright-report/
+            e2e/test-results/
+            ${{ runner.temp }}/e2e-logs/
+          retention-days: 7
+          if-no-files-found: error
