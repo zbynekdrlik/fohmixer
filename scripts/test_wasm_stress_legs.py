@@ -82,6 +82,27 @@ class LegsTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             wl.legs("JSC_a=1 rm")
 
+    def test_several_custom_legs_and_only_them(self) -> None:
+        early = "JSC_thresholdForBBQOptimizeSoon=5"
+        matrix = wl.legs(f"{early} JSC_useOMGJIT=0; {early} JSC_useBBQJIT=0", only=True)
+        self.assertEqual(matrix, [
+            {"leg": "custom-1", "jsc": f"{early} JSC_useOMGJIT=0"},
+            {"leg": "custom-2", "jsc": f"{early} JSC_useBBQJIT=0"},
+        ])
+        self.assertEqual(len(wl.legs(f"{early}; JSC_a=1")), len(wl.LEGS) + 2)
+        self.assertEqual(wl.legs(" ; JSC_a=1 ;", only=True), [{"leg": "custom", "jsc": "JSC_a=1"}])
+        with self.assertRaises(ValueError):
+            wl.legs("", only=True)
+        with self.assertRaises(ValueError):
+            wl.legs(" ; ", only=True)
+        with self.assertRaises(ValueError):
+            wl.legs("JSC_a=1; rm", only=True)
+        status, out = run("legs", "--loads", "4000", "--only", "--extra", "JSC_a=1; JSC_b=2")
+        self.assertEqual((status, [leg["leg"] for leg in json.loads(out)]), (0, ["custom-1", "custom-2"]))
+        status, out = run("legs", "--loads", "10", "--only")
+        self.assertEqual(status, 1)
+        self.assertIn("::error::only the custom legs", out)
+
     def test_the_cli_prints_the_matrix_and_refuses_bad_input(self) -> None:
         status, out = run("legs", "--loads", "1500")
         self.assertEqual(status, 0)

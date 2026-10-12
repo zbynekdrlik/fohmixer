@@ -10,7 +10,7 @@ name: wasm-stress
 # its traps, their load numbers and stacks, and its other faults, and uploads
 # the report for 7 days. Run it with:
 #
-#   gh workflow run wasm-stress.yml --ref dev -f loads=1500 [-f jsc="JSC_<option>=<value> ..."]
+#   gh workflow run wasm-stress.yml --ref dev -f loads=1500 [-f jsc="JSC_<option>=<value> ...[; ...]"] [-f only_custom=true]
 
 on:
   workflow_dispatch:
@@ -21,10 +21,15 @@ on:
         default: "500"
         type: string
       jsc:
-        description: "One more leg's JavaScriptCore options, space-separated JSC_<option>=<value> (empty: no extra leg)"
+        description: "More legs' JavaScriptCore options: space-separated JSC_<option>=<value>, legs separated by ';' (empty: no extra leg)"
         required: false
         default: ""
         type: string
+      only_custom:
+        description: "Run only the jsc input's legs, not the fixed ones"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -45,9 +50,12 @@ jobs:
         env:
           LOADS: ${{ inputs.loads }}
           JSC: ${{ inputs.jsc }}
+          ONLY: ${{ inputs.only_custom }}
         run: |
           set -euo pipefail
-          legs="$(python3 scripts/wasm_stress_legs.py legs --loads="$LOADS" --extra="$JSC")"
+          only=()
+          if [ "$ONLY" = "true" ]; then only=(--only); fi
+          legs="$(python3 scripts/wasm_stress_legs.py legs --loads="$LOADS" --extra="$JSC" "${only[@]}")"
           echo "loads per leg: $LOADS"
           echo "$legs"
           echo "legs=$legs" >> "$GITHUB_OUTPUT"

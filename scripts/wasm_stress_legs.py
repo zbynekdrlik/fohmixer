@@ -74,12 +74,20 @@ def loads(text: str) -> int:
     return count
 
 
-def legs(extra: str) -> list[dict[str, str]]:
-    """The matrix: the fixed legs, then `custom` with `extra`'s settings when it has any."""
-    matrix = [{"leg": name, "jsc": " ".join(settings(jsc))} for name, jsc in LEGS]
-    custom = settings(extra)
-    if custom:
-        matrix.append({"leg": CUSTOM, "jsc": " ".join(custom)})
+def legs(extra: str, only: bool = False) -> list[dict[str, str]]:
+    """The matrix: the fixed legs (none with `only`), then the custom legs of
+    `extra`: its `;`-separated groups of settings, `custom` for one group,
+    `custom-1`, `custom-2`, ... for several (#43: an amplifier with each tier
+    off, without the fixed legs again). `only` with no custom leg is refused."""
+    groups = [settings(part) for part in extra.split(";")]
+    customs = [" ".join(group) for group in groups if group]
+    if only and not customs:
+        raise ValueError("only the custom legs, but the jsc input has none")
+    matrix = [] if only else [{"leg": name, "jsc": " ".join(settings(jsc))} for name, jsc in LEGS]
+    if len(customs) == 1:
+        matrix.append({"leg": CUSTOM, "jsc": customs[0]})
+    else:
+        matrix.extend({"leg": f"{CUSTOM}-{i}", "jsc": jsc} for i, jsc in enumerate(customs, 1))
     return matrix
 
 
@@ -128,6 +136,7 @@ def main(argv: list[str] | None = None) -> int:
     p_legs = sub.add_parser("legs")
     p_legs.add_argument("--loads", required=True)
     p_legs.add_argument("--extra", default="")
+    p_legs.add_argument("--only", action="store_true")
     p_env = sub.add_parser("env")
     p_env.add_argument("settings")
     p_summary = sub.add_parser("summary")
@@ -137,7 +146,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "legs":
             loads(args.loads)
-            print(json.dumps(legs(args.extra)))
+            print(json.dumps(legs(args.extra, args.only)))
         elif args.command == "env":
             for word in settings(args.settings):
                 print(word)
