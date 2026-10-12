@@ -693,3 +693,122 @@ fn a_stopping_hub_closes_its_clients() {
         }
     });
 }
+
+/// The level meter of the volume's track.
+const HAND1: &str = "live_set tracks[name=Hand1 #]";
+
+#[test]
+fn a_hidden_page_gets_no_meter_until_it_wakes_and_every_other_value_at_once() {
+    // #51: a hidden page (a locked iPad) sends `idle` with `meter_ms` 0:
+    // its meters are held until it wakes, while another value reaches it
+    // at once and another page's meters are not held. Live's meters are
+    // still here, so the only way the held one can arrive is the wake.
+    let _serial = serial();
+    runtime().block_on(async {
+        let mut host = Host::start("band");
+        let dir = tempfile::tempdir().unwrap();
+        let hub = TestHub::start(vec![host.cfg()], dir.path()).await;
+        let mut awake = hub.client().await;
+        let mut hidden = hub.client().await;
+        awake
+            .instance_state("band", true, Some(false), SECS_3)
+            .await;
+        hidden
+            .instance_state("band", true, Some(false), SECS_3)
+            .await;
+        // The awake page subscribes first and gets the first values, so the
+        // hidden one's come in its `subbed` (cached), before it goes idle.
+        let meter = awake
+            .sub_key("band", HAND1, "output_meter_level", false)
+            .await;
+        awake.value_of(&meter, SECS_3).await;
+        let volume = awake.sub_key("band", VOLUME, "value", true).await;
+        awake.value_of(&volume, SECS_3).await;
+        assert_eq!(
+            hidden
+                .sub_key("band", HAND1, "output_meter_level", false)
+                .await,
+            meter
+        );
+        assert_eq!(hidden.sub_key("band", VOLUME, "value", true).await, volume);
+        hidden
+            .send(&ClientMsg::Idle {
+                on: true,
+                meter_ms: Some(0),
+            })
+            .await;
+        // The hub reads one socket in order: once the pong is here, the
+        // `idle` was taken.
+        hidden
+            .send(&ClientMsg::Ping {
+                n: 1,
+                t: 1.0,
+                rtt: None,
+                rtt_n: None,
+            })
+            .await;
+        hidden
+            .wait(SECS_3, |m| {
+                matches!(m, ServerMsg::Pong { n: 1, .. }).then_some(())
+            })
+            .await;
+        hidden.clear();
+        // Live's meter moves: the awake page gets it, so the hub has it.
+        assert_eq!(host.meter("Hand1 #", 0.7), 1);
+        awake
+            .value_until(&meter, SECS_3, |i| i.value == Some(json!(0.7)))
+            .await;
+        let meter_of = |m: &ServerMsg| match m {
+            ServerMsg::Values { items } => items.iter().find(|i| i.sub == meter).cloned(),
+            _ => None,
+        };
+        assert_eq!(
+            hidden.gets(Duration::from_millis(300), meter_of).await,
+            None,
+            "a hidden page's meter is held"
+        );
+        // Another value reaches the hidden page at once.
+        awake.set("band", VOLUME, "value", json!(0.5)).await;
+        hidden
+            .value_until(&volume, SECS_3, |i| i.value == Some(json!(0.5)))
+            .await;
+        assert_eq!(
+            hidden.gets(Duration::from_millis(100), meter_of).await,
+            None
+        );
+        // The page wakes: the held meter comes at once.
+        let woke = Instant::now();
+        hidden
+            .send(&ClientMsg::Idle {
+                on: false,
+                meter_ms: None,
+            })
+            .await;
+        let held = hidden.wait(SECS_3, meter_of).await;
+        assert_eq!(held.value, Some(json!(0.7)));
+        assert!(
+            woke.elapsed() < Duration::from_secs(1),
+            "{:?}",
+            woke.elapsed()
+        );
+        // Both `idle`s are in the event log, with the hidden page's socket.
+        let records = hub
+            .events_until(SECS_3, |r| {
+                r.iter().filter(|x| x["ev"] == "idle").count() == 2
+            })
+            .await;
+        let idle: Vec<&serde_json::Value> = records.iter().filter(|x| x["ev"] == "idle").collect();
+        assert_eq!(idle[0]["on"], json!(true));
+        assert_eq!(idle[0]["meter_ms"], json!(0));
+        assert_eq!(idle[0]["peer"], json!("127.0.0.1"));
+        assert_eq!(idle[1]["on"], json!(false));
+        assert_eq!(idle[1]["meter_ms"], serde_json::Value::Null);
+        // Only the hidden page pinged: its ping names its socket.
+        let ping = records.iter().find(|x| x["ev"] == "ping").unwrap();
+        assert!(ping["client"].is_u64(), "{ping}");
+        assert_eq!(idle[0]["client"], ping["client"], "the hidden page's");
+        assert_eq!(idle[1]["client"], ping["client"]);
+        hub.stop().await;
+        host.stop();
+    });
+}

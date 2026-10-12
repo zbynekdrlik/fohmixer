@@ -16,6 +16,8 @@
 //! P2a) and `eq`, `eq_list`, `eq_locks`, `eq_undo` (their pieces and the
 //! binary frames the hub sends an open editor's holder: [`crate::eq`]).
 
+use std::time::Duration;
+
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
@@ -113,6 +115,16 @@ pub enum ClientMsg {
     /// The page opened (`on`) or closed the Stream Deck tab (#52): only a
     /// client viewing it gets the keys' images (`deck_keys`).
     DeckView { on: bool },
+    /// The page went idle (`on`) or woke (#51): while idle the hub sends
+    /// this client's meter values at most once per `meter_ms`, the louder
+    /// value of each meter kept; `meter_ms` 0 pauses them until the page
+    /// wakes (a hidden page: a locked iPad). Absent: the default period.
+    /// [`meter_pace`] reads it. Every other message goes at once.
+    Idle {
+        on: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        meter_ms: Option<u32>,
+    },
     /// A Stream Deck key's press (#52): `down` at the touch, up at the
     /// release. `seq` is the page's own counter of presses (not `set`'s);
     /// `t` the page's clock as for `set`; an up carries the hold the page
@@ -443,6 +455,60 @@ pub fn write_key_of(hub_key: &str) -> &str {
     hub_key
         .rsplit_once('|')
         .map_or(hub_key, |(key, _display)| key)
+}
+
+/// The Live properties of a track's meters (spec X2): the one list the page
+/// subscribes from and the hub paces (#51).
+pub const METER_PROPS: [&str; 3] = [
+    "output_meter_level",
+    "output_meter_left",
+    "output_meter_right",
+];
+
+/// Whether a hub key ([`hub_key`]) is a meter's (#51): its property, the
+/// second field from the right (`instance|target|prop|display`), is one of
+/// [`METER_PROPS`], so a `|` inside a track name in the target cannot fool
+/// it.
+pub fn is_meter_key(hub_key: &str) -> bool {
+    hub_key
+        .rsplit('|')
+        .nth(1)
+        .is_some_and(|prop| METER_PROPS.contains(&prop))
+}
+
+/// An idle page's meter period when its `idle` names none (#51), ms.
+pub const IDLE_METER_MS: u32 = 250;
+/// The shortest meter period an idle page gets, ms.
+pub const IDLE_METER_MIN_MS: u32 = 100;
+/// The longest meter period an idle page gets, ms.
+pub const IDLE_METER_MAX_MS: u32 = 2000;
+
+/// How the hub sends one client's meter values (#51).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Pace {
+    /// As Live flushes them: an active page.
+    #[default]
+    Full,
+    /// At most once per period, the louder value of each meter kept: an
+    /// idle page.
+    Every(Duration),
+    /// None until the page wakes: a hidden page (a locked iPad).
+    Paused,
+}
+
+/// The meter pace of an `idle` message (#51): awake (`on` false) is full
+/// rate; `meter_ms` 0 pauses; any other period is clamped to
+/// [`IDLE_METER_MIN_MS`]..=[`IDLE_METER_MAX_MS`], [`IDLE_METER_MS`] when
+/// absent.
+pub fn meter_pace(on: bool, meter_ms: Option<u32>) -> Pace {
+    match (on, meter_ms) {
+        (false, _) => Pace::Full,
+        (true, Some(0)) => Pace::Paused,
+        (true, ms) => Pace::Every(Duration::from_millis(u64::from(
+            ms.unwrap_or(IDLE_METER_MS)
+                .clamp(IDLE_METER_MIN_MS, IDLE_METER_MAX_MS),
+        ))),
+    }
 }
 
 /// `POST /api/auth` body.

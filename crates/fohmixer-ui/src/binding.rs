@@ -9,7 +9,7 @@
 use std::collections::BTreeMap;
 use std::mem::discriminant;
 
-use fohmixer_proto::client::{hub_key, set_key};
+use fohmixer_proto::client::{METER_PROPS, hub_key, set_key};
 use fohmixer_proto::layout::{
     Anchor, Binding, Control, Layout, MeterSource, Page, ParamTarget, Section, Strip, StripMark,
 };
@@ -99,11 +99,13 @@ impl StripSubs {
     }
 }
 
-/// The meter properties of a meter source (spec X2).
+/// The meter properties of a meter source (spec X2), from the proto's one
+/// list (the hub paces them, #51).
 pub fn meter_props(source: MeterSource) -> &'static [&'static str] {
+    let props: &'static [&'static str] = &METER_PROPS;
     match source {
-        MeterSource::Level => &["output_meter_level"],
-        MeterSource::Lr => &["output_meter_left", "output_meter_right"],
+        MeterSource::Level => &props[..1],
+        MeterSource::Lr => &props[1..],
     }
 }
 

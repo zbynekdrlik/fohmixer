@@ -21,6 +21,9 @@
 //! (#71 PR I): the page's `eq_frame_ack` goes straight to its outbox
 //! (`Outbox::frame_acked`), which lets the next frame go. The writer takes
 //! the frame together with the batch's messages and writes it after them.
+//! A page's `idle` (#51) goes straight to its outbox too
+//! (`Outbox::pace_meters`): while it is idle its meters are paced, or
+//! paused while it is hidden; each one is an event-log record and a line.
 //!
 //! A socket's connect and disconnect lines name who opened it (#9, an
 //! [`Opener`]): the peer, the address Cloudflare forwarded (through the
@@ -42,7 +45,8 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use fohmixer_proto::client::{
-    CLOSE_RELOAD, ClientMsg, LiveCommand, MIN_CLIENT_PROTO, ServerMsg, UI_PROTO, proto_ok,
+    CLOSE_RELOAD, ClientMsg, LiveCommand, MIN_CLIENT_PROTO, Pace, ServerMsg, UI_PROTO, meter_pace,
+    proto_ok,
 };
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
@@ -342,6 +346,38 @@ pub fn trace_fields(client: ClientId, peer: &str, events: &[Value]) -> Value {
     json!({"client": client, "peer": peer, "events": events})
 }
 
+/// The meter period of a pace (#51), ms: none at full rate, 0 paused.
+fn pace_ms(pace: Pace) -> Option<u64> {
+    match pace {
+        Pace::Full => None,
+        Pace::Every(period) => Some(u64::try_from(period.as_millis()).unwrap_or(u64::MAX)),
+        Pace::Paused => Some(0),
+    }
+}
+
+/// The event-log fields of a page's `idle` (#51): whether it went idle, and
+/// the meter period the hub keeps for it ([`pace_ms`], after the clamp).
+pub fn idle_fields(client: ClientId, peer: &str, on: bool, pace: Pace) -> Value {
+    json!({"client": client, "peer": peer, "on": on, "meter_ms": pace_ms(pace)})
+}
+
+/// The line of a page's `idle` (#51).
+fn idle_line(pace: Pace) -> String {
+    match pace {
+        Pace::Full => "a page woke".to_string(),
+        Pace::Every(period) => format!(
+            "a page went idle: its meters at most every {} ms",
+            period.as_millis()
+        ),
+        Pace::Paused => "a page went idle: its meters paused".to_string(),
+    }
+}
+
+/// Logs a page's `idle` (#51), with its socket number.
+fn log_idle(client: ClientId, pace: Pace) {
+    tracing::info!(client, "{}", idle_line(pace));
+}
+
 fn handle_text(hub: &Hub, conn: &mut Conn, text: &str) {
     let client = conn.client;
     let outbox = Arc::clone(&conn.outbox);
@@ -450,6 +486,16 @@ fn handle_text(hub: &Hub, conn: &mut Conn, text: &str) {
         // Straight to the outbox (PR I): the writer's next frame may go.
         Ok(ClientMsg::EqFrameAck { session, seq }) => {
             outbox.frame_acked(session, seq, std::time::Instant::now());
+        }
+        // Straight to the outbox too (#51): its meters paced, paused, or
+        // back at full rate (the held ones at once). The page sends it on a
+        // change only.
+        Ok(ClientMsg::Idle { on, meter_ms }) => {
+            let pace = meter_pace(on, meter_ms);
+            outbox.pace_meters(pace, std::time::Instant::now());
+            hub.events
+                .record("idle", idle_fields(client, &conn.who.peer, on, pace));
+            log_idle(client, pace);
         }
         // Through the outbox like every answer: a pong proves the writer
         // still reaches the client.

@@ -831,3 +831,105 @@ fn eq_messages_round_trip() {
                "state": "closed", "reason": "locked", "since": 1_790_000_000_000.0}),
     );
 }
+
+#[test]
+fn idle_messages_round_trip() {
+    // #51: an idle page names its meter period; a paused one 0; a woken
+    // one none, and nothing of it is on the wire.
+    round_trip_client(
+        ClientMsg::Idle {
+            on: true,
+            meter_ms: Some(250),
+        },
+        json!({"type": "idle", "on": true, "meter_ms": 250}),
+    );
+    round_trip_client(
+        ClientMsg::Idle {
+            on: true,
+            meter_ms: Some(0),
+        },
+        json!({"type": "idle", "on": true, "meter_ms": 0}),
+    );
+    round_trip_client(
+        ClientMsg::Idle {
+            on: false,
+            meter_ms: None,
+        },
+        json!({"type": "idle", "on": false}),
+    );
+    // An idle page that names no period reads as none (the default).
+    assert_eq!(
+        serde_json::from_value::<ClientMsg>(json!({"type": "idle", "on": true})).unwrap(),
+        ClientMsg::Idle {
+            on: true,
+            meter_ms: None
+        }
+    );
+}
+
+#[test]
+fn the_meter_props_are_lives_three_meters() {
+    assert_eq!(
+        METER_PROPS,
+        [
+            "output_meter_level",
+            "output_meter_left",
+            "output_meter_right"
+        ]
+    );
+}
+
+#[test]
+fn a_meter_key_is_read_from_the_right() {
+    for prop in METER_PROPS {
+        for display in [false, true] {
+            let key = hub_key("band", "live_set tracks[name=Hand1 #]", prop, display);
+            assert!(is_meter_key(&key), "{key}");
+        }
+    }
+    for prop in ["mute", "value", "color", "output_meter", "meter_level"] {
+        let key = hub_key("band", "live_set tracks[name=Hand1 #]", prop, false);
+        assert!(!is_meter_key(&key), "{key}");
+    }
+    // A `|` inside a track name cannot fool it: read from the left, the
+    // first key's third field would be a meter prop, the second's not one.
+    assert!(!is_meter_key(
+        "band|live_set tracks[name=a|output_meter_level|b]|mute|false"
+    ));
+    assert!(is_meter_key(
+        "band|live_set tracks[name=a|b]|output_meter_left|false"
+    ));
+    // The display field is not the prop; a key without one has none.
+    assert!(!is_meter_key(
+        "band|live_set tracks 0|mute|output_meter_level"
+    ));
+    assert!(!is_meter_key("output_meter_level"));
+    assert!(!is_meter_key(""));
+}
+
+#[test]
+fn the_meter_pace_of_an_idle_message() {
+    assert_eq!(
+        (IDLE_METER_MS, IDLE_METER_MIN_MS, IDLE_METER_MAX_MS),
+        (250, 100, 2000)
+    );
+    let every = |ms: u64| Pace::Every(Duration::from_millis(ms));
+    // Awake: full rate, whatever the period says.
+    assert_eq!(meter_pace(false, None), Pace::Full);
+    assert_eq!(meter_pace(false, Some(250)), Pace::Full);
+    assert_eq!(meter_pace(false, Some(0)), Pace::Full);
+    assert_eq!(Pace::default(), Pace::Full);
+    // 0 pauses: a hidden page (a locked iPad) gets no meters.
+    assert_eq!(meter_pace(true, Some(0)), Pace::Paused);
+    // Absent: the default period; any other clamped to 100..=2000.
+    assert_eq!(meter_pace(true, None), every(250));
+    assert_eq!(meter_pace(true, Some(1)), every(100));
+    assert_eq!(meter_pace(true, Some(99)), every(100));
+    assert_eq!(meter_pace(true, Some(100)), every(100));
+    assert_eq!(meter_pace(true, Some(101)), every(101));
+    assert_eq!(meter_pace(true, Some(250)), every(250));
+    assert_eq!(meter_pace(true, Some(1999)), every(1999));
+    assert_eq!(meter_pace(true, Some(2000)), every(2000));
+    assert_eq!(meter_pace(true, Some(2001)), every(2000));
+    assert_eq!(meter_pace(true, Some(u32::MAX)), every(2000));
+}

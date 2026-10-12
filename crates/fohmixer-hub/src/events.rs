@@ -20,7 +20,7 @@
 //! `overflow` notes, the dropouts and the counter's resets), written as the
 //! page sent it. The Stream Deck's (#52): `deck_link`, `deck_press`,
 //! `deck_ok`, `deck_release`, `deck_key`, `deck_keys`, `deck_view` (an image
-//! only as its hash and size).
+//! only as its hash and size). A page going idle or waking (#51): `idle`.
 
 use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Write};
@@ -169,7 +169,8 @@ pub fn expired(file: NaiveDate, today: NaiveDate, keep_days: i64) -> bool {
 /// Companion's answers, its tab opened or closed and the releases the hub
 /// made itself (#52: rare, tiny, and the most consequential deck records),
 /// the Pro-Q 4 editors' opens, closes, locks and contacts (#71 PR E, `eq`),
-/// a page's `trace` that holds a dropout or a counter reset (the owner's
+/// a page going idle or waking (#51, `idle`: rare, and it explains a page's
+/// slow pings and paced meters), a page's `trace` that holds a dropout or a counter reset (the owner's
 /// priority on #43), the cap and dropped notes, and anything that carries
 /// an error. The flight recorder's other batches stop at the cap like the
 /// pings, the writes and the deck's key images (`deck_key`, `deck_keys`):
@@ -195,6 +196,7 @@ pub fn is_warn(record: &Value) -> bool {
                 | "deck_ok"
                 | "deck_view"
                 | "eq"
+                | "idle"
         )
         || (ev == "trace" && holds_dropout(record))
 }

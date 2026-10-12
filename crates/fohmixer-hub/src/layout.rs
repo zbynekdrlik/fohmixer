@@ -599,6 +599,21 @@ mod tests {
     }
 
     #[test]
+    fn the_idle_settings_pass_the_check_and_are_served_as_written() {
+        // #51: the hub only carries them to the page (`/api/layout` serves
+        // the checked layout).
+        let mut v: serde_json::Value = serde_json::from_slice(&layout_json("X", "band")).unwrap();
+        v["config"] = json!({"idle_after_s": 120, "idle_meter_ms": 500});
+        let layout = check(&serde_json::to_vec(&v).unwrap(), &["band".into()]).unwrap();
+        assert_eq!(layout.config.idle_after_s, Some(120));
+        assert_eq!(layout.config.idle_meter_ms, Some(500));
+        assert_eq!(
+            serde_json::to_value(&layout).unwrap()["config"],
+            json!({"idle_after_s": 120, "idle_meter_ms": 500})
+        );
+    }
+
+    #[test]
     fn validation_errors_are_listed() {
         let mut v: serde_json::Value = serde_json::from_slice(&layout_json("X", "band")).unwrap();
         v["schema"] = json!(9);
