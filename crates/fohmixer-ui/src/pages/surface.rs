@@ -248,6 +248,8 @@ pub fn Surface(token: String, session: RwSignal<Option<String>>) -> impl IntoVie
             .map(|target| view! { <EqScreen target=target /> })
     };
     // No context menu, selection or drag starts on the surface (#43 PR G).
+    // `data-idle` (#51) is for the E2E and support only: idle changes
+    // nothing on screen.
     view! {
         <div
             class="surface"
@@ -255,6 +257,7 @@ pub fn Surface(token: String, session: RwSignal<Option<String>>) -> impl IntoVie
             data-testid="surface"
             data-subs=move || store.subscribed.get().to_string()
             data-connected=move || store.connected.get().to_string()
+            data-idle=move || store.idle.get().to_string()
         >
             {content}
             {manual_view}
