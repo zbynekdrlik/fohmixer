@@ -239,6 +239,13 @@ exclude_re = [
   # touch-guard.spec.ts drives them on every tap target of the surface.
   "fohmixer-ui/src/components/mod\\.rs.*(replace|in) (owns_touches|owns_surface)( |$)",
   "fohmixer-ui/src/components/buttons\\.rs.*(replace|in) toggle_flag( |$)",
+  # components/fader.rs (#58): shown_volumes (each target's open write,
+  # through LiveStore::intent_view, which reads the page clock, else Live's
+  # value; the tested behave::vca::look and Drag take what it gives);
+  # params.spec.ts's backing-tracks fader tests drive it (the grooves and
+  # the readout at Live's values, a held drag's writes and Live's values
+  # after it).
+  "fohmixer-ui/src/components/fader\\.rs.*(replace|in) shown_volumes( |$)",
   # pages/surface.rs: a tab press (store, local storage), the Stream Deck
   # tab's press (#52: Nav::show_deck sets the tab's signal, Nav::select
   # clears it, each only on a change; deck.spec.ts opens it and checks a

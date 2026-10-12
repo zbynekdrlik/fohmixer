@@ -12,7 +12,8 @@
    surface, the tabs, the status), page.css (the page: its sides and the
    control column, #63), buttons.css (rail buttons,
    TechAlert), strip.css (strips, meter, fader, name button, parameter
-   fader), detail.css (the channel detail and its pan, #71), states.css
+   fader), vca.css (the backing-tracks fader, #58), detail.css (the
+   channel detail and its pan, #71), states.css
    (disabled, failed, unresolved, reduced motion) and intent.css (the look
    of a write Live has not confirmed), then deck.css (the Stream Deck tab,
    #52). */

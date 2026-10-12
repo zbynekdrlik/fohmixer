@@ -5,8 +5,8 @@
 //! mute_button 2.7.2, pan_control 1.5.3, meter_script 2.5.2,
 //! document_script 2.10.0), as the S4 design note quotes them, the Stream
 //! Deck's presses (#52, `deck`), the hold that opens a channel's detail
-//! (#71, `hold`) and the Pro-Q 4 screen's finger and picture (#71 PR E,
-//! `eq`).
+//! (#71, `hold`), the Pro-Q 4 screen's finger and picture (#71 PR E,
+//! `eq`) and the backing-tracks fader's drag and look (#58, `vca`).
 
 pub mod colour;
 pub mod db_text;
@@ -26,6 +26,7 @@ pub mod solo;
 pub mod status;
 pub mod timing;
 pub mod toggle;
+pub mod vca;
 
 /// What a continuous control (fader, pan) shows and sends in one frame.
 #[derive(Debug, Clone, Copy, PartialEq)]
