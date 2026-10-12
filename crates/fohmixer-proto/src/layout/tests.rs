@@ -772,6 +772,31 @@ fn the_fader_law_is_lives_unless_touchosc_is_named() {
     assert!(absent.get("fader_law").is_none(), "{absent}");
 }
 
+/// The idle settings (#51): absent is off and stays off the wire; set, they
+/// round-trip as numbers, and a non-number does not parse.
+#[test]
+fn the_idle_settings_are_off_unless_named() {
+    let layout = parse(sample());
+    assert_eq!(layout.config.idle_after_s, None);
+    assert_eq!(layout.config.idle_meter_ms, None);
+    let absent = serde_json::to_value(&layout.config).unwrap();
+    assert!(absent.get("idle_after_s").is_none(), "{absent}");
+    assert!(absent.get("idle_meter_ms").is_none(), "{absent}");
+    let mut v = sample();
+    v["config"]["idle_after_s"] = json!(120);
+    v["config"]["idle_meter_ms"] = json!(500);
+    let layout = parse(v);
+    assert_eq!(layout.config.idle_after_s, Some(120));
+    assert_eq!(layout.config.idle_meter_ms, Some(500));
+    assert_eq!(
+        serde_json::to_value(&layout.config).unwrap(),
+        json!({"fader_shaping": true, "idle_after_s": 120, "idle_meter_ms": 500})
+    );
+    let mut v = sample();
+    v["config"]["idle_after_s"] = json!("soon");
+    assert!(serde_json::from_value::<Layout>(v).is_err());
+}
+
 #[test]
 fn marker_fields_round_trip_and_stay_out_when_unset() {
     let mut v = sample();

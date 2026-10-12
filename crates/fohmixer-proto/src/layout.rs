@@ -307,6 +307,16 @@ pub struct LayoutConfig {
     /// `live` (Live's own law) when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fader_law: Option<FaderLaw>,
+    /// The page goes idle after this many seconds without a touch (#51);
+    /// absent or 0: never. The hub only carries it to the page. An older
+    /// hub refuses a layout that sets it (`deny_unknown_fields`): remove it
+    /// before rolling the hub back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_after_s: Option<u32>,
+    /// An idle page's meter period, ms (#51): what its `idle` message asks
+    /// the hub for (`client::meter_pace`); absent: the default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_meter_ms: Option<u32>,
 }
 
 /// The volume law of the strip faders (#63).
