@@ -3,7 +3,8 @@
 //! visible: 204 812 of them at the service of 2026-10-04, most of its
 //! volume). The hub logs every ping that reaches it with the page's latest
 //! round trip, so the page keeps only `{"ev": "rtt", "t", "n", "min", "med",
-//! "max"}` per second of pongs: how many came and how long they took.
+//! "max"}` per second of pongs: how many came and how long they took. While
+//! the page is idle (#51: a ping a second) a summary covers 10 s.
 
 use serde_json::{Value, json};
 
@@ -11,10 +12,23 @@ use super::moves::round1;
 
 /// A summary covers the pongs of this long (ms) from its first.
 pub const RTT_WINDOW_MS: f64 = 1000.0;
+/// While the page is idle (#51) a summary covers this long (ms): about ten
+/// pongs, not one.
+pub const IDLE_RTT_WINDOW_MS: f64 = 10_000.0;
 
-/// Whether a window that began at `start` is over at `now`.
-pub fn window_over(start: f64, now: f64) -> bool {
-    now - start >= RTT_WINDOW_MS
+/// How long a summary covers: [`RTT_WINDOW_MS`], [`IDLE_RTT_WINDOW_MS`]
+/// while the page is idle.
+pub fn window_ms(idle: bool) -> f64 {
+    if idle {
+        IDLE_RTT_WINDOW_MS
+    } else {
+        RTT_WINDOW_MS
+    }
+}
+
+/// Whether a window of `span` ms that began at `start` is over at `now`.
+pub fn window_over(start: f64, now: f64, span: f64) -> bool {
+    now - start >= span
 }
 
 /// The summary of round trips `rtts` (sorted, not empty) of the window from
@@ -32,15 +46,23 @@ pub fn summary(start: f64, rtts: &[f64]) -> Value {
     })
 }
 
-/// The pongs of the current second.
+/// The pongs of the current summary.
 #[derive(Debug, Default)]
 pub struct RttWindow {
     /// When its first pong came (page ms); none while it is empty.
     start: Option<f64>,
     rtts: Vec<f64>,
+    /// The page is idle: the window covers [`IDLE_RTT_WINDOW_MS`].
+    idle: bool,
 }
 
 impl RttWindow {
+    /// The page went idle (`on`) or woke (#51): an open window closes by
+    /// the span of now.
+    pub fn set_idle(&mut self, on: bool) {
+        self.idle = on;
+    }
+
     /// A pong at `t`, `rtt` ms after its ping: the summary of the window it
     /// closes, if one was over.
     pub fn add(&mut self, t: f64, rtt: f64) -> Option<Value> {
@@ -53,7 +75,8 @@ impl RttWindow {
     /// The window's summary when it is over at `now` (it starts again empty);
     /// none while it lasts or is empty.
     pub fn close(&mut self, now: f64) -> Option<Value> {
-        let start = self.start.filter(|&start| window_over(start, now))?;
+        let span = window_ms(self.idle);
+        let start = self.start.filter(|&start| window_over(start, now, span))?;
         self.start = None;
         let mut rtts = std::mem::take(&mut self.rtts);
         rtts.sort_by(f64::total_cmp);
@@ -68,9 +91,34 @@ mod tests {
     #[test]
     fn a_window_is_one_second_from_its_first_pong() {
         assert_eq!(RTT_WINDOW_MS, 1000.0);
-        assert!(!window_over(5_000.0, 5_999.0));
-        assert!(!window_over(5_000.0, 6_000.0_f64.next_down()));
-        assert!(window_over(5_000.0, 6_000.0));
+        assert_eq!(window_ms(false), 1000.0);
+        assert!(!window_over(5_000.0, 5_999.0, 1000.0));
+        assert!(!window_over(5_000.0, 6_000.0_f64.next_down(), 1000.0));
+        assert!(window_over(5_000.0, 6_000.0, 1000.0));
+    }
+
+    #[test]
+    fn while_idle_a_summary_covers_ten_seconds_of_pongs() {
+        assert_eq!(IDLE_RTT_WINDOW_MS, 10_000.0);
+        assert_eq!(window_ms(true), 10_000.0);
+        let mut w = RttWindow::default();
+        w.set_idle(true);
+        for (i, rtt) in [12.0, 8.0, 30.0].into_iter().enumerate() {
+            assert_eq!(w.add(1_000.0 + 3_000.0 * i as f64, rtt), None);
+        }
+        assert_eq!(w.close(11_000.0_f64.next_down()), None, "ten seconds");
+        assert_eq!(
+            w.close(11_000.0),
+            Some(json!({"ev": "rtt", "t": 1_000.0, "n": 3, "min": 8.0, "med": 12.0, "max": 30.0}))
+        );
+        // Awake: a second again.
+        w.set_idle(false);
+        assert_eq!(w.add(20_000.0, 5.0), None);
+        assert_eq!(w.close(21_000.0_f64.next_down()), None);
+        assert_eq!(
+            w.close(21_000.0),
+            Some(json!({"ev": "rtt", "t": 20_000.0, "n": 1, "min": 5.0, "med": 5.0, "max": 5.0}))
+        );
     }
 
     #[test]

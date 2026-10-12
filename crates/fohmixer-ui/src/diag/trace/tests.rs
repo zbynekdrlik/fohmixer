@@ -589,13 +589,13 @@ fn each_second_of_pongs_is_one_round_trip_summary() {
 #[test]
 fn a_long_frame_is_recorded_unless_it_follows_a_visibility_change() {
     let mut r = Recorder::default();
-    r.frame(1_000.0, 16.7);
-    r.frame(1_050.0, 50.0);
+    r.frame(1_000.0, 16.7, false);
+    r.frame(1_050.0, 50.0, false);
     assert!(r.is_empty(), "not long");
-    r.frame(1_200.0, 139.0);
+    r.frame(1_200.0, 139.0, false);
     r.visibility(2_000.0, true);
-    r.frame(60_000.0, 58_000.0);
-    r.frame(60_100.0, 100.0);
+    r.frame(60_000.0, 58_000.0, false);
+    r.frame(60_100.0, 100.0, false);
     let batch = r.upload(60_200.0, true, 0, 1).expect("a batch");
     assert_eq!(
         events_of(&batch),
@@ -605,6 +605,79 @@ fn a_long_frame_is_recorded_unless_it_follows_a_visibility_change() {
             json!({"ev": "frame", "t": 60_100.0, "ms": 100.0}),
         ],
         "the gap of the time hidden is no stall"
+    );
+}
+
+#[test]
+fn an_idle_page_s_frame_is_long_only_beyond_its_pace_and_a_turn_skips_one_gap() {
+    assert_eq!(stall_ms(150.0, true), 50.0);
+    assert_eq!(stall_ms(150.0, false), 150.0);
+    assert!(!is_long_frame(stall_ms(150.0, true)));
+    assert!(is_long_frame(stall_ms(150.0_f64.next_up(), true)));
+    let mut r = Recorder::default();
+    r.idle(true);
+    // The first gap after the turn: the frame already asked for.
+    r.frame(1_000.0, 120.0, false);
+    // Paced frames: 100 ms of pace, then a stall.
+    r.frame(1_150.0, 150.0, true);
+    assert!(r.is_empty(), "50 ms beyond the pace: not long");
+    r.frame(1_301.0, 151.0, true);
+    r.frame(1_481.0, 180.0, true);
+    // The wake: its first frame follows a paced one.
+    r.idle(false);
+    r.frame(2_000.0, 160.0, false);
+    r.frame(2_100.0, 100.0, false);
+    let batch = r.upload(2_200.0, true, 0, 1).expect("a batch");
+    assert_eq!(
+        events_of(&batch),
+        vec![
+            json!({"ev": "frame", "t": 1_301.0, "ms": 51.0, "paced": true}),
+            json!({"ev": "frame", "t": 1_481.0, "ms": 80.0, "paced": true}),
+            json!({"ev": "frame", "t": 2_100.0, "ms": 100.0}),
+        ]
+    );
+}
+
+#[test]
+fn while_the_page_is_idle_smaller_amounts_go_every_30_s() {
+    assert_eq!(IDLE_UPLOAD_MS, 30_000.0);
+    assert_eq!(upload_ms(false), 2_000.0);
+    assert_eq!(upload_ms(true), 30_000.0);
+    let mut r = Recorder::default();
+    r.push(&event(1));
+    assert_eq!(ts(&r.upload(0.0, true, 0, 1).expect("at once")), [1]);
+    r.idle(true);
+    r.push(&event(2));
+    assert_eq!(r.upload(2_000.0, true, 0, 2), None, "idle: not after 2 s");
+    assert_eq!(r.upload(30_000.0_f64.next_down(), true, 0, 2), None);
+    assert_eq!(ts(&r.upload(30_000.0, true, 0, 2).expect("30 s")), [2]);
+    // One asked for still goes at once.
+    r.push(&event(3));
+    r.soon();
+    assert_eq!(ts(&r.upload(30_100.0, true, 0, 3).expect("asked")), [3]);
+    // Awake: every 2 s again.
+    r.idle(false);
+    r.push(&event(4));
+    assert_eq!(r.upload(32_100.0_f64.next_down(), true, 0, 4), None);
+    assert_eq!(ts(&r.upload(32_100.0, true, 0, 4).expect("2 s")), [4]);
+}
+
+#[test]
+fn while_the_page_is_idle_a_round_trip_summary_covers_ten_seconds_of_pongs() {
+    // #51: an idle page pings once a second; one summary per 10 s, not one
+    // per pong.
+    let mut r = Recorder::default();
+    r.idle(true);
+    for i in 0..10 {
+        r.pong(1_000.0 + 1_000.0 * f64::from(i), 20.0 + f64::from(i));
+    }
+    assert!(r.is_empty(), "ten seconds last");
+    r.pong(11_000.0, 5.0);
+    assert_eq!(r.len(), 1, "the pong at 11 s closed them");
+    let batch = r.upload(11_000.0, true, 0, 1).expect("a batch");
+    assert_eq!(
+        events_of(&batch),
+        vec![json!({"ev": "rtt", "t": 1_000.0, "n": 10, "min": 20.0, "med": 25.0, "max": 29.0})]
     );
 }
 

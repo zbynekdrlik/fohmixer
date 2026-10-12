@@ -10,9 +10,11 @@
 //! turn to `unconfirmed` or `not_sent` ([`intent`], PR E: only the page
 //! knows when it drew them); a per-second summary of the pongs' round trips
 //! ([`rtt`]: the hub logs every ping, so a page event per pong only doubled
-//! the volume, 204 812 of them at the service of 2026-10-04); the socket's
-//! transitions ([`sock`]), a frame longer than [`LONG_FRAME_MS`] (the page's
-//! main thread stalled, [`Recorder::frame`]), a visibility change
+//! the volume, 204 812 of them at the service of 2026-10-04; one per 10 s
+//! while the page is idle, #51); the socket's transitions ([`sock`]), a
+//! frame longer than [`LONG_FRAME_MS`] (the page's main thread stalled,
+//! [`Recorder::frame`]; an idle page's paced frame by what lies beyond its
+//! pace, [`stall_ms`], marked `paced`), a visibility change
 //! ([`Recorder::visibility`]), and the dropout watch's `dropout` and `reset`
 //! (`behave::link`); the system's gestures ([`sys`], PR G: a context menu, a
 //! selection, a drag, a pinch's start, a cancelled pointer, a capture lost
@@ -43,8 +45,9 @@
 //!   nothing for up to 9 minutes), a backed-up socket does;
 //! - something waits and it is due: a full batch (events that fill a
 //!   message) as soon as the rate lets it, smaller amounts every
-//!   [`UPLOAD_MS`], and the first batch after a hello, a dropout or a reset
-//!   ([`Recorder::soon`]) as soon as the rate lets it.
+//!   [`UPLOAD_MS`] ([`IDLE_UPLOAD_MS`] while the page is idle, #51,
+//!   [`Recorder::idle`]), and the first batch after a hello, a dropout or a
+//!   reset ([`Recorder::soon`]) as soon as the rate lets it.
 //!
 //! Oldest first, so after a reconnect the backlog goes first. A batch stays
 //! in the ring until the pong of a ping sent after it: the hub reads a
@@ -75,6 +78,8 @@ use std::collections::{BTreeMap, VecDeque};
 use fohmixer_proto::client::ClientMsg;
 use serde_json::{Map, Value, json};
 
+use crate::behave::idle::IDLE_FRAME_MS;
+
 pub mod eq_lat;
 pub mod fingers;
 pub mod moves;
@@ -89,6 +94,9 @@ pub const MAX_EVENTS: usize = 20_000;
 pub const MAX_BYTES: usize = 2 * 1024 * 1024;
 /// Smaller amounts go at most this often (ms), unless a batch is due at once.
 pub const UPLOAD_MS: f64 = 2000.0;
+/// While the page is idle (#51) smaller amounts go at most this often (ms):
+/// it then mostly holds a round-trip summary every 10 s.
+pub const IDLE_UPLOAD_MS: f64 = 30_000.0;
 /// A batch's message is at most this many bytes, its events joined plus
 /// the `trace` envelope (at least one event, however large): one WebSocket
 /// frame, and a set sent right after it waits for it, so it is small (about
@@ -120,6 +128,19 @@ pub const LONG_FRAME_MS: f64 = 50.0;
 /// Whether a frame gap of `gap` ms is long.
 pub fn is_long_frame(gap: f64) -> bool {
     gap > LONG_FRAME_MS
+}
+
+/// How long the page stalled in a frame gap of `gap` ms: all of it, or for
+/// a `paced` frame (an idle page's, #51) what lies beyond the pace,
+/// [`IDLE_FRAME_MS`].
+pub fn stall_ms(gap: f64, paced: bool) -> f64 {
+    if paced { gap - IDLE_FRAME_MS } else { gap }
+}
+
+/// How often smaller amounts go (ms): [`UPLOAD_MS`], or [`IDLE_UPLOAD_MS`]
+/// while the page is idle.
+pub fn upload_ms(idle: bool) -> f64 {
+    if idle { IDLE_UPLOAD_MS } else { UPLOAD_MS }
 }
 
 /// Whether a socket holding `buffered` unsent bytes takes a batch.
@@ -328,10 +349,13 @@ pub struct Recorder {
     soon: bool,
     /// A set went onto the socket since the last tick.
     set_went: bool,
-    /// The next frame's gap follows a visibility change: it is the time the
-    /// page was hidden, not a stall.
-    after_visibility: bool,
-    /// The pongs of the current second.
+    /// The next frame's gap follows a visibility change (the time the page
+    /// was hidden) or an idle turn (#51: a wake's first frame comes up to a
+    /// pace after a paced one): not a stall.
+    skip_gap: bool,
+    /// The page is idle (#51).
+    idle: bool,
+    /// The pongs of the current summary.
     rtt: RttWindow,
 }
 
@@ -459,7 +483,7 @@ impl Recorder {
     }
 
     /// Whether a batch is due at `now`: the rate lets it, and it goes at
-    /// once ([`Recorder::soon`]), a full batch waits, or [`UPLOAD_MS`]
+    /// once ([`Recorder::soon`]), a full batch waits, or [`upload_ms`]
     /// passed since the last one.
     fn due(&self, now: f64) -> bool {
         let paced = self.paced_until.is_none_or(|at| now >= at);
@@ -467,7 +491,8 @@ impl Recorder {
         // them and the envelope.
         let commas = (self.events.len() - self.sent).saturating_sub(1);
         let full = self.unsent + commas + ENVELOPE >= BATCH_BYTES;
-        let time = self.soon || full || self.uploaded.is_none_or(|at| now - at >= UPLOAD_MS);
+        let every = upload_ms(self.idle);
+        let time = self.soon || full || self.uploaded.is_none_or(|at| now - at >= every);
         paced && time
     }
 
@@ -565,19 +590,37 @@ impl Recorder {
     }
 
     /// A frame `gap` ms after the one before, at page time `t`: recorded
-    /// when long, unless it is the first after a visibility change.
-    pub fn frame(&mut self, t: f64, gap: f64) {
-        if std::mem::take(&mut self.after_visibility) {
+    /// when the page stalled long in it ([`stall_ms`]: for a `paced` one,
+    /// an idle page's, beyond the pace; its `ms` is the stall, and `paced`
+    /// says so), unless it is the first after a visibility change or an
+    /// idle turn.
+    pub fn frame(&mut self, t: f64, gap: f64, paced: bool) {
+        if std::mem::take(&mut self.skip_gap) {
             return;
         }
-        if is_long_frame(gap) {
-            self.push(&json!({"ev": "frame", "t": t, "ms": gap}));
+        let stall = stall_ms(gap, paced);
+        if !is_long_frame(stall) {
+            return;
         }
+        let mut event = json!({"ev": "frame", "t": t, "ms": stall});
+        if paced {
+            event["paced"] = json!(true);
+        }
+        self.push(&event);
+    }
+
+    /// The page went idle (`on`) or woke (#51): smaller amounts go every
+    /// [`IDLE_UPLOAD_MS`] while idle, a round-trip summary covers
+    /// [`rtt::IDLE_RTT_WINDOW_MS`], and the next frame's gap is no stall.
+    pub fn idle(&mut self, on: bool) {
+        self.idle = on;
+        self.rtt.set_idle(on);
+        self.skip_gap = true;
     }
 
     /// The page was hidden or shown at `t`.
     pub fn visibility(&mut self, t: f64, hidden: bool) {
-        self.after_visibility = true;
+        self.skip_gap = true;
         self.push(&json!({"ev": "visibility", "t": t, "hidden": hidden}));
     }
 

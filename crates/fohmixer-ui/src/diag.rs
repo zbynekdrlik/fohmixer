@@ -661,19 +661,28 @@ fn trace_visibility() {
 }
 
 /// A frame of the animation loop (`raf::tick`), `gap` ms after the one
-/// before: counted, recorded when long (#43, the flight recorder), and the
-/// periodic `perf` report when it is due. The report's minute is kept on
-/// the page clock the reports are stamped with (`dom::now`), not on the
-/// frame's own time, which is the frame's start and may lie before the last
-/// report's stamp.
-pub fn frame(gap: f64) {
+/// before (`paced`: it came through an idle page's 100 ms pace, #51):
+/// counted, recorded when long (#43, the flight recorder), and the periodic
+/// `perf` report when it is due. The report's minute is kept on the page
+/// clock the reports are stamped with (`dom::now`), not on the frame's own
+/// time, which is the frame's start and may lie before the last report's
+/// stamp.
+pub fn frame(gap: f64, paced: bool) {
     let now = dom::now();
     let t = dom::epoch_now();
-    let _ = TRACE.try_with(|r| r.borrow_mut().frame(t, gap));
-    let due = PERF.try_with(|perf| perf.borrow_mut().frame(now, gap));
+    let _ = TRACE.try_with(|r| r.borrow_mut().frame(t, gap, paced));
+    let due = PERF.try_with(|perf| perf.borrow_mut().frame(now, gap, paced));
     if due.unwrap_or(false) {
         report(Kind::Perf);
     }
+}
+
+/// The page went idle (`on`) or woke (#51): the frame count drops its open
+/// window and the gap after the turn, and the flight recorder takes its idle
+/// rules (`Recorder::idle`).
+pub fn idle(on: bool) {
+    let _ = PERF.try_with(|perf| perf.borrow_mut().turn());
+    let _ = TRACE.try_with(|r| r.borrow_mut().idle(on));
 }
 
 /// Whether a pointer is down anywhere on the page (#51: a finger holds it

@@ -10,6 +10,12 @@
 //! frame after it carries is the time it was hidden. When a window closes a
 //! periodic report is due, at most once per [`PERF_GAP_MS`] ([`perf_due`]).
 //!
+//! An idle page's frame loop is paced (#51, `raf.rs`: at most one frame per
+//! 100 ms): its paced frames are not counted, so the rate stays the drawing
+//! page's, and each idle turn drops the open window and the gap after it
+//! ([`Perf::turn`]); no window fills while the page is idle, so no periodic
+//! report goes either.
+//!
 //! It also counts the pointers down at once ([`Perf::down`], [`Perf::up`]):
 //! the most since the last report (`touches_max`), and a report of its own
 //! when the page sees [`TOUCHES_REPORTED`] or more at once, more than ever
@@ -137,9 +143,10 @@ pub struct Perf {
 impl Perf {
     /// A frame at `now`, `gap` ms after the one before (a negative gap, a
     /// frame time a little before the loop started, counts as none): true
-    /// when it closed a window and a periodic report is due.
-    pub fn frame(&mut self, now: f64, gap: f64) -> bool {
-        if std::mem::take(&mut self.skip) {
+    /// when it closed a window and a periodic report is due. A `paced` frame
+    /// (an idle page's, #51) is not counted.
+    pub fn frame(&mut self, now: f64, gap: f64, paced: bool) -> bool {
+        if std::mem::take(&mut self.skip) || paced {
             return false;
         }
         let gap = gap.max(0.0);
@@ -164,6 +171,14 @@ impl Perf {
         self.window = None;
         self.skip = true;
         self.down.clear();
+    }
+
+    /// The page went idle or woke (#51): the open window is dropped and the
+    /// next frame's gap is not counted (the first after a wake follows a
+    /// paced one); the last window and the pointers down stay.
+    pub fn turn(&mut self) {
+        self.clear_window();
+        self.skip = true;
     }
 
     /// A pointer `id` of type `pointer_type` went down (`primary`: the first

@@ -25,6 +25,12 @@
 use fohmixer_proto::client::IDLE_METER_MS;
 use serde_json::{Value, json};
 
+/// An idle page's frame loop draws at most one frame per this many ms
+/// (`raf.rs`: a timer, then `requestAnimationFrame`): about 10 a second. The
+/// loop's frame step is capped at the same 100 ms (`raf::MAX_STEP_MS`), so
+/// the meters' ballistics keep nearly real time; raise that cap with it.
+pub const IDLE_FRAME_MS: f64 = 100.0;
+
 /// Why the page went idle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Sleep {

@@ -1,10 +1,10 @@
 //! The page's idle glue (#51): carries out `behave::idle`'s `IdleWatch`
-//! with the socket, the link's rules and a signal. A `visibilitychange`
-//! listener on the document (and the link's tick, should a change be
-//! missed) makes a hidden page (a locked iPad, the app in the background)
-//! Idle at once and sends `idle {on: true, meter_ms: 0}` from the handler
-//! itself, before iOS freezes the page; shown again, the page wakes:
-//! `idle {on: false}`, then a ping at once.
+//! with the socket, the link's rules, the frame loop and a signal. A
+//! `visibilitychange` listener on the document (and the link's tick, should
+//! a change be missed) makes a hidden page (a locked iPad, the app in the
+//! background) Idle at once and sends `idle {on: true, meter_ms: 0}` from
+//! the handler itself, before iOS freezes the page; shown again, the page
+//! wakes: `idle {on: false}`, then a ping at once.
 //!
 //! Touch-idle (PR 2b): the link's tick makes a page left untouched for the
 //! layout's `idle_after_s` Idle (`tick_idle`; absent or 0: never, the
@@ -12,14 +12,16 @@
 //! input on its editor is not shown yet (`behave::idle::holds`). A
 //! capture-phase, passive `pointerdown` listener on the window (`touched`)
 //! wakes it before any control sees the touch: the control's own handler
-//! then runs on a page already awake.
+//! then runs on a page already awake, its frame loop at full rate.
 //!
 //! Each turn sets the watchdog's and the dropout watch's idle rules
-//! (`Conn::set_idle`, `DropoutWatch::set_idle`), goes into the flight
-//! recorder as an essential `idle` event and writes the store's `idle`
-//! signal (`data-idle` on the surface; nothing visible). Each hello's
+//! (`Conn::set_idle`, `DropoutWatch::set_idle`), the frame loop's pace
+//! (`raf::set_idle`) and the diagnostics' (`diag::idle`), goes into the
+//! flight recorder as an essential `idle` event and writes the store's
+//! `idle` signal (`data-idle` on the surface; nothing visible). Each hello's
 //! socket has a new outbox at full rate, so an idle page tells it again
-//! (`idle_hello`).
+//! (`idle_hello`). The store's stop leaves no idle pace behind it
+//! (`end_idle`): the next store starts Active.
 
 use fohmixer_proto::client::ClientMsg;
 use leptos::prelude::*;
@@ -28,8 +30,8 @@ use wasm_bindgen::closure::Closure;
 
 use super::LiveStore;
 use crate::behave::idle::{self, Sleep, Turn};
-use crate::diag;
 use crate::dom;
+use crate::{diag, raf};
 
 impl LiveStore {
     /// Listens for the page hidden or shown and for every pointer down
@@ -62,6 +64,17 @@ impl LiveStore {
             .inner
             .try_update_value(|i| i.on_visibility = Some(on_visibility));
         self.sync_visibility();
+    }
+
+    /// The store stops (a logout, the surface unmounting): the frame loop
+    /// goes back to full rate, and a page that was idle takes its
+    /// diagnostics out of their idle rules (`diag::idle`). The next store
+    /// starts Active and never wakes, so nothing paced may outlive this one.
+    pub(super) fn end_idle(self) {
+        raf::set_idle(false);
+        if self.inner.try_with_value(|i| i.idle.is_idle()) == Some(true) {
+            diag::idle(false);
+        }
     }
 
     /// Removes the `visibilitychange` and `pointerdown` listeners (the store
@@ -139,10 +152,10 @@ impl LiveStore {
         }
     }
 
-    /// Carries out a turn at page time `now`: the link's rules, the hub's
-    /// meters (a sleep's `idle`; a wake's `idle` off and a ping at once, so
-    /// the radio and the hub hear the page first), the recorder's event and
-    /// the signal.
+    /// Carries out a turn at page time `now`: the link's rules, the frame
+    /// loop's pace and the diagnostics', the hub's meters (a sleep's `idle`;
+    /// a wake's `idle` off and a ping at once, so the radio and the hub hear
+    /// the page first), the recorder's event and the signal.
     fn turn_idle(self, turn: Turn, now: f64) {
         let on = matches!(turn, Turn::Sleep(_));
         let clock = dom::now();
@@ -150,6 +163,8 @@ impl LiveStore {
             i.conn.set_idle(on, clock);
             i.watch.set_idle(on, now);
         });
+        raf::set_idle(on);
+        diag::idle(on);
         diag::record(&turn.event(now));
         match turn {
             Turn::Sleep(why) => {
