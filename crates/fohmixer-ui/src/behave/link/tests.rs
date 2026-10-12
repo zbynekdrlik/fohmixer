@@ -531,3 +531,122 @@ fn a_tap_resets_the_counter_to_0_and_its_event_says_what_it_showed() {
         json!({"ev": "reset", "t": 91_000.0, "count": 0, "active": false})
     );
 }
+
+#[test]
+fn an_idle_page_counts_a_silence_from_2500_ms() {
+    assert_eq!(IDLE_DROPOUT_MS, 2500.0);
+    assert!(!is_silence(2_000.0, true));
+    assert!(!is_silence(2_500.0_f64.next_down(), true));
+    assert!(is_silence(2_500.0, true));
+    assert!(!is_silence(300.0_f64.next_down(), false));
+    assert!(is_silence(300.0, false));
+}
+
+#[test]
+fn an_idle_page_counts_no_power_save_hold_and_a_silence_of_2500_ms_once() {
+    let mut w = up(&[]);
+    w.set_idle(true, 0.0);
+    ticks(&mut w, 100.0, 1_000.0);
+    w.ping(0, 1_000.0);
+    // Its pong held 2 s (a Wi-Fi power-save hold): no dropout.
+    ticks(&mut w, 1_100.0, 3_000.0);
+    assert!(!w.active());
+    w.heard(3_000.0);
+    w.pong(0, 2_000.0);
+    assert_eq!(w.count(), 0);
+    assert!(w.take_reports().is_empty());
+    // The next one waits 2.5 s: one dropout, not a hair before.
+    ticks(&mut w, 3_100.0, 4_000.0);
+    w.ping(1, 4_000.0);
+    ticks(&mut w, 4_100.0, 6_400.0);
+    w.tick(6_500.0_f64.next_down());
+    assert_eq!(w.count(), 0);
+    w.tick(6_500.0);
+    assert_eq!(w.count(), 1);
+    assert!(w.active());
+    w.heard(6_600.0);
+    assert_eq!(
+        w.take_reports(),
+        vec![Dropout {
+            t: 4_000.0,
+            ms: 2_600.0,
+            socket_lost: false,
+            rtts: vec![2_000.0],
+        }]
+    );
+}
+
+#[test]
+fn a_lost_socket_counts_at_once_while_idle() {
+    let mut w = up(&[]);
+    w.set_idle(true, 0.0);
+    ticks(&mut w, 100.0, 500.0);
+    w.lost(550.0);
+    assert!(w.active());
+    assert_eq!(w.count(), 1);
+    w.tick(600.0);
+    w.hello(900.0);
+    assert_eq!(
+        w.take_reports(),
+        vec![Dropout {
+            t: 550.0,
+            ms: 350.0,
+            socket_lost: true,
+            rtts: vec![],
+        }]
+    );
+}
+
+#[test]
+fn the_wake_starts_the_silence_over() {
+    let mut w = up(&[]);
+    w.set_idle(true, 0.0);
+    ticks(&mut w, 100.0, 1_000.0);
+    w.ping(0, 1_000.0);
+    ticks(&mut w, 1_100.0, 1_900.0);
+    // Woken with that ping 900 ms unanswered: nothing counts at the wake.
+    w.set_idle(false, 1_900.0);
+    ticks(&mut w, 2_000.0, 2_100.0);
+    w.tick(2_199.0);
+    assert_eq!(w.count(), 0);
+    assert!(!w.active());
+    // Still nothing 300 ms after the wake: a dropout from the wake.
+    w.tick(2_200.0);
+    assert_eq!(w.count(), 1);
+    assert!(w.active());
+    w.heard(2_250.0);
+    assert_eq!(
+        w.take_reports(),
+        vec![Dropout {
+            t: 1_900.0,
+            ms: 350.0,
+            socket_lost: false,
+            rtts: vec![],
+        }]
+    );
+}
+
+#[test]
+fn a_dropout_open_at_the_wake_counts_once() {
+    let mut w = up(&[]);
+    w.set_idle(true, 0.0);
+    ticks(&mut w, 100.0, 1_000.0);
+    w.ping(0, 1_000.0);
+    ticks(&mut w, 1_100.0, 3_500.0);
+    assert_eq!(w.count(), 1, "2.5 s of silence while idle");
+    w.set_idle(false, 3_600.0);
+    ticks(&mut w, 3_600.0, 4_000.0);
+    assert_eq!(w.count(), 1);
+    assert!(w.active());
+    w.heard(4_050.0);
+    assert!(!w.active());
+    assert_eq!(
+        w.take_reports(),
+        vec![Dropout {
+            t: 1_000.0,
+            ms: 3_050.0,
+            socket_lost: false,
+            rtts: vec![],
+        }]
+    );
+}

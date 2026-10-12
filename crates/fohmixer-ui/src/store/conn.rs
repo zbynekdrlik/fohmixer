@@ -5,11 +5,12 @@
 //!
 //! A socket that stays silent is half-open (a Wi-Fi roam, an iPad that
 //! slept): once the hub said hello the store pings it every `PING_MS` while
-//! the page is visible (every `PING_HIDDEN_MS` while hidden), and a socket
-//! that heard nothing for `SILENCE_MS` (no hello, no pong, no value) is
-//! dropped and replaced. A socket that is open but never said hello talks
-//! to a hub that does not speak this protocol: one bounded reload
-//! (`net::on_missing_hello`), else it is replaced too.
+//! the page is visible (every `PING_HIDDEN_MS` while hidden or idle), and a
+//! socket that heard nothing for `SILENCE_MS` (no hello, no pong, no value;
+//! `IDLE_SILENCE_MS` while the page is idle, #51) is dropped and replaced;
+//! the page's wake starts that silence over. A socket that is open but never
+//! said hello talks to a hub that does not speak this protocol: one bounded
+//! reload (`net::on_missing_hello`), else it is replaced too.
 //!
 //! A ping (#43) carries its number, the page's clock and the round trip of
 //! the latest pong on this socket with the number of the ping it measured:
@@ -26,13 +27,24 @@ use crate::net;
 /// The watchdog's period: a ping (after the hello, while the page is
 /// visible) and a silence check.
 pub const PING_MS: u64 = 100;
-/// While the page is hidden it pings this often.
+/// While the page is hidden or idle (#51) it pings this often.
 pub const PING_HIDDEN_MS: f64 = 1000.0;
 /// A socket that heard nothing from the hub this long is replaced.
 pub const SILENCE_MS: f64 = 3000.0;
+/// While the page is idle (#51) a socket is replaced after this long: a ping
+/// a second and a Wi-Fi power-save hold of up to ~2.1 s (#43) are 3.1 s of
+/// silence on a healthy socket; this keeps today's margin (3 s + the 900 ms
+/// the slower pings add).
+pub const IDLE_SILENCE_MS: f64 = 4000.0;
 /// A tick this long after the previous one fired late (a throttled
 /// background tab, a blocked main thread): it says nothing about the socket.
 const LATE_MS: f64 = 2000.0;
+
+/// How long a socket may stay silent: [`SILENCE_MS`], or [`IDLE_SILENCE_MS`]
+/// while the page is idle.
+pub fn silence_limit(idle: bool) -> f64 {
+    if idle { IDLE_SILENCE_MS } else { SILENCE_MS }
+}
 
 /// What the watchdog does on one of its ticks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,6 +114,11 @@ pub struct Conn {
     ticked: f64,
     /// The page is hidden (it pings less often).
     hidden: bool,
+    /// The page is idle (#51): it pings less often and waits longer.
+    idle: bool,
+    /// When the page last woke from idle (page clock, ms): the silence
+    /// counts from here at the earliest.
+    woke: f64,
     /// The next ping's number.
     next_ping: u32,
     /// When the last ping went (page clock, ms).
@@ -185,7 +202,7 @@ impl Conn {
             self.heard = now;
         }
         self.ticked = now;
-        if now - self.heard < SILENCE_MS {
+        if now - self.heard.max(self.woke) < silence_limit(self.idle) {
             if self.ready && self.ping_due(now) {
                 Tick::Ping
             } else {
@@ -198,15 +215,31 @@ impl Conn {
         }
     }
 
-    /// Whether a ping is due at `now`: every tick while visible, every
-    /// `PING_HIDDEN_MS` while hidden.
+    /// Whether a ping is due at `now`: every tick while visible and active,
+    /// every `PING_HIDDEN_MS` while hidden or idle.
     fn ping_due(&self, now: f64) -> bool {
-        !self.hidden || now - self.pinged >= PING_HIDDEN_MS
+        !(self.hidden || self.idle) || now - self.pinged >= PING_HIDDEN_MS
     }
 
     /// The page was hidden or shown.
     pub fn set_hidden(&mut self, hidden: bool) {
         self.hidden = hidden;
+    }
+
+    /// How long this page's socket may stay silent now ([`silence_limit`]).
+    pub fn limit(&self) -> f64 {
+        silence_limit(self.idle)
+    }
+
+    /// The page went idle (`on`) or woke at `now` (#51). The wake starts the
+    /// silence over: an idle-era gap (a pong held by the Wi-Fi's power save)
+    /// is never judged by the active limit, which would drop a healthy
+    /// socket under the engineer's finger.
+    pub fn set_idle(&mut self, on: bool, now: f64) {
+        self.idle = on;
+        if !on {
+            self.woke = now;
+        }
     }
 
     /// The ping to send at `now` (page clock) and page time `t` (the epoch
