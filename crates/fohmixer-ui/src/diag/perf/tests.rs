@@ -381,3 +381,13 @@ fn a_pointer_is_down_from_its_down_to_its_up_a_primary_one_or_a_pause() {
     perf.pause();
     assert!(!perf.is_down(7), "hidden or shown: none down");
 }
+
+#[test]
+fn a_pointer_down_is_any_down_until_it_lifts() {
+    let mut perf = Perf::default();
+    assert!(!perf.any_down());
+    perf.down(3, "touch", true);
+    assert!(perf.any_down());
+    perf.up(3);
+    assert!(!perf.any_down());
+}
