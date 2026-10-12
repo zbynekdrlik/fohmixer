@@ -23,6 +23,7 @@ use leptos::prelude::*;
 use crate::behave::Start;
 use crate::behave::fader::VolumeLaw;
 use crate::behave::label::longest_word_chars;
+use crate::behave::vca::is_vca;
 use crate::binding::SubSpec;
 use crate::diag::trace::moves::{self, Press, Trail};
 use crate::diag::trace::sys;
@@ -33,7 +34,7 @@ use crate::store::{LiveStore, Readiness, Slot};
 
 use buttons::{HubToggleView, SoloView, StageMicsView};
 use overlay::AlertView;
-use params::{ParamFaderView, ParamToggleView};
+use params::{ParamFaderView, ParamToggleView, VcaFaderView};
 use strip::StripView;
 
 /// The layout-wide control settings (a context of the stage).
@@ -240,6 +241,10 @@ pub fn ControlView(
             <ParamToggleView label=label targets=targets press=press color=color />
         }
         .into_any(),
+        // Two or more track volumes: the backing-tracks fader (#58).
+        Control::ParamFader { label, targets } if is_vca(&targets) => {
+            view! { <VcaFaderView label=label targets=targets settings=settings /> }.into_any()
+        }
         Control::ParamFader { label, targets } => {
             view! { <ParamFaderView label=label targets=targets /> }.into_any()
         }

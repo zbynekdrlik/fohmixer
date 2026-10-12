@@ -3,7 +3,8 @@
 //! show the targets' real state: all on, all off, or mixed. A toggle's
 //! writes Live has not confirmed outline it (the most urgent of its
 //! targets', `data-intent`, #43 PR C), and its presses go to the page's
-//! flight recorder.
+//! flight recorder. A fader of two or more track volumes is the
+//! backing-tracks fader (#58, `VcaFaderView`).
 
 use fohmixer_proto::layout::{ParamTarget, Press};
 use leptos::html;
@@ -11,13 +12,18 @@ use leptos::prelude::*;
 use serde_json::Value;
 
 use super::fader::{self, FaderView, Law};
+use super::strip::ScaleView;
 use super::{
-    BtnText, fail_flash, intent_look, key_of, owns_touches, readiness, slot_of, touch_end_name,
-    trace_touch,
+    BtnText, Settings, fail_flash, intent_look, key_of, owns_touches, readiness, slot_of,
+    touch_end_name, trace_touch,
 };
+use crate::behave::fader::UNITY;
+use crate::behave::label::label_chars;
 use crate::behave::toggle::{ToggleCtl, ToggleState, Write, aggregate, is_on};
+use crate::behave::vca::{self, Look};
 use crate::binding::{SubSpec, param_subs};
 use crate::dom;
+use crate::raf;
 use crate::store::{LiveStore, Slot};
 
 /// One toggle target: its subscription (none when its path does not
@@ -213,6 +219,123 @@ pub fn ParamFaderView(label: String, targets: Vec<ParamTarget>) -> impl IntoView
                 <FaderView targets=targets shaping=false />
             </div>
             <span class="param-fader-display" data-testid="param-display">{display}</span>
+        </div>
+    }
+}
+
+/// The backing-tracks fader (#58 item 4; the owner's approval, comment
+/// 6125310190, of the mockup `docs/mockups/podklady-fader-v1.html`): a
+/// former MIDI fader whose targets are two or more track volumes
+/// (`behave::vca::is_vca`). Its label and the `≠ 0 dB` badge; the strips'
+/// dB scale and one groove per track on the strips' volume law, numbered
+/// in target order; the fader's cap at the loudest track (`FaderView`'s
+/// `vca` mode: a touch moves every track by the same dB, with the strips'
+/// touch handling); under it the loudest track's dB and every track's
+/// value. Its frame loop draws the grooves, the readout and the highlight
+/// (`data-moved`) from what each track shows: its open write, else Live's
+/// value (`fader::shown_volumes`), and only when that changed.
+#[component]
+pub fn VcaFaderView(label: String, targets: Vec<ParamTarget>, settings: Settings) -> impl IntoView {
+    let store = expect_context::<LiveStore>();
+    let law = settings.law;
+    let targets: Vec<fader::Target> = param_subs(&targets, true)
+        .into_iter()
+        .map(|spec| fader::Target {
+            slot: slot_of(store, spec.as_ref()),
+            spec,
+            law: Law::Volume(law),
+        })
+        .collect();
+    let count = targets.len();
+    let shown_targets = StoredValue::new(targets.clone());
+    let root = NodeRef::<html::Div>::new();
+    raf::animate(root, move |el| {
+        let loudest = dom::child(&el, ".vca-big");
+        let values = dom::child(&el, ".vca-values");
+        let grooves: Vec<Option<web_sys::HtmlElement>> = (0..count)
+            .map(|i| dom::child(&el, &format!(".vca-groove:nth-child({})", i + 1)))
+            .collect();
+        let mut shown: Option<Vec<Option<f64>>> = None;
+        let mut drawn: Option<Look> = None;
+        Box::new(move |_now: f64, _step: f64| {
+            let volumes = shown_targets
+                .try_with_value(|all| fader::shown_volumes(store, all))
+                .unwrap_or_default();
+            if shown.as_ref() == Some(&volumes) {
+                return;
+            }
+            let look = vca::look(law, &volumes);
+            shown = Some(volumes);
+            // Each part only when it changed (nothing at all on a frame
+            // whose volumes did not).
+            let was = drawn.as_ref();
+            if was.map(|w| w.moved) != Some(look.moved) {
+                let moved = if look.moved { "true" } else { "false" };
+                dom::set_attr(&el, "data-moved", moved);
+            }
+            if was.map(|w| &w.loudest) != Some(&look.loudest)
+                && let Some(text) = &loudest
+            {
+                text.set_text_content(Some(look.loudest.as_str()));
+            }
+            if was.map(|w| &w.values) != Some(&look.values)
+                && let Some(text) = &values
+            {
+                text.set_text_content(Some(look.values.as_str()));
+            }
+            for (i, groove) in look.grooves.iter().enumerate() {
+                let Some(Some(part)) = grooves.get(i) else {
+                    continue;
+                };
+                let old = was.and_then(|w| w.grooves.get(i));
+                if old.map(|o| o.pos) != Some(groove.pos) {
+                    dom::set_style(part, "--p", &format!("{:.5}", groove.pos));
+                }
+                if old.map(|o| &o.db) != Some(&groove.db) {
+                    dom::set_attr(part, "data-db", &groove.db);
+                }
+                if old.map(|o| o.moved) != Some(groove.moved) {
+                    let moved = if groove.moved { "true" } else { "false" };
+                    dom::set_attr(part, "data-moved", moved);
+                }
+            }
+            drawn = Some(look);
+        })
+    });
+    let label_attr = label.clone();
+    // The label's length sizes its font (`vca.css`, nothing measured, #21).
+    let length = format!("--n:{};", label_chars(&label));
+    // The unity line at 0 dB on the strips' law (`vca.css` `.vca-grooves`).
+    let unity = format!("--u:{:.4};", law.to_pos(UNITY));
+    let grooves = (1..=count)
+        .map(|n| {
+            view! {
+                <div class="vca-groove" data-testid="param-groove" data-db="" data-moved="false">
+                    <div class="vca-fill"></div>
+                    <span class="vca-n">{n}</span>
+                </div>
+            }
+        })
+        .collect_view();
+    view! {
+        <div
+            class="strip param-fader vca"
+            data-testid="param-fader"
+            data-label=label_attr
+            data-moved="false"
+            node_ref=root
+        >
+            <span class="param-fader-label" style=length>{label}</span>
+            <span class="vca-badge" data-testid="param-badge">"≠ 0 dB"</span>
+            <div class="strip-fz param-fz" style=unity>
+                <ScaleView law=law />
+                <div class="vca-grooves" aria-hidden="true">{grooves}</div>
+                <FaderView targets=targets shaping={settings.shaping} vca=true />
+            </div>
+            <div class="vca-readout" data-testid="param-readout">
+                <div class="vca-big" data-testid="param-display"></div>
+                <div class="vca-values" data-testid="param-values"></div>
+            </div>
         </div>
     }
 }

@@ -17,6 +17,12 @@
 //! page's flight recorder (#43, PR C): the down with where the touch started
 //! (`FaderCtl::press`), and each frame that sends from the finger with the
 //! pointer moves it carried (`diag::trace::moves::Trail`, PR D).
+//!
+//! The backing-tracks fader (#58, `vca`): its cap stands at the loudest
+//! target, a touch keeps every target's volume at its start and each move
+//! writes them by `behave::vca::Drag` (the loudest at the finger, every
+//! other one moved by the same dB), and the cap shows the loudest open
+//! write.
 
 use fohmixer_proto::client::set_key;
 use leptos::html;
@@ -27,12 +33,13 @@ use super::{
     fail_flash, owns_touches, readiness, readiness_now, trace_move, trace_start, trace_touch,
 };
 use crate::behave::fader::{self as curve, FaderCtl, UNITY, VolumeLaw};
+use crate::behave::vca::{self, Drag};
 use crate::behave::{TouchEnd, touch_end};
 use crate::binding::SubSpec;
 use crate::diag::trace::moves::{Axis, Press, Trail};
 use crate::dom;
 use crate::raf;
-use crate::store::intent::State;
+use crate::store::intent::{State, most_urgent};
 use crate::store::{LiveStore, Readiness, Slot};
 
 /// How a fader maps its position to Live's value.
@@ -77,8 +84,9 @@ impl Law {
     }
 
     /// Whether a touch's first pointer move only anchors the drag (#43 PR
-    /// F): a strip's volume fader's does; the imported multi-target
-    /// parameter faders keep TouchOSC's first move (the owner's call on #43).
+    /// F): a strip's volume fader's does, and so does the backing-tracks
+    /// fader's (#58: its targets are volumes); the linear parameter faders
+    /// keep TouchOSC's first move (the owner's call on #43).
     fn anchors(self) -> bool {
         match self {
             Self::Volume(_) => true,
@@ -139,12 +147,43 @@ pub struct Target {
     pub law: Law,
 }
 
+/// The volumes `targets` show (#58): each target's open write while the
+/// store holds one, else Live's value (`None` before Live's).
+pub fn shown_volumes(store: LiveStore, targets: &[Target]) -> Vec<Option<f64>> {
+    targets
+        .iter()
+        .map(|t| {
+            let open = t.spec.as_ref().and_then(|s| {
+                store
+                    .intent_view(&set_key(&s.instance, &s.target, &s.prop))
+                    .1
+            });
+            open.or_else(|| t.slot.try_with_untracked(Slot::number).flatten())
+        })
+        .collect()
+}
+
+/// A backing-tracks fader's writes as its cap sees them (#58): the most
+/// urgent state of its targets' writes (`data-intent`) and the loudest open
+/// write's volume (the cap shows it while one is open, §4.2).
+fn vca_intent(views: &[(State, Option<f64>)]) -> (State, Option<f64>) {
+    let state = most_urgent(views.iter().map(|(state, _)| *state));
+    let open: Vec<Option<f64>> = views.iter().map(|(_, value)| *value).collect();
+    (state, vca::loudest(&open))
+}
+
 /// A vertical fader showing its first target (by that target's law) and
 /// writing every target, each by its own law. It takes a touch only while
 /// every target has Live's value and a law that can map it (I8), and is
-/// red while any target's binding does not resolve (I5).
+/// red while any target's binding does not resolve (I5). With `vca` (the
+/// backing-tracks fader, #58) it shows the loudest target and a touch
+/// moves every target by the same dB from where the touch started.
 #[component]
-pub fn FaderView(targets: Vec<Target>, shaping: bool) -> impl IntoView {
+pub fn FaderView(
+    targets: Vec<Target>,
+    shaping: bool,
+    #[prop(optional)] vca: bool,
+) -> impl IntoView {
     let store = expect_context::<LiveStore>();
     let (slot, law) = targets.first().map_or_else(
         || {
@@ -181,6 +220,8 @@ pub fn FaderView(targets: Vec<Target>, shaping: bool) -> impl IntoView {
     let keys = StoredValue::new(keys);
     let shown_key = StoredValue::new(shown_key);
     let targets = StoredValue::new(targets);
+    // A backing-tracks fader's touch: every target's volume at its start.
+    let drag = StoredValue::new(None::<Drag>);
     let ctl = StoredValue::new(
         FaderCtl::new(shaping, law.glide_to())
             .anchoring(law.anchors())
@@ -198,19 +239,55 @@ pub fn FaderView(targets: Vec<Target>, shaping: bool) -> impl IntoView {
     let takes_input = move || {
         fader_readiness(readiness_now(&slots), laws.iter().all(|l| l.can_map())) == Readiness::Ready
     };
+    // Live's value as the cap's position: the first target's, or the
+    // loudest target's on a backing-tracks fader.
     let live = move || {
-        slot.try_with_untracked(Slot::number)
-            .flatten()
-            .and_then(|v| law.pos(v))
+        let value = if vca {
+            targets
+                .try_with_value(|all| {
+                    let values: Vec<Option<f64>> = all
+                        .iter()
+                        .map(|t| t.slot.try_with_untracked(Slot::number).flatten())
+                        .collect();
+                    vca::loudest(&values)
+                })
+                .flatten()
+        } else {
+            slot.try_with_untracked(Slot::number).flatten()
+        };
+        value.and_then(|v| law.pos(v))
     };
     // Every target's write of position `p`: the first target's sequence
-    // number (the flight recorder's move record names it).
+    // number (the flight recorder's move record names it). A
+    // backing-tracks fader's values come from its touch's start (#58),
+    // any other's from each target's own law.
     let send = move |p: f64, is_final: bool| -> Option<u64> {
+        let values: Vec<Option<f64>> = if vca {
+            let finger = law.value(p);
+            drag.try_with_value(|d| {
+                d.as_ref().zip(finger).map(|(d, finger)| {
+                    d.volumes(finger)
+                        .into_iter()
+                        .map(Some)
+                        .collect::<Vec<Option<f64>>>()
+                })
+            })
+            .flatten()
+            .unwrap_or_default()
+        } else {
+            targets
+                .try_with_value(|all| {
+                    all.iter()
+                        .map(|t| t.law.value(p))
+                        .collect::<Vec<Option<f64>>>()
+                })
+                .unwrap_or_default()
+        };
         targets
             .try_with_value(|all| {
                 let mut first = None;
-                for t in all {
-                    if let (Some(spec), Some(value)) = (&t.spec, t.law.value(p)) {
+                for (t, value) in all.iter().zip(values) {
+                    if let (Some(spec), Some(value)) = (&t.spec, value) {
                         let seq = store.set(
                             &spec.instance,
                             &spec.target,
@@ -242,6 +319,23 @@ pub fn FaderView(targets: Vec<Target>, shaping: bool) -> impl IntoView {
         let Some(at) = live() else {
             return;
         };
+        // A backing-tracks fader's touch starts from what every target
+        // shows (#58); it takes none while a target shows nothing.
+        let begun = if vca {
+            let shown = targets
+                .try_with_value(|all| shown_volumes(store, all))
+                .unwrap_or_default();
+            let Some(begun) = shown
+                .into_iter()
+                .collect::<Option<Vec<f64>>>()
+                .and_then(Drag::new)
+            else {
+                return;
+            };
+            Some(begun)
+        } else {
+            None
+        };
         let Some(el) = dom::current_element(&ev) else {
             return;
         };
@@ -253,6 +347,7 @@ pub fn FaderView(targets: Vec<Target>, shaping: bool) -> impl IntoView {
             .try_update_value(|c| c.press(id, y, travel, dom::now(), at))
             .flatten();
         if let Some(start) = taken {
+            let _ = drag.try_set_value(begun);
             let _ = el.set_pointer_capture(id);
             let press = Press {
                 at: dom::event_epoch(&ev),
@@ -313,10 +408,19 @@ pub fn FaderView(targets: Vec<Target>, shaping: bool) -> impl IntoView {
         let mut ghost: Option<f64> = None;
         let mut held: Option<bool> = None;
         Box::new(move |now: f64, _step: f64| {
-            let (intent, written) = shown_key
-                .try_with_value(|k| k.as_deref().map(|k| store.intent_view(k)))
-                .flatten()
-                .unwrap_or((State::Confirmed, None));
+            // The shown key's write, or a backing-tracks fader's loudest.
+            let view = if vca {
+                keys.try_with_value(|k| {
+                    let views: Vec<(State, Option<f64>)> =
+                        k.iter().map(|k| store.intent_view(k)).collect();
+                    vca_intent(&views)
+                })
+            } else {
+                shown_key
+                    .try_with_value(|k| k.as_deref().map(|k| store.intent_view(k)))
+                    .flatten()
+            };
+            let (intent, written) = view.unwrap_or((State::Confirmed, None));
             // The open write's position: the cap shows it (§4.2).
             let written = written
                 .filter(|_| intent.is_open())
@@ -394,7 +498,7 @@ pub fn FaderView(targets: Vec<Target>, shaping: bool) -> impl IntoView {
             <div class="fader-fill"></div>
             <div class="fader-ghost"></div>
             <div class="fader-rail">
-                <div class="fader-cap"></div>
+                <div class="fader-cap" data-testid="fader-cap"></div>
             </div>
         </div>
     }
@@ -449,6 +553,27 @@ mod tests {
         assert!(law.can_map());
         assert_eq!(law.pos(0.0), Some(0.5));
         assert_eq!(law.value(0.25), Some(-7.5));
+    }
+
+    #[test]
+    fn a_backing_tracks_faders_cap_shows_its_loudest_open_write_and_most_urgent_state() {
+        assert_eq!(
+            vca_intent(&[
+                (State::Confirmed, None),
+                (State::Sending, Some(0.4)),
+                (State::Unconfirmed, Some(0.6)),
+            ]),
+            (State::Unconfirmed, Some(0.6))
+        );
+        assert_eq!(
+            vca_intent(&[(State::NotSent, Some(0.3)), (State::Sending, Some(0.2))]),
+            (State::NotSent, Some(0.3))
+        );
+        assert_eq!(
+            vca_intent(&[(State::Confirmed, None), (State::Confirmed, None)]),
+            (State::Confirmed, None)
+        );
+        assert_eq!(vca_intent(&[]), (State::Confirmed, None));
     }
 
     #[test]

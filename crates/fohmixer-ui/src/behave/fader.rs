@@ -518,8 +518,8 @@ impl FaderCtl {
     /// Whether a touch's first pointer move only anchors the drag (#43 PR F,
     /// on by default): the iPad's first event of a touch comes late and
     /// several px from the down, and taken as a move it jumped the cap. The
-    /// imported multi-target parameter faders keep TouchOSC's first move
-    /// (the owner's call on #43).
+    /// linear parameter faders keep TouchOSC's first move (the owner's call
+    /// on #43; the backing-tracks fader, #58, anchors like a strip).
     pub fn anchoring(mut self, on: bool) -> Self {
         self.anchors = on;
         self
