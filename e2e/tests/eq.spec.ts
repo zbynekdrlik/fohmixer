@@ -341,22 +341,27 @@ async function overviewGap(screen: Locator): Promise<number> {
   return Math.abs(shape / want - 1);
 }
 
-/** The bar's zoom group shown, the overview in the picture's shape, and every part of the bar inside it and the screen, its texts whole. */
-async function zoomBarFits(screen: Locator) {
-  await expect(screen.getByTestId("eq-zoom")).toBeVisible();
-  await expect.poll(() => overviewGap(screen), { message: "the overview in the picture's shape" }).toBeLessThan(0.02);
+/** The bar not overflowing, the parts `inside` each within it and the screen, and the parts `whole` with their texts whole. */
+async function barFits(screen: Locator, inside: string[], whole: string[]) {
   const bar = screen.getByTestId("eq-bar");
   const barBox = (await bar.boundingBox())!;
   const width = screen.page().viewportSize()!.width;
   expect(await bar.evaluate((el) => el.scrollWidth - el.clientWidth), "the bar's overflow").toBeLessThanOrEqual(0);
-  for (const id of ["eq-exit", "eq-overview", "eq-factor", "eq-whole", "eq-help"]) {
+  for (const id of inside) {
     const box = (await screen.getByTestId(id).boundingBox())!;
-    const inside = box.x >= barBox.x - 0.5 && box.x + box.width <= Math.min(barBox.x + barBox.width, width) + 0.5 && box.y >= barBox.y - 0.5 && box.y + box.height <= barBox.y + barBox.height + 0.5;
-    expect(inside, `${id} ${JSON.stringify(box)} inside the bar ${JSON.stringify(barBox)}`).toBe(true);
+    const within = box.x >= barBox.x - 0.5 && box.x + box.width <= Math.min(barBox.x + barBox.width, width) + 0.5 && box.y >= barBox.y - 0.5 && box.y + box.height <= barBox.y + barBox.height + 0.5;
+    expect(within, `${id} ${JSON.stringify(box)} inside the bar ${JSON.stringify(barBox)}`).toBe(true);
   }
-  for (const id of ["eq-exit", "eq-factor", "eq-whole"]) {
+  for (const id of whole) {
     expect(await clipped(screen.getByTestId(id)), id).toEqual([]);
   }
+}
+
+/** The bar's zoom group shown, the overview in the picture's shape, and every part of the bar inside it and the screen, its texts whole (#71 PR P2b: ↶ VRÁTIŤ too). */
+async function zoomBarFits(screen: Locator) {
+  await expect(screen.getByTestId("eq-zoom")).toBeVisible();
+  await expect.poll(() => overviewGap(screen), { message: "the overview in the picture's shape" }).toBeLessThan(0.02);
+  await barFits(screen, ["eq-exit", "eq-overview", "eq-factor", "eq-whole", "eq-undo", "eq-help"], ["eq-exit", "eq-factor", "eq-whole", "eq-undo"]);
 }
 
 /** A recorded touch's point within 1 px of `at` (the page's mapping and the hub's rounding). */
@@ -446,6 +451,90 @@ async function recordNotes(page: Page) {
 /** The notes `recordNotes` saw. */
 async function notesSeen(page: Page): Promise<string[]> {
   return page.evaluate(() => (window as any).eqNotes as string[]);
+}
+
+/**
+ * The page's numbered inputs of its editor (`eq_input`) and its undos
+ * (`eq_undo`, #71 PR P2b: one numbering), in send order, and the hub's
+ * answers to the undos, read off the page's socket: watched before the page
+ * opens.
+ */
+function watchUndo(page: Page): { sent: any[]; answers: any[] } {
+  const sent: any[] = [];
+  const answers: any[] = [];
+  page.on("websocket", (ws) => {
+    ws.on("framesent", ({ payload }) => {
+      if (typeof payload === "string" && (payload.includes('"type":"eq_input"') || payload.includes('"type":"eq_undo"'))) sent.push(JSON.parse(payload));
+    });
+    ws.on("framereceived", ({ payload }) => {
+      if (typeof payload === "string" && payload.includes('"type":"eq_undo"')) answers.push(JSON.parse(payload));
+    });
+  });
+  return { sent, answers };
+}
+
+/** The page's undos among `watchUndo`'s sends. */
+function undoAsks(sent: any[]): any[] {
+  return sent.filter((m) => m.type === "eq_undo");
+}
+
+/** A real press of ↶ VRÁTIŤ at its centre (`page.mouse`: a locator's click would wait out its `aria-disabled`). */
+async function pressUndo(screen: Locator) {
+  const at = await centre(screen.getByTestId("eq-undo"));
+  await screen.page().mouse.click(at.x, at.y);
+}
+
+/** The hub's answer to the next undo after the first `before` of `answers`. */
+async function answerAfter(answers: any[], before: number): Promise<any> {
+  return (await until(async () => answers.slice(before), (a) => a.length >= 1, "the hub's answer to the undo"))[0];
+}
+
+/**
+ * How long to wait past the button's 700 ms before a press that must be
+ * tapped: the hub counts its own 700 ms from its tap on Pro-Q's ↶, which
+ * comes after the press (a grab, the read, the tap), and refuses a sooner
+ * undo (`too soon after the last undo`).
+ */
+const HUB_APART_MARGIN = 400;
+
+/**
+ * Pro-Q's undo history emptied (#71 PR P2b): the simulated Pro-Q keeps it
+ * through the hub's whole run, and earlier tests' drags left changes in it,
+ * so ↶ VRÁTIŤ is pressed until the hub answers `nothing`.
+ */
+async function undoAll(screen: Locator, answers: any[]) {
+  const undo = screen.getByTestId("eq-undo");
+  for (let i = 0; i < 12; i++) {
+    await expect(undo).toHaveAttribute("aria-disabled", "false");
+    await screen.page().waitForTimeout(HUB_APART_MARGIN);
+    const before = answers.length;
+    await pressUndo(screen);
+    if ((await answerAfter(answers, before)).result === "nothing") return;
+  }
+  throw new Error(`Pro-Q's undo history did not empty: ${JSON.stringify(answers)}`);
+}
+
+/**
+ * Records each state of ↶ VRÁTIŤ's note as it changes (`window.undoNotes`,
+ * `<data-shown>|<text>`): it shows for 1.6 s, which a poll on a slow runner
+ * could miss.
+ */
+async function recordUndoNotes(screen: Locator) {
+  await screen.getByTestId("eq-undo-note").evaluate((note) => {
+    const seen: string[] = [];
+    (window as any).undoNotes = seen;
+    const look = () => {
+      const now = `${note.getAttribute("data-shown")}|${note.textContent ?? ""}`;
+      if (seen[seen.length - 1] !== now) seen.push(now);
+    };
+    look();
+    new MutationObserver(look).observe(note, { attributes: true, childList: true, subtree: true, characterData: true });
+  });
+}
+
+/** The note's states `recordUndoNotes` saw. */
+async function undoNotes(page: Page): Promise<string[]> {
+  return page.evaluate(() => (window as any).undoNotes as string[]);
 }
 
 /** A page's console errors and warnings (a second page has no console guard). */
@@ -1853,5 +1942,303 @@ test.describe("The Pro-Q 4 screen on a slow link", () => {
     } finally {
       await impair.downRate(0);
     }
+  });
+});
+
+test.describe("The Pro-Q 4 screen's ↶ VRÁTIŤ", () => {
+  // #71 PR P2b (the owner approved the look, #71 comment 6120180007, the
+  // mockup docs/mockups/proq-undo-v1.html): a big undo on the bar asks the
+  // hub to tap Pro-Q's own ↶ (`eq_undo`, PR P2a). The hub reads the ↶ on a
+  // fresh picture and taps it only when it reads lit (something to undo);
+  // the simulated Pro-Q keeps an undo history (a drag makes one change, a
+  // tap on its ↶ undoes one and is recorded `{op: "undo", left}`). The
+  // button takes no press while a finger keeps the PC's contact, nor within
+  // 700 ms of the last one; a note over the picture says the hub's answer.
+
+  test("↶ VRÁTIŤ takes back Pro-Q's last change: the hub taps Pro-Q's own ↶, the note says so, the button rests 700 ms and a second press then sends nothing; with nothing left it says so and taps nothing", async ({ page }) => {
+    const since = Date.now();
+    const { sent, answers } = watchUndo(page);
+    await openSurface(page);
+    const { onTrack, trackPath } = await hand2Cards(page);
+    await editorOpen(trackPath, false);
+    await onTrack.getByTestId("eq-open").click();
+    const screen = await openScreen(page, trackPath);
+    const session = Number(await screen.getAttribute("data-session"));
+    const undo = screen.getByTestId("eq-undo");
+    const canvas = screen.getByTestId("eq-canvas");
+    await expect(undo).toHaveAttribute("aria-disabled", "false");
+    await expect(screen.getByTestId("eq-undo-note")).toHaveAttribute("data-shown", "false");
+    await undoAll(screen, answers);
+    await recordUndoNotes(screen);
+
+    // A real drag of a band at 3×: one change in Pro-Q's history.
+    const map = await zoomIn(screen, FROM);
+    const dragFrom = await touchMark();
+    const from = map.toPage(FROM);
+    const to = map.toPage(TO);
+    await page.mouse.move(from.x, from.y);
+    await page.mouse.down();
+    for (let i = 1; i <= DRAG_STEPS; i++) {
+      await page.mouse.move(from.x + ((to.x - from.x) * i) / DRAG_STEPS, from.y + ((to.y - from.y) * i) / DRAG_STEPS);
+      await frames(page, 2);
+    }
+    await page.mouse.up();
+    await touchesUntil(dragFrom, (all) => all.some((r) => r.phase === "up"), "the drag's up");
+    await caughtUp(screen);
+
+    // The press, watched in the page on its clock: the button, its flash and
+    // the canvas's rule for a first finger a macrotask after it, each change
+    // of them after it, and a second press dispatched 200 ms after it.
+    await screen.evaluate((el) => {
+      const w = window as any;
+      const button = el.querySelector('[data-testid="eq-undo"]') as HTMLElement;
+      const canvas = el.querySelector('[data-testid="eq-canvas"]')!;
+      const seen: any = { pressed: null, before: null, after: null, again: null, changes: [] };
+      w.undoPress = seen;
+      const observer = new MutationObserver((records) => {
+        const t = performance.now();
+        // Each change's new value: the next change's old one, the last one's now.
+        records.forEach((r, i) => {
+          const later = records.slice(i + 1).find((o) => o.target === r.target && o.attributeName === r.attributeName);
+          seen.changes.push({ t, name: r.attributeName, v: later ? later.oldValue : (r.target as Element).getAttribute(r.attributeName!) });
+        });
+      });
+      observer.observe(button, { attributes: true, attributeFilter: ["aria-disabled", "data-flash"], attributeOldValue: true });
+      observer.observe(canvas, { attributes: true, attributeFilter: ["data-takes-finger"], attributeOldValue: true });
+      const look = () => {
+        const style = getComputedStyle(button);
+        return {
+          disabled: button.getAttribute("aria-disabled"),
+          flash: button.getAttribute("data-flash"),
+          takes: canvas.getAttribute("data-takes-finger"),
+          border: style.borderTopColor,
+          color: style.color,
+          background: style.backgroundColor,
+        };
+      };
+      button.addEventListener(
+        "pointerdown",
+        () => {
+          seen.pressed = performance.now();
+          seen.before = look();
+          setTimeout(() => (seen.after = look()), 0);
+          setTimeout(() => {
+            seen.again = { t: performance.now(), disabled: button.getAttribute("aria-disabled") };
+            button.dispatchEvent(new PointerEvent("pointerdown", { pointerId: 93, pointerType: "touch", isPrimary: true, bubbles: true, cancelable: true }));
+          }, 200);
+        },
+        { capture: true, once: true },
+      );
+    });
+    const mark = await touchMark();
+    const asked = undoAsks(sent).length;
+    const answered = answers.length;
+    const notesBefore = (await undoNotes(page)).length;
+    await pressUndo(screen);
+    const answer = await answerAfter(answers, answered);
+    expect([answer.session, answer.result], JSON.stringify(answer)).toEqual([session, "done"]);
+    // The undo goes numbered as the editor's next input: every input and
+    // undo of the session in one sequence from 1.
+    expect(undoAsks(sent).slice(asked).map((m) => m.n), JSON.stringify(sent.slice(-3))).toEqual([answer.n]);
+    expect(sent.map((m) => m.n), JSON.stringify(sent.map((m) => [m.type, m.n]))).toEqual(sent.map((_, i) => i + 1));
+
+    // The hub tapped Pro-Q's ↶ where it read it for the picture's width (its
+    // `undo` record), and the simulated Pro-Q took the drag back: none left.
+    const picture = await pictureSize(canvas);
+    const [record] = await until(
+      async () => (await hubEvents()).filter((r: any) => r.ev === "eq" && r.what === "undo" && r.ts >= since && r.n === answer.n),
+      (all) => all.length >= 1,
+      "the hub's undo record",
+    );
+    expect([record.result, record.session, record.y, record.w, record.h], JSON.stringify(record)).toEqual(["done", session, 18, picture.width, picture.height]);
+    const tapped = await until(async () => (await simEq.records()).slice(mark.at), (r) => r.some((x) => x.op === "undo"), "the simulated Pro-Q's undo");
+    expect(steps(tapped), JSON.stringify(tapped)).toEqual([
+      ["touch", "down", record.x, 18],
+      ["touch", "up", record.x, 18],
+      ["undo", null, null, null],
+    ]);
+    expect(tapped[2].left, JSON.stringify(tapped)).toBe(0);
+    expect(tapped.every((r) => r.window === tapped[0].window), "one window").toBe(true);
+    await expect.poll(async () => (await undoNotes(page)).slice(notesBefore), { message: "the note" }).toContain("true|Vrátené: posledná zmena v Pro-Q");
+    expect(await clipped(screen.getByTestId("eq-undo-note"))).toEqual([]);
+
+    // The button: disabled and flashing a macrotask after the press, the
+    // canvas taking no first finger until a picture shows the undo; then the
+    // flash goes after 180 ms, the button takes a press again after 700 ms,
+    // and the canvas once caught up.
+    await expect(undo).toHaveAttribute("aria-disabled", "false");
+    await expect(canvas).toHaveAttribute("data-takes-finger", "true");
+    const press = await page.evaluate(() => (window as any).undoPress);
+    const story = JSON.stringify(press);
+    expect(press.before, story).toMatchObject({ disabled: "false", takes: "true", border: "rgb(255, 195, 90)", color: "rgb(255, 195, 90)", background: "rgb(42, 32, 16)" });
+    expect(press.after, story).toMatchObject({ disabled: "true", flash: "true", takes: "false", border: "rgb(90, 74, 42)", color: "rgb(122, 106, 74)", background: "rgb(90, 68, 16)" });
+    const changes = (name: string) => press.changes.filter((c: any) => c.name === name);
+    expect(changes("aria-disabled").map((c: any) => c.v), story).toEqual(["true", "false"]);
+    const enabled = changes("aria-disabled")[1].t - press.pressed;
+    expect(enabled, story).toBeGreaterThanOrEqual(700);
+    expect(enabled, story).toBeLessThan(1_500);
+    expect(changes("data-flash").map((c: any) => c.v), story).toEqual(["true", "false"]);
+    expect(changes("data-flash")[1].t - press.pressed, story).toBeGreaterThanOrEqual(180);
+    const takes = changes("data-takes-finger");
+    expect(takes[0]?.v, story).toBe("false");
+    expect(takes[takes.length - 1].v, story).toBe("true");
+    // The second press, 200 ms after the first, found it disabled and sent
+    // nothing: one undo went, one tap.
+    expect(press.again?.disabled, story).toBe("true");
+    expect(undoAsks(sent).length - asked, JSON.stringify(undoAsks(sent))).toBe(1);
+    expect(steps((await simEq.records()).slice(mark.at)), "only the first press's tap").toEqual(steps(tapped));
+
+    // The page's flight recorder: the press with its number, the answer and
+    // its wait for it.
+    const [event] = await until(
+      async () => pageEvents(await hubEvents()).filter((e: any) => e.ev === "eq_undo" && e.n === answer.n && e.t >= since),
+      (all) => all.length >= 1,
+      "the page's eq_undo event",
+      15_000,
+    );
+    expect(event.result, JSON.stringify(event)).toBe("done");
+    expect(event.ms, JSON.stringify(event)).toBeGreaterThanOrEqual(0);
+    expect(event.ms, JSON.stringify(event)).toBeLessThan(5_000);
+
+    // Nothing left to undo: the hub reads Pro-Q's ↶ grey and taps nothing.
+    await page.waitForTimeout(HUB_APART_MARGIN);
+    const nothingFrom = await touchMark();
+    const notesNow = (await undoNotes(page)).length;
+    const before = answers.length;
+    await pressUndo(screen);
+    expect((await answerAfter(answers, before)).result).toBe("nothing");
+    await expect.poll(async () => (await undoNotes(page)).slice(notesNow), { message: "the note" }).toContain("true|Nie je čo vrátiť");
+    await page.waitForTimeout(300);
+    expect(steps((await simEq.records()).slice(nothingFrom.at)), "no tap on the ↶").toEqual([]);
+
+    await caughtUp(screen);
+    const closing = (await simEq.records()).length;
+    await screen.getByTestId("eq-exit").click();
+    await expect(page.getByTestId("eq-screen")).toHaveCount(0);
+    await closedWithGuard(closing);
+    await editorOpen(trackPath, false);
+  });
+
+  test("while a finger holds the picture ↶ VRÁTIŤ takes no press and nothing goes; once it lifts a press takes the drag back", async ({ page }) => {
+    const { sent, answers } = watchUndo(page);
+    await openSurface(page);
+    const { onTrack, trackPath } = await hand2Cards(page);
+    await editorOpen(trackPath, false);
+    await onTrack.getByTestId("eq-open").click();
+    const screen = await openScreen(page, trackPath);
+    const undo = screen.getByTestId("eq-undo");
+    await recordUndoNotes(screen);
+    const map = await zoomIn(screen, FROM);
+    const dragFrom = await touchMark();
+    const from = map.toPage(FROM);
+    const to = map.toPage(TO);
+    const step = (i: number) => page.mouse.move(from.x + ((to.x - from.x) * i) / DRAG_STEPS, from.y + ((to.y - from.y) * i) / DRAG_STEPS);
+    await page.mouse.move(from.x, from.y);
+    await page.mouse.down();
+    for (let i = 1; i <= DRAG_STEPS / 2; i++) {
+      await step(i);
+      await frames(page, 2);
+    }
+    await touchesUntil(dragFrom, (all) => all.some((r) => r.phase === "update"), "the drag's moves");
+    await expect(undo).toHaveAttribute("aria-disabled", "true");
+    // A second finger on ↶ VRÁTIŤ (the mouse holds the picture): nothing goes.
+    const asked = undoAsks(sent).length;
+    await undo.dispatchEvent("pointerdown", { pointerId: 94, pointerType: "touch", isPrimary: false, bubbles: true, cancelable: true });
+    await page.waitForTimeout(400);
+    expect(undoAsks(sent).length, "no undo while the finger holds the picture").toBe(asked);
+    for (let i = DRAG_STEPS / 2 + 1; i <= DRAG_STEPS; i++) {
+      await step(i);
+      await frames(page, 2);
+    }
+    await page.mouse.up();
+    await touchesUntil(dragFrom, (all) => all.some((r) => r.phase === "up"), "the drag's up");
+    expect((await simEq.records()).slice(dragFrom.at).filter((r) => r.op === "undo"), "no undo during the drag").toEqual([]);
+
+    // Lifted: it takes a press, and the hub takes the drag back.
+    await expect(undo).toHaveAttribute("aria-disabled", "false");
+    const mark = await touchMark();
+    const notesBefore = (await undoNotes(page)).length;
+    const before = answers.length;
+    await pressUndo(screen);
+    expect((await answerAfter(answers, before)).result).toBe("done");
+    expect(undoAsks(sent).length - asked, "one undo").toBe(1);
+    await until(async () => (await simEq.records()).slice(mark.at), (r) => r.some((x) => x.op === "undo"), "the simulated Pro-Q's undo");
+    await expect.poll(async () => (await undoNotes(page)).slice(notesBefore), { message: "the note" }).toContain("true|Vrátené: posledná zmena v Pro-Q");
+
+    await caughtUp(screen);
+    const closing = (await simEq.records()).length;
+    await screen.getByTestId("eq-exit").click();
+    await expect(page.getByTestId("eq-screen")).toHaveCount(0);
+    await closedWithGuard(closing);
+    await editorOpen(trackPath, false);
+  });
+
+  test("↶ VRÁTIŤ sits on the bar after the name, before the lock mark and ?; upright only ↶ shows; the bar fits a phone either way; the legend names it", async ({ page }) => {
+    await openSurface(page);
+    const { onTrack, trackPath } = await hand2Cards(page);
+    await editorOpen(trackPath, false);
+    await onTrack.getByTestId("eq-open").click();
+    const screen = await openScreen(page, trackPath);
+    const area = screen.getByTestId("eq-area");
+    const undo = screen.getByTestId("eq-undo");
+    const word = screen.getByTestId("eq-undo-word");
+    await expect(screen.getByTestId("eq-undo-arrow")).toHaveText("↶");
+    await expect(word).toHaveText("VRÁTIŤ");
+    await expect(word).toBeVisible();
+    // Right of the name, left of the lock mark and ?.
+    const box = async (locator: Locator) => (await locator.boundingBox())!;
+    const name = await box(screen.locator(".eq-name"));
+    const own = await box(undo);
+    const mine = await box(screen.getByTestId("eq-mine"));
+    const help = await box(screen.getByTestId("eq-help"));
+    expect(own.x, "after the name").toBeGreaterThanOrEqual(name.x + name.width - 0.5);
+    expect(own.x + own.width, "before the lock mark").toBeLessThanOrEqual(mine.x + 0.5);
+    expect(mine.x + mine.width, "the lock mark before ?").toBeLessThanOrEqual(help.x + 0.5);
+    // The mockup's look: amber on dark, a 2 px border, at least 132 px wide.
+    const look = await undo.evaluate((el) => {
+      const style = getComputedStyle(el);
+      return { border: style.borderTopColor, line: style.borderTopWidth, color: style.color, background: style.backgroundColor };
+    });
+    expect(look).toEqual({ border: "rgb(255, 195, 90)", line: "2px", color: "rgb(255, 195, 90)", background: "rgb(42, 32, 16)" });
+    expect(own.width).toBeGreaterThanOrEqual(132);
+    await barFits(screen, ["eq-exit", "eq-undo", "eq-mine", "eq-help"], ["eq-exit", "eq-undo", "eq-mine"]);
+
+    // The legend: a hold opens nothing (PR O proved it on the PC), and ↶
+    // VRÁTIŤ's line.
+    await screen.getByTestId("eq-help").click();
+    const legend = screen.getByTestId("eq-legend");
+    await expect(legend.getByTestId("eq-legend-hold").locator("td")).toHaveText(["podržať", "nič: ponuka pásma sa neotvorí"]);
+    await expect(legend.getByTestId("eq-legend-undo").locator("td")).toHaveText(["↶ VRÁTIŤ", "vráti poslednú zmenu v Pro-Q"]);
+    await expect(legend).not.toContainText("overiť");
+    await screen.getByTestId("eq-help").click();
+    await expect(legend).toHaveCount(0);
+
+    // A phone upright: only ↶, and nothing in the bar cut off or outside it;
+    // zoomed too, the zoom group beside it.
+    await page.setViewportSize({ width: 390, height: 844 });
+    await frames(page, 3);
+    await shaped(screen);
+    await expect(word).toBeHidden();
+    await expect(screen.getByTestId("eq-undo-arrow")).toBeVisible();
+    expect((await box(undo)).width).toBeGreaterThanOrEqual(56);
+    await barFits(screen, ["eq-exit", "eq-undo", "eq-help"], ["eq-exit", "eq-undo"]);
+    await pinch(area, await centre(area), 50, 125);
+    await expect(screen.getByTestId("eq-factor")).toHaveText("2,5×");
+    await zoomBarFits(screen);
+
+    // A phone on its side: the 40 px bar, the word back, the zoom group shown.
+    await page.setViewportSize({ width: 844, height: 390 });
+    await frames(page, 3);
+    await shaped(screen);
+    await expect(word).toBeVisible();
+    expect(Math.round((await box(screen.getByTestId("eq-bar"))).height), "the low bar").toBe(40);
+    await expect(screen.getByTestId("eq-zoom")).toHaveAttribute("data-shown", "true");
+    await zoomBarFits(screen);
+
+    const closing = (await simEq.records()).length;
+    await screen.getByTestId("eq-exit").click();
+    await expect(page.getByTestId("eq-screen")).toHaveCount(0);
+    await closedWithGuard(closing);
+    await editorOpen(trackPath, false);
   });
 });
