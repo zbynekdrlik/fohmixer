@@ -109,6 +109,13 @@ pub fn meter_ms(why: Sleep, setting: Option<u32>) -> u32 {
     }
 }
 
+/// Whether something holds the page Active (touch-idle's `held`): a finger
+/// down, an open Pro-Q 4 screen, or an input on its editor the picture does
+/// not show yet.
+pub fn holds(finger_down: bool, eq_open: bool, eq_caught_up: bool) -> bool {
+    finger_down || eq_open || !eq_caught_up
+}
+
 /// Whether a countdown of `after` ms that started at `last` is over at `now`.
 pub fn due(now: f64, last: f64, after: f64) -> bool {
     now - last >= after

@@ -676,6 +676,13 @@ pub fn frame(gap: f64) {
     }
 }
 
+/// Whether a pointer is down anywhere on the page (#51: a finger holds it
+/// Active), as the capture-phase pointer listeners counted them.
+pub fn finger_down() -> bool {
+    PERF.try_with(|perf| perf.borrow().any_down())
+        .unwrap_or(false)
+}
+
 /// Reports every change of `data-sw` / `data-wake-lock` on `root` (set by
 /// `index.html`'s script, which runs before the app).
 fn observe_attributes(root: &web_sys::Element) {

@@ -25,7 +25,8 @@ impl LiveStore {
     /// stops, whatever the socket does: it keeps ticking while the page
     /// reconnects, so a lost socket counts from the page's next on-time tick.
     /// Each tick first takes the page hidden or shown should its
-    /// `visibilitychange` have been missed (#51), then shows the counter,
+    /// `visibilitychange` have been missed (#51) and touch-idle's countdown
+    /// (`tick_idle`), then shows the counter,
     /// tells the flight recorder the writes that turned `unconfirmed` or
     /// `not_sent` (#43 PR E) and sends its next batch when one is due.
     pub(super) fn tick_link(self) {
@@ -35,6 +36,7 @@ impl LiveStore {
                     return;
                 }
                 self.sync_visibility();
+                self.tick_idle();
                 let _ = self
                     .inner
                     .try_update_value(|i| i.watch.tick(dom::epoch_now()));

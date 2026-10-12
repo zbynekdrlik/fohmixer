@@ -103,6 +103,9 @@ struct Inner {
     idle: IdleWatch,
     /// The `visibilitychange` listener (#51), removed when the store stops.
     on_visibility: Option<Closure<dyn FnMut()>>,
+    /// The window's capture-phase `pointerdown` listener (#51: a touch wakes
+    /// the page), removed when the store stops.
+    on_touch: Option<Closure<dyn FnMut()>>,
 }
 
 impl Inner {
@@ -125,6 +128,7 @@ impl Inner {
             eq_undos: EqUndos::default(),
             idle: IdleWatch::new(dom::epoch_now()),
             on_visibility: None,
+            on_touch: None,
         }
     }
 
@@ -203,8 +207,8 @@ impl LiveStore {
 
     /// Connects: fetches the layout (checking the token), then opens the
     /// socket; starts the dropout watch's own tick (`tick_link`), which runs
-    /// until the store stops, and listens for the page hidden or shown
-    /// (#51, `listen_idle`).
+    /// until the store stops, and listens for the page hidden or shown and
+    /// for its touches (#51, `listen_idle`).
     pub fn start(self) {
         self.listen_idle();
         self.connect();
@@ -212,7 +216,8 @@ impl LiveStore {
     }
 
     /// Ends the store (the surface unmounts): closes the socket, stops
-    /// reconnecting, stops listening for the page hidden or shown.
+    /// reconnecting, stops listening for the page hidden or shown and for
+    /// its touches.
     pub fn stop(self) {
         self.unlisten_idle();
         let socket = self

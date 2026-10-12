@@ -31,6 +31,15 @@ fn a_hidden_page_asks_for_no_meters_an_untouched_one_for_paced_ones() {
 }
 
 #[test]
+fn a_finger_an_open_eq_screen_or_an_eq_input_not_shown_holds_the_page() {
+    assert!(!holds(false, false, true), "nothing holds it");
+    assert!(holds(true, false, true), "a finger down");
+    assert!(holds(false, true, true), "the Pro-Q 4 screen open");
+    assert!(holds(false, false, false), "an EQ input not shown yet");
+    assert!(holds(true, true, false));
+}
+
+#[test]
 fn the_countdown_is_over_at_exactly_its_length() {
     assert!(!due(2_999.0, 1_000.0, 2_000.0));
     assert!(!due(3_000.0_f64.next_down(), 1_000.0, 2_000.0));

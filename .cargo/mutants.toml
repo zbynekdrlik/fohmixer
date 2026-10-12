@@ -200,8 +200,18 @@ exclude_re = [
   # them: the page's idle messages off its socket, the hub's idle records,
   # no meter while hidden and every other value at once, the meters back at
   # the wake, the page's idle events in the event log, and no dropout over
-  # an idle period and its wake.
-  "fohmixer-ui/src/store/live/idle\\.rs.*(replace|in) LiveStore::(listen_idle|unlisten_idle|sync_visibility|turn_idle|meter_ms|send_idle|idle_hello|ping_now)( |$)",
+  # an idle period and its wake. PR 2b (touch-idle): listen_idle and
+  # unlisten_idle also add and remove the window's capture-phase pointerdown
+  # listener, touched (a pointer down through the tested IdleWatch::touched)
+  # and tick_idle (the layout's idle_after_s through the tested
+  # idle_after_ms, the tested holds of Perf::any_down, the open Pro-Q 4
+  # screen and the tested Inputs::caught_up, into the tested
+  # IdleWatch::tick).
+  # idle.spec.ts: a page left untouched goes idle (the hub's record with
+  # 250), a fader touch wakes it before the fader's own handler and its set
+  # reaches Live, the default layout never goes idle; eq.spec.ts: an open
+  # Pro-Q 4 screen never does, closed it does.
+  "fohmixer-ui/src/store/live/idle\\.rs.*(replace|in) LiveStore::(listen_idle|unlisten_idle|touched|tick_idle|sync_visibility|turn_idle|meter_ms|send_idle|idle_hello|ping_now)( |$)",
   "fohmixer-ui/src/store/live\\.rs.*(replace|in) (Socket::open|Socket::buffered|Socket::close|Inner::new|Inner::ping)( |$)",
   # auth.rs: local storage and the login request (login_outcome, login_body
   # and LoginError::message are the tested decisions).
@@ -324,7 +334,10 @@ exclude_re = [
   # frame rate and longest frame; after a visibilitychange a touch report
   # has no frame rate yet; dispatched touch pointers report at once, a
   # cancelled and a lifted one are not counted: touches_max 3, then 4).
-  "fohmixer-ui/src/diag\\.rs.*(replace|in) (listen_pointers|pointer_down|pointer_up|pause_perf|frame)( |$)",
+  # #51 PR 2b: finger_down (the tested Perf::any_down of the thread-local
+  # Perf); idle.spec.ts and eq.spec.ts drive it (a page idle while
+  # untouched, never while a finger or the Pro-Q 4 screen holds it).
+  "fohmixer-ui/src/diag\\.rs.*(replace|in) (listen_pointers|pointer_down|pointer_up|pause_perf|frame|finger_down)( |$)",
   # diag.rs, the flight recorder's glue (#43 PR C): record and with_trace
   # (the page's one Recorder in a thread-local) and trace_visibility (the
   # visibilitychange listener's call with the page clock and

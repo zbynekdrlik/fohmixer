@@ -202,6 +202,11 @@ impl Perf {
         self.down.iter().any(|&(down_id, _)| down_id == id)
     }
 
+    /// Whether any pointer is down (#51: a finger holds the page Active).
+    pub fn any_down(&self) -> bool {
+        !self.down.is_empty()
+    }
+
     /// A perf report goes at `now`: what it says. The most pointers at once
     /// starts again from those down now.
     pub fn report(&mut self, now: f64) -> PerfReport {
