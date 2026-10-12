@@ -666,6 +666,13 @@ pub struct RemoteStatus {
     pub tunnel: Option<TunnelStatus>,
 }
 
+/// The longest `error` a page's report carries, in characters (#43): the
+/// error's own text (the page cuts it to 300 characters) and the first
+/// lines of the thrown value's stack (4096 bytes at most). The page cuts the
+/// whole `error` to it and the hub keeps that much; a report stays well
+/// under the route's 10 KiB body limit.
+pub const REPORT_ERROR_MAX_CHARS: usize = 4500;
+
 /// What a page reports about itself (#26, `POST /api/client-report`): the
 /// event and the page's state, every field optional text. The hub keeps
 /// these fields only (serde drops any other), each cut short and stripped of

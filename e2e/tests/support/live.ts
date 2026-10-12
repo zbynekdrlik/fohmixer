@@ -306,6 +306,23 @@ export async function openSurface(page: Page) {
 }
 
 /**
+ * A Live volume's dB on the strips' law, spelled as the page's
+ * `behave::fader::value2db` (TouchOSC's `value2db`; SimLive's `volume_to_db`
+ * is the same curve): above 1 (or no number) 0 dB, the line from 0.4, the
+ * parabola from 0.15, the power curve below it, −∞ at −70 dB and under. The
+ * backing-tracks fader's tests (#58, `params.spec.ts`) check it against the
+ * page's own `data-db` of the same volumes.
+ */
+export function value2db(v: number): number {
+  if (v > 1 || Number.isNaN(v)) return 0;
+  if (v >= 0.4) return 40 * v - 34;
+  if (v >= 0.15) return -((399.751894 * v - 201.871345) ** 2 + 12630.61132) / 799.503788;
+  const gamma = 7504 / 5567;
+  const db = 118.426374 * v ** (1 / gamma) - 70;
+  return db <= -70 ? -Infinity : db;
+}
+
+/**
  * Live's display string in the strip readout's form (#21, TouchOSC's): one
  * decimal rounded half away from zero, no unit, a real minus, "−∞" for
  * silence.

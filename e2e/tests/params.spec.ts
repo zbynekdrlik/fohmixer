@@ -6,6 +6,7 @@ import {
   centre,
   clipped,
   dispatchPointer,
+  doubleTap,
   frames,
   harness,
   hostLine,
@@ -16,6 +17,7 @@ import {
   token,
   track,
   until,
+  value2db,
   volume,
 } from "./support/live";
 
@@ -310,6 +312,50 @@ test.describe("The backing-tracks fader", () => {
     await live.set("band", BASS, "value", before[1]);
   });
 
+  /** Both tracks' volumes in Live (Drums, Bass). */
+  const levels = () => Promise.all([live.get("band", DRUMS, "value"), live.get("band", BASS, "value")]);
+
+  /**
+   * Both tracks' volumes once Live holds them still (two reads 50 ms apart
+   * agree: the page's sets for the two tracks may land between two reads)
+   * and `ok` accepts them.
+   */
+  async function settled(ok: (v: number[]) => boolean, what: string): Promise<number[]> {
+    let previous: number[] = [];
+    const read = await until(
+      async () => {
+        const now = await levels();
+        const still = now.every((v, i) => v === previous[i]);
+        previous = now;
+        return { now, still };
+      },
+      ({ now, still }) => still && ok(now),
+      what,
+    );
+    return read.now;
+  }
+
+  /**
+   * "The same number of dB" in dB (the #58 review): every track's change on
+   * the page's own curve (`value2db`) is the loudest's, within 0.01 dB. The
+   * other tracks' volumes come from the law's dB → volume bisection (±3e-5
+   * of Live's volume), at most ~0.005 dB down to −41 dB, where the curve is
+   * steepest above the levels these tests use.
+   */
+  const SAME_DB = 0.01;
+
+  /** The page's `data-db` of each groove is the curve's dB of Live's volume (3 decimals). */
+  async function groovesShow(strip: Locator, volumes: number[]) {
+    const grooves = strip.getByTestId("param-groove");
+    for (const [i, v] of volumes.entries()) {
+      await expect
+        .poll(async () => Math.abs(Number(await grooves.nth(i).getAttribute("data-db")) - value2db(v)), {
+          message: `groove ${i} at ${value2db(v)} dB`,
+        })
+        .toBeLessThan(0.001);
+    }
+  }
+
   test("at 0 dB it looks like any strip: teal grooves at 0 dB, the cap on them, no badge", async ({ page }) => {
     await live.set("band", DRUMS, "value", 0.85);
     await live.set("band", BASS, "value", 0.85);
@@ -382,16 +428,18 @@ test.describe("The backing-tracks fader", () => {
   });
 
   test("a drag moves every track by the same dB, and back to its start restores them exactly", async ({ page }) => {
-    // −6 and −2 dB: the drag stays on the law's linear part (0.4 and up,
-    // 40 dB per unit of Live's volume), where the same dB is the same
-    // change of volume.
-    await live.set("band", DRUMS, "value", 0.7);
-    await live.set("band", BASS, "value", 0.8);
+    // Clearly different levels, as a prayer mode can leave them: Drums at
+    // 0 dB (the loudest, at the finger), Bass at −29.8 dB, on the law's
+    // curved part, where the same dB is not the same change of volume.
+    const START = [0.85, 0.24];
+    await live.set("band", DRUMS, "value", START[0]);
+    await live.set("band", BASS, "value", START[1]);
     await openSurface(page);
     const strip = podklady(page);
     const fader = strip.getByTestId("fader");
     await ready(fader);
-    await expect(strip.getByTestId("param-display")).toHaveText("-2.0 dB");
+    await expect(strip.getByTestId("param-display")).toHaveText("0.0 dB");
+    await groovesShow(strip, START);
     // A finger down; its first move only anchors (#43 PR F); then 40 px
     // down in moves too large to shape (each over 3 % of TouchOSC's 355 px
     // strip), so the cap follows the finger 1:1. The finger stays down.
@@ -401,20 +449,20 @@ test.describe("The backing-tracks fader", () => {
       { type: "pointermove", dy: -20 },
       { type: "pointermove", dy: -40 },
     ]);
-    const [drums, bass] = await until(
-      () => Promise.all([live.get("band", DRUMS, "value"), live.get("band", BASS, "value")]),
-      ([d, b]) => d < 0.69 && b < 0.79,
-      "both tracks down",
-    );
-    expect(drums, "Drums on the linear part").toBeGreaterThan(0.4);
-    // The loudest (Bass) at the finger, Drums moved by the same dB.
-    expect(Math.abs(drums - 0.7 - (bass - 0.8)), `Drums ${drums}, Bass ${bass}`).toBeLessThan(1e-4);
-    expect(bass, "at least 2 dB down").toBeLessThan(0.75);
-    // The surface shows what Live holds.
+    const [drums, bass] = await settled(([d, b]) => d < START[0] && b < START[1], "both tracks down, held still");
+    const dDrums = value2db(drums) - value2db(START[0]);
+    const dBass = value2db(bass) - value2db(START[1]);
+    // The drag's direction: down, the loudest by 2 dB or more.
+    expect(dDrums, `Drums ${drums}`).toBeLessThanOrEqual(-2);
+    expect(dBass, `Bass ${bass}`).toBeLessThan(0);
+    // Bass stays on the curved part (under −18 dB, above −41 dB).
+    expect(bass, "Bass on the curved part").toBeGreaterThan(0.15);
+    // The same dB: equal steps of volume would move Bass about three times
+    // as many dB here.
+    expect(Math.abs(dBass - dDrums), `Drums ${dDrums} dB, Bass ${dBass} dB`).toBeLessThan(SAME_DB);
+    // The surface shows what Live holds, on the same curve.
     await frames(page);
-    const grooves = strip.getByTestId("param-groove");
-    await expect.poll(async () => Math.abs(Number(await grooves.nth(0).getAttribute("data-db")) - (40 * drums - 34))).toBeLessThan(0.001);
-    await expect.poll(async () => Math.abs(Number(await grooves.nth(1).getAttribute("data-db")) - (40 * bass - 34))).toBeLessThan(0.001);
+    await groovesShow(strip, [drums, bass]);
     await expect(strip).toHaveAttribute("data-moved", "true");
     // Back up to where the finger started, and lifted: the touch's start
     // values, exactly.
@@ -423,12 +471,37 @@ test.describe("The backing-tracks fader", () => {
       { type: "pointermove", dy: 0 },
       { type: "pointerup", dy: 0 },
     ]);
-    await until(
-      () => Promise.all([live.get("band", DRUMS, "value"), live.get("band", BASS, "value")]),
-      ([d, b]) => d === 0.7 && b === 0.8,
-      "Drums 0.7 and Bass 0.8 again, exactly",
-    );
-    await expect(strip.getByTestId("param-groove").nth(0)).toHaveAttribute("data-db", "-6.000");
-    await expect(strip.getByTestId("param-display")).toHaveText("-2.0 dB");
+    await until(levels, ([d, b]) => d === START[0] && b === START[1], "Drums 0.85 and Bass 0.24 again, exactly");
+    await expect(strip.getByTestId("param-display")).toHaveText("0.0 dB");
+    await groovesShow(strip, START);
+  });
+
+  test("a double tap glides the loudest to 0 dB and every other track by the same dB", async ({ page }) => {
+    // As it behaves today, a strip's double tap (#58 item 4 review, point 3:
+    // whether this fader should take one at all is the owner's open
+    // question). Prayer-mode levels: Drums −14 dB (the loudest), Bass
+    // −29.8 dB.
+    const START = [0.5, 0.24];
+    await live.set("band", DRUMS, "value", START[0]);
+    await live.set("band", BASS, "value", START[1]);
+    await openSurface(page);
+    const strip = podklady(page);
+    const fader = strip.getByTestId("fader");
+    await ready(fader);
+    await expect(strip.getByTestId("param-display")).toHaveText("-14.0 dB");
+    await groovesShow(strip, START);
+    await doubleTap(fader);
+    // The glide's end: the loudest at 0 dB (as a strip's, 1e-6), held still.
+    const [drums, bass] = await settled(([d]) => Math.abs(d - 0.85) < 1e-6, "Drums at 0 dB, held still");
+    const dDrums = value2db(drums) - value2db(START[0]);
+    const dBass = value2db(bass) - value2db(START[1]);
+    // Up: Drums by its 14 dB to 0 dB, Bass by the same dB.
+    expect(Math.abs(dDrums - 14), `Drums ${drums}`).toBeLessThan(0.001);
+    expect(dBass, `Bass ${bass}`).toBeGreaterThan(0);
+    expect(Math.abs(dBass - dDrums), `Drums ${dDrums} dB, Bass ${dBass} dB`).toBeLessThan(SAME_DB);
+    await groovesShow(strip, [drums, bass]);
+    await expect(strip.getByTestId("param-display")).toHaveText("0.0 dB");
+    // Bass is still off 0 dB: the strip stays amber.
+    await expect(strip).toHaveAttribute("data-moved", "true");
   });
 });

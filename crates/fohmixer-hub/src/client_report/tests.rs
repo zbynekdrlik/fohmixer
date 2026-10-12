@@ -54,6 +54,7 @@ fn report(kind: &str) -> ClientReport {
 #[test]
 fn the_limits_are_these() {
     assert_eq!(TEXT_MAX_CHARS, 300);
+    assert_eq!(REPORT_ERROR_MAX_CHARS, 4500);
     assert_eq!(WORD_MAX_CHARS, 64);
     assert_eq!(RING, 50);
     assert_eq!(RATE_WINDOW, Duration::from_secs(10));
@@ -94,13 +95,19 @@ fn every_field_is_cleaned_the_free_texts_are_longer() {
     let word = format!("{}…", "y".repeat(WORD_MAX_CHARS));
     let text = format!("{}…", "y".repeat(TEXT_MAX_CHARS));
     let mut expected = fields(&word);
-    expected.ua = Some(text.clone());
-    expected.error = Some(text);
+    expected.ua = Some(text);
+    // The error is longer still: its text and its stack (#43).
+    expected.error = Some(long.clone());
     assert_eq!(clean_fields(fields(&long)), expected);
+    let mut over = fields("w");
+    over.error = Some("e".repeat(REPORT_ERROR_MAX_CHARS + 1));
+    let mut cut = fields("w");
+    cut.error = Some(format!("{}…", "e".repeat(REPORT_ERROR_MAX_CHARS)));
+    assert_eq!(clean_fields(over), cut);
     // Exactly at the limits: kept whole.
     let mut exact = fields(&"w".repeat(WORD_MAX_CHARS));
     exact.ua = Some("u".repeat(TEXT_MAX_CHARS));
-    exact.error = Some("e".repeat(TEXT_MAX_CHARS));
+    exact.error = Some("e".repeat(REPORT_ERROR_MAX_CHARS));
     assert_eq!(clean_fields(exact.clone()), exact);
     assert_eq!(
         clean_fields(ReportFields::default()),
@@ -402,7 +409,33 @@ async fn a_report_over_10_kib_is_refused() {
     assert_eq!(kept.len(), 1);
     // The accepted one was cut to the field limit.
     let error = kept[0].fields.error.as_deref().unwrap();
-    assert_eq!(error.chars().count(), TEXT_MAX_CHARS + 1);
+    assert_eq!(error.chars().count(), REPORT_ERROR_MAX_CHARS + 1);
+    hub.stop();
+}
+
+#[tokio::test]
+async fn an_error_with_its_stack_is_kept_whole_on_one_line() {
+    // A page's error with a long stack (#43, `diag::error_text`): its text
+    // cut to 300 characters, then the stack's first 30 lines (at most 4096
+    // bytes) joined on one line and the cut mark. The route takes it, and
+    // the status lists it whole (the log line logs the same field).
+    let dir = tempfile::tempdir().unwrap();
+    let hub = crate::test_hub(dir.path());
+    let frames = (0..30)
+        .map(|n| format!("wasm-function[{n}]@[wasm code] {}", "f".repeat(100)))
+        .collect::<Vec<_>>()
+        .join(" | ");
+    let error = format!("{}… | stack: {frames} [cut]", "m".repeat(300));
+    let chars = error.chars().count();
+    assert!(
+        chars > TEXT_MAX_CHARS && chars <= REPORT_ERROR_MAX_CHARS,
+        "{chars}"
+    );
+    let body = json!({"kind": "error", "ua": "Mozilla/5.0 (iPad)", "error": &error}).to_string();
+    assert!(body.len() < 10_240, "{}", body.len());
+    assert_eq!(post(&hub, body).await, StatusCode::NO_CONTENT);
+    let status = status_json(&hub).await;
+    assert_eq!(status["client_reports"][0]["error"], error.as_str());
     hub.stop();
 }
 
