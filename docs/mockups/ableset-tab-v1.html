@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="sk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>AbleSet tab v1</title>
+<!-- #90: AbleSet's own page inside fohmixer, for the owner's approval of
+     where the tab and the page sit. Synthetic: the AbleSet area is a drawn
+     placeholder with invented songs; the column's labels are generic. -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@700&family=Barlow:wght@600;700&family=JetBrains+Mono:wght@500;600;700&display=swap">
+<style>
+:root {
+    --bg: #07070c;
+    --panel: #1a1a28;
+    --bar: #11111b;
+    --line: #2a2a44;
+    --text: #eaeaf0;
+    --muted: #9a9ab4;
+    --accent: #3cc8b4;
+    --gold: #ffd166;
+    --red: #ff5d5d;
+    --display: "Barlow Condensed", "Arial Narrow", sans-serif;
+    --ui: "Barlow", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --mono: "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: #000; color: var(--text); font-family: var(--ui); }
+.page { display: flex; flex-direction: column; align-items: center; gap: 16px; padding: 12px 16px 40px; }
+.notes { width: 100%; max-width: 1194px; font: 600 15px/1.5 var(--ui); }
+.notes h1 { margin: 0 0 6px; color: var(--accent); font: 700 26px/1.2 var(--display); letter-spacing: 0.04em; }
+.notes h2 { margin: 16px 0 6px; font: 700 19px/1.2 var(--display); letter-spacing: 0.04em; }
+.notes ul { margin: 0; padding-left: 20px; }
+.notes li { margin: 3px 0; }
+.muted { color: var(--muted); }
+.controls { display: flex; flex-wrap: wrap; gap: 8px; width: 100%; max-width: 1194px; }
+.controls button { padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px; background: #11111b; color: var(--muted); font: 600 14px/1 var(--ui); cursor: pointer; }
+.controls button.on { border-color: var(--accent); color: var(--text); background: #12302c; }
+.fit { position: relative; width: 100%; max-width: 1194px; }
+.fit::before { content: ""; display: block; padding-top: calc(834 / 1194 * 100%); }
+.tablet { position: absolute; top: 0; left: 0; width: 1194px; height: 834px; transform-origin: 0 0; border: 1px solid var(--line); background: var(--bg); overflow: hidden; display: flex; gap: 6px; padding: 6px; }
+.frame { position: relative; flex: 1; min-width: 0; border-radius: 10px; overflow: hidden; background: #0f1016; border: 1px solid #1c1d2a; }
+/* The column at the right edge (variant A). */
+.column { flex: none; width: 132px; display: flex; flex-direction: column; gap: 8px; padding: 8px; border-radius: 12px; background: #11111b; border: 1px solid var(--line); }
+.head { text-align: center; padding: 6px 4px; border: 1px solid var(--line); border-radius: 10px; }
+.head .ln { font: 600 13px/1.6 var(--mono); }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #4ade80; margin-right: 5px; }
+.head .ver { color: var(--muted); font: 500 10px/1.4 var(--mono); }
+.tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 6px; border: 1px solid var(--line); border-radius: 10px; }
+.tab { padding: 6px 2px; border-radius: 6px; text-align: center; color: var(--muted); font: 700 12px/1.1 var(--display); letter-spacing: 0.05em; }
+.tab.wide { grid-column: 1 / 3; }
+.tab.sel { color: var(--text); box-shadow: inset 0 -2px 0 var(--gold); background: #1c1c2c; }
+.tab.able.sel { box-shadow: inset 0 -2px 0 var(--accent); }
+.rail { display: flex; flex-direction: column; gap: 6px; flex: 1; }
+.rbtn { padding: 10px 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); color: var(--muted); font: 700 13px/1 var(--display); letter-spacing: 0.05em; }
+.rbtn .d { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: #555; margin-right: 6px; }
+/* The thin strip at the right edge (variant B), the column over the page on ☰. */
+.thin { flex: none; width: 34px; display: flex; flex-direction: column; align-items: center; gap: 10px; padding-top: 10px; border-radius: 10px; background: #11111b; border: 1px solid var(--line); }
+.thin .burger { width: 26px; height: 40px; border-radius: 6px; border: 1px solid var(--line); display: grid; place-items: center; color: var(--text); font: 700 16px/1 var(--ui); }
+.overlay { position: absolute; top: 6px; bottom: 6px; right: 46px; width: 150px; display: none; }
+.overlay.on { display: flex; }
+.shade { position: absolute; inset: 0; background: rgba(5, 5, 8, 0.55); display: none; }
+.shade.on { display: block; }
+/* The drawn stand-in for AbleSet's own page. */
+.as { position: absolute; inset: 0; display: flex; flex-direction: column; font-family: var(--ui); }
+.as-top { display: flex; align-items: center; gap: 16px; padding: 14px 18px; background: #161722; border-bottom: 1px solid #23243a; }
+.as-song { font: 700 26px/1.1 var(--ui); }
+.as-time { margin-left: auto; font: 700 30px/1 var(--mono); color: #b8f5e8; }
+.as-body { flex: 1; display: flex; min-height: 0; }
+.as-list { width: 46%; padding: 10px; display: flex; flex-direction: column; gap: 6px; overflow: hidden; }
+.as-item { display: flex; gap: 10px; align-items: center; padding: 12px; border-radius: 8px; background: #191a26; font: 600 17px/1.2 var(--ui); color: #c9c9da; }
+.as-item.now { background: #213b35; color: #eafff9; }
+.as-item .n { width: 22px; color: #77779a; font: 600 13px/1 var(--mono); }
+.as-main { flex: 1; padding: 14px; display: flex; flex-direction: column; gap: 12px; }
+.as-sections { display: flex; gap: 8px; flex-wrap: wrap; }
+.as-sec { padding: 14px 18px; border-radius: 8px; background: #22233a; font: 700 16px/1 var(--ui); color: #d7d7ea; }
+.as-sec.now { background: #3d6fd9; color: #fff; }
+.as-lyrics { flex: 1; border-radius: 10px; background: #12131c; display: grid; place-items: center; text-align: center; font: 700 30px/1.35 var(--ui); color: #f1f1f7; padding: 20px; }
+.as-transport { display: flex; gap: 10px; }
+.as-transport div { flex: 1; padding: 18px; border-radius: 10px; text-align: center; font: 700 18px/1 var(--ui); background: #22233a; }
+.as-transport .play { background: #1f7a4f; }
+.as-tag { position: absolute; right: 10px; bottom: 8px; color: #666688; font: 600 11px/1 var(--mono); }
+/* The states instead of the frame. */
+.panel { position: absolute; inset: 0; display: grid; place-items: center; background: #0f1016; }
+.panel .box { max-width: 560px; padding: 28px; border: 1px solid var(--line); border-radius: 14px; background: #15151f; text-align: center; font: 600 17px/1.45 var(--ui); }
+.panel .box h3 { margin: 0 0 10px; font: 700 22px/1.2 var(--display); letter-spacing: 0.04em; }
+.panel .btn { display: inline-block; margin-top: 14px; padding: 12px 18px; border-radius: 10px; background: #12302c; border: 1px solid var(--accent); color: var(--text); font: 700 16px/1 var(--display); letter-spacing: 0.05em; }
+.panel .addr { margin-top: 10px; color: var(--accent); font: 600 15px/1.4 var(--mono); }
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="notes">
+    <h1>AbleSet vo fohmixeri: záložka a stránka (návrh v1)</h1>
+    <div class="muted">Hore si prepni variant A / B a stav. Plocha AbleSetu je len nakreslená náhrada s vymyslenými piesňami: v skutočnosti tam bude celá stránka AbleSetu, presne ako v Safari.</div>
+  </div>
+  <div class="controls" id="variants">
+    <button type="button" data-v="A" class="on">Variant A: stĺpec vpravo (odporúčam)</button>
+    <button type="button" data-v="B">Variant B: tenký pruh vpravo, ☰</button>
+  </div>
+  <div class="controls" id="states">
+    <button type="button" data-s="frame" class="on">AbleSet beží</button>
+    <button type="button" data-s="down">AbleSet nebeží</button>
+    <button type="button" data-s="signin">Mimo kostola: prihlásenie</button>
+    <button type="button" data-s="emergency">Núdzová adresa (IP)</button>
+  </div>
+  <div class="fit" id="fit"><div class="tablet" id="tablet"></div></div>
+  <div class="notes">
+    <h2>Ako to funguje</h2>
+    <ul>
+      <li><b>Záložka ABLESET</b> je posledná medzi záložkami v stĺpci, hneď za STREAM DECK. Ťuk na ňu ukáže AbleSet, ťuk na inú záložku vráti mixér.</li>
+      <li><b>Variant A (odporúčam):</b> na stránke AbleSetu sa stĺpec presunie k pravému okraju, AbleSet dostane zvyšok (asi 1040 × 820 bodov). Späť na mixér je jeden ťuk.</li>
+      <li><b>Variant B:</b> AbleSet dostane takmer celú šírku (asi 1150 bodov), vpravo je len tenký pruh s ☰. Späť na mixér sú dva ťuky (☰, potom záložka).</li>
+      <li>AbleSet sa načíta len keď je jeho záložka otvorená, aby mixér ostal rýchly.</li>
+      <li><b>AbleSet nebeží:</b> namiesto stránky je oznam a fohmixer ho skúša znova sám.</li>
+      <li><b>Mimo kostola:</b> pri prvom otvorení cez internet treba raz potvrdiť prihlásenie (ako pri fohmixeri).</li>
+      <li><b>Núdzová adresa (IP):</b> bez certifikátu sa AbleSet do fohmixera vložiť nedá; ukáže sa jeho priama adresa v lokálnej sieti.</li>
+      <li>Ťuky vo vnútri AbleSetu sú AbleSetu, fohmixer ich nevidí ani nezapisuje.</li>
+    </ul>
+  </div>
+</div>
+<script>
+"use strict";
+let variant = "A", state = "frame", overlay = false;
+const able = `
+  <div class="as">
+    <div class="as-top"><div class="as-song">3 · Pieseň C</div><div class="muted">120 BPM · 4/4</div><div class="as-time">02:14</div></div>
+    <div class="as-body">
+      <div class="as-list">
+        ${["Úvod", "Pieseň A", "Pieseň C", "Pieseň D", "Chvála", "Modlitba", "Pieseň E", "Záver"].map((s, i) => `<div class="as-item ${i === 2 ? "now" : ""}"><span class="n">${i + 1}</span>${s}</div>`).join("")}
+      </div>
+      <div class="as-main">
+        <div class="as-sections">${["Intro", "Verse 1", "Chorus", "Verse 2", "Bridge", "Outro"].map((s, i) => `<div class="as-sec ${i === 2 ? "now" : ""}">${s}</div>`).join("")}</div>
+        <div class="as-lyrics">Text piesne<br>druhý riadok</div>
+        <div class="as-transport"><div>⏮</div><div class="play">▶ HRAŤ</div><div>■ STOP</div><div>⏭</div></div>
+      </div>
+    </div>
+    <div class="as-tag">stránka AbleSetu (náhrada)</div>
+  </div>`;
+const panels = {
+  down: `<div class="panel"><div class="box"><h3>AbleSet nebeží</h3>AbleSet na PC teraz neodpovedá. Fohmixer ho skúša znova sám; mixér funguje ďalej.</div></div>`,
+  signin: `<div class="panel"><div class="box"><h3>Prihlásenie do AbleSetu</h3>Si mimo kostola. AbleSet chce raz potvrdiť prihlásenie, rovnako ako fohmixer.<div class="btn">PRIHLÁSIŤ SA</div></div></div>`,
+  emergency: `<div class="panel"><div class="box"><h3>Núdzová adresa</h3>Fohmixer je otvorený cez IP bez certifikátu, tak sa AbleSet nedá vložiť. Otvor fohmixer cez jeho meno, alebo AbleSet priamo:<div class="addr">http://&lt;PC v sieti&gt;</div></div></div>`,
+};
+function column() {
+  return `<div class="column">
+    <div class="head"><div class="ln"><span class="dot"></span>BAND</div><div class="ln"><span class="dot"></span>MASTER</div><div class="ver">v0.1.0-dev.7x</div></div>
+    <div class="tabs"><div class="tab">FOH</div><div class="tab">STAGE</div><div class="tab">BAND</div><div class="tab">OSTATNÉ</div><div class="tab wide">STREAM DECK</div><div class="tab wide able sel">ABLESET</div></div>
+    <div class="rail">${["STAGE", "STAGE AUT", "SOLO VOCALS", "REVERB", "VOC MIC"].map((s) => `<div class="rbtn"><span class="d"></span>${s}</div>`).join("")}<div style="flex:1"></div><div class="rbtn"><span class="d"></span>TECHALERT</div></div>
+  </div>`;
+}
+function draw() {
+  const t = document.getElementById("tablet");
+  const content = state === "frame" ? able : panels[state];
+  if (variant === "A") {
+    t.innerHTML = `<div class="frame">${content}</div>${column()}`;
+  } else {
+    t.innerHTML = `<div class="frame">${content}<div class="shade ${overlay ? "on" : ""}" id="shade"></div></div>
+      <div class="thin"><span class="dot"></span><div class="burger" id="burger">☰</div></div>
+      <div class="overlay ${overlay ? "on" : ""}">${column()}</div>`;
+    document.getElementById("burger").onclick = () => { overlay = !overlay; draw(); };
+    document.getElementById("shade").onclick = () => { overlay = false; draw(); };
+  }
+}
+function pick(id, attr, set) {
+  document.querySelectorAll(`#${id} button`).forEach((b) => b.addEventListener("click", () => {
+    document.querySelectorAll(`#${id} button`).forEach((x) => x.classList.toggle("on", x === b));
+    set(b.getAttribute(attr)); overlay = false; draw();
+  }));
+}
+pick("variants", "data-v", (v) => { variant = v; });
+pick("states", "data-s", (s) => { state = s; });
+function fit() { const w = document.getElementById("fit").getBoundingClientRect().width; document.getElementById("tablet").style.transform = `scale(${w / 1194})`; }
+window.addEventListener("resize", fit);
+fit();
+draw();
+</script>
+</body>
+</html>
