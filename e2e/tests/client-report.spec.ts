@@ -43,6 +43,14 @@ async function reportOf(w: Who, since: number, match: (report: any) => boolean, 
   return found;
 }
 
+/**
+ * A reported stack's frames (#43): its lines as the page joins them, without
+ * V8's first line (`Error: <message>`), which a WebKit stack does not have.
+ */
+function stackFrames(stack: string): string[] {
+  return stack.split(" | ").filter((line) => !line.startsWith("Error"));
+}
+
 test.describe("A browser tab", () => {
   test.use({ contextOptions: { screen: { width: 1111, height: 611 } } });
 
@@ -134,22 +142,89 @@ test.describe("A JavaScript error", () => {
   });
 });
 
+test.describe("A JavaScript error with a stack", () => {
+  test.use({ contextOptions: { screen: { width: 1127, height: 627 } } });
+
+  test("is reported with its stack's first frames after where it happened (#43)", async ({ page }) => {
+    const since = nowSecs();
+    await openSurface(page);
+    // The thrown value the browser hands the listener: an Error made two
+    // named functions deep (no tail call: WebKit drops a strict tail
+    // caller's frame), so the stack's first frames name them in both
+    // engines.
+    await page.evaluate(() => {
+      function e2eInner() {
+        return new Error("e2e synthetic error");
+      }
+      function e2eOuter() {
+        const error = e2eInner();
+        return error;
+      }
+      window.dispatchEvent(
+        new ErrorEvent("error", {
+          message: "e2e synthetic error",
+          filename: "https://example.org/e2e.js",
+          lineno: 3,
+          colno: 9,
+          error: e2eOuter(),
+        }),
+      );
+    });
+    const report = await reportOf(await who(page), since, (r) => r.kind === "error");
+    // Today's text first, so what reads it still matches; the stack after it.
+    const head = "e2e synthetic error at https://example.org/e2e.js:3:9 | stack: ";
+    expect(report.error.startsWith(head), report.error).toBe(true);
+    const frames = stackFrames(report.error.slice(head.length));
+    expect(frames[0], report.error).toContain("e2eInner");
+    expect(frames[1], report.error).toContain("e2eOuter");
+  });
+});
+
+test.describe("A long stack", () => {
+  test.use({ contextOptions: { screen: { width: 1129, height: 629 } } });
+
+  test("is cut to its first 30 lines with a mark, and the hub keeps it whole (#43)", async ({ page }) => {
+    const since = nowSecs();
+    await openSurface(page);
+    // 40 lines of 59 characters: the first 30 are about 1,900 characters on
+    // one line, far over the 300 an error had, under the stack's 4096 bytes.
+    const lines = Array.from({ length: 40 }, (_, i) => `e2e frame ${String(i).padStart(2, "0")} ${"f".repeat(46)}`);
+    // Any thrown object's string `stack` is read, an Error's or not.
+    await page.evaluate(
+      (stack) =>
+        window.dispatchEvent(
+          new ErrorEvent("error", { message: "e2e long stack", error: { stack: `${stack.join("\n")}\n` } }),
+        ),
+      lines,
+    );
+    const report = await reportOf(await who(page), since, (r) => r.kind === "error");
+    expect(report.error).toBe(`e2e long stack | stack: ${lines.slice(0, 30).join(" | ")} [cut]`);
+  });
+});
+
 test.describe("An unhandled promise rejection", () => {
   test.use({ contextOptions: { screen: { width: 1117, height: 617 } } });
 
-  test("is reported with its reason", async ({ page }) => {
+  test("is reported with its reason and its stack", async ({ page }) => {
     const since = nowSecs();
     await openSurface(page);
-    await page.evaluate(() =>
+    await page.evaluate(() => {
+      function e2eRejecter() {
+        const reason = new Error("e2e synthetic rejection");
+        return reason;
+      }
       window.dispatchEvent(
         new PromiseRejectionEvent("unhandledrejection", {
           promise: Promise.resolve(),
-          reason: new Error("e2e synthetic rejection"),
+          reason: e2eRejecter(),
         }),
-      ),
-    );
+      );
+    });
     const report = await reportOf(await who(page), since, (r) => r.kind === "error");
-    expect(report.error).toBe("unhandled rejection: e2e synthetic rejection");
+    // The reason first, as before (#43), then its stack.
+    const head = "unhandled rejection: e2e synthetic rejection | stack: ";
+    expect(report.error.startsWith(head), report.error).toBe(true);
+    expect(stackFrames(report.error.slice(head.length))[0], report.error).toContain("e2eRejecter");
   });
 });
 
