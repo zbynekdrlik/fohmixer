@@ -21,9 +21,11 @@
 //! when the cards are listed ([`lists_now`]), what names an editor
 //! ([`place_text`]), a card's note and the cards' list note in Slovak
 //! ([`failure_text`], [`list_text`]), which frames the screen shows
-//! ([`shows_frame`]) and a card's picture URL ([`picture_url`]).
+//! ([`shows_frame`]), a card's picture URL ([`picture_url`]) and the bar's
+//! ↶ VRÁTIŤ (#71 PR P2b: when it takes a press, [`undo_ready`], its flash
+//! and the note of its answer, [`undo_text`]).
 
-use fohmixer_proto::eq::{EqLock, PRODUCT, Touch, reason};
+use fohmixer_proto::eq::{EqLock, PRODUCT, Touch, UNDO_APART_MS, UNDO_DONE, UNDO_NOTHING, reason};
 
 /// Where a picture sits fitted into an area: its scale (CSS px a picture
 /// pixel) and its top-left corner in the area (CSS px).
@@ -816,6 +818,13 @@ impl Finger {
         self.fingers.iter().any(Option::is_some)
     }
 
+    /// Whether a finger is on the picture or a quick tap's up is still to
+    /// go (the PC's contact is not over yet): the bar's undo takes no press
+    /// then (#71 PR P2b, [`undo_ready`]).
+    pub fn busy(&self) -> bool {
+        self.held() || self.tap_pending()
+    }
+
     /// The two fingers of a pinch while both are down (in their places'
     /// order), on the area: what moves the view ([`Viewer::follow`]).
     pub fn pair(&self) -> Option<Pair> {
@@ -1058,6 +1067,12 @@ fn reason_text(why: &str) -> Option<&'static str> {
         reason::LEFT_OPEN => "Pro-Q 4 sa nepodarilo bezpečne zavrieť, ostáva otvorený na PC",
         reason::TOO_DEEP => "zariadenia sú vnorené príliš hlboko",
         reason::HOLD_ON => "na PC sa nedá vypnúť podržanie prsta, Pro-Q 4 sa preto neotvorí",
+        // An undo's refusals (#71 PR P2a); the bar's note says the last
+        // three its own way (`undo_text`).
+        reason::NO_EDITOR => "Pro-Q 4 už nie je otvorený",
+        reason::UNDO_BUSY => "Pro-Q 4 je práve zaneprázdnený, skús znova",
+        reason::UNDO_SOON => "príliš rýchlo po poslednom vrátení, skús znova",
+        reason::UNDO_MISSING => "šípka späť sa v Pro-Q 4 nenašla",
         _ => return None,
     };
     Some(text)
@@ -1080,6 +1095,54 @@ pub fn failure_text(why: &str) -> Option<String> {
         | reason::IN_USE => None,
         other => Some(
             reason_text(other).map_or_else(|| format!("Neotvoril sa: {other}"), str::to_string),
+        ),
+    }
+}
+
+/// How long the bar's ↶ VRÁTIŤ flashes when a press goes (ms, #71 PR P2b,
+/// the approved mockup `docs/mockups/proq-undo-v1.html`).
+pub const UNDO_FLASH_MS: f64 = 180.0;
+
+/// How long the note of an undo's answer shows over the picture (ms).
+pub const UNDO_NOTE_MS: f64 = 1600.0;
+
+/// Whether the bar's ↶ VRÁTIŤ takes a press at `now` (page ms; #71 PR P2b):
+/// not while the fingers keep a contact on the PC (`busy`, [`Finger::busy`]:
+/// the hub would refuse it, `UNDO_BUSY`), nor within
+/// [`UNDO_APART_MS`] of the last press it took (`pressed`; none yet): two
+/// taps on Pro-Q's own ↶ never make a double click. The button reads
+/// `aria-disabled` whenever this says no.
+pub fn undo_ready(busy: bool, pressed: Option<f64>, now: f64) -> bool {
+    !busy && pressed.is_none_or(|at| now - at >= UNDO_APART_MS)
+}
+
+/// Whether the ↶ VRÁTIŤ pressed at `pressed` (page ms) still flashes at
+/// `now`.
+pub fn undo_flash(pressed: Option<f64>, now: f64) -> bool {
+    pressed.is_some_and(|at| now - at < UNDO_FLASH_MS)
+}
+
+/// Whether the note of an undo answered at `at` (page ms; none: no answer
+/// yet) still shows at `now`.
+pub fn undo_note_shown(at: Option<f64>, now: f64) -> bool {
+    at.is_some_and(|at| now - at < UNDO_NOTE_MS)
+}
+
+/// The note over the picture for an undo's answer (`result`, the hub's
+/// `eq_undo`): done, nothing to undo, and the three refusals the owner can
+/// act on, each its own sentence; any other reason after "Vrátiť sa
+/// nepodarilo:" in Slovak through [`reason_text`], the hub's own words only
+/// for an unexpected one (a grab's or a tap's error).
+pub fn undo_text(result: &str) -> String {
+    match result {
+        UNDO_DONE => "Vrátené: posledná zmena v Pro-Q".to_string(),
+        UNDO_NOTHING => "Nie je čo vrátiť".to_string(),
+        reason::UNDO_MISSING => "Späť sa v Pro-Q nenašlo — nič sa nestlačilo".to_string(),
+        reason::UNDO_BUSY => "Prst je na obraze — vráť po zdvihnutí prsta".to_string(),
+        reason::UNDO_SOON => "Príliš rýchlo za sebou — stlač znova".to_string(),
+        other => format!(
+            "Vrátiť sa nepodarilo: {}",
+            reason_text(other).unwrap_or(other)
         ),
     }
 }
@@ -1642,6 +1705,20 @@ mod tests {
             said("press-and-hold could not be turned off"),
             "na PC sa nedá vypnúť podržanie prsta, Pro-Q 4 sa preto neotvorí"
         );
+        // An undo's refusals (#71 PR P2a).
+        assert_eq!(said("no such editor"), "Pro-Q 4 už nie je otvorený");
+        assert_eq!(
+            said("the editor is busy"),
+            "Pro-Q 4 je práve zaneprázdnený, skús znova"
+        );
+        assert_eq!(
+            said("too soon after the last undo"),
+            "príliš rýchlo po poslednom vrátení, skús znova"
+        );
+        assert_eq!(
+            said("Pro-Q's undo is not where it was measured"),
+            "šípka späť sa v Pro-Q 4 nenašla"
+        );
         // The protocol's names for them.
         for (named, word) in [
             (reason::OFFLINE, "instance offline"),
@@ -1656,10 +1733,117 @@ mod tests {
             (reason::NOT_ON_TOP, "the window did not come on top"),
             (reason::LEFT_OPEN, "left open in Live"),
             (reason::HOLD_ON, "press-and-hold could not be turned off"),
+            (reason::NO_EDITOR, "no such editor"),
+            (reason::UNDO_BUSY, "the editor is busy"),
+            (reason::UNDO_SOON, "too soon after the last undo"),
+            (
+                reason::UNDO_MISSING,
+                "Pro-Q's undo is not where it was measured",
+            ),
         ] {
             assert_eq!(said(named), said(word), "{word}");
             assert!(!said(named).starts_with("Neotvoril sa"), "{word}");
         }
+    }
+
+    #[test]
+    fn the_undo_takes_no_press_while_a_finger_keeps_a_contact_nor_within_700_ms() {
+        // #71 PR P2b: the approved mockup's rule.
+        assert_eq!(UNDO_APART_MS, 700.0);
+        assert!(undo_ready(false, None, 0.0), "no finger, never pressed");
+        // A finger on the picture, or a quick tap's up still to go.
+        assert!(!undo_ready(true, None, 0.0));
+        assert!(!undo_ready(true, Some(1_000.0), 5_000.0));
+        // From the last press it took: 699 refused, 700 taken.
+        assert!(!undo_ready(false, Some(1_000.0), 1_000.0));
+        assert!(!undo_ready(false, Some(1_000.0), 1_699.0));
+        assert!(!undo_ready(false, Some(1_000.0), 1_700.0_f64.next_down()));
+        assert!(undo_ready(false, Some(1_000.0), 1_700.0));
+        assert!(undo_ready(false, Some(1_000.0), 5_000.0));
+    }
+
+    #[test]
+    fn the_fingers_keep_the_pcs_contact_while_one_is_down_or_a_taps_up_is_to_go() {
+        let mut finger = Finger::default();
+        assert!(!finger.busy(), "no finger");
+        finger.down(1, p(10.0, 10.0), Spot::Edit, 0.0);
+        assert!(finger.busy(), "a finger waiting on the picture");
+        // A quick lift: its down at once, its up 40 ms later.
+        assert_eq!(
+            finger.up(1, p(10.0, 10.0), 10.0),
+            vec![(Touch::Down, 20.0, 20.0)]
+        );
+        assert!(!finger.held());
+        assert!(finger.busy(), "its up still to go");
+        assert_eq!(finger.frame(50.0), vec![(Touch::Up, 20.0, 20.0)]);
+        assert!(!finger.busy());
+        // A finger off the picture counts as well.
+        finger.down(2, p(10.0, 10.0), Spot::Off, 100.0);
+        assert!(finger.busy());
+        assert_eq!(finger.up(2, p(10.0, 10.0), 110.0), vec![]);
+        assert!(!finger.busy());
+    }
+
+    #[test]
+    fn the_undo_flashes_180_ms_and_its_note_shows_1600_ms() {
+        assert_eq!(UNDO_FLASH_MS, 180.0);
+        assert!(!undo_flash(None, 0.0), "never pressed");
+        assert!(undo_flash(Some(1_000.0), 1_000.0));
+        assert!(undo_flash(Some(1_000.0), 1_180.0_f64.next_down()));
+        assert!(!undo_flash(Some(1_000.0), 1_180.0));
+        assert!(!undo_flash(Some(1_000.0), 5_000.0));
+        assert_eq!(UNDO_NOTE_MS, 1600.0);
+        assert!(!undo_note_shown(None, 0.0), "no answer yet");
+        assert!(undo_note_shown(Some(1_000.0), 1_000.0));
+        assert!(undo_note_shown(Some(1_000.0), 2_600.0_f64.next_down()));
+        assert!(!undo_note_shown(Some(1_000.0), 2_600.0));
+        assert!(!undo_note_shown(Some(1_000.0), 9_000.0));
+    }
+
+    #[test]
+    fn each_answer_to_an_undo_has_its_note() {
+        // The approved mockup's notes, and the refusals the owner can act on.
+        assert_eq!(undo_text("done"), "Vrátené: posledná zmena v Pro-Q");
+        assert_eq!(undo_text("nothing"), "Nie je čo vrátiť");
+        assert_eq!(
+            undo_text("Pro-Q's undo is not where it was measured"),
+            "Späť sa v Pro-Q nenašlo — nič sa nestlačilo"
+        );
+        assert_eq!(
+            undo_text("the editor is busy"),
+            "Prst je na obraze — vráť po zdvihnutí prsta"
+        );
+        assert_eq!(
+            undo_text("too soon after the last undo"),
+            "Príliš rýchlo za sebou — stlač znova"
+        );
+        // The protocol's names for them.
+        for (named, word) in [
+            (UNDO_DONE, "done"),
+            (UNDO_NOTHING, "nothing"),
+            (
+                reason::UNDO_MISSING,
+                "Pro-Q's undo is not where it was measured",
+            ),
+            (reason::UNDO_BUSY, "the editor is busy"),
+            (reason::UNDO_SOON, "too soon after the last undo"),
+        ] {
+            assert_eq!(undo_text(named), undo_text(word), "{word}");
+        }
+        // Any other reason the protocol names, in Slovak.
+        assert_eq!(
+            undo_text(reason::NO_EDITOR),
+            "Vrátiť sa nepodarilo: Pro-Q 4 už nie je otvorený"
+        );
+        assert_eq!(
+            undo_text(reason::OFF),
+            "Vrátiť sa nepodarilo: EQ je na PC vypnuté."
+        );
+        // An unexpected one (a grab's or a tap's error): the hub's words.
+        assert_eq!(
+            undo_text("BitBlt failed"),
+            "Vrátiť sa nepodarilo: BitBlt failed"
+        );
     }
 
     #[test]

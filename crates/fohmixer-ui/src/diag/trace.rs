@@ -131,14 +131,16 @@ pub fn takes_batch(buffered: u32) -> bool {
 /// (touches, dropouts, resets, socket transitions, visibility, the notes of
 /// what went, a write's intent changes, PR G's system gestures and zooms,
 /// #52's Stream Deck presses, #71's channel detail steps and the Pro-Q 4
-/// screen's fingers); rank 0, first, for the round-trip summaries,
+/// screen's fingers and undos); rank 0, first, for the round-trip summaries,
 /// long frames and any other kind; rank 1, last, for the moves (the only
 /// per-frame data of a drag the hub cannot see). A touch's first moves are
 /// pushed as essential ([`Recorder::push_essential`]).
 pub fn drop_rank(ev: &str) -> Option<u8> {
     match ev {
         "touch" | "dropout" | "reset" | "sock" | "visibility" | "overflow" | "intent" | "sys"
-        | "zoom" | "deck" | "detail" | "eq_touch" | "eq_mv" | "eq_lat" | "eq_view" => None,
+        | "zoom" | "deck" | "detail" | "eq_touch" | "eq_mv" | "eq_lat" | "eq_view" | "eq_undo" => {
+            None
+        }
         "mv" => Some(1),
         _ => Some(0),
     }

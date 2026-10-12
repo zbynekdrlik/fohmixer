@@ -28,6 +28,7 @@ use super::intent::Intents;
 use super::{InstanceView, ResultFn, Slot, TOKEN_KEY, next_range};
 use crate::behave::link::{Counter, DropoutWatch};
 use crate::binding::SubSpec;
+use crate::diag::trace::fingers::EqUndos;
 use crate::diag::{self, trace};
 use crate::dom;
 use crate::net::{self, Decision, LayoutFetch};
@@ -93,6 +94,8 @@ struct Inner {
     /// The page's inputs of its open editor (#71 PR J): numbered, timed,
     /// and what the picture drawn last shows.
     eq_inputs: Inputs,
+    /// The bar's undos waiting for the hub's answer (#71 PR P2b).
+    eq_undos: EqUndos,
 }
 
 impl Inner {
@@ -112,6 +115,7 @@ impl Inner {
             deck_viewing: false,
             eq_frames: None,
             eq_inputs: Inputs::default(),
+            eq_undos: EqUndos::default(),
         }
     }
 }
@@ -147,6 +151,9 @@ pub struct LiveStore {
     pub eq_locks: RwSignal<Vec<EqLock>>,
     /// This page's Pro-Q 4 editor.
     pub eq: RwSignal<Option<EqView>>,
+    /// The hub's last answer to an undo of this page's open editor (#71 PR
+    /// P2b): its number and result (none since the screen opened).
+    pub eq_undone: RwSignal<Option<(u32, String)>>,
 }
 
 impl LiveStore {
@@ -167,6 +174,7 @@ impl LiveStore {
             eq_list: RwSignal::new(None),
             eq_locks: RwSignal::new(Vec::new()),
             eq: RwSignal::new(None),
+            eq_undone: RwSignal::new(None),
         }
     }
 
@@ -590,10 +598,9 @@ impl LiveStore {
                 since,
             }),
             ServerMsg::Link { .. } => {}
-            // Pro-Q 4's own undo (#71 PR P2a): this page sends no
-            // `eq_undo` yet (its control comes once the owner approved its
-            // look), so no answer is awaited.
-            ServerMsg::EqUndo { .. } => {}
+            // Pro-Q 4's own undo (#71 PR P2a): the answer to the bar's
+            // ↶ VRÁTIŤ (PR P2b).
+            ServerMsg::EqUndo { session, n, result } => self.on_eq_undo(session, n, result),
         }
     }
 

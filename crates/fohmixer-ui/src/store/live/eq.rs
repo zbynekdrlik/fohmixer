@@ -13,7 +13,10 @@
 //! numbered (`store::eq::inputs::Inputs`), a down with the input its picture
 //! showed; the screen tells what it drew (`eq_drawn`: the latency of the
 //! input a picture is the first to show) and asks whether its picture is
-//! caught up (`eq_caught_up`).
+//! caught up (`eq_caught_up`). PR P2b: the bar's undo (`eq_undo`, numbered
+//! with the inputs) and the hub's answer (`on_eq_undo`: its `eq_undo` event
+//! into the flight recorder, and the open editor's answer for the screen's
+//! note).
 
 use std::rc::Rc;
 
@@ -24,7 +27,9 @@ use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 
 use super::LiveStore;
-use crate::behave::eq::{Out, picture_url};
+use crate::behave::eq::{Out, picture_url, shows_frame};
+use crate::diag;
+use crate::diag::trace::fingers::EqUndos;
 use crate::dom;
 use crate::net;
 use crate::store::eq::inputs::{Drawn, Inputs};
@@ -112,10 +117,13 @@ impl LiveStore {
     pub fn eq_opening(self, instance: &str, path: &str) {
         let _ = self.eq.try_set(Some(asked(instance, path, true)));
         // A screen's inputs start afresh (PR J review: never another
-        // screen's, nor a restarted hub's session of the same number).
-        let _ = self
-            .inner
-            .try_update_value(|i| i.eq_inputs = Inputs::default());
+        // screen's, nor a restarted hub's session of the same number), and
+        // so do its undos (PR P2b).
+        let _ = self.inner.try_update_value(|i| {
+            i.eq_inputs = Inputs::default();
+            i.eq_undos = EqUndos::default();
+        });
+        let _ = self.eq_undone.try_set(None);
     }
 
     /// Opens the editor at `path` on `instance` for a picture `area` (CSS
@@ -162,6 +170,39 @@ impl LiveStore {
             n,
             seen,
         });
+    }
+
+    /// The bar's ↶ VRÁTIŤ (#71 PR P2b): Pro-Q's own undo of the open
+    /// editor, numbered as its next input (`Inputs::number`: a picture then
+    /// shows it before a first finger is taken again), its press at `at`
+    /// (page epoch ms) kept for its `eq_undo` event. Its number; none
+    /// without an open editor (nothing goes).
+    pub fn eq_undo(self, at: f64) -> Option<u32> {
+        let session = self.eq_session()?;
+        let n = self.inner.try_update_value(|i| {
+            let n = i.eq_inputs.number(session, dom::epoch_now());
+            i.eq_undos.pressed(n, at);
+            n
+        })?;
+        self.send(&ClientMsg::EqUndo { n });
+        Some(n)
+    }
+
+    /// The hub's answer to an undo (PR P2b): the press's `eq_undo` event
+    /// into the flight recorder (its time, the answer, the ms to it), and,
+    /// of the page's open editor (a frame's rule, `shows_frame`), the
+    /// answer for the screen's note.
+    pub(super) fn on_eq_undo(self, session: u32, n: u32, result: String) {
+        let event = self
+            .inner
+            .try_update_value(|i| i.eq_undos.answered(n, &result, dom::epoch_now()))
+            .flatten();
+        if let Some(event) = event {
+            diag::record(&event);
+        }
+        if shows_frame(session, self.eq_session()) {
+            let _ = self.eq_undone.try_set(Some((n, result)));
+        }
     }
 
     /// The page's open editor's session (none: none open).
