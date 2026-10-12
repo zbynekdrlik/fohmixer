@@ -873,8 +873,9 @@ mod tests {
         let ca = crate::tls::test_certs::TestCa::new();
         let now = crate::auth::now_secs() as i64;
         let (chain, key) = ca.leaf(&["foh.example.org"], now - 3600, now + 86_400);
+        let pem = crate::tls::checked(chain, key, "foh.example.org").unwrap();
         https
-            .serve(crate::tls::server_config(&chain, &key).unwrap())
+            .set_cert(crate::tls::Slot::Primary, "foh.example.org", &pem)
             .unwrap();
         let redirected = lan(crate::app_router(hub.clone()))
             .oneshot(get("foh.example.org:8480", None))

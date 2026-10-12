@@ -100,6 +100,7 @@ use layout::LayoutStore;
 use live::client::{Events, LiveEvent, LiveHandle};
 use remote::RemoteState;
 use router::RouterMsg;
+use tls::Slot;
 
 /// The HTTP port when neither `PORT` nor the config sets one.
 pub const DEFAULT_PORT: u16 = config::DEFAULT_HTTP_PORT;
@@ -272,6 +273,8 @@ impl HubInner {
 
     /// `GET /api/status`.
     pub async fn status(&self) -> HubStatus {
+        let now = auth::now_secs() as i64;
+        let https = self.https.get().map(Arc::as_ref);
         let (reply, answer) = oneshot::channel();
         self.route(RouterMsg::Status { reply });
         let router = answer.await.unwrap_or_default();
@@ -313,12 +316,9 @@ impl HubInner {
             stage_aut: router.stage_aut,
             clients: router.clients,
             client_reports: self.reports.list(),
-            remote: self.remote.snapshot(
-                &self.config,
-                self.https.get().map(Arc::as_ref),
-                auth::now_secs() as i64,
-            ),
+            remote: self.remote.snapshot(&self.config, https, now),
             companion: self.companion.as_ref().map(CompanionHandle::status),
+            ableset: self.remote.ableset(&self.config, https, now),
         }
     }
 }
@@ -399,6 +399,7 @@ impl Hub {
             layout = %config.layout_path().display(),
             stage_aut = hub_state.stage_aut,
             public_name = config.tls.as_ref().map(|t| t.name.as_str()).unwrap_or("-"),
+            ableset = config.ableset.as_ref().map(|a| a.name.as_str()).unwrap_or("-"),
             access = config.access.is_some(),
             companion = config.companion.is_some(),
             eq = ?config.eq_backend(),
@@ -752,7 +753,8 @@ fn start_https(hub: &Hub, at: SocketAddr, name: &str, retry: Duration) {
 }
 
 /// Binds the HTTPS listener on `at` and starts it: the stored certificate
-/// served when there is one, the ACME keeper started with `[acme]`.
+/// served when there is one (AbleSet's too, beside it, #90), the ACME
+/// keeper started with `[acme]`.
 fn bind_https(hub: &Hub, at: SocketAddr, name: &str) -> Result<(), String> {
     // The ACME client's HTTP client first: its failure leaves nothing bound.
     let acme_http = hub
@@ -770,7 +772,11 @@ fn bind_https(hub: &Hub, at: SocketAddr, name: &str) -> Result<(), String> {
     let _ = hub.https.set(Arc::clone(&https));
     hub.remote.set_bind_error(None);
     tracing::info!(addr = %https.addr(), name, "HTTPS listener bound");
-    remote::serve_stored(&https, &hub.remote, &hub.config.data_dir, name);
+    let data_dir = &hub.config.data_dir;
+    remote::serve_stored(&https, &hub.remote, data_dir, Slot::Primary, name);
+    if let Some(ableset) = &hub.config.ableset {
+        remote::serve_stored(&https, &hub.remote, data_dir, Slot::AbleSet, &ableset.name);
+    }
     if let (Some(cfg), Some(http)) = (&hub.config.acme, acme_http) {
         let acme = acme::Acme::new(name, cfg, &hub.config.data_dir, http);
         hub.add_task(tokio::spawn(acme::keep(

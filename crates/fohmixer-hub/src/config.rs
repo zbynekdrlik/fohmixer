@@ -26,6 +26,13 @@
 //! [tunnel]               # cloudflared's readiness, reported in /api/status
 //! ready_url = "http://127.0.0.1:20241/ready"
 //!
+//! # AbleSet's own page behind the hub (#90), optional: its name, served on
+//! # the [tls] listener with a certificate of its own (SNI, from
+//! # <data>/tls/ableset/); one label beside or under the [tls] name (the
+//! # same site).
+//! [ableset]
+//! name = "ableset.example.org"
+//!
 //! # The Stream Deck tab (#52), optional: Bitfocus Companion's Satellite API
 //! [companion]
 //! host = "companion.example.org"
@@ -228,6 +235,15 @@ pub struct TunnelCfg {
     pub ready_url: String,
 }
 
+/// `[ableset]` (#90): AbleSet's own page behind the hub, at a name of its
+/// own beside the `[tls]` name. The name is site data: the installer writes
+/// it, never this repository.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AbleSetCfg {
+    pub name: String,
+}
+
 /// `[companion]` (#52): the Stream Deck tab. The hub registers with
 /// Bitfocus Companion's Satellite API at `host:port` as one Stream Deck of
 /// `columns` x `rows` keys whose images Companion draws `bitmap_px` square;
@@ -308,6 +324,20 @@ pub fn is_dns_name(name: &str) -> bool {
             .is_some_and(|tld| tld.chars().any(|c| c.is_ascii_alphabetic()))
 }
 
+/// Whether `name` is the same site as the `[tls]` name `tls` (#90): one
+/// label under `tls`'s parent when that parent has two labels or more (a
+/// sibling: `ableset.example.org` beside `foh.example.org`), or one label
+/// under `tls` itself (a child). DNS names compare without case.
+pub fn same_site_name(tls: &str, name: &str) -> bool {
+    let Some((_, parent)) = name.split_once('.') else {
+        return false;
+    };
+    let sibling = tls
+        .split_once('.')
+        .is_some_and(|(_, up)| up.contains('.') && up.eq_ignore_ascii_case(parent));
+    sibling || parent.eq_ignore_ascii_case(tls)
+}
+
 /// Whether `value` is an e-mail address for the ACME account's contact:
 /// `local@domain`, the domain a DNS name, no space, quote, angle bracket or
 /// separator in the local part (the CA refuses the account otherwise).
@@ -375,6 +405,9 @@ pub struct Config {
     pub access: Option<AccessCfg>,
     #[serde(default)]
     pub tunnel: Option<TunnelCfg>,
+    /// AbleSet's page (#90); none: the hub knows of no AbleSet.
+    #[serde(default)]
+    pub ableset: Option<AbleSetCfg>,
     /// The Stream Deck tab (#52); none: no tab.
     #[serde(default)]
     pub companion: Option<CompanionCfg>,
@@ -399,6 +432,7 @@ impl Config {
             acme: None,
             access: None,
             tunnel: None,
+            ableset: None,
             companion: None,
             eq: None,
             data_dir: data_dir.to_path_buf(),
@@ -571,6 +605,31 @@ impl Config {
                 "[tunnel] ready_url {:?}: cloudflared's local readiness URL",
                 tunnel.ready_url
             );
+        }
+        if let Some(ableset) = &self.ableset {
+            let name = &ableset.name;
+            let Some(tls) = &self.tls else {
+                bail!("[ableset] needs [tls]: its name is served on that listener");
+            };
+            if !is_dns_name(name) {
+                bail!("[ableset] name {name:?}: a DNS name like ableset.example.org");
+            }
+            if name.eq_ignore_ascii_case(&tls.name) {
+                bail!("[ableset] name {name:?} is the [tls] name");
+            }
+            if self
+                .allowed_hosts
+                .iter()
+                .any(|h| h.eq_ignore_ascii_case(name))
+            {
+                bail!("[ableset] name {name:?} is in allowed_hosts: fohmixer never answers for it");
+            }
+            if !same_site_name(&tls.name, name) {
+                bail!(
+                    "[ableset] name {name:?}: one label beside or under the [tls] name {:?} (the same site)",
+                    tls.name
+                );
+            }
         }
         Ok(())
     }
@@ -808,6 +867,76 @@ mod tests {
             )
             .is_ok()
         );
+    }
+
+    #[test]
+    fn the_ableset_name_is_read_and_refused_unless_it_is_the_same_site() {
+        let tls = "[tls]\nname = \"foh.example.org\"\n";
+        let table = |name: &str| format!("{tls}[ableset]\nname = \"{name}\"\n");
+        let config = Config::parse(&table("ableset.example.org"), &data()).unwrap();
+        assert_eq!(
+            config.ableset,
+            Some(AbleSetCfg {
+                name: "ableset.example.org".into()
+            })
+        );
+        assert_eq!(
+            config.trusted_hosts(),
+            vec!["foh.example.org".to_string()],
+            "fohmixer's own routes never answer for it"
+        );
+        assert_eq!(Config::parse(tls, &data()).unwrap().ableset, None);
+        for ok in ["ableset.foh.example.org", "AbleSet.Example.ORG"] {
+            assert!(Config::parse(&table(ok), &data()).is_ok(), "{ok}");
+        }
+        for (text, message) in [
+            (
+                "[ableset]\nname = \"ableset.example.org\"\n".to_string(),
+                "[ableset] needs [tls]",
+            ),
+            (table("ableset"), "a DNS name like ableset.example.org"),
+            (table("FOH.example.org"), "is the [tls] name"),
+            (
+                format!(
+                    "allowed_hosts = [\"AbleSet.example.org\"]\n{}",
+                    table("ableset.example.org")
+                ),
+                "is in allowed_hosts",
+            ),
+            (table("ableset.example.net"), "(the same site)"),
+            (table("a.ableset.foh.example.org"), "(the same site)"),
+            (table("example.org"), "(the same site)"),
+            (
+                format!("{}colour = 1\n", table("a.example.org")),
+                "unknown field",
+            ),
+        ] {
+            let error = format!("{:#}", Config::parse(&text, &data()).unwrap_err());
+            assert!(error.contains(message), "{text}: {error}");
+        }
+    }
+
+    #[test]
+    fn the_same_site_is_one_label_beside_or_under_the_tls_name() {
+        for (tls, name) in [
+            ("foh.example.org", "ableset.example.org"),
+            ("foh.example.org", "ableset.foh.example.org"),
+            ("FOH.example.org", "ableset.EXAMPLE.org"),
+            ("example.org", "ableset.example.org"),
+        ] {
+            assert!(same_site_name(tls, name), "{tls} {name}");
+        }
+        for (tls, name) in [
+            // A sibling under a top-level domain is another site.
+            ("example.org", "ableset.org"),
+            ("foh.example.org", "ableset.example.net"),
+            ("foh.example.org", "a.b.example.org"),
+            ("foh.example.org", "a.ableset.foh.example.org"),
+            ("foh.example.org", "example.org"),
+            ("foh.example.org", "org"),
+        ] {
+            assert!(!same_site_name(tls, name), "{tls} {name}");
+        }
     }
 
     #[test]
