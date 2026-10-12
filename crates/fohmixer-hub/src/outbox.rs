@@ -48,6 +48,16 @@
 //! (`fohmixer_proto::eq::FrameHead`, written as the frame is taken). Meanwhile the
 //! newest frame waits in its slot, and the writer wakes for the ack, for
 //! anything else, or when the wait runs out ([`Outbox::next_batch`]).
+//!
+//! An idle page's meters (#51, its `idle` message, [`Outbox::pace_meters`])
+//! wait in a map of their own, per key the louder number (a peak shorter
+//! than the period still reaches the page; a value that is not a number
+//! replaces the one waiting), and join the batch's one `values` message once
+//! per period ([`Pace::Every`]); a hidden page's ([`Pace::Paused`]) wait
+//! until it wakes. Waking (full rate) puts every waiting meter with the
+//! values at once. Every other value, reply, ack and frame goes as before,
+//! and an instance going offline or a subscription left drops its waiting
+//! meters as it drops its values.
 
 pub mod flow;
 
@@ -56,7 +66,7 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Instant;
 
 use bytes::Bytes;
-use fohmixer_proto::client::{AckItem, DeckKey, ServerMsg, ValueItem};
+use fohmixer_proto::client::{AckItem, DeckKey, Pace, ServerMsg, ValueItem, is_meter_key};
 use fohmixer_proto::eq::{FrameHead, frame};
 use serde_json::Value;
 use tokio::sync::Notify;
@@ -87,6 +97,13 @@ struct Inner {
     flight: Flight,
     /// The frames' round trips since the last `rate` record (PR I).
     trips: Trips,
+    /// The page's meter values held back while it is idle (#51): per key
+    /// the louder number.
+    meters: BTreeMap<String, ValueItem>,
+    /// How the page's meter values go (#51): at once, paced or paused.
+    pace: Pace,
+    /// When the held meters go next while paced (#51).
+    meters_at: Option<Instant>,
     closed: bool,
 }
 
@@ -159,12 +176,65 @@ impl Inner {
     /// Whether nothing waits at all (the tests' view).
     #[cfg(test)]
     fn is_empty(&self) -> bool {
-        !self.has_messages() && self.frame.is_none()
+        !self.has_messages() && self.frame.is_none() && self.meters.is_empty()
+    }
+
+    /// A subscription's latest item; while the page is idle a meter's is
+    /// held back with the one already held, the louder kept (#51).
+    fn put_value(&mut self, item: ValueItem) {
+        if self.pace == Pace::Full || !is_meter_key(&item.sub) {
+            self.values.insert(item.sub.clone(), item);
+            return;
+        }
+        let kept = match self.meters.remove(&item.sub) {
+            Some(held) => louder(held, item),
+            None => item,
+        };
+        self.meters.insert(kept.sub.clone(), kept);
+    }
+
+    /// The page's meter pace from `now` on (#51): full rate puts every held
+    /// meter with the values (they go at once); a pace starts its first
+    /// period, unless one runs already; a pause holds them.
+    fn pace_meters(&mut self, pace: Pace, now: Instant) {
+        match pace {
+            Pace::Full => {
+                self.values.append(&mut self.meters);
+                self.meters_at = None;
+            }
+            Pace::Every(period) => {
+                self.meters_at.get_or_insert(now + period);
+            }
+            Pace::Paused => {}
+        }
+        self.pace = pace;
+    }
+
+    /// When the held meters go by themselves (#51): at once when paced and
+    /// due, at their release when paced and not; never (until something
+    /// wakes the writer) when none are held or they are paused.
+    fn meters_wake(&self, now: Instant) -> Wake {
+        match (self.pace, self.meters_at) {
+            _ if self.meters.is_empty() => Wake::Woken,
+            (Pace::Every(_), Some(at)) if now < at => Wake::At(at),
+            (Pace::Every(_), _) => Wake::Now,
+            _ => Wake::Woken,
+        }
+    }
+
+    /// Puts the held meters with the values when they are due at `now`
+    /// (#51); the next release is one period later.
+    fn release_meters(&mut self, now: Instant) {
+        if let (Wake::Now, Pace::Every(period)) = (self.meters_wake(now), self.pace) {
+            self.values.append(&mut self.meters);
+            self.meters_at = Some(now + period);
+        }
     }
 
     /// When the writer has something to write at `now`: a message or the
     /// close at once; a frame waiting at once when it may go
-    /// ([`Flight::due`]), else when its ack's wait runs out; nothing until
+    /// ([`Flight::due`]), else when its ack's wait runs out; held meters
+    /// when they are due (#51); the sooner of those two; nothing until
     /// woken (a frame that may not go with no wait to count, which the
     /// flight never gives, waits for the next ack or message: the writer
     /// never loops without awaiting).
@@ -172,18 +242,21 @@ impl Inner {
         if self.closed || self.has_messages() {
             return Wake::Now;
         }
-        match &self.frame {
+        let frame = match &self.frame {
             None => Wake::Woken,
             Some((head, _)) if self.flight.due(head.session, now) => Wake::Now,
             Some((head, _)) => self
                 .flight
                 .wait_until(head.session)
                 .map_or(Wake::Woken, Wake::At),
-        }
+        };
+        sooner(frame, self.meters_wake(now))
     }
 
-    /// The messages waiting, in write order (see [`Outbox::take`]).
-    fn take_messages(&mut self) -> Vec<ServerMsg> {
+    /// The messages waiting at `now`, in write order (see [`Outbox::take`]);
+    /// held meters that are due go with the values (#51).
+    fn take_messages(&mut self, now: Instant) -> Vec<ServerMsg> {
+        self.release_meters(now);
         let mut out: Vec<ServerMsg> = self.replies.drain(..).collect();
         out.extend(
             std::mem::take(&mut self.hub)
@@ -230,6 +303,27 @@ impl Inner {
     }
 }
 
+/// The sooner of two wakes (#51: a frame's and the held meters').
+fn sooner(a: Wake, b: Wake) -> Wake {
+    match (a, b) {
+        (Wake::Now, _) | (_, Wake::Now) => Wake::Now,
+        (Wake::At(x), Wake::At(y)) => Wake::At(x.min(y)),
+        (Wake::At(at), Wake::Woken) | (Wake::Woken, Wake::At(at)) => Wake::At(at),
+        (Wake::Woken, Wake::Woken) => Wake::Woken,
+    }
+}
+
+/// The meter item kept of a held one and a newer one (#51): the louder
+/// when both are numbers (a peak shorter than the period still reaches the
+/// page: the clip light and the bar's peak), else the newer.
+fn louder(held: ValueItem, new: ValueItem) -> ValueItem {
+    let level = |item: &ValueItem| item.value.as_ref().and_then(Value::as_f64);
+    match (level(&held), level(&new)) {
+        (Some(was), Some(now)) if was >= now => held,
+        _ => new,
+    }
+}
+
 /// One client's outbox.
 #[derive(Debug, Default)]
 pub struct Outbox {
@@ -263,11 +357,19 @@ impl Outbox {
         self.put(|inner| inner.push_reply(msg));
     }
 
-    /// The latest item of a subscription.
+    /// The latest item of a subscription; while the page is idle a meter's
+    /// is held back (#51, [`Outbox::pace_meters`]).
     pub fn value(&self, item: ValueItem) {
-        self.put(|inner| {
-            inner.values.insert(item.sub.clone(), item);
-        });
+        self.put(|inner| inner.put_value(item));
+    }
+
+    /// The page's meter pace from `now` on (#51, its `idle` message): full
+    /// rate (awake) sends every held meter at once; [`Pace::Every`] holds
+    /// them, the louder kept per key, and lets them go once per period, the
+    /// first one period from the first pacing; [`Pace::Paused`] holds them
+    /// until the page wakes.
+    pub fn pace_meters(&self, pace: Pace, now: Instant) {
+        self.put(|inner| inner.pace_meters(pace, now));
     }
 
     /// The latest `link` of an instance (#43); any other message is
@@ -357,18 +459,23 @@ impl Outbox {
         inner.deck_next = 0;
     }
 
-    /// Drops a pending item of a subscription the client left.
+    /// Drops a pending item of a subscription the client left (a held
+    /// meter's too, #51).
     pub fn forget(&self, sub: &str) {
-        self.lock().values.remove(sub);
+        let mut inner = self.lock();
+        inner.values.remove(sub);
+        inner.meters.remove(sub);
     }
 
     /// A state of an instance (an `instance` message), in order with the
-    /// replies; `online` false drops the instance's pending values.
+    /// replies; `online` false drops the instance's pending values (and its
+    /// held meters, #51).
     pub fn instance(&self, name: &str, online: bool, msg: ServerMsg) {
         self.put(|inner| {
             if !online {
                 let prefix = format!("{name}|");
                 inner.values.retain(|sub, _| !sub.starts_with(&prefix));
+                inner.meters.retain(|sub, _| !sub.starts_with(&prefix));
             }
             inner.push_reply(msg);
         });
@@ -398,12 +505,13 @@ impl Outbox {
 
     /// Everything waiting, in write order (replies and instance states,
     /// hub values, the layout revision, the instances' links, one `values`
-    /// message, one `ack` message, then one `deck_keys` message of at most
-    /// [`DECK_KEYS_PER_TAKE`] keys, the others left for the next take);
-    /// `None` once closed. The frame stays.
+    /// message (with the held meters when due, #51), one `ack` message,
+    /// then one `deck_keys` message of at most [`DECK_KEYS_PER_TAKE`] keys,
+    /// the others left for the next take); `None` once closed. The frame
+    /// stays.
     pub fn take(&self) -> Option<Vec<ServerMsg>> {
         let mut inner = self.lock();
-        (!inner.closed).then(|| inner.take_messages())
+        (!inner.closed).then(|| inner.take_messages(Instant::now()))
     }
 
     /// Everything waiting at `now`, the frame that may go with the messages
@@ -413,7 +521,7 @@ impl Outbox {
         if inner.closed {
             return None;
         }
-        let messages = inner.take_messages();
+        let messages = inner.take_messages(now);
         let frame = inner.take_frame(now);
         Some(Batch { messages, frame })
     }
@@ -423,7 +531,8 @@ impl Outbox {
     /// takes them at once, after what came meanwhile. A frame alone is
     /// something waiting too once it may go (PR I: its predecessor acked, or
     /// the ack's wait over, which wakes the writer by itself): the batch's
-    /// messages are then none.
+    /// messages are then none. So are an idle page's held meters once their
+    /// period ran out (#51): the writer wakes by itself for them.
     pub async fn next_batch(&self) -> Option<Batch> {
         loop {
             let wake = self.lock().wake(Instant::now());
@@ -1143,6 +1252,10 @@ mod tests {
         assert!(!outbox.lock().has_messages());
         outbox.eq_frame(head_of(1), Bytes::from_static(b"a"));
         assert!(!outbox.lock().has_messages(), "a frame alone");
+        // Nor is a held meter (#51): it goes when its period ran out.
+        outbox.pace_meters(Pace::Paused, Instant::now());
+        outbox.value(meter("Kick", json!(0.5)));
+        assert!(!outbox.lock().has_messages(), "a held meter");
         let kinds: [fn(&Outbox); 7] = [
             |o: &Outbox| o.reply(result("1")),
             |o: &Outbox| o.hub("stage_aut", json!(true)),
@@ -1217,6 +1330,387 @@ mod tests {
             .expect("woken by the ack")
             .unwrap();
         assert_eq!(batch, frame_only(framed(1, 2, b"b")));
+    }
+
+    /// A meter value (Live's `output_meter_level`) of `track` on `band`.
+    fn meter(track: &str, level: Value) -> ValueItem {
+        ValueItem::value(&meter_key("band", track), level, None)
+    }
+
+    /// The hub key of `track`'s level meter on `instance`.
+    fn meter_key(instance: &str, track: &str) -> String {
+        format!("{instance}|live_set tracks[name={track}]|output_meter_level|false")
+    }
+
+    /// A pace of `ms` (#51).
+    fn every(ms: u64) -> Pace {
+        Pace::Every(Duration::from_millis(ms))
+    }
+
+    fn values(items: Vec<ValueItem>) -> ServerMsg {
+        ServerMsg::Values { items }
+    }
+
+    /// The messages a writer takes at `now`.
+    fn taken(outbox: &Outbox, now: Instant) -> Vec<ServerMsg> {
+        outbox.take_batch(now).unwrap().messages
+    }
+
+    #[test]
+    fn a_paced_meter_waits_for_its_period_and_goes_with_the_values() {
+        let outbox = Outbox::new();
+        let t = Instant::now();
+        // Awake (the default), a meter goes at once.
+        outbox.value(meter("Kick", json!(0.1)));
+        assert_eq!(
+            taken(&outbox, t),
+            vec![values(vec![meter("Kick", json!(0.1))])]
+        );
+        // Idle from t at 250 ms: the first release is one period later.
+        outbox.pace_meters(every(250), t);
+        outbox.value(meter("Kick", json!(0.5)));
+        let due = at(t, 250);
+        let before = due - Duration::from_nanos(1);
+        assert_eq!(outbox.lock().wake(before), Wake::At(due));
+        assert_eq!(taken(&outbox, before), vec![], "one tick before: held");
+        assert_eq!(outbox.lock().wake(due), Wake::Now);
+        assert_eq!(
+            taken(&outbox, due),
+            vec![values(vec![meter("Kick", json!(0.5))])]
+        );
+        assert!(outbox.lock().is_empty(), "released once");
+        // A late release (the writer was busy): the next one is a period
+        // after it, not after the one it was due at.
+        outbox.value(meter("Kick", json!(0.6)));
+        let late = at(t, 600);
+        assert_eq!(
+            taken(&outbox, late),
+            vec![values(vec![meter("Kick", json!(0.6))])]
+        );
+        outbox.value(meter("Kick", json!(0.7)));
+        let next = at(t, 850);
+        assert_eq!(outbox.lock().wake(late), Wake::At(next));
+        assert_eq!(taken(&outbox, next - Duration::from_nanos(1)), vec![]);
+        // With another value: the batch's one `values` message holds both,
+        // in key order (`mute` before `output_meter_level`).
+        let mute = ValueItem::value("band|live_set tracks[name=Kick]|mute|false", json!(1), None);
+        outbox.value(mute.clone());
+        assert_eq!(
+            taken(&outbox, next),
+            vec![values(vec![mute, meter("Kick", json!(0.7))])]
+        );
+        // Nothing held: the writer sleeps until woken, its period or not.
+        assert_eq!(outbox.lock().wake(at(t, 5000)), Wake::Woken);
+    }
+
+    #[test]
+    fn a_held_meter_keeps_the_louder_number_and_a_non_number_replaces_it() {
+        let outbox = Outbox::new();
+        let t = Instant::now();
+        outbox.pace_meters(every(250), t);
+        for level in [json!(0.3), json!(0.9), json!(0.5), json!(0.9)] {
+            outbox.value(meter("Kick", level));
+        }
+        // Another meter of another kind is held on its own.
+        let left = ValueItem::value(
+            "band|live_set tracks[name=Kick]|output_meter_left|false",
+            json!(0.2),
+            None,
+        );
+        outbox.value(left.clone());
+        let due = at(t, 250);
+        assert_eq!(
+            taken(&outbox, due),
+            vec![values(vec![left, meter("Kick", json!(0.9))])],
+            "the loudest of the period"
+        );
+        // A quieter one after a louder one is still the louder; a louder one
+        // replaces.
+        outbox.value(meter("Kick", json!(0.4)));
+        outbox.value(meter("Kick", json!(1)));
+        outbox.value(meter("Kick", json!(0.8)));
+        assert_eq!(
+            taken(&outbox, at(t, 500)),
+            vec![values(vec![meter("Kick", json!(1))])]
+        );
+        // An error replaces a number, and a number then replaces the error
+        // (the newer: the error is no level).
+        let gone = ValueItem::error(&meter_key("band", "Kick"), "no such track");
+        outbox.value(meter("Kick", json!(0.9)));
+        outbox.value(gone.clone());
+        assert_eq!(taken(&outbox, at(t, 750)), vec![values(vec![gone.clone()])]);
+        outbox.value(gone);
+        outbox.value(meter("Kick", json!(0.1)));
+        assert_eq!(
+            taken(&outbox, at(t, 1000)),
+            vec![values(vec![meter("Kick", json!(0.1))])]
+        );
+        // A null replaces a number too.
+        outbox.value(meter("Kick", json!(0.9)));
+        outbox.value(meter("Kick", Value::Null));
+        assert_eq!(
+            taken(&outbox, at(t, 1250)),
+            vec![values(vec![meter("Kick", Value::Null)])]
+        );
+    }
+
+    #[test]
+    fn the_louder_of_two_meter_items() {
+        let kick = |v: Value| meter("Kick", v);
+        assert_eq!(louder(kick(json!(0.5)), kick(json!(0.4))), kick(json!(0.5)));
+        assert_eq!(louder(kick(json!(0.4)), kick(json!(0.5))), kick(json!(0.5)));
+        assert_eq!(louder(kick(json!(0)), kick(json!(1))), kick(json!(1)));
+        // Equal: the held one stays (the same number).
+        assert_eq!(louder(kick(json!(0.5)), kick(json!(0.5))), kick(json!(0.5)));
+        let gone = ValueItem::error(&meter_key("band", "Kick"), "gone");
+        assert_eq!(louder(kick(json!(0.5)), gone.clone()), gone);
+        assert_eq!(louder(gone, kick(json!(0.1))), kick(json!(0.1)));
+        assert_eq!(louder(kick(json!(0.5)), kick(json!("x"))), kick(json!("x")));
+    }
+
+    #[test]
+    fn everything_but_a_meter_goes_at_once_while_paced_or_paused() {
+        let t = Instant::now();
+        let mute = ValueItem::value("band|live_set tracks[name=Kick]|mute|false", json!(1), None);
+        let pong = ServerMsg::Pong {
+            n: 1,
+            t: 2.0,
+            h: 3.0,
+        };
+        for (pace, alone) in [
+            (every(250), Wake::At(at(t, 250))),
+            (Pace::Paused, Wake::Woken),
+        ] {
+            let outbox = Outbox::new();
+            outbox.pace_meters(pace, t);
+            outbox.value(meter("Kick", json!(0.5)));
+            assert_eq!(outbox.lock().wake(t), alone, "{pace:?}: a held meter alone");
+            assert!(!outbox.lock().has_messages(), "{pace:?}: no message");
+            assert!(!outbox.lock().is_empty(), "{pace:?}: but held");
+            outbox.value(mute.clone());
+            outbox.ack(AckItem::applied("k", 1, None));
+            outbox.reply(pong.clone());
+            outbox.layout(4);
+            assert_eq!(outbox.lock().wake(t), Wake::Now, "{pace:?}");
+            assert_eq!(
+                taken(&outbox, t),
+                vec![
+                    pong.clone(),
+                    ServerMsg::Layout { rev: 4 },
+                    values(vec![mute.clone()]),
+                    ServerMsg::Ack {
+                        items: vec![AckItem::applied("k", 1, None)]
+                    },
+                ],
+                "{pace:?}"
+            );
+            // A frame goes at once too.
+            outbox.eq_frame(head_of(1), Bytes::from_static(b"a"));
+            assert_eq!(outbox.take_frame(t), framed(1, 1, b"a"), "{pace:?}");
+            assert_eq!(outbox.lock().meters.len(), 1, "{pace:?}: still held");
+        }
+    }
+
+    #[test]
+    fn a_paused_meter_is_never_released_and_waking_releases_it_at_once() {
+        let outbox = Outbox::new();
+        let t = Instant::now();
+        // A meter written before the pause, still waiting with the values,
+        // goes; one written after it is held, however long.
+        outbox.value(meter("Kick", json!(0.1)));
+        outbox.pace_meters(Pace::Paused, t);
+        outbox.value(meter("Snare", json!(0.2)));
+        assert_eq!(
+            taken(&outbox, t),
+            vec![values(vec![meter("Kick", json!(0.1))])]
+        );
+        outbox.value(meter("Kick", json!(0.3)));
+        for n in [250, 2000, 3_600_000] {
+            assert_eq!(outbox.lock().wake(at(t, n)), Wake::Woken, "{n}");
+            assert_eq!(taken(&outbox, at(t, n)), vec![], "{n}");
+        }
+        // Waking: every held meter goes with the next batch.
+        outbox.pace_meters(Pace::Full, at(t, 5000));
+        assert_eq!(outbox.lock().wake(at(t, 5000)), Wake::Now);
+        assert_eq!(
+            taken(&outbox, at(t, 5000)),
+            vec![values(vec![
+                meter("Kick", json!(0.3)),
+                meter("Snare", json!(0.2))
+            ])]
+        );
+        // Awake again: a meter goes at once.
+        outbox.value(meter("Kick", json!(0.4)));
+        assert_eq!(
+            taken(&outbox, at(t, 5001)),
+            vec![values(vec![meter("Kick", json!(0.4))])]
+        );
+    }
+
+    #[test]
+    fn waking_a_paced_page_releases_before_its_period_and_a_new_pace_starts_afresh() {
+        let outbox = Outbox::new();
+        let t = Instant::now();
+        // A meter waiting with the values when the page went idle is the
+        // older one: the held one replaces it at the wake.
+        outbox.value(meter("Kick", json!(0.9)));
+        outbox.pace_meters(every(250), t);
+        outbox.value(meter("Kick", json!(0.2)));
+        outbox.pace_meters(Pace::Full, at(t, 10));
+        assert_eq!(
+            taken(&outbox, at(t, 10)),
+            vec![values(vec![meter("Kick", json!(0.2))])]
+        );
+        // Idle again: the first period starts at this pacing.
+        outbox.pace_meters(every(250), at(t, 20));
+        outbox.value(meter("Kick", json!(0.3)));
+        assert_eq!(outbox.lock().wake(at(t, 30)), Wake::At(at(t, 270)));
+        // Another `idle` while paced keeps the period running; the new period
+        // counts from the next release.
+        outbox.pace_meters(every(1000), at(t, 100));
+        assert_eq!(outbox.lock().wake(at(t, 100)), Wake::At(at(t, 270)));
+        assert_eq!(
+            taken(&outbox, at(t, 270)),
+            vec![values(vec![meter("Kick", json!(0.3))])]
+        );
+        outbox.value(meter("Kick", json!(0.4)));
+        assert_eq!(outbox.lock().wake(at(t, 270)), Wake::At(at(t, 1270)));
+        // Paused, then paced: the period that ran goes on.
+        outbox.pace_meters(Pace::Paused, at(t, 300));
+        assert_eq!(outbox.lock().wake(at(t, 1270)), Wake::Woken);
+        outbox.pace_meters(every(250), at(t, 400));
+        assert_eq!(outbox.lock().wake(at(t, 400)), Wake::At(at(t, 1270)));
+        // Awake, then paused, then paced: a fresh period.
+        outbox.pace_meters(Pace::Full, at(t, 500));
+        taken(&outbox, at(t, 500));
+        outbox.pace_meters(Pace::Paused, at(t, 600));
+        outbox.pace_meters(every(250), at(t, 700));
+        outbox.value(meter("Kick", json!(0.5)));
+        assert_eq!(outbox.lock().wake(at(t, 700)), Wake::At(at(t, 950)));
+    }
+
+    #[test]
+    fn an_instance_going_offline_and_a_left_subscription_drop_held_meters() {
+        let outbox = Outbox::new();
+        let t = Instant::now();
+        outbox.pace_meters(Pace::Paused, t);
+        outbox.value(meter("Kick", json!(0.5)));
+        outbox.value(meter("Snare", json!(0.5)));
+        let master = ValueItem::value(&meter_key("master", "Kick"), json!(0.7), None);
+        outbox.value(master.clone());
+        let bandx = ValueItem::value(&meter_key("bandx", "Kick"), json!(0.6), None);
+        outbox.value(bandx.clone());
+        outbox.forget(&meter_key("band", "Snare"));
+        put_instance(&outbox, false);
+        outbox.pace_meters(Pace::Full, t);
+        assert_eq!(
+            taken(&outbox, t),
+            vec![instance(false), values(vec![bandx, master])]
+        );
+    }
+
+    #[test]
+    fn the_writer_wakes_for_the_sooner_of_a_frame_and_the_held_meters() {
+        let t = Instant::now();
+        let outbox = Outbox::new();
+        outbox.pace_meters(every(250), t);
+        assert_eq!(outbox.lock().wake(at(t, 300)), Wake::Woken, "nothing held");
+        outbox.value(meter("Kick", json!(0.5)));
+        assert_eq!(outbox.lock().wake(t), Wake::At(at(t, 250)));
+        // A frame in flight and the next waiting for its ack until 1000.
+        outbox.eq_frame(head_of(1), Bytes::from_static(b"a"));
+        assert_eq!(outbox.lock().wake(t), Wake::Now, "a frame that may go");
+        outbox.take_frame(t);
+        outbox.eq_frame(head_of(1), Bytes::from_static(b"b"));
+        assert_eq!(
+            outbox.lock().wake(t),
+            Wake::At(at(t, 250)),
+            "the meters first"
+        );
+        assert_eq!(outbox.lock().wake(at(t, 250)), Wake::Now, "the meters due");
+        taken(&outbox, at(t, 250));
+        outbox.value(meter("Kick", json!(0.5)));
+        assert_eq!(
+            outbox.lock().wake(at(t, 300)),
+            Wake::At(at(t, 500)),
+            "the meters' next period first"
+        );
+        // A longer period: the frame's wait first.
+        outbox.pace_meters(Pace::Full, at(t, 300));
+        taken(&outbox, at(t, 300));
+        outbox.pace_meters(every(2000), at(t, 300));
+        outbox.value(meter("Kick", json!(0.5)));
+        assert_eq!(
+            outbox.lock().wake(at(t, 300)),
+            Wake::At(at(t, 1000)),
+            "the frame first"
+        );
+        // Paused: only the frame's wait counts.
+        outbox.pace_meters(Pace::Paused, at(t, 300));
+        assert_eq!(outbox.lock().wake(at(t, 300)), Wake::At(at(t, 1000)));
+        assert_eq!(
+            outbox.lock().wake(at(t, 1000)),
+            Wake::Now,
+            "its wait ran out"
+        );
+    }
+
+    #[test]
+    fn the_sooner_of_two_wakes() {
+        let t = Instant::now();
+        let (early, late) = (Wake::At(t), Wake::At(at(t, 1)));
+        for (a, b, sooner_one) in [
+            (Wake::Now, Wake::Now, Wake::Now),
+            (Wake::Now, early, Wake::Now),
+            (early, Wake::Now, Wake::Now),
+            (Wake::Now, Wake::Woken, Wake::Now),
+            (Wake::Woken, Wake::Now, Wake::Now),
+            (early, late, early),
+            (late, early, early),
+            (late, Wake::Woken, late),
+            (Wake::Woken, late, late),
+            (Wake::Woken, Wake::Woken, Wake::Woken),
+        ] {
+            assert_eq!(sooner(a, b), sooner_one, "{a:?} {b:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn the_writer_wakes_by_itself_for_the_held_meters_and_for_the_wake_up() {
+        let outbox = Arc::new(Outbox::new());
+        let paced = Instant::now();
+        outbox.pace_meters(every(100), paced);
+        outbox.value(meter("Kick", json!(0.5)));
+        let batch = tokio::time::timeout(Duration::from_secs(3), outbox.next_batch())
+            .await
+            .expect("woken when the period ran out")
+            .unwrap();
+        assert!(
+            paced.elapsed() >= Duration::from_millis(100),
+            "not before the period: {:?}",
+            paced.elapsed()
+        );
+        assert_eq!(
+            batch.messages,
+            vec![values(vec![meter("Kick", json!(0.5))])]
+        );
+        // Paused: the writer sleeps until the page wakes.
+        outbox.pace_meters(Pace::Paused, Instant::now());
+        outbox.value(meter("Kick", json!(0.6)));
+        let writer = Arc::clone(&outbox);
+        let batch = tokio::spawn(async move { writer.next_batch().await });
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert!(!batch.is_finished(), "held while paused");
+        outbox.pace_meters(Pace::Full, Instant::now());
+        let batch = tokio::time::timeout(Duration::from_millis(500), batch)
+            .await
+            .expect("woken by the wake")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            batch.messages,
+            vec![values(vec![meter("Kick", json!(0.6))])]
+        );
     }
 
     #[tokio::test]

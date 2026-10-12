@@ -235,3 +235,44 @@ fn a_clock_step_warning_is_logged_at_most_once_per_ten_seconds() {
     // the interval.
     assert!(step_warn_due(Some(20_000.0), 5_000.0));
 }
+
+#[test]
+fn an_idle_record_names_the_meter_period_the_hub_keeps() {
+    // #51: after the clamp; 0 paused; none awake.
+    let every = |ms: u64| Pace::Every(Duration::from_millis(ms));
+    assert_eq!(
+        idle_fields(3, "10.0.0.5", true, every(250)),
+        json!({"client": 3, "peer": "10.0.0.5", "on": true, "meter_ms": 250})
+    );
+    assert_eq!(
+        idle_fields(3, "10.0.0.5", true, meter_pace(true, Some(5000))),
+        json!({"client": 3, "peer": "10.0.0.5", "on": true, "meter_ms": 2000})
+    );
+    assert_eq!(
+        idle_fields(3, "10.0.0.5", true, Pace::Paused),
+        json!({"client": 3, "peer": "10.0.0.5", "on": true, "meter_ms": 0})
+    );
+    assert_eq!(
+        idle_fields(4, "10.0.0.6", false, Pace::Full),
+        json!({"client": 4, "peer": "10.0.0.6", "on": false, "meter_ms": null})
+    );
+}
+
+#[test]
+fn an_idle_line_says_how_the_pages_meters_go() {
+    let log = logged(|| {
+        log_idle(5, meter_pace(true, None));
+        log_idle(5, meter_pace(true, Some(0)));
+        log_idle(6, meter_pace(false, None));
+        log_idle(7, meter_pace(true, Some(50)));
+    });
+    for line in [
+        "a page went idle: its meters at most every 250 ms client=5",
+        "a page went idle: its meters paused client=5",
+        "a page woke client=6",
+        "a page went idle: its meters at most every 100 ms client=7",
+    ] {
+        assert!(log.contains(&format!("ws: {line}\n")), "{log}");
+    }
+    assert_eq!(log.matches(" INFO ").count(), 4, "{log}");
+}

@@ -131,6 +131,16 @@ impl Host {
             .unwrap_or_else(|| panic!("not a TUNER line: {answer}"))
     }
 
+    /// Pins the meters of every track and return named `name` at `level`
+    /// (0..1; Live's meter listeners fire once); how many it found.
+    pub fn meter(&mut self, name: &str, level: f64) -> usize {
+        let answer = self.answer(&format!("meter \"{name}\" {level}"));
+        answer
+            .strip_prefix("METER ")
+            .and_then(|n| n.parse().ok())
+            .unwrap_or_else(|| panic!("not a METER line: {answer}"))
+    }
+
     /// Deletes the track at `index` as a user in Live would; the tracks left
     /// (-1: no such track).
     pub fn delete_track(&mut self, index: u32) -> i64 {
