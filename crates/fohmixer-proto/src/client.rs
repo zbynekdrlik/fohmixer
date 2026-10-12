@@ -641,6 +641,29 @@ pub struct HttpsStatus {
     pub last_issued: Option<i64>,
 }
 
+/// One name's certificate in `GET /api/status` (#90): the per-certificate
+/// fields of [`HttpsStatus`], with the same meaning.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CertStatus {
+    /// Whether the HTTPS listener serves it.
+    pub serving: bool,
+    pub cert_names: Vec<String>,
+    pub not_after: Option<i64>,
+    pub days_left: Option<i64>,
+    pub cert_error: Option<String>,
+    pub acme_error: Option<String>,
+    pub acme_failures: u32,
+    pub last_issued: Option<i64>,
+}
+
+/// AbleSet's own page behind the hub (#90) in `GET /api/status`: its name
+/// (`[ableset]`) and that name's own certificate.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AbleSetStatus {
+    pub name: String,
+    pub cert: CertStatus,
+}
+
 /// cloudflared's readiness in `GET /api/status` (#17).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TunnelStatus {
@@ -769,6 +792,10 @@ pub struct HubStatus {
     /// (and in an older hub's answer).
     #[serde(default)]
     pub companion: Option<CompanionStatus>,
+    /// AbleSet's page (#90); none without `[ableset]` (and in an older
+    /// hub's answer).
+    #[serde(default)]
+    pub ableset: Option<AbleSetStatus>,
 }
 
 #[cfg(test)]

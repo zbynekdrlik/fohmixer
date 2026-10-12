@@ -33,7 +33,7 @@ use crate::http_client::HttpClient;
 use crate::https::Https;
 use crate::remote::{RemoteState, Stored};
 use crate::secrets::SECRETS_DIR;
-use crate::tls::{CertStore, Pem};
+use crate::tls::{CertStore, Pem, Slot};
 
 /// How often a kept certificate is looked at again.
 pub const CHECK_EVERY: Duration = Duration::from_secs(12 * 60 * 60);
@@ -302,7 +302,7 @@ impl Acme {
         store
             .save(&pem)
             .map_err(|e| format!("storing the certificate: {e}"))?;
-        crate::remote::serve(https, state, &pem)?;
+        crate::remote::serve(https, state, Slot::Primary, &self.name, &pem)?;
         Ok(pem)
     }
 

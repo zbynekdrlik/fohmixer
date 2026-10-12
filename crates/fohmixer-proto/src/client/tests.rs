@@ -544,6 +544,19 @@ fn api_bodies_round_trip() {
             api_version: Some("1.12.0".into()),
             keys: 32,
         }),
+        ableset: Some(AbleSetStatus {
+            name: "ableset.example.org".into(),
+            cert: CertStatus {
+                serving: true,
+                cert_names: vec!["ableset.example.org".into()],
+                not_after: Some(1_800_000_000),
+                days_left: Some(89),
+                cert_error: None,
+                acme_error: None,
+                acme_failures: 0,
+                last_issued: Some(1_790_000_000),
+            },
+        }),
     };
     let json = serde_json::to_value(&status).unwrap();
     assert_eq!(json["remote"]["https"]["days_left"], 60);
@@ -571,6 +584,7 @@ fn api_bodies_round_trip() {
     older.as_object_mut().unwrap().remove("remote");
     older.as_object_mut().unwrap().remove("client_reports");
     older.as_object_mut().unwrap().remove("companion");
+    older.as_object_mut().unwrap().remove("ableset");
     older["layout"].as_object_mut().unwrap().remove("markers");
     let older = serde_json::from_value::<HubStatus>(older).unwrap();
     assert_eq!(older.remote, RemoteStatus::default());
@@ -580,6 +594,8 @@ fn api_bodies_round_trip() {
         older.companion, None,
         "an older hub's answer has no Stream Deck"
     );
+    assert_eq!(older.ableset, None, "nor AbleSet's page");
+    assert_eq!(json["ableset"]["cert"]["days_left"], 89);
     assert_eq!(json["companion"]["keys"], 32);
     assert_eq!(json["companion"]["api_version"], "1.12.0");
     assert_eq!(json["instances"][0]["listeners"], 4);

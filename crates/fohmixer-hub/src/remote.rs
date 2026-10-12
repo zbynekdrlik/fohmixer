@@ -1,27 +1,66 @@
 //! Remote access's live state (#17) for `/api/status`: the served
-//! certificate, the ACME client's last result, the tunnel's readiness; and
-//! the start of the HTTPS listener on the stored certificate.
+//! certificates (the `[tls]` name's and, #90, AbleSet's name's), the ACME
+//! client's last result for each, the tunnel's readiness; and the start of
+//! the HTTPS listener on the stored certificates.
 
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use fohmixer_proto::client::{HttpsStatus, RemoteStatus, TunnelStatus};
+use fohmixer_proto::client::{AbleSetStatus, CertStatus, HttpsStatus, RemoteStatus, TunnelStatus};
 
 use crate::config::Config;
 use crate::https::Https;
-use crate::tls::{CertInfo, CertStore};
+use crate::tls::{CertInfo, CertStore, Slot};
 
+/// One name's certificate: the served one, why the stored one is not
+/// served, the ACME client's last result.
 #[derive(Debug, Default)]
-struct Inner {
-    bind_error: Option<String>,
+struct NameState {
     cert: Option<CertInfo>,
     cert_error: Option<String>,
     acme_error: Option<String>,
     acme_failures: u32,
     last_issued: Option<i64>,
+}
+
+impl NameState {
+    /// Its part of `/api/status` at `now` (`serving`: whether the listener
+    /// serves it).
+    fn status(&self, serving: bool, now: i64) -> CertStatus {
+        CertStatus {
+            serving,
+            cert_names: self
+                .cert
+                .as_ref()
+                .map(|c| c.names.clone())
+                .unwrap_or_default(),
+            not_after: self.cert.as_ref().map(|c| c.not_after),
+            days_left: self.cert.as_ref().map(|c| c.days_left(now)),
+            cert_error: self.cert_error.clone(),
+            acme_error: self.acme_error.clone(),
+            acme_failures: self.acme_failures,
+            last_issued: self.last_issued,
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct Inner {
+    bind_error: Option<String>,
+    primary: NameState,
+    ableset: NameState,
     tunnel: Option<TunnelStatus>,
 }
 
-/// The state the listener, the ACME client and the tunnel check write.
+impl Inner {
+    fn name(&mut self, slot: Slot) -> &mut NameState {
+        match slot {
+            Slot::Primary => &mut self.primary,
+            Slot::AbleSet => &mut self.ableset,
+        }
+    }
+}
+
+/// The state the listener, the ACME clients and the tunnel check write.
 #[derive(Debug, Default)]
 pub struct RemoteState(Mutex<Inner>);
 
@@ -35,21 +74,23 @@ impl RemoteState {
         self.inner().bind_error = why;
     }
 
-    /// The listener serves `cert`.
-    pub fn set_cert(&self, cert: CertInfo) {
+    /// The listener serves `cert` for `slot`.
+    pub fn set_cert(&self, slot: Slot, cert: CertInfo) {
         let mut inner = self.inner();
-        inner.cert = Some(cert);
-        inner.cert_error = None;
+        let name = inner.name(slot);
+        name.cert = Some(cert);
+        name.cert_error = None;
     }
 
-    /// The stored certificate is not served, because of `why`.
-    pub fn set_cert_error(&self, why: String) {
-        self.inner().cert_error = Some(why);
+    /// The stored certificate of `slot` is not served, because of `why`.
+    pub fn set_cert_error(&self, slot: Slot, why: String) {
+        self.inner().name(slot).cert_error = Some(why);
     }
 
     /// The ACME client got a certificate at `now`.
     pub fn acme_ok(&self, now: i64) {
-        let mut inner = self.inner();
+        let mut guard = self.inner();
+        let inner = &mut guard.primary;
         inner.acme_error = None;
         inner.acme_failures = 0;
         inner.last_issued = Some(now);
@@ -58,7 +99,8 @@ impl RemoteState {
     /// An ACME attempt failed because of `why`: how many in a row now, and
     /// whether the one before failed for the same reason.
     pub fn acme_failed(&self, why: String) -> (u32, bool) {
-        let mut inner = self.inner();
+        let mut guard = self.inner();
+        let inner = &mut guard.primary;
         let repeated = inner.acme_error.as_ref() == Some(&why);
         inner.acme_error = Some(why);
         inner.acme_failures += 1;
@@ -80,27 +122,41 @@ impl RemoteState {
         let inner = self.inner();
         RemoteStatus {
             name: config.tls.as_ref().map(|tls| tls.name.clone()),
-            https: config.tls.as_ref().map(|tls| HttpsStatus {
-                port: https.map_or(tls.port, |https| https.addr().port()),
-                bound: https.is_some(),
-                bind_error: inner.bind_error.clone(),
-                serving: https.is_some_and(Https::serving),
-                cert_names: inner
-                    .cert
-                    .as_ref()
-                    .map(|c| c.names.clone())
-                    .unwrap_or_default(),
-                not_after: inner.cert.as_ref().map(|c| c.not_after),
-                days_left: inner.cert.as_ref().map(|c| c.days_left(now)),
-                cert_error: inner.cert_error.clone(),
-                acme: config.acme.is_some(),
-                acme_error: inner.acme_error.clone(),
-                acme_failures: inner.acme_failures,
-                last_issued: inner.last_issued,
+            https: config.tls.as_ref().map(|tls| {
+                let cert = inner.primary.status(https.is_some_and(Https::serving), now);
+                HttpsStatus {
+                    port: https.map_or(tls.port, |https| https.addr().port()),
+                    bound: https.is_some(),
+                    bind_error: inner.bind_error.clone(),
+                    serving: cert.serving,
+                    cert_names: cert.cert_names,
+                    not_after: cert.not_after,
+                    days_left: cert.days_left,
+                    cert_error: cert.cert_error,
+                    acme: config.acme.is_some(),
+                    acme_error: cert.acme_error,
+                    acme_failures: cert.acme_failures,
+                    last_issued: cert.last_issued,
+                }
             }),
             access: config.access.is_some(),
             tunnel: config.tunnel.as_ref().and(inner.tunnel.clone()),
         }
+    }
+
+    /// The `ableset` part of `/api/status` at `now` (#90): none without
+    /// `[ableset]`.
+    pub fn ableset(
+        &self,
+        config: &Config,
+        https: Option<&Https>,
+        now: i64,
+    ) -> Option<AbleSetStatus> {
+        let serving = https.is_some_and(|https| https.serves(Slot::AbleSet));
+        config.ableset.as_ref().map(|ableset| AbleSetStatus {
+            name: ableset.name.clone(),
+            cert: self.inner().ableset.status(serving, now),
+        })
     }
 }
 
@@ -125,30 +181,46 @@ pub fn stored(store: &CertStore, name: &str) -> Stored {
     }
 }
 
-/// Serves `pem` on `https` and records it.
-pub fn serve(https: &Https, state: &RemoteState, pem: &crate::tls::Pem) -> Result<(), String> {
-    let config = crate::tls::server_config(&pem.chain, &pem.key)?;
-    https
-        .serve(config)
-        .map_err(|e| format!("starting the HTTPS listener: {e}"))?;
-    state.set_cert(pem.info.clone());
+/// Serves `pem` as the certificate of `slot` for `name` on `https` and
+/// records it.
+pub fn serve(
+    https: &Https,
+    state: &RemoteState,
+    slot: Slot,
+    name: &str,
+    pem: &crate::tls::Pem,
+) -> Result<(), String> {
+    https.set_cert(slot, name, pem)?;
+    state.set_cert(slot, pem.info.clone());
     Ok(())
 }
 
-/// At the start: the HTTPS listener serves the stored certificate, when
-/// there is a usable one (else it waits for the ACME client).
-pub fn serve_stored(https: &Https, state: &RemoteState, data_dir: &std::path::Path, name: &str) {
-    let store = CertStore::new(data_dir);
+/// At the start: the HTTPS listener serves the stored certificate of `slot`
+/// for `name`, when there is a usable one (else it waits for the ACME
+/// client).
+pub fn serve_stored(
+    https: &Https,
+    state: &RemoteState,
+    data_dir: &std::path::Path,
+    slot: Slot,
+    name: &str,
+) {
+    let store = CertStore::slot(data_dir, slot);
     let outcome = match stored(&store, name) {
-        Stored::Serve(pem) => serve(https, state, &pem).err(),
-        Stored::Missing => Some(format!(
-            "no certificate for {name} yet: HTTPS starts with the first one (plain HTTP serves meanwhile)"
-        )),
+        Stored::Serve(pem) => serve(https, state, slot, name, &pem).err(),
+        Stored::Missing => Some(match slot {
+            Slot::Primary => format!(
+                "no certificate for {name} yet: HTTPS starts with the first one (plain HTTP serves meanwhile)"
+            ),
+            Slot::AbleSet => format!(
+                "no certificate for {name} yet: it is served beside the [tls] name's once it is there"
+            ),
+        }),
         Stored::Unusable(why) => Some(why),
     };
     if let Some(why) = outcome {
         tracing::warn!(name, "HTTPS: {why}");
-        state.set_cert_error(why);
+        state.set_cert_error(slot, why);
     }
 }
 
@@ -211,7 +283,7 @@ mod tests {
         assert!(!status.serving);
         assert!(status.acme);
         assert_eq!((status.not_after, status.days_left), (None, None));
-        state.set_cert_error("no certificate yet".into());
+        state.set_cert_error(Slot::Primary, "no certificate yet".into());
         assert_eq!(state.acme_failed("first".into()), (1, false));
         assert_eq!(state.acme_failed("second".into()), (2, false));
         assert_eq!(state.acme_failed("second".into()), (3, true));
@@ -219,10 +291,13 @@ mod tests {
         assert_eq!(status.cert_error.as_deref(), Some("no certificate yet"));
         assert_eq!(status.acme_error.as_deref(), Some("second"));
         assert_eq!(status.acme_failures, 3);
-        state.set_cert(CertInfo {
-            names: vec!["foh.example.org".into()],
-            not_after: 100 * DAY,
-        });
+        state.set_cert(
+            Slot::Primary,
+            CertInfo {
+                names: vec!["foh.example.org".into()],
+                not_after: 100 * DAY,
+            },
+        );
         state.acme_ok(7);
         let status = state.snapshot(&full, Some(&https), 40 * DAY).https.unwrap();
         assert_eq!(status.cert_names, vec!["foh.example.org".to_string()]);
@@ -248,7 +323,7 @@ mod tests {
         assert_eq!(stored(&store, "foh.example.org"), Stored::Missing);
         let state = RemoteState::default();
         let https = Https::bind("127.0.0.1:0".parse().unwrap(), axum::Router::new()).unwrap();
-        serve_stored(&https, &state, dir.path(), "foh.example.org");
+        serve_stored(&https, &state, dir.path(), Slot::Primary, "foh.example.org");
         assert!(!https.serving());
         let full = config("[tls]\nname = \"foh.example.org\"\n");
         let error = state
@@ -261,6 +336,23 @@ mod tests {
             error.starts_with("no certificate for foh.example.org yet"),
             "{error}"
         );
+        // AbleSet's name (#90): its own store and status.
+        let both = config(
+            "[tls]\nname = \"foh.example.org\"\n[ableset]\nname = \"ableset.example.org\"\n",
+        );
+        let ableset = |at: i64| state.ableset(&both, Some(&https), at).unwrap().cert;
+        serve_stored(
+            &https,
+            &state,
+            dir.path(),
+            Slot::AbleSet,
+            "ableset.example.org",
+        );
+        let error = ableset(0).cert_error.unwrap();
+        assert_eq!(
+            error,
+            "no certificate for ableset.example.org yet: it is served beside the [tls] name's once it is there"
+        );
 
         let ca = TestCa::new();
         let (chain, key) = ca.leaf(&["other.example.org"], now() - DAY, now() + 90 * DAY);
@@ -271,21 +363,39 @@ mod tests {
             stored(&store, "foh.example.org"),
             Stored::Unusable(_)
         ));
-        serve_stored(&https, &state, dir.path(), "foh.example.org");
+        serve_stored(&https, &state, dir.path(), Slot::Primary, "foh.example.org");
         assert!(
             !https.serving(),
             "a certificate for another name is not served"
         );
+        let (chain, key) = ca.leaf(&["ableset.example.org"], now() - DAY, now() + 60 * DAY);
+        let pem = crate::tls::checked(chain, key, "ableset.example.org").unwrap();
+        CertStore::slot(dir.path(), Slot::AbleSet)
+            .save(&pem)
+            .unwrap();
+        serve_stored(
+            &https,
+            &state,
+            dir.path(),
+            Slot::AbleSet,
+            "ableset.example.org",
+        );
+        assert!(!https.serving(), "only the [tls] name's starts the server");
+        let waiting = ableset(0);
+        assert_eq!(waiting.cert_names, vec!["ableset.example.org".to_string()]);
+        assert_eq!((waiting.serving, waiting.cert_error), (false, None));
 
         let t = now();
         let (chain, key) = ca.leaf(&["foh.example.org"], t - DAY, t + 90 * DAY);
         std::fs::write(store.cert_path(), chain).unwrap();
         std::fs::write(store.key_path(), key).unwrap();
-        serve_stored(&https, &state, dir.path(), "foh.example.org");
+        serve_stored(&https, &state, dir.path(), Slot::Primary, "foh.example.org");
         assert!(https.serving());
         let status = state.snapshot(&full, Some(&https), t).https.unwrap();
         assert_eq!(status.cert_error, None);
         assert_eq!(status.days_left, Some(90));
+        assert!(ableset(t).serving, "served beside it now");
+        assert_eq!(state.ableset(&full, Some(&https), t), None);
         https.stop(std::time::Duration::from_millis(10));
         assert!(https.stopped(std::time::Duration::from_secs(5)).await);
 

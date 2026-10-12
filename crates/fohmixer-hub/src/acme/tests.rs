@@ -285,9 +285,8 @@ async fn a_failed_attempt_is_counted_and_keeps_the_served_certificate() {
     let old_ca = TestCa::new();
     let now = crate::auth::now_secs() as i64;
     let (chain, key) = old_ca.leaf(&[NAME], now - 80 * DAY, now + 10 * DAY);
-    https
-        .serve(crate::tls::server_config(&chain, &key).unwrap())
-        .unwrap();
+    let old = crate::tls::checked(chain, key, NAME).unwrap();
+    https.set_cert(Slot::Primary, NAME, &old).unwrap();
     // No token: retried every 5 minutes, the old certificate stays.
     assert_eq!(
         acme.renew(&store, &https, &state).await,

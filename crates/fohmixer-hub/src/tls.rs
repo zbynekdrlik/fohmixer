@@ -1,10 +1,12 @@
-//! The certificate of the `[tls]` name (#17): its store in the data folder,
-//! what it covers and until when, the TLS configuration the HTTPS listener
-//! serves it with, and when it is due for renewal.
+//! The certificates of the `[tls]` name (#17) and of AbleSet's name (#90):
+//! their stores in the data folder, what each covers and until when, the TLS
+//! configuration the HTTPS listener serves them with (chosen by the client's
+//! SNI), and when one is due for renewal.
 //!
 //! `<data>/tls/cert.pem` holds the chain (the certificate first) and
 //! `<data>/tls/key.pem` its private key (owner-only on Unix; on the PC the
-//! data folder's protected DACL guards it). The ACME client writes both
+//! data folder's protected DACL guards it); AbleSet's pair is the same in
+//! `<data>/tls/ableset/`. The ACME client writes the `[tls]` name's
 //! (`acme.rs`); a certificate put there by hand is served the same way.
 
 use std::io;
@@ -13,6 +15,8 @@ use std::sync::Arc;
 
 use rustls::pki_types::pem::PemObject as _;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+use rustls::server::{ClientHello, ResolvesServerCert};
+use rustls::sign::CertifiedKey;
 
 /// The store's folder inside the data folder.
 pub const TLS_DIR: &str = "tls";
@@ -20,6 +24,8 @@ pub const TLS_DIR: &str = "tls";
 pub const CERT_FILE: &str = "cert.pem";
 /// The private key file.
 pub const KEY_FILE: &str = "key.pem";
+/// AbleSet's store inside the `[tls]` name's folder (#90).
+pub const ABLESET_DIR: &str = "ableset";
 /// A certificate is renewed when it has less than this left: 30 days.
 pub const RENEW_BEFORE_SECS: i64 = 30 * 24 * 60 * 60;
 
@@ -101,28 +107,64 @@ pub fn cert_info(chain: &str) -> Result<CertInfo, String> {
     })
 }
 
-/// The HTTPS listener's TLS configuration for `chain` and `key`: rustls on
-/// ring, TLS 1.2 and 1.3, HTTP/1.1 (the WebSocket upgrade included). A key
-/// that is not the certificate's is an error.
-pub fn server_config(chain: &str, key: &str) -> Result<Arc<rustls::ServerConfig>, String> {
+/// `chain` and `key` as rustls serves them, on ring: a key that is not the
+/// certificate's is an error (what rustls's `with_single_cert` checks).
+pub fn certified_key(chain: &str, key: &str) -> Result<Arc<CertifiedKey>, String> {
     let certs = chain_ders(chain)?;
     let key = PrivateKeyDer::from_pem_slice(key.as_bytes())
         .map_err(|e| format!("the private key does not parse: {e}"))?;
+    CertifiedKey::from_der(certs, key, &rustls::crypto::ring::default_provider())
+        .map(Arc::new)
+        .map_err(|e| format!("the certificate and the key do not go together: {e}"))
+}
+
+/// Which name a certificate is for (#90).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Slot {
+    /// The `[tls]` name's: served to every client that names no other.
+    Primary,
+    /// AbleSet's name's (`[ableset]`).
+    AbleSet,
+}
+
+/// The served certificates, chosen by the client's SNI: AbleSet's for its
+/// name, the `[tls]` name's for anything else, no SNI included (rustls's own
+/// `ResolvesServerCertUsingSni` answers none there, which would fail clients
+/// that work today).
+#[derive(Debug, Clone)]
+pub struct SniCerts {
+    pub primary: Arc<CertifiedKey>,
+    /// AbleSet's name and certificate.
+    pub ableset: Option<(String, Arc<CertifiedKey>)>,
+}
+
+impl ResolvesServerCert for SniCerts {
+    fn resolve(&self, hello: ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
+        let key = match (&self.ableset, hello.server_name()) {
+            (Some((name, key)), Some(sni)) if sni.eq_ignore_ascii_case(name) => key,
+            _ => &self.primary,
+        };
+        Some(Arc::clone(key))
+    }
+}
+
+/// The HTTPS listener's TLS configuration for `certs`: rustls on ring, TLS
+/// 1.2 and 1.3, HTTP/1.1 (the WebSocket upgrade included).
+pub fn sni_config(certs: SniCerts) -> Result<Arc<rustls::ServerConfig>, String> {
     let mut config = rustls::ServerConfig::builder_with_provider(Arc::new(
         rustls::crypto::ring::default_provider(),
     ))
     .with_safe_default_protocol_versions()
     .map_err(|e| format!("TLS versions: {e}"))?
     .with_no_client_auth()
-    .with_single_cert(certs, key)
-    .map_err(|e| format!("the certificate and the key do not go together: {e}"))?;
+    .with_cert_resolver(Arc::new(certs));
     config.alpn_protocols = vec![b"http/1.1".to_vec()];
     Ok(Arc::new(config))
 }
 
 /// A checked chain and key: they parse, go together, and cover `name`.
 pub fn checked(chain: String, key: String, name: &str) -> Result<Pem, String> {
-    server_config(&chain, &key)?;
+    certified_key(&chain, &key)?;
     let info = cert_info(&chain)?;
     if !info.covers(name) {
         return Err(format!(
@@ -133,17 +175,26 @@ pub fn checked(chain: String, key: String, name: &str) -> Result<Pem, String> {
     Ok(Pem { chain, key, info })
 }
 
-/// The certificate store in `<data>/tls/`.
+/// The certificate store in `<data>/tls/` (AbleSet's: `<data>/tls/ableset/`).
 #[derive(Debug, Clone)]
 pub struct CertStore {
     dir: PathBuf,
 }
 
 impl CertStore {
-    /// The store of the data folder `data_dir`.
+    /// The `[tls]` name's store of the data folder `data_dir`.
     pub fn new(data_dir: &Path) -> Self {
+        Self::slot(data_dir, Slot::Primary)
+    }
+
+    /// The store of `slot` in the data folder `data_dir`.
+    pub fn slot(data_dir: &Path, slot: Slot) -> Self {
+        let tls = data_dir.join(TLS_DIR);
         Self {
-            dir: data_dir.join(TLS_DIR),
+            dir: match slot {
+                Slot::Primary => tls,
+                Slot::AbleSet => tls.join(ABLESET_DIR),
+            },
         }
     }
 
@@ -250,24 +301,37 @@ pub(crate) mod test_certs {
 
     /// A TLS handshake with `addr` for `name` (SNI) that trusts only the CA
     /// `ca_pem`: what the certificate the server presents covers and until
-    /// when, or why the handshake failed (a certificate of another CA, none).
+    /// when, or why the handshake failed (a certificate of another CA or of
+    /// another name, none).
     pub async fn handshake(
         addr: std::net::SocketAddr,
         name: &str,
         ca_pem: &str,
+    ) -> Result<super::CertInfo, String> {
+        handshake_sni(addr, name, ca_pem, true).await
+    }
+
+    /// [`handshake`], with the SNI extension sent or not (`name` is still
+    /// the name the certificate must cover).
+    pub async fn handshake_sni(
+        addr: std::net::SocketAddr,
+        name: &str,
+        ca_pem: &str,
+        sni: bool,
     ) -> Result<super::CertInfo, String> {
         use rustls::pki_types::pem::PemObject as _;
         let mut roots = rustls::RootCertStore::empty();
         roots
             .add(rustls::pki_types::CertificateDer::from_pem_slice(ca_pem.as_bytes()).unwrap())
             .unwrap();
-        let config = rustls::ClientConfig::builder_with_provider(std::sync::Arc::new(
+        let mut config = rustls::ClientConfig::builder_with_provider(std::sync::Arc::new(
             rustls::crypto::ring::default_provider(),
         ))
         .with_safe_default_protocol_versions()
         .unwrap()
         .with_root_certificates(roots)
         .with_no_client_auth();
+        config.enable_sni = sni;
         let tcp = tokio::net::TcpStream::connect(addr)
             .await
             .map_err(|e| e.to_string())?;
@@ -357,20 +421,25 @@ mod tests {
     fn a_matching_pair_makes_a_config_and_a_foreign_key_does_not() {
         let ca = TestCa::new();
         let (chain, key) = ca.leaf(&["foh.example.org"], now() - DAY, now() + 90 * DAY);
-        let config = server_config(&chain, &key).unwrap();
+        let primary = certified_key(&chain, &key).unwrap();
+        let config = sni_config(SniCerts {
+            primary,
+            ableset: None,
+        })
+        .unwrap();
         assert_eq!(config.alpn_protocols, vec![b"http/1.1".to_vec()]);
         let (_, other_key) = ca.leaf(&["foh.example.org"], now() - DAY, now() + 90 * DAY);
-        let error = server_config(&chain, &other_key).unwrap_err();
+        let error = certified_key(&chain, &other_key).unwrap_err();
         assert!(
             error.starts_with("the certificate and the key do not go together"),
             "{error}"
         );
         assert!(
-            server_config(&chain, "not a key")
+            certified_key(&chain, "not a key")
                 .unwrap_err()
                 .starts_with("the private key does not parse")
         );
-        assert!(server_config("", &key).is_err());
+        assert!(certified_key("", &key).is_err());
         let pem = checked(chain.clone(), key.clone(), "foh.example.org").unwrap();
         assert_eq!(pem.info.names, vec!["foh.example.org".to_string()]);
         assert_eq!(
