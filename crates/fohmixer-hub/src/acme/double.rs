@@ -5,7 +5,8 @@
 //! its nonce and URL; and the DNS-01 record — the TXT record at
 //! `_acme-challenge.<name>` in the Cloudflare double must hold the key
 //! authorization's digest when the challenge is answered. The test CA
-//! signs the CSR.
+//! signs the CSR. A test can refuse one name's challenges or new orders (a
+//! rate limit) and leave every other name's alone (#90).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
@@ -30,6 +31,12 @@ pub struct Ca {
     pub test_ca: TestCa,
     /// When set, the check of every challenge fails (the record is ignored).
     pub refuse_challenges: bool,
+    /// Names whose challenge check fails (the record is ignored): a DNS-01
+    /// error of that name only.
+    pub refused: BTreeSet<String>,
+    /// Names whose new orders are refused as Let's Encrypt refuses one over
+    /// its rate limit (429 `rateLimited`).
+    pub rate_limited: BTreeSet<String>,
     /// Account URL → its public key (x, y) and thumbprint.
     pub accounts: BTreeMap<String, (Vec<u8>, String)>,
     /// Every request: `POST /new-order` etc.
@@ -261,6 +268,13 @@ async fn acme_post(
                 .as_str()
                 .unwrap_or("")
                 .to_string();
+            if ca.rate_limited.contains(&name) {
+                return problem(
+                    StatusCode::TOO_MANY_REQUESTS,
+                    "rateLimited",
+                    &format!("too many certificates already issued for {name}"),
+                );
+            }
             // A valid authorization of this account for the name is reused,
             // as Let's Encrypt does for 30 days: no new challenge.
             let valid = ca
@@ -312,7 +326,7 @@ async fn acme_post(
                 .records
                 .values()
                 .any(|(n, content, _)| *n == fqdn && *content == expected);
-            let status = if found && !ca.refuse_challenges {
+            let status = if found && !ca.refuse_challenges && !ca.refused.contains(&name) {
                 "valid"
             } else {
                 "invalid"
@@ -374,6 +388,8 @@ pub async fn start(dns: Dns) -> (String, SharedCa) {
         dns,
         test_ca: TestCa::new(),
         refuse_challenges: false,
+        refused: BTreeSet::new(),
+        rate_limited: BTreeSet::new(),
         accounts: BTreeMap::new(),
         requests: Vec::new(),
         new_accounts: Vec::new(),

@@ -1,6 +1,11 @@
 //! The certificate of the `[tls]` name from an ACME CA (#17): Let's
 //! Encrypt by DNS-01 through the Cloudflare DNS API, in the hub itself (the
-//! PC depends on nothing else, spec P7).
+//! PC depends on nothing else, spec P7). AbleSet's name (#90) gets its own,
+//! from a second keeper with its own store and status: one account, one
+//! attempt at a time ([`Acme::turn`], each attempt cut off at
+//! [`ATTEMPT_LIMIT`], so neither name's attempt holds the other's renewal
+//! back for longer), and its failures never touch the `[tls]` name's
+//! certificate.
 //!
 //! [`keep`] runs for the hub's life: a stored certificate with 30 days or
 //! more left is kept (checked every [`CHECK_EVERY`]); otherwise one attempt
@@ -44,6 +49,16 @@ pub const MAX_RETRY: Duration = Duration::from_secs(6 * 60 * 60);
 /// The wait while no Cloudflare token is set: the check is local (nothing
 /// is asked of anyone), so a token set later is used within minutes.
 pub const NO_TOKEN_RETRY: Duration = Duration::from_secs(5 * 60);
+/// How long the CA's checks (the DNS record's, then the certificate's) are
+/// each polled.
+pub const CA_CHECK: Duration = Duration::from_secs(120);
+/// The longest one attempt may take (#90): far beyond a slow one that works
+/// (the propagation wait, at most `config::MAX_PROPAGATION_S`, the two
+/// [`CA_CHECK`]s and a few Cloudflare exchanges of `http_client::TIMEOUT`
+/// each). A CA that never answers (instant-acme's requests have no time
+/// limit of their own) ends the attempt there, which frees the turn for the
+/// other name.
+pub const ATTEMPT_LIMIT: Duration = Duration::from_secs(30 * 60);
 /// The account file's name without its extension.
 pub const ACCOUNT_STEM: &str = "acme_account";
 /// Why nothing happens without a token.
@@ -72,6 +87,11 @@ pub fn next_attempt(why: &str, failures: u32) -> Duration {
 /// keeps showing it).
 pub fn warns(why: &str, repeated: bool) -> bool {
     !repeated || why != NO_TOKEN
+}
+
+/// Why an attempt cut off at `limit` failed.
+fn cut_off(limit: Duration) -> String {
+    format!("the attempt did not end within {limit:?}")
 }
 
 /// The stored account when it belongs to `directory`. A file that does not
@@ -124,6 +144,8 @@ struct StoredAccount {
 
 /// The ACME client of one name.
 pub struct Acme {
+    /// Which of the hub's names (#90).
+    pub slot: Slot,
     pub name: String,
     pub cfg: AcmeCfg,
     pub data_dir: PathBuf,
@@ -132,18 +154,34 @@ pub struct Acme {
     pub http: HttpClient,
     /// How long the CA's checks are polled.
     pub retry: RetryPolicy,
+    /// Held during an attempt, shared by the keepers of all names (#90): on a
+    /// fresh data folder they never make two accounts, and their DNS-01 runs
+    /// never overlap.
+    pub turn: Arc<tokio::sync::Mutex<()>>,
+    /// Where an attempt is cut off ([`ATTEMPT_LIMIT`]; shorter in the tests).
+    pub attempt_limit: Duration,
 }
 
 impl Acme {
-    /// The client of `name` with `cfg`'s CA, the real Cloudflare API.
-    pub fn new(name: &str, cfg: &AcmeCfg, data_dir: &std::path::Path, http: HttpClient) -> Self {
+    /// The client of `slot`'s `name` with `cfg`'s CA, the real Cloudflare
+    /// API.
+    pub fn new(
+        slot: Slot,
+        name: &str,
+        cfg: &AcmeCfg,
+        data_dir: &std::path::Path,
+        http: HttpClient,
+    ) -> Self {
         Self {
+            slot,
             name: name.to_string(),
             cfg: cfg.clone(),
             data_dir: data_dir.to_path_buf(),
             cloudflare_api: crate::cloudflare::API.to_string(),
             http,
-            retry: RetryPolicy::new().timeout(Duration::from_secs(120)),
+            retry: RetryPolicy::new().timeout(CA_CHECK),
+            turn: Arc::default(),
+            attempt_limit: ATTEMPT_LIMIT,
         }
     }
 
@@ -302,27 +340,34 @@ impl Acme {
         store
             .save(&pem)
             .map_err(|e| format!("storing the certificate: {e}"))?;
-        crate::remote::serve(https, state, Slot::Primary, &self.name, &pem)?;
+        crate::remote::serve(https, state, self.slot, &self.name, &pem)?;
         Ok(pem)
     }
 
-    /// One attempt that stores and serves what it gets: `Err(the wait
-    /// before the next one)` when it fails.
+    /// One attempt that stores and serves what it gets, in the turn and cut
+    /// off at the limit: `Err(the wait before the next one)` when it fails.
     async fn renew(
         &self,
         store: &CertStore,
         https: &Https,
         state: &RemoteState,
     ) -> Result<(), Duration> {
+        let _turn = self.turn.lock().await;
         tracing::info!(name = %self.name, directory = %self.cfg.directory, "ACME: getting a certificate");
-        match self.obtain(store, https, state).await {
+        // Only `issue` awaits, so a cut-off attempt has stored and served
+        // nothing; a challenge record it leaves goes at the next attempt.
+        let attempt = tokio::time::timeout(self.attempt_limit, self.obtain(store, https, state));
+        match attempt
+            .await
+            .unwrap_or_else(|_| Err(cut_off(self.attempt_limit)))
+        {
             Ok(pem) => {
-                state.acme_ok(crate::auth::now_secs() as i64);
+                state.acme_ok(self.slot, crate::auth::now_secs() as i64);
                 tracing::info!(name = %self.name, not_after = pem.info.not_after, "ACME: new certificate served");
                 Ok(())
             }
             Err(why) => {
-                let (failures, repeated) = state.acme_failed(why.clone());
+                let (failures, repeated) = state.acme_failed(self.slot, why.clone());
                 let wait = next_attempt(&why, failures);
                 if warns(&why, repeated) {
                     tracing::warn!(
@@ -332,7 +377,7 @@ impl Acme {
                         "ACME: no certificate: {why}"
                     );
                 } else {
-                    tracing::debug!(failures, "ACME: still no certificate: {why}");
+                    tracing::debug!(name = %self.name, failures, "ACME: still no certificate: {why}");
                 }
                 Err(wait)
             }
@@ -342,7 +387,7 @@ impl Acme {
 
 /// Keeps the name's certificate for the hub's life (see the module doc).
 pub async fn keep(acme: Acme, https: Arc<Https>, state: Arc<RemoteState>) {
-    let store = CertStore::new(&acme.data_dir);
+    let store = CertStore::slot(&acme.data_dir, acme.slot);
     loop {
         let now = crate::auth::now_secs() as i64;
         let wait = match plan(&crate::remote::stored(&store, &acme.name), now) {

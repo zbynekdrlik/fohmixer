@@ -87,24 +87,24 @@ impl RemoteState {
         self.inner().name(slot).cert_error = Some(why);
     }
 
-    /// The ACME client got a certificate at `now`.
-    pub fn acme_ok(&self, now: i64) {
-        let mut guard = self.inner();
-        let inner = &mut guard.primary;
-        inner.acme_error = None;
-        inner.acme_failures = 0;
-        inner.last_issued = Some(now);
+    /// The ACME client of `slot` got a certificate at `now`.
+    pub fn acme_ok(&self, slot: Slot, now: i64) {
+        let mut inner = self.inner();
+        let name = inner.name(slot);
+        name.acme_error = None;
+        name.acme_failures = 0;
+        name.last_issued = Some(now);
     }
 
-    /// An ACME attempt failed because of `why`: how many in a row now, and
-    /// whether the one before failed for the same reason.
-    pub fn acme_failed(&self, why: String) -> (u32, bool) {
-        let mut guard = self.inner();
-        let inner = &mut guard.primary;
-        let repeated = inner.acme_error.as_ref() == Some(&why);
-        inner.acme_error = Some(why);
-        inner.acme_failures += 1;
-        (inner.acme_failures, repeated)
+    /// An ACME attempt of `slot` failed because of `why`: how many in a row
+    /// now, and whether the one before failed for the same reason.
+    pub fn acme_failed(&self, slot: Slot, why: String) -> (u32, bool) {
+        let mut inner = self.inner();
+        let name = inner.name(slot);
+        let repeated = name.acme_error.as_ref() == Some(&why);
+        name.acme_error = Some(why);
+        name.acme_failures += 1;
+        (name.acme_failures, repeated)
     }
 
     /// The tunnel's latest check.
@@ -284,9 +284,12 @@ mod tests {
         assert!(status.acme);
         assert_eq!((status.not_after, status.days_left), (None, None));
         state.set_cert_error(Slot::Primary, "no certificate yet".into());
-        assert_eq!(state.acme_failed("first".into()), (1, false));
-        assert_eq!(state.acme_failed("second".into()), (2, false));
-        assert_eq!(state.acme_failed("second".into()), (3, true));
+        assert_eq!(state.acme_failed(Slot::Primary, "first".into()), (1, false));
+        assert_eq!(
+            state.acme_failed(Slot::Primary, "second".into()),
+            (2, false)
+        );
+        assert_eq!(state.acme_failed(Slot::Primary, "second".into()), (3, true));
         let status = state.snapshot(&full, Some(&https), 0).https.unwrap();
         assert_eq!(status.cert_error.as_deref(), Some("no certificate yet"));
         assert_eq!(status.acme_error.as_deref(), Some("second"));
@@ -298,7 +301,7 @@ mod tests {
                 not_after: 100 * DAY,
             },
         );
-        state.acme_ok(7);
+        state.acme_ok(Slot::Primary, 7);
         let status = state.snapshot(&full, Some(&https), 40 * DAY).https.unwrap();
         assert_eq!(status.cert_names, vec!["foh.example.org".to_string()]);
         assert_eq!(status.not_after, Some(100 * DAY));
@@ -310,10 +313,52 @@ mod tests {
         assert_eq!((status.acme_error, status.acme_failures), (None, 0));
         assert_eq!(status.last_issued, Some(7));
         // After a success the same reason again is a first failure.
-        assert_eq!(state.acme_failed("second".into()), (1, false));
+        assert_eq!(
+            state.acme_failed(Slot::Primary, "second".into()),
+            (1, false)
+        );
         let manual = config("[tls]\nname = \"foh.example.org\"\n");
         assert!(!state.snapshot(&manual, Some(&https), 0).https.unwrap().acme);
         assert!(!state.snapshot(&manual, Some(&https), 0).access);
+    }
+
+    #[test]
+    fn each_names_acme_results_are_its_own() {
+        let state = RemoteState::default();
+        let both = config(
+            "[tls]\nname = \"foh.example.org\"\n[acme]\n[ableset]\nname = \"ableset.example.org\"\n",
+        );
+        let acme = |slot: Slot| match slot {
+            Slot::Primary => {
+                let tls = state.snapshot(&both, None, 0).https.unwrap();
+                (tls.acme_error, tls.acme_failures, tls.last_issued)
+            }
+            Slot::AbleSet => {
+                let cert = state.ableset(&both, None, 0).unwrap().cert;
+                (cert.acme_error, cert.acme_failures, cert.last_issued)
+            }
+        };
+        let failed = |why: &str, failures: u32| -> (Option<String>, u32, Option<i64>) {
+            (Some(why.to_string()), failures, None)
+        };
+        // AbleSet's failures leave the [tls] name's status as it was.
+        assert_eq!(state.acme_failed(Slot::AbleSet, "limit".into()), (1, false));
+        assert_eq!(state.acme_failed(Slot::AbleSet, "limit".into()), (2, true));
+        assert_eq!(acme(Slot::AbleSet), failed("limit", 2));
+        assert_eq!(acme(Slot::Primary), (None, 0, None));
+        // The [tls] name's: the same reason is its own first failure, and
+        // AbleSet's count goes on from its own.
+        assert_eq!(state.acme_failed(Slot::Primary, "limit".into()), (1, false));
+        assert_eq!(state.acme_failed(Slot::AbleSet, "limit".into()), (3, true));
+        assert_eq!(acme(Slot::Primary), failed("limit", 1));
+        // A success clears only its own name's failures.
+        state.acme_ok(Slot::Primary, 7);
+        assert_eq!(acme(Slot::Primary), (None, 0, Some(7)));
+        assert_eq!(acme(Slot::AbleSet), failed("limit", 3));
+        assert_eq!(state.acme_failed(Slot::Primary, "zone".into()), (1, false));
+        state.acme_ok(Slot::AbleSet, 9);
+        assert_eq!(acme(Slot::AbleSet), (None, 0, Some(9)));
+        assert_eq!(acme(Slot::Primary), (Some("zone".to_string()), 1, Some(7)));
     }
 
     #[tokio::test]
