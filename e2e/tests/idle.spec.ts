@@ -36,7 +36,8 @@ import {
 // listener on the window, before the control's own handler. The tests set
 // a short `idle_after_s` through `/hub/layout` (never Playwright's fake
 // clock: it fakes the page's timers and `performance.now`, and the pings'
-// `t` would leave the hub's clock pairing).
+// `t` would leave the hub's clock pairing). While idle its frame loop waits
+// 100 ms after each frame (PR 2c), and the wake brings back every frame.
 
 const HAND2 = track("Hand2 #");
 /** The hub key of Hand2's volume, without its `display` flag. */
@@ -150,6 +151,48 @@ function meterCounts(link: Link, from: number, to: number): Map<string, number> 
 
 /** The page's pings sent from `from` to `to` (test clock). */
 const pingsBetween = (link: Link, from: number, to: number) => link.sent.filter((f) => f.msg.type === "ping" && f.at >= from && f.at < to);
+
+/** A frame seen in the page: `performance.now()` when its callback ran, and the frame's own time. */
+type Seen = [number, number];
+type Frames = { app: Seen[]; browser: Seen[] };
+
+/**
+ * Counts the page's frames from its first script on (PR 2c): every callback
+ * the app hands `requestAnimationFrame` (web-sys calls it through the
+ * window's property, and `raf.rs` is the page's only caller), and every
+ * frame the browser draws (a loop on the original function). Callbacks of
+ * one frame get the same frame time, so the two lists match frame by frame.
+ */
+async function countFrames(page: Page) {
+  await page.addInitScript(() => {
+    const w = window as any;
+    const raw = window.requestAnimationFrame.bind(window);
+    w.__appFrames = [];
+    w.__browserFrames = [];
+    window.requestAnimationFrame = (callback: FrameRequestCallback) =>
+      raw((time: number) => {
+        w.__appFrames.push([performance.now(), time]);
+        callback(time);
+      });
+    const loop = (time: number) => {
+      w.__browserFrames.push([performance.now(), time]);
+      raw(loop);
+    };
+    raw(loop);
+  });
+}
+
+const readFrames = (page: Page): Promise<Frames> =>
+  page.evaluate(() => {
+    const w = window as any;
+    return { app: w.__appFrames, browser: w.__browserFrames };
+  });
+
+/** The page clock now (`performance.now()`). */
+const pageNow = (page: Page) => page.evaluate(() => performance.now());
+
+/** Waits until the page clock reaches `at`. */
+const pageTimeReaches = (page: Page, at: number, what: string) => until(() => pageNow(page), (now) => now >= at, what, 10_000);
 
 let live: LiveClient;
 test.beforeEach(async () => {
@@ -368,6 +411,65 @@ test.describe("Touch-idle", () => {
     } finally {
       await resetLayout();
       await live.set("band", volume(HAND2), "value", start);
+    }
+  });
+
+  test("an idle page draws about ten frames a second, and a touch brings back every frame at once", async ({ page }) => {
+    // The band, honest for both projects: idle, the app's frames are at
+    // least 95 ms apart (raf.rs waits 100 ms after a frame's work before it
+    // asks for the next one; 5 ms for the clocks' grain), at most 10.5 and at
+    // least 3 a second (the next display frame after the wait: about 9 in
+    // Chromium at 60 Hz, 5 to 7 in the runner's software WebKit, which draws
+    // 14 to 22 frames a second). Awake again, no absolute rate (WebKit's is
+    // the runner's): the app draws in every frame the browser draws from the
+    // touch on, the first included.
+    await countFrames(page);
+    try {
+      await setIdleAfter(IDLE_AFTER_S);
+      await openSurface(page);
+      const surface = page.getByTestId("surface");
+      await expect(surface).toHaveAttribute("data-idle", "true", { timeout: 10_000 });
+
+      // Idle: from a moment after the turn (the frame the loop asked for
+      // before it still comes at once), 2 s of the app's frames.
+      const idleFrom = (await pageNow(page)) + 300;
+      const idleTo = idleFrom + 2000;
+      await pageTimeReaches(page, idleTo, "2 s of the idle page's frames");
+      await expect(surface).toHaveAttribute("data-idle", "true");
+      const idle = (await readFrames(page)).app.map(([at]) => at).filter((at) => at >= idleFrom && at < idleTo);
+      const gaps = idle.slice(1).map((at, i) => at - idle[i]);
+      const listed = gaps.map(Math.round).join(", ");
+      expect(idle.length, `the app's frames in the idle 2 s (gaps: ${listed})`).toBeGreaterThanOrEqual(7);
+      expect(Math.min(...gaps), `the app's frame gaps while idle: ${listed}`).toBeGreaterThanOrEqual(95);
+      const rate = ((idle.length - 1) * 1000) / (idle[idle.length - 1] - idle[0]);
+      expect(rate, `the app's frames a second while idle (gaps: ${listed})`).toBeLessThanOrEqual(10.5);
+      expect(rate, `the app's frames a second while idle (gaps: ${listed})`).toBeGreaterThanOrEqual(3);
+
+      // A finger anywhere on the page wakes it (the window's capture-phase
+      // listener), lifted at once so nothing holds the page awake: the app's
+      // frames come back in every frame the browser draws, from the first.
+      // The page goes idle again 2 s after the touch, so the check reads the
+      // 1.5 s after it.
+      const woke = await page.evaluate(() => {
+        const at = performance.now();
+        for (const type of ["pointerdown", "pointerup"]) {
+          document.body.dispatchEvent(
+            new PointerEvent(type, { pointerId: 41, pointerType: "touch", isPrimary: true, bubbles: true, cancelable: true }),
+          );
+        }
+        return at;
+      });
+      await expect(surface).toHaveAttribute("data-idle", "false");
+      const wakeTo = woke + 1500;
+      await pageTimeReaches(page, wakeTo, "1.5 s after the touch");
+      const after = await readFrames(page);
+      const drawn = after.browser.filter(([at]) => at > woke && at < wakeTo);
+      const appTimes = new Set(after.app.filter(([at]) => at > woke).map(([, time]) => time));
+      const missed = drawn.filter(([, time]) => !appTimes.has(time)).map(([at]) => Math.round(at - woke));
+      expect(drawn.length, "the browser's frames in the 1.5 s after the touch").toBeGreaterThanOrEqual(5);
+      expect(missed, `browser frames the app skipped after the touch (ms after it; ${drawn.length} drawn)`).toEqual([]);
+    } finally {
+      await resetLayout();
     }
   });
 
