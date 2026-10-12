@@ -465,13 +465,13 @@ pub const METER_PROPS: [&str; 3] = [
     "output_meter_right",
 ];
 
-/// Whether a hub key ([`hub_key`]) is a meter's (#51): its property, read
-/// from the right (`instance|target|prop|display`), is one of
+/// Whether a hub key ([`hub_key`]) is a meter's (#51): its property, the
+/// second field from the right (`instance|target|prop|display`), is one of
 /// [`METER_PROPS`], so a `|` inside a track name in the target cannot fool
 /// it.
 pub fn is_meter_key(hub_key: &str) -> bool {
     hub_key
-        .rsplitn(3, '|')
+        .rsplit('|')
         .nth(1)
         .is_some_and(|prop| METER_PROPS.contains(&prop))
 }

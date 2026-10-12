@@ -203,7 +203,7 @@ impl Inner {
                 self.meters_at = None;
             }
             Pace::Every(period) => {
-                self.meters_at.get_or_insert(now + period);
+                self.meters_at = self.meters_at.or(Some(now + period));
             }
             Pace::Paused => {}
         }
