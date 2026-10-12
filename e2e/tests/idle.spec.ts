@@ -323,14 +323,20 @@ test.describe("Touch-idle", () => {
       const records = await until(() => idleRecords(opened), (r) => r.length >= 1, "the hub's idle record");
       expect(records).toMatchObject([{ on: true, meter_ms: 250 }]);
       // While idle: a ping a second, every meter key at most 4 values a
-      // second (SimLive's go at 30), none paused.
+      // second (SimLive's go at 30), none paused. The bounds follow the
+      // window as measured (a slow runner makes it longer than 2.2 s): one
+      // ping per second and one meter release per 250 ms of it, +2 for one
+      // at each edge of the window. At full rate (pings every 100 ms,
+      // SimLive's meters at 30 a second) both fail many times over.
       await page.waitForTimeout(2500);
       const quiet = { from: slept.at + 300, to: Date.now() };
-      expect(pingsBetween(link, quiet.from, quiet.to).length, "pings a second apart").toBeLessThanOrEqual(3);
+      const span = quiet.to - quiet.from;
+      const pings = pingsBetween(link, quiet.from, quiet.to).length;
+      expect(pings, `pings a second apart in ${span} ms`).toBeLessThanOrEqual(Math.floor(span / 1000) + 2);
       const counts = meterCounts(link, quiet.from, quiet.to);
       expect(counts.size, "the meters still come").toBeGreaterThan(0);
       const most = Math.max(...counts.values());
-      expect(most, "the most values of one meter key in 2.2 s").toBeLessThanOrEqual(10);
+      expect(most, `the most values of one meter key in ${span} ms`).toBeLessThanOrEqual(Math.floor(span / 250) + 2);
 
       // A finger on Hand2's fader. A listener on the fader itself notes the
       // page clock at the down: the wake's ping (sent right after its
