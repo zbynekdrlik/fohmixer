@@ -785,7 +785,7 @@ impl Router {
                 tracing::info!(
                     session,
                     state = read.name(),
-                    x = ?read.x(),
+                    x = %read.x().map_or_else(|| "-".to_string(), |x| x.to_string()),
                     width,
                     height,
                     "a Pro-Q 4 editor's undo reads"

@@ -35,7 +35,12 @@
 //!   frame small, in the picture's shape, a frame around the part in
 //!   sight), the factor and `CELÝ EQ`. Leaving it sends `eq_close`; the hub
 //!   closing it (refused, failed, its window gone, the socket lost) brings
-//!   the detail back.
+//!   the detail back. The bar's ↶ VRÁTIŤ (#71 PR P2b, the approved mockup
+//!   `docs/mockups/proq-undo-v1.html`) asks the hub to tap Pro-Q's own undo
+//!   (`eq_undo`, numbered with the fingers' inputs); it takes no press
+//!   while a finger keeps the PC's contact nor within 700 ms of the last
+//!   one (`behave::eq::undo_ready`), and a note over the picture says the
+//!   hub's answer (`behave::eq::undo_text`).
 //!
 //! The screen's open, close and lock refusal go to the flight recorder as
 //! `detail` events (`eq_open`, `eq_close` with why, `eq_locked`) with the
@@ -59,7 +64,7 @@ use crate::behave::eq::{
     AreaWatch, CardLock, Finger, ListLink, Look, Out, Point, STALE_TEXT, Spot, Viewer, can_open,
     card_lock, failure_text, hh_mm, in_use_text, list_text, lists_now, lock_refusal, locked,
     locked_text, look, on_picture, overview_size, place_text, point, spot, stale_landing,
-    stale_note, takes_finger, zoom_text,
+    stale_note, takes_finger, undo_flash, undo_note_shown, undo_ready, undo_text, zoom_text,
 };
 use crate::behave::eq_view::{ViewWatch, lands_on, part_of, scaled_part};
 use crate::binding::detail_keys;
@@ -702,11 +707,21 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
     // a new first finger.
     let caught_up = RwSignal::new(true);
     let tap_pending = RwSignal::new(false);
-    // Both follow the store and the finger right after every send (#71
+    // The bar's ↶ VRÁTIŤ (PR P2b): the last press it took (page ms),
+    // whether it takes none now (`aria-disabled`), its flash, and the note
+    // of the hub's answer (its text, when it came, whether it shows).
+    let undo_at = StoredValue::new(None::<f64>);
+    let undo_off = RwSignal::new(false);
+    let undo_flashing = RwSignal::new(false);
+    let undo_note = RwSignal::new(String::new());
+    let undo_note_at = StoredValue::new(None::<f64>);
+    let undo_note_on = RwSignal::new(false);
+    // They follow the store and the finger right after every send (#71
     // PR Q: written by the frame loop alone, the canvas still read caught
     // up a frame after a drag's up went, and a tap then was refused) and
-    // on every frame (a frame drawn catches the picture up). Never from the
-    // cleanup: the screen's own signals stay untouched there.
+    // on every frame (a frame drawn catches the picture up; the undo's
+    // 700 ms run out). Never from the cleanup: the screen's own signals
+    // stay untouched there.
     let note_takes = move || {
         let caught = store.eq_caught_up();
         if caught_up.try_get_untracked() != Some(caught) {
@@ -715,6 +730,17 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
         let pending = finger.try_with_value(Finger::tap_pending).unwrap_or(false);
         if tap_pending.try_get_untracked() != Some(pending) {
             let _ = tap_pending.try_set(pending);
+        }
+        let now = dom::now();
+        let busy = finger.try_with_value(Finger::busy).unwrap_or(false);
+        let pressed = undo_at.try_get_value().flatten();
+        let off = !undo_ready(busy, pressed, now);
+        if undo_off.try_get_untracked() != Some(off) {
+            let _ = undo_off.try_set(off);
+        }
+        let flash = undo_flash(pressed, now);
+        if undo_flashing.try_get_untracked() != Some(flash) {
+            let _ = undo_flashing.try_set(flash);
         }
     };
     let told = Drawn { store, lat };
@@ -782,6 +808,15 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
             }
         });
     }
+    // The hub's answer to an undo of this screen's editor (PR P2b): its
+    // note over the picture (the store keeps only the open editor's, and
+    // none from before this screen opened).
+    Effect::new(move |_| {
+        if let Some((_, result)) = store.eq_undone.try_get().flatten() {
+            let _ = undo_note.try_set(undo_text(&result));
+            let _ = undo_note_at.try_set_value(Some(dom::now()));
+        }
+    });
     // The editor this screen shows: the page's editor counts only when it
     // is this one (a late close of the one before is not this screen's).
     let editor = StoredValue::new((target.instance.clone(), target.path.clone()));
@@ -971,6 +1006,10 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
             if stale_shown.try_get_untracked() != Some(noted) {
                 let _ = stale_shown.try_set(noted);
             }
+            let noted = undo_note_shown(undo_note_at.try_get_value().flatten(), now);
+            if undo_note_on.try_get_untracked() != Some(noted) {
+                let _ = undo_note_on.try_set(noted);
+            }
             let Some(g) = grip.try_get_value().flatten() else {
                 return;
             };
@@ -1040,6 +1079,28 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
         note_takes();
         let _ = viewer.try_update_value(Viewer::whole);
     };
+    // ↶ VRÁTIŤ (PR P2b): Pro-Q's own undo, when the bar's rule takes the
+    // press (`undo_ready`); it goes numbered as the editor's next input,
+    // then the control rests 700 ms and flashes, and a first finger waits
+    // until a picture shows the undo (`note_takes`, as after a finger's
+    // send).
+    let undo = move |ev: web_sys::PointerEvent| {
+        ev.prevent_default();
+        let now = dom::now();
+        let busy = finger.try_with_value(Finger::busy).unwrap_or(false);
+        if !undo_ready(busy, undo_at.try_get_value().flatten(), now) {
+            return;
+        }
+        if store.eq_undo(dom::event_epoch(&ev)).is_none() {
+            return;
+        }
+        let _ = undo_at.try_set_value(Some(now));
+        note_takes();
+    };
+    let undo_disabled = move || undo_off.try_get().unwrap_or(false).to_string();
+    let undo_flash_text = move || undo_flashing.try_get().unwrap_or(false).to_string();
+    let undo_note_text = move || undo_note.try_get().unwrap_or_default();
+    let undo_note_shown_text = move || undo_note_on.try_get().unwrap_or(false).to_string();
     let shown_zoom = move || zoomed.try_get().unwrap_or(false).to_string();
     let factor_text = move || factor.try_get().unwrap_or_default();
     let state = move || {
@@ -1085,6 +1146,7 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
     let exit_keys: Vec<String> = Vec::new();
     let help_keys: Vec<String> = Vec::new();
     let whole_keys: Vec<String> = Vec::new();
+    let undo_keys: Vec<String> = Vec::new();
     let area_keys: Vec<String> = Vec::new();
     let where_text = target.title.clone();
     let chip = target.chip.clone();
@@ -1127,6 +1189,18 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
                         "CELÝ EQ"
                     </button>
                 </div>
+                <button
+                    type="button"
+                    class="eq-undo"
+                    data-testid="eq-undo"
+                    use:owns_touches=undo_keys
+                    aria-disabled=undo_disabled
+                    data-flash=undo_flash_text
+                    on:pointerdown=undo
+                >
+                    <span class="eq-undo-arrow" data-testid="eq-undo-arrow">"↶"</span>
+                    <span class="eq-undo-word" data-testid="eq-undo-word">"VRÁTIŤ"</span>
+                </button>
                 <span class="eq-mine" data-testid="eq-mine" data-shown=move || open().to_string()>
                     "zamknuté pre teba"
                 </span>
@@ -1165,6 +1239,9 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
                 <div class="eq-hint eq-stale" data-testid="eq-stale" data-shown=stale_text_shown>
                     {STALE_TEXT}
                 </div>
+                <div class="eq-undo-note" data-testid="eq-undo-note" data-shown=undo_note_shown_text>
+                    {undo_note_text}
+                </div>
                 {move || opening().then(|| view! { <div class="eq-wait">"Otváram Pro-Q 4…"</div> })}
             </div>
             {move || legend.try_get().unwrap_or(false).then(|| view! { <EqLegend /> })}
@@ -1175,7 +1252,8 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
 /// What a finger does on the Pro-Q (`?`): on the whole picture a tap zooms
 /// in (the owner's ruling of 2026-10-11); zoomed 2× or more real touches
 /// reach the PC; two fingers zoom this page's picture only (PR F, the
-/// mockup's lines).
+/// mockup's lines); a hold opens nothing (PR O proved it on the PC); ↶
+/// VRÁTIŤ takes back Pro-Q's last change (PR P2b).
 #[component]
 fn EqLegend() -> impl IntoView {
     view! {
@@ -1189,10 +1267,14 @@ fn EqLegend() -> impl IntoView {
                 <tr><td>"1 prst ťuk"</td><td>"klik (tlačidlá, výber pásma)"</td></tr>
                 <tr><td>"1 prst ťah"</td><td>"ťahanie (pásmo, gombík); kurzor na PC počas ťahu skočí"</td></tr>
                 <tr><td>"dvojťuk"</td><td>"dvojklik (nové pásmo v krivke; na pásme jeho frekvencia)"</td></tr>
-                <tr><td>"podržať"</td><td>"pravé tlačidlo (menu pásma) "<span class="eq-tbd">"· ešte overiť na PC"</span></td></tr>
+                <tr data-testid="eq-legend-hold"><td>"podržať"</td><td>"nič: ponuka pásma sa neotvorí"</td></tr>
                 <tr class="eq-legend-zoom"><td>"2 prsty od seba / k sebe"</td><td>"priblížiť / oddialiť (1× až 4×)"</td></tr>
                 <tr class="eq-legend-zoom"><td>"2 prsty spolu"</td><td>"posúvať priblížený obraz"</td></tr>
                 <tr class="eq-legend-zoom"><td>"CELÝ EQ"</td><td>"späť na celý obraz"</td></tr>
+                <tr class="eq-legend-undo" data-testid="eq-legend-undo">
+                    <td>"↶ VRÁTIŤ"</td>
+                    <td>"vráti poslednú zmenu v Pro-Q"</td>
+                </tr>
             </table>
             <p class="eq-legend-note">
                 "Pri priblížení obraz na PC zostáva rovnaký: mení sa len pohľad na tomto zariadení."

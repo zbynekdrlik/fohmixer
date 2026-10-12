@@ -16,8 +16,12 @@
 //!
 //! Points are rounded to 0.1 px, the zoom to 0.01. Pure, tested natively;
 //! `components/eq.rs` records them through `diag::record`.
+//!
+//! The bar's ↶ VRÁTIŤ (#71 PR P2b) is recorded too: each press the hub
+//! answered, as [`eq_undo`] (its input number, the answer and the ms from
+//! the press to it), kept by [`EqUndos`] until the answer comes.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 
 use fohmixer_proto::eq::Part;
 use serde_json::{Value, json};
@@ -58,6 +62,45 @@ pub fn eq_touch(t: f64, what: &str, pointer: i32, at: (f64, f64), zoom: f64) -> 
 /// whole frames from parts.
 pub fn eq_view(t: f64, part: Option<Part>) -> Value {
     json!({"ev": "eq_view", "t": t, "part": part})
+}
+
+/// The bar's ↶ VRÁTIŤ pressed at page time `t` (#71 PR P2b): the undo's
+/// input number `n`, the hub's answer (`result`: `done`, `nothing` or why
+/// not) and the ms from the press to the answer. Essential: the timeline
+/// shows it beside the hub's `undo` record.
+pub fn eq_undo(t: f64, n: u32, result: &str, ms: f64) -> Value {
+    json!({"ev": "eq_undo", "t": t, "n": n, "result": result, "ms": round1(ms)})
+}
+
+/// The presses kept waiting for their answer (the oldest goes first): the
+/// control takes one each 700 ms and the hub answers each at once, so a
+/// few at most.
+pub const UNDOS_KEPT: usize = 8;
+
+/// The bar's undo presses waiting for the hub's answer (#71 PR P2b): each
+/// one's input number and its page time.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct EqUndos {
+    waiting: VecDeque<(u32, f64)>,
+}
+
+impl EqUndos {
+    /// The undo numbered `n` went at page time `t`.
+    pub fn pressed(&mut self, n: u32, t: f64) {
+        if self.waiting.len() >= UNDOS_KEPT {
+            self.waiting.pop_front();
+        }
+        self.waiting.push_back((n, t));
+    }
+
+    /// The hub answered the undo numbered `n` with `result` at page time
+    /// `t`: its [`eq_undo`] event, at its press's time; none for one this
+    /// page does not wait for (answered already, or long gone).
+    pub fn answered(&mut self, n: u32, result: &str, t: f64) -> Option<Value> {
+        let at = self.waiting.iter().position(|(m, _)| *m == n)?;
+        let (_, pressed) = self.waiting.remove(at)?;
+        Some(eq_undo(pressed, n, result, t - pressed))
+    }
 }
 
 /// A finger's moves since its last summary: how many, the first and the
@@ -209,6 +252,51 @@ mod tests {
         assert_eq!(
             eq_view(6.0, None),
             json!({"ev": "eq_view", "t": 6.0, "part": null})
+        );
+    }
+
+    #[test]
+    fn an_undo_is_recorded_at_its_answer_with_its_press_time_and_its_wait() {
+        // #71 PR P2b.
+        let mut undos = EqUndos::default();
+        assert_eq!(undos.answered(4, "done", 10.0), None, "nothing pressed");
+        undos.pressed(4, 1_000.0);
+        undos.pressed(5, 1_800.0);
+        // Answered out of order, each finds its own press.
+        assert_eq!(
+            undos.answered(5, "nothing", 1_850.04),
+            Some(
+                json!({"ev": "eq_undo", "t": 1_800.0, "n": 5, "result": "nothing",
+                        "ms": 50.0})
+            )
+        );
+        assert_eq!(
+            undos.answered(4, "too soon after the last undo", 1_900.0),
+            Some(eq_undo(1_000.0, 4, "too soon after the last undo", 900.0))
+        );
+        // Each answer once.
+        assert_eq!(undos.answered(4, "done", 2_000.0), None);
+        assert_eq!(
+            eq_undo(7.5, 2, "done", 61.04),
+            json!({"ev": "eq_undo", "t": 7.5, "n": 2, "result": "done", "ms": 61.0})
+        );
+    }
+
+    #[test]
+    fn at_most_the_last_8_presses_wait_for_their_answer() {
+        assert_eq!(UNDOS_KEPT, 8);
+        let mut undos = EqUndos::default();
+        for n in 1..=9 {
+            undos.pressed(n, f64::from(n) * 1_000.0);
+        }
+        assert_eq!(undos.answered(1, "done", 20_000.0), None, "the oldest went");
+        assert_eq!(
+            undos.answered(2, "done", 20_000.0),
+            Some(eq_undo(2_000.0, 2, "done", 18_000.0))
+        );
+        assert_eq!(
+            undos.answered(9, "nothing", 20_000.0),
+            Some(eq_undo(9_000.0, 9, "nothing", 11_000.0))
         );
     }
 

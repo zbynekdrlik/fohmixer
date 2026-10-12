@@ -1,5 +1,6 @@
 //! The page's inputs of its open Pro-Q 4 editor (#71 PR J), pure: each
-//! numbered from 1 per session as it is sent, with its send time; the input
+//! numbered from 1 per session as it is sent (a finger's, and since PR P2b
+//! the bar's undo, [`Inputs::number`]), with its send time; the input
 //! the picture drawn last shows (the frames' `shown`); and the one the
 //! picture under a landing finger showed (a down's `seen`).
 //!
@@ -64,13 +65,22 @@ impl Inputs {
     /// `touch` sent on `session` at `now` (page epoch ms): its number, and
     /// on a down the input the picture it landed on showed.
     pub fn send(&mut self, session: u32, touch: Touch, now: f64) -> (u32, Option<u32>) {
+        let n = self.number(session, now);
+        (n, (touch == Touch::Down).then_some(self.landed))
+    }
+
+    /// The page's next input on `session`, sent at `now` (page epoch ms):
+    /// its number, its send time kept. A finger's ([`Inputs::send`]) or
+    /// the bar's undo (#71 PR P2b), numbered alike: a picture then shows
+    /// the undo before a first finger is taken again.
+    pub fn number(&mut self, session: u32, now: f64) -> u32 {
         self.of(session);
         self.sent += 1;
         if self.times.len() >= INPUTS_KEPT {
             self.times.pop_front();
         }
         self.times.push_back((self.sent, now));
-        (self.sent, (touch == Touch::Down).then_some(self.landed))
+        self.sent
     }
 
     /// Whether the picture drawn last on `session` shows every input sent
@@ -141,6 +151,35 @@ mod tests {
         // A finger lands now: its down says the picture showed input 3.
         inputs.land(3);
         assert_eq!(inputs.send(3, Touch::Down, 300.0), (4, Some(3)));
+    }
+
+    #[test]
+    fn an_undo_is_numbered_with_the_fingers_and_a_picture_must_show_it() {
+        // #71 PR P2b: the bar's undo takes the next number of the session's
+        // inputs; until a picture shows it, the page is not caught up.
+        let mut inputs = Inputs::default();
+        assert_eq!(inputs.send(2, Touch::Down, 0.0), (1, Some(0)));
+        assert_eq!(inputs.send(2, Touch::Up, 10.0), (2, None));
+        assert_eq!(inputs.drawn(2, 2, 50.0).samples, vec![50.0, 40.0]);
+        assert!(inputs.caught_up(2));
+        assert_eq!(inputs.number(2, 100.0), 3);
+        assert!(!inputs.caught_up(2), "the undo not shown yet");
+        // The picture that shows it measures it.
+        assert_eq!(
+            inputs.drawn(2, 3, 180.0),
+            Drawn {
+                samples: vec![80.0],
+                lost: 0
+            }
+        );
+        assert!(inputs.caught_up(2));
+        // The next finger's numbers go on from it.
+        inputs.land(2);
+        assert_eq!(inputs.send(2, Touch::Down, 200.0), (4, Some(3)));
+        // Another session's undo starts its numbers afresh.
+        assert_eq!(inputs.number(5, 300.0), 1);
+        assert!(!inputs.caught_up(5));
+        assert!(inputs.caught_up(2), "the old session's state is none");
     }
 
     #[test]

@@ -177,7 +177,14 @@ exclude_re = [
   # drawn on the store's inputs; PR L: eq_view (the message; the tested
   # behave::eq_view::ViewWatch decides when); eq.spec.ts reads the numbered inputs, the
   # refused landing on an old picture and the eq_lat records.
-  "fohmixer-ui/src/store/live/eq\\.rs.*(replace|in) LiveStore::(on_eq_list|on_eq_locks|on_eq|on_frame|eq_frames|list_eq|eq_opening|eq_open|eq_area|eq_input|eq_view|eq_session|eq_land|eq_caught_up|eq_drawn|eq_close|eq_socket_closed|eq_picture)( |$)",
+  # PR P2b: eq_undo (the bar's undo numbered through the tested
+  # Inputs::number, its press kept by the tested EqUndos::pressed, the
+  # message) and on_eq_undo (the hub's answer: the tested
+  # EqUndos::answered into the recorder, the open editor's answer by the
+  # tested shows_frame into its signal); eq.spec.ts reads the numbered
+  # undos off the page's socket, the hub's answers, the note and the
+  # page's eq_undo events in the event log.
+  "fohmixer-ui/src/store/live/eq\\.rs.*(replace|in) LiveStore::(on_eq_list|on_eq_locks|on_eq|on_frame|eq_frames|list_eq|eq_opening|eq_open|eq_area|eq_input|eq_view|eq_session|eq_land|eq_caught_up|eq_drawn|eq_close|eq_socket_closed|eq_picture|eq_undo|on_eq_undo)( |$)",
   "fohmixer-ui/src/store/live\\.rs.*(replace|in) (Socket::open|Socket::buffered|Socket::close|Inner::new)( |$)",
   # auth.rs: local storage and the login request (login_outcome, login_body
   # and LoginError::message are the tested decisions).
