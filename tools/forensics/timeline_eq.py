@@ -10,8 +10,10 @@ what the hub recorded (``eq`` records: ``stale``, a down it dropped; the
 ``rate`` and ``frames`` records' frame round trips and the frames that went
 because an ack did not come; PR P2a's ``undo``, a page's undo of Pro-Q's
 own ↶, and ``undo_read``, the hub's read of the ↶ after an open or a
-resize, never tapped). Pure: the model reads them, the report draws a
-table, stdout counts them."""
+resize, never tapped), and since PR P2b the page's own ``eq_undo`` (a
+press of the bar's ↶ VRÁTIŤ the hub answered: its input number, the
+answer and the ms from the press to it), listed beside the hub's ``undo``.
+Pure: the model reads them, the report draws a table, stdout counts them."""
 
 import collections
 
@@ -21,7 +23,7 @@ EqFinger = collections.namedtuple("EqFinger", ("time", "what", "pointer", "x", "
 EqLatency = collections.namedtuple("EqLatency", ("time", "frames", "samples", "lost", "decode_ms"))
 EqLink = collections.namedtuple("EqLink", ("time", "what", "trips", "rtt_max_ms", "ack_waits"))
 EqUndo = collections.namedtuple(
-    "EqUndo", ("time", "what", "session", "result", "x", "y", "width", "height")
+    "EqUndo", ("time", "what", "session", "n", "result", "x", "y", "width", "height", "ms")
 )
 
 UNDO_RECORDS = ("undo", "undo_read")
@@ -96,9 +98,32 @@ def eq_undo(record):
         record["ts"],
         what,
         _int(record.get("session")),
+        _int(record.get("n")),
         result if isinstance(result, str) else "?",
         _int(record.get("x")),
         _int(record.get("y")),
         _int(record.get("w")),
         _int(record.get("h")),
+        None,
+    )
+
+
+def page_undo(hub, data):
+    """The ``EqUndo`` of a page ``eq_undo`` event at hub time ``hub`` (#71 PR
+    P2b: a press of the bar's ↶ VRÁTIŤ, at its press's time, with the undo's
+    input number ``n``, the hub's ``result`` and ``ms`` from the press to the
+    answer). A field of the wrong type reads as missing (the result as
+    ``?``)."""
+    result = data.get("result")
+    return EqUndo(
+        hub,
+        "eq_undo",
+        None,
+        _int(data.get("n")),
+        result if isinstance(result, str) else "?",
+        None,
+        None,
+        None,
+        None,
+        number(data.get("ms")),
     )

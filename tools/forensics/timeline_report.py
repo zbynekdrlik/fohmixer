@@ -668,7 +668,9 @@ EQ_LEGEND = (
     "longer kept (lost) and the longest decode; then Pro-Q's own undo (PR P2a): each page's "
     "undo (done: its ↶ read lit and was tapped at x, y; nothing: it read grey, nothing to "
     "undo; else why the hub refused it) and each read of the ↶ the hub makes after an open "
-    "or a resize, never tapped (lit, grey or missing), with the picture's size."
+    "or a resize, never tapped (lit, grey or missing), with the picture's size; and each "
+    "press of the page's ↶ VRÁTIŤ the hub answered (eq_undo, PR P2b: at the press, the "
+    "undo's input number n, the answer the page got and the ms it waited for it)."
 )
 
 
@@ -739,9 +741,11 @@ def _eq_table(t):
 
 def _eq_undo_table(t):
     """Pro-Q's own undo (PR P2a): one row per page's undo and per read of the
-    ↶, with its result."""
+    ↶, with its result; PR P2b: the page's own record of each press, with
+    its input number and its wait, beside the hub's."""
     head = "".join(
-        f"<th>{h}</th>" for h in ("time (local)", "what", "session", "result", "x", "y", "picture")
+        f"<th>{h}</th>"
+        for h in ("time (local)", "what", "session", "n", "result", "x", "y", "picture", "ms")
     )
     rows = []
     for u in t.eq_undos:
@@ -749,10 +753,11 @@ def _eq_undo_table(t):
         cells = (
             local_text(u.time),
             u.what,
-            "n/a" if u.session is None else str(u.session),
+            *("n/a" if v is None else str(v) for v in (u.session, u.n)),
             u.result,
             *("n/a" if v is None else str(v) for v in (u.x, u.y)),
             size,
+            ms_text(u.ms),
         )
         content = "".join(f"<td>{esc(c)}</td>" for c in cells)
         rows.append(
