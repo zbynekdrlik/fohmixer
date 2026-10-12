@@ -412,3 +412,66 @@ fn a_hidden_page_pings_once_a_second() {
     c.set_hidden(true);
     assert_eq!(c.tick(s, 3_300.0, true), Tick::Silent);
 }
+
+#[test]
+fn an_idle_page_waits_4_s_for_its_hub() {
+    assert_eq!(IDLE_SILENCE_MS, 4000.0);
+    assert_eq!(silence_limit(false), 3000.0);
+    assert_eq!(silence_limit(true), 4000.0);
+    let mut c = Conn::default();
+    assert_eq!(c.limit(), 3000.0);
+    c.set_idle(true, 0.0);
+    assert_eq!(c.limit(), 4000.0);
+    c.set_idle(false, 0.0);
+    assert_eq!(c.limit(), 3000.0);
+}
+
+#[test]
+fn an_idle_page_pings_once_a_second_and_drops_its_socket_after_4_s() {
+    let mut c = Conn::default();
+    let s = c.opened(0.0);
+    c.hello(0.0);
+    assert_eq!(c.tick(s, 100.0, true), Tick::Ping, "active: every tick");
+    c.ping(100.0, 100.0);
+    c.set_idle(true, 150.0);
+    c.heard(200.0);
+    for at in [300.0, 700.0, 1_099.0] {
+        assert_eq!(c.tick(s, at, true), Tick::Wait, "{at}");
+    }
+    assert_eq!(
+        c.tick(s, 1_100.0, true),
+        Tick::Ping,
+        "1 s after the last ping"
+    );
+    c.ping(1_100.0, 1_100.0);
+    // Nothing heard since 200: past the active 3 s, within the idle 4 s.
+    for at in [2_100.0, 3_100.0, 3_300.0, 4_200.0_f64.next_down()] {
+        assert_ne!(c.tick(s, at, true), Tick::Silent, "{at}");
+    }
+    assert_eq!(
+        c.tick(s, 4_200.0, true),
+        Tick::Silent,
+        "4 s without a message"
+    );
+}
+
+#[test]
+fn the_wake_starts_the_silence_over() {
+    let mut c = Conn::default();
+    let s = c.opened(0.0);
+    c.hello(0.0);
+    c.set_idle(true, 0.0);
+    for at in [1_000.0, 2_000.0, 3_000.0] {
+        assert_ne!(c.tick(s, at, true), Tick::Silent, "{at}");
+    }
+    // Woken 3.5 s into the silence: the active 3 s count from the wake.
+    c.set_idle(false, 3_500.0);
+    for at in [3_600.0, 5_000.0, 6_400.0, 6_500.0_f64.next_down()] {
+        assert_eq!(c.tick(s, at, true), Tick::Ping, "{at}");
+    }
+    assert_eq!(
+        c.tick(s, 6_500.0, true),
+        Tick::Silent,
+        "3 s after the wake, still nothing heard"
+    );
+}

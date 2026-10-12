@@ -6,7 +6,8 @@
 //! suite in Chromium and WebKit. The writes' glue is `live/writes.rs`, the
 //! link's (the dropout watch's tick, the counter, the recorder's uploads)
 //! `live/link.rs`, the Pro-Q 4 screen's (#71 PR E: its messages and the
-//! binary frames) `live/eq.rs`.
+//! binary frames) `live/eq.rs`, the page's idle state's (#51: hidden or shown,
+//! the `idle` message) `live/idle.rs`.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -26,6 +27,7 @@ use super::eq::inputs::Inputs;
 use super::eq::{EqListView, EqView};
 use super::intent::Intents;
 use super::{InstanceView, ResultFn, Slot, TOKEN_KEY, next_range};
+use crate::behave::idle::IdleWatch;
 use crate::behave::link::{Counter, DropoutWatch};
 use crate::binding::SubSpec;
 use crate::diag::trace::fingers::EqUndos;
@@ -35,6 +37,7 @@ use crate::net::{self, Decision, LayoutFetch};
 
 mod deck;
 mod eq;
+mod idle;
 mod link;
 mod writes;
 
@@ -96,6 +99,10 @@ struct Inner {
     eq_inputs: Inputs,
     /// The bar's undos waiting for the hub's answer (#71 PR P2b).
     eq_undos: EqUndos,
+    /// The page's idle state (#51).
+    idle: IdleWatch,
+    /// The `visibilitychange` listener (#51), removed when the store stops.
+    on_visibility: Option<Closure<dyn FnMut()>>,
 }
 
 impl Inner {
@@ -116,7 +123,20 @@ impl Inner {
             eq_frames: None,
             eq_inputs: Inputs::default(),
             eq_undos: EqUndos::default(),
+            idle: IdleWatch::new(dom::epoch_now()),
+            on_visibility: None,
         }
+    }
+
+    /// The next ping at `now` (page clock) and `epoch` (the clock it
+    /// carries), told to the dropout watch: the watchdog's, and a wake's
+    /// (#51).
+    fn ping(&mut self, now: f64, epoch: f64) -> ClientMsg {
+        let ping = self.conn.ping(now, epoch);
+        if let ClientMsg::Ping { n, .. } = &ping {
+            self.watch.ping(*n, epoch);
+        }
+        ping
     }
 }
 
@@ -141,6 +161,8 @@ pub struct LiveStore {
     pub subscribed: RwSignal<usize>,
     /// The dropout counter on the surface (#43, §4.4).
     pub dropouts: RwSignal<Counter>,
+    /// The page is idle (#51): `data-idle` on the surface, nothing visible.
+    pub idle: RwSignal<bool>,
     /// The Stream Deck (#52): none from a hub without one (no tab).
     pub deck: RwSignal<Option<DeckInfo>>,
     /// Its keys as Companion drew them (only while this page views the tab).
@@ -169,6 +191,7 @@ impl LiveStore {
             connected: RwSignal::new(false),
             subscribed: RwSignal::new(0),
             dropouts: RwSignal::new(Counter::default()),
+            idle: RwSignal::new(false),
             deck: RwSignal::new(None),
             deck_keys: RwSignal::new(BTreeMap::new()),
             eq_list: RwSignal::new(None),
@@ -179,16 +202,19 @@ impl LiveStore {
     }
 
     /// Connects: fetches the layout (checking the token), then opens the
-    /// socket; and starts the dropout watch's own tick (`tick_link`), which
-    /// runs until the store stops.
+    /// socket; starts the dropout watch's own tick (`tick_link`), which runs
+    /// until the store stops, and listens for the page hidden or shown
+    /// (#51, `listen_idle`).
     pub fn start(self) {
+        self.listen_idle();
         self.connect();
         self.tick_link();
     }
 
     /// Ends the store (the surface unmounts): closes the socket, stops
-    /// reconnecting.
+    /// reconnecting, stops listening for the page hidden or shown.
     pub fn stop(self) {
+        self.unlisten_idle();
         let socket = self
             .inner
             .try_update_value(|i| {
@@ -347,16 +373,13 @@ impl LiveStore {
     fn watch(self, number: u64) {
         set_timeout(
             move || {
-                let Some((tick, ping)) = self.inner.try_update_value(|i| {
+                let Some((tick, ping, limit)) = self.inner.try_update_value(|i| {
                     let open = i.socket.as_ref().is_some_and(Socket::open);
                     let (now, epoch) = (dom::now(), dom::epoch_now());
                     i.conn.set_hidden(dom::hidden());
                     let tick = i.conn.tick(number, now, open);
-                    let ping = (tick == Tick::Ping).then(|| i.conn.ping(now, epoch));
-                    if let Some(ClientMsg::Ping { n, .. }) = &ping {
-                        i.watch.ping(*n, epoch);
-                    }
-                    (tick, ping)
+                    let ping = (tick == Tick::Ping).then(|| i.ping(now, epoch));
+                    (tick, ping, i.conn.limit())
                 }) else {
                     return;
                 };
@@ -378,7 +401,8 @@ impl LiveStore {
                         return;
                     }
                     Tick::Silent => {
-                        self.drop_socket("the hub has been silent for 3 s");
+                        let why = format!("the hub has been silent for {:.0} s", limit / 1000.0);
+                        self.drop_socket(&why);
                         return;
                     }
                 }
@@ -640,6 +664,7 @@ impl LiveStore {
             self.send_sub(spec);
         }
         self.deck_hello();
+        self.idle_hello();
     }
 
     /// An instance's new state: its slots wait while it is offline; its

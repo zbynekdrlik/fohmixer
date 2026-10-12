@@ -185,7 +185,24 @@ exclude_re = [
   # undos off the page's socket, the hub's answers, the note and the
   # page's eq_undo events in the event log.
   "fohmixer-ui/src/store/live/eq\\.rs.*(replace|in) LiveStore::(on_eq_list|on_eq_locks|on_eq|on_frame|eq_frames|list_eq|eq_opening|eq_open|eq_area|eq_input|eq_view|eq_session|eq_land|eq_caught_up|eq_drawn|eq_close|eq_socket_closed|eq_picture|eq_undo|on_eq_undo)( |$)",
-  "fohmixer-ui/src/store/live\\.rs.*(replace|in) (Socket::open|Socket::buffered|Socket::close|Inner::new)( |$)",
+  # store/live/idle.rs (#51): the page's idle glue, one function at a time:
+  # listen_idle and unlisten_idle (the document's visibilitychange listener,
+  # added at the store's start, removed at its stop), sync_visibility
+  # (document.hidden through the tested IdleWatch::visibility, from the
+  # listener and the link's tick), turn_idle (a turn through the tested
+  # Conn::set_idle and DropoutWatch::set_idle, the tested Turn::event into
+  # the recorder, the idle message, a wake's ping, the idle signal),
+  # meter_ms (the layout's idle_meter_ms through the tested
+  # behave::idle::meter_ms), send_idle, idle_hello (an idle page's message
+  # again after a hello) and ping_now (a wake's ping when the socket said
+  # hello). Inner::ping (store/live.rs) hands a ping to the tested
+  # DropoutWatch::ping (the watchdog's and a wake's). idle.spec.ts drives
+  # them: the page's idle messages off its socket, the hub's idle records,
+  # no meter while hidden and every other value at once, the meters back at
+  # the wake, the page's idle events in the event log, and no dropout over
+  # an idle period and its wake.
+  "fohmixer-ui/src/store/live/idle\\.rs.*(replace|in) LiveStore::(listen_idle|unlisten_idle|sync_visibility|turn_idle|meter_ms|send_idle|idle_hello|ping_now)( |$)",
+  "fohmixer-ui/src/store/live\\.rs.*(replace|in) (Socket::open|Socket::buffered|Socket::close|Inner::new|Inner::ping)( |$)",
   # auth.rs: local storage and the login request (login_outcome, login_body
   # and LoginError::message are the tested decisions).
   "fohmixer-ui/src/auth\\.rs.*(replace|in) (stored_token|login)( |$)",

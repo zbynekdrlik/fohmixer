@@ -6,7 +6,8 @@
 //! document_script 2.10.0), as the S4 design note quotes them, the Stream
 //! Deck's presses (#52, `deck`), the hold that opens a channel's detail
 //! (#71, `hold`), the Pro-Q 4 screen's finger and picture (#71 PR E,
-//! `eq`) and the backing-tracks fader's drag and look (#58, `vca`).
+//! `eq`), the backing-tracks fader's drag and look (#58, `vca`) and the
+//! page's idle state (#51, `idle`).
 
 pub mod colour;
 pub mod db_text;
@@ -15,6 +16,7 @@ pub mod eq;
 pub mod eq_view;
 pub mod fader;
 pub mod hold;
+pub mod idle;
 pub mod label;
 pub mod link;
 pub mod meter;

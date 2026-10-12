@@ -10,6 +10,14 @@
 //! that was frozen or hidden (its timers late) cannot tell the link's
 //! silence from its own.
 //!
+//! While the page is idle (#51: hidden, or untouched for a while) it pings
+//! once a second, and only a silence of [`IDLE_DROPOUT_MS`] counts (a lost
+//! socket always does): the Wi-Fi power-save holds of up to ~2.1 s that #43
+//! measured on an untouched iPad are not dropouts. At the wake the silence
+//! starts over ([`DropoutWatch::set_idle`]), so an idle ping still on its
+//! way never turns into a dropout under the engineer's finger, and an outage
+//! that lasts past the wake counts [`DROPOUT_MS`] after it.
+//!
 //! When a dropout ends (a message from the hub, or the next socket's hello)
 //! it becomes a report for the hub's event log, through the page's flight
 //! recorder (`diag/trace.rs`): when it started (page clock), how long it
@@ -30,8 +38,12 @@ use std::collections::VecDeque;
 
 use serde_json::{Value, json};
 
-/// Silence this long with a pong due is a dropout.
+/// Silence this long with a pong due is a dropout; a page tick this late
+/// says the page itself was away.
 pub const DROPOUT_MS: f64 = 300.0;
+/// While the page is idle (#51), silence this long with a pong due is a
+/// dropout.
+pub const IDLE_DROPOUT_MS: f64 = 2500.0;
 /// The round trips a report carries (the latest before the dropout).
 pub const RTTS_KEPT: usize = 5;
 /// Unanswered pings kept (6.4 s at 100 ms: past the 3 s silence that drops
@@ -81,6 +93,12 @@ pub fn is_dropout(gap: f64) -> bool {
     gap >= DROPOUT_MS
 }
 
+/// Whether a silence of `gap` ms with a pong due is a dropout on a page
+/// that is idle (`idle`, [`IDLE_DROPOUT_MS`]) or not ([`DROPOUT_MS`]).
+pub fn is_silence(gap: f64, idle: bool) -> bool {
+    gap >= if idle { IDLE_DROPOUT_MS } else { DROPOUT_MS }
+}
+
 /// The dropout watch of one page.
 #[derive(Debug, Default)]
 pub struct DropoutWatch {
@@ -104,6 +122,11 @@ pub struct DropoutWatch {
     reset_at: u64,
     /// Finished dropouts not taken yet.
     reports: VecDeque<Dropout>,
+    /// The page is idle (#51): only a longer silence counts.
+    idle: bool,
+    /// When the page last woke from idle: a silence starts here at the
+    /// earliest.
+    woke: f64,
 }
 
 impl DropoutWatch {
@@ -116,9 +139,12 @@ impl DropoutWatch {
     }
 
     /// The start of the current silence while a pong is due: the last
-    /// message heard, or the oldest unanswered ping when it is later.
+    /// message heard, the oldest unanswered ping or the page's last wake,
+    /// whichever is latest.
     fn silence_start(&self) -> Option<f64> {
-        self.pings.front().map(|&(_, sent)| sent.max(self.heard))
+        self.pings
+            .front()
+            .map(|&(_, sent)| sent.max(self.heard).max(self.woke))
     }
 
     /// Opens a dropout that started at `start` (counted once).
@@ -148,7 +174,18 @@ impl DropoutWatch {
 
     /// Whether a pong is due and the silence reached a dropout at `now`.
     fn silent(&self, now: f64) -> Option<f64> {
-        self.silence_start().filter(|&s| is_dropout(now - s))
+        self.silence_start()
+            .filter(|&s| is_silence(now - s, self.idle))
+    }
+
+    /// The page went idle (`on`) or woke at `now` (#51): while idle only a
+    /// silence of [`IDLE_DROPOUT_MS`] counts; the wake starts the silence
+    /// over (a dropout already open stays open, counted once).
+    pub fn set_idle(&mut self, on: bool, now: f64) {
+        self.idle = on;
+        if !on {
+            self.woke = now;
+        }
     }
 
     /// A socket said hello at `now`: a dropout in progress (its socket
