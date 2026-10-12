@@ -284,15 +284,17 @@ exclude_re = [
   # listeners' entry points), send (the thread-local state, the page clock),
   # arm_trailing and fire_trailing (a trailing report's timer), post_report
   # and read_env (matchMedia, navigator.standalone, screen, the <html>
-  # attributes), rejection_text (a JS reason as text) and post (the
-  # keepalive fetch). Their decisions are the tested Diag (offer/fire:
-  # throttle, trailing reports, waiting errors; hellos), Conn::closed (which
-  # close is a lost connection), fields, display_mode, screen_text,
-  # visibility, error_event_text and attribute_kind;
-  # e2e/tests/client-report.spec.ts drives the glue (load, connected,
-  # disconnected, reconnect, visibility, error, rejection, sw, wake lock and
-  # its trailing report).
-  "fohmixer-ui/src/diag\\.rs.*(replace|in) (install|observe_attributes|connected|disconnected|report|report_error|send|arm_trailing|fire_trailing|post_report|read_env|rejection_text|post)( |$)",
+  # attributes), rejection_text (a JS reason as text), stack_of (#43: a
+  # thrown value's or a reason's `stack` through js_sys::Reflect, a string
+  # or none) and post (the keepalive fetch). Their decisions are the tested
+  # Diag (offer/fire: throttle, trailing reports, waiting errors; hellos),
+  # Conn::closed (which close is a lost connection), fields, display_mode,
+  # screen_text, visibility, error_event_text, error_text and stack_line
+  # (#43: the text first, the stack's lines after it, bounded) and
+  # attribute_kind; e2e/tests/client-report.spec.ts drives the glue (load,
+  # connected, disconnected, reconnect, visibility, error, an error's and a
+  # rejection's stack, sw, wake lock and its trailing report).
+  "fohmixer-ui/src/diag\\.rs.*(replace|in) (install|observe_attributes|connected|disconnected|report|report_error|send|arm_trailing|fire_trailing|post_report|read_env|rejection_text|stack_of|post)( |$)",
   # diag.rs, the perf report's glue (#5, K4), one browser call each:
   # listen_pointers (the window's capture-phase pointerdown, pointerup and
   # pointercancel listeners), pointer_down and pointer_up (a PointerEvent's

@@ -6,14 +6,15 @@
 //!
 //! The pure part, tested natively: the report's fields from what the
 //! browser says ([`fields`], [`display_mode`], [`screen_text`],
-//! [`visibility`], [`error_event_text`]), which changed `<html>` attribute
-//! means which report ([`attribute_kind`]), and [`Diag`]: the throttle (at
-//! most one report per kind per [`REPORT_GAP_MS`], a change within the
-//! window sent once when it ends with the state of then, an error message
-//! only once) and the hellos (the first is `connected`, the later ones
-//! `reconnect`). The `perf` report's numbers (#5, K4: the frame rate, the
-//! longest frame, the most pointers at once and their type, and when a
-//! `perf` report is due) are [`perf`]'s.
+//! [`visibility`], [`error_event_text`], and since #43 the thrown value's
+//! stack after an error's text: [`error_text`], [`stack_line`]), which
+//! changed `<html>` attribute means which report ([`attribute_kind`]), and
+//! [`Diag`]: the throttle (at most one report per kind per
+//! [`REPORT_GAP_MS`], a change within the window sent once when it ends
+//! with the state of then, an error message only once) and the hellos (the
+//! first is `connected`, the later ones `reconnect`). The `perf` report's
+//! numbers (#5, K4: the frame rate, the longest frame, the most pointers at
+//! once and their type, and when a `perf` report is due) are [`perf`]'s.
 //!
 //! The browser glue ([`install`], [`connected`], [`disconnected`],
 //! [`frame`] and the helpers under them) reads the browser, asks [`Diag`]
@@ -38,7 +39,7 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::time::Duration;
 
-use fohmixer_proto::client::ReportFields;
+use fohmixer_proto::client::{REPORT_ERROR_MAX_CHARS, ReportFields};
 use leptos::prelude::set_timeout;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
@@ -55,8 +56,28 @@ use trace::sys::{self, ZoomWatch};
 
 /// At most one report of a kind per this interval (page clock, ms).
 pub const REPORT_GAP_MS: f64 = 5000.0;
-/// The longest error text a report carries, in characters.
+/// The longest text of an error (its message and where, or a rejection's
+/// reason) a report carries, in characters; its stack comes after it
+/// ([`error_text`]).
 pub const ERROR_MAX_CHARS: usize = 300;
+/// The most lines of a thrown value's stack an error report carries (#43).
+pub const STACK_MAX_LINES: usize = 30;
+/// The most bytes (UTF-8) of a stack an error report carries, its cut mark
+/// included (#43).
+pub const STACK_MAX_BYTES: usize = 4096;
+/// Between an error's text and its stack.
+pub const STACK_HEAD: &str = " | stack: ";
+/// Between a stack's lines: the hub keeps a report on one line (it drops
+/// line breaks).
+pub const STACK_JOIN: &str = " | ";
+/// The end of a stack that was cut.
+pub const STACK_CUT: &str = " [cut]";
+// The longest error text with its stack fits the report's `error`, which
+// the hub keeps whole (`fohmixer_proto::client::REPORT_ERROR_MAX_CHARS`):
+// the text, its ellipsis, the head and the stack (a byte is at most a
+// character).
+const _: () =
+    assert!(ERROR_MAX_CHARS + 1 + STACK_HEAD.len() + STACK_MAX_BYTES <= REPORT_ERROR_MAX_CHARS);
 /// How many error messages are remembered as sent (older ones may be sent
 /// again).
 pub const ERRORS_REMEMBERED: usize = 32;
@@ -326,6 +347,50 @@ pub fn error_event_text(message: &str, file: &str, line: u32, column: u32) -> St
     }
 }
 
+/// A thrown value's stack as one line (#43): each line trimmed, the empty
+/// ones dropped, joined by [`STACK_JOIN`]; at most [`STACK_MAX_LINES`]
+/// lines and [`STACK_MAX_BYTES`] bytes, whichever is less, a cut stack
+/// ending in [`STACK_CUT`] within those bytes. None when it holds no text.
+pub fn stack_line(stack: &str) -> Option<String> {
+    let lines: Vec<&str> = stack
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    if lines.is_empty() {
+        return None;
+    }
+    let joined = lines
+        .iter()
+        .take(STACK_MAX_LINES)
+        .copied()
+        .collect::<Vec<&str>>()
+        .join(STACK_JOIN);
+    if lines.len() <= STACK_MAX_LINES && joined.len() <= STACK_MAX_BYTES {
+        return Some(joined);
+    }
+    let room = STACK_MAX_BYTES - STACK_CUT.len();
+    let kept: String = joined
+        .char_indices()
+        .take_while(|(at, c)| at + c.len_utf8() <= room)
+        .map(|(_, c)| c)
+        .collect();
+    Some(kept + STACK_CUT)
+}
+
+/// An error report's text (#43): `text` as before (an error event's
+/// [`error_event_text`], a rejection's reason; cut to [`ERROR_MAX_CHARS`]),
+/// then, when the thrown value has a stack, [`STACK_HEAD`] and its
+/// [`stack_line`]: what today's readers match stays first, and the stack
+/// names the code the error came from.
+pub fn error_text(text: &str, stack: Option<&str>) -> String {
+    let text = truncate_for_display(text, ERROR_MAX_CHARS);
+    match stack.and_then(stack_line) {
+        Some(stack) => format!("{text}{STACK_HEAD}{stack}"),
+        None => text,
+    }
+}
+
 /// The report a changed `<html>` attribute makes.
 pub fn attribute_kind(name: &str) -> Option<Kind> {
     match name {
@@ -336,7 +401,8 @@ pub fn attribute_kind(name: &str) -> Option<Kind> {
 }
 
 /// A report's fields: the event, the page's state, this bundle's build,
-/// the reconnects so far and the error's text (cut to [`ERROR_MAX_CHARS`]).
+/// the reconnects so far and the error's text with its stack (cut to
+/// [`REPORT_ERROR_MAX_CHARS`], which an [`error_text`] never reaches).
 /// A `perf` report's numbers are added by [`perf::PerfReport::fill`].
 pub fn fields(kind: Kind, env: &Env, reconnects: u32, error: Option<&str>) -> ReportFields {
     let (width, height, dpr) = env.screen;
@@ -351,7 +417,7 @@ pub fn fields(kind: Kind, env: &Env, reconnects: u32, error: Option<&str>) -> Re
         wake_lock: env.wake_lock.clone(),
         visibility: Some(visibility(env.hidden).to_string()),
         reconnects: Some(reconnects.to_string()),
-        error: error.map(|text| truncate_for_display(text, ERROR_MAX_CHARS)),
+        error: error.map(|text| truncate_for_display(text, REPORT_ERROR_MAX_CHARS)),
         fps: None,
         long_frame_ms: None,
         touches_max: None,
@@ -399,14 +465,18 @@ pub fn install() {
         return;
     };
     // Any `error` event reaches this listener, not only an `ErrorEvent`
-    // (one dispatched as a plain `Event` has no message to read).
+    // (one dispatched as a plain `Event` has no message to read). The
+    // thrown value's stack follows the text (#43).
     let on_error = Closure::wrap(Box::new(|event: web_sys::Event| {
         let text = match event.dyn_ref::<web_sys::ErrorEvent>() {
-            Some(error) => error_event_text(
-                &error.message(),
-                &error.filename(),
-                error.lineno(),
-                error.colno(),
+            Some(error) => error_text(
+                &error_event_text(
+                    &error.message(),
+                    &error.filename(),
+                    error.lineno(),
+                    error.colno(),
+                ),
+                stack_of(&error.error()).as_deref(),
             ),
             None => format!("an {} event without a message", event.type_()),
         };
@@ -415,9 +485,10 @@ pub fn install() {
     let _ = window.add_event_listener_with_callback("error", on_error.as_ref().unchecked_ref());
     on_error.forget();
     let on_rejection = Closure::wrap(Box::new(|event: web_sys::PromiseRejectionEvent| {
-        report_error(format!(
-            "unhandled rejection: {}",
-            rejection_text(&event.reason())
+        let reason = event.reason();
+        report_error(error_text(
+            &format!("unhandled rejection: {}", rejection_text(&reason)),
+            stack_of(&reason).as_deref(),
         ));
     }) as Box<dyn FnMut(web_sys::PromiseRejectionEvent)>);
     let _ = window.add_event_listener_with_callback(
@@ -657,7 +728,7 @@ fn report_error(text: String) {
 /// Offers a report of `kind` to the throttle: sent now, or its trailing
 /// report armed.
 fn send(kind: Kind, error: Option<String>) {
-    let error = error.map(|text| truncate_for_display(&text, ERROR_MAX_CHARS));
+    let error = error.map(|text| truncate_for_display(&text, REPORT_ERROR_MAX_CHARS));
     let now = dom::now();
     let Ok(verdict) = DIAG.try_with(|diag| diag.borrow_mut().offer(kind, now, error.as_deref()))
     else {
@@ -760,6 +831,18 @@ fn rejection_text(reason: &wasm_bindgen::JsValue) -> String {
         .ok()
         .and_then(|json| json.as_string())
         .unwrap_or_else(|| "(no reason)".to_string())
+}
+
+/// The `stack` of a thrown value or a rejection's reason (#43): an
+/// object's `stack` when it is a string (an `Error`'s, in every engine),
+/// else none.
+fn stack_of(value: &wasm_bindgen::JsValue) -> Option<String> {
+    if !value.is_object() {
+        return None;
+    }
+    js_sys::Reflect::get(value, &"stack".into())
+        .ok()
+        .and_then(|stack| stack.as_string())
 }
 
 /// POSTs a report (`keepalive`: it survives a reload that follows). The

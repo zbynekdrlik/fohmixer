@@ -15,8 +15,10 @@
 //! page sends is trusted: only the fields of [`ReportFields`] are kept
 //! (serde drops any other), each is stripped of control characters (no
 //! forged log lines) and cut ([`WORD_MAX_CHARS`], [`TEXT_MAX_CHARS`] for the
-//! user agent and the error), and a peer gets at most [`RATE_MAX`] reports
-//! per [`RATE_WINDOW`] (a looping page cannot fill the log).
+//! user agent, [`REPORT_ERROR_MAX_CHARS`] for the error: its text and, since
+//! #43, the first lines of the thrown value's stack), and a peer gets at
+//! most [`RATE_MAX`] reports per [`RATE_WINDOW`] (a looping page cannot
+//! fill the log).
 
 use std::collections::{HashMap, VecDeque};
 use std::net::{IpAddr, SocketAddr};
@@ -26,13 +28,13 @@ use std::time::{Duration, Instant};
 use axum::Json;
 use axum::extract::{ConnectInfo, State};
 use axum::http::{HeaderMap, StatusCode};
-use fohmixer_proto::client::{ClientReport, ReportFields};
+use fohmixer_proto::client::{ClientReport, REPORT_ERROR_MAX_CHARS, ReportFields};
 
 use crate::Hub;
 use crate::access::{self, Origin};
 
-/// The longest value kept of the free-text fields (`ua`, `error`), in
-/// characters (an iPad's user agent is about 150).
+/// The longest user agent kept, in characters (an iPad's is about 150).
+/// The error keeps [`REPORT_ERROR_MAX_CHARS`], the page's own limit (#43).
 pub const TEXT_MAX_CHARS: usize = 300;
 /// The longest value kept of every other field (a word, a version, a host,
 /// a size, an address): a long one is not what the page sends.
@@ -63,9 +65,10 @@ pub fn clean(value: &str, max: usize) -> String {
     cut
 }
 
-/// Every field of a report, [`clean`]ed: the user agent and the error to
-/// [`TEXT_MAX_CHARS`], the others (the `perf` numbers too: the page sends
-/// them as short words) to [`WORD_MAX_CHARS`].
+/// Every field of a report, [`clean`]ed: the user agent to
+/// [`TEXT_MAX_CHARS`], the error to [`REPORT_ERROR_MAX_CHARS`] (its text and
+/// its stack's first lines, #43), the others (the `perf` numbers too: the
+/// page sends them as short words) to [`WORD_MAX_CHARS`].
 pub fn clean_fields(fields: ReportFields) -> ReportFields {
     let word = |value: Option<String>| value.map(|v| clean(&v, WORD_MAX_CHARS));
     let text = |value: Option<String>| value.map(|v| clean(&v, TEXT_MAX_CHARS));
@@ -80,7 +83,7 @@ pub fn clean_fields(fields: ReportFields) -> ReportFields {
         wake_lock: word(fields.wake_lock),
         visibility: word(fields.visibility),
         reconnects: word(fields.reconnects),
-        error: text(fields.error),
+        error: fields.error.map(|v| clean(&v, REPORT_ERROR_MAX_CHARS)),
         fps: word(fields.fps),
         long_frame_ms: word(fields.long_frame_ms),
         touches_max: word(fields.touches_max),

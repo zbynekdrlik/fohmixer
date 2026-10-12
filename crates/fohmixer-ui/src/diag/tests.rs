@@ -19,6 +19,11 @@ const ALL: [Kind; 9] = [
 fn the_limits_are_these() {
     assert_eq!(REPORT_GAP_MS, 5000.0);
     assert_eq!(ERROR_MAX_CHARS, 300);
+    assert_eq!(STACK_MAX_LINES, 30);
+    assert_eq!(STACK_MAX_BYTES, 4096);
+    assert_eq!(STACK_HEAD, " | stack: ");
+    assert_eq!(STACK_JOIN, " | ");
+    assert_eq!(STACK_CUT, " [cut]");
     assert_eq!(ERRORS_REMEMBERED, 32);
     assert_eq!(ERRORS_WAITING, 8);
     assert_eq!(REPORT_URL, "/api/client-report");
@@ -246,6 +251,127 @@ fn an_error_event_says_where_when_it_knows() {
 }
 
 #[test]
+fn a_stack_is_one_line_of_its_trimmed_lines() {
+    // WebKit's form (a frame per line), V8's (the error first, indented
+    // frames), a Windows line end, blank lines.
+    assert_eq!(
+        stack_line("wasm-function[812]@[wasm code]\nreal@https://foh.example.org/app.js:2:7\n"),
+        Some("wasm-function[812]@[wasm code] | real@https://foh.example.org/app.js:2:7".into())
+    );
+    assert_eq!(
+        stack_line("Error: boom\r\n    at inner (app.js:1:2)\n\n  \n    at outer (app.js:3:4)"),
+        Some("Error: boom | at inner (app.js:1:2) | at outer (app.js:3:4)".into())
+    );
+    assert_eq!(stack_line("one"), Some("one".into()));
+    // Nothing but whitespace is no stack.
+    assert_eq!(stack_line(""), None);
+    assert_eq!(stack_line(" \n\t\n "), None);
+}
+
+/// `n` stack lines `frame 0` …
+fn frames(n: usize) -> String {
+    (0..n)
+        .map(|i| format!("frame {i}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn a_stack_keeps_its_first_30_lines() {
+    let thirty = (0..STACK_MAX_LINES)
+        .map(|i| format!("frame {i}"))
+        .collect::<Vec<_>>()
+        .join(STACK_JOIN);
+    assert_eq!(stack_line(&frames(STACK_MAX_LINES)), Some(thirty.clone()));
+    // A 31st line is cut, and the cut is marked.
+    assert_eq!(
+        stack_line(&frames(STACK_MAX_LINES + 1)),
+        Some(format!("{thirty}{STACK_CUT}"))
+    );
+    assert_eq!(
+        stack_line(&frames(100)),
+        Some(format!("{thirty}{STACK_CUT}"))
+    );
+}
+
+#[test]
+fn a_stack_keeps_at_most_4096_bytes_its_mark_included() {
+    // Exactly the bytes: whole.
+    let exact = "a".repeat(STACK_MAX_BYTES);
+    assert_eq!(stack_line(&exact), Some(exact.clone()));
+    // One more: cut to the bytes, the mark at the end.
+    let over = "b".repeat(STACK_MAX_BYTES + 1);
+    let cut = stack_line(&over).unwrap();
+    assert_eq!(cut.len(), STACK_MAX_BYTES);
+    assert_eq!(
+        cut,
+        format!(
+            "{}{STACK_CUT}",
+            "b".repeat(STACK_MAX_BYTES - STACK_CUT.len())
+        )
+    );
+    // Two lines joined past the bytes (fewer than 30: the bytes alone cut
+    // them): cut inside a line.
+    let lines = ["c".repeat(3000), "d".repeat(3000)].join("\n");
+    let cut = stack_line(&lines).unwrap();
+    assert_eq!(cut.len(), STACK_MAX_BYTES);
+    assert!(
+        cut.starts_with(&format!("{}{STACK_JOIN}d", "c".repeat(3000))),
+        "{cut}"
+    );
+    // Never inside a character: a two-byte `é` that would end past the
+    // room before the mark is left out.
+    let wide = format!("a{}", "é".repeat(STACK_MAX_BYTES / 2));
+    let cut = stack_line(&wide).unwrap();
+    assert_eq!(
+        cut,
+        format!(
+            "a{}{STACK_CUT}",
+            "é".repeat((STACK_MAX_BYTES - STACK_CUT.len()) / 2 - 1)
+        )
+    );
+    assert!(cut.len() <= STACK_MAX_BYTES, "{}", cut.len());
+}
+
+#[test]
+fn an_error_s_text_comes_first_its_stack_after_it() {
+    assert_eq!(error_text("boom at app.js:1:2", None), "boom at app.js:1:2");
+    // A stack with no text adds nothing.
+    assert_eq!(error_text("boom", Some(" \n ")), "boom");
+    assert_eq!(
+        error_text(
+            "boom at app.js:1:2",
+            Some("inner@app.js:1:2\nouter@app.js:3:4")
+        ),
+        "boom at app.js:1:2 | stack: inner@app.js:1:2 | outer@app.js:3:4"
+    );
+    // The text is cut as before; the stack still follows.
+    let long = "t".repeat(ERROR_MAX_CHARS + 1);
+    assert_eq!(
+        error_text(&long, Some("inner")),
+        format!("{}… | stack: inner", "t".repeat(ERROR_MAX_CHARS))
+    );
+    assert_eq!(
+        error_text(&"t".repeat(ERROR_MAX_CHARS), None),
+        "t".repeat(ERROR_MAX_CHARS)
+    );
+}
+
+#[test]
+fn the_longest_error_with_its_stack_is_reported_whole() {
+    // The longest text (in characters) and the longest stack (in bytes:
+    // one-byte characters): what the hub keeps whole too.
+    let worst = error_text(&"é".repeat(400), Some("x".repeat(5000).as_str()));
+    assert_eq!(
+        worst.chars().count(),
+        ERROR_MAX_CHARS + 1 + STACK_HEAD.len() + STACK_MAX_BYTES
+    );
+    assert!(worst.chars().count() <= REPORT_ERROR_MAX_CHARS);
+    let report = fields(Kind::Error, &ipad(), 0, Some(worst.as_str()));
+    assert_eq!(report.error, Some(worst));
+}
+
+#[test]
 fn the_pwa_attributes_are_their_reports() {
     assert_eq!(attribute_kind("data-sw"), Some(Kind::Sw));
     assert_eq!(attribute_kind("data-wake-lock"), Some(Kind::WakeLock));
@@ -309,11 +435,17 @@ fn an_error_report_carries_its_text_cut_short() {
     let report = fields(Kind::Error, &ipad(), 0, Some("boom"));
     assert_eq!(report.kind.as_deref(), Some("error"));
     assert_eq!(report.error.as_deref(), Some("boom"));
-    let long = "e".repeat(ERROR_MAX_CHARS + 1);
+    // The report's limit is the hub's (#43): its text and its stack.
+    let exact = "e".repeat(REPORT_ERROR_MAX_CHARS);
+    let kept = fields(Kind::Error, &ipad(), 0, Some(exact.as_str()))
+        .error
+        .unwrap();
+    assert_eq!(kept, exact);
+    let long = "e".repeat(REPORT_ERROR_MAX_CHARS + 1);
     let cut = fields(Kind::Error, &ipad(), 0, Some(long.as_str()))
         .error
         .unwrap();
-    assert_eq!(cut, format!("{}…", "e".repeat(ERROR_MAX_CHARS)));
+    assert_eq!(cut, format!("{}…", "e".repeat(REPORT_ERROR_MAX_CHARS)));
 }
 
 #[test]
