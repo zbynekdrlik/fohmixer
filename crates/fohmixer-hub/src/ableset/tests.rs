@@ -2509,10 +2509,12 @@ async fn the_link_goes_down_after_two_failed_reads_and_up_at_the_first_good_one(
     let upstream = switched(Arc::clone(&up)).await;
     let (site, records) = site_with(&upstream, Duration::from_secs(1), 16);
     let (tx, mut changes) = tokio::sync::mpsc::unbounded_channel();
+    // Reads every 50 ms, each bounded at 2 s: a loaded runner's slow read
+    // is never a failed one (the hub bounds a read by its 5 s period).
     let period = Duration::from_millis(50);
     let reads = tokio::spawn(link::watch(
         Arc::clone(&site),
-        link::client(period),
+        link::client(Duration::from_secs(2)),
         format!("{upstream}/"),
         period,
         move |online| {
