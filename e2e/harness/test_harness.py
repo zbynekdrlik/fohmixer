@@ -498,6 +498,27 @@ class HarnessTest(unittest.TestCase):
         )
         self.assertLess(both.index("[companion]"), both.index("[tls]"))
 
+    def test_the_ableset_table_of_the_hub_config(self):
+        remote = {"name": "foh.e2e.test", "https_port": 8443}
+        ableset = {"name": "ableset.e2e.test", "upstream": "http://127.0.0.1:39193", "aud": "a-1"}
+        text = harness.hub_config(8480, 1, 2, remote, None, ableset)
+        self.assertEqual(
+            text,
+            harness.hub_config(8480, 1, 2, remote)
+            + '[ableset]\nname = "ableset.e2e.test"\nupstream = "http://127.0.0.1:39193"\n'
+            + 'access_aud = ["a-1"]\n',
+        )
+        no_aud = harness.hub_config(8480, 1, 2, remote, None, dict(ableset, aud=None))
+        self.assertTrue(no_aud.endswith('upstream = "http://127.0.0.1:39193"\n'), no_aud)
+        # Without a [tls] name the hub would refuse it: left out.
+        self.assertEqual(
+            harness.hub_config(8480, 1, 2, None, None, ableset), harness.hub_config(8480, 1, 2)
+        )
+
+    def test_without_a_fake_ableset_its_routes_are_absent(self):
+        self.assertEqual(self.harness.handle("GET", "/ableset", {})[0], 404)
+        self.assertEqual(self.post("/ableset/down")[0], 404)
+
     def test_without_a_fake_companion_its_routes_are_absent(self):
         self.assertEqual(self.harness.handle("GET", "/companion", {})[0], 404)
         self.assertEqual(self.post("/companion/down")[0], 404)
@@ -626,6 +647,74 @@ class FakeCompanionRoutes(unittest.TestCase):
                 harness.companion_of(
                     harness.parse_args(["--data", "d", "--layout", "l", "--companion", bad]), None
                 )
+
+
+class FakeAbleSetRoutes(unittest.TestCase):
+    """The harness with ``--fake-ableset-port`` and ``--ableset-name`` (#90):
+    the hub's config names the fake, its certificate goes into the store, the
+    routes drive the fake."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.data = tempfile.mkdtemp(prefix="fohmixer-harness-test-")
+        for name, text in (("leaf.pem", "CERT"), ("leaf.key", "KEY")):
+            with open(os.path.join(cls.data, name), "w", encoding="utf-8") as f:
+                f.write(text)
+        args = harness.parse_args(
+            [
+                *("--data", os.path.join(cls.data, "hub"), "--layout", LAYOUT),
+                *("--band-port", "0", "--master-port", "0", "--meters-hz", "0"),
+                *("--public-name", "foh.e2e.test", "--https-port", "9443"),
+                *("--tls-cert", os.path.join(cls.data, "leaf.pem")),
+                *("--tls-key", os.path.join(cls.data, "leaf.key")),
+                *("--fake-ableset-port", "0", "--ableset-name", "ableset.e2e.test"),
+                *("--ableset-cert", os.path.join(cls.data, "leaf.pem")),
+                *("--ableset-key", os.path.join(cls.data, "leaf.key")),
+                *("--ableset-aud", "ableset-aud"),
+            ]
+        )
+        cls.harness = harness.Harness(args)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.harness.stop()
+        shutil.rmtree(cls.data, ignore_errors=True)
+
+    def test_the_config_names_the_fake_and_its_certificate_is_in_the_store(self):
+        port = self.harness.ableset_fake.port
+        with open(os.path.join(self.data, "hub", "fohmixer-hub.toml"), encoding="utf-8") as f:
+            self.assertIn(
+                f'[ableset]\nname = "ableset.e2e.test"\nupstream = "http://127.0.0.1:{port}"\n'
+                'access_aud = ["ableset-aud"]\n',
+                f.read(),
+            )
+        store = os.path.join(self.data, "hub", "tls", "ableset")
+        for name, text in (("cert.pem", "CERT"), ("key.pem", "KEY")):
+            with open(os.path.join(store, name), encoding="utf-8") as f:
+                self.assertEqual(f.read(), text)
+
+    def test_the_routes_drive_the_fake(self):
+        handle = self.harness.handle
+        status, state = handle("GET", "/ableset", {})
+        self.assertEqual(
+            (status, state["port"], state["down"]), (200, self.harness.ableset_fake.port, False)
+        )
+        self.assertEqual(handle("POST", "/ableset/down", {})[1]["down"], True)
+        self.assertEqual(handle("POST", "/ableset/up", {})[1]["down"], False)
+        url = f"http://127.0.0.1:{state['port']}/static/app.css"
+        with urllib.request.urlopen(url, timeout=5) as r:
+            self.assertEqual(r.status, 200)
+        self.assertEqual(len(handle("GET", "/ableset", {})[1]["hits"]), 1)
+        self.assertEqual(handle("POST", "/ableset/clear", {})[1]["hits"], [])
+        self.assertEqual(handle("POST", "/ableset/nothing", {})[0], 404)
+
+    def test_a_name_without_the_fake_is_refused(self):
+        args = harness.parse_args(["--data", "d", "--layout", "l", "--ableset-name", "a.e2e.test"])
+        with self.assertRaises(SystemExit):
+            harness.ableset_of(args, None)
+        self.assertIsNone(
+            harness.ableset_of(harness.parse_args(["--data", "d", "--layout", "l"]), None)
+        )
 
 
 if __name__ == "__main__":

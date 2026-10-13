@@ -6,6 +6,8 @@
         [--public-name NAME --https-port PORT --tls-cert FILE --tls-key FILE]
         [--access-team TEAM --access-aud AUD --access-key FILE]
         [--fake-companion-port N | --companion HOST:PORT]
+        [--fake-ableset-port N --ableset-name NAME --ableset-cert FILE
+         --ableset-key FILE [--ableset-aud AUD]]
 
 It starts ``sim/host.py`` for ``band`` and ``master`` (the real FohMixer script on
 SimLive), writes the hub's config and layout into the data folder, starts the hub
@@ -75,6 +77,14 @@ what only the harness can do:
                                          ``[companion]``, and the hub restarted;
                                          {"companion": what it now holds}: false
                                          when no endpoint is configured
+    GET  /ableset                        the fake AbleSet's state (#90,
+                                         ``--fake-ableset-port``): ``port``, ``down``,
+                                         ``sockets``, ``presses``, ``hits`` (each
+                                         request, ``link`` true for the hub's own
+                                         reads); 404 without the fake
+    POST /ableset/down                   AbleSet stopped (a connect is refused)
+    POST /ableset/up                     AbleSet listening again
+    POST /ableset/clear                  the hits forgotten
     GET  /cdn-cgi/access/certs           the test Access key set (``--access-key``)
 
 Remote access (#17): with ``--public-name`` the hub serves that name over HTTPS
@@ -87,6 +97,13 @@ The Stream Deck (#52): with ``--fake-companion-port`` the harness starts
 ``fake_companion.py`` there (0: any free port) and the hub's config gets
 ``[companion]`` on it; with ``--companion HOST:PORT`` it names a real Companion
 (the ``companion`` CI job) and starts no fake.
+
+AbleSet's name (#90): with ``--fake-ableset-port`` the harness starts
+``fake_ableset.py`` there (0: any free port); with ``--ableset-name`` and a
+public name the hub's config gets ``[ableset]`` (that name, the fake as its
+upstream, ``--ableset-aud`` as its Access audience) and the name's own
+certificate (``--ableset-cert``, ``--ableset-key``) goes into its store
+``tls/ableset/``.
 
 The Pro-Q 4 screen (#71 PR E): the hub's config gets ``[eq] backend = "sim"``,
 the simulated window backend, whose records the tests read through ``/sim/eq``.
@@ -113,6 +130,7 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import impair
+from fake_ableset import FakeAbleSet
 from fake_companion import FakeCompanion
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -143,12 +161,14 @@ ANSWERS = {
 }
 
 
-def hub_config(http_port, band_port, master_port, remote=None, companion=None):
+def hub_config(http_port, band_port, master_port, remote=None, companion=None, ableset=None):
     """The hub's ``fohmixer-hub.toml`` for the two hosts (layout polled fast) and
     the Pro-Q 4 screen on the simulated window backend (#71 PR E), with the
     Stream Deck's ``[companion]`` on ``companion`` (host, port) when given (#52),
     then the remote-access tables of ``remote`` (``name``, ``https_port``, and
-    ``team``, ``aud``, ``jwks_url`` for ``[access]``) when given."""
+    ``team``, ``aud``, ``jwks_url`` for ``[access]``) when given, and
+    ``[ableset]`` of ``ableset`` (``name``, ``upstream``, ``aud``) beside a
+    ``[tls]`` name (#90)."""
     text = (
         f"http_port = {http_port}\n"
         'layout = "layout.json"\n'
@@ -173,6 +193,10 @@ def hub_config(http_port, band_port, master_port, remote=None, companion=None):
             f'[access]\nteam_domain = "{remote["team"]}"\naud = ["{remote["aud"]}"]\n'
             f'jwks_url = "{remote["jwks_url"]}"\n'
         )
+    if ableset and remote.get("name"):
+        text += f'[ableset]\nname = "{ableset["name"]}"\nupstream = "{ableset["upstream"]}"\n'
+        if ableset.get("aud"):
+            text += f'access_aud = ["{ableset["aud"]}"]\n'
     return text
 
 
@@ -382,6 +406,27 @@ def companion_of(args, fake):
     return None
 
 
+def ableset_of(args, fake):
+    """``[ableset]`` (#90): ``--ableset-name`` with the fake as its upstream,
+    else none."""
+    if not args.ableset_name:
+        return None
+    if fake is None:
+        raise SystemExit("--ableset-name needs --fake-ableset-port")
+    return {
+        "name": args.ableset_name,
+        "upstream": f"http://127.0.0.1:{fake.port}",
+        "aud": args.ableset_aud,
+    }
+
+
+def copy_cert(cert, key, folder):
+    """A certificate and its key into a store folder of the hub."""
+    os.makedirs(folder, exist_ok=True)
+    shutil.copyfile(cert, os.path.join(folder, "cert.pem"))
+    shutil.copyfile(key, os.path.join(folder, "key.pem"))
+
+
 class Host:
     """One ``sim/host.py`` process with its stdin and stdout lines."""
 
@@ -526,11 +571,16 @@ class Harness:
             "jwks_url": f"http://127.0.0.1:{args.control_port}{CERTS_PATH}",
         }
         if args.public_name:
-            tls = os.path.join(self.data, "tls")
-            os.makedirs(tls, exist_ok=True)
-            shutil.copyfile(args.tls_cert, os.path.join(tls, "cert.pem"))
-            shutil.copyfile(args.tls_key, os.path.join(tls, "key.pem"))
+            copy_cert(args.tls_cert, args.tls_key, os.path.join(self.data, "tls"))
         self.remote = remote
+        self.ableset_fake = None
+        if args.fake_ableset_port is not None:
+            self.ableset_fake = FakeAbleSet(args.fake_ableset_port)
+            self.ableset_fake.start()
+        self.ableset = ableset_of(args, self.ableset_fake)
+        if self.ableset and args.ableset_cert:
+            tls = os.path.join(self.data, "tls", "ableset")
+            copy_cert(args.ableset_cert, args.ableset_key, tls)
         self.http_port = args.http_port
         self.fake = None
         if args.fake_companion_port is not None:
@@ -555,6 +605,7 @@ class Harness:
                     self.hosts["master"].port,
                     self.remote,
                     companion,
+                    self.ableset,
                 )
             )
 
@@ -593,6 +644,9 @@ class Harness:
             return 200, dict(self.link.state(), port=self.link.port)
         if method == "GET" and parts == ["companion"]:
             return (200, self.fake.state()) if self.fake else (404, {"error": "no fake Companion"})
+        if method == "GET" and parts == ["ableset"]:
+            fake = self.ableset_fake
+            return (200, fake.state()) if fake else (404, {"error": "no fake AbleSet"})
         if method == "GET" and "/" + "/".join(parts) == CERTS_PATH:
             return (200, self.jwks) if self.jwks else (404, {"error": "no --access-key"})
         if method != "POST":
@@ -634,6 +688,15 @@ class Harness:
                 return 200, self.fake.clear()
             if parts == ["companion", "fail"]:
                 return 200, self.fake.fail(on_of(body, "/companion/fail"))
+        if parts and parts[0] == "ableset":
+            if self.ableset_fake is None:
+                return 404, {"error": "no fake AbleSet"}
+            if parts == ["ableset", "down"]:
+                return 200, self.ableset_fake.down()
+            if parts == ["ableset", "up"]:
+                return 200, self.ableset_fake.up()
+            if parts == ["ableset", "clear"]:
+                return 200, self.ableset_fake.clear()
         if parts == ["forensics", "timeline"]:
             return 200, forensics_timeline(self.data, body)
         if parts == ["link", "stall"]:
@@ -655,6 +718,8 @@ class Harness:
             self.hub.stop()
         if self.fake is not None:
             self.fake.stop()
+        if self.ableset_fake is not None:
+            self.ableset_fake.stop()
         for host in self.hosts.values():
             host.stop()
 
@@ -712,6 +777,12 @@ def parse_args(argv):
     # The Stream Deck (#52): a fake Companion on this port (0: any), or a real one.
     parser.add_argument("--fake-companion-port", type=int, default=None)
     parser.add_argument("--companion", default=None)
+    # AbleSet's name (#90): a fake AbleSet on this port (0: any) and [ableset].
+    parser.add_argument("--fake-ableset-port", type=int, default=None)
+    parser.add_argument("--ableset-name", default=None)
+    parser.add_argument("--ableset-cert", default=None)
+    parser.add_argument("--ableset-key", default=None)
+    parser.add_argument("--ableset-aud", default=None)
     return parser.parse_args(argv)
 
 
