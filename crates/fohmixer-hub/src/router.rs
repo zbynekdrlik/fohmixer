@@ -1118,6 +1118,7 @@ mod tests {
             client,
             outbox: Arc::clone(&outbox),
             peer: format!("10.0.0.{client}"),
+            lan: true,
         });
         outbox
     }
@@ -1304,6 +1305,7 @@ mod tests {
         router.handle(RouterMsg::Detach { client: 1 });
         assert_eq!(router.setters["band"].tracked(), 0);
         assert!(!router.peers.contains_key(&1));
+        assert!(!router.lan.contains_key(&1));
     }
 
     #[test]

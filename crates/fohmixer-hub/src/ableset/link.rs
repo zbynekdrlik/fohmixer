@@ -314,18 +314,23 @@ mod tests {
         };
         let page = Page::of(&cfg, &tls);
         assert_eq!(
-            page.msg(Some(true)),
+            page.msg(Some(true), true),
             ServerMsg::Ableset {
                 title: "Setlist".into(),
                 name: "ableset.example.org".into(),
                 parent: "foh.example.org".into(),
                 online: Some(true),
                 lan_port: 3000,
+                lan: true,
             }
         );
         assert!(matches!(
-            page.msg(None),
-            ServerMsg::Ableset { online: None, .. }
+            page.msg(None, false),
+            ServerMsg::Ableset {
+                online: None,
+                lan: false,
+                ..
+            }
         ));
         for (upstream, port) in [
             ("http://127.0.0.1:80", 80),

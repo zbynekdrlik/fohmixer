@@ -457,11 +457,13 @@ fn ablesets_message_round_trips_and_a_message_this_page_does_not_know_is_ignored
             parent: "foh.example.org".into(),
             online: Some(true),
             lan_port: 80,
+            lan: true,
         },
         json!({"type": "ableset", "title": "AbleSet", "name": "ableset.example.org",
-               "parent": "foh.example.org", "online": true, "lan_port": 80}),
+               "parent": "foh.example.org", "online": true, "lan_port": 80, "lan": true}),
     );
-    // Not known yet (#90 B3 review 4): before the hub's first read.
+    // Not known yet (#90 B3 review 4): before the hub's first read; a page
+    // that came through the tunnel (#90 PR C review M2).
     round_trip_server(
         ServerMsg::Ableset {
             title: "AbleSet".into(),
@@ -469,9 +471,24 @@ fn ablesets_message_round_trips_and_a_message_this_page_does_not_know_is_ignored
             parent: "foh.example.org".into(),
             online: None,
             lan_port: 3000,
+            lan: false,
         },
         json!({"type": "ableset", "title": "AbleSet", "name": "ableset.example.org",
-               "parent": "foh.example.org", "online": null, "lan_port": 3000}),
+               "parent": "foh.example.org", "online": null, "lan_port": 3000, "lan": false}),
+    );
+    // An older hub's message names no `lan`: the tunnel's, as before.
+    let older = json!({"type": "ableset", "title": "AbleSet", "name": "ableset.example.org",
+                       "parent": "foh.example.org", "online": true, "lan_port": 80});
+    assert_eq!(
+        serde_json::from_value::<ServerMsg>(older).unwrap(),
+        ServerMsg::Ableset {
+            title: "AbleSet".into(),
+            name: "ableset.example.org".into(),
+            parent: "foh.example.org".into(),
+            online: Some(true),
+            lan_port: 80,
+            lan: false,
+        }
     );
     // A newer hub's message (#90 B3): any type this page does not know,
     // with any fields, reads as `Unknown` (the page ignores it), never as

@@ -87,6 +87,21 @@ fn a_socket_through_a_proxy_is_from_the_internet() {
 }
 
 #[test]
+fn a_socket_is_the_lans_exactly_when_its_source_is() {
+    // #90 PR C review M2: the router tells AbleSet's page this, so a page
+    // on the LAN never shows AbleSet's internet sign-in.
+    let lan = opener(peer("10.0.0.5"), &HeaderMap::new());
+    assert!(lan.is_lan(), "{lan:?}");
+    assert!(opener(peer("127.0.0.1"), &HeaderMap::new()).is_lan());
+    let tunnel = headers(&[("cf-connecting-ip", "203.0.113.7")]);
+    let internet = opener(peer("127.0.0.1"), &tunnel);
+    assert!(!internet.is_lan(), "{internet:?}");
+    assert!(!opener(peer("198.51.100.7"), &HeaderMap::new()).is_lan());
+    assert!(!named("10.0.0.5", "-", "internet", "-").is_lan());
+    assert!(named("10.0.0.5", "-", "lan", "-").is_lan());
+}
+
+#[test]
 fn the_page_host_is_cleaned_and_no_origin_is_a_dash() {
     let host = |origin: Option<&str>| {
         let upgrade = origin.map_or_else(HeaderMap::new, |o| headers(&[("origin", o)]));

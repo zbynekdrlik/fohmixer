@@ -1,3 +1,5 @@
+import { randomBytes } from "node:crypto";
+import http from "node:http";
 import type { Locator, Page } from "@playwright/test";
 import { ABLESET_AUD, TUNNEL, accessJwt } from "./support/access";
 import { expect, test } from "./support/fixtures";
@@ -73,6 +75,99 @@ function ablesetEvents(since: number, ok: (events: any[]) => boolean, what: stri
   );
 }
 
+/**
+ * The hub's `ableset` message to a socket of its own opened with `headers`
+ * (a raw upgrade of the hub's /ws, as remote.spec.ts's `upgrade`): each page
+ * is told whether its own socket came over the LAN (#90 PR C review M2). A
+ * browser's socket cannot carry the tunnel's header (Playwright's extra
+ * headers never reach a WebSocket handshake: the hub logged `source="lan"`
+ * for the internet-path test's sockets), so the hub's side is read here.
+ */
+function toldOfAbleSet(headers: Record<string, string>): Promise<any> {
+  return new Promise(async (resolve, reject) => {
+    const url = new URL(BASE);
+    const request = http.request({
+      host: url.hostname,
+      port: url.port,
+      path: `/ws?token=${await token()}&proto=2`,
+      headers: {
+        Connection: "Upgrade",
+        Upgrade: "websocket",
+        "Sec-WebSocket-Version": "13",
+        "Sec-WebSocket-Key": randomBytes(16).toString("base64"),
+        ...headers,
+      },
+    });
+    request.on("upgrade", (_response, socket, head) => {
+      // The hub's frames are unmasked: a byte of FIN and opcode, the length
+      // (7 bits, or 126 / 127 and 2 / 8 bytes), the payload.
+      let data = Buffer.from(head);
+      const timer = setTimeout(() => {
+        socket.destroy();
+        reject(new Error("no ableset message within 5 s"));
+      }, 5_000);
+      const read = () => {
+        while (data.length >= 2) {
+          let length = data[1] & 0x7f;
+          let at = 2;
+          if (length === 126) {
+            if (data.length < 4) return;
+            length = data.readUInt16BE(2);
+            at = 4;
+          } else if (length === 127) {
+            if (data.length < 10) return;
+            length = Number(data.readBigUInt64BE(2));
+            at = 10;
+          }
+          if (data.length < at + length) return;
+          const text = (data[0] & 0x0f) === 1 ? data.subarray(at, at + length).toString("utf8") : "";
+          data = data.subarray(at + length);
+          if (text.includes('"type":"ableset"')) {
+            clearTimeout(timer);
+            socket.destroy();
+            resolve(JSON.parse(text));
+            return;
+          }
+        }
+      };
+      socket.on("data", (chunk: Buffer) => {
+        data = Buffer.concat([data, chunk]);
+        read();
+      });
+      read();
+    });
+    request.on("response", (response) => {
+      response.resume();
+      reject(new Error(`no upgrade: ${response.statusCode}`));
+    });
+    request.on("error", reject);
+    request.end();
+  });
+}
+
+/**
+ * The page's hub socket routed through, the hub's `ableset` message told as
+ * through the tunnel (`lan` false). The internet-path test's own socket
+ * cannot carry the tunnel's header (see `toldOfAbleSet`), so the hub tells
+ * it the LAN; this stands in for the tunnel on that one field, which
+ * `toldOfAbleSet` reads from the hub itself.
+ */
+async function asThroughTheTunnel(page: Page): Promise<() => number> {
+  let told = 0;
+  await page.routeWebSocket(HUB_SOCKET, (ws) => {
+    const server = ws.connectToServer();
+    server.onMessage((message) => {
+      if (typeof message === "string" && message.includes('"type":"ableset"')) {
+        told += 1;
+        ws.send(JSON.stringify({ ...JSON.parse(message), lan: false }));
+        return;
+      }
+      ws.send(message);
+    });
+  });
+  return () => told;
+}
+
 test.describe("AbleSet's tab (the LAN path, fohmixer's own https page)", () => {
   test.use({ baseURL: HTTPS });
 
@@ -93,6 +188,9 @@ test.describe("AbleSet's tab (the LAN path, fohmixer's own https page)", () => {
     const width = async (l: Locator) => (await l.boundingBox())!.width;
     expect(Math.abs((await width(tab)) - (await width(page.getByTestId("deck-tab"))))).toBeLessThan(1);
     expect(await width(tab)).toBeGreaterThan(1.5 * (await width(bar.getByTestId("tab").first())));
+    // The service worker controls the page when the probe runs (#90: its
+    // own fetch of the probe failed under its connect-src 'self').
+    await expect.poll(() => page.evaluate(() => !!navigator.serviceWorker.controller)).toBe(true);
 
     const area = await openAbleSet(page);
     await expect(area).toHaveAttribute("data-state", "frame");
@@ -202,6 +300,69 @@ test.describe("AbleSet's tab (the LAN path, fohmixer's own https page)", () => {
   });
 });
 
+test.describe("A probe that fails on the LAN", () => {
+  // The probe's image refused here, as a broken certificate or a missing LAN
+  // name would fail it: a failed image load in the console. The service
+  // worker is kept out so the route sees the page's own request (Playwright's
+  // own warning says so).
+  test.use({
+    baseURL: HTTPS,
+    serviceWorkers: "block",
+    allowedConsole: [[/^Failed to load resource: /, /^Service Worker registration blocked by Playwright$/], { scope: "test" }],
+  });
+
+  test("shows why, never the internet sign-in, and the mixer stays; a page's tab and back tries again", async ({
+    page,
+  }) => {
+    const since = Date.now();
+    const probe = (url: URL) => url.origin === ABLESET.origin && url.pathname === "/.fohmixer/probe";
+    let refused = 0;
+    await page.route(probe, (route) => {
+      refused += 1;
+      return route.abort();
+    });
+    await openSurface(page);
+    const area = await openAbleSet(page);
+    await expect(area).toHaveAttribute("data-state", "unreachable");
+    expect(refused).toBe(1);
+    const panel = page.getByTestId("ableset-panel");
+    await expect(panel).toHaveAttribute("data-panel", "unreachable");
+    await expect(panel.locator("h3")).toHaveText("AbleSet sa nedá načítať");
+    await expect(panel.locator(".ableset-text")).toHaveText(
+      "AbleSet sa cez sieť kostola nenačítal: jeho meno alebo certifikát nefunguje. Mixér funguje ďalej; fohmixer to skúsi znova, keď sa sem vrátiš.",
+    );
+    // Nothing to tap that would take the mixer away, and it stays.
+    await expect(panel.locator("button")).toHaveCount(0);
+    await expect(page.getByTestId("ableset-signin")).toHaveCount(0);
+    await expect(page.getByTestId("ableset-frame")).toHaveCount(0);
+    await expect(page.getByTestId("ableset-tab")).toHaveAttribute("data-offline", "false");
+    expect(page.url()).toBe(`${HTTPS}/`);
+    // Back from a page's tab, the probe passes and AbleSet loads.
+    await page.unroute(probe);
+    await leaveForTheMixer(page);
+    await openAbleSet(page);
+    await expect(page.getByTestId("ableset")).toHaveAttribute("data-state", "frame");
+    await ablesetLoaded(page);
+    const events = await ablesetEvents(
+      since,
+      (e) => e.filter((x) => x.what === "probe").length >= 2,
+      "both probes' answers",
+    );
+    const steps = events.map((e) =>
+      e.ev === "ableset_view" ? `view ${e.on}` : e.what === "probe" ? `probe ${e.ok}` : e.what === "panel" ? `panel ${e.panel}` : e.what,
+    );
+    expect(steps.slice(0, 7)).toEqual([
+      "view true",
+      "panel checking",
+      "probe false",
+      "panel unreachable",
+      "view false",
+      "view true",
+      "panel checking",
+    ]);
+  });
+});
+
 test.describe("AbleSet down while its tab is open", () => {
   // AbleSet stopped closes its socket in the frame under the page (the test
   // stops it on purpose): WebKit reports the reset of that socket.
@@ -252,10 +413,18 @@ test.describe("AbleSet's tab on the internet path", () => {
     allowedConsole: [[/^Failed to load resource: /, /^Service Worker registration blocked by Playwright$/], { scope: "test" }],
   });
 
+  test("the hub tells a page through the tunnel it is not on the LAN, and a LAN page it is", async () => {
+    expect((await toldOfAbleSet({})).lan).toBe(true);
+    const tunnel = await toldOfAbleSet({ ...TUNNEL, Cookie: `CF_Authorization=${accessJwt()}` });
+    expect(tunnel).toMatchObject({ type: "ableset", lan: false, name: ABLESET.hostname });
+  });
+
   test("needs AbleSet's own sign-in once, which comes back to the open tab", async ({ page, context }) => {
+    const told = await asThroughTheTunnel(page);
     await context.setExtraHTTPHeaders(TUNNEL);
     await context.addCookies([{ name: "CF_Authorization", value: accessJwt(), url: HTTPS }]);
     await openSurface(page);
+    await expect.poll(told).toBeGreaterThan(0);
     const area = await openAbleSet(page);
     await expect(area).toHaveAttribute("data-state", "signin");
     const panel = page.getByTestId("ableset-panel");
@@ -314,6 +483,9 @@ test.describe("AbleSet's tab on the emergency address", () => {
     const own = await opened;
     await expect(own.locator("body")).toHaveAttribute("data-app", "loaded");
     expect(own.url()).toBe(`http://127.0.0.1:${port}/`);
+    // Without an opener (#90 PR C review L4): AbleSet's page cannot reach
+    // the mixer's tab.
+    expect(await own.evaluate(() => window.opener === null)).toBe(true);
     await own.close();
   });
 });
@@ -337,5 +509,16 @@ test.describe("A hub that does not tell of AbleSet", () => {
     await expect.poll(() => held).toBeGreaterThan(0);
     await expect(page.getByTestId("deck-tab")).toBeVisible();
     await expect(page.getByTestId("ableset-tab")).toHaveCount(0);
+    // Without it the bar is as before AbleSet (#90 PR C review L7): the
+    // deck's tab one cell as wide as a page's, never a row of its own.
+    const bar = page.locator('[data-testid="tabbar"][data-level="0"]');
+    const deck = (await page.getByTestId("deck-tab").boundingBox())!;
+    const first = (await bar.getByTestId("tab").first().boundingBox())!;
+    expect(Math.abs(deck.width - first.width)).toBeLessThan(1);
+    const boxes = await bar.locator(":scope > button").evaluateAll((tabs) =>
+      tabs.map((t) => Math.round(t.getBoundingClientRect().top)),
+    );
+    const columns = await bar.evaluate((b) => getComputedStyle(b).gridTemplateColumns.split(" ").length);
+    expect(new Set(boxes).size).toBe(Math.ceil(boxes.length / columns));
   });
 });

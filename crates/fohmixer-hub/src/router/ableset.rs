@@ -77,12 +77,15 @@ mod tests {
         )
     }
 
-    fn attach(router: &mut Router, client: u64) -> Arc<Outbox> {
+    /// A client whose socket came over the LAN (`lan`) or through the
+    /// tunnel.
+    fn attach(router: &mut Router, client: u64, lan: bool) -> Arc<Outbox> {
         let outbox = Arc::new(Outbox::new());
         router.handle(RouterMsg::Attach {
             client,
             outbox: Arc::clone(&outbox),
             peer: format!("10.0.0.{client}"),
+            lan,
         });
         outbox
     }
@@ -100,19 +103,52 @@ mod tests {
     fn every_page_is_told_of_ablesets_page_at_attach_and_at_each_link_change() {
         let dir = tempfile::tempdir().unwrap();
         let mut router = bare(dir.path()).with_ableset(page());
-        let first = attach(&mut router, 1);
-        assert_eq!(told(&first), [page().msg(None)], "not known before a read");
+        let first = attach(&mut router, 1, true);
+        assert_eq!(
+            told(&first),
+            [page().msg(None, true)],
+            "not known before a read"
+        );
         assert!(router.handle(RouterMsg::AbleSetLink { online: true }));
-        assert_eq!(told(&first), [page().msg(Some(true))]);
-        let second = attach(&mut router, 2);
-        assert_eq!(told(&second), [page().msg(Some(true))], "the link as it is");
+        assert_eq!(told(&first), [page().msg(Some(true), true)]);
+        let second = attach(&mut router, 2, true);
+        assert_eq!(
+            told(&second),
+            [page().msg(Some(true), true)],
+            "the link as it is"
+        );
         assert!(router.handle(RouterMsg::AbleSetLink { online: false }));
-        assert_eq!(told(&first), [page().msg(Some(false))]);
-        assert_eq!(told(&second), [page().msg(Some(false))]);
+        assert_eq!(told(&first), [page().msg(Some(false), true)]);
+        assert_eq!(told(&second), [page().msg(Some(false), true)]);
         // A hub without [ableset] tells no page of it.
         let mut without = bare(dir.path());
-        let outbox = attach(&mut without, 3);
+        let outbox = attach(&mut without, 3, true);
         assert!(without.handle(RouterMsg::AbleSetLink { online: true }));
         assert!(told(&outbox).is_empty());
+    }
+
+    #[test]
+    fn each_page_is_told_whether_its_own_socket_came_over_the_lan() {
+        // #90 PR C review M2: a failed probe is AbleSet's sign-in only for a
+        // page that came through the tunnel; the page cannot tell itself.
+        let dir = tempfile::tempdir().unwrap();
+        let mut router = bare(dir.path()).with_ableset(page());
+        let lan = attach(&mut router, 1, true);
+        let tunnel = attach(&mut router, 2, false);
+        assert_eq!(told(&lan), [page().msg(None, true)]);
+        assert_eq!(told(&tunnel), [page().msg(None, false)]);
+        // Every link change tells each page its own again.
+        assert!(router.handle(RouterMsg::AbleSetLink { online: true }));
+        assert_eq!(told(&lan), [page().msg(Some(true), true)]);
+        assert_eq!(told(&tunnel), [page().msg(Some(true), false)]);
+        // A page gone takes its own with it; the next one with its number
+        // is told its own.
+        router.handle(RouterMsg::Detach { client: 2 });
+        assert!(!router.lan.contains_key(&2));
+        let again = attach(&mut router, 2, true);
+        assert_eq!(told(&again), [page().msg(Some(true), true)]);
+        assert!(router.handle(RouterMsg::AbleSetLink { online: false }));
+        assert_eq!(told(&again), [page().msg(Some(false), true)]);
+        assert_eq!(told(&lan), [page().msg(Some(false), true)]);
     }
 }

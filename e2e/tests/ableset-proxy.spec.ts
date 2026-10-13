@@ -93,6 +93,8 @@ test.describe("AbleSet's name over HTTPS (the LAN path)", () => {
       parent: PARENT.hostname,
       online: true,
       lan_port: port,
+      // The test's browser socket comes over the LAN (#90 PR C review M2).
+      lan: true,
     });
     await page.goto(`${ABLESET.origin}/`);
     await expect(page.locator("body")).toHaveAttribute("data-ws", "echo");
