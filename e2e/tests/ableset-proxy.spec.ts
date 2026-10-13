@@ -112,11 +112,13 @@ test.describe("AbleSet's name over HTTPS (the LAN path)", () => {
 });
 
 test.describe("Another site's request on AbleSet's name", () => {
-  // The refused image's 403: the test provokes it.
+  // WebKit's console line for the refused image's 403 (the test provokes it;
+  // Chromium's ORB drops the JSON answer to an image without one).
   test.use({ allowedConsole: [/^Failed to load resource: the server responded with a status of 403/] });
 
-  test("is refused before AbleSet, while the same image from fohmixer's own name loads", async ({ page }) => {
+  test("is refused by the hub before AbleSet, while the same image from fohmixer's own name loads", async ({ page }) => {
     await fakeAbleSet.clear();
+    const since = Date.now();
     const load = (src: string) =>
       page.evaluate(
         (url) =>
@@ -131,18 +133,20 @@ test.describe("Another site's request on AbleSet's name", () => {
     // Another site: the hub's own plain listener by address (fohmixer's page
     // policy allows AbleSet's images, so only the hub can refuse it).
     await page.goto(`${BASE}/api/version`);
-    const cross = `${ABLESET.origin}/static/pixel.gif?from=cross-site`;
-    const [refused, crossLoad] = await Promise.all([page.waitForResponse(cross), load(cross)]);
-    expect(crossLoad).toBe("error");
-    expect(refused.status()).toBe(403);
-    const why = await refused.json();
-    expect(why.code).toBe("ACCESS_DENIED");
-    expect(why.message).toMatch(/^Refused \(cross_site\)/);
+    expect(await load(`${ABLESET.origin}/static/pixel.gif?from=cross-site`)).toBe("error");
+    // The hub's own record of the refusal: a browser may hide the 403 itself
+    // (Chromium's ORB blocks a JSON answer to an image before the page sees it).
+    const refused = await until(
+      async () =>
+        (await hubEvents()).filter((r) => r.ev === "ableset_proxy" && r.ts >= since && r.status === 403),
+      (records) => records.length > 0,
+      "the hub's record of the refused image",
+    );
+    expect(refused[0]).toMatchObject({ method: "GET", path: "/static/pixel.gif" });
+    expect(refused[0].why).toBe('a cross-site request: mode "no-cors", dest "image"');
     // The same image from fohmixer's own name (the same site) reaches AbleSet.
     await page.goto(`${HTTPS}/api/version`);
-    const same = `${ABLESET.origin}/static/pixel.gif?from=same-site`;
-    const [served, sameLoad] = await Promise.all([page.waitForResponse(same), load(same)]);
-    expect([sameLoad, served.status()]).toEqual(["load", 200]);
+    expect(await load(`${ABLESET.origin}/static/pixel.gif?from=same-site`)).toBe("load");
     const paths = pageHits((await fakeAbleSet.state()).hits).map((h) => h.path);
     expect(paths).toEqual(["/static/pixel.gif?from=same-site"]);
   });
@@ -158,7 +162,6 @@ test.describe("AbleSet down", () => {
   }) => {
     // The link reads AbleSet's index every 5 s: down after two failed reads
     // (up to ~10 s), up at the next good one; the hub's page tries again every 5 s.
-    test.setTimeout(60_000);
     const bearer = await token();
     const since = Date.now();
     await fakeAbleSet.down();
@@ -166,15 +169,15 @@ test.describe("AbleSet down", () => {
       const answer = await page.goto(`${ABLESET.origin}/`);
       expect(answer?.status()).toBe(502);
       await expect(page.locator("body")).toHaveText("AbleSet na PC neodpovedá. Skúšam znova o 5 s.");
-      const down = await until(() => ablesetStatus(bearer), (s) => s.online === false, "AbleSet's link down", 20_000);
+      const down = await until(() => ablesetStatus(bearer), (s) => s.online === false, "AbleSet's link down", 15_000);
       expect(down.last_error).toContain("AbleSet does not answer");
     } finally {
       await fakeAbleSet.up();
     }
     const body = page.locator("body");
-    await expect(body).toHaveAttribute("data-app", "loaded", { timeout: 15_000 });
+    await expect(body).toHaveAttribute("data-app", "loaded", { timeout: 10_000 });
     await expect(body).toHaveAttribute("data-ws", "echo");
-    await until(() => ablesetStatus(bearer), (s) => s.online === true, "AbleSet's link up", 15_000);
+    await until(() => ablesetStatus(bearer), (s) => s.online === true, "AbleSet's link up", 10_000);
     const links = (await hubEvents()).filter((r) => r.ev === "ableset_link" && r.ts >= since);
     expect(links.map((r) => r.up)).toEqual([false, true]);
   });
