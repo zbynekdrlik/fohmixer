@@ -241,8 +241,11 @@ test.describe("AbleSet down while its tab is open", () => {
 test.describe("AbleSet's tab on the internet path", () => {
   // The probe refused (no AbleSet sign-in yet) is a failed image load in the
   // console: the test provokes it. The service worker is kept out
-  // (Playwright's own warning says so): the probe must leave the page with
-  // the test's tunnel header, which a worker's own fetch need not carry.
+  // (Playwright's own warning says so): fohmixer's own requests then leave
+  // the page itself with the test's tunnel header, which the worker's fetch
+  // of them may not carry. The probe never passes through the worker (sw.js
+  // leaves another origin's requests to the page); the LAN tests above run
+  // with the worker.
   test.use({
     baseURL: HTTPS,
     serviceWorkers: "block",
