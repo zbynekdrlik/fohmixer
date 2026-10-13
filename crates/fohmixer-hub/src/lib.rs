@@ -752,9 +752,9 @@ fn start_https(hub: &Hub, at: SocketAddr, name: &str, retry: Duration) {
     }
 }
 
-/// Binds the HTTPS listener on `at` and starts it: the stored certificate
-/// served when there is one (AbleSet's too, beside it, #90), the ACME
-/// keeper started with `[acme]`.
+/// Binds the HTTPS listener on `at` and starts it: the stored certificates
+/// served when there are (the `[tls]` name's first, then AbleSet's, #90),
+/// an ACME keeper per name started with `[acme]`, one turn between them.
 fn bind_https(hub: &Hub, at: SocketAddr, name: &str) -> Result<(), String> {
     // The ACME client's HTTP client first: its failure leaves nothing bound.
     let acme_http = hub
@@ -772,18 +772,26 @@ fn bind_https(hub: &Hub, at: SocketAddr, name: &str) -> Result<(), String> {
     let _ = hub.https.set(Arc::clone(&https));
     hub.remote.set_bind_error(None);
     tracing::info!(addr = %https.addr(), name, "HTTPS listener bound");
+    let ableset = hub
+        .config
+        .ableset
+        .iter()
+        .map(|a| (Slot::AbleSet, a.name.as_str()));
+    let names: Vec<(Slot, &str)> = std::iter::once((Slot::Primary, name))
+        .chain(ableset)
+        .collect();
     let data_dir = &hub.config.data_dir;
-    remote::serve_stored(&https, &hub.remote, data_dir, Slot::Primary, name);
-    if let Some(ableset) = &hub.config.ableset {
-        remote::serve_stored(&https, &hub.remote, data_dir, Slot::AbleSet, &ableset.name);
+    for &(slot, name) in &names {
+        remote::serve_stored(&https, &hub.remote, data_dir, slot, name);
     }
     if let (Some(cfg), Some(http)) = (&hub.config.acme, acme_http) {
-        let acme = acme::Acme::new(name, cfg, &hub.config.data_dir, http);
-        hub.add_task(tokio::spawn(acme::keep(
-            acme,
-            Arc::clone(&https),
-            Arc::clone(&hub.remote),
-        )));
+        let turn: Arc<tokio::sync::Mutex<()>> = Arc::default();
+        for (slot, name) in names {
+            let mut acme = acme::Acme::new(slot, name, cfg, data_dir, http.clone());
+            acme.turn = Arc::clone(&turn);
+            let keeper = acme::keep(acme, Arc::clone(&https), Arc::clone(&hub.remote));
+            hub.add_task(tokio::spawn(keeper));
+        }
     }
     Ok(())
 }
@@ -888,6 +896,63 @@ mod tests {
         let status = hub.remote.snapshot(&config, Some(https), 0).https.unwrap();
         assert_eq!((status.bound, status.bind_error), (true, None));
         hub.stop();
+    }
+
+    #[tokio::test]
+    async fn with_acme_each_configured_name_gets_its_own_keeper() {
+        let ableset_cfg = config::AbleSetCfg {
+            name: "ableset.example.org".into(),
+        };
+        for ableset in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut config = Config::defaults(dir.path());
+            config.instances.clear();
+            config.tls = Some(config::TlsCfg {
+                name: "foh.example.org".into(),
+                port: 0,
+                redirect_http: true,
+            });
+            // No Cloudflare token: each keeper's attempt fails at once,
+            // asking nothing of anyone, and shows in its own name's status.
+            config.acme = Some(config::AcmeCfg {
+                email: None,
+                directory: config::LETS_ENCRYPT.into(),
+                propagation_s: 0,
+            });
+            config.ableset = if ableset {
+                Some(ableset_cfg.clone())
+            } else {
+                None
+            };
+            let hub = Hub::start(config.clone()).unwrap();
+            let at = "127.0.0.1:0".parse().unwrap();
+            start_https(&hub, at, "foh.example.org", Duration::from_millis(50));
+            // Read as if [ableset] were set, so a keeper of AbleSet's name
+            // that should not run would show.
+            let mut read = config.clone();
+            read.ableset = Some(ableset_cfg.clone());
+            let attempts = || {
+                let tls = hub.remote.snapshot(&read, None, 0).https.unwrap();
+                let cert = hub.remote.ableset(&read, None, 0).unwrap().cert;
+                (
+                    (tls.acme_error, tls.acme_failures),
+                    (cert.acme_error, cert.acme_failures),
+                )
+            };
+            let failed = (Some(acme::NO_TOKEN.to_string()), 1);
+            for _ in 0..200 {
+                if attempts().0 == failed && (!ableset || attempts().1 == failed) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+            // A keeper of AbleSet's name would have had its turn by now.
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let none = (None, 0);
+            let expected = (failed.clone(), if ableset { failed } else { none });
+            assert_eq!(attempts(), expected, "[ableset]: {ableset}");
+            hub.stop();
+        }
     }
 
     #[test]

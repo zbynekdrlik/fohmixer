@@ -6,8 +6,8 @@
 //! `<data>/tls/cert.pem` holds the chain (the certificate first) and
 //! `<data>/tls/key.pem` its private key (owner-only on Unix; on the PC the
 //! data folder's protected DACL guards it); AbleSet's pair is the same in
-//! `<data>/tls/ableset/`. The ACME client writes the `[tls]` name's
-//! (`acme.rs`); a certificate put there by hand is served the same way.
+//! `<data>/tls/ableset/`. The ACME client writes both (`acme.rs`); a
+//! certificate put there by hand is served the same way.
 
 use std::io;
 use std::path::{Path, PathBuf};

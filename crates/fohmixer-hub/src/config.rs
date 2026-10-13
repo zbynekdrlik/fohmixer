@@ -28,8 +28,8 @@
 //!
 //! # AbleSet's own page behind the hub (#90), optional: its name, served on
 //! # the [tls] listener with a certificate of its own (SNI, from
-//! # <data>/tls/ableset/); one label beside or under the [tls] name (the
-//! # same site).
+//! # <data>/tls/ableset/; [acme] gets it too); one label beside or under
+//! # the [tls] name (the same site).
 //! [ableset]
 //! name = "ableset.example.org"
 //!

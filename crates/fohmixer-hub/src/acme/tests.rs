@@ -18,6 +18,7 @@ use crate::tls::test_certs::{TestCa, handshake};
 use crate::tls::{CertInfo, CertStore};
 
 const NAME: &str = "foh.example.org";
+const ABLESET: &str = "ableset.example.org";
 const DAY: i64 = 86_400;
 
 fn cf_secret() -> String {
@@ -37,7 +38,7 @@ async fn setup(dir: &std::path::Path, set_token: bool) -> (Acme, CfApi, SharedCa
         directory,
         propagation_s: 0,
     };
-    let mut acme = Acme::new(NAME, &cfg, dir, HttpClient::new().unwrap());
+    let mut acme = Acme::new(Slot::Primary, NAME, &cfg, dir, HttpClient::new().unwrap());
     assert_eq!(acme.cloudflare_api, crate::cloudflare::API);
     acme.cloudflare_api = cf_base;
     acme.retry = RetryPolicy::new()
@@ -236,7 +237,13 @@ fn an_https_directory_uses_the_verified_client() {
     };
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let _inside = runtime.enter();
-    let acme = Acme::new(NAME, &cfg, dir.path(), HttpClient::new().unwrap());
+    let acme = Acme::new(
+        Slot::Primary,
+        NAME,
+        &cfg,
+        dir.path(),
+        HttpClient::new().unwrap(),
+    );
     assert!(acme.builder().is_ok());
 }
 
@@ -325,6 +332,297 @@ async fn a_failed_attempt_is_counted_and_keeps_the_served_certificate() {
     assert!(https.stopped(Duration::from_secs(5)).await);
 }
 
+/// A client of AbleSet's `name` (#90) next to `acme`: the same doubles and
+/// the same turn.
+fn ableset_client(acme: &Acme, name: &str) -> Acme {
+    let mut ableset = Acme::new(
+        Slot::AbleSet,
+        name,
+        &acme.cfg,
+        &acme.data_dir,
+        acme.http.clone(),
+    );
+    ableset.cloudflare_api = acme.cloudflare_api.clone();
+    ableset.retry = acme.retry;
+    ableset.turn = Arc::clone(&acme.turn);
+    ableset
+}
+
+/// The config of both names, with `[acme]` (#90).
+fn both_names(dir: &std::path::Path) -> crate::config::Config {
+    crate::config::Config::parse(
+        "[tls]\nname = \"foh.example.org\"\n[acme]\n[ableset]\nname = \"ableset.example.org\"\n",
+        dir,
+    )
+    .unwrap()
+}
+
+/// The `[tls]` name's certificate from a CA of its own, put there by hand
+/// with 10 days left (its renewal is due), stored and served: that CA, the
+/// pair, and the time it was made at.
+fn tls_name_by_hand(
+    dir: &std::path::Path,
+    https: &Https,
+    state: &RemoteState,
+) -> (TestCa, Pem, i64) {
+    let own_ca = TestCa::new();
+    let now = crate::auth::now_secs() as i64;
+    let (chain, key) = own_ca.leaf(&[NAME], now - 80 * DAY, now + 10 * DAY);
+    let pem = crate::tls::checked(chain, key, NAME).unwrap();
+    CertStore::new(dir).save(&pem).unwrap();
+    crate::remote::serve(https, state, Slot::Primary, NAME, &pem).unwrap();
+    (own_ca, pem, now)
+}
+
+/// How an order of AbleSet's name fails (#90).
+#[derive(Debug, Clone, Copy)]
+enum Fault {
+    /// The CA finds no DNS-01 record with the key authorization.
+    Dns01,
+    /// The CA refuses the order: Let's Encrypt's rate limit.
+    RateLimit,
+    /// The Cloudflare token sees no zone of the name.
+    WrongZone,
+}
+
+#[tokio::test]
+async fn a_failing_ableset_order_leaves_the_tls_names_certificate_and_its_renewal_alone() {
+    for fault in [Fault::Dns01, Fault::RateLimit, Fault::WrongZone] {
+        let dir = tempfile::tempdir().unwrap();
+        let (acme, cf_api, ca) = setup(dir.path(), true).await;
+        let https = Https::bind("127.0.0.1:0".parse().unwrap(), axum::Router::new()).unwrap();
+        let state = RemoteState::default();
+        let config = both_names(dir.path());
+        let (own_ca, old, now) = tls_name_by_hand(dir.path(), &https, &state);
+        let primary_store = CertStore::new(dir.path());
+        // AbleSet's order fails.
+        let (name, prefix, reason) = match fault {
+            Fault::Dns01 => {
+                ca.lock().unwrap().refused.insert(ABLESET.into());
+                (
+                    ABLESET,
+                    "ACME challenge: ",
+                    "no TXT record with the key authorization",
+                )
+            }
+            Fault::RateLimit => {
+                ca.lock().unwrap().rate_limited.insert(ABLESET.into());
+                (ABLESET, "ACME order: ", "rateLimited")
+            }
+            Fault::WrongZone => (
+                "ableset.elsewhere.org",
+                "no Cloudflare zone for ableset.elsewhere.org",
+                "Zone > DNS > Edit",
+            ),
+        };
+        let ableset_store = CertStore::slot(dir.path(), Slot::AbleSet);
+        let ableset = ableset_client(&acme, name);
+        assert_eq!(
+            ableset.renew(&ableset_store, &https, &state).await,
+            Err(FIRST_RETRY),
+            "{fault:?}"
+        );
+        let cert = state.ableset(&config, Some(&https), now).unwrap().cert;
+        let why = cert.acme_error.clone().unwrap();
+        assert!(
+            why.starts_with(prefix) && why.contains(reason),
+            "{fault:?}: {why}"
+        );
+        assert_eq!(
+            (cert.acme_failures, cert.serving, cert.last_issued),
+            (1, false, None),
+            "{fault:?}"
+        );
+        assert!(!ableset_store.cert_path().exists(), "{fault:?}");
+        assert!(
+            cf_api.lock().unwrap().records.is_empty(),
+            "{fault:?}: no record stays"
+        );
+        // The [tls] name's certificate: the same one stored and served, its
+        // status untouched.
+        assert_eq!(
+            primary_store.load(NAME).unwrap().unwrap(),
+            Ok(old.clone()),
+            "{fault:?}"
+        );
+        let served = handshake(https.addr(), NAME, &own_ca.pem).await.unwrap();
+        assert_eq!(served, old.info, "{fault:?}");
+        let tls = state.snapshot(&config, Some(&https), now).https.unwrap();
+        assert_eq!(
+            (
+                tls.not_after,
+                tls.cert_error,
+                tls.acme_error,
+                tls.acme_failures,
+                tls.last_issued
+            ),
+            (Some(old.info.not_after), None, None, 0, None),
+            "{fault:?}"
+        );
+        // Its renewal, due, goes as it would without AbleSet's name.
+        assert_eq!(
+            acme.renew(&primary_store, &https, &state).await,
+            Ok(()),
+            "{fault:?}"
+        );
+        let ca_pem = ca.lock().unwrap().test_ca.pem.clone();
+        let served = handshake(https.addr(), NAME, &ca_pem).await.unwrap();
+        assert!(served.not_after > now + 30 * DAY, "{fault:?}: {served:?}");
+        let stored = primary_store.load(NAME).unwrap().unwrap().unwrap();
+        assert_eq!(stored.info, served, "{fault:?}");
+        let tls = state.snapshot(&config, Some(&https), now).https.unwrap();
+        assert_eq!((tls.acme_error, tls.acme_failures), (None, 0), "{fault:?}");
+        assert!(tls.last_issued.is_some(), "{fault:?}");
+        // AbleSet's failure stays its own.
+        let cert = state.ableset(&config, Some(&https), now).unwrap().cert;
+        assert_eq!(
+            (cert.acme_error, cert.acme_failures, cert.serving),
+            (Some(why), 1, false),
+            "{fault:?}"
+        );
+        https.stop(Duration::from_millis(10));
+        assert!(https.stopped(Duration::from_secs(5)).await);
+    }
+}
+
+#[tokio::test]
+async fn a_failing_tls_name_order_leaves_ablesets_certificate_and_status_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let (acme, _cf, ca) = setup(dir.path(), true).await;
+    let https = Https::bind("127.0.0.1:0".parse().unwrap(), axum::Router::new()).unwrap();
+    let state = RemoteState::default();
+    let config = both_names(dir.path());
+    let (own_ca, old, now) = tls_name_by_hand(dir.path(), &https, &state);
+    let primary_store = CertStore::new(dir.path());
+    // AbleSet's certificate: the CA's, in its own store, served beside the
+    // [tls] name's, which stays as it was.
+    let ableset_store = CertStore::slot(dir.path(), Slot::AbleSet);
+    let ableset = ableset_client(&acme, ABLESET);
+    assert_eq!(ableset.renew(&ableset_store, &https, &state).await, Ok(()));
+    assert!(matches!(
+        crate::remote::stored(&ableset_store, ABLESET),
+        Stored::Serve(_)
+    ));
+    let ca_pem = ca.lock().unwrap().test_ca.pem.clone();
+    let issued = handshake(https.addr(), ABLESET, &ca_pem).await.unwrap();
+    assert_eq!(issued.names, vec![ABLESET.to_string()]);
+    assert_eq!(primary_store.load(NAME).unwrap().unwrap(), Ok(old.clone()));
+    let tls = state.snapshot(&config, Some(&https), now).https.unwrap();
+    assert_eq!(tls.last_issued, None);
+    // The [tls] name's order is refused (the rate limit): its own failure,
+    // its old certificate still served.
+    ca.lock().unwrap().rate_limited.insert(NAME.into());
+    assert_eq!(
+        acme.renew(&primary_store, &https, &state).await,
+        Err(FIRST_RETRY)
+    );
+    let tls = state.snapshot(&config, Some(&https), now).https.unwrap();
+    let why = tls.acme_error.unwrap();
+    assert!(
+        why.starts_with("ACME order: ") && why.contains("rateLimited"),
+        "{why}"
+    );
+    assert_eq!(tls.acme_failures, 1);
+    let served = handshake(https.addr(), NAME, &own_ca.pem).await.unwrap();
+    assert_eq!(served, old.info);
+    // AbleSet's certificate and status are as its success left them.
+    let cert = state.ableset(&config, Some(&https), now).unwrap().cert;
+    assert_eq!(
+        (cert.serving, cert.acme_error, cert.acme_failures),
+        (true, None, 0)
+    );
+    assert!(cert.last_issued.is_some());
+    let served = handshake(https.addr(), ABLESET, &ca_pem).await.unwrap();
+    assert_eq!(served, issued);
+    https.stop(Duration::from_millis(10));
+    assert!(https.stopped(Duration::from_secs(5)).await);
+}
+
+#[tokio::test]
+async fn an_attempt_that_never_ends_is_cut_off_and_frees_the_turn() {
+    let dir = tempfile::tempdir().unwrap();
+    let (acme, _cf, ca) = setup(dir.path(), true).await;
+    let https = Arc::new(Https::bind("127.0.0.1:0".parse().unwrap(), axum::Router::new()).unwrap());
+    let state = Arc::new(RemoteState::default());
+    // AbleSet's CA takes the connection and never answers.
+    let silent = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut ableset = ableset_client(&acme, ABLESET);
+    ableset.cfg.directory = format!("http://{}/directory", silent.local_addr().unwrap());
+    ableset.attempt_limit = Duration::from_millis(300);
+    let hung = {
+        let (https, state) = (Arc::clone(&https), Arc::clone(&state));
+        let store = CertStore::slot(dir.path(), Slot::AbleSet);
+        tokio::spawn(async move { ableset.renew(&store, &https, &state).await })
+    };
+    for _ in 0..500 {
+        if acme.turn.try_lock().is_err() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert!(
+        acme.turn.try_lock().is_err(),
+        "AbleSet's attempt holds the turn"
+    );
+    // The [tls] name's renewal waits for the turn until AbleSet's attempt is
+    // cut off, then gets its certificate.
+    let primary_store = CertStore::new(dir.path());
+    assert_eq!(acme.renew(&primary_store, &https, &state).await, Ok(()));
+    assert_eq!(hung.await.unwrap(), Err(FIRST_RETRY));
+    let ca_pem = ca.lock().unwrap().test_ca.pem.clone();
+    let served = handshake(https.addr(), NAME, &ca_pem).await.unwrap();
+    assert_eq!(served.names, vec![NAME.to_string()]);
+    let config = both_names(dir.path());
+    let cert = state.ableset(&config, Some(&https), 0).unwrap().cert;
+    assert_eq!(
+        cert.acme_error.as_deref(),
+        Some("the attempt did not end within 300ms")
+    );
+    assert_eq!((cert.acme_failures, cert.serving), (1, false));
+    let tls = state.snapshot(&config, Some(&https), 0).https.unwrap();
+    assert_eq!((tls.acme_error, tls.acme_failures), (None, 0));
+    drop(silent);
+    https.stop(Duration::from_millis(10));
+    assert!(https.stopped(Duration::from_secs(5)).await);
+}
+
+#[tokio::test]
+async fn two_keepers_on_a_fresh_folder_share_one_account_and_keep_their_own_stores() {
+    let dir = tempfile::tempdir().unwrap();
+    let (acme, cf_api, ca) = setup(dir.path(), true).await;
+    let ableset = ableset_client(&acme, ABLESET);
+    let https = Arc::new(Https::bind("127.0.0.1:0".parse().unwrap(), axum::Router::new()).unwrap());
+    let state = Arc::new(RemoteState::default());
+    let tasks = [acme, ableset]
+        .map(|client| tokio::spawn(keep(client, Arc::clone(&https), Arc::clone(&state))));
+    for _ in 0..500 {
+        if https.serves(Slot::AbleSet) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    for task in tasks {
+        task.abort();
+    }
+    assert!(https.serves(Slot::AbleSet), "both names served");
+    // The turn: the second keeper waited for the first, whose account it
+    // then used.
+    assert_eq!(count(&ca, "POST /new-account"), 1);
+    assert_eq!(count(&ca, "POST /new-order"), 2);
+    assert!(cf_api.lock().unwrap().records.is_empty(), "no record stays");
+    let ca_pem = ca.lock().unwrap().test_ca.pem.clone();
+    for (slot, name) in [(Slot::Primary, NAME), (Slot::AbleSet, ABLESET)] {
+        match crate::remote::stored(&CertStore::slot(dir.path(), slot), name) {
+            Stored::Serve(pem) => assert_eq!(pem.info.names, vec![name.to_string()]),
+            other => panic!("{name}: {other:?}"),
+        }
+        let served = handshake(https.addr(), name, &ca_pem).await.unwrap();
+        assert_eq!(served.names, vec![name.to_string()]);
+    }
+    https.stop(Duration::from_millis(10));
+    assert!(https.stopped(Duration::from_secs(5)).await);
+}
+
 #[test]
 fn failed_attempts_are_retried_after_a_minute_doubling_to_six_hours() {
     let min = |m: u64| Duration::from_secs(60 * m);
@@ -338,6 +636,20 @@ fn failed_attempts_are_retried_after_a_minute_doubling_to_six_hours() {
     assert_eq!(FIRST_RETRY, min(1));
     assert_eq!(MAX_RETRY, min(360));
     assert_eq!(CHECK_EVERY, min(720));
+}
+
+#[test]
+fn an_attempt_is_cut_off_far_beyond_a_slow_one_that_works() {
+    assert_eq!(CA_CHECK, Duration::from_secs(120));
+    assert_eq!(ATTEMPT_LIMIT, Duration::from_secs(1800));
+    let slowest = Duration::from_secs(crate::config::MAX_PROPAGATION_S)
+        + 2 * CA_CHECK
+        + 10 * crate::http_client::TIMEOUT;
+    assert!(ATTEMPT_LIMIT > slowest, "{slowest:?}");
+    assert_eq!(
+        cut_off(ATTEMPT_LIMIT),
+        "the attempt did not end within 1800s"
+    );
 }
 
 #[test]
