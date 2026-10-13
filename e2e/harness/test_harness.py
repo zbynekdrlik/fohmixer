@@ -717,5 +717,124 @@ class FakeAbleSetRoutes(unittest.TestCase):
         )
 
 
+# A page and its hub in a process of their own (#43): an echo on a port it
+# prints first, then, given the link's port and a time in seconds on its
+# stdin, one byte at a time through the link to the echo and back, each
+# after the last one came back, every round trip (ms) printed as one JSON
+# line at the end. Out of the test's process, so the harness's work in it
+# delays neither the echo nor the clock.
+PAGE_AND_HUB = r"""
+import json, socket, sys, threading, time
+
+echo = socket.create_server(("127.0.0.1", 0))
+print(echo.getsockname()[1], flush=True)
+
+
+def serve():
+    conn, _ = echo.accept()
+    conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+    while True:
+        data = conn.recv(65536)
+        if not data:
+            return
+        conn.sendall(data)
+
+
+threading.Thread(target=serve, daemon=True).start()
+port, seconds = sys.stdin.readline().split()
+link = socket.create_connection(("127.0.0.1", int(port)), timeout=10)
+link.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+trips = []
+end = time.monotonic() + float(seconds)
+while time.monotonic() < end:
+    start = time.monotonic()
+    link.sendall(b"p")
+    if link.recv(1) != b"p":
+        raise SystemExit("the echo did not come back")
+    trips.append((time.monotonic() - start) * 1000)
+    time.sleep(0.005)
+print(json.dumps(trips), flush=True)
+"""
+
+# How long the page sends through the link while the harness reads (s).
+PACE_S = 2.0
+# The longest round trip through the link on loopback the test allows (ms):
+# the proxy alone takes well under a millisecond.
+PACE_MS = 40.0
+# The event log's records: about what the e2e job's hub has written by the
+# Pro-Q 4 slow-link test (master run 38340390496: 30 214 records, 7.1 MB, by
+# the end of the suite).
+LONG_LOG = 30_000
+
+
+class LinkPace(unittest.TestCase):
+    """The impair proxy keeps its pace while the harness works (#43, master
+    run 38340390496): ``GET /hub/events`` parses and writes the whole event
+    log, ~250 ms of Python with one ~90 ms ``json.dumps`` call, and a proxy
+    sharing the harness's interpreter held a page's pings that long (a lag
+    of 3 in ``eq.spec.ts``'s slow-link test, which bounds it at 2)."""
+
+    def test_the_link_keeps_its_pace_while_the_harness_reads_a_long_event_log(self):
+        data = tempfile.mkdtemp(prefix="fohmixer-harness-test-")
+        page = subprocess.Popen(
+            [sys.executable, "-c", PAGE_AND_HUB],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            echo_port = int(page.stdout.readline())
+            logs = os.path.join(data, "logs")
+            os.makedirs(logs)
+            with open(os.path.join(logs, "events-2026-10-03.jsonl"), "w", encoding="utf-8") as f:
+                for n in range(LONG_LOG):
+                    # A page's ping as the hub writes it.
+                    record = {"client": 60, "ev": "ping", "n": n, "rtt": 2.0, "rtt_n": n - 1}
+                    record.update(t=BASE + n * 100.0, hub_ms=BASE + n * 100.25, offset_ms=1.35)
+                    f.write(json.dumps(dict(record, peer="127.0.0.1", ts=BASE + n * 100)) + "\n")
+            args = harness.parse_args(
+                [
+                    "--data",
+                    data,
+                    "--layout",
+                    LAYOUT,
+                    "--http-port",
+                    str(echo_port),
+                    "--band-port",
+                    "0",
+                    "--master-port",
+                    "0",
+                    "--meters-hz",
+                    "0",
+                ]
+            )
+            work = harness.Harness(args)
+            try:
+                page.stdin.write(f"{work.link.port} {PACE_S}\n")
+                page.stdin.flush()
+                # What the harness's GET /hub/events does, its answer written
+                # as JSON too, over and over while the page sends.
+                longest = 0.0
+                end = time.monotonic() + PACE_S
+                while time.monotonic() < end:
+                    start = time.monotonic()
+                    status, answer = work.handle("GET", "/hub/events", {})
+                    json.dumps(answer)
+                    longest = max(longest, (time.monotonic() - start) * 1000)
+                    self.assertEqual((status, len(answer["events"])), (200, LONG_LOG))
+                trips = json.loads(page.stdout.readline())
+            finally:
+                work.stop()
+        finally:
+            page.stdin.close()
+            page.stdout.close()
+            self.assertEqual(page.wait(10), 0)
+            shutil.rmtree(data, ignore_errors=True)
+        # The read is long enough that a link sharing it would show it.
+        self.assertGreater(longest, 2 * PACE_MS)
+        self.assertGreater(len(trips), 20, "the page sent through the link meanwhile")
+        self.assertLess(max(trips), PACE_MS, f"round trips (ms): {[round(t) for t in trips]}")
+
+
 if __name__ == "__main__":
     unittest.main()
