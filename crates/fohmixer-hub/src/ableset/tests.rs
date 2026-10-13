@@ -1356,8 +1356,7 @@ async fn listen(app: Router) -> SocketAddr {
 async fn listen_with(app: Router, header_read: Duration) -> SocketAddr {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let mut server = axum_server::Server::<SocketAddr>::from_listener(listener);
-    crate::http1_limits(server.http_builder(), header_read);
+    let server = crate::accept::server(listener, header_read);
     tokio::spawn(server.serve(app.into_make_service_with_connect_info::<SocketAddr>()));
     addr
 }
