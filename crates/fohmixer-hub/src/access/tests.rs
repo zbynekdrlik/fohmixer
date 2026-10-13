@@ -84,7 +84,31 @@ fn a_forwarded_header_or_a_public_peer_is_the_internet() {
         );
         assert_eq!(classify(None, &proxied), Origin::Internet, "{name}");
     }
-    assert!(!has_proxy_header(&headers(&[("x-real-ip", "1.2.3.4")])));
+    // Any Cloudflare header (`Cf-Ray` is on every request the edge passes
+    // on, a Transform Rule cannot remove it) and every other proxy's (#90).
+    for name in [
+        "cf-ray",
+        "CF-Visitor",
+        "cf-warp-tag-id",
+        "cdn-loop",
+        "true-client-ip",
+        "via",
+        "x-forwarded-port",
+        "x-forwarded-server",
+        "x-real-ip",
+    ] {
+        let proxied = headers(&[(name, "1")]);
+        assert!(has_proxy_header(&proxied), "{name}");
+        assert_eq!(
+            classify(peer("127.0.0.1"), &proxied),
+            Origin::Internet,
+            "{name}"
+        );
+    }
+    // Only those: a name that merely contains one is no proxy's.
+    for name in ["cf", "x-cf-ray", "ecf-ray", "x-forwarded", "vias"] {
+        assert!(!has_proxy_header(&headers(&[(name, "1")])), "{name}");
+    }
 }
 
 #[test]
@@ -641,6 +665,10 @@ async fn the_middleware_gates_every_route_the_spa_included() {
         let lan = through_router(&hub, request(path, "192.168.1.20", &[])).await;
         assert_ne!(lan.status(), StatusCode::FORBIDDEN, "{path}");
     }
+    // A tunnel request a Cloudflare rule left without its forwarding
+    // headers still carries Cf-Ray: the internet (#90).
+    let ray = through_router(&hub, request("/", "127.0.0.1", &[("cf-ray", "r")])).await;
+    assert_eq!(ray.status(), StatusCode::FORBIDDEN);
     let allowed = through_router(
         &hub,
         request(

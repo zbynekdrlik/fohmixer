@@ -9,7 +9,7 @@ use axum::Json;
 use axum::body::{Body, Bytes};
 use axum::extract::ConnectInfo;
 use axum::http::{HeaderName, Uri};
-use axum::routing::{get, post};
+use axum::routing::{any, get, post};
 use std::time::Duration;
 
 use super::*;
@@ -22,7 +22,7 @@ const TLS_NAME: &str = "foh.example.org";
 const ABLESET_AUD: &str = "aud-ableset-test";
 /// Where nothing listens: a connection is refused at once.
 const CLOSED: &str = "http://127.0.0.1:1";
-const OURS: &str = "frame-ancestors https://foh.example.org https://foh.example.org:8443";
+const OURS: &str = "frame-ancestors 'self' https://foh.example.org https://foh.example.org:8443";
 
 fn tls() -> TlsCfg {
     TlsCfg {
@@ -62,7 +62,11 @@ async fn text_of(response: Response) -> String {
 fn the_upstream_request_keeps_the_browsers_headers_only() {
     let mut map = headers(&[
         ("host", "ableset.example.org:8443"),
-        ("connection", "keep-alive, X-Hop"),
+        // A client cannot name its Host, Origin or body length away.
+        (
+            "connection",
+            "keep-alive, X-Hop, Host, origin, Content-Length",
+        ),
         ("x-hop", "1"),
         ("keep-alive", "timeout=5"),
         ("proxy-connection", "keep-alive"),
@@ -83,6 +87,11 @@ fn the_upstream_request_keeps_the_browsers_headers_only() {
         ("x-forwarded-proto", "https"),
         ("forwarded", "for=203.0.113.7"),
         ("x-real-ip", "203.0.113.7"),
+        ("true-client-ip", "203.0.113.7"),
+        ("cdn-loop", "cloudflare"),
+        ("via", "1.1 proxy"),
+        ("x-forwarded-port", "443"),
+        ("x-forwarded-server", "proxy"),
         ("cookie", "CF_Authorization=t; theme=dark"),
         ("cookie", "browserId=b"),
         ("origin", "https://ableset.example.org:8443"),
@@ -290,20 +299,25 @@ fn site_with(upstream: &str, head: Duration, cap: u64) -> (Arc<AbleSet>, Receive
 }
 
 #[tokio::test]
-async fn only_the_first_failure_of_an_outage_is_a_warning_and_each_is_recorded() {
+async fn warn_lines_are_rationed_and_only_ablesets_own_fault_is_a_warn_class_record() {
     let (site, records) = site_with(CLOSED, Duration::from_secs(1), 16);
     let down = || Failure::Down("AbleSet does not answer: refused".into());
     let log = logged(|| {
         site.failed(&Method::GET, "/a", None, down());
+        assert!(site.failing.load(Ordering::Relaxed), "an outage started");
         site.failed(&Method::GET, "/b", None, down());
         site.failed(&Method::POST, "/c", None, Failure::TooLarge("big".into()));
         site.failed(&Method::GET, "/d", None, Failure::Timeout("late".into()));
         site.reached(&Method::GET, "/e", StatusCode::OK, Instant::now());
+        assert!(!site.failing.load(Ordering::Relaxed), "the outage ended");
         site.failed(&Method::GET, "/f", None, down());
     });
+    // One warn line per kind within its gap: AbleSet's outage (/a; the
+    // late answer and the next outage come too soon after it), and a
+    // client's fault (/c), which can never hide AbleSet's.
     let warned: Vec<&str> = log.lines().filter(|l| l.contains(" WARN ")).collect();
-    assert_eq!(warned.len(), 4, "{log}");
-    for (line, path) in warned.iter().zip(["/a", "/c", "/d", "/f"]) {
+    assert_eq!(warned.len(), 2, "{log}");
+    for (line, path) in warned.iter().zip(["/a", "/c"]) {
         assert!(line.contains(&format!("path=\"{path}\"")), "{line}");
     }
     let records: Vec<Value> = records.try_iter().collect();
@@ -312,11 +326,26 @@ async fn only_the_first_failure_of_an_outage_is_a_warning_and_each_is_recorded()
         (&first["ev"], &first["method"]),
         (&json!("ableset_proxy"), &json!("GET"))
     );
+    // Every one is recorded; only the warned fault of AbleSet itself under
+    // `error` (warn class, kept past the event log's daily cap), the rest
+    // under `why`: no client fills the PC's disk.
+    let keys: Vec<&str> = records
+        .iter()
+        .map(|r| {
+            if r.get("error").is_some() {
+                "error"
+            } else {
+                "why"
+            }
+        })
+        .collect();
+    assert_eq!(keys, ["error", "why", "why", "why", "why"]);
     let rows: Vec<(&str, u64, &str)> = records
         .iter()
         .map(|r| {
-            let text = |key: &str| r[key].as_str().unwrap();
-            (text("path"), r["status"].as_u64().unwrap(), text("error"))
+            let why = r.get("error").or_else(|| r.get("why")).unwrap();
+            let path = r["path"].as_str().unwrap();
+            (path, r["status"].as_u64().unwrap(), why.as_str().unwrap())
         })
         .collect();
     let refused = "AbleSet does not answer: refused";
@@ -332,14 +361,23 @@ async fn only_the_first_failure_of_an_outage_is_a_warning_and_each_is_recorded()
     );
 }
 
-/// A fake AbleSet on 127.0.0.1: `/echo` answers the headers it got as JSON,
-/// `/framed` with AbleSet-like framing headers, `/slow` never, `POST /press`
-/// the length of its body, anything else `fake <path and query>`.
+/// A fake AbleSet on 127.0.0.1: `/echo` answers the headers it got as JSON
+/// (a header's values `, `-joined), `/framed` with AbleSet-like framing
+/// headers, `/moved` an http redirect of AbleSet's name, `/cookies`,
+/// `/cors` and `/hop` with such headers, `/slow` never, `POST /press` the
+/// length of its body, anything else `fake <path and query>`.
 async fn fake() -> String {
     let echo = |seen: HeaderMap| async move {
         let seen: serde_json::Map<String, Value> = seen
-            .iter()
-            .map(|(k, v)| (k.as_str().to_string(), json!(v.to_str().unwrap_or(""))))
+            .keys()
+            .map(|k| {
+                let values: Vec<&str> = seen
+                    .get_all(k)
+                    .iter()
+                    .map(|v| v.to_str().unwrap_or(""))
+                    .collect();
+                (k.as_str().to_string(), json!(values.join(", ")))
+            })
             .collect();
         Json(Value::Object(seen))
     };
@@ -350,9 +388,49 @@ async fn fake() -> String {
         ];
         (framing, "framed")
     };
+    let moved = || async {
+        let to = [("location", "http://ableset.example.org/next")];
+        (StatusCode::FOUND, to)
+    };
+    let cookies = || async {
+        let set = [
+            (
+                "set-cookie",
+                "CF_Authorization=evil; Domain=example.org; Path=/",
+            ),
+            ("set-cookie", "cf_clearance=c; Path=/"),
+            (
+                "set-cookie",
+                "session=s; Domain=example.org; Path=/; HttpOnly",
+            ),
+            ("set-cookie", "theme=dark"),
+        ];
+        (axum::response::AppendHeaders(set), "cookies")
+    };
+    let cors = || async {
+        let grant = [
+            ("access-control-allow-origin", "*"),
+            ("access-control-allow-credentials", "true"),
+            ("access-control-expose-headers", "x-secret"),
+        ];
+        (grant, "cors")
+    };
+    let hop = || async {
+        let hop = [
+            ("connection", "x-gone"),
+            ("x-gone", "1"),
+            ("keep-alive", "timeout=5"),
+            ("proxy-authenticate", "Basic"),
+        ];
+        (hop, "hop")
+    };
     let app = Router::new()
-        .route("/echo", get(echo))
+        .route("/echo", any(echo))
         .route("/framed", get(framed))
+        .route("/moved", get(moved))
+        .route("/cookies", get(cookies))
+        .route("/cors", get(cors))
+        .route("/hop", get(hop))
         .route("/slow", get(std::future::pending::<()>))
         .route(
             "/press",
@@ -463,25 +541,167 @@ async fn ablesets_name_reaches_ableset_on_both_listeners_and_any_other_host_fohm
     .await;
     assert_eq!(refused.status(), StatusCode::MISDIRECTED_REQUEST);
     // AbleSet's own framing gives way to fohmixer's page; its other
-    // headers stay, Cloudflare's and the Access cookie do not reach it.
+    // headers stay, the Access cookie does not reach it (Cloudflare's
+    // headers: the internet test, a LAN request carries none).
     let framed = plain(&hub, get_from(NAME, "/framed", "10.0.0.5", &[])).await;
     assert!(framed.headers().get(header::X_FRAME_OPTIONS).is_none());
     assert_eq!(policies(framed.headers()), [OURS]);
     let pairs = [
-        ("cf-ray", "r"),
         ("cookie", "CF_Authorization=t; theme=dark"),
         ("user-agent", "ua"),
     ];
-    let echo = plain(&hub, get_from(NAME, "/echo", "10.0.0.5", &pairs)).await;
-    let seen: Value = serde_json::from_str(&text_of(echo).await).unwrap();
+    let seen = echo(plain(&hub, get_from(NAME, "/echo", "10.0.0.5", &pairs)).await).await;
     assert_eq!(
-        (&seen["host"], &seen["cookie"]),
-        (&json!(NAME), &json!("theme=dark"))
+        (&seen["host"], &seen["cookie"], &seen["user-agent"]),
+        (&json!(NAME), &json!("theme=dark"), &json!("ua"))
     );
-    assert_eq!(
-        (&seen["user-agent"], seen.get("cf-ray")),
-        (&json!("ua"), None)
+    hub.stop();
+}
+
+/// What the fake's `/echo` saw.
+async fn echo(response: Response) -> Value {
+    serde_json::from_str(&text_of(response).await).unwrap()
+}
+
+/// A request for `target` (`method`, no `Host` when `host` is none) from
+/// a LAN peer.
+fn odd(method: Method, target: &str, host: Option<&str>) -> axum::http::Request<Body> {
+    let mut request = axum::http::Request::builder()
+        .method(method)
+        .uri(target)
+        .body(Body::empty())
+        .unwrap();
+    if let Some(host) = host {
+        request
+            .headers_mut()
+            .insert(header::HOST, HeaderValue::from_str(host).unwrap());
+    }
+    let lan = SocketAddr::new("10.0.0.5".parse().unwrap(), 50000);
+    request.extensions_mut().insert(ConnectInfo(lan));
+    request
+}
+
+#[tokio::test]
+async fn ableset_gets_one_host_the_one_matched_and_only_a_path_never_an_outage() {
+    let upstream = fake().await;
+    let dir = tempfile::tempdir().unwrap();
+    let hub = hub_with(dir.path(), &upstream, None, &[]);
+    // A second Host, or a Connection naming Host or Origin away, changes
+    // nothing: AbleSet gets exactly the Host the hub matched (#90 review 7).
+    let mut twice = get_from(NAME, "/echo", "10.0.0.5", &[]);
+    let evil = HeaderValue::from_static("evil.example");
+    twice.headers_mut().append(header::HOST, evil);
+    assert_eq!(echo(plain(&hub, twice).await).await["host"], NAME);
+    for connection in ["host", "Host, origin"] {
+        let pairs = [("connection", connection), ("origin", "https://x.example")];
+        let seen = echo(plain(&hub, get_from(NAME, "/echo", "10.0.0.5", &pairs)).await).await;
+        assert_eq!(
+            (&seen["host"], &seen["origin"]),
+            (&json!(NAME), &json!("https://x.example")),
+            "{connection}"
+        );
+    }
+    // Without a Host (HTTP/2 sends none) the target's authority is the
+    // Host: AbleSet's name reaches AbleSet, a foreign one gets 421 (#90
+    // review 9); a Host with a trailing dot is neither name: 421.
+    let no_host = odd(Method::GET, "http://ableset.example.org/echo", None);
+    assert_eq!(echo(plain(&hub, no_host).await).await["host"], NAME);
+    let foreign = odd(Method::GET, "http://evil.example/api/version", None);
+    let dotted = get_from("ableset.example.org.", "/", "10.0.0.5", &[]);
+    for refused in [foreign, dotted] {
+        let answer = plain(&hub, refused).await;
+        assert_eq!(answer.status(), StatusCode::MISDIRECTED_REQUEST);
+    }
+    // CONNECT and TRACE are never forwarded, nor a target that is no path;
+    // none of them makes an AbleSet outage (#90 review 5).
+    for (method, target, status) in [
+        (Method::CONNECT, "ableset.example.org:443", 405),
+        (Method::TRACE, "/", 405),
+        (Method::OPTIONS, "*", 400),
+    ] {
+        let answer = plain(&hub, odd(method.clone(), target, Some(NAME))).await;
+        assert_eq!(answer.status().as_u16(), status, "{method} {target}");
+        assert_eq!(policies(answer.headers()), [OURS]);
+    }
+    let site = hub.ableset.as_ref().unwrap();
+    assert!(!site.failing.load(Ordering::Relaxed), "no outage");
+    // The plain listener's LAN answer keeps AbleSet's http Location (https
+    // would point TLS at the plain port, #90 review 8); over HTTPS it is
+    // made https.
+    let moved = plain(&hub, get_from(NAME, "/moved", "10.0.0.5", &[])).await;
+    let location = "http://ableset.example.org/next";
+    assert_eq!(moved.headers()[header::LOCATION], location);
+    let moved = crate::https_router(hub.clone())
+        .oneshot(get_from(NAME, "/moved", "10.0.0.5", &[]))
+        .await
+        .unwrap();
+    let location = "https://ableset.example.org/next";
+    assert_eq!(moved.headers()[header::LOCATION], location);
+    hub.stop();
+}
+
+#[tokio::test]
+async fn ablesets_answers_serve_its_own_pages_only() {
+    let upstream = fake().await;
+    let dir = tempfile::tempdir().unwrap();
+    let hub = hub_with(dir.path(), &upstream, None, &[]);
+    let fetch = |site: &str, mode: &str, dest: &str| {
+        let pairs = [
+            ("sec-fetch-site", site),
+            ("sec-fetch-mode", mode),
+            ("sec-fetch-dest", dest),
+        ];
+        get_from(NAME, "/p", "10.0.0.5", &pairs)
+    };
+    // Another site's image, script or fetch in a LAN browser (which opens
+    // AbleSet without its password) is refused before AbleSet (#90 review
+    // 2); a navigation from anywhere and the same site's requests pass.
+    for (mode, dest) in [
+        ("no-cors", "image"),
+        ("no-cors", "script"),
+        ("cors", "empty"),
+    ] {
+        let refused = plain(&hub, fetch("cross-site", mode, dest)).await;
+        assert_eq!(refused.status(), StatusCode::FORBIDDEN, "{mode} {dest}");
+        assert_eq!(policies(refused.headers()), [OURS]);
+        assert_eq!(refused.headers()["x-content-type-options"], "nosniff");
+    }
+    for (site, mode, dest) in [
+        ("cross-site", "navigate", "document"),
+        ("none", "navigate", "document"),
+        ("same-origin", "cors", "empty"),
+        ("same-site", "no-cors", "image"),
+    ] {
+        let passed = plain(&hub, fetch(site, mode, dest)).await;
+        assert_eq!(text_of(passed).await, "fake /p", "{site} {mode} {dest}");
+    }
+    // No CORS grant of AbleSet's leaves the hub; nosniff and fohmixer's
+    // Referrer-Policy on its answers (#90 review 10).
+    let cors = plain(&hub, get_from(NAME, "/cors", "10.0.0.5", &[])).await;
+    let names: Vec<&str> = cors.headers().keys().map(HeaderName::as_str).collect();
+    assert!(
+        names.iter().all(|n| !n.starts_with("access-control-")),
+        "{names:?}"
     );
+    assert_eq!(cors.headers()["x-content-type-options"], "nosniff");
+    let referrer = "strict-origin-when-cross-origin";
+    assert_eq!(cors.headers()["referrer-policy"], referrer);
+    // No Cloudflare cookie from AbleSet (it would shadow fohmixer's Access
+    // cookie), and the others host-only (#90 review 6).
+    let cookies = plain(&hub, get_from(NAME, "/cookies", "10.0.0.5", &[])).await;
+    let set: Vec<&str> = cookies
+        .headers()
+        .get_all(header::SET_COOKIE)
+        .iter()
+        .map(|v| v.to_str().unwrap())
+        .collect();
+    assert_eq!(set, ["session=s; Path=/; HttpOnly", "theme=dark"]);
+    // AbleSet's hop-by-hop headers end at the hop.
+    let hop = plain(&hub, get_from(NAME, "/hop", "10.0.0.5", &[])).await;
+    for gone in ["connection", "x-gone", "keep-alive", "proxy-authenticate"] {
+        assert!(hop.headers().get(gone).is_none(), "{gone}");
+    }
+    assert_eq!(text_of(hop).await, "hop");
     hub.stop();
 }
 
@@ -522,6 +742,39 @@ async fn from_the_internet_only_the_ableset_applications_assertion_opens_ableset
         assert!(seen.get(gone).is_none(), "{gone}: {seen}");
     }
     assert_eq!(seen["cookie"], "theme=dark");
+    // The assertion in Access's cookie: fohmixer's refused, AbleSet's let
+    // through, the cookie kept from AbleSet.
+    let in_cookie = |token: &str| {
+        let cookie = format!("CF_Authorization={token}; theme=dark");
+        let pairs = [
+            ("cf-connecting-ip", "203.0.113.7"),
+            ("cookie", cookie.as_str()),
+        ];
+        get_from(NAME, "/echo", "127.0.0.1", &pairs)
+    };
+    let refused = plain(&hub, in_cookie(&fohmixers)).await;
+    assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+    let seen = echo(plain(&hub, in_cookie(&ablesets)).await).await;
+    assert_eq!(seen["cookie"], "theme=dark");
+    // A Cloudflare header alone is the internet: a tunnel request a rule
+    // left without its forwarding headers still has Cf-Ray (#90 review 1).
+    // So is a public peer with no proxy header (a port-forward), and a
+    // request without its peer address is refused (fail closed).
+    let ray = get_from(NAME, "/echo", "127.0.0.1", &[("cf-ray", "r")]);
+    let public = get_from(NAME, "/echo", "203.0.113.7", &[]);
+    for request in [ray, public] {
+        assert_eq!(plain(&hub, request).await.status(), StatusCode::FORBIDDEN);
+    }
+    let mut no_peer = odd(Method::GET, "/echo", Some(NAME));
+    no_peer.extensions_mut().remove::<ConnectInfo<SocketAddr>>();
+    let body = echo(plain(&hub, no_peer).await).await;
+    let message = body["message"].as_str().unwrap();
+    assert!(message.starts_with("Refused (no_peer_address)"), "{body}");
+    // Through the tunnel the browser is on https (Cloudflare's edge):
+    // AbleSet's http Location becomes https there too (#90 review 8).
+    let moved = plain(&hub, tunnel(NAME, "/moved", Some(ablesets.as_str()))).await;
+    let location = "https://ableset.example.org/next";
+    assert_eq!(moved.headers()[header::LOCATION], location);
     // AbleSet's assertion never opens fohmixer.
     let fohmixer = plain(
         &hub,
@@ -630,6 +883,7 @@ async fn a_late_answer_is_504_and_a_body_over_the_cap_413() {
         .await
         .unwrap();
     assert_eq!(announced.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(policies(announced.headers()), [OURS]);
     let down = through(get_from(NAME, "/", "10.0.0.5", &[])).await.unwrap();
     assert_eq!(down.status(), StatusCode::BAD_GATEWAY);
     let errors: Vec<String> = records
@@ -674,6 +928,7 @@ async fn the_plain_listener_redirects_ablesets_name_once_its_certificate_serves(
     assert_eq!(redirected.status(), StatusCode::TEMPORARY_REDIRECT);
     let location = format!("https://{NAME}:{}/x?y=1", https.addr().port());
     assert_eq!(redirected.headers()[header::LOCATION], location.as_str());
+    assert_eq!(policies(redirected.headers()), [OURS]);
     // Never a tunnel request (refused here: no AbleSet audience), never on
     // the HTTPS listener.
     let pairs = [("cf-connecting-ip", "203.0.113.7")];
