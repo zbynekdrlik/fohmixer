@@ -10,3 +10,12 @@ useDefault = true
 [[allowlists]]
 description = "the E2E test run's invented Access AUD tag"
 regexes = ['''^fohmixer-e2e-aud$''']
+
+# Hub test fixture (#90, crates/fohmixer-hub/src/ableset/tests.rs, a
+# WebSocket upgrade written by hand): RFC 6455's own sample
+# Sec-WebSocket-Key (section 1.3, base64 of "the sample nonce"). A
+# handshake nonce is sent in the clear by design and this one is printed in
+# the RFC: not a secret.
+[[allowlists]]
+description = "RFC 6455's sample Sec-WebSocket-Key in a hub test"
+regexes = ['''^dGhlIHNhbXBsZSBub25jZQ==$''']
