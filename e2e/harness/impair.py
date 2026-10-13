@@ -15,6 +15,14 @@ It is a plain byte pipe (stdlib asyncio, one event loop in a thread of its own),
 so the page and the hub talk HTTP and WebSocket through it unchanged: the page's
 ``Host`` and ``Origin`` both name the proxy, which the hub's Origin guard accepts.
 
+The harness runs it in a process of its own (``Child``: this file's tool,
+driven through its control lines, with the calls of ``Impair``). A thread
+shares its process's interpreter lock, so the harness's own work held both
+directions of every page's link while it lasted (#43, master run
+38340390496: ``GET /hub/events`` parses and writes the whole event log, ~250
+ms of Python with one ~90 ms ``json.dumps`` call; a page's ping waited 150 ms
+on its way to the hub).
+
 - **Stall:** every byte read from either side waits until the stall ends, then
   goes on in order; a pipe holds one chunk while it waits and reads nothing more,
   so the kernel buffers push back. A stall that is already running is extended,
@@ -45,7 +53,8 @@ On its own (a degraded-link check of a deployed hub, from another machine):
         [--listen-host 127.0.0.1]
 
 prints ``IMPAIR <port>`` once it listens (on 127.0.0.1 unless
-``--listen-host`` names another address, e.g. a LAN one for a real tablet)
+``--listen-host`` names another address, e.g. a LAN one for a real tablet;
+one JSON line with its ``error`` and exit code 1 when it cannot listen)
 and then takes one control line per stdin line — ``stall <ms>``, ``drop``, ``block on|off``,
 ``rate <bytes per s>``, ``down <bytes per s>``, ``state`` — answering each with one JSON
 line; the end of stdin stops it.
@@ -55,8 +64,12 @@ import argparse
 import asyncio
 import json
 import math
+import os
+import queue
+import signal
 import socket
 import struct
+import subprocess
 import sys
 import threading
 
@@ -342,6 +355,136 @@ class Impair:
             left = self.stall_until - self.loop.time()
 
 
+class Child:
+    """The proxy in a process of its own: this file's tool, driven through its
+    control lines, with the calls of ``Impair`` (``start``, ``port``, ``stall``,
+    ``drop``, ``block``, ``rate``, ``down_rate``, ``state``, ``stop``), so the
+    work of the process that drives it never holds the link (#43). Its log
+    goes to this process's stderr. A refused value raises ``ValueError``, as
+    ``Impair``'s calls do; a tool that ended or does not answer raises
+    ``RuntimeError``."""
+
+    # The end of the tool's stdout, in the queue of its lines.
+    ENDED = object()
+
+    def __init__(self, listen_port, upstream_port, host="127.0.0.1", upstream_host=None):
+        self.command_line = [
+            sys.executable,
+            os.path.abspath(__file__),
+            "--upstream",
+            f"{upstream_host or host}:{upstream_port}",
+            "--listen-port",
+            str(listen_port),
+            "--listen-host",
+            host,
+        ]
+        self.port = None
+        self.proc = None
+        self.pump = None
+        self.lines = queue.Queue()
+        self.lock = threading.Lock()
+
+    def start(self):
+        """Starts the tool and waits for its port; raises when it cannot listen."""
+        self.proc = subprocess.Popen(
+            self.command_line, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True
+        )
+        self.pump = threading.Thread(target=self._pump, name="impair-child", daemon=True)
+        self.pump.start()
+        first = self._next(START_S)
+        if isinstance(first, str) and first.startswith("IMPAIR "):
+            self.port = int(first.split()[1])
+            return
+        if first is None:
+            reason = f"no port line within {START_S} s"
+        elif first is self.ENDED:
+            reason = "it ended without a port line"
+        else:
+            try:
+                reason = json.loads(first)["error"]
+            except (ValueError, KeyError, TypeError):
+                reason = f"its first line was {first!r}"
+        failure = RuntimeError(f"the impair proxy did not start: {reason}")
+        try:
+            self._end()
+        except RuntimeError as ending:
+            raise failure from ending
+        raise failure
+
+    def _pump(self):
+        """The tool's stdout lines into the queue, then ``ENDED``; closes it at its end."""
+        with self.proc.stdout:
+            for line in self.proc.stdout:
+                self.lines.put(line.rstrip("\n"))
+        self.lines.put(self.ENDED)
+
+    def _next(self, timeout):
+        """The tool's next line, ``ENDED`` after its last one, or None after ``timeout``."""
+        try:
+            return self.lines.get(timeout=timeout)
+        except queue.Empty:
+            return None
+
+    def _ask(self, line):
+        """One control line and the tool's answer (a dict)."""
+        with self.lock:
+            if self.proc is None or self.proc.poll() is not None:
+                code = None if self.proc is None else self.proc.returncode
+                raise RuntimeError(f"the impair proxy is not running (exit code {code}): {line!r}")
+            try:
+                self.proc.stdin.write(line + "\n")
+                self.proc.stdin.flush()
+            except BrokenPipeError:
+                raise RuntimeError(f"the impair proxy ended before {line!r}") from None
+            answer = self._next(CALL_S)
+        if answer is None or answer is self.ENDED:
+            raise RuntimeError(f"the impair proxy gave no answer to {line!r} within {CALL_S} s")
+        answer = json.loads(answer)
+        if "error" in answer:
+            raise ValueError(answer["error"])
+        return answer
+
+    def stall(self, ms):
+        return self._ask(f"stall {float(ms)!r}")
+
+    def drop(self):
+        return self._ask("drop")
+
+    def block(self, on):
+        return self._ask("block on" if on else "block off")
+
+    def rate(self, bytes_per_s):
+        return self._ask(f"rate {float(bytes_per_s)!r}")
+
+    def down_rate(self, bytes_per_s):
+        return self._ask(f"down {float(bytes_per_s)!r}")
+
+    def state(self):
+        return self._ask("state")
+
+    def stop(self):
+        """Ends the tool through the end of its stdin (it resets every
+        connection and closes its listener), SIGTERM if it does not end."""
+        if self.proc is None or self.proc.poll() is not None:
+            return
+        with self.lock:
+            self._end()
+
+    def _end(self):
+        self.proc.stdin.close()
+        try:
+            self.proc.wait(CALL_S)
+        except subprocess.TimeoutExpired:
+            self.proc.send_signal(signal.SIGTERM)
+            self.proc.wait(CALL_S)
+            raise RuntimeError(
+                f"the impair proxy did not end within {CALL_S} s of its stdin's end"
+            ) from None
+        finally:
+            # Its stdout ends with it: the pump closes it.
+            self.pump.join(CALL_S)
+
+
 def command(proxy, line):
     """One control line of the command-line tool: its answer, a dict (an
     ``error`` for a line it does not know or a value it refuses)."""
@@ -392,7 +535,12 @@ def main(argv=None, stdin=None, stdout=None):
         host=args.listen_host,
         upstream_host=args.upstream_host,
     )
-    proxy.start()
+    try:
+        proxy.start()
+    except RuntimeError as e:
+        log(f"not started: {e}")
+        print(json.dumps({"error": str(e)}), file=stdout, flush=True)
+        return 1
     print(f"IMPAIR {proxy.port}", file=stdout, flush=True)
     try:
         for line in stdin:
