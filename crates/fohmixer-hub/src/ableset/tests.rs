@@ -1525,35 +1525,46 @@ async fn a_tunnel_ableset_closed_ends_after_the_grace_though_the_page_stays_sile
 }
 
 #[tokio::test]
-async fn a_tunnel_whose_upgrades_never_complete_gives_its_slot_back_after_the_head_bound() {
-    let upstream = fake().await;
-    let (site, records) = site_with(&upstream, Duration::from_millis(300), 16);
+async fn an_upgrade_that_announces_a_body_is_400_before_it_takes_a_slot_and_no_outage() {
+    // A WebSocket handshake is a GET without a body (RFC 6455 4.1). One
+    // that announces a body would keep its connection to AbleSet as long as
+    // the page holds its own: hyper hands neither connection over before
+    // the body is read whole (#90 re-review Low 2). It is refused 400
+    // before it takes a socket slot (none is free here) and before AbleSet
+    // is asked, as the client's fault.
+    let (upstream, contacted) = closer().await;
+    let (events, records) = EventLog::channel(64);
+    let proxy = Proxy::new(&upstream, Duration::from_secs(5), 16);
+    let site = Arc::new(AbleSet::limited(NAME, &tls(), None, events, proxy, 4, 0));
     let at = listen(router(Arc::clone(&site), None)).await;
-    // The page announces a body and never sends it: hyper hands neither
-    // connection over before their request is read whole, so neither
-    // upgrade completes, though AbleSet answers 101 at once (#90 review 1).
-    let mut page = TcpStream::connect(at).await.unwrap();
-    let ask = format!(
-        "GET /socket.io/ HTTP/1.1\r\nHost: {NAME}\r\nConnection: Upgrade\r\n\
-         Upgrade: websocket\r\nSec-WebSocket-Version: 13\r\n\
-         Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
-         Sec-WebSocket-Protocol: x-test\r\nContent-Length: 1\r\n\r\n"
-    );
-    let sent = tokio::io::AsyncWriteExt::write_all(&mut page, ask.as_bytes());
-    sent.await.unwrap();
-    let mut status = [0_u8; 12];
-    tokio::time::timeout(Duration::from_secs(5), page.read_exact(&mut status))
-        .await
-        .expect("an answer within 5 s")
-        .unwrap();
-    assert_eq!(&status, b"HTTP/1.1 101");
-    tunnels_within(&site, 0, Duration::from_secs(3)).await;
+    for body in ["Content-Length: 1", "Transfer-Encoding: chunked"] {
+        let mut page = TcpStream::connect(at).await.unwrap();
+        let ask = format!(
+            "GET /socket.io/ HTTP/1.1\r\nHost: {NAME}\r\nConnection: Upgrade\r\n\
+             Upgrade: websocket\r\nSec-WebSocket-Version: 13\r\n{body}\r\n\r\n"
+        );
+        let sent = tokio::io::AsyncWriteExt::write_all(&mut page, ask.as_bytes());
+        sent.await.unwrap();
+        let mut status = [0_u8; 12];
+        tokio::time::timeout(Duration::from_secs(5), page.read_exact(&mut status))
+            .await
+            .expect("an answer within 5 s")
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&status), "HTTP/1.1 400", "{body}");
+    }
+    assert_eq!(contacted.load(Ordering::Relaxed), 0, "AbleSet was asked");
+    assert!(!site.failing.load(Ordering::Relaxed), "no outage");
     let records: Vec<Value> = records.try_iter().collect();
-    let close = ws_of(&records, "close");
-    assert_eq!(close.len(), 1, "{records:?}");
-    let why = "the upgrade did not complete within 300 ms";
-    assert_eq!(close[0]["why"], why);
-    drop(page);
+    assert_eq!(
+        (&records[0]["ev"], &records[0]["status"]),
+        (&json!("ableset_proxy"), &json!(400))
+    );
+    let why = "a WebSocket upgrade announced a request body";
+    assert_eq!(why_of(&records[0]), ("why", why));
+    assert!(
+        records.iter().all(|r| why_of(r) == ("why", why)),
+        "{records:?}"
+    );
 }
 
 #[tokio::test]
@@ -2050,6 +2061,42 @@ impl AsyncWrite for Stuck {
     fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
         Poll::Pending
     }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_write_that_makes_no_progress_for_a_minute_ends_the_tunnel() {
+    // #90 re-review Low 1: a page that never reads (its receive window
+    // zero) holds the write to it, and AbleSet's close queued behind that
+    // write, for good. A write to either end that makes no progress for a
+    // minute ends the tunnel; its other way then gets the grace. On the
+    // virtual clock: the real bound, without waiting for it.
+    let held = Duration::from_secs(600);
+    // The page takes 64 bytes and never reads again.
+    let ((page, _page_far), (ableset, mut ableset_far), (_sender, mut stop)) = ends_and_stop();
+    let started = tokio::time::Instant::now();
+    let piped = tokio::time::timeout(held, pipe(page, ableset, &mut stop, HALF_CLOSE_GRACE));
+    let pushed = tokio::io::AsyncWriteExt::write_all(&mut ableset_far, &[7; 1024]);
+    let (ended, pushed) = tokio::join!(piped, pushed);
+    pushed.unwrap();
+    let ended = ended.expect("the tunnel was still held after 600 s");
+    let why = "AbleSet to the page: a write made no progress for 60000 ms";
+    assert_eq!((ended.down, ended.why.as_str()), (64, why));
+    let took = started.elapsed();
+    let (stall, grace) = (Duration::from_secs(60), Duration::from_secs(5));
+    assert!(
+        took >= stall + grace && took < stall + grace * 2,
+        "{took:?}"
+    );
+    // The page closed, and AbleSet's end never completes the close passed
+    // on to it: that write is bounded too.
+    let ((page, mut page_far), (ableset, _ableset_far), (_sender, mut stop)) = ends_and_stop();
+    send_and_close(&mut page_far, b"ab").await;
+    let piped = pipe(page, Stuck(ableset), &mut stop, HALF_CLOSE_GRACE);
+    let ended = tokio::time::timeout(held, piped)
+        .await
+        .expect("the tunnel was still held after 600 s");
+    let why = "the page to AbleSet: a write made no progress for 60000 ms";
+    assert_eq!((ended.up, ended.why.as_str()), (2, why));
 }
 
 #[tokio::test]
