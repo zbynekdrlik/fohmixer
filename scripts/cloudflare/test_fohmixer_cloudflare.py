@@ -392,7 +392,8 @@ class ScriptTest(unittest.TestCase):
         self.assertEqual(self.run_main("--ableset-name", ABLESET)[0], 0)
         self.assert_access_before_exposure()
         code, out, _ = self.run_main(apply=False)
-        self.assertIn("REMOVE route %s (--apply needs --prune-routes for it)" % ABLESET, out)
+        line = "REMOVE route %s -> http://127.0.0.1:8480 (--apply needs --prune-routes for it)"
+        self.assertIn(line % ABLESET, out)
         self.assertNotIn("[ableset]", out)
 
     def test_ablesets_name_is_refused_when_it_is_the_name(self):
