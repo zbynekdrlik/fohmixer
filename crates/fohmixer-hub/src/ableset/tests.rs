@@ -491,6 +491,79 @@ fn a_clients_faults_are_recorded_once_per_gap_per_kind_and_ablesets_own_each_tim
     assert_eq!(FAULT_RECORDS, 1);
 }
 
+#[test]
+fn an_outage_is_recorded_at_its_start_then_rationed_and_at_its_end_with_the_count_left_out() {
+    // #90 B3h review 1: a client looping on AbleSet's name while AbleSet is
+    // closed. The outage's first record and its end go out at once; the
+    // rest, 8 per kind per gap, the count left out on the end's record.
+    let (site, records) = site_with(CLOSED, Duration::from_secs(1), 16);
+    let refused = "AbleSet does not answer: refused";
+    for _ in 0..20 {
+        site.failed(&Method::GET, "/a", None, Failure::Down(refused.into()));
+    }
+    site.reached(&Method::GET, "/b", StatusCode::OK, Instant::now());
+    // A new outage's first record goes out at once though its kind's
+    // ration is used up.
+    site.failed(&Method::GET, "/c", None, Failure::Down(refused.into()));
+    let records: Vec<Value> = records.try_iter().collect();
+    let rows: Vec<(&str, &str, u64)> = records
+        .iter()
+        .map(|r| {
+            let (key, why) = why_of(r);
+            (key, why, r["skipped"].as_u64().unwrap())
+        })
+        .collect();
+    let mut expected: Vec<(&str, &str, u64)> = vec![("error", refused, 0)];
+    expected.extend([("why", refused, 0); 8]);
+    expected.push(("why", "AbleSet answers again", 11));
+    expected.push(("why", refused, 0));
+    assert_eq!(rows, expected);
+    assert_eq!(
+        (&records[9]["path"], &records[9]["status"]),
+        (&json!("/b"), &json!(200))
+    );
+    // A hung AbleSet: its warned late answer at once, the rest rationed.
+    let (site, records) = site_with(CLOSED, Duration::from_secs(1), 16);
+    for _ in 0..12 {
+        site.failed(&Method::GET, "/d", None, Failure::Timeout("late".into()));
+    }
+    let keys: Vec<&str> = records.try_iter().map(|r| why_of(&r).0).collect();
+    let mut expected = vec!["error"];
+    expected.extend(["why"; 8]);
+    assert_eq!(keys, expected);
+}
+
+#[test]
+fn a_clients_long_text_is_clipped_in_the_record_and_the_warn_line() {
+    // #90 B3h review 2: a path up to 64 KB, a Sec-Fetch-* value up to the
+    // head's 400 KB, a target that is no path: cut to 256 characters with
+    // a mark naming the whole size, in the record and in hub.out.log.
+    let path = format!("/{}", "p".repeat(60 * 1024));
+    let mode = "m".repeat(300 * 1024);
+    let cross = headers(&[
+        ("sec-fetch-site", "cross-site"),
+        ("sec-fetch-mode", mode.as_str()),
+    ]);
+    let failure = refusal(&Method::GET, &"/".parse().unwrap(), &cross).unwrap();
+    let (site, records) = site_with(CLOSED, Duration::from_secs(1), 16);
+    let log = logged(|| {
+        site.failed(&Method::GET, &path, None, failure);
+    });
+    let records: Vec<Value> = records.try_iter().collect();
+    let clipped = format!("{}… ({} bytes)", &path[..256], path.len());
+    assert_eq!(records[0]["path"], json!(clipped));
+    let why = why_of(&records[0]).1;
+    assert!(why.len() < 1024, "{} bytes", why.len());
+    assert!(why.contains(&format!("… ({} bytes)", mode.len())), "{why}");
+    assert!(log.len() < 2048, "{} bytes", log.len());
+    assert!(log.contains(" WARN ") && log.contains(&clipped), "{log}");
+    let target: Uri = format!("{}:1", "h".repeat(1000)).parse().unwrap();
+    let Some(Failure::Target(why)) = refusal(&Method::GET, &target, &HeaderMap::new()) else {
+        panic!("a target that is no path");
+    };
+    assert!(why.len() < 512 && why.contains("… (1002 bytes)"), "{why}");
+}
+
 /// A record's key for its text (`error`: warn class, or `why`) and the text.
 fn why_of(record: &Value) -> (&'static str, &str) {
     let key = if record.get("error").is_some() {
@@ -1645,6 +1718,32 @@ async fn an_upgrade_that_announces_a_body_is_400_before_it_takes_a_slot_and_no_o
 }
 
 #[tokio::test]
+async fn a_request_body_the_page_breaks_is_its_fault_never_an_outage() {
+    // #90 B3h review 3: a chunked POST whose body breaks off (a malformed
+    // chunk) fails the request to AbleSet; that is the page's fault, never
+    // an AbleSet outage.
+    let upstream = fake().await;
+    let (site, records) = site_with(&upstream, Duration::from_secs(5), 1024);
+    let at = listen(router(Arc::clone(&site), None)).await;
+    let mut page = TcpStream::connect(at).await.unwrap();
+    let ask =
+        format!("POST /press HTTP/1.1\r\nHost: {NAME}\r\nTransfer-Encoding: chunked\r\n\r\nzz\r\n");
+    let sent = tokio::io::AsyncWriteExt::write_all(&mut page, ask.as_bytes());
+    sent.await.unwrap();
+    let mut status = [0_u8; 12];
+    tokio::time::timeout(Duration::from_secs(5), page.read_exact(&mut status))
+        .await
+        .expect("an answer within 5 s")
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&status), "HTTP/1.1 400");
+    assert!(!site.failing.load(Ordering::Relaxed), "no outage");
+    let records: Vec<Value> = records.try_iter().collect();
+    let (key, why) = why_of(&records[0]);
+    let text = "the page's request body broke off: ";
+    assert!(key == "why" && why.starts_with(text), "{key}: {why}");
+}
+
+#[tokio::test]
 async fn an_upgrade_answered_without_a_switch_holds_its_socket_slot_while_its_body_streams() {
     let upstream = fake().await;
     let (events, records) = EventLog::channel(64);
@@ -2141,11 +2240,11 @@ impl AsyncWrite for Stuck {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_write_that_makes_no_progress_for_a_minute_ends_the_tunnel() {
+async fn a_write_that_makes_no_progress_for_the_bound_ends_the_tunnel() {
     // #90 re-review Low 1: a page that never reads (its receive window
     // zero) holds the write to it, and AbleSet's close queued behind that
-    // write, for good. A write to either end that makes no progress for a
-    // minute ends the tunnel; its other way then gets the grace. On the
+    // write, for good. A write to either end that makes no progress for
+    // 90 s ends the tunnel; its other way then gets the grace. On the
     // virtual clock: the real bound, without waiting for it.
     let held = Duration::from_secs(600);
     // The page takes 64 bytes and never reads again.
@@ -2156,10 +2255,10 @@ async fn a_write_that_makes_no_progress_for_a_minute_ends_the_tunnel() {
     let (ended, pushed) = tokio::join!(piped, pushed);
     pushed.unwrap();
     let ended = ended.expect("the tunnel was still held after 600 s");
-    let why = "AbleSet to the page: a write made no progress for 60000 ms";
+    let why = "AbleSet to the page: a write made no progress for 90000 ms";
     assert_eq!((ended.down, ended.why.as_str()), (64, why));
     let took = started.elapsed();
-    let (stall, grace) = (Duration::from_secs(60), Duration::from_secs(5));
+    let (stall, grace) = (Duration::from_secs(90), Duration::from_secs(5));
     assert!(
         took >= stall + grace && took < stall + grace * 2,
         "{took:?}"
@@ -2172,13 +2271,13 @@ async fn a_write_that_makes_no_progress_for_a_minute_ends_the_tunnel() {
     let ended = tokio::time::timeout(held, piped)
         .await
         .expect("the tunnel was still held after 600 s");
-    let why = "the page to AbleSet: a write made no progress for 60000 ms";
+    let why = "the page to AbleSet: a write made no progress for 90000 ms";
     assert_eq!((ended.up, ended.why.as_str()), (2, why));
 }
 
 #[tokio::test(start_paused = true)]
 async fn a_slow_or_idle_tunnel_is_never_cut_by_the_stalled_write_bound() {
-    assert_eq!(STALLED_WRITE, Duration::from_secs(60));
+    assert_eq!(STALLED_WRITE, Duration::from_secs(90));
     let ((page, mut page_far), (ableset, mut ableset_far), (_sender, mut stop)) = ends_and_stop();
     let piped = pipe(page, ableset, &mut stop, HALF_CLOSE_GRACE);
     let the_ends = async {
