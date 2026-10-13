@@ -715,16 +715,26 @@ class Harness:
         return 404, {"error": f"no {method} {path}"}
 
     def stop(self):
-        self.link.stop()
-        # The hub first: its graceful REMOVE-DEVICE then reaches the fake.
+        """Stops every part, each one even when a part before it failed to
+        stop (that failure logged), then raises the first failure (#43)."""
+        parts = [("the impair proxy", self.link)]
+        # The hub before the fakes: its graceful REMOVE-DEVICE then reaches the fake.
         if self.hub is not None:
-            self.hub.stop()
+            parts.append(("the hub", self.hub))
         if self.fake is not None:
-            self.fake.stop()
+            parts.append(("the fake Companion", self.fake))
         if self.ableset_fake is not None:
-            self.ableset_fake.stop()
-        for host in self.hosts.values():
-            host.stop()
+            parts.append(("the fake AbleSet", self.ableset_fake))
+        parts += [(f"host {name}", host) for name, host in self.hosts.items()]
+        failures = []
+        for what, part in parts:
+            try:
+                part.stop()
+            except Exception as e:  # raised below, once every part had its stop
+                print(f"harness: {what} did not stop: {e!r}", file=sys.stderr, flush=True)
+                failures.append(e)
+        if failures:
+            raise failures[0]
 
 
 def handler_for(harness):
