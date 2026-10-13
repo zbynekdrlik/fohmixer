@@ -549,6 +549,35 @@ class HarnessTest(unittest.TestCase):
             server.server_close()
 
 
+class Stop(unittest.TestCase):
+    def test_a_part_that_fails_to_stop_never_leaves_the_others_running(self):
+        # The PR #109 review (#43): the link's stop raises when its tool does
+        # not end, and the hub, the fakes and the hosts were then left running.
+        data = tempfile.mkdtemp(prefix="fohmixer-harness-test-")
+        self.addCleanup(shutil.rmtree, data, ignore_errors=True)
+        args = harness.parse_args(
+            [
+                *("--data", data, "--layout", LAYOUT),
+                *("--band-port", "0", "--master-port", "0", "--meters-hz", "0"),
+                *("--fake-companion-port", "0", "--fake-ableset-port", "0"),
+            ]
+        )
+        work = harness.Harness(args)
+        parts = [work.fake, work.ableset_fake, *work.hosts.values()]
+        self.addCleanup(lambda: [part.stop() for part in parts if part.proc.poll() is None])
+        stop_link = work.link.stop
+
+        def failing():
+            stop_link()
+            raise RuntimeError("the impair proxy did not end")
+
+        work.link.stop = failing
+        with self.assertRaisesRegex(RuntimeError, "the impair proxy did not end"):
+            quietly(work.stop)
+        running = [os.path.basename(p.proc.args[1]) for p in parts if p.proc.poll() is None]
+        self.assertEqual(running, [], "every other part stopped")
+
+
 class FakeCompanionRoutes(unittest.TestCase):
     """The harness with ``--fake-companion-port`` (#52): the hub's config names
     the fake, the routes drive it."""
