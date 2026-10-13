@@ -38,6 +38,12 @@ impl Ration {
             None
         }
     }
+
+    /// The count left out since the last record allowed, handed to a record
+    /// of its own (an outage's end, #90 B3h): back to 0.
+    pub fn left_out(&mut self) -> u64 {
+        std::mem::take(&mut self.skipped)
+    }
 }
 
 #[cfg(test)]
@@ -66,5 +72,8 @@ mod tests {
         let mut late = Ration::default();
         assert_eq!(late.take(t + GAP, 1), Some(0));
         assert_eq!(late.take(t, 1), None);
+        // The count left out, handed on once.
+        assert_eq!((late.left_out(), late.left_out()), (1, 0));
+        assert_eq!(late.take(t + GAP * 2, 1), Some(0));
     }
 }

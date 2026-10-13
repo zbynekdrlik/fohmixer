@@ -27,21 +27,25 @@
 //!   browser on the PC sends, with the public `Host` (the owner's decision:
 //!   fohmixer's access rules are the lock).
 //! - When AbleSet does not answer, or the hub refuses, the hub answers
-//!   itself ([`down_answer`]), records every such request (`ableset_proxy`)
-//!   and logs it at warn at most once per [`WARN_GAP`] for each kind
-//!   ([`warn_line`]).
+//!   itself ([`down_answer`]), records it (`ableset_proxy`: each of
+//!   AbleSet's own faults, a client's at most [`FAULT_RECORDS`] per kind per
+//!   [`WARN_GAP`]) and logs it at warn at most once per [`WARN_GAP`] for
+//!   each kind ([`warn_line`]).
 //! - A WebSocket upgrade ([`is_upgrade`]: Socket.IO's `websocket`
 //!   transport, on HTTP/1.1), after the same checks, is a transparent byte
 //!   tunnel (B2): AbleSet's 101 goes back to the page and each way's bytes
 //!   are copied on their own, an end's close passed on to the other
 //!   ([`pipe`]). It ends when both ends closed, when one end is still open
-//!   [`HALF_CLOSE_GRACE`] after the other's close, or at the hub's stop
-//!   ([`AbleSet::stop`]); its two upgrades get the head bound. At most
+//!   [`HALF_CLOSE_GRACE`] after the other's close, when a write to one end
+//!   makes no progress for [`STALLED_WRITE`], or at the hub's stop
+//!   ([`AbleSet::stop`]); its two upgrades get the head bound. An upgrade
+//!   that announces a body is refused ([`upgrade_body`]). At most
 //!   [`MAX_SOCKETS`] at a time (one more: 503 at once), each slot held until
 //!   the tunnel's close record (or a non-101 answer's body) ends, each
 //!   opened and closed in an `ableset_ws` record ([`ws_fields`],
 //!   [`WS_RECORDS`] per kind per [`WARN_GAP`]).
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::future::Future;
 use std::io;
@@ -59,7 +63,7 @@ use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri, Ve
 use axum::middleware::{Next, from_fn_with_state};
 use axum::response::{IntoResponse, Response};
 use http_body_util::BodyExt as _;
-use hyper::upgrade::OnUpgrade;
+use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
 use serde_json::{Value, json};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt as _};
@@ -115,6 +119,31 @@ pub const WARN_GAP: Duration = crate::ration::GAP;
 /// once.
 pub const MAX_SOCKETS: usize = 64;
 
+/// At most this many `ableset_proxy` records of a client's fault (anything
+/// but AbleSet down or late, [`Failure::is_ableset`]) of one kind
+/// ([`Failure::kind`]) per [`WARN_GAP`], the count left out on the next
+/// (#90 B3h): a client in a loop (403s, a full hub's 503s) cannot use up
+/// the day's event-log space.
+pub const FAULT_RECORDS: u32 = 1;
+
+/// At most this many `ableset_proxy` records of AbleSet's own fault of one
+/// kind per [`WARN_GAP`] besides an outage's first one and a warned one
+/// (#90 B3h review 1): a client looping on AbleSet's name while AbleSet is
+/// closed would otherwise write one per request; 8 keep a short outage
+/// readable. The count left out rides on the outage's end
+/// ([`ANSWERS_AGAIN`]) or the kind's next record.
+pub const OUTAGE_RECORDS: u32 = 8;
+
+/// The `why` of the record that ends an outage: the first request AbleSet
+/// answers after it, with the outage's records left out as `skipped`.
+pub const ANSWERS_AGAIN: &str = "AbleSet answers again";
+
+/// At most this many characters of a client's own text (a path, a method,
+/// a `Sec-Fetch-*` value, a target) in a record or a log line (#90 B3h
+/// review 2): a path may be 64 KB and a head 400 KB, and neither the day's
+/// event-log cap nor `hub.out.log` is meant for them. [`clip`] cuts it.
+pub const CLIENT_TEXT: usize = 256;
+
 /// At most this many `ableset_ws` records (and info lines) of one kind,
 /// `open` or `close`, per [`WARN_GAP`]: a tab opened and closed now and
 /// then is all recorded, a client opening sockets in a loop is not (the
@@ -137,6 +166,23 @@ pub const STOPPED: &str = "the hub stops";
 /// tablet that then leaves the network: nothing in flight, so no TCP timer
 /// would ever end it) is cut, and its slot comes back.
 pub const HALF_CLOSE_GRACE: Duration = Duration::from_secs(5);
+
+/// How long a write to one end of a tunnel may make no progress before the
+/// tunnel ends (#90 re-review Low 1): a page that never reads (its receive
+/// window zero, the hub's send buffer full) would otherwise hold the write
+/// to it, and AbleSet's close queued behind that write, for good. Idle time
+/// is never bounded (an idle tunnel has no write waiting), and any progress
+/// starts the bound afresh: it bounds no progress, not a rate.
+///
+/// Against AbleSet's ping (design §3.4; #90 B3h review 5): once the hub's
+/// write waits, the ping sent before it may still be answered up to the
+/// ping timeout later, and the next one, sent the ping interval after that
+/// pong, is stuck behind the write; so AbleSet gives up on a page no byte
+/// reaches at most interval + 2 × timeout after the write began to wait:
+/// 22 s for AbleSet 3.1.5 (2 s, 10 s), 65 s by Socket.IO's defaults (25 s,
+/// 20 s). 90 s is above both, so the hub never cuts a page AbleSet still
+/// keeps; a live page takes bytes far more often.
+pub const STALLED_WRITE: Duration = Duration::from_secs(90);
 
 /// How long the hub's stop waits for every tunnel to end (#90 review 3):
 /// [`CLOSE_BOUND`] for their two ends to close, and half a second for their
@@ -171,8 +217,8 @@ pub struct AbleSet {
     tunnels: AtomicU64,
     /// The hub's stop: every tunnel ends at it.
     stop: watch::Sender<bool>,
-    /// The records' rations by kind.
-    rations: Mutex<HashMap<&'static str, Ration>>,
+    /// The records' rations by record and kind.
+    rations: Mutex<HashMap<(&'static str, &'static str), Ration>>,
 }
 
 impl AbleSet {
@@ -255,14 +301,21 @@ impl AbleSet {
         matches!(back, Ok(Ok(_)))
     }
 
-    /// Whether a record of `kind` is due, at most `per_gap` per
+    /// Whether a `record` of `kind` is due, at most `per_gap` per
     /// [`WARN_GAP`]: the count of its kind left out before it.
-    fn due(&self, kind: &'static str, per_gap: u32) -> Option<u64> {
+    fn due(&self, record: &'static str, kind: &'static str, per_gap: u32) -> Option<u64> {
         let mut rations = self.rations.lock().unwrap_or_else(PoisonError::into_inner);
         rations
-            .entry(kind)
+            .entry((record, kind))
             .or_default()
             .take(Instant::now(), per_gap)
+    }
+
+    /// The count of a `record` of `kind` its ration left out since its last
+    /// one, handed to a record of its own (back to 0).
+    fn left_out(&self, record: &'static str, kind: &'static str) -> u64 {
+        let mut rations = self.rations.lock().unwrap_or_else(PoisonError::into_inner);
+        rations.get_mut(&(record, kind)).map_or(0, Ration::left_out)
     }
 
     /// Tunnel `n` opened or closed: its `ableset_ws` record and info line
@@ -270,7 +323,7 @@ impl AbleSet {
     /// line.
     fn ws_note(&self, n: u64, opener: &Opener, ws: &Ws<'_>) {
         let kind = ws.kind();
-        let Some(skipped) = self.due(kind, WS_RECORDS) else {
+        let Some(skipped) = self.due("ableset_ws", kind, WS_RECORDS) else {
             tracing::debug!(client = n, "ableset: WebSocket {kind}");
             return;
         };
@@ -303,14 +356,17 @@ impl AbleSet {
     /// closed, one end stayed open [`HALF_CLOSE_GRACE`] past the other's
     /// close, or the hub stopped; then its `close` record, and only then
     /// its socket slot freed.
-    async fn carry(
+    async fn carry<P, A>(
         self: Arc<Self>,
         n: u64,
         opener: Opener,
-        page: OnUpgrade,
-        ableset: OnUpgrade,
+        page: P,
+        ableset: A,
         slot: OwnedSemaphorePermit,
-    ) {
+    ) where
+        P: Future<Output = Result<Upgraded, hyper::Error>>,
+        A: Future<Output = Result<Upgraded, hyper::Error>>,
+    {
         let _slot = slot;
         let started = Instant::now();
         let mut stop = self.stop.subscribe();
@@ -330,15 +386,32 @@ impl AbleSet {
         self.ws_note(n, &opener, &Ws::Close { ms, ended: &ended });
     }
 
-    /// AbleSet answered: the outage, if any, is over.
+    /// AbleSet answered: the outage, if any, is over. Its end is recorded
+    /// at once ([`ANSWERS_AGAIN`]), with the outage's records left out.
     fn reached(&self, method: &Method, path: &str, status: StatusCode, started: Instant) {
-        self.failing.store(false, Ordering::Relaxed);
+        let (method, path) = (clip(method.as_str()), clip(path));
         let ms = started.elapsed().as_millis() as u64;
-        tracing::debug!(%method, path, status = status.as_u16(), ms, "ableset: proxied");
+        let status = status.as_u16();
+        tracing::debug!(method = %method, path = ?path, status, ms, "ableset: proxied");
+        if self.failing.swap(false, Ordering::Relaxed) {
+            let skipped = self.left_out("ableset_proxy", "down");
+            tracing::info!(
+                method = %method,
+                path = ?path,
+                status,
+                skipped,
+                "ableset: {ANSWERS_AGAIN}"
+            );
+            let fields = proxy_fields(&method, &path, status, ANSWERS_AGAIN, false, skipped);
+            self.events.record("ableset_proxy", fields);
+        }
     }
 
-    /// AbleSet was not reached: answered by the hub, recorded, and logged
-    /// at warn when [`warn_line`] says so (else at debug).
+    /// AbleSet was not reached: answered by the hub, recorded (an outage's
+    /// first record and a warned one at once; the rest at most
+    /// [`OUTAGE_RECORDS`], a client's fault [`FAULT_RECORDS`], per kind per
+    /// [`WARN_GAP`]), and logged at warn when [`warn_line`] says so (else
+    /// at debug); the client's own text [`clip`]ped.
     fn failed(
         &self,
         method: &Method,
@@ -366,6 +439,16 @@ impl AbleSet {
                 "AbleSet is sent paths only",
             ),
             Failure::CrossSite(_) => crate::access::forbidden("cross_site"),
+            Failure::UpgradeBody(_) => error(
+                StatusCode::BAD_REQUEST,
+                "ABLESET_UPGRADE_BODY",
+                "A WebSocket upgrade carries no body",
+            ),
+            Failure::BrokenBody(_) => error(
+                StatusCode::BAD_REQUEST,
+                "ABLESET_BROKEN_BODY",
+                "The request body broke off",
+            ),
             Failure::Closed(_) => error(
                 StatusCode::BAD_GATEWAY,
                 "ABLESET_CLOSED",
@@ -406,13 +489,28 @@ impl AbleSet {
         };
         let why = failure.why();
         let status = answer.status().as_u16();
+        let (method, path) = (clip(method.as_str()), clip(path));
         if warn {
-            tracing::warn!(%method, path, status, "ableset: {why}");
+            tracing::warn!(method = %method, path = ?path, status, "ableset: {why}");
         } else {
-            tracing::debug!(%method, path, status, "ableset: {why}");
+            tracing::debug!(method = %method, path = ?path, status, "ableset: {why}");
         }
-        let fields = proxy_fields(method.as_str(), path, status, why, warn && ableset);
-        self.events.record("ableset_proxy", fields);
+        let alarm = warn && ableset;
+        let starts = matches!(failure, Failure::Down(_)) && !continues;
+        let per_gap = if ableset {
+            OUTAGE_RECORDS
+        } else {
+            FAULT_RECORDS
+        };
+        let due = if alarm || starts {
+            Some(0)
+        } else {
+            self.due("ableset_proxy", failure.kind(), per_gap)
+        };
+        if let Some(skipped) = due {
+            let fields = proxy_fields(&method, &path, status, why, alarm, skipped);
+            self.events.record("ableset_proxy", fields);
+        }
         answer
     }
 }
@@ -424,12 +522,31 @@ pub fn warn_line(wanted: bool, since: Option<Duration>) -> bool {
     wanted && since.is_none_or(|since| since >= WARN_GAP)
 }
 
+/// A client's own text cut to [`CLIENT_TEXT`] characters, with a mark
+/// naming its whole size when cut (pure, #90 B3h review 2).
+pub fn clip(text: &str) -> Cow<'_, str> {
+    match text.char_indices().nth(CLIENT_TEXT) {
+        None => Cow::Borrowed(text),
+        Some((end, _)) => Cow::Owned(format!("{}… ({} bytes)", &text[..end], text.len())),
+    }
+}
+
 /// The `ableset_proxy` record of a request that did not reach AbleSet: why
 /// under `error` for an `alarm` (a warned fault of AbleSet itself: a
-/// warn-class record, kept past the event log's daily cap), else under
-/// `why`, so no client can fill the PC's disk with warn-class records.
-pub fn proxy_fields(method: &str, path: &str, status: u16, why: &str, alarm: bool) -> Value {
-    let mut fields = json!({ "method": method, "path": path, "status": status });
+/// warn-class record, kept past the event log's daily cap, `events::is_warn`),
+/// else under `why`, so no client can fill the PC's disk with warn-class
+/// records; `skipped`: the records of its kind the ration left out before it.
+pub fn proxy_fields(
+    method: &str,
+    path: &str,
+    status: u16,
+    why: &str,
+    alarm: bool,
+    skipped: u64,
+) -> Value {
+    let mut fields = json!({
+        "method": method, "path": path, "status": status, "skipped": skipped
+    });
     fields[if alarm { "error" } else { "why" }] = json!(why);
     fields
 }
@@ -535,18 +652,23 @@ fn held(body: Body, slot: OwnedSemaphorePermit) -> Body {
     }))
 }
 
-/// A WebSocket upgrade (#90 B2), after the Access check and the refusals:
-/// sent on to AbleSet with its handshake headers. When AbleSet switches
-/// (101) the page gets AbleSet's 101, and its connection and AbleSet's
-/// become one byte tunnel ([`AbleSet::carry`]) holding a socket slot; any
-/// other answer is passed on as it came, holding the slot until its body
-/// ends (#90 review 2: no upgrade streams an answer with no slot).
+/// A WebSocket upgrade (#90 B2), after the Access check and the refusals,
+/// and refused before it takes a socket slot when it announces a body
+/// ([`upgrade_body`]): sent on to AbleSet with its handshake headers. When
+/// AbleSet switches (101) the page gets AbleSet's 101, and its connection
+/// and AbleSet's become one byte tunnel ([`AbleSet::carry`]) holding a
+/// socket slot; any other answer is passed on as it came, holding the slot
+/// until its body ends (#90 review 2: no upgrade streams an answer with no
+/// slot).
 async fn tunnel(
     site: Arc<AbleSet>,
     mut request: Request,
     path: &str,
     dest: Option<&str>,
 ) -> Response {
+    if let Some(failure) = upgrade_body(request.headers()) {
+        return site.failed(&Method::GET, path, dest, failure);
+    }
     let Ok(slot) = Arc::clone(&site.sockets).try_acquire_owned() else {
         let busy = Failure::Busy("every WebSocket slot for AbleSet is taken".to_string());
         return site.failed(&Method::GET, path, dest, busy);
@@ -590,6 +712,21 @@ pub fn is_upgrade(method: &Method, version: Version, headers: &HeaderMap) -> boo
         && version == Version::HTTP_11
         && names_token(headers, &header::CONNECTION, "upgrade")
         && is_websocket_upgrade(headers)
+}
+
+/// Why an upgrade is refused before it takes a socket slot (#90 re-review
+/// Low 2, pure): it announces a body (a `Content-Length` other than 0, or
+/// any `Transfer-Encoding`). A WebSocket handshake has none (RFC 6455 §4.1;
+/// no browser sends one), and hyper hands neither connection over before a
+/// request's body is read whole, so such an upgrade would keep a connection
+/// to AbleSet as long as the page holds its own. 400, the client's fault.
+pub fn upgrade_body(headers: &HeaderMap) -> Option<Failure> {
+    let length = headers
+        .get_all(header::CONTENT_LENGTH)
+        .iter()
+        .any(|v| v.to_str().ok().and_then(|v| v.trim().parse::<u64>().ok()) != Some(0));
+    (length || headers.contains_key(header::TRANSFER_ENCODING))
+        .then(|| Failure::UpgradeBody("a WebSocket upgrade announced a request body".to_string()))
 }
 
 /// The upgrade's pair, back after the hop-by-hop headers went: the request
@@ -706,10 +843,42 @@ pub fn source_closed(copied: io::Result<u64>) -> io::Result<()> {
 }
 
 /// A writer that counts the bytes it took (a way's count, kept through an
-/// error or the stop).
+/// error or the stop), and fails a write, flush or close that made no
+/// progress for [`STALLED_WRITE`] (#90 re-review Low 1).
 struct Counted<'a, W> {
     to: &'a mut W,
     count: &'a AtomicU64,
+    /// Running while a write waits: when it ends, the write failed.
+    stalled: Option<Pin<Box<tokio::time::Sleep>>>,
+}
+
+impl<W> Counted<'_, W> {
+    /// `polled` as it came, except a wait with no progress for
+    /// [`STALLED_WRITE`]: then an error (`TimedOut`) ends the way. Any
+    /// answer is progress and starts the bound afresh.
+    fn bounded<T>(
+        &mut self,
+        cx: &mut Context<'_>,
+        polled: Poll<io::Result<T>>,
+    ) -> Poll<io::Result<T>> {
+        if polled.is_ready() {
+            self.stalled = None;
+            return polled;
+        }
+        let stalled = self
+            .stalled
+            .get_or_insert_with(|| Box::pin(tokio::time::sleep(STALLED_WRITE)));
+        match stalled.as_mut().poll(cx) {
+            Poll::Ready(()) => Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!(
+                    "a write made no progress for {} ms",
+                    STALLED_WRITE.as_millis()
+                ),
+            ))),
+            Poll::Pending => Poll::Pending,
+        }
+    }
 }
 
 impl<W: AsyncWrite + Unpin> AsyncWrite for Counted<'_, W> {
@@ -723,27 +892,36 @@ impl<W: AsyncWrite + Unpin> AsyncWrite for Counted<'_, W> {
         if let Poll::Ready(Ok(n)) = &written {
             this.count.fetch_add(*n as u64, Ordering::Relaxed);
         }
-        written
+        this.bounded(cx, written)
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut *self.get_mut().to).poll_flush(cx)
+        let this = self.get_mut();
+        let flushed = Pin::new(&mut *this.to).poll_flush(cx);
+        this.bounded(cx, flushed)
     }
 
     fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut *self.get_mut().to).poll_shutdown(cx)
+        let this = self.get_mut();
+        let closed = Pin::new(&mut *this.to).poll_shutdown(cx);
+        this.bounded(cx, closed)
     }
 }
 
 /// One way of a tunnel: `from`'s bytes into `to` (counted in `count`),
 /// then `from`'s close passed on (`to` shut down: a FIN, over TLS its
-/// `close_notify`).
+/// `close_notify`); a write to `to` that makes no progress for
+/// [`STALLED_WRITE`] ends it with an error.
 async fn pass<R, W>(from: &mut R, to: &mut W, count: &AtomicU64) -> io::Result<()>
 where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
-    let mut counted = Counted { to, count };
+    let mut counted = Counted {
+        to,
+        count,
+        stalled: None,
+    };
     source_closed(tokio::io::copy(from, &mut counted).await)?;
     counted.shutdown().await
 }
@@ -891,7 +1069,8 @@ pub fn refusal(method: &Method, uri: &Uri, headers: &HeaderMap) -> Option<Failur
         return Some(Failure::Method(format!("{method} is never forwarded")));
     }
     if !uri.path().starts_with('/') {
-        return Some(Failure::Target(format!("the target {uri:?} is no path")));
+        let target = clip(&uri.to_string()).into_owned();
+        return Some(Failure::Target(format!("the target {target:?} is no path")));
     }
     let fetch = |name: &str| {
         headers
@@ -902,7 +1081,7 @@ pub fn refusal(method: &Method, uri: &Uri, headers: &HeaderMap) -> Option<Failur
     let mode = fetch("sec-fetch-mode");
     let cross_site = fetch("sec-fetch-site").eq_ignore_ascii_case("cross-site");
     (cross_site && !mode.eq_ignore_ascii_case("navigate")).then(|| {
-        let dest = fetch("sec-fetch-dest");
+        let (mode, dest) = (clip(mode), clip(fetch("sec-fetch-dest")));
         Failure::CrossSite(format!(
             "a cross-site request: mode {mode:?}, dest {dest:?}"
         ))

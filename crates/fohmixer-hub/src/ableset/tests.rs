@@ -404,9 +404,10 @@ async fn warn_lines_are_rationed_and_only_ablesets_own_fault_is_a_warn_class_rec
         (&first["ev"], &first["method"]),
         (&json!("ableset_proxy"), &json!("GET"))
     );
-    // Every one is recorded; only the warned fault of AbleSet itself under
-    // `error` (warn class, kept past the event log's daily cap), the rest
-    // under `why`: no client fills the PC's disk.
+    // Every one is recorded, and the outage's end (#90 B3h review 1); only
+    // the warned fault of AbleSet itself under `error` (warn class, kept
+    // past the event log's daily cap), the rest under `why`: no client
+    // fills the PC's disk.
     let keys: Vec<&str> = records
         .iter()
         .map(|r| {
@@ -417,7 +418,7 @@ async fn warn_lines_are_rationed_and_only_ablesets_own_fault_is_a_warn_class_rec
             }
         })
         .collect();
-    assert_eq!(keys, ["error", "why", "why", "why", "why"]);
+    assert_eq!(keys, ["error", "why", "why", "why", "why", "why"]);
     let rows: Vec<(&str, u64, &str)> = records
         .iter()
         .map(|r| {
@@ -434,9 +435,135 @@ async fn warn_lines_are_rationed_and_only_ablesets_own_fault_is_a_warn_class_rec
             ("/b", 502, refused),
             ("/c", 413, "big"),
             ("/d", 504, "late"),
+            ("/e", 200, "AbleSet answers again"),
             ("/f", 502, refused)
         ]
     );
+}
+
+#[test]
+fn a_clients_faults_are_recorded_once_per_gap_per_kind_and_ablesets_own_each_time() {
+    let (site, records) = site_with(CLOSED, Duration::from_secs(1), 16);
+    let busy = "every WebSocket slot for AbleSet is taken";
+    // A client in a loop (#90 B3h, review finding 6): one record per kind
+    // in a gap, the repeats left out (counted on the next one); AbleSet's
+    // own fault every time.
+    for _ in 0..3 {
+        site.failed(&Method::GET, "/a", None, Failure::Busy(busy.into()));
+        site.failed(&Method::GET, "/b", None, Failure::CrossSite("x".into()));
+        site.failed(&Method::GET, "/c", None, Failure::Down("refused".into()));
+    }
+    site.failed(&Method::GET, "/d", None, Failure::Target("t".into()));
+    let records: Vec<Value> = records.try_iter().collect();
+    let rows: Vec<(&str, &str, u64, bool)> = records
+        .iter()
+        .map(|r| {
+            let (key, why) = why_of(r);
+            let skipped = r["skipped"].as_u64().unwrap();
+            (key, why, skipped, crate::events::is_warn(r))
+        })
+        .collect();
+    // Only AbleSet's outage outlives the event log's daily cap (warn
+    // class), and only its warned first record; a client's faults never.
+    assert_eq!(
+        rows,
+        [
+            ("why", busy, 0, false),
+            ("why", "x", 0, false),
+            ("error", "refused", 0, true),
+            ("why", "refused", 0, false),
+            ("why", "refused", 0, false),
+            ("why", "t", 0, false),
+        ]
+    );
+    // Every kind is its own ration.
+    let every = [
+        Failure::Method(String::new()),
+        Failure::Target(String::new()),
+        Failure::CrossSite(String::new()),
+        Failure::UpgradeBody(String::new()),
+        Failure::Closed(String::new()),
+        Failure::Busy(String::new()),
+        Failure::TooLarge(String::new()),
+        Failure::Down(String::new()),
+        Failure::Timeout(String::new()),
+    ];
+    let kinds: std::collections::HashSet<&str> = every.iter().map(Failure::kind).collect();
+    assert_eq!(kinds.len(), every.len(), "{kinds:?}");
+    assert_eq!(FAULT_RECORDS, 1);
+}
+
+#[test]
+fn an_outage_is_recorded_at_its_start_then_rationed_and_at_its_end_with_the_count_left_out() {
+    // #90 B3h review 1: a client looping on AbleSet's name while AbleSet is
+    // closed. The outage's first record and its end go out at once; the
+    // rest, 8 per kind per gap, the count left out on the end's record.
+    let (site, records) = site_with(CLOSED, Duration::from_secs(1), 16);
+    let refused = "AbleSet does not answer: refused";
+    for _ in 0..20 {
+        site.failed(&Method::GET, "/a", None, Failure::Down(refused.into()));
+    }
+    site.reached(&Method::GET, "/b", StatusCode::OK, Instant::now());
+    // A new outage's first record goes out at once though its kind's
+    // ration is used up.
+    site.failed(&Method::GET, "/c", None, Failure::Down(refused.into()));
+    let records: Vec<Value> = records.try_iter().collect();
+    let rows: Vec<(&str, &str, u64)> = records
+        .iter()
+        .map(|r| {
+            let (key, why) = why_of(r);
+            (key, why, r["skipped"].as_u64().unwrap())
+        })
+        .collect();
+    let mut expected: Vec<(&str, &str, u64)> = vec![("error", refused, 0)];
+    expected.extend([("why", refused, 0); 8]);
+    expected.push(("why", "AbleSet answers again", 11));
+    expected.push(("why", refused, 0));
+    assert_eq!(rows, expected);
+    assert_eq!(
+        (&records[9]["path"], &records[9]["status"]),
+        (&json!("/b"), &json!(200))
+    );
+    // A hung AbleSet: its warned late answer at once, the rest rationed.
+    let (site, records) = site_with(CLOSED, Duration::from_secs(1), 16);
+    for _ in 0..12 {
+        site.failed(&Method::GET, "/d", None, Failure::Timeout("late".into()));
+    }
+    let keys: Vec<&str> = records.try_iter().map(|r| why_of(&r).0).collect();
+    let mut expected = vec!["error"];
+    expected.extend(["why"; 8]);
+    assert_eq!(keys, expected);
+}
+
+#[test]
+fn a_clients_long_text_is_clipped_in_the_record_and_the_warn_line() {
+    // #90 B3h review 2: a path up to 64 KB, a Sec-Fetch-* value up to the
+    // head's 400 KB, a target that is no path: cut to 256 characters with
+    // a mark naming the whole size, in the record and in hub.out.log.
+    let path = format!("/{}", "p".repeat(60 * 1024));
+    let mode = "m".repeat(300 * 1024);
+    let cross = headers(&[
+        ("sec-fetch-site", "cross-site"),
+        ("sec-fetch-mode", mode.as_str()),
+    ]);
+    let failure = refusal(&Method::GET, &"/".parse().unwrap(), &cross).unwrap();
+    let (site, records) = site_with(CLOSED, Duration::from_secs(1), 16);
+    let log = logged(|| {
+        site.failed(&Method::GET, &path, None, failure);
+    });
+    let records: Vec<Value> = records.try_iter().collect();
+    let clipped = format!("{}… ({} bytes)", &path[..256], path.len());
+    assert_eq!(records[0]["path"], json!(clipped));
+    let why = why_of(&records[0]).1;
+    assert!(why.len() < 1024, "{} bytes", why.len());
+    assert!(why.contains(&format!("… ({} bytes)", mode.len())), "{why}");
+    assert!(log.len() < 2048, "{} bytes", log.len());
+    assert!(log.contains(" WARN ") && log.contains(&clipped), "{log}");
+    let target: Uri = format!("{}:1", "h".repeat(1000)).parse().unwrap();
+    let Some(Failure::Target(why)) = refusal(&Method::GET, &target, &HeaderMap::new()) else {
+        panic!("a target that is no path");
+    };
+    assert!(why.len() < 512 && why.contains("… (1002 bytes)"), "{why}");
 }
 
 /// A record's key for its text (`error`: warn class, or `why`) and the text.
@@ -1178,6 +1305,32 @@ fn a_websocket_is_a_get_naming_the_upgrade_and_websocket_whose_pair_goes_on() {
     assert_eq!(map["upgrade"], "websocket");
 }
 
+#[tokio::test]
+async fn an_upgrade_that_announces_a_body_in_any_way_is_refused_400() {
+    let refused = |pairs: &[(&str, &str)]| upgrade_body(&headers(pairs)).is_some();
+    assert!(!refused(&[
+        ("connection", "upgrade"),
+        ("upgrade", "websocket")
+    ]));
+    assert!(!refused(&[("content-length", "0")]));
+    assert!(!refused(&[("content-length", " 0 ")]));
+    for pairs in [
+        &[("content-length", "1")][..],
+        &[("content-length", "1, 1")][..],
+        &[("content-length", "0"), ("content-length", "5")][..],
+        &[("transfer-encoding", "chunked")][..],
+        &[("content-length", "0"), ("transfer-encoding", "gzip")][..],
+    ] {
+        assert!(refused(pairs), "{pairs:?}");
+    }
+    let (site, _records) = site_with(CLOSED, Duration::from_secs(1), 16);
+    let failure = upgrade_body(&headers(&[("content-length", "1")])).unwrap();
+    let answer = site.failed(&Method::GET, "/socket.io/", None, failure);
+    assert_eq!(answer.status(), StatusCode::BAD_REQUEST);
+    let body: Value = serde_json::from_str(&text_of(answer).await).unwrap();
+    assert_eq!(body["code"], "ABLESET_UPGRADE_BODY");
+}
+
 #[test]
 fn a_tunnels_records_name_it_its_life_its_bytes_and_why_each_kind_rationed() {
     let (site, records) = site_with(CLOSED, Duration::from_secs(1), 16);
@@ -1278,8 +1431,7 @@ async fn listen(app: Router) -> SocketAddr {
 async fn listen_with(app: Router, header_read: Duration) -> SocketAddr {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let mut server = axum_server::Server::<SocketAddr>::from_listener(listener);
-    crate::http1_limits(server.http_builder(), header_read);
+    let server = crate::accept::server(listener, header_read);
     tokio::spawn(server.serve(app.into_make_service_with_connect_info::<SocketAddr>()));
     addr
 }
@@ -1525,20 +1677,59 @@ async fn a_tunnel_ableset_closed_ends_after_the_grace_though_the_page_stays_sile
 }
 
 #[tokio::test]
-async fn a_tunnel_whose_upgrades_never_complete_gives_its_slot_back_after_the_head_bound() {
-    let upstream = fake().await;
-    let (site, records) = site_with(&upstream, Duration::from_millis(300), 16);
+async fn an_upgrade_that_announces_a_body_is_400_before_it_takes_a_slot_and_no_outage() {
+    // A WebSocket handshake is a GET without a body (RFC 6455 4.1). One
+    // that announces a body would keep its connection to AbleSet as long as
+    // the page holds its own: hyper hands neither connection over before
+    // the body is read whole (#90 re-review Low 2). It is refused 400
+    // before it takes a socket slot (none is free here) and before AbleSet
+    // is asked, as the client's fault.
+    let (upstream, contacted) = closer().await;
+    let (events, records) = EventLog::channel(64);
+    let proxy = Proxy::new(&upstream, Duration::from_secs(5), 16);
+    let site = Arc::new(AbleSet::limited(NAME, &tls(), None, events, proxy, 4, 0));
     let at = listen(router(Arc::clone(&site), None)).await;
-    // The page announces a body and never sends it: hyper hands neither
-    // connection over before their request is read whole, so neither
-    // upgrade completes, though AbleSet answers 101 at once (#90 review 1).
-    let mut page = TcpStream::connect(at).await.unwrap();
-    let ask = format!(
-        "GET /socket.io/ HTTP/1.1\r\nHost: {NAME}\r\nConnection: Upgrade\r\n\
-         Upgrade: websocket\r\nSec-WebSocket-Version: 13\r\n\
-         Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
-         Sec-WebSocket-Protocol: x-test\r\nContent-Length: 1\r\n\r\n"
+    for body in ["Content-Length: 1", "Transfer-Encoding: chunked"] {
+        let mut page = TcpStream::connect(at).await.unwrap();
+        let ask = format!(
+            "GET /socket.io/ HTTP/1.1\r\nHost: {NAME}\r\nConnection: Upgrade\r\n\
+             Upgrade: websocket\r\nSec-WebSocket-Version: 13\r\n{body}\r\n\r\n"
+        );
+        let sent = tokio::io::AsyncWriteExt::write_all(&mut page, ask.as_bytes());
+        sent.await.unwrap();
+        let mut status = [0_u8; 12];
+        tokio::time::timeout(Duration::from_secs(5), page.read_exact(&mut status))
+            .await
+            .expect("an answer within 5 s")
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&status), "HTTP/1.1 400", "{body}");
+    }
+    assert_eq!(contacted.load(Ordering::Relaxed), 0, "AbleSet was asked");
+    assert!(!site.failing.load(Ordering::Relaxed), "no outage");
+    let records: Vec<Value> = records.try_iter().collect();
+    assert_eq!(
+        (&records[0]["ev"], &records[0]["status"]),
+        (&json!("ableset_proxy"), &json!(400))
     );
+    let why = "a WebSocket upgrade announced a request body";
+    assert_eq!(why_of(&records[0]), ("why", why));
+    assert!(
+        records.iter().all(|r| why_of(r) == ("why", why)),
+        "{records:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_request_body_the_page_breaks_is_its_fault_never_an_outage() {
+    // #90 B3h review 3: a chunked POST whose body breaks off (a malformed
+    // chunk) fails the request to AbleSet; that is the page's fault, never
+    // an AbleSet outage.
+    let upstream = fake().await;
+    let (site, records) = site_with(&upstream, Duration::from_secs(5), 1024);
+    let at = listen(router(Arc::clone(&site), None)).await;
+    let mut page = TcpStream::connect(at).await.unwrap();
+    let ask =
+        format!("POST /press HTTP/1.1\r\nHost: {NAME}\r\nTransfer-Encoding: chunked\r\n\r\nzz\r\n");
     let sent = tokio::io::AsyncWriteExt::write_all(&mut page, ask.as_bytes());
     sent.await.unwrap();
     let mut status = [0_u8; 12];
@@ -1546,14 +1737,70 @@ async fn a_tunnel_whose_upgrades_never_complete_gives_its_slot_back_after_the_he
         .await
         .expect("an answer within 5 s")
         .unwrap();
-    assert_eq!(&status, b"HTTP/1.1 101");
-    tunnels_within(&site, 0, Duration::from_secs(3)).await;
+    assert_eq!(String::from_utf8_lossy(&status), "HTTP/1.1 400");
+    assert!(!site.failing.load(Ordering::Relaxed), "no outage");
+    let records: Vec<Value> = records.try_iter().collect();
+    let (key, why) = why_of(&records[0]);
+    let text = "the page's request body broke off: ";
+    assert!(key == "why" && why.starts_with(text), "{key}: {why}");
+}
+
+#[test]
+fn a_page_body_error_is_marked_as_the_pages_and_never_ablesets() {
+    let marked = proxy::ClientBody(axum::Error::new(io::Error::other("cut")));
+    assert_eq!(marked.to_string(), "the page's request body: cut");
+    assert!(std::error::Error::source(&marked).is_some());
+    assert!(proxy::broke_off(&marked));
+    let failure = proxy::failure(&marked, false, 16);
+    let text = "the page's request body broke off: the page's request body: cut";
+    let Failure::BrokenBody(why) = &failure else {
+        panic!("{failure:?}");
+    };
+    assert!(why.starts_with(text), "{why}");
+    assert_eq!(failure.kind(), "broken_body");
+    assert!(!failure.is_ableset());
+    // An error of AbleSet's own is not the page's.
+    assert!(!proxy::broke_off(&io::Error::other("reset")));
+}
+
+#[tokio::test]
+async fn a_tunnel_whose_upgrades_never_complete_gives_its_slot_back_after_the_head_bound() {
+    // #90 B3h review 4: carry gives the two upgrades the proxy's head bound
+    // (300 ms here), so a page that never reads its 101 (a full receive
+    // window: hyper hands its connection over only once the 101 is out)
+    // holds no slot for good.
+    let (site, records) = site_with(CLOSED, Duration::from_millis(300), 16);
+    let opener = crate::ws::opener("10.0.0.5:50000".parse().unwrap(), &HeaderMap::new());
+    let slot = Arc::clone(&site.sockets).try_acquire_owned().unwrap();
+    let never = std::future::pending::<Result<Upgraded, hyper::Error>>;
+    let carried = Arc::clone(&site).carry(1, opener, never(), never(), slot);
+    tokio::time::timeout(Duration::from_secs(5), carried)
+        .await
+        .expect("the head bound ends it");
+    assert_eq!(site.open_sockets(), 0);
     let records: Vec<Value> = records.try_iter().collect();
     let close = ws_of(&records, "close");
     assert_eq!(close.len(), 1, "{records:?}");
-    let why = "the upgrade did not complete within 300 ms";
-    assert_eq!(close[0]["why"], why);
-    drop(page);
+    assert_eq!(
+        close[0]["why"],
+        "the upgrade did not complete within 300 ms"
+    );
+}
+
+#[tokio::test]
+async fn an_upgrade_that_announces_an_empty_body_opens_its_tunnel() {
+    // Content-Length: 0 is no body: never refused (#90 B3h review).
+    let upstream = fake().await;
+    let (site, _records) = site_with(&upstream, Duration::from_secs(5), 16);
+    let at = listen(router(Arc::clone(&site), None)).await;
+    let page = TcpStream::connect(at).await.unwrap();
+    let url = format!("ws://{NAME}/socket.io/");
+    let (mut ws, _) = socket(page, &url, &[("content-length", "0")])
+        .await
+        .unwrap();
+    let hi = Message::text("hi");
+    assert_eq!(round_trip(&mut ws, hi.clone()).await, hi);
+    assert_eq!(site.open_sockets(), 1);
 }
 
 #[tokio::test]
@@ -2050,6 +2297,89 @@ impl AsyncWrite for Stuck {
     fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
         Poll::Pending
     }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_write_that_makes_no_progress_for_the_bound_ends_the_tunnel() {
+    // #90 re-review Low 1: a page that never reads (its receive window
+    // zero) holds the write to it, and AbleSet's close queued behind that
+    // write, for good. A write to either end that makes no progress for
+    // 90 s ends the tunnel; its other way then gets the grace. On the
+    // virtual clock: the real bound, without waiting for it.
+    let held = Duration::from_secs(600);
+    // The page takes 64 bytes and never reads again.
+    let ((page, _page_far), (ableset, mut ableset_far), (_sender, mut stop)) = ends_and_stop();
+    let started = tokio::time::Instant::now();
+    let piped = tokio::time::timeout(held, pipe(page, ableset, &mut stop, HALF_CLOSE_GRACE));
+    let pushed = tokio::io::AsyncWriteExt::write_all(&mut ableset_far, &[7; 1024]);
+    let (ended, pushed) = tokio::join!(piped, pushed);
+    pushed.unwrap();
+    let ended = ended.expect("the tunnel was still held after 600 s");
+    let why = "AbleSet to the page: a write made no progress for 90000 ms";
+    assert_eq!((ended.down, ended.why.as_str()), (64, why));
+    let took = started.elapsed();
+    let (stall, grace) = (Duration::from_secs(90), Duration::from_secs(5));
+    assert!(
+        took >= stall + grace && took < stall + grace * 2,
+        "{took:?}"
+    );
+    // The page closed, and AbleSet's end never completes the close passed
+    // on to it: that write is bounded too.
+    let ((page, mut page_far), (ableset, _ableset_far), (_sender, mut stop)) = ends_and_stop();
+    send_and_close(&mut page_far, b"ab").await;
+    let piped = pipe(page, Stuck(ableset), &mut stop, HALF_CLOSE_GRACE);
+    let ended = tokio::time::timeout(held, piped)
+        .await
+        .expect("the tunnel was still held after 600 s");
+    let why = "the page to AbleSet: a write made no progress for 90000 ms";
+    assert_eq!((ended.up, ended.why.as_str()), (2, why));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_flush_that_makes_no_progress_ends_the_tunnel_too() {
+    // A page end that buffers what it takes (rustls under TLS) takes
+    // AbleSet's bytes at once; its flush into a page that never reads is
+    // bounded the same way (#90 B3h review).
+    let ((page, _page_far), (ableset, mut ableset_far), (_sender, mut stop)) = ends_and_stop();
+    let buffering = tokio::io::BufWriter::new(page);
+    let held = Duration::from_secs(600);
+    let piped = tokio::time::timeout(held, pipe(buffering, ableset, &mut stop, HALF_CLOSE_GRACE));
+    let pushed = tokio::io::AsyncWriteExt::write_all(&mut ableset_far, &[7; 100]);
+    let (ended, pushed) = tokio::join!(piped, pushed);
+    pushed.unwrap();
+    let ended = ended.expect("the tunnel was still held after 600 s");
+    let why = "AbleSet to the page: a write made no progress for 90000 ms";
+    assert_eq!((ended.down, ended.why.as_str()), (100, why));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_slow_or_idle_tunnel_is_never_cut_by_the_stalled_write_bound() {
+    assert_eq!(STALLED_WRITE, Duration::from_secs(90));
+    let ((page, mut page_far), (ableset, mut ableset_far), (_sender, mut stop)) = ends_and_stop();
+    let piped = pipe(page, ableset, &mut stop, HALF_CLOSE_GRACE);
+    let the_ends = async {
+        // Idle for twice the bound: no write waits, nothing is bounded.
+        tokio::time::sleep(STALLED_WRITE * 2).await;
+        // AbleSet sends 256 bytes and closes; the page takes them 16 at a
+        // time, 50 s apart: each wait under the bound, all of them far over
+        // it (any progress starts the bound afresh).
+        send_and_close(&mut ableset_far, &[7; 256]).await;
+        let mut got = Vec::new();
+        let mut chunk = [0_u8; 16];
+        while got.len() < 192 {
+            tokio::time::sleep(Duration::from_secs(50)).await;
+            page_far.read_exact(&mut chunk).await.unwrap();
+            got.extend_from_slice(&chunk);
+        }
+        page_far.read_to_end(&mut got).await.unwrap();
+        tokio::io::AsyncWriteExt::shutdown(&mut page_far)
+            .await
+            .unwrap();
+        got.len()
+    };
+    let (ended, got) = tokio::join!(piped, the_ends);
+    assert_eq!(got, 256);
+    assert_eq!((ended.down, ended.why.as_str()), (256, "closed"));
 }
 
 #[tokio::test]

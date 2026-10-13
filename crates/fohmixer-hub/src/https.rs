@@ -15,10 +15,11 @@ use std::time::Duration;
 
 use axum::Router;
 use axum_server::Handle;
-use axum_server::tls_rustls::RustlsConfig;
+use axum_server::tls_rustls::{RustlsAcceptor, RustlsConfig};
 use rustls::sign::CertifiedKey;
 use tokio::task::JoinHandle;
 
+use crate::accept::Peer;
 use crate::tls::{Pem, Slot, SniCerts};
 
 /// The latest certificate of each name and the served configuration.
@@ -38,7 +39,7 @@ pub struct Https {
     /// The bound socket until the first certificate starts the server.
     unused: Mutex<Option<std::net::TcpListener>>,
     served: Mutex<Served>,
-    handle: Handle<SocketAddr>,
+    handle: Handle<Peer>,
     task: Mutex<Option<JoinHandle<io::Result<()>>>>,
     /// The bound of a request head ([`crate::HEADER_READ`]; a test's own).
     header_read: Duration,
@@ -133,9 +134,10 @@ impl Https {
             return Err(io::Error::other("the HTTPS listener was stopped"));
         };
         let rustls = RustlsConfig::from_config(config);
-        let mut server =
-            axum_server::from_tcp_rustls(listener, rustls.clone())?.handle(self.handle.clone());
-        crate::http1_limits(server.http_builder(), self.header_read);
+        let listener = tokio::net::TcpListener::from_std(listener)?;
+        let server = crate::accept::server(listener, self.header_read)
+            .acceptor(RustlsAcceptor::new(rustls.clone()))
+            .handle(self.handle.clone());
         let server = server.serve(
             self.app
                 .clone()
@@ -186,7 +188,7 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 mod tests {
     use super::*;
     use crate::tls::checked;
-    use crate::tls::test_certs::{TestCa, handshake, handshake_sni};
+    use crate::tls::test_certs::{TestCa, connect, handshake, handshake_sni};
 
     const NAME: &str = "foh.example.org";
     const ABLESET: &str = "ableset.example.org";
@@ -223,6 +225,24 @@ mod tests {
         // The wait can be repeated: the server ends with its drain.
         assert!(https.stopped(Duration::from_secs(5)).await);
         assert!(https.stopped(Duration::from_millis(1)).await, "ended");
+    }
+
+    #[tokio::test]
+    async fn the_listener_bounds_a_request_head_itself() {
+        // #90 follow-up 5: serve applies the listener's own bound.
+        let ca = TestCa::new();
+        let now = crate::auth::now_secs() as i64;
+        let (chain, key) = ca.leaf(&[NAME], now - 3600, now + 86_400);
+        let bound = Duration::from_millis(300);
+        let https = Https::bind("127.0.0.1:0".parse().unwrap(), Router::new())
+            .unwrap()
+            .header_read(bound);
+        let pem = checked(chain, key, NAME).unwrap();
+        https.set_cert(Slot::Primary, NAME, &pem).unwrap();
+        let page = connect(https.addr(), NAME, &ca.pem, true).await.unwrap();
+        crate::closes_half_a_head(page, bound).await;
+        https.stop(Duration::from_millis(10));
+        assert!(https.stopped(Duration::from_secs(5)).await);
     }
 
     #[tokio::test]

@@ -138,6 +138,18 @@ fn warn_class_records_are_socket_link_cap_dropped_and_errors() {
         &json!({"ev": "deck_key", "key": 3, "pressed": true, "color": "#00aa00"})
     ));
     assert!(is_warn(&json!({"ev": "applied", "errors": 1})));
+    // AbleSet's name (#90 B3h): its outage outlives the cap, a client's
+    // fault and a tunnel's open and close do not.
+    assert!(is_warn(
+        &json!({"ev": "ableset_proxy", "status": 502, "error": "AbleSet does not answer"})
+    ));
+    assert!(!is_warn(
+        &json!({"ev": "ableset_proxy", "status": 503, "why": "every slot is taken", "skipped": 9})
+    ));
+    for what in ["open", "close"] {
+        let record = json!({"ev": "ableset_ws", "what": what, "why": "the hub stops"});
+        assert!(!is_warn(&record), "{what}");
+    }
     assert!(!is_warn(&json!({"ev": "applied", "errors": 0})));
     assert!(!is_warn(&json!({})));
 }

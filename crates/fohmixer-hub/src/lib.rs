@@ -60,6 +60,7 @@ use tokio::task::JoinHandle;
 use tower_http::set_header::SetResponseHeaderLayer;
 
 pub mod ableset;
+pub mod accept;
 pub mod access;
 pub mod acme;
 pub mod auth;
@@ -609,6 +610,31 @@ async fn deck_ticks(router: mpsc::UnboundedSender<RouterMsg>, period: Duration) 
     }
 }
 
+/// Half a request head sent on `stream`, which must then close after about
+/// `bound` (a listener's head bound, #90 follow-up 5), within 5 s (tests).
+#[cfg(test)]
+pub(crate) async fn closes_half_a_head<S>(mut stream: S, bound: Duration)
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    stream
+        .write_all(b"GET / HTTP/1.1\r\nHost: x\r\n")
+        .await
+        .unwrap();
+    stream.flush().await.unwrap();
+    let started = std::time::Instant::now();
+    let mut rest = Vec::new();
+    // A TLS peer may end without close_notify: any end is the close.
+    let closed = tokio::time::timeout(Duration::from_secs(5), stream.read_to_end(&mut rest));
+    assert!(closed.await.is_ok(), "the connection stayed open");
+    let after = started.elapsed();
+    assert!(
+        after >= bound * 2 / 3,
+        "closed after {after:?}, before the bound"
+    );
+}
+
 /// A hub on `dir` with no instances (tests).
 #[cfg(test)]
 pub(crate) fn test_hub(dir: &std::path::Path) -> Hub {
@@ -757,6 +783,21 @@ pub async fn serve_until<F>(
 where
     F: Future<Output = ()> + Send + 'static,
 {
+    serve_bounded(addr, config, ready, stop, HEADER_READ).await
+}
+
+/// [`serve_until`] with `header_read` as its listener's request-head bound
+/// (#90 follow-up 5: a test proves the listener applies it itself).
+pub(crate) async fn serve_bounded<F>(
+    addr: SocketAddr,
+    config: Config,
+    ready: oneshot::Sender<SocketAddr>,
+    stop: F,
+    header_read: Duration,
+) -> anyhow::Result<()>
+where
+    F: Future<Output = ()> + Send + 'static,
+{
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .with_context(|| format!("binding {addr}"))?;
@@ -783,14 +824,11 @@ where
     }
 
     // axum-server, as the HTTPS listener: its HTTP/1 settings can be set
-    // (`http1_limits`; `axum::serve` takes none). The stop closes the
-    // clients and the listener; open requests get STOP_DRAIN.
-    let handle: axum_server::Handle<SocketAddr> = axum_server::Handle::new();
-    let listener = listener.into_std().context("handing over the listener")?;
-    let mut server = axum_server::from_tcp(listener)
-        .context("serving the bound listener")?
-        .handle(handle.clone());
-    http1_limits(server.http_builder(), HEADER_READ);
+    // (`http1_limits`; `axum::serve` takes none) and its failed accepts are
+    // logged (`accept::Logged`). The stop closes the clients and the
+    // listener; open requests get STOP_DRAIN.
+    let handle: axum_server::Handle<accept::Peer> = axum_server::Handle::new();
+    let server = accept::server(listener, header_read).handle(handle.clone());
     let serve =
         server.serve(app_router(hub.clone()).into_make_service_with_connect_info::<SocketAddr>());
     tokio::pin!(serve);
@@ -1114,40 +1152,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_request_head_that_never_ends_closes_its_connection_after_the_bound() {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    async fn serve_until_bounds_a_request_head_on_its_own_listener() {
+        // #90 follow-up 5: the listener serve_until makes applies the bound
+        // itself (serve_until passes HEADER_READ to serve_bounded).
         assert_eq!(HEADER_READ, Duration::from_secs(120));
-        // A server set up as both listeners are, with a short bound.
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        listener.set_nonblocking(true).unwrap();
-        let addr = listener.local_addr().unwrap();
-        let handle: axum_server::Handle<SocketAddr> = axum_server::Handle::new();
-        let mut server = axum_server::from_tcp(listener)
-            .unwrap()
-            .handle(handle.clone());
-        http1_limits(server.http_builder(), Duration::from_millis(300));
-        let app = Router::new().route("/", axum::routing::get(|| async { "ok" }));
-        tokio::spawn(server.serve(app.into_make_service()));
-        // A whole head is answered.
-        let mut whole = tokio::net::TcpStream::connect(addr).await.unwrap();
-        let head = b"GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n";
-        whole.write_all(head).await.unwrap();
-        let mut text = String::new();
-        let read = tokio::time::timeout(Duration::from_secs(5), whole.read_to_string(&mut text));
-        read.await.unwrap().unwrap();
-        assert!(text.starts_with("HTTP/1.1 200 OK"), "{text}");
-        // A head that stops half way: the connection is closed after the
-        // bound, not held for good.
-        let mut half = tokio::net::TcpStream::connect(addr).await.unwrap();
-        half.write_all(b"GET / HTTP/1.1\r\nHost: x\r\n")
-            .await
-            .unwrap();
-        let started = std::time::Instant::now();
-        let mut rest = Vec::new();
-        let read = tokio::time::timeout(Duration::from_secs(5), half.read_to_end(&mut rest));
-        assert!(read.await.is_ok(), "the connection stayed open");
-        assert!(started.elapsed() >= Duration::from_millis(200));
-        handle.shutdown();
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = Config::defaults(dir.path());
+        config.instances.clear();
+        let (ready, at) = oneshot::channel();
+        let (stop, stopped) = oneshot::channel::<()>();
+        let bound = Duration::from_millis(300);
+        let addr = "127.0.0.1:0".parse().unwrap();
+        let stop_on = async move {
+            let _ = stopped.await;
+        };
+        let served = tokio::spawn(serve_bounded(addr, config, ready, stop_on, bound));
+        let at = at.await.unwrap();
+        let page = tokio::net::TcpStream::connect(at).await.unwrap();
+        closes_half_a_head(page, bound).await;
+        stop.send(()).unwrap();
+        served.await.unwrap().unwrap();
     }
 
     #[tokio::test]

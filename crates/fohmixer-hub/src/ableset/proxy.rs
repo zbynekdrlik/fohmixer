@@ -12,6 +12,7 @@
 //! and closes without an answer is the client's fault ([`failure`]).
 
 use std::error::Error as StdError;
+use std::fmt;
 use std::time::Duration;
 
 use axum::body::Body;
@@ -19,7 +20,7 @@ use axum::extract::Request;
 use axum::http::uri::{Authority, PathAndQuery, Scheme};
 use axum::http::{Extensions, HeaderValue, Uri, Version, header};
 use axum::response::Response;
-use http_body_util::{LengthLimitError, Limited};
+use http_body_util::{BodyExt as _, LengthLimitError, Limited};
 use hyper::body::Incoming;
 use hyper_util::client::legacy::Client;
 use hyper_util::client::legacy::connect::HttpConnector;
@@ -46,6 +47,12 @@ pub enum Failure {
     Target(String),
     /// Another site's request that is no navigation: 403.
     CrossSite(String),
+    /// A WebSocket upgrade that announces a body
+    /// (`ableset::upgrade_body`): 400.
+    UpgradeBody(String),
+    /// The page's own request body failed (a malformed chunk, a dropped
+    /// upload): 400, never an outage.
+    BrokenBody(String),
     /// AbleSet read a WebSocket upgrade and closed the connection without
     /// an answer (it serves no WebSocket there): 502, the client's fault.
     Closed(String),
@@ -66,11 +73,30 @@ impl Failure {
             Self::Method(why)
             | Self::Target(why)
             | Self::CrossSite(why)
+            | Self::UpgradeBody(why)
+            | Self::BrokenBody(why)
             | Self::Closed(why)
             | Self::Busy(why)
             | Self::TooLarge(why)
             | Self::Down(why)
             | Self::Timeout(why) => why,
+        }
+    }
+
+    /// Its kind: the key of a client's fault's record ration
+    /// (`ableset::FAULT_RECORDS`).
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Method(_) => "method",
+            Self::Target(_) => "target",
+            Self::CrossSite(_) => "cross_site",
+            Self::UpgradeBody(_) => "upgrade_body",
+            Self::BrokenBody(_) => "broken_body",
+            Self::Closed(_) => "closed",
+            Self::Busy(_) => "busy",
+            Self::TooLarge(_) => "too_large",
+            Self::Down(_) => "down",
+            Self::Timeout(_) => "timeout",
         }
     }
 
@@ -167,6 +193,9 @@ impl Proxy {
         if let Some(host) = host {
             parts.headers.insert(header::HOST, host);
         }
+        // The page's own body errors are marked, so a broken upload is
+        // never taken for AbleSet down (`failure`).
+        let body = body.map_err(ClientBody);
         let body = Body::new(Limited::new(body, self.max_body as usize));
         Ok(Request::from_parts(parts, body))
     }
@@ -190,15 +219,39 @@ impl Proxy {
     }
 }
 
+/// A page's own request body failing, marked on its way to AbleSet (#90
+/// B3h review 3), so [`failure`] tells it from AbleSet's faults.
+#[derive(Debug)]
+pub struct ClientBody(pub axum::Error);
+
+impl fmt::Display for ClientBody {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "the page's request body: {}", self.0)
+    }
+}
+
+impl StdError for ClientBody {
+    fn source(&self) -> Option<&(dyn StdError + 'static)> {
+        Some(&self.0)
+    }
+}
+
 /// Why a request AbleSet did not answer failed (pure): its body over
-/// `max_body`; a WebSocket `upgrade` AbleSet read and closed without an
-/// answer (#90 review 2: the client asked for a WebSocket AbleSet does not
-/// serve there, never an outage); else AbleSet down (a refused or failed
-/// connect always: it never read the request).
+/// `max_body`; its body broken by the page (a malformed chunk, a dropped
+/// upload: the page's fault, never an outage, #90 B3h review 3); a
+/// WebSocket `upgrade` AbleSet read and closed without an answer (#90
+/// review 2: the client asked for a WebSocket AbleSet does not serve there,
+/// never an outage); else AbleSet down (a refused or failed connect always:
+/// it never read the request).
 pub fn failure(error: &(dyn StdError + 'static), upgrade: bool, max_body: u64) -> Failure {
     if over_limit(error) {
         Failure::TooLarge(format!(
             "a request body went over the {max_body} bytes AbleSet is sent"
+        ))
+    } else if broke_off(error) {
+        Failure::BrokenBody(format!(
+            "the page's request body broke off: {}",
+            chain(error)
         ))
     } else if upgrade && closed_unanswered(error) {
         Failure::Closed(format!(
@@ -234,6 +287,11 @@ pub fn chain(error: &(dyn StdError + 'static)) -> String {
         .map(ToString::to_string)
         .collect::<Vec<_>>()
         .join(": ")
+}
+
+/// Whether the request failed because the page's own body failed.
+pub fn broke_off(error: &(dyn StdError + 'static)) -> bool {
+    causes(error).any(|e| e.is::<ClientBody>())
 }
 
 /// Whether the request failed because its body went over the cap.
