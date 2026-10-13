@@ -1216,7 +1216,7 @@ fn a_tunnels_records_name_it_its_life_its_bytes_and_why_each_kind_rationed() {
 #[tokio::test]
 async fn an_upgrade_ableset_does_not_switch_is_answered_as_it_came_its_handshake_sent_on() {
     let upstream = fake().await;
-    let (site, _records) = site_with(&upstream, Duration::from_secs(5), 16);
+    let (site, records) = site_with(&upstream, Duration::from_secs(5), 16);
     let pairs = [
         ("connection", "keep-alive, Upgrade"),
         ("upgrade", "websocket"),
@@ -1238,7 +1238,10 @@ async fn an_upgrade_ableset_does_not_switch_is_answered_as_it_came_its_handshake
     for (name, value) in &pairs[2..] {
         assert_eq!(seen[*name], json!(value), "{name}");
     }
-    assert_eq!(site.open_sockets(), 0, "no tunnel");
+    // No tunnel was opened: every open is an `ableset_ws` record (the first
+    // of its kind in a gap always is), and nothing was refused.
+    let records: Vec<Value> = records.try_iter().collect();
+    assert!(records.is_empty(), "{records:?}");
 }
 
 /// Serves `app` on 127.0.0.1 as the plain listener does (axum-server, the
