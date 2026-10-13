@@ -21,7 +21,7 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest as _;
 use tokio_tungstenite::tungstenite::{self, Message};
 
 use super::*;
-use crate::config::DEFAULT_ABLESET_UPSTREAM;
+use crate::config::{DEFAULT_ABLESET_TITLE, DEFAULT_ABLESET_UPSTREAM};
 use crate::test_keys::{KeyServer, claims, jwks, key, sign};
 use crate::tls::test_certs::{TestCa, connect};
 use crate::ws::tests::logged;
@@ -315,6 +315,7 @@ fn ablesets_gate_is_fohmixers_team_with_ablesets_audience() {
         name: NAME.into(),
         upstream: DEFAULT_ABLESET_UPSTREAM.into(),
         access_aud: Vec::new(),
+        title: DEFAULT_ABLESET_TITLE.into(),
     });
     assert_eq!(access_cfg(&config), None, "no audience: internet refused");
     config.ableset.as_mut().unwrap().access_aud = vec![ABLESET_AUD.into()];
@@ -744,6 +745,7 @@ fn hub_with(dir: &std::path::Path, upstream: &str, keys: Option<&KeyServer>, aud
         name: NAME.into(),
         upstream: upstream.into(),
         access_aud: aud.iter().map(|a| a.to_string()).collect(),
+        title: DEFAULT_ABLESET_TITLE.into(),
     });
     Hub::start(config).unwrap()
 }
@@ -2476,4 +2478,170 @@ async fn a_tunnel_outlives_the_header_read_bound_on_both_listeners() {
     assert_eq!(round_trip(&mut wss, hi.clone()).await, hi);
     hub.stop();
     https.stop(Duration::from_millis(10));
+}
+
+/// A fake AbleSet whose index answers 200 while `up`, else 503: its URL.
+async fn switched(up: Arc<AtomicBool>) -> String {
+    let index = move || {
+        let up = Arc::clone(&up);
+        async move {
+            if up.load(Ordering::Relaxed) {
+                StatusCode::OK
+            } else {
+                StatusCode::SERVICE_UNAVAILABLE
+            }
+        }
+    };
+    let at = listen(Router::new().route("/", get(index))).await;
+    format!("http://{at}")
+}
+
+/// The link's next change (B3), within 5 s.
+async fn change(changes: &mut tokio::sync::mpsc::UnboundedReceiver<bool>) -> Option<bool> {
+    tokio::time::timeout(Duration::from_secs(5), changes.recv())
+        .await
+        .expect("a change of the link within 5 s")
+}
+
+#[tokio::test]
+async fn the_link_goes_down_after_two_failed_reads_and_up_at_the_first_good_one() {
+    let up = Arc::new(AtomicBool::new(true));
+    let upstream = switched(Arc::clone(&up)).await;
+    let (site, records) = site_with(&upstream, Duration::from_secs(1), 16);
+    let (tx, mut changes) = tokio::sync::mpsc::unbounded_channel();
+    let period = Duration::from_millis(50);
+    let reads = tokio::spawn(link::watch(
+        Arc::clone(&site),
+        link::client(period),
+        format!("{upstream}/"),
+        period,
+        move |online| {
+            let _ = tx.send(online);
+        },
+    ));
+    let mut status = AbleSetStatus::default();
+    assert_eq!(change(&mut changes).await, Some(true));
+    site.fill(&mut status);
+    assert!(status.online && status.last_error.is_none(), "{status:?}");
+    assert!(status.checked.is_some_and(|at| at > 1_700_000_000));
+    up.store(false, Ordering::Relaxed);
+    assert_eq!(change(&mut changes).await, Some(false));
+    site.fill(&mut status);
+    let why = Some("AbleSet answers 503");
+    assert_eq!((status.online, status.last_error.as_deref()), (false, why));
+    up.store(true, Ordering::Relaxed);
+    assert_eq!(change(&mut changes).await, Some(true));
+    reads.abort();
+    let links: Vec<Value> = records
+        .try_iter()
+        .filter(|r| r["ev"] == "ableset_link")
+        .collect();
+    let rows: Vec<(bool, u64, Option<&str>)> = links
+        .iter()
+        .map(|r| {
+            let error = r.get("error").and_then(Value::as_str);
+            (
+                r["up"].as_bool().unwrap(),
+                r["failures"].as_u64().unwrap(),
+                error,
+            )
+        })
+        .collect();
+    // Down exactly at the second failed read in a row; up again with the
+    // failed reads before it (more may come before the switch is read).
+    assert_eq!(rows[..2], [(true, 0, None), (false, 2, why)]);
+    assert_eq!((rows.len(), rows[2].0, rows[2].2), (3, true, None));
+    assert!(rows[2].1 >= 2, "{rows:?}");
+    assert!(links.iter().all(crate::events::is_warn), "{links:?}");
+    assert_eq!(status.sockets, 0);
+}
+
+#[test]
+fn the_sign_in_goes_back_to_fohmixers_name_with_the_requests_port_only() {
+    for (host, target) in [
+        (
+            Some("ableset.example.org:8443"),
+            "https://foh.example.org:8443/#ableset",
+        ),
+        (
+            Some("ableset.example.org"),
+            "https://foh.example.org/#ableset",
+        ),
+        (
+            Some("ableset.example.org:443"),
+            "https://foh.example.org/#ableset",
+        ),
+        // The name is never the request's.
+        (
+            Some("evil.example:8443"),
+            "https://foh.example.org:8443/#ableset",
+        ),
+        (
+            Some("ableset.example.org:84x"),
+            "https://foh.example.org/#ableset",
+        ),
+        (None, "https://foh.example.org/#ableset"),
+    ] {
+        assert_eq!(signed_in_target(TLS_NAME, host), target, "{host:?}");
+    }
+    assert_eq!(routes::host_port("[::1]:8443"), Some(8443));
+    assert_eq!(routes::host_port("[::1]"), None);
+    assert_eq!(routes::host_port("a.example:1 x"), None);
+}
+
+#[tokio::test]
+async fn the_probe_and_the_sign_in_are_the_hubs_own_and_only_after_the_access_check() {
+    let keys = KeyServer::start(jwks(&[key()])).await;
+    let dir = tempfile::tempdir().unwrap();
+    // AbleSet is closed: anything forwarded would be a 502 and an outage.
+    let hub = hub_with(dir.path(), CLOSED, Some(&keys), &[ABLESET_AUD]);
+    let mut ablesets = claims();
+    ablesets["aud"] = json!([ABLESET_AUD]);
+    let ablesets = sign(key(), &ablesets);
+    let internet = |path: &str, token: Option<&str>| {
+        let mut pairs = vec![("cf-connecting-ip", "203.0.113.7")];
+        pairs.extend(token.map(|t| ("cf-access-jwt-assertion", t)));
+        get_from(NAME, path, "127.0.0.1", &pairs)
+    };
+    let lan = get_from(NAME, PROBE, "10.0.0.5", &[]);
+    for request in [lan, internet(PROBE, Some(ablesets.as_str()))] {
+        let response = plain(&hub, request).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let seen: Vec<Option<&str>> = [
+            "content-type",
+            "cache-control",
+            "cross-origin-resource-policy",
+        ]
+        .iter()
+        .map(|name| response.headers().get(*name).and_then(|v| v.to_str().ok()))
+        .collect();
+        let wanted = [Some("image/gif"), Some("no-store"), Some("same-site")];
+        assert_eq!(seen, wanted);
+        let body = axum::body::to_bytes(response.into_body(), 1024).await;
+        assert_eq!(&body.unwrap()[..], PIXEL);
+    }
+    assert_eq!((PIXEL.len(), &PIXEL[..6]), (43, &b"GIF89a"[..]));
+    // AbleSet's sign-in lands on its name and goes back to fohmixer's.
+    let lan = get_from("AbleSet.example.org:8443", SIGNED_IN, "10.0.0.5", &[]);
+    let back = |response: &Response| {
+        let location = response.headers().get(header::LOCATION);
+        (
+            response.status(),
+            location.map(|v| v.to_str().unwrap().to_string()),
+        )
+    };
+    let response = plain(&hub, lan).await;
+    let target = Some("https://foh.example.org:8443/#ableset".to_string());
+    assert_eq!(back(&response), (StatusCode::SEE_OTHER, target));
+    let response = plain(&hub, internet(SIGNED_IN, Some(ablesets.as_str()))).await;
+    let target = Some("https://foh.example.org/#ableset".to_string());
+    assert_eq!(back(&response), (StatusCode::SEE_OTHER, target));
+    // From the internet without AbleSet's assertion: Access refuses both.
+    for path in [PROBE, SIGNED_IN] {
+        let refused = plain(&hub, internet(path, None)).await;
+        assert_eq!(refused.status(), StatusCode::FORBIDDEN, "{path}");
+    }
+    let site = hub.ableset.as_ref().unwrap();
+    assert!(!site.failing.load(Ordering::Relaxed), "AbleSet was asked");
+    hub.stop();
 }

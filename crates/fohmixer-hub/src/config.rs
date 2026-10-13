@@ -36,6 +36,7 @@
 //! name = "ableset.example.org"
 //! upstream = "http://127.0.0.1:80"   # the default: http://, a loopback address, a port
 //! access_aud = ["<the AbleSet app's AUD tag>"]  # needs [access]; none: internet refused
+//! title = "AbleSet"      # 1..=24 characters, the tab's title (the default)
 //!
 //! # The Stream Deck tab (#52), optional: Bitfocus Companion's Satellite API
 //! [companion]
@@ -106,6 +107,8 @@ pub const DEFAULT_DECK_BITMAP_PX: u32 = 144;
 pub const DEFAULT_DECK_TITLE: &str = "Stream Deck";
 /// AbleSet's web app on this PC when `[ableset]` names no `upstream` (#90).
 pub const DEFAULT_ABLESET_UPSTREAM: &str = "http://127.0.0.1:80";
+/// AbleSet's tab's title when `[ableset]` names none (#90 B3).
+pub const DEFAULT_ABLESET_TITLE: &str = "AbleSet";
 
 /// One Live instance: its name (the `instance` of every command and
 /// binding) and the localhost port of its FohMixer script.
@@ -185,6 +188,10 @@ fn default_ableset_upstream() -> String {
     DEFAULT_ABLESET_UPSTREAM.to_string()
 }
 
+fn default_ableset_title() -> String {
+    DEFAULT_ABLESET_TITLE.to_string()
+}
+
 /// `[tls]`: the HTTPS listener for the one public name (LAN by the router's
 /// static DNS or the PC's hosts entry, the internet through the tunnel).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -249,8 +256,8 @@ pub struct TunnelCfg {
 /// own beside the `[tls]` name, proxied to AbleSet's web app at `upstream`
 /// (on this PC). Internet requests need an assertion of the AbleSet Access
 /// application (`access_aud`, with `[access]`'s team); none: refused. The
-/// name and the AUD are site data: the installer writes them, never this
-/// repository.
+/// page's tab is titled `title` (B3). The name and the AUD are site data:
+/// the installer writes them, never this repository.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AbleSetCfg {
@@ -259,6 +266,8 @@ pub struct AbleSetCfg {
     pub upstream: String,
     #[serde(default)]
     pub access_aud: Vec<String>,
+    #[serde(default = "default_ableset_title")]
+    pub title: String,
 }
 
 /// `[companion]` (#52): the Stream Deck tab. The hub registers with
@@ -677,6 +686,9 @@ impl Config {
                 );
             }
             self.validate_ableset_aud(&ableset.access_aud)?;
+            if !(1..=24).contains(&ableset.title.chars().count()) {
+                bail!("[ableset] title {:?}: 1..=24 characters", ableset.title);
+            }
         }
         Ok(())
     }
@@ -950,6 +962,7 @@ mod tests {
                 name: "ableset.example.org".into(),
                 upstream: "http://127.0.0.1:80".into(),
                 access_aud: Vec::new(),
+                title: "AbleSet".into(),
             })
         );
         assert_eq!(
@@ -1022,6 +1035,32 @@ mod tests {
         let error = Config::parse(&format!("{no_access}access_aud = [\"aud-a\"]\n"), &data());
         let error = format!("{:#}", error.unwrap_err());
         assert!(error.contains("access_aud needs [access]"), "{error}");
+    }
+
+    #[test]
+    fn ablesets_title_is_read_with_its_default_and_is_1_to_24_characters() {
+        let title = |rest: &str| {
+            let text = format!(
+                "[tls]\nname = \"foh.example.org\"\n\
+                 [ableset]\nname = \"ableset.example.org\"\n{rest}"
+            );
+            Config::parse(&text, &data()).map(|config| config.ableset.unwrap().title)
+        };
+        assert_eq!(title("").unwrap(), "AbleSet");
+        assert_eq!(title("title = \"Setlist\"\n").unwrap(), "Setlist");
+        // Characters, not bytes: Ž is two.
+        let longest = "Ž".repeat(24);
+        assert_eq!(title(&format!("title = \"{longest}\"\n")).unwrap(), longest);
+        for rest in [
+            "title = \"\"\n".to_string(),
+            format!("title = \"{}\"\n", "a".repeat(25)),
+        ] {
+            let error = format!("{:#}", title(&rest).unwrap_err());
+            assert!(
+                error.contains("[ableset] title") && error.contains("1..=24 characters"),
+                "{rest}: {error}"
+            );
+        }
     }
 
     #[test]

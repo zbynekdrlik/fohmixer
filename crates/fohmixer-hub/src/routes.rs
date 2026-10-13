@@ -178,6 +178,13 @@ pub(crate) fn host_name(host: &str) -> Option<(&str, bool)> {
     }
 }
 
+/// The port a `Host` value names (#90 B3), read only once [`host_name`]
+/// takes the value; none without one.
+pub(crate) fn host_port(host: &str) -> Option<u16> {
+    host_name(host)?;
+    host.rsplit_once(':')?.1.parse().ok()
+}
+
 /// The host a request names (#90): its first `Host` (one that is no text as
 /// `""`, which no check accepts), else its target's authority. An HTTP/2
 /// request carries no `Host` (hyper makes none from `:authority`), and an

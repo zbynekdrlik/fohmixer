@@ -155,6 +155,15 @@ fn warn_class_records_are_socket_link_cap_dropped_and_errors() {
 }
 
 #[test]
+fn ablesets_link_changes_outlive_the_cap_up_and_down() {
+    // #90 B3: an up carries no error, and is warn class all the same.
+    let up = json!({"ev": "ableset_link", "up": true, "failures": 0});
+    let down =
+        json!({"ev": "ableset_link", "up": false, "error": "AbleSet answers 503", "failures": 2});
+    assert!(is_warn(&up) && is_warn(&down));
+}
+
+#[test]
 fn a_trace_is_warn_class_only_with_a_dropout_or_a_counter_reset() {
     let trace = |events: Value| json!({"ev": "trace", "client": 3, "events": events});
     assert!(is_warn(&trace(json!([

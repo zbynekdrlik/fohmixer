@@ -44,6 +44,11 @@
 //!   the tunnel's close record (or a non-101 answer's body) ends, each
 //!   opened and closed in an `ableset_ws` record ([`ws_fields`],
 //!   [`WS_RECORDS`] per kind per [`WARN_GAP`]).
+//! - The hub's own (B3): its link to AbleSet's web app ([`link`]: read every
+//!   5 s, in `/api/status` and the `ableset` message to every page), and two
+//!   routes of its own on AbleSet's name after the Access check, never
+//!   forwarded: [`PROBE`] (whether this device may open AbleSet) and
+//!   [`SIGNED_IN`] (back to fohmixer's page after Access's sign-in).
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -61,7 +66,9 @@ use axum::body::Body;
 use axum::extract::{ConnectInfo, Request, State};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri, Version, header};
 use axum::middleware::{Next, from_fn_with_state};
-use axum::response::{IntoResponse, Response};
+use axum::response::{IntoResponse, Redirect, Response};
+use axum::routing::get;
+use fohmixer_proto::client::AbleSetStatus;
 use http_body_util::BodyExt as _;
 use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
@@ -79,6 +86,7 @@ use crate::ration::Ration;
 use crate::ws::Opener;
 use crate::{Hub, routes, tls::Slot};
 
+pub mod link;
 pub mod proxy;
 
 use proxy::{Failure, Proxy};
@@ -138,6 +146,15 @@ pub const OUTAGE_RECORDS: u32 = 8;
 /// answers after it, with the outage's records left out as `skipped`.
 pub const ANSWERS_AGAIN: &str = "AbleSet answers again";
 
+/// The hub's own probe on AbleSet's name (B3, design §5.4).
+pub const PROBE: &str = "/.fohmixer/probe";
+
+/// Where Access's sign-in for AbleSet's name lands (B3, design §5.4).
+pub const SIGNED_IN: &str = "/.fohmixer/signed-in";
+
+/// The probe's answer: a 1 × 1 transparent GIF.
+pub const PIXEL: &[u8] = b"GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff!\xf9\x04\x01\x00\x00\x00\x00,\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02D\x01\x00;";
+
 /// At most this many characters of a client's own text (a path, a method,
 /// a `Sec-Fetch-*` value, a target) in a record or a log line (#90 B3h
 /// review 2): a path may be 64 KB and a head 400 KB, and neither the day's
@@ -193,6 +210,8 @@ pub const CLOSED_WAIT: Duration = Duration::from_millis(1_500);
 pub struct AbleSet {
     /// The `[ableset]` name.
     pub name: String,
+    /// The `[tls]` name: fohmixer's page.
+    parent: String,
     /// The Access check of its internet requests (`access_aud`); none: they
     /// are refused.
     gate: Option<Arc<AccessGate>>,
@@ -219,6 +238,17 @@ pub struct AbleSet {
     stop: watch::Sender<bool>,
     /// The records' rations by record and kind.
     rations: Mutex<HashMap<(&'static str, &'static str), Ration>>,
+    /// The link to AbleSet's web app (B3, [`link`]).
+    link: Mutex<LinkState>,
+}
+
+/// The link and its last read: why it failed (none after a good one), when
+/// it was (Unix seconds).
+#[derive(Debug, Default)]
+struct LinkState {
+    link: link::Link,
+    error: Option<String>,
+    checked: Option<i64>,
 }
 
 impl AbleSet {
@@ -261,6 +291,7 @@ impl AbleSet {
         let ancestors = format!("frame-ancestors 'self' {origins}");
         Self {
             name: name.to_string(),
+            parent: tls.name.clone(),
             gate,
             proxy,
             frame_ancestors: HeaderValue::from_str(&ancestors)
@@ -275,7 +306,42 @@ impl AbleSet {
             tunnels: AtomicU64::new(0),
             stop: watch::Sender::new(false),
             rations: Mutex::default(),
+            link: Mutex::default(),
         }
+    }
+
+    /// A read of AbleSet's index at `now` (Unix seconds, [`link::watch`]):
+    /// the link stepped ([`link::link_step`]), and on a change its log line
+    /// and its `ableset_link` record; whether AbleSet is up now, on a change.
+    pub fn polled(&self, read: Result<(), String>, now: i64) -> Option<bool> {
+        let (note, error) = {
+            let mut state = self.link.lock().unwrap_or_else(PoisonError::into_inner);
+            let (next, note) = link::link_step(state.link, read.is_ok());
+            state.link = next;
+            state.error = read.err();
+            state.checked = Some(now);
+            (note?, state.error.clone())
+        };
+        let why = error.as_deref().unwrap_or("");
+        match note {
+            link::Note::Up { failures } => tracing::info!(failures, "ableset: link up"),
+            link::Note::Down { failures } => {
+                tracing::warn!(failures, "ableset: link DOWN: {why}");
+            }
+        }
+        let fields = link::link_fields(note, error.as_deref());
+        self.events.record("ableset_link", fields);
+        Some(note.up())
+    }
+
+    /// Its part of `/api/status` `ableset`: the link (B3) and the taken
+    /// WebSocket slots.
+    pub fn fill(&self, status: &mut AbleSetStatus) {
+        let state = self.link.lock().unwrap_or_else(PoisonError::into_inner);
+        status.online = state.link.online == Some(true);
+        status.last_error.clone_from(&state.error);
+        status.checked = state.checked;
+        status.sockets = self.open_sockets();
     }
 
     /// The hub's stop (#90 B2): every tunnel open now, and any opened after
@@ -598,13 +664,18 @@ pub async fn dispatch(State(to): State<Dispatch>, request: Request, next: Next) 
     }
 }
 
-/// The AbleSet name's application: the proxy behind its Access check, the
-/// redirect to HTTPS when `redirect` (the plain-HTTP listener's hub), and
-/// the framing headers on every answer.
+/// The AbleSet name's application: the hub's own [`PROBE`] and
+/// [`SIGNED_IN`], else the proxy, behind its Access check; the redirect to
+/// HTTPS when `redirect` (the plain-HTTP listener's hub), and the framing
+/// headers on every answer.
 pub fn router(site: Arc<AbleSet>, redirect: Option<Hub>) -> Router {
     let https = redirect.is_none();
     let access = from_fn_with_state(site.gate.clone(), crate::access::middleware);
-    let mut app = Router::new().fallback(forward).layer(access);
+    let mut app = Router::new()
+        .route(PROBE, get(probe))
+        .route(SIGNED_IN, get(signed_in))
+        .fallback(forward)
+        .layer(access);
     if let Some(hub) = redirect {
         app = app.layer(from_fn_with_state(hub, https_redirect));
     }
@@ -640,6 +711,51 @@ async fn forward(State(site): State<Arc<AbleSet>>, request: Request) -> Response
             response.map(|body| held(body, slot))
         }
         Err(failure) => site.failed(&method, &path, dest.as_deref(), failure),
+    }
+}
+
+/// [`PROBE`] (B3, design §5.4), after the Access check: the hub's own pixel,
+/// never AbleSet's, so the page learns whether this device may open AbleSet
+/// (an internet device needs its sign-in first) before it frames it; never
+/// stored, and only a page of the same site may use it.
+async fn probe() -> Response {
+    let corp = HeaderName::from_static("cross-origin-resource-policy");
+    let headers = [
+        (header::CONTENT_TYPE, "image/gif"),
+        (header::CACHE_CONTROL, "no-store"),
+        (corp, "same-site"),
+    ];
+    (headers, PIXEL).into_response()
+}
+
+/// [`SIGNED_IN`] (B3, design §5.4), after the Access check: Access's
+/// sign-in for AbleSet's name lands here, and the browser goes back to
+/// fohmixer's page, which opens its AbleSet tab ([`signed_in_target`]).
+async fn signed_in(State(site): State<Arc<AbleSet>>, request: Request) -> Response {
+    let peer = request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map_or_else(|| SocketAddr::from(([0, 0, 0, 0], 0)), |info| info.0);
+    let opener = crate::ws::opener(peer, request.headers());
+    tracing::info!(
+        peer = %opener.peer,
+        forwarded = ?opener.forwarded,
+        source = opener.source,
+        "ableset: signed in through Access"
+    );
+    let target = signed_in_target(&site.parent, routes::request_host(&request));
+    Redirect::to(&target).into_response()
+}
+
+/// Where AbleSet's sign-in sends the browser (pure, B3): fohmixer's page at
+/// `parent` (the `[tls]` name, from config: never a name of the request, so
+/// no open redirect) with the port the request's `Host` named (on the LAN
+/// the HTTPS listener's; through the tunnel none, Cloudflare's 443), its
+/// AbleSet tab opened by `#ableset`.
+pub fn signed_in_target(parent: &str, host: Option<&str>) -> String {
+    match host.and_then(routes::host_port).filter(|&port| port != 443) {
+        Some(port) => format!("https://{parent}:{port}/#ableset"),
+        None => format!("https://{parent}/#ableset"),
     }
 }
 

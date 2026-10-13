@@ -155,8 +155,13 @@ impl RemoteState {
         let serving = https.is_some_and(|https| https.serves(Slot::AbleSet));
         config.ableset.as_ref().map(|ableset| AbleSetStatus {
             name: ableset.name.clone(),
+            upstream: ableset.upstream.clone(),
+            // The hub knows its link and counts its tunnels
+            // (`ableset::AbleSet::fill`).
+            online: false,
+            last_error: None,
+            checked: None,
             cert: self.inner().ableset.status(serving, now),
-            // The hub counts its tunnels (`ableset::AbleSet::open_sockets`).
             sockets: 0,
         })
     }
