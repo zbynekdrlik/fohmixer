@@ -802,7 +802,8 @@ try {
             # AbleSet's name (#90): the hub checks it is the same site; these are refused before.
             @{ over = @{ AbleSetName = 'FOH.example.org' }; says = '*AbleSet needs a name of its own*'; what = 'ablesets-name-equal-to-the-public-name' },
             @{ over = @{ AccessTeam = $null; AccessAud = $null }; says = '*-AbleSetAccessAud needs -AccessTeam*'; what = 'an-ableset-aud-without-an-access-team' },
-            @{ over = @{ AbleSetName = $null }; says = '*give -AbleSetName*'; what = 'an-ableset-aud-without-ablesets-name' })) {
+            @{ over = @{ AbleSetName = $null }; says = '*give -AbleSetName*'; what = 'an-ableset-aud-without-ablesets-name' },
+            @{ over = @{ AbleSetName = $null; AbleSetAccessAud = $null; AbleSetTitle = 'Set' }; says = '*give -AbleSetName*'; what = 'an-ableset-title-without-ablesets-name' })) {
         $o = $remoteOver.Clone()
         foreach ($k in @($r.over.Keys)) {
             if ($null -eq $r.over[$k]) { $o.Remove($k) } else { $o[$k] = $r.over[$k] }
