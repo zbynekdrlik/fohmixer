@@ -13,7 +13,10 @@ PIN). This script reconciles, idempotently and in this order:
    given; an empty list is refused: an Access app without an allow-list is an
    open door) - BEFORE the name is published;
 3. the tunnel's ingress: the name -> ``--service`` (default the hub's
-   ``http://127.0.0.1:8480``), everything else 404;
+   ``http://127.0.0.1:8480``), everything else 404. The configuration is
+   written whole, so a host the tunnel routes now and this run does not name
+   is listed as ``REMOVE route <host>``, and ``--apply`` refuses it before
+   any change unless ``--prune-routes`` is given;
 4. the public DNS record: a proxied CNAME ``<name> -> <tunnel id>.cfargotunnel.com``.
    A record of the name that is not a tunnel CNAME is never overwritten
    (``--replace-dns`` to allow it).
@@ -137,6 +140,17 @@ def same_ingress(current, wanted):
     return have == want
 
 
+def dropped_routes(current, names):
+    """The hosts the tunnel routes now that ``names`` lacks: writing the
+    wanted configuration (always whole) would remove their routes."""
+    wanted = {norm(n) for n in names}
+    return [
+        r["hostname"]
+        for r in (current or {}).get("ingress") or []
+        if r.get("hostname") and norm(r["hostname"]) not in wanted
+    ]
+
+
 class Plan:
     """What a run did (or would do) and what the hub needs."""
 
@@ -195,13 +209,36 @@ def reconcile_access(api, plan, account, name, emails, session_duration):
         )
 
 
-def reconcile_ingress(api, plan, account, name, service):
+def config_path(account, plan):
+    return "/accounts/%s/cfd_tunnel/%s/configurations" % (account, plan.tunnel_id)
+
+
+def read_routes(api, plan, account, names, prune):
+    """The tunnel's configuration now (None for a new tunnel), read before
+    any change: with --apply, a route ``names`` lacks is refused here unless
+    ``prune`` (--prune-routes)."""
+    if plan.tunnel_id is None:
+        return None
+    current = (api.call("GET", config_path(account, plan)) or {}).get("config")
+    dropped = dropped_routes(current, names)
+    if dropped and plan.apply and not prune:
+        raise ApiError(
+            "the tunnel routes %s, which this run does not name: it would remove the route; "
+            "name it, or pass --prune-routes to remove it" % ", ".join(dropped)
+        )
+    return current
+
+
+def reconcile_ingress(api, plan, account, name, service, current, prune):
     wanted = ingress(name, service)
     if plan.tunnel_id is None:
         plan.note("route %s -> %s in the new tunnel" % (name, service))
         return
-    path = "/accounts/%s/cfd_tunnel/%s/configurations" % (account, plan.tunnel_id)
-    current = (api.call("GET", path) or {}).get("config")
+    for host in dropped_routes(current, [name]):
+        plan.note(
+            "REMOVE route %s%s" % (host, "" if prune else " (--apply needs --prune-routes for it)")
+        )
+    path = config_path(account, plan)
     if same_ingress(current, wanted):
         plan.note("the tunnel routes %s -> %s" % (name, service))
         return
@@ -271,8 +308,11 @@ def reconcile(api, args):
     """The whole run, in its order (see the module documentation)."""
     plan = Plan(args.apply)
     reconcile_tunnel(api, plan, args.account_id, args.tunnel_name)
+    current = read_routes(api, plan, args.account_id, [args.name], args.prune_routes)
     reconcile_access(api, plan, args.account_id, args.name, args.email, args.session_duration)
-    reconcile_ingress(api, plan, args.account_id, args.name, args.service)
+    reconcile_ingress(
+        api, plan, args.account_id, args.name, args.service, current, args.prune_routes
+    )
     reconcile_dns(api, plan, args.zone, args.name, args.replace_dns)
     if args.token_out:
         write_token(api, plan, args.account_id, args.token_out)
@@ -307,6 +347,11 @@ def parse_args(argv):
         "--token-out", default=None, help="write the tunnel's connector token here (with --apply)"
     )
     p.add_argument("--replace-dns", action="store_true")
+    p.add_argument(
+        "--prune-routes",
+        action="store_true",
+        help="with --apply, remove a tunnel route of a name this run does not name",
+    )
     p.add_argument("--apply", action="store_true")
     return p.parse_args(argv)
 
