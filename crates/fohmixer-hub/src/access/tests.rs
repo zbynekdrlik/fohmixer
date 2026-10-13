@@ -172,6 +172,14 @@ fn the_origin_guard_refuses_cross_site_writes_and_websocket_upgrades() {
             origin_violation(&headers(&upgrade), &get).is_some(),
             "{upgrade:?}"
         );
+        // An Upgrade list that names websocket is one too: AbleSet's
+        // tunnel reads it so (#90 review 4).
+        let mut listed = pairs.clone();
+        listed.push(("upgrade", "h2c, WebSocket"));
+        assert!(
+            origin_violation(&headers(&listed), &get).is_some(),
+            "{listed:?}"
+        );
         // A plain GET (a page, an asset) is not a write.
         assert_eq!(origin_violation(&headers(&pairs), &get), None, "{pairs:?}");
         assert_eq!(origin_violation(&headers(&pairs), &Method::HEAD), None);
