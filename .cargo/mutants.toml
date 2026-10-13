@@ -283,17 +283,23 @@ exclude_re = [
   # the readout at Live's values, a held drag's writes and Live's values
   # after it).
   "fohmixer-ui/src/components/fader\\.rs.*(replace|in) shown_volumes( |$)",
-  # pages/surface.rs: a tab press (store, local storage), the Stream Deck
-  # tab's press (#52: Nav::show_deck sets the tab's signal, Nav::select
-  # clears it, each only on a change; deck.spec.ts opens it and checks a
-  # reload never restores it), a view's button (#68: Nav::tap_view carries
+  # pages/surface.rs: a tab press (store, local storage), the Stream Deck's
+  # and AbleSet's tab press (#52, #90: Nav::show_extra sets the extra tab's
+  # signal, Nav::select clears it, each only on a change; deck.spec.ts opens
+  # the deck's and checks a reload never restores it, ableset.spec.ts opens
+  # AbleSet's, leaves it by a page's tab and opens the deck's beside it), a view's button (#68: Nav::tap_view carries
   # out the tested view_tap through Nav::select; markers.spec.ts taps it)
   # and the remembered pages' read; choose and selected_path are the tested
   # decisions. #63: Nav::open_column (the phone's column signal, written only
   # on a change) and step_window (a line's window moved through the tested
   # Shift::moved into the offsets' signal); column.spec.ts opens, closes and
   # steps them on both phone sizes.
-  "fohmixer-ui/src/pages/surface\\.rs.*(replace|in) (Nav::select|Nav::show_deck|Nav::tap_view|Nav::open_column|step_window|remembered_pages)( |$)",
+  "fohmixer-ui/src/pages/surface\\.rs.*(replace|in) (Nav::select|Nav::show_extra|Nav::tap_view|Nav::open_column|step_window|remembered_pages)( |$)",
+  # pages/ableset.rs (#90): take_return (location.hash read through the
+  # tested behave::ableset::returns_to_tab, then history.replaceState
+  # without it); ableset.spec.ts's sign-in comes back to #ableset and finds
+  # the tab open and the address without the hash.
+  "fohmixer-ui/src/pages/ableset\\.rs.*(replace|in) take_return( |$)",
   # pages/deck.rs (#52): the Stream Deck page's glue, one function at a
   # time: carry (a press decision of the tested behave::deck::Presses onto
   # the socket through LiveStore::deck_press, into the recorder through the

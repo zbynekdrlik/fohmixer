@@ -1,0 +1,104 @@
+/* AbleSet's tab (#90, the owner's variant A of
+   docs/mockups/ableset-tab-v1.html): the control column at the right edge
+   and AbleSet's own page in one frame filling the rest, or one of the
+   panels in its place (down, the sign-in, the emergency address, the brief
+   check). Colours and sizes are the mockup's. html and body take no touch
+   (style.css); the frame and its area take them again, so a finger scrolls
+   AbleSet's page. */
+
+.ableset-tab {
+    position: relative;
+}
+
+.ableset-dot {
+    position: absolute;
+    top: 3px;
+    right: 3px;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--danger);
+}
+
+/* The page's one line: AbleSet's area, then the column. */
+.ableset-page {
+    grid-template-columns: minmax(0, 1fr) var(--col);
+    grid-template-rows: minmax(0, 1fr);
+}
+
+.ableset-area {
+    position: relative;
+    grid-column: 1;
+    grid-row: 1;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    border: 1px solid #1c1d2a;
+    border-radius: 10px;
+    background: #0f1016;
+    touch-action: auto;
+}
+
+.ableset-frame {
+    display: block;
+    width: 100%;
+    height: 100%;
+    border: 0;
+    touch-action: auto;
+}
+
+.ableset-probe {
+    display: none;
+}
+
+.ableset-panel {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    padding: 12px;
+}
+
+.ableset-box {
+    max-width: 560px;
+    padding: 28px;
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    background: #15151f;
+    color: var(--text);
+    font: 600 17px/1.45 var(--ui);
+    text-align: center;
+}
+
+.ableset-box h3 {
+    margin: 0 0 10px;
+    font: 700 22px/1.2 var(--display);
+    letter-spacing: 0.04em;
+}
+
+.ableset-text {
+    margin: 0;
+}
+
+.ableset-btn {
+    display: inline-block;
+    margin-top: 14px;
+    padding: 12px 18px;
+    border: 1px solid var(--accent);
+    border-radius: 10px;
+    background: #12302c;
+    color: var(--text);
+    font: 700 16px/1 var(--display);
+    letter-spacing: 0.05em;
+}
+
+.ableset-addr {
+    display: block;
+    margin: 10px auto 0;
+    padding: 4px 6px;
+    border: 0;
+    background: none;
+    color: var(--accent);
+    font: 600 15px/1.4 var(--mono);
+    overflow-wrap: anywhere;
+}

@@ -95,6 +95,8 @@ fn what_a_touch_and_an_outage_need_is_essential_moves_round_trips_and_long_frame
         "eq_view",
         "eq_undo",
         "idle",
+        "ableset_view",
+        "ableset",
     ] {
         assert!(is_essential(ev), "{ev}");
     }
@@ -743,6 +745,44 @@ fn a_stream_deck_press_and_the_tab_are_page_events() {
     assert_eq!(
         deck_view(6.0, false),
         json!({"ev": "deck_view", "t": 6.0, "on": false})
+    );
+}
+
+#[test]
+fn ablesets_tab_and_its_steps_are_page_events() {
+    assert_eq!(
+        ableset_view(5.0, true),
+        json!({"ev": "ableset_view", "t": 5.0, "on": true})
+    );
+    assert_eq!(
+        ableset_view(6.0, false),
+        json!({"ev": "ableset_view", "t": 6.0, "on": false})
+    );
+    assert_eq!(
+        ableset(7.0, AbleSetStep::Probe { ok: true, ms: 41.6 }),
+        json!({"ev": "ableset", "t": 7.0, "what": "probe", "ok": true, "ms": 42.0})
+    );
+    assert_eq!(
+        ableset(
+            8.0,
+            AbleSetStep::Probe {
+                ok: false,
+                ms: 8_000.4
+            }
+        ),
+        json!({"ev": "ableset", "t": 8.0, "what": "probe", "ok": false, "ms": 8_000.0})
+    );
+    assert_eq!(
+        ableset(9.0, AbleSetStep::Load { ms: 912.5 }),
+        json!({"ev": "ableset", "t": 9.0, "what": "load", "ms": 913.0})
+    );
+    assert_eq!(
+        ableset(10.0, AbleSetStep::Panel("signin")),
+        json!({"ev": "ableset", "t": 10.0, "what": "panel", "panel": "signin"})
+    );
+    assert_eq!(
+        ableset(11.0, AbleSetStep::SignIn),
+        json!({"ev": "ableset", "t": 11.0, "what": "signin"})
     );
 }
 

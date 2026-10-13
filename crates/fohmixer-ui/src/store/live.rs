@@ -27,6 +27,7 @@ use super::eq::inputs::Inputs;
 use super::eq::{EqListView, EqView};
 use super::intent::Intents;
 use super::{InstanceView, ResultFn, Slot, TOKEN_KEY, next_range};
+use crate::behave::ableset::AbleSetInfo;
 use crate::behave::idle::IdleWatch;
 use crate::behave::link::{Counter, DropoutWatch};
 use crate::binding::SubSpec;
@@ -171,6 +172,9 @@ pub struct LiveStore {
     pub deck: RwSignal<Option<DeckInfo>>,
     /// Its keys as Companion drew them (only while this page views the tab).
     pub deck_keys: RwSignal<BTreeMap<u32, DeckKey>>,
+    /// AbleSet's page behind the hub (#90): none from a hub without one (no
+    /// tab); kept through a reconnect until the hub's next `ableset`.
+    pub ableset: RwSignal<Option<AbleSetInfo>>,
     /// The latest list of a strip's Pro-Q 4 instances (#71 PR E).
     pub eq_list: RwSignal<Option<EqListView>>,
     /// The held Pro-Q 4 editors, as the hub last said.
@@ -198,6 +202,7 @@ impl LiveStore {
             idle: RwSignal::new(false),
             deck: RwSignal::new(None),
             deck_keys: RwSignal::new(BTreeMap::new()),
+            ableset: RwSignal::new(None),
             eq_list: RwSignal::new(None),
             eq_locks: RwSignal::new(Vec::new()),
             eq: RwSignal::new(None),
@@ -631,8 +636,22 @@ impl LiveStore {
             // Pro-Q 4's own undo (#71 PR P2a): the answer to the bar's
             // ↶ VRÁTIŤ (PR P2b).
             ServerMsg::EqUndo { session, n, result } => self.on_eq_undo(session, n, result),
-            // AbleSet's page behind the hub (#90): its tab is PR C's.
-            ServerMsg::Ableset { .. } => {}
+            // AbleSet's page behind the hub (#90): its tab.
+            ServerMsg::Ableset {
+                title,
+                name,
+                parent,
+                online,
+                lan_port,
+            } => {
+                let _ = self.ableset.try_set(Some(AbleSetInfo {
+                    title,
+                    name,
+                    parent,
+                    online,
+                    lan_port,
+                }));
+            }
             // A newer hub's message (#90 B3): ignored, never an error.
             ServerMsg::Unknown => dom::log("a hub message this page does not know: ignored"),
         }
