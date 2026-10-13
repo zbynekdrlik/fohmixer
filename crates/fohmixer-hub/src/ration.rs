@@ -44,6 +44,12 @@ impl Ration {
     pub fn left_out(&mut self) -> u64 {
         std::mem::take(&mut self.skipped)
     }
+
+    /// Ends its window, keeping what it left out (a test's gap gone by).
+    #[cfg(test)]
+    pub fn expire(&mut self) {
+        self.window = None;
+    }
 }
 
 #[cfg(test)]

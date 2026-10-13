@@ -631,6 +631,10 @@ impl LiveStore {
             // Pro-Q 4's own undo (#71 PR P2a): the answer to the bar's
             // ↶ VRÁTIŤ (PR P2b).
             ServerMsg::EqUndo { session, n, result } => self.on_eq_undo(session, n, result),
+            // AbleSet's page behind the hub (#90): its tab is PR C's.
+            ServerMsg::Ableset { .. } => {}
+            // A newer hub's message (#90 B3): ignored, never an error.
+            ServerMsg::Unknown => dom::log("a hub message this page does not know: ignored"),
         }
     }
 

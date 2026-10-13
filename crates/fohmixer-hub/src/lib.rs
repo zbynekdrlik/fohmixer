@@ -340,7 +340,7 @@ impl HubInner {
         let router = answer.await.unwrap_or_default();
         let mut ableset = self.remote.ableset(&self.config, https, now);
         if let (Some(status), Some(site)) = (ableset.as_mut(), self.ableset.as_ref()) {
-            status.sockets = site.open_sockets();
+            site.fill(status);
         }
         let instances = self
             .config
@@ -496,6 +496,10 @@ impl Hub {
         }
         // The Tuner markers (#68) go to the layout store.
         router = router.with_layout(Arc::clone(&layout));
+        // AbleSet's page (#90 B3): every page is told of it.
+        if let (Some(cfg), Some(tls)) = (&config.ableset, &config.tls) {
+            router = router.with_ableset(ableset::link::Page::of(cfg, tls));
+        }
         tokio::spawn(router.run(router_rx));
         tasks.push(tokio::spawn(poll_layout(
             Arc::clone(&layout),
@@ -810,6 +814,7 @@ where
     if let Some((at, name)) = https_at {
         start_https(&hub, at, &name, HTTPS_BIND_RETRY);
     }
+    start_link(&hub, ableset::link::PERIOD);
     tracing::info!(
         addr = %local,
         version = %fohmixer_proto::full_version(),
@@ -886,6 +891,28 @@ fn tunnels_warning(ended: bool) -> Option<&'static str> {
 /// after the stop (`ended`: whether it had).
 fn https_drain_warning(ended: bool) -> Option<&'static str> {
     (!ended).then_some("HTTPS requests still open after the drain: stopping without them")
+}
+
+/// AbleSet's link (#90 B3): with `[ableset]`, the served hub reads AbleSet's
+/// index every `period` (`ableset::link::watch`), each change going to every
+/// page through the router. It starts with the listeners, as the ACME
+/// keepers do: a hub only built (`Hub::start`, the router tests) never
+/// reads AbleSet by itself.
+fn start_link(hub: &Hub, period: Duration) {
+    let (Some(site), Some(cfg)) = (&hub.ableset, &hub.config.ableset) else {
+        return;
+    };
+    let router = hub.router.clone();
+    let watch = ableset::link::watch(
+        Arc::clone(site),
+        ableset::link::client(period),
+        format!("{}/", cfg.upstream),
+        period,
+        move |online| {
+            let _ = router.send(RouterMsg::AbleSetLink { online });
+        },
+    );
+    hub.add_task(tokio::spawn(watch));
 }
 
 /// How often an HTTPS port that could not be bound is tried again.
@@ -1068,6 +1095,7 @@ mod tests {
             name: "ableset.example.org".into(),
             upstream: config::DEFAULT_ABLESET_UPSTREAM.into(),
             access_aud: Vec::new(),
+            title: config::DEFAULT_ABLESET_TITLE.into(),
         };
         for ableset in [false, true] {
             let dir = tempfile::tempdir().unwrap();

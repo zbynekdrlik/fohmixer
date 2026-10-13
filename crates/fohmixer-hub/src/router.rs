@@ -24,6 +24,9 @@
 //! The Pro-Q 4 screen (#71 PR E, `eq.rs`): the router owns who holds which
 //! editor; `router/eq.rs` carries the state's acts out through the window
 //! worker (`plugwin.rs`) and the instances.
+//!
+//! AbleSet's page (#90 B3, `router/ableset.rs`): every page is told of it
+//! at attach and at each change of the hub's link to AbleSet.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
@@ -45,6 +48,7 @@ use crate::setter::Setter;
 #[path = "router/writes.rs"]
 mod writes;
 
+mod ableset;
 #[path = "router/deck.rs"]
 mod deck;
 mod eq;
@@ -275,6 +279,10 @@ pub enum RouterMsg {
     EqWorker {
         event: crate::plugwin::PlugwinEvent,
     },
+    /// The hub's link to AbleSet went up or down (#90 B3).
+    AbleSetLink {
+        online: bool,
+    },
     /// The hub stops: the Stream Deck's held keys released and its task
     /// told to stop (#52), then every client closed.
     Stop,
@@ -336,6 +344,8 @@ pub struct Router {
     deck: Option<deck::DeckIo>,
     /// The Pro-Q 4 screen (#71 PR E); none with `[eq] backend = "off"`.
     eq: Option<eq::EqIo>,
+    /// AbleSet's page (#90 B3); none without `[ableset]`.
+    ableset: Option<ableset::AbleSetIo>,
     /// Keeps the strips' groups unfolded (#58).
     unfold: unfold::Keeper,
     /// Finds the Tuner markers (#68).
@@ -378,6 +388,7 @@ impl Router {
             started: std::time::Instant::now(),
             deck: None,
             eq: None,
+            ableset: None,
             unfold: unfold::Keeper::default(),
             markers: markers::Keeper::default(),
             layout_store: None,
@@ -424,6 +435,7 @@ impl Router {
                 }
                 self.deck_attach(client, &outbox);
                 self.eq_attach(client, &outbox);
+                self.ableset_attach(&outbox);
                 self.clients.insert(client, outbox);
                 self.peers.insert(client, peer);
             }
@@ -655,6 +667,7 @@ impl Router {
                 outcome,
             } => self.eq_closed(&key, session, outcome),
             RouterMsg::EqWorker { event } => self.eq_worker(event),
+            RouterMsg::AbleSetLink { online } => self.ableset_link(online),
             RouterMsg::Stop => return false,
         }
         true

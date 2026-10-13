@@ -433,6 +433,25 @@ pub enum ServerMsg {
         n: u32,
         result: String,
     },
+    /// AbleSet's own page behind the hub (#90 B3): sent on attach and on
+    /// every change of the hub's link to AbleSet, only by a hub with
+    /// `[ableset]` (a page without it shows no AbleSet tab). `name` is
+    /// AbleSet's name, `parent` the `[tls]` name (the page frames AbleSet
+    /// only when it was opened by that name), `online` the link (`null`:
+    /// not known yet, before the hub's first read decides; #90 B3 review
+    /// 4), `lan_port` AbleSet's own port on the PC (the emergency link).
+    Ableset {
+        title: String,
+        name: String,
+        parent: String,
+        online: Option<bool>,
+        lan_port: u16,
+    },
+    /// A message of a newer hub that this page does not know (#90 B3): any
+    /// other `type` reads as this, and the page ignores it, so a new
+    /// message never breaks an older page.
+    #[serde(other)]
+    Unknown,
 }
 
 /// The hub key of a subscription: `instance|target|prop|display`, with the
@@ -657,11 +676,25 @@ pub struct CertStatus {
 }
 
 /// AbleSet's own page behind the hub (#90) in `GET /api/status`: its name
-/// (`[ableset]`), that name's own certificate and its taken WebSocket
-/// slots.
+/// (`[ableset]`), the hub's link to AbleSet's web app, that name's own
+/// certificate and its taken WebSocket slots.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AbleSetStatus {
     pub name: String,
+    /// AbleSet's web app on this PC (`[ableset] upstream`).
+    #[serde(default)]
+    pub upstream: String,
+    /// The link (B3, the hub reads AbleSet's index every 5 s): up (down
+    /// only after two failed reads in a row; none: not known yet), why the
+    /// last read failed (none after a good one), and when it was last read
+    /// (Unix seconds). The link's fields are absent in an older hub's
+    /// answer.
+    #[serde(default)]
+    pub online: Option<bool>,
+    #[serde(default)]
+    pub last_error: Option<String>,
+    #[serde(default)]
+    pub checked: Option<i64>,
     pub cert: CertStatus,
     /// The taken WebSocket slots of AbleSet's tunnels (B2): the open
     /// tunnels, the upgrades still waiting for AbleSet's 101 or for their

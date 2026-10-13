@@ -179,7 +179,8 @@ pub fn expired(file: NaiveDate, today: NaiveDate, keep_days: i64) -> bool {
 /// AbleSet outage carries `error` (only its warned one, at most one per
 /// 10 s), a client's fault `why` (rationed), and an `ableset_ws` open or
 /// close never an `error`: only the outage outlives the cap, so no client
-/// fills the warn class.
+/// fills the warn class. Its link's changes (`ableset_link`, #90 B3: at
+/// most one per 5 s read, they explain a page's AbleSet tab) do too.
 pub fn is_warn(record: &Value) -> bool {
     let ev = record.get("ev").and_then(Value::as_str).unwrap_or("");
     let failed = record.get("error").is_some_and(|e| !e.is_null())
@@ -201,6 +202,7 @@ pub fn is_warn(record: &Value) -> bool {
                 | "deck_view"
                 | "eq"
                 | "idle"
+                | "ableset_link"
         )
         || (ev == "trace" && holds_dropout(record))
 }

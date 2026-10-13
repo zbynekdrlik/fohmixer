@@ -16,6 +16,7 @@ use std::time::{Duration, Instant};
 
 use fohmixer_hub::ableset::{CLOSE_BOUND, STOPPED};
 use fohmixer_hub::config::{AbleSetCfg, Config, TlsCfg};
+use fohmixer_proto::client::ServerMsg;
 use futures_util::{SinkExt, StreamExt};
 use rcgen::{BasicConstraints, CertificateParams, IsCa, Issuer, KeyPair};
 use rustls::pki_types::{CertificateDer, ServerName};
@@ -87,6 +88,7 @@ async fn hub_to(
         name: ABLESET.into(),
         upstream: upstream.into(),
         access_aud: Vec::new(),
+        title: fohmixer_hub::config::DEFAULT_ABLESET_TITLE.into(),
     });
     TestHub::start_config(config).await
 }
@@ -276,6 +278,85 @@ async fn ablesets_name_gets_its_own_certificate_on_the_same_listener() {
         (code, body["version"].as_str()),
         (200, Some(fohmixer_proto::VERSION))
     );
+    hub.stop().await;
+}
+
+/// A fake AbleSet that serves its index: its URL.
+async fn indexed_ableset() -> String {
+    let index = axum::routing::get(|| async { "<!doctype html><title>AbleSet</title>" });
+    let app = axum::Router::new().route("/", index);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    format!("http://{addr}")
+}
+
+#[tokio::test]
+async fn the_served_hub_reads_ablesets_link_and_tells_every_page() {
+    // #90 B3: the first read of AbleSet's index is at once; its change goes
+    // to /api/status, the event log and every page.
+    let dir = tempfile::tempdir().unwrap();
+    let (_, chain, key) = certificate_for(ABLESET);
+    let upstream = indexed_ableset().await;
+    let ableset = Some((chain.as_str(), key.as_str()));
+    let hub = hub_to(dir.path(), None, ableset, &upstream).await;
+    let up = |s: &fohmixer_proto::client::HubStatus| {
+        s.ableset.as_ref().is_some_and(|a| a.online == Some(true))
+    };
+    let status = hub.status_until(Duration::from_secs(5), up).await;
+    let ableset = status.ableset.unwrap();
+    assert_eq!(
+        (ableset.upstream.as_str(), ableset.last_error),
+        (upstream.as_str(), None)
+    );
+    assert!(ableset.checked.is_some());
+    let mut page = hub.client().await;
+    let port: u16 = upstream.rsplit_once(':').unwrap().1.parse().unwrap();
+    let told = page
+        .wait(Duration::from_secs(5), |msg| {
+            matches!(
+                msg,
+                ServerMsg::Ableset {
+                    online: Some(true),
+                    ..
+                }
+            )
+            .then(|| msg.clone())
+        })
+        .await;
+    let wanted = ServerMsg::Ableset {
+        title: "AbleSet".into(),
+        name: ABLESET.into(),
+        parent: NAME.into(),
+        online: Some(true),
+        lan_port: port,
+    };
+    assert_eq!(told, wanted);
+    let linked = |r: &[Value]| r.iter().any(|r| r["ev"] == "ableset_link");
+    let records = hub.events_until(Duration::from_secs(5), linked).await;
+    let link = records.iter().find(|r| r["ev"] == "ableset_link").unwrap();
+    assert_eq!(
+        (&link["up"], &link["failures"]),
+        (&Value::Bool(true), &Value::from(0))
+    );
+    page.close().await;
+    hub.stop().await;
+}
+
+#[tokio::test]
+async fn a_served_hub_without_ableset_tells_no_page_of_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let hub = hub(dir.path(), None, None).await;
+    let mut page = hub.client().await;
+    // The attach's messages come at once.
+    let mut told = Vec::new();
+    while let Some(msg) = page.next_message(Duration::from_millis(500)).await {
+        told.push(msg);
+    }
+    let ableset = told.iter().any(|m| matches!(m, ServerMsg::Ableset { .. }));
+    assert!(!ableset, "{told:?}");
+    assert_eq!(hub.status().await.ableset, None);
+    page.close().await;
     hub.stop().await;
 }
 

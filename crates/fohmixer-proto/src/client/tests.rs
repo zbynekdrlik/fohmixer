@@ -449,6 +449,45 @@ fn deck_messages_round_trip() {
 }
 
 #[test]
+fn ablesets_message_round_trips_and_a_message_this_page_does_not_know_is_ignored() {
+    round_trip_server(
+        ServerMsg::Ableset {
+            title: "AbleSet".into(),
+            name: "ableset.example.org".into(),
+            parent: "foh.example.org".into(),
+            online: Some(true),
+            lan_port: 80,
+        },
+        json!({"type": "ableset", "title": "AbleSet", "name": "ableset.example.org",
+               "parent": "foh.example.org", "online": true, "lan_port": 80}),
+    );
+    // Not known yet (#90 B3 review 4): before the hub's first read.
+    round_trip_server(
+        ServerMsg::Ableset {
+            title: "AbleSet".into(),
+            name: "ableset.example.org".into(),
+            parent: "foh.example.org".into(),
+            online: None,
+            lan_port: 3000,
+        },
+        json!({"type": "ableset", "title": "AbleSet", "name": "ableset.example.org",
+               "parent": "foh.example.org", "online": null, "lan_port": 3000}),
+    );
+    // A newer hub's message (#90 B3): any type this page does not know,
+    // with any fields, reads as `Unknown` (the page ignores it), never as
+    // an error; a known type still has to be whole.
+    for newer in [
+        json!({"type": "presenter", "stage": {"rows": 2}, "online": true}),
+        json!({"type": "a_later_message"}),
+    ] {
+        let read = serde_json::from_value::<ServerMsg>(newer.clone());
+        assert_eq!(read.unwrap(), ServerMsg::Unknown, "{newer}");
+    }
+    let broken = json!({"type": "ableset", "title": "AbleSet"});
+    assert!(serde_json::from_value::<ServerMsg>(broken).is_err());
+}
+
+#[test]
 fn api_bodies_round_trip() {
     let status = HubStatus {
         instances: vec![InstanceStatus {
@@ -546,6 +585,10 @@ fn api_bodies_round_trip() {
         }),
         ableset: Some(AbleSetStatus {
             name: "ableset.example.org".into(),
+            upstream: "http://127.0.0.1:80".into(),
+            online: Some(false),
+            last_error: Some("AbleSet answers 503".into()),
+            checked: Some(1_790_000_100),
             cert: CertStatus {
                 serving: true,
                 cert_names: vec!["ableset.example.org".into()],
@@ -603,6 +646,26 @@ fn api_bodies_round_trip() {
     before.as_object_mut().unwrap().remove("sockets");
     let before = serde_json::from_value::<AbleSetStatus>(before).unwrap();
     assert_eq!(before.sockets, 0);
+    // The link (#90 B3): a hub before it names none, so it reads as not
+    // known.
+    assert_eq!(json["ableset"]["upstream"], "http://127.0.0.1:80");
+    assert_eq!(json["ableset"]["online"], json!(false));
+    assert_eq!(json["ableset"]["last_error"], "AbleSet answers 503");
+    assert_eq!(json["ableset"]["checked"], 1_790_000_100_i64);
+    let mut unlinked = json["ableset"].clone();
+    for field in ["upstream", "online", "last_error", "checked"] {
+        unlinked.as_object_mut().unwrap().remove(field);
+    }
+    let unlinked = serde_json::from_value::<AbleSetStatus>(unlinked).unwrap();
+    assert_eq!(
+        (
+            unlinked.upstream.as_str(),
+            unlinked.online,
+            unlinked.last_error,
+            unlinked.checked
+        ),
+        ("", None, None, None)
+    );
     assert_eq!(json["companion"]["keys"], 32);
     assert_eq!(json["companion"]["api_version"], "1.12.0");
     assert_eq!(json["instances"][0]["listeners"], 4);
