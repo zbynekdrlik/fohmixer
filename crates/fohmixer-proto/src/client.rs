@@ -657,11 +657,16 @@ pub struct CertStatus {
 }
 
 /// AbleSet's own page behind the hub (#90) in `GET /api/status`: its name
-/// (`[ableset]`) and that name's own certificate.
+/// (`[ableset]`), that name's own certificate and its open WebSocket
+/// tunnels.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AbleSetStatus {
     pub name: String,
     pub cert: CertStatus,
+    /// The WebSocket tunnels to AbleSet open now (B2); absent in an older
+    /// hub's answer.
+    #[serde(default)]
+    pub sockets: usize,
 }
 
 /// cloudflared's readiness in `GET /api/status` (#17).

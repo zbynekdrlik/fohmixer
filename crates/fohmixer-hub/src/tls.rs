@@ -319,6 +319,23 @@ pub(crate) mod test_certs {
         ca_pem: &str,
         sni: bool,
     ) -> Result<super::CertInfo, String> {
+        let stream = connect(addr, name, ca_pem, sni).await?;
+        let leaf = stream.get_ref().1.peer_certificates().unwrap()[0].clone();
+        let pem = format!(
+            "-----BEGIN CERTIFICATE-----\n{}\n-----END CERTIFICATE-----\n",
+            base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &leaf)
+        );
+        super::cert_info(&pem)
+    }
+
+    /// A TLS connection to `addr` for `name` (SNI when `sni`) that trusts
+    /// only the CA `ca_pem`, once its handshake is done.
+    pub async fn connect(
+        addr: std::net::SocketAddr,
+        name: &str,
+        ca_pem: &str,
+        sni: bool,
+    ) -> Result<tokio_rustls::client::TlsStream<tokio::net::TcpStream>, String> {
         use rustls::pki_types::pem::PemObject as _;
         let mut roots = rustls::RootCertStore::empty();
         roots
@@ -336,16 +353,10 @@ pub(crate) mod test_certs {
             .await
             .map_err(|e| e.to_string())?;
         let server = rustls::pki_types::ServerName::try_from(name.to_string()).unwrap();
-        let stream = tokio_rustls::TlsConnector::from(std::sync::Arc::new(config))
+        tokio_rustls::TlsConnector::from(std::sync::Arc::new(config))
             .connect(server, tcp)
             .await
-            .map_err(|e| e.to_string())?;
-        let leaf = stream.get_ref().1.peer_certificates().unwrap()[0].clone();
-        let pem = format!(
-            "-----BEGIN CERTIFICATE-----\n{}\n-----END CERTIFICATE-----\n",
-            base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &leaf)
-        );
-        super::cert_info(&pem)
+            .map_err(|e| e.to_string())
     }
 }
 

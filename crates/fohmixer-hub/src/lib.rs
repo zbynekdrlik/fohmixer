@@ -85,6 +85,7 @@ pub mod pin_hash;
 pub mod pin_store;
 pub mod plugwin;
 pub mod provision;
+pub mod ration;
 pub mod remote;
 pub mod router;
 pub mod routes;
@@ -216,6 +217,11 @@ impl HubInner {
     /// for it.
     pub fn stop(&self) {
         let _ = self.router.send(RouterMsg::Stop);
+        // AbleSet's WebSocket tunnels (#90 B2): an upgraded connection is
+        // no longer the listener's, so its drain never waits for one.
+        if let Some(site) = &self.ableset {
+            site.stop();
+        }
         for task in self
             .tasks
             .lock()
@@ -307,6 +313,10 @@ impl HubInner {
         let (reply, answer) = oneshot::channel();
         self.route(RouterMsg::Status { reply });
         let router = answer.await.unwrap_or_default();
+        let mut ableset = self.remote.ableset(&self.config, https, now);
+        if let (Some(status), Some(site)) = (ableset.as_mut(), self.ableset.as_ref()) {
+            status.sockets = site.open_sockets();
+        }
         let instances = self
             .config
             .instances
@@ -347,7 +357,7 @@ impl HubInner {
             client_reports: self.reports.list(),
             remote: self.remote.snapshot(&self.config, https, now),
             companion: self.companion.as_ref().map(CompanionHandle::status),
-            ableset: self.remote.ableset(&self.config, https, now),
+            ableset,
         }
     }
 }

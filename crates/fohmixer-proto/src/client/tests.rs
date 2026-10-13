@@ -556,6 +556,7 @@ fn api_bodies_round_trip() {
                 acme_failures: 0,
                 last_issued: Some(1_790_000_000),
             },
+            sockets: 2,
         }),
     };
     let json = serde_json::to_value(&status).unwrap();
@@ -596,6 +597,12 @@ fn api_bodies_round_trip() {
     );
     assert_eq!(older.ableset, None, "nor AbleSet's page");
     assert_eq!(json["ableset"]["cert"]["days_left"], 89);
+    assert_eq!(json["ableset"]["sockets"], 2);
+    // A hub before the WebSocket tunnel (#90 B2) names none.
+    let mut before = json["ableset"].clone();
+    before.as_object_mut().unwrap().remove("sockets");
+    let before = serde_json::from_value::<AbleSetStatus>(before).unwrap();
+    assert_eq!(before.sockets, 0);
     assert_eq!(json["companion"]["keys"], 32);
     assert_eq!(json["companion"]["api_version"], "1.12.0");
     assert_eq!(json["instances"][0]["listeners"], 4);
