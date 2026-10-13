@@ -2720,3 +2720,93 @@ fn an_outages_start_and_end_carry_what_their_rations_left_out() {
     assert_eq!(why_of(&records[9]).1, ANSWERS_AGAIN);
     assert_eq!(EDGE_RECORDS, 8);
 }
+
+/// A fake AbleSet that keeps every connection open, as a keep-alive server
+/// does, and answers each request `ok`: its URL, the connections it took and
+/// the request heads it read (lowercase).
+async fn counting() -> (String, Arc<AtomicUsize>, Arc<Mutex<Vec<String>>>) {
+    use tokio::io::AsyncWriteExt as _;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let taken = Arc::new(AtomicUsize::new(0));
+    let heads = Arc::new(Mutex::new(Vec::new()));
+    let (count, seen) = (Arc::clone(&taken), Arc::clone(&heads));
+    tokio::spawn(async move {
+        while let Ok((mut stream, _)) = listener.accept().await {
+            count.fetch_add(1, Ordering::Relaxed);
+            let seen = Arc::clone(&seen);
+            tokio::spawn(async move {
+                let (mut buffer, mut chunk) = (Vec::new(), [0_u8; 1024]);
+                loop {
+                    while let Some(end) = buffer.windows(4).position(|w| w == b"\r\n\r\n") {
+                        let head: Vec<u8> = buffer.drain(..end + 4).collect();
+                        let head = String::from_utf8_lossy(&head).to_lowercase();
+                        seen.lock().unwrap().push(head);
+                        let ok = b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok";
+                        if stream.write_all(ok).await.is_err() {
+                            return;
+                        }
+                    }
+                    match stream.read(&mut chunk).await {
+                        Ok(0) | Err(_) => return,
+                        Ok(n) => buffer.extend_from_slice(&chunk[..n]),
+                    }
+                }
+            });
+        }
+    });
+    (format!("http://{addr}"), taken, heads)
+}
+
+#[tokio::test]
+async fn the_link_reads_on_a_fresh_connection_each_time_and_takes_any_answer() {
+    // #90 B3 review 1: AbleSet's Node server closes a keep-alive connection
+    // idle for 5 s, the link's period, so a pooled connection would be
+    // used again just as AbleSet closes it.
+    let (upstream, accepted, heads) = counting().await;
+    let client = link::client(Duration::from_secs(2));
+    let url = format!("{upstream}/");
+    for _ in 0..3 {
+        assert_eq!(link::read(&client, &url).await, Ok(()));
+        // A pool would have the connection back by now.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(accepted.load(Ordering::Relaxed), 3, "a connection per read");
+    let heads = heads.lock().unwrap();
+    assert_eq!(heads.len(), 3);
+    assert!(
+        heads
+            .iter()
+            .all(|head| head.contains("\r\naccept: */*\r\n")),
+        "{heads:?}"
+    );
+}
+
+#[tokio::test]
+async fn the_proxy_never_uses_a_connection_idle_near_ablesets_keep_alive() {
+    // #90 B3 review 1: Node closes a keep-alive connection idle for 5 s; one
+    // the proxy kept idle up to that and used just as it closes fails, and
+    // reads as AbleSet down. A connection idle a moment is used again.
+    let (upstream, accepted, _) = counting().await;
+    let proxy = Proxy::new(&upstream, proxy::HEAD_TIMEOUT, proxy::MAX_BODY);
+    let proxy = &proxy;
+    let ask = || async move {
+        let request = axum::http::Request::builder()
+            .uri("/")
+            .header("host", NAME)
+            .body(Body::empty())
+            .unwrap();
+        let answer = proxy.send(request).await.unwrap();
+        axum::body::to_bytes(answer.into_body(), 1024)
+            .await
+            .unwrap();
+    };
+    ask().await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    ask().await;
+    assert_eq!(accepted.load(Ordering::Relaxed), 1, "used again");
+    // Idle 3 s, well under Node's 5 s: never used again.
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    ask().await;
+    assert_eq!(accepted.load(Ordering::Relaxed), 2, "a new connection");
+}
