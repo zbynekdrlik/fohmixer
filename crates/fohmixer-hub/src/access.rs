@@ -38,7 +38,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use axum::extract::{ConnectInfo, Request, State};
-use axum::http::{HeaderMap, Method, StatusCode, header};
+use axum::http::{HeaderMap, HeaderName, Method, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::Response;
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header};
@@ -150,12 +150,25 @@ fn is_mutating(method: &Method) -> bool {
     [Method::POST, Method::PUT, Method::PATCH, Method::DELETE].contains(method)
 }
 
-/// A WebSocket handshake: a GET, exempt from CORS.
-fn is_websocket_upgrade(headers: &HeaderMap) -> bool {
+/// Whether the header `name` names `token` (any case) in any of its values
+/// or comma lists.
+pub fn names_token(headers: &HeaderMap, name: &HeaderName, token: &str) -> bool {
     headers
-        .get(header::UPGRADE)
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|v| v.eq_ignore_ascii_case("websocket"))
+        .get_all(name)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(','))
+        .any(|t| t.trim().eq_ignore_ascii_case(token))
+}
+
+/// A WebSocket handshake (a GET, exempt from CORS): an `Upgrade` that names
+/// `websocket`, any case, in any value or list. The one test (#90 review
+/// 4): the Origin guard checks every such request, and AbleSet's tunnel
+/// (`ableset::is_upgrade`) opens only for one of them, so no upgrade the
+/// tunnel or axum's `WebSocketUpgrade` (the first value, exactly) would
+/// switch skips the guard.
+pub fn is_websocket_upgrade(headers: &HeaderMap) -> bool {
+    names_token(headers, &header::UPGRADE, "websocket")
 }
 
 /// `host[:port]` of an `Origin` value (`http(s)://host[:port]`); also the

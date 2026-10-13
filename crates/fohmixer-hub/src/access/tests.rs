@@ -172,6 +172,14 @@ fn the_origin_guard_refuses_cross_site_writes_and_websocket_upgrades() {
             origin_violation(&headers(&upgrade), &get).is_some(),
             "{upgrade:?}"
         );
+        // An Upgrade list that names websocket is one too: AbleSet's
+        // tunnel reads it so (#90 review 4).
+        let mut listed = pairs.clone();
+        listed.push(("upgrade", "h2c, WebSocket"));
+        assert!(
+            origin_violation(&headers(&listed), &get).is_some(),
+            "{listed:?}"
+        );
         // A plain GET (a page, an asset) is not a write.
         assert_eq!(origin_violation(&headers(&pairs), &get), None, "{pairs:?}");
         assert_eq!(origin_violation(&headers(&pairs), &Method::HEAD), None);
@@ -186,6 +194,30 @@ fn the_origin_guard_refuses_cross_site_writes_and_websocket_upgrades() {
         origin_violation(&headers(&[host, ("sec-fetch-site", "cross-site")]), &post).unwrap(),
         "Sec-Fetch-Site: cross-site"
     );
+}
+
+#[test]
+fn a_websocket_upgrade_is_an_upgrade_naming_websocket_in_any_value_or_list() {
+    for pairs in [
+        vec![("upgrade", "websocket")],
+        vec![("upgrade", "WebSocket")],
+        vec![("upgrade", "h2c, websocket")],
+        vec![("upgrade", "h2c"), ("upgrade", " websocket ")],
+    ] {
+        assert!(is_websocket_upgrade(&headers(&pairs)), "{pairs:?}");
+    }
+    for pairs in [
+        vec![],
+        vec![("upgrade", "h2c")],
+        vec![("upgrade", "websockets")],
+        vec![("connection", "websocket")],
+    ] {
+        assert!(!is_websocket_upgrade(&headers(&pairs)), "{pairs:?}");
+    }
+    let connection = |value: &str| headers(&[("connection", value)]);
+    let upgrade = |map: &HeaderMap| names_token(map, &header::CONNECTION, "upgrade");
+    assert!(upgrade(&connection("keep-alive, Upgrade")));
+    assert!(!upgrade(&connection("upgraded")));
 }
 
 #[test]

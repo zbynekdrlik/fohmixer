@@ -156,6 +156,8 @@ impl RemoteState {
         config.ableset.as_ref().map(|ableset| AbleSetStatus {
             name: ableset.name.clone(),
             cert: self.inner().ableset.status(serving, now),
+            // The hub counts its tunnels (`ableset::AbleSet::open_sockets`).
+            sockets: 0,
         })
     }
 }

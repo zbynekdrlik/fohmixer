@@ -6,7 +6,10 @@
 //! both ways, never buffered. Bounded: the connect (2 s: on loopback a dead AbleSet refuses
 //! at once), the response head ([`HEAD_TIMEOUT`]), the request body
 //! ([`MAX_BODY`]); the response body is not (a long poll or a large asset
-//! must not be cut).
+//! must not be cut). A WebSocket upgrade ([`Proxy::open`], B2) goes the
+//! same way with its pair back; the client makes its connections with
+//! upgrades, so AbleSet's 101 can be taken over. An upgrade AbleSet reads
+//! and closes without an answer is the client's fault ([`failure`]).
 
 use std::error::Error as StdError;
 use std::time::Duration;
@@ -17,6 +20,7 @@ use axum::http::uri::{Authority, PathAndQuery, Scheme};
 use axum::http::{Extensions, HeaderValue, Uri, Version, header};
 use axum::response::Response;
 use http_body_util::{LengthLimitError, Limited};
+use hyper::body::Incoming;
 use hyper_util::client::legacy::Client;
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::rt::{TokioExecutor, TokioTimer};
@@ -42,6 +46,9 @@ pub enum Failure {
     Target(String),
     /// Another site's request that is no navigation: 403.
     CrossSite(String),
+    /// AbleSet read a WebSocket upgrade and closed the connection without
+    /// an answer (it serves no WebSocket there): 502, the client's fault.
+    Closed(String),
     /// Every request slot is taken (`ableset::MAX_REQUESTS`): 503.
     Busy(String),
     /// The request body is over [`MAX_BODY`].
@@ -59,6 +66,7 @@ impl Failure {
             Self::Method(why)
             | Self::Target(why)
             | Self::CrossSite(why)
+            | Self::Closed(why)
             | Self::Busy(why)
             | Self::TooLarge(why)
             | Self::Down(why)
@@ -106,9 +114,31 @@ impl Proxy {
         }
     }
 
+    /// How long AbleSet may take to answer with its head: also the bound
+    /// of a tunnel's two upgrades (#90 review 1).
+    pub fn head_timeout(&self) -> Duration {
+        self.head_timeout
+    }
+
     /// Forwards `request` to AbleSet: its answer (hop-by-hop headers
     /// removed), or why it did not get one.
     pub async fn send(&self, request: Request) -> Result<Response, Failure> {
+        let request = self.upstream(request)?;
+        self.exchange(request, false).await.map(answer)
+    }
+
+    /// Forwards a WebSocket upgrade to AbleSet (#90 B2): the request with
+    /// the upgrade's pair back (`ableset::upgrade_headers`); AbleSet's
+    /// answer as it came, so a 101 can be taken over (`hyper::upgrade::on`).
+    pub async fn open(&self, request: Request) -> Result<Response<Incoming>, Failure> {
+        let mut request = self.upstream(request)?;
+        super::upgrade_headers(request.headers_mut());
+        self.exchange(request, true).await
+    }
+
+    /// `request` as AbleSet is sent it, or why it is not sent (a body
+    /// announced over the cap, a target that makes no URI).
+    fn upstream(&self, request: Request) -> Result<Request, Failure> {
         let (mut parts, body) = request.into_parts();
         if let Some(size) = super::too_large(&parts.headers, self.max_body) {
             return Err(Failure::TooLarge(format!(
@@ -138,32 +168,63 @@ impl Proxy {
             parts.headers.insert(header::HOST, host);
         }
         let body = Body::new(Limited::new(body, self.max_body as usize));
-        let exchange = self.client.request(Request::from_parts(parts, body));
-        let response = match tokio::time::timeout(self.head_timeout, exchange).await {
-            Ok(Ok(response)) => response,
-            Ok(Err(e)) if over_limit(&e) => {
-                return Err(Failure::TooLarge(format!(
-                    "a request body went over the {} bytes AbleSet is sent",
-                    self.max_body
-                )));
-            }
-            Ok(Err(e)) => {
-                return Err(Failure::Down(format!(
-                    "AbleSet does not answer: {}",
-                    chain(&e)
-                )));
-            }
-            Err(_) => {
-                return Err(Failure::Timeout(format!(
-                    "AbleSet did not answer within {} ms",
-                    self.head_timeout.as_millis()
-                )));
-            }
-        };
-        let (mut parts, body) = response.into_parts();
-        super::strip_hop_by_hop(&mut parts.headers);
-        Ok(Response::from_parts(parts, Body::new(body)))
+        Ok(Request::from_parts(parts, body))
     }
+
+    /// Sends `request` (a WebSocket `upgrade` or not) to AbleSet: its
+    /// answer's head within the head timeout, or why none came.
+    async fn exchange(
+        &self,
+        request: Request,
+        upgrade: bool,
+    ) -> Result<Response<Incoming>, Failure> {
+        let exchange = self.client.request(request);
+        match tokio::time::timeout(self.head_timeout, exchange).await {
+            Ok(Ok(response)) => Ok(response),
+            Ok(Err(e)) => Err(failure(&e, upgrade, self.max_body)),
+            Err(_) => Err(Failure::Timeout(format!(
+                "AbleSet did not answer within {} ms",
+                self.head_timeout.as_millis()
+            ))),
+        }
+    }
+}
+
+/// Why a request AbleSet did not answer failed (pure): its body over
+/// `max_body`; a WebSocket `upgrade` AbleSet read and closed without an
+/// answer (#90 review 2: the client asked for a WebSocket AbleSet does not
+/// serve there, never an outage); else AbleSet down (a refused or failed
+/// connect always: it never read the request).
+pub fn failure(error: &(dyn StdError + 'static), upgrade: bool, max_body: u64) -> Failure {
+    if over_limit(error) {
+        Failure::TooLarge(format!(
+            "a request body went over the {max_body} bytes AbleSet is sent"
+        ))
+    } else if upgrade && closed_unanswered(error) {
+        Failure::Closed(format!(
+            "AbleSet closed the WebSocket request without an answer: {}",
+            chain(error)
+        ))
+    } else {
+        Failure::Down(format!("AbleSet does not answer: {}", chain(error)))
+    }
+}
+
+/// Whether AbleSet closed the connection after it read the request, before
+/// any answer (hyper's incomplete message); a connect error never is one.
+pub fn closed_unanswered(error: &(dyn StdError + 'static)) -> bool {
+    causes(error).any(|e| {
+        e.downcast_ref::<hyper::Error>()
+            .is_some_and(hyper::Error::is_incomplete_message)
+    })
+}
+
+/// AbleSet's answer as the page gets it: its hop-by-hop headers removed,
+/// its body streamed.
+pub fn answer(response: Response<Incoming>) -> Response {
+    let (mut parts, body) = response.into_parts();
+    super::strip_hop_by_hop(&mut parts.headers);
+    Response::from_parts(parts, Body::new(body))
 }
 
 /// An error and its causes, `: `-joined (hyper's own text alone says only

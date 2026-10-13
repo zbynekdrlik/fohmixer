@@ -3,19 +3,27 @@
 //! listeners, AbleSet's own gate, the proxy) against a fake AbleSet.
 
 use std::net::SocketAddr;
+use std::sync::atomic::AtomicUsize;
 use std::sync::mpsc::Receiver;
 
 use axum::Json;
 use axum::body::{Body, Bytes};
 use axum::extract::ConnectInfo;
-use axum::http::{HeaderName, Uri};
+use axum::extract::ws::WebSocketUpgrade;
+use axum::http::{HeaderName, Uri, Version};
 use axum::routing::{any, get, post};
-use futures_util::StreamExt as _;
+use futures_util::{SinkExt as _, StreamExt as _};
 use std::time::Duration;
+use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite};
+use tokio::net::TcpStream;
+use tokio_tungstenite::WebSocketStream;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest as _;
+use tokio_tungstenite::tungstenite::{self, Message};
 
 use super::*;
 use crate::config::DEFAULT_ABLESET_UPSTREAM;
 use crate::test_keys::{KeyServer, claims, jwks, key, sign};
+use crate::tls::test_certs::{TestCa, connect};
 use crate::ws::tests::logged;
 
 const NAME: &str = "ableset.example.org";
@@ -445,7 +453,9 @@ fn why_of(record: &Value) -> (&'static str, &str) {
 /// (a header's values `, `-joined), `/framed` with AbleSet-like framing
 /// headers, `/moved` an http redirect of AbleSet's name, `/cookies`,
 /// `/cors` and `/hop` with such headers, `/slow` never, `POST /press` the
-/// length of its body, anything else `fake <path and query>`.
+/// length of its body, `/socket.io/` a WebSocket echo ([`ws_echo`]),
+/// `/gone` a WebSocket it closes at once (its TCP connection, no close
+/// frame), anything else `fake <path and query>`.
 async fn fake() -> String {
     let echo = |seen: HeaderMap| async move {
         let seen: serde_json::Map<String, Value> = seen
@@ -513,6 +523,8 @@ async fn fake() -> String {
         .route("/hop", get(hop))
         .route("/slow", get(std::future::pending::<()>))
         .route("/stream", get(|| async { endless() }))
+        .route("/socket.io/", get(ws_echo))
+        .route("/gone", get(ws_gone))
         .route(
             "/press",
             post(|body: Bytes| async move { body.len().to_string() }),
@@ -522,6 +534,32 @@ async fn fake() -> String {
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     format!("http://{addr}")
+}
+
+/// A WebSocket echo (#90 B2) with the subprotocol `x-test`: text and
+/// binary messages come back, `bye` is answered with a close.
+async fn ws_echo(ws: WebSocketUpgrade) -> Response {
+    use axum::extract::ws::Message as M;
+    ws.protocols(["x-test"])
+        .on_upgrade(|mut socket| async move {
+            while let Some(Ok(message)) = socket.recv().await {
+                let reply = match message {
+                    M::Text(ref text) if text.as_str() == "bye" => M::Close(None),
+                    M::Text(_) | M::Binary(_) => message,
+                    _ => continue,
+                };
+                if socket.send(reply).await.is_err() {
+                    break;
+                }
+            }
+        })
+}
+
+/// A WebSocket (the subprotocol `x-test`) AbleSet closes at once: its TCP
+/// connection ends, no close frame is sent.
+async fn ws_gone(ws: WebSocketUpgrade) -> Response {
+    ws.protocols(["x-test"])
+        .on_upgrade(|socket| async move { drop(socket) })
 }
 
 /// An answer whose body sends one chunk and never ends.
@@ -535,7 +573,15 @@ async fn a_request_over_the_limit_is_503_at_once_its_slot_held_while_an_answer_s
     let upstream = fake().await;
     let (events, records) = EventLog::channel(64);
     let proxy = Proxy::new(&upstream, Duration::from_secs(5), 16);
-    let site = Arc::new(AbleSet::limited(NAME, &tls(), None, events, proxy, 1));
+    let site = Arc::new(AbleSet::limited(
+        NAME,
+        &tls(),
+        None,
+        events,
+        proxy,
+        1,
+        MAX_SOCKETS,
+    ));
     let through =
         |request: axum::http::Request<Body>| router(Arc::clone(&site), None).oneshot(request);
     // The one slot is held by an answer still streaming, not only its head.
@@ -998,8 +1044,9 @@ async fn a_late_answer_is_504_and_a_body_over_the_cap_413() {
     );
     // An announced size over the cap is refused before AbleSet is asked
     // (here nothing listens: asking would be a 502); a refused connection
-    // is AbleSet down, named with its causes.
-    let (site, records) = site_with(CLOSED, Duration::from_millis(300), 16);
+    // is AbleSet down, named with its causes (under the real head bound:
+    // Windows tries a refused connect again for about 1 s).
+    let (site, records) = site_with(CLOSED, proxy::HEAD_TIMEOUT, 16);
     let through =
         |request: axum::http::Request<Body>| router(Arc::clone(&site), None).oneshot(request);
     let announced = through(press("seventeen bytes!!", Some("17")))
@@ -1066,4 +1113,1037 @@ async fn the_plain_listener_redirects_ablesets_name_once_its_certificate_serves(
         .unwrap();
     assert_eq!(text_of(over_https).await, "fake /x?y=1");
     hub.stop();
+}
+
+#[test]
+fn a_websocket_is_a_get_naming_the_upgrade_and_websocket_whose_pair_goes_on() {
+    let ask = |method: Method, pairs: &[(&str, &str)]| {
+        is_upgrade(&method, Version::HTTP_11, &headers(pairs))
+    };
+    let socket = [("connection", "Upgrade"), ("upgrade", "websocket")];
+    assert!(ask(Method::GET, &socket));
+    // Only HTTP/1.1 switches (#90 review 5): hyper offers no upgrade on
+    // HTTP/1.0, and HTTP/2 has none.
+    for version in [Version::HTTP_10, Version::HTTP_2] {
+        assert!(
+            !is_upgrade(&Method::GET, version, &headers(&socket)),
+            "{version:?}"
+        );
+    }
+    let listed = [
+        ("connection", "keep-alive, Upgrade"),
+        ("upgrade", "h2c, WebSocket"),
+    ];
+    assert!(ask(Method::GET, &listed));
+    let two = [("connection", "keep-alive"), ("connection", "upgrade")];
+    assert!(ask(
+        Method::GET,
+        &[two[0], two[1], ("upgrade", "websocket")]
+    ));
+    assert!(!ask(Method::POST, &socket));
+    for pairs in [
+        &[("upgrade", "websocket")][..],
+        &[("connection", "upgrade")][..],
+        &[("connection", "upgrade"), ("upgrade", "h2c")][..],
+        &[("connection", "upgraded"), ("upgrade", "websocket")][..],
+        &[("connection", "upgrade"), ("upgrade", "websockets")][..],
+    ] {
+        assert!(!ask(Method::GET, pairs), "{pairs:?}");
+    }
+    // After the hop-by-hop headers went, the pair is put back; the
+    // handshake's own headers pass as they are.
+    let mut map = headers(&[
+        ("connection", "keep-alive, Upgrade, x-hop"),
+        ("upgrade", "WebSocket"),
+        ("x-hop", "1"),
+        ("sec-websocket-key", "k"),
+        ("sec-websocket-protocol", "x-test"),
+        ("sec-websocket-extensions", "permessage-deflate"),
+    ]);
+    strip_hop_by_hop(&mut map);
+    upgrade_headers(&mut map);
+    let mut names: Vec<&str> = map.keys().map(HeaderName::as_str).collect();
+    names.sort_unstable();
+    assert_eq!(
+        names,
+        [
+            "connection",
+            "sec-websocket-extensions",
+            "sec-websocket-key",
+            "sec-websocket-protocol",
+            "upgrade"
+        ]
+    );
+    assert_eq!(map["connection"], "upgrade");
+    assert_eq!(map["upgrade"], "websocket");
+}
+
+#[test]
+fn a_tunnels_records_name_it_its_life_its_bytes_and_why_each_kind_rationed() {
+    let (site, records) = site_with(CLOSED, Duration::from_secs(1), 16);
+    let from = "10.0.0.5:50000".parse().unwrap();
+    let opener = crate::ws::opener(from, &headers(&[("origin", "https://ableset.example.org")]));
+    let closed = Ended {
+        up: 12,
+        down: 34,
+        why: "closed".into(),
+    };
+    let failed = Ended {
+        up: 5,
+        down: 0,
+        why: "the page to AbleSet: reset by the peer".into(),
+    };
+    // A loop of opens: WS_RECORDS of them in a gap, the rest left out; a
+    // close has a ration of its own.
+    for _ in 0..=WS_RECORDS {
+        site.ws_note(7, &opener, &Ws::Open);
+    }
+    site.ws_note(
+        7,
+        &opener,
+        &Ws::Close {
+            ms: 5,
+            ended: &closed,
+        },
+    );
+    site.ws_note(
+        7,
+        &opener,
+        &Ws::Close {
+            ms: 6,
+            ended: &failed,
+        },
+    );
+    let records: Vec<Value> = records
+        .try_iter()
+        .map(|mut r| {
+            r.as_object_mut().unwrap().remove("ts");
+            r
+        })
+        .collect();
+    let opens = WS_RECORDS as usize;
+    assert_eq!(records.len(), opens + 2);
+    let open = json!({"ev": "ableset_ws", "what": "open", "client": 7, "peer": "10.0.0.5",
+        "forwarded": "-", "source": "lan", "origin": "ableset.example.org", "skipped": 0});
+    assert!(records[..opens].iter().all(|r| *r == open), "{records:?}");
+    assert_eq!(
+        records[opens..],
+        [
+            json!({"ev": "ableset_ws", "what": "close", "client": 7, "ms": 5, "up": 12,
+                "down": 34, "why": "closed", "skipped": 0}),
+            json!({"ev": "ableset_ws", "what": "close", "client": 7, "ms": 6, "up": 5,
+                "down": 0, "why": "the page to AbleSet: reset by the peer", "skipped": 0})
+        ]
+    );
+}
+
+#[tokio::test]
+async fn an_upgrade_ableset_does_not_switch_is_answered_as_it_came_its_handshake_sent_on() {
+    let upstream = fake().await;
+    let (site, records) = site_with(&upstream, Duration::from_secs(5), 16);
+    let pairs = [
+        ("connection", "keep-alive, Upgrade"),
+        ("upgrade", "websocket"),
+        ("sec-websocket-key", "k"),
+        ("sec-websocket-version", "13"),
+        ("sec-websocket-protocol", "x-test"),
+        ("sec-websocket-extensions", "permessage-deflate"),
+    ];
+    let answer = router(Arc::clone(&site), None)
+        .oneshot(get_from(NAME, "/echo", "10.0.0.5", &pairs))
+        .await
+        .unwrap();
+    assert_eq!(answer.status(), StatusCode::OK);
+    let seen = echo(answer).await;
+    assert_eq!(
+        (&seen["connection"], &seen["upgrade"]),
+        (&json!("upgrade"), &json!("websocket"))
+    );
+    for (name, value) in &pairs[2..] {
+        assert_eq!(seen[*name], json!(value), "{name}");
+    }
+    // No tunnel was opened: every open is an `ableset_ws` record (the first
+    // of its kind in a gap always is), and nothing was refused.
+    let records: Vec<Value> = records.try_iter().collect();
+    assert!(records.is_empty(), "{records:?}");
+}
+
+/// Serves `app` on 127.0.0.1 as the plain listener does (axum-server, the
+/// peer's address, its HTTP/1 settings): its address.
+async fn listen(app: Router) -> SocketAddr {
+    listen_with(app, crate::HEADER_READ).await
+}
+
+/// [`listen`] with `header_read` as its request heads' bound.
+async fn listen_with(app: Router, header_read: Duration) -> SocketAddr {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let mut server = axum_server::Server::<SocketAddr>::from_listener(listener);
+    crate::http1_limits(server.http_builder(), header_read);
+    tokio::spawn(server.serve(app.into_make_service_with_connect_info::<SocketAddr>()));
+    addr
+}
+
+/// A WebSocket for `url` over `stream`, asking for the subprotocol
+/// `x-test`, with `pairs` added: the socket and its 101's headers, or the
+/// refusal.
+async fn socket<S: AsyncRead + AsyncWrite + Unpin>(
+    stream: S,
+    url: &str,
+    pairs: &[(&str, &str)],
+) -> Result<(WebSocketStream<S>, HeaderMap), tungstenite::Error> {
+    let mut request = url.into_client_request().unwrap();
+    let protocol = HeaderValue::from_static("x-test");
+    request
+        .headers_mut()
+        .insert("sec-websocket-protocol", protocol);
+    request.headers_mut().extend(headers(pairs));
+    let (socket, answer) = tokio_tungstenite::client_async(request, stream).await?;
+    Ok((socket, answer.headers().clone()))
+}
+
+/// The status of an upgrade that was refused.
+fn refused<S>(opened: Result<(WebSocketStream<S>, HeaderMap), tungstenite::Error>) -> u16 {
+    match opened {
+        Err(tungstenite::Error::Http(answer)) => answer.status().as_u16(),
+        Err(other) => panic!("the upgrade failed otherwise: {other}"),
+        Ok(_) => panic!("the upgrade was let through"),
+    }
+}
+
+/// `message` sent, and the next message read, within 5 s.
+async fn round_trip<S: AsyncRead + AsyncWrite + Unpin>(
+    socket: &mut WebSocketStream<S>,
+    message: Message,
+) -> Message {
+    let trip = async {
+        socket.send(message).await.unwrap();
+        socket.next().await.unwrap().unwrap()
+    };
+    tokio::time::timeout(Duration::from_secs(5), trip)
+        .await
+        .expect("an answer within 5 s")
+}
+
+/// Whether the socket ends (a close, or its connection's end) within 5 s.
+async fn ends<S: AsyncRead + AsyncWrite + Unpin>(socket: &mut WebSocketStream<S>) -> bool {
+    let end = async {
+        while let Some(Ok(message)) = socket.next().await {
+            if message.is_close() {
+                return;
+            }
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(5), end)
+        .await
+        .is_ok()
+}
+
+/// Waits up to 5 s for `open` tunnels.
+async fn tunnels_until(site: &AbleSet, open: usize) {
+    tunnels_within(site, open, Duration::from_secs(5)).await;
+}
+
+/// Waits up to `limit` for `open` taken socket slots.
+async fn tunnels_within(site: &AbleSet, open: usize, limit: Duration) {
+    let deadline = Instant::now() + limit;
+    while site.open_sockets() != open && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(site.open_sockets(), open, "after {limit:?}");
+}
+
+#[tokio::test]
+async fn a_websocket_of_ablesets_name_is_a_byte_tunnel_on_both_listeners_until_an_end_or_the_stop()
+{
+    let upstream = fake().await;
+    let dir = tempfile::tempdir().unwrap();
+    let hub = hub_with(dir.path(), &upstream, None, &[]);
+    let site = Arc::clone(hub.ableset.as_ref().unwrap());
+    // The plain listener: text and a large binary message both ways, the
+    // subprotocol agreed with AbleSet, the tunnel in /api/status.
+    let plain = listen(crate::app_router(hub.clone())).await;
+    let url = format!("ws://{NAME}:{}/socket.io/?EIO=4", plain.port());
+    let lan = || async move { TcpStream::connect(plain).await.unwrap() };
+    let (mut ws, answer) = socket(lan().await, &url, &[]).await.unwrap();
+    assert_eq!(answer["sec-websocket-protocol"], "x-test");
+    let hi = Message::text("hi");
+    assert_eq!(round_trip(&mut ws, hi.clone()).await, hi);
+    let big = Message::binary(vec![7_u8; 1 << 20]);
+    assert_eq!(round_trip(&mut ws, big.clone()).await, big);
+    let status = hub.status().await.ableset.unwrap();
+    assert_eq!(status.sockets, 1);
+    // The page's close reaches AbleSet, whose close comes back.
+    ws.close(None).await.unwrap();
+    assert!(ends(&mut ws).await, "AbleSet's close came back");
+    drop(ws);
+    tunnels_until(&site, 0).await;
+    assert_eq!(hub.status().await.ableset.unwrap().sockets, 0);
+    // From the internet only with an assertion for AbleSet (none here).
+    let tunnel = [("cf-connecting-ip", "203.0.113.7")];
+    assert_eq!(refused(socket(lan().await, &url, &tunnel).await), 403);
+    // HTTPS by AbleSet's name (SNI): AbleSet's close reaches the page.
+    let ca = TestCa::new();
+    let now = crate::auth::now_secs() as i64;
+    let https = crate::https::Https::bind(
+        "127.0.0.1:0".parse().unwrap(),
+        crate::https_router(hub.clone()),
+    )
+    .unwrap();
+    for (slot, name) in [(Slot::Primary, TLS_NAME), (Slot::AbleSet, NAME)] {
+        let (chain, key) = ca.leaf(&[name], now - 3600, now + 86_400);
+        let pem = crate::tls::checked(chain, key, name).unwrap();
+        https.set_cert(slot, name, &pem).unwrap();
+    }
+    let tls = connect(https.addr(), NAME, &ca.pem, true).await.unwrap();
+    let secure = format!("wss://{NAME}/socket.io/?EIO=4");
+    let (mut ws, _) = socket(tls, &secure, &[]).await.unwrap();
+    let over = Message::text("over tls");
+    assert_eq!(round_trip(&mut ws, over.clone()).await, over);
+    let bye = round_trip(&mut ws, Message::text("bye")).await;
+    assert!(bye.is_close(), "{bye:?}");
+    drop(ws);
+    tunnels_until(&site, 0).await;
+    // The hub's stop closes an open tunnel.
+    let (mut ws, _) = socket(lan().await, &url, &[]).await.unwrap();
+    assert_eq!(round_trip(&mut ws, hi.clone()).await, hi);
+    hub.stop();
+    assert!(ends(&mut ws).await, "the stop closed the tunnel");
+    tunnels_until(&site, 0).await;
+    https.stop(Duration::from_millis(10));
+}
+
+#[tokio::test]
+async fn a_tunnel_past_the_limit_is_503_at_once_and_its_slot_comes_back_when_it_ends() {
+    let upstream = fake().await;
+    let (events, records) = EventLog::channel(64);
+    let proxy = Proxy::new(&upstream, Duration::from_secs(5), 16);
+    let site = Arc::new(AbleSet::limited(NAME, &tls(), None, events, proxy, 4, 1));
+    let at = listen(router(Arc::clone(&site), None)).await;
+    let url = format!("ws://{NAME}/socket.io/");
+    let lan = || async move { TcpStream::connect(at).await.unwrap() };
+    let (mut first, _) = socket(lan().await, &url, &[]).await.unwrap();
+    assert_eq!(site.open_sockets(), 1);
+    assert_eq!(refused(socket(lan().await, &url, &[]).await), 503);
+    let hi = Message::text("hi");
+    assert_eq!(round_trip(&mut first, hi.clone()).await, hi);
+    first.close(None).await.unwrap();
+    assert!(ends(&mut first).await);
+    drop(first);
+    tunnels_until(&site, 0).await;
+    let (mut second, _) = socket(lan().await, &url, &[]).await.unwrap();
+    assert_eq!(round_trip(&mut second, hi.clone()).await, hi);
+    // The first one's open and close, the refusal between them.
+    let records: Vec<Value> = records.try_iter().collect();
+    let what: Vec<(&str, &str)> = records
+        .iter()
+        .map(|r| {
+            let what = r.get("what").or_else(|| r.get("why")).unwrap();
+            (r["ev"].as_str().unwrap(), what.as_str().unwrap())
+        })
+        .collect();
+    assert_eq!(
+        what[..4],
+        [
+            ("ableset_ws", "open"),
+            ("ableset_proxy", "every WebSocket slot for AbleSet is taken"),
+            ("ableset_ws", "close"),
+            ("ableset_ws", "open")
+        ]
+    );
+    let close = &records[2];
+    assert_eq!(
+        (&close["client"], &close["why"]),
+        (&json!(1), &json!("closed"))
+    );
+    let bytes = |key: &str| close[key].as_u64().unwrap();
+    assert!(bytes("up") > 0 && bytes("down") > 0, "{close}");
+    assert_eq!(records[3]["client"], 2);
+}
+
+/// The `ableset_ws` records of kind `what` (`open`, `close`) in `records`.
+fn ws_of<'a>(records: &'a [Value], what: &str) -> Vec<&'a Value> {
+    records
+        .iter()
+        .filter(|r| r["ev"] == "ableset_ws" && r["what"] == what)
+        .collect()
+}
+
+/// A fake AbleSet that reads a request's head and closes the connection
+/// without an answer (as engine.io does with an upgrade it does not
+/// serve): its URL, and the count of connections it took.
+async fn closer() -> (String, Arc<AtomicUsize>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let taken = Arc::new(AtomicUsize::new(0));
+    let count = Arc::clone(&taken);
+    tokio::spawn(async move {
+        while let Ok((mut stream, _)) = listener.accept().await {
+            count.fetch_add(1, Ordering::Relaxed);
+            tokio::spawn(async move {
+                let mut head = Vec::new();
+                let mut buf = [0_u8; 1024];
+                while !head.windows(4).any(|w| w == b"\r\n\r\n") {
+                    match stream.read(&mut buf).await {
+                        Ok(0) | Err(_) => return,
+                        Ok(n) => head.extend_from_slice(&buf[..n]),
+                    }
+                }
+            });
+        }
+    });
+    (format!("http://{addr}"), taken)
+}
+
+#[tokio::test]
+async fn a_tunnel_ableset_closed_ends_after_the_grace_though_the_page_stays_silent() {
+    let upstream = fake().await;
+    let (site, records) = site_with(&upstream, Duration::from_secs(5), 16);
+    let at = listen(router(Arc::clone(&site), None)).await;
+    // AbleSet closes its end at once; the page never reads, writes or
+    // closes (a suspended tab on a tablet that then leaves the Wi-Fi:
+    // nothing in flight, so no TCP timer would ever end it, #90 review 1).
+    let page = TcpStream::connect(at).await.unwrap();
+    let (silent, _) = socket(page, &format!("ws://{NAME}/gone"), &[])
+        .await
+        .unwrap();
+    let opened = Instant::now();
+    tunnels_within(&site, 0, Duration::from_secs(8)).await;
+    // The page had the grace (5 s) to close its end, then the slot came
+    // back.
+    let held = opened.elapsed();
+    assert!(held >= Duration::from_millis(4_900), "{held:?}");
+    let records: Vec<Value> = records.try_iter().collect();
+    let close = ws_of(&records, "close");
+    assert_eq!(close.len(), 1, "{records:?}");
+    let why = "the page did not close within 5000 ms of AbleSet's close";
+    assert_eq!(
+        (&close[0]["why"], &close[0]["up"], &close[0]["down"]),
+        (&json!(why), &json!(0), &json!(0))
+    );
+    drop(silent);
+}
+
+#[tokio::test]
+async fn a_tunnel_whose_upgrades_never_complete_gives_its_slot_back_after_the_head_bound() {
+    let upstream = fake().await;
+    let (site, records) = site_with(&upstream, Duration::from_millis(300), 16);
+    let at = listen(router(Arc::clone(&site), None)).await;
+    // The page announces a body and never sends it: hyper hands neither
+    // connection over before their request is read whole, so neither
+    // upgrade completes, though AbleSet answers 101 at once (#90 review 1).
+    let mut page = TcpStream::connect(at).await.unwrap();
+    let ask = format!(
+        "GET /socket.io/ HTTP/1.1\r\nHost: {NAME}\r\nConnection: Upgrade\r\n\
+         Upgrade: websocket\r\nSec-WebSocket-Version: 13\r\n\
+         Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
+         Sec-WebSocket-Protocol: x-test\r\nContent-Length: 1\r\n\r\n"
+    );
+    let sent = tokio::io::AsyncWriteExt::write_all(&mut page, ask.as_bytes());
+    sent.await.unwrap();
+    let mut status = [0_u8; 12];
+    tokio::time::timeout(Duration::from_secs(5), page.read_exact(&mut status))
+        .await
+        .expect("an answer within 5 s")
+        .unwrap();
+    assert_eq!(&status, b"HTTP/1.1 101");
+    tunnels_within(&site, 0, Duration::from_secs(3)).await;
+    let records: Vec<Value> = records.try_iter().collect();
+    let close = ws_of(&records, "close");
+    assert_eq!(close.len(), 1, "{records:?}");
+    let why = "the upgrade did not complete within 300 ms";
+    assert_eq!(close[0]["why"], why);
+    drop(page);
+}
+
+#[tokio::test]
+async fn an_upgrade_answered_without_a_switch_holds_its_socket_slot_while_its_body_streams() {
+    let upstream = fake().await;
+    let (events, records) = EventLog::channel(64);
+    let proxy = Proxy::new(&upstream, Duration::from_secs(5), 16);
+    let site = Arc::new(AbleSet::limited(NAME, &tls(), None, events, proxy, 4, 1));
+    let upgrade = |path: &str| {
+        let pair = [("connection", "upgrade"), ("upgrade", "websocket")];
+        get_from(NAME, path, "10.0.0.5", &pair)
+    };
+    let through =
+        |request: axum::http::Request<Body>| router(Arc::clone(&site), None).oneshot(request);
+    // AbleSet answers 200 with a body that never ends: the one socket slot
+    // is held while it streams (#90 review 2), so a second upgrade is
+    // refused at once.
+    let streaming = through(upgrade("/stream")).await.unwrap();
+    assert_eq!(streaming.status(), StatusCode::OK);
+    assert_eq!(site.open_sockets(), 1);
+    let busy = through(upgrade("/stream")).await.unwrap();
+    assert_eq!(busy.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body: Value = serde_json::from_str(&text_of(busy).await).unwrap();
+    assert_eq!(body["code"], "ABLESET_BUSY");
+    // The answer gone (the page left), its slot is free again.
+    drop(streaming);
+    assert_eq!(site.open_sockets(), 0);
+    let seen = echo(through(upgrade("/echo")).await.unwrap()).await;
+    assert_eq!(seen["upgrade"], "websocket");
+    assert_eq!(site.open_sockets(), 0, "its body read, the slot is back");
+    let records: Vec<Value> = records.try_iter().collect();
+    let why: Vec<&Value> = records.iter().map(|r| &r["why"]).collect();
+    assert_eq!(why, [&json!("every WebSocket slot for AbleSet is taken")]);
+}
+
+#[tokio::test]
+async fn an_upgrade_ableset_closes_unanswered_is_no_outage_and_a_refused_one_is() {
+    let pair = [("connection", "upgrade"), ("upgrade", "websocket")];
+    // AbleSet reads the upgrade and closes without an answer (it serves no
+    // WebSocket there): the client's fault, never an outage (#90 review 2).
+    let (upstream, _) = closer().await;
+    let (site, records) = site_with(&upstream, proxy::HEAD_TIMEOUT, 16);
+    let closed = router(Arc::clone(&site), None)
+        .oneshot(get_from(NAME, "/elsewhere", "10.0.0.5", &pair))
+        .await
+        .unwrap();
+    assert_eq!(closed.status(), StatusCode::BAD_GATEWAY);
+    let body: Value = serde_json::from_str(&text_of(closed).await).unwrap();
+    assert_eq!(body["code"], "ABLESET_CLOSED");
+    assert!(!site.failing.load(Ordering::Relaxed), "no outage");
+    let records: Vec<Value> = records.try_iter().collect();
+    assert_eq!(records.len(), 1, "{records:?}");
+    let (key, why) = why_of(&records[0]);
+    let text = "AbleSet closed the WebSocket request without an answer: ";
+    assert!(
+        key == "why" && why.starts_with(text) && why.len() > text.len(),
+        "{key}: {why}"
+    );
+    // A connection AbleSet refuses is AbleSet down, an upgrade or not (the
+    // real head bound: Windows retries a refused connect for about 1 s).
+    let (site, records) = site_with(CLOSED, proxy::HEAD_TIMEOUT, 16);
+    let down = router(Arc::clone(&site), None)
+        .oneshot(get_from(NAME, "/socket.io/", "10.0.0.5", &pair))
+        .await
+        .unwrap();
+    assert_eq!(down.status(), StatusCode::BAD_GATEWAY);
+    let body: Value = serde_json::from_str(&text_of(down).await).unwrap();
+    assert_eq!(body["code"], "ABLESET_DOWN");
+    assert!(site.failing.load(Ordering::Relaxed), "an outage");
+    let records: Vec<Value> = records.try_iter().collect();
+    assert_eq!(why_of(&records[0]).0, "error");
+}
+
+#[tokio::test]
+async fn another_sites_websocket_on_ablesets_name_is_refused_before_ableset() {
+    let (upstream, contacted) = closer().await;
+    let dir = tempfile::tempdir().unwrap();
+    let hub = hub_with(dir.path(), &upstream, None, &[]);
+    let site = Arc::clone(hub.ableset.as_ref().unwrap());
+    let at = listen(crate::app_router(hub.clone())).await;
+    let url = format!("ws://{NAME}:{}/socket.io/?EIO=4", at.port());
+    for pairs in [
+        // A browser that sends no fetch metadata with a WebSocket.
+        &[("origin", "https://evil.example")][..],
+        // One that does.
+        &[
+            ("sec-fetch-site", "cross-site"),
+            ("sec-fetch-mode", "websocket"),
+        ][..],
+        // An Upgrade list that names websocket (#90 review 4: the Origin
+        // guard reads it as the tunnel does).
+        &[
+            ("origin", "https://evil.example"),
+            ("upgrade", "h2c, websocket"),
+        ][..],
+    ] {
+        let page = TcpStream::connect(at).await.unwrap();
+        assert_eq!(refused(socket(page, &url, pairs).await), 403, "{pairs:?}");
+    }
+    assert_eq!(contacted.load(Ordering::Relaxed), 0, "AbleSet was asked");
+    assert_eq!(site.open_sockets(), 0);
+    hub.stop();
+}
+
+#[tokio::test]
+async fn an_http_1_0_upgrade_opens_no_tunnel() {
+    let upstream = fake().await;
+    let (site, records) = site_with(&upstream, Duration::from_secs(5), 16);
+    let pairs = [
+        ("connection", "Upgrade"),
+        ("upgrade", "websocket"),
+        ("sec-websocket-key", "k"),
+        ("sec-websocket-version", "13"),
+    ];
+    let mut ask = get_from(NAME, "/echo", "10.0.0.5", &pairs);
+    *ask.version_mut() = Version::HTTP_10;
+    let answer = router(Arc::clone(&site), None).oneshot(ask).await.unwrap();
+    assert_eq!(answer.status(), StatusCode::OK);
+    // hyper offers no upgrade on HTTP/1.0 (#90 review 5): it goes to
+    // AbleSet as a plain GET, its hop-by-hop pair taken out, the rest kept.
+    let seen = echo(answer).await;
+    assert_eq!(
+        (seen.get("connection"), seen.get("upgrade")),
+        (None, None),
+        "{seen}"
+    );
+    assert_eq!(seen["sec-websocket-key"], "k");
+    let records: Vec<Value> = records.try_iter().collect();
+    assert!(records.is_empty(), "{records:?}");
+    assert_eq!(site.open_sockets(), 0);
+}
+
+#[tokio::test]
+async fn an_internet_tunnel_opens_with_ablesets_assertion_and_ableset_sees_none_of_it() {
+    let upstream = fake().await;
+    let keys = KeyServer::start(jwks(&[key()])).await;
+    let dir = tempfile::tempdir().unwrap();
+    let hub = hub_with(dir.path(), &upstream, Some(&keys), &[ABLESET_AUD]);
+    let mut ablesets = claims();
+    ablesets["aud"] = json!([ABLESET_AUD]);
+    let ablesets = sign(key(), &ablesets);
+    let fohmixers = sign(key(), &claims());
+    let at = listen(crate::app_router(hub.clone())).await;
+    let url = format!("ws://{NAME}:{}/socket.io/?EIO=4", at.port());
+    let from_cf = ("cf-connecting-ip", "203.0.113.7");
+    let in_cookie = |token: &str| format!("CF_Authorization={token}; theme=dark");
+    let (ablesets_cookie, fohmixers_cookie) = (in_cookie(&ablesets), in_cookie(&fohmixers));
+    // Through the tunnel (cloudflared on the PC): AbleSet's assertion, in
+    // the header or in Access's cookie, opens the tunnel; fohmixer's never.
+    for pairs in [
+        [from_cf, ("cf-access-jwt-assertion", ablesets.as_str())],
+        [from_cf, ("cookie", ablesets_cookie.as_str())],
+    ] {
+        let page = TcpStream::connect(at).await.unwrap();
+        let (mut ws, _) = socket(page, &url, &pairs).await.unwrap();
+        let hi = Message::text("hi");
+        assert_eq!(round_trip(&mut ws, hi.clone()).await, hi);
+    }
+    for pairs in [
+        [from_cf, ("cf-access-jwt-assertion", fohmixers.as_str())],
+        [from_cf, ("cookie", fohmixers_cookie.as_str())],
+    ] {
+        let page = TcpStream::connect(at).await.unwrap();
+        assert_eq!(refused(socket(page, &url, &pairs).await), 403);
+    }
+    // AbleSet's handshake carries none of it: no Cloudflare header, no
+    // assertion, no Access cookie; the pair and the rest go on.
+    let pairs = [
+        ("connection", "Upgrade"),
+        ("upgrade", "websocket"),
+        ("sec-websocket-key", "k"),
+        from_cf,
+        ("cf-ray", "r"),
+        ("cf-access-jwt-assertion", ablesets.as_str()),
+        ("cookie", ablesets_cookie.as_str()),
+    ];
+    let seen = echo(plain(&hub, get_from(NAME, "/echo", "127.0.0.1", &pairs)).await).await;
+    let names: Vec<&String> = seen.as_object().unwrap().keys().collect();
+    assert!(names.iter().all(|n| !n.starts_with("cf-")), "{names:?}");
+    assert_eq!(
+        (
+            &seen["cookie"],
+            &seen["upgrade"],
+            &seen["sec-websocket-key"]
+        ),
+        (&json!("theme=dark"), &json!("websocket"), &json!("k"))
+    );
+    hub.stop();
+}
+
+#[tokio::test]
+async fn the_stop_closes_a_tunnel_with_its_bytes_and_one_opened_after_it_at_once() {
+    let upstream = fake().await;
+    let (site, records) = site_with(&upstream, Duration::from_secs(5), 16);
+    let at = listen(router(Arc::clone(&site), None)).await;
+    let url = format!("ws://{NAME}/socket.io/");
+    let lan = || async move { TcpStream::connect(at).await.unwrap() };
+    let (mut ws, _) = socket(lan().await, &url, &[]).await.unwrap();
+    let hi = Message::text("hi");
+    assert_eq!(round_trip(&mut ws, hi.clone()).await, hi);
+    site.stop();
+    assert!(ends(&mut ws).await, "the stop closed the tunnel");
+    tunnels_until(&site, 0).await;
+    // A tunnel opened after the stop ends at once.
+    let (mut late, _) = socket(lan().await, &url, &[]).await.unwrap();
+    let after = Instant::now();
+    assert!(ends(&mut late).await, "a tunnel after the stop was carried");
+    assert!(after.elapsed() < CLOSE_BOUND, "{:?}", after.elapsed());
+    tunnels_until(&site, 0).await;
+    // Both closes are recorded with the bytes each way (#90 review 9): the
+    // page's masked "hi" frame (8 bytes) and AbleSet's (4); none for the
+    // one after the stop.
+    let records: Vec<Value> = records.try_iter().collect();
+    let closes: Vec<(&Value, &Value, &Value)> = ws_of(&records, "close")
+        .into_iter()
+        .map(|r| (&r["why"], &r["up"], &r["down"]))
+        .collect();
+    assert_eq!(
+        closes,
+        [
+            (&json!(STOPPED), &json!(8), &json!(4)),
+            (&json!(STOPPED), &json!(0), &json!(0))
+        ]
+    );
+}
+
+/// `bytes` written to `end`, then its close.
+async fn send_and_close(end: &mut tokio::io::DuplexStream, bytes: &[u8]) {
+    tokio::io::AsyncWriteExt::write_all(end, bytes)
+        .await
+        .unwrap();
+    tokio::io::AsyncWriteExt::shutdown(end).await.unwrap();
+}
+
+/// Everything `end` reads until its close.
+async fn read_all(end: &mut tokio::io::DuplexStream) -> Vec<u8> {
+    let mut got = Vec::new();
+    end.read_to_end(&mut got).await.unwrap();
+    got
+}
+
+/// A tunnel's two ends, each with its far end (what the page and AbleSet
+/// hold), and a stop not sent yet.
+#[allow(clippy::type_complexity)]
+fn ends_and_stop() -> (
+    (tokio::io::DuplexStream, tokio::io::DuplexStream),
+    (tokio::io::DuplexStream, tokio::io::DuplexStream),
+    (watch::Sender<bool>, watch::Receiver<bool>),
+) {
+    (
+        tokio::io::duplex(64),
+        tokio::io::duplex(64),
+        watch::channel(false),
+    )
+}
+
+#[test]
+fn why_a_tunnel_ended_names_the_way_and_the_end_that_did_not_close() {
+    assert_eq!(HALF_CLOSE_GRACE, Duration::from_secs(5));
+    let grace = Duration::from_millis(5000);
+    let ok = || Ok(());
+    let reset = || Err(io::Error::from(io::ErrorKind::ConnectionReset));
+    for first in [Way::Up, Way::Down] {
+        assert_eq!(why_ended(first, &ok(), Some(&ok()), grace), "closed");
+        assert_eq!(first.other().other(), first);
+    }
+    assert_eq!(Way::Up.other(), Way::Down);
+    assert_eq!(
+        why_ended(Way::Down, &ok(), None, grace),
+        "the page did not close within 5000 ms of AbleSet's close"
+    );
+    assert_eq!(
+        why_ended(Way::Up, &ok(), None, grace),
+        "AbleSet did not close within 5000 ms of the page's close"
+    );
+    // An error is named by its way: the first one's, else the other's.
+    assert_eq!(
+        why_ended(Way::Up, &reset(), Some(&ok()), grace),
+        "the page to AbleSet: connection reset"
+    );
+    assert_eq!(
+        why_ended(Way::Down, &reset(), None, grace),
+        "AbleSet to the page: connection reset"
+    );
+    assert_eq!(
+        why_ended(Way::Up, &ok(), Some(&reset()), grace),
+        "AbleSet to the page: connection reset"
+    );
+    // A source's close, a TLS page's without close_notify too (#90 review
+    // 9); any other error ends its way.
+    assert!(source_closed(Ok(7)).is_ok());
+    assert!(source_closed(Err(io::ErrorKind::UnexpectedEof.into())).is_ok());
+    let reset = source_closed(Err(io::ErrorKind::ConnectionReset.into()));
+    assert_eq!(
+        reset.err().map(|e| e.kind()),
+        Some(io::ErrorKind::ConnectionReset)
+    );
+}
+
+#[tokio::test]
+async fn a_tunnels_ways_pass_their_bytes_and_their_closes_and_count_them() {
+    let ((page, mut page_far), (ableset, mut ableset_far), (_sender, mut stop)) = ends_and_stop();
+    send_and_close(&mut page_far, b"abc").await;
+    send_and_close(&mut ableset_far, b"hello").await;
+    let ended = pipe(page, ableset, &mut stop, Duration::from_secs(5)).await;
+    let closed = Ended {
+        up: 3,
+        down: 5,
+        why: "closed".into(),
+    };
+    assert_eq!(ended, closed);
+    // Each end got the other's bytes, then its close.
+    assert_eq!(read_all(&mut ableset_far).await, b"abc");
+    assert_eq!(read_all(&mut page_far).await, b"hello");
+}
+
+#[tokio::test]
+async fn an_ends_close_reaches_the_other_at_once_and_its_answer_ends_the_tunnel() {
+    // RFC 6455 7.1.1: AbleSet closes first, the page closes right after it
+    // learns of that close, long before the grace.
+    let ((page, mut page_far), (ableset, mut ableset_far), (_sender, mut stop)) = ends_and_stop();
+    send_and_close(&mut ableset_far, b"bye").await;
+    let started = Instant::now();
+    let piped = pipe(page, ableset, &mut stop, Duration::from_secs(5));
+    let the_page = async {
+        let got = read_all(&mut page_far).await;
+        tokio::io::AsyncWriteExt::shutdown(&mut page_far)
+            .await
+            .unwrap();
+        got
+    };
+    let (ended, got) = tokio::join!(piped, the_page);
+    assert_eq!(got, b"bye");
+    let closed = Ended {
+        up: 0,
+        down: 3,
+        why: "closed".into(),
+    };
+    assert_eq!(ended, closed);
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "{:?}",
+        started.elapsed()
+    );
+}
+
+#[tokio::test]
+async fn a_ways_bytes_go_out_when_its_source_pauses() {
+    // An end that buffers what it is given (as rustls does under TLS) gets
+    // each burst at once: the copy flushes it when its source has nothing
+    // more for now.
+    let ((page, mut page_far), (ableset, mut ableset_far), (_sender, mut stop)) = ends_and_stop();
+    let buffering = tokio::io::BufWriter::new(page);
+    let piped = pipe(buffering, ableset, &mut stop, Duration::from_secs(5));
+    let the_ends = async {
+        tokio::io::AsyncWriteExt::write_all(&mut ableset_far, b"hello")
+            .await
+            .unwrap();
+        let mut got = [0_u8; 5];
+        let wait = Duration::from_secs(2);
+        let read = tokio::time::timeout(wait, page_far.read_exact(&mut got)).await;
+        send_and_close(&mut ableset_far, b"").await;
+        send_and_close(&mut page_far, b"").await;
+        (read.is_ok(), got)
+    };
+    let (ended, (read, got)) = tokio::join!(piped, the_ends);
+    assert!(read, "the burst stayed in the page end's buffer");
+    assert_eq!(&got, b"hello");
+    assert_eq!((ended.down, ended.why.as_str()), (5, "closed"));
+}
+
+#[tokio::test]
+async fn a_tunnel_ends_after_the_grace_when_one_end_closed_and_the_other_stays_silent() {
+    let grace = Duration::from_millis(100);
+    // AbleSet closed; the page stays silent.
+    let ((page, mut page_far), (ableset, mut ableset_far), (_sender, mut stop)) = ends_and_stop();
+    send_and_close(&mut ableset_far, b"").await;
+    let started = Instant::now();
+    let ended = pipe(page, ableset, &mut stop, grace).await;
+    assert!(started.elapsed() >= grace, "{:?}", started.elapsed());
+    let why = "the page did not close within 100 ms of AbleSet's close";
+    assert_eq!((ended.up, ended.down, ended.why.as_str()), (0, 0, why));
+    assert_eq!(
+        read_all(&mut page_far).await,
+        b"",
+        "AbleSet's close passed on"
+    );
+    // The page closed; AbleSet stays silent.
+    let ((page, mut page_far), (ableset, mut ableset_far), (_sender, mut stop)) = ends_and_stop();
+    send_and_close(&mut page_far, b"ab").await;
+    let ended = pipe(page, ableset, &mut stop, grace).await;
+    let why = "AbleSet did not close within 100 ms of the page's close";
+    assert_eq!((ended.up, ended.down, ended.why.as_str()), (2, 0, why));
+    assert_eq!(read_all(&mut ableset_far).await, b"ab");
+}
+
+#[tokio::test]
+async fn a_tunnels_error_is_named_by_its_way_with_the_bytes_so_far() {
+    let grace = Duration::from_secs(5);
+    // AbleSet is gone while the page sends: the page's way fails first.
+    let ((page, mut page_far), (ableset, ableset_far), (_sender, mut stop)) = ends_and_stop();
+    drop(ableset_far);
+    tokio::io::AsyncWriteExt::write_all(&mut page_far, b"abc")
+        .await
+        .unwrap();
+    let ended = pipe(page, ableset, &mut stop, grace).await;
+    let why = "the page to AbleSet: broken pipe";
+    assert_eq!((ended.up, ended.down, ended.why.as_str()), (0, 0, why));
+    // The page is gone while AbleSet sends: its close passed on, then
+    // AbleSet's way fails.
+    let ((page, page_far), (ableset, mut ableset_far), (_sender, mut stop)) = ends_and_stop();
+    drop(page_far);
+    tokio::io::AsyncWriteExt::write_all(&mut ableset_far, b"hello")
+        .await
+        .unwrap();
+    let ended = pipe(page, ableset, &mut stop, grace).await;
+    let why = "AbleSet to the page: broken pipe";
+    assert_eq!((ended.up, ended.down, ended.why.as_str()), (0, 0, why));
+    assert_eq!(read_all(&mut ableset_far).await, b"", "the page's close");
+}
+
+#[tokio::test]
+async fn the_stop_shuts_both_ends_together_and_keeps_the_bytes() {
+    let ((page, mut page_far), (ableset, mut ableset_far), (sender, mut stop)) = ends_and_stop();
+    tokio::io::AsyncWriteExt::write_all(&mut page_far, b"abc")
+        .await
+        .unwrap();
+    tokio::io::AsyncWriteExt::write_all(&mut ableset_far, b"hello")
+        .await
+        .unwrap();
+    let piped = pipe(page, ableset, &mut stop, Duration::from_secs(5));
+    let far = async {
+        let mut up = [0_u8; 3];
+        ableset_far.read_exact(&mut up).await.unwrap();
+        let mut down = [0_u8; 5];
+        page_far.read_exact(&mut down).await.unwrap();
+        sender.send_replace(true);
+        (
+            read_all(&mut ableset_far).await,
+            read_all(&mut page_far).await,
+        )
+    };
+    let (ended, rest) = tokio::join!(piped, far);
+    let stopped = Ended {
+        up: 3,
+        down: 5,
+        why: STOPPED.into(),
+    };
+    assert_eq!(ended, stopped);
+    assert_eq!(rest, (Vec::new(), Vec::new()), "both ends closed");
+    // A page whose close cannot go out (TLS into a full send buffer) does
+    // not hold AbleSet's close back (#90 review 8): both go together.
+    let ((page, _page_far), (ableset, mut ableset_far), (sender, mut stop)) = ends_and_stop();
+    sender.send_replace(true);
+    let started = Instant::now();
+    let piped = pipe(Stuck(page), ableset, &mut stop, Duration::from_secs(5));
+    let far = async {
+        read_all(&mut ableset_far).await;
+        started.elapsed()
+    };
+    let (ended, closed_after) = tokio::join!(piped, far);
+    assert!(closed_after < CLOSE_BOUND / 2, "{closed_after:?}");
+    assert!(started.elapsed() >= CLOSE_BOUND, "{:?}", started.elapsed());
+    assert_eq!(ended.why, STOPPED);
+}
+
+/// A tunnel end whose close never completes (a page's TLS `close_notify`
+/// into a full send buffer).
+struct Stuck(tokio::io::DuplexStream);
+
+impl AsyncRead for Stuck {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.get_mut().0).poll_read(cx, buf)
+    }
+}
+
+impl AsyncWrite for Stuck {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.get_mut().0).poll_write(cx, buf)
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.get_mut().0).poll_flush(cx)
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Poll::Pending
+    }
+}
+
+#[tokio::test]
+async fn a_tunnels_upgrades_are_bounded_and_end_at_the_stop() {
+    let (sender, mut stop) = watch::channel(false);
+    let ok = || std::future::ready(Ok::<u8, io::Error>(1));
+    let never = std::future::pending::<Result<u8, io::Error>>;
+    let bound = Duration::from_millis(50);
+    assert_eq!(upgraded(ok(), ok(), bound, &mut stop).await, Ok((1, 1)));
+    let failed = std::future::ready(Err::<u8, _>(io::Error::other("refused")));
+    assert_eq!(
+        upgraded(ok(), failed, bound, &mut stop).await,
+        Err("the upgrade failed: refused".to_string())
+    );
+    let started = Instant::now();
+    assert_eq!(
+        upgraded(ok(), never(), bound, &mut stop).await,
+        Err("the upgrade did not complete within 50 ms".to_string())
+    );
+    assert!(started.elapsed() >= bound);
+    sender.send_replace(true);
+    assert_eq!(
+        upgraded(ok(), ok(), bound, &mut stop).await,
+        Err(STOPPED.to_string())
+    );
+}
+
+#[tokio::test]
+async fn the_stop_waits_for_every_socket_slot_to_come_back() {
+    let (events, _records) = EventLog::channel(4);
+    let proxy = Proxy::new(CLOSED, Duration::from_secs(1), 16);
+    let site = AbleSet::limited(NAME, &tls(), None, events, proxy, 1, 2);
+    let short = Duration::from_millis(50);
+    assert!(site.closed(short).await, "nothing open");
+    let open = Arc::clone(&site.sockets).try_acquire_owned().unwrap();
+    assert!(!site.closed(short).await, "a tunnel still open");
+    drop(open);
+    assert!(site.closed(short).await);
+    assert_eq!(site.open_sockets(), 0);
+    assert_eq!(CLOSED_WAIT, CLOSE_BOUND + Duration::from_millis(500));
+}
+
+#[tokio::test]
+async fn a_tunnel_outlives_the_header_read_bound_on_both_listeners() {
+    let upstream = fake().await;
+    let dir = tempfile::tempdir().unwrap();
+    let hub = hub_with(dir.path(), &upstream, None, &[]);
+    let bound = Duration::from_millis(300);
+    let plain = listen_with(crate::app_router(hub.clone()), bound).await;
+    let https = crate::https::Https::bind(
+        "127.0.0.1:0".parse().unwrap(),
+        crate::https_router(hub.clone()),
+    )
+    .unwrap()
+    .header_read(bound);
+    let ca = TestCa::new();
+    let now = crate::auth::now_secs() as i64;
+    for (slot, name) in [(Slot::Primary, TLS_NAME), (Slot::AbleSet, NAME)] {
+        let (chain, key) = ca.leaf(&[name], now - 3600, now + 86_400);
+        let pem = crate::tls::checked(chain, key, name).unwrap();
+        https.set_cert(slot, name, &pem).unwrap();
+    }
+    // The bound is live on both listeners: a head that stops half way is
+    // closed after it.
+    let half = b"GET / HTTP/1.1\r\nHost: x\r\n";
+    let mut lan = TcpStream::connect(plain).await.unwrap();
+    tokio::io::AsyncWriteExt::write_all(&mut lan, half)
+        .await
+        .unwrap();
+    let mut tls = connect(https.addr(), NAME, &ca.pem, true).await.unwrap();
+    tokio::io::AsyncWriteExt::write_all(&mut tls, half)
+        .await
+        .unwrap();
+    tokio::io::AsyncWriteExt::flush(&mut tls).await.unwrap();
+    let closed = async {
+        let mut rest = Vec::new();
+        // A TLS peer may end without close_notify.
+        let _ = lan.read_to_end(&mut rest).await;
+        let _ = tls.read_to_end(&mut rest).await;
+    };
+    tokio::time::timeout(Duration::from_secs(5), closed)
+        .await
+        .expect("both closed after the bound");
+    // A tunnel on each, idle past the bound, still carries both ways.
+    let url = format!("ws://{NAME}:{}/socket.io/?EIO=4", plain.port());
+    let lan = TcpStream::connect(plain).await.unwrap();
+    let (mut ws, _) = socket(lan, &url, &[]).await.unwrap();
+    let tls = connect(https.addr(), NAME, &ca.pem, true).await.unwrap();
+    let secure = format!("wss://{NAME}/socket.io/?EIO=4");
+    let (mut wss, _) = socket(tls, &secure, &[]).await.unwrap();
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let hi = Message::text("hi");
+    assert_eq!(round_trip(&mut ws, hi.clone()).await, hi);
+    assert_eq!(round_trip(&mut wss, hi.clone()).await, hi);
+    hub.stop();
+    https.stop(Duration::from_millis(10));
 }

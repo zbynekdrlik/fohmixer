@@ -85,6 +85,7 @@ pub mod pin_hash;
 pub mod pin_store;
 pub mod plugwin;
 pub mod provision;
+pub mod ration;
 pub mod remote;
 pub mod router;
 pub mod routes;
@@ -124,6 +125,14 @@ pub const STOP_DRAIN: Duration = Duration::from_secs(5);
 /// tunnel may still reuse, where a POST could fail) and far above any real
 /// client's head (a phone's is a packet or two; its TLS handshake already
 /// has axum-server's 10 s).
+///
+/// What it does not bound: a connection that never sends a byte (after
+/// the TLS handshake on HTTPS), or only part of HTTP/2's 24-byte preface
+/// (hyper-util's auto builder reads that far, untimed, to choose HTTP/1 or
+/// HTTP/2), and an HTTP/2 connection (no head timer there). Never close
+/// that gap with axum-server's `http1_only()`: it serves connections
+/// without upgrades, which ends every WebSocket (the mixer's `/ws` and
+/// AbleSet's tunnel).
 pub const HEADER_READ: Duration = Duration::from_secs(120);
 
 /// The HTTP/1 settings of both listeners: a request head within
@@ -216,6 +225,11 @@ impl HubInner {
     /// for it.
     pub fn stop(&self) {
         let _ = self.router.send(RouterMsg::Stop);
+        // AbleSet's WebSocket tunnels (#90 B2): an upgraded connection is
+        // no longer the listener's, so its drain never waits for one.
+        if let Some(site) = &self.ableset {
+            site.stop();
+        }
         for task in self
             .tasks
             .lock()
@@ -278,6 +292,22 @@ impl HubInner {
         }
     }
 
+    /// Waits up to [`ableset::CLOSED_WAIT`] for AbleSet's WebSocket tunnels
+    /// to end after a stop (#90 review 3): their connections left the
+    /// listeners at the upgrade, so neither drain waits for them, and the
+    /// binary's runtime shutdown would cut a close (AbleSet's end without
+    /// its FIN) and its record.
+    pub async fn ableset_closed(&self) {
+        if let Some(site) = &self.ableset
+            && let Some(warning) = tunnels_warning(site.closed(ableset::CLOSED_WAIT).await)
+        {
+            tracing::warn!(
+                wait_ms = ableset::CLOSED_WAIT.as_millis() as u64,
+                "{warning}"
+            );
+        }
+    }
+
     /// Waits up to [`plugwin::STOP_WAIT`] for the Pro-Q 4 window worker to
     /// end after a stop (the router tells it to, at its end): its windows
     /// handed back (their z-order as it was), its contact ended.
@@ -307,6 +337,10 @@ impl HubInner {
         let (reply, answer) = oneshot::channel();
         self.route(RouterMsg::Status { reply });
         let router = answer.await.unwrap_or_default();
+        let mut ableset = self.remote.ableset(&self.config, https, now);
+        if let (Some(status), Some(site)) = (ableset.as_mut(), self.ableset.as_ref()) {
+            status.sockets = site.open_sockets();
+        }
         let instances = self
             .config
             .instances
@@ -347,7 +381,7 @@ impl HubInner {
             client_reports: self.reports.list(),
             remote: self.remote.snapshot(&self.config, https, now),
             companion: self.companion.as_ref().map(CompanionHandle::status),
-            ableset: self.remote.ableset(&self.config, https, now),
+            ableset,
         }
     }
 }
@@ -706,7 +740,8 @@ pub fn port_from(value: Option<&str>, default: u16) -> anyhow::Result<u16> {
 /// requests get up to [`STOP_DRAIN`] to finish, the Stream Deck's Companion
 /// task gets up to [`COMPANION_STOP_WAIT`] to remove the device (#52), the
 /// Pro-Q 4 window worker up to [`plugwin::STOP_WAIT`] to hand its windows
-/// back (#71), and it returns `Ok`.
+/// back (#71), AbleSet's WebSocket tunnels up to [`ableset::CLOSED_WAIT`]
+/// to close and record it (#90), and it returns `Ok`.
 ///
 /// With `[tls]` the HTTPS listener binds `addr`'s IP on its port next to
 /// it, serves the stored certificate or waits for the ACME client's first
@@ -785,6 +820,7 @@ where
     tracing::info!("HTTP server stopped");
     hub.companion_stopped().await;
     hub.plugwin_stopped().await;
+    hub.ableset_closed().await;
     if let Some(https) = hub.https.get() {
         // It took the stop with the HTTP server and ends its connections
         // STOP_DRAIN after it; this bound is only the backstop.
@@ -800,6 +836,12 @@ where
 /// (`ended`: whether it had).
 fn plugwin_stop_warning(ended: bool) -> Option<&'static str> {
     (!ended).then_some("the plug-in window worker did not end within the stop's wait")
+}
+
+/// The warning when AbleSet's tunnels had not all ended within the stop's
+/// wait (`ended`: whether they had).
+fn tunnels_warning(ended: bool) -> Option<&'static str> {
+    (!ended).then_some("AbleSet's WebSocket tunnels did not all end within the stop's wait")
 }
 
 /// The warning when the HTTPS listener had not ended within the backstop
@@ -1057,6 +1099,12 @@ mod tests {
     fn only_an_https_listener_still_draining_is_warned_about() {
         assert_eq!(https_drain_warning(true), None);
         assert!(https_drain_warning(false).unwrap().contains("still open"));
+    }
+
+    #[test]
+    fn only_ablesets_tunnels_still_open_are_warned_about() {
+        assert_eq!(tunnels_warning(true), None);
+        assert!(tunnels_warning(false).unwrap().contains("did not all end"));
     }
 
     #[test]

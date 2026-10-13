@@ -9,11 +9,14 @@
 
 mod support;
 
+use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Duration;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
+use fohmixer_hub::ableset::{CLOSE_BOUND, STOPPED};
 use fohmixer_hub::config::{AbleSetCfg, Config, TlsCfg};
-use futures_util::StreamExt;
+use futures_util::{SinkExt, StreamExt};
 use rcgen::{BasicConstraints, CertificateParams, IsCa, Issuer, KeyPair};
 use rustls::pki_types::{CertificateDer, ServerName};
 use serde_json::Value;
@@ -21,6 +24,7 @@ use support::TestHub;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
+use tokio_tungstenite::tungstenite::Message;
 
 const NAME: &str = "foh.example.org";
 const ABLESET: &str = "ableset.example.org";
@@ -53,6 +57,17 @@ async fn hub(
     stored: Option<(&str, &str)>,
     ableset: Option<(&str, &str)>,
 ) -> TestHub {
+    let upstream = fohmixer_hub::config::DEFAULT_ABLESET_UPSTREAM;
+    hub_to(dir, stored, ableset, upstream).await
+}
+
+/// [`hub`] with AbleSet at `upstream`.
+async fn hub_to(
+    dir: &std::path::Path,
+    stored: Option<(&str, &str)>,
+    ableset: Option<(&str, &str)>,
+    upstream: &str,
+) -> TestHub {
     let tls_dir = dir.join("tls");
     for (folder, pair) in [(tls_dir.join("ableset"), ableset), (tls_dir, stored)] {
         if let Some((chain, key)) = pair {
@@ -70,7 +85,7 @@ async fn hub(
     });
     config.ableset = ableset.map(|_| AbleSetCfg {
         name: ABLESET.into(),
-        upstream: fohmixer_hub::config::DEFAULT_ABLESET_UPSTREAM.into(),
+        upstream: upstream.into(),
         access_aud: Vec::new(),
     });
     TestHub::start_config(config).await
@@ -91,6 +106,16 @@ async fn tls_for(
     ca: &CertificateDer<'static>,
     name: &'static str,
 ) -> tokio_rustls::client::TlsStream<TcpStream> {
+    let tcp = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    tls_over(tcp, ca, name).await
+}
+
+/// A TLS connection over `tcp` for `name`, trusting `ca` only.
+async fn tls_over(
+    tcp: TcpStream,
+    ca: &CertificateDer<'static>,
+    name: &'static str,
+) -> tokio_rustls::client::TlsStream<TcpStream> {
     let mut roots = rustls::RootCertStore::empty();
     roots.add(ca.clone()).unwrap();
     let config = rustls::ClientConfig::builder_with_provider(Arc::new(
@@ -100,7 +125,6 @@ async fn tls_for(
     .unwrap()
     .with_root_certificates(roots)
     .with_no_client_auth();
-    let tcp = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
     TlsConnector::from(Arc::new(config))
         .connect(ServerName::try_from(name).unwrap(), tcp)
         .await
@@ -318,4 +342,101 @@ async fn a_taken_https_port_leaves_plain_http_serving_and_says_why() {
     );
     hub.stop().await;
     drop(taken);
+}
+
+/// A fake AbleSet for the stop's test: on 127.0.0.1, it sends every
+/// WebSocket it accepts 64 KiB binary messages until the connection takes
+/// no more; its URL and the bytes it got out so far.
+async fn pushing_ableset() -> (String, Arc<AtomicU64>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let pushed = Arc::new(AtomicU64::new(0));
+    let count = Arc::clone(&pushed);
+    tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            let count = Arc::clone(&count);
+            tokio::spawn(async move {
+                let Ok(mut ws) = tokio_tungstenite::accept_async(stream).await else {
+                    return;
+                };
+                let block = vec![7_u8; 64 * 1024];
+                while ws.send(Message::binary(block.clone())).await.is_ok() {
+                    count.fetch_add(block.len() as u64, Ordering::Relaxed);
+                }
+            });
+        }
+    });
+    (format!("http://{addr}"), pushed)
+}
+
+#[tokio::test]
+async fn the_stop_waits_for_an_ableset_tunnel_to_close_and_record_it() {
+    // #90 review 3: a tunnel's connection left the listener at its upgrade,
+    // so neither drain waits for it; serve_until must, or the binary's
+    // runtime shutdown cuts the close (AbleSet's end never gets its FIN)
+    // and its record.
+    let dir = tempfile::tempdir().unwrap();
+    let (_, chain, key) = certificate();
+    let (ableset_ca, ableset_chain, ableset_key) = certificate_for(ABLESET);
+    let (upstream, pushed) = pushing_ableset().await;
+    let ableset = Some((ableset_chain.as_str(), ableset_key.as_str()));
+    let hub = hub_to(dir.path(), Some((&chain, &key)), ableset, &upstream).await;
+    let port = hub.status().await.remote.https.unwrap().port;
+    // A page that never reads, on a 4 KiB receive buffer.
+    let socket = tokio::net::TcpSocket::new_v4().unwrap();
+    socket.set_recv_buffer_size(4096).unwrap();
+    let tcp = socket
+        .connect(SocketAddr::from(([127, 0, 0, 1], port)))
+        .await
+        .unwrap();
+    let tls = tls_over(tcp, &ableset_ca, ABLESET).await;
+    let url = format!("wss://{ABLESET}:{port}/socket.io/?EIO=4");
+    let (page, _) = tokio_tungstenite::client_async(url, tls)
+        .await
+        .expect("a wss tunnel to AbleSet");
+    // AbleSet fills the way to the page until its pushes stall: every
+    // buffer on the way is full, so the stop's close_notify to the page
+    // cannot go out and the tunnel's close takes its whole CLOSE_BOUND.
+    let (mut last, mut still) = (0, 0);
+    for _ in 0..400 {
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        let now = pushed.load(Ordering::Relaxed);
+        if now > 0 && now == last {
+            still += 1;
+            if still == 12 {
+                break;
+            }
+        } else {
+            (last, still) = (now, 0);
+        }
+    }
+    assert_eq!(still, 12, "AbleSet's pushes never stalled: {last} bytes");
+    let stopping = Instant::now();
+    hub.stop().await;
+    let waited = stopping.elapsed();
+    assert!(
+        waited >= CLOSE_BOUND,
+        "serve_until returned before the tunnel closed: {waited:?}"
+    );
+    // Its close was recorded before that (a tunnel gives its slot back only
+    // after its record), with the bytes it carried.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let close = loop {
+        let records = support::events_in(dir.path());
+        let close = records
+            .into_iter()
+            .find(|r| r["ev"] == "ableset_ws" && r["what"] == "close");
+        if let Some(close) = close {
+            break close;
+        }
+        assert!(Instant::now() < deadline, "no close record");
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    };
+    assert_eq!(close["why"], STOPPED);
+    assert!(
+        close["down"].as_u64().is_some_and(|down| down > 0),
+        "{close}"
+    );
+    assert!(close["up"].is_u64(), "{close}");
+    drop(page);
 }

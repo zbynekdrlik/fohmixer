@@ -30,25 +30,49 @@
 //!   itself ([`down_answer`]), records every such request (`ableset_proxy`)
 //!   and logs it at warn at most once per [`WARN_GAP`] for each kind
 //!   ([`warn_line`]).
+//! - A WebSocket upgrade ([`is_upgrade`]: Socket.IO's `websocket`
+//!   transport, on HTTP/1.1), after the same checks, is a transparent byte
+//!   tunnel (B2): AbleSet's 101 goes back to the page and each way's bytes
+//!   are copied on their own, an end's close passed on to the other
+//!   ([`pipe`]). It ends when both ends closed, when one end is still open
+//!   [`HALF_CLOSE_GRACE`] after the other's close, or at the hub's stop
+//!   ([`AbleSet::stop`]); its two upgrades get the head bound. At most
+//!   [`MAX_SOCKETS`] at a time (one more: 503 at once), each slot held until
+//!   the tunnel's close record (or a non-101 answer's body) ends, each
+//!   opened and closed in an `ableset_ws` record ([`ws_fields`],
+//!   [`WS_RECORDS`] per kind per [`WARN_GAP`]).
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::collections::HashMap;
+use std::future::Future;
+use std::io;
+use std::net::SocketAddr;
+use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
+use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use axum::Router;
 use axum::body::Body;
-use axum::extract::{Request, State};
-use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri, header};
+use axum::extract::{ConnectInfo, Request, State};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri, Version, header};
 use axum::middleware::{Next, from_fn_with_state};
 use axum::response::{IntoResponse, Response};
 use http_body_util::BodyExt as _;
+use hyper::upgrade::OnUpgrade;
+use hyper_util::rt::TokioIo;
 use serde_json::{Value, json};
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt as _};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, watch};
 use tower::ServiceExt as _;
 
-use crate::access::{AccessGate, JWT_COOKIE, has_proxy_header, is_proxy_header};
+use crate::access::{
+    AccessGate, JWT_COOKIE, has_proxy_header, is_proxy_header, is_websocket_upgrade, names_token,
+};
 use crate::config::{AbleSetCfg, AccessCfg, Config, TlsCfg};
 use crate::events::EventLog;
+use crate::ration::Ration;
+use crate::ws::Opener;
 use crate::{Hub, routes, tls::Slot};
 
 pub mod proxy;
@@ -82,8 +106,42 @@ pub const MAX_REQUESTS: usize = 64;
 
 /// The least time between two warn lines of one kind (#90): AbleSet's own
 /// faults, and everything else (a client's, a full hub), so a client's
-/// faults never hide AbleSet's.
-pub const WARN_GAP: Duration = Duration::from_secs(10);
+/// faults never hide AbleSet's. Also the window of the records' rations.
+pub const WARN_GAP: Duration = crate::ration::GAP;
+
+/// At most this many WebSocket tunnels to AbleSet at a time (#90 B2): an
+/// AbleSet page opens one Engine.IO socket and multiplexes over it, so this
+/// only keeps a flood from piling up on the PC. One more is answered 503 at
+/// once.
+pub const MAX_SOCKETS: usize = 64;
+
+/// At most this many `ableset_ws` records (and info lines) of one kind,
+/// `open` or `close`, per [`WARN_GAP`]: a tab opened and closed now and
+/// then is all recorded, a client opening sockets in a loop is not (the
+/// count left out rides on the next record).
+pub const WS_RECORDS: u32 = 8;
+
+/// How long the hub's stop waits for a tunnel's two ends to close (each
+/// end's close sent: a FIN, over TLS its `close_notify`).
+pub const CLOSE_BOUND: Duration = Duration::from_secs(1);
+
+/// Why a tunnel ended at the hub's stop.
+pub const STOPPED: &str = "the hub stops";
+
+/// How long a tunnel's other end may stay open once one end closed (#90
+/// review 1). A WebSocket has no use for a half-open connection: RFC 6455
+/// §7.1.1 has the server (AbleSet) close the TCP connection first and the
+/// client (the page) close its end at once after. 5 s lets that close come
+/// back over a weak Wi-Fi, two retransmissions at TCP's 1 s minimum RTO
+/// (RFC 6298) included. A page still silent after it (a suspended tab on a
+/// tablet that then leaves the network: nothing in flight, so no TCP timer
+/// would ever end it) is cut, and its slot comes back.
+pub const HALF_CLOSE_GRACE: Duration = Duration::from_secs(5);
+
+/// How long the hub's stop waits for every tunnel to end (#90 review 3):
+/// [`CLOSE_BOUND`] for their two ends to close, and half a second for their
+/// tasks to write their close records and give their slots back.
+pub const CLOSED_WAIT: Duration = Duration::from_millis(1_500);
 
 /// The AbleSet name's side of the hub.
 pub struct AbleSet {
@@ -104,6 +162,17 @@ pub struct AbleSet {
     /// else ([`WARN_GAP`]).
     ableset_warned: Mutex<Option<Instant>>,
     other_warned: Mutex<Option<Instant>>,
+    /// The taken WebSocket slots, of at most `max_sockets`: the open
+    /// tunnels, the upgrades waiting for AbleSet's 101 or for their two
+    /// ends, and the non-101 answers still streaming.
+    sockets: Arc<Semaphore>,
+    max_sockets: usize,
+    /// The last tunnel's number (1, 2, …; its own counter).
+    tunnels: AtomicU64,
+    /// The hub's stop: every tunnel ends at it.
+    stop: watch::Sender<bool>,
+    /// The records' rations by kind.
+    rations: Mutex<HashMap<&'static str, Ration>>,
 }
 
 impl AbleSet {
@@ -126,10 +195,11 @@ impl AbleSet {
         events: EventLog,
         proxy: Proxy,
     ) -> Self {
-        Self::limited(name, tls, gate, events, proxy, MAX_REQUESTS)
+        Self::limited(name, tls, gate, events, proxy, MAX_REQUESTS, MAX_SOCKETS)
     }
 
-    /// [`AbleSet::with_proxy`] with `slots` requests at a time.
+    /// [`AbleSet::with_proxy`] with `slots` requests and `sockets` tunnels
+    /// at a time.
     fn limited(
         name: &str,
         tls: &TlsCfg,
@@ -137,6 +207,7 @@ impl AbleSet {
         events: EventLog,
         proxy: Proxy,
         slots: usize,
+        sockets: usize,
     ) -> Self {
         // AbleSet's own pages may frame each other ('self'), as AbleSet's
         // own policy allows.
@@ -153,7 +224,110 @@ impl AbleSet {
             slots: Arc::new(Semaphore::new(slots)),
             ableset_warned: Mutex::new(None),
             other_warned: Mutex::new(None),
+            sockets: Arc::new(Semaphore::new(sockets)),
+            max_sockets: sockets,
+            tunnels: AtomicU64::new(0),
+            stop: watch::Sender::new(false),
+            rations: Mutex::default(),
         }
+    }
+
+    /// The hub's stop (#90 B2): every tunnel open now, and any opened after
+    /// it, is closed.
+    pub fn stop(&self) {
+        self.stop.send_replace(true);
+    }
+
+    /// The taken WebSocket slots (`/api/status` `ableset.sockets`): the open
+    /// tunnels, the upgrades not yet carried and the non-101 answers still
+    /// streaming.
+    pub fn open_sockets(&self) -> usize {
+        self.max_sockets - self.sockets.available_permits()
+    }
+
+    /// Waits up to `bound` for every tunnel to end after [`AbleSet::stop`]
+    /// (#90 review 3: their connections left the listeners at the upgrade,
+    /// so no drain waits for them): whether every socket slot came back (a
+    /// tunnel gives its slot back only after its close record).
+    pub async fn closed(&self, bound: Duration) -> bool {
+        let every = u32::try_from(self.max_sockets).unwrap_or(u32::MAX);
+        let back = tokio::time::timeout(bound, self.sockets.acquire_many(every)).await;
+        matches!(back, Ok(Ok(_)))
+    }
+
+    /// Whether a record of `kind` is due, at most `per_gap` per
+    /// [`WARN_GAP`]: the count of its kind left out before it.
+    fn due(&self, kind: &'static str, per_gap: u32) -> Option<u64> {
+        let mut rations = self.rations.lock().unwrap_or_else(PoisonError::into_inner);
+        rations
+            .entry(kind)
+            .or_default()
+            .take(Instant::now(), per_gap)
+    }
+
+    /// Tunnel `n` opened or closed: its `ableset_ws` record and info line
+    /// when the ration of its kind allows ([`WS_RECORDS`]), else a debug
+    /// line.
+    fn ws_note(&self, n: u64, opener: &Opener, ws: &Ws<'_>) {
+        let kind = ws.kind();
+        let Some(skipped) = self.due(kind, WS_RECORDS) else {
+            tracing::debug!(client = n, "ableset: WebSocket {kind}");
+            return;
+        };
+        match ws {
+            Ws::Open => tracing::info!(
+                client = n,
+                peer = %opener.peer,
+                forwarded = ?opener.forwarded,
+                source = opener.source,
+                origin = ?opener.origin,
+                skipped,
+                "ableset: WebSocket open"
+            ),
+            Ws::Close { ms, ended } => tracing::info!(
+                client = n,
+                ms,
+                up = ended.up,
+                down = ended.down,
+                why = ?ended.why,
+                skipped,
+                "ableset: WebSocket close"
+            ),
+        }
+        self.events
+            .record("ableset_ws", ws_fields(n, opener, ws, skipped));
+    }
+
+    /// A tunnel's life (#90 B2): both connections handed over within the
+    /// head bound ([`upgraded`]), then its bytes ([`pipe`]) until both ends
+    /// closed, one end stayed open [`HALF_CLOSE_GRACE`] past the other's
+    /// close, or the hub stopped; then its `close` record, and only then
+    /// its socket slot freed.
+    async fn carry(
+        self: Arc<Self>,
+        n: u64,
+        opener: Opener,
+        page: OnUpgrade,
+        ableset: OnUpgrade,
+        slot: OwnedSemaphorePermit,
+    ) {
+        let _slot = slot;
+        let started = Instant::now();
+        let mut stop = self.stop.subscribe();
+        let bound = self.proxy.head_timeout();
+        let ended = match upgraded(page, ableset, bound, &mut stop).await {
+            Ok((page, ableset)) => {
+                let (page, ableset) = (TokioIo::new(page), TokioIo::new(ableset));
+                pipe(page, ableset, &mut stop, HALF_CLOSE_GRACE).await
+            }
+            Err(why) => Ended {
+                up: 0,
+                down: 0,
+                why,
+            },
+        };
+        let ms = started.elapsed().as_millis() as u64;
+        self.ws_note(n, &opener, &Ws::Close { ms, ended: &ended });
     }
 
     /// AbleSet answered: the outage, if any, is over.
@@ -192,6 +366,11 @@ impl AbleSet {
                 "AbleSet is sent paths only",
             ),
             Failure::CrossSite(_) => crate::access::forbidden("cross_site"),
+            Failure::Closed(_) => error(
+                StatusCode::BAD_GATEWAY,
+                "ABLESET_CLOSED",
+                "AbleSet closed the WebSocket request without an answer",
+            ),
             Failure::Busy(_) => error(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "ABLESET_BUSY",
@@ -330,6 +509,9 @@ async fn forward(State(site): State<Arc<AbleSet>>, request: Request) -> Response
     if let Some(failure) = refusal(&method, request.uri(), request.headers()) {
         return site.failed(&method, &path, dest.as_deref(), failure);
     }
+    if is_upgrade(&method, request.version(), request.headers()) {
+        return tunnel(site, request, &path, dest.as_deref()).await;
+    }
     let Ok(slot) = Arc::clone(&site.slots).try_acquire_owned() else {
         let busy = Failure::Busy("every request slot for AbleSet is taken".to_string());
         return site.failed(&method, &path, dest.as_deref(), busy);
@@ -351,6 +533,351 @@ fn held(body: Body, slot: OwnedSemaphorePermit) -> Body {
         let _slot = &slot;
         frame
     }))
+}
+
+/// A WebSocket upgrade (#90 B2), after the Access check and the refusals:
+/// sent on to AbleSet with its handshake headers. When AbleSet switches
+/// (101) the page gets AbleSet's 101, and its connection and AbleSet's
+/// become one byte tunnel ([`AbleSet::carry`]) holding a socket slot; any
+/// other answer is passed on as it came, holding the slot until its body
+/// ends (#90 review 2: no upgrade streams an answer with no slot).
+async fn tunnel(
+    site: Arc<AbleSet>,
+    mut request: Request,
+    path: &str,
+    dest: Option<&str>,
+) -> Response {
+    let Ok(slot) = Arc::clone(&site.sockets).try_acquire_owned() else {
+        let busy = Failure::Busy("every WebSocket slot for AbleSet is taken".to_string());
+        return site.failed(&Method::GET, path, dest, busy);
+    };
+    // The Access check refused a request without its peer.
+    let peer = request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map_or_else(|| SocketAddr::from(([0, 0, 0, 0], 0)), |info| info.0);
+    let opener = crate::ws::opener(peer, request.headers());
+    let page = hyper::upgrade::on(&mut request);
+    let started = Instant::now();
+    match site.proxy.open(request).await {
+        Ok(mut answer) if answer.status() == StatusCode::SWITCHING_PROTOCOLS => {
+            site.reached(&Method::GET, path, answer.status(), started);
+            let ableset = hyper::upgrade::on(&mut answer);
+            let n = site.tunnels.fetch_add(1, Ordering::Relaxed) + 1;
+            site.ws_note(n, &opener, &Ws::Open);
+            tokio::spawn(Arc::clone(&site).carry(n, opener, page, ableset, slot));
+            let (mut parts, _) = answer.into_parts();
+            strip_hop_by_hop(&mut parts.headers);
+            upgrade_headers(&mut parts.headers);
+            Response::from_parts(parts, Body::empty())
+        }
+        Ok(answer) => {
+            site.reached(&Method::GET, path, answer.status(), started);
+            proxy::answer(answer).map(|body| held(body, slot))
+        }
+        Err(failure) => site.failed(&Method::GET, path, dest, failure),
+    }
+}
+
+/// Whether a request is tunneled: a WebSocket upgrade by the Origin
+/// guard's own test (`access::is_websocket_upgrade`, #90 review 4), a GET
+/// this hop can switch: HTTP/1.1 (hyper offers no upgrade on HTTP/1.0, so
+/// AbleSet would switch for nothing, #90 review 5) with a `Connection` that
+/// names `upgrade` (RFC 9110 §7.8). Socket.IO's polling is plain HTTP, and
+/// so is any other request: its hop-by-hop pair goes with the rest.
+pub fn is_upgrade(method: &Method, version: Version, headers: &HeaderMap) -> bool {
+    *method == Method::GET
+        && version == Version::HTTP_11
+        && names_token(headers, &header::CONNECTION, "upgrade")
+        && is_websocket_upgrade(headers)
+}
+
+/// The upgrade's pair, back after the hop-by-hop headers went: the request
+/// to AbleSet and AbleSet's 101 to the page carry `Connection: upgrade` and
+/// `Upgrade: websocket`. The `Sec-WebSocket-*` headers are end-to-end and
+/// pass as they are, so subprotocols and compression are agreed between
+/// the page and AbleSet.
+pub fn upgrade_headers(headers: &mut HeaderMap) {
+    headers.insert(header::CONNECTION, HeaderValue::from_static("upgrade"));
+    headers.insert(header::UPGRADE, HeaderValue::from_static("websocket"));
+}
+
+/// A tunnel opened or closed, for its record.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Ws<'a> {
+    Open,
+    /// Closed after `ms`, as `ended` says.
+    Close {
+        ms: u64,
+        ended: &'a Ended,
+    },
+}
+
+impl Ws<'_> {
+    /// The record's `what`, and the kind its ration counts.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Open => "open",
+            Self::Close { .. } => "close",
+        }
+    }
+}
+
+/// How a tunnel ended: the bytes it carried each way (`up`: the page's to
+/// AbleSet, `down`: AbleSet's to the page; counted as they go, so an
+/// error or the stop keeps them, #90 review 9) and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ended {
+    pub up: u64,
+    pub down: u64,
+    pub why: String,
+}
+
+/// One way of a tunnel's bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Way {
+    /// The page's bytes to AbleSet.
+    Up,
+    /// AbleSet's bytes to the page.
+    Down,
+}
+
+impl Way {
+    /// The other way.
+    pub fn other(self) -> Self {
+        match self {
+            Self::Up => Self::Down,
+            Self::Down => Self::Up,
+        }
+    }
+
+    /// The way, as a record's `why` names it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Up => "the page to AbleSet",
+            Self::Down => "AbleSet to the page",
+        }
+    }
+
+    /// The end its bytes come from.
+    pub fn source(self) -> &'static str {
+        match self {
+            Self::Up => "the page",
+            Self::Down => "AbleSet",
+        }
+    }
+}
+
+/// Why a tunnel ended (#90 review 1, pure): `first` the way that ended
+/// first and `how` (its source's close passed on, or an error), `then` how
+/// the other way ended within `grace` (none: it was still open, and both
+/// ends were dropped). Both closed: `closed`; else the first error, named
+/// by its way; else the end that did not close in time.
+pub fn why_ended(
+    first: Way,
+    how: &io::Result<()>,
+    then: Option<&io::Result<()>>,
+    grace: Duration,
+) -> String {
+    let other = first.other();
+    match (how, then) {
+        (Err(e), _) => format!("{}: {e}", first.name()),
+        (Ok(()), Some(Err(e))) => format!("{}: {e}", other.name()),
+        (Ok(()), Some(Ok(()))) => "closed".to_string(),
+        (Ok(()), None) => format!(
+            "{} did not close within {} ms of {}'s close",
+            other.source(),
+            grace.as_millis(),
+            first.source()
+        ),
+    }
+}
+
+/// How a way's copy ended (pure): its source closed (`Ok`), or the error
+/// that ended it. A page that ends its TLS without `close_notify` makes
+/// rustls report `UnexpectedEof`: that is its close too (#90 review 9;
+/// only TLS reports it, and only a page's end is TLS).
+pub fn source_closed(copied: io::Result<u64>) -> io::Result<()> {
+    match copied {
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
+/// A writer that counts the bytes it took (a way's count, kept through an
+/// error or the stop).
+struct Counted<'a, W> {
+    to: &'a mut W,
+    count: &'a AtomicU64,
+}
+
+impl<W: AsyncWrite + Unpin> AsyncWrite for Counted<'_, W> {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        let this = self.get_mut();
+        let written = Pin::new(&mut *this.to).poll_write(cx, buf);
+        if let Poll::Ready(Ok(n)) = &written {
+            this.count.fetch_add(*n as u64, Ordering::Relaxed);
+        }
+        written
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut *self.get_mut().to).poll_flush(cx)
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut *self.get_mut().to).poll_shutdown(cx)
+    }
+}
+
+/// One way of a tunnel: `from`'s bytes into `to` (counted in `count`),
+/// then `from`'s close passed on (`to` shut down: a FIN, over TLS its
+/// `close_notify`).
+async fn pass<R, W>(from: &mut R, to: &mut W, count: &AtomicU64) -> io::Result<()>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    let mut counted = Counted { to, count };
+    source_closed(tokio::io::copy(from, &mut counted).await)?;
+    counted.shutdown().await
+}
+
+/// What the way still open did after the other ended.
+enum Rest {
+    /// It ended too, so.
+    Ended(io::Result<()>),
+    /// It was still open when the grace ran out.
+    Open,
+    /// The hub stopped first.
+    Stop,
+}
+
+/// The way still open after the other ended, for at most `grace`.
+async fn rest<F>(way: Pin<&mut F>, stop: &mut watch::Receiver<bool>, grace: Duration) -> Rest
+where
+    F: Future<Output = io::Result<()>>,
+{
+    tokio::select! {
+        biased;
+        () = stopped(stop) => Rest::Stop,
+        how = way => Rest::Ended(how),
+        () = tokio::time::sleep(grace) => Rest::Open,
+    }
+}
+
+/// A tunnel's bytes (#90 review 1): each way copied on its own
+/// ([`pass`]), its source's close passed on to the other end. Once one way
+/// ended the other gets `grace`, then both ends are dropped (a WebSocket
+/// has no use for half a connection); at the hub's stop both ends are shut
+/// down together (#90 review 8), bounded by [`CLOSE_BOUND`]. How it ended,
+/// with the bytes each way so far.
+async fn pipe<P, A>(page: P, ableset: A, stop: &mut watch::Receiver<bool>, grace: Duration) -> Ended
+where
+    P: AsyncRead + AsyncWrite,
+    A: AsyncRead + AsyncWrite,
+{
+    let (up, down) = (AtomicU64::new(0), AtomicU64::new(0));
+    let (mut page_in, mut page_out) = tokio::io::split(page);
+    let (mut ableset_in, mut ableset_out) = tokio::io::split(ableset);
+    let why = {
+        let ups = pass(&mut page_in, &mut ableset_out, &up);
+        let downs = pass(&mut ableset_in, &mut page_out, &down);
+        tokio::pin!(ups, downs);
+        let first = tokio::select! {
+            biased;
+            () = stopped(stop) => None,
+            how = &mut ups => Some((Way::Up, how)),
+            how = &mut downs => Some((Way::Down, how)),
+        };
+        match first {
+            None => None,
+            Some((way, how)) => {
+                let after = match way {
+                    Way::Up => rest(downs, stop, grace).await,
+                    Way::Down => rest(ups, stop, grace).await,
+                };
+                match after {
+                    Rest::Stop => None,
+                    Rest::Ended(then) => Some(why_ended(way, &how, Some(&then), grace)),
+                    Rest::Open => Some(why_ended(way, &how, None, grace)),
+                }
+            }
+        }
+    };
+    let why = match why {
+        Some(why) => why,
+        None => {
+            let close = async { tokio::join!(page_out.shutdown(), ableset_out.shutdown()) };
+            let _ = tokio::time::timeout(CLOSE_BOUND, close).await;
+            STOPPED.to_string()
+        }
+    };
+    Ended {
+        up: up.into_inner(),
+        down: down.into_inner(),
+        why,
+    }
+}
+
+/// Both ends' upgrades (#90 B2), within `bound` (#90 review 1: AbleSet's
+/// head bound, [`proxy::HEAD_TIMEOUT`]): a page whose upgrade never
+/// completes holds no slot for good. Else why not: the upgrade failed, did
+/// not complete in time, or the hub stopped.
+async fn upgraded<P, A, T, E>(
+    page: P,
+    ableset: A,
+    bound: Duration,
+    stop: &mut watch::Receiver<bool>,
+) -> Result<(T, T), String>
+where
+    P: Future<Output = Result<T, E>>,
+    A: Future<Output = Result<T, E>>,
+    E: std::fmt::Display,
+{
+    let both = tokio::time::timeout(bound, async { tokio::try_join!(page, ableset) });
+    tokio::select! {
+        biased;
+        () = stopped(stop) => Err(STOPPED.to_string()),
+        joined = both => match joined {
+            Ok(Ok(ends)) => Ok(ends),
+            Ok(Err(e)) => Err(format!("the upgrade failed: {e}")),
+            Err(_) => Err(format!(
+                "the upgrade did not complete within {} ms",
+                bound.as_millis()
+            )),
+        },
+    }
+}
+
+/// Resolves once the hub stops (at once when it has; a gone hub is one).
+async fn stopped(stop: &mut watch::Receiver<bool>) {
+    let _ = stop.wait_for(|stopped| *stopped).await;
+}
+
+/// The `ableset_ws` record of tunnel `n` (`client`, as a socket line names
+/// its socket): its opener when it opened (`ws::opener`, the Access
+/// check's own classification), how long it lived, its bytes and why it
+/// ended when it closed; `skipped`: the records of its kind the ration
+/// left out before it.
+pub fn ws_fields(n: u64, opener: &Opener, ws: &Ws<'_>, skipped: u64) -> Value {
+    match ws {
+        Ws::Open => json!({
+            "what": "open", "client": n, "peer": opener.peer,
+            "forwarded": opener.forwarded, "source": opener.source,
+            "origin": opener.origin, "skipped": skipped
+        }),
+        Ws::Close { ms, ended } => json!({
+            "what": "close", "client": n, "ms": ms,
+            "up": ended.up, "down": ended.down,
+            "why": ended.why, "skipped": skipped
+        }),
+    }
 }
 
 /// Why AbleSet's router refuses a request before AbleSet sees it (#90): a
