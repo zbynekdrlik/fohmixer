@@ -995,3 +995,30 @@ fn a_double_tap_glide_stretched_carries_the_cap_and_says_how_far_it_has_come() {
     assert!(f.take_ended(), "arrived");
     assert_eq!(f.glide_progress(2081.0), None, "no glide any more");
 }
+
+#[test]
+fn a_dropped_double_tap_glide_sends_nothing_and_the_fader_holds() {
+    // #58: the backing-tracks fader drops the glide when a target has no
+    // value to glide from. Live's law, the cap at 0.55.
+    let mut f = FaderCtl::new(false, Some(0.85));
+    assert!(f.down(1, 500.0, TRAVEL, 0.0, 0.55));
+    assert_eq!(f.up(1, 20.0), None);
+    assert!(f.down(1, 500.0, TRAVEL, 60.0, 0.55));
+    assert_eq!(f.up(1, 80.0), None);
+    assert!(f.held(), "the double tap started its glide");
+    f.drop_glide();
+    assert!(!f.held(), "no glide drives it");
+    assert_eq!(f.glide_progress(100.0), None);
+    // The plain hold (100 ms) at the release's position, nothing sent.
+    assert_eq!(
+        f.frame(100.0, Some(0.55)),
+        Motion {
+            pos: Some(0.55),
+            send: None
+        }
+    );
+    assert!(!f.take_ended(), "a glide that never ran does not end");
+    // Dropping with no glide changes nothing.
+    f.drop_glide();
+    assert_eq!(f.frame(1000.0, Some(0.4)).pos, Some(0.4), "Live's value");
+}

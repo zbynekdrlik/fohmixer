@@ -632,6 +632,14 @@ impl FaderCtl {
         }
     }
 
+    /// Drops a glide a double tap just started, before any frame of it
+    /// (#58: the backing-tracks fader's, when a target has no value to
+    /// glide from): the fader holds where the release left it, as after a
+    /// plain release, and the glide sends nothing.
+    pub fn drop_glide(&mut self) {
+        self.glide = None;
+    }
+
     /// How far the running glide has come at `now` (0 to 1,
     /// [`Glide::progress`]); none without a glide. The frame loop reads it
     /// before [`FaderCtl::frame`]: the backing-tracks fader writes every

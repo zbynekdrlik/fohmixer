@@ -414,17 +414,19 @@ pub fn FaderView(
         // release started (a press stops any glide, so one running now is
         // this release's) takes every target from what it shows now (the
         // tap's last write included) to 0 dB, the cap from the loudest over
-        // the furthest track's way (`stretch_glide` does nothing without
-        // one). Another pointer's up touches no glide.
+        // the furthest track's way; with a target that shows nothing there
+        // is nothing to glide from, and the glide is dropped (both do
+        // nothing without a glide). Another pointer's up touches no glide.
         if vca && end.is_some_and(TouchEnd::ends_touch) {
             let begun = law.volume_law().and_then(|l| {
                 targets
                     .try_with_value(|all| Home::new(l, &shown_volumes(store, all)))
                     .flatten()
             });
-            if let Some(h) = &begun {
-                let _ = ctl.try_update_value(|c| c.stretch_glide(h.cap_from(), h.span()));
-            }
+            let _ = ctl.try_update_value(|c| match &begun {
+                Some(h) => c.stretch_glide(h.cap_from(), h.span()),
+                None => c.drop_glide(),
+            });
             let _ = home.try_set_value(begun);
         }
     };
