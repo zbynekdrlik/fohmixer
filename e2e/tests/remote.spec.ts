@@ -1,6 +1,6 @@
-import { createPrivateKey, createSign, randomBytes } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
 import http from "node:http";
+import { TUNNEL, accessJwt } from "./support/access";
 import { test, expect } from "./support/fixtures";
 import { BASE, centre, frames, openSurface, token } from "./support/live";
 import {
@@ -19,43 +19,10 @@ import {
 // of a per-run test CA both browsers trust, maps the name to 127.0.0.1 in
 // /etc/hosts (as the installer does on the Ableton PC; Chromium's
 // --host-resolver-rules would not reach WebKit), and an [access] section whose
-// key set the harness serves from a per-run RSA key (E2E_ACCESS_KEY), which
-// signs the assertions here the way Cloudflare Access signs them.
-//
-// A request "from the internet" is one with the tunnel's forwarded header
-// (`cf-connecting-ip`): cloudflared connects from the PC itself, so the header,
-// not the address, is what makes it an internet request.
+// key set the harness serves (`support/access.ts`: the assertions, and the
+// tunnel's forwarded header that makes a request an internet one).
 
 const PUBLIC = new URL(HTTPS);
-const KEY_FILE = process.env.E2E_ACCESS_KEY || "";
-const TEAM = process.env.E2E_ACCESS_TEAM || "fohmixer-e2e.cloudflareaccess.com";
-const AUD = process.env.E2E_ACCESS_AUD || "fohmixer-e2e-aud";
-const KID = "e2e-kid";
-const TUNNEL = { "cf-connecting-ip": "203.0.113.7" };
-
-function b64url(data: string | Buffer): string {
-  return Buffer.from(data).toString("base64url");
-}
-
-/** An Access assertion for the test application, `claims` overriding. */
-function accessJwt(claims: Record<string, unknown> = {}): string {
-  const now = Math.floor(Date.now() / 1000);
-  const header = b64url(JSON.stringify({ alg: "RS256", kid: KID, typ: "JWT" }));
-  const payload = b64url(
-    JSON.stringify({
-      aud: [AUD],
-      iss: `https://${TEAM}`,
-      exp: now + 3600,
-      iat: now,
-      email: "engineer@example.org",
-      ...claims,
-    }),
-  );
-  const signer = createSign("RSA-SHA256");
-  signer.update(`${header}.${payload}`);
-  const signature = signer.sign(createPrivateKey(readFileSync(KEY_FILE)), "base64url");
-  return `${header}.${payload}.${signature}`;
-}
 
 /** A WebSocket upgrade of the hub's /ws with `headers`: the answer's status (101 = upgraded). */
 function upgrade(headers: Record<string, string>): Promise<number> {
