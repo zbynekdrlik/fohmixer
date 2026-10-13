@@ -1152,46 +1152,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_request_head_that_never_ends_closes_its_connection_after_the_bound() {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        assert_eq!(HEADER_READ, Duration::from_secs(120));
-        // A server set up as both listeners are, with a short bound.
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        listener.set_nonblocking(true).unwrap();
-        let addr = listener.local_addr().unwrap();
-        let handle: axum_server::Handle<SocketAddr> = axum_server::Handle::new();
-        let mut server = axum_server::from_tcp(listener)
-            .unwrap()
-            .handle(handle.clone());
-        http1_limits(server.http_builder(), Duration::from_millis(300));
-        let app = Router::new().route("/", axum::routing::get(|| async { "ok" }));
-        tokio::spawn(server.serve(app.into_make_service()));
-        // A whole head is answered.
-        let mut whole = tokio::net::TcpStream::connect(addr).await.unwrap();
-        let head = b"GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n";
-        whole.write_all(head).await.unwrap();
-        let mut text = String::new();
-        let read = tokio::time::timeout(Duration::from_secs(5), whole.read_to_string(&mut text));
-        read.await.unwrap().unwrap();
-        assert!(text.starts_with("HTTP/1.1 200 OK"), "{text}");
-        // A head that stops half way: the connection is closed after the
-        // bound, not held for good.
-        let mut half = tokio::net::TcpStream::connect(addr).await.unwrap();
-        half.write_all(b"GET / HTTP/1.1\r\nHost: x\r\n")
-            .await
-            .unwrap();
-        let started = std::time::Instant::now();
-        let mut rest = Vec::new();
-        let read = tokio::time::timeout(Duration::from_secs(5), half.read_to_end(&mut rest));
-        assert!(read.await.is_ok(), "the connection stayed open");
-        assert!(started.elapsed() >= Duration::from_millis(200));
-        handle.shutdown();
-    }
-
-    #[tokio::test]
     async fn serve_until_bounds_a_request_head_on_its_own_listener() {
         // #90 follow-up 5: the listener serve_until makes applies the bound
         // itself (serve_until passes HEADER_READ to serve_bounded).
+        assert_eq!(HEADER_READ, Duration::from_secs(120));
         let dir = tempfile::tempdir().unwrap();
         let mut config = Config::defaults(dir.path());
         config.instances.clear();
