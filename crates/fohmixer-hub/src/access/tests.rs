@@ -876,3 +876,49 @@ fn a_deny_lines_path_is_cut_to_the_bound_of_a_clients_text() {
     assert!(lines[0].contains(&kept), "{}", lines[0]);
     assert!(!lines[0].contains(&"a".repeat(256)), "{}", lines[0]);
 }
+
+#[test]
+fn a_deny_line_cuts_a_clients_text_at_a_character_and_counts_what_it_left_out() {
+    let lines = DenyLines::default();
+    let path = "ž".repeat(300);
+    let detail = format!("Origin {} is not []", "x".repeat(300));
+    let deny = |reason| {
+        lines.deny(
+            "POST",
+            &path,
+            peer("10.0.0.5"),
+            Origin::Local,
+            reason,
+            &detail,
+        )
+    };
+    let log = crate::ws::tests::logged(|| {
+        for _ in 0..10 {
+            deny("cross_site");
+        }
+        // Another reason has a ration of its own.
+        deny("no_access");
+        // The gap goes by.
+        lines.expire();
+        deny("cross_site");
+    });
+    let warned: Vec<&str> = log
+        .lines()
+        .filter(|line| line.contains(" WARN ") && line.contains("access: DENY"))
+        .collect();
+    assert_eq!(warned.len(), 10, "{log}");
+    let none_left_out: Vec<bool> = warned.iter().map(|l| l.contains("skipped=0")).collect();
+    let mut wanted = vec![true; 9];
+    wanted.push(false);
+    assert_eq!(none_left_out, wanted);
+    assert!(warned[8].contains("reason=\"no_access\""), "{}", warned[8]);
+    assert!(warned[9].contains("skipped=2"), "{}", warned[9]);
+    let kept = format!("path=\"{}… (600 bytes)\"", "ž".repeat(256));
+    let cut = format!("(Origin {}… (317 bytes))", "x".repeat(249));
+    let named = ["method=POST", "peer=Some(10.0.0.5:50000)", "origin=Local"];
+    for line in &warned {
+        assert!(line.contains(&kept) && line.contains(&cut), "{line}");
+        assert!(named.iter().all(|n| line.contains(n)), "{line}");
+    }
+    assert_eq!(DENY_LINES, 8);
+}

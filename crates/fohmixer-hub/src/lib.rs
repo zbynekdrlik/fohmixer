@@ -176,6 +176,9 @@ pub struct HubInner {
     /// The Access check of internet requests (`[access]`); none: they are
     /// refused.
     pub access: Option<Arc<AccessGate>>,
+    /// The rations of its `access: DENY` lines (#90), shared by both
+    /// listeners' routers.
+    pub deny_lines: access::DenyLines,
     /// AbleSet's name behind the hub (#90, `[ableset]`).
     pub ableset: Option<Arc<ableset::AbleSet>>,
     /// Remote access's live state for `/api/status`.
@@ -513,6 +516,7 @@ impl Hub {
             auth,
             layout,
             access,
+            deny_lines: access::DenyLines::default(),
             ableset,
             remote,
             trusted_hosts,
@@ -695,7 +699,11 @@ fn router(hub: Hub, redirect: bool) -> Router {
     );
 
     let check_host = axum::middleware::from_fn_with_state(hub.clone(), routes::check_host);
-    let access = axum::middleware::from_fn_with_state(hub.access.clone(), access::middleware);
+    let guard = access::Guard {
+        gate: hub.access.clone(),
+        lines: hub.deny_lines.clone(),
+    };
+    let access = axum::middleware::from_fn_with_state(guard, access::middleware);
     let mut app = Router::new()
         .merge(routes::api_routes())
         .merge(routes::static_routes())
