@@ -1,4 +1,5 @@
 import { defineConfig, devices } from "@playwright/test";
+import { WEBKIT_ENV } from "./webkit-env";
 
 // The real Companion 5.0.7 job (#52, ci.yml `companion`): the Stream Deck tab
 // against Companion's official container, seeded with
@@ -23,7 +24,13 @@ export default defineConfig({
     },
     {
       name: "ipad",
-      use: { ...devices["iPad Pro 11 landscape"], browserName: "webkit", hasTouch: true },
+      use: {
+        ...devices["iPad Pro 11 landscape"],
+        browserName: "webkit",
+        hasTouch: true,
+        // #43: BBQ off, see webkit-env.ts.
+        launchOptions: { env: WEBKIT_ENV },
+      },
     },
   ],
 });
