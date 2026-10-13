@@ -2645,3 +2645,21 @@ async fn the_probe_and_the_sign_in_are_the_hubs_own_and_only_after_the_access_ch
     assert!(!site.failing.load(Ordering::Relaxed), "AbleSet was asked");
     hub.stop();
 }
+
+#[test]
+fn a_clients_text_is_clipped_at_a_character_never_inside_one() {
+    // #90 B3 (the B3h review's minor item): 256 characters, not bytes.
+    let two = "ž".repeat(CLIENT_TEXT);
+    assert_eq!(
+        clip(&two),
+        two.as_str(),
+        "256 two-byte characters stay whole"
+    );
+    let longer = format!("{two}ž");
+    assert_eq!(clip(&longer), format!("{two}… ({} bytes)", 2 * 257));
+    // A four-byte character over the 256th byte stays whole.
+    let slider = "\u{1F39A}";
+    let mixed = format!("{}{}", "a".repeat(255), slider.repeat(3));
+    let kept = format!("{}{slider}… (267 bytes)", "a".repeat(255));
+    assert_eq!(clip(&mixed), kept);
+}
