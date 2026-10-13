@@ -302,7 +302,7 @@ pub fn AbleSetView(rail: Vec<Control>, global: Vec<Control>) -> impl IntoView {
 /// A panel in the frame's place (the mockup's states, and #90 PR C review
 /// M2's LAN failure): its title, its text, and for the sign-in its button
 /// (to Access's top-level sign-in), for the emergency address AbleSet's
-/// direct address on the PC (in a new tab). Both act at
+/// direct address on the PC (in a new tab, without an opener). Both act at
 /// `pointerup`, where a finger's touch activates; the LAN failure has none.
 #[component]
 fn AbleSetPanel(panel: Panel, direct: Option<String>, signin: String) -> impl IntoView {
@@ -332,9 +332,11 @@ fn AbleSetPanel(panel: Panel, direct: Option<String>, signin: String) -> impl In
     let address = direct.map(|url| {
         let no_keys: Vec<String> = Vec::new();
         let shown = url.clone();
+        // Without an opener (#90 PR C review L4): AbleSet's page cannot
+        // reach the mixer's tab.
         let open = move |_: web_sys::PointerEvent| {
             if let Some(window) = web_sys::window() {
-                let _ = window.open_with_url_and_target(&url, "_blank");
+                let _ = window.open_with_url_and_target_and_features(&url, "_blank", "noopener");
             }
         };
         view! {
