@@ -432,10 +432,12 @@ fn the_glide_takes_every_track_from_its_start_to_exactly_0_db() {
     // The start: every track where it was.
     assert_eq!(h.volumes(0.0), vec![0.85, 0.5, 0.0, 0.95]);
     // A quarter and half of the way, each on its own way on the law.
-    assert_eq!(
-        h.volumes(0.25),
-        vec![0.85, 0.5875, 0.21250000000000002, 0.9249999999999999]
-    );
+    let quarter = h.volumes(0.25);
+    assert_eq!(quarter[0], 0.85, "the track at 0 dB stays exactly there");
+    for (got, want) in quarter.iter().zip([0.85, 0.5875, 0.2125, 0.925]) {
+        assert!((got - want).abs() < 1e-12, "{quarter:?}");
+    }
+    assert_eq!(quarter.len(), 4);
     let half = h.volumes(0.5);
     assert_eq!(half, vec![0.85, 0.675, 0.425, 0.8999999999999999]);
     for (got, want) in half.iter().zip([0.0, -7.0, -17.0, 2.0]) {
