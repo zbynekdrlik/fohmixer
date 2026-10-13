@@ -140,6 +140,8 @@ pub fn over_limit(error: &(dyn StdError + 'static)) -> bool {
 }
 
 /// An error, then each of its sources.
-fn causes(error: &(dyn StdError + 'static)) -> impl Iterator<Item = &(dyn StdError + 'static)> {
+fn causes<'a>(
+    error: &'a (dyn StdError + 'static),
+) -> impl Iterator<Item = &'a (dyn StdError + 'static)> {
     std::iter::successors(Some(error), |&e| e.source())
 }
