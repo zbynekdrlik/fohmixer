@@ -6,23 +6,29 @@ router's static DNS sends the name to the Ableton PC; everywhere else the
 public DNS sends it to a Cloudflare Tunnel whose connector (cloudflared, the
 ``fohmixer-tunnel`` service the installer sets up) forwards to the hub's plain
 HTTP port on the PC, behind a Cloudflare Access application (e-mail one-time
-PIN). This script reconciles, idempotently and in this order:
+PIN). ``--ableset-name`` adds AbleSet's own name (#90), which the hub serves
+beside fohmixer's: the same tunnel and origin, an Access application of its
+own (its own AUD, the same allow-list and settings). This script reconciles,
+idempotently and in this order:
 
 1. the tunnel (remotely managed): found by name or created;
-2. the Access application of the name with its one Allow policy (the e-mails
-   given; an empty list is refused: an Access app without an allow-list is an
-   open door) - BEFORE the name is published;
-3. the tunnel's ingress: the name -> ``--service`` (default the hub's
-   ``http://127.0.0.1:8480``), everything else 404. The configuration is
-   written whole, so a host the tunnel routes now and this run does not name
-   is listed as ``REMOVE route <host>``, and ``--apply`` refuses it before
-   any change unless ``--prune-routes`` is given;
-4. the public DNS record: a proxied CNAME ``<name> -> <tunnel id>.cfargotunnel.com``.
-   A record of the name that is not a tunnel CNAME is never overwritten
-   (``--replace-dns`` to allow it).
+2. the Access application of each name with its one Allow policy (the
+   e-mails given; an empty list is refused: an Access app without an
+   allow-list is an open door) - BEFORE the name is published;
+3. the tunnel's ingress: every name -> ``--service`` (default the hub's
+   ``http://127.0.0.1:8480``, which dispatches by Host), everything else 404.
+   The configuration is written whole, so a host the tunnel routes now and
+   this run does not name is listed as ``REMOVE route <host>``, and
+   ``--apply`` refuses it before any change unless ``--prune-routes`` is
+   given;
+4. the public DNS record of each name: a proxied CNAME
+   ``<name> -> <tunnel id>.cfargotunnel.com``. A record of the name that is
+   not a tunnel CNAME is never overwritten (``--replace-dns`` to allow it).
 
 It then prints the hub's ``[access]`` table (the team domain and the app's AUD
-tag, public IDs) and, with ``--token-out`` and ``--apply``, writes the tunnel's
+tag, public IDs), with ``--ableset-name`` also its ``[ableset]`` table (the
+name and the AbleSet app's AUD), and, with ``--token-out`` and ``--apply``,
+writes the tunnel's
 connector token to that file (owner-only) for ``Install-Fohmixer.ps1
 -SetTunnelToken``; the token is never printed.
 
@@ -121,20 +127,15 @@ def access_payload(name, emails, session_duration):
     }
 
 
-def ingress(name, service):
-    """The tunnel's configuration: ``name`` to the hub, everything else 404."""
-    return {
-        "config": {
-            "ingress": [
-                {"hostname": name, "service": service, "originRequest": {}},
-                {"service": "http_status:404"},
-            ]
-        }
-    }
+def ingress(names, service):
+    """The tunnel's configuration: every name to the hub, everything else 404."""
+    routes = [{"hostname": n, "service": service, "originRequest": {}} for n in names]
+    return {"config": {"ingress": routes + [{"service": "http_status:404"}]}}
 
 
 def same_ingress(current, wanted):
-    """Whether the tunnel already routes the name like ``wanted``."""
+    """Whether the tunnel already routes exactly like ``wanted`` (the whole
+    list, in order: cloudflared takes the first rule that matches)."""
     have = [(r.get("hostname"), r.get("service")) for r in (current or {}).get("ingress") or []]
     want = [(r.get("hostname"), r.get("service")) for r in wanted["config"]["ingress"]]
     return have == want
@@ -160,6 +161,8 @@ class Plan:
         self.tunnel_id = None
         self.aud = None
         self.team_domain = None
+        self.ableset_name = None
+        self.ableset_aud = None
 
     def note(self, text):
         self.actions.append(text)
@@ -180,6 +183,7 @@ def reconcile_tunnel(api, plan, account, tunnel_name):
 
 
 def reconcile_access(api, plan, account, name, emails, session_duration):
+    """The Access app of ``name``; its AUD tag (None before it exists)."""
     if not emails:
         raise ApiError(
             "no e-mail for the Access policy: an Access app without an allow-list is an open door"
@@ -199,14 +203,20 @@ def reconcile_access(api, plan, account, name, emails, session_duration):
         )
         if plan.apply:
             app = api.call("PUT", "%s/apps/%s" % (base, app["id"]), payload)
-    plan.aud = (app or {}).get("aud")
+    return (app or {}).get("aud")
+
+
+def read_team_domain(api, plan, account):
+    """The Access team domain (None when the token cannot read it)."""
     try:
-        plan.team_domain = (api.call("GET", base + "/organizations") or {}).get("auth_domain")
+        path = "/accounts/%s/access/organizations" % account
+        return (api.call("GET", path) or {}).get("auth_domain")
     except ApiError as e:
         plan.note(
             "the team domain is not readable with this token (%s): Zero Trust > Settings shows it"
             % e
         )
+        return None
 
 
 def config_path(account, plan):
@@ -229,20 +239,21 @@ def read_routes(api, plan, account, names, prune):
     return current
 
 
-def reconcile_ingress(api, plan, account, name, service, current, prune):
-    wanted = ingress(name, service)
+def reconcile_ingress(api, plan, account, names, service, current, prune):
+    wanted = ingress(names, service)
+    shown = ", ".join(names)
     if plan.tunnel_id is None:
-        plan.note("route %s -> %s in the new tunnel" % (name, service))
+        plan.note("route %s -> %s in the new tunnel" % (shown, service))
         return
-    for host in dropped_routes(current, [name]):
+    for host in dropped_routes(current, names):
         plan.note(
             "REMOVE route %s%s" % (host, "" if prune else " (--apply needs --prune-routes for it)")
         )
     path = config_path(account, plan)
     if same_ingress(current, wanted):
-        plan.note("the tunnel routes %s -> %s" % (name, service))
+        plan.note("the tunnel routes %s -> %s" % (shown, service))
         return
-    plan.note("route %s -> %s in the tunnel" % (name, service))
+    plan.note("route %s -> %s in the tunnel" % (shown, service))
     if plan.apply:
         api.call("PUT", path, wanted)
 
@@ -304,27 +315,47 @@ def write_token(api, plan, account, path):
     plan.note("wrote the connector token to %s" % path)
 
 
+def wanted_names(args):
+    """fohmixer's name, then AbleSet's when given (#90)."""
+    return [args.name] + ([args.ableset_name] if args.ableset_name else [])
+
+
 def reconcile(api, args):
     """The whole run, in its order (see the module documentation)."""
     plan = Plan(args.apply)
+    names = wanted_names(args)
+    plan.ableset_name = args.ableset_name
     reconcile_tunnel(api, plan, args.account_id, args.tunnel_name)
-    current = read_routes(api, plan, args.account_id, [args.name], args.prune_routes)
-    reconcile_access(api, plan, args.account_id, args.name, args.email, args.session_duration)
-    reconcile_ingress(
-        api, plan, args.account_id, args.name, args.service, current, args.prune_routes
-    )
-    reconcile_dns(api, plan, args.zone, args.name, args.replace_dns)
+    current = read_routes(api, plan, args.account_id, names, args.prune_routes)
+    auds = [
+        reconcile_access(api, plan, args.account_id, n, args.email, args.session_duration)
+        for n in names
+    ]
+    plan.aud = auds[0]
+    if args.ableset_name:
+        plan.ableset_aud = auds[1]
+    plan.team_domain = read_team_domain(api, plan, args.account_id)
+    reconcile_ingress(api, plan, args.account_id, names, args.service, current, args.prune_routes)
+    for n in names:
+        reconcile_dns(api, plan, args.zone, n, args.replace_dns)
     if args.token_out:
         write_token(api, plan, args.account_id, args.token_out)
     return plan
 
 
 def hub_access_table(plan):
-    """The hub's ``[access]`` table."""
-    return '[access]\nteam_domain = "%s"\naud = ["%s"]\n' % (
+    """The hub's ``[access]`` table, and its ``[ableset]`` table with
+    AbleSet's name (the installer's -AbleSetName and -AbleSetAccessAud)."""
+    text = '[access]\nteam_domain = "%s"\naud = ["%s"]\n' % (
         plan.team_domain or "<team>.cloudflareaccess.com",
         plan.aud or "<the Access app's AUD, after --apply>",
     )
+    if plan.ableset_name:
+        text += '\n[ableset]\nname = "%s"\naccess_aud = ["%s"]\n' % (
+            plan.ableset_name,
+            plan.ableset_aud or "<the AbleSet Access app's AUD, after --apply>",
+        )
+    return text
 
 
 def parse_args(argv):
@@ -334,6 +365,11 @@ def parse_args(argv):
     p.add_argument("--account-id", required=True)
     p.add_argument("--zone", required=True, help="the DNS zone of the name")
     p.add_argument("--name", required=True, help="the public name, e.g. foh.example.org")
+    p.add_argument(
+        "--ableset-name",
+        default=None,
+        help="AbleSet's own name beside it (#90), e.g. ableset.example.org",
+    )
     p.add_argument("--tunnel-name", default="fohmixer")
     p.add_argument(
         "--email", action="append", default=[], help="an e-mail the Access policy allows (repeat)"
@@ -358,6 +394,12 @@ def parse_args(argv):
 
 def main(argv=None, transport=None):
     args = parse_args(argv)
+    if args.ableset_name and norm(args.ableset_name) == norm(args.name):
+        print(
+            "fohmixer-cloudflare: --ableset-name is --name: AbleSet needs a name of its own",
+            file=sys.stderr,
+        )
+        return 1
     try:
         with open(os.path.expanduser(args.api_token_file), encoding="utf-8") as f:
             token = f.read().strip()
@@ -369,7 +411,7 @@ def main(argv=None, transport=None):
         return 1
     api = Api(token=token, transport=transport)
     mode = "APPLY" if args.apply else "DRY-RUN (reads only)"
-    print("fohmixer-cloudflare [%s] %s" % (mode, args.name))
+    print("fohmixer-cloudflare [%s] %s" % (mode, ", ".join(wanted_names(args))))
     try:
         plan = reconcile(api, args)
     except ApiError as e:

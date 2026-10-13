@@ -2,7 +2,9 @@
 Cloudflare API that keeps state: dry-run reads only, apply creates in the safe
 order (Access before the name is published), a second apply changes nothing,
 a foreign DNS record is never overwritten, the connector token is written
-owner-only and never printed."""
+owner-only and never printed; AbleSet's name (#90) gets its own Access app,
+route and record, and a route a run does not name is removed only with
+--prune-routes."""
 
 from __future__ import annotations
 
@@ -22,6 +24,7 @@ import fohmixer_cloudflare as fc  # noqa: E402
 ACCOUNT = "acc1"
 ZONE = "example.org"
 NAME = "foh.example.org"
+ABLESET = "ableset.example.org"
 # A low-entropy stand-in: a realistic token would read as a leak to the secret scan.
 CONNECTOR = "c" * 120
 
@@ -249,6 +252,67 @@ class ScriptTest(unittest.TestCase):
         hosts = [r.get("hostname") for r in self.cf.configs[tid]["ingress"]]
         self.assertEqual(hosts, [NAME, None])
 
+    def test_ablesets_name_gets_an_access_app_route_and_record_of_its_own(self):
+        code, out, err = self.run_main("--ableset-name", ABLESET)
+        self.assertEqual(code, 0, err)
+        (tid,) = self.cf.tunnels
+        apps = {a["domain"]: a for a in self.cf.apps.values()}
+        self.assertEqual(set(apps), {NAME, ABLESET})
+        foh, able = apps[NAME], apps[ABLESET]
+        self.assertEqual(able["name"], "fohmixer - " + ABLESET)
+        for key in ("type", "session_duration", "auto_redirect_to_identity", "policies"):
+            self.assertEqual(able[key], foh[key], key)
+        self.assertNotEqual(able["aud"], foh["aud"])
+        route = {"service": "http://127.0.0.1:8480", "originRequest": {}}
+        self.assertEqual(
+            self.cf.configs[tid]["ingress"],
+            [
+                dict(route, hostname=NAME),
+                dict(route, hostname=ABLESET),
+                {"service": "http_status:404"},
+            ],
+        )
+        records = sorted(
+            (r["name"], r["type"], r["content"], r["proxied"]) for r in self.cf.records.values()
+        )
+        target = tid + ".cfargotunnel.com"
+        self.assertEqual(records, [(ABLESET, "CNAME", target, True), (NAME, "CNAME", target, True)])
+        kinds = [p.split("/")[3] if p.startswith("/accounts") else "dns" for _, p in self.cf.writes]
+        self.assertEqual(kinds.count("access"), 2)
+        self.assertLess(kinds.index("access", 1), kinds.index("dns"), "both apps before DNS")
+        self.assertIn('aud = ["%s"]\n\n[ableset]\n' % foh["aud"], out)
+        self.assertIn('[ableset]\nname = "%s"\naccess_aud = ["%s"]\n' % (ABLESET, able["aud"]), out)
+        # A second run changes nothing but the apps' own updates.
+        self.cf.writes.clear()
+        code, out, _ = self.run_main("--ableset-name", ABLESET)
+        self.assertEqual(code, 0)
+        apps_path = "/accounts/acc1/access/apps/"
+        want = [("PUT", apps_path + foh["id"]), ("PUT", apps_path + able["id"])]
+        self.assertEqual(self.cf.writes, want)
+        self.assertIn("the tunnel routes %s, %s -> http://127.0.0.1:8480" % (NAME, ABLESET), out)
+        self.assertNotIn("REMOVE", out)
+
+    def test_ablesets_name_added_later_keeps_fohmixers_and_is_never_dropped_silently(self):
+        self.run_main()
+        self.cf.writes.clear()
+        code, out, _ = self.run_main("--ableset-name", ABLESET, apply=False)
+        self.assertEqual((code, self.cf.writes), (0, []))
+        self.assertIn("create the Access app of %s (allow: 2 e-mail(s))" % ABLESET, out)
+        self.assertIn("route %s, %s -> http://127.0.0.1:8480 in the tunnel" % (NAME, ABLESET), out)
+        self.assertIn("create DNS %s -> " % ABLESET, out)
+        self.assertIn('access_aud = ["<the AbleSet Access app\'s AUD, after --apply>"]', out)
+        self.assertNotIn("REMOVE", out)
+        self.assertEqual(self.run_main("--ableset-name", ABLESET)[0], 0)
+        code, out, _ = self.run_main(apply=False)
+        self.assertIn("REMOVE route %s (--apply needs --prune-routes for it)" % ABLESET, out)
+        self.assertNotIn("[ableset]", out)
+
+    def test_ablesets_name_is_refused_when_it_is_the_name(self):
+        code, _, err = self.run_main("--ableset-name", "FOH.example.org.")
+        self.assertEqual(code, 1)
+        self.assertIn("--ableset-name is --name: AbleSet needs a name of its own", err)
+        self.assertEqual((self.cf.writes, self.cf.tunnels), ([], {}))
+
     def test_a_foreign_dns_record_is_never_overwritten(self):
         self.cf.records["a1"] = {"id": "a1", "type": "A", "name": NAME, "content": "203.0.113.9"}
         code, _, err = self.run_main()
@@ -300,8 +364,11 @@ class ScriptTest(unittest.TestCase):
             api.call("GET", "/zones")
         self.assertIn("GET /zones: HTTP 500", str(raised.exception))
         self.assertEqual(fc.norm("FOH.Example.org./"), "foh.example.org")
-        self.assertTrue(fc.same_ingress(fc.ingress(NAME, "s")["config"], fc.ingress(NAME, "s")))
-        self.assertFalse(fc.same_ingress(None, fc.ingress(NAME, "s")))
+        both = fc.ingress([NAME, ABLESET], "s")
+        self.assertTrue(fc.same_ingress(both["config"], fc.ingress([NAME, ABLESET], "s")))
+        self.assertFalse(fc.same_ingress(both["config"], fc.ingress([ABLESET, NAME], "s")))
+        self.assertFalse(fc.same_ingress(fc.ingress([NAME], "s")["config"], both))
+        self.assertFalse(fc.same_ingress(None, fc.ingress([NAME], "s")))
 
 
 if __name__ == "__main__":
