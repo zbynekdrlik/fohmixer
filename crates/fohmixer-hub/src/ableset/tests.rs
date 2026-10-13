@@ -2810,3 +2810,29 @@ async fn the_proxy_never_uses_a_connection_idle_near_ablesets_keep_alive() {
     ask().await;
     assert_eq!(accepted.load(Ordering::Relaxed), 2, "a new connection");
 }
+
+#[test]
+fn a_sign_in_in_a_loop_writes_its_info_line_rationed() {
+    // #90 B3 review 2: a client, or another site's image, asking in a loop;
+    // hub.out.log has no cap.
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let log = logged(|| {
+        runtime.block_on(async {
+            let hub = hub_with(dir.path(), CLOSED, None, &[]);
+            for _ in 0..12 {
+                let request = get_from(NAME, SIGNED_IN, "10.0.0.5", &[]);
+                let answer = plain(&hub, request).await;
+                assert_eq!(answer.status(), StatusCode::SEE_OTHER);
+            }
+            hub.stop();
+        });
+    });
+    let lines = log
+        .lines()
+        .filter(|line| line.contains(" INFO ") && line.contains("signed in through Access"));
+    assert_eq!(lines.count(), 8, "{log}");
+}
