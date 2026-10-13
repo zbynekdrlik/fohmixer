@@ -404,9 +404,10 @@ async fn warn_lines_are_rationed_and_only_ablesets_own_fault_is_a_warn_class_rec
         (&first["ev"], &first["method"]),
         (&json!("ableset_proxy"), &json!("GET"))
     );
-    // Every one is recorded; only the warned fault of AbleSet itself under
-    // `error` (warn class, kept past the event log's daily cap), the rest
-    // under `why`: no client fills the PC's disk.
+    // Every one is recorded, and the outage's end (#90 B3h review 1); only
+    // the warned fault of AbleSet itself under `error` (warn class, kept
+    // past the event log's daily cap), the rest under `why`: no client
+    // fills the PC's disk.
     let keys: Vec<&str> = records
         .iter()
         .map(|r| {
@@ -417,7 +418,7 @@ async fn warn_lines_are_rationed_and_only_ablesets_own_fault_is_a_warn_class_rec
             }
         })
         .collect();
-    assert_eq!(keys, ["error", "why", "why", "why", "why"]);
+    assert_eq!(keys, ["error", "why", "why", "why", "why", "why"]);
     let rows: Vec<(&str, u64, &str)> = records
         .iter()
         .map(|r| {
@@ -434,6 +435,7 @@ async fn warn_lines_are_rationed_and_only_ablesets_own_fault_is_a_warn_class_rec
             ("/b", 502, refused),
             ("/c", 413, "big"),
             ("/d", 504, "late"),
+            ("/e", 200, "AbleSet answers again"),
             ("/f", 502, refused)
         ]
     );
