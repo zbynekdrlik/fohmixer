@@ -84,7 +84,8 @@
 }
 
 /* The extra tabs (STREAM DECK, ABLESET: #90, the approved mockup
-   ableset-tab-v1) each take the bar's whole width. */
+   ableset-tab-v1) each take the bar's whole width; STREAM DECK only beside
+   ABLESET (surface.rs DeckTab), else it is one cell as before. */
 .column .seg > .wide {
     grid-column: 1 / -1;
 }

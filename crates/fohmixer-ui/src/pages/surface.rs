@@ -637,7 +637,10 @@ fn ManualView() -> impl IntoView {
 }
 
 /// The Stream Deck's tab (#52): its title from the hub; a small red dot
-/// while Companion (or the hub) is unreachable, no words.
+/// while Companion (or the hub) is unreachable, no words. Beside AbleSet's
+/// tab both take a row of the bar (#90, the approved mockup); without it
+/// the deck's tab is one cell, as before AbleSet (#90 PR C review L7: the
+/// column's height is the faders' first).
 #[component]
 fn DeckTab() -> impl IntoView {
     let nav = expect_context::<Nav>();
@@ -649,13 +652,15 @@ fn DeckTab() -> impl IntoView {
     };
     let offline = move || store.deck.with(|d| d.as_ref().is_some_and(|d| !d.online));
     let lit = move || nav.shown.get() == Extra::Deck;
+    let wide = move || store.ableset.try_with(Option::is_some).unwrap_or(false);
     // A tab owns its touches (#43 PR G); it writes no key.
     let no_keys: Vec<String> = Vec::new();
     view! {
         <button
             type="button"
-            class="tab wide deck-tab"
+            class="tab deck-tab"
             use:owns_touches=no_keys
+            class:wide=wide
             class:selected=lit
             data-testid="deck-tab"
             data-selected=move || lit().to_string()
