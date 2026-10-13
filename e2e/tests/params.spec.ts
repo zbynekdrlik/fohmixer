@@ -476,32 +476,63 @@ test.describe("The backing-tracks fader", () => {
     await groovesShow(strip, START);
   });
 
-  test("a double tap glides the loudest to 0 dB and every other track by the same dB", async ({ page }) => {
-    // As it behaves today, a strip's double tap (#58 item 4 review, point 3:
-    // whether this fader should take one at all is the owner's open
-    // question). Prayer-mode levels: Drums −14 dB (the loudest), Bass
-    // −29.8 dB.
-    const START = [0.5, 0.24];
-    await live.set("band", DRUMS, "value", START[0]);
-    await live.set("band", BASS, "value", START[1]);
-    await openSurface(page);
+  test("a double tap puts every track at 0 dB, whatever their balance", async ({ page }) => {
+    // The owner's decision (#58 comment 6139533903, 2026-10-13): one
+    // gesture always brings the backing tracks back to normal, after a
+    // prayer mode and after a track was moved on its own; the balance is
+    // not kept. Live's 0 dB volume, as a strip's double tap reaches it.
+    const UNITY = 0.85;
     const strip = podklady(page);
     const fader = strip.getByTestId("fader");
+    const grooves = strip.getByTestId("param-groove");
+
+    /** Both tracks at 0 dB in Live, held still, and the fader showing it as any strip at 0 dB. */
+    async function everyTrackAt0dB() {
+      const [drums, bass] = await settled(
+        (v) => v.every((x) => Math.abs(x - UNITY) < 1e-6),
+        "Drums and Bass at 0 dB, held still",
+      );
+      expect(Math.abs(drums - UNITY), `Drums ${drums}`).toBeLessThan(1e-6);
+      expect(Math.abs(bass - UNITY), `Bass ${bass}`).toBeLessThan(1e-6);
+      for (const i of [0, 1]) {
+        await expect
+          .poll(
+            async () => {
+              const db = await grooves.nth(i).getAttribute("data-db");
+              return db ? Math.abs(Number(db)) : Infinity;
+            },
+            { message: `groove ${i} at 0 dB` },
+          )
+          .toBeLessThan(0.001);
+        await expect(grooves.nth(i)).toHaveAttribute("data-moved", "false");
+      }
+      await expect(strip.getByTestId("param-display")).toHaveText("0.0 dB");
+      await expect(strip.getByTestId("param-values")).toHaveText("0 0");
+      await expect(strip).toHaveAttribute("data-moved", "false");
+      await expect(strip.getByTestId("param-badge")).toBeHidden();
+      await expect.poll(() => capOffGroove(strip, 0), { message: "the cap at the grooves' level" }).toBeLessThan(1.5);
+    }
+
+    // A prayer mode's levels: Drums −14 dB (the loudest), Bass −29.8 dB.
+    await live.set("band", DRUMS, "value", 0.5);
+    await live.set("band", BASS, "value", 0.24);
+    await openSurface(page);
     await ready(fader);
     await expect(strip.getByTestId("param-display")).toHaveText("-14.0 dB");
-    await groovesShow(strip, START);
+    await groovesShow(strip, [0.5, 0.24]);
+    await expect(strip.getByTestId("param-badge")).toBeVisible();
     await doubleTap(fader);
-    // The glide's end: the loudest at 0 dB (as a strip's, 1e-6), held still.
-    const [drums, bass] = await settled(([d]) => Math.abs(d - 0.85) < 1e-6, "Drums at 0 dB, held still");
-    const dDrums = value2db(drums) - value2db(START[0]);
-    const dBass = value2db(bass) - value2db(START[1]);
-    // Up: Drums by its 14 dB to 0 dB, Bass by the same dB.
-    expect(Math.abs(dDrums - 14), `Drums ${drums}`).toBeLessThan(0.001);
-    expect(dBass, `Bass ${bass}`).toBeGreaterThan(0);
-    expect(Math.abs(dBass - dDrums), `Drums ${dDrums} dB, Bass ${dBass} dB`).toBeLessThan(SAME_DB);
-    await groovesShow(strip, [drums, bass]);
+    await everyTrackAt0dB();
+
+    // Then Bass moved on its own, to −∞, while Drums stays at 0 dB: the cap
+    // (the loudest) is at 0 dB already, and Bass still comes back to it.
+    await live.set("band", BASS, "value", 0);
+    await expect(grooves.nth(1)).toHaveAttribute("data-db", "-inf");
+    await expect(grooves.nth(0)).toHaveAttribute("data-db", "0.000");
     await expect(strip.getByTestId("param-display")).toHaveText("0.0 dB");
-    // Bass is still off 0 dB: the strip stays amber.
-    await expect(strip).toHaveAttribute("data-moved", "true");
+    await expect(strip.getByTestId("param-values")).toHaveText("0 -∞");
+    await expect(strip.getByTestId("param-badge")).toBeVisible();
+    await doubleTap(fader);
+    await everyTrackAt0dB();
   });
 });
