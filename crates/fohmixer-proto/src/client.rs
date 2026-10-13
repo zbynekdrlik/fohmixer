@@ -657,14 +657,16 @@ pub struct CertStatus {
 }
 
 /// AbleSet's own page behind the hub (#90) in `GET /api/status`: its name
-/// (`[ableset]`), that name's own certificate and its open WebSocket
-/// tunnels.
+/// (`[ableset]`), that name's own certificate and its taken WebSocket
+/// slots.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AbleSetStatus {
     pub name: String,
     pub cert: CertStatus,
-    /// The WebSocket tunnels to AbleSet open now (B2); absent in an older
-    /// hub's answer.
+    /// The taken WebSocket slots of AbleSet's tunnels (B2): the open
+    /// tunnels, the upgrades still waiting for AbleSet's 101 or for their
+    /// two ends, and an upgrade's non-101 answer still streaming; absent in
+    /// an older hub's answer.
     #[serde(default)]
     pub sockets: usize,
 }

@@ -197,6 +197,30 @@ fn the_origin_guard_refuses_cross_site_writes_and_websocket_upgrades() {
 }
 
 #[test]
+fn a_websocket_upgrade_is_an_upgrade_naming_websocket_in_any_value_or_list() {
+    for pairs in [
+        vec![("upgrade", "websocket")],
+        vec![("upgrade", "WebSocket")],
+        vec![("upgrade", "h2c, websocket")],
+        vec![("upgrade", "h2c"), ("upgrade", " websocket ")],
+    ] {
+        assert!(is_websocket_upgrade(&headers(&pairs)), "{pairs:?}");
+    }
+    for pairs in [
+        vec![],
+        vec![("upgrade", "h2c")],
+        vec![("upgrade", "websockets")],
+        vec![("connection", "websocket")],
+    ] {
+        assert!(!is_websocket_upgrade(&headers(&pairs)), "{pairs:?}");
+    }
+    let connection = |value: &str| headers(&[("connection", value)]);
+    let upgrade = |map: &HeaderMap| names_token(map, &header::CONNECTION, "upgrade");
+    assert!(upgrade(&connection("keep-alive, Upgrade")));
+    assert!(!upgrade(&connection("upgraded")));
+}
+
+#[test]
 fn the_assertion_comes_from_the_header_else_the_cookie() {
     assert_eq!(extract_token(&HeaderMap::new()), None);
     assert_eq!(

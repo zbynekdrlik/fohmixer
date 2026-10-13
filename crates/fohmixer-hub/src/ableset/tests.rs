@@ -1116,9 +1116,19 @@ async fn the_plain_listener_redirects_ablesets_name_once_its_certificate_serves(
 
 #[test]
 fn a_websocket_is_a_get_naming_the_upgrade_and_websocket_whose_pair_goes_on() {
-    let ask = |method: Method, pairs: &[(&str, &str)]| is_upgrade(&method, &headers(pairs));
+    let ask = |method: Method, pairs: &[(&str, &str)]| {
+        is_upgrade(&method, Version::HTTP_11, &headers(pairs))
+    };
     let socket = [("connection", "Upgrade"), ("upgrade", "websocket")];
     assert!(ask(Method::GET, &socket));
+    // Only HTTP/1.1 switches (#90 review 5): hyper offers no upgrade on
+    // HTTP/1.0, and HTTP/2 has none.
+    for version in [Version::HTTP_10, Version::HTTP_2] {
+        assert!(
+            !is_upgrade(&Method::GET, version, &headers(&socket)),
+            "{version:?}"
+        );
+    }
     let listed = [
         ("connection", "keep-alive, Upgrade"),
         ("upgrade", "h2c, WebSocket"),
@@ -1135,6 +1145,7 @@ fn a_websocket_is_a_get_naming_the_upgrade_and_websocket_whose_pair_goes_on() {
         &[("connection", "upgrade")][..],
         &[("connection", "upgrade"), ("upgrade", "h2c")][..],
         &[("connection", "upgraded"), ("upgrade", "websocket")][..],
+        &[("connection", "upgrade"), ("upgrade", "websockets")][..],
     ] {
         assert!(!ask(Method::GET, pairs), "{pairs:?}");
     }
@@ -1171,14 +1182,16 @@ fn a_tunnels_records_name_it_its_life_its_bytes_and_why_each_kind_rationed() {
     let (site, records) = site_with(CLOSED, Duration::from_secs(1), 16);
     let from = "10.0.0.5:50000".parse().unwrap();
     let opener = crate::ws::opener(from, &headers(&[("origin", "https://ableset.example.org")]));
-    let closed = ended(Ok((12, 34)));
-    let reset = io::Error::new(io::ErrorKind::ConnectionReset, "reset by the peer");
-    let failed = Ended {
-        bytes: None,
-        why: "reset by the peer".into(),
+    let closed = Ended {
+        up: 12,
+        down: 34,
+        why: "closed".into(),
     };
-    assert_eq!(ended(Err(reset)), failed);
-    assert_eq!(ended_by_stop().why, STOPPED);
+    let failed = Ended {
+        up: 5,
+        down: 0,
+        why: "the page to AbleSet: reset by the peer".into(),
+    };
     // A loop of opens: WS_RECORDS of them in a gap, the rest left out; a
     // close has a ration of its own.
     for _ in 0..=WS_RECORDS {
@@ -1217,8 +1230,8 @@ fn a_tunnels_records_name_it_its_life_its_bytes_and_why_each_kind_rationed() {
         [
             json!({"ev": "ableset_ws", "what": "close", "client": 7, "ms": 5, "up": 12,
                 "down": 34, "why": "closed", "skipped": 0}),
-            json!({"ev": "ableset_ws", "what": "close", "client": 7, "ms": 6, "up": null,
-                "down": null, "why": "reset by the peer", "skipped": 0})
+            json!({"ev": "ableset_ws", "what": "close", "client": 7, "ms": 6, "up": 5,
+                "down": 0, "why": "the page to AbleSet: reset by the peer", "skipped": 0})
         ]
     );
 }
@@ -1758,4 +1771,261 @@ async fn the_stop_closes_a_tunnel_with_its_bytes_and_one_opened_after_it_at_once
             (&json!(STOPPED), &json!(0), &json!(0))
         ]
     );
+}
+
+/// `bytes` written to `end`, then its close.
+async fn send_and_close(end: &mut tokio::io::DuplexStream, bytes: &[u8]) {
+    tokio::io::AsyncWriteExt::write_all(end, bytes)
+        .await
+        .unwrap();
+    tokio::io::AsyncWriteExt::shutdown(end).await.unwrap();
+}
+
+/// Everything `end` reads until its close.
+async fn read_all(end: &mut tokio::io::DuplexStream) -> Vec<u8> {
+    let mut got = Vec::new();
+    end.read_to_end(&mut got).await.unwrap();
+    got
+}
+
+/// A tunnel's two ends, each with its far end (what the page and AbleSet
+/// hold), and a stop not sent yet.
+#[allow(clippy::type_complexity)]
+fn ends_and_stop() -> (
+    (tokio::io::DuplexStream, tokio::io::DuplexStream),
+    (tokio::io::DuplexStream, tokio::io::DuplexStream),
+    (watch::Sender<bool>, watch::Receiver<bool>),
+) {
+    (
+        tokio::io::duplex(64),
+        tokio::io::duplex(64),
+        watch::channel(false),
+    )
+}
+
+#[test]
+fn why_a_tunnel_ended_names_the_way_and_the_end_that_did_not_close() {
+    assert_eq!(HALF_CLOSE_GRACE, Duration::from_secs(5));
+    let grace = Duration::from_millis(5000);
+    let ok = || Ok(());
+    let reset = || Err(io::Error::from(io::ErrorKind::ConnectionReset));
+    for first in [Way::Up, Way::Down] {
+        assert_eq!(why_ended(first, &ok(), Some(&ok()), grace), "closed");
+        assert_eq!(first.other().other(), first);
+    }
+    assert_eq!(Way::Up.other(), Way::Down);
+    assert_eq!(
+        why_ended(Way::Down, &ok(), None, grace),
+        "the page did not close within 5000 ms of AbleSet's close"
+    );
+    assert_eq!(
+        why_ended(Way::Up, &ok(), None, grace),
+        "AbleSet did not close within 5000 ms of the page's close"
+    );
+    // An error is named by its way: the first one's, else the other's.
+    assert_eq!(
+        why_ended(Way::Up, &reset(), Some(&ok()), grace),
+        "the page to AbleSet: connection reset"
+    );
+    assert_eq!(
+        why_ended(Way::Down, &reset(), None, grace),
+        "AbleSet to the page: connection reset"
+    );
+    assert_eq!(
+        why_ended(Way::Up, &ok(), Some(&reset()), grace),
+        "AbleSet to the page: connection reset"
+    );
+    // A source's close, a TLS page's without close_notify too (#90 review
+    // 9); any other error ends its way.
+    assert!(source_closed(Ok(7)).is_ok());
+    assert!(source_closed(Err(io::ErrorKind::UnexpectedEof.into())).is_ok());
+    let reset = source_closed(Err(io::ErrorKind::ConnectionReset.into()));
+    assert_eq!(
+        reset.err().map(|e| e.kind()),
+        Some(io::ErrorKind::ConnectionReset)
+    );
+}
+
+#[tokio::test]
+async fn a_tunnels_ways_pass_their_bytes_and_their_closes_and_count_them() {
+    let ((page, mut page_far), (ableset, mut ableset_far), (_sender, mut stop)) = ends_and_stop();
+    send_and_close(&mut page_far, b"abc").await;
+    send_and_close(&mut ableset_far, b"hello").await;
+    let ended = pipe(page, ableset, &mut stop, Duration::from_secs(5)).await;
+    let closed = Ended {
+        up: 3,
+        down: 5,
+        why: "closed".into(),
+    };
+    assert_eq!(ended, closed);
+    // Each end got the other's bytes, then its close.
+    assert_eq!(read_all(&mut ableset_far).await, b"abc");
+    assert_eq!(read_all(&mut page_far).await, b"hello");
+}
+
+#[tokio::test]
+async fn a_tunnel_ends_after_the_grace_when_one_end_closed_and_the_other_stays_silent() {
+    let grace = Duration::from_millis(100);
+    // AbleSet closed; the page stays silent.
+    let ((page, mut page_far), (ableset, mut ableset_far), (_sender, mut stop)) = ends_and_stop();
+    send_and_close(&mut ableset_far, b"").await;
+    let started = Instant::now();
+    let ended = pipe(page, ableset, &mut stop, grace).await;
+    assert!(started.elapsed() >= grace, "{:?}", started.elapsed());
+    let why = "the page did not close within 100 ms of AbleSet's close";
+    assert_eq!((ended.up, ended.down, ended.why.as_str()), (0, 0, why));
+    assert_eq!(
+        read_all(&mut page_far).await,
+        b"",
+        "AbleSet's close passed on"
+    );
+    // The page closed; AbleSet stays silent.
+    let ((page, mut page_far), (ableset, mut ableset_far), (_sender, mut stop)) = ends_and_stop();
+    send_and_close(&mut page_far, b"ab").await;
+    let ended = pipe(page, ableset, &mut stop, grace).await;
+    let why = "AbleSet did not close within 100 ms of the page's close";
+    assert_eq!((ended.up, ended.down, ended.why.as_str()), (2, 0, why));
+    assert_eq!(read_all(&mut ableset_far).await, b"ab");
+}
+
+#[tokio::test]
+async fn a_tunnels_error_is_named_by_its_way_with_the_bytes_so_far() {
+    let grace = Duration::from_secs(5);
+    // AbleSet is gone while the page sends: the page's way fails first.
+    let ((page, mut page_far), (ableset, ableset_far), (_sender, mut stop)) = ends_and_stop();
+    drop(ableset_far);
+    tokio::io::AsyncWriteExt::write_all(&mut page_far, b"abc")
+        .await
+        .unwrap();
+    let ended = pipe(page, ableset, &mut stop, grace).await;
+    let why = "the page to AbleSet: broken pipe";
+    assert_eq!((ended.up, ended.down, ended.why.as_str()), (0, 0, why));
+    // The page is gone while AbleSet sends: its close passed on, then
+    // AbleSet's way fails.
+    let ((page, page_far), (ableset, mut ableset_far), (_sender, mut stop)) = ends_and_stop();
+    drop(page_far);
+    tokio::io::AsyncWriteExt::write_all(&mut ableset_far, b"hello")
+        .await
+        .unwrap();
+    let ended = pipe(page, ableset, &mut stop, grace).await;
+    let why = "AbleSet to the page: broken pipe";
+    assert_eq!((ended.up, ended.down, ended.why.as_str()), (0, 0, why));
+    assert_eq!(read_all(&mut ableset_far).await, b"", "the page's close");
+}
+
+#[tokio::test]
+async fn the_stop_shuts_both_ends_together_and_keeps_the_bytes() {
+    let ((page, mut page_far), (ableset, mut ableset_far), (sender, mut stop)) = ends_and_stop();
+    tokio::io::AsyncWriteExt::write_all(&mut page_far, b"abc")
+        .await
+        .unwrap();
+    tokio::io::AsyncWriteExt::write_all(&mut ableset_far, b"hello")
+        .await
+        .unwrap();
+    let piped = pipe(page, ableset, &mut stop, Duration::from_secs(5));
+    let far = async {
+        let mut up = [0_u8; 3];
+        ableset_far.read_exact(&mut up).await.unwrap();
+        let mut down = [0_u8; 5];
+        page_far.read_exact(&mut down).await.unwrap();
+        sender.send_replace(true);
+        (
+            read_all(&mut ableset_far).await,
+            read_all(&mut page_far).await,
+        )
+    };
+    let (ended, rest) = tokio::join!(piped, far);
+    let stopped = Ended {
+        up: 3,
+        down: 5,
+        why: STOPPED.into(),
+    };
+    assert_eq!(ended, stopped);
+    assert_eq!(rest, (Vec::new(), Vec::new()), "both ends closed");
+    // A page whose close cannot go out (TLS into a full send buffer) does
+    // not hold AbleSet's close back (#90 review 8): both go together.
+    let ((page, _page_far), (ableset, mut ableset_far), (sender, mut stop)) = ends_and_stop();
+    sender.send_replace(true);
+    let started = Instant::now();
+    let piped = pipe(Stuck(page), ableset, &mut stop, Duration::from_secs(5));
+    let far = async {
+        read_all(&mut ableset_far).await;
+        started.elapsed()
+    };
+    let (ended, closed_after) = tokio::join!(piped, far);
+    assert!(closed_after < CLOSE_BOUND / 2, "{closed_after:?}");
+    assert!(started.elapsed() >= CLOSE_BOUND, "{:?}", started.elapsed());
+    assert_eq!(ended.why, STOPPED);
+}
+
+/// A tunnel end whose close never completes (a page's TLS `close_notify`
+/// into a full send buffer).
+struct Stuck(tokio::io::DuplexStream);
+
+impl AsyncRead for Stuck {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.get_mut().0).poll_read(cx, buf)
+    }
+}
+
+impl AsyncWrite for Stuck {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.get_mut().0).poll_write(cx, buf)
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.get_mut().0).poll_flush(cx)
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Poll::Pending
+    }
+}
+
+#[tokio::test]
+async fn a_tunnels_upgrades_are_bounded_and_end_at_the_stop() {
+    let (sender, mut stop) = watch::channel(false);
+    let ok = || std::future::ready(Ok::<u8, io::Error>(1));
+    let never = std::future::pending::<Result<u8, io::Error>>;
+    let bound = Duration::from_millis(50);
+    assert_eq!(upgraded(ok(), ok(), bound, &mut stop).await, Ok((1, 1)));
+    let failed = std::future::ready(Err::<u8, _>(io::Error::other("refused")));
+    assert_eq!(
+        upgraded(ok(), failed, bound, &mut stop).await,
+        Err("the upgrade failed: refused".to_string())
+    );
+    let started = Instant::now();
+    assert_eq!(
+        upgraded(ok(), never(), bound, &mut stop).await,
+        Err("the upgrade did not complete within 50 ms".to_string())
+    );
+    assert!(started.elapsed() >= bound);
+    sender.send_replace(true);
+    assert_eq!(
+        upgraded(ok(), ok(), bound, &mut stop).await,
+        Err(STOPPED.to_string())
+    );
+}
+
+#[tokio::test]
+async fn the_stop_waits_for_every_socket_slot_to_come_back() {
+    let (events, _records) = EventLog::channel(4);
+    let proxy = Proxy::new(CLOSED, Duration::from_secs(1), 16);
+    let site = AbleSet::limited(NAME, &tls(), None, events, proxy, 1, 2);
+    let short = Duration::from_millis(50);
+    assert!(site.closed(short).await, "nothing open");
+    let open = Arc::clone(&site.sockets).try_acquire_owned().unwrap();
+    assert!(!site.closed(short).await, "a tunnel still open");
+    drop(open);
+    assert!(site.closed(short).await);
+    assert_eq!(site.open_sockets(), 0);
+    assert_eq!(CLOSED_WAIT, CLOSE_BOUND + Duration::from_millis(500));
 }
