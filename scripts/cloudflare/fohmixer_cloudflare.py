@@ -17,10 +17,11 @@ idempotently and in this order:
    allow-list is an open door) - BEFORE the name is published;
 3. the tunnel's ingress: every name -> ``--service`` (default the hub's
    ``http://127.0.0.1:8480``, which dispatches by Host), everything else 404.
-   The configuration is written whole, so a host the tunnel routes now and
-   this run does not name is listed as ``REMOVE route <host>``, and
+   The ingress is written whole, so every rule the tunnel has now that the
+   wanted list lacks (another host, a path rule, a changed service or
+   option, another catch-all) is listed as ``REMOVE route <rule>``, and
    ``--apply`` refuses it before any change unless ``--prune-routes`` is
-   given;
+   given. The rest of the tunnel's configuration is carried over as it is;
 4. the public DNS record of each name: a proxied CNAME
    ``<name> -> <tunnel id>.cfargotunnel.com``. A record of the name that is
    not a tunnel CNAME is never overwritten (``--replace-dns`` to allow it).
@@ -133,23 +134,44 @@ def ingress(names, service):
     return {"config": {"ingress": routes + [{"service": "http_status:404"}]}}
 
 
+def rule_settings(rule, fold=False):
+    """An ingress rule as compared: every key with a value (an empty ``path``
+    or ``originRequest`` is none); with ``fold``, the host name normalised."""
+    settings = {k: v for k, v in (rule or {}).items() if v not in (None, "", {}, [])}
+    if fold and "hostname" in settings:
+        settings["hostname"] = norm(settings["hostname"])
+    return settings
+
+
 def same_ingress(current, wanted):
-    """Whether the tunnel already routes exactly like ``wanted`` (the whole
-    list, in order: cloudflared takes the first rule that matches)."""
-    have = [(r.get("hostname"), r.get("service")) for r in (current or {}).get("ingress") or []]
-    want = [(r.get("hostname"), r.get("service")) for r in wanted["config"]["ingress"]]
+    """Whether the tunnel already routes exactly like ``wanted``: every rule
+    with all its settings, in order (cloudflared takes the first match)."""
+    have = [rule_settings(r) for r in (current or {}).get("ingress") or []]
+    want = [rule_settings(r) for r in wanted["config"]["ingress"]]
     return have == want
 
 
-def dropped_routes(current, names):
-    """The hosts the tunnel routes now that ``names`` lacks: writing the
-    wanted configuration (always whole) would remove their routes."""
-    wanted = {norm(n) for n in names}
+def lost_rules(current, wanted):
+    """The rules the tunnel has now that ``wanted`` lacks: another host, a
+    path rule, a changed service or option, another catch-all. The ingress is
+    written whole, so the write would remove or change each of them."""
+    keep = [rule_settings(r, fold=True) for r in wanted["config"]["ingress"]]
     return [
-        r["hostname"]
-        for r in (current or {}).get("ingress") or []
-        if r.get("hostname") and norm(r["hostname"]) not in wanted
+        r for r in (current or {}).get("ingress") or [] if rule_settings(r, fold=True) not in keep
     ]
+
+
+def describe_rule(rule):
+    """A rule as a REMOVE line names it: ``<host or *>[ path <path>] ->
+    <service>``, then any other setting as JSON."""
+    rest = rule_settings(rule)
+    text = rest.pop("hostname", "*")
+    if "path" in rest:
+        text += " path %s" % rest.pop("path")
+    text += " -> %s" % rest.pop("service", None)
+    if rest:
+        text += " " + json.dumps(rest, sort_keys=True)
+    return text
 
 
 class Plan:
@@ -223,39 +245,43 @@ def config_path(account, plan):
     return "/accounts/%s/cfd_tunnel/%s/configurations" % (account, plan.tunnel_id)
 
 
-def read_routes(api, plan, account, names, prune):
+def read_routes(api, plan, account, wanted, prune):
     """The tunnel's configuration now (None for a new tunnel), read before
-    any change: with --apply, a route ``names`` lacks is refused here unless
-    ``prune`` (--prune-routes)."""
+    any change: with --apply, a rule the write of ``wanted`` would remove or
+    change (``lost_rules``) is refused here unless ``prune``
+    (--prune-routes)."""
     if plan.tunnel_id is None:
         return None
     current = (api.call("GET", config_path(account, plan)) or {}).get("config")
-    dropped = dropped_routes(current, names)
-    if dropped and plan.apply and not prune:
+    lost = lost_rules(current, wanted)
+    if lost and plan.apply and not prune:
         raise ApiError(
-            "the tunnel routes %s, which this run does not name: it would remove the route; "
-            "name it, or pass --prune-routes to remove it" % ", ".join(dropped)
+            "the tunnel has %s, which this run would remove or change: name it, "
+            "or pass --prune-routes" % "; ".join(describe_rule(r) for r in lost)
         )
     return current
 
 
-def reconcile_ingress(api, plan, account, names, service, current, prune):
-    wanted = ingress(names, service)
-    shown = ", ".join(names)
+def reconcile_ingress(api, plan, account, wanted, current, prune):
+    """The tunnel's ingress as ``wanted``. The rest of its configuration
+    (warp-routing, the default originRequest) is not this script's: the
+    write carries it over as it is."""
+    routes = [r for r in wanted["config"]["ingress"] if r.get("hostname")]
+    shown = "%s -> %s" % (", ".join(r["hostname"] for r in routes), routes[0]["service"])
     if plan.tunnel_id is None:
-        plan.note("route %s -> %s in the new tunnel" % (shown, service))
+        plan.note("route %s in the new tunnel" % shown)
         return
-    for host in dropped_routes(current, names):
-        plan.note(
-            "REMOVE route %s%s" % (host, "" if prune else " (--apply needs --prune-routes for it)")
-        )
-    path = config_path(account, plan)
+    for rule in lost_rules(current, wanted):
+        hint = "" if prune else " (--apply needs --prune-routes for it)"
+        plan.note("REMOVE route %s%s" % (describe_rule(rule), hint))
     if same_ingress(current, wanted):
-        plan.note("the tunnel routes %s -> %s" % (shown, service))
+        plan.note("the tunnel routes %s" % shown)
         return
-    plan.note("route %s -> %s in the tunnel" % (shown, service))
+    plan.note("route %s in the tunnel" % shown)
     if plan.apply:
-        api.call("PUT", path, wanted)
+        kept = {k: v for k, v in (current or {}).items() if k != "ingress" and v is not None}
+        config = dict(kept, ingress=wanted["config"]["ingress"])
+        api.call("PUT", config_path(account, plan), {"config": config})
 
 
 def reconcile_dns(api, plan, zone, name, replace):
@@ -326,7 +352,8 @@ def reconcile(api, args):
     names = wanted_names(args)
     plan.ableset_name = args.ableset_name
     reconcile_tunnel(api, plan, args.account_id, args.tunnel_name)
-    current = read_routes(api, plan, args.account_id, names, args.prune_routes)
+    wanted = ingress(names, args.service)
+    current = read_routes(api, plan, args.account_id, wanted, args.prune_routes)
     auds = [
         reconcile_access(api, plan, args.account_id, n, args.email, args.session_duration)
         for n in names
@@ -335,7 +362,7 @@ def reconcile(api, args):
     if args.ableset_name:
         plan.ableset_aud = auds[1]
     plan.team_domain = read_team_domain(api, plan, args.account_id)
-    reconcile_ingress(api, plan, args.account_id, names, args.service, current, args.prune_routes)
+    reconcile_ingress(api, plan, args.account_id, wanted, current, args.prune_routes)
     for n in names:
         reconcile_dns(api, plan, args.zone, n, args.replace_dns)
     if args.token_out:
