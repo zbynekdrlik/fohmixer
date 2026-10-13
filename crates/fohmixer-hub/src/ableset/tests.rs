@@ -1871,6 +1871,61 @@ async fn a_tunnels_ways_pass_their_bytes_and_their_closes_and_count_them() {
 }
 
 #[tokio::test]
+async fn an_ends_close_reaches_the_other_at_once_and_its_answer_ends_the_tunnel() {
+    // RFC 6455 7.1.1: AbleSet closes first, the page closes right after it
+    // learns of that close, long before the grace.
+    let ((page, mut page_far), (ableset, mut ableset_far), (_sender, mut stop)) = ends_and_stop();
+    send_and_close(&mut ableset_far, b"bye").await;
+    let started = Instant::now();
+    let piped = pipe(page, ableset, &mut stop, Duration::from_secs(5));
+    let the_page = async {
+        let got = read_all(&mut page_far).await;
+        tokio::io::AsyncWriteExt::shutdown(&mut page_far)
+            .await
+            .unwrap();
+        got
+    };
+    let (ended, got) = tokio::join!(piped, the_page);
+    assert_eq!(got, b"bye");
+    let closed = Ended {
+        up: 0,
+        down: 3,
+        why: "closed".into(),
+    };
+    assert_eq!(ended, closed);
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "{:?}",
+        started.elapsed()
+    );
+}
+
+#[tokio::test]
+async fn a_ways_bytes_go_out_when_its_source_pauses() {
+    // An end that buffers what it is given (as rustls does under TLS) gets
+    // each burst at once: the copy flushes it when its source has nothing
+    // more for now.
+    let ((page, mut page_far), (ableset, mut ableset_far), (_sender, mut stop)) = ends_and_stop();
+    let buffering = tokio::io::BufWriter::new(page);
+    let piped = pipe(buffering, ableset, &mut stop, Duration::from_secs(5));
+    let the_ends = async {
+        tokio::io::AsyncWriteExt::write_all(&mut ableset_far, b"hello")
+            .await
+            .unwrap();
+        let mut got = [0_u8; 5];
+        let wait = Duration::from_secs(2);
+        let read = tokio::time::timeout(wait, page_far.read_exact(&mut got)).await;
+        send_and_close(&mut ableset_far, b"").await;
+        send_and_close(&mut page_far, b"").await;
+        (read.is_ok(), got)
+    };
+    let (ended, (read, got)) = tokio::join!(piped, the_ends);
+    assert!(read, "the burst stayed in the page end's buffer");
+    assert_eq!(&got, b"hello");
+    assert_eq!((ended.down, ended.why.as_str()), (5, "closed"));
+}
+
+#[tokio::test]
 async fn a_tunnel_ends_after_the_grace_when_one_end_closed_and_the_other_stays_silent() {
     let grace = Duration::from_millis(100);
     // AbleSet closed; the page stays silent.

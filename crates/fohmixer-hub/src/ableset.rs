@@ -745,7 +745,7 @@ where
 {
     let mut counted = Counted { to, count };
     source_closed(tokio::io::copy(from, &mut counted).await)?;
-    counted.to.shutdown().await
+    counted.shutdown().await
 }
 
 /// What the way still open did after the other ended.
