@@ -287,13 +287,14 @@ exclude_re = [
   # and AbleSet's tab press (#52, #90: Nav::show_extra sets the extra tab's
   # signal, Nav::select clears it, each only on a change; deck.spec.ts opens
   # the deck's and checks a reload never restores it, ableset.spec.ts opens
-  # AbleSet's, leaves it by a page's tab and opens the deck's beside it), a view's button (#68: Nav::tap_view carries
-  # out the tested view_tap through Nav::select; markers.spec.ts taps it)
-  # and the remembered pages' read; choose and selected_path are the tested
-  # decisions. #63: Nav::open_column (the phone's column signal, written only
-  # on a change) and step_window (a line's window moved through the tested
-  # Shift::moved into the offsets' signal); column.spec.ts opens, closes and
-  # steps them on both phone sizes.
+  # AbleSet's, leaves it by a page's tab and opens the deck's beside it), a
+  # view's button (#68: Nav::tap_view carries out the tested view_tap
+  # through Nav::select; markers.spec.ts taps it) and the remembered pages'
+  # read; choose and selected_path are the tested decisions. #63:
+  # Nav::open_column (the phone's column signal, written only on a change)
+  # and step_window (a line's window moved through the tested Shift::moved
+  # into the offsets' signal); column.spec.ts opens, closes and steps them
+  # on both phone sizes.
   "fohmixer-ui/src/pages/surface\\.rs.*(replace|in) (Nav::select|Nav::show_extra|Nav::tap_view|Nav::open_column|step_window|remembered_pages)( |$)",
   # pages/ableset.rs (#90): take_return (location.hash read through the
   # tested behave::ableset::returns_to_tab, then history.replaceState
