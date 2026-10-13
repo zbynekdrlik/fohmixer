@@ -10,6 +10,7 @@ use axum::body::{Body, Bytes};
 use axum::extract::ConnectInfo;
 use axum::http::{HeaderName, Uri};
 use axum::routing::{any, get, post};
+use futures_util::StreamExt as _;
 use std::time::Duration;
 
 use super::*;
@@ -203,6 +204,75 @@ fn only_an_http_location_of_ablesets_name_becomes_https() {
             "{location}"
         );
     }
+}
+
+#[test]
+fn ablesets_cookies_stay_on_its_name_and_none_is_cloudflares() {
+    for (set, kept) in [
+        (
+            "a=1; Domain=example.org; Path=/; HttpOnly",
+            Some("a=1; Path=/; HttpOnly"),
+        ),
+        ("a=1;DOMAIN=.example.org;", Some("a=1")),
+        ("theme=dark", Some("theme=dark")),
+        ("cfg=1; domain = x; Secure", Some("cfg=1; Secure")),
+        ("Domain=x", Some("Domain=x")),
+        ("CF_Authorization=t; Path=/", None),
+        ("cf_clearance=c", None),
+        ("Cf_AppSession=x", None),
+    ] {
+        assert_eq!(host_only_cookie(set).as_deref(), kept, "{set}");
+    }
+}
+
+#[test]
+fn only_a_paths_request_no_other_site_made_goes_on_to_ableset() {
+    let get = |target: &str, pairs: &[(&str, &str)]| {
+        refusal(&Method::GET, &target.parse().unwrap(), &headers(pairs))
+    };
+    assert_eq!(get("/a?b=1", &[]), None);
+    assert_eq!(get("http://ableset.example.org/a", &[]), None);
+    for target in ["*", "ableset.example.org:443"] {
+        assert!(
+            matches!(get(target, &[]), Some(Failure::Target(_))),
+            "{target}"
+        );
+    }
+    for method in [Method::CONNECT, Method::TRACE] {
+        let refused = refusal(&method, &Uri::from_static("/"), &HeaderMap::new());
+        assert!(matches!(refused, Some(Failure::Method(_))), "{method}");
+    }
+    let site =
+        |site: &str, mode: &str| get("/", &[("sec-fetch-site", site), ("sec-fetch-mode", mode)]);
+    assert_eq!(site("Cross-Site", "Navigate"), None);
+    for mode in ["no-cors", "cors", "websocket", ""] {
+        let refused = site("cross-site", mode);
+        assert!(matches!(refused, Some(Failure::CrossSite(_))), "{mode}");
+    }
+    let named = site("CROSS-SITE", "no-cors").unwrap();
+    assert_eq!(
+        named.why(),
+        "a cross-site request: mode \"no-cors\", dest \"\""
+    );
+    for other in ["same-origin", "same-site", "none", ""] {
+        assert_eq!(site(other, "no-cors"), None, "{other}");
+    }
+}
+
+#[test]
+fn a_warn_line_is_for_news_and_at_most_once_per_gap() {
+    assert_eq!(WARN_GAP, Duration::from_secs(10));
+    assert!(warn_line(true, None));
+    assert!(warn_line(true, Some(WARN_GAP)));
+    assert!(!warn_line(true, Some(WARN_GAP - Duration::from_millis(1))));
+    assert!(!warn_line(false, None));
+    assert!(!warn_line(false, Some(WARN_GAP)));
+    let ableset = [
+        Failure::Down(String::new()),
+        Failure::Timeout(String::new()),
+    ];
+    assert!(ableset.iter().all(Failure::is_ableset));
+    assert!(!Failure::Busy(String::new()).is_ableset());
 }
 
 #[test]
@@ -432,6 +502,7 @@ async fn fake() -> String {
         .route("/cors", get(cors))
         .route("/hop", get(hop))
         .route("/slow", get(std::future::pending::<()>))
+        .route("/stream", get(|| async { endless() }))
         .route(
             "/press",
             post(|body: Bytes| async move { body.len().to_string() }),
@@ -441,6 +512,42 @@ async fn fake() -> String {
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     format!("http://{addr}")
+}
+
+/// An answer whose body sends one chunk and never ends.
+fn endless() -> Body {
+    let first = futures_util::stream::once(async { Ok::<_, std::io::Error>(Bytes::from("a")) });
+    Body::from_stream(first.chain(futures_util::stream::pending()))
+}
+
+#[tokio::test]
+async fn a_request_over_the_limit_is_503_at_once_its_slot_held_while_an_answer_streams() {
+    let upstream = fake().await;
+    let (events, records) = EventLog::channel(64);
+    let proxy = Proxy::new(&upstream, Duration::from_secs(5), 16);
+    let site = Arc::new(AbleSet::limited(NAME, &tls(), None, events, proxy, 1));
+    let through =
+        |request: axum::http::Request<Body>| router(Arc::clone(&site), None).oneshot(request);
+    // The one slot is held by an answer still streaming, not only its head.
+    let streaming = through(get_from(NAME, "/stream", "10.0.0.5", &[]))
+        .await
+        .unwrap();
+    assert_eq!(streaming.status(), StatusCode::OK);
+    let busy = through(get_from(NAME, "/p", "10.0.0.5", &[]))
+        .await
+        .unwrap();
+    assert_eq!(busy.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(policies(busy.headers()), [OURS]);
+    let body: Value = serde_json::from_str(&text_of(busy).await).unwrap();
+    assert_eq!(body["code"], "ABLESET_BUSY");
+    let why: Vec<Value> = records.try_iter().map(|r| r["why"].clone()).collect();
+    assert_eq!(why, ["every request slot for AbleSet is taken"]);
+    // The answer gone (the client left), its slot is free again.
+    drop(streaming);
+    let next = through(get_from(NAME, "/p", "10.0.0.5", &[]))
+        .await
+        .unwrap();
+    assert_eq!(text_of(next).await, "fake /p");
 }
 
 /// A hub with `[tls]`, `[ableset]` at `upstream` with the audiences `aud`,

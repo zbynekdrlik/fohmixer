@@ -122,13 +122,14 @@ impl Https {
             return Err(io::Error::other("the HTTPS listener was stopped"));
         };
         let rustls = RustlsConfig::from_config(config);
-        let server = axum_server::from_tcp_rustls(listener, rustls.clone())?
-            .handle(self.handle.clone())
-            .serve(
-                self.app
-                    .clone()
-                    .into_make_service_with_connect_info::<SocketAddr>(),
-            );
+        let mut server =
+            axum_server::from_tcp_rustls(listener, rustls.clone())?.handle(self.handle.clone());
+        crate::http1_limits(server.http_builder(), crate::HEADER_READ);
+        let server = server.serve(
+            self.app
+                .clone()
+                .into_make_service_with_connect_info::<SocketAddr>(),
+        );
         *lock(&self.task) = Some(tokio::spawn(server));
         served.config = Some(rustls);
         tracing::info!(addr = %self.addr, "HTTPS server listening");

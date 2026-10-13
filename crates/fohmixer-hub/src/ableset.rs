@@ -14,29 +14,39 @@
 //!   fohmixer assertion never opens AbleSet, nor the reverse), the
 //!   redirect to HTTPS (the plain-HTTP listener only, once AbleSet's
 //!   certificate serves; never by IP or for a tunnel request), and the
-//!   answer's framing headers ([`frame_policy`]): only fohmixer's own page
-//!   may frame AbleSet.
+//!   answer's headers ([`framing`], [`frame_policy`], [`answer_policy`]):
+//!   only fohmixer's own page and AbleSet's own may frame AbleSet, no
+//!   other site may read it, and no cookie of it leaves its name.
+//! - Before the proxy ([`refusal`], #90's review): only a path is
+//!   forwarded, never CONNECT or TRACE, never another site's request that
+//!   is no navigation (a LAN browser opens AbleSet without its password),
+//!   and at most [`MAX_REQUESTS`] at a time (one more: 503 at once).
 //! - The upstream request ([`strip_request`]): no hop-by-hop header, no
-//!   forwarding or Cloudflare header, no Access cookie. Nothing is added:
-//!   AbleSet sees what a browser on the PC sends, with the public `Host`
-//!   (the owner's decision: fohmixer's access rules are the lock).
-//! - When AbleSet does not answer, the hub answers itself ([`down_answer`]),
-//!   logs the first failure of an outage at warn, and records every failed
-//!   request (`ableset_proxy`).
+//!   forwarding or Cloudflare header, no Access cookie, exactly one `Host`
+//!   (the one the dispatch matched). Nothing is added: AbleSet sees what a
+//!   browser on the PC sends, with the public `Host` (the owner's decision:
+//!   fohmixer's access rules are the lock).
+//! - When AbleSet does not answer, or the hub refuses, the hub answers
+//!   itself ([`down_answer`]), records every such request (`ableset_proxy`)
+//!   and logs it at warn at most once per [`WARN_GAP`] for each kind
+//!   ([`warn_line`]).
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Instant;
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::{Duration, Instant};
 
 use axum::Router;
+use axum::body::Body;
 use axum::extract::{Request, State};
-use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri, header};
 use axum::middleware::{Next, from_fn_with_state};
 use axum::response::{IntoResponse, Response};
+use http_body_util::BodyExt as _;
 use serde_json::{Value, json};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tower::ServiceExt as _;
 
-use crate::access::{AccessGate, JWT_COOKIE, PROXY_HEADERS};
+use crate::access::{AccessGate, JWT_COOKIE, has_proxy_header, is_proxy_header};
 use crate::config::{AbleSetCfg, AccessCfg, Config, TlsCfg};
 use crate::events::EventLog;
 use crate::{Hub, routes, tls::Slot};
@@ -59,6 +69,22 @@ pub const HOP_BY_HOP: [&str; 9] = [
     "proxy-authorization",
 ];
 
+/// Headers a `Connection` header never names away (#90): the hub sets
+/// AbleSet's `Host` itself, AbleSet's own checks read `Origin`, and the
+/// body's length frames the message.
+const NEVER_HOP: [&str; 3] = ["host", "origin", "content-length"];
+
+/// At most this many requests are with AbleSet at a time, each until its
+/// answer's body ends (#90): a browser opens at most 6 connections to a
+/// name and an AbleSet page holds one Socket.IO poll, so this only keeps a
+/// flood from piling up on the PC. One more is answered 503 at once.
+pub const MAX_REQUESTS: usize = 64;
+
+/// The least time between two warn lines of one kind (#90): AbleSet's own
+/// faults, and everything else (a client's, a full hub), so a client's
+/// faults never hide AbleSet's.
+pub const WARN_GAP: Duration = Duration::from_secs(10);
+
 /// The AbleSet name's side of the hub.
 pub struct AbleSet {
     /// The `[ableset]` name.
@@ -72,6 +98,12 @@ pub struct AbleSet {
     events: EventLog,
     /// The last request did not reach AbleSet (one warn per outage).
     failing: AtomicBool,
+    /// The requests with AbleSet now ([`MAX_REQUESTS`]).
+    slots: Arc<Semaphore>,
+    /// The last warn line about AbleSet's own fault, and about anything
+    /// else ([`WARN_GAP`]).
+    ableset_warned: Mutex<Option<Instant>>,
+    other_warned: Mutex<Option<Instant>>,
 }
 
 impl AbleSet {
@@ -94,7 +126,22 @@ impl AbleSet {
         events: EventLog,
         proxy: Proxy,
     ) -> Self {
-        let ancestors = format!("frame-ancestors {}", https_origins(&tls.name, tls.port));
+        Self::limited(name, tls, gate, events, proxy, MAX_REQUESTS)
+    }
+
+    /// [`AbleSet::with_proxy`] with `slots` requests at a time.
+    fn limited(
+        name: &str,
+        tls: &TlsCfg,
+        gate: Option<Arc<AccessGate>>,
+        events: EventLog,
+        proxy: Proxy,
+        slots: usize,
+    ) -> Self {
+        // AbleSet's own pages may frame each other ('self'), as AbleSet's
+        // own policy allows.
+        let origins = https_origins(&tls.name, tls.port);
+        let ancestors = format!("frame-ancestors 'self' {origins}");
         Self {
             name: name.to_string(),
             gate,
@@ -103,6 +150,9 @@ impl AbleSet {
                 .expect("DNS names make a header value"),
             events,
             failing: AtomicBool::new(false),
+            slots: Arc::new(Semaphore::new(slots)),
+            ableset_warned: Mutex::new(None),
+            other_warned: Mutex::new(None),
         }
     }
 
@@ -113,9 +163,8 @@ impl AbleSet {
         tracing::debug!(%method, path, status = status.as_u16(), ms, "ableset: proxied");
     }
 
-    /// AbleSet was not reached: logged (the first failure of an outage at
-    /// warn; a body over the cap and a late answer always), recorded, and
-    /// answered by the hub.
+    /// AbleSet was not reached: answered by the hub, recorded, and logged
+    /// at warn when [`warn_line`] says so (else at debug).
     fn failed(
         &self,
         method: &Method,
@@ -123,8 +172,32 @@ impl AbleSet {
         dest: Option<&str>,
         failure: Failure,
     ) -> Response {
+        let error = crate::auth::error_response;
         let answer = match &failure {
-            Failure::TooLarge(_) => crate::auth::error_response(
+            Failure::Method(_) => {
+                let allow = [(
+                    header::ALLOW,
+                    "GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS",
+                )];
+                let refused = error(
+                    StatusCode::METHOD_NOT_ALLOWED,
+                    "ABLESET_METHOD",
+                    "This method is never sent to AbleSet",
+                );
+                (allow, refused).into_response()
+            }
+            Failure::Target(_) => error(
+                StatusCode::BAD_REQUEST,
+                "ABLESET_TARGET",
+                "AbleSet is sent paths only",
+            ),
+            Failure::CrossSite(_) => crate::access::forbidden("cross_site"),
+            Failure::Busy(_) => error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "ABLESET_BUSY",
+                "Too many requests for AbleSet at once: try again",
+            ),
+            Failure::TooLarge(_) => error(
                 StatusCode::PAYLOAD_TOO_LARGE,
                 "ABLESET_TOO_LARGE",
                 "The request body is too large for AbleSet",
@@ -132,36 +205,54 @@ impl AbleSet {
             Failure::Down(_) => down_answer(dest, false),
             Failure::Timeout(_) => down_answer(dest, true),
         };
-        // Only AbleSet being down makes an outage; a body over the cap or a
-        // late answer is a warning each time.
-        let was_failing = match failure {
+        // Only AbleSet being down makes an outage; its later failures are
+        // no news.
+        let continues = match failure {
             Failure::Down(_) => self.failing.swap(true, Ordering::Relaxed),
             _ => false,
         };
-        let why = failure.why();
-        if outage_starts(was_failing) {
-            tracing::warn!(%method, path, "ableset: {why}");
+        let ableset = failure.is_ableset();
+        let warned = if ableset {
+            &self.ableset_warned
         } else {
-            tracing::debug!(%method, path, "ableset: {why}");
-        }
+            &self.other_warned
+        };
+        let warn = {
+            let mut last = warned.lock().unwrap_or_else(PoisonError::into_inner);
+            let warn = warn_line(!continues, last.map(|at| at.elapsed()));
+            if warn {
+                *last = Some(Instant::now());
+            }
+            warn
+        };
+        let why = failure.why();
         let status = answer.status().as_u16();
-        self.events.record(
-            "ableset_proxy",
-            proxy_fields(method.as_str(), path, status, why),
-        );
+        if warn {
+            tracing::warn!(%method, path, status, "ableset: {why}");
+        } else {
+            tracing::debug!(%method, path, status, "ableset: {why}");
+        }
+        let fields = proxy_fields(method.as_str(), path, status, why, warn && ableset);
+        self.events.record("ableset_proxy", fields);
         answer
     }
 }
 
-/// Whether a failure starts an outage (`was_failing`: the request before
-/// failed too): only that one is a warning.
-pub fn outage_starts(was_failing: bool) -> bool {
-    !was_failing
+/// Whether a request the hub answered itself gets a warn line: only news
+/// (`wanted`: not the rest of an outage), and none within [`WARN_GAP`] of
+/// the last one of its kind (`since`; none yet: due).
+pub fn warn_line(wanted: bool, since: Option<Duration>) -> bool {
+    wanted && since.is_none_or(|since| since >= WARN_GAP)
 }
 
-/// The `ableset_proxy` record of a request that did not reach AbleSet.
-pub fn proxy_fields(method: &str, path: &str, status: u16, error: &str) -> Value {
-    json!({ "method": method, "path": path, "status": status, "error": error })
+/// The `ableset_proxy` record of a request that did not reach AbleSet: why
+/// under `error` for an `alarm` (a warned fault of AbleSet itself: a
+/// warn-class record, kept past the event log's daily cap), else under
+/// `why`, so no client can fill the PC's disk with warn-class records.
+pub fn proxy_fields(method: &str, path: &str, status: u16, why: &str, alarm: bool) -> Value {
+    let mut fields = json!({ "method": method, "path": path, "status": status });
+    fields[if alarm { "error" } else { "why" }] = json!(why);
+    fields
 }
 
 /// The `[access]` config of AbleSet's gate: `[access]`'s team and keys with
@@ -203,11 +294,7 @@ pub struct Dispatch {
 /// The outermost layer: a request for AbleSet's name goes to its router,
 /// any other one on to fohmixer's.
 pub async fn dispatch(State(to): State<Dispatch>, request: Request, next: Next) -> Response {
-    let host = request
-        .headers()
-        .get(header::HOST)
-        .and_then(|h| h.to_str().ok());
-    if for_ableset(host, &to.name) {
+    if for_ableset(routes::request_host(&request), &to.name) {
         let Ok(response) = to.router.oneshot(request).await;
         response
     } else {
@@ -219,16 +306,19 @@ pub async fn dispatch(State(to): State<Dispatch>, request: Request, next: Next) 
 /// redirect to HTTPS when `redirect` (the plain-HTTP listener's hub), and
 /// the framing headers on every answer.
 pub fn router(site: Arc<AbleSet>, redirect: Option<Hub>) -> Router {
+    let https = redirect.is_none();
     let access = from_fn_with_state(site.gate.clone(), crate::access::middleware);
     let mut app = Router::new().fallback(forward).layer(access);
     if let Some(hub) = redirect {
         app = app.layer(from_fn_with_state(hub, https_redirect));
     }
-    app.layer(from_fn_with_state(Arc::clone(&site), framed))
+    app.layer(from_fn_with_state((Arc::clone(&site), https), framed))
         .with_state(site)
 }
 
-/// The proxy's handler: the request to AbleSet, or the hub's own answer.
+/// The proxy's handler, after the Access check: the request to AbleSet,
+/// holding a slot until its answer's body ends, or the hub's own answer
+/// ([`refusal`], every slot taken, AbleSet not reached).
 async fn forward(State(site): State<Arc<AbleSet>>, request: Request) -> Response {
     let method = request.method().clone();
     let path = request.uri().path().to_string();
@@ -237,14 +327,59 @@ async fn forward(State(site): State<Arc<AbleSet>>, request: Request) -> Response
         .get("sec-fetch-dest")
         .and_then(|v| v.to_str().ok())
         .map(str::to_string);
+    if let Some(failure) = refusal(&method, request.uri(), request.headers()) {
+        return site.failed(&method, &path, dest.as_deref(), failure);
+    }
+    let Ok(slot) = Arc::clone(&site.slots).try_acquire_owned() else {
+        let busy = Failure::Busy("every request slot for AbleSet is taken".to_string());
+        return site.failed(&method, &path, dest.as_deref(), busy);
+    };
     let started = Instant::now();
     match site.proxy.send(request).await {
         Ok(response) => {
             site.reached(&method, &path, response.status(), started);
-            response
+            response.map(|body| held(body, slot))
         }
         Err(failure) => site.failed(&method, &path, dest.as_deref(), failure),
     }
+}
+
+/// `body`, holding its request's slot until it ends or is dropped (the
+/// client gone): a long poll or a large file counts while it streams.
+fn held(body: Body, slot: OwnedSemaphorePermit) -> Body {
+    Body::new(body.map_frame(move |frame| {
+        let _slot = &slot;
+        frame
+    }))
+}
+
+/// Why AbleSet's router refuses a request before AbleSet sees it (#90): a
+/// method never forwarded (CONNECT, TRACE: 405), a target that is no path
+/// (`*`, an authority: 400), and another site's request that is no
+/// navigation (403): a LAN browser opens AbleSet without its password, so
+/// another site's image, script or fetch must not drive it. A navigation
+/// (a link, a bookmark, the iframe of fohmixer's page) passes.
+pub fn refusal(method: &Method, uri: &Uri, headers: &HeaderMap) -> Option<Failure> {
+    if [Method::CONNECT, Method::TRACE].contains(method) {
+        return Some(Failure::Method(format!("{method} is never forwarded")));
+    }
+    if !uri.path().starts_with('/') {
+        return Some(Failure::Target(format!("the target {uri:?} is no path")));
+    }
+    let fetch = |name: &str| {
+        headers
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+    };
+    let mode = fetch("sec-fetch-mode");
+    let cross_site = fetch("sec-fetch-site").eq_ignore_ascii_case("cross-site");
+    (cross_site && !mode.eq_ignore_ascii_case("navigate")).then(|| {
+        let dest = fetch("sec-fetch-dest");
+        Failure::CrossSite(format!(
+            "a cross-site request: mode {mode:?}, dest {dest:?}"
+        ))
+    })
 }
 
 /// The plain-HTTP listener's redirect of AbleSet's name to HTTPS (307),
@@ -268,19 +403,46 @@ async fn https_redirect(State(hub): State<Hub>, request: Request, next: Next) ->
     }
 }
 
-/// Every answer for AbleSet's name gets the framing policy.
-async fn framed(State(site): State<Arc<AbleSet>>, request: Request, next: Next) -> Response {
+/// Every answer for AbleSet's name gets its headers: [`frame_policy`] where
+/// the browser is on https (the HTTPS listener, `https`, and a tunnel
+/// request: Cloudflare's edge is https), else [`framing`] (the plain
+/// listener's LAN: an https Location would point TLS at the plain port),
+/// then [`answer_policy`].
+async fn framed(
+    State((site, https)): State<(Arc<AbleSet>, bool)>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let to_https = https || has_proxy_header(request.headers());
     let mut response = next.run(request).await;
-    frame_policy(response.headers_mut(), &site.frame_ancestors, &site.name);
+    let headers = response.headers_mut();
+    if to_https {
+        frame_policy(headers, &site.frame_ancestors, &site.name);
+    } else {
+        framing(headers, &site.frame_ancestors);
+    }
+    answer_policy(headers);
     response
 }
 
-/// The answer's framing headers: `X-Frame-Options` removed (it cannot name
-/// an origin), `frame-ancestors` removed from every policy AbleSet sent
-/// (two policies are both enforced) and ours added, and an absolute
-/// `http://` Location of AbleSet's name made `https://` (an http navigation
-/// inside the https page would be blocked).
+/// The answer's framing headers ([`framing`]), and an absolute `http://`
+/// Location of AbleSet's name made `https://` (an http navigation inside
+/// an https page would be blocked).
 pub fn frame_policy(headers: &mut HeaderMap, frame_ancestors: &HeaderValue, name: &str) {
+    framing(headers, frame_ancestors);
+    let location = headers
+        .get(header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|l| https_location(l, name));
+    if let Some(value) = location.and_then(|l| HeaderValue::from_str(&l).ok()) {
+        headers.insert(header::LOCATION, value);
+    }
+}
+
+/// The answer's framing: `X-Frame-Options` removed (it cannot name an
+/// origin), `frame-ancestors` removed from every policy AbleSet sent (two
+/// policies are both enforced) and ours added.
+pub fn framing(headers: &mut HeaderMap, frame_ancestors: &HeaderValue) {
     headers.remove(header::X_FRAME_OPTIONS);
     let policies: Vec<String> = headers
         .get_all(header::CONTENT_SECURITY_POLICY)
@@ -295,13 +457,54 @@ pub fn frame_policy(headers: &mut HeaderMap, frame_ancestors: &HeaderValue, name
         }
     }
     headers.append(header::CONTENT_SECURITY_POLICY, frame_ancestors.clone());
-    let location = headers
-        .get(header::LOCATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|l| https_location(l, name));
-    if let Some(value) = location.and_then(|l| HeaderValue::from_str(&l).ok()) {
-        headers.insert(header::LOCATION, value);
+}
+
+/// The answer's other headers (#90): no CORS grant of AbleSet's (no other
+/// site's page may read it), its cookies through [`host_only_cookie`],
+/// `nosniff` and fohmixer's own `Referrer-Policy`.
+pub fn answer_policy(headers: &mut HeaderMap) {
+    let cors: Vec<HeaderName> = headers
+        .keys()
+        .filter(|name| name.as_str().starts_with("access-control-"))
+        .cloned()
+        .collect();
+    for name in cors {
+        headers.remove(name);
     }
+    let cookies: Vec<HeaderValue> = headers
+        .get_all(header::SET_COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .filter_map(host_only_cookie)
+        .filter_map(|c| HeaderValue::from_str(&c).ok())
+        .collect();
+    headers.remove(header::SET_COOKIE);
+    for cookie in cookies {
+        headers.append(header::SET_COOKIE, cookie);
+    }
+    let nosniff = HeaderValue::from_static("nosniff");
+    headers.insert(header::X_CONTENT_TYPE_OPTIONS, nosniff);
+    let referrer = HeaderValue::from_static("strict-origin-when-cross-origin");
+    headers.insert(header::REFERRER_POLICY, referrer);
+}
+
+/// A `Set-Cookie` value of AbleSet's kept on its own name (its `Domain`
+/// attribute out: host-only); none for a Cloudflare cookie (a name
+/// starting `CF_`, any case), which on a parent domain would shadow
+/// fohmixer's Access cookie at Cloudflare's edge.
+pub fn host_only_cookie(set_cookie: &str) -> Option<String> {
+    let mut parts = set_cookie.split(';').map(str::trim);
+    let pair = parts.next().unwrap_or("");
+    let name = pair.split('=').next().unwrap_or("").trim();
+    if name.get(..3).is_some_and(|p| p.eq_ignore_ascii_case("cf_")) {
+        return None;
+    }
+    let attributes = parts.filter(|attribute| {
+        let key = attribute.split('=').next().unwrap_or("").trim();
+        !attribute.is_empty() && !key.eq_ignore_ascii_case("domain")
+    });
+    let kept: Vec<&str> = std::iter::once(pair).chain(attributes).collect();
+    Some(kept.join("; "))
 }
 
 /// A policy without its `frame-ancestors` directive; none when nothing
@@ -330,16 +533,13 @@ pub fn https_location(location: &str, name: &str) -> Option<String> {
 }
 
 /// The upstream request's headers (#90 §3.3): hop-by-hop ones, every
-/// forwarding and Cloudflare header and the Access cookie out; everything
-/// else (`Host`, `Origin`, the other cookies, …) kept.
+/// proxy header (`access::PROXY_HEADERS`) and the Access cookie out;
+/// everything else (`Host`, `Origin`, the other cookies, …) kept.
 pub fn strip_request(headers: &mut HeaderMap) {
     strip_hop_by_hop(headers);
     let forwarding: Vec<_> = headers
         .keys()
-        .filter(|name| {
-            let name = name.as_str();
-            name.starts_with("cf-") || name == "x-real-ip" || PROXY_HEADERS.contains(&name)
-        })
+        .filter(|name| is_proxy_header(name.as_str()))
         .cloned()
         .collect();
     for name in forwarding {
@@ -357,7 +557,8 @@ pub fn strip_request(headers: &mut HeaderMap) {
     }
 }
 
-/// Removes the hop-by-hop headers and those `Connection` names.
+/// Removes the hop-by-hop headers and those `Connection` names (never
+/// one of [`NEVER_HOP`]).
 pub fn strip_hop_by_hop(headers: &mut HeaderMap) {
     let named: Vec<String> = headers
         .get_all(header::CONNECTION)
@@ -365,6 +566,7 @@ pub fn strip_hop_by_hop(headers: &mut HeaderMap) {
         .filter_map(|v| v.to_str().ok())
         .flat_map(|v| v.split(','))
         .map(|token| token.trim().to_ascii_lowercase())
+        .filter(|name| !NEVER_HOP.contains(&name.as_str()))
         .collect();
     for name in HOP_BY_HOP
         .iter()
