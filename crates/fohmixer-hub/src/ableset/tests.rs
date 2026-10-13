@@ -2733,7 +2733,6 @@ fn an_outages_start_and_end_carry_what_their_rations_left_out() {
 /// does, and answers each request `ok`: its URL, the connections it took and
 /// the request heads it read (lowercase).
 async fn counting() -> (String, Arc<AtomicUsize>, Arc<Mutex<Vec<String>>>) {
-    use tokio::io::AsyncWriteExt as _;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let taken = Arc::new(AtomicUsize::new(0));
@@ -2751,7 +2750,8 @@ async fn counting() -> (String, Arc<AtomicUsize>, Arc<Mutex<Vec<String>>>) {
                         let head = String::from_utf8_lossy(&head).to_lowercase();
                         seen.lock().unwrap().push(head);
                         let ok = b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok";
-                        if stream.write_all(ok).await.is_err() {
+                        let written = tokio::io::AsyncWriteExt::write_all(&mut stream, ok);
+                        if written.await.is_err() {
                             return;
                         }
                     }
@@ -2888,5 +2888,71 @@ async fn the_links_read_names_the_hub_and_asks_to_close_its_connection() {
     assert!(
         head.contains(&agent) && head.contains("\r\nconnection: close\r\n"),
         "{head}"
+    );
+}
+
+/// Through the HTTPS listener's application.
+async fn secure(hub: &Hub, request: axum::http::Request<Body>) -> Response {
+    crate::https_router(hub.clone())
+        .oneshot(request)
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn the_hubs_own_routes_answer_on_the_https_listener_too_and_take_no_other_method() {
+    let dir = tempfile::tempdir().unwrap();
+    // AbleSet is closed: anything forwarded would be a 502 and an outage.
+    let hub = hub_with(dir.path(), CLOSED, None, &[]);
+    let probe = secure(&hub, get_from(NAME, PROBE, "10.0.0.5", &[])).await;
+    let kind = probe.headers().get(header::CONTENT_TYPE).cloned();
+    assert_eq!(
+        (probe.status(), kind),
+        (StatusCode::OK, Some(HeaderValue::from_static("image/gif")))
+    );
+    let host = "ableset.example.org:8443";
+    let back = secure(&hub, get_from(host, SIGNED_IN, "10.0.0.5", &[])).await;
+    let location = back.headers().get(header::LOCATION).cloned();
+    let target = HeaderValue::from_static("https://foh.example.org:8443/#ableset");
+    assert_eq!(
+        (back.status(), location),
+        (StatusCode::SEE_OTHER, Some(target))
+    );
+    // Another method: after the Access check a 405, never forwarded.
+    let post = |path: &str| request(Method::POST, NAME, path, "10.0.0.5", &[], Body::empty());
+    for path in [PROBE, SIGNED_IN] {
+        let answers = [
+            plain(&hub, post(path)).await,
+            secure(&hub, post(path)).await,
+        ];
+        for answer in answers {
+            assert_eq!(answer.status(), StatusCode::METHOD_NOT_ALLOWED, "{path}");
+        }
+    }
+    let site = hub.ableset.as_ref().unwrap();
+    assert!(!site.failing.load(Ordering::Relaxed), "AbleSet was asked");
+    hub.stop();
+}
+
+#[tokio::test]
+async fn the_link_stops_with_the_hub() {
+    let (upstream, accepted, _) = counting().await;
+    let dir = tempfile::tempdir().unwrap();
+    let hub = hub_with(dir.path(), &upstream, None, &[]);
+    crate::start_link(&hub, Duration::from_millis(50));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while accepted.load(Ordering::Relaxed) < 2 {
+        assert!(Instant::now() < deadline, "no reads");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    hub.stop();
+    // A read already on its way may still land.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let stopped = accepted.load(Ordering::Relaxed);
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert_eq!(
+        accepted.load(Ordering::Relaxed),
+        stopped,
+        "a read after the stop"
     );
 }

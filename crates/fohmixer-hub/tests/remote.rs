@@ -344,6 +344,23 @@ async fn the_served_hub_reads_ablesets_link_and_tells_every_page() {
 }
 
 #[tokio::test]
+async fn a_served_hub_without_ableset_tells_no_page_of_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let hub = hub(dir.path(), None, None).await;
+    let mut page = hub.client().await;
+    // The attach's messages come at once.
+    let mut told = Vec::new();
+    while let Some(msg) = page.next_message(Duration::from_millis(500)).await {
+        told.push(msg);
+    }
+    let ableset = told.iter().any(|m| matches!(m, ServerMsg::Ableset { .. }));
+    assert!(!ableset, "{told:?}");
+    assert_eq!(hub.status().await.ableset, None);
+    page.close().await;
+    hub.stop().await;
+}
+
+#[tokio::test]
 async fn without_a_certificate_https_waits_and_says_why() {
     let dir = tempfile::tempdir().unwrap();
     let hub = hub(dir.path(), None, None).await;
