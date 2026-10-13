@@ -1,6 +1,7 @@
-import type { Locator, Page } from "@playwright/test";
+import type { Locator, Page, Request } from "@playwright/test";
 import { expect, test } from "./support/fixtures";
 import {
+  BASE,
   centre,
   clockKnown,
   companion,
@@ -14,6 +15,7 @@ import {
   openSurface,
   pageEvents,
   selectPage,
+  token,
   until,
 } from "./support/live";
 
@@ -194,6 +196,80 @@ async function downWhileClosing(key: Locator) {
       }
     },
     { clientX: x, clientY: y },
+  );
+}
+
+/** Whether `request` is a page's `visibility` report saying `hidden` (#26). */
+function hiddenReport(request: Request): boolean {
+  if (!request.url().endsWith("/api/client-report")) return false;
+  const report = JSON.parse(request.postData() ?? "{}");
+  return report.kind === "visibility" && report.visibility === "hidden";
+}
+
+/** `promise`'s end, or `late` once `ms` passed. */
+async function within<T>(promise: Promise<T>, ms: number, late: T): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([promise, new Promise<T>((done) => (timer = setTimeout(() => done(late), ms)))]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Leaves the surface for about:blank and waits until all the page sent on
+ * its way out is done (#43, push run 38411708522: the hub's restart reset the
+ * hidden page's report in flight, a console error in WebKit, and closed the
+ * page's socket itself): the hub keeps the page's `hidden` report (its
+ * `/api/status` `client_reports`, by the page's user agent and screen since
+ * `opened`), the browser saw that request end (WebKit: its answer; Chromium
+ * stops following a document's keepalive request at the navigation while the
+ * request goes on in the browser, so it ends there as failed: a local probe
+ * of both engines), and the hub's event log has the close of every socket
+ * the page opened since `opened` (epoch ms).
+ */
+async function leaveQuietly(page: Page, opened: number) {
+  const { ua, screen, origin } = await page.evaluate(() => ({
+    ua: navigator.userAgent,
+    screen: `${window.screen.width}x${window.screen.height}@${devicePixelRatio}`,
+    origin: location.host,
+  }));
+  const bearer = await token();
+  const context = page.context();
+  let onEnd: (request: Request) => void = () => {};
+  const ended = new Promise<string>((done) => {
+    onEnd = (request) => {
+      if (hiddenReport(request)) done("ended");
+    };
+  });
+  context.on("requestfinished", onEnd);
+  context.on("requestfailed", onEnd);
+  try {
+    await page.goto("about:blank");
+    const since = Math.floor(opened / 1000);
+    await until(
+      async () => {
+        const response = await fetch(`${BASE}/api/status`, { headers: { authorization: `Bearer ${bearer}` } });
+        if (!response.ok) throw new Error(`status: ${response.status}`);
+        return (await response.json()).client_reports;
+      },
+      (reports: any[]) =>
+        reports.some((r) => r.kind === "visibility" && r.visibility === "hidden" && r.ua === ua && r.screen === screen && r.at >= since),
+      "the hub's copy of the page's hidden report",
+    );
+    expect(await within(ended, 10_000, "not within 10 s"), "the browser saw the hidden report end").toBe("ended");
+  } finally {
+    context.off("requestfinished", onEnd);
+    context.off("requestfailed", onEnd);
+  }
+  await until(
+    async () => (await hubEvents()).filter((r: any) => r.ev === "sock" && r.origin === origin && r.ts >= opened),
+    (socks) => {
+      const closed = new Set(socks.filter((s) => s.what === "close").map((s) => s.client));
+      const open = socks.filter((s) => s.what === "open");
+      return open.length > 0 && open.every((s) => closed.has(s.client));
+    },
+    "the close of the page's socket at the hub",
   );
 }
 
@@ -792,12 +868,15 @@ test.describe("The Stream Deck tab", () => {
 
   test("the tab exists only when the hub has a [companion] table", async ({ page }) => {
     // Both hub restarts happen with no page open: a page's reconnect while
-    // the hub is down would log a failed load.
+    // the hub is down would log a failed load. Before the second, the page
+    // has left and all it sent on its way out is done (`leaveQuietly`).
     try {
       await harness("/hub/companion", { on: false });
+      const opened = Date.now();
       await openSurface(page);
       await expect(page.locator('[data-testid="tabbar"][data-level="0"] [data-testid="tab"]').first()).toBeVisible();
       await expect(page.getByTestId("deck-tab")).toHaveCount(0);
+      await leaveQuietly(page, opened);
     } finally {
       try {
         await page.goto("about:blank");

@@ -19,6 +19,8 @@ crates/fohmixer-tray/gen/
 e2e/node_modules/
 e2e/playwright-report/
 e2e/test-results/
+# The Playwright MCP server's page snapshots and screenshots (one was committed by accident, #43)
+.playwright-mcp/
 # cargo-mutants output
 mutants.out/
 mutants.out.old/

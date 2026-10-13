@@ -60,10 +60,14 @@ def read_exactly(sock, n, timeout=COME_S):
 
 
 class ImpairTest(unittest.TestCase):
+    # The proxy under test: in a thread of this process (``ChildTest``: in a
+    # process of its own).
+    PROXY = impair.Impair
+
     def setUp(self):
         self.echo = EchoServer()
         threading.Thread(target=self.echo.serve_forever, daemon=True).start()
-        self.proxy = impair.Impair(0, self.echo.server_address[1])
+        self.proxy = self.PROXY(0, self.echo.server_address[1])
         self.proxy.start()
         self.clients = []
 
@@ -180,7 +184,7 @@ class ImpairTest(unittest.TestCase):
         self.wait_for(lambda: self.proxy.state()["connections"] == 0, "the link to end")
 
     def test_a_listener_that_cannot_bind_fails_loudly(self):
-        taken = impair.Impair(self.proxy.port, self.echo.server_address[1])
+        taken = self.PROXY(self.proxy.port, self.echo.server_address[1])
         with self.assertRaises(RuntimeError) as caught:
             taken.start()
         self.assertIn("cannot listen", str(caught.exception))
@@ -190,7 +194,7 @@ class ImpairTest(unittest.TestCase):
         # than the listener's (a deployed hub on the LAN, in a live check).
         echo = EchoServer(host="127.0.0.2")
         threading.Thread(target=echo.serve_forever, daemon=True).start()
-        proxy = impair.Impair(0, echo.server_address[1], upstream_host="127.0.0.2")
+        proxy = self.PROXY(0, echo.server_address[1], upstream_host="127.0.0.2")
         proxy.start()
         try:
             client = socket.create_connection(("127.0.0.1", proxy.port), timeout=COME_S)
@@ -350,6 +354,20 @@ class ImpairTest(unittest.TestCase):
             stdin.close()
         self.assertEqual(ended, {"code": 0}, "the end of stdin stops it")
 
+    def test_the_tool_says_why_it_cannot_listen(self):
+        stdout = io.StringIO()
+        upstream = f"127.0.0.1:{self.echo.server_address[1]}"
+        with contextlib.redirect_stderr(io.StringIO()):
+            code = impair.main(
+                ["--upstream", upstream, "--listen-port", str(self.proxy.port)],
+                io.StringIO(),
+                stdout,
+            )
+        self.assertEqual(code, 1)
+        lines = stdout.getvalue().splitlines()
+        self.assertEqual(len(lines), 1, lines)
+        self.assertIn("cannot listen", json.loads(lines[0])["error"])
+
     def test_the_tools_arguments(self):
         args = impair.parse_args(["--upstream", "192.0.2.10:8480", "--listen-port", "9"])
         self.assertEqual(
@@ -367,7 +385,7 @@ class ImpairTest(unittest.TestCase):
         dead.bind(("127.0.0.1", 0))
         port = dead.getsockname()[1]
         dead.close()
-        proxy = impair.Impair(0, port)
+        proxy = self.PROXY(0, port)
         proxy.start()
         try:
             with self.assertRaises(ConnectionResetError):
@@ -377,6 +395,29 @@ class ImpairTest(unittest.TestCase):
                 client.recv(1)
         finally:
             proxy.stop()
+
+
+class ChildTest(ImpairTest):
+    """The same through ``Child``: the proxy in a process of its own, driven
+    through the tool's control lines, as the harness runs it (#43: as a
+    thread of the harness it shared the interpreter's lock with the
+    harness's work)."""
+
+    PROXY = impair.Child
+
+    def test_the_proxy_is_a_process_of_its_own(self):
+        client = self.connect()
+        client.sendall(b"own")
+        self.assertEqual(read_exactly(client, 3), b"own")
+        self.assertIsNone(self.proxy.proc.poll(), "the tool runs")
+        self.assertNotEqual(self.proxy.proc.pid, os.getpid())
+
+    def test_a_call_after_its_end_fails_loudly(self):
+        self.proxy.stop()
+        self.assertEqual(self.proxy.proc.returncode, 0, "the end of its stdin ends it")
+        with self.assertRaises(RuntimeError) as caught:
+            self.proxy.state()
+        self.assertIn("not running", str(caught.exception))
 
 
 if __name__ == "__main__":

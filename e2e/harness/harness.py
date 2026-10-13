@@ -13,7 +13,8 @@ It starts ``sim/host.py`` for ``band`` and ``master`` (the real FohMixer script 
 SimLive), writes the hub's config and layout into the data folder, starts the hub
 (when ``--hub`` is given), starts the impair proxy (#43, ``impair.py``) on
 ``--link-port`` in front of the hub's HTTP port (the Playwright projects open
-the surface through it, so a test can stall, drop or block the page's link) and
+the surface through it, so a test can stall, drop or block the page's link; a
+process of its own, so the harness's work never holds the link) and
 serves a small control API on 127.0.0.1 for the Playwright tests, which need
 what only the harness can do:
 
@@ -590,8 +591,10 @@ class Harness:
         self.companion_on = self.companion is not None
         self.write_config(self.companion)
         self.reset_layout()
-        # The proxy needs no hub to listen; it is up before the hub starts.
-        self.link = impair.Impair(args.link_port, args.http_port)
+        # The proxy needs no hub to listen; it is up before the hub starts. A
+        # process of its own (#43): as a thread of this one it shared the
+        # interpreter's lock, and a GET /hub/events held every page's link.
+        self.link = impair.Child(args.link_port, args.http_port)
         self.link.start()
         self.hub = Hub(args.hub, self.data, args.http_port, log_dir) if args.hub else None
 

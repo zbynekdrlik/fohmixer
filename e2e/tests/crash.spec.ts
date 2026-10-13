@@ -83,6 +83,20 @@ async function crashMidLoad(browser: Browser, root: number, browserName: string,
   const seeded = await token();
   await page.addInitScript((t) => localStorage.setItem("fohmixer_token", t), seeded);
   await page.goto("/", { waitUntil: "commit" });
+  // The page has its script context first. Playwright's expect looks once
+  // before it retries, and that first look waits for the frame's context
+  // with nothing racing it: not the page's crash, not its close (the main
+  // frame's calls belong to the context), by the code not even the call's
+  // own timeout (`frames.js` `expect`, `_expectInternal(…, noAbort)`,
+  // Playwright 1.58.2). A call that starts before the context exists
+  // outlives the crash: in push run 38411708522 (Chromium) the call began
+  // 1 ms after the commit and the kill came 9-34 ms later; the crash was
+  // reported in 26 ms and the page closed at once, yet the call ended only
+  // when the test's `finally` closed the browser, 5 s later. A local probe
+  // (Chromium, a loaded CPU) left 1 of 30 such calls hanging, and none of
+  // 30 once a locator's count had found the context. openSurface's own
+  // waits come after a `load`, past that window.
+  await page.getByTestId("stage").count();
   expect(() => crash.check(), "no crash before the signal").not.toThrow();
   // What openSurface waits on, with room to show whether the crash ends it early.
   let brokenAt = 0;

@@ -32,7 +32,14 @@ export type CrashWatch = {
  * The crashed page is closed at once: Playwright rejects a pending page call
  * on a crash only between its retries, and a call that waits for the page's
  * script context (a locator right after a navigation) would otherwise sit
- * until its own timeout. Closing the page ends every pending call on it.
+ * until its own timeout. Closing the page ends every pending call that
+ * waits on the page. It does not end an `expect(locator)` whose first look
+ * started before the frame had its script context (#43, push run
+ * 38411708522): Playwright 1.58.2 awaits that context with nothing racing
+ * it, and the main frame's calls belong to the context, not the page, so
+ * that call ends only with its browser (the test's own end). Only a crash
+ * right after a navigation's commit meets it; `crash.spec.ts` waits for the
+ * context before it crashes the page.
  */
 export function watchCrash(page: Page, browserName: string): CrashWatch {
   let crashedPage = false;
