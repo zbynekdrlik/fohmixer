@@ -1,4 +1,5 @@
 import { defineConfig, devices } from "@playwright/test";
+import { WEBKIT_ENV } from "./webkit-env";
 
 // Copied from iemmixer @ 22372bc and adapted: the engineer's iPad (WebKit)
 // joins Chromium as a second project, so a WebKit-only console warning fails
@@ -26,7 +27,13 @@ export default defineConfig({
       // The engineer's tablet: iPad Pro 11 in landscape (the surface is
       // landscape-only), WebKit with touch.
       name: "ipad",
-      use: { ...devices["iPad Pro 11 landscape"], browserName: "webkit", hasTouch: true },
+      use: {
+        ...devices["iPad Pro 11 landscape"],
+        browserName: "webkit",
+        hasTouch: true,
+        // #43: BBQ off, see webkit-env.ts.
+        launchOptions: { env: WEBKIT_ENV },
+      },
     },
   ],
 });
