@@ -40,6 +40,8 @@ pub struct Https {
     served: Mutex<Served>,
     handle: Handle<SocketAddr>,
     task: Mutex<Option<JoinHandle<io::Result<()>>>>,
+    /// The bound of a request head ([`crate::HEADER_READ`]; a test's own).
+    header_read: Duration,
 }
 
 impl Https {
@@ -64,7 +66,16 @@ impl Https {
             served: Mutex::default(),
             handle: Handle::new(),
             task: Mutex::new(None),
+            header_read: crate::HEADER_READ,
         })
+    }
+
+    /// The listener with `bound` as its request heads' bound (tests: the
+    /// listener's own bound, short).
+    #[cfg(test)]
+    pub fn header_read(mut self, bound: Duration) -> Self {
+        self.header_read = bound;
+        self
     }
 
     /// The bound address.
@@ -124,7 +135,7 @@ impl Https {
         let rustls = RustlsConfig::from_config(config);
         let mut server =
             axum_server::from_tcp_rustls(listener, rustls.clone())?.handle(self.handle.clone());
-        crate::http1_limits(server.http_builder(), crate::HEADER_READ);
+        crate::http1_limits(server.http_builder(), self.header_read);
         let server = server.serve(
             self.app
                 .clone()

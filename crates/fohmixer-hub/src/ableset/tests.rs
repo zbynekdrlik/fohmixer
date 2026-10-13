@@ -1044,8 +1044,9 @@ async fn a_late_answer_is_504_and_a_body_over_the_cap_413() {
     );
     // An announced size over the cap is refused before AbleSet is asked
     // (here nothing listens: asking would be a 502); a refused connection
-    // is AbleSet down, named with its causes.
-    let (site, records) = site_with(CLOSED, Duration::from_millis(300), 16);
+    // is AbleSet down, named with its causes (under the real head bound:
+    // Windows tries a refused connect again for about 1 s).
+    let (site, records) = site_with(CLOSED, proxy::HEAD_TIMEOUT, 16);
     let through =
         |request: axum::http::Request<Body>| router(Arc::clone(&site), None).oneshot(request);
     let announced = through(press("seventeen bytes!!", Some("17")))
@@ -1268,11 +1269,17 @@ async fn an_upgrade_ableset_does_not_switch_is_answered_as_it_came_its_handshake
 }
 
 /// Serves `app` on 127.0.0.1 as the plain listener does (axum-server, the
-/// peer's address): its address.
+/// peer's address, its HTTP/1 settings): its address.
 async fn listen(app: Router) -> SocketAddr {
+    listen_with(app, crate::HEADER_READ).await
+}
+
+/// [`listen`] with `header_read` as its request heads' bound.
+async fn listen_with(app: Router, header_read: Duration) -> SocketAddr {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let server = axum_server::Server::<SocketAddr>::from_listener(listener);
+    let mut server = axum_server::Server::<SocketAddr>::from_listener(listener);
+    crate::http1_limits(server.http_builder(), header_read);
     tokio::spawn(server.serve(app.into_make_service_with_connect_info::<SocketAddr>()));
     addr
 }
@@ -2028,4 +2035,60 @@ async fn the_stop_waits_for_every_socket_slot_to_come_back() {
     assert!(site.closed(short).await);
     assert_eq!(site.open_sockets(), 0);
     assert_eq!(CLOSED_WAIT, CLOSE_BOUND + Duration::from_millis(500));
+}
+
+#[tokio::test]
+async fn a_tunnel_outlives_the_header_read_bound_on_both_listeners() {
+    let upstream = fake().await;
+    let dir = tempfile::tempdir().unwrap();
+    let hub = hub_with(dir.path(), &upstream, None, &[]);
+    let bound = Duration::from_millis(300);
+    let plain = listen_with(crate::app_router(hub.clone()), bound).await;
+    let https = crate::https::Https::bind(
+        "127.0.0.1:0".parse().unwrap(),
+        crate::https_router(hub.clone()),
+    )
+    .unwrap()
+    .header_read(bound);
+    let ca = TestCa::new();
+    let now = crate::auth::now_secs() as i64;
+    for (slot, name) in [(Slot::Primary, TLS_NAME), (Slot::AbleSet, NAME)] {
+        let (chain, key) = ca.leaf(&[name], now - 3600, now + 86_400);
+        let pem = crate::tls::checked(chain, key, name).unwrap();
+        https.set_cert(slot, name, &pem).unwrap();
+    }
+    // The bound is live on both listeners: a head that stops half way is
+    // closed after it.
+    let half = b"GET / HTTP/1.1\r\nHost: x\r\n";
+    let mut lan = TcpStream::connect(plain).await.unwrap();
+    tokio::io::AsyncWriteExt::write_all(&mut lan, half)
+        .await
+        .unwrap();
+    let mut tls = connect(https.addr(), NAME, &ca.pem, true).await.unwrap();
+    tokio::io::AsyncWriteExt::write_all(&mut tls, half)
+        .await
+        .unwrap();
+    tokio::io::AsyncWriteExt::flush(&mut tls).await.unwrap();
+    let closed = async {
+        let mut rest = Vec::new();
+        // A TLS peer may end without close_notify.
+        let _ = lan.read_to_end(&mut rest).await;
+        let _ = tls.read_to_end(&mut rest).await;
+    };
+    tokio::time::timeout(Duration::from_secs(5), closed)
+        .await
+        .expect("both closed after the bound");
+    // A tunnel on each, idle past the bound, still carries both ways.
+    let url = format!("ws://{NAME}:{}/socket.io/?EIO=4", plain.port());
+    let lan = TcpStream::connect(plain).await.unwrap();
+    let (mut ws, _) = socket(lan, &url, &[]).await.unwrap();
+    let tls = connect(https.addr(), NAME, &ca.pem, true).await.unwrap();
+    let secure = format!("wss://{NAME}/socket.io/?EIO=4");
+    let (mut wss, _) = socket(tls, &secure, &[]).await.unwrap();
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let hi = Message::text("hi");
+    assert_eq!(round_trip(&mut ws, hi.clone()).await, hi);
+    assert_eq!(round_trip(&mut wss, hi.clone()).await, hi);
+    hub.stop();
+    https.stop(Duration::from_millis(10));
 }
