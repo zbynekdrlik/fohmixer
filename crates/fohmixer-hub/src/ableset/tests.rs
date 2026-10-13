@@ -2524,13 +2524,19 @@ async fn the_link_goes_down_after_two_failed_reads_and_up_at_the_first_good_one(
     let mut status = AbleSetStatus::default();
     assert_eq!(change(&mut changes).await, Some(true));
     site.fill(&mut status);
-    assert!(status.online && status.last_error.is_none(), "{status:?}");
+    assert!(
+        status.online == Some(true) && status.last_error.is_none(),
+        "{status:?}"
+    );
     assert!(status.checked.is_some_and(|at| at > 1_700_000_000));
     up.store(false, Ordering::Relaxed);
     assert_eq!(change(&mut changes).await, Some(false));
     site.fill(&mut status);
     let why = Some("AbleSet answers 503");
-    assert_eq!((status.online, status.last_error.as_deref()), (false, why));
+    assert_eq!(
+        (status.online, status.last_error.as_deref()),
+        (Some(false), why)
+    );
     up.store(true, Ordering::Relaxed);
     assert_eq!(change(&mut changes).await, Some(true));
     reads.abort();

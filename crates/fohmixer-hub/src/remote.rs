@@ -158,7 +158,7 @@ impl RemoteState {
             upstream: ableset.upstream.clone(),
             // The hub knows its link and counts its tunnels
             // (`ableset::AbleSet::fill`).
-            online: false,
+            online: None,
             last_error: None,
             checked: None,
             cert: self.inner().ableset.status(serving, now),

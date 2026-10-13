@@ -455,11 +455,23 @@ fn ablesets_message_round_trips_and_a_message_this_page_does_not_know_is_ignored
             title: "AbleSet".into(),
             name: "ableset.example.org".into(),
             parent: "foh.example.org".into(),
-            online: true,
+            online: Some(true),
             lan_port: 80,
         },
         json!({"type": "ableset", "title": "AbleSet", "name": "ableset.example.org",
                "parent": "foh.example.org", "online": true, "lan_port": 80}),
+    );
+    // Not known yet (#90 B3 review 4): before the hub's first read.
+    round_trip_server(
+        ServerMsg::Ableset {
+            title: "AbleSet".into(),
+            name: "ableset.example.org".into(),
+            parent: "foh.example.org".into(),
+            online: None,
+            lan_port: 3000,
+        },
+        json!({"type": "ableset", "title": "AbleSet", "name": "ableset.example.org",
+               "parent": "foh.example.org", "online": null, "lan_port": 3000}),
     );
     // A newer hub's message (#90 B3): any type this page does not know,
     // with any fields, reads as `Unknown` (the page ignores it), never as
@@ -574,7 +586,7 @@ fn api_bodies_round_trip() {
         ableset: Some(AbleSetStatus {
             name: "ableset.example.org".into(),
             upstream: "http://127.0.0.1:80".into(),
-            online: false,
+            online: Some(false),
             last_error: Some("AbleSet answers 503".into()),
             checked: Some(1_790_000_100),
             cert: CertStatus {
@@ -652,7 +664,7 @@ fn api_bodies_round_trip() {
             unlinked.last_error,
             unlinked.checked
         ),
-        ("", false, None, None)
+        ("", None, None, None)
     );
     assert_eq!(json["companion"]["keys"], 32);
     assert_eq!(json["companion"]["api_version"], "1.12.0");

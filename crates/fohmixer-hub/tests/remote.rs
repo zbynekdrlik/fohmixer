@@ -300,7 +300,9 @@ async fn the_served_hub_reads_ablesets_link_and_tells_every_page() {
     let upstream = indexed_ableset().await;
     let ableset = Some((chain.as_str(), key.as_str()));
     let hub = hub_to(dir.path(), None, ableset, &upstream).await;
-    let up = |s: &fohmixer_proto::client::HubStatus| s.ableset.as_ref().is_some_and(|a| a.online);
+    let up = |s: &fohmixer_proto::client::HubStatus| {
+        s.ableset.as_ref().is_some_and(|a| a.online == Some(true))
+    };
     let status = hub.status_until(Duration::from_secs(5), up).await;
     let ableset = status.ableset.unwrap();
     assert_eq!(
@@ -312,14 +314,21 @@ async fn the_served_hub_reads_ablesets_link_and_tells_every_page() {
     let port: u16 = upstream.rsplit_once(':').unwrap().1.parse().unwrap();
     let told = page
         .wait(Duration::from_secs(5), |msg| {
-            matches!(msg, ServerMsg::Ableset { online: true, .. }).then(|| msg.clone())
+            matches!(
+                msg,
+                ServerMsg::Ableset {
+                    online: Some(true),
+                    ..
+                }
+            )
+            .then(|| msg.clone())
         })
         .await;
     let wanted = ServerMsg::Ableset {
         title: "AbleSet".into(),
         name: ABLESET.into(),
         parent: NAME.into(),
-        online: true,
+        online: Some(true),
         lan_port: port,
     };
     assert_eq!(told, wanted);

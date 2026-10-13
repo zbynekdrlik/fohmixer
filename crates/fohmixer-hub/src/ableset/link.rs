@@ -36,8 +36,8 @@ pub const DOWN_AFTER: u32 = 2;
 /// The link as the hub knows it.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Link {
-    /// Up or down; none before the first change (not known yet: the pages
-    /// are told it is not up).
+    /// Up or down; none before the first change (not known yet, and the
+    /// pages are told so).
     pub online: Option<bool>,
     /// Failed reads in a row.
     pub failures: u32,
@@ -205,8 +205,8 @@ impl Page {
         }
     }
 
-    /// The `ableset` message with the link `online`.
-    pub fn msg(&self, online: bool) -> ServerMsg {
+    /// The `ableset` message with the link `online` (none: not known yet).
+    pub fn msg(&self, online: Option<bool>) -> ServerMsg {
         ServerMsg::Ableset {
             title: self.title.clone(),
             name: self.name.clone(),
@@ -314,18 +314,18 @@ mod tests {
         };
         let page = Page::of(&cfg, &tls);
         assert_eq!(
-            page.msg(true),
+            page.msg(Some(true)),
             ServerMsg::Ableset {
                 title: "Setlist".into(),
                 name: "ableset.example.org".into(),
                 parent: "foh.example.org".into(),
-                online: true,
+                online: Some(true),
                 lan_port: 3000,
             }
         );
         assert!(matches!(
-            page.msg(false),
-            ServerMsg::Ableset { online: false, .. }
+            page.msg(None),
+            ServerMsg::Ableset { online: None, .. }
         ));
         for (upstream, port) in [
             ("http://127.0.0.1:80", 80),

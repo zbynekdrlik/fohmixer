@@ -368,7 +368,7 @@ impl AbleSet {
     /// WebSocket slots.
     pub fn fill(&self, status: &mut AbleSetStatus) {
         let state = self.link.lock().unwrap_or_else(PoisonError::into_inner);
-        status.online = state.link.online == Some(true);
+        status.online = state.link.online;
         status.last_error.clone_from(&state.error);
         status.checked = state.checked;
         status.sockets = self.open_sockets();

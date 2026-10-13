@@ -7,21 +7,20 @@ use super::Router;
 use crate::ableset::link::Page;
 use crate::outbox::Outbox;
 
-/// AbleSet's page as the router tells it: its page and the link.
+/// AbleSet's page as the router tells it: its page and the link (none:
+/// not known yet).
 pub(super) struct AbleSetIo {
     page: Page,
-    online: bool,
+    online: Option<bool>,
 }
 
 impl Router {
-    /// The router of a hub with `[ableset]`: the link is not up until the
-    /// hub's first good read says so.
+    /// The router of a hub with `[ableset]`: the link is not known until
+    /// the hub's first read decides (#90 B3 review 4: a page tells "not
+    /// known yet" apart from "down").
     #[must_use]
     pub fn with_ableset(mut self, page: Page) -> Self {
-        self.ableset = Some(AbleSetIo {
-            page,
-            online: false,
-        });
+        self.ableset = Some(AbleSetIo { page, online: None });
         self
     }
 
@@ -37,8 +36,8 @@ impl Router {
         let Some(io) = self.ableset.as_mut() else {
             return;
         };
-        io.online = online;
-        let msg = io.page.msg(online);
+        io.online = Some(online);
+        let msg = io.page.msg(io.online);
         for outbox in self.clients.values() {
             outbox.reply(msg.clone());
         }
@@ -102,14 +101,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut router = bare(dir.path()).with_ableset(page());
         let first = attach(&mut router, 1);
-        assert_eq!(told(&first), [page().msg(false)], "not up before a read");
+        assert_eq!(told(&first), [page().msg(None)], "not known before a read");
         assert!(router.handle(RouterMsg::AbleSetLink { online: true }));
-        assert_eq!(told(&first), [page().msg(true)]);
+        assert_eq!(told(&first), [page().msg(Some(true))]);
         let second = attach(&mut router, 2);
-        assert_eq!(told(&second), [page().msg(true)], "the link as it is");
+        assert_eq!(told(&second), [page().msg(Some(true))], "the link as it is");
         assert!(router.handle(RouterMsg::AbleSetLink { online: false }));
-        assert_eq!(told(&first), [page().msg(false)]);
-        assert_eq!(told(&second), [page().msg(false)]);
+        assert_eq!(told(&first), [page().msg(Some(false))]);
+        assert_eq!(told(&second), [page().msg(Some(false))]);
         // A hub without [ableset] tells no page of it.
         let mut without = bare(dir.path());
         let outbox = attach(&mut without, 3);
