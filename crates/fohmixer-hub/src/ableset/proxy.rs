@@ -128,7 +128,7 @@ impl Proxy {
 /// An error and its causes, `: `-joined (hyper's own text alone says only
 /// "client error (Connect)").
 pub fn chain(error: &(dyn StdError + 'static)) -> String {
-    std::iter::successors(Some(error), |e| e.source())
+    causes(error)
         .map(ToString::to_string)
         .collect::<Vec<_>>()
         .join(": ")
@@ -136,5 +136,10 @@ pub fn chain(error: &(dyn StdError + 'static)) -> String {
 
 /// Whether the request failed because its body went over the cap.
 pub fn over_limit(error: &(dyn StdError + 'static)) -> bool {
-    std::iter::successors(Some(error), |e| e.source()).any(|e| e.is::<LengthLimitError>())
+    causes(error).any(|e| e.is::<LengthLimitError>())
+}
+
+/// An error, then each of its sources.
+fn causes(error: &(dyn StdError + 'static)) -> impl Iterator<Item = &(dyn StdError + 'static)> {
+    std::iter::successors(Some(error), |&e| e.source())
 }

@@ -377,7 +377,7 @@ pub fn strip_hop_by_hop(headers: &mut HeaderMap) {
 
 /// The cookies without the Access cookie (the hub's to check, never
 /// AbleSet's to see), joined; none when no other is left.
-pub fn without_access_cookie<'a>(cookies: impl Iterator<Item = &'a str>) -> Option<String> {
+pub fn without_access_cookie(cookies: impl Iterator<Item = &str>) -> Option<String> {
     let kept: Vec<&str> = cookies
         .flat_map(|c| c.split(';'))
         .map(str::trim)

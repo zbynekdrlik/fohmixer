@@ -11,7 +11,6 @@ use axum::extract::ConnectInfo;
 use axum::http::{HeaderName, Uri};
 use axum::routing::{get, post};
 use std::time::Duration;
-use tower::ServiceExt as _;
 
 use super::*;
 use crate::config::DEFAULT_ABLESET_UPSTREAM;
