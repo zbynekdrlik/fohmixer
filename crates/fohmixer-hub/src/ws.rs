@@ -90,6 +90,15 @@ pub struct Opener {
     pub origin: String,
 }
 
+impl Opener {
+    /// Whether the socket came over the LAN: its `source` is the LAN's
+    /// (#90: AbleSet's page message names it, so a page on the LAN never
+    /// shows AbleSet's internet sign-in).
+    pub fn is_lan(&self) -> bool {
+        self.source == client_report::source(access::Origin::Local)
+    }
+}
+
 /// The [`Opener`] of an upgrade from `peer` with `headers`: the Access
 /// check's own classification (no second classifier), the forwarded client
 /// as a client report reads it, and the `Origin` host
@@ -190,6 +199,7 @@ async fn session(mut socket: WebSocket, hub: Hub, proto: Option<u32>, who: Opene
         client,
         outbox: Arc::clone(&outbox),
         peer: who.peer.clone(),
+        lan: who.is_lan(),
     });
     log_socket("client connected", client, &who);
     hub.events

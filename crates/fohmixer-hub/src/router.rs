@@ -72,11 +72,14 @@ pub enum RouterMsg {
         instance: String,
         event: LiveEvent,
     },
-    /// A client connected: its outbox and its peer's address.
+    /// A client connected: its outbox, its peer's address and whether its
+    /// socket came over the LAN (the Access check's class,
+    /// `ws::Opener::is_lan`; AbleSet's page tells it so, #90).
     Attach {
         client: ClientId,
         outbox: Arc<Outbox>,
         peer: String,
+        lan: bool,
     },
     Sub {
         client: ClientId,
@@ -330,6 +333,9 @@ pub struct Router {
     clients: HashMap<ClientId, Arc<Outbox>>,
     /// Each client's peer address (event-log records).
     peers: HashMap<ClientId, String>,
+    /// Whether each client's socket came over the LAN (#90: AbleSet's page
+    /// message names it).
+    lan: HashMap<ClientId, bool>,
     live: BTreeMap<String, LiveHandle>,
     states: BTreeMap<String, InstanceState>,
     setters: BTreeMap<String, Setter>,
@@ -371,6 +377,7 @@ impl Router {
             names: NameCheck::default(),
             clients: HashMap::new(),
             peers: HashMap::new(),
+            lan: HashMap::new(),
             states: live
                 .keys()
                 .map(|k| (k.clone(), InstanceState::default()))
@@ -425,6 +432,7 @@ impl Router {
                 client,
                 outbox,
                 peer,
+                lan,
             } => {
                 for name in self.states.keys() {
                     self.send_instance(&outbox, name);
@@ -435,9 +443,10 @@ impl Router {
                 }
                 self.deck_attach(client, &outbox);
                 self.eq_attach(client, &outbox);
-                self.ableset_attach(&outbox);
+                self.ableset_attach(&outbox, lan);
                 self.clients.insert(client, outbox);
                 self.peers.insert(client, peer);
+                self.lan.insert(client, lan);
             }
             RouterMsg::Sub {
                 client,
@@ -530,6 +539,7 @@ impl Router {
                 self.subs.drop_client(client);
                 self.clients.remove(&client);
                 self.peers.remove(&client);
+                self.lan.remove(&client);
                 for setter in self.setters.values_mut() {
                     setter.drop_client(client);
                 }

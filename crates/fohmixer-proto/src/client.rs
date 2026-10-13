@@ -440,12 +440,18 @@ pub enum ServerMsg {
     /// only when it was opened by that name), `online` the link (`null`:
     /// not known yet, before the hub's first read decides; #90 B3 review
     /// 4), `lan_port` AbleSet's own port on the PC (the emergency link).
+    /// `lan` is this page's own: its socket came over the LAN (the Access
+    /// check's class, as its socket lines name it), so a failed probe is
+    /// no sign-in there (#90 PR C review M2); an older hub names none,
+    /// which reads as the tunnel's, as before.
     Ableset {
         title: String,
         name: String,
         parent: String,
         online: Option<bool>,
         lan_port: u16,
+        #[serde(default)]
+        lan: bool,
     },
     /// A message of a newer hub that this page does not know (#90 B3): any
     /// other `type` reads as this, and the page ignores it, so a new

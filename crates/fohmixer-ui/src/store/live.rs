@@ -643,6 +643,7 @@ impl LiveStore {
                 parent,
                 online,
                 lan_port,
+                lan,
             } => {
                 let _ = self.ableset.try_set(Some(AbleSetInfo {
                     title,
@@ -650,6 +651,7 @@ impl LiveStore {
                     parent,
                     online,
                     lan_port,
+                    lan,
                 }));
             }
             // A newer hub's message (#90 B3): ignored, never an error.

@@ -8,8 +8,10 @@
 //! of the hub's `/.fohmixer/probe` on AbleSet's name must load within
 //! `PROBE_MS`: outside the church AbleSet's name has an Access application
 //! of its own, whose login would not show inside a frame, so a failed probe
-//! shows the sign-in panel instead (a top-level sign-in that comes back to
-//! `#ableset`). `behave::ableset` decides what shows; this file carries it
+//! through the tunnel shows the sign-in panel instead (a top-level sign-in
+//! that comes back to `#ableset`); on the LAN (the hub's word for this
+//! page) a failed probe says why and leaves nothing to tap (#90 PR C review
+//! M2). `behave::ableset` decides what shows; this file carries it
 //! out. What happens inside the frame (AbleSet's own taps, scrolls and keys)
 //! is AbleSet's: the page sees none of it.
 
@@ -20,7 +22,7 @@ use leptos::prelude::*;
 use wasm_bindgen::JsValue;
 
 use crate::behave::ableset::{
-    PROBE_MS, Panel, Probe, SIGNIN_BUTTON, Show, after_link, again, direct_url, frame_url,
+    Fail, PROBE_MS, Panel, Probe, SIGNIN_BUTTON, Show, after_link, again, direct_url, frame_url,
     framed_here, panel_text, panel_title, probe_url, probed, probes, returns_to_tab, show,
     signin_url,
 };
@@ -94,6 +96,13 @@ pub fn AbleSetView(rail: Vec<Control>, global: Vec<Control>) -> impl IntoView {
             })
             .unwrap_or(false)
     });
+    // Whether this page's socket came over the LAN (the hub's word).
+    let lan = Memo::new(move |_| {
+        store
+            .ableset
+            .try_with(|a| a.as_ref().is_some_and(|a| a.lan))
+            .unwrap_or(false)
+    });
     let connected = move || store.connected.try_get().unwrap_or(false);
     let shown = Memo::new(move |_| {
         show(
@@ -101,6 +110,7 @@ pub fn AbleSetView(rail: Vec<Control>, global: Vec<Control>) -> impl IntoView {
             here.try_get().unwrap_or(false),
             connected(),
             probe.try_get().unwrap_or(Probe::Idle),
+            lan.try_get().unwrap_or(false),
         )
     });
 
@@ -109,17 +119,20 @@ pub fn AbleSetView(rail: Vec<Control>, global: Vec<Control>) -> impl IntoView {
 
     // Probe `n`'s answer (its image's load or error, or the time bound): only
     // the probe on its way takes it, and the recorder hears it with its time.
-    let answer = move |n: u32, ok: bool| {
+    let answer = move |n: u32, outcome: Result<(), Fail>| {
         let Some(before) = probe.try_get_untracked() else {
             return;
         };
-        let after = probed(before, n, ok);
+        let after = probed(before, n, outcome);
         if after != before {
             let _ = probe.try_set(after);
             let ms = dom::now() - probe_started.try_get_value().unwrap_or(0.0);
             diag::record(&trace::ableset(
                 dom::epoch_now(),
-                AbleSetStep::Probe { ok, ms },
+                AbleSetStep::Probe {
+                    ok: outcome.is_ok(),
+                    ms,
+                },
             ));
         }
     };
@@ -155,7 +168,7 @@ pub fn AbleSetView(rail: Vec<Control>, global: Vec<Control>) -> impl IntoView {
         let _ = probe_started.try_set_value(dom::now());
         let _ = probe.try_set(Probe::Pending(n));
         set_timeout(
-            move || answer(n, false),
+            move || answer(n, Err(Fail::Late)),
             Duration::from_millis(u64::from(PROBE_MS)),
         );
     });
@@ -256,8 +269,8 @@ pub fn AbleSetView(rail: Vec<Control>, global: Vec<Control>) -> impl IntoView {
                     class="ableset-probe"
                     alt=""
                     src=src
-                    on:load=move |_| answer(n, true)
-                    on:error=move |_| answer(n, false)
+                    on:load=move |_| answer(n, Ok(()))
+                    on:error=move |_| answer(n, Err(Fail::Error))
                 />
             })
         }
@@ -286,10 +299,11 @@ pub fn AbleSetView(rail: Vec<Control>, global: Vec<Control>) -> impl IntoView {
     }
 }
 
-/// A panel in the frame's place (the mockup's states): its title, its
-/// text, and for the sign-in its button (to Access's top-level sign-in),
-/// for the emergency address AbleSet's direct address on the PC (in a new
-/// tab). Both act at `pointerup`, where a finger's touch activates.
+/// A panel in the frame's place (the mockup's states, and #90 PR C review
+/// M2's LAN failure): its title, its text, and for the sign-in its button
+/// (to Access's top-level sign-in), for the emergency address AbleSet's
+/// direct address on the PC (in a new tab). Both act at
+/// `pointerup`, where a finger's touch activates; the LAN failure has none.
 #[component]
 fn AbleSetPanel(panel: Panel, direct: Option<String>, signin: String) -> impl IntoView {
     let title = panel_title(panel);

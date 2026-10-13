@@ -1,7 +1,9 @@
 //! The router's half of AbleSet's page (#90 B3): each client gets the
 //! `ableset` message when it attaches, and every client a new one at each
 //! change of the hub's link to AbleSet (`ableset/link.rs`), only with
-//! `[ableset]` (a page without it shows no AbleSet tab).
+//! `[ableset]` (a page without it shows no AbleSet tab). Each message names
+//! whether that client's own socket came over the LAN (#90 PR C review M2:
+//! a failed probe is AbleSet's sign-in only through the tunnel).
 
 use super::Router;
 use crate::ableset::link::Page;
@@ -24,22 +26,23 @@ impl Router {
         self
     }
 
-    /// A new client is told of AbleSet's page.
-    pub(super) fn ableset_attach(&self, outbox: &Outbox) {
+    /// A new client, whose socket came over the LAN (`lan`) or not, is told
+    /// of AbleSet's page.
+    pub(super) fn ableset_attach(&self, outbox: &Outbox, lan: bool) {
         if let Some(io) = &self.ableset {
-            outbox.reply(io.page.msg(io.online));
+            outbox.reply(io.page.msg(io.online, lan));
         }
     }
 
-    /// The link went up or down: every client is told.
+    /// The link went up or down: every client is told, each its own `lan`.
     pub(super) fn ableset_link(&mut self, online: bool) {
         let Some(io) = self.ableset.as_mut() else {
             return;
         };
         io.online = Some(online);
-        let msg = io.page.msg(io.online);
-        for outbox in self.clients.values() {
-            outbox.reply(msg.clone());
+        for (client, outbox) in &self.clients {
+            let lan = self.lan.get(client).copied().unwrap_or(false);
+            outbox.reply(io.page.msg(io.online, lan));
         }
     }
 }

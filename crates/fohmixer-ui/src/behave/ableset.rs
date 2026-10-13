@@ -3,7 +3,8 @@
 //! page, what the tab's page shows ([`show`]: AbleSet's own page in a frame,
 //! or a panel), the probe that comes first ([`Probe`]: on the internet path
 //! AbleSet's name has an Access application of its own, and a frame that
-//! Access redirects to its login would show nothing), the addresses the page
+//! Access redirects to its login would show nothing; on the LAN a failed
+//! probe says why, #90 PR C review M2), the addresses the page
 //! builds from its own (the frame, the probe, the sign-in, AbleSet directly
 //! on the PC) and the panels' texts (the mockup's). `pages/ableset.rs`
 //! carries it out.
@@ -23,6 +24,9 @@ pub struct AbleSetInfo {
     pub online: Option<bool>,
     /// AbleSet's own port on the PC (the direct address).
     pub lan_port: u16,
+    /// This page's socket came over the LAN (the hub's word, #90 PR C
+    /// review M2): a failed probe is no sign-in here.
+    pub lan: bool,
 }
 
 /// A panel in the frame's place.
@@ -31,8 +35,13 @@ pub enum Panel {
     /// AbleSet does not answer the hub (or the hub this page, before the
     /// frame was mounted).
     Down,
-    /// The probe failed: outside the church, AbleSet needs its own sign-in.
+    /// The probe failed through the tunnel: outside the church, AbleSet
+    /// needs its own sign-in.
     SignIn,
+    /// The probe failed on the LAN (#90 PR C review M2): AbleSet's name or
+    /// certificate does not work here, or it did not answer in time. Not in
+    /// the approved mockup.
+    Unreachable(Fail),
     /// The page is not fohmixer's own https page (the emergency address).
     Elsewhere,
     /// Not known yet, or the probe on its way.
@@ -45,6 +54,7 @@ impl Panel {
         match self {
             Panel::Down => "down",
             Panel::SignIn => "signin",
+            Panel::Unreachable(_) => "unreachable",
             Panel::Elsewhere => "elsewhere",
             Panel::Checking => "checking",
         }
@@ -70,15 +80,22 @@ impl Show {
     }
 }
 
+/// Why a probe failed: its image's error (a name, a certificate, or the
+/// tunnel's Access refusing it), or no answer within [`PROBE_MS`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fail {
+    Error,
+    Late,
+}
+
 /// The probe of AbleSet's name (an image the hub serves after its access
-/// decision): none yet, the `n`th on its way, loaded, or failed (an error or
-/// no answer within [`PROBE_MS`]).
+/// decision): none yet, the `n`th on its way, loaded, or failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Probe {
     Idle,
     Pending(u32),
     Passed,
-    Failed,
+    Failed(Fail),
 }
 
 /// How long a probe may take before it counts as failed (ms).
@@ -90,8 +107,10 @@ pub const PROBE_MS: u32 = 8_000;
 /// socket is down, or a restarted hub has not read AbleSet yet: AbleSet
 /// reconnects through the hub by itself); otherwise the page's socket down
 /// is the down panel, a link not read yet (`online` none) is checking, never
-/// down, and a failed probe is the sign-in.
-pub fn show(online: Option<bool>, here: bool, connected: bool, probe: Probe) -> Show {
+/// down, and a failed probe is the sign-in through the tunnel, and on the
+/// LAN (`lan`, the hub's word for this page) why it failed: never a sign-in
+/// that takes the mixer away.
+pub fn show(online: Option<bool>, here: bool, connected: bool, probe: Probe, lan: bool) -> Show {
     if !here {
         return Show::Panel(Panel::Elsewhere);
     }
@@ -107,10 +126,11 @@ pub fn show(online: Option<bool>, here: bool, connected: bool, probe: Probe) -> 
     if online.is_none() {
         return Show::Panel(Panel::Checking);
     }
-    if probe == Probe::Failed {
-        return Show::Panel(Panel::SignIn);
+    match probe {
+        Probe::Failed(why) if lan => Show::Panel(Panel::Unreachable(why)),
+        Probe::Failed(_) => Show::Panel(Panel::SignIn),
+        _ => Show::Panel(Panel::Checking),
     }
-    Show::Panel(Panel::Checking)
 }
 
 /// Whether a probe starts now: none yet, on fohmixer's own page, connected,
@@ -129,17 +149,14 @@ pub fn after_link(online: Option<bool>, probe: Probe) -> Probe {
     }
 }
 
-/// The probe after probe `n`'s answer: only the probe on its way takes it
-/// (an older one's late answer changes nothing).
-pub fn probed(probe: Probe, n: u32, ok: bool) -> Probe {
+/// The probe after probe `n`'s answer (loaded, or why not): only the probe
+/// on its way takes it (an older one's late answer changes nothing).
+pub fn probed(probe: Probe, n: u32, answer: Result<(), Fail>) -> Probe {
     match probe {
-        Probe::Pending(m) if m == n => {
-            if ok {
-                Probe::Passed
-            } else {
-                Probe::Failed
-            }
-        }
+        Probe::Pending(m) if m == n => match answer {
+            Ok(()) => Probe::Passed,
+            Err(why) => Probe::Failed(why),
+        },
         other => other,
     }
 }
@@ -147,10 +164,9 @@ pub fn probed(probe: Probe, n: u32, ok: bool) -> Probe {
 /// The probe when the page comes back visible: a failed one tries again
 /// (the sign-in may have happened meanwhile).
 pub fn again(probe: Probe) -> Probe {
-    if probe == Probe::Failed {
-        Probe::Idle
-    } else {
-        probe
+    match probe {
+        Probe::Failed(_) => Probe::Idle,
+        other => other,
     }
 }
 
@@ -209,6 +225,7 @@ pub fn panel_title(panel: Panel) -> &'static str {
     match panel {
         Panel::Down => "AbleSet nebeží",
         Panel::SignIn => "Prihlásenie do AbleSetu",
+        Panel::Unreachable(_) => "AbleSet sa nedá načítať",
         Panel::Elsewhere => "Núdzová adresa",
         Panel::Checking => "",
     }
@@ -223,6 +240,12 @@ pub fn panel_text(panel: Panel, direct: bool) -> &'static str {
         }
         Panel::SignIn => {
             "Si mimo kostola. AbleSet chce raz potvrdiť prihlásenie, rovnako ako fohmixer."
+        }
+        Panel::Unreachable(Fail::Error) => {
+            "AbleSet sa cez sieť kostola nenačítal: jeho meno alebo certifikát nefunguje. Mixér funguje ďalej; fohmixer to skúsi znova, keď sa sem vrátiš."
+        }
+        Panel::Unreachable(Fail::Late) => {
+            "AbleSet neodpovedal do 8 sekúnd. Mixér funguje ďalej; fohmixer to skúsi znova, keď sa sem vrátiš."
         }
         Panel::Elsewhere if direct => {
             "Fohmixer je otvorený cez IP bez certifikátu, tak sa AbleSet nedá vložiť. Otvor fohmixer cez jeho meno, alebo AbleSet priamo:"

@@ -205,14 +205,16 @@ impl Page {
         }
     }
 
-    /// The `ableset` message with the link `online` (none: not known yet).
-    pub fn msg(&self, online: Option<bool>) -> ServerMsg {
+    /// The `ableset` message with the link `online` (none: not known yet)
+    /// for a page whose socket came over the LAN (`lan`) or not.
+    pub fn msg(&self, online: Option<bool>, lan: bool) -> ServerMsg {
         ServerMsg::Ableset {
             title: self.title.clone(),
             name: self.name.clone(),
             parent: self.parent.clone(),
             online,
             lan_port: self.lan_port,
+            lan,
         }
     }
 }
