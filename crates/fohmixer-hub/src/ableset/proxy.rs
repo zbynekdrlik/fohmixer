@@ -46,6 +46,9 @@ pub enum Failure {
     Target(String),
     /// Another site's request that is no navigation: 403.
     CrossSite(String),
+    /// A WebSocket upgrade that announces a body
+    /// (`ableset::upgrade_body`): 400.
+    UpgradeBody(String),
     /// AbleSet read a WebSocket upgrade and closed the connection without
     /// an answer (it serves no WebSocket there): 502, the client's fault.
     Closed(String),
@@ -66,6 +69,7 @@ impl Failure {
             Self::Method(why)
             | Self::Target(why)
             | Self::CrossSite(why)
+            | Self::UpgradeBody(why)
             | Self::Closed(why)
             | Self::Busy(why)
             | Self::TooLarge(why)

@@ -1178,6 +1178,32 @@ fn a_websocket_is_a_get_naming_the_upgrade_and_websocket_whose_pair_goes_on() {
     assert_eq!(map["upgrade"], "websocket");
 }
 
+#[tokio::test]
+async fn an_upgrade_that_announces_a_body_in_any_way_is_refused_400() {
+    let refused = |pairs: &[(&str, &str)]| upgrade_body(&headers(pairs)).is_some();
+    assert!(!refused(&[
+        ("connection", "upgrade"),
+        ("upgrade", "websocket")
+    ]));
+    assert!(!refused(&[("content-length", "0")]));
+    assert!(!refused(&[("content-length", " 0 ")]));
+    for pairs in [
+        &[("content-length", "1")][..],
+        &[("content-length", "1, 1")][..],
+        &[("content-length", "0"), ("content-length", "5")][..],
+        &[("transfer-encoding", "chunked")][..],
+        &[("content-length", "0"), ("transfer-encoding", "gzip")][..],
+    ] {
+        assert!(refused(pairs), "{pairs:?}");
+    }
+    let (site, _records) = site_with(CLOSED, Duration::from_secs(1), 16);
+    let failure = upgrade_body(&headers(&[("content-length", "1")])).unwrap();
+    let answer = site.failed(&Method::GET, "/socket.io/", None, failure);
+    assert_eq!(answer.status(), StatusCode::BAD_REQUEST);
+    let body: Value = serde_json::from_str(&text_of(answer).await).unwrap();
+    assert_eq!(body["code"], "ABLESET_UPGRADE_BODY");
+}
+
 #[test]
 fn a_tunnels_records_name_it_its_life_its_bytes_and_why_each_kind_rationed() {
     let (site, records) = site_with(CLOSED, Duration::from_secs(1), 16);
@@ -2097,6 +2123,36 @@ async fn a_write_that_makes_no_progress_for_a_minute_ends_the_tunnel() {
         .expect("the tunnel was still held after 600 s");
     let why = "the page to AbleSet: a write made no progress for 60000 ms";
     assert_eq!((ended.up, ended.why.as_str()), (2, why));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_slow_or_idle_tunnel_is_never_cut_by_the_stalled_write_bound() {
+    assert_eq!(STALLED_WRITE, Duration::from_secs(60));
+    let ((page, mut page_far), (ableset, mut ableset_far), (_sender, mut stop)) = ends_and_stop();
+    let piped = pipe(page, ableset, &mut stop, HALF_CLOSE_GRACE);
+    let the_ends = async {
+        // Idle for twice the bound: no write waits, nothing is bounded.
+        tokio::time::sleep(STALLED_WRITE * 2).await;
+        // AbleSet sends 256 bytes and closes; the page takes them 16 at a
+        // time, 50 s apart: each wait under the bound, all of them far over
+        // it (any progress starts the bound afresh).
+        send_and_close(&mut ableset_far, &[7; 256]).await;
+        let mut got = Vec::new();
+        let mut chunk = [0_u8; 16];
+        while got.len() < 192 {
+            tokio::time::sleep(Duration::from_secs(50)).await;
+            page_far.read_exact(&mut chunk).await.unwrap();
+            got.extend_from_slice(&chunk);
+        }
+        page_far.read_to_end(&mut got).await.unwrap();
+        tokio::io::AsyncWriteExt::shutdown(&mut page_far)
+            .await
+            .unwrap();
+        got.len()
+    };
+    let (ended, got) = tokio::join!(piped, the_ends);
+    assert_eq!(got, 256);
+    assert_eq!((ended.down, ended.why.as_str()), (256, "closed"));
 }
 
 #[tokio::test]

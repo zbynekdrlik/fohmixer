@@ -35,8 +35,10 @@
 //!   tunnel (B2): AbleSet's 101 goes back to the page and each way's bytes
 //!   are copied on their own, an end's close passed on to the other
 //!   ([`pipe`]). It ends when both ends closed, when one end is still open
-//!   [`HALF_CLOSE_GRACE`] after the other's close, or at the hub's stop
-//!   ([`AbleSet::stop`]); its two upgrades get the head bound. At most
+//!   [`HALF_CLOSE_GRACE`] after the other's close, when a write to one end
+//!   makes no progress for [`STALLED_WRITE`], or at the hub's stop
+//!   ([`AbleSet::stop`]); its two upgrades get the head bound. An upgrade
+//!   that announces a body is refused ([`upgrade_body`]). At most
 //!   [`MAX_SOCKETS`] at a time (one more: 503 at once), each slot held until
 //!   the tunnel's close record (or a non-101 answer's body) ends, each
 //!   opened and closed in an `ableset_ws` record ([`ws_fields`],
@@ -137,6 +139,20 @@ pub const STOPPED: &str = "the hub stops";
 /// tablet that then leaves the network: nothing in flight, so no TCP timer
 /// would ever end it) is cut, and its slot comes back.
 pub const HALF_CLOSE_GRACE: Duration = Duration::from_secs(5);
+
+/// How long a write to one end of a tunnel may make no progress before the
+/// tunnel ends (#90 re-review Low 1): a page that never reads (its receive
+/// window zero, the hub's send buffer full) would otherwise hold the write
+/// to it, and AbleSet's close queued behind that write, for good. Idle time
+/// is never bounded (an idle tunnel has no write waiting). Against
+/// AbleSet's ping (design §3.4): AbleSet 3.1.5 pings every 2 s and closes a
+/// socket whose pong does not come within 10 s (Socket.IO's defaults: 25 s
+/// and 20 s). A page reached by no byte for a minute cannot have answered a
+/// ping for that long, so AbleSet has closed it by then under either; a
+/// live page answers within 12 s (45 s by the defaults), so its writes
+/// never wait this long: a slow link or a busy tab still takes bytes, and
+/// any progress starts the bound afresh.
+pub const STALLED_WRITE: Duration = Duration::from_secs(60);
 
 /// How long the hub's stop waits for every tunnel to end (#90 review 3):
 /// [`CLOSE_BOUND`] for their two ends to close, and half a second for their
@@ -366,6 +382,11 @@ impl AbleSet {
                 "AbleSet is sent paths only",
             ),
             Failure::CrossSite(_) => crate::access::forbidden("cross_site"),
+            Failure::UpgradeBody(_) => error(
+                StatusCode::BAD_REQUEST,
+                "ABLESET_UPGRADE_BODY",
+                "A WebSocket upgrade carries no body",
+            ),
             Failure::Closed(_) => error(
                 StatusCode::BAD_GATEWAY,
                 "ABLESET_CLOSED",
@@ -535,18 +556,23 @@ fn held(body: Body, slot: OwnedSemaphorePermit) -> Body {
     }))
 }
 
-/// A WebSocket upgrade (#90 B2), after the Access check and the refusals:
-/// sent on to AbleSet with its handshake headers. When AbleSet switches
-/// (101) the page gets AbleSet's 101, and its connection and AbleSet's
-/// become one byte tunnel ([`AbleSet::carry`]) holding a socket slot; any
-/// other answer is passed on as it came, holding the slot until its body
-/// ends (#90 review 2: no upgrade streams an answer with no slot).
+/// A WebSocket upgrade (#90 B2), after the Access check and the refusals,
+/// and refused before it takes a socket slot when it announces a body
+/// ([`upgrade_body`]): sent on to AbleSet with its handshake headers. When
+/// AbleSet switches (101) the page gets AbleSet's 101, and its connection
+/// and AbleSet's become one byte tunnel ([`AbleSet::carry`]) holding a
+/// socket slot; any other answer is passed on as it came, holding the slot
+/// until its body ends (#90 review 2: no upgrade streams an answer with no
+/// slot).
 async fn tunnel(
     site: Arc<AbleSet>,
     mut request: Request,
     path: &str,
     dest: Option<&str>,
 ) -> Response {
+    if let Some(failure) = upgrade_body(request.headers()) {
+        return site.failed(&Method::GET, path, dest, failure);
+    }
     let Ok(slot) = Arc::clone(&site.sockets).try_acquire_owned() else {
         let busy = Failure::Busy("every WebSocket slot for AbleSet is taken".to_string());
         return site.failed(&Method::GET, path, dest, busy);
@@ -590,6 +616,21 @@ pub fn is_upgrade(method: &Method, version: Version, headers: &HeaderMap) -> boo
         && version == Version::HTTP_11
         && names_token(headers, &header::CONNECTION, "upgrade")
         && is_websocket_upgrade(headers)
+}
+
+/// Why an upgrade is refused before it takes a socket slot (#90 re-review
+/// Low 2, pure): it announces a body (a `Content-Length` other than 0, or
+/// any `Transfer-Encoding`). A WebSocket handshake has none (RFC 6455 §4.1;
+/// no browser sends one), and hyper hands neither connection over before a
+/// request's body is read whole, so such an upgrade would keep a connection
+/// to AbleSet as long as the page holds its own. 400, the client's fault.
+pub fn upgrade_body(headers: &HeaderMap) -> Option<Failure> {
+    let length = headers
+        .get_all(header::CONTENT_LENGTH)
+        .iter()
+        .any(|v| v.to_str().ok().and_then(|v| v.trim().parse::<u64>().ok()) != Some(0));
+    (length || headers.contains_key(header::TRANSFER_ENCODING))
+        .then(|| Failure::UpgradeBody("a WebSocket upgrade announced a request body".to_string()))
 }
 
 /// The upgrade's pair, back after the hop-by-hop headers went: the request
@@ -706,10 +747,42 @@ pub fn source_closed(copied: io::Result<u64>) -> io::Result<()> {
 }
 
 /// A writer that counts the bytes it took (a way's count, kept through an
-/// error or the stop).
+/// error or the stop), and fails a write, flush or close that made no
+/// progress for [`STALLED_WRITE`] (#90 re-review Low 1).
 struct Counted<'a, W> {
     to: &'a mut W,
     count: &'a AtomicU64,
+    /// Running while a write waits: when it ends, the write failed.
+    stalled: Option<Pin<Box<tokio::time::Sleep>>>,
+}
+
+impl<W> Counted<'_, W> {
+    /// `polled` as it came, except a wait with no progress for
+    /// [`STALLED_WRITE`]: then an error (`TimedOut`) ends the way. Any
+    /// answer is progress and starts the bound afresh.
+    fn bounded<T>(
+        &mut self,
+        cx: &mut Context<'_>,
+        polled: Poll<io::Result<T>>,
+    ) -> Poll<io::Result<T>> {
+        if polled.is_ready() {
+            self.stalled = None;
+            return polled;
+        }
+        let stalled = self
+            .stalled
+            .get_or_insert_with(|| Box::pin(tokio::time::sleep(STALLED_WRITE)));
+        match stalled.as_mut().poll(cx) {
+            Poll::Ready(()) => Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!(
+                    "a write made no progress for {} ms",
+                    STALLED_WRITE.as_millis()
+                ),
+            ))),
+            Poll::Pending => Poll::Pending,
+        }
+    }
 }
 
 impl<W: AsyncWrite + Unpin> AsyncWrite for Counted<'_, W> {
@@ -723,27 +796,36 @@ impl<W: AsyncWrite + Unpin> AsyncWrite for Counted<'_, W> {
         if let Poll::Ready(Ok(n)) = &written {
             this.count.fetch_add(*n as u64, Ordering::Relaxed);
         }
-        written
+        this.bounded(cx, written)
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut *self.get_mut().to).poll_flush(cx)
+        let this = self.get_mut();
+        let flushed = Pin::new(&mut *this.to).poll_flush(cx);
+        this.bounded(cx, flushed)
     }
 
     fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut *self.get_mut().to).poll_shutdown(cx)
+        let this = self.get_mut();
+        let closed = Pin::new(&mut *this.to).poll_shutdown(cx);
+        this.bounded(cx, closed)
     }
 }
 
 /// One way of a tunnel: `from`'s bytes into `to` (counted in `count`),
 /// then `from`'s close passed on (`to` shut down: a FIN, over TLS its
-/// `close_notify`).
+/// `close_notify`); a write to `to` that makes no progress for
+/// [`STALLED_WRITE`] ends it with an error.
 async fn pass<R, W>(from: &mut R, to: &mut W, count: &AtomicU64) -> io::Result<()>
 where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
-    let mut counted = Counted { to, count };
+    let mut counted = Counted {
+        to,
+        count,
+        stalled: None,
+    };
     source_closed(tokio::io::copy(from, &mut counted).await)?;
     counted.shutdown().await
 }
