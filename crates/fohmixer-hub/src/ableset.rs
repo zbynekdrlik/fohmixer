@@ -27,10 +27,10 @@
 //!   browser on the PC sends, with the public `Host` (the owner's decision:
 //!   fohmixer's access rules are the lock).
 //! - When AbleSet does not answer, or the hub refuses, the hub answers
-//!   itself ([`down_answer`]), records it (`ableset_proxy`: each of
-//!   AbleSet's own faults, a client's at most [`FAULT_RECORDS`] per kind per
-//!   [`WARN_GAP`]) and logs it at warn at most once per [`WARN_GAP`] for
-//!   each kind ([`warn_line`]).
+//!   itself ([`down_answer`]), records it (`ableset_proxy`, rationed per
+//!   kind per [`WARN_GAP`]: [`EDGE_RECORDS`], [`OUTAGE_RECORDS`],
+//!   [`FAULT_RECORDS`]) and logs it at warn at most once per [`WARN_GAP`]
+//!   for each kind ([`warn_line`]).
 //! - A WebSocket upgrade ([`is_upgrade`]: Socket.IO's `websocket`
 //!   transport, on HTTP/1.1), after the same checks, is a transparent byte
 //!   tunnel (B2): AbleSet's 101 goes back to the page and each way's bytes
@@ -135,16 +135,24 @@ pub const MAX_SOCKETS: usize = 64;
 pub const FAULT_RECORDS: u32 = 1;
 
 /// At most this many `ableset_proxy` records of AbleSet's own fault of one
-/// kind per [`WARN_GAP`] besides an outage's first one and a warned one
-/// (#90 B3h review 1): a client looping on AbleSet's name while AbleSet is
-/// closed would otherwise write one per request; 8 keep a short outage
-/// readable. The count left out rides on the outage's end
+/// kind per [`WARN_GAP`] besides a warned one and an outage's first
+/// ([`EDGE_RECORDS`]) (#90 B3h review 1): a client looping on AbleSet's
+/// name while AbleSet is closed would otherwise write one per request; 8
+/// keep a short outage readable. The count left out rides on the outage's end
 /// ([`ANSWERS_AGAIN`]) or the kind's next record.
 pub const OUTAGE_RECORDS: u32 = 8;
 
 /// The `why` of the record that ends an outage: the first request AbleSet
 /// answers after it, with the outage's records left out as `skipped`.
 pub const ANSWERS_AGAIN: &str = "AbleSet answers again";
+
+/// At most this many records of an outage's start (one not warned) and as
+/// many of an outage's end per [`WARN_GAP`] (#90 B3, the B3h review's minor
+/// item): a client that alternates a request AbleSet drops with one it
+/// answers would otherwise write two records a cycle without bound. A
+/// start's `skipped` counts the starts left out before it; an end's, the
+/// outage records and the ends left out.
+pub const EDGE_RECORDS: u32 = 8;
 
 /// The hub's own probe on AbleSet's name (B3, design §5.4).
 pub const PROBE: &str = "/.fohmixer/probe";
@@ -453,14 +461,17 @@ impl AbleSet {
     }
 
     /// AbleSet answered: the outage, if any, is over. Its end is recorded
-    /// at once ([`ANSWERS_AGAIN`]), with the outage's records left out.
+    /// ([`ANSWERS_AGAIN`], at most [`EDGE_RECORDS`] per [`WARN_GAP`]), with
+    /// the outage's records and the ends left out.
     fn reached(&self, method: &Method, path: &str, status: StatusCode, started: Instant) {
         let (method, path) = (clip(method.as_str()), clip(path));
         let ms = started.elapsed().as_millis() as u64;
         let status = status.as_u16();
         tracing::debug!(method = %method, path = ?path, status, ms, "ableset: proxied");
-        if self.failing.swap(false, Ordering::Relaxed) {
-            let skipped = self.left_out("ableset_proxy", "down");
+        if self.failing.swap(false, Ordering::Relaxed)
+            && let Some(ends) = self.due("ableset_proxy", "end", EDGE_RECORDS)
+        {
+            let skipped = self.left_out("ableset_proxy", "down") + ends;
             tracing::info!(
                 method = %method,
                 path = ?path,
@@ -473,11 +484,12 @@ impl AbleSet {
         }
     }
 
-    /// AbleSet was not reached: answered by the hub, recorded (an outage's
-    /// first record and a warned one at once; the rest at most
-    /// [`OUTAGE_RECORDS`], a client's fault [`FAULT_RECORDS`], per kind per
-    /// [`WARN_GAP`]), and logged at warn when [`warn_line`] says so (else
-    /// at debug); the client's own text [`clip`]ped.
+    /// AbleSet was not reached: answered by the hub, recorded (a warned
+    /// fault of AbleSet at once; an outage's first record at most
+    /// [`EDGE_RECORDS`], AbleSet's other faults [`OUTAGE_RECORDS`] and a
+    /// client's [`FAULT_RECORDS`], per kind per [`WARN_GAP`]), and logged at
+    /// warn when [`warn_line`] says so (else at debug); the client's own text
+    /// [`clip`]ped.
     fn failed(
         &self,
         method: &Method,
@@ -568,8 +580,10 @@ impl AbleSet {
         } else {
             FAULT_RECORDS
         };
-        let due = if alarm || starts {
+        let due = if alarm {
             Some(0)
+        } else if starts {
+            self.due("ableset_proxy", "start", EDGE_RECORDS)
         } else {
             self.due("ableset_proxy", failure.kind(), per_gap)
         };

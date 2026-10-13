@@ -2685,3 +2685,38 @@ fn an_outage_that_starts_and_ends_in_a_loop_writes_its_start_and_end_rationed() 
     expected.push(("why", refused));
     assert_eq!(rows, expected);
 }
+
+#[test]
+fn an_outages_start_and_end_carry_what_their_rations_left_out() {
+    // #90 B3: after the gap, the next start counts the starts left out,
+    // the next end the ends and the outage records left out.
+    let (site, records) = site_with(CLOSED, Duration::from_secs(1), 16);
+    let refused = "AbleSet does not answer: refused";
+    for _ in 0..40 {
+        site.failed(&Method::GET, "/drop", None, Failure::Down(refused.into()));
+        site.reached(&Method::GET, "/", StatusCode::OK, Instant::now());
+    }
+    assert_eq!(records.try_iter().count(), 17);
+    // The gap goes by.
+    for ration in site.rations.lock().unwrap().values_mut() {
+        ration.expire();
+    }
+    // A start (31 left out: the 10th to the 40th), 9 more of the outage (8
+    // allowed, 1 left out), then its end (32 ends left out: the 9th to the
+    // 40th, and the 1).
+    for _ in 0..10 {
+        site.failed(&Method::GET, "/drop", None, Failure::Down(refused.into()));
+    }
+    site.reached(&Method::GET, "/", StatusCode::OK, Instant::now());
+    let records: Vec<Value> = records.try_iter().collect();
+    let skipped: Vec<u64> = records
+        .iter()
+        .map(|r| r["skipped"].as_u64().unwrap())
+        .collect();
+    let mut expected = vec![31];
+    expected.extend([0; 8]);
+    expected.push(33);
+    assert_eq!(skipped, expected);
+    assert_eq!(why_of(&records[9]).1, ANSWERS_AGAIN);
+    assert_eq!(EDGE_RECORDS, 8);
+}
