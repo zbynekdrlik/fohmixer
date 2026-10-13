@@ -230,7 +230,8 @@ pub fn ParamFaderView(label: String, targets: Vec<ParamTarget>) -> impl IntoView
 /// dB scale and one groove per track on the strips' volume law, numbered
 /// in target order; the fader's cap at the loudest track (`FaderView`'s
 /// `vca` mode: a touch moves every track by the same dB, with the strips'
-/// touch handling); under it the loudest track's dB and every track's
+/// touch handling, and a double tap glides every track to 0 dB, the owner's
+/// decision of 2026-10-13); under it the loudest track's dB and every track's
 /// value. Its frame loop draws the grooves, the readout and the highlight
 /// (`data-moved`) from what each track shows: its open write, else Live's
 /// value (`fader::shown_volumes`), and only when that changed.

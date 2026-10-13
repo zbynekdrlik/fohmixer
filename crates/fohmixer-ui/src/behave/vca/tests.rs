@@ -385,3 +385,114 @@ fn a_groove_sits_on_the_strips_law_and_waits_for_its_value() {
     assert_eq!(none.values, "– –");
     assert!(!none.moved);
 }
+
+/// The double tap's glide from 0 dB, −14 dB, −∞ and +4 dB on Live's law
+/// (the position is Live's volume; 0 dB at 0.85).
+fn home() -> Home {
+    Home::new(
+        VolumeLaw::Live,
+        &[Some(0.85), Some(0.5), Some(0.0), Some(0.95)],
+    )
+    .expect("targets")
+}
+
+#[test]
+fn a_double_taps_glide_needs_every_targets_value() {
+    let law = VolumeLaw::Live;
+    assert_eq!(Home::new(law, &[]), None);
+    assert_eq!(Home::new(law, &[Some(0.5), None]), None);
+    assert_eq!(Home::new(law, &[None, None]), None);
+    let one = Home::new(law, &[Some(0.5)]).expect("one target");
+    assert_eq!(one.volumes(1.0), vec![0.85]);
+}
+
+#[test]
+fn the_glide_starts_at_the_loudest_and_lasts_the_furthest_tracks_way() {
+    let h = home();
+    // The cap from the loudest (+4 dB); the furthest way is −∞'s, 0.85.
+    assert_eq!(h.cap_from(), 0.95);
+    assert_eq!(h.span(), 0.85);
+    // Prayer-mode levels: from −14 dB, the furthest −29.8 dB's 0.61.
+    let prayer = Home::new(VolumeLaw::Live, &[Some(0.5), Some(0.24)]).expect("targets");
+    assert_eq!(prayer.cap_from(), 0.5);
+    assert_eq!(prayer.span(), 0.85 - 0.24);
+    // The loudest at 0 dB and one moved up on its own: its way down.
+    let up = Home::new(VolumeLaw::Live, &[Some(0.85), Some(1.0)]).expect("targets");
+    assert_eq!(up.cap_from(), 1.0);
+    assert_eq!(up.span(), 1.0 - 0.85);
+    // Every track at 0 dB already: nowhere to go.
+    let still = Home::new(VolumeLaw::Live, &[Some(0.85), Some(0.85)]).expect("targets");
+    assert_eq!(still.cap_from(), 0.85);
+    assert_eq!(still.span(), 0.0);
+}
+
+#[test]
+fn the_glide_takes_every_track_from_its_start_to_exactly_0_db() {
+    let h = home();
+    // The start: every track where it was.
+    assert_eq!(h.volumes(0.0), vec![0.85, 0.5, 0.0, 0.95]);
+    // A quarter and half of the way, each on its own way on the law.
+    assert_eq!(
+        h.volumes(0.25),
+        vec![0.85, 0.5875, 0.21250000000000002, 0.9249999999999999]
+    );
+    let half = h.volumes(0.5);
+    assert_eq!(half, vec![0.85, 0.675, 0.425, 0.8999999999999999]);
+    for (got, want) in half.iter().zip([0.0, -7.0, -17.0, 2.0]) {
+        assert_db(*got, want, 1e-9);
+    }
+    // The end: every track at Live's 0 dB volume, exactly (a strip's
+    // double tap's), the one above 0 dB brought down too.
+    assert_eq!(h.volumes(1.0), vec![UNITY; 4]);
+    for volume in h.volumes(1.0) {
+        assert_eq!(value2db(volume), 0.0);
+        assert!(!is_moved(value2db(volume)));
+    }
+    // Before the start and past the end: the ends.
+    assert_eq!(h.volumes(-0.5), vec![0.85, 0.5, 0.0, 0.95]);
+    assert_eq!(h.volumes(1.5), vec![UNITY; 4]);
+}
+
+#[test]
+fn every_track_moves_toward_0_db_and_the_loudest_stays_the_loudest() {
+    let h = home();
+    let steps: Vec<Vec<f64>> = (0..=20_u32)
+        .map(|i| h.volumes(f64::from(i) / 20.0))
+        .collect();
+    for pair in steps.windows(2) {
+        let (before, after) = (&pair[0], &pair[1]);
+        for (track, (b, a)) in before.iter().zip(after).enumerate() {
+            let (b, a) = (value2db(*b), value2db(*a));
+            // Never away from 0 dB, never past it.
+            assert!(a.abs() <= b.abs(), "track {track}: {b} dB to {a} dB");
+            assert!(a * b >= 0.0, "track {track} crossed 0 dB: {b} to {a}");
+        }
+        // Every one that was off 0 dB moves on every step until the end.
+        assert!(
+            before[1..].iter().zip(&after[1..]).all(|(b, a)| a != b),
+            "{before:?} to {after:?}"
+        );
+        // The cap's track (+4 dB) is never below another one, and the one
+        // at 0 dB stays exactly there (no float wobble around it).
+        assert!(after.iter().all(|v| *v <= after[3]), "{after:?}");
+        assert_eq!(after[0], UNITY);
+    }
+}
+
+#[test]
+fn on_touchoscs_law_the_glide_ends_where_a_strips_double_tap_does() {
+    let law = VolumeLaw::TouchOsc;
+    let h = Home::new(law, &[Some(0.85), Some(0.24)]).expect("targets");
+    assert_eq!(h.cap_from(), law.to_pos(0.85));
+    assert_eq!(h.span(), law.to_pos(UNITY) - law.to_pos(0.24));
+    // A strip's glide ends at `to_pos(UNITY)` and writes that position's
+    // volume.
+    let strip = law.to_live(law.to_pos(UNITY));
+    assert_eq!(h.volumes(1.0), vec![strip, strip]);
+    let start = h.volumes(0.0);
+    assert!((start[1] - 0.24).abs() < 1e-12, "{start:?}");
+    // Half way on that law's positions.
+    let half = h.volumes(0.5);
+    let pos = (law.to_pos(0.24) + law.to_pos(UNITY)) / 2.0;
+    assert!((half[1] - law.to_live(pos)).abs() < 1e-12, "{half:?}");
+}
