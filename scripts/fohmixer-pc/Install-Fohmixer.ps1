@@ -50,6 +50,14 @@ Administrators only), and the service fohmixer-tunnel runs cloudflared
 run without -SetTunnelToken keeps the stored token. A run without -PublicName
 keeps the remote access an earlier run set up (its toml tables as installed;
 the hosts block, shortcut, firewall rule and service untouched).
+AbleSet's own page (#90), with -PublicName: -AbleSetName writes [ableset]
+after the other remote tables (the hub serves that name beside the public
+one and checks it is the same site) and maps it to 127.0.0.1 in the same
+hosts block; -AbleSetAccessAud is the AbleSet Access application's AUD
+tag(s), comma separated, in -AccessTeam's team (none: the LAN only, said on
+one line); -AbleSetTitle is the tab's title, written only when it is not
+the hub's default (AbleSet). A run with -PublicName and without
+-AbleSetName removes [ableset]; one without -PublicName keeps it.
 The Stream Deck tab (#52), only with -CompanionHost: the toml gets [companion]
 (Bitfocus Companion's Satellite API as host or host:port, default port 16622);
 the hub registers there as one more Stream Deck ("fohmixer"). A run without
@@ -111,6 +119,11 @@ param(
     [string]$TunnelDir = '',
     [string]$HostsFile = '',
     [string]$BandDesktop = '',
+    # AbleSet's own page (#90), with -PublicName: its name beside the public name, the AbleSet
+    # Access application's AUD tag(s), comma separated (none: the LAN only), and the tab's title.
+    [string]$AbleSetName = '',
+    [string]$AbleSetAccessAud = '',
+    [string]$AbleSetTitle = '',
     # The Stream Deck tab (#52): Bitfocus Companion's Satellite API as host or host:port
     # (default port 16622). Without it an installed [companion] table is kept.
     [string]$CompanionHost = ''
@@ -122,7 +135,8 @@ try {
     # Remote access (#17): checked, the tunnel token read, before any change.
     $remoteArgs = @{}
     foreach ($k in @('PublicName', 'HttpsPort', 'AcmeEmail', 'AcmeDirectory', 'AccessTeam', 'AccessAud', 'SetTunnelToken',
-            'CloudflaredExe', 'TunnelMetricsPort', 'TunnelDir', 'HostsFile', 'BandDesktop')) {
+            'CloudflaredExe', 'TunnelMetricsPort', 'TunnelDir', 'HostsFile', 'BandDesktop', 'AbleSetName', 'AbleSetAccessAud',
+            'AbleSetTitle')) {
         if ($PSBoundParameters.ContainsKey($k)) { $remoteArgs[$k] = $PSBoundParameters[$k] }
     }
     $remote = Resolve-FohRemote -DataDir $DataDir -BandUser $BandUser -HttpPort $HttpPort -BandPort $BandPort `

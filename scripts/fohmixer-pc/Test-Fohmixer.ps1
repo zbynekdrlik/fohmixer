@@ -29,7 +29,10 @@
 #   cloudflared check (fake cloudflared.cmd), the tunnel command line and the
 #   token file with its protected DACL, the tunnel service under a test name
 #   (never started, removed after), a -NoTask install with the token on stdin,
-#   and an install without -PublicName that keeps it;
+#   and an install without -PublicName that keeps it; AbleSet's name (#90):
+#   [ableset] in the toml and the installed remote tables, the hosts block
+#   with both names, its refusals, the hub refusing a cross-site name, the
+#   LAN-only install, an update keeping it and an install taking it out;
 # - the Pro-Q 4 screen's [eq] table (#71): read back from an installed toml
 #   (as the install writes it and as written by hand: no blank line, LF,
 #   trailing blanks, a UTF-8 byte order mark; never after [tls]), checked by
@@ -406,12 +409,24 @@ try {
     $staging = 'https://acme-staging-v02.api.letsencrypt.org/directory'
     Assert ((Get-FohRemoteToml -Name 'foh.example.org' -HttpsPort 8443 -AcmeDirectory $staging) -ceq
         ("`r`n[tls]`r`nname = `"foh.example.org`"`r`nport = 8443`r`n`r`n[acme]`r`ndirectory = `"$staging`"`r`n")) 'remote-toml-without-access-or-tunnel'
+    # AbleSet's name (#90): [ableset] last; access_aud only when given; the title only when not the hub's default.
+    $wantAbleSet = "`r`n[ableset]`r`nname = `"ableset.example.org`"`r`naccess_aud = [`"aud-a`"]`r`n"
+    $ablesetRemote = Get-FohRemoteToml -Name 'foh.example.org' -HttpsPort 443 -AcmeEmail 'owner@example.org' `
+        -AccessTeam 'team.cloudflareaccess.com' -AccessAud @('aud-1', 'aud-2') -Tunnel -TunnelMetricsPort 20241 `
+        -AbleSetName 'ableset.example.org' -AbleSetAccessAud @('aud-a') -AbleSetTitle 'AbleSet'
+    Assert ($ablesetRemote -ceq ($wantRemote + $wantAbleSet)) 'remote-toml-has-ableset-last-without-the-default-title'
+    $lanOnly = Get-FohRemoteToml -Name 'foh.example.org' -AbleSetName 'ableset.example.org' -AbleSetTitle 'Set "1"'
+    Assert ($lanOnly.EndsWith("`r`n[acme]`r`n`r`n[ableset]`r`nname = `"ableset.example.org`"`r`ntitle = `"Set \`"1\`"`"`r`n")) 'remote-toml-ableset-lan-only-with-its-own-title'
     $hostsBlock = "# BEGIN fohmixer (Install-Fohmixer.ps1, #17: the public name on this PC)`r`n127.0.0.1 foh.example.org`r`n# END fohmixer`r`n"
     Assert ((Get-FohHostsText -Text '' -Name 'foh.example.org') -ceq $hostsBlock) 'hosts-block-into-an-empty-file'
     $hostsOrig = "# Copyright (c) Microsoft`r`n127.0.0.1 localhost"
     Assert ((Get-FohHostsText -Text $hostsOrig -Name 'foh.example.org') -ceq ($hostsOrig + "`r`n" + $hostsBlock)) 'hosts-block-added-after-the-last-line'
     $hostsOld = $hostsOrig + "`r`n" + $hostsBlock.Replace('foh.example.org', 'old.example.org') + "10.0.0.1 other`r`n"
     Assert ((Get-FohHostsText -Text $hostsOld -Name 'foh.example.org') -ceq ($hostsOrig + "`r`n" + $hostsBlock + "10.0.0.1 other`r`n")) 'hosts-block-replaced-in-place'
+    $hostsBlock2 = $hostsBlock.Replace("127.0.0.1 foh.example.org`r`n", "127.0.0.1 foh.example.org`r`n127.0.0.1 ableset.example.org`r`n")
+    $hostsBoth = $hostsOrig + "`r`n" + $hostsBlock2 + "10.0.0.1 other`r`n"
+    Assert ((Get-FohHostsText -Text $hostsOld -Name @('foh.example.org', 'ableset.example.org')) -ceq $hostsBoth) 'hosts-block-with-both-names-replaced-in-place'
+    Assert ((Get-FohHostsText -Text $hostsBoth -Name 'foh.example.org') -ceq ($hostsOrig + "`r`n" + $hostsBlock + "10.0.0.1 other`r`n")) 'hosts-block-back-to-one-name-in-place'
     $hostsTest = Join-Path $base 'hosts-test'
     [IO.File]::WriteAllText($hostsTest, $hostsOrig + "`n")
     Assert (Set-FohHostsEntry -Path $hostsTest -Name 'foh.example.org') 'hosts-entry-written'
@@ -444,6 +459,10 @@ try {
     Assert ((Test-FohHubToml -Exe $HubExe -Text $goodToml -Dir $checkDir) -like '*: OK*') 'hub-toml-check-accepts-the-install-toml'
     $badToml = New-FohHubToml -HttpPort 18481 -BandPort 39181 -MasterPort 39182 -Remote (Get-FohRemoteToml -Name 'foh.example.org' -AcmeDirectory 'http://acme.example.org/directory')
     Assert ((ErrorOf { Test-FohHubToml -Exe $HubExe -Text $badToml -Dir $checkDir }) -like '*refused by the hub (exit 2)*an https URL*') 'hub-toml-check-refuses-with-the-hubs-reason'
+    $ablesetToml = New-FohHubToml -HttpPort 18481 -BandPort 39181 -MasterPort 39182 -Remote $ablesetRemote
+    Assert ((Test-FohHubToml -Exe $HubExe -Text $ablesetToml -Dir $checkDir) -like '*: OK*') 'hub-toml-check-accepts-the-ableset-table'
+    $crossSite = New-FohHubToml -HttpPort 18481 -BandPort 39181 -MasterPort 39182 -Remote (Get-FohRemoteToml -Name 'foh.example.org' -AbleSetName 'ableset.example.net')
+    Assert ((ErrorOf { Test-FohHubToml -Exe $HubExe -Text $crossSite -Dir $checkDir }) -like '*refused by the hub (exit 2)*(the same site)*') 'hub-toml-check-refuses-a-cross-site-ableset-name'
     Assert (@(Get-ChildItem -LiteralPath $checkDir -Force).Count -eq 0) 'hub-toml-check-leaves-no-file'
     # A layout is checked by the hub it is for, against the new config (#21).
     $okLayout = Join-Path $repo 'crates\fohmixer-hub\tests\fixtures\layout-ok.json'
@@ -454,6 +473,7 @@ try {
     # The installed toml's remote tables, as they were written.
     Assert ((Get-FohInstalledRemoteToml -Text ((New-FohHubToml -HttpPort 1 -BandPort 2 -MasterPort 3) + $gotRemote)) -ceq $gotRemote) 'installed-remote-tables-read-back-as-written'
     Assert ((Get-FohInstalledRemoteToml -Text (New-FohHubToml -HttpPort 1 -BandPort 2 -MasterPort 3)) -ceq '') 'installed-remote-tables-none-without-tls'
+    Assert ((Get-FohInstalledRemoteToml -Text ((New-FohHubToml -HttpPort 1 -BandPort 2 -MasterPort 3) + $ablesetRemote)) -ceq $ablesetRemote) 'installed-remote-tables-carry-ableset'
     # ---- the Stream Deck tab (#52): the [companion] table ----
     $wantCompanion = "`r`n[companion]`r`nhost = `"companion.example.org`"`r`nport = 16622`r`n"
     Assert ((Get-FohCompanionToml -Endpoint 'companion.example.org') -ceq $wantCompanion) 'companion-toml-default-port'
@@ -765,7 +785,7 @@ try {
     $remoteOver = @{
         DataDir = $dataR; PublicName = 'foh.example.org'; HttpsPort = 18443; AcmeEmail = 'owner@example.org'
         AccessTeam = 'team.cloudflareaccess.com'; AccessAud = 'aud-1, aud-2'; HostsFile = $hostsR; BandDesktop = $deskR
-        TunnelDir = $tunnelR; TunnelMetricsPort = 20299
+        TunnelDir = $tunnelR; TunnelMetricsPort = 20299; AbleSetName = 'ableset.example.org'; AbleSetAccessAud = 'aud-a'
         # -NoTask registers no service: the fake answers the --token-file check.
         CloudflaredExe = $cloudflared
     }
@@ -778,7 +798,11 @@ try {
             @{ over = @{ HttpsPort = 18481 }; says = '*the ports must differ*'; what = 'https-on-the-http-port' },
             @{ over = @{ BandDesktop = (Join-Path $base 'no-desktop') }; says = "*desktop not found*"; what = 'a-missing-desktop' },
             @{ over = @{ CloudflaredExe = (Join-Path $base 'no-cloudflared.exe') }; says = '*cloudflared not found*'; what = 'a-missing-cloudflared' },
-            @{ over = @{ CloudflaredExe = $oldCloudflared }; says = '*too old*'; what = 'a-cloudflared-without-token-file' })) {
+            @{ over = @{ CloudflaredExe = $oldCloudflared }; says = '*too old*'; what = 'a-cloudflared-without-token-file' },
+            # AbleSet's name (#90): the hub checks it is the same site; these are refused before.
+            @{ over = @{ AbleSetName = 'FOH.example.org' }; says = '*AbleSet needs a name of its own*'; what = 'ablesets-name-equal-to-the-public-name' },
+            @{ over = @{ AccessTeam = $null; AccessAud = $null }; says = '*-AbleSetAccessAud needs -AccessTeam*'; what = 'an-ableset-aud-without-an-access-team' },
+            @{ over = @{ AbleSetName = $null }; says = '*give -AbleSetName*'; what = 'an-ableset-aud-without-ablesets-name' })) {
         $o = $remoteOver.Clone()
         foreach ($k in @($r.over.Keys)) {
             if ($null -eq $r.over[$k]) { $o.Remove($k) } else { $o[$k] = $r.over[$k] }
@@ -799,7 +823,8 @@ try {
     } finally { $taken.Stop() }
     $res = Invoke-PsInput $install ($argsR + '-SetTunnelToken') 'not-a-token'
     Assert ($res.code -ne 0 -and $res.out -like '*tunnel token refused*' -and -not (Test-Path -LiteralPath $dataR)) 'install-refuses-a-bad-tunnel-token-before-any-change'
-    foreach ($o in @(@{ AccessTeam = 'team.cloudflareaccess.com' }, @{ HttpsPort = 8443 }, @{ HostsFile = $hostsR })) {
+    foreach ($o in @(@{ AccessTeam = 'team.cloudflareaccess.com' }, @{ HttpsPort = 8443 }, @{ HostsFile = $hostsR },
+            @{ AbleSetName = 'ableset.example.org' }, @{ AbleSetAccessAud = 'aud-a' }, @{ AbleSetTitle = 'Set' })) {
         $o['DataDir'] = $noneR
         $res = Invoke-Ps $install (Get-InstallArgs $o)
         Assert ($res.code -ne 0 -and $res.out -like '*need -PublicName*' -and -not (Test-Path -LiteralPath $noneR)) "install-refuses-$(@($o.Keys | Where-Object { $_ -ne 'DataDir' })[0])-without-a-public-name"
@@ -808,12 +833,16 @@ try {
     $r5 = Invoke-PsInput $install ($argsR + '-SetTunnelToken') $fakeToken
     Assert ($r5.code -eq 0) 'install-5-remote-exits-0'
     Assert (-not $r5.out.Contains($fakeToken)) 'install-5-never-prints-the-tunnel-token'
-    $wantR = New-FohHubToml -HttpPort 18481 -BandPort 39181 -MasterPort 39182 -Remote (Get-FohRemoteToml -Name 'foh.example.org' `
-        -HttpsPort 18443 -AcmeEmail 'owner@example.org' -AccessTeam 'team.cloudflareaccess.com' -AccessAud @('aud-1', 'aud-2') -Tunnel -TunnelMetricsPort 20299)
+    $tablesR = @{ Name = 'foh.example.org'; HttpsPort = 18443; AcmeEmail = 'owner@example.org'; AccessTeam = 'team.cloudflareaccess.com'
+        AccessAud = @('aud-1', 'aud-2'); Tunnel = $true; TunnelMetricsPort = 20299 }
+    $wantR = New-FohHubToml -HttpPort 18481 -BandPort 39181 -MasterPort 39182 -Remote (Get-FohRemoteToml @tablesR `
+        -AbleSetName 'ableset.example.org' -AbleSetAccessAud @('aud-a'))
     Assert ([IO.File]::ReadAllText((Join-Path $dataR 'fohmixer-hub.toml')) -ceq $wantR) 'install-5-toml-has-the-remote-tables'
     # Contains, not -like: '[' opens a wildcard character class.
-    Assert ($wantR.Contains('ready_url = "http://127.0.0.1:20299/ready"') -and $wantR.Contains('aud = ["aud-1", "aud-2"]')) 'install-5-toml-tunnel-and-audiences'
-    Assert ([IO.File]::ReadAllText($hostsR) -ceq ("127.0.0.1 localhost`r`n" + $hostsBlock)) 'install-5-maps-the-name-to-this-pc'
+    Assert ($wantR.Contains('ready_url = "http://127.0.0.1:20299/ready"') -and $wantR.Contains('aud = ["aud-1", "aud-2"]') -and
+        $wantR.EndsWith("`r`n[ableset]`r`nname = `"ableset.example.org`"`r`naccess_aud = [`"aud-a`"]`r`n")) 'install-5-toml-tunnel-audiences-and-ableset-last'
+    Assert ([IO.File]::ReadAllText($hostsR) -ceq ("127.0.0.1 localhost`r`n" + $hostsBlock2)) 'install-5-maps-both-names-to-this-pc'
+    Assert ($r5.out -like '*foh.example.org and ableset.example.org -> 127.0.0.1 in the hosts file*' -and -not $r5.out.Contains('the LAN only')) 'install-5-says-both-names'
     Assert ([IO.File]::ReadAllText((Join-Path $deskR 'fohmixer.url')) -ceq "[InternetShortcut]`r`nURL=https://foh.example.org:18443/`r`n") 'install-5-desktop-shortcut'
     Assert ([IO.File]::ReadAllText((Join-Path $tunnelR 'tunnel-token')) -ceq $fakeToken -and @(Test-FohTunnelDirAcl -Path $tunnelR).Count -eq 0) 'install-5-stores-the-token-for-system-and-administrators'
     # Again without -SetTunnelToken: the stored token keeps the tunnel; nothing changes.
@@ -829,6 +858,7 @@ try {
     Assert ($r7.code -eq 0 -and $r7.out -like '*remote access kept as installed*') 'install-7-without-a-public-name-exits-0'
     $newer = @(Get-ChangedFiles $watchR)
     Assert ($newer.Count -eq 0) "install-7-keeps-the-remote-access ($($newer -join ', '))"
+    Assert ([IO.File]::ReadAllText((Join-Path $dataR 'fohmixer-hub.toml')) -ceq $wantR) 'install-7-keeps-ablesets-table'
     # ---- install 8: the Stream Deck tab (#52): -CompanionHost writes [companion], an update keeps it ----
     $dataC = Join-Path $base 'data-companion'
     $r8 = Invoke-Ps $install (Get-InstallArgs @{ DataDir = $dataC; CompanionHost = '10.0.0.7:16700' })
@@ -870,7 +900,8 @@ try {
             @{ remote = $true; over = @{ AcmeEmail = 'owner example.org' }; says = '*an address like owner@example.org*'; what = 'an-acme-email-with-a-space' },
             # A backslash reaches the hub as given (escaped in the toml), and the hub refuses it.
             @{ remote = $true; over = @{ AcmeEmail = 'owner\x@example.org' }; says = '*an address like owner@example.org*'; what = 'an-acme-email-with-a-backslash' },
-            @{ remote = $true; over = @{ AccessAud = 'aud-1, aud.2' }; says = '*AUD tag*'; what = 'a-dot-in-an-aud' })) {
+            @{ remote = $true; over = @{ AccessAud = 'aud-1, aud.2' }; says = '*AUD tag*'; what = 'a-dot-in-an-aud' },
+            @{ remote = $true; over = @{ AbleSetName = 'ableset.example.net' }; says = '*(the same site)*'; what = 'a-cross-site-ableset-name' })) {
         $o = @{}
         if ($r.remote) { $o = $remoteOver.Clone() }
         foreach ($k in @($r.over.Keys)) { $o[$k] = $r.over[$k] }
@@ -884,6 +915,20 @@ try {
         $leftNames = ($left | ForEach-Object { $_.Name }) -join ', '
         Assert ($left.Count -eq 0) "install-refused-$($r.what)-leaves-no-unpacked-bundle-or-check-file ($leftNames)"
     }
+    # ---- installs 12 and 13 (#90): AbleSet's name for the LAN only, then taken out (the rollback) ----
+    $o = $remoteOver.Clone()
+    $o.Remove('AbleSetAccessAud')
+    $r12 = Invoke-Ps $install (Get-InstallArgs $o)
+    Assert ($r12.code -eq 0 -and $r12.out -like "*AbleSet's name ableset.example.org without -AbleSetAccessAud: the LAN only*") 'install-12-ableset-for-the-lan-only-says-so'
+    $want12 = New-FohHubToml -HttpPort 18481 -BandPort 39181 -MasterPort 39182 -Remote (Get-FohRemoteToml @tablesR -AbleSetName 'ableset.example.org')
+    Assert ([IO.File]::ReadAllText((Join-Path $dataR 'fohmixer-hub.toml')) -ceq $want12) 'install-12-toml-ableset-without-access-aud'
+    Assert ([IO.File]::ReadAllText($hostsR) -ceq ("127.0.0.1 localhost`r`n" + $hostsBlock2)) 'install-12-hosts-block-keeps-both-names'
+    $o.Remove('AbleSetName')
+    $r13 = Invoke-Ps $install (Get-InstallArgs $o)
+    Assert ($r13.code -eq 0) 'install-13-without-ablesets-name-exits-0'
+    $want13 = New-FohHubToml -HttpPort 18481 -BandPort 39181 -MasterPort 39182 -Remote (Get-FohRemoteToml @tablesR)
+    Assert ([IO.File]::ReadAllText((Join-Path $dataR 'fohmixer-hub.toml')) -ceq $want13) 'install-13-removes-the-ableset-table'
+    Assert ([IO.File]::ReadAllText($hostsR) -ceq ("127.0.0.1 localhost`r`n" + $hostsBlock)) 'install-13-hosts-block-back-to-the-public-name'
 
     # ---- the tasks, registered for this user in a test folder (never started) ----
     Register-FohHubTasks -AppDir $appV1 -DataDir $data -User $me -TaskPath $taskFolder
