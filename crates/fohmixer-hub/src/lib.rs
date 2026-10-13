@@ -1199,7 +1199,7 @@ mod tests {
         let (stop, stopped) = oneshot::channel::<()>();
         let bound = Duration::from_millis(300);
         let addr = "127.0.0.1:0".parse().unwrap();
-        let stop_on = async {
+        let stop_on = async move {
             let _ = stopped.await;
         };
         let served = tokio::spawn(serve_bounded(addr, config, ready, stop_on, bound));
