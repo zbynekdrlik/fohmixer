@@ -119,8 +119,8 @@ pub async fn watch<F>(
     loop {
         tick.tick().await;
         let read = read(&http, &url).await;
-        if let Some(note) = site.polled(read, crate::auth::now_secs() as i64) {
-            changed(note.up());
+        if let Some(up) = site.polled(read, crate::auth::now_secs() as i64) {
+            changed(up);
         }
     }
 }
