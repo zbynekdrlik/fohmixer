@@ -34,8 +34,16 @@ pub const HEAD_TIMEOUT: Duration = Duration::from_secs(60);
 /// The largest request body forwarded: 64 MiB (AbleSet's uploads are far
 /// smaller), a literal so cargo-mutants has no operator to mutate.
 pub const MAX_BODY: u64 = 67_108_864;
-/// How long an idle connection to AbleSet is kept.
-pub const POOL_IDLE: Duration = Duration::from_secs(30);
+/// How long an idle connection to AbleSet is kept (#90 B3 review 1): well
+/// under the 5 s after which AbleSet's Node server closes an idle
+/// keep-alive connection (`server.keepAliveTimeout`, counted from its last
+/// write, so the margin also covers a page that reads AbleSet's last bytes
+/// late). A request written on a connection AbleSet is closing just then
+/// fails, hyper retries only a request it has not written, and the failure
+/// reads as AbleSet down. A fresh loopback connection costs nothing. Not
+/// taken: retrying an idempotent request after such a close, which would
+/// keep every request's streamed body to send it again.
+pub const POOL_IDLE: Duration = Duration::from_secs(2);
 
 /// Why a request did not reach AbleSet (the text for the log and the
 /// record).

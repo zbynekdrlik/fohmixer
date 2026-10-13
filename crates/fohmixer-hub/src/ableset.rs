@@ -154,6 +154,12 @@ pub const ANSWERS_AGAIN: &str = "AbleSet answers again";
 /// outage records and the ends left out.
 pub const EDGE_RECORDS: u32 = 8;
 
+/// At most this many `ableset: signed in through Access` lines per
+/// [`WARN_GAP`] (#90 B3 review 2): a person signs in now and then, while a
+/// client (or another site's image) may ask in a loop, and `hub.out.log`
+/// has no cap. The count left out rides on the next line as `skipped`.
+pub const SIGN_IN_LINES: u32 = 8;
+
 /// The hub's own probe on AbleSet's name (B3, design §5.4).
 pub const PROBE: &str = "/.fohmixer/probe";
 
@@ -340,6 +346,22 @@ impl AbleSet {
         let fields = link::link_fields(note, error.as_deref());
         self.events.record("ableset_link", fields);
         Some(note.up())
+    }
+
+    /// A sign-in landed ([`SIGNED_IN`]): its info line with the opener's
+    /// peer, forwarded client and source while the ration allows
+    /// ([`SIGN_IN_LINES`], with `skipped`), else a debug line.
+    fn signed_in_line(&self, opener: &Opener) {
+        match self.due("ableset_signin", "line", SIGN_IN_LINES) {
+            Some(skipped) => tracing::info!(
+                peer = %opener.peer,
+                forwarded = ?opener.forwarded,
+                source = opener.source,
+                skipped,
+                "ableset: signed in through Access"
+            ),
+            None => tracing::debug!(peer = %opener.peer, "ableset: signed in through Access"),
+        }
     }
 
     /// Its part of `/api/status` `ableset`: the link (B3) and the taken
@@ -751,12 +773,7 @@ async fn signed_in(State(site): State<Arc<AbleSet>>, request: Request) -> Respon
         .get::<ConnectInfo<SocketAddr>>()
         .map_or_else(|| SocketAddr::from(([0, 0, 0, 0], 0)), |info| info.0);
     let opener = crate::ws::opener(peer, request.headers());
-    tracing::info!(
-        peer = %opener.peer,
-        forwarded = ?opener.forwarded,
-        source = opener.source,
-        "ableset: signed in through Access"
-    );
+    site.signed_in_line(&opener);
     let target = signed_in_target(&site.parent, routes::request_host(&request));
     Redirect::to(&target).into_response()
 }

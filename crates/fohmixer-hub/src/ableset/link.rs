@@ -1,8 +1,9 @@
 //! AbleSet's link and its page message (#90 B3, design §3.6, §5.1).
 //!
 //! The hub reads AbleSet's index (`GET <upstream>/`, a few kB, never its
-//! undocumented `/api`) every [`PERIOD`] with its own HTTP client. A 2xx or
-//! 3xx answer is a good read; any other answer, a refused connect or no
+//! undocumented `/api`) every [`PERIOD`] with a client of its own
+//! ([`LinkClient`]: a fresh connection each time). A 2xx or 3xx answer is a
+//! good read; any other answer, a refused connect or no
 //! answer within the period is a failed one. [`link_step`] decides: down
 //! only after [`DOWN_AFTER`] failed reads in a row (one never tears an open
 //! tab down), up again at the first good one, a [`Note`] only on a change.
@@ -14,12 +15,17 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::http::uri::Authority;
+use axum::http::{Request, header};
+use bytes::Bytes;
 use fohmixer_proto::client::ServerMsg;
+use http_body_util::{BodyExt as _, Empty, Limited};
+use hyper_util::client::legacy::Client;
+use hyper_util::client::legacy::connect::HttpConnector;
+use hyper_util::rt::TokioExecutor;
 use serde_json::{Value, json};
 
 use super::AbleSet;
 use crate::config::{AbleSetCfg, TlsCfg};
-use crate::http_client::HttpClient;
 
 /// How often AbleSet's index is read, and how long a read may take.
 pub const PERIOD: Duration = Duration::from_secs(5);
@@ -80,17 +86,70 @@ pub fn answered(status: u16) -> Result<(), String> {
     }
 }
 
-/// The link's client: plain http on loopback only (`config::is_upstream`),
-/// so no certificate roots; a read bounded by `period`.
-pub fn client(period: Duration) -> HttpClient {
-    HttpClient::with_roots(rustls::RootCertStore::empty()).with_timeout(period)
+/// The largest index read (AbleSet's is a few kB).
+pub const MAX_BODY: usize = 1_048_576;
+
+/// The link's own client (#90 B3 review 1): plain http to AbleSet's
+/// loopback upstream (`config::is_upstream`), a fresh connection for every
+/// read (none kept idle, `Connection: close`), `Accept: */*`. AbleSet's
+/// server is Node (Express), which closes a keep-alive connection idle for
+/// 5 s (`server.keepAliveTimeout`), exactly the period: a pooled connection
+/// would be used again just as AbleSet closes it, and hyper retries no
+/// request it already wrote, so two such reads would take the link down
+/// for nothing. A loopback connect every 5 s costs nothing.
+#[derive(Clone)]
+pub struct LinkClient {
+    client: Client<HttpConnector, Empty<Bytes>>,
+    timeout: Duration,
+}
+
+impl LinkClient {
+    /// One `GET url` within the client's bound, its body read whole (at most
+    /// [`MAX_BODY`]): the answer's status, or why none came (the URL first).
+    pub async fn status(&self, url: &str) -> Result<u16, String> {
+        let request = Request::get(url)
+            .header(header::ACCEPT, "*/*")
+            .header(header::CONNECTION, "close")
+            .header(header::USER_AGENT, agent())
+            .body(Empty::new())
+            .map_err(|e| format!("{url}: {e}"))?;
+        let exchange = async {
+            let answer = self.client.request(request).await;
+            let answer = answer.map_err(|e| super::proxy::chain(&e))?;
+            let status = answer.status().as_u16();
+            let body = Limited::new(answer.into_body(), MAX_BODY).collect().await;
+            body.map_err(|e| format!("reading the answer: {e}"))?;
+            Ok::<u16, String>(status)
+        };
+        match tokio::time::timeout(self.timeout, exchange).await {
+            Ok(Ok(status)) => Ok(status),
+            Ok(Err(why)) => Err(format!("{url}: {why}")),
+            Err(_) => Err(format!(
+                "{url}: no answer within {} ms",
+                self.timeout.as_millis()
+            )),
+        }
+    }
+}
+
+/// The hub's `User-Agent`.
+fn agent() -> String {
+    format!("fohmixer-hub/{}", fohmixer_proto::VERSION)
+}
+
+/// The link's client, a read bounded by `timeout` (the period in the hub).
+pub fn client(timeout: Duration) -> LinkClient {
+    let client = Client::builder(TokioExecutor::new())
+        .pool_max_idle_per_host(0)
+        .build(HttpConnector::new());
+    LinkClient { client, timeout }
 }
 
 /// One read of AbleSet's index at `url`: good, or why not.
-pub async fn read(http: &HttpClient, url: &str) -> Result<(), String> {
-    match http.get(url).await {
-        Ok(reply) => answered(reply.status),
-        Err(e) => Err(format!("AbleSet does not answer: {e:#}")),
+pub async fn read(client: &LinkClient, url: &str) -> Result<(), String> {
+    match client.status(url).await {
+        Ok(status) => answered(status),
+        Err(e) => Err(format!("AbleSet does not answer: {e}")),
     }
 }
 
@@ -107,7 +166,7 @@ pub fn link_fields(note: Note, error: Option<&str>) -> Value {
 /// ([`AbleSet::polled`]), handing each change to `changed` (up or not).
 pub async fn watch<F>(
     site: Arc<AbleSet>,
-    http: HttpClient,
+    http: LinkClient,
     url: String,
     period: Duration,
     changed: F,

@@ -2836,3 +2836,49 @@ fn a_sign_in_in_a_loop_writes_its_info_line_rationed() {
         .filter(|line| line.contains(" INFO ") && line.contains("signed in through Access"));
     assert_eq!(lines.count(), 8, "{log}");
 }
+
+#[test]
+fn the_sign_in_line_names_its_opener_and_carries_the_count_left_out() {
+    let (site, _) = site_with(CLOSED, Duration::from_secs(1), 16);
+    let lan = crate::ws::opener(SocketAddr::from(([10, 0, 0, 5], 50000)), &HeaderMap::new());
+    let log = logged(|| {
+        for _ in 0..10 {
+            site.signed_in_line(&lan);
+        }
+        // The gap goes by.
+        for ration in site.rations.lock().unwrap().values_mut() {
+            ration.expire();
+        }
+        site.signed_in_line(&lan);
+    });
+    let lines: Vec<&str> = log
+        .lines()
+        .filter(|line| line.contains(" INFO ") && line.contains("signed in through Access"))
+        .collect();
+    assert_eq!(lines.len(), 9, "{log}");
+    for line in &lines[..8] {
+        assert!(line.contains("skipped=0"), "{line}");
+    }
+    assert!(lines[8].contains("skipped=2"), "{log}");
+    let named = ["peer=10.0.0.5", "forwarded=\"-\"", "source=\"lan\""];
+    assert!(named.iter().all(|n| lines[0].contains(n)), "{}", lines[0]);
+    assert_eq!(SIGN_IN_LINES, 8);
+}
+
+#[tokio::test]
+async fn the_links_read_names_the_hub_and_asks_to_close_its_connection() {
+    let (upstream, _, heads) = counting().await;
+    let client = link::client(Duration::from_secs(2));
+    let read = link::read(&client, &format!("{upstream}/")).await;
+    assert_eq!(read, Ok(()));
+    let head = heads.lock().unwrap()[0].clone();
+    let agent = format!(
+        "\r\nuser-agent: fohmixer-hub/{}\r\n",
+        fohmixer_proto::VERSION
+    );
+    assert!(head.starts_with("get / http/1.1\r\n"), "{head}");
+    assert!(
+        head.contains(&agent) && head.contains("\r\nconnection: close\r\n"),
+        "{head}"
+    );
+}
