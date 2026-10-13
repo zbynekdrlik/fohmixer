@@ -2663,3 +2663,25 @@ fn a_clients_text_is_clipped_at_a_character_never_inside_one() {
     let kept = format!("{}{slider}… (267 bytes)", "a".repeat(255));
     assert_eq!(clip(&mixed), kept);
 }
+
+#[test]
+fn an_outage_that_starts_and_ends_in_a_loop_writes_its_start_and_end_rationed() {
+    // #90 B3 (the B3h review's minor item): a client that alternates a
+    // request AbleSet drops with one it answers starts and ends an outage
+    // each time. Its warned start goes out, then at most 8 starts and 8
+    // ends a gap, in their order; the rest are left out.
+    let (site, records) = site_with(CLOSED, Duration::from_secs(1), 16);
+    let refused = "AbleSet does not answer: refused";
+    for _ in 0..40 {
+        site.failed(&Method::GET, "/drop", None, Failure::Down(refused.into()));
+        site.reached(&Method::GET, "/", StatusCode::OK, Instant::now());
+    }
+    let records: Vec<Value> = records.try_iter().collect();
+    let rows: Vec<(&str, &str)> = records.iter().map(why_of).collect();
+    let mut expected = vec![("error", refused), ("why", ANSWERS_AGAIN)];
+    for _ in 0..7 {
+        expected.extend([("why", refused), ("why", ANSWERS_AGAIN)]);
+    }
+    expected.push(("why", refused));
+    assert_eq!(rows, expected);
+}
