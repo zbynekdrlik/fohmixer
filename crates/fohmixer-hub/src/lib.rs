@@ -125,6 +125,14 @@ pub const STOP_DRAIN: Duration = Duration::from_secs(5);
 /// tunnel may still reuse, where a POST could fail) and far above any real
 /// client's head (a phone's is a packet or two; its TLS handshake already
 /// has axum-server's 10 s).
+///
+/// What it does not bound: a connection that never sends a byte (after
+/// the TLS handshake on HTTPS), or only part of HTTP/2's 24-byte preface
+/// (hyper-util's auto builder reads that far, untimed, to choose HTTP/1 or
+/// HTTP/2), and an HTTP/2 connection (no head timer there). Never close
+/// that gap with axum-server's `http1_only()`: it serves connections
+/// without upgrades, which ends every WebSocket (the mixer's `/ws` and
+/// AbleSet's tunnel).
 pub const HEADER_READ: Duration = Duration::from_secs(120);
 
 /// The HTTP/1 settings of both listeners: a request head within
