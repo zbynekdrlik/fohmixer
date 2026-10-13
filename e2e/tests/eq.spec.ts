@@ -1805,9 +1805,38 @@ test.describe("The Pro-Q 4 screen on a slow link", () => {
         await page.mouse.move(from.x + 3 * i, from.y);
         await frames(page, 2);
       }
-      await page.mouse.up();
       // At once: a finger on the picture, which does not show the up yet.
-      await quickTap(area, from, 71);
+      // The tap goes in the up's own task (a `MutationObserver` on the
+      // canvas's `data-caught-up` turning false, as in the third test here):
+      // a tap as a Playwright call of its own came 95 ms after the up in push
+      // run 38411708522, when the picture already showed it (PAINT_MS 20),
+      // and the page took it. The picture first shows the drag's last move,
+      // so the up is what makes it old.
+      await caughtUp(screen);
+      await area.evaluate(
+        (el, { at, id }) => {
+          (window as any).__tapAfterUp = new Promise<string>((done) => {
+            const canvas = el.querySelector('[data-testid="eq-canvas"]')!;
+            const observer = new MutationObserver(() => {
+              if (canvas.getAttribute("data-caught-up") !== "false") return;
+              observer.disconnect();
+              for (const type of ["pointerdown", "pointerup"]) {
+                el.dispatchEvent(
+                  new PointerEvent(type, { pointerId: id, pointerType: "touch", isPrimary: true, clientX: at.x, clientY: at.y, bubbles: true, cancelable: true }),
+                );
+              }
+              done("tapped behind the up");
+            });
+            observer.observe(canvas, { attributes: true, attributeFilter: ["data-caught-up"] });
+          });
+        },
+        { at: from, id: 71 },
+      );
+      await page.mouse.up();
+      const tapped = await page.evaluate(() =>
+        Promise.race([(window as any).__tapAfterUp, new Promise((done) => setTimeout(() => done("the up made no picture old within 3 s"), 3000))]),
+      );
+      expect(tapped).toBe("tapped behind the up");
       await expect(stale).toHaveAttribute("data-shown", "true");
       await expect(stale).toHaveText("Obraz ešte dobieha, polož prst znova");
       const drag = await touchesUntil(before, (all) => all.some((r) => r.phase === "up"), "the drag's up");
