@@ -293,6 +293,10 @@ class ScriptTest(unittest.TestCase):
             ),
             (ours[:1] + [{"service": "http_status:503"}], "* -> http_status:503"),
             (
+                [dict(route, path="^/api")] + ours,
+                "foh.example.org path ^/api -> http://127.0.0.1:8480",
+            ),
+            (
                 [dict(route, originRequest={"noTLSVerify": True})] + ours[1:],
                 'foh.example.org -> http://127.0.0.1:8480 {"originRequest": {"noTLSVerify": true}}',
             ),
