@@ -6,6 +6,7 @@ import contextlib
 import io
 import json
 import os
+import signal
 import socket
 import socketserver
 import sys
@@ -411,6 +412,20 @@ class ChildTest(ImpairTest):
         self.assertEqual(read_exactly(client, 3), b"own")
         self.assertIsNone(self.proxy.proc.poll(), "the tool runs")
         self.assertNotEqual(self.proxy.proc.pid, os.getpid())
+
+    def test_a_late_answer_is_never_taken_for_the_next_calls_own(self):
+        # The PR #109 review (#43): a call that gave up waiting left its
+        # answer to come, and the next call read it as its own.
+        self.proxy.proc.send_signal(signal.SIGSTOP)
+        try:
+            with self.assertRaises(RuntimeError) as caught:
+                self.proxy.drop()
+            self.assertIn("no answer", str(caught.exception))
+        finally:
+            self.proxy.proc.send_signal(signal.SIGCONT)
+        state = self.proxy.state()
+        self.assertIn("connections", state, f"the late answer to drop: {state}")
+        self.assertEqual(self.proxy.block(False)["blocked"], False)
 
     def test_a_call_after_its_end_fails_loudly(self):
         self.proxy.stop()
