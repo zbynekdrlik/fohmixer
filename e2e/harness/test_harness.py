@@ -888,5 +888,17 @@ class LinkPace(Pace, unittest.TestCase):
         self.keeps_its_pace("link", [], lambda work: work.link.port)
 
 
+class CompanionPace(Pace, unittest.TestCase):
+    def test_the_fake_companion_keeps_its_pace_while_the_harness_reads_a_long_event_log(self):
+        flags = ["--fake-companion-port", "0"]
+        self.keeps_its_pace("companion", flags, lambda work: work.fake.port)
+
+
+class AbleSetPace(Pace, unittest.TestCase):
+    def test_the_fake_ableset_keeps_its_pace_while_the_harness_reads_a_long_event_log(self):
+        flags = ["--fake-ableset-port", "0"]
+        self.keeps_its_pace("ableset", flags, lambda work: work.ableset_fake.port)
+
+
 if __name__ == "__main__":
     unittest.main()
