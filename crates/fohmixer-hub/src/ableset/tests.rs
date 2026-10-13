@@ -1745,6 +1745,64 @@ async fn a_request_body_the_page_breaks_is_its_fault_never_an_outage() {
     assert!(key == "why" && why.starts_with(text), "{key}: {why}");
 }
 
+#[test]
+fn a_page_body_error_is_marked_as_the_pages_and_never_ablesets() {
+    let marked = proxy::ClientBody(axum::Error::new(io::Error::other("cut")));
+    assert_eq!(marked.to_string(), "the page's request body: cut");
+    assert!(std::error::Error::source(&marked).is_some());
+    assert!(proxy::broke_off(&marked));
+    let failure = proxy::failure(&marked, false, 16);
+    let text = "the page's request body broke off: the page's request body: cut";
+    let Failure::BrokenBody(why) = &failure else {
+        panic!("{failure:?}");
+    };
+    assert!(why.starts_with(text), "{why}");
+    assert_eq!(failure.kind(), "broken_body");
+    assert!(!failure.is_ableset());
+    // An error of AbleSet's own is not the page's.
+    assert!(!proxy::broke_off(&io::Error::other("reset")));
+}
+
+#[tokio::test]
+async fn a_tunnel_whose_upgrades_never_complete_gives_its_slot_back_after_the_head_bound() {
+    // #90 B3h review 4: carry gives the two upgrades the proxy's head bound
+    // (300 ms here), so a page that never reads its 101 (a full receive
+    // window: hyper hands its connection over only once the 101 is out)
+    // holds no slot for good.
+    let (site, records) = site_with(CLOSED, Duration::from_millis(300), 16);
+    let opener = crate::ws::opener("10.0.0.5:50000".parse().unwrap(), &HeaderMap::new());
+    let slot = Arc::clone(&site.sockets).try_acquire_owned().unwrap();
+    let never = std::future::pending::<Result<Upgraded, hyper::Error>>;
+    let carried = Arc::clone(&site).carry(1, opener, never(), never(), slot);
+    tokio::time::timeout(Duration::from_secs(5), carried)
+        .await
+        .expect("the head bound ends it");
+    assert_eq!(site.open_sockets(), 0);
+    let records: Vec<Value> = records.try_iter().collect();
+    let close = ws_of(&records, "close");
+    assert_eq!(close.len(), 1, "{records:?}");
+    assert_eq!(
+        close[0]["why"],
+        "the upgrade did not complete within 300 ms"
+    );
+}
+
+#[tokio::test]
+async fn an_upgrade_that_announces_an_empty_body_opens_its_tunnel() {
+    // Content-Length: 0 is no body: never refused (#90 B3h review).
+    let upstream = fake().await;
+    let (site, _records) = site_with(&upstream, Duration::from_secs(5), 16);
+    let at = listen(router(Arc::clone(&site), None)).await;
+    let page = TcpStream::connect(at).await.unwrap();
+    let url = format!("ws://{NAME}/socket.io/");
+    let (mut ws, _) = socket(page, &url, &[("content-length", "0")])
+        .await
+        .unwrap();
+    let hi = Message::text("hi");
+    assert_eq!(round_trip(&mut ws, hi.clone()).await, hi);
+    assert_eq!(site.open_sockets(), 1);
+}
+
 #[tokio::test]
 async fn an_upgrade_answered_without_a_switch_holds_its_socket_slot_while_its_body_streams() {
     let upstream = fake().await;
@@ -2275,6 +2333,23 @@ async fn a_write_that_makes_no_progress_for_the_bound_ends_the_tunnel() {
         .expect("the tunnel was still held after 600 s");
     let why = "the page to AbleSet: a write made no progress for 90000 ms";
     assert_eq!((ended.up, ended.why.as_str()), (2, why));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_flush_that_makes_no_progress_ends_the_tunnel_too() {
+    // A page end that buffers what it takes (rustls under TLS) takes
+    // AbleSet's bytes at once; its flush into a page that never reads is
+    // bounded the same way (#90 B3h review).
+    let ((page, _page_far), (ableset, mut ableset_far), (_sender, mut stop)) = ends_and_stop();
+    let buffering = tokio::io::BufWriter::new(page);
+    let held = Duration::from_secs(600);
+    let piped = tokio::time::timeout(held, pipe(buffering, ableset, &mut stop, HALF_CLOSE_GRACE));
+    let pushed = tokio::io::AsyncWriteExt::write_all(&mut ableset_far, &[7; 100]);
+    let (ended, pushed) = tokio::join!(piped, pushed);
+    pushed.unwrap();
+    let ended = ended.expect("the tunnel was still held after 600 s");
+    let why = "AbleSet to the page: a write made no progress for 90000 ms";
+    assert_eq!((ended.down, ended.why.as_str()), (100, why));
 }
 
 #[tokio::test(start_paused = true)]
