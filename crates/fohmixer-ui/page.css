@@ -83,6 +83,13 @@
     white-space: normal;
 }
 
+/* The extra tabs (STREAM DECK, ABLESET: #90, the approved mockup
+   ableset-tab-v1) each take the bar's whole width; STREAM DECK only beside
+   ABLESET (surface.rs DeckTab), else it is one cell as before. */
+.column .seg > .wide {
+    grid-column: 1 / -1;
+}
+
 .column .solo-clear.on {
     display: flex;
     justify-content: center;
@@ -448,10 +455,10 @@
    faders, 150 px wide and centred, a shade dimming the faders under it
    (✕, the shade and a page's tab close it: surface.rs). `--count-col` is
    the phone's column width, by which surface.rs still counts the strips
-   (the same strips show, wider: `arrange::arrange_in`). The deck page keeps
-   its column. TechAlert's wash sets its own visibility, so it still covers
-   the screen with the column closed; no `transform` here, which would hold
-   its `position: fixed`. */
+   (the same strips show, wider: `arrange::arrange_in`). The deck page and
+   AbleSet's (#90) keep their column. TechAlert's wash sets its own
+   visibility, so it still covers the screen with the column closed; no
+   `transform` here, which would hold its `position: fixed`. */
 .thin,
 .column-close,
 .column-shade {
@@ -459,19 +466,19 @@
 }
 
 @media (max-height: 520px) {
-    .body:not(.deck-page) {
+    .body:not(.deck-page, .ableset-page) {
         --count-col: 148px;
     }
 
     /* A low screen holds one line, whose ◀ ▶ are the thin strip's: the
        open column leaves them out, so its ✕ costs the rail nothing. */
-    .body:not(.deck-page) > .column > .shifts {
+    .body:not(.deck-page, .ableset-page) > .column > .shifts {
         display: none;
     }
 }
 
 @media (max-width: 520px) {
-    .body:not(.deck-page) {
+    .body:not(.deck-page, .ableset-page) {
         --count-col: 96px;
         /* The open column is 150 px wide: a rail button's words get its
            text width, not the narrow column's. */
@@ -480,7 +487,7 @@
 }
 
 @media (max-height: 520px), (max-width: 520px) {
-    .body:not(.deck-page) {
+    .body:not(.deck-page, .ableset-page) {
         --col: 34px;
         --overlay: 150px;
         position: relative;
@@ -488,7 +495,7 @@
 
     /* Above a pinned strip that overflows a side (its layers end at 2), as
        the column was; under the shade. */
-    .body:not(.deck-page) > .thin {
+    .body:not(.deck-page, .ableset-page) > .thin {
         position: relative;
         z-index: 3;
         grid-column: 2;
@@ -547,7 +554,7 @@
     /* The column over the faders: its own grid cell is the thin strip's
        (both lines given: an absolute grid child with no end line spans to
        the grid's edge), so 50 % is the screen's middle. */
-    .body:not(.deck-page) > .column {
+    .body:not(.deck-page, .ableset-page) > .column {
         grid-column: 2 / 3;
         position: absolute;
         top: 0;
@@ -564,7 +571,7 @@
         visibility: visible;
     }
 
-    .body:not(.deck-page) > .column > .column-close {
+    .body:not(.deck-page, .ableset-page) > .column > .column-close {
         display: block;
         flex: none;
         min-height: 28px;
@@ -579,7 +586,7 @@
 
     /* Under the column (the page's top layer, z-index 10), over the
        strips (their layers end at 2). */
-    .body:not(.deck-page) > .column-shade {
+    .body:not(.deck-page, .ableset-page) > .column-shade {
         display: block;
         position: absolute;
         inset: 0;

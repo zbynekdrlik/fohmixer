@@ -205,14 +205,16 @@ impl Page {
         }
     }
 
-    /// The `ableset` message with the link `online` (none: not known yet).
-    pub fn msg(&self, online: Option<bool>) -> ServerMsg {
+    /// The `ableset` message with the link `online` (none: not known yet)
+    /// for a page whose socket came over the LAN (`lan`) or not.
+    pub fn msg(&self, online: Option<bool>, lan: bool) -> ServerMsg {
         ServerMsg::Ableset {
             title: self.title.clone(),
             name: self.name.clone(),
             parent: self.parent.clone(),
             online,
             lan_port: self.lan_port,
+            lan,
         }
     }
 }
@@ -314,18 +316,23 @@ mod tests {
         };
         let page = Page::of(&cfg, &tls);
         assert_eq!(
-            page.msg(Some(true)),
+            page.msg(Some(true), true),
             ServerMsg::Ableset {
                 title: "Setlist".into(),
                 name: "ableset.example.org".into(),
                 parent: "foh.example.org".into(),
                 online: Some(true),
                 lan_port: 3000,
+                lan: true,
             }
         );
         assert!(matches!(
-            page.msg(None),
-            ServerMsg::Ableset { online: None, .. }
+            page.msg(None, false),
+            ServerMsg::Ableset {
+                online: None,
+                lan: false,
+                ..
+            }
         ));
         for (upstream, port) in [
             ("http://127.0.0.1:80", 80),

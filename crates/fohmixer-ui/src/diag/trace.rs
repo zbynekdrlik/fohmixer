@@ -20,7 +20,9 @@
 //! selection, a drag, a pinch's start, a cancelled pointer, a capture lost
 //! while the finger is down, and the visual viewport's zoom); a Stream Deck
 //! press ([`deck`], #52, essential) and the tab's opening and closing
-//! ([`deck_view`]); the Pro-Q 4 screen's fingers ([`fingers`], #71 PR I,
+//! ([`deck_view`]); AbleSet's tab ([`ableset_view`], #90) and its steps
+//! ([`ableset`]: the probe, the frame's load, a panel, the sign-in); the
+//! Pro-Q 4 screen's fingers ([`fingers`], #71 PR I,
 //! essential: each one's down, up and cancel with its picture point and the
 //! zoom, its moves summarized); the page's idle turns (`behave::idle`, #51,
 //! essential: why it slept or woke, and how long it was idle). No `send` and
@@ -153,7 +155,7 @@ pub fn takes_batch(buffered: u32) -> bool {
 /// (touches, dropouts, resets, socket transitions, visibility, the notes of
 /// what went, a write's intent changes, PR G's system gestures and zooms,
 /// #52's Stream Deck presses, #71's channel detail steps and the Pro-Q 4
-/// screen's fingers and undos, #51's idle turns); rank 0, first, for the
+/// screen's fingers and undos, #51's idle turns, #90's AbleSet tab); rank 0, first, for the
 /// round-trip summaries, long frames and any other kind; rank 1, last, for
 /// the moves (the only per-frame data of a drag the hub cannot see). A
 /// touch's first moves are pushed as essential ([`Recorder::push_essential`]).
@@ -161,7 +163,7 @@ pub fn drop_rank(ev: &str) -> Option<u8> {
     match ev {
         "touch" | "dropout" | "reset" | "sock" | "visibility" | "overflow" | "intent" | "sys"
         | "zoom" | "deck" | "detail" | "eq_touch" | "eq_mv" | "eq_lat" | "eq_view" | "eq_undo"
-        | "idle" => None,
+        | "idle" | "ableset_view" | "ableset" => None,
         "mv" => Some(1),
         _ => Some(0),
     }
@@ -243,6 +245,42 @@ pub fn detail(
 /// The Stream Deck tab opened (`on`) or closed (#52).
 pub fn deck_view(t: f64, on: bool) -> Value {
     json!({"ev": "deck_view", "t": t, "on": on})
+}
+
+/// AbleSet's tab opened (`on`) or closed (#90).
+pub fn ableset_view(t: f64, on: bool) -> Value {
+    json!({"ev": "ableset_view", "t": t, "on": on})
+}
+
+/// A step of AbleSet's tab (#90).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum AbleSetStep {
+    /// The probe's answer: loaded or not, and how long it took (ms).
+    Probe { ok: bool, ms: f64 },
+    /// The frame loaded, this long after it was mounted (ms).
+    Load { ms: f64 },
+    /// A panel shown instead of the frame (`down`, `signin`, `elsewhere`,
+    /// `checking`).
+    Panel(&'static str),
+    /// The sign-in pressed: the page leaves for Access's sign-in.
+    SignIn,
+}
+
+/// AbleSet's tab's step at `t` (#90): `what` and its facts, the times in
+/// whole ms.
+pub fn ableset(t: f64, step: AbleSetStep) -> Value {
+    match step {
+        AbleSetStep::Probe { ok, ms } => {
+            json!({"ev": "ableset", "t": t, "what": "probe", "ok": ok, "ms": ms.round()})
+        }
+        AbleSetStep::Load { ms } => {
+            json!({"ev": "ableset", "t": t, "what": "load", "ms": ms.round()})
+        }
+        AbleSetStep::Panel(panel) => {
+            json!({"ev": "ableset", "t": t, "what": "panel", "panel": panel})
+        }
+        AbleSetStep::SignIn => json!({"ev": "ableset", "t": t, "what": "signin"}),
+    }
 }
 
 /// The sequence number of a `set`; none for another message.

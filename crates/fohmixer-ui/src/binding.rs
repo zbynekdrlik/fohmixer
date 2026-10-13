@@ -397,7 +397,8 @@ pub fn selected_path(layout: &Layout, remembered: &BTreeMap<String, String>) -> 
 
 /// What a tap on view `view`'s button shows (#68): the view, remembering
 /// the page shown when that is no view; or, when the view is already shown
-/// (and not under the Stream Deck tab, `deck`), the page remembered before
+/// (and not under an extra tab, `deck`: the Stream Deck's or AbleSet's,
+/// #90), the page remembered before
 /// it (else the layout's default page). The page's index, and the page to
 /// remember from now on.
 pub fn view_tap(

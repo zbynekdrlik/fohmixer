@@ -126,6 +126,7 @@ fn attach(router: &mut Router, client: ClientId) -> Arc<Outbox> {
         client,
         outbox: Arc::clone(&outbox),
         peer: format!("10.0.0.{client}"),
+        lan: true,
     });
     outbox
 }

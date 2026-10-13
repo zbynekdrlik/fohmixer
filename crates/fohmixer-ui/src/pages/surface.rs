@@ -1,16 +1,17 @@
 //! The mixer surface (the redesign, #21; spec §4.2; the control column,
 //! #63): every page is its two sides and the control column between them.
 //! The column holds the dropout counter (#43), the connection badges and
-//! the version, the pages' tabs (the Stream Deck tab, #52, last, only from
-//! a hub with one), the pager's tabs, the SOLO ✕ pill, the arrows of a line
-//! that does not fit, the page's rail and the global controls at its foot;
-//! nothing sits above the faders. Where the controls go is `arrange` (pure);
+//! the version, the pages' tabs (the Stream Deck tab, #52, and AbleSet's,
+//! #90, last, each only from a hub with one), the pager's tabs, the SOLO ✕
+//! pill, the arrows of a line that does not fit, the page's rail and the
+//! global controls at its foot; nothing sits above the faders. Where the
+//! controls go is `arrange` (pure);
 //! this file measures a side and the height and renders the arrangement
 //! with keyed lists, so a sub-page switch or a shift remounts only the
 //! controls that change. Only the controls on screen are mounted, and the
 //! subscriptions are the selected path's with an open channel detail's
 //! (`binding::wanted_subs`, #71); the selected page and sub-page are
-//! remembered on the device, the Stream Deck tab and the detail never are.
+//! remembered on the device, the extra tabs and the detail never are.
 //! A Pro-Q 4 screen opened from the detail (#71 PR E) lies over everything,
 //! outside the layout's shell: a new layout keeps it; the detail closing
 //! closes it.
@@ -28,6 +29,7 @@ use crate::arrange::{
     Arrangement, Cell, Item, LineKey, METRICS, PageModel, Shift, Side, Sides, arrange_in, items,
     px_value, thin_line,
 };
+use crate::behave::ableset::tab_dot;
 use crate::behave::solo::soloed;
 use crate::binding::{
     DetailChange, SubSpec, choose, detail_strip, detail_update, group_title, page_solos,
@@ -39,6 +41,7 @@ use crate::components::{ControlView, Settings, fail_flash, key_of, owns_surface,
 use crate::dom;
 use crate::flow::{is_column, shared_instance};
 use crate::manual::manual_parts;
+use crate::pages::ableset::{AbleSetView, take_return};
 use crate::pages::deck::DeckView;
 use crate::store::{Badge, LiveStore, Slot};
 
@@ -50,6 +53,18 @@ const BODY_PAD: f64 = 12.0;
 /// Between a side and the column (`.body`'s gap).
 const BODY_GAP: f64 = 6.0;
 
+/// A tab after the layout's pages, shown instead of them (#52, #90).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum Extra {
+    /// None: the layout's page.
+    #[default]
+    None,
+    /// The Stream Deck (#52).
+    Deck,
+    /// AbleSet's own page (#90).
+    AbleSet,
+}
+
 /// The page selection (a context of the surface).
 #[derive(Clone, Copy)]
 struct Nav {
@@ -58,14 +73,14 @@ struct Nav {
     path: RwSignal<Vec<usize>>,
     remembered: RwSignal<BTreeMap<String, String>>,
     viewport: RwSignal<(f64, f64)>,
-    /// The Stream Deck tab is shown (#52); never remembered: a reload opens
-    /// the last mixer page. Written only on a change: a `try_set` notifies
-    /// even with the same value.
-    deck: RwSignal<bool>,
-    /// `deck` as every reader reads it (one memo): a pager tap rebuilds no
-    /// page, and a tap on the open deck tab does not mount its page again
-    /// (which would lift the held keys).
-    deck_shown: Memo<bool>,
+    /// The extra tab shown (#52 the Stream Deck, #90 AbleSet); never
+    /// remembered: a reload opens the last mixer page. Written only on a
+    /// change: a `try_set` notifies even with the same value.
+    extra: RwSignal<Extra>,
+    /// `extra` as every reader reads it (one memo): a pager tap rebuilds no
+    /// page, and a tap on the open deck or AbleSet tab does not mount its
+    /// page again (which would lift the held keys, or reload AbleSet).
+    shown: Memo<Extra>,
     /// The page shown before a view (#68): a second tap on the view's
     /// button goes back to it.
     before_view: RwSignal<Option<String>>,
@@ -98,9 +113,10 @@ impl Nav {
     /// closes too (#63, the approved mockup).
     fn select(self, level: usize, index: usize) {
         self.open_column(false);
-        // A layout tab leaves the deck; the page shown is selected as before.
-        if self.deck.try_get_untracked() == Some(true) {
-            let _ = self.deck.try_set(false);
+        // A layout tab leaves an extra tab; the page shown is selected as
+        // before.
+        if self.extra.try_get_untracked().unwrap_or_default() != Extra::None {
+            let _ = self.extra.try_set(Extra::None);
         }
         let Some(Some(layout)) = self.store.layout.try_get_untracked() else {
             return;
@@ -135,17 +151,21 @@ impl Nav {
             .try_with_untracked(|p| p.first().copied())
             .flatten();
         let before = self.before_view.try_get_untracked().flatten();
-        let deck = self.deck.try_get_untracked().unwrap_or(false);
-        let (target, remember) = view_tap(&layout, shown, deck, view, before.as_deref());
+        let extra = self.extra.try_get_untracked().unwrap_or_default() != Extra::None;
+        let (target, remember) = view_tap(&layout, shown, extra, view, before.as_deref());
         let _ = self.before_view.try_set(remember);
         self.select(0, target);
     }
 
-    /// The Stream Deck tab was tapped (#52).
-    fn show_deck(self) {
+    /// The Stream Deck's tab (#52) or AbleSet's (#90) was tapped.
+    fn show_extra(self, extra: Extra) {
         self.open_column(false);
-        if self.deck.try_get_untracked() == Some(false) {
-            let _ = self.deck.try_set(true);
+        if self
+            .extra
+            .try_get_untracked()
+            .is_some_and(|shown| shown != extra)
+        {
+            let _ = self.extra.try_set(extra);
         }
     }
 }
@@ -163,14 +183,14 @@ pub fn Surface(token: String, session: RwSignal<Option<String>>) -> impl IntoVie
     let store = LiveStore::new(token, session);
     provide_context(store);
     let viewport = RwSignal::new(dom::viewport());
-    let deck = RwSignal::new(false);
+    let extra = RwSignal::new(Extra::None);
     let nav = Nav {
         store,
         path: RwSignal::new(Vec::new()),
         remembered: RwSignal::new(remembered_pages()),
         viewport,
-        deck,
-        deck_shown: Memo::new(move |_| deck.get()),
+        extra,
+        shown: Memo::new(move |_| extra.get()),
         before_view: RwSignal::new(None),
         manual: RwSignal::new(false),
         detail: RwSignal::new(None),
@@ -196,6 +216,15 @@ pub fn Surface(token: String, session: RwSignal<Option<String>>) -> impl IntoVie
     });
     on_cleanup(move || store.stop());
     store.start();
+    // AbleSet's sign-in comes back to `#ableset` (#90 §5.4): the hash goes
+    // at once, and the tab opens once the hub tells of AbleSet's page.
+    let back_to_ableset = StoredValue::new(take_return());
+    Effect::new(move |_| {
+        if store.ableset.with(Option::is_some) && back_to_ableset.get_value() {
+            back_to_ableset.set_value(false);
+            nav.show_extra(Extra::AbleSet);
+        }
+    });
 
     let resize = window_event_listener(leptos::ev::resize, move |_| {
         let _ = viewport.try_set(dom::viewport());
@@ -343,9 +372,23 @@ fn Shell(layout: Arc<Layout>) -> impl IntoView {
         })
     };
     let body = move || {
-        if nav.deck_shown.get() {
-            let global = layout.global.clone();
-            return Some(view! { <DeckView global=global viewport=viewport /> }.into_any());
+        match nav.shown.get() {
+            Extra::Deck => {
+                let global = layout.global.clone();
+                return Some(view! { <DeckView global=global viewport=viewport /> }.into_any());
+            }
+            // AbleSet's page keeps the column of the page it was opened
+            // from: its rail and the global controls (#90, variant A).
+            Extra::AbleSet => {
+                let rail = page
+                    .get()
+                    .and_then(|index| layout.pages.get(index))
+                    .map(|opened_from| opened_from.rail.clone())
+                    .unwrap_or_default();
+                let global = layout.global.clone();
+                return Some(view! { <AbleSetView rail=rail global=global /> }.into_any());
+            }
+            Extra::None => {}
         }
         let index = page.get()?;
         let shown = layout.pages.get(index)?.clone();
@@ -361,8 +404,8 @@ fn Shell(layout: Arc<Layout>) -> impl IntoView {
 }
 
 /// The head of a page's column: the dropout counter, the badges and the
-/// version, the pages' tabs, the pager's tabs (none on the Stream Deck
-/// tab) and SOLO ✕.
+/// version, the pages' tabs, the pager's tabs (none on an extra tab) and
+/// SOLO ✕.
 #[component]
 pub fn ColumnHead() -> impl IntoView {
     let nav = expect_context::<Nav>();
@@ -382,7 +425,7 @@ pub fn ColumnHead() -> impl IntoView {
     // stay, dimmed.
     let pager_tabs = move || {
         let index = page.try_get().flatten()?;
-        if nav.deck_shown.try_get().unwrap_or(false) {
+        if nav.shown.try_get().unwrap_or_default() != Extra::None {
             return None;
         }
         let shown = for_pager.pages.get(index)?;
@@ -415,7 +458,7 @@ pub fn ColumnHead() -> impl IntoView {
             .map(|(index, id, title)| {
                 let lit = move || {
                     page.try_get().flatten() == Some(index)
-                        && !nav.deck_shown.try_get().unwrap_or(false)
+                        && nav.shown.try_get().unwrap_or_default() == Extra::None
                 };
                 // A view's button owns its touches (#43 PR G); it writes no key.
                 let no_keys: Vec<String> = Vec::new();
@@ -483,7 +526,7 @@ fn TabBar(
             let lit = move || {
                 // A disposed selection (a layout change) lights nothing.
                 selected.try_get().flatten() == Some(index)
-                    && !(level == 0 && nav.deck_shown.try_get().unwrap_or(false))
+                    && !(level == 0 && nav.shown.try_get().unwrap_or_default() != Extra::None)
             };
             // A tab owns its touches (#43 PR G); it writes no key.
             let no_keys: Vec<String> = Vec::new();
@@ -503,15 +546,20 @@ fn TabBar(
             }
         })
         .collect_view();
-    // The Stream Deck's tab ends the pages' bar, from a hub with one (#52).
-    let deck_tab = (level == 0).then(|| {
+    // The Stream Deck's tab (#52), then AbleSet's (#90), end the pages' bar,
+    // each from a hub with one.
+    let extra_tabs = (level == 0).then(|| {
         let has_deck = move || nav.store.deck.with(Option::is_some);
-        view! { <Show when=has_deck><DeckTab /></Show> }
+        let has_ableset = move || nav.store.ableset.with(Option::is_some);
+        view! {
+            <Show when=has_deck><DeckTab /></Show>
+            <Show when=has_ableset><AbleSetTab /></Show>
+        }
     });
     view! {
         <div class="seg" class:dim=dim data-testid="tabbar" data-level={level.to_string()}>
             {buttons}
-            {deck_tab}
+            {extra_tabs}
         </div>
     }
 }
@@ -589,7 +637,10 @@ fn ManualView() -> impl IntoView {
 }
 
 /// The Stream Deck's tab (#52): its title from the hub; a small red dot
-/// while Companion (or the hub) is unreachable, no words.
+/// while Companion (or the hub) is unreachable, no words. Beside AbleSet's
+/// tab both take a row of the bar (#90, the approved mockup); without it
+/// the deck's tab is one cell, as before AbleSet (#90 PR C review L7: the
+/// column's height is the faders' first).
 #[component]
 fn DeckTab() -> impl IntoView {
     let nav = expect_context::<Nav>();
@@ -600,7 +651,8 @@ fn DeckTab() -> impl IntoView {
             .with(|d| d.as_ref().map(|d| d.title.clone()).unwrap_or_default())
     };
     let offline = move || store.deck.with(|d| d.as_ref().is_some_and(|d| !d.online));
-    let lit = move || nav.deck_shown.get();
+    let lit = move || nav.shown.get() == Extra::Deck;
+    let wide = move || store.ableset.try_with(Option::is_some).unwrap_or(false);
     // A tab owns its touches (#43 PR G); it writes no key.
     let no_keys: Vec<String> = Vec::new();
     view! {
@@ -608,15 +660,54 @@ fn DeckTab() -> impl IntoView {
             type="button"
             class="tab deck-tab"
             use:owns_touches=no_keys
+            class:wide=wide
             class:selected=lit
             data-testid="deck-tab"
             data-selected=move || lit().to_string()
             data-offline=move || offline().to_string()
-            on:pointerdown=move |_| nav.show_deck()
+            on:pointerdown=move |_| nav.show_extra(Extra::Deck)
         >
             {title}
             <Show when=offline>
                 <i class="deck-dot" data-testid="deck-dot"></i>
+            </Show>
+        </button>
+    }
+}
+
+/// AbleSet's tab (#90, the owner's variant A: the last tab, right after the
+/// Stream Deck's): its title from the hub; a small red dot while AbleSet
+/// (or the hub) is unreachable, no words.
+#[component]
+fn AbleSetTab() -> impl IntoView {
+    let nav = expect_context::<Nav>();
+    let store = nav.store;
+    let title = move || {
+        store
+            .ableset
+            .with(|a| a.as_ref().map(|a| a.title.clone()).unwrap_or_default())
+    };
+    let offline = move || {
+        let online = store.ableset.with(|a| a.as_ref().and_then(|a| a.online));
+        tab_dot(online, store.connected.get())
+    };
+    let lit = move || nav.shown.get() == Extra::AbleSet;
+    // A tab owns its touches (#43 PR G); it writes no key.
+    let no_keys: Vec<String> = Vec::new();
+    view! {
+        <button
+            type="button"
+            class="tab wide ableset-tab"
+            use:owns_touches=no_keys
+            class:selected=lit
+            data-testid="ableset-tab"
+            data-selected=move || lit().to_string()
+            data-offline=move || offline().to_string()
+            on:pointerdown=move |_| nav.show_extra(Extra::AbleSet)
+        >
+            {title}
+            <Show when=offline>
+                <i class="ableset-dot" data-testid="ableset-dot"></i>
             </Show>
         </button>
     }

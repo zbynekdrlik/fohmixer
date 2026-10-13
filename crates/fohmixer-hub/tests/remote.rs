@@ -330,6 +330,7 @@ async fn the_served_hub_reads_ablesets_link_and_tells_every_page() {
         parent: NAME.into(),
         online: Some(true),
         lan_port: port,
+        lan: true,
     };
     assert_eq!(told, wanted);
     let linked = |r: &[Value]| r.iter().any(|r| r["ev"] == "ableset_link");
