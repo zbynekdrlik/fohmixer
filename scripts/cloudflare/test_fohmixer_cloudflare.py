@@ -116,6 +116,18 @@ class ScriptTest(unittest.TestCase):
         Path(self.token_file).write_text("t" * 40 + "\n", encoding="utf-8")
         self.cf = FakeCloudflare()
 
+    def assert_access_before_exposure(self):
+        """The LAST Access write comes before the tunnel's configuration
+        write and the first DNS write: no route or record of a name ever
+        exists before every app does (#90)."""
+        writes = self.cf.writes
+        access = [i for i, (_, p) in enumerate(writes) if "/access/apps" in p]
+        routes = [i for i, (_, p) in enumerate(writes) if p.endswith("/configurations")]
+        dns = [i for i, (_, p) in enumerate(writes) if p.startswith("/zones/")]
+        self.assertTrue(access and routes and dns, writes)
+        self.assertLess(max(access), min(routes), writes)
+        self.assertLess(max(access), min(dns), writes)
+
     def run_main(self, *extra, apply=True, emails=("a@example.org", "b@example.org")):
         argv = [
             "--account-id",
@@ -193,6 +205,7 @@ class ScriptTest(unittest.TestCase):
         self.assertLess(
             kinds.index("access"), kinds.index("dns"), "Access exists before the name is public"
         )
+        self.assert_access_before_exposure()
         self.assertIn(
             '[access]\nteam_domain = "team.cloudflareaccess.com"\naud = ["aud-' + app["id"] + '"]',
             out,
@@ -277,9 +290,8 @@ class ScriptTest(unittest.TestCase):
         )
         target = tid + ".cfargotunnel.com"
         self.assertEqual(records, [(ABLESET, "CNAME", target, True), (NAME, "CNAME", target, True)])
-        kinds = [p.split("/")[3] if p.startswith("/accounts") else "dns" for _, p in self.cf.writes]
-        self.assertEqual(kinds.count("access"), 2)
-        self.assertLess(kinds.index("access", 1), kinds.index("dns"), "both apps before DNS")
+        self.assertEqual(sum("/access/apps" in p for _, p in self.cf.writes), 2)
+        self.assert_access_before_exposure()
         self.assertIn('aud = ["%s"]\n\n[ableset]\n' % foh["aud"], out)
         self.assertIn('[ableset]\nname = "%s"\naccess_aud = ["%s"]\n' % (ABLESET, able["aud"]), out)
         # A second run changes nothing but the apps' own updates.
@@ -302,7 +314,9 @@ class ScriptTest(unittest.TestCase):
         self.assertIn("create DNS %s -> " % ABLESET, out)
         self.assertIn('access_aud = ["<the AbleSet Access app\'s AUD, after --apply>"]', out)
         self.assertNotIn("REMOVE", out)
+        self.cf.writes.clear()
         self.assertEqual(self.run_main("--ableset-name", ABLESET)[0], 0)
+        self.assert_access_before_exposure()
         code, out, _ = self.run_main(apply=False)
         self.assertIn("REMOVE route %s (--apply needs --prune-routes for it)" % ABLESET, out)
         self.assertNotIn("[ableset]", out)
