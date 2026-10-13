@@ -533,6 +533,22 @@ test.describe("The backing-tracks fader", () => {
     await expect(strip.getByTestId("param-values")).toHaveText("0 -∞");
     await expect(strip.getByTestId("param-badge")).toBeVisible();
     await doubleTap(fader);
+    // On its way: the glide lasts Bass's way from −∞ (about 2.8 s), never
+    // the cap's own (none), so Live holds Bass part way up for a while,
+    // never a jump to 0 dB; Drums stays at 0 dB on every read.
+    const drumsSeen: number[] = [];
+    await expect
+      .poll(
+        async () => {
+          const [drums, bass] = await levels();
+          drumsSeen.push(drums);
+          return bass > 0 && bass < UNITY;
+        },
+        { message: "Bass part way up from −∞ while it glides", timeout: 1500, intervals: [25] },
+      )
+      .toBe(true);
+    await expect(strip.getByTestId("param-display")).toHaveText("0.0 dB");
+    for (const drums of drumsSeen) expect(Math.abs(drums - UNITY), `Drums ${drums}`).toBeLessThan(1e-6);
     await everyTrackAt0dB();
   });
 });
