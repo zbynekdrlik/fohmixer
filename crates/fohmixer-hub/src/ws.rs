@@ -560,4 +560,4 @@ fn pass_through(
 
 #[cfg(test)]
 #[path = "ws/tests.rs"]
-mod tests;
+pub(crate) mod tests;

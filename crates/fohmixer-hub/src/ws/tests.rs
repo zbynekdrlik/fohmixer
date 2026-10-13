@@ -125,8 +125,8 @@ impl Write for Captured {
 }
 
 /// What `f` logs, formatted as the hub's log formats it (without the time
-/// and the colours).
-fn logged(f: impl FnOnce()) -> String {
+/// and the colours); also `ableset`'s tests (#90).
+pub(crate) fn logged(f: impl FnOnce()) -> String {
     let captured = Captured::default();
     let writer = captured.clone();
     let subscriber = tracing_subscriber::fmt()

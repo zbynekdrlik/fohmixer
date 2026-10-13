@@ -29,9 +29,13 @@
 //! # AbleSet's own page behind the hub (#90), optional: its name, served on
 //! # the [tls] listener with a certificate of its own (SNI, from
 //! # <data>/tls/ableset/; [acme] gets it too); one label beside or under
-//! # the [tls] name (the same site).
+//! # the [tls] name (the same site). Requests for it go to AbleSet's web app
+//! # on this PC, behind fohmixer's access rules (LAN open; the internet
+//! # needs the AbleSet Access application's own assertion).
 //! [ableset]
 //! name = "ableset.example.org"
+//! upstream = "http://127.0.0.1:80"   # the default: http://, a loopback address, a port
+//! access_aud = ["<the AbleSet app's AUD tag>"]  # needs [access]; none: internet refused
 //!
 //! # The Stream Deck tab (#52), optional: Bitfocus Companion's Satellite API
 //! [companion]
@@ -100,6 +104,8 @@ pub const DEFAULT_DECK_ROWS: u32 = 4;
 pub const DEFAULT_DECK_BITMAP_PX: u32 = 144;
 /// The tab's title.
 pub const DEFAULT_DECK_TITLE: &str = "Stream Deck";
+/// AbleSet's web app on this PC when `[ableset]` names no `upstream` (#90).
+pub const DEFAULT_ABLESET_UPSTREAM: &str = "http://127.0.0.1:80";
 
 /// One Live instance: its name (the `instance` of every command and
 /// binding) and the localhost port of its FohMixer script.
@@ -175,6 +181,10 @@ fn default_deck_title() -> String {
     DEFAULT_DECK_TITLE.to_string()
 }
 
+fn default_ableset_upstream() -> String {
+    DEFAULT_ABLESET_UPSTREAM.to_string()
+}
+
 /// `[tls]`: the HTTPS listener for the one public name (LAN by the router's
 /// static DNS or the PC's hosts entry, the internet through the tunnel).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -236,12 +246,19 @@ pub struct TunnelCfg {
 }
 
 /// `[ableset]` (#90): AbleSet's own page behind the hub, at a name of its
-/// own beside the `[tls]` name. The name is site data: the installer writes
-/// it, never this repository.
+/// own beside the `[tls]` name, proxied to AbleSet's web app at `upstream`
+/// (on this PC). Internet requests need an assertion of the AbleSet Access
+/// application (`access_aud`, with `[access]`'s team); none: refused. The
+/// name and the AUD are site data: the installer writes them, never this
+/// repository.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AbleSetCfg {
     pub name: String,
+    #[serde(default = "default_ableset_upstream")]
+    pub upstream: String,
+    #[serde(default)]
+    pub access_aud: Vec<String>,
 }
 
 /// `[companion]` (#52): the Stream Deck tab. The hub registers with
@@ -379,6 +396,29 @@ pub fn url_allowed(url: &str) -> bool {
         }
         _ => false,
     }
+}
+
+/// Whether `url` is AbleSet's web app on this PC (#90): `http://`, a
+/// loopback address (`127.0.0.1`, `[::1]`, `localhost`) and an optional
+/// port, nothing after it. Loopback only: the hub never becomes a proxy into
+/// the LAN.
+pub fn is_upstream(url: &str) -> bool {
+    let Some(Ok(authority)) = url
+        .strip_prefix("http://")
+        .filter(|rest| !rest.contains('@'))
+        .map(str::parse::<axum::http::uri::Authority>)
+    else {
+        return false;
+    };
+    // The authority parses whole (no path, query or fragment); after its
+    // host only `:<port>` may follow, a port in 1..=65535.
+    let port = &authority.as_str()[authority.host().len()..];
+    let port_ok = port.is_empty()
+        || port
+            .strip_prefix(':')
+            .and_then(|p| p.parse::<u16>().ok())
+            .is_some_and(|p| p != 0);
+    port_ok && url_allowed(url)
 }
 
 /// The hub's configuration.
@@ -630,6 +670,36 @@ impl Config {
                     tls.name
                 );
             }
+            if !is_upstream(&ableset.upstream) {
+                bail!(
+                    "[ableset] upstream {:?}: http:// and a loopback address with an optional port, like {DEFAULT_ABLESET_UPSTREAM}",
+                    ableset.upstream
+                );
+            }
+            self.validate_ableset_aud(&ableset.access_aud)?;
+        }
+        Ok(())
+    }
+
+    /// `[ableset] access_aud` (#90): the AbleSet Access application's own
+    /// AUD tags, with `[access]` (its team and keys); never one of
+    /// fohmixer's, so neither application's assertion opens the other.
+    fn validate_ableset_aud(&self, aud: &[String]) -> anyhow::Result<()> {
+        if aud.is_empty() {
+            return Ok(());
+        }
+        let Some(access) = &self.access else {
+            bail!("[ableset] access_aud needs [access]: its team and keys come from there");
+        };
+        if aud.iter().any(|a| !is_aud(a)) {
+            bail!(
+                "[ableset] access_aud {aud:?}: the AbleSet Access application's AUD tag(s), letters, digits, - and _"
+            );
+        }
+        if let Some(shared) = aud.iter().find(|a| access.aud.contains(a)) {
+            bail!(
+                "[ableset] access_aud {shared:?} is fohmixer's own [access] aud: AbleSet needs an Access application of its own"
+            );
         }
         Ok(())
     }
@@ -877,7 +947,9 @@ mod tests {
         assert_eq!(
             config.ableset,
             Some(AbleSetCfg {
-                name: "ableset.example.org".into()
+                name: "ableset.example.org".into(),
+                upstream: "http://127.0.0.1:80".into(),
+                access_aud: Vec::new(),
             })
         );
         assert_eq!(
@@ -913,6 +985,71 @@ mod tests {
         ] {
             let error = format!("{:#}", Config::parse(&text, &data()).unwrap_err());
             assert!(error.contains(message), "{text}: {error}");
+        }
+    }
+
+    #[test]
+    fn ablesets_upstream_and_audience_are_read_and_checked() {
+        let table = |rest: &str| {
+            format!(
+                "[tls]\nname = \"foh.example.org\"\n\
+                 [access]\nteam_domain = \"team.cloudflareaccess.com\"\naud = [\"aud-foh\"]\n\
+                 [ableset]\nname = \"ableset.example.org\"\n{rest}"
+            )
+        };
+        let text = table("upstream = \"http://[::1]:3000\"\naccess_aud = [\"aud-ableset\"]\n");
+        let ableset = Config::parse(&text, &data()).unwrap().ableset.unwrap();
+        assert_eq!(ableset.upstream, "http://[::1]:3000");
+        assert_eq!(ableset.access_aud, vec!["aud-ableset".to_string()]);
+        for (rest, message) in [
+            (
+                "upstream = \"http://10.0.0.5:80\"\n",
+                "upstream \"http://10.0.0.5:80\"",
+            ),
+            ("access_aud = [\"aud foh\"]\n", "AUD tag(s)"),
+            (
+                "access_aud = [\"aud-foh\"]\n",
+                "is fohmixer's own [access] aud",
+            ),
+        ] {
+            let error = format!("{:#}", Config::parse(&table(rest), &data()).unwrap_err());
+            assert!(error.contains(message), "{rest}: {error}");
+        }
+        // The audience needs [access]; without one the LAN alone is served.
+        let no_access = "[tls]\nname = \"foh.example.org\"\n\
+            [ableset]\nname = \"ableset.example.org\"\n";
+        assert!(Config::parse(no_access, &data()).is_ok());
+        let error = Config::parse(&format!("{no_access}access_aud = [\"aud-a\"]\n"), &data());
+        let error = format!("{:#}", error.unwrap_err());
+        assert!(error.contains("access_aud needs [access]"), "{error}");
+    }
+
+    #[test]
+    fn ablesets_upstream_is_http_on_loopback_with_nothing_after_the_port() {
+        for url in [
+            "http://127.0.0.1:80",
+            "http://127.0.0.1",
+            "http://localhost:3000",
+            "http://[::1]:65535",
+        ] {
+            assert!(is_upstream(url), "{url}");
+        }
+        for url in [
+            "https://127.0.0.1:80",
+            "http://192.168.1.5:80",
+            "http://ableset.example.org",
+            "http://127.0.0.1:80/",
+            "http://127.0.0.1/app",
+            "http://127.0.0.1?x=1",
+            "http://127.0.0.1#x",
+            "http://user@127.0.0.1",
+            "http://127.0.0.1:0",
+            "http://127.0.0.1:65536",
+            "http://127.0.0.1:",
+            "http://",
+            "127.0.0.1:80",
+        ] {
+            assert!(!is_upstream(url), "{url}");
         }
     }
 
