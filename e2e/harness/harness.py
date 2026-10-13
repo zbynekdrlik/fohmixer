@@ -130,9 +130,9 @@ import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import fake_ableset
+import fake_companion
 import impair
-from fake_ableset import FakeAbleSet
-from fake_companion import FakeCompanion
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # The forensics tool's own local time text (#43): the window the harness asks
@@ -576,7 +576,7 @@ class Harness:
         self.remote = remote
         self.ableset_fake = None
         if args.fake_ableset_port is not None:
-            self.ableset_fake = FakeAbleSet(args.fake_ableset_port)
+            self.ableset_fake = fake_ableset.Child(args.fake_ableset_port)
             self.ableset_fake.start()
         self.ableset = ableset_of(args, self.ableset_fake)
         if self.ableset and args.ableset_cert:
@@ -585,7 +585,7 @@ class Harness:
         self.http_port = args.http_port
         self.fake = None
         if args.fake_companion_port is not None:
-            self.fake = FakeCompanion(args.fake_companion_port)
+            self.fake = fake_companion.Child(args.fake_companion_port)
             self.fake.start()
         self.companion = companion_of(args, self.fake)
         self.companion_on = self.companion is not None

@@ -46,8 +46,12 @@ class Conn:
 
 
 class FakeCompanionTest(unittest.TestCase):
+    # The fake under test: in a thread of this process (``ChildTest``: in a
+    # process of its own, as the harness runs it).
+    FAKE = fake_companion.FakeCompanion
+
     def setUp(self):
-        self.fake = fake_companion.FakeCompanion(0)
+        self.fake = self.FAKE(0)
         self.fake.start()
         self.addCleanup(self.fake.stop)
 
@@ -265,6 +269,38 @@ class FakeCompanionTest(unittest.TestCase):
         conn.read()
         fake.stop()
         self.assertFalse(fake.thread.is_alive())
+
+
+class ChildTest(FakeCompanionTest):
+    """The same through ``Child``: the fake in a process of its own, driven
+    through the tool's control lines, as the harness runs it (#43: as a
+    thread of the harness it shared the interpreter's lock with the
+    harness's work)."""
+
+    FAKE = fake_companion.Child
+
+    def test_the_fake_is_a_process_of_its_own_that_the_end_of_its_stdin_stops(self):
+        self.assertNotEqual(self.fake.proc.pid, os.getpid())
+        conn = self.connect()
+        self.assertEqual(self.fake.state()["down"], False)
+        self.fake.stop()
+        self.assertEqual(self.fake.proc.returncode, 0, "the end of its stdin ends it")
+        with self.assertRaises(OSError):
+            socket.create_connection(("127.0.0.1", self.fake.port), timeout=COME_S)
+        with self.assertRaises(RuntimeError) as caught:
+            self.fake.state()
+        self.assertIn("not running", str(caught.exception))
+        conn.close()
+
+    def test_a_port_taken_or_an_unknown_line_fails_loudly(self):
+        taken = self.FAKE(self.fake.port)
+        with self.assertRaises(RuntimeError) as caught:
+            taken.start()
+        self.assertIn("cannot listen", str(caught.exception))
+        self.assertEqual(taken.proc.returncode, 1, "one JSON error line, then exit 1")
+        with self.assertRaises(ValueError) as caught:
+            self.fake.ask("nap")
+        self.assertIn("unknown line", str(caught.exception))
 
 
 if __name__ == "__main__":

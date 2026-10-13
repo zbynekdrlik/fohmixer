@@ -13,6 +13,12 @@ faults the tests turn on:
     fake.state()                     # connections, devices, presses, down, failing
     fake.stop()
 
+The harness runs it in a process of its own (``Child``: this file's tool, its
+control lines ``down``, ``up``, ``fail on|off``, ``reset``, ``clear``,
+``state``, as ``child.py`` drives a tool, #43): as a thread of the harness it
+shared the interpreter's lock, and the harness's ``GET /hub/events`` held
+every connection of it.
+
 Each key is a small solid PNG (stdlib ``zlib``), coloured by its number and
 brighter while pressed (the bitmaps are PNG, not the real Companion's webp: the hub
 and the page treat the data URL as opaque, and the real Companion 5.0.7 job
@@ -30,13 +36,17 @@ in a thread of its own; every control call and failure is printed on stderr
 connection is closed, the loop stopped.
 """
 
+import argparse
 import asyncio
 import base64
+import os
 import struct
 import sys
 import threading
 import time
 import zlib
+
+import child
 
 # How long a control call waits for the loop.
 CALL_S = 5.0
@@ -349,3 +359,65 @@ class FakeCompanion:
             else:
                 send(f'ERROR MESSAGE="Unknown command: {cmd}" ')
             await writer.drain()
+
+
+class Child(child.Child):
+    """The fake in a process of its own (``child.py``, #43): this file's tool,
+    with the calls of ``FakeCompanion`` (``start``, ``port``, ``down``,
+    ``up``, ``fail``, ``reset``, ``clear``, ``state``, ``stop``)."""
+
+    def __init__(self, port, host="127.0.0.1"):
+        tool = [sys.executable, os.path.abspath(__file__), "--port", str(port), "--host", host]
+        super().__init__("the fake Companion", "FAKE_COMPANION", tool)
+
+    def down(self):
+        return self.ask("down")
+
+    def up(self):
+        return self.ask("up")
+
+    def fail(self, on):
+        return self.ask("fail on" if on else "fail off")
+
+    def reset(self):
+        return self.ask("reset")
+
+    def clear(self):
+        return self.ask("clear")
+
+    def state(self):
+        return self.ask("state")
+
+
+def command(fake, line):
+    """One control line of the tool: its answer, a dict (an ``error`` for a
+    line it does not know)."""
+    calls = {
+        "down": fake.down,
+        "up": fake.up,
+        "fail on": lambda: fake.fail(True),
+        "fail off": lambda: fake.fail(False),
+        "reset": fake.reset,
+        "clear": fake.clear,
+        "state": fake.state,
+    }
+    call = calls.get(" ".join(line.split()))
+    if call is None:
+        log(f"unknown line {line.strip()!r}")
+        return {"error": f"unknown line {line.strip()!r}: {' | '.join(calls)}"}
+    return call()
+
+
+def main(argv=None, stdin=None, stdout=None):
+    parser = argparse.ArgumentParser(description="the fake Companion of the E2E suite")
+    parser.add_argument("--port", type=int, default=0)
+    parser.add_argument("--host", default="127.0.0.1")
+    args = parser.parse_args(argv)
+    fake = FakeCompanion(args.port, host=args.host)
+    return child.serve(
+        fake, "FAKE_COMPANION", command, stdin or sys.stdin, stdout or sys.stdout, log
+    )
+
+
+if __name__ == "__main__":
+    sys.exit(main())
