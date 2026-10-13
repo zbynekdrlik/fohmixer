@@ -2,7 +2,9 @@
 Cloudflare API that keeps state: dry-run reads only, apply creates in the safe
 order (Access before the name is published), a second apply changes nothing,
 a foreign DNS record is never overwritten, the connector token is written
-owner-only and never printed."""
+owner-only and never printed; AbleSet's name (#90) gets its own Access app,
+route and record, and a route a run does not name is removed only with
+--prune-routes."""
 
 from __future__ import annotations
 
@@ -22,6 +24,7 @@ import fohmixer_cloudflare as fc  # noqa: E402
 ACCOUNT = "acc1"
 ZONE = "example.org"
 NAME = "foh.example.org"
+ABLESET = "ableset.example.org"
 # A low-entropy stand-in: a realistic token would read as a leak to the secret scan.
 CONNECTOR = "c" * 120
 
@@ -113,6 +116,18 @@ class ScriptTest(unittest.TestCase):
         Path(self.token_file).write_text("t" * 40 + "\n", encoding="utf-8")
         self.cf = FakeCloudflare()
 
+    def assert_access_before_exposure(self):
+        """The LAST Access write comes before the tunnel's configuration
+        write and the first DNS write: no route or record of a name ever
+        exists before every app does (#90)."""
+        writes = self.cf.writes
+        access = [i for i, (_, p) in enumerate(writes) if "/access/apps" in p]
+        routes = [i for i, (_, p) in enumerate(writes) if p.endswith("/configurations")]
+        dns = [i for i, (_, p) in enumerate(writes) if p.startswith("/zones/")]
+        self.assertTrue(access and routes and dns, writes)
+        self.assertLess(max(access), min(routes), writes)
+        self.assertLess(max(access), min(dns), writes)
+
     def run_main(self, *extra, apply=True, emails=("a@example.org", "b@example.org")):
         argv = [
             "--account-id",
@@ -190,6 +205,7 @@ class ScriptTest(unittest.TestCase):
         self.assertLess(
             kinds.index("access"), kinds.index("dns"), "Access exists before the name is public"
         )
+        self.assert_access_before_exposure()
         self.assertIn(
             '[access]\nteam_domain = "team.cloudflareaccess.com"\naud = ["aud-' + app["id"] + '"]',
             out,
@@ -213,14 +229,182 @@ class ScriptTest(unittest.TestCase):
         (rid,) = self.cf.records
         self.cf.records[rid]["content"] = "old.cfargotunnel.com"
         self.cf.configs[tid]["ingress"][0]["service"] = "http://127.0.0.1:9999"
-        code, out, _ = self.run_main("--service", "http://127.0.0.1:8480", emails=["c@example.org"])
+        # The route's service changed by hand is a rule the write replaces
+        # (#90): refused before any change without --prune-routes.
+        code, _, err = self.run_main(emails=["c@example.org"])
+        self.assertEqual(code, 1)
+        self.assertIn("foh.example.org -> http://127.0.0.1:9999", err)
+        self.assertEqual(self.cf.records[rid]["content"], "old.cfargotunnel.com")
+        code, out, _ = self.run_main(
+            "--service", "http://127.0.0.1:8480", "--prune-routes", emails=["c@example.org"]
+        )
         self.assertEqual(code, 0)
+        self.assertIn("REMOVE route foh.example.org -> http://127.0.0.1:9999\n", out)
         self.assertEqual(self.cf.records[rid]["content"], tid + ".cfargotunnel.com")
         self.assertEqual(self.cf.configs[tid]["ingress"][0]["service"], "http://127.0.0.1:8480")
         (app,) = self.cf.apps.values()
         self.assertEqual(app["policies"][0]["include"], [{"email": {"email": "c@example.org"}}])
         self.assertIn("update DNS", out)
         self.assertIn("route foh.example.org -> http://127.0.0.1:8480 in the tunnel", out)
+
+    def test_a_route_the_run_does_not_name_is_removed_only_with_prune_routes(self):
+        # The whole configuration is written at once, so a run that does not
+        # name a routed host (AbleSet's, #90) would drop its route. The
+        # dry-run lists it; --apply refuses before any change without
+        # --prune-routes.
+        self.run_main()
+        (tid,) = self.cf.tunnels
+        other = {"hostname": "ableset.example.org", "service": "http://127.0.0.1:8480"}
+        self.cf.configs[tid]["ingress"].insert(1, other)
+        before = [dict(r) for r in self.cf.configs[tid]["ingress"]]
+        self.cf.writes.clear()
+        code, out, _ = self.run_main(apply=False)
+        self.assertEqual(code, 0)
+        self.assertIn("REMOVE route ableset.example.org", out)
+        self.assertEqual(self.cf.writes, [])
+        code, _, err = self.run_main()
+        self.assertEqual(code, 1)
+        self.assertIn("ableset.example.org", err)
+        self.assertIn("--prune-routes", err)
+        self.assertEqual(self.cf.writes, [], "refused before any change")
+        self.assertEqual(self.cf.configs[tid]["ingress"], before)
+        code, out, err = self.run_main("--prune-routes")
+        self.assertEqual(code, 0, err)
+        self.assertIn("REMOVE route ableset.example.org", out)
+        hosts = [r.get("hostname") for r in self.cf.configs[tid]["ingress"]]
+        self.assertEqual(hosts, [NAME, None])
+
+    def test_any_rule_the_write_would_change_or_drop_needs_prune_routes(self):
+        # Rules added by hand that the whole-configuration write would drop
+        # or replace: each is listed, and --apply refuses before any change
+        # without --prune-routes (#90).
+        self.run_main()
+        (tid,) = self.cf.tunnels
+        ours = [dict(r) for r in self.cf.configs[tid]["ingress"]]
+        route = {"hostname": NAME, "service": "http://127.0.0.1:8480"}
+        cases = [
+            (
+                [{"hostname": NAME, "path": "^/admin", "service": "http_status:403"}] + ours,
+                "foh.example.org path ^/admin -> http_status:403",
+            ),
+            (
+                ours[:1] + [{"path": "^/x", "service": "http://127.0.0.1:9000"}] + ours[1:],
+                "* path ^/x -> http://127.0.0.1:9000",
+            ),
+            (ours[:1] + [{"service": "http_status:503"}], "* -> http_status:503"),
+            (
+                [dict(route, path="^/api")] + ours,
+                "foh.example.org path ^/api -> http://127.0.0.1:8480",
+            ),
+            (
+                [dict(route, originRequest={"noTLSVerify": True})] + ours[1:],
+                'foh.example.org -> http://127.0.0.1:8480 {"originRequest": {"noTLSVerify": true}}',
+            ),
+        ]
+        for rules, line in cases:
+            with self.subTest(line):
+                self.cf.configs[tid]["ingress"] = [dict(r) for r in rules]
+                self.cf.writes.clear()
+                code, out, _ = self.run_main(apply=False)
+                self.assertEqual((code, self.cf.writes), (0, []))
+                self.assertIn("REMOVE route %s (--apply needs --prune-routes for it)" % line, out)
+                code, _, err = self.run_main()
+                self.assertEqual(code, 1)
+                self.assertIn(line, err)
+                self.assertIn("--prune-routes", err)
+                self.assertEqual(self.cf.writes, [], "refused before any change")
+                self.assertEqual(self.cf.configs[tid]["ingress"], rules)
+                code, out, err = self.run_main("--prune-routes")
+                self.assertEqual(code, 0, err)
+                self.assertIn("REMOVE route %s\n" % line, out)
+                self.assertEqual(self.cf.configs[tid]["ingress"], ours)
+
+    def test_empty_settings_are_no_change_and_settings_beside_the_ingress_are_kept(self):
+        self.run_main()
+        (tid,) = self.cf.tunnels
+        config = self.cf.configs[tid]
+        # As an API may echo them: an empty path and option are none.
+        config["ingress"][0]["path"] = ""
+        config["ingress"][1]["originRequest"] = {}
+        config["warp-routing"] = {"enabled": True}
+        config["originRequest"] = {"connectTimeout": 10}
+        self.cf.writes.clear()
+        code, out, _ = self.run_main()
+        self.assertEqual(code, 0)
+        self.assertIn("the tunnel routes foh.example.org -> http://127.0.0.1:8480", out)
+        self.assertNotIn("REMOVE", out)
+        self.assertEqual([p for _, p in self.cf.writes if "configurations" in p], [])
+        # Adding AbleSet's name rewrites the ingress and keeps the rest.
+        code, out, err = self.run_main("--ableset-name", ABLESET)
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("REMOVE", out)
+        config = self.cf.configs[tid]
+        self.assertEqual([r.get("hostname") for r in config["ingress"]], [NAME, ABLESET, None])
+        self.assertEqual(config["warp-routing"], {"enabled": True})
+        self.assertEqual(config["originRequest"], {"connectTimeout": 10})
+
+    def test_ablesets_name_gets_an_access_app_route_and_record_of_its_own(self):
+        code, out, err = self.run_main("--ableset-name", ABLESET)
+        self.assertEqual(code, 0, err)
+        (tid,) = self.cf.tunnels
+        apps = {a["domain"]: a for a in self.cf.apps.values()}
+        self.assertEqual(set(apps), {NAME, ABLESET})
+        foh, able = apps[NAME], apps[ABLESET]
+        self.assertEqual(able["name"], "fohmixer - " + ABLESET)
+        for key in ("type", "session_duration", "auto_redirect_to_identity", "policies"):
+            self.assertEqual(able[key], foh[key], key)
+        self.assertNotEqual(able["aud"], foh["aud"])
+        route = {"service": "http://127.0.0.1:8480", "originRequest": {}}
+        self.assertEqual(
+            self.cf.configs[tid]["ingress"],
+            [
+                dict(route, hostname=NAME),
+                dict(route, hostname=ABLESET),
+                {"service": "http_status:404"},
+            ],
+        )
+        records = sorted(
+            (r["name"], r["type"], r["content"], r["proxied"]) for r in self.cf.records.values()
+        )
+        target = tid + ".cfargotunnel.com"
+        self.assertEqual(records, [(ABLESET, "CNAME", target, True), (NAME, "CNAME", target, True)])
+        self.assertEqual(sum("/access/apps" in p for _, p in self.cf.writes), 2)
+        self.assert_access_before_exposure()
+        self.assertIn('aud = ["%s"]\n\n[ableset]\n' % foh["aud"], out)
+        self.assertIn('[ableset]\nname = "%s"\naccess_aud = ["%s"]\n' % (ABLESET, able["aud"]), out)
+        # A second run changes nothing but the apps' own updates.
+        self.cf.writes.clear()
+        code, out, _ = self.run_main("--ableset-name", ABLESET)
+        self.assertEqual(code, 0)
+        apps_path = "/accounts/acc1/access/apps/"
+        want = [("PUT", apps_path + foh["id"]), ("PUT", apps_path + able["id"])]
+        self.assertEqual(self.cf.writes, want)
+        self.assertIn("the tunnel routes %s, %s -> http://127.0.0.1:8480" % (NAME, ABLESET), out)
+        self.assertNotIn("REMOVE", out)
+
+    def test_ablesets_name_added_later_keeps_fohmixers_and_is_never_dropped_silently(self):
+        self.run_main()
+        self.cf.writes.clear()
+        code, out, _ = self.run_main("--ableset-name", ABLESET, apply=False)
+        self.assertEqual((code, self.cf.writes), (0, []))
+        self.assertIn("create the Access app of %s (allow: 2 e-mail(s))" % ABLESET, out)
+        self.assertIn("route %s, %s -> http://127.0.0.1:8480 in the tunnel" % (NAME, ABLESET), out)
+        self.assertIn("create DNS %s -> " % ABLESET, out)
+        self.assertIn('access_aud = ["<the AbleSet Access app\'s AUD, after --apply>"]', out)
+        self.assertNotIn("REMOVE", out)
+        self.cf.writes.clear()
+        self.assertEqual(self.run_main("--ableset-name", ABLESET)[0], 0)
+        self.assert_access_before_exposure()
+        code, out, _ = self.run_main(apply=False)
+        line = "REMOVE route %s -> http://127.0.0.1:8480 (--apply needs --prune-routes for it)"
+        self.assertIn(line % ABLESET, out)
+        self.assertNotIn("[ableset]", out)
+
+    def test_ablesets_name_is_refused_when_it_is_the_name(self):
+        code, _, err = self.run_main("--ableset-name", "FOH.example.org.")
+        self.assertEqual(code, 1)
+        self.assertIn("--ableset-name is --name: AbleSet needs a name of its own", err)
+        self.assertEqual((self.cf.writes, self.cf.tunnels), ([], {}))
 
     def test_a_foreign_dns_record_is_never_overwritten(self):
         self.cf.records["a1"] = {"id": "a1", "type": "A", "name": NAME, "content": "203.0.113.9"}
@@ -273,8 +457,11 @@ class ScriptTest(unittest.TestCase):
             api.call("GET", "/zones")
         self.assertIn("GET /zones: HTTP 500", str(raised.exception))
         self.assertEqual(fc.norm("FOH.Example.org./"), "foh.example.org")
-        self.assertTrue(fc.same_ingress(fc.ingress(NAME, "s")["config"], fc.ingress(NAME, "s")))
-        self.assertFalse(fc.same_ingress(None, fc.ingress(NAME, "s")))
+        both = fc.ingress([NAME, ABLESET], "s")
+        self.assertTrue(fc.same_ingress(both["config"], fc.ingress([NAME, ABLESET], "s")))
+        self.assertFalse(fc.same_ingress(both["config"], fc.ingress([ABLESET, NAME], "s")))
+        self.assertFalse(fc.same_ingress(fc.ingress([NAME], "s")["config"], both))
+        self.assertFalse(fc.same_ingress(None, fc.ingress([NAME], "s")))
 
 
 if __name__ == "__main__":

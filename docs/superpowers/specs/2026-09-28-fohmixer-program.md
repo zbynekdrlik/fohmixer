@@ -11,7 +11,7 @@
 - **Engineer iPad**: the FOH engineer's tablet. Today it runs TouchOSC.
 - **TouchOSC surface**: the engineer's TouchOSC Mk2 project (newest copy 2026-08-02) plus its Lua scripts from `zbynekdrlik/abl-touchosc`.
 - **Reference script**: `leolabs/ableton-js` (MIT).
-  - AbleSet runs v3.4.5 in the band Live on this PC: UDP, 10 ms timer.
+  - AbleSet's Live script in the band Live on this PC is v3.4.5 (the AbleSet app is 2.6.7, #90): UDP, 10 ms timer.
   - The WebSocket/threaded transport is new upstream in v5 (2026-09-11) and does not yet run on this PC.
 
 **Owner reading path:** §0, then §3.1 and §8. About 1,800 words.
@@ -76,7 +76,7 @@
 
 **v1 scope.** Parity with the TouchOSC surfaces in use today (§3). Same pages, strips and behaviours, faster and better looking.
 
-**Non-goals for v1:** sends, device parameters, graphic EQ, LUFS, AbleSet, lyrics, Resolume, lighting, VB-Matrix routing, a third Live on another PC. All of them stay possible later (§4). (Internet access was one until the owner's #17, D7.)
+**Non-goals for v1:** sends, device parameters, graphic EQ, LUFS, lyrics, Resolume, lighting, VB-Matrix routing, a third Live on another PC. All of them stay possible later (§4). (Internet access was one until the owner's #17, D7; AbleSet until #90: AbleSet's own page in a tab.)
 
 **Principles**
 
