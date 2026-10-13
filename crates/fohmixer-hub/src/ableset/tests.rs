@@ -431,6 +431,16 @@ async fn warn_lines_are_rationed_and_only_ablesets_own_fault_is_a_warn_class_rec
     );
 }
 
+/// A record's key for its text (`error`: warn class, or `why`) and the text.
+fn why_of(record: &Value) -> (&'static str, &str) {
+    let key = if record.get("error").is_some() {
+        "error"
+    } else {
+        "why"
+    };
+    (key, record[key].as_str().unwrap())
+}
+
 /// A fake AbleSet on 127.0.0.1: `/echo` answers the headers it got as JSON
 /// (a header's values `, `-joined), `/framed` with AbleSet-like framing
 /// headers, `/moved` an http redirect of AbleSet's name, `/cookies`,
@@ -972,12 +982,18 @@ async fn a_late_answer_is_504_and_a_body_over_the_cap_413() {
         .await
         .unwrap();
     assert_eq!(streamed.status(), StatusCode::PAYLOAD_TOO_LARGE);
-    let errors: Vec<Value> = records.try_iter().map(|r| r["error"].clone()).collect();
+    // AbleSet's late answer is a warn-class record, the client's body over
+    // the cap is not.
+    let records: Vec<Value> = records.try_iter().collect();
+    let whys: Vec<(&str, &str)> = records.iter().map(why_of).collect();
     assert_eq!(
-        errors,
+        whys,
         [
-            "AbleSet did not answer within 300 ms",
-            "a request body went over the 16 bytes AbleSet is sent"
+            ("error", "AbleSet did not answer within 300 ms"),
+            (
+                "why",
+                "a request body went over the 16 bytes AbleSet is sent"
+            )
         ]
     );
     // An announced size over the cap is refused before AbleSet is asked
@@ -993,14 +1009,17 @@ async fn a_late_answer_is_504_and_a_body_over_the_cap_413() {
     assert_eq!(policies(announced.headers()), [OURS]);
     let down = through(get_from(NAME, "/", "10.0.0.5", &[])).await.unwrap();
     assert_eq!(down.status(), StatusCode::BAD_GATEWAY);
-    let errors: Vec<String> = records
-        .try_iter()
-        .map(|r| r["error"].as_str().unwrap().to_string())
-        .collect();
+    let records: Vec<Value> = records.try_iter().collect();
+    let whys: Vec<(&str, &str)> = records.iter().map(why_of).collect();
     assert_eq!(
-        errors[0],
-        "a request body of 17 bytes is over the 16 bytes AbleSet is sent"
+        whys[0],
+        (
+            "why",
+            "a request body of 17 bytes is over the 16 bytes AbleSet is sent"
+        )
     );
+    assert_eq!(whys[1].0, "error");
+    let errors: Vec<&str> = whys.iter().map(|(_, why)| *why).collect();
     let prefix = "AbleSet does not answer: client error (Connect): tcp connect error: ";
     assert!(
         errors[1].starts_with(prefix) && errors[1].len() > prefix.len(),
