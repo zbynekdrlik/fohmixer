@@ -130,9 +130,9 @@ import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import fake_ableset
+import fake_companion
 import impair
-from fake_ableset import FakeAbleSet
-from fake_companion import FakeCompanion
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # The forensics tool's own local time text (#43): the window the harness asks
@@ -576,7 +576,7 @@ class Harness:
         self.remote = remote
         self.ableset_fake = None
         if args.fake_ableset_port is not None:
-            self.ableset_fake = FakeAbleSet(args.fake_ableset_port)
+            self.ableset_fake = fake_ableset.Child(args.fake_ableset_port)
             self.ableset_fake.start()
         self.ableset = ableset_of(args, self.ableset_fake)
         if self.ableset and args.ableset_cert:
@@ -585,7 +585,7 @@ class Harness:
         self.http_port = args.http_port
         self.fake = None
         if args.fake_companion_port is not None:
-            self.fake = FakeCompanion(args.fake_companion_port)
+            self.fake = fake_companion.Child(args.fake_companion_port)
             self.fake.start()
         self.companion = companion_of(args, self.fake)
         self.companion_on = self.companion is not None
@@ -715,16 +715,26 @@ class Harness:
         return 404, {"error": f"no {method} {path}"}
 
     def stop(self):
-        self.link.stop()
-        # The hub first: its graceful REMOVE-DEVICE then reaches the fake.
+        """Stops every part, each one even when a part before it failed to
+        stop (that failure logged), then raises the first failure (#43)."""
+        parts = [("the impair proxy", self.link)]
+        # The hub before the fakes: its graceful REMOVE-DEVICE then reaches the fake.
         if self.hub is not None:
-            self.hub.stop()
+            parts.append(("the hub", self.hub))
         if self.fake is not None:
-            self.fake.stop()
+            parts.append(("the fake Companion", self.fake))
         if self.ableset_fake is not None:
-            self.ableset_fake.stop()
-        for host in self.hosts.values():
-            host.stop()
+            parts.append(("the fake AbleSet", self.ableset_fake))
+        parts += [(f"host {name}", host) for name, host in self.hosts.items()]
+        failures = []
+        for what, part in parts:
+            try:
+                part.stop()
+            except Exception as e:  # raised below, once every part had its stop
+                print(f"harness: {what} did not stop: {e!r}", file=sys.stderr, flush=True)
+                failures.append(e)
+        if failures:
+            raise failures[0]
 
 
 def handler_for(harness):

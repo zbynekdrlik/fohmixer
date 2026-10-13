@@ -824,3 +824,101 @@ async fn a_refusal_names_its_reason_and_the_way_in() {
         "Refused (no_access_token): open it on the local network, or sign in through Cloudflare Access"
     );
 }
+
+/// The `access: DENY` warn lines of `requests`, each sent to a fresh hub
+/// without `[access]` through the plain listener's router, as logged.
+fn deny_lines(requests: Vec<axum::http::Request<Body>>) -> Vec<String> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let log = crate::ws::tests::logged(|| {
+        runtime.block_on(async {
+            let hub = access_hub(dir.path(), None);
+            for request in requests {
+                let refused = through_router(&hub, request).await;
+                assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+            }
+            hub.stop();
+        });
+    });
+    log.lines()
+        .filter(|line| line.contains(" WARN ") && line.contains("access: DENY"))
+        .map(str::to_string)
+        .collect()
+}
+
+#[test]
+fn a_refusal_in_a_loop_writes_its_deny_line_rationed() {
+    // #90: another site's page posting from a LAN browser in a loop, or an
+    // internet client without its assertion; hub.out.log has no cap.
+    let posts = (0..12)
+        .map(|_| {
+            let origin = [("origin", "https://evil.example")];
+            let mut post = request("/api/auth", "192.168.1.20", &origin);
+            *post.method_mut() = Method::POST;
+            post
+        })
+        .collect();
+    let lines = deny_lines(posts);
+    assert_eq!(lines.len(), 8, "{lines:#?}");
+}
+
+#[test]
+fn a_deny_lines_path_is_cut_to_the_bound_of_a_clients_text() {
+    // #90: a path may be 64 KB; the line keeps 256 characters and the size.
+    let path = format!("/{}", "a".repeat(300));
+    let internet = request(&path, "203.0.113.7", &[]);
+    let lines = deny_lines(vec![internet]);
+    let kept = format!("path=\"/{}… (301 bytes)\"", "a".repeat(255));
+    assert_eq!(lines.len(), 1, "{lines:#?}");
+    assert!(lines[0].contains(&kept), "{}", lines[0]);
+    assert!(!lines[0].contains(&"a".repeat(256)), "{}", lines[0]);
+}
+
+#[test]
+fn a_deny_line_cuts_a_clients_text_at_a_character_and_counts_what_it_left_out() {
+    let lines = DenyLines::default();
+    let path = "ž".repeat(300);
+    let detail = format!("Origin {} is not []", "x".repeat(300));
+    let deny = |reason| {
+        lines.deny(
+            "POST",
+            &path,
+            peer("10.0.0.5"),
+            Origin::Local,
+            reason,
+            &detail,
+        )
+    };
+    let log = crate::ws::tests::logged(|| {
+        for _ in 0..10 {
+            deny("cross_site");
+        }
+        // Another reason has a ration of its own.
+        deny("no_access");
+        // The gap goes by.
+        lines.expire();
+        deny("cross_site");
+    });
+    let warned: Vec<&str> = log
+        .lines()
+        .filter(|line| line.contains(" WARN ") && line.contains("access: DENY"))
+        .collect();
+    assert_eq!(warned.len(), 10, "{log}");
+    let none_left_out: Vec<bool> = warned.iter().map(|l| l.contains("skipped=0")).collect();
+    let mut wanted = vec![true; 9];
+    wanted.push(false);
+    assert_eq!(none_left_out, wanted);
+    assert!(warned[8].contains("reason=\"no_access\""), "{}", warned[8]);
+    assert!(warned[9].contains("skipped=2"), "{}", warned[9]);
+    let kept = format!("path=\"{}… (600 bytes)\"", "ž".repeat(256));
+    let cut = format!("(Origin {}… (317 bytes))", "x".repeat(249));
+    let named = ["method=POST", "peer=Some(10.0.0.5:50000)", "origin=Local"];
+    for line in &warned {
+        assert!(line.contains(&kept) && line.contains(&cut), "{line}");
+        assert!(named.iter().all(|n| line.contains(n)), "{line}");
+    }
+    assert_eq!(DENY_LINES, 8);
+}

@@ -50,7 +50,6 @@
 //!   forwarded: [`PROBE`] (whether this device may open AbleSet) and
 //!   [`SIGNED_IN`] (back to fohmixer's page after Access's sign-in).
 
-use std::borrow::Cow;
 use std::collections::HashMap;
 use std::future::Future;
 use std::io;
@@ -78,11 +77,13 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore, watch};
 use tower::ServiceExt as _;
 
 use crate::access::{
-    AccessGate, JWT_COOKIE, has_proxy_header, is_proxy_header, is_websocket_upgrade, names_token,
+    AccessGate, DenyLines, Guard, JWT_COOKIE, has_proxy_header, is_proxy_header,
+    is_websocket_upgrade, names_token,
 };
 use crate::config::{AbleSetCfg, AccessCfg, Config, TlsCfg};
 use crate::events::EventLog;
 use crate::ration::Ration;
+pub use crate::ration::{CLIENT_TEXT, clip};
 use crate::ws::Opener;
 use crate::{Hub, routes, tls::Slot};
 
@@ -169,12 +170,6 @@ pub const SIGNED_IN: &str = "/.fohmixer/signed-in";
 /// The probe's answer: a 1 × 1 transparent GIF.
 pub const PIXEL: &[u8] = b"GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff!\xf9\x04\x01\x00\x00\x00\x00,\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02D\x01\x00;";
 
-/// At most this many characters of a client's own text (a path, a method,
-/// a `Sec-Fetch-*` value, a target) in a record or a log line (#90 B3h
-/// review 2): a path may be 64 KB and a head 400 KB, and neither the day's
-/// event-log cap nor `hub.out.log` is meant for them. [`clip`] cuts it.
-pub const CLIENT_TEXT: usize = 256;
-
 /// At most this many `ableset_ws` records (and info lines) of one kind,
 /// `open` or `close`, per [`WARN_GAP`]: a tab opened and closed now and
 /// then is all recorded, a client opening sockets in a loop is not (the
@@ -229,6 +224,8 @@ pub struct AbleSet {
     /// The Access check of its internet requests (`access_aud`); none: they
     /// are refused.
     gate: Option<Arc<AccessGate>>,
+    /// The rations of its `access: DENY` lines, shared by both listeners.
+    deny_lines: DenyLines,
     proxy: Proxy,
     /// `frame-ancestors` of fohmixer's own page, on every answer.
     frame_ancestors: HeaderValue,
@@ -307,6 +304,7 @@ impl AbleSet {
             name: name.to_string(),
             parent: tls.name.clone(),
             gate,
+            deny_lines: DenyLines::default(),
             proxy,
             frame_ancestors: HeaderValue::from_str(&ancestors)
                 .expect("DNS names make a header value"),
@@ -624,15 +622,6 @@ pub fn warn_line(wanted: bool, since: Option<Duration>) -> bool {
     wanted && since.is_none_or(|since| since >= WARN_GAP)
 }
 
-/// A client's own text cut to [`CLIENT_TEXT`] characters, with a mark
-/// naming its whole size when cut (pure, #90 B3h review 2).
-pub fn clip(text: &str) -> Cow<'_, str> {
-    match text.char_indices().nth(CLIENT_TEXT) {
-        None => Cow::Borrowed(text),
-        Some((end, _)) => Cow::Owned(format!("{}… ({} bytes)", &text[..end], text.len())),
-    }
-}
-
 /// The `ableset_proxy` record of a request that did not reach AbleSet: why
 /// under `error` for an `alarm` (a warned fault of AbleSet itself: a
 /// warn-class record, kept past the event log's daily cap, `events::is_warn`),
@@ -706,7 +695,11 @@ pub async fn dispatch(State(to): State<Dispatch>, request: Request, next: Next) 
 /// headers on every answer.
 pub fn router(site: Arc<AbleSet>, redirect: Option<Hub>) -> Router {
     let https = redirect.is_none();
-    let access = from_fn_with_state(site.gate.clone(), crate::access::middleware);
+    let guard = Guard {
+        gate: site.gate.clone(),
+        lines: site.deny_lines.clone(),
+    };
+    let access = from_fn_with_state(guard, crate::access::middleware);
     let mut app = Router::new()
         .route(PROBE, get(probe))
         .route(SIGNED_IN, get(signed_in))

@@ -34,7 +34,7 @@
 
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
-use std::sync::Arc;
+use std::sync::{Arc, PoisonError};
 use std::time::{Duration, Instant};
 
 use axum::extract::{ConnectInfo, Request, State};
@@ -47,6 +47,7 @@ use tokio::sync::{Mutex, RwLock};
 
 use crate::config::AccessCfg;
 use crate::http_client::HttpClient;
+use crate::ration::{Ration, clip};
 
 /// Headers a proxy sets and a request made straight to the hub never
 /// carries; an entry ending in `-` names every header it starts. Any of
@@ -512,19 +513,87 @@ pub fn forbidden(reason: &str) -> Response {
     )
 }
 
+/// At most this many `access: DENY` warn lines of one reason per
+/// [`crate::ration::GAP`] (#90): every refusal says why, but a client in a
+/// loop (another site's page posting from a LAN browser, an internet client
+/// without its assertion) must not flood `hub.out.log`, which has no cap.
+/// The count left out rides on the next one as `skipped`; the rest are
+/// debug lines.
+pub const DENY_LINES: u32 = 8;
+
+/// The `access: DENY` lines' rations, one per reason: one per router (the
+/// hub's for fohmixer's name, AbleSet's for its own), so its two listeners
+/// share it.
+#[derive(Clone, Default)]
+pub struct DenyLines(Arc<std::sync::Mutex<HashMap<&'static str, Ration>>>);
+
+impl DenyLines {
+    /// A refusal's line: at warn while its reason's ration allows
+    /// ([`DENY_LINES`], with `skipped`), else at debug; the client's own
+    /// text (the method, the path, and the detail, which can hold an
+    /// `Origin`, a `Host` or a key id) [`clip`]ped, the path quoted.
+    pub fn deny(
+        &self,
+        method: &str,
+        path: &str,
+        peer: Option<SocketAddr>,
+        origin: Origin,
+        reason: &'static str,
+        detail: &str,
+    ) {
+        let due = {
+            let mut rations = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+            let ration = rations.entry(reason).or_default();
+            ration.take(Instant::now(), DENY_LINES)
+        };
+        let (method, path, detail) = (clip(method), clip(path), clip(detail));
+        match due {
+            Some(skipped) => tracing::warn!(
+                method = %method,
+                path = ?path,
+                peer = ?peer,
+                origin = ?origin,
+                reason,
+                skipped,
+                "access: DENY ({detail})"
+            ),
+            None => tracing::debug!(
+                method = %method,
+                path = ?path,
+                peer = ?peer,
+                origin = ?origin,
+                reason,
+                "access: DENY ({detail})"
+            ),
+        }
+    }
+
+    /// Ends every ration's window, keeping what it left out (a test's gap
+    /// gone by).
+    #[cfg(test)]
+    pub fn expire(&self) {
+        let mut rations = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        rations.values_mut().for_each(Ration::expire);
+    }
+}
+
+/// The middleware's state: the gate (`None`: internet requests are
+/// refused) and its router's [`DenyLines`]. The module does not depend on
+/// the rest of the hub.
+#[derive(Clone)]
+pub struct Guard {
+    pub gate: Option<Arc<AccessGate>>,
+    pub lines: DenyLines,
+}
+
 /// The middleware in front of every route (the SPA's catch-all included).
-/// Its state is only the gate (`None`: internet requests are refused), so
-/// the module does not depend on the rest of the hub.
-pub async fn middleware(
-    State(gate): State<Option<Arc<AccessGate>>>,
-    request: Request,
-    next: Next,
-) -> Response {
+pub async fn middleware(State(guard): State<Guard>, request: Request, next: Next) -> Response {
     let peer = request
         .extensions()
         .get::<ConnectInfo<SocketAddr>>()
         .map(|info| info.0);
-    let decision = decide(gate.as_deref(), peer, request.headers(), request.method()).await;
+    let gate = guard.gate.as_deref();
+    let decision = decide(gate, peer, request.headers(), request.method()).await;
     match decision {
         Decision::Allow { identity } => {
             if let Some(who) = identity {
@@ -539,14 +608,10 @@ pub async fn middleware(
         } => {
             // Every refusal says why: a LAN client that somehow sends a
             // forwarded header gets a 403 whose cause is this line.
-            tracing::warn!(
-                method = %request.method(),
-                path = %request.uri().path(),
-                peer = ?peer,
-                origin = ?origin,
-                reason,
-                "access: DENY ({detail})"
-            );
+            let (method, path) = (request.method().as_str(), request.uri().path());
+            guard
+                .lines
+                .deny(method, path, peer, origin, reason, &detail);
             forbidden(reason)
         }
     }

@@ -24,7 +24,7 @@ use http_body_util::{BodyExt as _, LengthLimitError, Limited};
 use hyper::body::Incoming;
 use hyper_util::client::legacy::Client;
 use hyper_util::client::legacy::connect::HttpConnector;
-use hyper_util::rt::{TokioExecutor, TokioTimer};
+use hyper_util::rt::TokioExecutor;
 
 /// How long a connection to AbleSet may take.
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
@@ -34,16 +34,18 @@ pub const HEAD_TIMEOUT: Duration = Duration::from_secs(60);
 /// The largest request body forwarded: 64 MiB (AbleSet's uploads are far
 /// smaller), a literal so cargo-mutants has no operator to mutate.
 pub const MAX_BODY: u64 = 67_108_864;
-/// How long an idle connection to AbleSet is kept (#90 B3 review 1): well
-/// under the 5 s after which AbleSet's Node server closes an idle
-/// keep-alive connection (`server.keepAliveTimeout`, counted from its last
-/// write, so the margin also covers a page that reads AbleSet's last bytes
-/// late). A request written on a connection AbleSet is closing just then
-/// fails, hyper retries only a request it has not written, and the failure
-/// reads as AbleSet down. A fresh loopback connection costs nothing. Not
-/// taken: retrying an idempotent request after such a close, which would
-/// keep every request's streamed body to send it again.
-pub const POOL_IDLE: Duration = Duration::from_secs(2);
+/// The idle connections to AbleSet kept: none, so every request takes a
+/// fresh loopback connection, as the link's reads do (#90). AbleSet's Node
+/// server closes a keep-alive connection idle for 5 s
+/// (`server.keepAliveTimeout`, counted from its last write); a request
+/// written on a connection it is closing just then fails, hyper retries
+/// only a request it has not written, and the failure reads as AbleSet
+/// down. A kept connection, however briefly, leaves that race open to an
+/// AbleSet whose timeout is shorter and to a page that drains a body late;
+/// with none there is no race at all, for one loopback connect per request.
+/// Not taken: retrying an idempotent request after such a close, which
+/// would keep every request's streamed body to send it again.
+pub const POOL_IDLE: usize = 0;
 
 /// Why a request did not reach AbleSet (the text for the log and the
 /// record).
@@ -136,9 +138,7 @@ impl Proxy {
         connector.set_connect_timeout(Some(CONNECT_TIMEOUT));
         connector.set_nodelay(true);
         let client = Client::builder(TokioExecutor::new())
-            .pool_idle_timeout(POOL_IDLE)
-            .pool_max_idle_per_host(8)
-            .pool_timer(TokioTimer::new())
+            .pool_max_idle_per_host(POOL_IDLE)
             .build(connector);
         Self {
             client,

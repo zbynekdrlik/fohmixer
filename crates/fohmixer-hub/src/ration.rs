@@ -3,11 +3,29 @@
 //! client in a loop can neither flood the hub's log nor use up the day's
 //! event-log space (`events.rs`: past 256 MB a day only warn-class records
 //! are written), while the count of what was left out stays on the record.
+//! A client's own text in such a record or line is cut too ([`clip`]).
 
+use std::borrow::Cow;
 use std::time::{Duration, Instant};
 
 /// The window of a ration.
 pub const GAP: Duration = Duration::from_secs(10);
+
+/// At most this many characters of a client's own text (a path, a method,
+/// a `Sec-Fetch-*` value, a target, an `Origin`) in a record or a log line
+/// (#90 B3h review 2): a path may be 64 KB and a head 400 KB, and neither
+/// the day's event-log cap nor `hub.out.log` is meant for them. [`clip`]
+/// cuts it.
+pub const CLIENT_TEXT: usize = 256;
+
+/// A client's own text cut to [`CLIENT_TEXT`] characters, with a mark
+/// naming its whole size when cut (pure, #90 B3h review 2).
+pub fn clip(text: &str) -> Cow<'_, str> {
+    match text.char_indices().nth(CLIENT_TEXT) {
+        None => Cow::Borrowed(text),
+        Some((end, _)) => Cow::Owned(format!("{}… ({} bytes)", &text[..end], text.len())),
+    }
+}
 
 /// One kind's ration: the window it is in, what it used of it, and what it
 /// left out since the last record it allowed.
