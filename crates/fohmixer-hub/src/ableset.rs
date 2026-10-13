@@ -27,9 +27,10 @@
 //!   browser on the PC sends, with the public `Host` (the owner's decision:
 //!   fohmixer's access rules are the lock).
 //! - When AbleSet does not answer, or the hub refuses, the hub answers
-//!   itself ([`down_answer`]), records every such request (`ableset_proxy`)
-//!   and logs it at warn at most once per [`WARN_GAP`] for each kind
-//!   ([`warn_line`]).
+//!   itself ([`down_answer`]), records it (`ableset_proxy`: each of
+//!   AbleSet's own faults, a client's at most [`FAULT_RECORDS`] per kind per
+//!   [`WARN_GAP`]) and logs it at warn at most once per [`WARN_GAP`] for
+//!   each kind ([`warn_line`]).
 //! - A WebSocket upgrade ([`is_upgrade`]: Socket.IO's `websocket`
 //!   transport, on HTTP/1.1), after the same checks, is a transparent byte
 //!   tunnel (B2): AbleSet's 101 goes back to the page and each way's bytes
@@ -117,6 +118,13 @@ pub const WARN_GAP: Duration = crate::ration::GAP;
 /// once.
 pub const MAX_SOCKETS: usize = 64;
 
+/// At most this many `ableset_proxy` records of a client's fault (anything
+/// but AbleSet down or late, [`Failure::is_ableset`]) of one kind
+/// ([`Failure::kind`]) per [`WARN_GAP`], the count left out on the next
+/// (#90 B3h): a client in a loop (403s, a full hub's 503s) cannot use up
+/// the day's event-log space. AbleSet's own faults are all recorded.
+pub const FAULT_RECORDS: u32 = 1;
+
 /// At most this many `ableset_ws` records (and info lines) of one kind,
 /// `open` or `close`, per [`WARN_GAP`]: a tab opened and closed now and
 /// then is all recorded, a client opening sockets in a loop is not (the
@@ -187,8 +195,8 @@ pub struct AbleSet {
     tunnels: AtomicU64,
     /// The hub's stop: every tunnel ends at it.
     stop: watch::Sender<bool>,
-    /// The records' rations by kind.
-    rations: Mutex<HashMap<&'static str, Ration>>,
+    /// The records' rations by record and kind.
+    rations: Mutex<HashMap<(&'static str, &'static str), Ration>>,
 }
 
 impl AbleSet {
@@ -271,12 +279,12 @@ impl AbleSet {
         matches!(back, Ok(Ok(_)))
     }
 
-    /// Whether a record of `kind` is due, at most `per_gap` per
+    /// Whether a `record` of `kind` is due, at most `per_gap` per
     /// [`WARN_GAP`]: the count of its kind left out before it.
-    fn due(&self, kind: &'static str, per_gap: u32) -> Option<u64> {
+    fn due(&self, record: &'static str, kind: &'static str, per_gap: u32) -> Option<u64> {
         let mut rations = self.rations.lock().unwrap_or_else(PoisonError::into_inner);
         rations
-            .entry(kind)
+            .entry((record, kind))
             .or_default()
             .take(Instant::now(), per_gap)
     }
@@ -286,7 +294,7 @@ impl AbleSet {
     /// line.
     fn ws_note(&self, n: u64, opener: &Opener, ws: &Ws<'_>) {
         let kind = ws.kind();
-        let Some(skipped) = self.due(kind, WS_RECORDS) else {
+        let Some(skipped) = self.due("ableset_ws", kind, WS_RECORDS) else {
             tracing::debug!(client = n, "ableset: WebSocket {kind}");
             return;
         };
@@ -353,8 +361,9 @@ impl AbleSet {
         tracing::debug!(%method, path, status = status.as_u16(), ms, "ableset: proxied");
     }
 
-    /// AbleSet was not reached: answered by the hub, recorded, and logged
-    /// at warn when [`warn_line`] says so (else at debug).
+    /// AbleSet was not reached: answered by the hub, recorded (a client's
+    /// fault at most [`FAULT_RECORDS`] per kind per [`WARN_GAP`]), and
+    /// logged at warn when [`warn_line`] says so (else at debug).
     fn failed(
         &self,
         method: &Method,
@@ -432,8 +441,16 @@ impl AbleSet {
         } else {
             tracing::debug!(%method, path, status, "ableset: {why}");
         }
-        let fields = proxy_fields(method.as_str(), path, status, why, warn && ableset);
-        self.events.record("ableset_proxy", fields);
+        let due = if ableset {
+            Some(0)
+        } else {
+            self.due("ableset_proxy", failure.kind(), FAULT_RECORDS)
+        };
+        if let Some(skipped) = due {
+            let alarm = warn && ableset;
+            let fields = proxy_fields(method.as_str(), path, status, why, alarm, skipped);
+            self.events.record("ableset_proxy", fields);
+        }
         answer
     }
 }
@@ -447,10 +464,20 @@ pub fn warn_line(wanted: bool, since: Option<Duration>) -> bool {
 
 /// The `ableset_proxy` record of a request that did not reach AbleSet: why
 /// under `error` for an `alarm` (a warned fault of AbleSet itself: a
-/// warn-class record, kept past the event log's daily cap), else under
-/// `why`, so no client can fill the PC's disk with warn-class records.
-pub fn proxy_fields(method: &str, path: &str, status: u16, why: &str, alarm: bool) -> Value {
-    let mut fields = json!({ "method": method, "path": path, "status": status });
+/// warn-class record, kept past the event log's daily cap, `events::is_warn`),
+/// else under `why`, so no client can fill the PC's disk with warn-class
+/// records; `skipped`: the records of its kind the ration left out before it.
+pub fn proxy_fields(
+    method: &str,
+    path: &str,
+    status: u16,
+    why: &str,
+    alarm: bool,
+    skipped: u64,
+) -> Value {
+    let mut fields = json!({
+        "method": method, "path": path, "status": status, "skipped": skipped
+    });
     fields[if alarm { "error" } else { "why" }] = json!(why);
     fields
 }

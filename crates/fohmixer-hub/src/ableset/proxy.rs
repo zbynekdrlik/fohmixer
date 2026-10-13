@@ -78,6 +78,22 @@ impl Failure {
         }
     }
 
+    /// Its kind: the key of a client's fault's record ration
+    /// (`ableset::FAULT_RECORDS`).
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Method(_) => "method",
+            Self::Target(_) => "target",
+            Self::CrossSite(_) => "cross_site",
+            Self::UpgradeBody(_) => "upgrade_body",
+            Self::Closed(_) => "closed",
+            Self::Busy(_) => "busy",
+            Self::TooLarge(_) => "too_large",
+            Self::Down(_) => "down",
+            Self::Timeout(_) => "timeout",
+        }
+    }
+
     /// Whether it is AbleSet's own fault (down, late), not a client's or a
     /// full hub's.
     pub fn is_ableset(&self) -> bool {

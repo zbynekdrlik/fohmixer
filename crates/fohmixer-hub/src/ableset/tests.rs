@@ -439,6 +439,58 @@ async fn warn_lines_are_rationed_and_only_ablesets_own_fault_is_a_warn_class_rec
     );
 }
 
+#[test]
+fn a_clients_faults_are_recorded_once_per_gap_per_kind_and_ablesets_own_each_time() {
+    let (site, records) = site_with(CLOSED, Duration::from_secs(1), 16);
+    let busy = "every WebSocket slot for AbleSet is taken";
+    // A client in a loop (#90 B3h, review finding 6): one record per kind
+    // in a gap, the repeats left out (counted on the next one); AbleSet's
+    // own fault every time.
+    for _ in 0..3 {
+        site.failed(&Method::GET, "/a", None, Failure::Busy(busy.into()));
+        site.failed(&Method::GET, "/b", None, Failure::CrossSite("x".into()));
+        site.failed(&Method::GET, "/c", None, Failure::Down("refused".into()));
+    }
+    site.failed(&Method::GET, "/d", None, Failure::Target("t".into()));
+    let records: Vec<Value> = records.try_iter().collect();
+    let rows: Vec<(&str, &str, u64, bool)> = records
+        .iter()
+        .map(|r| {
+            let (key, why) = why_of(r);
+            let skipped = r["skipped"].as_u64().unwrap();
+            (key, why, skipped, crate::events::is_warn(r))
+        })
+        .collect();
+    // Only AbleSet's outage outlives the event log's daily cap (warn
+    // class), and only its warned first record; a client's faults never.
+    assert_eq!(
+        rows,
+        [
+            ("why", busy, 0, false),
+            ("why", "x", 0, false),
+            ("error", "refused", 0, true),
+            ("why", "refused", 0, false),
+            ("why", "refused", 0, false),
+            ("why", "t", 0, false),
+        ]
+    );
+    // Every kind is its own ration.
+    let every = [
+        Failure::Method(String::new()),
+        Failure::Target(String::new()),
+        Failure::CrossSite(String::new()),
+        Failure::UpgradeBody(String::new()),
+        Failure::Closed(String::new()),
+        Failure::Busy(String::new()),
+        Failure::TooLarge(String::new()),
+        Failure::Down(String::new()),
+        Failure::Timeout(String::new()),
+    ];
+    let kinds: std::collections::HashSet<&str> = every.iter().map(Failure::kind).collect();
+    assert_eq!(kinds.len(), every.len(), "{kinds:?}");
+    assert_eq!(FAULT_RECORDS, 1);
+}
+
 /// A record's key for its text (`error`: warn class, or `why`) and the text.
 fn why_of(record: &Value) -> (&'static str, &str) {
     let key = if record.get("error").is_some() {
