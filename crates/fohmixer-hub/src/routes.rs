@@ -166,7 +166,7 @@ fn is_port(port: &str) -> bool {
 /// brackets) and whether it was bracketed, or `None` for anything else
 /// (`[::1] x`, `127.0.0.1:1 x`, an empty or non-digit port, a name in
 /// brackets).
-fn host_name(host: &str) -> Option<(&str, bool)> {
+pub(crate) fn host_name(host: &str) -> Option<(&str, bool)> {
     if let Some(rest) = host.strip_prefix('[') {
         let (addr, after) = rest.split_once(']')?;
         let port_ok = after.is_empty() || after.strip_prefix(':').is_some_and(is_port);
@@ -236,10 +236,26 @@ pub fn redirect_target(
     https_port: Option<u16>,
     path_and_query: &str,
 ) -> Option<String> {
-    let tls = tls.filter(|tls| tls.redirect_http && !proxied)?;
+    let tls = tls.filter(|tls| tls.redirect_http)?;
+    redirect_to(host, proxied, &tls.name, https_port, path_and_query)
+}
+
+/// [`redirect_target`] for `name` (the `[tls]` name, or AbleSet's #90): to
+/// `https://<name>[:https_port]<path>` when the request names it, no proxy
+/// handled it and the HTTPS listener serves its certificate (`https_port`).
+pub fn redirect_to(
+    host: Option<&str>,
+    proxied: bool,
+    name: &str,
+    https_port: Option<u16>,
+    path_and_query: &str,
+) -> Option<String> {
+    if proxied {
+        return None;
+    }
     let https_port = https_port?;
-    let (name, _bracketed) = host_name(host?)?;
-    if !name.eq_ignore_ascii_case(&tls.name) {
+    let (host, _bracketed) = host_name(host?)?;
+    if !host.eq_ignore_ascii_case(name) {
         return None;
     }
     let port = if https_port == 443 {
@@ -247,22 +263,29 @@ pub fn redirect_target(
     } else {
         format!(":{https_port}")
     };
-    Some(format!("https://{}{port}{path_and_query}", tls.name))
+    Some(format!("https://{name}{port}{path_and_query}"))
 }
 
-/// The redirect of the public name to HTTPS (the plain-HTTP listener only).
-pub async fn https_redirect(State(hub): State<Hub>, request: Request, next: Next) -> Response {
+/// What a redirect reads of a request: its `Host`, whether a proxy handled
+/// it, and its path and query.
+pub(crate) fn redirect_inputs(request: &Request) -> (Option<&str>, bool, &str) {
     let host = request
         .headers()
         .get(header::HOST)
         .and_then(|h| h.to_str().ok());
     let path = request.uri().path_and_query().map_or("/", |pq| pq.as_str());
     let proxied = crate::access::has_proxy_header(request.headers());
+    (host, proxied, path)
+}
+
+/// The redirect of the public name to HTTPS (the plain-HTTP listener only).
+pub async fn https_redirect(State(hub): State<Hub>, request: Request, next: Next) -> Response {
     let serving = hub
         .https
         .get()
         .filter(|https| https.serving())
         .map(|https| https.addr().port());
+    let (host, proxied, path) = redirect_inputs(&request);
     match redirect_target(host, proxied, hub.config.tls.as_ref(), serving, path) {
         Some(location) => axum::response::Redirect::temporary(&location).into_response(),
         None => next.run(request).await,

@@ -70,6 +70,8 @@ async fn hub(
     });
     config.ableset = ableset.map(|_| AbleSetCfg {
         name: ABLESET.into(),
+        upstream: fohmixer_hub::config::DEFAULT_ABLESET_UPSTREAM.into(),
+        access_aud: Vec::new(),
     });
     TestHub::start_config(config).await
 }

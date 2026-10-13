@@ -24,6 +24,11 @@
 //! `/api/status` (`remote.rs`). The plain-HTTP listener always stays: it is
 //! the emergency path by IP and the tunnel's origin.
 //!
+//! AbleSet's own page (#90, `[ableset]`): requests for its name go, on both
+//! listeners and before fohmixer's own layers, to AbleSet's web app on this
+//! PC (`ableset.rs`), under fohmixer's access rules with an Access gate of
+//! their own.
+//!
 //! The Stream Deck tab (#52, `[companion]`): one more Stream Deck on Bitfocus
 //! Companion's Satellite API (`companion.rs`), its state in the router
 //! (`deck.rs`, `router/deck.rs`), its link in `/api/status`. The stop
@@ -52,6 +57,7 @@ use tokio::sync::{Notify, mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tower_http::set_header::SetResponseHeaderLayer;
 
+pub mod ableset;
 pub mod access;
 pub mod acme;
 pub mod auth;
@@ -139,6 +145,8 @@ pub struct HubInner {
     /// The Access check of internet requests (`[access]`); none: they are
     /// refused.
     pub access: Option<Arc<AccessGate>>,
+    /// AbleSet's name behind the hub (#90, `[ableset]`).
+    pub ableset: Option<Arc<ableset::AbleSet>>,
     /// Remote access's live state for `/api/status`.
     pub remote: Arc<RemoteState>,
     /// The host names a request may name besides addresses (`check_host`).
@@ -337,14 +345,22 @@ impl Hub {
         let (router_tx, router_rx) = mpsc::unbounded_channel();
         let mut tasks = Vec::new();
         let remote = Arc::new(RemoteState::default());
-        let access = match &config.access {
-            Some(cfg) => {
-                let gate = AccessGate::new(cfg, remote_http()?);
-                tasks.push(gate.spawn_refresher());
-                Some(gate)
-            }
-            None => None,
-        };
+        let access = access_gate(config.access.as_ref(), &mut tasks)?;
+        // AbleSet's name (#90): its own gate, the AbleSet application's
+        // audience, so neither application's assertion opens the other.
+        let ableset_gate = access_gate(ableset::access_cfg(&config).as_ref(), &mut tasks)?;
+        let ableset = config
+            .ableset
+            .as_ref()
+            .zip(config.tls.as_ref())
+            .map(|(cfg, tls)| {
+                Arc::new(ableset::AbleSet::new(
+                    cfg,
+                    tls,
+                    ableset_gate,
+                    events.clone(),
+                ))
+            });
         if let Some(cfg) = &config.tunnel {
             tasks.push(tunnel::spawn(
                 remote_http()?,
@@ -437,6 +453,7 @@ impl Hub {
             auth,
             layout,
             access,
+            ableset,
             remote,
             trusted_hosts,
             https: std::sync::OnceLock::new(),
@@ -479,6 +496,20 @@ use crate::plugwin::win::hub_backend as windows_backend;
 #[cfg(not(windows))]
 fn windows_backend() -> anyhow::Result<Box<dyn plugwin::Backend>> {
     anyhow::bail!("[eq] backend \"windows\" runs on Windows only")
+}
+
+/// The Access gate of `cfg` with its key refresher among `tasks`; none
+/// without a config (internet requests are then refused).
+fn access_gate(
+    cfg: Option<&config::AccessCfg>,
+    tasks: &mut Vec<JoinHandle<()>>,
+) -> anyhow::Result<Option<Arc<AccessGate>>> {
+    let Some(cfg) = cfg else {
+        return Ok(None);
+    };
+    let gate = AccessGate::new(cfg, remote_http()?);
+    tasks.push(gate.spawn_refresher());
+    Ok(Some(gate))
 }
 
 /// The HTTP client of the remote-access tasks, on rustls with ring.
@@ -531,12 +562,33 @@ pub(crate) fn test_hub(dir: &std::path::Path) -> Hub {
     Hub::start(config).expect("a test hub")
 }
 
+/// fohmixer's own Content-Security-Policy: WASM + inline scripts (Trunk's
+/// loader) and inline styles (Leptos); connections to this server only (the
+/// client WebSocket is same-origin, which 'self' covers); images may also be
+/// the page's own blobs (a Pro-Q 4 card's last picture, fetched with the
+/// token, #71). With `[ableset]` (#90; `framed`: its name and the `[tls]`
+/// port) AbleSet's origins may be framed and probed as an image.
+pub fn page_csp(framed: Option<(&str, u16)>) -> String {
+    let (img, frame) = match framed {
+        Some((name, port)) => {
+            let origins = ableset::https_origins(name, port);
+            (format!(" {origins}"), format!("; frame-src {origins}"))
+        }
+        None => (String::new(), String::new()),
+    };
+    format!(
+        "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data: blob:{img}; font-src 'self'{frame}"
+    )
+}
+
 /// The HTTP application: API and static routes behind the security headers,
 /// the host check (DNS rebinding), the redirect to HTTPS (`redirect`, the
 /// plain-HTTP listener only) and the Access check (`access.rs`), in that
 /// order, in front of every route. No CORS layer: the UI is always loaded
 /// from this server, so its requests are same-origin; a foreign page gets
-/// no `Access-Control-Allow-Origin` and cannot read API responses.
+/// no `Access-Control-Allow-Origin` and cannot read API responses. With
+/// `[ableset]` (#90) a request for AbleSet's name goes to its own router
+/// before any of that (`ableset::dispatch`).
 fn router(hub: Hub, redirect: bool) -> Router {
     let x_frame_options = SetResponseHeaderLayer::overriding(
         HeaderName::from_static("x-frame-options"),
@@ -550,15 +602,11 @@ fn router(hub: Hub, redirect: bool) -> Router {
         HeaderName::from_static("referrer-policy"),
         HeaderValue::from_static("strict-origin-when-cross-origin"),
     );
-    // CSP allows WASM + inline scripts (Trunk's loader) and inline styles
-    // (Leptos); connections go to this server only (the client WebSocket is
-    // same-origin, which 'self' covers); images may also be the page's own
-    // blobs (a Pro-Q 4 card's last picture, fetched with the token, #71).
+    let framed = hub.config.ableset.as_ref().zip(hub.config.tls.as_ref());
+    let csp = page_csp(framed.map(|(a, tls)| (a.name.as_str(), tls.port)));
     let csp = SetResponseHeaderLayer::overriding(
         HeaderName::from_static("content-security-policy"),
-        HeaderValue::from_static(
-            "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data: blob:; font-src 'self'",
-        ),
+        HeaderValue::from_str(&csp).expect("a policy of DNS names is a header value"),
     );
 
     let check_host = axum::middleware::from_fn_with_state(hub.clone(), routes::check_host);
@@ -573,12 +621,24 @@ fn router(hub: Hub, redirect: bool) -> Router {
             routes::https_redirect,
         ));
     }
-    app.layer(check_host)
+    let app = app
+        .layer(check_host)
         .layer(x_frame_options)
         .layer(x_content_type_options)
         .layer(referrer_policy)
         .layer(csp)
-        .with_state(hub)
+        .with_state(hub.clone());
+    match hub.ableset.clone() {
+        Some(site) => {
+            let redirect = if redirect { Some(hub.clone()) } else { None };
+            let to = ableset::Dispatch {
+                name: site.name.clone(),
+                router: ableset::router(site, redirect),
+            };
+            app.layer(axum::middleware::from_fn_with_state(to, ableset::dispatch))
+        }
+        None => app,
+    }
 }
 
 /// The plain-HTTP listener's application: [`router`] with the redirect of
@@ -902,6 +962,8 @@ mod tests {
     async fn with_acme_each_configured_name_gets_its_own_keeper() {
         let ableset_cfg = config::AbleSetCfg {
             name: "ableset.example.org".into(),
+            upstream: config::DEFAULT_ABLESET_UPSTREAM.into(),
+            access_aud: Vec::new(),
         };
         for ableset in [false, true] {
             let dir = tempfile::tempdir().unwrap();
@@ -953,6 +1015,18 @@ mod tests {
             assert_eq!(attempts(), expected, "[ableset]: {ableset}");
             hub.stop();
         }
+    }
+
+    #[test]
+    fn the_page_may_frame_ablesets_origins_only_with_ableset() {
+        let today = "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data: blob:; font-src 'self'";
+        assert_eq!(page_csp(None), today);
+        assert_eq!(
+            page_csp(Some(("ableset.example.org", 8443))),
+            "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self'; \
+             img-src 'self' data: blob: https://ableset.example.org https://ableset.example.org:8443; font-src 'self'; \
+             frame-src https://ableset.example.org https://ableset.example.org:8443"
+        );
     }
 
     #[test]

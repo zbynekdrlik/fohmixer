@@ -14,6 +14,8 @@ fohmixer-proto = { path = "../fohmixer-proto" }
 axum = { version = "0.8", features = ["macros", "json", "ws"] }
 # Security headers
 tower-http = { version = "0.6", features = ["set-header"] }
+# AbleSet's name goes to its own router (#90: `oneshot`)
+tower = { version = "0.5", features = ["util"] }
 # Async runtime (signal: the binary's graceful stop; io-util: Companion's line reads, #52)
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net", "sync", "time", "io-util"] }
 # The WebSocket client of the FohMixer scripts (the version axum's ws uses)
@@ -80,7 +82,6 @@ windows = { version = "0.61", features = [
 ] }
 
 [dev-dependencies]
-tower = { version = "0.5", features = ["util"] }
 # Test doubles of #17: a test CA signs the ACME double's CSRs (rcgen); ring
 # checks the double's JWS signatures and key thumbprints and reads the
 # public half of the test RSA keys (made by `openssl genrsa`: the RSA crate
