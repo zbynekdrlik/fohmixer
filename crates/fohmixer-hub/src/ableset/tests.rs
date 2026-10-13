@@ -2791,32 +2791,30 @@ async fn the_link_reads_on_a_fresh_connection_each_time_and_takes_any_answer() {
 }
 
 #[tokio::test]
-async fn the_proxy_never_uses_a_connection_idle_near_ablesets_keep_alive() {
-    // #90 B3 review 1: Node closes a keep-alive connection idle for 5 s; one
-    // the proxy kept idle up to that and used just as it closes fails, and
-    // reads as AbleSet down. A connection idle a moment is used again.
+async fn the_proxy_takes_a_fresh_connection_for_every_request() {
+    // #90: Node closes a keep-alive connection idle for 5 s, counted from its
+    // last write; a request the proxy writes on a connection AbleSet is
+    // closing just then fails and reads as AbleSet down. No connection is
+    // kept idle, so none is used again, as the link's reads.
     let (upstream, accepted, _) = counting().await;
     let proxy = Proxy::new(&upstream, proxy::HEAD_TIMEOUT, proxy::MAX_BODY);
-    let proxy = &proxy;
-    let ask = || async move {
+    for _ in 0..3 {
         let request = axum::http::Request::builder()
             .uri("/")
             .header("host", NAME)
             .body(Body::empty())
             .unwrap();
         let answer = proxy.send(request).await.unwrap();
-        axum::body::to_bytes(answer.into_body(), 1024)
-            .await
-            .unwrap();
-    };
-    ask().await;
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    ask().await;
-    assert_eq!(accepted.load(Ordering::Relaxed), 1, "used again");
-    // Idle 3 s, well under Node's 5 s: never used again.
-    tokio::time::sleep(Duration::from_secs(3)).await;
-    ask().await;
-    assert_eq!(accepted.load(Ordering::Relaxed), 2, "a new connection");
+        let body = axum::body::to_bytes(answer.into_body(), 1024).await;
+        assert_eq!(body.unwrap(), "ok");
+        // A pool would have the connection back by now.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(
+        accepted.load(Ordering::Relaxed),
+        3,
+        "a connection per request"
+    );
 }
 
 #[test]
