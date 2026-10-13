@@ -409,7 +409,8 @@ impl TapTracker {
 }
 
 /// A constant-speed glide (the double tap's move to 0 dB, a pan's to the
-/// centre).
+/// centre). It lasts as long as `speed` takes over its span: its own way,
+/// or a longer one it was stretched to ([`Glide::stretched`], #58).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Glide {
     from: f64,
@@ -417,6 +418,9 @@ pub struct Glide {
     t0: f64,
     /// Positions per second.
     speed: f64,
+    /// The positions whose travel at `speed` the glide lasts: `|to − from|`,
+    /// or more once stretched.
+    span: f64,
 }
 
 impl Glide {
@@ -432,17 +436,54 @@ impl Glide {
             to,
             t0,
             speed,
+            span: (to - from).abs(),
         }
     }
 
-    /// The position at time `t` and whether the glide has arrived.
+    /// The same glide (its end, start time and speed) from `from`, lasting
+    /// as long as its speed takes over `span` positions, never less than
+    /// its own way (#58: the backing-tracks fader's double tap lasts its
+    /// furthest track's way to 0 dB while the cap shows the loudest's).
+    pub fn stretched(self, from: f64, span: f64) -> Self {
+        Self {
+            from,
+            to: self.to,
+            t0: self.t0,
+            speed: self.speed,
+            span: span.max((self.to - from).abs()),
+        }
+    }
+
+    /// The positions travelled at time `t` (none before the start).
+    fn travelled(&self, t: f64) -> f64 {
+        self.speed * (t - self.t0).max(0.0) / 1000.0
+    }
+
+    /// The position at time `t` and whether the glide has arrived: the
+    /// same share of its own way as of its span ([`Glide::progress`]).
     pub fn at(&self, t: f64) -> (f64, bool) {
-        let travelled = self.speed * (t - self.t0).max(0.0) / 1000.0;
+        let travelled = self.travelled(t);
         let gap = self.to - self.from;
-        if travelled >= gap.abs() {
+        if travelled >= self.span {
             (self.to, true)
         } else {
-            (self.from + travelled.copysign(gap), false)
+            // A glide that was not stretched moves `travelled` itself (the
+            // ratio is exactly 1).
+            (
+                self.from + (travelled * (gap.abs() / self.span)).copysign(gap),
+                false,
+            )
+        }
+    }
+
+    /// How far the glide has come at time `t`: 0 at its start, 1 once it
+    /// arrived (at once for one with nowhere to go).
+    pub fn progress(&self, t: f64) -> f64 {
+        let travelled = self.travelled(t);
+        if travelled >= self.span {
+            1.0
+        } else {
+            travelled / self.span
         }
     }
 }
@@ -578,6 +619,33 @@ impl FaderCtl {
     /// since the last call: the store then marks its last write released.
     pub fn take_ended(&mut self) -> bool {
         std::mem::take(&mut self.ended)
+    }
+
+    /// Stretches the glide a double tap started (#58, the backing-tracks
+    /// fader): from `from` (its loudest track's position) to the same end,
+    /// lasting as long as a glide over `span` positions (its furthest
+    /// track's way to 0 dB), so the cap arrives with every track and no
+    /// track moves faster than a strip's glide. Nothing without a glide.
+    pub fn stretch_glide(&mut self, from: f64, span: f64) {
+        if let Some(glide) = self.glide {
+            self.glide = Some(glide.stretched(from, span));
+        }
+    }
+
+    /// Drops a glide a double tap just started, before any frame of it
+    /// (#58: the backing-tracks fader's, when a target has no value to
+    /// glide from): the fader holds where the release left it, as after a
+    /// plain release, and the glide sends nothing.
+    pub fn drop_glide(&mut self) {
+        self.glide = None;
+    }
+
+    /// How far the running glide has come at `now` (0 to 1,
+    /// [`Glide::progress`]); none without a glide. The frame loop reads it
+    /// before [`FaderCtl::frame`]: the backing-tracks fader writes every
+    /// track that far on its way to 0 dB (#58).
+    pub fn glide_progress(&self, now: f64) -> Option<f64> {
+        self.glide.map(|glide| glide.progress(now))
     }
 
     /// Pointer `id` pressed at `y` (px) on a fader `travel` px long, while

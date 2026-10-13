@@ -22,7 +22,11 @@
 //! target, a touch keeps every target's volume at its start and each move
 //! writes them by `behave::vca::Drag` (the loudest at the finger, every
 //! other one moved by the same dB), and the cap shows the loudest open
-//! write.
+//! write. Its double tap (the owner's decision of 2026-10-13) glides every
+//! target to 0 dB by `behave::vca::Home`: the release that starts the glide
+//! takes what every target shows, stretches the cap's glide from the
+//! loudest over the furthest track's way, and each glide frame writes every
+//! target that far on its way.
 
 use fohmixer_proto::client::set_key;
 use leptos::html;
@@ -33,7 +37,7 @@ use super::{
     fail_flash, owns_touches, readiness, readiness_now, trace_move, trace_start, trace_touch,
 };
 use crate::behave::fader::{self as curve, FaderCtl, UNITY, VolumeLaw};
-use crate::behave::vca::{self, Drag};
+use crate::behave::vca::{self, Drag, Home};
 use crate::behave::{TouchEnd, touch_end};
 use crate::binding::SubSpec;
 use crate::diag::trace::moves::{Axis, Press, Trail};
@@ -103,13 +107,19 @@ impl Law {
         }
     }
 
-    /// The volume law a touch's record names (#63): a volume fader's; none
-    /// for a parameter fader (its positions are its range's).
-    fn traced(self) -> Option<VolumeLaw> {
+    /// A volume fader's volume law (#58: the backing-tracks fader's double
+    /// tap moves its tracks on it); none for a parameter fader.
+    fn volume_law(self) -> Option<VolumeLaw> {
         match self {
             Self::Volume(law) => Some(law),
             Self::Linear(_) => None,
         }
+    }
+
+    /// The volume law a touch's record names (#63): a volume fader's; none
+    /// for a parameter fader (its positions are its range's).
+    fn traced(self) -> Option<VolumeLaw> {
+        self.volume_law()
     }
 
     /// Whether the law can map (reactive: a parameter's range arrived).
@@ -176,8 +186,9 @@ fn vca_intent(views: &[(State, Option<f64>)]) -> (State, Option<f64>) {
 /// writing every target, each by its own law. It takes a touch only while
 /// every target has Live's value and a law that can map it (I8), and is
 /// red while any target's binding does not resolve (I5). With `vca` (the
-/// backing-tracks fader, #58) it shows the loudest target and a touch
-/// moves every target by the same dB from where the touch started.
+/// backing-tracks fader, #58) it shows the loudest target, a touch moves
+/// every target by the same dB from where the touch started, and a double
+/// tap glides every target to 0 dB.
 #[component]
 pub fn FaderView(
     targets: Vec<Target>,
@@ -220,8 +231,11 @@ pub fn FaderView(
     let keys = StoredValue::new(keys);
     let shown_key = StoredValue::new(shown_key);
     let targets = StoredValue::new(targets);
-    // A backing-tracks fader's touch: every target's volume at its start.
+    // A backing-tracks fader's touch: every target's volume at its start;
+    // and its double tap's glide: from every target's volume at the glide's
+    // start to 0 dB.
     let drag = StoredValue::new(None::<Drag>);
+    let home = StoredValue::new(None::<Home>);
     let ctl = StoredValue::new(
         FaderCtl::new(shaping, law.glide_to())
             .anchoring(law.anchors())
@@ -259,21 +273,24 @@ pub fn FaderView(
     };
     // Every target's write of position `p`: the first target's sequence
     // number (the flight recorder's move record names it). A
-    // backing-tracks fader's values come from its touch's start (#58),
-    // any other's from each target's own law.
-    let send = move |p: f64, is_final: bool| -> Option<u64> {
+    // backing-tracks fader's values come from its touch's start (#58) or,
+    // on a glide's frame (`glide`: how far it has come), from its double
+    // tap's `Home`; any other's from each target's own law.
+    let send = move |p: f64, is_final: bool, glide: Option<f64>| -> Option<u64> {
         let values: Vec<Option<f64>> = if vca {
-            let finger = law.value(p);
-            drag.try_with_value(|d| {
-                d.as_ref().zip(finger).map(|(d, finger)| {
-                    d.volumes(finger)
-                        .into_iter()
-                        .map(Some)
-                        .collect::<Vec<Option<f64>>>()
-                })
-            })
-            .flatten()
-            .unwrap_or_default()
+            let volumes = match glide {
+                Some(at) => home
+                    .try_with_value(|h| h.as_ref().map(|h| h.volumes(at)))
+                    .flatten(),
+                None => drag
+                    .try_with_value(|d| {
+                        d.as_ref()
+                            .zip(law.value(p))
+                            .map(|(d, finger)| d.volumes(finger))
+                    })
+                    .flatten(),
+            };
+            volumes.unwrap_or_default().into_iter().map(Some).collect()
         } else {
             targets
                 .try_with_value(|all| {
@@ -378,7 +395,7 @@ pub fn FaderView(
     // The flight recorder hears the end of this fader's own touches.
     let ended = move |end: Option<TouchEnd>, what: &str, id: i32| {
         match end {
-            Some(TouchEnd::Send(p)) => sent_moves(p, send(p, true)),
+            Some(TouchEnd::Send(p)) => sent_moves(p, send(p, true, None)),
             Some(TouchEnd::Released) => {
                 let _ = keys.try_with_value(|k| store.release(k));
             }
@@ -393,6 +410,25 @@ pub fn FaderView(
         let id = ev.pointer_id();
         let end = ctl.try_update_value(|c| touch_end(c.drives(id), c.up(id, dom::now())));
         ended(end, "up", id);
+        // A backing-tracks fader's double tap (#58): the glide this touch's
+        // release started (a press stops any glide, so one running now is
+        // this release's) takes every target from what it shows now (the
+        // tap's last write included) to 0 dB, the cap from the loudest over
+        // the furthest track's way; with a target that shows nothing there
+        // is nothing to glide from, and the glide is dropped (both do
+        // nothing without a glide). Another pointer's up touches no glide.
+        if vca && end.is_some_and(TouchEnd::ends_touch) {
+            let begun = law.volume_law().and_then(|l| {
+                targets
+                    .try_with_value(|all| Home::new(l, &shown_volumes(store, all)))
+                    .flatten()
+            });
+            let _ = ctl.try_update_value(|c| match &begun {
+                Some(h) => c.stretch_glide(h.cap_from(), h.span()),
+                None => c.drop_glide(),
+            });
+            let _ = home.try_set_value(begun);
+        }
     };
     // A cancelled pointer, or one whose capture was lost without an up:
     // the touch ends without a tap.
@@ -426,13 +462,15 @@ pub fn FaderView(
                 .filter(|_| intent.is_open())
                 .and_then(|v| law.pos(v));
             let at = live();
-            let Some((motion, glide_ended, is_held)) = ctl.try_update_value(|c| {
+            let Some((motion, glide_ended, is_held, glide)) = ctl.try_update_value(|c| {
                 c.intent(intent.is_open(), now);
                 if let Some(p) = written {
                     c.write_at(p);
                 }
+                // How far a glide has come at this frame (its send's).
+                let glide = c.glide_progress(now);
                 let motion = c.frame(now, at);
-                (motion, c.take_ended(), c.held())
+                (motion, c.take_ended(), c.held(), glide)
             }) else {
                 return;
             };
@@ -443,7 +481,7 @@ pub fn FaderView(
                 held = Some(is_held);
             }
             if let Some(p) = motion.send {
-                sent_moves(p, send(p, false));
+                sent_moves(p, send(p, false, glide));
             }
             if glide_ended {
                 let _ = keys.try_with_value(|k| store.release(k));
@@ -529,6 +567,9 @@ mod tests {
         assert_eq!(live.shaping_law(), VolumeLaw::Live);
         assert_eq!(live.traced(), Some(VolumeLaw::Live));
         assert_eq!(law.traced(), Some(VolumeLaw::TouchOsc));
+        // The backing-tracks fader's double tap moves its tracks on it (#58).
+        assert_eq!(live.volume_law(), Some(VolumeLaw::Live));
+        assert_eq!(law.volume_law(), Some(VolumeLaw::TouchOsc));
         assert!(live.anchors() && live.ready() && live.can_map());
     }
 
@@ -547,6 +588,11 @@ mod tests {
             "shaped as the Lua did"
         );
         assert_eq!(law.traced(), None, "its positions are its range's");
+        assert_eq!(
+            law.volume_law(),
+            None,
+            "a parameter's range is no volume law"
+        );
         assert!(!law.anchors(), "TouchOSC's first move (#43 PR F)");
         let _ = range.try_set(Some((-15.0, 15.0)));
         assert!(law.ready());

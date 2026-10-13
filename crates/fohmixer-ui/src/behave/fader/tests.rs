@@ -910,3 +910,115 @@ fn a_glide_runs_at_its_own_speed() {
         "a fader glides at 0.3 a second"
     );
 }
+
+#[test]
+fn a_glide_says_how_far_it_has_come() {
+    // 0.3 positions a second over its own 0.6: 2 s.
+    let g = Glide::new(0.25, 0.85, 1000.0);
+    assert_eq!(g.progress(900.0), 0.0, "never before its start");
+    assert_eq!(g.progress(1000.0), 0.0);
+    assert_eq!(g.progress(2000.0), 0.5);
+    assert!(g.progress(2999.0) < 1.0);
+    assert_eq!(g.progress(3000.0), 1.0);
+    assert_eq!(g.progress(9000.0), 1.0, "arrived stays arrived");
+    // Downwards the same; with nowhere to go, arrived at once.
+    assert_eq!(Glide::new(0.85, 0.25, 0.0).progress(1000.0), 0.5);
+    assert_eq!(Glide::new(0.85, 0.85, 0.0).progress(0.0), 1.0);
+}
+
+#[test]
+fn a_stretched_glide_lasts_its_span_and_takes_its_own_way_in_step() {
+    // The cap from 0.55 to 0.85 (0.3 of its own way), stretched over 0.6
+    // (#58: the furthest track's way): 2 s at 0.3 a second, half its own
+    // way when half the span is travelled.
+    let g = Glide::new(0.7, 0.85, 80.0).stretched(0.55, 0.6);
+    assert_eq!(g.at(80.0), (0.55, false), "from its new start");
+    assert_eq!(g.progress(1080.0), 0.5);
+    let (p, done) = g.at(1080.0);
+    assert!(!done);
+    assert_close(p, 0.7);
+    assert!(!g.at(2079.0).1);
+    assert_eq!(g.at(2080.0), (0.85, true));
+    assert_eq!(g.progress(2080.0), 1.0);
+    // Downwards from above its end: 0.3 of a 0.4 span is 3/4 of 0.1.
+    let down = Glide::new(0.9, 0.85, 0.0).stretched(0.95, 0.4);
+    let (p, done) = down.at(1000.0);
+    assert!(!done);
+    assert_close(p, 0.875);
+    // A cap already at its end stays there for the whole span.
+    let still = Glide::new(0.85, 0.85, 0.0).stretched(0.85, 0.85);
+    assert_eq!(still.at(1000.0), (0.85, false));
+    assert_eq!(still.progress(1000.0), 0.3 / 0.85);
+    assert!(!still.at(2833.0).1);
+    assert_eq!(still.at(2834.0), (0.85, true));
+    // Never shorter than its own way (0.6 from 0.25).
+    let short = Glide::new(0.5, 0.85, 0.0).stretched(0.25, 0.1);
+    assert!(!short.at(1999.0).1);
+    assert_eq!(short.at(2000.0), (0.85, true));
+}
+
+#[test]
+fn a_double_tap_glide_stretched_carries_the_cap_and_says_how_far_it_has_come() {
+    // Live's law (0 dB at position 0.85); the cap at 0.55.
+    let mut f = FaderCtl::new(false, Some(0.85));
+    assert_eq!(f.glide_progress(0.0), None, "no glide");
+    f.stretch_glide(0.2, 0.9);
+    assert_eq!(f.glide_progress(0.0), None, "nothing to stretch");
+    assert_eq!(
+        f.frame(0.0, Some(0.55)),
+        Motion {
+            pos: Some(0.55),
+            send: None
+        }
+    );
+    assert!(f.down(1, 500.0, TRAVEL, 0.0, 0.55));
+    assert_eq!(f.up(1, 20.0), None);
+    assert!(f.down(1, 500.0, TRAVEL, 60.0, 0.55));
+    assert_eq!(f.up(1, 80.0), None);
+    assert_eq!(f.glide_progress(80.0), Some(0.0));
+    // Stretched over 0.6 (its furthest track's way): 2 s, not 1 s.
+    f.stretch_glide(0.55, 0.6);
+    assert_eq!(f.glide_progress(1080.0), Some(0.5));
+    let half = f.frame(1080.0, Some(0.55));
+    assert_close(half.pos.unwrap(), 0.7);
+    assert_close(half.send.unwrap(), 0.7);
+    assert!(f.held() && !f.take_ended(), "still gliding");
+    assert!(f.glide_progress(2079.0).is_some_and(|p| p < 1.0));
+    assert_eq!(f.glide_progress(2080.0), Some(1.0));
+    assert_eq!(
+        f.frame(2080.0, Some(0.55)),
+        Motion {
+            pos: Some(0.85),
+            send: Some(0.85)
+        }
+    );
+    assert!(f.take_ended(), "arrived");
+    assert_eq!(f.glide_progress(2081.0), None, "no glide any more");
+}
+
+#[test]
+fn a_dropped_double_tap_glide_sends_nothing_and_the_fader_holds() {
+    // #58: the backing-tracks fader drops the glide when a target has no
+    // value to glide from. Live's law, the cap at 0.55.
+    let mut f = FaderCtl::new(false, Some(0.85));
+    assert!(f.down(1, 500.0, TRAVEL, 0.0, 0.55));
+    assert_eq!(f.up(1, 20.0), None);
+    assert!(f.down(1, 500.0, TRAVEL, 60.0, 0.55));
+    assert_eq!(f.up(1, 80.0), None);
+    assert!(f.held(), "the double tap started its glide");
+    f.drop_glide();
+    assert!(!f.held(), "no glide drives it");
+    assert_eq!(f.glide_progress(100.0), None);
+    // The plain hold (100 ms) at the release's position, nothing sent.
+    assert_eq!(
+        f.frame(100.0, Some(0.55)),
+        Motion {
+            pos: Some(0.55),
+            send: None
+        }
+    );
+    assert!(!f.take_ended(), "a glide that never ran does not end");
+    // Dropping with no glide changes nothing.
+    f.drop_glide();
+    assert_eq!(f.frame(1000.0, Some(0.4)).pos, Some(0.4), "Live's value");
+}

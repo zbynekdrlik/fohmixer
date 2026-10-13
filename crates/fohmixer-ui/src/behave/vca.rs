@@ -8,7 +8,11 @@
 //! (a console VCA's, the owner's option A), so a balance the Live set gave
 //! them (its prayer mode) stays; while any track is off 0 dB the strip is
 //! amber with `≠ 0 dB`, the loudest track's dB large and every track's
-//! value under it.
+//! value under it. A double tap puts every track exactly at 0 dB (the
+//! owner's decision of 2026-10-13, comment 6139533903; it no longer keeps
+//! the balance): one gesture always brings the backing tracks back to
+//! normal, after the prayer mode and after a track was moved on its own
+//! ([`Home`]).
 //!
 //! A volume's dB and a dB's volume are the strips' law, reused, never a copy
 //! of the curve: [`value2db`] and [`audio_for_db_change`] from 0 dB (as
@@ -131,6 +135,75 @@ impl Drag {
                     volume_of(value2db(volume) + delta)
                 }
             })
+            .collect()
+    }
+}
+
+/// The double tap's glide (the owner's decision of 2026-10-13, #58 comment
+/// 6139533903): every target from its volume at the glide's start to Live's
+/// 0 dB volume, whatever balance it had (a prayer mode's, or a track moved
+/// on its own). The tracks move on the strips' law's positions, each the
+/// same share of its own way at once: so every groove slides as a strip's
+/// cap glides, −∞ is simply position 0, the loudest stays the loudest (the
+/// cap's), and both ends are exact. The glide lasts as long as a strip's
+/// over the furthest track's way ([`Home::span`]), so all arrive together
+/// and none moves faster than a strip's glide.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Home {
+    law: VolumeLaw,
+    /// Every target's position on the law at the glide's start.
+    start: Vec<f64>,
+    /// The loudest's start position (the cap's).
+    from: f64,
+    /// The furthest any track has to go to 0 dB, in positions.
+    span: f64,
+}
+
+impl Home {
+    /// The glide from these volumes (every target's, in order) on `law`;
+    /// none without a target or while one has no value.
+    pub fn new(law: VolumeLaw, volumes: &[Option<f64>]) -> Option<Self> {
+        let start: Vec<f64> = volumes
+            .iter()
+            .map(|volume| volume.map(|v| law.to_pos(v)))
+            .collect::<Option<_>>()?;
+        let unity = law.to_pos(UNITY);
+        let from = start.iter().copied().reduce(f64::max)?;
+        let span = start
+            .iter()
+            .map(|&pos| (unity - pos).abs())
+            .fold(0.0, f64::max);
+        Some(Self {
+            law,
+            start,
+            from,
+            span,
+        })
+    }
+
+    /// The cap's start: the loudest track's position.
+    pub fn cap_from(&self) -> f64 {
+        self.from
+    }
+
+    /// The furthest track's way to 0 dB (positions): the glide lasts as
+    /// long as a strip's glide over it.
+    pub fn span(&self) -> f64 {
+        self.span
+    }
+
+    /// Every target's volume `p` of the way (0 to 1, clamped): each at
+    /// that share of the way from its start position to 0 dB's (what is
+    /// left of its way shrinks with `1 − p`), so the start's volumes at 0
+    /// and, at 1, exactly the volume a strip's double tap reaches (its
+    /// glide's end, `to_pos(UNITY)`, on the same law). A track already at
+    /// 0 dB stays exactly there all the way (no float wobble around it).
+    pub fn volumes(&self, p: f64) -> Vec<f64> {
+        let p = p.clamp(0.0, 1.0);
+        let unity = self.law.to_pos(UNITY);
+        self.start
+            .iter()
+            .map(|&pos| self.law.to_live(unity - (unity - pos) * (1.0 - p)))
             .collect()
     }
 }
