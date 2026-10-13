@@ -1,8 +1,9 @@
 //! The HTTP leg of AbleSet's proxy (#90 §3.2, §3.4): one hyper-util legacy
 //! client per hub, after axum's own `examples/reverse-proxy`. The request
-//! goes to `upstream` with its path and query unchanged, its headers
-//! filtered (`ableset::strip_request`); the bodies stream both ways, never
-//! buffered. Bounded: the connect (2 s: on loopback a dead AbleSet refuses
+//! goes to `upstream` with its path and query unchanged (the URI built
+//! from its parts), its headers filtered (`ableset::strip_request`) with
+//! exactly one `Host`, the one the dispatch matched; the bodies stream
+//! both ways, never buffered. Bounded: the connect (2 s: on loopback a dead AbleSet refuses
 //! at once), the response head ([`HEAD_TIMEOUT`]), the request body
 //! ([`MAX_BODY`]); the response body is not (a long poll or a large asset
 //! must not be cut).
@@ -12,7 +13,8 @@ use std::time::Duration;
 
 use axum::body::Body;
 use axum::extract::Request;
-use axum::http::{Extensions, Version};
+use axum::http::uri::{Authority, PathAndQuery, Scheme};
+use axum::http::{Extensions, HeaderValue, Uri, Version, header};
 use axum::response::Response;
 use http_body_util::{LengthLimitError, Limited};
 use hyper_util::client::legacy::Client;
@@ -34,6 +36,14 @@ pub const POOL_IDLE: Duration = Duration::from_secs(30);
 /// record).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Failure {
+    /// A method never forwarded (CONNECT, TRACE): 405.
+    Method(String),
+    /// A target that is no path (`*`, an authority): 400.
+    Target(String),
+    /// Another site's request that is no navigation: 403.
+    CrossSite(String),
+    /// Every request slot is taken (`ableset::MAX_REQUESTS`): 503.
+    Busy(String),
     /// The request body is over [`MAX_BODY`].
     TooLarge(String),
     /// AbleSet does not answer (refused, reset, …).
@@ -46,23 +56,40 @@ impl Failure {
     /// Why, for the log and the record.
     pub fn why(&self) -> &str {
         match self {
-            Self::TooLarge(why) | Self::Down(why) | Self::Timeout(why) => why,
+            Self::Method(why)
+            | Self::Target(why)
+            | Self::CrossSite(why)
+            | Self::Busy(why)
+            | Self::TooLarge(why)
+            | Self::Down(why)
+            | Self::Timeout(why) => why,
         }
+    }
+
+    /// Whether it is AbleSet's own fault (down, late), not a client's or a
+    /// full hub's.
+    pub fn is_ableset(&self) -> bool {
+        matches!(self, Self::Down(_) | Self::Timeout(_))
     }
 }
 
 /// The client to AbleSet's web app.
 pub struct Proxy {
     client: Client<HttpConnector, Body>,
-    /// `http://<loopback>[:port]` (`config::is_upstream`).
-    upstream: String,
+    /// The authority of `upstream`: `<loopback>[:port]`.
+    authority: Authority,
     head_timeout: Duration,
     max_body: u64,
 }
 
 impl Proxy {
-    /// A client to `upstream` with these bounds.
+    /// A client to `upstream` (`http://<loopback>[:port]`, as
+    /// `config::is_upstream` accepts it) with these bounds.
     pub fn new(upstream: &str, head_timeout: Duration, max_body: u64) -> Self {
+        let authority = upstream
+            .strip_prefix("http://")
+            .and_then(|a| a.parse::<Authority>().ok())
+            .expect("an upstream config::is_upstream accepted");
         let mut connector = HttpConnector::new();
         connector.set_connect_timeout(Some(CONNECT_TIMEOUT));
         connector.set_nodelay(true);
@@ -73,7 +100,7 @@ impl Proxy {
             .build(connector);
         Self {
             client,
-            upstream: upstream.to_string(),
+            authority,
             head_timeout,
             max_body,
         }
@@ -89,13 +116,27 @@ impl Proxy {
                 self.max_body
             )));
         }
-        let path = parts.uri.path_and_query().map_or("/", |pq| pq.as_str());
-        parts.uri = format!("{}{path}", self.upstream)
-            .parse()
-            .map_err(|e| Failure::Down(format!("the upstream URI: {e}")))?;
+        // The Host the dispatch matched: the first, else the target's
+        // authority (HTTP/2).
+        let authority = parts.uri.authority().map(Authority::as_str);
+        let host = match parts.headers.get(header::HOST) {
+            Some(host) => Some(host.clone()),
+            None => authority.and_then(|a| HeaderValue::from_str(a).ok()),
+        };
+        let path = parts.uri.path_and_query().cloned();
+        let path = path.unwrap_or_else(|| PathAndQuery::from_static("/"));
+        parts.uri = Uri::builder()
+            .scheme(Scheme::HTTP)
+            .authority(self.authority.clone())
+            .path_and_query(path)
+            .build()
+            .map_err(|e| Failure::Target(format!("the upstream URI: {e}")))?;
         parts.version = Version::HTTP_11;
         parts.extensions = Extensions::new();
         super::strip_request(&mut parts.headers);
+        if let Some(host) = host {
+            parts.headers.insert(header::HOST, host);
+        }
         let body = Body::new(Limited::new(body, self.max_body as usize));
         let exchange = self.client.request(Request::from_parts(parts, body));
         let response = match tokio::time::timeout(self.head_timeout, exchange).await {

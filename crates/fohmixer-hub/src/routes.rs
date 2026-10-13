@@ -178,6 +178,18 @@ pub(crate) fn host_name(host: &str) -> Option<(&str, bool)> {
     }
 }
 
+/// The host a request names (#90): its first `Host` (one that is no text as
+/// `""`, which no check accepts), else its target's authority. An HTTP/2
+/// request carries no `Host` (hyper makes none from `:authority`), and an
+/// absolute-form HTTP/1 target may carry the name alone. `dispatch`,
+/// `check_host` and the redirects read it here.
+pub(crate) fn request_host(request: &Request) -> Option<&str> {
+    match request.headers().get(header::HOST) {
+        Some(host) => Some(host.to_str().unwrap_or("")),
+        None => request.uri().authority().map(|a| a.as_str()),
+    }
+}
+
 /// Whether a `Host` header value (read by `host_name`) names this hub: an IP
 /// address (IPv6 in brackets), `localhost`, or one of `allowed` (the
 /// config's `allowed_hosts`). A request without one (not a browser) passes.
@@ -204,10 +216,7 @@ pub fn host_allowed(host: Option<&str>, allowed: &[String]) -> bool {
 /// by DNS rebinding — and try PINs from its address (spec D7: the login
 /// guard budgets per address).
 pub async fn check_host(State(hub): State<Hub>, request: Request, next: Next) -> Response {
-    let host = request
-        .headers()
-        .get(header::HOST)
-        .map(|h| h.to_str().unwrap_or(""));
+    let host = request_host(&request);
     if host_allowed(host, &hub.trusted_hosts) {
         next.run(request).await
     } else {
@@ -269,10 +278,7 @@ pub fn redirect_to(
 /// What a redirect reads of a request: its `Host`, whether a proxy handled
 /// it, and its path and query.
 pub(crate) fn redirect_inputs(request: &Request) -> (Option<&str>, bool, &str) {
-    let host = request
-        .headers()
-        .get(header::HOST)
-        .and_then(|h| h.to_str().ok());
+    let host = request_host(request);
     let path = request.uri().path_and_query().map_or("/", |pq| pq.as_str());
     let proxied = crate::access::has_proxy_header(request.headers());
     (host, proxied, path)

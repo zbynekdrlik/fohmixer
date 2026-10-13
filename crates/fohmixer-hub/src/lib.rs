@@ -53,7 +53,9 @@ use axum::Router;
 use axum::extract::FromRef;
 use axum::http::{HeaderName, HeaderValue};
 use fohmixer_proto::client::{HubStatus, InstanceStatus, LayoutStatus};
-use tokio::sync::{Notify, mpsc, oneshot};
+use hyper_util::rt::{TokioExecutor, TokioTimer};
+use hyper_util::server::conn::auto;
+use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tower_http::set_header::SetResponseHeaderLayer;
 
@@ -113,6 +115,25 @@ pub const DEFAULT_PORT: u16 = config::DEFAULT_HTTP_PORT;
 
 /// How long a stop waits for open requests before the server returns anyway.
 pub const STOP_DRAIN: Duration = Duration::from_secs(5);
+
+/// How long a client may take to send a request's head, on both listeners
+/// (#90; before, a client that never finished one held its connection for
+/// good). hyper counts it from when a connection waits for a head, so an
+/// idle kept-alive connection also closes after it: 2 minutes is above
+/// cloudflared's 90 s idle pool (the hub never closes a connection the
+/// tunnel may still reuse, where a POST could fail) and far above any real
+/// client's head (a phone's is a packet or two; its TLS handshake already
+/// has axum-server's 10 s).
+pub const HEADER_READ: Duration = Duration::from_secs(120);
+
+/// The HTTP/1 settings of both listeners: a request head within
+/// `header_read`, on Tokio's timer (hyper runs no timeout without one).
+pub fn http1_limits(builder: &mut auto::Builder<TokioExecutor>, header_read: Duration) {
+    builder
+        .http1()
+        .timer(TokioTimer::new())
+        .header_read_timeout(header_read);
+}
 
 /// How long the stop waits for the Companion task's `REMOVE-DEVICE` (#52; the
 /// task bounds its own wait for Companion at 500 ms) before it ends the task.
@@ -726,33 +747,36 @@ where
         tracing::debug!("nobody waits for the ready signal");
     }
 
-    // The stop closes the clients and the listener; open requests get
-    // STOP_DRAIN.
-    let stopping = Arc::new(Notify::new());
-    let stop_seen = Arc::clone(&stopping);
-    let hub_at_stop = hub.clone();
-    let serve = axum::serve(
-        listener,
-        app_router(hub.clone()).into_make_service_with_connect_info::<SocketAddr>(),
-    )
-    .with_graceful_shutdown(async move {
-        stop.await;
-        tracing::info!(
-            drain_s = STOP_DRAIN.as_secs(),
-            "stop requested: the clients close, the listener closes, open requests get the drain"
-        );
-        hub_at_stop.stop();
-        if let Some(https) = hub_at_stop.https.get() {
-            https.stop(STOP_DRAIN);
+    // axum-server, as the HTTPS listener: its HTTP/1 settings can be set
+    // (`http1_limits`; `axum::serve` takes none). The stop closes the
+    // clients and the listener; open requests get STOP_DRAIN.
+    let handle: axum_server::Handle<SocketAddr> = axum_server::Handle::new();
+    let listener = listener.into_std().context("handing over the listener")?;
+    let mut server = axum_server::from_tcp(listener)
+        .context("serving the bound listener")?
+        .handle(handle.clone());
+    http1_limits(server.http_builder(), HEADER_READ);
+    let serve =
+        server.serve(app_router(hub.clone()).into_make_service_with_connect_info::<SocketAddr>());
+    tokio::pin!(serve);
+    let ended = tokio::select! {
+        result = &mut serve => Some(result),
+        () = stop => {
+            tracing::info!(
+                drain_s = STOP_DRAIN.as_secs(),
+                "stop requested: the clients close, the listener closes, open requests get the drain"
+            );
+            hub.stop();
+            if let Some(https) = hub.https.get() {
+                https.stop(STOP_DRAIN);
+            }
+            handle.graceful_shutdown(None);
+            tokio::time::timeout(STOP_DRAIN, &mut serve).await.ok()
         }
-        stop_seen.notify_one();
-    });
-    tokio::select! {
-        result = serve => result.context("serving HTTP")?,
-        () = async {
-            stopping.notified().await;
-            tokio::time::sleep(STOP_DRAIN).await;
-        } => tracing::warn!(
+    };
+    match ended {
+        Some(result) => result.context("serving HTTP")?,
+        None => tracing::warn!(
             drain_s = STOP_DRAIN.as_secs(),
             "HTTP requests still open after the drain: stopping without them"
         ),
@@ -1039,6 +1063,43 @@ mod tests {
     fn only_a_window_worker_still_running_is_warned_about() {
         assert_eq!(plugwin_stop_warning(true), None);
         assert!(plugwin_stop_warning(false).unwrap().contains("did not end"));
+    }
+
+    #[tokio::test]
+    async fn a_request_head_that_never_ends_closes_its_connection_after_the_bound() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        assert_eq!(HEADER_READ, Duration::from_secs(120));
+        // A server set up as both listeners are, with a short bound.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle: axum_server::Handle<SocketAddr> = axum_server::Handle::new();
+        let mut server = axum_server::from_tcp(listener)
+            .unwrap()
+            .handle(handle.clone());
+        http1_limits(server.http_builder(), Duration::from_millis(300));
+        let app = Router::new().route("/", axum::routing::get(|| async { "ok" }));
+        tokio::spawn(server.serve(app.into_make_service()));
+        // A whole head is answered.
+        let mut whole = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let head = b"GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n";
+        whole.write_all(head).await.unwrap();
+        let mut text = String::new();
+        let read = tokio::time::timeout(Duration::from_secs(5), whole.read_to_string(&mut text));
+        read.await.unwrap().unwrap();
+        assert!(text.starts_with("HTTP/1.1 200 OK"), "{text}");
+        // A head that stops half way: the connection is closed after the
+        // bound, not held for good.
+        let mut half = tokio::net::TcpStream::connect(addr).await.unwrap();
+        half.write_all(b"GET / HTTP/1.1\r\nHost: x\r\n")
+            .await
+            .unwrap();
+        let started = std::time::Instant::now();
+        let mut rest = Vec::new();
+        let read = tokio::time::timeout(Duration::from_secs(5), half.read_to_end(&mut rest));
+        assert!(read.await.is_ok(), "the connection stayed open");
+        assert!(started.elapsed() >= Duration::from_millis(200));
+        handle.shutdown();
     }
 
     #[tokio::test]

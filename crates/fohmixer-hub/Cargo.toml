@@ -53,12 +53,14 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # from Let's Encrypt by DNS-01 (instant-acme; rcgen makes the key and the
 # CSR), their expiry and names read back (x509-parser), and the hub's own
 # HTTPS client (the Access JWKS, the Cloudflare DNS API, cloudflared's
-# readiness) on the hyper stack instant-acme already brings.
+# readiness) on the hyper stack instant-acme already brings. Since #90
+# axum-server serves the plain-HTTP listener too, both with hyper-util's
+# auto builder and its HTTP/1 header-read bound.
 axum-server = { version = "0.8", default-features = false, features = ["tls-rustls-no-provider"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 instant-acme = { version = "0.8", default-features = false, features = ["hyper-rustls", "ring", "rcgen"] }
 hyper = { version = "1", features = ["client", "http1"] }
-hyper-util = { version = "0.1", features = ["client-legacy", "http1", "tokio"] }
+hyper-util = { version = "0.1", features = ["client-legacy", "http1", "server-auto", "tokio"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "ring", "rustls-platform-verifier", "tls12", "logging"] }
 http-body-util = "0.1"
 bytes = "1"

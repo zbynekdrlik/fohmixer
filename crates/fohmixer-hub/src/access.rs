@@ -49,15 +49,33 @@ use crate::config::AccessCfg;
 use crate::http_client::HttpClient;
 
 /// Headers a proxy sets and a request made straight to the hub never
-/// carries. Any of them makes a request `Internet`: a LAN client that sends
-/// one only makes itself need Access (the safe direction).
-pub const PROXY_HEADERS: [&str; 5] = [
-    "cf-connecting-ip",
-    "x-forwarded-for",
-    "x-forwarded-host",
-    "x-forwarded-proto",
+/// carries; an entry ending in `-` names every header it starts. Any of
+/// them makes a request `Internet`, and none of them reaches AbleSet
+/// (`ableset::strip_request`): one list for both (#90). `cf-` is every
+/// Cloudflare header: Cf-Ray is on every request the edge passes on and no
+/// Transform Rule removes it, so a tunnel request a rule left without its
+/// forwarding headers still counts. A LAN client that sends one only makes
+/// itself need Access (the safe direction).
+pub const PROXY_HEADERS: [&str; 7] = [
+    "cf-",
+    "x-forwarded-",
     "forwarded",
+    "x-real-ip",
+    "true-client-ip",
+    "cdn-loop",
+    "via",
 ];
+
+/// Whether a header (by its lowercase name) is one of [`PROXY_HEADERS`].
+pub fn is_proxy_header(name: &str) -> bool {
+    PROXY_HEADERS.iter().any(|&entry| {
+        if entry.ends_with('-') {
+            name.starts_with(entry)
+        } else {
+            name == entry
+        }
+    })
+}
 
 /// The header Cloudflare Access injects with the signed assertion.
 pub const JWT_HEADER: &str = "cf-access-jwt-assertion";
@@ -107,7 +125,7 @@ pub fn is_private_ip(ip: IpAddr) -> bool {
 
 /// Whether a proxy handled the request.
 pub fn has_proxy_header(headers: &HeaderMap) -> bool {
-    PROXY_HEADERS.iter().any(|h| headers.contains_key(*h))
+    headers.keys().any(|name| is_proxy_header(name.as_str()))
 }
 
 /// Classifies a request. Both listeners insert the peer address
