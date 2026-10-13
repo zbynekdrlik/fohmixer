@@ -1,5 +1,5 @@
 import { test, expect } from "./support/fixtures";
-import { BASE, fakeAbleSet, hubEvents, openSurface, pageHits, token, until } from "./support/live";
+import { BASE, fakeAbleSet, harness, hubEvents, openSurface, pageHits, token, until } from "./support/live";
 import { HTTPS } from "./support/pwa";
 
 // AbleSet's own page under its own name behind the hub (#90 B3b).
@@ -117,6 +117,12 @@ test.describe("Another site's request on AbleSet's name", () => {
   test.use({ allowedConsole: [/^Failed to load resource: the server responded with a status of 403/] });
 
   test("is refused by the hub before AbleSet, while the same image from fohmixer's own name loads", async ({ page }) => {
+    // A fresh hub, so the refusal's record below is the first of its kind in
+    // its window whatever an earlier test refused: the hub keeps one record
+    // of a client's fault of one kind per 10 s (`ableset::FAULT_RECORDS`), and
+    // a cross-site 403 within 10 s before this one would leave none (the
+    // #90 B3b review). No page is open across the restart.
+    await harness("/hub/restart", { rotate_secret: false });
     await fakeAbleSet.clear();
     const since = Date.now();
     const load = (src: string) =>
@@ -173,11 +179,13 @@ test.describe("AbleSet down", () => {
       expect(down.last_error).toContain("AbleSet does not answer");
     } finally {
       await fakeAbleSet.up();
+      // The link is up again before the next spec, also after a failure
+      // above (the #90 B3b review).
+      await until(() => ablesetStatus(bearer), (s) => s.online === true, "AbleSet's link up", 10_000);
     }
     const body = page.locator("body");
     await expect(body).toHaveAttribute("data-app", "loaded", { timeout: 10_000 });
     await expect(body).toHaveAttribute("data-ws", "echo");
-    await until(() => ablesetStatus(bearer), (s) => s.online === true, "AbleSet's link up", 10_000);
     const links = (await hubEvents()).filter((r) => r.ev === "ableset_link" && r.ts >= since);
     expect(links.map((r) => r.up)).toEqual([false, true]);
   });
