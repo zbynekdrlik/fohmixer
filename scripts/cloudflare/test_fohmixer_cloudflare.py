@@ -222,6 +222,33 @@ class ScriptTest(unittest.TestCase):
         self.assertIn("update DNS", out)
         self.assertIn("route foh.example.org -> http://127.0.0.1:8480 in the tunnel", out)
 
+    def test_a_route_the_run_does_not_name_is_removed_only_with_prune_routes(self):
+        # The whole configuration is written at once, so a run that does not
+        # name a routed host (AbleSet's, #90) would drop its route. The
+        # dry-run lists it; --apply refuses before any change without
+        # --prune-routes.
+        self.run_main()
+        (tid,) = self.cf.tunnels
+        other = {"hostname": "ableset.example.org", "service": "http://127.0.0.1:8480"}
+        self.cf.configs[tid]["ingress"].insert(1, other)
+        before = [dict(r) for r in self.cf.configs[tid]["ingress"]]
+        self.cf.writes.clear()
+        code, out, _ = self.run_main(apply=False)
+        self.assertEqual(code, 0)
+        self.assertIn("REMOVE route ableset.example.org", out)
+        self.assertEqual(self.cf.writes, [])
+        code, _, err = self.run_main()
+        self.assertEqual(code, 1)
+        self.assertIn("ableset.example.org", err)
+        self.assertIn("--prune-routes", err)
+        self.assertEqual(self.cf.writes, [], "refused before any change")
+        self.assertEqual(self.cf.configs[tid]["ingress"], before)
+        code, out, err = self.run_main("--prune-routes")
+        self.assertEqual(code, 0, err)
+        self.assertIn("REMOVE route ableset.example.org", out)
+        hosts = [r.get("hostname") for r in self.cf.configs[tid]["ingress"]]
+        self.assertEqual(hosts, [NAME, None])
+
     def test_a_foreign_dns_record_is_never_overwritten(self):
         self.cf.records["a1"] = {"id": "a1", "type": "A", "name": NAME, "content": "203.0.113.9"}
         code, _, err = self.run_main()
