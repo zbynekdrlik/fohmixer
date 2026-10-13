@@ -398,18 +398,24 @@ jobs:
           set -euo pipefail
           npm ci
           npx playwright install --with-deps chromium webkit
-      - name: Remote access (#17) - a per-run test CA and certificate for foh.e2e.test that both browsers trust, the name in /etc/hosts, the Access test key
+      - name: Remote access (#17, #90) - a per-run test CA with a certificate for foh.e2e.test and one for AbleSet's ableset.e2e.test that both browsers trust, the names in /etc/hosts, the Access test key
         run: |
           set -euo pipefail
           dir="$RUNNER_TEMP/e2e-remote"
           mkdir -p "$dir"
           openssl req -x509 -newkey rsa:2048 -nodes -keyout "$dir/ca.key" -out "$dir/ca.pem" -days 2 \
             -subj "/CN=fohmixer E2E test CA" -addext "basicConstraints=critical,CA:TRUE" -addext "keyUsage=critical,keyCertSign,cRLSign"
-          openssl req -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -keyout "$dir/key.pem" -out "$dir/leaf.csr" -subj "/CN=foh.e2e.test"
-          printf 'subjectAltName=DNS:foh.e2e.test\nextendedKeyUsage=serverAuth\nbasicConstraints=CA:FALSE\nkeyUsage=critical,digitalSignature\n' > "$dir/leaf.ext"
-          openssl x509 -req -in "$dir/leaf.csr" -CA "$dir/ca.pem" -CAkey "$dir/ca.key" -CAcreateserial -days 2 -extfile "$dir/leaf.ext" -out "$dir/cert.pem"
-          # The name resolves to this runner, as the installer maps it on the Ableton PC.
-          echo "127.0.0.1 foh.e2e.test" | sudo tee -a /etc/hosts
+          # A leaf for <name> as <prefix>cert.pem and <prefix>key.pem.
+          leaf() {
+            openssl req -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -keyout "$dir/${2}key.pem" -out "$dir/${2}leaf.csr" -subj "/CN=$1"
+            printf 'subjectAltName=DNS:%s\nextendedKeyUsage=serverAuth\nbasicConstraints=CA:FALSE\nkeyUsage=critical,digitalSignature\n' "$1" > "$dir/${2}leaf.ext"
+            openssl x509 -req -in "$dir/${2}leaf.csr" -CA "$dir/ca.pem" -CAkey "$dir/ca.key" -CAcreateserial -days 2 -extfile "$dir/${2}leaf.ext" -out "$dir/${2}cert.pem"
+          }
+          leaf foh.e2e.test ""
+          # AbleSet's name (#90): its own certificate, same-site with foh.e2e.test.
+          leaf ableset.e2e.test ableset-
+          # The names resolve to this runner, as the installer maps them on the Ableton PC.
+          printf '127.0.0.1 foh.e2e.test\n127.0.0.1 ableset.e2e.test\n' | sudo tee -a /etc/hosts
           # WebKit (GnuTLS) trusts the system store; Chromium the NSS database.
           sudo cp "$dir/ca.pem" /usr/local/share/ca-certificates/fohmixer-e2e.crt
           sudo update-ca-certificates
@@ -440,8 +446,9 @@ jobs:
           # 30 Hz), the hub on the import tool's synthetic layout, the impair
           # proxy in front of the hub (#43, 127.0.0.1:8481: the surface opens
           # through it), the fake Companion (#52, 127.0.0.1:39192: the hub's
-          # Stream Deck tab) and the harness's control API for the tests
-          # (127.0.0.1:39190).
+          # Stream Deck tab), the fake AbleSet (#90, 127.0.0.1:39193: the
+          # hub's [ableset] upstream, its name ableset.e2e.test) and the
+          # harness's control API for the tests (127.0.0.1:39190).
           mkdir -p "$RUNNER_TEMP/e2e-logs"
           nohup python3 e2e/harness/harness.py --hub ./target/release/fohmixer-hub \
             --data "$RUNNER_TEMP/hub-data" --link-port 8481 \
@@ -451,12 +458,16 @@ jobs:
             --tls-cert "$E2E_REMOTE_DIR/cert.pem" --tls-key "$E2E_REMOTE_DIR/key.pem" \
             --access-team fohmixer-e2e.cloudflareaccess.com --access-aud fohmixer-e2e-aud \
             --access-key "$E2E_REMOTE_DIR/access.pem" \
+            --fake-ableset-port 39193 --ableset-name ableset.e2e.test \
+            --ableset-cert "$E2E_REMOTE_DIR/ableset-cert.pem" --ableset-key "$E2E_REMOTE_DIR/ableset-key.pem" \
+            --ableset-aud fohmixer-e2e-ableset-aud \
             --log-dir "$RUNNER_TEMP/e2e-logs" > "$RUNNER_TEMP/e2e-logs/harness.log" 2>&1 &
           for i in $(seq 1 60); do
             if curl -sf http://127.0.0.1:39190/health > /dev/null \
               && curl -sf http://127.0.0.1:8480/api/version > /dev/null \
               && curl -sf http://127.0.0.1:8481/api/version > /dev/null \
-              && curl -sf https://foh.e2e.test:8443/api/version > /dev/null; then
+              && curl -sf https://foh.e2e.test:8443/api/version > /dev/null \
+              && curl -sf https://ableset.e2e.test:8443/static/app.css > /dev/null; then
               echo "harness ready after ${i}s"
               exit 0
             fi
@@ -483,6 +494,7 @@ jobs:
           E2E_LINK_URL: http://127.0.0.1:8481
           E2E_HARNESS_URL: http://127.0.0.1:39190
           E2E_HTTPS_URL: https://foh.e2e.test:8443
+          E2E_ABLESET_URL: https://ableset.e2e.test:8443
           E2E_ACCESS_TEAM: fohmixer-e2e.cloudflareaccess.com
           E2E_ACCESS_AUD: fohmixer-e2e-aud
         # NODE_EXTRA_CA_CERTS: the tests' own requests (Node) trust the test CA too.
