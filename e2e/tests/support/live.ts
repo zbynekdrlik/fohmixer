@@ -84,6 +84,29 @@ export const companion = {
 };
 
 /**
+ * The harness's fake AbleSet (#90 B3b, `e2e/harness/fake_ableset.py`), the
+ * hub's `[ableset]` upstream: `state()` (`port`, `down`, `sockets`, `presses`,
+ * `hits`: each request it got, `link` true for the hub's own read of its index
+ * every 5 s), `down` (AbleSet stopped: a connect is refused), `up`, `clear`
+ * (the hits forgotten).
+ */
+export const fakeAbleSet = {
+  state: async (): Promise<any> => {
+    const response = await fetch(`${HARNESS}/ableset`);
+    if (!response.ok) throw new Error(`harness /ableset: ${response.status}`);
+    return response.json();
+  },
+  down: () => harness("/ableset/down"),
+  up: () => harness("/ableset/up"),
+  clear: () => harness("/ableset/clear"),
+};
+
+/** The fake AbleSet's hits of pages: the hub's own link reads left out. */
+export function pageHits(hits: any[]): any[] {
+  return hits.filter((hit) => !hit.link);
+}
+
+/**
  * The hub's simulated window backend (#71 PR E, `[eq] backend = "sim"` in the
  * harness's config): `records()` reads what it did, in order (`GET /sim/eq`:
  * `{op: "take" | "press_and_hold" | "touch" | "resize" | "release" | "close", window, phase?, x?, y?, quiet?}`, a
