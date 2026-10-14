@@ -29,10 +29,8 @@ use crate::pin_hash::PinHasher;
 use crate::pin_store::PinStore;
 use crate::secrets::SECRETS_DIR;
 
-/// Token lifetime: 365 days, the owner's rule (#116): a device logged in is
-/// not asked for the PIN again for at least a year. Rotating
-/// `secrets/jwt_secret` on the PC logs every device out.
-pub const TOKEN_EXPIRY_SECS: u64 = 365 * 24 * 60 * 60;
+/// Token lifetime: 7 days (iemmixer's engineer token).
+pub const TOKEN_EXPIRY_SECS: u64 = 7 * 24 * 60 * 60;
 /// The subject of every token: the one role fohmixer has.
 pub const ENGINEER: &str = "engineer";
 
