@@ -3220,3 +3220,111 @@ fn the_locked_pages_line_names_its_opener_rationed_with_the_count_left_out() {
     assert_eq!(records.try_iter().count(), 0);
     assert_eq!(LOCK_LINES, 8);
 }
+
+#[test]
+fn the_locked_page_is_dark_and_goes_on_to_ableset_without_its_script() {
+    // #90 review M1 and M3: a refresh needs no script, and the page's
+    // scheme is fohmixer's (no white canvas at every open).
+    let refresh = format!("<meta http-equiv=\"refresh\" content=\"3;url={LOCKED}?failed=script\">");
+    let script = format!("<script src=\"{LOCK_SCRIPT}\"></script>");
+    let wanted = format!(
+        "<!doctype html><html lang=\"sk\"><meta charset=\"utf-8\">\
+         <meta name=\"color-scheme\" content=\"dark\">{refresh}<title>AbleSet</title>{script}</html>"
+    );
+    assert_eq!(LOCK_PAGE, wanted);
+    // The refresh's word is the hub's to read.
+    let query = "failed=script";
+    assert_eq!(lock_failure(Some(query)).as_deref(), Some("script"));
+}
+
+#[test]
+fn only_the_lock_pages_own_navigation_is_its_word() {
+    // #90 review M2: by the fetch metadata `refusal` reads; a browser that
+    // sends none passes.
+    let navigate = ("sec-fetch-mode", "navigate");
+    let cases: &[(&[(&str, &str)], bool)] = &[
+        (&[], true),
+        (&[("sec-fetch-site", "same-origin"), navigate], true),
+        (
+            &[
+                ("sec-fetch-site", "Same-Origin"),
+                ("sec-fetch-mode", "Navigate"),
+            ],
+            true,
+        ),
+        (&[("sec-fetch-site", "same-origin")], true),
+        (&[navigate], true),
+        // Another site's image.
+        (
+            &[
+                ("sec-fetch-site", "cross-site"),
+                ("sec-fetch-mode", "no-cors"),
+            ],
+            false,
+        ),
+        // Another site's navigation, and fohmixer's own (same-site) page.
+        (&[("sec-fetch-site", "cross-site"), navigate], false),
+        (&[("sec-fetch-site", "same-site"), navigate], false),
+        (&[("sec-fetch-site", "none")], false),
+        // The page's own origin, but no navigation.
+        (
+            &[
+                ("sec-fetch-site", "same-origin"),
+                ("sec-fetch-mode", "no-cors"),
+            ],
+            false,
+        ),
+        (&[("sec-fetch-mode", "cors")], false),
+    ];
+    for (pairs, own) in cases {
+        assert_eq!(own_navigation(&headers(pairs)), *own, "{pairs:?}");
+    }
+}
+
+#[test]
+fn a_lock_failure_not_of_the_lock_pages_own_navigation_is_never_recorded() {
+    // #90 review M2: on the LAN anyone may ask, another site's image too;
+    // it still goes on to AbleSet, with a debug line only.
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let (site, records) = site_with(CLOSED, Duration::from_secs(1), 16);
+    let app = router(Arc::clone(&site), None);
+    let ask = |pairs: &[(&str, &str)]| {
+        let path = format!("{LOCKED}?failed=forged");
+        let request = get_from(NAME, &path, "10.0.0.5", pairs);
+        let answer = runtime.block_on(app.clone().oneshot(request)).unwrap();
+        let location = answer.headers().get(header::LOCATION).cloned();
+        assert_eq!(
+            (answer.status(), location),
+            (StatusCode::SEE_OTHER, Some(HeaderValue::from_static("/"))),
+            "{pairs:?}"
+        );
+    };
+    let log = logged(|| {
+        ask(&[
+            ("sec-fetch-site", "cross-site"),
+            ("sec-fetch-mode", "no-cors"),
+            ("sec-fetch-dest", "image"),
+        ]);
+        ask(&[
+            ("sec-fetch-site", "same-site"),
+            ("sec-fetch-mode", "navigate"),
+        ]);
+    });
+    assert_eq!(records.try_iter().count(), 0);
+    assert!(!log.contains(" WARN "), "{log}");
+    // The page's own navigation (its refresh, or its script's replace) is.
+    let log = logged(|| {
+        ask(&[
+            ("sec-fetch-site", "same-origin"),
+            ("sec-fetch-mode", "navigate"),
+            ("sec-fetch-dest", "iframe"),
+        ]);
+    });
+    let written: Vec<Value> = records.try_iter().collect();
+    assert_eq!(written.len(), 1, "{written:?}");
+    assert_eq!(written[0]["why"], "forged");
+    assert!(log.contains(" WARN "), "{log}");
+}

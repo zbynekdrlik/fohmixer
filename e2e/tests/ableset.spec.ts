@@ -42,6 +42,8 @@ const PAGE_API = new RegExp(
 );
 /** The hub's page on AbleSet's name that stores AbleSet's lock, then opens AbleSet (#90, `ableset::LOCKED`). */
 const LOCKED = "/.fohmixer/locked";
+/** The lock page's script on AbleSet's name (`ableset::LOCK_SCRIPT`). */
+const LOCK_SCRIPT_URL = new RegExp(`^${ABLESET.origin.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/\\.fohmixer/locked\\.js$`);
 /** How long the probe may take (`behave::ableset::PROBE_MS`). */
 const PROBE_MS = 8_000;
 const SANDBOX =
@@ -63,6 +65,17 @@ async function openAbleSet(page: Page): Promise<Locator> {
 }
 
 const frameOf = (page: Page) => page.frameLocator('[data-testid="ableset-frame"]');
+
+/** The frame's document on AbleSet's name. */
+const inside = (page: Page) => page.frames().find((f) => f.url().startsWith(ABLESET.origin));
+
+/** The hub's `ableset_lock` records since `since` (a lock the lock page could not store, #90), once there is one. */
+const lockRecords = (since: number) =>
+  until(
+    async () => (await hubEvents()).filter((r: any) => r.ev === "ableset_lock" && r.ts >= since),
+    (r) => r.length > 0,
+    "the hub's record of the lock that could not be stored",
+  );
 
 /** AbleSet's page loaded in the frame, its socket echoing through the hub: its body. */
 async function ablesetLoaded(page: Page): Promise<Locator> {
@@ -357,9 +370,6 @@ test.describe("AbleSet opened from the tab is locked (#90, the owner's report of
   // name first, which stores "true" and then opens AbleSet's own page.
   test.use({ baseURL: HTTPS });
 
-  /** The frame's document on AbleSet's name. */
-  const inside = (page: Page) => page.frames().find((f) => f.url().startsWith(ABLESET.origin));
-
   test("every open of the tab loads AbleSet locked, also after AbleSet was unlocked", async ({ page }) => {
     await fakeAbleSet.clear();
     // AbleSet left unlocked on this device: its own page, top-level on its
@@ -408,13 +418,46 @@ test.describe("AbleSet opened from the tab is locked (#90, the owner's report of
     const body = await ablesetLoaded(page);
     await expect(body).toHaveAttribute("data-locked", "none");
     expect(inside(page)?.url()).toBe(`${ABLESET.origin}/`);
-    const records = await until(
-      async () => (await hubEvents()).filter((r: any) => r.ev === "ableset_lock" && r.ts >= since),
-      (r) => r.length > 0,
-      "the hub's record of the lock that could not be stored",
-    );
+    const records = await lockRecords(since);
     expect(records).toHaveLength(1);
     expect(records[0]).toMatchObject({ why: "SecurityError", source: "lan", forwarded: "-", skipped: 0 });
+  });
+});
+
+test.describe("AbleSet's lock page without its script (#90 review M1)", () => {
+  // The lock page's script refused, as a Wi-Fi drop or a hub restart
+  // between the page and its script would: Chromium's failed load of that
+  // address only (WebKit logs a refused route at info). The service worker
+  // is kept out so the route sees every request (Playwright's own warning
+  // says so).
+  test.use({
+    baseURL: HTTPS,
+    serviceWorkers: "block",
+    allowedConsole: [
+      [{ text: /^Failed to load resource: /, url: LOCK_SCRIPT_URL }, /^Service Worker registration blocked by Playwright$/],
+      { scope: "test" },
+    ],
+  });
+
+  test("goes on to AbleSet by its refresh, and the hub records it", async ({ page, context }) => {
+    const since = Date.now();
+    let refused = 0;
+    await context.route(LOCK_SCRIPT_URL, (route) => {
+      refused += 1;
+      return route.abort();
+    });
+    await openSurface(page);
+    await openAbleSet(page);
+    // The page's refresh comes 3 s after it loaded without its script; the
+    // hub records it and answers with AbleSet's own page.
+    await expect(frameOf(page).locator("body")).toHaveAttribute("data-app", "loaded", { timeout: 15_000 });
+    const body = await ablesetLoaded(page);
+    await expect(body).toHaveAttribute("data-locked", "none");
+    expect(inside(page)?.url()).toBe(`${ABLESET.origin}/`);
+    expect(refused).toBe(1);
+    const records = await lockRecords(since);
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({ why: "script", source: "lan", forwarded: "-" });
   });
 });
 

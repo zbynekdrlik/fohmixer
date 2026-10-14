@@ -190,15 +190,36 @@ pub const LOCK_KEY: &str = "AbleSetLocked";
 /// The locked page's policy: nothing but its own script.
 pub const LOCK_POLICY: &str = "default-src 'none'; script-src 'self'";
 
-/// The locked page: its script, nothing else.
+/// The locked page: its script, and two things that need none.
+///
+/// - `color-scheme: dark`, as fohmixer's page (#90 review M3): a frame
+///   whose document has another scheme than its embedder gets an opaque
+///   canvas of its own scheme, white here, at every open (a local probe of
+///   both engines read a white pixel without it and the area's own
+///   `#0f1016` with it).
+/// - A refresh to [`LOCKED`]`?failed=script` 3 s after the page has
+///   completely loaded (#90 review M1): a script that never arrived (a
+///   Wi-Fi drop or a hub restart between the two requests) would leave the
+///   frame empty and the lock unrecorded; so the hub records it and AbleSet
+///   opens all the same. The refresh counts from the page's completed
+///   load, which a page whose script ran never reaches (its
+///   `location.replace` cuts the load) and a script on its way holds back:
+///   the same probe saw no refresh with AbleSet's page or the script 5 s
+///   late, and the refresh at 3 s with the script refused, under this
+///   policy and the frame's sandbox. A refresh is a navigation, no fetch:
+///   the policy's `default-src` covers the fetch directives only (CSP 3's
+///   navigation directives are `form-action` and `frame-ancestors`).
 pub const LOCK_PAGE: &str = "<!doctype html><html lang=\"sk\"><meta charset=\"utf-8\">\
+    <meta name=\"color-scheme\" content=\"dark\">\
+    <meta http-equiv=\"refresh\" content=\"3;url=/.fohmixer/locked?failed=script\">\
     <title>AbleSet</title><script src=\"/.fohmixer/locked.js\"></script></html>";
 
 /// The locked page's script: [`LOCK_KEY`] stored as `"true"`, then
 /// AbleSet's own page in this one's place. Storage refused (a browser that
 /// blocks a site's storage throws): AbleSet's page all the same, through
 /// [`LOCKED`]`?failed=<the error's name>`, which the hub records
-/// ([`lock_failure`]) and answers with a 303 to `/`.
+/// ([`lock_failure`], only the page's own navigation: [`own_navigation`])
+/// and answers with a 303 to `/`.
 pub const LOCK_JS: &str = r#""use strict";
 // fohmixer (#90): AbleSet opened from fohmixer's tab starts locked.
 (() => {
@@ -877,13 +898,23 @@ fn request_opener(request: &Request) -> Opener {
 
 /// [`LOCKED`] (#90, the owner's report of 2026-10-14), after the Access
 /// check: the locked page ([`locked_page`]); with the page's word that
-/// storage was refused ([`lock_failure`]) its record, and a 303 to
-/// AbleSet's own `/`, so AbleSet opens all the same.
+/// storage was refused or its script never ran ([`lock_failure`]) its
+/// record, only from the page's own navigation ([`own_navigation`], #90
+/// review M2: another site's image may loop it, a debug line then), and
+/// either way a 303 to AbleSet's own `/`, so AbleSet opens all the same.
 async fn locked(State(site): State<Arc<AbleSet>>, request: Request) -> Response {
     let opener = request_opener(&request);
     match lock_failure(request.uri().query()) {
         Some(why) => {
-            site.lock_failed(&opener, &why);
+            if own_navigation(request.headers()) {
+                site.lock_failed(&opener, &why);
+            } else {
+                tracing::debug!(
+                    peer = %opener.peer,
+                    why = ?why,
+                    "ableset: a lock failure not of the lock page's own navigation"
+                );
+            }
             Redirect::to("/").into_response()
         }
         None => {
@@ -916,14 +947,27 @@ async fn lock_script() -> Response {
     (headers, LOCK_JS).into_response()
 }
 
-/// The locked page's word that storage was refused (pure): the `failed`
-/// value of the query (the error's name, percent-encoded as the page sent
-/// it), [`clip`]ped; none without one (the page itself).
+/// The locked page's word that storage was refused or its script never ran
+/// (pure): the `failed` value of the query (the error's name,
+/// percent-encoded as the page sent it, or `script` from its refresh),
+/// [`clip`]ped; none without one (the page itself).
 pub fn lock_failure(query: Option<&str>) -> Option<String> {
     query?
         .split('&')
         .find_map(|pair| pair.strip_prefix("failed="))
         .map(|why| clip(why).into_owned())
+}
+
+/// Whether a request is the lock page's own navigation (pure, #90 review
+/// M2), by the browser's fetch metadata, as [`refusal`] reads it: its
+/// `Sec-Fetch-Site`, when sent, `same-origin` (another site's request, or
+/// fohmixer's own same-site page, is not the page's word), and its
+/// `Sec-Fetch-Mode`, when sent, `navigate` (an image or a fetch is not). A
+/// browser that sends neither passes, as in [`refusal`].
+pub fn own_navigation(headers: &HeaderMap) -> bool {
+    let fetch = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
+    fetch("sec-fetch-site").is_none_or(|site| site.eq_ignore_ascii_case("same-origin"))
+        && fetch("sec-fetch-mode").is_none_or(|mode| mode.eq_ignore_ascii_case("navigate"))
 }
 
 /// The `ableset_lock` record of a lock the page could not store: why (the
