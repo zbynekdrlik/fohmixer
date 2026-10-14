@@ -403,20 +403,20 @@ jobs:
           sum="$(sha256sum target/release/fohmixer-hub | cut -d ' ' -f 1)"
           echo "hub-e2e sha256 ${sum}"
           echo "sha256=${sum}" >> "$GITHUB_OUTPUT"
-      # A day: long enough for a failed leg's rerun (gh run rerun --failed);
-      # later, rerun the whole run, which builds it again.
+      # 7 days, as wasm-dist: a failed leg's rerun (gh run rerun --failed)
+      # finds it as long as a leg could rerun before hub-e2e (#43).
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: hub-e2e
           path: target/release/fohmixer-hub
-          retention-days: 1
+          retention-days: 7
           if-no-files-found: error
 
   e2e:
     # The Playwright suite in four legs (#43): each project (Chromium, the
     # iPad's WebKit) in two shards (Playwright's --shard: whole spec files,
     # split by test count in file order). In one job both projects took
-    # 1550-1760 s of the 30 minutes; a leg takes about a third of it. Every
+    # 1550-1760 s of the 30 minutes; a leg takes 315-555 s since hub-e2e. Every
     # leg is a runner of its own with its own hub process (hub-e2e's build),
     # harness, test CA and failure evidence, so the specs' shared-hub rules
     # hold within a leg.
