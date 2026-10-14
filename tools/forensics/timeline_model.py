@@ -1,7 +1,7 @@
 """The forensics timeline's analysis (#43): page time on the hub's clock,
 gestures and gaps, busy episodes, the control lanes, confirmations, the
 volume jumps with their cause, the touches of single volume faders
-(``timeline_touch.py``, PR D), the system's gestures (PR G), the Stream Deck's presses (#52), the channel detail's steps (#71) and the summary. Pure: it reads nothing. One of
+(``timeline_touch.py``, PR D), the system's gestures (PR G), the Stream Deck's presses (#52), the channel detail's steps (#71), AbleSet's tab (#90) and the summary. Pure: it reads nothing. One of
 the five files of ``timeline.py`` (see its docstring), copied to the Ableton
 PC together with it.
 """
@@ -12,9 +12,18 @@ import itertools
 import json
 import math
 
+import timeline_ableset
 import timeline_eq
 import timeline_touch
-from timeline_read import TAIL_KINDS, is_volume, key_hash, local_text, number, value2db
+from timeline_read import (
+    HEAD_KINDS,
+    TAIL_KINDS,
+    is_volume,
+    key_hash,
+    local_text,
+    number,
+    value2db,
+)
 
 # A gap between two points of a control's row that is marked, and the bound
 # of every measured cause (ms).
@@ -328,8 +337,9 @@ class Timeline:
             )
         kinds = collections.defaultdict(list)
         for record in sorted(records, key=lambda r: r["ts"]):
+            first = -math.inf if record.get("ev") in HEAD_KINDS else lead
             last = end + TRACE_TAIL_MS if record.get("ev") in TAIL_KINDS else end
-            if lead <= record["ts"] <= last:
+            if first <= record["ts"] <= last:
                 kinds[record.get("ev")].append(record)
         in_window = [r for group in kinds.values() for r in group if start <= r["ts"] <= end]
         self.records = len(in_window)
@@ -431,6 +441,19 @@ class Timeline:
             [e for e in self.page if e.ev == "deck" and self.in_window(e.hub)],
             self.deck_presses,
         )
+        # AbleSet's tab (#90): the hub's link changes (the truth about
+        # AbleSet: the page's down panel also shows while its own socket is
+        # down), its state at the window's start, its outages, and the
+        # page's steps of the tab, each with the link at its time.
+        links = timeline_ableset.links(kinds["ableset_link"])
+        self.ableset_start = timeline_ableset.link_at(links, start)
+        self.ableset_links = [link for link in links if self.in_window(link.time)]
+        self.ableset_outages = timeline_ableset.outages(links, start, end)
+        self.ableset_steps = [
+            timeline_ableset.step(e.hub, e.data, links)
+            for e in self.page
+            if e.ev in timeline_ableset.PAGE_EVENTS and self.in_window(e.hub)
+        ]
 
     # The window's parts.
 
@@ -899,6 +922,9 @@ def summary(timeline):
     eq_samples = timeline_eq.samples_of(timeline.eq_latency)
     eq_decodes = [lat.decode_ms for lat in timeline.eq_latency if lat.decode_ms is not None]
     eq_trips = [link.rtt_max_ms for link in timeline.eq_links if link.rtt_max_ms is not None]
+    steps = timeline.ableset_steps
+    probe_ms = [s.ms for s in steps if s.what == "probe" and s.ms is not None]
+    load_ms = [s.ms for s in steps if s.what == "load" and s.ms is not None]
 
     def gap_max(row):
         gaps = [g[2] for lane in timeline.lanes.values() for g in lane["gaps"][row]]
@@ -972,6 +998,12 @@ def summary(timeline):
         ("deck_link_outages", str(len(timeline.deck_outages))),
         ("deck_rtt_p50_ms", ms_text(percentile(deck_rtts, 0.50))),
         ("deck_rtt_p99_ms", ms_text(percentile(deck_rtts, 0.99))),
+        ("ableset_link_at_start", timeline_ableset.state_text(timeline.ableset_start)),
+        ("ableset_link_outages", str(len(timeline.ableset_outages))),
+        ("ableset_opens", str(sum(s.what == "open" for s in steps))),
+        ("ableset_probes_failed", str(sum(s.what == "probe" and s.ok is False for s in steps))),
+        ("ableset_probe_max_ms", ms_text(max(probe_ms, default=None))),
+        ("ableset_load_max_ms", ms_text(max(load_ms, default=None))),
         ("skipped_lines", str(timeline.skipped)),
         ("notes", str(len(timeline.notes))),
     ]

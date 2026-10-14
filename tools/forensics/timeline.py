@@ -30,9 +30,12 @@ lines whose ``"ts"`` is in range. Records from 60 s before ``--from``
 brings events from inside it (the page's recorder drains a full backlog in
 ~95 s, and waits for the next socket while the link is down). So do the
 ``ping``s of those 30 min, for the page clocks only (a trace on the next
-socket has only that socket's pings); no other line there is parsed. A
-line that does not parse (a write in progress) is skipped and counted; a
-day file only those 30 min reach is not noted when it is missing.
+socket has only that socket's pings); no other line there is parsed.
+AbleSet's link changes (``ableset_link``, #90) count from the start of the
+first day file read: the latest before the window is AbleSet's state at its
+start. A line that does not parse (a write in progress) is skipped and
+counted; a day file only those 30 min reach is not noted when it is
+missing.
 
 Page time maps to hub time as ``t + offset``: the ``offset_ms`` of the ping of
 the trace's own client nearest in time to the trace record, else the nearest
@@ -61,24 +64,32 @@ round trip and answer (ok, refused with its error, offline) and the holds
 (page and hub), the releases the hub made itself with Companion's answer (a
 ``lost`` one never reached Companion), the red flashes (a down not sent,
 refused by the hub offline or late, or answered not ok), Companion's key
-changes within 10 s of a press and Companion's link outages.
+changes within 10 s of a press and Companion's link outages; then AbleSet's
+tab (#90, the hub's ``ableset_link`` records and the page's ``ableset_view``
+and ``ableset`` events): AbleSet's state at the window's start, each change
+of the hub's link to AbleSet (the truth: the page's down panel also shows
+while its own socket is down), each step of the page's tab (open, close, the
+probe's answer and ms, the frame's load ms, a panel shown, a sign-in) with
+the hub's link at its time, and AbleSet's outages.
 
 stdout: the summary, one ``name=value`` per line, the names of the report's
 summary table (the deck's: ``deck_presses``, ``deck_unsent``,
 ``deck_forced_releases``, ``deck_link_outages``, ``deck_rtt_p50_ms``,
-``deck_rtt_p99_ms``). It never prints a key: a control is ``key#<the first
+``deck_rtt_p99_ms``; AbleSet's: ``ableset_link_at_start``,
+``ableset_link_outages``, ``ableset_opens``, ``ableset_probes_failed``,
+``ableset_probe_max_ms``, ``ableset_load_max_ms``). It never prints a key: a control is ``key#<the first
 10 hex of its SHA-256>``, so the numbers can go on a public ticket. Exit 0
 with a report also when the window holds nothing; exit 1 with one
 ``timeline: ...`` line on stderr on a usage or input error.
 
 This file is the command; beside it ``timeline_read.py`` (values, times, the
 logs read), ``timeline_model.py`` (the analysis and the summary),
-``timeline_touch.py`` (the touches of single volume faders and the system
-gestures) and
-``timeline_report.py`` (the HTML). Python 3.11 standard library only: the
-five files are copied to the Ableton PC into one folder and this one is run
-with the PC's Python (its folder is on ``sys.path`` then, so it finds the
-other four).
+``timeline_touch.py`` (the touches of single volume faders, the system
+gestures and the Stream Deck), ``timeline_eq.py`` (the Pro-Q 4 screen),
+``timeline_ableset.py`` (AbleSet's tab) and ``timeline_report.py`` (the
+HTML). Python 3.11 standard library only: the seven files are copied to the
+Ableton PC into one folder and this one is run with the PC's Python (its
+folder is on ``sys.path`` then, so it finds the other six).
 """
 
 import argparse

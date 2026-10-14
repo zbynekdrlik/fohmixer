@@ -22,6 +22,12 @@ TS = re.compile(rb'"ts":\s*(-?\d+)')
 # press's ``deck_ok`` (Companion's answer, just after the window's end).
 TAIL_KINDS = ("trace", "ping", "deck_ok")
 TAIL_EV = re.compile(rb'"ev":\s*"(?:' + b"|".join(k.encode() for k in TAIL_KINDS) + rb')"')
+# The records read from the start of the window's first day file, before
+# its lead too (#90): AbleSet's link changes (``ableset_link``: warn class,
+# at most one per 5 s read), whose latest before the window is AbleSet's
+# state at its start.
+HEAD_KINDS = ("ableset_link",)
+HEAD_EV = re.compile(rb'"ev":\s*"(?:' + b"|".join(k.encode() for k in HEAD_KINDS) + rb')"')
 TIME = re.compile(
     r"(?:(?P<date>\d{4}-\d{2}-\d{2})[ T])?(?P<h>\d{1,2}):(?P<m>\d{2})"
     r"(?::(?P<s>\d{2})(?:\.(?P<f>\d{1,6}))?)?"
@@ -173,10 +179,12 @@ def day_files(start_ms, end_ms):
 
 def read_events(folder, start_ms, end_ms, trace_end_ms):
     """The records of the window's day files in ``folder``: ``ts`` from
-    ``start_ms`` to ``end_ms`` (``TAIL_KINDS`` to ``trace_end_ms``), in ``ts``
-    order. Returns (records, files read, files missing, lines skipped). A line
-    whose ``ts`` is out of range, or past ``end_ms`` and of no tail kind, is
-    never parsed; a missing file only the tail reaches is not reported."""
+    ``start_ms`` to ``end_ms`` (``TAIL_KINDS`` to ``trace_end_ms``,
+    ``HEAD_KINDS`` from the first file's start), in ``ts`` order. Returns
+    (records, files read, files missing, lines skipped). A line whose ``ts``
+    is out of range, past ``end_ms`` and of no tail kind, or before
+    ``start_ms`` and of no head kind, is never parsed; a missing file only
+    the tail reaches is not reported."""
     records, read, missing, skipped = [], [], [], 0
     window = day_files(start_ms, end_ms)
     for name in day_files(start_ms, trace_end_ms):
@@ -193,7 +201,7 @@ def read_events(folder, start_ms, end_ms, trace_end_ms):
                         skipped += bool(line.strip())
                         continue
                     ts = int(found[1])
-                    if not start_ms <= ts <= trace_end_ms:
+                    if ts > trace_end_ms or (ts < start_ms and HEAD_EV.search(line) is None):
                         continue
                     if ts > end_ms and TAIL_EV.search(line) is None:
                         continue
@@ -206,8 +214,9 @@ def read_events(folder, start_ms, end_ms, trace_end_ms):
                     if isinstance(ts, bool) or not isinstance(ts, int):
                         skipped += 1
                         continue
+                    first = -math.inf if record.get("ev") in HEAD_KINDS else start_ms
                     last = trace_end_ms if record.get("ev") in TAIL_KINDS else end_ms
-                    if start_ms <= ts <= last:
+                    if first <= ts <= last:
                         records.append(record)
         except OSError as e:
             raise TimelineError(f"cannot read {name}: {e.strerror or e}") from e
