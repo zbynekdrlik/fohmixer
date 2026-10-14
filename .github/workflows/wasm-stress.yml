@@ -1,9 +1,9 @@
 name: wasm-stress
 
 # The WebKit wasm trap at page load (#43), on demand: `workflow_dispatch`
-# only, never on a push or a pull request. It builds what the e2e job runs
+# only, never on a push or a pull request. It builds what the e2e legs run
 # (the UI with its function names, the hub with it embedded: ci.yml's wasm
-# and e2e steps, pinned the same) once, then loads the surface `loads` times
+# and hub-e2e steps, pinned the same) once, then loads the surface `loads` times
 # in the iPad project's WebKit (playwright.stress.config.ts, e2e/stress/)
 # under each leg's JavaScriptCore options (JSC_* environment variables,
 # scripts/wasm_stress_legs.py), with the e2e job's harness. Each leg reports
