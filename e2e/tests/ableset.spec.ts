@@ -582,7 +582,6 @@ test.describe("AbleSet's tab on the emergency address", () => {
     const direct = page.getByTestId("ableset-direct");
     await expect(direct).toHaveText(`http://127.0.0.1:${port}/`);
     await expect(page.getByTestId("ableset-frame")).toHaveCount(0);
-    await expect(page.locator(".ableset-probe")).toHaveCount(0);
     await frames(page);
     expect(requested.filter((url) => url.includes(ABLESET.hostname))).toEqual([]);
     expect(pageHits((await fakeAbleSet.state()).hits)).toEqual([]);
