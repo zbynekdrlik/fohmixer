@@ -9,6 +9,7 @@ import json
 import math
 
 from timeline_model import ROWS, Span, ms_text, no_data_text, percentile
+from timeline_ableset import state_text
 from timeline_read import key_hash, key_scale, local_text, number, to_live, utc_text, value2db
 from timeline_touch import OFFLINE
 
@@ -57,7 +58,7 @@ CSS = """
 body { font: 13px/1.4 system-ui, sans-serif; margin: 16px; color: #222; background: #fff; }
 h1 { font-size: 18px; margin: 0 0 8px; }
 table { border-collapse: collapse; margin: 8px 0 16px; }
-tr.deck-unsent td, tr.deck-release td { color: #a00; }
+tr.deck-unsent td, tr.deck-release td, tr.ableset-link.down td { color: #a00; }
 th, td { border: 1px solid #ccc; padding: 2px 8px; text-align: left; vertical-align: top; }
 td { font-variant-numeric: tabular-nums; }
 .notes li { color: #8a4b00; }
@@ -963,6 +964,108 @@ def _deck_table(t):
     return f"<p>{esc(DECK_LEGEND)}</p>{table}{outage_list}"
 
 
+ABLESET_LEGEND = (
+    "AbleSet's tab (#90): the hub's link to AbleSet, the truth about AbleSet's state (read "
+    "every 5 s, down at the second failed read in a row, up at the first good one; each "
+    "change is a hub row), and each step of the page's tab: open and close, the probe's "
+    "answer (ok or failed, ms from its start: failed is the sign-in through the tunnel, the "
+    "unreachable panel on the LAN), the frame's load (ms from its mount), each panel shown "
+    "and a press of the sign-in. The last column is the hub's link at the step: a down panel "
+    "while the link was up came from the page's own socket."
+)
+
+
+def _ableset_result(s):
+    """A page step's result cell: the probe's answer, the panel's name."""
+    if s.what == "probe":
+        return {True: "ok", False: "failed"}.get(s.ok, "n/a")
+    return s.panel or ""
+
+
+def _ableset_table(t):
+    state = state_text(t.ableset_start)
+    head_line = tag(
+        "p",
+        esc(f"AbleSet's link at the window's start (the hub): {state}"),
+        class_="ableset-start",
+        data_link=state,
+    )
+    if not (t.ableset_links or t.ableset_steps or t.ableset_outages):
+        return (
+            f"{head_line}<p>No AbleSet link change and no step of AbleSet's tab in the window.</p>"
+        )
+    head = "".join(
+        f"<th>{h}</th>" for h in ("time (local)", "from", "step", "result", "ms", "AbleSet (hub)")
+    )
+    rows = []
+    for link in t.ableset_links:
+        if link.up:
+            why = f"after {link.failures} failed reads" if link.failures else ""
+        else:
+            why = link.error or "n/a"
+        cells = (local_text(link.time), "hub", "link " + state_text(link.up), why, "", "")
+        rows.append(
+            (
+                link.time,
+                0,
+                tag(
+                    "tr",
+                    "".join(f"<td>{esc(c)}</td>" for c in cells),
+                    class_="ableset-link " + state_text(link.up),
+                    data_time=num(link.time),
+                    data_up=_flag(link.up),
+                    data_failures=None if link.failures is None else str(link.failures),
+                ),
+            )
+        )
+    for s in t.ableset_steps:
+        cells = (
+            local_text(s.time),
+            "page",
+            s.what,
+            _ableset_result(s),
+            "" if s.ms is None else ms_text(s.ms),
+            state_text(s.link),
+        )
+        rows.append(
+            (
+                s.time,
+                1,
+                tag(
+                    "tr",
+                    "".join(f"<td>{esc(c)}</td>" for c in cells),
+                    class_="ableset-step",
+                    data_time=num(s.time),
+                    data_what=s.what,
+                    data_ok=_flag(s.ok),
+                    data_ms=None if s.ms is None else num(s.ms),
+                    data_panel=s.panel,
+                    data_link=state_text(s.link),
+                ),
+            )
+        )
+    rows.sort(key=lambda row: row[:2])
+    table = f'<table class="ableset"><tr>{head}</tr>{"".join(row[2] for row in rows)}</table>'
+    outages = "".join(
+        tag(
+            "li",
+            esc(
+                f"{local_text(o.start)} to {local_text(o.end)}: {ms_text(o.ms)} ms "
+                f"({o.error or 'n/a'})"
+                + ("" if o.read else ", its start counted back from the up's failed reads")
+            ),
+            class_="ableset-outage",
+            data_ms=num(o.ms),
+            data_read=_flag(o.read),
+        )
+        for o in t.ableset_outages
+    )
+    outage_list = (
+        f"<p>AbleSet outages (the hub's link down):</p><ul>{outages}</ul>" if outages else ""
+    )
+    return f"<p>{esc(ABLESET_LEGEND)}</p>{head_line}{table}{outage_list}"
+
+
 def render(t, pairs, files):
     """The whole report: the window, ``files`` (the names read), the notes,
     the summary ``pairs``, the lanes and the jumps."""
@@ -996,5 +1099,6 @@ def render(t, pairs, files):
         f"<h2>Channel detail</h2>{_detail_table(t)}"
         f"<h2>Pro-Q 4 screen</h2>{_eq_table(t)}"
         f"<h2>Stream Deck</h2>{_deck_table(t)}"
+        f"<h2>AbleSet</h2>{_ableset_table(t)}"
         "</body></html>\n"
     )

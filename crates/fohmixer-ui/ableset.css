@@ -47,10 +47,6 @@
     touch-action: auto;
 }
 
-.ableset-probe {
-    display: none;
-}
-
 .ableset-panel {
     position: absolute;
     inset: 0;

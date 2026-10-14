@@ -191,6 +191,29 @@ fn a_trace_is_warn_class_only_with_a_dropout_or_a_counter_reset() {
 }
 
 #[test]
+fn a_trace_with_ablesets_tab_opened_or_closed_outlives_the_cap() {
+    // #90 design §6: the tab's open and close explain a page's AbleSet tab
+    // past a day file's cap; its other steps alone stay bulk.
+    let trace = |events: Value| json!({"ev": "trace", "client": 3, "events": events});
+    for on in [true, false] {
+        let record = trace(json!([
+            {"ev": "ping", "t": 1.0, "n": 4},
+            {"ev": "ableset_view", "t": 2.0, "on": on}
+        ]));
+        assert!(is_warn(&record), "{on}");
+    }
+    assert!(!is_warn(&trace(json!([
+        {"ev": "ableset", "t": 1.0, "what": "probe", "ok": false, "ms": 8000.0},
+        {"ev": "ableset", "t": 2.0, "what": "panel", "panel": "unreachable"},
+        {"ev": "ableset", "t": 3.0, "what": "load", "ms": 40.0}
+    ]))));
+    // Another record holding one is not a page's trace.
+    assert!(!is_warn(
+        &json!({"ev": "set", "events": [{"ev": "ableset_view", "on": true}]})
+    ));
+}
+
+#[test]
 fn the_cap_is_crossed_by_a_line_past_it() {
     assert!(!over_cap(10, 5, 15));
     assert!(over_cap(10, 6, 15));
@@ -295,13 +318,26 @@ fn past_the_cap_only_warn_class_records_are_written() {
         &stamp("deck_press", noon(day), json!({"key": 3, "down": true})),
         &dropped,
     );
+    // A page's trace with AbleSet's tab opened goes in too, one with only
+    // the tab's other steps does not (#90).
+    let step = json!({"ev": "ableset", "t": 1.0, "what": "load", "ms": 40.0});
+    let view = json!({"ev": "ableset_view", "t": 2.0, "on": true});
+    writer.take(
+        &stamp("trace", noon(day), json!({"events": [step]})),
+        &dropped,
+    );
+    writer.take(
+        &stamp("trace", noon(day), json!({"events": [view]})),
+        &dropped,
+    );
     writer.flush();
     let written = lines(dir.path(), day);
     assert_eq!(
         evs(&written),
-        vec!["set", "set", "cap", "sock", "ack", "deck_press"],
+        vec!["set", "set", "cap", "sock", "ack", "deck_press", "trace"],
         "{written:?}"
     );
+    assert_eq!(written[6]["events"][0]["ev"], "ableset_view");
     assert_eq!(written[2]["cap_bytes"], 200);
     assert_eq!(written[1]["seq"], 2);
     // The next day starts a file of its own, under the cap again.

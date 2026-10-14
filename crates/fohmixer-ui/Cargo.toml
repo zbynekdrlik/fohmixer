@@ -75,6 +75,7 @@ web-sys = { version = "0.3", features = [
     "Url",
     "ImageBitmap",
     "HtmlCanvasElement",
+    "HtmlImageElement",
     "CanvasRenderingContext2d",
     "ResizeObserver",
 ] }

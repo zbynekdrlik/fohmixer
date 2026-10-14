@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import http from "node:http";
-import type { Locator, Page } from "@playwright/test";
+import type { Locator, Page, Route } from "@playwright/test";
 import { ABLESET_AUD, TUNNEL, accessJwt } from "./support/access";
 import { expect, test } from "./support/fixtures";
 import {
@@ -30,6 +30,11 @@ import { HTTPS } from "./support/pwa";
 // the emergency address (the suite's plain http by address) shows a panel.
 
 const ABLESET = new URL(process.env.E2E_ABLESET_URL || "https://ableset.e2e.test:8443");
+/** The probe's address: AbleSet's name with the page's port, a number making each probe new. */
+const PROBE_URL = new RegExp(`^${ABLESET.origin.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/\\.fohmixer/probe\\?\\d+$`);
+const isProbe = (url: URL) => PROBE_URL.test(url.href);
+/** How long the probe may take (`behave::ableset::PROBE_MS`). */
+const PROBE_MS = 8_000;
 const SANDBOX =
   "allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-modals allow-downloads";
 
@@ -56,6 +61,21 @@ async function ablesetLoaded(page: Page): Promise<Locator> {
   await expect(body).toHaveAttribute("data-app", "loaded");
   await expect(body).toHaveAttribute("data-ws", "echo");
   return body;
+}
+
+/** The page hidden or shown, as an iPad's lock or app switch does (deck.spec.ts's `setHidden`). */
+async function setHidden(page: Page, hidden: boolean) {
+  await page.evaluate((on) => {
+    const doc = document as any;
+    if (on) {
+      Object.defineProperty(doc, "hidden", { configurable: true, get: () => true });
+      Object.defineProperty(doc, "visibilityState", { configurable: true, get: () => "hidden" });
+    } else {
+      delete doc.hidden;
+      delete doc.visibilityState;
+    }
+    document.dispatchEvent(new Event("visibilitychange", { bubbles: true }));
+  }, hidden);
 }
 
 /** A layout page's tab: the mixer again. */
@@ -209,6 +229,16 @@ test.describe("AbleSet's tab (the LAN path, fohmixer's own https page)", () => {
     expect(framed.width).toBeGreaterThan(viewport.width - column.width - 40);
     // AbleSet's socket goes through the hub, and a press inside the frame reaches AbleSet.
     await until(() => ablesetStatus(bearer), (s) => s.sockets >= 1, "AbleSet's socket counted");
+    // The hub's record of that socket opening (design §6): the frame's own
+    // page, over the LAN (#90 PR C review L8).
+    const tunnels = async (what: string) =>
+      (await hubEvents()).filter((r: any) => r.ev === "ableset_ws" && r.what === what && r.ts >= since);
+    const [opened] = await until(
+      async () => (await tunnels("open")).filter((r: any) => r.origin === ABLESET.host),
+      (r) => r.length === 1,
+      "the hub's record of AbleSet's socket opening",
+    );
+    expect(opened.source).toBe("lan");
     await frameOf(page).locator("#fake-button").click();
     await expect(frameOf(page).locator("body")).toHaveAttribute("data-pressed", "ok");
     expect((await fakeAbleSet.state()).presses).toBe(pressed + 1);
@@ -218,6 +248,15 @@ test.describe("AbleSet's tab (the LAN path, fohmixer's own https page)", () => {
     await expect(page.getByTestId("ableset-frame")).toHaveCount(0);
     await expect(tab).toHaveAttribute("data-selected", "false");
     await until(() => ablesetStatus(bearer), (s) => s.sockets === 0, "AbleSet's socket closed");
+    // And its close: the same tunnel, its time and its bytes both ways.
+    const [closed] = await until(
+      async () => (await tunnels("close")).filter((r: any) => r.client === opened.client),
+      (r) => r.length === 1,
+      "the hub's record of AbleSet's socket closing",
+    );
+    expect(closed.ms).toBeGreaterThan(0);
+    expect(closed.up).toBeGreaterThan(0);
+    expect(closed.down).toBeGreaterThan(0);
     // The page's flight recorder: the tab's opening, the brief check, the
     // probe's answer, the frame's load and the tab's closing.
     const events = await ablesetEvents(
@@ -302,20 +341,23 @@ test.describe("AbleSet's tab (the LAN path, fohmixer's own https page)", () => {
 
 test.describe("A probe that fails on the LAN", () => {
   // The probe's image refused here, as a broken certificate or a missing LAN
-  // name would fail it: a failed image load in the console. The service
-  // worker is kept out so the route sees the page's own request (Playwright's
-  // own warning says so).
+  // name would fail it: a failed image load in the console, of the probe's
+  // address only (an abort has no status). The service worker is kept out so
+  // the route sees the page's own request (Playwright's own warning says so).
   test.use({
     baseURL: HTTPS,
     serviceWorkers: "block",
-    allowedConsole: [[/^Failed to load resource: /, /^Service Worker registration blocked by Playwright$/], { scope: "test" }],
+    allowedConsole: [
+      [{ text: /^Failed to load resource: /, url: PROBE_URL }, /^Service Worker registration blocked by Playwright$/],
+      { scope: "test" },
+    ],
   });
 
   test("shows why, never the internet sign-in, and the mixer stays; a page's tab and back tries again", async ({
     page,
   }) => {
     const since = Date.now();
-    const probe = (url: URL) => url.origin === ABLESET.origin && url.pathname === "/.fohmixer/probe";
+    const probe = isProbe;
     let refused = 0;
     await page.route(probe, (route) => {
       refused += 1;
@@ -363,6 +405,66 @@ test.describe("A probe that fails on the LAN", () => {
   });
 });
 
+test.describe("A probe with no answer within its bound", () => {
+  // The probe is held by the test's route, so the service worker is kept out
+  // (Playwright's own warning says so); nothing fails to load.
+  test.use({ baseURL: HTTPS, serviceWorkers: "block", allowedConsole: [/^Service Worker registration blocked by Playwright$/] });
+
+  test("says so after 8 s, its late answer changes nothing, and the page shown again probes anew", async ({ page }) => {
+    const since = Date.now();
+    const held: Route[] = [];
+    await page.route(isProbe, (route) => {
+      held.push(route);
+    });
+    // The page's clock is the test's (#90 PR C review L6): the 8 s bound is
+    // jumped over, never waited out. The clock runs on by itself meanwhile.
+    await page.clock.install();
+    await openSurface(page);
+    const area = await openAbleSet(page);
+    await expect(area).toHaveAttribute("data-state", "checking");
+    await expect.poll(() => held.length).toBe(1);
+    await page.clock.fastForward(PROBE_MS);
+    await expect(area).toHaveAttribute("data-state", "unreachable");
+    const panel = page.getByTestId("ableset-panel");
+    await expect(panel.locator("h3")).toHaveText("AbleSet sa nedá načítať");
+    await expect(panel.locator(".ableset-text")).toHaveText(
+      "AbleSet neodpovedal do 8 sekúnd. Mixér funguje ďalej; fohmixer to skúsi znova, keď sa sem vrátiš.",
+    );
+    // The held probe answers late: only a probe on its way takes an answer,
+    // and the page takes this one without a fault.
+    const answered = page.waitForEvent("requestfinished", (request) => request === held[0].request());
+    await held[0].continue();
+    await answered;
+    await expect(area).toHaveAttribute("data-state", "unreachable");
+    // Hidden, nothing probes; shown again, a fresh probe passes and AbleSet loads.
+    await page.unroute(isProbe);
+    await setHidden(page, true);
+    await expect(area).toHaveAttribute("data-state", "unreachable");
+    await setHidden(page, false);
+    await expect(area).toHaveAttribute("data-state", "frame");
+    await ablesetLoaded(page);
+    expect(held).toHaveLength(1);
+    const events = await ablesetEvents(
+      since,
+      (e) => e.filter((x) => x.what === "probe").length >= 2 && e.some((x) => x.what === "load"),
+      "both probes' answers and the frame's load",
+    );
+    const steps = events.map((e) =>
+      e.ev === "ableset_view" ? `view ${e.on}` : e.what === "probe" ? `probe ${e.ok}` : e.what === "panel" ? `panel ${e.panel}` : e.what,
+    );
+    expect(steps).toEqual([
+      "view true",
+      "panel checking",
+      "probe false",
+      "panel unreachable",
+      "panel checking",
+      "probe true",
+      "load",
+    ]);
+    expect(events.find((e) => e.what === "probe").ms).toBeGreaterThanOrEqual(PROBE_MS);
+  });
+});
+
 test.describe("AbleSet down while its tab is open", () => {
   // AbleSet stopped closes its socket in the frame under the page (the test
   // stops it on purpose): WebKit reports the reset of that socket.
@@ -401,7 +503,8 @@ test.describe("AbleSet down while its tab is open", () => {
 
 test.describe("AbleSet's tab on the internet path", () => {
   // The probe refused (no AbleSet sign-in yet) is a failed image load in the
-  // console: the test provokes it. The service worker is kept out
+  // console, the probe's address with Access's 403: the test provokes it.
+  // The service worker is kept out
   // (Playwright's own warning says so): fohmixer's own requests then leave
   // the page itself with the test's tunnel header, which the worker's fetch
   // of them may not carry. The probe never passes through the worker (sw.js
@@ -410,7 +513,13 @@ test.describe("AbleSet's tab on the internet path", () => {
   test.use({
     baseURL: HTTPS,
     serviceWorkers: "block",
-    allowedConsole: [[/^Failed to load resource: /, /^Service Worker registration blocked by Playwright$/], { scope: "test" }],
+    allowedConsole: [
+      [
+        { text: /^Failed to load resource: the server responded with a status of 403 \(/, url: PROBE_URL },
+        /^Service Worker registration blocked by Playwright$/,
+      ],
+      { scope: "test" },
+    ],
   });
 
   test("the hub tells a page through the tunnel it is not on the LAN, and a LAN page it is", async () => {

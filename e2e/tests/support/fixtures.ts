@@ -1,10 +1,22 @@
 import { test as base, expect, type Page } from "@playwright/test";
 
+/**
+ * A console line a test deliberately provokes: its text, or its text and
+ * the URL the browser names with it (`msg.location().url`; for a failed
+ * load, Chromium's and WebKit's own resource), so a failed load of any
+ * other resource still fails the test (#90 PR C review L9).
+ */
+export type Allowance = RegExp | { text: RegExp; url: RegExp };
+
 type ConsoleGuard = {
   /** Console messages this test deliberately provokes (e.g. a 401 it asks for). */
-  allowedConsole: RegExp[];
+  allowedConsole: Allowance[];
   consoleGuard: void;
 };
+
+function allows(allowance: Allowance, text: string, url: string): boolean {
+  return allowance instanceof RegExp ? allowance.test(text) : allowance.text.test(text) && allowance.url.test(url);
+}
 
 /**
  * What a test fails with when its page's browser process crashes (#9). The
@@ -84,7 +96,7 @@ export const test = base.extend<ConsoleGuard>({
       // `[[/a/, /b/], { scope: "test" }]`.
       if (!Array.isArray(allowedConsole)) {
         throw new Error(
-          "allowedConsole must be a RegExp[]: wrap two or more patterns as [[/a/, /b/], { scope: \"test\" }]",
+          "allowedConsole must be an array: wrap two or more allowances as [[/a/, /b/], { scope: \"test\" }]",
         );
       }
       const crashes = [watchCrash(page, browserName)];
@@ -94,7 +106,7 @@ export const test = base.extend<ConsoleGuard>({
       page.on("console", (msg) => {
         if (msg.type() !== "error" && msg.type() !== "warning") return;
         const text = msg.text();
-        if (allowedConsole.some((pattern) => pattern.test(text))) return;
+        if (allowedConsole.some((allowance) => allows(allowance, text, msg.location().url))) return;
         problems.push(`[${msg.type()}] ${text}`);
       });
       page.on("pageerror", (error) => problems.push(`[pageerror] ${error.message}`));
