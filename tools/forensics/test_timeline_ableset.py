@@ -163,23 +163,51 @@ class AbleSetSection(ReportCase):
 
 
 class Reading(ReportCase):
-    def test_link_changes_are_read_from_the_first_day_files_start_only(self):
+    def test_link_changes_are_read_from_the_previous_day_files_start(self):
         log = Log()
-        # The previous UTC date's file is not read: the window's first day
-        # file starts at midnight.
+        # The hub writes only changes, so the previous UTC date's file is read
+        # too, for the link only: its other early lines are never parsed.
         link(log, BASE - 17 * 60 * MINUTE, False, 2, REFUSED)
+        log.add(
+            "set", BASE - 17 * 60 * MINUTE, client=1, instance="band", key="k", seq=1, value=0.5
+        )
         link(log, BASE - 3 * 60 * MINUTE, True, 3)
-        log.add("set", BASE - 3 * 60 * MINUTE, client=1, instance="band", key="k", seq=1, value=0.5)
+        log.add("set", BASE - 3 * 60 * MINUTE, client=1, instance="band", key="k", seq=2, value=0.5)
         log.write(self.logs)
         start = BASE
-        records, files, _, skipped = read.read_events(
+        records, files, missing, skipped = read.read_events(
             self.logs, start - MINUTE, start + 1000, start + 31 * MINUTE
         )
-        self.assertEqual(files, ["events-2026-10-03.jsonl"])
+        self.assertEqual(files, ["events-2026-10-02.jsonl", "events-2026-10-03.jsonl"])
+        self.assertEqual(missing, [])
         self.assertEqual(
-            [(r["ev"], r["ts"]) for r in records], [("ableset_link", BASE - 3 * 60 * MINUTE)]
+            [(r["ev"], r["ts"]) for r in records],
+            [("ableset_link", BASE - 17 * 60 * MINUTE), ("ableset_link", BASE - 3 * 60 * MINUTE)],
         )
         self.assertEqual(skipped, 0)
+
+    def test_an_outage_that_began_the_day_before_is_the_state_at_the_start(self):
+        log = Log()
+        # Down before UTC midnight and not back: no change on the window's day.
+        link(log, BASE - 17 * 60 * MINUTE, False, 2, REFUSED)
+        log.write(self.logs)
+        records, _, missing, _ = read.read_events(
+            self.logs, BASE - MINUTE, BASE + 1000, BASE + 31 * MINUTE
+        )
+        # The window's own day file is missing; the previous one only the
+        # link reaches is not.
+        self.assertEqual(missing, ["events-2026-10-03.jsonl"])
+        state = link_at(links(records), BASE)
+        self.assertEqual((state.up, state.error), (False, REFUSED))
+
+    def test_a_missing_previous_day_file_is_no_note(self):
+        log = Log()
+        link(log, BASE - 3 * 60 * MINUTE, True, 3)
+        log.write(self.logs)
+        _, files, missing, _ = read.read_events(
+            self.logs, BASE - MINUTE, BASE + 1000, BASE + 31 * MINUTE
+        )
+        self.assertEqual((files, missing), (["events-2026-10-03.jsonl"], []))
 
 
 class Pure(unittest.TestCase):
