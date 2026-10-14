@@ -180,7 +180,9 @@ pub fn expired(file: NaiveDate, today: NaiveDate, keep_days: i64) -> bool {
 /// 10 s), a client's fault `why` (rationed), and an `ableset_ws` open or
 /// close never an `error`: only the outage outlives the cap, so no client
 /// fills the warn class. Its link's changes (`ableset_link`, #90 B3: at
-/// most one per 5 s read, they explain a page's AbleSet tab) do too.
+/// most one per 5 s read, they explain a page's AbleSet tab) do too, and
+/// so does a page's `trace` that holds its AbleSet tab opened or closed
+/// (`ableset_view`, #90 design §6: a few per open, beside the dropouts).
 pub fn is_warn(record: &Value) -> bool {
     let ev = record.get("ev").and_then(Value::as_str).unwrap_or("");
     let failed = record.get("error").is_some_and(|e| !e.is_null())
@@ -204,11 +206,12 @@ pub fn is_warn(record: &Value) -> bool {
                 | "idle"
                 | "ableset_link"
         )
-        || (ev == "trace" && holds_dropout(record))
+        || (ev == "trace" && holds_warn_event(record))
 }
 
-/// Whether a page's `trace` holds a dropout or a reset of its counter.
-fn holds_dropout(record: &Value) -> bool {
+/// Whether a page's `trace` holds a dropout, a reset of its counter or its
+/// AbleSet tab opened or closed.
+fn holds_warn_event(record: &Value) -> bool {
     record
         .get("events")
         .and_then(Value::as_array)
@@ -216,7 +219,7 @@ fn holds_dropout(record: &Value) -> bool {
             events.iter().any(|e| {
                 matches!(
                     e.get("ev").and_then(Value::as_str),
-                    Some("dropout" | "reset")
+                    Some("dropout" | "reset" | "ableset_view")
                 )
             })
         })
