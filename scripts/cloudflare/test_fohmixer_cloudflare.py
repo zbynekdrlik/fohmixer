@@ -400,6 +400,33 @@ class ScriptTest(unittest.TestCase):
         self.assertIn(line % ABLESET, out)
         self.assertNotIn("[ableset]", out)
 
+    def test_ablesets_app_takes_its_own_allow_list_and_fohmixers_keeps_its_own(self):
+        code, out, err = self.run_main(
+            "--ableset-name",
+            ABLESET,
+            "--ableset-email",
+            "c@example.org",
+            "--ableset-email",
+            "b@example.org",
+        )
+        self.assertEqual(code, 0, err)
+        apps = {a["domain"]: a for a in self.cf.apps.values()}
+
+        def allowed(app):
+            (policy,) = app["policies"]
+            return [rule["email"]["email"] for rule in policy["include"]]
+
+        self.assertEqual(allowed(apps[NAME]), ["a@example.org", "b@example.org"])
+        self.assertEqual(allowed(apps[ABLESET]), ["c@example.org", "b@example.org"])
+        self.assertIn("create the Access app of %s (allow: 2 e-mail(s))" % ABLESET, out)
+        self.assert_access_before_exposure()
+
+    def test_an_ableset_allow_list_without_ablesets_name_is_refused(self):
+        code, _, err = self.run_main("--ableset-email", "c@example.org")
+        self.assertEqual(code, 1)
+        self.assertIn("--ableset-email without --ableset-name", err)
+        self.assertEqual((self.cf.writes, self.cf.tunnels), ([], {}))
+
     def test_ablesets_name_is_refused_when_it_is_the_name(self):
         code, _, err = self.run_main("--ableset-name", "FOH.example.org.")
         self.assertEqual(code, 1)
