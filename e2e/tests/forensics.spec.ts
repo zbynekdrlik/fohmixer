@@ -63,17 +63,28 @@ test("a fader dragged through a stall: every hop and the page's record in the ev
   await ready(fader);
   await until(() => shown(fader), (v) => Math.abs(v - START) < 1e-3, "the fader at 0.5");
 
-  // A finger drags the fader up for 1.6 s (a 1 px move every 20 ms); 400 ms
-  // in, the link stalls 800 ms in both directions.
-  const steps: PointerStep[] = [{ type: "pointerdown" }];
-  for (let i = 1; i <= 80; i++) steps.push({ wait: 20 }, { type: "pointermove", dy: i });
-  steps.push({ type: "pointerup", dy: 80 });
+  // A finger drags the fader up 1 px every 20 ms: 20 moves (400 ms), held
+  // until the hub has the drag's first set; then the link stalls 800 ms in
+  // both directions while the finger goes on for 60 more moves and lifts.
+  // The arrivals' gap over the stall needs an arrival before it, and the page
+  // sends a fader's set only in its animation frame: WebKit on the runner
+  // once drew no frame for 1.07 s from the touch on (master run 38546278518,
+  // the leg's first test), so a fixed 400 ms left the first set in the stall.
+  const pressed: PointerStep[] = [{ type: "pointerdown" }];
+  for (let i = 1; i <= 20; i++) pressed.push({ wait: 20 }, { type: "pointermove", dy: i });
+  const onward: PointerStep[] = [];
+  for (let i = 21; i <= 80; i++) onward.push({ wait: 20 }, { type: "pointermove", dy: i });
+  onward.push({ type: "pointerup", dy: 80 });
   const dragFrom = await pageNow(page);
-  const drag = dispatchPointer(fader, steps, 61);
-  await page.waitForTimeout(400);
+  await dispatchPointer(fader, pressed, 61);
+  await until(
+    hubEvents,
+    (ev) => ev.some((e) => e.ev === "set" && e.key === KEY && e.t >= dragFrom),
+    "the drag's first set at the hub before the stall",
+  );
   const stallFrom = await pageNow(page);
   await impair.stall(800);
-  await drag;
+  await dispatchPointer(fader, onward, 61);
   const stallTo = stallFrom + 800;
   const dragTo = await pageNow(page);
 
