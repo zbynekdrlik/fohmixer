@@ -8,7 +8,8 @@ public DNS sends it to a Cloudflare Tunnel whose connector (cloudflared, the
 HTTP port on the PC, behind a Cloudflare Access application (e-mail one-time
 PIN). ``--ableset-name`` adds AbleSet's own name (#90), which the hub serves
 beside fohmixer's: the same tunnel and origin, an Access application of its
-own (its own AUD, the same allow-list and settings). This script reconciles,
+own (its own AUD and settings like fohmixer's; its allow-list is
+``--ableset-email``, else the same ``--email`` list). This script reconciles,
 idempotently and in this order:
 
 1. the tunnel (remotely managed): found by name or created;
@@ -346,6 +347,15 @@ def wanted_names(args):
     return [args.name] + ([args.ableset_name] if args.ableset_name else [])
 
 
+def allow_lists(args):
+    """Each wanted name's allow-list, in ``wanted_names``' order: AbleSet's is
+    ``--ableset-email`` when given, else fohmixer's (#90)."""
+    lists = [args.email]
+    if args.ableset_name:
+        lists.append(args.ableset_email or args.email)
+    return lists
+
+
 def reconcile(api, args):
     """The whole run, in its order (see the module documentation)."""
     plan = Plan(args.apply)
@@ -355,8 +365,8 @@ def reconcile(api, args):
     wanted = ingress(names, args.service)
     current = read_routes(api, plan, args.account_id, wanted, args.prune_routes)
     auds = [
-        reconcile_access(api, plan, args.account_id, n, args.email, args.session_duration)
-        for n in names
+        reconcile_access(api, plan, args.account_id, n, emails, args.session_duration)
+        for n, emails in zip(names, allow_lists(args), strict=True)
     ]
     plan.aud = auds[0]
     if args.ableset_name:
@@ -402,6 +412,12 @@ def parse_args(argv):
         "--email", action="append", default=[], help="an e-mail the Access policy allows (repeat)"
     )
     p.add_argument(
+        "--ableset-email",
+        action="append",
+        default=[],
+        help="an e-mail AbleSet's Access policy allows (repeat; default: the --email list)",
+    )
+    p.add_argument(
         "--service", default="http://127.0.0.1:8480", help="the tunnel's origin on the PC"
     )
     p.add_argument("--session-duration", default="720h")
@@ -421,6 +437,12 @@ def parse_args(argv):
 
 def main(argv=None, transport=None):
     args = parse_args(argv)
+    if args.ableset_email and not args.ableset_name:
+        print(
+            "fohmixer-cloudflare: --ableset-email without --ableset-name: there is no AbleSet app",
+            file=sys.stderr,
+        )
+        return 1
     if args.ableset_name and norm(args.ableset_name) == norm(args.name):
         print(
             "fohmixer-cloudflare: --ableset-name is --name: AbleSet needs a name of its own",
