@@ -23,7 +23,8 @@ jumped at 19:40" is answered from the logs alone.
   names and never lands in a repository. Nothing else is written.
 
 It reads only the day files of the window (the UTC dates from 1 min before
-``--from`` to 30 min after ``--to``), line by line, and parses only the
+``--from`` to 30 min after ``--to``; for AbleSet's link changes only, the
+day before too), line by line, and parses only the
 lines whose ``"ts"`` is in range. Records from 60 s before ``--from``
 (offsets, busy episodes that started before) to ``--to`` count, a page's
 ``trace`` up to 30 min after ``--to`` too: a batch uploaded after the window
