@@ -5,7 +5,8 @@ name: CI
 # TouchOSC import tool, the live probe and the forensics timeline, fmt and clippy (native and wasm32), tests with a
 # coverage floor (the hub's tests run real sim/host.py processes), the
 # Windows build of the hub (the PC's platform: DPAPI), the Trunk build,
-# Playwright E2E in Chromium and WebKit (iPad) with the console guard, the
+# Playwright E2E in Chromium and WebKit (iPad) with the console guard (four
+# legs: each project in two shards, #43), the
 # Stream Deck tab against the real Companion 5.0.7 (#52), cargo-deny,
 # gitleaks and the private denylist scan, the version check and diff-scoped
 # mutation testing.
@@ -366,14 +367,39 @@ jobs:
           if-no-files-found: error
 
   e2e:
-    name: e2e
+    # The Playwright suite in four legs (#43): each project (Chromium, the
+    # iPad's WebKit) in two shards (Playwright's --shard: whole spec files,
+    # split by test count in file order). In one job both projects took
+    # 1550-1760 s of the 30 minutes; a leg takes about a third of it. Every
+    # leg is a runner of its own with its own hub, harness, test CA and
+    # failure evidence, so the specs' shared-hub rules hold within a leg.
+    name: e2e ${{ matrix.project }} ${{ matrix.shard }}
     needs: [wasm]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    strategy:
+      # Every leg runs to its end: one cycle reports every failing leg.
+      fail-fast: false
+      matrix:
+        project: [chromium, ipad]
+        # Every i/n of n, on one line: scripts/check_integrity.py fails a
+        # list that misses one (its tests would never run).
+        shard: ["1/2", "2/2"]
+        include:
+          - project: chromium
+            browser: chromium
+          - project: ipad
+            browser: webkit
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: The leg's name (its failure evidence's artifact)
+        id: leg
+        env:
+          PROJECT: ${{ matrix.project }}
+          SHARD: ${{ matrix.shard }}
+        run: echo "id=${PROJECT}-${SHARD/\//of}" >> "$GITHUB_OUTPUT"
       - name: Rust toolchain (rust-toolchain.toml)
         run: rustup toolchain install
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -381,6 +407,9 @@ jobs:
           name: wasm-dist
           path: crates/fohmixer-ui/dist
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          # The legs share one cache key: one of them saves it.
+          save-if: ${{ matrix.project == 'chromium' && matrix.shard == '1/2' }}
       - name: Build the hub (release, the real UI embedded)
         run: cargo build --locked --release -p fohmixer-hub
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -391,13 +420,16 @@ jobs:
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/ms-playwright
-          key: ${{ runner.os }}-playwright-${{ hashFiles('e2e/package-lock.json') }}
-      - name: Install Playwright (Chromium and WebKit)
+          # The leg's browser only (the companion job's key holds both).
+          key: ${{ runner.os }}-playwright-${{ matrix.browser }}-${{ hashFiles('e2e/package-lock.json') }}
+      - name: Install Playwright (the leg's browser)
         working-directory: e2e
+        env:
+          BROWSER: ${{ matrix.browser }}
         run: |
           set -euo pipefail
           npm ci
-          npx playwright install --with-deps chromium webkit
+          npx playwright install --with-deps "$BROWSER"
       - name: Remote access (#17, #90) - a per-run test CA with a certificate for foh.e2e.test and one for AbleSet's ableset.e2e.test that both browsers trust, the names in /etc/hosts, the Access test key
         run: |
           set -euo pipefail
@@ -485,10 +517,12 @@ jobs:
           # pattern first; the Playwright step then sets ulimit -c 0.
           echo "runner core_pattern: $(cat /proc/sys/kernel/core_pattern)"
           sudo sysctl -w kernel.core_pattern=core
-      - name: Playwright (Chromium and WebKit iPad, clean console)
+      - name: Playwright (the leg's project and shard, clean console)
         working-directory: e2e
         env:
           CI: "true"
+          PROJECT: ${{ matrix.project }}
+          SHARD: ${{ matrix.shard }}
           E2E_BASE_URL: http://127.0.0.1:8480
           # The impair proxy (#43): the Playwright projects' base URL.
           E2E_LINK_URL: http://127.0.0.1:8481
@@ -507,7 +541,8 @@ jobs:
             echo "::error::core_pattern pipes core dumps (${pattern}): a crashed test browser would hang in its dump"
             exit 1
           fi
-          E2E_ACCESS_KEY="$E2E_REMOTE_DIR/access.pem" NODE_EXTRA_CA_CERTS="$E2E_REMOTE_DIR/ca.pem" npx playwright test --reporter=list,html
+          E2E_ACCESS_KEY="$E2E_REMOTE_DIR/access.pem" NODE_EXTRA_CA_CERTS="$E2E_REMOTE_DIR/ca.pem" \
+            npx playwright test --project="$PROJECT" --shard="$SHARD" --reporter=list,html
       - name: Kernel crash evidence (#9) - the core pattern, the kernel's segfault and trap lines, the core dumps
         if: failure()
         run: |
@@ -536,7 +571,8 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: e2e-failure
+          # One per leg, e.g. e2e-failure-ipad-1of2.
+          name: e2e-failure-${{ steps.leg.outputs.id }}
           # The hub's event log (#71 PR Q): the pages' flight recorders
           # (a refused finger's eq_touch, a dropout) and the hub's records,
           # which hub.log does not hold.
