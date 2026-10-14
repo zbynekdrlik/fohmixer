@@ -197,8 +197,8 @@ class Reading(ReportCase):
         # The window's own day file is missing; the previous one only the
         # link reaches is not.
         self.assertEqual(missing, ["events-2026-10-03.jsonl"])
-        state = link_at(links(records), BASE)
-        self.assertEqual((state.up, state.error), (False, REFUSED))
+        self.assertIs(link_at(links(records), BASE), False)
+        self.assertEqual(links(records)[0].error, REFUSED)
 
     def test_a_missing_previous_day_file_is_no_note(self):
         log = Log()
