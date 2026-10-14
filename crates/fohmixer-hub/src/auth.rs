@@ -328,13 +328,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_engineer_pin_gives_a_seven_day_token() {
+    async fn the_engineer_pin_gives_a_token_for_a_year() {
         let dir = tempfile::tempdir().unwrap();
         let auth = auth(dir.path(), true);
         let resp = login_with(&app(Arc::clone(&auth), [10, 0, 0, 50]), PIN).await;
         assert_eq!(resp.status(), StatusCode::OK);
         let body = json_body(resp).await;
-        assert_eq!(body["expires_in"], 7 * 24 * 60 * 60);
+        // The owner's rule (#116): a device logged in is not asked again for a year.
+        assert_eq!(body["expires_in"], 365 * 24 * 60 * 60);
         let token = body["token"].as_str().unwrap();
         let claims = auth.claims(Some(token)).expect("a valid token");
         assert_eq!(claims.sub, "engineer");

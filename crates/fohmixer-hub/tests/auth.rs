@@ -56,7 +56,7 @@ fn the_api_needs_a_token_and_the_engineer_pin_gives_one() {
         .await;
         assert_eq!(code, 200, "{body}");
         let login: AuthResponse = serde_json::from_value(body).unwrap();
-        assert_eq!(login.expires_in, 7 * 24 * 60 * 60);
+        assert_eq!(login.expires_in, 365 * 24 * 60 * 60);
         // The token opens the WebSocket and the API.
         let client = Client::connect(&format!(
             "ws://{}/ws?token={}&proto=2",
