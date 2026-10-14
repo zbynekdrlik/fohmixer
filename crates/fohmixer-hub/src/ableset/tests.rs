@@ -2954,3 +2954,269 @@ async fn the_link_stops_with_the_hub() {
         "a read after the stop"
     );
 }
+
+#[tokio::test]
+async fn the_locked_page_runs_only_its_own_script_is_never_stored_and_never_asks_ableset() {
+    // #90, the owner's report of 2026-10-14: the tab's frame opens AbleSet
+    // through this page, which stores AbleSet's lock and then opens
+    // AbleSet's own page.
+    let dir = tempfile::tempdir().unwrap();
+    // AbleSet is closed: anything forwarded would be a 502 and an outage.
+    let hub = hub_with(dir.path(), CLOSED, None, &[]);
+    let named = |response: &Response, names: &[&str]| -> Vec<Option<String>> {
+        names
+            .iter()
+            .map(|name| {
+                let value = response.headers().get(*name);
+                value.map(|v| v.to_str().unwrap().to_string())
+            })
+            .collect()
+    };
+    for https in [false, true] {
+        let page = get_from(NAME, LOCKED, "10.0.0.5", &[]);
+        let page = if https {
+            secure(&hub, page).await
+        } else {
+            plain(&hub, page).await
+        };
+        assert_eq!(page.status(), StatusCode::OK, "https {https}");
+        let seen = named(&page, &["content-type", "cache-control", "x-frame-options"]);
+        let wanted = [
+            Some("text/html; charset=utf-8".to_string()),
+            Some("no-store".to_string()),
+            None,
+        ];
+        assert_eq!(seen, wanted, "https {https}");
+        // Its own policy, and fohmixer's framing beside it.
+        assert_eq!(policies(page.headers()), [LOCK_POLICY, OURS]);
+        assert_eq!(text_of(page).await, LOCK_PAGE);
+        let script = get_from(NAME, LOCK_SCRIPT, "10.0.0.5", &[]);
+        let script = if https {
+            secure(&hub, script).await
+        } else {
+            plain(&hub, script).await
+        };
+        assert_eq!(script.status(), StatusCode::OK, "https {https}");
+        let names = [
+            "content-type",
+            "cache-control",
+            "cross-origin-resource-policy",
+            "x-content-type-options",
+        ];
+        let wanted = [
+            Some("text/javascript; charset=utf-8".to_string()),
+            Some("no-store".to_string()),
+            Some("same-origin".to_string()),
+            Some("nosniff".to_string()),
+        ];
+        assert_eq!(named(&script, &names), wanted, "https {https}");
+        assert_eq!(text_of(script).await, LOCK_JS);
+    }
+    assert_eq!(LOCK_POLICY, "default-src 'none'; script-src 'self'");
+    let tag = format!("<script src=\"{LOCK_SCRIPT}\"></script>");
+    assert!(LOCK_PAGE.contains(&tag), "{LOCK_PAGE}");
+    // The script stores AbleSet's lock as AbleSet reads it, then opens
+    // AbleSet's own page in its place; storage refused, through the
+    // record's address.
+    assert_eq!(LOCK_KEY, "AbleSetLocked");
+    for part in [
+        format!("localStorage.setItem(\"{LOCK_KEY}\", \"true\");"),
+        format!("location.replace(failed === null ? \"/\" : \"{LOCKED}?failed=\""),
+        "encodeURIComponent(failed)".to_string(),
+    ] {
+        assert!(LOCK_JS.contains(&part), "{part}: {LOCK_JS}");
+    }
+    // Another method: after the Access check a 405, never forwarded.
+    let post = |path: &str| request(Method::POST, NAME, path, "10.0.0.5", &[], Body::empty());
+    for path in [LOCKED, LOCK_SCRIPT] {
+        let answers = [
+            plain(&hub, post(path)).await,
+            secure(&hub, post(path)).await,
+        ];
+        for answer in answers {
+            assert_eq!(answer.status(), StatusCode::METHOD_NOT_ALLOWED, "{path}");
+        }
+    }
+    let site = hub.ableset.as_ref().unwrap();
+    assert!(!site.failing.load(Ordering::Relaxed), "AbleSet was asked");
+    hub.stop();
+}
+
+#[tokio::test]
+async fn the_locked_page_and_its_script_are_only_after_the_access_check() {
+    let keys = KeyServer::start(jwks(&[key()])).await;
+    let dir = tempfile::tempdir().unwrap();
+    let hub = hub_with(dir.path(), CLOSED, Some(&keys), &[ABLESET_AUD]);
+    let mut ablesets = claims();
+    ablesets["aud"] = json!([ABLESET_AUD]);
+    let ablesets = sign(key(), &ablesets);
+    let fohmixers = sign(key(), &claims());
+    let internet = |path: &str, token: Option<&str>| {
+        let mut pairs = vec![("cf-connecting-ip", "203.0.113.7")];
+        pairs.extend(token.map(|t| ("cf-access-jwt-assertion", t)));
+        get_from(NAME, path, "127.0.0.1", &pairs)
+    };
+    for path in [LOCKED, LOCK_SCRIPT] {
+        // From the internet only with AbleSet's own assertion.
+        for token in [None, Some(fohmixers.as_str())] {
+            let refused = plain(&hub, internet(path, token)).await;
+            assert_eq!(refused.status(), StatusCode::FORBIDDEN, "{path} {token:?}");
+        }
+        let allowed = plain(&hub, internet(path, Some(ablesets.as_str()))).await;
+        assert_eq!(allowed.status(), StatusCode::OK, "{path}");
+        // The LAN is never authenticated.
+        let lan = plain(&hub, get_from(NAME, path, "10.0.0.5", &[])).await;
+        assert_eq!(lan.status(), StatusCode::OK, "{path}");
+    }
+    // The page's word that storage was refused, too.
+    let failed = format!("{LOCKED}?failed=SecurityError");
+    let refused = plain(&hub, internet(&failed, None)).await;
+    assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+    hub.stop();
+}
+
+#[tokio::test]
+async fn a_lock_the_page_could_not_store_is_recorded_and_ableset_opens_all_the_same() {
+    let (site, records) = site_with(CLOSED, Duration::from_secs(1), 16);
+    let app = router(Arc::clone(&site), None);
+    let path = format!("{LOCKED}?failed=SecurityError");
+    let answer = app
+        .clone()
+        .oneshot(get_from(NAME, &path, "10.0.0.5", &[]))
+        .await
+        .unwrap();
+    // A 303 to AbleSet's own page, under fohmixer's framing.
+    let location = answer.headers().get(header::LOCATION).cloned();
+    assert_eq!(
+        (answer.status(), location),
+        (StatusCode::SEE_OTHER, Some(HeaderValue::from_static("/")))
+    );
+    assert_eq!(policies(answer.headers()), [OURS]);
+    let written: Vec<Value> = records.try_iter().collect();
+    assert_eq!(written.len(), 1, "{written:?}");
+    let record = &written[0];
+    assert_eq!(record["ev"], "ableset_lock");
+    let fields = ["why", "peer", "forwarded", "source", "skipped"].map(|k| record[k].clone());
+    let wanted = [
+        json!("SecurityError"),
+        json!("10.0.0.5"),
+        json!("-"),
+        json!("lan"),
+        json!(0),
+    ];
+    assert_eq!(fields, wanted);
+    // The page's own word: never a warn-class record.
+    assert!(record.get("error").is_none(), "{record}");
+    assert!(!crate::events::is_warn(record), "{record}");
+    // The page itself writes no record.
+    let page = app
+        .oneshot(get_from(NAME, LOCKED, "10.0.0.5", &[]))
+        .await
+        .unwrap();
+    assert_eq!(page.status(), StatusCode::OK);
+    assert_eq!(records.try_iter().count(), 0);
+    assert!(!site.failing.load(Ordering::Relaxed), "AbleSet was asked");
+}
+
+#[test]
+fn the_pages_word_of_a_refused_lock_is_its_failed_value_clipped() {
+    for (query, why) in [
+        (None, None),
+        (Some(""), None),
+        (Some("x=1"), None),
+        (Some("notfailed=1"), None),
+        (Some("failed"), None),
+        (Some("failed=SecurityError"), Some("SecurityError")),
+        (
+            Some("a=1&failed=Quota%20Exceeded&b=2"),
+            Some("Quota%20Exceeded"),
+        ),
+        (Some("failed="), Some("")),
+    ] {
+        assert_eq!(lock_failure(query).as_deref(), why, "{query:?}");
+    }
+    let long = format!("failed={}", "a".repeat(300));
+    let clipped = format!("{}… (300 bytes)", "a".repeat(CLIENT_TEXT));
+    assert_eq!(lock_failure(Some(&long)), Some(clipped));
+}
+
+#[test]
+fn a_refused_locks_record_names_its_opener() {
+    let peer = SocketAddr::from(([127, 0, 0, 1], 50000));
+    let internet = crate::ws::opener(peer, &headers(&[("cf-connecting-ip", "203.0.113.7")]));
+    assert_eq!(
+        lock_fields(&internet, "QuotaExceededError", 3),
+        json!({
+            "why": "QuotaExceededError", "peer": "127.0.0.1",
+            "forwarded": "203.0.113.7", "source": "internet", "skipped": 3
+        })
+    );
+}
+
+#[test]
+fn a_refused_lock_in_a_loop_is_recorded_and_warned_rationed() {
+    let (site, records) = site_with(CLOSED, Duration::from_secs(1), 16);
+    let lan = crate::ws::opener(SocketAddr::from(([10, 0, 0, 5], 50000)), &HeaderMap::new());
+    let log = logged(|| {
+        for _ in 0..12 {
+            site.lock_failed(&lan, "SecurityError");
+        }
+        // The gap goes by.
+        for ration in site.rations.lock().unwrap().values_mut() {
+            ration.expire();
+        }
+        site.lock_failed(&lan, "SecurityError");
+    });
+    let skipped: Vec<u64> = records
+        .try_iter()
+        .map(|r| r["skipped"].as_u64().unwrap())
+        .collect();
+    let mut expected = vec![0; 8];
+    expected.push(4);
+    assert_eq!(skipped, expected);
+    let warned: Vec<&str> = log
+        .lines()
+        .filter(|line| line.contains(" WARN ") && line.contains("lock not stored"))
+        .collect();
+    assert_eq!(warned.len(), 9, "{log}");
+    let named = [
+        "peer=10.0.0.5",
+        "forwarded=\"-\"",
+        "source=\"lan\"",
+        "why=\"SecurityError\"",
+        "skipped=0",
+    ];
+    assert!(named.iter().all(|n| warned[0].contains(n)), "{}", warned[0]);
+    assert!(warned[8].contains("skipped=4"), "{}", warned[8]);
+    assert_eq!(LOCK_RECORDS, 8);
+}
+
+#[test]
+fn the_locked_pages_line_names_its_opener_rationed_with_the_count_left_out() {
+    let (site, records) = site_with(CLOSED, Duration::from_secs(1), 16);
+    let lan = crate::ws::opener(SocketAddr::from(([10, 0, 0, 5], 50000)), &HeaderMap::new());
+    let log = logged(|| {
+        for _ in 0..10 {
+            site.locked_line(&lan);
+        }
+        // The gap goes by.
+        for ration in site.rations.lock().unwrap().values_mut() {
+            ration.expire();
+        }
+        site.locked_line(&lan);
+    });
+    let lines: Vec<&str> = log
+        .lines()
+        .filter(|line| line.contains(" INFO ") && line.contains("opened locked"))
+        .collect();
+    assert_eq!(lines.len(), 9, "{log}");
+    for line in &lines[..8] {
+        assert!(line.contains("skipped=0"), "{line}");
+    }
+    assert!(lines[8].contains("skipped=2"), "{log}");
+    let named = ["peer=10.0.0.5", "forwarded=\"-\"", "source=\"lan\""];
+    assert!(named.iter().all(|n| lines[0].contains(n)), "{}", lines[0]);
+    // A line, never a record.
+    assert_eq!(records.try_iter().count(), 0);
+    assert_eq!(LOCK_LINES, 8);
+}

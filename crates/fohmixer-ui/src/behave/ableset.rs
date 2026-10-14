@@ -5,9 +5,9 @@
 //! AbleSet's name has an Access application of its own, and a frame that
 //! Access redirects to its login would show nothing; on the LAN a failed
 //! probe says why, #90 PR C review M2), the addresses the page
-//! builds from its own (the frame, the probe, the sign-in, AbleSet directly
-//! on the PC) and the panels' texts (the mockup's). `pages/ableset.rs`
-//! carries it out.
+//! builds from its own (the frame, through the hub's page that stores
+//! AbleSet's lock; the probe, the sign-in, AbleSet directly on the PC) and
+//! the panels' texts (the mockup's). `pages/ableset.rs` carries it out.
 
 use std::net::IpAddr;
 
@@ -191,9 +191,16 @@ fn origin(name: &str, port: &str) -> String {
     }
 }
 
-/// The frame's address: AbleSet's page.
+/// The hub's page on AbleSet's name that stores AbleSet's lock, then opens
+/// AbleSet's own page in its place (#90, the owner's report of 2026-10-14:
+/// AbleSet reads its lock once at load, from storage this page cannot
+/// write).
+pub const LOCKED: &str = "/.fohmixer/locked";
+
+/// The frame's address: AbleSet's page through the hub's [`LOCKED`], so
+/// every open of the tab (a fresh frame) starts AbleSet locked.
 pub fn frame_url(name: &str, port: &str) -> String {
-    format!("{}/", origin(name, port))
+    format!("{}{LOCKED}", origin(name, port))
 }
 
 /// The probe's address (`n` makes every probe a new request).

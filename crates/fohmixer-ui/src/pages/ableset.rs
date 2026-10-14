@@ -2,8 +2,10 @@
 //! `docs/mockups/ableset-tab-v1.html`): the control column at the right
 //! edge (its head, the rail of the page it was opened from, the global
 //! controls at its foot) and one frame of AbleSet's own page,
-//! `https://<AbleSet's name>[:the page's port]/`, filling the rest. The frame
-//! is mounted only while the tab shows it: on the mixer AbleSet's app, its
+//! `https://<AbleSet's name>[:the page's port]/`, filling the rest, opened
+//! through the hub's `/.fohmixer/locked`, which stores AbleSet's lock first
+//! (#90, the owner's report of 2026-10-14: every open starts it locked). The
+//! frame is mounted only while the tab shows it: on the mixer AbleSet's app, its
 //! socket and its drawing cost the iPad nothing. Before it mounts, an image
 //! of the hub's `/.fohmixer/probe` on AbleSet's name must load within
 //! `PROBE_MS` (an image outside the page, whose handler outlives the tab:

@@ -45,10 +45,13 @@
 //!   opened and closed in an `ableset_ws` record ([`ws_fields`],
 //!   [`WS_RECORDS`] per kind per [`WARN_GAP`]).
 //! - The hub's own (B3): its link to AbleSet's web app ([`link`]: read every
-//!   5 s, in `/api/status` and the `ableset` message to every page), and two
+//!   5 s, in `/api/status` and the `ableset` message to every page), and
 //!   routes of its own on AbleSet's name after the Access check, never
-//!   forwarded: [`PROBE`] (whether this device may open AbleSet) and
-//!   [`SIGNED_IN`] (back to fohmixer's page after Access's sign-in).
+//!   forwarded: [`PROBE`] (whether this device may open AbleSet),
+//!   [`SIGNED_IN`] (back to fohmixer's page after Access's sign-in) and
+//!   [`LOCKED`] with its script [`LOCK_SCRIPT`] (where the tab's frame opens
+//!   AbleSet: its lock stored, then AbleSet's own page, the owner's report
+//!   of 2026-10-14).
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -166,6 +169,60 @@ pub const PROBE: &str = "/.fohmixer/probe";
 
 /// Where Access's sign-in for AbleSet's name lands (B3, design §5.4).
 pub const SIGNED_IN: &str = "/.fohmixer/signed-in";
+
+/// Where the tab's frame opens AbleSet (#90, the owner's report of
+/// 2026-10-14: AbleSet opened from the tab came up unlocked). AbleSet 3.4.5
+/// reads its lock once at load from its own storage ([`LOCK_KEY`], `"true"`:
+/// locked), which fohmixer's page cannot write (another origin): this page
+/// of the hub's, on AbleSet's name, stores it with its script and then
+/// replaces itself with AbleSet's own `/`. The frame is made afresh at every
+/// open of the tab, so AbleSet starts locked every time.
+pub const LOCKED: &str = "/.fohmixer/locked";
+
+/// The locked page's script: a file of its own, as the page's policy
+/// ([`LOCK_POLICY`]) runs only its own scripts.
+pub const LOCK_SCRIPT: &str = "/.fohmixer/locked.js";
+
+/// AbleSet's own storage key for its lock ("Lock Controls"), read once at
+/// load: `"true"` locked, any other value unlocked.
+pub const LOCK_KEY: &str = "AbleSetLocked";
+
+/// The locked page's policy: nothing but its own script.
+pub const LOCK_POLICY: &str = "default-src 'none'; script-src 'self'";
+
+/// The locked page: its script, nothing else.
+pub const LOCK_PAGE: &str = "<!doctype html><html lang=\"sk\"><meta charset=\"utf-8\">\
+    <title>AbleSet</title><script src=\"/.fohmixer/locked.js\"></script></html>";
+
+/// The locked page's script: [`LOCK_KEY`] stored as `"true"`, then
+/// AbleSet's own page in this one's place. Storage refused (a browser that
+/// blocks a site's storage throws): AbleSet's page all the same, through
+/// [`LOCKED`]`?failed=<the error's name>`, which the hub records
+/// ([`lock_failure`]) and answers with a 303 to `/`.
+pub const LOCK_JS: &str = r#""use strict";
+// fohmixer (#90): AbleSet opened from fohmixer's tab starts locked.
+(() => {
+  let failed = null;
+  try {
+    localStorage.setItem("AbleSetLocked", "true");
+  } catch (e) {
+    failed = String((e && e.name) || "unknown");
+  }
+  location.replace(failed === null ? "/" : "/.fohmixer/locked?failed=" + encodeURIComponent(failed));
+})();
+"#;
+
+/// At most this many `ableset: opened locked` lines per [`WARN_GAP`]: the
+/// tab opens AbleSet now and then, a client may ask in a loop, and
+/// `hub.out.log` has no cap. The count left out rides on the next line as
+/// `skipped`.
+pub const LOCK_LINES: u32 = 8;
+
+/// At most this many `ableset_lock` records (and warn lines) of a lock the
+/// page could not store per [`WARN_GAP`]: the page's own word, so a client
+/// in a loop cannot use up the day's event-log space. The count left out
+/// rides on the next record as `skipped`.
+pub const LOCK_RECORDS: u32 = 8;
 
 /// The probe's answer: a 1 × 1 transparent GIF.
 pub const PIXEL: &[u8] = b"GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff!\xf9\x04\x01\x00\x00\x00\x00,\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02D\x01\x00;";
@@ -360,6 +417,45 @@ impl AbleSet {
             ),
             None => tracing::debug!(peer = %opener.peer, "ableset: signed in through Access"),
         }
+    }
+
+    /// The locked page served ([`LOCKED`]): its info line with the opener's
+    /// peer, forwarded client and source while the ration allows
+    /// ([`LOCK_LINES`], with `skipped`), else a debug line.
+    fn locked_line(&self, opener: &Opener) {
+        match self.due("ableset_lock", "line", LOCK_LINES) {
+            Some(skipped) => tracing::info!(
+                peer = %opener.peer,
+                forwarded = ?opener.forwarded,
+                source = opener.source,
+                skipped,
+                "ableset: opened locked"
+            ),
+            None => tracing::debug!(peer = %opener.peer, "ableset: opened locked"),
+        }
+    }
+
+    /// The locked page could not store AbleSet's lock (`why`, the error's
+    /// name as the page sent it): its `ableset_lock` record ([`lock_fields`])
+    /// and warn line while the ration allows ([`LOCK_RECORDS`], with
+    /// `skipped`), else a debug line. AbleSet opens unlocked then, so it is
+    /// a warn; the record's text is `why`, never `error`: the page's own word
+    /// is no warn-class record.
+    fn lock_failed(&self, opener: &Opener, why: &str) {
+        let Some(skipped) = self.due("ableset_lock", "failed", LOCK_RECORDS) else {
+            tracing::debug!(peer = %opener.peer, why = ?why, "ableset: lock not stored");
+            return;
+        };
+        tracing::warn!(
+            peer = %opener.peer,
+            forwarded = ?opener.forwarded,
+            source = opener.source,
+            why = ?why,
+            skipped,
+            "ableset: lock not stored, AbleSet opens unlocked"
+        );
+        self.events
+            .record("ableset_lock", lock_fields(opener, why, skipped));
     }
 
     /// Its part of `/api/status` `ableset`: the link (B3) and the taken
@@ -689,10 +785,10 @@ pub async fn dispatch(State(to): State<Dispatch>, request: Request, next: Next) 
     }
 }
 
-/// The AbleSet name's application: the hub's own [`PROBE`] and
-/// [`SIGNED_IN`], else the proxy, behind its Access check; the redirect to
-/// HTTPS when `redirect` (the plain-HTTP listener's hub), and the framing
-/// headers on every answer.
+/// The AbleSet name's application: the hub's own [`PROBE`], [`SIGNED_IN`],
+/// [`LOCKED`] and [`LOCK_SCRIPT`], else the proxy, behind its Access check;
+/// the redirect to HTTPS when `redirect` (the plain-HTTP listener's hub),
+/// and the framing headers on every answer.
 pub fn router(site: Arc<AbleSet>, redirect: Option<Hub>) -> Router {
     let https = redirect.is_none();
     let guard = Guard {
@@ -703,6 +799,8 @@ pub fn router(site: Arc<AbleSet>, redirect: Option<Hub>) -> Router {
     let mut app = Router::new()
         .route(PROBE, get(probe))
         .route(SIGNED_IN, get(signed_in))
+        .route(LOCKED, get(locked))
+        .route(LOCK_SCRIPT, get(lock_script))
         .fallback(forward)
         .layer(access);
     if let Some(hub) = redirect {
@@ -761,14 +859,81 @@ async fn probe() -> Response {
 /// sign-in for AbleSet's name lands here, and the browser goes back to
 /// fohmixer's page, which opens its AbleSet tab ([`signed_in_target`]).
 async fn signed_in(State(site): State<Arc<AbleSet>>, request: Request) -> Response {
+    site.signed_in_line(&request_opener(&request));
+    let target = signed_in_target(&site.parent, routes::request_host(&request));
+    Redirect::to(&target).into_response()
+}
+
+/// Who asked for one of the hub's own routes (`ws::opener`, the one
+/// classification): its peer from the listener's `ConnectInfo` (none: the
+/// Access check refused the request before it got here).
+fn request_opener(request: &Request) -> Opener {
     let peer = request
         .extensions()
         .get::<ConnectInfo<SocketAddr>>()
         .map_or_else(|| SocketAddr::from(([0, 0, 0, 0], 0)), |info| info.0);
-    let opener = crate::ws::opener(peer, request.headers());
-    site.signed_in_line(&opener);
-    let target = signed_in_target(&site.parent, routes::request_host(&request));
-    Redirect::to(&target).into_response()
+    crate::ws::opener(peer, request.headers())
+}
+
+/// [`LOCKED`] (#90, the owner's report of 2026-10-14), after the Access
+/// check: the locked page ([`locked_page`]); with the page's word that
+/// storage was refused ([`lock_failure`]) its record, and a 303 to
+/// AbleSet's own `/`, so AbleSet opens all the same.
+async fn locked(State(site): State<Arc<AbleSet>>, request: Request) -> Response {
+    let opener = request_opener(&request);
+    match lock_failure(request.uri().query()) {
+        Some(why) => {
+            site.lock_failed(&opener, &why);
+            Redirect::to("/").into_response()
+        }
+        None => {
+            site.locked_line(&opener);
+            locked_page()
+        }
+    }
+}
+
+/// The locked page's answer: [`LOCK_PAGE`] under [`LOCK_POLICY`], never
+/// stored (the framing headers come with every answer, [`framed`]).
+pub fn locked_page() -> Response {
+    let headers = [
+        (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+        (header::CACHE_CONTROL, "no-store"),
+        (header::CONTENT_SECURITY_POLICY, LOCK_POLICY),
+    ];
+    (headers, LOCK_PAGE).into_response()
+}
+
+/// [`LOCK_SCRIPT`], after the Access check: [`LOCK_JS`], never stored, and
+/// only a page of its own origin may run it.
+async fn lock_script() -> Response {
+    let corp = HeaderName::from_static("cross-origin-resource-policy");
+    let headers = [
+        (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
+        (header::CACHE_CONTROL, "no-store"),
+        (corp, "same-origin"),
+    ];
+    (headers, LOCK_JS).into_response()
+}
+
+/// The locked page's word that storage was refused (pure): the `failed`
+/// value of the query (the error's name, percent-encoded as the page sent
+/// it), [`clip`]ped; none without one (the page itself).
+pub fn lock_failure(query: Option<&str>) -> Option<String> {
+    query?
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("failed="))
+        .map(|why| clip(why).into_owned())
+}
+
+/// The `ableset_lock` record of a lock the page could not store: why (the
+/// page's word), its opener (`ws::opener`) and the records the ration left
+/// out before it.
+pub fn lock_fields(opener: &Opener, why: &str, skipped: u64) -> Value {
+    json!({
+        "why": why, "peer": opener.peer, "forwarded": opener.forwarded,
+        "source": opener.source, "skipped": skipped
+    })
 }
 
 /// Where AbleSet's sign-in sends the browser (pure, B3): fohmixer's page at
