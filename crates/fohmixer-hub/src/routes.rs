@@ -342,15 +342,44 @@ pub fn static_routes() -> Router<Hub> {
         .route("/{*path}", get(serve_spa_route))
 }
 
-async fn serve_index() -> Response {
-    serve_embedded_file("index.html")
+async fn serve_index(State(hub): State<Hub>) -> Response {
+    serve_page(&hub.policy_rev)
 }
 
-async fn serve_spa_route(Path(path): Path<String>) -> Response {
+async fn serve_spa_route(State(hub): State<Hub>, Path(path): Path<String>) -> Response {
     if path.contains('.') {
         serve_embedded_file(&path)
     } else {
-        serve_embedded_file("index.html")
+        serve_page(&hub.policy_rev)
+    }
+}
+
+/// The page: `index.html` with the revision of the page policy it is
+/// served with (#90, [`with_policy`]).
+fn serve_page(policy_rev: &str) -> Response {
+    const INDEX: &str = "index.html";
+    match <Assets as RustEmbed>::get(INDEX) {
+        Some(file) => {
+            let page = with_policy(&String::from_utf8_lossy(&file.data), policy_rev);
+            file_response(INDEX, page.into_bytes())
+        }
+        None => not_found(INDEX),
+    }
+}
+
+/// `page` with `<meta name="fohmixer-policy" content="<policy_rev>">` before
+/// its `</head>` (#90, `fohmixer_proto::client::POLICY_META`): in the same
+/// answer as the policy itself, so the page knows exactly which policy it
+/// loaded with and reloads when a hello names another (a hub restarted with
+/// `[ableset]` added). A page without a head (the native builds'
+/// placeholder) is served as it is.
+pub fn with_policy(page: &str, policy_rev: &str) -> String {
+    match page.split_once("</head>") {
+        Some((head, rest)) => format!(
+            "{head}<meta name=\"{}\" content=\"{policy_rev}\">\n</head>{rest}",
+            fohmixer_proto::client::POLICY_META
+        ),
+        None => page.to_string(),
     }
 }
 
@@ -367,13 +396,23 @@ fn has_content_hash(path: &str) -> bool {
 
 /// One embedded file with its MIME type and cache policy, or 404.
 fn serve_embedded_file(path: &str) -> Response {
-    let Some(file) = <Assets as RustEmbed>::get(path) else {
-        tracing::debug!(path, "static file not found");
-        return Response::builder()
-            .status(StatusCode::NOT_FOUND)
-            .body(Body::from("Not found"))
-            .expect("a static 404 response is valid");
-    };
+    match <Assets as RustEmbed>::get(path) {
+        Some(file) => file_response(path, file.data.into_owned()),
+        None => not_found(path),
+    }
+}
+
+/// The 404 of a static file.
+fn not_found(path: &str) -> Response {
+    tracing::debug!(path, "static file not found");
+    Response::builder()
+        .status(StatusCode::NOT_FOUND)
+        .body(Body::from("Not found"))
+        .expect("a static 404 response is valid")
+}
+
+/// The answer of a static file at `path` with its MIME type and cache policy.
+fn file_response(path: &str, body: Vec<u8>) -> Response {
     let mime = mime_guess::from_path(path)
         .first_or_octet_stream()
         .to_string();
@@ -386,7 +425,7 @@ fn serve_embedded_file(path: &str) -> Response {
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, mime)
         .header(header::CACHE_CONTROL, cache_control)
-        .body(Body::from(file.data.into_owned()))
+        .body(Body::from(body))
         .expect("an embedded file response is valid")
 }
 
@@ -503,7 +542,32 @@ mod tests {
             "no-cache, must-revalidate"
         );
         let index = <Assets as RustEmbed>::get("index.html").expect("dist/index.html");
-        assert_eq!(body_bytes(response).await, index.data.to_vec());
+        // With the policy's revision of a hub without [ableset] in it (#90;
+        // the native builds' placeholder has no head, `with_policy` has its
+        // own test).
+        let rev = crate::policy_rev(&crate::page_csp(None));
+        let page = with_policy(&String::from_utf8_lossy(&index.data), &rev);
+        assert_eq!(body_bytes(response).await, page.into_bytes());
+    }
+
+    #[test]
+    fn the_page_carries_its_policys_revision_before_the_end_of_its_head() {
+        // #90: the page reads it to know the policy it loaded with.
+        let page =
+            "<!DOCTYPE html>\n<html>\n<head>\n<title>t</title>\n</head>\n<body></body>\n</html>\n";
+        assert_eq!(
+            with_policy(page, "0123456789abcdef"),
+            "<!DOCTYPE html>\n<html>\n<head>\n<title>t</title>\n\
+             <meta name=\"fohmixer-policy\" content=\"0123456789abcdef\">\n</head>\n<body></body>\n</html>\n"
+        );
+        // Only the first head's end: a text in the body naming it stays.
+        let twice = "<head></head><body></head></body>";
+        assert_eq!(
+            with_policy(twice, "r"),
+            "<head><meta name=\"fohmixer-policy\" content=\"r\">\n</head><body></head></body>"
+        );
+        // No head (the native builds' placeholder): as it is.
+        assert_eq!(with_policy("placeholder", "r"), "placeholder");
     }
 
     #[tokio::test]

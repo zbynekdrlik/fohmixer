@@ -1,7 +1,8 @@
 //! The hub connection's rules (S4 design note §4, §6): the reconnect
 //! schedule (under 2 s, never giving up), the protocol handshake (iemmixer's
-//! `handshake.rs` @ 22372bc: a bounded reload on a protocol mismatch, and
-//! since #26 on a hub of another build), the
+//! `handshake.rs` @ 22372bc: a bounded reload on a protocol mismatch, since
+//! #26 on a hub of another build, and since #90 on a hub that sends its
+//! pages another policy than this page's), the
 //! WebSocket URL, and what an HTTP answer of the hub means. The browser
 //! calls (`fetch_text`, `reload`, `last_reload`) are thin wrappers.
 
@@ -42,22 +43,38 @@ fn may_reload(now: f64, last: Option<f64>) -> bool {
     last.is_none_or(|t| now - t >= RELOAD_GAP_MS || now < t)
 }
 
+/// Whether the hub now sends its pages another policy than the one this
+/// page loaded with (#90): `hub`, the hello's `policy`; `page`, the revision
+/// the hub wrote into this page's `index.html`
+/// (`fohmixer_proto::client::POLICY_META`). Either one unknown (a hub or a
+/// page of an older build, whose build differs anyway) is no change.
+pub fn policy_changed(hub: Option<&str>, page: Option<&str>) -> bool {
+    hub.zip(page).is_some_and(|(hub, page)| hub != page)
+}
+
 /// The decision on the hub's hello: reload (at most once a minute) when
-/// the hub does not serve this page's protocol, or runs another build than
-/// the page's own (`server_build`, the hub's `fohmixer_proto::VERSION`).
+/// the hub does not serve this page's protocol, runs another build than
+/// the page's own (`server_build`, the hub's `fohmixer_proto::VERSION`), or
+/// sends its pages another policy than the one this page loaded with
+/// (`server_policy` against `page_policy`, [`policy_changed`]).
 /// The build check (#26) brings an open page, a Home Screen app included,
 /// onto the new bundle after every deploy: the hub restarts, the socket
-/// reconnects, the hello names the new build. `sw.js` is network-only, so
-/// the reload fetches the new bundle.
+/// reconnects, the hello names the new build. The policy check (#90) does
+/// the same for a restart with the same build and another config (`[ableset]`
+/// added: the page's old policy refused AbleSet's tab). `sw.js` is
+/// network-only, so the reload fetches the new bundle and its policy.
 pub fn on_hello(
     server_proto: u32,
     min_client_proto: u32,
     server_build: &str,
+    server_policy: Option<&str>,
+    page_policy: Option<&str>,
     now: f64,
     last: Option<f64>,
 ) -> Decision {
     let served = (min_client_proto..=server_proto).contains(&UI_PROTO);
-    let current = server_build == fohmixer_proto::VERSION;
+    let current =
+        server_build == fohmixer_proto::VERSION && !policy_changed(server_policy, page_policy);
     if (served && current) || !may_reload(now, last) {
         Decision::Keep
     } else {
@@ -217,17 +234,19 @@ mod tests {
 
     /// This page's own build, as the hub names its build in the hello.
     const SAME: &str = fohmixer_proto::VERSION;
+    /// The page policy this page loaded with, and the hub's the same (#90).
+    const P: Option<&str> = Some("0123456789abcdef");
 
     #[test]
     fn a_served_protocol_keeps_the_page() {
         // This page speaks protocol 2 (#43).
-        assert_eq!(on_hello(2, 2, SAME, 0.0, None), Decision::Keep);
-        assert_eq!(on_hello(3, 2, SAME, 0.0, None), Decision::Keep);
-        assert_eq!(on_hello(2, 1, SAME, 0.0, None), Decision::Keep);
+        assert_eq!(on_hello(2, 2, SAME, P, P, 0.0, None), Decision::Keep);
+        assert_eq!(on_hello(3, 2, SAME, P, P, 0.0, None), Decision::Keep);
+        assert_eq!(on_hello(2, 1, SAME, P, P, 0.0, None), Decision::Keep);
         // The hub no longer serves this page, or is older than it.
-        assert_eq!(on_hello(4, 3, SAME, 1e6, None), Decision::Reload);
-        assert_eq!(on_hello(1, 1, SAME, 1e6, None), Decision::Reload);
-        assert_eq!(on_hello(0, 0, SAME, 1e6, None), Decision::Reload);
+        assert_eq!(on_hello(4, 3, SAME, P, P, 1e6, None), Decision::Reload);
+        assert_eq!(on_hello(1, 1, SAME, P, P, 1e6, None), Decision::Reload);
+        assert_eq!(on_hello(0, 0, SAME, P, P, 1e6, None), Decision::Reload);
     }
 
     #[test]
@@ -235,28 +254,82 @@ mod tests {
         // #26: a deploy with the same protocol still brings an open page
         // (a Home Screen app) onto the new bundle by itself.
         let t = 1_000_000.0;
-        assert_eq!(on_hello(2, 2, SAME, t, None), Decision::Keep);
-        assert_eq!(on_hello(2, 2, "0.0.0-other", t, None), Decision::Reload);
-        assert_eq!(on_hello(2, 2, "", t, None), Decision::Reload);
+        assert_eq!(on_hello(2, 2, SAME, P, P, t, None), Decision::Keep);
+        assert_eq!(
+            on_hello(2, 2, "0.0.0-other", P, P, t, None),
+            Decision::Reload
+        );
+        assert_eq!(on_hello(2, 2, "", P, P, t, None), Decision::Reload);
         // The build is compared whole, not by prefix.
         let longer = format!("{SAME}.1");
-        assert_eq!(on_hello(2, 2, &longer, t, None), Decision::Reload);
+        assert_eq!(on_hello(2, 2, &longer, P, P, t, None), Decision::Reload);
         // Still at most once a minute: a page that just reloaded keeps
         // itself (the hub may serve an older bundle than it names).
         let other = "0.0.0-other";
-        assert_eq!(on_hello(2, 2, other, t, Some(t - 59_999.0)), Decision::Keep);
         assert_eq!(
-            on_hello(2, 2, other, t, Some(t - 60_000.0)),
+            on_hello(2, 2, other, P, P, t, Some(t - 59_999.0)),
+            Decision::Keep
+        );
+        assert_eq!(
+            on_hello(2, 2, other, P, P, t, Some(t - 60_000.0)),
             Decision::Reload
         );
     }
 
     #[test]
+    fn a_hub_that_sends_another_page_policy_reloads_the_page() {
+        // #90: a hub restarted with [ableset] added, the same build: the
+        // page's policy refused AbleSet's tab until it reloaded.
+        let t = 1_000_000.0;
+        let other = Some("fedcba9876543210");
+        assert_eq!(on_hello(2, 2, SAME, other, P, t, None), Decision::Reload);
+        assert_eq!(on_hello(2, 2, SAME, P, other, t, None), Decision::Reload);
+        // The same policy (a plain restart): nothing.
+        assert_eq!(on_hello(2, 2, SAME, P, P, t, None), Decision::Keep);
+        // Either one unknown (a hub or a page of an older build) is no change.
+        assert_eq!(on_hello(2, 2, SAME, None, P, t, None), Decision::Keep);
+        assert_eq!(on_hello(2, 2, SAME, P, None, t, None), Decision::Keep);
+        assert_eq!(on_hello(2, 2, SAME, None, None, t, None), Decision::Keep);
+        // Another build still reloads with the same policy, or none known.
+        assert_eq!(
+            on_hello(2, 2, "0.0.0-other", P, P, t, None),
+            Decision::Reload
+        );
+        assert_eq!(
+            on_hello(2, 2, "0.0.0-other", None, None, t, None),
+            Decision::Reload
+        );
+        // At most once a minute, as for a build.
+        assert_eq!(
+            on_hello(2, 2, SAME, other, P, t, Some(t - 59_999.0)),
+            Decision::Keep
+        );
+        assert_eq!(
+            on_hello(2, 2, SAME, other, P, t, Some(t - 60_000.0)),
+            Decision::Reload
+        );
+    }
+
+    #[test]
+    fn a_policy_changed_only_when_both_are_known_and_differ() {
+        assert!(policy_changed(Some("a"), Some("b")));
+        assert!(!policy_changed(Some("a"), Some("a")));
+        assert!(!policy_changed(None, Some("a")));
+        assert!(!policy_changed(Some("a"), None));
+        assert!(!policy_changed(None, None));
+        // Compared whole, not by prefix.
+        assert!(policy_changed(Some("ab"), Some("a")));
+    }
+
+    #[test]
     fn reloads_are_at_most_one_per_minute() {
         let t = 1_000_000.0;
-        assert_eq!(on_hello(4, 3, SAME, t, Some(t - 59_999.0)), Decision::Keep);
         assert_eq!(
-            on_hello(4, 3, SAME, t, Some(t - 60_000.0)),
+            on_hello(4, 3, SAME, P, P, t, Some(t - 59_999.0)),
+            Decision::Keep
+        );
+        assert_eq!(
+            on_hello(4, 3, SAME, P, P, t, Some(t - 60_000.0)),
             Decision::Reload
         );
         assert_eq!(on_missing_hello(t, Some(t - 1_000.0)), Decision::Keep);

@@ -32,6 +32,10 @@ pub const UI_PROTO: u32 = 2;
 pub const MIN_CLIENT_PROTO: u32 = 2;
 /// WebSocket close code telling a client with another protocol to reload.
 pub const CLOSE_RELOAD: u16 = 4001;
+/// The `name` of the `<meta>` in which the hub's `index.html` carries the
+/// revision of the page policy it was served with (#90): the page compares
+/// it with the hello's `policy`.
+pub const POLICY_META: &str = "fohmixer-policy";
 /// The hub value of the STAGE AUT flag (spec §2.4, F15).
 pub const HUB_STAGE_AUT: &str = "stage_aut";
 
@@ -317,6 +321,11 @@ pub enum ServerMsg {
         proto: u32,
         build: String,
         min_client_proto: u32,
+        /// The revision of the page policy (Content-Security-Policy) the hub
+        /// sends with its pages now (#90): a page that loaded with another
+        /// reloads. None from a hub before it; a page before it ignores it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        policy: Option<String>,
     },
     /// The script's result slots for a `cmd`, in command order.
     Result { id: String, data: Vec<Value> },

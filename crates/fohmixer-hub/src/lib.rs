@@ -185,6 +185,11 @@ pub struct HubInner {
     pub remote: Arc<RemoteState>,
     /// The host names a request may name besides addresses (`check_host`).
     pub trusted_hosts: Vec<String>,
+    /// The Content-Security-Policy sent with every page ([`page_policy`]).
+    pub page_policy: String,
+    /// Its revision ([`policy_rev`], #90): in the hello and in the served
+    /// `index.html`, so an open page that loaded with another reloads.
+    pub policy_rev: String,
     /// The HTTPS listener (`[tls]`), once `serve_until` made it.
     pub https: std::sync::OnceLock<Arc<Https>>,
     /// The pages' diagnostic reports (#26, `POST /api/client-report`).
@@ -469,6 +474,8 @@ impl Hub {
         let names: Vec<String> = config.instances.iter().map(|i| i.name.clone()).collect();
         let layout = Arc::new(layout::store_in(&config.data_dir, &config.layout, names));
         let hub_state = rules::HubState::load(&config.data_dir);
+        let policy = page_policy(&config);
+        let revision = policy_rev(&policy);
         tracing::info!(
             instances = config.instances.len(),
             layout = %config.layout_path().display(),
@@ -478,6 +485,7 @@ impl Hub {
             access = config.access.is_some(),
             companion = config.companion.is_some(),
             eq = ?config.eq_backend(),
+            policy = %revision,
             "hub started"
         );
         let mut router = router::Router::new(
@@ -516,6 +524,8 @@ impl Hub {
             auth,
             layout,
             access,
+            page_policy: policy,
+            policy_rev: revision,
             deny_lines: access::DenyLines::default(),
             ableset,
             remote,
@@ -651,6 +661,23 @@ pub(crate) fn test_hub(dir: &std::path::Path) -> Hub {
     Hub::start(config).expect("a test hub")
 }
 
+/// The Content-Security-Policy the hub of `config` sends with its pages:
+/// [`page_csp`] of `[ableset]`'s name and the `[tls]` port (#90).
+pub fn page_policy(config: &Config) -> String {
+    let framed = config.ableset.as_ref().zip(config.tls.as_ref());
+    page_csp(framed.map(|(a, tls)| (a.name.as_str(), tls.port)))
+}
+
+/// The revision of a page policy (#90): its FNV-1a hash in 16 hex digits
+/// (as a key image's identity, `deck::img_hash`). A page keeps the one it
+/// loaded with (the hub writes it into the `index.html` it serves,
+/// `routes::with_policy`) and reloads when a hello names another: a restart
+/// with `[ableset]` added or removed changes it, one with the same policy
+/// never does.
+pub fn policy_rev(policy: &str) -> String {
+    deck::img_hash(policy)
+}
+
 /// fohmixer's own Content-Security-Policy: WASM + inline scripts (Trunk's
 /// loader) and inline styles (Leptos); connections to this server only (the
 /// client WebSocket is same-origin, which 'self' covers); images may also be
@@ -691,11 +718,9 @@ fn router(hub: Hub, redirect: bool) -> Router {
         HeaderName::from_static("referrer-policy"),
         HeaderValue::from_static("strict-origin-when-cross-origin"),
     );
-    let framed = hub.config.ableset.as_ref().zip(hub.config.tls.as_ref());
-    let csp = page_csp(framed.map(|(a, tls)| (a.name.as_str(), tls.port)));
     let csp = SetResponseHeaderLayer::overriding(
         HeaderName::from_static("content-security-policy"),
-        HeaderValue::from_str(&csp).expect("a policy of DNS names is a header value"),
+        HeaderValue::from_str(&hub.page_policy).expect("a policy of DNS names is a header value"),
     );
 
     let check_host = axum::middleware::from_fn_with_state(hub.clone(), routes::check_host);
@@ -1167,6 +1192,44 @@ mod tests {
              img-src 'self' data: blob: https://ableset.example.org https://ableset.example.org:8443; font-src 'self'; \
              frame-src https://ableset.example.org https://ableset.example.org:8443"
         );
+    }
+
+    #[test]
+    fn the_page_policys_revision_changes_with_ableset_and_only_with_the_policy() {
+        // #90: a page reloads when the hello names another revision than
+        // the one it loaded with, and only then.
+        let data = std::path::Path::new("data");
+        let config = |text: &str| Config::parse(text, data).unwrap();
+        let tls = "[tls]\nname = \"foh.example.org\"\nport = 8443\n";
+        let ableset = |port: u16, title: &str| {
+            format!(
+                "[tls]\nname = \"foh.example.org\"\nport = {port}\n\
+                 [ableset]\nname = \"ableset.example.org\"\ntitle = \"{title}\"\n"
+            )
+        };
+        let with = ableset(8443, "AbleSet");
+        // The policy is the page's CSP of the config.
+        assert_eq!(page_policy(&config(tls)), page_csp(None));
+        assert_eq!(page_policy(&config("")), page_csp(None));
+        assert_eq!(
+            page_policy(&config(&with)),
+            page_csp(Some(("ableset.example.org", 8443)))
+        );
+        let rev = |text: &str| policy_rev(&page_policy(&config(text)));
+        // The same config: the same revision, so a plain restart reloads nothing.
+        assert_eq!(rev(tls), rev(tls));
+        assert_eq!(rev(&with), rev(&with));
+        // [ableset] added or removed: another one.
+        assert_ne!(rev(tls), rev(&with));
+        // So is another [tls] port under [ableset] (AbleSet's origins name it).
+        assert_ne!(rev(&ableset(9443, "AbleSet")), rev(&with));
+        // A change outside the policy is none.
+        assert_eq!(rev(&ableset(8443, "Show")), rev(&with));
+        assert_eq!(rev(""), rev(tls));
+        // FNV-1a in 16 hex digits.
+        assert_eq!(policy_rev(""), "cbf29ce484222325");
+        assert_eq!(policy_rev("a"), "af63dc4c8601ec8c");
+        assert_eq!(rev(tls).len(), 16);
     }
 
     #[test]
