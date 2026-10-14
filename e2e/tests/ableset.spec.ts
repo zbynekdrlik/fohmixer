@@ -698,13 +698,13 @@ test.describe("A page open while the hub restarts (#90: its page policy)", () =>
       expect(on).toBe(true);
       // The restarted hub's hello names another page policy: the page
       // reloads by itself, once (the handshake's once-a-minute guard).
-      await expect.poll(loads, { message: "the page's reloads", timeout: 20_000 }).toBe(1);
+      await expect.poll(loads, { message: "the page's reloads", timeout: 20_000, intervals: [50] }).toBe(1);
       await expect(page.getByTestId("surface")).toHaveAttribute("data-connected", "true", { timeout: 15_000 });
       expect(Number(await page.evaluate((key) => localStorage.getItem(key), RELOAD_KEY))).toBeGreaterThan(0);
       // The hello that reloaded it and the reloaded page's own name one
       // policy, which the reloaded page now carries; the page before had
       // another.
-      await expect.poll(() => policies().length).toBeGreaterThanOrEqual(2);
+      await expect.poll(() => policies().length, { intervals: [50] }).toBeGreaterThanOrEqual(2);
       const told = policies();
       expect(told[0]).toMatch(/^[0-9a-f]{16}$/);
       expect(new Set(told)).toEqual(new Set([told[0]]));
@@ -734,13 +734,15 @@ test.describe("A page open while the hub restarts (#90: its page policy)", () =>
     const policies = hubPolicies(page);
     // [ableset] stays on: the same config, and the hub restarted all the same.
     expect((await harness("/hub/ableset", { on: true })).ableset).toBe(true);
-    // The page hears the restarted hub's hello and stays connected: the
-    // decision is made at that hello.
-    await expect.poll(() => policies().length, { timeout: 20_000 }).toBeGreaterThanOrEqual(1);
-    await expect(surface).toHaveAttribute("data-connected", "true", { timeout: 15_000 });
-    await page.waitForTimeout(1000);
+    // The page hears the restarted hub's hello (its socket closed at the
+    // stop, so `data-connected` went false before it) and the same marked
+    // page is connected again: the hello's decision, made before that, kept
+    // it (a reload would have dropped the mark).
+    await expect.poll(() => policies().length, { timeout: 20_000, intervals: [50] }).toBeGreaterThanOrEqual(1);
+    await expect(page.locator('[data-testid="surface"][data-e2e-kept="1"]')).toHaveAttribute("data-connected", "true", {
+      timeout: 15_000,
+    });
     expect(loads()).toBe(0);
-    await expect(surface).toHaveAttribute("data-e2e-kept", "1");
     expect(await page.evaluate((key) => localStorage.getItem(key), RELOAD_KEY)).toBeNull();
     // It knew the policy it loaded with, and the hub named the same.
     const loaded = await loadedPolicy(page);
