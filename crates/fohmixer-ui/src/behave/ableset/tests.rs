@@ -231,13 +231,15 @@ fn the_page_is_fohmixers_own_only_over_https_by_its_name() {
 #[test]
 fn the_addresses_take_the_pages_own_port() {
     // The LAN: the hub's [tls] port; the tunnel: Cloudflare's 443 (none).
+    // The frame opens the hub's page that stores AbleSet's lock, which then
+    // opens AbleSet's own page (#90, the owner's report of 2026-10-14).
     assert_eq!(
         frame_url("ableset.example.org", "8443"),
-        "https://ableset.example.org:8443/"
+        "https://ableset.example.org:8443/.fohmixer/locked"
     );
     assert_eq!(
         frame_url("ableset.example.org", ""),
-        "https://ableset.example.org/"
+        "https://ableset.example.org/.fohmixer/locked"
     );
     assert_eq!(
         probe_url("ableset.example.org", "8443", 1_760_000_000_123),

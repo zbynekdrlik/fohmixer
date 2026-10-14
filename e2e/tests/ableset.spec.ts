@@ -40,6 +40,10 @@ const isProbe = (url: URL) => PROBE_URL.test(url.href);
 const PAGE_API = new RegExp(
   `^${new URL(HTTPS).origin.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/api/(layout|client-report)$`,
 );
+/** The hub's page on AbleSet's name that stores AbleSet's lock, then opens AbleSet (#90, `ableset::LOCKED`). */
+const LOCKED = "/.fohmixer/locked";
+/** The lock page's script on AbleSet's name (`ableset::LOCK_SCRIPT`). */
+const LOCK_SCRIPT_URL = new RegExp(`^${ABLESET.origin.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/\\.fohmixer/locked\\.js$`);
 /** How long the probe may take (`behave::ableset::PROBE_MS`). */
 const PROBE_MS = 8_000;
 const SANDBOX =
@@ -61,6 +65,17 @@ async function openAbleSet(page: Page): Promise<Locator> {
 }
 
 const frameOf = (page: Page) => page.frameLocator('[data-testid="ableset-frame"]');
+
+/** The frame's document on AbleSet's name. */
+const inside = (page: Page) => page.frames().find((f) => f.url().startsWith(ABLESET.origin));
+
+/** The hub's `ableset_lock` records since `since` (a lock the lock page could not store, #90), once there is one. */
+const lockRecords = (since: number) =>
+  until(
+    async () => (await hubEvents()).filter((r: any) => r.ev === "ableset_lock" && r.ts >= since),
+    (r) => r.length > 0,
+    "the hub's record of the lock that could not be stored",
+  );
 
 /** AbleSet's page loaded in the frame, its socket echoing through the hub: its body. */
 async function ablesetLoaded(page: Page): Promise<Locator> {
@@ -222,7 +237,8 @@ test.describe("AbleSet's tab (the LAN path, fohmixer's own https page)", () => {
     const area = await openAbleSet(page);
     await expect(area).toHaveAttribute("data-state", "frame");
     const frame = page.getByTestId("ableset-frame");
-    await expect(frame).toHaveAttribute("src", `${ABLESET.origin}/`);
+    // The hub's page that stores AbleSet's lock first (#90).
+    await expect(frame).toHaveAttribute("src", `${ABLESET.origin}${LOCKED}`);
     await expect(frame).toHaveAttribute("sandbox", SANDBOX);
     await expect(frame).toHaveAttribute("referrerpolicy", "no-referrer");
     await expect(frame).toHaveAttribute("allow", "");
@@ -343,6 +359,105 @@ test.describe("AbleSet's tab (the LAN path, fohmixer's own https page)", () => {
     await expect(page.getByTestId("deck-tab")).toHaveAttribute("data-selected", "false");
     await expect(area).toHaveAttribute("data-state", "frame");
     await ablesetLoaded(page);
+  });
+});
+
+test.describe("AbleSet opened from the tab is locked (#90, the owner's report of 2026-10-14)", () => {
+  // AbleSet 3.4.5 reads its lock once at load from its own storage
+  // (`AbleSetLocked`, "true": locked; anything else or nothing: unlocked in a
+  // browser). The fake's page says what it read (`data-locked`, `none`:
+  // nothing stored). The tab's frame opens the hub's own page on AbleSet's
+  // name first, which stores "true" and then opens AbleSet's own page.
+  test.use({ baseURL: HTTPS });
+
+  test("every open of the tab loads AbleSet locked, also after AbleSet was unlocked", async ({ page }) => {
+    await fakeAbleSet.clear();
+    // AbleSet left unlocked on this device: its own page, top-level on its
+    // name, stores "false" as AbleSet's own unlock does. The hub leaves
+    // AbleSet's own page as it is: loaded again there, it is still unlocked.
+    const own = page.locator("body");
+    await page.goto(`${ABLESET.origin}/`);
+    await expect(own).toHaveAttribute("data-locked", "none");
+    await page.evaluate(() => localStorage.setItem("AbleSetLocked", "false"));
+    await page.reload();
+    await expect(own).toHaveAttribute("data-app", "loaded");
+    await expect(own).toHaveAttribute("data-locked", "false");
+    // The tab opens it locked, and the frame ends on AbleSet's own page.
+    await openSurface(page);
+    await openAbleSet(page);
+    let body = await ablesetLoaded(page);
+    await expect(body).toHaveAttribute("data-locked", "true");
+    expect(inside(page)?.url()).toBe(`${ABLESET.origin}/`);
+    // Unlocked inside AbleSet (its button stores "false"), the tab left and
+    // opened again: a fresh frame, locked again.
+    await body.evaluate(() => localStorage.setItem("AbleSetLocked", "false"));
+    await leaveForTheMixer(page);
+    await expect(page.getByTestId("ableset-frame")).toHaveCount(0);
+    await openAbleSet(page);
+    body = await ablesetLoaded(page);
+    await expect(body).toHaveAttribute("data-locked", "true");
+    expect(inside(page)?.url()).toBe(`${ABLESET.origin}/`);
+    // The lock page and its script are the hub's own: AbleSet never sees them.
+    const paths = pageHits((await fakeAbleSet.state()).hits).map((h) => h.path);
+    expect(paths.filter((path) => path.startsWith("/.fohmixer/"))).toEqual([]);
+  });
+
+  test("storage refused: AbleSet's page all the same, and the hub records why", async ({ page }) => {
+    const since = Date.now();
+    // Storage refused on the lock page only, as a browser that blocks a
+    // site's storage throws there (AbleSet's own page keeps its storage).
+    await page.addInitScript((path) => {
+      if (location.pathname === path) {
+        Storage.prototype.setItem = function () {
+          throw new DOMException("refused by the test", "SecurityError");
+        };
+      }
+    }, LOCKED);
+    await openSurface(page);
+    await openAbleSet(page);
+    const body = await ablesetLoaded(page);
+    await expect(body).toHaveAttribute("data-locked", "none");
+    expect(inside(page)?.url()).toBe(`${ABLESET.origin}/`);
+    const records = await lockRecords(since);
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({ why: "SecurityError", source: "lan", forwarded: "-", skipped: 0 });
+  });
+});
+
+test.describe("AbleSet's lock page without its script (#90 review M1)", () => {
+  // The lock page's script refused, as a Wi-Fi drop or a hub restart
+  // between the page and its script would: Chromium's failed load of that
+  // address only (WebKit logs a refused route at info). The service worker
+  // is kept out so the route sees every request (Playwright's own warning
+  // says so).
+  test.use({
+    baseURL: HTTPS,
+    serviceWorkers: "block",
+    allowedConsole: [
+      [{ text: /^Failed to load resource: /, url: LOCK_SCRIPT_URL }, /^Service Worker registration blocked by Playwright$/],
+      { scope: "test" },
+    ],
+  });
+
+  test("goes on to AbleSet by its refresh, and the hub records it", async ({ page, context }) => {
+    const since = Date.now();
+    let refused = 0;
+    await context.route(LOCK_SCRIPT_URL, (route) => {
+      refused += 1;
+      return route.abort();
+    });
+    await openSurface(page);
+    await openAbleSet(page);
+    // The page's refresh comes 3 s after it loaded without its script; the
+    // hub records it and answers with AbleSet's own page.
+    await expect(frameOf(page).locator("body")).toHaveAttribute("data-app", "loaded", { timeout: 15_000 });
+    const body = await ablesetLoaded(page);
+    await expect(body).toHaveAttribute("data-locked", "none");
+    expect(inside(page)?.url()).toBe(`${ABLESET.origin}/`);
+    expect(refused).toBe(1);
+    const records = await lockRecords(since);
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({ why: "script", source: "lan", forwarded: "-" });
   });
 });
 

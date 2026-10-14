@@ -15,8 +15,10 @@ Its routes:
 
     GET  /                    the page: an absolute-path script and stylesheet,
                               a button ``#fake-button`` and a long list
-    GET  /static/app.js       the page's script: a ``browserId`` kept in
-                              ``localStorage``, the socket, the button
+    GET  /static/app.js       the page's script: the ``AbleSetLocked`` it read
+                              from ``localStorage`` at load as ``data-locked``
+                              (``none``: nothing stored; #90), a ``browserId``
+                              kept in ``localStorage``, the socket, the button
     GET  /static/app.css      the page's stylesheet
     GET  /static/pixel.gif    a 1 x 1 GIF
     POST /api/press           counted: ``{"pressed": <presses so far>}``
@@ -100,6 +102,10 @@ SCRIPT = """\
 // hub must serve AbleSet's assets under AbleSet's name.
 (() => {
   const body = document.body;
+  // AbleSet 3.4.5 reads its lock once at load ("true": locked, #90): the
+  // fake says what it read.
+  const locked = localStorage.getItem("AbleSetLocked");
+  body.dataset.locked = locked === null ? "none" : locked;
   let id = localStorage.getItem("browserId");
   if (!id) {
     id = "b" + Math.random().toString(36).slice(2, 12);

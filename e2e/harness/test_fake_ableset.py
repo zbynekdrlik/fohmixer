@@ -111,7 +111,15 @@ class FakeAbleSetTest(unittest.TestCase):
             self.assertIn(part, text)
         status, fields, script = conn.ask("GET", "/static/app.js")
         self.assertEqual((status, fields["content-type"]), (200, "text/javascript; charset=utf-8"))
-        for part in ("localStorage", '"/socket.io/?"', "browserId", '"/api/press"', "data"):
+        for part in (
+            "localStorage",
+            '"AbleSetLocked"',
+            "dataset.locked",
+            '"/socket.io/?"',
+            "browserId",
+            '"/api/press"',
+            "data",
+        ):
             self.assertIn(part, script.decode())
         status, fields, style = conn.ask("GET", "/static/app.css")
         self.assertEqual((status, fields["content-type"]), (200, "text/css; charset=utf-8"))

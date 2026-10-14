@@ -178,8 +178,9 @@ pub fn expired(file: NaiveDate, today: NaiveDate, keep_days: i64) -> bool {
 /// (PR C). AbleSet's name (#90 B3h): an `ableset_proxy` record of an
 /// AbleSet outage carries `error` (only its warned one, at most one per
 /// 10 s), a client's fault `why` (rationed), and an `ableset_ws` open or
-/// close never an `error`: only the outage outlives the cap, so no client
-/// fills the warn class. Its link's changes (`ableset_link`, #90 B3: at
+/// close never an `error`, nor an `ableset_lock` (the tab's lock page could
+/// not store AbleSet's lock, #90: the page's own word, `why`, rationed):
+/// only the outage outlives the cap, so no client fills the warn class. Its link's changes (`ableset_link`, #90 B3: at
 /// most one per 5 s read, they explain a page's AbleSet tab) do too, and
 /// so does a page's `trace` that holds its AbleSet tab opened or closed
 /// (`ableset_view`, #90 design §6: a few per open, beside the dropouts).
