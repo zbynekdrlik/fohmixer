@@ -94,6 +94,27 @@ class IntegrityTests(unittest.TestCase):
             want = [] if ok else [f".github/workflows/ci.yml:4: pinned action without its version comment (# vX.Y.Z): actions/checkout@{sha}"]
             self.assertEqual(ci.violations(self.root), want, line)
 
+    def test_a_playwright_shard_list_has_every_shard_once(self) -> None:
+        # The e2e legs (#43): a shard missing from the matrix never runs its tests.
+        for value, ok in (('["1/2", "2/2"]', True), ("['2/3', '1/3', '3/3']", True), ("[1/1]", True),
+                          ('["1/2", "2/2"]  # the e2e legs', True),
+                          # cargo-mutants' 0-based shards and a computed list are no Playwright list
+                          ("[0, 1, 2, 3]", True), ("${{ fromJSON(needs.mutants-list.outputs.shards) }}", True),
+                          ('["1/3", "2/3"]', False), ('["1/2", "1/2"]', False), ('["1/2", "2/2", "3/2"]', False),
+                          ('["1/2", "2/3"]', False), ('["0/2", "1/2", "2/2"]', False), ('["1/2", 2]', False)):
+            self.put(".github/workflows/ci.yml",
+                     "jobs:\n  a:\n    strategy:\n      matrix:\n        shard: " + value + "\n    steps:\n" + PINNED)
+            want = [] if ok else [
+                ".github/workflows/ci.yml:5: Playwright shard list without every i/n of n once (a missing shard's tests never run)"]
+            self.assertEqual(ci.violations(self.root), want, value)
+
+    def test_a_shard_list_on_several_lines_is_refused(self) -> None:
+        # The check reads the list on its one line; a block list would pass it unread.
+        self.put(".github/workflows/ci.yml",
+                 'jobs:\n  a:\n    strategy:\n      matrix:\n        shard:\n          - "1/2"\n    steps:\n' + PINNED)
+        self.assertEqual(ci.violations(self.root), [
+            ".github/workflows/ci.yml:5: matrix shard list on several lines (write it on one: the shard check reads it there)"])
+
     def test_force_kill_command(self) -> None:
         self.put("scripts/stop.ps1", "taskkill /F /IM fohmixer-hub.exe\n")
         self.assertEqual(ci.violations(self.root), [f"scripts/stop.ps1:1: force-kill command (spec {KILL})"])

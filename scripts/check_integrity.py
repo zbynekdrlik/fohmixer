@@ -2,7 +2,8 @@
 """Integrity gate (adapted from iemmixer @ 22372bc): no ignored, skipped or
 focused tests (Rust, Playwright, Python), no continue-on-error, self-hosted
 runners or pull_request_target, every action pinned to a full commit SHA with
-its version comment, no force-kill verb anywhere, comments included
+its version comment, every Playwright shard of a matrix listed (#43), no
+force-kill verb anywhere, comments included
 (spec I7: nothing is force-killed on the Ableton PC), and every tap target
 of the surface owns its touches and none takes a mouse event (#43 PR G)."""
 from __future__ import annotations
@@ -25,6 +26,11 @@ USES = re.compile(r"^\s*-?\s*uses:\s*(\S+)(.*)$")
 PINNED = re.compile(r"^[^@\s]+@[0-9a-f]{40}$")
 # The pin's release, e.g. `# v7.0.1`.
 VERSION_COMMENT = re.compile(r"^\s+#\s*v\d+(?:\.\d+)*\s*$")
+# A matrix's shard list (the e2e legs, #43): Playwright's `--shard=i/n` needs
+# every i of n once, or a missing shard's tests never run. The list is read on
+# its one line; cargo-mutants' 0-based shards and a computed list are not i/n.
+SHARD_LIST = re.compile(r"^\s*shard:\s*(\[[^\]]*\])?\s*(?:#.*)?$")
+SHARD_ITEM = re.compile(r"""^["']?(\d+)/(\d+)["']?$""")
 # Force-end verbs (I7): Windows' own (taskkill, tskill, Sysinternals pskill),
 # PowerShell's, WMI/CIM's Terminate (-MethodName or its alias -Name; wmic's
 # call terminate and delete), a job whose closing ends its processes, and the
@@ -79,6 +85,25 @@ def unowned_taps(text: str) -> list[int]:
     return found
 
 
+def shard_list_problem(line: str) -> str | None:
+    """What is wrong with a workflow line's matrix shard list, if anything."""
+    match = SHARD_LIST.match(line)
+    if not match:
+        return None
+    if match.group(1) is None:
+        return "matrix shard list on several lines (write it on one: the shard check reads it there)"
+    items = [item.strip() for item in match.group(1)[1:-1].split(",") if item.strip()]
+    shards = [SHARD_ITEM.match(item) for item in items]
+    if not any(shards):
+        return None
+    if all(shards):
+        totals = {int(shard.group(2)) for shard in shards}
+        current = sorted(int(shard.group(1)) for shard in shards)
+        if len(totals) == 1 and current == list(range(1, totals.pop() + 1)):
+            return None
+    return "Playwright shard list without every i/n of n once (a missing shard's tests never run)"
+
+
 def violations(root: Path) -> list[str]:
     found: list[str] = []
     for path in files(root, "crates", (".rs",)):
@@ -110,6 +135,9 @@ def violations(root: Path) -> list[str]:
         for n, line in lines(path):
             if WORKFLOW_FORBIDDEN.search(line):
                 found.append(f"{rel}:{n}: forbidden workflow construct")
+            problem = shard_list_problem(line)
+            if problem:
+                found.append(f"{rel}:{n}: {problem}")
             match = USES.match(line)
             if match and not match.group(1).startswith("./"):
                 if not PINNED.match(match.group(1)):
