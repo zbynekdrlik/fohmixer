@@ -518,6 +518,8 @@ class HarnessTest(unittest.TestCase):
     def test_without_a_fake_ableset_its_routes_are_absent(self):
         self.assertEqual(self.harness.handle("GET", "/ableset", {})[0], 404)
         self.assertEqual(self.post("/ableset/down")[0], 404)
+        self.assertEqual(self.post("/hub/ableset", {"on": True})[0], 404, "no hub in this test")
+        self.assertEqual(self.harness.set_ableset(True), False, "no --ableset-name")
 
     def test_without_a_fake_companion_its_routes_are_absent(self):
         self.assertEqual(self.harness.handle("GET", "/companion", {})[0], 404)
@@ -736,6 +738,29 @@ class FakeAbleSetRoutes(unittest.TestCase):
         self.assertEqual(len(handle("GET", "/ableset", {})[1]["hits"]), 1)
         self.assertEqual(handle("POST", "/ableset/clear", {})[1]["hits"], [])
         self.assertEqual(handle("POST", "/ableset/nothing", {})[0], 404)
+
+    def config(self):
+        with open(os.path.join(self.data, "hub", "fohmixer-hub.toml"), encoding="utf-8") as f:
+            return f.read()
+
+    def test_the_ableset_table_goes_and_comes_back_with_the_rest_kept(self):
+        # #90: the hub restarted with or without [ableset] (here no hub runs).
+        whole = self.config()
+        table = whole[whole.index("[ableset]") :]
+        self.assertTrue(table.startswith('[ableset]\nname = "ableset.e2e.test"\n'))
+        try:
+            self.assertEqual(self.harness.set_ableset(False), False)
+            self.assertEqual(self.config(), whole.replace(table, ""), "only [ableset] went")
+            self.assertIn("[tls]", self.config())
+            # Another table's switch keeps it off.
+            self.assertEqual(self.harness.set_companion(False), False)
+            self.assertNotIn("[ableset]", self.config())
+        finally:
+            self.assertEqual(self.harness.set_ableset(True), True)
+        self.assertEqual(self.config(), whole, "the same config again")
+        # And keeps it on.
+        self.assertEqual(self.harness.set_companion(True), False, "no Companion here")
+        self.assertEqual(self.config(), whole)
 
     def test_a_name_without_the_fake_is_refused(self):
         args = harness.parse_args(["--data", "d", "--layout", "l", "--ableset-name", "a.e2e.test"])

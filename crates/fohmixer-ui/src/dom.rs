@@ -135,6 +135,16 @@ pub fn current_element(event: &web_sys::Event) -> Option<web_sys::HtmlElement> {
     event.current_target()?.dyn_into().ok()
 }
 
+/// The `content` of the document's `<meta name="<name>">`, if there is one
+/// (#90: the page policy's revision the hub wrote into this page).
+pub fn meta_content(name: &str) -> Option<String> {
+    web_sys::window()?
+        .document()?
+        .query_selector(&format!("meta[name=\"{name}\"]"))
+        .ok()??
+        .get_attribute("content")
+}
+
 /// The first descendant of `root` matching `selector`, as an HTML element.
 pub fn child(root: &web_sys::Element, selector: &str) -> Option<web_sys::HtmlElement> {
     root.query_selector(selector).ok()??.dyn_into().ok()

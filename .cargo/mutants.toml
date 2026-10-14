@@ -66,7 +66,10 @@ exclude_re = [
   # #63 added computed (a computed style's property: the phone's
   # --count-col, parsed by the tested arrange::px_value; column.spec.ts
   # reads the strips' width it gives on both phone sizes).
-  "fohmixer-ui/src/dom\\.rs.*(replace|in) (now|epoch_now|event_epoch|hidden|wall_now|log|error|set_style|set_attr|remove_attr|viewport|current_element|child|storage|storage_get|storage_set|storage_remove|prevent_on|event_element|computed)( |$)",
+  # #90 added meta_content (a <meta>'s content: the page policy's revision
+  # the hub wrote into the page, handed to the tested net::on_hello;
+  # ableset.spec.ts reads it against the hub's hellos across a restart).
+  "fohmixer-ui/src/dom\\.rs.*(replace|in) (now|epoch_now|event_epoch|hidden|wall_now|log|error|set_style|set_attr|remove_attr|viewport|current_element|child|storage|storage_get|storage_set|storage_remove|prevent_on|event_element|computed|meta_content)( |$)",
   # net.rs: the fetch wrapper and the handshake reload (location.reload);
   # #71 PR E added fetch_blob (a Pro-Q 4 card's last picture with the
   # token; eq.spec.ts reads the card's picture after a close).

@@ -184,6 +184,8 @@ async fn session(mut socket: WebSocket, hub: Hub, proto: Option<u32>, who: Opene
         proto: UI_PROTO,
         build: fohmixer_proto::VERSION.to_string(),
         min_client_proto: MIN_CLIENT_PROTO,
+        // #90: a page that loaded with another policy reloads.
+        policy: Some(hub.policy_rev.clone()),
     };
     if socket.send(text(&hello)).await.is_err() {
         return;

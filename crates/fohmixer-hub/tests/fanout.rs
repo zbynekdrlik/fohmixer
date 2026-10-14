@@ -621,10 +621,15 @@ fn the_handshake_is_hello_and_a_protocol_mismatch_closes_with_4001() {
                 proto,
                 build,
                 min_client_proto,
+                policy,
             } => {
                 assert_eq!(*proto, UI_PROTO);
                 assert_eq!(build, fohmixer_proto::VERSION);
                 assert_eq!(*min_client_proto, 2);
+                // #90: the revision of the policy its pages are served with
+                // (this hub has no [ableset]).
+                let served = fohmixer_hub::policy_rev(&fohmixer_hub::page_csp(None));
+                assert_eq!(policy.as_deref(), Some(served.as_str()));
             }
             other => panic!("{other:?}"),
         }

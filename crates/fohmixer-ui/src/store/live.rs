@@ -13,7 +13,9 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::Duration;
 
-use fohmixer_proto::client::{CLOSE_RELOAD, ClientMsg, DeckKey, LiveCommand, ServerMsg};
+use fohmixer_proto::client::{
+    CLOSE_RELOAD, ClientMsg, DeckKey, LiveCommand, POLICY_META, ServerMsg,
+};
 use fohmixer_proto::eq::EqLock;
 use fohmixer_proto::layout::Layout;
 use leptos::prelude::*;
@@ -523,7 +525,8 @@ impl LiveStore {
                 proto,
                 build,
                 min_client_proto,
-            } => self.on_hello(proto, &build, min_client_proto),
+                policy,
+            } => self.on_hello(proto, &build, min_client_proto, policy.as_deref()),
             ServerMsg::Subbed {
                 sub,
                 value,
@@ -659,16 +662,27 @@ impl LiveStore {
         }
     }
 
-    fn on_hello(self, proto: u32, build: &str, min_client_proto: u32) {
+    fn on_hello(self, proto: u32, build: &str, min_client_proto: u32, policy: Option<&str>) {
         let now = dom::wall_now();
-        if net::on_hello(proto, min_client_proto, build, now, net::last_reload())
-            == Decision::Reload
+        // The page policy this page loaded with (#90): the hub wrote its
+        // revision into the page.
+        let loaded = dom::meta_content(POLICY_META);
+        if net::on_hello(
+            proto,
+            min_client_proto,
+            build,
+            policy,
+            loaded.as_deref(),
+            now,
+            net::last_reload(),
+        ) == Decision::Reload
         {
             let page = fohmixer_proto::VERSION;
+            let (policy, loaded) = (policy.unwrap_or("-"), loaded.as_deref().unwrap_or("-"));
             net::reload(
                 now,
                 &format!(
-                    "hub {build} (this page {page}) serves UI protocol {min_client_proto}..={proto}"
+                    "hub {build} (this page {page}) serves UI protocol {min_client_proto}..={proto}, page policy {policy} (this page {loaded})"
                 ),
             );
             return;

@@ -167,8 +167,10 @@ fn server_messages_round_trip() {
             proto: UI_PROTO,
             build: "0.1.0".into(),
             min_client_proto: MIN_CLIENT_PROTO,
+            policy: Some("0123456789abcdef".into()),
         },
-        json!({"type": "hello", "proto": 2, "build": "0.1.0", "min_client_proto": 2}),
+        json!({"type": "hello", "proto": 2, "build": "0.1.0", "min_client_proto": 2,
+            "policy": "0123456789abcdef"}),
     );
     round_trip_server(
         ServerMsg::Result {
@@ -357,6 +359,32 @@ fn a_hub_keys_write_key_drops_its_display_flag() {
         "band|live_set tracks 0|mute"
     );
     assert_eq!(write_key_of("no-bar"), "no-bar");
+}
+
+#[test]
+fn the_hellos_page_policy_is_optional_both_ways() {
+    // #90: a hub before the page policy's revision says hello without it,
+    // and a page reads that as no policy (no reload on it).
+    let older: ServerMsg = serde_json::from_value(
+        json!({"type": "hello", "proto": 2, "build": "1.0.8", "min_client_proto": 2}),
+    )
+    .unwrap();
+    assert_eq!(
+        older,
+        ServerMsg::Hello {
+            proto: 2,
+            build: "1.0.8".into(),
+            min_client_proto: 2,
+            policy: None,
+        }
+    );
+    // A field the page does not know is ignored, as a page before #90
+    // ignores `policy` (`ServerMsg` denies no unknown field).
+    let newer: ServerMsg = serde_json::from_value(json!({"type": "hello", "proto": 2,
+        "build": "1.0.9", "min_client_proto": 2, "policy": "p", "later": [1]}))
+    .unwrap();
+    assert!(matches!(newer, ServerMsg::Hello { policy: Some(p), .. } if p == "p"));
+    assert_eq!(POLICY_META, "fohmixer-policy");
 }
 
 #[test]
