@@ -6,8 +6,11 @@ import { expect, test } from "./support/fixtures";
 import {
   BASE,
   HUB_SOCKET,
+  RELOAD_KEY,
+  countLoads,
   fakeAbleSet,
   frames,
+  harness,
   hubEvents,
   openDeck,
   openSurface,
@@ -33,6 +36,10 @@ const ABLESET = new URL(process.env.E2E_ABLESET_URL || "https://ableset.e2e.test
 /** The probe's address: AbleSet's name with the page's port, a number making each probe new. */
 const PROBE_URL = new RegExp(`^${ABLESET.origin.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/\\.fohmixer/probe\\?\\d+$`);
 const isProbe = (url: URL) => PROBE_URL.test(url.href);
+/** The page's own requests a hub restart under it fails (#90): its layout fetch and its reports, on fohmixer's https page. */
+const PAGE_API = new RegExp(
+  `^${new URL(HTTPS).origin.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/api/(layout|client-report)$`,
+);
 /** How long the probe may take (`behave::ableset::PROBE_MS`). */
 const PROBE_MS = 8_000;
 const SANDBOX =
@@ -628,5 +635,116 @@ test.describe("A hub that does not tell of AbleSet", () => {
     );
     const columns = await bar.evaluate((b) => getComputedStyle(b).gridTemplateColumns.split(" ").length);
     expect(new Set(boxes).size).toBe(Math.ceil(boxes.length / columns));
+  });
+});
+
+/** The page policy's revision the hub wrote into the page's `index.html` (#90), or null. */
+const loadedPolicy = (page: Page): Promise<string | null> =>
+  page.evaluate(() => document.querySelector('meta[name="fohmixer-policy"]')?.getAttribute("content") ?? null);
+
+/**
+ * The `policy` of every hub hello the page receives from now on (#90), on
+ * each of its hub sockets, across its reloads (null for a hello without one).
+ */
+function hubPolicies(page: Page): () => (string | null)[] {
+  const seen: (string | null)[] = [];
+  page.on("websocket", (socket) => {
+    if (!HUB_SOCKET.test(socket.url())) return;
+    socket.on("framereceived", ({ payload }) => {
+      if (typeof payload === "string" && payload.includes('"type":"hello"')) seen.push(JSON.parse(payload).policy ?? null);
+    });
+  });
+  return () => seen;
+}
+
+test.describe("A page open while the hub restarts (#90: its page policy)", () => {
+  // The hub restarts under an open page on fohmixer's https page (the hub's
+  // own listener: no impair proxy holds the page's requests meanwhile), so
+  // while it is down the page's reconnect fails its layout fetch and its
+  // `disconnected` report: failed loads of those addresses only (and a
+  // socket, should one attempt land in the gap). The service worker is kept
+  // out (Playwright's own warning says so), so those failures are the page's
+  // own fetches; it is network-only, so the page policy comes with the hub's
+  // answer either way.
+  test.use({
+    baseURL: HTTPS,
+    serviceWorkers: "block",
+    allowedConsole: [
+      [
+        { text: /^Failed to load resource: /, url: PAGE_API },
+        /^WebSocket connection to 'wss:\/\/[^']+\/ws\?[^']*' failed/,
+        /^Service Worker registration blocked by Playwright$/,
+      ],
+      { scope: "test" },
+    ],
+  });
+
+  test("that gains [ableset] reloads once by itself, and its ABLESET tab then frames AbleSet", async ({ page }) => {
+    // The church iPad (#90 comment 6163657943): a Home Screen app open
+    // before the hub had [ableset] kept the policy it loaded with, whose
+    // img-src and frame-src lack AbleSet's name, and its tab could not load.
+    let on = true;
+    try {
+      // No page is open across this restart (deck.spec.ts's [companion] test).
+      on = (await harness("/hub/ableset", { on: false })).ableset;
+      expect(on).toBe(false);
+      await openSurface(page);
+      await expect(page.getByTestId("deck-tab")).toBeVisible();
+      await expect(page.getByTestId("ableset-tab")).toHaveCount(0);
+      const before = await loadedPolicy(page);
+      const loads = countLoads(page);
+      const policies = hubPolicies(page);
+      on = (await harness("/hub/ableset", { on: true })).ableset;
+      expect(on).toBe(true);
+      // The restarted hub's hello names another page policy: the page
+      // reloads by itself, once (the handshake's once-a-minute guard).
+      await expect.poll(loads, { message: "the page's reloads", timeout: 20_000 }).toBe(1);
+      await expect(page.getByTestId("surface")).toHaveAttribute("data-connected", "true", { timeout: 15_000 });
+      expect(Number(await page.evaluate((key) => localStorage.getItem(key), RELOAD_KEY))).toBeGreaterThan(0);
+      // The hello that reloaded it and the reloaded page's own name one
+      // policy, which the reloaded page now carries; the page before had
+      // another.
+      await expect.poll(() => policies().length).toBeGreaterThanOrEqual(2);
+      const told = policies();
+      expect(told[0]).toMatch(/^[0-9a-f]{16}$/);
+      expect(new Set(told)).toEqual(new Set([told[0]]));
+      expect(before).toMatch(/^[0-9a-f]{16}$/);
+      expect(before).not.toBe(told[0]);
+      expect(await loadedPolicy(page)).toBe(told[0]);
+      // With it the tab frames AbleSet.
+      const area = await openAbleSet(page);
+      await expect(area).toHaveAttribute("data-state", "frame", { timeout: 15_000 });
+      await ablesetLoaded(page);
+      expect(loads()).toBe(1);
+    } finally {
+      if (!on) {
+        await page.goto("about:blank");
+        await harness("/hub/ableset", { on: true });
+      }
+    }
+  });
+
+  test("with the same config keeps the page: it only reconnects", async ({ page }) => {
+    await openSurface(page);
+    await expect(page.getByTestId("ableset-tab")).toBeVisible();
+    const surface = page.getByTestId("surface");
+    // A reloaded page would not carry the mark.
+    await surface.evaluate((el) => el.setAttribute("data-e2e-kept", "1"));
+    const loads = countLoads(page);
+    const policies = hubPolicies(page);
+    // [ableset] stays on: the same config, and the hub restarted all the same.
+    expect((await harness("/hub/ableset", { on: true })).ableset).toBe(true);
+    // The page hears the restarted hub's hello and stays connected: the
+    // decision is made at that hello.
+    await expect.poll(() => policies().length, { timeout: 20_000 }).toBeGreaterThanOrEqual(1);
+    await expect(surface).toHaveAttribute("data-connected", "true", { timeout: 15_000 });
+    await page.waitForTimeout(1000);
+    expect(loads()).toBe(0);
+    await expect(surface).toHaveAttribute("data-e2e-kept", "1");
+    expect(await page.evaluate((key) => localStorage.getItem(key), RELOAD_KEY)).toBeNull();
+    // It knew the policy it loaded with, and the hub named the same.
+    const loaded = await loadedPolicy(page);
+    expect(loaded).toMatch(/^[0-9a-f]{16}$/);
+    expect(new Set(policies())).toEqual(new Set([loaded]));
   });
 });

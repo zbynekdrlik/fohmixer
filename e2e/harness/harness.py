@@ -86,6 +86,12 @@ what only the harness can do:
     POST /ableset/down                   AbleSet stopped (a connect is refused)
     POST /ableset/up                     AbleSet listening again
     POST /ableset/clear                  the hits forgotten
+    POST /hub/ableset {"on": <bool>}     the hub's config with or without
+                                         ``[ableset]``, and the hub restarted
+                                         (also when it already was so: a
+                                         restart with the same config);
+                                         {"ableset": what it now holds}: false
+                                         without ``--ableset-name``
     GET  /cdn-cgi/access/certs           the test Access key set (``--access-key``)
 
 Remote access (#17): with ``--public-name`` the hub serves that name over HTTPS
@@ -589,7 +595,8 @@ class Harness:
             self.fake.start()
         self.companion = companion_of(args, self.fake)
         self.companion_on = self.companion is not None
-        self.write_config(self.companion)
+        self.ableset_on = self.ableset is not None
+        self.write_config()
         self.reset_layout()
         # The proxy needs no hub to listen; it is up before the hub starts. A
         # process of its own (#43): as a thread of this one it shared the
@@ -598,8 +605,8 @@ class Harness:
         self.link.start()
         self.hub = Hub(args.hub, self.data, args.http_port, log_dir) if args.hub else None
 
-    def write_config(self, companion):
-        """The hub's config, with ``[companion]`` on ``companion`` or without."""
+    def write_config(self):
+        """The hub's config, with ``[companion]`` and ``[ableset]`` while they are on."""
         with open(os.path.join(self.data, "fohmixer-hub.toml"), "w", encoding="utf-8") as f:
             f.write(
                 hub_config(
@@ -607,20 +614,30 @@ class Harness:
                     self.hosts["band"].port,
                     self.hosts["master"].port,
                     self.remote,
-                    companion,
-                    self.ableset,
+                    self.companion if self.companion_on else None,
+                    self.ableset if self.ableset_on else None,
                 )
             )
 
     def set_companion(self, on):
         """The hub's config with or without ``[companion]``; answers what it now
         holds (never on without an endpoint), the hub restarted when there is one."""
-        actual = bool(on) and self.companion is not None
-        self.write_config(self.companion if actual else None)
-        self.companion_on = actual
+        self.companion_on = bool(on) and self.companion is not None
+        self.write_config()
         if self.hub is not None:
             self.hub.restart(False)
-        return actual
+        return self.companion_on
+
+    def set_ableset(self, on):
+        """The hub's config with or without ``[ableset]`` (#90: a page open
+        across the restart loaded with another page policy than the hub then
+        sends); answers what it now holds (never on without ``--ableset-name``),
+        the hub restarted when there is one, also when nothing changed."""
+        self.ableset_on = bool(on) and self.ableset is not None
+        self.write_config()
+        if self.hub is not None:
+            self.hub.restart(False)
+        return self.ableset_on
 
     def write_layout(self, layout):
         """Replaces the layout file whole (the hub never reads half a file)."""
@@ -675,6 +692,8 @@ class Harness:
             return 200, {"ok": True}
         if parts == ["hub", "companion"] and self.hub is not None:
             return 200, {"companion": self.set_companion(on_of(body, "/hub/companion"))}
+        if parts == ["hub", "ableset"] and self.hub is not None:
+            return 200, {"ableset": self.set_ableset(on_of(body, "/hub/ableset"))}
         if parts and parts[0] == "companion":
             if self.fake is None:
                 return 404, {"error": "no fake Companion"}
