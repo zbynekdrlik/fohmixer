@@ -7,7 +7,8 @@ name: CI
 # Windows build of the hub (the PC's platform: DPAPI), the Trunk build,
 # Playwright E2E in Chromium and WebKit (iPad) with the console guard (four
 # legs: each project in two shards, #43), the
-# Stream Deck tab against the real Companion 5.0.7 (#52), cargo-deny,
+# Stream Deck tab against the real Companion 5.0.7 (#52), both on one hub
+# build per run (hub-e2e, #43), cargo-deny,
 # gitleaks and the private denylist scan, the version check and diff-scoped
 # mutation testing.
 
@@ -366,15 +367,61 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
+  hub-e2e:
+    name: hub-e2e
+    # The hub the E2E runs (#43), built once per run: the release profile,
+    # its default features and the real UI (wasm-dist) embedded, as each e2e
+    # leg and companion built it for itself before (~130 s each). The legs
+    # and companion download it and check it against the SHA-256 this job
+    # prints (its sha256 output) before they run it.
+    needs: [wasm]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      sha256: ${{ steps.sum.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Rust toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: wasm-dist
+          path: crates/fohmixer-ui/dist
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          # The key the legs saved when each built the hub (their job id,
+          # e2e): the move keeps that cache warm.
+          shared-key: e2e
+      - name: Build the hub (release, the real UI embedded)
+        run: cargo build --locked --release -p fohmixer-hub
+      - name: The hub's SHA-256 (the legs and companion check theirs against it)
+        id: sum
+        run: |
+          set -euo pipefail
+          sum="$(sha256sum target/release/fohmixer-hub | cut -d ' ' -f 1)"
+          echo "hub-e2e sha256 ${sum}"
+          echo "sha256=${sum}" >> "$GITHUB_OUTPUT"
+      # A day: long enough for a failed leg's rerun (gh run rerun --failed);
+      # later, rerun the whole run, which builds it again.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: hub-e2e
+          path: target/release/fohmixer-hub
+          retention-days: 1
+          if-no-files-found: error
+
   e2e:
     # The Playwright suite in four legs (#43): each project (Chromium, the
     # iPad's WebKit) in two shards (Playwright's --shard: whole spec files,
     # split by test count in file order). In one job both projects took
     # 1550-1760 s of the 30 minutes; a leg takes about a third of it. Every
-    # leg is a runner of its own with its own hub, harness, test CA and
-    # failure evidence, so the specs' shared-hub rules hold within a leg.
+    # leg is a runner of its own with its own hub process (hub-e2e's build),
+    # harness, test CA and failure evidence, so the specs' shared-hub rules
+    # hold within a leg.
     name: e2e ${{ matrix.project }} ${{ matrix.shard }}
-    needs: [wasm]
+    needs: [hub-e2e]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     strategy:
@@ -400,18 +447,18 @@ jobs:
           PROJECT: ${{ matrix.project }}
           SHARD: ${{ matrix.shard }}
         run: echo "id=${PROJECT}-${SHARD/\//of}" >> "$GITHUB_OUTPUT"
-      - name: Rust toolchain (rust-toolchain.toml)
-        run: rustup toolchain install
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: wasm-dist
-          path: crates/fohmixer-ui/dist
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          # The legs share one cache key: one of them saves it.
-          save-if: ${{ matrix.project == 'chromium' && matrix.shard == '1/2' }}
-      - name: Build the hub (release, the real UI embedded)
-        run: cargo build --locked --release -p fohmixer-hub
+          name: hub-e2e
+          path: target/release
+      - name: The hub hub-e2e built (its SHA-256 checked, the executable bit an artifact does not keep)
+        env:
+          HUB_SHA256: ${{ needs.hub-e2e.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          sha256sum target/release/fohmixer-hub
+          echo "${HUB_SHA256}  target/release/fohmixer-hub" | sha256sum --check --strict -
+          chmod +x target/release/fohmixer-hub
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "22"
@@ -589,8 +636,9 @@ jobs:
     # container pinned by digest, seeded with the synthetic test
     # configuration through its own import page (e2e/companion/seed.mjs), the
     # hub registered on its Satellite API, and Playwright (Chromium and WebKit
-    # iPad) on the Stream Deck tab (playwright.companion.config.ts).
-    needs: [wasm]
+    # iPad) on the Stream Deck tab (playwright.companion.config.ts), on
+    # hub-e2e's hub as the e2e legs.
+    needs: [hub-e2e]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     services:
@@ -611,15 +659,18 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Rust toolchain (rust-toolchain.toml)
-        run: rustup toolchain install
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: wasm-dist
-          path: crates/fohmixer-ui/dist
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - name: Build the hub (release, the real UI embedded)
-        run: cargo build --locked --release -p fohmixer-hub
+          name: hub-e2e
+          path: target/release
+      - name: The hub hub-e2e built (its SHA-256 checked, the executable bit an artifact does not keep)
+        env:
+          HUB_SHA256: ${{ needs.hub-e2e.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          sha256sum target/release/fohmixer-hub
+          echo "${HUB_SHA256}  target/release/fohmixer-hub" | sha256sum --check --strict -
+          chmod +x target/release/fohmixer-hub
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "22"
