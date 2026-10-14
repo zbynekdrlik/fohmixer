@@ -6,7 +6,9 @@
 //! is mounted only while the tab shows it: on the mixer AbleSet's app, its
 //! socket and its drawing cost the iPad nothing. Before it mounts, an image
 //! of the hub's `/.fohmixer/probe` on AbleSet's name must load within
-//! `PROBE_MS`: outside the church AbleSet's name has an Access application
+//! `PROBE_MS` (an image outside the page, whose handler outlives the tab:
+//! its answer can come after the bound or after the tab closed, #90 C2):
+//! outside the church AbleSet's name has an Access application
 //! of its own, whose login would not show inside a frame, so a failed probe
 //! through the tunnel shows the sign-in panel instead (a top-level sign-in
 //! that comes back to `#ableset`); on the LAN (the hub's word for this
@@ -19,7 +21,8 @@ use std::time::Duration;
 
 use fohmixer_proto::layout::Control;
 use leptos::prelude::*;
-use wasm_bindgen::JsValue;
+use wasm_bindgen::closure::Closure;
+use wasm_bindgen::{JsCast, JsValue};
 
 use crate::behave::ableset::{
     Fail, PROBE_MS, Panel, Probe, SIGNIN_BUTTON, Show, after_link, again, direct_url, frame_url,
@@ -147,8 +150,14 @@ pub fn AbleSetView(rail: Vec<Control>, global: Vec<Control>) -> impl IntoView {
             }
         }
     });
-    // A probe starts when one is due; its image is in the view below, and
-    // it fails if no answer came within PROBE_MS.
+    // A probe starts when one is due: an image of its address that is never
+    // in the page, and it fails if no answer came within PROBE_MS. The
+    // browser loads an image whatever happens to the view, so its one
+    // handler (load or error) belongs to the JS GC (`into_js_value`), not
+    // to a view: a view's `on:load` closure is dropped with the view, and an
+    // answer after the bound, or after the tab closed, then called a dropped
+    // closure (#90 C2). `answer` takes only the probe on its way, and finds
+    // nothing once the tab is gone.
     Effect::new(move |_| {
         let due = probes(
             online.try_get().flatten(),
@@ -167,6 +176,26 @@ pub fn AbleSetView(rail: Vec<Control>, global: Vec<Control>) -> impl IntoView {
         };
         let _ = probe_started.try_set_value(dom::now());
         let _ = probe.try_set(Probe::Pending(n));
+        let port = at
+            .try_with_value(|(_, port)| port.clone())
+            .unwrap_or_default();
+        let src = store
+            .ableset
+            .try_with_untracked(|a| {
+                a.as_ref()
+                    .map(|a| probe_url(&a.name, &port, dom::wall_now() as u64))
+            })
+            .flatten();
+        if let (Some(src), Ok(image)) = (src, web_sys::HtmlImageElement::new()) {
+            let heard = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
+                let loaded = event.type_() == "load";
+                answer(n, if loaded { Ok(()) } else { Err(Fail::Error) });
+            })
+            .into_js_value();
+            image.set_onload(Some(heard.unchecked_ref()));
+            image.set_onerror(Some(heard.unchecked_ref()));
+            image.set_src(&src);
+        }
         set_timeout(
             move || answer(n, Err(Fail::Late)),
             Duration::from_millis(u64::from(PROBE_MS)),
@@ -251,31 +280,6 @@ pub fn AbleSetView(rail: Vec<Control>, global: Vec<Control>) -> impl IntoView {
             view! { <AbleSetPanel panel=panel direct=direct signin=signin /> }.into_any()
         }
     };
-    let probe_image = move || match probe.try_get() {
-        Some(Probe::Pending(n)) => {
-            let port = at
-                .try_with_value(|(_, port)| port.clone())
-                .unwrap_or_default();
-            let src = store
-                .ableset
-                .try_with_untracked(|a| {
-                    a.as_ref()
-                        .map(|a| probe_url(&a.name, &port, dom::wall_now() as u64))
-                })
-                .flatten()
-                .unwrap_or_default();
-            Some(view! {
-                <img
-                    class="ableset-probe"
-                    alt=""
-                    src=src
-                    on:load=move |_| answer(n, Ok(()))
-                    on:error=move |_| answer(n, Err(Fail::Error))
-                />
-            })
-        }
-        _ => None,
-    };
     let state = move || shown.try_get().map_or("checking", Show::name);
     let rail = rail
         .into_iter()
@@ -287,7 +291,7 @@ pub fn AbleSetView(rail: Vec<Control>, global: Vec<Control>) -> impl IntoView {
         .collect_view();
     view! {
         <div class="body ableset-page" data-testid="ableset" data-state=state>
-            <div class="ableset-area">{content} {probe_image}</div>
+            <div class="ableset-area">{content}</div>
             <nav class="column" data-testid="column">
                 <ColumnHead />
                 <div class="rail" data-testid="rail">
