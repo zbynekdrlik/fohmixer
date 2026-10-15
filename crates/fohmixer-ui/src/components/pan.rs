@@ -10,7 +10,10 @@
 //! (`data-intent`, `intent.css`, #43 PR C); each touch's down (with where
 //! it started, `PanCtl::press`), up and cancel goes to the page's flight
 //! recorder, and each frame that sends from the finger with the pointer moves
-//! it carried (`diag::trace::moves::Trail`, PR D). It lives in the channel
+//! it carried (`diag::trace::moves::Trail`, PR D); a primary down of the
+//! held pointer's type, or a hidden page, ends a touch whose end the
+//! browser never delivered (#124) as a cancel, recorded `lost`. It lives in
+//! the channel
 //! detail (#71, D17), large; its dot's width is the stylesheet's (`--dot`),
 //! measured at each touch's down with the bar's padding box it travels,
 //! never assumed.
@@ -20,9 +23,9 @@ use leptos::html;
 use leptos::prelude::*;
 use serde_json::json;
 
-use super::{fail_flash, owns_touches, readiness, trace_move, trace_start, trace_touch};
+use super::{down_of, fail_flash, owns_touches, readiness, trace_move, trace_start, trace_touch};
 use crate::behave::pan::{self, PanCtl};
-use crate::behave::{TouchEnd, touch_end};
+use crate::behave::{Taken, TouchEnd, touch_end};
 use crate::binding::SubSpec;
 use crate::diag::trace::moves::{Axis, Press, Trail};
 use crate::dom;
@@ -73,6 +76,33 @@ pub fn PanView(state: RwSignal<Slot>, spec: SubSpec) -> impl IntoView {
             .flatten();
         let _ = shown_key.try_with_value(|k| trace_move(trail, k, pan::to_pos(panning), seq));
     };
+    // The end of a touch (`behave::touch_end`): the unsent move as a final
+    // `set`, or the release time of the write already sent (L4).
+    // The flight recorder hears the end of this pan's own touches.
+    let ended = move |end: Option<TouchEnd>, what: &str, id: i32| {
+        match end {
+            Some(TouchEnd::Send(v)) => send(v, true),
+            Some(TouchEnd::Released) => {
+                let _ = key.try_with_value(|k| store.release(k));
+            }
+            Some(TouchEnd::NotMine) | None => {}
+        }
+        if end.is_some_and(TouchEnd::ends_touch) {
+            let _ = key.try_with_value(|k| trace_touch(what, k, id));
+            let _ = trail.try_update_value(|t| t.end(id));
+        }
+    };
+    // A hidden page ends a touch the browser has not ended (#124), as a
+    // fader's: whatever `isPrimary` the next finger brings.
+    let hidden = window_event_listener_untyped("visibilitychange", move |_| {
+        if !dom::hidden() {
+            return;
+        }
+        if let Some(lost) = ctl.try_update_value(|c| c.hidden(dom::now())).flatten() {
+            ended(Some(lost.end), "lost", lost.pointer);
+        }
+    });
+    on_cleanup(move || hidden.remove());
     let on_down = move |ev: web_sys::PointerEvent| {
         let Some(at) = live() else {
             return;
@@ -86,12 +116,18 @@ pub fn PanView(state: RwSignal<Slot>, spec: SubSpec) -> impl IntoView {
         // drawn (`--dot`: the detail's dot is large).
         let dot = dom::child(&el, ".pan-dot").map_or(0.0, |d| d.get_bounding_client_rect().width());
         let travel = (f64::from(el.client_width()) - dot).max(1.0);
-        let id = ev.pointer_id();
+        let down = down_of(&ev);
+        let id = down.id;
         let x = f64::from(ev.client_x());
         let taken = ctl
-            .try_update_value(|c| c.press(id, x, travel, dom::now(), at))
+            .try_update_value(|c| c.press(down, x, travel, dom::now(), at))
             .flatten();
-        if let Some(start) = taken {
+        if let Some(Taken { start, lost }) = taken {
+            // A touch whose end the browser never delivered, ended by this
+            // primary down (#124): its end first, recorded as `lost`.
+            if let Some(lost) = lost {
+                ended(Some(lost.end), "lost", lost.pointer);
+            }
             let _ = el.set_pointer_capture(id);
             let press = Press {
                 at: dom::event_epoch(&ev),
@@ -115,22 +151,6 @@ pub fn PanView(state: RwSignal<Slot>, spec: SubSpec) -> impl IntoView {
         if let Some(pos) = moved {
             let at = dom::event_epoch(&ev);
             let _ = trail.try_update_value(|t| t.moved(id, at, x, pos));
-        }
-    };
-    // The end of a touch (`behave::touch_end`): the unsent move as a final
-    // `set`, or the release time of the write already sent (L4).
-    // The flight recorder hears the end of this pan's own touches.
-    let ended = move |end: Option<TouchEnd>, what: &str, id: i32| {
-        match end {
-            Some(TouchEnd::Send(v)) => send(v, true),
-            Some(TouchEnd::Released) => {
-                let _ = key.try_with_value(|k| store.release(k));
-            }
-            Some(TouchEnd::NotMine) | None => {}
-        }
-        if end.is_some_and(TouchEnd::ends_touch) {
-            let _ = key.try_with_value(|k| trace_touch(what, k, id));
-            let _ = trail.try_update_value(|t| t.end(id));
         }
     };
     let on_up = move |ev: web_sys::PointerEvent| {

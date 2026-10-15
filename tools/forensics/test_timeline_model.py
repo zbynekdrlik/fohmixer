@@ -118,6 +118,26 @@ class Helpers(unittest.TestCase):
         taps = [touch(1000, "tap"), touch(6000, "tap", pointer=2)]
         self.assertEqual(model.gestures(taps, VOX, 9000), [(1000, 2000.0), (6000, 7000.0)])
 
+    def test_a_lost_touch_ends_at_its_lost_record(self):
+        # #124: the page records `lost` for a touch whose end the browser
+        # never delivered, when a primary down ends it on its control. That
+        # record is the touch's lift: its span ends there (plus the tail),
+        # not at the window's end.
+        lost = [touch(1000, "down"), touch(4000, "lost")]
+        self.assertEqual(model.gestures(lost, VOX, 9000), [(1000, 5000.0)])
+        self.assertIs(model.lift_of(lost[1:], VOX, 1), lost[1])
+        # The next finger's down comes with it and cuts the tail there.
+        taken = [*lost, touch(4000, "down", pointer=2), touch(6000, "up", pointer=2)]
+        self.assertEqual(model.gestures(taken, VOX, 9000), [(1000, 4000), (4000, 7000.0)])
+        # Another pointer's or another control's `lost` ends nothing.
+        other = [
+            touch(1000, "down"),
+            touch(4000, "lost", pointer=2),
+            touch(4000, "lost", keys=(HAND,)),
+        ]
+        self.assertIsNone(model.lift_of(other[1:], VOX, 1))
+        self.assertEqual(model.gestures(other, VOX, 9000), [(1000, 9000)])
+
     def test_busy_episodes_merge_both_sources(self):
         changes = [
             (1500.4, "band", False),

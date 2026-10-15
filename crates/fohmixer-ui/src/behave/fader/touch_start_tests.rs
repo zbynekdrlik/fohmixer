@@ -25,7 +25,7 @@ fn assert_close(a: f64, b: f64) {
 /// travel of `travel` px, Live's value sitting at position `live`.
 fn touched(travel: f64, live: f64) -> FaderCtl {
     let mut f = FaderCtl::new(true, Some(to_pos(UNITY)));
-    assert!(f.down(1, 500.0, travel, 0.0, live));
+    assert!(f.down(1, true, 500.0, travel, 0.0, live));
     f
 }
 
@@ -86,7 +86,7 @@ fn each_touch_anchors_its_own_first_move() {
     assert_eq!(f.up(1, 120.0), None);
     // Within the hold: the next touch starts from the cap, and its first
     // move (15 px down) anchors again.
-    assert!(f.down(2, 300.0, IPAD, 300.0, 0.5));
+    assert!(f.down(2, true, 300.0, IPAD, 300.0, 0.5));
     assert!(f.moved(2, 315.0, 380.0));
     assert_eq!(f.frame(390.0, Some(0.5)).pos, Some(first));
     assert_eq!(f.frame(390.0, Some(0.5)).send, None);
@@ -105,10 +105,10 @@ fn another_pointers_move_is_not_the_touchs_first() {
 /// `px` px up: whether the second glides to 0 dB (what it sends 1 s later).
 fn two_taps_sliding(live: f64, px: f64) -> Option<f64> {
     let mut f = FaderCtl::new(false, Some(to_pos(UNITY)));
-    assert!(f.down(1, 500.0, IPAD, 0.0, live));
+    assert!(f.down(1, true, 500.0, IPAD, 0.0, live));
     assert!(f.moved(1, 500.0 - px, 30.0));
     assert_eq!(f.up(1, 60.0), None, "the anchor left nothing to send");
-    assert!(f.down(1, 500.0, IPAD, 160.0, live));
+    assert!(f.down(1, true, 500.0, IPAD, 160.0, live));
     assert!(f.moved(1, 500.0 - px, 190.0));
     assert_eq!(f.up(1, 220.0), None);
     f.frame(1_220.0, Some(live)).send
@@ -139,7 +139,7 @@ fn plain_fader() -> FaderCtl {
 /// sitting at position `live`: its moves are `(px up from the down, time)`.
 /// What the lift leaves to send.
 fn touch_of(f: &mut FaderCtl, live: f64, down: f64, moves: &[(f64, f64)], up: f64) -> Option<f64> {
-    assert!(f.down(1, 500.0, IPAD, down, live));
+    assert!(f.down(1, true, 500.0, IPAD, down, live));
     for &(px, at) in moves {
         assert!(f.moved(1, 500.0 - px, at));
     }
@@ -303,14 +303,14 @@ fn a_move_is_measured_as_the_finger_distance_on_touchoscs_strip() {
 fn a_fader_that_keeps_touchoscs_first_move_takes_it_whole() {
     // The imported parameter faders (shaping off): their first move moves.
     let mut f = FaderCtl::new(false, None).anchoring(false);
-    assert!(f.down(1, 500.0, IPAD, 0.0, 0.5));
+    assert!(f.down(1, true, 500.0, IPAD, 0.0, 0.5));
     assert!(f.moved(1, 490.0, 83.0));
     let frame = f.frame(90.0, Some(0.5));
     assert_close(frame.pos.unwrap(), 0.5 + 10.0 / IPAD);
     assert_close(frame.send.unwrap(), 0.5 + 10.0 / IPAD);
     // And anchoring on is the default's.
     let mut f = FaderCtl::new(false, None).anchoring(true);
-    assert!(f.down(1, 500.0, IPAD, 0.0, 0.5));
+    assert!(f.down(1, true, 500.0, IPAD, 0.0, 0.5));
     assert!(f.moved(1, 490.0, 83.0));
     assert_eq!(f.frame(90.0, Some(0.5)).send, None);
 }
