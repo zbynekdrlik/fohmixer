@@ -8,7 +8,9 @@
 //! - its down, up or cancel ([`eq_touch`]): the pointer, the picture point
 //!   under it (the editor's pixels, through the page's view) and the view's
 //!   zoom, whether the finger reached the editor or not (a pinch's fingers
-//!   too, and the whole picture's taps, which zoom);
+//!   too, and the whole picture's taps, which zoom); `lost` (#124) for a
+//!   finger whose end the browser never delivered, ended by the next
+//!   primary down of its type or by a hidden page;
 //! - its moves, summarized like a fader's `mv` ([`EqFingers::moved`]): how
 //!   many, the first and the last picture point and the time between them,
 //!   one `eq_mv` per [`RUN_MS`] of moving and one at its end, so a drag's
@@ -42,7 +44,7 @@ fn spans(first: f64, t: f64) -> bool {
     t - first >= RUN_MS
 }
 
-/// A finger's `what` (`down`, `up`, `cancel`) at page time `t`: its
+/// A finger's `what` (`down`, `up`, `cancel`, `lost`) at page time `t`: its
 /// pointer, its picture point `at` and the view's `zoom`.
 pub fn eq_touch(t: f64, what: &str, pointer: i32, at: (f64, f64), zoom: f64) -> Value {
     json!({
@@ -187,8 +189,8 @@ impl EqFingers {
         None
     }
 
-    /// `pointer`'s touch ended (`what`: `up`, `cancel`) at picture point
-    /// `at` (none: where it last was, a cancel's), the view at `zoom`: the
+    /// `pointer`'s touch ended (`what`: `up`, `cancel`, `lost`) at picture
+    /// point `at` (none: where it last was, a cancel's), the view at `zoom`: the
     /// summary of its moves not summarized yet, then its event. Nothing for
     /// a pointer not down (the capture a finger loses after its lift).
     pub fn end(
@@ -211,16 +213,18 @@ impl EqFingers {
         events
     }
 
-    /// The screen goes from under the fingers (it closes, the page hides):
-    /// each finger's moves, then its `cancel` at its last point.
-    pub fn leave(&mut self, t: f64, zoom: f64) -> Vec<Value> {
+    /// The screen goes from under the fingers (it closes: `what` is
+    /// `cancel`; the page hides: `lost`, #124, a hidden Home Screen app
+    /// keeps no touch going): each finger's moves, then its `what` at its
+    /// last point.
+    pub fn leave(&mut self, t: f64, what: &str, zoom: f64) -> Vec<Value> {
         let down = std::mem::take(&mut self.down);
         down.into_iter()
             .flat_map(|(pointer, held)| {
                 let summary = held.run.map(|run| run.summary(pointer));
                 summary
                     .into_iter()
-                    .chain([eq_touch(t, "cancel", pointer, held.last, zoom)])
+                    .chain([eq_touch(t, what, pointer, held.last, zoom)])
             })
             .collect()
     }
@@ -379,7 +383,7 @@ mod tests {
         fingers.down(10.0, 1, (50.0, 50.0), 1.0);
         fingers.moved(20.0, 1, (52.0, 51.0));
         assert_eq!(
-            fingers.leave(30.0, 1.5),
+            fingers.leave(30.0, "cancel", 1.5),
             vec![
                 json!({"ev": "eq_mv", "t": 20.0, "p": 1, "n": 1,
                        "a": [52.0, 51.0], "b": [52.0, 51.0], "ms": 0.0}),
@@ -387,7 +391,40 @@ mod tests {
                 eq_touch(30.0, "cancel", 2, (5.0, 5.0), 1.5),
             ]
         );
-        assert_eq!(fingers.leave(40.0, 1.0), Vec::<Value>::new(), "none left");
+        assert_eq!(
+            fingers.leave(40.0, "cancel", 1.0),
+            Vec::<Value>::new(),
+            "none left"
+        );
         assert_eq!(fingers.moved(50.0, 1, (1.0, 1.0)), None);
+    }
+
+    #[test]
+    fn a_finger_whose_end_never_came_is_lost_at_its_last_point() {
+        // #124: the next primary down of its type ends it (the glue's
+        // `end` with `lost`), or a hidden page ends every finger (`leave`
+        // with `lost`): its moves first, then `lost` where it last was.
+        let mut fingers = EqFingers::default();
+        fingers.down(0.0, 3, (5.0, 5.0), 3.0);
+        fingers.moved(10.0, 3, (6.0, 5.0));
+        assert_eq!(
+            fingers.end(900.0, "lost", 3, None, 3.0),
+            vec![
+                json!({"ev": "eq_mv", "t": 10.0, "p": 3, "n": 1,
+                       "a": [6.0, 5.0], "b": [6.0, 5.0], "ms": 0.0}),
+                json!({"ev": "eq_touch", "t": 900.0, "what": "lost", "p": 3,
+                       "x": 6.0, "y": 5.0, "z": 3.0}),
+            ]
+        );
+        assert_eq!(
+            fingers.end(950.0, "up", 3, Some((6.0, 5.0)), 3.0),
+            Vec::<Value>::new(),
+            "its own end, late, is nothing"
+        );
+        fingers.down(1_000.0, 4, (7.0, 8.0), 2.5);
+        assert_eq!(
+            fingers.leave(1_100.0, "lost", 2.5),
+            vec![eq_touch(1_100.0, "lost", 4, (7.0, 8.0), 2.5)]
+        );
     }
 }

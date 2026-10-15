@@ -2328,3 +2328,229 @@ test.describe("The Pro-Q 4 screen's ↶ VRÁTIŤ", () => {
     await editorOpen(trackPath, false);
   });
 });
+
+test.describe("The Pro-Q 4 screen and a finger whose end never came (#124)", () => {
+  // iOS can take a finger for a system gesture and deliver no pointerup,
+  // pointercancel or lostpointercapture for it (#124: a fader's touch with
+  // no end on 2026-10-15). A dispatched pointer is no active pointer, so
+  // its setPointerCapture fails and no capture is ever lost: the state of
+  // such a touch. The screen kept it among its fingers, and every later
+  // finger pinched with it. Now the next primary finger of its type, or a
+  // hide, ends it (its contact cancelled at the PC, `eq_touch` `lost`), and
+  // the new finger starts a gesture of its own.
+
+  /** One finger's pointer event (a touch, `primary` as a browser marks it) dispatched on the area at a page point. */
+  async function fingerEvent(area: Locator, type: string, at: At, id: number, primary: boolean) {
+    await area.evaluate(
+      (el, { type, at, id, primary }) => {
+        el.dispatchEvent(
+          new PointerEvent(type, { pointerId: id, pointerType: "touch", isPrimary: primary, clientX: at.x, clientY: at.y, bubbles: true, cancelable: true }),
+        );
+      },
+      { type, at, id, primary },
+    );
+  }
+
+  /**
+   * One finger's drag dispatched on the area (a touch, `primary` as a
+   * browser marks it): down at `from`, `DRAG_STEPS` moves to `to`, one an
+   * animation frame (the page sends at most one a frame), two frames, the
+   * up at `to`. Its first move passes the 6 px slop, so its down goes at
+   * once.
+   */
+  async function fingerDrag(area: Locator, from: At, to: At, id: number, primary: boolean) {
+    await area.evaluate(
+      async (el, { from, to, id, primary, steps }) => {
+        const frame = () => new Promise<void>((done) => requestAnimationFrame(() => done()));
+        const fire = (type: string, x: number, y: number) =>
+          el.dispatchEvent(
+            new PointerEvent(type, { pointerId: id, pointerType: "touch", isPrimary: primary, clientX: x, clientY: y, bubbles: true, cancelable: true }),
+          );
+        fire("pointerdown", from.x, from.y);
+        for (let i = 1; i <= steps; i++) {
+          await frame();
+          fire("pointermove", Math.round(from.x + ((to.x - from.x) * i) / steps), Math.round(from.y + ((to.y - from.y) * i) / steps));
+        }
+        await frame();
+        await frame();
+        fire("pointerup", to.x, to.y);
+      },
+      { from, to, id, primary, steps: DRAG_STEPS },
+    );
+  }
+
+  /** Hand2 #'s Pro-Q 4 on the track open and zoomed in on `FROM` (a finger edits): the screen, its area, the picture's map and the editor's path. */
+  async function openZoomed(page: Page) {
+    await openSurface(page);
+    const { onTrack, trackPath } = await hand2Cards(page);
+    await editorOpen(trackPath, false);
+    await onTrack.getByTestId("eq-open").click();
+    const screen = await openScreen(page, trackPath);
+    const map = await zoomIn(screen, FROM);
+    return { screen, area: screen.getByTestId("eq-area"), map, trackPath };
+  }
+
+  /** The exit: the editor closed with the guard and released, closed in Live. */
+  async function exitScreen(page: Page, screen: Locator, trackPath: string) {
+    const closing = (await simEq.records()).length;
+    await screen.getByTestId("eq-exit").click();
+    await expect(page.getByTestId("eq-screen")).toHaveCount(0);
+    await closedWithGuard(closing);
+    await editorOpen(trackPath, false);
+  }
+
+  /** The hub's records of the PC's contacts on `path` since `since` (`eq` `touch`: down, up, cancel; never a move), once `n` are in. */
+  async function contacts(path: string, since: number, n: number): Promise<string[]> {
+    const records = await until(
+      async () => (await hubEvents()).filter((r: any) => r.ev === "eq" && r.what === "touch" && r.path === path && r.ts >= since),
+      (all) => all.length >= n,
+      `the hub's ${n} contact records`,
+    );
+    return records.map((r: any) => r.why);
+  }
+
+  /** The page's `eq_touch` records since `since` as [what, pointer], once pointer `last`'s up is in (up to 15 s for the upload). */
+  async function fingerRecords(since: number, last: number): Promise<(string | number)[][]> {
+    const records = await until(
+      async () => pageEvents(await hubEvents()).filter((e: any) => e.ev === "eq_touch" && e.t >= since),
+      (all) => all.some((e: any) => e.what === "up" && e.p === last),
+      `the page's eq_touch up of ${last}`,
+      15_000,
+    );
+    return records.map((e: any) => [e.what, e.p]);
+  }
+
+  /** Whether the view stayed where `shown` was: no pinch zoomed or panned it. */
+  async function sameView(screen: Locator, shown: { left: number; top: number }) {
+    await expect(screen.getByTestId("eq-factor")).toHaveText("3,0×");
+    const now = await pictureMap(screen.getByTestId("eq-canvas"));
+    expect(Math.max(Math.abs(now.left - shown.left), Math.abs(now.top - shown.top)), "the view stayed: no pinch").toBeLessThan(0.5);
+  }
+
+  test("a finger whose end never came keeps no pinch going: the next first finger drags a band alone", async ({ page }) => {
+    const LOST = 901;
+    const SECOND = 902;
+    const NEXT = 903;
+    const { screen, area, map, trackPath } = await openZoomed(page);
+    const since = Date.now();
+    const start = await touchMark();
+    // A finger rests on the band; after its hold the PC's contact is down.
+    const lostAt = map.toPage(FROM);
+    await fingerEvent(area, "pointerdown", lostAt, LOST, true);
+    await touchesUntil(start, (all) => all.some((r) => r.phase === "down"), "the lost finger's contact");
+    // A second finger comes and goes (the system gesture's): the page
+    // pinches, so the contact is cancelled then. The first finger's end
+    // never comes, and it alone kept the screen pinching.
+    const other = { x: lostAt.x + 150, y: lostAt.y };
+    await fingerEvent(area, "pointerdown", other, SECOND, false);
+    await touchesUntil(start, (all) => all.some((r) => r.phase === "cancel"), "the pinch's cancel of the contact");
+    await fingerEvent(area, "pointerup", other, SECOND, false);
+    await frames(page, 2);
+    await expect(screen.getByTestId("eq-factor")).toHaveText("3,0×");
+    const shown = await pictureMap(screen.getByTestId("eq-canvas"));
+    await caughtUp(screen);
+    // The next first finger (primary: no other finger is down) drags a
+    // band: alone, so the editor gets its drag and the view stays.
+    const from = { x: lostAt.x - 100, y: lostAt.y + 60 };
+    const to = { x: from.x + 80, y: from.y - 40 };
+    const mark = await touchMark();
+    await fingerDrag(area, from, to, NEXT, true);
+    const drag = await touchesUntil(mark, (all) => all.some((r) => r.phase === "up"), "the next finger's drag at the editor");
+    wentFromTo(drag, shown.toPicture(from), shown.toPicture(to));
+    await sameView(screen, shown);
+    // The PC's contacts: the lost finger's down and cancel, the drag's down
+    // and up.
+    expect(await contacts(trackPath, since, 4)).toEqual(["down", "cancel", "down", "up"]);
+    // The page's record: the lost finger ended at the next finger's down.
+    expect(await fingerRecords(since, NEXT)).toEqual([
+      ["down", LOST],
+      ["down", SECOND],
+      ["up", SECOND],
+      ["lost", LOST],
+      ["down", NEXT],
+      ["up", NEXT],
+    ]);
+    await exitScreen(page, screen, trackPath);
+  });
+
+  test("a finger whose end never came on the editor: the next first finger ends its contact and pinches nothing; once the picture shows that cancel a finger drags a band alone", async ({ page }) => {
+    const LOST = 911;
+    const NEXT = 912;
+    const AFTER = 913;
+    const { screen, area, map, trackPath } = await openZoomed(page);
+    const since = Date.now();
+    const start = await touchMark();
+    const lostAt = map.toPage(FROM);
+    await fingerEvent(area, "pointerdown", lostAt, LOST, true);
+    await touchesUntil(start, (all) => all.some((r) => r.phase === "down"), "the lost finger's contact");
+    const shown = await pictureMap(screen.getByTestId("eq-canvas"));
+    // The next first finger ends the lost one: its contact is cancelled at
+    // its point, so no band stays grabbed. This finger landed on a picture
+    // that cannot show that cancel yet, so the page refuses it (#71 PR J:
+    // an old picture never acts; the hub would drop its down): it reaches
+    // nothing, and it pinches nothing either.
+    const from = { x: lostAt.x - 100, y: lostAt.y + 60 };
+    const to = { x: from.x + 80, y: from.y - 40 };
+    await fingerDrag(area, from, to, NEXT, true);
+    const ended = await touchesUntil(start, (all) => all.some((r) => r.phase === "cancel"), "the lost contact's cancel");
+    expect(ended[0].phase).toBe("down");
+    const cancel = ended[ended.length - 1];
+    expect(near(cancel, map.toPicture(lostAt)), `the cancel ${JSON.stringify(cancel)} at ${JSON.stringify(map.toPicture(lostAt))}`).toBe(true);
+    await sameView(screen, shown);
+    await page.waitForTimeout(300);
+    const settled = await touchesAfter(start);
+    expect(settled[settled.length - 1].phase, `nothing after the cancel: ${JSON.stringify(settled)}`).toBe("cancel");
+    // The finger after it drags a band, alone.
+    await caughtUp(screen);
+    const mark = await touchMark();
+    await fingerDrag(area, from, to, AFTER, true);
+    const drag = await touchesUntil(mark, (all) => all.some((r) => r.phase === "up"), "the next finger's drag at the editor");
+    wentFromTo(drag, shown.toPicture(from), shown.toPicture(to));
+    await sameView(screen, shown);
+    expect(await contacts(trackPath, since, 4)).toEqual(["down", "cancel", "down", "up"]);
+    expect(await fingerRecords(since, AFTER)).toEqual([
+      ["down", LOST],
+      ["lost", LOST],
+      ["down", NEXT],
+      ["stale", NEXT],
+      ["up", NEXT],
+      ["down", AFTER],
+      ["up", AFTER],
+    ]);
+    await exitScreen(page, screen, trackPath);
+  });
+
+  test("a hide ends a finger whose end never came, recorded lost: the next finger drags a band alone, primary or not", async ({ page }) => {
+    const LOST = 921;
+    const NEXT = 922;
+    const { screen, area, map, trackPath } = await openZoomed(page);
+    const since = Date.now();
+    const start = await touchMark();
+    const lostAt = map.toPage(FROM);
+    await fingerEvent(area, "pointerdown", lostAt, LOST, true);
+    await touchesUntil(start, (all) => all.some((r) => r.phase === "down"), "the lost finger's contact");
+    const shown = await pictureMap(screen.getByTestId("eq-canvas"));
+    // A hidden Home Screen app keeps no touch going.
+    await setHidden(page, true);
+    await touchesUntil(start, (all) => all.some((r) => r.phase === "cancel"), "the hidden page's cancel", 1_500);
+    await setHidden(page, false);
+    await caughtUp(screen);
+    // Not primary (the browser might still count the lost finger): the
+    // hide freed the screen anyway.
+    const from = { x: lostAt.x - 100, y: lostAt.y + 60 };
+    const to = { x: from.x + 80, y: from.y - 40 };
+    const mark = await touchMark();
+    await fingerDrag(area, from, to, NEXT, false);
+    const drag = await touchesUntil(mark, (all) => all.some((r) => r.phase === "up"), "the next finger's drag at the editor");
+    wentFromTo(drag, shown.toPicture(from), shown.toPicture(to));
+    await sameView(screen, shown);
+    expect(await contacts(trackPath, since, 4)).toEqual(["down", "cancel", "down", "up"]);
+    expect(await fingerRecords(since, NEXT)).toEqual([
+      ["down", LOST],
+      ["lost", LOST],
+      ["down", NEXT],
+      ["up", NEXT],
+    ]);
+    await exitScreen(page, screen, trackPath);
+  });
+});

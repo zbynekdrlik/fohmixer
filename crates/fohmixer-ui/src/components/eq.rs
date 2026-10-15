@@ -59,7 +59,7 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 
 use super::buttons::colour_style;
-use super::{owns_touches, trace_detail};
+use super::{down_of, owns_touches, trace_detail};
 use crate::behave::eq::{
     AreaWatch, CardLock, Finger, ListLink, Look, Out, Point, STALE_TEXT, Spot, Viewer, can_open,
     card_lock, failure_text, hh_mm, in_use_text, list_text, lists_now, lock_refusal, locked,
@@ -687,11 +687,11 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
             crate::diag::record(event);
         }
     };
-    // Every finger goes: each one's moves and its cancel where it was.
-    let fingers_leave = move || {
+    // Every finger goes: each one's moves and its `what` where it was.
+    let fingers_leave = move |what: &str| {
         record(
             fingers
-                .try_update_value(|f| f.leave(dom::epoch_now(), zoom_now()))
+                .try_update_value(|f| f.leave(dom::epoch_now(), what, zoom_now()))
                 .unwrap_or_default(),
         );
     };
@@ -761,7 +761,7 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
         );
         note_takes();
         if hidden {
-            fingers_leave();
+            fingers_leave("cancel");
         }
     });
     // A turned or resized screen: the area's box again (the frame loop
@@ -780,7 +780,7 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
             watcher.disconnect();
         }
         send(finger.try_update_value(Finger::leave).unwrap_or_default());
-        fingers_leave();
+        fingers_leave("cancel");
         if let Some(Some(event)) = lat.try_update_value(|l| l.leave(dom::epoch_now())) {
             crate::diag::record(&event);
         }
@@ -866,7 +866,8 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
         let Some((at, picture)) = point_of(&ev) else {
             return;
         };
-        let id = ev.pointer_id();
+        let by = down_of(&ev);
+        let id = by.id;
         let now = dom::now();
         // The finger's own time (the PR I review: the handler's time shifts
         // with a long frame).
@@ -904,7 +905,7 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
         }
         let lands = if stale { Spot::Off } else { lands };
         let out = finger
-            .try_update_value(|f| f.down(id, at, lands, now))
+            .try_update_value(|f| f.down(by, at, lands, now))
             .unwrap_or_default();
         if finger.try_with_value(|f| f.has(id)).unwrap_or(false) {
             let _ = area.set_pointer_capture(id);
