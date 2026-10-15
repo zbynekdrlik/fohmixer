@@ -1,4 +1,5 @@
 use super::*;
+use crate::behave::{Lost, TouchEnd};
 
 fn close(a: f64, b: f64) -> bool {
     (a - b).abs() < 1e-12
@@ -449,7 +450,7 @@ fn zero_db() -> Option<f64> {
 /// Live's value sitting at position `live`.
 fn touched(live: f64) -> FaderCtl {
     let mut f = FaderCtl::new(false, zero_db());
-    assert!(f.down(1, 500.0, TRAVEL, 0.0, live));
+    assert!(f.down(1, true, 500.0, TRAVEL, 0.0, live));
     f
 }
 
@@ -488,7 +489,7 @@ fn a_fader_moves_with_its_finger_and_sends_once_per_frame() {
 fn a_touched_fader_shows_the_finger_then_live_after_the_hold() {
     // Spec I4: while touched, Live's echo is not shown.
     let mut f = FaderCtl::new(true, zero_db());
-    assert!(f.down(1, 500.0, TRAVEL, 0.0, 0.25));
+    assert!(f.down(1, true, 500.0, TRAVEL, 0.0, 0.25));
     anchor(&mut f, 1, 500.0, 5.0);
     assert!(f.moved(1, 450.0, 10.0));
     let finger = f.frame(16.0, Some(0.1)).pos.unwrap();
@@ -526,7 +527,7 @@ fn the_release_sends_what_no_frame_sent() {
 #[test]
 fn a_second_pointer_does_not_move_a_held_fader() {
     let mut f = touched(0.5);
-    assert!(!f.down(2, 100.0, TRAVEL, 5.0, 0.5));
+    assert!(!f.down(2, false, 100.0, TRAVEL, 5.0, 0.5));
     assert!(!f.moved(2, 50.0, 10.0));
     assert_eq!(f.up(2, 20.0), None);
     assert_eq!(f.cancel(2, 20.0), None);
@@ -537,16 +538,100 @@ fn a_second_pointer_does_not_move_a_held_fader() {
     assert_close(f.frame(50.0, Some(0.5)).pos.unwrap(), 0.6);
     // Once released, another pointer may take it.
     f.up(1, 60.0);
-    assert!(f.down(2, 100.0, TRAVEL, 70.0, 0.5));
+    assert!(f.down(2, true, 100.0, TRAVEL, 70.0, 0.5));
+}
+
+#[test]
+fn a_second_finger_takes_a_free_fader() {
+    // Another finger is down on another control: this one's down is not
+    // primary, and the fader is free, so it takes it.
+    let mut f = FaderCtl::new(false, zero_db());
+    let taken = f.press(2, false, 500.0, TRAVEL, 0.0, 0.5);
+    assert_eq!(taken.map(|t| t.lost), Some(None), "it ends no touch");
+    assert!(f.drives(2));
+}
+
+#[test]
+fn a_primary_down_ends_a_touch_whose_end_never_came() {
+    // #124: iOS took pointer 1 for a system gesture and delivered no up,
+    // no cancel and no lost capture. A second finger is still refused; a
+    // primary down means no other finger is down, so pointer 1 was lost.
+    let mut f = touched(0.5);
+    anchor(&mut f, 1, 500.0, 5.0);
+    assert!(f.moved(1, 490.0, 10.0));
+    assert_close(f.frame(16.0, Some(0.5)).send.unwrap(), 0.6);
+    assert_eq!(
+        f.press(2, false, 300.0, TRAVEL, 20.0, 0.6),
+        None,
+        "a second finger"
+    );
+    assert!(f.drives(1));
+    // Pointer 1's touch ends as a cancel (no tap; the frame sent its move,
+    // so its write is released) and pointer 2 drives the fader from the cap.
+    let Taken { start, lost } = f
+        .press(2, true, 300.0, TRAVEL, 5_000.0, 0.6)
+        .expect("a primary down takes the fader");
+    assert_eq!(
+        lost,
+        Some(Lost {
+            pointer: 1,
+            end: TouchEnd::Released,
+        })
+    );
+    assert!(start.local, "the cap, as the lost touch left it");
+    assert_close(start.from, 0.6);
+    assert_close(start.shown, 0.6);
+    assert!(f.drives(2) && !f.drives(1));
+    assert!(f.held());
+    // Pointer 1's late events are no longer its touch.
+    assert!(!f.moved(1, 400.0, 5_010.0));
+    assert_eq!(f.up(1, 5_020.0), None);
+    assert_eq!(f.cancel(1, 5_020.0), None);
+    assert!(f.drives(2));
+    anchor(&mut f, 2, 300.0, 5_030.0);
+    assert!(f.moved(2, 290.0, 5_040.0));
+    assert_close(f.frame(5_050.0, Some(0.6)).send.unwrap(), 0.7);
+    assert_eq!(f.up(2, 5_060.0), None);
+    assert!(!f.held());
+}
+
+#[test]
+fn a_lost_touchs_unsent_move_goes_as_its_end() {
+    let mut f = touched(0.5);
+    anchor(&mut f, 1, 500.0, 5.0);
+    assert!(f.moved(1, 490.0, 10.0));
+    // No frame sent the move before the next finger came.
+    let lost = f
+        .press(2, true, 300.0, TRAVEL, 12.0, 0.5)
+        .and_then(|t| t.lost)
+        .expect("pointer 1 lost");
+    assert_eq!(lost.pointer, 1);
+    let TouchEnd::Send(p) = lost.end else {
+        panic!("its unsent move, got {:?}", lost.end);
+    };
+    assert_close(p, 0.6);
+    assert_eq!(f.frame(16.0, Some(0.5)).send, None, "sent once, as its end");
+}
+
+#[test]
+fn a_lost_touch_is_no_tap() {
+    // Pointer 1 went down and its end never came; pointer 2's quick tap
+    // 100 ms later is a first tap. Were the lost touch a tap, the two would
+    // be a double tap and glide the fader to 0 dB.
+    let mut f = touched(0.5);
+    assert!(f.down(2, true, 500.0, TRAVEL, 100.0, 0.5));
+    assert_eq!(f.up(2, 200.0), None);
+    assert!(!f.held(), "no glide");
+    assert_eq!(f.frame(1_300.0, Some(0.5)).send, None);
 }
 
 #[test]
 fn a_double_tap_glides_to_0_db_sending_each_frame() {
     let mut f = FaderCtl::new(false, zero_db());
     let live = 0.25;
-    assert!(f.down(1, 500.0, TRAVEL, 0.0, live));
+    assert!(f.down(1, true, 500.0, TRAVEL, 0.0, live));
     assert_eq!(f.up(1, 20.0), None);
-    assert!(f.down(1, 500.0, TRAVEL, 60.0, live));
+    assert!(f.down(1, true, 500.0, TRAVEL, 60.0, live));
     assert_eq!(f.up(1, 80.0), None);
     let frame = f.frame(1080.0, Some(live));
     assert_close(frame.pos.unwrap(), live + 0.3);
@@ -567,9 +652,9 @@ fn a_double_tap_glides_to_0_db_sending_each_frame() {
 fn a_glide_stops_where_it_is_when_lives_value_goes() {
     let mut f = FaderCtl::new(false, zero_db());
     let live = 0.25;
-    assert!(f.down(1, 500.0, TRAVEL, 0.0, live));
+    assert!(f.down(1, true, 500.0, TRAVEL, 0.0, live));
     assert_eq!(f.up(1, 20.0), None);
-    assert!(f.down(1, 500.0, TRAVEL, 60.0, live));
+    assert!(f.down(1, true, 500.0, TRAVEL, 60.0, live));
     assert_eq!(f.up(1, 80.0), None);
     let gliding = f.frame(1080.0, Some(live));
     assert_close(gliding.send.unwrap(), live + 0.3);
@@ -588,9 +673,9 @@ fn a_glide_stops_where_it_is_when_lives_value_goes() {
 #[test]
 fn without_a_glide_target_a_double_tap_does_nothing() {
     let mut f = FaderCtl::new(false, None);
-    f.down(1, 500.0, TRAVEL, 0.0, 0.25);
+    f.down(1, true, 500.0, TRAVEL, 0.0, 0.25);
     f.up(1, 20.0);
-    f.down(1, 500.0, TRAVEL, 60.0, 0.25);
+    f.down(1, true, 500.0, TRAVEL, 60.0, 0.25);
     f.up(1, 80.0);
     assert_eq!(f.frame(1080.0, Some(0.25)).send, None);
     assert_eq!(f.frame(1080.0, Some(0.25)).pos, Some(0.25));
@@ -599,22 +684,22 @@ fn without_a_glide_target_a_double_tap_does_nothing() {
 #[test]
 fn a_touch_stops_the_glide_where_it_is_and_a_cancel_never_taps() {
     let mut f = FaderCtl::new(false, zero_db());
-    f.down(1, 500.0, TRAVEL, 0.0, 0.0);
+    f.down(1, true, 500.0, TRAVEL, 0.0, 0.0);
     f.up(1, 10.0);
-    f.down(1, 500.0, TRAVEL, 70.0, 0.0);
+    f.down(1, true, 500.0, TRAVEL, 70.0, 0.0);
     f.up(1, 80.0);
     let gliding = f.frame(580.0, Some(0.0)).pos.unwrap();
     assert_close(gliding, 0.15);
-    assert!(f.down(3, 200.0, TRAVEL, 590.0, 0.0));
+    assert!(f.down(3, true, 200.0, TRAVEL, 590.0, 0.0));
     assert_eq!(f.frame(600.0, Some(0.0)).pos, Some(gliding), "no jump");
     anchor(&mut f, 3, 200.0, 605.0);
     assert!(f.moved(3, 190.0, 610.0));
     assert_close(f.frame(620.0, Some(0.0)).pos.unwrap(), gliding + 0.1);
     // Two cancelled taps start no glide.
     let mut f = FaderCtl::new(false, zero_db());
-    f.down(1, 500.0, TRAVEL, 0.0, 0.5);
+    f.down(1, true, 500.0, TRAVEL, 0.0, 0.5);
     f.cancel(1, 10.0);
-    f.down(1, 500.0, TRAVEL, 70.0, 0.5);
+    f.down(1, true, 500.0, TRAVEL, 70.0, 0.5);
     f.cancel(1, 80.0);
     assert_eq!(f.frame(1000.0, Some(0.5)).send, None);
 }
@@ -627,11 +712,11 @@ fn a_touch_during_the_hold_starts_from_the_shown_position() {
     f.up(1, 20.0);
     let shown = f.frame(30.0, Some(0.1)).pos.unwrap();
     assert_eq!(shown, 1.0);
-    assert!(f.down(1, 500.0, TRAVEL, 50.0, 0.1));
+    assert!(f.down(1, true, 500.0, TRAVEL, 50.0, 0.1));
     assert_eq!(f.frame(60.0, Some(0.1)).pos, Some(shown));
     // After the hold, a touch starts from Live's value.
     f.up(1, 70.0);
-    assert!(f.down(1, 500.0, TRAVEL, 500.0, 0.1));
+    assert!(f.down(1, true, 500.0, TRAVEL, 500.0, 0.1));
     assert_eq!(f.frame(510.0, Some(0.2)).pos, Some(0.1));
 }
 
@@ -651,7 +736,7 @@ fn without_a_value_from_live_nothing_is_shown() {
 #[test]
 fn a_zero_travel_counts_as_one_pixel() {
     let mut f = FaderCtl::new(false, None);
-    f.down(1, 10.0, 0.0, 0.0, 0.0);
+    f.down(1, true, 10.0, 0.0, 0.0, 0.0);
     anchor(&mut f, 1, 10.0, 0.5);
     f.moved(1, 9.9, 1.0);
     assert_close(f.frame(2.0, None).pos.unwrap(), 0.1);
@@ -686,7 +771,7 @@ fn while_its_write_is_open_the_fader_shows_its_own_position_not_lives() {
     assert_eq!(f.frame(7_001.0, Some(0.3)).pos, Some(0.3));
     // With shaping, the hold after the close is a second.
     let mut f = FaderCtl::new(true, zero_db());
-    assert!(f.down(1, 500.0, TRAVEL, 0.0, 0.25));
+    assert!(f.down(1, true, 500.0, TRAVEL, 0.0, 0.25));
     f.intent(true, 1.0);
     f.up(1, 10.0);
     f.intent(false, 3_000.0);
@@ -703,7 +788,7 @@ fn a_touch_while_its_write_is_open_starts_from_the_cap() {
     f.up(1, 20.0);
     // Its release was not sent (L4): long after the hold the cap stays.
     f.intent(true, 30.0);
-    assert!(f.down(1, 500.0, TRAVEL, 5_000.0, 0.25));
+    assert!(f.down(1, true, 500.0, TRAVEL, 5_000.0, 0.25));
     assert_eq!(f.frame(5_001.0, Some(0.25)).pos, Some(cap));
     anchor(&mut f, 1, 500.0, 5_005.0);
     f.moved(1, 490.0, 5_010.0);
@@ -715,9 +800,9 @@ fn the_end_of_a_glide_is_told_once() {
     let live = 0.25;
     let double_tapped = || {
         let mut f = FaderCtl::new(false, zero_db());
-        f.down(1, 500.0, TRAVEL, 0.0, live);
+        f.down(1, true, 500.0, TRAVEL, 0.0, live);
         f.up(1, 20.0);
-        f.down(1, 500.0, TRAVEL, 60.0, live);
+        f.down(1, true, 500.0, TRAVEL, 60.0, live);
         f.up(1, 80.0);
         f
     };
@@ -739,7 +824,7 @@ fn the_end_of_a_glide_is_told_once() {
     // Stopped by a touch: the touch's own release tells.
     let mut f = double_tapped();
     f.frame(1080.0, Some(live));
-    assert!(f.down(2, 300.0, TRAVEL, 1090.0, live));
+    assert!(f.down(2, true, 300.0, TRAVEL, 1090.0, live));
     f.frame(1100.0, Some(live));
     assert!(!f.take_ended());
 }
@@ -748,13 +833,13 @@ fn the_end_of_a_glide_is_told_once() {
 fn the_fader_says_which_pointer_drives_it() {
     let mut f = FaderCtl::new(false, None);
     assert!(!f.drives(1), "untouched");
-    assert!(f.down(1, 500.0, TRAVEL, 0.0, 0.5));
+    assert!(f.down(1, true, 500.0, TRAVEL, 0.0, 0.5));
     assert!(f.drives(1) && !f.drives(2));
     assert_eq!(f.up(2, 5.0), None);
     assert!(f.drives(1), "another pointer's release is not its");
     assert_eq!(f.up(1, 10.0), None, "nothing unsent");
     assert!(!f.drives(1), "released");
-    assert!(f.down(3, 500.0, TRAVEL, 500.0, 0.5));
+    assert!(f.down(3, true, 500.0, TRAVEL, 500.0, 0.5));
     f.cancel(3, 510.0);
     assert!(!f.drives(3), "cancelled");
 }
@@ -766,7 +851,7 @@ fn a_fader_built_while_its_write_is_open_shows_the_write_and_a_touch_starts_ther
     f.intent(true, 0.0);
     f.write_at(0.7);
     assert_eq!(f.frame(1.0, Some(0.25)).pos, Some(0.7), "the write, not 0");
-    assert!(f.down(1, 500.0, TRAVEL, 10.0, 0.25));
+    assert!(f.down(1, true, 500.0, TRAVEL, 10.0, 0.25));
     // Under a finger the fader follows the finger, not the write.
     f.write_at(0.2);
     assert_eq!(f.frame(11.0, Some(0.25)).pos, Some(0.7));
@@ -776,9 +861,9 @@ fn a_fader_built_while_its_write_is_open_shows_the_write_and_a_touch_starts_ther
     f.up(1, 40.0);
     // Gliding, the glide drives it.
     let mut f = FaderCtl::new(false, zero_db());
-    f.down(1, 500.0, TRAVEL, 0.0, 0.25);
+    f.down(1, true, 500.0, TRAVEL, 0.0, 0.25);
     f.up(1, 20.0);
-    f.down(1, 500.0, TRAVEL, 60.0, 0.25);
+    f.down(1, true, 500.0, TRAVEL, 60.0, 0.25);
     f.up(1, 80.0);
     f.write_at(0.9);
     assert_close(f.frame(1080.0, Some(0.25)).pos.unwrap(), 0.55);
@@ -789,21 +874,24 @@ fn a_press_says_where_the_touch_started() {
     let mut f = FaderCtl::new(false, zero_db());
     let _ = f.frame(0.0, Some(0.25));
     // Not local: the touch starts from Live's position, whatever the fader
-    // showed.
+    // showed. A press on a free fader ends no other touch.
     let start = |shown, live, local, from| {
-        Some(Start {
-            shown,
-            live,
-            local,
-            from,
+        Some(Taken {
+            start: Start {
+                shown,
+                live,
+                local,
+                from,
+            },
+            lost: None,
         })
     };
     assert_eq!(
-        f.press(1, 500.0, TRAVEL, 10.0, 0.5),
+        f.press(1, true, 500.0, TRAVEL, 10.0, 0.5),
         start(0.25, 0.5, false, 0.5)
     );
     assert_eq!(
-        f.press(2, 400.0, TRAVEL, 11.0, 0.5),
+        f.press(2, false, 400.0, TRAVEL, 11.0, 0.5),
         None,
         "another pointer"
     );
@@ -813,14 +901,14 @@ fn a_press_says_where_the_touch_started() {
     assert_eq!(f.up(1, 20.0), None);
     // Within the hold the touch starts from the fader's own position.
     assert_eq!(
-        f.press(1, 500.0, TRAVEL, 119.0, 0.5),
+        f.press(1, true, 500.0, TRAVEL, 119.0, 0.5),
         start(0.625, 0.5, true, 0.625)
     );
     assert_eq!(f.cancel(1, 130.0), None);
     // After the hold, from Live's again.
     let _ = f.frame(231.0, Some(0.375));
     assert_eq!(
-        f.press(1, 500.0, TRAVEL, 232.0, 0.25),
+        f.press(1, true, 500.0, TRAVEL, 232.0, 0.25),
         start(0.375, 0.25, false, 0.25)
     );
     assert_eq!(f.cancel(1, 240.0), None);
@@ -828,7 +916,7 @@ fn a_press_says_where_the_touch_started() {
     let _ = f.frame(400.0, Some(0.25));
     f.intent(true, 401.0);
     assert_eq!(
-        f.press(1, 500.0, TRAVEL, 402.0, 0.75),
+        f.press(1, true, 500.0, TRAVEL, 402.0, 0.75),
         start(0.25, 0.75, true, 0.25)
     );
 }
@@ -873,7 +961,7 @@ fn on_lives_law_the_forced_first_step_is_one_tenth_db_of_lives_value() {
     );
     // The fader passes its law to its shaping.
     let mut f = FaderCtl::new(true, None).law(VolumeLaw::Live);
-    assert!(f.down(1, 500.0, REFERENCE_TRAVEL, 0.0, 0.6));
+    assert!(f.down(1, true, 500.0, REFERENCE_TRAVEL, 0.0, 0.6));
     anchor(&mut f, 1, 500.0, 1.0);
     assert!(f.moved(1, 500.0 - REFERENCE_TRAVEL * 0.001, 2.0));
     assert_eq!(f.pos(), 0.602508544921875);
@@ -883,11 +971,11 @@ fn on_lives_law_the_forced_first_step_is_one_tenth_db_of_lives_value() {
 fn a_fader_is_held_while_a_finger_or_its_glide_drives_it() {
     let mut f = FaderCtl::new(false, zero_db());
     assert!(!f.held());
-    assert!(f.down(1, 500.0, TRAVEL, 0.0, 0.25));
+    assert!(f.down(1, true, 500.0, TRAVEL, 0.0, 0.25));
     assert!(f.held(), "a finger");
     assert_eq!(f.up(1, 20.0), None);
     assert!(!f.held(), "lifted");
-    assert!(f.down(1, 500.0, TRAVEL, 60.0, 0.25));
+    assert!(f.down(1, true, 500.0, TRAVEL, 60.0, 0.25));
     assert_eq!(f.up(1, 80.0), None);
     assert!(f.held(), "the double tap's glide");
     let arrive = 80.0 + (to_pos(UNITY) - 0.25) / GLIDE_SPEED * 1000.0 + 1.0;
@@ -971,9 +1059,9 @@ fn a_double_tap_glide_stretched_carries_the_cap_and_says_how_far_it_has_come() {
             send: None
         }
     );
-    assert!(f.down(1, 500.0, TRAVEL, 0.0, 0.55));
+    assert!(f.down(1, true, 500.0, TRAVEL, 0.0, 0.55));
     assert_eq!(f.up(1, 20.0), None);
-    assert!(f.down(1, 500.0, TRAVEL, 60.0, 0.55));
+    assert!(f.down(1, true, 500.0, TRAVEL, 60.0, 0.55));
     assert_eq!(f.up(1, 80.0), None);
     assert_eq!(f.glide_progress(80.0), Some(0.0));
     // Stretched over 0.6 (its furthest track's way): 2 s, not 1 s.
@@ -1001,9 +1089,9 @@ fn a_dropped_double_tap_glide_sends_nothing_and_the_fader_holds() {
     // #58: the backing-tracks fader drops the glide when a target has no
     // value to glide from. Live's law, the cap at 0.55.
     let mut f = FaderCtl::new(false, Some(0.85));
-    assert!(f.down(1, 500.0, TRAVEL, 0.0, 0.55));
+    assert!(f.down(1, true, 500.0, TRAVEL, 0.0, 0.55));
     assert_eq!(f.up(1, 20.0), None);
-    assert!(f.down(1, 500.0, TRAVEL, 60.0, 0.55));
+    assert!(f.down(1, true, 500.0, TRAVEL, 60.0, 0.55));
     assert_eq!(f.up(1, 80.0), None);
     assert!(f.held(), "the double tap started its glide");
     f.drop_glide();

@@ -441,20 +441,24 @@ export async function centre(control: Locator): Promise<{ x: number; y: number }
   return { x: Math.round(box.x + box.width / 2), y: Math.round(box.y + box.height / 2) };
 }
 
-/** One step of `dispatchPointer`: a pointer event `dy` px above the control's centre, or a wait. */
+/**
+ * One step of `dispatchPointer`: a pointer event `dy` px above the control's
+ * centre and `dx` px right of it (a pan's drag, #124), or a wait.
+ */
 export type PointerStep =
-  | { type: "pointerdown" | "pointermove" | "pointerup" | "pointercancel"; dy?: number }
+  | { type: "pointerdown" | "pointermove" | "pointerup" | "pointercancel"; dx?: number; dy?: number }
   | { wait: number };
 
 /**
  * Pointer events of one finger (a touch, `pointerId`) dispatched on `control`
- * inside the page, at its centre or `dy` px above it, with the waits timed in
- * the page: exact timing in both engines (one real click takes ~160 ms in
- * WebKit on the CI runner), and a finger that can stay down while the real
- * mouse does something else. The page clock (`performance.now()`) after the
- * last step. `primary`: the finger is the first one down (`isPrimary`, as a
- * browser marks a touch while no other is down); a second finger passes
- * false (a dispatched event's own default is false).
+ * inside the page, at its centre or `dy` px above it (and `dx` right of it),
+ * with the waits timed in the page: exact timing in both engines (one real
+ * click takes ~160 ms in WebKit on the CI runner), and a finger that can stay
+ * down while the real mouse does something else. The page clock
+ * (`performance.now()`) after the last step. `primary`: the finger is the
+ * first one down (`isPrimary`, as a browser marks a touch while no other is
+ * down); a second finger passes false (a dispatched event's own default is
+ * false).
  */
 export async function dispatchPointer(control: Locator, steps: PointerStep[], pointerId = 21, primary = true): Promise<number> {
   const { x, y } = await centre(control);
@@ -470,7 +474,7 @@ export async function dispatchPointer(control: Locator, steps: PointerStep[], po
             pointerId: id,
             pointerType: "touch",
             isPrimary,
-            clientX,
+            clientX: clientX + (step.dx ?? 0),
             clientY: clientY - (step.dy ?? 0),
             bubbles: true,
             cancelable: true,

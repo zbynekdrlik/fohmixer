@@ -38,7 +38,7 @@ use super::{
 };
 use crate::behave::fader::{self as curve, FaderCtl, UNITY, VolumeLaw};
 use crate::behave::vca::{self, Drag, Home};
-use crate::behave::{TouchEnd, touch_end};
+use crate::behave::{Taken, TouchEnd, touch_end};
 use crate::binding::SubSpec;
 use crate::diag::trace::moves::{Axis, Press, Trail};
 use crate::dom;
@@ -359,11 +359,12 @@ pub fn FaderView(
         ev.prevent_default();
         let travel = el.get_bounding_client_rect().height().max(1.0);
         let id = ev.pointer_id();
+        let primary = ev.is_primary();
         let y = f64::from(ev.client_y());
         let taken = ctl
-            .try_update_value(|c| c.press(id, y, travel, dom::now(), at))
+            .try_update_value(|c| c.press(id, primary, y, travel, dom::now(), at))
             .flatten();
-        if let Some(start) = taken {
+        if let Some(Taken { start, .. }) = taken {
             let _ = drag.try_set_value(begun);
             let _ = el.set_pointer_capture(id);
             let press = Press {

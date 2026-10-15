@@ -54,6 +54,26 @@ pub struct Start {
     pub from: f64,
 }
 
+/// A press a continuous control (fader, pan) took: where its touch started
+/// and, when the press ended another pointer's touch, that touch (#124).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Taken {
+    pub start: Start,
+    pub lost: Option<Lost>,
+}
+
+/// A touch whose end the browser never delivered (#124: iOS took the finger
+/// for a system gesture and sent no `pointerup`, `pointercancel` or
+/// `lostpointercapture`), ended by a primary pointer's down on its control:
+/// its pointer and its end, a cancel's (no tap; `touch_end`: the move it
+/// left unsent as a final `set`, else its write released). The flight
+/// recorder's touch `lost`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Lost {
+    pub pointer: i32,
+    pub end: TouchEnd,
+}
+
 /// What the end of a pointer's touch means for a continuous control's write
 /// (#43, L4).
 #[derive(Debug, Clone, Copy, PartialEq)]

@@ -16,7 +16,7 @@
 
 use fohmixer_proto::layout::FaderLaw;
 
-use super::{Motion, Start};
+use super::{Motion, Start, Taken};
 
 /// TouchOSC's position ↔ Live volume exponent: `v = p^0.515` (−6 dB at
 /// half travel).
@@ -649,17 +649,33 @@ impl FaderCtl {
     }
 
     /// Pointer `id` pressed at `y` (px) on a fader `travel` px long, while
-    /// Live's value sits at position `live`: whether this pointer now drives
-    /// the fader.
-    pub fn down(&mut self, id: i32, y: f64, travel: f64, now: f64, live: f64) -> bool {
-        self.press(id, y, travel, now, live).is_some()
+    /// Live's value sits at position `live` (`primary`: the browser's
+    /// `isPrimary`): whether this pointer now drives the fader.
+    pub fn down(
+        &mut self,
+        id: i32,
+        primary: bool,
+        y: f64,
+        travel: f64,
+        now: f64,
+        live: f64,
+    ) -> bool {
+        self.press(id, primary, y, travel, now, live).is_some()
     }
 
     /// [`FaderCtl::down`], with where the touch started when this pointer
     /// now drives the fader (#43 PR D): the position it showed, Live's,
     /// whether it showed its own (a finger, a glide, an open write, the
     /// hold) and the position the touch starts from.
-    pub fn press(&mut self, id: i32, y: f64, travel: f64, now: f64, live: f64) -> Option<Start> {
+    pub fn press(
+        &mut self,
+        id: i32,
+        _primary: bool,
+        y: f64,
+        travel: f64,
+        now: f64,
+        live: f64,
+    ) -> Option<Taken> {
         if self.pointer.is_some() {
             return None;
         }
@@ -677,11 +693,14 @@ impl FaderCtl {
         self.shaper.set_travel(self.travel);
         self.shaper.start(self.pos);
         self.taps.down(self.pos, now);
-        Some(Start {
-            shown,
-            live,
-            local,
-            from: self.pos,
+        Some(Taken {
+            start: Start {
+                shown,
+                live,
+                local,
+                from: self.pos,
+            },
+            lost: None,
         })
     }
 

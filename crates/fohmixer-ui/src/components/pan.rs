@@ -22,7 +22,7 @@ use serde_json::json;
 
 use super::{fail_flash, owns_touches, readiness, trace_move, trace_start, trace_touch};
 use crate::behave::pan::{self, PanCtl};
-use crate::behave::{TouchEnd, touch_end};
+use crate::behave::{Taken, TouchEnd, touch_end};
 use crate::binding::SubSpec;
 use crate::diag::trace::moves::{Axis, Press, Trail};
 use crate::dom;
@@ -87,11 +87,12 @@ pub fn PanView(state: RwSignal<Slot>, spec: SubSpec) -> impl IntoView {
         let dot = dom::child(&el, ".pan-dot").map_or(0.0, |d| d.get_bounding_client_rect().width());
         let travel = (f64::from(el.client_width()) - dot).max(1.0);
         let id = ev.pointer_id();
+        let primary = ev.is_primary();
         let x = f64::from(ev.client_x());
         let taken = ctl
-            .try_update_value(|c| c.press(id, x, travel, dom::now(), at))
+            .try_update_value(|c| c.press(id, primary, x, travel, dom::now(), at))
             .flatten();
-        if let Some(start) = taken {
+        if let Some(Taken { start, .. }) = taken {
             let _ = el.set_pointer_capture(id);
             let press = Press {
                 at: dom::event_epoch(&ev),

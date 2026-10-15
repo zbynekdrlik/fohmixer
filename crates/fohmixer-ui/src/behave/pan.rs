@@ -4,7 +4,7 @@
 //! TouchOSC script jumped), grey when centred and cyan otherwise.
 
 use super::fader::Glide;
-use super::{Motion, Start};
+use super::{Motion, Start, Taken};
 
 /// The colour of a centred pan and of an off-centre one.
 pub const CENTERED: &str = "#646464";
@@ -88,16 +88,33 @@ impl PanCtl {
     }
 
     /// Pointer `id` pressed at `x` (px) on a pan `travel` px wide, Live's
-    /// panning being `live`: whether this pointer now drives the pan.
-    pub fn down(&mut self, id: i32, x: f64, travel: f64, now: f64, live: f64) -> bool {
-        self.press(id, x, travel, now, live).is_some()
+    /// panning being `live` (`primary`: the browser's `isPrimary`): whether
+    /// this pointer now drives the pan.
+    pub fn down(
+        &mut self,
+        id: i32,
+        primary: bool,
+        x: f64,
+        travel: f64,
+        now: f64,
+        live: f64,
+    ) -> bool {
+        self.press(id, primary, x, travel, now, live).is_some()
     }
 
     /// [`PanCtl::down`], with where the touch started when this pointer now
     /// drives the pan (#43 PR D), in positions: the one it showed, Live's
     /// panning's, whether it showed its own (a finger, the hold) and the one
     /// the touch starts from.
-    pub fn press(&mut self, id: i32, x: f64, travel: f64, now: f64, live: f64) -> Option<Start> {
+    pub fn press(
+        &mut self,
+        id: i32,
+        _primary: bool,
+        x: f64,
+        travel: f64,
+        now: f64,
+        live: f64,
+    ) -> Option<Taken> {
         if self.pointer.is_some() {
             return None;
         }
@@ -112,11 +129,14 @@ impl PanCtl {
         self.first_move = true;
         self.last_x = x;
         self.travel = travel.max(1.0);
-        Some(Start {
-            shown,
-            live: to_pos(live),
-            local,
-            from: self.pos,
+        Some(Taken {
+            start: Start {
+                shown,
+                live: to_pos(live),
+                local,
+                from: self.pos,
+            },
+            lost: None,
         })
     }
 
@@ -241,6 +261,7 @@ impl PanCtl {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::behave::{Lost, TouchEnd};
 
     #[test]
     fn the_position_maps_to_minus_one_to_one() {
@@ -274,7 +295,7 @@ mod tests {
 
     fn touched(live: f64) -> PanCtl {
         let mut p = PanCtl::default();
-        assert!(p.down(1, 100.0, 200.0, 0.0, live));
+        assert!(p.down(1, true, 100.0, 200.0, 0.0, live));
         p
     }
 
@@ -297,7 +318,7 @@ mod tests {
         assert!(p.moved(1, -1000.0));
         assert_eq!(p.frame(30.0, Some(0.0)).send, Some(-1.0));
         // Another pointer does nothing to it.
-        assert!(!p.down(2, 0.0, 200.0, 40.0, 0.0));
+        assert!(!p.down(2, false, 0.0, 200.0, 40.0, 0.0));
         assert!(!p.moved(2, 50.0));
         assert_eq!(p.up(2, 50.0), None);
         assert_eq!(p.cancel(2, 50.0), None);
@@ -313,7 +334,7 @@ mod tests {
         anchor(&mut p, 1, 100.0);
         p.moved(1, 120.0);
         assert_eq!(p.up(1, 10.0), Some(to_live(to_pos(0.5) + 0.1)));
-        assert!(p.down(1, 100.0, 200.0, 200.0, 0.5));
+        assert!(p.down(1, true, 100.0, 200.0, 200.0, 0.5));
         assert_eq!(
             p.up(1, 309.0),
             None,
@@ -340,9 +361,9 @@ mod tests {
         assert_eq!(p.frame(1033.0, Some(1.0)).send, None);
         assert_eq!(p.frame(1034.0, Some(1.0)).pos, Some(1.0));
         // A third release starts over; 300 ms is too late: no glide.
-        assert!(p.down(1, 100.0, 200.0, 1500.0, 0.5));
+        assert!(p.down(1, true, 100.0, 200.0, 1500.0, 0.5));
         assert_eq!(p.up(1, 1510.0), None);
-        assert!(p.down(1, 100.0, 200.0, 1700.0, 0.5));
+        assert!(p.down(1, true, 100.0, 200.0, 1700.0, 0.5));
         assert_eq!(p.up(1, 1810.0), None, "300 ms apart");
         assert_eq!(
             p.frame(1811.0, Some(0.5)),
@@ -359,7 +380,7 @@ mod tests {
     fn a_pan_glide_stops_where_it_is_when_lives_value_goes() {
         let mut p = touched(0.5);
         assert_eq!(p.up(1, 10.0), None);
-        assert!(p.down(1, 100.0, 200.0, 50.0, 0.5));
+        assert!(p.down(1, true, 100.0, 200.0, 50.0, 0.5));
         assert_eq!(p.up(1, 60.0), None);
         let gliding = p.frame(310.0, Some(0.5));
         assert!(close(gliding.pos.unwrap(), 0.65), "{gliding:?}");
@@ -382,18 +403,21 @@ mod tests {
     fn a_touch_stops_the_pan_glide_where_it_is() {
         let mut p = touched(0.5);
         assert_eq!(p.up(1, 10.0), None);
-        assert!(p.down(1, 100.0, 200.0, 50.0, 0.5));
+        assert!(p.down(1, true, 100.0, 200.0, 50.0, 0.5));
         assert_eq!(p.up(1, 60.0), None);
         let _ = p.frame(310.0, Some(0.5));
         let at = p.pos();
         assert!(close(at, 0.65), "{at}");
         assert_eq!(
-            p.press(2, 100.0, 200.0, 320.0, 0.5),
-            Some(Start {
-                shown: at,
-                live: 0.75,
-                local: true,
-                from: at,
+            p.press(2, true, 100.0, 200.0, 320.0, 0.5),
+            Some(Taken {
+                start: Start {
+                    shown: at,
+                    live: 0.75,
+                    local: true,
+                    from: at,
+                },
+                lost: None,
             }),
             "the touch starts where the glide was"
         );
@@ -408,44 +432,125 @@ mod tests {
         let mut p = PanCtl::default();
         let _ = p.frame(0.0, Some(0.0));
         let start = |shown, live, local, from| {
-            Some(Start {
-                shown,
-                live,
-                local,
-                from,
+            Some(Taken {
+                start: Start {
+                    shown,
+                    live,
+                    local,
+                    from,
+                },
+                lost: None,
             })
         };
         assert_eq!(
-            p.press(1, 100.0, 200.0, 10.0, 0.5),
+            p.press(1, true, 100.0, 200.0, 10.0, 0.5),
             start(0.5, 0.75, false, 0.75),
             "from Live's panning, as a position"
         );
-        assert_eq!(p.press(2, 0.0, 200.0, 11.0, 0.5), None);
+        assert_eq!(p.press(2, false, 0.0, 200.0, 11.0, 0.5), None);
         anchor(&mut p, 1, 100.0);
         assert!(p.moved(1, 125.0));
         assert_eq!(p.up(1, 20.0), Some(to_live(0.875)));
         assert_eq!(
-            p.press(1, 100.0, 200.0, 119.0, 0.0),
+            p.press(1, true, 100.0, 200.0, 119.0, 0.0),
             start(0.875, 0.5, true, 0.875),
             "within the hold"
         );
         assert_eq!(p.cancel(1, 150.0), None);
         let _ = p.frame(251.0, Some(-0.5));
         assert_eq!(
-            p.press(1, 100.0, 200.0, 252.0, 1.0),
+            p.press(1, true, 100.0, 200.0, 252.0, 1.0),
             start(0.25, 1.0, false, 1.0)
         );
+    }
+
+    #[test]
+    fn a_second_finger_takes_a_free_pan() {
+        let mut p = PanCtl::default();
+        let taken = p.press(2, false, 100.0, 200.0, 0.0, 0.0);
+        assert_eq!(taken.map(|t| t.lost), Some(None), "it ends no touch");
+        assert!(p.drives(2));
+    }
+
+    #[test]
+    fn a_primary_down_ends_a_touch_whose_end_never_came() {
+        // #124, as a fader's: pointer 1's end never came. A second finger is
+        // still refused; a primary down ends pointer 1's touch as a cancel
+        // and drives the pan from where it was.
+        let mut p = touched(0.0);
+        anchor(&mut p, 1, 100.0);
+        assert!(p.moved(1, 150.0));
+        assert_eq!(p.frame(10.0, Some(0.0)).send, Some(0.5));
+        assert_eq!(
+            p.press(2, false, 0.0, 200.0, 20.0, 0.5),
+            None,
+            "a second finger"
+        );
+        assert!(p.drives(1));
+        assert_eq!(
+            p.press(2, true, 0.0, 200.0, 5_000.0, 0.5),
+            Some(Taken {
+                start: Start {
+                    shown: 0.75,
+                    live: 0.75,
+                    local: true,
+                    from: 0.75,
+                },
+                lost: Some(Lost {
+                    pointer: 1,
+                    end: TouchEnd::Released,
+                }),
+            })
+        );
+        assert!(p.drives(2) && !p.drives(1));
+        // Pointer 1's late events are no longer its touch.
+        assert!(!p.moved(1, 300.0));
+        assert_eq!(p.up(1, 5_010.0), None);
+        assert_eq!(p.cancel(1, 5_010.0), None);
+        anchor(&mut p, 2, 0.0);
+        assert!(p.moved(2, 50.0));
+        assert_eq!(p.frame(5_020.0, Some(0.5)).send, Some(1.0));
+        assert_eq!(p.up(2, 5_030.0), None);
+    }
+
+    #[test]
+    fn a_lost_pan_touch_sends_its_unsent_move_and_is_no_release() {
+        // Pointer 1's move was not sent yet when pointer 2 came: it goes as
+        // the lost touch's end. The lost touch is no release, so pointer 2's
+        // release 50 ms later is a first one and does not centre the pan.
+        let mut p = touched(0.0);
+        anchor(&mut p, 1, 100.0);
+        assert!(p.moved(1, 150.0));
+        let lost = p
+            .press(2, true, 0.0, 200.0, 100.0, 0.0)
+            .and_then(|t| t.lost);
+        assert_eq!(
+            lost,
+            Some(Lost {
+                pointer: 1,
+                end: TouchEnd::Send(0.5),
+            })
+        );
+        assert_eq!(
+            p.frame(110.0, Some(0.0)).send,
+            None,
+            "sent once, as its end"
+        );
+        assert_eq!(p.up(2, 150.0), None);
+        let after = p.frame(500.0, Some(0.5));
+        assert_eq!(after.send, None, "no glide to the centre");
+        assert_eq!(after.pos, Some(0.75), "Live's value after the hold");
     }
 
     #[test]
     fn a_cancel_never_centres() {
         let mut p = touched(0.5);
         assert_eq!(p.up(1, 10.0), None);
-        assert!(p.down(1, 100.0, 200.0, 50.0, 0.5));
+        assert!(p.down(1, true, 100.0, 200.0, 50.0, 0.5));
         assert_eq!(p.cancel(1, 60.0), None);
-        assert!(p.down(1, 100.0, 200.0, 70.0, 0.5));
+        assert!(p.down(1, true, 100.0, 200.0, 70.0, 0.5));
         assert_eq!(p.up(1, 80.0), None, "the cancel forgot the first release");
-        assert!(p.down(1, 100.0, 200.0, 90.0, 0.5));
+        assert!(p.down(1, true, 100.0, 200.0, 90.0, 0.5));
         anchor(&mut p, 1, 100.0);
         p.moved(1, 110.0);
         assert!(p.cancel(1, 95.0).is_some(), "a cancel sends the last move");
@@ -462,10 +567,10 @@ mod tests {
         assert_eq!(p.frame(110.0, Some(-1.0)).pos, Some(0.0));
         // A touch after the hold starts from Live's value, during it from
         // the shown one.
-        assert!(p.down(1, 0.0, 200.0, 400.0, 0.5));
+        assert!(p.down(1, true, 0.0, 200.0, 400.0, 0.5));
         assert_eq!(p.frame(401.0, None).pos, Some(0.75));
         assert_eq!(p.up(1, 402.0), None, "392 ms after the last release");
-        assert!(p.down(1, 0.0, 200.0, 450.0, -1.0));
+        assert!(p.down(1, true, 0.0, 200.0, 450.0, -1.0));
         assert_eq!(p.frame(451.0, None).pos, Some(0.75));
         p.cancel(1, 460.0);
         assert_eq!(
@@ -481,13 +586,13 @@ mod tests {
     fn the_pan_says_which_pointer_drives_it() {
         let mut p = PanCtl::default();
         assert!(!p.drives(1), "untouched");
-        assert!(p.down(1, 100.0, 200.0, 0.0, 0.0));
+        assert!(p.down(1, true, 100.0, 200.0, 0.0, 0.0));
         assert!(p.drives(1) && !p.drives(2));
         assert_eq!(p.up(2, 5.0), None);
         assert!(p.drives(1), "another pointer's release is not its");
         assert_eq!(p.up(1, 10.0), None, "nothing unsent");
         assert!(!p.drives(1), "released");
-        assert!(p.down(3, 100.0, 200.0, 500.0, 0.0));
+        assert!(p.down(3, true, 100.0, 200.0, 500.0, 0.0));
         p.cancel(3, 510.0);
         assert!(!p.drives(3), "cancelled");
     }
@@ -498,7 +603,7 @@ mod tests {
         // several px away from the down; it moves nothing and sends nothing,
         // and the drag goes on from it.
         let mut p = PanCtl::default();
-        assert!(p.down(1, 100.0, 64.0, 0.0, 0.0));
+        assert!(p.down(1, true, 100.0, 64.0, 0.0, 0.0));
         assert!(p.moved(1, 106.0));
         assert_eq!(
             p.frame(80.0, Some(0.0)),
@@ -520,7 +625,7 @@ mod tests {
         // Another pointer's move is not the touch's first; each touch anchors
         // its own first move.
         assert_eq!(p.up(1, 120.0), None);
-        assert!(p.down(2, 100.0, 64.0, 500.0, 0.25));
+        assert!(p.down(2, true, 100.0, 64.0, 500.0, 0.25));
         assert!(!p.moved(3, 140.0));
         assert!(p.moved(2, 92.0));
         assert_eq!(p.frame(520.0, Some(0.25)).pos, Some(0.625));
@@ -532,7 +637,7 @@ mod tests {
     fn the_pan_says_where_a_move_left_it() {
         // The flight recorder's `a` (#43 PR F): read right after the move.
         let mut p = PanCtl::default();
-        assert!(p.down(1, 100.0, 64.0, 0.0, -0.5));
+        assert!(p.down(1, true, 100.0, 64.0, 0.0, -0.5));
         assert_eq!(p.pos(), 0.25, "the touch's start");
         assert!(p.moved(1, 106.0));
         assert_eq!(p.pos(), 0.25, "the anchor moved nothing");
@@ -543,7 +648,7 @@ mod tests {
     #[test]
     fn a_pan_touch_whose_finger_only_anchored_sends_nothing() {
         let mut p = PanCtl::default();
-        assert!(p.down(1, 100.0, 64.0, 0.0, 0.0));
+        assert!(p.down(1, true, 100.0, 64.0, 0.0, 0.0));
         assert!(p.moved(1, 94.0));
         assert_eq!(p.up(1, 50.0), None, "nothing unsent");
         assert_eq!(p.frame(60.0, Some(0.0)).pos, Some(0.5));
@@ -552,7 +657,7 @@ mod tests {
     #[test]
     fn a_zero_width_counts_as_one_pixel() {
         let mut p = PanCtl::default();
-        p.down(1, 0.0, 0.0, 0.0, -1.0);
+        p.down(1, true, 0.0, 0.0, 0.0, -1.0);
         anchor(&mut p, 1, 0.0);
         p.moved(1, 0.25);
         assert_eq!(p.frame(1.0, None).pos, Some(0.25));

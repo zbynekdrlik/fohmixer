@@ -2,11 +2,18 @@ import { test, expect, type Page } from "./support/fixtures";
 import type { Locator } from "@playwright/test";
 import {
   LiveClient,
+  type PointerStep,
   centre,
   dbForm,
+  dispatchPointer,
   frames,
   harness,
+  hubEvents,
+  impair,
+  openDetail,
   openSurface,
+  pageEvents,
+  panning,
   ready,
   ret,
   shown,
@@ -264,5 +271,171 @@ test.describe("A lost pointer capture", () => {
     await page.waitForTimeout(300);
     expect(await live.get("band", B.target, "value")).toBe(ended);
     await page.mouse.up();
+  });
+});
+
+// A touch whose end the browser never delivered (#124): at an event a reverb
+// fader on the iPad took no touch until the page was reloaded. A finger's
+// down was recorded, a second finger began an iOS system gesture, and that
+// finger's up, cancel and lost capture never came: the fader kept refusing
+// every later touch while it "held" the lost pointer. A dispatched pointer is
+// no active pointer, so the fader's `setPointerCapture` fails and no capture
+// is ever lost: exactly the state of a touch the system took.
+
+/** The lost finger's pointer and the next finger's. */
+const LOST = 901;
+const NEXT = 902;
+
+/** The page's clock (`performance.timeOrigin + performance.now()`, the `t` of its records). */
+const pageNow = (page: Page) => page.evaluate(() => performance.timeOrigin + performance.now());
+
+/** The page hidden or shown, as iOS does around a system gesture (deck.spec's `setHidden`). */
+async function setHidden(page: Page, hidden: boolean) {
+  await page.evaluate((on) => {
+    const doc = document as any;
+    if (on) {
+      Object.defineProperty(doc, "hidden", { configurable: true, get: () => true });
+      Object.defineProperty(doc, "visibilityState", { configurable: true, get: () => "hidden" });
+    } else {
+      delete doc.hidden;
+      delete doc.visibilityState;
+    }
+    document.dispatchEvent(new Event("visibilitychange", { bubbles: true }));
+  }, hidden);
+}
+
+/**
+ * What followed the lost touch on the iPad: the link dropped (a 1006), the
+ * page hidden and shown again, and a new socket. The link is held from the
+ * drop until the page is shown, so none of the page's reports is under way
+ * when the drop resets the connections (WebKit logs a request reset in
+ * flight as an error, deck.spec); the stuck finger lives through all of it.
+ */
+async function droppedHiddenAndBack(page: Page) {
+  const surface = page.getByTestId("surface");
+  await impair.block(true);
+  await impair.drop();
+  await expect(surface).toHaveAttribute("data-connected", "false");
+  await setHidden(page, true);
+  await setHidden(page, false);
+  await impair.block(false);
+  await expect(surface).toHaveAttribute("data-connected", "true", { timeout: 15_000 });
+}
+
+/** A drag of the next finger: down, the anchor, two moves `px` apart along `axis`, its lift. */
+function nextDrag(axis: "dx" | "dy", px: number): PointerStep[] {
+  const at = (n: number) => (axis === "dx" ? { dx: n } : { dy: n });
+  return [
+    { type: "pointerdown" },
+    { type: "pointermove", ...at(0) },
+    { wait: 20 },
+    { type: "pointermove", ...at(px) },
+    { wait: 20 },
+    { type: "pointermove", ...at(2 * px) },
+    { wait: 20 },
+    { type: "pointerup", ...at(2 * px) },
+  ];
+}
+
+/**
+ * The touches the page recorded for `key` from page time `from` on, as
+ * `[what, pointer]` in page time order, once the next finger's lift is in
+ * the event log (a hidden page's recorder uploads a little later).
+ */
+async function touchesOf(key: string, from: number): Promise<[string, number][]> {
+  return until(
+    async () =>
+      pageEvents(await hubEvents())
+        .filter((e: any) => e.ev === "touch" && Array.isArray(e.keys) && e.keys.includes(key) && e.t >= from)
+        .sort((a: any, b: any) => a.t - b.t)
+        .map((e: any): [string, number] => [e.what, e.pointer]),
+    (touches) => touches.some(([what, pointer]) => what === "up" && pointer === NEXT),
+    "the next finger's lift in the event log",
+    15_000,
+  );
+}
+
+/** The hub's `set` records of `key` the page sent from page time `from` on. */
+async function setsOf(key: string, from: number): Promise<any[]> {
+  return (await hubEvents()).filter((e: any) => e.ev === "set" && e.key === key && e.t >= from);
+}
+
+test.describe("A touch whose end never came (#124)", () => {
+  // The drop resets the page's socket: WebKit reports the reset of an open
+  // socket as "WebSocket connection to '…' failed: Error receiving data:
+  // Connection reset by peer" (Chromium says nothing; resilience.spec).
+  test.use({ allowedConsole: [/^WebSocket connection to '.*' failed/] });
+
+  test.afterEach(async () => {
+    // Never leave the link held for the next test.
+    await impair.block(false);
+  });
+
+  test("a fader held by a lost finger takes the next primary finger", async ({ page }) => {
+    const key = `band|${A.target}|value`;
+    const before = await live.get("band", A.target, "value");
+    await live.set("band", A.target, "value", 0.5);
+    try {
+      await openSurface(page);
+      const fader = strip(page, A.name).getByTestId("fader");
+      await ready(fader);
+      await until(() => shown(fader), (v) => Math.abs(v - 0.5) < 0.001, "fader A at 0.5");
+      const from = await pageNow(page);
+      // The finger drags fader A up (its first move anchors) and its end
+      // never comes.
+      await dispatchPointer(fader, [{ type: "pointerdown" }, { type: "pointermove", dy: 0 }, { type: "pointermove", dy: 40 }], LOST);
+      await until(() => live.get("band", A.target, "value"), (v) => v > 0.51, "the lost finger's drag in Live");
+      const held = await settled(page, () => live.get("band", A.target, "value"));
+      await expect(fader, "the strip lit under the lost finger").toHaveAttribute("data-held", "true");
+      await droppedHiddenAndBack(page);
+      await ready(fader);
+      // A new finger on the same fader: the first one down, so primary.
+      const nextFrom = await pageNow(page);
+      await dispatchPointer(fader, nextDrag("dy", 20), NEXT);
+      await until(() => live.get("band", A.target, "value"), (v) => v > held + 0.01, "the next finger's drag in Live");
+      await expect(fader).toHaveAttribute("data-held", "false");
+      expect((await setsOf(key, nextFrom)).length, "the next finger's sets at the hub").toBeGreaterThan(0);
+      // The page's record: the lost touch ended when the next finger came.
+      expect(await touchesOf(key, from)).toEqual([
+        ["down", LOST],
+        ["lost", LOST],
+        ["down", NEXT],
+        ["up", NEXT],
+      ]);
+    } finally {
+      await live.set("band", A.target, "value", before);
+    }
+  });
+
+  test("a pan held by a lost finger takes the next primary finger", async ({ page }) => {
+    const target = panning(track("Hand2 #"));
+    const key = `band|${target}|value`;
+    const before = await live.get("band", target, "value");
+    await live.set("band", target, "value", 0);
+    try {
+      await openSurface(page);
+      // The pan is the channel detail's (#71).
+      const pan = (await openDetail(page, "Hand2 #")).getByTestId("pan");
+      await ready(pan);
+      await until(() => shown(pan), (v) => Math.abs(v) < 0.001, "the pan centred");
+      const from = await pageNow(page);
+      await dispatchPointer(pan, [{ type: "pointerdown" }, { type: "pointermove", dx: 0 }, { type: "pointermove", dx: 30 }], LOST);
+      await until(() => live.get("band", target, "value"), (v) => v > 0.01, "the lost finger's drag in Live");
+      const held = await settled(page, () => live.get("band", target, "value"));
+      await droppedHiddenAndBack(page);
+      await ready(pan);
+      const nextFrom = await pageNow(page);
+      await dispatchPointer(pan, nextDrag("dx", 15), NEXT);
+      await until(() => live.get("band", target, "value"), (v) => v > held + 0.01, "the next finger's drag in Live");
+      expect((await setsOf(key, nextFrom)).length, "the next finger's sets at the hub").toBeGreaterThan(0);
+      expect(await touchesOf(key, from)).toEqual([
+        ["down", LOST],
+        ["lost", LOST],
+        ["down", NEXT],
+        ["up", NEXT],
+      ]);
+    } finally {
+      await live.set("band", target, "value", before);
+    }
   });
 });
