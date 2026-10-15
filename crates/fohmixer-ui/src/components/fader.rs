@@ -17,8 +17,9 @@
 //! page's flight recorder (#43, PR C): the down with where the touch started
 //! (`FaderCtl::press`), and each frame that sends from the finger with the
 //! pointer moves it carried (`diag::trace::moves::Trail`, PR D). A primary
-//! down ends a touch whose end the browser never delivered (#124) as a
-//! cancel, recorded `lost` before the new finger's down.
+//! down of the held pointer's type ends a touch whose end the browser never
+//! delivered (#124) as a cancel, recorded `lost` before the new finger's
+//! down; a hidden page ends it too.
 //!
 //! The backing-tracks fader (#58, `vca`): its cap stands at the loudest
 //! target, a touch keeps every target's volume at its start and each move
@@ -348,6 +349,20 @@ pub fn FaderView(
             let _ = trail.try_update_value(|t| t.end(id));
         }
     };
+
+    // A hidden page ends a touch the browser has not ended (#124): a hidden
+    // Home Screen app keeps no touch going, and this works whatever
+    // `isPrimary` the next finger brings. `visibilitychange` bubbles to
+    // the window.
+    let hidden = window_event_listener_untyped("visibilitychange", move |_| {
+        if !dom::hidden() {
+            return;
+        }
+        if let Some(lost) = ctl.try_update_value(|c| c.hidden(dom::now())).flatten() {
+            ended(Some(lost.end), "lost", lost.pointer);
+        }
+    });
+    on_cleanup(move || hidden.remove());
 
     let on_down = move |ev: web_sys::PointerEvent| {
         if !takes_input() {

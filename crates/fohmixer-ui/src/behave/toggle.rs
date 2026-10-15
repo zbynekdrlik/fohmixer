@@ -12,6 +12,7 @@ use fohmixer_proto::layout::Press;
 use serde_json::Value;
 
 use super::Down;
+use crate::diag::perf::Pointer;
 
 /// Two presses closer than this are a double tap.
 pub const DOUBLE_TAP_MS: f64 = 200.0;
@@ -70,7 +71,10 @@ pub fn aggregate(targets: &[Option<bool>]) -> ToggleState {
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct ToggleCtl {
     last_press: Option<f64>,
-    pulsing: bool,
+    /// The press a running pulse lasts for: its pointer and its type (#124:
+    /// a press whose release never came is ended by the next primary down
+    /// of its type, or a hide).
+    pulse: Option<(i32, Option<Pointer>)>,
 }
 
 impl ToggleCtl {
@@ -83,7 +87,7 @@ impl ToggleCtl {
 
     /// A press by `by` at `now` on a toggle showing `state`: the write, if
     /// any.
-    pub fn down(&mut self, _by: Down, press: Press, state: ToggleState, now: f64) -> Option<Write> {
+    pub fn down(&mut self, by: Down, press: Press, state: ToggleState, now: f64) -> Option<Write> {
         let flip = if state == ToggleState::On {
             Write::Off
         } else {
@@ -94,10 +98,10 @@ impl ToggleCtl {
             Press::DoubleTapLatch => self.double(now).then_some(flip),
             Press::PulseAndDoubleTapLatch => {
                 if self.double(now) {
-                    self.pulsing = false;
+                    self.pulse = None;
                     Some(Write::On)
                 } else {
-                    self.pulsing = flip == Write::On;
+                    self.pulse = (flip == Write::On).then_some((by.id, by.kind));
                     Some(flip)
                 }
             }
@@ -109,22 +113,25 @@ impl ToggleCtl {
     /// press's type (no other of its type is down): the press's pointer,
     /// and the pulse's `Off` goes (a pulse left on is worse than a stuck
     /// fader). None otherwise, a second finger's down included.
-    pub fn missed(&mut self, _by: Down) -> Option<i32> {
-        None
+    pub fn missed(&mut self, by: Down) -> Option<i32> {
+        let (id, kind) = self.pulse?;
+        if !by.ends(kind) {
+            return None;
+        }
+        self.pulse = None;
+        Some(id)
     }
 
     /// The page went hidden (#124): a pulse still running ends, its
     /// press's release lost (a hidden Home Screen app keeps no touch
     /// going): the press's pointer, and the pulse's `Off` goes.
     pub fn hidden(&mut self) -> Option<i32> {
-        None
+        self.pulse.take().map(|(id, _)| id)
     }
 
     /// The release: the end of a pulse, if one is running.
     pub fn up(&mut self) -> Option<Write> {
-        let pulsing = self.pulsing;
-        self.pulsing = false;
-        pulsing.then_some(Write::Off)
+        self.pulse.take().map(|_| Write::Off)
     }
 }
 

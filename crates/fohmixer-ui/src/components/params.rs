@@ -3,7 +3,9 @@
 //! show the targets' real state: all on, all off, or mixed. A toggle's
 //! writes Live has not confirmed outline it (the most urgent of its
 //! targets', `data-intent`, #43 PR C), and its presses go to the page's
-//! flight recorder. A fader of two or more track volumes is the
+//! flight recorder. A pulse whose release the browser never delivered goes
+//! off at the next primary down of its type on the toggle or at a hide
+//! (#124, `lost`). A fader of two or more track volumes is the
 //! backing-tracks fader (#58, `VcaFaderView`).
 
 use fohmixer_proto::layout::{ParamTarget, Press};
@@ -134,12 +136,30 @@ pub fn ParamToggleView(
         if let Some(el) = dom::current_element(&ev) {
             let _ = el.set_pointer_capture(ev.pointer_id());
         }
-        let _ = keys.try_with_value(|k| trace_touch("down", k, ev.pointer_id()));
+        // A pulse whose release the browser never delivered ends at the next
+        // primary down of its type (#124): its Off goes, recorded `lost`.
         let by = down_of(&ev);
+        if let Some(Some(old)) = ctl.try_update_value(|c| c.missed(by)) {
+            let _ = keys.try_with_value(|k| trace_touch("lost", k, old));
+            write(Write::Off);
+        }
+        let _ = keys.try_with_value(|k| trace_touch("down", k, ev.pointer_id()));
         if let Some(Some(w)) = ctl.try_update_value(|c| c.down(by, press, now_state, dom::now())) {
             write(w);
         }
     };
+    // A hidden page ends a running pulse (#124): a hidden Home Screen app
+    // keeps no touch going, and a pulse left on is worse than a stuck fader.
+    let hidden = window_event_listener_untyped("visibilitychange", move |_| {
+        if !dom::hidden() {
+            return;
+        }
+        if let Some(Some(old)) = ctl.try_update_value(ToggleCtl::hidden) {
+            let _ = keys.try_with_value(|k| trace_touch("lost", k, old));
+            write(Write::Off);
+        }
+    });
+    on_cleanup(move || hidden.remove());
     let on_up = move |ev: web_sys::PointerEvent| {
         if let Some(what) = touch_end_name(&ev.type_()) {
             let _ = keys.try_with_value(|k| trace_touch(what, k, ev.pointer_id()));

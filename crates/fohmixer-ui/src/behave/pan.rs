@@ -4,7 +4,8 @@
 //! TouchOSC script jumped), grey when centred and cyan otherwise.
 
 use super::fader::Glide;
-use super::{Down, Lost, Motion, Start, Taken, touch_end};
+use super::{Down, Lost, Motion, Start, Taken, TouchEnd, touch_end};
+use crate::diag::perf::Pointer;
 
 /// The colour of a centred pan and of an off-centre one.
 pub const CENTERED: &str = "#646464";
@@ -52,6 +53,9 @@ pub fn color(p: f64) -> &'static str {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PanCtl {
     pointer: Option<i32>,
+    /// The held pointer's type (#124 M1: only a primary down of that type
+    /// ends a touch whose end never came).
+    kind: Option<Pointer>,
     /// The touch's next pointer move is its first.
     first_move: bool,
     last_x: f64,
@@ -69,6 +73,7 @@ impl Default for PanCtl {
     fn default() -> Self {
         Self {
             pointer: None,
+            kind: None,
             first_move: false,
             last_x: 0.0,
             travel: 1.0,
@@ -107,13 +112,14 @@ impl PanCtl {
     /// drives the pan (#43 PR D), in positions: the one it showed, Live's
     /// panning's, whether it showed its own (a finger, the hold) and the one
     /// the touch starts from. A held pan refuses a second finger; a primary
-    /// pointer's down (no other pointer is down) ends the held touch, whose
-    /// end the browser never delivered (#124), as a cancel, and the new
-    /// finger drives the pan from where that touch left it (`lost`).
+    /// down of the held pointer's type ([`Down::ends`]) ends the held touch,
+    /// whose end the browser never delivered (#124), as a cancel (`lost`),
+    /// and the new finger drives the pan: from Live's panning when that
+    /// touch had nothing left to send, else from the dot during the hold.
     pub fn press(&mut self, down: Down, x: f64, travel: f64, now: f64, live: f64) -> Option<Taken> {
         let id = down.id;
         let lost = match self.pointer {
-            Some(_) if !down.ends(None) => return None,
+            Some(_) if !down.ends(self.kind) => return None,
             Some(held) => Some(self.lose(held, now)),
             None => None,
         };
@@ -125,6 +131,7 @@ impl PanCtl {
         // A touch stops a glide where it is.
         self.glide = None;
         self.pointer = Some(id);
+        self.kind = down.kind;
         self.first_move = true;
         self.last_x = x;
         self.travel = travel.max(1.0);
@@ -141,20 +148,25 @@ impl PanCtl {
 
     /// Ends pointer `id`'s touch, whose end the browser never delivered
     /// (#124): as a cancel (no release that centres), the panning it left
-    /// unsent its end.
+    /// unsent its end. With nothing left to send no post-release hold starts
+    /// from now (#124 I1): the next touch starts from Live's panning; a
+    /// panning it left unsent keeps the dot there for the hold.
     fn lose(&mut self, id: i32, now: f64) -> Lost {
-        Lost {
-            pointer: id,
-            end: touch_end(true, self.cancel(id, now)),
+        let hold_until = self.hold_until;
+        let end = touch_end(true, self.cancel(id, now));
+        if end == TouchEnd::Released {
+            self.hold_until = hold_until;
         }
+        Lost { pointer: id, end }
     }
 
     /// The page went hidden (#124): a pointer still held lost its end (a
     /// hidden Home Screen app keeps no touch going), and its touch ends as
     /// one a primary down ends, whatever `isPrimary` the next finger
     /// brings. None when no pointer is held.
-    pub fn hidden(&mut self, _now: f64) -> Option<Lost> {
-        None
+    pub fn hidden(&mut self, now: f64) -> Option<Lost> {
+        let held = self.pointer?;
+        Some(self.lose(held, now))
     }
 
     /// Whether pointer `id` drives this pan (its release is this pan's).

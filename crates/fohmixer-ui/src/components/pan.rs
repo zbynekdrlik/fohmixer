@@ -10,9 +10,10 @@
 //! (`data-intent`, `intent.css`, #43 PR C); each touch's down (with where
 //! it started, `PanCtl::press`), up and cancel goes to the page's flight
 //! recorder, and each frame that sends from the finger with the pointer moves
-//! it carried (`diag::trace::moves::Trail`, PR D); a primary down ends a
-//! touch whose end the browser never delivered (#124) as a cancel, recorded
-//! `lost` before the new finger's down. It lives in the channel
+//! it carried (`diag::trace::moves::Trail`, PR D); a primary down of the
+//! held pointer's type, or a hidden page, ends a touch whose end the
+//! browser never delivered (#124) as a cancel, recorded `lost`. It lives in
+//! the channel
 //! detail (#71, D17), large; its dot's width is the stylesheet's (`--dot`),
 //! measured at each touch's down with the bar's padding box it travels,
 //! never assumed.
@@ -91,6 +92,17 @@ pub fn PanView(state: RwSignal<Slot>, spec: SubSpec) -> impl IntoView {
             let _ = trail.try_update_value(|t| t.end(id));
         }
     };
+    // A hidden page ends a touch the browser has not ended (#124), as a
+    // fader's: whatever `isPrimary` the next finger brings.
+    let hidden = window_event_listener_untyped("visibilitychange", move |_| {
+        if !dom::hidden() {
+            return;
+        }
+        if let Some(lost) = ctl.try_update_value(|c| c.hidden(dom::now())).flatten() {
+            ended(Some(lost.end), "lost", lost.pointer);
+        }
+    });
+    on_cleanup(move || hidden.remove());
     let on_down = move |ev: web_sys::PointerEvent| {
         let Some(at) = live() else {
             return;

@@ -82,8 +82,8 @@ impl Down {
     /// no other of its type is down (as `diag::perf::Perf::down` forgets
     /// its type's missed ups); a mouse or a pen is primary among its own
     /// kind and never ends a finger's touch (#124 M1).
-    pub fn ends(self, _held: Option<Pointer>) -> bool {
-        self.primary
+    pub fn ends(self, held: Option<Pointer>) -> bool {
+        self.primary && self.kind == held
     }
 }
 

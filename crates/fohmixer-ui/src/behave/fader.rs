@@ -16,7 +16,9 @@
 
 use fohmixer_proto::layout::FaderLaw;
 
-use super::{Down, Lost, Motion, Start, Taken, touch_end};
+use crate::diag::perf::Pointer;
+
+use super::{Down, Lost, Motion, Start, Taken, TouchEnd, touch_end};
 
 /// TouchOSC's position ↔ Live volume exponent: `v = p^0.515` (−6 dB at
 /// half travel).
@@ -512,6 +514,9 @@ pub struct FaderCtl {
     glide_to: Option<f64>,
     glide: Option<Glide>,
     pointer: Option<i32>,
+    /// The held pointer's type (#124 M1: only a primary down of that type
+    /// ends a touch whose end never came).
+    kind: Option<Pointer>,
     last_y: f64,
     travel: f64,
     pos: f64,
@@ -542,6 +547,7 @@ impl FaderCtl {
             glide_to,
             glide: None,
             pointer: None,
+            kind: None,
             last_y: 0.0,
             travel: 1.0,
             pos: 0.0,
@@ -668,14 +674,16 @@ impl FaderCtl {
     /// now drives the fader (#43 PR D): the position it showed, Live's,
     /// whether it showed its own (a finger, a glide, an open write, the
     /// hold) and the position the touch starts from. A held fader refuses
-    /// a second finger; a primary pointer's down (no other pointer is down)
-    /// ends the held touch, whose end the browser never delivered (#124:
-    /// iOS took the finger for a system gesture), as a cancel, and the new
-    /// finger drives the fader from where that touch left it (`lost`).
+    /// a second finger; a primary down of the held pointer's type
+    /// ([`Down::ends`]: no other pointer of that type is down) ends the held
+    /// touch, whose end the browser never delivered (#124: iOS took the
+    /// finger for a system gesture), as a cancel (`lost`), and the new finger
+    /// drives the fader: from Live's value when that touch had nothing left
+    /// to send, from the cap while a write is open or a hold runs.
     pub fn press(&mut self, down: Down, y: f64, travel: f64, now: f64, live: f64) -> Option<Taken> {
         let id = down.id;
         let lost = match self.pointer {
-            Some(_) if !down.ends(None) => return None,
+            Some(_) if !down.ends(self.kind) => return None,
             Some(held) => Some(self.lose(held, now)),
             None => None,
         };
@@ -686,6 +694,7 @@ impl FaderCtl {
         }
         self.glide = None;
         self.pointer = Some(id);
+        self.kind = down.kind;
         self.last_y = y;
         self.travel = travel.max(1.0);
         self.first_move = self.anchors;
@@ -705,20 +714,28 @@ impl FaderCtl {
     }
 
     /// Ends pointer `id`'s touch, whose end the browser never delivered
-    /// (#124): as a cancel (no tap), the move it left unsent its end.
+    /// (#124): as a cancel (no tap), the move it left unsent its end. With
+    /// nothing left to send the finger left long ago, so no post-release
+    /// hold starts from now (#124 I1): the hold it had stays (a recent
+    /// ack's), and the next touch starts from Live's value unless a write
+    /// is open or that hold runs. A move it left unsent goes as its end:
+    /// Live is about to hold it, so the hold keeps the cap there.
     fn lose(&mut self, id: i32, now: f64) -> Lost {
-        Lost {
-            pointer: id,
-            end: touch_end(true, self.cancel(id, now)),
+        let hold_until = self.hold_until;
+        let end = touch_end(true, self.cancel(id, now));
+        if end == TouchEnd::Released {
+            self.hold_until = hold_until;
         }
+        Lost { pointer: id, end }
     }
 
     /// The page went hidden (#124): a pointer still held lost its end (a
     /// hidden Home Screen app keeps no touch going), and its touch ends as
     /// one a primary down ends, whatever `isPrimary` the next finger
     /// brings. None when no pointer is held.
-    pub fn hidden(&mut self, _now: f64) -> Option<Lost> {
-        None
+    pub fn hidden(&mut self, now: f64) -> Option<Lost> {
+        let held = self.pointer?;
+        Some(self.lose(held, now))
     }
 
     /// Whether pointer `id` drives this fader (its release is this fader's).
