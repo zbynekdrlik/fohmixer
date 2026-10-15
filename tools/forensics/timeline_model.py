@@ -127,16 +127,23 @@ def _starts(touch, key):
     return touch.data.get("what") in ("down", "tap") and _names(touch, key)
 
 
+# The ends of a touch: a lift, a cancel, and (#124) a touch whose end the
+# browser never delivered, which the page ends at the next primary down on
+# its control and records as ``lost``.
+LIFTS = ("up", "cancel", "lost")
+
+
 def lift_of(later, key, pointer):
     """The lift of a ``down`` of ``key`` by ``pointer``, among the touches
-    ``later`` than it: the first ``up`` or ``cancel`` of that pointer naming
-    the key, searched only up to that pointer's next ``down`` naming the key
-    (a lift lost on the way); None when there is none."""
+    ``later`` than it: the first ``up``, ``cancel`` or ``lost`` (``LIFTS``)
+    of that pointer naming the key, searched only up to that pointer's next
+    ``down`` naming the key (a lift lost on the way); None when there is
+    none."""
     for t in later:
         if t.data.get("pointer") != pointer or not _names(t, key):
             continue
         what = t.data.get("what")
-        if what in ("up", "cancel"):
+        if what in LIFTS:
             return t
         if what == "down":
             return None
@@ -152,9 +159,10 @@ def gestures(touches, key, end):
     - A ``down`` spans to its lift plus ``GESTURE_TAIL_MS``, cut at the start
       of the next touch (``down`` or ``tap``) of the key that begins at or
       after the lift (a fader let go and grabbed again within the tail: the
-      time the finger was off is no gap). Its lift is the first ``up`` or
-      ``cancel`` with the same pointer whose keys name the key, searched only
-      up to that pointer's next ``down`` of the key.
+      time the finger was off is no gap). Its lift is the first ``up``,
+      ``cancel`` or ``lost`` (#124: an end the page inferred at the next
+      primary down) with the same pointer whose keys name the key, searched
+      only up to that pointer's next ``down`` of the key.
     - A ``down`` with no lift spans to the start of the next touch of the
       key (another finger's or tablet's too), else to ``end`` (a fader held
       past the window).

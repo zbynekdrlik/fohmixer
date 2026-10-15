@@ -16,7 +16,7 @@
 
 use fohmixer_proto::layout::FaderLaw;
 
-use super::{Motion, Start, Taken};
+use super::{Lost, Motion, Start, Taken, touch_end};
 
 /// TouchOSC's position ↔ Live volume exponent: `v = p^0.515` (−6 dB at
 /// half travel).
@@ -666,19 +666,25 @@ impl FaderCtl {
     /// [`FaderCtl::down`], with where the touch started when this pointer
     /// now drives the fader (#43 PR D): the position it showed, Live's,
     /// whether it showed its own (a finger, a glide, an open write, the
-    /// hold) and the position the touch starts from.
+    /// hold) and the position the touch starts from. A held fader refuses
+    /// a second finger; a primary pointer's down (no other pointer is down)
+    /// ends the held touch, whose end the browser never delivered (#124:
+    /// iOS took the finger for a system gesture), as a cancel, and the new
+    /// finger drives the fader from where that touch left it (`lost`).
     pub fn press(
         &mut self,
         id: i32,
-        _primary: bool,
+        primary: bool,
         y: f64,
         travel: f64,
         now: f64,
         live: f64,
     ) -> Option<Taken> {
-        if self.pointer.is_some() {
-            return None;
-        }
+        let lost = match self.pointer {
+            Some(_) if !primary => return None,
+            Some(held) => Some(self.lose(held, now)),
+            None => None,
+        };
         let shown = self.pos;
         let local = self.local(now);
         if !local {
@@ -700,8 +706,17 @@ impl FaderCtl {
                 local,
                 from: self.pos,
             },
-            lost: None,
+            lost,
         })
+    }
+
+    /// Ends pointer `id`'s touch, whose end the browser never delivered
+    /// (#124): as a cancel (no tap), the move it left unsent its end.
+    fn lose(&mut self, id: i32, now: f64) -> Lost {
+        Lost {
+            pointer: id,
+            end: touch_end(true, self.cancel(id, now)),
+        }
     }
 
     /// Whether pointer `id` drives this fader (its release is this fader's).

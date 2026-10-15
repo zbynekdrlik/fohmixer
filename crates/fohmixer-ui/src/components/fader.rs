@@ -16,7 +16,9 @@
 //! drops a `not_sent` write. Each touch's down, up and cancel goes to the
 //! page's flight recorder (#43, PR C): the down with where the touch started
 //! (`FaderCtl::press`), and each frame that sends from the finger with the
-//! pointer moves it carried (`diag::trace::moves::Trail`, PR D).
+//! pointer moves it carried (`diag::trace::moves::Trail`, PR D). A primary
+//! down ends a touch whose end the browser never delivered (#124) as a
+//! cancel, recorded `lost` before the new finger's down.
 //!
 //! The backing-tracks fader (#58, `vca`): its cap stands at the loudest
 //! target, a touch keeps every target's volume at its start and each move
@@ -329,6 +331,23 @@ pub fn FaderView(
         });
     };
 
+    // The end of a touch (`behave::touch_end`): the unsent move as a final
+    // `set`, or the release time of the write already sent (L4).
+    // The flight recorder hears the end of this fader's own touches.
+    let ended = move |end: Option<TouchEnd>, what: &str, id: i32| {
+        match end {
+            Some(TouchEnd::Send(p)) => sent_moves(p, send(p, true, None)),
+            Some(TouchEnd::Released) => {
+                let _ = keys.try_with_value(|k| store.release(k));
+            }
+            Some(TouchEnd::NotMine) | None => {}
+        }
+        if end.is_some_and(TouchEnd::ends_touch) {
+            let _ = keys.try_with_value(|k| trace_touch(what, k, id));
+            let _ = trail.try_update_value(|t| t.end(id));
+        }
+    };
+
     let on_down = move |ev: web_sys::PointerEvent| {
         if !takes_input() {
             return;
@@ -364,7 +383,12 @@ pub fn FaderView(
         let taken = ctl
             .try_update_value(|c| c.press(id, primary, y, travel, dom::now(), at))
             .flatten();
-        if let Some(Taken { start, .. }) = taken {
+        if let Some(Taken { start, lost }) = taken {
+            // A touch whose end the browser never delivered, ended by this
+            // primary down (#124): its end first, recorded as `lost`.
+            if let Some(lost) = lost {
+                ended(Some(lost.end), "lost", lost.pointer);
+            }
             let _ = drag.try_set_value(begun);
             let _ = el.set_pointer_capture(id);
             let press = Press {
@@ -389,22 +413,6 @@ pub fn FaderView(
         if let Some(pos) = moved {
             let at = dom::event_epoch(&ev);
             let _ = trail.try_update_value(|t| t.moved(id, at, y, pos));
-        }
-    };
-    // The end of a touch (`behave::touch_end`): the unsent move as a final
-    // `set`, or the release time of the write already sent (L4).
-    // The flight recorder hears the end of this fader's own touches.
-    let ended = move |end: Option<TouchEnd>, what: &str, id: i32| {
-        match end {
-            Some(TouchEnd::Send(p)) => sent_moves(p, send(p, true, None)),
-            Some(TouchEnd::Released) => {
-                let _ = keys.try_with_value(|k| store.release(k));
-            }
-            Some(TouchEnd::NotMine) | None => {}
-        }
-        if end.is_some_and(TouchEnd::ends_touch) {
-            let _ = keys.try_with_value(|k| trace_touch(what, k, id));
-            let _ = trail.try_update_value(|t| t.end(id));
         }
     };
     let on_up = move |ev: web_sys::PointerEvent| {

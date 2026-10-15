@@ -4,7 +4,7 @@
 //! TouchOSC script jumped), grey when centred and cyan otherwise.
 
 use super::fader::Glide;
-use super::{Motion, Start, Taken};
+use super::{Lost, Motion, Start, Taken, touch_end};
 
 /// The colour of a centred pan and of an off-centre one.
 pub const CENTERED: &str = "#646464";
@@ -105,19 +105,24 @@ impl PanCtl {
     /// [`PanCtl::down`], with where the touch started when this pointer now
     /// drives the pan (#43 PR D), in positions: the one it showed, Live's
     /// panning's, whether it showed its own (a finger, the hold) and the one
-    /// the touch starts from.
+    /// the touch starts from. A held pan refuses a second finger; a primary
+    /// pointer's down (no other pointer is down) ends the held touch, whose
+    /// end the browser never delivered (#124), as a cancel, and the new
+    /// finger drives the pan from where that touch left it (`lost`).
     pub fn press(
         &mut self,
         id: i32,
-        _primary: bool,
+        primary: bool,
         x: f64,
         travel: f64,
         now: f64,
         live: f64,
     ) -> Option<Taken> {
-        if self.pointer.is_some() {
-            return None;
-        }
+        let lost = match self.pointer {
+            Some(_) if !primary => return None,
+            Some(held) => Some(self.lose(held, now)),
+            None => None,
+        };
         let shown = self.pos;
         let local = self.local(now);
         if !local {
@@ -136,8 +141,18 @@ impl PanCtl {
                 local,
                 from: self.pos,
             },
-            lost: None,
+            lost,
         })
+    }
+
+    /// Ends pointer `id`'s touch, whose end the browser never delivered
+    /// (#124): as a cancel (no release that centres), the panning it left
+    /// unsent its end.
+    fn lose(&mut self, id: i32, now: f64) -> Lost {
+        Lost {
+            pointer: id,
+            end: touch_end(true, self.cancel(id, now)),
+        }
     }
 
     /// Whether pointer `id` drives this pan (its release is this pan's).
