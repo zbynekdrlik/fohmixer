@@ -31,6 +31,8 @@ pub mod timing;
 pub mod toggle;
 pub mod vca;
 
+use crate::diag::perf::Pointer;
+
 /// What a continuous control (fader, pan) shows and sends in one frame.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Motion {
@@ -52,6 +54,37 @@ pub struct Start {
     pub live: f64,
     pub local: bool,
     pub from: f64,
+}
+
+/// A pointer's down on a control that holds it until its end (a fader, a
+/// pan, a pulse toggle; #124): its id, its type (`PointerEvent.pointerType`,
+/// none for another) and whether it is the primary pointer of its type (the
+/// browser's `isPrimary`: no other pointer of that type is down).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Down {
+    pub id: i32,
+    pub kind: Option<Pointer>,
+    pub primary: bool,
+}
+
+impl Down {
+    /// A finger's down (a touch pointer).
+    pub fn touch(id: i32, primary: bool) -> Self {
+        Self {
+            id,
+            kind: Some(Pointer::Touch),
+            primary,
+        }
+    }
+
+    /// Whether this down ends a held pointer of type `held` whose end the
+    /// browser never delivered: a primary pointer of that same type means
+    /// no other of its type is down (as `diag::perf::Perf::down` forgets
+    /// its type's missed ups); a mouse or a pen is primary among its own
+    /// kind and never ends a finger's touch (#124 M1).
+    pub fn ends(self, _held: Option<Pointer>) -> bool {
+        self.primary
+    }
 }
 
 /// A press a continuous control (fader, pan) took: where its touch started
@@ -131,6 +164,41 @@ mod tests {
         assert!(TouchEnd::Send(0.4).ends_touch());
         assert!(TouchEnd::Released.ends_touch());
         assert!(!TouchEnd::NotMine.ends_touch());
+    }
+
+    #[test]
+    fn only_a_primary_down_of_the_held_pointers_type_ends_it() {
+        let touch = Some(Pointer::Touch);
+        assert!(Down::touch(2, true).ends(touch));
+        assert!(!Down::touch(2, false).ends(touch), "a second finger");
+        let mouse = Down {
+            id: 1,
+            kind: Some(Pointer::Mouse),
+            primary: true,
+        };
+        assert!(!mouse.ends(touch), "a mouse is primary among mice only");
+        assert!(mouse.ends(Some(Pointer::Mouse)));
+        let pen = Down {
+            id: 3,
+            kind: Some(Pointer::Pen),
+            primary: true,
+        };
+        assert!(!pen.ends(touch) && !pen.ends(Some(Pointer::Mouse)));
+        let other = Down {
+            id: 4,
+            kind: None,
+            primary: true,
+        };
+        assert!(!other.ends(touch), "a type the page does not know");
+        assert!(other.ends(None));
+        assert_eq!(
+            Down::touch(7, false),
+            Down {
+                id: 7,
+                kind: Some(Pointer::Touch),
+                primary: false,
+            }
+        );
     }
 
     #[test]

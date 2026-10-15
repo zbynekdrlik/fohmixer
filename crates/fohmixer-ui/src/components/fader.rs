@@ -36,7 +36,8 @@ use leptos::prelude::*;
 use serde_json::json;
 
 use super::{
-    fail_flash, owns_touches, readiness, readiness_now, trace_move, trace_start, trace_touch,
+    down_of, fail_flash, owns_touches, readiness, readiness_now, trace_move, trace_start,
+    trace_touch,
 };
 use crate::behave::fader::{self as curve, FaderCtl, UNITY, VolumeLaw};
 use crate::behave::vca::{self, Drag, Home};
@@ -377,11 +378,11 @@ pub fn FaderView(
         };
         ev.prevent_default();
         let travel = el.get_bounding_client_rect().height().max(1.0);
-        let id = ev.pointer_id();
-        let primary = ev.is_primary();
+        let down = down_of(&ev);
+        let id = down.id;
         let y = f64::from(ev.client_y());
         let taken = ctl
-            .try_update_value(|c| c.press(id, primary, y, travel, dom::now(), at))
+            .try_update_value(|c| c.press(down, y, travel, dom::now(), at))
             .flatten();
         if let Some(Taken { start, lost }) = taken {
             // A touch whose end the browser never delivered, ended by this

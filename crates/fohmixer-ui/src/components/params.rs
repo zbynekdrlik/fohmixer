@@ -14,7 +14,7 @@ use serde_json::Value;
 use super::fader::{self, FaderView, Law};
 use super::strip::ScaleView;
 use super::{
-    BtnText, Settings, fail_flash, intent_look, key_of, owns_touches, readiness, slot_of,
+    BtnText, Settings, down_of, fail_flash, intent_look, key_of, owns_touches, readiness, slot_of,
     touch_end_name, trace_touch,
 };
 use crate::behave::fader::UNITY;
@@ -135,7 +135,8 @@ pub fn ParamToggleView(
             let _ = el.set_pointer_capture(ev.pointer_id());
         }
         let _ = keys.try_with_value(|k| trace_touch("down", k, ev.pointer_id()));
-        if let Some(Some(w)) = ctl.try_update_value(|c| c.down(press, now_state, dom::now())) {
+        let by = down_of(&ev);
+        if let Some(Some(w)) = ctl.try_update_value(|c| c.down(by, press, now_state, dom::now())) {
             write(w);
         }
     };

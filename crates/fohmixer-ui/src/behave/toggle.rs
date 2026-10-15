@@ -11,6 +11,8 @@
 use fohmixer_proto::layout::Press;
 use serde_json::Value;
 
+use super::Down;
+
 /// Two presses closer than this are a double tap.
 pub const DOUBLE_TAP_MS: f64 = 200.0;
 /// How close a number must be to the target's `on` value to count as on.
@@ -79,8 +81,9 @@ impl ToggleCtl {
         double
     }
 
-    /// A press at `now` on a toggle showing `state`: the write, if any.
-    pub fn down(&mut self, press: Press, state: ToggleState, now: f64) -> Option<Write> {
+    /// A press by `by` at `now` on a toggle showing `state`: the write, if
+    /// any.
+    pub fn down(&mut self, _by: Down, press: Press, state: ToggleState, now: f64) -> Option<Write> {
         let flip = if state == ToggleState::On {
             Write::Off
         } else {
@@ -101,6 +104,22 @@ impl ToggleCtl {
         }
     }
 
+    /// A pointer comes down (`by`, #124): a pulse whose press's release the
+    /// browser never delivered ends when this is a primary pointer of that
+    /// press's type (no other of its type is down): the press's pointer,
+    /// and the pulse's `Off` goes (a pulse left on is worse than a stuck
+    /// fader). None otherwise, a second finger's down included.
+    pub fn missed(&mut self, _by: Down) -> Option<i32> {
+        None
+    }
+
+    /// The page went hidden (#124): a pulse still running ends, its
+    /// press's release lost (a hidden Home Screen app keeps no touch
+    /// going): the press's pointer, and the pulse's `Off` goes.
+    pub fn hidden(&mut self) -> Option<i32> {
+        None
+    }
+
     /// The release: the end of a pulse, if one is running.
     pub fn up(&mut self) -> Option<Write> {
         let pulsing = self.pulsing;
@@ -112,6 +131,7 @@ impl ToggleCtl {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::diag::perf::Pointer;
     use serde_json::json;
 
     #[test]
@@ -146,15 +166,15 @@ mod tests {
     fn toggle_turns_all_on_unless_all_are_on() {
         let mut t = ToggleCtl::default();
         assert_eq!(
-            t.down(Press::Toggle, ToggleState::Off, 0.0),
+            t.down(Down::touch(1, true), Press::Toggle, ToggleState::Off, 0.0),
             Some(Write::On)
         );
         assert_eq!(
-            t.down(Press::Toggle, ToggleState::Mixed, 1.0),
+            t.down(Down::touch(1, true), Press::Toggle, ToggleState::Mixed, 1.0),
             Some(Write::On)
         );
         assert_eq!(
-            t.down(Press::Toggle, ToggleState::On, 2.0),
+            t.down(Down::touch(1, true), Press::Toggle, ToggleState::On, 2.0),
             Some(Write::Off)
         );
         assert_eq!(t.up(), None);
@@ -164,18 +184,30 @@ mod tests {
     fn double_tap_latch_ignores_single_presses() {
         let mut t = ToggleCtl::default();
         let press = Press::DoubleTapLatch;
-        assert_eq!(t.down(press, ToggleState::Off, 0.0), None);
-        assert_eq!(t.up(), None);
-        assert_eq!(t.down(press, ToggleState::Off, 199.0), Some(Write::On));
-        assert_eq!(t.down(press, ToggleState::On, 300.0), None);
         assert_eq!(
-            t.down(press, ToggleState::On, 500.0),
+            t.down(Down::touch(1, true), press, ToggleState::Off, 0.0),
+            None
+        );
+        assert_eq!(t.up(), None);
+        assert_eq!(
+            t.down(Down::touch(1, true), press, ToggleState::Off, 199.0),
+            Some(Write::On)
+        );
+        assert_eq!(
+            t.down(Down::touch(1, true), press, ToggleState::On, 300.0),
+            None
+        );
+        assert_eq!(
+            t.down(Down::touch(1, true), press, ToggleState::On, 500.0),
             None,
             "200 ms is too slow"
         );
-        assert_eq!(t.down(press, ToggleState::On, 650.0), Some(Write::Off));
         assert_eq!(
-            t.down(press, ToggleState::Off, 700.0),
+            t.down(Down::touch(1, true), press, ToggleState::On, 650.0),
+            Some(Write::Off)
+        );
+        assert_eq!(
+            t.down(Down::touch(1, true), press, ToggleState::Off, 700.0),
             None,
             "a double tap resets"
         );
@@ -185,7 +217,10 @@ mod tests {
     fn a_pulse_press_turns_on_until_the_release() {
         let mut t = ToggleCtl::default();
         let press = Press::PulseAndDoubleTapLatch;
-        assert_eq!(t.down(press, ToggleState::Off, 0.0), Some(Write::On));
+        assert_eq!(
+            t.down(Down::touch(1, true), press, ToggleState::Off, 0.0),
+            Some(Write::On)
+        );
         assert_eq!(t.up(), Some(Write::Off));
         assert_eq!(t.up(), None, "one release, one off");
     }
@@ -194,13 +229,82 @@ mod tests {
     fn a_double_tap_latches_the_pulse_and_a_press_unlatches() {
         let mut t = ToggleCtl::default();
         let press = Press::PulseAndDoubleTapLatch;
-        assert_eq!(t.down(press, ToggleState::Off, 0.0), Some(Write::On));
+        assert_eq!(
+            t.down(Down::touch(1, true), press, ToggleState::Off, 0.0),
+            Some(Write::On)
+        );
         assert_eq!(t.up(), Some(Write::Off));
-        assert_eq!(t.down(press, ToggleState::Off, 150.0), Some(Write::On));
+        assert_eq!(
+            t.down(Down::touch(1, true), press, ToggleState::Off, 150.0),
+            Some(Write::On)
+        );
         assert_eq!(t.up(), None, "latched");
-        assert_eq!(t.down(press, ToggleState::On, 1000.0), Some(Write::Off));
+        assert_eq!(
+            t.down(Down::touch(1, true), press, ToggleState::On, 1000.0),
+            Some(Write::Off)
+        );
         assert_eq!(t.up(), None, "an unlatch is no pulse");
-        assert_eq!(t.down(press, ToggleState::Mixed, 2000.0), Some(Write::On));
+        assert_eq!(
+            t.down(Down::touch(1, true), press, ToggleState::Mixed, 2000.0),
+            Some(Write::On)
+        );
         assert_eq!(t.up(), Some(Write::Off), "a mixed state pulses");
+    }
+
+    #[test]
+    fn a_primary_down_ends_a_pulse_whose_release_never_came() {
+        // #124 M2: pointer 1's pulse is on and its release never came. A
+        // second finger or a primary mouse ends nothing; a primary finger
+        // does (its Off goes), and the lost release then ends nothing.
+        let mut t = ToggleCtl::default();
+        let press = Press::PulseAndDoubleTapLatch;
+        assert_eq!(
+            t.down(Down::touch(1, true), press, ToggleState::Off, 0.0),
+            Some(Write::On)
+        );
+        assert_eq!(t.missed(Down::touch(2, false)), None, "a second finger");
+        let mouse = Down {
+            id: 3,
+            kind: Some(Pointer::Mouse),
+            primary: true,
+        };
+        assert_eq!(t.missed(mouse), None, "a mouse never ends a finger's");
+        assert_eq!(t.missed(Down::touch(2, true)), Some(1));
+        assert_eq!(t.missed(Down::touch(4, true)), None, "once");
+        assert_eq!(t.up(), None, "the pulse already ended");
+    }
+
+    #[test]
+    fn a_hidden_page_ends_a_running_pulse_only() {
+        let mut t = ToggleCtl::default();
+        let press = Press::PulseAndDoubleTapLatch;
+        assert_eq!(t.hidden(), None, "nothing pressed");
+        assert_eq!(
+            t.down(Down::touch(5, true), press, ToggleState::Off, 0.0),
+            Some(Write::On)
+        );
+        assert_eq!(t.hidden(), Some(5));
+        assert_eq!(t.hidden(), None, "once");
+        assert_eq!(t.up(), None);
+        // A latched pulse is no press: a hide leaves it on.
+        assert_eq!(
+            t.down(Down::touch(6, true), press, ToggleState::Off, 1_000.0),
+            Some(Write::On)
+        );
+        assert_eq!(t.up(), Some(Write::Off));
+        assert_eq!(
+            t.down(Down::touch(7, true), press, ToggleState::Off, 1_150.0),
+            Some(Write::On)
+        );
+        assert_eq!(t.hidden(), None, "latched");
+        assert_eq!(t.missed(Down::touch(8, true)), None, "latched");
+        // A plain toggle holds nothing.
+        let mut t = ToggleCtl::default();
+        assert_eq!(
+            t.down(Down::touch(9, true), Press::Toggle, ToggleState::Off, 0.0),
+            Some(Write::On)
+        );
+        assert_eq!(t.hidden(), None);
+        assert_eq!(t.missed(Down::touch(10, true)), None);
     }
 }

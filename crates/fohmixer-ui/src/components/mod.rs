@@ -20,11 +20,12 @@ use fohmixer_proto::layout::{Control, MeterSource};
 use leptos::html;
 use leptos::prelude::*;
 
-use crate::behave::Start;
 use crate::behave::fader::VolumeLaw;
 use crate::behave::label::longest_word_chars;
 use crate::behave::vca::is_vca;
+use crate::behave::{Down, Start};
 use crate::binding::SubSpec;
+use crate::diag::perf::Pointer;
 use crate::diag::trace::moves::{self, Press, Trail};
 use crate::diag::trace::sys;
 use crate::dom;
@@ -90,6 +91,16 @@ pub fn owns_touches(el: web_sys::Element, keys: Vec<String>) {
 /// ([`sys::SURFACE_PREVENTS`]).
 pub fn owns_surface(el: web_sys::Element) {
     dom::prevent_on(&el, &sys::SURFACE_PREVENTS);
+}
+
+/// A pointer event's down as a control that holds the pointer reads it
+/// (#124, `behave::Down`): its id, its type and whether it is primary.
+pub fn down_of(ev: &web_sys::PointerEvent) -> Down {
+    Down {
+        id: ev.pointer_id(),
+        kind: Pointer::parse(&ev.pointer_type()),
+        primary: ev.is_primary(),
+    }
 }
 
 /// Records a touch (`down`, `up`, `cancel`, or a toggle's `tap`) on the

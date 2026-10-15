@@ -4,7 +4,7 @@
 //! TouchOSC script jumped), grey when centred and cyan otherwise.
 
 use super::fader::Glide;
-use super::{Lost, Motion, Start, Taken, touch_end};
+use super::{Down, Lost, Motion, Start, Taken, touch_end};
 
 /// The colour of a centred pan and of an off-centre one.
 pub const CENTERED: &str = "#646464";
@@ -99,7 +99,8 @@ impl PanCtl {
         now: f64,
         live: f64,
     ) -> bool {
-        self.press(id, primary, x, travel, now, live).is_some()
+        self.press(Down::touch(id, primary), x, travel, now, live)
+            .is_some()
     }
 
     /// [`PanCtl::down`], with where the touch started when this pointer now
@@ -109,17 +110,10 @@ impl PanCtl {
     /// pointer's down (no other pointer is down) ends the held touch, whose
     /// end the browser never delivered (#124), as a cancel, and the new
     /// finger drives the pan from where that touch left it (`lost`).
-    pub fn press(
-        &mut self,
-        id: i32,
-        primary: bool,
-        x: f64,
-        travel: f64,
-        now: f64,
-        live: f64,
-    ) -> Option<Taken> {
+    pub fn press(&mut self, down: Down, x: f64, travel: f64, now: f64, live: f64) -> Option<Taken> {
+        let id = down.id;
         let lost = match self.pointer {
-            Some(_) if !primary => return None,
+            Some(_) if !down.ends(None) => return None,
             Some(held) => Some(self.lose(held, now)),
             None => None,
         };
@@ -153,6 +147,14 @@ impl PanCtl {
             pointer: id,
             end: touch_end(true, self.cancel(id, now)),
         }
+    }
+
+    /// The page went hidden (#124): a pointer still held lost its end (a
+    /// hidden Home Screen app keeps no touch going), and its touch ends as
+    /// one a primary down ends, whatever `isPrimary` the next finger
+    /// brings. None when no pointer is held.
+    pub fn hidden(&mut self, _now: f64) -> Option<Lost> {
+        None
     }
 
     /// Whether pointer `id` drives this pan (its release is this pan's).
@@ -277,6 +279,7 @@ impl PanCtl {
 mod tests {
     use super::*;
     use crate::behave::{Lost, TouchEnd};
+    use crate::diag::perf::Pointer;
 
     #[test]
     fn the_position_maps_to_minus_one_to_one() {
@@ -424,7 +427,7 @@ mod tests {
         let at = p.pos();
         assert!(close(at, 0.65), "{at}");
         assert_eq!(
-            p.press(2, true, 100.0, 200.0, 320.0, 0.5),
+            p.press(Down::touch(2, true), 100.0, 200.0, 320.0, 0.5),
             Some(Taken {
                 start: Start {
                     shown: at,
@@ -458,23 +461,23 @@ mod tests {
             })
         };
         assert_eq!(
-            p.press(1, true, 100.0, 200.0, 10.0, 0.5),
+            p.press(Down::touch(1, true), 100.0, 200.0, 10.0, 0.5),
             start(0.5, 0.75, false, 0.75),
             "from Live's panning, as a position"
         );
-        assert_eq!(p.press(2, false, 0.0, 200.0, 11.0, 0.5), None);
+        assert_eq!(p.press(Down::touch(2, false), 0.0, 200.0, 11.0, 0.5), None);
         anchor(&mut p, 1, 100.0);
         assert!(p.moved(1, 125.0));
         assert_eq!(p.up(1, 20.0), Some(to_live(0.875)));
         assert_eq!(
-            p.press(1, true, 100.0, 200.0, 119.0, 0.0),
+            p.press(Down::touch(1, true), 100.0, 200.0, 119.0, 0.0),
             start(0.875, 0.5, true, 0.875),
             "within the hold"
         );
         assert_eq!(p.cancel(1, 150.0), None);
         let _ = p.frame(251.0, Some(-0.5));
         assert_eq!(
-            p.press(1, true, 100.0, 200.0, 252.0, 1.0),
+            p.press(Down::touch(1, true), 100.0, 200.0, 252.0, 1.0),
             start(0.25, 1.0, false, 1.0)
         );
     }
@@ -482,7 +485,7 @@ mod tests {
     #[test]
     fn a_second_finger_takes_a_free_pan() {
         let mut p = PanCtl::default();
-        let taken = p.press(2, false, 100.0, 200.0, 0.0, 0.0);
+        let taken = p.press(Down::touch(2, false), 100.0, 200.0, 0.0, 0.0);
         assert_eq!(taken.map(|t| t.lost), Some(None), "it ends no touch");
         assert!(p.drives(2));
     }
@@ -491,24 +494,25 @@ mod tests {
     fn a_primary_down_ends_a_touch_whose_end_never_came() {
         // #124, as a fader's: pointer 1's end never came. A second finger is
         // still refused; a primary down ends pointer 1's touch as a cancel
-        // and drives the pan from where it was.
+        // and drives the pan from Live's panning (#124 I1: nothing was left
+        // to send, so no hold keeps the dot).
         let mut p = touched(0.0);
         anchor(&mut p, 1, 100.0);
         assert!(p.moved(1, 150.0));
         assert_eq!(p.frame(10.0, Some(0.0)).send, Some(0.5));
         assert_eq!(
-            p.press(2, false, 0.0, 200.0, 20.0, 0.5),
+            p.press(Down::touch(2, false), 0.0, 200.0, 20.0, 0.5),
             None,
             "a second finger"
         );
         assert!(p.drives(1));
         assert_eq!(
-            p.press(2, true, 0.0, 200.0, 5_000.0, 0.5),
+            p.press(Down::touch(2, true), 0.0, 200.0, 5_000.0, 0.5),
             Some(Taken {
                 start: Start {
                     shown: 0.75,
                     live: 0.75,
-                    local: true,
+                    local: false,
                     from: 0.75,
                 },
                 lost: Some(Lost {
@@ -537,7 +541,7 @@ mod tests {
         anchor(&mut p, 1, 100.0);
         assert!(p.moved(1, 150.0));
         let lost = p
-            .press(2, true, 0.0, 200.0, 100.0, 0.0)
+            .press(Down::touch(2, true), 0.0, 200.0, 100.0, 0.0)
             .and_then(|t| t.lost);
         assert_eq!(
             lost,
@@ -555,6 +559,85 @@ mod tests {
         let after = p.frame(500.0, Some(0.5));
         assert_eq!(after.send, None, "no glide to the centre");
         assert_eq!(after.pos, Some(0.75), "Live's value after the hold");
+    }
+
+    /// A pan whose pointer 1 dragged from the centre to 0.75 and whose
+    /// frame sent it, its end never delivered (#124).
+    fn stuck() -> PanCtl {
+        let mut p = touched(0.0);
+        anchor(&mut p, 1, 100.0);
+        assert!(p.moved(1, 150.0));
+        assert_eq!(p.frame(10.0, Some(0.0)).send, Some(0.5));
+        p
+    }
+
+    #[test]
+    fn a_long_lost_touch_hands_the_next_finger_lives_panning() {
+        // #124 I1: Live's panning moved to -0.5 (position 0.25) while the
+        // dot stayed at 0.75; the next finger starts from Live's, and its
+        // first move sends -0.25 (25 px on), never near the stale 0.5.
+        let mut p = stuck();
+        assert_eq!(p.frame(5_000.0, Some(-0.5)).pos, Some(0.75));
+        let Taken { start, lost } = p
+            .press(Down::touch(2, true), 0.0, 200.0, 5_000.0, -0.5)
+            .expect("a primary down takes the pan");
+        assert_eq!(lost.map(|l| l.end), Some(TouchEnd::Released));
+        assert_eq!(
+            start,
+            Start {
+                shown: 0.75,
+                live: 0.25,
+                local: false,
+                from: 0.25,
+            }
+        );
+        anchor(&mut p, 2, 0.0);
+        assert!(p.moved(2, 25.0));
+        assert_eq!(p.frame(5_010.0, Some(-0.5)).send, Some(-0.25));
+        // Its unsent move goes as its end: Live is about to hold it, so the
+        // next finger starts there.
+        let mut p = touched(0.0);
+        anchor(&mut p, 1, 100.0);
+        assert!(p.moved(1, 150.0));
+        let Taken { start, .. } = p
+            .press(Down::touch(2, true), 0.0, 200.0, 5_000.0, -0.5)
+            .expect("taken");
+        assert!(start.local);
+        assert_eq!(start.from, 0.75);
+    }
+
+    #[test]
+    fn a_hidden_page_ends_a_held_pan_touch() {
+        assert_eq!(PanCtl::default().hidden(0.0), None, "nothing held");
+        let mut p = stuck();
+        assert_eq!(
+            p.hidden(5_000.0),
+            Some(Lost {
+                pointer: 1,
+                end: TouchEnd::Released,
+            })
+        );
+        assert!(!p.drives(1));
+        assert_eq!(p.hidden(5_001.0), None, "once");
+        // A second finger takes the free pan, from Live's panning.
+        let start = p
+            .press(Down::touch(2, false), 0.0, 200.0, 6_000.0, -0.5)
+            .expect("taken")
+            .start;
+        assert_eq!(start.from, 0.25);
+    }
+
+    #[test]
+    fn a_primary_down_of_another_type_never_ends_a_held_pan_touch() {
+        let mut p = stuck();
+        let mouse = Down {
+            id: 9,
+            kind: Some(Pointer::Mouse),
+            primary: true,
+        };
+        assert_eq!(p.press(mouse, 0.0, 200.0, 5_000.0, 0.5), None);
+        assert!(p.drives(1));
+        assert!(p.down(2, true, 0.0, 200.0, 5_000.0, 0.5));
     }
 
     #[test]

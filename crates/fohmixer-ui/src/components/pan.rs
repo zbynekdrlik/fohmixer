@@ -22,7 +22,7 @@ use leptos::html;
 use leptos::prelude::*;
 use serde_json::json;
 
-use super::{fail_flash, owns_touches, readiness, trace_move, trace_start, trace_touch};
+use super::{down_of, fail_flash, owns_touches, readiness, trace_move, trace_start, trace_touch};
 use crate::behave::pan::{self, PanCtl};
 use crate::behave::{Taken, TouchEnd, touch_end};
 use crate::binding::SubSpec;
@@ -104,11 +104,11 @@ pub fn PanView(state: RwSignal<Slot>, spec: SubSpec) -> impl IntoView {
         // drawn (`--dot`: the detail's dot is large).
         let dot = dom::child(&el, ".pan-dot").map_or(0.0, |d| d.get_bounding_client_rect().width());
         let travel = (f64::from(el.client_width()) - dot).max(1.0);
-        let id = ev.pointer_id();
-        let primary = ev.is_primary();
+        let down = down_of(&ev);
+        let id = down.id;
         let x = f64::from(ev.client_x());
         let taken = ctl
-            .try_update_value(|c| c.press(id, primary, x, travel, dom::now(), at))
+            .try_update_value(|c| c.press(down, x, travel, dom::now(), at))
             .flatten();
         if let Some(Taken { start, lost }) = taken {
             // A touch whose end the browser never delivered, ended by this

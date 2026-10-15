@@ -16,7 +16,7 @@
 
 use fohmixer_proto::layout::FaderLaw;
 
-use super::{Lost, Motion, Start, Taken, touch_end};
+use super::{Down, Lost, Motion, Start, Taken, touch_end};
 
 /// TouchOSC's position ↔ Live volume exponent: `v = p^0.515` (−6 dB at
 /// half travel).
@@ -660,7 +660,8 @@ impl FaderCtl {
         now: f64,
         live: f64,
     ) -> bool {
-        self.press(id, primary, y, travel, now, live).is_some()
+        self.press(Down::touch(id, primary), y, travel, now, live)
+            .is_some()
     }
 
     /// [`FaderCtl::down`], with where the touch started when this pointer
@@ -671,17 +672,10 @@ impl FaderCtl {
     /// ends the held touch, whose end the browser never delivered (#124:
     /// iOS took the finger for a system gesture), as a cancel, and the new
     /// finger drives the fader from where that touch left it (`lost`).
-    pub fn press(
-        &mut self,
-        id: i32,
-        primary: bool,
-        y: f64,
-        travel: f64,
-        now: f64,
-        live: f64,
-    ) -> Option<Taken> {
+    pub fn press(&mut self, down: Down, y: f64, travel: f64, now: f64, live: f64) -> Option<Taken> {
+        let id = down.id;
         let lost = match self.pointer {
-            Some(_) if !primary => return None,
+            Some(_) if !down.ends(None) => return None,
             Some(held) => Some(self.lose(held, now)),
             None => None,
         };
@@ -717,6 +711,14 @@ impl FaderCtl {
             pointer: id,
             end: touch_end(true, self.cancel(id, now)),
         }
+    }
+
+    /// The page went hidden (#124): a pointer still held lost its end (a
+    /// hidden Home Screen app keeps no touch going), and its touch ends as
+    /// one a primary down ends, whatever `isPrimary` the next finger
+    /// brings. None when no pointer is held.
+    pub fn hidden(&mut self, _now: f64) -> Option<Lost> {
+        None
     }
 
     /// Whether pointer `id` drives this fader (its release is this fader's).

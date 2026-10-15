@@ -1,5 +1,6 @@
 use super::*;
 use crate::behave::{Lost, TouchEnd};
+use crate::diag::perf::Pointer;
 
 fn close(a: f64, b: f64) -> bool {
     (a - b).abs() < 1e-12
@@ -546,7 +547,7 @@ fn a_second_finger_takes_a_free_fader() {
     // Another finger is down on another control: this one's down is not
     // primary, and the fader is free, so it takes it.
     let mut f = FaderCtl::new(false, zero_db());
-    let taken = f.press(2, false, 500.0, TRAVEL, 0.0, 0.5);
+    let taken = f.press(Down::touch(2, false), 500.0, TRAVEL, 0.0, 0.5);
     assert_eq!(taken.map(|t| t.lost), Some(None), "it ends no touch");
     assert!(f.drives(2));
 }
@@ -561,15 +562,16 @@ fn a_primary_down_ends_a_touch_whose_end_never_came() {
     assert!(f.moved(1, 490.0, 10.0));
     assert_close(f.frame(16.0, Some(0.5)).send.unwrap(), 0.6);
     assert_eq!(
-        f.press(2, false, 300.0, TRAVEL, 20.0, 0.6),
+        f.press(Down::touch(2, false), 300.0, TRAVEL, 20.0, 0.6),
         None,
         "a second finger"
     );
     assert!(f.drives(1));
     // Pointer 1's touch ends as a cancel (no tap; the frame sent its move,
-    // so its write is released) and pointer 2 drives the fader from the cap.
+    // so its write is released) and pointer 2 drives the fader from Live's
+    // value (#124 I1: nothing was left to send and no ack is recent).
     let Taken { start, lost } = f
-        .press(2, true, 300.0, TRAVEL, 5_000.0, 0.6)
+        .press(Down::touch(2, true), 300.0, TRAVEL, 5_000.0, 0.6)
         .expect("a primary down takes the fader");
     assert_eq!(
         lost,
@@ -578,7 +580,7 @@ fn a_primary_down_ends_a_touch_whose_end_never_came() {
             end: TouchEnd::Released,
         })
     );
-    assert!(start.local, "the cap, as the lost touch left it");
+    assert!(!start.local, "Live's value, here where the cap stands");
     assert_close(start.from, 0.6);
     assert_close(start.shown, 0.6);
     assert!(f.drives(2) && !f.drives(1));
@@ -602,7 +604,7 @@ fn a_lost_touchs_unsent_move_goes_as_its_end() {
     assert!(f.moved(1, 490.0, 10.0));
     // No frame sent the move before the next finger came.
     let lost = f
-        .press(2, true, 300.0, TRAVEL, 12.0, 0.5)
+        .press(Down::touch(2, true), 300.0, TRAVEL, 12.0, 0.5)
         .and_then(|t| t.lost)
         .expect("pointer 1 lost");
     assert_eq!(lost.pointer, 1);
@@ -623,6 +625,150 @@ fn a_lost_touch_is_no_tap() {
     assert_eq!(f.up(2, 200.0), None);
     assert!(!f.held(), "no glide");
     assert_eq!(f.frame(1_300.0, Some(0.5)).send, None);
+}
+
+/// A fader whose pointer 1 dragged from 0.5 to 0.6 and whose frame sent
+/// it, its end never delivered (#124).
+fn stuck() -> FaderCtl {
+    let mut f = touched(0.5);
+    anchor(&mut f, 1, 500.0, 5.0);
+    assert!(f.moved(1, 490.0, 10.0));
+    assert_close(f.frame(16.0, Some(0.5)).send.unwrap(), 0.6);
+    f
+}
+
+#[test]
+fn a_long_lost_touch_hands_the_next_finger_lives_value() {
+    // #124 I1: while pointer 1 was held the cap stayed where it left it
+    // (0.6), and Live's value moved elsewhere (0.3: the channel detail's
+    // fader, Live's own window). Its write was acked long ago and nothing
+    // was left to send, so nothing holds the cap: the next finger starts
+    // from Live's value, and its first move sends near 0.3, never the
+    // stale 0.6.
+    let mut f = stuck();
+    f.intent(true, 16.0);
+    f.intent(false, 50.0);
+    assert_close(f.frame(5_000.0, Some(0.3)).pos.unwrap(), 0.6);
+    let Taken { start, lost } = f
+        .press(Down::touch(2, true), 300.0, TRAVEL, 5_000.0, 0.3)
+        .expect("a primary down takes the fader");
+    assert_eq!(lost.map(|l| l.end), Some(TouchEnd::Released));
+    assert!(!start.local);
+    assert_close(start.shown, 0.6);
+    assert_close(start.live, 0.3);
+    assert_close(start.from, 0.3);
+    anchor(&mut f, 2, 300.0, 5_010.0);
+    assert!(f.moved(2, 290.0, 5_020.0));
+    assert_close(f.frame(5_030.0, Some(0.3)).send.unwrap(), 0.4);
+}
+
+#[test]
+fn an_open_write_or_a_recent_ack_keeps_the_cap_for_the_next_finger() {
+    // Its write still open (L3): the cap shows the write, a touch starts
+    // there.
+    let mut f = stuck();
+    f.intent(true, 16.0);
+    let start = f
+        .press(Down::touch(2, true), 300.0, TRAVEL, 5_000.0, 0.3)
+        .expect("taken")
+        .start;
+    assert!(start.local);
+    assert_close(start.from, 0.6);
+    // Acked 50 ms before the next finger: within the hold, the cap.
+    let mut f = stuck();
+    f.intent(true, 16.0);
+    f.intent(false, 4_950.0);
+    let start = f
+        .press(Down::touch(2, true), 300.0, TRAVEL, 5_000.0, 0.3)
+        .expect("taken")
+        .start;
+    assert!(start.local);
+    assert_close(start.from, 0.6);
+}
+
+#[test]
+fn a_lost_touchs_unsent_move_keeps_the_cap_for_the_next_finger() {
+    // Its last move goes as its end, so Live is about to hold it: the next
+    // finger starts there.
+    let mut f = touched(0.5);
+    anchor(&mut f, 1, 500.0, 5.0);
+    assert!(f.moved(1, 490.0, 10.0));
+    let Taken { start, lost } = f
+        .press(Down::touch(2, true), 300.0, TRAVEL, 5_000.0, 0.3)
+        .expect("taken");
+    assert!(matches!(lost.map(|l| l.end), Some(TouchEnd::Send(_))));
+    assert!(start.local);
+    assert_close(start.from, 0.6);
+}
+
+#[test]
+fn a_hidden_page_ends_a_held_touch_whatever_the_next_finger_says() {
+    // #124: a hidden Home Screen app keeps no touch going. The touch
+    // pointer 1 held ends at the hide as one a primary down ends, so the
+    // next finger takes the fader even when the iPad does not mark it
+    // primary.
+    let mut free = FaderCtl::new(false, zero_db());
+    assert_eq!(free.hidden(0.0), None, "nothing held");
+    let mut f = stuck();
+    assert_eq!(
+        f.hidden(5_000.0),
+        Some(Lost {
+            pointer: 1,
+            end: TouchEnd::Released,
+        })
+    );
+    assert!(!f.held() && !f.drives(1));
+    assert_eq!(f.hidden(5_001.0), None, "once");
+    assert_eq!(f.up(1, 5_002.0), None, "its late lift is no touch");
+    let start = f
+        .press(Down::touch(2, false), 300.0, TRAVEL, 6_000.0, 0.3)
+        .expect("a second finger takes the free fader")
+        .start;
+    assert!(!start.local);
+    assert_close(start.from, 0.3);
+    // A move no frame sent goes as the hidden touch's end.
+    let mut f = touched(0.5);
+    anchor(&mut f, 1, 500.0, 5.0);
+    assert!(f.moved(1, 490.0, 10.0));
+    let lost = f.hidden(12.0).expect("pointer 1 lost");
+    let TouchEnd::Send(p) = lost.end else {
+        panic!("its unsent move, got {:?}", lost.end);
+    };
+    assert_close(p, 0.6);
+}
+
+#[test]
+fn a_primary_down_of_another_type_never_ends_a_held_touch() {
+    // #124 M1: `isPrimary` holds within a pointer type. A mouse or a pen is
+    // primary among its own kind while a finger holds the fader.
+    let mut f = stuck();
+    for kind in [Pointer::Mouse, Pointer::Pen] {
+        let other = Down {
+            id: 9,
+            kind: Some(kind),
+            primary: true,
+        };
+        assert_eq!(
+            f.press(other, 300.0, TRAVEL, 5_000.0, 0.6),
+            None,
+            "{kind:?}"
+        );
+        assert!(f.drives(1));
+    }
+    assert!(
+        f.down(2, true, 300.0, TRAVEL, 5_000.0, 0.6),
+        "a finger does"
+    );
+    // And a finger never ends a mouse's drag.
+    let mut f = FaderCtl::new(false, zero_db());
+    let mouse = Down {
+        id: 1,
+        kind: Some(Pointer::Mouse),
+        primary: true,
+    };
+    assert!(f.press(mouse, 500.0, TRAVEL, 0.0, 0.5).is_some());
+    assert!(!f.down(2, true, 300.0, TRAVEL, 10.0, 0.5));
+    assert!(f.drives(1));
 }
 
 #[test]
@@ -887,11 +1033,11 @@ fn a_press_says_where_the_touch_started() {
         })
     };
     assert_eq!(
-        f.press(1, true, 500.0, TRAVEL, 10.0, 0.5),
+        f.press(Down::touch(1, true), 500.0, TRAVEL, 10.0, 0.5),
         start(0.25, 0.5, false, 0.5)
     );
     assert_eq!(
-        f.press(2, false, 400.0, TRAVEL, 11.0, 0.5),
+        f.press(Down::touch(2, false), 400.0, TRAVEL, 11.0, 0.5),
         None,
         "another pointer"
     );
@@ -901,14 +1047,14 @@ fn a_press_says_where_the_touch_started() {
     assert_eq!(f.up(1, 20.0), None);
     // Within the hold the touch starts from the fader's own position.
     assert_eq!(
-        f.press(1, true, 500.0, TRAVEL, 119.0, 0.5),
+        f.press(Down::touch(1, true), 500.0, TRAVEL, 119.0, 0.5),
         start(0.625, 0.5, true, 0.625)
     );
     assert_eq!(f.cancel(1, 130.0), None);
     // After the hold, from Live's again.
     let _ = f.frame(231.0, Some(0.375));
     assert_eq!(
-        f.press(1, true, 500.0, TRAVEL, 232.0, 0.25),
+        f.press(Down::touch(1, true), 500.0, TRAVEL, 232.0, 0.25),
         start(0.375, 0.25, false, 0.25)
     );
     assert_eq!(f.cancel(1, 240.0), None);
@@ -916,7 +1062,7 @@ fn a_press_says_where_the_touch_started() {
     let _ = f.frame(400.0, Some(0.25));
     f.intent(true, 401.0);
     assert_eq!(
-        f.press(1, true, 500.0, TRAVEL, 402.0, 0.75),
+        f.press(Down::touch(1, true), 500.0, TRAVEL, 402.0, 0.75),
         start(0.25, 0.75, true, 0.25)
     );
 }

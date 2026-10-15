@@ -337,22 +337,45 @@ function nextDrag(axis: "dx" | "dy", px: number): PointerStep[] {
   ];
 }
 
+/** The page's `touch` records of `key` from page time `from` on, in page time order. */
+async function touchRecords(key: string, from: number): Promise<any[]> {
+  return pageEvents(await hubEvents())
+    .filter((e: any) => e.ev === "touch" && Array.isArray(e.keys) && e.keys.includes(key) && e.t >= from)
+    .sort((a: any, b: any) => a.t - b.t);
+}
+
 /**
  * The touches the page recorded for `key` from page time `from` on, as
- * `[what, pointer]` in page time order, once the next finger's lift is in
- * the event log (a hidden page's recorder uploads a little later).
+ * `[what, pointer]` in page time order, once the lift of `lifted` (the next
+ * finger by default) is in the event log (a hidden page's recorder uploads
+ * a little later).
  */
-async function touchesOf(key: string, from: number): Promise<[string, number][]> {
+async function touchesOf(key: string, from: number, lifted = NEXT): Promise<[string, number][]> {
   return until(
-    async () =>
-      pageEvents(await hubEvents())
-        .filter((e: any) => e.ev === "touch" && Array.isArray(e.keys) && e.keys.includes(key) && e.t >= from)
-        .sort((a: any, b: any) => a.t - b.t)
-        .map((e: any): [string, number] => [e.what, e.pointer]),
-    (touches) => touches.some(([what, pointer]) => what === "up" && pointer === NEXT),
-    "the next finger's lift in the event log",
+    async () => (await touchRecords(key, from)).map((e: any): [string, number] => [e.what, e.pointer]),
+    (touches) => touches.some(([what, pointer]) => what === "up" && pointer === lifted),
+    `pointer ${lifted}'s lift in the event log`,
     15_000,
   );
+}
+
+/**
+ * Fader A at 0.5, then a finger's drag on it (its first move anchors) whose
+ * end never comes; Live at the finger's value. The fader, that value and
+ * the page time before the finger.
+ */
+async function stuckFader(page: Page): Promise<{ fader: Locator; held: number; from: number }> {
+  await live.set("band", A.target, "value", 0.5);
+  await openSurface(page);
+  const fader = strip(page, A.name).getByTestId("fader");
+  await ready(fader);
+  await until(() => shown(fader), (v) => Math.abs(v - 0.5) < 0.001, "fader A at 0.5");
+  const from = await pageNow(page);
+  await dispatchPointer(fader, [{ type: "pointerdown" }, { type: "pointermove", dy: 0 }, { type: "pointermove", dy: 40 }], LOST);
+  await until(() => live.get("band", A.target, "value"), (v) => v > 0.51, "the lost finger's drag in Live");
+  const held = await settled(page, () => live.get("band", A.target, "value"));
+  await expect(fader, "the strip lit under the lost finger").toHaveAttribute("data-held", "true");
+  return { fader, held, from };
 }
 
 /** The hub's `set` records of `key` the page sent from page time `from` on. */
@@ -436,6 +459,136 @@ test.describe("A touch whose end never came (#124)", () => {
       ]);
     } finally {
       await live.set("band", target, "value", before);
+    }
+  });
+  test("with no drop and no hide, the next primary finger takes it from Live's value, not the frozen cap", async ({ page }) => {
+    const key = `band|${A.target}|value`;
+    const before = await live.get("band", A.target, "value");
+    try {
+      const { fader, held, from } = await stuckFader(page);
+      // Live's value moves elsewhere while the cap stays frozen under the
+      // lost finger (the channel detail's fader, Live's own window): the
+      // strip's dB readout follows Live, the cap does not.
+      const moved = held - 0.25;
+      await live.set("band", A.target, "value", moved);
+      await expect(strip(page, A.name).getByTestId("db")).toHaveText(dbForm(await live.display("band", A.target, moved)));
+      expect(Math.abs((await shown(fader)) - held), "the cap frozen at the lost finger's value").toBeLessThan(0.001);
+      // Past the hold after the lost finger's last ack (1 s with touch
+      // shaping): the touch was lost long ago, as on the iPad.
+      await page.waitForTimeout(1200);
+      const nextFrom = await pageNow(page);
+      await dispatchPointer(fader, nextDrag("dy", 10), NEXT);
+      await until(() => live.get("band", A.target, "value"), (v) => v > moved + 0.005, "the next finger's drag in Live");
+      await expect(fader).toHaveAttribute("data-held", "false");
+      // No jump: the drag goes on from Live's value; no set comes near the
+      // frozen cap, 0.25 above it (the finger's 20 px are at most ~0.09 on
+      // the desktop's 225 px travel, both moves in one frame).
+      const sets = (await setsOf(key, nextFrom)).sort((a: any, b: any) => a.t - b.t);
+      expect(sets.length, "the next finger's sets at the hub").toBeGreaterThan(0);
+      expect(sets[0].value - moved, "the first set near Live's value").toBeLessThan(0.15);
+      for (const set of sets) expect(set.value, "no set near the frozen cap").toBeLessThan(held - 0.1);
+      expect(await touchesOf(key, from)).toEqual([
+        ["down", LOST],
+        ["lost", LOST],
+        ["down", NEXT],
+        ["up", NEXT],
+      ]);
+      const down = (await touchRecords(key, from)).find((e: any) => e.what === "down" && e.pointer === NEXT);
+      expect(down.local, "the next finger's touch starts from Live's value").toBe(false);
+    } finally {
+      await live.set("band", A.target, "value", before);
+    }
+  });
+
+  test("a second finger on a fader a lost finger holds is still refused", async ({ page }) => {
+    const key = `band|${A.target}|value`;
+    const before = await live.get("band", A.target, "value");
+    const SECOND = 904;
+    try {
+      const { fader, held, from } = await stuckFader(page);
+      // Not primary: another finger is down (the browser still counts the
+      // first one), so the fader keeps it.
+      await dispatchPointer(fader, nextDrag("dy", 20), SECOND, false);
+      await frames(page);
+      await page.waitForTimeout(600);
+      expect(await live.get("band", A.target, "value"), "the second finger moved nothing").toBe(held);
+      await expect(fader).toHaveAttribute("data-held", "true");
+      // The first finger's own lift still ends its touch.
+      await dispatchPointer(fader, [{ type: "pointerup", dy: 40 }], LOST);
+      await expect(fader).toHaveAttribute("data-held", "false");
+      expect(await touchesOf(key, from, LOST)).toEqual([
+        ["down", LOST],
+        ["up", LOST],
+      ]);
+    } finally {
+      await live.set("band", A.target, "value", before);
+    }
+  });
+
+  test("a hide ends a lost finger's touch: the next finger takes the fader, primary or not", async ({ page }) => {
+    const key = `band|${A.target}|value`;
+    const before = await live.get("band", A.target, "value");
+    const OTHER = 903;
+    try {
+      const { fader, held, from } = await stuckFader(page);
+      // A hidden Home Screen app keeps no touch going: the hide ends it,
+      // whatever the next finger's isPrimary says.
+      await setHidden(page, true);
+      await expect(fader).toHaveAttribute("data-held", "false");
+      await setHidden(page, false);
+      await dispatchPointer(fader, nextDrag("dy", 20), OTHER, false);
+      await until(() => live.get("band", A.target, "value"), (v) => v > held + 0.01, "the next finger's drag in Live");
+      expect(await touchesOf(key, from, OTHER)).toEqual([
+        ["down", LOST],
+        ["lost", LOST],
+        ["down", OTHER],
+        ["up", OTHER],
+      ]);
+    } finally {
+      await live.set("band", A.target, "value", before);
+    }
+  });
+
+  test("a pulse toggle whose press never ended goes off at a hide, and at the next first finger", async ({ page }) => {
+    // ZVUKAR pulses Hand4 #'s mute: on (false) while pressed, off (true) at
+    // the release. A pulse left on at an event is worse than a stuck fader.
+    const hand4 = track("Hand4 #");
+    const key = `band|${hand4}|mute`;
+    const before = await live.get("band", hand4, "mute");
+    const mute = () => live.get("band", hand4, "mute");
+    await live.set("band", hand4, "mute", true);
+    try {
+      await openSurface(page);
+      const zvukar = page.locator('[data-testid="param-toggle"][data-label="ZVUKAR"]');
+      await ready(zvukar);
+      await expect(zvukar).toHaveAttribute("data-state", "off");
+      const from = await pageNow(page);
+      // A press whose release never comes, then a hide: the pulse ends.
+      await dispatchPointer(zvukar, [{ type: "pointerdown" }], 911);
+      await until(mute, (v) => v === false, "on while pressed");
+      await setHidden(page, true);
+      await until(mute, (v) => v === true, "off at the hide");
+      await setHidden(page, false);
+      // Another press whose release never comes; the next first finger
+      // ends it (no double tap: 300 ms apart).
+      await page.waitForTimeout(300);
+      await dispatchPointer(zvukar, [{ type: "pointerdown" }], 912);
+      await until(mute, (v) => v === false, "on while pressed again");
+      await page.waitForTimeout(300);
+      await dispatchPointer(zvukar, [{ type: "pointerdown" }, { wait: 50 }, { type: "pointerup" }], 913);
+      await until(mute, (v) => v === true, "off at the next first finger");
+      await page.waitForTimeout(500);
+      expect(await mute(), "no pulse left on").toBe(true);
+      expect(await touchesOf(key, from, 913)).toEqual([
+        ["down", 911],
+        ["lost", 911],
+        ["down", 912],
+        ["lost", 912],
+        ["down", 913],
+        ["up", 913],
+      ]);
+    } finally {
+      await live.set("band", hand4, "mute", before);
     }
   });
 });
