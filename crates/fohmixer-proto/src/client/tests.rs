@@ -1064,3 +1064,46 @@ fn the_meter_pace_of_an_idle_message() {
     assert_eq!(meter_pace(true, Some(2001)), every(2000));
     assert_eq!(meter_pace(true, Some(u32::MAX)), every(2000));
 }
+
+#[test]
+fn a_linked_mutes_writes_go_as_one_sets_message_of_set_items() {
+    // #127: a `set`'s fields, each item its own key, seq and ack.
+    let set = |target: &str, seq: u64| ClientMsg::Set {
+        instance: "band".into(),
+        target: target.into(),
+        prop: "mute".into(),
+        value: json!(true),
+        seq,
+        t: 1_790_000_000_123.5,
+        is_final: true,
+    };
+    let items: Vec<SetItem> = [
+        set("live_set tracks 3", 7),
+        set("live_set return_tracks 1", 8),
+    ]
+    .into_iter()
+    .filter_map(SetItem::of)
+    .collect();
+    assert_eq!(
+        items[1],
+        SetItem {
+            instance: "band".into(),
+            target: "live_set return_tracks 1".into(),
+            prop: "mute".into(),
+            value: json!(true),
+            seq: 8,
+            t: 1_790_000_000_123.5,
+            is_final: true,
+        }
+    );
+    round_trip_client(
+        ClientMsg::Sets { sets: items },
+        json!({"type": "sets", "sets": [
+            {"instance": "band", "target": "live_set tracks 3", "prop": "mute", "value": true,
+             "seq": 7, "t": 1_790_000_000_123.5, "final": true},
+            {"instance": "band", "target": "live_set return_tracks 1", "prop": "mute", "value": true,
+             "seq": 8, "t": 1_790_000_000_123.5, "final": true}]}),
+    );
+    // Any other message carries no write.
+    assert_eq!(SetItem::of(ClientMsg::Unsub { sub: "k".into() }), None);
+}

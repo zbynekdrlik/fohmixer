@@ -118,6 +118,7 @@ fn strip(name: &str) -> Strip {
         pinned: false,
         label: None,
         mark: None,
+        mute_links: Vec::new(),
     }
 }
 
@@ -172,6 +173,50 @@ fn a_strip_subscribes_every_part_and_its_colour() {
     assert_eq!(strip_subs(&bad, MeterSource::Level).shown(), vec![]);
     assert_eq!(StripSubs::default().all(), vec![]);
     assert_eq!(StripSubs::default().shown(), vec![]);
+}
+
+#[test]
+fn a_linked_mute_subscribes_each_partners_mute_on_the_page_and_in_the_detail() {
+    // #127: the strip's mute shows and writes its partners' mutes too.
+    let mut linked = marker(3, "Vox 1");
+    linked.mute_links = vec![
+        Binding {
+            instance: "band".into(),
+            anchor: Anchor::TrackAt { index: 9 },
+            path: None,
+        },
+        Binding {
+            instance: "band".into(),
+            anchor: Anchor::ReturnAt { index: 1 },
+            path: None,
+        },
+    ];
+    let partners = vec![
+        "band|live_set tracks 9|mute|false".to_string(),
+        "band|live_set return_tracks 1|mute|false".to_string(),
+    ];
+    let subs = strip_subs(&linked, MeterSource::Level);
+    assert_eq!(keys(&subs.linked), partners);
+    let shown = keys(&subs.shown());
+    assert_eq!(shown.len(), 6);
+    assert_eq!(shown[4..], partners[..]);
+    let all = keys(&subs.all());
+    assert_eq!(all.len(), 7);
+    assert_eq!(all[5..], partners[..]);
+    assert_eq!(
+        keys(&control_subs(
+            &Control::Strip(Box::new(linked.clone())),
+            MeterSource::Level
+        )),
+        shown
+    );
+    let detail = keys(&detail_subs(&linked, MeterSource::Level).all());
+    assert_eq!(detail[5..], partners[..]);
+    // A strip without a link: none.
+    assert_eq!(
+        strip_subs(&marker(3, "Vox 1"), MeterSource::Level).linked,
+        vec![]
+    );
 }
 
 #[test]
@@ -696,6 +741,7 @@ fn marker(index: u32, label: &str) -> Strip {
         pinned: false,
         label: Some(label.into()),
         mark: None,
+        mute_links: Vec::new(),
     }
 }
 

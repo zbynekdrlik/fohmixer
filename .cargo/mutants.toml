@@ -149,7 +149,12 @@ exclude_re = [
   # pan's and the mute's unconfirmed and not_sent records back from the
   # event log, resilience.spec.ts a not_sent write Live's replayed value
   # closes within milliseconds.
-  "fohmixer-ui/src/store/live/writes\\.rs.*(replace|in) LiveStore::(on_ack|resend|set|sent_set|release|touch|intent_state|intent_view|live_value|note_intents)( |$)",
+  # #127 added set_together (a linked mute's tap: the tested
+  # Intents::set_together with the page clock and each key's flash, its one
+  # `sets` message through sent_set); linked-mute.spec.ts taps a strip
+  # linked three ways and reads the three mutes in SimLive and the hub's one
+  # batch of them.
+  "fohmixer-ui/src/store/live/writes\\.rs.*(replace|in) LiveStore::(on_ack|resend|set|set_together|sent_set|release|touch|intent_state|intent_view|live_value|note_intents)( |$)",
   # store/live/deck.rs (#52): the Stream Deck's glue, one function at a time:
   # on_deck, on_deck_keys and on_deck_ack (the hub's messages into the
   # signals and the tested DeckWaiting), deck_view and deck_hello (the tab's

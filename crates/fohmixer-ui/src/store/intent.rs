@@ -16,7 +16,9 @@
 //! `RESEND_MAX_AGE_MS` old or older; a closed one is `confirmed`. A control
 //! still held (no release) is never `unconfirmed` and is always sent again.
 //! When an instance is back (after a reconnect's hello, or online again) the
-//! store sends its intents again (`resend`), each as a new `set`.
+//! store sends its intents again (`resend`), each as a new write of its
+//! key, all of them in one `sets` message (#127: a linked mute's tap sent
+//! again still reaches Live in one batch).
 //!
 //! The page's flight recorder hears when a write turns `unconfirmed` or
 //! `not_sent` (`changes`, #43 PR E): only the page knows when it drew the
@@ -24,8 +26,11 @@
 
 use std::collections::BTreeMap;
 
-use fohmixer_proto::client::{AckItem, ClientMsg, set_key};
+use fohmixer_proto::client::{AckItem, ClientMsg, MAX_SETS, SetItem, set_key};
 use serde_json::Value;
+
+/// Where a write goes: its instance, LOM target and property.
+pub type At<'a> = (&'a str, &'a str, &'a str);
 
 /// A release this old (ms) without its ack is `unconfirmed` (L3, §4.3).
 pub const UNCONFIRMED_MS: f64 = 1000.0;
@@ -90,10 +95,82 @@ pub struct Change {
 /// What a resend does (`Intents::resend`).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Resend {
-    /// The `set`s to send, one per key.
-    pub sets: Vec<ClientMsg>,
+    /// The writes to send, one per key (sent together: `messages`).
+    pub sets: Writes,
     /// The keys whose release was too old: `not_sent` now.
     pub not_sent: Vec<String>,
+}
+
+impl Resend {
+    /// The writes in the order they go, at most [`MAX_SETS`] (the hub's
+    /// limit) to a `sets` message.
+    pub fn batches(&self) -> std::slice::Chunks<'_, SetItem> {
+        self.sets.items.chunks(MAX_SETS)
+    }
+
+    /// The messages that send the writes again (#127 review M1): ONE `sets`
+    /// per batch, so a linked mute's tap sent again still reaches Live in
+    /// one batch; none when nothing goes.
+    pub fn messages(&self) -> Vec<ClientMsg> {
+        self.batches()
+            .map(|sets| ClientMsg::Sets {
+                sets: sets.to_vec(),
+            })
+            .collect()
+    }
+}
+
+/// A resend's writes (#127 re-review T-a): kept as writes (`SetItem`), so
+/// [`Resend::messages`] sends every one and nothing is parsed out of a
+/// message; each also reads as the `set` it would be on its own
+/// (`as_slice`, and the slice it derefs to).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Writes {
+    items: Vec<SetItem>,
+    sets: Vec<ClientMsg>,
+}
+
+impl Writes {
+    /// One more write.
+    fn push(&mut self, item: SetItem) {
+        self.sets.push(set_msg(item.clone()));
+        self.items.push(item);
+    }
+
+    /// Each write as the `set` it would be on its own.
+    pub fn as_slice(&self) -> &[ClientMsg] {
+        &self.sets
+    }
+}
+
+impl std::ops::Deref for Writes {
+    type Target = [ClientMsg];
+
+    fn deref(&self) -> &[ClientMsg] {
+        self.as_slice()
+    }
+}
+
+/// The `set` message of one write.
+fn set_msg(item: SetItem) -> ClientMsg {
+    let SetItem {
+        instance,
+        target,
+        prop,
+        value,
+        seq,
+        t,
+        is_final,
+    } = item;
+    ClientMsg::Set {
+        instance,
+        target,
+        prop,
+        value,
+        seq,
+        t,
+        is_final,
+    }
 }
 
 /// One key's latest write.
@@ -138,9 +215,9 @@ struct Open {
 }
 
 impl Open {
-    /// The `set` of this intent.
-    fn set_msg(&self) -> ClientMsg {
-        ClientMsg::Set {
+    /// This intent's write.
+    fn item(&self) -> SetItem {
+        SetItem {
             instance: self.instance.clone(),
             target: self.target.clone(),
             prop: self.prop.clone(),
@@ -215,12 +292,26 @@ impl<F> Intents<F> {
     /// time `t`, `fail` hearing its failure: its key and the `set` to send.
     pub fn set(
         &mut self,
-        (instance, target, prop): (&str, &str, &str),
+        at: At<'_>,
         value: Value,
         t: f64,
         is_final: bool,
         fail: Option<F>,
     ) -> (String, ClientMsg) {
+        let (key, item) = self.write(at, value, t, is_final, fail);
+        (key, set_msg(item))
+    }
+
+    /// A control's write, as [`Intents::set`] makes it: its key and the
+    /// write.
+    fn write(
+        &mut self,
+        (instance, target, prop): At<'_>,
+        value: Value,
+        t: f64,
+        is_final: bool,
+        fail: Option<F>,
+    ) -> (String, SetItem) {
         self.last_seq += 1;
         let key = set_key(instance, target, prop);
         let open = Open {
@@ -237,13 +328,34 @@ impl<F> Intents<F> {
             not_sent: None,
             told: None,
         };
-        let msg = open.set_msg();
+        let item = open.item();
         self.open.insert(key.clone(), open);
         match fail {
             Some(fail) => self.fails.insert(key.clone(), fail),
             None => self.fails.remove(&key),
         };
-        (key, msg)
+        (key, item)
+    }
+
+    /// Writes of `value` to every target at page time `t` (#127, a linked
+    /// mute's tap), each of its own key, sequence number and failure
+    /// handler, as [`Intents::set`] makes them: their keys and ONE `sets`
+    /// message (the hub writes one instance's to Live in one batch).
+    pub fn set_together(
+        &mut self,
+        targets: Vec<(At<'_>, Option<F>)>,
+        value: &Value,
+        t: f64,
+        is_final: bool,
+    ) -> (Vec<String>, ClientMsg) {
+        let mut keys = Vec::new();
+        let mut sets = Vec::new();
+        for (target, fail) in targets {
+            let (key, item) = self.write(target, value.clone(), t, is_final, fail);
+            keys.push(key);
+            sets.push(item);
+        }
+        (keys, ClientMsg::Sets { sets })
     }
 
     /// The control of `key` was let go at page time `t` without a final
@@ -341,7 +453,7 @@ impl<F> Intents<F> {
                 *last_seq += 1;
                 o.intent.seq = *last_seq;
                 o.intent.t = now;
-                out.sets.push(o.set_msg());
+                out.sets.push(o.item());
             }
         }
         out

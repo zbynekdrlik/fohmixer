@@ -14,8 +14,14 @@
 //! #43 PR D): a touch that starts away from Live's value shows as its first
 //! applied value against it. `applied` and a batch's `ack`s carry the batch
 //! number, its sequence numbers and Live's round trip.
+//!
+//! A `sets` (#127, a linked mute's tracks) hands every item to its setter
+//! before any batch is written: one instance's items go to Live together.
+//! It takes at most `MAX_SETS` (32) items; the others are acked failed.
 
-use fohmixer_proto::client::{AckItem, set_key};
+use std::collections::BTreeSet;
+
+use fohmixer_proto::client::{AckItem, MAX_SETS, set_key};
 use serde_json::{Value, json};
 
 use super::{Router, RouterMsg};
@@ -78,6 +84,11 @@ pub fn unknown_instance(instance: &str) -> String {
     format!("unknown instance {instance:?}")
 }
 
+/// The error of a `sets` item past the first [`MAX_SETS`] (#127 review M3).
+pub fn too_many_sets() -> String {
+    format!("more than {MAX_SETS} writes in one sets")
+}
+
 /// The event-log fields of an ack; `batch`: the batch it answers and Live's
 /// round trip of it (none for an ack without a batch).
 pub fn ack_fields(
@@ -114,6 +125,34 @@ impl Router {
     /// A client's `set`: its record, its setter, and a batch when none is
     /// in flight.
     pub(super) fn on_set(&mut self, set: SetMsg) {
+        let instance = set.instance.clone();
+        self.take_set(set);
+        self.write_next(&instance);
+    }
+
+    /// A client's `sets` (#127, a linked mute's tracks): each taken as a
+    /// `set` first, then a batch per instance, so the writes of one
+    /// instance go to Live together. Only the first [`MAX_SETS`] are taken
+    /// (#127 review M3): each one after them is acked failed at once.
+    pub(super) fn on_sets(&mut self, mut sets: Vec<SetMsg>) {
+        let over = sets.split_off(sets.len().min(MAX_SETS));
+        for set in over {
+            let key = set_key(&set.instance, &set.target, &set.prop);
+            let ack = AckItem::failed(&key, set.seq, &too_many_sets());
+            self.send_ack(&set.instance, set.client, ack, None);
+        }
+        let instances: BTreeSet<String> = sets.iter().map(|s| s.instance.clone()).collect();
+        for set in sets {
+            self.take_set(set);
+        }
+        for instance in &instances {
+            self.write_next(instance);
+        }
+    }
+
+    /// A set's record and its setter's want (an unknown instance's is
+    /// acked with an error at once).
+    fn take_set(&mut self, set: SetMsg) {
         let key = set_key(&set.instance, &set.target, &set.prop);
         let now = self.now_ms();
         let want = Want {
@@ -144,7 +183,6 @@ impl Router {
         if let Some((client, ack)) = outcome.superseded {
             self.send_ack(&set.instance, client, ack, None);
         }
-        self.write_next(&set.instance);
     }
 
     /// Writes an instance's next batch, when it has one and none is in

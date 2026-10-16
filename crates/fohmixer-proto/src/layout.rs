@@ -208,6 +208,12 @@ pub struct Strip {
     /// A marker problem shown on the strip (#68, I9).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mark: Option<StripMark>,
+    /// The linked mute (#127, D16): the other tracks its mute writes with
+    /// its own, each a track (or return track) by index whose Tuner's
+    /// `+MUTE:<id>` names the strip's `+ID:<id>`; empty for a mute of its
+    /// own track alone.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mute_links: Vec<Binding>,
 }
 
 /// How a marker strip is marked (#68): a conflict (its label is on another
@@ -276,10 +282,13 @@ impl Control {
         matches!(self, Control::Strip(strip) if strip.pinned)
     }
 
-    /// The bindings this control reads or writes.
+    /// The bindings this control reads or writes (a strip's linked mutes
+    /// after its own, #127).
     pub fn bindings(&self) -> Vec<&Binding> {
         match self {
-            Control::Strip(strip) => vec![&strip.binding],
+            Control::Strip(strip) => std::iter::once(&strip.binding)
+                .chain(&strip.mute_links)
+                .collect(),
             Control::Solo { binding, .. }
             | Control::Stage { binding, .. }
             | Control::Alert { binding, .. } => vec![binding],
@@ -679,6 +688,9 @@ impl Validator {
                 self.binding(&format!("{at}.binding"), &strip.binding);
                 if strip.label.as_deref().is_some_and(|l| l.trim().is_empty()) {
                     self.error(&format!("{at}.label"), "an empty label".to_string());
+                }
+                for (i, link) in strip.mute_links.iter().enumerate() {
+                    self.binding(&format!("{at}.mute_links[{i}]"), link);
                 }
             }
             Control::Solo { binding, .. } | Control::Stage { binding, .. } => {

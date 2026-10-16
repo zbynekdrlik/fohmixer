@@ -13,6 +13,7 @@ use leptos::prelude::{UpdateValue, WithValue};
 use serde_json::Value;
 
 use super::{FailFn, LiveStore};
+use crate::binding::SubSpec;
 use crate::diag::{self, trace, trace::Recorder};
 use crate::dom;
 use crate::store::intent::{Acked, RESEND_MAX_AGE_MS, State};
@@ -39,7 +40,8 @@ impl LiveStore {
     }
 
     /// `instance` is back (#43, L4): its open writes go again, as new
-    /// `set`s; a release too old to send blindly is `not_sent` now.
+    /// writes in one `sets` message (#127: a linked tap's in one batch); a
+    /// release too old to send blindly is `not_sent` now.
     pub(super) fn resend(self, instance: &str) {
         let Some(resend) = self
             .inner
@@ -56,15 +58,19 @@ impl LiveStore {
         // once (Live's value replayed after the hello can close it within
         // milliseconds, before the next tick).
         self.note_intents();
+        let messages = resend.messages();
+        // The writes the socket took (#127 re-review T-a), by message.
         let mut taken = 0;
-        for msg in &resend.sets {
-            let sent = self.sent_set(msg);
-            taken += usize::from(sent);
+        for (msg, batch) in messages.iter().zip(resend.batches()) {
+            if self.sent_set(msg) {
+                taken += batch.len();
+            }
         }
         if !resend.sets.is_empty() || !resend.not_sent.is_empty() {
             dom::log(&format!(
-                "instance {instance} is back: {} writes sent again ({taken} taken), {} not sent",
+                "instance {instance} is back: {} writes sent again in {} messages ({taken} writes taken), {} not sent",
                 resend.sets.len(),
+                messages.len(),
                 resend.not_sent.len()
             ));
         }
@@ -100,6 +106,40 @@ impl LiveStore {
             ));
         }
         trace::seq_of(&msg)
+    }
+
+    /// A linked mute's tap (#127): `value` to `prop` of every target, each
+    /// a write of its own key through the intent store (its own sequence
+    /// number, ack and handler from `failed`), all in ONE `sets` message so
+    /// the hub writes one instance's to Live in one batch. Writes the socket
+    /// cannot take now are kept and sent when their instance is back (L1).
+    pub fn set_together(
+        self,
+        targets: &[SubSpec],
+        value: &Value,
+        is_final: bool,
+        failed: impl Fn() -> FailFn,
+    ) {
+        self.note_intents();
+        let t = dom::epoch_now();
+        let Some((keys, msg)) = self.inner.try_update_value(|i| {
+            let each = targets
+                .iter()
+                .map(|s| {
+                    let at = (s.instance.as_str(), s.target.as_str(), s.prop.as_str());
+                    (at, Some(failed()))
+                })
+                .collect();
+            i.intents.set_together(each, value, t, is_final)
+        }) else {
+            return;
+        };
+        if !self.sent_set(&msg) {
+            dom::log(&format!(
+                "sets {} kept: not connected to the hub, sent when it is back",
+                keys.join(", ")
+            ));
+        }
     }
 
     /// Sends a `set`: whether the socket took it. One it took holds the

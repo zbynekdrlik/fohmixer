@@ -98,6 +98,12 @@ pub enum ClientMsg {
         #[serde(rename = "final")]
         is_final: bool,
     },
+    /// Writes Live applies together (#127, a linked mute's tracks): each
+    /// item a `set` of its own key, `seq` and `ack`. The hub takes them all
+    /// before it writes a batch, so one instance's go to Live in one batch;
+    /// at most [`MAX_SETS`] of them (the items after those are acked
+    /// failed).
+    Sets { sets: Vec<SetItem> },
     /// A liveness probe, answered by `pong` (the client's watchdog: a
     /// socket that stays silent is half-open and is replaced): its number,
     /// the page's clock, and the round trip (ms) of the latest pong on this
@@ -467,6 +473,49 @@ pub enum ServerMsg {
     /// message never breaks an older page.
     #[serde(other)]
     Unknown,
+}
+
+/// The most writes one [`ClientMsg::Sets`] carries (#127 review M3): far
+/// above any real link; the hub acks the items after them failed.
+pub const MAX_SETS: usize = 32;
+
+/// One write of a [`ClientMsg::Sets`] (#127): a `set`'s fields.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SetItem {
+    pub instance: String,
+    pub target: String,
+    pub prop: String,
+    pub value: Value,
+    pub seq: u64,
+    pub t: f64,
+    #[serde(rename = "final")]
+    pub is_final: bool,
+}
+
+impl SetItem {
+    /// The write a `set` message carries; none for any other message.
+    pub fn of(msg: ClientMsg) -> Option<Self> {
+        match msg {
+            ClientMsg::Set {
+                instance,
+                target,
+                prop,
+                value,
+                seq,
+                t,
+                is_final,
+            } => Some(Self {
+                instance,
+                target,
+                prop,
+                value,
+                seq,
+                t,
+                is_final,
+            }),
+            _ => None,
+        }
+    }
 }
 
 /// The hub key of a subscription: `instance|target|prop|display`, with the

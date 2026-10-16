@@ -46,8 +46,15 @@ html, body { margin: 0; background: #0b0b12; }
 <tr><td><code>+G:VOCALS:2</code></td><td>skupina a pozícia v nej (1 až 999); môže sa opakovať: jeden fader vo viacerých skupinách</td></tr>
 <tr><td><code>+PIN</code></td><td>vždy na obrazovke: v každom pohľade aj pri posune ◀ ▶</td></tr>
 <tr><td><code>+MG</code></td><td>ochrana mute: zmena chce druhé ťuknutie</td></tr>
+<tr><td><code>+ID:VOX1</code></td><td>značka pásu pre linknutý mute (nižšie): veľké písmená, číslice, <code>-</code> a <code>_</code></td></tr>
+<tr><td><code>+MUTE:VOX1</code></td><td>tento track sa stíši a zapne spolu s pásom, ktorý má <code>+ID:VOX1</code></td></tr>
 </table>
 <p>Značky píš veľkými písmenami (ako v AbleSete). Tuner bez úvodzoviek a bez značky <code>+</code> je obyčajný Tuner a fohmixer si ho nevšíma.</p>
+
+<h2>LINKNUTÝ MUTE</h2>
+<p>Jeden MUTE môže stíšiť naraz viac trackov, napríklad repro aj stream toho istého speváka. Tuner pásu dostane <code>+ID:</code> s krátkym názvom, ktorý si vymyslíš, a Tuner každého ďalšieho tracku alebo returnu <code>+MUTE:</code> s tým istým názvom. Tuner, ktorý má iba <code>+MUTE</code> (bez mena v úvodzovkách), nerobí na fohmixeri žiadny pás. Ak ten track už Tuner so značkami má, pridaj <code>+MUTE</code> do neho (dva Tunery v jednom tracku sú chyba).</p>
+<p>Príklad: Tuner speváka <code>"Vox 1" +G:STAGE +ID:VOX1</code>, Tuner jeho stream tracku <code>+MUTE:VOX1</code>.</p>
+<p>Na tlačidle je vľavo hore reťaz s počtom linknutých trackov: sivá, keď všetky hrajú, červená, keď sú všetky stíšené, a oranžová napríklad <b>1/3</b>, keď niekto v Abletone ručne stíšil len časť. Ťuk stíši všetky; keď sú všetky stíšené, ťuk ich všetky zapne. Pás stmavne, len keď sú stíšené všetky. Na úzkom páse sa nápis MUTE neukáže, ak sa nezmestí vedľa reťaze: stíšenie vtedy ukazuje červená reťaz a tmavý pás. Názov platí v rámci jedného Live setu.</p>
 
 <h2>POHĽADY</h2>
 <p>Skupinu, ktorú hlavný pohľad nemá, ukáže tlačidlo v strednom páse (POHĽADY): jej fadre a všetky pripnuté. Ďalší ťuk ťa vráti späť.</p>
@@ -56,6 +63,7 @@ html, body { margin: 0; background: #0b0b12; }
 <ul>
 <li><b>KONFLIKT:</b> dva Tunery s rovnakým menom. Oba fadre sú vypnuté, kým jedno meno nezmeníš.</li>
 <li><b>Žltý roh (ZNAČKA?):</b> neznáma značka, zlá hodnota, dva Tunery v jednom tracku alebo dva fadre na jednej pozícii. Fader funguje, oprav meno Tunera.</li>
+<li><b>Linknutý mute:</b> to isté <code>+ID</code> na dvoch pásoch (oba majú žltý roh a nelinkuje sa ani jeden), <code>+MUTE</code> s názvom, ktorý nemá žiadny pás, alebo <code>+MUTE</code> s názvom vlastného pásu. Číslo na reťazi je počet trackov, ktoré MUTE stíši, aj s pásom samotným. Skontroluj reťaz: ak chýba, alebo je číslo na nej (po chvíli) menšie, ako koľko trackov si prepojil, niektorý <code>+MUTE</code> Tuner má preklep.</li>
 <li>Tuner bez skupiny (<code>+G:</code>) sa neukáže nikde.</li>
 </ul>
 <p>Zmena v Abletone sa na tablete ukáže do sekundy.</p>

@@ -829,6 +829,63 @@ fn marker_fields_round_trip_and_stay_out_when_unset() {
 }
 
 #[test]
+fn a_linked_mute_round_trips_lists_its_tracks_after_its_own_and_is_checked() {
+    // #127: a strip's linked mute writes its own track and each link's.
+    let link = |anchor: Value| json!({"instance": "band", "anchor": anchor});
+    let mut v = sample();
+    foh_row(&mut v, 1)[0]["controls"][0]["mute_links"] = json!([
+        link(json!({"kind": "track_at", "index": 4})),
+        link(json!({"kind": "return_at", "index": 0}))
+    ]);
+    let layout = parse(v.clone());
+    assert_eq!(layout.validate(), vec![]);
+    assert_eq!(serde_json::to_value(&layout).unwrap(), v);
+    let Section::Group(group) = &layout.pages[1].rows[1].sections[0] else {
+        panic!("a group")
+    };
+    let targets: Vec<String> = group.controls[0]
+        .bindings()
+        .iter()
+        .map(|b| b.target().unwrap())
+        .collect();
+    assert_eq!(
+        targets,
+        [
+            "live_set return_tracks[name=A-Rev]",
+            "live_set tracks 4",
+            "live_set return_tracks 0"
+        ]
+    );
+    let Control::Strip(strip) = &group.controls[0] else {
+        panic!("a strip")
+    };
+    assert_eq!(strip.mute_links[1].anchor, Anchor::ReturnAt { index: 0 });
+    // The layout's bindings hold them, in the strip's place.
+    let all: Vec<String> = layout
+        .bindings()
+        .iter()
+        .map(|b| b.target().unwrap())
+        .collect();
+    assert_eq!(all[6..9], targets[..]);
+    // A link is a binding like any: checked where it stands.
+    let mut bad = v;
+    foh_row(&mut bad, 1)[0]["controls"][0]["mute_links"][1]["instance"] = json!("");
+    assert_eq!(
+        errors(bad),
+        vec![
+            "pages[1].rows[1].sections[0].controls[0].mute_links[1]: binding without an instance"
+                .to_string()
+        ]
+    );
+    // None: nothing written (the sample has none).
+    let mut plain = serde_json::to_value(parse(sample())).unwrap();
+    assert_eq!(
+        foh_row(&mut plain, 1)[0]["controls"][0].get("mute_links"),
+        None
+    );
+}
+
+#[test]
 fn a_bad_tag_group_an_empty_label_or_a_view_as_default_page_is_refused() {
     let mut v = sample();
     foh_row(&mut v, 1)[0]["tags"] = json!("Vocals");

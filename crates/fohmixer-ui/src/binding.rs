@@ -69,6 +69,9 @@ pub struct StripSubs {
     /// The track's colour in Live (the name button, #21): never gates the
     /// strip (I8 gates on its values only).
     pub color: Option<SubSpec>,
+    /// The linked mute's other tracks' mutes (#127), in the strip's order:
+    /// its mute reads and writes them with its own.
+    pub linked: Vec<SubSpec>,
 }
 
 impl StripSubs {
@@ -81,6 +84,7 @@ impl StripSubs {
             .collect();
         out.extend(self.meters.iter().cloned());
         out.extend(self.color.iter().cloned());
+        out.extend(self.linked.iter().cloned());
         out
     }
 
@@ -95,6 +99,7 @@ impl StripSubs {
             .collect();
         out.extend(self.meters.iter().cloned());
         out.extend(self.color.iter().cloned());
+        out.extend(self.linked.iter().cloned());
         out
     }
 }
@@ -122,6 +127,7 @@ pub fn strip_subs(strip: &Strip, source: MeterSource) -> StripSubs {
             .filter_map(|prop| spec(b, "", prop, false))
             .collect(),
         color: spec(b, "", "color", false),
+        linked: strip.mute_links.iter().filter_map(mute_sub).collect(),
     }
 }
 

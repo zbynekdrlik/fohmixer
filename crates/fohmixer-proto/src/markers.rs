@@ -3,12 +3,15 @@
 //! tags, AbleSet style: `"Vox 1" +G:VOCALS:2 +G:TALKSHOW:1 +PIN +MG`.
 //!
 //! - [`parse`] reads one Tuner's name: the quoted label, the groups with
-//!   their places, `+PIN`, `+MG`, and every problem as a value (never an
-//!   error: a problem is shown on the strip, I9).
+//!   their places, `+PIN`, `+MG`, the linked mute's `+ID:<id>` and
+//!   `+MUTE:<id>` (#127), and every problem as a value (never an error: a
+//!   problem is shown on the strip, I9).
 //! - [`compose`] turns the frame (the layout file: pages, rows, the rail)
 //!   and the markers the hub found into the served layout: a frame group
 //!   with `tags` shows that tag group's strips, every other tag group
-//!   becomes a view (a page flagged `view`), equal labels are conflicts.
+//!   becomes a view (a page flagged `view`), equal labels are conflicts,
+//!   and a strip whose `+ID` other Tuners of its Live set name with
+//!   `+MUTE` mutes their tracks with its own.
 //!
 //! Pure, shared by the hub, `layout check` and the tests.
 
@@ -49,7 +52,27 @@ pub struct Marker {
     pub pin: bool,
     /// `+MG`: the mute guard (F12).
     pub mute_guard: bool,
+    /// `+ID:<id>`: the strip's id, which other Tuners' `+MUTE` name (#127).
+    pub id: Option<String>,
+    /// `+MUTE:<id>`: the strips whose mute writes this track's mute too
+    /// (#127), each id once.
+    pub mutes: Vec<String>,
     pub problems: Vec<TagProblem>,
+}
+
+impl Marker {
+    /// Whether the Tuner only links its track's mute (#127): `+MUTE` with
+    /// no quote, no group and no other tag (its first problem is
+    /// [`TagProblem::NoLabel`] while [`parse`] reads it). It makes no strip,
+    /// so a missing label or group is no problem there.
+    fn only_mutes(&self) -> bool {
+        !self.mutes.is_empty()
+            && self.groups.is_empty()
+            && self.id.is_none()
+            && !self.pin
+            && !self.mute_guard
+            && self.problems.first() == Some(&TagProblem::NoLabel)
+    }
 }
 
 /// A problem of a marker or of its place among the others.
@@ -78,6 +101,20 @@ pub enum TagProblem {
     DoubleTuner,
     /// Another strip of the group has the same place.
     SamePlace { group: String, place: u32 },
+    /// A `+ID:` or `+MUTE:` tag whose id is not valid (#127; the rule of a
+    /// group name).
+    BadId { tag: String },
+    /// A second `+ID:` tag (the first counts).
+    SecondId { tag: String },
+    /// The same `+MUTE:` id twice (it counts once).
+    DuplicateMute { id: String },
+    /// Another marker of the Live set carries the same `+ID`: neither
+    /// strip's mute links (#127).
+    DuplicateId { id: String },
+    /// A `+MUTE:` whose id no marker of the Live set carries (#127).
+    OrphanMute { id: String },
+    /// A `+MUTE:` naming its own strip's `+ID` (#127).
+    SelfMute { id: String },
 }
 
 /// Whether a Tuner's name makes it a marker: a quote or a `+` token.
@@ -157,33 +194,76 @@ pub fn parse(name: &str) -> Marker {
         match tag {
             "PIN" => marker.pin = true,
             "MG" => marker.mute_guard = true,
-            _ => match tag.strip_prefix("G:") {
-                Some(arg) => match group_tag(arg) {
-                    Some(group) if marker.groups.iter().any(|g| g.name == group.name) => {
-                        marker
-                            .problems
-                            .push(TagProblem::DuplicateGroup { name: group.name });
+            _ => {
+                if let Some(arg) = tag.strip_prefix("G:") {
+                    match group_tag(arg) {
+                        Some(group) if marker.groups.iter().any(|g| g.name == group.name) => {
+                            marker
+                                .problems
+                                .push(TagProblem::DuplicateGroup { name: group.name });
+                        }
+                        Some(group) => marker.groups.push(group),
+                        None => marker.problems.push(TagProblem::BadGroup {
+                            tag: token.to_string(),
+                        }),
                     }
-                    Some(group) => marker.groups.push(group),
-                    None => marker.problems.push(TagProblem::BadGroup {
+                } else if let Some(arg) = tag.strip_prefix("ID:") {
+                    id_tag(&mut marker, token, arg);
+                } else if let Some(arg) = tag.strip_prefix("MUTE:") {
+                    mute_tag(&mut marker, token, arg);
+                } else {
+                    marker.problems.push(TagProblem::UnknownTag {
                         tag: token.to_string(),
-                    }),
-                },
-                None => marker.problems.push(TagProblem::UnknownTag {
-                    tag: token.to_string(),
-                }),
-            },
+                    });
+                }
+            }
         }
     }
-    if marker.groups.is_empty() {
+    if marker.only_mutes() {
+        // Its NoLabel: no strip, no label to miss.
+        marker.problems.remove(0);
+    } else if marker.groups.is_empty() {
         marker.problems.push(TagProblem::NoGroup);
     }
     marker
 }
 
+/// A `+ID:<id>` tag (`token`, its argument `arg`): the strip's id, once.
+fn id_tag(marker: &mut Marker, token: &str, arg: &str) {
+    if !valid_group_name(arg) {
+        marker.problems.push(TagProblem::BadId {
+            tag: token.to_string(),
+        });
+    } else if marker.id.is_some() {
+        marker.problems.push(TagProblem::SecondId {
+            tag: token.to_string(),
+        });
+    } else {
+        marker.id = Some(arg.to_string());
+    }
+}
+
+/// A `+MUTE:<id>` tag (`token`, its argument `arg`): a strip this track's
+/// mute follows, each id once.
+fn mute_tag(marker: &mut Marker, token: &str, arg: &str) {
+    if !valid_group_name(arg) {
+        marker.problems.push(TagProblem::BadId {
+            tag: token.to_string(),
+        });
+    } else if marker.mutes.iter().any(|m| m == arg) {
+        marker.problems.push(TagProblem::DuplicateMute {
+            id: arg.to_string(),
+        });
+    } else {
+        marker.mutes.push(arg.to_string());
+    }
+}
+
 /// What a frame (the layout file) may not hold (#68): a view page or an
-/// id starting with [`VIEW_PREFIX`] (the markers make those), or a strip in
-/// a `tags` group (its strips are its markers'; other controls follow them).
+/// id starting with [`VIEW_PREFIX`] (the markers make those), a strip in a
+/// `tags` group (its strips are its markers'; other controls follow them),
+/// or a strip with `mute_links` (#127 review M4: a linked mute is the Tuner
+/// markers' `+ID` and `+MUTE`, never the frame's).
 pub fn frame_problems(frame: &Layout) -> Vec<LayoutError> {
     let mut out = Vec::new();
     let mut id = |at: &str, id: &str| {
@@ -244,6 +324,23 @@ pub fn frame_problems(frame: &Layout) -> Vec<LayoutError> {
                     ),
                 });
             }
+        }
+    }
+    let linked = |c: &Control| matches!(c, Control::Strip(strip) if !strip.mute_links.is_empty());
+    let mut refuse = |at: String| {
+        out.push(LayoutError {
+            at,
+            message: "a linked mute: the Tuner markers make those".to_string(),
+        });
+    };
+    for (i, page) in frame.pages.iter().enumerate() {
+        if page.controls().into_iter().any(linked) {
+            refuse(format!("pages[{i}]"));
+        }
+    }
+    for (i, control) in frame.global.iter().enumerate() {
+        if linked(control) {
+            refuse(format!("global[{i}]"));
         }
     }
     out
@@ -314,17 +411,18 @@ pub fn has_placeholder_label(strip: &Strip) -> bool {
     strip.label.as_deref() == Some(placeholder_label(index).as_str())
 }
 
-/// One marker read: where, what it says, and every problem it has.
+/// One marker read: where, what it says, every problem it has, and the
+/// tracks its strip's mute writes with its own (#127).
 struct Entry<'a> {
     found: &'a Found,
     marker: Marker,
     problems: Vec<TagProblem>,
+    links: Vec<Binding>,
 }
 
 impl Entry<'_> {
-    /// The strip it shows: bound to its track by index, its label (or the
-    /// track's number when the label is missing), its mark.
-    fn strip(&self) -> Strip {
+    /// Its track, by index (D16 binds everything so).
+    fn track(&self) -> Binding {
         let anchor = match self.found.kind {
             TrackKind::Track => Anchor::TrackAt {
                 index: self.found.index,
@@ -333,6 +431,17 @@ impl Entry<'_> {
                 index: self.found.index,
             },
         };
+        Binding {
+            instance: self.found.instance.clone(),
+            anchor,
+            path: None,
+        }
+    }
+
+    /// The strip it shows: bound to its track by index, its label (or the
+    /// track's number when the label is missing), its mark, its linked
+    /// mute.
+    fn strip(&self) -> Strip {
         let conflict = self
             .problems
             .iter()
@@ -345,11 +454,7 @@ impl Entry<'_> {
             Some(StripMark::Problem)
         };
         Strip {
-            binding: Binding {
-                instance: self.found.instance.clone(),
-                anchor,
-                path: None,
-            },
+            binding: self.track(),
             strip_kind: match self.found.kind {
                 TrackKind::Track => StripKind::Standard,
                 TrackKind::Return => StripKind::Return,
@@ -364,7 +469,53 @@ impl Entry<'_> {
                     .unwrap_or_else(|| placeholder_label(self.found.index)),
             ),
             mark,
+            mute_links: self.links.clone(),
         }
+    }
+}
+
+/// The linked mutes (#127): a strip's `+ID` named by other markers'
+/// `+MUTE` tags of its Live set (an id names a strip of its own instance)
+/// gets their tracks, in Live's order. An id that two or more markers
+/// carry is a problem on each, and links nothing; a `+MUTE` whose id no
+/// marker carries, or its own marker's, is a problem on its marker (I9).
+fn link_mutes(entries: &mut [Entry<'_>]) {
+    let mut ids: BTreeMap<(&str, &str), Vec<usize>> = BTreeMap::new();
+    for (i, entry) in entries.iter().enumerate() {
+        if let Some(id) = &entry.marker.id {
+            ids.entry((entry.found.instance.as_str(), id.as_str()))
+                .or_default()
+                .push(i);
+        }
+    }
+    let mut problems: Vec<(usize, TagProblem)> = Vec::new();
+    for ((_, id), list) in &ids {
+        if list.len() > 1 {
+            for &i in list {
+                problems.push((i, TagProblem::DuplicateId { id: id.to_string() }));
+            }
+        }
+    }
+    let mut links: Vec<(usize, Binding)> = Vec::new();
+    for (i, entry) in entries.iter().enumerate() {
+        for id in &entry.marker.mutes {
+            let carriers = ids.get(&(entry.found.instance.as_str(), id.as_str()));
+            match carriers.map(Vec::as_slice) {
+                None => problems.push((i, TagProblem::OrphanMute { id: id.clone() })),
+                Some([own]) if *own == i => {
+                    problems.push((i, TagProblem::SelfMute { id: id.clone() }));
+                }
+                Some([strip]) => links.push((*strip, entry.track())),
+                // A duplicate: marked on its carriers, nothing links.
+                Some(_) => {}
+            }
+        }
+    }
+    for (i, problem) in problems {
+        entries[i].problems.push(problem);
+    }
+    for (i, link) in links {
+        entries[i].links.push(link);
     }
 }
 
@@ -449,6 +600,7 @@ pub fn compose(frame: &Layout, found: &[Found]) -> Composed {
                 found: f,
                 marker,
                 problems,
+                links: Vec::new(),
             }
         })
         .collect();
@@ -468,6 +620,7 @@ pub fn compose(frame: &Layout, found: &[Found]) -> Composed {
             });
         }
     }
+    link_mutes(&mut entries);
     let groups = members(&entries);
     // Two strips on one place of a group: both marked.
     for (name, list) in &groups {

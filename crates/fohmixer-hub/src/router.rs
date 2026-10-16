@@ -32,7 +32,9 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use fohmixer_proto::client::{HUB_STAGE_AUT, ServerMsg, StageAutStatus, Unresolved, ValueItem};
+use fohmixer_proto::client::{
+    HUB_STAGE_AUT, ServerMsg, SetItem, StageAutStatus, Unresolved, ValueItem,
+};
 use fohmixer_proto::layout::{Binding, Layout};
 use serde_json::{Value, json};
 use tokio::sync::{mpsc, oneshot};
@@ -108,6 +110,15 @@ pub enum RouterMsg {
         seq: u64,
         t: f64,
         is_final: bool,
+        hub_ms: f64,
+        offset_ms: Option<f64>,
+    },
+    /// A client's writes Live applies together (#127, `sets`: a linked
+    /// mute's tracks), each taken as a `set` before any batch is written;
+    /// at most `MAX_SETS`, the rest acked failed (`writes::on_sets`).
+    Sets {
+        client: ClientId,
+        sets: Vec<SetItem>,
         hub_ms: f64,
         offset_ms: Option<f64>,
     },
@@ -496,6 +507,27 @@ impl Router {
                 hub_ms,
                 offset_ms,
             }),
+            RouterMsg::Sets {
+                client,
+                sets,
+                hub_ms,
+                offset_ms,
+            } => self.on_sets(
+                sets.into_iter()
+                    .map(|s| writes::SetMsg {
+                        client,
+                        instance: s.instance,
+                        target: s.target,
+                        prop: s.prop,
+                        value: s.value,
+                        seq: s.seq,
+                        t: s.t,
+                        is_final: s.is_final,
+                        hub_ms,
+                        offset_ms,
+                    })
+                    .collect(),
+            ),
             RouterMsg::UnfoldRead {
                 instance,
                 seq,
@@ -1316,6 +1348,140 @@ mod tests {
         assert_eq!(router.setters["band"].tracked(), 0);
         assert!(!router.peers.contains_key(&1));
         assert!(!router.lan.contains_key(&1));
+    }
+
+    /// A `sets` item (#127): `band`'s `target` muted, sent at page time
+    /// 1000.5.
+    fn mute_item(target: &str, seq: u64) -> SetItem {
+        SetItem {
+            instance: "band".into(),
+            target: target.into(),
+            prop: "mute".into(),
+            value: json!(true),
+            seq,
+            t: 1_000.5,
+            is_final: true,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_linked_mutes_sets_go_to_live_in_one_batch_and_each_is_acked() {
+        // #127: three `set`s would go as two batches (the first alone, the
+        // others after its result); a `sets` takes all three, then writes.
+        let dir = tempfile::tempdir().unwrap();
+        let (mut router, mut rx, records_rx) = offline_router(dir.path());
+        let outbox = attach(&mut router, 1);
+        outbox.take();
+        router.handle(RouterMsg::Sets {
+            client: 1,
+            sets: vec![
+                mute_item("live_set tracks 1", 1),
+                mute_item("live_set  tracks 2", 2),
+                mute_item("live_set return_tracks 0", 3),
+            ],
+            hub_ms: 1_250.5,
+            offset_ms: Some(200.0),
+        });
+        let written = records(&records_rx);
+        assert_eq!(evs(&written), vec!["set", "set", "set", "batch"]);
+        let keys = [
+            "band|live_set return_tracks 0|mute",
+            "band|live_set tracks 1|mute",
+            "band|live_set tracks 2|mute",
+        ];
+        assert_eq!(written[1]["key"], keys[2]);
+        assert_eq!(written[1]["seq"], 2);
+        // Each set's own record: the page 200 ms behind, 50 ms on the way.
+        assert_eq!(written[2]["delay_ms"], 50.0);
+        assert_eq!(written[3]["n"], 3);
+        let sent: Vec<(&str, u64)> = written[3]["sent"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| (i["key"].as_str().unwrap(), i["seq"].as_u64().unwrap()))
+            .collect();
+        assert_eq!(sent, [(keys[0], 3), (keys[1], 1), (keys[2], 2)]);
+        let applied = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .expect("the batch's result comes back")
+            .unwrap();
+        router.handle(applied);
+        let mut acked: Vec<AckItem> = outbox
+            .take()
+            .unwrap()
+            .into_iter()
+            .flat_map(|m| match m {
+                ServerMsg::Ack { items } => items,
+                _ => Vec::new(),
+            })
+            .collect();
+        acked.sort_by(|a, b| a.key.cmp(&b.key));
+        assert_eq!(
+            acked,
+            vec![
+                AckItem::failed(keys[0], 3, "instance offline"),
+                AckItem::failed(keys[1], 1, "instance offline"),
+                AckItem::failed(keys[2], 2, "instance offline"),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_sets_of_more_than_32_writes_has_its_first_32_written_and_the_rest_acked_failed() {
+        // #127 review M3: a `sets` takes at most 32 items (far above any
+        // real link); those after them are acked failed at once, with why,
+        // and the first 32 are written as one batch.
+        let dir = tempfile::tempdir().unwrap();
+        let (mut router, _rx, records_rx) = offline_router(dir.path());
+        let outbox = attach(&mut router, 1);
+        outbox.take();
+        let sets: Vec<SetItem> = (0..34u64)
+            .map(|i| mute_item(&format!("live_set tracks {i}"), i + 1))
+            .collect();
+        router.handle(RouterMsg::Sets {
+            client: 1,
+            sets,
+            hub_ms: 1_250.5,
+            offset_ms: Some(200.0),
+        });
+        let written = records(&records_rx);
+        let mut want = vec!["ack"; 2];
+        want.extend(["set"; 32]);
+        want.push("batch");
+        assert_eq!(evs(&written), want);
+        let why = "more than 32 writes in one sets";
+        let refused = [
+            AckItem::failed("band|live_set tracks 32|mute", 33, why),
+            AckItem::failed("band|live_set tracks 33|mute", 34, why),
+        ];
+        for (record, ack) in written.iter().zip(&refused) {
+            assert_eq!(record["key"], ack.key);
+            assert_eq!(record["seq"], ack.seq);
+            assert_eq!(record["error"], why);
+        }
+        assert_eq!(written[2]["key"], "band|live_set tracks 0|mute");
+        assert_eq!(written[33]["key"], "band|live_set tracks 31|mute");
+        assert_eq!(written[34]["n"], 32);
+        let mut sent: Vec<u64> = written[34]["sent"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["seq"].as_u64().unwrap())
+            .collect();
+        sent.sort_unstable();
+        assert_eq!(sent, (1..=32).collect::<Vec<u64>>());
+        // The page hears the two refusals before any result of the batch.
+        let mut acked: Vec<AckItem> = outbox
+            .take()
+            .unwrap()
+            .into_iter()
+            .flat_map(|m| match m {
+                ServerMsg::Ack { items } => items,
+                _ => Vec::new(),
+            })
+            .collect();
+        acked.sort_by(|a, b| a.key.cmp(&b.key));
+        assert_eq!(acked, refused);
     }
 
     #[test]

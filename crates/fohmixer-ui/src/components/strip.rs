@@ -15,7 +15,7 @@ use std::time::Duration;
 use fohmixer_proto::layout::{Strip, StripKind};
 use leptos::prelude::*;
 
-use super::buttons::{MuteView, anchor_name};
+use super::buttons::{Corner, MuteView, Partner, anchor_name};
 use super::detail::DetailStrip;
 use super::fader::{FaderView, Law, Target};
 use super::meter::{MeterView, StatusView};
@@ -243,6 +243,28 @@ pub fn StripView(strip: Strip, settings: Settings, shared: Option<String>) -> im
         }];
         view! { <FaderView targets=targets shaping={settings.shaping} /> }
     });
+    let ret = strip.strip_kind == StripKind::Return;
+    // The instance tag only where the group does not name it (#63).
+    let tagged = shared.as_deref() != Some(instance.as_str());
+    // A marker problem (#68): a conflict disables the strip, any other
+    // problem marks it; the word replaces Live's dB on the readout line.
+    let look = mark_look(strip.mark);
+    let mark = look.map(|(mark, _)| mark);
+    // The linked mute (#127): each partner's mute, read and written with
+    // the strip's own. The name button's corner line holds a problem's `!`,
+    // the chain, the RET of a return in a named group and the MUTE mark.
+    let partners: Vec<Partner> = subs
+        .linked
+        .iter()
+        .map(|spec| Partner {
+            spec: spec.clone(),
+            slot: store.slot(spec),
+        })
+        .collect();
+    let corner: Option<Corner> = Some(Corner {
+        flag: mark == Some("problem"),
+        ret: ret && !tagged,
+    });
     let mute_view = mute.zip(subs.mute.clone()).map(|(slot, spec)| {
         view! {
             <MuteView
@@ -251,13 +273,12 @@ pub fn StripView(strip: Strip, settings: Settings, shared: Option<String>) -> im
                 guarded={strip.mute_guard}
                 label=label
                 color=color
+                partners=partners
+                corner=corner
             />
         }
     });
     let db = volume.map(|slot| view! { <DbView state=slot /> });
-    let ret = strip.strip_kind == StripKind::Return;
-    // The instance tag only where the group does not name it (#63).
-    let tagged = shared.as_deref() != Some(instance.as_str());
     let tag = tagged.then(|| {
         let text = if ret {
             format!("{instance} · ret")
@@ -271,19 +292,8 @@ pub fn StripView(strip: Strip, settings: Settings, shared: Option<String>) -> im
             </span>
         }
     });
-    // A return in a named group says so on its name button.
-    let ret_mark = (ret && !tagged).then(|| {
-        view! { <span class="strip-ret" data-testid="strip-ret" aria-hidden="true">"RET"</span> }
-    });
-    // A marker problem (#68): a conflict disables the strip, any other
-    // problem marks it; the word replaces Live's dB on the readout line.
-    let look = mark_look(strip.mark);
-    let mark = look.map(|(mark, _)| mark);
     let mark_word = look.map(|(_, word)| {
         view! { <span class="strip-mark" data-testid="strip-mark">{word}</span> }
-    });
-    let flag = (mark == Some("problem")).then(|| {
-        view! { <span class="strip-flag" aria-hidden="true">"!"</span> }
     });
     let kind = format!("{:?}", strip.strip_kind).to_lowercase();
     // Each attribute its own copy (the macro may move a value into a child
@@ -314,8 +324,6 @@ pub fn StripView(strip: Strip, settings: Settings, shared: Option<String>) -> im
                     </div>
                     <StripMenu strip=menu_strip />
                 </div>
-                {ret_mark}
-                {flag}
             </div>
             {tag}
             <div class="strip-fz" style=unity>
