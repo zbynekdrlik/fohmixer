@@ -597,6 +597,42 @@ fn a_frame_holds_no_view_no_view_id_and_no_strip_in_a_tags_group() {
 }
 
 #[test]
+fn a_frame_strip_carries_no_linked_mute() {
+    // #127 review M4: a linked mute is the Tuner markers' (`+ID` and
+    // `+MUTE`, the owner's ruling), never the frame's: a frame strip with
+    // `mute_links`, on a page or among the global controls, is refused as a
+    // view page is.
+    let link = json!([{"instance": "band", "anchor": {"kind": "return_at", "index": 0}}]);
+    let mut v = serde_json::to_value(frame()).unwrap();
+    v["pages"][0]["rows"][0]["sections"][1]["controls"][0]["mute_links"] = link.clone();
+    v["global"] = json!([
+        fader(),
+        {"kind": "strip",
+         "binding": {"instance": "band", "anchor": {"kind": "track", "name": "Keys #"}},
+         "strip_kind": "standard",
+         "mute_links": link}
+    ]);
+    let linked: Layout = serde_json::from_value(v).expect("parses");
+    assert_eq!(linked.validate(), vec![], "a valid layout otherwise");
+    let problems: Vec<String> = frame_problems(&linked)
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    assert_eq!(
+        problems,
+        vec![
+            "pages[0]: a linked mute: the Tuner markers make those".to_string(),
+            "global[1]: a linked mute: the Tuner markers make those".to_string(),
+        ]
+    );
+    // The same strips without it pass.
+    let mut plain = serde_json::to_value(frame()).unwrap();
+    plain["global"] = json!([fader()]);
+    let plain: Layout = serde_json::from_value(plain).expect("parses");
+    assert_eq!(frame_problems(&plain), vec![]);
+}
+
+#[test]
 fn a_marker_without_a_label_shows_its_tracks_number_and_is_known_by_it() {
     assert_eq!(placeholder_label(0), "#1");
     assert_eq!(placeholder_label(7), "#8");

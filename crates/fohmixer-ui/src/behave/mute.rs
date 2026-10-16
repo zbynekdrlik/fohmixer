@@ -124,6 +124,32 @@ impl Linked {
     }
 }
 
+/// A linked mute as a tap finds it (#127 review M2): the tracks a tap
+/// writes (indices, the strip's own first) and what they show together.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reach {
+    pub targets: Vec<usize>,
+    pub state: Linked,
+}
+
+impl Reach {
+    /// From each track's mute (`None`: no value yet), the strip's own first.
+    pub fn of(muted: &[Option<bool>]) -> Self {
+        let state = Linked::of(muted);
+        let targets = if state == Linked::Unknown {
+            Vec::new()
+        } else {
+            (0..muted.len()).collect()
+        };
+        Self { targets, state }
+    }
+
+    /// The chain's number (`count`: every linked mute).
+    pub fn text(&self, count: usize) -> String {
+        self.state.text(count)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -213,5 +239,49 @@ mod tests {
         ]
         .map(Linked::look);
         assert_eq!(looks, ["all", "muted", "mixed", "unknown"]);
+    }
+
+    #[test]
+    fn a_tap_writes_the_own_track_and_every_partner_with_a_value() {
+        // #127 review M2: a partner without a value is left out and never
+        // disables the strip's own mute (the PA mute always works); the
+        // state is the written tracks'.
+        let (f, t) = (Some(false), Some(true));
+        let reach = |targets: Vec<usize>, state: Linked| Reach { targets, state };
+        assert_eq!(
+            Reach::of(&[f, t, f]),
+            reach(vec![0, 1, 2], Linked::Mixed { muted: 1 })
+        );
+        assert_eq!(Reach::of(&[f, None, f]), reach(vec![0, 2], Linked::Playing));
+        assert_eq!(Reach::of(&[t, t, None]), reach(vec![0, 1], Linked::Muted));
+        assert_eq!(
+            Reach::of(&[t, None, f]),
+            reach(vec![0, 2], Linked::Mixed { muted: 1 })
+        );
+        // No partner with a value: the strip's own mute alone.
+        assert_eq!(Reach::of(&[f, None, None]), reach(vec![0], Linked::Playing));
+        assert_eq!(Reach::of(&[f, None]).state.tap(), Some(true));
+        assert_eq!(Reach::of(&[t, None]).state.tap(), Some(false));
+        // The strip's own track without a value: nothing, whatever the
+        // partners show.
+        assert_eq!(Reach::of(&[None, t, f]), reach(vec![], Linked::Unknown));
+        assert_eq!(Reach::of(&[None, t, f]).state.tap(), None);
+        assert_eq!(Reach::of(&[]), reach(vec![], Linked::Unknown));
+        // A plain mute: a link of one.
+        assert_eq!(Reach::of(&[t]), reach(vec![0], Linked::Muted));
+        assert_eq!(Reach::of(&[f]), reach(vec![0], Linked::Playing));
+    }
+
+    #[test]
+    fn the_chain_counts_the_mutes_a_tap_writes_now() {
+        let (f, t) = (Some(false), Some(true));
+        assert_eq!(Reach::of(&[f, f, f]).text(3), "3");
+        assert_eq!(Reach::of(&[t, t, t]).text(3), "3");
+        assert_eq!(Reach::of(&[t, f, f]).text(3), "1/3");
+        // A partner without a value is not counted.
+        assert_eq!(Reach::of(&[t, None, f]).text(3), "1/2");
+        assert_eq!(Reach::of(&[t, t, None]).text(3), "2");
+        // While the strip's own track has none: every linked mute.
+        assert_eq!(Reach::of(&[None, t, f]).text(3), "3");
     }
 }

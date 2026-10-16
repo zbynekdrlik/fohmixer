@@ -58,7 +58,7 @@ impl LiveStore {
         // milliseconds, before the next tick).
         self.note_intents();
         let mut taken = 0;
-        for msg in &resend.sets {
+        for msg in &resend.messages() {
             let sent = self.sent_set(msg);
             taken += usize::from(sent);
         }

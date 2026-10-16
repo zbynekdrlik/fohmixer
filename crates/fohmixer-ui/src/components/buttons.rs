@@ -18,7 +18,7 @@ use super::{
 };
 use crate::behave::colour::{css_color, text_on};
 use crate::behave::label::{label_chars, strip_label};
-use crate::behave::mute::{GUARD_MS, GuardAction, Linked, MuteGuard};
+use crate::behave::mute::{GUARD_MS, GuardAction, Linked, MuteGuard, Reach};
 use crate::binding::{SubSpec, mute_sub, solo_sub};
 use crate::dom;
 use crate::store::{LiveStore, Readiness, Slot};
@@ -82,8 +82,8 @@ pub struct Partner {
 }
 
 /// What a mute's tracks (`slots`: the strip's own first, then its
-/// partners') show together (#127), tracked or not.
-fn linked_now(slots: &[RwSignal<Slot>], tracked: bool) -> Linked {
+/// partners') show together and which a tap writes (#127), tracked or not.
+fn linked_now(slots: &[RwSignal<Slot>], tracked: bool) -> Reach {
     let muted: Vec<Option<bool>> = slots
         .iter()
         .map(|s| {
@@ -94,7 +94,7 @@ fn linked_now(slots: &[RwSignal<Slot>], tracked: bool) -> Linked {
             }
         })
         .collect();
-    Linked::of(&muted)
+    Reach::of(&muted)
 }
 
 /// The linked mute's mark (#127, the approved mockup paired-mute-v3,
@@ -108,7 +108,7 @@ pub fn LinkMark(slots: Vec<RwSignal<Slot>>) -> impl IntoView {
     let slots = StoredValue::new(slots);
     let state = Memo::new(move |_| {
         slots
-            .try_with_value(|s| linked_now(s, true))
+            .try_with_value(|s| linked_now(s, true).state)
             .unwrap_or(Linked::Unknown)
     });
     let shown = move || state.try_get().unwrap_or(Linked::Unknown);
@@ -184,7 +184,7 @@ pub fn MuteView(
                 // What the button shows now (P2): all muted unmutes all,
                 // else every track is muted.
                 let now = slots
-                    .try_with_value(|s| linked_now(s, false))
+                    .try_with_value(|s| linked_now(s, false).state)
                     .unwrap_or(Linked::Unknown);
                 if let Some(muted) = now.tap() {
                     let _ = specs.try_with_value(|s| {
@@ -214,7 +214,7 @@ pub fn MuteView(
     };
     let shown = Memo::new(move |_| {
         slots
-            .try_with_value(|s| linked_now(s, true))
+            .try_with_value(|s| linked_now(s, true).state)
             .unwrap_or(Linked::Unknown)
     });
     let now = move || shown.try_get().unwrap_or(Linked::Unknown);
@@ -444,14 +444,23 @@ mod tests {
             let partner = mute(Some(true));
             let other = mute(Some(false));
             assert_eq!(
-                linked_now(&[own, partner, other], tracked),
+                linked_now(&[own, partner, other], tracked).state,
                 Linked::Mixed { muted: 1 }
             );
+            // #127 review M2: a partner without a value is left out.
+            let waiting = mute(None);
+            assert_eq!(
+                linked_now(&[own, waiting, partner], tracked),
+                Reach {
+                    targets: vec![0, 2],
+                    state: Linked::Mixed { muted: 1 }
+                }
+            );
             let _ = own.try_set(Slot::Pending);
-            assert_eq!(linked_now(&[own, partner], tracked), Linked::Unknown);
-            assert_eq!(linked_now(&[partner], tracked), Linked::Muted);
-            assert_eq!(linked_now(&[other], tracked), Linked::Playing);
-            assert_eq!(linked_now(&[mute(None)], tracked), Linked::Unknown);
+            assert_eq!(linked_now(&[own, partner], tracked).state, Linked::Unknown);
+            assert_eq!(linked_now(&[partner], tracked).state, Linked::Muted);
+            assert_eq!(linked_now(&[other], tracked).state, Linked::Playing);
+            assert_eq!(linked_now(&[mute(None)], tracked).state, Linked::Unknown);
         }
     }
 

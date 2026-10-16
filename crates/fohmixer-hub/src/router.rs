@@ -1425,6 +1425,64 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn a_sets_of_more_than_32_writes_has_its_first_32_written_and_the_rest_acked_failed() {
+        // #127 review M3: a `sets` takes at most 32 items (far above any
+        // real link); those after them are acked failed at once, with why,
+        // and the first 32 are written as one batch.
+        let dir = tempfile::tempdir().unwrap();
+        let (mut router, _rx, records_rx) = offline_router(dir.path());
+        let outbox = attach(&mut router, 1);
+        outbox.take();
+        let sets: Vec<SetItem> = (0..34u64)
+            .map(|i| mute_item(&format!("live_set tracks {i}"), i + 1))
+            .collect();
+        router.handle(RouterMsg::Sets {
+            client: 1,
+            sets,
+            hub_ms: 1_250.5,
+            offset_ms: Some(200.0),
+        });
+        let written = records(&records_rx);
+        let mut want = vec!["ack"; 2];
+        want.extend(["set"; 32]);
+        want.push("batch");
+        assert_eq!(evs(&written), want);
+        let why = "more than 32 writes in one sets";
+        let refused = [
+            AckItem::failed("band|live_set tracks 32|mute", 33, why),
+            AckItem::failed("band|live_set tracks 33|mute", 34, why),
+        ];
+        for (record, ack) in written.iter().zip(&refused) {
+            assert_eq!(record["key"], ack.key);
+            assert_eq!(record["seq"], ack.seq);
+            assert_eq!(record["error"], why);
+        }
+        assert_eq!(written[2]["key"], "band|live_set tracks 0|mute");
+        assert_eq!(written[33]["key"], "band|live_set tracks 31|mute");
+        assert_eq!(written[34]["n"], 32);
+        let mut sent: Vec<u64> = written[34]["sent"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["seq"].as_u64().unwrap())
+            .collect();
+        sent.sort_unstable();
+        assert_eq!(sent, (1..=32).collect::<Vec<u64>>());
+        // The page hears the two refusals before any result of the batch.
+        let mut acked: Vec<AckItem> = outbox
+            .take()
+            .unwrap()
+            .into_iter()
+            .flat_map(|m| match m {
+                ServerMsg::Ack { items } => items,
+                _ => Vec::new(),
+            })
+            .collect();
+        acked.sort_by(|a, b| a.key.cmp(&b.key));
+        assert_eq!(acked, refused);
+    }
+
     #[test]
     fn live_health_goes_to_every_client_and_a_change_to_the_log() {
         let dir = tempfile::tempdir().unwrap();

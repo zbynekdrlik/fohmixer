@@ -100,7 +100,9 @@ pub enum ClientMsg {
     },
     /// Writes Live applies together (#127, a linked mute's tracks): each
     /// item a `set` of its own key, `seq` and `ack`. The hub takes them all
-    /// before it writes a batch, so one instance's go to Live in one batch.
+    /// before it writes a batch, so one instance's go to Live in one batch;
+    /// at most [`MAX_SETS`] of them (the items after those are acked
+    /// failed).
     Sets { sets: Vec<SetItem> },
     /// A liveness probe, answered by `pong` (the client's watchdog: a
     /// socket that stays silent is half-open and is replaced): its number,
@@ -472,6 +474,10 @@ pub enum ServerMsg {
     #[serde(other)]
     Unknown,
 }
+
+/// The most writes one [`ClientMsg::Sets`] carries (#127 review M3): far
+/// above any real link; the hub acks the items after them failed.
+pub const MAX_SETS: usize = 32;
 
 /// One write of a [`ClientMsg::Sets`] (#127): a `set`'s fields.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

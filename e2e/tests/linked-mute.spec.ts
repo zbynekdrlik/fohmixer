@@ -1,7 +1,20 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test, expect } from "./support/fixtures";
-import { LiveClient, harness, hostLine, hubEvents, hubStatus, openSurface, ready, selectPage, until } from "./support/live";
+import {
+  LiveClient,
+  doubleTap,
+  harness,
+  hostLine,
+  hubEvents,
+  hubStatus,
+  openDetail,
+  openSurface,
+  ready,
+  seen,
+  selectPage,
+  until,
+} from "./support/live";
 
 // The linked mute (#127, the approved mockup docs/mockups/paired-mute-v3.html,
 // variant A): a strip whose Tuner carries `+ID:<id>` mutes its own track and
@@ -203,16 +216,157 @@ test.describe("A linked mute", () => {
         ["track", 3, ["orphan_mute NOBODY"]],
       ]);
       expect(problems[2].name).toBe("+MUTE:NOBODY");
-      // No link: Vox 1's tap mutes its own track alone.
+      // No link: Vox 1's tap mutes its own track alone, in a batch of its
+      // own key only (the hub's record of the tap's batch).
       const mute = strips.and(page.locator('[data-label="Vox 1"]')).getByTestId("mute");
       await ready(mute);
+      const since = Date.now();
       await mute.click();
       await until(() => live.get("band", OWN, "mute"), (v) => v === true, "Vox 1's own track muted");
-      await page.waitForTimeout(300);
+      const tapped = await until(() => linkedBatches(since), (b) => b.length >= 1, "the tap's batch");
+      expect(tapped.length).toBe(1);
+      expect(tapped[0].n).toBe(1);
+      expect(tapped[0].sent.map((item: any) => item.key)).toEqual([`band|${OWN}|mute`]);
       expect(await live.get("band", RETURN, "mute")).toBe(false);
       expect(await live.get("band", TRACK, "mute")).toBe(false);
     } finally {
       await cleanUp(["tuner track 1 remove", "tuner track 2 remove", "tuner return 0 remove", "tuner track 3 remove"]);
+    }
+    await expect(strips).toHaveCount(0, { timeout: 10_000 });
+  });
+
+  test("a guarded linked mute (+MG): the first tap arms and writes nothing, the second mutes all three in one batch", async ({ page }) => {
+    for (const t of LINKED) await live.set("band", t, "mute", false);
+    await openSurface(page);
+    const strips = page.locator('.slot[data-group="markers"] [data-testid="strip"]');
+    const linked = strips.and(page.locator('[data-label="Vox 1"]'));
+    try {
+      await harness("/hub/layout", { layout: withMarkers() });
+      await selectPage(page, "foh");
+      expect(await hostLine("band", `tuner track 1 set '"Vox 1" +G:MARKERS +ID:VOX1 +MG'`)).toBe("TUNER 1");
+      expect(await hostLine("band", "tuner track 2 set '+MUTE:VOX1'")).toBe("TUNER 1");
+      expect(await hostLine("band", "tuner return 0 set '+MUTE:VOX1'")).toBe("TUNER 1");
+      const mute = linked.getByTestId("mute");
+      const chain = linked.getByTestId("mute-link");
+      await expect(chain).toHaveText("3", { timeout: 10_000 });
+      await ready(mute);
+      const since = Date.now();
+      // One tap arms (the button pulses) and the arm runs out.
+      await mute.click();
+      await expect(mute).toHaveClass(/\barmed\b/);
+      await expect(mute).not.toHaveClass(/\barmed\b/);
+      expect(await mutes(live)).toEqual([false, false, false]);
+      await expect(chain).toHaveAttribute("data-state", "all");
+      // Two taps within the guard's 500 ms: all three muted.
+      await doubleTap(mute, 150);
+      for (const t of LINKED) await until(() => live.get("band", t, "mute"), (v) => v === true, `${t} muted by the confirming tap`);
+      await expect(chain).toHaveAttribute("data-state", "muted");
+      await expect(mute).toHaveAttribute("data-muted", "true");
+      // The hub's only batch of the three since the first tap is the
+      // confirming tap's: the arming taps wrote nothing.
+      const batches = await until(() => linkedBatches(since), (b) => b.length >= 1, "the confirming tap's batch");
+      expect(batches.length).toBe(1);
+      expect(batches[0].n).toBe(3);
+      expect(batches[0].sent.map((item: any) => item.key).sort()).toEqual(KEYS);
+      expect(batches[0].sent.every((item: any) => item.value === true)).toBe(true);
+    } finally {
+      await cleanUp(["tuner track 1 remove", "tuner track 2 remove", "tuner return 0 remove"]);
+    }
+    await expect(strips).toHaveCount(0, { timeout: 10_000 });
+  });
+
+  test("the channel detail's MUTE carries the chain on its button, and a tap there writes the whole link", async ({ page }) => {
+    for (const t of LINKED) await live.set("band", t, "mute", false);
+    await openSurface(page);
+    const strips = page.locator('.slot[data-group="markers"] [data-testid="strip"]');
+    const linked = strips.and(page.locator('[data-label="Vox 1"]'));
+    try {
+      await harness("/hub/layout", { layout: withMarkers() });
+      await selectPage(page, "foh");
+      expect(await hostLine("band", `tuner track 1 set '"Vox 1" +G:MARKERS +ID:VOX1'`)).toBe("TUNER 1");
+      expect(await hostLine("band", "tuner track 2 set '+MUTE:VOX1'")).toBe("TUNER 1");
+      expect(await hostLine("band", "tuner return 0 set '+MUTE:VOX1'")).toBe("TUNER 1");
+      await expect(linked.getByTestId("mute-link")).toHaveText("3", { timeout: 10_000 });
+      // The marker strip's track by index: SimLive's track 1 is `#2`.
+      await expect(linked).toHaveAttribute("data-track", "#2");
+      const detail = await openDetail(page, "#2");
+      const mute = detail.getByTestId("mute");
+      const pill = mute.getByTestId("mute-link");
+      await ready(mute);
+      // The pill on the detail's MUTE: the chain and the count, grey.
+      await expect(pill).toHaveText("3");
+      await expect(pill).toHaveAttribute("data-state", "all");
+      await expect(pill).toHaveCSS("color", GREY);
+      expect(await seen(pill)).toBe(true);
+      const box = (await mute.boundingBox())!;
+      const mark = (await pill.boundingBox())!;
+      expect(mark.x >= box.x && mark.x + mark.width <= box.x + box.width, "the pill on the button").toBe(true);
+      expect(mark.y >= box.y && mark.y + mark.height <= box.y + box.height, "the pill on the button").toBe(true);
+      // A tap mutes all three in one batch; another unmutes them.
+      const since = Date.now();
+      await mute.click();
+      for (const t of LINKED) await until(() => live.get("band", t, "mute"), (v) => v === true, `${t} muted from the detail`);
+      await expect(pill).toHaveAttribute("data-state", "muted");
+      await expect(pill).toHaveCSS("color", RED);
+      await expect(mute).toHaveAttribute("data-muted", "true");
+      await mute.click();
+      for (const t of LINKED) await until(() => live.get("band", t, "mute"), (v) => v === false, `${t} unmuted from the detail`);
+      await expect(pill).toHaveAttribute("data-state", "all");
+      const batches = await until(() => linkedBatches(since), (b) => b.length >= 2, "the detail's two batches");
+      expect(batches.map((b: any) => b.n)).toEqual([3, 3]);
+      for (const b of batches) expect(b.sent.map((item: any) => item.key).sort()).toEqual(KEYS);
+      expect(batches.map((b: any) => b.sent[0].value)).toEqual([true, false]);
+    } finally {
+      await cleanUp(["tuner track 1 remove", "tuner track 2 remove", "tuner return 0 remove"]);
+    }
+    await expect(strips).toHaveCount(0, { timeout: 10_000 });
+  });
+
+  test("an all-muted linked return with a problem keeps `!` and the chain at 64 px, its RET and MUTE mark yielding, and shows them all at 120 px", async ({ page }) => {
+    for (const t of LINKED) await live.set("band", t, "mute", false);
+    await openSurface(page);
+    const strips = page.locator('.slot[data-group="markers"] [data-testid="strip"]');
+    const hall = strips.and(page.locator('[data-label="Hall"]'));
+    try {
+      await harness("/hub/layout", { layout: withMarkers() });
+      await selectPage(page, "foh");
+      // The return's own Tuner links tracks 1 and 2; `+GX` is a typo, a
+      // problem that leaves the link working.
+      expect(await hostLine("band", `tuner return 0 set '"Hall" +G:MARKERS +ID:HALL +GX'`)).toBe("TUNER 1");
+      expect(await hostLine("band", "tuner track 1 set '+MUTE:HALL'")).toBe("TUNER 1");
+      expect(await hostLine("band", "tuner track 2 set '+MUTE:HALL'")).toBe("TUNER 1");
+      const mute = hall.getByTestId("mute");
+      const chain = hall.getByTestId("mute-link");
+      const flag = hall.locator(".strip-flag");
+      const ret = hall.getByTestId("strip-ret");
+      const mark = hall.locator(".mute-mark");
+      await expect(chain).toHaveText("3", { timeout: 10_000 });
+      await expect(hall).toHaveAttribute("data-mark", "problem");
+      await expect(hall).toHaveAttribute("data-kind", "return");
+      await expect(ret).toHaveText("RET");
+      await ready(mute);
+      await mute.click();
+      for (const t of LINKED) await until(() => live.get("band", t, "mute"), (v) => v === true, `${t} muted by the return's tap`);
+      await expect(mute).toHaveAttribute("data-muted", "true");
+      await expect(chain).toHaveAttribute("data-state", "muted");
+      /** The strip at `px` wide: what can be seen of its corner. */
+      const at = async (px: number) => {
+        await hall.evaluate((el, w) => (el as HTMLElement).style.setProperty("--strip-w", `${w}px`), px);
+        await expect.poll(async () => Math.round((await hall.boundingBox())!.width)).toBe(px);
+        return { flag: await seen(flag), chain: await seen(chain), ret: await seen(ret), mute: await seen(mark) };
+      };
+      // 64 px: `!` and the red chain stay; RET and the MUTE mark yield.
+      expect(await at(64)).toEqual({ flag: true, chain: true, ret: false, mute: false });
+      // 120 px: every mark, the MUTE mark at the right of the corner.
+      expect(await at(120)).toEqual({ flag: true, chain: true, ret: true, mute: true });
+      const corner = (await ret.boundingBox())!;
+      const muted = (await mark.boundingBox())!;
+      const button = (await mute.boundingBox())!;
+      expect(corner.x + corner.width + 3, "RET left of the MUTE mark").toBeLessThanOrEqual(muted.x + 0.5);
+      expect(muted.x + muted.width, "the MUTE mark inside the button").toBeLessThanOrEqual(button.x + button.width - 2.5);
+      expect((await flag.boundingBox())!.x - button.x, "`!` in the top-left corner").toBeLessThan(4);
+    } finally {
+      await cleanUp(["tuner return 0 remove", "tuner track 1 remove", "tuner track 2 remove"]);
     }
     await expect(strips).toHaveCount(0, { timeout: 10_000 });
   });

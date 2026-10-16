@@ -607,3 +607,91 @@ fn a_linked_mutes_writes_go_as_one_sets_message_each_its_own_intent() {
     );
     assert_eq!(intents.len(), 1);
 }
+
+#[test]
+fn an_instances_writes_sent_again_go_as_one_sets_message() {
+    // #127 review M1: a linked mute's tap sent again after a reconnect
+    // still reaches Live in one batch: the instance's writes go again as
+    // ONE `sets`, each with its new sequence number.
+    let mut intents = Intents::<&str>::default();
+    let (_, tapped) = intents.set_together(
+        vec![
+            (("band", "live_set tracks 3", "mute"), Some("own")),
+            (
+                ("band", "live_set return_tracks 1", "mute"),
+                Some("partner"),
+            ),
+        ],
+        &json!(true),
+        1_000.0,
+        true,
+    );
+    assert!(matches!(tapped, ClientMsg::Sets { .. }));
+    let (_, _) = intents.set(("master", TARGET, "value"), json!(0.3), 1_000.0, true, None);
+    let resend = intents.resend("band", 1_500.0);
+    assert_eq!(resend.sets.len(), 2, "the master's write waits for its own");
+    let item = |target: &str, seq: u64| SetItem {
+        instance: "band".into(),
+        target: target.into(),
+        prop: "mute".into(),
+        value: json!(true),
+        seq,
+        t: 1_500.0,
+        is_final: true,
+    };
+    assert_eq!(
+        resend.messages(),
+        vec![ClientMsg::Sets {
+            sets: vec![
+                item("live_set return_tracks 1", 4),
+                item("live_set tracks 3", 5)
+            ]
+        }]
+    );
+    // Each acked on its own, as before.
+    let own = set_key("band", "live_set tracks 3", "mute");
+    assert_eq!(
+        intents.ack(&AckItem::failed(&own, 5, "refused")),
+        Acked::Failed("refused".into(), Some("own"))
+    );
+    // One write alone goes as a `sets` of one; nothing to send, no message.
+    let master = intents.resend("master", 1_600.0);
+    assert!(matches!(
+        master.messages().as_slice(),
+        [ClientMsg::Sets { sets }] if sets.len() == 1 && sets[0].seq == 6
+    ));
+    assert_eq!(
+        intents.resend("nowhere", 1_700.0).messages(),
+        Vec::<ClientMsg>::new()
+    );
+}
+
+#[test]
+fn more_writes_sent_again_than_a_sets_takes_go_as_several() {
+    // #127 review M3: a `sets` carries at most MAX_SETS writes (the hub
+    // refuses the rest), so a resend of more goes as several, in order.
+    use fohmixer_proto::client::MAX_SETS;
+    let mut intents = Intents::<&str>::default();
+    for i in 0..=MAX_SETS {
+        intents.set(
+            ("band", &format!("live_set tracks {i:02}"), "mute"),
+            json!(true),
+            1_000.0,
+            true,
+            None,
+        );
+    }
+    let messages = intents.resend("band", 1_500.0).messages();
+    let sizes: Vec<usize> = messages
+        .iter()
+        .map(|m| match m {
+            ClientMsg::Sets { sets } => sets.len(),
+            _ => 0,
+        })
+        .collect();
+    assert_eq!(sizes, vec![MAX_SETS, 1]);
+    let ClientMsg::Sets { sets } = &messages[1] else {
+        panic!("a sets")
+    };
+    assert_eq!(sets[0].target, format!("live_set tracks {MAX_SETS:02}"));
+}

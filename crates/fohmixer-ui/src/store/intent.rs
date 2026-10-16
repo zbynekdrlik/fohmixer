@@ -99,6 +99,13 @@ pub struct Resend {
     pub not_sent: Vec<String>,
 }
 
+impl Resend {
+    /// The messages that send the writes again (#127 review M1).
+    pub fn messages(&self) -> Vec<ClientMsg> {
+        self.sets.clone()
+    }
+}
+
 /// One key's latest write.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Intent {

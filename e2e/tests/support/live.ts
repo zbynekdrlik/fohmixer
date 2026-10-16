@@ -564,6 +564,27 @@ export async function clipped(el: Locator): Promise<string[]> {
   });
 }
 
+/**
+ * Whether `el` can be seen (#127): drawn (not `display: none`, not hidden,
+ * a box of its own) and inside every box that clips it (an `overflow` other
+ * than `visible`) up to its strip, so a mark that the name button's corner
+ * wrapped out of its line is not seen.
+ */
+export async function seen(el: Locator): Promise<boolean> {
+  return el.evaluate((node: Element) => {
+    const b = node.getBoundingClientRect();
+    const cs = getComputedStyle(node);
+    if (cs.display === "none" || cs.visibility !== "visible" || b.width === 0 || b.height === 0) return false;
+    const strip = node.closest('[data-testid="strip"]');
+    for (let a = node.parentElement; a && a !== strip?.parentElement; a = a.parentElement) {
+      if (getComputedStyle(a).overflow === "visible") continue;
+      const c = a.getBoundingClientRect();
+      if (b.left < c.left - 0.5 || b.right > c.right + 0.5 || b.top < c.top - 0.5 || b.bottom > c.bottom + 0.5) return false;
+    }
+    return true;
+  });
+}
+
 /** The laid-out text's width and height (page px). */
 export async function textSize(el: Locator): Promise<{ w: number; h: number }> {
   return el.evaluate((node: Element) => {
