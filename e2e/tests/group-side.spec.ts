@@ -6,12 +6,12 @@ import {
   LiveClient,
   openSurface,
   ready,
+  resetGroups,
   selectPage,
+  setGroups,
   shown,
   strip,
-  titleGroups,
   track,
-  untitleGroups,
   until,
   volume,
 } from "./support/live";
@@ -132,10 +132,11 @@ test.describe("A group's name on its side (#127)", () => {
       expect(Math.abs(box.y - lineBox.y), `row ${r}: the strip at the top`).toBeLessThan(0.5);
       expect(Math.abs(box.height - lineBox.height), `row ${r}: the strip as high as its line`).toBeLessThan(0.5);
     }
-    // The cue page's untitled block: no title, no room.
+    // The cue page's untitled block: no title, no room, no side label.
     await selectPage(page, "cue");
     await expect(line(page, 0)).toHaveAttribute("data-captions", "false");
     await expect(line(page, 0).locator(".group-title")).toHaveCount(0);
+    await expect(page.getByTestId("group-side")).toHaveCount(0);
     expect(await titleRoom(line(page, 0))).toBe(0);
     await selectPage(page, "foh");
   });
@@ -143,9 +144,9 @@ test.describe("A group's name on its side (#127)", () => {
   test("a title over a run that starts with no strip keeps its line's room: the faders' measured gain", async ({ page }) => {
     // Generic titles on the fixture's backing-tracks fader group (the FOH
     // page's lower line) and the cue page's block.
-    const titles = { "foh-4": "BACKING", "cue-1": "CUE" };
+    const groups = { "foh-4": { title: "BACKING" }, "cue-1": { title: "CUE" } };
     try {
-      await titleGroups(titles);
+      await setGroups(groups);
       await openSurface(page);
       const upper = line(page, 0);
       const lower = line(page, 1);
@@ -187,13 +188,42 @@ test.describe("A group's name on its side (#127)", () => {
       await expect(cue).toHaveAttribute("data-captions", "true");
       await expect(cue.locator('[data-testid="group"] .group-title')).toBeVisible();
       await expect(cue.getByTestId("group-title")).toHaveText("CUE");
+      await expect(page.getByTestId("group-side"), "a block carries no side label").toHaveCount(0);
       const cueRoom = await titleRoom(cue);
       expect(cueRoom).toBe(room);
       const block = (await cue.locator(".block").boundingBox())!;
       expect(Math.abs(block.y - ((await cue.boundingBox())!.y + cueRoom)), "the block under the title's room").toBeLessThan(0.5);
       await selectPage(page, "foh");
     } finally {
-      await untitleGroups(Object.keys(titles));
+      await resetGroups(Object.keys(groups));
+    }
+  });
+
+  test("an untitled coloured block shows its group's colour as its top edge, at no height", async ({ page }) => {
+    // #127 re-review m1: with no title to show, the block's group keeps no
+    // title over it, so the block wears the colour itself, as a strip does.
+    const COLOUR = "#5480E4";
+    try {
+      await setGroups({ "cue-1": { color: COLOUR } });
+      await openSurface(page);
+      await selectPage(page, "cue");
+      const cue = line(page, 0);
+      const block = cue.locator(".block");
+      await expect(block).toBeVisible({ timeout: 10_000 });
+      await expect(cue).toHaveAttribute("data-captions", "false");
+      await expect(cue.locator(".group-title")).toHaveCount(0);
+      await expect(page.getByTestId("group-side")).toHaveCount(0);
+      const edge = await block.evaluate((el) => {
+        const before = getComputedStyle(el, "::before");
+        return { color: before.borderTopColor, width: before.borderTopWidth, style: before.borderTopStyle, touch: before.pointerEvents };
+      });
+      expect(edge).toEqual({ color: "rgb(84, 128, 228)", width: "3px", style: "solid", touch: "none" });
+      // At no height: the block starts at its line's top, as without it.
+      const blockBox = (await block.boundingBox())!;
+      expect(Math.abs(blockBox.y - (await cue.boundingBox())!.y)).toBeLessThan(0.5);
+      await selectPage(page, "foh");
+    } finally {
+      await resetGroups(["cue-1"]);
     }
   });
 

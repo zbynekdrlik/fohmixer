@@ -218,30 +218,45 @@ function allGroups(layout: any): any[] {
   );
 }
 
+/** What a test gives a fixture group: a title, a colour. */
+export type GroupFields = { title?: string; color?: string };
+
 /**
- * The fixture layout with these groups titled (#127: the fixture's runs that
- * start with no strip have no title to show, so no line keeps the titles'
- * room; a title makes one), served by the hub when this returns. Generic
- * titles only (a public repo). A test that sets it puts the fixture back
- * with `untitleGroups` in its `finally`.
+ * The fixture layout with these groups' fields set (#127: the fixture's runs
+ * that start with no strip have no title to show, so no line keeps the
+ * titles' room, and its blocks have no colour; a title or a colour makes
+ * one), served by the hub when this returns. Generic titles only (a public
+ * repo). A test that sets it puts the fixture back with `resetGroups` in its
+ * `finally`.
  */
-export async function titleGroups(titles: Record<string, string>) {
+export async function setGroups(changes: Record<string, GroupFields>) {
   const layout = JSON.parse(readFileSync(FIXTURE_LAYOUT, "utf-8"));
-  for (const group of allGroups(layout)) if (group.id in titles) group.title = titles[group.id];
+  for (const group of allGroups(layout)) Object.assign(group, changes[group.id] ?? {});
   await harness("/hub/layout", { layout });
   await until(
     servedLayout,
-    (l) => Object.entries(titles).every(([id, title]) => allGroups(l).find((g) => g.id === id)?.title === title),
-    "the hub serving the titled groups",
+    (l) =>
+      Object.entries(changes).every(([id, fields]) => {
+        const group = allGroups(l).find((g) => g.id === id);
+        return Object.entries(fields).every(([key, value]) => group?.[key] === value);
+      }),
+    "the hub serving the changed groups",
   );
 }
 
-/** The fixture layout again after `titleGroups`, served by the hub when this returns. */
-export async function untitleGroups(ids: string[]) {
+/**
+ * The fixture layout again after `setGroups`, served by the hub when this
+ * returns (the fixture gives these groups no title and no colour).
+ */
+export async function resetGroups(ids: string[]) {
   await harness("/hub/layout/reset");
   await until(
     servedLayout,
-    (l) => ids.every((id) => allGroups(l).find((g) => g.id === id)?.title === undefined),
+    (l) =>
+      ids.every((id) => {
+        const group = allGroups(l).find((g) => g.id === id);
+        return group?.title === undefined && group?.color === undefined;
+      }),
     "the hub serving the fixture layout again",
   );
 }

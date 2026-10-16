@@ -974,9 +974,9 @@ fn LineView(
 
 /// One item of a line: a group's run anchor (`data-testid="group"`, which
 /// the tests find a strip's group by) with, over a run that does not start
-/// with a strip, the group's title (its marker, its title and the instance
-/// its strips share, #63), or a cell (on the first strip of a run, the
-/// group's name on its side, #127). Its side, an anchor's run and title
+/// with a strip, the group's title when it has one to show (its marker, its
+/// title and the instance its strips share, #63; `caption`), or a cell (on
+/// the first strip of a run, the group's name on its side, #127). Its side, an anchor's run and title
 /// and a cell's label are read from the line by its key (a keyed list
 /// keeps the item it was made with; a shift or a sub-page switch can make
 /// another strip a run's first).

@@ -195,7 +195,8 @@ test.describe("The page is its rows of sections around the control column", () =
         const slots = page.locator(`.slot[data-group="${section.id}"]`);
         const instances = section.controls.filter((c: any) => c.kind === "strip").map((c: any) => c.binding.instance);
         const shared = instances.length > 0 && instances.every((i: string) => i === instances[0]) ? instances[0] : null;
-        const name = section.title ?? (shared ? shared.toUpperCase() : null);
+        // A blank title is none, as in arrange::group_label.
+        const name = section.title?.trim() ? section.title : shared ? shared.toUpperCase() : null;
         if (section.controls[0]?.kind === "strip") {
           await expect(group.getByTestId("group-title"), `${section.id}: no title over its strips`).toHaveCount(0);
           await expect(group.locator(".group-mark"), `${section.id}: no marker`).toHaveCount(0);

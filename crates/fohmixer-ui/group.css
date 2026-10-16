@@ -4,7 +4,9 @@
    that strip's side (`.group-side`, in its scale column), any other run
    keeps the group's title over it when there is one to show (a title, or
    the Live set its strips share). The group's colour is on every strip's
-   3 px top edge (strip.css `.strip::before`). */
+   3 px top edge (strip.css `.strip::before`) and on every block's (a group
+   of buttons, `.block::before` below), so a coloured group whose run shows
+   no title still shows its colour. */
 
 /* A line keeps the titles' 16 px at its top only while it shows a title
    over a run on any of its sub-pages and windows (`data-captions`,
@@ -72,6 +74,24 @@
     height: 7px;
     border-radius: 2px;
     background: var(--gc, var(--accent));
+}
+
+/* A block (a group of buttons, page.css) wears its group's colour as a 3 px
+   top edge, as a strip does: a layer as large as the block (inside its
+   1 px border, so 11 px corners), which adds no height, follows the
+   rounded corners and takes no touch. No colour, no edge. */
+.block {
+    position: relative;
+}
+
+.block::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-top: 3px solid var(--gc, transparent);
+    border-radius: 11px;
+    opacity: 0.9;
+    pointer-events: none;
 }
 
 /* A group's name on its side in its run's first strip (variant B of

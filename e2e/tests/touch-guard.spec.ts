@@ -12,10 +12,10 @@ import {
   pageEvents,
   ready,
   strip,
-  titleGroups,
+  resetGroups,
+  setGroups,
   track,
   until,
-  untitleGroups,
   volume,
 } from "./support/live";
 
@@ -176,14 +176,14 @@ test("a group's title over a run keeps the browser's touches", async ({ page }) 
   // is one to show; the fixture's backing-tracks fader group gets a generic
   // title, so the FOH page shows one.
   try {
-    await titleGroups({ "foh-4": "BACKING" });
+    await setGroups({ "foh-4": { title: "BACKING" } });
     await openSurface(page);
     const title = page.locator('[data-testid="group"][data-group="foh-4"]').getByTestId("group-title");
     await expect(title).toHaveText("BACKING", { timeout: 10_000 });
     expect(await prevented(title, "touchstart"), "a touchstart on a group's title").toBe(false);
     expect(await style(title, "-webkit-user-drag"), "a group's title is not dragged").toBe("none");
   } finally {
-    await untitleGroups(["foh-4"]);
+    await resetGroups(["foh-4"]);
   }
 });
 
