@@ -40,6 +40,7 @@ mod tests {
             pinned: false,
             label: None,
             mark: None,
+            mute_links: Vec::new(),
         }))
     }
 

@@ -27,6 +27,9 @@ use std::collections::BTreeMap;
 use fohmixer_proto::client::{AckItem, ClientMsg, SetItem, set_key};
 use serde_json::Value;
 
+/// Where a write goes: its instance, LOM target and property.
+pub type At<'a> = (&'a str, &'a str, &'a str);
+
 /// A release this old (ms) without its ack is `unconfirmed` (L3, §4.3).
 pub const UNCONFIRMED_MS: f64 = 1000.0;
 /// After a reconnect a release is sent again only while younger than this
@@ -252,7 +255,7 @@ impl<F> Intents<F> {
     /// message (the hub writes one instance's to Live in one batch).
     pub fn set_together(
         &mut self,
-        targets: Vec<((&str, &str, &str), Option<F>)>,
+        targets: Vec<(At<'_>, Option<F>)>,
         value: &Value,
         t: f64,
         is_final: bool,

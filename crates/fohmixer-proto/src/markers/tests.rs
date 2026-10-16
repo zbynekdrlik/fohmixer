@@ -640,6 +640,7 @@ fn a_marker_without_a_label_shows_its_tracks_number_and_is_known_by_it() {
         pinned: false,
         label: Some(label.into()),
         mark: None,
+        mute_links: Vec::new(),
     };
     assert!(has_placeholder_label(&bound(
         Anchor::TrackAt { index: 2 },

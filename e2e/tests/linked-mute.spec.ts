@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test, expect } from "./support/fixtures";
-import { LiveClient, harness, hostLine, hubEvents, hubStatus, openSurface, ready, selectPage, strip, until } from "./support/live";
+import { LiveClient, harness, hostLine, hubEvents, hubStatus, openSurface, ready, selectPage, until } from "./support/live";
 
 // The linked mute (#127, the approved mockup docs/mockups/paired-mute-v3.html,
 // variant A): a strip whose Tuner carries `+ID:<id>` mutes its own track and
@@ -79,6 +79,13 @@ test.describe("A linked mute", () => {
     try {
       await harness("/hub/layout", { layout: withMarkers() });
       await selectPage(page, "foh");
+      // Today's strip first: no link, no chain; its fader's travel.
+      expect(await hostLine("band", `tuner track 1 set '"Vox 1" +G:MARKERS'`)).toBe("TUNER 1");
+      await expect(linked).toHaveCount(1, { timeout: 10_000 });
+      await ready(linked.getByTestId("fader"));
+      await expect(linked.getByTestId("mute-link")).toHaveCount(0);
+      const today = (await linked.getByTestId("fader").boundingBox())!.height;
+      // Linked three ways: the strip's own track, a track and a return.
       expect(await hostLine("band", `tuner track 1 set '"Vox 1" +G:MARKERS +ID:VOX1'`)).toBe("TUNER 1");
       expect(await hostLine("band", "tuner track 2 set '+MUTE:VOX1'")).toBe("TUNER 1");
       expect(await hostLine("band", "tuner return 0 set '+MUTE:VOX1'")).toBe("TUNER 1");
@@ -92,13 +99,13 @@ test.describe("A linked mute", () => {
       await expect(chain).toHaveCSS("color", GREY);
       await expect(mute).toHaveAttribute("data-muted", "false");
       await expect(mute).toHaveClass(/\blit\b/);
-      // No height: the name button stays 30 px and the fader's travel is an
-      // unlinked strip's of the same line (the fixture's band A-Reverb #).
+      // No height: the name button stays 30 px and the fader's travel is
+      // the same strip's before the link.
       expect((await mute.boundingBox())!.height).toBeCloseTo(30, 1);
+      await ready(linked.getByTestId("fader"));
       const travel = (await linked.getByTestId("fader").boundingBox())!.height;
-      const plain = (await strip(page, "A-Reverb #").getByTestId("fader").boundingBox())!.height;
-      test.info().annotations.push({ type: "travel-px", description: `${travel} (unlinked ${plain})` });
-      expect(Math.abs(travel - plain), `the linked strip's travel ${travel} against ${plain}`).toBeLessThan(0.5);
+      test.info().annotations.push({ type: "travel-px", description: `${travel} (unlinked ${today})` });
+      expect(Math.abs(travel - today), `the linked strip's travel ${travel} against ${today}`).toBeLessThan(0.5);
       expect(travel).toBeGreaterThan(200);
       // The chain sits in the button's top-left corner, above the name.
       const corner = (await chain.boundingBox())!;
