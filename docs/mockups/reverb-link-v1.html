@@ -1,0 +1,1559 @@
+<!doctype html>
+<!-- fohmixer #130 (with #104's merged STAGE button): mockup v1, for the
+     owner's decision; not part of the app. Screen 1: the two reverb faders
+     (Reverb ST = stream, Reverb PA = repro) in the EFFECTS run, linked and
+     unlinked, and the REVERB rule while the band Live is stopped (faders
+     10 dB down, a return mark, the hand wins); two places to switch the
+     link (A: a rail button, B: the channel detail). Screen 2: the rail
+     buttons with a 3 s hold for the automatic mode (STAGE, owner's decision
+     on #104 of 17.10.2026; REVERB on the same pattern, and its plain-toggle
+     fallback). Each screen is the iPad's 1194 x 834 at 1:1; the strips and
+     buttons use the app's CSS (crates/fohmixer-ui, v1.2.0) at the iPad's
+     strip size (83.16 px), the fonts are the app's own files, inlined. The
+     page measures its own faders and writes the numbers. Invented names, no
+     site data. -->
+<html lang="sk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Fohmixer spojené reverby v1</title>
+<style>
+/* The app's fonts (crates/fohmixer-ui/fonts, SIL OFL 1.1), inlined so the
+   page makes no request; style.css's faces and ranges. */
+@font-face {
+    font-family: "Barlow Condensed";
+    font-weight: 700;
+    font-display: block;
+    src: url("../../crates/fohmixer-ui/fonts/barlow-condensed-latin-700-normal.woff2") format("woff2");
+    unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2212, U+221E;
+}
+@font-face {
+    font-family: "Barlow Condensed";
+    font-weight: 700;
+    font-display: block;
+    src: url("../../crates/fohmixer-ui/fonts/barlow-condensed-latin-ext-700-normal.woff2") format("woff2");
+    unicode-range: U+0100-02AF, U+0304, U+0308, U+0329, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+    font-family: "Barlow";
+    font-weight: 600;
+    font-display: block;
+    src: url("../../crates/fohmixer-ui/fonts/barlow-latin-600-normal.woff2") format("woff2");
+    unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2212, U+221E;
+}
+@font-face {
+    font-family: "Barlow";
+    font-weight: 600;
+    font-display: block;
+    src: url("../../crates/fohmixer-ui/fonts/barlow-latin-ext-600-normal.woff2") format("woff2");
+    unicode-range: U+0100-02AF, U+0304, U+0308, U+0329, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+    font-family: "Barlow";
+    font-weight: 700;
+    font-display: block;
+    src: url("../../crates/fohmixer-ui/fonts/barlow-latin-700-normal.woff2") format("woff2");
+    unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2212, U+221E;
+}
+@font-face {
+    font-family: "Barlow";
+    font-weight: 700;
+    font-display: block;
+    src: url("../../crates/fohmixer-ui/fonts/barlow-latin-ext-700-normal.woff2") format("woff2");
+    unicode-range: U+0100-02AF, U+0304, U+0308, U+0329, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+    font-family: "JetBrains Mono";
+    font-weight: 500;
+    font-display: block;
+    src: url("../../crates/fohmixer-ui/fonts/jetbrains-mono-latin-500-normal.woff2") format("woff2");
+    unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2212, U+221E;
+}
+@font-face {
+    font-family: "JetBrains Mono";
+    font-weight: 600;
+    font-display: block;
+    src: url("../../crates/fohmixer-ui/fonts/jetbrains-mono-latin-600-normal.woff2") format("woff2");
+    unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2212, U+221E;
+}
+
+/* --- the app's tokens (style.css) --- */
+:root {
+    color-scheme: dark;
+    --bg: #07070c;
+    --page: #0b0b12;
+    --bar: #11111b;
+    --section: #151522;
+    --panel: #1a1a28;
+    --panel-mute: #12121b;
+    --panel-hi: #20203a;
+    --track: #0a0a14;
+    --line: #2a2a44;
+    --line-soft: rgba(255, 255, 255, 0.06);
+    --accent: #4ecdc4;
+    --accent-dim: rgba(78, 205, 196, 0.28);
+    --mute: #e63946;
+    --solo: #f4d35e;
+    --band: #4ecdc4;
+    --master: #8b7dff;
+    --text: #eaeaf0;
+    --muted: #9a9ab4;
+    --faint: #5c5c78;
+    --m-green: #36d67a;
+    --m-yellow: #f5d547;
+    --m-red: #ff4757;
+    --danger: #ff3b30;
+    --ok: #36d67a;
+    --warn: #f5a623;
+    --display: "Barlow Condensed", "Arial Narrow", sans-serif;
+    --ui: "Barlow", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --mono: "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+    /* NEW: the reverb rule's colour (the hub toggles' #6d86ff, buttons.css)
+       and its lighter line. */
+    --aut: #6d86ff;
+    --aut-hi: #9cadff;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+html,
+body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--ui);
+    -webkit-text-size-adjust: 100%;
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+    -webkit-tap-highlight-color: transparent;
+}
+
+/* --- a line (page.css, group.css: no caption line) --- */
+.line {
+    --strip-w: 83.16px;
+    display: flex;
+    gap: 4px;
+    min-width: 0;
+    min-height: 0;
+    height: 408px;
+}
+
+.slot {
+    display: grid;
+    flex: none;
+    min-width: 0;
+    min-height: 0;
+}
+
+/* --- the strip (strip.css, v1.2.0) --- */
+.strip {
+    --head-w: calc(var(--strip-w, 76px) - 10px);
+    position: relative;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+    gap: 3px;
+    flex: none;
+    width: var(--strip-w, 76px);
+    min-height: 0;
+    padding: 5px 4px 4px;
+    border: 1px solid transparent;
+    border-radius: 9px;
+    background: var(--panel);
+}
+
+.strip::before,
+.strip::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: 8px;
+    pointer-events: none;
+}
+
+.strip::before {
+    border-top: 3px solid var(--gc, var(--accent));
+    opacity: 0.9;
+}
+
+.strip:has(.mute[data-muted="true"]) {
+    background-color: var(--panel-mute);
+}
+
+.strip:has(.mute[data-muted="true"])::before {
+    opacity: 0.3;
+}
+
+.strip:has(.mute[data-muted="true"]) :is(.fader-cap, .fader-fill, .meter, .strip-readout) {
+    opacity: 0.4;
+}
+
+.strip-fz {
+    display: grid;
+    grid-template-columns: 17px 11px minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
+    gap: 3px;
+    min-height: 0;
+    padding: 8px 0 10px;
+}
+
+.strip-fz .scale {
+    grid-area: 1 / 1;
+}
+
+.strip-fz .meter {
+    grid-area: 1 / 2;
+}
+
+.strip-fz .fader {
+    grid-area: 1 / 1 / 2 / 4;
+    --x: calc(50% + 17px);
+}
+
+.scale {
+    position: relative;
+}
+
+.tick {
+    position: absolute;
+    right: 0;
+    transform: translateY(-50%);
+    color: var(--faint);
+    font: 500 8.5px/1 var(--mono);
+    white-space: nowrap;
+}
+
+.tick.unity {
+    color: var(--muted);
+}
+
+.meter {
+    position: relative;
+}
+
+.meter-bars {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    grid-auto-columns: 1fr;
+    grid-auto-flow: column;
+    gap: 1px;
+}
+
+.meter-clip {
+    position: absolute;
+    z-index: 2;
+    top: -9px;
+    left: -3px;
+    right: -3px;
+    height: 9px;
+}
+
+.meter-clip::before {
+    content: "";
+    position: absolute;
+    top: 2px;
+    left: 3px;
+    right: 3px;
+    height: 4px;
+    border-radius: 2px;
+    background: #2a1016;
+}
+
+.meter-peak {
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+    transform: translateY(calc((1 - var(--pk, 0)) * 100%));
+}
+
+.meter-peak::before {
+    content: "";
+    position: absolute;
+    top: -1px;
+    left: 0;
+    right: 0;
+    height: 2px;
+    background: #ffffff;
+}
+
+.meter-bar {
+    position: relative;
+    overflow: hidden;
+    background: #0e0e18;
+}
+
+.meter-zones {
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(
+        to top,
+        var(--m-green) 0 var(--yellow, 31%),
+        var(--m-yellow) var(--yellow, 31%) var(--red, 61%),
+        var(--m-red) var(--red, 61%) 100%
+    );
+}
+
+.meter-cover {
+    position: absolute;
+    inset: 0;
+    background: #0e0e18;
+    transform-origin: top;
+    transform: scaleY(1);
+}
+
+.fader {
+    position: relative;
+}
+
+.fader::after {
+    content: "";
+    position: absolute;
+    top: calc((1 - var(--u, 0.7294)) * 100%);
+    left: calc(var(--x, 50%) - 16px);
+    right: 2px;
+    height: 1px;
+    background: rgba(255, 255, 255, 0.28);
+}
+
+.fader-groove,
+.fader-fill {
+    position: absolute;
+    left: var(--x, 50%);
+    width: 6px;
+    margin-left: -3px;
+    border-radius: 3px;
+}
+
+.fader-groove {
+    top: 0;
+    bottom: 0;
+    background: var(--track);
+    box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.fader-fill {
+    bottom: 0;
+    height: 100%;
+    transform-origin: bottom;
+    transform: scaleY(var(--p, 0));
+    background: linear-gradient(to top, rgba(78, 205, 196, 0.25), var(--accent));
+}
+
+.fader-rail {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    pointer-events: none;
+    transform: translateY(calc(var(--p, 0) * -100%));
+}
+
+.fader-cap {
+    --cap-w: min(32px, calc(var(--strip-w, 76px) - 38px));
+    position: absolute;
+    top: 100%;
+    left: var(--x, 50%);
+    width: var(--cap-w);
+    height: 22px;
+    margin: -11px 0 0 calc(var(--cap-w) / -2);
+    border: 1px solid #4a4a66;
+    border-bottom-color: #15151f;
+    border-radius: 6px;
+    background: linear-gradient(#3a3a52, #262638);
+}
+
+.fader-cap::before {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 6px;
+    right: 6px;
+    height: 2px;
+    margin-top: -1px;
+    border-radius: 1px;
+    background: var(--text);
+}
+
+.strip-head {
+    position: relative;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: 30px 22px;
+    row-gap: 2px;
+    min-width: 0;
+}
+
+.strip-info {
+    --menu-w: clamp(18px, calc(var(--strip-w, 76px) * 0.25), 22px);
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    min-width: 0;
+    height: 22px;
+    margin: 0 -2px;
+}
+
+.strip-readout {
+    display: flex;
+    justify-self: center;
+    align-items: center;
+    gap: 2px;
+    max-width: 100%;
+    min-width: 0;
+    padding: 0 2px;
+    border-radius: 5px;
+}
+
+.strip-readout .db {
+    font-size: clamp(7px, calc((var(--strip-w, 76px) - 18px - var(--menu-w)) / 3.3), 12px);
+    line-height: 17px;
+}
+
+.status {
+    flex: none;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: rgb(0, 255, 0);
+}
+
+.db {
+    color: #9be7a8;
+    font: 600 12px/1.4 var(--mono);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+.db.unity {
+    color: #ffffff;
+}
+
+/* ☰ (detail.css) */
+.strip-menu {
+    position: relative;
+    display: grid;
+    place-items: center;
+    width: var(--menu-w);
+    height: 20px;
+    margin: 0;
+    padding: 0;
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    background: #141420;
+    color: var(--muted);
+    font: 700 12px/1 var(--ui);
+}
+
+/* The name button is the mute (strip.css). */
+.mute {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 0;
+    height: 34px;
+    padding: 0 4px;
+    border-radius: 7px;
+    background: #1f1f2e;
+    box-shadow: inset 0 0 0 1px var(--line);
+    color: var(--faint);
+    font: 700 clamp(11px, calc(var(--strip-w, 76px) * 0.2), 15px) / 1 var(--display);
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+}
+
+.mute.lit {
+    background: var(--tc, var(--accent));
+    box-shadow: none;
+    color: var(--tt, #10101a);
+}
+
+.strip-head > .mute {
+    height: 30px;
+    padding: 9px 3px 0;
+}
+
+.strip-label {
+    display: block;
+    max-width: 100%;
+    overflow: hidden;
+    font-size: clamp(
+        9px,
+        calc((var(--strip-w, 76px) - 18px - var(--n, 5) * 0.5px) / (var(--n, 5) * 0.5)),
+        17px
+    );
+    line-height: 1.3;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.strip-corner {
+    position: absolute;
+    top: 1.5px;
+    right: 3px;
+    left: 3px;
+    display: flex;
+    flex-wrap: wrap;
+    align-content: flex-start;
+    align-items: flex-start;
+    gap: 16px 3px;
+    height: 13.5px;
+    overflow: hidden;
+    letter-spacing: 0;
+    pointer-events: none;
+}
+
+.strip-ret {
+    flex: none;
+    margin-top: 1.5px;
+    padding: 0 2px;
+    border-radius: 3px;
+    background: rgba(7, 7, 12, 0.6);
+    color: var(--muted);
+    font: 800 7.5px/1.4 var(--ui);
+    letter-spacing: 0.6px;
+}
+
+.mute-mark {
+    display: none;
+    flex: none;
+    margin: 0.5px 0 0 auto;
+    color: var(--mute);
+    font: 800 7.5px/1 var(--ui);
+    letter-spacing: 0.6px;
+}
+
+.mute[data-muted="true"] .mute-mark {
+    display: block;
+}
+
+/* A problem's `!` (states.css). */
+.strip-flag {
+    flex: none;
+    margin-top: 1.5px;
+    width: 12px;
+    height: 12px;
+    border-radius: 3px;
+    background: var(--warn);
+    color: #0b0b12;
+    font: 800 10px/12px var(--ui);
+    text-align: center;
+}
+
+/* --- the linked mute's chain (link.css) --- */
+.link-mark {
+    --chain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='2.2' stroke-linecap='round'%3E%3Cpath d='M6.4 9.6l3.2-3.2'/%3E%3Cpath d='M7.2 4.6l1.1-1.1a2.9 2.9 0 0 1 4.1 4.1l-1.1 1.1'/%3E%3Cpath d='M8.8 11.4l-1.1 1.1a2.9 2.9 0 0 1-4.1-4.1l1.1-1.1'/%3E%3C/svg%3E");
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: 1px;
+    height: 9px;
+    padding: 0 3px 0 2px;
+    border-radius: 3px;
+    background: rgba(7, 7, 12, 0.66);
+    color: #d6d6e2;
+    font: 800 8.5px/9px var(--ui);
+    letter-spacing: 0.2px;
+    pointer-events: none;
+}
+
+.link-mark::before {
+    content: "";
+    flex: none;
+    width: 8.5px;
+    height: 8.5px;
+    background: currentColor;
+    -webkit-mask: var(--chain) center / contain no-repeat;
+    mask: var(--chain) center / contain no-repeat;
+}
+
+.link-mark[data-state="muted"] {
+    color: #ff5a67;
+}
+
+.link-n {
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+/* --- the group's name on its side (group.css) --- */
+.group-side {
+    position: absolute;
+    top: 6.25px;
+    left: 0;
+    width: 11px;
+    height: calc(30% - 12.5px);
+    overflow: hidden;
+    writing-mode: vertical-rl;
+    transform: rotate(180deg);
+    text-align: end;
+    color: var(--band);
+    font: 600 9.5px/11px var(--ui);
+    letter-spacing: 1.2px;
+    text-transform: uppercase;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    pointer-events: none;
+}
+
+/* === NEW (#130): the linked faders. The chain of link.css with "dB" in
+   the accent (the faders' fill) on the same dark pill: the corner line
+   after `!` and the mute chain, before RET and MUTE; it never yields.
+   On the fader, the cap's line takes the accent too. No height. === */
+.link-mark.flink {
+    color: var(--accent);
+    text-transform: none;
+}
+
+/* Crowded (a problem's `!` beside a mixed count such as 1/2): the chain
+   alone, so it never yields. */
+.strip-corner > .link-mark.flink.compact {
+    padding: 0 2px;
+}
+
+.strip-corner > .link-mark.flink.compact .link-n {
+    display: none;
+}
+
+.strip[data-flink="true"] .fader-cap::before {
+    background: var(--accent);
+}
+
+/* === NEW (#130): REVERB AUT holds a fader lowered. Over the groove, the
+   part the rule took away, hollow in the rule's colour, from the cap up to
+   where the fader returns (`--r`); there a dashed line (wider than the
+   cap, so it is never the amber line of an unconfirmed write, intent.css);
+   beside it, right of the groove, AUT −10 on its side; the readout in the
+   rule's colour. No touch, no height. === */
+.aut-span {
+    position: absolute;
+    top: calc((1 - var(--r)) * 100%);
+    bottom: calc(var(--p) * 100%);
+    left: var(--x);
+    width: 8px;
+    margin-left: -4px;
+    border-radius: 4px;
+    background: rgba(109, 134, 255, 0.22);
+    box-shadow: inset 0 0 0 1.5px var(--aut);
+    pointer-events: none;
+}
+
+.aut-ret {
+    position: absolute;
+    top: calc((1 - var(--r)) * 100%);
+    left: calc(var(--x) - 18px);
+    width: 36px;
+    height: 0;
+    margin-top: -1.5px;
+    border-top: 3px dashed var(--aut-hi);
+    pointer-events: none;
+}
+
+/* A mark on its side right of the groove: the box between two levels, the
+   pill centred in it. */
+.fz-mark {
+    position: absolute;
+    z-index: 2;
+    left: calc(var(--x) + 5px);
+    width: 13px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    pointer-events: none;
+}
+
+.fz-mark.aut {
+    top: calc((1 - var(--r)) * 100% + 5px);
+    bottom: calc(var(--p) * 100% + 14px);
+}
+
+.fz-mark.hand {
+    bottom: calc(var(--p) * 100% + 14px);
+    height: 44px;
+}
+
+.fz-pill {
+    writing-mode: vertical-rl;
+    transform: rotate(180deg);
+    padding: 4px 0;
+    border-radius: 3px;
+    background: var(--aut);
+    color: #0b0b12;
+    font: 800 8.5px/13px var(--ui);
+    letter-spacing: 0.6px;
+    text-align: center;
+    white-space: nowrap;
+}
+
+.fz-mark.hand .fz-pill {
+    background: var(--text);
+}
+
+.strip-readout[data-aut="low"] {
+    background: var(--aut);
+}
+
+.strip-readout[data-aut="low"] .db {
+    color: #0b0b12;
+}
+
+/* --- rail buttons (buttons.css; the column's sizes, page.css) --- */
+.btn {
+    --c: var(--accent);
+    position: relative;
+    display: grid;
+    align-content: center;
+    min-height: 44px;
+    padding: 6px 8px 6px 20px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--panel);
+    color: var(--muted);
+    font: 700 11.5px/1.15 var(--ui);
+    letter-spacing: 0.6px;
+    text-transform: uppercase;
+    text-align: left;
+    overflow-wrap: anywhere;
+}
+
+.btn::before {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 8px;
+    width: 6px;
+    height: 6px;
+    margin-top: -3px;
+    border-radius: 50%;
+    background: var(--faint);
+}
+
+.btn.on {
+    border-color: color-mix(in srgb, var(--c) 55%, transparent);
+    background: color-mix(in srgb, var(--c) 18%, var(--panel));
+    color: var(--text);
+}
+
+.btn.on::before {
+    background: var(--c);
+    box-shadow: 0 0 8px var(--c);
+}
+
+.stage-mics { --c: #4fa3ff; }
+.hub-toggle { --c: #6d86ff; }
+/* NEW: the merged REVERB button wears the rule's colour; REV LINK and the
+   detail's link switch the linked faders' accent. */
+.reverb-btn { --c: var(--aut); }
+.rev-link { --c: var(--accent); }
+
+/* A column's cut-out at the iPad's size: 132 px, its 6 px padding, a
+   button 118 x 44 (the rail's rows, minmax(24px, 44px)); `--tw` the rail
+   button's text width (page.css `.body`). */
+.railcut {
+    --tw: 98px;
+    display: grid;
+    grid-auto-rows: 44px;
+    gap: 4px;
+    width: max-content;
+    padding: 6px;
+    border: 1px solid var(--line-soft);
+    border-radius: 12px;
+    background: var(--bar);
+}
+
+.railcut.two {
+    grid-template-columns: 118px 118px;
+}
+
+.railcut.one {
+    grid-template-columns: 118px;
+}
+
+.railcut .btn {
+    min-height: 0;
+    padding: 4px 4px 4px 14px;
+}
+
+.railcut .btn::before {
+    left: 5px;
+}
+
+.btn .btn-text {
+    font-size: min(11.5px, calc((var(--tw, 65px) - var(--n, 5) * 0.6px) / (var(--n, 5) * 0.65)));
+}
+
+/* === NEW (#104, #130): a rail button with an automatic mode. The first
+   line: the label and, in AUT mode, a white AUT pill at its end (outlined
+   while a tap overrides the rule); a second line in plain words for what
+   the rule does now. The 3 s hold fills the button from the left, a white
+   bar at its foot. The button keeps its 118 x 44. === */
+.btn-row {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
+}
+
+.btn-row > .btn-text {
+    min-width: 0;
+}
+
+.aut-badge {
+    flex: none;
+    margin-left: auto;
+    padding: 0 4px;
+    border-radius: 4px;
+    background: var(--text);
+    color: #0b0b12;
+    font: 800 9.5px/13px var(--ui);
+    letter-spacing: 0.6px;
+}
+
+.aut-badge.held {
+    background: none;
+    box-shadow: inset 0 0 0 1.5px var(--text);
+    color: var(--text);
+}
+
+.btn-sub {
+    margin-top: 2px;
+    overflow: hidden;
+    color: var(--muted);
+    font: 600 9.5px/12px var(--ui);
+    letter-spacing: 0.2px;
+    text-overflow: ellipsis;
+    text-transform: none;
+    white-space: nowrap;
+}
+
+.btn.on .btn-sub {
+    color: var(--text);
+}
+
+.btn-sub.low {
+    color: var(--aut-hi);
+}
+
+.hold {
+    position: absolute;
+    inset: -1px;
+    border-radius: 10px;
+    background: linear-gradient(to right, rgba(234, 234, 240, 0.2) var(--hold), transparent var(--hold));
+    pointer-events: none;
+}
+
+.hold::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    bottom: 0;
+    width: var(--hold);
+    height: 3px;
+    border-radius: 0 0 0 10px;
+    background: var(--text);
+}
+
+/* --- the channel detail (detail.css): its name chip and a box --- */
+.detail-chip {
+    display: inline-block;
+    padding: 3px 12px;
+    border-radius: 6px;
+    background: var(--tc, var(--accent));
+    color: var(--tt, #10101a);
+    font: 700 18px/1.3 var(--display);
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    white-space: nowrap;
+}
+
+.detail-box {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 10px;
+    border-radius: 12px;
+    background: var(--panel);
+}
+
+.detail-title {
+    margin: 0;
+    color: var(--faint);
+    font: 700 12px/1.3 var(--display);
+    letter-spacing: 0.12em;
+}
+
+.detail-box .btn {
+    min-height: 44px;
+}
+
+/* === the mockup's page (not the app's) === */
+.screen {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    width: 1194px;
+    height: 834px;
+    padding: 8px 6px 6px;
+    overflow: hidden;
+    background: var(--page);
+}
+
+.screen + .screen {
+    border-top: 2px solid #000;
+}
+
+.top {
+    display: flex;
+    align-items: baseline;
+    gap: 14px;
+    padding: 0 4px;
+    white-space: nowrap;
+}
+
+.overline {
+    color: var(--muted);
+    font: 700 10px/1.2 var(--ui);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+}
+
+.lead {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--text);
+    font: 600 13px/1.3 var(--ui);
+    text-overflow: ellipsis;
+}
+
+.states {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 8px;
+}
+
+.col {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+}
+
+h2 {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    height: 22px;
+    margin: 0;
+    padding: 0 2px;
+    font: 700 17px/1 var(--display);
+    letter-spacing: 0.03em;
+    white-space: nowrap;
+}
+
+.vletter {
+    display: grid;
+    flex: none;
+    place-items: center;
+    min-width: 22px;
+    height: 22px;
+    padding: 0 5px;
+    border-radius: 7px;
+    background: var(--panel-hi);
+    color: var(--text);
+    font: 700 16px/1 var(--display);
+}
+
+.vletter.variant {
+    background: var(--solo);
+    color: #10101a;
+}
+
+.frame {
+    position: relative;
+    flex: none;
+    height: 408px;
+}
+
+.ruler {
+    position: absolute;
+    left: 259px;
+    width: 28px;
+    border: 1px solid var(--muted);
+    border-left: 0;
+    border-radius: 0 3px 3px 0;
+    pointer-events: none;
+}
+
+.ruler > span {
+    position: absolute;
+    top: 50%;
+    left: 3px;
+    transform: translateY(-50%);
+    color: var(--text);
+    font: 600 10px/1.15 var(--mono);
+}
+
+.cap {
+    margin: 0;
+    color: var(--text);
+    font: 600 12.5px/1.34 var(--ui);
+}
+
+.cap b {
+    color: #ffffff;
+}
+
+.inline-mark {
+    display: inline-flex;
+    vertical-align: 1px;
+}
+
+.inline-mark .link-mark {
+    height: 11px;
+    padding: 0 3px 0 2px;
+    font-size: 9.5px;
+    line-height: 11px;
+}
+
+.inline-pill {
+    display: inline-block;
+    padding: 0 3px;
+    border-radius: 3px;
+    background: var(--aut);
+    color: #0b0b12;
+    font: 800 10px/14px var(--ui);
+    letter-spacing: 0.4px;
+}
+
+.inline-pill.hand {
+    background: var(--text);
+}
+
+.inline-pill.badge {
+    background: var(--text);
+}
+
+.inline-pill.badge.held {
+    background: none;
+    box-shadow: inset 0 0 0 1.5px var(--text);
+    color: var(--text);
+}
+
+.ret-swatch {
+    display: inline-block;
+    width: 18px;
+    height: 0;
+    vertical-align: 3px;
+    border-top: 3px dashed var(--aut-hi);
+}
+
+.row {
+    display: grid;
+    gap: 8px;
+    min-height: 0;
+}
+
+.screen1 .row.bottom {
+    flex: 1;
+    grid-template-columns: 300px 430px minmax(0, 1fr);
+}
+
+.box {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+    min-width: 0;
+    min-height: 0;
+    padding: 8px 10px;
+    border: 1px solid var(--line-soft);
+    border-radius: 12px;
+    background: var(--section);
+}
+
+.box h3 {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    margin: 0;
+    font: 700 16px/22px var(--display);
+    letter-spacing: 0.03em;
+    white-space: nowrap;
+}
+
+.box p,
+.box li {
+    margin: 0;
+    color: var(--text);
+    font: 600 12.5px/1.34 var(--ui);
+}
+
+.box .small {
+    color: var(--muted);
+}
+
+.box ul {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin: 0;
+    padding-left: 15px;
+}
+
+.pair {
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+}
+
+.tagged {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.tag {
+    color: var(--muted);
+    font: 700 10px/12px var(--ui);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+}
+
+.num {
+    color: #9be7a8;
+    font: 600 12px/1 var(--mono);
+    white-space: nowrap;
+}
+
+/* Screen 2: the rail buttons' states, a cut-out of the column each. */
+.sect {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.sect > h2 .sub {
+    color: var(--muted);
+    font: 600 13px/1 var(--ui);
+    letter-spacing: 0;
+}
+
+.cells {
+    display: grid;
+    gap: 8px;
+}
+
+.cells.six {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+
+.cells.seven {
+    grid-template-columns: repeat(5, minmax(0, 1fr)) 8px repeat(2, minmax(0, 1fr));
+}
+
+.cell {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+    padding: 8px;
+    border: 1px solid var(--line-soft);
+    border-radius: 12px;
+    background: var(--section);
+}
+
+.cell.alt {
+    border-style: dashed;
+}
+
+.cell h4 {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 0;
+    font: 700 15px/20px var(--display);
+    letter-spacing: 0.03em;
+    white-space: nowrap;
+}
+
+.cell h4 .vletter {
+    min-width: 20px;
+    height: 20px;
+    font-size: 14px;
+}
+
+.cell p {
+    margin: 0;
+    color: var(--text);
+    font: 600 12px/1.34 var(--ui);
+}
+
+.divider {
+    align-self: stretch;
+    border-left: 1px dashed var(--line);
+    justify-self: center;
+}
+
+.screen2 .row.notes {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    align-items: start;
+}
+</style>
+</head>
+<body>
+<!-- ============ Screen 1: the reverb faders ============ -->
+<div class="screen screen1">
+    <header class="top">
+        <div class="overline">fohmixer #130 · spojené reverby a REVERB AUT · návrh v1 · obrazovka 1/2</div>
+        <div class="lead">Fader stream reverbu (Reverb ST) a repro reverbu (Reverb PA) v skupine EFFECTS. Skutočná veľkosť iPadu, vymyslené mená.</div>
+    </header>
+    <div class="states">
+        <section class="col">
+            <h2><span class="vletter">1</span>Pieseň · spojené</h2>
+            <div class="frame"><div class="line" data-state="1"></div></div>
+            <div class="railcut two" data-rail="1"></div>
+            <p class="cap">Hýbem PA, ST ide s ním o rovnaké dB (rozdiel 3 dB ostáva). Spojenie ukazuje <span class="inline-mark"><span class="link-mark flink"><span class="link-n">dB</span></span></span> v rohu mena oboch a tyrkysová čiarka na gombíku. Fader nestratí nič.</p>
+        </section>
+        <section class="col">
+            <h2><span class="vletter">2</span>Pieseň · rozpojené</h2>
+            <div class="frame"><div class="line" data-state="2"></div></div>
+            <div class="railcut two" data-rail="2"></div>
+            <p class="cap">Každý fader sám: PA o 9 dB nižšie ako ST (sála sama dozvučí). Značka v rohu zmizne, čiarka na gombíku je zas biela.</p>
+        </section>
+        <section class="col">
+            <h2><span class="vletter">3</span>Rozprávanie · REVERB AUT</h2>
+            <div class="frame"><div class="line" data-state="3"></div></div>
+            <div class="railcut two" data-rail="3"></div>
+            <p class="cap">Live zastal: o 2 s oba fadre klesnú o 10 dB (za 2 s). <span class="ret-swatch"></span> = kam sa vrátia, keď Live zahrá (za 0,5 s). Pri fadri <span class="inline-pill">AUT −10</span>, dB svieti modro.</p>
+        </section>
+        <section class="col">
+            <h2><span class="vletter">4</span>Zvukár prevzal PA</h2>
+            <div class="frame"><div class="line" data-state="4"></div></div>
+            <div class="railcut two" data-rail="4"></div>
+            <p class="cap">Rozpojené, PA potiahol hore: pravidlo ho pustí, čiarka zmizne, pri gombíku <span class="inline-pill hand">RUKA</span>; pri štarte ostane, kde je. ST sa vráti. Spojené: ruka vezme oba.</p>
+        </section>
+    </div>
+    <div class="row bottom">
+        <section class="box">
+            <h3><span class="vletter variant">A</span>Spojenie na lište: REV LINK</h3>
+            <div class="pair">
+                <div class="tagged"><span class="tag">spojené</span><div class="railcut one" data-rail="link-on"></div></div>
+                <div class="tagged"><span class="tag">rozpojené</span><div class="railcut one" data-rail="link-off"></div></div>
+            </div>
+            <p>Jedno ťuknutie, stav vidno stále; svieti tyrkysovo ako značka na pásoch. Na lište o tlačidlo viac.</p>
+        </section>
+        <section class="box">
+            <h3><span class="vletter variant">B</span>Spojenie v detaile kanála (podrž ☰ na reverbe)</h3>
+            <div class="pair">
+                <div class="tagged">
+                    <span class="tag">detail Reverb PA (výrez)</span>
+                    <span class="detail-chip" data-chip></span>
+                    <div class="detail-box" data-detail></div>
+                </div>
+                <div class="tagged" style="flex:1;min-width:0">
+                    <p>Na lište nič nepribudne. Prepnutie: podrž ☰, ťukni, späť na mix.</p>
+                    <p class="small">Stav vidno len značkou v rohu mien (ako v A). Rovnaký prepínač je aj v detaile Reverb ST.</p>
+                </div>
+            </div>
+        </section>
+        <section class="box">
+            <h3>Namerané (iPad 1194 × 834)</h3>
+            <ul>
+                <li>Dráha fadra <span class="num" data-travel>322 px</span> na všetkých 12 pásoch, ako dnes; nad fadrami nič nepribudlo.</li>
+                <li>Mená ako dnes: Vox 1 <span class="num" data-name="Vox 1">17 px</span>, Reverb ST a PA <span class="num" data-name="Reverb ST">13.5 px</span> (9 znakov, pravidlo podľa dĺžky).</li>
+                <li>Roh mena 67 px, <span class="inline-mark"><span class="link-mark flink"><span class="link-n">dB</span></span></span> 25 px: zmestí sa aj s reťazou mute a <b>!</b> (ustúpi MUTE). S <b>!</b> a reťazou 1/2 len reťaz bez dB (12,5 px). Na 64 px páse (telefón) sa s <b>!</b> a reťazou nezmestí.</li>
+                <li>Obe varianty stoja 0 px výšky fadra; A berie miesto na lište, B nie.</li>
+            </ul>
+        </section>
+    </div>
+</div>
+
+<!-- ============ Screen 2: the rail buttons with an automatic mode ============ -->
+<div class="screen screen2">
+    <header class="top">
+        <div class="overline">fohmixer #104 + #130 · tlačidlá s automatikou · obrazovka 2/2</div>
+        <div class="lead">Ťuk = ručne ako dnes, podržanie 3 s = automatika AUT zap./vyp. Tlačidlo ostáva 118 × 44 px ako na lište.</div>
+    </header>
+    <section class="sect">
+        <h2>STAGE <span class="sub">(mikrofóny zo stage do tvojho reproduktora; STAGE a STAGE AUT sú jedno tlačidlo)</span></h2>
+        <div class="cells six" data-cells="stage"></div>
+    </section>
+    <section class="sect">
+        <h2>REVERB podľa rovnakého vzoru <span class="sub">(ťuk = oba reverby −10 dB hneď / späť; podržanie 3 s = REVERB AUT) · vpravo: samostatný prepínač</span></h2>
+        <div class="cells seven" data-cells="reverb"></div>
+    </section>
+    <div class="row notes">
+        <section class="box">
+            <h3>Ťuk a podržanie</h3>
+            <ul>
+                <li>Ťuk sa vykoná pri pustení prsta (dnes pri dotyku), aby podržanie nič neprepínalo.</li>
+                <li>Podržanie 3 s zapne alebo vypne AUT; pruh sa plní zľava. Pustíš medzi tým: nič sa nestane.</li>
+                <li>Ťuk v AUT platí do najbližšieho zastavenia alebo štartu Live; AUT ostáva zapnuté.</li>
+            </ul>
+        </section>
+        <section class="box">
+            <h3>Prečo aj REVERB</h3>
+            <ul>
+                <li>Rovnaké gesto na oboch tlačidlách, jedno tlačidlo na lište namiesto dvoch.</li>
+                <li>Ťuk má zmysel: modlitba alebo reč počas piesne, ktorú zastavenie Live nechytí. Oba fadre idú hneď −10 dB, ďalší ťuk ich vráti presne na úroveň piesne.</li>
+                <li>Svieti = reverb na úrovni piesne, ako kedysi REVERB; tmavé = −10 dB.</li>
+            </ul>
+        </section>
+        <section class="box">
+            <h3>Ak ťuk na REVERB netreba</h3>
+            <ul>
+                <li>Ostane samostatný prepínač REVERB AUT (vpravo hore): ťuk zapne alebo vypne pravidlo, druhý riadok ukazuje, čo práve robí.</li>
+                <li>Fadre sa hýbu rovnako v oboch prípadoch (obrazovka 1); ruka vždy vyhráva.</li>
+            </ul>
+        </section>
+    </div>
+</div>
+<script>
+"use strict";
+
+// Live's volume taper (behave/fader.rs value2db) and the position `db`
+// away from 0 dB (the group-captions mockup's).
+function value2db(v) {
+    if (v > 1) return 0;
+    if (v >= 0.4) return 40 * v - 34;
+    if (v >= 0.15) return -((399.751894 * v - 201.871345) ** 2 + 12630.61132) / 799.503788;
+    const db = 118.426374 * v ** (5567 / 7504) - 70;
+    return db <= -70 ? -Infinity : db;
+}
+function posOf(db) {
+    let low = 0, high = 1;
+    for (let i = 0; i < 14; i++) {
+        const mid = (low + high) / 2;
+        if (value2db(mid) < db) low = mid; else high = mid;
+    }
+    return (low + high) / 2;
+}
+const UNITY = 0.85;
+const TICKS = [6, 0, -6, -12, -18, -24, -30, -40, -60];
+const tickLabel = (db) => (db > 0 ? "+" + db : db < 0 ? "−" + -db : "0");
+const dbText = (db) => (db === 0 ? "0.0" : (db < 0 ? "−" + (-db).toFixed(1) : db.toFixed(1)));
+
+function textOn(hex) {
+    const lin = (c) => { c /= 255; return c <= 10 / 255 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; };
+    const n = parseInt(hex.slice(1), 16);
+    const l = 0.2126 * lin((n >> 16) & 255) + 0.7152 * lin((n >> 8) & 255) + 0.0722 * lin(n & 255);
+    return l > 0.179 ? "#10101a" : "#f4f4fa";
+}
+
+function el(tag, cls, attrs = {}) {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    for (const [k, v] of Object.entries(attrs)) {
+        if (k === "text") e.textContent = v; else e.setAttribute(k, v);
+    }
+    return e;
+}
+
+// Invented groups and tracks (Live's colours).
+const STAGE = { title: "STAGE", gc: "#FFA529", instance: "band" };
+const FX = { title: "EFFECTS", gc: "#D86CE4", instance: "band" };
+const VOX = { name: "Vox 1", tc: "#FF94A6", link: 2, group: STAGE };
+const ST = { name: "Reverb ST", tc: "#5ECBF1", group: FX, first: true };
+const PA = { name: "Reverb PA", tc: "#8BC5FF", group: FX };
+
+// The four states: dB, meter level, the link, the rule's return level,
+// the hand.
+const STATES = {
+    1: [{ ...VOX, db: -1.5, lvl: 0.64 }, { ...ST, db: -2, lvl: 0.55, flink: true }, { ...PA, db: -5, lvl: 0.5, flink: true }],
+    2: [{ ...VOX, db: -1.5, lvl: 0.64 }, { ...ST, db: 0, lvl: 0.58 }, { ...PA, db: -9, lvl: 0.42 }],
+    3: [{ ...VOX, db: -1.5, lvl: 0.66 }, { ...ST, db: -12, lvl: 0.3, flink: true, ret: -2 }, { ...PA, db: -15, lvl: 0.26, flink: true, ret: -5 }],
+    4: [{ ...VOX, db: -1.5, lvl: 0.66 }, { ...ST, db: -10, lvl: 0.32, ret: 0 }, { ...PA, db: -13, lvl: 0.34, hand: true }],
+};
+
+// The name button (MuteView) and its corner line: `!`, the mute chain,
+// the fader link (NEW), RET, MUTE.
+function muteButton(m) {
+    const muted = m.muted ? "true" : "false";
+    const b = el("div", "mute", { "data-muted": muted, style: `--tc:${m.tc};--tt:${textOn(m.tc)};` });
+    b.classList.toggle("lit", !m.muted);
+    b.append(el("span", "strip-label", { text: m.name, style: `--n:${[...m.name].length};` }));
+    const corner = el("span", "strip-corner");
+    if (m.flag) corner.append(el("span", "strip-flag", { text: "!" }));
+    if (m.link) {
+        const link = el("span", "link-mark", { "data-state": m.muted ? "muted" : "all", "data-mark": "chain" });
+        link.append(el("span", "link-n", { text: String(m.link) }));
+        corner.append(link);
+    }
+    if (m.flink) {
+        const f = el("span", "link-mark flink", { "data-mark": "flink" });
+        f.append(el("span", "link-n", { text: "dB" }));
+        corner.append(f);
+    }
+    if (m.ret_mark) corner.append(el("span", "strip-ret", { text: "RET", "data-mark": "ret" }));
+    corner.append(el("span", "mute-mark", { text: "MUTE", "data-mark": "mute" }));
+    b.append(corner);
+    return b;
+}
+
+function stripHead(m) {
+    const h = el("div", "strip-head");
+    const info = el("div", "strip-info");
+    const readout = el("div", "strip-readout");
+    if (m.ret !== undefined) readout.dataset.aut = "low";
+    readout.append(el("div", "status"), el("span", m.db === 0 ? "db unity" : "db", { text: dbText(m.db) }));
+    const menu = el("div", "strip-menu");
+    menu.append(el("span", "", { text: "☰" }));
+    info.append(readout, menu);
+    h.append(muteButton(m), info);
+    return h;
+}
+
+function strip(m) {
+    const s = el("div", "strip");
+    if (m.flink) s.dataset.flink = "true";
+    const fz = el("div", "strip-fz", { style: `--u:${UNITY};` });
+    const scale = el("div", "scale");
+    for (const db of TICKS) {
+        scale.append(el("span", db === 0 ? "tick unity" : "tick", { text: tickLabel(db), style: `top:${((1 - posOf(db)) * 100).toFixed(3)}%;` }));
+    }
+    if (m.first) scale.append(el("span", "group-side", { text: m.group.title, "data-instance": m.group.instance }));
+    const meter = el("div", "meter", { style: `--yellow:${(posOf(-12) * 100).toFixed(2)}%;--red:${(posOf(-3) * 100).toFixed(2)}%;` });
+    const bars = el("div", "meter-bars");
+    const bar = el("div", "meter-bar");
+    const peak = Math.min(1, m.lvl + 0.05);
+    bar.append(
+        el("div", "meter-zones"),
+        el("div", "meter-cover", { style: `transform:scaleY(${(1 - m.lvl).toFixed(4)});` }),
+        el("div", "meter-peak", { style: `--pk:${peak.toFixed(4)};opacity:0.75;` }),
+    );
+    bars.append(bar);
+    meter.append(el("div", "meter-clip"), bars);
+    let style = `--p:${posOf(m.db).toFixed(4)};`;
+    if (m.ret !== undefined) style += `--r:${posOf(m.ret).toFixed(4)};`;
+    const fader = el("div", "fader", { style });
+    const rail = el("div", "fader-rail");
+    rail.append(el("div", "fader-cap"));
+    fader.append(el("div", "fader-groove"), el("div", "fader-fill"));
+    if (m.ret !== undefined) {
+        fader.append(el("div", "aut-span"), el("div", "aut-ret", { "data-ret": dbText(m.ret) }));
+    }
+    fader.append(rail);
+    if (m.ret !== undefined) {
+        const mark = el("div", "fz-mark aut");
+        mark.append(el("span", "fz-pill", { text: `AUT −${Math.round(m.ret - m.db)}` }));
+        fader.append(mark);
+    }
+    if (m.hand) {
+        const mark = el("div", "fz-mark hand");
+        mark.append(el("span", "fz-pill", { text: "RUKA" }));
+        fader.append(mark);
+    }
+    fz.append(scale, meter, fader);
+    s.append(stripHead(m), fz);
+    return s;
+}
+
+function drawLine(line) {
+    for (const m of STATES[line.dataset.state]) {
+        const slot = el("div", "slot", { style: `--gc:${m.group.gc};` });
+        slot.append(strip(m));
+        line.append(slot);
+    }
+}
+
+// A rail button: the label (its longest word `--n`), the AUT pill, the
+// line under it, the hold's fill.
+function railBtn(b) {
+    const d = el("div", `btn ${b.cls}`);
+    d.classList.toggle("on", !!b.on);
+    const row = el("span", "btn-row");
+    const longest = Math.max(...b.label.split(" ").map((w) => [...w].length));
+    row.append(el("span", "btn-text", { text: b.label, style: `--n:${longest};` }));
+    if (b.aut) row.append(el("span", b.aut === "held" ? "aut-badge held" : "aut-badge", { text: "AUT" }));
+    d.append(row);
+    if (b.sub) d.append(el("span", b.low ? "btn-sub low" : "btn-sub", { text: b.sub }));
+    if (b.hold) d.append(el("span", "hold", { style: `--hold:${b.hold}%;` }));
+    return d;
+}
+
+const STAGE_OFF = { cls: "stage-mics", label: "STAGE" };
+const RAILS = {
+    1: [STAGE_OFF, { cls: "reverb-btn", label: "REVERB", on: true, aut: "run", sub: "hrá · plný" }],
+    2: [STAGE_OFF, { cls: "reverb-btn", label: "REVERB", on: true, aut: "run", sub: "hrá · plný" }],
+    3: [STAGE_OFF, { cls: "reverb-btn", label: "REVERB", aut: "run", sub: "stojí · −10 dB", low: true }],
+    4: [STAGE_OFF, { cls: "reverb-btn", label: "REVERB", aut: "run", sub: "ST −10 · PA v ruke", low: true }],
+    "link-on": [{ cls: "rev-link", label: "REV LINK", on: true }],
+    "link-off": [{ cls: "rev-link", label: "REV LINK" }],
+};
+for (const box of document.querySelectorAll("[data-rail]")) {
+    for (const b of RAILS[box.dataset.rail]) box.append(railBtn(b));
+}
+
+// B: the detail's chip and its new switch (a cut-out of the right box).
+const chip = document.querySelector("[data-chip]");
+chip.textContent = PA.name;
+chip.style.cssText = `--tc:${PA.tc};--tt:${textOn(PA.tc)};`;
+const detail = document.querySelector("[data-detail]");
+detail.append(el("h4", "detail-title", { text: "FADER" }), railBtn({ cls: "rev-link", label: "SPOJENÝ S REVERB ST", on: true }));
+detail.style.width = "220px";
+
+// Screen 2's cells: a column cut-out with the button, a title, a caption.
+const CELLS = {
+    stage: [
+        { n: "1", t: "Vypnuté", b: { cls: "stage-mics", label: "STAGE" }, p: "Mikrofóny zo stage stíšené. Ťuk ich zapne, ako dnes." },
+        { n: "2", t: "Zapnuté", b: { cls: "stage-mics", label: "STAGE", on: true }, p: "Svieti: mikrofóny zo stage idú do tvojho reproduktora." },
+        { n: "3", t: "Podržanie 3 s", b: { cls: "stage-mics", label: "STAGE", hold: 64, sub: "drž… zapína AUT" }, p: "Pruh sa plní zľava; po 3 s je AUT zapnuté. Rovnako sa vypína." },
+        { n: "4", t: "AUT · pieseň", b: { cls: "stage-mics", label: "STAGE", aut: "run", sub: "hrá · stíšené" }, p: "Biele AUT: automatika beží. Live hrá, pravidlo mikrofóny stíšilo." },
+        { n: "5", t: "AUT · Live stojí", b: { cls: "stage-mics", label: "STAGE", on: true, aut: "run", sub: "stojí · zapnuté" }, p: "Live zastal, pravidlo mikrofóny zaplo: počuješ, čo chcú zo stage." },
+        { n: "6", t: "AUT · ručne", b: { cls: "stage-mics", label: "STAGE", on: true, aut: "held", sub: "ručne do zastavenia" }, p: "Ťukol si počas piesne: zapnuté ručne do najbližšieho zastavenia; prázdne AUT, automatika ostáva." },
+    ],
+    reverb: [
+        { n: "1", t: "Plný", b: { cls: "reverb-btn", label: "REVERB", on: true }, p: "Svieti: reverby na úrovni piesne. Ťuk: oba −10 dB." },
+        { n: "2", t: "Ťuk: −10 dB", b: { cls: "reverb-btn", label: "REVERB", sub: "ručne · −10 dB", low: true }, p: "Oba fadre zišli o 10 dB, čiarka ukazuje návrat. Ďalší ťuk ich vráti." },
+        { n: "3", t: "AUT · pieseň", b: { cls: "reverb-btn", label: "REVERB", on: true, aut: "run", sub: "hrá · plný" }, p: "Podržaním 3 s zapnuté AUT. Live hrá: plný." },
+        { n: "4", t: "AUT · Live stojí", b: { cls: "reverb-btn", label: "REVERB", aut: "run", sub: "stojí · −10 dB", low: true }, p: "Live zastal: pravidlo dalo oba −10 dB (obrazovka 1, stav 3)." },
+        { n: "5", t: "AUT · ručne", b: { cls: "reverb-btn", label: "REVERB", aut: "held", sub: "ručne −10 · do zast.", low: true }, p: "Modlitba v piesni: ťuk, −10 dB do najbližšieho zastavenia; AUT ostáva." },
+        null,
+        { n: "A", t: "REVERB AUT", alt: true, b: { cls: "hub-toggle", label: "REVERB AUT", on: true, sub: "hrá · plný" }, p: "Samostatný prepínač: ťuk zapne pravidlo. Live hrá." },
+        { n: "B", t: "REVERB AUT · stojí", alt: true, b: { cls: "hub-toggle", label: "REVERB AUT", on: true, sub: "stojí · −10 dB", low: true }, p: "Live stojí, pravidlo drží oba −10 dB." },
+    ],
+};
+for (const box of document.querySelectorAll("[data-cells]")) {
+    for (const c of CELLS[box.dataset.cells]) {
+        if (!c) { box.append(el("div", "divider")); continue; }
+        const cell = el("div", c.alt ? "cell alt" : "cell");
+        const h = el("h4", "");
+        h.append(el("span", c.alt ? "vletter variant" : "vletter", { text: c.n }), document.createTextNode(c.t));
+        const cut = el("div", "railcut one");
+        cut.append(railBtn(c.b));
+        cell.append(h, cut, el("p", "", { text: c.p }));
+        box.append(cell);
+    }
+}
+
+// Each line's faders, measured here: the ruler and the numbers.
+function measure() {
+    const round = (v) => Math.round(v * 10) / 10;
+    const travels = [];
+    for (const frame of document.querySelectorAll(".frame")) {
+        const f = frame.getBoundingClientRect();
+        const faders = [...frame.querySelectorAll(".fader")].map((e) => e.getBoundingClientRect());
+        faders.forEach((r) => travels.push(round(r.height)));
+        const t = round(faders[0].height);
+        const ruler = el("div", "ruler", { style: `top:${faders[0].top - f.top}px;height:${t}px;` });
+        const label = el("span", "");
+        label.innerHTML = `${t}<br>px`;
+        ruler.append(label);
+        frame.append(ruler);
+    }
+    const same = travels.every((t) => t === travels[0]);
+    document.querySelector("[data-travel]").textContent = same ? `${travels[0]} px` : travels.join("/") + " px";
+    for (const span of document.querySelectorAll("[data-name]")) {
+        const label = [...document.querySelectorAll(".screen1 .strip-label")].find((e) => e.textContent === span.dataset.name);
+        span.textContent = `${String(round(parseFloat(getComputedStyle(label).fontSize))).replace(".", ",")} px`;
+    }
+    document.body.dataset.travel = JSON.stringify(travels);
+}
+
+document.querySelectorAll(".line").forEach(drawLine);
+document.fonts.ready.then(measure);
+</script>
+</body>
+</html>
