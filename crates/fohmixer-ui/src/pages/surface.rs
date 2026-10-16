@@ -728,7 +728,7 @@ fn PageView(page: Page, global: Vec<Control>, sub: Memo<Option<usize>>) -> impl 
     // every resize. The middle is the column, or on a phone the thin strip
     // (#63, shown there only), the strips then counted as with the column
     // (`--count-col`, the phone's column width in `page.css`).
-    let room = RwSignal::new((Sides::both(0.0), 0.0_f64));
+    let measured = RwSignal::new((Sides::both(0.0), 0.0_f64));
     Effect::new(move |_| {
         let _ = nav.viewport.get();
         if let (Some(body), Some(column)) = (body_ref.get(), column_ref.get()) {
@@ -748,7 +748,7 @@ fn PageView(page: Page, global: Vec<Control>, sub: Memo<Option<usize>>) -> impl 
                 width: side(middle),
             };
             let height = f64::from(body.client_height()) - BODY_PAD;
-            let _ = room.try_set((sides, height.max(0.0)));
+            let _ = measured.try_set((sides, height.max(0.0)));
         }
     });
     // Each line's window (a line that does not fit), from the column's
@@ -760,7 +760,7 @@ fn PageView(page: Page, global: Vec<Control>, sub: Memo<Option<usize>>) -> impl 
     let offsets = RwSignal::new(BTreeMap::<LineKey, usize>::new());
     let (arranged, line_rooms) = page_memos(
         model.clone(),
-        room.into(),
+        measured.into(),
         sub.into(),
         offsets.into(),
         |model, sides, height| rooms(model, sides, height, &METRICS),
@@ -831,7 +831,7 @@ fn PageView(page: Page, global: Vec<Control>, sub: Memo<Option<usize>>) -> impl 
         .collect_view();
     let line_view = move |line: usize| {
         let model = model.clone();
-        view! { <LineView arranged=arranged rooms=line_rooms model=model line=line /> }
+        view! { <LineView arranged=arranged line_rooms=line_rooms model=model line=line /> }
     };
     let shift =
         move |line: usize| view! { <ShiftView arranged=arranged offsets=offsets line=line /> };
@@ -900,8 +900,9 @@ fn PageView(page: Page, global: Vec<Control>, sub: Memo<Option<usize>>) -> impl 
 /// before it is laid out), the shown sub-page and the lines' windows; the
 /// rooms (`room_of`, `arrange::rooms` on the page; it arranges every
 /// sub-page and window of each line) of the measured page alone, so
-/// neither a sub-page switch nor an arrow recomputes them (the #127
-/// re-review's m3). Every read tolerates a disposed value (`try_*`): a
+/// neither a sub-page switch nor an arrow recomputes them, only a new
+/// measurement (each run of the page's measuring effect, even one that
+/// measures the same; the #127 re-review's m3). Every read tolerates a disposed value (`try_*`): a
 /// layout change disposes the page while its keyed lists' effects may
 /// still run once.
 fn page_memos(
@@ -940,13 +941,13 @@ fn page_memos(
 /// the rest of the left half and the column, the right side's), so a cell
 /// that changes side or group run moves and is not rebuilt. Only a line
 /// that shows a group's title over a run on any of its sub-pages and
-/// windows keeps the title's room (`data-captions`, from `rooms`, the
+/// windows keeps the title's room (`data-captions`, from `line_rooms`, the
 /// page's `arrange::rooms`, #127): on any other its strips take it, and a
 /// sub-page switch or an arrow never changes it.
 #[component]
 fn LineView(
     arranged: Memo<Option<Arrangement>>,
-    rooms: Memo<Vec<bool>>,
+    line_rooms: Memo<Vec<bool>>,
     model: Arc<PageModel>,
     line: usize,
 ) -> impl IntoView {
@@ -964,7 +965,7 @@ fn LineView(
         })
     };
     let captioned = Memo::new(move |_| {
-        rooms
+        line_rooms
             .try_with(|r| r.get(line).copied())
             .flatten()
             .unwrap_or(false)
@@ -1506,11 +1507,11 @@ mod tests {
         assert_eq!(moved.lines[0].shift.map(|s| s.offset), Some(1));
         assert_eq!(line_rooms.get_untracked(), vec![true]);
         assert_eq!(ran(), 1, "an arrow");
-        // A new size: the rooms again, once.
+        // A new measurement: the rooms again, once.
         let _ = measured.try_set((Sides::both(519.0), 822.0));
         assert!(arranged.get_untracked().is_some());
         assert_eq!(line_rooms.get_untracked(), vec![true]);
-        assert_eq!(ran(), 2, "a new size");
+        assert_eq!(ran(), 2, "a new measurement");
         // Laid out at no width again: no arrangement, no rooms.
         let _ = measured.try_set((Sides::both(0.0), 822.0));
         assert_eq!(arranged.get_untracked(), None);

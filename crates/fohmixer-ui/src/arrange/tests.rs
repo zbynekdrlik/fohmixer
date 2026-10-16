@@ -1609,6 +1609,65 @@ fn each_line_has_its_room_in_the_order_of_the_lines() {
         rooms(&PageModel::of(&foh()), Sides::both(519.0), 822.0, &METRICS),
         vec![false, false]
     );
+    // The same lines as the arrangement's, which the surface reads them by
+    // (the #127 m3 review's m4): two lines, one, and a phone's side.
+    for (page, sides, height) in [
+        (&model, Sides::both(519.0), 822.0),
+        (&model, Sides::both(519.0), 400.0),
+        (&upper, Sides::both(519.0), 822.0),
+        (
+            &PageModel::of(&foh()),
+            Sides {
+                count: 336.0,
+                width: 393.0,
+            },
+            378.0,
+        ),
+    ] {
+        let lines = arrange_in(page, Some(0), sides, height, |_| 0, &METRICS)
+            .lines
+            .len();
+        assert!(lines > 0, "the premise: lines");
+        assert_eq!(rooms(page, sides, height, &METRICS).len(), lines);
+    }
+}
+
+#[test]
+fn a_lines_room_is_counted_on_the_side_the_strips_are_counted_on() {
+    // A phone (the #127 m3 review's m1): the strips are counted with the
+    // column (`count`) and drawn wider (`width`). Five cells, a button
+    // second: on 135 px the window from one step on starts its left run
+    // with the button (its title shows); on 519 px all fit, cut after the
+    // third, and the button sits inside the first strip's run.
+    let model = PageModel::of(&page(vec![vec![group(
+        "a",
+        vec![
+            strip("S0"),
+            toggle("T"),
+            strip("S1"),
+            strip("S2"),
+            strip("S3"),
+        ],
+    )]]));
+    let narrow = Sides {
+        count: 135.0,
+        width: 519.0,
+    };
+    let wide = Sides {
+        count: 519.0,
+        width: 135.0,
+    };
+    assert_eq!(rooms(&model, narrow, 822.0, &METRICS), vec![true]);
+    assert_eq!(rooms(&model, wide, 822.0, &METRICS), vec![false]);
+    // The premises, on one side for both.
+    let window = arrange(&model, None, 135.0, 822.0, |_| 1, &METRICS);
+    assert!(
+        captions(&items(&model, &window.lines[0])),
+        "135 px, one step on"
+    );
+    let whole = arrange(&model, None, 519.0, 822.0, |_| 0, &METRICS);
+    assert_eq!(whole.lines[0].shift, None);
+    assert!(!captions(&items(&model, &whole.lines[0])), "519 px");
 }
 
 #[test]

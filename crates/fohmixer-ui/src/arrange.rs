@@ -18,9 +18,8 @@
 //! title over it when there is one to show, and only a line that shows
 //! such a title on any of its sub-pages and windows keeps the title's room
 //! (`rooms`, which depends on the measured page alone). The layout's own
-//! order is kept everywhere:
-//! which strips sit where is the owner's choice. This module is pure;
-//! `pages::surface` measures and renders.
+//! order is kept everywhere: which strips sit where is the owner's choice.
+//! This module is pure; `pages::surface` measures and renders.
 
 use fohmixer_proto::layout::{Control, Group, Page, Section};
 
