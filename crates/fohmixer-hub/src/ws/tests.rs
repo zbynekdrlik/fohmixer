@@ -139,9 +139,49 @@ impl Write for Captured {
     }
 }
 
+/// The tests' global subscriber: it writes nothing and is interested in every
+/// callsite (`sometimes`: each event then asks the thread's own subscriber).
+/// Without it, while `logged`'s scoped subscriber is the only one alive,
+/// tracing-core asks the registering thread's own default about a new
+/// callsite; another test's thread has none and caches the callsite as
+/// never, for `logged` too (dev run 38919475834 lost ableset's lock warn so).
+struct Quiet;
+
+impl tracing::Subscriber for Quiet {
+    fn register_callsite(
+        &self,
+        _: &'static tracing::Metadata<'static>,
+    ) -> tracing::subscriber::Interest {
+        tracing::subscriber::Interest::sometimes()
+    }
+
+    fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+        false
+    }
+
+    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+
+    fn event(&self, _: &tracing::Event<'_>) {}
+
+    fn enter(&self, _: &tracing::span::Id) {}
+
+    fn exit(&self, _: &tracing::span::Id) {}
+}
+
 /// What `f` logs, formatted as the hub's log formats it (without the time
 /// and the colours); also `ableset`'s tests (#90).
 pub(crate) fn logged(f: impl FnOnce()) -> String {
+    static QUIET: std::sync::Once = std::sync::Once::new();
+    QUIET.call_once(|| {
+        tracing::subscriber::set_global_default(Quiet)
+            .expect("the hub's unit tests set no other global subscriber");
+    });
     let captured = Captured::default();
     let writer = captured.clone();
     let subscriber = tracing_subscriber::fmt()
