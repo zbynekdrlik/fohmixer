@@ -158,6 +158,30 @@ pub(crate) fn logged(f: impl FnOnce()) -> String {
     String::from_utf8(bytes).unwrap()
 }
 
+/// A warn line whose callsite a test reaches on two threads.
+fn reached_on_two_threads() {
+    tracing::warn!("logged: a callsite another thread reached first");
+}
+
+#[test]
+fn logged_keeps_a_line_whose_callsite_another_thread_reached_first() {
+    // The `test` job of dev run 38919475834: ableset's lock warn went missing
+    // from `logged` although its record was written. With `logged`'s scoped
+    // subscriber the only one alive, tracing-core asks the registering
+    // thread's own default about a new callsite; another test's thread has
+    // none, so the callsite was cached as never, for `logged` too.
+    let log = logged(|| {
+        std::thread::spawn(reached_on_two_threads).join().unwrap();
+        reached_on_two_threads();
+    });
+    assert!(
+        log.contains("logged: a callsite another thread reached first"),
+        "{log:?}"
+    );
+    // A thread with no subscriber of its own has the tests' quiet one.
+    assert!(tracing::dispatcher::has_been_set());
+}
+
 #[test]
 fn the_connect_and_disconnect_lines_name_the_peer_the_forwarded_client_the_source_and_the_page_host()
  {
