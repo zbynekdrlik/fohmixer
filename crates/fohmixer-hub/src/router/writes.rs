@@ -14,6 +14,11 @@
 //! #43 PR D): a touch that starts away from Live's value shows as its first
 //! applied value against it. `applied` and a batch's `ack`s carry the batch
 //! number, its sequence numbers and Live's round trip.
+//!
+//! A `sets` (#127, a linked mute's tracks) hands every item to its setter
+//! before any batch is written: one instance's items go to Live together.
+
+use std::collections::BTreeSet;
 
 use fohmixer_proto::client::{AckItem, set_key};
 use serde_json::{Value, json};
@@ -114,6 +119,27 @@ impl Router {
     /// A client's `set`: its record, its setter, and a batch when none is
     /// in flight.
     pub(super) fn on_set(&mut self, set: SetMsg) {
+        let instance = set.instance.clone();
+        self.take_set(set);
+        self.write_next(&instance);
+    }
+
+    /// A client's `sets` (#127, a linked mute's tracks): each taken as a
+    /// `set` first, then a batch per instance, so the writes of one
+    /// instance go to Live together.
+    pub(super) fn on_sets(&mut self, sets: Vec<SetMsg>) {
+        let instances: BTreeSet<String> = sets.iter().map(|s| s.instance.clone()).collect();
+        for set in sets {
+            self.take_set(set);
+        }
+        for instance in &instances {
+            self.write_next(instance);
+        }
+    }
+
+    /// A set's record and its setter's want (an unknown instance's is
+    /// acked with an error at once).
+    fn take_set(&mut self, set: SetMsg) {
         let key = set_key(&set.instance, &set.target, &set.prop);
         let now = self.now_ms();
         let want = Want {
@@ -144,7 +170,6 @@ impl Router {
         if let Some((client, ack)) = outcome.superseded {
             self.send_ack(&set.instance, client, ack, None);
         }
-        self.write_next(&set.instance);
     }
 
     /// Writes an instance's next batch, when it has one and none is in

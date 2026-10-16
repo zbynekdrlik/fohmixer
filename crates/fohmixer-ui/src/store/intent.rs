@@ -24,7 +24,7 @@
 
 use std::collections::BTreeMap;
 
-use fohmixer_proto::client::{AckItem, ClientMsg, set_key};
+use fohmixer_proto::client::{AckItem, ClientMsg, SetItem, set_key};
 use serde_json::Value;
 
 /// A release this old (ms) without its ack is `unconfirmed` (L3, §4.3).
@@ -244,6 +244,27 @@ impl<F> Intents<F> {
             None => self.fails.remove(&key),
         };
         (key, msg)
+    }
+
+    /// Writes of `value` to every target at page time `t` (#127, a linked
+    /// mute's tap), each of its own key, sequence number and failure
+    /// handler, as [`Intents::set`] makes them: their keys and ONE `sets`
+    /// message (the hub writes one instance's to Live in one batch).
+    pub fn set_together(
+        &mut self,
+        targets: Vec<((&str, &str, &str), Option<F>)>,
+        value: &Value,
+        t: f64,
+        is_final: bool,
+    ) -> (Vec<String>, ClientMsg) {
+        let mut keys = Vec::new();
+        let mut sets = Vec::new();
+        for (target, fail) in targets {
+            let (key, msg) = self.set(target, value.clone(), t, is_final, fail);
+            keys.push(key);
+            sets.extend(SetItem::of(msg));
+        }
+        (keys, ClientMsg::Sets { sets })
     }
 
     /// The control of `key` was let go at page time `t` without a final

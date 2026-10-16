@@ -551,3 +551,59 @@ fn the_recorder_hears_a_write_not_sent_again_at_the_resend_that_kept_it() {
     let _ = intents.ack(&AckItem::applied(&key, 2, Some(json!(0.5))));
     assert_eq!(intents.changes(5_000.0), Vec::<Change>::new(), "closed");
 }
+
+#[test]
+fn a_linked_mutes_writes_go_as_one_sets_message_each_its_own_intent() {
+    // #127: each target a write of its own key, sequence number and
+    // handler; one `sets` message carries them all.
+    let mut intents = Intents::<&str>::default();
+    let (_, before) = intents.set(AT, json!(0.5), 1_000.0, false, None);
+    assert!(matches!(before, ClientMsg::Set { seq: 1, .. }));
+    let (keys, msg) = intents.set_together(
+        vec![
+            (("band", "live_set tracks 3", "mute"), Some("own")),
+            (
+                ("band", "live_set return_tracks 1", "mute"),
+                Some("partner"),
+            ),
+        ],
+        &json!(true),
+        1_001.5,
+        true,
+    );
+    let own = set_key("band", "live_set tracks 3", "mute");
+    let partner = set_key("band", "live_set return_tracks 1", "mute");
+    assert_eq!(keys, vec![own.clone(), partner.clone()]);
+    let item = |target: &str, seq: u64| SetItem {
+        instance: "band".into(),
+        target: target.into(),
+        prop: "mute".into(),
+        value: json!(true),
+        seq,
+        t: 1_001.5,
+        is_final: true,
+    };
+    assert_eq!(
+        msg,
+        ClientMsg::Sets {
+            sets: vec![
+                item("live_set tracks 3", 2),
+                item("live_set return_tracks 1", 3)
+            ]
+        }
+    );
+    assert_eq!(intents.len(), 3);
+    assert_eq!(intents.handler(&own), Some(&"own"));
+    assert_eq!(intents.handler(&partner), Some(&"partner"));
+    // Acked each on its own: one failed, the other confirmed.
+    assert_eq!(
+        intents.ack(&AckItem::failed(&partner, 3, "refused")),
+        Acked::Failed("refused".into(), Some("partner"))
+    );
+    assert_eq!(intents.state(&own, 1_002.0), State::Sending);
+    assert_eq!(
+        intents.ack(&AckItem::applied(&own, 2, None)),
+        Acked::Confirmed
+    );
+    assert_eq!(intents.len(), 1);
+}

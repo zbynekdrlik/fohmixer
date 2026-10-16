@@ -13,6 +13,7 @@ use leptos::prelude::{UpdateValue, WithValue};
 use serde_json::Value;
 
 use super::{FailFn, LiveStore};
+use crate::binding::SubSpec;
 use crate::diag::{self, trace, trace::Recorder};
 use crate::dom;
 use crate::store::intent::{Acked, RESEND_MAX_AGE_MS, State};
@@ -100,6 +101,40 @@ impl LiveStore {
             ));
         }
         trace::seq_of(&msg)
+    }
+
+    /// A linked mute's tap (#127): `value` to `prop` of every target, each
+    /// a write of its own key through the intent store (its own sequence
+    /// number, ack and handler from `failed`), all in ONE `sets` message so
+    /// the hub writes one instance's to Live in one batch. Writes the socket
+    /// cannot take now are kept and sent when their instance is back (L1).
+    pub fn set_together(
+        self,
+        targets: &[SubSpec],
+        value: &Value,
+        is_final: bool,
+        failed: impl Fn() -> FailFn,
+    ) {
+        self.note_intents();
+        let t = dom::epoch_now();
+        let Some((keys, msg)) = self.inner.try_update_value(|i| {
+            let each = targets
+                .iter()
+                .map(|s| {
+                    let at = (s.instance.as_str(), s.target.as_str(), s.prop.as_str());
+                    (at, Some(failed()))
+                })
+                .collect();
+            i.intents.set_together(each, value, t, is_final)
+        }) else {
+            return;
+        };
+        if !self.sent_set(&msg) {
+            dom::log(&format!(
+                "sets {} kept: not connected to the hub, sent when it is back",
+                keys.join(", ")
+            ));
+        }
     }
 
     /// Sends a `set`: whether the socket took it. One it took holds the

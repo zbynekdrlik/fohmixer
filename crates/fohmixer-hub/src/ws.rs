@@ -439,6 +439,14 @@ fn handle_text(hub: &Hub, conn: &mut Conn, text: &str) {
             hub_ms: crate::live::wall_ms().unwrap_or(0.0),
             offset_ms: conn.offset,
         }),
+        // A linked mute's writes (#127): the router takes them all before
+        // it writes, so Live gets them in one batch.
+        Ok(ClientMsg::Sets { sets }) => hub.route(RouterMsg::Sets {
+            client,
+            sets,
+            hub_ms: crate::live::wall_ms().unwrap_or(0.0),
+            offset_ms: conn.offset,
+        }),
         Ok(ClientMsg::Trace { events }) => hub
             .events
             .record("trace", trace_fields(client, &conn.who.peer, &events)),

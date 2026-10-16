@@ -3,14 +3,15 @@
 //! an event-log record in order (`set` → `batch` → `applied` → `ack`), a
 //! stalled Live gets one batch per result with only the newest value (spec
 //! §6.2 test 5), a newer write of another client supersedes a pending
-//! one, and a touch's first set records Live's value before it (PR D).
+//! one, a touch's first set records Live's value before it (PR D), and a
+//! linked mute's `sets` go to Live in one batch (#127).
 #![cfg(unix)]
 
 mod support;
 
 use std::time::Duration;
 
-use fohmixer_proto::client::{AckItem, ClientMsg, ValueItem, set_key};
+use fohmixer_proto::client::{AckItem, ClientMsg, SetItem, ValueItem, set_key};
 use serde_json::{Value, json};
 use support::{Client, Host, TestHub, runtime, serial};
 
@@ -290,6 +291,95 @@ fn a_touchs_first_set_records_lives_value_before_it() {
             Some(&Value::Null),
             "the hub holds no value of a key nobody subscribed"
         );
+        hub.stop().await;
+        host.stop();
+    });
+}
+
+/// A `sets` item (#127) of `target`'s mute on `band`.
+fn mute_item(target: &str, value: bool, seq: u64) -> SetItem {
+    SetItem {
+        instance: "band".into(),
+        target: target.into(),
+        prop: "mute".into(),
+        value: json!(value),
+        seq,
+        t: 2_000.0 + seq as f64,
+        is_final: true,
+    }
+}
+
+#[test]
+fn a_linked_mutes_writes_reach_live_in_one_batch_each_acked() {
+    // #127: a strip's mute linked with a track and a return: one `sets`
+    // message, one `set_prop` batch, one ack per key.
+    let _serial = serial();
+    runtime().block_on(async {
+        let host = Host::start("band");
+        let dir = tempfile::tempdir().unwrap();
+        let hub = TestHub::start(vec![host.cfg()], dir.path()).await;
+        let mut a = hub.client().await;
+        a.instance_state("band", true, Some(false), SECS_5).await;
+        let targets = [
+            "live_set tracks 1",
+            "live_set tracks 2",
+            "live_set return_tracks 0",
+        ];
+        for target in targets {
+            assert_eq!(
+                a.get("band", target, "mute").await,
+                json!(false),
+                "{target}"
+            );
+        }
+        let sets = |value: bool, first: u64| ClientMsg::Sets {
+            sets: (0_u64..)
+                .zip(targets)
+                .map(|(i, target)| mute_item(target, value, first + i))
+                .collect(),
+        };
+        a.send(&sets(true, 1)).await;
+        for (seq, target) in (1_u64..).zip(targets) {
+            let key = set_key("band", target, "mute");
+            assert_eq!(
+                a.ack_of(&key, seq, SECS_5).await,
+                AckItem::applied(&key, seq, None)
+            );
+            assert_eq!(a.get("band", target, "mute").await, json!(true), "{target}");
+        }
+        let records = hub
+            .events_until(SECS_5, |r| {
+                r.iter().any(|x| x["ev"] == "ack" && x["seq"] == 3)
+            })
+            .await;
+        let first = set_key("band", targets[0], "mute");
+        let batches = batches_of(&records, &first);
+        assert_eq!(batches.len(), 1, "{batches:?}");
+        assert_eq!(batches[0]["n"], 3);
+        let mut sent: Vec<&str> = batches[0]["sent"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["key"].as_str().unwrap())
+            .collect();
+        sent.sort_unstable();
+        let mut keys: Vec<String> = targets.iter().map(|t| set_key("band", t, "mute")).collect();
+        keys.sort_unstable();
+        assert_eq!(sent, keys);
+        // Unmuted together again.
+        a.send(&sets(false, 4)).await;
+        let key = set_key("band", targets[2], "mute");
+        assert_eq!(
+            a.ack_of(&key, 6, SECS_5).await,
+            AckItem::applied(&key, 6, None)
+        );
+        for target in targets {
+            assert_eq!(
+                a.get("band", target, "mute").await,
+                json!(false),
+                "{target}"
+            );
+        }
         hub.stop().await;
         host.stop();
     });
