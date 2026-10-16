@@ -1,0 +1,131 @@
+/* fohmixer: a group on the page (#127; split from page.css and strip.css,
+   linked after strip.css). `arrange::items` decides what a run of a
+   group's cells shows: a run that starts with a strip names the group on
+   that strip's side (`.group-side`, in its scale column), any other run
+   keeps the group's title over it when there is one to show (a title, or
+   the Live set its strips share). The group's colour is on every strip's
+   3 px top edge (strip.css `.strip::before`) and on every block's (a group
+   of buttons, `.block::before` below), so a coloured group whose run shows
+   no title still shows its colour. */
+
+/* A line keeps the titles' 16 px at its top only while it shows a title
+   over a run on any of its sub-pages and windows (`data-captions`,
+   `LineArrangement::room`); every other line gives them to its faders. */
+.line[data-captions="true"] {
+    padding-top: 16px;
+}
+
+/* A group's run anchor before its run: no width of its own (its negative
+   margin takes back the gap after it); over a run that does not start
+   with a strip, the group's title, its line laid over the run's top, `--n`
+   cells and `--units` strips wide: a long title never widens anything. */
+.run-title {
+    position: relative;
+    flex: none;
+    width: 0;
+    margin-right: -4px;
+}
+
+.group-title {
+    position: absolute;
+    top: -16px;
+    left: 0;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    width: calc(var(--strip-w, 76px) * var(--units, 1) + (var(--n, 1) - 1) * 4px);
+    height: 14px;
+    margin: 0;
+    padding: 0 4px;
+    overflow: hidden;
+    border-top: 2px solid var(--gc, var(--line));
+    color: var(--muted);
+    font: 600 9.5px/12px var(--ui);
+    letter-spacing: 1.2px;
+    text-transform: uppercase;
+    white-space: nowrap;
+}
+
+.group-title > [data-testid="group-title"] {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* The Live instance every strip of the group shares (#63). */
+.group-instance {
+    flex: none;
+    padding: 0 4px;
+    border-radius: 4px;
+    color: var(--band);
+    background: rgba(78, 205, 196, 0.14);
+    font: 700 9px/12px var(--ui);
+    letter-spacing: 0.5px;
+}
+
+.group-instance[data-instance="master"] {
+    color: var(--master);
+    background: rgba(139, 125, 255, 0.16);
+}
+
+.group-mark {
+    flex: none;
+    width: 7px;
+    height: 7px;
+    border-radius: 2px;
+    background: var(--gc, var(--accent));
+}
+
+/* A block (a group of buttons, page.css) wears its group's colour as a 3 px
+   top edge, as a strip does: a layer as large as the block (inside its
+   1 px border, so 11 px corners), which adds no height, follows the
+   rounded corners and takes no touch. No colour, no edge. */
+.block {
+    position: relative;
+}
+
+.block::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-top: 3px solid var(--gc, transparent);
+    border-radius: 11px;
+    opacity: 0.9;
+    pointer-events: none;
+}
+
+/* A group's name on its side in its run's first strip (variant B of
+   docs/mockups/group-captions-v1.html): its title, or an untitled group's
+   shared Live set (BAND, MASTER). On the scale's left edge, read bottom to
+   top, 2 px clear of the 8.5 px +6 and −6 dB labels (ScaleView's
+   `--side-from`, `--side-to`), beside the right-aligned 0 dB label; 11 px
+   thick, so a long name ends in an ellipsis and never widens anything. In
+   the colour of the Live set the group's strips share (teal band, violet
+   master), muted when they differ. The fader over the scale takes the
+   touch. */
+.group-side {
+    position: absolute;
+    top: calc(var(--side-from) + 6.25px);
+    left: 0;
+    width: 11px;
+    height: calc(var(--side-to) - var(--side-from) - 12.5px);
+    overflow: hidden;
+    writing-mode: vertical-rl;
+    transform: rotate(180deg);
+    text-align: end;
+    color: var(--muted);
+    font: 600 9.5px/11px var(--ui);
+    letter-spacing: 1.2px;
+    text-transform: uppercase;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    pointer-events: none;
+}
+
+.group-side[data-instance] {
+    color: var(--band);
+}
+
+.group-side[data-instance="master"] {
+    color: var(--master);
+}

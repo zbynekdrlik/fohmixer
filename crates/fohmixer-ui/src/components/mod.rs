@@ -20,6 +20,7 @@ use fohmixer_proto::layout::{Control, MeterSource};
 use leptos::html;
 use leptos::prelude::*;
 
+use crate::arrange::GroupLabel;
 use crate::behave::fader::VolumeLaw;
 use crate::behave::label::longest_word_chars;
 use crate::behave::vca::is_vca;
@@ -223,17 +224,21 @@ pub fn readiness_now(slots: &[RwSignal<Slot>]) -> Readiness {
 }
 
 /// One layout control; `shared` is the Live instance every strip of its
-/// group shares (#63), none outside a group or in a mixed one.
+/// group shares (#63), none outside a group or in a mixed one;
+/// `group_name` the group's name a strip shows on its side when it starts
+/// a run (#127).
 #[component]
 pub fn ControlView(
     control: Control,
     #[prop(default = None)] shared: Option<String>,
+    #[prop(optional, into)] group_name: Signal<Option<GroupLabel>>,
 ) -> impl IntoView {
     let settings = expect_context::<Settings>();
     match control {
-        Control::Strip(strip) => {
-            view! { <StripView strip={*strip} settings=settings shared=shared /> }.into_any()
+        Control::Strip(strip) => view! {
+            <StripView strip={*strip} settings=settings shared=shared group_name=group_name />
         }
+        .into_any(),
         Control::Solo { binding, label } => {
             view! { <SoloView binding=binding label=label /> }.into_any()
         }

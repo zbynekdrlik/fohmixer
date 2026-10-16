@@ -551,6 +551,43 @@ class HarnessTest(unittest.TestCase):
             server.server_close()
 
 
+class EphemeralPorts(unittest.TestCase):
+    # The master run of PR #128's merge: the control port 39190 sat in the
+    # runner's ephemeral range (32768-60999), an outbound connection held it,
+    # and the harness died on EADDRINUSE before any test ran.
+    def test_a_fixed_port_in_the_ephemeral_range_is_at_risk_unless_reserved(self):
+        ports = [8480, 8481, 8443, 39101, 39102, 39190, 39192, 39193]
+        self.assertEqual(
+            harness.ports_at_risk(ports, "32768\t60999\n", "\n"),
+            [39101, 39102, 39190, 39192, 39193],
+        )
+        self.assertEqual(harness.ports_at_risk(ports, "32768\t60999\n", "39100-39199\n"), [])
+        # A list of single ports and ranges, as the kernel prints it.
+        self.assertEqual(
+            harness.ports_at_risk(ports, "32768\t60999\n", "39101,39190-39192\n"),
+            [39102, 39193],
+        )
+        # The range's own ends are in it.
+        self.assertEqual(
+            harness.ports_at_risk([32768, 60999, 61000], "32768 60999", ""), [32768, 60999]
+        )
+
+    def test_any_free_port_and_no_port_are_never_at_risk(self):
+        self.assertEqual(harness.ports_at_risk([0, None, 39190], "32768 60999", "39190"), [])
+
+    def test_the_fixed_ports_are_the_ones_the_harness_binds(self):
+        args = harness.parse_args(
+            [
+                *("--data", "d", "--layout", "l", "--link-port", "8481"),
+                *("--fake-companion-port", "39192", "--fake-ableset-port", "39193"),
+            ]
+        )
+        self.assertEqual(
+            sorted(p for p in harness.fixed_ports(args) if p),
+            [8443, 8480, 8481, 39101, 39102, 39190, 39192, 39193],
+        )
+
+
 class Stop(unittest.TestCase):
     def test_a_part_that_fails_to_stop_never_leaves_the_others_running(self):
         # The PR #109 review (#43): the link's stop raises when its tool does

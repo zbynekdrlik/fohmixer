@@ -786,6 +786,59 @@ def handler_for(harness):
     return Handler
 
 
+# The kernel's ephemeral range and the ports kept out of it (Linux).
+PORT_RANGE = "/proc/sys/net/ipv4/ip_local_port_range"
+RESERVED_PORTS = "/proc/sys/net/ipv4/ip_local_reserved_ports"
+
+
+def ports_at_risk(ports, port_range, reserved):
+    """The fixed ports (0 and None take any free port) inside the ephemeral
+    range ``port_range`` (the kernel's text, ``"32768\t60999"``) and not in
+    ``reserved`` (its list, ``"39101,39190-39192"``): an outbound connection
+    may hold one when the harness binds it (EADDRINUSE, the master run of
+    PR #128's merge)."""
+    low, high = (int(part) for part in port_range.split())
+    kept = set()
+    for item in reserved.strip().split(","):
+        if item.strip():
+            first, _, last = item.strip().partition("-")
+            kept.update(range(int(first), int(last or first) + 1))
+    return [p for p in ports if p and low <= p <= high and p not in kept]
+
+
+def fixed_ports(args):
+    """Every port the harness, its hosts, its tools and the hub bind."""
+    return [
+        args.control_port,
+        args.band_port,
+        args.master_port,
+        args.http_port,
+        args.https_port,
+        args.link_port,
+        args.fake_companion_port,
+        args.fake_ableset_port,
+    ]
+
+
+def check_ports(args):
+    """Refuse fixed ports an outbound connection may take first (Linux only:
+    elsewhere there is no range to read)."""
+    try:
+        with open(PORT_RANGE) as f:
+            port_range = f.read()
+        with open(RESERVED_PORTS) as f:
+            reserved = f.read()
+    except FileNotFoundError:
+        return
+    risky = ports_at_risk(fixed_ports(args), port_range, reserved)
+    if risky:
+        raise SystemExit(
+            f"harness: ports {risky} are in the ephemeral range {' '.join(port_range.split())}"
+            " and not reserved, so an outbound connection can take one first:"
+            " reserve them (sudo sysctl -w net.ipv4.ip_local_reserved_ports=...)"
+        )
+
+
 def parse_args(argv):
     parser = argparse.ArgumentParser(description="fohmixer E2E harness")
     parser.add_argument("--data", required=True)
@@ -820,6 +873,7 @@ def parse_args(argv):
 
 def main(argv=None):
     args = parse_args(argv)
+    check_ports(args)
     harness = Harness(args)
     server = ThreadingHTTPServer(("127.0.0.1", args.control_port), handler_for(harness))
     stop = threading.Event()

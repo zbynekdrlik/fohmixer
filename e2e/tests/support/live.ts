@@ -209,6 +209,68 @@ export async function resetLayout() {
   await until(servedLayout, (l) => l.config?.idle_after_s === undefined, "the hub serving the fixture layout again");
 }
 
+/** Every group of a layout: the rows' and every pager sub-page's. */
+function allGroups(layout: any): any[] {
+  return layout.pages.flatMap((page: any) =>
+    page.rows.flatMap((row: any) =>
+      row.sections.flatMap((s: any) => (s.kind === "pager" ? s.pages.flatMap((sub: any) => sub.sections) : [s])),
+    ),
+  );
+}
+
+/** What a test gives a fixture group: a title, a colour. */
+export type GroupFields = { title?: string; color?: string };
+
+/**
+ * The fixture layout with these groups' fields set (#127: the fixture's runs
+ * that start with no strip have no title to show, so no line keeps the
+ * titles' room, and its blocks have no colour; a title or a colour makes
+ * one), served by the hub when this returns. Generic titles only (a public
+ * repo). A test that sets it puts the fixture back with `resetGroups` in its
+ * `finally`.
+ */
+export async function setGroups(changes: Record<string, GroupFields>) {
+  const layout = JSON.parse(readFileSync(FIXTURE_LAYOUT, "utf-8"));
+  for (const group of allGroups(layout)) Object.assign(group, changes[group.id] ?? {});
+  await harness("/hub/layout", { layout });
+  await until(
+    servedLayout,
+    (l) =>
+      Object.entries(changes).every(([id, fields]) => {
+        const group = allGroups(l).find((g) => g.id === id);
+        return Object.entries(fields).every(([key, value]) => group?.[key] === value);
+      }),
+    "the hub serving the changed groups",
+  );
+}
+
+/**
+ * The fixture layout again after `setGroups`, served by the hub when this
+ * returns (the fixture gives these groups no title and no colour).
+ */
+export async function resetGroups(ids: string[]) {
+  await harness("/hub/layout/reset");
+  await until(
+    servedLayout,
+    (l) =>
+      ids.every((id) => {
+        const group = allGroups(l).find((g) => g.id === id);
+        return group?.title === undefined && group?.color === undefined;
+      }),
+    "the hub serving the fixture layout again",
+  );
+}
+
+/**
+ * The name on the side of the first strip of `inner`'s group's run (#127:
+ * its title, or an untitled group's shared Live set): the first one among
+ * the group's strips.
+ */
+export async function groupLabelOf(page: Page, inner: Locator): Promise<Locator> {
+  const id = await inner.evaluate((e) => e.closest("[data-group]")?.getAttribute("data-group") ?? "");
+  return page.locator(`.slot[data-group="${id}"] [data-testid="group-side"]`).first();
+}
+
 /** A control line on a host's stdin (`stall <ms>`, `rename "<a>" "<b>"`): its answer. */
 export async function hostLine(instance: string, line: string): Promise<string | null> {
   return (await harness(`/host/${instance}/line`, { line })).answer;

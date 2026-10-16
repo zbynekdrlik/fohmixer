@@ -139,9 +139,49 @@ impl Write for Captured {
     }
 }
 
+/// The tests' global subscriber: it writes nothing and is interested in every
+/// callsite (`sometimes`: each event then asks the thread's own subscriber).
+/// Without it, while `logged`'s scoped subscriber is the only one alive,
+/// tracing-core asks the registering thread's own default about a new
+/// callsite; another test's thread has none and caches the callsite as
+/// never, for `logged` too (dev run 38919475834 lost ableset's lock warn so).
+struct Quiet;
+
+impl tracing::Subscriber for Quiet {
+    fn register_callsite(
+        &self,
+        _: &'static tracing::Metadata<'static>,
+    ) -> tracing::subscriber::Interest {
+        tracing::subscriber::Interest::sometimes()
+    }
+
+    fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+        false
+    }
+
+    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+
+    fn event(&self, _: &tracing::Event<'_>) {}
+
+    fn enter(&self, _: &tracing::span::Id) {}
+
+    fn exit(&self, _: &tracing::span::Id) {}
+}
+
 /// What `f` logs, formatted as the hub's log formats it (without the time
 /// and the colours); also `ableset`'s tests (#90).
 pub(crate) fn logged(f: impl FnOnce()) -> String {
+    static QUIET: std::sync::Once = std::sync::Once::new();
+    QUIET.call_once(|| {
+        tracing::subscriber::set_global_default(Quiet)
+            .expect("the hub's unit tests set no other global subscriber");
+    });
     let captured = Captured::default();
     let writer = captured.clone();
     let subscriber = tracing_subscriber::fmt()
@@ -156,6 +196,30 @@ pub(crate) fn logged(f: impl FnOnce()) -> String {
         .unwrap_or_else(PoisonError::into_inner)
         .clone();
     String::from_utf8(bytes).unwrap()
+}
+
+/// A warn line whose callsite a test reaches on two threads.
+fn reached_on_two_threads() {
+    tracing::warn!("logged: a callsite another thread reached first");
+}
+
+#[test]
+fn logged_keeps_a_line_whose_callsite_another_thread_reached_first() {
+    // The `test` job of dev run 38919475834: ableset's lock warn went missing
+    // from `logged` although its record was written. With `logged`'s scoped
+    // subscriber the only one alive, tracing-core asks the registering
+    // thread's own default about a new callsite; another test's thread has
+    // none, so the callsite was cached as never, for `logged` too.
+    let log = logged(|| {
+        std::thread::spawn(reached_on_two_threads).join().unwrap();
+        reached_on_two_threads();
+    });
+    assert!(
+        log.contains("logged: a callsite another thread reached first"),
+        "{log:?}"
+    );
+    // A thread with no subscriber of its own has the tests' quiet one.
+    assert!(tracing::dispatcher::has_been_set());
 }
 
 #[test]

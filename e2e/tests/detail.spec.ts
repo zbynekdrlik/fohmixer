@@ -308,8 +308,10 @@ test.describe("The channel detail", () => {
     await expect(detail.getByTestId("detail-sub")).toHaveText("band");
     try {
       await harness("/hub/layout", { layout: changed });
-      // The new layout on screen: the detail names the group's new title.
+      // The new layout on screen: the detail names the group's new title,
+      // and the group's first strip under it on its side (#127).
       await expect(detail.getByTestId("detail-sub")).toHaveText("DETAIL TEST · band", { timeout: 10_000 });
+      await expect(page.getByTestId("group-side").filter({ hasText: "DETAIL TEST" })).toHaveCount(1);
       await expect(detail).toHaveAttribute("data-track", "Hand2 #");
       await ready(detail.getByTestId("fader"));
       // The strip gone from the layout: the detail closes.
@@ -321,7 +323,7 @@ test.describe("The channel detail", () => {
       await harness("/hub/layout/reset");
     }
     await expect(strip(page, "Hand2 #")).toBeVisible({ timeout: 10_000 });
-    await expect(page.getByTestId("group-title").filter({ hasText: "DETAIL TEST" })).toHaveCount(0, { timeout: 10_000 });
+    await expect(page.getByTestId("group-side").filter({ hasText: "DETAIL TEST" })).toHaveCount(0, { timeout: 10_000 });
   });
 
   test("TechAlert's wash flashes over it", async ({ page }) => {

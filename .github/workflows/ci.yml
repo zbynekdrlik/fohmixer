@@ -528,6 +528,10 @@ jobs:
           # Stream Deck tab), the fake AbleSet (#90, 127.0.0.1:39193: the
           # hub's [ableset] upstream, its name ableset.e2e.test) and the
           # harness's control API for the tests (127.0.0.1:39190).
+          # The harness's fixed ports (39101-39193) sit in the runner's
+          # ephemeral range: reserve them, or an outbound connection can take
+          # one before the harness binds it (EADDRINUSE; the harness checks).
+          sudo sysctl -w net.ipv4.ip_local_reserved_ports=39100-39199
           mkdir -p "$RUNNER_TEMP/e2e-logs"
           nohup python3 e2e/harness/harness.py --hub ./target/release/fohmixer-hub \
             --data "$RUNNER_TEMP/hub-data" --link-port 8481 \
@@ -713,6 +717,10 @@ jobs:
           set -euo pipefail
           # The two SimLive hosts and the hub as in the e2e job, the hub's
           # [companion] on the service's Satellite port (no fake).
+          # The harness's fixed ports (39101-39193) sit in the runner's
+          # ephemeral range: reserve them, or an outbound connection can take
+          # one before the harness binds it (EADDRINUSE; the harness checks).
+          sudo sysctl -w net.ipv4.ip_local_reserved_ports=39100-39199
           mkdir -p "$RUNNER_TEMP/e2e-logs"
           nohup python3 e2e/harness/harness.py --hub ./target/release/fohmixer-hub \
             --data "$RUNNER_TEMP/hub-data" \

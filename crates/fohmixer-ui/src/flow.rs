@@ -1,6 +1,8 @@
 //! What a control is to the surface: a strip-wide column or a button, and
-//! the Live instance a group's strips share (#63: the group's title names
-//! it once). Where the controls go is `arrange` (the control column, #63).
+//! the Live instance a group's strips share (#63: the group names it once;
+//! since #127 on its run's first strip, by the colour of the group's name,
+//! which is the set's name, `BAND`/`MASTER`, for an untitled group). Where
+//! the controls go is `arrange` (the control column, #63).
 
 use fohmixer_proto::layout::Control;
 
@@ -10,9 +12,9 @@ pub fn is_column(control: &Control) -> bool {
     matches!(control, Control::Strip(_) | Control::ParamFader { .. })
 }
 
-/// The Live instance every strip of a group shares (#63: the group's title
-/// names it once instead of each strip); none when the group holds no strip
-/// or its strips differ. The other controls do not count.
+/// The Live instance every strip of a group shares (#63: the group names it
+/// once instead of each strip); none when the group holds no strip or its
+/// strips differ. The other controls do not count.
 pub fn shared_instance(controls: &[Control]) -> Option<String> {
     let mut instances = controls.iter().filter_map(|c| match c {
         Control::Strip(strip) => Some(strip.binding.instance.as_str()),

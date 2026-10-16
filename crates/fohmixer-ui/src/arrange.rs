@@ -11,15 +11,19 @@
 //! arrows move. A pager's sub-pages share one region of slots: a pinned
 //! control keeps its slot on every sub-page and the slots are one unit
 //! each, so nothing after the region moves when the sub-page changes. A
-//! line renders as one keyed list of its cells and its groups' titles
+//! line renders as one keyed list of its cells and its groups' run anchors
 //! (`items`), each on its side, so a cell that changes side or group run
-//! moves without being rebuilt. The layout's own order is kept everywhere:
+//! moves without being rebuilt. A run that starts with a strip names its
+//! group on that strip's side (#127, `GroupLabel`); any other run keeps its
+//! title over it when there is one to show, and only a line that shows
+//! such a title on any of its sub-pages and windows keeps the title's room
+//! (`LineArrangement::room`). The layout's own order is kept everywhere:
 //! which strips sit where is the owner's choice. This module is pure;
 //! `pages::surface` measures and renders.
 
 use fohmixer_proto::layout::{Control, Group, Page, Section};
 
-use crate::flow::is_column;
+use crate::flow::{is_column, shared_instance};
 
 #[cfg(test)]
 mod tests;
@@ -190,6 +194,25 @@ impl PageModel {
     /// The control at `at`.
     pub fn control(&self, at: At) -> Option<&Control> {
         self.groups.get(at.group)?.controls.get(at.control)
+    }
+
+    /// The sub-pages a line of `rows` can show: each of its pager's, or
+    /// only `None` when it holds no pager (or one without sub-pages).
+    fn line_subs(&self, rows: &[usize]) -> Vec<Option<usize>> {
+        let count = rows
+            .iter()
+            .filter_map(|row| self.rows.get(*row))
+            .flatten()
+            .find_map(|part| match part {
+                Part::Pager(subs) => Some(subs.len()),
+                Part::Group(_) => None,
+            })
+            .unwrap_or(0);
+        if count == 0 {
+            vec![None]
+        } else {
+            (0..count).map(Some).collect()
+        }
     }
 }
 
@@ -437,7 +460,8 @@ pub struct LineKey {
 }
 
 /// One line as arranged: the page rows it holds (and its window's key), its
-/// halves and its window.
+/// halves and its window; `room`: it keeps the groups' titles' room at its
+/// top (`keeps_room`, the same on every sub-page and window).
 #[derive(Debug, Clone, PartialEq)]
 pub struct LineArrangement {
     pub rows: Vec<usize>,
@@ -445,6 +469,7 @@ pub struct LineArrangement {
     pub left: Vec<Cell>,
     pub right: Vec<Cell>,
     pub shift: Option<Shift>,
+    pub room: bool,
 }
 
 /// A page as arranged: the strip width every line shares and the lines.
@@ -516,17 +541,8 @@ pub fn arrange_in(
     let mut out = Vec::new();
     let widest = (side / m.min).max(1.0);
     for rows in lines(model.weights(), height, m) {
-        let cells: Vec<Cell> = rows
-            .iter()
-            .flat_map(|row| row_cells(model, *row, sub, m))
-            .map(|cell| match cell {
-                Cell::Block { group, units } => Cell::Block {
-                    group,
-                    units: units.min(widest),
-                },
-                other => other,
-            })
-            .collect();
+        let cells = line_cells(model, &rows, sub, widest, m);
+        let room = keeps_room(model, &rows, side, widest, m);
         let key = model.line_key(&rows, sub);
         let offset = offset(&key);
         let (cells, shift) = shown(&cells, side, offset, m);
@@ -545,12 +561,51 @@ pub fn arrange_in(
             left: cells[..at].to_vec(),
             right: cells[at..].to_vec(),
             shift,
+            room,
         });
     }
     Arrangement {
         width: width.clamp(m.min, m.max),
         lines: out,
     }
+}
+
+/// A line's cells, its rows' in order, with the pager on sub-page `sub`; a
+/// block wider than `widest` strips is narrowed to it.
+fn line_cells(
+    model: &PageModel,
+    rows: &[usize],
+    sub: Option<usize>,
+    widest: f64,
+    m: &Metrics,
+) -> Vec<Cell> {
+    rows.iter()
+        .flat_map(|row| row_cells(model, *row, sub, m))
+        .map(|cell| match cell {
+            Cell::Block { group, units } => Cell::Block {
+                group,
+                units: units.min(widest),
+            },
+            other => other,
+        })
+        .collect()
+}
+
+/// Whether a line of `rows` keeps the groups' titles' room (#127): when a
+/// run shows its group's title over it (`captions`) on any sub-page the
+/// line can show and in any of its windows on a side `side` px wide. So
+/// neither a sub-page switch nor an arrow moves the line's strips (the
+/// pinned ones included) or changes their faders' travel.
+fn keeps_room(model: &PageModel, rows: &[usize], side: f64, widest: f64, m: &Metrics) -> bool {
+    model.line_subs(rows).into_iter().any(|sub| {
+        let cells = line_cells(model, rows, sub, widest, m);
+        let last = shown(&cells, side, 0, m).1.map_or(0, |shift| shift.last);
+        (0..=last).any(|offset| {
+            let (on_screen, _) = shown(&cells, side, offset, m);
+            let at = split(&on_screen, m);
+            captions(&items_of(model, &on_screen[..at], &on_screen[at..]))
+        })
+    })
 }
 
 /// How much wider a strip is on `sides.width` than on `sides.count` (1 on
@@ -618,8 +673,50 @@ pub enum Side {
     Right,
 }
 
-/// One item of a line's keyed list: a group's title over its run of cells
-/// on one side (`cells` of them, `units` strips wide), or a cell.
+/// The group's name on its side in the scale column of the first strip of
+/// each of its runs (#127, the owner's variant B of
+/// `docs/mockups/group-captions-v1.html`): its text, the group's title or,
+/// for an untitled group, the Live set its strips share in capitals
+/// (`BAND`, `MASTER`; `group_label`), and that shared instance (the label's
+/// colour; none when the strips differ, and then each strip keeps its
+/// instance tag).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GroupLabel {
+    pub text: String,
+    pub instance: Option<String>,
+}
+
+/// The label `group` gives the first strip of each of its runs: its title,
+/// or, for an untitled group whose strips share a Live set, that set's name
+/// in capitals (`BAND`, `MASTER`: the set is named once for the group,
+/// program spec F4); none for an untitled group whose strips differ or that
+/// holds no strip (a title of blanks is none). It is also whether a title
+/// over a run would show anything (a title or the set's pill): a group
+/// without a label keeps no title over any run.
+pub fn group_label(group: &Group) -> Option<GroupLabel> {
+    let instance = shared_instance(&group.controls);
+    let text = group
+        .title
+        .clone()
+        .filter(|t| !t.trim().is_empty())
+        .or_else(|| instance.as_deref().map(str::to_uppercase))?;
+    Some(GroupLabel { text, instance })
+}
+
+/// Whether `cell` is a strip (a parameter fader, a button, a block or a
+/// blank is not: only a strip's scale column carries the group's label).
+fn is_strip(model: &PageModel, cell: &Cell) -> bool {
+    match cell {
+        Cell::Control { at, .. } => matches!(model.control(*at), Some(Control::Strip(_))),
+        Cell::Block { .. } | Cell::Blank { .. } => false,
+    }
+}
+
+/// One item of a line's keyed list: a group's run anchor on one side
+/// (`cells` of them, `units` strips wide; `caption`: the group's title
+/// shows over the run, which does not start with a strip and has a title
+/// or a shared set to show), or a cell (`label`: the group's name on its
+/// side, on the first strip of a run).
 #[derive(Debug, Clone, PartialEq)]
 pub enum Item {
     Title {
@@ -628,10 +725,12 @@ pub enum Item {
         side: Side,
         cells: usize,
         units: f64,
+        caption: bool,
     },
     Cell {
         cell: Cell,
         side: Side,
+        label: Option<GroupLabel>,
     },
 }
 
@@ -654,25 +753,55 @@ impl Item {
 }
 
 /// A line as one list, the left half's then the right half's: each run of
-/// a group's cells after its title (a run of blanks has none).
-pub fn items(line: &LineArrangement) -> Vec<Item> {
+/// a group's cells after its anchor (a run of blanks has none). A run that
+/// starts with a strip names its group (`group_label`) on that strip's
+/// side (a group cut into runs, by the column or by another group's pinned
+/// strip, on each run's first strip) and shows no title over it; any other
+/// run keeps its title over it when the group has a label, so a title is
+/// never empty (#127).
+pub fn items(model: &PageModel, line: &LineArrangement) -> Vec<Item> {
+    items_of(model, &line.left, &line.right)
+}
+
+/// `items` of a line's two halves.
+fn items_of(model: &PageModel, left: &[Cell], right: &[Cell]) -> Vec<Item> {
     let mut out = Vec::new();
     let mut titles: Vec<usize> = Vec::new();
-    for (side, half) in [(Side::Left, &line.left), (Side::Right, &line.right)] {
+    for (side, half) in [(Side::Left, left), (Side::Right, right)] {
         for run in runs(half) {
+            let mut label = None;
             if let Some(group) = run.group {
                 let before = titles.iter().filter(|g| **g == group).count();
                 titles.push(group);
+                let strip = run.cells.first().is_some_and(|c| is_strip(model, c));
+                let named = model.groups.get(group).and_then(group_label);
+                let caption = !strip && named.is_some();
+                if strip {
+                    label = named;
+                }
                 out.push(Item::Title {
                     key: format!("t{group}-{before}"),
                     group,
                     side,
                     cells: run.cells.len(),
                     units: run.cells.iter().map(|c| c.units()).sum(),
+                    caption,
                 });
             }
-            out.extend(run.cells.iter().map(|&cell| Item::Cell { cell, side }));
+            out.extend(run.cells.iter().map(|&cell| Item::Cell {
+                cell,
+                side,
+                label: label.take(),
+            }));
         }
     }
     out
+}
+
+/// Whether a line's items show a group's title over a run (on any of its
+/// sub-pages and windows, the line keeps the title's room: `keeps_room`).
+pub fn captions(items: &[Item]) -> bool {
+    items
+        .iter()
+        .any(|item| matches!(item, Item::Title { caption: true, .. }))
 }

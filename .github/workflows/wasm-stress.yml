@@ -167,6 +167,8 @@ jobs:
           RUST_LOG: info
         run: |
           set -euo pipefail
+          # The harness's fixed ports, out of the ephemeral range (ci.yml).
+          sudo sysctl -w net.ipv4.ip_local_reserved_ports=39100-39199
           mkdir -p "$RUNNER_TEMP/e2e-logs"
           nohup python3 e2e/harness/harness.py --hub ./target/release/fohmixer-hub \
             --data "$RUNNER_TEMP/hub-data" --link-port 8481 \
