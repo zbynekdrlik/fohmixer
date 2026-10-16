@@ -20,7 +20,9 @@
 //!   page's view (`behave::eq::Finger`: the first finger waits 120 ms or
 //!   6 px before its down, a lift meanwhile is a tap, its up 40 ms after its
 //!   down on a frame (PR G); a move at most once per animation frame, the up
-//!   and the cancel always, a lost capture as a cancel). The open carries
+//!   and the cancel always, a lost capture as a cancel; a finger whose end
+//!   never came ended by the next primary down of its type or a hide, #124).
+//!   The open carries
 //!   the picture area (PR G: the editor on the PC gets its aspect), sent
 //!   once the area is in the page; a changed area (a phone turned, a
 //!   window resized) goes as `eq_area` once it rested 300 ms while the
@@ -44,8 +46,8 @@
 //!
 //! The screen's open, close and lock refusal go to the flight recorder as
 //! `detail` events (`eq_open`, `eq_close` with why, `eq_locked`) with the
-//! strip's keys, and every finger on the picture as `eq_touch` (its down, up
-//! or cancel: the picture point and the zoom) and `eq_mv` (its moves
+//! strip's keys, and every finger on the picture as `eq_touch` (its down, up,
+//! cancel or `lost`: the picture point and the zoom) and `eq_mv` (its moves
 //! summarized; #71 PR I, `diag::trace::fingers`). Every tap target owns its
 //! touches.
 
@@ -751,7 +753,9 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
     // Opening from now on; the open itself goes with the area, at its load.
     store.eq_opening(&target.instance, &target.path);
     // A hidden page lifts its finger (`Finger::visibility`), as the Stream
-    // Deck lifts its keys: `visibilitychange` bubbles to the window.
+    // Deck lifts its keys: `visibilitychange` bubbles to the window. A
+    // hidden Home Screen app keeps no touch going, so the recorder has each
+    // finger `lost` (#124).
     let hidden = window_event_listener_untyped("visibilitychange", move |_| {
         let hidden = dom::hidden();
         send(
@@ -761,7 +765,7 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
         );
         note_takes();
         if hidden {
-            fingers_leave("cancel");
+            fingers_leave("lost");
         }
     });
     // A turned or resized screen: the area's box again (the frame loop
@@ -872,6 +876,22 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
         // The finger's own time (the PR I review: the handler's time shifts
         // with a long frame).
         let t = dom::event_epoch(&ev);
+        // A finger whose end the browser never delivered (#124: iOS took it
+        // for a system gesture) ends first, at a primary down of its type:
+        // its contact cancelled at the PC, recorded `lost` before this
+        // finger's down. This finger then starts a gesture of its own, a
+        // first finger under the picture's rule below, never a pinch.
+        let missed = finger
+            .try_update_value(|f| f.missed(by))
+            .unwrap_or_default();
+        for pointer in missed.pointers {
+            record(
+                fingers
+                    .try_update_value(|f| f.end(t, "lost", pointer, None, zoom_now()))
+                    .unwrap_or_default(),
+            );
+        }
+        send(missed.out);
         let down = fingers.try_update_value(|f| f.down(t, id, at.picture, zoom_now()));
         record(down.into_iter().collect());
         let lands = spot(on_picture(at.picture, picture), zoom_now());

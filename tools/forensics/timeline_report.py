@@ -663,7 +663,8 @@ def _detail_table(t):
 EQ_LEGEND = (
     "Pro-Q 4 screen (#71): each finger on the editor's picture as the page recorded it "
     "(down, up, cancel, and stale: a finger refused because the picture did not yet show "
-    "the page's last input), at the editor's picture pixels with the page's zoom; then each "
+    "the page's last input; lost: a finger whose end never came, ended by the next primary "
+    "finger or a hidden page, #124), at the editor's picture pixels with the page's zoom; then each "
     "second of drawing: the frames drawn, the latency samples (from an input's send to the "
     "draw of the first picture that shows it), the inputs shown whose send time the page no "
     "longer kept (lost) and the longest decode; then Pro-Q's own undo (PR P2a): each page's "

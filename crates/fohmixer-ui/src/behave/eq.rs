@@ -11,7 +11,9 @@
 //! a second finger makes a pinch
 //! that sends the editor nothing, a move goes at most once per animation
 //! frame, the newest one, and the end always goes, a lost capture as a
-//! cancel, a hidden page's finger lifted; the owner's ruling of 2026-10-11:
+//! cancel, a hidden page's finger lifted, and a finger whose end never came
+//! ended by the next primary down of its type, #124, [`Finger::missed`];
+//! the owner's ruling of 2026-10-11:
 //! below [`EDIT_ZOOM_MIN`] the whole picture takes no edits, and a tap there
 //! zooms to [`TAP_ZOOM`] on its point, [`Spot`], [`Viewer::zoom_on`]), when
 //! the page's picture area
@@ -28,6 +30,7 @@
 use fohmixer_proto::eq::{EqLock, PRODUCT, Touch, UNDO_APART_MS, UNDO_DONE, UNDO_NOTHING, reason};
 
 use super::Down;
+use crate::diag::perf::Pointer;
 
 /// Where a picture sits fitted into an area: its scale (CSS px a picture
 /// pixel) and its top-left corner in the area (CSS px).
@@ -492,10 +495,12 @@ enum Stage {
     Pinching,
 }
 
-/// A finger down: its pointer and its last point.
+/// A finger down: its pointer, its type (#124: a primary down of that type
+/// ends it, [`Finger::missed`]) and its last point.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Held {
     pointer: i32,
+    kind: Option<Pointer>,
     at: Point,
 }
 
@@ -513,8 +518,8 @@ pub struct Missed {
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Finger {
     stage: Stage,
-    /// The fingers down, at most two: each one's pointer and its last
-    /// point.
+    /// The fingers down, at most two: each one's pointer, its type and its
+    /// last point.
     fingers: [Option<Held>; 2],
     /// A quick tap's up still to go (PR G): its point, and when its down
     /// went (page ms).
@@ -547,9 +552,25 @@ impl Finger {
     /// The fingers whose end the browser never delivered (#124: iOS took a
     /// finger for a system gesture and sent no `pointerup`, `pointercancel`
     /// or `lostpointercapture`), ended by `down` before its own
-    /// [`Finger::down`]. Not yet: nothing ends.
-    pub fn missed(&mut self, _down: Down) -> Missed {
-        Missed::default()
+    /// [`Finger::down`]: a primary pointer of their type ([`Down::ends`]:
+    /// no other pointer of that type is down) ends every finger of that
+    /// type, each one as its cancel. A first finger on the editor gets its
+    /// cancel at its last point (the PC's contact ends, no band stays
+    /// grabbed); one waiting, settling, on the overview or off the picture
+    /// never reached it, and a pinch's contact was cancelled when the pinch
+    /// began: nothing goes for them. The new finger then starts a gesture
+    /// of its own, never a pinch with a finger that left. A second finger,
+    /// or a pointer of another type, ends nothing (#124 M1).
+    pub fn missed(&mut self, down: Down) -> Missed {
+        let mut missed = Missed::default();
+        let fingers = self.fingers;
+        for held in fingers.into_iter().flatten() {
+            if down.ends(held.kind) {
+                missed.out.extend(self.cancel(held.pointer));
+                missed.pointers.push(held.pointer);
+            }
+        }
+        missed
     }
 
     /// A pointer's down (`down`: its id and type) at `at` where it lands
@@ -565,6 +586,7 @@ impl Finger {
         }
         let held = Held {
             pointer: down.id,
+            kind: down.kind,
             at,
         };
         match self.stage {
