@@ -1859,6 +1859,44 @@ mod tests {
     }
 
     #[test]
+    fn a_lost_finger_keeps_the_undo_off_until_a_primary_down_of_its_type_ends_it() {
+        // #124 review I1: a finger whose end never came keeps the PC's
+        // contact, so ↶ VRÁTIŤ takes no press (`busy`, `undo_ready`). A
+        // primary touch on the bar (↶ VRÁTIŤ, CELÝ EQ) ends it first, as on
+        // the picture: its cancel goes before the undo, and the undo is
+        // taken. A second finger's press leaves a finger that is really
+        // down alone.
+        let mut finger = Finger::default();
+        touching(&mut finger, 1, p(10.0, 20.0));
+        assert!(finger.busy());
+        assert!(!undo_ready(finger.busy(), None, 1_000.0));
+        assert_eq!(finger.missed(second(2)), Missed::default());
+        assert!(!undo_ready(finger.busy(), None, 1_000.0), "still held");
+        assert_eq!(
+            finger.missed(first(3)),
+            Missed {
+                pointers: vec![1],
+                out: vec![(Touch::Cancel, 20.0, 40.0)],
+            }
+        );
+        assert!(!finger.busy());
+        assert!(undo_ready(finger.busy(), None, 1_000.0), "the undo goes");
+        // CELÝ EQ after a lost finger: the same, and the whole picture then
+        // finds nothing on the editor (no second cancel).
+        touching(&mut finger, 4, p(30.0, 30.0));
+        assert_eq!(
+            finger.missed(first(5)),
+            Missed {
+                pointers: vec![4],
+                out: vec![(Touch::Cancel, 60.0, 60.0)],
+            }
+        );
+        assert_eq!(finger.off_editor(), vec![]);
+        assert!(!finger.busy());
+        assert!(undo_ready(finger.busy(), Some(0.0), 1_000.0));
+    }
+
+    #[test]
     fn a_cards_lock_and_its_text() {
         let lock = |path: &str, mine: bool| EqLock {
             instance: "band".into(),

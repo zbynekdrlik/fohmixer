@@ -892,7 +892,7 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
             );
         }
         send(missed.out);
-        let down = fingers.try_update_value(|f| f.down(t, id, at.picture, zoom_now()));
+        let down = fingers.try_update_value(|f| f.down(t, id, by.kind, at.picture, zoom_now()));
         record(down.into_iter().collect());
         let lands = spot(on_picture(at.picture, picture), zoom_now());
         // A first finger on an old picture, or in a stalled link, reaches
@@ -1011,9 +1011,7 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
                 let _ = stale_at.try_set_value(Some(now));
                 record(
                     fingers
-                        .try_update_value(|f| {
-                            f.end(dom::epoch_now(), "cancel", pointer, None, zoom_now())
-                        })
+                        .try_update_value(|f| f.cut(dom::epoch_now(), pointer, zoom_now()))
                         .unwrap_or_default(),
                 );
             }

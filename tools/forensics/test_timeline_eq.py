@@ -243,7 +243,7 @@ class EqScreen(ReportCase):
             ],
         )
         summary, page, stdout = self.report(log, BASE, BASE + 5000)
-        self.assertEqual((summary["eq_fingers"], summary["eq_lost"]), ("3", "2"))
+        self.assertEqual((summary["eq_fingers"], summary["eq_fingers_lost"]), ("3", "2"))
         self.assertEqual(
             [(r["data-what"], r.get("data-pointer")) for r in finger_rows(page)],
             [
@@ -256,11 +256,11 @@ class EqScreen(ReportCase):
             ],
             "in time order, the lost finger's end before the next finger's down",
         )
-        self.assertIn("eq_lost=2\n", stdout)
-        self.assertIn("lost: a finger whose end never came", page.text)
+        self.assertIn("eq_fingers_lost=2\n", stdout)
+        self.assertIn("lost finger: one whose end never came", page.text)
         # Outside the window: not counted.
         summary, _, _ = self.report(log, BASE, BASE + 2500)
-        self.assertEqual(summary["eq_lost"], "0")
+        self.assertEqual(summary["eq_fingers_lost"], "0")
 
     def test_outside_the_window_is_left_out(self):
         log = Log()
@@ -292,7 +292,7 @@ class EqScreen(ReportCase):
                     "eq_fingers",
                     "eq_stale",
                     "eq_uncovered",
-                    "eq_lost",
+                    "eq_fingers_lost",
                     "eq_lat_n",
                     "eq_frames_drawn",
                 )

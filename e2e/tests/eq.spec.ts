@@ -2339,9 +2339,9 @@ test.describe("The Pro-Q 4 screen and a finger whose end never came (#124)", () 
   // hide, ends it (its contact cancelled at the PC, `eq_touch` `lost`), and
   // the new finger starts a gesture of its own.
 
-  /** One finger's pointer event (a touch, `primary` as a browser marks it) dispatched on the area at a page point. */
-  async function fingerEvent(area: Locator, type: string, at: At, id: number, primary: boolean) {
-    await area.evaluate(
+  /** One finger's pointer event (a touch, `primary` as a browser marks it) dispatched on `target` (the area, a bar's button) at a page point. */
+  async function fingerEvent(target: Locator, type: string, at: At, id: number, primary: boolean) {
+    await target.evaluate(
       (el, { type, at, id, primary }) => {
         el.dispatchEvent(
           new PointerEvent(type, { pointerId: id, pointerType: "touch", isPrimary: primary, clientX: at.x, clientY: at.y, bubbles: true, cancelable: true }),
@@ -2356,12 +2356,19 @@ test.describe("The Pro-Q 4 screen and a finger whose end never came (#124)", () 
    * browser marks it): down at `from`, `DRAG_STEPS` moves to `to`, one an
    * animation frame (the page sends at most one a frame), two frames, the
    * up at `to`. Its first move passes the 6 px slop, so its down goes at
-   * once.
+   * once. Whether the screen's note "Obraz ešte dobieha" (`eq-stale`)
+   * showed at any frame of the drag: read in the page, as it lasts only
+   * 1.5 s (e2e.md's short states).
    */
-  async function fingerDrag(area: Locator, from: At, to: At, id: number, primary: boolean) {
-    await area.evaluate(
+  async function fingerDrag(area: Locator, from: At, to: At, id: number, primary: boolean): Promise<boolean> {
+    return area.evaluate(
       async (el, { from, to, id, primary, steps }) => {
         const frame = () => new Promise<void>((done) => requestAnimationFrame(() => done()));
+        const note = document.querySelector('[data-testid="eq-stale"]');
+        let noted = false;
+        const look = () => {
+          noted = noted || note?.getAttribute("data-shown") === "true";
+        };
         const fire = (type: string, x: number, y: number) =>
           el.dispatchEvent(
             new PointerEvent(type, { pointerId: id, pointerType: "touch", isPrimary: primary, clientX: x, clientY: y, bubbles: true, cancelable: true }),
@@ -2369,11 +2376,15 @@ test.describe("The Pro-Q 4 screen and a finger whose end never came (#124)", () 
         fire("pointerdown", from.x, from.y);
         for (let i = 1; i <= steps; i++) {
           await frame();
+          look();
           fire("pointermove", Math.round(from.x + ((to.x - from.x) * i) / steps), Math.round(from.y + ((to.y - from.y) * i) / steps));
         }
         await frame();
+        look();
         await frame();
+        look();
         fire("pointerup", to.x, to.y);
+        return noted;
       },
       { from, to, id, primary, steps: DRAG_STEPS },
     );
@@ -2409,12 +2420,12 @@ test.describe("The Pro-Q 4 screen and a finger whose end never came (#124)", () 
     return records.map((r: any) => r.why);
   }
 
-  /** The page's `eq_touch` records since `since` as [what, pointer], once pointer `last`'s up is in (up to 15 s for the upload). */
-  async function fingerRecords(since: number, last: number): Promise<(string | number)[][]> {
+  /** The page's `eq_touch` records since `since` as [what, pointer], once pointer `last`'s `end` (its up by default) is in (up to 15 s for the upload). */
+  async function fingerRecords(since: number, last: number, end = "up"): Promise<(string | number)[][]> {
     const records = await until(
       async () => pageEvents(await hubEvents()).filter((e: any) => e.ev === "eq_touch" && e.t >= since),
-      (all) => all.some((e: any) => e.what === "up" && e.p === last),
-      `the page's eq_touch up of ${last}`,
+      (all) => all.some((e: any) => e.what === end && e.p === last),
+      `the page's eq_touch ${end} of ${last}`,
       15_000,
     );
     return records.map((e: any) => [e.what, e.p]);
@@ -2491,7 +2502,8 @@ test.describe("The Pro-Q 4 screen and a finger whose end never came (#124)", () 
     // nothing, and it pinches nothing either.
     const from = { x: lostAt.x - 100, y: lostAt.y + 60 };
     const to = { x: from.x + 80, y: from.y - 40 };
-    await fingerDrag(area, from, to, NEXT, true);
+    // The engineer sees why: "Obraz ešte dobieha, polož prst znova".
+    expect(await fingerDrag(area, from, to, NEXT, true), "the stale note under the refused finger").toBe(true);
     const ended = await touchesUntil(start, (all) => all.some((r) => r.phase === "cancel"), "the lost contact's cancel");
     expect(ended[0].phase).toBe("down");
     const cancel = ended[ended.length - 1];
@@ -2550,6 +2562,63 @@ test.describe("The Pro-Q 4 screen and a finger whose end never came (#124)", () 
       ["lost", LOST],
       ["down", NEXT],
       ["up", NEXT],
+    ]);
+    await exitScreen(page, screen, trackPath);
+  });
+
+  test("a finger whose end never came leaves ↶ VRÁTIŤ and CELÝ EQ working: a primary touch on either ends it first, its contact's cancel before the undo", async ({ page }) => {
+    // #124 review I1: the lost finger kept the PC's contact, so ↶ VRÁTIŤ
+    // took no press until a touch on the picture. A primary touch on the
+    // bar proves no other touch is down, so it ends the lost finger first.
+    const LOST = 931;
+    const PRESS = 932;
+    const LOST_AGAIN = 933;
+    const WHOLE = 934;
+    const { sent, answers } = watchUndo(page);
+    const { screen, area, map, trackPath } = await openZoomed(page);
+    const undo = screen.getByTestId("eq-undo");
+    const since = Date.now();
+    const start = await touchMark();
+    const lostAt = map.toPage(FROM);
+    await fingerEvent(area, "pointerdown", lostAt, LOST, true);
+    await touchesUntil(start, (all) => all.some((r) => r.phase === "down"), "the lost finger's contact");
+    await expect(undo, "the lost finger keeps the PC's contact").toHaveAttribute("aria-disabled", "true");
+    // A primary touch on ↶ VRÁTIŤ: the lost contact's cancel, then the undo.
+    const sentFrom = sent.length;
+    const before = answers.length;
+    const press = await centre(undo);
+    await fingerEvent(undo, "pointerdown", press, PRESS, true);
+    await fingerEvent(undo, "pointerup", press, PRESS, true);
+    const ended = await touchesUntil(start, (all) => all.some((r) => r.phase === "cancel"), "the lost contact's cancel");
+    const cancel = ended.find((r) => r.phase === "cancel");
+    expect(near(cancel, map.toPicture(lostAt)), `the cancel ${JSON.stringify(cancel)} at ${JSON.stringify(map.toPicture(lostAt))}`).toBe(true);
+    const answer = await answerAfter(answers, before);
+    expect(["done", "nothing"], `the hub took the undo: ${JSON.stringify(answer)}`).toContain(answer.result);
+    expect(
+      sent.slice(sentFrom).map((m) => (m.type === "eq_undo" ? "undo" : m.touch)),
+      "on the page's socket the cancel goes before the undo",
+    ).toEqual(["cancel", "undo"]);
+    // CELÝ EQ: the same. Another lost finger once a picture shows the undo,
+    // then a primary touch on CELÝ EQ: its contact's cancel, the whole
+    // picture, and ↶ VRÁTIŤ takes a press again with no touch on the
+    // picture.
+    await caughtUp(screen);
+    const again = await touchMark();
+    await fingerEvent(area, "pointerdown", lostAt, LOST_AGAIN, true);
+    await touchesUntil(again, (all) => all.some((r) => r.phase === "down"), "the second lost finger's contact");
+    const whole = screen.getByTestId("eq-whole");
+    const wholeAt = await centre(whole);
+    await fingerEvent(whole, "pointerdown", wholeAt, WHOLE, true);
+    await fingerEvent(whole, "pointerup", wholeAt, WHOLE, true);
+    await touchesUntil(again, (all) => all.some((r) => r.phase === "cancel"), "the second lost contact's cancel");
+    await expect(screen.getByTestId("eq-zoom")).toHaveAttribute("data-shown", "false");
+    await expect(undo, "↶ VRÁTIŤ free again").toHaveAttribute("aria-disabled", "false");
+    expect(await contacts(trackPath, since, 4)).toEqual(["down", "cancel", "down", "cancel"]);
+    expect(await fingerRecords(since, LOST_AGAIN, "lost")).toEqual([
+      ["down", LOST],
+      ["lost", LOST],
+      ["down", LOST_AGAIN],
+      ["lost", LOST_AGAIN],
     ]);
     await exitScreen(page, screen, trackPath);
   });
