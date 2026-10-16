@@ -27,7 +27,7 @@ use serde_json::json;
 use crate::app::version_text;
 use crate::arrange::{
     Arrangement, Cell, GroupLabel, Item, LineKey, METRICS, PageModel, Shift, Side, Sides,
-    arrange_in, items, px_value, thin_line,
+    arrange_in, items, px_value, rooms, thin_line,
 };
 use crate::behave::ableset::tab_dot;
 use crate::behave::solo::soloed;
@@ -758,22 +758,13 @@ fn PageView(page: Page, global: Vec<Control>, sub: Memo<Option<usize>>) -> impl 
     // its start and coming back finds it where it was; a turned screen with
     // the same lines keeps each window (clamped by `shown`).
     let offsets = RwSignal::new(BTreeMap::<LineKey, usize>::new());
-    // Every read below tolerates a disposed value (`try_*`): a layout change
-    // disposes the page while its keyed lists' effects may still run once.
-    let arranged = {
-        let model = model.clone();
-        Memo::new(move |_| {
-            let (sides, height) = room.try_get()?;
-            let sub = sub.try_get()?;
-            if sides.count <= 0.0 {
-                return None;
-            }
-            offsets.try_with(|offsets| {
-                let offset = |key: &LineKey| offsets.get(key).copied().unwrap_or(0);
-                arrange_in(&model, sub, sides, height, offset, &METRICS)
-            })
-        })
-    };
+    let (arranged, line_rooms) = page_memos(
+        model.clone(),
+        room.into(),
+        sub.into(),
+        offsets.into(),
+        |model, sides, height| rooms(model, sides, height, &METRICS),
+    );
     let count = Memo::new(move |_| {
         arranged
             .try_with(|a| a.as_ref().map_or(0, |a| a.lines.len()))
@@ -840,7 +831,7 @@ fn PageView(page: Page, global: Vec<Control>, sub: Memo<Option<usize>>) -> impl 
         .collect_view();
     let line_view = move |line: usize| {
         let model = model.clone();
-        view! { <LineView arranged=arranged model=model line=line /> }
+        view! { <LineView arranged=arranged rooms=line_rooms model=model line=line /> }
     };
     let shift =
         move |line: usize| view! { <ShiftView arranged=arranged offsets=offsets line=line /> };
@@ -904,17 +895,58 @@ fn PageView(page: Page, global: Vec<Control>, sub: Memo<Option<usize>>) -> impl 
     }
 }
 
+/// The page's arrangement and its lines' rooms (#127), each a memo of what
+/// it depends on: the arrangement of the measured page (`measured`, none
+/// before it is laid out), the shown sub-page and the lines' windows; the
+/// rooms (`room_of`, `arrange::rooms` on the page; it arranges every
+/// sub-page and window of each line) of the measured page alone, so
+/// neither a sub-page switch nor an arrow recomputes them (the #127
+/// re-review's m3). Every read tolerates a disposed value (`try_*`): a
+/// layout change disposes the page while its keyed lists' effects may
+/// still run once.
+fn page_memos(
+    model: Arc<PageModel>,
+    measured: Signal<(Sides, f64)>,
+    sub: Signal<Option<usize>>,
+    offsets: Signal<BTreeMap<LineKey, usize>>,
+    room_of: impl Fn(&PageModel, Sides, f64) -> Vec<bool> + Send + Sync + 'static,
+) -> (Memo<Option<Arrangement>>, Memo<Vec<bool>>) {
+    let arranged = {
+        let model = model.clone();
+        Memo::new(move |_| {
+            let (sides, height) = measured.try_get()?;
+            let sub = sub.try_get()?;
+            if !sides.measured() {
+                return None;
+            }
+            offsets.try_with(|offsets| {
+                let offset = |key: &LineKey| offsets.get(key).copied().unwrap_or(0);
+                arrange_in(&model, sub, sides, height, offset, &METRICS)
+            })
+        })
+    };
+    let line_rooms = Memo::new(move |_| {
+        measured
+            .try_get()
+            .filter(|(sides, _)| sides.measured())
+            .map(|(sides, height)| room_of(&model, sides, height))
+            .unwrap_or_default()
+    });
+    (arranged, line_rooms)
+}
+
 /// One line: its items in one keyed list (`arrange::items`), each on its
 /// side of the column (`page.css` orders the left side's, `.split` taking
 /// the rest of the left half and the column, the right side's), so a cell
 /// that changes side or group run moves and is not rebuilt. Only a line
 /// that shows a group's title over a run on any of its sub-pages and
-/// windows keeps the title's room (`data-captions`,
-/// `LineArrangement::room`, #127): on any other its strips take it, and a
+/// windows keeps the title's room (`data-captions`, from `rooms`, the
+/// page's `arrange::rooms`, #127): on any other its strips take it, and a
 /// sub-page switch or an arrow never changes it.
 #[component]
 fn LineView(
     arranged: Memo<Option<Arrangement>>,
+    rooms: Memo<Vec<bool>>,
     model: Arc<PageModel>,
     line: usize,
 ) -> impl IntoView {
@@ -932,12 +964,9 @@ fn LineView(
         })
     };
     let captioned = Memo::new(move |_| {
-        arranged
-            .try_with(|a| {
-                a.as_ref()
-                    .and_then(|a| a.lines.get(line))
-                    .is_some_and(|l| l.room)
-            })
+        rooms
+            .try_with(|r| r.get(line).copied())
+            .flatten()
             .unwrap_or(false)
     });
     // The line's row, and its left side's span (`--l-units` strips and
@@ -1401,5 +1430,91 @@ fn StatusCluster() -> impl IntoView {
             <span class="version" data-testid="version">{version_text()}</span>
             <ManualChip />
         </div>
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::*;
+
+    fn strip(name: &str) -> serde_json::Value {
+        json!({"kind": "strip", "binding": {"instance": "band", "anchor": {"kind": "track", "name": name}},
+               "strip_kind": "standard"})
+    }
+
+    fn toggle(label: &str) -> serde_json::Value {
+        json!({"kind": "param_toggle", "label": label, "press": "toggle",
+               "targets": [{"binding": {"instance": "band", "anchor": {"kind": "track", "name": "T"}},
+                            "prop": "mute", "on": false, "off": true}]})
+    }
+
+    #[test]
+    fn a_sub_page_switch_or_an_arrow_never_recomputes_the_lines_rooms() {
+        // #127 re-review m3: a pager whose second sub-page holds a titled
+        // block, beside five strips; on 135 px sides the line shows a
+        // window. The rooms are counted each time they are computed.
+        let page: Page = serde_json::from_value(json!({"id": "p", "title": "P", "rows": [{"sections": [
+            {"kind": "pager", "id": "pg", "default_page": "a", "pages": [
+                {"id": "a", "title": "A", "sections": [
+                    {"kind": "group", "id": "a", "title": "A", "controls": [strip("A0"), strip("A1")]}]},
+                {"id": "b", "title": "B", "sections": [
+                    {"kind": "group", "id": "b", "title": "CUE", "controls": [toggle("T0"), toggle("T1")]}]}]},
+            {"kind": "group", "id": "s", "title": "S",
+             "controls": [strip("S0"), strip("S1"), strip("S2"), strip("S3"), strip("S4")]}]}]}))
+        .expect("a page");
+        let owner = Owner::new();
+        owner.set();
+        let model = Arc::new(PageModel::of(&page));
+        let measured = RwSignal::new((Sides::both(0.0), 822.0));
+        let sub = RwSignal::new(Some(0));
+        let offsets = RwSignal::new(BTreeMap::<LineKey, usize>::new());
+        let runs = Arc::new(AtomicUsize::new(0));
+        let counted = runs.clone();
+        let (arranged, line_rooms) = page_memos(
+            model.clone(),
+            measured.into(),
+            sub.into(),
+            offsets.into(),
+            move |model, sides, height| {
+                counted.fetch_add(1, Ordering::SeqCst);
+                rooms(model, sides, height, &METRICS)
+            },
+        );
+        let ran = || runs.load(Ordering::SeqCst);
+        // Not laid out yet: no arrangement, no rooms, nothing computed.
+        assert_eq!(arranged.get_untracked(), None);
+        assert_eq!(line_rooms.get_untracked(), Vec::<bool>::new());
+        assert_eq!(ran(), 0);
+        // Laid out: the rooms once.
+        let _ = measured.try_set((Sides::both(135.0), 822.0));
+        let on_a = arranged.get_untracked().expect("arranged");
+        assert!(on_a.lines[0].shift.is_some(), "the premise: a window");
+        assert_eq!(line_rooms.get_untracked(), vec![true]);
+        assert_eq!(ran(), 1);
+        // A sub-page switch: a new arrangement, the rooms not computed again.
+        let _ = sub.try_set(Some(1));
+        let on_b = arranged.get_untracked().expect("arranged");
+        assert_ne!(on_a, on_b, "the premise: another arrangement");
+        assert_eq!(line_rooms.get_untracked(), vec![true]);
+        assert_eq!(ran(), 1, "a sub-page switch");
+        // An arrow: the window moves, the rooms not computed again.
+        let key = model.line_key(&[0], Some(1));
+        let _ = offsets.try_set(BTreeMap::from([(key, 1)]));
+        let moved = arranged.get_untracked().expect("arranged");
+        assert_eq!(moved.lines[0].shift.map(|s| s.offset), Some(1));
+        assert_eq!(line_rooms.get_untracked(), vec![true]);
+        assert_eq!(ran(), 1, "an arrow");
+        // A new size: the rooms again, once.
+        let _ = measured.try_set((Sides::both(519.0), 822.0));
+        assert!(arranged.get_untracked().is_some());
+        assert_eq!(line_rooms.get_untracked(), vec![true]);
+        assert_eq!(ran(), 2, "a new size");
+        // Laid out at no width again: no arrangement, no rooms.
+        let _ = measured.try_set((Sides::both(0.0), 822.0));
+        assert_eq!(arranged.get_untracked(), None);
+        assert_eq!(line_rooms.get_untracked(), Vec::<bool>::new());
+        assert_eq!(ran(), 2);
     }
 }

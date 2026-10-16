@@ -987,8 +987,7 @@ fn a_line_is_one_list_of_its_cells_after_their_groups_titles_each_on_its_side() 
                 },
                 left: vec![],
                 right: vec![],
-                shift: None,
-                room: false
+                shift: None
             }
         ),
         vec![]
@@ -1200,7 +1199,9 @@ fn one_line(model: &PageModel) -> Vec<Item> {
 
 /// Whether `one_line`'s line keeps the titles' room.
 fn one_room(model: &PageModel) -> bool {
-    arrange(model, Some(0), 519.0, 822.0, |_| 0, &METRICS).lines[0].room
+    let all = rooms(model, Sides::both(519.0), 822.0, &METRICS);
+    assert_eq!(all.len(), 1, "the premise: one line");
+    all[0]
 }
 
 #[test]
@@ -1548,14 +1549,17 @@ fn a_lines_room_is_the_same_on_every_sub_page() {
         captions(&items(&model, &on_b.lines[0])),
         "b's block's title"
     );
-    assert!(on_a.lines[0].room, "the room on a");
-    assert!(on_b.lines[0].room, "the room on b");
-    // The block untitled: no title anywhere, no room on either.
+    // The room: one value for the line, whatever the sub-page shown.
+    assert_eq!(
+        rooms(&model, Sides::both(519.0), 822.0, &METRICS),
+        vec![true]
+    );
+    // The block untitled: no title anywhere, no room.
     let model = pages(None);
-    for sub in [Some(0), Some(1)] {
-        let a = arrange(&model, sub, 519.0, 822.0, |_| 0, &METRICS);
-        assert!(!a.lines[0].room, "{sub:?}");
-    }
+    assert_eq!(
+        rooms(&model, Sides::both(519.0), 822.0, &METRICS),
+        vec![false]
+    );
     // The titled block on the first of three sub-pages: the room on the
     // others too.
     let first = PageModel::of(&page(vec![vec![pager(vec![
@@ -1569,8 +1573,65 @@ fn a_lines_room_is_the_same_on_every_sub_page() {
     for sub in [Some(1), Some(2)] {
         let a = arrange(&first, sub, 519.0, 822.0, |_| 0, &METRICS);
         assert!(!captions(&items(&first, &a.lines[0])), "{sub:?}: no title");
-        assert!(a.lines[0].room, "{sub:?}: the room");
     }
+    assert_eq!(
+        rooms(&first, Sides::both(519.0), 822.0, &METRICS),
+        vec![true]
+    );
+}
+
+#[test]
+fn each_line_has_its_room_in_the_order_of_the_lines() {
+    // Two rows, two lines on a tall side: the upper of strips, the lower
+    // with a titled block; one line of both on a low one.
+    let model = PageModel::of(&page(vec![
+        vec![group("s", vec![strip("S0"), strip("S1")])],
+        vec![titled("b", Some("CUE"), vec![toggle("T0"), toggle("T1")])],
+    ]));
+    assert_eq!(
+        rooms(&model, Sides::both(519.0), 822.0, &METRICS),
+        vec![false, true]
+    );
+    assert_eq!(
+        rooms(&model, Sides::both(519.0), 400.0, &METRICS),
+        vec![true]
+    );
+    let upper = PageModel::of(&page(vec![
+        vec![titled("b", Some("CUE"), vec![toggle("T0"), toggle("T1")])],
+        vec![group("s", vec![strip("S0"), strip("S1")])],
+    ]));
+    assert_eq!(
+        rooms(&upper, Sides::both(519.0), 822.0, &METRICS),
+        vec![true, false]
+    );
+    // The FOH shape: strips only on both lines.
+    assert_eq!(
+        rooms(&PageModel::of(&foh()), Sides::both(519.0), 822.0, &METRICS),
+        vec![false, false]
+    );
+}
+
+#[test]
+fn a_page_is_measured_once_a_side_has_width() {
+    assert!(!Sides::both(0.0).measured());
+    assert!(!Sides::both(-1.0).measured());
+    assert!(Sides::both(0.0_f64.next_up()).measured());
+    assert!(Sides::both(135.0).measured());
+    // The count decides (a phone's thin strip leaves the width wider).
+    assert!(
+        !Sides {
+            count: 0.0,
+            width: 135.0
+        }
+        .measured()
+    );
+    assert!(
+        Sides {
+            count: 135.0,
+            width: 0.0
+        }
+        .measured()
+    );
 }
 
 #[test]
@@ -1624,16 +1685,20 @@ fn a_lines_room_is_the_same_in_every_window() {
         captions(&items(&model, &next.lines[0])),
         "the title one step on"
     );
-    assert!(start.lines[0].room, "the room from the start");
-    assert!(next.lines[0].room, "the room one step on");
+    assert_eq!(
+        rooms(&model, Sides::both(135.0), 822.0, &METRICS),
+        vec![true],
+        "the room, whichever window shows"
+    );
     // Strips only: no room in any window.
     let strips = PageModel::of(&page(vec![vec![group(
         "a",
         (0..5).map(|i| strip(&format!("S{i}"))).collect(),
     )]]));
-    for offset in [0, 1] {
-        let a = arrange(&strips, None, 135.0, 822.0, |_| offset, &METRICS);
-        assert!(a.lines[0].shift.is_some(), "the premise: a window");
-        assert!(!a.lines[0].room, "{offset}");
-    }
+    let a = arrange(&strips, None, 135.0, 822.0, |_| 0, &METRICS);
+    assert!(a.lines[0].shift.is_some(), "the premise: a window");
+    assert_eq!(
+        rooms(&strips, Sides::both(135.0), 822.0, &METRICS),
+        vec![false]
+    );
 }
