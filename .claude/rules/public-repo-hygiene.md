@@ -15,6 +15,8 @@ This repository is public. These never enter it — not in code, tests, fixtures
 
 What is public: the code, the import tool, and a **synthetic** `.tosc` fixture and layout (invented track names such as `Klavir #`, `Vox 1`; never a copied real one).
 
+- **Mockups (`docs/mockups/*.html`) load the app's fonts by relative path** (`url("../../crates/fohmixer-ui/fonts/<file>.woff2")`; githack serves them beside the page), never inlined as base64. A long base64 run is case-insensitive text to the denylist scan and can hold a term by chance (#130's first mockup did, in one font); the binary `.woff2` files are skipped as binary.
+
 - `.mcp.json` is git-ignored (it carries the MCP servers' auth); never commit it or paste its values.
 - Live checks on the Ableton PC (spec §5.3, "L") record their results on the tickets without host names, IPs or user paths.
 - **No repo URLs in ticket texts** (#71, 2026-10-10): a GitHub or raw.githack URL of this repo carries the account's name, which is on the private list. Name a file by its path and commit instead; the owner gets a mockup's githack link in the session only. Gate every post on the count: `[ "$(grep -c … <file>)" = 0 ] && gh issue comment …` — never `;` (a `;` posted a hit once, deleted at once).
