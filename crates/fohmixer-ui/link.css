@@ -48,6 +48,24 @@
     white-space: nowrap;
 }
 
+/* A count of four characters or more (a mixed count of a two-digit total,
+   "1/10" to "31/32": LinkMark's `compact`, behave::mute::chain_compact) is
+   drawn compact on a strip's corner line, so a problem's `!` and the chain
+   fit its 48 px at 64 px (#127 re-review N1; swept over 64-120 px in both
+   engines, strip-head.spec.ts): the chain and the count at 7.5 px, no
+   letter spacing, a tighter pill. Every shorter count looks as before. */
+.strip-corner > .link-mark.compact {
+    gap: 0.5px;
+    padding: 0 2px 0 1.5px;
+    font-size: 7.5px;
+    letter-spacing: 0;
+}
+
+.strip-corner > .link-mark.compact::before {
+    width: 7.5px;
+    height: 7.5px;
+}
+
 /* The channel detail's mute carries its chain on the button. */
 .mute > .link-mark {
     position: absolute;

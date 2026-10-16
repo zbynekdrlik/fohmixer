@@ -169,9 +169,17 @@ impl Reach {
     }
 }
 
-/// Whether the chain's count `text` is drawn compact (#127 re-review N1).
-pub fn chain_compact(_text: &str) -> bool {
-    false
+/// A chain's count this many characters long or longer is drawn compact
+/// (#127 re-review N1): a mixed count of a two-digit total, "1/10" to
+/// "31/32", beside a problem's `!` would not fit the corner line of a 64 px
+/// strip otherwise.
+pub const COMPACT_CHARS: usize = 4;
+
+/// Whether the chain's count `text` is drawn compact (LinkMark's
+/// `compact`, link.css): [`COMPACT_CHARS`] characters or more. Every
+/// shorter count looks as before.
+pub fn chain_compact(text: &str) -> bool {
+    text.chars().count() >= COMPACT_CHARS
 }
 
 #[cfg(test)]

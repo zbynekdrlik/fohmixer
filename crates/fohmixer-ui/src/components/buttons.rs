@@ -17,7 +17,7 @@ use super::{
 };
 use crate::behave::colour::{css_color, text_on};
 use crate::behave::label::{label_chars, strip_label};
-use crate::behave::mute::{GUARD_MS, GuardAction, Linked, MuteGuard, Reach};
+use crate::behave::mute::{GUARD_MS, GuardAction, Linked, MuteGuard, Reach, chain_compact};
 use crate::binding::{SubSpec, mute_sub, solo_sub};
 use crate::dom;
 use crate::store::{LiveStore, Slot};
@@ -118,8 +118,17 @@ pub fn LinkMark(slots: Vec<RwSignal<Slot>>) -> impl IntoView {
             .try_with(|r| r.text(count))
             .unwrap_or_else(|| count.to_string())
     };
+    // A long count is drawn compact, so it fits the strip's corner line
+    // beside a problem's `!` (#127 re-review N1).
+    let compact = move || chain_compact(&text());
     view! {
-        <span class="link-mark" data-testid="mute-link" data-state=look aria-hidden="true">
+        <span
+            class="link-mark"
+            class:compact=compact
+            data-testid="mute-link"
+            data-state=look
+            aria-hidden="true"
+        >
             <span class="link-n" data-testid="mute-link-n">
                 {text}
             </span>

@@ -414,8 +414,10 @@
    was before #127. A mark that does not fit the line wraps onto a second
    one, which the line clips (the 16 px row gap puts it below the clip
    whatever the first line's height): the MUTE mark goes first, then RET
-   (the review's I1 ruling); `!` and the chain always fit (swept over
-   64-120 px in both engines, strip-head.spec.ts). The marks' real widths
+   (the review's I1 ruling); `!` and the chain always fit, whatever the
+   count: one of four characters or more is drawn compact (link.css,
+   `.link-mark.compact`, #127 re-review N1; swept over 64-120 px in both
+   engines, strip-head.spec.ts). The marks' real widths
    decide, in each engine; nothing is guessed. No touch: a tap reaches the
    button. */
 .strip-corner {
