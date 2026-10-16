@@ -40,7 +40,8 @@ impl LiveStore {
     }
 
     /// `instance` is back (#43, L4): its open writes go again, as new
-    /// `set`s; a release too old to send blindly is `not_sent` now.
+    /// writes in one `sets` message (#127: a linked tap's in one batch); a
+    /// release too old to send blindly is `not_sent` now.
     pub(super) fn resend(self, instance: &str) {
         let Some(resend) = self
             .inner
@@ -57,15 +58,17 @@ impl LiveStore {
         // once (Live's value replayed after the hello can close it within
         // milliseconds, before the next tick).
         self.note_intents();
+        let messages = resend.messages();
         let mut taken = 0;
-        for msg in &resend.messages() {
+        for msg in &messages {
             let sent = self.sent_set(msg);
             taken += usize::from(sent);
         }
         if !resend.sets.is_empty() || !resend.not_sent.is_empty() {
             dom::log(&format!(
-                "instance {instance} is back: {} writes sent again ({taken} taken), {} not sent",
+                "instance {instance} is back: {} writes sent again in {} messages ({taken} taken), {} not sent",
                 resend.sets.len(),
+                messages.len(),
                 resend.not_sent.len()
             ));
         }

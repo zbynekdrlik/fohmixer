@@ -407,18 +407,30 @@
     line-height: 17px;
 }
 
-/* The name button's top-left corner (#127): a problem's `!` (states.css),
-   the linked mute's chain and a return's RET, in this order, side by side
-   over the button (the head's first 30 px), never on each other or the
-   name under them; no touch. */
+/* The name button's corner line (#127, the approved mockup paired-mute-v3,
+   variant A; MuteView draws it in the strip's button), over the name: a
+   problem's `!` (states.css), the linked mute's chain and a return's RET
+   at the left, in this order, and the MUTE mark at the right end, where it
+   was before #127. A mark that does not fit the line wraps onto a second
+   one, which the line clips (the 16 px row gap puts it below the clip
+   whatever the first line's height): the MUTE mark goes first, then RET
+   (the review's I1 ruling); `!` and the chain always fit (swept over
+   64-120 px in both engines, strip-head.spec.ts). The marks' real widths
+   decide, in each engine; nothing is guessed. No touch: a tap reaches the
+   button. */
 .strip-corner {
     position: absolute;
     top: 1.5px;
+    right: 3px;
     left: 3px;
-    z-index: 2;
     display: flex;
+    flex-wrap: wrap;
+    align-content: flex-start;
     align-items: flex-start;
-    gap: 3px;
+    gap: 16px 3px;
+    height: 13.5px;
+    overflow: hidden;
+    letter-spacing: 0;
     pointer-events: none;
 }
 
@@ -523,11 +535,13 @@
     white-space: nowrap;
 }
 
+/* The MUTE mark, red while every track of the mute is muted: the right end
+   of a strip's corner line (`.strip-corner`), 2 px from the top and 3 px
+   from the right as before #127; the channel detail's MUTE shows none. */
 .mute-mark {
     display: none;
-    position: absolute;
-    top: 2px;
-    right: 3px;
+    flex: none;
+    margin: 0.5px 0 0 auto;
     color: var(--mute);
     font: 800 7.5px/1 var(--ui);
     letter-spacing: 0.6px;

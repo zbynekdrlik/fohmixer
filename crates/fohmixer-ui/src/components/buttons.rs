@@ -13,15 +13,14 @@ use leptos::prelude::*;
 use serde_json::{Value, json};
 
 use super::{
-    BtnText, fail_flash, intent_look, key_of, owns_touches, readiness, readiness_now, slot_of,
-    trace_touch,
+    BtnText, fail_flash, intent_look, key_of, owns_touches, readiness, slot_of, trace_touch,
 };
 use crate::behave::colour::{css_color, text_on};
 use crate::behave::label::{label_chars, strip_label};
 use crate::behave::mute::{GUARD_MS, GuardAction, Linked, MuteGuard, Reach};
 use crate::binding::{SubSpec, mute_sub, solo_sub};
 use crate::dom;
-use crate::store::{LiveStore, Readiness, Slot};
+use crate::store::{LiveStore, Slot};
 
 /// The style of a button lit in Live's colour `value` (the track colour and
 /// the text colour that reads on it); nothing until the colour is known.
@@ -82,7 +81,8 @@ pub struct Partner {
 }
 
 /// What a mute's tracks (`slots`: the strip's own first, then its
-/// partners') show together and which a tap writes (#127), tracked or not.
+/// partners') show together and which of them a tap writes (#127: the
+/// strip's own and every partner with Live's value), tracked or not.
 fn linked_now(slots: &[RwSignal<Slot>], tracked: bool) -> Reach {
     let muted: Vec<Option<bool>> = slots
         .iter()
@@ -98,32 +98,45 @@ fn linked_now(slots: &[RwSignal<Slot>], tracked: bool) -> Reach {
 }
 
 /// The linked mute's mark (#127, the approved mockup paired-mute-v3,
-/// variant A): a chain and how many mutes are linked (`slots`: the strip's
-/// own and each partner's), grey while all play, red while all are muted,
-/// amber `m/N` while m of them are muted by hand in Live. It takes no touch
-/// and no height.
+/// variant A): a chain and the number of mutes a tap writes (`slots`: the
+/// strip's own and each partner's; a partner without Live's value is not
+/// counted), grey while all play, red while all are muted, amber `m/N`
+/// while m of them are muted by hand in Live. It takes no touch and no
+/// height.
 #[component]
 pub fn LinkMark(slots: Vec<RwSignal<Slot>>) -> impl IntoView {
     let count = slots.len();
     let slots = StoredValue::new(slots);
-    let state = Memo::new(move |_| {
+    let reach = Memo::new(move |_| {
         slots
-            .try_with_value(|s| linked_now(s, true).state)
-            .unwrap_or(Linked::Unknown)
+            .try_with_value(|s| linked_now(s, true))
+            .unwrap_or_else(|| Reach::of(&[]))
     });
-    let shown = move || state.try_get().unwrap_or(Linked::Unknown);
+    let look = move || reach.try_with(|r| r.state.look()).unwrap_or("unknown");
+    let text = move || {
+        reach
+            .try_with(|r| r.text(count))
+            .unwrap_or_else(|| count.to_string())
+    };
     view! {
-        <span
-            class="link-mark"
-            data-testid="mute-link"
-            data-state=move || shown().look()
-            aria-hidden="true"
-        >
+        <span class="link-mark" data-testid="mute-link" data-state=look aria-hidden="true">
             <span class="link-n" data-testid="mute-link-n">
-                {move || shown().text(count)}
+                {text}
             </span>
         </span>
     }
+}
+
+/// What a strip's name button shows on its corner line (#127, strip.css
+/// `.strip-corner`): a problem's `!` and a return's RET around the linked
+/// mute's chain, and the MUTE mark at its right end. The channel detail's
+/// MUTE has no corner line: its chain is a pill on the button.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Corner {
+    /// A marker problem's `!` (#68).
+    pub flag: bool,
+    /// RET: a return in a group that names its instance (#63).
+    pub ret: bool,
 }
 
 /// A strip's name button, its mute: lit in the track's Live colour while the
@@ -131,8 +144,12 @@ pub fn LinkMark(slots: Vec<RwSignal<Slot>>) -> impl IntoView {
 /// first arms and pulses). A linked mute (#127, `partners`) shows and writes
 /// its partners' mutes with its own: lit while any of them plays, dark only
 /// when all are muted; a tap mutes all, or unmutes all when all are muted,
-/// in one `sets` message. `pill`: the chain shows on the button itself (the
-/// channel detail's); a strip shows it in its head's corner.
+/// in one `sets` message. It takes a tap once the strip's own track has
+/// Live's value: a partner without one is left out of the tap and of what
+/// the button shows, and never disables it (the PA mute always works;
+/// `behave::mute::Reach`). `corner`: a strip's corner line, with the chain;
+/// none for the channel detail's MUTE, which carries the chain on the
+/// button.
 #[component]
 pub fn MuteView(
     state: RwSignal<Slot>,
@@ -141,7 +158,7 @@ pub fn MuteView(
     label: String,
     color: Option<RwSignal<Slot>>,
     partners: Vec<Partner>,
-    pill: bool,
+    corner: Option<Corner>,
 ) -> impl IntoView {
     let store = expect_context::<LiveStore>();
     let slot = state;
@@ -153,8 +170,30 @@ pub fn MuteView(
         .chain(partners.iter().map(|p| p.spec.clone()))
         .collect();
     let keys: Vec<String> = specs.iter().map(key_of).collect();
-    let mark_slots = all.clone();
-    let mark = (pill && linked).then(move || view! { <LinkMark slots=mark_slots /> });
+    // The strip's corner line, or the detail's MUTE mark and pill.
+    let line_slots = all.clone();
+    let line = corner.map(move |c| {
+        let flag = c
+            .flag
+            .then(|| view! { <span class="strip-flag" aria-hidden="true">"!"</span> });
+        let chain = linked.then(move || view! { <LinkMark slots=line_slots /> });
+        let ret = c.ret.then(|| {
+            view! { <span class="strip-ret" data-testid="strip-ret" aria-hidden="true">"RET"</span> }
+        });
+        view! {
+            <span class="strip-corner">
+                {flag}
+                {chain}
+                {ret}
+                <span class="mute-mark" aria-hidden="true">"MUTE"</span>
+            </span>
+        }
+    });
+    let on_button = corner
+        .is_none()
+        .then(|| view! { <span class="mute-mark" aria-hidden="true">"MUTE"</span> });
+    let pill_slots = all.clone();
+    let pill = (corner.is_none() && linked).then(move || view! { <LinkMark slots=pill_slots /> });
     let root = NodeRef::<html::Div>::new();
     intent_look(root, store, keys.clone());
     // The root owns its touches (#43 PR G) and names its keys.
@@ -167,10 +206,7 @@ pub fn MuteView(
     let armed = RwSignal::new(false);
     let failed = RwSignal::new(false);
     let on_down = move |ev: web_sys::PointerEvent| {
-        let ready = slots
-            .try_with_value(|s| readiness_now(s.as_slice()) == Readiness::Ready)
-            .unwrap_or(false);
-        if !ready {
+        if !slot.try_with_untracked(Slot::is_ready).unwrap_or(false) {
             return;
         }
         ev.prevent_default();
@@ -181,14 +217,21 @@ pub fn MuteView(
         match action {
             GuardAction::Apply if linked => {
                 let _ = armed.try_set(false);
-                // What the button shows now (P2): all muted unmutes all,
-                // else every track is muted.
-                let now = slots
-                    .try_with_value(|s| linked_now(s, false).state)
-                    .unwrap_or(Linked::Unknown);
-                if let Some(muted) = now.tap() {
+                // What the button shows now (P2), over the tracks with
+                // Live's value: all muted unmutes them, else they are muted.
+                let reach = slots.try_with_value(|s| linked_now(s, false));
+                if let Some(reach) = reach
+                    && let Some(muted) = reach.state.tap()
+                {
                     let _ = specs.try_with_value(|s| {
-                        store.set_together(s, &json!(muted), true, move || fail_flash(failed));
+                        let targets: Vec<SubSpec> = reach
+                            .targets
+                            .iter()
+                            .filter_map(|&i| s.get(i).cloned())
+                            .collect();
+                        store.set_together(&targets, &json!(muted), true, move || {
+                            fail_flash(failed)
+                        });
                     });
                 }
             }
@@ -218,11 +261,8 @@ pub fn MuteView(
             .unwrap_or(Linked::Unknown)
     });
     let now = move || shown.try_get().unwrap_or(Linked::Unknown);
-    let state = Memo::new(move |_| {
-        slots
-            .try_with_value(|s| readiness(s.as_slice()))
-            .unwrap_or(Readiness::Waiting)
-    });
+    // Its own track's readiness alone (#127 review M2).
+    let state = Memo::new(move |_| readiness(&[slot]));
     let binding = move || state.try_get().map_or("waiting", |s| s.name());
     let disabled = move || state.try_get().map_or("true", |s| s.disabled());
     let look = move || colour_style(color.and_then(|c| c.try_with(Slot::number).flatten()));
@@ -243,8 +283,9 @@ pub fn MuteView(
             on:pointerdown=on_down
         >
             <span class="strip-label" data-testid="strip-label" style=length>{label}</span>
-            <span class="mute-mark" aria-hidden="true">"MUTE"</span>
-            {mark}
+            {on_button}
+            {pill}
+            {line}
         </div>
     }
 }

@@ -124,29 +124,48 @@ impl Linked {
     }
 }
 
-/// A linked mute as a tap finds it (#127 review M2): the tracks a tap
-/// writes (indices, the strip's own first) and what they show together.
+/// A linked mute as a tap finds it (#127 review M2, the main session's
+/// ruling): the tracks a tap writes and what they show together. A tap
+/// acts once the strip's own track has Live's value; it writes that track
+/// and every partner that has one. A partner without a value (waiting, or
+/// its binding unresolved) is left out of the tap and of the state, and
+/// never disables the strip's own mute: the PA mute always works.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Reach {
+    /// The tracks a tap writes, by their index in the mutes given (the
+    /// strip's own first); none while the strip's own has no value.
     pub targets: Vec<usize>,
+    /// What those tracks show together.
     pub state: Linked,
 }
 
 impl Reach {
-    /// From each track's mute (`None`: no value yet), the strip's own first.
+    /// From each track's mute (`None`: no value), the strip's own first.
     pub fn of(muted: &[Option<bool>]) -> Self {
-        let state = Linked::of(muted);
-        let targets = if state == Linked::Unknown {
-            Vec::new()
-        } else {
-            (0..muted.len()).collect()
+        let targets: Vec<usize> = match muted.first() {
+            Some(Some(_)) => muted
+                .iter()
+                .enumerate()
+                .filter_map(|(i, m)| m.map(|_| i))
+                .collect(),
+            _ => Vec::new(),
         };
-        Self { targets, state }
+        let shown: Vec<Option<bool>> = targets.iter().map(|&i| muted[i]).collect();
+        Self {
+            state: Linked::of(&shown),
+            targets,
+        }
     }
 
-    /// The chain's number (`count`: every linked mute).
+    /// The chain's number: how many mutes a tap writes now, and `m/N` of
+    /// them while they disagree; every linked mute (`count`) while the
+    /// strip's own track has no value.
     pub fn text(&self, count: usize) -> String {
-        self.state.text(count)
+        if self.targets.is_empty() {
+            self.state.text(count)
+        } else {
+            self.state.text(self.targets.len())
+        }
     }
 }
 

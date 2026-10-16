@@ -15,7 +15,7 @@ use fohmixer_proto::layout::{Strip, StripKind};
 use leptos::prelude::*;
 use serde_json::json;
 
-use super::buttons::{MuteView, Partner, anchor_name, colour_style};
+use super::buttons::{Corner, MuteView, Partner, anchor_name, colour_style};
 use super::eq::EqCards;
 use super::fader::{FaderView, Law, Target};
 use super::meter::{MeterView, StatusView};
@@ -203,7 +203,8 @@ pub fn DetailView(strip: Strip, group: Option<String>) -> impl IntoView {
     let mute_label = "MUTE".to_string();
     let no_colour: Option<RwSignal<Slot>> = None;
     // A linked mute (#127) writes its partners here too, its chain on the
-    // button.
+    // button (no corner line: that is the strip's).
+    let no_corner: Option<Corner> = None;
     let partners: Vec<Partner> = subs
         .linked
         .iter()
@@ -221,7 +222,7 @@ pub fn DetailView(strip: Strip, group: Option<String>) -> impl IntoView {
                 label=mute_label
                 color=no_colour
                 partners=partners
-                pill=true
+                corner=no_corner
             />
         }
     });

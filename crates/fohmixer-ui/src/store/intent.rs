@@ -16,7 +16,9 @@
 //! `RESEND_MAX_AGE_MS` old or older; a closed one is `confirmed`. A control
 //! still held (no release) is never `unconfirmed` and is always sent again.
 //! When an instance is back (after a reconnect's hello, or online again) the
-//! store sends its intents again (`resend`), each as a new `set`.
+//! store sends its intents again (`resend`), each as a new write of its
+//! key, all of them in one `sets` message (#127: a linked mute's tap sent
+//! again still reaches Live in one batch).
 //!
 //! The page's flight recorder hears when a write turns `unconfirmed` or
 //! `not_sent` (`changes`, #43 PR E): only the page knows when it drew the
@@ -24,7 +26,7 @@
 
 use std::collections::BTreeMap;
 
-use fohmixer_proto::client::{AckItem, ClientMsg, SetItem, set_key};
+use fohmixer_proto::client::{AckItem, ClientMsg, MAX_SETS, SetItem, set_key};
 use serde_json::Value;
 
 /// Where a write goes: its instance, LOM target and property.
@@ -93,16 +95,25 @@ pub struct Change {
 /// What a resend does (`Intents::resend`).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Resend {
-    /// The `set`s to send, one per key.
+    /// The writes to send, a `set` per key (sent together: `messages`).
     pub sets: Vec<ClientMsg>,
     /// The keys whose release was too old: `not_sent` now.
     pub not_sent: Vec<String>,
 }
 
 impl Resend {
-    /// The messages that send the writes again (#127 review M1).
+    /// The messages that send the writes again (#127 review M1): ONE `sets`
+    /// (at most [`MAX_SETS`] writes each, the hub's limit), so a linked
+    /// mute's tap sent again still reaches Live in one batch; none when
+    /// nothing goes.
     pub fn messages(&self) -> Vec<ClientMsg> {
-        self.sets.clone()
+        let items: Vec<SetItem> = self.sets.iter().cloned().filter_map(SetItem::of).collect();
+        items
+            .chunks(MAX_SETS)
+            .map(|sets| ClientMsg::Sets {
+                sets: sets.to_vec(),
+            })
+            .collect()
     }
 }
 

@@ -54,11 +54,3 @@
     top: 4px;
     left: 4px;
 }
-
-/* While every track of a link is muted, the corner keeps only the red
-   chain: a return's RET and a problem's `!` give way to the MUTE mark (the
-   three do not fit side by side on a strip under ~80 px, swept 64-120 px in
-   both engines; the readout line still says ZNAČKA?). */
-.strip-head:has(> .mute[data-muted="true"]) > .strip-corner:has(> .link-mark) > :is(.strip-ret, .strip-flag) {
-    display: none;
-}

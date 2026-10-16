@@ -17,10 +17,11 @@
 //!
 //! A `sets` (#127, a linked mute's tracks) hands every item to its setter
 //! before any batch is written: one instance's items go to Live together.
+//! It takes at most `MAX_SETS` (32) items; the others are acked failed.
 
 use std::collections::BTreeSet;
 
-use fohmixer_proto::client::{AckItem, set_key};
+use fohmixer_proto::client::{AckItem, MAX_SETS, set_key};
 use serde_json::{Value, json};
 
 use super::{Router, RouterMsg};
@@ -83,6 +84,11 @@ pub fn unknown_instance(instance: &str) -> String {
     format!("unknown instance {instance:?}")
 }
 
+/// The error of a `sets` item past the first [`MAX_SETS`] (#127 review M3).
+pub fn too_many_sets() -> String {
+    format!("more than {MAX_SETS} writes in one sets")
+}
+
 /// The event-log fields of an ack; `batch`: the batch it answers and Live's
 /// round trip of it (none for an ack without a batch).
 pub fn ack_fields(
@@ -126,8 +132,15 @@ impl Router {
 
     /// A client's `sets` (#127, a linked mute's tracks): each taken as a
     /// `set` first, then a batch per instance, so the writes of one
-    /// instance go to Live together.
-    pub(super) fn on_sets(&mut self, sets: Vec<SetMsg>) {
+    /// instance go to Live together. Only the first [`MAX_SETS`] are taken
+    /// (#127 review M3): each one after them is acked failed at once.
+    pub(super) fn on_sets(&mut self, mut sets: Vec<SetMsg>) {
+        let over = sets.split_off(sets.len().min(MAX_SETS));
+        for set in over {
+            let key = set_key(&set.instance, &set.target, &set.prop);
+            let ack = AckItem::failed(&key, set.seq, &too_many_sets());
+            self.send_ack(&set.instance, set.client, ack, None);
+        }
         let instances: BTreeSet<String> = sets.iter().map(|s| s.instance.clone()).collect();
         for set in sets {
             self.take_set(set);

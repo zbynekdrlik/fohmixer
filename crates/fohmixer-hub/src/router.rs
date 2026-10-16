@@ -114,7 +114,8 @@ pub enum RouterMsg {
         offset_ms: Option<f64>,
     },
     /// A client's writes Live applies together (#127, `sets`: a linked
-    /// mute's tracks), each taken as a `set` before any batch is written.
+    /// mute's tracks), each taken as a `set` before any batch is written;
+    /// at most `MAX_SETS`, the rest acked failed (`writes::on_sets`).
     Sets {
         client: ClientId,
         sets: Vec<SetItem>,

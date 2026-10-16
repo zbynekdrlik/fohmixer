@@ -15,7 +15,7 @@ use std::time::Duration;
 use fohmixer_proto::layout::{Strip, StripKind};
 use leptos::prelude::*;
 
-use super::buttons::{LinkMark, MuteView, Partner, anchor_name};
+use super::buttons::{Corner, MuteView, Partner, anchor_name};
 use super::detail::DetailStrip;
 use super::fader::{FaderView, Law, Target};
 use super::meter::{MeterView, StatusView};
@@ -243,8 +243,16 @@ pub fn StripView(strip: Strip, settings: Settings, shared: Option<String>) -> im
         }];
         view! { <FaderView targets=targets shaping={settings.shaping} /> }
     });
+    let ret = strip.strip_kind == StripKind::Return;
+    // The instance tag only where the group does not name it (#63).
+    let tagged = shared.as_deref() != Some(instance.as_str());
+    // A marker problem (#68): a conflict disables the strip, any other
+    // problem marks it; the word replaces Live's dB on the readout line.
+    let look = mark_look(strip.mark);
+    let mark = look.map(|(mark, _)| mark);
     // The linked mute (#127): each partner's mute, read and written with
-    // the strip's own; its chain sits in the head's corner.
+    // the strip's own. The name button's corner line holds a problem's `!`,
+    // the chain, the RET of a return in a named group and the MUTE mark.
     let partners: Vec<Partner> = subs
         .linked
         .iter()
@@ -253,11 +261,9 @@ pub fn StripView(strip: Strip, settings: Settings, shared: Option<String>) -> im
             slot: store.slot(spec),
         })
         .collect();
-    let link_mark = mute.filter(|_| !partners.is_empty()).map(|own| {
-        let slots: Vec<RwSignal<Slot>> = std::iter::once(own)
-            .chain(partners.iter().map(|p| p.slot))
-            .collect();
-        view! { <LinkMark slots=slots /> }
+    let corner: Option<Corner> = Some(Corner {
+        flag: mark == Some("problem"),
+        ret: ret && !tagged,
     });
     let mute_view = mute.zip(subs.mute.clone()).map(|(slot, spec)| {
         view! {
@@ -268,14 +274,11 @@ pub fn StripView(strip: Strip, settings: Settings, shared: Option<String>) -> im
                 label=label
                 color=color
                 partners=partners
-                pill=false
+                corner=corner
             />
         }
     });
     let db = volume.map(|slot| view! { <DbView state=slot /> });
-    let ret = strip.strip_kind == StripKind::Return;
-    // The instance tag only where the group does not name it (#63).
-    let tagged = shared.as_deref() != Some(instance.as_str());
     let tag = tagged.then(|| {
         let text = if ret {
             format!("{instance} · ret")
@@ -289,24 +292,8 @@ pub fn StripView(strip: Strip, settings: Settings, shared: Option<String>) -> im
             </span>
         }
     });
-    // A return in a named group says so on its name button.
-    let ret_mark = (ret && !tagged).then(|| {
-        view! { <span class="strip-ret" data-testid="strip-ret" aria-hidden="true">"RET"</span> }
-    });
-    // A marker problem (#68): a conflict disables the strip, any other
-    // problem marks it; the word replaces Live's dB on the readout line.
-    let look = mark_look(strip.mark);
-    let mark = look.map(|(mark, _)| mark);
     let mark_word = look.map(|(_, word)| {
         view! { <span class="strip-mark" data-testid="strip-mark">{word}</span> }
-    });
-    let flag = (mark == Some("problem")).then(|| {
-        view! { <span class="strip-flag" aria-hidden="true">"!"</span> }
-    });
-    // The name button's top-left corner (#127): a problem's `!`, the linked
-    // mute's chain and a return's RET side by side, never on each other.
-    let corner = (flag.is_some() || link_mark.is_some() || ret_mark.is_some()).then(|| {
-        view! { <span class="strip-corner">{flag}{link_mark}{ret_mark}</span> }
     });
     let kind = format!("{:?}", strip.strip_kind).to_lowercase();
     // Each attribute its own copy (the macro may move a value into a child
@@ -337,7 +324,6 @@ pub fn StripView(strip: Strip, settings: Settings, shared: Option<String>) -> im
                     </div>
                     <StripMenu strip=menu_strip />
                 </div>
-                {corner}
             </div>
             {tag}
             <div class="strip-fz" style=unity>

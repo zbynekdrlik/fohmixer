@@ -260,8 +260,10 @@ fn mute_tag(marker: &mut Marker, token: &str, arg: &str) {
 }
 
 /// What a frame (the layout file) may not hold (#68): a view page or an
-/// id starting with [`VIEW_PREFIX`] (the markers make those), or a strip in
-/// a `tags` group (its strips are its markers'; other controls follow them).
+/// id starting with [`VIEW_PREFIX`] (the markers make those), a strip in a
+/// `tags` group (its strips are its markers'; other controls follow them),
+/// or a strip with `mute_links` (#127 review M4: a linked mute is the Tuner
+/// markers' `+ID` and `+MUTE`, never the frame's).
 pub fn frame_problems(frame: &Layout) -> Vec<LayoutError> {
     let mut out = Vec::new();
     let mut id = |at: &str, id: &str| {
@@ -322,6 +324,23 @@ pub fn frame_problems(frame: &Layout) -> Vec<LayoutError> {
                     ),
                 });
             }
+        }
+    }
+    let linked = |c: &Control| matches!(c, Control::Strip(strip) if !strip.mute_links.is_empty());
+    let mut refuse = |at: String| {
+        out.push(LayoutError {
+            at,
+            message: "a linked mute: the Tuner markers make those".to_string(),
+        });
+    };
+    for (i, page) in frame.pages.iter().enumerate() {
+        if page.controls().into_iter().any(linked) {
+            refuse(format!("pages[{i}]"));
+        }
+    }
+    for (i, control) in frame.global.iter().enumerate() {
+        if linked(control) {
+            refuse(format!("global[{i}]"));
         }
     }
     out
