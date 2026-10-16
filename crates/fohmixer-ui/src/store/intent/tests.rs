@@ -670,11 +670,14 @@ fn an_instances_writes_sent_again_go_as_one_sets_message() {
 fn more_writes_sent_again_than_a_sets_takes_go_as_several() {
     // #127 review M3: a `sets` carries at most MAX_SETS writes (the hub
     // refuses the rest), so a resend of more goes as several, in order.
+    // Track numbers of three digits: a key's target is canonical (`09` is
+    // `9`), so these keys sort as they were written.
     use fohmixer_proto::client::MAX_SETS;
+    let target = |i: usize| format!("live_set tracks {}", 100 + i);
     let mut intents = Intents::<&str>::default();
     for i in 0..=MAX_SETS {
         intents.set(
-            ("band", &format!("live_set tracks {i:02}"), "mute"),
+            ("band", &target(i), "mute"),
             json!(true),
             1_000.0,
             true,
@@ -690,8 +693,13 @@ fn more_writes_sent_again_than_a_sets_takes_go_as_several() {
         })
         .collect();
     assert_eq!(sizes, vec![MAX_SETS, 1]);
-    let ClientMsg::Sets { sets } = &messages[1] else {
-        panic!("a sets")
-    };
-    assert_eq!(sets[0].target, format!("live_set tracks {MAX_SETS:02}"));
+    let targets: Vec<Vec<String>> = messages
+        .iter()
+        .map(|m| match m {
+            ClientMsg::Sets { sets } => sets.iter().map(|s| s.target.clone()).collect(),
+            _ => Vec::new(),
+        })
+        .collect();
+    assert_eq!(targets[0], (0..MAX_SETS).map(target).collect::<Vec<_>>());
+    assert_eq!(targets[1], vec![target(MAX_SETS)]);
 }
