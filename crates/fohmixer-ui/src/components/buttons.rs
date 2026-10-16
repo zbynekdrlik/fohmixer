@@ -13,14 +13,15 @@ use leptos::prelude::*;
 use serde_json::{Value, json};
 
 use super::{
-    BtnText, fail_flash, intent_look, key_of, owns_touches, readiness, slot_of, trace_touch,
+    BtnText, fail_flash, intent_look, key_of, owns_touches, readiness, readiness_now, slot_of,
+    trace_touch,
 };
 use crate::behave::colour::{css_color, text_on};
 use crate::behave::label::{label_chars, strip_label};
-use crate::behave::mute::{GUARD_MS, GuardAction, MuteGuard, lit};
+use crate::behave::mute::{GUARD_MS, GuardAction, Linked, MuteGuard};
 use crate::binding::{SubSpec, mute_sub, solo_sub};
 use crate::dom;
-use crate::store::{LiveStore, Slot};
+use crate::store::{LiveStore, Readiness, Slot};
 
 /// The style of a button lit in Live's colour `value` (the track colour and
 /// the text colour that reads on it); nothing until the colour is known.
@@ -72,9 +73,66 @@ pub(super) fn toggle_flag(
     );
 }
 
+/// A linked mute's partner (#127): another track's mute, its subscription
+/// and its slot.
+#[derive(Clone)]
+pub struct Partner {
+    pub spec: SubSpec,
+    pub slot: RwSignal<Slot>,
+}
+
+/// What a mute's tracks (`slots`: the strip's own first, then its
+/// partners') show together (#127), tracked or not.
+fn linked_now(slots: &[RwSignal<Slot>], tracked: bool) -> Linked {
+    let muted: Vec<Option<bool>> = slots
+        .iter()
+        .map(|s| {
+            if tracked {
+                s.try_with(Slot::flag).flatten()
+            } else {
+                s.try_with_untracked(Slot::flag).flatten()
+            }
+        })
+        .collect();
+    Linked::of(&muted)
+}
+
+/// The linked mute's mark (#127, the approved mockup paired-mute-v3,
+/// variant A): a chain and how many mutes are linked (`slots`: the strip's
+/// own and each partner's), grey while all play, red while all are muted,
+/// amber `m/N` while m of them are muted by hand in Live. It takes no touch
+/// and no height.
+#[component]
+pub fn LinkMark(slots: Vec<RwSignal<Slot>>) -> impl IntoView {
+    let count = slots.len();
+    let slots = StoredValue::new(slots);
+    let state = Memo::new(move |_| {
+        slots
+            .try_with_value(|s| linked_now(s, true))
+            .unwrap_or(Linked::Unknown)
+    });
+    let shown = move || state.try_get().unwrap_or(Linked::Unknown);
+    view! {
+        <span
+            class="link-mark"
+            data-testid="mute-link"
+            data-state=move || shown().look()
+            aria-hidden="true"
+        >
+            <span class="link-n" data-testid="mute-link-n">
+                {move || shown().text(count)}
+            </span>
+        </span>
+    }
+}
+
 /// A strip's name button, its mute: lit in the track's Live colour while the
 /// track is audible; a guarded strip needs a second tap within 500 ms (the
-/// first arms and pulses).
+/// first arms and pulses). A linked mute (#127, `partners`) shows and writes
+/// its partners' mutes with its own: lit while any of them plays, dark only
+/// when all are muted; a tap mutes all, or unmutes all when all are muted,
+/// in one `sets` message. `pill`: the chain shows on the button itself (the
+/// channel detail's); a strip shows it in its head's corner.
 #[component]
 pub fn MuteView(
     state: RwSignal<Slot>,
@@ -82,21 +140,37 @@ pub fn MuteView(
     guarded: bool,
     label: String,
     color: Option<RwSignal<Slot>>,
+    partners: Vec<Partner>,
+    pill: bool,
 ) -> impl IntoView {
     let store = expect_context::<LiveStore>();
     let slot = state;
-    let keys = vec![key_of(&spec)];
+    let linked = !partners.is_empty();
+    let all: Vec<RwSignal<Slot>> = std::iter::once(slot)
+        .chain(partners.iter().map(|p| p.slot))
+        .collect();
+    let specs: Vec<SubSpec> = std::iter::once(spec.clone())
+        .chain(partners.iter().map(|p| p.spec.clone()))
+        .collect();
+    let keys: Vec<String> = specs.iter().map(key_of).collect();
+    let mark_slots = all.clone();
+    let mark = (pill && linked).then(move || view! { <LinkMark slots=mark_slots /> });
     let root = NodeRef::<html::Div>::new();
     intent_look(root, store, keys.clone());
     // The root owns its touches (#43 PR G) and names its keys.
     let touch_keys = keys.clone();
     let keys = StoredValue::new(keys);
     let spec = StoredValue::new(spec);
+    let specs = StoredValue::new(specs);
+    let slots = StoredValue::new(all);
     let guard = StoredValue::new(MuteGuard::default());
     let armed = RwSignal::new(false);
     let failed = RwSignal::new(false);
     let on_down = move |ev: web_sys::PointerEvent| {
-        if !slot.try_with_untracked(Slot::is_ready).unwrap_or(false) {
+        let ready = slots
+            .try_with_value(|s| readiness_now(s.as_slice()) == Readiness::Ready)
+            .unwrap_or(false);
+        if !ready {
             return;
         }
         ev.prevent_default();
@@ -105,6 +179,19 @@ pub fn MuteView(
             .try_update_value(|g| g.on_tap(guarded, dom::now()))
             .unwrap_or(GuardAction::Arm);
         match action {
+            GuardAction::Apply if linked => {
+                let _ = armed.try_set(false);
+                // What the button shows now (P2): all muted unmutes all,
+                // else every track is muted.
+                let now = slots
+                    .try_with_value(|s| linked_now(s, false))
+                    .unwrap_or(Linked::Unknown);
+                if let Some(muted) = now.tap() {
+                    let _ = specs.try_with_value(|s| {
+                        store.set_together(s, &json!(muted), true, move || fail_flash(failed));
+                    });
+                }
+            }
             GuardAction::Apply => {
                 let _ = armed.try_set(false);
                 let _ = spec.try_with_value(|s| toggle_flag(store, s, slot, failed));
@@ -125,16 +212,19 @@ pub fn MuteView(
             }
         }
     };
-    let muted = move || slot.try_with(Slot::flag).flatten();
-    let is_lit = move || muted().is_some_and(lit);
-    let state = Memo::new(move |_| readiness(&[slot]));
+    let shown = Memo::new(move |_| {
+        slots
+            .try_with_value(|s| linked_now(s, true))
+            .unwrap_or(Linked::Unknown)
+    });
+    let now = move || shown.try_get().unwrap_or(Linked::Unknown);
+    let state = Memo::new(move |_| {
+        slots
+            .try_with_value(|s| readiness(s.as_slice()))
+            .unwrap_or(Readiness::Waiting)
+    });
     let binding = move || state.try_get().map_or("waiting", |s| s.name());
     let disabled = move || state.try_get().map_or("true", |s| s.disabled());
-    let muted_attr = move || match muted() {
-        Some(true) => "true",
-        Some(false) => "false",
-        None => "unknown",
-    };
     let look = move || colour_style(color.and_then(|c| c.try_with(Slot::number).flatten()));
     let length = format!("--n:{};", label_chars(&label));
     view! {
@@ -142,11 +232,11 @@ pub fn MuteView(
             class="mute"
             node_ref=root
             use:owns_touches=touch_keys
-            class:lit=is_lit
+            class:lit=move || now().lit()
             class:armed=move || armed.try_get().unwrap_or(false)
             class:failed=move || failed.try_get().unwrap_or(false)
             data-testid="mute"
-            data-muted=muted_attr
+            data-muted=move || now().muted_attr()
             data-binding=binding
             aria-disabled=disabled
             style=look
@@ -154,6 +244,7 @@ pub fn MuteView(
         >
             <span class="strip-label" data-testid="strip-label" style=length>{label}</span>
             <span class="mute-mark" aria-hidden="true">"MUTE"</span>
+            {mark}
         </div>
     }
 }
@@ -336,6 +427,32 @@ mod tests {
         assert_eq!(anchor_name(&binding(Anchor::ReturnAt { index: 11 })), "#12");
         assert_eq!(anchor_name(&binding(Anchor::Master)), "Master");
         assert_eq!(anchor_name(&binding(Anchor::Song)), "Song");
+    }
+
+    #[test]
+    fn a_linked_mute_reads_every_tracks_mute_tracked_or_not() {
+        // #127: the strip's own first, then each partner's.
+        let mute = |on: Option<bool>| {
+            RwSignal::new(on.map_or(Slot::Pending, |m| Slot::Value {
+                value: serde_json::json!(m),
+                display: None,
+                at: 0.0,
+            }))
+        };
+        for tracked in [true, false] {
+            let own = mute(Some(false));
+            let partner = mute(Some(true));
+            let other = mute(Some(false));
+            assert_eq!(
+                linked_now(&[own, partner, other], tracked),
+                Linked::Mixed { muted: 1 }
+            );
+            let _ = own.try_set(Slot::Pending);
+            assert_eq!(linked_now(&[own, partner], tracked), Linked::Unknown);
+            assert_eq!(linked_now(&[partner], tracked), Linked::Muted);
+            assert_eq!(linked_now(&[other], tracked), Linked::Playing);
+            assert_eq!(linked_now(&[mute(None)], tracked), Linked::Unknown);
+        }
     }
 
     #[test]

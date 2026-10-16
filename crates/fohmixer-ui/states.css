@@ -84,16 +84,11 @@
     color: var(--warn);
 }
 
-/* A return's RET mark moves over to make room for the corner. */
-.strip[data-mark="problem"] .strip-ret {
-    left: 18px;
-}
-
+/* The corner's first mark (strip.css `.strip-corner`): the chain and RET
+   follow it. */
 .strip-flag {
-    position: absolute;
-    top: 3px;
-    left: 3px;
-    z-index: 2;
+    flex: none;
+    margin-top: 1.5px;
     width: 12px;
     height: 12px;
     border-radius: 3px;

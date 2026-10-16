@@ -15,7 +15,7 @@ use std::time::Duration;
 use fohmixer_proto::layout::{Strip, StripKind};
 use leptos::prelude::*;
 
-use super::buttons::{MuteView, anchor_name};
+use super::buttons::{LinkMark, MuteView, Partner, anchor_name};
 use super::detail::DetailStrip;
 use super::fader::{FaderView, Law, Target};
 use super::meter::{MeterView, StatusView};
@@ -243,6 +243,22 @@ pub fn StripView(strip: Strip, settings: Settings, shared: Option<String>) -> im
         }];
         view! { <FaderView targets=targets shaping={settings.shaping} /> }
     });
+    // The linked mute (#127): each partner's mute, read and written with
+    // the strip's own; its chain sits in the head's corner.
+    let partners: Vec<Partner> = subs
+        .linked
+        .iter()
+        .map(|spec| Partner {
+            spec: spec.clone(),
+            slot: store.slot(spec),
+        })
+        .collect();
+    let link_mark = mute.filter(|_| !partners.is_empty()).map(|own| {
+        let slots: Vec<RwSignal<Slot>> = std::iter::once(own)
+            .chain(partners.iter().map(|p| p.slot))
+            .collect();
+        view! { <LinkMark slots=slots /> }
+    });
     let mute_view = mute.zip(subs.mute.clone()).map(|(slot, spec)| {
         view! {
             <MuteView
@@ -251,6 +267,8 @@ pub fn StripView(strip: Strip, settings: Settings, shared: Option<String>) -> im
                 guarded={strip.mute_guard}
                 label=label
                 color=color
+                partners=partners
+                pill=false
             />
         }
     });
@@ -285,6 +303,11 @@ pub fn StripView(strip: Strip, settings: Settings, shared: Option<String>) -> im
     let flag = (mark == Some("problem")).then(|| {
         view! { <span class="strip-flag" aria-hidden="true">"!"</span> }
     });
+    // The name button's top-left corner (#127): a problem's `!`, the linked
+    // mute's chain and a return's RET side by side, never on each other.
+    let corner = (flag.is_some() || link_mark.is_some() || ret_mark.is_some()).then(|| {
+        view! { <span class="strip-corner">{flag}{link_mark}{ret_mark}</span> }
+    });
     let kind = format!("{:?}", strip.strip_kind).to_lowercase();
     // Each attribute its own copy (the macro may move a value into a child
     // before an attribute reads it).
@@ -314,8 +337,7 @@ pub fn StripView(strip: Strip, settings: Settings, shared: Option<String>) -> im
                     </div>
                     <StripMenu strip=menu_strip />
                 </div>
-                {ret_mark}
-                {flag}
+                {corner}
             </div>
             {tag}
             <div class="strip-fz" style=unity>
