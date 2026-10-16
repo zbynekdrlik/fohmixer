@@ -665,3 +665,321 @@ fn a_marker_without_a_label_shows_its_tracks_number_and_is_known_by_it() {
     unlabelled.label = None;
     assert!(!has_placeholder_label(&unlabelled));
 }
+
+#[test]
+fn a_strip_carries_an_id_and_any_tuner_mutes_with_one() {
+    // #127: `+ID:<id>` on a strip's Tuner, `+MUTE:<id>` on any track's.
+    let m = parse(r#""Vox 1" +G:VOCALS +ID:VOX1 +MG"#);
+    assert_eq!(m.id.as_deref(), Some("VOX1"));
+    assert_eq!(m.mutes, Vec::<String>::new());
+    assert!(m.mute_guard);
+    assert_eq!(m.problems, vec![]);
+    // A Tuner with only `+MUTE` makes no strip: no label and no group to miss.
+    let m = parse("+MUTE:VOX1");
+    assert_eq!(m.label, None);
+    assert_eq!(m.id, None);
+    assert_eq!(m.groups, vec![]);
+    assert_eq!(m.mutes, vec!["VOX1".to_string()]);
+    assert_eq!(m.problems, vec![]);
+    // With a label it is a strip of its own (and mutes with VOX1 and V-2_B).
+    let m = parse(r#""Vox 1 S" +G:STREAM +MUTE:VOX1 +MUTE:V-2_B +ID:VOXS"#);
+    assert_eq!(m.label.as_deref(), Some("Vox 1 S"));
+    assert_eq!(m.groups, vec![group_tag("STREAM", None)]);
+    assert_eq!(m.mutes, vec!["VOX1".to_string(), "V-2_B".to_string()]);
+    assert_eq!(m.id.as_deref(), Some("VOXS"));
+    assert_eq!(m.problems, vec![]);
+    // A label and no group: a strip that shows nowhere, as before.
+    let m = parse(r#""Vox" +MUTE:A"#);
+    assert_eq!(m.problems, vec![TagProblem::NoGroup]);
+}
+
+#[test]
+fn only_a_tuner_of_nothing_but_mutes_is_spared_its_label_and_group() {
+    let problems = |name: &str| parse(name).problems;
+    let none = Vec::<TagProblem>::new();
+    assert_eq!(problems("+MUTE:A +MUTE:B"), none);
+    // Any other tag wants a strip, so its label and group count.
+    for name in ["+MUTE:A +PIN", "+MUTE:A +MG", "+MUTE:A +ID:B"] {
+        assert_eq!(
+            problems(name),
+            vec![TagProblem::NoLabel, TagProblem::NoGroup],
+            "{name}"
+        );
+    }
+    assert_eq!(problems("+MUTE:A +G:X"), vec![TagProblem::NoLabel]);
+    // No mutes: a name without a quote or a tag is as before.
+    assert_eq!(
+        problems("Vox"),
+        vec![
+            TagProblem::NoLabel,
+            TagProblem::StrayText { text: "Vox".into() },
+            TagProblem::NoGroup
+        ]
+    );
+    assert_eq!(
+        problems("+PIN"),
+        vec![TagProblem::NoLabel, TagProblem::NoGroup]
+    );
+    // A label that is there but empty or unclosed stays a problem.
+    assert_eq!(
+        problems(r#""" +MUTE:A"#),
+        vec![TagProblem::EmptyLabel, TagProblem::NoGroup]
+    );
+    assert_eq!(
+        problems(r#""Vox +MUTE:A"#),
+        vec![
+            TagProblem::UnclosedLabel,
+            TagProblem::StrayText { text: "Vox".into() },
+            TagProblem::NoGroup
+        ]
+    );
+    // Stray text beside it is still shown.
+    assert_eq!(
+        problems("Vox +MUTE:A"),
+        vec![TagProblem::StrayText { text: "Vox".into() }]
+    );
+}
+
+#[test]
+fn a_bad_second_or_repeated_id_is_a_problem() {
+    let ok = "A".repeat(MAX_GROUP_NAME);
+    let long = "A".repeat(MAX_GROUP_NAME + 1);
+    let m = parse(&format!(
+        r#""Vox" +G:A +ID:vox +ID: +ID:{long} +ID:A1 +ID:B2 +MUTE:x +MUTE:{ok} +MUTE:{ok} +MUTE: +MUTE +ID"#
+    ));
+    assert_eq!(m.id.as_deref(), Some("A1"));
+    assert_eq!(m.mutes, vec![ok.clone()]);
+    let bad = |tag: &str| TagProblem::BadId { tag: tag.into() };
+    assert_eq!(
+        m.problems,
+        vec![
+            bad("+ID:vox"),
+            bad("+ID:"),
+            bad(&format!("+ID:{long}")),
+            TagProblem::SecondId {
+                tag: "+ID:B2".into()
+            },
+            bad("+MUTE:x"),
+            TagProblem::DuplicateMute { id: ok },
+            bad("+MUTE:"),
+            TagProblem::UnknownTag {
+                tag: "+MUTE".into()
+            },
+            TagProblem::UnknownTag { tag: "+ID".into() },
+        ]
+    );
+}
+
+/// The strip of `label` in `layout`'s group `id`.
+fn strip_in<'a>(layout: &'a Layout, id: &str, label: &str) -> &'a Strip {
+    strips(&group(layout, id).controls)
+        .into_iter()
+        .find(|s| s.label.as_deref() == Some(label))
+        .unwrap_or_else(|| panic!("no strip {label} in {id}"))
+}
+
+fn at(instance: &str, anchor: Anchor) -> Binding {
+    Binding {
+        instance: instance.into(),
+        anchor,
+        path: None,
+    }
+}
+
+#[test]
+fn a_strip_whose_id_others_name_mutes_their_tracks_with_its_own() {
+    // A link of 3: the strip's track, a track and a return, each by index.
+    let found = vec![
+        found("band", TrackKind::Track, 3, r#""Vox 1" +G:VOCALS +ID:VOX1"#),
+        found("band", TrackKind::Track, 9, "+MUTE:VOX1"),
+        found("band", TrackKind::Return, 1, "+MUTE:VOX1"),
+        found("band", TrackKind::Track, 4, r#""Vox 2" +G:VOCALS"#),
+    ];
+    let composed = compose(&frame(), &found);
+    assert_eq!(composed.problems, vec![]);
+    assert_eq!(composed.layout.validate(), vec![]);
+    // The partners make no strip; only Vox 1 links.
+    assert_eq!(
+        labels(&group(&composed.layout, "vocals").controls),
+        ["Vox 1", "Vox 2"]
+    );
+    let vox1 = strip_in(&composed.layout, "vocals", "Vox 1");
+    assert_eq!(vox1.binding, at("band", Anchor::TrackAt { index: 3 }));
+    assert_eq!(
+        vox1.mute_links,
+        vec![
+            at("band", Anchor::TrackAt { index: 9 }),
+            at("band", Anchor::ReturnAt { index: 1 })
+        ]
+    );
+    assert_eq!(vox1.mark, None);
+    assert_eq!(
+        strip_in(&composed.layout, "vocals", "Vox 2").mute_links,
+        vec![]
+    );
+    assert_eq!(composed.layout.pages.len(), 1, "no view of its own");
+    // In any order the hub finds them.
+    let mut reversed = found.clone();
+    reversed.reverse();
+    assert_eq!(compose(&frame(), &reversed), composed);
+}
+
+#[test]
+fn a_partner_may_be_a_strip_of_its_own_with_a_link_of_its_own() {
+    let found = vec![
+        found("band", TrackKind::Track, 3, r#""Vox 1" +G:VOCALS +ID:VOX1"#),
+        found(
+            "band",
+            TrackKind::Track,
+            5,
+            r#""Vox 1 S" +G:HANDS +ID:VOXS +MUTE:VOX1"#,
+        ),
+        found("band", TrackKind::Track, 7, "+MUTE:VOXS"),
+    ];
+    let composed = compose(&frame(), &found);
+    assert_eq!(composed.problems, vec![]);
+    assert_eq!(
+        strip_in(&composed.layout, "vocals", "Vox 1").mute_links,
+        vec![at("band", Anchor::TrackAt { index: 5 })]
+    );
+    assert_eq!(
+        strip_in(&composed.layout, "hands", "Vox 1 S").mute_links,
+        vec![at("band", Anchor::TrackAt { index: 7 })]
+    );
+}
+
+#[test]
+fn an_id_on_two_strips_marks_both_and_links_neither() {
+    let found = vec![
+        found("band", TrackKind::Track, 3, r#""A" +G:VOCALS +ID:VOX1"#),
+        found("band", TrackKind::Track, 4, r#""B" +G:VOCALS +ID:VOX1"#),
+        found("band", TrackKind::Track, 6, "+MUTE:VOX1"),
+        // The same id in the other Live set is no duplicate: each set's
+        // own (its +MUTE links within its set).
+        found("master", TrackKind::Track, 0, r#""C" +G:HANDS +ID:VOX1"#),
+        found("master", TrackKind::Return, 2, "+MUTE:VOX1"),
+    ];
+    let composed = compose(&frame(), &found);
+    let duplicate = TagProblem::DuplicateId { id: "VOX1".into() };
+    let problems: Vec<(&str, u32, Vec<TagProblem>)> = composed
+        .problems
+        .iter()
+        .map(|r| (r.instance.as_str(), r.index, r.problems.clone()))
+        .collect();
+    assert_eq!(
+        problems,
+        vec![
+            ("band", 3, vec![duplicate.clone()]),
+            ("band", 4, vec![duplicate]),
+        ]
+    );
+    for label in ["A", "B"] {
+        let strip = strip_in(&composed.layout, "vocals", label);
+        assert_eq!(strip.mark, Some(StripMark::Problem), "{label}");
+        assert_eq!(strip.mute_links, vec![], "{label}");
+    }
+    let c = strip_in(&composed.layout, "hands", "C");
+    assert_eq!(c.mark, None);
+    assert_eq!(
+        c.mute_links,
+        vec![at("master", Anchor::ReturnAt { index: 2 })]
+    );
+}
+
+#[test]
+fn a_mute_naming_no_strip_or_its_own_is_a_problem_listed_with_its_marker() {
+    let found = vec![
+        found(
+            "band",
+            TrackKind::Track,
+            2,
+            r#""Self" +G:VOCALS +ID:SELF +MUTE:SELF"#,
+        ),
+        found("band", TrackKind::Track, 7, "+MUTE:NOBODY"),
+        found(
+            "band",
+            TrackKind::Track,
+            8,
+            r#""Lone" +G:VOCALS +MUTE:NOBODY"#,
+        ),
+        // An id of the other Live set is no strip of this one.
+        found("master", TrackKind::Track, 1, r#""Far" +G:HANDS +ID:FAR"#),
+        found("band", TrackKind::Return, 0, "+MUTE:FAR"),
+    ];
+    let composed = compose(&frame(), &found);
+    assert_eq!(
+        composed.problems,
+        vec![
+            MarkerReport {
+                instance: "band".into(),
+                kind: TrackKind::Track,
+                index: 2,
+                name: r#""Self" +G:VOCALS +ID:SELF +MUTE:SELF"#.into(),
+                problems: vec![TagProblem::SelfMute { id: "SELF".into() }],
+            },
+            MarkerReport {
+                instance: "band".into(),
+                kind: TrackKind::Track,
+                index: 7,
+                name: "+MUTE:NOBODY".into(),
+                problems: vec![TagProblem::OrphanMute {
+                    id: "NOBODY".into()
+                }],
+            },
+            MarkerReport {
+                instance: "band".into(),
+                kind: TrackKind::Track,
+                index: 8,
+                name: r#""Lone" +G:VOCALS +MUTE:NOBODY"#.into(),
+                problems: vec![TagProblem::OrphanMute {
+                    id: "NOBODY".into()
+                }],
+            },
+            MarkerReport {
+                instance: "band".into(),
+                kind: TrackKind::Return,
+                index: 0,
+                name: "+MUTE:FAR".into(),
+                problems: vec![TagProblem::OrphanMute { id: "FAR".into() }],
+            },
+        ]
+    );
+    let own = strip_in(&composed.layout, "vocals", "Self");
+    assert_eq!(own.mark, Some(StripMark::Problem));
+    assert_eq!(own.mute_links, vec![]);
+    assert_eq!(
+        strip_in(&composed.layout, "vocals", "Lone").mark,
+        Some(StripMark::Problem)
+    );
+    assert_eq!(
+        strip_in(&composed.layout, "hands", "Far").mute_links,
+        vec![]
+    );
+}
+
+#[test]
+fn the_linked_mutes_problems_serialize_with_their_codes() {
+    let problems = vec![
+        TagProblem::BadId {
+            tag: "+ID:x".into(),
+        },
+        TagProblem::SecondId {
+            tag: "+ID:B".into(),
+        },
+        TagProblem::DuplicateMute { id: "A".into() },
+        TagProblem::DuplicateId { id: "A".into() },
+        TagProblem::OrphanMute { id: "A".into() },
+        TagProblem::SelfMute { id: "A".into() },
+    ];
+    assert_eq!(
+        serde_json::to_value(&problems).unwrap(),
+        json!([
+            {"code": "bad_id", "tag": "+ID:x"},
+            {"code": "second_id", "tag": "+ID:B"},
+            {"code": "duplicate_mute", "id": "A"},
+            {"code": "duplicate_id", "id": "A"},
+            {"code": "orphan_mute", "id": "A"},
+            {"code": "self_mute", "id": "A"},
+        ])
+    );
+}
