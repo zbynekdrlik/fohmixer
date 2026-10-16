@@ -718,7 +718,8 @@ test.describe("The Stream Deck tab", () => {
     await expect(page.locator('[data-testid="fader"][data-e2e-kept]')).toHaveCount(all);
     // The pager's other page: only the pager's faders are new.
     await selectPage(page, "others");
-    await expect(page.locator('[data-testid="group"][data-group="others-1"] .group-title')).toBeVisible();
+    await expect(page.locator('[data-testid="group"][data-group="others-1"]')).toHaveCount(1);
+    await expect(page.locator('.slot[data-group="others-1"] [data-testid="strip"]')).toBeVisible();
     await frames(page);
     expect(await fixed()).toEqual([fixedFaders, fixedFaders]);
   });

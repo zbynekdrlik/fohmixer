@@ -26,8 +26,8 @@ use serde_json::json;
 
 use crate::app::version_text;
 use crate::arrange::{
-    Arrangement, Cell, Item, LineKey, METRICS, PageModel, Shift, Side, Sides, arrange_in, items,
-    px_value, thin_line,
+    Arrangement, Cell, GroupLabel, Item, LineKey, METRICS, PageModel, Shift, Side, Sides,
+    arrange_in, captions, items, px_value, thin_line,
 };
 use crate::behave::ableset::tab_dot;
 use crate::behave::solo::soloed;
@@ -907,23 +907,30 @@ fn PageView(page: Page, global: Vec<Control>, sub: Memo<Option<usize>>) -> impl 
 /// One line: its items in one keyed list (`arrange::items`), each on its
 /// side of the column (`page.css` orders the left side's, `.split` taking
 /// the rest of the left half and the column, the right side's), so a cell
-/// that changes side or group run moves and is not rebuilt.
+/// that changes side or group run moves and is not rebuilt. Only a line
+/// that shows a group's title over a run keeps the title's room
+/// (`data-captions`, `arrange::captions`, #127): on any other its strips
+/// take it.
 #[component]
 fn LineView(
     arranged: Memo<Option<Arrangement>>,
     model: Arc<PageModel>,
     line: usize,
 ) -> impl IntoView {
-    let list = Memo::new(move |_| {
-        arranged
-            .try_with(|a| {
-                a.as_ref()
-                    .and_then(|a| a.lines.get(line))
-                    .map(items)
-                    .unwrap_or_default()
-            })
-            .unwrap_or_default()
-    });
+    let list = {
+        let model = model.clone();
+        Memo::new(move |_| {
+            arranged
+                .try_with(|a| {
+                    a.as_ref()
+                        .and_then(|a| a.lines.get(line))
+                        .map(|l| items(&model, l))
+                        .unwrap_or_default()
+                })
+                .unwrap_or_default()
+        })
+    };
+    let captioned = Memo::new(move |_| list.try_with(|l| captions(l.as_slice())).unwrap_or(false));
     // The line's row, and its left side's span (`--l-units` strips and
     // `--l-cells` cells): `.split` takes the rest of the left side and the
     // column, so the right side starts right after the column.
@@ -943,17 +950,27 @@ fn LineView(
         view! { <ItemView list=list model=model item=item /> }
     };
     view! {
-        <div class="line" data-testid="line" data-line=line.to_string() style=place>
+        <div
+            class="line"
+            data-testid="line"
+            data-line=line.to_string()
+            data-captions=move || captioned.try_get().unwrap_or(false).to_string()
+            style=place
+        >
             <div class="split" aria-hidden="true"></div>
             <For each=move || list.try_get().unwrap_or_default() key=Item::key children=item />
         </div>
     }
 }
 
-/// One item of a line: a group's title (its marker, its title and the
-/// instance its strips share, #63) over its run of cells, or a cell. Its
-/// side and a title's run are read from the line by its key (a keyed list
-/// keeps the item it was made with).
+/// One item of a line: a group's run anchor (`data-testid="group"`, which
+/// the tests find a strip's group by) with, over a run that does not start
+/// with a strip, the group's title (its marker, its title and the instance
+/// its strips share, #63), or a cell (on the first strip of a run, the
+/// group's name on its side, #127). Its side, an anchor's run and title
+/// and a cell's label are read from the line by its key (a keyed list
+/// keeps the item it was made with; a shift or a sub-page switch can make
+/// another strip a run's first).
 #[component]
 fn ItemView(list: Memo<Vec<Item>>, model: Arc<PageModel>, item: Item) -> impl IntoView {
     let id = item.key();
@@ -973,14 +990,33 @@ fn ItemView(list: Memo<Vec<Item>>, model: Arc<PageModel>, item: Item) -> impl In
             let id = group.id.clone();
             let title = group.title.clone().unwrap_or_default();
             let color = group.color.clone();
-            let instance = shared_instance(&group.controls).map(|name| {
-                let instance_attr = name.clone();
-                view! {
-                    <span class="group-instance" data-testid="group-instance" data-instance=instance_attr>
-                        {name}
-                    </span>
-                }
-            });
+            let shared = shared_instance(&group.controls);
+            // The title over a run that does not start with a strip (#127).
+            let caption = move || {
+                matches!(
+                    now.try_get().flatten(),
+                    Some(Item::Title { caption: true, .. })
+                )
+            };
+            let heading = move || {
+                caption().then(|| {
+                    let instance = shared.clone().map(|name| {
+                        let instance_attr = name.clone();
+                        view! {
+                            <span class="group-instance" data-testid="group-instance" data-instance=instance_attr>
+                                {name}
+                            </span>
+                        }
+                    });
+                    view! {
+                        <h2 class="group-title">
+                            <i class="group-mark"></i>
+                            <span data-testid="group-title">{title.clone()}</span>
+                            {instance}
+                        </h2>
+                    }
+                })
+            };
             // The title spans its run: `--n` cells, `--units` strips wide.
             let look = move || {
                 let (cells, units) = match now.try_get().flatten() {
@@ -995,11 +1031,7 @@ fn ItemView(list: Memo<Vec<Item>>, model: Arc<PageModel>, item: Item) -> impl In
             };
             view! {
                 <div class="run-title" data-testid="group" data-group=id data-side=side style=look>
-                    <h2 class="group-title">
-                        <i class="group-mark"></i>
-                        <span data-testid="group-title">{title}</span>
-                        {instance}
-                    </h2>
+                    {heading}
                 </div>
             }
             .into_any()
@@ -1012,9 +1044,14 @@ fn ItemView(list: Memo<Vec<Item>>, model: Arc<PageModel>, item: Item) -> impl In
                 .and_then(|g| g.color.as_ref())
                 .map(|c| format!("--gc:{c};"))
                 .unwrap_or_default();
+            // The group's name on its side, on a run's first strip (#127).
+            let label = Memo::new(move |_| match now.try_get().flatten() {
+                Some(Item::Cell { label, .. }) => label,
+                _ => None,
+            });
             view! {
                 <div class="slot" data-side=side data-group=id style=look>
-                    <CellView model=model cell=cell />
+                    <CellView model=model cell=cell label=label />
                 </div>
             }
             .into_any()
@@ -1022,10 +1059,11 @@ fn ItemView(list: Memo<Vec<Item>>, model: Arc<PageModel>, item: Item) -> impl In
     }
 }
 
-/// One cell: a control (in a pager's slot a wide strip is one strip wide),
-/// a group of buttons as one block, or an empty slot.
+/// One cell: a control (in a pager's slot a wide strip is one strip wide;
+/// a strip shows `label` in its scale column, #127), a group of buttons as
+/// one block, or an empty slot.
 #[component]
-fn CellView(model: Arc<PageModel>, cell: Cell) -> impl IntoView {
+fn CellView(model: Arc<PageModel>, cell: Cell, label: Memo<Option<GroupLabel>>) -> impl IntoView {
     match cell {
         Cell::Control { at, units, .. } => {
             let Some(group) = model.groups.get(at.group) else {
@@ -1043,7 +1081,7 @@ fn CellView(model: Arc<PageModel>, cell: Cell) -> impl IntoView {
                 other => other,
             };
             if is_column(&control) {
-                view! { <ControlView control=control shared=shared /> }.into_any()
+                view! { <ControlView control=control shared=shared group_name=label /> }.into_any()
             } else {
                 view! {
                     <div class="cell">

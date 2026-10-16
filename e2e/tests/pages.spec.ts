@@ -184,14 +184,25 @@ test.describe("The page is its rows of sections around the control column", () =
       expect(Math.abs(first - (column.x + column.width + 6)), `row ${r}: its right side at the column`).toBeLessThan(1);
     }
     expect(await groups(page)).toEqual(expected.flat());
-    // Titles and colour markers.
+    // Titles and colour markers (#127): a run that starts with a strip shows
+    // no title over it, and its first strip names a titled group on its
+    // side; any other run keeps its title and its colour marker.
     for (const row of foh.rows) {
       for (const section of row.sections) {
         if (section.kind !== "group") continue;
         const group = page.locator(`[data-testid="group"][data-group="${section.id}"]`);
-        await expect(group.getByTestId("group-title")).toHaveText(section.title ?? "");
+        const slots = page.locator(`.slot[data-group="${section.id}"]`);
+        if (section.controls[0]?.kind === "strip") {
+          await expect(group.getByTestId("group-title"), `${section.id}: no title over its strips`).toHaveCount(0);
+          await expect(group.locator(".group-mark"), `${section.id}: no marker`).toHaveCount(0);
+          const label = slots.first().getByTestId("group-side");
+          if (section.title) await expect(label).toHaveText(section.title);
+          await expect(slots.getByTestId("group-side"), `${section.id}: its side labels`).toHaveCount(section.title ? 1 : 0);
+        } else {
+          await expect(group.getByTestId("group-title")).toHaveText(section.title ?? "");
+          if (section.color) await expect(group.locator(".group-mark")).toHaveCSS("background-color", rgb(section.color));
+        }
         if (section.color) {
-          await expect(group.locator(".group-mark")).toHaveCSS("background-color", rgb(section.color));
           // Each strip of the group wears its colour on its top edge.
           const edges = await page
             .locator(`.slot[data-group="${section.id}"] [data-testid="strip"]`)
@@ -257,8 +268,15 @@ test.describe("Nothing moves under a finger", () => {
     await openSurface(page);
     const changed = layout();
     const row = changed.pages[1].rows[1];
-    const section = row.sections.find((s: any) => s.kind === "group" && s.controls.length === 1);
+    // A one-cell group whose run starts with no strip (the parameter
+    // fader's: its title over it) and a one-strip group (its name on the
+    // strip's side, #127).
+    const section = row.sections.find((s: any) => s.kind === "group" && s.controls.length === 1 && s.controls[0].kind !== "strip");
+    const named = row.sections.find((s: any) => s.kind === "group" && s.controls.length === 1 && s.controls[0].kind === "strip");
     section.title = "A VERY LONG SECTION TITLE FOR ONE STRIP";
+    named.title = "A VERY LONG SECTION TITLE FOR ONE STRIP";
+    const side = page.locator(`.slot[data-group="${named.id}"]`).getByTestId("group-side");
+    const widthBefore = (await page.locator(`.slot[data-group="${named.id}"]`).boundingBox())!.width;
     try {
       await harness("/hub/layout", { layout: changed });
       const group = page.locator(`[data-testid="group"][data-group="${section.id}"]`);
@@ -268,6 +286,19 @@ test.describe("Nothing moves under a finger", () => {
       const one = (await page.locator(`.slot[data-group="${section.id}"]`).first().boundingBox())!;
       expect(Math.abs(title.width - one.width)).toBeLessThan(1);
       expect(Math.abs(title.x - one.x)).toBeLessThan(1);
+      // The side label stays in its scale column and ends in an ellipsis;
+      // its strip keeps its width.
+      await expect(side).toHaveText(named.title);
+      const scale = (await page.locator(`.slot[data-group="${named.id}"]`).getByTestId("scale").boundingBox())!;
+      const label = (await side.boundingBox())!;
+      expect(label.x).toBeGreaterThanOrEqual(scale.x - 0.5);
+      expect(label.x + label.width).toBeLessThanOrEqual(scale.x + scale.width + 0.5);
+      expect(label.y).toBeGreaterThanOrEqual(scale.y - 0.5);
+      expect(label.y + label.height).toBeLessThanOrEqual(scale.y + scale.height + 0.5);
+      expect(await side.evaluate((e) => e.scrollHeight > e.clientHeight), "the title is cut").toBe(true);
+      await expect(side).toHaveCSS("text-overflow", "ellipsis");
+      const widthAfter = (await page.locator(`.slot[data-group="${named.id}"]`).boundingBox())!.width;
+      expect(Math.abs(widthAfter - widthBefore)).toBeLessThan(0.5);
     } finally {
       await harness("/hub/layout/reset");
     }

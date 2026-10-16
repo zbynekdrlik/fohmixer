@@ -58,16 +58,21 @@ test.describe("A strip", () => {
     await live.set("band", volume(HAND2), "value", 0.85);
     await expect(strip(page, "Hand2 #").getByTestId("strip-label")).toHaveText("Hand2");
     await expect(strip(page, "B-Main repro #").getByTestId("strip-label")).toHaveText("Main");
-    // #63: a group whose strips share an instance names it in its title,
-    // not on each strip; a return says RET on its name button.
-    await expect((await groupOf(page, strip(page, "Hand2 #"))).getByTestId("group-instance")).toHaveText("band");
+    // #63, #127: a group whose strips share an instance names it once, in
+    // the colour of its name on its first strip's side (STAGE), not on each
+    // strip; an untitled group (Hand2's) names nothing; a return says RET on
+    // its name button.
+    await expect(strip(page, "Vocal 1 repro#").getByTestId("group-side")).toHaveAttribute("data-instance", "band");
+    await expect(strip(page, "Vocal 1 repro#").getByTestId("strip-instance")).toHaveCount(0);
+    await expect((await groupOf(page, strip(page, "Hand2 #"))).getByTestId("group-title")).toHaveCount(0);
+    await expect(page.locator(`.slot[data-group="foh-2"]`).getByTestId("group-side")).toHaveCount(0);
     await expect(strip(page, "Hand2 #").getByTestId("strip-instance")).toHaveCount(0);
     await expect(strip(page, "B-Main repro #").getByTestId("strip-instance")).toHaveCount(0);
     await expect(strip(page, "B-Main repro #").getByTestId("strip-ret")).toHaveText("RET");
     await expect(strip(page, "Hand2 #").getByTestId("strip-ret")).toHaveCount(0);
   });
 
-  test("its texts fit their boxes: the dB text, the name and the instance", async ({ page }) => {
+  test("its texts fit their boxes: the dB text, the name and the group's name", async ({ page }) => {
     // #9, findings 3-4: a narrow strip's 39 x 25 instance label showed "BANC"
     // for BAND, and the dB text must show Live's whole string.
     const VOCAL1 = track("Vocal 1 repro#");
@@ -77,9 +82,14 @@ test.describe("A strip", () => {
       await openSurface(page);
       const narrow = strip(page, "Vocal 1 repro#");
       await expect(narrow.getByTestId("db")).toHaveText(dbForm(await live.display("band", volume(VOCAL1), 0.829725)));
-      const named = (await groupOf(page, narrow)).getByTestId("group-instance");
-      await expect(named).toHaveText(/band/i);
-      expect(await clipped(named), "the group's instance").toEqual([]);
+      // #127: the group's name on the strip's side, in its instance's colour.
+      const named = narrow.getByTestId("group-side");
+      await expect(named).toHaveText(/stage/i);
+      await expect(named).toHaveAttribute("data-instance", "band");
+      expect(
+        await named.evaluate((e) => [e.scrollWidth - e.clientWidth, e.scrollHeight - e.clientHeight]),
+        "the group's name shown whole",
+      ).toEqual([0, 0]);
       for (const name of ["Vocal 1 repro#", "Hand2 #", "B-Main repro #"]) {
         for (const part of ["db", "strip-label"]) {
           const el = strip(page, name).getByTestId(part);
@@ -408,7 +418,13 @@ test.describe("A strip", () => {
     await openSurface(page);
     await selectPage(page, "others");
     const master = strip(page, "Hand1 #", "master");
-    await expect((await groupOf(page, master)).getByTestId("group-instance")).toHaveText("master");
+    // #127: its group (untitled, every strip master's) shows no title and
+    // no side label, and the strip no instance tag: the strip itself is the
+    // master's (its locator's `data-instance`).
+    await expect(master).toBeVisible();
+    await expect((await groupOf(page, master)).getByTestId("group-title")).toHaveCount(0);
+    await expect(master.getByTestId("group-side")).toHaveCount(0);
+    await expect(master.getByTestId("strip-instance")).toHaveCount(0);
     await expect(master.getByTestId("db")).toHaveText(dbForm(await live.display("master", volume(track("Hand1 #")), 0.6)));
   });
 });

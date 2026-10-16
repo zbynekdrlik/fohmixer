@@ -253,8 +253,11 @@
    the right side's; one
    gap (arrange.rs METRICS.gap) between any two cells, a group's or not. It
    spans the page's three columns: the column, the page's top layer, lies
-   over the split and takes its touches. The titles take the line's top
-   16 px.
+   over the split and takes its touches. A run that starts with a strip
+   names its group on that strip's side (#127, strip.css `.group-side`);
+   only a line with a title over a run (one that starts with a button, a
+   block or a parameter fader: `data-captions`) keeps the titles' 16 px at
+   its top, every other gives them to its faders.
    Nothing is clipped: the strip width fits the halves (a held strip's
    ring stays whole). */
 .line {
@@ -263,6 +266,9 @@
     gap: 4px;
     min-width: 0;
     min-height: 0;
+}
+
+.line[data-captions="true"] {
     padding-top: 16px;
 }
 
@@ -300,9 +306,10 @@
     min-height: 0;
 }
 
-/* A group's title before its run: no width of its own (its negative
-   margin takes back the gap after it), its line laid over the run's top,
-   `--n` cells and `--units` strips wide. */
+/* A group's run anchor before its run: no width of its own (its negative
+   margin takes back the gap after it); over a run that does not start
+   with a strip, the group's title, its line laid over the run's top, `--n`
+   cells and `--units` strips wide. */
 .run-title {
     position: relative;
     flex: none;

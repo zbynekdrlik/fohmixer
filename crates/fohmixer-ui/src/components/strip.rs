@@ -5,6 +5,8 @@
 //! under it (a hand holding the tablet covers the bottom of the screen, so
 //! nothing to read sits there); then the instance tag when the group's
 //! strips differ and the fader zone (the dB scale, the meter, the fader).
+//! The first strip of a group's run names the group on its side in the
+//! scale column (#127).
 //! The pan left the strip for the channel detail (#71, D17: at the foot
 //! the iPad's home bar waits for a swipe, and pans are rarely used), so the
 //! strip neither draws nor subscribes it (`StripSubs::shown`): a hold on
@@ -20,19 +22,38 @@ use super::detail::DetailStrip;
 use super::fader::{FaderView, Law, Target};
 use super::meter::{MeterView, StatusView};
 use super::{Settings, owns_touches, trace_detail};
+use crate::arrange::GroupLabel;
 use crate::behave::db_text::db_text;
 use crate::behave::fader::{UNITY, VolumeLaw};
 use crate::behave::hold::{HINT_MS, HOLD_MS, Hold, Lift};
 use crate::behave::label::{mark_look, shown_label};
-use crate::behave::scale::{tick_label, tick_pos, ticks};
+use crate::behave::scale::{side_style, tick_label, tick_pos, ticks};
 use crate::binding::{detail_keys, strip_subs};
 use crate::dom;
 use crate::store::{LiveStore, Slot};
 
 /// The dB scale beside a fader: the labels of the fader's volume law at the
-/// fader positions of their levels.
+/// fader positions of their levels; on the first strip of a group's run,
+/// `group_name`, the group's name on its side (#127, `strip.css` `.group-side`):
+/// between the +6 and −6 dB labels of the law (`behave::scale::side_style`),
+/// in the colour of the Live instance the group's strips share
+/// (`data-instance`, none when they differ). It takes no touch: the fader
+/// over the scale gets it.
 #[component]
-pub fn ScaleView(law: VolumeLaw) -> impl IntoView {
+pub fn ScaleView(
+    law: VolumeLaw,
+    #[prop(optional, into)] group_name: Signal<Option<GroupLabel>>,
+) -> impl IntoView {
+    let place = side_style(law);
+    let side = move || {
+        group_name.try_get().flatten().map(|GroupLabel { text, instance }| {
+            view! {
+                <span class="group-side" data-testid="group-side" data-instance=instance style=place.clone()>
+                    {text}
+                </span>
+            }
+        })
+    };
     let labels = ticks(law)
         .iter()
         .map(|db| {
@@ -45,7 +66,7 @@ pub fn ScaleView(law: VolumeLaw) -> impl IntoView {
             }
         })
         .collect_view();
-    view! { <div class="scale" data-testid="scale" aria-hidden="true">{labels}</div> }
+    view! { <div class="scale" data-testid="scale" aria-hidden="true">{labels}{side}</div> }
 }
 
 /// Live's dB readout in TouchOSC's form (one decimal, no unit, white exactly
@@ -211,9 +232,15 @@ fn StripMenu(strip: Strip) -> impl IntoView {
 }
 
 /// One strip; `shared` is the Live instance every strip of its group shares
-/// (#63: the group's title names it, so the strip does not).
+/// (#63: the group names it, so the strip does not); `group_name` the
+/// group's name on its side when the strip starts a run (#127, `ScaleView`).
 #[component]
-pub fn StripView(strip: Strip, settings: Settings, shared: Option<String>) -> impl IntoView {
+pub fn StripView(
+    strip: Strip,
+    settings: Settings,
+    shared: Option<String>,
+    #[prop(optional, into)] group_name: Signal<Option<GroupLabel>>,
+) -> impl IntoView {
     let store = expect_context::<LiveStore>();
     // The strip its ☰ opens the detail of (#71).
     let menu_strip = strip.clone();
@@ -327,7 +354,7 @@ pub fn StripView(strip: Strip, settings: Settings, shared: Option<String>) -> im
             </div>
             {tag}
             <div class="strip-fz" style=unity>
-                <ScaleView law=law />
+                <ScaleView law=law group_name=group_name />
                 <MeterView levels={meters.clone()} law=law />
                 {fader}
             </div>
