@@ -59,14 +59,16 @@ impl LiveStore {
         // milliseconds, before the next tick).
         self.note_intents();
         let messages = resend.messages();
+        // The writes the socket took (#127 re-review T-a), by message.
         let mut taken = 0;
-        for msg in &messages {
-            let sent = self.sent_set(msg);
-            taken += usize::from(sent);
+        for (msg, batch) in messages.iter().zip(resend.batches()) {
+            if self.sent_set(msg) {
+                taken += batch.len();
+            }
         }
         if !resend.sets.is_empty() || !resend.not_sent.is_empty() {
             dom::log(&format!(
-                "instance {instance} is back: {} writes sent again in {} messages ({taken} taken), {} not sent",
+                "instance {instance} is back: {} writes sent again in {} messages ({taken} writes taken), {} not sent",
                 resend.sets.len(),
                 messages.len(),
                 resend.not_sent.len()

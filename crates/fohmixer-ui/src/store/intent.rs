@@ -95,25 +95,81 @@ pub struct Change {
 /// What a resend does (`Intents::resend`).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Resend {
-    /// The writes to send, a `set` per key (sent together: `messages`).
-    pub sets: Vec<ClientMsg>,
+    /// The writes to send, one per key (sent together: `messages`).
+    pub sets: Writes,
     /// The keys whose release was too old: `not_sent` now.
     pub not_sent: Vec<String>,
 }
 
 impl Resend {
+    /// The writes in the order they go, at most [`MAX_SETS`] (the hub's
+    /// limit) to a `sets` message.
+    pub fn batches(&self) -> std::slice::Chunks<'_, SetItem> {
+        self.sets.items.chunks(MAX_SETS)
+    }
+
     /// The messages that send the writes again (#127 review M1): ONE `sets`
-    /// (at most [`MAX_SETS`] writes each, the hub's limit), so a linked
-    /// mute's tap sent again still reaches Live in one batch; none when
-    /// nothing goes.
+    /// per batch, so a linked mute's tap sent again still reaches Live in
+    /// one batch; none when nothing goes.
     pub fn messages(&self) -> Vec<ClientMsg> {
-        let items: Vec<SetItem> = self.sets.iter().cloned().filter_map(SetItem::of).collect();
-        items
-            .chunks(MAX_SETS)
+        self.batches()
             .map(|sets| ClientMsg::Sets {
                 sets: sets.to_vec(),
             })
             .collect()
+    }
+}
+
+/// A resend's writes (#127 re-review T-a): kept as writes (`SetItem`), so
+/// [`Resend::messages`] sends every one and nothing is parsed out of a
+/// message; each also reads as the `set` it would be on its own
+/// (`as_slice`, and the slice it derefs to).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Writes {
+    items: Vec<SetItem>,
+    sets: Vec<ClientMsg>,
+}
+
+impl Writes {
+    /// One more write.
+    fn push(&mut self, item: SetItem) {
+        self.sets.push(set_msg(item.clone()));
+        self.items.push(item);
+    }
+
+    /// Each write as the `set` it would be on its own.
+    pub fn as_slice(&self) -> &[ClientMsg] {
+        &self.sets
+    }
+}
+
+impl std::ops::Deref for Writes {
+    type Target = [ClientMsg];
+
+    fn deref(&self) -> &[ClientMsg] {
+        self.as_slice()
+    }
+}
+
+/// The `set` message of one write.
+fn set_msg(item: SetItem) -> ClientMsg {
+    let SetItem {
+        instance,
+        target,
+        prop,
+        value,
+        seq,
+        t,
+        is_final,
+    } = item;
+    ClientMsg::Set {
+        instance,
+        target,
+        prop,
+        value,
+        seq,
+        t,
+        is_final,
     }
 }
 
@@ -159,9 +215,9 @@ struct Open {
 }
 
 impl Open {
-    /// The `set` of this intent.
-    fn set_msg(&self) -> ClientMsg {
-        ClientMsg::Set {
+    /// This intent's write.
+    fn item(&self) -> SetItem {
+        SetItem {
             instance: self.instance.clone(),
             target: self.target.clone(),
             prop: self.prop.clone(),
@@ -236,12 +292,26 @@ impl<F> Intents<F> {
     /// time `t`, `fail` hearing its failure: its key and the `set` to send.
     pub fn set(
         &mut self,
-        (instance, target, prop): (&str, &str, &str),
+        at: At<'_>,
         value: Value,
         t: f64,
         is_final: bool,
         fail: Option<F>,
     ) -> (String, ClientMsg) {
+        let (key, item) = self.write(at, value, t, is_final, fail);
+        (key, set_msg(item))
+    }
+
+    /// A control's write, as [`Intents::set`] makes it: its key and the
+    /// write.
+    fn write(
+        &mut self,
+        (instance, target, prop): At<'_>,
+        value: Value,
+        t: f64,
+        is_final: bool,
+        fail: Option<F>,
+    ) -> (String, SetItem) {
         self.last_seq += 1;
         let key = set_key(instance, target, prop);
         let open = Open {
@@ -258,13 +328,13 @@ impl<F> Intents<F> {
             not_sent: None,
             told: None,
         };
-        let msg = open.set_msg();
+        let item = open.item();
         self.open.insert(key.clone(), open);
         match fail {
             Some(fail) => self.fails.insert(key.clone(), fail),
             None => self.fails.remove(&key),
         };
-        (key, msg)
+        (key, item)
     }
 
     /// Writes of `value` to every target at page time `t` (#127, a linked
@@ -281,9 +351,9 @@ impl<F> Intents<F> {
         let mut keys = Vec::new();
         let mut sets = Vec::new();
         for (target, fail) in targets {
-            let (key, msg) = self.set(target, value.clone(), t, is_final, fail);
+            let (key, item) = self.write(target, value.clone(), t, is_final, fail);
             keys.push(key);
-            sets.extend(SetItem::of(msg));
+            sets.push(item);
         }
         (keys, ClientMsg::Sets { sets })
     }
@@ -383,7 +453,7 @@ impl<F> Intents<F> {
                 *last_seq += 1;
                 o.intent.seq = *last_seq;
                 o.intent.t = now;
-                out.sets.push(o.set_msg());
+                out.sets.push(o.item());
             }
         }
         out
