@@ -169,6 +169,11 @@ impl Reach {
     }
 }
 
+/// Whether the chain's count `text` is drawn compact (#127 re-review N1).
+pub fn chain_compact(_text: &str) -> bool {
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -302,5 +307,24 @@ mod tests {
         assert_eq!(Reach::of(&[t, t, None]).text(3), "2");
         // While the strip's own track has none: every linked mute.
         assert_eq!(Reach::of(&[None, t, f]).text(3), "3");
+    }
+
+    #[test]
+    fn a_count_of_four_characters_or_more_is_drawn_compact() {
+        // #127 re-review N1: a mixed count of a two-digit total beside a
+        // problem's `!` does not fit the corner line of a 64 px strip.
+        for text in ["1/10", "9/12", "10/12", "12/12", "31/32"] {
+            assert!(chain_compact(text), "{text} is compact");
+        }
+        // Every shorter count keeps its look.
+        for text in ["1", "3", "9", "10", "12", "32", "1/3", "8/9"] {
+            assert!(!chain_compact(text), "{text} is not compact");
+        }
+        // As the chain shows it.
+        let (f, t) = (Some(false), Some(true));
+        let mut ten = vec![f; 10];
+        assert!(!chain_compact(&Reach::of(&ten).text(10)), "10");
+        ten[3] = t;
+        assert!(chain_compact(&Reach::of(&ten).text(10)), "1/10");
     }
 }

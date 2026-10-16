@@ -6,13 +6,17 @@ import { openSurface } from "./support/live";
 // mute's chain and a return's RET in the top-left corner, the MUTE mark at
 // the top right, the name under them. When they do not all fit the strip's
 // width, the MUTE mark yields first (the dark strip, and on a linked strip
-// the red chain, say "muted"), then RET; `!` and the chain never yield.
+// the red chain, say "muted"), then RET; `!` and the chain never yield,
+// whatever their count: a count of four characters or more (a mixed count of
+// a two-digit total, "1/10" to "12/12") is drawn compact (#127 re-review N1).
 //
 // A static render of the strip head as StripView and MuteView draw it, in
 // the surface's own stylesheets and bundled fonts, swept over the strip
-// widths: every link state (all playing, mixed 1/3 and 2/4, all muted) with
-// and without `!` and RET, and unlinked strips (playing and muted, with and
-// without `!` and RET), each with a short and a long name.
+// widths: every link state (all playing, mixed 1/3 and 2/4, all muted; and
+// with a two-digit total: all playing and all muted 10 and 12, mixed 1/10,
+// 9/12, 10/12 and 12/12) with and without `!` and RET, and unlinked strips
+// (playing and muted, with and without `!` and RET), each with a short and a
+// long name.
 
 const WIDTHS = [64, 72, 76, 88, 120];
 const LABELS = ["Vox 1", "Klavir 2"];
@@ -23,6 +27,15 @@ const LINKS: ({ state: "all" | "mixed" | "muted"; text: string } | null)[] = [
   { state: "mixed", text: "1/3" },
   { state: "mixed", text: "2/4" },
   { state: "muted", text: "3" },
+  // Two-digit totals (#127 re-review N1): `!` and the chain still fit.
+  { state: "all", text: "10" },
+  { state: "all", text: "12" },
+  { state: "muted", text: "10" },
+  { state: "muted", text: "12" },
+  { state: "mixed", text: "1/10" },
+  { state: "mixed", text: "9/12" },
+  { state: "mixed", text: "10/12" },
+  { state: "mixed", text: "12/12" },
 ];
 
 type Case = {
@@ -57,12 +70,14 @@ async function sweep(list: Case[]): Promise<{ faces: string[]; problems: string[
   host.style.cssText =
     "position:fixed;inset:0;z-index:2147483647;overflow:auto;display:flex;flex-wrap:wrap;align-items:flex-start;gap:6px;padding:6px;background:#0b0b12";
   document.body.appendChild(host);
+  /** LinkMark's `compact` (behave::mute::chain_compact): a count of four characters or more. */
+  const compact = (text: string) => [...text].length >= 4;
   const strips = list.map((c) => {
     const muted = c.link ? c.link.state === "muted" : c.muted;
     const attr = c.link ? { all: "false", mixed: "mixed", muted: "true" }[c.link.state] : String(c.muted);
     const flag = c.flag ? '<span class="strip-flag" aria-hidden="true">!</span>' : "";
     const chain = c.link
-      ? `<span class="link-mark" data-testid="mute-link" data-state="${c.link.state}" aria-hidden="true"><span class="link-n" data-testid="mute-link-n">${c.link.text}</span></span>`
+      ? `<span class="link-mark${compact(c.link.text) ? " compact" : ""}" data-testid="mute-link" data-state="${c.link.state}" aria-hidden="true"><span class="link-n" data-testid="mute-link-n">${c.link.text}</span></span>`
       : "";
     const ret = c.ret ? '<span class="strip-ret" data-testid="strip-ret" aria-hidden="true">RET</span>' : "";
     const s = document.createElement("div");
