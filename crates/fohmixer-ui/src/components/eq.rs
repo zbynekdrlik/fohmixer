@@ -20,7 +20,9 @@
 //!   page's view (`behave::eq::Finger`: the first finger waits 120 ms or
 //!   6 px before its down, a lift meanwhile is a tap, its up 40 ms after its
 //!   down on a frame (PR G); a move at most once per animation frame, the up
-//!   and the cancel always, a lost capture as a cancel). The open carries
+//!   and the cancel always, a lost capture as a cancel; a finger whose end
+//!   never came ended by the next primary down of its type or a hide, #124).
+//!   The open carries
 //!   the picture area (PR G: the editor on the PC gets its aspect), sent
 //!   once the area is in the page; a changed area (a phone turned, a
 //!   window resized) goes as `eq_area` once it rested 300 ms while the
@@ -44,8 +46,8 @@
 //!
 //! The screen's open, close and lock refusal go to the flight recorder as
 //! `detail` events (`eq_open`, `eq_close` with why, `eq_locked`) with the
-//! strip's keys, and every finger on the picture as `eq_touch` (its down, up
-//! or cancel: the picture point and the zoom) and `eq_mv` (its moves
+//! strip's keys, and every finger on the picture as `eq_touch` (its down, up,
+//! cancel or `lost`: the picture point and the zoom) and `eq_mv` (its moves
 //! summarized; #71 PR I, `diag::trace::fingers`). Every tap target owns its
 //! touches.
 
@@ -59,7 +61,8 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 
 use super::buttons::colour_style;
-use super::{owns_touches, trace_detail};
+use super::{down_of, owns_touches, trace_detail};
+use crate::behave::Down;
 use crate::behave::eq::{
     AreaWatch, CardLock, Finger, ListLink, Look, Out, Point, STALE_TEXT, Spot, Viewer, can_open,
     card_lock, failure_text, hh_mm, in_use_text, list_text, lists_now, lock_refusal, locked,
@@ -687,13 +690,33 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
             crate::diag::record(event);
         }
     };
-    // Every finger goes: each one's moves and its cancel where it was.
-    let fingers_leave = move || {
+    // Every finger goes: each one's moves and its `what` where it was.
+    let fingers_leave = move |what: &str| {
         record(
             fingers
-                .try_update_value(|f| f.leave(dom::epoch_now(), zoom_now()))
+                .try_update_value(|f| f.leave(dom::epoch_now(), what, zoom_now()))
                 .unwrap_or_default(),
         );
+    };
+    // A finger whose end the browser never delivered (#124: iOS took it for
+    // a system gesture) ends at a primary down of its type anywhere on the
+    // screen (the picture, ↶ VRÁTIŤ, CELÝ EQ: a primary down proves no other
+    // pointer of its type is down), before that down does anything: its
+    // contact cancelled at the PC (numbered before the down's own input, so
+    // the hub ends it first and an undo is not refused busy), and every such
+    // finger the recorder keeps recorded `lost` at `t`, the down's own time
+    // (`EqFingers::missed`: a third finger and one whose contact a dropout
+    // cut included).
+    let end_missed = move |by: Down, t: f64| {
+        let out = finger
+            .try_update_value(|f| f.missed(by).out)
+            .unwrap_or_default();
+        record(
+            fingers
+                .try_update_value(|f| f.missed(t, by, zoom_now()))
+                .unwrap_or_default(),
+        );
+        send(out);
     };
     // The latency of each second of frames drawn (PR J), and when a finger
     // last landed on an old picture (its note shows for a while).
@@ -751,7 +774,9 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
     // Opening from now on; the open itself goes with the area, at its load.
     store.eq_opening(&target.instance, &target.path);
     // A hidden page lifts its finger (`Finger::visibility`), as the Stream
-    // Deck lifts its keys: `visibilitychange` bubbles to the window.
+    // Deck lifts its keys: `visibilitychange` bubbles to the window. A
+    // hidden Home Screen app keeps no touch going, so the recorder has each
+    // finger `lost` (#124).
     let hidden = window_event_listener_untyped("visibilitychange", move |_| {
         let hidden = dom::hidden();
         send(
@@ -761,7 +786,7 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
         );
         note_takes();
         if hidden {
-            fingers_leave();
+            fingers_leave("lost");
         }
     });
     // A turned or resized screen: the area's box again (the frame loop
@@ -780,7 +805,7 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
             watcher.disconnect();
         }
         send(finger.try_update_value(Finger::leave).unwrap_or_default());
-        fingers_leave();
+        fingers_leave("cancel");
         if let Some(Some(event)) = lat.try_update_value(|l| l.leave(dom::epoch_now())) {
             crate::diag::record(&event);
         }
@@ -866,12 +891,18 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
         let Some((at, picture)) = point_of(&ev) else {
             return;
         };
-        let id = ev.pointer_id();
+        let by = down_of(&ev);
+        let id = by.id;
         let now = dom::now();
         // The finger's own time (the PR I review: the handler's time shifts
         // with a long frame).
         let t = dom::event_epoch(&ev);
-        let down = fingers.try_update_value(|f| f.down(t, id, at.picture, zoom_now()));
+        // A finger whose end never came ends first (#124), recorded `lost`
+        // before this finger's down; this finger then starts a gesture of
+        // its own, a first finger under the picture's rule below, never a
+        // pinch.
+        end_missed(by, t);
+        let down = fingers.try_update_value(|f| f.down(t, id, by.kind, at.picture, zoom_now()));
         record(down.into_iter().collect());
         let lands = spot(on_picture(at.picture, picture), zoom_now());
         // A first finger on an old picture, or in a stalled link, reaches
@@ -904,7 +935,7 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
         }
         let lands = if stale { Spot::Off } else { lands };
         let out = finger
-            .try_update_value(|f| f.down(id, at, lands, now))
+            .try_update_value(|f| f.down(by, at, lands, now))
             .unwrap_or_default();
         if finger.try_with_value(|f| f.has(id)).unwrap_or(false) {
             let _ = area.set_pointer_capture(id);
@@ -990,9 +1021,7 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
                 let _ = stale_at.try_set_value(Some(now));
                 record(
                     fingers
-                        .try_update_value(|f| {
-                            f.end(dom::epoch_now(), "cancel", pointer, None, zoom_now())
-                        })
+                        .try_update_value(|f| f.cut(dom::epoch_now(), pointer, zoom_now()))
                         .unwrap_or_default(),
                 );
             }
@@ -1067,10 +1096,12 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
         let _ = legend.try_update(|on| *on = !*on);
     };
     // `CELÝ EQ`: the whole picture again (the frame loop draws it). A finger
-    // on the editor ends first, with its cancel where it was (the PR I
-    // review: a drag went on at 1×, its points remapped); a pinch goes on.
+    // whose end never came ends first (#124 review I1); a finger on the
+    // editor ends then, with its cancel where it was (the PR I review: a
+    // drag went on at 1×, its points remapped); a pinch goes on.
     let whole = move |ev: web_sys::PointerEvent| {
         ev.prevent_default();
+        end_missed(down_of(&ev), dom::event_epoch(&ev));
         send(
             finger
                 .try_update_value(Finger::off_editor)
@@ -1083,9 +1114,12 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
     // press (`undo_ready`); it goes numbered as the editor's next input,
     // then the control rests 700 ms and flashes, and a first finger waits
     // until a picture shows the undo (`note_takes`, as after a finger's
-    // send).
+    // send). A finger whose end never came ends first (#124 review I1): its
+    // contact's cancel goes before the undo, and it keeps the undo off no
+    // longer.
     let undo = move |ev: web_sys::PointerEvent| {
         ev.prevent_default();
+        end_missed(down_of(&ev), dom::event_epoch(&ev));
         let now = dom::now();
         let busy = finger.try_with_value(Finger::busy).unwrap_or(false);
         if !undo_ready(busy, undo_at.try_get_value().flatten(), now) {

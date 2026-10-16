@@ -1,5 +1,5 @@
 """The forensics timeline's Pro-Q 4 screen (#71, acceptance point 6): the
-page's ``eq_touch`` fingers (down, up, cancel, stale) and ``eq_lat``
+page's ``eq_touch`` fingers (down, up, cancel, stale, #124's lost) and ``eq_lat``
 latency windows, the hub's ``eq`` records of a dropped stale down and of
 the frames' round trips; PR P2a's ``undo`` (a page's undo of Pro-Q's own
 ↶) and ``undo_read`` (the hub's read of it, never tapped), and PR P2b's page
@@ -223,6 +223,45 @@ class EqScreen(ReportCase):
         self.assertEqual([r["data-lost"] for r in lat_rows(page)], ["0", "2"])
         self.assertIn("eq_lat_p95_ms=210.0\n", stdout)
 
+    def test_a_finger_whose_end_never_came_is_listed_lost_and_counted(self):
+        # #124: the page ends a finger whose end the browser never delivered
+        # at the next primary down of its type (in that down's handler, so at
+        # its time) or at a hide, and records it ``lost``.
+        log = Log()
+        log.pings(7, BASE, BASE + 5000)
+        p0 = BASE + 1000 - OFFSET
+        log.trace(
+            BASE + 4500,
+            7,
+            [
+                finger(p0, "down", 901),
+                finger(p0 + 2000, "lost", 901),
+                finger(p0 + 2000, "down", 902),
+                finger(p0 + 2100, "up", 902),
+                finger(p0 + 2500, "down", 903),
+                finger(p0 + 2900, "lost", 903),
+            ],
+        )
+        summary, page, stdout = self.report(log, BASE, BASE + 5000)
+        self.assertEqual((summary["eq_fingers"], summary["eq_fingers_lost"]), ("3", "2"))
+        self.assertEqual(
+            [(r["data-what"], r.get("data-pointer")) for r in finger_rows(page)],
+            [
+                ("down", "901"),
+                ("lost", "901"),
+                ("down", "902"),
+                ("up", "902"),
+                ("down", "903"),
+                ("lost", "903"),
+            ],
+            "in time order, the lost finger's end before the next finger's down",
+        )
+        self.assertIn("eq_fingers_lost=2\n", stdout)
+        self.assertIn("lost finger: one whose end never came", page.text)
+        # Outside the window: not counted.
+        summary, _, _ = self.report(log, BASE, BASE + 2500)
+        self.assertEqual(summary["eq_fingers_lost"], "0")
+
     def test_outside_the_window_is_left_out(self):
         log = Log()
         self.session(log)
@@ -253,11 +292,12 @@ class EqScreen(ReportCase):
                     "eq_fingers",
                     "eq_stale",
                     "eq_uncovered",
+                    "eq_fingers_lost",
                     "eq_lat_n",
                     "eq_frames_drawn",
                 )
             ],
-            ["0", "0", "0", "0", "0"],
+            ["0", "0", "0", "0", "0", "0"],
         )
         self.assertEqual(summary["eq_lat_p50_ms"], "n/a")
         self.assertEqual(finger_rows(page), [])

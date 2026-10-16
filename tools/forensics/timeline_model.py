@@ -990,6 +990,7 @@ def summary(timeline):
         ("eq_fingers", str(sum(f.what == "down" for f in timeline.eq_fingers))),
         ("eq_stale", str(sum(f.what == "stale" for f in timeline.eq_fingers))),
         ("eq_uncovered", str(sum(f.what == "uncovered" for f in timeline.eq_fingers))),
+        ("eq_fingers_lost", str(sum(f.what == "lost" for f in timeline.eq_fingers))),
         ("eq_hub_stale", str(timeline.eq_hub_stale)),
         ("eq_lat_n", str(len(eq_samples))),
         ("eq_lat_lost", str(sum(lat.lost for lat in timeline.eq_latency))),
