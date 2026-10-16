@@ -505,8 +505,10 @@ struct Held {
 }
 
 /// The fingers a primary down ended (#124, [`Finger::missed`]): each one's
-/// pointer (the flight recorder's `lost`), and what goes to the editor for
-/// them (a cancel at its last point for a first finger on it).
+/// pointer, and what goes to the editor for them (a cancel at its last point
+/// for a first finger on it). The flight recorder, which keeps every finger
+/// on the area (a third one, one whose contact a dropout cut), writes its
+/// `lost` rows by the same rule (`diag::trace::fingers::EqFingers::missed`).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Missed {
     pub pointers: Vec<i32>,

@@ -143,10 +143,12 @@ impl Run {
     }
 }
 
-/// A finger down on the screen: its last picture point and its moves not
-/// summarized yet.
+/// A finger down on the screen: its type (#124: a primary down of that
+/// type ends it, [`EqFingers::missed`]), its last picture point and its
+/// moves not summarized yet.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Held {
+    kind: Option<Pointer>,
     last: (f64, f64),
     run: Option<Run>,
 }
@@ -158,19 +160,20 @@ pub struct EqFingers {
 }
 
 impl EqFingers {
-    /// `pointer` (of type `_kind`) went down at picture point `at` with the
+    /// `pointer` (of type `kind`) went down at picture point `at` with the
     /// view at `zoom`: its event.
     pub fn down(
         &mut self,
         t: f64,
         pointer: i32,
-        _kind: Option<Pointer>,
+        kind: Option<Pointer>,
         at: (f64, f64),
         zoom: f64,
     ) -> Value {
         self.down.insert(
             pointer,
             Held {
+                kind,
                 last: at,
                 run: None,
             },
@@ -222,17 +225,41 @@ impl EqFingers {
         events
     }
 
-    /// The fingers whose end never came that `_by`, a pointer's down at `_t`,
-    /// ends (#124). Not yet: none.
-    pub fn missed(&mut self, _t: f64, _by: Down, _zoom: f64) -> Vec<Value> {
-        Vec::new()
+    /// The fingers whose end never came (#124) that `by`, a pointer's down
+    /// at `t`, ends: when it is primary, every finger of its type this
+    /// recorder keeps (`behave::Down::ends`, the screen's fingers' own
+    /// rule), a third finger the screen's fingers never took and one whose
+    /// contact a dropout cut included: each one's moves, then `lost` at its
+    /// last point. A second finger, or a pointer of another type, ends none.
+    pub fn missed(&mut self, t: f64, by: Down, zoom: f64) -> Vec<Value> {
+        let lost: Vec<i32> = self
+            .down
+            .iter()
+            .filter(|(_, held)| by.ends(held.kind))
+            .map(|(pointer, _)| *pointer)
+            .collect();
+        lost.into_iter()
+            .flat_map(|pointer| self.end(t, "lost", pointer, None, zoom))
+            .collect()
     }
 
     /// `pointer`'s contact with the editor ended at `t` while the finger
     /// stays down (a dropout under it, #71 PR J): its moves, then its
-    /// `cancel` at its last point.
+    /// `cancel` at its last point. The finger stays kept: its own end, a
+    /// primary down of its type or the screen's going still gives it its
+    /// row; none for a pointer not down.
     pub fn cut(&mut self, t: f64, pointer: i32, zoom: f64) -> Vec<Value> {
-        self.end(t, "cancel", pointer, None, zoom)
+        let Some(held) = self.down.get_mut(&pointer) else {
+            return Vec::new();
+        };
+        let mut events: Vec<Value> = held
+            .run
+            .take()
+            .map(|run| run.summary(pointer))
+            .into_iter()
+            .collect();
+        events.push(eq_touch(t, "cancel", pointer, held.last, zoom));
+        events
     }
 
     /// The screen goes from under the fingers (it closes: `what` is
