@@ -11,7 +11,7 @@ mod support;
 
 use std::time::Duration;
 
-use fohmixer_proto::client::{AckItem, ClientMsg, SetItem, ValueItem, set_key};
+use fohmixer_proto::client::{AckItem, ClientMsg, ServerMsg, SetItem, ValueItem, set_key};
 use serde_json::{Value, json};
 use support::{Client, Host, TestHub, runtime, serial};
 
@@ -296,6 +296,28 @@ fn a_touchs_first_set_records_lives_value_before_it() {
     });
 }
 
+/// The acks of `wanted` (key, seq), sorted by key, from however many `ack`
+/// messages bring them: the outbox coalesces a batch's acks, so one message
+/// can carry all of them (`Client::ack_of` would drop the others with it).
+async fn acks_of(client: &mut Client, wanted: &[(String, u64)]) -> Vec<AckItem> {
+    let mut got: Vec<AckItem> = Vec::new();
+    while got.len() < wanted.len() {
+        let items = client
+            .wait(SECS_5, |m| match m {
+                ServerMsg::Ack { items } => Some(items.clone()),
+                _ => None,
+            })
+            .await;
+        got.extend(
+            items
+                .into_iter()
+                .filter(|i| wanted.iter().any(|(k, s)| *k == i.key && *s == i.seq)),
+        );
+    }
+    got.sort_by(|a, b| a.key.cmp(&b.key));
+    got
+}
+
 /// A `sets` item (#127) of `target`'s mute on `band`.
 fn mute_item(target: &str, value: bool, seq: u64) -> SetItem {
     SetItem {
@@ -338,13 +360,24 @@ fn a_linked_mutes_writes_reach_live_in_one_batch_each_acked() {
                 .map(|(i, target)| mute_item(target, value, first + i))
                 .collect(),
         };
+        // Each key is acked on its own, whatever messages carry them.
+        let wanted = |first: u64| -> Vec<(String, u64)> {
+            (first..)
+                .zip(targets)
+                .map(|(seq, target)| (set_key("band", target, "mute"), seq))
+                .collect()
+        };
+        let applied = |wanted: &[(String, u64)]| -> Vec<AckItem> {
+            let mut acks: Vec<AckItem> = wanted
+                .iter()
+                .map(|(key, seq)| AckItem::applied(key, *seq, None))
+                .collect();
+            acks.sort_by(|a, b| a.key.cmp(&b.key));
+            acks
+        };
         a.send(&sets(true, 1)).await;
-        for (seq, target) in (1_u64..).zip(targets) {
-            let key = set_key("band", target, "mute");
-            assert_eq!(
-                a.ack_of(&key, seq, SECS_5).await,
-                AckItem::applied(&key, seq, None)
-            );
+        assert_eq!(acks_of(&mut a, &wanted(1)).await, applied(&wanted(1)));
+        for target in targets {
             assert_eq!(a.get("band", target, "mute").await, json!(true), "{target}");
         }
         let records = hub
@@ -368,11 +401,7 @@ fn a_linked_mutes_writes_reach_live_in_one_batch_each_acked() {
         assert_eq!(sent, keys);
         // Unmuted together again.
         a.send(&sets(false, 4)).await;
-        let key = set_key("band", targets[2], "mute");
-        assert_eq!(
-            a.ack_of(&key, 6, SECS_5).await,
-            AckItem::applied(&key, 6, None)
-        );
+        assert_eq!(acks_of(&mut a, &wanted(4)).await, applied(&wanted(4)));
         for target in targets {
             assert_eq!(
                 a.get("band", target, "mute").await,
