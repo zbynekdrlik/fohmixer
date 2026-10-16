@@ -1556,6 +1556,45 @@ fn a_lines_room_is_the_same_on_every_sub_page() {
         let a = arrange(&model, sub, 519.0, 822.0, |_| 0, &METRICS);
         assert!(!a.lines[0].room, "{sub:?}");
     }
+    // The titled block on the first of three sub-pages: the room on the
+    // others too.
+    let first = PageModel::of(&page(vec![vec![pager(vec![
+        (
+            "b",
+            vec![titled("b", Some("CUE"), vec![toggle("T0"), toggle("T1")])],
+        ),
+        ("a", vec![group("a", vec![strip("A0"), strip("A1")])]),
+        ("c", vec![group("c", vec![strip("C0")])]),
+    ])]]));
+    for sub in [Some(1), Some(2)] {
+        let a = arrange(&first, sub, 519.0, 822.0, |_| 0, &METRICS);
+        assert!(!captions(&items(&first, &a.lines[0])), "{sub:?}: no title");
+        assert!(a.lines[0].room, "{sub:?}: the room");
+    }
+}
+
+#[test]
+fn a_line_can_show_each_of_its_pagers_sub_pages() {
+    // The pager's row: each of its three sub-pages; a row without one, and
+    // two rows on one line with the pager in the second, likewise.
+    let model = PageModel::of(&page(vec![
+        vec![
+            pager(vec![
+                ("a", vec![group("a", vec![strip("A")])]),
+                ("b", vec![group("b", vec![strip("B")])]),
+                ("c", vec![group("c", vec![strip("C")])]),
+            ]),
+            group("s", vec![strip("S")]),
+        ],
+        vec![group("t", vec![strip("T")])],
+    ]));
+    let all = vec![Some(0), Some(1), Some(2)];
+    assert_eq!(model.line_subs(&[0]), all);
+    assert_eq!(model.line_subs(&[1]), vec![None]);
+    assert_eq!(model.line_subs(&[1, 0]), all);
+    // A pager with no sub-page shows none.
+    let empty = PageModel::of(&page(vec![vec![pager(vec![])]]));
+    assert_eq!(empty.line_subs(&[0]), vec![None]);
 }
 
 #[test]
