@@ -177,39 +177,6 @@
     color: var(--muted);
 }
 
-/* A group's name on its side in its run's first strip (#127, variant B of
-   docs/mockups/group-captions-v1.html): on the scale's left edge, read
-   bottom to top, 2 px clear of the 8.5 px +6 and −6 dB labels (ScaleView's
-   `--side-from`, `--side-to`), beside the right-aligned 0 dB label; in the
-   colour of the Live set the group's strips share, muted when they differ.
-   The fader over the scale takes the touch. */
-.group-side {
-    position: absolute;
-    top: calc(var(--side-from) + 6.25px);
-    left: 0;
-    width: 11px;
-    height: calc(var(--side-to) - var(--side-from) - 12.5px);
-    overflow: hidden;
-    writing-mode: vertical-rl;
-    transform: rotate(180deg);
-    text-align: end;
-    color: var(--muted);
-    font: 600 9.5px/11px var(--ui);
-    letter-spacing: 1.2px;
-    text-transform: uppercase;
-    white-space: nowrap;
-    text-overflow: ellipsis;
-    pointer-events: none;
-}
-
-.group-side[data-instance] {
-    color: var(--band);
-}
-
-.group-side[data-instance="master"] {
-    color: var(--master);
-}
-
 .meter {
     position: relative;
 }

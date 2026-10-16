@@ -51,7 +51,7 @@ pub const SIDE_TO_DB: f64 = -6.0;
 
 /// Where a group's name runs on law `law`, as CSS variables (percent of the
 /// scale's height from its top, as a label's `top`): `--side-from` the
-/// +6 dB label's level and `--side-to` the −6 dB label's. `strip.css`'s
+/// +6 dB label's level and `--side-to` the −6 dB label's. `group.css`'s
 /// `.group-side` keeps 2 px clear of each label's box (8.5 px high, centred
 /// on its level).
 pub fn side_style(law: VolumeLaw) -> String {

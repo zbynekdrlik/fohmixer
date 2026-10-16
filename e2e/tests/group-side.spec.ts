@@ -2,17 +2,30 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Locator, Page } from "@playwright/test";
 import { test, expect } from "./support/fixtures";
-import { LiveClient, openSurface, ready, selectPage, shown, strip, track, until, volume } from "./support/live";
+import {
+  LiveClient,
+  openSurface,
+  ready,
+  selectPage,
+  shown,
+  strip,
+  titleGroups,
+  track,
+  untitleGroups,
+  until,
+  volume,
+} from "./support/live";
 
 // A group's name on its side (#127, the owner's variant B of
-// docs/mockups/group-captions-v1.html): a run of a group's cells that
-// starts with a strip shows no title over it, and its first strip names a
-// titled group in its scale column, between the +6 and −6 dB labels, in the
-// colour of the Live set the group's strips share (muted when they differ).
-// A line of such runs gives the title's room to its faders; a run that
-// starts with something else (a parameter fader, a button, a block) keeps
-// its title over it, and its line the room. Both projects at the iPad's
-// size, the imported synthetic layout.
+// docs/mockups/group-captions-v1.html; the review rulings 6224257660): a run
+// of a group's cells that starts with a strip shows no title over it, and its
+// first strip names the group in its scale column, between the +6 and −6 dB
+// labels: its title, or an untitled group's shared Live set (BAND, MASTER),
+// in the colour of that set (muted when the strips differ). A run that starts
+// with something else (a parameter fader, a button, a block) keeps its title
+// over it only when there is one to show; a line keeps the title's room only
+// when such a title shows on it, and gives it to its faders otherwise. Both
+// projects at the iPad's size, the imported synthetic layout.
 
 const LAYOUT = join(__dirname, "..", "..", "tools", "import-tosc", "fixtures", "expected-layout.json");
 
@@ -29,10 +42,17 @@ function fohRows(): any[][] {
 /** Whether a group's run starts with a strip (the fixture's groups are never cut at this size). */
 const startsWithStrip = (group: any) => group.controls[0]?.kind === "strip";
 
-/** The Live instance every strip of a group shares; null when they differ. */
+/** The Live instance every strip of a group shares; null when they differ or there is none. */
 function sharedInstance(group: any): string | null {
   const instances: string[] = group.controls.filter((c: any) => c.kind === "strip").map((c: any) => c.binding.instance);
   return instances.length > 0 && instances.every((i) => i === instances[0]) ? instances[0] : null;
+}
+
+/** A group's name: its title, else its shared Live set in capitals; null when it has neither. */
+function groupName(group: any): string | null {
+  if (group.title) return group.title;
+  const shared = sharedInstance(group);
+  return shared ? shared.toUpperCase() : null;
 }
 
 /** A colour token of the page (`--band`, …) as a computed colour. */
@@ -52,6 +72,12 @@ const line = (page: Page, n: number) => page.locator(`[data-testid="line"][data-
 
 /** The room a line keeps at its top for its groups' titles (px). */
 const titleRoom = (l: Locator) => l.evaluate((e) => parseFloat(getComputedStyle(e).paddingTop));
+
+/** A strip's fader travel (px). */
+async function travel(s: Locator): Promise<number> {
+  await ready(s.getByTestId("fader"));
+  return (await s.getByTestId("fader").boundingBox())!.height;
+}
 
 /** The side label of `s` and the parts of its scale column, as page boxes. */
 async function sideGeometry(s: Locator) {
@@ -80,67 +106,104 @@ test.afterEach(async () => {
 });
 
 test.describe("A group's name on its side (#127)", () => {
-  test("a line of strip runs gives the title's room to its faders; a run that starts with no strip keeps its title", async ({ page }) => {
+  test("no line keeps room for a title it does not show: every fixture line gives it to its faders", async ({ page }) => {
     const rows = fohRows();
-    // The premise: the upper row's runs all start with a strip, the lower
-    // row holds one that does not (the backing-tracks fader's group).
-    expect(rows[0].every(startsWithStrip)).toBe(true);
-    expect(rows[1].some((g) => !startsWithStrip(g))).toBe(true);
+    // The premise: the runs that start with no strip (the backing-tracks
+    // fader's, the cue page's block) have no title and share no Live set.
+    const bare = rows.flat().filter((g) => !startsWithStrip(g));
+    expect(bare.length).toBeGreaterThan(0);
+    for (const group of bare) expect(groupName(group), group.id).toBeNull();
     await openSurface(page);
     await expect(page.getByTestId("line")).toHaveCount(rows.length);
     for (let r = 0; r < rows.length; r++) {
-      const kept = rows[r].some((g) => !startsWithStrip(g));
-      await expect(line(page, r), `row ${r}`).toHaveAttribute("data-captions", String(kept));
+      await expect(line(page, r), `row ${r}`).toHaveAttribute("data-captions", "false");
+      expect(await titleRoom(line(page, r)), `row ${r}`).toBe(0);
       for (const group of rows[r]) {
-        // Every run keeps its anchor (the tests find a strip's group by it).
+        // Every run keeps its anchor (the tests find a strip's group by it),
+        // with no title over it.
         const anchor = line(page, r).locator(`[data-testid="group"][data-group="${group.id}"]`);
         await expect(anchor, `${group.id}: one run`).toHaveCount(1);
-        if (startsWithStrip(group)) {
-          await expect(anchor.locator(".group-title"), `${group.id}: no title over its strips`).toHaveCount(0);
-          await expect(anchor.getByTestId("group-instance")).toHaveCount(0);
-        } else {
-          await expect(anchor.locator(".group-title"), `${group.id}: its title`).toBeVisible();
-          await expect(anchor.getByTestId("group-title")).toHaveText(group.title ?? "");
-        }
+        await expect(anchor.locator(".group-title"), `${group.id}: no title`).toHaveCount(0);
       }
+      // A strip fills its line from the top.
+      const s = line(page, r).getByTestId("strip").first();
+      const box = (await s.boundingBox())!;
+      const lineBox = (await line(page, r).boundingBox())!;
+      expect(Math.abs(box.y - lineBox.y), `row ${r}: the strip at the top`).toBeLessThan(0.5);
+      expect(Math.abs(box.height - lineBox.height), `row ${r}: the strip as high as its line`).toBeLessThan(0.5);
     }
-    // The upper line keeps no room, the lower one the title's.
+    // The cue page's untitled block: no title, no room.
+    await selectPage(page, "cue");
+    await expect(line(page, 0)).toHaveAttribute("data-captions", "false");
+    await expect(line(page, 0).locator(".group-title")).toHaveCount(0);
     expect(await titleRoom(line(page, 0))).toBe(0);
-    const room = await titleRoom(line(page, 1));
-    expect(room, "the title's room").toBeGreaterThan(10);
-    const upper = (await line(page, 0).boundingBox())!;
-    const lower = (await line(page, 1).boundingBox())!;
-    expect(Math.abs(upper.height - lower.height), "the premise: two lines as high").toBeLessThan(0.5);
-    // A strip of each: the upper fills its line from the top, the lower
-    // starts under the title's room.
-    const top = strip(page, "Hand2 #");
-    const bottom = strip(page, "Hand4 #", "master");
-    const topBox = (await top.boundingBox())!;
-    const bottomBox = (await bottom.boundingBox())!;
-    expect(Math.abs(topBox.y - upper.y)).toBeLessThan(0.5);
-    expect(Math.abs(topBox.height - upper.height)).toBeLessThan(0.5);
-    expect(Math.abs(bottomBox.y - (lower.y + room))).toBeLessThan(0.5);
-    // The fader's travel: the upper strip's is longer than what the lower
-    // line (as every line before #127) leaves by exactly the title's room;
-    // nothing else in the strip changed.
-    await ready(top.getByTestId("fader"));
-    await ready(bottom.getByTestId("fader"));
-    const travel = async (s: Locator) => (await s.getByTestId("fader").boundingBox())!.height;
-    const now = await travel(top);
-    const before = await travel(bottom);
-    console.log(`group-side travel (${test.info().project.name}): ${before} px with the title's room, ${now} px without (+${now - before} px, the room ${room} px)`);
-    expect(Math.abs(now - before - room), `${now} px against ${before} px`).toBeLessThan(0.5);
-    const head = async (s: Locator) => (await s.locator(".strip-head").boundingBox())!.height;
-    expect(Math.abs((await head(top)) - (await head(bottom)))).toBeLessThan(0.5);
-    for (const s of [top, bottom]) await expect(s.getByTestId("strip-label")).toHaveCSS("font-size", "17px");
+    await selectPage(page, "foh");
   });
 
-  test("each run's first strip names a titled group in the colour of the Live set its strips share", async ({ page }) => {
-    const labelled = fohRows()
-      .flat()
-      .filter((g) => startsWithStrip(g) && g.title);
-    // The premise: a band, a master and a mixed group.
-    expect(labelled.map(sharedInstance).sort()).toEqual(["band", "master", null].sort());
+  test("a title over a run that starts with no strip keeps its line's room: the faders' measured gain", async ({ page }) => {
+    // Generic titles on the fixture's backing-tracks fader group (the FOH
+    // page's lower line) and the cue page's block.
+    const titles = { "foh-4": "BACKING", "cue-1": "CUE" };
+    try {
+      await titleGroups(titles);
+      await openSurface(page);
+      const upper = line(page, 0);
+      const lower = line(page, 1);
+      const caption = lower.locator('[data-testid="group"][data-group="foh-4"] .group-title');
+      await expect(caption).toBeVisible({ timeout: 10_000 });
+      await expect(caption.getByTestId("group-title")).toHaveText("BACKING");
+      await expect(lower).toHaveAttribute("data-captions", "true");
+      await expect(upper).toHaveAttribute("data-captions", "false");
+      expect(await titleRoom(upper)).toBe(0);
+      const room = await titleRoom(lower);
+      expect(room, "the title's room").toBeGreaterThan(10);
+      const upperBox = (await upper.boundingBox())!;
+      const lowerBox = (await lower.boundingBox())!;
+      expect(Math.abs(upperBox.height - lowerBox.height), "the premise: two lines as high").toBeLessThan(0.5);
+      // A strip of each: the upper fills its line, the lower starts under
+      // the title's room.
+      const top = strip(page, "Hand2 #");
+      const bottom = strip(page, "Hand4 #", "master");
+      const topBox = (await top.boundingBox())!;
+      const bottomBox = (await bottom.boundingBox())!;
+      expect(Math.abs(topBox.y - upperBox.y)).toBeLessThan(0.5);
+      expect(Math.abs(topBox.height - upperBox.height)).toBeLessThan(0.5);
+      expect(Math.abs(bottomBox.y - (lowerBox.y + room))).toBeLessThan(0.5);
+      // The fader's travel: the upper strip's is longer than the lower's
+      // (what every line left before #127) by exactly the title's room;
+      // nothing else in the strip changed.
+      const now = await travel(top);
+      const before = await travel(bottom);
+      console.log(
+        `group-side travel (${test.info().project.name}): ${before} px with the title's room, ${now} px without (+${now - before} px, the room ${room} px)`,
+      );
+      expect(Math.abs(now - before - room), `${now} px against ${before} px`).toBeLessThan(0.5);
+      const head = async (s: Locator) => (await s.locator(".strip-head").boundingBox())!.height;
+      expect(Math.abs((await head(top)) - (await head(bottom)))).toBeLessThan(0.5);
+      for (const s of [top, bottom]) await expect(s.getByTestId("strip-label")).toHaveCSS("font-size", "17px");
+      // The cue page's titled block: its title, and the room over it.
+      await selectPage(page, "cue");
+      const cue = line(page, 0);
+      await expect(cue).toHaveAttribute("data-captions", "true");
+      await expect(cue.locator('[data-testid="group"] .group-title')).toBeVisible();
+      await expect(cue.getByTestId("group-title")).toHaveText("CUE");
+      const cueRoom = await titleRoom(cue);
+      expect(cueRoom).toBe(room);
+      const block = (await cue.locator(".block").boundingBox())!;
+      expect(Math.abs(block.y - ((await cue.boundingBox())!.y + cueRoom)), "the block under the title's room").toBeLessThan(0.5);
+      await selectPage(page, "foh");
+    } finally {
+      await untitleGroups(Object.keys(titles));
+    }
+  });
+
+  test("each run's first strip names its group in the colour of the Live set its strips share", async ({ page }) => {
+    const groups = fohRows().flat().filter(startsWithStrip);
+    const named = groups.filter((g) => groupName(g) !== null);
+    // The premise: titled band, master and mixed groups, and untitled band
+    // and master ones.
+    expect(named.filter((g) => g.title).map(sharedInstance).sort()).toEqual(["band", "master", null].sort());
+    expect(named.filter((g) => !g.title).map(sharedInstance).sort()).toEqual(["band", "master"]);
     await openSurface(page);
     const colours: Record<string, string> = {
       band: await token(page, "--band"),
@@ -148,12 +211,12 @@ test.describe("A group's name on its side (#127)", () => {
       mixed: await token(page, "--muted"),
     };
     expect(new Set(Object.values(colours)).size, "three colours").toBe(3);
-    await expect(page.getByTestId("group-side")).toHaveCount(labelled.length);
-    for (const group of labelled) {
+    await expect(page.getByTestId("group-side")).toHaveCount(named.length);
+    for (const group of named) {
       const first = group.controls[0];
       const s = strip(page, first.binding.anchor.name, first.binding.instance);
       const label = s.getByTestId("group-side");
-      await expect(label).toHaveText(group.title);
+      await expect(label).toHaveText(groupName(group)!);
       await expect(page.locator(`.slot[data-group="${group.id}"]`).getByTestId("group-side"), `${group.id}: one label`).toHaveCount(1);
       const shared = sharedInstance(group);
       if (shared) await expect(label).toHaveAttribute("data-instance", shared);
@@ -164,7 +227,7 @@ test.describe("A group's name on its side (#127)", () => {
       const strips = group.controls.filter((c: any) => c.kind === "strip").length;
       await expect(page.locator(`.slot[data-group="${group.id}"]`).getByTestId("strip-instance")).toHaveCount(shared ? 0 : strips);
       // Inside the scale column, between the +6 and −6 dB labels, over no
-      // tick label, the whole title shown.
+      // tick label, the whole name shown.
       const geo = await sideGeometry(s);
       const { label: box, scale } = geo;
       expect(box.left, `${group.id}: in the scale`).toBeGreaterThanOrEqual(scale.left - 0.5);
@@ -178,11 +241,7 @@ test.describe("A group's name on its side (#127)", () => {
       expect(box.bottom - box.top, "a real band").toBeGreaterThan(40);
       const over = geo.ticks.filter((t) => box.left < t.right && t.left < box.right && box.top < t.bottom && t.top < box.bottom);
       expect(over.map((t) => t.db), `${group.id}: over a tick label`).toEqual([]);
-      expect(geo.overflow, `${group.id}: the whole title`).toEqual([0, 0]);
-    }
-    // An untitled group's strips name nothing.
-    for (const group of fohRows().flat().filter((g) => startsWithStrip(g) && !g.title)) {
-      await expect(page.locator(`.slot[data-group="${group.id}"]`).getByTestId("group-side"), group.id).toHaveCount(0);
+      expect(geo.overflow, `${group.id}: the whole name`).toEqual([0, 0]);
     }
   });
 
@@ -209,21 +268,5 @@ test.describe("A group's name on its side (#127)", () => {
     } finally {
       await live.set("master", HAND4, "value", before);
     }
-  });
-
-  test("the cue page's block keeps its group's title and its line the room", async ({ page }) => {
-    await openSurface(page);
-    await selectPage(page, "cue");
-    const cue = line(page, 0);
-    await expect(cue).toHaveAttribute("data-captions", "true");
-    const anchor = cue.locator('[data-testid="group"]');
-    await expect(anchor).toHaveCount(1);
-    await expect(anchor.locator(".group-title")).toBeVisible();
-    await expect(page.getByTestId("group-side")).toHaveCount(0);
-    const room = await titleRoom(cue);
-    expect(room).toBeGreaterThan(10);
-    const block = (await cue.locator(".block").boundingBox())!;
-    expect(Math.abs(block.y - ((await cue.boundingBox())!.y + room)), "the block under the title's room").toBeLessThan(0.5);
-    await selectPage(page, "foh");
   });
 });

@@ -1,7 +1,8 @@
 //! What a control is to the surface: a strip-wide column or a button, and
 //! the Live instance a group's strips share (#63: the group names it once;
-//! since #127 by its name's colour on its run's first strip). Where the
-//! controls go is `arrange` (the control column, #63).
+//! since #127 on its run's first strip, by the colour of the group's name,
+//! which is the set's name, `BAND`/`MASTER`, for an untitled group). Where
+//! the controls go is `arrange` (the control column, #63).
 
 use fohmixer_proto::layout::Control;
 

@@ -987,7 +987,8 @@ fn a_line_is_one_list_of_its_cells_after_their_groups_titles_each_on_its_side() 
                 },
                 left: vec![],
                 right: vec![],
-                shift: None
+                shift: None,
+                room: false
             }
         ),
         vec![]
@@ -1197,6 +1198,11 @@ fn one_line(model: &PageModel) -> Vec<Item> {
     items(model, &a.lines[0])
 }
 
+/// Whether `one_line`'s line keeps the titles' room.
+fn one_room(model: &PageModel) -> bool {
+    arrange(model, Some(0), 519.0, 822.0, |_| 0, &METRICS).lines[0].room
+}
+
 #[test]
 fn a_groups_label_is_its_title_in_the_colour_of_the_instance_its_strips_share() {
     let band = |name: &str| strip_on("band", name);
@@ -1238,11 +1244,37 @@ fn a_groups_label_is_its_title_in_the_colour_of_the_instance_its_strips_share() 
         label("BAND", Some("master")),
         "only the strips count"
     );
+    // Untitled (a title of blanks too): the set its strips share, in
+    // capitals (F4: the set is named once for the group); none when they
+    // differ or there is no strip.
     for title in [None, Some(""), Some("  ")] {
         assert_eq!(
-            group_label(&group_of(titled("u", title, vec![band("A")]))),
+            group_label(&group_of(titled("u", title, vec![band("A"), band("B")]))),
+            label("BAND", Some("band")),
+            "untitled band: {title:?}"
+        );
+        assert_eq!(
+            group_label(&group_of(titled(
+                "u",
+                title,
+                vec![toggle("T"), master("A")]
+            ))),
+            label("MASTER", Some("master")),
+            "untitled master: {title:?}"
+        );
+        assert_eq!(
+            group_label(&group_of(titled("u", title, vec![band("A"), master("B")]))),
             None,
-            "untitled: {title:?}"
+            "untitled, both sets: {title:?}"
+        );
+        assert_eq!(
+            group_label(&group_of(titled(
+                "u",
+                title,
+                vec![toggle("T"), param_fader("P")]
+            ))),
+            None,
+            "untitled, no strip: {title:?}"
         );
     }
 }
@@ -1281,13 +1313,14 @@ fn a_run_that_starts_with_a_strip_names_its_group_on_that_strip_and_shows_no_tit
     ]]));
     // Five cells a side: no group is cut by the column.
     let line = one_line(&model);
-    // Each titled run's first strip, nothing else; an untitled group none.
+    // Each run's first strip, nothing else; the untitled group by its set.
     assert_eq!(
         labels(&line),
         vec![
             ("c0-0".into(), "STAGE".into(), Some("band".into())),
             ("c1-0".into(), "EFFECTS".into(), None),
             ("c2-0".into(), "HANDS".into(), Some("master".into())),
+            ("c3-0".into(), "BAND".into(), Some("band".into())),
         ]
     );
     // Every run keeps its anchor (the tests find a strip's group by it),
@@ -1302,6 +1335,20 @@ fn a_run_that_starts_with_a_strip_names_its_group_on_that_strip_and_shows_no_tit
         ]
     );
     assert!(!captions(&line));
+    assert!(!one_room(&model));
+    // An untitled group whose strips differ names nothing.
+    let mixed = PageModel::of(&page(vec![vec![titled(
+        "m",
+        None,
+        vec![strip_on("band", "R"), strip_on("master", "R")],
+    )]]));
+    let line = one_line(&mixed);
+    assert_eq!(labels(&line), vec![]);
+    // (Cut by the column: a run a side, neither with a title.)
+    assert_eq!(
+        anchors(&line),
+        vec![("t0-0".into(), false), ("t0-1".into(), false)]
+    );
 }
 
 #[test]
@@ -1340,12 +1387,17 @@ fn a_run_that_does_not_start_with_a_strip_keeps_its_title_and_its_line_the_room(
         vec![("c2-0".into(), "STAGE".into(), Some("band".into()))]
     );
     assert!(captions(&line));
-    let block = PageModel::of(&page(vec![vec![titled(
-        "cue",
-        None,
-        vec![toggle("T0"), toggle("T1")],
-    )]]));
-    let line = one_line(&block);
+    assert!(one_room(&model));
+    // A titled block keeps its title; an untitled one has none to show and
+    // keeps none: its line gives the room to its faders.
+    let block = |title: Option<&str>| {
+        PageModel::of(&page(vec![vec![titled(
+            "cue",
+            title,
+            vec![toggle("T0"), toggle("T1")],
+        )]]))
+    };
+    let line = one_line(&block(Some("CUE")));
     assert_eq!(anchors(&line), vec![("t0-0".into(), true)]);
     assert!(matches!(
         line[1],
@@ -1356,6 +1408,40 @@ fn a_run_that_does_not_start_with_a_strip_keeps_its_title_and_its_line_the_room(
         }
     ));
     assert!(captions(&line));
+    assert!(one_room(&block(Some("CUE"))));
+    let line = one_line(&block(None));
+    assert_eq!(anchors(&line), vec![("t0-0".into(), false)]);
+    assert!(!captions(&line));
+    assert!(!one_room(&block(None)));
+    // Untitled runs that start with no strip: a parameter fader shows
+    // nothing (no title, no strip: none), a button before a band strip the
+    // set's pill (kept). Three cells a side: no group is cut.
+    let untitled = PageModel::of(&page(vec![vec![
+        titled("p", None, vec![param_fader("All")]),
+        titled("b", None, vec![toggle("T"), strip_on("band", "A")]),
+        group(
+            "s",
+            vec![
+                strip_on("band", "S0"),
+                strip_on("band", "S1"),
+                strip_on("band", "S2"),
+            ],
+        ),
+    ]]));
+    let line = one_line(&untitled);
+    assert_eq!(
+        anchors(&line),
+        vec![
+            ("t0-0".into(), false),
+            ("t1-0".into(), true),
+            ("t2-0".into(), false)
+        ]
+    );
+    assert_eq!(
+        labels(&line),
+        vec![("c2-0".into(), "s".into(), Some("band".into()))]
+    );
+    assert!(one_room(&untitled));
     // A line of blanks only (a pager whose shown sub-page is empty) has no
     // run anchor and no title.
     assert!(!captions(&[Item::Cell {
@@ -1435,4 +1521,80 @@ fn a_group_cut_into_runs_names_itself_at_the_start_of_each_run() {
         .sum();
     assert!(count > 1, "the premise: runs on the line");
     assert_eq!(firsts.len(), count, "{firsts:?}");
+}
+
+#[test]
+fn a_lines_room_is_the_same_on_every_sub_page() {
+    // A pager whose second sub-page holds a titled block: the line keeps
+    // the title's room on the first sub-page too, where no title shows, so
+    // a switch moves no strip.
+    let pages = |title: Option<&str>| {
+        PageModel::of(&page(vec![vec![
+            pager(vec![
+                ("a", vec![group("a", vec![strip("A0"), strip("A1")])]),
+                (
+                    "b",
+                    vec![titled("b", title, vec![toggle("T0"), toggle("T1")])],
+                ),
+            ]),
+            group("s", vec![strip("S0"), strip("S1")]),
+        ]]))
+    };
+    let model = pages(Some("CUE"));
+    let on_a = arrange(&model, Some(0), 519.0, 822.0, |_| 0, &METRICS);
+    let on_b = arrange(&model, Some(1), 519.0, 822.0, |_| 0, &METRICS);
+    assert!(!captions(&items(&model, &on_a.lines[0])), "no title on a");
+    assert!(
+        captions(&items(&model, &on_b.lines[0])),
+        "b's block's title"
+    );
+    assert!(on_a.lines[0].room, "the room on a");
+    assert!(on_b.lines[0].room, "the room on b");
+    // The block untitled: no title anywhere, no room on either.
+    let model = pages(None);
+    for sub in [Some(0), Some(1)] {
+        let a = arrange(&model, sub, 519.0, 822.0, |_| 0, &METRICS);
+        assert!(!a.lines[0].room, "{sub:?}");
+    }
+}
+
+#[test]
+fn a_lines_room_is_the_same_in_every_window() {
+    // Sides of 135 px hold four cells at 64 px: the group's five cells show
+    // in a window. From the start, both runs start with a strip; one step
+    // on, the right one starts with the button (its title shows). The line
+    // keeps the room in both windows, so an arrow moves no strip.
+    let model = PageModel::of(&page(vec![vec![group(
+        "a",
+        vec![
+            strip("S0"),
+            strip("S1"),
+            strip("S2"),
+            toggle("T"),
+            strip("S3"),
+        ],
+    )]]));
+    let start = arrange(&model, None, 135.0, 822.0, |_| 0, &METRICS);
+    let next = arrange(&model, None, 135.0, 822.0, |_| 1, &METRICS);
+    assert_eq!(start.lines[0].shift.map(|s| s.last), Some(1), "the premise");
+    assert!(
+        !captions(&items(&model, &start.lines[0])),
+        "no title from the start"
+    );
+    assert!(
+        captions(&items(&model, &next.lines[0])),
+        "the title one step on"
+    );
+    assert!(start.lines[0].room, "the room from the start");
+    assert!(next.lines[0].room, "the room one step on");
+    // Strips only: no room in any window.
+    let strips = PageModel::of(&page(vec![vec![group(
+        "a",
+        (0..5).map(|i| strip(&format!("S{i}"))).collect(),
+    )]]));
+    for offset in [0, 1] {
+        let a = arrange(&strips, None, 135.0, 822.0, |_| offset, &METRICS);
+        assert!(a.lines[0].shift.is_some(), "the premise: a window");
+        assert!(!a.lines[0].room, "{offset}");
+    }
 }

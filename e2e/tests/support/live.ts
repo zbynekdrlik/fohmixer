@@ -209,6 +209,53 @@ export async function resetLayout() {
   await until(servedLayout, (l) => l.config?.idle_after_s === undefined, "the hub serving the fixture layout again");
 }
 
+/** Every group of a layout: the rows' and every pager sub-page's. */
+function allGroups(layout: any): any[] {
+  return layout.pages.flatMap((page: any) =>
+    page.rows.flatMap((row: any) =>
+      row.sections.flatMap((s: any) => (s.kind === "pager" ? s.pages.flatMap((sub: any) => sub.sections) : [s])),
+    ),
+  );
+}
+
+/**
+ * The fixture layout with these groups titled (#127: the fixture's runs that
+ * start with no strip have no title to show, so no line keeps the titles'
+ * room; a title makes one), served by the hub when this returns. Generic
+ * titles only (a public repo). A test that sets it puts the fixture back
+ * with `untitleGroups` in its `finally`.
+ */
+export async function titleGroups(titles: Record<string, string>) {
+  const layout = JSON.parse(readFileSync(FIXTURE_LAYOUT, "utf-8"));
+  for (const group of allGroups(layout)) if (group.id in titles) group.title = titles[group.id];
+  await harness("/hub/layout", { layout });
+  await until(
+    servedLayout,
+    (l) => Object.entries(titles).every(([id, title]) => allGroups(l).find((g) => g.id === id)?.title === title),
+    "the hub serving the titled groups",
+  );
+}
+
+/** The fixture layout again after `titleGroups`, served by the hub when this returns. */
+export async function untitleGroups(ids: string[]) {
+  await harness("/hub/layout/reset");
+  await until(
+    servedLayout,
+    (l) => ids.every((id) => allGroups(l).find((g) => g.id === id)?.title === undefined),
+    "the hub serving the fixture layout again",
+  );
+}
+
+/**
+ * The name on the side of the first strip of `inner`'s group's run (#127:
+ * its title, or an untitled group's shared Live set): the first one among
+ * the group's strips.
+ */
+export async function groupLabelOf(page: Page, inner: Locator): Promise<Locator> {
+  const id = await inner.evaluate((e) => e.closest("[data-group]")?.getAttribute("data-group") ?? "");
+  return page.locator(`.slot[data-group="${id}"] [data-testid="group-side"]`).first();
+}
+
 /** A control line on a host's stdin (`stall <ms>`, `rename "<a>" "<b>"`): its answer. */
 export async function hostLine(instance: string, line: string): Promise<string | null> {
   return (await harness(`/host/${instance}/line`, { line })).answer;

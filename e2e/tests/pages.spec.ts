@@ -185,22 +185,27 @@ test.describe("The page is its rows of sections around the control column", () =
     }
     expect(await groups(page)).toEqual(expected.flat());
     // Titles and colour markers (#127): a run that starts with a strip shows
-    // no title over it, and its first strip names a titled group on its
-    // side; any other run keeps its title and its colour marker.
+    // no title over it, and its first strip names the group on its side (its
+    // title, or an untitled group's shared Live set); any other run keeps
+    // its title and its colour marker when it has a name to show.
     for (const row of foh.rows) {
       for (const section of row.sections) {
         if (section.kind !== "group") continue;
         const group = page.locator(`[data-testid="group"][data-group="${section.id}"]`);
         const slots = page.locator(`.slot[data-group="${section.id}"]`);
+        const instances = section.controls.filter((c: any) => c.kind === "strip").map((c: any) => c.binding.instance);
+        const shared = instances.length > 0 && instances.every((i: string) => i === instances[0]) ? instances[0] : null;
+        const name = section.title ?? (shared ? shared.toUpperCase() : null);
         if (section.controls[0]?.kind === "strip") {
           await expect(group.getByTestId("group-title"), `${section.id}: no title over its strips`).toHaveCount(0);
           await expect(group.locator(".group-mark"), `${section.id}: no marker`).toHaveCount(0);
-          const label = slots.first().getByTestId("group-side");
-          if (section.title) await expect(label).toHaveText(section.title);
-          await expect(slots.getByTestId("group-side"), `${section.id}: its side labels`).toHaveCount(section.title ? 1 : 0);
-        } else {
+          if (name) await expect(slots.first().getByTestId("group-side")).toHaveText(name);
+          await expect(slots.getByTestId("group-side"), `${section.id}: its side labels`).toHaveCount(name ? 1 : 0);
+        } else if (name) {
           await expect(group.getByTestId("group-title")).toHaveText(section.title ?? "");
           if (section.color) await expect(group.locator(".group-mark")).toHaveCSS("background-color", rgb(section.color));
+        } else {
+          await expect(group.getByTestId("group-title"), `${section.id}: no empty title`).toHaveCount(0);
         }
         if (section.color) {
           // Each strip of the group wears its colour on its top edge.

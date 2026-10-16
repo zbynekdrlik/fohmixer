@@ -12,7 +12,8 @@
    surface, the tabs, the status), page.css (the page: its sides and the
    control column, #63), buttons.css (rail buttons,
    TechAlert), strip.css (strips, meter, fader, name button, parameter
-   fader), link.css (the linked mute's chain, #127), vca.css (the
+   fader), group.css (a group's title over a run and its name on a strip's
+   side, #127), link.css (the linked mute's chain, #127), vca.css (the
    backing-tracks fader, #58), detail.css (the
    channel detail and its pan, #71), states.css
    (disabled, failed, unresolved, reduced motion) and intent.css (the look

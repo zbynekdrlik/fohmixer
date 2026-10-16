@@ -34,7 +34,7 @@ use crate::store::{LiveStore, Slot};
 
 /// The dB scale beside a fader: the labels of the fader's volume law at the
 /// fader positions of their levels; on the first strip of a group's run,
-/// `group_name`, the group's name on its side (#127, `strip.css` `.group-side`):
+/// `group_name`, the group's name on its side (#127, `group.css` `.group-side`):
 /// between the +6 and −6 dB labels of the law (`behave::scale::side_style`),
 /// in the colour of the Live instance the group's strips share
 /// (`data-instance`, none when they differ). It takes no touch: the fader
@@ -232,8 +232,9 @@ fn StripMenu(strip: Strip) -> impl IntoView {
 }
 
 /// One strip; `shared` is the Live instance every strip of its group shares
-/// (#63: the group names it, so the strip does not); `group_name` the
-/// group's name on its side when the strip starts a run (#127, `ScaleView`).
+/// (#63: the group names it once, since #127 by its name on the side of
+/// its run's first strip, so the strip does not); `group_name` that name
+/// when the strip starts a run (#127, `ScaleView`).
 #[component]
 pub fn StripView(
     strip: Strip,

@@ -27,7 +27,7 @@ use serde_json::json;
 use crate::app::version_text;
 use crate::arrange::{
     Arrangement, Cell, GroupLabel, Item, LineKey, METRICS, PageModel, Shift, Side, Sides,
-    arrange_in, captions, items, px_value, thin_line,
+    arrange_in, items, px_value, thin_line,
 };
 use crate::behave::ableset::tab_dot;
 use crate::behave::solo::soloed;
@@ -908,9 +908,10 @@ fn PageView(page: Page, global: Vec<Control>, sub: Memo<Option<usize>>) -> impl 
 /// side of the column (`page.css` orders the left side's, `.split` taking
 /// the rest of the left half and the column, the right side's), so a cell
 /// that changes side or group run moves and is not rebuilt. Only a line
-/// that shows a group's title over a run keeps the title's room
-/// (`data-captions`, `arrange::captions`, #127): on any other its strips
-/// take it.
+/// that shows a group's title over a run on any of its sub-pages and
+/// windows keeps the title's room (`data-captions`,
+/// `LineArrangement::room`, #127): on any other its strips take it, and a
+/// sub-page switch or an arrow never changes it.
 #[component]
 fn LineView(
     arranged: Memo<Option<Arrangement>>,
@@ -930,7 +931,15 @@ fn LineView(
                 .unwrap_or_default()
         })
     };
-    let captioned = Memo::new(move |_| list.try_with(|l| captions(l.as_slice())).unwrap_or(false));
+    let captioned = Memo::new(move |_| {
+        arranged
+            .try_with(|a| {
+                a.as_ref()
+                    .and_then(|a| a.lines.get(line))
+                    .is_some_and(|l| l.room)
+            })
+            .unwrap_or(false)
+    });
     // The line's row, and its left side's span (`--l-units` strips and
     // `--l-cells` cells): `.split` takes the rest of the left side and the
     // column, so the right side starts right after the column.
