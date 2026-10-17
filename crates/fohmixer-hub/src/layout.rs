@@ -243,6 +243,7 @@ impl LayoutStore {
             rev,
             "the layout's markers changed: a new composition served"
         );
+        warn_lonely(&state);
         // Under the lock, as `poll` keeps its own: two writers never pick
         // the same free name, and the newest backup is the newest served.
         self.backup_served(state.layout.as_deref());
@@ -332,6 +333,7 @@ impl LayoutStore {
                 state.rev += 1;
                 state.frame = Some(Arc::new(layout));
                 serve(&mut state);
+                warn_lonely(&state);
                 self.backup_served(state.layout.as_deref());
                 state.error = None;
                 self.backup(&text);
@@ -366,6 +368,7 @@ impl LayoutStore {
             state.rev += 1;
             state.frame = Some(Arc::new(layout));
             serve(state);
+            warn_lonely(state);
             state.accepted = Some(text);
             tracing::warn!(
                 backup = %name,
@@ -475,10 +478,15 @@ fn serve(state: &mut State) {
     let composed = compose(&frame, &state.markers);
     state.problems = composed.problems;
     state.links = composed.links;
+    state.layout = Some(Arc::new(composed.layout));
+}
+
+/// A new composition's warn lines (#130: once per composition served, never
+/// again for a marker set that leaves it as it was).
+fn warn_lonely(state: &State) {
     for line in lonely_lines(&state.links) {
         tracing::warn!("{line}");
     }
-    state.layout = Some(Arc::new(composed.layout));
 }
 
 /// A warn line per linked fader no Tuner names (#130): it is red on the
