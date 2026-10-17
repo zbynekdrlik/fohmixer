@@ -2,7 +2,9 @@
 //! reverb-link-v2): whether a leader's touch moves its partners, the corner
 //! marks of a leader and a partner, the detail's texts, and a linked
 //! touch's start and volumes on the backing-tracks fader's same-dB drag
-//! (`vca::Drag::around`). Pure.
+//! (`vca::Drag::around`; a leader at −∞ moves alone). Pure.
+
+use fohmixer_proto::volume::value2db;
 
 use super::vca::Drag;
 
@@ -103,9 +105,11 @@ pub fn follow_state(on: Option<bool>, fixed: bool, leader: &str) -> String {
 
 /// A linked touch's start: the own track's shown volume first, then each
 /// partner that shows one (its index kept); none without the own track's
-/// value or without a partner's.
+/// value or without a partner's. A leader at −∞ has no dB to move its
+/// partners by (the main session's ruling on #130: a move up would throw
+/// them to +6 dB, a write at the bottom give NaN): it moves alone.
 pub fn link_drag(own: Option<f64>, partners: &[Option<f64>]) -> Option<(Drag, Vec<usize>)> {
-    let own = own?;
+    let own = own.filter(|&v| value2db(v).is_finite())?;
     let (idx, starts): (Vec<usize>, Vec<f64>) = partners
         .iter()
         .enumerate()
@@ -131,7 +135,6 @@ pub fn link_volumes(drag: &Drag, idx: &[usize], own: f64) -> Vec<(usize, f64)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fohmixer_proto::volume::value2db;
 
     #[test]
     fn a_leader_moves_its_partners_while_its_switch_is_on() {
