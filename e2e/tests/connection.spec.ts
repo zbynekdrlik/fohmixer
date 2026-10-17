@@ -1,4 +1,4 @@
-import type { Locator, Page, WebSocketRoute } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
 import { test, expect } from "./support/fixtures";
 import {
   HUB_SOCKET,
@@ -13,6 +13,7 @@ import {
   token,
   track,
   until,
+  withoutHubValuesAfterTheFirst,
 } from "./support/live";
 
 // The hub connection (S4 design note §4, §6; #8 review): the handshake
@@ -94,24 +95,6 @@ async function railSteps(since: number, ok: (steps: string[]) => boolean): Promi
     "the rail steps uploaded",
     15_000,
   );
-}
-
-/**
- * Routes the page's sockets to the hub: the first one as it is, every later
- * one with all but the hub values (as if the hub had not sent STAGE AUT
- * yet). The routes, in order.
- */
-async function withoutHubValuesAfterTheFirst(page: Page): Promise<WebSocketRoute[]> {
-  const sockets: WebSocketRoute[] = [];
-  await page.routeWebSocket(HUB_SOCKET, (ws) => {
-    sockets.push(ws);
-    const server = ws.connectToServer();
-    if (sockets.length === 1) return;
-    server.onMessage((message) => {
-      if (JSON.parse(String(message)).type !== "hub") ws.send(message);
-    });
-  });
-  return sockets;
 }
 
 test.describe("The protocol handshake", () => {

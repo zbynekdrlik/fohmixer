@@ -255,7 +255,10 @@ pub fn ParamFaderView(label: String, targets: Vec<ParamTarget>) -> impl IntoView
 /// decision of 2026-10-13); under it the loudest track's dB and every track's
 /// value. Its frame loop draws the grooves, the readout and the highlight
 /// (`data-moved`) from what each track shows: its open write, else Live's
-/// value (`fader::shown_volumes`), and only when that changed.
+/// value (`fader::shown_volumes`), and only when that changed. A linked
+/// fader (#130, D18: `link`) is drawn so whatever its partners: the markers
+/// fill its targets with the tracks whose Tuners carry `+FADER:<id>`, in
+/// Live's order; with none, its fader is red (I5) and takes no touch.
 #[component]
 pub fn VcaFaderView(label: String, targets: Vec<ParamTarget>, settings: Settings) -> impl IntoView {
     let store = expect_context::<LiveStore>();

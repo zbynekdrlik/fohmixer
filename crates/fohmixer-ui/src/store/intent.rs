@@ -337,10 +337,30 @@ impl<F> Intents<F> {
         (key, item)
     }
 
+    /// Writes Live applies together, each its own value (#130: a linked
+    /// fader's move; #127's linked mute is the same value for every one):
+    /// each its own intent, seq and handler, ONE `sets` message (the hub
+    /// writes one instance's to Live in one batch).
+    pub fn set_each(
+        &mut self,
+        items: Vec<(At<'_>, Value, Option<F>)>,
+        t: f64,
+        is_final: bool,
+    ) -> (Vec<String>, ClientMsg) {
+        let mut keys = Vec::new();
+        let mut sets = Vec::new();
+        for (target, value, fail) in items {
+            let (key, item) = self.write(target, value, t, is_final, fail);
+            keys.push(key);
+            sets.push(item);
+        }
+        (keys, ClientMsg::Sets { sets })
+    }
+
     /// Writes of `value` to every target at page time `t` (#127, a linked
     /// mute's tap), each of its own key, sequence number and failure
     /// handler, as [`Intents::set`] makes them: their keys and ONE `sets`
-    /// message (the hub writes one instance's to Live in one batch).
+    /// message ([`Intents::set_each`] with the same value for every one).
     pub fn set_together(
         &mut self,
         targets: Vec<(At<'_>, Option<F>)>,
@@ -348,14 +368,11 @@ impl<F> Intents<F> {
         t: f64,
         is_final: bool,
     ) -> (Vec<String>, ClientMsg) {
-        let mut keys = Vec::new();
-        let mut sets = Vec::new();
-        for (target, fail) in targets {
-            let (key, item) = self.write(target, value.clone(), t, is_final, fail);
-            keys.push(key);
-            sets.push(item);
-        }
-        (keys, ClientMsg::Sets { sets })
+        let items = targets
+            .into_iter()
+            .map(|(at, fail)| (at, value.clone(), fail))
+            .collect();
+        self.set_each(items, t, is_final)
     }
 
     /// The control of `key` was let go at page time `t` without a final

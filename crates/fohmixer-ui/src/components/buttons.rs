@@ -16,6 +16,7 @@ use super::{
     BtnText, fail_flash, intent_look, key_of, owns_touches, readiness, slot_of, trace_touch,
 };
 use crate::behave::colour::{css_color, text_on};
+use crate::behave::fader_link::{Flink, flink_compact};
 use crate::behave::label::{label_chars, strip_label};
 use crate::behave::mute::{GUARD_MS, GuardAction, Linked, MuteGuard, Reach, chain_compact};
 use crate::binding::{SubSpec, mute_sub, solo_sub};
@@ -168,6 +169,10 @@ pub fn MuteView(
     color: Option<RwSignal<Slot>>,
     partners: Vec<Partner>,
     corner: Option<Corner>,
+    /// The fader link's mark in the corner line (#130): a leader's or a
+    /// partner's; none on the detail's MUTE.
+    #[prop(optional, into)]
+    flink: Signal<Flink>,
 ) -> impl IntoView {
     let store = expect_context::<LiveStore>();
     let slot = state;
@@ -179,7 +184,13 @@ pub fn MuteView(
         .chain(partners.iter().map(|p| p.spec.clone()))
         .collect();
     let keys: Vec<String> = specs.iter().map(key_of).collect();
-    // The strip's corner line, or the detail's MUTE mark and pill.
+    // The strip's corner line, or the detail's MUTE mark and pill. The
+    // fader link's mark (#130) goes after the chain, compact beside a
+    // crowded one (`flink_compact`: the chain's count as LinkMark shows it).
+    let count = all.len();
+    let count_slots = all.clone();
+    let chain_text = (linked && corner.is_some())
+        .then(|| Memo::new(move |_| linked_now(&count_slots, true).text(count)));
     let line_slots = all.clone();
     let line = corner.map(move |c| {
         let flag = c
@@ -189,10 +200,34 @@ pub fn MuteView(
         let ret = c.ret.then(|| {
             view! { <span class="strip-ret" data-testid="strip-ret" aria-hidden="true">"RET"</span> }
         });
+        let compact = move || {
+            let text = chain_text.and_then(|t| t.try_get());
+            flink_compact(c.flag, text.as_deref())
+        };
+        let fader_mark = move || {
+            let role = flink.try_get().unwrap_or_default();
+            role.shown().then(|| {
+                let name = role.name();
+                let follow = role.follows();
+                view! {
+                    <span
+                        class="link-mark flink"
+                        class:follow=follow
+                        class:compact=compact
+                        data-testid="fader-link-mark"
+                        data-role=name
+                        aria-hidden="true"
+                    >
+                        <span class="link-n">"dB"</span>
+                    </span>
+                }
+            })
+        };
         view! {
             <span class="strip-corner">
                 {flag}
                 {chain}
+                {fader_mark}
                 {ret}
                 <span class="mute-mark" aria-hidden="true">"MUTE"</span>
             </span>

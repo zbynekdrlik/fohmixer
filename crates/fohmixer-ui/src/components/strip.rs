@@ -20,6 +20,7 @@ use leptos::prelude::*;
 use super::buttons::{Corner, MuteView, Partner, anchor_name};
 use super::detail::DetailStrip;
 use super::fader::{FaderView, Law, Target};
+use super::fader_link::link_parts;
 use super::meter::{MeterView, StatusView};
 use super::{Settings, owns_touches, trace_detail};
 use crate::arrange::GroupLabel;
@@ -246,6 +247,9 @@ pub fn StripView(
     // The strip its ☰ opens the detail of (#71).
     let menu_strip = strip.clone();
     let subs = strip_subs(&strip, settings.meter_source);
+    // The fader link (#130, D18): a leader's partners and switch, a
+    // partner's leaders, the corner's mark.
+    let parts = link_parts(store, &strip, &subs, settings.law);
     let volume = subs.volume.as_ref().map(|s| store.slot(s));
     let mute = subs.mute.as_ref().map(|s| store.slot(s));
     let color = subs.color.as_ref().map(|s| store.slot(s));
@@ -263,13 +267,23 @@ pub fn StripView(
     let label_attr = label.clone();
     let instance = strip.binding.instance.clone();
 
+    let link_on = parts.link_on;
+    let flink = parts.flink;
+    let link_partners = parts.partners;
     let fader = volume.zip(subs.volume.clone()).map(|(slot, spec)| {
         let targets = vec![Target {
             spec: Some(spec),
             slot,
             law: Law::Volume(settings.law),
         }];
-        view! { <FaderView targets=targets shaping={settings.shaping} /> }
+        view! {
+            <FaderView
+                targets=targets
+                shaping={settings.shaping}
+                partners=link_partners
+                link_on=link_on
+            />
+        }
     });
     let ret = strip.strip_kind == StripKind::Return;
     // The instance tag only where the group does not name it (#63).
@@ -303,6 +317,7 @@ pub fn StripView(
                 color=color
                 partners=partners
                 corner=corner
+                flink=flink
             />
         }
     });
@@ -331,6 +346,9 @@ pub fn StripView(
     let law = settings.law;
     // The unity line at 0 dB on the fader's law (`strip.css` `.fader::after`).
     let unity = format!("--u:{:.4};", law.to_pos(UNITY));
+    // The fader link's mark (#130): `link.css` gives a leader's cap line
+    // the accent.
+    let flink_attr = move || flink.try_get().unwrap_or_default().name();
     view! {
         <div
             class="strip"
@@ -341,6 +359,7 @@ pub fn StripView(
             data-instance=strip_instance
             data-kind=kind
             data-mark=mark
+            data-flink=flink_attr
         >
             <div class="strip-head">
                 {mute_view}

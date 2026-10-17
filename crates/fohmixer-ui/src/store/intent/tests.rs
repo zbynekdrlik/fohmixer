@@ -553,6 +553,39 @@ fn the_recorder_hears_a_write_not_sent_again_at_the_resend_that_kept_it() {
 }
 
 #[test]
+fn writes_with_their_own_values_go_in_one_sets() {
+    // #130: a linked fader's move, each write its own value.
+    let mut intents = Intents::<&str>::default();
+    let st = ("band", "live_set tracks 4 mixer_device volume", "value");
+    let pa = ("band", "live_set tracks 5 mixer_device volume", "value");
+    let (keys, msg) = intents.set_each(
+        vec![(st, json!(0.7), None), (pa, json!(0.5), None)],
+        10.0,
+        false,
+    );
+    assert_eq!(
+        keys,
+        vec![
+            "band|live_set tracks 4 mixer_device volume|value",
+            "band|live_set tracks 5 mixer_device volume|value"
+        ]
+    );
+    let ClientMsg::Sets { sets } = msg else {
+        panic!("{msg:?}")
+    };
+    assert_eq!(
+        sets.iter()
+            .map(|s| (s.seq, s.value.clone(), s.is_final, s.t))
+            .collect::<Vec<_>>(),
+        vec![(1, json!(0.7), false, 10.0), (2, json!(0.5), false, 10.0)]
+    );
+    assert_eq!(
+        intents.open(&keys[1]).map(|w| w.value.clone()),
+        Some(json!(0.5))
+    );
+}
+
+#[test]
 fn a_linked_mutes_writes_go_as_one_sets_message_each_its_own_intent() {
     // #127: each target a write of its own key, sequence number and
     // handler; one `sets` message carries them all.

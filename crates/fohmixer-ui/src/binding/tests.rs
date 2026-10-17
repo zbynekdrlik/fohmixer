@@ -1,5 +1,5 @@
 use super::*;
-use fohmixer_proto::layout::StripKind;
+use fohmixer_proto::layout::{FaderFollow, FaderLink, LinkPartner, StripKind};
 use serde_json::json;
 
 fn track(name: &str, path: Option<&str>) -> Binding {
@@ -780,6 +780,45 @@ fn with_strips(strips: &[Strip]) -> Layout {
             {"kind": "group", "id": "markers", "title": "MARKERS", "controls": controls}]}]}]
     }))
     .expect("the layout parses")
+}
+
+#[test]
+fn a_leader_subscribes_its_fader_partners_volumes_and_a_partner_none() {
+    let mut strip = marker(3, "Rev PA");
+    strip.fader_link = Some(FaderLink {
+        id: "REV".into(),
+        partners: vec![LinkPartner {
+            binding: Binding {
+                instance: "band".into(),
+                anchor: Anchor::TrackAt { index: 2 },
+                path: None,
+            },
+            label: "Rev ST".into(),
+        }],
+    });
+    let subs = strip_subs(&strip, MeterSource::Level);
+    assert_eq!(
+        subs.fader_partners
+            .iter()
+            .map(SubSpec::key)
+            .collect::<Vec<_>>(),
+        vec!["band|live_set tracks 2 mixer_device volume|value|true"]
+    );
+    assert!(
+        subs.shown().contains(&subs.fader_partners[0])
+            && subs.all().contains(&subs.fader_partners[0])
+    );
+    let mut partner = marker(2, "Rev ST");
+    partner.fader_follows = vec![FaderFollow {
+        id: "REV".into(),
+        leader: "Rev PA".into(),
+        fixed: false,
+    }];
+    assert!(
+        strip_subs(&partner, MeterSource::Level)
+            .fader_partners
+            .is_empty()
+    );
 }
 
 #[test]

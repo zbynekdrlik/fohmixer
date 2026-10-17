@@ -2,10 +2,10 @@
 # dropped): the PR gate in .github/workflows/ci.yml is diff-scoped, its shard
 # count computed by the `mutants-list` job from the diff's mutant count; the
 # full sweep is .github/workflows/mutation-full.yml (on demand). Both pass
-# --copy-target=true after a warm-up build and --timeout 160 (with
+# --copy-target=true after a warm-up build and --timeout 170 (with
 # --baseline=skip there is no measured test time, so a hung mutant would
-# otherwise hold its job for 300 s; 160 s is 2x the measured unmutated hub
-# suite, .claude/rules/ci.md). Tests run per package only. A mutant caught
+# otherwise hold its job for 300 s; 170 s is 2x the slowest measured
+# unmutated hub suite, .claude/rules/ci.md). Tests run per package only. A mutant caught
 # only by a timeout is tested again by scripts/mutants_recheck.py.
 profile = "mutants"
 test_tool = "nextest"
@@ -155,7 +155,13 @@ exclude_re = [
   # `sets` message through sent_set); linked-mute.spec.ts taps a strip
   # linked three ways and reads the three mutes in SimLive and the hub's one
   # batch of them.
-  "fohmixer-ui/src/store/live/writes\\.rs.*(replace|in) LiveStore::(on_ack|resend|set|set_together|sent_set|release|touch|intent_state|intent_view|live_value|note_intents)( |$)",
+  # #130 added set_each (writes Live applies together, each its own value:
+  # the tested Intents::set_each with the page clock and each key's flash,
+  # its one `sets` message through sent_set, its first seq by the tested
+  # trace::seq_of; set_together now hands it the same value for each);
+  # fader-link.spec.ts drags a linked leader and Podklady All on tags and
+  # reads every batch of the drag at the hub carrying all of their keys.
+  "fohmixer-ui/src/store/live/writes\\.rs.*(replace|in) LiveStore::(on_ack|resend|set|set_each|set_together|sent_set|release|touch|intent_state|intent_view|live_value|note_intents)( |$)",
   # store/live/deck.rs (#52): the Stream Deck's glue, one function at a time:
   # on_deck, on_deck_keys and on_deck_ack (the hub's messages into the
   # signals and the tested DeckWaiting), deck_view and deck_hello (the tab's
@@ -288,6 +294,12 @@ exclude_re = [
   # touch-guard.spec.ts drives them on every tap target of the surface.
   "fohmixer-ui/src/components/mod\\.rs.*(replace|in) (owns_touches|owns_surface)( |$)",
   "fohmixer-ui/src/components/buttons\\.rs.*(replace|in) toggle_flag( |$)",
+  # components/fader_link.rs (#130): link_parts, the fader link's glue:
+  # signals over the hub values and the store; its decisions are
+  # behave::fader_link (tested), driven end to end by fader-link.spec.ts
+  # (the marks, the detail's switch and note, the linked drag and double
+  # tap).
+  "fohmixer-ui/src/components/fader_link\\.rs.*(replace|in) link_parts( |$)",
   # components/fader.rs (#58): shown_volumes (each target's open write,
   # through LiveStore::intent_view, which reads the page clock, else Live's
   # value; the tested behave::vca::look and Drag take what it gives);

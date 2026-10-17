@@ -106,6 +106,17 @@ fn only_a_fader_of_two_or_more_track_volumes_is_the_backing_tracks_fader() {
 }
 
 #[test]
+fn a_linked_fader_is_the_backing_tracks_fader_whatever_its_targets() {
+    assert!(draws_vca(true, &[]));
+    assert!(
+        draws_vca(true, &[volume("Drums #")]),
+        "one partner: still the backing-tracks fader"
+    );
+    assert!(!draws_vca(false, &[volume("Drums #")]));
+    assert!(draws_vca(false, &[volume("Drums #"), volume("Bass #")]));
+}
+
+#[test]
 fn the_loudest_is_the_largest_known_volume() {
     assert_eq!(loudest(&[Some(0.5), None, Some(0.55)]), Some(0.55));
     assert_eq!(loudest(&[Some(0.7), Some(0.2)]), Some(0.7));
@@ -190,6 +201,29 @@ fn a_drag_back_to_its_start_restores_the_exact_values() {
     // The finger's summed moves come back a few ulps off: still no move.
     assert_eq!(drag.volumes(0.55_f64.next_up()), vec![0.5, 0.55]);
     assert_eq!(drag.volumes(0.55_f64.next_down()), vec![0.5, 0.55]);
+}
+
+#[test]
+fn a_drag_around_its_own_track_moves_the_others_by_the_same_db() {
+    // The fader link (#130, D18): the own track at the finger, never the loudest.
+    let drag = Drag::around(vec![0.6, 0.85], 0.6);
+    let moved = drag.volumes(0.7);
+    assert_eq!(moved[0], 0.7);
+    assert_db(
+        moved[1],
+        value2db(0.85) + (value2db(0.7) - value2db(0.6)),
+        0.01,
+    );
+    // Back to the start: Live's values exactly.
+    assert_eq!(drag.volumes(0.6), vec![0.6, 0.85]);
+    // A partner at the own track's level follows exactly; one at −∞ stays.
+    assert_eq!(
+        Drag::around(vec![0.6, 0.6], 0.6).volumes(0.5),
+        vec![0.5, 0.5]
+    );
+    assert_eq!(Drag::around(vec![0.85, 0.0], 0.85).volumes(0.6)[1], 0.0);
+    // `new` still puts the loudest at the finger (#58).
+    assert_eq!(Drag::new(vec![0.6, 0.85]).unwrap().volumes(0.7)[1], 0.7);
 }
 
 #[test]

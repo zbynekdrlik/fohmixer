@@ -66,6 +66,13 @@ pub fn is_vca(targets: &[ParamTarget]) -> bool {
     targets.len() >= 2 && targets.iter().all(is_track_volume)
 }
 
+/// Whether a `param_fader` draws as the backing-tracks fader: a linked one
+/// (#130, D18: Podklady All, whatever its partners) or two or more track
+/// volumes (#58).
+pub fn draws_vca(linked: bool, targets: &[ParamTarget]) -> bool {
+    linked || is_vca(targets)
+}
+
 /// The loudest of the known volumes (the cap's); none before one is known.
 pub fn loudest(volumes: &[Option<f64>]) -> Option<f64> {
     volumes.iter().flatten().copied().reduce(f64::max)
@@ -93,31 +100,39 @@ fn is_same(delta: f64) -> bool {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Drag {
     start: Vec<f64>,
-    loudest: f64,
+    /// The track at the finger: the loudest (#58) or the touched strip's
+    /// own (#130).
+    anchor: f64,
 }
 
 impl Drag {
     /// A drag from these volumes (every target's, in order); none without
     /// a target.
     pub fn new(start: Vec<f64>) -> Option<Self> {
-        let loudest = start.iter().copied().reduce(f64::max)?;
-        Some(Self { start, loudest })
+        let anchor = start.iter().copied().reduce(f64::max)?;
+        Some(Self::around(start, anchor))
+    }
+
+    /// A drag whose `anchor` (a start volume) follows the finger: the fader
+    /// link's own track (#130, D18).
+    pub fn around(start: Vec<f64>, anchor: f64) -> Self {
+        Self { start, anchor }
     }
 
     /// Every target's volume with the cap at Live volume `finger`: the
-    /// loudest at the finger, every other one at its start dB plus the
-    /// finger's change from the loudest's start dB (silent at the law's
+    /// anchor at the finger, every other one at its start dB plus the
+    /// finger's change from the anchor's start dB (silent at the law's
     /// floor). A change under [`SAME_DB`] gives the start's volumes.
     pub fn volumes(&self, finger: f64) -> Vec<f64> {
         let finger = finger.clamp(0.0, 1.0);
-        let delta = value2db(finger) - value2db(self.loudest);
+        let delta = value2db(finger) - value2db(self.anchor);
         if is_same(delta) {
             return self.start.clone();
         }
         self.start
             .iter()
             .map(|&volume| {
-                if volume == self.loudest {
+                if volume == self.anchor {
                     finger
                 } else {
                     volume_of(value2db(volume) + delta)

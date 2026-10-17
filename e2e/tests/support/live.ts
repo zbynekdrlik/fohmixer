@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { expect, type Locator, type Page } from "@playwright/test";
+import { expect, type Locator, type Page, type WebSocketRoute } from "@playwright/test";
 
 // The E2E world: the hub (E2E_BASE_URL) with two SimLive hosts (band, master)
 // started by e2e/harness/harness.py, whose control API (E2E_HARNESS_URL) can
@@ -698,6 +698,25 @@ export async function textSize(el: Locator): Promise<{ w: number; h: number }> {
 
 /** The page's hub socket (`page.routeWebSocket(HUB_SOCKET, …)`). */
 export const HUB_SOCKET = /\/ws\?/;
+
+/**
+ * Routes the page's sockets to the hub: the first one as it is, every later
+ * one with all but the hub values (as if the hub had not sent STAGE AUT or a
+ * fader link's switch yet: `connection.spec.ts`, `fader-link.spec.ts`). The
+ * routes, in order.
+ */
+export async function withoutHubValuesAfterTheFirst(page: Page): Promise<WebSocketRoute[]> {
+  const sockets: WebSocketRoute[] = [];
+  await page.routeWebSocket(HUB_SOCKET, (ws) => {
+    sockets.push(ws);
+    const server = ws.connectToServer();
+    if (sockets.length === 1) return;
+    server.onMessage((message) => {
+      if (JSON.parse(String(message)).type !== "hub") ws.send(message);
+    });
+  });
+  return sockets;
+}
 
 /** Where the page keeps its last handshake reload (wall clock ms). */
 export const RELOAD_KEY = "fohmixer_proto_reload_at";
