@@ -63,6 +63,47 @@ async function prevented(el: Locator, type: string): Promise<boolean> {
   }, type);
 }
 
+/**
+ * The merged STAGE button with STAGE AUT on, at a phone's size (#104 review
+ * M8): the column opened, the pill a dot in the button's corner beside the
+ * label's text, and every rail button whole. Puts STAGE AUT back off.
+ */
+async function stageDotFits(page: Page) {
+  const live = await LiveClient.open();
+  try {
+    live.setHub("stage_aut", true);
+    await openSurface(page);
+    await openColumn(page);
+    const stage = page.getByTestId("stage-mics");
+    await expect(stage).toHaveAttribute("data-aut", "run");
+    const place = await stage.evaluate((el) => {
+      const button = el.getBoundingClientRect();
+      const dot = el.querySelector(".aut-badge")!.getBoundingClientRect();
+      const range = document.createRange();
+      range.selectNodeContents(el.querySelector(".btn-text")!);
+      const text = range.getBoundingClientRect();
+      return { button, dot, text };
+    });
+    // A 6 px dot inside the button, right of the label's text.
+    expect(place.dot.width).toBeCloseTo(6, 0);
+    expect(place.dot.height).toBeCloseTo(6, 0);
+    expect(place.dot.left).toBeGreaterThanOrEqual(place.button.left);
+    expect(place.dot.right).toBeLessThanOrEqual(place.button.right);
+    expect(place.dot.top).toBeGreaterThanOrEqual(place.button.top);
+    expect(place.dot.bottom).toBeLessThanOrEqual(place.button.bottom);
+    expect(place.dot.left, "the dot beside the label's text").toBeGreaterThanOrEqual(place.text.right);
+    // No second line on a phone.
+    await expect(stage.getByTestId("btn-sub")).toBeHidden();
+    for (const button of await page.getByTestId("rail").locator(".btn").all()) {
+      expect(await clipped(button), `rail button ${await button.textContent()}`).toEqual([]);
+    }
+  } finally {
+    live.setHub("stage_aut", false);
+    await until(async () => live.hub.get("stage_aut"), (v) => v === false, "STAGE AUT off");
+    live.close();
+  }
+}
+
 /** The strip width every line shares (`--strip-w`, px). */
 async function stripWidth(page: Page): Promise<number> {
   return page.getByTestId("page").evaluate((el) => parseFloat((el as HTMLElement).style.getPropertyValue("--strip-w")));
@@ -200,6 +241,10 @@ test.describe("On a phone on its side", () => {
         expect(box.y + box.height, `rail button ${name} on screen`).toBeLessThanOrEqual(390);
       }
     }
+  });
+
+  test("with STAGE AUT on, the STAGE button's pill is a dot in its corner and no rail button is clipped (#104)", async ({ page }) => {
+    await stageDotFits(page);
   });
 
   test("☰ opens the column over the dimmed faders, nothing under it moves; ✕, the shade and a page's tab close it; the thin strip's arrows move the line", async ({ page }) => {
@@ -344,6 +389,10 @@ test.describe("On a phone on its side", () => {
 
 test.describe("On a phone upright", () => {
   test.use({ viewport: { width: 390, height: 844 } });
+
+  test("with STAGE AUT on, the STAGE button's pill is a dot in its corner and no rail button is clipped (#104)", async ({ page }) => {
+    await stageDotFits(page);
+  });
 
   test("each row is a line of two strips a side, the column over the faders, its tabs and buttons whole", async ({ page }) => {
     await openSurface(page);

@@ -335,3 +335,34 @@ fn a_range_read_without_an_answer_keeps_the_range_before() {
     assert_eq!(next_range(before, &gone), None, "Live says it is gone");
     assert_eq!(next_range(None, &Err("offline".into())), None);
 }
+
+#[test]
+fn the_hub_values_stay_through_an_outage_stale_until_the_next_connection_sends_them() {
+    let mut hub = HubValues::default();
+    assert_eq!(
+        (hub.flag("stage_aut"), hub.fresh_flag("stage_aut")),
+        (None, None)
+    );
+    hub.put("stage_aut".into(), json!(true));
+    hub.put("other".into(), json!(false));
+    assert_eq!(hub.flag("stage_aut"), Some(true));
+    assert_eq!(hub.fresh_flag("stage_aut"), Some(true));
+    assert_eq!(hub.fresh_flag("other"), Some(false));
+    // A close keeps them, stale: shown, not acted on.
+    hub.closed();
+    assert_eq!(hub.flag("stage_aut"), Some(true));
+    assert_eq!(hub.fresh_flag("stage_aut"), None);
+    assert_eq!(hub.flag("other"), Some(false));
+    // The next connection's first value replaces them all: a key the hub no
+    // longer sends goes.
+    hub.put("stage_aut".into(), json!(false));
+    assert_eq!(hub.fresh_flag("stage_aut"), Some(false));
+    assert_eq!(hub.flag("other"), None);
+    // Further values of the same connection add to them.
+    hub.put("other".into(), json!(true));
+    assert_eq!(hub.fresh_flag("other"), Some(true));
+    assert_eq!(hub.fresh_flag("stage_aut"), Some(false));
+    // A value that is no flag reads as none.
+    hub.put("stage_aut".into(), json!("yes"));
+    assert_eq!(hub.flag("stage_aut"), None);
+}

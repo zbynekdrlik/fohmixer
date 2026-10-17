@@ -635,8 +635,8 @@ pub struct InstanceStatus {
     pub script_version: String,
     /// The last heartbeat's age of Live's main-thread tick.
     pub main_tick_age_ms: Option<f64>,
-    /// Client subscriptions (hub keys) on this instance: the pages' and
-    /// STAGE AUT's (the unfold keeper's own subscriptions are not counted).
+    /// Client subscriptions (hub keys) on this instance: the pages' (the
+    /// hub's own keepers' and rules' left out).
     pub subscriptions: usize,
     /// Live listeners the hub holds on this instance for its clients
     /// (subscriptions and the name guards of name bindings, deduplicated;
@@ -653,6 +653,11 @@ pub struct InstanceStatus {
     /// folded group.
     #[serde(default)]
     pub unfolded: Vec<String>,
+    /// The instance's transport (#130, D18), as the hub last heard
+    /// `is_playing`; none before it heard one (and in an older hub's
+    /// answer).
+    #[serde(default)]
+    pub playing: Option<bool>,
 }
 
 /// A layout binding that does not resolve on its instance (spec §2.5 D4,

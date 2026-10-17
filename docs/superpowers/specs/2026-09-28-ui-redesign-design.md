@@ -40,12 +40,13 @@ Control     = strip { binding, strip_kind: standard|return, wide?: bool, mute_gu
             | alert { binding, period_ms, label? } | refresh { label? } | text { text }
 ```
 
+- `hub_toggle` (the STAGE AUT button) left the schema with D18 (#104): since D18 the stage control with `aut` carries STAGE AUT (one rail button, a 3 s hold for the rule), and a layout that still holds `hub_toggle` is refused (`unknown variant`).
 - `Binding`, `ParamTarget`, `Press`, `Scale`, `LayoutConfig` are unchanged from schema 1 (the binding form is the D2 core).
 - `strip_kind`: `narrow` and `solid` were TouchOSC geometry and go; `meter_mute_only` (the TechAlert strip) merges into `alert` (one control: mute toggle of the TechAlert track + the full-screen blink). `wide` marks a bus strip drawn wider (the two top-right strips, returns).
 - `color` (`#RRGGBB`) on a group or a toggle is an identity hint (the section marker, a toggle's lit colour); the UI maps it onto its palette. A strip's colour comes from Live (§4.3).
 - `global` controls show on every page, in the rail's footer (TechAlert, REFRESH ALL).
 - `text` holds the Conf page's configuration text; `ConfInfo` still renders on the page with id `conf`.
-- **Validation** (proto `validate`): `schema == 2`; ids unique across pages, sub-pages and sections; every `default_page` names an existing page; at most one `pager` per page; bindings parse; alert `period_ms > 0`; `hub_toggle.key == stage_aut`; targets complete; `color` is `#RRGGBB[AA]`. `bindings()` and `stage_aut_binding()` walk the new tree.
+- **Validation** (proto `validate`): `schema == 2`; ids unique across pages, sub-pages and sections; every `default_page` names an existing page; at most one `pager` per page; bindings parse; alert `period_ms > 0`; `hub_toggle.key == stage_aut` (until D18); targets complete; `color` is `#RRGGBB[AA]`. `bindings()` and `stage_aut_binding()` walk the new tree.
 - The hub's load/poll/last-good/backup logic is unchanged; a schema-1 backup no longer validates, so the install ships a schema-2 `layout.json` (§6).
 
 ## 3. Import (tools/import-tosc)

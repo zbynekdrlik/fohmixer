@@ -87,8 +87,7 @@ fn sample() -> Layout {
             {"id": "foh", "title": "FOH",
              "rail": [
                 {"kind": "stage", "binding": tr("Mics #"), "aut": true},
-                {"kind": "solo", "binding": tr("Vocals grp")},
-                {"kind": "hub_toggle", "key": "stage_aut", "label": "STAGE AUT"}],
+                {"kind": "solo", "binding": tr("Vocals grp")}],
              "rows": [
                 {"sections": [
                     {"kind": "pager", "id": "foh-pager", "default_page": "others", "pages": [
@@ -100,7 +99,7 @@ fn sample() -> Layout {
                         {"kind": "strip", "binding": tr("C"), "strip_kind": "standard"},
                         {"kind": "strip", "binding": tr("A"), "strip_kind": "standard"}]}]}]},
             {"id": "more", "title": "More", "rows": [{"sections": [{"kind": "group", "controls": [
-                {"kind": "hub_toggle", "key": "stage_aut", "label": "STAGE AUT"}]}]}]}
+                {"kind": "stage", "binding": tr("Mics #")}]}]}]}
         ],
         "global": [
             {"kind": "alert", "binding": tr("TechAlert #"), "period_ms": 300}
@@ -272,10 +271,22 @@ fn every_control_kind_subscribes_what_it_shows() {
     assert_eq!(
         sub(&Control::Stage {
             binding: track("M", None),
-            aut: true,
+            aut: false,
             label: None
         }),
         vec![format!("band|{}|mute|false", t("M"))]
+    );
+    // With STAGE AUT (#104, D18): its Live's transport too.
+    assert_eq!(
+        sub(&Control::Stage {
+            binding: track("M", None),
+            aut: true,
+            label: None
+        }),
+        vec![
+            format!("band|{}|mute|false", t("M")),
+            "band|live_set|is_playing|false".to_string()
+        ]
     );
     assert_eq!(
         sub(&Control::Alert {
@@ -325,9 +336,12 @@ fn every_control_kind_subscribes_what_it_shows() {
         4,
         "a strip: volume, mute, one meter, colour (#71: its pan is the detail's)"
     );
-    let none = Control::HubToggle {
-        key: "stage_aut".into(),
-        label: "A".into(),
+    // A control whose every target fails to parse subscribes nothing.
+    let none = Control::ParamToggle {
+        label: "x".into(),
+        targets: vec![target("Q", Some("devices["), "value")],
+        press: fohmixer_proto::layout::Press::Toggle,
+        color: None,
     };
     assert_eq!(sub(&none), Vec::<String>::new());
 }
@@ -343,7 +357,6 @@ fn shown(layout: &Layout, path: &[usize]) -> Vec<String> {
             },
             Control::Solo { .. } => "solo".into(),
             Control::Stage { .. } => "stage".into(),
-            Control::HubToggle { .. } => "hub".into(),
             Control::ParamToggle { label, .. } => label.clone(),
             Control::ParamFader { .. } => "fader".into(),
             Control::Alert { .. } => "alert".into(),
@@ -356,20 +369,20 @@ fn the_controls_on_screen_are_the_rail_the_rows_with_the_sub_page_and_the_global
     let layout = sample();
     assert_eq!(
         shown(&layout, &[1, 0]),
-        vec!["stage", "solo", "hub", "A", "C", "A", "alert"]
+        vec!["stage", "solo", "A", "C", "A", "alert"]
     );
     assert_eq!(
         shown(&layout, &[1, 1]),
-        vec!["stage", "solo", "hub", "B", "C", "A", "alert"]
+        vec!["stage", "solo", "B", "C", "A", "alert"]
     );
     // No sub-page chosen (or one that is gone): the pager shows nothing.
     assert_eq!(
         shown(&layout, &[1]),
-        vec!["stage", "solo", "hub", "C", "A", "alert"]
+        vec!["stage", "solo", "C", "A", "alert"]
     );
     assert_eq!(shown(&layout, &[1, 7]), shown(&layout, &[1]));
     assert_eq!(shown(&layout, &[0]), vec!["Vox 1 TU", "alert"]);
-    assert_eq!(shown(&layout, &[2]), vec!["hub", "alert"]);
+    assert_eq!(shown(&layout, &[2]), vec!["stage", "alert"]);
     // No page: the global controls only.
     assert_eq!(shown(&layout, &[]), vec!["alert"]);
     assert_eq!(shown(&layout, &[9]), vec!["alert"]);
@@ -392,17 +405,17 @@ fn a_pinned_strip_of_another_sub_page_stays_on_screen() {
     a.pinned = true;
     assert_eq!(
         shown(&layout, &[1, 1]),
-        vec!["stage", "solo", "hub", "A", "B", "C", "A", "alert"]
+        vec!["stage", "solo", "A", "B", "C", "A", "alert"]
     );
     // On its own sub-page, once.
     assert_eq!(
         shown(&layout, &[1, 0]),
-        vec!["stage", "solo", "hub", "A", "C", "A", "alert"]
+        vec!["stage", "solo", "A", "C", "A", "alert"]
     );
     // No sub-page chosen: the pinned strip still shows.
     assert_eq!(
         shown(&layout, &[1]),
-        vec!["stage", "solo", "hub", "A", "C", "A", "alert"]
+        vec!["stage", "solo", "A", "C", "A", "alert"]
     );
 }
 
@@ -410,9 +423,9 @@ fn a_pinned_strip_of_another_sub_page_stays_on_screen() {
 fn every_key_on_screen_is_subscribed_once() {
     let layout = sample();
     let subs = visible_subs(&layout, &[1, 0]);
-    // stage + solo, strips A and C (A twice on screen; no pan, #71),
-    // TechAlert.
-    assert_eq!(subs.len(), 2 + 4 + 4 + 1);
+    // stage (its mute and, with STAGE AUT, its Live's transport, #104) +
+    // solo, strips A and C (A twice on screen; no pan, #71), TechAlert.
+    assert_eq!(subs.len(), 3 + 4 + 4 + 1);
     let unique: std::collections::BTreeSet<String> = subs.iter().map(SubSpec::key).collect();
     assert_eq!(unique.len(), subs.len());
     assert!(
@@ -422,7 +435,7 @@ fn every_key_on_screen_is_subscribed_once() {
     assert!(!subs.iter().any(|s| s.target.contains("name=B]")));
     // The other sub-page: B instead of A (A stays, the fixed group holds it).
     let others = visible_subs(&layout, &[1, 1]);
-    assert_eq!(others.len(), 2 + 4 + 4 + 4 + 1);
+    assert_eq!(others.len(), 3 + 4 + 4 + 4 + 1);
     assert!(
         !others
             .iter()
@@ -978,4 +991,41 @@ fn a_details_events_name_its_volume_and_mute_keys() {
     let mut bad = strip("X");
     bad.binding.path = Some("devices[name=".into());
     assert_eq!(detail_keys(&bad), Vec::<String>::new());
+}
+
+#[test]
+fn a_stage_with_aut_reads_its_lives_transport_too() {
+    let binding = Binding {
+        instance: "band".into(),
+        anchor: Anchor::Track {
+            name: "Mics Stage #".into(),
+        },
+        path: None,
+    };
+    let stage = |aut| Control::Stage {
+        binding: binding.clone(),
+        aut,
+        label: None,
+    };
+    let keys = |c: &Control| {
+        control_subs(c, MeterSource::Level)
+            .iter()
+            .map(SubSpec::key)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        keys(&stage(false)),
+        vec!["band|live_set tracks[name=Mics Stage #]|mute|false"]
+    );
+    assert_eq!(
+        keys(&stage(true)),
+        vec![
+            "band|live_set tracks[name=Mics Stage #]|mute|false",
+            "band|live_set|is_playing|false"
+        ]
+    );
+    assert_eq!(
+        transport_sub("master").key(),
+        "master|live_set|is_playing|false"
+    );
 }

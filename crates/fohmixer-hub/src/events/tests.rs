@@ -448,3 +448,18 @@ fn the_writer_thread_writes_sweeps_at_start_and_ends_with_its_handles() {
     assert_eq!(tail[0]["client"], 1);
     assert!(ts_of(&tail[0]) > 0);
 }
+
+#[test]
+fn the_rules_records_are_warn_class() {
+    // #104, #130, D18: every transport change and STAGE AUT's steps outlive
+    // the cap (a few per song, and they explain what the rules did).
+    assert!(is_warn(
+        &json!({"ev": "transport", "instance": "band", "playing": true, "prev": false})
+    ));
+    assert!(is_warn(
+        &json!({"ev": "stage_aut", "step": "flag", "on": true})
+    ));
+    assert!(is_warn(
+        &json!({"ev": "stage_aut", "step": "write", "instance": "band", "mute": true})
+    ));
+}

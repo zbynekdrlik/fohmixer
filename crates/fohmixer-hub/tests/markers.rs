@@ -254,7 +254,8 @@ fn the_migration_names_the_owners_plain_tuners_with_their_planned_markers() {
                     strip("track", "Hand1 #", true), strip("track", "Hand2 #", false)]},
                 {"kind": "group", "id": "fx", "title": "FX", "controls": [
                     strip("return", "A-Reverb #", false),
-                    {"kind": "hub_toggle", "key": "stage_aut", "label": "STAGE AUT"}]},
+                    {"kind": "stage", "label": "STAGE",
+                     "binding": {"instance": "band", "anchor": {"kind": "track", "name": "Mics Stage #"}}}]},
                 {"kind": "group", "id": "keys", "title": "Keys", "controls": [
                     strip("track", "Keys 1", false)]}]}]}]
         });
@@ -352,7 +353,8 @@ fn a_frame_with_a_problem_renames_nothing() {
             "default_page": "p",
             "pages": [{"id": "p", "title": "P", "rows": [{"sections": [
                 {"kind": "group", "id": "hands", "title": "Hands", "controls": [
-                    {"kind": "hub_toggle", "key": "stage_aut", "label": "STAGE AUT"},
+                    {"kind": "stage", "label": "STAGE",
+                     "binding": {"instance": "band", "anchor": {"kind": "track", "name": "Mics Stage #"}}},
                     {"kind": "strip", "strip_kind": "standard",
                      "binding": {"instance": "band", "anchor": {"kind": "track", "name": "Hand1 #"}}}]}]}]}]
         });

@@ -19,11 +19,6 @@
           "label": "STAGE"
         },
         {
-          "kind": "hub_toggle",
-          "key": "stage_aut",
-          "label": "STAGE AUT"
-        },
-        {
           "kind": "solo",
           "binding": {
             "instance": "band",

@@ -1,8 +1,8 @@
 /* fohmixer: the rail buttons and TechAlert's wash (split from style.css,
    #43; linked after it). */
 
-/* --- rail buttons (stage, STAGE AUT, solos, the former MIDI toggles,
-   TechAlert) --- */
+/* --- rail buttons (stage, solos, the former MIDI toggles, TechAlert; the
+   stage with STAGE AUT is in rule.css, D18) --- */
 
 .btn {
     --c: var(--accent);
@@ -66,7 +66,6 @@
 }
 
 .stage-mics { --c: #4fa3ff; }
-.hub-toggle { --c: #6d86ff; }
 .solo { --c: var(--solo); }
 .param-toggle { --c: #ff9f43; }
 .alert-toggle { --c: var(--mute); }

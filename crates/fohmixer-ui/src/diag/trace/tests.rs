@@ -808,3 +808,14 @@ fn a_channel_details_steps_name_the_strips_keys() {
     );
     assert_eq!(drop_rank("detail"), None);
 }
+
+#[test]
+fn a_rail_press_step_is_an_essential_event_with_its_button_and_keys() {
+    let keys = vec!["band|live_set tracks 6|mute".to_string()];
+    assert_eq!(
+        rail(12.5, "hold", "stage", &keys, 3),
+        json!({"ev": "rail", "t": 12.5, "what": "hold", "button": "stage", "keys": keys, "pointer": 3})
+    );
+    assert_eq!(drop_rank("rail"), None);
+    assert!(is_essential("rail"));
+}

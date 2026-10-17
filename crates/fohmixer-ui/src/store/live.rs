@@ -28,7 +28,7 @@ use super::deck::{DeckInfo, DeckWaiting};
 use super::eq::inputs::Inputs;
 use super::eq::{EqListView, EqView};
 use super::intent::Intents;
-use super::{InstanceView, ResultFn, Slot, TOKEN_KEY, next_range};
+use super::{HubValues, InstanceView, ResultFn, Slot, TOKEN_KEY, next_range};
 use crate::behave::ableset::AbleSetInfo;
 use crate::behave::idle::IdleWatch;
 use crate::behave::link::{Counter, DropoutWatch};
@@ -159,9 +159,9 @@ pub struct LiveStore {
     pub layout_note: RwSignal<Option<String>>,
     /// The instances, by name.
     pub instances: RwSignal<BTreeMap<String, InstanceView>>,
-    /// The hub values (STAGE AUT), as the hub last sent them on this
-    /// socket (none while disconnected).
-    pub hub: RwSignal<BTreeMap<String, Value>>,
+    /// The hub values (STAGE AUT), as the hub last sent them: kept through
+    /// an outage, stale until the next connection sends them (#104 M4).
+    pub hub: RwSignal<HubValues>,
     /// The hub socket is up and said hello.
     pub connected: RwSignal<bool>,
     /// How many subscriptions the pages on screen hold.
@@ -197,7 +197,7 @@ impl LiveStore {
             layout: RwSignal::new(None),
             layout_note: RwSignal::new(None),
             instances: RwSignal::new(BTreeMap::new()),
-            hub: RwSignal::new(BTreeMap::new()),
+            hub: RwSignal::new(HubValues::default()),
             connected: RwSignal::new(false),
             subscribed: RwSignal::new(0),
             dropouts: RwSignal::new(Counter::default()),
@@ -468,7 +468,7 @@ impl LiveStore {
             diag::disconnected();
         }
         let _ = self.connected.try_set(false);
-        let _ = self.hub.try_set(BTreeMap::new());
+        let _ = self.hub.try_update(HubValues::closed);
         let _ = self.instances.try_update(|all| {
             for view in all.values_mut() {
                 view.online = false;
@@ -568,9 +568,7 @@ impl LiveStore {
                 },
             ),
             ServerMsg::Hub { key, value } => {
-                let _ = self.hub.try_update(|hub| {
-                    hub.insert(key, value);
-                });
+                let _ = self.hub.try_update(|hub| hub.put(key, value));
             }
             ServerMsg::Layout { rev } => self.on_layout(rev),
             ServerMsg::Result { id, data } => self.finish(&id, Ok(data)),

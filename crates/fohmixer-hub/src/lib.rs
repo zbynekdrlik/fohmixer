@@ -374,6 +374,7 @@ impl HubInner {
                     connect_failures: snap.connect_failures,
                     last_error: snap.last_error,
                     unfolded: router.unfolded.get(&cfg.name).cloned().unwrap_or_default(),
+                    playing: router.playing.get(&cfg.name).copied().flatten(),
                 }
             })
             .collect();

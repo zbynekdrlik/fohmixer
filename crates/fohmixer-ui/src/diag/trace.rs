@@ -155,7 +155,8 @@ pub fn takes_batch(buffered: u32) -> bool {
 /// (touches, dropouts, resets, socket transitions, visibility, the notes of
 /// what went, a write's intent changes, PR G's system gestures and zooms,
 /// #52's Stream Deck presses, #71's channel detail steps and the Pro-Q 4
-/// screen's fingers and undos, #51's idle turns, #90's AbleSet tab); rank 0, first, for the
+/// screen's fingers and undos, #51's idle turns, #90's AbleSet tab, the
+/// rail buttons' presses, #104/#130); rank 0, first, for the
 /// round-trip summaries, long frames and any other kind; rank 1, last, for
 /// the moves (the only per-frame data of a drag the hub cannot see). A
 /// touch's first moves are pushed as essential ([`Recorder::push_essential`]).
@@ -163,7 +164,7 @@ pub fn drop_rank(ev: &str) -> Option<u8> {
     match ev {
         "touch" | "dropout" | "reset" | "sock" | "visibility" | "overflow" | "intent" | "sys"
         | "zoom" | "deck" | "detail" | "eq_touch" | "eq_mv" | "eq_lat" | "eq_view" | "eq_undo"
-        | "idle" | "ableset_view" | "ableset" => None,
+        | "idle" | "ableset_view" | "ableset" | "rail" => None,
         "mv" => Some(1),
         _ => Some(0),
     }
@@ -240,6 +241,14 @@ pub fn detail(
         event["pointer"] = json!(pointer);
     }
     event
+}
+
+/// A rail button's press step (#104, #130, D18): `what` `press`, `slid`,
+/// `tap`, `hold`, `cancel`, `lost`; `button` `stage` or `reverb`; the keys
+/// it writes (none for REVERB: the hub writes); the pointer. Essential:
+/// rare, and what a "STAGE AUT switched by itself" report is read from.
+pub fn rail(t: f64, what: &str, button: &str, keys: &[String], pointer: i32) -> Value {
+    json!({"ev": "rail", "t": t, "what": what, "button": button, "keys": keys, "pointer": pointer})
 }
 
 /// The Stream Deck tab opened (`on`) or closed (#52).

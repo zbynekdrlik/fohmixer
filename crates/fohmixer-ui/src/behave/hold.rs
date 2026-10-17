@@ -11,6 +11,11 @@
 //! without a tap. Right after a hold opens the detail, its parts take no
 //! touch for `OPEN_GUARD_MS` (a second tap at ☰'s spot would land on its
 //! MUTE; `guard_left`: a new layout's remount does not guard again).
+//!
+//! A rail button with an automatic mode (#104, #130, D18) presses the same
+//! way with its own hold (`Hold::with`, `behave::rail::RAIL_HOLD_MS`): a
+//! lift before it is the button's tap, the hold turns the mode on or off,
+//! and a hidden page ends a press (`Hold::leave`).
 
 /// How long a press on ☰ lasts before it opens the channel detail.
 pub const HOLD_MS: f64 = 500.0;
@@ -21,9 +26,14 @@ pub const SLIDE_PX: f64 = 10.0;
 /// How long the detail's parts take no touch after it opens.
 pub const OPEN_GUARD_MS: f64 = 400.0;
 
-/// Whether a press that started at `start` has lasted the hold at `now`.
+/// Whether a press that started at `start` has lasted ☰'s hold at `now`.
 pub fn held_long(start: f64, now: f64) -> bool {
-    now - start >= HOLD_MS
+    lasted(start, HOLD_MS, now)
+}
+
+/// Whether `ms` have passed from `start` at `now`.
+fn lasted(start: f64, ms: f64, now: f64) -> bool {
+    now - start >= ms
 }
 
 /// Whether a finger `dx`, `dy` px from its down point has slid off the
@@ -62,13 +72,39 @@ pub enum Lift {
     Nothing,
 }
 
-/// The ☰ button's press.
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+/// A press that lasts its hold: the ☰ button's ([`HOLD_MS`], the default)
+/// and a rail button's with an automatic mode (#104, #130, D18:
+/// `behave::rail::RAIL_HOLD_MS`).
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Hold {
     press: Option<Press>,
+    /// How long a press lasts before it holds (ms).
+    ms: f64,
+}
+
+impl Default for Hold {
+    fn default() -> Self {
+        Self::with(HOLD_MS)
+    }
 }
 
 impl Hold {
+    /// A press that holds after `ms`.
+    pub fn with(ms: f64) -> Self {
+        Self { press: None, ms }
+    }
+
+    /// The press's pointer, opened or not.
+    pub fn pressing(&self) -> Option<i32> {
+        self.press.map(|p| p.pointer)
+    }
+
+    /// The page went hidden: any press ends, with neither a tap nor a hold;
+    /// the pointer it ended.
+    pub fn leave(&mut self) -> Option<i32> {
+        self.press.take().map(|p| p.pointer)
+    }
+
     /// Pointer `pointer` went down at `now` (`primary`: no other pointer
     /// is down, the browser's `isPrimary`): whether it is the press now. A
     /// second finger's down while one presses is not; the same pointer, or
@@ -98,7 +134,7 @@ impl Hold {
     /// detail yet.
     pub fn due(&self, now: f64) -> bool {
         self.press
-            .is_some_and(|p| !p.opened && held_long(p.at, now))
+            .is_some_and(|p| !p.opened && lasted(p.at, self.ms, now))
     }
 
     /// The hold's check at `now`: whether the press opens the detail now
@@ -144,7 +180,7 @@ impl Hold {
         self.press = None;
         if press.opened {
             Lift::Nothing
-        } else if held_long(press.at, now) {
+        } else if lasted(press.at, self.ms, now) {
             Lift::Open
         } else {
             Lift::Tap
@@ -163,6 +199,51 @@ impl Hold {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_rail_press_holds_at_exactly_3000_ms() {
+        let mut h = Hold::with(3000.0);
+        assert!(h.down(1, true, 0.0));
+        assert!(!h.open(3000.0_f64.next_down()));
+        assert!(h.holding());
+        assert!(h.open(3000.0));
+        assert!(!h.open(3500.0), "once");
+        assert_eq!(h.up(1, 3600.0), Lift::Nothing);
+        // A lift a hair before is a tap; one after that no check saw is the hold.
+        assert!(h.down(2, true, 0.0));
+        assert_eq!(h.up(2, 3000.0_f64.next_down()), Lift::Tap);
+        assert!(h.down(3, true, 0.0));
+        assert_eq!(h.up(3, 3000.0), Lift::Open);
+        // From the press's own down, not from 0.
+        assert!(h.down(4, true, 1000.0));
+        assert!(!h.due(4000.0_f64.next_down()));
+        assert!(h.due(4000.0));
+        // ☰'s stays 500 ms.
+        let mut menu = Hold::default();
+        assert!(menu.down(5, true, 0.0));
+        assert!(!menu.open(500.0_f64.next_down()));
+        assert!(menu.open(500.0));
+        assert_eq!(Hold::default(), Hold::with(HOLD_MS));
+    }
+
+    #[test]
+    fn a_press_says_its_pointer_and_a_hidden_page_ends_it() {
+        let mut h = Hold::with(3000.0);
+        assert_eq!(h.pressing(), None);
+        assert_eq!(h.leave(), None);
+        assert!(h.down(7, true, 0.0));
+        assert_eq!(h.pressing(), Some(7));
+        assert_eq!(h.leave(), Some(7));
+        assert_eq!(h.pressing(), None);
+        assert!(!h.holding());
+        assert!(!h.open(4000.0), "nothing to open");
+        assert_eq!(h.up(7, 4000.0), Lift::Nothing);
+        // An opened press still says its pointer until it ends.
+        assert!(h.down(8, true, 0.0));
+        assert!(h.open(3000.0));
+        assert_eq!(h.pressing(), Some(8));
+        assert_eq!(h.leave(), Some(8));
+    }
 
     #[test]
     fn a_press_has_lasted_the_hold_at_exactly_500_ms() {

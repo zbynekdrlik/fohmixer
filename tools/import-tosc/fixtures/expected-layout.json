@@ -55,11 +55,6 @@
      "label": "STAGE"
     },
     {
-     "kind": "hub_toggle",
-     "key": "stage_aut",
-     "label": "STAGE AUT"
-    },
-    {
      "kind": "solo",
      "binding": {
       "instance": "band",
@@ -450,6 +445,10 @@
    {
     "node": "root/pager1/WORSHIP/FOH ",
     "why": "the pager's page-change message (X6)"
+   },
+   {
+    "node": "root/pager1/WORSHIP/group70",
+    "why": "STAGE AUT: the stage button carries it (D18)"
    },
    {
     "node": "root/pager1/WORSHIP/group81/button43",

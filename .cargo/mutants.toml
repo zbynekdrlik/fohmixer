@@ -254,7 +254,10 @@ exclude_re = [
   # detail's signal and open time written, the step recorded with the
   # tested binding::detail_keys); detail.spec.ts reads the steps back from
   # the event log and drives the open, the exit and a layout's close.
-  "fohmixer-ui/src/components/mod\\.rs.*(replace|in) (trace_touch|trace_start|trace_move|intent_look|trace_detail)( |$)",
+  # #104 added trace_rail (a rail button's press step, the tested
+  # trace::rail event with the page clock, into the recorder);
+  # controls.spec.ts reads the steps back from the event log.
+  "fohmixer-ui/src/components/mod\\.rs.*(replace|in) (trace_touch|trace_start|trace_move|intent_look|trace_detail|trace_rail)( |$)",
   "fohmixer-ui/src/components/detail\\.rs.*(replace|in) DetailStrip::(open|close)( |$)",
   # components/eq.rs (#71 PR E): EqNav::open and EqNav::close (the screen's
   # signal written, the step recorded with the tested trace::detail),

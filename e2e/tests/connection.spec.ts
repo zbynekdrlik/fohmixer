@@ -1,10 +1,22 @@
 import type { Page, WebSocketRoute } from "@playwright/test";
 import { test, expect } from "./support/fixtures";
-import { HUB_SOCKET, RELOAD_KEY, countLoads, openSurface, ready, token } from "./support/live";
+import {
+  HUB_SOCKET,
+  LiveClient,
+  RELOAD_KEY,
+  countLoads,
+  dispatchPointer,
+  hubEvents,
+  openSurface,
+  pageEvents,
+  ready,
+  token,
+  until,
+} from "./support/live";
 
 // The hub connection (S4 design note §4, §6; #8 review): the handshake
-// reload is bounded across page loads, and a reconnect forgets the hub's
-// values until the hub sends them again. Playwright stands between the page
+// reload is bounded across page loads, and a reconnect keeps the hub's
+// values, stale, until the hub sends them again (#104 M4). Playwright stands between the page
 // and the hub's socket (`routeWebSocket`).
 
 /**
@@ -60,31 +72,62 @@ test.describe("The protocol handshake", () => {
 });
 
 test.describe("A reconnect", () => {
-  test("forgets the hub's values until the hub sends them again", async ({ page }) => {
-    const sockets: WebSocketRoute[] = [];
-    await page.routeWebSocket(HUB_SOCKET, (ws) => {
-      sockets.push(ws);
-      const server = ws.connectToServer();
-      if (sockets.length === 1) return;
-      // Every later socket: all but the hub values (as if the hub had not
-      // sent STAGE AUT yet).
-      server.onMessage((message) => {
-        if (JSON.parse(String(message)).type !== "hub") ws.send(message);
+  test("keeps the hub's values, stale, until the hub sends them again; a hold meanwhile is refused", async ({ page }) => {
+    // STAGE AUT on (#104, D18: the merged STAGE button carries it).
+    const live = await LiveClient.open();
+    try {
+      live.setHub("stage_aut", true);
+      await until(async () => live.hub.get("stage_aut"), (v) => v === true, "STAGE AUT on");
+      const sockets: WebSocketRoute[] = [];
+      await page.routeWebSocket(HUB_SOCKET, (ws) => {
+        sockets.push(ws);
+        const server = ws.connectToServer();
+        if (sockets.length === 1) return;
+        // Every later socket: all but the hub values (as if the hub had not
+        // sent STAGE AUT yet).
+        server.onMessage((message) => {
+          if (JSON.parse(String(message)).type !== "hub") ws.send(message);
+        });
       });
-    });
-    await openSurface(page);
-    const aut = page.getByTestId("stage-aut");
-    await ready(aut);
-    // The socket drops (a Wi-Fi blip): the page reconnects. (Playwright
-    // closes the hub's side with the same code, which a browser socket takes
-    // only as 1000 or 3000-4999; 4001 is the hub's reload code.)
-    await sockets[0].close({ code: 4000, reason: "gone" });
-    await expect.poll(() => sockets.length, { timeout: 10_000 }).toBe(2);
-    await expect(page.getByTestId("surface")).toHaveAttribute("data-connected", "true");
-    // Connected again, but STAGE AUT has no value from this connection yet:
-    // it takes no tap (I8), however long the hub stays silent about it.
-    await expect(aut).toHaveAttribute("aria-disabled", "true");
-    await page.waitForTimeout(1000);
-    await expect(aut).toHaveAttribute("aria-disabled", "true");
+      await openSurface(page);
+      const stage = page.getByTestId("stage-mics");
+      await ready(stage);
+      await expect(stage).toHaveAttribute("data-aut", "run");
+      // The socket drops (a Wi-Fi blip): the page reconnects. (Playwright
+      // closes the hub's side with the same code, which a browser socket
+      // takes only as 1000 or 3000-4999; 4001 is the hub's reload code.)
+      await sockets[0].close({ code: 4000, reason: "gone" });
+      await expect.poll(() => sockets.length, { timeout: 10_000 }).toBe(2);
+      await expect(page.getByTestId("surface")).toHaveAttribute("data-connected", "true");
+      // Connected again, but STAGE AUT has no value from this connection
+      // yet: the button keeps showing the last one, stale (#104 M4, as
+      // Live's values, L2), however long the hub stays silent about it.
+      await expect(stage).toHaveAttribute("data-aut", "run");
+      await page.waitForTimeout(1000);
+      await expect(stage).toHaveAttribute("data-aut", "run");
+      // A hold meanwhile cannot act (I8): no fill, no hold's line, and at
+      // 3 s it is refused, recorded so; the flag stays.
+      const since = await page.evaluate(() => performance.timeOrigin + performance.now());
+      await dispatchPointer(stage, [{ type: "pointerdown" }, { wait: 1000 }]);
+      await expect(stage).toHaveAttribute("data-holding", "false");
+      await expect(stage.getByTestId("btn-sub")).not.toHaveText(/drž/);
+      await dispatchPointer(stage, [{ wait: 2300 }, { type: "pointerup" }]);
+      await page.waitForTimeout(300);
+      expect(live.hub.get("stage_aut")).toBe(true);
+      const steps = await until(
+        async () =>
+          pageEvents(await hubEvents())
+            .filter((e: any) => e.ev === "rail" && e.t >= since)
+            .map((e: any) => e.what),
+        (s) => s.includes("refused"),
+        "the refused hold uploaded",
+        15_000,
+      );
+      expect(steps).toEqual(["press", "refused"]);
+    } finally {
+      live.setHub("stage_aut", false);
+      await until(async () => live.hub.get("stage_aut"), (v) => v === false, "STAGE AUT off");
+      live.close();
+    }
   });
 });

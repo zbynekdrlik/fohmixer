@@ -7,7 +7,7 @@ fn track(name: &str) -> Value {
 
 /// A small valid layout: a cue page of toggles; the FOH page with a rail,
 /// a nested pager beside fixed strips and a second row; a third page of
-/// one STAGE AUT toggle; TechAlert on every page.
+/// one stage button without STAGE AUT; TechAlert on every page.
 fn sample() -> Value {
     json!({
         "schema": 2,
@@ -20,7 +20,6 @@ fn sample() -> Value {
             {"id": "foh", "title": "FOH",
              "rail": [
                 {"kind": "stage", "binding": track("Mics Stage #"), "aut": true, "label": "STAGE"},
-                {"kind": "hub_toggle", "key": "stage_aut", "label": "STAGE AUT"},
                 {"kind": "solo", "binding": track("Vocals Repro grp#"), "label": "Vocals"},
                 {"kind": "param_toggle", "label": "REVERB", "press": "toggle", "color": "#F39420",
                  "targets": [{"binding": track("Rev #"), "prop": "mute", "on": false, "off": true}]}],
@@ -44,7 +43,7 @@ fn sample() -> Value {
                                       "prop": "value", "scale": "cc_linear"}]}]}],
                  "weight": 0.8}]},
             {"id": "more", "title": "More", "rows": [{"sections": [
-                {"kind": "group", "id": "more-1", "controls": [{"kind": "hub_toggle", "key": "stage_aut", "label": "STAGE AUT"}]}]}]}
+                {"kind": "group", "id": "more-1", "controls": [{"kind": "stage", "binding": track("Mics Stage #"), "label": "STAGE"}]}]}]}
         ],
         "global": [
             {"kind": "alert", "binding": track("TechAlert #"), "period_ms": 300, "label": "TechAlert"}
@@ -76,7 +75,7 @@ fn the_sample_parses_validates_and_round_trips() {
     assert_eq!(layout.validate(), vec![]);
     assert_eq!(layout.default_page, "foh");
     let foh = &layout.pages[1];
-    assert_eq!(foh.rail.len(), 4);
+    assert_eq!(foh.rail.len(), 3);
     assert_eq!(foh.rows.len(), 2);
     assert_eq!(foh.rows[0].weight, 1.0);
     assert_eq!(foh.rows[1].weight, 0.8);
@@ -180,6 +179,15 @@ fn defaults_are_filled_and_omitted() {
 }
 
 #[test]
+fn a_hub_toggle_no_longer_parses() {
+    // D18 (#104): STAGE AUT is the stage control's `aut`; its toggle left.
+    let v = json!({"schema": 2, "default_page": "p", "pages": [{"id": "p", "title": "P",
+        "rail": [{"kind": "hub_toggle", "key": "stage_aut", "label": "STAGE AUT"}]}]});
+    let err = serde_json::from_value::<Layout>(v).unwrap_err().to_string();
+    assert!(err.contains("unknown variant `hub_toggle`"), "{err}");
+}
+
+#[test]
 fn an_unknown_kind_does_not_parse() {
     let mut v = sample();
     v["global"][0]["kind"] = json!("battery");
@@ -226,7 +234,7 @@ fn place(v: &mut Value, i: usize) -> &mut Value {
         6 => &mut v["pages"][1]["rows"][0]["sections"][1]["controls"][0],
         7 => &mut v["pages"][1]["rail"][0],
         8 => &mut v["pages"][1]["rail"][1],
-        9 => &mut v["pages"][1]["rail"][3],
+        9 => &mut v["pages"][1]["rail"][2],
         10 => &mut v["global"][0],
         _ => &mut v["pages"][2]["rows"][0]["sections"][0]["controls"][0],
     }
@@ -381,8 +389,8 @@ fn a_bad_path_is_an_error() {
 #[test]
 fn param_targets_need_a_prop_and_their_values_or_scale() {
     let mut v = sample();
-    v["pages"][1]["rail"][3]["targets"][0]["prop"] = json!("");
-    v["pages"][1]["rail"][3]["targets"][0]
+    v["pages"][1]["rail"][2]["targets"][0]["prop"] = json!("");
+    v["pages"][1]["rail"][2]["targets"][0]
         .as_object_mut()
         .unwrap()
         .remove("off");
@@ -390,8 +398,8 @@ fn param_targets_need_a_prop_and_their_values_or_scale() {
     assert_eq!(
         errors(v),
         vec![
-            "pages[1].rail[3].targets[0]: target without a prop".to_string(),
-            "pages[1].rail[3].targets[0]: a toggle target needs on and off".to_string(),
+            "pages[1].rail[2].targets[0]: target without a prop".to_string(),
+            "pages[1].rail[2].targets[0]: a toggle target needs on and off".to_string(),
             "pages[1].rows[1].sections[0].controls[1]: no targets".to_string(),
         ]
     );
@@ -400,14 +408,14 @@ fn param_targets_need_a_prop_and_their_values_or_scale() {
         .as_object_mut()
         .unwrap()
         .remove("scale");
-    v["pages"][1]["rail"][3]["targets"][0]
+    v["pages"][1]["rail"][2]["targets"][0]
         .as_object_mut()
         .unwrap()
         .remove("on");
     assert_eq!(
         errors(v),
         vec![
-            "pages[1].rail[3].targets[0]: a toggle target needs on and off".to_string(),
+            "pages[1].rail[2].targets[0]: a toggle target needs on and off".to_string(),
             "pages[1].rows[1].sections[0].controls[1].targets[0]: a fader target needs a scale"
                 .to_string(),
         ]
@@ -423,7 +431,7 @@ fn param_targets_need_a_prop_and_their_values_or_scale() {
 #[test]
 fn bindings_need_an_instance_and_a_name() {
     let mut v = sample();
-    v["pages"][1]["rail"][2]["binding"]["instance"] = json!("");
+    v["pages"][1]["rail"][1]["binding"]["instance"] = json!("");
     v["global"][0]["binding"]["anchor"] = json!({"kind": "return", "name": ""});
     v["pages"][1]["rail"][0]["binding"]["anchor"] = json!({"kind": "track", "name": ""});
     foh_row(&mut v, 1)[0]["controls"][0]["binding"]["instance"] = json!("");
@@ -431,7 +439,7 @@ fn bindings_need_an_instance_and_a_name() {
         errors(v),
         vec![
             "pages[1].rail[0].binding: anchor without a name".to_string(),
-            "pages[1].rail[2].binding: binding without an instance".to_string(),
+            "pages[1].rail[1].binding: binding without an instance".to_string(),
             "pages[1].rows[1].sections[0].controls[0].binding: binding without an instance"
                 .to_string(),
             "global[0].binding: anchor without a name".to_string(),
@@ -440,17 +448,15 @@ fn bindings_need_an_instance_and_a_name() {
 }
 
 #[test]
-fn colors_alerts_and_hub_values_are_checked() {
+fn colors_and_alerts_are_checked() {
     let mut v = sample();
     foh_row(&mut v, 1)[0]["color"] = json!("grey");
-    v["pages"][1]["rail"][3]["color"] = json!("#F3942");
+    v["pages"][1]["rail"][2]["color"] = json!("#F3942");
     v["global"][0]["period_ms"] = json!(0);
-    v["pages"][1]["rail"][1]["key"] = json!("battery");
     assert_eq!(
         errors(v),
         vec![
-            r#"pages[1].rail[1]: unknown hub value "battery""#.to_string(),
-            r##"pages[1].rail[3].color: "#F3942" is not #RRGGBB or #RRGGBBAA"##.to_string(),
+            r##"pages[1].rail[2].color: "#F3942" is not #RRGGBB or #RRGGBBAA"##.to_string(),
             r#"pages[1].rows[1].sections[0].color: "grey" is not #RRGGBB or #RRGGBBAA"#.to_string(),
             "global[0]: alert period 0 ms".to_string(),
         ]
@@ -560,6 +566,7 @@ fn bindings_are_listed_in_document_order() {
             "live_set tracks[name=Podklady #]",
             "live_set return_tracks[name=A-Rev]",
             "live_set tracks[name=Stems grp#] mixer_device volume",
+            "live_set tracks[name=Mics Stage #]",
             "live_set tracks[name=TechAlert #]",
         ]
     );
@@ -574,8 +581,9 @@ fn bindings_are_listed_in_document_order() {
         .map(|b| b.target().unwrap())
         .collect();
     assert_eq!(names[5], "live_set tracks[name=Hand1 #]");
-    // 11 on the pages, TechAlert on every page (#58: REFRESH ALL is gone).
-    assert_eq!(layout.controls().len(), 12);
+    // 10 on the pages, then TechAlert (#58: REFRESH ALL is gone; D18: the
+    // STAGE AUT toggle too).
+    assert_eq!(layout.controls().len(), 11);
 }
 
 #[test]
@@ -588,7 +596,6 @@ fn a_page_lists_its_controls_rail_first() {
             Control::Strip(_) => "strip",
             Control::Solo { .. } => "solo",
             Control::Stage { .. } => "stage",
-            Control::HubToggle { .. } => "hub_toggle",
             Control::ParamToggle { .. } => "param_toggle",
             Control::ParamFader { .. } => "param_fader",
             Control::Alert { .. } => "alert",
@@ -598,7 +605,6 @@ fn a_page_lists_its_controls_rail_first() {
         kinds,
         vec![
             "stage",
-            "hub_toggle",
             "solo",
             "param_toggle",
             "strip",
@@ -610,10 +616,7 @@ fn a_page_lists_its_controls_rail_first() {
     let section = &layout.pages[1].rows[0].sections[0];
     assert_eq!(section.groups().len(), 1);
     assert_eq!(layout.pages[1].rows[0].sections[1].groups().len(), 1);
-    assert_eq!(
-        layout.pages[2].controls()[0].bindings(),
-        Vec::<&Binding>::new()
-    );
+    assert_eq!(layout.pages[2].controls()[0].bindings().len(), 1);
     assert_eq!(layout.pages[2].controls().len(), 1);
 }
 

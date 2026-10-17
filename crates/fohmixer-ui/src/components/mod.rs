@@ -13,6 +13,7 @@ pub mod meter;
 pub mod overlay;
 pub mod pan;
 pub mod params;
+pub mod rail;
 pub mod strip;
 
 use fohmixer_proto::client::set_key;
@@ -34,9 +35,10 @@ use crate::raf;
 use crate::store::intent::{State, most_urgent};
 use crate::store::{LiveStore, Readiness, Slot};
 
-use buttons::{HubToggleView, SoloView, StageMicsView};
+use buttons::{SoloView, StageMicsView};
 use overlay::AlertView;
 use params::{ParamFaderView, ParamToggleView, VcaFaderView};
+use rail::{RuleButton, RuleKind};
 use strip::StripView;
 
 /// The layout-wide control settings (a context of the stage).
@@ -164,6 +166,19 @@ pub fn trace_detail(what: &str, why: Option<&str>, keys: &[String], pointer: Opt
     ));
 }
 
+/// Records a rail button's press step (#104, #130, D18,
+/// `diag::trace::rail`) with the keys it writes, in the page's flight
+/// recorder.
+pub fn trace_rail(what: &str, button: &str, keys: &[String], pointer: i32) {
+    crate::diag::record(&crate::diag::trace::rail(
+        dom::epoch_now(),
+        what,
+        button,
+        keys,
+        pointer,
+    ));
+}
+
 /// The flight recorder's name of the event that ends a touch: `up` for a
 /// `pointerup`, `cancel` for a `pointercancel`; none for the
 /// `lostpointercapture` that follows either (it ends nothing new).
@@ -242,12 +257,21 @@ pub fn ControlView(
         Control::Solo { binding, label } => {
             view! { <SoloView binding=binding label=label /> }.into_any()
         }
-        Control::Stage { binding, label, .. } => {
-            view! { <StageMicsView binding=binding label=label /> }.into_any()
+        // The merged STAGE button (#104, D18): a stage control with `aut`.
+        Control::Stage {
+            binding,
+            label,
+            aut: true,
+        } => {
+            let kind = RuleKind::Stage(binding);
+            let label = label.unwrap_or_else(|| "STAGE".to_string());
+            view! { <RuleButton kind=kind label=label /> }.into_any()
         }
-        Control::HubToggle { key, label } => {
-            view! { <HubToggleView key=key label=label /> }.into_any()
-        }
+        Control::Stage {
+            binding,
+            label,
+            aut: false,
+        } => view! { <StageMicsView binding=binding label=label /> }.into_any(),
         Control::ParamToggle {
             label,
             targets,
