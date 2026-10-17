@@ -1649,6 +1649,142 @@ async fn closer() -> (String, Arc<AtomicUsize>) {
     (format!("http://{addr}"), taken)
 }
 
+/// A fake AbleSet that reads a request's head, then resets the connection
+/// (`SO_LINGER` 0 before the drop: a reset on every platform, as Windows can
+/// answer a close of an upgrade it does not serve, #90).
+async fn resetter() -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        while let Ok((mut stream, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let mut head = Vec::new();
+                let mut buf = [0_u8; 1024];
+                while !head.windows(4).any(|w| w == b"\r\n\r\n") {
+                    match stream.read(&mut buf).await {
+                        Ok(0) | Err(_) => return,
+                        Ok(n) => head.extend_from_slice(&buf[..n]),
+                    }
+                }
+                stream.set_zero_linger().unwrap();
+            });
+        }
+    });
+    format!("http://{addr}")
+}
+
+#[tokio::test]
+async fn an_upgrade_ableset_resets_after_it_read_is_no_outage() {
+    // #90: AbleSet read the upgrade and reset the connection without an
+    // answer (Windows' way of a close): the client's fault, never an outage.
+    let pair = [("connection", "upgrade"), ("upgrade", "websocket")];
+    let upstream = resetter().await;
+    let (site, records) = site_with(&upstream, proxy::HEAD_TIMEOUT, 16);
+    let reset = router(Arc::clone(&site), None)
+        .oneshot(get_from(NAME, "/elsewhere", "10.0.0.5", &pair))
+        .await
+        .unwrap();
+    assert_eq!(reset.status(), StatusCode::BAD_GATEWAY);
+    let body: Value = serde_json::from_str(&text_of(reset).await).unwrap();
+    assert_eq!(body["code"], "ABLESET_CLOSED");
+    assert!(!site.failing.load(Ordering::Relaxed), "no outage");
+    let records: Vec<Value> = records.try_iter().collect();
+    assert_eq!(records.len(), 1, "{records:?}");
+    let (key, why) = why_of(&records[0]);
+    let text = "AbleSet closed the WebSocket request without an answer: ";
+    assert!(
+        key == "why" && why.starts_with(text) && why.len() > text.len(),
+        "{key}: {why}"
+    );
+}
+
+/// The error of a GET through hyper's client to `url` (none answers).
+async fn client_error(url: &str) -> hyper_util::client::legacy::Error {
+    let client = hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
+        .build_http::<http_body_util::Empty<Bytes>>();
+    client
+        .get(url.parse().unwrap())
+        .await
+        .expect_err("no answer")
+}
+
+/// An error whose source is a client's error (a connect error under a
+/// reset, as no real connect gives one).
+#[derive(Debug)]
+struct Under(hyper_util::client::legacy::Error);
+
+impl std::fmt::Display for Under {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "under")
+    }
+}
+
+impl std::error::Error for Under {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.0)
+    }
+}
+
+#[tokio::test]
+async fn a_close_or_a_reset_after_the_connect_is_closed_and_a_failed_connect_is_down() {
+    // One error at a time: an I/O reset or abort ends unanswered, another
+    // I/O error does not.
+    assert!(proxy::ended_unanswered(&io::Error::from(
+        io::ErrorKind::ConnectionReset
+    )));
+    assert!(proxy::ended_unanswered(&io::Error::from(
+        io::ErrorKind::ConnectionAborted
+    )));
+    assert!(!proxy::ended_unanswered(&io::Error::from(
+        io::ErrorKind::ConnectionRefused
+    )));
+    assert!(!proxy::ended_unanswered(&io::Error::other("reset")));
+    // AbleSet read the request and closed (hyper's incomplete message).
+    let (closing, _) = closer().await;
+    let incomplete = client_error(&closing).await;
+    assert!(!proxy::connect_failed(&incomplete));
+    assert!(proxy::closed_unanswered(&incomplete), "{incomplete:?}");
+    assert!(matches!(
+        proxy::failure(&incomplete, true, 16),
+        Failure::Closed(_)
+    ));
+    assert!(
+        matches!(proxy::failure(&incomplete, false, 16), Failure::Down(_)),
+        "not an upgrade"
+    );
+    // It read the request and reset the connection.
+    let reset = client_error(&resetter().await).await;
+    assert!(!proxy::connect_failed(&reset));
+    assert!(proxy::closed_unanswered(&reset), "{reset:?}");
+    assert!(matches!(
+        proxy::failure(&reset, true, 16),
+        Failure::Closed(_)
+    ));
+    // A refused connect: AbleSet down.
+    let refused = client_error(CLOSED).await;
+    assert!(proxy::connect_failed(&refused), "{refused:?}");
+    assert!(!proxy::closed_unanswered(&refused));
+    assert!(matches!(
+        proxy::failure(&refused, true, 16),
+        Failure::Down(_)
+    ));
+    // A reset at the connect (a connect error under a reset): still down.
+    let at_connect = io::Error::new(io::ErrorKind::ConnectionReset, Under(refused));
+    assert!(proxy::connect_failed(&at_connect));
+    assert!(!proxy::closed_unanswered(&at_connect));
+    assert!(matches!(
+        proxy::failure(&at_connect, true, 16),
+        Failure::Down(_)
+    ));
+    // A reset with no client error at all ends unanswered.
+    assert!(!proxy::connect_failed(&io::Error::from(
+        io::ErrorKind::ConnectionReset
+    )));
+    assert!(proxy::closed_unanswered(&io::Error::from(
+        io::ErrorKind::ConnectionReset
+    )));
+}
+
 #[tokio::test]
 async fn a_tunnel_ableset_closed_ends_after_the_grace_though_the_page_stays_silent() {
     let upstream = fake().await;

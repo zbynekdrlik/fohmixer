@@ -1,14 +1,19 @@
 //! The rail buttons with an automatic mode (#104, #130, D18; the approved
-//! mockup `docs/mockups/reverb-link-v1.html`, screen 2): a tap acts on the
-//! finger's lift; a 3 s hold turns the automatic mode on or off (the press
-//! is `behave::hold::Hold` with `RAIL_HOLD_MS`: a slide past 10 px, a
-//! cancel, a lost capture or a hidden page end it with nothing done; a
-//! second finger is no press, the first goes on). A press whose end never
-//! came ends at the next primary down anywhere on the page (#124, review
-//! I1: a capture-phase window listener). A hold that cannot act (the page
-//! not connected, the hub's flag not known on this connection) shows no
-//! fill and flashes refused at its hold. The decisions are `behave::rail`'s;
-//! each step goes to the flight recorder.
+//! mockup `docs/mockups/reverb-link-v1.html`, screen 2; the owner's rulings
+//! on #104 of 2026-10-17): a lift before `RAIL_HOLD_MS` (1 s, not the
+//! mockup's 3 s) is the tap; at 1 s the press is full (the fill stays full, the line says
+//! `pusť — zapne AUT` / `pusť — vypne AUT`, nothing is sent) and the lift
+//! then turns the automatic mode on or off. The press is
+//! `behave::hold::Hold::lifted`: a slide past 10 px, a cancel, a lost
+//! capture or a hidden page end it with nothing done, before or after the
+//! full mark, so a lost end never acts; a second finger is no press, the
+//! first goes on. A press whose end never came ends at the next primary
+//! down of its type anywhere on the page (#124, review I1: a capture-phase
+//! window listener). A press that cannot act (the page not connected, the
+//! hub's flag not known on this connection) shows no fill, and at its full
+//! mark it flashes refused and is dead (its lift does nothing); a full
+//! press's lift that cannot act is refused the same way. The decisions are
+//! `behave::rail`'s; each step goes to the flight recorder.
 
 use std::time::Duration;
 
@@ -27,8 +32,8 @@ use super::{
 };
 use crate::behave::hold::{Hold, Lift};
 use crate::behave::rail::{
-    Aut, RAIL_HOLD_MS, RailLook, SETTLE_MS, cancels, hold_step, hold_value, rail_press, settling,
-    shows_hold, stage_look, stale_press, transport_changed,
+    Aut, Fill, RAIL_HOLD_MS, RailLook, SETTLE_MS, cancels, fill_of, full_step, hold_step,
+    hold_value, rail_press, restarted, settling, stage_look, stale_press, transport_changed,
 };
 use crate::binding::{mute_sub, transport_sub};
 use crate::diag::perf::Pointer;
@@ -70,7 +75,9 @@ pub fn RuleButton(kind: RuleKind, label: String) -> impl IntoView {
     // a press whose end never came).
     let press_kind = StoredValue::new(None::<Pointer>);
     let check = StoredValue::new(None::<TimeoutHandle>);
+    // The press's state as shown: filling (before its hold), full (past it).
     let holding = RwSignal::new(false);
+    let full = RwSignal::new(false);
     // The transport's last change not yet settled (the page clock), its
     // value before, and the one look check after it (review M3).
     let changed_at = RwSignal::new(None::<f64>);
@@ -128,16 +135,21 @@ pub fn RuleButton(kind: RuleKind, label: String) -> impl IntoView {
             .flatten()
     };
     let connected = move || store.connected.try_get().unwrap_or(false);
-    // The fill and the hold's line: only for a press that can act.
+    // The fill and the hold's lines: only for a press that can act.
     let fill = Memo::new(move |_| {
-        shows_hold(holding.try_get().unwrap_or(false), fresh_aut(), connected())
+        fill_of(
+            holding.try_get().unwrap_or(false),
+            full.try_get().unwrap_or(false),
+            fresh_aut(),
+            connected(),
+        )
     });
     let look = Memo::new(move |_| {
         stage_look(
             aut(),
             playing.try_with(Slot::flag).flatten(),
             slot.try_with(Slot::flag).flatten(),
-            fill.try_get().unwrap_or(false),
+            fill.try_get().unwrap_or(Fill::None),
             settling(changed_at.try_get().flatten(), dom::now()),
         )
     });
@@ -156,27 +168,36 @@ pub fn RuleButton(kind: RuleKind, label: String) -> impl IntoView {
     let step = move |what: &str, pointer: i32| {
         let _ = keys.try_with_value(|k| trace_rail(what, "stage", k, pointer));
     };
-    // The hold: STAGE AUT the other way when it can act, else refused.
-    let held = move |pointer: i32| {
+    // What a hold may send now: STAGE AUT the other way, or none (refused).
+    let can_send = move || {
         let aut = store
             .hub
             .try_with_untracked(|h| h.fresh_flag(HUB_STAGE_AUT))
             .flatten();
         let connected = store.connected.try_get_untracked().unwrap_or(false);
-        let value = hold_value(aut, connected);
+        hold_value(aut, connected)
+    };
+    let refuse = move || fail_flash(failed)("STAGE AUT cannot be switched now".to_string());
+    // The lift of a full press: STAGE AUT the other way when it can act,
+    // else refused.
+    let held = move |pointer: i32| {
+        let value = can_send();
         step(hold_step(value), pointer);
         match value {
             Some(on) => store.set_hub(HUB_STAGE_AUT, json!(on)),
-            None => fail_flash(failed)("STAGE AUT cannot be switched now".to_string()),
+            None => refuse(),
         }
     };
-    // The press's state follows it; a press over waits for no check.
+    // The press's state follows it; a press no longer filling waits for no
+    // check.
     let settle = move || {
-        let pressing = hold.try_with_value(Hold::holding).unwrap_or(false);
-        if !pressing && let Some(Some(handle)) = check.try_update_value(Option::take) {
+        let filling = hold.try_with_value(Hold::holding).unwrap_or(false);
+        let is_full = hold.try_with_value(Hold::full).unwrap_or(false);
+        if !filling && let Some(Some(handle)) = check.try_update_value(Option::take) {
             handle.clear();
         }
-        let _ = holding.try_set(pressing);
+        let _ = holding.try_set(filling);
+        let _ = full.try_set(is_full);
     };
     // A press whose end never came ends at the next primary down anywhere
     // on the page, before any control's handler sees it (#124, review I1).
@@ -212,11 +233,16 @@ pub fn RuleButton(kind: RuleKind, label: String) -> impl IntoView {
         ev.prevent_default();
         let id = ev.pointer_id();
         let primary = ev.is_primary();
+        let before = hold.try_with_value(Hold::pressing).flatten();
         let pressed = hold
             .try_update_value(|h| h.down(id, primary, dom::now()))
             .unwrap_or(false);
         if !pressed {
             return;
+        }
+        // A down of another type took over a press still down (N2).
+        if let Some(old) = restarted(before, id) {
+            step("lost", old);
         }
         let _ = press_kind.try_set_value(Pointer::parse(&ev.pointer_type()));
         step("press", id);
@@ -227,17 +253,23 @@ pub fn RuleButton(kind: RuleKind, label: String) -> impl IntoView {
             handle.clear();
         }
         // One check a little after the hold (a coarse clock never finds the
-        // press a hair short of it).
+        // press a hair short of it): the press is full, nothing is sent; one
+        // that cannot act is refused and dead.
         let timer = set_timeout_with_handle(
             move || {
                 let _ = check.try_set_value(None);
-                let holds = hold
+                let fills = hold
                     .try_update_value(|h| h.open(dom::now()))
                     .unwrap_or(false);
-                settle();
-                if holds {
-                    held(id);
+                if fills {
+                    let value = can_send();
+                    step(full_step(value), id);
+                    if value.is_none() {
+                        let _ = hold.try_update_value(Hold::refuse);
+                        refuse();
+                    }
                 }
+                settle();
             },
             Duration::from_millis(RAIL_HOLD_MS as u64 + 20),
         );
@@ -300,7 +332,8 @@ pub fn RuleButton(kind: RuleKind, label: String) -> impl IntoView {
         })
     };
     let muted = move || (slot.try_with(Slot::flag).flatten() == Some(true)).to_string();
-    let filling = move || fill.try_get().unwrap_or(false).to_string();
+    let filling = move || fill.try_get().is_some_and(Fill::holding).to_string();
+    let is_full = move || fill.try_get().is_some_and(Fill::full).to_string();
     // The fill's time is the hold's (rule.css reads it).
     let hold_time = format!("--hold-ms:{RAIL_HOLD_MS}ms;");
     view! {
@@ -315,6 +348,7 @@ pub fn RuleButton(kind: RuleKind, label: String) -> impl IntoView {
             data-muted=muted
             data-aut=pill
             data-holding=filling
+            data-full=is_full
             data-binding=bound
             aria-disabled=disabled
             on:pointerdown=on_down

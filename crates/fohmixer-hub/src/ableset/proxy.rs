@@ -272,11 +272,34 @@ pub fn failure(error: &(dyn StdError + 'static), upgrade: bool, max_body: u64) -
 }
 
 /// Whether AbleSet closed the connection after it read the request, before
-/// any answer (hyper's incomplete message); a connect error never is one.
+/// any answer: hyper's incomplete message, or a reset or an abort of the
+/// connection (Windows can answer a close of an upgrade it does not serve
+/// with a reset, #90); a connect error never is one (AbleSet never read
+/// the request).
 pub fn closed_unanswered(error: &(dyn StdError + 'static)) -> bool {
+    !connect_failed(error) && causes(error).any(ended_unanswered)
+}
+
+/// Whether one error of a chain says the connection ended before an
+/// answer: hyper's incomplete message, or an I/O reset or abort.
+pub fn ended_unanswered(error: &(dyn StdError + 'static)) -> bool {
+    error
+        .downcast_ref::<hyper::Error>()
+        .is_some_and(hyper::Error::is_incomplete_message)
+        || error.downcast_ref::<std::io::Error>().is_some_and(|e| {
+            matches!(
+                e.kind(),
+                std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted
+            )
+        })
+}
+
+/// Whether the client's connect failed (anywhere in the chain): AbleSet
+/// down, whatever the cause.
+pub fn connect_failed(error: &(dyn StdError + 'static)) -> bool {
     causes(error).any(|e| {
-        e.downcast_ref::<hyper::Error>()
-            .is_some_and(hyper::Error::is_incomplete_message)
+        e.downcast_ref::<hyper_util::client::legacy::Error>()
+            .is_some_and(hyper_util::client::legacy::Error::is_connect)
     })
 }
 

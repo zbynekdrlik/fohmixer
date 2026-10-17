@@ -13,9 +13,13 @@
 //! MUTE; `guard_left`: a new layout's remount does not guard again).
 //!
 //! A rail button with an automatic mode (#104, #130, D18) presses the same
-//! way with its own hold (`Hold::with`, `behave::rail::RAIL_HOLD_MS`): a
-//! lift before it is the button's tap, the hold turns the mode on or off,
-//! and a hidden page ends a press (`Hold::leave`).
+//! way with its own hold (`behave::rail::RAIL_HOLD_MS`) but acts at its
+//! lift (`Hold::lifted`, the owner's ruling on #104 of 2026-10-17): its
+//! check only makes the press full, a lift while full acts (`Lift::Open`)
+//! unless the full mark was refused (`Hold::refuse`), and a full press still
+//! ends with nothing done at a slide, a cancel, a lost capture or a hidden
+//! page (`Hold::leave`), so a lost end never acts. A lift before the hold
+//! is the button's tap.
 
 /// How long a press on ☰ lasts before it opens the channel detail.
 pub const HOLD_MS: f64 = 500.0;
@@ -51,13 +55,25 @@ pub fn guard_left(opened_at: f64, now: f64) -> f64 {
 }
 
 /// One press: its pointer, when it went down, where its first move
-/// anchored it (none before that move), and whether it opened the detail.
+/// anchored it (none before that move), whether it passed its check (☰'s
+/// opened the detail; a rail press is full) and whether that full mark was
+/// refused (a rail press that could not act: its lift does nothing).
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Press {
     pointer: i32,
     at: f64,
     anchor: Option<(f64, f64)>,
     opened: bool,
+    refused: bool,
+}
+
+/// When a held press acts: ☰'s at its check (opening the detail is
+/// harmless), a rail button's at its lift once full (#104: a lost end never
+/// acts).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Acts {
+    AtCheck,
+    AtLift,
 }
 
 /// What a lift ends ([`Hold::up`]).
@@ -66,9 +82,10 @@ pub enum Lift {
     /// Lifted before the hold: a tap (the hint).
     Tap,
     /// Lifted after the hold, which no check has seen yet (a late timer):
-    /// the detail opens now.
+    /// the detail opens now; a rail press's lift while full (it acts now).
     Open,
-    /// Another pointer's lift, or the press already opened the detail.
+    /// Another pointer's lift, a press that already opened the detail, or a
+    /// rail press whose full mark was refused.
     Nothing,
 }
 
@@ -80,6 +97,7 @@ pub struct Hold {
     press: Option<Press>,
     /// How long a press lasts before it holds (ms).
     ms: f64,
+    acts: Acts,
 }
 
 impl Default for Hold {
@@ -89,9 +107,36 @@ impl Default for Hold {
 }
 
 impl Hold {
-    /// A press that holds after `ms`.
+    /// A press that holds after `ms` and acts at its check (☰'s).
     pub fn with(ms: f64) -> Self {
-        Self { press: None, ms }
+        Self {
+            press: None,
+            ms,
+            acts: Acts::AtCheck,
+        }
+    }
+
+    /// A press that is full after `ms` and acts at its lift once full (a
+    /// rail button's, #104).
+    pub fn lifted(ms: f64) -> Self {
+        Self {
+            press: None,
+            ms,
+            acts: Acts::AtLift,
+        }
+    }
+
+    /// Whether the press is full: past its check and not refused.
+    pub fn full(&self) -> bool {
+        self.press.is_some_and(|p| p.opened && !p.refused)
+    }
+
+    /// The full mark could not act (#104: the page not connected, the hub's
+    /// flag not known): the press is dead, its lift does nothing.
+    pub fn refuse(&mut self) {
+        if let Some(press) = self.press.as_mut().filter(|p| p.opened) {
+            press.refused = true;
+        }
     }
 
     /// The press's pointer, opened or not.
@@ -120,6 +165,7 @@ impl Hold {
             at: now,
             anchor: None,
             opened: false,
+            refused: false,
         });
         true
     }
@@ -152,12 +198,14 @@ impl Hold {
     /// Pointer `pointer` moved to `x`, `y`: whether that ended its press
     /// (slid off it: no tap, nothing opens, the fill clears). The press's
     /// first move only anchors it there; a press that opened the detail
-    /// already has nothing left to end (its finger moving on is no slide).
+    /// already has nothing left to end (its finger moving on is no slide),
+    /// while a full rail press still slides off (nothing acts).
     pub fn moved(&mut self, pointer: i32, x: f64, y: f64) -> bool {
+        let at_lift = self.acts == Acts::AtLift;
         let Some(press) = self
             .press
             .as_mut()
-            .filter(|p| p.pointer == pointer && !p.opened)
+            .filter(|p| p.pointer == pointer && (!p.opened || at_lift))
         else {
             return false;
         };
@@ -179,7 +227,11 @@ impl Hold {
         };
         self.press = None;
         if press.opened {
-            Lift::Nothing
+            if self.acts == Acts::AtLift && !press.refused {
+                Lift::Open
+            } else {
+                Lift::Nothing
+            }
         } else if lasted(press.at, self.ms, now) {
             Lift::Open
         } else {
@@ -201,23 +253,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_rail_press_holds_at_exactly_3000_ms() {
-        let mut h = Hold::with(3000.0);
+    fn a_press_with_its_own_at_check_hold_opens_at_exactly_that_hold() {
+        let mut h = Hold::with(1000.0);
         assert!(h.down(1, true, 0.0));
-        assert!(!h.open(3000.0_f64.next_down()));
+        assert!(!h.open(1000.0_f64.next_down()));
         assert!(h.holding());
-        assert!(h.open(3000.0));
-        assert!(!h.open(3500.0), "once");
-        assert_eq!(h.up(1, 3600.0), Lift::Nothing);
+        assert!(h.open(1000.0));
+        assert!(!h.open(1500.0), "once");
+        assert_eq!(h.up(1, 1600.0), Lift::Nothing);
         // A lift a hair before is a tap; one after that no check saw is the hold.
         assert!(h.down(2, true, 0.0));
-        assert_eq!(h.up(2, 3000.0_f64.next_down()), Lift::Tap);
+        assert_eq!(h.up(2, 1000.0_f64.next_down()), Lift::Tap);
         assert!(h.down(3, true, 0.0));
-        assert_eq!(h.up(3, 3000.0), Lift::Open);
+        assert_eq!(h.up(3, 1000.0), Lift::Open);
         // From the press's own down, not from 0.
         assert!(h.down(4, true, 1000.0));
-        assert!(!h.due(4000.0_f64.next_down()));
-        assert!(h.due(4000.0));
+        assert!(!h.due(2000.0_f64.next_down()));
+        assert!(h.due(2000.0));
         // ☰'s stays 500 ms.
         let mut menu = Hold::default();
         assert!(menu.down(5, true, 0.0));
@@ -227,8 +279,92 @@ mod tests {
     }
 
     #[test]
+    fn a_rail_press_is_full_at_exactly_1000_ms_and_acts_at_its_lift() {
+        let mut h = Hold::lifted(1000.0);
+        assert!(h.down(1, true, 0.0));
+        assert!(!h.full());
+        assert!(!h.open(1000.0_f64.next_down()));
+        assert!(h.holding() && !h.full(), "filling");
+        assert!(h.open(1000.0));
+        assert!(h.full() && !h.holding(), "full");
+        assert!(!h.open(1500.0), "once");
+        assert_eq!(h.pressing(), Some(1));
+        // Another pointer's lift ends nothing; its own acts.
+        assert_eq!(h.up(2, 1600.0), Lift::Nothing);
+        assert!(h.full());
+        assert_eq!(h.up(1, 1600.0), Lift::Open);
+        assert!(!h.full());
+        // A lift a hair before is a tap; one after that no check saw acts.
+        assert!(h.down(2, true, 0.0));
+        assert_eq!(h.up(2, 1000.0_f64.next_down()), Lift::Tap);
+        assert!(h.down(3, true, 0.0));
+        assert_eq!(h.up(3, 1000.0), Lift::Open);
+        assert_eq!(Hold::lifted(1000.0).acts, Acts::AtLift);
+        assert_eq!(Hold::with(1000.0).acts, Acts::AtCheck);
+    }
+
+    #[test]
+    fn a_refused_full_mark_makes_the_lift_do_nothing_and_never_a_tap() {
+        let mut h = Hold::lifted(1000.0);
+        // A refusal before the full mark does nothing: the press still fills
+        // and acts at its lift.
+        assert!(h.down(1, true, 0.0));
+        h.refuse();
+        assert!(h.holding(), "no full mark yet: nothing to refuse");
+        assert!(h.open(1000.0));
+        assert!(h.full(), "the early refusal left no mark");
+        assert_eq!(h.up(1, 1100.0), Lift::Open);
+        // Refused at the full mark: dead, still down until its end, and its
+        // lift does nothing.
+        assert!(h.down(1, true, 2000.0));
+        assert!(h.open(3000.0));
+        h.refuse();
+        assert!(!h.full() && !h.holding());
+        assert_eq!(h.pressing(), Some(1), "still down until its end");
+        assert_eq!(h.up(1, 3500.0), Lift::Nothing);
+        // A new press starts afresh.
+        assert!(h.down(1, true, 4000.0));
+        assert!(h.open(5000.0));
+        assert!(h.full());
+        assert_eq!(h.up(1, 5100.0), Lift::Open);
+    }
+
+    #[test]
+    fn a_full_rail_press_ends_with_nothing_done_at_a_slide_a_cancel_or_a_hide() {
+        let full = || {
+            let mut h = Hold::lifted(1000.0);
+            assert!(h.down(1, true, 0.0));
+            assert!(h.open(1000.0));
+            h
+        };
+        // A slide past 10 px from the first move.
+        let mut h = full();
+        assert!(!h.moved(1, 50.0, 50.0), "the anchor");
+        assert!(!h.moved(1, 60.0, 50.0), "exactly 10 px");
+        assert!(h.moved(1, 60.0_f64.next_up(), 50.0));
+        assert_eq!((h.full(), h.up(1, 1500.0)), (false, Lift::Nothing));
+        // A cancel or a lost capture.
+        let mut h = full();
+        h.cancel(2);
+        assert!(h.full(), "another pointer's cancel");
+        h.cancel(1);
+        assert_eq!((h.full(), h.up(1, 1500.0)), (false, Lift::Nothing));
+        // A hidden page.
+        let mut h = full();
+        assert_eq!(h.leave(), Some(1));
+        assert_eq!(h.up(1, 1500.0), Lift::Nothing);
+        // ☰'s opened press keeps sliding nothing off.
+        let mut menu = Hold::default();
+        assert!(menu.down(1, true, 0.0));
+        assert!(menu.open(500.0));
+        assert!(!menu.moved(1, 0.0, 0.0));
+        assert!(!menu.moved(1, 0.0, 300.0));
+        assert_eq!(menu.up(1, 600.0), Lift::Nothing);
+    }
+
+    #[test]
     fn a_press_says_its_pointer_and_a_hidden_page_ends_it() {
-        let mut h = Hold::with(3000.0);
+        let mut h = Hold::with(1000.0);
         assert_eq!(h.pressing(), None);
         assert_eq!(h.leave(), None);
         assert!(h.down(7, true, 0.0));
@@ -236,11 +372,11 @@ mod tests {
         assert_eq!(h.leave(), Some(7));
         assert_eq!(h.pressing(), None);
         assert!(!h.holding());
-        assert!(!h.open(4000.0), "nothing to open");
-        assert_eq!(h.up(7, 4000.0), Lift::Nothing);
+        assert!(!h.open(2000.0), "nothing to open");
+        assert_eq!(h.up(7, 2000.0), Lift::Nothing);
         // An opened press still says its pointer until it ends.
         assert!(h.down(8, true, 0.0));
-        assert!(h.open(3000.0));
+        assert!(h.open(1000.0));
         assert_eq!(h.pressing(), Some(8));
         assert_eq!(h.leave(), Some(8));
     }

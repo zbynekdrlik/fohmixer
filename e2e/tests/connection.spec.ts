@@ -1,16 +1,17 @@
-import type { Page, WebSocketRoute } from "@playwright/test";
+import type { Locator, Page, WebSocketRoute } from "@playwright/test";
 import { test, expect } from "./support/fixtures";
 import {
   HUB_SOCKET,
   LiveClient,
   RELOAD_KEY,
   countLoads,
-  dispatchPointer,
+  dispatchSnapped,
   hubEvents,
   openSurface,
   pageEvents,
   ready,
   token,
+  track,
   until,
 } from "./support/live";
 
@@ -41,6 +42,76 @@ async function openLoggedIn(page: Page, reloadedAt?: number) {
   );
   await page.goto("/");
   await expect(page.getByTestId("stage")).toBeVisible();
+}
+
+/** One state of the STAGE button, recorded in the page at the page clock `t`. */
+type Look = { t: number; failed: boolean; holding: string | null; full: string | null };
+
+/**
+ * Records the button's look at every change of its `class`, `data-holding`
+ * or `data-full` from now on (a `MutationObserver`, PR #133's review, M1): a
+ * flash is observed, never sampled, so nothing depends on when a read lands.
+ */
+async function watchLook(button: Locator) {
+  await button.evaluate((el) => {
+    const w = window as any;
+    w.stageLooks = [];
+    const note = () =>
+      w.stageLooks.push({
+        t: performance.now(),
+        failed: el.classList.contains("failed"),
+        holding: el.getAttribute("data-holding"),
+        full: el.getAttribute("data-full"),
+      });
+    note();
+    w.stageWatch = new MutationObserver(note);
+    w.stageWatch.observe(el, { attributes: true, attributeFilter: ["class", "data-holding", "data-full"] });
+  });
+}
+
+/** The looks `watchLook` recorded, its observer stopped. */
+async function watchedLooks(page: Page): Promise<Look[]> {
+  return page.evaluate(() => {
+    const w = window as any;
+    w.stageWatch.disconnect();
+    return w.stageLooks;
+  });
+}
+
+/** The page clock at the start of each `failed` flash in `looks`. */
+function flashStarts(looks: Look[]): number[] {
+  return looks.filter((look, i) => look.failed && !(i > 0 && looks[i - 1].failed)).map((look) => look.t);
+}
+
+/** The page's `rail` steps since `since` (the page clock), once `ok` holds. */
+async function railSteps(since: number, ok: (steps: string[]) => boolean): Promise<string[]> {
+  return until(
+    async () =>
+      pageEvents(await hubEvents())
+        .filter((e: any) => e.ev === "rail" && e.t >= since)
+        .map((e: any) => e.what),
+    ok,
+    "the rail steps uploaded",
+    15_000,
+  );
+}
+
+/**
+ * Routes the page's sockets to the hub: the first one as it is, every later
+ * one with all but the hub values (as if the hub had not sent STAGE AUT
+ * yet). The routes, in order.
+ */
+async function withoutHubValuesAfterTheFirst(page: Page): Promise<WebSocketRoute[]> {
+  const sockets: WebSocketRoute[] = [];
+  await page.routeWebSocket(HUB_SOCKET, (ws) => {
+    sockets.push(ws);
+    const server = ws.connectToServer();
+    if (sockets.length === 1) return;
+    server.onMessage((message) => {
+      if (JSON.parse(String(message)).type !== "hub") ws.send(message);
+    });
+  });
+  return sockets;
 }
 
 test.describe("The protocol handshake", () => {
@@ -78,17 +149,7 @@ test.describe("A reconnect", () => {
     try {
       live.setHub("stage_aut", true);
       await until(async () => live.hub.get("stage_aut"), (v) => v === true, "STAGE AUT on");
-      const sockets: WebSocketRoute[] = [];
-      await page.routeWebSocket(HUB_SOCKET, (ws) => {
-        sockets.push(ws);
-        const server = ws.connectToServer();
-        if (sockets.length === 1) return;
-        // Every later socket: all but the hub values (as if the hub had not
-        // sent STAGE AUT yet).
-        server.onMessage((message) => {
-          if (JSON.parse(String(message)).type !== "hub") ws.send(message);
-        });
-      });
+      const sockets = await withoutHubValuesAfterTheFirst(page);
       await openSurface(page);
       const stage = page.getByTestId("stage-mics");
       await ready(stage);
@@ -106,24 +167,80 @@ test.describe("A reconnect", () => {
       await page.waitForTimeout(1000);
       await expect(stage).toHaveAttribute("data-aut", "run");
       // A hold meanwhile cannot act (I8): no fill, no hold's line, and at
-      // 3 s it is refused, recorded so; the flag stays.
+      // 1 s (the owner's ruling on #104) it is refused, recorded so; the
+      // flag stays.
       const since = await page.evaluate(() => performance.timeOrigin + performance.now());
-      await dispatchPointer(stage, [{ type: "pointerdown" }, { wait: 1000 }]);
-      await expect(stage).toHaveAttribute("data-holding", "false");
-      await expect(stage.getByTestId("btn-sub")).not.toHaveText(/drž/);
-      await dispatchPointer(stage, [{ wait: 2300 }, { type: "pointerup" }]);
+      // One finger's sequence timed in the page: the look at 0.4 s and the
+      // lift at 1.5 s, both read in the page's timer order around the 1 s
+      // mark, and the refusal's 400 ms flash observed (PR #133's review, M1).
+      await watchLook(stage);
+      const press = await dispatchSnapped(stage, [
+        { type: "pointerdown" },
+        { wait: 400 },
+        { snap: true },
+        { wait: 1100 },
+        { snap: true },
+        { type: "pointerup" },
+        { wait: 100 },
+      ]);
+      const looks = await watchedLooks(page);
+      expect(press.snaps[0].holding).toBe("false");
+      expect(press.snaps[0].sub).not.toMatch(/drž|pusť/);
+      const flashes = flashStarts(looks).map((t) => t - press.start);
+      expect(flashes, "one refusal flash, at the 1 s mark, before the lift").toHaveLength(1);
+      expect(flashes[0]).toBeGreaterThanOrEqual(1000);
+      expect(flashes[0]).toBeLessThan(press.snaps[1].at);
+      expect(looks.map((look) => look.full), "never full").not.toContain("true");
+      expect(looks.map((look) => look.holding), "never a fill").not.toContain("true");
       await page.waitForTimeout(300);
       expect(live.hub.get("stage_aut")).toBe(true);
-      const steps = await until(
-        async () =>
-          pageEvents(await hubEvents())
-            .filter((e: any) => e.ev === "rail" && e.t >= since)
-            .map((e: any) => e.what),
-        (s) => s.includes("refused"),
-        "the refused hold uploaded",
-        15_000,
-      );
-      expect(steps).toEqual(["press", "refused"]);
+      expect(await railSteps(since, (s) => s.includes("refused"))).toEqual(["press", "refused"]);
+    } finally {
+      live.setHub("stage_aut", false);
+      await until(async () => live.hub.get("stage_aut"), (v) => v === false, "STAGE AUT off");
+      live.close();
+    }
+  });
+
+  test("a full hold whose connection drops before its lift is refused at the lift; the flag and the mics stay (#104)", async ({ page }) => {
+    // The lift checks again whether the hold can act (PR #133's review, M2): a
+    // value kept from the full mark would switch STAGE AUT after a
+    // reconnect whose hub has not told it yet.
+    const live = await LiveClient.open();
+    const mics = track("Mics Stage #");
+    try {
+      live.setHub("stage_aut", false);
+      await until(async () => live.hub.get("stage_aut"), (v) => v === false, "STAGE AUT off");
+      await live.set("band", mics, "mute", false);
+      const sockets = await withoutHubValuesAfterTheFirst(page);
+      await openSurface(page);
+      const stage = page.getByTestId("stage-mics");
+      await ready(stage);
+      await expect(stage).toHaveAttribute("data-aut", "off");
+      const since = await page.evaluate(() => performance.timeOrigin + performance.now());
+      await watchLook(stage);
+      // Held past the 1 s mark: full, nothing sent (read in the page's
+      // timer order).
+      const press = await dispatchSnapped(stage, [{ type: "pointerdown" }, { wait: 1300 }, { snap: true }]);
+      expect(press.snaps[0]).toMatchObject({ holding: "true", full: "true", sub: "pusť — zapne AUT", failed: false });
+      expect(live.hub.get("stage_aut")).toBe(false);
+      // The finger stays down; the socket drops and the page reconnects,
+      // and the new socket has no STAGE AUT from the hub: the full press can
+      // no longer act, so it shows no fill.
+      await sockets[0].close({ code: 4000, reason: "gone" });
+      await expect.poll(() => sockets.length, { timeout: 10_000 }).toBe(2);
+      await expect(page.getByTestId("surface")).toHaveAttribute("data-connected", "true");
+      await expect(stage).toHaveAttribute("data-full", "false");
+      // The lift: refused, one flash after it, nothing sent.
+      const lift = await dispatchSnapped(stage, [{ type: "pointerup" }, { wait: 600 }]);
+      const looks = await watchedLooks(page);
+      const flashes = flashStarts(looks);
+      expect(flashes, "one refusal flash, at the lift").toHaveLength(1);
+      expect(flashes[0]).toBeGreaterThanOrEqual(lift.start);
+      await page.waitForTimeout(300);
+      expect(live.hub.get("stage_aut")).toBe(false);
+      expect(await live.get("band", mics, "mute")).toBe(false);
+      expect(await railSteps(since, (s) => s.includes("refused"))).toEqual(["press", "full", "refused"]);
     } finally {
       live.setHub("stage_aut", false);
       await until(async () => live.hub.get("stage_aut"), (v) => v === false, "STAGE AUT off");
