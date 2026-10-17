@@ -1,16 +1,16 @@
 //! The toggle buttons (spec F12, F14, F15): the strip mute with its
-//! protection, the group solos, the stage-mic button and STAGE AUT. Every
-//! button shows Live's (or the hub's) value, never a local memory (spec P2),
+//! protection, the group solos and the stage-mic button without STAGE AUT
+//! (with it, the stage button is `components::rail::RuleButton`, D18).
+//! Every button shows Live's value, never a local memory (spec P2),
 //! and takes a tap only once that value is here (I8). A write that Live has
 //! not confirmed outlines the button (`data-intent`, #43 PR C:
 //! `components::intent_look`), and each tap goes to the page's flight
 //! recorder.
 
-use fohmixer_proto::client::HUB_STAGE_AUT;
 use fohmixer_proto::layout::{Anchor, Binding};
 use leptos::html;
 use leptos::prelude::*;
-use serde_json::{Value, json};
+use serde_json::json;
 
 use super::{
     BtnText, fail_flash, intent_look, key_of, owns_touches, readiness, slot_of, trace_touch,
@@ -390,55 +390,6 @@ pub fn StageMicsView(binding: Binding, label: Option<String>) -> impl IntoView {
             data-testid="stage-mics"
             data-muted=move || muted().to_string()
             data-binding=bound
-            aria-disabled=disabled
-            on:pointerdown=on_down
-        >
-            <BtnText text=label />
-        </div>
-    }
-}
-
-/// A hub value's toggle: STAGE AUT (spec F15, X9: the rule runs in the hub).
-#[component]
-pub fn HubToggleView(key: String, label: String) -> impl IntoView {
-    let store = expect_context::<LiveStore>();
-    let key = StoredValue::new(key);
-    let value = move || {
-        key.try_with_value(|k| store.hub.with(|hub| hub.get(k).and_then(Value::as_bool)))
-            .flatten()
-    };
-    let on = move || value() == Some(true);
-    let ready = move || store.connected.get() && value().is_some();
-    let on_down = move |ev: web_sys::PointerEvent| {
-        ev.prevent_default();
-        let current = key
-            .try_with_value(|k| {
-                store
-                    .hub
-                    .try_with_untracked(|hub| hub.get(k).and_then(Value::as_bool))
-                    .flatten()
-            })
-            .flatten();
-        let connected = store.connected.try_get_untracked().unwrap_or(false);
-        if let (Some(current), true) = (current, connected) {
-            let _ = key.try_with_value(|k| store.set_hub(k, json!(!current)));
-        }
-    };
-    let testid = if key.with_value(|k| k == HUB_STAGE_AUT) {
-        "stage-aut"
-    } else {
-        "hub-toggle"
-    };
-    let disabled = move || if ready() { "false" } else { "true" };
-    // It owns its touches (#43 PR G); a hub value has no write key.
-    let no_keys: Vec<String> = Vec::new();
-    view! {
-        <div
-            class="btn hub-toggle"
-            use:owns_touches=no_keys
-            class:on=on
-            data-testid=testid
-            data-on=move || on().to_string()
             aria-disabled=disabled
             on:pointerdown=on_down
         >

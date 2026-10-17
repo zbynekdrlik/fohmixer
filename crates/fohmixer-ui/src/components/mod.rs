@@ -34,7 +34,7 @@ use crate::raf;
 use crate::store::intent::{State, most_urgent};
 use crate::store::{LiveStore, Readiness, Slot};
 
-use buttons::{HubToggleView, SoloView, StageMicsView};
+use buttons::{SoloView, StageMicsView};
 use overlay::AlertView;
 use params::{ParamFaderView, ParamToggleView, VcaFaderView};
 use strip::StripView;
@@ -244,9 +244,6 @@ pub fn ControlView(
         }
         Control::Stage { binding, label, .. } => {
             view! { <StageMicsView binding=binding label=label /> }.into_any()
-        }
-        Control::HubToggle { key, label } => {
-            view! { <HubToggleView key=key label=label /> }.into_any()
         }
         Control::ParamToggle {
             label,

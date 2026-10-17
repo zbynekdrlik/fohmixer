@@ -10,8 +10,9 @@ canvas coordinates, clips each node to the part TouchOSC shows (inside its
 group, page, pager and the canvas; a clipped node is reported, one with
 nothing shown is dropped), and classifies nodes by their role, not by their
 script alone: strips (by the names of their parts), solo buttons, the stage
-mics and STAGE AUT, areas and their titles, labels, the root overlay (the
-TechAlert strip and the alert box; REFRESH ALL is dropped, #58). The former MIDI controls take
+mics (STAGE AUT is their ``aut``; its own button is dropped, D18), areas and
+their titles, labels, the root overlay (the TechAlert strip and the alert
+box; REFRESH ALL is dropped, #58). The former MIDI controls take
 their targets and ranges from the band set's MIDI mappings (``KeyMidi`` in the
 gzip XML of the ``.als``): a clean mapping becomes a ``param_toggle`` /
 ``param_fader`` writing its targets directly (D10); anything else is dropped
@@ -55,7 +56,7 @@ RUN_GAP = 1.5
 # A strip this many times its page's median strip width is drawn wide.
 WIDE_FROM = 1.2
 # The non-strip controls that go to the rail of a page with strips.
-RAIL_KINDS = ("stage", "hub_toggle", "solo", "param_toggle")
+RAIL_KINDS = ("stage", "solo", "param_toggle")
 # The strip parts, by their node names (abl-touchosc's group_init.lua).
 STRIP_PARTS = {
     "fader": "fader",
@@ -934,8 +935,9 @@ class Importer:
                 )
             )
         elif node.name == "btn_stage_aut" or (node.type == "GROUP" and node.child("btn_stage_aut")):
-            label = self.group_text(node) or "STAGE AUT"
-            out.append(self.item("hub_toggle", shown, path, key="stage_aut", label=label))
+            # D18 (#104): STAGE AUT is the stage control's `aut` (one rail
+            # button: a tap the mics, a 3 s hold the rule), never a control.
+            self.drop(path, "STAGE AUT: the stage button carries it (D18)")
         elif node.type == "GROUP" and any(_midi_of(c) for c in node.children):
             self.midi_group(node, ax, ay, shown, out, path)
         elif _is_refresh(node):
@@ -1189,8 +1191,6 @@ class Importer:
                 out["aut"] = True
             if item["label"]:
                 out["label"] = item["label"]
-        elif kind == "hub_toggle":
-            out |= {"key": item["key"], "label": item["label"]}
         elif kind == "param_toggle":
             out |= {"label": item["label"], "targets": item["targets"], "press": item["press"]}
             if item["color"]:

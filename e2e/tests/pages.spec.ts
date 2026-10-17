@@ -22,10 +22,12 @@ async function pageSubs(page: import("@playwright/test").Page): Promise<number> 
   return Number(await page.getByTestId("surface").getAttribute("data-subs"));
 }
 
-/** The hub holds the page's subscriptions plus STAGE AUT's own (live_set is_playing). */
+/** The hub holds exactly the page's subscriptions: its rules' own (every
+ * instance's transport, #104) are not counted, and the merged STAGE button's
+ * transport is the page's own. */
 async function expectHubToHold(page: import("@playwright/test").Page, subs: number) {
   await expect(page.getByTestId("surface")).toHaveAttribute("data-subs", String(subs));
-  await until(hubSubscriptions, (n) => n === subs + 1, `the hub to hold ${subs + 1} subscriptions`);
+  await until(hubSubscriptions, (n) => n === subs, `the hub to hold ${subs} subscriptions`);
 }
 
 /** The ids of the groups on screen, in document order. */
@@ -104,7 +106,7 @@ test.describe("The page is its rows of sections around the control column", () =
       .locator(".btn")
       .evaluateAll((els) => els.map((e) => e.getAttribute("data-testid")));
     const rail = layout().pages[1].rail.map((c: any) =>
-      ({ stage: "stage-mics", hub_toggle: "stage-aut", solo: "solo", param_toggle: "param-toggle" })[c.kind as string],
+      ({ stage: "stage-mics", solo: "solo", param_toggle: "param-toggle" })[c.kind as string],
     );
     expect(kinds).toEqual([...rail, "alert-toggle"]);
     await expect(page.getByTestId("solo").first()).toHaveText("SOLO Vocals");

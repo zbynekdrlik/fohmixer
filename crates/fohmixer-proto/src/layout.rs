@@ -14,7 +14,6 @@ use std::collections::HashSet;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::client::HUB_STAGE_AUT;
 use crate::path::{PathError, escape_name, parse_steps, steps_text};
 
 /// The schema version this build reads.
@@ -58,8 +57,8 @@ pub struct Page {
     pub title: String,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub view: bool,
-    /// The function controls down the left side (stage mics, STAGE AUT,
-    /// solos, the former MIDI toggles), top to bottom.
+    /// The function controls down the left side (the stage mics with STAGE
+    /// AUT, solos, the former MIDI toggles), top to bottom.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rail: Vec<Control>,
     /// The rows of sections, top to bottom.
@@ -147,7 +146,8 @@ pub enum Control {
     },
     /// The stage-mic button: the mute of the stage-mic track, lit while the
     /// mics are live (spec F15, #9). `aut`: the hub's STAGE AUT rule drives
-    /// this binding's mute.
+    /// this binding's mute, and the button carries its flag (D18, #104: a
+    /// 3 s hold turns it on or off; the `hub_toggle` kind is gone).
     Stage {
         binding: Binding,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -155,8 +155,6 @@ pub enum Control {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         label: Option<String>,
     },
-    /// A toggle of a hub value (the STAGE AUT button).
-    HubToggle { key: String, label: String },
     /// A former MIDI toggle writing its targets directly (spec F17, F18);
     /// `color` is its lit colour.
     ParamToggle {
@@ -295,7 +293,6 @@ impl Control {
             Control::ParamToggle { targets, .. } | Control::ParamFader { targets, .. } => {
                 targets.iter().map(|t| &t.binding).collect()
             }
-            Control::HubToggle { .. } => vec![],
         }
     }
 }
@@ -702,11 +699,6 @@ impl Validator {
                 self.binding(&format!("{at}.binding"), binding);
                 if *period_ms == 0 {
                     self.error(at, "alert period 0 ms".to_string());
-                }
-            }
-            Control::HubToggle { key, .. } => {
-                if key != HUB_STAGE_AUT {
-                    self.error(at, format!("unknown hub value {key:?}"));
                 }
             }
             Control::ParamToggle { targets, color, .. } => {

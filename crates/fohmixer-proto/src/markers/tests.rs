@@ -305,7 +305,10 @@ fn a_tag_group_the_frame_does_not_show_is_a_view_with_the_pins() {
 
 #[test]
 fn a_view_keeps_the_rail_of_the_frames_default_page() {
-    let rail = |label: &str| json!([{"kind": "hub_toggle", "key": "stage_aut", "label": label}]);
+    let rail = |label: &str| {
+        json!([{"kind": "stage", "label": label,
+                "binding": {"instance": "band", "anchor": {"kind": "track", "name": "Mics Stage #"}}}])
+    };
     let mut frame = serde_json::to_value(frame()).unwrap();
     frame["pages"][0]["rail"] = rail("FOH RAIL");
     let mut cue = frame["pages"][0].clone();

@@ -331,14 +331,13 @@ class ImportTest(unittest.TestCase):
     # --- rail ---
 
     def test_the_rail_holds_the_pages_non_strip_controls_top_to_bottom(self):
-        # FOH has strips: its stage mics, STAGE AUT, solos and toggles, all
-        # outside the nested pager, form its rail ordered by y (REPRO, a
-        # standalone button, is the lowest).
+        # FOH has strips: its stage mics (with STAGE AUT, D18), solos and
+        # toggles, all outside the nested pager, form its rail ordered by y
+        # (REPRO, a standalone button, is the lowest).
         self.assertEqual(
             [(c["kind"], import_tosc.display(c)) for c in self.foh["rail"]],
             [
                 ("stage", "STAGE"),
-                ("hub_toggle", "STAGE AUT"),
                 ("solo", "Vocals"),
                 ("solo", "Stems"),
                 ("param_toggle", "REVERB"),
@@ -355,7 +354,7 @@ class ImportTest(unittest.TestCase):
         )
 
     def test_the_stage_mics_stage_aut_and_solos_keep_their_bindings(self):
-        stage, aut, vocals, stems = self.foh["rail"][:4]
+        stage, vocals, stems = self.foh["rail"][:3]
         self.assertEqual(
             stage,
             {
@@ -368,7 +367,14 @@ class ImportTest(unittest.TestCase):
                 "label": "STAGE",
             },
         )
-        self.assertEqual(aut, {"kind": "hub_toggle", "key": "stage_aut", "label": "STAGE AUT"})
+        rail = self.foh["rail"]
+        self.assertNotIn("hub_toggle", [item["kind"] for item in rail])
+        self.assertTrue(stage["aut"], "the stage control carries STAGE AUT (D18)")
+        # The STAGE AUT button is dropped and reported, never a label or a box.
+        self.assertIn(
+            "STAGE AUT: the stage button carries it (D18)",
+            [d["why"] for d in self.report["dropped"]],
+        )
         self.assertEqual(
             [s["binding"]["anchor"]["name"] for s in (vocals, stems)],
             ["Vocals Repro grp#", "Stems grp#"],
@@ -963,8 +969,7 @@ class ImportTest(unittest.TestCase):
         self.assertIn("no mapping in the set", text)
         self.assertIn("Conf/unfold_band 'Old grp#': the hub keeps", text)
         self.assertIn(
-            "- foh rail: STAGE, STAGE AUT, Vocals, Stems, REVERB, VOC MIC, AUTOTUNE, ZVUKAR, "
-            "REPRO\n",
+            "- foh rail: STAGE, Vocals, Stems, REVERB, VOC MIC, AUTOTUNE, ZVUKAR, REPRO\n",
             text,
         )
         self.assertIn(
@@ -998,10 +1003,11 @@ class ImportTest(unittest.TestCase):
         self.assertEqual({m["verdict"] for m in layout["report"]["midi"]}, {"dropped"})
         self.assertEqual({m["why"] for m in layout["report"]["midi"]}, {"no set given (--set)"})
         self.assertEqual(layout["report"]["unresolved"], [])
-        # The rail keeps what needs no set: the stage mics, STAGE AUT, solos.
+        # The rail keeps what needs no set: the stage mics (STAGE AUT is
+        # their `aut`, D18) and the solos.
         self.assertEqual(
             [c["kind"] for c in layout["pages"][1]["rail"]],
-            ["stage", "hub_toggle", "solo", "solo"],
+            ["stage", "solo", "solo"],
         )
 
 
