@@ -1428,3 +1428,18 @@ fn the_same_layout_again_closes_a_track_list_window() {
         2
     );
 }
+
+#[test]
+fn closing_a_track_list_window_resumes_only_the_waiting_returns() {
+    // A held fader at rest whose return does not wait: the window's end
+    // leaves it unsettled, so a value of Live's elsewhere is still no hand
+    // until one is where the rule left it.
+    let mut r = rule(false, Some(true));
+    r.tap(true, 0.0);
+    let _ = run(&mut r, 25.0, 500.0);
+    r.live(ST, lowered(0.85), 600.0);
+    r.tracks_changed("band");
+    assert_eq!(r.tracks_known("band", 700.0), vec![]);
+    assert_eq!(r.live(ST, 0.7, 800.0), vec![], "unsettled: no hand");
+    assert_eq!(r.state().faders[0].back, Some(0.85));
+}
