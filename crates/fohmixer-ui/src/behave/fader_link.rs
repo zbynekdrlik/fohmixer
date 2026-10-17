@@ -62,10 +62,17 @@ pub fn flink_of(lead_on: bool, follow_on: bool) -> Flink {
     }
 }
 
-/// The mark draws the chain alone beside a problem's `!` and a mute chain
-/// (v1's crowded case): it never yields.
-pub fn flink_compact(flag: bool, mute_chain: bool) -> bool {
-    flag && mute_chain
+/// A mute chain's count this many characters long or longer crowds the
+/// corner line (`1/3`, `12`; a one-digit count leaves the whole mark room
+/// beside it at 64 px).
+pub const CROWDED_CHARS: usize = 2;
+
+/// The mark draws the chain alone when the corner line is crowded (D18):
+/// beside a mute chain with a problem's `!` (v1's case), or beside a mute
+/// chain whose count `mute_count` is [`CROWDED_CHARS`] characters or more;
+/// none without a mute chain. It never yields to RET or the MUTE mark.
+pub fn flink_compact(flag: bool, mute_count: Option<&str>) -> bool {
+    mute_count.is_some_and(|count| flag || count.chars().count() >= CROWDED_CHARS)
 }
 
 /// A leader's switch (the button's capitals are the stylesheet's).
@@ -165,9 +172,21 @@ mod tests {
             [false, false, true]
         );
         assert_eq!(Flink::default(), Flink::Off);
-        assert!(flink_compact(true, true));
-        assert!(!flink_compact(true, false));
-        assert!(!flink_compact(false, true));
+    }
+
+    #[test]
+    fn the_mark_is_the_chain_alone_beside_a_crowded_mute_chain() {
+        // v1's case: a problem's `!` beside the mute chain.
+        assert!(flink_compact(true, Some("3")));
+        assert!(!flink_compact(true, None));
+        // A one-digit count leaves the whole mark room; two characters or
+        // more crowd it, `!` or not.
+        assert!(!flink_compact(false, Some("3")));
+        assert!(flink_compact(false, Some("12")));
+        assert!(flink_compact(false, Some("1/3")));
+        assert!(flink_compact(false, Some("10/12")));
+        assert!(!flink_compact(false, None));
+        assert_eq!(CROWDED_CHARS, 2);
     }
 
     #[test]

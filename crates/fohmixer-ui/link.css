@@ -54,14 +54,14 @@
    fit its 48 px at 64 px (#127 re-review N1; swept over 64-120 px in both
    engines, strip-head.spec.ts): the chain and the count at 7.5 px, no
    letter spacing, a tighter pill. Every shorter count looks as before. */
-.strip-corner > .link-mark.compact {
+.strip-corner > .link-mark.compact:not(.flink) {
     gap: 0.5px;
     padding: 0 2px 0 1.5px;
     font-size: 7.5px;
     letter-spacing: 0;
 }
 
-.strip-corner > .link-mark.compact::before {
+.strip-corner > .link-mark.compact:not(.flink)::before {
     width: 7.5px;
     height: 7.5px;
 }
@@ -71,4 +71,35 @@
     position: absolute;
     top: 4px;
     left: 4px;
+}
+
+/* The fader link (#130, D18; the approved mockup reverb-link-v2): the
+   chain with "dB" in the accent, after a problem's `!` and the mute chain,
+   before RET and MUTE: in the accent on a leader whose link is on; on a
+   partner a leader moves (`.follow`) grey inside an accent ring (on any
+   track colour the dark pill keeps it readable); the chain alone, at its
+   whole size, beside a crowded mute chain (`behave::fader_link::
+   flink_compact`: with a problem's `!`, or a count of two characters or
+   more; it never yields to RET or MUTE); the leader's cap line in the
+   accent. No height. */
+.link-mark.flink {
+    color: var(--accent);
+    text-transform: none;
+}
+
+.link-mark.flink.follow {
+    color: #d6d6e2;
+    box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.strip-corner > .link-mark.flink.compact {
+    padding: 0 2px;
+}
+
+.strip-corner > .link-mark.flink.compact .link-n {
+    display: none;
+}
+
+.strip[data-flink="lead"] .fader-cap::before {
+    background: var(--accent);
 }

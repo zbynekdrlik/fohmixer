@@ -9,6 +9,7 @@ pub mod buttons;
 pub mod detail;
 pub mod eq;
 pub mod fader;
+mod fader_link;
 pub mod meter;
 pub mod overlay;
 pub mod pan;

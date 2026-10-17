@@ -41,6 +41,7 @@ use super::{
     trace_touch,
 };
 use crate::behave::fader::{self as curve, FaderCtl, UNITY, VolumeLaw};
+use crate::behave::fader_link::{link_drag, link_volumes};
 use crate::behave::vca::{self, Drag, Home};
 use crate::behave::{Taken, TouchEnd, touch_end};
 use crate::binding::SubSpec;
@@ -192,12 +193,22 @@ fn vca_intent(views: &[(State, Option<f64>)]) -> (State, Option<f64>) {
 /// red while any target's binding does not resolve (I5). With `vca` (the
 /// backing-tracks fader, #58) it shows the loudest target, a touch moves
 /// every target by the same dB from where the touch started, and a double
-/// tap glides every target to 0 dB.
+/// tap glides every target to 0 dB. A fader link's leader (#130, D18:
+/// `partners`, while `link_on`) writes its partners with its own by the
+/// same dB, in one `sets`.
 #[component]
 pub fn FaderView(
     targets: Vec<Target>,
     shaping: bool,
     #[prop(optional)] vca: bool,
+    /// A fader link's partners (#130, D18): the volumes a leader's touch
+    /// writes with its own by the same dB while `link_on`; empty for any
+    /// other fader.
+    #[prop(optional)]
+    partners: Vec<Target>,
+    /// The leader's link is on (its hub switch, and partners to move).
+    #[prop(optional, into)]
+    link_on: Signal<bool>,
 ) -> impl IntoView {
     let store = expect_context::<LiveStore>();
     let (slot, law) = targets.first().map_or_else(
@@ -224,17 +235,33 @@ pub fn FaderView(
         .first()
         .and_then(|t| t.spec.as_ref())
         .map(|s| set_key(&s.instance, &s.target, &s.prop));
+    // The partners' write keys: released with the fader's own when it goes
+    // under a finger (a key never written releases nothing).
+    let partner_keys: Vec<String> = partners
+        .iter()
+        .filter_map(|t| t.spec.as_ref())
+        .map(|s| set_key(&s.instance, &s.target, &s.prop))
+        .collect();
     // A fader taken away under a finger (a page switch) gets no pointerup:
     // its write counts as released then, never held forever (L4).
     {
         let keys = keys.clone();
-        on_cleanup(move || store.release(&keys));
+        on_cleanup(move || {
+            store.release(&keys);
+            store.release(&partner_keys);
+        });
     }
     // The root owns its touches (#43 PR G) and names its keys.
     let touch_keys = keys.clone();
     let keys = StoredValue::new(keys);
     let shown_key = StoredValue::new(shown_key);
     let targets = StoredValue::new(targets);
+    let partners = StoredValue::new(partners);
+    // A leader's linked touch (#130): the drag around its own start and the
+    // partners it moves; none while unlinked.
+    let link = StoredValue::new(None::<(Drag, Vec<usize>)>);
+    // The keys this touch writes (its own; a linked one's partners' too).
+    let touched = StoredValue::new(touch_keys.clone());
     // A backing-tracks fader's touch: every target's volume at its start;
     // and its double tap's glide: from every target's volume at the glide's
     // start to 0 dB.
@@ -281,6 +308,27 @@ pub fn FaderView(
     // on a glide's frame (`glide`: how far it has come), from its double
     // tap's `Home`; any other's from each target's own law.
     let send = move |p: f64, is_final: bool, glide: Option<f64>| -> Option<u64> {
+        // A leader's linked touch (#130): its own value and each partner's
+        // by the same dB, in ONE `sets` (one batch in Live).
+        if !vca && let Some(Some((moved, idx))) = link.try_with_value(Clone::clone) {
+            let own = targets
+                .try_with_value(|all| {
+                    all.first()
+                        .and_then(|t| Some((t.spec.clone()?, t.law.value(p)?)))
+                })
+                .flatten();
+            if let Some((spec, value)) = own {
+                let mut items = vec![(spec, json!(value))];
+                let _ = partners.try_with_value(|all| {
+                    for (i, volume) in link_volumes(&moved, &idx, value) {
+                        if let Some(spec) = all.get(i).and_then(|t| t.spec.clone()) {
+                            items.push((spec, json!(volume)));
+                        }
+                    }
+                });
+                return store.set_each(&items, is_final, move || fail_flash(failed));
+            }
+        }
         let values: Vec<Option<f64>> = if vca {
             let volumes = match glide {
                 Some(at) => home
@@ -340,7 +388,7 @@ pub fn FaderView(
         match end {
             Some(TouchEnd::Send(p)) => sent_moves(p, send(p, true, None)),
             Some(TouchEnd::Released) => {
-                let _ = keys.try_with_value(|k| store.release(k));
+                let _ = touched.try_with_value(|k| store.release(k));
             }
             Some(TouchEnd::NotMine) | None => {}
         }
@@ -406,6 +454,33 @@ pub fn FaderView(
                 ended(Some(lost.end), "lost", lost.pointer);
             }
             let _ = drag.try_set_value(begun);
+            // A leader's touch with its link on (#130): its own shown volume
+            // and each partner's at the down; none while unlinked.
+            let linking = !vca && link_on.try_get_untracked().unwrap_or(false);
+            let begun_link = if linking {
+                let own = targets
+                    .try_with_value(|all| shown_volumes(store, &all[..all.len().min(1)]))
+                    .unwrap_or_default();
+                let theirs = partners
+                    .try_with_value(|p| shown_volumes(store, p))
+                    .unwrap_or_default();
+                link_drag(own.first().copied().flatten(), &theirs)
+            } else {
+                None
+            };
+            let mut writes = keys.try_with_value(Clone::clone).unwrap_or_default();
+            if let Some((_, idx)) = &begun_link {
+                let _ = partners.try_with_value(|p| {
+                    writes.extend(
+                        idx.iter()
+                            .filter_map(|&i| p.get(i).and_then(|t| t.spec.as_ref()))
+                            .map(|s| set_key(&s.instance, &s.target, &s.prop)),
+                    );
+                });
+            }
+            let _ = link.try_set_value(begun_link);
+            store.touch(&writes);
+            let _ = touched.try_set_value(writes);
             let _ = el.set_pointer_capture(id);
             let press = Press {
                 at: dom::event_epoch(&ev),
@@ -413,10 +488,7 @@ pub fn FaderView(
                 travel,
             };
             let _ = trail.try_update_value(|t| t.start(id, Axis::Up, press, start.from));
-            let _ = keys.try_with_value(|k| {
-                store.touch(k);
-                trace_start(k, id, press, start, law.traced());
-            });
+            let _ = keys.try_with_value(|k| trace_start(k, id, press, start, law.traced()));
         }
     };
     let on_move = move |ev: web_sys::PointerEvent| {
@@ -509,7 +581,7 @@ pub fn FaderView(
                 sent_moves(p, send(p, false, glide));
             }
             if glide_ended {
-                let _ = keys.try_with_value(|k| store.release(k));
+                let _ = touched.try_with_value(|k| store.release(k));
             }
             if look != Some(intent) {
                 dom::set_attr(&el, "data-intent", intent.name());
