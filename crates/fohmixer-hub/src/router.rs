@@ -352,6 +352,13 @@ fn transport_change(prev: Option<bool>, playing: bool) -> Option<Value> {
     (prev != Some(playing)).then(|| json!({"playing": playing, "prev": prev}))
 }
 
+/// What a delivery of the rules' transport subscription says: its error
+/// first (the listener failed: the rules are blind, #130 review M6), else
+/// its value; none when it holds neither.
+fn transport_heard(value: Option<Value>, error: Option<String>) -> Option<Result<Value, String>> {
+    error.map(Err).or_else(|| value.map(Ok))
+}
+
 /// What the router needs besides its instances: its own sender (a batch's
 /// result comes back as a message) and the event log.
 pub struct RouterIo {
@@ -941,6 +948,21 @@ impl Router {
         }
     }
 
+    /// The rules' transport subscription of the hub key `sub` failed: the
+    /// transport is not known any more (a later value is a first one),
+    /// logged once per failed delivery and recorded (warn class: an error).
+    fn transport_failed(&mut self, sub: &str, error: &str) {
+        let Some((instance, watch)) = self.transport.iter_mut().find(|(_, w)| w.key == sub) else {
+            return;
+        };
+        let instance = instance.clone();
+        watch.playing = None;
+        tracing::warn!(instance = %instance, error = ?error, "the rules cannot follow the transport");
+        self.io
+            .events
+            .record("transport", json!({"instance": instance, "error": error}));
+    }
+
     /// A transport value for STAGE AUT.
     fn stage_value(&mut self, playing: bool) {
         if let Some(mute) = self.stage.on_playing(playing) {
@@ -1103,11 +1125,11 @@ impl Router {
         self.send_requests();
         let mut unfold = Vec::new();
         let mut marker_items: Vec<(String, Option<Value>)> = Vec::new();
-        let mut transport: Vec<(String, Value)> = Vec::new();
+        let mut transport: Vec<(String, Result<Value, String>)> = Vec::new();
         for (client, item) in self.subs.take_deliveries() {
             if client == RULES_CLIENT {
-                if let Some(value) = item.value {
-                    transport.push((item.sub, value));
+                if let Some(heard) = transport_heard(item.value, item.error) {
+                    transport.push((item.sub, heard));
                 }
             } else if client == UNFOLD_CLIENT {
                 if let Some(error) = &item.error {
@@ -1123,8 +1145,11 @@ impl Router {
                 outbox.value(item);
             }
         }
-        for (sub, value) in transport {
-            self.on_transport(&sub, &value);
+        for (sub, heard) in transport {
+            match heard {
+                Ok(value) => self.on_transport(&sub, &value),
+                Err(error) => self.transport_failed(&sub, &error),
+            }
         }
         self.unfold_apply(unfold);
         let marker_actions = self
@@ -1368,6 +1393,136 @@ mod tests {
         assert_eq!(
             items,
             vec![("band|live_set|tempo|false".to_string(), Some(json!(120.0)))]
+        );
+    }
+
+    #[test]
+    fn a_rules_delivery_says_its_error_first_then_its_value() {
+        assert_eq!(
+            transport_heard(Some(json!(true)), None),
+            Some(Ok(json!(true)))
+        );
+        assert_eq!(
+            transport_heard(None, Some("not observable".into())),
+            Some(Err("not observable".into()))
+        );
+        assert_eq!(
+            transport_heard(Some(json!(false)), Some("gone".into())),
+            Some(Err("gone".into()))
+        );
+        assert_eq!(transport_heard(None, None), None);
+    }
+
+    /// The table of `router` online, with Live's answer to each pending
+    /// listener: `answer(prop)` the slot for that prop.
+    fn answer_listeners(router: &mut Router, answer: impl Fn(&str) -> Value) {
+        router.subs.connected("band");
+        let out = router.subs.drain_outgoing();
+        assert!(!out.is_empty());
+        for o in out {
+            let slots: Vec<Value> = o
+                .commands
+                .iter()
+                .map(|c| answer(c["args"]["prop"].as_str().unwrap_or("")))
+                .collect();
+            router.subs.on_result(&o.instance, &o.uuid, &slots);
+        }
+    }
+
+    /// Every `values` item waiting in an outbox: its key and value.
+    fn values_in(outbox: &Outbox) -> Vec<(String, Option<Value>)> {
+        outbox
+            .take()
+            .unwrap()
+            .into_iter()
+            .flat_map(|m| match m {
+                ServerMsg::Values { items } => items
+                    .into_iter()
+                    .map(|i| (i.sub, i.value))
+                    .collect::<Vec<_>>(),
+                _ => Vec::new(),
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_failed_transport_listener_is_logged_and_recorded_and_forgets_the_transport() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut router, _rx, rx) = offline_router(dir.path());
+        router.transport.get_mut("band").unwrap().playing = Some(true);
+        answer_listeners(
+            &mut router,
+            |_| json!({"ok": false, "error": "not observable", "errorType": "PathError"}),
+        );
+        router.flush();
+        let got = records(&rx);
+        assert_eq!(evs(&got), ["transport"]);
+        assert_eq!(
+            (&got[0]["instance"], &got[0]["error"]),
+            (&json!("band"), &json!("not observable"))
+        );
+        assert!(crate::events::is_warn(&got[0]), "{}", got[0]);
+        assert_eq!(router.transport_now("band"), None, "the rules are blind");
+        // A failure of another key reaches no rule.
+        router.transport_failed("band|live_set|tempo|false", "gone");
+        assert!(records(&rx).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_page_and_the_rules_share_the_transport_and_the_rules_keep_it_after_the_pages_unsub()
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut router, _rx, rx) = offline_router(dir.path());
+        let page = attach(&mut router, 1);
+        page.take();
+        router.handle(RouterMsg::Sub {
+            client: 1,
+            instance: "band".into(),
+            target: "live_set".into(),
+            prop: "is_playing".into(),
+            display: false,
+        });
+        page.take();
+        let key = "band|live_set|is_playing|false";
+        assert_eq!(router.transport["band"].key, key, "one entry, both clients");
+        answer_listeners(
+            &mut router,
+            |_| json!({"ok": true, "data": {"key": "live_1.is_playing", "value": false}}),
+        );
+        router.flush();
+        // Both get the value: the page in its outbox, the rules recorded.
+        assert_eq!(
+            values_in(&page),
+            vec![(key.to_string(), Some(json!(false)))]
+        );
+        assert_eq!(router.transport_now("band"), Some(false));
+        assert_eq!(evs(&records(&rx)), ["transport"]);
+        // The page lets it go; Live's next value still reaches the rules.
+        router.handle(RouterMsg::Unsub {
+            client: 1,
+            sub: key.into(),
+        });
+        page.take();
+        router.subs.on_values(
+            "band",
+            &[crate::live::LiveValue {
+                key: "live_1.is_playing".into(),
+                value: json!(true),
+                display: None,
+                error: None,
+            }],
+        );
+        router.flush();
+        assert_eq!(router.transport_now("band"), Some(true));
+        let got = records(&rx);
+        assert_eq!(evs(&got), ["transport"]);
+        assert_eq!(
+            (&got[0]["playing"], &got[0]["prev"]),
+            (&json!(true), &json!(false))
+        );
+        assert!(
+            values_in(&page).is_empty(),
+            "the page is no subscriber any more"
         );
     }
 
