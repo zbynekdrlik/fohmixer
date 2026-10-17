@@ -1213,3 +1213,62 @@ fn a_track_list_change_saves_only_what_it_changes() {
         ]
     );
 }
+
+#[test]
+fn the_tables_value_is_taken_only_by_a_fader_without_one() {
+    let mut r = rule(false, Some(true));
+    assert_eq!(r.cached(ST, 0.5, 0.0), vec![], "Rev ST has its value");
+    assert_eq!(
+        r.cached("band|live_set tracks 9 mixer_device volume|value", 0.5, 0.0),
+        vec![]
+    );
+    let acts = r.tap(true, 100.0);
+    let Step::Lower { faders, .. } = steps(&acts)[1] else {
+        panic!("{acts:?}")
+    };
+    assert_eq!(faders[0].from, 0.85, "its own value, not the table's");
+    // A fader recomposed onto a followed key has none: it takes it.
+    let mut r = Reverb::new(&Saved::default());
+    r.set_faders(vec![fader("Rev ST", 4)], 0.0);
+    r.cached(ST, 0.7, 0.0);
+    let acts = r.tap(true, 100.0);
+    let Step::Lower { faders, .. } = steps(&acts)[1] else {
+        panic!("{acts:?}")
+    };
+    assert_eq!(faders[0].from, 0.7);
+}
+
+#[test]
+fn a_tap_down_over_a_waiting_return_lowers_as_a_tap_does() {
+    // Live plays: the tap's own lowering; the line says the wait is off.
+    let mut r = restarted();
+    r.transport("band", true, 0.0);
+    let acts = r.tap(true, 100.0);
+    assert_eq!(
+        steps(&acts),
+        vec![
+            &Step::Tap { low: true },
+            &Step::Lower {
+                why: Low::Tap,
+                faders: vec![]
+            }
+        ]
+    );
+    assert_eq!(r.state().low, Some(Low::Tap));
+    assert_eq!(
+        step_line(steps(&acts)[1]),
+        "REVERB keeps the reverb faders low (tap): their waiting return is off"
+    );
+    // Live stands, AUT on: the stop's (it returns at the start).
+    let mut r = restarted();
+    r.transport("band", false, 0.0);
+    r.tap(false, 50.0);
+    assert!(r.state().faders[0].back.is_some(), "its return waits");
+    r.tap(true, 100.0);
+    assert_eq!(r.state().low, Some(Low::Stop));
+    assert_eq!(r.live(ST, lowered(0.85), 200.0), vec![]);
+    assert!(matches!(
+        steps(&r.transport("band", true, 300.0))[0],
+        Step::Return { .. }
+    ));
+}
