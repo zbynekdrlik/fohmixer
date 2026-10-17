@@ -1705,8 +1705,7 @@ async fn client_error(url: &str) -> hyper_util::client::legacy::Error {
     client
         .get(url.parse().unwrap())
         .await
-        .err()
-        .expect("no answer")
+        .expect_err("no answer")
 }
 
 /// An error whose source is a client's error (a connect error under a
