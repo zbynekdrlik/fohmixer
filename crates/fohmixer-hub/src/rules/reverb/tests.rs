@@ -1340,3 +1340,91 @@ fn a_tap_down_takes_back_a_waiting_return_whose_strip_is_away() {
     );
     assert_eq!(r.state().faders[0].back, Some(0.85));
 }
+
+#[test]
+fn a_track_list_window_skips_a_lowering_until_it_closes() {
+    let mut r = rule(false, Some(true));
+    r.tracks_changed("band");
+    let acts = r.tap(true, 0.0);
+    assert_eq!(
+        steps(&acts),
+        vec![
+            &Step::Tap { low: true },
+            &Step::Skipped {
+                label: "Rev ST".into(),
+                why: "track list".into()
+            },
+            &Step::Skipped {
+                label: "Rev PA".into(),
+                why: "track list".into()
+            },
+        ]
+    );
+    assert_eq!(r.state().low, None);
+    assert_eq!(r.tracks_known("master", 50.0), vec![], "another Live's");
+    assert_eq!(r.tracks_known("band", 100.0), vec![], "nothing waited");
+    assert!(matches!(steps(&r.tap(true, 200.0))[1], Step::Lower { .. }));
+}
+
+#[test]
+fn a_return_in_a_track_list_window_waits_and_goes_on_when_it_closes() {
+    let mut r = rule(true, Some(true));
+    r.transport("band", false, 0.0);
+    r.tick(2000.0);
+    let _ = run(&mut r, 2025.0, 4000.0);
+    r.live(ST, lowered(0.85), 4100.0);
+    r.live(PA, lowered(0.6), 4100.0);
+    r.tracks_changed("band");
+    let acts = r.transport("band", true, 5000.0);
+    assert_eq!(
+        steps(&acts),
+        vec![
+            &Step::Pending {
+                label: "Rev ST".into()
+            },
+            &Step::Pending {
+                label: "Rev PA".into()
+            },
+        ]
+    );
+    assert_eq!(
+        r.live(ST, lowered(0.85), 5100.0),
+        vec![],
+        "held by the window"
+    );
+    let ran = run(&mut r, 5125.0, 5500.0);
+    assert_eq!(ran, vec![]);
+    // The markers settle with no new layout: both go on from Live's values.
+    let acts = r.tracks_known("band", 6000.0);
+    assert_eq!(
+        steps(&acts)
+            .iter()
+            .filter(|s| matches!(s, Step::Return { .. }))
+            .count(),
+        2
+    );
+    let ran = run(&mut r, 6025.0, 6500.0);
+    let ends: Vec<_> = writes(&ran).into_iter().filter(|w| w.2).collect();
+    assert_eq!(ends, vec![(ST, 0.85, true), (PA, 0.6, true)]);
+    assert_eq!(r.tracks_known("band", 7000.0), vec![], "closed already");
+}
+
+#[test]
+fn the_same_layout_again_closes_a_track_list_window() {
+    let mut r = rule(false, Some(true));
+    r.tap(true, 0.0);
+    let _ = run(&mut r, 25.0, 500.0);
+    r.live(ST, lowered(0.85), 600.0);
+    r.live(PA, lowered(0.6), 600.0);
+    r.tracks_changed("band");
+    r.tap(false, 700.0);
+    assert_eq!(r.state().faders[0].back, Some(0.85), "its return waits");
+    let acts = r.set_faders(vec![fader("Rev ST", 4), fader("Rev PA", 5)], 800.0);
+    assert_eq!(
+        steps(&acts)
+            .iter()
+            .filter(|s| matches!(s, Step::Return { .. }))
+            .count(),
+        2
+    );
+}

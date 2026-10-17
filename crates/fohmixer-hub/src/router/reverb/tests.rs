@@ -8,7 +8,9 @@ use serde_json::{Value, json};
 
 use super::super::tests::{attach, offline_router, records, set_msg, status};
 use super::super::{MARKERS_CLIENT, Router, RouterMsg, UNFOLD_CLIENT};
-use super::{REVERB_CLIENT, REVERB_PEER, list_changed, list_instance, rearm, wake_in};
+use super::{
+    REVERB_CLIENT, REVERB_PEER, list_changed, list_instance, rearm, tracks_settled, wake_in,
+};
 use crate::live::LiveValue;
 use crate::live::client::LiveEvent;
 use crate::outbox::Outbox;
@@ -937,6 +939,74 @@ async fn a_return_between_a_track_list_change_and_the_next_layout_waits_for_it()
             ),
             (
                 json!("band|live_set tracks 2 mixer_device volume|value"),
+                json!(0.6),
+                json!(true)
+            ),
+        ]
+    );
+}
+
+#[test]
+fn a_track_list_window_closes_only_when_the_markers_read_settles() {
+    assert!(tracks_settled(true, false, false));
+    assert!(!tracks_settled(false, false, false), "a failed read");
+    assert!(!tracks_settled(true, true, false), "still reading");
+    assert!(!tracks_settled(true, false, true), "a layout to come");
+}
+
+#[tokio::test]
+async fn the_markers_settling_with_no_new_layout_lets_a_waiting_return_go_on() {
+    // A track added after both reverbs: the list changes, their indices
+    // do not, and no new layout comes.
+    let (mut router, rx, _dir, _own) = listed(false);
+    set_hub(&mut router, HUB_REVERB_AUT, json!(true));
+    set_hub(&mut router, HUB_REVERB_LOW, json!(true));
+    let end = router.now_ms() + 600.0;
+    let acts = router.reverb.rule.tick(end);
+    router.reverb_apply(acts, None);
+    router.subs.on_values(
+        "band",
+        &[
+            pushed("live_st.value", json!(lowered(0.85))),
+            pushed("live_pa.value", json!(lowered(0.6))),
+        ],
+    );
+    router.flush();
+    router
+        .subs
+        .on_values("band", &[pushed("live_1.tracks", json!([1, 2, 9]))]);
+    router.flush();
+    router
+        .subs
+        .on_values("band", &[pushed("live_1.is_playing", json!(true))]);
+    router.flush();
+    let _ = records(&rx);
+    let end = router.now_ms() + 600.0;
+    let acts = router.reverb.rule.tick(end);
+    router.reverb_apply(acts, None);
+    assert_eq!(
+        rule_sets(&records(&rx)),
+        vec![],
+        "the window holds the return"
+    );
+    router.reverb_tracks_known("band");
+    let end = router.now_ms() + 600.0;
+    let acts = router.reverb.rule.tick(end);
+    router.reverb_apply(acts, None);
+    let ends: Vec<(Value, Value, Value)> = rule_sets(&records(&rx))
+        .into_iter()
+        .filter(|(_, _, last)| *last == json!(true))
+        .collect();
+    assert_eq!(
+        ends,
+        vec![
+            (
+                json!("band|live_set tracks 0 mixer_device volume|value"),
+                json!(0.85),
+                json!(true)
+            ),
+            (
+                json!("band|live_set tracks 1 mixer_device volume|value"),
                 json!(0.6),
                 json!(true)
             ),
