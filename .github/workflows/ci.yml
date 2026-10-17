@@ -938,6 +938,12 @@ jobs:
           fi
           shards=$(( (count + MUTANTS_PER_SHARD - 1) / MUTANTS_PER_SHARD ))
           if [ "$shards" -lt 1 ]; then shards=1; fi
+          # GitHub runs at most 256 jobs from one matrix: past it the
+          # `mutation` matrix would fail to expand with no reason given.
+          if [ "$shards" -gt 256 ]; then
+            echo "::error::$count mutants need $shards shards at $MUTANTS_PER_SHARD per shard, past GitHub's 256-job matrix: split the PR"
+            exit 1
+          fi
           matrix="$(python3 -c 'import json, sys; print(json.dumps(list(range(int(sys.argv[1])))))' "$shards")"
           echo "mutants in the diff against ${BASE_REF}: $count; shards at <= $MUTANTS_PER_SHARD per shard: $shards"
           echo "shards=$matrix" >> "$GITHUB_OUTPUT"
