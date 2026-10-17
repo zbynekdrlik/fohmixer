@@ -1,5 +1,8 @@
 //! The hub's router: one task that owns the subscription table, the client
 //! outboxes, the setters and the STAGE AUT rule (S3 design note §3, §4, §6).
+//! It follows every instance's transport from its start (#104, #130, D18:
+//! `RULES_CLIENT`), logs each change (`transport`) and hands it to the
+//! rules.
 //!
 //! Everything reaches it as a message, in order: the instances' events (a
 //! subscription's result stays ordered with the value pushes of the same
@@ -59,8 +62,10 @@ mod markers;
 mod markers_io;
 mod unfold;
 
-/// The router's own subscriber: the STAGE AUT rule (clients start at 1).
-pub const STAGE_CLIENT: ClientId = 0;
+/// The router's own subscriber for the rules (#130, D18): every instance's
+/// transport, which STAGE AUT and REVERB AUT follow and the event log
+/// records (clients start at 1).
+pub const RULES_CLIENT: ClientId = 0;
 /// The router's subscriber that keeps the strips' groups unfolded (#58;
 /// client numbers count up from 1 and never reach it).
 pub const UNFOLD_CLIENT: ClientId = ClientId::MAX;
@@ -309,6 +314,9 @@ pub struct RouterStatus {
     /// The groups the unfold keeper holds, per instance (#58).
     pub unfolded: BTreeMap<String, Vec<String>>,
     pub listeners: BTreeMap<String, usize>,
+    /// Each instance's transport as the router last heard it (#104, D18;
+    /// none before the first value, and again after a disconnect).
+    pub playing: BTreeMap<String, Option<bool>>,
     pub stage_aut: StageAutStatus,
     pub clients: usize,
     pub unresolved: Vec<Unresolved>,
@@ -321,13 +329,27 @@ struct InstanceState {
     set_name: String,
 }
 
-/// Where STAGE AUT acts: the stage-mic track's mute and the transport
-/// subscription that drives it.
+/// Where STAGE AUT acts: the stage-mic track's mute (its instance's
+/// transport drives it, `Router::transport`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct StageTarget {
     instance: String,
     target: String,
-    sub: String,
+}
+
+/// One instance's transport as the router follows it: its subscription's
+/// hub key and the latest `is_playing` heard (none before the first, and
+/// again after a disconnect).
+#[derive(Debug, Clone)]
+struct TransportWatch {
+    key: String,
+    playing: Option<bool>,
+}
+
+/// The `transport` record's fields for a value `playing` after `prev`; none
+/// when it changed nothing.
+fn transport_change(prev: Option<bool>, playing: bool) -> Option<Value> {
+    (prev != Some(playing)).then(|| json!({"playing": playing, "prev": prev}))
 }
 
 /// What the router needs besides its instances: its own sender (a batch's
@@ -352,6 +374,8 @@ pub struct Router {
     setters: BTreeMap<String, Setter>,
     stage: StageAut,
     stage_target: Option<StageTarget>,
+    /// Every instance's transport (#104, D18), by instance.
+    transport: BTreeMap<String, TransportWatch>,
     layout_rev: u64,
     data_dir: PathBuf,
     io: RouterIo,
@@ -383,8 +407,25 @@ impl Router {
         data_dir: PathBuf,
         io: RouterIo,
     ) -> Self {
+        // The rules follow every instance's transport from the start (the
+        // table resolves it at the connect).
+        let mut subs = Subs::new(live.keys().cloned());
+        let transport = live
+            .keys()
+            .filter_map(|name| {
+                subs.subscribe(RULES_CLIENT, name, "live_set", "is_playing", false)
+                    .ok()
+                    .map(|reply| {
+                        let watch = TransportWatch {
+                            key: reply.key,
+                            playing: None,
+                        };
+                        (name.clone(), watch)
+                    })
+            })
+            .collect();
         Self {
-            subs: Subs::new(live.keys().cloned()),
+            subs,
             names: NameCheck::default(),
             clients: HashMap::new(),
             peers: HashMap::new(),
@@ -400,6 +441,7 @@ impl Router {
             live,
             stage: StageAut::new(stage_aut),
             stage_target: None,
+            transport,
             layout_rev: 0,
             data_dir,
             io,
@@ -619,17 +661,19 @@ impl Router {
                     subscriptions: names
                         .clone()
                         .map(|n| {
-                            let own = [UNFOLD_CLIENT, MARKERS_CLIENT];
+                            let own = [UNFOLD_CLIENT, MARKERS_CLIENT, RULES_CLIENT];
                             (n.clone(), self.subs.subscriptions_besides(n, &own))
                         })
                         .collect(),
                     unfolded: unfold::by_instance(self.unfold.held()),
                     listeners: names
+                        .clone()
                         .map(|n| {
-                            let own = [UNFOLD_CLIENT, MARKERS_CLIENT];
+                            let own = [UNFOLD_CLIENT, MARKERS_CLIENT, RULES_CLIENT];
                             (n.clone(), self.subs.listeners_besides(n, &own))
                         })
                         .collect(),
+                    playing: names.map(|n| (n.clone(), self.transport_now(n))).collect(),
                     stage_aut: StageAutStatus {
                         on: self.stage.is_on(),
                         writes: self.stage.writes(),
@@ -744,6 +788,9 @@ impl Router {
                 }
                 self.subs.disconnected(instance);
                 self.names.stop(instance);
+                if let Some(watch) = self.transport.get_mut(instance) {
+                    watch.playing = None;
+                }
                 if self
                     .stage_target
                     .as_ref()
@@ -819,6 +866,10 @@ impl Router {
             return;
         };
         let changed = on != self.stage.is_on();
+        self.io.events.record(
+            "stage_aut",
+            json!({"step": "flag", "on": on, "client": client, "peer": self.peers.get(&client)}),
+        );
         let write = self.stage.set_flag(on);
         if changed {
             tracing::info!(on, "STAGE AUT turned {}", if on { "on" } else { "off" });
@@ -834,8 +885,8 @@ impl Router {
         }
     }
 
-    /// Follows a new layout's STAGE AUT binding: leaves the old transport
-    /// subscription and starts afresh on the new one.
+    /// Follows a new layout's STAGE AUT binding: the rule starts afresh on
+    /// the new target, with its instance's transport as last heard.
     fn set_stage_binding(&mut self, binding: Option<&Binding>) {
         let wanted = binding.and_then(|b| b.target().ok().map(|t| (b.instance.clone(), t)));
         let current = self
@@ -845,46 +896,60 @@ impl Router {
         if wanted == current {
             return;
         }
-        if let Some(old) = self.stage_target.take() {
-            self.subs.unsubscribe(STAGE_CLIENT, &old.sub);
-        }
+        self.stage_target = None;
         self.stage.on_disconnect();
         let Some((instance, target)) = wanted else {
             tracing::info!("the layout has no STAGE AUT binding");
             return;
         };
-        match self
-            .subs
-            .subscribe(STAGE_CLIENT, &instance, "live_set", "is_playing", false)
-        {
-            Ok(reply) => {
-                tracing::info!(instance = %instance, target = %target, "STAGE AUT follows the transport");
-                self.stage_target = Some(StageTarget {
-                    instance,
-                    target,
-                    sub: reply.key,
-                });
-                if let Some(Cached::Value { value, .. }) = reply.cached {
-                    self.stage_value(&value);
-                }
-            }
-            Err((_, error)) => {
-                tracing::warn!(instance = %instance, error = %error, "STAGE AUT cannot follow the transport");
-            }
+        tracing::info!(instance = %instance, target = %target, "STAGE AUT follows the transport");
+        let playing = self.transport_now(&instance);
+        self.stage_target = Some(StageTarget { instance, target });
+        if let Some(playing) = playing {
+            self.stage_value(playing);
         }
     }
 
-    /// A transport value for the rule.
-    fn stage_value(&mut self, value: &Value) {
-        if let Some(playing) = value.as_bool()
-            && let Some(mute) = self.stage.on_playing(playing)
+    /// The latest `is_playing` of `instance` (none before one was heard).
+    pub(super) fn transport_now(&self, instance: &str) -> Option<bool> {
+        self.transport.get(instance).and_then(|w| w.playing)
+    }
+
+    /// A transport value of the hub key `sub`: recorded on a change, then
+    /// handed to the rules.
+    fn on_transport(&mut self, sub: &str, value: &Value) {
+        let Some(playing) = value.as_bool() else {
+            return;
+        };
+        let Some((instance, watch)) = self.transport.iter_mut().find(|(_, w)| w.key == sub) else {
+            return;
+        };
+        let instance = instance.clone();
+        let Some(mut fields) = transport_change(watch.playing, playing) else {
+            return;
+        };
+        watch.playing = Some(playing);
+        fields["instance"] = json!(instance);
+        tracing::info!(instance = %instance, playing, "the transport {}", if playing { "started" } else { "stopped" });
+        self.io.events.record("transport", fields);
+        if self
+            .stage_target
+            .as_ref()
+            .is_some_and(|t| t.instance == instance)
         {
+            self.stage_value(playing);
+        }
+    }
+
+    /// A transport value for STAGE AUT.
+    fn stage_value(&mut self, playing: bool) {
+        if let Some(mute) = self.stage.on_playing(playing) {
             self.write_stage(mute);
         }
     }
 
-    /// Writes the stage mics' mute (logged; a failure is logged, never
-    /// retried — spec I6).
+    /// Writes the stage mics' mute (logged and recorded; a failure is
+    /// logged and recorded, never retried — spec I6).
     fn write_stage(&self, mute: bool) {
         let Some(target) = &self.stage_target else {
             return;
@@ -893,15 +958,24 @@ impl Router {
             return;
         };
         tracing::info!(instance = %target.instance, target = %target.target, mute, "STAGE AUT writes the stage mics' mute");
+        self.io.events.record(
+            "stage_aut",
+            json!({"step": "write", "instance": target.instance, "mute": mute}),
+        );
         let result = live.call(vec![json!({
             "target": target.target,
             "name": "set_prop",
             "args": {"prop": "mute", "value": mute},
         })]);
         let what = target.target.clone();
+        let events = self.io.events.clone();
         tokio::spawn(async move {
             if let Some(problem) = write_failure(&result.await) {
                 tracing::warn!(target = %what, problem = %problem, "STAGE AUT write failed");
+                events.record(
+                    "stage_aut",
+                    json!({"step": "failed", "target": what, "problem": problem}),
+                );
             }
         });
     }
@@ -1029,10 +1103,11 @@ impl Router {
         self.send_requests();
         let mut unfold = Vec::new();
         let mut marker_items: Vec<(String, Option<Value>)> = Vec::new();
+        let mut transport: Vec<(String, Value)> = Vec::new();
         for (client, item) in self.subs.take_deliveries() {
-            if client == STAGE_CLIENT {
-                if let Some(value) = &item.value {
-                    self.stage_value(value);
+            if client == RULES_CLIENT {
+                if let Some(value) = item.value {
+                    transport.push((item.sub, value));
                 }
             } else if client == UNFOLD_CLIENT {
                 if let Some(error) = &item.error {
@@ -1047,6 +1122,9 @@ impl Router {
             } else if let Some(outbox) = self.clients.get(&client) {
                 outbox.value(item);
             }
+        }
+        for (sub, value) in transport {
+            self.on_transport(&sub, &value);
         }
         self.unfold_apply(unfold);
         let marker_actions = self
@@ -1190,6 +1268,148 @@ mod tests {
     }
 
     const VOLUME: &str = "band|live_set tracks 0 mixer_device volume|value";
+
+    #[test]
+    fn a_transport_change_is_recorded_once_with_what_it_was_before() {
+        assert_eq!(
+            transport_change(None, false),
+            Some(json!({"playing": false, "prev": null}))
+        );
+        assert_eq!(
+            transport_change(Some(false), true),
+            Some(json!({"playing": true, "prev": false}))
+        );
+        assert_eq!(
+            transport_change(Some(true), false),
+            Some(json!({"playing": false, "prev": true}))
+        );
+        assert_eq!(transport_change(Some(true), true), None);
+        assert_eq!(transport_change(Some(false), false), None);
+    }
+
+    #[tokio::test]
+    async fn the_router_follows_every_instances_transport_from_its_start() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut router, _rx, _records) = offline_router(dir.path());
+        assert_eq!(router.transport.len(), 1);
+        assert_eq!(
+            router.transport["band"].key,
+            "band|live_set|is_playing|false"
+        );
+        assert_eq!(router.transport_now("band"), None, "nothing heard yet");
+        assert_eq!(
+            router.subs.subscriptions("band"),
+            1,
+            "is_playing, the rules' own"
+        );
+        let now = status(&mut router);
+        assert_eq!(now.subscriptions["band"], 0, "the hub's own");
+        assert_eq!(now.listeners["band"], 0, "the hub's own");
+        assert_eq!(now.playing, BTreeMap::from([("band".to_string(), None)]));
+    }
+
+    /// Waits (bounded) for the next record whose `ev` is `ev`.
+    async fn next_record(rx: &std::sync::mpsc::Receiver<Value>, ev: &str) -> Value {
+        for _ in 0..300 {
+            if let Some(found) = rx.try_iter().find(|r| r["ev"] == ev) {
+                return found;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("no {ev} record within 3 s");
+    }
+
+    #[tokio::test]
+    async fn a_transport_change_is_recorded_and_drives_stage_aut() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut router, _rx, rx) = offline_router(dir.path());
+        let key = router.transport["band"].key.clone();
+        // Not a bool, or another key: nothing.
+        router.on_transport(&key, &json!(1));
+        router.on_transport("band|live_set|current_song_time|false", &json!(true));
+        assert!(records(&rx).is_empty());
+        assert_eq!(router.transport_now("band"), None);
+        // The first value, then the same again: one record.
+        router.on_transport(&key, &json!(false));
+        router.on_transport(&key, &json!(false));
+        assert_eq!(router.transport_now("band"), Some(false));
+        let got = records(&rx);
+        assert_eq!(evs(&got), ["transport"]);
+        assert_eq!(
+            (&got[0]["instance"], &got[0]["playing"], &got[0]["prev"]),
+            (&json!("band"), &json!(false), &json!(null))
+        );
+        assert_eq!(
+            status(&mut router).playing,
+            BTreeMap::from([("band".to_string(), Some(false))])
+        );
+        // STAGE AUT on, then a binding in the band: the rule applies the
+        // transport it finds (stopped: live) and records the write.
+        let a = attach(&mut router, 1);
+        router.handle(RouterMsg::SetHub {
+            client: 1,
+            key: HUB_STAGE_AUT.into(),
+            value: json!(true),
+        });
+        let flag = records(&rx);
+        assert_eq!(evs(&flag), ["stage_aut"]);
+        assert_eq!(
+            (
+                &flag[0]["step"],
+                &flag[0]["on"],
+                &flag[0]["client"],
+                &flag[0]["peer"]
+            ),
+            (&json!("flag"), &json!(true), &json!(1), &json!("10.0.0.1"))
+        );
+        a.take();
+        let binding = Binding {
+            instance: "band".into(),
+            anchor: fohmixer_proto::layout::Anchor::Track {
+                name: "Mics Stage #".into(),
+            },
+            path: None,
+        };
+        router.set_stage_binding(Some(&binding));
+        let write = next_record(&rx, "stage_aut").await;
+        assert_eq!(
+            (&write["step"], &write["instance"], &write["mute"]),
+            (&json!("write"), &json!("band"), &json!(false))
+        );
+        assert_eq!(router.stage.writes(), 1);
+        // The instance is offline: the write fails, recorded.
+        let failed = next_record(&rx, "stage_aut").await;
+        assert_eq!(failed["step"], "failed");
+        assert_eq!(failed["target"], "live_set tracks[name=Mics Stage #]");
+        assert!(
+            failed["problem"].as_str().is_some_and(|p| !p.is_empty()),
+            "{failed}"
+        );
+        // A start of the band's transport: recorded, and the rule mutes.
+        router.on_transport(&key, &json!(true));
+        let got = records(&rx);
+        assert_eq!(evs(&got), ["transport", "stage_aut"]);
+        assert_eq!(
+            (&got[0]["playing"], &got[0]["prev"]),
+            (&json!(true), &json!(false))
+        );
+        assert_eq!(
+            (&got[1]["step"], &got[1]["mute"]),
+            (&json!("write"), &json!(true))
+        );
+        // A disconnect forgets the transport: the next value is a first one.
+        router.handle(RouterMsg::Live {
+            instance: "band".into(),
+            event: LiveEvent::Disconnected,
+        });
+        assert_eq!(router.transport_now("band"), None);
+        router.on_transport(&key, &json!(true));
+        let again = next_record(&rx, "transport").await;
+        assert_eq!(
+            (&again["playing"], &again["prev"]),
+            (&json!(true), &json!(null))
+        );
+    }
 
     #[test]
     fn a_write_to_an_unknown_instance_is_acked_with_an_error() {
@@ -1611,8 +1831,9 @@ mod tests {
         router.handle(layout(1, vec![("band".into(), "Keys 1".into())]));
         assert_eq!(
             router.subs.subscriptions("band"),
-            2,
-            "the keeper's watches of the band's tracks and visible tracks (#58)"
+            3,
+            "the keeper's watches of the band's tracks and visible tracks (#58), \
+             and the rules' transport (#104)"
         );
         let now = status(&mut router);
         assert_eq!(now.subscriptions["band"], 0, "the hub's own read");
@@ -1620,7 +1841,7 @@ mod tests {
         // A new layout without it lets it go; an instance the hub does not
         // know is refused (logged) and kept nowhere.
         router.handle(layout(2, vec![("nowhere".into(), "X".into())]));
-        assert_eq!(router.subs.subscriptions("band"), 0);
+        assert_eq!(router.subs.subscriptions("band"), 1, "the rules' transport");
         assert_eq!(
             cached_value(&Cached::Value {
                 value: json!(1),
@@ -1761,8 +1982,9 @@ mod tests {
         let mut router = router.with_layout(store);
         assert_eq!(
             router.subs.subscriptions("band"),
-            2,
-            "the keeper's watches of the band's tracks and return tracks (#68)"
+            3,
+            "the keeper's watches of the band's tracks and return tracks (#68), \
+             and the rules' transport (#104)"
         );
         assert_eq!(
             status(&mut router).subscriptions["band"],

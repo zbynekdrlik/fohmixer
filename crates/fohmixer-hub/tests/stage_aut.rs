@@ -2,7 +2,8 @@
 //! the band's stage-mic track (the layout's `stage` item with `aut`) is
 //! muted while the transport plays and live when it stops; the flag is kept
 //! across a hub restart; a host restart gives exactly one write after the
-//! reconnect.
+//! reconnect. Every transport change and STAGE AUT's steps are in the event
+//! log (#104, D18).
 #![cfg(unix)]
 
 mod support;
@@ -12,7 +13,7 @@ use std::time::Duration;
 
 use fohmixer_hub::config::InstanceCfg;
 use fohmixer_proto::client::{ClientMsg, ServerMsg};
-use serde_json::json;
+use serde_json::{Value, json};
 use support::{Client, Host, TestHub, runtime, serial};
 
 const SECS_3: Duration = Duration::from_secs(3);
@@ -90,6 +91,34 @@ fn with_the_flag_on_the_stage_mics_mute_while_playing() {
         a.value_until(&mute, SECS_3, |i| i.value == Some(json!(false)))
             .await;
         hub.status_until(SECS_3, |s| s.stage_aut.writes == 3).await;
+        // The hub follows and logs every transport change (#104, D18), and
+        // STAGE AUT's flag and writes.
+        let count = |records: &[Value], ev: &str| records.iter().filter(|r| r["ev"] == ev).count();
+        let records = hub
+            .events_until(SECS_3, |records| {
+                count(records, "transport") >= 3 && count(records, "stage_aut") >= 4
+            })
+            .await;
+        let transports: Vec<Value> = records
+            .iter()
+            .filter(|r| r["ev"] == "transport")
+            .map(|r| json!({"instance": r["instance"], "playing": r["playing"], "prev": r["prev"]}))
+            .collect();
+        assert_eq!(
+            transports,
+            vec![
+                json!({"instance": "band", "playing": false, "prev": null}),
+                json!({"instance": "band", "playing": true, "prev": false}),
+                json!({"instance": "band", "playing": false, "prev": true}),
+            ]
+        );
+        assert_eq!(hub.status().await.instances[0].playing, Some(false));
+        let steps: Vec<Value> = records
+            .iter()
+            .filter(|r| r["ev"] == "stage_aut")
+            .map(|r| r["step"].clone())
+            .collect();
+        assert_eq!(steps, ["flag", "write", "write", "write"], "{steps:?}");
         // Flag off: the transport is not followed.
         set_flag(&mut a, false).await;
         transport(&mut a, "start_playing").await;
