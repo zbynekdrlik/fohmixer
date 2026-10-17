@@ -1047,6 +1047,38 @@ mod tests {
     }
 
     #[test]
+    fn a_lonely_linked_fader_is_warned_once_per_new_composition() {
+        // #130 review M6: at the file's accept and at a marker set that
+        // changes the composition, never at one that leaves it as it was.
+        let lonely = "the linked fader band/PODKLADY has no partner";
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(dir.path());
+        let frame = json!({"schema": 2, "default_page": "foh", "pages": [{"id": "foh", "title": "FOH",
+            "rows": [{"sections": [
+                {"kind": "group", "id": "vocals", "title": "VOCALS", "tags": "VOCALS"},
+                {"kind": "group", "id": "bt", "controls": [
+                    {"kind": "param_fader", "label": "Podklady All", "link": {"instance": "band", "id": "PODKLADY"}}]}]}]}]});
+        write(dir.path(), &serde_json::to_vec(&frame).unwrap());
+        let log = crate::ws::tests::logged(|| assert_eq!(store.poll(), Some(1)));
+        assert_eq!(log.matches(lonely).count(), 1, "{log}");
+        let log = crate::ws::tests::logged(|| assert_eq!(store.set_markers(Vec::new()), None));
+        assert!(!log.contains(lonely), "the same composition: {log}");
+        let vox = Found {
+            instance: "band".into(),
+            kind: TrackKind::Track,
+            index: 2,
+            name: r#""Vox" +G:VOCALS"#.into(),
+            tuners: 1,
+        };
+        let log = crate::ws::tests::logged(|| assert_eq!(store.set_markers(vec![vox]), Some(2)));
+        assert_eq!(
+            log.matches(lonely).count(),
+            1,
+            "a new one, still alone: {log}"
+        );
+    }
+
+    #[test]
     fn an_unwritable_backup_folder_does_not_stop_the_layout() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join(BACKUP_DIR), b"a file, not a folder").unwrap();
