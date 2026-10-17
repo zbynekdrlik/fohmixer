@@ -92,6 +92,7 @@ fn a_glide_is_linear_in_db_and_lands_exactly() {
     assert!((value2db(half) - (value2db(0.85) + value2db(0.6)) / 2.0).abs() < 0.01);
     assert!(!g.at(3000.0_f64.next_down()).1);
     assert_eq!(g.at(3000.0), (0.6, true), "exactly its end");
+    assert_eq!(g.to(), 0.6);
     assert_eq!(g.at(9000.0), (0.6, true));
     // From −∞ (the floor) up: no NaN, the end exact.
     let up = Glide::new(0.0, 0.3, 0.0, 500.0);
@@ -787,6 +788,34 @@ fn a_return_before_lives_value_waits_for_it_and_lands_exactly() {
 }
 
 #[test]
+fn a_pending_return_is_recorded_once_and_a_stop_takes_the_fader_back() {
+    let mut r = restarted();
+    let acts = r.transport("band", true, 0.0);
+    assert_eq!(
+        steps(&acts),
+        vec![&Step::Pending {
+            label: "Rev ST".into()
+        }],
+        "nothing moves: no return record"
+    );
+    let acts = r.tap(false, 100.0);
+    assert_eq!(
+        steps(&acts),
+        vec![&Step::Tap { low: false }],
+        "still waiting: recorded once"
+    );
+    // Live stops again before the value came: the lowering keeps it held,
+    // and its value where the rule left it returns nothing.
+    r.transport("band", false, 200.0);
+    let acts = r.tick(2200.0);
+    assert!(writes(&acts).is_empty());
+    assert_eq!(r.state().low, Some(Low::Stop));
+    assert_eq!(r.live(ST, lowered(0.85), 2300.0), vec![]);
+    assert_eq!(r.state().faders[0].back, Some(0.85));
+    assert_eq!(run(&mut r, 2325.0, 3000.0), vec![]);
+}
+
+#[test]
 fn a_return_before_lives_value_lets_go_of_a_fader_found_elsewhere() {
     let mut r = restarted();
     r.transport("band", true, 0.0);
@@ -1066,5 +1095,76 @@ fn a_fader_a_layout_drops_mid_glide_records_its_stop() {
         !steps(&acts)
             .iter()
             .any(|s| matches!(s, Step::Stopped { label, .. } if label == "Rev ST"))
+    );
+}
+
+#[test]
+fn a_restored_lowering_stays_unless_it_is_the_stops_with_aut_on_and_live_playing() {
+    // (by, AUT, Live plays): only (Stop, on, plays) returns at once.
+    for (by, aut, playing) in [
+        (Low::Tap, true, true),
+        (Low::Stop, false, true),
+        (Low::Stop, true, false),
+    ] {
+        let mut r = Reverb::new(&Saved {
+            aut,
+            low: Some(SavedLow {
+                by,
+                faders: vec![SavedFader {
+                    instance: "band".into(),
+                    label: "Rev PA".into(),
+                    back: 0.6,
+                    left: Some(lowered(0.6)),
+                }],
+            }),
+        });
+        r.set_faders(vec![fader("Rev ST", 4)], 0.0);
+        r.live(ST, 0.85, 0.0);
+        r.transport("band", playing, 0.0);
+        let acts = r.set_faders(vec![fader("Rev ST", 4), fader("Rev PA", 5)], 1000.0);
+        assert!(
+            !steps(&acts)
+                .iter()
+                .any(|s| matches!(s, Step::Pending { .. } | Step::Return { .. })),
+            "{by:?} {aut} {playing}"
+        );
+        assert_eq!(r.state().low, Some(by));
+        assert_eq!(r.state().faders[1].back, Some(0.6));
+    }
+}
+
+#[test]
+fn a_lost_transport_ends_the_wait_and_is_a_first_value_again() {
+    let mut r = rule(true, Some(true));
+    r.transport("band", false, 0.0);
+    assert_eq!(r.transport_lost("master"), vec![], "another Live's");
+    assert_eq!(
+        r.transport_lost("band"),
+        vec![Act::Step(Step::Cancelled), Act::Tell]
+    );
+    assert_eq!(r.state().playing, None);
+    assert_eq!(run(&mut r, 2000.0, 4500.0), vec![], "nothing lowered");
+    // Heard again stopped: a first value, which never lowers.
+    assert!(steps(&r.transport("band", false, 5000.0)).is_empty());
+    assert_eq!(r.transport_lost("band"), vec![Act::Tell], "no wait to end");
+}
+
+#[test]
+fn a_pending_return_has_its_line() {
+    assert_eq!(
+        step_line(&Step::Pending {
+            label: "Rev ST".into()
+        }),
+        "REVERB returns Rev ST once Live reports where it is"
+    );
+    assert!(!step_warn(&Step::Pending {
+        label: "Rev ST".into()
+    }));
+    assert_eq!(
+        serde_json::to_value(Step::Pending {
+            label: "Rev ST".into()
+        })
+        .unwrap(),
+        serde_json::json!({"step": "pending", "label": "Rev ST"})
     );
 }

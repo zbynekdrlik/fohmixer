@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use fohmixer_proto::client::{
-    AckItem, HUB_REVERB_AUT, HUB_REVERB_LOW, ReverbState, ServerMsg, SetItem,
+    AckItem, HUB_REVERB_AUT, HUB_REVERB_LOW, Low, ReverbState, ServerMsg, SetItem,
 };
 use fohmixer_proto::layout::RuleFader;
 use serde_json::{Value, json};
@@ -581,4 +581,59 @@ async fn a_transport_listener_failure_ends_reverb_auts_wait() {
             .iter()
             .any(|r| r["ev"] == "reverb" && r["step"] == "cancelled")
     );
+}
+
+#[tokio::test]
+async fn a_reconnects_values_are_judged_before_its_transport() {
+    // Ruling 3's flush order, pinned: one connect answer carrying a held
+    // fader's volume off where the rule left it and Live playing. The
+    // value comes first, so the hand wins: nothing pends, nothing returns.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, _rx, rx) = offline_router(dir.path());
+    let _page = attach(&mut router, 1);
+    router.reverb_layout(faders());
+    router.subs.connected("band");
+    answer(&mut router, |_, prop| match prop {
+        "value" => slot("live_1.value", json!(0.85)),
+        "is_playing" => slot("live_1.is_playing", json!(false)),
+        _ => json!({"ok": true, "data": null}),
+    });
+    router.flush();
+    // AUT on while Live stands, and a tap takes the wait over: lowered for
+    // the stop; the glide runs to its end.
+    set_hub(&mut router, HUB_REVERB_AUT, json!(true));
+    set_hub(&mut router, HUB_REVERB_LOW, json!(true));
+    let now = router.now_ms() + 600.0;
+    let acts = router.reverb.rule.tick(now);
+    router.reverb_apply(acts, None);
+    let state = router.reverb.rule.state();
+    assert_eq!(
+        (state.low, state.faders[0].back),
+        (Some(Low::Stop), Some(0.85))
+    );
+    router.handle(RouterMsg::Live {
+        instance: "band".into(),
+        event: LiveEvent::Disconnected,
+    });
+    let _ = records(&rx);
+    router.subs.connected("band");
+    answer(&mut router, |_, prop| match prop {
+        "value" => slot("live_1.value", json!(0.7)),
+        "is_playing" => slot("live_1.is_playing", json!(true)),
+        _ => json!({"ok": true, "data": null}),
+    });
+    router.flush();
+    let got = records(&rx);
+    let steps: Vec<&Value> = got
+        .iter()
+        .filter(|r| r["ev"] == "reverb")
+        .map(|r| &r["step"])
+        .collect();
+    assert_eq!(steps, vec!["hand"], "{got:?}");
+    assert!(
+        !got.iter()
+            .any(|r| r["ev"] == "set" && r["client"] == json!(REVERB_CLIENT)),
+        "nothing written"
+    );
+    assert_eq!(router.reverb.rule.state().low, None);
 }
