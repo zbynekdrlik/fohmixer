@@ -38,10 +38,10 @@ pub const CLOSE_RELOAD: u16 = 4001;
 pub const POLICY_META: &str = "fohmixer-policy";
 /// The hub value of the STAGE AUT flag (spec §2.4, F15).
 pub const HUB_STAGE_AUT: &str = "stage_aut";
-/// The hub value of REVERB AUT (#130, D18, F30; the hub takes it from PR 4
-/// on): a bool.
+/// The hub value of REVERB AUT (#130, D18, F30; the hub's rule, kept in
+/// `hub-state.json`): a bool.
 pub const HUB_REVERB_AUT: &str = "reverb_aut";
-/// The hub value a REVERB tap asks for (#130, D18; from PR 4 on): the
+/// The hub value a REVERB tap asks for (#130, D18): the
 /// reverb faders lowered (`true`) or at the song level, as the button
 /// shows `!low`, so two pages' simultaneous taps agree.
 pub const HUB_REVERB_LOW: &str = "reverb_low";
@@ -106,7 +106,7 @@ pub enum ClientMsg {
     /// End a subscription (the `sub` key from `subbed`).
     Unsub { sub: String },
     /// Set a hub value: `stage_aut`; since #130 a fader link's switch
-    /// (`fader_link|<instance>|<id>`, [`fader_link_key`]) and, from PR 4,
+    /// (`fader_link|<instance>|<id>`, [`fader_link_key`]) and REVERB's
     /// `reverb_aut` and `reverb_low`.
     SetHub { key: String, value: Value },
     /// A control's write (#43): the latest value the engineer set on one

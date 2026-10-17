@@ -96,7 +96,8 @@ impl StageAut {
 pub struct HubState {
     #[serde(default)]
     pub stage_aut: bool,
-    /// REVERB (#130, D18): `reverb_aut` and, from PR 4, `reverb_low`.
+    /// REVERB (#130, D18): `reverb_aut` and `reverb_low` (what the rule
+    /// holds lowered, by fader identity).
     #[serde(flatten)]
     pub reverb: reverb::Saved,
     /// The fader links' switches a page set (#130, D18).

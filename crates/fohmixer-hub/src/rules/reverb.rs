@@ -1,8 +1,34 @@
 //! REVERB (#130, spec D18, F30): the reverb faders (the `+REVERB` marker
-//! strips, `Layout::reverb_faders`) and, from PR 4, the hub's REVERB AUT
-//! rule. Pure: the router hands it each layout's faders and carries out
-//! what it returns ([`Act`]); every step is an event-log record (`reverb`)
-//! with one hub log line ([`step_line`]).
+//! strips, `Layout::reverb_faders`) and the hub's REVERB AUT rule. Pure: the
+//! router hands it each layout's faders, Live's values, the transport, the
+//! pages' taps and writes, the acks of its last writes and the time, and
+//! carries out what it returns ([`Act`]); every step is an event-log record
+//! (`reverb`) with one hub log line ([`step_line`]).
+//!
+//! The rules (design B.3–B.6):
+//!
+//! - **REVERB AUT:** a stop of the followed Live (the first fader's) that the
+//!   rule sees while AUT is on starts a wait of [`STOP_WAIT_MS`] (the last
+//!   chord's tail); then every fader glides [`DROP_DB`] down over
+//!   [`LOWER_MS`]. A start glides them back in [`RETURN_MS`], each exactly
+//!   to the level it had; a start within the wait lowers nothing.
+//! - **The tap** (`reverb_low`): down in [`TAP_MS`], back in [`RETURN_MS`];
+//!   two taps asking the same thing agree. A tap while AUT is on overrides
+//!   the rule until the next stop or start, and AUT stays on.
+//! - **The hand wins:** a page's write of a fader while the rule holds it
+//!   (lowered, the wait, a glide), or a value of Live's off where the rule
+//!   left it once the rule's last write was applied, lets that fader go
+//!   (`RUKA`) until the next stop, which takes it again from where it is.
+//! - **A first value never lowers:** a hub start, a reconnect or a set load
+//!   only returns (Live plays, the faders lowered by the stop, AUT on).
+//! - **AUT off while low** leaves the faders where they are (a tap returns
+//!   them); **AUT on** while Live stands starts the wait, or takes a tap's
+//!   lowering over (it returns at the start).
+//! - **Kept over a restart:** what the rule holds ([`Saved`], `hub-state.json`)
+//!   by identity (the fader's Live set and label, never its track index); a
+//!   layout that names a held fader again holds it again.
+//! - **A track-list change or an offline instance** stops that instance's
+//!   glides at once; what the rule holds stays.
 
 use fohmixer_proto::client::{Low, ReverbFader, ReverbState, ReverbStatus, set_key};
 use fohmixer_proto::layout::RuleFader;
@@ -89,7 +115,7 @@ pub struct Saved {
         skip_serializing_if = "std::ops::Not::not"
     )]
     pub aut: bool,
-    /// The faders the rule holds lowered, and why (PR 4).
+    /// The faders the rule holds lowered, and why.
     #[serde(
         default,
         rename = "reverb_low",
@@ -120,15 +146,93 @@ pub struct SavedFader {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "step", rename_all = "snake_case")]
 pub enum Step {
+    Aut {
+        on: bool,
+    },
+    Tap {
+        low: bool,
+    },
+    /// A stop seen: the lowering starts in `ms`.
+    Wait {
+        ms: f64,
+    },
+    /// The wait ended with nothing lowered: Live played within it, a tap
+    /// took over, AUT went off, or every fader was in the hand.
+    Cancelled,
+    Lower {
+        why: Low,
+        faders: Vec<Move>,
+    },
+    Return {
+        faders: Vec<Move>,
+    },
+    /// The hand took a fader: a page's write (`page`) or Live's own value
+    /// (`live`, its `value`).
+    Hand {
+        label: String,
+        by: By,
+        value: Option<f64>,
+    },
+    Arrived {
+        label: String,
+        value: f64,
+    },
+    /// A glide stopped: `tracks`, `offline`, `layout` (its track moved),
+    /// `hand` (a page during a return).
+    Stopped {
+        label: String,
+        why: String,
+    },
+    /// Nothing to lower: `silent` (−∞) or `no value`.
+    Skipped {
+        label: String,
+        why: String,
+    },
     /// A layout named these faders.
-    Faders { labels: Vec<String> },
+    Faders {
+        labels: Vec<String>,
+    },
+    /// Held faders a layout named again; `waiting` still wait for theirs.
+    Restored {
+        faders: usize,
+        waiting: usize,
+    },
+    /// AUT off while low: the faders stay.
+    Off,
+}
+
+/// One fader's glide in a lowering or a return.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Move {
+    pub label: String,
+    pub from: f64,
+    pub to: f64,
+    pub ms: f64,
+}
+
+/// Who took a fader.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum By {
+    Page,
+    Live,
 }
 
 /// What the router carries out.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Act {
+    /// A glide step to a fader's volume (`last`: its end).
+    Write {
+        instance: String,
+        target: String,
+        key: String,
+        value: f64,
+        last: bool,
+    },
     /// A record and its log line.
     Step(Step),
+    /// `hub-state.json` gets what the rule holds.
+    Save,
     /// Every page gets the new state.
     Tell,
 }
@@ -139,12 +243,82 @@ struct Fader {
     spec: RuleFader,
     /// Its volume's write key (a page's `set` of it has this key).
     key: String,
+    /// Live's latest value.
+    live: Option<f64>,
+    /// Where it returns: the rule holds it low.
+    back: Option<f64>,
+    /// Where the rule left it (its lowering's end).
+    left: Option<f64>,
+    /// The engineer took it (`RUKA`) while the rule held it.
+    hand: bool,
+    glide: Option<Glide>,
+    /// Live's values are its own: the rule's last write was applied, or
+    /// Live reported where the rule left it.
+    settled: bool,
 }
 
 impl Fader {
     fn of(spec: RuleFader) -> Self {
         let key = set_key(&spec.instance, &spec.target, "value");
-        Self { spec, key }
+        Self {
+            spec,
+            key,
+            live: None,
+            back: None,
+            left: None,
+            hand: false,
+            glide: None,
+            settled: true,
+        }
+    }
+
+    fn held(&self) -> bool {
+        self.back.is_some()
+    }
+
+    fn same(&self, other: &Fader) -> bool {
+        self.spec.instance == other.spec.instance && self.spec.label == other.spec.label
+    }
+
+    /// Where it is now: its glide's value, else Live's.
+    fn now_at(&self, now: f64) -> Option<f64> {
+        self.glide.map(|g| g.at(now).0).or(self.live)
+    }
+
+    fn let_go(&mut self) {
+        self.back = None;
+        self.left = None;
+        self.glide = None;
+        self.hand = true;
+    }
+
+    fn saved(&self) -> Option<SavedFader> {
+        self.back.map(|back| SavedFader {
+            instance: self.spec.instance.clone(),
+            label: self.spec.label.clone(),
+            back,
+            left: self.left,
+        })
+    }
+
+    /// Takes over the last layout's fader of its identity: what the rule
+    /// holds; Live's value and a glide only when its target is the same.
+    fn take_over(&mut self, kept: Fader) -> Option<Act> {
+        self.back = kept.back;
+        self.left = kept.left;
+        self.hand = kept.hand;
+        self.settled = kept.settled;
+        if kept.key == self.key {
+            self.live = kept.live;
+            self.glide = kept.glide;
+            return None;
+        }
+        kept.glide.map(|_| {
+            Act::Step(Step::Stopped {
+                label: self.spec.label.clone(),
+                why: "layout".into(),
+            })
+        })
     }
 }
 
@@ -152,53 +326,496 @@ impl Fader {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Reverb {
     aut: bool,
+    low: Option<Low>,
     faders: Vec<Fader>,
+    /// The followed transport (the first fader's Live).
+    playing: Option<bool>,
+    /// The stop's lowering starts then (router ms).
+    wait: Option<f64>,
+    /// Held faders waiting for a layout to name them.
+    restore: Option<SavedLow>,
+    writes: u64,
+    hands: u64,
 }
 
 impl Reverb {
-    /// From `hub-state.json`.
+    /// From `hub-state.json`: AUT, and what the rule held (restored once a
+    /// layout names its faders).
     pub fn new(saved: &Saved) -> Self {
         Self {
             aut: saved.aut,
+            low: None,
             faders: Vec::new(),
+            playing: None,
+            wait: None,
+            restore: saved.low.clone(),
+            writes: 0,
+            hands: 0,
         }
+    }
+
+    /// The Live whose transport the rule follows.
+    pub fn followed(&self) -> Option<&str> {
+        self.faders.first().map(|f| f.spec.instance.as_str())
     }
 
     fn labels(&self) -> Vec<String> {
         self.faders.iter().map(|f| f.spec.label.clone()).collect()
     }
 
-    /// A served layout's faders.
+    /// A served layout's faders: each takes over what the rule held of its
+    /// identity; a held fader the layout no longer names waits for one that
+    /// does.
     pub fn set_faders(&mut self, specs: Vec<RuleFader>) -> Vec<Act> {
         if self.faders.iter().map(|f| &f.spec).eq(specs.iter()) {
             return Vec::new();
         }
-        self.faders = specs.into_iter().map(Fader::of).collect();
+        let was = self.followed().map(str::to_string);
+        let mut old = std::mem::take(&mut self.faders);
+        let mut acts = Vec::new();
+        for spec in specs {
+            let mut fader = Fader::of(spec);
+            if let Some(i) = old.iter().position(|o| o.same(&fader)) {
+                acts.extend(fader.take_over(old.remove(i)));
+            }
+            self.faders.push(fader);
+        }
+        // A held fader the layout no longer names waits for one that does
+        // (an empty wait is dropped by `restore_held` at once).
+        let by = self.low.unwrap_or(Low::Stop);
+        self.restore
+            .get_or_insert_with(|| SavedLow {
+                by,
+                faders: Vec::new(),
+            })
+            .faders
+            .extend(old.iter().filter_map(Fader::saved));
+        acts.extend(self.restore_held());
+        if self.followed() != was.as_deref() {
+            self.playing = None;
+            if self.wait.take().is_some() {
+                acts.push(Act::Step(Step::Cancelled));
+            }
+        }
+        acts.push(Act::Step(Step::Faders {
+            labels: self.labels(),
+        }));
+        acts.push(Act::Save);
+        acts.push(Act::Tell);
+        acts
+    }
+
+    /// Held faders a layout names again (by set and label) are held again.
+    fn restore_held(&mut self) -> Vec<Act> {
+        let Some(mut saved) = self.restore.take() else {
+            return Vec::new();
+        };
+        let mut found = 0;
+        let faders = &mut self.faders;
+        saved.faders.retain(|s| {
+            let Some(fader) = faders
+                .iter_mut()
+                .find(|f| f.spec.instance == s.instance && f.spec.label == s.label && !f.held())
+            else {
+                return true;
+            };
+            fader.back = Some(s.back);
+            fader.left = s.left;
+            fader.hand = false;
+            fader.settled = true;
+            found += 1;
+            false
+        });
+        let waiting = saved.faders.len();
+        if found > 0 && self.low.is_none() {
+            self.low = Some(saved.by);
+        }
+        if waiting > 0 {
+            self.restore = Some(saved);
+        }
+        if found == 0 {
+            return Vec::new();
+        }
+        vec![Act::Step(Step::Restored {
+            faders: found,
+            waiting,
+        })]
+    }
+
+    /// Live's value of a fader's volume (`key`: its write key).
+    pub fn live(&mut self, key: &str, value: f64) -> Vec<Act> {
+        let Some(fader) = self.faders.iter_mut().find(|f| f.key == key) else {
+            return Vec::new();
+        };
+        fader.live = Some(value);
+        let at_left = fader.left.is_some_and(|left| same_volume(left, value));
+        if !fader.settled {
+            fader.settled = at_left;
+            return Vec::new();
+        }
+        if !fader.held() || fader.glide.is_some() || at_left {
+            return Vec::new();
+        }
+        fader.let_go();
+        let label = fader.spec.label.clone();
+        self.hands += 1;
         vec![
-            Act::Step(Step::Faders {
-                labels: self.labels(),
+            Act::Step(Step::Hand {
+                label,
+                by: By::Live,
+                value: Some(value),
             }),
+            Act::Save,
             Act::Tell,
         ]
+    }
+
+    /// A transport value of `instance` at `now` (router ms).
+    pub fn transport(&mut self, instance: &str, playing: bool, now: f64) -> Vec<Act> {
+        if self.followed() != Some(instance) {
+            return Vec::new();
+        }
+        let before = self.playing.replace(playing);
+        if before == Some(playing) {
+            return Vec::new();
+        }
+        let mut acts = vec![Act::Tell];
+        match (before, playing) {
+            (None, true) if self.aut && self.low == Some(Low::Stop) => {
+                acts.extend(self.return_all(now));
+            }
+            (None, _) => {}
+            (Some(_), false) if self.aut => {
+                // The next stop takes a fader the hand had let go again.
+                for fader in self.faders.iter_mut().filter(|f| !f.held()) {
+                    fader.hand = false;
+                }
+                self.wait = Some(now + STOP_WAIT_MS);
+                acts.push(Act::Step(Step::Wait { ms: STOP_WAIT_MS }));
+            }
+            (Some(_), false) => {}
+            (Some(_), true) => {
+                if self.wait.take().is_some() {
+                    acts.push(Act::Step(Step::Cancelled));
+                }
+                if self.aut && self.low.is_some() {
+                    acts.extend(self.return_all(now));
+                }
+            }
+        }
+        acts
+    }
+
+    /// Every fader neither held low nor in the hand is remembered and glides
+    /// 10 dB down over `ms`.
+    fn lower(&mut self, why: Low, ms: f64, now: f64) -> Vec<Act> {
+        let mut acts = Vec::new();
+        let mut moves = Vec::new();
+        for fader in &mut self.faders {
+            if fader.held() || fader.hand {
+                continue;
+            }
+            let label = fader.spec.label.clone();
+            let Some(from) = fader.now_at(now) else {
+                acts.push(Act::Step(Step::Skipped {
+                    label,
+                    why: "no value".into(),
+                }));
+                continue;
+            };
+            if silent(from) {
+                acts.push(Act::Step(Step::Skipped {
+                    label,
+                    why: "silent".into(),
+                }));
+                continue;
+            }
+            let to = lowered(from);
+            fader.back = Some(from);
+            fader.left = Some(to);
+            fader.hand = false;
+            fader.settled = false;
+            fader.glide = Some(Glide::new(from, to, now, ms));
+            moves.push(Move {
+                label,
+                from,
+                to,
+                ms,
+            });
+        }
+        if self.faders.iter().any(Fader::held) {
+            self.low = Some(why);
+            acts.insert(0, Act::Step(Step::Lower { why, faders: moves }));
+            acts.push(Act::Save);
+            acts.push(Act::Tell);
+        }
+        acts
+    }
+
+    /// Every held fader glides back to its song level; the rule lets go. A
+    /// fader whose Live value the hub has not heard (just after a restart or
+    /// a reconnect) glides from where the rule left it.
+    fn return_all(&mut self, now: f64) -> Vec<Act> {
+        let mut moves = Vec::new();
+        for fader in &mut self.faders {
+            if let Some(back) = fader.back.take() {
+                match fader.now_at(now).or(fader.left) {
+                    Some(from) => {
+                        fader.glide = Some(Glide::new(from, back, now, RETURN_MS));
+                        fader.settled = false;
+                        moves.push(Move {
+                            label: fader.spec.label.clone(),
+                            from,
+                            to: back,
+                            ms: RETURN_MS,
+                        });
+                    }
+                    None => fader.glide = None,
+                }
+                fader.left = None;
+            }
+            fader.hand = false;
+        }
+        self.low = None;
+        self.wait = None;
+        vec![
+            Act::Step(Step::Return { faders: moves }),
+            Act::Save,
+            Act::Tell,
+        ]
+    }
+
+    /// A page's tap at `now`: the faders lowered (`low`) or at the song
+    /// level, as the button asks (two taps asking the same agree).
+    pub fn tap(&mut self, low: bool, now: f64) -> Vec<Act> {
+        let mut acts = vec![Act::Step(Step::Tap { low })];
+        match (low, self.low.is_some()) {
+            (true, false) => {
+                if self.wait.take().is_some() {
+                    acts.push(Act::Step(Step::Cancelled));
+                }
+                // A tap asks for every reverb down: the hand's too.
+                for fader in &mut self.faders {
+                    fader.hand = false;
+                }
+                let why = if self.aut && self.playing == Some(false) {
+                    Low::Stop
+                } else {
+                    Low::Tap
+                };
+                acts.extend(self.lower(why, TAP_MS, now));
+            }
+            (false, true) => acts.extend(self.return_all(now)),
+            (false, false) => {
+                if self.wait.take().is_some() {
+                    acts.push(Act::Step(Step::Cancelled));
+                }
+            }
+            (true, true) => {}
+        }
+        acts.push(Act::Tell);
+        acts
+    }
+
+    /// A page turned REVERB AUT on or off at `now`.
+    pub fn set_aut(&mut self, on: bool, now: f64) -> Vec<Act> {
+        if on == self.aut {
+            return vec![Act::Tell];
+        }
+        self.aut = on;
+        let mut acts = vec![Act::Step(Step::Aut { on }), Act::Save, Act::Tell];
+        if on {
+            match (self.playing, self.low) {
+                (Some(false), None) => {
+                    self.wait = Some(now + STOP_WAIT_MS);
+                    acts.push(Act::Step(Step::Wait { ms: STOP_WAIT_MS }));
+                }
+                (Some(false), Some(Low::Tap)) => self.low = Some(Low::Stop),
+                _ => {}
+            }
+        } else {
+            if self.wait.take().is_some() {
+                acts.push(Act::Step(Step::Cancelled));
+            }
+            if self.low == Some(Low::Stop) {
+                self.low = Some(Low::Tap);
+                acts.push(Act::Step(Step::Off));
+            }
+        }
+        acts
+    }
+
+    /// A page wrote a fader's volume (`key`: its write key).
+    pub fn hand(&mut self, key: &str) -> Vec<Act> {
+        let rule_holds = self.wait.is_some() || self.low.is_some();
+        let Some(fader) = self.faders.iter_mut().find(|f| f.key == key) else {
+            return Vec::new();
+        };
+        let label = fader.spec.label.clone();
+        if fader.held() || (rule_holds && !fader.hand) {
+            fader.let_go();
+            self.hands += 1;
+            return vec![
+                Act::Step(Step::Hand {
+                    label,
+                    by: By::Page,
+                    value: None,
+                }),
+                Act::Save,
+                Act::Tell,
+            ];
+        }
+        if fader.glide.take().is_some() {
+            return vec![Act::Step(Step::Stopped {
+                label,
+                why: "hand".into(),
+            })];
+        }
+        Vec::new()
+    }
+
+    /// The ack of the rule's last write of `key` came.
+    pub fn applied(&mut self, key: &str) {
+        if let Some(fader) = self
+            .faders
+            .iter_mut()
+            .find(|f| f.key == key && f.glide.is_none())
+        {
+            fader.settled = true;
+        }
+    }
+
+    /// The time is `now` (router ms): the wait's end, and every glide's step.
+    pub fn tick(&mut self, now: f64) -> Vec<Act> {
+        let mut acts = Vec::new();
+        if self.wait.is_some_and(|at| due(at, now)) {
+            self.wait = None;
+            acts.extend(self.lower(Low::Stop, LOWER_MS, now));
+            if !self.faders.iter().any(Fader::held) {
+                acts.push(Act::Step(Step::Cancelled));
+            }
+            // The wait is over: every page is told.
+            acts.push(Act::Tell);
+        }
+        for fader in &mut self.faders {
+            let Some(glide) = fader.glide else {
+                continue;
+            };
+            let (value, last) = glide.at(now);
+            acts.push(Act::Write {
+                instance: fader.spec.instance.clone(),
+                target: fader.spec.target.clone(),
+                key: fader.key.clone(),
+                value,
+                last,
+            });
+            self.writes += 1;
+            if last {
+                fader.glide = None;
+                acts.push(Act::Step(Step::Arrived {
+                    label: fader.spec.label.clone(),
+                    value,
+                }));
+            }
+        }
+        acts
+    }
+
+    /// When the rule next needs the time: the wait's end, or the next
+    /// glide step; none while it rests.
+    pub fn next_tick(&self, now: f64) -> Option<f64> {
+        let step = self
+            .faders
+            .iter()
+            .any(|f| f.glide.is_some())
+            .then_some(now + STEP_MS);
+        match (self.wait, step) {
+            (Some(wait), Some(step)) => Some(wait.min(step)),
+            (wait, step) => wait.or(step),
+        }
+    }
+
+    /// An instance went offline: its glides stop, its values (and, for the
+    /// followed one, the transport and the wait) are forgotten; what the
+    /// rule holds stays.
+    pub fn offline(&mut self, instance: &str) -> Vec<Act> {
+        let mut acts = Vec::new();
+        for fader in self
+            .faders
+            .iter_mut()
+            .filter(|f| f.spec.instance == instance)
+        {
+            fader.live = None;
+            fader.settled = true;
+            if fader.glide.take().is_some() {
+                acts.push(Act::Step(Step::Stopped {
+                    label: fader.spec.label.clone(),
+                    why: "offline".into(),
+                }));
+            }
+        }
+        if self.followed() == Some(instance) {
+            self.playing = None;
+            if self.wait.take().is_some() {
+                acts.push(Act::Step(Step::Cancelled));
+            }
+            acts.push(Act::Tell);
+        }
+        acts
+    }
+
+    /// An instance's track list changed: its glides stop at once (an index
+    /// names another track until the next layout), and Live's values count
+    /// again only once one is where the rule left the fader.
+    pub fn tracks_changed(&mut self, instance: &str) -> Vec<Act> {
+        let mut acts = Vec::new();
+        for fader in self
+            .faders
+            .iter_mut()
+            .filter(|f| f.spec.instance == instance)
+        {
+            fader.settled = false;
+            if fader.glide.take().is_some() {
+                acts.push(Act::Step(Step::Stopped {
+                    label: fader.spec.label.clone(),
+                    why: "tracks".into(),
+                }));
+            }
+        }
+        acts
     }
 
     /// What every page is told.
     pub fn state(&self) -> ReverbState {
         ReverbState {
             aut: self.aut,
-            low: None,
-            playing: None,
-            waiting: false,
+            low: self.low,
+            playing: self.playing,
+            waiting: self.wait.is_some(),
             faders: self
                 .faders
                 .iter()
                 .map(|f| ReverbFader {
                     key: f.key.clone(),
                     label: f.spec.label.clone(),
-                    back: None,
-                    hand: false,
+                    back: f.back,
+                    hand: f.hand,
                 })
                 .collect(),
+        }
+    }
+
+    /// What `hub-state.json` keeps: AUT, and every held fader (those a
+    /// layout names and those still waiting for one).
+    pub fn saved(&self) -> Saved {
+        let mut faders: Vec<SavedFader> = self.faders.iter().filter_map(Fader::saved).collect();
+        if let Some(waiting) = &self.restore {
+            faders.extend(waiting.faders.iter().cloned());
+        }
+        let by = self.low.or_else(|| self.restore.as_ref().map(|r| r.by));
+        Saved {
+            aut: self.aut,
+            low: by.map(|by| SavedLow { by, faders }),
         }
     }
 
@@ -206,157 +823,85 @@ impl Reverb {
     pub fn status(&self) -> ReverbStatus {
         ReverbStatus {
             aut: self.aut,
-            low: None,
+            low: self.low,
             faders: self.faders.len(),
-            writes: 0,
-            hands: 0,
+            writes: self.writes,
+            hands: self.hands,
         }
     }
 }
 
 /// A step's hub log line.
 pub fn step_line(step: &Step) -> String {
+    let labels = |moves: &[Move]| {
+        moves
+            .iter()
+            .map(|m| m.label.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
     match step {
+        Step::Aut { on } => format!("REVERB AUT turned {}", if *on { "on" } else { "off" }),
+        Step::Tap { low } => format!("REVERB tapped: {}", if *low { "down" } else { "back" }),
+        Step::Wait { ms } => {
+            format!("Live stopped: REVERB AUT lowers the reverb faders in {ms:.0} ms")
+        }
+        Step::Cancelled => "REVERB AUT's wait ended with nothing lowered".to_string(),
+        Step::Lower {
+            why: Low::Stop,
+            faders,
+        } if faders.is_empty() => {
+            "REVERB AUT takes over the reverb faders already low: they return at the start"
+                .to_string()
+        }
+        Step::Lower { why, faders } => format!(
+            "REVERB lowers {} by {DROP_DB:.0} dB ({})",
+            labels(faders),
+            if *why == Low::Stop { "stop" } else { "tap" }
+        ),
+        Step::Return { faders } => {
+            format!("REVERB returns {} to the song level", labels(faders))
+        }
+        Step::Hand {
+            label,
+            by: By::Page,
+            ..
+        } => format!("REVERB lets go of {label}: moved on a page"),
+        Step::Hand {
+            label,
+            by: By::Live,
+            value,
+        } => format!(
+            "REVERB lets go of {label}: Live has it at {}",
+            value.unwrap_or(f64::NAN)
+        ),
+        Step::Arrived { label, value } => format!("REVERB: {label} arrived at {value}"),
+        Step::Stopped { label, why } => format!("REVERB stopped the glide of {label}: {why}"),
+        Step::Skipped { label, why } => format!("REVERB skips {label}: {why}"),
         Step::Faders { labels } if labels.is_empty() => {
             "REVERB has no faders (no +REVERB strip)".to_string()
         }
         Step::Faders { labels } => format!("REVERB's faders: {}", labels.join(", ")),
+        Step::Restored { faders, waiting } => {
+            format!("REVERB holds {faders} restored fader(s) low; {waiting} wait for their strip")
+        }
+        Step::Off => {
+            "REVERB AUT off while the reverb faders are low: they stay, a tap returns them"
+                .to_string()
+        }
+    }
+}
+
+/// Whether a step's line is a warning: a glide stopped, a fader skipped, or
+/// held faders whose strip no layout names.
+pub fn step_warn(step: &Step) -> bool {
+    match step {
+        Step::Stopped { .. } | Step::Skipped { .. } => true,
+        Step::Restored { waiting, .. } => *waiting > 0,
+        _ => false,
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn fader(label: &str, index: u32) -> RuleFader {
-        RuleFader {
-            instance: "band".into(),
-            label: label.into(),
-            target: format!("live_set tracks {index} mixer_device volume"),
-        }
-    }
-
-    #[test]
-    fn the_faders_come_from_the_layout_each_with_its_write_key() {
-        let mut rule = Reverb::new(&Saved::default());
-        assert_eq!(
-            rule.set_faders(vec![fader("Rev ST", 4), fader("Rev PA", 5)]),
-            vec![
-                Act::Step(Step::Faders {
-                    labels: vec!["Rev ST".into(), "Rev PA".into()]
-                }),
-                Act::Tell,
-            ]
-        );
-        assert_eq!(
-            rule.set_faders(vec![fader("Rev ST", 4), fader("Rev PA", 5)]),
-            vec![],
-            "the same faders: nothing"
-        );
-        let state = rule.state();
-        assert_eq!(
-            state
-                .faders
-                .iter()
-                .map(|f| (f.key.as_str(), f.label.as_str()))
-                .collect::<Vec<_>>(),
-            vec![
-                ("band|live_set tracks 4 mixer_device volume|value", "Rev ST"),
-                ("band|live_set tracks 5 mixer_device volume|value", "Rev PA"),
-            ]
-        );
-        assert!(!state.aut && state.low.is_none() && state.playing.is_none() && !state.waiting);
-        assert_eq!(rule.status().faders, 2);
-        // A layout without them: told, and the line says so.
-        assert_eq!(
-            rule.set_faders(vec![]),
-            vec![Act::Step(Step::Faders { labels: vec![] }), Act::Tell]
-        );
-        assert_eq!(rule.status().faders, 0);
-    }
-
-    #[test]
-    fn each_step_has_its_line() {
-        assert_eq!(
-            step_line(&Step::Faders {
-                labels: vec!["Rev ST".into(), "Rev PA".into()]
-            }),
-            "REVERB's faders: Rev ST, Rev PA"
-        );
-        assert_eq!(
-            step_line(&Step::Faders { labels: vec![] }),
-            "REVERB has no faders (no +REVERB strip)"
-        );
-        assert_eq!(
-            serde_json::to_value(Step::Faders {
-                labels: vec!["A".into()]
-            })
-            .unwrap(),
-            serde_json::json!({"step": "faders", "labels": ["A"]})
-        );
-        assert!(
-            Reverb::new(&Saved {
-                aut: true,
-                low: None
-            })
-            .state()
-            .aut
-        );
-        assert!(
-            Reverb::new(&Saved {
-                aut: true,
-                low: None
-            })
-            .status()
-            .aut
-        );
-    }
-
-    #[test]
-    fn the_rules_numbers() {
-        assert_eq!(
-            (
-                DROP_DB,
-                STOP_WAIT_MS,
-                LOWER_MS,
-                TAP_MS,
-                RETURN_MS,
-                STEP_MS,
-                SAME_VOLUME
-            ),
-            (10.0, 2000.0, 2000.0, 500.0, 500.0, 25.0, 0.000_001)
-        );
-    }
-
-    #[test]
-    fn the_thresholds_are_exact() {
-        assert!(same_volume(0.0, 1e-6));
-        assert!(!same_volume(0.0, 1e-6_f64.next_up()));
-        assert!(same_volume(1e-6, 0.0));
-        assert!(same_volume(0.5, 0.5), "a level is its own");
-        assert!(due(1000.0, 1000.0));
-        assert!(!due(1000.0, 1000.0_f64.next_down()));
-        assert!(due(1000.0, 1000.0_f64.next_up()));
-        assert!(silent(0.0));
-        assert!(!silent(f64::MIN_POSITIVE));
-        assert!((value2db(lowered(0.85)) + 10.0).abs() < 0.01);
-        assert!((value2db(lowered(0.6)) - (value2db(0.6) - 10.0)).abs() < 0.01);
-        assert_eq!(lowered(0.0), 0.0);
-    }
-
-    #[test]
-    fn a_glide_is_linear_in_db_and_lands_exactly() {
-        let g = Glide::new(0.85, 0.6, 1000.0, 2000.0);
-        assert_eq!(g.at(1000.0), (volume_of(value2db(0.85)), false));
-        let (half, done) = g.at(2000.0);
-        assert!(!done);
-        assert!((value2db(half) - (value2db(0.85) + value2db(0.6)) / 2.0).abs() < 0.01);
-        assert!(!g.at(3000.0_f64.next_down()).1);
-        assert_eq!(g.at(3000.0), (0.6, true), "exactly its end");
-        assert_eq!(g.at(9000.0), (0.6, true));
-        // From −∞ (the floor) up: no NaN, the end exact.
-        let up = Glide::new(0.0, 0.3, 0.0, 500.0);
-        assert!(up.at(250.0).0.is_finite() && up.at(250.0).0 > 0.0);
-        assert_eq!(up.at(500.0), (0.3, true));
-    }
-}
+#[path = "reverb/tests.rs"]
+mod tests;
