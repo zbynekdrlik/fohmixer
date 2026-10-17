@@ -273,6 +273,12 @@ pub fn mute_sub(binding: &Binding) -> Option<SubSpec> {
     spec(binding, "", "mute", false)
 }
 
+/// The transport of an instance (#104, D18): the merged STAGE button's
+/// second line follows it.
+pub fn transport_sub(instance: &str) -> SubSpec {
+    SubSpec::new(instance, "live_set".into(), "is_playing", false)
+}
+
 /// The subscriptions of a former MIDI control's targets, in target order
 /// (`None` where a path does not parse); a fader's first target brings
 /// Live's display string.
@@ -290,9 +296,14 @@ pub fn control_subs(control: &Control, source: MeterSource) -> Vec<SubSpec> {
     match control {
         Control::Strip(strip) => strip_subs(strip, source).shown(),
         Control::Solo { binding, .. } => solo_sub(binding).into_iter().collect(),
-        Control::Stage { binding, .. } | Control::Alert { binding, .. } => {
-            mute_sub(binding).into_iter().collect()
+        Control::Stage { binding, aut, .. } => {
+            let mut subs: Vec<SubSpec> = mute_sub(binding).into_iter().collect();
+            if *aut {
+                subs.push(transport_sub(&binding.instance));
+            }
+            subs
         }
+        Control::Alert { binding, .. } => mute_sub(binding).into_iter().collect(),
         Control::ParamToggle { targets, .. } => {
             param_subs(targets, false).into_iter().flatten().collect()
         }
