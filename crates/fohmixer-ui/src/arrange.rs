@@ -17,9 +17,9 @@
 //! group on that strip's side (#127, `GroupLabel`); any other run keeps its
 //! title over it when there is one to show, and only a line that shows
 //! such a title on any of its sub-pages and windows keeps the title's room
-//! (`LineArrangement::room`). The layout's own order is kept everywhere:
-//! which strips sit where is the owner's choice. This module is pure;
-//! `pages::surface` measures and renders.
+//! (`rooms`, which depends on the measured page alone). The layout's own
+//! order is kept everywhere: which strips sit where is the owner's choice.
+//! This module is pure; `pages::surface` measures and renders.
 
 use fohmixer_proto::layout::{Control, Group, Page, Section};
 
@@ -460,8 +460,7 @@ pub struct LineKey {
 }
 
 /// One line as arranged: the page rows it holds (and its window's key), its
-/// halves and its window; `room`: it keeps the groups' titles' room at its
-/// top (`keeps_room`, the same on every sub-page and window).
+/// halves and its window (whether it keeps the titles' room: `rooms`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct LineArrangement {
     pub rows: Vec<usize>,
@@ -469,7 +468,6 @@ pub struct LineArrangement {
     pub left: Vec<Cell>,
     pub right: Vec<Cell>,
     pub shift: Option<Shift>,
-    pub room: bool,
 }
 
 /// A page as arranged: the strip width every line shares and the lines.
@@ -506,6 +504,17 @@ impl Sides {
             width: side,
         }
     }
+
+    /// Whether the page has been laid out (a side to count the strips on).
+    pub fn measured(self) -> bool {
+        self.count > 0.0
+    }
+}
+
+/// The widest a block may be on a side `side` px wide, in strips (at least
+/// one).
+fn widest(side: f64, m: &Metrics) -> f64 {
+    (side / m.min).max(1.0)
 }
 
 /// The page arranged with its pager on sub-page `sub`, a side `side` px
@@ -539,10 +548,9 @@ pub fn arrange_in(
     let side = sides.count;
     let mut width = m.max;
     let mut out = Vec::new();
-    let widest = (side / m.min).max(1.0);
+    let widest = widest(side, m);
     for rows in lines(model.weights(), height, m) {
         let cells = line_cells(model, &rows, sub, widest, m);
-        let room = keeps_room(model, &rows, side, widest, m);
         let key = model.line_key(&rows, sub);
         let offset = offset(&key);
         let (cells, shift) = shown(&cells, side, offset, m);
@@ -561,7 +569,6 @@ pub fn arrange_in(
             left: cells[..at].to_vec(),
             right: cells[at..].to_vec(),
             shift,
-            room,
         });
     }
     Arrangement {
@@ -588,6 +595,21 @@ fn line_cells(
             },
             other => other,
         })
+        .collect()
+}
+
+/// Whether each line of the page keeps the groups' titles' room at its top
+/// (#127), the lines as `arrange_in` makes them on `sides` and `height`:
+/// it depends on the measured page alone, never on the sub-page shown or a
+/// line's window (`keeps_room`), so the surface keeps it in a memo of its
+/// own that neither a sub-page switch nor an arrow recomputes (the #127
+/// re-review's m3: it arranges every sub-page and window of the line).
+pub fn rooms(model: &PageModel, sides: Sides, height: f64, m: &Metrics) -> Vec<bool> {
+    let side = sides.count;
+    let widest = widest(side, m);
+    lines(model.weights(), height, m)
+        .iter()
+        .map(|rows| keeps_room(model, rows, side, widest, m))
         .collect()
 }
 
@@ -799,7 +821,7 @@ fn items_of(model: &PageModel, left: &[Cell], right: &[Cell]) -> Vec<Item> {
 }
 
 /// Whether a line's items show a group's title over a run (on any of its
-/// sub-pages and windows, the line keeps the title's room: `keeps_room`).
+/// sub-pages and windows, the line keeps the title's room: `rooms`).
 pub fn captions(items: &[Item]) -> bool {
     items
         .iter()

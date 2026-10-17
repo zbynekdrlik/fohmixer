@@ -10,7 +10,7 @@
 
 /* A line keeps the titles' 16 px at its top only while it shows a title
    over a run on any of its sub-pages and windows (`data-captions`,
-   `LineArrangement::room`); every other line gives them to its faders. */
+   `arrange::rooms`); every other line gives them to its faders. */
 .line[data-captions="true"] {
     padding-top: 16px;
 }
