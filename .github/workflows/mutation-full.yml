@@ -45,7 +45,8 @@ jobs:
         run: |
           set -uo pipefail
           packages=(--package fohmixer-proto --package fohmixer-hub --package fohmixer-ui --package fohmixer-tray)
-          cargo mutants --baseline=skip --timeout 60 --jobs 2 --copy-target=true --shard "${SHARD}/${SHARDS}" \
+          # --timeout 160: 2x the measured unmutated hub suite, as ci.yml's gate.
+          cargo mutants --baseline=skip --timeout 160 --jobs 2 --copy-target=true --shard "${SHARD}/${SHARDS}" \
             "${packages[@]}" --all-features -- --all-targets
           code=$?
           if [ -f mutants.out/missed.txt ]; then echo "--- missed mutants ---"; cat mutants.out/missed.txt; fi
@@ -56,7 +57,7 @@ jobs:
           # Catches by a timeout are tested again (mutants.out/recheck); its
           # MISSED lines are survivors too.
           python3 scripts/mutants_recheck.py --out mutants.out -- \
-            --baseline=skip --timeout 120 --jobs 1 --copy-target=true "${packages[@]}" --all-features -- --all-targets
+            --baseline=skip --timeout 160 --jobs 1 --copy-target=true "${packages[@]}" --all-features -- --all-targets
           code=$?
           case "$code" in
             0|2|3) echo "timeout recheck finished (exit $code)"; exit 0 ;;

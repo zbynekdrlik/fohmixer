@@ -1,8 +1,9 @@
-//! STAGE AUT (spec §2.4, F15, X9): the one rule the hub runs on Live's
-//! values. While the flag is on, the stage-mic track follows the transport:
-//! playing → muted, stopped → live. The flag is a hub value shared by every
-//! client and kept in `<data>/hub-state.json`, so the rule keeps working
-//! while every iPad sleeps.
+//! STAGE AUT (spec §2.4, F15, X9): a rule the hub runs on Live's values
+//! (REVERB's, #130, is `rules/reverb.rs`). While the flag is on, the
+//! stage-mic track follows the transport: playing → muted, stopped → live.
+//! The flag is a hub value shared by every client and kept in
+//! `<data>/hub-state.json`, so the rule keeps working while every iPad
+//! sleeps.
 //!
 //! The rule writes once per change of `is_playing` (never twice for one
 //! change, and never fighting a hand-set mute in between), once when the
@@ -13,6 +14,11 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+
+#[path = "rules/links.rs"]
+pub mod links;
+#[path = "rules/reverb.rs"]
+pub mod reverb;
 
 /// The file of the persisted hub values.
 pub const HUB_STATE_FILE: &str = "hub-state.json";
@@ -84,28 +90,35 @@ impl StageAut {
     }
 }
 
-/// The persisted hub values.
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// The persisted hub values. The router keeps them whole and saves them
+/// whole (#130: a save of one value keeps the others).
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HubState {
     #[serde(default)]
     pub stage_aut: bool,
+    /// REVERB (#130, D18): `reverb_aut` and, from PR 4, `reverb_low`.
+    #[serde(flatten)]
+    pub reverb: reverb::Saved,
+    /// The fader links' switches a page set (#130, D18).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fader_links: Vec<links::SavedLink>,
 }
 
 impl HubState {
     /// `<data>/hub-state.json`; missing is the defaults. A file that does not
-    /// parse is logged and read as the defaults (the flag off) — never a
-    /// reason to leave the mixer down — and is not overwritten until the
-    /// flag changes.
+    /// parse is logged and read as the defaults (the rules off) — never a
+    /// reason to leave the mixer down — and is not overwritten until a hub
+    /// value changes (STAGE AUT, a fader link's switch; #130).
     pub fn load(data_dir: &Path) -> Self {
         let path = data_dir.join(HUB_STATE_FILE);
         match std::fs::read_to_string(&path) {
             Ok(text) => serde_json::from_str(&text).unwrap_or_else(|e| {
-                tracing::error!(path = %path.display(), error = %e, "unreadable hub state: STAGE AUT starts off");
+                tracing::error!(path = %path.display(), error = %e, "unreadable hub state: the hub's rules start off");
                 Self::default()
             }),
             Err(e) => {
                 if let Some(problem) = read_problem(&e) {
-                    tracing::error!(path = %path.display(), error = %problem, "unreadable hub state: STAGE AUT starts off");
+                    tracing::error!(path = %path.display(), error = %problem, "unreadable hub state: the hub's rules start off");
                 }
                 Self::default()
             }
@@ -219,7 +232,54 @@ mod tests {
     fn the_state_file_round_trips_and_a_bad_one_starts_off() {
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(HubState::load(dir.path()), HubState::default());
-        HubState { stage_aut: true }.save(dir.path()).unwrap();
+        let state = HubState {
+            stage_aut: true,
+            reverb: reverb::Saved {
+                aut: true,
+                low: Some(reverb::SavedLow {
+                    by: fohmixer_proto::client::Low::Stop,
+                    faders: vec![reverb::SavedFader {
+                        instance: "band".into(),
+                        label: "Rev ST".into(),
+                        back: 0.85,
+                        left: Some(0.6),
+                    }],
+                }),
+            },
+            fader_links: vec![links::SavedLink {
+                instance: "band".into(),
+                id: "REV".into(),
+                on: false,
+            }],
+        };
+        state.save(dir.path()).unwrap();
+        assert_eq!(HubState::load(dir.path()), state);
+        // An older file (STAGE AUT only) reads with REVERB's defaults, and
+        // the defaults write no key of REVERB's.
+        std::fs::write(state_path(dir.path()), r#"{"stage_aut": true}"#).unwrap();
+        assert_eq!(HubState::load(dir.path()).reverb, reverb::Saved::default());
+        assert_eq!(HubState::load(dir.path()).fader_links, vec![]);
+        HubState {
+            stage_aut: false,
+            reverb: reverb::Saved::default(),
+            fader_links: Vec::new(),
+        }
+        .save(dir.path())
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(state_path(dir.path()))
+                .unwrap()
+                .parse::<serde_json::Value>()
+                .unwrap(),
+            serde_json::json!({"stage_aut": false})
+        );
+        HubState {
+            stage_aut: true,
+            reverb: reverb::Saved::default(),
+            fader_links: Vec::new(),
+        }
+        .save(dir.path())
+        .unwrap();
         assert_eq!(state_path(dir.path()), dir.path().join(HUB_STATE_FILE));
         assert!(HubState::load(dir.path()).stage_aut);
         std::fs::write(state_path(dir.path()), "{not json").unwrap();
@@ -232,6 +292,14 @@ mod tests {
         std::fs::remove_file(state_path(dir.path())).unwrap();
         std::fs::create_dir(state_path(dir.path())).unwrap();
         assert!(!HubState::load(dir.path()).stage_aut, "unreadable: off");
-        assert!(HubState { stage_aut: true }.save(dir.path()).is_err());
+        assert!(
+            HubState {
+                stage_aut: true,
+                reverb: reverb::Saved::default(),
+                fader_links: Vec::new(),
+            }
+            .save(dir.path())
+            .is_err()
+        );
     }
 }

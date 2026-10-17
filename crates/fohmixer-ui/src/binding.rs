@@ -310,6 +310,8 @@ pub fn control_subs(control: &Control, source: MeterSource) -> Vec<SubSpec> {
         Control::ParamFader { targets, .. } => {
             param_subs(targets, true).into_iter().flatten().collect()
         }
+        // REVERB (#130): its state is the hub's `reverb` message, no sub.
+        Control::Reverb { .. } => Vec::new(),
     }
 }
 

@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use fohmixer_proto::client::{
-    CLOSE_RELOAD, ClientMsg, DeckKey, LiveCommand, POLICY_META, ServerMsg,
+    CLOSE_RELOAD, ClientMsg, DeckKey, LiveCommand, POLICY_META, ReverbState, ServerMsg,
 };
 use fohmixer_proto::eq::EqLock;
 use fohmixer_proto::layout::Layout;
@@ -162,6 +162,9 @@ pub struct LiveStore {
     /// The hub values (STAGE AUT), as the hub last sent them: kept through
     /// an outage, stale until the next connection sends them (#104 M4).
     pub hub: RwSignal<HubValues>,
+    /// REVERB (#130): the hub's last state, kept through a reconnect until
+    /// the hub's next.
+    pub reverb: RwSignal<Option<ReverbState>>,
     /// The hub socket is up and said hello.
     pub connected: RwSignal<bool>,
     /// How many subscriptions the pages on screen hold.
@@ -198,6 +201,7 @@ impl LiveStore {
             layout_note: RwSignal::new(None),
             instances: RwSignal::new(BTreeMap::new()),
             hub: RwSignal::new(HubValues::default()),
+            reverb: RwSignal::new(None),
             connected: RwSignal::new(false),
             subscribed: RwSignal::new(0),
             dropouts: RwSignal::new(Counter::default()),
@@ -569,6 +573,11 @@ impl LiveStore {
             ),
             ServerMsg::Hub { key, value } => {
                 let _ = self.hub.try_update(|hub| hub.put(key, value));
+            }
+            // REVERB (#130): the rail button and the faders' marks read it
+            // (PR 5).
+            ServerMsg::Reverb(state) => {
+                let _ = self.reverb.try_set(Some(state));
             }
             ServerMsg::Layout { rev } => self.on_layout(rev),
             ServerMsg::Result { id, data } => self.finish(&id, Ok(data)),

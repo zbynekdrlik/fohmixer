@@ -185,8 +185,10 @@ pub fn expired(file: NaiveDate, today: NaiveDate, keep_days: i64) -> bool {
 /// so does a page's `trace` that holds its AbleSet tab opened or closed
 /// (`ableset_view`, #90 design §6: a few per open, beside the dropouts).
 /// The rules' records (#104, #130, D18): every instance's `transport`
-/// change and STAGE AUT's `stage_aut` (its flag, its writes and their
-/// failures): a few per song, and they explain what the stage mics did.
+/// change, STAGE AUT's `stage_aut` (its flag, its writes and their
+/// failures), REVERB's `reverb` steps and each fader link's switch
+/// (`fader_link`): a few per song, and they explain what the stage mics,
+/// the reverbs and the links did.
 pub fn is_warn(record: &Value) -> bool {
     let ev = record.get("ev").and_then(Value::as_str).unwrap_or("");
     let failed = record.get("error").is_some_and(|e| !e.is_null())
@@ -211,6 +213,8 @@ pub fn is_warn(record: &Value) -> bool {
                 | "ableset_link"
                 | "transport"
                 | "stage_aut"
+                | "reverb"
+                | "fader_link"
         )
         || (ev == "trace" && holds_warn_event(record))
 }

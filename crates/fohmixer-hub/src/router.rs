@@ -36,9 +36,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use fohmixer_proto::client::{
-    HUB_STAGE_AUT, ServerMsg, SetItem, StageAutStatus, Unresolved, ValueItem,
+    FaderLinkStatus, HUB_STAGE_AUT, ReverbStatus, ServerMsg, SetItem, StageAutStatus, Unresolved,
+    ValueItem,
 };
-use fohmixer_proto::layout::{Binding, Layout};
+use fohmixer_proto::layout::{Binding, Layout, LinkId, RuleFader};
 use serde_json::{Value, json};
 use tokio::sync::{mpsc, oneshot};
 
@@ -47,6 +48,7 @@ use crate::live::client::{LiveError, LiveEvent, LiveHandle};
 use crate::live::names::NameCheck;
 use crate::live::subs::{Cached, ClientId, Outgoing, Subs};
 use crate::outbox::Outbox;
+use crate::rules::links::FaderLinks;
 use crate::rules::{HubState, StageAut};
 use crate::setter::Setter;
 
@@ -57,9 +59,13 @@ mod ableset;
 #[path = "router/deck.rs"]
 mod deck;
 mod eq;
+#[path = "router/links.rs"]
+mod links;
 mod markers;
 #[path = "router/markers_io.rs"]
 mod markers_io;
+#[path = "router/reverb.rs"]
+mod reverb;
 mod unfold;
 
 /// The router's own subscriber for the rules (#130, D18): every instance's
@@ -166,13 +172,18 @@ pub enum RouterMsg {
     },
     /// A new layout is served: its revision, its STAGE AUT binding and its
     /// check targets per instance (for the unresolved-names check: the
-    /// bindings, `live::names::layout_targets`) and its strips' tracks.
+    /// bindings, `live::names::layout_targets`), its strips' tracks and its
+    /// reverb faders.
     Layout {
         rev: u64,
         stage: Option<Binding>,
         targets: BTreeMap<String, Vec<String>>,
         /// The strips' tracks (`Layout::strip_tracks`, #58).
         strips: Vec<(String, String)>,
+        /// The REVERB rule's faders (`Layout::reverb_faders`, #130).
+        reverb: Vec<RuleFader>,
+        /// Its fader links' strip leaders (`Layout::fader_leaders`, #130).
+        fader_leaders: Vec<LinkId>,
     },
     /// The router's part of `/api/status`.
     Status {
@@ -318,6 +329,10 @@ pub struct RouterStatus {
     /// none before the first value, and again after a disconnect).
     pub playing: BTreeMap<String, Option<bool>>,
     pub stage_aut: StageAutStatus,
+    /// REVERB (#130, D18).
+    pub reverb: ReverbStatus,
+    /// Each strip leader's fader link switch (#130).
+    pub fader_links: Vec<FaderLinkStatus>,
     pub clients: usize,
     pub unresolved: Vec<Unresolved>,
 }
@@ -379,8 +394,15 @@ pub struct Router {
     live: BTreeMap<String, LiveHandle>,
     states: BTreeMap<String, InstanceState>,
     setters: BTreeMap<String, Setter>,
+    /// The persisted hub values (`hub-state.json`), kept whole and saved
+    /// whole (#130).
+    state: HubState,
     stage: StageAut,
     stage_target: Option<StageTarget>,
+    /// REVERB (#130, D18).
+    reverb: reverb::ReverbIo,
+    /// The fader links' switches (#130, D18).
+    links: FaderLinks,
     /// Every instance's transport (#104, D18), by instance.
     transport: BTreeMap<String, TransportWatch>,
     layout_rev: u64,
@@ -407,10 +429,11 @@ pub struct Router {
 }
 
 impl Router {
-    /// A router over these instances, STAGE AUT persisted as `stage_aut`.
+    /// A router over these instances, with the persisted hub values
+    /// (`hub-state.json`: STAGE AUT, REVERB, the fader links' switches).
     pub fn new(
         live: BTreeMap<String, LiveHandle>,
-        stage_aut: bool,
+        state: HubState,
         data_dir: PathBuf,
         io: RouterIo,
     ) -> Self {
@@ -446,8 +469,11 @@ impl Router {
                 .map(|k| (k.clone(), Setter::default()))
                 .collect(),
             live,
-            stage: StageAut::new(stage_aut),
+            stage: StageAut::new(state.stage_aut),
             stage_target: None,
+            reverb: reverb::ReverbIo::new(&state.reverb),
+            links: FaderLinks::new(&state.fader_links),
+            state,
             transport,
             layout_rev: 0,
             data_dir,
@@ -498,6 +524,8 @@ impl Router {
                     self.send_instance(&outbox, name);
                 }
                 outbox.hub(HUB_STAGE_AUT, json!(self.stage.is_on()));
+                self.reverb_attach(&outbox);
+                self.links_attach(&outbox);
                 if self.layout_rev > 0 {
                     outbox.layout(self.layout_rev);
                 }
@@ -630,6 +658,8 @@ impl Router {
                 stage,
                 targets,
                 strips,
+                reverb,
+                fader_leaders,
             } => {
                 // Two producers (the file's poll and the markers, #68): an
                 // older revision arriving late never replaces a newer one.
@@ -641,6 +671,8 @@ impl Router {
                     outbox.layout(rev);
                 }
                 self.set_stage_binding(stage.as_ref());
+                self.reverb_layout(reverb);
+                self.links_layout(fader_leaders);
                 let actions = self.unfold.set_strips(strips);
                 self.unfold_apply(actions);
                 self.names.set_targets(targets);
@@ -685,6 +717,8 @@ impl Router {
                         on: self.stage.is_on(),
                         writes: self.stage.writes(),
                     },
+                    reverb: self.reverb.rule.status(),
+                    fader_links: self.links.status(),
                     clients: self.clients.len(),
                     unresolved: self.names.unresolved(),
                 });
@@ -863,6 +897,10 @@ impl Router {
     }
 
     fn set_hub(&mut self, client: ClientId, key: &str, value: &Value) {
+        // The fader links' switches first (#130), then STAGE AUT.
+        if self.links_set_hub(client, key, value) {
+            return;
+        }
         let (true, Some(on)) = (key == HUB_STAGE_AUT, value.as_bool()) else {
             if let Some(outbox) = self.clients.get(&client) {
                 outbox.reply(ServerMsg::Error {
@@ -880,15 +918,22 @@ impl Router {
         let write = self.stage.set_flag(on);
         if changed {
             tracing::info!(on, "STAGE AUT turned {}", if on { "on" } else { "off" });
-            if let Err(e) = (HubState { stage_aut: on }).save(&self.data_dir) {
-                tracing::error!(error = %e, "cannot save the STAGE AUT flag");
-            }
+            self.state.stage_aut = on;
+            self.save_state();
         }
         for outbox in self.clients.values() {
             outbox.hub(HUB_STAGE_AUT, json!(on));
         }
         if let Some(mute) = write {
             self.write_stage(mute);
+        }
+    }
+
+    /// Writes the hub values whole (#130: a save of one value keeps the
+    /// others).
+    fn save_state(&self) {
+        if let Err(e) = self.state.save(&self.data_dir) {
+            tracing::error!(error = %e, "cannot save the hub's values (hub-state.json)");
         }
     }
 
@@ -1169,6 +1214,8 @@ pub fn layout_msg(rev: u64, served: Option<&Layout>) -> RouterMsg {
             .map(crate::live::names::layout_targets)
             .unwrap_or_default(),
         strips: served.map(Layout::strip_tracks).unwrap_or_default(),
+        reverb: served.map(Layout::reverb_faders).unwrap_or_default(),
+        fader_leaders: served.map(Layout::fader_leaders).unwrap_or_default(),
     }
 }
 
@@ -1217,7 +1264,7 @@ mod tests {
         let (tx, _) = mpsc::unbounded_channel();
         Router::new(
             BTreeMap::new(),
-            false,
+            HubState::default(),
             dir.to_path_buf(),
             RouterIo {
                 tx,
@@ -1229,8 +1276,20 @@ mod tests {
     /// A router over `band` on a port nothing listens on (the instance stays
     /// offline: a write is answered "instance offline" at once), its own
     /// messages and the event-log records.
-    fn offline_router(
+    pub(super) fn offline_router(
         dir: &std::path::Path,
+    ) -> (
+        Router,
+        mpsc::UnboundedReceiver<RouterMsg>,
+        std::sync::mpsc::Receiver<Value>,
+    ) {
+        offline_router_with(dir, HubState::default())
+    }
+
+    /// The same router, started from `state` (`hub-state.json` as loaded).
+    pub(super) fn offline_router_with(
+        dir: &std::path::Path,
+        state: HubState,
     ) -> (
         Router,
         mpsc::UnboundedReceiver<RouterMsg>,
@@ -1250,14 +1309,14 @@ mod tests {
         let (events, records) = EventLog::channel(1024);
         let router = Router::new(
             BTreeMap::from([("band".to_string(), live)]),
-            false,
+            state,
             dir.to_path_buf(),
             RouterIo { tx, events },
         );
         (router, rx, records)
     }
 
-    fn attach(router: &mut Router, client: ClientId) -> Arc<Outbox> {
+    pub(super) fn attach(router: &mut Router, client: ClientId) -> Arc<Outbox> {
         let outbox = Arc::new(Outbox::new());
         router.handle(RouterMsg::Attach {
             client,
@@ -1636,7 +1695,7 @@ mod tests {
         let (tx, _) = mpsc::unbounded_channel();
         let mut router = Router::new(
             BTreeMap::new(),
-            false,
+            HubState::default(),
             dir.path().to_path_buf(),
             RouterIo { tx, events },
         );
@@ -1929,7 +1988,7 @@ mod tests {
         let (tx, _) = mpsc::unbounded_channel();
         let mut router = Router::new(
             BTreeMap::new(),
-            false,
+            HubState::default(),
             dir.path().to_path_buf(),
             RouterIo { tx, events },
         );
@@ -1989,17 +2048,22 @@ mod tests {
         let first = attach(&mut router, 1);
         assert_eq!(
             first.take().unwrap(),
-            vec![ServerMsg::Hub {
-                key: HUB_STAGE_AUT.into(),
-                value: json!(false)
-            }],
-            "no layout yet: no revision"
+            vec![
+                ServerMsg::Reverb(router.reverb.rule.state()),
+                ServerMsg::Hub {
+                    key: HUB_STAGE_AUT.into(),
+                    value: json!(false)
+                }
+            ],
+            "no layout yet: no revision (REVERB's state, #130, is a reply)"
         );
         router.handle(RouterMsg::Layout {
             rev: 1,
             stage: None,
             targets: BTreeMap::new(),
             strips: Vec::new(),
+            reverb: Vec::new(),
+            fader_leaders: Vec::new(),
         });
         assert_eq!(first.take().unwrap(), vec![ServerMsg::Layout { rev: 1 }]);
         let second = attach(&mut router, 2);
@@ -2028,6 +2092,8 @@ mod tests {
             stage: None,
             targets: BTreeMap::new(),
             strips: Vec::new(),
+            reverb: Vec::new(),
+            fader_leaders: Vec::new(),
         };
         router.handle(layout(2));
         router.handle(layout(1));
@@ -2045,6 +2111,8 @@ mod tests {
             stage: None,
             targets: BTreeMap::new(),
             strips,
+            reverb: Vec::new(),
+            fader_leaders: Vec::new(),
         };
         router.handle(layout(1, vec![("band".into(), "Keys 1".into())]));
         assert_eq!(
@@ -2079,6 +2147,8 @@ mod tests {
             stage: None,
             targets: BTreeMap::new(),
             strips: vec![("band".into(), "Keys 1".into())],
+            reverb: Vec::new(),
+            fader_leaders: Vec::new(),
         });
         // The read goes to an offline instance: its failure comes back…
         let failed = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())

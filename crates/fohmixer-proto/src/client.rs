@@ -22,7 +22,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
 use crate::eq::{Area, EqItem, EqLock, EqState, Part, Touch};
-use crate::layout::Binding;
+use crate::layout::{Binding, LinkId};
 use crate::path::canonical_target;
 
 /// The client protocol this build speaks.
@@ -38,6 +38,30 @@ pub const CLOSE_RELOAD: u16 = 4001;
 pub const POLICY_META: &str = "fohmixer-policy";
 /// The hub value of the STAGE AUT flag (spec §2.4, F15).
 pub const HUB_STAGE_AUT: &str = "stage_aut";
+/// The hub value of REVERB AUT (#130, D18, F30; the hub takes it from PR 4
+/// on): a bool.
+pub const HUB_REVERB_AUT: &str = "reverb_aut";
+/// The hub value a REVERB tap asks for (#130, D18; from PR 4 on): the
+/// reverb faders lowered (`true`) or at the song level, as the button
+/// shows `!low`, so two pages' simultaneous taps agree.
+pub const HUB_REVERB_LOW: &str = "reverb_low";
+/// The hub value of a fader link's switch (#130, D18): this prefix, the
+/// leader's Live set, `|`, its id (`fader_link|band|REV`; a bool).
+pub const FADER_LINK_PREFIX: &str = "fader_link|";
+
+/// The hub key of `link`'s switch.
+pub fn fader_link_key(link: &LinkId) -> String {
+    format!("{FADER_LINK_PREFIX}{}|{}", link.instance, link.id)
+}
+
+/// The link a hub key names; none for any other key.
+pub fn fader_link_of(key: &str) -> Option<LinkId> {
+    let (instance, id) = key.strip_prefix(FADER_LINK_PREFIX)?.rsplit_once('|')?;
+    (!instance.is_empty() && !id.is_empty()).then(|| LinkId {
+        instance: instance.to_string(),
+        id: id.to_string(),
+    })
+}
 
 /// Whether a client speaking `proto` is served.
 pub fn proto_ok(proto: u32) -> bool {
@@ -81,7 +105,9 @@ pub enum ClientMsg {
     },
     /// End a subscription (the `sub` key from `subbed`).
     Unsub { sub: String },
-    /// Set a hub value (only `stage_aut`).
+    /// Set a hub value: `stage_aut`; since #130 a fader link's switch
+    /// (`fader_link|<instance>|<id>`, [`fader_link_key`]) and, from PR 4,
+    /// `reverb_aut` and `reverb_low`.
     SetHub { key: String, value: Value },
     /// A control's write (#43): the latest value the engineer set on one
     /// property, answered by an `ack` item of its key. `seq` is the page's,
@@ -468,6 +494,10 @@ pub enum ServerMsg {
         #[serde(default)]
         lan: bool,
     },
+    /// REVERB (#130, D18): REVERB AUT, whether the reverb faders are
+    /// lowered and why, the followed transport, the stop's wait, and each
+    /// fader's return level and hand; at attach and on every change.
+    Reverb(ReverbState),
     /// A message of a newer hub that this page does not know (#90 B3): any
     /// other `type` reads as this, and the page ignores it, so a new
     /// message never breaks an older page.
@@ -490,6 +520,72 @@ pub struct SetItem {
     pub t: f64,
     #[serde(rename = "final")]
     pub is_final: bool,
+}
+
+/// Why the reverb faders are lowered (#130, D18): a tap of REVERB, or
+/// REVERB AUT at a stop of Live.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Low {
+    Tap,
+    Stop,
+}
+
+/// One reverb fader in [`ReverbState`] (#130, D18).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReverbFader {
+    /// Its volume's write key ([`set_key`]): a page's `set` of it is the
+    /// engineer's hand.
+    pub key: String,
+    /// Its strip's label (the rule knows a fader by it across layouts).
+    pub label: String,
+    /// The level it returns to, while the rule holds it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub back: Option<f64>,
+    /// The engineer moved it while the rule held it: let go (`RUKA`) until
+    /// the next stop.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hand: bool,
+}
+
+/// REVERB's state, told to every page (#130, D18, [`ServerMsg::Reverb`]).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReverbState {
+    /// REVERB AUT is on.
+    pub aut: bool,
+    /// The reverb faders are lowered, and why; none at the song level.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub low: Option<Low>,
+    /// The followed transport (the first reverb fader's Live); none before
+    /// it is heard.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub playing: Option<bool>,
+    /// A stop's 2 s wait runs.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub waiting: bool,
+    /// The reverb faders, in Live's order.
+    pub faders: Vec<ReverbFader>,
+}
+
+/// REVERB in `GET /api/status` (#130, D18): REVERB AUT, why the faders
+/// are lowered (none at the song level), how many there are, the rule's
+/// writes and the faders the hand took.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReverbStatus {
+    pub aut: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub low: Option<Low>,
+    pub faders: usize,
+    pub writes: u64,
+    pub hands: u64,
+}
+
+/// A fader link's switch in `GET /api/status` (#130).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FaderLinkStatus {
+    pub instance: String,
+    pub id: String,
+    pub on: bool,
 }
 
 impl SetItem {
@@ -691,6 +787,10 @@ pub struct LayoutStatus {
 pub struct MarkersStatus {
     pub found: usize,
     pub problems: Vec<crate::markers::MarkerReport>,
+    /// Every fader link the composition made, with its partner count
+    /// (#130); absent in an older hub's answer.
+    #[serde(default)]
+    pub links: Vec<crate::markers::LinkReport>,
 }
 
 /// STAGE AUT in `GET /api/status`: the flag and the mute writes it made.
@@ -905,6 +1005,13 @@ pub struct HubStatus {
     /// hub's answer).
     #[serde(default)]
     pub ableset: Option<AbleSetStatus>,
+    /// REVERB (#130, D18); the defaults in an older hub's answer.
+    #[serde(default)]
+    pub reverb: ReverbStatus,
+    /// The strip leaders' fader link switches (#130); none in an older
+    /// hub's answer.
+    #[serde(default)]
+    pub fader_links: Vec<FaderLinkStatus>,
 }
 
 #[cfg(test)]

@@ -599,6 +599,7 @@ fn a_page_lists_its_controls_rail_first() {
             Control::ParamToggle { .. } => "param_toggle",
             Control::ParamFader { .. } => "param_fader",
             Control::Alert { .. } => "alert",
+            Control::Reverb { .. } => "reverb",
         })
         .collect();
     assert_eq!(
@@ -927,4 +928,156 @@ fn only_a_letter_and_a_hyphen_is_a_prefix() {
     assert_eq!(strip_label("B-"), "");
     assert_eq!(strip_label("B"), "B");
     assert_eq!(strip_label(""), "");
+}
+
+#[test]
+fn the_reverb_faders_are_the_placed_reverb_strips_each_track_once_in_lives_order() {
+    let strip = |index: u32, ret: bool, label: &str, reverb: bool| {
+        json!({"kind": "strip",
+        "binding": {"instance": "band", "anchor": if ret { json!({"kind": "return_at", "index": index}) } else { json!({"kind": "track_at", "index": index}) }},
+        "strip_kind": if ret { "return" } else { "standard" }, "label": label, "reverb": reverb})
+    };
+    let layout = parse(json!({"schema": 2, "default_page": "p", "pages": [
+        {"id": "p", "title": "P", "rail": [{"kind": "reverb", "label": "REVERB"}], "rows": [{"sections": [
+            {"kind": "group", "id": "fx", "controls": [strip(0, true, "Rev Ret", true), strip(5, false, "Rev PA", true), strip(4, false, "Rev ST", true), strip(6, false, "Vox 1", false)]}]}]},
+        {"id": "view-FX", "title": "FX", "view": true, "rows": [{"sections": [
+            {"kind": "group", "id": "view-fx", "controls": [strip(4, false, "Rev ST", true)]}]}]}]}));
+    assert!(layout.validate().is_empty(), "{:?}", layout.validate());
+    let faders = layout.reverb_faders();
+    let got: Vec<(&str, &str)> = faders
+        .iter()
+        .map(|f| (f.label.as_str(), f.target.as_str()))
+        .collect();
+    assert_eq!(
+        got,
+        vec![
+            ("Rev ST", "live_set tracks 4 mixer_device volume"),
+            ("Rev PA", "live_set tracks 5 mixer_device volume"),
+            ("Rev Ret", "live_set return_tracks 0 mixer_device volume"),
+        ]
+    );
+    assert!(faders.iter().all(|f| f.instance == "band"));
+    assert!(
+        parse(json!({"schema": 2, "default_page": "p", "pages": [{"id": "p", "title": "P"}]}))
+            .reverb_faders()
+            .is_empty()
+    );
+}
+
+#[test]
+fn a_reverb_control_parses_and_binds_nothing() {
+    let control: Control =
+        serde_json::from_value(json!({"kind": "reverb", "label": "REVERB"})).unwrap();
+    assert_eq!(
+        control,
+        Control::Reverb {
+            label: Some("REVERB".into())
+        }
+    );
+    assert!(control.bindings().is_empty());
+    assert_eq!(
+        serde_json::to_value(Control::Reverb { label: None }).unwrap(),
+        json!({"kind": "reverb"})
+    );
+}
+
+/// A page whose one group holds `controls`.
+fn page_of(controls: Vec<Value>) -> Layout {
+    parse(
+        json!({"schema": 2, "default_page": "p", "pages": [{"id": "p", "title": "P",
+        "rows": [{"sections": [{"kind": "group", "id": "g", "controls": controls}]}]}]}),
+    )
+}
+
+#[test]
+fn a_linked_param_fader_parses_without_targets_and_validates_its_link() {
+    let fader = |link: Value| json!({"kind": "param_fader", "label": "Podklady All", "link": link});
+    let ok = page_of(vec![fader(json!({"instance": "band", "id": "PODKLADY"}))]);
+    assert_eq!(ok.validate(), vec![]);
+    assert_eq!(
+        ok.linked_faders(),
+        vec![(
+            LinkId {
+                instance: "band".into(),
+                id: "PODKLADY".into()
+            },
+            "Podklady All".to_string()
+        )]
+    );
+    assert!(
+        ok.bindings().is_empty(),
+        "a frame's linked fader names no track"
+    );
+    let errors = |l: &Layout| {
+        l.validate()
+            .into_iter()
+            .map(|e| (e.at, e.message))
+            .collect::<Vec<_>>()
+    };
+    let at = "pages[0].rows[0].sections[0].controls[0]";
+    assert_eq!(
+        errors(&page_of(vec![fader(
+            json!({"instance": "", "id": "podklady"})
+        )])),
+        vec![
+            (
+                format!("{at}.link"),
+                "a link without an instance".to_string()
+            ),
+            (
+                format!("{at}.link"),
+                "\"podklady\" is not an id".to_string()
+            ),
+        ]
+    );
+    assert_eq!(
+        errors(&page_of(vec![
+            json!({"kind": "param_fader", "label": "OWN"})
+        ])),
+        vec![(at.to_string(), "no targets".to_string())]
+    );
+    let control: Control =
+        serde_json::from_value(fader(json!({"instance": "band", "id": "P"}))).unwrap();
+    assert_eq!(
+        serde_json::to_value(&control).unwrap(),
+        json!({"kind": "param_fader", "label": "Podklady All", "link": {"instance": "band", "id": "P"}})
+    );
+}
+
+#[test]
+fn the_fader_leaders_are_the_placed_strips_with_a_link_each_once() {
+    let strip = |index: u32, id: Option<&str>| {
+        let mut s = json!({"kind": "strip", "binding": {"instance": "band", "anchor": {"kind": "track_at", "index": index}},
+            "strip_kind": "standard", "label": format!("S{index}")});
+        if let Some(id) = id {
+            s["fader_link"] = json!({"id": id, "partners": [{"binding": {"instance": "band", "anchor": {"kind": "track_at", "index": 9}}, "label": "#10"}]});
+        }
+        s
+    };
+    let layout = parse(json!({"schema": 2, "default_page": "p", "pages": [
+        {"id": "p", "title": "P", "rows": [{"sections": [{"kind": "group", "id": "g", "controls": [strip(5, Some("VOX1")), strip(4, None), strip(3, Some("REV"))]}]}]},
+        {"id": "view-X", "title": "X", "view": true, "rows": [{"sections": [{"kind": "group", "id": "v", "controls": [strip(3, Some("REV"))]}]}]}]}));
+    assert_eq!(layout.validate(), vec![]);
+    let link = |id: &str| LinkId {
+        instance: "band".into(),
+        id: id.into(),
+    };
+    assert_eq!(layout.fader_leaders(), vec![link("REV"), link("VOX1")]);
+    assert_eq!(
+        layout.bindings().len(),
+        7,
+        "each leader's partners after its binding"
+    );
+    let bad = page_of(vec![{
+        let mut s = strip(3, Some("rev"));
+        s["fader_link"]["partners"][0]["binding"]["instance"] = json!("");
+        s
+    }]);
+    assert_eq!(
+        bad.validate()
+            .into_iter()
+            .map(|e| e.message)
+            .collect::<Vec<_>>(),
+        ["\"rev\" is not an id", "binding without an instance"]
+    );
 }

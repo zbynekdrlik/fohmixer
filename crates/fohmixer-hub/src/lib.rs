@@ -387,6 +387,8 @@ impl HubInner {
                 markers: self.layout.markers_status(),
             },
             stage_aut: router.stage_aut,
+            reverb: router.reverb,
+            fader_links: router.fader_links,
             clients: router.clients,
             client_reports: self.reports.list(),
             remote: self.remote.snapshot(&self.config, https, now),
@@ -491,7 +493,7 @@ impl Hub {
         );
         let mut router = router::Router::new(
             live.clone(),
-            hub_state.stage_aut,
+            hub_state,
             config.data_dir.clone(),
             router::RouterIo {
                 tx: router_tx.clone(),

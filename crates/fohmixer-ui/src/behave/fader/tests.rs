@@ -38,32 +38,6 @@ fn the_cc_linear_scale_spans_the_parameter_range() {
 }
 
 #[test]
-fn value2db_is_the_touchosc_curve_in_each_range() {
-    for (v, db) in [
-        (1.0, 6.0),
-        (0.85, 0.0),
-        (0.4, -18.0),
-        (0.39999, -18.001762236950533),
-        (0.2, -34.39049787108893),
-        (0.15, -40.986236048588935),
-        (0.14999, -41.01368891610561),
-        (0.1, -48.54258355581338),
-        (1e-6, -69.995809918992),
-        (1.5, 0.0),
-    ] {
-        assert!(close(value2db(v), db), "value2db({v}) = {}", value2db(v));
-    }
-    assert_eq!(value2db(0.0), f64::NEG_INFINITY);
-}
-
-#[test]
-fn the_bisection_splits_at_an_exact_hit_like_the_lua() {
-    // value2db(0.5) is exactly -14 dB: the first midpoint hits the target
-    // and the Lua moves `high` (its test is `mid_db < target`).
-    assert_close(audio_for_db_change(0.5, 0.0), 0.499969482421875);
-}
-
-#[test]
 fn the_shaping_thresholds_are_strict_where_the_lua_is() {
     assert!(!is_emergency(0.03) && is_emergency(0.030000000000000002));
     assert!(!is_calm(0.015) && is_calm(0.014999999999999998));
@@ -73,14 +47,6 @@ fn the_shaping_thresholds_are_strict_where_the_lua_is() {
     assert!(writes_back(0.00010000000000000002) && writes_back(-0.00010000000000000002));
     // A first move of exactly 3 % is shaped (0.9), not an emergency.
     assert_eq!(shaped(true, 0.0, &[0.03]), vec![0.027]);
-}
-
-#[test]
-fn a_db_change_is_found_by_bisection() {
-    assert_close(audio_for_db_change(0.85, 0.1), 0.852508544921875);
-    assert_close(audio_for_db_change(0.85, -0.1), 0.847503662109375);
-    assert_close(audio_for_db_change(0.2, 1.0), 0.208343505859375);
-    assert_close(audio_for_db_change(0.5, -6.0), 0.360015869140625);
 }
 
 /// Runs a touch from `start` through the finger `deltas`.

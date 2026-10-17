@@ -74,7 +74,7 @@ mod tests {
         let (tx, _) = mpsc::unbounded_channel();
         Router::new(
             BTreeMap::new(),
-            false,
+            crate::rules::HubState::default(),
             dir.to_path_buf(),
             RouterIo { tx, events },
         )
