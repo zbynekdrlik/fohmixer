@@ -1308,6 +1308,69 @@ mod tests {
         assert_eq!(now.playing, BTreeMap::from([("band".to_string(), None)]));
     }
 
+    #[tokio::test]
+    async fn a_flush_hands_the_transport_to_the_rules_and_a_pages_values_to_its_outbox() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut router, _rx, rx) = offline_router(dir.path());
+        let page = attach(&mut router, 1);
+        page.take();
+        router.handle(RouterMsg::Sub {
+            client: 1,
+            instance: "band".into(),
+            target: "live_set".into(),
+            prop: "tempo".into(),
+            display: false,
+        });
+        page.take();
+        // The table goes online and Live answers both listeners: the rules'
+        // transport and the page's tempo.
+        router.subs.connected("band");
+        let out = router.subs.drain_outgoing();
+        assert!(!out.is_empty());
+        for o in out {
+            let slots: Vec<Value> = o
+                .commands
+                .iter()
+                .map(|c| match c["args"]["prop"].as_str() {
+                    Some("is_playing") => {
+                        json!({"ok": true, "data": {"key": "live_1.is_playing", "value": true}})
+                    }
+                    Some("tempo") => {
+                        json!({"ok": true, "data": {"key": "live_1.tempo", "value": 120.0}})
+                    }
+                    _ => json!({"ok": true, "data": null}),
+                })
+                .collect();
+            router.subs.on_result(&o.instance, &o.uuid, &slots);
+        }
+        router.flush();
+        // The rules heard the transport (recorded); the page gets its tempo
+        // and nothing of the rules'.
+        let got = records(&rx);
+        assert_eq!(evs(&got), ["transport"]);
+        assert_eq!(
+            (&got[0]["playing"], &got[0]["prev"]),
+            (&json!(true), &json!(null))
+        );
+        assert_eq!(router.transport_now("band"), Some(true));
+        let items: Vec<(String, Option<Value>)> = page
+            .take()
+            .unwrap()
+            .into_iter()
+            .flat_map(|m| match m {
+                ServerMsg::Values { items } => items
+                    .into_iter()
+                    .map(|i| (i.sub, i.value))
+                    .collect::<Vec<_>>(),
+                _ => Vec::new(),
+            })
+            .collect();
+        assert_eq!(
+            items,
+            vec![("band|live_set|tempo|false".to_string(), Some(json!(120.0)))]
+        );
+    }
+
     /// Waits (bounded) for the next record whose `ev` is `ev`.
     async fn next_record(rx: &std::sync::mpsc::Receiver<Value>, ev: &str) -> Value {
         for _ in 0..300 {
