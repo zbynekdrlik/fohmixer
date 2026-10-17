@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   LiveClient,
   centre,
+  clipped,
   dispatchPointer,
   doubleTap,
   harness,
@@ -246,6 +247,69 @@ test.describe("The merged STAGE button (#104, D18)", () => {
     const steps = await railSteps(since, (s) => s.includes("hold") && s.includes("lost"));
     expect(steps).toEqual(expect.arrayContaining(["press", "slid", "lost", "hold"]));
     expect(steps).not.toContain("tap");
+  });
+
+  test("a press whose end never came ends at the next primary finger elsewhere: no hold 3 s later (#124)", async ({ page }) => {
+    await live.call("band", "live_set", "stop_playing");
+    await live.set("band", mics, "mute", false);
+    live.setHub("stage_aut", false);
+    const volume = `${track("Hand2 #")} mixer_device volume`;
+    const level = await live.get("band", volume, "value");
+    try {
+      await openSurface(page);
+      const since = await pageNow(page);
+      const button = page.getByTestId("stage-mics");
+      await ready(button);
+      const fader = strip(page, "Hand2 #").getByTestId("fader");
+      await ready(fader);
+      // A finger on STAGE whose end never comes: a dispatched pointer
+      // captures nothing, as a finger the system took (#124).
+      await dispatchPointer(button, [{ type: "pointerdown" }], 21);
+      await expect(button).toHaveAttribute("data-holding", "true");
+      // The next primary finger, on a fader's cap, ends it at once.
+      await dispatchPointer(fader.locator(".fader-cap"), [{ type: "pointerdown" }, { wait: 50 }, { type: "pointerup" }], 22);
+      await expect(button).toHaveAttribute("data-holding", "false");
+      await page.waitForTimeout(3200);
+      expect(live.hub.get("stage_aut")).toBe(false);
+      expect(await live.get("band", mics, "mute")).toBe(false);
+      await expect(button).toHaveAttribute("data-aut", "off");
+      const steps = await railSteps(since, (s) => s.includes("lost"));
+      expect(steps).toEqual(["press", "lost"]);
+    } finally {
+      await live.set("band", volume, "value", level);
+    }
+  });
+
+  test.describe("at the iPad's size", () => {
+    test.use({ viewport: { width: 1194, height: 834 } });
+
+    test("with STAGE AUT on, each of its four lines and the pill fit the button", async ({ page }) => {
+      await live.call("band", "live_set", "stop_playing");
+      await live.set("band", mics, "mute", false);
+      live.setHub("stage_aut", true);
+      await openSurface(page);
+      const button = page.getByTestId("stage-mics");
+      await ready(button);
+      const sub = button.getByTestId("btn-sub");
+      const fits = async (text: string, aut: string) => {
+        await expect(sub).toHaveText(text);
+        await expect(button).toHaveAttribute("data-aut", aut);
+        expect(await clipped(button), `the button with "${text}"`).toEqual([]);
+        expect(await clipped(sub), `its line "${text}"`).toEqual([]);
+        expect(await clipped(button.locator(".btn-row")), `its label and pill with "${text}"`).toEqual([]);
+      };
+      await fits("stojí · zapnuté", "run");
+      // A tap mutes the mics while Live stands: the override until the start.
+      await button.click();
+      await until(() => live.get("band", mics, "mute"), (v) => v === true, "muted by the tap");
+      await fits("ručne do štartu", "held");
+      await live.call("band", "live_set", "start_playing");
+      await fits("hrá · stíšené", "run");
+      // A tap opens them during the song: the override until the stop.
+      await button.click();
+      await until(() => live.get("band", mics, "mute"), (v) => v === false, "live by the tap");
+      await fits("ručne do zastavenia", "held");
+    });
   });
 });
 
