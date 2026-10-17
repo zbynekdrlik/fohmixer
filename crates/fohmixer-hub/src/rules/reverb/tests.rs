@@ -1160,3 +1160,32 @@ fn a_pending_return_has_its_line() {
         serde_json::json!({"step": "pending", "label": "Rev ST"})
     );
 }
+
+#[test]
+fn a_tap_down_while_a_return_waits_keeps_the_fader_low() {
+    // A tap back's return waits for Live's value; a tap down from another
+    // page crosses it before the value comes (review N3).
+    let mut r = restarted();
+    r.transport("band", true, 0.0);
+    r.tap(true, 100.0);
+    let acts = r.live(ST, lowered(0.85), 200.0);
+    assert!(steps(&acts).is_empty(), "no return: {acts:?}");
+    let ran = run(&mut r, 225.0, 1000.0);
+    assert_eq!(ran, vec![], "nothing written");
+    assert_eq!(r.state().faders[0].back, Some(0.85));
+    assert!(r.state().low.is_some());
+}
+
+#[test]
+fn a_pending_return_survives_a_layout_that_drops_its_fader() {
+    // Review N4: the strip goes and comes back while the return waits.
+    let mut r = restarted();
+    r.transport("band", true, 0.0);
+    r.set_faders(vec![], 100.0);
+    r.set_faders(vec![fader("Rev ST", 4)], 200.0);
+    r.live(ST, lowered(0.85), 300.0);
+    let ran = run(&mut r, 325.0, 800.0);
+    let ends: Vec<_> = writes(&ran).into_iter().filter(|w| w.2).collect();
+    assert_eq!(ends, vec![(ST, 0.85, true)]);
+    assert_eq!(r.state().low, None);
+}

@@ -637,3 +637,155 @@ async fn a_reconnects_values_are_judged_before_its_transport() {
     );
     assert_eq!(router.reverb.rule.state().low, None);
 }
+
+/// Live's push of `value` under its listener key `key`.
+fn pushed(key: &str, value: Value) -> LiveValue {
+    LiveValue {
+        key: key.into(),
+        value,
+        display: None,
+        error: None,
+    }
+}
+
+/// Rev ST on band track 0 and Rev PA on track 1, Live stopped, with the
+/// marker keeper's list followed; then a track inserted before both, its
+/// index bindings resolved again (track 0 is the new track, track 1 Rev
+/// ST), and the markers' new layout: Rev ST on track 1 (Rev PA's old,
+/// already followed key), Rev PA on track 2. `lowered_first` first lowers
+/// both for the stop and lets Live report them where the rule left them.
+/// The router, its records, and what must outlive the test's checks (the
+/// data folder, the router's own channel).
+type Shifted = (
+    Router,
+    std::sync::mpsc::Receiver<Value>,
+    tempfile::TempDir,
+    tokio::sync::mpsc::UnboundedReceiver<RouterMsg>,
+);
+
+fn shifted(lowered_first: bool) -> Shifted {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, own, rx) = offline_router(dir.path());
+    let _page = attach(&mut router, 1);
+    router.reverb_layout(vec![fader("Rev ST", 0), fader("Rev PA", 1)]);
+    router
+        .subs
+        .subscribe(MARKERS_CLIENT, "band", "live_set", "tracks", false)
+        .unwrap();
+    router.subs.connected("band");
+    answer(&mut router, |target, prop| match (target, prop) {
+        ("live_set tracks 0 mixer_device volume", "value") => slot("live_st.value", json!(0.85)),
+        ("live_set tracks 1 mixer_device volume", "value") => slot("live_pa.value", json!(0.6)),
+        (_, "tracks") => slot("live_1.tracks", json!([1, 2])),
+        (_, "is_playing") => slot("live_1.is_playing", json!(false)),
+        _ => json!({"ok": true, "data": null}),
+    });
+    router.flush();
+    let st = if lowered_first {
+        set_hub(&mut router, HUB_REVERB_AUT, json!(true));
+        set_hub(&mut router, HUB_REVERB_LOW, json!(true));
+        let end = router.now_ms() + 600.0;
+        let acts = router.reverb.rule.tick(end);
+        router.reverb_apply(acts, None);
+        router.subs.on_values(
+            "band",
+            &[
+                pushed("live_st.value", json!(lowered(0.85))),
+                pushed("live_pa.value", json!(lowered(0.6))),
+            ],
+        );
+        router.flush();
+        lowered(0.85)
+    } else {
+        0.85
+    };
+    // A track inserted before both: the list changes, and the index
+    // bindings are resolved again.
+    router
+        .subs
+        .on_values("band", &[pushed("live_1.tracks", json!([9, 1, 2]))]);
+    router.flush();
+    router.subs.connected("band");
+    answer(&mut router, |target, prop| match (target, prop) {
+        ("live_set tracks 0 mixer_device volume", "value") => slot("live_new.value", json!(0.5)),
+        ("live_set tracks 1 mixer_device volume", "value") => slot("live_st.value", json!(st)),
+        (_, "tracks") => slot("live_1.tracks", json!([9, 1, 2])),
+        (_, "is_playing") => slot("live_1.is_playing", json!(false)),
+        _ => json!({"ok": true, "data": null}),
+    });
+    router.flush();
+    // The markers' new layout; Rev PA's new key is followed afresh.
+    router.reverb_layout(vec![fader("Rev ST", 1), fader("Rev PA", 2)]);
+    let pa = if lowered_first { lowered(0.6) } else { 0.6 };
+    answer(&mut router, |target, prop| match (target, prop) {
+        ("live_set tracks 2 mixer_device volume", "value") => slot("live_pa.value", json!(pa)),
+        _ => json!({"ok": true, "data": null}),
+    });
+    router.flush();
+    let _ = records(&rx);
+    (router, rx, dir, own)
+}
+
+#[tokio::test]
+async fn a_held_fader_recomposed_onto_a_followed_key_returns_exactly() {
+    // Review N1: Rev ST, held low at rest, lands on Rev PA's old key, which
+    // REVERB already follows; the start returns it from Live's value.
+    let (mut router, rx, _dir, _own) = shifted(true);
+    router
+        .subs
+        .on_values("band", &[pushed("live_1.is_playing", json!(true))]);
+    router.flush();
+    let got = records(&rx);
+    let steps: Vec<&Value> = got
+        .iter()
+        .filter(|r| r["ev"] == "reverb")
+        .map(|r| &r["step"])
+        .collect();
+    assert!(!steps.contains(&&json!("pending")), "{got:?}");
+    let back = got
+        .iter()
+        .find(|r| r["ev"] == "reverb" && r["step"] == "return")
+        .expect("a return");
+    assert_eq!(
+        back["faders"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| (m["label"].clone(), m["from"].clone(), m["to"].clone()))
+            .collect::<Vec<_>>(),
+        vec![
+            (json!("Rev ST"), json!(lowered(0.85)), json!(0.85)),
+            (json!("Rev PA"), json!(lowered(0.6)), json!(0.6)),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_fader_recomposed_onto_a_followed_key_is_lowered_from_its_value() {
+    // The same shift with nothing held: the next tap lowers Rev ST from
+    // the value the table holds, never skipping it for "no value".
+    let (mut router, rx, _dir, _own) = shifted(false);
+    set_hub(&mut router, HUB_REVERB_LOW, json!(true));
+    let got = records(&rx);
+    assert!(
+        !got.iter()
+            .any(|r| r["ev"] == "reverb" && r["step"] == "skipped"),
+        "{got:?}"
+    );
+    let lower = got
+        .iter()
+        .find(|r| r["ev"] == "reverb" && r["step"] == "lower")
+        .expect("a lowering");
+    assert_eq!(
+        lower["faders"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| (m["label"].clone(), m["from"].clone()))
+            .collect::<Vec<_>>(),
+        vec![
+            (json!("Rev ST"), json!(0.85)),
+            (json!("Rev PA"), json!(0.6)),
+        ]
+    );
+}
