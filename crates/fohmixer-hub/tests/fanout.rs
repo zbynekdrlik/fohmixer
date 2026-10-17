@@ -601,9 +601,22 @@ fn bad_requests_get_errors_and_the_connection_stays() {
             sub: "nothing".into(),
         })
         .await;
-        let is_playing = a.sub_key("band", "live_set", "is_playing", false).await;
-        let item = a.value_of(&is_playing, SECS_3).await;
-        assert_eq!(item.value, Some(json!(false)));
+        // The hub's rules hold every instance's transport from its start
+        // (#104, D18): a page's subscription of it shares their entry, so its
+        // `subbed` carries the value once Live has answered (else the value
+        // follows in `values`).
+        let ServerMsg::Subbed {
+            sub, value, error, ..
+        } = a.sub("band", "live_set", "is_playing", false).await
+        else {
+            panic!("not subbed")
+        };
+        assert_eq!(error, None);
+        let value = match value {
+            Some(value) => Some(value),
+            None => a.value_of(&sub, SECS_3).await.value,
+        };
+        assert_eq!(value, Some(json!(false)));
         hub.stop().await;
         host.stop();
     });
