@@ -379,16 +379,43 @@ pub fn frame_problems(frame: &Layout) -> Vec<LayoutError> {
         |c| matches!(c, Control::ParamFader { link: Some(_), targets, .. } if !targets.is_empty()),
         "a linked fader's tracks: the Tuner markers make those",
     );
-    let links = frame.linked_faders();
-    for (k, (link, _)) in links.iter().enumerate() {
-        if links[..k].iter().any(|(l, _)| l == link) {
-            out.push(LayoutError {
-                at: "pages".to_string(),
-                message: format!(
-                    "the fader link {}/{} is named twice",
-                    link.instance, link.id
-                ),
-            });
+    // One link on two faders: named at the second, with its label (#130
+    // review M4).
+    let places = frame
+        .pages
+        .iter()
+        .enumerate()
+        .flat_map(|(i, page)| {
+            page.controls()
+                .into_iter()
+                .map(move |c| (format!("pages[{i}]"), c))
+        })
+        .chain(
+            frame
+                .global
+                .iter()
+                .enumerate()
+                .map(|(i, c)| (format!("global[{i}]"), c)),
+        );
+    let mut named: Vec<&LinkId> = Vec::new();
+    for (at, control) in places {
+        if let Control::ParamFader {
+            label,
+            link: Some(link),
+            ..
+        } = control
+        {
+            if named.contains(&link) {
+                out.push(LayoutError {
+                    at,
+                    message: format!(
+                        "the fader link {}/{} is named twice: again by {label:?}",
+                        link.instance, link.id
+                    ),
+                });
+            } else {
+                named.push(link);
+            }
         }
     }
     out

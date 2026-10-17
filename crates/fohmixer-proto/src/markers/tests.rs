@@ -1507,9 +1507,26 @@ fn a_frame_holds_no_fader_link_and_names_a_linked_faders_tracks_by_its_link_only
         messages(&frame(vec![both])),
         ["a linked fader's tracks: the Tuner markers make those"]
     );
+    // One link on two faders (review M4): at the second one, by its label,
+    // on a page or among the global controls.
+    let mut again = linked.clone();
+    again["label"] = json!("Podklady 2");
+    let errors = |f: &Layout| {
+        frame_problems(f)
+            .into_iter()
+            .map(|e| (e.at, e.message))
+            .collect::<Vec<_>>()
+    };
+    let twice = "the fader link band/PODKLADY is named twice: again by \"Podklady 2\"";
     assert_eq!(
-        messages(&frame(vec![linked.clone(), linked])),
-        ["the fader link band/PODKLADY is named twice"]
+        errors(&frame(vec![linked.clone(), again.clone()])),
+        [("pages[0]".to_string(), twice.to_string())]
+    );
+    let mut global = frame(vec![linked]);
+    global.global = vec![serde_json::from_value(again).unwrap()];
+    assert_eq!(
+        errors(&global),
+        [("global[0]".to_string(), twice.to_string())]
     );
 }
 
