@@ -638,6 +638,15 @@ impl Router {
                 }
                 let actions = self.markers.read_done(&instance, seq, step, &outcome);
                 self.markers_apply(actions);
+                // A read that leaves every strip where it was ends REVERB's
+                // track-list window (#130 review W1).
+                if reverb::tracks_settled(
+                    outcome.is_ok(),
+                    self.markers.reading(&instance),
+                    self.markers_pending.is_some(),
+                ) {
+                    self.reverb_tracks_known(&instance);
+                }
             }
             RouterMsg::MarkersRetry { instance } => {
                 let actions = self.markers.retry(&instance);

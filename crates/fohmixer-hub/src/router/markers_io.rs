@@ -243,5 +243,11 @@ impl Router {
             let served = store.current().1;
             self.handle(layout_msg(rev, served.as_deref()));
         }
+        // Served or unchanged, the composition is settled: REVERB's
+        // track-list windows close (#130 review W1).
+        let names: Vec<String> = self.live.keys().cloned().collect();
+        for name in names {
+            self.reverb_tracks_known(&name);
+        }
     }
 }

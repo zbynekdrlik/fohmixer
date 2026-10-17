@@ -41,6 +41,13 @@ pub(super) fn wake_in(at: f64, now: f64) -> std::time::Duration {
     std::time::Duration::from_secs_f64((at - now).max(0.0) / 1000.0)
 }
 
+/// Whether the marker keeper's read of an instance settled where each
+/// strip is with no new layout coming: the read answered, none of its
+/// instance runs any more, and no new composition waits (review W1).
+pub(super) fn tracks_settled(read_ok: bool, reading: bool, composing: bool) -> bool {
+    read_ok && !reading && !composing
+}
+
 /// The instance of a hub key that is its track list or return-track list
 /// (an index then names another track).
 pub(super) fn list_instance(sub: &str) -> Option<String> {
@@ -190,6 +197,14 @@ impl Router {
     pub(super) fn reverb_transport(&mut self, instance: &str, playing: bool) {
         let now = self.now_ms();
         let acts = self.reverb.rule.transport(instance, playing, now);
+        self.reverb_apply(acts, None);
+    }
+
+    /// The markers settled `instance`'s strips where they were: the window
+    /// its track-list change opened closes (review W1).
+    pub(super) fn reverb_tracks_known(&mut self, instance: &str) {
+        let now = self.now_ms();
+        let acts = self.reverb.rule.tracks_known(instance, now);
         self.reverb_apply(acts, None);
     }
 
