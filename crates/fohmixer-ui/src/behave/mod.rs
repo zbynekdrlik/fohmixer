@@ -7,7 +7,8 @@
 //! Deck's presses (#52, `deck`), the hold that opens a channel's detail
 //! (#71, `hold`), the Pro-Q 4 screen's finger and picture (#71 PR E,
 //! `eq`), the backing-tracks fader's drag and look (#58, `vca`), the
-//! page's idle state (#51, `idle`) and AbleSet's tab (#90, `ableset`).
+//! page's idle state (#51, `idle`), AbleSet's tab (#90, `ableset`) and the
+//! rail buttons with an automatic mode (#104, #130, D18, `rail`).
 
 pub mod ableset;
 pub mod colour;
@@ -24,6 +25,7 @@ pub mod meter;
 pub mod mute;
 pub mod pan;
 pub mod peak;
+pub mod rail;
 pub mod scale;
 pub mod solo;
 pub mod status;
