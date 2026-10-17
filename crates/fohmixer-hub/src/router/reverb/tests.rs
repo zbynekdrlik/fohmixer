@@ -214,7 +214,7 @@ async fn the_rules_writes_are_sets_of_its_own_client_and_a_pages_set_lets_the_fa
         page.take()
             .unwrap()
             .iter()
-            .any(|m| matches!(m, ServerMsg::Reverb(s) if s.faders[0].hand))
+            .any(|m| matches!(m, ServerMsg::Reverb(s) if s.faders.first().is_some_and(|f| f.hand)))
     );
     assert_eq!(saved(dir.path())["reverb_low"]["faders"], json!([]));
     // A REVERB key with a value that is no bool: the usual error.
