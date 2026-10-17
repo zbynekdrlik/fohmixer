@@ -25,7 +25,7 @@ use leptos::prelude::*;
 use crate::arrange::GroupLabel;
 use crate::behave::fader::VolumeLaw;
 use crate::behave::label::longest_word_chars;
-use crate::behave::vca::is_vca;
+use crate::behave::vca::draws_vca;
 use crate::behave::{Down, Start};
 use crate::binding::SubSpec;
 use crate::diag::perf::Pointer;
@@ -282,8 +282,13 @@ pub fn ControlView(
             <ParamToggleView label=label targets=targets press=press color=color />
         }
         .into_any(),
-        // Two or more track volumes: the backing-tracks fader (#58).
-        Control::ParamFader { label, targets, .. } if is_vca(&targets) => {
+        // A linked fader (#130, Podklady All on tags) or two or more track
+        // volumes (#58): the backing-tracks fader.
+        Control::ParamFader {
+            label,
+            targets,
+            link,
+        } if draws_vca(link.is_some(), &targets) => {
             view! { <VcaFaderView label=label targets=targets settings=settings /> }.into_any()
         }
         Control::ParamFader { label, targets, .. } => {

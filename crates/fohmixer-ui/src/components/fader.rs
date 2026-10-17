@@ -306,7 +306,9 @@ pub fn FaderView(
     // number (the flight recorder's move record names it). A
     // backing-tracks fader's values come from its touch's start (#58) or,
     // on a glide's frame (`glide`: how far it has come), from its double
-    // tap's `Home`; any other's from each target's own law.
+    // tap's `Home`; any other's from each target's own law. One target is
+    // one `set`; several go as ONE `sets` (#130: Live moves them in the
+    // same batch).
     let send = move |p: f64, is_final: bool, glide: Option<f64>| -> Option<u64> {
         // A leader's linked touch (#130): its own value and each partner's
         // by the same dB, in ONE `sets` (one batch in Live).
@@ -354,21 +356,25 @@ pub fn FaderView(
         };
         targets
             .try_with_value(|all| {
-                let mut first = None;
-                for (t, value) in all.iter().zip(values) {
-                    if let (Some(spec), Some(value)) = (&t.spec, value) {
-                        let seq = store.set(
-                            &spec.instance,
-                            &spec.target,
-                            &spec.prop,
-                            json!(value),
-                            is_final,
-                            Some(fail_flash(failed)),
-                        );
-                        first = first.or(seq);
-                    }
+                let items: Vec<(SubSpec, serde_json::Value)> = all
+                    .iter()
+                    .zip(values)
+                    .filter_map(|(t, value)| Some((t.spec.clone()?, json!(value?))))
+                    .collect();
+                match items.as_slice() {
+                    [] => None,
+                    [(spec, value)] => store.set(
+                        &spec.instance,
+                        &spec.target,
+                        &spec.prop,
+                        value.clone(),
+                        is_final,
+                        Some(fail_flash(failed)),
+                    ),
+                    // The backing-tracks fader (#58, #130): every track in
+                    // one batch.
+                    _ => store.set_each(&items, is_final, move || fail_flash(failed)),
                 }
-                first
             })
             .flatten()
     };
