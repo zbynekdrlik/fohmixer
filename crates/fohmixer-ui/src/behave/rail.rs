@@ -5,13 +5,18 @@
 //! pill, outlined while a tap overrides the rule until the next stop or
 //! start, and a second line says in plain words what the rule does now.
 //!
-//! The press's own decisions are here too (#104 review I1, M3, M4, M5): a
-//! press whose end never came ends at the next primary down anywhere on the
-//! page (`stale_press`); a hold acts only while the page is connected and
-//! the hub's flag of this connection is known (`hold_value`), else it shows
-//! no fill and is refused; a mismatch of the transport and the mics reads
-//! as a tap's override only once it outlasts the transport's last change by
-//! `SETTLE_MS` (`settling`).
+//! The press's own decisions are here too (#104 review I1, M3, M4, M5; the
+//! owner's ruling on #104 of 2026-10-17): the hold acts at the LIFT once
+//! the fill is full (`rail_press`, `Hold::lifted`): at `RAIL_HOLD_MS` the
+//! press is full (`full_text`, recorded `full`, nothing sent), a lift then
+//! acts (`hold`) and a slide, a cancel, a lost capture, a hidden page or a
+//! stale press ends it with nothing done, so a lost end never acts. A press
+//! whose end never came ends at the next primary down of its type anywhere
+//! on the page (`stale_press`); a hold acts only while the page is connected
+//! and the hub's flag of this connection is known (`hold_value`), else it
+//! shows no fill and is refused (`full_step`, `hold_step`); a mismatch of
+//! the transport and the mics reads as a tap's override only once it
+//! outlasts the transport's last change by `SETTLE_MS` (`settling`).
 
 use super::Down;
 use super::hold::Hold;
@@ -26,9 +31,9 @@ pub const RAIL_HOLD_MS: f64 = 3000.0;
 /// trip), not as a tap's override.
 pub const SETTLE_MS: f64 = 500.0;
 
-/// A rail button's press.
+/// A rail button's press: full at `RAIL_HOLD_MS`, acting at its lift.
 pub fn rail_press() -> Hold {
-    Hold::with(RAIL_HOLD_MS)
+    Hold::lifted(RAIL_HOLD_MS)
 }
 
 /// The press a pointer's down anywhere on the page ends with nothing done
@@ -39,6 +44,14 @@ pub fn rail_press() -> Hold {
 /// finger (not primary) leaves a real hold alone.
 pub fn stale_press(pressing: Option<i32>, kind: Option<Pointer>, down: Down) -> Option<i32> {
     pressing.filter(|old| down.ends(kind) || *old == down.id)
+}
+
+/// The earlier pointer a press's restart dropped, recorded `lost`: a down of
+/// another pointer that `Hold::down` took over a press still down (a
+/// primary down of another type, which `stale_press` leaves alone; #130
+/// re-review N2).
+pub fn restarted(before: Option<i32>, down: i32) -> Option<i32> {
+    before.filter(|old| *old != down)
 }
 
 /// Whether a cancel or a lost capture of `pointer` ends the press with a
@@ -54,14 +67,45 @@ pub fn hold_value(aut: Option<bool>, connected: bool) -> Option<bool> {
     aut.filter(|_| connected).map(|on| !on)
 }
 
-/// Whether a press shows the hold's fill and line: a press down that can
-/// act at its hold.
-pub fn shows_hold(pressing: bool, aut: Option<bool>, connected: bool) -> bool {
-    pressing && hold_value(aut, connected).is_some()
+/// What a rail press shows: nothing, the fill growing, or the fill full.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fill {
+    None,
+    Filling,
+    Full,
 }
 
-/// The flight recorder's step of a press that lasted its hold: `hold`, or
-/// `refused` when it could not act.
+impl Fill {
+    /// Its `data-holding`: a fill shows (growing or full).
+    pub fn holding(self) -> bool {
+        self != Fill::None
+    }
+
+    /// Its `data-full`.
+    pub fn full(self) -> bool {
+        self == Fill::Full
+    }
+}
+
+/// The fill of a press `filling` (down, before its hold) or `full` (past
+/// it): only a press that can act shows one (`hold_value`).
+pub fn fill_of(filling: bool, full: bool, aut: Option<bool>, connected: bool) -> Fill {
+    match (hold_value(aut, connected), full, filling) {
+        (None, _, _) => Fill::None,
+        (Some(_), true, _) => Fill::Full,
+        (Some(_), false, true) => Fill::Filling,
+        (Some(_), false, false) => Fill::None,
+    }
+}
+
+/// The flight recorder's step at a press's full mark: `full` (nothing is
+/// sent yet), or `refused` when it could not act (the press is dead).
+pub fn full_step(value: Option<bool>) -> &'static str {
+    if value.is_some() { "full" } else { "refused" }
+}
+
+/// The flight recorder's step of a lift that acts: `hold`, or `refused`
+/// when it could not act.
 pub fn hold_step(value: Option<bool>) -> &'static str {
     if value.is_some() { "hold" } else { "refused" }
 }
@@ -110,6 +154,15 @@ pub struct RailLook {
     pub low: bool,
 }
 
+/// The second line while the press is full: what its lift will do.
+pub fn full_text(aut_on: bool) -> &'static str {
+    if aut_on {
+        "pusť — vypne AUT"
+    } else {
+        "pusť — zapne AUT"
+    }
+}
+
 /// The second line while a hold fills the button.
 pub fn hold_text(aut_on: bool) -> &'static str {
     if aut_on {
@@ -121,7 +174,7 @@ pub fn hold_text(aut_on: bool) -> &'static str {
 
 /// The merged STAGE button (#104): `aut` the hub's STAGE AUT flag,
 /// `playing` its Live's transport, `muted` the stage mics' mute (each none
-/// before it is known), `holding` a press filling it (`shows_hold`),
+/// before it is known), `fill` the press's (`fill_of`),
 /// `settling` the transport changed less than `SETTLE_MS` ago: the mics are
 /// read as the rule is setting them, so its write on the way never flashes
 /// the override's look.
@@ -129,7 +182,7 @@ pub fn stage_look(
     aut: Option<bool>,
     playing: Option<bool>,
     muted: Option<bool>,
-    holding: bool,
+    fill: Fill,
     settling: bool,
 ) -> RailLook {
     let on = aut == Some(true);
@@ -141,12 +194,11 @@ pub fn stage_look(
         (true, Some((playing, muted))) if playing != muted => Aut::Held,
         (true, _) => Aut::Run,
     };
-    let sub = if holding {
-        Some(hold_text(on).to_string())
-    } else if on {
-        known.map(|state| stage_sub(state).to_string())
-    } else {
-        None
+    let sub = match (fill, on) {
+        (Fill::Filling, _) => Some(hold_text(on).to_string()),
+        (Fill::Full, _) => Some(full_text(on).to_string()),
+        (Fill::None, true) => known.map(|state| stage_sub(state).to_string()),
+        (Fill::None, false) => None,
     };
     RailLook {
         lit: muted == Some(false),
@@ -179,7 +231,7 @@ mod tests {
         assert!(press.down(1, true, 0.0));
         assert!(!press.open(2999.0));
         assert!(press.open(3000.0));
-        assert_eq!(rail_press(), Hold::with(3000.0));
+        assert_eq!(rail_press(), Hold::lifted(3000.0));
     }
 
     #[test]
@@ -194,16 +246,16 @@ mod tests {
 
     #[test]
     fn stage_is_lit_while_the_mics_are_live_whatever_aut_says() {
-        assert!(stage_look(None, None, Some(false), false, false).lit);
-        assert!(!stage_look(None, None, Some(true), false, false).lit);
+        assert!(stage_look(None, None, Some(false), Fill::None, false).lit);
+        assert!(!stage_look(None, None, Some(true), Fill::None, false).lit);
         assert!(
-            !stage_look(None, None, None, false, false).lit,
+            !stage_look(None, None, None, Fill::None, false).lit,
             "unknown stays dark"
         );
-        assert!(stage_look(Some(true), Some(true), Some(false), false, false).lit);
-        assert!(!stage_look(Some(true), Some(false), Some(true), false, false).lit);
-        assert!(!stage_look(Some(true), Some(true), Some(false), false, false).low);
-        assert!(!stage_look(Some(true), Some(false), Some(false), true, false).low);
+        assert!(stage_look(Some(true), Some(true), Some(false), Fill::None, false).lit);
+        assert!(!stage_look(Some(true), Some(false), Some(true), Fill::None, false).lit);
+        assert!(!stage_look(Some(true), Some(true), Some(false), Fill::None, false).low);
+        assert!(!stage_look(Some(true), Some(false), Some(false), Fill::Filling, false).low);
     }
 
     #[test]
@@ -214,9 +266,9 @@ mod tests {
             (Some(true), Some(false)),
             (None, None),
         ] {
-            let look = stage_look(Some(false), playing, muted, false, false);
+            let look = stage_look(Some(false), playing, muted, Fill::None, false);
             assert_eq!((look.aut, look.sub), (Aut::Off, None));
-            let unknown = stage_look(None, playing, muted, false, false);
+            let unknown = stage_look(None, playing, muted, Fill::None, false);
             assert_eq!((unknown.aut, unknown.sub), (Aut::Off, None));
         }
     }
@@ -224,7 +276,7 @@ mod tests {
     #[test]
     fn with_aut_the_pill_runs_and_the_line_says_what_the_rule_does() {
         let line =
-            |playing, muted| stage_look(Some(true), Some(playing), Some(muted), false, false);
+            |playing, muted| stage_look(Some(true), Some(playing), Some(muted), Fill::None, false);
         assert_eq!(
             line(true, true),
             RailLook {
@@ -264,7 +316,7 @@ mod tests {
         );
         // Unknown transport or mute: the pill runs, no line.
         assert_eq!(
-            stage_look(Some(true), None, Some(true), false, false),
+            stage_look(Some(true), None, Some(true), Fill::None, false),
             RailLook {
                 lit: false,
                 aut: Aut::Run,
@@ -273,7 +325,7 @@ mod tests {
             }
         );
         assert_eq!(
-            stage_look(Some(true), Some(true), None, false, false),
+            stage_look(Some(true), Some(true), None, Fill::None, false),
             RailLook {
                 lit: false,
                 aut: Aut::Run,
@@ -286,23 +338,25 @@ mod tests {
     #[test]
     fn a_hold_in_progress_replaces_the_line() {
         assert_eq!(
-            stage_look(Some(false), Some(true), Some(true), true, false)
+            stage_look(Some(false), Some(true), Some(true), Fill::Filling, false)
                 .sub
                 .as_deref(),
             Some("drž… zapína AUT")
         );
         assert_eq!(
-            stage_look(Some(true), Some(true), Some(true), true, false)
+            stage_look(Some(true), Some(true), Some(true), Fill::Filling, false)
                 .sub
                 .as_deref(),
             Some("drž… vypína AUT")
         );
         assert_eq!(
-            stage_look(None, None, None, true, false).sub.as_deref(),
+            stage_look(None, None, None, Fill::Filling, false)
+                .sub
+                .as_deref(),
             Some("drž… zapína AUT")
         );
         // The pill and the light stay what they were.
-        let look = stage_look(Some(true), Some(true), Some(false), true, false);
+        let look = stage_look(Some(true), Some(true), Some(false), Fill::Filling, false);
         assert_eq!((look.aut, look.lit), (Aut::Held, true));
     }
 
@@ -310,7 +364,7 @@ mod tests {
     fn a_settling_mismatch_reads_as_the_rule_at_work() {
         // The transport just changed: the mics read as the rule sets them.
         let just_changed =
-            |playing, muted| stage_look(Some(true), Some(playing), Some(muted), false, true);
+            |playing, muted| stage_look(Some(true), Some(playing), Some(muted), Fill::None, true);
         assert_eq!(
             just_changed(true, false),
             RailLook {
@@ -333,20 +387,20 @@ mod tests {
         for (playing, muted) in [(true, true), (false, false)] {
             assert_eq!(
                 just_changed(playing, muted),
-                stage_look(Some(true), Some(playing), Some(muted), false, false)
+                stage_look(Some(true), Some(playing), Some(muted), Fill::None, false)
             );
         }
         // Without AUT, unknown or while a hold fills it: as before.
         assert_eq!(
-            stage_look(Some(false), Some(true), Some(false), false, true).aut,
+            stage_look(Some(false), Some(true), Some(false), Fill::None, true).aut,
             Aut::Off
         );
         assert_eq!(
-            stage_look(Some(true), None, Some(false), false, true).sub,
+            stage_look(Some(true), None, Some(false), Fill::None, true).sub,
             None
         );
         assert_eq!(
-            stage_look(Some(true), Some(true), Some(false), true, true)
+            stage_look(Some(true), Some(true), Some(false), Fill::Filling, true)
                 .sub
                 .as_deref(),
             Some("drž… vypína AUT")
@@ -413,14 +467,70 @@ mod tests {
         assert_eq!(hold_value(Some(false), false), None);
         assert_eq!(hold_value(None, false), None);
         // The fill and the hold's line only for a press that can act.
-        assert!(shows_hold(true, Some(false), true));
-        assert!(shows_hold(true, Some(true), true));
-        assert!(!shows_hold(false, Some(true), true));
-        assert!(!shows_hold(true, None, true));
-        assert!(!shows_hold(true, Some(true), false));
+        // The fill and the hold's lines only for a press that can act.
+        assert_eq!(fill_of(true, false, Some(false), true), Fill::Filling);
+        assert_eq!(fill_of(true, false, Some(true), true), Fill::Filling);
+        assert_eq!(fill_of(false, true, Some(true), true), Fill::Full);
+        assert_eq!(fill_of(false, true, Some(false), true), Fill::Full);
+        assert_eq!(fill_of(false, false, Some(true), true), Fill::None);
+        assert_eq!(fill_of(true, false, None, true), Fill::None);
+        assert_eq!(fill_of(false, true, None, true), Fill::None);
+        assert_eq!(fill_of(true, false, Some(true), false), Fill::None);
+        assert_eq!(fill_of(false, true, Some(true), false), Fill::None);
+        assert_eq!(
+            [
+                Fill::None.holding(),
+                Fill::Filling.holding(),
+                Fill::Full.holding()
+            ],
+            [false, true, true]
+        );
+        assert_eq!(
+            [Fill::None.full(), Fill::Filling.full(), Fill::Full.full()],
+            [false, false, true]
+        );
+        // The recorder's step at the full mark.
+        assert_eq!(full_step(Some(true)), "full");
+        assert_eq!(full_step(Some(false)), "full");
+        assert_eq!(full_step(None), "refused");
         // The recorder's step at the hold.
         assert_eq!(hold_step(Some(true)), "hold");
         assert_eq!(hold_step(Some(false)), "hold");
         assert_eq!(hold_step(None), "refused");
+    }
+
+    #[test]
+    fn a_full_press_says_what_its_lift_will_do() {
+        assert_eq!(full_text(false), "pusť — zapne AUT");
+        assert_eq!(full_text(true), "pusť — vypne AUT");
+        let line = |aut, fill| stage_look(aut, Some(true), Some(true), fill, false).sub;
+        assert_eq!(
+            line(Some(false), Fill::Full).as_deref(),
+            Some("pusť — zapne AUT")
+        );
+        assert_eq!(
+            line(Some(true), Fill::Full).as_deref(),
+            Some("pusť — vypne AUT")
+        );
+        assert_eq!(line(None, Fill::Full).as_deref(), Some("pusť — zapne AUT"));
+        assert_eq!(
+            line(Some(true), Fill::Filling).as_deref(),
+            Some("drž… vypína AUT")
+        );
+        assert_eq!(
+            line(Some(true), Fill::None).as_deref(),
+            Some("hrá · stíšené")
+        );
+        assert_eq!(line(Some(false), Fill::None), None);
+        // The pill and the light stay what they were.
+        let look = stage_look(Some(true), Some(true), Some(false), Fill::Full, false);
+        assert_eq!((look.aut, look.lit), (Aut::Held, true));
+    }
+
+    #[test]
+    fn a_restart_by_another_pointer_drops_the_earlier_one() {
+        assert_eq!(restarted(Some(5), 1), Some(5));
+        assert_eq!(restarted(Some(5), 5), None, "the same pointer again");
+        assert_eq!(restarted(None, 5), None);
     }
 }
