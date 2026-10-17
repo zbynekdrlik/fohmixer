@@ -193,6 +193,29 @@ fn a_drag_back_to_its_start_restores_the_exact_values() {
 }
 
 #[test]
+fn a_drag_around_its_own_track_moves_the_others_by_the_same_db() {
+    // The fader link (#130, D18): the own track at the finger, never the loudest.
+    let drag = Drag::around(vec![0.6, 0.85], 0.6);
+    let moved = drag.volumes(0.7);
+    assert_eq!(moved[0], 0.7);
+    assert_db(
+        moved[1],
+        value2db(0.85) + (value2db(0.7) - value2db(0.6)),
+        0.01,
+    );
+    // Back to the start: Live's values exactly.
+    assert_eq!(drag.volumes(0.6), vec![0.6, 0.85]);
+    // A partner at the own track's level follows exactly; one at −∞ stays.
+    assert_eq!(
+        Drag::around(vec![0.6, 0.6], 0.6).volumes(0.5),
+        vec![0.5, 0.5]
+    );
+    assert_eq!(Drag::around(vec![0.85, 0.0], 0.85).volumes(0.6)[1], 0.0);
+    // `new` still puts the loudest at the finger (#58).
+    assert_eq!(Drag::new(vec![0.6, 0.85]).unwrap().volumes(0.7)[1], 0.7);
+}
+
+#[test]
 fn the_balance_comes_back_after_the_floor() {
     // −14, −12 and 0 dB pulled down to −∞, then part way up, then back.
     let drag = Drag::new(vec![0.5, 0.55, 0.85]).expect("targets");
