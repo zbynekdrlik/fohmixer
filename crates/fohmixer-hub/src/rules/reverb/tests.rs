@@ -1189,3 +1189,27 @@ fn a_pending_return_survives_a_layout_that_drops_its_fader() {
     assert_eq!(ends, vec![(ST, 0.85, true)]);
     assert_eq!(r.state().low, None);
 }
+
+#[test]
+fn a_track_list_change_saves_only_what_it_changes() {
+    // A return glide stopped by a track-list change: let go, nothing the
+    // rule holds changed, so nothing saved.
+    let mut r = rule(false, Some(true));
+    r.tap(true, 0.0);
+    let _ = run(&mut r, 25.0, 500.0);
+    r.tap(false, 1000.0);
+    assert_eq!(
+        r.tracks_changed("band"),
+        vec![
+            Act::Step(Step::Stopped {
+                label: "Rev ST".into(),
+                why: "tracks".into()
+            }),
+            Act::Step(Step::Stopped {
+                label: "Rev PA".into(),
+                why: "tracks".into()
+            }),
+            Act::Tell,
+        ]
+    );
+}

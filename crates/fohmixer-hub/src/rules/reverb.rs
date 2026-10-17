@@ -915,6 +915,7 @@ impl Reverb {
     /// again only once one is where the rule left the fader. A fader stopped
     /// mid-glide is let go: its value lies between the levels for good.
     pub fn tracks_changed(&mut self, instance: &str) -> Vec<Act> {
+        let before = self.saved();
         let mut acts = Vec::new();
         for fader in self
             .faders
@@ -932,7 +933,10 @@ impl Reverb {
         }
         if !acts.is_empty() {
             self.drop_low();
-            acts.push(Act::Save);
+            // A stopped return glide changes nothing the rule holds.
+            if self.saved() != before {
+                acts.push(Act::Save);
+            }
             acts.push(Act::Tell);
         }
         acts
