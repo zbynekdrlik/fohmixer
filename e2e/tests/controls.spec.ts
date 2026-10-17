@@ -1,4 +1,4 @@
-import type { Locator, Page } from "@playwright/test";
+import type { Page } from "@playwright/test";
 import { test, expect } from "./support/fixtures";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -7,6 +7,7 @@ import {
   centre,
   clipped,
   dispatchPointer,
+  dispatchSnapped,
   doubleTap,
   harness,
   hostLine,
@@ -83,16 +84,6 @@ test.describe("Solo buttons", () => {
 
 test.describe("The merged STAGE button (#104, D18)", () => {
   const mics = track("Mics Stage #");
-  /** The button's look read in the page: its attributes and second line. */
-  async function lookOf(button: Locator) {
-    return button.evaluate((el) => ({
-      on: el.classList.contains("on"),
-      aut: el.getAttribute("data-aut"),
-      holding: el.getAttribute("data-holding"),
-      sub: el.querySelector(".btn-sub")?.textContent ?? "",
-    }));
-  }
-
   /** The page hidden or shown, as an iPad's lock or app switch does (deck.spec's `setHidden`). */
   async function setHidden(page: Page, hidden: boolean) {
     await page.evaluate((on) => {
@@ -169,12 +160,22 @@ test.describe("The merged STAGE button (#104, D18)", () => {
 
     // A 1 s hold (the owner's ruling on #104) turns AUT on at its lift: the
     // fill (over RAIL_HOLD_MS, its CSS time from `--hold-ms`) and its line
-    // meanwhile, the mics untouched.
-    await dispatchPointer(button, [{ type: "pointerdown" }, { wait: 300 }]);
-    expect(await lookOf(button)).toMatchObject({ holding: "true", sub: "drž… zapína AUT" });
+    // before the full mark, the full line after it (both read in the page's
+    // timer order, PR #133's review, M1), nothing sent and the mics untouched
+    // until the lift.
+    const on = await dispatchSnapped(button, [
+      { type: "pointerdown" },
+      { wait: 300 },
+      { snap: true },
+      { wait: 1000 },
+      { snap: true },
+    ]);
+    expect(on.snaps[0]).toMatchObject({ holding: "true", full: "false", sub: "drž… zapína AUT" });
+    expect(on.snaps[1]).toMatchObject({ holding: "true", full: "true", sub: "pusť — zapne AUT" });
     expect(await button.locator(".hold").evaluate((el) => getComputedStyle(el).transitionDuration)).toBe("1s");
     expect(live.hub.get("stage_aut")).toBe(false);
-    await dispatchPointer(button, [{ wait: 1000 }, { type: "pointerup" }]);
+    expect(await live.get("band", mics, "mute")).toBe(false);
+    await dispatchPointer(button, [{ type: "pointerup" }]);
     await until(async () => live.hub.get("stage_aut"), (v) => v === true, "STAGE AUT on");
     await expect(button).toHaveAttribute("data-aut", "run");
     await expect(button.getByTestId("aut-badge")).toHaveText("AUT");
@@ -236,10 +237,19 @@ test.describe("The merged STAGE button (#104, D18)", () => {
     expect(await live.get("band", mics, "mute")).toBe(false);
     await expect(button).toHaveAttribute("data-aut", "run");
 
-    // A second 1 s hold turns AUT off at its lift; the mics stay as they are.
-    await dispatchPointer(button, [{ type: "pointerdown" }, { wait: 200 }]);
-    await expect(button.getByTestId("btn-sub")).toHaveText("drž… vypína AUT");
-    await dispatchPointer(button, [{ wait: 1000 }, { type: "pointerup" }]);
+    // A second 1 s hold turns AUT off at its lift (its lines read in the
+    // page's timer order, PR #133's review, M1); the mics stay as they are.
+    const off = await dispatchSnapped(button, [
+      { type: "pointerdown" },
+      { wait: 300 },
+      { snap: true },
+      { wait: 1000 },
+      { snap: true },
+    ]);
+    expect(off.snaps[0]).toMatchObject({ holding: "true", full: "false", sub: "drž… vypína AUT" });
+    expect(off.snaps[1]).toMatchObject({ holding: "true", full: "true", sub: "pusť — vypne AUT" });
+    expect(live.hub.get("stage_aut")).toBe(true);
+    await dispatchPointer(button, [{ type: "pointerup" }]);
     await until(async () => live.hub.get("stage_aut"), (v) => v === false, "STAGE AUT off");
     await expect(button).toHaveAttribute("data-aut", "off");
     await expect(button.getByTestId("aut-badge")).toHaveCount(0);

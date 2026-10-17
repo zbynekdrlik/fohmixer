@@ -505,30 +505,54 @@ export async function centre(control: Locator): Promise<{ x: number; y: number }
 
 /**
  * One step of `dispatchPointer`: a pointer event `dy` px above the control's
- * centre and `dx` px right of it (a pan's drag, #124), or a wait.
+ * centre and `dx` px right of it (a pan's drag, #124), a wait, or a snapshot
+ * of the control's look (`dispatchSnapped`).
  */
 export type PointerStep =
   | { type: "pointerdown" | "pointermove" | "pointerup" | "pointercancel"; dx?: number; dy?: number }
-  | { wait: number };
+  | { wait: number }
+  | { snap: true };
 
 /**
- * Pointer events of one finger (a touch, `pointerId`) dispatched on `control`
- * inside the page, at its centre or `dy` px above it (and `dx` right of it),
- * with the waits timed in the page: exact timing in both engines (one real
- * click takes ~160 ms in WebKit on the CI runner), and a finger that can stay
- * down while the real mouse does something else. The page clock
- * (`performance.now()`) after the last step. `primary`: the finger is the
- * first one down (`isPrimary`, as a browser marks a touch while no other is
- * down); a second finger passes false (a dispatched event's own default is
- * false).
+ * A rail button's look at a `{ snap: true }` step, read in the page (PR
+ * #133's review, M1): `at` ms after the sequence started, its `data-holding`
+ * and `data-full`, its second line (`.btn-sub`) and whether it flashes
+ * `failed`.
  */
-export async function dispatchPointer(control: Locator, steps: PointerStep[], pointerId = 21, primary = true): Promise<number> {
+export type ButtonSnap = { at: number; holding: string | null; full: string | null; sub: string; failed: boolean };
+
+/**
+ * `dispatchPointer`, which also gives the page clock (`performance.now()`)
+ * when the sequence started and the control's look at each `{ snap: true }`
+ * step. A snap is read in the page's own timer order (PR #133's review, M1): one
+ * 300 ms after a down always comes before a check the down set for 1020 ms,
+ * one 1300 ms after it always after, however slow the runner (a read of its
+ * own after the call returns lands one Playwright round trip later).
+ */
+export async function dispatchSnapped(
+  control: Locator,
+  steps: PointerStep[],
+  pointerId = 21,
+  primary = true,
+): Promise<{ start: number; end: number; snaps: ButtonSnap[] }> {
   const { x, y } = await centre(control);
   return control.evaluate(
     async (el, { clientX, clientY, list, id, isPrimary }) => {
+      const start = performance.now();
+      const snaps: { at: number; holding: string | null; full: string | null; sub: string; failed: boolean }[] = [];
       for (const step of list) {
         if ("wait" in step) {
           await new Promise((done) => setTimeout(done, step.wait));
+          continue;
+        }
+        if ("snap" in step) {
+          snaps.push({
+            at: performance.now() - start,
+            holding: el.getAttribute("data-holding"),
+            full: el.getAttribute("data-full"),
+            sub: el.querySelector(".btn-sub")?.textContent ?? "",
+            failed: el.classList.contains("failed"),
+          });
           continue;
         }
         el.dispatchEvent(
@@ -543,10 +567,25 @@ export async function dispatchPointer(control: Locator, steps: PointerStep[], po
           }),
         );
       }
-      return performance.now();
+      return { start, end: performance.now(), snaps };
     },
     { clientX: x, clientY: y, list: steps, id: pointerId, isPrimary: primary },
   );
+}
+
+/**
+ * Pointer events of one finger (a touch, `pointerId`) dispatched on `control`
+ * inside the page, at its centre or `dy` px above it (and `dx` right of it),
+ * with the waits timed in the page: exact timing in both engines (one real
+ * click takes ~160 ms in WebKit on the CI runner), and a finger that can stay
+ * down while the real mouse does something else. The page clock
+ * (`performance.now()`) after the last step. `primary`: the finger is the
+ * first one down (`isPrimary`, as a browser marks a touch while no other is
+ * down); a second finger passes false (a dispatched event's own default is
+ * false).
+ */
+export async function dispatchPointer(control: Locator, steps: PointerStep[], pointerId = 21, primary = true): Promise<number> {
+  return (await dispatchSnapped(control, steps, pointerId, primary)).end;
 }
 
 /**
