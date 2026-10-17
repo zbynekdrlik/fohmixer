@@ -363,10 +363,11 @@ impl Reverb {
         self.faders.iter().map(|f| f.spec.label.clone()).collect()
     }
 
-    /// A served layout's faders: each takes over what the rule held of its
-    /// identity; a held fader the layout no longer names waits for one that
-    /// does.
-    pub fn set_faders(&mut self, specs: Vec<RuleFader>) -> Vec<Act> {
+    /// A served layout's faders at `now` (router ms): each takes over what
+    /// the rule held of its identity; a held fader the layout no longer
+    /// names waits for one that does.
+    pub fn set_faders(&mut self, specs: Vec<RuleFader>, now: f64) -> Vec<Act> {
+        let _ = now;
         if self.faders.iter().map(|f| &f.spec).eq(specs.iter()) {
             return Vec::new();
         }
@@ -442,8 +443,10 @@ impl Reverb {
         })]
     }
 
-    /// Live's value of a fader's volume (`key`: its write key).
-    pub fn live(&mut self, key: &str, value: f64) -> Vec<Act> {
+    /// Live's value of a fader's volume (`key`: its write key) at `now`
+    /// (router ms).
+    pub fn live(&mut self, key: &str, value: f64, now: f64) -> Vec<Act> {
+        let _ = now;
         let Some(fader) = self.faders.iter_mut().find(|f| f.key == key) else {
             return Vec::new();
         };

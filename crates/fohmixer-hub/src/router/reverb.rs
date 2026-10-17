@@ -146,10 +146,12 @@ impl Router {
                 }
             }
         }
-        let acts = self.reverb.rule.set_faders(faders);
+        let now = self.now_ms();
+        let acts = self.reverb.rule.set_faders(faders, now);
         self.reverb_apply(acts, None);
         for (key, value) in cached {
-            let acts = self.reverb.rule.live(&key, value);
+            let now = self.now_ms();
+            let acts = self.reverb.rule.live(&key, value, now);
             self.reverb_apply(acts, None);
         }
         if let Some(instance) = self.reverb.rule.followed().map(str::to_string)
@@ -161,7 +163,8 @@ impl Router {
 
     /// A value of a fader's volume subscription (its hub key `sub`).
     pub(super) fn reverb_value(&mut self, sub: &str, value: f64) {
-        let acts = self.reverb.rule.live(write_key_of(sub), value);
+        let now = self.now_ms();
+        let acts = self.reverb.rule.live(write_key_of(sub), value, now);
         self.reverb_apply(acts, None);
     }
 

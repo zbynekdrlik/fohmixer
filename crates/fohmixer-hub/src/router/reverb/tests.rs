@@ -51,7 +51,8 @@ fn saved(dir: &std::path::Path) -> Value {
 
 /// Live's value of a fader, handed to the rule as the flush would.
 fn live(router: &mut Router, key: &str, value: f64) {
-    let acts = router.reverb.rule.live(key, value);
+    let now = router.now_ms();
+    let acts = router.reverb.rule.live(key, value, now);
     router.reverb_apply(acts, None);
 }
 

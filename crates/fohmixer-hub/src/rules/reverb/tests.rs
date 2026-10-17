@@ -14,9 +14,9 @@ const PA: &str = "band|live_set tracks 5 mixer_device volume|value";
 /// Two faders at 0.85 and 0.6, AUT as asked, the transport as given.
 fn rule(aut: bool, playing: Option<bool>) -> Reverb {
     let mut r = Reverb::new(&Saved { aut, low: None });
-    r.set_faders(vec![fader("Rev ST", 4), fader("Rev PA", 5)]);
-    r.live(ST, 0.85);
-    r.live(PA, 0.6);
+    r.set_faders(vec![fader("Rev ST", 4), fader("Rev PA", 5)], 0.0);
+    r.live(ST, 0.85, 0.0);
+    r.live(PA, 0.6, 0.0);
     if let Some(p) = playing {
         r.transport("band", p, 0.0);
     }
@@ -103,7 +103,7 @@ fn a_glide_is_linear_in_db_and_lands_exactly() {
 fn the_faders_come_from_the_layout_each_with_its_write_key() {
     let mut rule = Reverb::new(&Saved::default());
     assert_eq!(
-        rule.set_faders(vec![fader("Rev ST", 4), fader("Rev PA", 5)]),
+        rule.set_faders(vec![fader("Rev ST", 4), fader("Rev PA", 5)], 0.0),
         vec![
             Act::Step(Step::Faders {
                 labels: vec!["Rev ST".into(), "Rev PA".into()]
@@ -113,7 +113,7 @@ fn the_faders_come_from_the_layout_each_with_its_write_key() {
         ]
     );
     assert_eq!(
-        rule.set_faders(vec![fader("Rev ST", 4), fader("Rev PA", 5)]),
+        rule.set_faders(vec![fader("Rev ST", 4), fader("Rev PA", 5)], 0.0),
         vec![],
         "the same faders: nothing"
     );
@@ -130,7 +130,7 @@ fn the_faders_come_from_the_layout_each_with_its_write_key() {
     assert_eq!(rule.status().faders, 2);
     // A layout without them: told, and the line says so.
     assert_eq!(
-        rule.set_faders(vec![]),
+        rule.set_faders(vec![], 0.0),
         vec![
             Act::Step(Step::Faders { labels: vec![] }),
             Act::Save,
@@ -263,8 +263,8 @@ fn the_first_transport_value_never_lowers() {
         }),
     };
     let mut back = Reverb::new(&saved);
-    back.set_faders(vec![fader("Rev ST", 4), fader("Rev PA", 5)]);
-    back.live(ST, lowered(0.85));
+    back.set_faders(vec![fader("Rev ST", 4), fader("Rev PA", 5)], 0.0);
+    back.live(ST, lowered(0.85), 0.0);
     assert!(matches!(
         steps(&back.transport("band", true, 0.0))[0],
         Step::Return { .. }
@@ -278,7 +278,7 @@ fn the_first_transport_value_never_lowers() {
                 faders: saved.low.clone().unwrap().faders,
             }),
         });
-        kept.set_faders(vec![fader("Rev ST", 4)]);
+        kept.set_faders(vec![fader("Rev ST", 4)], 0.0);
         assert!(steps(&kept.transport("band", true, 0.0)).is_empty());
         assert!(kept.state().low.is_some());
     }
@@ -430,13 +430,17 @@ fn a_live_value_off_where_the_rule_left_it_lets_go_only_once_settled() {
     r.tap(true, 0.0);
     run(&mut r, 25.0, 500.0);
     assert_eq!(
-        r.live(PA, 0.5),
+        r.live(PA, 0.5, 0.0),
         vec![],
         "an echo before the last write's ack"
     );
     r.applied(PA);
-    assert_eq!(r.live(PA, lowered(0.6)), vec![], "where the rule left it");
-    let acts = r.live(PA, lowered(0.6) + 1e-3);
+    assert_eq!(
+        r.live(PA, lowered(0.6), 0.0),
+        vec![],
+        "where the rule left it"
+    );
+    let acts = r.live(PA, lowered(0.6) + 1e-3, 0.0);
     assert!(matches!(steps(&acts)[0], Step::Hand { by: By::Live, .. }));
     assert!(r.state().faders[1].hand && r.state().faders[1].back.is_none());
     assert_eq!(r.status().hands, 1);
@@ -445,10 +449,10 @@ fn a_live_value_off_where_the_rule_left_it_lets_go_only_once_settled() {
     r.tap(true, 0.0);
     r.tick(25.0);
     r.applied(ST);
-    assert_eq!(r.live(ST, 0.5), vec![]);
+    assert_eq!(r.live(ST, 0.5, 0.0), vec![]);
     run(&mut r, 50.0, 500.0);
     assert_eq!(
-        r.live(ST, 0.5),
+        r.live(ST, 0.5, 0.0),
         vec![],
         "settled only by its last write's ack"
     );
@@ -502,7 +506,7 @@ fn the_next_stop_takes_a_hand_fader_again_from_where_it_is() {
     r.transport("band", false, 0.0);
     r.tick(2000.0);
     r.hand(PA);
-    r.live(PA, 0.7);
+    r.live(PA, 0.7, 0.0);
     r.transport("band", true, 5000.0);
     r.transport("band", false, 6000.0);
     let acts = r.tick(8000.0);
@@ -529,8 +533,8 @@ fn the_next_stop_takes_a_hand_fader_again_from_where_it_is() {
 #[test]
 fn a_silent_fader_or_one_without_a_value_is_skipped() {
     let mut r = Reverb::new(&Saved::default());
-    r.set_faders(vec![fader("Rev ST", 4), fader("Rev PA", 5)]);
-    r.live(ST, 0.0);
+    r.set_faders(vec![fader("Rev ST", 4), fader("Rev PA", 5)], 0.0);
+    r.live(ST, 0.0, 0.0);
     let acts = r.tap(true, 0.0);
     assert!(steps(&acts).contains(&&Step::Skipped {
         label: "Rev ST".into(),
@@ -555,17 +559,17 @@ fn a_track_list_change_stops_the_instances_glides_until_its_tracks_are_back() {
             .all(|a| !matches!(a, Act::Write { .. }))
     );
     assert_eq!(
-        r.live(PA, 0.33),
+        r.live(PA, 0.33, 0.0),
         vec![],
         "another track at the index: no hand"
     );
     assert_eq!(
-        r.live(PA, lowered(0.6)),
+        r.live(PA, lowered(0.6), 0.0),
         vec![],
         "its own value again: settled"
     );
     assert!(matches!(
-        steps(&r.live(PA, 0.7))[0],
+        steps(&r.live(PA, 0.7, 0.0))[0],
         Step::Hand { by: By::Live, .. }
     ));
     assert_eq!(r.tracks_changed("master"), vec![]);
@@ -592,7 +596,7 @@ fn an_offline_instance_stops_its_glides_and_keeps_what_is_held() {
     // Back online, Live's values are its own: off where the rule left a
     // fader is the hand (a set load).
     assert!(matches!(
-        steps(&r.live(PA, 0.7))[0],
+        steps(&r.live(PA, 0.7, 0.0))[0],
         Step::Hand { by: By::Live, .. }
     ));
     // Offline during the wait: the wait ends; another Live's: nothing.
@@ -607,7 +611,7 @@ fn an_offline_instance_stops_its_glides_and_keeps_what_is_held() {
 fn a_new_layout_takes_the_held_state_by_label() {
     let mut r = rule(false, Some(true));
     r.tap(true, 0.0);
-    let acts = r.set_faders(vec![fader("Rev ST", 4), fader("Rev PA", 6)]);
+    let acts = r.set_faders(vec![fader("Rev ST", 4), fader("Rev PA", 6)], 0.0);
     assert!(steps(&acts).contains(&&Step::Stopped {
         label: "Rev PA".into(),
         why: "layout".into()
@@ -622,7 +626,7 @@ fn a_new_layout_takes_the_held_state_by_label() {
         Some(true),
         "the same Live: still followed"
     );
-    let acts = r.set_faders(vec![fader("Rev ST", 4)]);
+    let acts = r.set_faders(vec![fader("Rev ST", 4)], 0.0);
     assert!(
         !steps(&acts)
             .iter()
@@ -633,7 +637,7 @@ fn a_new_layout_takes_the_held_state_by_label() {
         2,
         "Rev PA waits for its strip"
     );
-    let acts = r.set_faders(vec![fader("Rev ST", 4), fader("Rev PA", 6)]);
+    let acts = r.set_faders(vec![fader("Rev ST", 4), fader("Rev PA", 6)], 0.0);
     assert!(steps(&acts).contains(&&Step::Restored {
         faders: 1,
         waiting: 0
@@ -645,17 +649,16 @@ fn a_new_layout_takes_the_held_state_by_label() {
         label: "Rev M".into(),
         target: "live_set tracks 1 mixer_device volume".into(),
     };
-    r.set_faders(vec![master]);
+    r.set_faders(vec![master], 0.0);
     assert_eq!(r.followed(), Some("master"));
     assert_eq!(r.state().playing, None);
     // A new label in the same Live takes over nothing.
     let mut r = rule(false, Some(true));
     r.tap(true, 0.0);
-    r.set_faders(vec![
-        fader("Rev X", 7),
-        fader("Rev ST", 4),
-        fader("Rev PA", 5),
-    ]);
+    r.set_faders(
+        vec![fader("Rev X", 7), fader("Rev ST", 4), fader("Rev PA", 5)],
+        0.0,
+    );
     assert_eq!(
         r.state().faders.iter().map(|f| f.back).collect::<Vec<_>>(),
         vec![None, Some(0.85), Some(0.6)]
@@ -671,7 +674,7 @@ fn a_new_followed_live_ends_the_wait() {
         label: "Rev M".into(),
         target: "live_set tracks 1 mixer_device volume".into(),
     };
-    assert!(steps(&r.set_faders(vec![master])).contains(&&Step::Cancelled));
+    assert!(steps(&r.set_faders(vec![master], 0.0)).contains(&&Step::Cancelled));
     assert!(!r.state().waiting);
     assert_eq!(run(&mut r, 2000.0, 2500.0), vec![]);
 }
@@ -701,7 +704,7 @@ fn a_restored_fader_found_elsewhere_is_let_go() {
     let mut r = Reverb::new(&saved);
     assert_eq!(r.saved(), saved, "nothing named yet: kept as it was");
     // A layout naming neither: nothing restored, nothing low.
-    let acts = r.set_faders(vec![fader("Rev X", 7)]);
+    let acts = r.set_faders(vec![fader("Rev X", 7)], 0.0);
     assert!(
         !steps(&acts)
             .iter()
@@ -709,15 +712,18 @@ fn a_restored_fader_found_elsewhere_is_let_go() {
     );
     assert_eq!(r.state().low, None);
     assert_eq!(r.saved(), saved);
-    let acts = r.set_faders(vec![fader("Rev ST", 4), fader("Rev PA", 5)]);
+    let acts = r.set_faders(vec![fader("Rev ST", 4), fader("Rev PA", 5)], 0.0);
     assert!(steps(&acts).contains(&&Step::Restored {
         faders: 2,
         waiting: 0
     }));
     assert_eq!(r.state().low, Some(Low::Tap));
-    assert_eq!(r.live(ST, lowered(0.85)), vec![]);
+    assert_eq!(r.live(ST, lowered(0.85), 0.0), vec![]);
     assert!(
-        matches!(steps(&r.live(PA, 0.7))[0], Step::Hand { by: By::Live, .. }),
+        matches!(
+            steps(&r.live(PA, 0.7, 0.0))[0],
+            Step::Hand { by: By::Live, .. }
+        ),
         "a set loaded meanwhile"
     );
     let acts = r.tap(false, 0.0);
@@ -743,7 +749,7 @@ fn a_return_without_lives_value_glides_from_where_the_rule_left_it() {
         }),
     };
     let mut r = Reverb::new(&saved);
-    r.set_faders(vec![fader("Rev ST", 4)]);
+    r.set_faders(vec![fader("Rev ST", 4)], 0.0);
     let acts = r.transport("band", true, 0.0);
     assert_eq!(
         steps(&acts)[0],
