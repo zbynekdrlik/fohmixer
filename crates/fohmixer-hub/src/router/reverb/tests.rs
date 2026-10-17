@@ -789,3 +789,157 @@ async fn a_fader_recomposed_onto_a_followed_key_is_lowered_from_its_value() {
         ]
     );
 }
+
+/// Rev ST on band track 0 at 0.85 and Rev PA on track 1 at 0.6, the marker
+/// keeper's list followed, Live playing or not.
+fn listed(playing: bool) -> Shifted {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, own, rx) = offline_router(dir.path());
+    let _page = attach(&mut router, 1);
+    router.reverb_layout(vec![fader("Rev ST", 0), fader("Rev PA", 1)]);
+    router
+        .subs
+        .subscribe(MARKERS_CLIENT, "band", "live_set", "tracks", false)
+        .unwrap();
+    router.subs.connected("band");
+    answer(&mut router, |target, prop| match (target, prop) {
+        ("live_set tracks 0 mixer_device volume", "value") => slot("live_st.value", json!(0.85)),
+        ("live_set tracks 1 mixer_device volume", "value") => slot("live_pa.value", json!(0.6)),
+        (_, "tracks") => slot("live_1.tracks", json!([1, 2])),
+        (_, "is_playing") => slot("live_1.is_playing", json!(playing)),
+        _ => json!({"ok": true, "data": null}),
+    });
+    router.flush();
+    (router, rx, dir, own)
+}
+
+/// A track inserted before both while Live stands: the list changes in its
+/// own flush, then the index bindings are resolved again (track 0 the new
+/// track at 0.5, track 1 Rev ST at `st`).
+fn insert_track(router: &mut Router, st: f64) {
+    router
+        .subs
+        .on_values("band", &[pushed("live_1.tracks", json!([9, 1, 2]))]);
+    router.flush();
+    router.subs.connected("band");
+    answer(router, |target, prop| match (target, prop) {
+        ("live_set tracks 0 mixer_device volume", "value") => slot("live_new.value", json!(0.5)),
+        ("live_set tracks 1 mixer_device volume", "value") => slot("live_st.value", json!(st)),
+        (_, "tracks") => slot("live_1.tracks", json!([9, 1, 2])),
+        (_, "is_playing") => slot("live_1.is_playing", json!(false)),
+        _ => json!({"ok": true, "data": null}),
+    });
+    router.flush();
+}
+
+/// The markers' layout after the insert: Rev ST on track 1 (followed
+/// before), Rev PA on track 2, whose value `pa` Live then reports.
+fn relayout(router: &mut Router, pa: f64) {
+    router.reverb_layout(vec![fader("Rev ST", 1), fader("Rev PA", 2)]);
+    answer(router, |target, prop| match (target, prop) {
+        ("live_set tracks 2 mixer_device volume", "value") => slot("live_pa.value", json!(pa)),
+        _ => json!({"ok": true, "data": null}),
+    });
+    router.flush();
+}
+
+/// The `set` records of REVERB's own writes in `got`: key, value, final.
+fn rule_sets(got: &[Value]) -> Vec<(Value, Value, Value)> {
+    got.iter()
+        .filter(|r| r["ev"] == "set" && r["client"] == json!(REVERB_CLIENT))
+        .map(|r| (r["key"].clone(), r["value"].clone(), r["final"].clone()))
+        .collect()
+}
+
+#[tokio::test]
+async fn a_lowering_writes_nothing_between_a_track_list_change_and_the_next_layout() {
+    // Review W1: AUT's wait ends after a track was inserted before both
+    // reverbs and before the markers composed the new layout.
+    let (mut router, rx, _dir, _own) = listed(true);
+    set_hub(&mut router, HUB_REVERB_AUT, json!(true));
+    router
+        .subs
+        .on_values("band", &[pushed("live_1.is_playing", json!(false))]);
+    router.flush();
+    assert!(router.reverb.rule.state().waiting);
+    insert_track(&mut router, 0.85);
+    let _ = records(&rx);
+    let end = router.now_ms() + 2100.0;
+    let acts = router.reverb.rule.tick(end);
+    router.reverb_apply(acts, None);
+    let got = records(&rx);
+    assert_eq!(rule_sets(&got), vec![], "nothing by the old index: {got:?}");
+    // The new layout ends the window: a tap lowers both by their new keys.
+    relayout(&mut router, 0.6);
+    set_hub(&mut router, HUB_REVERB_LOW, json!(true));
+    let _ = records(&rx);
+    let step = router.now_ms() + 30.0;
+    let acts = router.reverb.rule.tick(step);
+    router.reverb_apply(acts, None);
+    let keys: Vec<Value> = rule_sets(&records(&rx))
+        .into_iter()
+        .map(|(key, _, _)| key)
+        .collect();
+    assert_eq!(
+        keys,
+        vec![
+            json!("band|live_set tracks 1 mixer_device volume|value"),
+            json!("band|live_set tracks 2 mixer_device volume|value"),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_return_between_a_track_list_change_and_the_next_layout_waits_for_it() {
+    // Review W1: both held low at rest, a track inserted before them, then
+    // a start before the markers composed the new layout.
+    let (mut router, rx, _dir, _own) = listed(false);
+    set_hub(&mut router, HUB_REVERB_AUT, json!(true));
+    set_hub(&mut router, HUB_REVERB_LOW, json!(true));
+    let end = router.now_ms() + 600.0;
+    let acts = router.reverb.rule.tick(end);
+    router.reverb_apply(acts, None);
+    router.subs.on_values(
+        "band",
+        &[
+            pushed("live_st.value", json!(lowered(0.85))),
+            pushed("live_pa.value", json!(lowered(0.6))),
+        ],
+    );
+    router.flush();
+    insert_track(&mut router, lowered(0.85));
+    let _ = records(&rx);
+    router
+        .subs
+        .on_values("band", &[pushed("live_1.is_playing", json!(true))]);
+    router.flush();
+    let end = router.now_ms() + 600.0;
+    let acts = router.reverb.rule.tick(end);
+    router.reverb_apply(acts, None);
+    let got = records(&rx);
+    assert_eq!(rule_sets(&got), vec![], "nothing by the old index: {got:?}");
+    // The new layout: each returns exactly to its song level.
+    relayout(&mut router, lowered(0.6));
+    let end = router.now_ms() + 600.0;
+    let acts = router.reverb.rule.tick(end);
+    router.reverb_apply(acts, None);
+    let ends: Vec<(Value, Value, Value)> = rule_sets(&records(&rx))
+        .into_iter()
+        .filter(|(_, _, last)| *last == json!(true))
+        .collect();
+    assert_eq!(
+        ends,
+        vec![
+            (
+                json!("band|live_set tracks 1 mixer_device volume|value"),
+                json!(0.85),
+                json!(true)
+            ),
+            (
+                json!("band|live_set tracks 2 mixer_device volume|value"),
+                json!(0.6),
+                json!(true)
+            ),
+        ]
+    );
+}

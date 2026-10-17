@@ -1272,3 +1272,71 @@ fn a_tap_down_over_a_waiting_return_lowers_as_a_tap_does() {
         Step::Return { .. }
     ));
 }
+
+/// Both held low for the stop across a restart (AUT on); Live starts:
+/// Rev PA (its value heard) returns, Rev ST's return waits for its value;
+/// then a layout drops Rev ST's strip alone.
+fn away_while_waiting() -> Reverb {
+    let mut r = Reverb::new(&Saved {
+        aut: true,
+        low: Some(SavedLow {
+            by: Low::Stop,
+            faders: vec![
+                SavedFader {
+                    instance: "band".into(),
+                    label: "Rev ST".into(),
+                    back: 0.85,
+                    left: Some(lowered(0.85)),
+                },
+                SavedFader {
+                    instance: "band".into(),
+                    label: "Rev PA".into(),
+                    back: 0.6,
+                    left: Some(lowered(0.6)),
+                },
+            ],
+        }),
+    });
+    r.set_faders(vec![fader("Rev ST", 4), fader("Rev PA", 5)], 0.0);
+    r.live(PA, lowered(0.6), 0.0);
+    r.transport("band", true, 0.0);
+    let _ = run(&mut r, 25.0, 500.0);
+    r.live(PA, 0.6, 600.0);
+    r.set_faders(vec![fader("Rev PA", 5)], 700.0);
+    r
+}
+
+#[test]
+fn a_stops_lowering_takes_back_a_waiting_return_whose_strip_is_away() {
+    // Review R2-1: the stop lowers while Rev ST's strip is away; named
+    // again, it stays low until the start.
+    let mut r = away_while_waiting();
+    r.transport("band", false, 800.0);
+    let _ = run(&mut r, 2800.0, 4800.0);
+    r.set_faders(vec![fader("Rev ST", 4), fader("Rev PA", 5)], 5000.0);
+    r.live(ST, lowered(0.85), 5100.0);
+    let ran = run(&mut r, 5125.0, 6000.0);
+    assert!(
+        writes(&ran).iter().all(|w| w.0 != ST),
+        "Rev ST stays low through the stop: {ran:?}"
+    );
+    r.transport("band", true, 6000.0);
+    let ran = run(&mut r, 6025.0, 6500.0);
+    let ends: Vec<_> = writes(&ran).into_iter().filter(|w| w.2).collect();
+    assert!(ends.contains(&(ST, 0.85, true)), "{ends:?}");
+}
+
+#[test]
+fn a_tap_down_takes_back_a_waiting_return_whose_strip_is_away() {
+    let mut r = away_while_waiting();
+    r.tap(true, 800.0);
+    let _ = run(&mut r, 825.0, 1300.0);
+    r.set_faders(vec![fader("Rev ST", 4), fader("Rev PA", 5)], 1500.0);
+    r.live(ST, lowered(0.85), 1600.0);
+    let ran = run(&mut r, 1625.0, 2500.0);
+    assert!(
+        writes(&ran).iter().all(|w| w.0 != ST),
+        "Rev ST stays low after the tap down: {ran:?}"
+    );
+    assert_eq!(r.state().faders[0].back, Some(0.85));
+}
