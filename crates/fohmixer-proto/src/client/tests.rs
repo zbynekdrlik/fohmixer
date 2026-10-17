@@ -653,6 +653,8 @@ fn api_bodies_round_trip() {
             },
             sockets: 2,
         }),
+        reverb: ReverbStatus::default(),
+        fader_links: Vec::new(),
     };
     let json = serde_json::to_value(&status).unwrap();
     assert_eq!(json["remote"]["https"]["days_left"], 60);
@@ -701,6 +703,12 @@ fn api_bodies_round_trip() {
         "an older hub's answer has no Stream Deck"
     );
     assert_eq!(older.ableset, None, "nor AbleSet's page");
+    let mut before_reverb = json.clone();
+    before_reverb.as_object_mut().unwrap().remove("reverb");
+    before_reverb.as_object_mut().unwrap().remove("fader_links");
+    let before_reverb = serde_json::from_value::<HubStatus>(before_reverb).unwrap();
+    assert_eq!(before_reverb.reverb, ReverbStatus::default());
+    assert!(before_reverb.fader_links.is_empty());
     assert_eq!(json["ableset"]["cert"]["days_left"], 89);
     assert_eq!(json["ableset"]["sockets"], 2);
     // A hub before the WebSocket tunnel (#90 B2) names none.
@@ -732,6 +740,13 @@ fn api_bodies_round_trip() {
     assert_eq!(json["companion"]["api_version"], "1.12.0");
     assert_eq!(json["instances"][0]["listeners"], 4);
     assert_eq!(json["stage_aut"]["writes"], 3);
+    // REVERB and the fader links' switches (#130): the defaults here, and
+    // the defaults from an older hub.
+    assert_eq!(
+        json["reverb"],
+        json!({"aut": false, "faders": 0, "writes": 0, "hands": 0})
+    );
+    assert_eq!(json["fader_links"], json!([]));
     assert_eq!(json["instances"][0]["connect_failures"], 0);
     assert_eq!(
         json["layout"]["unresolved"][0],
@@ -1123,4 +1138,89 @@ fn a_linked_mutes_writes_go_as_one_sets_message_of_set_items() {
     );
     // Any other message carries no write.
     assert_eq!(SetItem::of(ClientMsg::Unsub { sub: "k".into() }), None);
+}
+
+#[test]
+fn the_reverb_state_is_one_message_with_its_faders() {
+    let state = ReverbState {
+        aut: true,
+        low: Some(Low::Stop),
+        playing: Some(false),
+        waiting: false,
+        faders: vec![
+            ReverbFader {
+                key: "band|live_set tracks 4 mixer_device volume|value".into(),
+                label: "Rev ST".into(),
+                back: Some(0.85),
+                hand: false,
+            },
+            ReverbFader {
+                key: "band|live_set tracks 5 mixer_device volume|value".into(),
+                label: "Rev PA".into(),
+                back: None,
+                hand: true,
+            },
+        ],
+    };
+    let wire = json!({"type": "reverb", "aut": true, "low": "stop", "playing": false,
+        "faders": [
+            {"key": "band|live_set tracks 4 mixer_device volume|value", "label": "Rev ST", "back": 0.85},
+            {"key": "band|live_set tracks 5 mixer_device volume|value", "label": "Rev PA", "hand": true}]});
+    assert_eq!(
+        serde_json::to_value(ServerMsg::Reverb(state.clone())).unwrap(),
+        wire
+    );
+    assert_eq!(
+        serde_json::from_value::<ServerMsg>(wire).unwrap(),
+        ServerMsg::Reverb(state)
+    );
+    let bare = json!({"type": "reverb", "aut": false, "faders": []});
+    match serde_json::from_value::<ServerMsg>(bare).unwrap() {
+        ServerMsg::Reverb(s) => {
+            assert!(s.low.is_none() && s.playing.is_none() && !s.waiting && !s.aut)
+        }
+        other => panic!("{other:?}"),
+    }
+    let waiting = json!({"type": "reverb", "aut": true, "waiting": true, "faders": []});
+    match serde_json::from_value::<ServerMsg>(waiting.clone()).unwrap() {
+        ServerMsg::Reverb(s) => {
+            assert!(s.waiting);
+            assert_eq!(serde_json::to_value(ServerMsg::Reverb(s)).unwrap(), waiting);
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(
+        (HUB_REVERB_AUT, HUB_REVERB_LOW),
+        ("reverb_aut", "reverb_low")
+    );
+    assert_eq!(serde_json::to_value(Low::Tap).unwrap(), json!("tap"));
+}
+
+#[test]
+fn a_fader_links_hub_key_names_its_set_and_id_and_reads_back() {
+    let link = LinkId {
+        instance: "band".into(),
+        id: "REV".into(),
+    };
+    assert_eq!(FADER_LINK_PREFIX, "fader_link|");
+    assert_eq!(fader_link_key(&link), "fader_link|band|REV");
+    assert_eq!(fader_link_of("fader_link|band|REV"), Some(link));
+    for key in [
+        "fader_link|band|",
+        "fader_link||REV",
+        "fader_link|REV",
+        "stage_aut",
+        "reverb_aut|band|REV",
+    ] {
+        assert_eq!(fader_link_of(key), None, "{key}");
+    }
+    let status = FaderLinkStatus {
+        instance: "band".into(),
+        id: "REV".into(),
+        on: true,
+    };
+    assert_eq!(
+        serde_json::to_value(&status).unwrap(),
+        json!({"instance": "band", "id": "REV", "on": true})
+    );
 }
