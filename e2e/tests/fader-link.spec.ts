@@ -17,6 +17,7 @@ import {
   selectPage,
   until,
   value2db,
+  withoutHubValuesAfterTheFirst,
 } from "./support/live";
 
 // The fader link (#130, D18; mockup reverb-link-v2): like the linked mute,
@@ -30,6 +31,9 @@ const LAYOUT = join(__dirname, "..", "..", "tools", "import-tosc", "fixtures", "
 /** SimLive's band set: Rev ST on Hand3 # (track 2), Rev PA on Hand4 # (track 3). */
 const ST = "live_set tracks 2 mixer_device volume";
 const PA = "live_set tracks 3 mixer_device volume";
+/** Their tracks (the mutes). */
+const ST_TRACK = "live_set tracks 2";
+const PA_TRACK = "live_set tracks 3";
 const KEYS = [`band|${ST}|value`, `band|${PA}|value`];
 const REV = "fader_link|band|REV";
 /** SimLive's band set: Drums # (track 10) and Bass # (track 11). */
@@ -100,14 +104,18 @@ const change = (from: number, to: number) => value2db(to) - value2db(from);
 test.describe("A fader link", () => {
   let live: LiveClient;
   let before: number[];
+  let mutes: boolean[];
   test.beforeEach(async () => {
     live = await LiveClient.open();
     before = [await live.get("band", ST, "value"), await live.get("band", PA, "value")];
+    mutes = [await live.get("band", ST_TRACK, "mute"), await live.get("band", PA_TRACK, "mute")];
   });
   test.afterEach(async () => {
     live.setHub(REV, true); // the default (Q3): put back what the test switched
     await live.set("band", ST, "value", before[0]);
     await live.set("band", PA, "value", before[1]);
+    await live.set("band", ST_TRACK, "mute", mutes[0]);
+    await live.set("band", PA_TRACK, "mute", mutes[1]);
     await hostLine("band", "tuner track 2 remove");
     await hostLine("band", "tuner track 3 remove");
     await harness("/hub/layout/reset");
@@ -131,7 +139,6 @@ test.describe("A fader link", () => {
   }
 
   test("a leader shown nowhere leads nothing; placed, its link starts on, both marked; the switch is the leader's, the partner's detail names it", async ({ page }) => {
-    test.setTimeout(60_000);
     await live.set("band", ST, "value", 0.36);
     await live.set("band", PA, "value", 0.6);
     await openSurface(page);
@@ -220,16 +227,35 @@ test.describe("A fader link", () => {
     await dispatchPointer(pa, drag(20));
     await until(() => settled(live, PA), (v) => v > 0.6, "Rev PA moved");
     expect(await live.get("band", ST, "value")).toBe(0.36);
-    for (const b of await batches(since, KEYS)) expect(b.sent.map((i: any) => i.key)).toEqual([KEYS[1]]);
+    const unlinked = await until(() => batches(since, KEYS), (b) => b.length > 0, "the unlinked drag's batches");
+    for (const b of unlinked) expect(b.sent.map((i: any) => i.key)).toEqual([KEYS[1]]);
 
     // On again (a page's switch, here the test's client): both marks back.
     live.setHub(REV, true);
-    await expect(strip(page, "Rev PA").getByTestId("fader-link-mark")).toHaveAttribute("data-role", "lead");
+    const mark = strip(page, "Rev PA").getByTestId("fader-link-mark");
+    await expect(mark).toHaveAttribute("data-role", "lead");
     await expect(strip(page, "Rev ST").getByTestId("fader-link-mark")).toHaveAttribute("data-role", "follow");
+
+    // Beside a crowded mute chain the mark is the chain alone (the app's
+    // `flink_compact` over the chain's own count): Rev ST also mutes with
+    // Rev PA (`+MUTE:REV`, the mockup's Vox 1 and Vox 1 S); muted by hand in
+    // Live the chain reads 1/2 and the mark is compact, unmuted it is whole.
+    await live.set("band", ST_TRACK, "mute", false);
+    await live.set("band", PA_TRACK, "mute", false);
+    expect(await hostLine("band", `tuner track 2 set '"Rev ST" +G:REVERBS +FADER:REV +MUTE:REV'`)).toBe("TUNER 1");
+    const chain = strip(page, "Rev PA").getByTestId("mute-link");
+    await expect(chain).toHaveText("2", { timeout: 10_000 });
+    await expect(mark).toHaveAttribute("data-role", "lead");
+    await expect(mark).not.toHaveClass(/\bcompact\b/);
+    await live.set("band", ST_TRACK, "mute", true);
+    await expect(chain).toHaveText("1/2");
+    await expect(mark).toHaveClass(/\bcompact\b/);
+    await live.set("band", ST_TRACK, "mute", false);
+    await expect(chain).toHaveText("2");
+    await expect(mark).not.toHaveClass(/\bcompact\b/);
   });
 
   test("the leader moves its partner by the same dB in one batch, on a drag and a double tap; the partner alone moves alone; one at −∞ stays", async ({ page }) => {
-    test.setTimeout(60_000);
     await live.set("band", ST, "value", 0.36);
     await live.set("band", PA, "value", 0.6);
     const { pa, st } = await linked(page);
@@ -258,7 +284,8 @@ test.describe("A fader link", () => {
     await until(() => settled(live, PA), (v) => Math.abs(v - 0.85) < 1e-6, "Rev PA at 0 dB", 8000);
     const stEnd = await settled(live, ST);
     expect(Math.abs(change(stDown, stEnd) - change(paAt, 0.85)), `Rev ST ${stDown} to ${stEnd}`).toBeLessThan(SAME_DB);
-    for (const b of await batches(since, KEYS)) expect(b.sent.map((i: any) => i.key).sort()).toEqual(KEYS);
+    const tapped = await until(() => batches(since, KEYS), (b) => b.length > 0, "the double tap's batches");
+    for (const b of tapped) expect(b.sent.map((i: any) => i.key).sort()).toEqual(KEYS);
 
     // A partner at −∞ stays there (the page shows it first: the down reads it).
     await live.set("band", ST, "value", 0);
@@ -281,6 +308,48 @@ test.describe("A fader link", () => {
     const lone = await until(() => batches(since, KEYS), (b) => b.length > 0, "the leader's batches");
     for (const b of lone) expect(b.sent.map((i: any) => i.key)).toEqual([KEYS[1]]);
   });
+
+  test("after a reconnect the leader's switch shows its value, stale; a tap before the hub tells it again is refused and sends nothing", async ({ page }) => {
+    // The design's C table (review I1): the switch acts only on a value the
+    // hub sent on this connection (`behave::rail::hold_value` over
+    // `HubValues::fresh_flag`), as STAGE AUT's hold does (connection.spec.ts).
+    const sockets = await withoutHubValuesAfterTheFirst(page);
+    await linked(page);
+    // The socket drops (a Wi-Fi blip): the page reconnects, and the hub's
+    // values do not come on the new socket.
+    await sockets[0].close({ code: 4000, reason: "gone" });
+    await expect.poll(() => sockets.length, { timeout: 10_000 }).toBe(2);
+    await expect(page.getByTestId("surface")).toHaveAttribute("data-connected", "true");
+    // Shown stale: the marks and the switch as they were.
+    await expect(strip(page, "Rev PA").getByTestId("fader-link-mark")).toHaveAttribute("data-role", "lead");
+    await expect(strip(page, "Rev ST").getByTestId("fader-link-mark")).toHaveAttribute("data-role", "follow");
+    const detail = await openDetail(page, "#4");
+    const link = detail.getByTestId("fader-link");
+    await expect(link).toHaveAttribute("data-on", "true");
+    await expect(link).toHaveAttribute("aria-disabled", "false");
+    // A tap: refused with a flash (400 ms: observed, not sampled), nothing sent.
+    await link.evaluate((el) => {
+      (window as any).linkFlashes = 0;
+      new MutationObserver(() => {
+        if (el.classList.contains("failed")) (window as any).linkFlashes += 1;
+      }).observe(el, { attributes: true, attributeFilter: ["class"] });
+    });
+    const since = Date.now();
+    await link.click();
+    await expect.poll(() => page.evaluate(() => (window as any).linkFlashes), { message: "the refusal's flash" }).toBeGreaterThan(0);
+    await expect(link).toHaveAttribute("data-on", "true");
+    // Nothing reached the hub: the switch the test's client sends after the
+    // tap is the only one the event log holds since it (the log is read up
+    // to that record, so a set_hub of the tap would be in it).
+    live.setHub(REV, true);
+    const switched = await until(
+      async () => (await hubEvents()).filter((r: any) => r.ev === "fader_link" && r.ts >= since),
+      (r: any[]) => r.length > 0,
+      "the test's own switch recorded",
+    );
+    expect(switched.map((r: any) => r.on)).toEqual([true]);
+    expect((await hubStatus()).fader_links).toEqual([{ instance: "band", id: "REV", on: true }]);
+  });
 });
 
 test.describe("Podklady All on Tuner tags", () => {
@@ -302,7 +371,6 @@ test.describe("Podklady All on Tuner tags", () => {
   });
 
   test("its tracks are the Tuners' +FADER partners: red without, the same dB in one batch with, 0 dB on a double tap", async ({ page }) => {
-    test.setTimeout(60_000);
     await live.set("band", DRUMS, "value", 0.85);
     await live.set("band", BASS, "value", 0.24);
     await openSurface(page);
