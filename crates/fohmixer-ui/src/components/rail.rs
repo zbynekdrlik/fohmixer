@@ -2,9 +2,13 @@
 //! mockup `docs/mockups/reverb-link-v1.html`, screen 2): a tap acts on the
 //! finger's lift; a 3 s hold turns the automatic mode on or off (the press
 //! is `behave::hold::Hold` with `RAIL_HOLD_MS`: a slide past 10 px, a
-//! cancel, a lost capture, a hidden page or a second finger end it with
-//! nothing done; a primary down ends a press whose end never came, #124).
-//! The look is `behave::rail`'s. Each step goes to the flight recorder.
+//! cancel, a lost capture or a hidden page end it with nothing done; a
+//! second finger is no press, the first goes on). A press whose end never
+//! came ends at the next primary down anywhere on the page (#124, review
+//! I1: a capture-phase window listener). A hold that cannot act (the page
+//! not connected, the hub's flag not known on this connection) shows no
+//! fill and flashes refused at its hold. The decisions are `behave::rail`'s;
+//! each step goes to the flight recorder.
 
 use std::time::Duration;
 
@@ -12,15 +16,22 @@ use fohmixer_proto::client::HUB_STAGE_AUT;
 use fohmixer_proto::layout::Binding;
 use leptos::html;
 use leptos::prelude::*;
-use serde_json::{Value, json};
+use serde_json::json;
+use wasm_bindgen::JsCast;
+use wasm_bindgen::closure::Closure;
 
 use super::buttons::toggle_flag;
 use super::{
-    BtnText, intent_look, key_of, owns_touches, readiness, readiness_now, slot_of, trace_rail,
+    BtnText, down_of, fail_flash, intent_look, key_of, owns_touches, readiness, readiness_now,
+    slot_of, trace_rail,
 };
 use crate::behave::hold::{Hold, Lift};
-use crate::behave::rail::{Aut, RAIL_HOLD_MS, RailLook, rail_press, stage_look};
+use crate::behave::rail::{
+    Aut, RAIL_HOLD_MS, RailLook, SETTLE_MS, cancels, hold_step, hold_value, rail_press, settling,
+    shows_hold, stage_look, stale_press, transport_changed,
+};
 use crate::binding::{mute_sub, transport_sub};
+use crate::diag::perf::Pointer;
 use crate::dom;
 use crate::store::{LiveStore, Readiness, Slot};
 
@@ -30,6 +41,10 @@ pub enum RuleKind {
     /// The merged STAGE button: the stage mics' mute and STAGE AUT.
     Stage(Binding),
 }
+
+/// A page-wide `pointerdown` listener of a rail button (capture phase),
+/// kept to remove it in the cleanup.
+type DownListener = Closure<dyn FnMut(web_sys::PointerEvent)>;
 
 /// A rail button with an automatic mode: the merged STAGE button (#104)
 /// shows the stage mics' mute (lit while they are live, as `StageMicsView`)
@@ -51,27 +66,79 @@ pub fn RuleButton(kind: RuleKind, label: String) -> impl IntoView {
     let spec = StoredValue::new(spec);
     let failed = RwSignal::new(false);
     let hold = StoredValue::new(rail_press());
+    // The press's pointer type (#124: only a primary down of its type ends
+    // a press whose end never came).
+    let press_kind = StoredValue::new(None::<Pointer>);
     let check = StoredValue::new(None::<TimeoutHandle>);
     let holding = RwSignal::new(false);
-    // The timer goes with the button (the cleanup writes no signal of its
-    // own).
+    // The transport's last change not yet settled (the page clock), its
+    // value before, and the one look check after it (review M3).
+    let changed_at = RwSignal::new(None::<f64>);
+    let transport_before = StoredValue::new(None::<bool>);
+    let settle_check = StoredValue::new(None::<TimeoutHandle>);
+    let any_down = StoredValue::new_local(None::<DownListener>);
+    // The timers and the page's listener go with the button (the cleanup
+    // writes no signal of its own).
     on_cleanup(move || {
-        if let Some(Some(handle)) = check.try_update_value(Option::take) {
-            handle.clear();
+        for timer in [check, settle_check] {
+            if let Some(Some(handle)) = timer.try_update_value(Option::take) {
+                handle.clear();
+            }
+        }
+        if let (Some(Some(listener)), Some(window)) =
+            (any_down.try_update_value(Option::take), web_sys::window())
+        {
+            let _ = window.remove_event_listener_with_callback_and_bool(
+                "pointerdown",
+                listener.as_ref().unchecked_ref(),
+                true,
+            );
         }
     });
-    let aut = move || {
+    // Each change of the transport: when it came, and one look check once
+    // it has settled.
+    Effect::new(move |_| {
+        let now_playing = playing.try_with(Slot::flag).flatten();
+        let before = transport_before
+            .try_update_value(|b| std::mem::replace(b, now_playing))
+            .flatten();
+        if !transport_changed(before, now_playing) {
+            return;
+        }
+        let _ = changed_at.try_set(Some(dom::now()));
+        if let Some(Some(handle)) = settle_check.try_update_value(Option::take) {
+            handle.clear();
+        }
+        let timer = set_timeout_with_handle(
+            move || {
+                let _ = settle_check.try_set_value(None);
+                let _ = changed_at.try_set(None);
+            },
+            Duration::from_millis(SETTLE_MS as u64 + 20),
+        );
+        let _ = settle_check.try_set_value(timer.ok());
+    });
+    // STAGE AUT as shown (kept stale through an outage, #104 M4) and as a
+    // hold may act on it (this connection's).
+    let aut = move || store.hub.try_with(|h| h.flag(HUB_STAGE_AUT)).flatten();
+    let fresh_aut = move || {
         store
             .hub
-            .try_with(|h| h.get(HUB_STAGE_AUT).and_then(Value::as_bool))
+            .try_with(|h| h.fresh_flag(HUB_STAGE_AUT))
             .flatten()
     };
+    let connected = move || store.connected.try_get().unwrap_or(false);
+    // The fill and the hold's line: only for a press that can act.
+    let fill = Memo::new(move |_| {
+        shows_hold(holding.try_get().unwrap_or(false), fresh_aut(), connected())
+    });
     let look = Memo::new(move |_| {
         stage_look(
             aut(),
             playing.try_with(Slot::flag).flatten(),
             slot.try_with(Slot::flag).flatten(),
-            holding.try_get().unwrap_or(false),
+            fill.try_get().unwrap_or(false),
+            settling(changed_at.try_get().flatten(), dom::now()),
         )
     });
     // The tap: the stage mics by hand, as STAGE did (I8: Live's value here).
@@ -85,22 +152,25 @@ pub fn RuleButton(kind: RuleKind, label: String) -> impl IntoView {
             }
         });
     };
-    // The hold: STAGE AUT the other way, once the hub's flag is known.
-    let held = move || {
-        let current = store
-            .hub
-            .try_with_untracked(|h| h.get(HUB_STAGE_AUT).and_then(Value::as_bool))
-            .flatten();
-        let connected = store.connected.try_get_untracked().unwrap_or(false);
-        if let (Some(current), true) = (current, connected) {
-            store.set_hub(HUB_STAGE_AUT, json!(!current));
-        }
-    };
     // The flight recorder hears each step with the stage mics' key.
     let step = move |what: &str, pointer: i32| {
         let _ = keys.try_with_value(|k| trace_rail(what, "stage", k, pointer));
     };
-    // The fill follows the press; a press over waits for no check.
+    // The hold: STAGE AUT the other way when it can act, else refused.
+    let held = move |pointer: i32| {
+        let aut = store
+            .hub
+            .try_with_untracked(|h| h.fresh_flag(HUB_STAGE_AUT))
+            .flatten();
+        let connected = store.connected.try_get_untracked().unwrap_or(false);
+        let value = hold_value(aut, connected);
+        step(hold_step(value), pointer);
+        match value {
+            Some(on) => store.set_hub(HUB_STAGE_AUT, json!(on)),
+            None => fail_flash(failed)("STAGE AUT cannot be switched now".to_string()),
+        }
+    };
+    // The press's state follows it; a press over waits for no check.
     let settle = move || {
         let pressing = hold.try_with_value(Hold::holding).unwrap_or(false);
         if !pressing && let Some(Some(handle)) = check.try_update_value(Option::take) {
@@ -108,6 +178,25 @@ pub fn RuleButton(kind: RuleKind, label: String) -> impl IntoView {
         }
         let _ = holding.try_set(pressing);
     };
+    // A press whose end never came ends at the next primary down anywhere
+    // on the page, before any control's handler sees it (#124, review I1).
+    let listener = Closure::wrap(Box::new(move |ev: web_sys::PointerEvent| {
+        let pressing = hold.try_with_value(Hold::pressing).flatten();
+        let kind = press_kind.try_get_value().flatten();
+        if let Some(old) = stale_press(pressing, kind, down_of(&ev)) {
+            let _ = hold.try_update_value(Hold::leave);
+            step("lost", old);
+            settle();
+        }
+    }) as Box<dyn FnMut(web_sys::PointerEvent)>);
+    if let Some(window) = web_sys::window() {
+        let _ = window.add_event_listener_with_callback_and_bool(
+            "pointerdown",
+            listener.as_ref().unchecked_ref(),
+            true,
+        );
+    }
+    let _ = any_down.try_set_value(Some(listener));
     // A hidden page ends a press with nothing done. `visibilitychange`
     // bubbles from the document to the window.
     let hidden = window_event_listener_untyped("visibilitychange", move |_| {
@@ -123,17 +212,13 @@ pub fn RuleButton(kind: RuleKind, label: String) -> impl IntoView {
         ev.prevent_default();
         let id = ev.pointer_id();
         let primary = ev.is_primary();
-        let before = hold.try_with_value(Hold::pressing).flatten();
         let pressed = hold
             .try_update_value(|h| h.down(id, primary, dom::now()))
             .unwrap_or(false);
         if !pressed {
             return;
         }
-        // A primary down ends a press whose end never came (#124).
-        if let Some(old) = before.filter(|old| *old != id) {
-            step("lost", old);
-        }
+        let _ = press_kind.try_set_value(Pointer::parse(&ev.pointer_type()));
         step("press", id);
         if let Some(el) = dom::current_element(&ev) {
             let _ = el.set_pointer_capture(id);
@@ -151,8 +236,7 @@ pub fn RuleButton(kind: RuleKind, label: String) -> impl IntoView {
                     .unwrap_or(false);
                 settle();
                 if holds {
-                    step("hold", id);
-                    held();
+                    held(id);
                 }
             },
             Duration::from_millis(RAIL_HOLD_MS as u64 + 20),
@@ -183,17 +267,14 @@ pub fn RuleButton(kind: RuleKind, label: String) -> impl IntoView {
                 step("tap", id);
                 tap();
             }
-            Lift::Open => {
-                step("hold", id);
-                held();
-            }
+            Lift::Open => held(id),
             Lift::Nothing => {}
         }
     };
     // A cancelled pointer, or one whose capture was lost: nothing done.
     let on_cancel = move |ev: web_sys::PointerEvent| {
         let id = ev.pointer_id();
-        if hold.try_with_value(Hold::pressing).flatten() == Some(id) {
+        if cancels(hold.try_with_value(Hold::pressing).flatten(), id) {
             step("cancel", id);
         }
         let _ = hold.try_update_value(|h| h.cancel(id));
@@ -219,6 +300,9 @@ pub fn RuleButton(kind: RuleKind, label: String) -> impl IntoView {
         })
     };
     let muted = move || (slot.try_with(Slot::flag).flatten() == Some(true)).to_string();
+    let filling = move || fill.try_get().unwrap_or(false).to_string();
+    // The fill's time is the hold's (rule.css reads it).
+    let hold_time = format!("--hold-ms:{RAIL_HOLD_MS}ms;");
     view! {
         <div
             class="btn stage-mics rule-btn"
@@ -226,10 +310,11 @@ pub fn RuleButton(kind: RuleKind, label: String) -> impl IntoView {
             use:owns_touches=touch_keys
             class:on=lit
             class:failed=move || failed.try_get().unwrap_or(false)
+            style=hold_time
             data-testid="stage-mics"
             data-muted=muted
             data-aut=pill
-            data-holding=move || holding.try_get().unwrap_or(false).to_string()
+            data-holding=filling
             data-binding=bound
             aria-disabled=disabled
             on:pointerdown=on_down

@@ -72,23 +72,24 @@
     color: var(--aut-hi);
 }
 
-/* The 3 s hold fills the button from the left, a white bar at its foot:
-   one transition while `data-holding` (a transform, no looping animation,
-   nothing per frame; inside the button, so nothing overflows it). */
+/* The hold fills the button from the left, a white bar at its foot: one
+   transition while `data-holding` (a press that can act; no looping
+   animation, nothing per frame). A clip grows over the button's whole
+   layer, so the fill keeps its rounded leading edge and nothing overflows
+   the button; its time is the component's `--hold-ms` (`RAIL_HOLD_MS`). */
 .rule-btn .hold {
     position: absolute;
     inset: 0;
     border-radius: 9px;
     background: rgba(234, 234, 240, 0.2);
     box-shadow: inset 0 -3px 0 var(--text);
-    transform: scaleX(0);
-    transform-origin: left;
+    clip-path: inset(0 100% 0 0 round 9px);
     pointer-events: none;
 }
 
 .rule-btn[data-holding="true"] .hold {
-    transform: scaleX(1);
-    transition: transform 3s linear;
+    clip-path: inset(0 0 0 0 round 9px);
+    transition: clip-path var(--hold-ms) linear;
 }
 
 /* Phones: no second line, and the pill is a dot in the corner (no width);

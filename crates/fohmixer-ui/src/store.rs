@@ -16,7 +16,7 @@
 //! disabled (`Readiness`).
 //!
 //! The pure parts are unit-tested natively: here `Slot`, `Readiness`,
-//! `Wanted`, `Badge`, `range_from` and `next_range`, in `conn` the
+//! `Wanted`, `Badge`, `HubValues` (#104), `range_from` and `next_range`, in `conn` the
 //! connection's decisions (reconnect, hello, the watchdog and its pings, the
 //! layout and instance changes), in `intent` the controls' writes waiting
 //! for their ack (#43), in `deck` the Stream Deck's (#52: the key size, the
@@ -276,6 +276,45 @@ pub struct InstanceView {
     pub online: bool,
     pub busy: bool,
     pub set_name: String,
+}
+
+/// The hub values (STAGE AUT, #104), as the hub last sent them (review
+/// M4): kept through an outage, stale from a socket's close until the next
+/// connection's first `hub` message, which replaces them all (the hub sends
+/// every hub value at each attach, so a key it no longer sends goes then).
+/// A stale value is shown, as Live's stale values are (L2); only a fresh
+/// one may be acted on.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct HubValues {
+    values: BTreeMap<String, Value>,
+    /// The values came on the open connection.
+    fresh: bool,
+}
+
+impl HubValues {
+    /// A `hub` message: the first one of a connection replaces every value.
+    pub fn put(&mut self, key: String, value: Value) {
+        if !self.fresh {
+            self.values.clear();
+            self.fresh = true;
+        }
+        self.values.insert(key, value);
+    }
+
+    /// The socket closed: the values stay, stale.
+    pub fn closed(&mut self) {
+        self.fresh = false;
+    }
+
+    /// A flag as last sent (shown; stale or not).
+    pub fn flag(&self, key: &str) -> Option<bool> {
+        self.values.get(key).and_then(Value::as_bool)
+    }
+
+    /// A flag sent on the open connection (what a control may act on).
+    pub fn fresh_flag(&self, key: &str) -> Option<bool> {
+        self.flag(key).filter(|_| self.fresh)
+    }
 }
 
 /// A connection badge's state (spec §2.5 robustness).
