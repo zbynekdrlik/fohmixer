@@ -363,6 +363,14 @@ impl Fader {
     }
 }
 
+/// Held faders waiting for a layout to name them: what is saved of each,
+/// and whether its return waits for Live's value (review N4).
+#[derive(Debug, Clone, PartialEq)]
+struct Waiting {
+    by: Low,
+    faders: Vec<(SavedFader, bool)>,
+}
+
 /// REVERB's state.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Reverb {
@@ -374,7 +382,7 @@ pub struct Reverb {
     /// The stop's lowering starts then (router ms).
     wait: Option<f64>,
     /// Held faders waiting for a layout to name them.
-    restore: Option<SavedLow>,
+    restore: Option<Waiting>,
     writes: u64,
     hands: u64,
 }
@@ -389,7 +397,10 @@ impl Reverb {
             faders: Vec::new(),
             playing: None,
             wait: None,
-            restore: saved.low.clone(),
+            restore: saved.low.as_ref().map(|low| Waiting {
+                by: low.by,
+                faders: low.faders.iter().map(|f| (f.clone(), false)).collect(),
+            }),
             writes: 0,
             hands: 0,
         }
@@ -433,12 +444,15 @@ impl Reverb {
         // (an empty wait is dropped by `restore_held` at once).
         let by = self.low.unwrap_or(Low::Stop);
         self.restore
-            .get_or_insert_with(|| SavedLow {
+            .get_or_insert_with(|| Waiting {
                 by,
                 faders: Vec::new(),
             })
             .faders
-            .extend(old.iter().filter_map(Fader::saved));
+            .extend(
+                old.iter()
+                    .filter_map(|f| f.saved().map(|kept| (kept, f.pending))),
+            );
         if self.followed() != was.as_deref() {
             self.playing = None;
             if self.wait.take().is_some() {
@@ -466,13 +480,13 @@ impl Reverb {
             return Vec::new();
         };
         let mut found: Vec<usize> = Vec::new();
-        let mut waiting: Vec<SavedFader> = Vec::new();
-        for s in saved.faders {
+        let mut waiting: Vec<(SavedFader, bool)> = Vec::new();
+        for (s, pending) in saved.faders {
             let at = self.faders.iter().position(|f| {
                 f.spec.instance == s.instance && f.spec.label == s.label && !f.held()
             });
             let Some(i) = at else {
-                waiting.push(s);
+                waiting.push((s, pending));
                 continue;
             };
             let fader = &mut self.faders[i];
@@ -480,11 +494,12 @@ impl Reverb {
             fader.left = s.left;
             fader.hand = false;
             fader.settled = true;
+            fader.pending = pending;
             found.push(i);
         }
         let count = waiting.len();
         if count > 0 {
-            self.restore = Some(SavedLow {
+            self.restore = Some(Waiting {
                 by: saved.by,
                 faders: waiting,
             });
@@ -552,6 +567,17 @@ impl Reverb {
             Act::Save,
             Act::Tell,
         ]
+    }
+
+    /// Live's value of a fader's volume the hub already holds, handed at a
+    /// new layout: taken only by a fader with no value yet (one recomposed
+    /// onto a key the hub already follows, review N1); a fader that has its
+    /// value heard it already.
+    pub fn cached(&mut self, key: &str, value: f64, now: f64) -> Vec<Act> {
+        if self.faders.iter().any(|f| f.key == key && f.live.is_none()) {
+            return self.live(key, value, now);
+        }
+        Vec::new()
     }
 
     /// `low` says a fader is held lowered: with none held, it ends.
@@ -719,6 +745,16 @@ impl Reverb {
                 if self.wait.take().is_some() {
                     acts.push(Act::Step(Step::Cancelled));
                 }
+            }
+            // Low already: one lowering; but a return waiting for Live's
+            // value is called off, the fader kept low (review N3).
+            (true, true) if self.faders.iter().any(|f| f.pending) => {
+                let why = if self.aut && self.playing == Some(false) {
+                    Low::Stop
+                } else {
+                    Low::Tap
+                };
+                acts.extend(self.lower(why, TAP_MS, now));
             }
             (true, true) => {}
         }
@@ -943,7 +979,7 @@ impl Reverb {
     pub fn saved(&self) -> Saved {
         let mut faders: Vec<SavedFader> = self.faders.iter().filter_map(Fader::saved).collect();
         if let Some(waiting) = &self.restore {
-            faders.extend(waiting.faders.iter().cloned());
+            faders.extend(waiting.faders.iter().map(|(kept, _)| kept.clone()));
         }
         let by = self.low.or_else(|| self.restore.as_ref().map(|r| r.by));
         Saved {
@@ -986,6 +1022,12 @@ pub fn step_line(step: &Step) -> String {
         } if faders.is_empty() => {
             "REVERB AUT takes over the reverb faders already low: they return at the start"
                 .to_string()
+        }
+        Step::Lower {
+            why: Low::Tap,
+            faders,
+        } if faders.is_empty() => {
+            "REVERB keeps the reverb faders low (tap): their waiting return is off".to_string()
         }
         Step::Lower { why, faders } => format!(
             "REVERB lowers {} by {DROP_DB:.0} dB ({})",

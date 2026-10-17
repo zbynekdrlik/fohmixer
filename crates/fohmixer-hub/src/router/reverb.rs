@@ -124,7 +124,6 @@ impl Router {
                 self.subs.unsubscribe(REVERB_CLIENT, &sub);
             }
         }
-        let mut cached: Vec<(String, f64)> = Vec::new();
         for (key, (instance, target)) in wanted {
             if self.reverb.watched.contains_key(&key) {
                 continue;
@@ -134,11 +133,6 @@ impl Router {
                 .subscribe(REVERB_CLIENT, &instance, &target, "value", false)
             {
                 Ok(reply) => {
-                    if let Some(Cached::Value { value, .. }) = &reply.cached
-                        && let Some(v) = value.as_f64()
-                    {
-                        cached.push((key.clone(), v));
-                    }
                     self.reverb.watched.insert(key, reply.key);
                 }
                 Err((_, error)) => {
@@ -149,9 +143,21 @@ impl Router {
         let now = self.now_ms();
         let acts = self.reverb.rule.set_faders(faders, now);
         self.reverb_apply(acts, None);
-        for (key, value) in cached {
+        // Every followed fader's value the table holds, the keys followed
+        // before too: a fader the new layout put on another one's key has
+        // none of its own yet (review N1).
+        let held: Vec<(String, f64)> = self
+            .reverb
+            .watched
+            .iter()
+            .filter_map(|(key, sub)| match self.subs.cached(sub) {
+                Some(Cached::Value { value, .. }) => value.as_f64().map(|v| (key.clone(), v)),
+                _ => None,
+            })
+            .collect();
+        for (key, value) in held {
             let now = self.now_ms();
-            let acts = self.reverb.rule.live(&key, value, now);
+            let acts = self.reverb.rule.cached(&key, value, now);
             self.reverb_apply(acts, None);
         }
         if let Some(instance) = self.reverb.rule.followed().map(str::to_string)
