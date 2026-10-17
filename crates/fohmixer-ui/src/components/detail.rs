@@ -18,6 +18,7 @@ use serde_json::json;
 use super::buttons::{Corner, MuteView, Partner, anchor_name, colour_style};
 use super::eq::EqCards;
 use super::fader::{FaderView, Law, Target};
+use super::fader_link::{FaderFollowView, FaderLinkView, link_parts};
 use super::meter::{MeterView, StatusView};
 use super::pan::PanView;
 use super::strip::{DbView, ScaleView};
@@ -136,6 +137,10 @@ pub fn DetailView(strip: Strip, group: Option<String>) -> impl IntoView {
     let settings = expect_context::<Settings>();
     let shown = use_context::<DetailStrip>();
     let subs = detail_subs(&strip, settings.meter_source);
+    // The fader link (#130, D18): the detail's fader moves a leader's
+    // partners as the strip's does; its right box ends with the switch or
+    // the note.
+    let parts = link_parts(store, &strip, &subs, settings.law);
     let volume = subs.volume.as_ref().map(|s| store.slot(s));
     let pan = subs.pan.as_ref().map(|s| store.slot(s));
     let mute = subs.mute.as_ref().map(|s| store.slot(s));
@@ -227,14 +232,53 @@ pub fn DetailView(strip: Strip, group: Option<String>) -> impl IntoView {
         }
     });
     let db = volume.map(|slot| view! { <DbView state=slot /> });
+    let link_on = parts.link_on;
+    let link_partners = parts.partners;
     let fader = volume.zip(subs.volume.clone()).map(|(slot, spec)| {
         let targets = vec![Target {
             spec: Some(spec),
             slot,
             law: Law::Volume(law),
         }];
-        view! { <FaderView targets=targets shaping={settings.shaping} /> }
+        view! {
+            <FaderView
+                targets=targets
+                shaping={settings.shaping}
+                partners=link_partners
+                link_on=link_on
+            />
+        }
     });
+    // The fader link (#130): a leader's switch, a partner's note.
+    let link_keys: Vec<String> = subs
+        .volume
+        .iter()
+        .chain(&subs.fader_partners)
+        .map(key_of)
+        .collect();
+    let link_box = match (parts.key, parts.follows.is_empty()) {
+        (Some(link_key), _) => {
+            let labels = parts.labels;
+            Some(
+                view! {
+                    <h2 class="detail-title">"FADER"</h2>
+                    <FaderLinkView link_key=link_key labels=labels keys=link_keys />
+                }
+                .into_any(),
+            )
+        }
+        (None, false) => {
+            let follows = parts.follows;
+            Some(
+                view! {
+                    <h2 class="detail-title">"FADER"</h2>
+                    <FaderFollowView follows=follows />
+                }
+                .into_any(),
+            )
+        }
+        (None, true) => None,
+    };
     // The unity line at 0 dB on the fader's law (`strip.css` `.fader::after`).
     let unity = format!("--u:{:.4};", law.to_pos(UNITY));
     let pan_view = pan
@@ -308,6 +352,7 @@ pub fn DetailView(strip: Strip, group: Option<String>) -> impl IntoView {
                         <span>"R 50"</span>
                     </div>
                     {centre}
+                    {link_box}
                 </section>
             </div>
         </div>

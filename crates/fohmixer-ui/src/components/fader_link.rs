@@ -5,10 +5,15 @@
 use fohmixer_proto::client::fader_link_key;
 use fohmixer_proto::layout::{LinkId, Strip};
 use leptos::prelude::*;
+use serde_json::json;
 
 use super::fader::{Law, Target};
+use super::{BtnText, fail_flash, owns_touches, trace_touch};
 use crate::behave::fader::VolumeLaw;
-use crate::behave::fader_link::{Flink, flink_of, follows_on, linked};
+use crate::behave::fader_link::{
+    Flink, flink_of, follow_state, follow_text, follows_on, link_text, linked,
+};
+use crate::behave::rail::hold_value;
 use crate::binding::StripSubs;
 use crate::store::LiveStore;
 
@@ -96,4 +101,79 @@ pub fn link_parts(store: LiveStore, strip: &Strip, subs: &StripSubs, law: Volume
         labels,
         follows,
     }
+}
+
+/// A leader's switch in its channel detail (#130, D18): `SPOJENÝ S <the
+/// partners' labels>`, lit while on. A tap asks the hub for the other value
+/// once its value is fresh on this connection and the page is connected
+/// (the rail's rule, `behave::rail::hold_value`), else it flashes refused.
+/// It owns its touches; its tap goes to the flight recorder with the
+/// leader's and its partners' volume keys.
+#[component]
+pub fn FaderLinkView(link_key: String, labels: Vec<String>, keys: Vec<String>) -> impl IntoView {
+    let store = expect_context::<LiveStore>();
+    let text = link_text(&labels);
+    let key = StoredValue::new(link_key);
+    let on = move || {
+        key.try_with_value(|k| store.hub.try_with(|h| h.flag(k)).flatten())
+            .flatten()
+            == Some(true)
+    };
+    let ready = move || store.connected.try_get().unwrap_or(false);
+    let failed = RwSignal::new(false);
+    let touch_keys = keys.clone();
+    let keys = StoredValue::new(keys);
+    let on_down = move |ev: web_sys::PointerEvent| {
+        ev.prevent_default();
+        let _ = keys.try_with_value(|k| trace_touch("tap", k, ev.pointer_id()));
+        let fresh = key
+            .try_with_value(|k| store.hub.try_with_untracked(|h| h.fresh_flag(k)).flatten())
+            .flatten();
+        let connected = store.connected.try_get_untracked().unwrap_or(false);
+        match (hold_value(fresh, connected), key.try_get_value()) {
+            (Some(value), Some(k)) => store.set_hub(&k, json!(value)),
+            _ => fail_flash(failed)("refused".to_string()),
+        }
+    };
+    view! {
+        <div
+            class="btn fader-link"
+            use:owns_touches=touch_keys
+            class:on=on
+            class:failed=move || failed.try_get().unwrap_or(false)
+            data-testid="fader-link"
+            data-on=move || on().to_string()
+            aria-disabled=move || (!ready()).to_string()
+            on:pointerdown=on_down
+        >
+            <BtnText text=text />
+        </div>
+    }
+}
+
+/// A partner's note in its channel detail (#130): each leader that moves
+/// it (`IDE S <leader>`) and whether it does now; no switch, no touch.
+#[component]
+pub fn FaderFollowView(follows: Vec<Follow>) -> impl IntoView {
+    let store = expect_context::<LiveStore>();
+    follows
+        .into_iter()
+        .map(|f| {
+            let who = follow_text(&f.leader);
+            let key = StoredValue::new(f.key);
+            let flag = move || {
+                key.try_with_value(|k| store.hub.try_with(|h| h.flag(k)).flatten())
+                    .flatten()
+            };
+            let (leader, fixed) = (f.leader, f.fixed);
+            let state = move || follow_state(flag(), fixed, &leader);
+            let on = move || (fixed || flag() == Some(true)).to_string();
+            view! {
+                <div class="fader-follow" data-testid="fader-follow" data-on=on>
+                    <span class="fader-follow-who">{who}</span>
+                    <span class="fader-follow-state">{state}</span>
+                </div>
+            }
+        })
+        .collect_view()
 }
