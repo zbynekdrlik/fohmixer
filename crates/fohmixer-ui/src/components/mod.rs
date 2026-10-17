@@ -164,6 +164,19 @@ pub fn trace_detail(what: &str, why: Option<&str>, keys: &[String], pointer: Opt
     ));
 }
 
+/// Records a rail button's press step (#104, #130, D18,
+/// `diag::trace::rail`) with the keys it writes, in the page's flight
+/// recorder.
+pub fn trace_rail(what: &str, button: &str, keys: &[String], pointer: i32) {
+    crate::diag::record(&crate::diag::trace::rail(
+        dom::epoch_now(),
+        what,
+        button,
+        keys,
+        pointer,
+    ));
+}
+
 /// The flight recorder's name of the event that ends a touch: `up` for a
 /// `pointerup`, `cancel` for a `pointercancel`; none for the
 /// `lostpointercapture` that follows either (it ends nothing new).
