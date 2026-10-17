@@ -545,6 +545,12 @@ impl Entry<'_> {
             .unwrap_or_else(|| placeholder_label(self.found.index))
     }
 
+    /// Whether its strip is placed: in a tag group, so in the served layout
+    /// (a marker without `+G:` shows nowhere, `NoGroup`).
+    fn placed(&self) -> bool {
+        !self.marker.groups.is_empty()
+    }
+
     /// Whether its strip shows a conflict (an equal label elsewhere).
     fn conflict(&self) -> bool {
         self.problems
@@ -554,8 +560,9 @@ impl Entry<'_> {
 
     /// The strip it shows: bound to its track by index, its label (or the
     /// track's number when the label is missing), its mark, its linked
-    /// mute, whether it is a reverb fader (#130: never in a conflict, the
-    /// rule knows a fader by its label).
+    /// mute, whether it is a reverb fader (#130: only with a label of its
+    /// own, never a placeholder or one in conflict: the rule knows a fader
+    /// by its label across layouts and restarts).
     fn strip(&self) -> Strip {
         let mark = if self.conflict() {
             Some(StripMark::Conflict)
@@ -576,7 +583,7 @@ impl Entry<'_> {
             label: Some(self.label()),
             mark,
             mute_links: self.links.clone(),
-            reverb: self.marker.reverb && !self.conflict(),
+            reverb: self.marker.reverb && self.marker.label.is_some() && !self.conflict(),
             fader_link: self.leads.clone(),
             fader_follows: self.follows.clone(),
         }
@@ -672,7 +679,8 @@ fn link_mutes(entries: &mut [Entry<'_>], ids: &Ids) {
 /// link; the partner (its track by index and its label) goes to its
 /// leader in Live's order (the entries are in it), and the leader's label
 /// to the partner's strip. A `+FADER` whose id nothing carries, or only its
-/// own strip, is a problem on its marker; a duplicate links nothing.
+/// own strip, is a problem on its marker; a duplicate, or a leader that is
+/// not placed (no `+G:`), links nothing.
 /// Returns each frame fader's partners, by its index.
 fn link_faders(
     entries: &mut [Entry<'_>],
@@ -694,7 +702,9 @@ fn link_faders(
                 Some([Carrier::Marker(own)]) if *own == i => {
                     problems.push((i, TagProblem::SelfFader { id: id.clone() }));
                 }
-                Some([Carrier::Marker(lead)]) => {
+                // A placed leader only (#130 review M1): the hub keeps a
+                // switch for a strip of the served layout.
+                Some([Carrier::Marker(lead)]) if entries[*lead].placed() => {
                     follows.push((
                         i,
                         FaderFollow {
@@ -716,7 +726,8 @@ fn link_faders(
                     ));
                     framed[*f].push(partner);
                 }
-                // A duplicate: marked on its carriers, nothing links.
+                // A duplicate (marked on its carriers), or a leader shown
+                // nowhere (its own `NoGroup`): nothing links.
                 Some(_) => {}
             }
         }
