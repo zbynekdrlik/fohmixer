@@ -469,6 +469,15 @@ try {
     $badLayout = Join-Path $repo 'crates\fohmixer-hub\tests\fixtures\layout-bad.json'
     Assert ((Test-FohHubLayout -Exe $HubExe -Layout $okLayout -Text $goodToml -Dir $checkDir) -like '*: OK*') 'hub-layout-check-accepts-the-fixture'
     Assert ((ErrorOf { Test-FohHubLayout -Exe $HubExe -Layout $badLayout -Text $goodToml -Dir $checkDir }) -like '*refused by the new hub (exit 2)*sections*color*') 'hub-layout-check-refuses-with-the-hubs-reason'
+    # A layout that still holds STAGE AUT's own toggle (#104, D18: refused from
+    # 1.3.0) is refused by the new hub before the install stops anything.
+    $toggleLayout = Join-Path $base 'hub-toggle-layout.json'
+    $okText = [IO.File]::ReadAllText($okLayout)
+    $toggleText = $okText -replace '"rail": \[', '"rail": [{"kind": "hub_toggle", "key": "stage_aut", "label": "STAGE AUT"}, '
+    Assert ($toggleText -ne $okText) 'hub-toggle-layout-made'
+    [IO.File]::WriteAllText($toggleLayout, $toggleText)
+    Assert ((ErrorOf { Test-FohHubLayout -Exe $HubExe -Layout $toggleLayout -Text $goodToml -Dir $checkDir }) -like '*refused by the new hub (exit 2)*does not parse*unknown variant*hub_toggle*') 'hub-layout-check-refuses-a-hub-toggle'
+    Remove-Item -LiteralPath $toggleLayout
     Assert (@(Get-ChildItem -LiteralPath $checkDir -Force).Count -eq 0) 'hub-layout-check-leaves-no-file'
     # The installed toml's remote tables, as they were written.
     Assert ((Get-FohInstalledRemoteToml -Text ((New-FohHubToml -HttpPort 1 -BandPort 2 -MasterPort 3) + $gotRemote)) -ceq $gotRemote) 'installed-remote-tables-read-back-as-written'

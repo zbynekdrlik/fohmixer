@@ -104,6 +104,22 @@ fn a_layout_the_hub_would_serve_passes_and_another_is_exit_2_with_why() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert_eq!(out.status.code(), Some(2), "{stderr}");
     assert!(stderr.contains(r#"unknown instance "master""#), "{stderr}");
+    // A layout that still holds STAGE AUT's own toggle (#104, D18): the
+    // installer's check refuses it before anything stops.
+    let ok = std::fs::read_to_string(fixtures.join("layout-ok.json")).unwrap();
+    let with_toggle = ok.replacen(
+        "\"rail\": [",
+        r#""rail": [{"kind": "hub_toggle", "key": "stage_aut", "label": "STAGE AUT"}, "#,
+        1,
+    );
+    assert_ne!(with_toggle, ok);
+    let toggle = dir.path().join("hub-toggle.json");
+    std::fs::write(&toggle, with_toggle).unwrap();
+    let out = layout_check(&toggle, &config);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(2), "{stderr}");
+    assert!(stderr.contains("does not parse"), "{stderr}");
+    assert!(stderr.contains("unknown variant `hub_toggle`"), "{stderr}");
     // A config the hub refuses, or a missing file, is exit 2 too.
     let out = layout_check(
         &fixtures.join("layout-ok.json"),
