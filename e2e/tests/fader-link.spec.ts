@@ -266,6 +266,20 @@ test.describe("A fader link", () => {
     await dispatchPointer(pa, drag(-20));
     await until(() => settled(live, PA), (v) => v < 0.85, "Rev PA down");
     expect(await live.get("band", ST, "value")).toBe(0);
+
+    // A leader at −∞ moves alone (the main session's ruling on #130: the
+    // same dB is undefined from there; a move up threw the partner to
+    // +6 dB). Both values shown on the strips first: the down reads them.
+    await live.set("band", ST, "value", 0.36);
+    await live.set("band", PA, "value", 0);
+    await expect(strip(page, "Rev ST").getByTestId("db")).toHaveText(dbForm(await live.display("band", ST, 0.36)));
+    await expect(strip(page, "Rev PA").getByTestId("db")).toHaveText(dbForm(await live.display("band", PA, 0)));
+    since = Date.now();
+    await dispatchPointer(pa, drag(40));
+    await until(() => settled(live, PA), (v) => v > 0, "Rev PA up from −∞");
+    expect(await live.get("band", ST, "value"), "Rev ST unchanged").toBe(0.36);
+    const lone = await until(() => batches(since, KEYS), (b) => b.length > 0, "the leader's batches");
+    for (const b of lone) expect(b.sent.map((i: any) => i.key)).toEqual([KEYS[1]]);
   });
 });
 

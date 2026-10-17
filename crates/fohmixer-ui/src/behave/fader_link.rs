@@ -214,6 +214,31 @@ mod tests {
     }
 
     #[test]
+    fn a_leader_at_minus_infinity_moves_alone() {
+        // Same dB is undefined from −∞ (the main session's ruling on #130):
+        // a move up would throw every partner to +6 dB, a write at the
+        // bottom give NaN. The leader moves alone.
+        assert!(link_drag(Some(0.0), &[Some(0.6)]).is_none());
+        // The lowest volume above the floor (the law's bisection step,
+        // `volume_of(-70.0.next_up())`) is a level: it leads.
+        let lowest = 3.0517578125e-05;
+        assert!(value2db(lowest).is_finite());
+        let (drag, idx) = link_drag(Some(lowest), &[Some(0.6)]).expect("a level leads");
+        assert_eq!(idx, vec![0]);
+        assert_eq!(link_volumes(&drag, &idx, lowest), vec![(0, 0.6)]);
+    }
+
+    #[test]
+    fn a_partner_at_minus_infinity_stays_there_when_the_leader_moves() {
+        let (drag, idx) = link_drag(Some(0.6), &[Some(0.0), Some(0.36)]).unwrap();
+        assert_eq!(idx, vec![0, 1]);
+        let up = link_volumes(&drag, &idx, 0.7);
+        assert_eq!(up[0], (0, 0.0));
+        assert!(up[1].1 > 0.36);
+        assert_eq!(link_volumes(&drag, &idx, 0.5)[0], (0, 0.0));
+    }
+
+    #[test]
     fn a_linked_touch_starts_from_the_own_and_every_partner_with_a_value() {
         assert!(
             link_drag(None, &[Some(0.6)]).is_none(),
