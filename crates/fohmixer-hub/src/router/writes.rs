@@ -18,12 +18,17 @@
 //! A `sets` (#127, a linked mute's tracks) hands every item to its setter
 //! before any batch is written: one instance's items go to Live together.
 //! It takes at most `MAX_SETS` (32) items; the others are acked failed.
+//!
+//! REVERB (#130, D18, `router/reverb.rs`) writes through here too, as its
+//! own client (`REVERB_CLIENT`): every page's write of a key reaches the
+//! rule first (the hand), and the acks of the rule's writes go to it.
 
 use std::collections::BTreeSet;
 
 use fohmixer_proto::client::{AckItem, MAX_SETS, set_key};
 use serde_json::{Value, json};
 
+use super::reverb::REVERB_CLIENT;
 use super::{Router, RouterMsg};
 use crate::clock::one_way_delay;
 use crate::live::subs::ClientId;
@@ -151,9 +156,13 @@ impl Router {
     }
 
     /// A set's record and its setter's want (an unknown instance's is
-    /// acked with an error at once).
-    fn take_set(&mut self, set: SetMsg) {
+    /// acked with an error at once). A page's write of a reverb fader is
+    /// the hand (#130): the rule hears it before the setter takes it.
+    pub(super) fn take_set(&mut self, set: SetMsg) {
         let key = set_key(&set.instance, &set.target, &set.prop);
+        if set.client != REVERB_CLIENT {
+            self.reverb_hand(&key, set.client);
+        }
         let now = self.now_ms();
         let want = Want {
             client: set.client,
@@ -251,8 +260,17 @@ impl Router {
             tracing::warn!(instance, rtt_ms = applied.rtt_ms, "{problem}");
         }
         let round = Some((applied.batch, applied.rtt_ms));
+        let mine: Vec<AckItem> = applied
+            .acks
+            .iter()
+            .filter(|(c, _)| *c == REVERB_CLIENT)
+            .map(|(_, a)| a.clone())
+            .collect();
         for (client, ack) in applied.acks {
             self.send_ack(instance, client, ack, round);
+        }
+        for ack in &mine {
+            self.reverb_acked(ack);
         }
         self.write_next(instance);
     }

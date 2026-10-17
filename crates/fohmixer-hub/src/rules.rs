@@ -96,7 +96,8 @@ impl StageAut {
 pub struct HubState {
     #[serde(default)]
     pub stage_aut: bool,
-    /// REVERB (#130, D18): `reverb_aut` and, from PR 4, `reverb_low`.
+    /// REVERB (#130, D18): `reverb_aut` and `reverb_low` (what the rule
+    /// holds lowered, by fader identity).
     #[serde(flatten)]
     pub reverb: reverb::Saved,
     /// The fader links' switches a page set (#130, D18).
@@ -108,7 +109,8 @@ impl HubState {
     /// `<data>/hub-state.json`; missing is the defaults. A file that does not
     /// parse is logged and read as the defaults (the rules off) — never a
     /// reason to leave the mixer down — and is not overwritten until a hub
-    /// value changes (STAGE AUT, a fader link's switch; #130).
+    /// value changes (STAGE AUT, a fader link's switch, REVERB AUT or what
+    /// REVERB holds lowered; a layout alone saves nothing; #130).
     pub fn load(data_dir: &Path) -> Self {
         let path = data_dir.join(HUB_STATE_FILE);
         match std::fs::read_to_string(&path) {
