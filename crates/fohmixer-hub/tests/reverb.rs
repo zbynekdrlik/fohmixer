@@ -359,9 +359,6 @@ fn a_host_restart_while_lowered_lowers_nothing_again() {
             s.faders.len() == 2 && s.faders.iter().all(|f| f.hand && f.back.is_none())
         })
         .await;
-        // A lowering would have begun by now: its wait is 2 s from the
-        // first transport value, which came with the connect.
-        tokio::time::sleep(Duration::from_millis(2500)).await;
         assert_eq!(
             volume(&mut a, 2).await,
             0.75,
