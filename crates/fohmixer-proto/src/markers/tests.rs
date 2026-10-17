@@ -1100,7 +1100,7 @@ fn fader_tags_parse_each_id_once_by_the_group_name_rule() {
 
 #[test]
 fn a_leaders_id_named_by_fader_tags_links_their_volumes_in_lives_order() {
-    let found = vec![
+    let found = [
         found(
             "band",
             TrackKind::Track,
@@ -1195,7 +1195,7 @@ fn one_id_serves_a_mute_link_and_a_fader_link() {
 
 #[test]
 fn a_fader_tags_problems_mirror_the_linked_mutes() {
-    let found = vec![
+    let found = [
         found(
             "band",
             TrackKind::Track,

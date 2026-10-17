@@ -986,17 +986,20 @@ mod tests {
 
     #[test]
     fn a_linked_fader_alone_is_one_warn_line_and_its_instance_is_checked() {
-        let report = |leader, partners| LinkReport {
+        // Each report its own id: a line names its link, so a mutant that
+        // lets another report through shows as another line.
+        let report = |id: &str, leader, partners| LinkReport {
             instance: "band".into(),
-            id: "PODKLADY".into(),
+            id: id.into(),
             leader,
             partners,
         };
         assert_eq!(
             lonely_lines(&[
-                report(Leader::Frame, 0),
-                report(Leader::Strip, 0),
-                report(Leader::Frame, 2)
+                report("PODKLADY", Leader::Frame, 0),
+                report("REV", Leader::Strip, 0),
+                report("BT", Leader::Frame, 2),
+                report("ONE", Leader::Frame, 1),
             ]),
             vec![
                 "the linked fader band/PODKLADY has no partner: no Tuner of its Live set carries +FADER:PODKLADY"

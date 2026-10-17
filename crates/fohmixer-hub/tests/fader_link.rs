@@ -76,7 +76,7 @@ fn a_leader_its_partner_and_the_linked_fader_come_from_the_tags_and_the_switch_s
         tag(&mut host);
         // The whole composition: both links with all their partners, and
         // the router's reverb faders of the same layout.
-        let links = vec![
+        let links = [
             LinkReport {
                 instance: "band".into(),
                 id: "PODKLADY".into(),

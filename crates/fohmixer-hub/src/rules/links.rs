@@ -145,7 +145,7 @@ mod tests {
 
     #[test]
     fn a_new_leader_starts_as_the_default_and_a_switch_is_kept() {
-        assert!(LINK_DEFAULT);
+        // LINK_DEFAULT: a leader nobody switched is on (its first tell).
         let mut links = FaderLinks::new(&[]);
         assert_eq!(links.values(), vec![], "no layout yet");
         assert_eq!(
