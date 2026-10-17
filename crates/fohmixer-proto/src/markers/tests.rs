@@ -1512,3 +1512,82 @@ fn a_frame_holds_no_fader_link_and_names_a_linked_faders_tracks_by_its_link_only
         ["the fader link band/PODKLADY is named twice"]
     );
 }
+
+#[test]
+fn a_reverb_strip_without_a_label_of_its_own_is_no_reverb_fader() {
+    // #130 review I1: a placeholder label names another track after a
+    // track-list change, so the REVERB rule could not know the fader by it.
+    // The strip keeps its label problem, its only mark.
+    let composed = compose(
+        &frame(),
+        &[
+            found("band", TrackKind::Track, 4, r#""Rev ST" +G:VOCALS +REVERB"#),
+            found("band", TrackKind::Track, 9, "+G:VOCALS +REVERB"),
+            found("band", TrackKind::Track, 10, r#""" +G:VOCALS +REVERB"#),
+            found("band", TrackKind::Track, 11, r#""Rev +G:VOCALS +REVERB"#),
+        ],
+    );
+    for label in ["#10", "#11", "#12"] {
+        let strip = strip_in(&composed.layout, "vocals", label);
+        assert!(!strip.reverb, "{label}");
+        assert_eq!(strip.mark, Some(StripMark::Problem), "{label}");
+    }
+    assert!(strip_in(&composed.layout, "vocals", "Rev ST").reverb);
+    let faders: Vec<String> = composed
+        .layout
+        .reverb_faders()
+        .into_iter()
+        .map(|f| f.label)
+        .collect();
+    assert_eq!(faders, ["Rev ST"]);
+    let problems: Vec<(u32, Vec<TagProblem>)> = composed
+        .problems
+        .iter()
+        .map(|r| (r.index, r.problems.clone()))
+        .collect();
+    assert_eq!(
+        problems,
+        vec![
+            (9, vec![TagProblem::NoLabel]),
+            (10, vec![TagProblem::EmptyLabel]),
+            (
+                11,
+                vec![
+                    TagProblem::UnclosedLabel,
+                    TagProblem::StrayText { text: "Rev".into() }
+                ]
+            ),
+        ]
+    );
+}
+
+#[test]
+fn a_leader_shown_nowhere_leads_nothing() {
+    // #130 review M1: the hub keeps a switch only for a strip of the served
+    // layout (`Layout::fader_leaders`), so a leader without `+G:` (its own
+    // `NoGroup`) gives no follow and is in no link.
+    let composed = compose(
+        &frame(),
+        &[
+            found("band", TrackKind::Track, 3, r#""Rev PA" +ID:REV"#),
+            found(
+                "band",
+                TrackKind::Track,
+                2,
+                r#""Rev ST" +G:VOCALS +FADER:REV"#,
+            ),
+        ],
+    );
+    assert_eq!(
+        strip_in(&composed.layout, "vocals", "Rev ST").fader_follows,
+        vec![]
+    );
+    assert_eq!(composed.links, vec![]);
+    assert_eq!(composed.layout.fader_leaders(), vec![]);
+    let problems: Vec<(u32, Vec<TagProblem>)> = composed
+        .problems
+        .iter()
+        .map(|r| (r.index, r.problems.clone()))
+        .collect();
+    assert_eq!(problems, vec![(3, vec![TagProblem::NoGroup])]);
+}
