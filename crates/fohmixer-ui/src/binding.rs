@@ -72,6 +72,10 @@ pub struct StripSubs {
     /// The linked mute's other tracks' mutes (#127), in the strip's order:
     /// its mute reads and writes them with its own.
     pub linked: Vec<SubSpec>,
+    /// A fader link's partners' volumes (#130, D18): a leader's fader
+    /// writes them with its own by the same dB while its link is on; each
+    /// with the display string (the partner strip's own key).
+    pub fader_partners: Vec<SubSpec>,
 }
 
 impl StripSubs {
@@ -85,6 +89,7 @@ impl StripSubs {
         out.extend(self.meters.iter().cloned());
         out.extend(self.color.iter().cloned());
         out.extend(self.linked.iter().cloned());
+        out.extend(self.fader_partners.iter().cloned());
         out
     }
 
@@ -100,6 +105,7 @@ impl StripSubs {
         out.extend(self.meters.iter().cloned());
         out.extend(self.color.iter().cloned());
         out.extend(self.linked.iter().cloned());
+        out.extend(self.fader_partners.iter().cloned());
         out
     }
 }
@@ -128,6 +134,12 @@ pub fn strip_subs(strip: &Strip, source: MeterSource) -> StripSubs {
             .collect(),
         color: spec(b, "", "color", false),
         linked: strip.mute_links.iter().filter_map(mute_sub).collect(),
+        fader_partners: strip
+            .fader_link
+            .iter()
+            .flat_map(|l| &l.partners)
+            .filter_map(|p| spec(&p.binding, "mixer_device volume", "value", true))
+            .collect(),
     }
 }
 
