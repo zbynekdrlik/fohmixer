@@ -5,7 +5,6 @@ import {
   LiveClient,
   RELOAD_KEY,
   countLoads,
-  dispatchPointer,
   hubEvents,
   openSurface,
   pageEvents,
@@ -108,10 +107,36 @@ test.describe("A reconnect", () => {
       // A hold meanwhile cannot act (I8): no fill, no hold's line, and at
       // 3 s it is refused, recorded so; the flag stays.
       const since = await page.evaluate(() => performance.timeOrigin + performance.now());
-      await dispatchPointer(stage, [{ type: "pointerdown" }, { wait: 1000 }]);
-      await expect(stage).toHaveAttribute("data-holding", "false");
-      await expect(stage.getByTestId("btn-sub")).not.toHaveText(/drž/);
-      await dispatchPointer(stage, [{ wait: 2300 }, { type: "pointerup" }]);
+      // One finger's sequence timed in the page: the look at 1 s, the
+      // refusal's flash right after the 3 s mark (it lasts 400 ms), the lift.
+      const seen = await stage.evaluate(async (el) => {
+        const box = el.getBoundingClientRect();
+        const finger = (type: string) =>
+          new PointerEvent(type, {
+            pointerId: 21,
+            pointerType: "touch",
+            isPrimary: true,
+            clientX: box.x + box.width / 2,
+            clientY: box.y + box.height / 2,
+            bubbles: true,
+            cancelable: true,
+          });
+        const wait = (ms: number) => new Promise((done) => setTimeout(done, ms));
+        el.dispatchEvent(finger("pointerdown"));
+        await wait(1000);
+        const holding = el.getAttribute("data-holding");
+        const line = el.querySelector(".btn-sub")?.textContent ?? "";
+        await wait(2150);
+        const flashed = el.classList.contains("failed");
+        const full = el.getAttribute("data-full");
+        await wait(100);
+        el.dispatchEvent(finger("pointerup"));
+        return { holding, line, flashed, full };
+      });
+      expect(seen.holding).toBe("false");
+      expect(seen.line).not.toMatch(/drž|pusť/);
+      expect(seen.flashed, "the refusal's flash after the 3 s mark").toBe(true);
+      expect(seen.full).toBe("false");
       await page.waitForTimeout(300);
       expect(live.hub.get("stage_aut")).toBe(true);
       const steps = await until(

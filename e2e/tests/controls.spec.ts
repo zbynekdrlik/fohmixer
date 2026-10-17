@@ -167,9 +167,11 @@ test.describe("The merged STAGE button (#104, D18)", () => {
     await until(() => live.get("band", mics, "mute"), (v) => v === false, "live by the tap");
     await expect(button).toHaveClass(/\bon\b/);
 
-    // A 3 s hold turns AUT on: the fill and its line meanwhile, the mics untouched.
+    // A 3 s hold turns AUT on at its lift: the fill (over RAIL_HOLD_MS, its
+    // CSS time from `--hold-ms`) and its line meanwhile, the mics untouched.
     await dispatchPointer(button, [{ type: "pointerdown" }, { wait: 1000 }]);
     expect(await lookOf(button)).toMatchObject({ holding: "true", sub: "drž… zapína AUT" });
+    expect(await button.locator(".hold").evaluate((el) => getComputedStyle(el).transitionDuration)).toBe("3s");
     expect(live.hub.get("stage_aut")).toBe(false);
     await dispatchPointer(button, [{ wait: 2300 }, { type: "pointerup" }]);
     await until(async () => live.hub.get("stage_aut"), (v) => v === true, "STAGE AUT on");
@@ -280,10 +282,84 @@ test.describe("The merged STAGE button (#104, D18)", () => {
     }
   });
 
+  test("a hold with no lift stays full and sends nothing; the next primary finger ends it lost (#104)", async ({ page }) => {
+    await live.call("band", "live_set", "stop_playing");
+    await live.set("band", mics, "mute", false);
+    live.setHub("stage_aut", false);
+    const volume = `${track("Hand2 #")} mixer_device volume`;
+    const level = await live.get("band", volume, "value");
+    try {
+      await openSurface(page);
+      const since = await pageNow(page);
+      const button = page.getByTestId("stage-mics");
+      await ready(button);
+      const fader = strip(page, "Hand2 #").getByTestId("fader");
+      await ready(fader);
+      // A finger on STAGE whose end never comes (a dispatched pointer
+      // captures nothing, #124's state), and nothing else touched.
+      await dispatchPointer(button, [{ type: "pointerdown" }, { wait: 3200 }], 21);
+      await expect(button).toHaveAttribute("data-full", "true");
+      await expect(button).toHaveAttribute("data-holding", "true");
+      await expect(button.getByTestId("btn-sub")).toHaveText("pusť — zapne AUT");
+      expect(live.hub.get("stage_aut")).toBe(false);
+      expect(await live.get("band", mics, "mute")).toBe(false);
+      expect(await railSteps(since, (s) => s.includes("full"))).toEqual(["press", "full"]);
+      // At 5 s still nothing.
+      await page.waitForTimeout(1800);
+      await expect(button).toHaveAttribute("data-full", "true");
+      expect(live.hub.get("stage_aut")).toBe(false);
+      expect(await live.get("band", mics, "mute")).toBe(false);
+      // The next primary finger, on a fader's cap, ends it with nothing done.
+      await dispatchPointer(fader.locator(".fader-cap"), [{ type: "pointerdown" }, { wait: 50 }, { type: "pointerup" }], 22);
+      await expect(button).toHaveAttribute("data-full", "false");
+      await expect(button).toHaveAttribute("data-holding", "false");
+      await page.waitForTimeout(300);
+      expect(live.hub.get("stage_aut")).toBe(false);
+      await expect(button).toHaveAttribute("data-aut", "off");
+      expect(await railSteps(since, (s) => s.includes("lost"))).toEqual(["press", "full", "lost"]);
+    } finally {
+      await live.set("band", volume, "value", level);
+    }
+  });
+
+  test("a hold turns STAGE AUT on and off at its lift once full, never before (#104)", async ({ page }) => {
+    await live.call("band", "live_set", "stop_playing");
+    await live.set("band", mics, "mute", false);
+    live.setHub("stage_aut", false);
+    await openSurface(page);
+    const since = await pageNow(page);
+    const button = page.getByTestId("stage-mics");
+    await ready(button);
+    const sub = button.getByTestId("btn-sub");
+    // On: full at 3 s, unchanged until the lift.
+    await dispatchPointer(button, [{ type: "pointerdown" }, { wait: 3200 }]);
+    await expect(button).toHaveAttribute("data-full", "true");
+    await expect(sub).toHaveText("pusť — zapne AUT");
+    await page.waitForTimeout(300);
+    expect(live.hub.get("stage_aut"), "nothing before the lift").toBe(false);
+    await dispatchPointer(button, [{ type: "pointerup" }]);
+    await until(async () => live.hub.get("stage_aut"), (v) => v === true, "STAGE AUT on at the lift");
+    await expect(button).toHaveAttribute("data-full", "false");
+    await expect(button).toHaveAttribute("data-aut", "run");
+    // Off the same way.
+    await dispatchPointer(button, [{ type: "pointerdown" }, { wait: 3200 }]);
+    await expect(button).toHaveAttribute("data-full", "true");
+    await expect(sub).toHaveText("pusť — vypne AUT");
+    await page.waitForTimeout(300);
+    expect(live.hub.get("stage_aut"), "nothing before the lift").toBe(true);
+    await dispatchPointer(button, [{ type: "pointerup" }]);
+    await until(async () => live.hub.get("stage_aut"), (v) => v === false, "STAGE AUT off at the lift");
+    await expect(button).toHaveAttribute("data-aut", "off");
+    expect(await live.get("band", mics, "mute")).toBe(false);
+    expect(
+      await railSteps(since, (s) => s.filter((w) => w === "hold").length >= 2),
+    ).toEqual(["press", "full", "hold", "press", "full", "hold"]);
+  });
+
   test.describe("at the iPad's size", () => {
     test.use({ viewport: { width: 1194, height: 834 } });
 
-    test("with STAGE AUT on, each of its four lines and the pill fit the button", async ({ page }) => {
+    test("with STAGE AUT on, each of its four lines, the full press's two and the pill fit the button", async ({ page }) => {
       await live.call("band", "live_set", "stop_playing");
       await live.set("band", mics, "mute", false);
       live.setHub("stage_aut", true);
@@ -312,6 +388,15 @@ test.describe("The merged STAGE button (#104, D18)", () => {
       await button.click();
       await until(() => live.get("band", mics, "mute"), (v) => v === false, "live by the tap");
       await fits("ručne do zastavenia", "held");
+      // The full press's two lines (#104): a hold to full, then its lift.
+      await dispatchPointer(button, [{ type: "pointerdown" }, { wait: 3200 }]);
+      await fits("pusť — vypne AUT", "held");
+      await dispatchPointer(button, [{ type: "pointerup" }]);
+      await until(async () => live.hub.get("stage_aut"), (v) => v === false, "STAGE AUT off");
+      await dispatchPointer(button, [{ type: "pointerdown" }, { wait: 3200 }]);
+      await fits("pusť — zapne AUT", "off");
+      await dispatchPointer(button, [{ type: "pointerup" }]);
+      await until(async () => live.hub.get("stage_aut"), (v) => v === true, "STAGE AUT on");
     });
   });
 });
