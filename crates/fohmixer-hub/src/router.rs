@@ -410,7 +410,7 @@ impl Router {
         // The rules follow every instance's transport from the start (the
         // table resolves it at the connect).
         let mut subs = Subs::new(live.keys().cloned());
-        let transport = live
+        let transport: BTreeMap<String, TransportWatch> = live
             .keys()
             .filter_map(|name| {
                 subs.subscribe(RULES_CLIENT, name, "live_set", "is_playing", false)
