@@ -936,7 +936,8 @@ class Importer:
             )
         elif node.name == "btn_stage_aut" or (node.type == "GROUP" and node.child("btn_stage_aut")):
             # D18 (#104): STAGE AUT is the stage control's `aut` (one rail
-            # button: a tap the mics, a 3 s hold the rule), never a control.
+            # button: a tap the mics, a 1 s hold, acting at its lift, the
+            # rule), never a control.
             self.drop(path, "STAGE AUT: the stage button carries it (D18)")
         elif node.type == "GROUP" and any(_midi_of(c) for c in node.children):
             self.midi_group(node, ax, ay, shown, out, path)

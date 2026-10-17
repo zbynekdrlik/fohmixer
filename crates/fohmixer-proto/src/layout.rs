@@ -147,7 +147,8 @@ pub enum Control {
     /// The stage-mic button: the mute of the stage-mic track, lit while the
     /// mics are live (spec F15, #9). `aut`: the hub's STAGE AUT rule drives
     /// this binding's mute, and the button carries its flag (D18, #104: a
-    /// 3 s hold turns it on or off; the `hub_toggle` kind is gone).
+    /// 1 s hold, acting at its lift, turns it on or off; the `hub_toggle`
+    /// kind is gone).
     Stage {
         binding: Binding,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
