@@ -1,6 +1,6 @@
 import type { Page, WebSocketRoute } from "@playwright/test";
 import { test, expect } from "./support/fixtures";
-import { HUB_SOCKET, RELOAD_KEY, countLoads, openSurface, ready, token } from "./support/live";
+import { HUB_SOCKET, LiveClient, RELOAD_KEY, countLoads, dispatchPointer, openSurface, ready, token, until } from "./support/live";
 
 // The hub connection (S4 design note §4, §6; #8 review): the handshake
 // reload is bounded across page loads, and a reconnect forgets the hub's
@@ -61,30 +61,45 @@ test.describe("The protocol handshake", () => {
 
 test.describe("A reconnect", () => {
   test("forgets the hub's values until the hub sends them again", async ({ page }) => {
-    const sockets: WebSocketRoute[] = [];
-    await page.routeWebSocket(HUB_SOCKET, (ws) => {
-      sockets.push(ws);
-      const server = ws.connectToServer();
-      if (sockets.length === 1) return;
-      // Every later socket: all but the hub values (as if the hub had not
-      // sent STAGE AUT yet).
-      server.onMessage((message) => {
-        if (JSON.parse(String(message)).type !== "hub") ws.send(message);
+    // STAGE AUT on (#104, D18: the merged STAGE button carries it).
+    const live = await LiveClient.open();
+    try {
+      live.setHub("stage_aut", true);
+      await until(async () => live.hub.get("stage_aut"), (v) => v === true, "STAGE AUT on");
+      const sockets: WebSocketRoute[] = [];
+      await page.routeWebSocket(HUB_SOCKET, (ws) => {
+        sockets.push(ws);
+        const server = ws.connectToServer();
+        if (sockets.length === 1) return;
+        // Every later socket: all but the hub values (as if the hub had not
+        // sent STAGE AUT yet).
+        server.onMessage((message) => {
+          if (JSON.parse(String(message)).type !== "hub") ws.send(message);
+        });
       });
-    });
-    await openSurface(page);
-    const aut = page.getByTestId("stage-aut");
-    await ready(aut);
-    // The socket drops (a Wi-Fi blip): the page reconnects. (Playwright
-    // closes the hub's side with the same code, which a browser socket takes
-    // only as 1000 or 3000-4999; 4001 is the hub's reload code.)
-    await sockets[0].close({ code: 4000, reason: "gone" });
-    await expect.poll(() => sockets.length, { timeout: 10_000 }).toBe(2);
-    await expect(page.getByTestId("surface")).toHaveAttribute("data-connected", "true");
-    // Connected again, but STAGE AUT has no value from this connection yet:
-    // it takes no tap (I8), however long the hub stays silent about it.
-    await expect(aut).toHaveAttribute("aria-disabled", "true");
-    await page.waitForTimeout(1000);
-    await expect(aut).toHaveAttribute("aria-disabled", "true");
+      await openSurface(page);
+      const stage = page.getByTestId("stage-mics");
+      await ready(stage);
+      await expect(stage).toHaveAttribute("data-aut", "run");
+      // The socket drops (a Wi-Fi blip): the page reconnects. (Playwright
+      // closes the hub's side with the same code, which a browser socket
+      // takes only as 1000 or 3000-4999; 4001 is the hub's reload code.)
+      await sockets[0].close({ code: 4000, reason: "gone" });
+      await expect.poll(() => sockets.length, { timeout: 10_000 }).toBe(2);
+      await expect(page.getByTestId("surface")).toHaveAttribute("data-connected", "true");
+      // Connected again, but STAGE AUT has no value from this connection
+      // yet: the button shows no AUT, however long the hub stays silent
+      // about it, and a 3 s hold turns nothing (I8).
+      await expect(stage).toHaveAttribute("data-aut", "off");
+      await page.waitForTimeout(1000);
+      await expect(stage).toHaveAttribute("data-aut", "off");
+      await dispatchPointer(stage, [{ type: "pointerdown" }, { wait: 3200 }, { type: "pointerup" }]);
+      await page.waitForTimeout(300);
+      expect(live.hub.get("stage_aut")).toBe(true);
+    } finally {
+      live.setHub("stage_aut", false);
+      await until(async () => live.hub.get("stage_aut"), (v) => v === false, "STAGE AUT off");
+      live.close();
+    }
   });
 });

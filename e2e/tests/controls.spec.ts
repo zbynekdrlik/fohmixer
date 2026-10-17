@@ -1,15 +1,19 @@
+import type { Locator, Page } from "@playwright/test";
 import { test, expect } from "./support/fixtures";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   LiveClient,
   centre,
+  dispatchPointer,
   doubleTap,
   harness,
   hostLine,
+  hubEvents,
   hubStatus,
   hubSubscriptions,
   openSurface,
+  pageEvents,
   ready,
   selectPage,
   strip,
@@ -17,9 +21,9 @@ import {
   until,
 } from "./support/live";
 
-// Solo, the stage mics with STAGE AUT, TechAlert, bindings that stay current
-// with no REFRESH ALL and the hub's unfold of the strips' groups (spec F3, F7,
-// F14–F16, I5; #58).
+// Solo, the merged STAGE button (the stage mics and STAGE AUT, #104, D18),
+// TechAlert, bindings that stay current with no REFRESH ALL and the hub's
+// unfold of the strips' groups (spec F3, F7, F14–F16, I5; #58).
 
 let live: LiveClient;
 test.beforeEach(async () => {
@@ -76,48 +80,172 @@ test.describe("Solo buttons", () => {
   });
 });
 
-test.describe("Stage mics and STAGE AUT", () => {
-  test("STAGE AUT mutes the stage mics while Live plays and unmutes them when it stops", async ({ page }) => {
-    const mics = track("Mics Stage #");
+test.describe("The merged STAGE button (#104, D18)", () => {
+  const mics = track("Mics Stage #");
+  /** The button's look read in the page: its attributes and second line. */
+  async function lookOf(button: Locator) {
+    return button.evaluate((el) => ({
+      on: el.classList.contains("on"),
+      aut: el.getAttribute("data-aut"),
+      holding: el.getAttribute("data-holding"),
+      sub: el.querySelector(".btn-sub")?.textContent ?? "",
+    }));
+  }
+
+  /** The page hidden or shown, as an iPad's lock or app switch does (deck.spec's `setHidden`). */
+  async function setHidden(page: Page, hidden: boolean) {
+    await page.evaluate((on) => {
+      const doc = document as any;
+      if (on) {
+        Object.defineProperty(doc, "hidden", { configurable: true, get: () => true });
+        Object.defineProperty(doc, "visibilityState", { configurable: true, get: () => "hidden" });
+      } else {
+        delete doc.hidden;
+        delete doc.visibilityState;
+      }
+      document.dispatchEvent(new Event("visibilitychange", { bubbles: true }));
+    }, hidden);
+  }
+
+  test.afterEach(async () => {
+    live.setHub("stage_aut", false);
     await live.call("band", "live_set", "stop_playing");
     await live.set("band", mics, "mute", false);
+  });
+
+  /** The page clock (the flight recorder's `t`) now. */
+  function pageNow(page: Page): Promise<number> {
+    return page.evaluate(() => performance.timeOrigin + performance.now());
+  }
+
+  /** The rail steps the page recorded since `since`, once uploaded. */
+  async function railSteps(since: number, ok: (steps: string[]) => boolean): Promise<string[]> {
+    return until(
+      async () =>
+        pageEvents(await hubEvents())
+          .filter((e: any) => e.ev === "rail" && e.t >= since)
+          .map((e: any) => e.what),
+      ok,
+      "the rail steps uploaded",
+      15_000,
+    );
+  }
+
+  test("a tap acts on the lift, a 3 s hold turns STAGE AUT on, and the rule follows the transport until a tap overrides it", async ({ page }) => {
+    await live.call("band", "live_set", "stop_playing");
+    await live.set("band", mics, "mute", false);
+    live.setHub("stage_aut", false);
     await openSurface(page);
-    const aut = page.getByTestId("stage-aut");
+    const since = await pageNow(page);
     const button = page.getByTestId("stage-mics");
-    await ready(aut);
     await ready(button);
-    await expect(button).toHaveText("STAGE");
+    await expect(page.getByTestId("stage-aut")).toHaveCount(0);
+    await expect(button.locator(".btn-text")).toHaveText("STAGE");
+    await expect(button).toHaveAttribute("data-aut", "off");
+    await expect(button.getByTestId("aut-badge")).toHaveCount(0);
     await expect(button).toHaveAttribute("data-muted", "false");
-    // Lit while the mics are live, as TouchOSC's button (its script: mute
-    // false -> x 1) and every strip's mute (F12, lit when audible): the
-    // engineer reads a lit STAGE as "the stage is open" (#9, parity audit #21).
+    // Lit while the mics are live, as TouchOSC's button and every strip's
+    // mute (F12, lit when audible): a lit STAGE reads "the stage is open".
     await expect(button).toHaveClass(/\bon\b/);
-    try {
-      if ((await aut.getAttribute("data-on")) === "true") await aut.click();
-      await expect(aut).toHaveAttribute("data-on", "false");
-      await aut.click();
-      await expect(aut).toHaveAttribute("data-on", "true");
-      await live.call("band", "live_set", "start_playing");
-      await until(() => live.get("band", mics, "mute"), (v) => v === true, "muted while playing");
-      await expect(button).toHaveAttribute("data-muted", "true");
-      await expect(button).not.toHaveClass(/\bon\b/);
-      await live.call("band", "live_set", "stop_playing");
-      await until(() => live.get("band", mics, "mute"), (v) => v === false, "live when stopped");
-      await expect(button).toHaveAttribute("data-muted", "false");
-      await expect(button).toHaveClass(/\bon\b/);
-    } finally {
-      live.setHub("stage_aut", false);
-      await live.call("band", "live_set", "stop_playing");
-    }
-    await expect(aut).toHaveAttribute("data-on", "false");
-    // The button itself mutes and unmutes them by hand: dark while muted,
-    // lit again once live.
-    await button.click();
-    await until(() => live.get("band", mics, "mute"), (v) => v === true, "muted by hand");
+    // Its touches are its own (#43 PR G).
+    expect(
+      await button.evaluate((el) => {
+        const e = new Event("touchstart", { bubbles: true, cancelable: true });
+        el.dispatchEvent(e);
+        return e.defaultPrevented;
+      }),
+    ).toBe(true);
+
+    // A tap on the lift: nothing while the finger is down.
+    await dispatchPointer(button, [{ type: "pointerdown" }, { wait: 400 }]);
+    expect(await live.get("band", mics, "mute")).toBe(false);
+    await dispatchPointer(button, [{ type: "pointerup" }]);
+    await until(() => live.get("band", mics, "mute"), (v) => v === true, "muted by the tap");
     await expect(button).not.toHaveClass(/\bon\b/);
     await button.click();
-    await until(() => live.get("band", mics, "mute"), (v) => v === false, "live by hand");
+    await until(() => live.get("band", mics, "mute"), (v) => v === false, "live by the tap");
     await expect(button).toHaveClass(/\bon\b/);
+
+    // A 3 s hold turns AUT on: the fill and its line meanwhile, the mics untouched.
+    await dispatchPointer(button, [{ type: "pointerdown" }, { wait: 1000 }]);
+    expect(await lookOf(button)).toMatchObject({ holding: "true", sub: "drž… zapína AUT" });
+    expect(live.hub.get("stage_aut")).toBe(false);
+    await dispatchPointer(button, [{ wait: 2300 }, { type: "pointerup" }]);
+    await until(async () => live.hub.get("stage_aut"), (v) => v === true, "STAGE AUT on");
+    await expect(button).toHaveAttribute("data-aut", "run");
+    await expect(button.getByTestId("aut-badge")).toHaveText("AUT");
+    await expect(button).toHaveAttribute("data-holding", "false");
+    expect(await live.get("band", mics, "mute")).toBe(false);
+    await expect(button.getByTestId("btn-sub")).toHaveText("stojí · zapnuté");
+
+    // The rule: playing → muted, stopped → live.
+    await live.call("band", "live_set", "start_playing");
+    await until(() => live.get("band", mics, "mute"), (v) => v === true, "muted while playing");
+    await expect(button.getByTestId("btn-sub")).toHaveText("hrá · stíšené");
+    await expect(button).toHaveAttribute("data-aut", "run");
+    await expect(button).not.toHaveClass(/\bon\b/);
+    // A tap during the song overrides it until the next stop: outlined AUT.
+    await button.click();
+    await until(() => live.get("band", mics, "mute"), (v) => v === false, "live by hand during the song");
+    await expect(button).toHaveAttribute("data-aut", "held");
+    await expect(button.getByTestId("btn-sub")).toHaveText("ručne do zastavenia");
+    await live.call("band", "live_set", "stop_playing");
+    await expect(button).toHaveAttribute("data-aut", "run");
+    await expect(button.getByTestId("btn-sub")).toHaveText("stojí · zapnuté");
+    expect(await live.get("band", mics, "mute")).toBe(false);
+
+    // The page's steps in its flight recorder.
+    const steps = await railSteps(since, (s) => s.includes("hold") && s.filter((w) => w === "tap").length >= 3);
+    expect(steps).toEqual(expect.arrayContaining(["press", "tap", "hold"]));
+  });
+
+  test("a slide or a hidden page ends a press with nothing done, and a second 3 s hold turns STAGE AUT off", async ({ page }) => {
+    await live.call("band", "live_set", "stop_playing");
+    await live.set("band", mics, "mute", false);
+    live.setHub("stage_aut", true);
+    await openSurface(page);
+    const since = await pageNow(page);
+    const button = page.getByTestId("stage-mics");
+    await ready(button);
+    await expect(button).toHaveAttribute("data-aut", "run");
+    await expect(button.getByTestId("btn-sub")).toHaveText("stojí · zapnuté");
+
+    // A slide past 10 px ends the press: no hold, no tap.
+    await dispatchPointer(button, [
+      { type: "pointerdown" },
+      { type: "pointermove", dx: 0, dy: 0 },
+      { type: "pointermove", dx: 0, dy: 11 },
+      { wait: 3200 },
+      { type: "pointerup", dy: 11 },
+    ]);
+    await expect(button).toHaveAttribute("data-holding", "false");
+    expect(live.hub.get("stage_aut")).toBe(true);
+    expect(await live.get("band", mics, "mute")).toBe(false);
+    // A hidden page ends a press too.
+    await dispatchPointer(button, [{ type: "pointerdown" }, { wait: 500 }]);
+    await expect(button).toHaveAttribute("data-holding", "true");
+    await setHidden(page, true);
+    await setHidden(page, false);
+    await expect(button).toHaveAttribute("data-holding", "false");
+    await dispatchPointer(button, [{ wait: 2800 }, { type: "pointerup" }]);
+    expect(live.hub.get("stage_aut")).toBe(true);
+    expect(await live.get("band", mics, "mute")).toBe(false);
+    await expect(button).toHaveAttribute("data-aut", "run");
+
+    // A second 3 s hold turns AUT off; the mics stay as they are.
+    await dispatchPointer(button, [{ type: "pointerdown" }, { wait: 500 }]);
+    await expect(button.getByTestId("btn-sub")).toHaveText("drž… vypína AUT");
+    await dispatchPointer(button, [{ wait: 2800 }, { type: "pointerup" }]);
+    await until(async () => live.hub.get("stage_aut"), (v) => v === false, "STAGE AUT off");
+    await expect(button).toHaveAttribute("data-aut", "off");
+    await expect(button.getByTestId("aut-badge")).toHaveCount(0);
+    await expect(button.getByTestId("btn-sub")).toHaveText("");
+    expect(await live.get("band", mics, "mute")).toBe(false);
+
+    // The page's steps in its flight recorder.
+    const steps = await railSteps(since, (s) => s.includes("hold") && s.includes("lost"));
+    expect(steps).toEqual(expect.arrayContaining(["press", "slid", "lost", "hold"]));
+    expect(steps).not.toContain("tap");
   });
 });
 
