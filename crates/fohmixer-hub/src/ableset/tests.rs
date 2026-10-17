@@ -1649,6 +1649,55 @@ async fn closer() -> (String, Arc<AtomicUsize>) {
     (format!("http://{addr}"), taken)
 }
 
+/// A fake AbleSet that reads a request's head, then resets the connection
+/// (`SO_LINGER` 0 before the drop: a reset on every platform, as Windows can
+/// answer a close of an upgrade it does not serve, #90).
+async fn resetter() -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        while let Ok((mut stream, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let mut head = Vec::new();
+                let mut buf = [0_u8; 1024];
+                while !head.windows(4).any(|w| w == b"\r\n\r\n") {
+                    match stream.read(&mut buf).await {
+                        Ok(0) | Err(_) => return,
+                        Ok(n) => head.extend_from_slice(&buf[..n]),
+                    }
+                }
+                stream.set_zero_linger().unwrap();
+            });
+        }
+    });
+    format!("http://{addr}")
+}
+
+#[tokio::test]
+async fn an_upgrade_ableset_resets_after_it_read_is_no_outage() {
+    // #90: AbleSet read the upgrade and reset the connection without an
+    // answer (Windows' way of a close): the client's fault, never an outage.
+    let pair = [("connection", "upgrade"), ("upgrade", "websocket")];
+    let upstream = resetter().await;
+    let (site, records) = site_with(&upstream, proxy::HEAD_TIMEOUT, 16);
+    let reset = router(Arc::clone(&site), None)
+        .oneshot(get_from(NAME, "/elsewhere", "10.0.0.5", &pair))
+        .await
+        .unwrap();
+    assert_eq!(reset.status(), StatusCode::BAD_GATEWAY);
+    let body: Value = serde_json::from_str(&text_of(reset).await).unwrap();
+    assert_eq!(body["code"], "ABLESET_CLOSED");
+    assert!(!site.failing.load(Ordering::Relaxed), "no outage");
+    let records: Vec<Value> = records.try_iter().collect();
+    assert_eq!(records.len(), 1, "{records:?}");
+    let (key, why) = why_of(&records[0]);
+    let text = "AbleSet closed the WebSocket request without an answer: ";
+    assert!(
+        key == "why" && why.starts_with(text) && why.len() > text.len(),
+        "{key}: {why}"
+    );
+}
+
 #[tokio::test]
 async fn a_tunnel_ableset_closed_ends_after_the_grace_though_the_page_stays_silent() {
     let upstream = fake().await;
