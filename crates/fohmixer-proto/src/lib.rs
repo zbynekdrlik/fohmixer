@@ -4,8 +4,8 @@
 //! iemmixer's `iem-core` @ 22372bc), the hub ⇄ client protocol
 //! ([`client`], spec §2.4; the Pro-Q 4 screen's pieces, [`eq`], F28), the
 //! layout document ([`layout`], spec §2.5), the Tuner markers that fill it
-//! ([`markers`], D16) and the LOM path grammar both use ([`path`], S2 design
-//! note §3.1).
+//! ([`markers`], D16), the LOM path grammar both use ([`path`], S2 design
+//! note §3.1) and Live's volume law in dB ([`volume`], #130).
 
 use serde::{Deserialize, Serialize};
 
@@ -14,6 +14,7 @@ pub mod eq;
 pub mod layout;
 pub mod markers;
 pub mod path;
+pub mod volume;
 
 /// Application version: the workspace's `[workspace.package].version`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

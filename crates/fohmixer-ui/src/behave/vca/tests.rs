@@ -115,35 +115,11 @@ fn the_loudest_is_the_largest_known_volume() {
 }
 
 #[test]
-fn the_law_ends_are_its_own() {
-    assert_eq!(value2db(1.0), TOP_DB);
-    assert_eq!(value2db(0.0), f64::NEG_INFINITY);
-    assert!(value2db(1e-9) > FLOOR_DB, "only silence is below the floor");
-    assert_eq!(FLOOR_DB, -70.0);
+fn the_fader_thresholds_are_its_own() {
+    // The law's ends are `fohmixer_proto::volume`'s (#130), tested there.
     assert_eq!(SILENT_DB, -69.95);
     assert_eq!(MOVED_DB, 0.05);
     assert_eq!(SAME_DB, 0.000_001);
-}
-
-#[test]
-fn a_db_maps_to_its_volume_on_the_strips_law_with_both_ends_exact() {
-    // The top: +6 dB and above is volume 1, a hair under it the bisection's.
-    assert_eq!(volume_of(6.0), 1.0);
-    assert_eq!(volume_of(9.5), 1.0);
-    assert_eq!(volume_of(f64::INFINITY), 1.0);
-    assert_eq!(volume_of(6.0_f64.next_down()), 0.999969482421875);
-    // The floor: −70 dB and below (−∞) is volume 0, a hair above it not.
-    assert_eq!(volume_of(-70.0), 0.0);
-    assert_eq!(volume_of(-85.0), 0.0);
-    assert_eq!(volume_of(f64::NEG_INFINITY), 0.0);
-    assert_eq!(volume_of(f64::NAN), 0.0);
-    assert_eq!(volume_of((-70.0_f64).next_up()), 3.0517578125e-05);
-    // In between, the strips' own bisection from 0 dB (`scale::tick_pos`).
-    assert_eq!(volume_of(0.0), 0.850006103515625);
-    assert_eq!(volume_of(-14.0), 0.499969482421875);
-    assert_eq!(volume_of(-20.0), 0.360015869140625);
-    assert_db(volume_of(-40.0), -40.0, 0.01);
-    assert_db(volume_of(-60.0), -60.0, 0.01);
 }
 
 #[test]

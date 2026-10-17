@@ -15,18 +15,18 @@
 //! ([`Home`]).
 //!
 //! A volume's dB and a dB's volume are the strips' law, reused, never a copy
-//! of the curve: [`value2db`] and [`audio_for_db_change`] from 0 dB (as
+//! of the curve (since #130 in `fohmixer_proto::volume`, shared with the
+//! hub): [`value2db`] and `audio_for_db_change` from 0 dB (as
 //! `scale::tick_pos` places the scale's labels), with −∞ as volume 0 and
 //! +6 dB as volume 1.
 
 use fohmixer_proto::layout::{Anchor, ParamTarget};
 
-use super::fader::{UNITY, VolumeLaw, audio_for_db_change, value2db};
+use super::fader::{UNITY, VolumeLaw, value2db};
 
-/// The law's top: Live's volume 1.0 reads +6 dB.
-pub const TOP_DB: f64 = 6.0;
-/// The law's floor: at or below it [`value2db`] reads −∞ (volume 0).
-pub const FLOOR_DB: f64 = -70.0;
+// The law's ends and a dB's volume, shared with the hub (#130,
+// `fohmixer_proto::volume`).
+pub use fohmixer_proto::volume::{FLOOR_DB, TOP_DB, volume_of};
 /// A track this far off 0 dB, or further, highlights the fader (the
 /// mockup's rule: its readout would not read `0.0`).
 pub const MOVED_DB: f64 = 0.05;
@@ -69,18 +69,6 @@ pub fn is_vca(targets: &[ParamTarget]) -> bool {
 /// The loudest of the known volumes (the cap's); none before one is known.
 pub fn loudest(volumes: &[Option<f64>]) -> Option<f64> {
     volumes.iter().flatten().copied().reduce(f64::max)
-}
-
-/// The Live volume of `db` on the strips' law: 1 at +6 dB and above, 0 at
-/// the floor and below (−∞), else the volume `db` away from 0 dB.
-pub fn volume_of(db: f64) -> f64 {
-    if db >= TOP_DB {
-        1.0
-    } else if db > FLOOR_DB {
-        audio_for_db_change(UNITY, db)
-    } else {
-        0.0
-    }
 }
 
 /// Whether a level is off 0 dB enough to show: the amber highlight.

@@ -20,11 +20,12 @@ use crate::diag::perf::Pointer;
 
 use super::{Down, Lost, Motion, Start, Taken, TouchEnd, touch_end};
 
+// Live's volume law in dB, shared with the hub (#130, `fohmixer_proto::volume`).
+pub use fohmixer_proto::volume::{UNITY, audio_for_db_change, value2db};
+
 /// TouchOSC's position ↔ Live volume exponent: `v = p^0.515` (−6 dB at
 /// half travel).
 pub const EXPONENT: f64 = 0.515;
-/// Live's volume at 0 dB: the double-tap target.
-pub const UNITY: f64 = 0.85;
 /// The double-tap glide speed, in positions per second (TouchOSC: 0.005 per
 /// frame; here time-based, so 60 and 120 Hz behave the same).
 pub const GLIDE_SPEED: f64 = 0.3;
@@ -58,9 +59,6 @@ const LINEAR_FROM: f64 = 0.7;
 const LINEAR_TO: f64 = 1.0;
 /// TouchOSC writes a reshaped value back only when it differs by more.
 const WRITE_BACK: f64 = 0.0001;
-/// The bisection steps of `audio_for_db_change`: the Lua halves [0, 1]
-/// until it is at most 1e-4 wide, which takes 14 halvings.
-const BISECT_STEPS: u32 = 14;
 
 /// Tap detection (TouchOSC): a tap moves less than this and lasts less
 /// than `TAP_MS`; a finger that strayed more than `STRAY` must have been
@@ -140,41 +138,6 @@ pub fn linear_pos(value: f64, (min, max): (f64, f64)) -> f64 {
 /// The parameter value at position `p` of its `(min, max)` range.
 pub fn linear_value(p: f64, (min, max): (f64, f64)) -> f64 {
     min + p.clamp(0.0, 1.0) * (max - min)
-}
-
-/// TouchOSC's `value2db`, the dB approximation of a Live volume. Only the
-/// touch shaping and the meter colour use it; every dB text on screen is
-/// Live's own display string (spec X1).
-pub fn value2db(v: f64) -> f64 {
-    // The Lua's ranges, tested from the top: above 1 (or no number) is 0 dB.
-    if v > 1.0 || v.is_nan() {
-        0.0
-    } else if v >= 0.4 {
-        40.0 * v - 34.0
-    } else if v >= 0.15 {
-        -((399.751894 * v - 201.871345).powi(2) + 12630.61132) / 799.503788
-    } else {
-        // Spelled as the Lua computes it (gamma = 7504/5567, then 1/gamma).
-        let gamma = 7504.0 / 5567.0;
-        let db = 118.426374 * v.powf(1.0 / gamma) - 70.0;
-        if db <= -70.0 { f64::NEG_INFINITY } else { db }
-    }
-}
-
-/// The Live volume `db_change` dB away from `start` (TouchOSC's
-/// `dbChangeToAudioChange`: a bisection over 0..1).
-pub fn audio_for_db_change(start: f64, db_change: f64) -> f64 {
-    let target = value2db(start) + db_change;
-    let (mut low, mut high) = (0.0_f64, 1.0_f64);
-    for _ in 0..BISECT_STEPS {
-        let mid = (low + high) / 2.0;
-        if value2db(mid) < target {
-            low = mid;
-        } else {
-            high = mid;
-        }
-    }
-    (low + high) / 2.0
 }
 
 /// The size of a move of `delta` positions on a fader `travel` px long, as a
