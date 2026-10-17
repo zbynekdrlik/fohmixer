@@ -106,7 +106,7 @@ fn rig(dir: &std::path::Path) -> Rig {
     let (plugwin, sim) = sim_plugwin();
     let router = Router::new(
         BTreeMap::from([("band".to_string(), offline_live())]),
-        false,
+        crate::rules::HubState::default(),
         dir.to_path_buf(),
         RouterIo { tx, events },
     )
@@ -1252,7 +1252,7 @@ async fn a_hub_without_the_screen_says_so() {
     let (tx, _rx) = mpsc::unbounded_channel();
     let mut router = Router::new(
         BTreeMap::new(),
-        false,
+        crate::rules::HubState::default(),
         dir.path().to_path_buf(),
         RouterIo {
             tx,
