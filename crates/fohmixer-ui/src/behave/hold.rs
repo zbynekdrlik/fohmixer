@@ -253,7 +253,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_rail_press_holds_at_exactly_1000_ms() {
+    fn a_press_with_its_own_at_check_hold_opens_at_exactly_that_hold() {
         let mut h = Hold::with(1000.0);
         assert!(h.down(1, true, 0.0));
         assert!(!h.open(1000.0_f64.next_down()));
@@ -306,19 +306,27 @@ mod tests {
     #[test]
     fn a_refused_full_mark_makes_the_lift_do_nothing_and_never_a_tap() {
         let mut h = Hold::lifted(1000.0);
+        // A refusal before the full mark does nothing: the press still fills
+        // and acts at its lift.
         assert!(h.down(1, true, 0.0));
         h.refuse();
         assert!(h.holding(), "no full mark yet: nothing to refuse");
         assert!(h.open(1000.0));
+        assert!(h.full(), "the early refusal left no mark");
+        assert_eq!(h.up(1, 1100.0), Lift::Open);
+        // Refused at the full mark: dead, still down until its end, and its
+        // lift does nothing.
+        assert!(h.down(1, true, 2000.0));
+        assert!(h.open(3000.0));
         h.refuse();
         assert!(!h.full() && !h.holding());
         assert_eq!(h.pressing(), Some(1), "still down until its end");
-        assert_eq!(h.up(1, 1500.0), Lift::Nothing);
+        assert_eq!(h.up(1, 3500.0), Lift::Nothing);
         // A new press starts afresh.
-        assert!(h.down(1, true, 2000.0));
-        assert!(h.open(3000.0));
+        assert!(h.down(1, true, 4000.0));
+        assert!(h.open(5000.0));
         assert!(h.full());
-        assert_eq!(h.up(1, 3100.0), Lift::Open);
+        assert_eq!(h.up(1, 5100.0), Lift::Open);
     }
 
     #[test]

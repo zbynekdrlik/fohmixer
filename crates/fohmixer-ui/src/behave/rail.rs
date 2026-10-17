@@ -467,7 +467,6 @@ mod tests {
         assert_eq!(hold_value(Some(true), false), None, "not connected");
         assert_eq!(hold_value(Some(false), false), None);
         assert_eq!(hold_value(None, false), None);
-        // The fill and the hold's line only for a press that can act.
         // The fill and the hold's lines only for a press that can act.
         assert_eq!(fill_of(true, false, Some(false), true), Fill::Filling);
         assert_eq!(fill_of(true, false, Some(true), true), Fill::Filling);
