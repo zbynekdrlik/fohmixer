@@ -4,8 +4,9 @@
 //!
 //! - [`parse`] reads one Tuner's name: the quoted label, the groups with
 //!   their places, `+PIN`, `+MG`, the linked mute's `+ID:<id>` and
-//!   `+MUTE:<id>` (#127), and every problem as a value (never an error: a
-//!   problem is shown on the strip, I9).
+//!   `+MUTE:<id>` (#127), the REVERB rule's `+REVERB` (#130), and every
+//!   problem as a value (never an error: a problem is shown on the strip,
+//!   I9).
 //! - [`compose`] turns the frame (the layout file: pages, rows, the rail)
 //!   and the markers the hub found into the served layout: a frame group
 //!   with `tags` shows that tag group's strips, every other tag group
@@ -57,6 +58,8 @@ pub struct Marker {
     /// `+MUTE:<id>`: the strips whose mute writes this track's mute too
     /// (#127), each id once.
     pub mutes: Vec<String>,
+    /// `+REVERB` (#130, D18): the strip is one of the REVERB rule's faders.
+    pub reverb: bool,
     pub problems: Vec<TagProblem>,
 }
 
@@ -71,6 +74,7 @@ impl Marker {
             && self.id.is_none()
             && !self.pin
             && !self.mute_guard
+            && !self.reverb
             && self.problems.first() == Some(&TagProblem::NoLabel)
     }
 }
@@ -194,6 +198,7 @@ pub fn parse(name: &str) -> Marker {
         match tag {
             "PIN" => marker.pin = true,
             "MG" => marker.mute_guard = true,
+            "REVERB" => marker.reverb = true,
             _ => {
                 if let Some(arg) = tag.strip_prefix("G:") {
                     match group_tag(arg) {
@@ -262,8 +267,9 @@ fn mute_tag(marker: &mut Marker, token: &str, arg: &str) {
 /// What a frame (the layout file) may not hold (#68): a view page or an
 /// id starting with [`VIEW_PREFIX`] (the markers make those), a strip in a
 /// `tags` group (its strips are its markers'; other controls follow them),
-/// or a strip with `mute_links` (#127 review M4: a linked mute is the Tuner
-/// markers' `+ID` and `+MUTE`, never the frame's).
+/// a strip with `mute_links` (#127 review M4: a linked mute is the Tuner
+/// markers' `+ID` and `+MUTE`, never the frame's) or with `reverb` (#130:
+/// the markers' `+REVERB`).
 pub fn frame_problems(frame: &Layout) -> Vec<LayoutError> {
     let mut out = Vec::new();
     let mut id = |at: &str, id: &str| {
@@ -326,24 +332,45 @@ pub fn frame_problems(frame: &Layout) -> Vec<LayoutError> {
             }
         }
     }
-    let linked = |c: &Control| matches!(c, Control::Strip(strip) if !strip.mute_links.is_empty());
-    let mut refuse = |at: String| {
-        out.push(LayoutError {
-            at,
-            message: "a linked mute: the Tuner markers make those".to_string(),
-        });
-    };
+    refuse(
+        frame,
+        &mut out,
+        |c| matches!(c, Control::Strip(s) if !s.mute_links.is_empty()),
+        "a linked mute: the Tuner markers make those",
+    );
+    refuse(
+        frame,
+        &mut out,
+        |c| matches!(c, Control::Strip(s) if s.reverb),
+        "a reverb fader: the Tuner markers make those",
+    );
+    out
+}
+
+/// Refuses each page whose controls, and each global control, `bad` finds,
+/// with `message` (#127, #130: what only the Tuner markers make).
+fn refuse(
+    frame: &Layout,
+    out: &mut Vec<LayoutError>,
+    bad: impl Fn(&Control) -> bool,
+    message: &str,
+) {
     for (i, page) in frame.pages.iter().enumerate() {
-        if page.controls().into_iter().any(linked) {
-            refuse(format!("pages[{i}]"));
+        if page.controls().into_iter().any(&bad) {
+            out.push(LayoutError {
+                at: format!("pages[{i}]"),
+                message: message.to_string(),
+            });
         }
     }
     for (i, control) in frame.global.iter().enumerate() {
-        if linked(control) {
-            refuse(format!("global[{i}]"));
+        if bad(control) {
+            out.push(LayoutError {
+                at: format!("global[{i}]"),
+                message: message.to_string(),
+            });
         }
     }
-    out
 }
 
 /// Whether a marker's track is a track or a return track.
@@ -438,15 +465,19 @@ impl Entry<'_> {
         }
     }
 
+    /// Whether its strip shows a conflict (an equal label elsewhere).
+    fn conflict(&self) -> bool {
+        self.problems
+            .iter()
+            .any(|p| matches!(p, TagProblem::Conflict { .. }))
+    }
+
     /// The strip it shows: bound to its track by index, its label (or the
     /// track's number when the label is missing), its mark, its linked
-    /// mute.
+    /// mute, whether it is a reverb fader (#130: never in a conflict, the
+    /// rule knows a fader by its label).
     fn strip(&self) -> Strip {
-        let conflict = self
-            .problems
-            .iter()
-            .any(|p| matches!(p, TagProblem::Conflict { .. }));
-        let mark = if conflict {
+        let mark = if self.conflict() {
             Some(StripMark::Conflict)
         } else if self.problems.is_empty() {
             None
@@ -470,6 +501,7 @@ impl Entry<'_> {
             ),
             mark,
             mute_links: self.links.clone(),
+            reverb: self.marker.reverb && !self.conflict(),
         }
     }
 }

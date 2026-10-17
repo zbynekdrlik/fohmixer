@@ -181,6 +181,14 @@ pub enum Control {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         mute_guard: bool,
     },
+    /// The REVERB rail button (#130, D18): a tap lowers or returns the
+    /// reverb faders, a 1 s hold, acting at its lift, turns REVERB AUT on
+    /// or off. Its faders are the markers' `+REVERB` strips
+    /// ([`Layout::reverb_faders`]).
+    Reverb {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+    },
 }
 
 /// A strip: its binding, its kind, and how it is drawn and guarded.
@@ -213,6 +221,10 @@ pub struct Strip {
     /// own track alone.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mute_links: Vec<Binding>,
+    /// One of the REVERB rule's faders (#130, D18): its Tuner marker's
+    /// `+REVERB`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub reverb: bool,
 }
 
 /// How a marker strip is marked (#68): a conflict (its label is on another
@@ -294,6 +306,7 @@ impl Control {
             Control::ParamToggle { targets, .. } | Control::ParamFader { targets, .. } => {
                 targets.iter().map(|t| &t.binding).collect()
             }
+            Control::Reverb { .. } => vec![],
         }
     }
 }
@@ -562,6 +575,53 @@ impl Layout {
             .collect();
         tracks.into_iter().collect()
     }
+
+    /// The REVERB rule's faders: every placed strip with `reverb` (a marker
+    /// strip, bound by index), each track once (a strip shows in several
+    /// views), in Live's order: instance, tracks before returns, index.
+    pub fn reverb_faders(&self) -> Vec<RuleFader> {
+        let mut found: std::collections::BTreeMap<(String, u8, u32), RuleFader> =
+            std::collections::BTreeMap::new();
+        for control in self.controls() {
+            let Control::Strip(strip) = control else {
+                continue;
+            };
+            if !strip.reverb {
+                continue;
+            }
+            let (kind, index) = match strip.binding.anchor {
+                Anchor::TrackAt { index } => (0, index),
+                Anchor::ReturnAt { index } => (1, index),
+                _ => continue,
+            };
+            let volume = Binding {
+                instance: strip.binding.instance.clone(),
+                anchor: strip.binding.anchor.clone(),
+                path: Some("mixer_device volume".to_string()),
+            };
+            let Ok(target) = volume.target() else {
+                continue;
+            };
+            found
+                .entry((strip.binding.instance.clone(), kind, index))
+                .or_insert_with(|| RuleFader {
+                    instance: strip.binding.instance.clone(),
+                    label: strip.label.clone().unwrap_or_default(),
+                    target,
+                });
+        }
+        found.into_values().collect()
+    }
+}
+
+/// One fader of the REVERB rule (#130, D18): a reverb strip's track, its
+/// label (the rule knows a fader by it across layouts: a track inserted
+/// above moves the index) and its volume's LOM target.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuleFader {
+    pub instance: String,
+    pub label: String,
+    pub target: String,
 }
 
 struct Validator {
@@ -709,6 +769,7 @@ impl Validator {
                 self.targets(at, targets, true);
             }
             Control::ParamFader { targets, .. } => self.targets(at, targets, false),
+            Control::Reverb { .. } => {}
         }
     }
 

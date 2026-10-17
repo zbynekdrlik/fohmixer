@@ -297,6 +297,8 @@ pub fn ControlView(
             <AlertView binding=binding period_ms=period_ms label=label guarded=mute_guard />
         }
         .into_any(),
+        // The REVERB rail button (#130): drawn from PR 5 on.
+        Control::Reverb { .. } => ().into_any(),
     }
 }
 

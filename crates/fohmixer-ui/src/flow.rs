@@ -43,6 +43,7 @@ mod tests {
             label: None,
             mark: None,
             mute_links: Vec::new(),
+            reverb: false,
         }))
     }
 

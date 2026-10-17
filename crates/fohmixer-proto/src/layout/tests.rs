@@ -599,6 +599,7 @@ fn a_page_lists_its_controls_rail_first() {
             Control::ParamToggle { .. } => "param_toggle",
             Control::ParamFader { .. } => "param_fader",
             Control::Alert { .. } => "alert",
+            Control::Reverb { .. } => "reverb",
         })
         .collect();
     assert_eq!(
@@ -927,4 +928,55 @@ fn only_a_letter_and_a_hyphen_is_a_prefix() {
     assert_eq!(strip_label("B-"), "");
     assert_eq!(strip_label("B"), "B");
     assert_eq!(strip_label(""), "");
+}
+
+#[test]
+fn the_reverb_faders_are_the_placed_reverb_strips_each_track_once_in_lives_order() {
+    let strip = |index: u32, ret: bool, label: &str, reverb: bool| {
+        json!({"kind": "strip",
+        "binding": {"instance": "band", "anchor": if ret { json!({"kind": "return_at", "index": index}) } else { json!({"kind": "track_at", "index": index}) }},
+        "strip_kind": if ret { "return" } else { "standard" }, "label": label, "reverb": reverb})
+    };
+    let layout = parse(json!({"schema": 2, "default_page": "p", "pages": [
+        {"id": "p", "title": "P", "rail": [{"kind": "reverb", "label": "REVERB"}], "rows": [{"sections": [
+            {"kind": "group", "id": "fx", "controls": [strip(0, true, "Rev Ret", true), strip(5, false, "Rev PA", true), strip(4, false, "Rev ST", true), strip(6, false, "Vox 1", false)]}]}]},
+        {"id": "view-FX", "title": "FX", "view": true, "rows": [{"sections": [
+            {"kind": "group", "id": "view-fx", "controls": [strip(4, false, "Rev ST", true)]}]}]}]}));
+    assert!(layout.validate().is_empty(), "{:?}", layout.validate());
+    let faders = layout.reverb_faders();
+    let got: Vec<(&str, &str)> = faders
+        .iter()
+        .map(|f| (f.label.as_str(), f.target.as_str()))
+        .collect();
+    assert_eq!(
+        got,
+        vec![
+            ("Rev ST", "live_set tracks 4 mixer_device volume"),
+            ("Rev PA", "live_set tracks 5 mixer_device volume"),
+            ("Rev Ret", "live_set return_tracks 0 mixer_device volume"),
+        ]
+    );
+    assert!(faders.iter().all(|f| f.instance == "band"));
+    assert!(
+        parse(json!({"schema": 2, "default_page": "p", "pages": [{"id": "p", "title": "P"}]}))
+            .reverb_faders()
+            .is_empty()
+    );
+}
+
+#[test]
+fn a_reverb_control_parses_and_binds_nothing() {
+    let control: Control =
+        serde_json::from_value(json!({"kind": "reverb", "label": "REVERB"})).unwrap();
+    assert_eq!(
+        control,
+        Control::Reverb {
+            label: Some("REVERB".into())
+        }
+    );
+    assert!(control.bindings().is_empty());
+    assert_eq!(
+        serde_json::to_value(Control::Reverb { label: None }).unwrap(),
+        json!({"kind": "reverb"})
+    );
 }

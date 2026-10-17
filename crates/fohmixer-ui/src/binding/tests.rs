@@ -118,6 +118,7 @@ fn strip(name: &str) -> Strip {
         label: None,
         mark: None,
         mute_links: Vec::new(),
+        reverb: false,
     }
 }
 
@@ -360,6 +361,7 @@ fn shown(layout: &Layout, path: &[usize]) -> Vec<String> {
             Control::ParamToggle { label, .. } => label.clone(),
             Control::ParamFader { .. } => "fader".into(),
             Control::Alert { .. } => "alert".into(),
+            Control::Reverb { .. } => "reverb".into(),
         })
         .collect()
 }
@@ -755,6 +757,7 @@ fn marker(index: u32, label: &str) -> Strip {
         label: Some(label.into()),
         mark: None,
         mute_links: Vec::new(),
+        reverb: false,
     }
 }
 

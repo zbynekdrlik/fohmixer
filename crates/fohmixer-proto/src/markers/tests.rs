@@ -680,6 +680,7 @@ fn a_marker_without_a_label_shows_its_tracks_number_and_is_known_by_it() {
         label: Some(label.into()),
         mark: None,
         mute_links: Vec::new(),
+        reverb: false,
     };
     assert!(has_placeholder_label(&bound(
         Anchor::TrackAt { index: 2 },
@@ -1022,4 +1023,44 @@ fn the_linked_mutes_problems_serialize_with_their_codes() {
             {"code": "self_mute", "id": "A"},
         ])
     );
+}
+
+#[test]
+fn reverb_marks_a_strip_of_the_rule_and_never_one_in_conflict() {
+    let marker = parse(r#""Rev ST" +G:VOCALS +REVERB"#);
+    assert!(marker.reverb);
+    assert!(marker.problems.is_empty(), "{:?}", marker.problems);
+    assert!(!parse(r#""Vox 1" +G:VOCALS"#).reverb);
+    let composed = compose(
+        &frame(),
+        &[
+            found("band", TrackKind::Track, 4, r#""Rev ST" +G:VOCALS +REVERB"#),
+            found("band", TrackKind::Track, 6, r#""Vox 1" +G:VOCALS"#),
+            found("band", TrackKind::Track, 7, r#""Rev" +G:VOCALS +REVERB"#),
+            found("band", TrackKind::Track, 8, r#""Rev" +G:HANDS +REVERB"#),
+        ],
+    );
+    assert!(strip_in(&composed.layout, "vocals", "Rev ST").reverb);
+    assert!(!strip_in(&composed.layout, "vocals", "Vox 1").reverb);
+    assert!(
+        !strip_in(&composed.layout, "vocals", "Rev").reverb,
+        "a conflict's label is no identity"
+    );
+    assert!(!strip_in(&composed.layout, "hands", "Rev").reverb);
+}
+
+#[test]
+fn a_frame_strip_cannot_be_a_reverb_fader() {
+    let frame: Layout = serde_json::from_value(
+        json!({"schema": 2, "default_page": "p", "pages": [{"id": "p", "title": "P",
+        "rows": [{"sections": [{"kind": "group", "id": "g", "controls": [{"kind": "strip",
+            "binding": {"instance": "band", "anchor": {"kind": "track", "name": "Rev #"}},
+            "strip_kind": "standard", "reverb": true}]}]}]}]}),
+    )
+    .unwrap();
+    let messages: Vec<String> = frame_problems(&frame)
+        .into_iter()
+        .map(|e| e.message)
+        .collect();
+    assert_eq!(messages, ["a reverb fader: the Tuner markers make those"]);
 }
