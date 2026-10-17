@@ -778,10 +778,8 @@ fn a_return_before_lives_value_waits_for_it_and_lands_exactly() {
     assert_eq!(r.state().faders[0].back, Some(0.85));
     // Live reports it where the rule left it: the return glides from there.
     r.live(ST, lowered(0.85), 1000.0);
-    let ends: Vec<_> = writes(&run(&mut r, 1025.0, 1500.0))
-        .into_iter()
-        .filter(|w| w.2)
-        .collect();
+    let acts = run(&mut r, 1025.0, 1500.0);
+    let ends: Vec<_> = writes(&acts).into_iter().filter(|w| w.2).collect();
     assert_eq!(ends, vec![(ST, 0.85, true)]);
     assert_eq!(r.state().low, None);
     assert_eq!(r.saved().low, None);
@@ -852,10 +850,8 @@ fn an_offline_instances_held_faders_wait_for_its_values_to_return() {
     // Back online, where the rule left them: both return exactly.
     r.live(ST, lowered(0.85), 6000.0);
     r.live(PA, lowered(0.6), 6000.0);
-    let ends: Vec<_> = writes(&run(&mut r, 6025.0, 6500.0))
-        .into_iter()
-        .filter(|w| w.2)
-        .collect();
+    let acts = run(&mut r, 6025.0, 6500.0);
+    let ends: Vec<_> = writes(&acts).into_iter().filter(|w| w.2).collect();
     assert_eq!(ends, vec![(ST, 0.85, true), (PA, 0.6, true)]);
 }
 
@@ -1021,10 +1017,8 @@ fn a_lowering_during_a_return_keeps_the_song_level() {
     );
     run(&mut r, 1275.0, 1750.0);
     r.tap(false, 2000.0);
-    let ends: Vec<_> = writes(&run(&mut r, 2025.0, 2500.0))
-        .into_iter()
-        .filter(|w| w.2)
-        .collect();
+    let acts = run(&mut r, 2025.0, 2500.0);
+    let ends: Vec<_> = writes(&acts).into_iter().filter(|w| w.2).collect();
     assert_eq!(ends, vec![(ST, 0.85, true), (PA, 0.6, true)]);
 }
 
@@ -1074,10 +1068,8 @@ fn a_lowering_for_the_stop_restored_while_live_plays_returns_at_once() {
         "no write before its value"
     );
     r.live(PA, lowered(0.6), 2000.0);
-    let ends: Vec<_> = writes(&run(&mut r, 2025.0, 2500.0))
-        .into_iter()
-        .filter(|w| w.2)
-        .collect();
+    let acts = run(&mut r, 2025.0, 2500.0);
+    let ends: Vec<_> = writes(&acts).into_iter().filter(|w| w.2).collect();
     assert_eq!(ends, vec![(PA, 0.6, true)]);
     assert_eq!(r.state().low, None);
 }
