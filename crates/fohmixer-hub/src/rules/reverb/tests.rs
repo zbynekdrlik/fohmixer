@@ -793,14 +793,14 @@ fn a_return_before_lives_value_lets_go_of_a_fader_found_elsewhere() {
     assert_eq!(run(&mut r, 25.0, 1000.0), vec![]);
     // Moved in Live's own window meanwhile: the hand wins.
     let acts = r.live(ST, 0.7, 1000.0);
-    assert!(matches!(
+    assert_eq!(
         steps(&acts)[0],
-        Step::Hand {
+        &Step::Hand {
+            label: "Rev ST".into(),
             by: By::Live,
-            value: Some(0.7),
-            ..
+            value: Some(0.7)
         }
-    ));
+    );
     assert_eq!(run(&mut r, 1025.0, 2000.0), vec![], "nothing written");
     assert!(r.state().faders[0].hand && r.state().faders[0].back.is_none());
     assert_eq!(r.state().low, None);
@@ -980,6 +980,9 @@ fn a_lowering_during_a_return_keeps_the_song_level() {
     let mut r = rule(false, Some(true));
     r.tap(true, 0.0);
     run(&mut r, 25.0, 500.0);
+    // Live reports them where the rule left them: the return really moves.
+    r.live(ST, lowered(0.85), 600.0);
+    r.live(PA, lowered(0.6), 600.0);
     r.tap(false, 1000.0);
     run(&mut r, 1025.0, 1250.0);
     r.tap(true, 1250.0);
