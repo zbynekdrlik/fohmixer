@@ -108,7 +108,6 @@ fn the_faders_come_from_the_layout_each_with_its_write_key() {
             Act::Step(Step::Faders {
                 labels: vec!["Rev ST".into(), "Rev PA".into()]
             }),
-            Act::Save,
             Act::Tell,
         ]
     );
@@ -131,11 +130,7 @@ fn the_faders_come_from_the_layout_each_with_its_write_key() {
     // A layout without them: told, and the line says so.
     assert_eq!(
         rule.set_faders(vec![], 0.0),
-        vec![
-            Act::Step(Step::Faders { labels: vec![] }),
-            Act::Save,
-            Act::Tell
-        ]
+        vec![Act::Step(Step::Faders { labels: vec![] }), Act::Tell]
     );
     assert_eq!(rule.status().faders, 0);
 }
@@ -549,27 +544,43 @@ fn a_silent_fader_or_one_without_a_value_is_skipped() {
 }
 
 #[test]
-fn a_track_list_change_stops_the_instances_glides_until_its_tracks_are_back() {
+fn a_track_list_change_lets_go_of_a_gliding_fader_and_keeps_a_still_one_until_its_value() {
+    // Mid-glide: its value lies between the levels for good, never where
+    // the rule leaves it, so the rule lets it go (review M5).
     let mut r = rule(false, Some(true));
     r.tap(true, 0.0);
-    assert_eq!(steps(&r.tracks_changed("band")).len(), 2);
+    let acts = r.tracks_changed("band");
+    assert_eq!(steps(&acts).len(), 2);
+    assert!(acts.contains(&Act::Save) && acts.contains(&Act::Tell));
+    assert!(r.state().faders.iter().all(|f| f.back.is_none() && f.hand));
+    assert_eq!(r.state().low, None);
     assert!(
         run(&mut r, 25.0, 600.0)
             .iter()
             .all(|a| !matches!(a, Act::Write { .. }))
     );
+    // Lowered and still: held; Live's values count again once one is
+    // where the rule left the fader.
+    let mut r = rule(false, Some(true));
+    r.tap(true, 0.0);
+    run(&mut r, 25.0, 500.0);
     assert_eq!(
-        r.live(PA, 0.33, 0.0),
+        r.tracks_changed("band"),
+        vec![],
+        "no glide: nothing stopped"
+    );
+    assert_eq!(
+        r.live(PA, 0.33, 600.0),
         vec![],
         "another track at the index: no hand"
     );
     assert_eq!(
-        r.live(PA, lowered(0.6), 0.0),
+        r.live(PA, lowered(0.6), 600.0),
         vec![],
         "its own value again: settled"
     );
     assert!(matches!(
-        steps(&r.live(PA, 0.7, 0.0))[0],
+        steps(&r.live(PA, 0.7, 600.0))[0],
         Step::Hand { by: By::Live, .. }
     ));
     assert_eq!(r.tracks_changed("master"), vec![]);
@@ -734,9 +745,9 @@ fn a_restored_fader_found_elsewhere_is_let_go() {
     assert_eq!(r.saved().low, None, "all back: nothing held");
 }
 
-#[test]
-fn a_return_without_lives_value_glides_from_where_the_rule_left_it() {
-    let saved = Saved {
+/// Rev ST held low for the stop across a restart (AUT on).
+fn restarted() -> Reverb {
+    let mut r = Reverb::new(&Saved {
         aut: true,
         low: Some(SavedLow {
             by: Low::Stop,
@@ -747,22 +758,76 @@ fn a_return_without_lives_value_glides_from_where_the_rule_left_it() {
                 left: Some(lowered(0.85)),
             }],
         }),
-    };
-    let mut r = Reverb::new(&saved);
+    });
     r.set_faders(vec![fader("Rev ST", 4)], 0.0);
+    r
+}
+
+#[test]
+fn a_return_before_lives_value_waits_for_it_and_lands_exactly() {
+    let mut r = restarted();
     let acts = r.transport("band", true, 0.0);
+    assert!(writes(&acts).is_empty());
     assert_eq!(
-        steps(&acts)[0],
-        &Step::Return {
-            faders: vec![Move {
-                label: "Rev ST".into(),
-                from: lowered(0.85),
-                to: 0.85,
-                ms: RETURN_MS
-            }]
-        }
+        run(&mut r, 25.0, 1000.0),
+        vec![],
+        "nothing written before Live's value"
     );
-    assert!(writes(&run(&mut r, 25.0, 500.0)).contains(&(ST, 0.85, true)));
+    assert_eq!(r.state().low, Some(Low::Stop));
+    assert_eq!(r.state().faders[0].back, Some(0.85));
+    // Live reports it where the rule left it: the return glides from there.
+    r.live(ST, lowered(0.85), 1000.0);
+    let ends: Vec<_> = writes(&run(&mut r, 1025.0, 1500.0))
+        .into_iter()
+        .filter(|w| w.2)
+        .collect();
+    assert_eq!(ends, vec![(ST, 0.85, true)]);
+    assert_eq!(r.state().low, None);
+    assert_eq!(r.saved().low, None);
+}
+
+#[test]
+fn a_return_before_lives_value_lets_go_of_a_fader_found_elsewhere() {
+    let mut r = restarted();
+    r.transport("band", true, 0.0);
+    assert_eq!(run(&mut r, 25.0, 1000.0), vec![]);
+    // Moved in Live's own window meanwhile: the hand wins.
+    let acts = r.live(ST, 0.7, 1000.0);
+    assert!(matches!(
+        steps(&acts)[0],
+        Step::Hand {
+            by: By::Live,
+            value: Some(0.7),
+            ..
+        }
+    ));
+    assert_eq!(run(&mut r, 1025.0, 2000.0), vec![], "nothing written");
+    assert!(r.state().faders[0].hand && r.state().faders[0].back.is_none());
+    assert_eq!(r.state().low, None);
+    assert_eq!(r.status().hands, 1);
+}
+
+#[test]
+fn an_offline_instances_held_faders_wait_for_its_values_to_return() {
+    let mut r = rule(true, Some(true));
+    r.transport("band", false, 0.0);
+    r.tick(2000.0);
+    run(&mut r, 2025.0, 4000.0);
+    r.offline("band");
+    r.tap(false, 5000.0);
+    assert_eq!(run(&mut r, 5025.0, 6000.0), vec![], "never written offline");
+    assert_eq!(
+        r.state().faders.iter().map(|f| f.back).collect::<Vec<_>>(),
+        vec![Some(0.85), Some(0.6)]
+    );
+    // Back online, where the rule left them: both return exactly.
+    r.live(ST, lowered(0.85), 6000.0);
+    r.live(PA, lowered(0.6), 6000.0);
+    let ends: Vec<_> = writes(&run(&mut r, 6025.0, 6500.0))
+        .into_iter()
+        .filter(|w| w.2)
+        .collect();
+    assert_eq!(ends, vec![(ST, 0.85, true), (PA, 0.6, true)]);
 }
 
 #[test]
@@ -905,5 +970,98 @@ fn each_step_has_its_line_and_warns_where_it_should() {
         .unwrap(),
         serde_json::json!({"step": "lower", "why": "stop",
             "faders": [{"label": "Rev ST", "from": 0.85, "to": 0.6, "ms": 2000.0}]})
+    );
+}
+
+#[test]
+fn a_lowering_during_a_return_keeps_the_song_level() {
+    // A tap back, then a tap down within the return's 0.5 s (a double tap,
+    // or two pages' taps crossing): the song level stays the one each had.
+    let mut r = rule(false, Some(true));
+    r.tap(true, 0.0);
+    run(&mut r, 25.0, 500.0);
+    r.tap(false, 1000.0);
+    run(&mut r, 1025.0, 1250.0);
+    r.tap(true, 1250.0);
+    assert_eq!(
+        r.state().faders.iter().map(|f| f.back).collect::<Vec<_>>(),
+        vec![Some(0.85), Some(0.6)]
+    );
+    run(&mut r, 1275.0, 1750.0);
+    r.tap(false, 2000.0);
+    let ends: Vec<_> = writes(&run(&mut r, 2025.0, 2500.0))
+        .into_iter()
+        .filter(|w| w.2)
+        .collect();
+    assert_eq!(ends, vec![(ST, 0.85, true), (PA, 0.6, true)]);
+}
+
+#[test]
+fn letting_go_of_every_held_fader_ends_the_lowering() {
+    let mut r = rule(true, Some(true));
+    r.transport("band", false, 0.0);
+    r.tick(2000.0);
+    run(&mut r, 2025.0, 4000.0);
+    r.hand(ST);
+    assert_eq!(r.state().low, Some(Low::Stop), "Rev PA is still held");
+    // The last one goes by Live's own value, once its last write is acked.
+    r.applied(PA);
+    let acts = r.live(PA, 0.7, 4500.0);
+    assert!(acts.contains(&Act::Save) && acts.contains(&Act::Tell));
+    assert_eq!(r.state().low, None, "nothing held: nothing lowered");
+    assert_eq!(r.saved().low, None);
+    let acts = r.transport("band", true, 5000.0);
+    assert!(steps(&acts).is_empty(), "no return of nothing");
+    assert_eq!(run(&mut r, 5025.0, 6000.0), vec![]);
+}
+
+#[test]
+fn a_lowering_for_the_stop_restored_while_live_plays_returns_at_once() {
+    let mut r = Reverb::new(&Saved {
+        aut: true,
+        low: Some(SavedLow {
+            by: Low::Stop,
+            faders: vec![SavedFader {
+                instance: "band".into(),
+                label: "Rev PA".into(),
+                back: 0.6,
+                left: Some(lowered(0.6)),
+            }],
+        }),
+    });
+    // Rev PA's strip is missing while Live plays.
+    r.set_faders(vec![fader("Rev ST", 4)], 0.0);
+    r.live(ST, 0.85, 0.0);
+    r.transport("band", true, 0.0);
+    assert_eq!(r.state().low, None);
+    // Its strip comes back mid-song: it returns, once Live reports it.
+    r.set_faders(vec![fader("Rev ST", 4), fader("Rev PA", 5)], 1000.0);
+    assert_eq!(
+        run(&mut r, 1025.0, 1500.0),
+        vec![],
+        "no write before its value"
+    );
+    r.live(PA, lowered(0.6), 2000.0);
+    let ends: Vec<_> = writes(&run(&mut r, 2025.0, 2500.0))
+        .into_iter()
+        .filter(|w| w.2)
+        .collect();
+    assert_eq!(ends, vec![(PA, 0.6, true)]);
+    assert_eq!(r.state().low, None);
+}
+
+#[test]
+fn a_fader_a_layout_drops_mid_glide_records_its_stop() {
+    let mut r = rule(false, Some(true));
+    r.tap(true, 0.0);
+    let acts = r.set_faders(vec![fader("Rev ST", 4)], 100.0);
+    assert!(steps(&acts).contains(&&Step::Stopped {
+        label: "Rev PA".into(),
+        why: "layout".into()
+    }));
+    assert!(
+        !steps(&acts)
+            .iter()
+            .any(|s| matches!(s, Step::Stopped { label, .. } if label == "Rev ST"))
     );
 }

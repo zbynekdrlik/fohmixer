@@ -511,6 +511,18 @@ async fn a_linked_drag_lets_go_of_every_fader_it_writes_and_a_partner_alone_of_i
     set_hub(&mut router, HUB_REVERB_LOW, json!(false));
     set_hub(&mut router, HUB_REVERB_LOW, json!(true));
     assert_eq!(hands(&router), vec![false, false], "a tap takes both again");
+    assert_eq!(
+        router
+            .reverb
+            .rule
+            .state()
+            .faders
+            .iter()
+            .map(|f| f.back)
+            .collect::<Vec<_>>(),
+        vec![Some(0.85), Some(0.6)],
+        "a lowering during Rev ST's return keeps its song level"
+    );
     router.handle(RouterMsg::Sets {
         client: 1,
         sets: vec![item(0, 2, 0.7), item(1, 3, 0.4)],
@@ -523,4 +535,46 @@ async fn a_linked_drag_lets_go_of_every_fader_it_writes_and_a_partner_alone_of_i
         "the leader's drag writes both"
     );
     assert_eq!(router.reverb.rule.status().hands, 3);
+}
+
+#[tokio::test]
+async fn a_layout_never_writes_over_a_hub_state_it_could_not_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("hub-state.json");
+    std::fs::write(&file, "{not json").unwrap();
+    let (mut router, _rx, _records) = offline_router(dir.path());
+    router.reverb_layout(faders());
+    router.reverb_layout(vec![fader("Rev ST", 0), fader("Rev PA", 1)]);
+    router.reverb_layout(Vec::new());
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        "{not json",
+        "nothing the rule holds changed: nothing saved"
+    );
+}
+
+#[tokio::test]
+async fn a_transport_listener_failure_ends_reverb_auts_wait() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, _rx, rx) = offline_router(dir.path());
+    let _page = attach(&mut router, 1);
+    router.reverb_layout(faders());
+    live(&mut router, ST, 0.85);
+    router.reverb_transport("band", true);
+    set_hub(&mut router, HUB_REVERB_AUT, json!(true));
+    router.reverb_transport("band", false);
+    assert!(router.reverb.rule.state().waiting);
+    let _ = records(&rx);
+    let key = router.transport["band"].key.clone();
+    router.transport_failed(&key, "gone");
+    let state = router.reverb.rule.state();
+    assert!(
+        !state.waiting && state.playing.is_none(),
+        "an unknown transport never lowers"
+    );
+    assert!(
+        records(&rx)
+            .iter()
+            .any(|r| r["ev"] == "reverb" && r["step"] == "cancelled")
+    );
 }
