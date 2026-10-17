@@ -108,11 +108,44 @@ impl LiveStore {
         trace::seq_of(&msg)
     }
 
-    /// A linked mute's tap (#127): `value` to `prop` of every target, each
-    /// a write of its own key through the intent store (its own sequence
-    /// number, ack and handler from `failed`), all in ONE `sets` message so
-    /// the hub writes one instance's to Live in one batch. Writes the socket
-    /// cannot take now are kept and sent when their instance is back (L1).
+    /// Writes Live applies together, each its own value (#130: a linked
+    /// fader's move, the backing-tracks fader's frame; #127: a linked
+    /// mute's tap): each `(target, value)` a write of its own key through
+    /// the intent store (its own sequence number, ack and handler from
+    /// `failed`), all in ONE `sets` message so the hub writes one
+    /// instance's to Live in one batch. Writes the socket cannot take now
+    /// are kept and sent when their instance is back (L1). The first
+    /// write's sequence number (a fader's move record names it).
+    pub fn set_each(
+        self,
+        items: &[(SubSpec, Value)],
+        is_final: bool,
+        failed: impl Fn() -> FailFn,
+    ) -> Option<u64> {
+        self.note_intents();
+        let t = dom::epoch_now();
+        let (keys, msg) = self.inner.try_update_value(|i| {
+            let each = items
+                .iter()
+                .map(|(s, value)| {
+                    let at = (s.instance.as_str(), s.target.as_str(), s.prop.as_str());
+                    (at, value.clone(), Some(failed()))
+                })
+                .collect();
+            i.intents.set_each(each, t, is_final)
+        })?;
+        if !self.sent_set(&msg) {
+            dom::log(&format!(
+                "sets {} kept: not connected to the hub, sent when it is back",
+                keys.join(", ")
+            ));
+        }
+        trace::seq_of(&msg)
+    }
+
+    /// A linked mute's tap (#127): `value` to `prop` of every target, in
+    /// ONE `sets` message ([`LiveStore::set_each`] with the same value for
+    /// every one).
     pub fn set_together(
         self,
         targets: &[SubSpec],
@@ -120,26 +153,9 @@ impl LiveStore {
         is_final: bool,
         failed: impl Fn() -> FailFn,
     ) {
-        self.note_intents();
-        let t = dom::epoch_now();
-        let Some((keys, msg)) = self.inner.try_update_value(|i| {
-            let each = targets
-                .iter()
-                .map(|s| {
-                    let at = (s.instance.as_str(), s.target.as_str(), s.prop.as_str());
-                    (at, Some(failed()))
-                })
-                .collect();
-            i.intents.set_together(each, value, t, is_final)
-        }) else {
-            return;
-        };
-        if !self.sent_set(&msg) {
-            dom::log(&format!(
-                "sets {} kept: not connected to the hub, sent when it is back",
-                keys.join(", ")
-            ));
-        }
+        let items: Vec<(SubSpec, Value)> =
+            targets.iter().map(|s| (s.clone(), value.clone())).collect();
+        let _ = self.set_each(&items, is_final, failed);
     }
 
     /// Sends a `set`: whether the socket took it. One it took holds the

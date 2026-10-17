@@ -2,6 +2,7 @@
 //! when a batch goes, what it holds, and when its events leave the ring.
 
 use super::*;
+use fohmixer_proto::client::SetItem;
 
 /// An event of kind `kind` whose JSON is exactly `len` bytes.
 fn sized_kind(kind: &str, len: usize) -> Value {
@@ -137,6 +138,26 @@ fn each_event_carries_its_kind_its_page_time_and_its_facts() {
 fn a_sets_sequence_names_its_frames_move_record() {
     assert_eq!(seq_of(&set_msg()), Some(12));
     assert_eq!(seq_of(&ClientMsg::Unsub { sub: "x".into() }), None);
+}
+
+#[test]
+fn a_sets_is_named_by_its_first_writes_seq() {
+    let item = |seq| SetItem {
+        instance: "band".into(),
+        target: "live_set tracks 4 mixer_device volume".into(),
+        prop: "value".into(),
+        value: json!(0.5),
+        seq,
+        t: 1.0,
+        is_final: false,
+    };
+    assert_eq!(
+        seq_of(&ClientMsg::Sets {
+            sets: vec![item(7), item(8)]
+        }),
+        Some(7)
+    );
+    assert_eq!(seq_of(&ClientMsg::Sets { sets: vec![] }), None);
 }
 
 #[test]

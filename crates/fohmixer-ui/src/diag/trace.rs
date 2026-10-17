@@ -292,10 +292,13 @@ pub fn ableset(t: f64, step: AbleSetStep) -> Value {
     }
 }
 
-/// The sequence number of a `set`; none for another message.
+/// The sequence number of a `set`, a `sets`' first write's; none for
+/// another message.
 pub fn seq_of(msg: &ClientMsg) -> Option<u64> {
     match msg {
         ClientMsg::Set { seq, .. } => Some(*seq),
+        // Writes Live applies together (#127, #130): the first one's.
+        ClientMsg::Sets { sets } => sets.first().map(|s| s.seq),
         _ => None,
     }
 }

@@ -155,7 +155,13 @@ exclude_re = [
   # `sets` message through sent_set); linked-mute.spec.ts taps a strip
   # linked three ways and reads the three mutes in SimLive and the hub's one
   # batch of them.
-  "fohmixer-ui/src/store/live/writes\\.rs.*(replace|in) LiveStore::(on_ack|resend|set|set_together|sent_set|release|touch|intent_state|intent_view|live_value|note_intents)( |$)",
+  # #130 added set_each (writes Live applies together, each its own value:
+  # the tested Intents::set_each with the page clock and each key's flash,
+  # its one `sets` message through sent_set, its first seq by the tested
+  # trace::seq_of; set_together now hands it the same value for each);
+  # fader-link.spec.ts drags a linked leader and Podklady All on tags and
+  # reads every batch of the drag at the hub carrying all of their keys.
+  "fohmixer-ui/src/store/live/writes\\.rs.*(replace|in) LiveStore::(on_ack|resend|set|set_each|set_together|sent_set|release|touch|intent_state|intent_view|live_value|note_intents)( |$)",
   # store/live/deck.rs (#52): the Stream Deck's glue, one function at a time:
   # on_deck, on_deck_keys and on_deck_ack (the hub's messages into the
   # signals and the tested DeckWaiting), deck_view and deck_hello (the tab's
