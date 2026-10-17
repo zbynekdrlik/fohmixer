@@ -19,7 +19,7 @@ use super::{
     BtnText, intent_look, key_of, owns_touches, readiness, readiness_now, slot_of, trace_rail,
 };
 use crate::behave::hold::{Hold, Lift};
-use crate::behave::rail::{RAIL_HOLD_MS, RailLook, rail_press, stage_look};
+use crate::behave::rail::{Aut, RAIL_HOLD_MS, RailLook, rail_press, stage_look};
 use crate::binding::{mute_sub, transport_sub};
 use crate::dom;
 use crate::store::{LiveStore, Readiness, Slot};
@@ -206,6 +206,18 @@ pub fn RuleButton(kind: RuleKind, label: String) -> impl IntoView {
     let pill = move || look.try_with(|l| l.aut.name()).unwrap_or("off");
     let low = move || look.try_with(|l| l.low).unwrap_or(false);
     let sub = move || look.try_with(|l: &RailLook| l.sub.clone()).flatten();
+    // The pill is in the page only while the rule is on: no hidden text in
+    // a rail button (its words are checked to stay inside it).
+    let pill_on = Memo::new(move |_| look.try_with(|l| l.aut != Aut::Off).unwrap_or(false));
+    let badge = move || {
+        pill_on.try_get().unwrap_or(false).then(|| {
+            view! {
+                <span class="aut-badge" data-testid="aut-badge">
+                    "AUT"
+                </span>
+            }
+        })
+    };
     let muted = move || (slot.try_with(Slot::flag).flatten() == Some(true)).to_string();
     view! {
         <div
@@ -228,9 +240,7 @@ pub fn RuleButton(kind: RuleKind, label: String) -> impl IntoView {
         >
             <span class="btn-row">
                 <BtnText text=label />
-                <span class="aut-badge" data-testid="aut-badge">
-                    "AUT"
-                </span>
+                {badge}
             </span>
             <span class="btn-sub" data-testid="btn-sub" class:low=low>
                 {sub}
