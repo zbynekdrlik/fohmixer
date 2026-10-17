@@ -106,6 +106,17 @@ fn only_a_fader_of_two_or_more_track_volumes_is_the_backing_tracks_fader() {
 }
 
 #[test]
+fn a_linked_fader_is_the_backing_tracks_fader_whatever_its_targets() {
+    assert!(draws_vca(true, &[]));
+    assert!(
+        draws_vca(true, &[volume("Drums #")]),
+        "one partner: still the backing-tracks fader"
+    );
+    assert!(!draws_vca(false, &[volume("Drums #")]));
+    assert!(draws_vca(false, &[volume("Drums #"), volume("Bass #")]));
+}
+
+#[test]
 fn the_loudest_is_the_largest_known_volume() {
     assert_eq!(loudest(&[Some(0.5), None, Some(0.55)]), Some(0.55));
     assert_eq!(loudest(&[Some(0.7), Some(0.2)]), Some(0.7));

@@ -66,6 +66,13 @@ pub fn is_vca(targets: &[ParamTarget]) -> bool {
     targets.len() >= 2 && targets.iter().all(is_track_volume)
 }
 
+/// Whether a `param_fader` draws as the backing-tracks fader: a linked one
+/// (#130, D18: Podklady All, whatever its partners) or two or more track
+/// volumes (#58).
+pub fn draws_vca(linked: bool, targets: &[ParamTarget]) -> bool {
+    linked || is_vca(targets)
+}
+
 /// The loudest of the known volumes (the cap's); none before one is known.
 pub fn loudest(volumes: &[Option<f64>]) -> Option<f64> {
     volumes.iter().flatten().copied().reduce(f64::max)
