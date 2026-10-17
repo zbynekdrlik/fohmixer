@@ -296,7 +296,10 @@ test.describe("The merged STAGE button (#104, D18)", () => {
         await expect(button).toHaveAttribute("data-aut", aut);
         expect(await clipped(button), `the button with "${text}"`).toEqual([]);
         expect(await clipped(sub), `its line "${text}"`).toEqual([]);
-        expect(await clipped(button.locator(".btn-row")), `its label and pill with "${text}"`).toEqual([]);
+        // The label and the pill side by side within the row (a row is no
+        // clipping box: its glyphs' content area may pass its line box).
+        const row = await button.locator(".btn-row").evaluate((el) => [el.scrollWidth, el.clientWidth]);
+        expect(row[0], `its label and pill side by side with "${text}"`).toBeLessThanOrEqual(row[1]);
       };
       await fits("stojí · zapnuté", "run");
       // A tap mutes the mics while Live stands: the override until the start.
