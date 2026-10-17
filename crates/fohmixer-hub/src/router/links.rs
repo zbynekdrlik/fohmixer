@@ -70,8 +70,10 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::super::RouterMsg;
-    use super::super::tests::{attach, offline_router};
+    use super::super::tests::{attach, offline_router, offline_router_with};
     use crate::outbox::Outbox;
+    use crate::rules::HubState;
+    use crate::rules::reverb::{Saved, SavedFader, SavedLow};
 
     const REV: &str = "fader_link|band|REV";
 
@@ -233,6 +235,48 @@ mod tests {
                 .filter(|r| r["ev"] == "fader_link")
                 .count(),
             1
+        );
+    }
+
+    #[tokio::test]
+    async fn a_switch_saved_keeps_every_other_hub_value_as_loaded() {
+        // #130 review M2: the router saves the hub state whole, so a link's
+        // save keeps STAGE AUT on and REVERB's keys as `hub-state.json` had
+        // them (PR 4 reads `reverb_low` across a restart).
+        let dir = tempfile::tempdir().unwrap();
+        let loaded = HubState {
+            stage_aut: true,
+            reverb: Saved {
+                aut: true,
+                low: Some(SavedLow {
+                    by: fohmixer_proto::client::Low::Stop,
+                    faders: vec![SavedFader {
+                        instance: "band".into(),
+                        label: "Rev ST".into(),
+                        back: 0.85,
+                        left: Some(0.6),
+                    }],
+                }),
+            },
+            fader_links: Vec::new(),
+        };
+        let (mut router, _rx, _records) = offline_router_with(dir.path(), loaded);
+        let _page = attach(&mut router, 1);
+        router.handle(layout(1, vec![rev()]));
+        router.handle(RouterMsg::SetHub {
+            client: 1,
+            key: REV.into(),
+            value: json!(false),
+        });
+        assert_eq!(
+            saved(dir.path()),
+            json!({
+                "stage_aut": true,
+                "reverb_aut": true,
+                "reverb_low": {"by": "stop", "faders": [
+                    {"instance": "band", "label": "Rev ST", "back": 0.85, "left": 0.6}]},
+                "fader_links": [{"instance": "band", "id": "REV", "on": false}]
+            })
         );
     }
 }

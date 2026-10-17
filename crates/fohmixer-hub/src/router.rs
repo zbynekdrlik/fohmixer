@@ -430,7 +430,7 @@ pub struct Router {
 
 impl Router {
     /// A router over these instances, with the persisted hub values
-    /// (`hub-state.json`: STAGE AUT, REVERB).
+    /// (`hub-state.json`: STAGE AUT, REVERB, the fader links' switches).
     pub fn new(
         live: BTreeMap<String, LiveHandle>,
         state: HubState,
@@ -1283,6 +1283,18 @@ mod tests {
         mpsc::UnboundedReceiver<RouterMsg>,
         std::sync::mpsc::Receiver<Value>,
     ) {
+        offline_router_with(dir, HubState::default())
+    }
+
+    /// The same router, started from `state` (`hub-state.json` as loaded).
+    pub(super) fn offline_router_with(
+        dir: &std::path::Path,
+        state: HubState,
+    ) -> (
+        Router,
+        mpsc::UnboundedReceiver<RouterMsg>,
+        std::sync::mpsc::Receiver<Value>,
+    ) {
         let free = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = free.local_addr().unwrap().port();
         drop(free);
@@ -1297,7 +1309,7 @@ mod tests {
         let (events, records) = EventLog::channel(1024);
         let router = Router::new(
             BTreeMap::from([("band".to_string(), live)]),
-            HubState::default(),
+            state,
             dir.to_path_buf(),
             RouterIo { tx, events },
         );

@@ -1608,3 +1608,67 @@ fn a_leader_shown_nowhere_leads_nothing() {
         .collect();
     assert_eq!(problems, vec![(3, vec![TagProblem::NoGroup])]);
 }
+
+#[test]
+fn a_strip_may_lead_and_follow_and_a_tuner_may_follow_two_leaders() {
+    // #130's C table: a strip that leads and follows carries both; a partner
+    // of two linked leaders is a partner of each (two follows on its strip).
+    let composed = compose(
+        &frame(),
+        &[
+            found("band", TrackKind::Track, 1, r#""A" +G:VOCALS +ID:A"#),
+            found(
+                "band",
+                TrackKind::Track,
+                2,
+                r#""B" +G:VOCALS +ID:B +FADER:A"#,
+            ),
+            found(
+                "band",
+                TrackKind::Track,
+                3,
+                r#""C" +G:VOCALS +FADER:A +FADER:B"#,
+            ),
+            found("band", TrackKind::Track, 4, "+FADER:A +FADER:B"),
+        ],
+    );
+    assert_eq!(composed.problems, vec![]);
+    let partner = |index: u32, label: &str| LinkPartner {
+        binding: at("band", Anchor::TrackAt { index }),
+        label: label.into(),
+    };
+    let follow = |id: &str| FaderFollow {
+        id: id.into(),
+        leader: id.into(),
+        fixed: false,
+    };
+    let a = strip_in(&composed.layout, "vocals", "A");
+    assert_eq!(
+        a.fader_link,
+        Some(FaderLink {
+            id: "A".into(),
+            partners: vec![partner(2, "B"), partner(3, "C"), partner(4, "#5")]
+        })
+    );
+    assert_eq!(a.fader_follows, vec![]);
+    let b = strip_in(&composed.layout, "vocals", "B");
+    assert_eq!(
+        b.fader_link,
+        Some(FaderLink {
+            id: "B".into(),
+            partners: vec![partner(3, "C"), partner(4, "#5")]
+        }),
+        "it leads"
+    );
+    assert_eq!(b.fader_follows, vec![follow("A")], "and it follows");
+    let c = strip_in(&composed.layout, "vocals", "C");
+    assert_eq!(c.fader_link, None);
+    assert_eq!(c.fader_follows, vec![follow("A"), follow("B")]);
+    let report = |id: &str, partners| LinkReport {
+        instance: "band".into(),
+        id: id.into(),
+        leader: Leader::Strip,
+        partners,
+    };
+    assert_eq!(composed.links, vec![report("A", 3), report("B", 2)]);
+}
