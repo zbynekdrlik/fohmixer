@@ -4,15 +4,17 @@
 //!
 //! - [`parse`] reads one Tuner's name: the quoted label, the groups with
 //!   their places, `+PIN`, `+MG`, the linked mute's `+ID:<id>` and
-//!   `+MUTE:<id>` (#127), the REVERB rule's `+REVERB` (#130), and every
-//!   problem as a value (never an error: a problem is shown on the strip,
-//!   I9).
+//!   `+MUTE:<id>` (#127), the fader link's `+FADER:<id>` and the REVERB
+//!   rule's `+REVERB` (#130), and every problem as a value (never an
+//!   error: a problem is shown on the strip, I9).
 //! - [`compose`] turns the frame (the layout file: pages, rows, the rail)
 //!   and the markers the hub found into the served layout: a frame group
 //!   with `tags` shows that tag group's strips, every other tag group
 //!   becomes a view (a page flagged `view`), equal labels are conflicts,
-//!   and a strip whose `+ID` other Tuners of its Live set name with
-//!   `+MUTE` mutes their tracks with its own.
+//!   a strip whose `+ID` other Tuners of its Live set name with `+MUTE`
+//!   mutes their tracks with its own, a strip whose `+ID` other Tuners
+//!   name with `+FADER` leads their faders, and the frame's linked fader
+//!   takes the `+FADER` tracks of its link.
 //!
 //! Pure, shared by the hub, `layout check` and the tests.
 
@@ -21,8 +23,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::layout::{
-    Anchor, Binding, Control, Group, Layout, LayoutError, Page, Row, Section, Strip, StripKind,
-    StripMark,
+    Anchor, Binding, Control, FaderFollow, FaderLink, Group, Layout, LayoutError, LinkId,
+    LinkPartner, Page, ParamTarget, Row, Scale, Section, Strip, StripKind, StripMark,
 };
 
 /// The `class_name` of Live's Tuner (only a Tuner can be a marker).
@@ -58,18 +60,21 @@ pub struct Marker {
     /// `+MUTE:<id>`: the strips whose mute writes this track's mute too
     /// (#127), each id once.
     pub mutes: Vec<String>,
+    /// `+FADER:<id>` (#130, D18): the leaders whose fader moves this
+    /// track's volume by the same dB while their link is on, each id once.
+    pub faders: Vec<String>,
     /// `+REVERB` (#130, D18): the strip is one of the REVERB rule's faders.
     pub reverb: bool,
     pub problems: Vec<TagProblem>,
 }
 
 impl Marker {
-    /// Whether the Tuner only links its track's mute (#127): `+MUTE` with
-    /// no quote, no group and no other tag (its first problem is
-    /// [`TagProblem::NoLabel`] while [`parse`] reads it). It makes no strip,
-    /// so a missing label or group is no problem there.
-    fn only_mutes(&self) -> bool {
-        !self.mutes.is_empty()
+    /// Whether the Tuner only links its track (#127, #130): `+MUTE` or
+    /// `+FADER` tags with no quote, no group and no other tag (its first
+    /// problem is [`TagProblem::NoLabel`] while [`parse`] reads it). It makes
+    /// no strip, so a missing label or group is no problem there.
+    fn only_links(&self) -> bool {
+        !(self.mutes.is_empty() && self.faders.is_empty())
             && self.groups.is_empty()
             && self.id.is_none()
             && !self.pin
@@ -105,8 +110,8 @@ pub enum TagProblem {
     DoubleTuner,
     /// Another strip of the group has the same place.
     SamePlace { group: String, place: u32 },
-    /// A `+ID:` or `+MUTE:` tag whose id is not valid (#127; the rule of a
-    /// group name).
+    /// A `+ID:`, `+MUTE:` or `+FADER:` tag whose id is not valid (#127,
+    /// #130; the rule of a group name).
     BadId { tag: String },
     /// A second `+ID:` tag (the first counts).
     SecondId { tag: String },
@@ -119,6 +124,13 @@ pub enum TagProblem {
     OrphanMute { id: String },
     /// A `+MUTE:` naming its own strip's `+ID` (#127).
     SelfMute { id: String },
+    /// The same `+FADER:` id twice (it counts once; #130).
+    DuplicateFader { id: String },
+    /// A `+FADER:` whose id no strip of the Live set carries, nor the
+    /// frame's linked fader (#130).
+    OrphanFader { id: String },
+    /// A `+FADER:` naming its own strip's `+ID` (#130).
+    SelfFader { id: String },
 }
 
 /// Whether a Tuner's name makes it a marker: a quote or a `+` token.
@@ -215,7 +227,13 @@ pub fn parse(name: &str) -> Marker {
                 } else if let Some(arg) = tag.strip_prefix("ID:") {
                     id_tag(&mut marker, token, arg);
                 } else if let Some(arg) = tag.strip_prefix("MUTE:") {
-                    mute_tag(&mut marker, token, arg);
+                    link_tag(&mut marker.mutes, &mut marker.problems, token, arg, |id| {
+                        TagProblem::DuplicateMute { id }
+                    });
+                } else if let Some(arg) = tag.strip_prefix("FADER:") {
+                    link_tag(&mut marker.faders, &mut marker.problems, token, arg, |id| {
+                        TagProblem::DuplicateFader { id }
+                    });
                 } else {
                     marker.problems.push(TagProblem::UnknownTag {
                         tag: token.to_string(),
@@ -224,7 +242,7 @@ pub fn parse(name: &str) -> Marker {
             }
         }
     }
-    if marker.only_mutes() {
+    if marker.only_links() {
         // Its NoLabel: no strip, no label to miss.
         marker.problems.remove(0);
     } else if marker.groups.is_empty() {
@@ -248,19 +266,23 @@ fn id_tag(marker: &mut Marker, token: &str, arg: &str) {
     }
 }
 
-/// A `+MUTE:<id>` tag (`token`, its argument `arg`): a strip this track's
-/// mute follows, each id once.
-fn mute_tag(marker: &mut Marker, token: &str, arg: &str) {
+/// A `+MUTE:<id>` or `+FADER:<id>` tag (`token`, its argument `arg`): an id
+/// into `ids`, each once (`twice` names a repeat's problem; #127, #130).
+fn link_tag(
+    ids: &mut Vec<String>,
+    problems: &mut Vec<TagProblem>,
+    token: &str,
+    arg: &str,
+    twice: fn(String) -> TagProblem,
+) {
     if !valid_group_name(arg) {
-        marker.problems.push(TagProblem::BadId {
+        problems.push(TagProblem::BadId {
             tag: token.to_string(),
         });
-    } else if marker.mutes.iter().any(|m| m == arg) {
-        marker.problems.push(TagProblem::DuplicateMute {
-            id: arg.to_string(),
-        });
+    } else if ids.iter().any(|id| id == arg) {
+        problems.push(twice(arg.to_string()));
     } else {
-        marker.mutes.push(arg.to_string());
+        ids.push(arg.to_string());
     }
 }
 
@@ -269,7 +291,8 @@ fn mute_tag(marker: &mut Marker, token: &str, arg: &str) {
 /// `tags` group (its strips are its markers'; other controls follow them),
 /// a strip with `mute_links` (#127 review M4: a linked mute is the Tuner
 /// markers' `+ID` and `+MUTE`, never the frame's) or with `reverb` (#130:
-/// the markers' `+REVERB`).
+/// the markers' `+REVERB`), a strip with a fader link or a follow, a
+/// linked fader with its own targets, or one link on two faders (#130).
 pub fn frame_problems(frame: &Layout) -> Vec<LayoutError> {
     let mut out = Vec::new();
     let mut id = |at: &str, id: &str| {
@@ -344,6 +367,30 @@ pub fn frame_problems(frame: &Layout) -> Vec<LayoutError> {
         |c| matches!(c, Control::Strip(s) if s.reverb),
         "a reverb fader: the Tuner markers make those",
     );
+    refuse(
+        frame,
+        &mut out,
+        |c| matches!(c, Control::Strip(s) if s.fader_link.is_some() || !s.fader_follows.is_empty()),
+        "a fader link: the Tuner markers make those",
+    );
+    refuse(
+        frame,
+        &mut out,
+        |c| matches!(c, Control::ParamFader { link: Some(_), targets, .. } if !targets.is_empty()),
+        "a linked fader's tracks: the Tuner markers make those",
+    );
+    let links = frame.linked_faders();
+    for (k, (link, _)) in links.iter().enumerate() {
+        if links[..k].iter().any(|(l, _)| l == link) {
+            out.push(LayoutError {
+                at: "pages".to_string(),
+                message: format!(
+                    "the fader link {}/{} is named twice",
+                    link.instance, link.id
+                ),
+            });
+        }
+    }
     out
 }
 
@@ -412,11 +459,33 @@ pub struct MarkerReport {
     pub problems: Vec<TagProblem>,
 }
 
-/// The served layout and every marker problem.
+/// The served layout, every marker problem and every fader link made.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Composed {
     pub layout: Layout,
     pub problems: Vec<MarkerReport>,
+    pub links: Vec<LinkReport>,
+}
+
+/// Which leader a link has (#130).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Leader {
+    /// A strip's `+ID`.
+    Strip,
+    /// The frame's linked fader (Podklady All).
+    Frame,
+}
+
+/// A fader link the composition made (#130, `/api/status`
+/// `layout.markers.links`): its Live set, its id, its leader and how many
+/// partners it has (a frame's linked fader may have none).
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct LinkReport {
+    pub instance: String,
+    pub id: String,
+    pub leader: Leader,
+    pub partners: usize,
 }
 
 /// The label a marker strip shows when its Tuner names none (a missing,
@@ -438,13 +507,16 @@ pub fn has_placeholder_label(strip: &Strip) -> bool {
     strip.label.as_deref() == Some(placeholder_label(index).as_str())
 }
 
-/// One marker read: where, what it says, every problem it has, and the
-/// tracks its strip's mute writes with its own (#127).
+/// One marker read: where, what it says, every problem it has, the
+/// tracks its strip's mute writes with its own (#127), the fader link it
+/// leads and the leaders it follows (#130).
 struct Entry<'a> {
     found: &'a Found,
     marker: Marker,
     problems: Vec<TagProblem>,
     links: Vec<Binding>,
+    leads: Option<FaderLink>,
+    follows: Vec<FaderFollow>,
 }
 
 impl Entry<'_> {
@@ -463,6 +535,14 @@ impl Entry<'_> {
             anchor,
             path: None,
         }
+    }
+
+    /// The label its strip shows, and its partners' leaders read (#130).
+    fn label(&self) -> String {
+        self.marker
+            .label
+            .clone()
+            .unwrap_or_else(|| placeholder_label(self.found.index))
     }
 
     /// Whether its strip shows a conflict (an equal label elsewhere).
@@ -493,51 +573,87 @@ impl Entry<'_> {
             wide: false,
             mute_guard: self.marker.mute_guard,
             pinned: self.marker.pin,
-            label: Some(
-                self.marker
-                    .label
-                    .clone()
-                    .unwrap_or_else(|| placeholder_label(self.found.index)),
-            ),
+            label: Some(self.label()),
             mark,
             mute_links: self.links.clone(),
             reverb: self.marker.reverb && !self.conflict(),
+            fader_link: self.leads.clone(),
+            fader_follows: self.follows.clone(),
         }
     }
 }
 
-/// The linked mutes (#127): a strip's `+ID` named by other markers'
-/// `+MUTE` tags of its Live set (an id names a strip of its own instance)
-/// gets their tracks, in Live's order. An id that two or more markers
-/// carry is a problem on each, and links nothing; a `+MUTE` whose id no
-/// marker carries, or its own marker's, is a problem on its marker (I9).
-fn link_mutes(entries: &mut [Entry<'_>]) {
-    let mut ids: BTreeMap<(&str, &str), Vec<usize>> = BTreeMap::new();
+/// Who carries an id of a Live set (#127, #130): a marker's `+ID` (its
+/// entry) or a linked fader of the frame (its index in `linked_faders`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Carrier {
+    Marker(usize),
+    Frame(usize),
+}
+
+/// Every id of every Live set and its carriers.
+type Ids = BTreeMap<(String, String), Vec<Carrier>>;
+
+/// The ids the markers' `+ID` and the frame's linked faders carry.
+fn carriers(entries: &[Entry<'_>], frame: &[(LinkId, String)]) -> Ids {
+    let mut ids = Ids::new();
     for (i, entry) in entries.iter().enumerate() {
         if let Some(id) = &entry.marker.id {
-            ids.entry((entry.found.instance.as_str(), id.as_str()))
+            ids.entry((entry.found.instance.clone(), id.clone()))
                 .or_default()
-                .push(i);
+                .push(Carrier::Marker(i));
         }
     }
-    let mut problems: Vec<(usize, TagProblem)> = Vec::new();
-    for ((_, id), list) in &ids {
+    for (f, (link, _)) in frame.iter().enumerate() {
+        ids.entry((link.instance.clone(), link.id.clone()))
+            .or_default()
+            .push(Carrier::Frame(f));
+    }
+    ids
+}
+
+/// An id on two or more carriers is a problem on each marker that carries
+/// it, and links nothing (#127; the frame's fader has no marker to mark).
+fn duplicate_ids(entries: &mut [Entry<'_>], ids: &Ids) {
+    for ((_, id), list) in ids {
         if list.len() > 1 {
-            for &i in list {
-                problems.push((i, TagProblem::DuplicateId { id: id.to_string() }));
+            for carrier in list {
+                if let Carrier::Marker(i) = carrier {
+                    entries[*i]
+                        .problems
+                        .push(TagProblem::DuplicateId { id: id.clone() });
+                }
             }
         }
     }
+}
+
+/// The carriers of `id` in `entry`'s Live set.
+fn carried<'a>(ids: &'a Ids, entry: &Entry<'_>, id: &str) -> Option<&'a [Carrier]> {
+    ids.get(&(entry.found.instance.clone(), id.to_string()))
+        .map(Vec::as_slice)
+}
+
+/// The linked mutes (#127): a strip's `+ID` named by other markers'
+/// `+MUTE` tags of its Live set (an id names a strip of its own instance)
+/// gets their tracks, in Live's order. A `+MUTE` whose id no marker
+/// carries (the frame's linked fader has no mute), or its own marker's, is
+/// a problem on its marker (I9); a duplicate id links nothing.
+fn link_mutes(entries: &mut [Entry<'_>], ids: &Ids) {
+    let mut problems: Vec<(usize, TagProblem)> = Vec::new();
     let mut links: Vec<(usize, Binding)> = Vec::new();
     for (i, entry) in entries.iter().enumerate() {
         for id in &entry.marker.mutes {
-            let carriers = ids.get(&(entry.found.instance.as_str(), id.as_str()));
-            match carriers.map(Vec::as_slice) {
-                None => problems.push((i, TagProblem::OrphanMute { id: id.clone() })),
-                Some([own]) if *own == i => {
+            match carried(ids, entry, id) {
+                // No strip of its set carries the id (the frame's fader has
+                // no mute).
+                None | Some([Carrier::Frame(_)]) => {
+                    problems.push((i, TagProblem::OrphanMute { id: id.clone() }));
+                }
+                Some([Carrier::Marker(own)]) if *own == i => {
                     problems.push((i, TagProblem::SelfMute { id: id.clone() }));
                 }
-                Some([strip]) => links.push((*strip, entry.track())),
+                Some([Carrier::Marker(strip)]) => links.push((*strip, entry.track())),
                 // A duplicate: marked on its carriers, nothing links.
                 Some(_) => {}
             }
@@ -548,6 +664,137 @@ fn link_mutes(entries: &mut [Entry<'_>]) {
     }
     for (i, link) in links {
         entries[i].links.push(link);
+    }
+}
+
+/// The fader links (#130, D18): a `+FADER:<id>` names the strip that
+/// carries `+ID:<id>` in its Live set, or the frame's linked fader of that
+/// link; the partner (its track by index and its label) goes to its
+/// leader in Live's order (the entries are in it), and the leader's label
+/// to the partner's strip. A `+FADER` whose id nothing carries, or only its
+/// own strip, is a problem on its marker; a duplicate links nothing.
+/// Returns each frame fader's partners, by its index.
+fn link_faders(
+    entries: &mut [Entry<'_>],
+    ids: &Ids,
+    frame: &[(LinkId, String)],
+) -> Vec<Vec<LinkPartner>> {
+    let mut problems: Vec<(usize, TagProblem)> = Vec::new();
+    let mut leads: Vec<(usize, String, LinkPartner)> = Vec::new();
+    let mut follows: Vec<(usize, FaderFollow)> = Vec::new();
+    let mut framed: Vec<Vec<LinkPartner>> = vec![Vec::new(); frame.len()];
+    for (i, entry) in entries.iter().enumerate() {
+        for id in &entry.marker.faders {
+            let partner = LinkPartner {
+                binding: entry.track(),
+                label: entry.label(),
+            };
+            match carried(ids, entry, id) {
+                None => problems.push((i, TagProblem::OrphanFader { id: id.clone() })),
+                Some([Carrier::Marker(own)]) if *own == i => {
+                    problems.push((i, TagProblem::SelfFader { id: id.clone() }));
+                }
+                Some([Carrier::Marker(lead)]) => {
+                    follows.push((
+                        i,
+                        FaderFollow {
+                            id: id.clone(),
+                            leader: entries[*lead].label(),
+                            fixed: false,
+                        },
+                    ));
+                    leads.push((*lead, id.clone(), partner));
+                }
+                Some([Carrier::Frame(f)]) => {
+                    follows.push((
+                        i,
+                        FaderFollow {
+                            id: id.clone(),
+                            leader: frame[*f].1.clone(),
+                            fixed: true,
+                        },
+                    ));
+                    framed[*f].push(partner);
+                }
+                // A duplicate: marked on its carriers, nothing links.
+                Some(_) => {}
+            }
+        }
+    }
+    for (i, problem) in problems {
+        entries[i].problems.push(problem);
+    }
+    for (i, follow) in follows {
+        entries[i].follows.push(follow);
+    }
+    for (lead, id, partner) in leads {
+        entries[lead]
+            .leads
+            .get_or_insert_with(|| FaderLink {
+                id,
+                partners: Vec::new(),
+            })
+            .partners
+            .push(partner);
+    }
+    framed
+}
+
+/// A partner's volume as a linked fader's target (#130): its track by
+/// index, `mixer_device volume`, the `value`, the MIDI map's scale (the
+/// backing-tracks fader reads it as a volume, `vca::is_track_volume`).
+fn volume_target(partner: &LinkPartner) -> ParamTarget {
+    ParamTarget {
+        binding: Binding {
+            instance: partner.binding.instance.clone(),
+            anchor: partner.binding.anchor.clone(),
+            path: Some("mixer_device volume".to_string()),
+        },
+        prop: "value".to_string(),
+        on: None,
+        off: None,
+        scale: Some(Scale::CcLinear),
+    }
+}
+
+/// Fills every linked fader of the served layout with its partners'
+/// volumes (one whose link nothing names gets none).
+fn fill_links(layout: &mut Layout, frame: &[(LinkId, String)], partners: &[Vec<LinkPartner>]) {
+    let mut fill = |control: &mut Control| {
+        if let Control::ParamFader {
+            link: Some(link),
+            targets,
+            ..
+        } = control
+            && let Some(i) = frame.iter().position(|(l, _)| l == link)
+        {
+            *targets = partners[i].iter().map(volume_target).collect();
+        }
+    };
+    for page in &mut layout.pages {
+        page.rail.iter_mut().for_each(&mut fill);
+        for row in &mut page.rows {
+            for section in &mut row.sections {
+                each_group_mut(section, &mut |g: &mut Group| {
+                    g.controls.iter_mut().for_each(&mut fill)
+                });
+            }
+        }
+    }
+    layout.global.iter_mut().for_each(&mut fill);
+}
+
+/// Every group of `section`, mutable (a pager's sub-pages' too).
+fn each_group_mut(section: &mut Section, f: &mut impl FnMut(&mut Group)) {
+    match section {
+        Section::Group(group) => f(group),
+        Section::Pager(pager) => {
+            for sub in &mut pager.pages {
+                for s in &mut sub.sections {
+                    each_group_mut(s, f);
+                }
+            }
+        }
     }
 }
 
@@ -633,6 +880,8 @@ pub fn compose(frame: &Layout, found: &[Found]) -> Composed {
                 marker,
                 problems,
                 links: Vec::new(),
+                leads: None,
+                follows: Vec::new(),
             }
         })
         .collect();
@@ -652,7 +901,11 @@ pub fn compose(frame: &Layout, found: &[Found]) -> Composed {
             });
         }
     }
-    link_mutes(&mut entries);
+    let frame_links = frame.linked_faders();
+    let ids = carriers(&entries, &frame_links);
+    duplicate_ids(&mut entries, &ids);
+    link_mutes(&mut entries, &ids);
+    let frame_partners = link_faders(&mut entries, &ids, &frame_links);
     let groups = members(&entries);
     // Two strips on one place of a group: both marked.
     for (name, list) in &groups {
@@ -716,6 +969,30 @@ pub fn compose(frame: &Layout, found: &[Found]) -> Composed {
             .pages
             .push(view_page(name, &groups, &entries, &strips, &rail));
     }
+    fill_links(&mut layout, &frame_links, &frame_partners);
+    let mut links: Vec<LinkReport> = entries
+        .iter()
+        .filter_map(|e| {
+            e.leads.as_ref().map(|l| LinkReport {
+                instance: e.found.instance.clone(),
+                id: l.id.clone(),
+                leader: Leader::Strip,
+                partners: l.partners.len(),
+            })
+        })
+        .collect();
+    links.extend(
+        frame_links
+            .iter()
+            .zip(&frame_partners)
+            .map(|((l, _), p)| LinkReport {
+                instance: l.instance.clone(),
+                id: l.id.clone(),
+                leader: Leader::Frame,
+                partners: p.len(),
+            }),
+    );
+    links.sort();
     let problems = entries
         .iter()
         .filter(|e| !e.problems.is_empty())
@@ -727,7 +1004,11 @@ pub fn compose(frame: &Layout, found: &[Found]) -> Composed {
             problems: e.problems.clone(),
         })
         .collect();
-    Composed { layout, problems }
+    Composed {
+        layout,
+        problems,
+        links,
+    }
 }
 
 /// A view: its group's strips, then every pinned strip not in it, under

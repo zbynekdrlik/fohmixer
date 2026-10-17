@@ -691,6 +691,10 @@ pub struct LayoutStatus {
 pub struct MarkersStatus {
     pub found: usize,
     pub problems: Vec<crate::markers::MarkerReport>,
+    /// Every fader link the composition made, with its partner count
+    /// (#130); absent in an older hub's answer.
+    #[serde(default)]
+    pub links: Vec<crate::markers::LinkReport>,
 }
 
 /// STAGE AUT in `GET /api/status`: the flag and the mute writes it made.

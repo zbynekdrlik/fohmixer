@@ -568,6 +568,12 @@ fn api_bodies_round_trip() {
                     name: r#""Vox" +G:x"#.into(),
                     problems: vec![crate::markers::TagProblem::BadGroup { tag: "+G:x".into() }],
                 }],
+                links: vec![crate::markers::LinkReport {
+                    instance: "band".into(),
+                    id: "PODKLADY".into(),
+                    leader: crate::markers::Leader::Frame,
+                    partners: 5,
+                }],
             },
         },
         stage_aut: StageAutStatus {
@@ -655,7 +661,17 @@ fn api_bodies_round_trip() {
     assert_eq!(
         json["layout"]["markers"],
         json!({"found": 2, "problems": [{"instance": "band", "kind": "track", "index": 4,
-               "name": "\"Vox\" +G:x", "problems": [{"code": "bad_group", "tag": "+G:x"}]}]})
+               "name": "\"Vox\" +G:x", "problems": [{"code": "bad_group", "tag": "+G:x"}]}],
+               "links": [{"instance": "band", "id": "PODKLADY", "leader": "frame", "partners": 5}]})
+    );
+    // A hub before the fader links (#130) names none.
+    let mut unlinked = json["layout"]["markers"].clone();
+    unlinked.as_object_mut().unwrap().remove("links");
+    assert_eq!(
+        serde_json::from_value::<MarkersStatus>(unlinked)
+            .unwrap()
+            .links,
+        vec![]
     );
     // A report's fields sit next to when and where it came from.
     assert_eq!(

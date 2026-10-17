@@ -23,7 +23,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use fohmixer_proto::client::MarkersStatus;
 use fohmixer_proto::layout::Layout;
 use fohmixer_proto::markers::migrate::{Migration, Planned, migration};
-use fohmixer_proto::markers::{Found, MarkerReport, TrackKind, compose, frame_problems, parse};
+use fohmixer_proto::markers::{
+    Found, Leader, LinkReport, MarkerReport, TrackKind, compose, frame_problems, parse,
+};
 
 /// Backups kept.
 pub const MAX_BACKUPS: usize = 30;
@@ -47,6 +49,8 @@ struct State {
     /// The markers found, and the problems of the last composition.
     markers: Vec<Found>,
     problems: Vec<MarkerReport>,
+    /// The fader links of the last composition (#130).
+    links: Vec<LinkReport>,
     /// The accepted file content.
     accepted: Option<Vec<u8>>,
     error: Option<String>,
@@ -176,7 +180,13 @@ pub fn check(text: &[u8], instances: &[String]) -> Result<Layout, String> {
         .chain(frame_problems(&layout))
         .map(|e| e.to_string())
         .collect();
-    let named = layout.bindings().into_iter().map(|b| &b.instance);
+    // A linked fader (#130) names its instance by its link, not a binding.
+    let links = layout.linked_faders();
+    let named = layout
+        .bindings()
+        .into_iter()
+        .map(|b| &b.instance)
+        .chain(links.iter().map(|(l, _)| &l.instance));
     for instance in named {
         if !instances.contains(instance) {
             problems.push(format!("unknown instance {instance:?}"));
@@ -274,12 +284,14 @@ impl LayoutStore {
         Some(m)
     }
 
-    /// The markers in `/api/status` (#68): how many, and every problem.
+    /// The markers in `/api/status` (#68): how many, every problem and
+    /// every fader link (#130).
     pub fn markers_status(&self) -> MarkersStatus {
         let state = self.lock();
         MarkersStatus {
             found: state.markers.len(),
             problems: state.problems.clone(),
+            links: state.links.clone(),
         }
     }
 
@@ -457,11 +469,31 @@ impl LayoutStore {
 fn serve(state: &mut State) {
     let Some(frame) = state.frame.clone() else {
         state.problems = Vec::new();
+        state.links = Vec::new();
         return;
     };
     let composed = compose(&frame, &state.markers);
     state.problems = composed.problems;
+    state.links = composed.links;
+    for line in lonely_lines(&state.links) {
+        tracing::warn!("{line}");
+    }
     state.layout = Some(Arc::new(composed.layout));
+}
+
+/// A warn line per linked fader no Tuner names (#130): it is red on the
+/// surface until one does.
+pub fn lonely_lines(links: &[LinkReport]) -> Vec<String> {
+    links
+        .iter()
+        .filter(|l| l.leader == Leader::Frame && l.partners == 0)
+        .map(|l| {
+            format!(
+                "the linked fader {}/{} has no partner: no Tuner of its Live set carries +FADER:{}",
+                l.instance, l.id, l.id
+            )
+        })
+        .collect()
 }
 
 /// The store of a data folder: `layout` (relative to it) and its backups.
@@ -950,6 +982,65 @@ mod tests {
         assert_eq!(store.poll(), None);
         assert!(store.error().unwrap().contains("a view page"));
         assert_eq!(store.current().0, 3);
+    }
+
+    #[test]
+    fn a_linked_fader_alone_is_one_warn_line_and_its_instance_is_checked() {
+        let report = |leader, partners| LinkReport {
+            instance: "band".into(),
+            id: "PODKLADY".into(),
+            leader,
+            partners,
+        };
+        assert_eq!(
+            lonely_lines(&[
+                report(Leader::Frame, 0),
+                report(Leader::Strip, 0),
+                report(Leader::Frame, 2)
+            ]),
+            vec![
+                "the linked fader band/PODKLADY has no partner: no Tuner of its Live set carries +FADER:PODKLADY"
+                    .to_string()
+            ]
+        );
+        let frame = json!({"schema": 2, "default_page": "p", "pages": [{"id": "p", "title": "P", "rows": [{"sections": [
+            {"kind": "group", "id": "g", "controls": [{"kind": "param_fader", "label": "P", "link": {"instance": "nowhere", "id": "P"}}]}]}]}]});
+        let error = check(frame.to_string().as_bytes(), &["band".to_string()]).unwrap_err();
+        assert!(error.contains("unknown instance \"nowhere\""), "{error}");
+    }
+
+    #[test]
+    fn the_markers_status_lists_each_fader_link_with_its_partners() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(dir.path());
+        let frame = json!({"schema": 2, "default_page": "foh", "pages": [{"id": "foh", "title": "FOH",
+            "rows": [{"sections": [
+                {"kind": "group", "id": "vocals", "title": "VOCALS", "tags": "VOCALS"},
+                {"kind": "group", "id": "bt", "controls": [
+                    {"kind": "param_fader", "label": "Podklady All", "link": {"instance": "band", "id": "PODKLADY"}}]}]}]}]});
+        write(dir.path(), &serde_json::to_vec(&frame).unwrap());
+        assert_eq!(store.poll(), Some(1));
+        let report = |partners| LinkReport {
+            instance: "band".into(),
+            id: "PODKLADY".into(),
+            leader: Leader::Frame,
+            partners,
+        };
+        assert_eq!(
+            store.markers_status().links,
+            vec![report(0)],
+            "alone, it is listed with no partner"
+        );
+        let partner = Found {
+            instance: "band".into(),
+            kind: TrackKind::Track,
+            index: 10,
+            name: "+FADER:PODKLADY".into(),
+            tuners: 1,
+        };
+        assert_eq!(store.set_markers(vec![partner]), Some(2));
+        assert_eq!(store.markers_status().links, vec![report(1)]);
+        assert_eq!(store.markers_status().problems, vec![]);
     }
 
     #[test]

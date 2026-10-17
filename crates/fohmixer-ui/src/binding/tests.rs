@@ -119,6 +119,8 @@ fn strip(name: &str) -> Strip {
         mark: None,
         mute_links: Vec::new(),
         reverb: false,
+        fader_link: None,
+        fader_follows: Vec::new(),
     }
 }
 
@@ -325,7 +327,8 @@ fn every_control_kind_subscribes_what_it_shows() {
     assert_eq!(
         sub(&Control::ParamFader {
             label: "x".into(),
-            targets
+            targets,
+            link: None,
         }),
         vec![
             format!("band|{} mixer_device volume|value|true", t("P")),
@@ -758,6 +761,8 @@ fn marker(index: u32, label: &str) -> Strip {
         mark: None,
         mute_links: Vec::new(),
         reverb: false,
+        fader_link: None,
+        fader_follows: Vec::new(),
     }
 }
 

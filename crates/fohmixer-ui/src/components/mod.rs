@@ -282,10 +282,10 @@ pub fn ControlView(
         }
         .into_any(),
         // Two or more track volumes: the backing-tracks fader (#58).
-        Control::ParamFader { label, targets } if is_vca(&targets) => {
+        Control::ParamFader { label, targets, .. } if is_vca(&targets) => {
             view! { <VcaFaderView label=label targets=targets settings=settings /> }.into_any()
         }
-        Control::ParamFader { label, targets } => {
+        Control::ParamFader { label, targets, .. } => {
             view! { <ParamFaderView label=label targets=targets /> }.into_any()
         }
         Control::Alert {

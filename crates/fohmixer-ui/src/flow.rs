@@ -44,6 +44,8 @@ mod tests {
             mark: None,
             mute_links: Vec::new(),
             reverb: false,
+            fader_link: None,
+            fader_follows: Vec::new(),
         }))
     }
 
@@ -60,6 +62,7 @@ mod tests {
         Control::ParamFader {
             label: "All".into(),
             targets: vec![],
+            link: None,
         }
     }
 

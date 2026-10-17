@@ -166,9 +166,15 @@ pub enum Control {
         color: Option<String>,
     },
     /// A former MIDI fader writing its targets directly (spec F18).
+    /// `link` (#130, D18): a leader with no track of its own (Podklady
+    /// All): the frame names only the link, and the markers fill `targets`
+    /// with the tracks whose Tuners carry `+FADER:<id>` in its Live set.
     ParamFader {
         label: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
         targets: Vec<ParamTarget>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        link: Option<LinkId>,
     },
     /// TechAlert: the mute of its track, and the full-screen blink while it
     /// is unmuted (spec F16). `mute_guard`: a change needs a second tap, as
@@ -225,6 +231,51 @@ pub struct Strip {
     /// `+REVERB`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub reverb: bool,
+    /// The fader link this strip leads (#130, D18): its `+ID` and the
+    /// tracks whose Tuners carry `+FADER:<id>`; while the hub's switch of it
+    /// is on, a move of this strip's fader moves theirs by the same dB.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fader_link: Option<FaderLink>,
+    /// The fader links this strip is a partner of (#130): their leaders.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fader_follows: Vec<FaderFollow>,
+}
+
+/// A fader link's leader: its Live set and its `+ID` (#130, D18).
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LinkId {
+    pub instance: String,
+    pub id: String,
+}
+
+/// A leading strip's fader link (#130): its id and its partners' tracks by
+/// index with their labels, in Live's order.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FaderLink {
+    pub id: String,
+    pub partners: Vec<LinkPartner>,
+}
+
+/// One partner: its track or return by index, and its label (its marker's,
+/// or `#<index + 1>`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LinkPartner {
+    pub binding: Binding,
+    pub label: String,
+}
+
+/// A leader whose fader moves this strip's: its id and label; `fixed` for
+/// the frame's linked fader, which is always on.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FaderFollow {
+    pub id: String,
+    pub leader: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fixed: bool,
 }
 
 /// How a marker strip is marked (#68): a conflict (its label is on another
@@ -294,11 +345,17 @@ impl Control {
     }
 
     /// The bindings this control reads or writes (a strip's linked mutes
-    /// after its own, #127).
+    /// after its own, #127, then its fader link's partners, #130).
     pub fn bindings(&self) -> Vec<&Binding> {
         match self {
             Control::Strip(strip) => std::iter::once(&strip.binding)
                 .chain(&strip.mute_links)
+                .chain(
+                    strip
+                        .fader_link
+                        .iter()
+                        .flat_map(|l| l.partners.iter().map(|p| &p.binding)),
+                )
                 .collect(),
             Control::Solo { binding, .. }
             | Control::Stage { binding, .. }
@@ -612,6 +669,39 @@ impl Layout {
         }
         found.into_values().collect()
     }
+
+    /// The frame's linked faders (#130, D18: Podklady All): each one's link
+    /// and label, in document order.
+    pub fn linked_faders(&self) -> Vec<(LinkId, String)> {
+        self.controls()
+            .into_iter()
+            .filter_map(|c| match c {
+                Control::ParamFader {
+                    label,
+                    link: Some(link),
+                    ..
+                } => Some((link.clone(), label.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The leaders whose switch the hub keeps (#130): every placed strip
+    /// with a fader link, each once (a strip shows in several views).
+    pub fn fader_leaders(&self) -> Vec<LinkId> {
+        let leaders: std::collections::BTreeSet<LinkId> = self
+            .controls()
+            .into_iter()
+            .filter_map(|c| match c {
+                Control::Strip(strip) => strip.fader_link.as_ref().map(|l| LinkId {
+                    instance: strip.binding.instance.clone(),
+                    id: l.id.clone(),
+                }),
+                _ => None,
+            })
+            .collect();
+        leaders.into_iter().collect()
+    }
 }
 
 /// One fader of the REVERB rule (#130, D18): a reverb strip's track, its
@@ -750,6 +840,15 @@ impl Validator {
                 for (i, link) in strip.mute_links.iter().enumerate() {
                     self.binding(&format!("{at}.mute_links[{i}]"), link);
                 }
+                if let Some(link) = &strip.fader_link {
+                    self.id_name(&format!("{at}.fader_link"), &link.id);
+                    for (i, p) in link.partners.iter().enumerate() {
+                        self.binding(
+                            &format!("{at}.fader_link.partners[{i}].binding"),
+                            &p.binding,
+                        );
+                    }
+                }
             }
             Control::Solo { binding, .. } | Control::Stage { binding, .. } => {
                 self.binding(&format!("{at}.binding"), binding);
@@ -768,9 +867,30 @@ impl Validator {
                 }
                 self.targets(at, targets, true);
             }
-            Control::ParamFader { targets, .. } => self.targets(at, targets, false),
+            Control::ParamFader { targets, link, .. } => {
+                if let Some(link) = link {
+                    self.link(&format!("{at}.link"), link);
+                }
+                // A linked fader waits for the markers' tracks (#130).
+                if link.is_none() || !targets.is_empty() {
+                    self.targets(at, targets, false);
+                }
+            }
             Control::Reverb { .. } => {}
         }
+    }
+
+    fn id_name(&mut self, at: &str, id: &str) {
+        if !crate::markers::valid_group_name(id) {
+            self.error(at, format!("{id:?} is not an id"));
+        }
+    }
+
+    fn link(&mut self, at: &str, link: &LinkId) {
+        if link.instance.is_empty() {
+            self.error(at, "a link without an instance".to_string());
+        }
+        self.id_name(at, &link.id);
     }
 
     fn targets(&mut self, at: &str, targets: &[ParamTarget], toggle: bool) {

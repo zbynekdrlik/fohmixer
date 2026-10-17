@@ -681,6 +681,8 @@ fn a_marker_without_a_label_shows_its_tracks_number_and_is_known_by_it() {
         mark: None,
         mute_links: Vec::new(),
         reverb: false,
+        fader_link: None,
+        fader_follows: Vec::new(),
     };
     assert!(has_placeholder_label(&bound(
         Anchor::TrackAt { index: 2 },
@@ -1063,4 +1065,450 @@ fn a_frame_strip_cannot_be_a_reverb_fader() {
         .map(|e| e.message)
         .collect();
     assert_eq!(messages, ["a reverb fader: the Tuner markers make those"]);
+}
+
+#[test]
+fn fader_tags_parse_each_id_once_by_the_group_name_rule() {
+    let marker = parse("+FADER:REV +FADER:VOX1 +FADER:REV +FADER:rev");
+    assert_eq!(marker.faders, vec!["REV".to_string(), "VOX1".to_string()]);
+    assert_eq!(
+        marker.problems,
+        vec![
+            TagProblem::DuplicateFader { id: "REV".into() },
+            TagProblem::BadId {
+                tag: "+FADER:rev".into()
+            },
+        ]
+    );
+    // Only links: no strip, so no label or group to miss.
+    assert_eq!(parse("+FADER:REV").problems, vec![]);
+    assert_eq!(parse("+MUTE:VOX1 +FADER:REV").problems, vec![]);
+    // Anything else beside them: a strip's marker, which misses both.
+    for name in [
+        "+FADER:REV +PIN",
+        "+FADER:REV +MG",
+        "+FADER:REV +REVERB",
+        "+FADER:REV +ID:X",
+    ] {
+        assert_eq!(
+            parse(name).problems,
+            vec![TagProblem::NoLabel, TagProblem::NoGroup],
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn a_leaders_id_named_by_fader_tags_links_their_volumes_in_lives_order() {
+    let found = vec![
+        found(
+            "band",
+            TrackKind::Track,
+            3,
+            r#""Rev PA" +G:VOCALS +ID:REV +REVERB"#,
+        ),
+        found(
+            "band",
+            TrackKind::Track,
+            2,
+            r#""Rev ST" +G:VOCALS +FADER:REV +REVERB"#,
+        ),
+        found("band", TrackKind::Return, 1, "+FADER:REV"),
+        found("band", TrackKind::Track, 4, r#""Vox 1" +G:VOCALS"#),
+    ];
+    let composed = compose(&frame(), &found);
+    assert_eq!(composed.problems, vec![]);
+    assert_eq!(composed.layout.validate(), vec![]);
+    assert_eq!(
+        labels(&group(&composed.layout, "vocals").controls),
+        ["Rev ST", "Rev PA", "Vox 1"]
+    );
+    let pa = strip_in(&composed.layout, "vocals", "Rev PA");
+    assert_eq!(
+        pa.fader_link,
+        Some(FaderLink {
+            id: "REV".into(),
+            partners: vec![
+                LinkPartner {
+                    binding: at("band", Anchor::TrackAt { index: 2 }),
+                    label: "Rev ST".into()
+                },
+                LinkPartner {
+                    binding: at("band", Anchor::ReturnAt { index: 1 }),
+                    label: "#2".into()
+                },
+            ]
+        })
+    );
+    assert_eq!(pa.fader_follows, vec![]);
+    assert_eq!(pa.mute_links, vec![], "a fader link is no mute link");
+    let st = strip_in(&composed.layout, "vocals", "Rev ST");
+    assert_eq!(st.fader_link, None);
+    assert_eq!(
+        st.fader_follows,
+        vec![FaderFollow {
+            id: "REV".into(),
+            leader: "Rev PA".into(),
+            fixed: false
+        }]
+    );
+    assert_eq!(
+        strip_in(&composed.layout, "vocals", "Vox 1").fader_follows,
+        vec![]
+    );
+    assert_eq!(
+        composed.links,
+        vec![LinkReport {
+            instance: "band".into(),
+            id: "REV".into(),
+            leader: Leader::Strip,
+            partners: 2
+        }]
+    );
+    let mut reversed = found.clone();
+    reversed.reverse();
+    assert_eq!(compose(&frame(), &reversed), composed);
+}
+
+#[test]
+fn one_id_serves_a_mute_link_and_a_fader_link() {
+    let composed = compose(
+        &frame(),
+        &[
+            found("band", TrackKind::Track, 3, r#""Vox 1" +G:VOCALS +ID:VOX1"#),
+            found("band", TrackKind::Track, 9, "+MUTE:VOX1 +FADER:VOX1"),
+        ],
+    );
+    assert_eq!(composed.problems, vec![]);
+    let vox = strip_in(&composed.layout, "vocals", "Vox 1");
+    assert_eq!(
+        vox.mute_links,
+        vec![at("band", Anchor::TrackAt { index: 9 })]
+    );
+    assert_eq!(vox.fader_link.as_ref().map(|l| l.partners.len()), Some(1));
+    assert_eq!(
+        labels(&group(&composed.layout, "vocals").controls),
+        ["Vox 1"],
+        "the partner makes no strip"
+    );
+}
+
+#[test]
+fn a_fader_tags_problems_mirror_the_linked_mutes() {
+    let found = vec![
+        found(
+            "band",
+            TrackKind::Track,
+            1,
+            r#""A" +G:VOCALS +ID:REV +FADER:REV"#,
+        ),
+        found("band", TrackKind::Track, 2, "+FADER:NONE +FADER:NONE"),
+        found("band", TrackKind::Track, 4, r#""B" +G:VOCALS +ID:TWO"#),
+        found("band", TrackKind::Track, 5, r#""C" +G:VOCALS +ID:TWO"#),
+        found("band", TrackKind::Track, 6, "+FADER:TWO"),
+        // An id holds in its own Live set only.
+        found("master", TrackKind::Track, 0, "+FADER:REV"),
+    ];
+    let composed = compose(&frame(), &found);
+    let problems: Vec<(&str, u32, Vec<TagProblem>)> = composed
+        .problems
+        .iter()
+        .map(|r| (r.instance.as_str(), r.index, r.problems.clone()))
+        .collect();
+    assert_eq!(
+        problems,
+        vec![
+            ("band", 1, vec![TagProblem::SelfFader { id: "REV".into() }]),
+            (
+                "band",
+                2,
+                vec![
+                    TagProblem::DuplicateFader { id: "NONE".into() },
+                    TagProblem::OrphanFader { id: "NONE".into() }
+                ]
+            ),
+            (
+                "band",
+                4,
+                vec![TagProblem::DuplicateId { id: "TWO".into() }]
+            ),
+            (
+                "band",
+                5,
+                vec![TagProblem::DuplicateId { id: "TWO".into() }]
+            ),
+            (
+                "master",
+                0,
+                vec![TagProblem::OrphanFader { id: "REV".into() }]
+            ),
+        ]
+    );
+    for label in ["A", "B", "C"] {
+        assert_eq!(
+            strip_in(&composed.layout, "vocals", label).fader_link,
+            None,
+            "{label}"
+        );
+    }
+    assert_eq!(composed.links, vec![]);
+    assert_eq!(
+        serde_json::to_value(TagProblem::OrphanFader { id: "X".into() }).unwrap(),
+        json!({"code": "orphan_fader", "id": "X"})
+    );
+    assert_eq!(
+        serde_json::to_value(TagProblem::SelfFader { id: "X".into() }).unwrap(),
+        json!({"code": "self_fader", "id": "X"})
+    );
+    assert_eq!(
+        serde_json::to_value(TagProblem::DuplicateFader { id: "X".into() }).unwrap(),
+        json!({"code": "duplicate_fader", "id": "X"})
+    );
+}
+
+/// A frame whose `bt` group holds Podklady All linked to band's `PODKLADY`
+/// (#130) beside the VOCALS tags group.
+fn podklady_frame() -> Layout {
+    serde_json::from_value(json!({"schema": 2, "default_page": "foh", "pages": [{"id": "foh", "title": "FOH",
+        "rows": [{"sections": [
+            {"kind": "group", "id": "vocals", "title": "VOCALS", "tags": "VOCALS"},
+            {"kind": "group", "id": "bt", "controls": [
+                {"kind": "param_fader", "label": "Podklady All", "link": {"instance": "band", "id": "PODKLADY"}}]}]}]}]}))
+    .expect("the frame parses")
+}
+
+/// Podklady All in a composed layout.
+fn podklady(layout: &Layout) -> &Control {
+    group(layout, "bt").controls.first().expect("Podklady All")
+}
+
+/// A track's volume by index, as the markers fill a linked fader.
+fn volume_at(index: u32) -> ParamTarget {
+    ParamTarget {
+        binding: Binding {
+            instance: "band".into(),
+            anchor: Anchor::TrackAt { index },
+            path: Some("mixer_device volume".into()),
+        },
+        prop: "value".into(),
+        on: None,
+        off: None,
+        scale: Some(Scale::CcLinear),
+    }
+}
+
+#[test]
+fn the_frames_linked_fader_takes_the_fader_tags_tracks_of_its_set() {
+    let composed = compose(
+        &podklady_frame(),
+        &[
+            found("band", TrackKind::Track, 11, "+FADER:PODKLADY"),
+            found(
+                "band",
+                TrackKind::Track,
+                10,
+                r#""Drums" +G:VOCALS +FADER:PODKLADY"#,
+            ),
+            found("band", TrackKind::Track, 12, "+MUTE:PODKLADY"),
+            found("master", TrackKind::Track, 2, "+FADER:PODKLADY"),
+        ],
+    );
+    let Control::ParamFader { targets, link, .. } = podklady(&composed.layout) else {
+        panic!("no param_fader")
+    };
+    assert_eq!(targets, &vec![volume_at(10), volume_at(11)]);
+    assert_eq!(
+        link,
+        &Some(LinkId {
+            instance: "band".into(),
+            id: "PODKLADY".into()
+        })
+    );
+    assert_eq!(composed.layout.validate(), vec![]);
+    assert_eq!(
+        strip_in(&composed.layout, "vocals", "Drums").fader_follows,
+        vec![FaderFollow {
+            id: "PODKLADY".into(),
+            leader: "Podklady All".into(),
+            fixed: true
+        }]
+    );
+    assert_eq!(
+        composed.links,
+        vec![LinkReport {
+            instance: "band".into(),
+            id: "PODKLADY".into(),
+            leader: Leader::Frame,
+            partners: 2
+        }]
+    );
+    let problems: Vec<(&str, u32, Vec<TagProblem>)> = composed
+        .problems
+        .iter()
+        .map(|r| (r.instance.as_str(), r.index, r.problems.clone()))
+        .collect();
+    assert_eq!(
+        problems,
+        vec![
+            // No strip of its set carries the id: the frame's fader has no mute.
+            (
+                "band",
+                12,
+                vec![TagProblem::OrphanMute {
+                    id: "PODKLADY".into()
+                }]
+            ),
+            (
+                "master",
+                2,
+                vec![TagProblem::OrphanFader {
+                    id: "PODKLADY".into()
+                }]
+            ),
+        ]
+    );
+}
+
+#[test]
+fn a_linked_fader_in_a_pager_on_the_rail_or_global_is_filled_too() {
+    // fill_links walks every place a frame control can be: a pager's
+    // sub-pages, the rail and the global controls.
+    let fader = |id: &str| json!({"kind": "param_fader", "label": id, "link": {"instance": "band", "id": id}});
+    let frame: Layout = serde_json::from_value(json!({"schema": 2, "default_page": "foh",
+        "pages": [{"id": "foh", "title": "FOH", "rail": [fader("RAIL")], "rows": [{"sections": [
+            {"kind": "pager", "id": "pg", "default_page": "a", "pages": [
+                {"id": "a", "title": "A", "sections": [{"kind": "group", "id": "ga", "controls": [fader("PAGER")]}]}]}]}]}],
+        "global": [fader("GLOBAL")]}))
+    .expect("the frame parses");
+    let composed = compose(
+        &frame,
+        &[
+            found("band", TrackKind::Track, 1, "+FADER:RAIL"),
+            found("band", TrackKind::Track, 2, "+FADER:PAGER"),
+            found("band", TrackKind::Track, 3, "+FADER:GLOBAL"),
+        ],
+    );
+    let filled: Vec<(String, Vec<ParamTarget>)> = composed
+        .layout
+        .controls()
+        .into_iter()
+        .filter_map(|c| match c {
+            Control::ParamFader { label, targets, .. } => Some((label.clone(), targets.clone())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        filled,
+        vec![
+            ("RAIL".to_string(), vec![volume_at(1)]),
+            ("PAGER".to_string(), vec![volume_at(2)]),
+            ("GLOBAL".to_string(), vec![volume_at(3)]),
+        ]
+    );
+    assert_eq!(composed.problems, vec![]);
+}
+
+#[test]
+fn a_linked_fader_with_no_partner_or_a_taken_id_has_no_targets() {
+    let alone = compose(&podklady_frame(), &[]);
+    assert!(
+        matches!(podklady(&alone.layout), Control::ParamFader { targets, .. } if targets.is_empty())
+    );
+    assert_eq!(
+        alone.layout.validate(),
+        vec![],
+        "a linked fader may wait for its tracks"
+    );
+    assert_eq!(
+        alone.links,
+        vec![LinkReport {
+            instance: "band".into(),
+            id: "PODKLADY".into(),
+            leader: Leader::Frame,
+            partners: 0
+        }]
+    );
+    let taken = compose(
+        &podklady_frame(),
+        &[
+            found(
+                "band",
+                TrackKind::Track,
+                3,
+                r#""Pad" +G:VOCALS +ID:PODKLADY"#,
+            ),
+            found("band", TrackKind::Track, 10, "+FADER:PODKLADY"),
+            found("band", TrackKind::Track, 12, "+MUTE:PODKLADY"),
+        ],
+    );
+    assert!(
+        matches!(podklady(&taken.layout), Control::ParamFader { targets, .. } if targets.is_empty())
+    );
+    let pad = strip_in(&taken.layout, "vocals", "Pad");
+    assert_eq!(
+        (pad.fader_link.clone(), pad.mute_links.clone()),
+        (None, vec![])
+    );
+    let problems: Vec<(u32, Vec<TagProblem>)> = taken
+        .problems
+        .iter()
+        .map(|r| (r.index, r.problems.clone()))
+        .collect();
+    assert_eq!(
+        problems,
+        vec![(
+            3,
+            vec![TagProblem::DuplicateId {
+                id: "PODKLADY".into()
+            }]
+        )]
+    );
+}
+
+#[test]
+fn a_frame_holds_no_fader_link_and_names_a_linked_faders_tracks_by_its_link_only() {
+    let frame = |controls: Vec<serde_json::Value>| -> Layout {
+        serde_json::from_value(
+            json!({"schema": 2, "default_page": "p", "pages": [{"id": "p", "title": "P",
+            "rows": [{"sections": [{"kind": "group", "id": "g", "controls": controls}]}]}]}),
+        )
+        .unwrap()
+    };
+    let strip = |field: &str, value: serde_json::Value| {
+        let mut s = json!({"kind": "strip", "binding": {"instance": "band", "anchor": {"kind": "track", "name": "Rev #"}}, "strip_kind": "standard"});
+        s[field] = value;
+        s
+    };
+    let messages = |f: &Layout| {
+        frame_problems(f)
+            .into_iter()
+            .map(|e| e.message)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        messages(&frame(vec![strip(
+            "fader_link",
+            json!({"id": "REV", "partners": []})
+        )])),
+        ["a fader link: the Tuner markers make those"]
+    );
+    assert_eq!(
+        messages(&frame(vec![strip(
+            "fader_follows",
+            json!([{"id": "REV", "leader": "Rev PA"}])
+        )])),
+        ["a fader link: the Tuner markers make those"]
+    );
+    let linked = json!({"kind": "param_fader", "label": "Podklady All", "link": {"instance": "band", "id": "PODKLADY"}});
+    assert_eq!(messages(&frame(vec![linked.clone()])), Vec::<String>::new());
+    let mut both = linked.clone();
+    both["targets"] = json!([{"binding": {"instance": "band", "anchor": {"kind": "track", "name": "Drums #"}, "path": "mixer_device volume"}, "prop": "value", "scale": "cc_linear"}]);
+    assert_eq!(
+        messages(&frame(vec![both])),
+        ["a linked fader's tracks: the Tuner markers make those"]
+    );
+    assert_eq!(
+        messages(&frame(vec![linked.clone(), linked])),
+        ["the fader link band/PODKLADY is named twice"]
+    );
 }
