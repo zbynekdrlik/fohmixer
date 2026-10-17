@@ -1030,6 +1030,7 @@ impl Router {
         self.io
             .events
             .record("transport", json!({"instance": instance, "error": error}));
+        self.reverb_transport_lost(&instance);
     }
 
     /// A transport value for STAGE AUT.

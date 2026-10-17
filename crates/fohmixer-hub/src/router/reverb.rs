@@ -187,6 +187,13 @@ impl Router {
         self.reverb_apply(acts, None);
     }
 
+    /// The rules' transport listener of `instance` failed (`transport_failed`):
+    /// REVERB forgets the transport and ends its wait.
+    pub(super) fn reverb_transport_lost(&mut self, instance: &str) {
+        let acts = self.reverb.rule.transport_lost(instance);
+        self.reverb_apply(acts, None);
+    }
+
     /// A page's write of `key` (`take_set`; never the rule's own).
     pub(super) fn reverb_hand(&mut self, key: &str, client: ClientId) {
         let acts = self.reverb.rule.hand(key);
