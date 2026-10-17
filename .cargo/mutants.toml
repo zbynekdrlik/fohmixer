@@ -2,10 +2,10 @@
 # dropped): the PR gate in .github/workflows/ci.yml is diff-scoped, its shard
 # count computed by the `mutants-list` job from the diff's mutant count; the
 # full sweep is .github/workflows/mutation-full.yml (on demand). Both pass
-# --copy-target=true after a warm-up build and --timeout 160 (with
+# --copy-target=true after a warm-up build and --timeout 170 (with
 # --baseline=skip there is no measured test time, so a hung mutant would
-# otherwise hold its job for 300 s; 160 s is 2x the measured unmutated hub
-# suite, .claude/rules/ci.md). Tests run per package only. A mutant caught
+# otherwise hold its job for 300 s; 170 s is 2x the slowest measured
+# unmutated hub suite, .claude/rules/ci.md). Tests run per package only. A mutant caught
 # only by a timeout is tested again by scripts/mutants_recheck.py.
 profile = "mutants"
 test_tool = "nextest"
