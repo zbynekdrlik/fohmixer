@@ -80,8 +80,9 @@
    track colour the dark pill keeps it readable); the chain alone, at its
    whole size, beside a crowded mute chain (`behave::fader_link::
    flink_compact`: with a problem's `!`, or a count of two characters or
-   more; it never yields to RET or MUTE); the leader's cap line in the
-   accent. No height. */
+   more; it never yields to RET or MUTE, but beside both `!` and a mute
+   chain a strip under 88 px may have no room for it); the leader's cap
+   line in the accent. No height. */
 .link-mark.flink {
     color: var(--accent);
     text-transform: none;
