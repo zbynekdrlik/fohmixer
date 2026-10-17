@@ -13,6 +13,7 @@ pub mod meter;
 pub mod overlay;
 pub mod pan;
 pub mod params;
+pub mod rail;
 pub mod strip;
 
 use fohmixer_proto::client::set_key;
@@ -37,6 +38,7 @@ use crate::store::{LiveStore, Readiness, Slot};
 use buttons::{SoloView, StageMicsView};
 use overlay::AlertView;
 use params::{ParamFaderView, ParamToggleView, VcaFaderView};
+use rail::{RuleButton, RuleKind};
 use strip::StripView;
 
 /// The layout-wide control settings (a context of the stage).
@@ -255,9 +257,21 @@ pub fn ControlView(
         Control::Solo { binding, label } => {
             view! { <SoloView binding=binding label=label /> }.into_any()
         }
-        Control::Stage { binding, label, .. } => {
-            view! { <StageMicsView binding=binding label=label /> }.into_any()
+        // The merged STAGE button (#104, D18): a stage control with `aut`.
+        Control::Stage {
+            binding,
+            label,
+            aut: true,
+        } => {
+            let kind = RuleKind::Stage(binding);
+            let label = label.unwrap_or_else(|| "STAGE".to_string());
+            view! { <RuleButton kind=kind label=label /> }.into_any()
         }
+        Control::Stage {
+            binding,
+            label,
+            aut: false,
+        } => view! { <StageMicsView binding=binding label=label /> }.into_any(),
         Control::ParamToggle {
             label,
             targets,

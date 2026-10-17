@@ -1,0 +1,126 @@
+/* fohmixer: the rail buttons with an automatic mode (#104, #130, D18; the
+   approved mockup reverb-link-v1, screen 2): the merged STAGE button's
+   label with its AUT pill, its second line and the 3 s hold's fill
+   (components/rail.rs RuleButton). Linked after vca.css. */
+
+/* The rule's colour (the old hub toggles' blue) and its lighter line. */
+:root {
+    --aut: #6d86ff;
+    --aut-hi: #9cadff;
+}
+
+.rule-btn {
+    align-content: center;
+    gap: 2px;
+}
+
+.btn-row {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
+}
+
+.btn-row > .btn-text {
+    min-width: 0;
+}
+
+/* The label's width leaves the pill its room (32 px): the base formula of
+   buttons.css `.rail .btn-text` less it. */
+.rail .rule-btn .btn-text {
+    font-size: min(11.5px, calc((var(--tw, 65px) - 32px - var(--n, 5) * 0.6px) / (var(--n, 5) * 0.65)));
+}
+
+.aut-badge {
+    flex: none;
+    margin-left: auto;
+    padding: 0 4px;
+    border-radius: 4px;
+    background: var(--text);
+    color: #0b0b12;
+    font: 800 9.5px/13px var(--ui);
+    letter-spacing: 0.6px;
+}
+
+.rule-btn[data-aut="off"] .aut-badge {
+    display: none;
+}
+
+/* A tap overrides the rule until the next stop or start: outlined. */
+.rule-btn[data-aut="held"] .aut-badge {
+    background: none;
+    box-shadow: inset 0 0 0 1.5px var(--text);
+    color: var(--text);
+}
+
+.btn-sub {
+    overflow: hidden;
+    color: var(--muted);
+    font: 600 9.5px/12px var(--ui);
+    letter-spacing: 0.2px;
+    text-overflow: ellipsis;
+    text-transform: none;
+    white-space: nowrap;
+}
+
+.btn-sub:empty {
+    display: none;
+}
+
+.btn.on .btn-sub {
+    color: var(--text);
+}
+
+.btn-sub.low {
+    color: var(--aut-hi);
+}
+
+/* The 3 s hold fills the button from the left, a white bar at its foot:
+   one transition while `data-holding` (a transform, no looping animation,
+   nothing per frame; inside the button, so nothing overflows it). */
+.rule-btn .hold {
+    position: absolute;
+    inset: 0;
+    border-radius: 9px;
+    background: rgba(234, 234, 240, 0.2);
+    box-shadow: inset 0 -3px 0 var(--text);
+    transform: scaleX(0);
+    transform-origin: left;
+    pointer-events: none;
+}
+
+.rule-btn[data-holding="true"] .hold {
+    transform: scaleX(1);
+    transition: transform 3s linear;
+}
+
+/* Phones: no second line, and the pill is a dot in the corner (no width);
+   the label takes the rail's whole text width again. */
+@media (max-height: 520px), (max-width: 520px) {
+    .rule-btn .btn-sub {
+        display: none;
+    }
+
+    .rail .rule-btn .btn-text {
+        font-size: min(11.5px, calc((var(--tw, 65px) - var(--n, 5) * 0.6px) / (var(--n, 5) * 0.65)));
+    }
+
+    .rule-btn .aut-badge {
+        position: absolute;
+        top: 3px;
+        right: 3px;
+        width: 6px;
+        height: 6px;
+        padding: 0;
+        border-radius: 50%;
+        font-size: 0;
+    }
+}
+
+/* A low screen: page.css's size of a rail button's words again (this file
+   comes after it). */
+@media (max-height: 520px) {
+    .column .rail .rule-btn .btn-text {
+        font-size: min(9.5px, calc((var(--tw, 65px) - var(--n, 5) * 0.6px) / (var(--n, 5) * 0.65)));
+    }
+}
