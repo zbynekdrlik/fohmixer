@@ -466,4 +466,7 @@ fn the_rules_records_are_warn_class() {
     assert!(is_warn(
         &json!({"ev": "reverb", "step": "faders", "labels": ["Rev ST"]})
     ));
+    assert!(is_warn(
+        &json!({"ev": "fader_link", "instance": "band", "id": "REV", "on": false, "client": 2})
+    ));
 }

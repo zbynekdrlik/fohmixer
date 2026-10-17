@@ -15,6 +15,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+#[path = "rules/links.rs"]
+pub mod links;
 #[path = "rules/reverb.rs"]
 pub mod reverb;
 
@@ -97,6 +99,9 @@ pub struct HubState {
     /// REVERB (#130, D18): `reverb_aut` and, from PR 4, `reverb_low`.
     #[serde(flatten)]
     pub reverb: reverb::Saved,
+    /// The fader links' switches a page set (#130, D18).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fader_links: Vec<links::SavedLink>,
 }
 
 impl HubState {
@@ -241,6 +246,11 @@ mod tests {
                     }],
                 }),
             },
+            fader_links: vec![links::SavedLink {
+                instance: "band".into(),
+                id: "REV".into(),
+                on: false,
+            }],
         };
         state.save(dir.path()).unwrap();
         assert_eq!(HubState::load(dir.path()), state);
@@ -248,9 +258,11 @@ mod tests {
         // the defaults write no key of REVERB's.
         std::fs::write(state_path(dir.path()), r#"{"stage_aut": true}"#).unwrap();
         assert_eq!(HubState::load(dir.path()).reverb, reverb::Saved::default());
+        assert_eq!(HubState::load(dir.path()).fader_links, vec![]);
         HubState {
             stage_aut: false,
             reverb: reverb::Saved::default(),
+            fader_links: Vec::new(),
         }
         .save(dir.path())
         .unwrap();
@@ -264,6 +276,7 @@ mod tests {
         HubState {
             stage_aut: true,
             reverb: reverb::Saved::default(),
+            fader_links: Vec::new(),
         }
         .save(dir.path())
         .unwrap();
@@ -283,6 +296,7 @@ mod tests {
             HubState {
                 stage_aut: true,
                 reverb: reverb::Saved::default(),
+                fader_links: Vec::new(),
             }
             .save(dir.path())
             .is_err()

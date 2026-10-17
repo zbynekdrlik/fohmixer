@@ -104,6 +104,7 @@ mod tests {
             targets: BTreeMap::new(),
             strips: Vec::new(),
             reverb: vec![fader],
+            fader_leaders: Vec::new(),
         });
         let told = reverb(&first);
         assert_eq!(told.last().map(|s| s.faders.len()), Some(1));

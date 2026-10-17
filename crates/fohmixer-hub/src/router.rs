@@ -36,9 +36,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use fohmixer_proto::client::{
-    HUB_STAGE_AUT, ReverbStatus, ServerMsg, SetItem, StageAutStatus, Unresolved, ValueItem,
+    FaderLinkStatus, HUB_STAGE_AUT, ReverbStatus, ServerMsg, SetItem, StageAutStatus, Unresolved,
+    ValueItem,
 };
-use fohmixer_proto::layout::{Binding, Layout, RuleFader};
+use fohmixer_proto::layout::{Binding, Layout, LinkId, RuleFader};
 use serde_json::{Value, json};
 use tokio::sync::{mpsc, oneshot};
 
@@ -47,6 +48,7 @@ use crate::live::client::{LiveError, LiveEvent, LiveHandle};
 use crate::live::names::NameCheck;
 use crate::live::subs::{Cached, ClientId, Outgoing, Subs};
 use crate::outbox::Outbox;
+use crate::rules::links::FaderLinks;
 use crate::rules::{HubState, StageAut};
 use crate::setter::Setter;
 
@@ -57,6 +59,8 @@ mod ableset;
 #[path = "router/deck.rs"]
 mod deck;
 mod eq;
+#[path = "router/links.rs"]
+mod links;
 mod markers;
 #[path = "router/markers_io.rs"]
 mod markers_io;
@@ -178,6 +182,8 @@ pub enum RouterMsg {
         strips: Vec<(String, String)>,
         /// The REVERB rule's faders (`Layout::reverb_faders`, #130).
         reverb: Vec<RuleFader>,
+        /// Its fader links' strip leaders (`Layout::fader_leaders`, #130).
+        fader_leaders: Vec<LinkId>,
     },
     /// The router's part of `/api/status`.
     Status {
@@ -325,6 +331,8 @@ pub struct RouterStatus {
     pub stage_aut: StageAutStatus,
     /// REVERB (#130, D18).
     pub reverb: ReverbStatus,
+    /// Each strip leader's fader link switch (#130).
+    pub fader_links: Vec<FaderLinkStatus>,
     pub clients: usize,
     pub unresolved: Vec<Unresolved>,
 }
@@ -393,6 +401,8 @@ pub struct Router {
     stage_target: Option<StageTarget>,
     /// REVERB (#130, D18).
     reverb: reverb::ReverbIo,
+    /// The fader links' switches (#130, D18).
+    links: FaderLinks,
     /// Every instance's transport (#104, D18), by instance.
     transport: BTreeMap<String, TransportWatch>,
     layout_rev: u64,
@@ -462,6 +472,7 @@ impl Router {
             stage: StageAut::new(state.stage_aut),
             stage_target: None,
             reverb: reverb::ReverbIo::new(&state.reverb),
+            links: FaderLinks::new(&state.fader_links),
             state,
             transport,
             layout_rev: 0,
@@ -514,6 +525,7 @@ impl Router {
                 }
                 outbox.hub(HUB_STAGE_AUT, json!(self.stage.is_on()));
                 self.reverb_attach(&outbox);
+                self.links_attach(&outbox);
                 if self.layout_rev > 0 {
                     outbox.layout(self.layout_rev);
                 }
@@ -647,6 +659,7 @@ impl Router {
                 targets,
                 strips,
                 reverb,
+                fader_leaders,
             } => {
                 // Two producers (the file's poll and the markers, #68): an
                 // older revision arriving late never replaces a newer one.
@@ -659,6 +672,7 @@ impl Router {
                 }
                 self.set_stage_binding(stage.as_ref());
                 self.reverb_layout(reverb);
+                self.links_layout(fader_leaders);
                 let actions = self.unfold.set_strips(strips);
                 self.unfold_apply(actions);
                 self.names.set_targets(targets);
@@ -704,6 +718,7 @@ impl Router {
                         writes: self.stage.writes(),
                     },
                     reverb: self.reverb.rule.status(),
+                    fader_links: self.links.status(),
                     clients: self.clients.len(),
                     unresolved: self.names.unresolved(),
                 });
@@ -882,6 +897,10 @@ impl Router {
     }
 
     fn set_hub(&mut self, client: ClientId, key: &str, value: &Value) {
+        // The fader links' switches first (#130), then STAGE AUT.
+        if self.links_set_hub(client, key, value) {
+            return;
+        }
         let (true, Some(on)) = (key == HUB_STAGE_AUT, value.as_bool()) else {
             if let Some(outbox) = self.clients.get(&client) {
                 outbox.reply(ServerMsg::Error {
@@ -1196,6 +1215,7 @@ pub fn layout_msg(rev: u64, served: Option<&Layout>) -> RouterMsg {
             .unwrap_or_default(),
         strips: served.map(Layout::strip_tracks).unwrap_or_default(),
         reverb: served.map(Layout::reverb_faders).unwrap_or_default(),
+        fader_leaders: served.map(Layout::fader_leaders).unwrap_or_default(),
     }
 }
 
@@ -2031,6 +2051,7 @@ mod tests {
             targets: BTreeMap::new(),
             strips: Vec::new(),
             reverb: Vec::new(),
+            fader_leaders: Vec::new(),
         });
         assert_eq!(first.take().unwrap(), vec![ServerMsg::Layout { rev: 1 }]);
         let second = attach(&mut router, 2);
@@ -2060,6 +2081,7 @@ mod tests {
             targets: BTreeMap::new(),
             strips: Vec::new(),
             reverb: Vec::new(),
+            fader_leaders: Vec::new(),
         };
         router.handle(layout(2));
         router.handle(layout(1));
@@ -2078,6 +2100,7 @@ mod tests {
             targets: BTreeMap::new(),
             strips,
             reverb: Vec::new(),
+            fader_leaders: Vec::new(),
         };
         router.handle(layout(1, vec![("band".into(), "Keys 1".into())]));
         assert_eq!(
@@ -2113,6 +2136,7 @@ mod tests {
             targets: BTreeMap::new(),
             strips: vec![("band".into(), "Keys 1".into())],
             reverb: Vec::new(),
+            fader_leaders: Vec::new(),
         });
         // The read goes to an offline instance: its failure comes back…
         let failed = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
