@@ -76,18 +76,20 @@ pub fn link_parts(store: LiveStore, strip: &Strip, subs: &StripSubs, law: Volume
             fixed: f.fixed,
         })
         .collect();
+    // Memos (review M6): another hub value's change (STAGE AUT, another
+    // link's switch) re-runs them but reaches no mark or fader.
     let flag = move |k: &str| store.hub.try_with(|h| h.flag(k)).flatten();
     let lead_key = key.clone();
-    let link_on = Signal::derive(move || linked(lead_key.as_deref().and_then(flag), count));
+    let link_on = Memo::new(move |_| linked(lead_key.as_deref().and_then(flag), count));
     let follow_keys = follows.clone();
-    let follow_on = Signal::derive(move || {
+    let follow_on = Memo::new(move |_| {
         let now: Vec<(Option<bool>, bool)> = follow_keys
             .iter()
             .map(|f| (flag(&f.key), f.fixed))
             .collect();
         follows_on(&now)
     });
-    let flink = Signal::derive(move || {
+    let flink = Memo::new(move |_| {
         flink_of(
             link_on.try_get().unwrap_or(false),
             follow_on.try_get().unwrap_or(false),
@@ -95,8 +97,8 @@ pub fn link_parts(store: LiveStore, strip: &Strip, subs: &StripSubs, law: Volume
     });
     LinkParts {
         partners,
-        link_on,
-        flink,
+        link_on: link_on.into(),
+        flink: flink.into(),
         key,
         labels,
         follows,
@@ -114,11 +116,12 @@ pub fn FaderLinkView(link_key: String, labels: Vec<String>, keys: Vec<String>) -
     let store = expect_context::<LiveStore>();
     let text = link_text(&labels);
     let key = StoredValue::new(link_key);
-    let on = move || {
+    let lit = Memo::new(move |_| {
         key.try_with_value(|k| store.hub.try_with(|h| h.flag(k)).flatten())
             .flatten()
             == Some(true)
-    };
+    });
+    let on = move || lit.try_get().unwrap_or(false);
     let ready = move || store.connected.try_get().unwrap_or(false);
     let failed = RwSignal::new(false);
     let touch_keys = keys.clone();
@@ -161,10 +164,11 @@ pub fn FaderFollowView(follows: Vec<Follow>) -> impl IntoView {
         .map(|f| {
             let who = follow_text(&f.leader);
             let key = StoredValue::new(f.key);
-            let flag = move || {
+            let value = Memo::new(move |_| {
                 key.try_with_value(|k| store.hub.try_with(|h| h.flag(k)).flatten())
                     .flatten()
-            };
+            });
+            let flag = move || value.try_get().flatten();
             let (leader, fixed) = (f.leader, f.fixed);
             let state = move || follow_state(flag(), fixed, &leader);
             let on = move || (fixed || flag() == Some(true)).to_string();

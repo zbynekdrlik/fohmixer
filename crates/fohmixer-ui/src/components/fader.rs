@@ -235,22 +235,6 @@ pub fn FaderView(
         .first()
         .and_then(|t| t.spec.as_ref())
         .map(|s| set_key(&s.instance, &s.target, &s.prop));
-    // The partners' write keys: released with the fader's own when it goes
-    // under a finger (a key never written releases nothing).
-    let partner_keys: Vec<String> = partners
-        .iter()
-        .filter_map(|t| t.spec.as_ref())
-        .map(|s| set_key(&s.instance, &s.target, &s.prop))
-        .collect();
-    // A fader taken away under a finger (a page switch) gets no pointerup:
-    // its write counts as released then, never held forever (L4).
-    {
-        let keys = keys.clone();
-        on_cleanup(move || {
-            store.release(&keys);
-            store.release(&partner_keys);
-        });
-    }
     // The root owns its touches (#43 PR G) and names its keys.
     let touch_keys = keys.clone();
     let keys = StoredValue::new(keys);
@@ -262,6 +246,13 @@ pub fn FaderView(
     let link = StoredValue::new(None::<(Drag, Vec<usize>)>);
     // The keys this touch writes (its own; a linked one's partners' too).
     let touched = StoredValue::new(touch_keys.clone());
+    // A fader taken away under a finger (a page switch) gets no pointerup:
+    // the keys its last touch wrote count as released then, never held
+    // forever (L4). A partner's key is released only when a linked touch
+    // wrote it (the cleanup runs before the owner's stored values go).
+    on_cleanup(move || {
+        let _ = touched.try_with_value(|k| store.release(k));
+    });
     // A backing-tracks fader's touch: every target's volume at its start;
     // and its double tap's glide: from every target's volume at the glide's
     // start to 0 dB.
