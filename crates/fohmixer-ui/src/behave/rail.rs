@@ -1,7 +1,8 @@
 //! The rail buttons with an automatic mode (#104, #130, D18; the approved
 //! mockup `docs/mockups/reverb-link-v1.html`, screen 2): a tap on the
-//! finger's lift does what the button did by hand, a 3 s hold turns the
-//! automatic mode on or off. While it is on, the button wears an `AUT`
+//! finger's lift does what the button did by hand, a 1 s hold turns the
+//! automatic mode on or off at its lift (the owner's ruling on #104: 1 s,
+//! not the mockup's 3 s). While it is on, the button wears an `AUT`
 //! pill, outlined while a tap overrides the rule until the next stop or
 //! start, and a second line says in plain words what the rule does now.
 //!
@@ -22,9 +23,9 @@ use super::Down;
 use super::hold::Hold;
 use crate::diag::perf::Pointer;
 
-/// How long a rail button's press lasts before it turns its automatic mode
-/// on or off.
-pub const RAIL_HOLD_MS: f64 = 3000.0;
+/// How long a rail button's press lasts before it is full (its lift then
+/// turns its automatic mode on or off; the owner's ruling on #104: 1 s).
+pub const RAIL_HOLD_MS: f64 = 1000.0;
 
 /// How long after a change of the transport a mismatch of the mics still
 /// reads as the rule at work (the hub's write is on its way, one Live round
@@ -225,13 +226,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_rail_holds_for_three_seconds() {
-        assert_eq!(RAIL_HOLD_MS, 3000.0);
+    fn the_rail_holds_for_one_second() {
+        assert_eq!(RAIL_HOLD_MS, 1000.0);
         let mut press = rail_press();
         assert!(press.down(1, true, 0.0));
-        assert!(!press.open(2999.0));
-        assert!(press.open(3000.0));
-        assert_eq!(rail_press(), Hold::lifted(3000.0));
+        assert!(!press.open(1000.0_f64.next_down()));
+        assert!(press.open(1000.0));
+        assert_eq!(rail_press(), Hold::lifted(1000.0));
     }
 
     #[test]

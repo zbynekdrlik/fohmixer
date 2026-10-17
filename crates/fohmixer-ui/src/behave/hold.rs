@@ -253,23 +253,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_rail_press_holds_at_exactly_3000_ms() {
-        let mut h = Hold::with(3000.0);
+    fn a_rail_press_holds_at_exactly_1000_ms() {
+        let mut h = Hold::with(1000.0);
         assert!(h.down(1, true, 0.0));
-        assert!(!h.open(3000.0_f64.next_down()));
+        assert!(!h.open(1000.0_f64.next_down()));
         assert!(h.holding());
-        assert!(h.open(3000.0));
-        assert!(!h.open(3500.0), "once");
-        assert_eq!(h.up(1, 3600.0), Lift::Nothing);
+        assert!(h.open(1000.0));
+        assert!(!h.open(1500.0), "once");
+        assert_eq!(h.up(1, 1600.0), Lift::Nothing);
         // A lift a hair before is a tap; one after that no check saw is the hold.
         assert!(h.down(2, true, 0.0));
-        assert_eq!(h.up(2, 3000.0_f64.next_down()), Lift::Tap);
+        assert_eq!(h.up(2, 1000.0_f64.next_down()), Lift::Tap);
         assert!(h.down(3, true, 0.0));
-        assert_eq!(h.up(3, 3000.0), Lift::Open);
+        assert_eq!(h.up(3, 1000.0), Lift::Open);
         // From the press's own down, not from 0.
         assert!(h.down(4, true, 1000.0));
-        assert!(!h.due(4000.0_f64.next_down()));
-        assert!(h.due(4000.0));
+        assert!(!h.due(2000.0_f64.next_down()));
+        assert!(h.due(2000.0));
         // ☰'s stays 500 ms.
         let mut menu = Hold::default();
         assert!(menu.down(5, true, 0.0));
@@ -279,54 +279,54 @@ mod tests {
     }
 
     #[test]
-    fn a_rail_press_is_full_at_exactly_3000_ms_and_acts_at_its_lift() {
-        let mut h = Hold::lifted(3000.0);
+    fn a_rail_press_is_full_at_exactly_1000_ms_and_acts_at_its_lift() {
+        let mut h = Hold::lifted(1000.0);
         assert!(h.down(1, true, 0.0));
         assert!(!h.full());
-        assert!(!h.open(3000.0_f64.next_down()));
+        assert!(!h.open(1000.0_f64.next_down()));
         assert!(h.holding() && !h.full(), "filling");
-        assert!(h.open(3000.0));
+        assert!(h.open(1000.0));
         assert!(h.full() && !h.holding(), "full");
-        assert!(!h.open(3500.0), "once");
+        assert!(!h.open(1500.0), "once");
         assert_eq!(h.pressing(), Some(1));
         // Another pointer's lift ends nothing; its own acts.
-        assert_eq!(h.up(2, 3600.0), Lift::Nothing);
+        assert_eq!(h.up(2, 1600.0), Lift::Nothing);
         assert!(h.full());
-        assert_eq!(h.up(1, 3600.0), Lift::Open);
+        assert_eq!(h.up(1, 1600.0), Lift::Open);
         assert!(!h.full());
         // A lift a hair before is a tap; one after that no check saw acts.
         assert!(h.down(2, true, 0.0));
-        assert_eq!(h.up(2, 3000.0_f64.next_down()), Lift::Tap);
+        assert_eq!(h.up(2, 1000.0_f64.next_down()), Lift::Tap);
         assert!(h.down(3, true, 0.0));
-        assert_eq!(h.up(3, 3000.0), Lift::Open);
-        assert_eq!(Hold::lifted(3000.0).acts, Acts::AtLift);
-        assert_eq!(Hold::with(3000.0).acts, Acts::AtCheck);
+        assert_eq!(h.up(3, 1000.0), Lift::Open);
+        assert_eq!(Hold::lifted(1000.0).acts, Acts::AtLift);
+        assert_eq!(Hold::with(1000.0).acts, Acts::AtCheck);
     }
 
     #[test]
     fn a_refused_full_mark_makes_the_lift_do_nothing_and_never_a_tap() {
-        let mut h = Hold::lifted(3000.0);
+        let mut h = Hold::lifted(1000.0);
         assert!(h.down(1, true, 0.0));
         h.refuse();
         assert!(h.holding(), "no full mark yet: nothing to refuse");
-        assert!(h.open(3000.0));
+        assert!(h.open(1000.0));
         h.refuse();
         assert!(!h.full() && !h.holding());
         assert_eq!(h.pressing(), Some(1), "still down until its end");
-        assert_eq!(h.up(1, 3500.0), Lift::Nothing);
+        assert_eq!(h.up(1, 1500.0), Lift::Nothing);
         // A new press starts afresh.
-        assert!(h.down(1, true, 4000.0));
-        assert!(h.open(7000.0));
+        assert!(h.down(1, true, 2000.0));
+        assert!(h.open(3000.0));
         assert!(h.full());
-        assert_eq!(h.up(1, 7100.0), Lift::Open);
+        assert_eq!(h.up(1, 3100.0), Lift::Open);
     }
 
     #[test]
     fn a_full_rail_press_ends_with_nothing_done_at_a_slide_a_cancel_or_a_hide() {
         let full = || {
-            let mut h = Hold::lifted(3000.0);
+            let mut h = Hold::lifted(1000.0);
             assert!(h.down(1, true, 0.0));
-            assert!(h.open(3000.0));
+            assert!(h.open(1000.0));
             h
         };
         // A slide past 10 px from the first move.
@@ -334,17 +334,17 @@ mod tests {
         assert!(!h.moved(1, 50.0, 50.0), "the anchor");
         assert!(!h.moved(1, 60.0, 50.0), "exactly 10 px");
         assert!(h.moved(1, 60.0_f64.next_up(), 50.0));
-        assert_eq!((h.full(), h.up(1, 3500.0)), (false, Lift::Nothing));
+        assert_eq!((h.full(), h.up(1, 1500.0)), (false, Lift::Nothing));
         // A cancel or a lost capture.
         let mut h = full();
         h.cancel(2);
         assert!(h.full(), "another pointer's cancel");
         h.cancel(1);
-        assert_eq!((h.full(), h.up(1, 3500.0)), (false, Lift::Nothing));
+        assert_eq!((h.full(), h.up(1, 1500.0)), (false, Lift::Nothing));
         // A hidden page.
         let mut h = full();
         assert_eq!(h.leave(), Some(1));
-        assert_eq!(h.up(1, 3500.0), Lift::Nothing);
+        assert_eq!(h.up(1, 1500.0), Lift::Nothing);
         // ☰'s opened press keeps sliding nothing off.
         let mut menu = Hold::default();
         assert!(menu.down(1, true, 0.0));
@@ -356,7 +356,7 @@ mod tests {
 
     #[test]
     fn a_press_says_its_pointer_and_a_hidden_page_ends_it() {
-        let mut h = Hold::with(3000.0);
+        let mut h = Hold::with(1000.0);
         assert_eq!(h.pressing(), None);
         assert_eq!(h.leave(), None);
         assert!(h.down(7, true, 0.0));
@@ -364,11 +364,11 @@ mod tests {
         assert_eq!(h.leave(), Some(7));
         assert_eq!(h.pressing(), None);
         assert!(!h.holding());
-        assert!(!h.open(4000.0), "nothing to open");
-        assert_eq!(h.up(7, 4000.0), Lift::Nothing);
+        assert!(!h.open(2000.0), "nothing to open");
+        assert_eq!(h.up(7, 2000.0), Lift::Nothing);
         // An opened press still says its pointer until it ends.
         assert!(h.down(8, true, 0.0));
-        assert!(h.open(3000.0));
+        assert!(h.open(1000.0));
         assert_eq!(h.pressing(), Some(8));
         assert_eq!(h.leave(), Some(8));
     }

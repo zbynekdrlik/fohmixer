@@ -1,7 +1,7 @@
 //! The rail buttons with an automatic mode (#104, #130, D18; the approved
-//! mockup `docs/mockups/reverb-link-v1.html`, screen 2; the owner's ruling
-//! on #104 of 2026-10-17): a lift before `RAIL_HOLD_MS` is the tap; at
-//! `RAIL_HOLD_MS` the press is full (the fill stays full, the line says
+//! mockup `docs/mockups/reverb-link-v1.html`, screen 2; the owner's rulings
+//! on #104 of 2026-10-17): a lift before `RAIL_HOLD_MS` (1 s, not the
+//! mockup's 3 s) is the tap; at 1 s the press is full (the fill stays full, the line says
 //! `pusť — zapne AUT` / `pusť — vypne AUT`, nothing is sent) and the lift
 //! then turns the automatic mode on or off. The press is
 //! `behave::hold::Hold::lifted`: a slide past 10 px, a cancel, a lost

@@ -105,10 +105,11 @@ test.describe("A reconnect", () => {
       await page.waitForTimeout(1000);
       await expect(stage).toHaveAttribute("data-aut", "run");
       // A hold meanwhile cannot act (I8): no fill, no hold's line, and at
-      // 3 s it is refused, recorded so; the flag stays.
+      // 1 s it is refused, recorded so; the flag stays.
       const since = await page.evaluate(() => performance.timeOrigin + performance.now());
-      // One finger's sequence timed in the page: the look at 1 s, the
-      // refusal's flash right after the 3 s mark (it lasts 400 ms), the lift.
+      // One finger's sequence timed in the page: the look at 0.4 s, the
+      // refusal's flash right after the 1 s mark (the owner's ruling on
+      // #104; the flash lasts 400 ms), the lift.
       const seen = await stage.evaluate(async (el) => {
         const box = el.getBoundingClientRect();
         const finger = (type: string) =>
@@ -123,10 +124,10 @@ test.describe("A reconnect", () => {
           });
         const wait = (ms: number) => new Promise((done) => setTimeout(done, ms));
         el.dispatchEvent(finger("pointerdown"));
-        await wait(1000);
+        await wait(400);
         const holding = el.getAttribute("data-holding");
         const line = el.querySelector(".btn-sub")?.textContent ?? "";
-        await wait(2150);
+        await wait(750);
         const flashed = el.classList.contains("failed");
         const full = el.getAttribute("data-full");
         await wait(100);
@@ -135,7 +136,7 @@ test.describe("A reconnect", () => {
       });
       expect(seen.holding).toBe("false");
       expect(seen.line).not.toMatch(/drž|pusť/);
-      expect(seen.flashed, "the refusal's flash after the 3 s mark").toBe(true);
+      expect(seen.flashed, "the refusal's flash after the 1 s mark").toBe(true);
       expect(seen.full).toBe("false");
       await page.waitForTimeout(300);
       expect(live.hub.get("stage_aut")).toBe(true);
