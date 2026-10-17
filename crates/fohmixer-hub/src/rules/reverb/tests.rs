@@ -468,6 +468,7 @@ fn aut_off_while_lowered_keeps_them_and_aut_on_waits_only_while_live_stands() {
     ));
     let mut r = rule(false, Some(false));
     assert!(steps(&r.set_aut(true, 0.0)).contains(&&Step::Wait { ms: 2000.0 }));
+    assert_eq!(r.tick(2000.0_f64.next_down()), vec![], "the wait not over");
     assert!(matches!(
         steps(&r.tick(2000.0))[0],
         Step::Lower { why: Low::Stop, .. }
@@ -509,6 +510,20 @@ fn the_next_stop_takes_a_hand_fader_again_from_where_it_is() {
         panic!("{acts:?}")
     };
     assert!(faders.iter().any(|m| m.label == "Rev PA" && m.from == 0.7));
+    // A hand during the wait, then a start within it: nothing returned, so
+    // the hand stays until the next stop, which takes the fader again.
+    let mut r = rule(true, Some(true));
+    r.transport("band", false, 0.0);
+    r.hand(PA);
+    r.transport("band", true, 1000.0);
+    assert!(r.state().faders[1].hand);
+    r.transport("band", false, 2000.0);
+    assert!(!r.state().faders[1].hand);
+    let acts = r.tick(4000.0);
+    let Step::Lower { faders, .. } = steps(&acts)[0] else {
+        panic!("{acts:?}")
+    };
+    assert_eq!(faders.len(), 2);
 }
 
 #[test]

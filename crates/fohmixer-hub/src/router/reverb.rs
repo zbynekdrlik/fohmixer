@@ -35,6 +35,12 @@ pub(super) fn rearm(armed: Option<f64>, at: f64) -> bool {
     armed.is_none_or(|armed| armed > at)
 }
 
+/// How long the wake for `at` sleeps from `now` (router ms; never
+/// negative: a need already due wakes at once).
+pub(super) fn wake_in(at: f64, now: f64) -> std::time::Duration {
+    std::time::Duration::from_secs_f64((at - now).max(0.0) / 1000.0)
+}
+
 /// The instance of a hub key that is its track list or return-track list
 /// (an index then names another track).
 pub(super) fn list_instance(sub: &str) -> Option<String> {
@@ -320,7 +326,7 @@ impl Router {
         self.reverb.armed = Some(at);
         let generation = self.reverb.generation;
         let tx = self.io.tx.clone();
-        let wait = std::time::Duration::from_secs_f64((at - now).max(0.0) / 1000.0);
+        let wait = wake_in(at, now);
         tokio::spawn(async move {
             tokio::time::sleep(wait).await;
             let _ = tx.send(RouterMsg::ReverbWake { generation });

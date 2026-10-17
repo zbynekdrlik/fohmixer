@@ -7,8 +7,8 @@ use fohmixer_proto::layout::RuleFader;
 use serde_json::{Value, json};
 
 use super::super::tests::{attach, offline_router, records, set_msg, status};
-use super::super::{MARKERS_CLIENT, Router, RouterMsg};
-use super::{REVERB_CLIENT, REVERB_PEER, list_changed, list_instance, rearm};
+use super::super::{MARKERS_CLIENT, Router, RouterMsg, UNFOLD_CLIENT};
+use super::{REVERB_CLIENT, REVERB_PEER, list_changed, list_instance, rearm, wake_in};
 use crate::live::LiveValue;
 use crate::live::client::LiveEvent;
 use crate::outbox::Outbox;
@@ -100,11 +100,28 @@ fn item(index: u32, seq: u64, value: f64) -> SetItem {
 }
 
 #[test]
+fn the_rules_client_is_the_hubs_own_after_the_keepers() {
+    assert_eq!(
+        (UNFOLD_CLIENT, MARKERS_CLIENT, REVERB_CLIENT),
+        (u64::MAX, u64::MAX - 1, u64::MAX - 2)
+    );
+}
+
+#[test]
 fn a_wake_is_armed_only_when_sooner_than_the_one_on_its_way() {
     assert!(rearm(None, 100.0));
     assert!(rearm(Some(200.0), 100.0));
     assert!(!rearm(Some(100.0), 100.0));
     assert!(!rearm(Some(50.0), 100.0));
+}
+
+#[test]
+fn a_wake_sleeps_until_its_need_and_never_less_than_nothing() {
+    assert_eq!(
+        wake_in(1500.0, 1000.0),
+        std::time::Duration::from_millis(500)
+    );
+    assert_eq!(wake_in(900.0, 1000.0), std::time::Duration::ZERO);
 }
 
 #[test]

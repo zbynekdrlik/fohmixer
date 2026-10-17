@@ -918,8 +918,13 @@ jobs:
           # dependencies; 12 per shard ran over then, 8 per shard ran out of
           # the 20 minutes on 9 of 45 shards in PR #53, and 6 per shard on 9
           # of 136 shards in PR #73: 3 rounds took 17 minutes). 4 per shard
-          # is 2 rounds plus setup, about 15 minutes.
-          MUTANTS_PER_SHARD: "4"
+          # was 2 rounds plus setup, about 15 minutes, until #130 PR 4 (221
+          # hub mutants, run 39044523754): a mutated hub's build took 269 to
+          # 500 s two at a time and the setup 4.3 minutes, so the shards'
+          # median was 17.2 minutes, 21 of 56 took over 19 and 7 ran out of
+          # the 20. 2 per shard is one round (--jobs 2) plus setup, 9 to 14
+          # minutes (one mutant alone: 9.4 minutes).
+          MUTANTS_PER_SHARD: "2"
           BASE_REF: ${{ github.base_ref }}
         run: |
           set -euo pipefail
@@ -1024,12 +1029,13 @@ jobs:
           fi
           packages=(--package fohmixer-proto --package fohmixer-hub --package fohmixer-ui --package fohmixer-tray)
           # --timeout: with --baseline=skip cargo-mutants has no measured test
-          # time and would allow 300 s per mutant. 170 s is 2x the slowest
+          # time and would allow 300 s per mutant. 180 s is 2x the slowest
           # measured unmutated hub suite (78.8, 80.3 and 78.6 s in
-          # mutation-warmup, #130: 2 x 80.3 s = 160.6 s, past 160 s): under
-          # it a survivor reads as TIMEOUT, not MISSED (.claude/rules/ci.md).
+          # mutation-warmup, then 88.0 s with REVERB AUT's host tests, #130:
+          # 2 x 88.0 s = 176 s, past 170 s): under it a survivor reads as
+          # TIMEOUT, not MISSED (.claude/rules/ci.md).
           status=0
-          cargo mutants --in-diff "$RUNNER_TEMP/pr.diff" --baseline=skip --timeout 170 --jobs 2 --copy-target=true \
+          cargo mutants --in-diff "$RUNNER_TEMP/pr.diff" --baseline=skip --timeout 180 --jobs 2 --copy-target=true \
             --shard "${SHARD}/${SHARDS}" "${packages[@]}" --all-features -- --all-targets || status=$?
           case "$status" in
             0|2|3) ;;
@@ -1044,6 +1050,6 @@ jobs:
           # test); a survivor fails the gate (exit 2).
           recheck=0
           python3 scripts/mutants_recheck.py --out mutants.out -- \
-            --baseline=skip --timeout 170 --jobs 1 --copy-target=true "${packages[@]}" --all-features -- --all-targets || recheck=$?
+            --baseline=skip --timeout 180 --jobs 1 --copy-target=true "${packages[@]}" --all-features -- --all-targets || recheck=$?
           if [ "$status" -ne 0 ]; then exit "$status"; fi
           exit "$recheck"
