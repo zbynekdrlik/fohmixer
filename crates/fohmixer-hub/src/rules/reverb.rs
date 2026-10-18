@@ -450,7 +450,7 @@ impl Reverb {
     /// the rule held of its identity; a held fader the layout no longer
     /// names waits for one that does. A layout ends no window: its
     /// composition may predate an instance's newest read (review M1), so the
-    /// router ends each settled one after it (`tracks_known`).
+    /// router ends each settled one after it (`tracks_served`).
     pub fn set_faders(&mut self, specs: Vec<RuleFader>, now: f64) -> Vec<Act> {
         if self.faders.iter().map(|f| &f.spec).eq(specs.iter()) {
             return Vec::new();
@@ -768,8 +768,9 @@ impl Reverb {
             }
             let label = fader.spec.label.clone();
             if self.moved.contains(&fader.spec.instance) {
-                // Its index may name another track until the next layout:
-                // it stays at its level for this lowering (review W1).
+                // Its index may name another track until the instance's
+                // markers are settled: it stays at its level for this
+                // lowering (review W1, M1).
                 acts.push(Act::Step(Step::Skipped {
                     label,
                     why: "track list".into(),
@@ -1054,7 +1055,7 @@ impl Reverb {
     }
 
     /// An instance's track list changed: its glides stop at once (an index
-    /// names another track until the next layout), and Live's values count
+    /// may name another track until its markers are settled), and Live's values count
     /// again only once one is where the rule left the fader. A fader stopped
     /// mid-glide is let go: its value lies between the levels for good. Until
     /// the router says its strips are settled (`tracks_known`), nothing is
