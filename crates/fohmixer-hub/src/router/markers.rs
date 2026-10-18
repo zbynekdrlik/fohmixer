@@ -229,6 +229,10 @@ struct Instance {
     /// The migration's fresh read of the lists did not answer: the names
     /// may be old, so nothing of this instance is renamed (#68 PR C).
     stale: bool,
+    /// The markers may not be where Live has them: the instance went
+    /// offline, or a read of it failed, since its last whole read (#130
+    /// review M1, W2).
+    unsure: bool,
 }
 
 /// The names of a list value's items (the script encodes a track as an
@@ -455,6 +459,25 @@ impl Keeper {
         vec![self.read(instance)]
     }
 
+    /// The instance went offline: until a whole read after its next connect,
+    /// its markers may not be where Live has them (a set loaded meanwhile,
+    /// #130 review W2).
+    pub fn disconnected(&mut self, instance: &str) {
+        if let Some(state) = self.instances.get_mut(instance) {
+            state.unsure = true;
+        }
+    }
+
+    /// Whether `instance`'s markers are where Live has them, as far as a read
+    /// can tell (#130 review M1): no read of it runs, and its last one since
+    /// it went offline or failed answered whole. The migration's `stale`
+    /// names move no strip. An instance the keeper does not follow has none.
+    pub fn settled(&self, instance: &str) -> bool {
+        self.instances
+            .get(instance)
+            .is_none_or(|state| state.pending.is_none() && !state.unsure)
+    }
+
     /// A failed read's second chance (`Action::Retry`).
     pub fn retry(&mut self, instance: &str) -> Vec<Action> {
         if self.instances.contains_key(instance) {
@@ -482,6 +505,7 @@ impl Keeper {
         };
         let Ok(slots) = outcome else {
             state.pending = None;
+            state.unsure = true;
             state.failures += 1;
             return if state.failures <= MAX_RETRIES {
                 vec![Action::Retry {
@@ -515,6 +539,7 @@ impl Keeper {
         // Only a whole read resets the count: a second batch that keeps
         // failing is tried again `MAX_RETRIES` times too.
         state.failures = 0;
+        state.unsure = false;
         state.devices = done.devices;
         state.tuners = tuners;
         let mut actions = self.resubscribe(instance, done.counts);

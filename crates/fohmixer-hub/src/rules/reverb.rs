@@ -36,9 +36,12 @@
 //! - **A track-list change or an offline instance** stops that instance's
 //!   glides at once. Offline, what the rule holds stays; a track-list
 //!   change lets go of a fader it stopped mid-glide (its value lies between
-//!   the levels for good), and until the next layout settles where each
-//!   strip is, nothing is written to that instance's faders: a lowering
-//!   skips them, a return waits (an index may name another track).
+//!   the levels for good). Either opens the instance's window: until the
+//!   router says its strips are settled again (`tracks_known`: the marker
+//!   keeper's read since answered whole, no composition waiting), nothing is
+//!   written to that instance's faders and Live's values of them are kept,
+//!   not judged: a lowering skips them, a return waits (an index may name
+//!   another track).
 
 use std::collections::BTreeSet;
 
@@ -279,6 +282,9 @@ struct Fader {
     settled: bool,
     /// Held, its return asked before Live's value of it was heard.
     pending: bool,
+    /// Held, Live's value of it heard in its instance's window: judged when
+    /// the window ends (`Reverb::resume`).
+    unjudged: bool,
 }
 
 impl Fader {
@@ -294,6 +300,7 @@ impl Fader {
             glide: None,
             settled: true,
             pending: false,
+            unjudged: false,
         }
     }
 
@@ -357,6 +364,7 @@ impl Fader {
         if kept.key == self.key {
             self.live = kept.live;
             self.glide = kept.glide;
+            self.unjudged = kept.unjudged;
             return None;
         }
         kept.glide.map(|_| {
@@ -390,9 +398,11 @@ pub struct Reverb {
     restore: Option<Waiting>,
     writes: u64,
     hands: u64,
-    /// Instances whose track list changed since the last layout: nothing is
-    /// written to their faders until a layout, or the markers' read with
-    /// nothing changed, settles where each strip is (review W1).
+    /// Instances whose strips' places are unknown (their window): the track
+    /// list changed, or the instance went offline, and the router has not
+    /// said since that its markers are settled (review W1, M1, W2). Nothing
+    /// is written to their faders, and Live's values of them are judged only
+    /// when the window ends.
     moved: BTreeSet<String>,
 }
 
@@ -427,12 +437,12 @@ impl Reverb {
 
     /// A served layout's faders at `now` (router ms): each takes over what
     /// the rule held of its identity; a held fader the layout no longer
-    /// names waits for one that does.
+    /// names waits for one that does. A layout ends no window: its
+    /// composition may predate an instance's newest read (review M1), so the
+    /// router ends each settled one after it (`tracks_known`).
     pub fn set_faders(&mut self, specs: Vec<RuleFader>, now: f64) -> Vec<Act> {
-        // A served layout settles where every strip is (review W1).
-        let ended = std::mem::take(&mut self.moved);
         if self.faders.iter().map(|f| &f.spec).eq(specs.iter()) {
-            return self.resume(&ended, now);
+            return Vec::new();
         }
         let before = self.saved();
         let was = self.followed().map(str::to_string);
@@ -472,7 +482,6 @@ impl Reverb {
             }
         }
         acts.extend(self.restore_held(now));
-        acts.extend(self.resume(&ended, now));
         acts.push(Act::Step(Step::Faders {
             labels: self.labels(),
         }));
@@ -540,12 +549,14 @@ impl Reverb {
             return Vec::new();
         };
         fader.live = Some(value);
-        let at_left = fader.left.is_some_and(|left| same_volume(left, value));
-        if fader.pending && self.moved.contains(&fader.spec.instance) {
-            // Its index may name another track: the return waits for the
-            // layout too.
+        if self.moved.contains(&fader.spec.instance) {
+            // Its index may name another track until the window ends: the
+            // value is judged then (`resume`), never by a stale index (W2).
+            fader.unjudged = fader.held();
             return Vec::new();
         }
+        fader.unjudged = false;
+        let at_left = fader.left.is_some_and(|left| same_volume(left, value));
         if fader.pending {
             // The return waited for this value: where the rule left the
             // fader, it glides back; elsewhere, the hand wins.
@@ -608,14 +619,14 @@ impl Reverb {
                 .is_some_and(|w| w.faders.iter().any(|(_, pending)| *pending))
     }
 
-    /// The window of the instances `ended` closed (review W1): a return that
-    /// waited only for it, Live's value of the fader heard meanwhile, goes on
-    /// as that value would take it.
+    /// The window of the instances `ended` closed (review W1, W2): a return
+    /// that waited for it, and a held fader whose value came in it, go on as
+    /// Live's value would take them.
     fn resume(&mut self, ended: &BTreeSet<String>, now: f64) -> Vec<Act> {
         let heard: Vec<(String, f64)> = self
             .faders
             .iter()
-            .filter(|f| f.pending && ended.contains(&f.spec.instance))
+            .filter(|f| (f.pending || f.unjudged) && ended.contains(&f.spec.instance))
             .filter_map(|f| f.live.map(|v| (f.key.clone(), v)))
             .collect();
         heard
@@ -624,8 +635,9 @@ impl Reverb {
             .collect()
     }
 
-    /// The markers' read of `instance` settled with no new layout: each strip
-    /// is where it was, and the window a track-list change opened closes.
+    /// The router found `instance`'s strips settled (the marker keeper's read
+    /// answered whole since the window opened, no composition waiting, and a
+    /// layout of it served or none needed): the window closes.
     pub fn tracks_known(&mut self, instance: &str, now: f64) -> Vec<Act> {
         if !self.moved.remove(instance) {
             return Vec::new();
@@ -681,13 +693,16 @@ impl Reverb {
     /// its return glides to; a held one whose return waits stays held.
     fn lower(&mut self, why: Low, ms: f64, now: f64) -> Vec<Act> {
         // A held fader whose strip is away is taken back too: it comes back
-        // lowered for this reason, its return no longer waiting (R2-1).
-        if let Some(waiting) = &mut self.restore {
+        // lowered for this reason, its return no longer waiting (R2-1); a
+        // change of it is a lowering, recorded and saved (review M2).
+        let taken = self.restore.as_mut().is_some_and(|waiting| {
+            let changed = waiting.by != why || waiting.faders.iter().any(|(_, p)| *p);
             waiting.by = why;
             for (_, pending) in &mut waiting.faders {
                 *pending = false;
             }
-        }
+            changed
+        });
         let mut acts = Vec::new();
         let mut moves = Vec::new();
         for fader in &mut self.faders {
@@ -738,7 +753,7 @@ impl Reverb {
                 ms,
             });
         }
-        if self.faders.iter().any(Fader::held) {
+        if taken || self.faders.iter().any(Fader::held) {
             self.low = Some(why);
             acts.insert(0, Act::Step(Step::Lower { why, faders: moves }));
             acts.push(Act::Save);
@@ -907,8 +922,10 @@ impl Reverb {
         let mut acts = Vec::new();
         if self.wait.is_some_and(|at| due(at, now)) {
             self.wait = None;
-            acts.extend(self.lower(Low::Stop, LOWER_MS, now));
-            if !self.faders.iter().any(Fader::held) {
+            let lowered = self.lower(Low::Stop, LOWER_MS, now);
+            let none = !lowers(&lowered);
+            acts.extend(lowered);
+            if none {
                 acts.push(Act::Step(Step::Cancelled));
             }
             // The wait is over: every page is told.
@@ -954,8 +971,10 @@ impl Reverb {
 
     /// An instance went offline: its glides stop, its values (and, for the
     /// followed one, the transport and the wait) are forgotten; what the
-    /// rule holds stays.
+    /// rule holds stays. Its window opens (review W2): a set loaded or a
+    /// track moved meanwhile is known only from the connect's read.
     pub fn offline(&mut self, instance: &str) -> Vec<Act> {
+        self.moved.insert(instance.to_string());
         let mut acts = Vec::new();
         for fader in self
             .faders
@@ -985,8 +1004,8 @@ impl Reverb {
     /// names another track until the next layout), and Live's values count
     /// again only once one is where the rule left the fader. A fader stopped
     /// mid-glide is let go: its value lies between the levels for good. Until
-    /// a layout (or `tracks_known`) settles where each strip is, nothing is
-    /// written to the instance's faders (review W1).
+    /// the router says its strips are settled (`tracks_known`), nothing is
+    /// written to the instance's faders (review W1, M1).
     pub fn tracks_changed(&mut self, instance: &str) -> Vec<Act> {
         self.moved.insert(instance.to_string());
         let before = self.saved();
@@ -1076,6 +1095,12 @@ impl Reverb {
             hands: self.hands,
         }
     }
+}
+
+/// Whether `acts` hold a lowering (the stop's wait ended with one).
+fn lowers(acts: &[Act]) -> bool {
+    acts.iter()
+        .any(|a| matches!(a, Act::Step(Step::Lower { .. })))
 }
 
 /// A step's hub log line.

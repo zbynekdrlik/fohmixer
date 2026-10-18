@@ -639,11 +639,8 @@ impl Router {
                 let actions = self.markers.read_done(&instance, seq, step, &outcome);
                 self.markers_apply(actions);
                 // A read that leaves every strip where it was ends REVERB's
-                // track-list window (#130 review W1).
-                if reverb::tracks_settled(
-                    outcome.is_ok() && !self.markers.reading(&instance),
-                    self.markers_pending.is_some(),
-                ) {
+                // track-list window (#130 review W1, M1).
+                if self.reverb_settled(&instance) {
                     self.reverb_tracks_known(&instance);
                 }
             }
@@ -865,6 +862,9 @@ impl Router {
                 {
                     self.stage.on_disconnect();
                 }
+                // Until a read after the next connect, the strips' places are
+                // unknown (a set loaded meanwhile): REVERB's window opens.
+                self.markers.disconnected(instance);
                 self.reverb_offline(instance);
                 self.broadcast_instance(instance);
             }

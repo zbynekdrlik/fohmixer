@@ -167,6 +167,19 @@ impl Router {
             let acts = self.reverb.rule.cached(&key, value, now);
             self.reverb_apply(acts, None);
         }
+        // The layout ends the track-list window of each instance whose
+        // markers are settled; one that predates an instance's newest read
+        // leaves its window to that read (review M1). The rule asks no one:
+        // the router tells it, instance by instance.
+        let settled: Vec<String> = self
+            .live
+            .keys()
+            .filter(|name| self.reverb_settled(name))
+            .cloned()
+            .collect();
+        for name in settled {
+            self.reverb_tracks_known(&name);
+        }
         if let Some(instance) = self.reverb.rule.followed().map(str::to_string)
             && let Some(playing) = self.transport_now(&instance)
         {
@@ -200,8 +213,19 @@ impl Router {
         self.reverb_apply(acts, None);
     }
 
-    /// The markers settled `instance`'s strips where they were: the window
-    /// its track-list change opened closes (review W1).
+    /// Whether `instance`'s strips are where Live has them (review M1, W2):
+    /// the marker keeper's markers of it are settled (no read of it runs, and
+    /// none failed or was missed by a disconnect since its last whole one),
+    /// and no new composition waits.
+    pub(super) fn reverb_settled(&self, instance: &str) -> bool {
+        tracks_settled(
+            self.markers.settled(instance),
+            self.markers_pending.is_some(),
+        )
+    }
+
+    /// The markers settled `instance`'s strips: the window its track-list
+    /// change or its disconnect opened closes (review W1, W2).
     pub(super) fn reverb_tracks_known(&mut self, instance: &str) {
         let now = self.now_ms();
         let acts = self.reverb.rule.tracks_known(instance, now);
