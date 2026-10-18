@@ -1,7 +1,9 @@
 /* fohmixer: the rail buttons with an automatic mode (#104, #130, D18; the
-   approved mockup reverb-link-v1, screen 2): the merged STAGE button's
-   label with its AUT pill, its second line and the 1 s hold's fill
-   (components/rail.rs RuleButton). Linked after vca.css. */
+   approved mockups reverb-link-v1, screen 2, and reverb-link-v2, screens 1
+   and 3): the merged STAGE button's and REVERB's label with its AUT pill,
+   its second line and the 1 s hold's fill (components/rail.rs RuleButton),
+   and REVERB's marks on a reverb fader (components/fader.rs ReverbMarks).
+   Linked after vca.css. */
 
 /* The rule's colour (the old hub toggles' blue) and its lighter line. The
    AUT pill is in the page only while the rule is on (rail.rs). */
@@ -13,6 +15,11 @@
 .rule-btn {
     align-content: center;
     gap: 2px;
+}
+
+/* REVERB wears the rule's colour (lit at the song level). */
+.reverb-btn {
+    --c: var(--aut);
 }
 
 .btn-row {

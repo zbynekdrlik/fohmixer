@@ -366,3 +366,38 @@ fn the_hub_values_stay_through_an_outage_stale_until_the_next_connection_sends_t
     hub.put("stage_aut".into(), json!("yes"));
     assert_eq!(hub.flag("stage_aut"), None);
 }
+
+#[test]
+fn reverbs_state_stays_through_an_outage_stale_until_the_hub_tells_it_again() {
+    use fohmixer_proto::client::{Low, ReverbFader};
+    let told = |aut: bool, low: Option<Low>| ReverbState {
+        aut,
+        low,
+        playing: Some(false),
+        waiting: false,
+        faders: vec![ReverbFader {
+            key: "band|live_set tracks 2 mixer_device volume|value".into(),
+            label: "Rev ST".into(),
+            back: low.map(|_| 0.85),
+            hand: false,
+        }],
+    };
+    let mut reverb = HubReverb::default();
+    assert_eq!((reverb.shown(), reverb.fresh()), (None, None));
+    // A close before any state keeps nothing to show.
+    reverb.closed();
+    assert_eq!((reverb.shown(), reverb.fresh()), (None, None));
+    let first = told(true, Some(Low::Stop));
+    reverb.put(first.clone());
+    assert_eq!(reverb.shown(), Some(&first));
+    assert_eq!(reverb.fresh(), Some(&first));
+    // A close keeps it, stale: shown, not acted on.
+    reverb.closed();
+    assert_eq!(reverb.shown(), Some(&first));
+    assert_eq!(reverb.fresh(), None);
+    // The next connection's state replaces it, fresh.
+    let next = told(false, None);
+    reverb.put(next.clone());
+    assert_eq!(reverb.shown(), Some(&next));
+    assert_eq!(reverb.fresh(), Some(&next));
+}
