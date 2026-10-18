@@ -12,6 +12,7 @@ import {
   hostLine,
   hubEvents,
   hubStatus,
+  openDetail,
   openSurface,
   pageEvents,
   ready,
@@ -373,6 +374,60 @@ test.describe("REVERB and REVERB AUT", () => {
     await until(() => settled(live, ST), (v) => v === 0.85, "back exactly");
     await until(() => settled(live, PA), (v) => v === 0.6, "Rev PA back exactly");
     await expect(button).toHaveClass(/\bon\b/);
+  });
+
+  test("the channel detail's fader shows REVERB's return mark, AUT −10 and RUKA, with no height", async ({ page }) => {
+    await live.set("band", ST, "value", 0.85);
+    await live.set("band", PA, "value", 0.6);
+    await setUp(page);
+    // Rev PA (band track 3: `#4` by index) in its channel detail, which
+    // covers the strips and the rail.
+    const detail = await openDetail(page, "#4");
+    const fader = detail.getByTestId("fader");
+    await ready(fader);
+    for (const id of ["aut-span", "aut-ret", "aut-mark", "hand-mark"]) {
+      await expect(detail.getByTestId(id), `the detail's ${id}`).toHaveCount(1);
+      await expect(detail.getByTestId(id)).not.toHaveClass(/\bshown\b/);
+    }
+    await expect(detail.getByTestId("detail-readout")).toHaveAttribute("data-aut", "");
+    const travel = (await fader.boundingBox())!.height;
+    const cap = async () => {
+      const box = (await fader.getByTestId("fader-cap").boundingBox())!;
+      return box.y + box.height / 2;
+    };
+    const songLevel = await cap();
+
+    // Lowered (a page's tap, here the test's client: the detail covers the
+    // rail): the return mark at the song level, AUT −10, the readout in the
+    // rule's colour, no height.
+    live.setHub("reverb_low", true);
+    await until(() => settled(live, PA), tenDown(0.6), "Rev PA −10 dB");
+    await expect(detail.getByTestId("aut-span")).toHaveClass(/\bshown\b/);
+    await expect(detail.getByTestId("aut-ret")).toHaveClass(/\bshown\b/);
+    await expect(detail.getByTestId("aut-mark")).toHaveClass(/\bshown\b/);
+    await expect(detail.getByTestId("aut-mark")).toHaveText("AUT −10");
+    await expect(detail.getByTestId("detail-readout")).toHaveAttribute("data-aut", "low");
+    const ret = (await detail.getByTestId("aut-ret").boundingBox())!;
+    expect(Math.abs(ret.y + ret.height / 2 - songLevel), "the return mark at the song level").toBeLessThan(2);
+    expect(await cap(), "the cap under its return mark").toBeGreaterThan(songLevel + 10);
+    expect((await fader.boundingBox())!.height, "no height").toBeCloseTo(travel, 0);
+
+    // Dragged in the detail: the rule lets it go, RUKA there and on the strip.
+    await dispatchPointer(fader, [
+      { type: "pointerdown" },
+      { type: "pointermove", dy: 0 },
+      { type: "pointermove", dy: 20 },
+      { type: "pointerup", dy: 20 },
+    ]);
+    await until(async () => live.reverb?.faders?.[1]?.hand, (v: boolean) => v === true, "the hub let Rev PA go");
+    await expect(detail.getByTestId("hand-mark")).toHaveClass(/\bshown\b/);
+    await expect(detail.getByTestId("hand-mark")).toHaveText("RUKA");
+    await expect(detail.getByTestId("aut-ret")).not.toHaveClass(/\bshown\b/);
+    await expect(detail.getByTestId("detail-readout")).toHaveAttribute("data-aut", "");
+    expect((await fader.boundingBox())!.height, "no height").toBeCloseTo(travel, 0);
+    await detail.getByTestId("detail-exit").click();
+    await expect(strip(page, "Rev PA").getByTestId("hand-mark")).toHaveClass(/\bshown\b/);
+    await expect(strip(page, "Rev ST").getByTestId("aut-ret")).toHaveClass(/\bshown\b/);
   });
 
   test("after a reconnect, until the hub tells REVERB's state again, a tap and a hold are refused and send nothing", async ({ page }) => {
