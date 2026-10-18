@@ -465,10 +465,13 @@ impl Keeper {
 
     /// The instance went offline: until a whole read after its next connect,
     /// its markers may not be where Live has them (a set loaded meanwhile,
-    /// #130 review W2).
+    /// #130 review W2). The read in flight is dropped: an answer the router
+    /// handles after the disconnect is void (review N1), and the connect
+    /// reads afresh.
     pub fn disconnected(&mut self, instance: &str) {
         if let Some(state) = self.instances.get_mut(instance) {
             state.unsure = true;
+            state.pending = None;
         }
     }
 
