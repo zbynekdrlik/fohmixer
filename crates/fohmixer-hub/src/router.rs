@@ -2241,7 +2241,7 @@ mod tests {
     }
 
     /// The next message the router's own tasks send that `want` takes.
-    async fn next_of(
+    pub(super) async fn next_of(
         rx: &mut mpsc::UnboundedReceiver<RouterMsg>,
         what: &str,
         want: impl Fn(&RouterMsg) -> bool,

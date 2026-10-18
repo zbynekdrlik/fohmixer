@@ -1,13 +1,15 @@
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use fohmixer_proto::client::{
     AckItem, HUB_REVERB_AUT, HUB_REVERB_LOW, Low, ReverbState, ServerMsg, SetItem,
 };
 use fohmixer_proto::layout::RuleFader;
 use serde_json::{Value, json};
+use tokio::sync::mpsc::UnboundedReceiver;
 
-use super::super::tests::{attach, offline_router, records, set_msg, status};
-use super::super::{MARKERS_CLIENT, Router, RouterMsg, UNFOLD_CLIENT};
+use super::super::tests::{attach, next_of, offline_router, records, set_msg, status};
+use super::super::{MARKERS_CLIENT, Router, RouterMsg, UNFOLD_CLIENT, layout_msg, markers};
 use super::{
     REVERB_CLIENT, REVERB_PEER, list_changed, list_instance, rearm, tracks_settled, wake_in,
 };
@@ -586,10 +588,11 @@ async fn a_transport_listener_failure_ends_reverb_auts_wait() {
 }
 
 #[tokio::test]
-async fn a_reconnects_values_are_judged_before_its_transport() {
-    // Ruling 3's flush order, pinned: one connect answer carrying a held
-    // fader's volume off where the rule left it and Live playing. The
-    // value comes first, so the hand wins: nothing pends, nothing returns.
+async fn a_reconnects_values_are_judged_once_its_window_ends() {
+    // One connect answer carrying a held fader's volume off where the rule
+    // left it and Live playing. The disconnect opened the track-list window
+    // (review W2): the start's return waits, and the value is judged once
+    // the connect's read settles: the hand wins, nothing is written.
     let dir = tempfile::tempdir().unwrap();
     let (mut router, _rx, rx) = offline_router(dir.path());
     let _page = attach(&mut router, 1);
@@ -631,12 +634,17 @@ async fn a_reconnects_values_are_judged_before_its_transport() {
         .filter(|r| r["ev"] == "reverb")
         .map(|r| &r["step"])
         .collect();
+    assert_eq!(steps, vec!["pending"], "{got:?}");
+    assert_eq!(rule_sets(&got), vec![], "nothing written");
+    router.reverb_tracks_known("band");
+    let got = records(&rx);
+    let steps: Vec<&Value> = got
+        .iter()
+        .filter(|r| r["ev"] == "reverb")
+        .map(|r| &r["step"])
+        .collect();
     assert_eq!(steps, vec!["hand"], "{got:?}");
-    assert!(
-        !got.iter()
-            .any(|r| r["ev"] == "set" && r["client"] == json!(REVERB_CLIENT)),
-        "nothing written"
-    );
+    assert_eq!(rule_sets(&got), vec![], "nothing written");
     assert_eq!(router.reverb.rule.state().low, None);
 }
 
@@ -1010,6 +1018,428 @@ async fn the_markers_settling_with_no_new_layout_lets_a_waiting_return_go_on() {
                 json!(0.6),
                 json!(true)
             ),
+        ]
+    );
+}
+
+/// Rev ST's and Rev PA's Tuner markers: strips of the tag group FX.
+const ST_MARK: &str = r#""Rev ST" +G:FX +REVERB"#;
+const PA_MARK: &str = r#""Rev PA" +G:FX +REVERB"#;
+
+/// Live's answer to a command: its data.
+fn ok(data: Value) -> Value {
+    json!({"ok": true, "data": data})
+}
+
+/// The marker keeper's next read: its number and batch, from the offline
+/// answer its task sent the router (left unhandled: the read stays open).
+async fn next_read(own: &mut UnboundedReceiver<RouterMsg>) -> (u64, markers::Step) {
+    let read = next_of(own, "a read", |m| {
+        matches!(m, RouterMsg::MarkersRead { .. })
+    })
+    .await;
+    let RouterMsg::MarkersRead { seq, step, .. } = read else {
+        unreachable!()
+    };
+    (seq, step)
+}
+
+/// Live's answer to the keeper's read `seq` of `n` band tracks, a Tuner
+/// named `name` alone on each `(index, name)` track: both batches, handled
+/// as the read's tasks send them.
+async fn read_answered(
+    router: &mut Router,
+    own: &mut UnboundedReceiver<RouterMsg>,
+    seq: u64,
+    n: u32,
+    tuners: &[(u32, &str)],
+) {
+    let devices = (0..n)
+        .map(|i| match tuners.iter().find(|(at, _)| *at == i) {
+            Some((_, name)) => ok(json!([
+                {"$ref": format!("d{i}"), "class": "Device", "name": name, "path": "p"}
+            ])),
+            None => ok(json!([])),
+        })
+        .collect();
+    router.handle(RouterMsg::MarkersRead {
+        instance: "band".into(),
+        seq,
+        step: markers::Step::Devices,
+        outcome: Ok(devices),
+    });
+    if tuners.is_empty() {
+        return;
+    }
+    let classes = next_read(own).await;
+    assert_eq!(classes, (seq, markers::Step::Classes));
+    router.handle(RouterMsg::MarkersRead {
+        instance: "band".into(),
+        seq,
+        step: markers::Step::Classes,
+        outcome: Ok(vec![ok(json!("Tuner")); tuners.len()]),
+    });
+}
+
+/// The markers' quiet time ends: its message handled.
+async fn settle(router: &mut Router, own: &mut UnboundedReceiver<RouterMsg>) {
+    let msg = next_of(own, "the quiet time", |m| {
+        matches!(m, RouterMsg::MarkersSettle { .. })
+    })
+    .await;
+    router.handle(msg);
+}
+
+/// The rule's time `ms` from now: its wake handled.
+fn tick_after(router: &mut Router, ms: f64) {
+    let at = router.now_ms() + ms;
+    let acts = router.reverb.rule.tick(at);
+    router.reverb_apply(acts, None);
+}
+
+/// A router whose marker keeper follows the band (a frame of one tag group
+/// FX): Rev ST on band track 0 and Rev PA on track 1, composed from the
+/// keeper's own read, at 0.85 and 0.6, AUT on, Live playing or not.
+async fn marked(playing: bool) -> Shifted {
+    let dir = tempfile::tempdir().unwrap();
+    let frame = json!({"schema": 2, "default_page": "p", "pages": [{"id": "p", "title": "P",
+        "rows": [{"sections": [{"kind": "group", "id": "fx", "title": "FX", "tags": "FX"}]}]}]});
+    std::fs::write(dir.path().join("layout.json"), frame.to_string()).unwrap();
+    let store = Arc::new(crate::layout::store_in(
+        dir.path(),
+        std::path::Path::new("layout.json"),
+        vec!["band".into()],
+    ));
+    assert_eq!(store.poll(), Some(1));
+    let (router, mut own, rx) = offline_router(dir.path());
+    let mut router = router.with_layout(store);
+    let _page = attach(&mut router, 1);
+    router.subs.connected("band");
+    answer(&mut router, |target, prop| match (target, prop) {
+        (_, "tracks") => slot("live_1.tracks", json!([1, 2])),
+        (_, "return_tracks") => slot("live_1.returns", json!([])),
+        (_, "is_playing") => slot("live_1.is_playing", json!(playing)),
+        _ => json!({"ok": true, "data": null}),
+    });
+    router.flush();
+    let (seq, _) = next_read(&mut own).await;
+    read_answered(&mut router, &mut own, seq, 2, &[(0, ST_MARK), (1, PA_MARK)]).await;
+    settle(&mut router, &mut own).await;
+    assert_eq!(router.reverb.rule.state().faders.len(), 2);
+    answer(&mut router, |target, prop| match (target, prop) {
+        ("live_set tracks 0 mixer_device volume", "value") => slot("live_st.value", json!(0.85)),
+        ("live_set tracks 1 mixer_device volume", "value") => slot("live_pa.value", json!(0.6)),
+        _ => json!({"ok": true, "data": null}),
+    });
+    router.flush();
+    set_hub(&mut router, HUB_REVERB_AUT, json!(true));
+    let _ = records(&rx);
+    (router, rx, dir, own)
+}
+
+/// Both lowered for the stop by a tap (Live stands, AUT on), the glide run
+/// to its end, and Live reporting them where the rule left them.
+fn lowered_at_rest(router: &mut Router) {
+    set_hub(router, HUB_REVERB_LOW, json!(true));
+    tick_after(router, 600.0);
+    router.subs.on_values(
+        "band",
+        &[
+            pushed("live_st.value", json!(lowered(0.85))),
+            pushed("live_pa.value", json!(lowered(0.6))),
+        ],
+    );
+    router.flush();
+}
+
+/// A track added after both reverbs (the list changes, their indices do
+/// not), then Live starts: both returns wait for the window. The keeper's
+/// read of the band runs.
+async fn added_after(router: &mut Router, own: &mut UnboundedReceiver<RouterMsg>) -> u64 {
+    router
+        .subs
+        .on_values("band", &[pushed("live_1.tracks", json!([1, 2, 9]))]);
+    router.flush();
+    let (seq, _) = next_read(own).await;
+    router
+        .subs
+        .on_values("band", &[pushed("live_1.is_playing", json!(true))]);
+    router.flush();
+    seq
+}
+
+/// The ends of REVERB's writes in `got`: both back exactly on their own
+/// keys.
+fn returned_exactly(got: &[Value]) {
+    let ends: Vec<(Value, Value, Value)> = rule_sets(got)
+        .into_iter()
+        .filter(|(_, _, last)| *last == json!(true))
+        .collect();
+    assert_eq!(
+        ends,
+        vec![
+            (json!(ST), json!(0.85), json!(true)),
+            (json!(PA), json!(0.6), json!(true)),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_second_track_list_change_within_the_settle_keeps_the_window_until_its_read() {
+    // Review M1, the first trigger: the first change's read reports its
+    // markers, and a second change comes within their 300 ms quiet time,
+    // so the first composition is served while the second read runs. AUT's
+    // wait then ends.
+    let (mut router, rx, _dir, mut own) = marked(true).await;
+    router
+        .subs
+        .on_values("band", &[pushed("live_1.tracks", json!([9, 1, 2]))]);
+    router.flush();
+    let (first, _) = next_read(&mut own).await;
+    read_answered(
+        &mut router,
+        &mut own,
+        first,
+        3,
+        &[(1, ST_MARK), (2, PA_MARK)],
+    )
+    .await;
+    router
+        .subs
+        .on_values("band", &[pushed("live_1.tracks", json!([8, 9, 1, 2]))]);
+    router.flush();
+    let (second, _) = next_read(&mut own).await;
+    // The index bindings resolved again: track 1 is the first new track,
+    // track 2 Rev ST's.
+    router.subs.connected("band");
+    answer(&mut router, |target, prop| match (target, prop) {
+        ("live_set tracks 0 mixer_device volume", "value") => slot("live_a.value", json!(0.5)),
+        ("live_set tracks 1 mixer_device volume", "value") => slot("live_b.value", json!(0.4)),
+        (_, "tracks") => slot("live_1.tracks", json!([8, 9, 1, 2])),
+        (_, "return_tracks") => slot("live_1.returns", json!([])),
+        (_, "is_playing") => slot("live_1.is_playing", json!(true)),
+        _ => json!({"ok": true, "data": null}),
+    });
+    router.flush();
+    // The first composition (Rev ST on track 1, Rev PA on 2) is served.
+    settle(&mut router, &mut own).await;
+    answer(&mut router, |target, prop| match (target, prop) {
+        ("live_set tracks 2 mixer_device volume", "value") => slot("live_st.value", json!(0.85)),
+        _ => json!({"ok": true, "data": null}),
+    });
+    router.flush();
+    router
+        .subs
+        .on_values("band", &[pushed("live_1.is_playing", json!(false))]);
+    router.flush();
+    assert!(router.reverb.rule.state().waiting);
+    let _ = records(&rx);
+    tick_after(&mut router, 2100.0);
+    let got = records(&rx);
+    assert_eq!(
+        rule_sets(&got),
+        vec![],
+        "nothing by the old indices: {got:?}"
+    );
+    // The second read's composition ends the window: a tap lowers both by
+    // their keys now.
+    read_answered(
+        &mut router,
+        &mut own,
+        second,
+        4,
+        &[(2, ST_MARK), (3, PA_MARK)],
+    )
+    .await;
+    settle(&mut router, &mut own).await;
+    answer(&mut router, |target, prop| match (target, prop) {
+        ("live_set tracks 3 mixer_device volume", "value") => slot("live_pa.value", json!(0.6)),
+        _ => json!({"ok": true, "data": null}),
+    });
+    router.flush();
+    let _ = records(&rx);
+    set_hub(&mut router, HUB_REVERB_LOW, json!(true));
+    tick_after(&mut router, 30.0);
+    let got = records(&rx);
+    let lower = got
+        .iter()
+        .find(|r| r["ev"] == "reverb" && r["step"] == "lower")
+        .expect("a lowering");
+    assert_eq!(
+        lower["faders"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["from"].clone())
+            .collect::<Vec<_>>(),
+        vec![json!(0.85), json!(0.6)]
+    );
+    let keys: Vec<Value> = rule_sets(&got).into_iter().map(|(key, _, _)| key).collect();
+    assert_eq!(
+        keys,
+        vec![
+            json!("band|live_set tracks 2 mixer_device volume|value"),
+            json!("band|live_set tracks 3 mixer_device volume|value"),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_settle_that_serves_nothing_ends_the_window_only_of_a_settled_instance() {
+    // Review M1, the second trigger, and M4: a composition that serves
+    // nothing (the same markers again, as a Tuner's own name value gives)
+    // settles while the band's read runs; its window stays.
+    let (mut router, rx, _dir, mut own) = marked(false).await;
+    lowered_at_rest(&mut router);
+    let seq = added_after(&mut router, &mut own).await;
+    let found = router.markers.found().to_vec();
+    router.markers_found(found.clone());
+    settle(&mut router, &mut own).await;
+    let _ = records(&rx);
+    tick_after(&mut router, 600.0);
+    assert_eq!(rule_sets(&records(&rx)), vec![], "the read still runs");
+    // The read answers, unchanged, while another such composition waits:
+    // the window ends once that one settles, serving nothing.
+    router.markers_found(found);
+    read_answered(&mut router, &mut own, seq, 3, &[(0, ST_MARK), (1, PA_MARK)]).await;
+    tick_after(&mut router, 600.0);
+    assert_eq!(rule_sets(&records(&rx)), vec![], "a composition waits");
+    settle(&mut router, &mut own).await;
+    tick_after(&mut router, 600.0);
+    returned_exactly(&records(&rx));
+}
+
+#[tokio::test]
+async fn a_layout_served_while_the_markers_read_runs_keeps_the_window() {
+    // Review M1, the fourth trigger: the layout file's poll serves the
+    // same strips while the band's read after a track-list change runs.
+    let (mut router, rx, _dir, mut own) = marked(false).await;
+    lowered_at_rest(&mut router);
+    let seq = added_after(&mut router, &mut own).await;
+    let (rev, served) = router.layout_store.clone().unwrap().current();
+    router.handle(layout_msg(rev + 1, served.as_deref()));
+    let _ = records(&rx);
+    tick_after(&mut router, 600.0);
+    assert_eq!(rule_sets(&records(&rx)), vec![], "the read still runs");
+    read_answered(&mut router, &mut own, seq, 3, &[(0, ST_MARK), (1, PA_MARK)]).await;
+    tick_after(&mut router, 600.0);
+    returned_exactly(&records(&rx));
+}
+
+#[tokio::test]
+async fn a_failed_markers_read_keeps_the_window_until_a_read_answers() {
+    // The keeper's read after a track-list change fails: no read runs, yet
+    // where each strip is stays unknown, so a composition that settles
+    // meanwhile ends no window.
+    let (mut router, rx, _dir, mut own) = marked(false).await;
+    lowered_at_rest(&mut router);
+    router
+        .subs
+        .on_values("band", &[pushed("live_1.tracks", json!([1, 2, 9]))]);
+    router.flush();
+    let failed = next_of(&mut own, "a read", |m| {
+        matches!(m, RouterMsg::MarkersRead { .. })
+    })
+    .await;
+    router.handle(failed);
+    router
+        .subs
+        .on_values("band", &[pushed("live_1.is_playing", json!(true))]);
+    router.flush();
+    let found = router.markers.found().to_vec();
+    router.markers_found(found);
+    settle(&mut router, &mut own).await;
+    let _ = records(&rx);
+    tick_after(&mut router, 600.0);
+    assert_eq!(rule_sets(&records(&rx)), vec![], "the read failed");
+    // The read tried again answers, unchanged: the window ends.
+    router.handle(RouterMsg::MarkersRetry {
+        instance: "band".into(),
+    });
+    let (seq, _) = next_read(&mut own).await;
+    read_answered(&mut router, &mut own, seq, 3, &[(0, ST_MARK), (1, PA_MARK)]).await;
+    tick_after(&mut router, 600.0);
+    returned_exactly(&records(&rx));
+}
+
+#[tokio::test]
+async fn a_reconnect_after_a_track_list_change_writes_nothing_until_its_read_settles() {
+    // Review W2: the band goes offline; a track is inserted before both
+    // reverbs meanwhile; it reconnects.
+    let (mut router, rx, _dir, mut own) = marked(true).await;
+    router.handle(RouterMsg::Live {
+        instance: "band".into(),
+        event: LiveEvent::Disconnected,
+    });
+    // While it is offline, a composition that serves nothing settles: the
+    // window stays (no read can tell where the strips are).
+    let found = router.markers.found().to_vec();
+    router.markers_found(found);
+    settle(&mut router, &mut own).await;
+    router.handle(RouterMsg::Live {
+        instance: "band".into(),
+        event: LiveEvent::Connected(crate::live::ConnectInfo {
+            instance: "band".into(),
+            set_name: "set".into(),
+            script_version: "0".into(),
+            live_version: "12".into(),
+        }),
+    });
+    // The connect's read (of the tracks it knew) goes out; the new list
+    // starts a newer one.
+    let _ = next_read(&mut own).await;
+    answer(&mut router, |target, prop| match (target, prop) {
+        ("live_set tracks 0 mixer_device volume", "value") => slot("live_new.value", json!(0.5)),
+        ("live_set tracks 1 mixer_device volume", "value") => slot("live_st.value", json!(0.85)),
+        (_, "tracks") => slot("live_1.tracks", json!([9, 1, 2])),
+        (_, "return_tracks") => slot("live_1.returns", json!([])),
+        (_, "is_playing") => slot("live_1.is_playing", json!(true)),
+        _ => json!({"ok": true, "data": null}),
+    });
+    router.flush();
+    let (seq, _) = next_read(&mut own).await;
+    let _ = records(&rx);
+    // A tap down before the read settles: nothing by the old indices.
+    set_hub(&mut router, HUB_REVERB_LOW, json!(true));
+    tick_after(&mut router, 600.0);
+    let got = records(&rx);
+    assert_eq!(
+        rule_sets(&got),
+        vec![],
+        "nothing by the old indices: {got:?}"
+    );
+    // The read finds the strips moved; their layout ends the window, and
+    // the faders behave as before: a tap down lowers both by their keys now.
+    read_answered(&mut router, &mut own, seq, 3, &[(1, ST_MARK), (2, PA_MARK)]).await;
+    settle(&mut router, &mut own).await;
+    answer(&mut router, |target, prop| match (target, prop) {
+        ("live_set tracks 2 mixer_device volume", "value") => slot("live_pa.value", json!(0.6)),
+        _ => json!({"ok": true, "data": null}),
+    });
+    router.flush();
+    let _ = records(&rx);
+    set_hub(&mut router, HUB_REVERB_LOW, json!(true));
+    tick_after(&mut router, 30.0);
+    let got = records(&rx);
+    let lower = got
+        .iter()
+        .find(|r| r["ev"] == "reverb" && r["step"] == "lower")
+        .expect("a lowering");
+    assert_eq!(
+        lower["faders"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["from"].clone())
+            .collect::<Vec<_>>(),
+        vec![json!(0.85), json!(0.6)]
+    );
+    let keys: Vec<Value> = rule_sets(&got).into_iter().map(|(key, _, _)| key).collect();
+    assert_eq!(
+        keys,
+        vec![
+            json!("band|live_set tracks 1 mixer_device volume|value"),
+            json!("band|live_set tracks 2 mixer_device volume|value"),
         ]
     );
 }
