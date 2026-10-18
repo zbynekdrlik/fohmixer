@@ -8,8 +8,9 @@
 //! (#71, `hold`), the Pro-Q 4 screen's finger and picture (#71 PR E,
 //! `eq`), the backing-tracks fader's drag and look (#58, `vca`), the
 //! page's idle state (#51, `idle`), AbleSet's tab (#90, `ableset`), the
-//! rail buttons with an automatic mode (#104, #130, D18, `rail`) and the
-//! fader link's marks and same-dB move (#130, `fader_link`).
+//! rail buttons with an automatic mode (#104, #130, D18, `rail`), the
+//! fader link's marks and same-dB move (#130, `fader_link`) and REVERB's
+//! button and the faders' marks (#130, `reverb`).
 
 pub mod ableset;
 pub mod colour;
@@ -28,6 +29,7 @@ pub mod mute;
 pub mod pan;
 pub mod peak;
 pub mod rail;
+pub mod reverb;
 pub mod scale;
 pub mod solo;
 pub mod status;
