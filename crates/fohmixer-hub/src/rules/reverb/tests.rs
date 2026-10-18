@@ -614,10 +614,7 @@ fn a_track_list_change_lets_go_of_a_gliding_fader_and_keeps_a_still_one_until_it
         steps(&r.live(PA, 0.7, 700.0))[0],
         Step::Hand { by: By::Live, .. }
     ));
-    assert_eq!(
-        recorded(&r.tracks_changed("master")),
-        serde_json::json!([window("master", true, "tracks")])
-    );
+    assert_eq!(r.tracks_changed("master"), vec![], "no reverb fader there");
 }
 
 #[test]
@@ -654,10 +651,7 @@ fn an_offline_instance_stops_its_glides_and_keeps_what_is_held() {
     // Offline during the wait: the wait ends; another Live's: nothing.
     let mut r = rule(true, Some(true));
     r.transport("band", false, 0.0);
-    assert_eq!(
-        recorded(&r.offline("master")),
-        serde_json::json!([window("master", true, "offline")])
-    );
+    assert_eq!(r.offline("master"), vec![], "no reverb fader there");
     assert!(steps(&r.offline("band")).contains(&&Step::Cancelled));
     assert!(!r.state().waiting);
 }
@@ -1656,4 +1650,23 @@ fn a_served_layout_ends_the_window_recorded_so_and_the_returns_go_on() {
     let ran = run(&mut r, 825.0, 1300.0);
     let ends: Vec<_> = writes(&ran).into_iter().filter(|w| w.2).collect();
     assert_eq!(ends, vec![(ST, 0.85, true), (PA, 0.6, true)]);
+}
+
+#[test]
+fn a_window_opens_only_where_the_rule_has_a_reverb_fader() {
+    // A Live with no `+REVERB` strip: a list change or a disconnect of it
+    // records nothing (no window to hold).
+    let mut r = rule(false, Some(true));
+    assert_eq!(r.tracks_changed("master"), vec![]);
+    assert_eq!(r.offline("master"), vec![]);
+    // Both held low, then a layout without them: they wait in `restore`,
+    // which counts for their own Live only.
+    r.tap(true, 0.0);
+    let _ = run(&mut r, 25.0, 500.0);
+    r.set_faders(vec![], 600.0);
+    assert_eq!(r.tracks_changed("master"), vec![]);
+    assert_eq!(
+        recorded(&r.tracks_changed("band")),
+        serde_json::json!([window("band", true, "tracks")])
+    );
 }

@@ -659,9 +659,11 @@ impl Reverb {
         self.end_window(instance, "layout", now)
     }
 
-    /// Opens `instance`'s window (`why`: its cause), recorded once.
+    /// Opens `instance`'s window (`why`: its cause), recorded once; only
+    /// where the rule has a reverb fader, on a layout or waiting in
+    /// `restore` (a Live with none gets no vacuous record).
     fn open_window(&mut self, instance: &str, why: &str) -> Vec<Act> {
-        if !self.moved.insert(instance.to_string()) {
+        if !self.has_fader_in(instance) || !self.moved.insert(instance.to_string()) {
             return Vec::new();
         }
         vec![Act::Step(Step::Window {
@@ -669,6 +671,16 @@ impl Reverb {
             open: true,
             why: why.to_string(),
         })]
+    }
+
+    /// Whether the rule has a reverb fader of `instance`: a layout's, or
+    /// one waiting in `restore`.
+    fn has_fader_in(&self, instance: &str) -> bool {
+        self.faders.iter().any(|f| f.spec.instance == instance)
+            || self
+                .restore
+                .as_ref()
+                .is_some_and(|w| w.faders.iter().any(|(s, _)| s.instance == instance))
     }
 
     /// Ends `instance`'s window (`why`: how), recorded, and resumes what
