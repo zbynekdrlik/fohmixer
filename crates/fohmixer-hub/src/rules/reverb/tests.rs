@@ -1193,16 +1193,19 @@ fn a_lost_transport_ends_the_wait_and_is_a_first_value_again() {
 fn a_pending_return_has_its_line() {
     assert_eq!(
         step_line(&Step::Pending {
-            label: "Rev ST".into()
+            label: "Rev ST".into(),
+            why: "value".into()
         }),
         "REVERB returns Rev ST once Live reports where it is"
     );
     assert!(!step_warn(&Step::Pending {
-        label: "Rev ST".into()
+        label: "Rev ST".into(),
+        why: "value".into()
     }));
     assert_eq!(
         serde_json::to_value(Step::Pending {
-            label: "Rev ST".into()
+            label: "Rev ST".into(),
+            why: "value".into()
         })
         .unwrap(),
         serde_json::json!({"step": "pending", "label": "Rev ST", "why": "value"})

@@ -186,10 +186,12 @@ pub enum Step {
     Return {
         faders: Vec<Move>,
     },
-    /// A held fader's return waits for Live's value of it (none heard since
-    /// a restart or a reconnect).
+    /// A held fader's return waits: for Live's value of it (`value`: none
+    /// heard since a restart), or for its instance's window to end (`track
+    /// list`: an index may name another track).
     Pending {
         label: String,
+        why: String,
     },
     /// The hand took a fader: a page's write (`page`) or Live's own value
     /// (`live`, its `value`).
@@ -224,6 +226,15 @@ pub enum Step {
     },
     /// AUT off while low: the faders stay.
     Off,
+    /// An instance's window (review M3): it opens (`open`) when its track
+    /// list changed (`tracks`) or it went offline (`offline`), and nothing is
+    /// written to its faders until it ends: its markers settled with no new
+    /// layout (`settled`), or a layout of them served (`layout`).
+    Window {
+        instance: String,
+        open: bool,
+        why: String,
+    },
 }
 
 /// One fader's glide in a lowering or a return.
@@ -639,10 +650,40 @@ impl Reverb {
     /// answered whole since the window opened, no composition waiting, and a
     /// layout of it served or none needed): the window closes.
     pub fn tracks_known(&mut self, instance: &str, now: f64) -> Vec<Act> {
+        self.end_window(instance, "settled", now)
+    }
+
+    /// A layout served `instance`'s strips with its markers settled (review
+    /// M1): the window closes.
+    pub fn tracks_served(&mut self, instance: &str, now: f64) -> Vec<Act> {
+        self.end_window(instance, "layout", now)
+    }
+
+    /// Opens `instance`'s window (`why`: its cause), recorded once.
+    fn open_window(&mut self, instance: &str, why: &str) -> Vec<Act> {
+        if !self.moved.insert(instance.to_string()) {
+            return Vec::new();
+        }
+        vec![Act::Step(Step::Window {
+            instance: instance.to_string(),
+            open: true,
+            why: why.to_string(),
+        })]
+    }
+
+    /// Ends `instance`'s window (`why`: how), recorded, and resumes what
+    /// waited for it.
+    fn end_window(&mut self, instance: &str, why: &str, now: f64) -> Vec<Act> {
         if !self.moved.remove(instance) {
             return Vec::new();
         }
-        self.resume(&BTreeSet::from([instance.to_string()]), now)
+        let mut acts = vec![Act::Step(Step::Window {
+            instance: instance.to_string(),
+            open: false,
+            why: why.to_string(),
+        })];
+        acts.extend(self.resume(&BTreeSet::from([instance.to_string()]), now));
+        acts
     }
 
     /// `low` says a fader is held lowered: with none held, it ends.
@@ -791,6 +832,7 @@ impl Reverb {
                 Some(back) => moves.push(back),
                 None if !was => waits.push(Act::Step(Step::Pending {
                     label: fader.spec.label.clone(),
+                    why: pending_why(writable).into(),
                 })),
                 None => {}
             }
@@ -974,8 +1016,7 @@ impl Reverb {
     /// rule holds stays. Its window opens (review W2): a set loaded or a
     /// track moved meanwhile is known only from the connect's read.
     pub fn offline(&mut self, instance: &str) -> Vec<Act> {
-        self.moved.insert(instance.to_string());
-        let mut acts = Vec::new();
+        let mut acts = self.open_window(instance, "offline");
         for fader in self
             .faders
             .iter_mut()
@@ -1007,9 +1048,9 @@ impl Reverb {
     /// the router says its strips are settled (`tracks_known`), nothing is
     /// written to the instance's faders (review W1, M1).
     pub fn tracks_changed(&mut self, instance: &str) -> Vec<Act> {
-        self.moved.insert(instance.to_string());
+        let mut acts = self.open_window(instance, "tracks");
         let before = self.saved();
-        let mut acts = Vec::new();
+        let mut stopped = Vec::new();
         for fader in self
             .faders
             .iter_mut()
@@ -1017,14 +1058,15 @@ impl Reverb {
         {
             fader.settled = false;
             if fader.glide.is_some() {
-                acts.push(Act::Step(Step::Stopped {
+                stopped.push(Act::Step(Step::Stopped {
                     label: fader.spec.label.clone(),
                     why: "tracks".into(),
                 }));
                 fader.let_go();
             }
         }
-        if !acts.is_empty() {
+        if !stopped.is_empty() {
+            acts.extend(stopped);
             self.drop_low();
             // A stopped return glide changes nothing the rule holds.
             if self.saved() != before {
@@ -1097,6 +1139,12 @@ impl Reverb {
     }
 }
 
+/// Why a return waits: its index may name another track (`writable` false),
+/// or Live's value of it is unknown.
+fn pending_why(writable: bool) -> &'static str {
+    if writable { "value" } else { "track list" }
+}
+
 /// Whether `acts` hold a lowering (the stop's wait ended with one).
 fn lowers(acts: &[Act]) -> bool {
     acts.iter()
@@ -1140,8 +1188,11 @@ pub fn step_line(step: &Step) -> String {
         Step::Return { faders } => {
             format!("REVERB returns {} to the song level", labels(faders))
         }
-        Step::Pending { label } => {
+        Step::Pending { label, why } if why == "value" => {
             format!("REVERB returns {label} once Live reports where it is")
+        }
+        Step::Pending { label, .. } => {
+            format!("REVERB returns {label} once its track list settles")
         }
         Step::Hand {
             label,
@@ -1170,6 +1221,16 @@ pub fn step_line(step: &Step) -> String {
             "REVERB AUT off while the reverb faders are low: they stay, a tap returns them"
                 .to_string()
         }
+        Step::Window {
+            instance,
+            open: true,
+            why,
+        } => format!(
+            "REVERB writes nothing to {instance}'s reverb faders until their strips are settled ({why})"
+        ),
+        Step::Window { instance, why, .. } => format!(
+            "REVERB writes {instance}'s reverb faders again: their strips are settled ({why})"
+        ),
     }
 }
 

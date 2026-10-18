@@ -178,7 +178,9 @@ impl Router {
             .cloned()
             .collect();
         for name in settled {
-            self.reverb_tracks_known(&name);
+            let now = self.now_ms();
+            let acts = self.reverb.rule.tracks_served(&name, now);
+            self.reverb_apply(acts, None);
         }
         if let Some(instance) = self.reverb.rule.followed().map(str::to_string)
             && let Some(playing) = self.transport_now(&instance)
