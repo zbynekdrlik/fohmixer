@@ -216,10 +216,21 @@
     background: var(--text);
 }
 
-.strip-readout[data-aut="low"] {
+.strip-readout[data-aut="low"],
+.detail-readout[data-aut="low"] {
     background: var(--aut);
 }
 
-.strip-readout[data-aut="low"] .db {
+.strip-readout[data-aut="low"] .db,
+.detail-readout[data-aut="low"] .db {
     color: #0b0b12;
+}
+
+/* The channel detail's readout (#130 PR 5 review M1): a pill around its
+   light and dB, as the strip's (a flex item of the detail's left box, so
+   centred by itself; no height of its own). */
+.detail-readout[data-aut="low"] {
+    align-self: center;
+    padding: 0 10px;
+    border-radius: 8px;
 }

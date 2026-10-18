@@ -28,6 +28,7 @@ use super::{
 use crate::behave::fader::UNITY;
 use crate::behave::hold::guard_left;
 use crate::behave::label::shown_label;
+use crate::behave::reverb::held_low;
 use crate::binding::{CLOSE_EXIT, SubSpec, detail_keys, detail_subs};
 use crate::dom;
 use crate::store::{LiveStore, Readiness, Slot};
@@ -234,6 +235,20 @@ pub fn DetailView(strip: Strip, group: Option<String>) -> impl IntoView {
     let db = volume.map(|slot| view! { <DbView state=slot /> });
     let link_on = parts.link_on;
     let link_partners = parts.partners;
+    // A reverb strip (#130, D18; PR 5 review M1): REVERB's marks on the
+    // detail's fader too, and its readout in the rule's colour while the
+    // rule holds it low (the detail covers the strip).
+    let reverb = strip.reverb;
+    let volume_key = StoredValue::new(subs.volume.as_ref().map(key_of).unwrap_or_default());
+    let low = move || {
+        reverb
+            && store
+                .reverb
+                .try_with(|r| volume_key.try_with_value(|k| held_low(r.shown(), k)))
+                .flatten()
+                .unwrap_or(false)
+    };
+    let readout_aut = move || if low() { "low" } else { "" };
     let fader = volume.zip(subs.volume.clone()).map(|(slot, spec)| {
         let targets = vec![Target {
             spec: Some(spec),
@@ -246,6 +261,7 @@ pub fn DetailView(strip: Strip, group: Option<String>) -> impl IntoView {
                 shaping={settings.shaping}
                 partners=link_partners
                 link_on=link_on
+                reverb=reverb
             />
         }
     });
@@ -328,7 +344,7 @@ pub fn DetailView(strip: Strip, group: Option<String>) -> impl IntoView {
             <div class="detail-body">
                 <section class="detail-box detail-left" data-testid="detail-left">
                     {mute_view}
-                    <div class="detail-readout" data-testid="detail-readout">
+                    <div class="detail-readout" data-testid="detail-readout" data-aut=readout_aut>
                         <StatusView slots=all activity=activity />
                         {db}
                     </div>

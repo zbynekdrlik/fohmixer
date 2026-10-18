@@ -28,7 +28,7 @@ use crate::behave::db_text::db_text;
 use crate::behave::fader::{UNITY, VolumeLaw};
 use crate::behave::hold::{HINT_MS, HOLD_MS, Hold, Lift};
 use crate::behave::label::{mark_look, shown_label};
-use crate::behave::reverb::{Mark, mark_of};
+use crate::behave::reverb::held_low;
 use crate::behave::scale::{side_style, tick_label, tick_pos, ticks};
 use crate::binding::{detail_keys, strip_subs};
 use crate::dom;
@@ -275,17 +275,15 @@ pub fn StripView(
     // readout in the rule's colour while the rule holds it low.
     let reverb = strip.reverb;
     let volume_key = StoredValue::new(subs.volume.as_ref().map(key_of).unwrap_or_default());
-    let held_low = move || {
+    let low = move || {
         reverb
             && store
                 .reverb
-                .try_with(|r| {
-                    volume_key.try_with_value(|k| matches!(mark_of(r.shown(), k), Mark::Aut { .. }))
-                })
+                .try_with(|r| volume_key.try_with_value(|k| held_low(r.shown(), k)))
                 .flatten()
                 .unwrap_or(false)
     };
-    let readout_aut = move || if held_low() { "low" } else { "" };
+    let readout_aut = move || if low() { "low" } else { "" };
     let fader = volume.zip(subs.volume.clone()).map(|(slot, spec)| {
         let targets = vec![Target {
             spec: Some(spec),

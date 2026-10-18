@@ -171,6 +171,12 @@ pub fn mark_of(state: Option<&ReverbState>, key: &str) -> Mark {
     }
 }
 
+/// Whether the rule holds that fader low: its readout (the strip's and the
+/// channel detail's) in the rule's colour.
+pub fn held_low(state: Option<&ReverbState>, key: &str) -> bool {
+    matches!(mark_of(state, key), Mark::Aut { .. })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -463,5 +469,20 @@ mod tests {
         assert_eq!(aut_text(0.85, 0.0), "AUT −∞");
         assert_eq!(aut_text(0.0, 0.0), "AUT");
         assert_eq!(aut_text(0.6, 0.85), "AUT", "above its return level");
+    }
+
+    #[test]
+    fn a_readout_is_in_the_rules_colour_only_while_its_fader_is_held_low() {
+        let s = with(true, Some(Low::Stop), Some(false), false);
+        assert!(held_low(Some(&s), ST));
+        assert!(held_low(Some(&s), PA));
+        assert!(!held_low(Some(&s), "other"));
+        assert!(!held_low(None, ST));
+        assert!(!held_low(Some(&state()), ST), "at the song level");
+        let mut h = s.clone();
+        h.faders[1].back = None;
+        h.faders[1].hand = true;
+        assert!(!held_low(Some(&h), PA), "in the hand");
+        assert!(held_low(Some(&h), ST));
     }
 }
