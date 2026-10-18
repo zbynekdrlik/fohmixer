@@ -17,6 +17,7 @@ import {
   pageEvents,
   ready,
   selectPage,
+  strip as stripByTrack,
   until,
   value2db,
 } from "./support/live";
@@ -107,6 +108,24 @@ async function fits(button: Locator, text: string) {
   expect(row[0], `its label and pill side by side with "${text}"`).toBeLessThanOrEqual(row[1]);
 }
 
+/**
+ * The fader travel of both reverb strips equals an unmarked strip's of the
+ * same row (master's Hand4 #, the HANDS group: one instance, no tag) and is
+ * the iPad's 322 px (fader height first: nothing REVERB adds takes any).
+ */
+async function travelsPinned(page: Page, state: string) {
+  const reference = (await stripByTrack(page, "Hand4 #", "master").getByTestId("fader").boundingBox())!.height;
+  const travels: [string, number][] = [];
+  for (const label of ["Rev ST", "Rev PA"]) {
+    travels.push([label, (await strip(page, label).getByTestId("fader").boundingBox())!.height]);
+  }
+  console.log(`reverb travel (${test.info().project.name}, ${state}): ${travels.map(([l, h]) => `${l} ${h}`).join(", ")}, Hand4 # ${reference} px`);
+  for (const [label, travel] of travels) {
+    expect(travel, `${label}'s travel equals an unmarked strip's (${state})`).toBeCloseTo(reference, 0);
+    expect(Math.abs(travel - 322), `${label}'s travel is 322 px (${state}): ${travel}`).toBeLessThanOrEqual(1);
+  }
+}
+
 /** A 1 s hold, full at 1.2 s (read in the page before the lift, PR #133's review M1), then its lift. */
 async function hold(button: Locator, line: string, live: LiveClient, aut: boolean) {
   const press = await dispatchSnapped(button, [{ type: "pointerdown" }, { wait: 1200 }, { snap: true }]);
@@ -180,6 +199,12 @@ test.describe("REVERB and REVERB AUT", () => {
     expect(await rail.nth(0).getAttribute("data-testid")).toBe("stage-mics");
     expect(await rail.nth(1).getAttribute("data-testid")).toBe("reverb");
     await expect(button.locator(".btn-text")).toHaveText("REVERB");
+    // The rail's 118 × 44 (#130 PC check; review M4).
+    const size = (await button.boundingBox())!;
+    console.log(`reverb button (${test.info().project.name}): ${size.width} × ${size.height} px`);
+    expect(Math.abs(size.width - 118), `118 px wide: ${size.width}`).toBeLessThanOrEqual(1);
+    expect(Math.abs(size.height - 44), `44 px high: ${size.height}`).toBeLessThanOrEqual(1);
+    await travelsPinned(page, "song level");
     await expect(button).toHaveClass(/\bon\b/);
     await expect(button).toHaveAttribute("data-aut", "off");
     await expect(button).toHaveAttribute("data-low", "false");
@@ -232,6 +257,7 @@ test.describe("REVERB and REVERB AUT", () => {
     expect(await capAt(), "the cap under its return mark").toBeGreaterThan(songLevel + 10);
     expect(await strip(page, "Rev ST").getByTestId("aut-mark").evaluate((el) => getComputedStyle(el).pointerEvents)).toBe("none");
     expect((await fader.boundingBox())!.height, "no height").toBeCloseTo(travel, 0);
+    await travelsPinned(page, "lowered");
 
     // The next tap: both exactly back.
     await button.click();
@@ -429,6 +455,64 @@ test.describe("REVERB and REVERB AUT", () => {
     await expect(strip(page, "Rev PA").getByTestId("hand-mark")).toHaveClass(/\bshown\b/);
     await expect(strip(page, "Rev ST").getByTestId("aut-ret")).toHaveClass(/\bshown\b/);
   });
+
+  for (const [width, height] of [
+    [844, 390],
+    [390, 844],
+  ]) {
+    test.describe(`on a phone, ${width} × ${height}`, () => {
+      test.use({ viewport: { width, height } });
+
+      test("the REVERB button fits the phone's rail: its AUT pill a dot beside the label, no second line, every rail button whole", async ({ page }) => {
+        await live.call("band", "live_set", "start_playing");
+        await openSurface(page);
+        await harness("/hub/layout", { layout: withReverbButton() });
+        const button = page.getByTestId("reverb");
+        await expect(button).toHaveCount(1, { timeout: 10_000 });
+        expect(await hostLine("band", `tuner track 2 set '"Rev ST" +G:REVERBS +REVERB'`)).toBe("TUNER 1");
+        expect(await hostLine("band", `tuner track 3 set '"Rev PA" +G:REVERBS +REVERB'`)).toBe("TUNER 1");
+        await expect(button).toHaveAttribute("data-binding", "ready", { timeout: 10_000 });
+        // REVERB AUT on while Live plays (nothing lowers).
+        live.setHub("reverb_aut", true);
+        await until(async () => live.reverb?.aut, (v: boolean) => v === true, "REVERB AUT on");
+        // The phone's column behind ☰ (#63).
+        await page.getByTestId("thin-burger").dispatchEvent("pointerdown");
+        await expect(page.getByTestId("page")).toHaveAttribute("data-column-open", "true");
+        await expect(page.getByTestId("column")).toBeVisible();
+        await expect(button).toHaveAttribute("data-aut", "run");
+        const place = await button.evaluate((el) => {
+          const box = el.getBoundingClientRect();
+          const dot = el.querySelector(".aut-badge")!.getBoundingClientRect();
+          const range = document.createRange();
+          range.selectNodeContents(el.querySelector(".btn-text")!);
+          const text = range.getBoundingClientRect();
+          return { box, dot, text };
+        });
+        // A 6 px dot inside the button, right of the label's text.
+        expect(place.dot.width).toBeCloseTo(6, 0);
+        expect(place.dot.height).toBeCloseTo(6, 0);
+        expect(place.dot.left).toBeGreaterThanOrEqual(place.box.left);
+        expect(place.dot.right).toBeLessThanOrEqual(place.box.right);
+        expect(place.dot.top).toBeGreaterThanOrEqual(place.box.top);
+        expect(place.dot.bottom).toBeLessThanOrEqual(place.box.bottom);
+        expect(place.dot.left, "the dot beside the label's text").toBeGreaterThanOrEqual(place.text.right);
+        await expect(button.getByTestId("btn-sub")).toBeHidden();
+        // Every rail button whole, inside the rail's part that holds it, on screen.
+        const rail = page.getByTestId("rail");
+        for (const part of [".rail-main", ".rail-foot"]) {
+          const area = (await rail.locator(part).boundingBox())!;
+          for (const each of await rail.locator(`${part} .btn`).all()) {
+            const name = await each.textContent();
+            expect(await clipped(each), `rail button ${name}`).toEqual([]);
+            const box = (await each.boundingBox())!;
+            expect(box.y, `rail button ${name}: top inside ${part}`).toBeGreaterThanOrEqual(area.y - 0.5);
+            expect(box.y + box.height, `rail button ${name}: bottom inside ${part}`).toBeLessThanOrEqual(area.y + area.height + 0.5);
+            expect(box.y + box.height, `rail button ${name} on screen`).toBeLessThanOrEqual(height);
+          }
+        }
+      });
+    });
+  }
 
   test("after a reconnect, until the hub tells REVERB's state again, a tap and a hold are refused and send nothing", async ({ page }) => {
     await live.set("band", ST, "value", 0.85);
