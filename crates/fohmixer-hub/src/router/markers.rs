@@ -404,8 +404,12 @@ impl Keeper {
                 state.returns = Some(value.clone());
                 changed
             }
+            // A read's answer comes back on a task of its own, so a value
+            // Live sent after that read ran can reach the keeper first: while
+            // a read runs, only a new one is sure to see it (equal to what
+            // the last read saw, the older answer would hide it for good).
             Watch::Devices { kind, index, .. } => {
-                state.devices.get(&(*kind, *index)) != Some(value)
+                state.pending.is_some() || state.devices.get(&(*kind, *index)) != Some(value)
             }
             Watch::Name {
                 kind,

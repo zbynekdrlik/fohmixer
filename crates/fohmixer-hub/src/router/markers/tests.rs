@@ -888,3 +888,36 @@ fn the_markers_are_settled_once_a_read_since_a_failure_or_a_disconnect_answers_w
     apply(&mut k, actions);
     assert!(k.settled("band"));
 }
+
+#[test]
+fn a_devices_value_while_a_read_runs_reads_again() {
+    // #130: a read's answer comes on a task of its own, so a devices value
+    // Live sent after the read ran (a reconnect's listener answers, a Tuner
+    // inserted at once) can reach the keeper before that answer. Equal to
+    // what the last read saw, it used to start nothing, and the older
+    // answer then hid the Tuner.
+    let mut k = keeper();
+    read_band(&mut k);
+    let devices = key(&Watch::Devices {
+        instance: "band".into(),
+        kind: TrackKind::Track,
+        index: 0,
+    });
+    let seen = json!([
+        device("Device", r#""Vox 1" +G:A"#),
+        device("RackDevice", "Rack")
+    ]);
+    let actions = k.connected("band");
+    let mut applied = apply(&mut k, actions);
+    let (_, first, _, _) = applied.reads.pop().expect("the connect's read");
+    let actions = k.value(&devices, Some(&seen));
+    let mut applied = apply(&mut k, actions);
+    let (_, second, step, _) = applied.reads.pop().expect("a read again");
+    assert_eq!(step, Step::Devices);
+    assert!(second > first, "a newer read");
+    assert_eq!(
+        k.read_done("band", first, Step::Devices, &Ok(vec![ok(json!([]))])),
+        vec![],
+        "the older answer is void"
+    );
+}
