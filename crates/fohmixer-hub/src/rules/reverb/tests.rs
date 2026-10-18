@@ -398,7 +398,10 @@ fn a_page_set_lets_go_during_the_wait_the_glide_and_the_rest() {
         faders.iter().map(|m| m.label.as_str()).collect::<Vec<_>>(),
         vec!["Rev PA"]
     );
-    assert!(!r.state().faders[0].hand, "the rule let everything go");
+    assert!(
+        r.state().faders[0].hand,
+        "Rev ST taken: RUKA until the next stop, a start keeps it (F30)"
+    );
     assert_eq!(r.hand(ST), vec![], "not held: a set changes nothing");
     assert_eq!(
         r.hand("band|live_set tracks 9 mixer_device volume|value"),
@@ -415,6 +418,91 @@ fn a_page_set_lets_go_during_the_wait_the_glide_and_the_rest() {
     );
     assert_eq!(r.next_tick(5000.0), None);
     assert_eq!(r.status().hands, 1);
+}
+
+/// Each fader's `hand` (`RUKA`), in Live's order.
+fn hands(r: &Reverb) -> Vec<bool> {
+    r.state().faders.iter().map(|f| f.hand).collect()
+}
+
+#[test]
+fn a_stop_ends_every_hand_with_aut_off_too() {
+    // F30: a fader the engineer moves is let go (`RUKA`) until the next
+    // stop (#130 PR 5 review M2, the main session's ruling).
+    let mut r = rule(false, Some(true));
+    r.tap(true, 0.0);
+    run(&mut r, 25.0, 500.0);
+    r.hand(ST);
+    r.hand(PA);
+    assert_eq!(hands(&r), vec![true, true]);
+    assert_eq!(r.state().low, None, "nothing held");
+    let acts = r.transport("band", false, 1000.0);
+    assert_eq!(hands(&r), vec![false, false], "the stop ends them");
+    assert!(acts.contains(&Act::Tell), "the pages see it");
+    assert!(writes(&acts).is_empty(), "AUT off: nothing lowers");
+    assert!(!r.state().waiting);
+}
+
+#[test]
+fn a_start_keeps_every_hand_and_the_next_stop_ends_them() {
+    // AUT on, Live stands, both taken: nothing is held, so the start
+    // returns nothing, and RUKA stays through the song.
+    let mut r = rule(true, Some(true));
+    r.transport("band", false, 0.0);
+    r.tick(2000.0);
+    run(&mut r, 2025.0, 4000.0);
+    r.hand(ST);
+    r.hand(PA);
+    assert_eq!(r.state().low, None);
+    let acts = r.transport("band", true, 5000.0);
+    assert!(writes(&acts).is_empty(), "nothing held: nothing returns");
+    assert_eq!(hands(&r), vec![true, true], "RUKA through the song");
+    r.transport("band", false, 6000.0);
+    assert_eq!(hands(&r), vec![false, false], "the next stop ends them");
+    // One still held: the start returns it, the taken one keeps RUKA.
+    let mut r = rule(true, Some(true));
+    r.transport("band", false, 0.0);
+    r.tick(2000.0);
+    run(&mut r, 2025.0, 4000.0);
+    r.hand(PA);
+    assert_eq!(r.state().low, Some(Low::Stop), "Rev ST still held");
+    let acts = r.transport("band", true, 5000.0);
+    let Step::Return { faders } = steps(&acts)[0] else {
+        panic!("{acts:?}")
+    };
+    assert_eq!(
+        faders.iter().map(|m| m.label.as_str()).collect::<Vec<_>>(),
+        vec!["Rev ST"]
+    );
+    assert_eq!(hands(&r), vec![false, true], "the taken one keeps RUKA");
+    r.transport("band", false, 6000.0);
+    assert_eq!(hands(&r), vec![false, false], "the next stop ends it");
+}
+
+#[test]
+fn a_tap_back_keeps_a_hand_and_a_tap_down_takes_it_again() {
+    // AUT off: a tap down, Rev PA taken, a tap back returns Rev ST alone
+    // and Rev PA keeps RUKA; the next tap down takes both again.
+    let mut r = rule(false, Some(true));
+    r.tap(true, 0.0);
+    run(&mut r, 25.0, 500.0);
+    r.hand(PA);
+    let acts = r.tap(false, 1000.0);
+    let Step::Return { faders } = steps(&acts)[1] else {
+        panic!("{acts:?}")
+    };
+    assert_eq!(
+        faders.iter().map(|m| m.label.as_str()).collect::<Vec<_>>(),
+        vec!["Rev ST"]
+    );
+    assert_eq!(hands(&r), vec![false, true], "a tap back keeps RUKA");
+    run(&mut r, 1025.0, 1500.0);
+    let acts = r.tap(true, 2000.0);
+    let Step::Lower { faders, .. } = steps(&acts)[1] else {
+        panic!("{acts:?}")
+    };
+    assert_eq!(faders.len(), 2, "the tap takes the hand's fader too");
+    assert_eq!(hands(&r), vec![false, false]);
 }
 
 #[test]

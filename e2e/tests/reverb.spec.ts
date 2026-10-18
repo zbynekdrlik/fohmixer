@@ -247,7 +247,7 @@ test.describe("REVERB and REVERB AUT", () => {
     expect(await railSteps(since, (s) => s.filter((w) => w === "tap").length >= 2)).toEqual(["press", "tap", "press", "tap"]);
   });
 
-  test("REVERB AUT: a 1 s hold and its lift turn it on, Live's stop lowers after 2 s, its start returns, the hand wins", async ({ page }) => {
+  test("REVERB AUT: a 1 s hold and its lift turn it on, Live's stop lowers after 2 s, its start returns, the hand wins until the next stop", async ({ page }) => {
     await live.set("band", ST, "value", 0.85);
     await live.set("band", PA, "value", 0.6);
     await live.call("band", "live_set", "start_playing");
@@ -298,19 +298,27 @@ test.describe("REVERB and REVERB AUT", () => {
     await fits(button, "ST −10 · PA v ruke");
     const handLevel = await settled(live, PA);
 
-    // Live plays: Rev ST back exactly, Rev PA stays where the hand left it.
+    // Live plays: Rev ST back exactly, Rev PA stays where the hand left it,
+    // RUKA through the song (F30: let go until the next stop).
     await live.call("band", "live_set", "start_playing");
     await until(() => settled(live, ST), (v) => v === 0.85, "Rev ST back exactly");
     await page.waitForTimeout(800);
     expect(await settled(live, PA), "the hand wins").toBe(handLevel);
-    await expect(strip(page, "Rev PA").getByTestId("hand-mark")).not.toHaveClass(/\bshown\b/);
     await expect(strip(page, "Rev ST").getByTestId("aut-ret")).not.toHaveClass(/\bshown\b/);
+    await expect(strip(page, "Rev PA").getByTestId("hand-mark")).toHaveClass(/\bshown\b/);
     await fits(button, "hrá · plný");
 
     // A second hold turns it off at its lift.
     await hold(button, "pusť — vypne AUT", live, false);
     await expect(button).toHaveAttribute("data-aut", "off");
     await expect(button.getByTestId("aut-badge")).toHaveCount(0);
+    await expect(strip(page, "Rev PA").getByTestId("hand-mark")).toHaveClass(/\bshown\b/);
+    // The next stop ends RUKA, with AUT off too, and lowers nothing.
+    await live.call("band", "live_set", "stop_playing");
+    await expect(strip(page, "Rev PA").getByTestId("hand-mark")).not.toHaveClass(/\bshown\b/);
+    await expect(button.getByTestId("btn-sub")).toHaveText("");
+    expect(await settled(live, PA)).toBe(handLevel);
+    expect(await settled(live, ST)).toBe(0.85);
     const steps = await until(
       () => reverbSteps(since),
       (s) => ["wait", "lower", "hand", "return", "aut"].every((w) => s.includes(w)),
