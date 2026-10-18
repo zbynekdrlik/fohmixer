@@ -1592,3 +1592,68 @@ fn a_lowering_that_holds_nothing_on_the_surface_records_and_saves_what_it_takes_
     );
     assert!(!acts.contains(&Act::Save), "{acts:?}");
 }
+
+#[test]
+fn the_window_and_a_return_it_holds_have_their_lines() {
+    assert_eq!(
+        step_line(&Step::Pending {
+            label: "Rev ST".into(),
+            why: "track list".into()
+        }),
+        "REVERB returns Rev ST once its track list settles"
+    );
+    assert_eq!(
+        step_line(&Step::Window {
+            instance: "band".into(),
+            open: true,
+            why: "tracks".into()
+        }),
+        "REVERB writes nothing to band's reverb faders until their strips are settled (tracks)"
+    );
+    assert_eq!(
+        step_line(&Step::Window {
+            instance: "band".into(),
+            open: false,
+            why: "layout".into()
+        }),
+        "REVERB writes band's reverb faders again: their strips are settled (layout)"
+    );
+    assert!(!step_warn(&Step::Window {
+        instance: "band".into(),
+        open: true,
+        why: "offline".into()
+    }));
+    assert_eq!(
+        serde_json::to_value(Step::Window {
+            instance: "band".into(),
+            open: false,
+            why: "settled".into()
+        })
+        .unwrap(),
+        window("band", false, "settled")
+    );
+}
+
+#[test]
+fn a_served_layout_ends_the_window_recorded_so_and_the_returns_go_on() {
+    let mut r = rule(false, Some(true));
+    r.tap(true, 0.0);
+    let _ = run(&mut r, 25.0, 500.0);
+    r.live(ST, lowered(0.85), 600.0);
+    r.live(PA, lowered(0.6), 600.0);
+    r.tracks_changed("band");
+    r.tap(false, 700.0);
+    let acts = r.tracks_served("band", 800.0);
+    assert_eq!(recorded(&acts)[0], window("band", false, "layout"));
+    assert_eq!(
+        steps(&acts)
+            .iter()
+            .filter(|s| matches!(s, Step::Return { .. }))
+            .count(),
+        2
+    );
+    assert_eq!(r.tracks_served("band", 900.0), vec![], "closed already");
+    let ran = run(&mut r, 825.0, 1300.0);
+    let ends: Vec<_> = writes(&ran).into_iter().filter(|w| w.2).collect();
+    assert_eq!(ends, vec![(ST, 0.85, true), (PA, 0.6, true)]);
+}
