@@ -921,3 +921,27 @@ fn a_devices_value_while_a_read_runs_reads_again() {
         "the older answer is void"
     );
 }
+
+#[test]
+fn a_read_answered_after_a_disconnect_settles_nothing() {
+    // #130 review N1: the script answers the keeper's last batch, then its
+    // disconnect frame; the router handles the disconnect before the
+    // answer. Only the connect's read may settle the markers then.
+    let mut k = keeper();
+    let actions = k.value(&tracks_key("band"), Some(&list(1)));
+    let mut applied = apply(&mut k, actions);
+    let (_, seq, _, _) = applied.reads.pop().expect("a read");
+    k.disconnected("band");
+    let actions = k.read_done("band", seq, Step::Devices, &Ok(vec![ok(json!([]))]));
+    apply(&mut k, actions);
+    assert!(
+        !k.settled("band"),
+        "offline: the old answer settles nothing"
+    );
+    let actions = k.connected("band");
+    let mut applied = apply(&mut k, actions);
+    let (_, seq, _, _) = applied.reads.pop().expect("the connect's read");
+    let actions = k.read_done("band", seq, Step::Devices, &Ok(vec![ok(json!([]))]));
+    apply(&mut k, actions);
+    assert!(k.settled("band"));
+}
