@@ -43,6 +43,16 @@ fn steps(acts: &[Act]) -> Vec<&Step> {
         .collect()
 }
 
+/// The steps of `acts` as their records' fields.
+fn recorded(acts: &[Act]) -> serde_json::Value {
+    serde_json::to_value(steps(acts)).unwrap()
+}
+
+/// A `window` record's fields (review M3).
+fn window(instance: &str, open: bool, why: &str) -> serde_json::Value {
+    serde_json::json!({"step": "window", "instance": instance, "open": open, "why": why})
+}
+
 /// Ticks every STEP_MS from `from` to `to` (both included).
 fn run(r: &mut Reverb, from: f64, to: f64) -> Vec<Act> {
     let n = ((to - from) / STEP_MS) as usize;
@@ -551,7 +561,14 @@ fn a_track_list_change_lets_go_of_a_gliding_fader_and_keeps_a_still_one_until_it
     let mut r = rule(false, Some(true));
     r.tap(true, 0.0);
     let acts = r.tracks_changed("band");
-    assert_eq!(steps(&acts).len(), 2);
+    assert_eq!(
+        recorded(&acts),
+        serde_json::json!([
+            window("band", true, "tracks"),
+            {"step": "stopped", "label": "Rev ST", "why": "tracks"},
+            {"step": "stopped", "label": "Rev PA", "why": "tracks"},
+        ])
+    );
     assert!(acts.contains(&Act::Save) && acts.contains(&Act::Tell));
     assert!(r.state().faders.iter().all(|f| f.back.is_none() && f.hand));
     assert_eq!(r.state().low, None);
@@ -566,9 +583,10 @@ fn a_track_list_change_lets_go_of_a_gliding_fader_and_keeps_a_still_one_until_it
     let mut r = rule(false, Some(true));
     r.tap(true, 0.0);
     run(&mut r, 25.0, 500.0);
+    let acts = r.tracks_changed("band");
     assert_eq!(
-        r.tracks_changed("band"),
-        vec![],
+        (acts.len(), recorded(&acts)),
+        (1, serde_json::json!([window("band", true, "tracks")])),
         "no glide: nothing stopped"
     );
     assert_eq!(
@@ -583,8 +601,8 @@ fn a_track_list_change_lets_go_of_a_gliding_fader_and_keeps_a_still_one_until_it
         "the window: judged at its end"
     );
     assert_eq!(
-        r.tracks_known("band", 650.0),
-        vec![],
+        recorded(&r.tracks_known("band", 650.0)),
+        serde_json::json!([window("band", false, "settled")]),
         "its last value, unsettled: no hand"
     );
     assert_eq!(
@@ -596,7 +614,10 @@ fn a_track_list_change_lets_go_of_a_gliding_fader_and_keeps_a_still_one_until_it
         steps(&r.live(PA, 0.7, 700.0))[0],
         Step::Hand { by: By::Live, .. }
     ));
-    assert_eq!(r.tracks_changed("master"), vec![]);
+    assert_eq!(
+        recorded(&r.tracks_changed("master")),
+        serde_json::json!([window("master", true, "tracks")])
+    );
 }
 
 #[test]
@@ -633,7 +654,10 @@ fn an_offline_instance_stops_its_glides_and_keeps_what_is_held() {
     // Offline during the wait: the wait ends; another Live's: nothing.
     let mut r = rule(true, Some(true));
     r.transport("band", false, 0.0);
-    assert_eq!(r.offline("master"), vec![]);
+    assert_eq!(
+        recorded(&r.offline("master")),
+        serde_json::json!([window("master", true, "offline")])
+    );
     assert!(steps(&r.offline("band")).contains(&&Step::Cancelled));
     assert!(!r.state().waiting);
 }
@@ -809,10 +833,8 @@ fn a_pending_return_is_recorded_once_and_a_stop_takes_the_fader_back() {
     let mut r = restarted();
     let acts = r.transport("band", true, 0.0);
     assert_eq!(
-        steps(&acts),
-        vec![&Step::Pending {
-            label: "Rev ST".into()
-        }],
+        recorded(&acts),
+        serde_json::json!([{"step": "pending", "label": "Rev ST", "why": "value"}]),
         "nothing moves: no return record"
     );
     let acts = r.tap(false, 100.0);
@@ -1183,7 +1205,7 @@ fn a_pending_return_has_its_line() {
             label: "Rev ST".into()
         })
         .unwrap(),
-        serde_json::json!({"step": "pending", "label": "Rev ST"})
+        serde_json::json!({"step": "pending", "label": "Rev ST", "why": "value"})
     );
 }
 
@@ -1224,20 +1246,17 @@ fn a_track_list_change_saves_only_what_it_changes() {
     r.tap(true, 0.0);
     let _ = run(&mut r, 25.0, 500.0);
     r.tap(false, 1000.0);
+    let acts = r.tracks_changed("band");
     assert_eq!(
-        r.tracks_changed("band"),
-        vec![
-            Act::Step(Step::Stopped {
-                label: "Rev ST".into(),
-                why: "tracks".into()
-            }),
-            Act::Step(Step::Stopped {
-                label: "Rev PA".into(),
-                why: "tracks".into()
-            }),
-            Act::Tell,
-        ]
+        recorded(&acts),
+        serde_json::json!([
+            window("band", true, "tracks"),
+            {"step": "stopped", "label": "Rev ST", "why": "tracks"},
+            {"step": "stopped", "label": "Rev PA", "why": "tracks"},
+        ])
     );
+    assert_eq!(acts.last(), Some(&Act::Tell));
+    assert!(!acts.contains(&Act::Save));
 }
 
 #[test]
@@ -1388,7 +1407,11 @@ fn a_track_list_window_skips_a_lowering_until_it_closes() {
     );
     assert_eq!(r.state().low, None);
     assert_eq!(r.tracks_known("master", 50.0), vec![], "another Live's");
-    assert_eq!(r.tracks_known("band", 100.0), vec![], "nothing waited");
+    assert_eq!(
+        recorded(&r.tracks_known("band", 100.0)),
+        serde_json::json!([window("band", false, "settled")]),
+        "nothing waited"
+    );
     assert!(matches!(steps(&r.tap(true, 200.0))[1], Step::Lower { .. }));
 }
 
@@ -1403,15 +1426,11 @@ fn a_return_in_a_track_list_window_waits_and_goes_on_when_it_closes() {
     r.tracks_changed("band");
     let acts = r.transport("band", true, 5000.0);
     assert_eq!(
-        steps(&acts),
-        vec![
-            &Step::Pending {
-                label: "Rev ST".into()
-            },
-            &Step::Pending {
-                label: "Rev PA".into()
-            },
-        ]
+        recorded(&acts),
+        serde_json::json!([
+            {"step": "pending", "label": "Rev ST", "why": "track list"},
+            {"step": "pending", "label": "Rev PA", "why": "track list"},
+        ])
     );
     assert_eq!(
         r.live(ST, lowered(0.85), 5100.0),
@@ -1471,7 +1490,10 @@ fn closing_a_track_list_window_resumes_only_the_waiting_returns() {
     let _ = run(&mut r, 25.0, 500.0);
     r.live(ST, lowered(0.85), 600.0);
     r.tracks_changed("band");
-    assert_eq!(r.tracks_known("band", 700.0), vec![]);
+    assert_eq!(
+        recorded(&r.tracks_known("band", 700.0)),
+        serde_json::json!([window("band", false, "settled")])
+    );
     assert_eq!(r.live(ST, 0.7, 800.0), vec![], "unsettled: no hand");
     assert_eq!(r.state().faders[0].back, Some(0.85));
 }

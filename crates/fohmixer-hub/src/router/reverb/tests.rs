@@ -643,7 +643,7 @@ async fn a_reconnects_values_are_judged_once_its_window_ends() {
         .filter(|r| r["ev"] == "reverb")
         .map(|r| &r["step"])
         .collect();
-    assert_eq!(steps, vec!["hand"], "{got:?}");
+    assert_eq!(steps, vec!["window", "hand"], "{got:?}");
     assert_eq!(rule_sets(&got), vec![], "nothing written");
     assert_eq!(router.reverb.rule.state().low, None);
 }
@@ -1459,4 +1459,57 @@ async fn an_unchanged_markers_read_after_a_track_list_change_lets_the_waiting_re
     read_answered(&mut router, &mut own, seq, 3, &[(0, ST_MARK), (1, PA_MARK)]).await;
     tick_after(&mut router, 600.0);
     returned_exactly(&records(&rx));
+}
+
+#[tokio::test]
+async fn the_track_list_window_is_recorded_where_it_opens_and_where_it_ends() {
+    // Review M3: a `window` record at each open (its cause) and end (how it
+    // ended); a return the window holds is `pending` for the track list.
+    let (mut router, rx, _dir, mut own) = marked(false).await;
+    lowered_at_rest(&mut router);
+    let seq = added_after(&mut router, &mut own).await;
+    read_answered(&mut router, &mut own, seq, 3, &[(0, ST_MARK), (1, PA_MARK)]).await;
+    tick_after(&mut router, 600.0);
+    // A track inserted before both: the read finds them moved, and their
+    // layout ends the window.
+    router
+        .subs
+        .on_values("band", &[pushed("live_1.tracks", json!([8, 1, 2, 9]))]);
+    router.flush();
+    let (seq, _) = next_read(&mut own).await;
+    read_answered(&mut router, &mut own, seq, 4, &[(1, ST_MARK), (2, PA_MARK)]).await;
+    settle(&mut router, &mut own).await;
+    router.handle(RouterMsg::Live {
+        instance: "band".into(),
+        event: LiveEvent::Disconnected,
+    });
+    let got = records(&rx);
+    let windows: Vec<(Value, Value, Value)> = got
+        .iter()
+        .filter(|r| r["ev"] == "reverb" && r["step"] == "window")
+        .map(|r| (r["instance"].clone(), r["open"].clone(), r["why"].clone()))
+        .collect();
+    assert_eq!(
+        windows,
+        vec![
+            (json!("band"), json!(true), json!("tracks")),
+            (json!("band"), json!(false), json!("settled")),
+            (json!("band"), json!(true), json!("tracks")),
+            (json!("band"), json!(false), json!("layout")),
+            (json!("band"), json!(true), json!("offline")),
+        ],
+        "{got:?}"
+    );
+    let pending: Vec<(Value, Value)> = got
+        .iter()
+        .filter(|r| r["ev"] == "reverb" && r["step"] == "pending")
+        .map(|r| (r["label"].clone(), r["why"].clone()))
+        .collect();
+    assert_eq!(
+        pending,
+        vec![
+            (json!("Rev ST"), json!("track list")),
+            (json!("Rev PA"), json!("track list")),
+        ]
+    );
 }
