@@ -948,10 +948,10 @@ async fn a_return_between_a_track_list_change_and_the_next_layout_waits_for_it()
 
 #[test]
 fn a_track_list_window_closes_only_when_the_markers_read_settles() {
-    assert!(tracks_settled(true, false, false));
-    assert!(!tracks_settled(false, false, false), "a failed read");
-    assert!(!tracks_settled(true, true, false), "still reading");
-    assert!(!tracks_settled(true, false, true), "a layout to come");
+    assert!(tracks_settled(true, false));
+    assert!(!tracks_settled(false, false), "the markers not settled");
+    assert!(!tracks_settled(true, true), "a layout to come");
+    assert!(!tracks_settled(false, true));
 }
 
 #[tokio::test]

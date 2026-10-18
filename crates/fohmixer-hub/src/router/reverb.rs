@@ -41,11 +41,11 @@ pub(super) fn wake_in(at: f64, now: f64) -> std::time::Duration {
     std::time::Duration::from_secs_f64((at - now).max(0.0) / 1000.0)
 }
 
-/// Whether the marker keeper's read of an instance settled where each
-/// strip is with no new layout coming: the read answered, none of its
-/// instance runs any more, and no new composition waits (review W1).
-pub(super) fn tracks_settled(read_ok: bool, reading: bool, composing: bool) -> bool {
-    read_ok && !reading && !composing
+/// Whether an instance's strips are where Live has them, with no new
+/// layout coming: the marker keeper's markers of it are settled, and no new
+/// composition waits (review W1).
+pub(super) fn tracks_settled(settled: bool, composing: bool) -> bool {
+    settled && !composing
 }
 
 /// The instance of a hub key that is its track list or return-track list

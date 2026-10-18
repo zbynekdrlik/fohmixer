@@ -641,8 +641,7 @@ impl Router {
                 // A read that leaves every strip where it was ends REVERB's
                 // track-list window (#130 review W1).
                 if reverb::tracks_settled(
-                    outcome.is_ok(),
-                    self.markers.reading(&instance),
+                    outcome.is_ok() && !self.markers.reading(&instance),
                     self.markers_pending.is_some(),
                 ) {
                     self.reverb_tracks_known(&instance);
