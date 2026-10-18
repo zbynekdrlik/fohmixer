@@ -850,3 +850,98 @@ fn a_connect_reads_the_tuners_again_once_the_lists_are_known() {
         }]
     );
 }
+
+#[test]
+fn the_markers_are_settled_once_a_read_since_a_failure_or_a_disconnect_answers_whole() {
+    // #130 review M1, W2: REVERB's track-list window ends only then.
+    let mut k = keeper();
+    assert!(k.settled("band"), "nothing read, nothing missed");
+    assert!(k.settled("nobody"), "an instance it does not follow");
+    let actions = k.value(&tracks_key("band"), Some(&list(1)));
+    let mut applied = apply(&mut k, actions);
+    let (_, seq, _, _) = applied.reads.pop().expect("a read");
+    assert!(!k.settled("band"), "a read runs");
+    // A failed read: none runs, yet the markers may be old.
+    let actions = k.read_done("band", seq, Step::Devices, &Err("x".to_string()));
+    apply(&mut k, actions);
+    assert!(!k.settled("band"), "the read failed");
+    // Tried again, it answers whole: settled.
+    let actions = k.retry("band");
+    let mut applied = apply(&mut k, actions);
+    let (_, seq, _, _) = applied.reads.pop().expect("the retry's read");
+    let actions = k.read_done("band", seq, Step::Devices, &Ok(vec![ok(json!([]))]));
+    apply(&mut k, actions);
+    assert!(k.settled("band"));
+    // The migration's stale names move no strip.
+    assert_eq!(k.refresh("band", None), vec![]);
+    assert!(k.reading("band") && k.settled("band"));
+    // A disconnect: not settled until a read after the connect answers.
+    k.disconnected("band");
+    k.disconnected("nobody");
+    assert!(!k.settled("band"), "offline");
+    assert!(k.settled("nobody"));
+    let actions = k.connected("band");
+    let mut applied = apply(&mut k, actions);
+    let (_, seq, _, _) = applied.reads.pop().expect("the connect's read");
+    assert!(!k.settled("band"), "the connect's read runs");
+    let actions = k.read_done("band", seq, Step::Devices, &Ok(vec![ok(json!([]))]));
+    apply(&mut k, actions);
+    assert!(k.settled("band"));
+}
+
+#[test]
+fn a_devices_value_while_a_read_runs_reads_again() {
+    // #130: a read's answer comes on a task of its own, so a devices value
+    // Live sent after the read ran (a reconnect's listener answers, a Tuner
+    // inserted at once) can reach the keeper before that answer. Equal to
+    // what the last read saw, it used to start nothing, and the older
+    // answer then hid the Tuner.
+    let mut k = keeper();
+    read_band(&mut k);
+    let devices = key(&Watch::Devices {
+        instance: "band".into(),
+        kind: TrackKind::Track,
+        index: 0,
+    });
+    let seen = json!([
+        device("Device", r#""Vox 1" +G:A"#),
+        device("RackDevice", "Rack")
+    ]);
+    let actions = k.connected("band");
+    let mut applied = apply(&mut k, actions);
+    let (_, first, _, _) = applied.reads.pop().expect("the connect's read");
+    let actions = k.value(&devices, Some(&seen));
+    let mut applied = apply(&mut k, actions);
+    let (_, second, step, _) = applied.reads.pop().expect("a read again");
+    assert_eq!(step, Step::Devices);
+    assert!(second > first, "a newer read");
+    assert_eq!(
+        k.read_done("band", first, Step::Devices, &Ok(vec![ok(json!([]))])),
+        vec![],
+        "the older answer is void"
+    );
+}
+
+#[test]
+fn a_read_answered_after_a_disconnect_settles_nothing() {
+    // #130 review N1: the script answers the keeper's last batch, then its
+    // disconnect frame; the router handles the disconnect before the
+    // answer. Only the connect's read may settle the markers then.
+    let mut k = keeper();
+    let actions = k.value(&tracks_key("band"), Some(&list(1)));
+    let mut applied = apply(&mut k, actions);
+    let (_, seq, _, _) = applied.reads.pop().expect("a read");
+    k.disconnected("band");
+    let actions = k.read_done("band", seq, Step::Devices, &Ok(vec![ok(json!([]))]));
+    apply(&mut k, actions);
+    assert!(
+        !k.settled("band"),
+        "offline: the old answer settles nothing"
+    );
+    let actions = k.connected("band");
+    let mut applied = apply(&mut k, actions);
+    let (_, seq, _, _) = applied.reads.pop().expect("the connect's read");
+    let actions = k.read_done("band", seq, Step::Devices, &Ok(vec![ok(json!([]))]));
+    apply(&mut k, actions);
+    assert!(k.settled("band"));
+}

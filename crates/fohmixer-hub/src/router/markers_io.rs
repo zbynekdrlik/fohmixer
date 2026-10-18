@@ -243,5 +243,14 @@ impl Router {
             let served = store.current().1;
             self.handle(layout_msg(rev, served.as_deref()));
         }
+        // Served or unchanged, the composition is settled: REVERB's
+        // track-list windows close, each only where no read of its instance
+        // runs or failed since (#130 review W1, M1).
+        let names: Vec<String> = self.live.keys().cloned().collect();
+        for name in names {
+            if self.reverb_settled(&name) {
+                self.reverb_tracks_known(&name);
+            }
+        }
     }
 }

@@ -18,7 +18,7 @@ const BISECT_STEPS: u32 = 14;
 
 /// TouchOSC's `value2db`, the dB approximation of a Live volume. The touch
 /// shaping, the meter colour and the backing-tracks fader use it, and from
-/// PR 4 the hub's REVERB rule; every dB text on screen is Live's own
+/// 1.6.0 the hub's REVERB rule; every dB text on screen is Live's own
 /// display string (spec X1).
 pub fn value2db(v: f64) -> f64 {
     // The Lua's ranges, tested from the top: above 1 (or no number) is 0 dB.

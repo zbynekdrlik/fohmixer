@@ -2,7 +2,8 @@
 //! outboxes, the setters and the STAGE AUT rule (S3 design note §3, §4, §6).
 //! It follows every instance's transport from its start (#104, #130, D18:
 //! `RULES_CLIENT`), logs each change (`transport`) and hands it to the
-//! rules.
+//! rules: STAGE AUT here, REVERB in `router/reverb.rs` (#130, D18: its own
+//! subscriber `REVERB_CLIENT`, its writes through the setters, its wakes).
 //!
 //! Everything reaches it as a message, in order: the instances' events (a
 //! subscription's result stays ordered with the value pushes of the same
@@ -313,6 +314,11 @@ pub enum RouterMsg {
     AbleSetLink {
         online: bool,
     },
+    /// REVERB's wake `generation` came (#130, D18: the stop's wait ended or
+    /// a glide's next step is due); a newer armed wake makes it stale.
+    ReverbWake {
+        generation: u64,
+    },
     /// The hub stops: the Stream Deck's held keys released and its task
     /// told to stop (#52), then every client closed.
     Stop,
@@ -458,7 +464,8 @@ impl Router {
             subs,
             names: NameCheck::default(),
             clients: HashMap::new(),
-            peers: HashMap::new(),
+            // The REVERB rule's writes name it in the event log (#130).
+            peers: HashMap::from([(reverb::REVERB_CLIENT, reverb::REVERB_PEER.to_string())]),
             lan: HashMap::new(),
             states: live
                 .keys()
@@ -631,6 +638,11 @@ impl Router {
                 }
                 let actions = self.markers.read_done(&instance, seq, step, &outcome);
                 self.markers_apply(actions);
+                // A read that leaves every strip where it was ends REVERB's
+                // track-list window (#130 review W1, M1).
+                if self.reverb_settled(&instance) {
+                    self.reverb_tracks_known(&instance);
+                }
             }
             RouterMsg::MarkersRetry { instance } => {
                 let actions = self.markers.retry(&instance);
@@ -700,7 +712,12 @@ impl Router {
                     subscriptions: names
                         .clone()
                         .map(|n| {
-                            let own = [UNFOLD_CLIENT, MARKERS_CLIENT, RULES_CLIENT];
+                            let own = [
+                                UNFOLD_CLIENT,
+                                MARKERS_CLIENT,
+                                RULES_CLIENT,
+                                reverb::REVERB_CLIENT,
+                            ];
                             (n.clone(), self.subs.subscriptions_besides(n, &own))
                         })
                         .collect(),
@@ -708,7 +725,12 @@ impl Router {
                     listeners: names
                         .clone()
                         .map(|n| {
-                            let own = [UNFOLD_CLIENT, MARKERS_CLIENT, RULES_CLIENT];
+                            let own = [
+                                UNFOLD_CLIENT,
+                                MARKERS_CLIENT,
+                                RULES_CLIENT,
+                                reverb::REVERB_CLIENT,
+                            ];
                             (n.clone(), self.subs.listeners_besides(n, &own))
                         })
                         .collect(),
@@ -795,6 +817,7 @@ impl Router {
             } => self.eq_closed(&key, session, outcome),
             RouterMsg::EqWorker { event } => self.eq_worker(event),
             RouterMsg::AbleSetLink { online } => self.ableset_link(online),
+            RouterMsg::ReverbWake { generation } => self.reverb_wake(generation),
             RouterMsg::Stop => return false,
         }
         true
@@ -839,6 +862,10 @@ impl Router {
                 {
                     self.stage.on_disconnect();
                 }
+                // Until a read after the next connect, the strips' places are
+                // unknown (a set loaded meanwhile): REVERB's window opens.
+                self.markers.disconnected(instance);
+                self.reverb_offline(instance);
                 self.broadcast_instance(instance);
             }
             LiveEvent::Busy {
@@ -897,8 +924,12 @@ impl Router {
     }
 
     fn set_hub(&mut self, client: ClientId, key: &str, value: &Value) {
-        // The fader links' switches first (#130), then STAGE AUT.
+        // The fader links' switches first (#130), then REVERB's keys, then
+        // STAGE AUT.
         if self.links_set_hub(client, key, value) {
+            return;
+        }
+        if self.reverb_set_hub(client, key, value) {
             return;
         }
         let (true, Some(on)) = (key == HUB_STAGE_AUT, value.as_bool()) else {
@@ -991,6 +1022,7 @@ impl Router {
         {
             self.stage_value(playing);
         }
+        self.reverb_transport(&instance, playing);
     }
 
     /// The rules' transport subscription of the hub key `sub` failed: the
@@ -1006,6 +1038,7 @@ impl Router {
         self.io
             .events
             .record("transport", json!({"instance": instance, "error": error}));
+        self.reverb_transport_lost(&instance);
     }
 
     /// A transport value for STAGE AUT.
@@ -1165,12 +1198,16 @@ impl Router {
 
     /// Sends the requests and hands out the table's values (the unfold
     /// keeper's to the keeper: they ask only for reads and writes, which go
-    /// out on their own).
+    /// out on their own). REVERB (#130) gets its faders' volumes, then the
+    /// track lists the marker keeper follows, before the transport: a
+    /// reconnect's values are judged before its first transport value.
     fn flush(&mut self) {
         self.send_requests();
         let mut unfold = Vec::new();
         let mut marker_items: Vec<(String, Option<Value>)> = Vec::new();
         let mut transport: Vec<(String, Result<Value, String>)> = Vec::new();
+        let mut reverb_values: Vec<(String, f64)> = Vec::new();
+        let mut reverb_lists: Vec<(String, Value)> = Vec::new();
         for (client, item) in self.subs.take_deliveries() {
             if client == RULES_CLIENT {
                 if let Some(heard) = transport_heard(item.value, item.error) {
@@ -1185,10 +1222,25 @@ impl Router {
                 if let Some(error) = &item.error {
                     tracing::warn!(key = %item.sub, error = %error, "a list or name the hub's marker keeper listens to failed");
                 }
+                if reverb::list_instance(&item.sub).is_some()
+                    && let Some(value) = &item.value
+                {
+                    reverb_lists.push((item.sub.clone(), value.clone()));
+                }
                 marker_items.push((item.sub, item.value));
+            } else if client == reverb::REVERB_CLIENT {
+                if let Some(v) = item.value.as_ref().and_then(Value::as_f64) {
+                    reverb_values.push((item.sub, v));
+                }
             } else if let Some(outbox) = self.clients.get(&client) {
                 outbox.value(item);
             }
+        }
+        for (sub, value) in reverb_values {
+            self.reverb_value(&sub, value);
+        }
+        for (sub, value) in reverb_lists {
+            self.reverb_list(&sub, &value);
         }
         for (sub, heard) in transport {
             match heard {
@@ -1327,7 +1379,7 @@ mod tests {
         outbox
     }
 
-    fn set_msg(client: ClientId, instance: &str, seq: u64, value: f64) -> RouterMsg {
+    pub(super) fn set_msg(client: ClientId, instance: &str, seq: u64, value: f64) -> RouterMsg {
         RouterMsg::Set {
             client,
             instance: instance.into(),
@@ -1343,7 +1395,7 @@ mod tests {
     }
 
     /// Every record waiting, by `ev`.
-    fn records(rx: &std::sync::mpsc::Receiver<Value>) -> Vec<Value> {
+    pub(super) fn records(rx: &std::sync::mpsc::Receiver<Value>) -> Vec<Value> {
         rx.try_iter().collect()
     }
 
@@ -2035,7 +2087,7 @@ mod tests {
         assert!(records(&rx).is_empty());
     }
 
-    fn status(router: &mut Router) -> RouterStatus {
+    pub(super) fn status(router: &mut Router) -> RouterStatus {
         let (reply, mut answer) = oneshot::channel();
         assert!(router.handle(RouterMsg::Status { reply }));
         answer.try_recv().expect("answered at once")
@@ -2189,7 +2241,7 @@ mod tests {
     }
 
     /// The next message the router's own tasks send that `want` takes.
-    async fn next_of(
+    pub(super) async fn next_of(
         rx: &mut mpsc::UnboundedReceiver<RouterMsg>,
         what: &str,
         want: impl Fn(&RouterMsg) -> bool,
