@@ -850,3 +850,41 @@ fn a_connect_reads_the_tuners_again_once_the_lists_are_known() {
         }]
     );
 }
+
+#[test]
+fn the_markers_are_settled_once_a_read_since_a_failure_or_a_disconnect_answers_whole() {
+    // #130 review M1, W2: REVERB's track-list window ends only then.
+    let mut k = keeper();
+    assert!(k.settled("band"), "nothing read, nothing missed");
+    assert!(k.settled("nobody"), "an instance it does not follow");
+    let actions = k.value(&tracks_key("band"), Some(&list(1)));
+    let mut applied = apply(&mut k, actions);
+    let (_, seq, _, _) = applied.reads.pop().expect("a read");
+    assert!(!k.settled("band"), "a read runs");
+    // A failed read: none runs, yet the markers may be old.
+    let actions = k.read_done("band", seq, Step::Devices, &Err("x".to_string()));
+    apply(&mut k, actions);
+    assert!(!k.settled("band"), "the read failed");
+    // Tried again, it answers whole: settled.
+    let actions = k.retry("band");
+    let mut applied = apply(&mut k, actions);
+    let (_, seq, _, _) = applied.reads.pop().expect("the retry's read");
+    let actions = k.read_done("band", seq, Step::Devices, &Ok(vec![ok(json!([]))]));
+    apply(&mut k, actions);
+    assert!(k.settled("band"));
+    // The migration's stale names move no strip.
+    assert_eq!(k.refresh("band", None), vec![]);
+    assert!(k.reading("band") && k.settled("band"));
+    // A disconnect: not settled until a read after the connect answers.
+    k.disconnected("band");
+    k.disconnected("nobody");
+    assert!(!k.settled("band"), "offline");
+    assert!(k.settled("nobody"));
+    let actions = k.connected("band");
+    let mut applied = apply(&mut k, actions);
+    let (_, seq, _, _) = applied.reads.pop().expect("the connect's read");
+    assert!(!k.settled("band"), "the connect's read runs");
+    let actions = k.read_done("band", seq, Step::Devices, &Ok(vec![ok(json!([]))]));
+    apply(&mut k, actions);
+    assert!(k.settled("band"));
+}

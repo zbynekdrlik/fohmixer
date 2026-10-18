@@ -1443,3 +1443,20 @@ async fn a_reconnect_after_a_track_list_change_writes_nothing_until_its_read_set
         ]
     );
 }
+
+#[tokio::test]
+async fn an_unchanged_markers_read_after_a_track_list_change_lets_the_waiting_return_write_exactly()
+{
+    // Review M4: the read that answers unchanged after a track added past
+    // both ends the window through `MarkersRead`; without that close the
+    // returns would wait for good (no composition, no layout comes).
+    let (mut router, rx, _dir, mut own) = marked(false).await;
+    lowered_at_rest(&mut router);
+    let seq = added_after(&mut router, &mut own).await;
+    let _ = records(&rx);
+    tick_after(&mut router, 600.0);
+    assert_eq!(rule_sets(&records(&rx)), vec![], "the read runs");
+    read_answered(&mut router, &mut own, seq, 3, &[(0, ST_MARK), (1, PA_MARK)]).await;
+    tick_after(&mut router, 600.0);
+    returned_exactly(&records(&rx));
+}
