@@ -82,14 +82,20 @@ pub fn reverb_look(state: Option<&ReverbState>, fill: Fill) -> RailLook {
 
 /// Whether a tap overrides REVERB AUT until the next stop or start: the
 /// faders lowered while Live plays, or at the song level while it stands
-/// with no stop's wait running and no fader in the hand (a hand is the
-/// engineer's, not a tap's).
+/// with no stop's wait running, unless every fader was taken by hand (then
+/// no tap brought them up: the hands did; a fader returned by a tap beside
+/// one in the hand is the tap's, #130 PR 5 re-review N1).
 fn overridden(s: &ReverbState, lowered: bool) -> bool {
     match (s.playing, lowered) {
         (Some(true), true) => true,
-        (Some(false), false) => !s.waiting && !s.faders.iter().any(|f| f.hand),
+        (Some(false), false) => !s.waiting && !all_in_hand(&s.faders),
         _ => false,
     }
+}
+
+/// Every reverb fader taken by hand (`RUKA`), none brought up by a tap.
+fn all_in_hand(faders: &[ReverbFader]) -> bool {
+    !faders.is_empty() && faders.iter().all(|f| f.hand)
 }
 
 /// What REVERB does now, in plain words; none while it says nothing (AUT
@@ -102,9 +108,10 @@ fn reverb_sub(s: &ReverbState, lowered: bool) -> Option<String> {
     Some(match (lowered, playing, s.waiting) {
         (false, true, _) => "hrá · plný".to_string(),
         (false, false, true) => "stojí · plný".to_string(),
-        (false, false, false) => {
-            hands_text(&s.faders).unwrap_or_else(|| "ručne plný · do štartu".to_string())
+        (false, false, false) if all_in_hand(&s.faders) => {
+            hands_text(&s.faders).unwrap_or_default()
         }
+        (false, false, false) => "ručne plný · do štartu".to_string(),
         (true, true, _) => "ručne −10 · do zast.".to_string(),
         (true, false, _) => hands_text(&s.faders).unwrap_or_else(|| "stojí · −10 dB".to_string()),
     })
