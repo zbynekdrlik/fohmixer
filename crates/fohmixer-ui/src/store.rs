@@ -16,7 +16,7 @@
 //! disabled (`Readiness`).
 //!
 //! The pure parts are unit-tested natively: here `Slot`, `Readiness`,
-//! `Wanted`, `Badge`, `HubValues` (#104), `range_from` and `next_range`, in `conn` the
+//! `Wanted`, `Badge`, `HubValues` (#104), `HubReverb` (#130), `range_from` and `next_range`, in `conn` the
 //! connection's decisions (reconnect, hello, the watchdog and its pings, the
 //! layout and instance changes), in `intent` the controls' writes waiting
 //! for their ack (#43), in `deck` the Stream Deck's (#52: the key size, the
@@ -32,6 +32,7 @@ mod live;
 
 use std::collections::BTreeMap;
 
+use fohmixer_proto::client::ReverbState;
 use serde_json::{Value, json};
 
 use crate::binding::SubSpec;
@@ -314,6 +315,43 @@ impl HubValues {
     /// A flag sent on the open connection (what a control may act on).
     pub fn fresh_flag(&self, key: &str) -> Option<bool> {
         self.flag(key).filter(|_| self.fresh)
+    }
+}
+
+/// REVERB's state as the hub last told it (#130, D18, `ServerMsg::Reverb`):
+/// kept through an outage, so the button and the faders' marks stay as
+/// they were (as the hub values and Live's stale values, L2), and stale
+/// from a socket's close until the next connection's `reverb` message (the
+/// hub tells it at each attach). Only a fresh one may be acted on: a tap or
+/// a hold of the REVERB button (`behave::reverb::tap_value`,
+/// `behave::rail::hold_value`).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct HubReverb {
+    state: Option<ReverbState>,
+    /// The state came on the open connection.
+    fresh: bool,
+}
+
+impl HubReverb {
+    /// A `reverb` message: the state now, fresh.
+    pub fn put(&mut self, state: ReverbState) {
+        self.state = Some(state);
+        self.fresh = true;
+    }
+
+    /// The socket closed: the state stays, stale.
+    pub fn closed(&mut self) {
+        self.fresh = false;
+    }
+
+    /// The state as last told (shown; stale or not).
+    pub fn shown(&self) -> Option<&ReverbState> {
+        self.state.as_ref()
+    }
+
+    /// The state told on the open connection (what a press may act on).
+    pub fn fresh(&self) -> Option<&ReverbState> {
+        self.state.as_ref().filter(|_| self.fresh)
     }
 }
 

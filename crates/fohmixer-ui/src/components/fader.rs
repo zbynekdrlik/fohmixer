@@ -30,6 +30,10 @@
 //! takes what every target shows, stretches the cap's glide from the
 //! loudest over the furthest track's way, and each glide frame writes every
 //! target that far on its way.
+//!
+//! A reverb fader (#130, D18) carries REVERB's marks (`ReverbMarks`): while
+//! the hub's rule holds it low, the lowered part of its groove, its return
+//! level and `AUT −n`; once the engineer took it, `RUKA`.
 
 use fohmixer_proto::client::set_key;
 use leptos::html;
@@ -42,6 +46,7 @@ use super::{
 };
 use crate::behave::fader::{self as curve, FaderCtl, UNITY, VolumeLaw};
 use crate::behave::fader_link::{link_drag, link_volumes};
+use crate::behave::reverb::{Mark, aut_text, mark_of};
 use crate::behave::vca::{self, Drag, Home};
 use crate::behave::{Taken, TouchEnd, touch_end};
 use crate::binding::SubSpec;
@@ -187,6 +192,54 @@ fn vca_intent(views: &[(State, Option<f64>)]) -> (State, Option<f64>) {
     (state, vca::loudest(&open))
 }
 
+/// The REVERB rule's marks on a reverb fader (#130, D18; the approved
+/// mockup reverb-link-v2, screen 1, states 3 and 4): while the rule holds
+/// it low, the lowered part of its groove, a dashed return mark at its song
+/// level (`--r`) and `AUT −n` (the live difference, `aut_text`); once the
+/// engineer took it, `RUKA`. Each is hidden unless `.shown`. No touch, no
+/// height: they sit in the fader and read its `--p` and `--x`.
+/// `volume_key` is the fader's volume's write key (the hub's
+/// `ReverbFader.key`), `state` its slot, `law` the strip's volume law.
+#[component]
+pub fn ReverbMarks(volume_key: String, state: RwSignal<Slot>, law: VolumeLaw) -> impl IntoView {
+    let store = expect_context::<LiveStore>();
+    let volume_key = StoredValue::new(volume_key);
+    let mark = Memo::new(move |_| {
+        store
+            .reverb
+            .try_with(|r| volume_key.try_with_value(|k| mark_of(r.shown(), k)))
+            .flatten()
+            .unwrap_or(Mark::None)
+    });
+    let back = move || match mark.try_get() {
+        Some(Mark::Aut { back }) => Some(back),
+        _ => None,
+    };
+    let at = move || {
+        back()
+            .map(|b| format!("--r:{:.5};", law.to_pos(b)))
+            .unwrap_or_default()
+    };
+    let shown = move || back().is_some();
+    let hand = move || mark.try_get() == Some(Mark::Hand);
+    let text = move || {
+        back()
+            .zip(state.try_with(Slot::number).flatten())
+            .map(|(b, live)| aut_text(b, live))
+            .unwrap_or_default()
+    };
+    view! {
+        <div class="aut-span" data-testid="aut-span" class:shown=shown style=at></div>
+        <div class="aut-ret" data-testid="aut-ret" class:shown=shown style=at></div>
+        <div class="fz-mark aut" data-testid="aut-mark" class:shown=shown style=at>
+            <span class="fz-pill">{text}</span>
+        </div>
+        <div class="fz-mark hand" data-testid="hand-mark" class:shown=hand>
+            <span class="fz-pill">"RUKA"</span>
+        </div>
+    }
+}
+
 /// A vertical fader showing its first target (by that target's law) and
 /// writing every target, each by its own law. It takes a touch only while
 /// every target has Live's value and a law that can map it (I8), and is
@@ -195,7 +248,8 @@ fn vca_intent(views: &[(State, Option<f64>)]) -> (State, Option<f64>) {
 /// every target by the same dB from where the touch started, and a double
 /// tap glides every target to 0 dB. A fader link's leader (#130, D18:
 /// `partners`, while `link_on`) writes its partners with its own by the
-/// same dB, in one `sets`.
+/// same dB, in one `sets`. A reverb fader (`reverb`, #130) shows REVERB's
+/// marks (`ReverbMarks`; never the backing-tracks fader).
 #[component]
 pub fn FaderView(
     targets: Vec<Target>,
@@ -209,6 +263,9 @@ pub fn FaderView(
     /// The leader's link is on (its hub switch, and partners to move).
     #[prop(optional, into)]
     link_on: Signal<bool>,
+    /// A reverb fader (#130, D18: its strip's `+REVERB`): REVERB's marks.
+    #[prop(optional)]
+    reverb: bool,
 ) -> impl IntoView {
     let store = expect_context::<LiveStore>();
     let (slot, law) = targets.first().map_or_else(
@@ -611,6 +668,14 @@ pub fn FaderView(
 
     let binding = move || state.try_get().map_or("waiting", |s| s.name());
     let disabled = move || state.try_get().map_or("true", |s| s.disabled());
+    // REVERB's marks on a reverb strip's volume fader (#130): its first
+    // target's key, slot and volume law.
+    let marks = (reverb && !vca)
+        .then(|| shown_key.try_get_value().flatten().zip(law.volume_law()))
+        .flatten()
+        .map(|(volume_key, volume_law)| {
+            view! { <ReverbMarks volume_key=volume_key state=slot law=volume_law /> }
+        });
     view! {
         <div
             class="fader"
@@ -629,6 +694,7 @@ pub fn FaderView(
             <div class="fader-groove"></div>
             <div class="fader-fill"></div>
             <div class="fader-ghost"></div>
+            {marks}
             <div class="fader-rail">
                 <div class="fader-cap" data-testid="fader-cap"></div>
             </div>

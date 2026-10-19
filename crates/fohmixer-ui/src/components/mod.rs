@@ -303,8 +303,12 @@ pub fn ControlView(
             <AlertView binding=binding period_ms=period_ms label=label guarded=mute_guard />
         }
         .into_any(),
-        // The REVERB rail button (#130): drawn from PR 5 on.
-        Control::Reverb { .. } => ().into_any(),
+        // The REVERB rail button (#130, D18): a tap lowers or returns the
+        // reverb faders, a 1 s hold turns REVERB AUT at its lift.
+        Control::Reverb { label } => {
+            let label = label.unwrap_or_else(|| "REVERB".to_string());
+            view! { <RuleButton kind=RuleKind::Reverb label=label /> }.into_any()
+        }
     }
 }
 

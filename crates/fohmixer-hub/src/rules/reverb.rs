@@ -18,7 +18,9 @@
 //! - **The hand wins:** a page's write of a fader while the rule holds it
 //!   (lowered, the wait, a glide), or a value of Live's off where the rule
 //!   left it once the rule's last write was applied, lets that fader go
-//!   (`RUKA`) until the next stop, which takes it again from where it is.
+//!   (`RUKA`) until the next stop (AUT on or off) or a lowering that takes
+//!   it again (a tap down); a start or a tap back keeps it. With AUT on the
+//!   stop's lowering takes it again from where it is.
 //! - **A first value never lowers:** a hub start, a reconnect or a set load
 //!   only returns (Live plays, the faders lowered by the stop, AUT on).
 //! - **A return waits for Live's value:** a held fader whose value the hub
@@ -285,7 +287,8 @@ struct Fader {
     back: Option<f64>,
     /// Where the rule left it (its lowering's end).
     left: Option<f64>,
-    /// The engineer took it (`RUKA`) while the rule held it.
+    /// The engineer took it (`RUKA`) while the rule held it: let go until
+    /// the next stop, or a lowering that takes it again (F30).
     hand: bool,
     glide: Option<Glide>,
     /// Live's values are its own: the rule's last write was applied, or
@@ -698,6 +701,13 @@ impl Reverb {
         acts
     }
 
+    /// Every fader's hand ends (`RUKA`): a stop.
+    fn drop_hands(&mut self) {
+        for fader in &mut self.faders {
+            fader.hand = false;
+        }
+    }
+
     /// `low` says a fader is held lowered: with none held, it ends.
     fn drop_low(&mut self) {
         if !self.faders.iter().any(Fader::held) {
@@ -720,15 +730,16 @@ impl Reverb {
                 acts.extend(self.return_all(now));
             }
             (None, _) => {}
-            (Some(_), false) if self.aut => {
-                // The next stop takes a fader the hand had let go again.
-                for fader in self.faders.iter_mut().filter(|f| !f.held()) {
-                    fader.hand = false;
+            (Some(_), false) => {
+                // A fader the hand let go is let go until the next stop
+                // (F30), with AUT on or off; with AUT on the stop takes it
+                // again.
+                self.drop_hands();
+                if self.aut {
+                    self.wait = Some(now + STOP_WAIT_MS);
+                    acts.push(Act::Step(Step::Wait { ms: STOP_WAIT_MS }));
                 }
-                self.wait = Some(now + STOP_WAIT_MS);
-                acts.push(Act::Step(Step::Wait { ms: STOP_WAIT_MS }));
             }
-            (Some(_), false) => {}
             (Some(_), true) => {
                 if self.wait.take().is_some() {
                     acts.push(Act::Step(Step::Cancelled));
@@ -817,6 +828,8 @@ impl Reverb {
     }
 
     /// Every held fader glides back to its song level; the rule lets go.
+    /// A fader in the hand keeps it (`RUKA` until the next stop or
+    /// lowering).
     fn return_all(&mut self, now: f64) -> Vec<Act> {
         let held: Vec<usize> = self
             .faders
@@ -825,9 +838,6 @@ impl Reverb {
             .filter(|(_, f)| f.held())
             .map(|(i, _)| i)
             .collect();
-        for fader in &mut self.faders {
-            fader.hand = false;
-        }
         self.wait = None;
         self.return_these(&held, now)
     }

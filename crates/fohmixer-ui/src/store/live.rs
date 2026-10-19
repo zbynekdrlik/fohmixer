@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use fohmixer_proto::client::{
-    CLOSE_RELOAD, ClientMsg, DeckKey, LiveCommand, POLICY_META, ReverbState, ServerMsg,
+    CLOSE_RELOAD, ClientMsg, DeckKey, LiveCommand, POLICY_META, ServerMsg,
 };
 use fohmixer_proto::eq::EqLock;
 use fohmixer_proto::layout::Layout;
@@ -28,7 +28,7 @@ use super::deck::{DeckInfo, DeckWaiting};
 use super::eq::inputs::Inputs;
 use super::eq::{EqListView, EqView};
 use super::intent::Intents;
-use super::{HubValues, InstanceView, ResultFn, Slot, TOKEN_KEY, next_range};
+use super::{HubReverb, HubValues, InstanceView, ResultFn, Slot, TOKEN_KEY, next_range};
 use crate::behave::ableset::AbleSetInfo;
 use crate::behave::idle::IdleWatch;
 use crate::behave::link::{Counter, DropoutWatch};
@@ -162,9 +162,9 @@ pub struct LiveStore {
     /// The hub values (STAGE AUT), as the hub last sent them: kept through
     /// an outage, stale until the next connection sends them (#104 M4).
     pub hub: RwSignal<HubValues>,
-    /// REVERB (#130): the hub's last state, kept through a reconnect until
-    /// the hub's next.
-    pub reverb: RwSignal<Option<ReverbState>>,
+    /// REVERB (#130): the hub's last state, kept through a reconnect,
+    /// stale until the hub's next (`HubReverb`).
+    pub reverb: RwSignal<HubReverb>,
     /// The hub socket is up and said hello.
     pub connected: RwSignal<bool>,
     /// How many subscriptions the pages on screen hold.
@@ -201,7 +201,7 @@ impl LiveStore {
             layout_note: RwSignal::new(None),
             instances: RwSignal::new(BTreeMap::new()),
             hub: RwSignal::new(HubValues::default()),
-            reverb: RwSignal::new(None),
+            reverb: RwSignal::new(HubReverb::default()),
             connected: RwSignal::new(false),
             subscribed: RwSignal::new(0),
             dropouts: RwSignal::new(Counter::default()),
@@ -473,6 +473,7 @@ impl LiveStore {
         }
         let _ = self.connected.try_set(false);
         let _ = self.hub.try_update(HubValues::closed);
+        let _ = self.reverb.try_update(HubReverb::closed);
         let _ = self.instances.try_update(|all| {
             for view in all.values_mut() {
                 view.online = false;
@@ -574,10 +575,9 @@ impl LiveStore {
             ServerMsg::Hub { key, value } => {
                 let _ = self.hub.try_update(|hub| hub.put(key, value));
             }
-            // REVERB (#130): the rail button and the faders' marks read it
-            // (PR 5).
+            // REVERB (#130): the rail button and the faders' marks read it.
             ServerMsg::Reverb(state) => {
-                let _ = self.reverb.try_set(Some(state));
+                let _ = self.reverb.try_update(|reverb| reverb.put(state));
             }
             ServerMsg::Layout { rev } => self.on_layout(rev),
             ServerMsg::Result { id, data } => self.finish(&id, Ok(data)),

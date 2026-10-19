@@ -22,12 +22,13 @@ use super::detail::DetailStrip;
 use super::fader::{FaderView, Law, Target};
 use super::fader_link::link_parts;
 use super::meter::{MeterView, StatusView};
-use super::{Settings, owns_touches, trace_detail};
+use super::{Settings, key_of, owns_touches, trace_detail};
 use crate::arrange::GroupLabel;
 use crate::behave::db_text::db_text;
 use crate::behave::fader::{UNITY, VolumeLaw};
 use crate::behave::hold::{HINT_MS, HOLD_MS, Hold, Lift};
 use crate::behave::label::{mark_look, shown_label};
+use crate::behave::reverb::held_low;
 use crate::behave::scale::{side_style, tick_label, tick_pos, ticks};
 use crate::binding::{detail_keys, strip_subs};
 use crate::dom;
@@ -270,6 +271,19 @@ pub fn StripView(
     let link_on = parts.link_on;
     let flink = parts.flink;
     let link_partners = parts.partners;
+    // A reverb strip (#130, D18): REVERB's marks on its fader, and its
+    // readout in the rule's colour while the rule holds it low.
+    let reverb = strip.reverb;
+    let volume_key = StoredValue::new(subs.volume.as_ref().map(key_of).unwrap_or_default());
+    let low = move || {
+        reverb
+            && store
+                .reverb
+                .try_with(|r| volume_key.try_with_value(|k| held_low(r.shown(), k)))
+                .flatten()
+                .unwrap_or(false)
+    };
+    let readout_aut = move || if low() { "low" } else { "" };
     let fader = volume.zip(subs.volume.clone()).map(|(slot, spec)| {
         let targets = vec![Target {
             spec: Some(spec),
@@ -282,6 +296,7 @@ pub fn StripView(
                 shaping={settings.shaping}
                 partners=link_partners
                 link_on=link_on
+                reverb=reverb
             />
         }
     });
@@ -364,7 +379,7 @@ pub fn StripView(
             <div class="strip-head">
                 {mute_view}
                 <div class="strip-info">
-                    <div class="strip-readout" data-testid="strip-readout">
+                    <div class="strip-readout" data-testid="strip-readout" data-aut=readout_aut>
                         <StatusView slots=all activity=activity />
                         {db}
                         {mark_word}
