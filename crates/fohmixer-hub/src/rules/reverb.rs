@@ -18,7 +18,9 @@
 //! - **The hand wins:** a page's write of a fader while the rule holds it
 //!   (lowered, the wait, a glide), or a value of Live's off where the rule
 //!   left it once the rule's last write was applied, lets that fader go
-//!   (`RUKA`) until the next stop, which takes it again from where it is.
+//!   (`RUKA`) until the next stop (AUT on or off) or a lowering that takes
+//!   it again (a tap down); a start or a tap back keeps it. With AUT on the
+//!   stop's lowering takes it again from where it is.
 //! - **A first value never lowers:** a hub start, a reconnect or a set load
 //!   only returns (Live plays, the faders lowered by the stop, AUT on).
 //! - **A return waits for Live's value:** a held fader whose value the hub
