@@ -408,21 +408,21 @@ mod tests {
 
     #[test]
     fn every_fader_in_the_hand_while_live_stands_is_the_hand_not_a_tap() {
-        // The hub ends `low` when the last held fader is let go: the line
-        // names the hands and the pill runs (no tap overrides the rule).
+        // The hub ends `low` when the last held fader is let go: every
+        // fader taken by hand, no tap, so the line names the hands and the
+        // pill runs (no tap overrides the rule).
         let mut s = with(true, None, Some(false), false);
+        s.faders[0].hand = true;
         s.faders[1].hand = true;
         assert_eq!(
             look(&s),
             RailLook {
                 lit: true,
                 aut: Aut::Run,
-                sub: Some("PA v ruke".into()),
+                sub: Some("ST PA v ruke".into()),
                 low: false
             }
         );
-        s.faders[0].hand = true;
-        assert_eq!(look(&s).sub.as_deref(), Some("ST PA v ruke"));
         // During the stop's wait or while Live plays, the rule's own line.
         let mut waiting = with(true, None, Some(false), true);
         waiting.faders[1].hand = true;
@@ -443,6 +443,36 @@ mod tests {
         manual.faders[1].back = None;
         manual.faders[1].hand = true;
         assert_eq!(look(&manual).sub.as_deref(), Some("ručne · −10 dB"));
+    }
+
+    #[test]
+    fn a_tap_back_with_a_fader_in_the_hand_shows_the_taps_override() {
+        // REVERB AUT on, Live stopped, both lowered; Rev PA taken by hand,
+        // then a tap back returned Rev ST (the hand stays until the next
+        // stop): the tap's override until the start, outlined (F30); Rev
+        // PA's own fader shows RUKA (#130 PR 5 re-review N1, the main
+        // session's ruling).
+        let mut s = with(true, None, Some(false), false);
+        s.faders[1].hand = true;
+        assert_eq!(
+            look(&s),
+            RailLook {
+                lit: true,
+                aut: Aut::Held,
+                sub: Some("ručne plný · do štartu".into()),
+                low: false
+            }
+        );
+        assert_eq!(mark_of(Some(&s), PA), Mark::Hand);
+        assert_eq!(mark_of(Some(&s), ST), Mark::None);
+        // No reverb fader at all: the override's look, as before.
+        let mut none = with(true, None, Some(false), false);
+        none.faders.clear();
+        let empty = look(&none);
+        assert_eq!(
+            (empty.aut, empty.sub.as_deref()),
+            (Aut::Held, Some("ručne plný · do štartu"))
+        );
     }
 
     #[test]
