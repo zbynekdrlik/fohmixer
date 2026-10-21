@@ -1205,3 +1205,56 @@ async fn a_disconnect_without_autotune_targets_holds_nothing() {
     });
     assert_eq!(steps(&rx), Vec::<Value>::new());
 }
+
+#[tokio::test]
+async fn a_rack_replaced_at_the_same_path_is_followed_afresh_and_written_once() {
+    // PR #139 review M1: a preset hot-swapped onto the stream rack (or the
+    // rack deleted and undone): the script ends the macro's listener
+    // (`gone`), and the walk finds a new `$ref` at the same path.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, _rx, rx) = aut_on(dir.path());
+    router.handle(layout(1, vec![stream()]));
+    find(&mut router, STREAM, 7);
+    // Live stands, the macro at 0: AUT writes it off.
+    answer(&mut router, false, 0.0);
+    router.flush();
+    assert_eq!(router.autotune.targets[STREAM].value, Some(0.0));
+    assert_eq!(
+        writes(&steps(&rx)),
+        vec![write_of(false, "transport", &["#8"])]
+    );
+    router.subs.on_values(
+        "band",
+        &[LiveValue {
+            key: "live_9.value".into(),
+            value: Value::Null,
+            display: None,
+            error: Some("gone".into()),
+        }],
+    );
+    router.flush();
+    assert_eq!(router.autotune.targets[STREAM].value, None);
+    let walk = walk_of(&router, STREAM);
+    router.autotune_found(
+        STREAM,
+        walk,
+        Ok(Found {
+            path: found(7).path,
+            id: "p7b".into(),
+        }),
+    );
+    // The new rack gets the decision once, through its own ref.
+    assert_eq!(writes(&steps(&rx)), vec![write_of(false, "found", &["#8"])]);
+    assert_eq!(
+        router.autotune.targets[STREAM]
+            .found
+            .as_ref()
+            .map(|f| f.id.as_str()),
+        Some("p7b")
+    );
+    // Its value is followed afresh: Live answers the new listener.
+    answer(&mut router, false, 127.0);
+    router.flush();
+    assert_eq!(router.autotune.targets[STREAM].value, Some(127.0));
+    assert_eq!(router.autotune.state().targets[0].state, TargetState::On);
+}
