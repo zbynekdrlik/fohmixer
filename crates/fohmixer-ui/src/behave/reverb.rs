@@ -402,8 +402,9 @@ mod tests {
     fn every_fader_in_the_hand_while_live_stands_is_the_hand_not_a_tap() {
         // The hub ends `low` when the last held fader is let go: every
         // fader taken by hand, no tap, so the pill runs (no tap overrides
-        // the rule) and the line is the state's own, naming no hand (the
-        // owner's ruling on #130 of 2026-10-21).
+        // the rule) and the line is REVERB's own state with nothing held,
+        // naming no hand (the owner's ruling on #130 of 2026-10-21; PR #139
+        // review I3: never the tap override's `ručne plný · do štartu`).
         let mut s = with(true, None, Some(false), false);
         s.faders[0].hand = true;
         s.faders[1].hand = true;
@@ -412,7 +413,7 @@ mod tests {
             RailLook {
                 lit: true,
                 aut: Aut::Run,
-                sub: Some("ručne plný · do štartu".into()),
+                sub: Some("stojí · plný".into()),
                 low: false,
                 mixed: false,
             }
@@ -437,6 +438,11 @@ mod tests {
         manual.faders[1].back = None;
         manual.faders[1].hand = true;
         assert_eq!(look(&manual).sub.as_deref(), Some("ručne · −10 dB"));
+        // AUT off, every fader in the hand at the song level: no line.
+        let mut idle = with(false, None, Some(false), false);
+        idle.faders[0].hand = true;
+        idle.faders[1].hand = true;
+        assert_eq!((look(&idle).aut, look(&idle).sub), (Aut::Off, None));
     }
 
     #[test]
