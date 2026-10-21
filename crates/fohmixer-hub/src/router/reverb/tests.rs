@@ -164,6 +164,7 @@ async fn a_page_is_told_the_reverb_faders_at_attach_and_at_a_new_layout() {
         strips: Vec::new(),
         reverb: vec![fader("Rev ST", 4)],
         fader_leaders: Vec::new(),
+        autotune: Vec::new(),
     });
     let told = reverb(&first);
     assert_eq!(told.last().map(|s| s.faders.len()), Some(1));

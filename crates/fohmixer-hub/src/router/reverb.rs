@@ -197,7 +197,8 @@ impl Router {
     }
 
     /// A value of a list the marker keeper follows: a changed track list
-    /// stops its instance's glides.
+    /// stops its instance's glides, and AUTOTUNE walks its targets there
+    /// again (#104: an index may name another track now).
     pub(super) fn reverb_list(&mut self, sub: &str, value: &Value) {
         let Some(instance) = list_instance(sub) else {
             return;
@@ -205,6 +206,7 @@ impl Router {
         let before = self.reverb.lists.insert(sub.to_string(), value.clone());
         if list_changed(before.as_ref(), value) {
             self.reverb_tracks(&instance);
+            self.autotune_tracks(&instance);
         }
     }
 

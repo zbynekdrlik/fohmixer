@@ -469,4 +469,10 @@ fn the_rules_records_are_warn_class() {
     assert!(is_warn(
         &json!({"ev": "fader_link", "instance": "band", "id": "REV", "on": false, "client": 2})
     ));
+    // #104: AUTOTUNE's steps.
+    assert!(is_warn(
+        &json!({"ev": "autotune", "step": "write", "instance": "band", "on": true,
+                "why": "transport", "targets": ["#8"]})
+    ));
+    assert!(is_warn(&json!({"ev": "autotune", "step": "found"})));
 }

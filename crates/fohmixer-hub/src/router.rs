@@ -31,16 +31,21 @@
 //!
 //! AbleSet's page (#90 B3, `router/ableset.rs`): every page is told of it
 //! at attach and at each change of the hub's link to AbleSet.
+//!
+//! AUTOTUNE (#104, D19, `router/autotune.rs`): the `+AUTOTUNE` tracks'
+//! `Latencies` racks found by a walk, their first macro written through its
+//! `$ref` by the rule's transport, the pages' flag and taps (its own
+//! subscriber `AUTOTUNE_CLIENT`).
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use fohmixer_proto::client::{
-    FaderLinkStatus, HUB_STAGE_AUT, ReverbStatus, ServerMsg, SetItem, StageAutStatus, Unresolved,
-    ValueItem,
+    AutotuneStatus, FaderLinkStatus, HUB_STAGE_AUT, ReverbStatus, ServerMsg, SetItem,
+    StageAutStatus, Unresolved, ValueItem,
 };
-use fohmixer_proto::layout::{Binding, Layout, LinkId, RuleFader};
+use fohmixer_proto::layout::{AutotuneTarget, Binding, Layout, LinkId, RuleFader};
 use serde_json::{Value, json};
 use tokio::sync::{mpsc, oneshot};
 
@@ -57,6 +62,8 @@ use crate::setter::Setter;
 mod writes;
 
 mod ableset;
+#[path = "router/autotune.rs"]
+mod autotune;
 #[path = "router/deck.rs"]
 mod deck;
 mod eq;
@@ -185,6 +192,8 @@ pub enum RouterMsg {
         reverb: Vec<RuleFader>,
         /// Its fader links' strip leaders (`Layout::fader_leaders`, #130).
         fader_leaders: Vec<LinkId>,
+        /// The AUTOTUNE rule's tracks (`Layout::autotune_targets`, #104).
+        autotune: Vec<AutotuneTarget>,
     },
     /// The router's part of `/api/status`.
     Status {
@@ -319,6 +328,20 @@ pub enum RouterMsg {
     ReverbWake {
         generation: u64,
     },
+    /// An AUTOTUNE target's walk `walk` ended (#104): its rack's first
+    /// macro, or why not in words (a newer walk makes it void).
+    AutotuneFound {
+        key: String,
+        walk: u64,
+        outcome: Result<crate::rules::autotune::find::Found, String>,
+    },
+    /// The answer to AUTOTUNE's write of `instance`'s targets `keys` (#104;
+    /// `Err`: why none was written: offline, a timeout, refused).
+    AutotuneWritten {
+        instance: String,
+        keys: Vec<String>,
+        outcome: Result<Vec<Value>, String>,
+    },
     /// The hub stops: the Stream Deck's held keys released and its task
     /// told to stop (#52), then every client closed.
     Stop,
@@ -339,6 +362,8 @@ pub struct RouterStatus {
     pub reverb: ReverbStatus,
     /// Each strip leader's fader link switch (#130).
     pub fader_links: Vec<FaderLinkStatus>,
+    /// AUTOTUNE (#104, D19).
+    pub autotune: AutotuneStatus,
     pub clients: usize,
     pub unresolved: Vec<Unresolved>,
 }
@@ -409,6 +434,8 @@ pub struct Router {
     reverb: reverb::ReverbIo,
     /// The fader links' switches (#130, D18).
     links: FaderLinks,
+    /// AUTOTUNE (#104, D19).
+    autotune: autotune::AutotuneIo,
     /// Every instance's transport (#104, D18), by instance.
     transport: BTreeMap<String, TransportWatch>,
     layout_rev: u64,
@@ -480,6 +507,7 @@ impl Router {
             stage_target: None,
             reverb: reverb::ReverbIo::new(&state.reverb),
             links: FaderLinks::new(&state.fader_links),
+            autotune: autotune::AutotuneIo::new(state.autotune_aut),
             state,
             transport,
             layout_rev: 0,
@@ -532,6 +560,7 @@ impl Router {
                 }
                 outbox.hub(HUB_STAGE_AUT, json!(self.stage.is_on()));
                 self.reverb_attach(&outbox);
+                self.autotune_attach(&outbox);
                 self.links_attach(&outbox);
                 if self.layout_rev > 0 {
                     outbox.layout(self.layout_rev);
@@ -672,6 +701,7 @@ impl Router {
                 strips,
                 reverb,
                 fader_leaders,
+                autotune,
             } => {
                 // Two producers (the file's poll and the markers, #68): an
                 // older revision arriving late never replaces a newer one.
@@ -684,6 +714,7 @@ impl Router {
                 }
                 self.set_stage_binding(stage.as_ref());
                 self.reverb_layout(reverb);
+                self.autotune_layout(autotune);
                 self.links_layout(fader_leaders);
                 let actions = self.unfold.set_strips(strips);
                 self.unfold_apply(actions);
@@ -717,6 +748,7 @@ impl Router {
                                 MARKERS_CLIENT,
                                 RULES_CLIENT,
                                 reverb::REVERB_CLIENT,
+                                autotune::AUTOTUNE_CLIENT,
                             ];
                             (n.clone(), self.subs.subscriptions_besides(n, &own))
                         })
@@ -730,6 +762,7 @@ impl Router {
                                 MARKERS_CLIENT,
                                 RULES_CLIENT,
                                 reverb::REVERB_CLIENT,
+                                autotune::AUTOTUNE_CLIENT,
                             ];
                             (n.clone(), self.subs.listeners_besides(n, &own))
                         })
@@ -741,6 +774,7 @@ impl Router {
                     },
                     reverb: self.reverb.rule.status(),
                     fader_links: self.links.status(),
+                    autotune: self.autotune.status(),
                     clients: self.clients.len(),
                     unresolved: self.names.unresolved(),
                 });
@@ -818,6 +852,14 @@ impl Router {
             RouterMsg::EqWorker { event } => self.eq_worker(event),
             RouterMsg::AbleSetLink { online } => self.ableset_link(online),
             RouterMsg::ReverbWake { generation } => self.reverb_wake(generation),
+            RouterMsg::AutotuneFound { key, walk, outcome } => {
+                self.autotune_found(&key, walk, outcome);
+            }
+            RouterMsg::AutotuneWritten {
+                instance,
+                keys,
+                outcome,
+            } => self.autotune_written(&instance, &keys, &outcome),
             RouterMsg::Stop => return false,
         }
         true
@@ -841,6 +883,8 @@ impl Router {
                 let actions = self.markers.connected(instance);
                 self.markers_apply(actions);
                 self.eq_connected(instance);
+                // AUTOTUNE's refs too: its targets are walked again.
+                self.autotune_connected(instance);
                 self.broadcast_instance(instance);
             }
             LiveEvent::Disconnected => {
@@ -866,6 +910,7 @@ impl Router {
                 // unknown (a set loaded meanwhile): REVERB's window opens.
                 self.markers.disconnected(instance);
                 self.reverb_offline(instance);
+                self.autotune_offline(instance);
                 self.broadcast_instance(instance);
             }
             LiveEvent::Busy {
@@ -925,11 +970,14 @@ impl Router {
 
     fn set_hub(&mut self, client: ClientId, key: &str, value: &Value) {
         // The fader links' switches first (#130), then REVERB's keys, then
-        // STAGE AUT.
+        // AUTOTUNE's (#104), then STAGE AUT.
         if self.links_set_hub(client, key, value) {
             return;
         }
         if self.reverb_set_hub(client, key, value) {
+            return;
+        }
+        if self.autotune_set_hub(client, key, value) {
             return;
         }
         let (true, Some(on)) = (key == HUB_STAGE_AUT, value.as_bool()) else {
@@ -1023,6 +1071,7 @@ impl Router {
             self.stage_value(playing);
         }
         self.reverb_transport(&instance, playing);
+        self.autotune_transport(&instance, playing);
     }
 
     /// The rules' transport subscription of the hub key `sub` failed: the
@@ -1039,6 +1088,7 @@ impl Router {
             .events
             .record("transport", json!({"instance": instance, "error": error}));
         self.reverb_transport_lost(&instance);
+        self.autotune_transport_lost(&instance);
     }
 
     /// A transport value for STAGE AUT.
@@ -1199,8 +1249,9 @@ impl Router {
     /// Sends the requests and hands out the table's values (the unfold
     /// keeper's to the keeper: they ask only for reads and writes, which go
     /// out on their own). REVERB (#130) gets its faders' volumes, then the
-    /// track lists the marker keeper follows, before the transport: a
-    /// reconnect's values are judged before its first transport value.
+    /// track lists the marker keeper follows, then AUTOTUNE (#104) its
+    /// macros' values, before the transport: a reconnect's values are judged
+    /// before its first transport value.
     fn flush(&mut self) {
         self.send_requests();
         let mut unfold = Vec::new();
@@ -1208,6 +1259,7 @@ impl Router {
         let mut transport: Vec<(String, Result<Value, String>)> = Vec::new();
         let mut reverb_values: Vec<(String, f64)> = Vec::new();
         let mut reverb_lists: Vec<(String, Value)> = Vec::new();
+        let mut autotune_items: Vec<ValueItem> = Vec::new();
         for (client, item) in self.subs.take_deliveries() {
             if client == RULES_CLIENT {
                 if let Some(heard) = transport_heard(item.value, item.error) {
@@ -1232,6 +1284,8 @@ impl Router {
                 if let Some(v) = item.value.as_ref().and_then(Value::as_f64) {
                     reverb_values.push((item.sub, v));
                 }
+            } else if client == autotune::AUTOTUNE_CLIENT {
+                autotune_items.push(item);
             } else if let Some(outbox) = self.clients.get(&client) {
                 outbox.value(item);
             }
@@ -1241,6 +1295,9 @@ impl Router {
         }
         for (sub, value) in reverb_lists {
             self.reverb_list(&sub, &value);
+        }
+        for item in autotune_items {
+            self.autotune_delivery(&item.sub, item.value, item.error);
         }
         for (sub, heard) in transport {
             match heard {
@@ -1268,6 +1325,7 @@ pub fn layout_msg(rev: u64, served: Option<&Layout>) -> RouterMsg {
         strips: served.map(Layout::strip_tracks).unwrap_or_default(),
         reverb: served.map(Layout::reverb_faders).unwrap_or_default(),
         fader_leaders: served.map(Layout::fader_leaders).unwrap_or_default(),
+        autotune: served.map(Layout::autotune_targets).unwrap_or_default(),
     }
 }
 
@@ -2102,12 +2160,14 @@ mod tests {
             first.take().unwrap(),
             vec![
                 ServerMsg::Reverb(router.reverb.rule.state()),
+                ServerMsg::Autotune(router.autotune.state()),
                 ServerMsg::Hub {
                     key: HUB_STAGE_AUT.into(),
                     value: json!(false)
                 }
             ],
-            "no layout yet: no revision (REVERB's state, #130, is a reply)"
+            "no layout yet: no revision (REVERB's state, #130, and AUTOTUNE's, \
+             #104, are replies)"
         );
         router.handle(RouterMsg::Layout {
             rev: 1,
@@ -2116,6 +2176,7 @@ mod tests {
             strips: Vec::new(),
             reverb: Vec::new(),
             fader_leaders: Vec::new(),
+            autotune: Vec::new(),
         });
         assert_eq!(first.take().unwrap(), vec![ServerMsg::Layout { rev: 1 }]);
         let second = attach(&mut router, 2);
@@ -2146,6 +2207,7 @@ mod tests {
             strips: Vec::new(),
             reverb: Vec::new(),
             fader_leaders: Vec::new(),
+            autotune: Vec::new(),
         };
         router.handle(layout(2));
         router.handle(layout(1));
@@ -2165,6 +2227,7 @@ mod tests {
             strips,
             reverb: Vec::new(),
             fader_leaders: Vec::new(),
+            autotune: Vec::new(),
         };
         router.handle(layout(1, vec![("band".into(), "Keys 1".into())]));
         assert_eq!(
@@ -2201,6 +2264,7 @@ mod tests {
             strips: vec![("band".into(), "Keys 1".into())],
             reverb: Vec::new(),
             fader_leaders: Vec::new(),
+            autotune: Vec::new(),
         });
         // The read goes to an offline instance: its failure comes back…
         let failed = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
