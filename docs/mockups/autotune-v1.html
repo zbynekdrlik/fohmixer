@@ -1,0 +1,848 @@
+<!doctype html>
+<!-- fohmixer #104: mockup v1 of the AUTOTUNE rail button, for the owner's
+     decision; not part of the app. AUTOTUNE becomes a rail button with an
+     automatic mode, like the merged STAGE and REVERB buttons (the approved
+     reverb-link-v2, screen 3): a tap switches autotune on or off on every
+     tagged singer track at once (the Tuner tags +AUTOTUNE and
+     +AUTOTUNE:0), a 1 s hold acting at its lift turns AUTOTUNE AUT on or
+     off (Live plays: on; Live stops: off). Screen 1: the rail at the
+     iPad's size (STAGE, REVERB, AUTOTUNE), the button by hand (off, on,
+     mixed, a tap on mixed), and with AUT (the hold, stopped, playing, a
+     tap's override, mixed, turning AUT off). Screen 2: no track found, a
+     track's problem, waiting for the hub, the phone's two sizes, what the
+     button shows, the tags, the page's own measurements and what is up for
+     approval. The buttons use the app's CSS (crates/fohmixer-ui rule.css,
+     buttons.css, page.css, states.css, v1.8.0) at the column's sizes
+     (118 x 44 on the iPad's 1194 x 834); the fonts are the app's own
+     files, loaded by relative path. The page measures every button's
+     lines and writes the numbers. Invented counts, no site data. -->
+<html lang="sk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Fohmixer AUTOTUNE v1</title>
+<style>
+/* The app's fonts (crates/fohmixer-ui/fonts, SIL OFL 1.1), by relative
+   path; style.css's faces and ranges. */
+@font-face {
+    font-family: "Barlow Condensed";
+    font-weight: 700;
+    font-display: block;
+    src: url("../../crates/fohmixer-ui/fonts/barlow-condensed-latin-700-normal.woff2") format("woff2");
+    unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2212, U+221E;
+}
+@font-face {
+    font-family: "Barlow Condensed";
+    font-weight: 700;
+    font-display: block;
+    src: url("../../crates/fohmixer-ui/fonts/barlow-condensed-latin-ext-700-normal.woff2") format("woff2");
+    unicode-range: U+0100-02AF, U+0304, U+0308, U+0329, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+    font-family: "Barlow";
+    font-weight: 600;
+    font-display: block;
+    src: url("../../crates/fohmixer-ui/fonts/barlow-latin-600-normal.woff2") format("woff2");
+    unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2212, U+221E;
+}
+@font-face {
+    font-family: "Barlow";
+    font-weight: 600;
+    font-display: block;
+    src: url("../../crates/fohmixer-ui/fonts/barlow-latin-ext-600-normal.woff2") format("woff2");
+    unicode-range: U+0100-02AF, U+0304, U+0308, U+0329, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+    font-family: "Barlow";
+    font-weight: 700;
+    font-display: block;
+    src: url("../../crates/fohmixer-ui/fonts/barlow-latin-700-normal.woff2") format("woff2");
+    unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2212, U+221E;
+}
+@font-face {
+    font-family: "Barlow";
+    font-weight: 700;
+    font-display: block;
+    src: url("../../crates/fohmixer-ui/fonts/barlow-latin-ext-700-normal.woff2") format("woff2");
+    unicode-range: U+0100-02AF, U+0304, U+0308, U+0329, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+    font-family: "JetBrains Mono";
+    font-weight: 600;
+    font-display: block;
+    src: url("../../crates/fohmixer-ui/fonts/jetbrains-mono-latin-600-normal.woff2") format("woff2");
+    unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2212, U+221E;
+}
+@font-face {
+    font-family: "JetBrains Mono";
+    font-weight: 600;
+    font-display: block;
+    src: url("../../crates/fohmixer-ui/fonts/jetbrains-mono-latin-ext-600-normal.woff2") format("woff2");
+    unicode-range: U+0100-02AF, U+0304, U+0308, U+0329, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+/* --- the app's tokens (style.css, rule.css) --- */
+:root {
+    color-scheme: dark;
+    --bg: #07070c;
+    --page: #0b0b12;
+    --bar: #11111b;
+    --section: #151522;
+    --panel: #1a1a28;
+    --panel-hi: #20203a;
+    --line: #2a2a44;
+    --line-soft: rgba(255, 255, 255, 0.06);
+    --accent: #4ecdc4;
+    --solo: #f4d35e;
+    --text: #eaeaf0;
+    --muted: #9a9ab4;
+    --faint: #5c5c78;
+    --danger: #ff3b30;
+    --warn: #f5a623;
+    --display: "Barlow Condensed", "Arial Narrow", sans-serif;
+    --ui: "Barlow", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --mono: "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+    --aut: #6d86ff;
+    --aut-hi: #9cadff;
+    /* NEW: AUTOTUNE keeps the former AUTOTUNE toggle's orange
+       (buttons.css .param-toggle) and a lighter line of it. */
+    --tune: #ff9f43;
+    --tune-hi: #ffc58a;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+html,
+body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--ui);
+    -webkit-text-size-adjust: 100%;
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+    -webkit-tap-highlight-color: transparent;
+}
+
+/* --- rail buttons (buttons.css; the column's sizes, page.css) --- */
+.btn {
+    --c: var(--accent);
+    position: relative;
+    display: grid;
+    align-content: center;
+    min-height: 44px;
+    padding: 6px 8px 6px 20px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--panel);
+    color: var(--muted);
+    font: 700 11.5px/1.15 var(--ui);
+    letter-spacing: 0.6px;
+    text-transform: uppercase;
+    text-align: left;
+    overflow-wrap: anywhere;
+}
+
+.btn::before {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 8px;
+    width: 6px;
+    height: 6px;
+    margin-top: -3px;
+    border-radius: 50%;
+    background: var(--faint);
+}
+
+.btn.on {
+    border-color: color-mix(in srgb, var(--c) 55%, transparent);
+    background: color-mix(in srgb, var(--c) 18%, var(--panel));
+    color: var(--text);
+}
+
+.btn.on::before {
+    background: var(--c);
+    box-shadow: 0 0 8px var(--c);
+}
+
+.stage-mics { --c: #4fa3ff; }
+
+/* --- the rule buttons (rule.css, v1.8.0) --- */
+.rule-btn {
+    align-content: center;
+    gap: 2px;
+}
+
+.reverb-btn {
+    --c: var(--aut);
+}
+
+.btn-row {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
+}
+
+.btn-row > .btn-text {
+    min-width: 0;
+}
+
+.aut-badge {
+    flex: none;
+    margin-left: auto;
+    padding: 0 4px;
+    border-radius: 4px;
+    background: var(--text);
+    color: #0b0b12;
+    font: 800 9.5px/13px var(--ui);
+    letter-spacing: 0.6px;
+}
+
+.rule-btn[data-aut="held"] .aut-badge {
+    background: none;
+    box-shadow: inset 0 0 0 1.5px var(--text);
+    color: var(--text);
+}
+
+.btn-sub {
+    overflow: hidden;
+    color: var(--muted);
+    font: 600 9.5px/12px var(--ui);
+    letter-spacing: 0.2px;
+    text-overflow: ellipsis;
+    text-transform: none;
+    white-space: nowrap;
+}
+
+.btn.on .btn-sub {
+    color: var(--text);
+}
+
+.btn-sub.low {
+    color: var(--aut-hi);
+}
+
+/* The hold's fill (rule.css): a clip over the button's whole layer, here
+   stopped at `--hold` of the way. */
+.rule-btn .hold {
+    position: absolute;
+    inset: 0;
+    border-radius: 9px;
+    background: rgba(234, 234, 240, 0.2);
+    box-shadow: inset 0 -3px 0 var(--text);
+    clip-path: inset(0 calc(100% - var(--hold)) 0 0 round 9px);
+    pointer-events: none;
+}
+
+/* An unresolved binding (states.css, I5): red; waiting (no state yet):
+   greyed. */
+[data-binding="unresolved"] {
+    opacity: 1;
+    background-color: var(--danger) !important;
+}
+
+[aria-disabled="true"] {
+    opacity: 0.35;
+}
+
+/* === NEW (#104): the AUTOTUNE button. Lit (every found track on) in the
+   former toggle's orange; dark when every one is off; mixed (some on, some
+   off): dark with an orange ring, the light half orange and the count on
+   the second line. A track's problem (no Latencies rack, or two): the
+   yellow `!` in the top-left corner, as on a marker strip's name button
+   (states.css .strip-flag); it takes no width from the words. === */
+.autotune-btn {
+    --c: var(--tune);
+}
+
+.autotune-btn[data-state="mixed"] {
+    border-color: var(--tune);
+    box-shadow: inset 0 0 0 1px var(--tune);
+}
+
+.autotune-btn[data-state="mixed"]::before {
+    background: linear-gradient(to right, var(--tune) 50%, var(--faint) 50%);
+}
+
+.autotune-btn[data-state="mixed"] .btn-sub {
+    color: var(--tune-hi);
+}
+
+.rule-flag {
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 11px;
+    height: 11px;
+    border-radius: 3px;
+    background: var(--warn);
+    color: #0b0b12;
+    font: 800 9px/11px var(--ui);
+    text-align: center;
+    pointer-events: none;
+}
+
+/* A column's cut-out at the iPad's size: 132 px, its 6 px padding, a
+   button 118 x 44 (the rail's rows, minmax(24px, 44px)); `--tw` the rail
+   button's text width (page.css `.body`). */
+.railcut {
+    --tw: 98px;
+    display: grid;
+    grid-template-columns: 118px;
+    grid-auto-rows: 44px;
+    gap: 4px;
+    width: max-content;
+    padding: 6px;
+    border: 1px solid var(--line-soft);
+    border-radius: 12px;
+    background: var(--bar);
+}
+
+.railcut .btn {
+    min-height: 0;
+    padding: 4px 4px 4px 14px;
+}
+
+.railcut .btn::before {
+    left: 5px;
+}
+
+/* rule.css: the label leaves the pill its room (32 px). */
+.railcut .rule-btn .btn-text {
+    font-size: min(11.5px, calc((var(--tw, 65px) - 32px - var(--n, 5) * 0.6px) / (var(--n, 5) * 0.65)));
+}
+
+/* The phone's open column (page.css, rule.css; the approved mockup
+   phone-burger-v1): 150 px. Upright: one column, the text width 118 px;
+   on its side: two columns, the text width 45 px, the words at most
+   9.5 px on one line. No second line; the pill is a 6 px dot in the
+   button's top-right corner. */
+.railcut.up {
+    --tw: 118px;
+    grid-template-columns: 138px;
+    grid-auto-rows: 32px;
+}
+
+.railcut.side {
+    --tw: 45px;
+    grid-template-columns: 68px 68px;
+    grid-auto-rows: 26px;
+    padding: 6px 5px;
+}
+
+.railcut.up .rule-btn .btn-text,
+.railcut.side .rule-btn .btn-text {
+    font-size: min(11.5px, calc((var(--tw, 65px) - var(--n, 5) * 0.6px) / (var(--n, 5) * 0.65)));
+}
+
+.railcut.side .btn {
+    padding: 1px 3px 1px 12px;
+}
+
+.railcut.side .btn::before {
+    left: 4px;
+}
+
+.railcut.side .rule-btn .btn-text {
+    font-size: min(9.5px, calc((var(--tw, 65px) - var(--n, 5) * 0.6px) / (var(--n, 5) * 0.65)));
+    line-height: 1;
+}
+
+.railcut:is(.up, .side) .btn-sub {
+    display: none;
+}
+
+.railcut:is(.up, .side) .aut-badge {
+    position: absolute;
+    top: 3px;
+    right: 3px;
+    width: 6px;
+    height: 6px;
+    padding: 0;
+    border-radius: 50%;
+    font-size: 0;
+}
+
+/* === the mockup's page (not the app's) === */
+.screen {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    width: 1194px;
+    height: 834px;
+    padding: 8px 6px 6px;
+    overflow: hidden;
+    background: var(--page);
+}
+
+.screen + .screen {
+    border-top: 2px solid #000;
+}
+
+.top {
+    display: flex;
+    align-items: baseline;
+    gap: 14px;
+    padding: 0 4px;
+    white-space: nowrap;
+}
+
+.overline {
+    color: var(--muted);
+    font: 700 10px/1.2 var(--ui);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+}
+
+.lead {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--text);
+    font: 600 13px/1.3 var(--ui);
+    text-overflow: ellipsis;
+}
+
+.sect {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+h2 {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    height: 22px;
+    margin: 0;
+    padding: 0 2px;
+    font: 700 17px/1 var(--display);
+    letter-spacing: 0.03em;
+    white-space: nowrap;
+}
+
+h2 .sub {
+    color: var(--muted);
+    font: 600 13px/1 var(--ui);
+    letter-spacing: 0;
+}
+
+.cells {
+    display: grid;
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    gap: 8px;
+}
+
+.cell {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+    padding: 8px;
+    border: 1px solid var(--line-soft);
+    border-radius: 12px;
+    background: var(--section);
+}
+
+.cell.wide {
+    grid-column: span 2;
+}
+
+.cell h4 {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 0;
+    font: 700 15px/20px var(--display);
+    letter-spacing: 0.03em;
+    white-space: nowrap;
+}
+
+.vletter {
+    display: grid;
+    flex: none;
+    place-items: center;
+    min-width: 20px;
+    height: 20px;
+    padding: 0 5px;
+    border-radius: 7px;
+    background: var(--panel-hi);
+    color: var(--text);
+    font: 700 14px/1 var(--display);
+}
+
+.cell p {
+    margin: 0;
+    color: var(--text);
+    font: 600 12px/1.34 var(--ui);
+}
+
+.flow {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.arrow {
+    color: var(--muted);
+    font: 700 12px/1.2 var(--ui);
+    text-align: center;
+    white-space: nowrap;
+}
+
+.arrow b {
+    display: block;
+    color: var(--text);
+    font-size: 18px;
+}
+
+.row {
+    display: grid;
+    gap: 8px;
+    min-height: 0;
+}
+
+.row.notes {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    align-items: start;
+}
+
+.box {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+    min-width: 0;
+    padding: 8px 10px;
+    border: 1px solid var(--line-soft);
+    border-radius: 12px;
+    background: var(--section);
+}
+
+.cells > .box {
+    grid-column: span 4;
+}
+
+.box h3 {
+    margin: 0;
+    font: 700 16px/22px var(--display);
+    letter-spacing: 0.03em;
+    white-space: nowrap;
+}
+
+.box p,
+.box li {
+    margin: 0;
+    color: var(--text);
+    font: 600 12.5px/1.34 var(--ui);
+}
+
+.box ul,
+.box ol {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin: 0;
+    padding-left: 16px;
+}
+
+.box .small {
+    color: var(--muted);
+}
+
+code {
+    padding: 0 3px;
+    border-radius: 3px;
+    background: #0e0e18;
+    color: #9be7a8;
+    font: 600 11px/1.3 var(--mono);
+    white-space: nowrap;
+}
+
+.num {
+    color: #9be7a8;
+    font: 600 12px/1 var(--mono);
+    white-space: nowrap;
+}
+
+.rec {
+    color: var(--tune);
+}
+
+.inline-pill {
+    display: inline-block;
+    padding: 0 3px;
+    border-radius: 3px;
+    background: var(--text);
+    color: #0b0b12;
+    font: 800 10px/14px var(--ui);
+    letter-spacing: 0.4px;
+}
+
+.inline-pill.held {
+    background: none;
+    box-shadow: inset 0 0 0 1.5px var(--text);
+    color: var(--text);
+}
+
+.inline-flag {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border-radius: 3px;
+    background: var(--warn);
+    color: #0b0b12;
+    font: 800 10px/12px var(--ui);
+    text-align: center;
+    vertical-align: -1px;
+}
+</style>
+</head>
+<body>
+<!-- ============ Screen 1: the rail, by hand, AUTOTUNE AUT ============ -->
+<div class="screen screen1">
+    <header class="top">
+        <div class="overline">fohmixer #104 · tlačidlo AUTOTUNE · návrh v1 · obrazovka 1/2</div>
+        <div class="lead">Ťuk = autotune na všetkých označených stopách zap./vyp., podržanie 1 s a pustenie = AUT. Tlačidlo ostáva 118 × 44 px.</div>
+    </header>
+    <section class="sect">
+        <h2>Na lište a ručne <span class="sub">(AUT vypnuté: ťuk zapne alebo vypne autotune na všetkých stopách naraz)</span></h2>
+        <div class="cells" data-cells="hand"></div>
+    </section>
+    <section class="sect">
+        <h2>AUTOTUNE AUT <span class="sub">(podržanie 1 s a pustenie; potom Live hrá = autotune zapnutý, Live stojí = vypnutý, na stream aj repro stopách)</span></h2>
+        <div class="cells" data-cells="aut"></div>
+    </section>
+    <section class="sect">
+        <h2>AUT: zmiešané a vypnutie</h2>
+        <div class="cells" data-cells="aut2">
+            <section class="box" data-order="last">
+                <h3>Ťuk a podržanie</h3>
+                <ul>
+                    <li>Ťuk sa vykoná pri pustení prsta. Podržanie 1 s nič neprepína; AUT sa prepne až pri pustení plnej výplne.</li>
+                    <li>Ťuk prepne vždy všetky stopy naraz: zapnuté → vypnuté, vypnuté → zapnuté, <span class="rec">zmiešané → vypnuté</span>.</li>
+                    <li>S AUT platí ťuk do najbližšieho štartu alebo zastavenia Live (obtiahnuté <span class="inline-pill held">AUT</span>); potom pravidlo zas zapne alebo vypne všetky.</li>
+                    <li>AUT vidia všetky iPady a ostane zapnuté aj po reštarte hubu.</li>
+                </ul>
+            </section>
+        </div>
+    </section>
+</div>
+
+<!-- ============ Screen 2: problems, phone, notes ============ -->
+<div class="screen screen2">
+    <header class="top">
+        <div class="overline">fohmixer #104 · tlačidlo AUTOTUNE · návrh v1 · obrazovka 2/2</div>
+        <div class="lead">Stopy určujú značky v Tuneroch: <code>+AUTOTUNE</code> (stream, zapnutý 127) a <code>+AUTOTUNE:0</code> (repro, zapnutý 0).</div>
+    </header>
+    <section class="sect">
+        <h2>Chyby, čakanie a telefón</h2>
+        <div class="cells" data-cells="trouble"></div>
+    </section>
+    <div class="row notes">
+        <section class="box">
+            <h3>Čo tlačidlo ukazuje</h3>
+            <ul>
+                <li>Svieti: autotune zapnutý na každej nájdenej stope.</li>
+                <li>Tmavé: vypnutý na každej.</li>
+                <li>Tmavé s oranžovým okrajom, polovičným svetlom a počtom: <span class="rec">zmiešané</span>.</li>
+                <li>Stopa je zapnutá len na svojej hodnote zapnutia (127, repro 0). Každá iná hodnota, aj ručne nastavená, je vypnutá.</li>
+                <li>Druhý riadok len s AUT, pri zmiešanom a pri podržaní.</li>
+            </ul>
+        </section>
+        <section class="box">
+            <h3>Značky v Tuneri</h3>
+            <ul>
+                <li><code>+AUTOTUNE</code>: rack Latencies na stope, aj vo vnútri iného racku; jeho prvé makro, zapnutý 127, vypnutý 0 (stream).</li>
+                <li><code>+AUTOTUNE:0</code>: to isté, zapnutý 0, vypnutý 127 (repro).</li>
+                <li>Stačí aj Tuner len s <code>+MUTE</code>: pás nevznikne.</li>
+                <li>Na stope musí byť presne jeden rack Latencies, inak žltý roh.</li>
+            </ul>
+        </section>
+        <section class="box">
+            <h3>Namerané (iPad 1194 × 834)</h3>
+            <ul>
+                <li>Tlačidlo <span class="num">118 × 44 px</span> na mieste starého prepínača: <span class="num">0 px</span> výšky fadrov, nad fadrami nič.</li>
+                <li>Najdlhší druhý riadok <span data-widest-text>–</span>: <span class="num" data-widest>–</span> z <span class="num">98 px</span>.</li>
+                <li>Nápis AUTOTUNE s <span class="inline-pill">AUT</span>: <span class="num" data-label-w>–</span> z <span class="num">98 px</span>.</li>
+                <li data-fit>Všetky riadky sa zmestia.</li>
+            </ul>
+        </section>
+        <section class="box">
+            <h3>Na schválenie</h3>
+            <ol>
+                <li>Farba: <span class="rec">oranžová</span> ako dnešný prepínač AUTOTUNE.</li>
+                <li>Zmiešané: tmavé, oranžový okraj, polovičné svetlo, počet „2/10 zap.“.</li>
+                <li>Ťuk na zmiešané <span class="rec">vypne všetky</span>.</li>
+                <li>Texty druhého riadku (obrazovka 1).</li>
+                <li>Problém stopy: žltý <span class="inline-flag">!</span> vľavo hore; žiadna nájdená stopa: červené.</li>
+            </ol>
+        </section>
+    </div>
+</div>
+<script>
+"use strict";
+
+function el(tag, cls, attrs = {}) {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    for (const [k, v] of Object.entries(attrs)) {
+        if (k === "text") e.textContent = v; else e.setAttribute(k, v);
+    }
+    return e;
+}
+
+// A rule button (components/rail.rs RuleButton): the label (its longest
+// word `--n`), the AUT pill while the rule is on (outlined: held), the
+// second line, the hold's fill; NEW for AUTOTUNE: `data-state` (on, off,
+// mixed) and the problem's `!`.
+function railBtn(b) {
+    const d = el("div", `btn ${b.cls} rule-btn`);
+    d.classList.toggle("on", !!b.on);
+    d.dataset.aut = b.aut || "off";
+    if (b.state) d.dataset.state = b.state;
+    d.dataset.binding = b.binding || "ready";
+    if (b.binding === "waiting") d.setAttribute("aria-disabled", "true");
+    const row = el("span", "btn-row");
+    const longest = Math.max(...b.label.split(" ").map((w) => [...w].length));
+    row.append(el("span", "btn-text", { text: b.label, style: `--n:${longest};` }));
+    if (b.aut) row.append(el("span", "aut-badge", { text: "AUT" }));
+    d.append(row);
+    if (b.sub) d.append(el("span", b.low ? "btn-sub low" : "btn-sub", { text: b.sub }));
+    if (b.hold !== undefined) d.append(el("span", "hold", { style: `--hold:${b.hold}%;` }));
+    if (b.flag) d.append(el("span", "rule-flag", { text: "!" }));
+    return d;
+}
+
+const TUNE = { cls: "autotune-btn", label: "AUTOTUNE" };
+const OFF = { ...TUNE, state: "off" };
+const ON = { ...TUNE, state: "on", on: true };
+const MIXED = { ...TUNE, state: "mixed", sub: "2/10 zap." };
+
+// The rail while Live plays, all three rules on.
+const RAIL = [
+    { cls: "stage-mics", label: "STAGE", aut: "run", sub: "hrá · stíšené" },
+    { cls: "reverb-btn", label: "REVERB", on: true, aut: "run", sub: "hrá · plný" },
+    { ...ON, aut: "run", sub: "hrá · zapnutý" },
+];
+
+const CELLS = {
+    hand: [
+        { n: "", t: "Na lište · Live hrá", rail: RAIL, p: "AUTOTUNE nahradí starý prepínač na tom istom mieste, v jeho oranžovej. Nad fadrami nič nepribudne." },
+        { n: "1", t: "Vypnutý", b: OFF, p: "Autotune je vypnutý na všetkých stopách so značkou. Ťuk ho zapne na všetkých." },
+        { n: "2", t: "Zapnutý", b: ON, p: "Svieti: autotune je zapnutý na všetkých stopách. Ťuk ho vypne na všetkých." },
+        { n: "3", t: "Zmiešané", b: MIXED, p: "Zapnutý len na 2 z 10 stôp (napr. ho prepla pieseň): tmavé, oranžový okraj, počet dole." },
+        { n: "4", t: "Ťuk na zmiešané", wide: true, flow: [MIXED, OFF], p: "Ťuk na zmiešané vypne autotune na všetkých stopách, ako pri linknutom mute: polovičný stav ide do tmavého. Ďalší ťuk zapne všetky." },
+    ],
+    aut: [
+        { n: "5", t: "Podržanie", b: { ...OFF, hold: 60, sub: "drž… zapína AUT" }, p: "Výplň sa plní zľava 1 s. Pustíš skôr: nič sa neprepne." },
+        { n: "6", t: "Plné · pusť", b: { ...OFF, hold: 100, sub: "pusť — zapne AUT" }, p: "Po 1 s je výplň plná; AUT sa zapne až pri pustení." },
+        { n: "7", t: "AUT · stojí", b: { ...OFF, aut: "run", sub: "stojí · vypnutý" }, p: "Live stojí: pravidlo vyplo autotune na všetkých stopách, na reč a modlitbu." },
+        { n: "8", t: "AUT · hrá", b: { ...ON, aut: "run", sub: "hrá · zapnutý" }, p: "Live hrá: pravidlo zaplo autotune na všetkých stopách, raz pri štarte." },
+        { n: "9", t: "AUT · ručne vyp.", b: { ...OFF, aut: "held", sub: "ručne vyp. · do zast." }, p: "Ťuk počas piesne: vypnutý ručne do najbližšieho zastavenia. Prázdne AUT, automatika ostáva." },
+        { n: "10", t: "AUT · ručne zap.", b: { ...ON, aut: "held", sub: "ručne zap. · do štartu" }, p: "Ťuk, keď Live stojí: zapnutý ručne do najbližšieho štartu Live." },
+    ],
+    aut2: [
+        { n: "11", t: "AUT · zmiešané", b: { ...MIXED, aut: "held", sub: "zmiešané · 2/10 zap." }, p: "Live hrá, no autotune majú len 2 z 10 stôp (napr. ho pieseň vypla): obtiahnuté AUT. Ťuk vypne všetky." },
+        { n: "12", t: "Vypnúť AUT", b: { ...ON, aut: "run", hold: 100, sub: "pusť — vypne AUT" }, p: "S AUT zapnutým: „drž… vypína AUT“, plná výplň „pusť — vypne AUT“. Autotune ostane, ako je." },
+    ],
+    trouble: [
+        { n: "13", t: "Žiadna stopa", b: { ...TUNE, binding: "unresolved" }, p: "Žiadny Tuner nemá +AUTOTUNE, alebo hub nenašiel ani jeden rack Latencies: červené, ťuk nič neurobí." },
+        { n: "14", t: "Problém stopy", b: { ...ON, flag: true }, p: "Jedna stopa nemá rack Latencies (alebo má dva): žltý roh. Ostatné stopy tlačidlo prepína ďalej." },
+        { n: "15", t: "Problém · AUT", b: { ...ON, aut: "run", sub: "hrá · zapnutý", flag: true }, p: "Roh sa zmestí aj s AUT a druhým riadkom. Ktorá stopa a prečo, povie stav hubu a log." },
+        { n: "16", t: "Čaká na hub", b: { ...TUNE, binding: "waiting" }, p: "Po pripojení, kým hub nepovie stav: sivé, ťuk ani podržanie nič nepošlú." },
+        { n: "17", t: "Telefón nastojato", rail: RAIL, cut: "up", p: "Otvorený stĺpec: bez druhého riadku, AUT je bodka v rohu tlačidla." },
+        { n: "18", t: "Telefón naležato", rail: RAIL, cut: "side", p: "Dva stĺpce tlačidiel; bodka AUT vpravo od nápisu, v tlačidle." },
+    ],
+};
+
+function railcut(buttons, cut) {
+    const box = el("div", cut ? `railcut ${cut}` : "railcut");
+    for (const b of buttons) box.append(railBtn(b));
+    return box;
+}
+
+for (const box of document.querySelectorAll("[data-cells]")) {
+    const last = box.querySelector('[data-order="last"]');
+    for (const c of CELLS[box.dataset.cells]) {
+        const cell = el("div", c.wide ? "cell wide" : "cell");
+        const h = el("h4", "");
+        if (c.n) h.append(el("span", "vletter", { text: c.n }));
+        h.append(document.createTextNode(c.t));
+        cell.append(h);
+        if (c.flow) {
+            const flow = el("div", "flow");
+            const arrow = el("div", "arrow");
+            arrow.append(document.createTextNode("ťuk"), el("b", "", { text: "→" }));
+            flow.append(railcut([c.flow[0]]), arrow, railcut([c.flow[1]]));
+            cell.append(flow);
+        } else {
+            cell.append(railcut(c.rail || [c.b], c.cut));
+        }
+        cell.append(el("p", "", { text: c.p }));
+        box.insertBefore(cell, last);
+    }
+}
+
+// Every button's lines measured here: a label on one line inside its row
+// beside the pill, the second line not cut (no ellipsis), the phone's dot
+// right of the label; and nothing of the page overflowing.
+function measure() {
+    const r1 = (v) => Math.round(v * 10) / 10;
+    const width = (node) => {
+        const range = document.createRange();
+        range.selectNodeContents(node);
+        return { box: range.getBoundingClientRect(), lines: range.getClientRects().length };
+    };
+    const clipped = [];
+    let widest = { text: "", w: 0 };
+    let labelW = 0;
+    for (const b of document.querySelectorAll(".btn")) {
+        const name = b.querySelector(".btn-text").textContent;
+        const button = b.getBoundingClientRect();
+        const row = b.querySelector(".btn-row");
+        const text = width(b.querySelector(".btn-text"));
+        if (text.lines > 1) clipped.push(`${name}: nápis na ${text.lines} riadky`);
+        if (row.scrollWidth > row.clientWidth + 0.5) clipped.push(`${name}: prvý riadok pretečie`);
+        if (text.box.left < button.left || text.box.right > button.right) clipped.push(`${name}: nápis mimo tlačidla`);
+        const badge = b.querySelector(".aut-badge");
+        if (badge) {
+            const r = badge.getBoundingClientRect();
+            if (r.left < text.box.right - 0.01) clipped.push(`${name}: AUT na nápise`);
+            if (r.left < button.left || r.right > button.right || r.top < button.top || r.bottom > button.bottom) clipped.push(`${name}: AUT mimo tlačidla`);
+            if (name === "AUTOTUNE" && getComputedStyle(badge).position !== "absolute") {
+                labelW = Math.max(labelW, text.box.width + parseFloat(getComputedStyle(row).columnGap) + r.width);
+            }
+        }
+        const flag = b.querySelector(".rule-flag");
+        if (flag) {
+            const r = flag.getBoundingClientRect();
+            if (r.right > text.box.left) clipped.push(`${name}: ! na nápise`);
+        }
+        const sub = b.querySelector(".btn-sub");
+        if (sub && getComputedStyle(sub).display !== "none") {
+            const s = width(sub);
+            if (s.box.width > widest.w) widest = { text: sub.textContent, w: s.box.width };
+            if (sub.scrollWidth > sub.clientWidth + 0.5 || s.box.right > button.right) clipped.push(`${name}: „${sub.textContent}“ sa nezmestí`);
+            if (s.box.bottom > button.bottom) clipped.push(`${name}: druhý riadok pod tlačidlom`);
+        }
+    }
+    for (const node of document.querySelectorAll(".screen, .cell, .box, .lead")) {
+        if (node.scrollHeight > node.clientHeight + 0.5 || node.scrollWidth > node.clientWidth + 0.5) {
+            clipped.push(`${node.className}: pretečie`);
+        }
+    }
+    document.querySelector("[data-widest-text]").textContent = `„${widest.text}“`;
+    document.querySelector("[data-widest]").textContent = `${String(r1(widest.w)).replace(".", ",")} px`;
+    document.querySelector("[data-label-w]").textContent = `${String(r1(labelW)).replace(".", ",")} px`;
+    if (clipped.length) document.querySelector("[data-fit]").textContent = `Nezmestí sa: ${clipped.join("; ")}`;
+    document.body.dataset.fit = JSON.stringify({ clipped, widest: { text: widest.text, w: r1(widest.w) }, labelW: r1(labelW) });
+}
+
+document.fonts.ready.then(measure);
+</script>
+</body>
+</html>
