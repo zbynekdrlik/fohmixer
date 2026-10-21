@@ -173,7 +173,7 @@ fn write_commands_set_each_parameter_through_its_ref_in_one_batch() {
 
 #[test]
 fn slot_failures_name_each_target_that_did_not_answer_ok() {
-    let keys = vec![REPRO.to_string(), STREAM.to_string()];
+    let keys = [REPRO.to_string(), STREAM.to_string()];
     let ok = json!({"ok": true, "data": null});
     let failure = |key: &str, why: &str| (key.to_string(), why.to_string());
     assert_eq!(
@@ -423,7 +423,7 @@ async fn a_stale_walk_answer_is_dropped() {
     assert!(walk_of(&router, STREAM) > older);
     router.autotune_found(STREAM, older, Ok(found(7)));
     assert_eq!(router.autotune.targets[STREAM].found, None);
-    assert_eq!(steps(&rx), vec![]);
+    assert_eq!(steps(&rx), Vec::<Value>::new());
     assert_eq!(router.subs.subscriptions("band"), 1, "the transport only");
     find(&mut router, STREAM, 7);
     assert_eq!(router.autotune.targets[STREAM].found, Some(found(7)));
@@ -458,7 +458,7 @@ async fn a_walk_answer_after_a_disconnect_is_void() {
     let _ = steps(&rx);
     router.autotune_found(STREAM, walk, Ok(found(7)));
     assert_eq!(router.autotune.targets[STREAM].found, None);
-    assert_eq!(steps(&rx), vec![]);
+    assert_eq!(steps(&rx), Vec::<Value>::new());
     assert_eq!(router.autotune.state().targets.len(), 2);
     assert!(
         router
@@ -571,7 +571,7 @@ async fn a_start_writes_on_and_a_stop_writes_off_once_per_change() {
     router.transport_failed(TRANSPORT, "not observable");
     assert_eq!(router.autotune.state().playing, None);
     transport(&mut router, false);
-    assert_eq!(steps(&rx), vec![]);
+    assert_eq!(steps(&rx), Vec::<Value>::new());
 }
 
 #[tokio::test]
@@ -580,7 +580,7 @@ async fn a_target_found_after_the_start_gets_the_rules_last_write_once() {
     let (mut router, _rx, rx) = aut_on(dir.path());
     router.handle(layout(1, vec![repro(), stream()]));
     transport(&mut router, true);
-    assert_eq!(steps(&rx), vec![], "nothing found: no write");
+    assert_eq!(steps(&rx), Vec::<Value>::new(), "nothing found: no write");
     find(&mut router, STREAM, 7);
     let got = steps(&rx);
     assert_eq!(got.len(), 2);
@@ -600,7 +600,7 @@ async fn a_target_found_after_the_start_gets_the_rules_last_write_once() {
     );
     // Found again (a track-list change's walk): no write.
     find(&mut router, REPRO, 6);
-    assert_eq!(steps(&rx), vec![]);
+    assert_eq!(steps(&rx), Vec::<Value>::new());
     assert_eq!(
         status(&mut router).autotune.writes,
         1,
@@ -743,7 +743,7 @@ async fn status_leaves_the_rules_subscriptions_out_and_lists_each_target() {
     );
     // The same problem again is no news; another one is.
     router.autotune_found(PLAIN, walk, Err("no rack named Latencies".into()));
-    assert_eq!(steps(&rx), vec![]);
+    assert_eq!(steps(&rx), Vec::<Value>::new());
     router.autotune_found(PLAIN, walk, Err("2 racks named Latencies".into()));
     assert_eq!(steps(&rx).len(), 1);
     // Found after all: no problem any more.
