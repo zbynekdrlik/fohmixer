@@ -786,3 +786,54 @@ async fn a_lost_macro_drops_its_value_and_walks_it_again() {
     router.autotune_delivery("band|live_set|tempo|false", Some(json!(120.0)), None);
     assert_eq!(router.autotune.targets[STREAM].value, None);
 }
+
+#[tokio::test]
+async fn a_macro_a_page_already_follows_gives_a_found_target_its_value_at_once() {
+    // A page follows the stream rack's macro already (Live answered it):
+    // the target found at that path takes the table's value at once, with
+    // no listener answer of its own to wait for.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, _rx, _records) = offline_router(dir.path());
+    let page = attach(&mut router, 1);
+    router.handle(layout(1, vec![stream()]));
+    let path = found(7).path;
+    assert!(
+        router
+            .subs
+            .subscribe(1, "band", &path, "value", false)
+            .is_ok()
+    );
+    answer(&mut router, false, 127.0);
+    let _ = told(&page);
+    find(&mut router, STREAM, 7);
+    assert_eq!(router.autotune.targets[STREAM].value, Some(127.0));
+    assert_eq!(
+        told(&page).last().map(states),
+        Some(vec![("#8".to_string(), TargetState::On)])
+    );
+}
+
+#[tokio::test]
+async fn every_walk_after_a_disconnect_has_a_new_number() {
+    // A disconnect gives each target of the set a walk number none had
+    // before, so no walk on its way from the old connection can match.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, _rx, _records) = offline_router(dir.path());
+    online(&mut router);
+    router.handle(layout(1, vec![repro(), stream()]));
+    let before = [walk_of(&router, REPRO), walk_of(&router, STREAM)];
+    router.handle(RouterMsg::Live {
+        instance: "band".into(),
+        event: LiveEvent::Disconnected,
+    });
+    let after = [walk_of(&router, REPRO), walk_of(&router, STREAM)];
+    let newest = before[0].max(before[1]);
+    assert!(
+        after.iter().all(|w| *w > newest),
+        "{before:?} then {after:?}"
+    );
+    assert_ne!(after[0], after[1]);
+    // The repro target's walk from before the disconnect is void.
+    router.autotune_found(REPRO, before[0], Ok(found(6)));
+    assert_eq!(router.autotune.targets[REPRO].found, None);
+}
