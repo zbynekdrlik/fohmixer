@@ -44,11 +44,6 @@ pub fn tap_step(value: Option<bool>) -> &'static str {
     if value.is_some() { "tap" } else { "refused" }
 }
 
-/// A label's last word (the mockup's `ST`, `PA`).
-pub fn short_label(label: &str) -> &str {
-    label.split_whitespace().last().unwrap_or(label)
-}
-
 /// The REVERB button (D18; mockup screen 3): lit at the song level, dark
 /// while lowered; the `AUT` pill outlined while a tap overrides the rule; a
 /// press's fill (`behave::rail::fill_of`) shows its own line.
@@ -101,46 +96,22 @@ fn all_in_hand(faders: &[ReverbFader]) -> bool {
 }
 
 /// What REVERB does now, in plain words; none while it says nothing (AUT
-/// off at the song level, or the transport not yet heard).
+/// off at the song level, or the transport not yet heard). It names no
+/// fader in the hand (the owner's ruling on #130 of 2026-10-21): the faders
+/// show that themselves (`RUKA`, `AUT −10`).
 fn reverb_sub(s: &ReverbState, lowered: bool) -> Option<String> {
     if !s.aut {
         return lowered.then(|| "ručne · −10 dB".to_string());
     }
     let playing = s.playing?;
-    Some(match (lowered, playing, s.waiting) {
-        (false, true, _) => "hrá · plný".to_string(),
-        (false, false, true) => "stojí · plný".to_string(),
-        (false, false, false) if all_in_hand(&s.faders) => {
-            hands_text(&s.faders).unwrap_or_default()
-        }
-        (false, false, false) => "ručne plný · do štartu".to_string(),
-        (true, true, _) => "ručne −10 · do zast.".to_string(),
-        (true, false, _) => hands_text(&s.faders).unwrap_or_else(|| "stojí · −10 dB".to_string()),
-    })
-}
-
-/// The second line while the engineer holds some faders: the lowered ones
-/// and the ones in the hand, by their short labels; none without a hand.
-fn hands_text(faders: &[ReverbFader]) -> Option<String> {
-    let hands: Vec<&str> = faders
-        .iter()
-        .filter(|f| f.hand)
-        .map(|f| short_label(&f.label))
-        .collect();
-    if hands.is_empty() {
-        return None;
-    }
-    let down: Vec<&str> = faders
-        .iter()
-        .filter(|f| f.back.is_some())
-        .map(|f| short_label(&f.label))
-        .collect();
-    let hand = format!("{} v ruke", hands.join(" "));
-    Some(if down.is_empty() {
-        hand
-    } else {
-        format!("{} −10 · {hand}", down.join(" "))
-    })
+    let line = match (lowered, playing, s.waiting) {
+        (false, true, _) => "hrá · plný",
+        (false, false, true) => "stojí · plný",
+        (false, false, false) => "ručne plný · do štartu",
+        (true, true, _) => "ručne −10 · do zast.",
+        (true, false, _) => "stojí · −10 dB",
+    };
+    Some(line.to_string())
 }
 
 /// The pill beside a held fader: the live difference to its return level,
@@ -410,26 +381,29 @@ mod tests {
     }
 
     #[test]
-    fn a_hand_shows_in_the_second_line_with_short_labels() {
+    fn the_button_names_no_fader_in_the_hand() {
+        // The owner's ruling on #130 of 2026-10-21: the faders show the
+        // hand (RUKA) and the lowering (AUT −10) themselves, so the line is
+        // REVERB's own: Rev ST held lowered, Rev PA taken by hand.
         let mut s = with(true, Some(Low::Stop), Some(false), false);
         s.faders[1].back = None;
         s.faders[1].hand = true;
         let one = look(&s);
-        assert_eq!(one.sub.as_deref(), Some("ST −10 · PA v ruke"));
+        assert_eq!(one.sub.as_deref(), Some("stojí · −10 dB"));
         assert_eq!((one.aut, one.lit, one.low), (Aut::Run, false, true));
-        s.faders[0].back = None;
-        s.faders[0].hand = true;
-        assert_eq!(look(&s).sub.as_deref(), Some("ST PA v ruke"));
-        assert_eq!(short_label("Rev ST"), "ST");
-        assert_eq!(short_label("Hall"), "Hall");
-        assert_eq!(short_label(""), "");
+        // While Live plays the tap's override, the same with a hand.
+        let mut tap = with(true, Some(Low::Tap), Some(true), false);
+        tap.faders[1].back = None;
+        tap.faders[1].hand = true;
+        assert_eq!(look(&tap).sub.as_deref(), Some("ručne −10 · do zast."));
     }
 
     #[test]
     fn every_fader_in_the_hand_while_live_stands_is_the_hand_not_a_tap() {
         // The hub ends `low` when the last held fader is let go: every
-        // fader taken by hand, no tap, so the line names the hands and the
-        // pill runs (no tap overrides the rule).
+        // fader taken by hand, no tap, so the pill runs (no tap overrides
+        // the rule) and the line is the state's own, naming no hand (the
+        // owner's ruling on #130 of 2026-10-21).
         let mut s = with(true, None, Some(false), false);
         s.faders[0].hand = true;
         s.faders[1].hand = true;
@@ -438,7 +412,7 @@ mod tests {
             RailLook {
                 lit: true,
                 aut: Aut::Run,
-                sub: Some("ST PA v ruke".into()),
+                sub: Some("ručne plný · do štartu".into()),
                 low: false,
                 mixed: false,
             }
