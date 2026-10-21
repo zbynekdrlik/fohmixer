@@ -5,8 +5,8 @@
 //! hand until the next change.
 //!
 //! Pure: the router's glue (`router/autotune.rs`) finds each target's
-//! `Latencies` rack, writes its first macro through its `$ref` and records
-//! every [`Step`].
+//! `Latencies` rack ([`find`]), writes its first macro through its `$ref`
+//! and records every [`Step`].
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -14,6 +14,9 @@ use fohmixer_proto::client::TargetState;
 use serde::Serialize;
 
 use super::stage_rule;
+
+#[path = "autotune/find.rs"]
+pub mod find;
 
 /// A target's value within half a step of its on value is on; any other is
 /// off (today's repro "off" values, 11 to 16 set by hand, read off).
