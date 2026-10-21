@@ -314,6 +314,8 @@ export class LiveClient {
   hub = new Map<string, unknown>();
   /** The hub's last REVERB state (#130: `ServerMsg::Reverb`, told to every client). */
   reverb: any = null;
+  /** The hub's last AUTOTUNE state (#104: `ServerMsg::Autotune`, told to every client). */
+  autotune: any = null;
 
   private constructor(ws: WebSocket) {
     this.ws = ws;
@@ -321,6 +323,7 @@ export class LiveClient {
       const msg = JSON.parse(String(event.data));
       if (msg.type === "hub") this.hub.set(msg.key, msg.value);
       if (msg.type === "reverb") this.reverb = msg;
+      if (msg.type === "autotune") this.autotune = msg;
       if ((msg.type === "result" || msg.type === "error") && msg.id && this.waiting.has(msg.id)) {
         this.waiting.get(msg.id)!(msg);
         this.waiting.delete(msg.id);

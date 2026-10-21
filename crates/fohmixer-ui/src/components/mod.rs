@@ -309,6 +309,13 @@ pub fn ControlView(
             let label = label.unwrap_or_else(|| "REVERB".to_string());
             view! { <RuleButton kind=RuleKind::Reverb label=label /> }.into_any()
         }
+        // The AUTOTUNE rail button (#104, D19): a tap switches every
+        // `+AUTOTUNE` track's autotune, a 1 s hold turns AUTOTUNE AUT at its
+        // lift.
+        Control::Autotune { label, .. } => {
+            let label = label.unwrap_or_else(|| "AUTOTUNE".to_string());
+            view! { <RuleButton kind=RuleKind::Autotune label=label /> }.into_any()
+        }
     }
 }
 

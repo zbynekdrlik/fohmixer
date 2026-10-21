@@ -70,6 +70,27 @@ class SiteTest(unittest.TestCase):
         self.assertIn("Chain Selector", [p.name for p in rack.parameters])
         self.assertEqual(type(rack.chains[0].mixer_device).__name__, "ChainMixerDevice")
 
+    def test_the_latencies_racks_sit_on_top_and_one_rack_deep(self):
+        # #104: AUTOTUNE's rack, on a repro track's chain itself and one rack
+        # deeper (the stream tracks' shape); its first macro is parameter 1.
+        by_name = {t.name: t for t in self.song.tracks}
+        on_top = by_name["Vocal 2 repro#"].devices[0]
+        self.assertEqual(type(on_top).__name__, "RackDevice")
+        self.assertEqual(on_top.name, "Latencies")
+        self.assertEqual([c.name for c in on_top.chains], ["Auto", "Dry"])
+        macro = on_top.parameters[1]
+        self.assertEqual(
+            (macro.name, macro.min, macro.max, macro.value), ("Macro 1", 0.0, 127.0, 0.0)
+        )
+        outer = by_name["Vocal 3 repro#"].devices[0]
+        self.assertEqual((type(outer).__name__, outer.name), ("RackDevice", "Stream FX"))
+        inner = outer.chains[0].devices[0]
+        self.assertEqual((type(inner).__name__, inner.name), ("RackDevice", "Latencies"))
+        self.assertEqual(inner.parameters[1].name, "Macro 1")
+        self.assertEqual([c.name for c in inner.chains], ["Dry", "Auto"])
+        # Vocal 1 repro# keeps no Latencies rack (params.spec.ts relies on it).
+        self.assertEqual([d.name for d in by_name["Vocal 1 repro#"].devices], ["EQ Eight"])
+
     def test_pro_q_4_on_a_track_and_in_a_rack_chain(self):
         # #71: Hand2 # holds a Pro-Q 4, a rack whose first chain holds a renamed
         # one and whose second chain holds another plug-in.

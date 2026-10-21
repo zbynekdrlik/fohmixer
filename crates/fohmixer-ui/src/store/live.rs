@@ -28,7 +28,9 @@ use super::deck::{DeckInfo, DeckWaiting};
 use super::eq::inputs::Inputs;
 use super::eq::{EqListView, EqView};
 use super::intent::Intents;
-use super::{HubReverb, HubValues, InstanceView, ResultFn, Slot, TOKEN_KEY, next_range};
+use super::{
+    HubAutotune, HubReverb, HubValues, InstanceView, ResultFn, Slot, TOKEN_KEY, next_range,
+};
 use crate::behave::ableset::AbleSetInfo;
 use crate::behave::idle::IdleWatch;
 use crate::behave::link::{Counter, DropoutWatch};
@@ -165,6 +167,9 @@ pub struct LiveStore {
     /// REVERB (#130): the hub's last state, kept through a reconnect,
     /// stale until the hub's next (`HubReverb`).
     pub reverb: RwSignal<HubReverb>,
+    /// AUTOTUNE (#104): the hub's last state, kept through a reconnect,
+    /// stale until the hub's next (`HubAutotune`).
+    pub autotune: RwSignal<HubAutotune>,
     /// The hub socket is up and said hello.
     pub connected: RwSignal<bool>,
     /// How many subscriptions the pages on screen hold.
@@ -202,6 +207,7 @@ impl LiveStore {
             instances: RwSignal::new(BTreeMap::new()),
             hub: RwSignal::new(HubValues::default()),
             reverb: RwSignal::new(HubReverb::default()),
+            autotune: RwSignal::new(HubAutotune::default()),
             connected: RwSignal::new(false),
             subscribed: RwSignal::new(0),
             dropouts: RwSignal::new(Counter::default()),
@@ -474,6 +480,7 @@ impl LiveStore {
         let _ = self.connected.try_set(false);
         let _ = self.hub.try_update(HubValues::closed);
         let _ = self.reverb.try_update(HubReverb::closed);
+        let _ = self.autotune.try_update(HubAutotune::closed);
         let _ = self.instances.try_update(|all| {
             for view in all.values_mut() {
                 view.online = false;
@@ -578,6 +585,10 @@ impl LiveStore {
             // REVERB (#130): the rail button and the faders' marks read it.
             ServerMsg::Reverb(state) => {
                 let _ = self.reverb.try_update(|reverb| reverb.put(state));
+            }
+            // AUTOTUNE (#104): the rail button reads it.
+            ServerMsg::Autotune(state) => {
+                let _ = self.autotune.try_update(|autotune| autotune.put(state));
             }
             ServerMsg::Layout { rev } => self.on_layout(rev),
             ServerMsg::Result { id, data } => self.finish(&id, Ok(data)),

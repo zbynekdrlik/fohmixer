@@ -5,16 +5,18 @@
 //! - [`parse`] reads one Tuner's name: the quoted label, the groups with
 //!   their places, `+PIN`, `+MG`, the linked mute's `+ID:<id>` and
 //!   `+MUTE:<id>` (#127), the fader link's `+FADER:<id>` and the REVERB
-//!   rule's `+REVERB` (#130), and every problem as a value (never an
-//!   error: a problem is shown on the strip, I9).
+//!   rule's `+REVERB` (#130), the AUTOTUNE rule's `+AUTOTUNE` (#104), and
+//!   every problem as a value (never an error: a problem is shown on the
+//!   strip, I9).
 //! - [`compose`] turns the frame (the layout file: pages, rows, the rail)
 //!   and the markers the hub found into the served layout: a frame group
 //!   with `tags` shows that tag group's strips, every other tag group
 //!   becomes a view (a page flagged `view`), equal labels are conflicts,
 //!   a strip whose `+ID` other Tuners of its Live set name with `+MUTE`
 //!   mutes their tracks with its own, a strip whose `+ID` other Tuners
-//!   name with `+FADER` leads their faders, and the frame's linked fader
-//!   takes the `+FADER` tracks of its link.
+//!   name with `+FADER` leads their faders, the frame's linked fader
+//!   takes the `+FADER` tracks of its link, and every `autotune` control
+//!   takes the `+AUTOTUNE` tracks (#104).
 //!
 //! Pure, shared by the hub, `layout check` and the tests.
 
@@ -23,8 +25,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::layout::{
-    Anchor, Binding, Control, FaderFollow, FaderLink, Group, Layout, LayoutError, LinkId,
-    LinkPartner, Page, ParamTarget, Row, Scale, Section, Strip, StripKind, StripMark,
+    Anchor, AutotuneTarget, Binding, Control, FaderFollow, FaderLink, Group, Layout, LayoutError,
+    LinkId, LinkPartner, Page, ParamTarget, Row, Scale, Section, Strip, StripKind, StripMark,
 };
 
 /// The `class_name` of Live's Tuner (only a Tuner can be a marker).
@@ -35,6 +37,32 @@ pub const MAX_GROUP_NAME: usize = 32;
 pub const MAX_PLACE: u32 = 999;
 /// A view page's id: this prefix and its group's name.
 pub const VIEW_PREFIX: &str = "view-";
+
+/// Where a `+AUTOTUNE` track's autotune is on (#104): `+AUTOTUNE` on 127
+/// (off 0, the stream racks), `+AUTOTUNE:0` on 0 (off 127, the repro racks).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutotuneOn {
+    Max,
+    Zero,
+}
+
+impl AutotuneOn {
+    /// The value of the rack's first macro that turns autotune on.
+    pub fn on(self) -> u8 {
+        match self {
+            AutotuneOn::Max => 127,
+            AutotuneOn::Zero => 0,
+        }
+    }
+
+    /// The value that turns it off.
+    pub fn off(self) -> u8 {
+        match self {
+            AutotuneOn::Max => 0,
+            AutotuneOn::Zero => 127,
+        }
+    }
+}
 
 /// A group a marker puts its strip in, and its place there.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -65,16 +93,19 @@ pub struct Marker {
     pub faders: Vec<String>,
     /// `+REVERB` (#130, D18): the strip is one of the REVERB rule's faders.
     pub reverb: bool,
+    /// `+AUTOTUNE` / `+AUTOTUNE:0` (#104, D19): the track is one of the
+    /// AUTOTUNE rule's, and where its autotune is on.
+    pub autotune: Option<AutotuneOn>,
     pub problems: Vec<TagProblem>,
 }
 
 impl Marker {
-    /// Whether the Tuner only links its track (#127, #130): `+MUTE` or
-    /// `+FADER` tags with no quote, no group and no other tag (its first
-    /// problem is [`TagProblem::NoLabel`] while [`parse`] reads it). It makes
-    /// no strip, so a missing label or group is no problem there.
-    fn only_links(&self) -> bool {
-        !(self.mutes.is_empty() && self.faders.is_empty())
+    /// Whether the Tuner makes no strip (#127, #130, #104): `+MUTE`,
+    /// `+FADER` or `+AUTOTUNE` tags with no quote, no group and no other tag
+    /// (its first problem is [`TagProblem::NoLabel`] while [`parse`] reads
+    /// it). A missing label or group is no problem there.
+    fn makes_no_strip(&self) -> bool {
+        !(self.mutes.is_empty() && self.faders.is_empty() && self.autotune.is_none())
             && self.groups.is_empty()
             && self.id.is_none()
             && !self.pin
@@ -131,6 +162,10 @@ pub enum TagProblem {
     OrphanFader { id: String },
     /// A `+FADER:` naming its own strip's `+ID` (#130).
     SelfFader { id: String },
+    /// A `+AUTOTUNE:` tag whose argument is not `0` (#104).
+    BadAutotune { tag: String },
+    /// A second `+AUTOTUNE` tag (the first counts; #104).
+    SecondAutotune { tag: String },
 }
 
 /// Whether a Tuner's name makes it a marker: a quote or a `+` token.
@@ -211,6 +246,7 @@ pub fn parse(name: &str) -> Marker {
             "PIN" => marker.pin = true,
             "MG" => marker.mute_guard = true,
             "REVERB" => marker.reverb = true,
+            "AUTOTUNE" => autotune_tag(&mut marker, token, Some(AutotuneOn::Max)),
             _ => {
                 if let Some(arg) = tag.strip_prefix("G:") {
                     match group_tag(arg) {
@@ -234,6 +270,8 @@ pub fn parse(name: &str) -> Marker {
                     link_tag(&mut marker.faders, &mut marker.problems, token, arg, |id| {
                         TagProblem::DuplicateFader { id }
                     });
+                } else if let Some(arg) = tag.strip_prefix("AUTOTUNE:") {
+                    autotune_tag(&mut marker, token, autotune_arg(arg));
                 } else {
                     marker.problems.push(TagProblem::UnknownTag {
                         tag: token.to_string(),
@@ -242,7 +280,7 @@ pub fn parse(name: &str) -> Marker {
             }
         }
     }
-    if marker.only_links() {
+    if marker.makes_no_strip() {
         // Its NoLabel: no strip, no label to miss.
         marker.problems.remove(0);
     } else if marker.groups.is_empty() {
@@ -263,6 +301,24 @@ fn id_tag(marker: &mut Marker, token: &str, arg: &str) {
         });
     } else {
         marker.id = Some(arg.to_string());
+    }
+}
+
+/// A `+AUTOTUNE:<arg>` tag's argument (#104): `0` only.
+fn autotune_arg(arg: &str) -> Option<AutotuneOn> {
+    (arg == "0").then_some(AutotuneOn::Zero)
+}
+
+/// A `+AUTOTUNE` tag (`token`; `on` none: a bad argument), once (#104).
+fn autotune_tag(marker: &mut Marker, token: &str, on: Option<AutotuneOn>) {
+    match on {
+        None => marker.problems.push(TagProblem::BadAutotune {
+            tag: token.to_string(),
+        }),
+        Some(_) if marker.autotune.is_some() => marker.problems.push(TagProblem::SecondAutotune {
+            tag: token.to_string(),
+        }),
+        Some(on) => marker.autotune = Some(on),
     }
 }
 
@@ -292,7 +348,8 @@ fn link_tag(
 /// a strip with `mute_links` (#127 review M4: a linked mute is the Tuner
 /// markers' `+ID` and `+MUTE`, never the frame's) or with `reverb` (#130:
 /// the markers' `+REVERB`), a strip with a fader link or a follow, a
-/// linked fader with its own targets, or one link on two faders (#130).
+/// linked fader with its own targets, or one link on two faders (#130), or
+/// an autotune control naming tracks (#104: the markers' `+AUTOTUNE`).
 pub fn frame_problems(frame: &Layout) -> Vec<LayoutError> {
     let mut out = Vec::new();
     let mut id = |at: &str, id: &str| {
@@ -378,6 +435,12 @@ pub fn frame_problems(frame: &Layout) -> Vec<LayoutError> {
         &mut out,
         |c| matches!(c, Control::ParamFader { link: Some(_), targets, .. } if !targets.is_empty()),
         "a linked fader's tracks: the Tuner markers make those",
+    );
+    refuse(
+        frame,
+        &mut out,
+        |c| matches!(c, Control::Autotune { targets, .. } if !targets.is_empty()),
+        "the autotune tracks: the Tuner markers make those",
     );
     // One link on two faders: named at the second, with its label (#130
     // review M4).
@@ -798,7 +861,7 @@ fn volume_target(partner: &LinkPartner) -> ParamTarget {
 /// Fills every linked fader of the served layout with its partners'
 /// volumes (one whose link nothing names gets none).
 fn fill_links(layout: &mut Layout, frame: &[(LinkId, String)], partners: &[Vec<LinkPartner>]) {
-    let mut fill = |control: &mut Control| {
+    each_control_mut(layout, &mut |control: &mut Control| {
         if let Control::ParamFader {
             link: Some(link),
             targets,
@@ -808,18 +871,49 @@ fn fill_links(layout: &mut Layout, frame: &[(LinkId, String)], partners: &[Vec<L
         {
             *targets = partners[i].iter().map(volume_target).collect();
         }
-    };
+    });
+}
+
+/// The `+AUTOTUNE` tracks (#104), placed or not, in Live's order (the
+/// entries are in it): each track by index, its label, its macro's values.
+fn autotune_targets(entries: &[Entry<'_>]) -> Vec<AutotuneTarget> {
+    entries
+        .iter()
+        .filter_map(|entry| {
+            entry.marker.autotune.map(|on| AutotuneTarget {
+                binding: entry.track(),
+                label: entry.label(),
+                on: on.on(),
+                off: on.off(),
+            })
+        })
+        .collect()
+}
+
+/// Fills every autotune control of the served layout with the `+AUTOTUNE`
+/// tracks (#104; a view's copied rail too, so it runs after the views).
+fn fill_autotune(layout: &mut Layout, tracks: &[AutotuneTarget]) {
+    each_control_mut(layout, &mut |control: &mut Control| {
+        if let Control::Autotune { targets, .. } = control {
+            *targets = tracks.to_vec();
+        }
+    });
+}
+
+/// Every control of the layout, mutable: each page's rail and rows (a
+/// pager's sub-pages too), then the global controls.
+fn each_control_mut(layout: &mut Layout, f: &mut impl FnMut(&mut Control)) {
     for page in &mut layout.pages {
-        page.rail.iter_mut().for_each(&mut fill);
+        page.rail.iter_mut().for_each(&mut *f);
         for row in &mut page.rows {
             for section in &mut row.sections {
                 each_group_mut(section, &mut |g: &mut Group| {
-                    g.controls.iter_mut().for_each(&mut fill)
+                    g.controls.iter_mut().for_each(&mut *f)
                 });
             }
         }
     }
-    layout.global.iter_mut().for_each(&mut fill);
+    layout.global.iter_mut().for_each(&mut *f);
 }
 
 /// Every group of `section`, mutable (a pager's sub-pages' too).
@@ -1008,6 +1102,7 @@ pub fn compose(frame: &Layout, found: &[Found]) -> Composed {
             .push(view_page(name, &groups, &entries, &strips, &rail));
     }
     fill_links(&mut layout, &frame_links, &frame_partners);
+    fill_autotune(&mut layout, &autotune_targets(&entries));
     let mut links: Vec<LinkReport> = entries
         .iter()
         .filter_map(|e| {

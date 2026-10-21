@@ -12,6 +12,10 @@
 //! [`MAX_RACKS`] racks deep at most. A slot that failed (a device deleted
 //! meanwhile) is skipped; a failed first read (the track not found) fails
 //! the walk with the script's error.
+//!
+//! Its helpers (`get`, `answered`, `refused`, `items`) also serve the
+//! AUTOTUNE rule's find of a track's `Latencies` rack (#104,
+//! `rules/autotune/find.rs`).
 
 use fohmixer_proto::eq::{PRODUCT, place};
 use serde_json::{Value, json};
@@ -77,19 +81,19 @@ pub enum Step {
 }
 
 /// A `get_prop` of `prop` on `path`.
-pub(super) fn get(path: &str, prop: &str) -> Value {
+pub(crate) fn get(path: &str, prop: &str) -> Value {
     json!({"target": path, "name": "get_prop", "args": {"prop": prop}})
 }
 
 /// A slot's data when it answered.
-pub(super) fn answered(slot: &Value) -> Option<&Value> {
+pub(crate) fn answered(slot: &Value) -> Option<&Value> {
     (slot.get("ok") == Some(&Value::Bool(true)))
         .then(|| slot.get("data"))
         .flatten()
 }
 
 /// Why a slot has no answer (none: it has one).
-fn refused(slot: Option<&Value>) -> Option<String> {
+pub(crate) fn refused(slot: Option<&Value>) -> Option<String> {
     let Some(slot) = slot else {
         return Some("no result".to_string());
     };
@@ -106,7 +110,7 @@ fn refused(slot: Option<&Value>) -> Option<String> {
 
 /// One object of a list answer: its class, path, name and `$ref`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct Item<'a> {
+pub(crate) struct Item<'a> {
     pub class: &'a str,
     pub path: &'a str,
     pub name: &'a str,
@@ -115,7 +119,7 @@ pub(super) struct Item<'a> {
 
 /// The objects of a list answer (one without a path is left out; a missing
 /// class, name or `$ref` reads empty).
-pub(super) fn items(data: &Value) -> Vec<Item<'_>> {
+pub(crate) fn items(data: &Value) -> Vec<Item<'_>> {
     data.as_array()
         .into_iter()
         .flatten()

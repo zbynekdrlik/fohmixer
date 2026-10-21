@@ -24,13 +24,13 @@ test-group = 'hub-ports'
 [[profile.default.overrides]]
 # companion_client and deck (#52): no host, but timing checks; eq (#71 PR E):
 # SimLive hosts, the guard's wait and a contact's 2 s of silence
-filter = 'binary_id(fohmixer-hub::live_client) | binary_id(fohmixer-hub::fanout) | binary_id(fohmixer-hub::stage_aut) | binary_id(fohmixer-hub::layout) | binary_id(fohmixer-hub::auth) | binary_id(fohmixer-hub::names) | binary_id(fohmixer-hub::ping) | binary_id(fohmixer-hub::setter) | binary_id(fohmixer-hub::companion_client) | binary_id(fohmixer-hub::deck) | binary_id(fohmixer-hub::unfold) | binary_id(fohmixer-hub::markers) | binary_id(fohmixer-hub::eq) | binary_id(fohmixer-hub::reverb) | binary_id(fohmixer-hub::fader_link)'
+filter = 'binary_id(fohmixer-hub::live_client) | binary_id(fohmixer-hub::fanout) | binary_id(fohmixer-hub::stage_aut) | binary_id(fohmixer-hub::layout) | binary_id(fohmixer-hub::auth) | binary_id(fohmixer-hub::names) | binary_id(fohmixer-hub::ping) | binary_id(fohmixer-hub::setter) | binary_id(fohmixer-hub::companion_client) | binary_id(fohmixer-hub::deck) | binary_id(fohmixer-hub::unfold) | binary_id(fohmixer-hub::markers) | binary_id(fohmixer-hub::eq) | binary_id(fohmixer-hub::reverb) | binary_id(fohmixer-hub::fader_link) | binary_id(fohmixer-hub::autotune)'
 test-group = 'hub-hosts'
 
 [profile.mutants]
 # A mutant is caught at its first failing test: stop there and end the tests
 # still running, so a mutant that makes some tests hang is caught by a bounded
-# test in seconds instead of holding the run until cargo-mutants' 180 s
+# test in seconds instead of holding the run until cargo-mutants' 190 s
 # timeout (TIMEOUT; .claude/rules/ci.md).
 fail-fast = { max-fail = 1, terminate = "immediate" }
 # Every test is bounded: a test still running after 2 × 5 s is ended and
@@ -65,7 +65,7 @@ slow-timeout = { period = "25s", terminate-after = 2, grace-period = "2s" }
 # fohmixer-hub: its graceful-stop tests start the real binary and one holds
 # the 5 s stop drain on purpose, so a single test needs more than 10 s of
 # headroom on a loaded mutation shard. 30 s stays well inside cargo-mutants'
-# 180 s timeout.
+# 190 s timeout.
 [[profile.mutants.overrides]]
 filter = 'package(fohmixer-hub)'
 slow-timeout = { period = "10s", terminate-after = 3, grace-period = "2s" }
@@ -73,7 +73,7 @@ slow-timeout = { period = "10s", terminate-after = 3, grace-period = "2s" }
 [profile.mutants-recheck]
 # One mutant at a time (--jobs 1), every test bounded at 60 s: a test that is
 # merely slow passes; a mutant caught again by a timeout here hangs.
-# cargo-mutants' --timeout for the recheck (180 s) covers it. The `all()`
+# cargo-mutants' --timeout for the recheck (190 s) covers it. The `all()`
 # override is needed: an override of the inherited profile (fohmixer-hub's
 # 30 s) would win over a base value.
 inherits = "mutants"

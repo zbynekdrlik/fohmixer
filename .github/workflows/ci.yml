@@ -1035,13 +1035,14 @@ jobs:
           fi
           packages=(--package fohmixer-proto --package fohmixer-hub --package fohmixer-ui --package fohmixer-tray)
           # --timeout: with --baseline=skip cargo-mutants has no measured test
-          # time and would allow 300 s per mutant. 180 s is 2x the slowest
+          # time and would allow 300 s per mutant. 190 s is 2x the slowest
           # measured unmutated hub suite (78.8, 80.3 and 78.6 s in
           # mutation-warmup, then 88.0 s with REVERB AUT's host tests, #130:
-          # 2 x 88.0 s = 176 s, past 170 s): under it a survivor reads as
-          # TIMEOUT, not MISSED (.claude/rules/ci.md).
+          # 2 x 88.0 s = 176 s, past 170 s; then 90.2 s with AUTOTUNE AUT's,
+          # #104: 2 x 90.2 s = 180.4 s, past 180 s): under it a survivor
+          # reads as TIMEOUT, not MISSED (.claude/rules/ci.md).
           status=0
-          cargo mutants --in-diff "$RUNNER_TEMP/pr.diff" --baseline=skip --timeout 180 --jobs 2 --copy-target=true \
+          cargo mutants --in-diff "$RUNNER_TEMP/pr.diff" --baseline=skip --timeout 190 --jobs 2 --copy-target=true \
             --shard "${SHARD}/${SHARDS}" "${packages[@]}" --all-features -- --all-targets || status=$?
           case "$status" in
             0|2|3) ;;
@@ -1056,6 +1057,6 @@ jobs:
           # test); a survivor fails the gate (exit 2).
           recheck=0
           python3 scripts/mutants_recheck.py --out mutants.out -- \
-            --baseline=skip --timeout 180 --jobs 1 --copy-target=true "${packages[@]}" --all-features -- --all-targets || recheck=$?
+            --baseline=skip --timeout 190 --jobs 1 --copy-target=true "${packages[@]}" --all-features -- --all-targets || recheck=$?
           if [ "$status" -ne 0 ]; then exit "$status"; fi
           exit "$recheck"

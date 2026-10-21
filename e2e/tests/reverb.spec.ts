@@ -322,7 +322,10 @@ test.describe("REVERB and REVERB AUT", () => {
     await expect(strip(page, "Rev PA").getByTestId("aut-mark")).not.toHaveClass(/\bshown\b/);
     await expect(strip(page, "Rev PA").getByTestId("strip-readout")).toHaveAttribute("data-aut", "");
     await expect(strip(page, "Rev ST").getByTestId("aut-ret")).toHaveClass(/\bshown\b/);
-    await fits(button, "ST −10 · PA v ruke");
+    // The button names no fader in the hand (the owner's ruling on #130 of
+    // 2026-10-21): the faders show it; the line stays REVERB's own.
+    await fits(button, "stojí · −10 dB");
+    await expect(button).toHaveAttribute("data-aut", "run");
     const handLevel = await settled(live, PA);
 
     // Live plays: Rev ST back exactly, Rev PA stays where the hand left it,

@@ -19,6 +19,8 @@
 //! the transport and the mics reads as a tap's override only once it
 //! outlasts the transport's last change by `SETTLE_MS` (`settling`).
 
+use fohmixer_proto::client::{HUB_AUTOTUNE_AUT, HUB_REVERB_AUT, HUB_STAGE_AUT};
+
 use super::Down;
 use super::hold::Hold;
 use crate::diag::perf::Pointer;
@@ -31,6 +33,66 @@ pub const RAIL_HOLD_MS: f64 = 1000.0;
 /// reads as the rule at work (the hub's write is on its way, one Live round
 /// trip), not as a tap's override.
 pub const SETTLE_MS: f64 = 500.0;
+
+/// The rule a rail button carries (#104, #130): what tells the buttons
+/// apart where they share the press, the pill and the second line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Rule {
+    /// The merged STAGE button: the stage mics' mute and STAGE AUT.
+    Stage,
+    /// REVERB (#130): the reverb faders lowered or back, and REVERB AUT.
+    Reverb,
+    /// AUTOTUNE (#104, D19): every `+AUTOTUNE` track's autotune, and
+    /// AUTOTUNE AUT.
+    Autotune,
+}
+
+impl Rule {
+    /// The flight recorder's `button` of its `rail` steps.
+    pub fn button(self) -> &'static str {
+        match self {
+            Self::Stage => "stage",
+            Self::Reverb => "reverb",
+            Self::Autotune => "autotune",
+        }
+    }
+
+    /// The hub value its hold turns on or off.
+    pub fn aut_key(self) -> &'static str {
+        match self {
+            Self::Stage => HUB_STAGE_AUT,
+            Self::Reverb => HUB_REVERB_AUT,
+            Self::Autotune => HUB_AUTOTUNE_AUT,
+        }
+    }
+
+    /// Its root's classes (`rule.css`).
+    pub fn class(self) -> &'static str {
+        match self {
+            Self::Stage => "btn stage-mics rule-btn",
+            Self::Reverb => "btn reverb-btn rule-btn",
+            Self::Autotune => "btn autotune-btn rule-btn",
+        }
+    }
+
+    /// Its root's `data-testid`.
+    pub fn testid(self) -> &'static str {
+        match self {
+            Self::Stage => "stage-mics",
+            Self::Reverb => "reverb",
+            Self::Autotune => "autotune",
+        }
+    }
+
+    /// Why a press it refuses did nothing (the failure flash's words).
+    pub fn refusal(self) -> &'static str {
+        match self {
+            Self::Stage => "STAGE AUT cannot be switched now",
+            Self::Reverb => "REVERB cannot be switched now",
+            Self::Autotune => "AUTOTUNE cannot be switched now",
+        }
+    }
+}
 
 /// A rail button's press: full at `RAIL_HOLD_MS`, acting at its lift.
 pub fn rail_press() -> Hold {
@@ -153,6 +215,9 @@ pub struct RailLook {
     pub sub: Option<String>,
     /// The second line in the rule's colour (the reverbs lowered).
     pub low: bool,
+    /// Neither lit nor dark (#104, AUTOTUNE): some targets on, some off;
+    /// the button dark with a ring in its colour and half its light.
+    pub mixed: bool,
 }
 
 /// The second line while the press is full: what its lift will do.
@@ -206,6 +271,7 @@ pub fn stage_look(
         aut: pill,
         sub,
         low: false,
+        mixed: false,
     }
 }
 
@@ -284,7 +350,8 @@ mod tests {
                 lit: false,
                 aut: Aut::Run,
                 sub: Some("hrá · stíšené".into()),
-                low: false
+                low: false,
+                mixed: false,
             }
         );
         assert_eq!(
@@ -293,7 +360,8 @@ mod tests {
                 lit: true,
                 aut: Aut::Run,
                 sub: Some("stojí · zapnuté".into()),
-                low: false
+                low: false,
+                mixed: false,
             }
         );
         // A tap overrides the rule until the next stop or start: outlined.
@@ -303,7 +371,8 @@ mod tests {
                 lit: true,
                 aut: Aut::Held,
                 sub: Some("ručne do zastavenia".into()),
-                low: false
+                low: false,
+                mixed: false,
             }
         );
         assert_eq!(
@@ -312,7 +381,8 @@ mod tests {
                 lit: false,
                 aut: Aut::Held,
                 sub: Some("ručne do štartu".into()),
-                low: false
+                low: false,
+                mixed: false,
             }
         );
         // Unknown transport or mute: the pill runs, no line.
@@ -322,7 +392,8 @@ mod tests {
                 lit: false,
                 aut: Aut::Run,
                 sub: None,
-                low: false
+                low: false,
+                mixed: false,
             }
         );
         assert_eq!(
@@ -331,7 +402,8 @@ mod tests {
                 lit: false,
                 aut: Aut::Run,
                 sub: None,
-                low: false
+                low: false,
+                mixed: false,
             }
         );
     }
@@ -372,7 +444,8 @@ mod tests {
                 lit: true,
                 aut: Aut::Run,
                 sub: Some("hrá · stíšené".into()),
-                low: false
+                low: false,
+                mixed: false,
             }
         );
         assert_eq!(
@@ -381,7 +454,8 @@ mod tests {
                 lit: false,
                 aut: Aut::Run,
                 sub: Some("stojí · zapnuté".into()),
-                low: false
+                low: false,
+                mixed: false,
             }
         );
         // A match reads the same settled or not.
@@ -525,6 +599,38 @@ mod tests {
         // The pill and the light stay what they were.
         let look = stage_look(Some(true), Some(true), Some(false), Fill::Full, false);
         assert_eq!((look.aut, look.lit), (Aut::Held, true));
+    }
+
+    #[test]
+    fn each_rule_names_its_button_its_hub_value_its_look_and_its_refusal() {
+        assert_eq!(
+            [Rule::Stage, Rule::Reverb, Rule::Autotune].map(Rule::button),
+            ["stage", "reverb", "autotune"]
+        );
+        assert_eq!(
+            [Rule::Stage, Rule::Reverb, Rule::Autotune].map(Rule::aut_key),
+            ["stage_aut", "reverb_aut", "autotune_aut"]
+        );
+        assert_eq!(
+            [Rule::Stage, Rule::Reverb, Rule::Autotune].map(Rule::class),
+            [
+                "btn stage-mics rule-btn",
+                "btn reverb-btn rule-btn",
+                "btn autotune-btn rule-btn"
+            ]
+        );
+        assert_eq!(
+            [Rule::Stage, Rule::Reverb, Rule::Autotune].map(Rule::testid),
+            ["stage-mics", "reverb", "autotune"]
+        );
+        assert_eq!(
+            [Rule::Stage, Rule::Reverb, Rule::Autotune].map(Rule::refusal),
+            [
+                "STAGE AUT cannot be switched now",
+                "REVERB cannot be switched now",
+                "AUTOTUNE cannot be switched now"
+            ]
+        );
     }
 
     #[test]

@@ -389,6 +389,7 @@ impl HubInner {
             stage_aut: router.stage_aut,
             reverb: router.reverb,
             fader_links: router.fader_links,
+            autotune: router.autotune,
             clients: router.clients,
             client_reports: self.reports.list(),
             remote: self.remote.snapshot(&self.config, https, now),

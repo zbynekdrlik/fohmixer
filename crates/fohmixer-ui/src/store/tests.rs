@@ -401,3 +401,34 @@ fn reverbs_state_stays_through_an_outage_stale_until_the_hub_tells_it_again() {
     assert_eq!(reverb.shown(), Some(&next));
     assert_eq!(reverb.fresh(), Some(&next));
 }
+
+#[test]
+fn autotunes_state_stays_through_an_outage_stale_until_the_hub_tells_it_again() {
+    use fohmixer_proto::client::{AutotuneTargetState, TargetState};
+    let told = |aut: bool, state: TargetState| AutotuneState {
+        aut,
+        playing: Some(true),
+        targets: vec![AutotuneTargetState {
+            label: "#7".into(),
+            state,
+        }],
+    };
+    let mut autotune = HubAutotune::default();
+    assert_eq!((autotune.shown(), autotune.fresh()), (None, None));
+    // A close before any state keeps nothing to show.
+    autotune.closed();
+    assert_eq!((autotune.shown(), autotune.fresh()), (None, None));
+    let first = told(true, TargetState::On);
+    autotune.put(first.clone());
+    assert_eq!(autotune.shown(), Some(&first));
+    assert_eq!(autotune.fresh(), Some(&first));
+    // A close keeps it, stale: shown, not acted on.
+    autotune.closed();
+    assert_eq!(autotune.shown(), Some(&first));
+    assert_eq!(autotune.fresh(), None);
+    // The next connection's state replaces it, fresh.
+    let next = told(false, TargetState::Off);
+    autotune.put(next.clone());
+    assert_eq!(autotune.shown(), Some(&next));
+    assert_eq!(autotune.fresh(), Some(&next));
+}

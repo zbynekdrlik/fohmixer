@@ -186,9 +186,10 @@ pub fn expired(file: NaiveDate, today: NaiveDate, keep_days: i64) -> bool {
 /// (`ableset_view`, #90 design §6: a few per open, beside the dropouts).
 /// The rules' records (#104, #130, D18): every instance's `transport`
 /// change, STAGE AUT's `stage_aut` (its flag, its writes and their
-/// failures), REVERB's `reverb` steps and each fader link's switch
-/// (`fader_link`): a few per song, and they explain what the stage mics,
-/// the reverbs and the links did.
+/// failures), REVERB's `reverb` steps, each fader link's switch
+/// (`fader_link`) and AUTOTUNE's `autotune` steps (#104): a few per song,
+/// and they explain what the stage mics, the reverbs, the links and the
+/// singers' autotune did.
 pub fn is_warn(record: &Value) -> bool {
     let ev = record.get("ev").and_then(Value::as_str).unwrap_or("");
     let failed = record.get("error").is_some_and(|e| !e.is_null())
@@ -215,6 +216,7 @@ pub fn is_warn(record: &Value) -> bool {
                 | "stage_aut"
                 | "reverb"
                 | "fader_link"
+                | "autotune"
         )
         || (ev == "trace" && holds_warn_event(record))
 }

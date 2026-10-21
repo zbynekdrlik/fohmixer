@@ -365,6 +365,7 @@ fn shown(layout: &Layout, path: &[usize]) -> Vec<String> {
             Control::ParamFader { .. } => "fader".into(),
             Control::Alert { .. } => "alert".into(),
             Control::Reverb { .. } => "reverb".into(),
+            Control::Autotune { .. } => "autotune".into(),
         })
         .collect()
 }
@@ -1075,4 +1076,33 @@ fn a_stage_with_aut_reads_its_lives_transport_too() {
         transport_sub("master").key(),
         "master|live_set|is_playing|false"
     );
+}
+
+#[test]
+fn an_autotune_control_subscribes_nothing() {
+    // AUTOTUNE (#104, D19): its state is the hub's `autotune` message (the
+    // hub follows the racks it found), so the page subscribes none of its
+    // targets, nor REVERB's faders for REVERB.
+    let at = |index: u32| fohmixer_proto::layout::AutotuneTarget {
+        binding: Binding {
+            instance: "band".into(),
+            anchor: Anchor::TrackAt { index },
+            path: None,
+        },
+        label: format!("#{}", index + 1),
+        on: 127,
+        off: 0,
+    };
+    let autotune = Control::Autotune {
+        label: Some("AUTOTUNE".into()),
+        targets: vec![at(6), at(7)],
+    };
+    assert_eq!(autotune.bindings().len(), 2, "the targets are bindings");
+    for source in [MeterSource::Level, MeterSource::Lr] {
+        assert_eq!(control_subs(&autotune, source), Vec::<SubSpec>::new());
+        assert_eq!(
+            control_subs(&Control::Reverb { label: None }, source),
+            Vec::<SubSpec>::new()
+        );
+    }
 }

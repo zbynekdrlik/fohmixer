@@ -1,15 +1,20 @@
-/* fohmixer: the rail buttons with an automatic mode (#104, #130, D18; the
-   approved mockups reverb-link-v1, screen 2, and reverb-link-v2, screens 1
-   and 3): the merged STAGE button's and REVERB's label with its AUT pill,
-   its second line and the 1 s hold's fill (components/rail.rs RuleButton),
-   and REVERB's marks on a reverb fader (components/fader.rs ReverbMarks).
-   Linked after vca.css. */
+/* fohmixer: the rail buttons with an automatic mode (#104, #130, D18, D19;
+   the approved mockups reverb-link-v1, screen 2, reverb-link-v2, screens 1
+   and 3, and autotune-v1): the merged STAGE button's, REVERB's and
+   AUTOTUNE's label with its AUT pill, its second line and the 1 s hold's
+   fill (components/rail.rs RuleButton), AUTOTUNE's mixed look and problem
+   corner, and REVERB's marks on a reverb fader (components/fader.rs
+   ReverbMarks). Linked after vca.css. */
 
 /* The rule's colour (the old hub toggles' blue) and its lighter line. The
    AUT pill is in the page only while the rule is on (rail.rs). */
 :root {
     --aut: #6d86ff;
     --aut-hi: #9cadff;
+    /* AUTOTUNE keeps the former AUTOTUNE toggle's orange (buttons.css
+       `.param-toggle`) and a lighter line of it. */
+    --tune: #ff9f43;
+    --tune-hi: #ffc58a;
 }
 
 .rule-btn {
@@ -20,6 +25,43 @@
 /* REVERB wears the rule's colour (lit at the song level). */
 .reverb-btn {
     --c: var(--aut);
+}
+
+/* AUTOTUNE (#104, D19): lit in the orange while every found track is on;
+   mixed (some on, some off): dark with an orange ring, the light half
+   orange and the count on the second line in the lighter orange. */
+.autotune-btn {
+    --c: var(--tune);
+}
+
+.autotune-btn[data-mixed="true"] {
+    border-color: var(--tune);
+    box-shadow: inset 0 0 0 1px var(--tune);
+}
+
+.autotune-btn[data-mixed="true"]::before {
+    background: linear-gradient(to right, var(--tune) 50%, var(--faint) 50%);
+}
+
+.autotune-btn[data-mixed="true"] .btn-sub {
+    color: var(--tune-hi);
+}
+
+/* A target without its rack (none or two named Latencies) while others
+   work: the yellow `!` in the top-left corner, as a marker strip's flag
+   (states.css `.strip-flag`); it takes no width from the words. */
+.rule-flag {
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 11px;
+    height: 11px;
+    border-radius: 3px;
+    background: var(--warn);
+    color: #0b0b12;
+    font: 800 9px/11px var(--ui);
+    text-align: center;
+    pointer-events: none;
 }
 
 .btn-row {
@@ -120,13 +162,28 @@
         border-radius: 50%;
         font-size: 0;
     }
+
+    /* The problem corner a 6 px square in the other corner (the phone's
+       button leaves the `!` no room left of its words). */
+    .rule-btn .rule-flag {
+        top: 3px;
+        left: 3px;
+        width: 6px;
+        height: 6px;
+        border-radius: 2px;
+        font-size: 0;
+    }
 }
 
 /* A low screen: page.css's size of a rail button's words again (this file
-   comes after it). */
+   comes after it), 3 px short of the text width so a long label ends left
+   of its AUT dot (#104: at 844 x 390 the column's button is 67 px, its dot
+   starts 44 px after the label's start, a pixel inside `--tw`, and
+   AUTOTUNE's glyphs ran 0.8 px into it at the full width; STAGE and REVERB
+   keep their 9.5 px). */
 @media (max-height: 520px) {
     .column .rail .rule-btn .btn-text {
-        font-size: min(9.5px, calc((var(--tw, 65px) - var(--n, 5) * 0.6px) / (var(--n, 5) * 0.65)));
+        font-size: min(9.5px, calc((var(--tw, 65px) - 3px - var(--n, 5) * 0.6px) / (var(--n, 5) * 0.65)));
     }
 }
 

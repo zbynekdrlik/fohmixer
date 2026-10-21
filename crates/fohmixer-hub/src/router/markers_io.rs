@@ -245,12 +245,14 @@ impl Router {
         }
         // Served or unchanged, the composition is settled: REVERB's
         // track-list windows close, each only where no read of its instance
-        // runs or failed since (#130 review W1, M1).
+        // runs or failed since (#130 review W1, M1), and so do AUTOTUNE's
+        // holds (#104, PR #139 review I1).
         let names: Vec<String> = self.live.keys().cloned().collect();
         for name in names {
             if self.reverb_settled(&name) {
                 self.reverb_tracks_known(&name);
             }
+            self.autotune_release(&name, "settled");
         }
     }
 }
