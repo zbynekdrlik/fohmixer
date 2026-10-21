@@ -1252,8 +1252,27 @@ async fn a_rack_replaced_at_the_same_path_is_followed_afresh_and_written_once() 
             .map(|f| f.id.as_str()),
         Some("p7b")
     );
-    // Its value is followed afresh: Live answers the new listener.
-    answer(&mut router, false, 127.0);
+    // Its value is followed afresh: exactly one new listener of the macro
+    // goes out, and Live's answer to it is the target's value. Only the
+    // pending requests are answered (no connect, which would re-resolve
+    // the errored entry by itself: PR #139 re-review N1).
+    let mut added = 0;
+    for o in router.subs.drain_outgoing() {
+        let slots: Vec<Value> = o
+            .commands
+            .iter()
+            .map(|c| {
+                if c["name"] == "add_listener" && c["args"]["prop"] == "value" {
+                    added += 1;
+                    slot("live_10.value", json!(127.0))
+                } else {
+                    ok(Value::Null)
+                }
+            })
+            .collect();
+        router.subs.on_result(&o.instance, &o.uuid, &slots);
+    }
+    assert_eq!(added, 1, "one new listener of the macro");
     router.flush();
     assert_eq!(router.autotune.targets[STREAM].value, Some(127.0));
     assert_eq!(router.autotune.state().targets[0].state, TargetState::On);
