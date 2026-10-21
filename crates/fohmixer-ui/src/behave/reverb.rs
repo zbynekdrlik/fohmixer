@@ -59,6 +59,7 @@ pub fn reverb_look(state: Option<&ReverbState>, fill: Fill) -> RailLook {
             aut: Aut::Off,
             sub: None,
             low: false,
+            mixed: false,
         };
     };
     let lowered = s.low.is_some();
@@ -77,6 +78,7 @@ pub fn reverb_look(state: Option<&ReverbState>, fill: Fill) -> RailLook {
         aut,
         sub,
         low: lowered,
+        mixed: false,
     }
 }
 
@@ -276,7 +278,8 @@ mod tests {
                 lit: true,
                 aut: Aut::Off,
                 sub: None,
-                low: false
+                low: false,
+                mixed: false,
             }
         );
         assert_eq!(
@@ -285,7 +288,8 @@ mod tests {
                 lit: false,
                 aut: Aut::Off,
                 sub: Some("ručne · −10 dB".into()),
-                low: true
+                low: true,
+                mixed: false,
             }
         );
         // AUT off: no line at the song level, whatever the transport.
@@ -297,7 +301,8 @@ mod tests {
                 lit: true,
                 aut: Aut::Run,
                 sub: Some("hrá · plný".into()),
-                low: false
+                low: false,
+                mixed: false,
             }
         );
         assert_eq!(
@@ -306,7 +311,8 @@ mod tests {
                 lit: true,
                 aut: Aut::Run,
                 sub: Some("stojí · plný".into()),
-                low: false
+                low: false,
+                mixed: false,
             }
         );
         assert_eq!(
@@ -315,7 +321,8 @@ mod tests {
                 lit: false,
                 aut: Aut::Run,
                 sub: Some("stojí · −10 dB".into()),
-                low: true
+                low: true,
+                mixed: false,
             }
         );
         // A tap overrides the rule until the next stop or start: outlined.
@@ -325,7 +332,8 @@ mod tests {
                 lit: false,
                 aut: Aut::Held,
                 sub: Some("ručne −10 · do zast.".into()),
-                low: true
+                low: true,
+                mixed: false,
             }
         );
         assert_eq!(
@@ -334,7 +342,8 @@ mod tests {
                 lit: true,
                 aut: Aut::Held,
                 sub: Some("ručne plný · do štartu".into()),
-                low: false
+                low: false,
+                mixed: false,
             }
         );
         // The transport not heard yet: the pill runs, no line.
@@ -344,7 +353,8 @@ mod tests {
                 lit: true,
                 aut: Aut::Run,
                 sub: None,
-                low: false
+                low: false,
+                mixed: false,
             }
         );
         assert_eq!(
@@ -353,7 +363,8 @@ mod tests {
                 lit: false,
                 aut: Aut::Run,
                 sub: None,
-                low: true
+                low: true,
+                mixed: false,
             }
         );
         // Before the hub's state: dark, nothing.
@@ -363,7 +374,8 @@ mod tests {
                 lit: false,
                 aut: Aut::Off,
                 sub: None,
-                low: false
+                low: false,
+                mixed: false,
             }
         );
         assert_eq!(reverb_look(None, Fill::Full).sub, None);
@@ -427,7 +439,8 @@ mod tests {
                 lit: true,
                 aut: Aut::Run,
                 sub: Some("ST PA v ruke".into()),
-                low: false
+                low: false,
+                mixed: false,
             }
         );
         // During the stop's wait or while Live plays, the rule's own line.
@@ -467,7 +480,8 @@ mod tests {
                 lit: true,
                 aut: Aut::Held,
                 sub: Some("ručne plný · do štartu".into()),
-                low: false
+                low: false,
+                mixed: false,
             }
         );
         assert_eq!(mark_of(Some(&s), PA), Mark::Hand);

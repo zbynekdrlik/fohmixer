@@ -153,6 +153,9 @@ pub struct RailLook {
     pub sub: Option<String>,
     /// The second line in the rule's colour (the reverbs lowered).
     pub low: bool,
+    /// Neither lit nor dark (#104, AUTOTUNE): some targets on, some off;
+    /// the button dark with a ring in its colour and half its light.
+    pub mixed: bool,
 }
 
 /// The second line while the press is full: what its lift will do.
@@ -206,6 +209,7 @@ pub fn stage_look(
         aut: pill,
         sub,
         low: false,
+        mixed: false,
     }
 }
 
@@ -284,7 +288,8 @@ mod tests {
                 lit: false,
                 aut: Aut::Run,
                 sub: Some("hrá · stíšené".into()),
-                low: false
+                low: false,
+                mixed: false,
             }
         );
         assert_eq!(
@@ -293,7 +298,8 @@ mod tests {
                 lit: true,
                 aut: Aut::Run,
                 sub: Some("stojí · zapnuté".into()),
-                low: false
+                low: false,
+                mixed: false,
             }
         );
         // A tap overrides the rule until the next stop or start: outlined.
@@ -303,7 +309,8 @@ mod tests {
                 lit: true,
                 aut: Aut::Held,
                 sub: Some("ručne do zastavenia".into()),
-                low: false
+                low: false,
+                mixed: false,
             }
         );
         assert_eq!(
@@ -312,7 +319,8 @@ mod tests {
                 lit: false,
                 aut: Aut::Held,
                 sub: Some("ručne do štartu".into()),
-                low: false
+                low: false,
+                mixed: false,
             }
         );
         // Unknown transport or mute: the pill runs, no line.
@@ -322,7 +330,8 @@ mod tests {
                 lit: false,
                 aut: Aut::Run,
                 sub: None,
-                low: false
+                low: false,
+                mixed: false,
             }
         );
         assert_eq!(
@@ -331,7 +340,8 @@ mod tests {
                 lit: false,
                 aut: Aut::Run,
                 sub: None,
-                low: false
+                low: false,
+                mixed: false,
             }
         );
     }
@@ -372,7 +382,8 @@ mod tests {
                 lit: true,
                 aut: Aut::Run,
                 sub: Some("hrá · stíšené".into()),
-                low: false
+                low: false,
+                mixed: false,
             }
         );
         assert_eq!(
@@ -381,7 +392,8 @@ mod tests {
                 lit: false,
                 aut: Aut::Run,
                 sub: Some("stojí · zapnuté".into()),
-                low: false
+                low: false,
+                mixed: false,
             }
         );
         // A match reads the same settled or not.

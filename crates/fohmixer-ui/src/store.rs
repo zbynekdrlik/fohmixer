@@ -16,7 +16,8 @@
 //! disabled (`Readiness`).
 //!
 //! The pure parts are unit-tested natively: here `Slot`, `Readiness`,
-//! `Wanted`, `Badge`, `HubValues` (#104), `HubReverb` (#130), `range_from` and `next_range`, in `conn` the
+//! `Wanted`, `Badge`, `HubValues` (#104), `HubTold` (#130: REVERB's;
+//! #104: AUTOTUNE's), `range_from` and `next_range`, in `conn` the
 //! connection's decisions (reconnect, hello, the watchdog and its pings, the
 //! layout and instance changes), in `intent` the controls' writes waiting
 //! for their ack (#43), in `deck` the Stream Deck's (#52: the key size, the
@@ -32,7 +33,7 @@ mod live;
 
 use std::collections::BTreeMap;
 
-use fohmixer_proto::client::ReverbState;
+use fohmixer_proto::client::{AutotuneState, ReverbState};
 use serde_json::{Value, json};
 
 use crate::binding::SubSpec;
@@ -318,23 +319,34 @@ impl HubValues {
     }
 }
 
-/// REVERB's state as the hub last told it (#130, D18, `ServerMsg::Reverb`):
-/// kept through an outage, so the button and the faders' marks stay as
-/// they were (as the hub values and Live's stale values, L2), and stale
-/// from a socket's close until the next connection's `reverb` message (the
-/// hub tells it at each attach). Only a fresh one may be acted on: a tap or
-/// a hold of the REVERB button (`behave::reverb::tap_value`,
+/// A rule's state as the hub last told it (#130, D18, `ServerMsg::Reverb`;
+/// #104, D19, `ServerMsg::Autotune`): kept through an outage, so the
+/// button (and REVERB's faders' marks) stay as they were (as the hub values
+/// and Live's stale values, L2), and stale from a socket's close until the
+/// next connection's message (the hub tells it at each attach). Only a
+/// fresh one may be acted on: a tap or a hold of its rail button
+/// (`behave::reverb::tap_value`, `behave::autotune::tap_value`,
 /// `behave::rail::hold_value`).
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct HubReverb {
-    state: Option<ReverbState>,
+#[derive(Debug, Clone, PartialEq)]
+pub struct HubTold<T> {
+    state: Option<T>,
     /// The state came on the open connection.
     fresh: bool,
 }
 
-impl HubReverb {
-    /// A `reverb` message: the state now, fresh.
-    pub fn put(&mut self, state: ReverbState) {
+/// Nothing told yet (no `T: Default`: a rule's state has no default).
+impl<T> Default for HubTold<T> {
+    fn default() -> Self {
+        Self {
+            state: None,
+            fresh: false,
+        }
+    }
+}
+
+impl<T> HubTold<T> {
+    /// The rule's message: the state now, fresh.
+    pub fn put(&mut self, state: T) {
         self.state = Some(state);
         self.fresh = true;
     }
@@ -345,15 +357,21 @@ impl HubReverb {
     }
 
     /// The state as last told (shown; stale or not).
-    pub fn shown(&self) -> Option<&ReverbState> {
+    pub fn shown(&self) -> Option<&T> {
         self.state.as_ref()
     }
 
     /// The state told on the open connection (what a press may act on).
-    pub fn fresh(&self) -> Option<&ReverbState> {
+    pub fn fresh(&self) -> Option<&T> {
         self.state.as_ref().filter(|_| self.fresh)
     }
 }
+
+/// REVERB's state as the hub last told it (#130).
+pub type HubReverb = HubTold<ReverbState>;
+
+/// AUTOTUNE's state as the hub last told it (#104).
+pub type HubAutotune = HubTold<AutotuneState>;
 
 /// A connection badge's state (spec §2.5 robustness).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
