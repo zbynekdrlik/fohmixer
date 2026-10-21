@@ -45,6 +45,12 @@ pub const HUB_REVERB_AUT: &str = "reverb_aut";
 /// reverb faders lowered (`true`) or at the song level, as the button
 /// shows `!low`, so two pages' simultaneous taps agree.
 pub const HUB_REVERB_LOW: &str = "reverb_low";
+/// The hub value of AUTOTUNE AUT (#104, D19; the hub's rule, kept in
+/// `hub-state.json`): a bool.
+pub const HUB_AUTOTUNE_AUT: &str = "autotune_aut";
+/// The hub value an AUTOTUNE tap asks for (#104): every target on (`true`)
+/// or off, as the button shows it, so two pages' taps agree.
+pub const HUB_AUTOTUNE: &str = "autotune";
 /// The hub value of a fader link's switch (#130, D18): this prefix, the
 /// leader's Live set, `|`, its id (`fader_link|band|REV`; a bool).
 pub const FADER_LINK_PREFIX: &str = "fader_link|";
@@ -107,7 +113,8 @@ pub enum ClientMsg {
     Unsub { sub: String },
     /// Set a hub value: `stage_aut`; since #130 a fader link's switch
     /// (`fader_link|<instance>|<id>`, [`fader_link_key`]) and REVERB's
-    /// `reverb_aut` and `reverb_low`.
+    /// `reverb_aut` and `reverb_low`; since #104 AUTOTUNE's `autotune_aut`
+    /// and `autotune`.
     SetHub { key: String, value: Value },
     /// A control's write (#43): the latest value the engineer set on one
     /// property, answered by an `ack` item of its key. `seq` is the page's,
@@ -498,6 +505,9 @@ pub enum ServerMsg {
     /// lowered and why, the followed transport, the stop's wait, and each
     /// fader's return level and hand; at attach and on every change.
     Reverb(ReverbState),
+    /// AUTOTUNE (#104, D19): AUTOTUNE AUT, the first target's Live set's
+    /// transport and each target's state; at attach and on every change.
+    Autotune(AutotuneState),
     /// A message of a newer hub that this page does not know (#90 B3): any
     /// other `type` reads as this, and the page ignores it, so a new
     /// message never breaks an older page.
@@ -578,6 +588,65 @@ pub struct ReverbStatus {
     pub faders: usize,
     pub writes: u64,
     pub hands: u64,
+}
+
+/// Where one AUTOTUNE target stands (#104): its rack's first macro at its
+/// on value (`on`), at any other (`off`), not found yet or no value heard
+/// yet (`waiting`), or no rack to switch (`missing`: none, two, or one
+/// without a first macro).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TargetState {
+    On,
+    Off,
+    Waiting,
+    Missing,
+}
+
+/// One AUTOTUNE target in [`AutotuneState`] (#104): its label and state.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AutotuneTargetState {
+    pub label: String,
+    pub state: TargetState,
+}
+
+/// AUTOTUNE's state, told to every page (#104, D19,
+/// [`ServerMsg::Autotune`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AutotuneState {
+    /// AUTOTUNE AUT is on.
+    pub aut: bool,
+    /// The first target's Live set's transport; none before it is heard.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub playing: Option<bool>,
+    /// The targets, in Live's order.
+    pub targets: Vec<AutotuneTargetState>,
+}
+
+/// One AUTOTUNE target in `GET /api/status` (#104): its Live set, track
+/// (LOM target) and label, its on value, its state, the path of the macro
+/// the hub found, or why it found none.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AutotuneTargetStatus {
+    pub instance: String,
+    pub track: String,
+    pub label: String,
+    pub on: u8,
+    pub state: TargetState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub problem: Option<String>,
+}
+
+/// AUTOTUNE in `GET /api/status` (#104, D19): AUTOTUNE AUT, the rule's
+/// writes, the taps, and each target.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AutotuneStatus {
+    pub aut: bool,
+    pub writes: u64,
+    pub taps: u64,
+    pub targets: Vec<AutotuneTargetStatus>,
 }
 
 /// A fader link's switch in `GET /api/status` (#130).
@@ -1012,6 +1081,9 @@ pub struct HubStatus {
     /// hub's answer.
     #[serde(default)]
     pub fader_links: Vec<FaderLinkStatus>,
+    /// AUTOTUNE (#104, D19); the defaults in an older hub's answer.
+    #[serde(default)]
+    pub autotune: AutotuneStatus,
 }
 
 #[cfg(test)]

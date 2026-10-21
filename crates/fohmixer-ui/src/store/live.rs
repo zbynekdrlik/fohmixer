@@ -579,6 +579,8 @@ impl LiveStore {
             ServerMsg::Reverb(state) => {
                 let _ = self.reverb.try_update(|reverb| reverb.put(state));
             }
+            // AUTOTUNE (#104): read once its button is drawn.
+            ServerMsg::Autotune(_) => {}
             ServerMsg::Layout { rev } => self.on_layout(rev),
             ServerMsg::Result { id, data } => self.finish(&id, Ok(data)),
             ServerMsg::Error {

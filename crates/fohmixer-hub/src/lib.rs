@@ -52,7 +52,7 @@ use anyhow::Context as _;
 use axum::Router;
 use axum::extract::FromRef;
 use axum::http::{HeaderName, HeaderValue};
-use fohmixer_proto::client::{HubStatus, InstanceStatus, LayoutStatus};
+use fohmixer_proto::client::{AutotuneStatus, HubStatus, InstanceStatus, LayoutStatus};
 use hyper_util::rt::{TokioExecutor, TokioTimer};
 use hyper_util::server::conn::auto;
 use tokio::sync::{mpsc, oneshot};
@@ -389,6 +389,7 @@ impl HubInner {
             stage_aut: router.stage_aut,
             reverb: router.reverb,
             fader_links: router.fader_links,
+            autotune: AutotuneStatus::default(),
             clients: router.clients,
             client_reports: self.reports.list(),
             remote: self.remote.snapshot(&self.config, https, now),

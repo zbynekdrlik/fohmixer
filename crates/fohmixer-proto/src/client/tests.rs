@@ -655,8 +655,41 @@ fn api_bodies_round_trip() {
         }),
         reverb: ReverbStatus::default(),
         fader_links: Vec::new(),
+        autotune: AutotuneStatus {
+            aut: true,
+            writes: 3,
+            taps: 1,
+            targets: vec![
+                AutotuneTargetStatus {
+                    instance: "band".into(),
+                    track: "live_set tracks 6".into(),
+                    label: "Vox 2".into(),
+                    on: 0,
+                    state: TargetState::On,
+                    path: Some("live_set tracks 6 devices 0 parameters 1".into()),
+                    problem: None,
+                },
+                AutotuneTargetStatus {
+                    instance: "band".into(),
+                    track: "live_set tracks 8".into(),
+                    label: "#9".into(),
+                    on: 127,
+                    state: TargetState::Missing,
+                    path: None,
+                    problem: Some("no rack named Latencies".into()),
+                },
+            ],
+        },
     };
     let json = serde_json::to_value(&status).unwrap();
+    assert_eq!(
+        json["autotune"],
+        json!({"aut": true, "writes": 3, "taps": 1, "targets": [
+            {"instance": "band", "track": "live_set tracks 6", "label": "Vox 2", "on": 0,
+             "state": "on", "path": "live_set tracks 6 devices 0 parameters 1"},
+            {"instance": "band", "track": "live_set tracks 8", "label": "#9", "on": 127,
+             "state": "missing", "problem": "no rack named Latencies"}]})
+    );
     assert_eq!(json["remote"]["https"]["days_left"], 60);
     assert_eq!(json["remote"]["tunnel"]["ready_connections"], 4);
     assert_eq!(json["remote"]["access"], json!(true));
@@ -709,6 +742,21 @@ fn api_bodies_round_trip() {
     let before_reverb = serde_json::from_value::<HubStatus>(before_reverb).unwrap();
     assert_eq!(before_reverb.reverb, ReverbStatus::default());
     assert!(before_reverb.fader_links.is_empty());
+    // A hub before AUTOTUNE (#104) names none: its defaults.
+    let mut before_autotune = json.clone();
+    before_autotune.as_object_mut().unwrap().remove("autotune");
+    let before_autotune = serde_json::from_value::<HubStatus>(before_autotune).unwrap();
+    assert_eq!(before_autotune.autotune, AutotuneStatus::default());
+    assert_eq!(
+        serde_json::to_value(AutotuneStatus::default()).unwrap(),
+        json!({"aut": false, "writes": 0, "taps": 0, "targets": []})
+    );
+    assert_eq!(
+        serde_json::from_value::<HubStatus>(json.clone())
+            .unwrap()
+            .autotune,
+        status.autotune
+    );
     assert_eq!(json["ableset"]["cert"]["days_left"], 89);
     assert_eq!(json["ableset"]["sockets"], 2);
     // A hub before the WebSocket tunnel (#90 B2) names none.
@@ -1222,5 +1270,47 @@ fn a_fader_links_hub_key_names_its_set_and_id_and_reads_back() {
     assert_eq!(
         serde_json::to_value(&status).unwrap(),
         json!({"instance": "band", "id": "REV", "on": true})
+    );
+}
+
+#[test]
+fn an_autotune_message_round_trips_and_an_older_page_reads_it_as_unknown() {
+    let state = AutotuneState {
+        aut: true,
+        playing: Some(false),
+        targets: vec![
+            AutotuneTargetState {
+                label: "Vox 2".into(),
+                state: TargetState::On,
+            },
+            AutotuneTargetState {
+                label: "#8".into(),
+                state: TargetState::Missing,
+            },
+        ],
+    };
+    let wire = json!({"type": "autotune", "aut": true, "playing": false, "targets": [
+        {"label": "Vox 2", "state": "on"}, {"label": "#8", "state": "missing"}]});
+    round_trip_server(ServerMsg::Autotune(state), wire);
+    // Before the transport is heard: no `playing` key.
+    let unheard = AutotuneState {
+        aut: false,
+        playing: None,
+        targets: vec![AutotuneTargetState {
+            label: "#8".into(),
+            state: TargetState::Waiting,
+        }],
+    };
+    round_trip_server(
+        ServerMsg::Autotune(unheard),
+        json!({"type": "autotune", "aut": false, "targets": [{"label": "#8", "state": "waiting"}]}),
+    );
+    assert_eq!(
+        serde_json::to_value(TargetState::Off).unwrap(),
+        json!("off")
+    );
+    assert_eq!(
+        (HUB_AUTOTUNE_AUT, HUB_AUTOTUNE),
+        ("autotune_aut", "autotune")
     );
 }
