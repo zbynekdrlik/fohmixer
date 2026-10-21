@@ -1,5 +1,6 @@
 //! STAGE AUT (spec §2.4, F15, X9): a rule the hub runs on Live's values
-//! (REVERB's, #130, is `rules/reverb.rs`). While the flag is on, the
+//! (REVERB's, #130, is `rules/reverb.rs`; AUTOTUNE's, #104, is
+//! `rules/autotune.rs`). While the flag is on, the
 //! stage-mic track follows the transport: playing → muted, stopped → live.
 //! The flag is a hub value shared by every client and kept in
 //! `<data>/hub-state.json`, so the rule keeps working while every iPad
@@ -15,6 +16,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+#[path = "rules/autotune.rs"]
+pub mod autotune;
 #[path = "rules/links.rs"]
 pub mod links;
 #[path = "rules/reverb.rs"]
@@ -103,6 +106,9 @@ pub struct HubState {
     /// The fader links' switches a page set (#130, D18).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fader_links: Vec<links::SavedLink>,
+    /// AUTOTUNE AUT (#104, D19); written only while on.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub autotune_aut: bool,
 }
 
 impl HubState {
@@ -110,7 +116,8 @@ impl HubState {
     /// parse is logged and read as the defaults (the rules off) — never a
     /// reason to leave the mixer down — and is not overwritten until a hub
     /// value changes (STAGE AUT, a fader link's switch, REVERB AUT or what
-    /// REVERB holds lowered; a layout alone saves nothing; #130).
+    /// REVERB holds lowered, AUTOTUNE AUT; a layout alone saves nothing;
+    /// #130, #104).
     pub fn load(data_dir: &Path) -> Self {
         let path = data_dir.join(HUB_STATE_FILE);
         match std::fs::read_to_string(&path) {
@@ -253,6 +260,7 @@ mod tests {
                 id: "REV".into(),
                 on: false,
             }],
+            autotune_aut: true,
         };
         state.save(dir.path()).unwrap();
         assert_eq!(HubState::load(dir.path()), state);
@@ -261,10 +269,12 @@ mod tests {
         std::fs::write(state_path(dir.path()), r#"{"stage_aut": true}"#).unwrap();
         assert_eq!(HubState::load(dir.path()).reverb, reverb::Saved::default());
         assert_eq!(HubState::load(dir.path()).fader_links, vec![]);
+        assert!(!HubState::load(dir.path()).autotune_aut, "AUTOTUNE AUT off");
         HubState {
             stage_aut: false,
             reverb: reverb::Saved::default(),
             fader_links: Vec::new(),
+            autotune_aut: false,
         }
         .save(dir.path())
         .unwrap();
@@ -275,10 +285,28 @@ mod tests {
                 .unwrap(),
             serde_json::json!({"stage_aut": false})
         );
+        // AUTOTUNE AUT on is written beside STAGE AUT (#104).
+        HubState {
+            stage_aut: false,
+            reverb: reverb::Saved::default(),
+            fader_links: Vec::new(),
+            autotune_aut: true,
+        }
+        .save(dir.path())
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(state_path(dir.path()))
+                .unwrap()
+                .parse::<serde_json::Value>()
+                .unwrap(),
+            serde_json::json!({"stage_aut": false, "autotune_aut": true})
+        );
+        assert!(HubState::load(dir.path()).autotune_aut);
         HubState {
             stage_aut: true,
             reverb: reverb::Saved::default(),
             fader_links: Vec::new(),
+            autotune_aut: false,
         }
         .save(dir.path())
         .unwrap();
@@ -299,6 +327,7 @@ mod tests {
                 stage_aut: true,
                 reverb: reverb::Saved::default(),
                 fader_links: Vec::new(),
+                autotune_aut: false,
             }
             .save(dir.path())
             .is_err()
