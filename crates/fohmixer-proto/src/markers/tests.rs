@@ -784,6 +784,128 @@ fn only_a_tuner_of_nothing_but_mutes_is_spared_its_label_and_group() {
 }
 
 #[test]
+fn autotune_tags_name_where_autotune_is_on() {
+    // #104: `+AUTOTUNE` on 127 (the stream racks), `+AUTOTUNE:0` on 0 (repro).
+    let m = parse(r#""Vox 1" +G:STAGE +AUTOTUNE"#);
+    assert_eq!(m.autotune, Some(AutotuneOn::Max));
+    assert_eq!(m.label.as_deref(), Some("Vox 1"));
+    assert_eq!(m.groups, vec![group_tag("STAGE", None)]);
+    assert_eq!(m.problems, vec![]);
+    let m = parse(r#""Vox 1" +G:STAGE +AUTOTUNE:0"#);
+    assert_eq!(m.autotune, Some(AutotuneOn::Zero));
+    assert_eq!(m.problems, vec![]);
+    assert_eq!(parse(r#""Vox 1" +G:STAGE"#).autotune, None);
+    for tag in ["+AUTOTUNE:5", "+AUTOTUNE:", "+AUTOTUNE:00", "+AUTOTUNE:127"] {
+        let m = parse(&format!(r#""Vox 1" +G:STAGE {tag}"#));
+        assert_eq!(m.autotune, None, "{tag}");
+        assert_eq!(
+            m.problems,
+            vec![TagProblem::BadAutotune { tag: tag.into() }],
+            "{tag}"
+        );
+    }
+    // A second one is a problem, and the first counts.
+    let m = parse(r#""Vox 1" +G:STAGE +AUTOTUNE +AUTOTUNE:0"#);
+    assert_eq!(m.autotune, Some(AutotuneOn::Max));
+    assert_eq!(
+        m.problems,
+        vec![TagProblem::SecondAutotune {
+            tag: "+AUTOTUNE:0".into()
+        }]
+    );
+    let m = parse(r#""Vox 1" +G:STAGE +AUTOTUNE:0 +AUTOTUNE"#);
+    assert_eq!(m.autotune, Some(AutotuneOn::Zero));
+    assert_eq!(
+        m.problems,
+        vec![TagProblem::SecondAutotune {
+            tag: "+AUTOTUNE".into()
+        }]
+    );
+    // A bad one after a good one is bad, not second.
+    let m = parse(r#""Vox 1" +G:STAGE +AUTOTUNE +AUTOTUNE:x"#);
+    assert_eq!(m.autotune, Some(AutotuneOn::Max));
+    assert_eq!(
+        m.problems,
+        vec![TagProblem::BadAutotune {
+            tag: "+AUTOTUNE:x".into()
+        }]
+    );
+    // Lowercase is no tag of ours.
+    assert_eq!(
+        parse(r#""Vox 1" +G:STAGE +autotune"#).problems,
+        vec![TagProblem::UnknownTag {
+            tag: "+autotune".into()
+        }]
+    );
+    assert_eq!(AutotuneOn::Max.on(), 127);
+    assert_eq!(AutotuneOn::Max.off(), 0);
+    assert_eq!(AutotuneOn::Zero.on(), 0);
+    assert_eq!(AutotuneOn::Zero.off(), 127);
+}
+
+#[test]
+fn a_tuner_of_links_and_autotune_makes_no_strip() {
+    let problems = |name: &str| parse(name).problems;
+    let none = Vec::<TagProblem>::new();
+    // A stream track's Tuner: `+MUTE:<id> +AUTOTUNE`, or the tag alone.
+    assert_eq!(problems("+MUTE:A +AUTOTUNE"), none);
+    assert_eq!(problems("+AUTOTUNE"), none);
+    assert_eq!(problems("+AUTOTUNE:0"), none);
+    assert_eq!(problems("+FADER:B +AUTOTUNE"), none);
+    assert_eq!(parse("+AUTOTUNE").autotune, Some(AutotuneOn::Max));
+    // Any strip tag beside it wants a strip: its label and group count.
+    for name in [
+        "+AUTOTUNE +PIN",
+        "+AUTOTUNE +MG",
+        "+AUTOTUNE +REVERB",
+        "+AUTOTUNE:0 +ID:X",
+    ] {
+        assert_eq!(
+            problems(name),
+            vec![TagProblem::NoLabel, TagProblem::NoGroup],
+            "{name}"
+        );
+    }
+    // A bad autotune tag alone is no autotune: no strip's tag, no link.
+    assert_eq!(
+        problems("+AUTOTUNE:5"),
+        vec![
+            TagProblem::NoLabel,
+            TagProblem::BadAutotune {
+                tag: "+AUTOTUNE:5".into()
+            },
+            TagProblem::NoGroup
+        ]
+    );
+    // Stray text beside it is still shown.
+    assert_eq!(
+        problems("Vox +AUTOTUNE"),
+        vec![TagProblem::StrayText { text: "Vox".into() }]
+    );
+    // A label with it: a strip that shows nowhere without a group.
+    assert_eq!(problems(r#""Vox" +AUTOTUNE"#), vec![TagProblem::NoGroup]);
+}
+
+#[test]
+fn the_autotune_problems_serialize_with_their_codes() {
+    let problems = vec![
+        TagProblem::BadAutotune {
+            tag: "+AUTOTUNE:5".into(),
+        },
+        TagProblem::SecondAutotune {
+            tag: "+AUTOTUNE:0".into(),
+        },
+    ];
+    assert_eq!(
+        serde_json::to_value(&problems).unwrap(),
+        json!([
+            {"code": "bad_autotune", "tag": "+AUTOTUNE:5"},
+            {"code": "second_autotune", "tag": "+AUTOTUNE:0"},
+        ])
+    );
+}
+
+#[test]
 fn a_bad_second_or_repeated_id_is_a_problem() {
     let ok = "A".repeat(MAX_GROUP_NAME);
     let long = "A".repeat(MAX_GROUP_NAME + 1);
