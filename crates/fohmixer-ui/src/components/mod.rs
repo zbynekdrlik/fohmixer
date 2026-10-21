@@ -309,6 +309,9 @@ pub fn ControlView(
             let label = label.unwrap_or_else(|| "REVERB".to_string());
             view! { <RuleButton kind=RuleKind::Reverb label=label /> }.into_any()
         }
+        // The AUTOTUNE rail button (#104, D19): drawn once the owner approved
+        // its mockup.
+        Control::Autotune { .. } => ().into_any(),
     }
 }
 

@@ -365,6 +365,7 @@ fn shown(layout: &Layout, path: &[usize]) -> Vec<String> {
             Control::ParamFader { .. } => "fader".into(),
             Control::Alert { .. } => "alert".into(),
             Control::Reverb { .. } => "reverb".into(),
+            Control::Autotune { .. } => "autotune".into(),
         })
         .collect()
 }

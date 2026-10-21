@@ -1794,3 +1794,153 @@ fn a_strip_may_lead_and_follow_and_a_tuner_may_follow_two_leaders() {
     };
     assert_eq!(composed.links, vec![report("A", 3), report("B", 2)]);
 }
+
+/// The frame with an autotune control (#104) on the FOH rail, in a pager's
+/// sub-page, in a row's group and among the global controls.
+fn autotune_frame() -> Layout {
+    let autotune = json!({"kind": "autotune", "label": "AUTOTUNE"});
+    serde_json::from_value(json!({
+        "schema": 2,
+        "default_page": "foh",
+        "pages": [{"id": "foh", "title": "FOH", "rail": [autotune.clone()], "rows": [
+            {"sections": [
+                {"kind": "group", "id": "vocals", "title": "VOCALS", "tags": "VOCALS"},
+                {"kind": "group", "id": "fx", "controls": [autotune.clone()]}]},
+            {"sections": [{"kind": "pager", "id": "pager", "default_page": "one", "pages": [
+                {"id": "one", "title": "ONE", "sections": [
+                    {"kind": "group", "id": "deep", "controls": [autotune.clone()]}]}]}]}]}],
+        "global": [autotune]
+    }))
+    .expect("the frame parses")
+}
+
+/// The autotune targets of every autotune control of `layout`, in
+/// document order.
+fn autotune_controls(layout: &Layout) -> Vec<Vec<AutotuneTarget>> {
+    layout
+        .controls()
+        .into_iter()
+        .filter_map(|c| match c {
+            Control::Autotune { targets, .. } => Some(targets.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn autotune_at(anchor: Anchor, label: &str, on: u8, off: u8) -> AutotuneTarget {
+    AutotuneTarget {
+        binding: at("band", anchor),
+        label: label.into(),
+        on,
+        off,
+    }
+}
+
+#[test]
+fn compose_fills_every_autotune_control_with_the_tagged_tracks_in_lives_order() {
+    let tagged = [
+        found("band", TrackKind::Track, 9, "+MUTE:V1 +AUTOTUNE"),
+        found("band", TrackKind::Return, 0, "+AUTOTUNE"),
+        found(
+            "band",
+            TrackKind::Track,
+            3,
+            r#""Vox 1" +G:VOCALS +ID:V1 +AUTOTUNE:0"#,
+        ),
+        found("band", TrackKind::Track, 5, r#""Hand" +G:TALKSHOW"#),
+    ];
+    let composed = compose(&autotune_frame(), &tagged);
+    let want = vec![
+        autotune_at(Anchor::TrackAt { index: 3 }, "Vox 1", 0, 127),
+        autotune_at(Anchor::TrackAt { index: 9 }, "#10", 127, 0),
+        autotune_at(Anchor::ReturnAt { index: 0 }, "#1", 127, 0),
+    ];
+    let pages: Vec<&str> = composed
+        .layout
+        .pages
+        .iter()
+        .map(|p| p.id.as_str())
+        .collect();
+    assert_eq!(pages, ["foh", "view-TALKSHOW"]);
+    // The FOH rail, its row's group, the pager's group, the view's copied
+    // rail and the global control.
+    assert_eq!(autotune_controls(&composed.layout), vec![want.clone(); 5]);
+    assert_eq!(composed.layout.autotune_targets(), want);
+    assert_eq!(composed.layout.validate(), vec![]);
+    assert_eq!(composed.problems, vec![]);
+    // The strips are as without the tags: track 3's, linked to track 9;
+    // none for track 9.
+    let untagged = compose(
+        &autotune_frame(),
+        &[
+            found("band", TrackKind::Track, 9, "+MUTE:V1"),
+            found("band", TrackKind::Track, 3, r#""Vox 1" +G:VOCALS +ID:V1"#),
+            found("band", TrackKind::Track, 5, r#""Hand" +G:TALKSHOW"#),
+        ],
+    );
+    assert_eq!(
+        group(&composed.layout, "vocals"),
+        group(&untagged.layout, "vocals")
+    );
+    assert_eq!(
+        labels(&group(&composed.layout, "vocals").controls),
+        ["Vox 1"]
+    );
+    assert_eq!(
+        strip_in(&composed.layout, "vocals", "Vox 1").mute_links,
+        vec![at("band", Anchor::TrackAt { index: 9 })]
+    );
+}
+
+#[test]
+fn a_frame_autotune_control_names_no_tracks() {
+    let target = json!({"binding": {"instance": "band", "anchor": {"kind": "track_at", "index": 1}},
+                        "label": "#2", "on": 127, "off": 0});
+    let frame: Layout = serde_json::from_value(json!({"schema": 2, "default_page": "p",
+        "pages": [{"id": "p", "title": "P",
+                   "rail": [{"kind": "autotune", "targets": [target.clone()]}]},
+                  {"id": "q", "title": "Q", "rail": [{"kind": "autotune"}]}],
+        "global": [{"kind": "autotune"}, {"kind": "autotune", "targets": [target]}]}))
+    .unwrap();
+    let problems: Vec<(String, String)> = frame_problems(&frame)
+        .into_iter()
+        .map(|e| (e.at, e.message))
+        .collect();
+    let message = "the autotune tracks: the Tuner markers make those".to_string();
+    assert_eq!(
+        problems,
+        vec![
+            ("pages[0]".to_string(), message.clone()),
+            ("global[1]".to_string(), message)
+        ]
+    );
+    assert_eq!(frame_problems(&autotune_frame()), vec![]);
+}
+
+#[test]
+fn autotune_tags_without_a_control_fill_nothing() {
+    let tagged = [
+        found("band", TrackKind::Track, 9, "+MUTE:V1 +AUTOTUNE"),
+        found(
+            "band",
+            TrackKind::Track,
+            3,
+            r#""Vox 1" +G:VOCALS +ID:V1 +AUTOTUNE:0"#,
+        ),
+    ];
+    let composed = compose(&frame(), &tagged);
+    assert_eq!(composed.problems, vec![]);
+    assert!(composed.layout.autotune_targets().is_empty());
+    assert!(autotune_controls(&composed.layout).is_empty());
+    let untagged = compose(
+        &frame(),
+        &[
+            found("band", TrackKind::Track, 9, "+MUTE:V1"),
+            found("band", TrackKind::Track, 3, r#""Vox 1" +G:VOCALS +ID:V1"#),
+        ],
+    );
+    assert_eq!(composed.layout, untagged.layout);
+    // An autotune control and no tag: no targets.
+    let composed = compose(&autotune_frame(), &[]);
+    assert_eq!(autotune_controls(&composed.layout), vec![Vec::new(); 4]);
+}

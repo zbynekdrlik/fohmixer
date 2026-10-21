@@ -25,8 +25,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::layout::{
-    Anchor, Binding, Control, FaderFollow, FaderLink, Group, Layout, LayoutError, LinkId,
-    LinkPartner, Page, ParamTarget, Row, Scale, Section, Strip, StripKind, StripMark,
+    Anchor, AutotuneTarget, Binding, Control, FaderFollow, FaderLink, Group, Layout, LayoutError,
+    LinkId, LinkPartner, Page, ParamTarget, Row, Scale, Section, Strip, StripKind, StripMark,
 };
 
 /// The `class_name` of Live's Tuner (only a Tuner can be a marker).
@@ -348,7 +348,8 @@ fn link_tag(
 /// a strip with `mute_links` (#127 review M4: a linked mute is the Tuner
 /// markers' `+ID` and `+MUTE`, never the frame's) or with `reverb` (#130:
 /// the markers' `+REVERB`), a strip with a fader link or a follow, a
-/// linked fader with its own targets, or one link on two faders (#130).
+/// linked fader with its own targets, or one link on two faders (#130), or
+/// an autotune control naming tracks (#104: the markers' `+AUTOTUNE`).
 pub fn frame_problems(frame: &Layout) -> Vec<LayoutError> {
     let mut out = Vec::new();
     let mut id = |at: &str, id: &str| {
@@ -434,6 +435,12 @@ pub fn frame_problems(frame: &Layout) -> Vec<LayoutError> {
         &mut out,
         |c| matches!(c, Control::ParamFader { link: Some(_), targets, .. } if !targets.is_empty()),
         "a linked fader's tracks: the Tuner markers make those",
+    );
+    refuse(
+        frame,
+        &mut out,
+        |c| matches!(c, Control::Autotune { targets, .. } if !targets.is_empty()),
+        "the autotune tracks: the Tuner markers make those",
     );
     // One link on two faders: named at the second, with its label (#130
     // review M4).
@@ -854,7 +861,7 @@ fn volume_target(partner: &LinkPartner) -> ParamTarget {
 /// Fills every linked fader of the served layout with its partners'
 /// volumes (one whose link nothing names gets none).
 fn fill_links(layout: &mut Layout, frame: &[(LinkId, String)], partners: &[Vec<LinkPartner>]) {
-    let mut fill = |control: &mut Control| {
+    each_control_mut(layout, &mut |control: &mut Control| {
         if let Control::ParamFader {
             link: Some(link),
             targets,
@@ -864,18 +871,49 @@ fn fill_links(layout: &mut Layout, frame: &[(LinkId, String)], partners: &[Vec<L
         {
             *targets = partners[i].iter().map(volume_target).collect();
         }
-    };
+    });
+}
+
+/// The `+AUTOTUNE` tracks (#104), placed or not, in Live's order (the
+/// entries are in it): each track by index, its label, its macro's values.
+fn autotune_targets(entries: &[Entry<'_>]) -> Vec<AutotuneTarget> {
+    entries
+        .iter()
+        .filter_map(|entry| {
+            entry.marker.autotune.map(|on| AutotuneTarget {
+                binding: entry.track(),
+                label: entry.label(),
+                on: on.on(),
+                off: on.off(),
+            })
+        })
+        .collect()
+}
+
+/// Fills every autotune control of the served layout with the `+AUTOTUNE`
+/// tracks (#104; a view's copied rail too, so it runs after the views).
+fn fill_autotune(layout: &mut Layout, tracks: &[AutotuneTarget]) {
+    each_control_mut(layout, &mut |control: &mut Control| {
+        if let Control::Autotune { targets, .. } = control {
+            *targets = tracks.to_vec();
+        }
+    });
+}
+
+/// Every control of the layout, mutable: each page's rail and rows (a
+/// pager's sub-pages too), then the global controls.
+fn each_control_mut(layout: &mut Layout, f: &mut impl FnMut(&mut Control)) {
     for page in &mut layout.pages {
-        page.rail.iter_mut().for_each(&mut fill);
+        page.rail.iter_mut().for_each(&mut *f);
         for row in &mut page.rows {
             for section in &mut row.sections {
                 each_group_mut(section, &mut |g: &mut Group| {
-                    g.controls.iter_mut().for_each(&mut fill)
+                    g.controls.iter_mut().for_each(&mut *f)
                 });
             }
         }
     }
-    layout.global.iter_mut().for_each(&mut fill);
+    layout.global.iter_mut().for_each(&mut *f);
 }
 
 /// Every group of `section`, mutable (a pager's sub-pages' too).
@@ -1064,6 +1102,7 @@ pub fn compose(frame: &Layout, found: &[Found]) -> Composed {
             .push(view_page(name, &groups, &entries, &strips, &rail));
     }
     fill_links(&mut layout, &frame_links, &frame_partners);
+    fill_autotune(&mut layout, &autotune_targets(&entries));
     let mut links: Vec<LinkReport> = entries
         .iter()
         .filter_map(|e| {

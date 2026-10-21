@@ -324,6 +324,8 @@ pub fn control_subs(control: &Control, source: MeterSource) -> Vec<SubSpec> {
         }
         // REVERB (#130): its state is the hub's `reverb` message, no sub.
         Control::Reverb { .. } => Vec::new(),
+        // AUTOTUNE (#104): its state is the hub's `autotune` message, no sub.
+        Control::Autotune { .. } => Vec::new(),
     }
 }
 

@@ -600,6 +600,7 @@ fn a_page_lists_its_controls_rail_first() {
             Control::ParamFader { .. } => "param_fader",
             Control::Alert { .. } => "alert",
             Control::Reverb { .. } => "reverb",
+            Control::Autotune { .. } => "autotune",
         })
         .collect();
     assert_eq!(
@@ -1079,5 +1080,160 @@ fn the_fader_leaders_are_the_placed_strips_with_a_link_each_once() {
             .map(|e| e.message)
             .collect::<Vec<_>>(),
         ["\"rev\" is not an id", "binding without an instance"]
+    );
+}
+
+/// An autotune target of track `index` (#104), `on`/`off` its macro's values.
+fn autotune_target(index: u32, on: u8, off: u8) -> Value {
+    json!({"binding": {"instance": "band", "anchor": {"kind": "track_at", "index": index}},
+           "label": format!("#{}", index + 1), "on": on, "off": off})
+}
+
+/// A page whose rail holds one autotune control with `targets`.
+fn autotune_rail(targets: Vec<Value>) -> Value {
+    json!({"schema": 2, "default_page": "p", "pages": [{"id": "p", "title": "P",
+        "rail": [{"kind": "autotune", "label": "AUTOTUNE", "targets": targets}]}]})
+}
+
+#[test]
+fn an_autotune_control_parses_and_binds_its_tracks() {
+    let control: Control =
+        serde_json::from_value(json!({"kind": "autotune", "label": "AUTOTUNE"})).unwrap();
+    assert_eq!(
+        control,
+        Control::Autotune {
+            label: Some("AUTOTUNE".into()),
+            targets: Vec::new(),
+        }
+    );
+    assert!(control.bindings().is_empty());
+    assert_eq!(
+        serde_json::to_value(&control).unwrap(),
+        json!({"kind": "autotune", "label": "AUTOTUNE"}),
+        "no targets key while it has none"
+    );
+    assert_eq!(
+        serde_json::to_value(Control::Autotune {
+            label: None,
+            targets: Vec::new(),
+        })
+        .unwrap(),
+        json!({"kind": "autotune"})
+    );
+    let filled = json!({"kind": "autotune", "targets": [autotune_target(9, 127, 0), autotune_target(3, 0, 127)]});
+    let control: Control = serde_json::from_value(filled.clone()).unwrap();
+    assert_eq!(serde_json::to_value(&control).unwrap(), filled);
+    let targets: Vec<String> = control
+        .bindings()
+        .iter()
+        .map(|b| b.target().unwrap())
+        .collect();
+    assert_eq!(targets, ["live_set tracks 9", "live_set tracks 3"]);
+    let layout = parse(autotune_rail(vec![
+        autotune_target(9, 127, 0),
+        autotune_target(3, 0, 127),
+    ]));
+    assert_eq!(layout.validate(), vec![]);
+    assert_eq!(layout.bindings().len(), 2);
+}
+
+#[test]
+fn an_unknown_field_on_an_autotune_control_does_not_parse() {
+    let error = serde_json::from_value::<Control>(
+        json!({"kind": "autotune", "label": "AUTOTUNE", "press": "toggle"}),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("unknown field"), "{error}");
+    let mut target = autotune_target(1, 127, 0);
+    target["scale"] = json!("cc_linear");
+    let error = serde_json::from_value::<Control>(json!({"kind": "autotune", "targets": [target]}))
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("unknown field"), "{error}");
+}
+
+#[test]
+fn an_autotune_target_needs_apart_values_up_to_127() {
+    let errors = |targets: Vec<Value>| {
+        parse(autotune_rail(targets))
+            .validate()
+            .into_iter()
+            .map(|e| (e.at, e.message))
+            .collect::<Vec<_>>()
+    };
+    let at = "pages[0].rail[0].targets[0]";
+    assert_eq!(errors(vec![autotune_target(1, 127, 0)]), vec![]);
+    assert_eq!(errors(vec![autotune_target(1, 0, 127)]), vec![]);
+    assert_eq!(
+        errors(vec![autotune_target(1, 127, 127)]),
+        vec![(
+            at.to_string(),
+            "an autotune target's on and off are equal".to_string()
+        )]
+    );
+    assert_eq!(
+        errors(vec![autotune_target(1, 0, 0)]),
+        vec![(
+            at.to_string(),
+            "an autotune target's on and off are equal".to_string()
+        )]
+    );
+    assert_eq!(
+        errors(vec![autotune_target(1, 200, 0)]),
+        vec![(
+            at.to_string(),
+            "an autotune target's on 200 or off 0 is past 127".to_string()
+        )]
+    );
+    assert_eq!(
+        errors(vec![autotune_target(1, 0, 128)]),
+        vec![(
+            at.to_string(),
+            "an autotune target's on 0 or off 128 is past 127".to_string()
+        )]
+    );
+    let mut nameless = autotune_target(1, 127, 0);
+    nameless["binding"]["instance"] = json!("");
+    assert_eq!(
+        errors(vec![autotune_target(2, 127, 0), nameless]),
+        vec![(
+            "pages[0].rail[0].targets[1].binding".to_string(),
+            "binding without an instance".to_string()
+        )]
+    );
+    assert_eq!(MACRO_MAX, 127);
+}
+
+#[test]
+fn the_autotune_targets_are_the_first_autotune_controls() {
+    let layout = parse(json!({"schema": 2, "default_page": "a", "pages": [
+        {"id": "a", "title": "A", "rail": [
+            {"kind": "reverb"},
+            {"kind": "autotune", "targets": [autotune_target(4, 127, 0), autotune_target(2, 0, 127)]}]},
+        {"id": "b", "title": "B", "rail": [
+            {"kind": "autotune", "targets": [autotune_target(7, 127, 0)]}]}]}));
+    let targets = layout.autotune_targets();
+    let got: Vec<(String, u8, u8)> = targets
+        .iter()
+        .map(|t| (t.binding.target().unwrap(), t.on, t.off))
+        .collect();
+    assert_eq!(
+        got,
+        vec![
+            ("live_set tracks 4".to_string(), 127, 0),
+            ("live_set tracks 2".to_string(), 0, 127),
+        ]
+    );
+    assert_eq!(targets[0].label, "#5");
+    let global = parse(
+        json!({"schema": 2, "default_page": "a", "pages": [{"id": "a", "title": "A"}],
+        "global": [{"kind": "autotune", "targets": [autotune_target(8, 127, 0)]}]}),
+    );
+    assert_eq!(global.autotune_targets().len(), 1);
+    assert!(
+        parse(json!({"schema": 2, "default_page": "a", "pages": [{"id": "a", "title": "A"}]}))
+            .autotune_targets()
+            .is_empty()
     );
 }

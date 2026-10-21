@@ -195,6 +195,31 @@ pub enum Control {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         label: Option<String>,
     },
+    /// The AUTOTUNE rail button (#104, D19): a tap switches every tagged
+    /// singer track's autotune, a 1 s hold, acting at its lift, turns
+    /// AUTOTUNE AUT. `targets` are the markers' `+AUTOTUNE` tracks (a frame
+    /// names none: `compose` fills them).
+    Autotune {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        targets: Vec<AutotuneTarget>,
+    },
+}
+
+/// The largest value of a rack's macro (#104: the `Latencies` rack's first
+/// macro, 0 to 127).
+pub const MACRO_MAX: u8 = 127;
+
+/// One `+AUTOTUNE` track (#104): its track by index, its label (its
+/// marker's, or `#<index + 1>`), the values of its rack's first macro.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AutotuneTarget {
+    pub binding: Binding,
+    pub label: String,
+    pub on: u8,
+    pub off: u8,
 }
 
 /// A strip: its binding, its kind, and how it is drawn and guarded.
@@ -345,7 +370,8 @@ impl Control {
     }
 
     /// The bindings this control reads or writes (a strip's linked mutes
-    /// after its own, #127, then its fader link's partners, #130).
+    /// after its own, #127, then its fader link's partners, #130; AUTOTUNE's
+    /// tracks, #104).
     pub fn bindings(&self) -> Vec<&Binding> {
         match self {
             Control::Strip(strip) => std::iter::once(&strip.binding)
@@ -364,6 +390,7 @@ impl Control {
                 targets.iter().map(|t| &t.binding).collect()
             }
             Control::Reverb { .. } => vec![],
+            Control::Autotune { targets, .. } => targets.iter().map(|t| &t.binding).collect(),
         }
     }
 }
@@ -686,6 +713,18 @@ impl Layout {
             .collect()
     }
 
+    /// The AUTOTUNE rule's tracks (#104): the first `autotune` control's
+    /// targets, in document order (`compose` fills every one alike).
+    pub fn autotune_targets(&self) -> Vec<AutotuneTarget> {
+        self.controls()
+            .into_iter()
+            .find_map(|c| match c {
+                Control::Autotune { targets, .. } => Some(targets.clone()),
+                _ => None,
+            })
+            .unwrap_or_default()
+    }
+
     /// The leaders whose switch the hub keeps (#130): every placed strip
     /// with a fader link, each once (a strip shows in several views).
     pub fn fader_leaders(&self) -> Vec<LinkId> {
@@ -877,6 +916,26 @@ impl Validator {
                 }
             }
             Control::Reverb { .. } => {}
+            Control::Autotune { targets, .. } => {
+                for (i, t) in targets.iter().enumerate() {
+                    let t_at = format!("{at}.targets[{i}]");
+                    self.binding(&format!("{t_at}.binding"), &t.binding);
+                    self.autotune_values(&t_at, t.on, t.off);
+                }
+            }
+        }
+    }
+
+    /// An autotune target's macro values (#104): each up to [`MACRO_MAX`],
+    /// and apart.
+    fn autotune_values(&mut self, at: &str, on: u8, off: u8) {
+        if on > MACRO_MAX || off > MACRO_MAX {
+            self.error(
+                at,
+                format!("an autotune target's on {on} or off {off} is past {MACRO_MAX}"),
+            );
+        } else if on == off {
+            self.error(at, "an autotune target's on and off are equal".to_string());
         }
     }
 
