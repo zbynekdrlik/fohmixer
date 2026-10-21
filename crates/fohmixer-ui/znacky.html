@@ -51,6 +51,8 @@ html, body { margin: 0; background: #0b0b12; }
 <tr><td><code>+ID:REV</code></td><td>značka pásu aj pre spojený fader (nižšie): to isté <code>+ID</code> môže slúžiť mute aj fadru</td></tr>
 <tr><td><code>+FADER:REV</code></td><td>fader tohto tracku sa pohne o rovnaké dB, keď pohneš pásom s <code>+ID:REV</code> (ak je spojenie zapnuté)</td></tr>
 <tr><td><code>+REVERB</code></td><td>fader reverbu: tlačidlo REVERB ho stíši o 10 dB a vráti, REVERB AUT pri zastavení Live. Patrí len na pás (meno v úvodzovkách a skupina); bez vlastného mena (alebo s menom, ktoré má aj iný pás) to fader reverbu nie je.</td></tr>
+<tr><td><code>+AUTOTUNE</code></td><td>autotune tohto tracku (nižšie): rack s menom <b>Latencies</b>, aj vo vnútri iného racku, a jeho prvé makro; zapnutý 127, vypnutý 0 (stream)</td></tr>
+<tr><td><code>+AUTOTUNE:0</code></td><td>to isté, zapnutý 0 a vypnutý 127 (repro)</td></tr>
 </table>
 <p>Značky píš veľkými písmenami (ako v AbleSete). Tuner bez úvodzoviek a bez značky <code>+</code> je obyčajný Tuner a fohmixer si ho nevšíma.</p>
 
@@ -65,6 +67,11 @@ html, body { margin: 0; background: #0b0b12; }
 <p>Spojenie sa zapína a vypína v detaile vedúceho pásu (podrž ☰): <b>SPOJENÝ S …</b>. Kým je zapnuté, vedúci má v rohu mena značku <b>dB</b> s reťazou a tyrkysovú čiarku na gombíku; partner má rovnakú značku obtiahnutú. Detail partnera povie, kto ho vedie.</p>
 <p><b>Podklady All</b> nemá vlastný track: jeho stopy sú tracky, ktorých Tuner má <code>+FADER:PODKLADY</code>. Je spojený vždy.</p>
 
+<h2>AUTOTUNE</h2>
+<p>Tlačidlo <b>AUTOTUNE</b> zapína a vypína autotune spevákov naraz. Tuner každého tracku s autotunom dostane <code>+AUTOTUNE</code> (zapnutý, keď je prvé makro racku na 127) alebo <code>+AUTOTUNE:0</code> (zapnutý na 0). Fohmixer v tracku nájde rack s menom <b>Latencies</b>, aj vo vnútri iného racku (najviac tri racky hlboko), a prepína jeho prvé makro. V tracku musí byť práve jeden taký rack. Tuner, ktorý má iba <code>+MUTE</code>, <code>+FADER</code> a <code>+AUTOTUNE</code> (bez mena v úvodzovkách), nerobí žiadny pás, takže stream track môže mať <code>+MUTE:VOX1 +AUTOTUNE</code>. Značky platia, len keď má layout tlačidlo AUTOTUNE.</p>
+<p>Príklad: Tuner speváka <code>"Vox 1" +G:STAGE +ID:VOX1 +AUTOTUNE:0</code>, Tuner jeho stream tracku <code>+MUTE:VOX1 +AUTOTUNE</code>.</p>
+<p>Ťuk prepne autotune všetkých takých trackov. <b>AUTOTUNE AUT</b> (podrž tlačidlo 1 s a pusť): kým je zapnutý, fohmixer zapne autotune, keď Live hrá, a vypne ho, keď Live stojí. Ťuk platí do najbližšieho štartu alebo zastavenia.</p>
+
 <h2>POHĽADY</h2>
 <p>Skupinu, ktorú hlavný pohľad nemá, ukáže tlačidlo v strednom páse (POHĽADY): jej fadre a všetky pripnuté. Ďalší ťuk ťa vráti späť.</p>
 
@@ -74,6 +81,7 @@ html, body { margin: 0; background: #0b0b12; }
 <li><b>Žltý roh (ZNAČKA?):</b> neznáma značka, zlá hodnota, dva Tunery v jednom tracku alebo dva fadre na jednej pozícii. Fader funguje, oprav meno Tunera.</li>
 <li><b>Linknutý mute:</b> to isté <code>+ID</code> na dvoch pásoch (oba majú žltý roh a nelinkuje sa ani jeden), <code>+MUTE</code> s názvom, ktorý nemá žiadny pás, alebo <code>+MUTE</code> s názvom vlastného pásu. Číslo na reťazi je počet trackov, ktoré MUTE stíši, aj s pásom samotným. Skontroluj reťaz: ak chýba, alebo je číslo na nej (po chvíli) menšie, ako koľko trackov si prepojil, niektorý <code>+MUTE</code> Tuner má preklep.</li>
 <li><b>Spojený fader:</b> to isté <code>+ID</code> na dvoch pásoch (nespojí sa nič), <code>+FADER</code> s názvom, ktorý nemá žiadny pás, <code>+FADER</code> s názvom vlastného pásu alebo ten istý <code>+FADER</code> dvakrát. Podklady All bez jediného <code>+FADER:PODKLADY</code> je červený.</li>
+<li><b>Autotune:</b> <code>+AUTOTUNE:</code> s inou hodnotou ako <code>0</code> alebo druhý <code>+AUTOTUNE</code> v jednom Tuneri je zlá značka. Track bez racku Latencies alebo s dvoma sa neprepína: tlačidlo AUTOTUNE to ukáže a stav hubu (<code>/api/status</code>, <code>autotune.targets</code>) povie prečo.</li>
 <li>Tuner bez skupiny (<code>+G:</code>) sa neukáže nikde.</li>
 </ul>
 <p>Zmena v Abletone sa na tablete ukáže do sekundy.</p>
