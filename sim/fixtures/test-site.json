@@ -35,8 +35,35 @@
           "name": "Vocal 1 repro#",
           "devices": [{"template": "eq8", "name": "EQ Eight"}]
         },
-        {"name": "Vocal 2 repro#", "panning": -0.25},
-        {"name": "Vocal 3 repro#", "panning": 0.25},
+        {
+          "name": "Vocal 2 repro#",
+          "panning": -0.25,
+          "devices": [
+            {"template": "rack", "name": "Latencies", "chains": [{"name": "Auto"}, {"name": "Dry"}]}
+          ]
+        },
+        {
+          "name": "Vocal 3 repro#",
+          "panning": 0.25,
+          "devices": [
+            {
+              "template": "rack",
+              "name": "Stream FX",
+              "chains": [
+                {
+                  "name": "Chain 1",
+                  "devices": [
+                    {
+                      "template": "rack",
+                      "name": "Latencies",
+                      "chains": [{"name": "Dry"}, {"name": "Auto"}]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
         {"name": "Keys 1"}
       ]
     },
