@@ -384,7 +384,10 @@ impl Router {
         let was = target.found.replace(found.clone());
         let wrote = target.wrote.clone();
         let instance = target.instance.clone();
-        if was.as_ref().map(|f| f.path.as_str()) != Some(found.path.as_str()) {
+        // Another path, or the same path with a new `$ref` (a rack replaced
+        // in place; PR #139 review M1): its value is followed afresh, which
+        // also gives up a listener the script ended.
+        if was.as_ref() != Some(&found) {
             self.autotune_follow(key, &found);
         }
         if let Some(on) = found_write(
@@ -396,7 +399,7 @@ impl Router {
         }
     }
 
-    /// Follows a found macro's value afresh (its subscription at the found
+    /// Follows a found macro's value afresh (a new subscription at the found
     /// path), recorded `found`.
     fn autotune_follow(&mut self, key: &str, found: &Found) {
         let Some(target) = self.autotune.targets.get(key) else {
