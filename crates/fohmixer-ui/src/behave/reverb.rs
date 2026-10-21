@@ -98,7 +98,9 @@ fn all_in_hand(faders: &[ReverbFader]) -> bool {
 /// What REVERB does now, in plain words; none while it says nothing (AUT
 /// off at the song level, or the transport not yet heard). It names no
 /// fader in the hand (the owner's ruling on #130 of 2026-10-21): the faders
-/// show that themselves (`RUKA`, `AUT −10`).
+/// show that themselves (`RUKA`, `AUT −10`). With every fader in the hand
+/// while Live stands, nothing is held and no tap overrides the rule: its
+/// own `stojí · plný` (PR #139 review I3), never the tap's line.
 fn reverb_sub(s: &ReverbState, lowered: bool) -> Option<String> {
     if !s.aut {
         return lowered.then(|| "ručne · −10 dB".to_string());
@@ -107,6 +109,7 @@ fn reverb_sub(s: &ReverbState, lowered: bool) -> Option<String> {
     let line = match (lowered, playing, s.waiting) {
         (false, true, _) => "hrá · plný",
         (false, false, true) => "stojí · plný",
+        (false, false, false) if all_in_hand(&s.faders) => "stojí · plný",
         (false, false, false) => "ručne plný · do štartu",
         (true, true, _) => "ručne −10 · do zast.",
         (true, false, _) => "stojí · −10 dB",
