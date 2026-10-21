@@ -76,14 +76,18 @@ pub(super) struct AutotuneIo {
 }
 
 impl AutotuneIo {
+    /// AUTOTUNE with the persisted flag; its state as every page gets it at
+    /// attach is the one told (a layout without targets tells nothing new).
     pub fn new(aut: bool) -> Self {
-        Self {
+        let mut io = Self {
             rule: AutotuneAut::new(aut),
             targets: BTreeMap::new(),
             order: Vec::new(),
             walks: 0,
             told: None,
-        }
+        };
+        io.told = Some(io.state());
+        io
     }
 
     /// The state every page is told: AUT, the first target's Live set's

@@ -289,6 +289,7 @@ fn a_tap_overrides_until_the_next_change_and_aut_survives_a_hub_restart() {
         // A new hub on the same data: AUT is on at once and writes the
         // transport it finds (Live plays) once the racks are found.
         let hub = TestHub::start(vec![host.cfg()], dir.path()).await;
+        hub.status_until(SECS_5, |s| s.instances[0].online).await;
         let mut b = hub.client().await;
         let first = b
             .wait(SECS_5, |m| match m {
