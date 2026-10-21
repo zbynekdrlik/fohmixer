@@ -253,8 +253,30 @@ fn every_step_has_its_line_and_only_failures_warn() {
         step_line(&missing),
         "AUTOTUNE has no rack for band live_set tracks 8: no rack named Latencies"
     );
+    let held = Step::Held {
+        instance: "band".into(),
+        on: true,
+        why: "offline".into(),
+    };
+    let released = Step::Held {
+        instance: "band".into(),
+        on: false,
+        why: "layout".into(),
+    };
+    assert_eq!(
+        step_line(&held),
+        "AUTOTUNE writes nothing to band until its markers are settled (offline)"
+    );
+    assert_eq!(
+        step_line(&released),
+        "AUTOTUNE writes band again: its markers are settled (layout)"
+    );
+    assert_eq!(
+        serde_json::to_value(&held).unwrap(),
+        json!({"step": "held", "instance": "band", "on": true, "why": "offline"})
+    );
     let tap_write = write_step(Why::Tap);
-    for step in [&flag, &tap, &tap_write, &found] {
+    for step in [&flag, &tap, &tap_write, &found, &held, &released] {
         assert!(!step_warn(step), "{step:?}");
     }
     assert!(step_warn(&failed));

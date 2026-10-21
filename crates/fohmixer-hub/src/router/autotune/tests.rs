@@ -14,7 +14,7 @@ use super::super::tests::{attach, next_of, offline_router, offline_router_with, 
 use super::super::{Router, RouterMsg, layout_msg, markers};
 use super::{
     AUTOTUNE_CLIENT, PARAMETER_CLASS, TOO_DEEP, Target, autotune_fields, found_write, macro_value,
-    missing_news, slot_failures, state_of, target_key, write_commands,
+    may_write, missing_news, slot_failures, state_of, target_key, write_commands,
 };
 use crate::live::LiveValue;
 use crate::live::client::LiveEvent;
@@ -225,10 +225,25 @@ fn the_glues_small_decisions() {
         Some("no rack named Latencies"),
         "no rack named Latencies"
     ));
-    assert_eq!(found_write(false, Some(true)), Some(true));
-    assert_eq!(found_write(false, Some(false)), Some(false));
-    assert_eq!(found_write(false, None), None);
-    assert_eq!(found_write(true, Some(true)), None, "found again: no write");
+    // A found macro gets the set's decision unless it is the one written.
+    assert_eq!(found_write(None, "p7", Some(true)), Some(true));
+    assert_eq!(found_write(None, "p7", Some(false)), Some(false));
+    assert_eq!(found_write(None, "p7", None), None);
+    assert_eq!(
+        found_write(Some("p6"), "p7", Some(true)),
+        Some(true),
+        "another macro"
+    );
+    assert_eq!(
+        found_write(Some("p7"), "p7", Some(true)),
+        None,
+        "the macro written: no write"
+    );
+    // A set's writes go only with no hold and its markers settled.
+    assert!(may_write(false, true));
+    assert!(!may_write(true, true), "held");
+    assert!(!may_write(false, false), "the markers not settled");
+    assert!(!may_write(true, false));
     assert_eq!(
         autotune_fields(&Step::Tap { on: true }, Some(3), Some("10.0.0.3")),
         json!({"step": "tap", "on": true, "client": 3, "peer": "10.0.0.3"})
@@ -250,6 +265,7 @@ fn a_targets_state_is_missing_waiting_or_its_macro_against_its_on_value() {
         problem: problem.map(str::to_string),
         sub: None,
         value,
+        wrote: None,
     };
     assert_eq!(
         state_of(&at(None, Some("no rack named Latencies"), None)),
@@ -1176,4 +1192,16 @@ async fn a_track_list_change_writes_nothing_by_the_old_index_until_the_new_layou
             write_of(true, "found", &["#3"])
         ]
     );
+}
+
+#[tokio::test]
+async fn a_disconnect_without_autotune_targets_holds_nothing() {
+    // The hold is recorded only for a Live set with AUTOTUNE targets.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, _rx, rx) = offline_router(dir.path());
+    router.handle(RouterMsg::Live {
+        instance: "band".into(),
+        event: LiveEvent::Disconnected,
+    });
+    assert_eq!(steps(&rx), Vec::<Value>::new());
 }

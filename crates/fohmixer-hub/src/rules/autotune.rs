@@ -239,6 +239,16 @@ pub enum Step {
         target: String,
         problem: String,
     },
+    /// A Live set's writes are held (`on`) while its markers may not be
+    /// where Live has them (#104, PR #139 review I1): it went `offline`, its
+    /// track list changed (`tracks`), or a write met its markers unsettled
+    /// (`markers`); the hold ends (not `on`) once they settled with no new
+    /// layout (`settled`) or a layout of them was served (`layout`).
+    Held {
+        instance: String,
+        on: bool,
+        why: String,
+    },
 }
 
 fn on_off(on: bool) -> &'static str {
@@ -276,6 +286,14 @@ pub fn step_line(step: &Step) -> String {
             target,
             problem,
         } => format!("AUTOTUNE has no rack for {instance} {target}: {problem}"),
+        Step::Held {
+            instance,
+            on: true,
+            why,
+        } => format!("AUTOTUNE writes nothing to {instance} until its markers are settled ({why})"),
+        Step::Held { instance, why, .. } => {
+            format!("AUTOTUNE writes {instance} again: its markers are settled ({why})")
+        }
     }
 }
 
