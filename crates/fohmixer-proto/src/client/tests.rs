@@ -680,6 +680,16 @@ fn api_bodies_round_trip() {
                 },
             ],
         },
+        songmap: vec![SongMapStatus {
+            instance: "band".into(),
+            songs: 166,
+            keyed: 165,
+            changes: 8,
+            problems: 0,
+            sections: crate::songmap::SectionsState::FirstOf(2),
+            at_ms: 1_790_000_300,
+            stale: true,
+        }],
     };
     let json = serde_json::to_value(&status).unwrap();
     assert_eq!(
@@ -689,6 +699,18 @@ fn api_bodies_round_trip() {
              "state": "on", "path": "live_set tracks 6 devices 0 parameters 1"},
             {"instance": "band", "track": "live_set tracks 8", "label": "#9", "on": 127,
              "state": "missing", "problem": "no rack named Latencies"}]})
+    );
+    assert_eq!(
+        json["songmap"],
+        json!([{"instance": "band", "songs": 166, "keyed": 165, "changes": 8, "problems": 0,
+                "sections": {"first_of": 2}, "at_ms": 1_790_000_300_u64, "stale": true}])
+    );
+    // A hub before the song map (#140) names none.
+    let mut older = json.clone();
+    older.as_object_mut().unwrap().remove("songmap");
+    assert_eq!(
+        serde_json::from_value::<HubStatus>(older).unwrap().songmap,
+        vec![]
     );
     assert_eq!(json["remote"]["https"]["days_left"], 60);
     assert_eq!(json["remote"]["tunnel"]["ready_connections"], 4);

@@ -17,7 +17,7 @@ use axum::{
     routing::{get, post},
 };
 use fohmixer_proto::VersionInfo;
-use fohmixer_proto::client::HubStatus;
+use fohmixer_proto::client::{HubStatus, SongMapReport};
 use fohmixer_proto::layout::LayoutResponse;
 use fohmixer_proto::markers::migrate::MigrationStatus;
 use rust_embed::RustEmbed;
@@ -121,6 +121,44 @@ async fn post_migration(
 ) -> Result<Json<MigrationStatus>, Rejection> {
     hub.auth.require(&headers)?;
     Ok(Json(hub.migration(true).await))
+}
+
+/// The query of `GET /api/songmap`: the Live set.
+#[derive(Debug, serde::Deserialize)]
+pub struct SongMapQuery {
+    pub instance: String,
+}
+
+/// The error answer of `GET /api/songmap` when there is no map.
+fn songmap_missing(missing: crate::router::SongMapMissing) -> Rejection {
+    let (status, code, message) = match missing {
+        crate::router::SongMapMissing::Unknown => (
+            StatusCode::NOT_FOUND,
+            "UNKNOWN_INSTANCE",
+            "no Live set of that name",
+        ),
+        crate::router::SongMapMissing::NotRead => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "NO_SONGMAP",
+            "the song map was not read yet",
+        ),
+    };
+    Rejection::from(error_response(status, code, message))
+}
+
+/// `GET /api/songmap?instance=<name>` (a token, #140): the Live set's newest
+/// song map (every span, its key and key changes, every problem in words),
+/// 404 for an unknown set, 503 before its first read.
+async fn get_songmap(
+    State(hub): State<Hub>,
+    headers: HeaderMap,
+    Query(query): Query<SongMapQuery>,
+) -> Result<Json<SongMapReport>, Rejection> {
+    hub.auth.require(&headers)?;
+    hub.songmap(&query.instance)
+        .await
+        .map(Json)
+        .map_err(songmap_missing)
 }
 
 /// The query of `GET /api/eq/picture`: the editor's instance and path.
@@ -330,6 +368,7 @@ pub fn api_routes() -> Router<Hub> {
             get(get_migration).post(post_migration),
         )
         .route("/api/eq/picture", get(get_eq_picture))
+        .route("/api/songmap", get(get_songmap))
         .route("/ws", get(crate::ws::ws_handler))
 }
 
@@ -740,6 +779,76 @@ mod tests {
         let response = get_with_token(&hub, "/api/eq/picture?instance=band").await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         hub.stop();
+    }
+
+    #[tokio::test]
+    async fn songmap_route_answers_404_for_an_unknown_instance_and_503_before_a_read() {
+        // #140: a hub of one Live set on a port nothing listens on (it stays
+        // offline, so its map is never read).
+        let dir = tempfile::tempdir().unwrap();
+        let free = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = free.local_addr().unwrap().port();
+        drop(free);
+        let mut config = crate::config::Config::defaults(dir.path());
+        config.instances = vec![crate::config::InstanceCfg {
+            name: "band".into(),
+            port,
+        }];
+        let hub = crate::Hub::start(config).unwrap();
+        let response = get_with_token(&hub, "/api/songmap?instance=band").await;
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body: serde_json::Value = serde_json::from_slice(&body_bytes(response).await).unwrap();
+        assert_eq!(body["code"], "NO_SONGMAP");
+        let response = get_with_token(&hub, "/api/songmap?instance=master").await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let body: serde_json::Value = serde_json::from_slice(&body_bytes(response).await).unwrap();
+        assert_eq!(body["code"], "UNKNOWN_INSTANCE");
+        // A query without the set is refused; without a token, nothing.
+        let response = get_with_token(&hub, "/api/songmap").await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let response = lan(crate::app_router(hub.clone()))
+            .oneshot(
+                Request::get("/api/songmap?instance=band")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        // The status names no map before a read.
+        let response = get_with_token(&hub, "/api/status").await;
+        let status: fohmixer_proto::client::HubStatus =
+            serde_json::from_slice(&body_bytes(response).await).unwrap();
+        assert_eq!(status.songmap, vec![]);
+        hub.stop();
+    }
+
+    #[tokio::test]
+    async fn a_missing_song_map_answers_its_code() {
+        let codes = [
+            (
+                crate::router::SongMapMissing::Unknown,
+                StatusCode::NOT_FOUND,
+                "UNKNOWN_INSTANCE",
+                "no Live set of that name",
+            ),
+            (
+                crate::router::SongMapMissing::NotRead,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "NO_SONGMAP",
+                "the song map was not read yet",
+            ),
+        ];
+        for (missing, status, code, message) in codes {
+            let response = songmap_missing(missing).into_response();
+            assert_eq!(response.status(), status, "{missing:?}");
+            let body: serde_json::Value =
+                serde_json::from_slice(&body_bytes(response).await).unwrap();
+            assert_eq!(
+                (body["code"].as_str(), body["message"].as_str()),
+                (Some(code), Some(message))
+            );
+        }
     }
 
     #[tokio::test]

@@ -476,3 +476,20 @@ fn the_rules_records_are_warn_class() {
     ));
     assert!(is_warn(&json!({"ev": "autotune", "step": "found"})));
 }
+
+#[test]
+fn the_record_is_warn_only_with_problems_or_an_error() {
+    // #140: a song map read is bulk unless its map has problems or it failed.
+    assert!(!is_warn(
+        &json!({"ev": "songmap", "problems": 0, "songs": 166})
+    ));
+    assert!(is_warn(&json!({"ev": "songmap", "problems": 1})));
+    assert!(is_warn(&json!({"ev": "songmap", "problems": 12})));
+    assert!(is_warn(
+        &json!({"ev": "songmap", "error": "instance offline"})
+    ));
+    assert!(!is_warn(&json!({"ev": "songmap"})));
+    assert!(!is_warn(&json!({"ev": "songmap", "problems": "1"})));
+    // Another record's `problems` is not a song map's.
+    assert!(!is_warn(&json!({"ev": "ack", "problems": 3})));
+}

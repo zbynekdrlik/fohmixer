@@ -36,6 +36,11 @@
 //! `Latencies` racks found by a walk, their first macro written through its
 //! `$ref` by the rule's transport, the pages' flag and taps (its own
 //! subscriber `AUTOTUNE_CLIENT`).
+//!
+//! The song map (#140, `router/songmap.rs`): every Live set's locators and
+//! Sections key clips read into a song map at a connect, a list change and
+//! every transport change, served at `GET /api/songmap` (its own subscriber
+//! `SONGMAP_CLIENT`; it writes nothing to Live).
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
@@ -43,7 +48,7 @@ use std::sync::Arc;
 
 use fohmixer_proto::client::{
     AutotuneStatus, FaderLinkStatus, HUB_STAGE_AUT, ReverbStatus, ServerMsg, SetItem,
-    StageAutStatus, Unresolved, ValueItem,
+    SongMapReport, SongMapStatus, StageAutStatus, Unresolved, ValueItem,
 };
 use fohmixer_proto::layout::{AutotuneTarget, Binding, Layout, LinkId, RuleFader};
 use serde_json::{Value, json};
@@ -74,7 +79,11 @@ mod markers;
 mod markers_io;
 #[path = "router/reverb.rs"]
 mod reverb;
+#[path = "router/songmap.rs"]
+mod songmap;
 mod unfold;
+
+pub use songmap::Missing as SongMapMissing;
 
 /// The router's own subscriber for the rules (#130, D18): every instance's
 /// transport, which STAGE AUT and REVERB AUT follow and the event log
@@ -342,6 +351,20 @@ pub enum RouterMsg {
         keys: Vec<String>,
         outcome: Result<Vec<Value>, String>,
     },
+    /// A read of `instance`'s song map ended (#140): what it found, or why
+    /// not, and how long it took (a newer read or a disconnect makes it
+    /// void).
+    SongMapRead {
+        instance: String,
+        read_no: u64,
+        result: Result<songmap::Listing, String>,
+        ms: u64,
+    },
+    /// `GET /api/songmap` (#140): `instance`'s newest song map.
+    SongMap {
+        instance: String,
+        reply: oneshot::Sender<Result<SongMapReport, SongMapMissing>>,
+    },
     /// The hub stops: the Stream Deck's held keys released and its task
     /// told to stop (#52), then every client closed.
     Stop,
@@ -364,6 +387,8 @@ pub struct RouterStatus {
     pub fader_links: Vec<FaderLinkStatus>,
     /// AUTOTUNE (#104, D19).
     pub autotune: AutotuneStatus,
+    /// Each Live set's song map, once read (#140).
+    pub songmap: Vec<SongMapStatus>,
     pub clients: usize,
     pub unresolved: Vec<Unresolved>,
 }
@@ -436,6 +461,8 @@ pub struct Router {
     links: FaderLinks,
     /// AUTOTUNE (#104, D19).
     autotune: autotune::AutotuneIo,
+    /// The song map (#140).
+    songmap: songmap::SongMapIo,
     /// Every instance's transport (#104, D18), by instance.
     transport: BTreeMap<String, TransportWatch>,
     layout_rev: u64,
@@ -508,6 +535,7 @@ impl Router {
             reverb: reverb::ReverbIo::new(&state.reverb),
             links: FaderLinks::new(&state.fader_links),
             autotune: autotune::AutotuneIo::new(state.autotune_aut),
+            songmap: songmap::SongMapIo::default(),
             state,
             transport,
             layout_rev: 0,
@@ -751,6 +779,7 @@ impl Router {
                                 RULES_CLIENT,
                                 reverb::REVERB_CLIENT,
                                 autotune::AUTOTUNE_CLIENT,
+                                songmap::SONGMAP_CLIENT,
                             ];
                             (n.clone(), self.subs.subscriptions_besides(n, &own))
                         })
@@ -765,6 +794,7 @@ impl Router {
                                 RULES_CLIENT,
                                 reverb::REVERB_CLIENT,
                                 autotune::AUTOTUNE_CLIENT,
+                                songmap::SONGMAP_CLIENT,
                             ];
                             (n.clone(), self.subs.listeners_besides(n, &own))
                         })
@@ -777,6 +807,7 @@ impl Router {
                     reverb: self.reverb.rule.status(),
                     fader_links: self.links.status(),
                     autotune: self.autotune.status(),
+                    songmap: self.songmap.status(),
                     clients: self.clients.len(),
                     unresolved: self.names.unresolved(),
                 });
@@ -862,6 +893,15 @@ impl Router {
                 keys,
                 outcome,
             } => self.autotune_written(&instance, &keys, &outcome),
+            RouterMsg::SongMapRead {
+                instance,
+                read_no,
+                result,
+                ms,
+            } => self.songmap_read(&instance, read_no, result, ms),
+            RouterMsg::SongMap { instance, reply } => {
+                let _ = reply.send(self.songmap_report(&instance));
+            }
             RouterMsg::Stop => return false,
         }
         true
@@ -887,6 +927,8 @@ impl Router {
                 self.eq_connected(instance);
                 // AUTOTUNE's refs too: its targets are walked again.
                 self.autotune_connected(instance);
+                // The song map follows the set's lists (#140).
+                self.songmap_connected(instance);
                 self.broadcast_instance(instance);
             }
             LiveEvent::Disconnected => {
@@ -913,6 +955,7 @@ impl Router {
                 self.markers.disconnected(instance);
                 self.reverb_offline(instance);
                 self.autotune_offline(instance);
+                self.songmap_offline(instance);
                 self.broadcast_instance(instance);
             }
             LiveEvent::Busy {
@@ -1058,7 +1101,8 @@ impl Router {
             return;
         };
         let instance = instance.clone();
-        let Some(mut fields) = transport_change(watch.playing, playing) else {
+        let prev = watch.playing;
+        let Some(mut fields) = transport_change(prev, playing) else {
             return;
         };
         watch.playing = Some(playing);
@@ -1074,6 +1118,7 @@ impl Router {
         }
         self.reverb_transport(&instance, playing);
         self.autotune_transport(&instance, playing);
+        self.songmap_transport(&instance, prev);
     }
 
     /// The rules' transport subscription of the hub key `sub` failed: the
@@ -1252,8 +1297,9 @@ impl Router {
     /// keeper's to the keeper: they ask only for reads and writes, which go
     /// out on their own). REVERB (#130) gets its faders' volumes, then the
     /// track lists the marker keeper follows, then AUTOTUNE (#104) its
-    /// macros' values, before the transport: a reconnect's values are judged
-    /// before its first transport value.
+    /// macros' values, then the song map (#140) its lists, before the
+    /// transport: a reconnect's values are judged before its first transport
+    /// value.
     fn flush(&mut self) {
         self.send_requests();
         let mut unfold = Vec::new();
@@ -1262,6 +1308,7 @@ impl Router {
         let mut reverb_values: Vec<(String, f64)> = Vec::new();
         let mut reverb_lists: Vec<(String, Value)> = Vec::new();
         let mut autotune_items: Vec<ValueItem> = Vec::new();
+        let mut songmap_items: Vec<ValueItem> = Vec::new();
         for (client, item) in self.subs.take_deliveries() {
             if client == RULES_CLIENT {
                 if let Some(heard) = transport_heard(item.value, item.error) {
@@ -1288,6 +1335,8 @@ impl Router {
                 }
             } else if client == autotune::AUTOTUNE_CLIENT {
                 autotune_items.push(item);
+            } else if client == songmap::SONGMAP_CLIENT {
+                songmap_items.push(item);
             } else if let Some(outbox) = self.clients.get(&client) {
                 outbox.value(item);
             }
@@ -1301,6 +1350,7 @@ impl Router {
         for item in autotune_items {
             self.autotune_delivery(&item.sub, item.value, item.error);
         }
+        self.songmap_delivery(songmap_items);
         for (sub, heard) in transport {
             match heard {
                 Ok(value) => self.on_transport(&sub, &value),
