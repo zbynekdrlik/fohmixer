@@ -2,7 +2,8 @@
 //! (invented titles) with locators and a `Sections` track; the hub reads
 //! its songs, spans, keys and key clips at the connect, again when a
 //! locator or a key clip is added in Live, and at every transport change
-//! (a rename in Live shows only then); a big set reads in chunks; and the
+//! (a rename in Live shows only then); a big set reads in chunks; two
+//! tracks named Sections read the first one's clips by its index; and the
 //! hub writes nothing to Live for it.
 #![cfg(unix)]
 
@@ -348,6 +349,76 @@ fn the_hub_never_writes_to_live_for_the_map() {
             .filter(|r| matches!(r["ev"].as_str(), Some("set" | "batch" | "applied")))
             .collect();
         assert_eq!(writes, Vec::<Value>::new());
+        c.close().await;
+        hub.stop().await;
+        host.stop();
+    });
+}
+
+/// A set with two tracks named Sections (#140 review M9 a): the first
+/// (track 1) with a key clip in song 1, the second (track 3) with another;
+/// AbleSet takes the first, and so does the hub.
+fn two_sections_site(dir: &Path) -> PathBuf {
+    let set = json!({"name": "Two Sections Site",
+        "tracks": [
+            {"name": "Click #"},
+            {"name": "Sections", "arrangement_clips": [
+                {"name": "Key {G}", "start_time": 40.0, "end_time": 41.0}]},
+            {"name": "Bass #"},
+            {"name": "Sections", "arrangement_clips": [
+                {"name": "Key {A}", "start_time": 20.0, "end_time": 21.0}]}],
+        "cue_points": [
+            {"name": "001 Test One {C 120 4/4}", "time": 0.0},
+            {"name": "SONG END", "time": 96.0}]});
+    let path = dir.join("two-sections-site.json");
+    std::fs::write(&path, set.to_string()).unwrap();
+    path
+}
+
+#[test]
+fn two_sections_tracks_read_the_first_ones_clips_by_its_index() {
+    let _serial = serial();
+    runtime().block_on(async {
+        let dir = tempfile::tempdir().unwrap();
+        let mut host = Host::start_site("band", &two_sections_site(dir.path()), 0, 0.0);
+        let hub = TestHub::start(vec![host.cfg()], dir.path()).await;
+        let mut c = hub.client().await;
+        // The script's own answer to the name: ambiguous, never a guess.
+        let by_name = json!({"target": "live_set tracks[name=Sections]", "name": "get_prop",
+                             "args": {"prop": "arrangement_clips"}});
+        let slots = c.cmd("band", vec![by_name]).await.unwrap();
+        assert_eq!(slots[0]["ok"], json!(false), "{slots:?}");
+        assert!(
+            slots[0]["error"]
+                .as_str()
+                .is_some_and(|e| e.contains("ambiguous")),
+            "{slots:?}"
+        );
+        // So the read took the first one's clips by its index.
+        let map = songmap_until(&hub, SECS_5, |m| m["spans"].as_array().is_some()).await;
+        assert_eq!(map["sections"], json!({"first_of": 2}));
+        assert_eq!(
+            map["spans"][0]["changes"],
+            json!([{"time": 40.0, "key": {"root": 7, "minor": false, "name": "G"}}]),
+            "the first Sections track's key clip, not the second's"
+        );
+        assert_eq!(map["problems"], json!([]));
+        // Its clips are followed at that index, the second's are not.
+        assert_eq!(host.listeners("arrangement_clips", "live_set tracks 1"), 1);
+        assert_eq!(host.listeners("arrangement_clips", "live_set tracks 3"), 0);
+        // A key clip added on the first is in the next map.
+        assert_eq!(host.clip("add 1 60 61 Key {D}"), 2);
+        let map = songmap_until(&hub, SECS_5, |m| {
+            m["spans"][0]["changes"]
+                .as_array()
+                .is_some_and(|c| c.len() == 2)
+        })
+        .await;
+        assert_eq!(
+            map["spans"][0]["changes"][1],
+            json!({"time": 60.0, "key": {"root": 2, "minor": false, "name": "D"}})
+        );
+        assert_eq!(map["sections"], json!({"first_of": 2}));
         c.close().await;
         hub.stop().await;
         host.stop();
