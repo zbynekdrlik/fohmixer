@@ -847,6 +847,51 @@ fn a_mistyped_key_is_told_from_a_word_by_how_it_fails() {
 }
 
 #[test]
+fn a_first_letter_is_read_as_a_key_letter_only_for_h_and_lower_case() {
+    assert_eq!(letter_fixed("h"), Some("B".to_string()));
+    assert_eq!(letter_fixed("Hmoll"), Some("Bmoll".to_string()));
+    assert_eq!(letter_fixed("am"), Some("Am".to_string()));
+    assert_eq!(letter_fixed("f#m"), Some("F#m".to_string()));
+    assert_eq!(letter_fixed("bridge"), Some("Bridge".to_string()));
+    assert_eq!(letter_fixed("g"), Some("G".to_string()));
+    for spelling in ["", "A", "G#", "Verse", "i", "x", "soft"] {
+        assert_eq!(letter_fixed(spelling), None, "{spelling}");
+    }
+}
+
+#[test]
+fn a_spelling_is_wrong_by_its_root_or_by_its_fixed_letter() {
+    // Its root: an accidental that is no key, or a wrong suffix.
+    for spelling in [
+        "E#", "Cb", "Fbm", "Amin", "AM", "F♯m", "Fis", "Es", "Gism", "Amolm",
+    ] {
+        assert!(wrong_root(spelling), "{spelling}");
+        assert!(spelled_wrong(spelling), "{spelling}");
+    }
+    for spelling in [
+        "", "C", "Cm", "F#", "Bridge", "Amm", "AMEN", "Verse", "Hook",
+    ] {
+        assert!(!wrong_root(spelling), "{spelling}");
+    }
+    // A fixed first letter: a key, or a wrong root, once it is fixed.
+    for spelling in [
+        "g", "am", "bb", "ebm", "h", "hm", "Hmoll", "amin", "fis", "e#",
+    ] {
+        assert!(spelled_wrong(spelling), "{spelling}");
+    }
+    for spelling in [
+        "bridge", "build", "drums", "fade", "hold", "Hook", "Hymn", "C", "Verse", "x",
+    ] {
+        assert!(!spelled_wrong(spelling), "{spelling}");
+    }
+    // A double spelling: two keys, or a half spelled wrong.
+    assert!(mistyped("F/G", KeyError::TwoKeys));
+    assert!(mistyped("C/Amin", KeyError::Suffix));
+    assert!(mistyped("F#/H", KeyError::Letter));
+    assert!(!mistyped("Hook/Verse", KeyError::Letter));
+}
+
+#[test]
 fn a_key_clip_in_a_keyless_song_stays_keyless() {
     let m = build(
         &[cue("088 Dance", 0.0), cue("SONG END", 30.0)],
@@ -1072,6 +1117,14 @@ fn each_problem_reads_in_words() {
     assert_eq!(
         text(ProblemKind::BadKey(KeyError::Suffix), Some(12), Some(3.0)),
         "song 012: its key does not read: only m may follow the key (beat 3)"
+    );
+    assert_eq!(
+        text(ProblemKind::BadBraces, Some(12), None),
+        "song 012: its {…} is empty or never closed"
+    );
+    assert_eq!(
+        serde_json::to_value(ProblemKind::BadBraces).unwrap(),
+        serde_json::json!("bad_braces")
     );
     assert_eq!(
         text(ProblemKind::NotEnded, Some(158), Some(89000.0)),

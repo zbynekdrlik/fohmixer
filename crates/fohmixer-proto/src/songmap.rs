@@ -30,12 +30,12 @@ const STOPS: [&str; 2] = ["STOP", "AUTOSTOP"];
 /// The flags that make any locator a stop.
 const STOP_FLAGS: [&str; 2] = ["+STAY", "+JUMP"];
 /// What may follow a key clip's root by mistake (spec Appendix A.3's
-/// rejected suffixes, #140 review I2): a one-word description with one of
-/// them after its root, alone or before `m`, is a mistyped key.
-const WRONG_SUFFIXES: [&str; 8] = ["min", "maj", "mol", "moll", "dur", "M", "♯", "♭"];
-/// `H` and the lower-case key letters: a one-word description that does
-/// not read and starts with one is a mistyped key (#140 review I2).
-const WRONG_LETTERS: [char; 9] = ['H', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
+/// rejected suffixes and German spellings, #140 review I2 and round 2's
+/// C2): a spelling with one of them after its root, alone or before `m`, is
+/// a mistyped key.
+const WRONG_SUFFIXES: [&str; 11] = [
+    "min", "maj", "mol", "moll", "dur", "M", "♯", "♭", "is", "es", "s",
+];
 
 /// One locator: its name, and its time in beats when it was read (the
 /// ignored ones and the sections have none).
@@ -125,6 +125,9 @@ pub enum ProblemKind {
     /// A word after a song's key that is not its tempo (`{C 120bpm}`, `{A
     /// cappella}`, #140 review M5).
     BadTempo,
+    /// A song locator's `{…}` is empty or never closed (`{}`, `{C 120`, #140
+    /// review M6, round 2's M6b).
+    BadBraces,
     /// A song's entry did not end with `SONG END`, `STOP` or `AUTOSTOP`.
     NotEnded,
     /// A key clip lies in no ended song.
@@ -161,6 +164,7 @@ impl Problem {
             ProblemKind::TwoDescriptions => "its locator holds two {…}".to_string(),
             ProblemKind::BadKey(error) => format!("its key does not read: {}", error.text()),
             ProblemKind::BadTempo => "the word after the key must be the tempo".to_string(),
+            ProblemKind::BadBraces => "its {…} is empty or never closed".to_string(),
             ProblemKind::NotEnded => "not ended by SONG END, STOP or AUTOSTOP".to_string(),
             ProblemKind::ClipOutsideSong => {
                 format!(
@@ -326,17 +330,19 @@ fn is_tempo(word: &str) -> bool {
 /// nothing (a key that does not read is `BadKey`, a word after it that is
 /// no tempo `BadTempo`). No description: no key, and a problem only when
 /// the name still holds a `{` (`{}`, a `{` never closed: a tag that does not
-/// read, spec §4, #140 review M6), else none.
+/// read, spec §4, #140 review M6), else none; that and an empty `{ }` are
+/// `BadBraces` (round 2's M6b: the key may be there, the braces are wrong).
 fn song_key(name: &str, description: Option<&str>) -> Result<Option<Key>, ProblemKind> {
     let Some(description) = description else {
         return if name.contains('{') {
-            Err(ProblemKind::BadKey(KeyError::Empty))
+            Err(ProblemKind::BadBraces)
         } else {
             Ok(None)
         };
     };
     let mut words = description.split_whitespace();
-    let key = parse_token(words.next().unwrap_or("")).map_err(ProblemKind::BadKey)?;
+    let first = words.next().ok_or(ProblemKind::BadBraces)?;
+    let key = parse_token(first).map_err(ProblemKind::BadKey)?;
     match words.next() {
         Some(word) if !is_tempo(word) => Err(ProblemKind::BadTempo),
         _ => Ok(Some(key)),
@@ -355,28 +361,58 @@ fn named_key(name: &str) -> bool {
     words == ["Key"]
 }
 
-/// Whether a one-word description that does not read (`error`) is a
-/// mistyped key rather than a word (#140 review I2 b): an accidental, two
-/// keys, a known wrong suffix after its root (alone or before `m`), or `H`
-/// or a lower-case key letter first.
+/// Whether a description's first word, which does not read (`error`), is
+/// a mistyped key rather than a word (#140 review I2 b, round 2's C1, C2,
+/// C2b): a double spelling of two keys, or one of its `/` spellings spelled
+/// wrong (`spelled_wrong`).
 fn mistyped(word: &str, error: KeyError) -> bool {
+    error == KeyError::TwoKeys || word.split('/').any(spelled_wrong)
+}
+
+/// Whether one spelling (no `/`) is a key spelled wrong: with `H` or a
+/// lower-case `a`–`h` first, when it reads as a key, or is spelled wrong,
+/// with that letter upper-cased (`h`/`H` as `B`; round 2's C1: a plain word
+/// such as `bridge` is no attempt at a key); else when its root is wrong
+/// (`wrong_root`).
+fn spelled_wrong(spelling: &str) -> bool {
+    match letter_fixed(spelling) {
+        Some(fixed) => parse_token(&fixed).is_ok() || wrong_root(&fixed),
+        None => wrong_root(spelling),
+    }
+}
+
+/// A spelling with its first letter read as a key letter (`H`/`h` as `B`, a
+/// lower-case `a`–`g` upper-cased), none when it starts otherwise.
+fn letter_fixed(spelling: &str) -> Option<String> {
+    let mut chars = spelling.chars();
+    let letter = match chars.next()? {
+        'H' | 'h' => 'B',
+        lower @ 'a'..='g' => lower.to_ascii_uppercase(),
+        _ => return None,
+    };
+    Some(format!("{letter}{}", chars.as_str()))
+}
+
+/// Whether a spelling's root is an accidental that is no key (`E#`, `Cb`),
+/// or is followed by a wrong suffix, alone or before `m` (`Amin`, `F♯m`,
+/// `Fis`, `Gism`).
+fn wrong_root(spelling: &str) -> bool {
     let wrong = |rest: &str| {
         WRONG_SUFFIXES.contains(&rest)
             || rest
                 .strip_suffix('m')
                 .is_some_and(|r| WRONG_SUFFIXES.contains(&r))
     };
-    match error {
-        KeyError::Accidental | KeyError::TwoKeys => true,
-        KeyError::Suffix => key::after_root(word).is_some_and(wrong),
-        KeyError::Empty | KeyError::Letter => word.starts_with(WRONG_LETTERS),
-    }
+    parse_token(spelling) == Err(KeyError::Accidental)
+        || key::after_root(spelling).is_some_and(wrong)
 }
 
-/// A clip's key: none when it is no key clip (no description, or a word
-/// such as `{soft}`); the key, or `Err` when its description is no one key
-/// (#140 review I2): more words after a key, a mistyped key (`{Amin}`,
-/// `{H}`), or anything that does not read on a clip named `Key`.
+/// A clip's key: none when it is no key clip (no description, or words
+/// such as `{soft}`, `{Chorus 2}`); the key, or `Err` when its description
+/// is no one key (#140 review I2, round 2's C2b): more words after a key, a
+/// first word that is a mistyped key (`{Amin}`, `{h}`, `{Fis}`, `{Amin
+/// loud}`, `{Amin/C}`), or anything that does not read on a clip named
+/// `Key`.
 fn clip_key(name: &str) -> Option<Result<Key, ()>> {
     let name = name.trim();
     let named = named_key(name);
@@ -389,7 +425,7 @@ fn clip_key(name: &str) -> Option<Result<Key, ()>> {
     match (parse_token(word), more) {
         (Ok(_), true) => Some(Err(())),
         (Ok(key), false) => Some(Ok(key)),
-        (Err(error), _) if named || (!more && mistyped(word, error)) => Some(Err(())),
+        (Err(error), _) if named || mistyped(word, error) => Some(Err(())),
         (Err(_), _) => None,
     }
 }
