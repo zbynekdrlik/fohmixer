@@ -6,10 +6,10 @@ use tokio::sync::mpsc::UnboundedReceiver;
 use super::super::tests::{next_of, offline_router, records, status};
 use super::super::{Router, RouterMsg};
 use super::{
-    CLIPS, CUE_POINTS, Listed, Listing, MAX_TEXTS, Missing, Read, SECTIONS, SONGMAP_CLIENT,
-    Trigger, clip_commands, clips_of, cues_of, first_commands, listed, next_read, problems_changed,
-    read_words, report_of, same_names, sections_state, songmap_error_fields, songmap_fields,
-    songmap_warn, status_of, time_commands, transport_reads,
+    CLIPS, CUE_POINTS, Listed, Listing, MAX_TEXTS, Missing, Object, Read, SECTIONS, SONGMAP_CLIENT,
+    Trigger, by_ref, clip_commands, clips_of, cues_of, first_commands, listed, next_read,
+    problems_changed, read_words, report_of, same_names, sections_state, songmap_error_fields,
+    songmap_fields, songmap_warn, status_of, time_commands, transport_reads,
 };
 use crate::live::client::LiveEvent;
 
@@ -27,13 +27,24 @@ fn clips_key(track: &str) -> String {
     hub_key("band", track, CLIPS, false)
 }
 
-/// `(path, name)` pairs of a list, its paths `<list> <i>`.
-fn listed_pairs(list: &str, names: &[&str]) -> Vec<(String, String)> {
+/// The objects of a list as a read finds them: paths `<list> <i>`, refs
+/// `live_<i>` (as [`objects`] encodes them).
+fn listed_objects(list: &str, class: &str, names: &[&str]) -> Vec<Object> {
     names
         .iter()
         .enumerate()
-        .map(|(i, n)| (format!("{list} {i}"), (*n).to_string()))
+        .map(|(i, n)| Object {
+            path: format!("{list} {i}"),
+            name: (*n).to_string(),
+            id: format!("live_{i}"),
+            class: class.to_string(),
+        })
         .collect()
+}
+
+/// A `$ref` target of a class.
+fn target(id: &str, class: &str) -> Value {
+    json!({"$ref": id, "class": class})
 }
 
 /// A list answer as the script encodes it.
@@ -266,24 +277,16 @@ fn only_needed_cue_times_are_read() {
         "* end",
         "SONG END",
     ];
-    let cues = listed_pairs("live_set cue_points", &names);
+    let cues = listed_objects("live_set cue_points", "CuePoint", &names);
     let calls = time_commands(&cues);
     assert_eq!(calls.len(), 1);
-    let paths: Vec<&str> = calls[0]
+    // Each through its `$ref` (review M2), never by its index.
+    let targets: Vec<&Value> = calls[0].iter().map(|c| &c["target"]).collect();
+    let want: Vec<Value> = [0, 3, 4, 9, 11, 14]
         .iter()
-        .map(|c| c["target"].as_str().unwrap())
+        .map(|i| target(&format!("live_{i}"), "CuePoint"))
         .collect();
-    assert_eq!(
-        paths,
-        [
-            "live_set cue_points 0",
-            "live_set cue_points 3",
-            "live_set cue_points 4",
-            "live_set cue_points 9",
-            "live_set cue_points 11",
-            "live_set cue_points 14"
-        ]
-    );
+    assert_eq!(targets, want.iter().collect::<Vec<&Value>>());
     assert!(
         calls[0]
             .iter()
@@ -292,35 +295,56 @@ fn only_needed_cue_times_are_read() {
 }
 
 #[test]
+fn a_time_is_read_through_its_objects_ref_and_class() {
+    let cue = Object {
+        path: "live_set cue_points 7".into(),
+        name: "001 A {C}".into(),
+        id: "live_41".into(),
+        class: "CuePoint".into(),
+    };
+    assert_eq!(
+        by_ref(&cue, "time"),
+        json!({"target": {"$ref": "live_41", "class": "CuePoint"}, "name": "get_prop",
+               "args": {"prop": "time"}})
+    );
+    // A locator deleted since the list was read: its ref is stale, the
+    // read fails (and is tried again, never paired with another's time).
+    let stale = json!({"ok": false, "error": "deleted: live_41", "errorType": "StaleRef"});
+    assert_eq!(
+        cues_of(&[cue], &[stale]),
+        Err("live_set cue_points 7 time: deleted: live_41".to_string())
+    );
+}
+
+#[test]
 fn times_are_read_in_chunks_of_200() {
     let names: Vec<String> = (0..450).map(|i| format!("{:03} Song", i % 1000)).collect();
     let refs: Vec<&str> = names.iter().map(String::as_str).collect();
-    let calls = time_commands(&listed_pairs("live_set cue_points", &refs));
+    let calls = time_commands(&listed_objects("live_set cue_points", "CuePoint", &refs));
     let sizes: Vec<usize> = calls.iter().map(Vec::len).collect();
     assert_eq!(sizes, [200, 200, 50]);
-    assert_eq!(calls[2][49]["target"], "live_set cue_points 449");
+    assert_eq!(calls[2][49]["target"], target("live_449", "CuePoint"));
     assert!(time_commands(&[]).is_empty(), "no locators, no call");
 }
 
 #[test]
 fn only_clips_with_a_brace_get_their_start_read() {
-    let clips = listed_pairs(
+    let clips = listed_objects(
         "live_set tracks 1 arrangement_clips",
+        "Clip",
         &["Verse", "Key {G}", "Chorus", "Bridge {soft}"],
     );
     let calls = clip_commands(&clips);
     assert_eq!(
         calls,
         vec![vec![
-            json!({"target": "live_set tracks 1 arrangement_clips 1", "name": "get_prop",
+            json!({"target": {"$ref": "live_1", "class": "Clip"}, "name": "get_prop",
                    "args": {"prop": "start_time"}}),
-            json!({"target": "live_set tracks 1 arrangement_clips 3", "name": "get_prop",
+            json!({"target": {"$ref": "live_3", "class": "Clip"}, "name": "get_prop",
                    "args": {"prop": "start_time"}}),
         ]]
     );
-    let many: Vec<(String, String)> = (0..201)
-        .map(|i| (format!("c {i}"), "Key {A}".to_string()))
-        .collect();
+    let many = listed_objects("c", "Clip", &["Key {A}"; 201]);
     let sizes: Vec<usize> = clip_commands(&many).iter().map(Vec::len).collect();
     assert_eq!(sizes, [200, 1]);
 }
@@ -362,11 +386,16 @@ fn the_first_answer_lists_the_locators_and_the_sections_track() {
     assert_eq!(
         listed(&slots),
         Ok(Listed {
-            cues: listed_pairs("live_set cue_points", &["001 A {C}", "SONG END"]),
+            cues: listed_objects(
+                "live_set cue_points",
+                "CuePoint",
+                &["001 A {C}", "SONG END"]
+            ),
             sections: SectionsState::One,
             track: Some("live_set tracks 1".into()),
-            clips: Some(listed_pairs(
+            clips: Some(listed_objects(
                 "live_set tracks 1 arrangement_clips",
+                "Clip",
                 &["Key {G}"]
             )),
         })
@@ -454,8 +483,9 @@ fn sections_state_counts_the_tracks_named_sections() {
 
 #[test]
 fn the_times_read_go_to_the_cues_that_needed_them() {
-    let cues = listed_pairs(
+    let cues = listed_objects(
         "live_set cue_points",
+        "CuePoint",
         &["001 A {C}", "> Verse", "SONG END", "* TS"],
     );
     assert_eq!(
@@ -491,7 +521,11 @@ fn the_times_read_go_to_the_cues_that_needed_them() {
         cues_of(&cues, &[ok(json!(0.0)), ok(json!("x"))]),
         Err("live_set cue_points 2 time: not a number".to_string())
     );
-    let clips = listed_pairs("live_set tracks 1 arrangement_clips", &["Verse", "Key {G}"]);
+    let clips = listed_objects(
+        "live_set tracks 1 arrangement_clips",
+        "Clip",
+        &["Verse", "Key {G}"],
+    );
     assert_eq!(
         clips_of(&clips, &[ok(json!(22897.0))]),
         Ok(vec![

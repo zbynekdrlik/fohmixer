@@ -21,7 +21,9 @@
 //! `tracks[name=Sections]` (the script refuses an ambiguous name: with two
 //! such tracks the first one's clips are read by its index in a second
 //! call), then the needed locators' `time` and the key clips' `start_time`
-//! in calls of at most `TIME_CHUNK` commands, one after another. A failed
+//! through each object's `$ref` (an object moved or deleted meanwhile is
+//! never paired with another one's time) in calls of at most `TIME_CHUNK`
+//! commands, one after another. A failed
 //! call ends the read with its error and keeps the old map; a disconnect
 //! voids the read in flight (its answer's number is no longer the set's)
 //! and keeps the last map, stale until the next read.
@@ -74,16 +76,29 @@ pub struct Listing {
     pub track: Option<String>,
 }
 
+/// One object of a list a read found: its path (index form, for the words
+/// of a failed read), its name, and its `$ref` with its class, through
+/// which its time is read (#140 review M2: a locator moved past another
+/// during a read is never paired with the other one's time, and a deleted
+/// one answers a stale reference, which fails the read).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct Object {
+    pub path: String,
+    pub name: String,
+    pub id: String,
+    pub class: String,
+}
+
 /// What the first call of a read found: the locators and the Sections
-/// tracks, with their paths and names.
+/// tracks, each with its path, name and `$ref`.
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct Listed {
-    pub cues: Vec<(String, String)>,
+    pub cues: Vec<Object>,
     pub sections: SectionsState,
     pub track: Option<String>,
     /// The Sections clips when the name binding answered (one such track);
     /// none: read them at `track`, if any.
-    pub clips: Option<Vec<(String, String)>>,
+    pub clips: Option<Vec<Object>>,
 }
 
 /// What a trigger does.
@@ -236,18 +251,34 @@ pub(super) fn first_commands() -> Vec<Value> {
     ]
 }
 
-/// The `(path, name)` of each object of a list answer.
-fn pairs(data: &Value) -> Vec<(String, String)> {
+/// The objects of a list answer.
+fn objects(data: &Value) -> Vec<Object> {
     items(data)
         .into_iter()
-        .map(|i| (i.path.to_string(), i.name.to_string()))
+        .map(|i| Object {
+            path: i.path.to_string(),
+            name: i.name.to_string(),
+            id: i.id.to_string(),
+            class: i.class.to_string(),
+        })
         .collect()
 }
 
+/// A `get_prop` of `prop` on `object` through its `$ref` and class: the
+/// same object wherever it moved (the script refuses the ref of a deleted
+/// object, or of another class, as `StaleRef`).
+pub(super) fn by_ref(object: &Object, prop: &str) -> Value {
+    json!({
+        "target": {"$ref": object.id, "class": object.class},
+        "name": "get_prop",
+        "args": {"prop": prop},
+    })
+}
+
 /// A slot's list, or why it has none (`what` names it).
-fn list_of(slot: Option<&Value>, what: &str) -> Result<Vec<(String, String)>, String> {
+fn list_of(slot: Option<&Value>, what: &str) -> Result<Vec<Object>, String> {
     match slot.and_then(answered) {
-        Some(data) => Ok(pairs(data)),
+        Some(data) => Ok(objects(data)),
         None => Err(format!(
             "{what}: {}",
             refused(slot).unwrap_or_else(|| "no list".to_string())
@@ -261,65 +292,62 @@ fn list_of(slot: Option<&Value>, what: &str) -> Result<Vec<(String, String)>, St
 pub(super) fn listed(slots: &[Value]) -> Result<Listed, String> {
     let cues = list_of(slots.first(), CUE_POINTS)?;
     let tracks = list_of(slots.get(2), "tracks")?;
-    let named: Vec<&(String, String)> = tracks
+    let named: Vec<&Object> = tracks
         .iter()
-        .filter(|(_, name)| name == SECTIONS_NAME)
+        .filter(|track| track.name == SECTIONS_NAME)
         .collect();
     Ok(Listed {
         cues,
         sections: sections_state(named.len()),
-        track: named.first().map(|(path, _)| path.clone()),
-        clips: slots.get(1).and_then(answered).map(pairs),
+        track: named.first().map(|track| track.path.clone()),
+        clips: slots.get(1).and_then(answered).map(objects),
     })
 }
 
-/// The `get_prop prop` of each pair `wanted` takes, in calls of at most
-/// `TIME_CHUNK` commands.
-fn chunked(
-    pairs: &[(String, String)],
-    wanted: impl Fn(&str) -> bool,
-    prop: &str,
-) -> Vec<Vec<Value>> {
-    let commands: Vec<Value> = pairs
+/// The `get_prop prop` of each object `wanted` takes (by its name), through
+/// its `$ref`, in calls of at most `TIME_CHUNK` commands.
+fn chunked(objects: &[Object], wanted: impl Fn(&str) -> bool, prop: &str) -> Vec<Vec<Value>> {
+    let commands: Vec<Value> = objects
         .iter()
-        .filter(|(_, name)| wanted(name))
-        .map(|(path, _)| get(path, prop))
+        .filter(|object| wanted(&object.name))
+        .map(|object| by_ref(object, prop))
         .collect();
     commands.chunks(TIME_CHUNK).map(<[Value]>::to_vec).collect()
 }
 
 /// The `time` reads of the locators that need one (neither ignored nor a
 /// section), in calls of at most `TIME_CHUNK`.
-pub(super) fn time_commands(cues: &[(String, String)]) -> Vec<Vec<Value>> {
+pub(super) fn time_commands(cues: &[Object]) -> Vec<Vec<Value>> {
     chunked(cues, |name| needs_time(&classify(name)), "time")
 }
 
 /// The `start_time` reads of the clips whose name holds `{`, in calls of at
 /// most `TIME_CHUNK`.
-pub(super) fn clip_commands(clips: &[(String, String)]) -> Vec<Vec<Value>> {
+pub(super) fn clip_commands(clips: &[Object]) -> Vec<Vec<Value>> {
     chunked(clips, clip_needs_time, "start_time")
 }
 
-/// Each pair's name with its time from `slots` (in order, one per pair
+/// Each object's name with its time from `slots` (in order, one per object
 /// `wanted` takes; none for the others), or the first that did not read.
 fn timed(
-    pairs: &[(String, String)],
+    objects: &[Object],
     wanted: impl Fn(&str) -> bool,
     slots: &[Value],
     prop: &str,
 ) -> Result<Vec<(String, Option<f64>)>, String> {
     let mut slots = slots.iter();
-    pairs
+    objects
         .iter()
-        .map(|(path, name)| {
-            if !wanted(name) {
-                return Ok((name.clone(), None));
+        .map(|object| {
+            if !wanted(&object.name) {
+                return Ok((object.name.clone(), None));
             }
             let slot = slots.next();
             match slot.and_then(answered).and_then(Value::as_f64) {
-                Some(time) => Ok((name.clone(), Some(time))),
+                Some(time) => Ok((object.name.clone(), Some(time))),
                 None => Err(format!(
-                    "{path} {prop}: {}",
+                    "{} {prop}: {}",
+                    object.path,
                     refused(slot).unwrap_or_else(|| "not a number".to_string())
                 )),
             }
@@ -328,7 +356,7 @@ fn timed(
 }
 
 /// The locators with their times read.
-pub(super) fn cues_of(cues: &[(String, String)], slots: &[Value]) -> Result<Vec<Cue>, String> {
+pub(super) fn cues_of(cues: &[Object], slots: &[Value]) -> Result<Vec<Cue>, String> {
     let timed = timed(cues, |name| needs_time(&classify(name)), slots, "time")?;
     Ok(timed
         .into_iter()
@@ -337,10 +365,7 @@ pub(super) fn cues_of(cues: &[(String, String)], slots: &[Value]) -> Result<Vec<
 }
 
 /// The clips with their starts read.
-pub(super) fn clips_of(
-    clips: &[(String, String)],
-    slots: &[Value],
-) -> Result<Vec<ClipName>, String> {
+pub(super) fn clips_of(clips: &[Object], slots: &[Value]) -> Result<Vec<ClipName>, String> {
     let timed = timed(clips, clip_needs_time, slots, "start_time")?;
     Ok(timed
         .into_iter()
