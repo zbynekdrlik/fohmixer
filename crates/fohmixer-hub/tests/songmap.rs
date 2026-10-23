@@ -382,8 +382,18 @@ fn two_sections_tracks_read_the_first_ones_clips_by_its_index() {
         let dir = tempfile::tempdir().unwrap();
         let mut host = Host::start_site("band", &two_sections_site(dir.path()), 0, 0.0);
         let hub = TestHub::start(vec![host.cfg()], dir.path()).await;
+        // The read took the first one's clips by its index.
+        let map = songmap_until(&hub, SECS_5, |m| m["spans"].as_array().is_some()).await;
+        assert_eq!(map["sections"], json!({"first_of": 2}));
+        assert_eq!(
+            map["spans"][0]["changes"],
+            json!([{"time": 40.0, "key": {"root": 7, "minor": false, "name": "G"}}]),
+            "the first Sections track's key clip, not the second's"
+        );
+        assert_eq!(map["problems"], json!([]));
+        // Since the script's own answer to the name is ambiguous, never a
+        // guess (asked once the hub is connected: the map is read).
         let mut c = hub.client().await;
-        // The script's own answer to the name: ambiguous, never a guess.
         let by_name = json!({"target": "live_set tracks[name=Sections]", "name": "get_prop",
                              "args": {"prop": "arrangement_clips"}});
         let slots = c.cmd("band", vec![by_name]).await.unwrap();
@@ -394,15 +404,6 @@ fn two_sections_tracks_read_the_first_ones_clips_by_its_index() {
                 .is_some_and(|e| e.contains("ambiguous")),
             "{slots:?}"
         );
-        // So the read took the first one's clips by its index.
-        let map = songmap_until(&hub, SECS_5, |m| m["spans"].as_array().is_some()).await;
-        assert_eq!(map["sections"], json!({"first_of": 2}));
-        assert_eq!(
-            map["spans"][0]["changes"],
-            json!([{"time": 40.0, "key": {"root": 7, "minor": false, "name": "G"}}]),
-            "the first Sections track's key clip, not the second's"
-        );
-        assert_eq!(map["problems"], json!([]));
         // Its clips are followed at that index, the second's are not.
         assert_eq!(host.listeners("arrangement_clips", "live_set tracks 1"), 1);
         assert_eq!(host.listeners("arrangement_clips", "live_set tracks 3"), 0);
