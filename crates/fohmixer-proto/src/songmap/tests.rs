@@ -534,7 +534,13 @@ fn a_clip_whose_description_is_no_key_is_no_key_clip() {
         ],
     );
     assert!(m.spans[0].changes.is_empty());
-    assert!(m.problems.is_empty());
+    // `Amin` is no word but a mistyped key: spec Appendix A.3 lists `min`
+    // under "Rejected, as a problem", so it is never a silent no-key clip
+    // (review I2). The others stay no key clip, with no problem.
+    assert_eq!(
+        kinds(&m),
+        [(ProblemKind::BadClipKey, Some(31), Some(22810.0))]
+    );
 }
 
 #[test]
