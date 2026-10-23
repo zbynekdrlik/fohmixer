@@ -365,6 +365,13 @@ pub enum RouterMsg {
         instance: String,
         reply: oneshot::Sender<Result<SongMapReport, SongMapMissing>>,
     },
+    /// A failed song map read of `instance` is due again (#140 review M3):
+    /// `read_no` is the failed read's; void unless it is still the set's
+    /// retry.
+    SongMapRetry {
+        instance: String,
+        read_no: u64,
+    },
     /// The hub stops: the Stream Deck's held keys released and its task
     /// told to stop (#52), then every client closed.
     Stop,
@@ -902,6 +909,7 @@ impl Router {
             RouterMsg::SongMap { instance, reply } => {
                 let _ = reply.send(self.songmap_report(&instance));
             }
+            RouterMsg::SongMapRetry { instance, read_no } => self.songmap_retry(&instance, read_no),
             RouterMsg::Stop => return false,
         }
         true
