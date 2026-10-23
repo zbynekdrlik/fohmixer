@@ -693,6 +693,62 @@ fn a_one_word_description_spelled_as_a_wrong_key_is_a_problem() {
     assert!(one_clip("Pad {bridge}").problems.is_empty());
 }
 
+/// Whether a clip's description makes it a bad key clip of song 031.
+fn bad_clip(name: &str) -> bool {
+    kinds(&one_clip(name)) == [(ProblemKind::BadClipKey, Some(31), Some(22800.0))]
+}
+
+#[test]
+fn a_key_spelled_in_lower_case_or_with_h_is_a_problem_a_word_is_not() {
+    // Round 2's C1: a word whose first letter, upper-cased (`h`/`H` read as
+    // `B`), gives a key or a mistyped key is a problem; any other word is
+    // none, whatever its first letter.
+    for word in ["g", "am", "f#m", "bb", "ebm", "amin", "h", "hm", "Hmoll"] {
+        assert!(bad_clip(&format!("Pad {{{word}}}")), "{word}");
+    }
+    for word in ["bridge", "build", "drums", "fade", "hold", "Hook", "Hymn"] {
+        let m = one_clip(&format!("Pad {{{word}}}"));
+        assert!(m.problems.is_empty(), "{word}: {:?}", m.problems);
+    }
+}
+
+#[test]
+fn a_german_spelling_is_a_mistyped_key_on_any_clip() {
+    // Round 2's C2: spec A.3 rejects Fis and Es, as a problem.
+    for word in ["Fis", "Es", "Cis", "As", "Gism", "fis", "es"] {
+        assert!(bad_clip(&format!("Pad {{{word}}}")), "{word}");
+        assert!(bad_clip(&format!("Key {{{word}}}")), "{word}");
+    }
+}
+
+#[test]
+fn a_mistyped_first_word_or_spelling_half_is_a_problem() {
+    // Round 2's C2b: more words after a mistyped key, or a double spelling
+    // with a mistyped half, is a problem on any clip, as `{G loud}` is.
+    for description in [
+        "Amin loud",
+        "Amin/C",
+        "F♯m/A",
+        "C/Amin",
+        "g loud",
+        "Fis 2",
+        "F#/H",
+    ] {
+        assert!(bad_clip(&format!("Pad {{{description}}}")), "{description}");
+    }
+    // Words stay words, alone or with more after them.
+    for description in [
+        "Bridge 2",
+        "Chorus 2",
+        "soft and slow",
+        "hold on",
+        "Hook/Verse",
+    ] {
+        let m = one_clip(&format!("Pad {{{description}}}"));
+        assert!(m.problems.is_empty(), "{description}: {:?}", m.problems);
+    }
+}
+
 #[test]
 fn words_and_longer_descriptions_stay_no_key_clips() {
     // {Verse}, {soft}, {Bridge} and {Chorus 2} are words (review I2's
