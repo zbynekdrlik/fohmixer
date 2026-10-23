@@ -250,6 +250,8 @@ fn a_song_without_a_description_has_no_key_and_no_problem() {
 fn an_empty_or_unclosed_description_is_a_problem() {
     // Review M6: a song locator holding a `{` that opens no description is
     // a tag that does not read (spec §4), not a song without a key.
+    // Round 2's M6b: its own problem, whose words say the braces are at
+    // fault: "no key" was the wrong hint, the key may be there (`{C 120`).
     for name in [
         "001 T {}",
         "001 T { }",
@@ -259,9 +261,17 @@ fn an_empty_or_unclosed_description_is_a_problem() {
     ] {
         let m = build(&[cue(name, 0.0), cue("SONG END", 9.0)], &[]);
         assert_eq!(m.spans[0].key, None, "{name}");
+        assert_eq!(m.problems.len(), 1, "{name}");
+        let problem = &m.problems[0];
         assert_eq!(
-            kinds(&m),
-            [(ProblemKind::BadKey(KeyError::Empty), Some(1), Some(0.0))],
+            serde_json::to_value(problem.kind).unwrap(),
+            serde_json::json!("bad_braces"),
+            "{name}"
+        );
+        assert_eq!((problem.song, problem.time), (Some(1), Some(0.0)), "{name}");
+        assert_eq!(
+            problem.text(),
+            "song 001: its {…} is empty or never closed (beat 0)",
             "{name}"
         );
     }
@@ -677,12 +687,10 @@ fn a_one_word_description_spelled_as_a_wrong_key_is_a_problem() {
             "{name}"
         );
     }
-    // The ruling's "a lower-case key letter first" takes any such word,
-    // not only a key's spelling.
-    assert_eq!(
-        kinds(&one_clip("Pad {bridge}")),
-        [(ProblemKind::BadClipKey, Some(31), Some(22800.0))]
-    );
+    // Round 2's C1: a lower-case or `H` first letter makes a problem only
+    // of a key spelled so; a plain word is no attempt at a key (spec A.3
+    // rejects lower case inside a key token).
+    assert!(one_clip("Pad {bridge}").problems.is_empty());
 }
 
 #[test]
@@ -699,7 +707,6 @@ fn words_and_longer_descriptions_stay_no_key_clips() {
         "KEY {soft}",
         "key {soft}",
         "Keys {soft}",
-        "Pad {Amin loud}",
         "Pad {Bridge 2}",
         "Empty {}",
         "Open {G",
@@ -708,6 +715,12 @@ fn words_and_longer_descriptions_stay_no_key_clips() {
         assert!(m.spans[0].changes.is_empty(), "{name}");
         assert!(m.problems.is_empty(), "{name}: {:?}", m.problems);
     }
+    // Round 2's C2b: a first word that is a mistyped key is a problem with
+    // more words after it, as `{G loud}` is (spec A.3).
+    assert_eq!(
+        kinds(&one_clip("Pad {Amin loud}")),
+        [(ProblemKind::BadClipKey, Some(31), Some(22800.0))]
+    );
 }
 
 #[test]
@@ -746,6 +759,8 @@ fn a_mistyped_key_is_told_from_a_word_by_how_it_fails() {
         ("F♯", KeyError::Suffix),
         ("F♯m", KeyError::Suffix),
         ("Amolm", KeyError::Suffix),
+        // Round 2's C2: spec A.3 rejects Fis and Es, as a problem.
+        ("Fis", KeyError::Suffix),
         ("H", KeyError::Letter),
         ("h", KeyError::Letter),
         ("am", KeyError::Letter),
@@ -757,7 +772,6 @@ fn a_mistyped_key_is_told_from_a_word_by_how_it_fails() {
         ("Bridge", KeyError::Suffix),
         ("Amm", KeyError::Suffix),
         ("AMEN", KeyError::Suffix),
-        ("Fis", KeyError::Suffix),
         ("Verse", KeyError::Letter),
         ("soft", KeyError::Letter),
         ("Intro", KeyError::Letter),
@@ -766,11 +780,14 @@ fn a_mistyped_key_is_told_from_a_word_by_how_it_fails() {
         assert_eq!(parse_token(word), Err(error), "{word}");
         assert!(!mistyped(word, error), "{word}");
     }
+    // Round 2: the German `is`, `es` and `s` join them (C2); no list of
+    // letters any more, the letter rule reads the word itself (C1).
     assert_eq!(
-        WRONG_SUFFIXES,
-        ["min", "maj", "mol", "moll", "dur", "M", "♯", "♭"]
+        WRONG_SUFFIXES[..],
+        [
+            "min", "maj", "mol", "moll", "dur", "M", "♯", "♭", "is", "es", "s"
+        ]
     );
-    assert_eq!(WRONG_LETTERS, ['H', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h']);
 }
 
 #[test]
