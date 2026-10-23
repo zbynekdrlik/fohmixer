@@ -313,10 +313,16 @@ fn is_tempo(word: &str) -> bool {
 
 /// A song's key from its description: the first word, then the tempo or
 /// nothing (a key that does not read is `BadKey`, a word after it that is
-/// no tempo `BadTempo`). No description: no key and no problem.
-fn song_key(description: Option<&str>) -> Result<Option<Key>, ProblemKind> {
+/// no tempo `BadTempo`). No description: no key, and a problem only when
+/// the name still holds a `{` (`{}`, a `{` never closed: a tag that does not
+/// read, spec §4, #140 review M6), else none.
+fn song_key(name: &str, description: Option<&str>) -> Result<Option<Key>, ProblemKind> {
     let Some(description) = description else {
-        return Ok(None);
+        return if name.contains('{') {
+            Err(ProblemKind::BadKey(KeyError::Empty))
+        } else {
+            Ok(None)
+        };
     };
     let mut words = description.split_whitespace();
     let key = parse_token(words.next().unwrap_or("")).map_err(ProblemKind::BadKey)?;
@@ -451,7 +457,7 @@ fn spans(placed: &[Placed], problems: &mut Vec<Problem>) -> Vec<Building> {
             keyless = true;
             None
         } else {
-            match song_key(description.as_deref()) {
+            match song_key(cue.name, description.as_deref()) {
                 Ok(key) => key,
                 Err(kind) => {
                     problems.push(problem(kind));

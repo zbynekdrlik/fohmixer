@@ -247,6 +247,31 @@ fn a_song_without_a_description_has_no_key_and_no_problem() {
 }
 
 #[test]
+fn an_empty_or_unclosed_description_is_a_problem() {
+    // Review M6: a song locator holding a `{` that opens no description is
+    // a tag that does not read (spec §4), not a song without a key.
+    for name in [
+        "001 T {}",
+        "001 T { }",
+        "001 T {C 120",
+        "001 T {",
+        "001 T } {C 120",
+    ] {
+        let m = build(&[cue(name, 0.0), cue("SONG END", 9.0)], &[]);
+        assert_eq!(m.spans[0].key, None, "{name}");
+        assert_eq!(
+            kinds(&m),
+            [(ProblemKind::BadKey(KeyError::Empty), Some(1), Some(0.0))],
+            "{name}"
+        );
+    }
+    // A `}` alone opens nothing: no tag, no problem.
+    let m = build(&[cue("001 T C 120}", 0.0), cue("SONG END", 9.0)], &[]);
+    assert_eq!(m.spans[0].key, None);
+    assert!(m.problems.is_empty());
+}
+
+#[test]
 fn two_descriptions_make_the_song_keyless() {
     let m = build(&[cue("001 T {C 100} {D}", 0.0), cue("SONG END", 9.0)], &[]);
     assert_eq!(m.spans[0].key, None);
