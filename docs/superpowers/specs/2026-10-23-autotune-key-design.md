@@ -1,6 +1,6 @@
 # Autotune key per song, switched by the hub (#140)
 
-Status: draft for the owner's review. Every rule in §2 is the owner's, recorded on #140 between 2026-10-21 and 2026-10-23 with the owner's own words. The main session's calls are marked *(call)*. What is left to the builder is in §12. Nothing is built before the owner approves this note, and nothing on the surface is built before the owner approves mockup v2.
+Status: approved by the owner on 2026-10-23, with English texts on the surface and in the set (#141). Every rule in §2 is the owner's, recorded on #140 between 2026-10-21 and 2026-10-23 with the owner's own words. The main session's calls are marked *(call)*. What is left to the builder is in §12. Nothing is built before the owner approves this note, and nothing on the surface is built before the owner approves mockup v2.
 
 ## 0. Zhrnutie pre vlastníka
 
@@ -84,7 +84,7 @@ The owner: "je to veľmi pracné udržiavať správne".
   - **Placement *(call)*:**
     - The positions are used as the automation has them, half-beats included.
     - 133's 75136.6 goes to 75136.5: earlier, never later, so it stays before the entry.
-  - **Each new clip is named `Tónina {X}` *(call)*.** AbleSet shows it as a short section, with the key as its description, just before the section it precedes. The owner accepted adding clips, which accepts this: "pridať nový clip".
+  - **Each new clip is named `Key {X}`.** The owner ruled on 2026-10-23 that the set and the surface use English terms (#141). AbleSet shows the clip as a short section, with the key as its description, just before the section it precedes. The owner accepted adding clips: "pridať nový clip".
   - The automation artefacts in 095, 123 and 148 are not converted *(call, open to the owner's veto)*.
 - **A song's span** runs from its locator to the next locator that is neither a section (`>`) nor ignored (`*`). That locator must be `SONG END`, `STOP` or `AUTOSTOP`. Outside every span there is no key.
 - **A song without a valid key** gets no autotune for its whole span. A key is never guessed, never taken from the old automation, and never carried over from the previous song.
@@ -113,7 +113,7 @@ There are two states only.
 - **A per-singer manual off.** That singer stays on DRY whatever the automation says.
   - It covers both of the singer's tracks, stream and PA.
   - It is kept across a hub restart.
-- **The AUTOTUNE button is always on the surface.**
+- **The AUTOTUNE button is always on the surface.** Its texts and the panel's are English, as approved in mockup v2 (`tuning · F`, `stopped · F`, `no song`, `no key`, `off · F`, the panel's `ON`/`OFF`, `TUNE`/`DRY`).
   - It switches AUT and shows the active key and any mismatch.
   - The gesture and the look are mockup v2's, for the owner's approval.
   - AUT is kept in `hub-state.json` across a restart, and is off after a first install.

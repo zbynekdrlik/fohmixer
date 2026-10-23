@@ -1,6 +1,7 @@
 <!doctype html>
-<!-- fohmixer #140: mockup v2 of the AUTOTUNE rail button, for the owner's
-     decision; not part of the app. It revises the approved v1 (#104) after
+<!-- fohmixer #140: mockup v2 of the AUTOTUNE rail button, approved by the
+     owner on 2026-10-23 with English texts on the surface (#141); not part
+     of the app. It revises the approved v1 (#104) after
      the owner's rulings of 2026-10-23 on #140: two states only (AUT on: the
      rules; AUT off: autotune fully off), the keys always written, a
      per-singer manual off, the key and a read-back mismatch shown. A 1 s
@@ -798,8 +799,8 @@ code {
             <h3>Postup: vypnúť jedného speváka</h3>
             <ol>
                 <li>Ťukni na AUTOTUNE: otvorí sa panel spevákov.</li>
-                <li>Pri spevákovi ťukni na <span class="rec">vyp.</span>: jeho stream aj PA idú na DRY hneď a ostanú tak aj cez ďalšie piesne a reštart.</li>
-                <li>Späť ho zapne ťuk na <span class="rec">zap.</span>; ladiť začne podľa pravidiel.</li>
+                <li>Pri spevákovi ťukni na <span class="rec">OFF</span>: jeho stream aj PA idú na DRY hneď a ostanú tak aj cez ďalšie piesne a reštart.</li>
+                <li>Späť ho zapne ťuk na <span class="rec">ON</span>; ladiť začne podľa pravidiel.</li>
             </ol>
         </section>
         <section class="box">
@@ -816,7 +817,7 @@ code {
             <ol>
                 <li><span class="rec">Podržanie 1 s</span> prepne AUT (ako dnes), ťuk otvorí panel.</li>
                 <li>Druhý riadok so stavom a tóninou (obrazovka 1).</li>
-                <li>Panel spevákov a jeho <span class="rec">zap./vyp.</span> pre stream aj PA naraz.</li>
+                <li>Panel spevákov a jeho <span class="rec">ON/OFF</span> pre stream aj PA naraz. Texty na iPade sú anglické.</li>
                 <li>Nezhoda tóniny: žltý <span class="inline-flag">!</span>, spevák na DRY, dôvod v paneli.</li>
             </ol>
         </section>
@@ -862,33 +863,33 @@ const ON = { ...TUNE, state: "on", on: true };
 const MIXED = { ...TUNE, state: "mixed" };
 
 const RAIL = [
-    { cls: "stage-mics", label: "STAGE", aut: "run", sub: "hrá · stíšené" },
-    { cls: "reverb-btn", label: "REVERB", on: true, aut: "run", sub: "hrá · plný" },
-    { ...ON, aut: "run", sub: "ladí · F" },
+    { cls: "stage-mics", label: "STAGE", aut: "run" },
+    { cls: "reverb-btn", label: "REVERB", on: true, aut: "run" },
+    { ...ON, aut: "run", sub: "tuning · F" },
 ];
 
 const CELLS = {
     aut: [
-        { n: "1", t: "AUT vypnutá", b: { ...OFF, sub: "vyp. · F" }, p: "Autotune je úplne vypnutý, všetci na DRY. Tónina piesne (F) sa zapisuje aj tak, aby bola po zapnutí hneď správna." },
-        { n: "2", t: "Podržanie", b: { ...OFF, hold: 60, sub: "drž… zapína AUT" }, p: "Výplň sa plní 1 s. Pustíš skôr: nič sa neprepne." },
-        { n: "3", t: "Plné · pusť", b: { ...OFF, hold: 100, sub: "pusť — zapne AUT" }, p: "AUT sa zapne až pri pustení. Rovnako sa vypína." },
-        { n: "4", t: "AUT · Live stojí", b: { ...OFF, aut: "run", sub: "stojí · F" }, p: "AUT zapnutá, Live stojí: neladí, aj v strede piesne. Tónina F je pripravená." },
-        { n: "5", t: "AUT · hrá v piesni", b: { ...ON, aut: "run", sub: "ladí · F" }, p: "Live hrá v piesni s tóninou F: svieti, ladí každý zapnutý spevák na streame aj PA." },
-        { n: "6", t: "Zmena v piesni", wide: false, b: { ...ON, aut: "run", sub: "ladí · G" }, p: "Klip sekcie „Verse {G}“: na jeho začiatku hub zapíše G a riadok ukáže G." },
+        { n: "1", t: "AUT vypnutá", b: { ...OFF, sub: "off · F" }, p: "Autotune je úplne vypnutý, všetci na DRY. Tónina piesne (F) sa zapisuje aj tak, aby bola po zapnutí hneď správna." },
+        { n: "2", t: "Podržanie", b: { ...OFF, hold: 60, sub: "hold… AUT on" }, p: "Výplň sa plní 1 s. Pustíš skôr: nič sa neprepne." },
+        { n: "3", t: "Plné · pusť", b: { ...OFF, hold: 100, sub: "release — AUT on" }, p: "AUT sa zapne až pri pustení. Rovnako sa vypína." },
+        { n: "4", t: "AUT · Live stojí", b: { ...OFF, aut: "run", sub: "stopped · F" }, p: "AUT zapnutá, Live stojí: neladí, aj v strede piesne. Tónina F je pripravená." },
+        { n: "5", t: "AUT · hrá v piesni", b: { ...ON, aut: "run", sub: "tuning · F" }, p: "Live hrá v piesni s tóninou F: svieti, ladí každý zapnutý spevák na streame aj PA." },
+        { n: "6", t: "Zmena v piesni", wide: false, b: { ...ON, aut: "run", sub: "tuning · G" }, p: "Klip „Key {G}“ na stope Sections: na jeho začiatku hub zapíše G a riadok ukáže G." },
     ],
     rules: [
-        { n: "7", t: "Mimo piesne", b: { ...OFF, aut: "run", sub: "mimo piesne" }, p: "Live hrá medzi piesňami (reč, prechod): neladí." },
-        { n: "8", t: "Bez tóniny", b: { ...OFF, aut: "run", sub: "bez tóniny" }, p: "Lokátor piesne nemá tóninu: neladí celú pieseň, tónina sa nikdy nehádá." },
-        { n: "9", t: "Tónina sa overuje", b: { ...OFF, aut: "run", sub: "zapisuje · F" }, p: "Po štarte: najprv tónina, spätné čítanie, až potom ladenie. Trvá zlomok sekundy." },
+        { n: "7", t: "Mimo piesne", b: { ...OFF, aut: "run", sub: "no song" }, p: "Live hrá medzi piesňami (reč, prechod): neladí." },
+        { n: "8", t: "Bez tóniny", b: { ...OFF, aut: "run", sub: "no key" }, p: "Lokátor piesne nemá tóninu: neladí celú pieseň, tónina sa nikdy nehádá." },
+        { n: "9", t: "Tónina sa overuje", b: { ...OFF, aut: "run", sub: "checking · F" }, p: "Po štarte: najprv tónina, spätné čítanie, až potom ladenie. Trvá zlomok sekundy." },
         { n: "", t: "Na lište · Live hrá", rail: RAIL, p: "AUTOTUNE nahradí dnešný prepínač na tom istom mieste, v jeho oranžovej." },
     ],
     trouble: [
-        { n: "10", t: "Spevák ručne vyp.", b: { ...MIXED, aut: "run", sub: "ladí · F · 1 vyp." }, p: "Jeden spevák je ručne vypnutý: ostatní ladia, okraj ukazuje, že neladí každý." },
-        { n: "11", t: "Nezhoda tóniny", b: { ...MIXED, aut: "run", sub: "ladí · F · 1 !", flag: true }, p: "Spätné čítanie u jedného speváka nesedí: ten ide na DRY, žltý roh, dôvod v paneli." },
-        { n: "12", t: "Chyba v lokátoroch", b: { ...ON, aut: "run", sub: "ladí · F", flag: true }, p: "Napr. pieseň bez SONG END: tá pieseň neladí, ostatné áno. Žltý roh, zoznam v paneli." },
+        { n: "10", t: "Spevák ručne vyp.", b: { ...MIXED, aut: "run", sub: "tuning · F · 1 off" }, p: "Jeden spevák je ručne vypnutý: ostatní ladia, okraj ukazuje, že neladí každý." },
+        { n: "11", t: "Nezhoda tóniny", b: { ...MIXED, aut: "run", sub: "tuning · F · 1 !", flag: true }, p: "Spätné čítanie u jedného speváka nesedí: ten ide na DRY, žltý roh, dôvod v paneli." },
+        { n: "12", t: "Chyba v lokátoroch", b: { ...ON, aut: "run", sub: "tuning · F", flag: true }, p: "Napr. pieseň bez SONG END: tá pieseň neladí, ostatné áno. Žltý roh, zoznam v paneli." },
         { n: "13", t: "Žiadny spevák", b: { ...TUNE, binding: "unresolved" }, p: "Žiadny Tuner nemá +AUTOTUNE: červené. Podržanie ani ťuk nič neurobia." },
         { n: "14", t: "Čaká na hub", b: { ...TUNE, binding: "waiting" }, p: "Po pripojení, kým hub nepovie stav: sivé." },
-        { n: "15", t: "Panel otvorený", b: { ...ON, aut: "run", sub: "ladí · F", open: true }, p: "Ťuk otvoril panel spevákov (obrazovka 2); tlačidlo má biely okraj." },
+        { n: "15", t: "Panel otvorený", b: { ...ON, aut: "run", sub: "tuning · F", open: true }, p: "Ťuk otvoril panel spevákov (obrazovka 2); tlačidlo má biely okraj." },
     ],
     phone: [
         { n: "16", t: "Nastojato", rail: RAIL, cut: "up", p: "Bez druhého riadku; AUT je bodka. Panel cez celú šírku." },
@@ -902,12 +903,12 @@ const SINGERS = [
     { name: "Vox 2", stream: "on", pa: "on", key: "F", ok: true },
     { name: "Vox 3", stream: "dry", pa: "dry", key: "F", ok: true, off: true },
     { name: "Vox 4", stream: "none", pa: "on", key: "F", ok: true },
-    { name: "Vox 5", stream: "dry", pa: "on", key: "F", ok: false, why: "stream: Key číta G, zapísané F" },
+    { name: "Vox 5", stream: "dry", pa: "on", key: "F", ok: false, why: "stream Key reads G, wrote F" },
     { name: "Vox 6", stream: "on", pa: "on", key: "F", ok: true },
 ];
 
 function chip(state, where) {
-    const text = { on: "ladí", dry: "DRY", none: "bez autotune" }[state];
+    const text = { on: "TUNE", dry: "DRY", none: "—" }[state];
     return el("span", `chip ${state}`, { text: `${where} ${text}` });
 }
 
@@ -915,7 +916,7 @@ function panel() {
     const p = el("div", "tpanel-in");
     const head = el("div", "tp-head");
     head.append(el("span", "tp-title", { text: "AUTOTUNE" }), el("span", "aut-badge", { text: "AUT" }));
-    head.append(el("span", "tp-song", { text: "pieseň 031 · F → G od klipu „Verse {G}“" }));
+    head.append(el("span", "tp-song", { text: "song 031 · F → G at Key {G}" }));
     p.append(head);
     for (const s of SINGERS) {
         const r = el("div", s.off ? "tp-row off" : "tp-row");
@@ -923,14 +924,14 @@ function panel() {
         const chips = el("span", "tp-chips");
         chips.append(chip(s.stream, "stream"), chip(s.pa, "PA"));
         const key = el("span", s.ok ? "tp-key ok" : "tp-key bad", { text: s.ok ? `${s.key} ✓` : "!" });
-        const sw = el("span", s.off ? "tp-sw" : "tp-sw on", { text: s.off ? "zap." : "vyp." });
+        const sw = el("span", s.off ? "tp-sw" : "tp-sw on", { text: s.off ? "ON" : "OFF" });
         r.append(name, chips, key, sw);
         p.append(r);
-        if (!s.ok) p.append(el("div", "tp-why", { text: `${s.name}: ${s.why} · ostáva na DRY, hub zapíše znova pri ďalšej zmene` }));
+        if (!s.ok) p.append(el("div", "tp-why", { text: `${s.name}: ${s.why} · on DRY, rewrite at the next change` }));
     }
     const foot = el("div", "tp-foot");
-    foot.append(el("span", "", { text: "Mapa piesní: 165 piesní s tóninou, 8 zmien v piesňach, 1 problém (pieseň 088 bez tóniny)." }));
-    foot.append(el("span", "small", { text: "Lišta Live: F Major. Podrž AUTOTUNE 1 s: AUT zap./vyp." }));
+    foot.append(el("span", "", { text: "Song map: 165 songs with a key, 8 key changes, 1 problem (088: no key)." }));
+    foot.append(el("span", "small", { text: "Live: F Major. Hold AUTOTUNE 1 s: AUT on/off." }));
     p.append(foot);
     return p;
 }
@@ -953,7 +954,7 @@ for (const box of document.querySelectorAll("[data-cells]")) {
         box.append(cell);
     }
 }
-document.querySelector("[data-panel-rail]").append(railBtn({ ...MIXED, aut: "run", sub: "ladí · F · 1 !", flag: true, open: true }));
+document.querySelector("[data-panel-rail]").append(railBtn({ ...MIXED, aut: "run", sub: "tuning · F · 1 !", flag: true, open: true }));
 document.querySelector("[data-panel]").append(panel());
 
 // Every button's lines measured, as v1.
