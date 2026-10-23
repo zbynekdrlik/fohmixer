@@ -159,12 +159,37 @@ fn a_song_ended_by_another_entry_or_by_nothing_is_not_ended() {
 
 #[test]
 fn free_text_after_the_key_is_refused() {
-    let m = build(&[cue("001 T {A cappella}", 0.0), cue("SONG END", 9.0)], &[]);
-    assert_eq!(m.spans[0].key, None);
-    assert!(matches!(m.problems[0].kind, ProblemKind::BadKey(_)));
+    // Review M5: its own problem, which says the word must be the tempo.
+    for name in [
+        "001 T {A cappella}",
+        "001 T {C 120bpm}",
+        "001 T {F#m slow 4/4}",
+    ] {
+        let m = build(&[cue(name, 0.0), cue("SONG END", 9.0)], &[]);
+        assert_eq!(m.spans[0].key, None, "{name}");
+        assert_eq!(
+            kinds(&m),
+            [(ProblemKind::BadTempo, Some(1), Some(0.0))],
+            "{name}"
+        );
+        assert_eq!(
+            m.problems[0].text(),
+            "song 001: the word after the key must be the tempo (beat 0)",
+            "{name}"
+        );
+    }
+    // A key that does not read stays its own problem, tempo or not.
+    let m = build(
+        &[cue("001 T {Amin cappella}", 0.0), cue("SONG END", 9.0)],
+        &[],
+    );
     assert_eq!(
         kinds(&m),
         [(ProblemKind::BadKey(KeyError::Suffix), Some(1), Some(0.0))]
+    );
+    assert_eq!(
+        serde_json::to_value(ProblemKind::BadTempo).unwrap(),
+        serde_json::json!("bad_tempo")
     );
 }
 
@@ -205,7 +230,7 @@ fn a_key_alone_or_with_a_tempo_reads() {
         assert_eq!(m.spans[0].key, None, "{name}");
         assert_eq!(
             kinds(&m),
-            [(ProblemKind::BadKey(KeyError::Suffix), Some(1), Some(0.0))],
+            [(ProblemKind::BadTempo, Some(1), Some(0.0))],
             "{name}"
         );
     }

@@ -118,6 +118,9 @@ pub enum ProblemKind {
     TwoDescriptions,
     /// A song's key does not read.
     BadKey(KeyError),
+    /// A word after a song's key that is not its tempo (`{C 120bpm}`, `{A
+    /// cappella}`, #140 review M5).
+    BadTempo,
     /// A song's entry did not end with `SONG END`, `STOP` or `AUTOSTOP`.
     NotEnded,
     /// A key clip lies in no ended song.
@@ -150,6 +153,7 @@ impl Problem {
             ProblemKind::SameTime => "two locators or key clips at one time".to_string(),
             ProblemKind::TwoDescriptions => "its locator holds two {…}".to_string(),
             ProblemKind::BadKey(error) => format!("its key does not read: {}", error.text()),
+            ProblemKind::BadTempo => "the word after the key must be the tempo".to_string(),
             ProblemKind::NotEnded => "not ended by SONG END, STOP or AUTOSTOP".to_string(),
             ProblemKind::ClipOutsideSong => {
                 format!(
@@ -308,15 +312,16 @@ fn is_tempo(word: &str) -> bool {
 }
 
 /// A song's key from its description: the first word, then the tempo or
-/// nothing. No description: no key and no problem.
-fn song_key(description: Option<&str>) -> Result<Option<Key>, KeyError> {
+/// nothing (a key that does not read is `BadKey`, a word after it that is
+/// no tempo `BadTempo`). No description: no key and no problem.
+fn song_key(description: Option<&str>) -> Result<Option<Key>, ProblemKind> {
     let Some(description) = description else {
         return Ok(None);
     };
     let mut words = description.split_whitespace();
-    let key = parse_token(words.next().unwrap_or(""))?;
+    let key = parse_token(words.next().unwrap_or("")).map_err(ProblemKind::BadKey)?;
     match words.next() {
-        Some(word) if !is_tempo(word) => Err(KeyError::Suffix),
+        Some(word) if !is_tempo(word) => Err(ProblemKind::BadTempo),
         _ => Ok(Some(key)),
     }
 }
@@ -448,8 +453,8 @@ fn spans(placed: &[Placed], problems: &mut Vec<Problem>) -> Vec<Building> {
         } else {
             match song_key(description.as_deref()) {
                 Ok(key) => key,
-                Err(error) => {
-                    problems.push(problem(ProblemKind::BadKey(error)));
+                Err(kind) => {
+                    problems.push(problem(kind));
                     keyless = true;
                     None
                 }
