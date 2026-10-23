@@ -121,17 +121,20 @@ pub enum ProblemKind {
     ClipInKeylessSong,
 }
 
-/// One problem: what, which song (if one), where (in beats).
+/// One problem: what, which song (if one), where (in beats), and the
+/// Sections clip it is about (its trimmed name; none for a locator's).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Problem {
     pub kind: ProblemKind,
     pub song: Option<u16>,
     pub time: Option<f64>,
+    #[serde(default)]
+    pub clip: Option<String>,
 }
 
 impl Problem {
     /// The problem in words (English, #141), e.g. `song 031: two locators
-    /// or key clips at one time (beat 22766)`.
+    /// or key clips at one time (beat 22766)`; a clip's names the clip.
     pub fn text(&self) -> String {
         let what = match self.kind {
             ProblemKind::DuplicateNumber => "its number is on another song too".to_string(),
@@ -139,9 +142,24 @@ impl Problem {
             ProblemKind::TwoDescriptions => "its locator holds two {…}".to_string(),
             ProblemKind::BadKey(error) => format!("its key does not read: {}", error.text()),
             ProblemKind::NotEnded => "not ended by SONG END, STOP or AUTOSTOP".to_string(),
-            ProblemKind::ClipOutsideSong => "a key clip outside every ended song".to_string(),
-            ProblemKind::BadClipKey => "a Sections clip holds more than a key".to_string(),
-            ProblemKind::ClipInKeylessSong => "a key clip in a song without a key".to_string(),
+            ProblemKind::ClipOutsideSong => {
+                format!(
+                    "{} lies outside every ended song",
+                    self.clip_words("key clip")
+                )
+            }
+            ProblemKind::BadClipKey => {
+                format!(
+                    "{} does not read as one key",
+                    self.clip_words("Sections clip")
+                )
+            }
+            ProblemKind::ClipInKeylessSong => {
+                format!(
+                    "{} lies in a song without a key",
+                    self.clip_words("key clip")
+                )
+            }
         };
         let song = self
             .song
@@ -152,6 +170,15 @@ impl Problem {
             .map(|t| format!(" (beat {t})"))
             .unwrap_or_default();
         format!("{song}{what}{beat}")
+    }
+
+    /// The clip a problem is about, in words: `the key clip "Key {G}"`, or
+    /// `a key clip` when its name is not known.
+    fn clip_words(&self, what: &str) -> String {
+        match &self.clip {
+            Some(name) => format!("the {what} \"{name}\""),
+            None => format!("a {what}"),
+        }
     }
 }
 
@@ -356,6 +383,7 @@ fn spans(placed: &[Placed], problems: &mut Vec<Problem>) -> Vec<Building> {
             kind,
             song: Some(*number),
             time: Some(cue.time),
+            clip: None,
         };
         let end = next
             .filter(|n| matches!(n.kind, CueKind::SongEnd | CueKind::Stop))
@@ -403,6 +431,7 @@ fn duplicates(songs: &mut [Building], problems: &mut Vec<Problem>) {
                 kind: ProblemKind::DuplicateNumber,
                 song: Some(number),
                 time: Some(song.span.start),
+                clip: None,
             });
         }
     }
@@ -428,6 +457,7 @@ fn same_times(placed: &[Placed], songs: &mut [Building], problems: &mut Vec<Prob
             kind: ProblemKind::SameTime,
             song,
             time: Some(time),
+            clip: None,
         };
         let mut found = false;
         for song in songs.iter_mut().filter(|b| touches(&b.span, time)) {
@@ -460,6 +490,7 @@ fn key_clips(clips: &[ClipName], spans: &mut [Span], problems: &mut Vec<Problem>
             kind,
             song,
             time: Some(start),
+            clip: Some(clip.name.trim().to_string()),
         };
         let song = at.map(|i| spans[i].number);
         match (read, at) {
@@ -481,6 +512,7 @@ fn key_clips(clips: &[ClipName], spans: &mut [Span], problems: &mut Vec<Problem>
                     kind: ProblemKind::SameTime,
                     song: Some(span.number),
                     time: Some(change.time),
+                    clip: None,
                 });
             }
             kept.push(change);

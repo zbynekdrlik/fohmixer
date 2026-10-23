@@ -864,7 +864,7 @@ fn the_report_answers_an_unknown_set_a_set_not_read_and_a_map() {
     assert_eq!(
         serde_json::to_value(&got.problems).unwrap(),
         json!([{"kind": "clip_in_keyless_song", "song": 2, "time": 150.0,
-                "text": "song 002: a key clip in a song without a key (beat 150)"}])
+                "text": "song 002: the key clip \"Key {D}\" lies in a song without a key (beat 150)"}])
     );
     assert!(!got.stale);
 }

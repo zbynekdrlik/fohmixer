@@ -471,6 +471,51 @@ fn a_clip_with_more_words_after_the_key_is_refused() {
             (ProblemKind::BadClipKey, None, Some(30000.0))
         ]
     );
+    // The words name the clip and its song.
+    let texts: Vec<String> = m.problems.iter().map(Problem::text).collect();
+    assert_eq!(
+        texts,
+        [
+            "song 031: the Sections clip \"Chorus {G loud}\" does not read as one key (beat 22900)",
+            "the Sections clip \"Late {G loud}\" does not read as one key (beat 30000)"
+        ]
+    );
+}
+
+#[test]
+fn a_clips_problem_carries_its_trimmed_name_and_a_locators_none() {
+    let m = build(
+        &[
+            cue("001 T {C 100}", 0.0),
+            cue("SONG END", 100.0),
+            cue("002 U", 200.0),
+            cue("SONG END", 300.0),
+            cue("003 V {D 100}", 400.0),
+        ],
+        &[clip("  Key {E}  ", 150.0), clip("Key {F}", 250.0)],
+    );
+    let clips: Vec<(ProblemKind, Option<&str>)> = m
+        .problems
+        .iter()
+        .map(|p| (p.kind, p.clip.as_deref()))
+        .collect();
+    assert_eq!(
+        clips,
+        [
+            (ProblemKind::NotEnded, None),
+            (ProblemKind::ClipOutsideSong, Some("Key {E}")),
+            (ProblemKind::ClipInKeylessSong, Some("Key {F}"))
+        ]
+    );
+    let texts: Vec<String> = m.problems.iter().map(Problem::text).collect();
+    assert_eq!(
+        texts,
+        [
+            "song 003: not ended by SONG END, STOP or AUTOSTOP (beat 400)",
+            "the key clip \"Key {E}\" lies outside every ended song (beat 150)",
+            "song 002: the key clip \"Key {F}\" lies in a song without a key (beat 250)"
+        ]
+    );
 }
 
 #[test]
@@ -694,7 +739,15 @@ fn a_description_is_between_the_first_brace_and_the_last() {
 
 #[test]
 fn each_problem_reads_in_words() {
-    let text = |kind, song, time| Problem { kind, song, time }.text();
+    let text = |kind, song, time| {
+        Problem {
+            kind,
+            song,
+            time,
+            clip: None,
+        }
+        .text()
+    };
     assert_eq!(
         text(ProblemKind::SameTime, Some(31), Some(22766.0)),
         "song 031: two locators or key clips at one time (beat 22766)"
@@ -715,17 +768,29 @@ fn each_problem_reads_in_words() {
         text(ProblemKind::NotEnded, Some(158), Some(89000.0)),
         "song 158: not ended by SONG END, STOP or AUTOSTOP (beat 89000)"
     );
+    // A clip's problem without the clip's name.
     assert_eq!(
         text(ProblemKind::ClipOutsideSong, None, Some(75136.5)),
-        "a key clip outside every ended song (beat 75136.5)"
+        "a key clip lies outside every ended song (beat 75136.5)"
     );
     assert_eq!(
         text(ProblemKind::BadClipKey, Some(31), Some(1.0)),
-        "song 031: a Sections clip holds more than a key (beat 1)"
+        "song 031: a Sections clip does not read as one key (beat 1)"
     );
     assert_eq!(
         text(ProblemKind::ClipInKeylessSong, Some(88), None),
-        "song 088: a key clip in a song without a key"
+        "song 088: a key clip lies in a song without a key"
+    );
+    // With it: in quotes.
+    let named = Problem {
+        kind: ProblemKind::BadClipKey,
+        song: Some(31),
+        time: None,
+        clip: Some("Key {G loud}".into()),
+    };
+    assert_eq!(
+        named.text(),
+        "song 031: the Sections clip \"Key {G loud}\" does not read as one key"
     );
 }
 
@@ -742,9 +807,15 @@ fn the_map_serializes_in_english_words() {
             "spans": [{"number": 1, "start": 0.0, "end": 10.0,
                        "key": {"root": 9, "minor": true},
                        "changes": [{"time": 5.0, "key": {"root": 0, "minor": false}}]}],
-            "problems": [{"kind": "clip_outside_song", "song": null, "time": 50.0}]
+            "problems": [{"kind": "clip_outside_song", "song": null, "time": 50.0,
+                          "clip": "Key {D}"}]
         })
     );
+    // A problem without its clip (an older hub's) reads as a locator's.
+    let older: Problem =
+        serde_json::from_value(serde_json::json!({"kind": "not_ended", "song": 1, "time": 0.0}))
+            .unwrap();
+    assert_eq!(older.clip, None);
     assert_eq!(
         serde_json::to_value(ProblemKind::BadKey(KeyError::Letter)).unwrap(),
         serde_json::json!({"bad_key": "letter"})
