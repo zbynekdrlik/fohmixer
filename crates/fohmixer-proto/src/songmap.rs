@@ -29,6 +29,13 @@ const SONG_ENDS: [&str; 2] = ["SONG END", "SONGEND"];
 const STOPS: [&str; 2] = ["STOP", "AUTOSTOP"];
 /// The flags that make any locator a stop.
 const STOP_FLAGS: [&str; 2] = ["+STAY", "+JUMP"];
+/// What may follow a key clip's root by mistake (spec Appendix A.3's
+/// rejected suffixes, #140 review I2): a one-word description with one of
+/// them after its root, alone or before `m`, is a mistyped key.
+const WRONG_SUFFIXES: [&str; 8] = ["min", "maj", "mol", "moll", "dur", "M", "♯", "♭"];
+/// `H` and the lower-case key letters: a one-word description that does
+/// not read and starts with one is a mistyped key (#140 review I2).
+const WRONG_LETTERS: [char; 9] = ['H', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
 
 /// One locator: its name, and its time in beats when it was read (the
 /// ignored ones and the sections have none).
@@ -115,7 +122,9 @@ pub enum ProblemKind {
     NotEnded,
     /// A key clip lies in no ended song.
     ClipOutsideSong,
-    /// A Sections clip's `{…}` starts with a key but holds more words.
+    /// A Sections clip's `{…}` is no one key: a key with more words after
+    /// it, a mistyped key (`{Amin}`, `{H}`), or any that does not read on a
+    /// clip named `Key` (#140 review I2).
     BadClipKey,
     /// A key clip lies in a song without a key.
     ClipInKeylessSong,
@@ -312,15 +321,55 @@ fn song_key(description: Option<&str>) -> Result<Option<Key>, KeyError> {
     }
 }
 
-/// A clip's key: none when its description does not start with a key
-/// token (no key clip); the key, or `Err` when more words follow it.
+/// Whether a clip follows the owner's naming of a key clip, `Key {X}`
+/// (spec §2.1): its words outside the braces are exactly `Key`; with a `{`
+/// that opens no `{…}` (`Key {}`, `Key {G`), the words before that `{`.
+fn named_key(name: &str) -> bool {
+    let words: Vec<&str> = match (braces(name), name.find('{')) {
+        (Some(_), _) => outside(name),
+        (None, Some(open)) => name[..open].split_whitespace().collect(),
+        (None, None) => return false,
+    };
+    words == ["Key"]
+}
+
+/// Whether a one-word description that does not read (`error`) is a
+/// mistyped key rather than a word (#140 review I2 b): an accidental, two
+/// keys, a known wrong suffix after its root (alone or before `m`), or `H`
+/// or a lower-case key letter first.
+fn mistyped(word: &str, error: KeyError) -> bool {
+    let wrong = |rest: &str| {
+        WRONG_SUFFIXES.contains(&rest)
+            || rest
+                .strip_suffix('m')
+                .is_some_and(|r| WRONG_SUFFIXES.contains(&r))
+    };
+    match error {
+        KeyError::Accidental | KeyError::TwoKeys => true,
+        KeyError::Suffix => key::after_root(word).is_some_and(wrong),
+        KeyError::Empty | KeyError::Letter => word.starts_with(WRONG_LETTERS),
+    }
+}
+
+/// A clip's key: none when it is no key clip (no description, or a word
+/// such as `{soft}`); the key, or `Err` when its description is no one key
+/// (#140 review I2): more words after a key, a mistyped key (`{Amin}`,
+/// `{H}`), or anything that does not read on a clip named `Key`.
 fn clip_key(name: &str) -> Option<Result<Key, ()>> {
-    let mut words = description(name.trim())?.split_whitespace();
-    let key = parse_token(words.next()?).ok()?;
-    Some(match words.next() {
-        Some(_) => Err(()),
-        None => Ok(key),
-    })
+    let name = name.trim();
+    let named = named_key(name);
+    let Some(description) = description(name) else {
+        return named.then_some(Err(()));
+    };
+    let mut words = description.split_whitespace();
+    let word = words.next().unwrap_or("");
+    let more = words.next().is_some();
+    match (parse_token(word), more) {
+        (Ok(_), true) => Some(Err(())),
+        (Ok(key), false) => Some(Ok(key)),
+        (Err(error), _) if named || (!more && mistyped(word, error)) => Some(Err(())),
+        (Err(_), _) => None,
+    }
 }
 
 /// A locator placed in time.

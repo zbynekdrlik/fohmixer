@@ -115,6 +115,22 @@ fn rejected_spellings_are_problems() {
 }
 
 #[test]
+fn after_root_is_what_follows_an_accepted_root() {
+    assert_eq!(after_root("Amin"), Some("min"));
+    assert_eq!(after_root("F#m"), Some("m"));
+    assert_eq!(after_root("Ebmaj"), Some("maj"));
+    assert_eq!(after_root("F♯m"), Some("♯m"));
+    assert_eq!(after_root("B♭"), Some("♭"));
+    assert_eq!(after_root("Bridge"), Some("ridge"));
+    assert_eq!(after_root("G"), Some(""));
+    assert_eq!(after_root("Bb"), Some(""));
+    // No accepted root first: nothing follows it.
+    for t in ["", "H", "c", "E#", "Cbmaj", "Verse"] {
+        assert_eq!(after_root(t), None, "{t}");
+    }
+}
+
+#[test]
 fn every_problem_has_its_words() {
     assert_eq!(KeyError::Empty.text(), "no key");
     assert_eq!(

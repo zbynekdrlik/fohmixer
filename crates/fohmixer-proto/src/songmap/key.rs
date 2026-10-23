@@ -93,6 +93,16 @@ pub fn parse_token(token: &str) -> Result<Key, KeyError> {
 
 /// One spelling: a root, then nothing or `m`.
 fn spelling(text: &str) -> Result<Key, KeyError> {
+    let (root, suffix) = root_of(text)?;
+    match suffix {
+        "" => Ok(Key { root, minor: false }),
+        "m" => Ok(Key { root, minor: true }),
+        _ => Err(KeyError::Suffix),
+    }
+}
+
+/// A spelling's root (its letter and accidental) and what follows it.
+fn root_of(text: &str) -> Result<(u8, &str), KeyError> {
     let mut chars = text.chars();
     let letter = chars.next().ok_or(KeyError::Empty)?;
     let natural = LETTERS
@@ -101,7 +111,7 @@ fn spelling(text: &str) -> Result<Key, KeyError> {
         .map(|(_, root)| *root)
         .ok_or(KeyError::Letter)?;
     let rest = chars.as_str();
-    let (root, suffix) = match rest.chars().next() {
+    match rest.chars().next() {
         Some(accidental @ ('#' | 'b')) => {
             let spelled = format!("{letter}{accidental}");
             let root = ACCIDENTALS
@@ -109,15 +119,17 @@ fn spelling(text: &str) -> Result<Key, KeyError> {
                 .find(|(name, _)| *name == spelled)
                 .map(|(_, root)| *root)
                 .ok_or(KeyError::Accidental)?;
-            (root, &rest[1..])
+            Ok((root, &rest[1..]))
         }
-        _ => (natural, rest),
-    };
-    match suffix {
-        "" => Ok(Key { root, minor: false }),
-        "m" => Ok(Key { root, minor: true }),
-        _ => Err(KeyError::Suffix),
+        _ => Ok((natural, rest)),
     }
+}
+
+/// What follows a spelling's root (`min` in `Amin`, `♯m` in `F♯m`), none
+/// when it does not start with an accepted root (`H`, `c`, `E#`): the song
+/// map tells a mistyped key from a word by it (#140 review I2).
+pub fn after_root(text: &str) -> Option<&str> {
+    root_of(text).ok().map(|(_, rest)| rest)
 }
 
 impl Key {

@@ -661,6 +661,69 @@ fn words_and_longer_descriptions_stay_no_key_clips() {
 }
 
 #[test]
+fn a_clip_is_named_key_by_its_words_outside_the_braces() {
+    for name in [
+        "Key {G}",
+        "Key{G}",
+        "Key  {G}",
+        "{G} Key",
+        "Key {}",
+        "Key {G",
+        "Key {x} {y}",
+    ] {
+        assert!(named_key(name), "{name}");
+    }
+    for name in [
+        "Key",
+        "key {G}",
+        "KEY {G}",
+        "Keys {G}",
+        "Key 2 {G}",
+        "Key {G} x",
+        "x {G",
+    ] {
+        assert!(!named_key(name), "{name}");
+    }
+}
+
+#[test]
+fn a_mistyped_key_is_told_from_a_word_by_how_it_fails() {
+    for (word, error) in [
+        ("E#", KeyError::Accidental),
+        ("Am/A", KeyError::TwoKeys),
+        ("Amin", KeyError::Suffix),
+        ("AM", KeyError::Suffix),
+        ("F♯", KeyError::Suffix),
+        ("F♯m", KeyError::Suffix),
+        ("Amolm", KeyError::Suffix),
+        ("H", KeyError::Letter),
+        ("h", KeyError::Letter),
+        ("am", KeyError::Letter),
+    ] {
+        assert_eq!(parse_token(word), Err(error), "{word}");
+        assert!(mistyped(word, error), "{word}");
+    }
+    for (word, error) in [
+        ("Bridge", KeyError::Suffix),
+        ("Amm", KeyError::Suffix),
+        ("AMEN", KeyError::Suffix),
+        ("Fis", KeyError::Suffix),
+        ("Verse", KeyError::Letter),
+        ("soft", KeyError::Letter),
+        ("Intro", KeyError::Letter),
+        ("", KeyError::Empty),
+    ] {
+        assert_eq!(parse_token(word), Err(error), "{word}");
+        assert!(!mistyped(word, error), "{word}");
+    }
+    assert_eq!(
+        WRONG_SUFFIXES,
+        ["min", "maj", "mol", "moll", "dur", "M", "♯", "♭"]
+    );
+    assert_eq!(WRONG_LETTERS, ['H', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h']);
+}
+
+#[test]
 fn a_key_clip_in_a_keyless_song_stays_keyless() {
     let m = build(
         &[cue("088 Dance", 0.0), cue("SONG END", 30.0)],
