@@ -9,8 +9,8 @@ use super::{
     After, CLIPS, CUE_POINTS, Listed, Listing, MAX_TEXTS, Missing, Object, RETRY_MS, Read,
     SECTIONS, SONGMAP_CLIENT, Trigger, after_read, by_ref, clip_commands, clips_by_index, clips_of,
     cues_of, first_commands, listed, map_of, next_read, problems_changed, read_words, report_of,
-    same_names, sections_state, songmap_error_fields, songmap_fields, songmap_warn, status_of,
-    time_commands, transport_reads,
+    same_names, second_commands, sections_state, songmap_error_fields, songmap_fields,
+    songmap_warn, status_of, time_commands, track_went, transport_reads, with_sections_error,
 };
 use crate::live::client::LiveEvent;
 
@@ -98,6 +98,7 @@ fn listing_at(track: Option<&str>, sections: SectionsState) -> Listing {
         ],
         sections,
         track: track.map(str::to_string),
+        sections_error: None,
     }
 }
 
@@ -483,6 +484,7 @@ fn unreadable_listing() -> Listing {
         clips: Vec::new(),
         sections: SectionsState::Unreadable,
         track: None,
+        sections_error: Some("arrangement_clips: group tracks have none".into()),
     }
 }
 
@@ -555,6 +557,75 @@ async fn an_unreadable_sections_track_is_served_with_its_problem() {
     let got = songmap_records(&events);
     assert_eq!(got[0]["sections"], "unreadable");
     assert_eq!(got[0]["problems_changed"], true);
+}
+
+#[test]
+fn the_sections_clips_are_read_through_the_tracks_ref() {
+    // Round 2's O1: the second call targets the track's `$ref` and class
+    // from the tracks answer, never its index.
+    let track = Object {
+        path: "live_set tracks 3".into(),
+        name: "Sections".into(),
+        id: "live_77".into(),
+        class: "Track".into(),
+    };
+    assert_eq!(
+        second_commands(&track),
+        vec![
+            json!({"target": {"$ref": "live_77", "class": "Track"}, "name": "get_prop",
+                    "args": {"prop": "arrangement_clips"}})
+        ]
+    );
+    // A track deleted since the first call fails the read (it is tried
+    // again); any other refusal is an unreadable track (review M9).
+    let stale = json!({"ok": false, "error": "deleted: live_77", "errorType": "StaleRef"});
+    assert_eq!(
+        track_went(Some(&stale), "live_set tracks 3"),
+        Some("live_set tracks 3 arrangement_clips: deleted: live_77".to_string())
+    );
+    let group = refused("arrangement_clips: group tracks have none");
+    assert_eq!(track_went(Some(&group), "live_set tracks 3"), None);
+    assert_eq!(track_went(Some(&ok(json!([]))), "live_set tracks 3"), None);
+    assert_eq!(track_went(None, "live_set tracks 3"), None);
+}
+
+#[test]
+fn a_records_sections_error_says_why_the_clips_do_not_read() {
+    // Round 2's C3: the script's words, in the record (and so its log
+    // line) only when there are some.
+    let fields = json!({"instance": "band", "problems": 1});
+    assert_eq!(
+        with_sections_error(
+            fields.clone(),
+            Some("arrangement_clips: group tracks have none")
+        ),
+        json!({"instance": "band", "problems": 1,
+               "sections_error": "arrangement_clips: group tracks have none"})
+    );
+    assert_eq!(with_sections_error(fields.clone(), None), fields);
+}
+
+#[tokio::test]
+async fn an_unreadable_sections_tracks_record_and_line_carry_the_scripts_words() {
+    let (mut router, _rx, events, _dir) = online();
+    router.songmap_trigger("band");
+    let log = crate::ws::tests::logged(|| answer(&mut router, 1, Ok(unreadable_listing())));
+    let got = songmap_records(&events);
+    assert_eq!(
+        got[0]["sections_error"],
+        "arrangement_clips: group tracks have none"
+    );
+    assert!(log.contains("group tracks have none"), "{log}");
+    // Its problem keeps no varying words: M8 compares the problems.
+    assert_eq!(
+        router.songmap.last_problems["band"][0].text(),
+        "the clips of the track named Sections cannot be read: no key clip applies"
+    );
+    // A read of a readable track records none.
+    router.songmap_trigger("band");
+    answer(&mut router, 2, Ok(listing()));
+    let got = songmap_records(&events);
+    assert!(got[0].get("sections_error").is_none(), "{}", got[0]);
 }
 
 #[test]
@@ -869,6 +940,7 @@ async fn a_disconnect_voids_the_read_in_flight_and_keeps_the_last_map_stale() {
         clips: Vec::new(),
         sections: SectionsState::None,
         track: None,
+        sections_error: None,
     };
     answer(&mut router, 2, Ok(other));
     assert_eq!(songmap_records(&events), Vec::<Value>::new());
@@ -1079,6 +1151,7 @@ fn listing_with_a_problem() -> Listing {
         clips: Vec::new(),
         sections: SectionsState::None,
         track: None,
+        sections_error: None,
     }
 }
 
@@ -1274,6 +1347,7 @@ fn the_report_answers_an_unknown_set_a_set_not_read_and_a_map() {
         }],
         sections: SectionsState::One,
         track: None,
+        sections_error: None,
     };
     let read = Read {
         map: fohmixer_proto::songmap::build(&keyless.cues, &keyless.clips),

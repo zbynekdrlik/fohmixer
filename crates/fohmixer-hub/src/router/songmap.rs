@@ -19,8 +19,8 @@
 //! **How it reads** (one task per read, every loop over a list it holds):
 //! one call for the locators, the tracks and the clips of
 //! `tracks[name=Sections]` (the script refuses an ambiguous name: with two
-//! such tracks the first one's clips are read by its index in a second
-//! call), then the needed locators' `time` and the key clips' `start_time`
+//! such tracks the first one's clips are read through its `$ref` in a
+//! second call), then the needed locators' `time` and the key clips' `start_time`
 //! through each object's `$ref` (an object moved or deleted meanwhile is
 //! never paired with another one's time) in calls of at most `TIME_CHUNK`
 //! commands, one after another. A failed
@@ -79,6 +79,10 @@ pub struct Listing {
     pub sections: SectionsState,
     /// The first `Sections` track's path (index form), none without one.
     pub track: Option<String>,
+    /// Why the Sections track's clips could not be read, the script's own
+    /// words (`sections: unreadable`; #140 round 2 C3): for the record and
+    /// the log line, never a `Problem`, whose equality M8 compares.
+    pub sections_error: Option<String>,
 }
 
 /// One object of a list a read found: its path (index form, for the words
@@ -100,9 +104,11 @@ pub(super) struct Object {
 pub(super) struct Listed {
     pub cues: Vec<Object>,
     pub sections: SectionsState,
-    pub track: Option<String>,
+    /// The first track named `Sections`, as the tracks answer gave it: its
+    /// path and its `$ref` (#140 round 2 O1).
+    pub track: Option<Object>,
     /// The Sections clips when the name binding answered (one such track);
-    /// none: read them at `track`, if any.
+    /// none: read them through `track`, if any.
     pub clips: Option<Vec<Object>>,
 }
 
@@ -335,13 +341,32 @@ pub(super) fn listed(slots: &[Value]) -> Result<Listed, String> {
     Ok(Listed {
         cues,
         sections: sections_state(named.len()),
-        track: named.first().map(|track| track.path.clone()),
+        track: named.first().map(|track| (*track).clone()),
         clips: slots.get(1).and_then(answered).map(objects),
     })
 }
 
+/// A read's second call: the first Sections track's clips through its
+/// `$ref` and class, as the tracks answer gave them (#140 round 2 O1: a
+/// track moved since the first call is still the right one).
+pub(super) fn second_commands(track: &Object) -> Vec<Value> {
+    vec![by_ref(track, CLIPS)]
+}
+
+/// The read's error when the second call's track went since the first
+/// call (`StaleRef`: deleted, or another object at its pointer; #140 round
+/// 2 O1): the read fails and is tried again, never read as an unreadable
+/// Sections track.
+pub(super) fn track_went(slot: Option<&Value>, path: &str) -> Option<String> {
+    let stale = slot
+        .and_then(|slot| slot.get("errorType"))
+        .and_then(Value::as_str)
+        == Some(crate::eq::close::STALE_REF);
+    stale.then(|| format!("{path} {CLIPS}: {}", refused(slot).unwrap_or_default()))
+}
+
 /// The second call's answer, the clips of the first track named `Sections`
-/// read by its index (`track`): its clips, followed at that path; or, when
+/// at its index path (`track`): its clips, followed at that path; or, when
 /// they cannot be read (a group track of that name, #140 review M9), none,
 /// `SectionsState::Unreadable` and nothing to follow, so the spans still
 /// come from the locators.
@@ -498,6 +523,16 @@ pub(super) fn read_words(fields: &Value) -> &'static str {
     }
 }
 
+/// A read's record with the script's words on why the Sections track's
+/// clips could not be read, when they could not (`sections_error`; #140
+/// round 2 C3: in the record and the log line, never in a `Problem`).
+pub(super) fn with_sections_error(mut fields: Value, error: Option<&str>) -> Value {
+    if let (Some(error), Some(record)) = (error, fields.as_object_mut()) {
+        record.insert("sections_error".into(), json!(error));
+    }
+    fields
+}
+
 /// The `songmap` record of a read that failed: whether the set's kept map
 /// is stale now (`stale`; none kept: false) and whether the read is tried
 /// again after [`RETRY_MS`] (`retry`).
@@ -522,13 +557,18 @@ async fn call(live: &LiveHandle, commands: Vec<Value>) -> Result<Vec<Value>, Str
 async fn read_songmap(live: LiveHandle) -> Result<Listing, String> {
     let first = call(&live, first_commands()).await?;
     let listed = listed(&first)?;
-    let (clips, sections, track) = match (listed.clips, listed.track) {
-        (Some(clips), track) => (clips, listed.sections, track),
+    let (clips, sections, track, sections_error) = match (listed.clips, listed.track) {
+        (Some(clips), track) => (clips, listed.sections, track.map(|t| t.path), None),
         (None, Some(track)) => {
-            let slots = call(&live, vec![get(&track, CLIPS)]).await?;
-            clips_by_index(slots.first(), listed.sections, track)
+            let slots = call(&live, second_commands(&track)).await?;
+            let slot = slots.first();
+            if let Some(error) = track_went(slot, &track.path) {
+                return Err(error);
+            }
+            let (clips, sections, followed) = clips_by_index(slot, listed.sections, track.path);
+            (clips, sections, followed, refused(slot))
         }
-        (None, None) => (Vec::new(), listed.sections, None),
+        (None, None) => (Vec::new(), listed.sections, None, None),
     };
     let mut times = Vec::new();
     for chunk in time_commands(&listed.cues) {
@@ -543,6 +583,7 @@ async fn read_songmap(live: LiveHandle) -> Result<Listing, String> {
         clips: clips_of(&clips, &starts)?,
         sections,
         track,
+        sections_error,
     })
 }
 
@@ -721,7 +762,10 @@ impl Router {
                 };
                 let last = self.songmap.last_problems.get(instance);
                 let changed = problems_changed(last.map(Vec::as_slice), &read.map.problems);
-                let fields = songmap_fields(instance, &read, ms, changed);
+                let fields = with_sections_error(
+                    songmap_fields(instance, &read, ms, changed),
+                    listing.sections_error.as_deref(),
+                );
                 self.songmap
                     .last_problems
                     .insert(instance.to_string(), read.map.problems.clone());
