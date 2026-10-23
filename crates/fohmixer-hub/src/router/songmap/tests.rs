@@ -7,10 +7,10 @@ use super::super::tests::{next_of, offline_router, records, status};
 use super::super::{Router, RouterMsg};
 use super::{
     After, CLIPS, CUE_POINTS, Listed, Listing, MAX_TEXTS, Missing, Object, RETRY_MS, Read,
-    SECTIONS, SONGMAP_CLIENT, Trigger, after_read, by_ref, clip_commands, clips_of, cues_of,
-    first_commands, listed, next_read, problems_changed, read_words, report_of, same_names,
-    sections_state, songmap_error_fields, songmap_fields, songmap_warn, status_of, time_commands,
-    transport_reads,
+    SECTIONS, SONGMAP_CLIENT, Trigger, after_read, by_ref, clip_commands, clips_by_index, clips_of,
+    cues_of, first_commands, listed, map_of, next_read, problems_changed, read_words, report_of,
+    same_names, sections_state, songmap_error_fields, songmap_fields, songmap_warn, status_of,
+    time_commands, transport_reads,
 };
 use crate::live::client::LiveEvent;
 
@@ -472,6 +472,87 @@ fn a_first_answer_without_the_locators_or_the_tracks_fails_the_read() {
         Err("tracks: no result".to_string())
     );
     assert_eq!(listed(&[]), Err("cue_points: no result".to_string()));
+}
+
+/// The set read with its Sections track's clips unreadable: no clips.
+fn unreadable_listing() -> Listing {
+    Listing {
+        cues: listing().cues,
+        clips: Vec::new(),
+        sections: SectionsState::Unreadable,
+        track: None,
+    }
+}
+
+#[test]
+fn a_sections_track_whose_clips_do_not_read_leaves_the_spans() {
+    // Review M9 b: the second call's clips (by the first such track's
+    // index) refused, e.g. a group track named Sections: no clips and
+    // nothing to follow, never a failed read.
+    let track = "live_set tracks 1".to_string();
+    let answered = ok(objects(
+        "live_set tracks 1 arrangement_clips",
+        "Clip",
+        &["Key {G}"],
+    ));
+    assert_eq!(
+        clips_by_index(Some(&answered), SectionsState::FirstOf(2), track.clone()),
+        (
+            listed_objects("live_set tracks 1 arrangement_clips", "Clip", &["Key {G}"]),
+            SectionsState::FirstOf(2),
+            Some(track.clone())
+        )
+    );
+    let group = refused("arrangement_clips: group tracks have none");
+    assert_eq!(
+        clips_by_index(Some(&group), SectionsState::One, track.clone()),
+        (Vec::new(), SectionsState::Unreadable, None)
+    );
+    assert_eq!(
+        clips_by_index(None, SectionsState::One, track),
+        (Vec::new(), SectionsState::Unreadable, None)
+    );
+    // Its map: the songs from the locators, and a problem that says so.
+    let map = map_of(&unreadable_listing());
+    assert_eq!(map.spans.len(), 2);
+    assert_eq!(
+        map.spans[0].key,
+        Some(Key {
+            root: 0,
+            minor: false
+        })
+    );
+    assert_eq!(
+        map.problems
+            .iter()
+            .map(|p| (p.kind, p.text()))
+            .collect::<Vec<(ProblemKind, String)>>(),
+        [(
+            ProblemKind::SectionsUnreadable,
+            "the clips of the track named Sections cannot be read: no key clip applies".to_string()
+        )]
+    );
+    // Any other read's map is the parser's own.
+    assert_eq!(
+        map_of(&listing()),
+        fohmixer_proto::songmap::build(&listing().cues, &listing().clips)
+    );
+}
+
+#[tokio::test]
+async fn an_unreadable_sections_track_is_served_with_its_problem() {
+    let (mut router, _rx, events, _dir) = online();
+    router.songmap_trigger("band");
+    answer(&mut router, 1, Ok(unreadable_listing()));
+    let now = status(&mut router).songmap;
+    assert_eq!(
+        (now[0].songs, now[0].problems, now[0].sections),
+        (2, 1, SectionsState::Unreadable)
+    );
+    assert_eq!(router.songmap.clips.get("band"), None, "nothing to follow");
+    let got = songmap_records(&events);
+    assert_eq!(got[0]["sections"], "unreadable");
+    assert_eq!(got[0]["problems_changed"], true);
 }
 
 #[test]

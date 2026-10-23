@@ -1064,5 +1064,24 @@ fn the_map_serializes_in_english_words() {
         serde_json::to_value(SectionsState::None).unwrap(),
         serde_json::json!("none")
     );
+    // #140 review M9: a Sections track whose clips cannot be read.
+    assert_eq!(
+        serde_json::to_value(SectionsState::Unreadable).unwrap(),
+        serde_json::json!("unreadable")
+    );
+    let unreadable = Problem {
+        kind: ProblemKind::SectionsUnreadable,
+        song: None,
+        time: None,
+        clip: None,
+    };
+    assert_eq!(
+        serde_json::to_value(unreadable.kind).unwrap(),
+        serde_json::json!("sections_unreadable")
+    );
+    assert_eq!(
+        unreadable.text(),
+        "the clips of the track named Sections cannot be read: no key clip applies"
+    );
     assert_eq!(TIME_CHUNK, 200);
 }

@@ -34,8 +34,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use fohmixer_proto::client::{ProblemReport, SongMapReport, SongMapStatus, SpanReport, ValueItem};
 use fohmixer_proto::songmap::{
-    ClipName, Cue, Problem, SectionsState, SongMap, TIME_CHUNK, build, classify, clip_needs_time,
-    counts, needs_time,
+    ClipName, Cue, Problem, ProblemKind, SectionsState, SongMap, TIME_CHUNK, build, classify,
+    clip_needs_time, counts, needs_time,
 };
 use serde_json::{Value, json};
 
@@ -340,6 +340,37 @@ pub(super) fn listed(slots: &[Value]) -> Result<Listed, String> {
     })
 }
 
+/// The second call's answer, the clips of the first track named `Sections`
+/// read by its index (`track`): its clips, followed at that path; or, when
+/// they cannot be read (a group track of that name, #140 review M9), none,
+/// `SectionsState::Unreadable` and nothing to follow, so the spans still
+/// come from the locators.
+pub(super) fn clips_by_index(
+    slot: Option<&Value>,
+    sections: SectionsState,
+    track: String,
+) -> (Vec<Object>, SectionsState, Option<String>) {
+    match slot.and_then(answered) {
+        Some(data) => (objects(data), sections, Some(track)),
+        None => (Vec::new(), SectionsState::Unreadable, None),
+    }
+}
+
+/// A read's map: the parser's, with a problem when the Sections track's
+/// clips could not be read (#140 review M9).
+pub(super) fn map_of(listing: &Listing) -> SongMap {
+    let mut map = build(&listing.cues, &listing.clips);
+    if listing.sections == SectionsState::Unreadable {
+        map.problems.push(Problem {
+            kind: ProblemKind::SectionsUnreadable,
+            song: None,
+            time: None,
+            clip: None,
+        });
+    }
+    map
+}
+
 /// The `get_prop prop` of each object `wanted` takes (by its name), through
 /// its `$ref`, in calls of at most `TIME_CHUNK` commands.
 fn chunked(objects: &[Object], wanted: impl Fn(&str) -> bool, prop: &str) -> Vec<Vec<Value>> {
@@ -491,13 +522,13 @@ async fn call(live: &LiveHandle, commands: Vec<Value>) -> Result<Vec<Value>, Str
 async fn read_songmap(live: LiveHandle) -> Result<Listing, String> {
     let first = call(&live, first_commands()).await?;
     let listed = listed(&first)?;
-    let clips = match (listed.clips, &listed.track) {
-        (Some(clips), _) => clips,
+    let (clips, sections, track) = match (listed.clips, listed.track) {
+        (Some(clips), track) => (clips, listed.sections, track),
         (None, Some(track)) => {
-            let slots = call(&live, vec![get(track, CLIPS)]).await?;
-            list_of(slots.first(), CLIPS)?
+            let slots = call(&live, vec![get(&track, CLIPS)]).await?;
+            clips_by_index(slots.first(), listed.sections, track)
         }
-        (None, None) => Vec::new(),
+        (None, None) => (Vec::new(), listed.sections, None),
     };
     let mut times = Vec::new();
     for chunk in time_commands(&listed.cues) {
@@ -510,8 +541,8 @@ async fn read_songmap(live: LiveHandle) -> Result<Listing, String> {
     Ok(Listing {
         cues: cues_of(&listed.cues, &times)?,
         clips: clips_of(&clips, &starts)?,
-        sections: listed.sections,
-        track: listed.track,
+        sections,
+        track,
     })
 }
 
@@ -683,7 +714,7 @@ impl Router {
         let fields = match result {
             Ok(listing) => {
                 let read = Read {
-                    map: build(&listing.cues, &listing.clips),
+                    map: map_of(&listing),
                     sections: listing.sections,
                     at_ms: u64::try_from(crate::events::now_ms()).unwrap_or(0),
                     read_no,

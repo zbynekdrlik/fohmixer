@@ -85,6 +85,10 @@ pub enum SectionsState {
     One,
     /// Several are (their count): the first one's clips were read.
     FirstOf(usize),
+    /// The first track named `Sections` has clips that cannot be read (a
+    /// group track of that name, #140 review M9): no key clip applies, and
+    /// the map says so in a problem.
+    Unreadable,
 }
 
 /// A key clip applied: from its start, this key.
@@ -131,6 +135,9 @@ pub enum ProblemKind {
     BadClipKey,
     /// A key clip lies in a song without a key.
     ClipInKeylessSong,
+    /// The Sections track's clips cannot be read (`SectionsState::
+    /// Unreadable`, #140 review M9).
+    SectionsUnreadable,
 }
 
 /// One problem: what, which song (if one), where (in beats), and the
@@ -172,6 +179,10 @@ impl Problem {
                     "{} lies in a song without a key",
                     self.clip_words("key clip")
                 )
+            }
+            ProblemKind::SectionsUnreadable => {
+                "the clips of the track named Sections cannot be read: no key clip applies"
+                    .to_string()
             }
         };
         let song = self
