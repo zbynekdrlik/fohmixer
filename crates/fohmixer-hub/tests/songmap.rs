@@ -167,7 +167,7 @@ fn the_hub_serves_the_sites_song_map() {
             (&json!(2), &json!(2), &json!(1), &json!(0))
         );
         hub.stop().await;
-        drop(host);
+        host.stop();
     });
 }
 
@@ -195,7 +195,7 @@ fn a_locator_added_in_live_is_in_the_next_map() {
         );
         assert_eq!(key(third), Some((2, false)), "D");
         hub.stop().await;
-        drop(host);
+        host.stop();
     });
 }
 
@@ -220,7 +220,7 @@ fn a_key_clip_added_in_live_is_in_the_next_map() {
             json!([{"time": 150.5, "key": {"root": 9, "minor": false}}])
         );
         hub.stop().await;
-        drop(host);
+        host.stop();
     });
 }
 
@@ -251,7 +251,7 @@ fn a_rename_is_read_at_the_next_transport_change() {
         transport(&mut c, "stop_playing").await;
         c.close().await;
         hub.stop().await;
-        drop(host);
+        host.stop();
     });
 }
 
@@ -286,7 +286,7 @@ fn a_big_set_reads_in_chunks() {
             (&json!(450), &json!(0))
         );
         hub.stop().await;
-        drop(host);
+        host.stop();
     });
 }
 
@@ -345,6 +345,6 @@ fn the_hub_never_writes_to_live_for_the_map() {
         assert_eq!(writes, Vec::<Value>::new());
         c.close().await;
         hub.stop().await;
-        drop(host);
+        host.stop();
     });
 }
