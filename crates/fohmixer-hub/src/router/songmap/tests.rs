@@ -967,7 +967,13 @@ async fn a_failed_read_leaves_the_map_stale_and_is_tried_once_more_after_retry_m
     );
     assert_eq!(router.songmap.retry.get("band"), Some(&2));
     // The retry is due RETRY_MS later and reads.
-    let due = a_retry(&mut rx).await.expect("a retry");
+    let due = tokio::time::timeout(
+        std::time::Duration::from_millis(2 * RETRY_MS),
+        a_retry(&mut rx),
+    )
+    .await
+    .expect("a retry within twice RETRY_MS")
+    .expect("the router's tasks run");
     let waited = failed_at.elapsed();
     assert!(
         waited >= std::time::Duration::from_millis(RETRY_MS)
