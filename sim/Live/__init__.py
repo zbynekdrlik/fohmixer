@@ -49,6 +49,7 @@ RackDevice = _submodule("RackDevice")
 PluginDevice = _submodule("PluginDevice")
 Chain = _submodule("Chain")
 ChainMixerDevice = _submodule("ChainMixerDevice")
+Clip = _submodule("Clip")
 
 
 def _export(module, cls, name):
@@ -647,12 +648,14 @@ class _TrackClass(_LiveObject):
     mixer_device = _Prop(readonly=True, observable=False)
     # Not fold_state: Live answers add_listener on it with "not observable"
     # (read on the PC, #58); a fold shows in Song.visible_tracks.
-    _listened = ("devices",)
+    # arrangement_clips (#140): observable on the PC's Live 12.4.6.
+    _listened = ("devices", "arrangement_clips")
 
     def __init__(self, song, name, *, foldable=False, group=None, mixer=None, color=0x5480E4):
         super().__init__()
         self._song = song
         self._devices = []
+        self._arrangement_clips = []
         self._v.update(
             name=name,
             color=color,
@@ -690,6 +693,10 @@ class _TrackClass(_LiveObject):
         return _Vector(self._devices)
 
     @property
+    def arrangement_clips(self):
+        return _Vector(self._arrangement_clips)
+
+    @property
     def is_visible(self):
         return self._sim_visible()
 
@@ -713,7 +720,7 @@ class _TrackClass(_LiveObject):
         self._sim_set("output_meter_level", float(max(left, right)))
 
     def _sim_children(self):
-        return [self._v["mixer_device"], *self._devices]
+        return [self._v["mixer_device"], *self._devices, *self._arrangement_clips]
 
 
 _TrackClass.monitoring_states = _MonitoringStates
@@ -734,7 +741,9 @@ class _SongClass(_LiveObject):
     is_playing = _Prop(coerce=_bool)
     tempo = _Prop(coerce=_tempo)
     name = _Prop(readonly=True, observable=False)
-    _listened = ("tracks", "return_tracks", "visible_tracks")
+    # cue_points (#140): observable on the PC's Live 12.4.6, kept in time
+    # order as Live keeps it.
+    _listened = ("tracks", "return_tracks", "visible_tracks", "cue_points")
 
     def __init__(self, name=""):
         super().__init__()
@@ -742,6 +751,8 @@ class _SongClass(_LiveObject):
         self._tracks = []
         self._returns = []
         self._master = None
+        self._cue_points = []
+        self._sim_jumps = []
 
     @property
     def tracks(self):
@@ -754,6 +765,10 @@ class _SongClass(_LiveObject):
     @property
     def master_track(self):
         return self._master
+
+    @property
+    def cue_points(self):
+        return _Vector(self._cue_points)
 
     @property
     def visible_tracks(self):
@@ -787,11 +802,58 @@ class _SongClass(_LiveObject):
         self._fire("tracks")
         self._fire("visible_tracks")
 
+    def _sim_sort_cue_points(self):
+        """Keep the cue points in time order (stable), as Live does."""
+        self._cue_points.sort(key=lambda cue: cue._v["time"])
+
     def _sim_children(self):
-        return [*self._tracks, *self._returns, self._master]
+        return [*self._tracks, *self._returns, self._master, *self._cue_points]
 
 
 _export(Song, _SongClass, "Song")
+
+
+class _CuePointClass(_LiveObject):
+    """A locator (#140): its ``name`` and ``time`` (beats) are observable, as
+    on the PC's Live 12.4.6; ``jump`` moves the song there (SimLive records
+    the jump in ``song._sim_jumps``)."""
+
+    name = _Prop(coerce=_str)
+    time = _Prop(readonly=True)
+
+    def __init__(self, song, name, time):
+        super().__init__()
+        self._song = song
+        self._v.update(name=name, time=_float(time))
+
+    def jump(self):
+        self._song._sim_jumps.append(self._v["time"])
+
+
+_export(Song, _CuePointClass, "CuePoint")
+
+
+class _ClipClass(_LiveObject):
+    """An arrangement clip (#140): ``name``, ``start_time`` and ``end_time``
+    (beats) are observable, as on the PC; every SimLive clip is a MIDI clip
+    (the Sections track's are)."""
+
+    name = _Prop(coerce=_str)
+    start_time = _Prop(readonly=True)
+    end_time = _Prop(readonly=True)
+    is_midi_clip = _Prop(readonly=True, observable=False)
+
+    def __init__(self, name, start_time, end_time):
+        super().__init__()
+        self._v.update(
+            name=name,
+            start_time=_float(start_time),
+            end_time=_float(end_time),
+            is_midi_clip=True,
+        )
+
+
+_export(Clip, _ClipClass, "Clip")
 
 
 class _ApplicationClass(_LiveObject):

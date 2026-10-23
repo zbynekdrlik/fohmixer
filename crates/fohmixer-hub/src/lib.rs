@@ -339,6 +339,21 @@ impl HubInner {
         answer.await.unwrap_or_default()
     }
 
+    /// `GET /api/songmap` (#140): `instance`'s newest song map, or why
+    /// there is none (an unknown set, or none read yet; a router gone
+    /// answers the latter).
+    pub async fn songmap(
+        &self,
+        instance: &str,
+    ) -> Result<fohmixer_proto::client::SongMapReport, router::SongMapMissing> {
+        let (reply, answer) = oneshot::channel();
+        self.route(RouterMsg::SongMap {
+            instance: instance.to_string(),
+            reply,
+        });
+        answer.await.unwrap_or(Err(router::SongMapMissing::NotRead))
+    }
+
     /// `GET /api/status`.
     pub async fn status(&self) -> HubStatus {
         let now = auth::now_secs() as i64;
@@ -390,6 +405,7 @@ impl HubInner {
             reverb: router.reverb,
             fader_links: router.fader_links,
             autotune: router.autotune,
+            songmap: router.songmap,
             clients: router.clients,
             client_reports: self.reports.list(),
             remote: self.remote.snapshot(&self.config, https, now),

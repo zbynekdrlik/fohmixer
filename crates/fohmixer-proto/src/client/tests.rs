@@ -680,6 +680,16 @@ fn api_bodies_round_trip() {
                 },
             ],
         },
+        songmap: vec![SongMapStatus {
+            instance: "band".into(),
+            songs: 166,
+            keyed: 165,
+            changes: 8,
+            problems: 0,
+            sections: crate::songmap::SectionsState::FirstOf(2),
+            at_ms: 1_790_000_300,
+            stale: true,
+        }],
     };
     let json = serde_json::to_value(&status).unwrap();
     assert_eq!(
@@ -689,6 +699,18 @@ fn api_bodies_round_trip() {
              "state": "on", "path": "live_set tracks 6 devices 0 parameters 1"},
             {"instance": "band", "track": "live_set tracks 8", "label": "#9", "on": 127,
              "state": "missing", "problem": "no rack named Latencies"}]})
+    );
+    assert_eq!(
+        json["songmap"],
+        json!([{"instance": "band", "songs": 166, "keyed": 165, "changes": 8, "problems": 0,
+                "sections": {"first_of": 2}, "at_ms": 1_790_000_300_u64, "stale": true}])
+    );
+    // A hub before the song map (#140) names none.
+    let mut older = json.clone();
+    older.as_object_mut().unwrap().remove("songmap");
+    assert_eq!(
+        serde_json::from_value::<HubStatus>(older).unwrap().songmap,
+        vec![]
     );
     assert_eq!(json["remote"]["https"]["days_left"], 60);
     assert_eq!(json["remote"]["tunnel"]["ready_connections"], 4);
@@ -1313,4 +1335,57 @@ fn an_autotune_message_round_trips_and_an_older_page_reads_it_as_unknown() {
         (HUB_AUTOTUNE_AUT, HUB_AUTOTUNE),
         ("autotune_aut", "autotune")
     );
+}
+
+#[test]
+fn a_song_map_reports_keys_with_their_names() {
+    // #140 review M7: every key of the report carries its name, in spans
+    // and in changes; an older hub's answer without names still reads.
+    let span = crate::songmap::Span {
+        number: 31,
+        start: 22766.0,
+        end: Some(23501.0),
+        key: Some(crate::songmap::Key {
+            root: 6,
+            minor: true,
+        }),
+        changes: vec![crate::songmap::KeyChange {
+            time: 22897.0,
+            key: crate::songmap::Key {
+                root: 3,
+                minor: false,
+            },
+        }],
+    };
+    let report = SpanReport::from(&span);
+    assert_eq!(
+        serde_json::to_value(&report).unwrap(),
+        json!({"number": 31, "start": 22766.0, "end": 23501.0,
+               "key": {"root": 6, "minor": true, "name": "F#m"},
+               "changes": [{"time": 22897.0, "key": {"root": 3, "minor": false, "name": "Eb"}}]})
+    );
+    let keyless = crate::songmap::Span {
+        number: 88,
+        start: 0.0,
+        end: None,
+        key: None,
+        changes: Vec::new(),
+    };
+    assert_eq!(
+        serde_json::to_value(SpanReport::from(&keyless)).unwrap(),
+        json!({"number": 88, "start": 0.0, "end": null, "key": null, "changes": []})
+    );
+    let older: SpanReport = serde_json::from_value(json!({
+        "number": 31, "start": 0.0, "end": 9.0, "key": {"root": 6, "minor": true},
+        "changes": [{"time": 1.0, "key": {"root": 3, "minor": false}}]}))
+    .unwrap();
+    assert_eq!(
+        older.key,
+        Some(KeyReport {
+            root: 6,
+            minor: true,
+            name: String::new()
+        })
+    );
+    assert_eq!(older.changes[0].key.name, "");
 }

@@ -19,3 +19,13 @@ regexes = ['''^fohmixer-e2e-aud$''']
 [[allowlists]]
 description = "RFC 6455's sample Sec-WebSocket-Key in a hub test"
 regexes = ['''^dGhlIHNhbXBsZSBub25jZQ==$''']
+
+# Hub test fixtures (#140, crates/fohmixer-hub/src/router/songmap/tests.rs,
+# and the other router tests that answer a listener as the FohMixer script
+# does): a script listener key `live_<object id>.<property>`, e.g.
+# `live_2.cue_points`. It names a LOM object of the script's own registry and
+# one of its properties; the script hands it to every client that listens:
+# not a secret.
+[[allowlists]]
+description = "a FohMixer script listener key (live_<id>.<property>) in a hub test"
+regexes = ['''^live_[0-9]+\.[a-z_]+$''']

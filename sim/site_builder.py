@@ -6,11 +6,13 @@ module, which would shadow a ``sim/site.py``.)
 Fixture shape::
 
     {"name": str, "live_version": [12, 2, 5],
-     "tracks": [TRACK...], "returns": [TRACK...], "master": TRACK}
+     "tracks": [TRACK...], "returns": [TRACK...], "master": TRACK,
+     "cue_points"?: [{"name", "time"}...] (locators, #140; kept in time order)}
 
     TRACK  = {"name", "color"?, "mute"?, "solo"?, "volume"?, "panning"?,
               "devices"?: [DEVICE...], "children"?: [TRACK...] (makes a group),
-              "fold_state"?: 0|1 (groups)}
+              "fold_state"?: 0|1 (groups),
+              "arrangement_clips"?: [{"name", "start_time", "end_time"}...] (#140)}
     DEVICE = {"template": "plain"|"eq8"|"rack"|"plugin", "name", "class_name"?,
               "parameters"?: [PARAM...], "chains"?: [{"name", "devices"?}],
               "product"?: str (a plugin's class_display_name, #71)}
@@ -50,6 +52,10 @@ def build_from_spec(spec):
         _add_track(song, track_spec, None, return_names)
     song._returns = [_make_track(song, r, None, return_names) for r in spec.get("returns", ())]
     song._master = _make_track(song, spec.get("master", {"name": "Main"}), None, ())
+    song._cue_points = [
+        Live.Song.CuePoint(song, c["name"], c["time"]) for c in spec.get("cue_points", ())
+    ]
+    song._sim_sort_cue_points()
     Live.Application.get_application()._sim_configure(song, spec.get("live_version", (12, 2, 5)))
     return song
 
@@ -78,6 +84,13 @@ def _make_track(song, spec, group, return_names):
     track._v["solo"] = bool(spec.get("solo", False))
     track._v["fold_state"] = int(spec.get("fold_state", 0))
     track._devices = [_make_device(d) for d in spec.get("devices", ())]
+    track._arrangement_clips = sorted(
+        (
+            Live.Clip.Clip(c["name"], c["start_time"], c["end_time"])
+            for c in spec.get("arrangement_clips", ())
+        ),
+        key=lambda clip: clip.start_time,
+    )
     return track
 
 

@@ -123,17 +123,12 @@ jobs:
           node-version: "22"
           cache: npm
           cache-dependency-path: e2e/package-lock.json
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cache/ms-playwright
-          key: ${{ runner.os }}-playwright-${{ hashFiles('e2e/package-lock.json') }}
-      # Both browsers, as the e2e job: the cache above is that job's too.
+      # Both browsers, as the companion job: the same cache entry.
       - name: Install Playwright (Chromium and WebKit)
-        working-directory: e2e
-        run: |
-          set -euo pipefail
-          npm ci
-          npx playwright install --with-deps chromium webkit
+        uses: ./.github/actions/playwright-browsers
+        timeout-minutes: 10
+        with:
+          browsers: chromium webkit
       - name: Remote access (#17) - a per-run test CA and certificate for foh.e2e.test that both browsers trust, the name in /etc/hosts, the Access test key
         run: |
           set -euo pipefail

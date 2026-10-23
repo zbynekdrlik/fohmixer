@@ -23,8 +23,9 @@ test-group = 'hub-ports'
 
 [[profile.default.overrides]]
 # companion_client and deck (#52): no host, but timing checks; eq (#71 PR E):
-# SimLive hosts, the guard's wait and a contact's 2 s of silence
-filter = 'binary_id(fohmixer-hub::live_client) | binary_id(fohmixer-hub::fanout) | binary_id(fohmixer-hub::stage_aut) | binary_id(fohmixer-hub::layout) | binary_id(fohmixer-hub::auth) | binary_id(fohmixer-hub::names) | binary_id(fohmixer-hub::ping) | binary_id(fohmixer-hub::setter) | binary_id(fohmixer-hub::companion_client) | binary_id(fohmixer-hub::deck) | binary_id(fohmixer-hub::unfold) | binary_id(fohmixer-hub::markers) | binary_id(fohmixer-hub::eq) | binary_id(fohmixer-hub::reverb) | binary_id(fohmixer-hub::fader_link) | binary_id(fohmixer-hub::autotune)'
+# SimLive hosts, the guard's wait and a contact's 2 s of silence; songmap
+# (#140): SimLive hosts
+filter = 'binary_id(fohmixer-hub::live_client) | binary_id(fohmixer-hub::fanout) | binary_id(fohmixer-hub::stage_aut) | binary_id(fohmixer-hub::layout) | binary_id(fohmixer-hub::auth) | binary_id(fohmixer-hub::names) | binary_id(fohmixer-hub::ping) | binary_id(fohmixer-hub::setter) | binary_id(fohmixer-hub::companion_client) | binary_id(fohmixer-hub::deck) | binary_id(fohmixer-hub::unfold) | binary_id(fohmixer-hub::markers) | binary_id(fohmixer-hub::eq) | binary_id(fohmixer-hub::reverb) | binary_id(fohmixer-hub::fader_link) | binary_id(fohmixer-hub::autotune) | binary_id(fohmixer-hub::songmap)'
 test-group = 'hub-hosts'
 
 [profile.mutants]

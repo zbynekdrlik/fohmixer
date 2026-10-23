@@ -82,6 +82,20 @@ class IntegrityTests(unittest.TestCase):
         self.assertEqual(ci.violations(self.root),
                          [".github/workflows/ci.yml:4: action not pinned to a full commit SHA: actions/checkout@v7"])
 
+    def test_our_composite_actions_are_held_to_the_workflow_rules(self) -> None:
+        sha = "55cc8345863c7cc4c66a329aec7e433d2d1c52a9"
+        self.put(".github/actions/a/action.yml",
+                 "runs:\n  using: composite\n  steps:\n"
+                 f"    - uses: actions/cache/restore@{sha} # v6.1.0\n"
+                 "    - uses: actions/cache/save@v6\n"
+                 f"    - uses: actions/cache/save@{sha}\n"
+                 "    - run: true\n      continue-on-error: true\n")
+        self.assertEqual(ci.violations(self.root), [
+            ".github/actions/a/action.yml:5: action not pinned to a full commit SHA: actions/cache/save@v6",
+            f".github/actions/a/action.yml:6: pinned action without its version comment (# vX.Y.Z): actions/cache/save@{sha}",
+            ".github/actions/a/action.yml:8: forbidden workflow construct",
+        ])
+
     def test_a_pin_needs_its_version_comment(self) -> None:
         sha = "3d3c42e5aac5ba805825da76410c181273ba90b1"
         for line, ok in ((f"      - uses: actions/checkout@{sha} # v7.0.1\n", True),

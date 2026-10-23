@@ -5,7 +5,8 @@
 //! ([`client`], spec §2.4; the Pro-Q 4 screen's pieces, [`eq`], F28), the
 //! layout document ([`layout`], spec §2.5), the Tuner markers that fill it
 //! ([`markers`], D16), the LOM path grammar both use ([`path`], S2 design
-//! note §3.1) and Live's volume law in dB ([`volume`], #130).
+//! note §3.1), Live's volume law in dB ([`volume`], #130) and the song map
+//! of a set's locators and Sections key clips ([`songmap`], #140).
 
 use serde::{Deserialize, Serialize};
 
@@ -14,6 +15,7 @@ pub mod eq;
 pub mod layout;
 pub mod markers;
 pub mod path;
+pub mod songmap;
 pub mod volume;
 
 /// Application version: the workspace's `[workspace.package].version`.

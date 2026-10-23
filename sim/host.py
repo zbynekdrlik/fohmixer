@@ -31,6 +31,22 @@ WebSocket server is bound. Control lines on stdin (never over the WebSocket):
                                 would (its group's children too; the lists'
                                 listeners fire); prints ``DELETED <tracks
                                 left>``, or ``DELETED -1`` with no such track
+    cue add <time> <name...>    a locator (#140), as a user in Live would: add
+    cue rename <index> <name...>  one (kept in time order) or remove one (the
+    cue time <index> <time>     ``cue_points`` listener fires), rename one or
+    cue remove <index>          move it (only its own ``name`` / ``time``
+                                listener fires; the list stays in time order);
+                                prints ``CUE <cue points>``, or ``CUE -1`` for
+                                a bad line or no such locator
+    clip add <track> <start> <end> <name...>
+    clip rename <track> <clip> <name...>
+    clip remove <track> <clip>  an arrangement clip of the track at <track>
+                                (#140): added (kept in start order) or removed
+                                (the track's ``arrangement_clips`` listener
+                                fires), or renamed (its ``name`` listener
+                                fires); prints ``CLIP <clips on the track>``,
+                                or ``CLIP -1`` for a bad line or no such
+                                track or clip
 
 SIGTERM or SIGINT calls ``FohMixer.disconnect()`` on the main thread and exits 0.
 Used by the S2 integration tests and by the hub (S3) and UI (S4) tests.
@@ -152,6 +168,108 @@ def delete_track(song, index):
     return len(song.tracks)
 
 
+def _beats(text):
+    """A time in beats, or None."""
+    try:
+        value = float(text)
+    except ValueError:
+        return None
+    return value if math.isfinite(value) else None
+
+
+def cue_line(line):
+    """A ``cue`` line's ``(action, index or time, name or time)``, or None."""
+    words = line.rstrip("\r\n").split(None, 3)
+    if len(words) < 3:
+        return None
+    action, first = words[1], words[2]
+    rest = words[3] if len(words) == 4 else ""
+    if action == "add":
+        time = _beats(first)
+        return None if time is None or not rest else ("add", time, rest)
+    if not first.isdigit():
+        return None
+    index = int(first)
+    if action == "rename" and rest:
+        return ("rename", index, rest)
+    if action == "time" and _beats(rest) is not None:
+        return ("time", index, _beats(rest))
+    if action == "remove" and not rest:
+        return ("remove", index, None)
+    return None
+
+
+def cue(song, action, first, second):
+    """Add, rename, move or remove a locator (main thread); the locators
+    then, -1 when there is no such locator."""
+    if action == "add":
+        song._cue_points.append(Live.Song.CuePoint(song, second, first))
+        song._sim_sort_cue_points()
+        song._fire("cue_points")
+        return len(song._cue_points)
+    if not 0 <= first < len(song._cue_points):
+        return -1
+    point = song._cue_points[first]
+    if action == "rename":
+        point._sim_set("name", second)
+    elif action == "time":
+        point._sim_set("time", second)
+        song._sim_sort_cue_points()
+    else:
+        song._cue_points.pop(first)._sim_delete()
+        song._fire("cue_points")
+    return len(song._cue_points)
+
+
+def clip_line(line):
+    """A ``clip`` line's ``(action, track, rest)``, or None: ``add``'s rest is
+    ``(start, end, name)``, ``rename``'s ``(clip, name)``, ``remove``'s
+    ``(clip,)``."""
+    words = line.rstrip("\r\n").split(None, 3)
+    if len(words) < 4 or not words[2].isdigit():
+        return None
+    action, track, args = words[1], int(words[2]), words[3]
+    if action == "add":
+        parts = args.split(None, 2)
+        if len(parts) == 3:
+            start, end = _beats(parts[0]), _beats(parts[1])
+            if start is not None and end is not None and start < end:
+                return ("add", track, (start, end, parts[2]))
+        return None
+    parts = args.split(None, 1)
+    if not parts[0].isdigit():
+        return None
+    if action == "rename" and len(parts) == 2:
+        return ("rename", track, (int(parts[0]), parts[1]))
+    if action == "remove" and len(parts) == 1:
+        return ("remove", track, (int(parts[0]),))
+    return None
+
+
+def clip(song, action, track_index, rest):
+    """Add, rename or remove an arrangement clip of the track at
+    ``track_index`` (main thread); the track's clips then, -1 when there is
+    no such track or clip."""
+    if not 0 <= track_index < len(song.tracks):
+        return -1
+    track = song.tracks[track_index]
+    clips = track._arrangement_clips
+    if action == "add":
+        start, end, name = rest
+        clips.append(Live.Clip.Clip(name, start, end))
+        clips.sort(key=lambda c: c.start_time)
+        track._fire("arrangement_clips")
+        return len(clips)
+    if not 0 <= rest[0] < len(clips):
+        return -1
+    if action == "rename":
+        clips[rest[0]]._sim_set("name", rest[1])
+    else:
+        clips.pop(rest[0])._sim_delete()
+        track._fire("arrangement_clips")
+    return len(clips)
+
+
 def tuner_line(line):
     """A ``tuner`` line's ``(kind, index, action, name)``, or None."""
     try:
@@ -218,6 +336,16 @@ def control(main_thread, song, line, held):
         parsed = tuner_line(line)
         if parsed is not None:
             return f"TUNER {main_thread.call(lambda: tuner(song, *parsed))}"
+    if words and words[0] == "cue":
+        parsed = cue_line(line)
+        if parsed is None:
+            return "CUE -1"
+        return f"CUE {main_thread.call(lambda: cue(song, *parsed))}"
+    if words and words[0] == "clip":
+        parsed = clip_line(line)
+        if parsed is None:
+            return "CLIP -1"
+        return f"CLIP {main_thread.call(lambda: clip(song, *parsed))}"
     if len(words) == 3 and words[0] == "listeners":
         prop, text = words[1], words[2].strip()
         return f"LISTENERS {main_thread.call(lambda: count_listeners(song, prop, text))}"

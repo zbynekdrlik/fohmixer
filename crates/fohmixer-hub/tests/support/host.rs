@@ -151,6 +151,29 @@ impl Host {
             .unwrap_or_else(|| panic!("not a DELETED line: {answer}"))
     }
 
+    /// A locator line (#140), as a user in Live would: `add <time>
+    /// <name…>`, `rename <index> <name…>`, `time <index> <time>` or `remove
+    /// <index>`; the locators then (-1: a bad line or no such locator).
+    pub fn cue(&mut self, args: &str) -> i64 {
+        let answer = self.answer(&format!("cue {args}"));
+        answer
+            .strip_prefix("CUE ")
+            .and_then(|n| n.parse().ok())
+            .unwrap_or_else(|| panic!("not a CUE line: {answer}"))
+    }
+
+    /// An arrangement clip line (#140) of a track: `add <track> <start>
+    /// <end> <name…>`, `rename <track> <clip> <name…>` or `remove <track>
+    /// <clip>`; the track's clips then (-1: a bad line, no such track or
+    /// clip).
+    pub fn clip(&mut self, args: &str) -> i64 {
+        let answer = self.answer(&format!("clip {args}"));
+        answer
+            .strip_prefix("CLIP ")
+            .and_then(|n| n.parse().ok())
+            .unwrap_or_else(|| panic!("not a CLIP line: {answer}"))
+    }
+
     /// The Live listeners on `prop` of the object at `path` (-1: none there).
     pub fn listeners(&mut self, prop: &str, path: &str) -> i64 {
         let answer = self.answer(&format!("listeners {prop} {path}"));

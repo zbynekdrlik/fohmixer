@@ -464,19 +464,14 @@ jobs:
           node-version: "22"
           cache: npm
           cache-dependency-path: e2e/package-lock.json
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cache/ms-playwright
-          # The leg's browser only (the companion job's key holds both).
-          key: ${{ runner.os }}-playwright-${{ matrix.browser }}-${{ hashFiles('e2e/package-lock.json') }}
+      # The leg's browser and its system packages, cached (#140: no Ubuntu
+      # mirror on the critical path). Normally under a minute; a stalled
+      # mirror fails here by name, not at the job's limit.
       - name: Install Playwright (the leg's browser)
-        working-directory: e2e
-        env:
-          BROWSER: ${{ matrix.browser }}
-        run: |
-          set -euo pipefail
-          npm ci
-          npx playwright install --with-deps "$BROWSER"
+        uses: ./.github/actions/playwright-browsers
+        timeout-minutes: 10
+        with:
+          browsers: ${{ matrix.browser }}
       - name: Remote access (#17, #90) - a per-run test CA with a certificate for foh.e2e.test and one for AbleSet's ableset.e2e.test that both browsers trust, the names in /etc/hosts, the Access test key
         run: |
           set -euo pipefail
@@ -680,16 +675,11 @@ jobs:
           node-version: "22"
           cache: npm
           cache-dependency-path: e2e/package-lock.json
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cache/ms-playwright
-          key: ${{ runner.os }}-playwright-${{ hashFiles('e2e/package-lock.json') }}
       - name: Install Playwright (Chromium and WebKit)
-        working-directory: e2e
-        run: |
-          set -euo pipefail
-          npm ci
-          npx playwright install --with-deps chromium webkit
+        uses: ./.github/actions/playwright-browsers
+        timeout-minutes: 10
+        with:
+          browsers: chromium webkit
       - name: Seed Companion with the synthetic test configuration (its own import page)
         working-directory: e2e
         timeout-minutes: 5
