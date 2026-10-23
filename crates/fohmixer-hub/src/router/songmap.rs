@@ -112,8 +112,9 @@ pub(super) struct SongMapIo {
     pub subs: BTreeMap<String, String>,
     /// Each set's Sections clips subscription (hub key) and its path.
     pub clips: BTreeMap<String, (String, String)>,
-    /// The clips subscriptions whose first value is the read's own.
-    pub fresh: BTreeSet<String>,
+    /// The clips subscriptions a read just made, with the clips' names it
+    /// read: a first value naming the same clips is that read's own.
+    pub fresh: BTreeMap<String, Vec<String>>,
 }
 
 impl SongMapIo {
@@ -181,6 +182,18 @@ pub(super) fn report_of(
                 text: p.text(),
             })
             .collect(),
+    })
+}
+
+/// Whether a list value names exactly `names`, in order (a listener's
+/// value encodes each object with its name).
+pub(super) fn same_names(value: Option<&Value>, names: &[String]) -> bool {
+    value.and_then(Value::as_array).is_some_and(|list| {
+        list.len() == names.len()
+            && list
+                .iter()
+                .zip(names)
+                .all(|(item, name)| item.get("name").and_then(Value::as_str) == Some(name.as_str()))
     })
 }
 
@@ -431,9 +444,10 @@ impl Router {
     }
 
     /// Follows the clips of the Sections track a read found (by its index
-    /// path), or none; its first value is the read's own (none comes when
-    /// the table already held one: a page follows the same clips).
-    fn songmap_follow_clips(&mut self, instance: &str, track: Option<&str>) {
+    /// path), or none; a first value naming the clips the read saw
+    /// (`names`) is the read's own (none comes when the table already held
+    /// one: a page follows the same clips).
+    fn songmap_follow_clips(&mut self, instance: &str, track: Option<&str>, names: Vec<String>) {
         let wanted = track.map(|t| format!("{t} {CLIPS}"));
         let current = self
             .songmap
@@ -453,7 +467,7 @@ impl Router {
         };
         if let Some((key, cached)) = self.songmap_follow(instance, track, CLIPS) {
             if !cached {
-                self.songmap.fresh.insert(key.clone());
+                self.songmap.fresh.insert(key.clone(), names);
             }
             self.songmap
                 .clips
@@ -463,15 +477,16 @@ impl Router {
 
     /// The deliveries of the song map's subscriptions: each a trigger of
     /// its set, once per set (the first value of a clips subscription a read
-    /// just made is that read's own).
+    /// just made is that read's own when it names the clips the read saw: a
+    /// clip added meanwhile still reads).
     pub(super) fn songmap_delivery(&mut self, items: Vec<ValueItem>) {
         let mut sets = BTreeSet::new();
         for item in items {
             let Some(instance) = self.songmap.subs.get(&item.sub).cloned() else {
                 continue;
             };
-            let fresh = self.songmap.fresh.remove(&item.sub);
-            if fresh && item.error.is_none() {
+            let read = self.songmap.fresh.remove(&item.sub);
+            if read.is_some_and(|names| same_names(item.value.as_ref(), &names)) {
                 continue;
             }
             sets.insert(instance);
@@ -554,7 +569,8 @@ impl Router {
                 let fields = songmap_fields(instance, &read, ms);
                 self.songmap.maps.insert(instance.to_string(), read);
                 self.songmap.stale.remove(instance);
-                self.songmap_follow_clips(instance, listing.track.as_deref());
+                let names = listing.clips.iter().map(|c| c.name.clone()).collect();
+                self.songmap_follow_clips(instance, listing.track.as_deref(), names);
                 fields
             }
             Err(error) => songmap_error_fields(instance, read_no, &error, ms),

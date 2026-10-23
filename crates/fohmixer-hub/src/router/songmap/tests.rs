@@ -8,7 +8,7 @@ use super::super::{Router, RouterMsg};
 use super::{
     CLIPS, CUE_POINTS, Listed, Listing, MAX_TEXTS, Missing, Read, SECTIONS, SONGMAP_CLIENT,
     Trigger, clip_commands, clips_of, cues_of, first_commands, listed, next_read, report_of,
-    sections_state, songmap_error_fields, songmap_fields, status_of, time_commands,
+    same_names, sections_state, songmap_error_fields, songmap_fields, status_of, time_commands,
     transport_reads,
 };
 use crate::live::client::LiveEvent;
@@ -617,9 +617,18 @@ async fn the_sections_clips_are_followed_by_the_index_a_read_found() {
     );
     assert!(router.songmap.subs.contains_key(&first));
     assert_eq!(router.subs.subscriptions("band"), 4);
-    // Its first value is the read's own: no read.
-    router.songmap_delivery(vec![ValueItem::value(&first, json!([]), None)]);
+    // Its first value names the clips the read saw: the read's own, no read.
+    assert_eq!(
+        router.songmap.fresh.get(&first),
+        Some(&vec!["Verse".to_string(), "Key {G}".to_string()])
+    );
+    router.songmap_delivery(vec![ValueItem::value(
+        &first,
+        json!([{"name": "Verse"}, {"name": "Key {G}"}]),
+        None,
+    )]);
     assert_eq!(router.songmap.reads, 1);
+    assert!(router.songmap.fresh.is_empty());
     // A later one is a change: a read.
     router.songmap_delivery(vec![ValueItem::value(&first, json!([1]), None)]);
     assert_eq!(router.songmap.reads, 2);
@@ -644,6 +653,45 @@ async fn the_sections_clips_are_followed_by_the_index_a_read_found() {
     assert_eq!(router.songmap.clips.get("band"), None);
     assert!(!router.songmap.subs.contains_key(&second));
     assert_eq!(router.subs.subscriptions("band"), 3);
+}
+
+#[test]
+fn a_first_value_is_the_reads_own_only_when_it_names_the_same_clips() {
+    let names = vec!["Verse".to_string(), "Key {G}".to_string()];
+    let value = |names: &[&str]| -> Value {
+        names
+            .iter()
+            .map(|n| json!({"$ref": "live_1", "class": "Clip", "name": n}))
+            .collect()
+    };
+    assert!(same_names(Some(&value(&["Verse", "Key {G}"])), &names));
+    assert!(!same_names(
+        Some(&value(&["Verse", "Key {G}", "Key {A}"])),
+        &names
+    ));
+    assert!(!same_names(Some(&value(&["Verse"])), &names));
+    assert!(!same_names(Some(&value(&["Key {G}", "Verse"])), &names));
+    assert!(!same_names(Some(&value(&["Verse", "Key {A}"])), &names));
+    assert!(!same_names(Some(&json!([{"name": "Verse"}, {}])), &names));
+    assert!(!same_names(None, &names));
+    assert!(!same_names(Some(&json!("Verse")), &names));
+    assert!(same_names(Some(&json!([])), &[]));
+}
+
+#[tokio::test]
+async fn a_clip_added_before_the_clips_were_followed_still_reads() {
+    let (mut router, _rx, _events, _dir) = online();
+    router.songmap_trigger("band");
+    answer(&mut router, 1, Ok(listing()));
+    let key = clips_key("live_set tracks 1");
+    // The listener's first value already holds a clip the read did not see.
+    router.songmap_delivery(vec![ValueItem::value(
+        &key,
+        json!([{"name": "Verse"}, {"name": "Key {G}"}, {"name": "Key {A}"}]),
+        None,
+    )]);
+    assert_eq!(router.songmap.reads, 2);
+    assert!(router.songmap.fresh.is_empty());
 }
 
 #[tokio::test]
@@ -710,9 +758,9 @@ async fn a_disconnect_voids_the_read_in_flight_and_keeps_the_last_map_stale() {
     assert_eq!((now[0].songs, now[0].stale), (2, true));
     let stale = report(&mut router, "band").unwrap();
     assert_eq!((stale.read_no, stale.stale), (1, true));
-    // A stale map's first value after the clips' resubscription reads.
+    // The clips' first value after the reconnect reads.
     let first = clips_key("live_set tracks 1");
-    assert!(!router.songmap.fresh.contains(&first));
+    assert!(!router.songmap.fresh.contains_key(&first));
     // The next read replaces it, fresh.
     connected(&mut router);
     router.songmap_trigger("band");
