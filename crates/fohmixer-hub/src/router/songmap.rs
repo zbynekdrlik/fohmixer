@@ -369,6 +369,13 @@ pub(super) fn songmap_fields(instance: &str, read: &Read, ms: u64) -> Value {
     })
 }
 
+/// Whether a read's record is warn class, judged on the record as it is
+/// written (`events::stamp` gives it the `ev` that `events::is_warn` keys
+/// on): the read's log line takes that level (#140 review M1).
+pub(super) fn songmap_warn(fields: &Value) -> bool {
+    crate::events::is_warn(&crate::events::stamp("songmap", 0, fields.clone()))
+}
+
 /// The `songmap` record of a read that failed.
 pub(super) fn songmap_error_fields(instance: &str, read_no: u64, error: &str, ms: u64) -> Value {
     json!({"instance": instance, "read_no": read_no, "ms": ms, "error": error})
@@ -575,7 +582,7 @@ impl Router {
             }
             Err(error) => songmap_error_fields(instance, read_no, &error, ms),
         };
-        if crate::events::is_warn(&fields) {
+        if songmap_warn(&fields) {
             tracing::warn!(instance = %instance, fields = %fields, "the song map was read with problems");
         } else {
             tracing::info!(instance = %instance, fields = %fields, "the song map was read");

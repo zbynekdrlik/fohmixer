@@ -8,8 +8,8 @@ use super::super::{Router, RouterMsg};
 use super::{
     CLIPS, CUE_POINTS, Listed, Listing, MAX_TEXTS, Missing, Read, SECTIONS, SONGMAP_CLIENT,
     Trigger, clip_commands, clips_of, cues_of, first_commands, listed, next_read, report_of,
-    same_names, sections_state, songmap_error_fields, songmap_fields, status_of, time_commands,
-    transport_reads,
+    same_names, sections_state, songmap_error_fields, songmap_fields, songmap_warn, status_of,
+    time_commands, transport_reads,
 };
 use crate::live::client::LiveEvent;
 
@@ -826,6 +826,28 @@ async fn a_read_with_problems_is_logged_at_warn() {
     assert!(log.contains(" WARN "), "{log}");
     assert!(log.contains("the song map"), "{log}");
     assert!(!log.contains(" INFO "), "{log}");
+}
+
+#[test]
+fn a_reads_class_is_its_records_as_written() {
+    let read = |listing: Listing| Read {
+        map: fohmixer_proto::songmap::build(&listing.cues, &listing.clips),
+        sections: listing.sections,
+        at_ms: 1,
+        read_no: 1,
+    };
+    assert!(songmap_warn(&songmap_fields(
+        "band",
+        &read(listing_with_a_problem()),
+        3
+    )));
+    assert!(!songmap_warn(&songmap_fields("band", &read(listing()), 3)));
+    assert!(songmap_warn(&songmap_error_fields(
+        "band",
+        2,
+        "Live did not answer",
+        3
+    )));
 }
 
 #[tokio::test]
