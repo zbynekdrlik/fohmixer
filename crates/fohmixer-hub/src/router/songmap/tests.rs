@@ -393,7 +393,8 @@ fn the_first_answer_lists_the_locators_and_the_sections_track() {
                 &["001 A {C}", "SONG END"]
             ),
             sections: SectionsState::One,
-            track: Some("live_set tracks 1".into()),
+            // Round 2's O1: the track as the answer gave it, `$ref` and all.
+            track: listed_objects("live_set tracks", "Track", &["Click", "Sections"]).pop(),
             clips: Some(listed_objects(
                 "live_set tracks 1 arrangement_clips",
                 "Clip",
@@ -444,10 +445,11 @@ fn the_report_names_a_second_sections_track() {
     ];
     let first = listed(&slots).unwrap();
     assert_eq!(first.sections, SectionsState::FirstOf(2));
+    // Round 2's O1: the first one's clips are read through its `$ref`.
+    let track = first.track.clone().expect("the first Sections track");
     assert_eq!(
-        first.track.as_deref(),
-        Some("live_set tracks 1"),
-        "the first one's clips are read by its index"
+        (track.path.as_str(), track.id.as_str(), track.class.as_str()),
+        ("live_set tracks 1", "live_1", "Track")
     );
     assert_eq!(first.clips, None);
     assert_eq!(
