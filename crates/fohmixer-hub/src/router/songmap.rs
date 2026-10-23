@@ -26,8 +26,9 @@
 //! commands, one after another. A failed
 //! call ends the read with its error and keeps the old map, stale, and the
 //! read is tried once more after [`RETRY_MS`]; a disconnect voids the read
-//! in flight (its answer's number is no longer the set's) and keeps the
-//! last map, stale until the next read.
+//! in flight (its answer's number is no longer the set's; its task is
+//! aborted, so it asks Live for nothing more) and keeps the last map, stale
+//! until the next read.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -130,6 +131,10 @@ pub(super) struct SongMapIo {
     pub maps: BTreeMap<String, Read>,
     /// The read in flight of each set, by its number.
     pub reading: BTreeMap<String, u64>,
+    /// The task of each set's read in flight: a disconnect aborts it, so
+    /// its remaining commands never reach a set loaded meanwhile (#140
+    /// review M4).
+    pub tasks: BTreeMap<String, tokio::task::JoinHandle<()>>,
     /// The sets that read again after the read in flight.
     pub dirty: BTreeSet<String>,
     /// The sets whose map is not current: from before a disconnect, or its
@@ -638,9 +643,10 @@ impl Router {
         self.songmap.reads += 1;
         let read_no = self.songmap.reads;
         self.songmap.reading.insert(instance.to_string(), read_no);
+        let key = instance.to_string();
         let instance = instance.to_string();
         let tx = self.io.tx.clone();
-        tokio::spawn(async move {
+        let task = tokio::spawn(async move {
             let started = std::time::Instant::now();
             let result = read_songmap(live).await;
             let ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
@@ -651,6 +657,7 @@ impl Router {
                 ms,
             });
         });
+        self.songmap.tasks.insert(key, task);
     }
 
     /// A read's answer: a void one (a disconnect, an older read) does
@@ -669,6 +676,7 @@ impl Router {
             return;
         }
         self.songmap.reading.remove(instance);
+        self.songmap.tasks.remove(instance);
         let retried = self.songmap.retrying.remove(instance);
         let dirty = self.songmap.dirty.remove(instance);
         let after = after_read(result.is_err(), retried, dirty);
@@ -738,10 +746,14 @@ impl Router {
         self.songmap_read_start(instance, true);
     }
 
-    /// `instance` went offline: its read in flight is void, nothing more is
-    /// asked of it, and its map is stale until the next read.
+    /// `instance` went offline: its read in flight is void and its task
+    /// aborted (#140 review M4), nothing more is asked of it, and its map is
+    /// stale until the next read.
     pub(super) fn songmap_offline(&mut self, instance: &str) {
         self.songmap.reading.remove(instance);
+        if let Some(task) = self.songmap.tasks.remove(instance) {
+            task.abort();
+        }
         self.songmap.dirty.remove(instance);
         self.songmap.retry.remove(instance);
         self.songmap.retrying.remove(instance);

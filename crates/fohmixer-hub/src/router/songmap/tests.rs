@@ -910,6 +910,10 @@ async fn a_failed_read_leaves_the_map_stale_and_is_tried_once_more_after_retry_m
     );
     assert!(router.songmap.retry.is_empty());
     assert!(router.songmap.retrying.is_empty());
+    assert!(
+        router.songmap.tasks.is_empty(),
+        "an answered read's task is let go"
+    );
     let none = tokio::time::timeout(
         std::time::Duration::from_millis(3 * RETRY_MS),
         a_retry(&mut rx),
@@ -1288,5 +1292,92 @@ fn the_key_names_of_the_report_are_autotunes() {
             .map(|p| p.kind)
             .collect::<Vec<ProblemKind>>(),
         vec![]
+    );
+}
+
+/// A script of `band` on a port of its own: it sends `connect`, then hands
+/// every request it reads to `seen` and answers none.
+async fn deaf_script(seen: tokio::sync::mpsc::UnboundedSender<Value>) -> u16 {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        let (tcp, _) = listener.accept().await.unwrap();
+        let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+        let connect = json!({"event": "connect", "data": {"instance": "band", "set_name": "Deaf"}});
+        ws.send(Message::Text(connect.to_string().into()))
+            .await
+            .unwrap();
+        while let Some(Ok(message)) = ws.next().await {
+            if let Message::Text(text) = message {
+                let _ = seen.send(serde_json::from_str(text.as_str()).unwrap());
+            }
+        }
+    });
+    port
+}
+
+#[tokio::test]
+async fn a_disconnect_ends_the_reads_task_so_it_asks_live_nothing_more() {
+    // Review M4. Only the router hears the disconnect here: the script stays
+    // connected, so a command the read's task still sent would reach it (after
+    // a quick reconnect, the set loaded meanwhile).
+    let (seen_tx, mut seen) = tokio::sync::mpsc::unbounded_channel();
+    let port = deaf_script(seen_tx).await;
+    let (heard_tx, mut heard) = tokio::sync::mpsc::unbounded_channel();
+    let events: crate::live::client::Events =
+        std::sync::Arc::new(move |_: &str, event: LiveEvent| {
+            let _ = heard_tx.send(event);
+        });
+    let cfg = crate::config::InstanceCfg {
+        name: "band".into(),
+        port,
+    };
+    let (live, _task) = crate::live::client::LiveHandle::spawn(&cfg, events);
+    let info = loop {
+        let event = tokio::time::timeout(std::time::Duration::from_secs(5), heard.recv())
+            .await
+            .expect("the script's connect")
+            .expect("the client runs");
+        if let LiveEvent::Connected(info) = event {
+            break info;
+        }
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let (log, _records) = crate::events::EventLog::channel(64);
+    let mut router = Router::new(
+        std::collections::BTreeMap::from([("band".to_string(), live.clone())]),
+        crate::rules::HubState::default(),
+        dir.path().to_path_buf(),
+        super::super::RouterIo { tx, events: log },
+    );
+    router.handle(RouterMsg::Live {
+        instance: "band".into(),
+        event: LiveEvent::Connected(info),
+    });
+    router.songmap_trigger("band");
+    assert!(router.songmap.tasks.contains_key("band"), "a read runs");
+    router.handle(RouterMsg::Live {
+        instance: "band".into(),
+        event: LiveEvent::Disconnected,
+    });
+    assert!(router.songmap.tasks.is_empty());
+    // Every task gets its turns: a read's task not aborted would send its
+    // first call now, before ours.
+    for _ in 0..16 {
+        tokio::task::yield_now().await;
+    }
+    let ours = vec![crate::eq::walk::get("live_set", "tempo")];
+    let _unanswered = live.call(ours.clone());
+    let first = tokio::time::timeout(std::time::Duration::from_secs(5), seen.recv())
+        .await
+        .expect("our request")
+        .expect("the script runs");
+    assert_eq!(
+        first["commands"],
+        Value::from(ours),
+        "the read's task sent nothing after the disconnect"
     );
 }
