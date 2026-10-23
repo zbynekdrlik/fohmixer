@@ -2,7 +2,7 @@
 """Integrity gate (adapted from iemmixer @ 22372bc): no ignored, skipped or
 focused tests (Rust, Playwright, Python), no continue-on-error, self-hosted
 runners or pull_request_target, every action pinned to a full commit SHA with
-its version comment, every Playwright shard of a matrix listed (#43), no
+its version comment (the workflows' and our own composite actions' steps), every Playwright shard of a matrix listed (#43), no
 force-kill verb anywhere, comments included
 (spec I7: nothing is force-killed on the Ableton PC), and every tap target
 of the surface owns its touches and none takes a mouse event (#43 PR G)."""
@@ -130,7 +130,8 @@ def violations(root: Path) -> list[str]:
             if rel in SELF:
                 continue
             found += [f"{rel}:{n}: skipped Python test" for n, line in lines(path) if PY_SKIP.search(line)]
-    for path in files(root, ".github/workflows", (".yml", ".yaml")):
+    yaml = (".yml", ".yaml")
+    for path in files(root, ".github/workflows", yaml) + files(root, ".github/actions", yaml):
         rel = path.relative_to(root).as_posix()
         for n, line in lines(path):
             if WORKFLOW_FORBIDDEN.search(line):

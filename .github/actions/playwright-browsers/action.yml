@@ -1,0 +1,65 @@
+# Playwright's browsers and their system packages, with no Ubuntu mirror on
+# the critical path (#140): `playwright install --with-deps` apt-installs about
+# 180 packages (117 MB) on every run, and on 23.10.2026 some runners got the
+# mirror at ~50 kB/s, so a 15-50 s step ran into the job's 30 minutes. apt
+# keeps the downloaded .deb files in a cached directory: a warm cache leaves
+# only `apt-get update` (~12 MB) to the mirror. The calling step bounds it with
+# its own timeout-minutes, under the job's.
+name: Playwright browsers
+description: npm ci in e2e/, then the given Playwright browsers with their system packages, both cached
+inputs:
+  browsers:
+    description: Space-separated Playwright browser names (chromium, webkit)
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: The cache key (the browsers, the lockfile's Playwright, the runner image)
+      id: key
+      shell: bash
+      env:
+        BROWSERS: ${{ inputs.browsers }}
+        LOCK: ${{ hashFiles('e2e/package-lock.json') }}
+      run: |
+        set -euo pipefail
+        prefix="${RUNNER_OS}-playwright-${BROWSERS// /-}-${LOCK}-"
+        # A new runner image may bring newer packages: its own entry, seeded
+        # from the last image's (restore-keys) so only the changed ones download.
+        echo "prefix=${prefix}" >> "$GITHUB_OUTPUT"
+        echo "key=${prefix}${ImageOS:-unknown}-${ImageVersion:-unknown}" >> "$GITHUB_OUTPUT"
+    - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      id: restore
+      with:
+        path: |
+          ~/.cache/ms-playwright
+          ~/.cache/fohmixer-apt-archives
+        key: ${{ steps.key.outputs.key }}
+        restore-keys: ${{ steps.key.outputs.prefix }}
+    - name: Install Playwright and the browsers' system packages
+      shell: bash
+      working-directory: e2e
+      env:
+        BROWSERS: ${{ inputs.browsers }}
+      run: |
+        set -euo pipefail
+        archives="$HOME/.cache/fohmixer-apt-archives"
+        mkdir -p "$archives/partial"
+        # apt-get keeps what it downloads; the cache directory takes the place
+        # of /var/cache/apt/archives.
+        printf 'Dir::Cache::Archives "%s/";\nAPT::Keep-Downloaded-Packages "true";\n' "$archives" \
+          | sudo tee /etc/apt/apt.conf.d/99fohmixer-archives
+        cached=$(find "$archives" -maxdepth 1 -name '*.deb' | wc -l)
+        echo "cached packages before the install: ${cached}"
+        npm ci
+        # shellcheck disable=SC2086 # the browser names are separate words
+        npx playwright install --with-deps $BROWSERS
+        # apt wrote as root; the cache save reads as the runner.
+        sudo chown -R "$(id -u):$(id -g)" "$archives"
+        echo "cached packages after the install: $(find "$archives" -maxdepth 1 -name '*.deb' | wc -l)"
+    - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      if: steps.restore.outputs.cache-hit != 'true'
+      with:
+        path: |
+          ~/.cache/ms-playwright
+          ~/.cache/fohmixer-apt-archives
+        key: ${{ steps.key.outputs.key }}
