@@ -800,6 +800,34 @@ async fn a_failed_read_keeps_the_map_and_is_recorded_warn() {
     ));
 }
 
+/// A set read whose map has one problem: song 1 is not ended.
+fn listing_with_a_problem() -> Listing {
+    Listing {
+        cues: vec![Cue {
+            name: "001 Test One {C 120}".into(),
+            time: Some(0.0),
+        }],
+        clips: Vec::new(),
+        sections: SectionsState::None,
+        track: None,
+    }
+}
+
+#[tokio::test]
+async fn a_read_with_problems_is_logged_at_warn() {
+    // Review M1: the read's log line takes the class its record has as it
+    // is written (with its `ev`), never the class of its bare fields.
+    let (mut router, _rx, events, _dir) = online();
+    router.songmap_trigger("band");
+    let log = crate::ws::tests::logged(|| answer(&mut router, 1, Ok(listing_with_a_problem())));
+    let got = songmap_records(&events);
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0]["problems"], 1);
+    assert!(log.contains(" WARN "), "{log}");
+    assert!(log.contains("the song map"), "{log}");
+    assert!(!log.contains(" INFO "), "{log}");
+}
+
 #[tokio::test]
 async fn a_transport_change_reads_again() {
     let (mut router, _rx, _events, _dir) = online();
