@@ -543,6 +543,123 @@ fn a_clip_whose_description_is_no_key_is_no_key_clip() {
     );
 }
 
+/// One song (031 in F, beats 22766 to 23501) with one clip at beat 22800.
+fn one_clip(name: &str) -> SongMap {
+    build(
+        &[cue("031 T {F 95 4/4}", 22766.0), cue("SONG END", 23501.0)],
+        &[clip(name, 22800.0)],
+    )
+}
+
+#[test]
+fn a_clip_named_key_whose_key_does_not_read_is_a_problem() {
+    // The owner names every key clip `Key {X}` (spec §2.1): one whose key
+    // does not read is a mistyped key, never a silent no-key clip (review
+    // I2 a). The song keeps its own key.
+    for name in [
+        "Key {Amin}",
+        "Key {Gmaj}",
+        "Key {H}",
+        "Key {g}",
+        "Key {E#}",
+        "Key {F♯}",
+        "Key {Am/A}",
+        "Key {Fis}",
+        "Key {soft}",
+        "Key {Amin loud}",
+        "Key {}",
+        "Key { }",
+        "Key {G",
+        "  Key{Cmoll}  ",
+        "{soft} Key",
+    ] {
+        let m = one_clip(name);
+        assert!(m.spans[0].changes.is_empty(), "{name}");
+        assert_eq!(
+            kinds(&m),
+            [(ProblemKind::BadClipKey, Some(31), Some(22800.0))],
+            "{name}"
+        );
+        assert_eq!(key_at(&m, 22900.0), Some((31, major(5))), "{name}");
+    }
+    assert_eq!(
+        one_clip("Key {Amin}").problems[0].text(),
+        "song 031: the Sections clip \"Key {Amin}\" does not read as one key (beat 22800)"
+    );
+}
+
+#[test]
+fn a_one_word_description_spelled_as_a_wrong_key_is_a_problem() {
+    // Review I2 b: an accidental, two keys, a known wrong suffix, `H` or a
+    // lower-case key letter first, whatever the clip's name.
+    for name in [
+        "Bridge {Amin}",
+        "Bridge {Gmaj}",
+        "Bridge {Amol}",
+        "Bridge {Amoll}",
+        "Bridge {Adur}",
+        "Bridge {AM}",
+        "Bridge {F♯}",
+        "Bridge {B♭}",
+        "Bridge {F♯m}",
+        "Bridge {Ebmaj}",
+        "Intro {E#}",
+        "Intro {Cb}",
+        "Intro {Fbm}",
+        "Tag {Am/A}",
+        "Tag {F/G}",
+        "Chorus {H}",
+        "Chorus {Hm}",
+        "Chorus {Hmoll}",
+        "Verse {g}",
+        "Verse {f#m}",
+        "Verse {am}",
+        "Verse {cis}",
+        "Verse {es}",
+        "Verse {h}",
+        "key {Amin}",
+    ] {
+        let m = one_clip(name);
+        assert!(m.spans[0].changes.is_empty(), "{name}");
+        assert_eq!(
+            kinds(&m),
+            [(ProblemKind::BadClipKey, Some(31), Some(22800.0))],
+            "{name}"
+        );
+    }
+    // The ruling's "a lower-case key letter first" takes any such word,
+    // not only a key's spelling.
+    assert_eq!(
+        kinds(&one_clip("Pad {bridge}")),
+        [(ProblemKind::BadClipKey, Some(31), Some(22800.0))]
+    );
+}
+
+#[test]
+fn words_and_longer_descriptions_stay_no_key_clips() {
+    // {Verse}, {soft}, {Bridge} and {Chorus 2} are words (review I2's
+    // ruling); a name in another case than `Key` is no key clip's name, and
+    // a description of two words is no mistyped key.
+    for name in [
+        "Verse",
+        "x {Verse}",
+        "Break {soft}",
+        "x {Bridge}",
+        "y {Chorus 2}",
+        "KEY {soft}",
+        "key {soft}",
+        "Keys {soft}",
+        "Pad {Amin loud}",
+        "Pad {Bridge 2}",
+        "Empty {}",
+        "Open {G",
+    ] {
+        let m = one_clip(name);
+        assert!(m.spans[0].changes.is_empty(), "{name}");
+        assert!(m.problems.is_empty(), "{name}: {:?}", m.problems);
+    }
+}
+
 #[test]
 fn a_key_clip_in_a_keyless_song_stays_keyless() {
     let m = build(
