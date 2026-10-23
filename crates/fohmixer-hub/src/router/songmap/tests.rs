@@ -7,9 +7,9 @@ use super::super::tests::{next_of, offline_router, records, status};
 use super::super::{Router, RouterMsg};
 use super::{
     CLIPS, CUE_POINTS, Listed, Listing, MAX_TEXTS, Missing, Read, SECTIONS, SONGMAP_CLIENT,
-    Trigger, clip_commands, clips_of, cues_of, first_commands, listed, next_read, report_of,
-    same_names, sections_state, songmap_error_fields, songmap_fields, songmap_warn, status_of,
-    time_commands, transport_reads,
+    Trigger, clip_commands, clips_of, cues_of, first_commands, listed, next_read, problems_changed,
+    read_words, report_of, same_names, sections_state, songmap_error_fields, songmap_fields,
+    songmap_warn, status_of, time_commands, transport_reads,
 };
 use crate::live::client::LiveEvent;
 
@@ -213,7 +213,8 @@ async fn a_connect_reads_the_map_once() {
         got,
         vec![
             json!({"instance": "band", "read_no": 1, "songs": 2, "keyed": 1, "changes": 1,
-                    "problems": 0, "sections": "one", "ms": 7, "problem_texts": []})
+                    "problems": 0, "sections": "one", "ms": 7, "problem_texts": [],
+                    "problems_changed": false})
         ]
     );
     // The read found the Sections track: its clips are followed by index.
@@ -839,15 +840,114 @@ fn a_reads_class_is_its_records_as_written() {
     assert!(songmap_warn(&songmap_fields(
         "band",
         &read(listing_with_a_problem()),
-        3
+        3,
+        true
     )));
-    assert!(!songmap_warn(&songmap_fields("band", &read(listing()), 3)));
+    assert!(!songmap_warn(&songmap_fields(
+        "band",
+        &read(listing_with_a_problem()),
+        3,
+        false
+    )));
+    assert!(!songmap_warn(&songmap_fields(
+        "band",
+        &read(listing()),
+        3,
+        false
+    )));
     assert!(songmap_warn(&songmap_error_fields(
         "band",
         2,
         "Live did not answer",
         3
     )));
+}
+
+#[test]
+fn problems_change_against_the_last_read_since_the_connect() {
+    let problem = |kind| fohmixer_proto::songmap::Problem {
+        kind,
+        song: Some(1),
+        time: Some(0.0),
+        clip: None,
+    };
+    let one = vec![problem(ProblemKind::NotEnded)];
+    let other = vec![problem(ProblemKind::BadTempo)];
+    let none: &[fohmixer_proto::songmap::Problem] = &[];
+    // A first read: changed when it has any.
+    assert!(!problems_changed(None, none));
+    assert!(problems_changed(None, &one));
+    // Later: changed when they differ, a change to none included.
+    assert!(!problems_changed(Some(one.as_slice()), &one));
+    assert!(!problems_changed(Some(none), none));
+    assert!(problems_changed(Some(one.as_slice()), none));
+    assert!(problems_changed(Some(none), &one));
+    assert!(problems_changed(Some(one.as_slice()), &other));
+}
+
+#[tokio::test]
+async fn a_known_unchanged_problem_stays_bulk_and_a_change_is_warn() {
+    // Review M8: one warn record when the problems change, none at every
+    // start and stop while they stay as they are; each record keeps its
+    // texts.
+    let (mut router, _rx, events, _dir) = online();
+    let reads = [
+        listing_with_a_problem(),
+        listing_with_a_problem(),
+        listing(),
+        listing(),
+        listing_with_a_problem(),
+    ];
+    for (n, read) in (1_u64..).zip(reads) {
+        router.songmap_trigger("band");
+        answer(&mut router, n, Ok(read));
+    }
+    // A reconnect: its first read with the same problem is warn again.
+    router.handle(RouterMsg::Live {
+        instance: "band".into(),
+        event: LiveEvent::Disconnected,
+    });
+    connected(&mut router);
+    router.songmap_trigger("band");
+    answer(&mut router, 6, Ok(listing_with_a_problem()));
+    let got = songmap_records(&events);
+    let classes: Vec<(bool, bool)> = got
+        .iter()
+        .map(|r| (r["problems_changed"] == json!(true), songmap_warn(r)))
+        .collect();
+    assert_eq!(
+        classes,
+        [
+            (true, true),
+            (false, false),
+            (true, true),
+            (false, false),
+            (true, true),
+            (true, true)
+        ]
+    );
+    let text = json!(["song 001: not ended by SONG END, STOP or AUTOSTOP (beat 0)"]);
+    assert_eq!(
+        got[1]["problem_texts"], text,
+        "a bulk record keeps its texts"
+    );
+    assert_eq!(got[5]["problem_texts"], text);
+}
+
+#[test]
+fn a_reads_line_says_what_its_record_says() {
+    assert_eq!(
+        read_words(&json!({"error": "Live did not answer"})),
+        "the song map could not be read"
+    );
+    assert_eq!(
+        read_words(&json!({"problems": 1, "problems_changed": true})),
+        "the song map was read, its problems changed"
+    );
+    assert_eq!(
+        read_words(&json!({"problems": 1, "problems_changed": false})),
+        "the song map was read"
+    );
 }
 
 #[tokio::test]
@@ -936,7 +1036,7 @@ fn the_record_and_the_status_sum_a_read_up() {
         at_ms: 1_790_000_000_000,
         read_no: 9,
     };
-    let fields = songmap_fields("band", &read, 31);
+    let fields = songmap_fields("band", &read, 31, true);
     assert_eq!(fields["problems"], 25);
     assert_eq!(fields["problem_texts"].as_array().unwrap().len(), MAX_TEXTS);
     assert_eq!(MAX_TEXTS, 20);
@@ -953,7 +1053,7 @@ fn the_record_and_the_status_sum_a_read_up() {
     assert_eq!(
         rest,
         json!({"instance": "band", "read_no": 9, "songs": 25, "keyed": 0, "changes": 0,
-               "problems": 25, "sections": "none", "ms": 31})
+               "problems": 25, "sections": "none", "ms": 31, "problems_changed": true})
     );
     assert!(crate::events::is_warn(&{
         let mut r = fields.clone();

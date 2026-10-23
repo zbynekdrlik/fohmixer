@@ -30,8 +30,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use fohmixer_proto::client::{ProblemReport, SongMapReport, SongMapStatus, SpanReport, ValueItem};
 use fohmixer_proto::songmap::{
-    ClipName, Cue, SectionsState, SongMap, TIME_CHUNK, build, classify, clip_needs_time, counts,
-    needs_time,
+    ClipName, Cue, Problem, SectionsState, SongMap, TIME_CHUNK, build, classify, clip_needs_time,
+    counts, needs_time,
 };
 use serde_json::{Value, json};
 
@@ -115,6 +115,9 @@ pub(super) struct SongMapIo {
     /// The clips subscriptions a read just made, with the clips' names it
     /// read: a first value naming the same clips is that read's own.
     pub fresh: BTreeMap<String, Vec<String>>,
+    /// The problems of each set's last read since its connect: a read's
+    /// record is warn class only when its own differ (#140 review M8).
+    pub last_problems: BTreeMap<String, Vec<Problem>>,
 }
 
 impl SongMapIo {
@@ -345,9 +348,23 @@ pub(super) fn clips_of(
         .collect())
 }
 
+/// Whether a read's problems differ from the set's last read since its
+/// connect (`last`; none: the first read, which differs when it has any):
+/// only then is its record warn class, so a known problem left as it was
+/// stays bulk at every transport change (#140 review M8).
+pub(super) fn problems_changed(last: Option<&[Problem]>, now: &[Problem]) -> bool {
+    last.map_or(!now.is_empty(), |last| last != now)
+}
+
 /// The `songmap` record of a read: its counts, which Sections track, how
-/// long it took (`ms`) and its first problems in words.
-pub(super) fn songmap_fields(instance: &str, read: &Read, ms: u64) -> Value {
+/// long it took (`ms`), its first problems in words, and whether they
+/// changed since the set's last read (`problems_changed`, its class).
+pub(super) fn songmap_fields(
+    instance: &str,
+    read: &Read,
+    ms: u64,
+    problems_changed: bool,
+) -> Value {
     let n = counts(&read.map);
     let texts: Vec<String> = read
         .map
@@ -366,6 +383,7 @@ pub(super) fn songmap_fields(instance: &str, read: &Read, ms: u64) -> Value {
         "sections": read.sections,
         "ms": ms,
         "problem_texts": texts,
+        "problems_changed": problems_changed,
     })
 }
 
@@ -374,6 +392,18 @@ pub(super) fn songmap_fields(instance: &str, read: &Read, ms: u64) -> Value {
 /// on): the read's log line takes that level (#140 review M1).
 pub(super) fn songmap_warn(fields: &Value) -> bool {
     crate::events::is_warn(&crate::events::stamp("songmap", 0, fields.clone()))
+}
+
+/// The words of a read's log line: a failed read's, a read whose problems
+/// changed, or a plain one.
+pub(super) fn read_words(fields: &Value) -> &'static str {
+    if fields.get("error").is_some() {
+        "the song map could not be read"
+    } else if fields.get("problems_changed") == Some(&Value::Bool(true)) {
+        "the song map was read, its problems changed"
+    } else {
+        "the song map was read"
+    }
 }
 
 /// The `songmap` record of a read that failed.
@@ -573,7 +603,12 @@ impl Router {
                     at_ms: u64::try_from(crate::events::now_ms()).unwrap_or(0),
                     read_no,
                 };
-                let fields = songmap_fields(instance, &read, ms);
+                let last = self.songmap.last_problems.get(instance);
+                let changed = problems_changed(last.map(Vec::as_slice), &read.map.problems);
+                let fields = songmap_fields(instance, &read, ms, changed);
+                self.songmap
+                    .last_problems
+                    .insert(instance.to_string(), read.map.problems.clone());
                 self.songmap.maps.insert(instance.to_string(), read);
                 self.songmap.stale.remove(instance);
                 let names = listing.clips.iter().map(|c| c.name.clone()).collect();
@@ -582,10 +617,11 @@ impl Router {
             }
             Err(error) => songmap_error_fields(instance, read_no, &error, ms),
         };
+        let words = read_words(&fields);
         if songmap_warn(&fields) {
-            tracing::warn!(instance = %instance, fields = %fields, "the song map was read with problems");
+            tracing::warn!(instance = %instance, fields = %fields, "{words}");
         } else {
-            tracing::info!(instance = %instance, fields = %fields, "the song map was read");
+            tracing::info!(instance = %instance, fields = %fields, "{words}");
         }
         self.io.events.record("songmap", fields);
         if self.songmap.dirty.remove(instance) {
@@ -598,6 +634,8 @@ impl Router {
     pub(super) fn songmap_offline(&mut self, instance: &str) {
         self.songmap.reading.remove(instance);
         self.songmap.dirty.remove(instance);
+        // The first read after the next connect is judged as a first one.
+        self.songmap.last_problems.remove(instance);
         if let Some((key, _)) = self.songmap.clips.get(instance) {
             self.songmap.fresh.remove(key);
         }

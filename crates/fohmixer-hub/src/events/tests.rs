@@ -478,18 +478,29 @@ fn the_rules_records_are_warn_class() {
 }
 
 #[test]
-fn the_record_is_warn_only_with_problems_or_an_error() {
-    // #140: a song map read is bulk unless its map has problems or it failed.
+fn the_record_is_warn_only_when_its_problems_changed_or_it_failed() {
+    // #140 review M8: a song map read is bulk unless its problems changed
+    // since the set's last read, or it failed; known, unchanged problems
+    // at every start and stop are bulk.
     assert!(!is_warn(
-        &json!({"ev": "songmap", "problems": 0, "songs": 166})
+        &json!({"ev": "songmap", "problems": 0, "songs": 166, "problems_changed": false})
     ));
-    assert!(is_warn(&json!({"ev": "songmap", "problems": 1})));
-    assert!(is_warn(&json!({"ev": "songmap", "problems": 12})));
+    assert!(!is_warn(
+        &json!({"ev": "songmap", "problems": 12, "problems_changed": false})
+    ));
+    assert!(is_warn(
+        &json!({"ev": "songmap", "problems": 1, "problems_changed": true})
+    ));
+    assert!(is_warn(
+        &json!({"ev": "songmap", "problems": 0, "problems_changed": true})
+    ));
     assert!(is_warn(
         &json!({"ev": "songmap", "error": "instance offline"})
     ));
-    assert!(!is_warn(&json!({"ev": "songmap"})));
-    assert!(!is_warn(&json!({"ev": "songmap", "problems": "1"})));
-    // Another record's `problems` is not a song map's.
-    assert!(!is_warn(&json!({"ev": "ack", "problems": 3})));
+    assert!(!is_warn(&json!({"ev": "songmap", "problems": 3})));
+    assert!(!is_warn(
+        &json!({"ev": "songmap", "problems_changed": "true"})
+    ));
+    // Another record's `problems_changed` is not a song map's.
+    assert!(!is_warn(&json!({"ev": "ack", "problems_changed": true})));
 }

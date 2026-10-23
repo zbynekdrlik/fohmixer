@@ -189,9 +189,11 @@ pub fn expired(file: NaiveDate, today: NaiveDate, keep_days: i64) -> bool {
 /// failures), REVERB's `reverb` steps, each fader link's switch
 /// (`fader_link`) and AUTOTUNE's `autotune` steps (#104): a few per song,
 /// and they explain what the stage mics, the reverbs, the links and the
-/// singers' autotune did. A `songmap` read (#140) only when its map has
-/// problems (or the read failed: its `error`): a clean read at every
-/// transport change is bulk.
+/// singers' autotune did. A `songmap` read (#140) only when its problems
+/// changed since the set's last read (`problems_changed`; the first read
+/// after a connect: when it has any) or it failed (its `error`): a read at
+/// every transport change whose problems are known and unchanged is bulk
+/// (review M8).
 pub fn is_warn(record: &Value) -> bool {
     let ev = record.get("ev").and_then(Value::as_str).unwrap_or("");
     let failed = record.get("error").is_some_and(|e| !e.is_null())
@@ -221,15 +223,12 @@ pub fn is_warn(record: &Value) -> bool {
                 | "autotune"
         )
         || (ev == "trace" && holds_warn_event(record))
-        || (ev == "songmap" && has_problems(record))
+        || (ev == "songmap" && problems_changed(record))
 }
 
-/// Whether a record counts `problems` (more than none).
-fn has_problems(record: &Value) -> bool {
-    record
-        .get("problems")
-        .and_then(Value::as_u64)
-        .is_some_and(|n| n > 0)
+/// Whether a song map read's record says its problems changed.
+fn problems_changed(record: &Value) -> bool {
+    record.get("problems_changed").and_then(Value::as_bool) == Some(true)
 }
 
 /// Whether a page's `trace` holds a dropout, a reset of its counter or its
