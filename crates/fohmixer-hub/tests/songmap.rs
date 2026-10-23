@@ -129,10 +129,15 @@ fn the_hub_serves_the_sites_song_map() {
         assert_eq!(key(&spans[0]), Some((0, false)), "C");
         assert_eq!(
             spans[0]["changes"],
-            json!([{"time": 40.0, "key": {"root": 7, "minor": false}}]),
+            json!([{"time": 40.0, "key": {"root": 7, "minor": false, "name": "G"}}]),
             "the change to G at its clip's exact start"
         );
         assert_eq!(key(&spans[1]), Some((6, true)), "F# minor");
+        assert_eq!(
+            (&spans[0]["key"]["name"], &spans[1]["key"]["name"]),
+            (&json!("C"), &json!("F#m")),
+            "each key named as Auto-Tune spells it"
+        );
         assert_eq!(
             (&spans[1]["start"], &spans[1]["end"]),
             (&json!(128.0), &json!(200.0))
@@ -217,7 +222,7 @@ fn a_key_clip_added_in_live_is_in_the_next_map() {
         .await;
         assert_eq!(
             map["spans"][1]["changes"],
-            json!([{"time": 150.5, "key": {"root": 9, "minor": false}}])
+            json!([{"time": 150.5, "key": {"root": 9, "minor": false, "name": "A"}}])
         );
         hub.stop().await;
         host.stop();

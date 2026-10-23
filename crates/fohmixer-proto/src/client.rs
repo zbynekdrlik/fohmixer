@@ -24,7 +24,7 @@ use serde_json::Value;
 use crate::eq::{Area, EqItem, EqLock, EqState, Part, Touch};
 use crate::layout::{Binding, LinkId};
 use crate::path::canonical_target;
-use crate::songmap::{Counts, ProblemKind, SectionsState, Span};
+use crate::songmap::{Counts, Key, ProblemKind, SectionsState, Span};
 
 /// The client protocol this build speaks.
 pub const UI_PROTO: u32 = 2;
@@ -675,6 +675,66 @@ pub struct ProblemReport {
     pub text: String,
 }
 
+/// A key in `GET /api/songmap` (#140): its root (C = 0 … B = 11), whether
+/// it is minor, and its name in Auto-Tune's spelling (`F#m`, review M7: the
+/// report is compared with verification 2 by hand; empty in an older hub's
+/// answer).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeyReport {
+    pub root: u8,
+    pub minor: bool,
+    #[serde(default)]
+    pub name: String,
+}
+
+impl From<Key> for KeyReport {
+    fn from(key: Key) -> Self {
+        Self {
+            root: key.root,
+            minor: key.minor,
+            name: key.name(),
+        }
+    }
+}
+
+/// A key change in `GET /api/songmap` (#140): from `time` (beats), this key.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ChangeReport {
+    pub time: f64,
+    pub key: KeyReport,
+}
+
+/// A song's span in `GET /api/songmap` (#140): its number, its start and
+/// end in beats (no end: not ended), its key (none: no autotune in the
+/// span) and its key changes in time order, each key with its name.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SpanReport {
+    pub number: u16,
+    pub start: f64,
+    pub end: Option<f64>,
+    pub key: Option<KeyReport>,
+    pub changes: Vec<ChangeReport>,
+}
+
+impl From<&Span> for SpanReport {
+    fn from(span: &Span) -> Self {
+        Self {
+            number: span.number,
+            start: span.start,
+            end: span.end,
+            key: span.key.map(KeyReport::from),
+            changes: span
+                .changes
+                .iter()
+                .map(|change| ChangeReport {
+                    time: change.time,
+                    key: KeyReport::from(change.key),
+                })
+                .collect(),
+        }
+    }
+}
+
 /// `GET /api/songmap?instance=<name>` (#140): a Live set's newest song map,
 /// its read's number and time (hub UTC ms), whether it is stale, which
 /// Sections track it read, its counts, every span and every problem.
@@ -686,7 +746,7 @@ pub struct SongMapReport {
     pub stale: bool,
     pub sections: SectionsState,
     pub counts: Counts,
-    pub spans: Vec<Span>,
+    pub spans: Vec<SpanReport>,
     pub problems: Vec<ProblemReport>,
 }
 

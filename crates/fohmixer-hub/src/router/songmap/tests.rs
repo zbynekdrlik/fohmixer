@@ -887,8 +887,9 @@ fn the_report_answers_an_unknown_set_a_set_not_read_and_a_map() {
             "sections": {"first_of": 2},
             "counts": {"songs": 2, "keyed": 1, "changes": 1, "problems": 0},
             "spans": [
-                {"number": 1, "start": 0.0, "end": 100.0, "key": {"root": 0, "minor": false},
-                 "changes": [{"time": 50.0, "key": {"root": 7, "minor": false}}]},
+                {"number": 1, "start": 0.0, "end": 100.0,
+                 "key": {"root": 0, "minor": false, "name": "C"},
+                 "changes": [{"time": 50.0, "key": {"root": 7, "minor": false, "name": "G"}}]},
                 {"number": 2, "start": 120.0, "end": 200.0, "key": null, "changes": []}
             ],
             "problems": []

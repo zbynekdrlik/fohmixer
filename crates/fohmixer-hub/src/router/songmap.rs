@@ -28,7 +28,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use fohmixer_proto::client::{ProblemReport, SongMapReport, SongMapStatus, ValueItem};
+use fohmixer_proto::client::{ProblemReport, SongMapReport, SongMapStatus, SpanReport, ValueItem};
 use fohmixer_proto::songmap::{
     ClipName, Cue, SectionsState, SongMap, TIME_CHUNK, build, classify, clip_needs_time, counts,
     needs_time,
@@ -170,7 +170,7 @@ pub(super) fn report_of(
         stale,
         sections: read.sections,
         counts: counts(&read.map),
-        spans: read.map.spans.clone(),
+        spans: read.map.spans.iter().map(SpanReport::from).collect(),
         problems: read
             .map
             .problems
