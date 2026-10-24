@@ -1079,6 +1079,43 @@ async fn writes_are_held_while_the_markers_are_unsettled() {
 }
 
 #[tokio::test]
+async fn a_found_target_waits_for_both_its_values_with_the_bar_it_owes() {
+    // A held song start owes the key and the bar; after the release the
+    // walk finds another device, whose values come one at a time: nothing
+    // goes out (not even the bar alone) until both are heard.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, mut own, rx, mut script) = scripted_router(dir.path());
+    ready_stream(&mut router, (0.5, 1.0 / 28.0));
+    deliver(&mut router, TIME, 10.0);
+    confirm(&mut router, &mut own, &mut script).await;
+    router.autotune_tracks("band");
+    deliver(&mut router, TIME, 250.0);
+    router.autotune_release("band", "settled");
+    find(&mut router, STREAM, rack(7, "b"));
+    no_call(&mut script);
+    let key_sub = router.autotune.targets[STREAM].key_sub.clone().unwrap();
+    deliver(&mut router, &key_sub, 0.5);
+    no_call(&mut script);
+    let _ = steps(&rx);
+    let scale_sub = router.autotune.targets[STREAM].scale_sub.clone().unwrap();
+    deliver(&mut router, &scale_sub, 0.0);
+    let [root, scale] = set_bar(6, "Minor");
+    assert_eq!(
+        confirm(&mut router, &mut own, &mut script).await,
+        vec![
+            set_ref("k7b", 6.0 / 11.0),
+            set_ref("s7b", 1.0 / 28.0),
+            root,
+            scale
+        ]
+    );
+    assert_eq!(
+        of(&steps(&rx), "key_write"),
+        vec![key_write("F#m", "found", &["#8"], true)]
+    );
+}
+
+#[tokio::test]
 async fn a_track_inserted_above_a_target_is_no_other_writer_and_writes_nothing_by_the_old_index() {
     // PR 2a review M3 (the main session's ruling): the key device is
     // followed by its index path, so after a track-list change the values
