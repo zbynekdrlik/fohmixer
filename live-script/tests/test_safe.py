@@ -5,6 +5,7 @@
 import logging
 import select
 import shutil
+import struct
 import tempfile
 import time
 import unittest
@@ -32,7 +33,7 @@ REPRO_RACK = "live_set tracks 6 devices 0"
 STREAM_RACK = "live_set tracks 7 devices 0 chains 0 devices 0"
 REPRO = f"{REPRO_RACK} parameters 1"
 STREAM = f"{STREAM_RACK} parameters 1"
-LOST = "hub lost (disconnect): set 2 autotune selectors to DRY"
+LOST = "hub lost (disconnect): set 2 autotune selectors to DRY, 0 already there"
 SILENCE_S = Config.HUB_SILENCE_MS / 1000.0
 
 
@@ -120,7 +121,8 @@ class SafeTest(unittest.TestCase):
         self.assertFalse(self.safe.armed(c))
         self.assertEqual(self.safe.fire(c, "disconnect"), 0)
         self.assertEqual(
-            self.lines.messages, ["hub lost (disconnect): set 1 autotune selectors to DRY"]
+            self.lines.messages,
+            ["hub lost (disconnect): set 1 autotune selectors to DRY, 0 already there"],
         )
 
     def test_fire_writes_each_once_and_clears(self):
@@ -147,7 +149,8 @@ class SafeTest(unittest.TestCase):
         self.assertEqual(self.safe.fire(c, "disconnect"), 1)
         self.assertEqual(p2.value, 0.0)
         self.assertEqual(
-            self.lines.messages, ["hub lost (disconnect): set 1 autotune selectors to DRY"]
+            self.lines.messages,
+            ["hub lost (disconnect): set 1 autotune selectors to DRY, 0 already there"],
         )
 
     def test_one_connections_list_is_its_own(self):
@@ -179,7 +182,24 @@ class SafeTest(unittest.TestCase):
             self.lines.messages,
         )
         self.assertEqual(
-            self.lines.messages[1], "hub lost (silence): set 1 autotune selectors to DRY"
+            self.lines.messages[1],
+            "hub lost (silence): set 1 autotune selectors to DRY, 0 already there",
+        )
+
+    def test_a_selector_already_on_dry_is_not_written(self):
+        # PR #146 review M6: an equal write at every hub stop could mark the
+        # set changed; a selector Live holds at its DRY value is left alone.
+        c = Conn()
+        p1, p2 = self.param(REPRO), self.param(STREAM)
+        p1._sim_set("value", 127.0)
+        p2._sim_set("value", 127.0)
+        self.safe.arm(c, [(p1, 127.0), (p2, 0.0)])
+        self.assertEqual(self.safe.fire(c, "disconnect"), 1)
+        self.assertEqual((p1.value, p2.value), (127.0, 0.0))
+        self.assertEqual((p1._sim_set_count("value"), p2._sim_set_count("value")), (0, 1))
+        self.assertEqual(
+            self.lines.messages,
+            ["hub lost (disconnect): set 1 autotune selectors to DRY, 1 already there"],
         )
 
     def test_clear_forgets_every_list_and_writes_nothing(self):
@@ -208,7 +228,8 @@ class SafeTest(unittest.TestCase):
         self.assertEqual(self.safe.check_silence(1.6, [heard, deaf]), [(heard, 2)])
         self.assertEqual((p1.value, p2.value), (127.0, 0.0))
         self.assertEqual(
-            self.lines.messages, ["hub lost (silence): set 2 autotune selectors to DRY"]
+            self.lines.messages,
+            ["hub lost (silence): set 2 autotune selectors to DRY, 0 already there"],
         )
         # Once fired, it is forgotten; an unarmed connection never fires.
         self.assertEqual(self.safe.check_silence(60.0, [heard, deaf]), [])
@@ -293,6 +314,32 @@ class SafeTest(unittest.TestCase):
                 )
         self.assertFalse(self.safe.armed(self.ctx.connection))
         self.assertEqual(self.register((REPRO, 127), (STREAM, 0)), {"armed": 2}, "ints are numbers")
+
+    def test_the_command_refuses_a_target_named_twice(self):
+        # PR #146 review M3: one selector with two values, the last winning.
+        self.register((REPRO, 127.0))
+        writes = [
+            {"target": self.ref(REPRO), "value": 127.0},
+            {"target": self.ref(STREAM), "value": 0.0},
+            {"target": self.ref(REPRO), "value": 0.0},
+        ]
+        self.assertEqual(self.refused(writes), "1 safe write target(s) named twice")
+        self.param(REPRO)._sim_set("value", 0.0)
+        self.assertEqual(self.safe.fire(self.ctx.connection, "disconnect"), 1, "the old list")
+        self.assertEqual(self.param(REPRO).value, 127.0)
+
+    def test_the_command_takes_at_most_64_writes(self):
+        # PR #146 review M3: one command on Live's main thread stays short.
+        self.assertEqual(ops.SAFE_MAX, 64)
+        ref = self.ref(REPRO)
+        writes = [{"target": ref, "value": 127.0}] * 65
+        self.assertEqual(self.refused(writes), "more than 64 safe writes")
+        # 64 pass the count (here they name one selector, refused as such).
+        self.assertEqual(
+            self.refused([{"target": ref, "value": 127.0}] * 64),
+            "63 safe write target(s) named twice",
+        )
+        self.assertFalse(self.safe.armed(self.ctx.connection))
 
     def test_the_command_takes_only_refs_of_parameters(self):
         ref = self.ref(REPRO)
@@ -431,19 +478,25 @@ class SurfaceSafeTest(unittest.TestCase):
         self.assertFalse(conn.is_open)
         # The close frame goes out (the hub would answer it and reconnect).
         events = []
+        close = None
         for _ in range(10):
             client.readable(0.1)
             client.read_available()
-            events += [m.get("event") or m["opcode"] for m in client.messages()]
-            if CLOSE in events:
+            for message in client.messages():
+                events.append(message.get("event") or message["opcode"])
+                if message.get("opcode") == CLOSE:
+                    close = message
+            if close is not None:
                 break
             self.surface._on_timer()
         self.assertEqual(events[-1], CLOSE, events)
+        # With its reason (PR #146 review M5): 1001 and `silent`.
+        self.assertEqual(close["payload"], struct.pack("!H", 1001) + b"silent")
         for _ in range(3):
             self.surface._on_timer()
         log = self.log_text()
         self.assertEqual(log.count("hub lost"), 1, log)
-        self.assertIn("hub lost (silence): set 2 autotune selectors to DRY", log)
+        self.assertIn("hub lost (silence): set 2 autotune selectors to DRY, 0 already there", log)
         self.assertIn(f"connection {conn.id}: the hub said nothing for 1.5 s, closing it", log)
         self.assertEqual((repro._sim_set_count("value"), stream._sim_set_count("value")), (1, 1))
 

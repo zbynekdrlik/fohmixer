@@ -38,17 +38,23 @@ class SafeWrites:
         return conn in self._lists
 
     def fire(self, conn, why):
-        """Writes each of ``conn``'s registered values once (a deleted object
-        is skipped), logs it and forgets the list; how many were written. An
-        unarmed connection writes and logs nothing."""
+        """Writes each of ``conn``'s registered values once where Live does
+        not already hold it (a deleted object is skipped; PR #146 review M6:
+        no equal write, which may mark the set changed at every hub stop),
+        logs it and forgets the list; how many were written. An unarmed
+        connection writes and logs nothing."""
         items = self._lists.pop(conn, None)
         if items is None:
             return 0
         written = 0
+        already = 0
         for param, value in items:
             if not is_alive(param):
                 continue
             try:
+                if param.value == value:
+                    already += 1
+                    continue
                 param.value = value
             except Exception as e:  # noqa: BLE001 - logged; the other selectors still go
                 self._log.warning(
@@ -56,7 +62,12 @@ class SafeWrites:
                 )
                 continue
             written += 1
-        self._log.warning("hub lost (%s): set %d autotune selectors to DRY", why, written)
+        self._log.warning(
+            "hub lost (%s): set %d autotune selectors to DRY, %d already there",
+            why,
+            written,
+            already,
+        )
         return written
 
     def check_silence(self, now, connections):

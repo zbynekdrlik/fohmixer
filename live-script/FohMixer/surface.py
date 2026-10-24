@@ -32,6 +32,9 @@ from .version import VERSION
 BIND_HOST = "127.0.0.1"
 PROTO = 1
 STALL_LOG_MS = 200.0
+# A silent hub's connection is closed with this code and reason (PR #146
+# review M5): the hub's log and event log tell it from a crash or a set load.
+SILENT_CLOSE = (1001, "silent")
 SHUTDOWN_GRACE_S = 0.3
 ERROR_LOG_INTERVAL_S = 60.0
 
@@ -259,7 +262,7 @@ class FohMixer(ControlSurface):
                 conn.id,
                 Config.HUB_SILENCE_MS / 1000.0,
             )
-            conn.close()
+            conn.close(*SILENT_CLOSE)
 
     def _heartbeat(self):
         """The heartbeat when one is due, timed after this tick's work: a tick

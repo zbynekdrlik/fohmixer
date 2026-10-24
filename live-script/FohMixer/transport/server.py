@@ -162,6 +162,8 @@ class Connection:
         self._fragment_opcode = None
         self._state = OPEN
         self._close_queued = False
+        # The close frame's code and reason (none: an empty close frame).
+        self._close_with = None
         self._close_sent_at = None
         self._peer_closed = False
         self._last_progress = now
@@ -228,10 +230,13 @@ class Connection:
         self._heartbeat = {"event": "heartbeat", "data": data, "ts": now_ms()}
         return True
 
-    def close(self):
-        """Graceful: send what is queued, a close frame, then close."""
+    def close(self, code=None, reason=""):
+        """Graceful: send what is queued, a close frame (with ``code`` and
+        ``reason`` when given), then close."""
         if self._state == OPEN:
             self._state = CLOSING
+            if code is not None:
+                self._close_with = (code, reason)
 
     def abort(self):
         """At once: drop what is queued and reset the connection."""
@@ -367,7 +372,9 @@ class Connection:
             return {"event": "values", "data": list(values.values()), "ts": now_ms()}
         if self._state == CLOSING and not self._close_queued:
             self._close_queued = True
-            return encode_close_frame()
+            if self._close_with is None:
+                return encode_close_frame()
+            return encode_close_frame(*self._close_with)
         return None
 
     def _frame(self, opcode, fin, payload):

@@ -22,6 +22,10 @@ RACK_MACRO = 1
 # A DRY write's target: a ``$ref`` of this class, never a path.
 SAFE_CLASS = "DeviceParameter"
 SAFE_SHAPE = "a safe write is {target: {$ref, class: DeviceParameter}, value}"
+# The most DRY writes one registration names (PR #146 review M3): the band
+# set has 12; a list resolves and is checked on Live's main thread in one
+# command.
+SAFE_MAX = 64
 
 
 class Context:
@@ -187,13 +191,17 @@ def _is_safe_write(item):
 def _safe_writes(obj, where, args, ctx):
     """Keeps this connection's DRY writes (#140 PR 3a, ``safe.py``): each a
     rack's first macro by its ``$ref`` and a value in its range, every target
-    resolved now (its object is what a fallback writes). A list with a target
-    that does not resolve, one that is no rack's first macro, or a value out
-    of its range is refused whole, and the list kept before stays."""
+    resolved now (its object is what a fallback writes). A list longer than
+    ``SAFE_MAX``, or with a target that does not resolve, one named twice
+    (PR #146 review M3: two values for one selector), one that is no rack's
+    first macro, or a value out of its range is refused whole, and the list
+    kept before stays."""
     _check_keys(args, "safe_writes", ("writes",))
     writes = args["writes"]
     if not isinstance(writes, list):
         raise OpError("bad args", "writes must be a list")
+    if len(writes) > SAFE_MAX:
+        raise OpError("bad args", f"more than {SAFE_MAX} safe writes")
     if not all(_is_safe_write(item) for item in writes):
         raise OpError("bad args", SAFE_SHAPE)
     resolved = []
@@ -207,6 +215,9 @@ def _safe_writes(obj, where, args, ctx):
         resolved.append((param, item["value"]))
     if unresolved:
         raise OpError("bad args", f"{unresolved} safe write target(s) do not resolve")
+    twice = len(resolved) - len({id_of(param) for param, _value in resolved})
+    if twice:
+        raise OpError("bad args", f"{twice} safe write target(s) named twice")
     not_macros = sum(1 for param, _value in resolved if not is_rack_macro(param))
     if not_macros:
         raise OpError("bad args", f"{not_macros} safe write target(s) are no rack's first macro")
