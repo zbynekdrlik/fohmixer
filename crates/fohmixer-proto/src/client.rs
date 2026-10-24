@@ -624,14 +624,38 @@ pub struct AutotuneState {
     pub targets: Vec<AutotuneTargetState>,
 }
 
+/// Where a target's key stands (#140 PR 2b; spec §5): nothing written yet
+/// (`no_key`), a write on its way and not read back yet (`writing`), the
+/// read-back showed the key written (`confirmed`) or another key or none
+/// (`mismatch`), Live refused the write or the read (`refused`: a Max map
+/// holds the parameter), or its values changed since the hub confirmed
+/// its key (`another_writer`: shown, never fought).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KeyState {
+    NoKey,
+    Writing,
+    Confirmed,
+    Mismatch,
+    Refused,
+    AnotherWriter,
+}
+
 /// One AUTOTUNE target's key device in `GET /api/status` (#140 PR 2): which
 /// device holds its Key and Scale (`auto_tune`, `gridder`) and its path,
 /// their values as last heard (both), the key they show (`F#m`; none for a
-/// scale step other than Major or Minor), or why it has none (`problem`).
-/// For `gridder` the values and `shows` are Live's side of AudioGridder's
-/// slots only, never the remote plug-in: the spike read a slot on C while
-/// its remote Auto-Tune was on Bb (spec §5). Every field is absent in an
-/// older hub's answer.
+/// scale step other than Major or Minor), or why it has none (`problem`);
+/// since PR 2b the key the hub last wrote there (`want`) and where it
+/// stands (`state`). `state` judges `want`, the key LAST WRITTEN there,
+/// not the key in force: while a write is held, or a target found waits
+/// for its values, it still names the old key (or `no_key`). A reader that
+/// asks whether a target holds the key in force compares `want` with the
+/// set's `keys[].key` too (PR #144 review M2). For `gridder` the values and
+/// `shows` are Live's side
+/// of AudioGridder's slots only, never the remote plug-in: the spike read a
+/// slot on C while its remote Auto-Tune was on Bb (spec §5), so `confirmed`
+/// there means the write went through and Live's slot reads the key back.
+/// Every field is absent in an older hub's answer.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct KeyTargetStatus {
     #[serde(default)]
@@ -644,6 +668,10 @@ pub struct KeyTargetStatus {
     pub shows: Option<String>,
     #[serde(default)]
     pub problem: Option<String>,
+    #[serde(default)]
+    pub want: Option<String>,
+    #[serde(default)]
+    pub state: Option<KeyState>,
 }
 
 /// One AUTOTUNE target in `GET /api/status` (#104): its Live set, track
@@ -668,7 +696,9 @@ pub struct AutotuneTargetStatus {
 /// A Live set's key in force in `GET /api/status` (#140 PR 2): the song
 /// the playhead is in (none outside every song) and its key (`F#m`; none
 /// in a keyless song), and the position it was judged at: the playhead
-/// (beats), the transport and the tempo as last heard.
+/// (beats), the transport and the tempo as last heard; since PR 2b the key
+/// Live's bar showed at its last read-back (`bar`; none before one, or for
+/// a scale other than Major or Minor).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct KeyInForce {
     #[serde(default)]
@@ -683,6 +713,8 @@ pub struct KeyInForce {
     pub playing: Option<bool>,
     #[serde(default)]
     pub tempo: Option<f64>,
+    #[serde(default)]
+    pub bar: Option<String>,
 }
 
 /// AUTOTUNE in `GET /api/status` (#104, D19): AUTOTUNE AUT, the rule's

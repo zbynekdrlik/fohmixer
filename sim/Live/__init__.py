@@ -19,6 +19,7 @@ Names starting with ``_sim`` are test helpers; they are not part of the LOM.
 
 import itertools
 import math
+import struct
 import sys
 import types
 
@@ -121,12 +122,23 @@ class _StringVector(_Vector):
     __slots__ = ()
 
 
+class _TimeableValueVector(_Vector):
+    """A device's ``parameters``: real Live answers it as
+    ``<Device.ATimeableValueVector object at ...>`` (read on the PC, #140),
+    a vector class of the module ``Device``, not ``Base``."""
+
+    __slots__ = ()
+
+
 _export(Base, _Vector, "Vector")
 _export(Base, _StringVector, "StringVector")
+_export(Device, _TimeableValueVector, "ATimeableValueVector")
 # Live's vector classes report the module "Base", not "Live.Base": repr of
-# song.tracks on the PC is "<Base.Vector object at ...>" (#58).
+# song.tracks on the PC is "<Base.Vector object at ...>" (#58); a device's
+# parameters report "Device" (#140).
 _Vector.__module__ = "Base"
 _StringVector.__module__ = "Base"
+_TimeableValueVector.__module__ = "Device"
 
 
 # --- timer -------------------------------------------------------------------------------
@@ -391,6 +403,12 @@ def _format(kind, value, items):
 PARAMETER_DISABLED = "Value cannot be set, the parameter is disabled"
 
 
+def _float32(value):
+    """``value`` as a float32 holds it (Live keeps a parameter's value so:
+    the PC read 2/11 written to a slot back as 0.1818181872367859)."""
+    return struct.unpack("<f", struct.pack("<f", value))[0]
+
+
 def _param_value(param, value):
     # A parameter a Max map holds (#140 spike part 1: `is_enabled` false,
     # `state` disabled): Live refuses every LOM write with this text.
@@ -399,7 +417,10 @@ def _param_value(param, value):
     value = _float(value)
     if not param._v["min"] <= value <= param._v["max"]:
         raise RuntimeError("Invalid value")
-    return value
+    # A plug-in's parameter keeps what is written as a float32 (#140 PR 2b,
+    # the PC's AudioGridder slots); the others keep the float as written,
+    # which SimLive's older tests pin exactly.
+    return _float32(value) if param._float32 else value
 
 
 class _DeviceParameterClass(_LiveObject):
@@ -418,6 +439,7 @@ class _DeviceParameterClass(_LiveObject):
         super().__init__()
         self._display = display
         self._items = tuple(items)
+        self._float32 = False
         quantized = display == "items"
         if quantized:
             lo, hi = 0.0, float(len(self._items) - 1)
@@ -556,7 +578,7 @@ class _DeviceClass(_LiveObject):
 
     @property
     def parameters(self):
-        return _Vector(self._parameters)
+        return _TimeableValueVector(self._parameters)
 
     def _sim_children(self):
         return list(self._parameters)
@@ -631,6 +653,9 @@ class _PluginDeviceClass(_DeviceClass):
     def __init__(self, name, product, parameters=()):
         super().__init__(name, "PluginDevice", parameters, display_name=product)
         self._v["is_editor_open"] = False
+        # Its parameters keep a written value as Live's float32 (#140 PR 2b).
+        for param in parameters:
+            param._float32 = True
 
 
 _export(PluginDevice, _PluginDeviceClass, "PluginDevice")

@@ -202,6 +202,60 @@ impl LiveHandle {
     }
 }
 
+/// A handle with no task and no socket behind it, for the router's unit
+/// tests (#140 PR 2b): every request comes to the test's [`Script`], which
+/// sees each call's commands and answers it itself.
+#[cfg(test)]
+pub(crate) fn scripted(name: &str) -> (LiveHandle, Script) {
+    let (tx, rx) = mpsc::unbounded_channel();
+    let handle = LiveHandle {
+        name: name.to_string(),
+        port: 0,
+        tx,
+        snapshot: Arc::new(Mutex::new(Snapshot::default())),
+        requests: Arc::new(AtomicU64::new(0)),
+    };
+    (handle, Script { rx })
+}
+
+/// The test's side of a [`scripted`] handle.
+#[cfg(test)]
+pub(crate) struct Script {
+    rx: mpsc::UnboundedReceiver<Request>,
+}
+
+/// One call a [`scripted`] handle got: its commands, answered by the test.
+#[cfg(test)]
+pub(crate) struct Asked {
+    pub commands: Vec<Value>,
+    reply: Reply,
+}
+
+#[cfg(test)]
+impl Script {
+    /// The next call waiting, if any (a subscription table's `send`, which
+    /// waits for no answer, is passed over).
+    pub(crate) fn try_call(&mut self) -> Option<Asked> {
+        while let Ok(request) = self.rx.try_recv() {
+            if let Some(reply) = request.reply {
+                return Some(Asked {
+                    commands: request.commands,
+                    reply,
+                });
+            }
+        }
+        None
+    }
+}
+
+#[cfg(test)]
+impl Asked {
+    /// Live's answer: its slots.
+    pub(crate) fn answer(self, slots: Vec<Value>) {
+        let _ = self.reply.send(Ok(slots));
+    }
+}
+
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 /// Writes the session's requests to the script, in order, until a write

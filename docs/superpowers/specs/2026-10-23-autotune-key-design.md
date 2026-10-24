@@ -208,7 +208,7 @@ A pure module (in the proto crate, beside `markers.rs`, or in the hub; *(call)*:
   - The builder reads each parameter's `min`/`max` and quantization on the PC and keeps the conversion in one pure, tested function.
   - **A write always changes Live's value *(call)*.** A slot write that changes the value reaches the remote plug-in (spike part 2). Whether rewriting the value the slot already holds reaches it is not known: Live may skip an unchanged value.
     - So the hub writes the step's centre `i/n`.
-    - When the parameter already holds that value, the hub writes `(i + 0.25)/n` instead, or `(i − 0.25)/n` for the last step.
+    - When the parameter already holds that value, the hub writes `(i + 0.05)/n` instead, or `(i − 0.05)/n` for the last step. (It was 0.25; PR #144's review I2, as ruled on 24.10.2026: 0.05 stays inside the step both under rounding and under VST3's discrete mapping `floor(v × (n + 1))`, where a quarter step moved G#, A and Bb to the next key.)
     - Both read back as the same step (round half up).
     - This holds for every target, so the code has one path.
 - **When.**

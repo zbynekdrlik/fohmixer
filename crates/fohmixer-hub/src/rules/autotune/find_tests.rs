@@ -375,9 +375,36 @@ fn a_rack_without_a_second_parameter_has_no_macro() {
         "live_set tracks 6 devices 0",
         "Latencies"
     )]))]);
+    // The parameter list answered as text, as an old FohMixer script in
+    // Live answers it (#140: `Device.ATimeableValueVector`): why, never
+    // "no parameter 1".
+    let Step::Done(Err(missing)) = find.answer(&[ok(json!(
+        "<Device.ATimeableValueVector object at 0x7f3a00001040>"
+    ))]) else {
+        panic!("the rack's macro is missing")
+    };
+    assert_eq!(missing.to_string(), AS_TEXT);
+}
+
+/// Why a device's parameter list could not be read, as the hub says it.
+const AS_TEXT: &str = "Live answered the parameter list as text: the FohMixer script loaded in \
+                       Live predates the fix for it; restart Live";
+
+#[test]
+fn a_plug_ins_parameters_answered_as_text_say_why() {
+    let (mut find, rack_path) = to_the_rack();
+    find.answer(&parts(&rack_path, chains(&rack_path, 1)));
+    let plugin = format!("{rack_path} chains 0 devices 0");
+    find.answer(&[ok(json!([device("PluginDevice", &plugin, "AudioGridder")]))]);
+    let Step::Done(Ok(found)) = find.answer(&[ok(json!(
+        "<Device.ATimeableValueVector object at 0x7f3a00001080>"
+    ))]) else {
+        panic!("the find ends with the macro")
+    };
+    assert_eq!(found.path, format!("{rack_path} parameters 1"));
     assert_eq!(
-        find.answer(&[ok(json!("no list"))]),
-        Step::Done(Err(Missing::NoMacro))
+        found.key.err().map(|m| m.to_string()).as_deref(),
+        Some(AS_TEXT)
     );
 }
 
@@ -633,4 +660,17 @@ fn missing_says_why_in_words() {
         Missing::NoMacro.to_string(),
         "the Latencies rack has no parameter 1"
     );
+}
+
+#[test]
+fn a_parameter_list_as_text_says_why_in_words() {
+    assert_eq!(Missing::ParametersAsText.to_string(), AS_TEXT);
+    assert_eq!(KeyMissing::ParametersAsText.to_string(), AS_TEXT);
+    assert_eq!(PARAMETERS_AS_TEXT, AS_TEXT);
+    assert!(as_text(Some(&json!(
+        "<Device.ATimeableValueVector object at 0x1>"
+    ))));
+    assert!(!as_text(Some(&json!([]))));
+    assert!(!as_text(Some(&Value::Null)));
+    assert!(!as_text(None));
 }

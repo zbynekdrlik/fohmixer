@@ -270,6 +270,10 @@ fn a_targets_state_is_missing_waiting_or_its_macro_against_its_on_value() {
         key_sub: None,
         scale_sub: None,
         values: (None, None),
+        keyt: crate::rules::autotune::keys::KeyTarget::new(),
+        key_write: 0,
+        key_wrote: None,
+        key_sure: false,
     };
     assert_eq!(
         state_of(&at(None, Some("no rack named Latencies"), None)),
@@ -433,6 +437,8 @@ async fn a_found_target_is_followed_and_told_to_every_page() {
                 values: None,
                 shows: None,
                 problem: Some("the Latencies rack has no chain".into()),
+                want: None,
+                state: None,
             }),
         }]
     );

@@ -1,6 +1,7 @@
 """SimLive for the autotune keys (#140 PR 2): the song clock and a jump of
 ``current_song_time``, Live's bar (``root_note``, ``scale_name``), a
-parameter a Max map holds (disabled: Live refuses its writes), their fixture
+parameter a Max map holds (disabled: Live refuses its writes), a plug-in's
+parameter keeping a written value as Live's float32 (PR 2b), their fixture
 keys and the host's ``song`` and ``param`` lines. Names are invented
 (public repository)."""
 
@@ -224,8 +225,10 @@ class HostLineTest(unittest.TestCase):
     def test_param_value_writes_as_another_writer_would(self):
         fired = _Counter()
         _slot(self.song, 1).add_value_listener(fired)
-        self.assertEqual(self.line(f"param {SLOT_0} value 0.9"), "PARAM 0.9")
-        self.assertEqual((_slot(self.song, 1).value, fired.count), (0.9, 1))
+        self.assertEqual(self.line(f"param {SLOT_0} value 0.75"), "PARAM 0.75")
+        self.assertEqual((_slot(self.song, 1).value, fired.count), (0.75, 1))
+        # A plug-in's slot answers Live's float32 of the value written.
+        self.assertEqual(self.line(f"param {SLOT_0} value 0.9"), "PARAM 0.8999999761581421")
         # Held by a map: refused, nothing changes.
         self.assertEqual(self.line(f"param {SLOT_1} value 0.5"), "PARAM -1")
         self.assertEqual(_slot(self.song, 2).value, 0.0)
@@ -240,7 +243,7 @@ class HostLineTest(unittest.TestCase):
             "param value 1",
         ):
             self.assertEqual(self.line(bad), "PARAM -1", bad)
-        self.assertEqual((_slot(self.song, 1).value, fired.count), (0.9, 1))
+        self.assertEqual((_slot(self.song, 1).value, fired.count), (0.8999999761581421, 2))
 
     def test_param_enabled_holds_or_frees_a_parameter(self):
         self.assertEqual(self.line(f"param {SLOT_1} enabled 1"), "PARAM 1")
@@ -293,12 +296,92 @@ class SetCountTest(unittest.TestCase):
 
     def test_the_sets_line_answers_the_count_at_a_path(self):
         self.assertEqual(self.line(f"sets value {SLOT_0}"), "SETS 0")
-        self.assertEqual(self.line(f"param {SLOT_0} value 0.9"), "PARAM 0.9")
-        self.assertEqual(self.line(f"param {SLOT_1} value 0.9"), "PARAM -1")
+        self.assertEqual(self.line(f"param {SLOT_0} value 0.75"), "PARAM 0.75")
+        self.assertEqual(self.line(f"param {SLOT_1} value 0.75"), "PARAM -1")
         self.assertEqual(self.line(f"sets value {SLOT_0}"), "SETS 1")
         self.assertEqual(self.line(f"sets value {SLOT_1}"), "SETS 1", "a refused set counts")
         self.assertEqual(self.line("sets root_note live_set"), "SETS 0")
         self.assertEqual(self.line("sets value live_set tracks 9 devices 0"), "SETS -1")
+
+
+class DeviceVectorTest(unittest.TestCase):
+    """A device's ``parameters`` is Live's ``Device.ATimeableValueVector``,
+    as real Live answers it (#140: the PC with 1.10.0), not a ``Base``
+    vector: a script that took only ``Base`` vectors for lists sent it as
+    text. A track's devices and a rack's chains stay ``Base`` vectors."""
+
+    def test_a_devices_parameters_are_a_device_vector(self):
+        song = _site()
+        rack = song.tracks[0].devices[0]
+        plugin = rack.chains[0].devices[0]
+        for device in (rack, plugin):
+            params = device.parameters
+            self.assertEqual(
+                (type(params).__module__, type(params).__name__),
+                ("Device", "ATimeableValueVector"),
+            )
+            self.assertEqual(params[0].name, "Device On")
+            self.assertEqual(list(params), list(device._parameters))
+        for vector in (song.tracks[0].devices, rack.chains, song.tracks):
+            self.assertEqual((type(vector).__module__, type(vector).__name__), ("Base", "Vector"))
+        self.assertIs(Live.Device.ATimeableValueVector, type(rack.parameters))
+
+
+class Float32Test(unittest.TestCase):
+    """A plug-in's parameter keeps a written value as Live's float32 (#140
+    PR 2b: the PC read 2/11 written to a slot back as 0.1818181872367859);
+    any other parameter keeps the float as written."""
+
+    def test_a_plugins_parameter_keeps_a_float32(self):
+        slot = _slot(_site(), 1)
+        slot.value = 2 / 11
+        self.assertEqual(slot.value, 0.1818181872367859)
+        slot.value = 10 / 11
+        self.assertEqual(slot.value, 0.9090909361839294)
+        slot.value = 0.25
+        self.assertEqual(slot.value, 0.25, "a float32 value stays as it is")
+        self.assertEqual(slot.str_for_value(slot.value), "0.25")
+
+    def test_the_float32_echo_is_no_change(self):
+        slot = _slot(_site(), 1)
+        fired = _Counter()
+        slot.add_value_listener(fired)
+        slot.value = 2 / 11
+        slot.value = 0.1818181872367859
+        slot.value = 2 / 11
+        self.assertEqual(fired.count, 1, "Live's value never changed again")
+        self.assertEqual(slot._sim_set_count("value"), 3)
+
+    def test_another_devices_parameter_keeps_the_float_as_written(self):
+        song = _site()
+        rack = song.tracks[0].devices[0]
+        macro = rack.parameters[1]
+        self.assertEqual(macro.name, "Macro 1")
+        macro.value = 64.1
+        self.assertEqual(macro.value, 64.1)
+        volume = song.tracks[0].mixer_device.volume
+        volume.value = 2 / 11
+        self.assertEqual(volume.value, 2 / 11)
+
+    def test_a_fixtures_value_is_kept_as_given(self):
+        song = site_builder.build_from_spec(
+            {
+                "name": "F",
+                "tracks": [
+                    {
+                        "name": "T",
+                        "devices": [
+                            {
+                                "template": "plugin",
+                                "name": "P",
+                                "parameters": [{"name": "0:x", "value": 1 / 28}],
+                            }
+                        ],
+                    }
+                ],
+            }
+        )
+        self.assertEqual(song.tracks[0].devices[0].parameters[1].value, 1 / 28)
 
 
 if __name__ == "__main__":

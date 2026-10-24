@@ -7,19 +7,23 @@
 //! map until it answers) and records each change (`key`), each key device
 //! found (`key_device`) and each one missing (`key_missing`, when news).
 //! It also refuses a page's AUTOTUNE AUT on and tap until #140 PR 3
-//! (`refused`): nothing here writes to Live. The writes are PR 2b's.
+//! (`refused`). It hands the writes (PR 2b, `key_writes.rs`) a song start
+//! and a key change of the set, a target found, and every key or scale
+//! value heard (another writer, a key owed until its values were heard).
 
 use std::collections::BTreeSet;
 
 use fohmixer_proto::client::{KeyTargetStatus, ServerMsg};
-use fohmixer_proto::songmap::SongMap;
+use fohmixer_proto::songmap::{Key, SongMap};
 use serde_json::Value;
 
 use super::super::{Router, transport_heard};
 use super::{AUTOTUNE_CLIENT, AutotuneIo, missing_news};
 use crate::live::subs::{Cached, ClientId};
 use crate::rules::autotune::find::KeyFound;
-use crate::rules::autotune::keys::{InForce, KeyFollow, in_force, shows};
+use crate::rules::autotune::keys::{
+    InForce, KeyFollow, KeyTarget, KeyWhy, in_force, kept_ahead, shows,
+};
 use crate::rules::autotune::{REFUSED_WHY, Step};
 
 /// A Live set's playhead in beats.
@@ -31,7 +35,14 @@ pub const VALUE: &str = "value";
 
 /// One Live set's playhead as AUTOTUNE follows it: the position, the
 /// transport and the tempo as last heard (none before, and after a
-/// disconnect), its subscriptions, and its key in force.
+/// disconnect), its subscriptions, and its key in force with the lookahead
+/// it was judged with (`ahead`, kept while the set is not known to play
+/// until its playhead moves: PR 2a review M4), the playhead heard before
+/// the latest (`before`: a key change's crossing, PR #144 review M1); and
+/// Live's bar as the key
+/// writes keep it (#140 PR 2b): what its last read-back showed, the newest
+/// write that holds it with its key, whether a held write owes it the key,
+/// and the newest key change's lateness to record.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(in crate::router) struct Position {
     pub time: Option<f64>,
@@ -40,6 +51,22 @@ pub(in crate::router) struct Position {
     pub time_sub: Option<String>,
     pub tempo_sub: Option<String>,
     pub follow: KeyFollow,
+    pub ahead: f64,
+    pub before: Option<f64>,
+    pub bar: Option<String>,
+    pub bar_writing: Option<(u64, Key)>,
+    pub bar_owed: bool,
+    pub late: Option<LateNote>,
+}
+
+/// Where a key change's lateness is measured from (spec §6): its song, the
+/// playhead at the decision and the change's start (beats), at the tempo.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(in crate::router) struct LateNote {
+    pub song: u16,
+    pub at: f64,
+    pub change: f64,
+    pub tempo: f64,
 }
 
 /// Which value of a key device a subscription follows.
@@ -108,20 +135,26 @@ pub(super) fn heard_number(heard: Option<&Result<Value, String>>, was: Option<f6
 }
 
 /// The song and key in force at a set's position on its song map: no song
-/// and no key without a map or a position heard; one tick ahead only while
-/// it is known to play.
+/// and no key without a map or a position heard; one tick ahead while it
+/// is known to play, else the lookahead it kept (PR 2a review M4).
 pub(super) fn key_now(map: Option<&SongMap>, position: &Position) -> InForce {
     let (Some(map), Some(time)) = (map, position.time) else {
         return (None, None);
     };
-    in_force(map, time, position.playing == Some(true), position.tempo)
+    if position.playing == Some(true) {
+        in_force(map, time, true, position.tempo)
+    } else {
+        in_force(map, time + position.ahead, false, None)
+    }
 }
 
 /// A target's key device in `/api/status`: the device, its path, its two
-/// values once both were heard and the key they show; or why there is none.
+/// values once both were heard and the key they show, the key last written
+/// there and where it stands (#140 PR 2b); or why there is none.
 pub(super) fn key_status(
     key: &Result<KeyFound, String>,
     values: (Option<f64>, Option<f64>),
+    keyt: &KeyTarget,
 ) -> KeyTargetStatus {
     match key {
         Ok(found) => {
@@ -134,6 +167,8 @@ pub(super) fn key_status(
                     .and_then(|(key, scale)| shows(key, scale))
                     .map(|key| key.name()),
                 problem: None,
+                want: keyt.wanted().map(|key| key.name()),
+                state: Some(keyt.state()),
             }
         }
         Err(problem) => KeyTargetStatus {
@@ -142,6 +177,8 @@ pub(super) fn key_status(
             values: None,
             shows: None,
             problem: Some(problem.clone()),
+            want: None,
+            state: None,
         },
     }
 }
@@ -181,6 +218,12 @@ impl Router {
             time_sub,
             tempo_sub,
             follow: KeyFollow::new(),
+            ahead: 0.0,
+            before: None,
+            bar: None,
+            bar_writing: None,
+            bar_owed: false,
+            late: None,
         };
         self.autotune
             .positions
@@ -244,14 +287,27 @@ impl Router {
             return;
         };
         match part {
-            PositionPart::Time => position.time = heard_number(heard.as_ref(), position.time),
+            PositionPart::Time => {
+                let time = heard_number(heard.as_ref(), position.time);
+                // A stopped set's playhead moved: its kept lookahead ends.
+                position.ahead = kept_ahead(
+                    position.playing == Some(true),
+                    position.tempo,
+                    position.ahead,
+                    time != position.time,
+                );
+                position.before = position.time;
+                position.time = time;
+            }
             PositionPart::Tempo => position.tempo = heard_number(heard.as_ref(), position.tempo),
         }
         self.autotune_position(instance);
     }
 
     /// A set's transport as AUTOTUNE hears it (none: the listener failed):
-    /// the key in force judged again (the lookahead is a playing set's).
+    /// the key in force judged again (the lookahead is a playing set's; a
+    /// stop keeps the one it was judged with, so a stop alone changes
+    /// nothing: PR 2a review M4).
     pub(super) fn autotune_position_playing(&mut self, instance: &str, playing: Option<bool>) {
         let Some(position) = self.autotune.positions.get_mut(instance) else {
             return;
@@ -264,7 +320,9 @@ impl Router {
     /// map, once one was read since the set's connect (PR 2a review M1);
     /// within a connection stale or not (a read in flight keeps the old map
     /// until it answers, so the key never flickers to none): a change is
-    /// one `key` record.
+    /// one `key` record, and a song start or a key change with a key in
+    /// force writes it to every target of the set (#140 PR 2b; a keyless
+    /// song or out of every song writes nothing: the keys stay).
     pub(super) fn autotune_position(&mut self, instance: &str) {
         let current = self.autotune.current_maps.contains(instance);
         let map = self
@@ -276,6 +334,12 @@ impl Router {
         let Some(position) = self.autotune.positions.get_mut(instance) else {
             return;
         };
+        position.ahead = kept_ahead(
+            position.playing == Some(true),
+            position.tempo,
+            position.ahead,
+            false,
+        );
         let (song, key) = key_now(map, position);
         let Some(why) = position.follow.on_position((song, key)) else {
             return;
@@ -289,6 +353,10 @@ impl Router {
             },
             None,
         );
+        if let Some(key) = key.filter(|_| matches!(why, KeyWhy::Song | KeyWhy::Change)) {
+            let keys = self.autotune.keys_in_order(instance);
+            self.autotune_key_write(instance, &keys, key, why);
+        }
     }
 
     /// A new song map of `instance` was stored (`songmap_read`): it is the
@@ -310,6 +378,12 @@ impl Router {
             position.playing = None;
             position.tempo = None;
             position.follow.reset();
+            position.ahead = 0.0;
+            position.before = None;
+            position.bar = None;
+            position.bar_writing = None;
+            position.bar_owed = false;
+            position.late = None;
         }
     }
 
@@ -331,9 +405,16 @@ impl Router {
         match now {
             Ok(device) => {
                 if before.as_ref() == Some(&Ok(device.clone())) {
+                    // The same device: its walk confirmed it (PR 2a review
+                    // M3), and it gets the key in force when owed.
+                    if let Some(target) = self.autotune.targets.get_mut(key) {
+                        target.key_sure = true;
+                    }
+                    self.autotune_key_owed(key);
                     return;
                 }
                 self.autotune_key_unsub(key);
+                self.autotune_key_forget(key);
                 let (key_sub, key_value) =
                     self.autotune_number_sub(&instance, &device.key.path, VALUE);
                 let (scale_sub, scale_value) =
@@ -349,11 +430,14 @@ impl Router {
                     target.key_sub = key_sub;
                     target.scale_sub = scale_sub;
                     target.values = (key_value, scale_value);
+                    target.key_sure = true;
                 }
                 self.autotune_step(step, None);
+                self.autotune_key_owed(key);
             }
             Err(problem) => {
                 self.autotune_key_unsub(key);
+                self.autotune_key_forget(key);
                 let was = before.as_ref().and_then(|k| k.as_ref().err());
                 let news = missing_news(was.map(String::as_str), &problem);
                 if let Some(target) = self.autotune.targets.get_mut(key) {
@@ -387,7 +471,9 @@ impl Router {
 
     /// A delivery of a target's Key or Scale value: kept; an error (its path
     /// no longer resolves) drops it and the device, and walks the target
-    /// again, so its answer follows the device afresh.
+    /// again, so its answer follows the device afresh. A value heard is
+    /// judged for another writer, and a key owed is written once both
+    /// values are heard (#140 PR 2b).
     pub(super) fn autotune_key_value(
         &mut self,
         key: &str,
@@ -407,7 +493,10 @@ impl Router {
             tracing::warn!(key = %key, error = ?error, "AUTOTUNE lost a key device's value: it looks again");
             target.key = None;
             self.autotune_walk(key);
+            return;
         }
+        self.autotune_another(key);
+        self.autotune_key_owed(key);
     }
 
     /// A page's AUTOTUNE AUT on or tap (`what`), refused until #140 PR 3:

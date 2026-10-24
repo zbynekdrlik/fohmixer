@@ -197,6 +197,33 @@ fn no_tempo_means_no_lookahead() {
 }
 
 #[test]
+fn a_stopped_set_keeps_its_lookahead_until_its_playhead_moves() {
+    // PR 2a review M4, as ruled.
+    assert!((kept_ahead(true, Some(120.0), 0.0, false) - 0.07).abs() < 1e-12);
+    assert!(
+        (kept_ahead(true, Some(120.0), 0.5, true) - 0.07).abs() < 1e-12,
+        "playing: one tick at its tempo"
+    );
+    assert_eq!(kept_ahead(true, None, 0.07, false), 0.0, "no tempo heard");
+    assert_eq!(
+        kept_ahead(false, Some(120.0), 0.07, false),
+        0.07,
+        "a stop keeps it"
+    );
+    assert_eq!(
+        kept_ahead(false, Some(90.0), 0.07, false),
+        0.07,
+        "a tempo heard while stopped too"
+    );
+    assert_eq!(
+        kept_ahead(false, Some(120.0), 0.07, true),
+        0.0,
+        "a locate ends it"
+    );
+    assert_eq!(kept_ahead(false, None, 0.03, false), 0.03);
+}
+
+#[test]
 fn a_key_clip_is_in_force_one_tick_early_only_while_playing() {
     // 031 → G at 22897 (spec §2.1), 120 bpm: 0.07 beats ahead.
     let m = map_031();
@@ -368,4 +395,303 @@ fn a_reset_makes_the_same_song_a_start_again() {
     k.reset();
     assert_eq!(k.now(), OUT);
     assert_eq!(k.on_position((Some(31), Some(f))), Some(KeyWhy::Song));
+}
+
+// --- PR 2b: the value to write, the read-back, the retry, the lateness ---
+
+const DISABLED: &str = "Value cannot be set, the parameter is disabled";
+
+fn minor(root: u8) -> Key {
+    Key { root, minor: true }
+}
+
+#[test]
+fn the_constants_of_the_writes() {
+    assert_eq!((NUDGE, SAME_VALUE_EPS, LATE_BOUND_MS), (0.05, 1e-6, 100.0));
+}
+
+#[test]
+fn the_centre_is_written_unless_it_is_already_there() {
+    assert_eq!(write_value(2, 11, None), 2.0 / 11.0);
+    assert_eq!(write_value(2, 11, Some(0.0)), 2.0 / 11.0);
+    assert_eq!(write_value(2, 11, Some(2.0 / 11.0)), 2.05 / 11.0);
+    assert_eq!(write_value(11, 11, Some(1.0)), 10.95 / 11.0);
+    // The nudged value is no centre: the centre again.
+    assert_eq!(write_value(2, 11, Some(2.05 / 11.0)), 2.0 / 11.0);
+    // The scale's steps: Major and Minor over 28.
+    assert_eq!(write_value(0, 28, Some(0.0)), 0.05 / 28.0);
+    assert_eq!(write_value(1, 28, Some(1.0 / 28.0)), 1.05 / 28.0);
+    assert_eq!(write_value(1, 28, Some(0.0)), 1.0 / 28.0);
+}
+
+#[test]
+fn the_centre_is_within_its_epsilon_only() {
+    // Exactly the epsilon away is no longer the centre.
+    assert_eq!(write_value(0, 11, Some(SAME_VALUE_EPS)), 0.0);
+    assert_eq!(write_value(0, 11, Some(0.9e-6)), 0.05 / 11.0);
+    assert_eq!(write_value(0, 11, Some(-0.9e-6)), 0.05 / 11.0);
+    assert_eq!(write_value(5, 11, Some(5.0 / 11.0 + 2e-6)), 5.0 / 11.0);
+}
+
+#[test]
+fn a_float32_echo_of_the_centre_counts_as_the_centre() {
+    assert_eq!(write_value(2, 11, Some(0.1818181872367859)), 2.05 / 11.0); // spike part 2
+    assert_eq!(write_value(10, 11, Some(0.9090909361839294)), 10.05 / 11.0);
+    let echo = f64::from((6.0_f64 / 11.0) as f32);
+    assert_eq!(write_value(6, 11, Some(echo)), 6.05 / 11.0);
+}
+
+#[test]
+fn a_keys_values_are_its_root_and_scale_steps() {
+    assert_eq!(key_values(major(2), (None, None)), (2.0 / 11.0, 0.0));
+    assert_eq!(key_values(minor(6), (None, None)), (6.0 / 11.0, 1.0 / 28.0));
+    // Each against its own current value.
+    assert_eq!(
+        key_values(minor(6), (Some(6.0 / 11.0), Some(0.0))),
+        (6.05 / 11.0, 1.0 / 28.0)
+    );
+    assert_eq!(
+        key_values(minor(6), (Some(0.5), Some(1.0 / 28.0))),
+        (6.0 / 11.0, 1.05 / 28.0)
+    );
+    assert_eq!(
+        key_values(major(11), (Some(1.0), Some(0.0))),
+        (10.95 / 11.0, 0.05 / 28.0)
+    );
+}
+
+/// The step a plug-in hears under VST3's standard discrete mapping:
+/// `min(steps, floor(v × (steps + 1)))` (PR #144 review I2).
+fn vst3_step(v: f64, steps: u8) -> u8 {
+    let n = f64::from(steps);
+    (v * (n + 1.0)).floor().min(n) as u8
+}
+
+#[test]
+fn a_nudged_value_stays_in_its_step_under_both_mappings() {
+    // PR #144 review I2, as ruled: Auto-Tune Artist's own names round
+    // (spec A.4, `key_index_of`), but VST3's standard discrete mapping
+    // floors over steps + 1 bins; AudioGridder passes the value on. The
+    // centre and the nudged value must land on the same step under both,
+    // for every key and both scales.
+    for (steps, indexes) in [(KEY_STEPS, 0..=11u8), (SCALE_STEPS, 0..=1u8)] {
+        for index in indexes {
+            let centre = write_value(index, steps, None);
+            let nudged = write_value(index, steps, Some(centre));
+            assert_ne!(centre, nudged, "{index}/{steps}");
+            for value in [centre, nudged] {
+                let rounded = if steps == KEY_STEPS {
+                    key_index_of(value)
+                } else {
+                    scale_index_of(value)
+                };
+                assert_eq!(rounded, index, "rounding {value} ({index}/{steps})");
+                assert_eq!(
+                    vst3_step(value, steps),
+                    index,
+                    "VST3 {value} ({index}/{steps})"
+                );
+            }
+        }
+    }
+    // The mapping as the review gave it: 0.25 would move G# to A.
+    assert_eq!(vst3_step(8.25 / 11.0, KEY_STEPS), 9);
+    assert_eq!(vst3_step(8.05 / 11.0, KEY_STEPS), 8);
+    assert_eq!(vst3_step(1.0, KEY_STEPS), 11);
+}
+
+#[test]
+fn a_nudged_value_reads_back_as_the_same_key() {
+    for root in 0..12u8 {
+        for minor in [false, true] {
+            let k = Key { root, minor };
+            let centre = key_values(k, (None, None));
+            let nudged = key_values(k, (Some(centre.0), Some(centre.1)));
+            assert_eq!(judge(k, centre), Readback::Confirmed);
+            assert_eq!(judge(k, nudged), Readback::Confirmed, "{k:?}");
+            assert_ne!(centre, nudged);
+            assert_ne!(centre.0, nudged.0, "{k:?}");
+            assert_ne!(centre.1, nudged.1, "{k:?}");
+        }
+    }
+}
+
+#[test]
+fn a_wrong_step_is_shown_not_confirmed() {
+    let a = Key {
+        root: 9,
+        minor: false,
+    };
+    assert_eq!(
+        judge(a, (2.0 / 11.0, 0.0)),
+        Readback::Shows(Some(Key {
+            root: 2,
+            minor: false
+        }))
+    );
+    assert_eq!(judge(a, (9.0 / 11.0, 2.0 / 28.0)), Readback::Shows(None));
+    assert_eq!(
+        judge(a, (9.0 / 11.0, 1.0 / 28.0)),
+        Readback::Shows(Some(minor(9)))
+    );
+    assert_eq!(judge(a, (9.0 / 11.0, 0.0)), Readback::Confirmed);
+    assert_eq!(
+        serde_json::to_value([
+            Readback::Confirmed,
+            Readback::Shows(None),
+            Readback::Refused("x".into())
+        ])
+        .unwrap(),
+        serde_json::json!(["confirmed", {"shows": null}, {"refused": "x"}])
+    );
+}
+
+#[test]
+fn a_mismatch_is_retried_once_per_key() {
+    let a = Key {
+        root: 9,
+        minor: false,
+    };
+    let mut t = KeyTarget::new();
+    assert_eq!(t.state(), KeyState::NoKey);
+    assert_eq!(t.wanted(), None);
+    t.want(a);
+    t.sent();
+    assert_eq!(t.state(), KeyState::Writing);
+    assert_eq!(t.wanted(), Some(a));
+    assert_eq!(
+        t.written(Readback::Refused(DISABLED.into())),
+        Some(KeyWhy::Retry)
+    );
+    assert_eq!(t.written(Readback::Refused(DISABLED.into())), None);
+    assert_eq!(t.state(), KeyState::Refused);
+    // The same key again (the next song start): no second retry.
+    t.want(a);
+    t.sent();
+    assert_eq!(t.written(Readback::Shows(None)), None);
+    assert_eq!(t.state(), KeyState::Mismatch);
+    // Another key gets its own retry.
+    t.want(Key {
+        root: 2,
+        minor: false,
+    });
+    assert_eq!(t.written(Readback::Shows(None)), Some(KeyWhy::Retry));
+    // A confirmed write needs none, and leaves the retry where it was.
+    let mut c = KeyTarget::new();
+    c.want(a);
+    c.sent();
+    assert_eq!(c.written(Readback::Confirmed), None);
+    assert_eq!(c.state(), KeyState::Confirmed);
+    assert_eq!(c.written(Readback::Shows(None)), Some(KeyWhy::Retry));
+    assert_eq!(c.written(Readback::Shows(None)), None);
+}
+
+#[test]
+fn a_wanted_key_with_no_outcome_yet_is_writing() {
+    let mut t = KeyTarget::new();
+    t.want(major(0));
+    assert_eq!(t.state(), KeyState::Writing);
+}
+
+#[test]
+fn a_value_heard_between_writes_is_another_writer() {
+    let a = major(9);
+    let mut t = KeyTarget::new();
+    assert!(!t.heard((2.0 / 11.0, 0.0)), "nothing wanted");
+    t.want(a);
+    t.sent();
+    assert!(!t.heard((2.0 / 11.0, 0.0)), "while writing");
+    assert_eq!(t.written(Readback::Confirmed), None);
+    assert!(t.heard((2.0 / 11.0, 0.0)));
+    assert!(!t.heard((9.0 / 11.0, 0.0)), "A's own values");
+    assert!(!t.heard((9.05 / 11.0, 0.05 / 28.0)), "A nudged");
+    t.another();
+    assert_eq!(t.state(), KeyState::AnotherWriter);
+    // The next write takes over: its own echoes are no other writer.
+    t.want(major(2));
+    t.sent();
+    assert_eq!(t.state(), KeyState::Writing);
+    assert!(
+        !t.heard((9.0 / 11.0, 0.0)),
+        "while writing, after a confirmed key"
+    );
+    assert_eq!(t.written(Readback::Confirmed), None);
+    assert_eq!(t.state(), KeyState::Confirmed);
+}
+
+#[test]
+fn a_refused_or_mismatched_target_is_no_other_writer() {
+    // A Max map holds the parameter: Live keeps its own value; the target
+    // stays refused (spec §5: shown as refused until the maps are off).
+    let a = major(9);
+    let mut t = KeyTarget::new();
+    t.want(a);
+    t.sent();
+    t.written(Readback::Refused(DISABLED.into()));
+    assert!(!t.heard((2.0 / 11.0, 0.0)));
+    t.written(Readback::Shows(None));
+    assert!(!t.heard((2.0 / 11.0, 0.0)));
+    assert_eq!(t.state(), KeyState::Mismatch);
+}
+
+#[test]
+fn every_key_state_has_its_word() {
+    let words = [
+        (KeyState::NoKey, "no_key"),
+        (KeyState::Writing, "writing"),
+        (KeyState::Confirmed, "confirmed"),
+        (KeyState::Mismatch, "mismatch"),
+        (KeyState::Refused, "refused"),
+        (KeyState::AnotherWriter, "another_writer"),
+    ];
+    for (state, word) in words {
+        assert_eq!(state_word(state), word);
+        assert_eq!(
+            serde_json::to_value(state).unwrap(),
+            serde_json::json!(word)
+        );
+    }
+}
+
+#[test]
+fn lateness_counts_beats_at_the_tempo_plus_the_round_trip() {
+    assert_eq!(late_ms(22897.0, 22897.0, 120.0, 12.0), 12.0);
+    assert!((late_ms(22896.93, 22897.0, 120.0, 12.0) - (-23.0)).abs() < 1e-6);
+    assert!((late_ms(22897.1, 22897.0, 120.0, 0.0) - 50.0).abs() < 1e-6);
+    assert!((late_ms(100.5, 100.0, 60.0, 5.0) - 505.0).abs() < 1e-6);
+}
+
+#[test]
+fn the_bar_shows_its_root_and_scale() {
+    assert_eq!(bar_shows(Some(0), Some("Major")), Some(major(0)));
+    assert_eq!(bar_shows(Some(11), Some("Minor")), Some(minor(11)));
+    assert_eq!(bar_shows(Some(12), Some("Major")), None);
+    assert_eq!(bar_shows(Some(300), Some("Major")), None);
+    assert_eq!(bar_shows(Some(3), Some("Dorian")), None);
+    assert_eq!(bar_shows(None, Some("Major")), None);
+    assert_eq!(bar_shows(Some(3), None), None);
+    assert_eq!(bar_state(major(0), Some(major(0))), BarState::Confirmed);
+    assert_eq!(bar_state(major(0), Some(minor(0))), BarState::Shows);
+    assert_eq!(bar_state(major(0), None), BarState::Shows);
+    assert_eq!(
+        serde_json::to_value([BarState::Confirmed, BarState::Shows]).unwrap(),
+        serde_json::json!(["confirmed", "shows"])
+    );
+}
+
+#[test]
+fn only_continuous_play_crosses_a_key_change() {
+    // PR #144 review M1: the clip at 50, a tick (0.07 beat) ahead at 120 bpm.
+    assert_eq!(CROSSING_BEATS, 1.0);
+    assert!(crossed(Some(49.9), 49.95, 50.0, 0.07), "the tick across it");
+    assert!(!crossed(None, 49.95, 50.0, 0.07), "no position before");
+    assert!(!crossed(Some(10.0), 60.0, 50.0, 0.07), "a jump past it");
+    assert!(!crossed(Some(60.0), 50.5, 50.0, 0.07), "a jump back");
+    // Already at it before (one lookahead on): no crossing now.
+    assert!(!crossed(Some(49.5), 49.75, 50.0, 0.5));
+    assert!(crossed(Some(49.25), 49.75, 50.0, 0.5));
+    // The playhead must go forward, at most one beat.
+    assert!(!crossed(Some(49.5), 49.5, 50.0, 0.25), "standing");
+    assert!(crossed(Some(49.0), 50.0, 50.0, 0.0), "one beat");
+    assert!(!crossed(Some(48.75), 50.0, 50.0, 0.0), "more than one beat");
 }

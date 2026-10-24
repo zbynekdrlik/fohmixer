@@ -1,6 +1,8 @@
 """The generic LOM layer: path grammar and resolution, the id registry, the codec."""
 
+import types
 import unittest
+from unittest import mock
 
 import _paths
 import Live
@@ -232,6 +234,63 @@ class CodecTest(unittest.TestCase):
         )
         Other.__module__ = "thing"
         self.assertEqual(self.encode(Other()), "other")
+
+    def test_a_vector_of_any_live_module_becomes_a_list(self):
+        # Real Live answers Device.parameters as "<Device.ATimeableValueVector
+        # object at ...>" (read on the PC with 1.10.0, #140): a vector class
+        # of the module "Device", not "Base"; the old codec sent its str().
+        for module in ("Device", "Base", "Live", "Live.Device"):
+            with self.subTest(module=module):
+                Vector = type("ATimeableValueVector", (), {"__iter__": lambda self: iter((2, "b"))})
+                Vector.__module__ = module
+                self.assertEqual(self.encode(Vector()), [2, "b"])
+        # A class named like a vector of no Live module is still no vector.
+        Other = type(
+            "ATimeableValueVector",
+            (),
+            {"__iter__": lambda self: iter(()), "__str__": lambda self: "other"},
+        )
+        Other.__module__ = "thing"
+        self.assertEqual(self.encode(Other()), "other")
+
+    def test_base_and_device_vectors_are_lists_whatever_live_shows(self):
+        # PR #144 review I1: the two modules Live's vectors were read in on
+        # the PC, Base (#58) and Device (a device's parameters, #140), are
+        # taken by name; the general check can only add to them. A bare
+        # Live (none of its modules as attributes) must not take them away.
+        bare = types.ModuleType("Live")
+        with mock.patch.object(codec, "Live", bare):
+            for module, name in (("Base", "Vector"), ("Device", "ATimeableValueVector")):
+                with self.subTest(module=module):
+                    Vector = type(name, (), {"__iter__": lambda self: iter((3, "c"))})
+                    Vector.__module__ = module
+                    self.assertEqual(self.encode(Vector()), [3, "c"])
+            # Any other module is a vector's only through the general check.
+            Other = type(
+                "Vector",
+                (),
+                {"__iter__": lambda self: iter(()), "__str__": lambda self: "other"},
+            )
+            Other.__module__ = "Track"
+            self.assertEqual(self.encode(Other()), "other")
+        # With Live's own modules, the general check takes Track's too.
+        Track = type("Vector", (), {"__iter__": lambda self: iter((4,))})
+        Track.__module__ = "Track"
+        self.assertEqual(self.encode(Track()), [4])
+
+    def test_a_devices_parameters_become_a_list_of_refs(self):
+        # SimLive's device parameters are Live's Device.ATimeableValueVector.
+        device = self.song.tracks[5].devices[0]
+        params = device.parameters
+        self.assertEqual(
+            (type(params).__module__, type(params).__name__), ("Device", "ATimeableValueVector")
+        )
+        out = self.encode(params, "live_set tracks 5 devices 0 parameters")
+        self.assertIsInstance(out, list)
+        self.assertEqual(len(out), len(params))
+        self.assertEqual(out[0]["class"], "DeviceParameter")
+        self.assertEqual(out[0]["name"], "Device On")
+        self.assertEqual(out[1]["path"], "live_set tracks 5 devices 0 parameters 1")
 
     def test_object_without_name_has_no_name_key(self):
         out = self.encode(self.song.tracks[0].mixer_device, "live_set tracks 0 mixer_device")

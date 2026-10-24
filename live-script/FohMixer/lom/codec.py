@@ -12,6 +12,7 @@ qualified ``Live.X.Y.name`` (calls); lists and dicts decode element-wise.
 """
 
 import math
+import types
 
 import Live
 
@@ -44,14 +45,35 @@ def _is_live_type(cls):
     return module == "Live" or module.startswith("Live.")
 
 
+# The modules Live's vector classes were read in on the PC: ``Base`` (a track
+# list, #58) and ``Device`` (a device's parameters, #140). Taken by name,
+# whatever the ``Live`` module shows: the general check below can only add.
+VECTOR_MODULES = ("Base", "Device")
+
+
+def _live_module(module):
+    """Whether a class's ``__module__`` is one of Live's: a module its vectors
+    were read in (``VECTOR_MODULES``), ``Live``, ``Live.*``, or the bare name
+    of another of its modules, as Live's own classes report it."""
+    if module in VECTOR_MODULES or module == "Live" or module.startswith("Live."):
+        return True
+    return isinstance(getattr(Live, module, None), types.ModuleType)
+
+
 def is_vector(value):
-    """A tuple, a list or a Live vector. Live's vector classes report the
-    module ``Base`` (``<Base.Vector object at ...>``, read on the PC, #58), and
-    SimLive's do too."""
+    """A tuple, a list or a Live vector: a class whose name ends in
+    ``Vector`` from one of Live's modules. Live's track list reports
+    ``<Base.Vector object at ...>`` (read on the PC, #58) and a device's
+    parameters ``<Device.ATimeableValueVector object at ...>`` (#140: taken
+    for no vector, they reached the hub as text); SimLive's do the same.
+    Only a vector gets ``list()``: on any other Live object a generic
+    ``list()`` can hang Live (ableton-js issue #115), so a class of no Live
+    module is never one, whatever its name."""
     if isinstance(value, (list, tuple)):
         return True
     cls = type(value)
-    return cls.__name__.endswith("Vector") and getattr(cls, "__module__", None) == "Base"
+    module = getattr(cls, "__module__", None) or ""
+    return cls.__name__.endswith("Vector") and _live_module(module)
 
 
 def is_live_object(value):
