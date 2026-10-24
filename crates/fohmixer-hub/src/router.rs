@@ -344,6 +344,19 @@ pub enum RouterMsg {
         walk: u64,
         outcome: Result<crate::rules::autotune::find::Found, String>,
     },
+    /// An AUTOTUNE target's walk `walk` failed (#140): a read Live did not
+    /// answer (offline, a timeout) or refused; worth another walk.
+    AutotuneWalkFailed {
+        key: String,
+        walk: u64,
+        why: String,
+    },
+    /// A failed walk `walk`'s retry is due (#140); void once the target was
+    /// walked since (a trigger, a disconnect).
+    AutotuneWalkRetry {
+        key: String,
+        walk: u64,
+    },
     /// The answer to AUTOTUNE's write of `instance`'s targets `keys` (#104;
     /// `Err`: why none was written: offline, a timeout, refused).
     AutotuneWritten {
@@ -920,6 +933,10 @@ impl Router {
             RouterMsg::AutotuneFound { key, walk, outcome } => {
                 self.autotune_found(&key, walk, outcome);
             }
+            RouterMsg::AutotuneWalkFailed { key, walk, why } => {
+                self.autotune_walk_failed(&key, walk, why);
+            }
+            RouterMsg::AutotuneWalkRetry { key, walk } => self.autotune_walk_retry(&key, walk),
             RouterMsg::AutotuneWritten {
                 instance,
                 keys,

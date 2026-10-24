@@ -50,6 +50,7 @@ use fohmixer_proto::client::{
 use fohmixer_proto::layout::AutotuneTarget;
 use serde_json::{Value, json};
 
+use super::songmap::{MAX_RETRIES, RETRY_MS};
 use super::{Router, RouterMsg, transport_heard};
 use crate::eq::walk::refused;
 use crate::live::client::LiveHandle;
@@ -115,6 +116,9 @@ pub(super) struct Target {
     /// track-list change (and a disconnect) until then, when a value
     /// delivery may be another track's (PR 2a review M3).
     pub key_sure: bool,
+    /// Its walks that failed in a row since its last trigger or answer
+    /// (#140: a set still loading answers no read for a while).
+    pub walk_failures: u32,
 }
 
 /// The router's AUTOTUNE.
@@ -334,19 +338,40 @@ pub(super) fn autotune_fields(step: &Step, client: Option<ClientId>, peer: Optio
     fields
 }
 
+/// Whether a target whose walks failed `failures` times in a row (this
+/// one included) is walked again after [`RETRY_MS`] (#140): up to
+/// [`MAX_RETRIES`] retries, the song map's bound; then it waits for the
+/// next trigger.
+pub(super) fn walk_again(failures: u32) -> bool {
+    failures <= MAX_RETRIES
+}
+
+/// How a walk ended: its definite answer (the macro, or why there is none
+/// in words), or a read that failed (Live offline, a timeout, a refused
+/// read: #140, worth another walk).
+#[derive(Debug, Clone, PartialEq)]
+pub(super) enum Walked {
+    Answered(Result<Found, String>),
+    Failed(String),
+}
+
 /// Finds the `Latencies` rack of the track at `target` (at most
-/// [`find::MAX_READS`] reads): its first macro, or why not in words.
-async fn find_rack(live: LiveHandle, target: String) -> Result<Found, String> {
+/// [`find::MAX_READS`] reads): its first macro, or why not in words, or the
+/// read that failed.
+async fn find_rack(live: LiveHandle, target: String) -> Walked {
     let (mut find, mut commands) = Find::start(&target);
     for _ in 0..find::MAX_READS {
-        let slots = live.call(commands).await.map_err(|e| e.to_string())?;
+        let slots = match live.call(commands).await {
+            Ok(slots) => slots,
+            Err(e) => return Walked::Failed(e.to_string()),
+        };
         match find.answer(&slots) {
             find::Step::Read(next) => commands = next,
-            find::Step::Done(done) => return done.map_err(|m| m.to_string()),
-            find::Step::Failed(why) => return Err(why),
+            find::Step::Done(done) => return Walked::Answered(done.map_err(|m| m.to_string())),
+            find::Step::Failed(why) => return Walked::Failed(why),
         }
     }
-    Err(TOO_DEEP.to_string())
+    Walked::Answered(Err(TOO_DEEP.to_string()))
 }
 
 impl Router {
@@ -381,6 +406,7 @@ impl Router {
                 key_write: 0,
                 key_wrote: None,
                 key_sure: false,
+                walk_failures: 0,
             };
             wanted.push((key, target));
         }
@@ -441,9 +467,19 @@ impl Router {
         self.autotune_tell();
     }
 
-    /// Walks a target again (a new walk number: an answer of an older walk
-    /// is void), while its Live set is online; its connect walks it else.
+    /// Walks a target again for a trigger (a layout, a connect, a transport
+    /// change, a track-list change, a failed write or value): its failed
+    /// walks' count starts over (#140).
     pub(super) fn autotune_walk(&mut self, key: &str) {
+        if let Some(target) = self.autotune.targets.get_mut(key) {
+            target.walk_failures = 0;
+        }
+        self.autotune_walk_now(key);
+    }
+
+    /// Walks a target (a new walk number: an answer of an older walk is
+    /// void), while its Live set is online; its connect walks it else.
+    fn autotune_walk_now(&mut self, key: &str) {
         let Some(target) = self.autotune.targets.get_mut(key) else {
             return;
         };
@@ -457,18 +493,70 @@ impl Router {
         let key = key.to_string();
         let tx = self.io.tx.clone();
         tokio::spawn(async move {
-            let outcome = find_rack(live, track).await;
-            let _ = tx.send(RouterMsg::AutotuneFound { key, walk, outcome });
+            let msg = match find_rack(live, track).await {
+                Walked::Answered(outcome) => RouterMsg::AutotuneFound { key, walk, outcome },
+                Walked::Failed(why) => RouterMsg::AutotuneWalkFailed { key, walk, why },
+            };
+            let _ = tx.send(msg);
         });
+    }
+
+    /// A walk's read failed (#140): void unless it is the target's newest
+    /// walk; else the target is missing with Live's words (recorded when
+    /// news) and walked again after [`RETRY_MS`] while retries are left
+    /// ([`walk_again`]), or one `gave_up` record (warn) waits for the next
+    /// trigger.
+    pub(super) fn autotune_walk_failed(&mut self, key: &str, walk: u64, why: String) {
+        if self.autotune.targets.get(key).map(|t| t.walk) != Some(walk) {
+            return;
+        }
+        self.autotune_target_missing(key, why.clone());
+        let Some(target) = self.autotune.targets.get_mut(key) else {
+            return;
+        };
+        target.walk_failures += 1;
+        let failures = target.walk_failures;
+        let (instance, track) = (target.instance.clone(), target.track.clone());
+        if walk_again(failures) {
+            let (key, tx) = (key.to_string(), self.io.tx.clone());
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(RETRY_MS)).await;
+                let _ = tx.send(RouterMsg::AutotuneWalkRetry { key, walk });
+            });
+        } else {
+            self.autotune_step(
+                Step::GaveUp {
+                    instance,
+                    target: track,
+                    problem: why,
+                    walks: failures,
+                },
+                None,
+            );
+        }
+        self.autotune_tell();
+    }
+
+    /// A failed walk's retry is due: the target is walked again, unless it
+    /// was walked since (a trigger, a disconnect: the retry is void).
+    pub(super) fn autotune_walk_retry(&mut self, key: &str, walk: u64) {
+        if self.autotune.targets.get(key).map(|t| t.walk) == Some(walk) {
+            self.autotune_walk_now(key);
+        }
     }
 
     /// A walk's answer: a stale one (a newer walk, a disconnect) does
     /// nothing; a found macro is followed (and gets its set's last write
     /// when newly found), a missing one says why.
     pub(super) fn autotune_found(&mut self, key: &str, walk: u64, outcome: Result<Found, String>) {
-        if self.autotune.targets.get(key).map(|t| t.walk) != Some(walk) {
+        let Some(target) = self.autotune.targets.get_mut(key) else {
+            return;
+        };
+        if target.walk != walk {
             return;
         }
+        // A definite answer: its failed walks are over (#140).
+        target.walk_failures = 0;
         match outcome {
             Ok(found) => self.autotune_target_found(key, found),
             Err(why) => self.autotune_target_missing(key, why),
