@@ -4,9 +4,13 @@ use fohmixer_proto::layout::{Anchor, AutotuneTarget, Binding};
 use serde_json::{Value, json};
 use tokio::sync::mpsc::UnboundedReceiver;
 
-use super::super::super::tests::{next_of, records};
+use fohmixer_proto::client::{SafeState, SafeStatus};
+
+use super::super::super::retries::{CONNECT_RETRIES, RETRY_MS};
+use super::super::super::tests::{next_of, records, status};
 use super::super::super::{Router, RouterIo, RouterMsg};
-use super::{SAFE_WRITES, Safe, safe_commands, safe_news, safe_problem};
+use super::super::AfterWalk;
+use super::{SAFE_WRITES, Safe, failed_problem, safe_commands, safe_news, safe_problem};
 use crate::live::client::{Asked, LiveEvent, Script, scripted};
 use crate::rules::HubState;
 use crate::rules::autotune::find::Found;
@@ -215,28 +219,56 @@ fn a_list_is_news_unless_the_script_holds_it() {
     let list = |pairs: &[(&str, u8)]| -> Vec<(String, u8)> {
         pairs.iter().map(|(id, v)| (id.to_string(), *v)).collect()
     };
-    let held = |list: Option<Vec<(String, u8)>>| Safe { list, seq: 1 };
+    let held = |list: Vec<(String, u8)>, state: SafeState| Safe {
+        list,
+        seq: 1,
+        state,
+        problem: None,
+        failures: 0,
+    };
     let both = list(&[("p6", 127), ("p7", 0)]);
     // Since its connect the script holds nothing: only a list with writes
     // is news.
     assert!(!safe_news(None, &[]));
     assert!(safe_news(None, &both));
-    // The list sent last is no news; another one is, a disarm too.
-    assert!(!safe_news(Some(&held(Some(both.clone()))), &both));
-    assert!(safe_news(
-        Some(&held(Some(both.clone()))),
-        &list(&[("p6", 127)])
-    ));
-    assert!(safe_news(
-        Some(&held(Some(both.clone()))),
-        &list(&[("p6", 127), ("p7", 127)])
-    ));
-    assert!(safe_news(Some(&held(Some(both.clone()))), &[]));
-    assert!(!safe_news(Some(&held(Some(Vec::new()))), &[]));
+    // The list sent last (on its way or kept) is no news; another one is,
+    // a disarm too.
+    for state in [SafeState::Sent, SafeState::Kept] {
+        assert!(!safe_news(Some(&held(both.clone(), state)), &both));
+        assert!(safe_news(
+            Some(&held(both.clone(), state)),
+            &list(&[("p6", 127)])
+        ));
+        assert!(safe_news(
+            Some(&held(both.clone(), state)),
+            &list(&[("p6", 127), ("p7", 127)])
+        ));
+        assert!(safe_news(Some(&held(both.clone(), state)), &[]));
+        assert!(!safe_news(Some(&held(Vec::new(), state)), &[]));
+    }
     // After a failure what the script holds is not known: any list is
-    // news, an empty one too.
-    assert!(safe_news(Some(&held(None)), &both));
-    assert!(safe_news(Some(&held(None)), &[]));
+    // news, the same one and an empty one too.
+    assert!(safe_news(
+        Some(&held(both.clone(), SafeState::Failed)),
+        &both
+    ));
+    assert!(safe_news(Some(&held(Vec::new(), SafeState::Failed)), &[]));
+}
+
+#[test]
+fn a_failed_registration_says_when_it_gave_up() {
+    assert_eq!(
+        failed_problem("instance offline", AfterWalk::Retry, 3),
+        "instance offline"
+    );
+    assert_eq!(
+        failed_problem("no such function: safe_writes", AfterWalk::Wait, 1),
+        "no such function: safe_writes"
+    );
+    assert_eq!(
+        failed_problem("instance offline", AfterWalk::GiveUp, 25),
+        "instance offline (gave up after 25 tries, until the next trigger)"
+    );
 }
 
 #[test]
@@ -271,7 +303,7 @@ async fn every_found_selector_is_registered_with_its_off_value() {
     assert_eq!(both, writes(&[("p6", 127.0), ("p7", 0.0)]), "Live's order");
     assert_eq!(
         router.autotune.safe["band"].list,
-        Some(vec![("p6".to_string(), 127), ("p7".to_string(), 0)])
+        vec![("p6".to_string(), 127), ("p7".to_string(), 0)]
     );
     // The first one's answer is void: the second one replaced it.
     answered(&mut router, &mut own, first, kept(1)).await;
@@ -314,7 +346,7 @@ async fn a_lost_rack_shrinks_the_list() {
     router.handle(layout(2, vec![repro()]));
     let (none, _) = registration(&mut script);
     assert_eq!(none, Writes::new());
-    assert_eq!(router.autotune.safe["band"].list, Some(Vec::new()));
+    assert_eq!(router.autotune.safe["band"].list, Vec::new());
 }
 
 #[tokio::test]
@@ -358,7 +390,7 @@ async fn a_failed_registration_is_sent_again_at_the_next_change() {
         safe_steps(&rx),
         vec![safe_step(2, Some("no such function: safe_writes"))]
     );
-    assert_eq!(router.autotune.safe["band"].list, None);
+    assert_eq!(router.autotune.safe["band"].state, SafeState::Failed);
     // What the script holds is not known: the same list goes again where
     // the next registration would (the markers settled, no hold).
     router.autotune_release("band", "settled");
@@ -407,4 +439,168 @@ async fn a_found_target_whose_walk_live_did_not_answer_keeps_its_ref_and_its_dry
     assert!(router.autotune.targets[STREAM].found.is_none());
     let (shrunk, _) = registration(&mut script);
     assert_eq!(shrunk, writes(&[("p6", 127.0)]));
+}
+
+/// Every message the router's own tasks send within `limit_ms` (on tokio's
+/// virtual clock), handled.
+async fn pump(router: &mut Router, own: &mut UnboundedReceiver<RouterMsg>, limit_ms: u64) {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(limit_ms);
+    while let Ok(Some(msg)) = tokio::time::timeout_at(deadline, own.recv()).await {
+        router.handle(msg);
+    }
+}
+
+/// The band's registration in `/api/status`.
+fn safe_status(router: &mut Router) -> Vec<SafeStatus> {
+    status(router).autotune.safe
+}
+
+fn band(state: SafeState, problem: Option<&str>) -> Vec<SafeStatus> {
+    vec![SafeStatus {
+        instance: "band".into(),
+        state,
+        targets: 2,
+        problem: problem.map(str::to_string),
+    }]
+}
+
+#[tokio::test]
+async fn a_registration_is_kept_only_on_the_scripts_ok() {
+    // PR #146 review I2: the hub tells a registration on its way from one
+    // the script kept, so #140 PR 3b can switch on only under a kept one.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, mut own, _rx, mut script) = scripted_router(dir.path());
+    assert_eq!(safe_status(&mut router), Vec::new());
+    let asked = both_found(&mut router, &mut own, &mut script).await;
+    assert_eq!(safe_status(&mut router), band(SafeState::Sent, None));
+    answered(&mut router, &mut own, asked, kept(2)).await;
+    assert_eq!(safe_status(&mut router), band(SafeState::Kept, None));
+    // A new list is on its way again until its answer.
+    router.handle(layout(2, vec![repro()]));
+    let (_, asked) = registration(&mut script);
+    let only = vec![SafeStatus {
+        instance: "band".into(),
+        state: SafeState::Sent,
+        targets: 1,
+        problem: None,
+    }];
+    assert_eq!(safe_status(&mut router), only);
+    answered(&mut router, &mut own, asked, kept(1)).await;
+    assert_eq!(safe_status(&mut router)[0].state, SafeState::Kept);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_registration_live_did_not_answer_is_retried_every_retry_ms() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, mut own, rx, mut script) = scripted_router(dir.path());
+    let asked = both_found(&mut router, &mut own, &mut script).await;
+    answered(&mut router, &mut own, asked, None).await;
+    assert_eq!(
+        safe_status(&mut router),
+        band(SafeState::Failed, Some("instance offline"))
+    );
+    assert_eq!(router.autotune.safe["band"].failures, 1);
+    assert_eq!(
+        safe_steps(&rx),
+        vec![safe_step(2, Some("instance offline"))]
+    );
+    // Not before RETRY_MS, then once.
+    pump(&mut router, &mut own, RETRY_MS - 1).await;
+    assert!(next_safe(&mut script).is_none(), "not before RETRY_MS");
+    pump(&mut router, &mut own, RETRY_MS / 2).await;
+    let (again, asked) = registration(&mut script);
+    assert_eq!(again, writes(&[("p6", 127.0), ("p7", 0.0)]));
+    assert!(next_safe(&mut script).is_none(), "once");
+    answered(&mut router, &mut own, asked, kept(2)).await;
+    assert_eq!(safe_status(&mut router), band(SafeState::Kept, None));
+    assert_eq!(router.autotune.safe["band"].failures, 0);
+    pump(&mut router, &mut own, 3 * RETRY_MS).await;
+    assert!(next_safe(&mut script).is_none(), "kept: no more");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_refused_registration_is_shown_and_not_retried() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, mut own, _rx, mut script) = scripted_router(dir.path());
+    let asked = both_found(&mut router, &mut own, &mut script).await;
+    let refused = json!({"ok": false,
+        "error": "bad args: 1 safe write target(s) do not resolve", "errorType": "OpError"});
+    answered(&mut router, &mut own, asked, Some(refused)).await;
+    assert_eq!(
+        safe_status(&mut router),
+        band(
+            SafeState::Failed,
+            Some("bad args: 1 safe write target(s) do not resolve")
+        )
+    );
+    assert_eq!(router.autotune.safe["band"].failures, 0, "no retry counted");
+    pump(&mut router, &mut own, 3 * RETRY_MS).await;
+    assert!(next_safe(&mut script).is_none(), "never retried");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_registration_live_never_answers_gives_up_after_the_connect_retries() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, mut own, _rx, mut script) = scripted_router(dir.path());
+    let mut asked = both_found(&mut router, &mut own, &mut script).await;
+    for n in 1..=CONNECT_RETRIES {
+        answered(&mut router, &mut own, asked, None).await;
+        pump(&mut router, &mut own, RETRY_MS + RETRY_MS / 2).await;
+        asked = next_safe(&mut script)
+            .unwrap_or_else(|| panic!("retry {n}"))
+            .1;
+    }
+    answered(&mut router, &mut own, asked, None).await;
+    assert_eq!(
+        safe_status(&mut router),
+        band(
+            SafeState::Failed,
+            Some("instance offline (gave up after 25 tries, until the next trigger)")
+        )
+    );
+    pump(&mut router, &mut own, 3 * RETRY_MS).await;
+    assert!(next_safe(&mut script).is_none(), "no retry after the last");
+    // The next change point sends it again, its count over.
+    router.autotune_release("band", "settled");
+    let (_, asked) = registration(&mut script);
+    assert_eq!(router.autotune.safe["band"].failures, 0);
+    answered(&mut router, &mut own, asked, None).await;
+    pump(&mut router, &mut own, RETRY_MS + RETRY_MS / 2).await;
+    assert!(next_safe(&mut script).is_some(), "retried again");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_retry_is_void_after_a_newer_registration_or_a_disconnect_and_waits_while_busy() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, mut own, _rx, mut script) = scripted_router(dir.path());
+    let asked = both_found(&mut router, &mut own, &mut script).await;
+    answered(&mut router, &mut own, asked, None).await;
+    // A change point sends the list again before the retry is due: the
+    // retry is void.
+    router.autotune_release("band", "settled");
+    let (_, newer) = registration(&mut script);
+    // (Under the call's 3 s answer timeout: `newer` waits unanswered.)
+    pump(&mut router, &mut own, RETRY_MS + RETRY_MS / 4).await;
+    assert!(next_safe(&mut script).is_none(), "the old retry is void");
+    // While Live is busy a due retry waits, uncounted.
+    answered(&mut router, &mut own, newer, None).await;
+    router.states.get_mut("band").unwrap().busy = true;
+    pump(&mut router, &mut own, 3 * RETRY_MS + RETRY_MS / 2).await;
+    assert!(next_safe(&mut script).is_none(), "no retry while busy");
+    assert_eq!(router.autotune.safe["band"].failures, 1);
+    router.states.get_mut("band").unwrap().busy = false;
+    pump(&mut router, &mut own, RETRY_MS).await;
+    let (_, asked) = registration(&mut script);
+    // A disconnect voids a waiting retry.
+    answered(&mut router, &mut own, asked, None).await;
+    router.handle(RouterMsg::Live {
+        instance: "band".into(),
+        event: LiveEvent::Disconnected,
+    });
+    pump(&mut router, &mut own, 3 * RETRY_MS).await;
+    assert!(
+        next_safe(&mut script).is_none(),
+        "void after the disconnect"
+    );
+    assert_eq!(safe_status(&mut router), Vec::new());
 }
