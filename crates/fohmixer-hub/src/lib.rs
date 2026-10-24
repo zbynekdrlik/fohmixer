@@ -452,6 +452,9 @@ impl Hub {
                 Arc::clone(&remote),
             ));
         }
+        // The router's beat (PR #146 review I1): the writers ping the
+        // scripts only while the router's loop turns.
+        let beat = live::client::Beat::router();
         let mut live = BTreeMap::new();
         for instance in &config.instances {
             let tx = router_tx.clone();
@@ -461,7 +464,7 @@ impl Hub {
                     event,
                 });
             });
-            let (handle, task) = LiveHandle::spawn(instance, events);
+            let (handle, task) = LiveHandle::spawn_with(instance, events, beat.clone());
             live.insert(instance.name.clone(), handle);
             tasks.push(task);
         }
@@ -526,7 +529,11 @@ impl Hub {
             router = router.with_eq(plugwin, Arc::clone(&pictures));
         }
         // The Tuner markers (#68) go to the layout store.
-        router = router.with_layout(Arc::clone(&layout));
+        router = router.with_layout(Arc::clone(&layout)).with_beat(beat);
+        tasks.push(tokio::spawn(router::beat_ticks(
+            router_tx.clone(),
+            Duration::from_millis(live::client::ROUTER_BEAT_MS),
+        )));
         // AbleSet's page (#90 B3): every page is told of it.
         if let (Some(cfg), Some(tls)) = (&config.ableset, &config.tls) {
             router = router.with_ableset(ableset::link::Page::of(cfg, tls));

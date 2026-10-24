@@ -55,7 +55,7 @@ use serde_json::{Value, json};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::events::EventLog;
-use crate::live::client::{LiveError, LiveEvent, LiveHandle};
+use crate::live::client::{Beat, LiveError, LiveEvent, LiveHandle};
 use crate::live::names::NameCheck;
 use crate::live::subs::{Cached, ClientId, Outgoing, Subs};
 use crate::outbox::Outbox;
@@ -374,6 +374,9 @@ pub enum RouterMsg {
         targets: usize,
         outcome: Result<Vec<Value>, String>,
     },
+    /// A beat (PR #146 review I1, every `live::client::ROUTER_BEAT_MS`):
+    /// nothing to do; the loop's turn stamps the router's `Beat`.
+    Beat,
     /// The retry of `instance`'s failed registration `seq` is due (#140 PR
     /// 3a, PR #146 review I2); void once the set registered since or went
     /// offline.
@@ -541,6 +544,26 @@ pub struct Router {
     /// The latest markers waiting for their quiet time, and its number.
     markers_pending: Option<Vec<fohmixer_proto::markers::Found>>,
     markers_generation: u64,
+    /// Stamped at every turn of the loop (PR #146 review I1): the Live
+    /// clients' writers ping only while it is fresh.
+    beat: Beat,
+}
+
+/// The router's beat (PR #146 review I1): a [`RouterMsg::Beat`] every
+/// `period`, so an idle loop still turns and stamps its `Beat`; it ends
+/// with the router's channel.
+pub(crate) async fn beat_ticks(
+    router: mpsc::UnboundedSender<RouterMsg>,
+    period: std::time::Duration,
+) {
+    let mut tick = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tick.tick().await;
+        if router.send(RouterMsg::Beat).is_err() {
+            return;
+        }
+    }
 }
 
 impl Router {
@@ -608,11 +631,19 @@ impl Router {
             layout_store: None,
             markers_pending: None,
             markers_generation: 0,
+            beat: Beat::steady(),
         };
         if autotune_saved {
             router.save_state();
         }
         router
+    }
+
+    /// Stamps `beat` at every turn of its loop (the hub's; the Live
+    /// clients' writers read it).
+    pub fn with_beat(mut self, beat: Beat) -> Self {
+        self.beat = beat;
+        self
     }
 
     /// Serves messages until [`RouterMsg::Stop`], then releases the Stream
@@ -624,6 +655,9 @@ impl Router {
         while let Some(msg) = rx.recv().await {
             let go_on = self.handle(msg);
             self.flush();
+            // The loop turned: the Live clients' writers may ping (PR #146
+            // review I1).
+            self.beat.stamp();
             if !go_on {
                 break;
             }
@@ -965,6 +999,7 @@ impl Router {
             RouterMsg::AutotuneSafeRetry { instance, seq } => {
                 self.autotune_safe_retry(&instance, seq);
             }
+            RouterMsg::Beat => {}
             RouterMsg::AutotuneKeysWritten {
                 instance,
                 write,

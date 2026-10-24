@@ -20,7 +20,14 @@
 //!   with the value pushes.
 //! - The writer task also pings the script every [`KEEPALIVE_MS`] (#140 PR
 //!   3a): a script holding the hub's DRY writes counts a hub it heard
-//!   nothing from for 1.5 s as gone and falls back to DRY.
+//!   nothing from for 1.5 s as gone and falls back to DRY. It pings only
+//!   while the router's [`Beat`] is fresh (PR #146 review I1): a router that
+//!   hung or panicked stops the pings, and so the fallback. The worst case
+//!   from the router's last turn: its beat stays fresh [`BEAT_FRESH_MS`]
+//!   (600 ms), so the last ping goes at most 600 ms after it, and the
+//!   script falls back 1500 ms after the last ping it heard (plus one Live
+//!   tick): about 0.6 + 1.5 = 2.1 s. A process that ended closes its
+//!   sockets: the fallback is at once.
 //! - Busy: Live's main-thread tick older than 150 ms, or no heartbeat for
 //!   300 ms (checked every 50 ms), reported on change with its reason; a
 //!   heartbeat after an overdue gap is logged with where it was held.
@@ -56,6 +63,66 @@ pub const BUSY_CHECK: Duration = Duration::from_millis(50);
 /// (#140 PR 3a): the script counts a hub silent for 1.5 s as gone
 /// (`Config.HUB_SILENCE_MS`), three pings missed.
 pub const KEEPALIVE_MS: u64 = 500;
+/// How often a beat message reaches the router, in ms (PR #146 review I1):
+/// its loop stamps the [`Beat`] at every message it handles.
+pub const ROUTER_BEAT_MS: u64 = 200;
+/// How long a router's [`Beat`] stays fresh after its last stamp, in ms:
+/// three beats missed.
+pub const BEAT_FRESH_MS: u64 = 600;
+
+/// Whether a beat stamped at `last_ms` is fresh at `now_ms` (the same
+/// clock; a stamp after the reading is fresh).
+pub fn beat_fresh(now_ms: u64, last_ms: u64) -> bool {
+    now_ms.saturating_sub(last_ms) < BEAT_FRESH_MS
+}
+
+/// The router's heartbeat (PR #146 review I1): the router stamps it as its
+/// loop turns, and the Live clients' writers ping the scripts only while it
+/// is fresh, so the pings say the router decides, not only that the
+/// process lives. A steady beat (no router drives the client: the tools,
+/// the tests) never ages. Its clock is tokio's (paused in the tests).
+#[derive(Debug, Clone)]
+pub struct Beat {
+    start: tokio::time::Instant,
+    /// The last stamp, in ms since `start`; none: steady.
+    last: Option<Arc<AtomicU64>>,
+}
+
+impl Beat {
+    /// A beat for a router to stamp, fresh from now.
+    pub fn router() -> Self {
+        Self {
+            start: tokio::time::Instant::now(),
+            last: Some(Arc::new(AtomicU64::new(0))),
+        }
+    }
+
+    /// A beat that never ages.
+    pub fn steady() -> Self {
+        Self {
+            start: tokio::time::Instant::now(),
+            last: None,
+        }
+    }
+
+    /// The router's loop turned now.
+    pub fn stamp(&self) {
+        if let Some(last) = &self.last {
+            last.store(self.elapsed_ms(), Ordering::Relaxed);
+        }
+    }
+
+    /// Whether the router turned within [`BEAT_FRESH_MS`].
+    pub fn fresh(&self) -> bool {
+        self.last
+            .as_ref()
+            .is_none_or(|last| beat_fresh(self.elapsed_ms(), last.load(Ordering::Relaxed)))
+    }
+
+    fn elapsed_ms(&self) -> u64 {
+        u64::try_from(self.start.elapsed().as_millis()).unwrap_or(u64::MAX)
+    }
+}
 
 /// What an instance's task reports, in the order the script sent it.
 #[derive(Debug, Clone, PartialEq)]
@@ -142,8 +209,15 @@ fn lock(m: &Mutex<Snapshot>) -> std::sync::MutexGuard<'_, Snapshot> {
 
 impl LiveHandle {
     /// Starts the task of `cfg`; its events go to `events`. The task ends
-    /// when every handle is dropped (or the returned task is aborted).
+    /// when every handle is dropped (or the returned task is aborted). Its
+    /// writer pings whatever any router does ([`Beat::steady`]).
     pub fn spawn(cfg: &InstanceCfg, events: Events) -> (Self, JoinHandle<()>) {
+        Self::spawn_with(cfg, events, Beat::steady())
+    }
+
+    /// [`LiveHandle::spawn`] whose writer pings only while `beat` is fresh
+    /// (the hub's: its router's).
+    pub fn spawn_with(cfg: &InstanceCfg, events: Events, beat: Beat) -> (Self, JoinHandle<()>) {
         let (tx, rx) = mpsc::unbounded_channel();
         let snapshot = Arc::new(Mutex::new(Snapshot::default()));
         let handle = Self {
@@ -153,7 +227,7 @@ impl LiveHandle {
             snapshot: Arc::clone(&snapshot),
             requests: Arc::new(AtomicU64::new(0)),
         };
-        let task = tokio::spawn(run(cfg.clone(), rx, events, snapshot));
+        let task = tokio::spawn(run(cfg.clone(), rx, events, snapshot, beat));
         (handle, task)
     }
 
@@ -265,12 +339,15 @@ impl Asked {
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 /// Writes the session's requests to the script, in order, and a ping every
-/// [`KEEPALIVE_MS`] (the first one that long after the start), until a
-/// write fails or the session drops its sender. The pings go from here,
-/// never from the session's `select!` loop, which never awaits a write
-/// (#9).
-async fn write_requests<S>(mut sink: S, mut texts: mpsc::UnboundedReceiver<String>)
-where
+/// [`KEEPALIVE_MS`] (the first one that long after the start) while the
+/// router's `beat` is fresh, until a write fails or the session drops its
+/// sender. The pings go from here, never from the session's `select!`
+/// loop, which never awaits a write (#9).
+pub(crate) async fn write_requests<S>(
+    mut sink: S,
+    mut texts: mpsc::UnboundedReceiver<String>,
+    beat: Beat,
+) where
     S: Sink<Message> + Unpin,
 {
     let every = Duration::from_millis(KEEPALIVE_MS);
@@ -282,7 +359,13 @@ where
                 Some(text) => Message::Text(text.into()),
                 None => return,
             },
-            _ = keepalive.tick() => Message::Ping(Default::default()),
+            _ = keepalive.tick() => {
+                // A router that no longer turns gets no pings sent for it.
+                if !beat.fresh() {
+                    continue;
+                }
+                Message::Ping(Default::default())
+            }
         };
         if sink.send(message).await.is_err() {
             return;
@@ -331,6 +414,7 @@ async fn run(
     mut rx: mpsc::UnboundedReceiver<Request>,
     events: Events,
     snapshot: Arc<Mutex<Snapshot>>,
+    beat: Beat,
 ) {
     let url = format!("ws://127.0.0.1:{}", cfg.port);
     let mut backoff = Backoff::default();
@@ -351,6 +435,7 @@ async fn run(
                     port: cfg.port,
                     events: &events,
                     snapshot: &snapshot,
+                    beat: &beat,
                 };
                 match session.run(socket, &mut rx).await {
                     End::Stop => return,
@@ -391,6 +476,7 @@ struct Session<'a> {
     port: u16,
     events: &'a Events,
     snapshot: &'a Mutex<Snapshot>,
+    beat: &'a Beat,
 }
 
 /// The busy state of one connection.
@@ -446,7 +532,7 @@ impl Session<'_> {
         // Requests go out through their own task, so this loop never waits
         // for a write and keeps reading the script's frames.
         let (out, texts) = mpsc::unbounded_channel::<String>();
-        let mut writer = tokio::spawn(write_requests(sink, texts));
+        let mut writer = tokio::spawn(write_requests(sink, texts, self.beat.clone()));
         let mut pending: HashMap<String, Reply> = HashMap::new();
         let mut health = Health {
             connected: false,
