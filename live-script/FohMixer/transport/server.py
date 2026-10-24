@@ -166,6 +166,9 @@ class Connection:
         self._peer_closed = False
         self._last_progress = now
         self._finished = False
+        # When a read last took bytes from the client (``time.monotonic()``;
+        # the handshake counts): a hub silent for long is gone (#140 PR 3a).
+        self.last_heard_s = now
 
     @property
     def socket(self):
@@ -236,9 +239,13 @@ class Connection:
 
     # --- the main thread's tick ---
 
-    def receive(self):
+    def receive(self, now=None):
         """Read what has arrived, within ``IO_BUDGET_S``: requests go to the
-        inbox; the end of the stream or a read error resets the connection."""
+        inbox; the end of the stream or a read error resets the connection.
+        Bytes read are the client heard at ``now`` (``time.monotonic()``
+        unless given: the tick's), a frame's or part of one (a ping too)."""
+        if now is None:
+            now = time.monotonic()
         deadline = time.perf_counter() + IO_BUDGET_S
         while self.reading:
             try:
@@ -251,6 +258,7 @@ class Connection:
             if not data:
                 self.abort()
                 return
+            self.last_heard_s = now
             self.take(data)
             if time.perf_counter() >= deadline:
                 return
@@ -512,7 +520,7 @@ class Server:
                 elif isinstance(owner, _Handshake):
                     self._advance_handshake(owner, now)
                 else:
-                    owner.receive()
+                    owner.receive(now)
             except Exception:  # noqa: BLE001 - one client's failure closes that client only
                 self._fail(owner, "reading")
         self._reap()
@@ -721,7 +729,7 @@ class Server:
             self._log.warning("client connected (connection %s)", conn.id)
             if leftover:
                 conn.take(leftover)
-            conn.receive()
+            conn.receive(now)
         except Exception:  # noqa: BLE001 - one client's failure closes that client only
             self._fail(conn, "reading")
 

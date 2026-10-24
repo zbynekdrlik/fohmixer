@@ -3,15 +3,17 @@
 ``ops``, and the surface making them when a connection ends."""
 
 import logging
+import select
 import shutil
 import tempfile
+import time
 import unittest
 
 import _paths
 import FohMixer
 import Live
 import site_builder
-from _rawclient import RawClient, request_frame
+from _rawclient import CLOSE, RawClient, masked_frame, request_frame
 from c_instance import CInstance
 from FohMixer import Config
 from FohMixer.lom import ops
@@ -23,11 +25,15 @@ from FohMixer.safe import SafeWrites
 # The fixture's two `Latencies` racks: on top of Vocal 2 repro# (the repro
 # form, on 0, off 127) and inside Stream FX on Vocal 3 repro# (the stream
 # form, on 127, off 0); each one's first macro.
+# RFC 6455's ping opcode, pinned here (as `_rawclient`'s close), not taken
+# from the script under test.
+PING = 0x9
 REPRO_RACK = "live_set tracks 6 devices 0"
 STREAM_RACK = "live_set tracks 7 devices 0 chains 0 devices 0"
 REPRO = f"{REPRO_RACK} parameters 1"
 STREAM = f"{STREAM_RACK} parameters 1"
 LOST = "hub lost (disconnect): set 2 autotune selectors to DRY"
+SILENCE_S = Config.HUB_SILENCE_MS / 1000.0
 
 
 class RecordingHandler(logging.Handler):
@@ -49,14 +55,18 @@ def recording_logger(name):
 
 
 class Conn:
-    """A connection as the drain hands it over: only its identity counts."""
+    """A connection as the drain hands it over: its identity, and when the
+    hub was last heard on it (``Connection.last_heard_s``)."""
+
+    def __init__(self, last_heard_s=0.0):
+        self.last_heard_s = last_heard_s
 
 
 class SafeTest(unittest.TestCase):
     def setUp(self):
         self.song = site_builder.build(_paths.FIXTURE)
         self.log, self.lines = recording_logger(self.id())
-        self.safe = SafeWrites(self.log)
+        self.safe = SafeWrites(self.log, SILENCE_S)
         self.ctx = ops.Context(
             song=self.song,
             app=Live.Application.get_application(),
@@ -181,6 +191,37 @@ class SafeTest(unittest.TestCase):
         self.assertEqual(self.safe.fire(c, "disconnect"), 0)
         self.assertEqual(p1._sim_set_count("value"), 0)
         self.assertEqual(self.lines.messages, [])
+
+    # --- a silent hub ---
+
+    def test_the_silence_is_1_5_s(self):
+        self.assertEqual(Config.HUB_SILENCE_MS, 1500)
+
+    def test_silence_fires_an_armed_connection_after_1_5_s_only(self):
+        heard, deaf = Conn(last_heard_s=0.0), Conn(last_heard_s=0.0)
+        p1, p2 = self.param(REPRO), self.param(STREAM)
+        p2._sim_set("value", 127.0)
+        self.safe.arm(heard, [(p1, 127.0), (p2, 0.0)])
+        self.assertEqual(self.safe.check_silence(1.4, [heard, deaf]), [])
+        self.assertEqual(self.safe.check_silence(SILENCE_S, [heard, deaf]), [], "not past it")
+        self.assertEqual((p1.value, p2.value), (0.0, 127.0), "nothing written yet")
+        self.assertEqual(self.safe.check_silence(1.6, [heard, deaf]), [(heard, 2)])
+        self.assertEqual((p1.value, p2.value), (127.0, 0.0))
+        self.assertEqual(
+            self.lines.messages, ["hub lost (silence): set 2 autotune selectors to DRY"]
+        )
+        # Once fired, it is forgotten; an unarmed connection never fires.
+        self.assertEqual(self.safe.check_silence(60.0, [heard, deaf]), [])
+        self.assertEqual(len(self.lines.messages), 1)
+
+    def test_silence_counts_from_when_the_hub_was_last_heard(self):
+        c = Conn(last_heard_s=100.0)
+        p1 = self.param(REPRO)
+        self.safe.arm(c, [(p1, 127.0)])
+        self.assertEqual(self.safe.check_silence(101.4, [c]), [])
+        c.last_heard_s = 101.4  # heard again
+        self.assertEqual(self.safe.check_silence(102.8, [c]), [])
+        self.assertEqual(self.safe.check_silence(103.0, [c]), [(c, 1)])
 
     # --- the command ---
 
@@ -372,6 +413,54 @@ class SurfaceSafeTest(unittest.TestCase):
         self.assertEqual((repro.value, stream.value), (0.0, 127.0))
         self.assertEqual((repro._sim_set_count("value"), stream._sim_set_count("value")), (0, 0))
         self.assertNotIn("hub lost", self.log_text())
+
+    def test_a_silent_hub_gets_its_dry_writes_and_its_connection_closed(self):
+        client = self.armed_client()
+        repro, stream = self.macros()
+        stream._sim_set("value", 127.0)
+        (conn,) = self.surface.server.connections()
+        # Heard 1.4 s ago: nothing yet.
+        conn.last_heard_s = time.monotonic() - 1.4
+        self.surface._on_timer()
+        self.assertEqual((repro.value, stream.value), (0.0, 127.0))
+        self.assertTrue(conn.is_open)
+        # 2 s of silence: the DRY writes go, and the connection closes.
+        conn.last_heard_s = time.monotonic() - 2.0
+        self.surface._on_timer()
+        self.assertEqual((repro.value, stream.value), (127.0, 0.0))
+        self.assertFalse(conn.is_open)
+        # The close frame goes out (the hub would answer it and reconnect).
+        events = []
+        for _ in range(10):
+            client.readable(0.1)
+            client.read_available()
+            events += [m.get("event") or m["opcode"] for m in client.messages()]
+            if CLOSE in events:
+                break
+            self.surface._on_timer()
+        self.assertEqual(events[-1], CLOSE, events)
+        for _ in range(3):
+            self.surface._on_timer()
+        log = self.log_text()
+        self.assertEqual(log.count("hub lost"), 1, log)
+        self.assertIn("hub lost (silence): set 2 autotune selectors to DRY", log)
+        self.assertIn(f"connection {conn.id}: the hub said nothing for 1.5 s, closing it", log)
+        self.assertEqual((repro._sim_set_count("value"), stream._sim_set_count("value")), (1, 1))
+
+    def test_a_hub_heard_after_a_live_stall_is_no_silent_hub(self):
+        # The hub's pings waited in the socket while Live's main thread was
+        # away: the tick reads them before it judges the silence.
+        client = self.armed_client()
+        stream = self.macros()[1]
+        stream._sim_set("value", 127.0)
+        (conn,) = self.surface.server.connections()
+        conn.last_heard_s = time.monotonic() - 3.0
+        client.sock.sendall(masked_frame(PING, b"keep-alive"))
+        self.assertTrue(select.select([conn.socket], [], [], 2.0)[0])
+        self.surface._on_timer()
+        self.assertTrue(conn.is_open)
+        self.assertEqual(stream.value, 127.0)
+        self.assertTrue(self.surface.safe.armed(conn))
 
 
 if __name__ == "__main__":

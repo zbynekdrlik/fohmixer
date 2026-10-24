@@ -5,7 +5,8 @@ Live's main thread runs ``_on_timer`` every ``TIMER_INTERVAL_MS`` from
 fallback). Each call does all of the script's work, its socket I/O included:
 the script runs no threads (#5, K1: in Live they got Python only around this
 tick). A call records ``last_main_tick``, reads the sockets (``poll_in``),
-runs queued commands within the work budget (``Drain``), flushes dirty
+judges the hubs' silence (``SafeWrites.check_silence``, #140 PR 3a), runs
+queued commands within the work budget (``Drain``), flushes dirty
 subscriptions, makes the heartbeat when one is due (``Heartbeats``), and
 writes the sockets (``poll_out``); a step that fails is logged and the
 others still run. A connection that ends makes the DRY writes its hub
@@ -162,7 +163,7 @@ class FohMixer(ControlSurface):
         self._last_error_log = {}
         self._registry = Registry()
         self._subs = Subscriptions(self._registry, Config.METER_MIN_INTERVAL_MS)
-        self._safe = SafeWrites(self._log)
+        self._safe = SafeWrites(self._log, Config.HUB_SILENCE_MS / 1000.0)
         self.last_main_tick = time.monotonic()
         self.connected = True
         self._shown_bind_error = None
@@ -241,10 +242,24 @@ class FohMixer(ControlSurface):
         # Each step on its own: one that fails must not stop the others (a
         # heartbeat that stops makes the hub report Live busy for ever).
         self._guarded("socket reads failed", self._server.poll_in)
+        self._guarded("the hubs' silence check failed", self._hub_silence, now)
         self._guarded("commands failed", self._drain.run)
         self._guarded("subscription flush failed", self._subs.flush, now * 1000.0)
         self._guarded("heartbeat failed", self._heartbeat)
         self._guarded("socket writes failed", self._server.poll_out)
+
+    def _hub_silence(self, now):
+        """A hub silent past ``HUB_SILENCE_MS`` counts as gone (#140 PR 3a):
+        its DRY writes go, and its connection is closed, so a hub that was
+        only slow reconnects and registers again. After this tick's reads:
+        what a Live stall held back was read first."""
+        for conn, _written in self._safe.check_silence(now, self._server.connections()):
+            self._log.warning(
+                "connection %s: the hub said nothing for %.1f s, closing it",
+                conn.id,
+                Config.HUB_SILENCE_MS / 1000.0,
+            )
+            conn.close()
 
     def _heartbeat(self):
         """The heartbeat when one is due, timed after this tick's work: a tick

@@ -22,6 +22,7 @@ import unittest
 import _paths  # noqa: F401 - puts the script and SimLive on sys.path
 import Live
 from _rawclient import CLOSE, RawClient, masked_frame, request_frame, upgrade_request
+from FohMixer.safe import SafeWrites
 from FohMixer.transport import server as transport
 from FohMixer.transport.server import Server
 from FohMixer.transport.websocket import OPCODE_TEXT
@@ -54,6 +55,14 @@ def whole_second():
 
 TIME_WAIT = "06"
 TICK_MS = 10
+# RFC 6455's ping opcode, pinned here (as `_rawclient`'s close).
+PING = 0x9
+
+
+class Selector:
+    """A parameter the DRY writes may write (alive: not equal to None)."""
+
+    value = 64.0
 
 
 class RecordingHandler(logging.Handler):
@@ -752,6 +761,50 @@ class OneTickTest(unittest.TestCase):
         self.assertLessEqual(max(b - a for a, b in itertools.pairwise(counts)), 2, counts)
         uuids = [self.server.inbox.get_nowait()[1]["uuid"] for _ in range(3)]
         self.assertEqual(uuids, ["q0", "q1", "q2"])
+
+    def test_a_connection_is_heard_at_its_handshake(self):
+        # #140 PR 3a: a hub's silence counts from its connect at the latest.
+        before = time.monotonic()
+        self.client()
+        self.tick()
+        (conn,) = self.server.connections()
+        self.assertGreaterEqual(conn.last_heard_s, before)
+        self.assertLessEqual(conn.last_heard_s, time.monotonic())
+
+    def test_a_frame_read_after_a_stall_counts_as_heard(self):
+        # #140 PR 3a: a ping that waited in the socket while Live's main
+        # thread was away is read at the tick's time, so the silence check
+        # after the tick's reads finds the hub heard.
+        client = self.client()
+        self.tick()
+        (conn,) = self.server.connections()
+        conn.last_heard_s = 1.0
+        client.sock.sendall(masked_frame(PING, b"keep-alive"))
+        self.assertTrue(select.select([conn.socket], [], [], 2.0)[0])
+        conn.receive(5.0)
+        self.assertEqual(conn.last_heard_s, 5.0)
+        safe = SafeWrites(self.logger, 1.5)
+        safe.arm(conn, [(Selector(), 0.0)])
+        self.assertEqual(safe.check_silence(5.0, [conn]), [])
+        self.assertTrue(safe.armed(conn))
+        # Nothing read: the time stays.
+        conn.receive(9.0)
+        self.assertEqual(conn.last_heard_s, 5.0)
+        self.assertEqual(safe.check_silence(9.0, [conn]), [(conn, 1)])
+
+    def test_a_tick_stamps_what_it_reads_with_its_own_time(self):
+        client = self.client()
+        self.tick()
+        (conn,) = self.server.connections()
+        conn.last_heard_s = 1.0
+        self.server.poll_in()
+        self.assertEqual(conn.last_heard_s, 1.0, "nothing came")
+        client.sock.sendall(masked_frame(PING, b"keep-alive"))
+        self.assertTrue(select.select([conn.socket], [], [], 2.0)[0])
+        before = time.monotonic()
+        self.server.poll_in()
+        self.assertGreaterEqual(conn.last_heard_s, before)
+        self.assertLessEqual(conn.last_heard_s, time.monotonic())
 
     def test_a_request_too_deep_for_json_gets_an_error_and_the_next_one_still_runs(self):
         deep = masked_frame(OPCODE_TEXT, b"[" * 200_000)

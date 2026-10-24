@@ -15,6 +15,10 @@ WINDOW_MS = 20
 METER_MIN_INTERVAL_MS = 33
 HEARTBEAT_INTERVAL_MS = 100
 RESULT_QUEUE_MAX = 1000
+# A hub connection that registered DRY writes and was heard nothing from for
+# this long counts as gone (#140 PR 3a): its DRY writes go, and it is closed.
+# The hub pings every 500 ms; the check runs after the tick's reads.
+HUB_SILENCE_MS = 1500
 
 # Log folder; None means ``logs/`` next to this file (env FOHMIXER_LOG_DIR overrides).
 LOG_DIR = None

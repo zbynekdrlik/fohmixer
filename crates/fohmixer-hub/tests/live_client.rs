@@ -228,7 +228,12 @@ where
         let (tcp, _) = listener.accept().await.unwrap();
         let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
         ws.send(Message::Text(connect.into())).await.unwrap();
-        while let Some(Ok(Message::Text(text))) = ws.next().await {
+        while let Some(Ok(message)) = ws.next().await {
+            // The hub's keep-alive pings (#140 PR 3a) are no requests:
+            // tungstenite answers them itself.
+            let Message::Text(text) = message else {
+                continue;
+            };
             let request: Value = serde_json::from_str(text.as_str()).unwrap();
             for frame in answer(&request) {
                 if ws.send(Message::Text(frame.into())).await.is_err() {

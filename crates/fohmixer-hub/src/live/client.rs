@@ -18,6 +18,9 @@
 //!   ([`LiveHandle::call`]) gets it back directly, anything else (the
 //!   subscription table's requests) goes to the event sink in frame order,
 //!   with the value pushes.
+//! - The writer task also pings the script every [`KEEPALIVE_MS`] (#140 PR
+//!   3a): a script holding the hub's DRY writes counts a hub it heard
+//!   nothing from for 1.5 s as gone and falls back to DRY.
 //! - Busy: Live's main-thread tick older than 150 ms, or no heartbeat for
 //!   300 ms (checked every 50 ms), reported on change with its reason; a
 //!   heartbeat after an overdue gap is logged with where it was held.
@@ -29,8 +32,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use futures_util::stream::SplitSink;
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{Sink, SinkExt, StreamExt};
 use serde_json::{Value, json};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, oneshot};
@@ -50,6 +52,10 @@ pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 /// How often the heartbeat's age is checked for "busy".
 pub const BUSY_CHECK: Duration = Duration::from_millis(50);
+/// How often the writer pings the script with nothing else to send, in ms
+/// (#140 PR 3a): the script counts a hub silent for 1.5 s as gone
+/// (`Config.HUB_SILENCE_MS`), three pings missed.
+pub const KEEPALIVE_MS: u64 = 500;
 
 /// What an instance's task reports, in the order the script sent it.
 #[derive(Debug, Clone, PartialEq)]
@@ -258,14 +264,27 @@ impl Asked {
 
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
-/// Writes the session's requests to the script, in order, until a write
-/// fails or the session drops its sender.
-async fn write_requests(
-    mut sink: SplitSink<Socket, Message>,
-    mut texts: mpsc::UnboundedReceiver<String>,
-) {
-    while let Some(text) = texts.recv().await {
-        if sink.send(Message::Text(text.into())).await.is_err() {
+/// Writes the session's requests to the script, in order, and a ping every
+/// [`KEEPALIVE_MS`] (the first one that long after the start), until a
+/// write fails or the session drops its sender. The pings go from here,
+/// never from the session's `select!` loop, which never awaits a write
+/// (#9).
+async fn write_requests<S>(mut sink: S, mut texts: mpsc::UnboundedReceiver<String>)
+where
+    S: Sink<Message> + Unpin,
+{
+    let every = Duration::from_millis(KEEPALIVE_MS);
+    let mut keepalive = tokio::time::interval_at(tokio::time::Instant::now() + every, every);
+    keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        let message = tokio::select! {
+            text = texts.recv() => match text {
+                Some(text) => Message::Text(text.into()),
+                None => return,
+            },
+            _ = keepalive.tick() => Message::Ping(Default::default()),
+        };
+        if sink.send(message).await.is_err() {
             return;
         }
     }
@@ -630,6 +649,98 @@ mod tests {
             Some("connection attempt timed out")
         );
         drop(silent);
+    }
+
+    /// What a writer sent, and when (on tokio's clock, since `start`).
+    type Sent = Arc<Mutex<Vec<(Duration, Message)>>>;
+
+    /// A sink that keeps every message with its time in `sent` (taken by
+    /// value: the sink borrows nothing, so a task can own it).
+    fn recording(
+        start: tokio::time::Instant,
+        sent: Sent,
+    ) -> std::pin::Pin<Box<impl Sink<Message, Error = std::convert::Infallible>>> {
+        Box::pin(futures_util::sink::unfold(
+            (),
+            move |(), message: Message| {
+                let sent = Arc::clone(&sent);
+                async move {
+                    sent.lock().unwrap().push((start.elapsed(), message));
+                    Ok::<(), std::convert::Infallible>(())
+                }
+            },
+        ))
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_writer_pings_every_500_ms() {
+        // #140 PR 3a: the script counts a hub silent for 1.5 s as gone.
+        assert_eq!(KEEPALIVE_MS, 500);
+        let start = tokio::time::Instant::now();
+        let sent: Sent = Arc::default();
+        let (out, texts) = mpsc::unbounded_channel::<String>();
+        let writer = tokio::spawn(write_requests(recording(start, Arc::clone(&sent)), texts));
+        tokio::time::sleep(Duration::from_millis(1250)).await;
+        let pings = |sent: &Sent| -> Vec<Duration> {
+            sent.lock()
+                .unwrap()
+                .iter()
+                .filter(|(_, m)| matches!(m, Message::Ping(_)))
+                .map(|(at, _)| *at)
+                .collect()
+        };
+        assert_eq!(
+            pings(&sent),
+            vec![Duration::from_millis(500), Duration::from_millis(1000)],
+            "a ping at 500 and 1000 ms with no request queued"
+        );
+        // A request goes out as text at once, and the pings go on.
+        out.send("{\"uuid\": \"u1\"}".to_string()).unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let texts: Vec<(Duration, String)> = sent
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|(at, m)| match m {
+                Message::Text(t) => Some((*at, t.as_str().to_string())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            texts,
+            vec![(
+                Duration::from_millis(1250),
+                "{\"uuid\": \"u1\"}".to_string()
+            )]
+        );
+        assert_eq!(
+            pings(&sent),
+            vec![
+                Duration::from_millis(500),
+                Duration::from_millis(1000),
+                Duration::from_millis(1500)
+            ]
+        );
+        // The session's sender gone, the writer ends.
+        drop(out);
+        tokio::time::timeout(Duration::from_secs(1), writer)
+            .await
+            .expect("the writer ends with its sender")
+            .unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_writer_ends_when_a_ping_cannot_be_written() {
+        let failing = Box::pin(futures_util::sink::unfold(
+            (),
+            |(), _message: Message| async move { Err::<(), &str>("the socket is gone") },
+        ));
+        let (_out, texts) = mpsc::unbounded_channel::<String>();
+        let writer = tokio::spawn(write_requests(failing, texts));
+        tokio::time::timeout(Duration::from_secs(2), writer)
+            .await
+            .expect("the writer ends at its first failed write")
+            .unwrap();
     }
 
     #[test]
