@@ -226,14 +226,12 @@ impl Find {
     /// No read left: one match has its parameters and chains read, none or
     /// several are missing.
     fn matched(&mut self) -> Step {
-        match self.matches.as_slice() {
-            [] => Step::Done(Err(Missing::NoRack)),
-            [path] => {
-                let path = path.clone();
-                self.read(Ask::RackParts { path })
-            }
-            several => Step::Done(Err(Missing::Twice(several.len()))),
-        }
+        let path = match self.matches.as_slice() {
+            [] => return Step::Done(Err(Missing::NoRack)),
+            [path] => path.clone(),
+            several => return Step::Done(Err(Missing::Twice(several.len()))),
+        };
+        self.read(Ask::RackParts { path })
     }
 
     /// The rack's parameters and chains answered: its macro, then its chain
@@ -273,10 +271,10 @@ impl Find {
             .map(|item| item.path.to_string())
             .collect();
         match plugins.as_slice() {
-            [path] => {
-                let path = path.clone();
-                self.read(Ask::PluginParameters { path, selector })
-            }
+            [path] => self.read(Ask::PluginParameters {
+                path: path.clone(),
+                selector,
+            }),
             several => done(selector, Err(KeyMissing::Plugins(several.len()))),
         }
     }

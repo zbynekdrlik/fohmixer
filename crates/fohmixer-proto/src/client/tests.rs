@@ -668,6 +668,13 @@ fn api_bodies_round_trip() {
                     state: TargetState::On,
                     path: Some("live_set tracks 6 devices 0 parameters 1".into()),
                     problem: None,
+                    key: Some(KeyTargetStatus {
+                        device: Some("gridder".into()),
+                        path: Some("live_set tracks 6 devices 0 chains 0 devices 0".into()),
+                        values: Some([0.5, 1.0 / 28.0]),
+                        shows: Some("F#m".into()),
+                        problem: None,
+                    }),
                 },
                 AutotuneTargetStatus {
                     instance: "band".into(),
@@ -677,8 +684,17 @@ fn api_bodies_round_trip() {
                     state: TargetState::Missing,
                     path: None,
                     problem: Some("no rack named Latencies".into()),
+                    key: None,
                 },
             ],
+            keys: vec![KeyInForce {
+                instance: "band".into(),
+                song: Some(31),
+                key: Some("G".into()),
+                time: Some(22897.5),
+                playing: Some(true),
+                tempo: Some(95.0),
+            }],
         },
         songmap: vec![SongMapStatus {
             instance: "band".into(),
@@ -696,9 +712,32 @@ fn api_bodies_round_trip() {
         json["autotune"],
         json!({"aut": true, "writes": 3, "taps": 1, "targets": [
             {"instance": "band", "track": "live_set tracks 6", "label": "Vox 2", "on": 0,
-             "state": "on", "path": "live_set tracks 6 devices 0 parameters 1"},
+             "state": "on", "path": "live_set tracks 6 devices 0 parameters 1",
+             "key": {"device": "gridder", "path": "live_set tracks 6 devices 0 chains 0 devices 0",
+                     "values": [0.5, 1.0 / 28.0], "shows": "F#m", "problem": null}},
             {"instance": "band", "track": "live_set tracks 8", "label": "#9", "on": 127,
-             "state": "missing", "problem": "no rack named Latencies"}]})
+             "state": "missing", "problem": "no rack named Latencies"}],
+            "keys": [{"instance": "band", "song": 31, "key": "G", "time": 22897.5,
+                      "playing": true, "tempo": 95.0}]})
+    );
+    // A hub before the key path (#140 PR 2) names no key device and no
+    // key in force.
+    let mut before_keys = json["autotune"].clone();
+    before_keys.as_object_mut().unwrap().remove("keys");
+    before_keys["targets"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("key");
+    let before_keys = serde_json::from_value::<AutotuneStatus>(before_keys).unwrap();
+    assert!(before_keys.keys.is_empty());
+    assert_eq!(before_keys.targets[0].key, None);
+    assert_eq!(
+        serde_json::from_value::<KeyTargetStatus>(json!({})).unwrap(),
+        KeyTargetStatus::default()
+    );
+    assert_eq!(
+        serde_json::from_value::<KeyInForce>(json!({})).unwrap(),
+        KeyInForce::default()
     );
     assert_eq!(
         json["songmap"],
@@ -771,7 +810,7 @@ fn api_bodies_round_trip() {
     assert_eq!(before_autotune.autotune, AutotuneStatus::default());
     assert_eq!(
         serde_json::to_value(AutotuneStatus::default()).unwrap(),
-        json!({"aut": false, "writes": 0, "taps": 0, "targets": []})
+        json!({"aut": false, "writes": 0, "taps": 0, "targets": [], "keys": []})
     );
     assert_eq!(
         serde_json::from_value::<HubStatus>(json.clone())

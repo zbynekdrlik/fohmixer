@@ -22,22 +22,23 @@ import {
 
 // AUTOTUNE and AUTOTUNE AUT on the surface (#104, D19; the approved mockup
 // docs/mockups/autotune-v1.html): the AUTOTUNE rail button (where the
-// former AUTOTUNE toggle stood) switches autotune on or off on every
-// `+AUTOTUNE` track at once (the hub writes each `Latencies` rack's first
-// macro through its ref), and its 1 s hold turns AUTOTUNE AUT on or off at
-// its lift (Live plays: on; Live stops: off). SimLive's band set: Vocal 2
-// repro# (track 6) has a `Latencies` rack on top, tagged `+AUTOTUNE:0`
-// (on 0, off 127, the repro form); Vocal 3 repro# (track 7) has one inside
-// `Stream FX`, tagged `+AUTOTUNE` (on 127, off 0, the stream form); Keys 1
-// (track 8) has none. Both macros start at 0: track 6 on, track 7 off.
+// former AUTOTUNE toggle stood) shows Live's autotune on every `+AUTOTUNE`
+// track (each `Latencies` rack's first macro). Until #140 PR 3 nothing
+// switches (#140 PR 2a, the keys first): the hub refuses its tap and the
+// AUTOTUNE AUT its 1 s hold asks at the lift, and writes nothing to Live;
+// the page itself is unchanged (mockup v2 waits). SimLive's band set:
+// Vocal 2 repro# (track 6) has a `Latencies` rack on top, tagged
+// `+AUTOTUNE:0` (on 0, off 127, the repro form); Vocal 3 repro# (track 7)
+// has one inside `Stream FX`, tagged `+AUTOTUNE` (on 127, off 0, the stream
+// form); Keys 1 (track 8) has none. Both macros start at 0: track 6 on,
+// track 7 off.
 
 const LAYOUT = join(__dirname, "..", "..", "tools", "import-tosc", "fixtures", "expected-layout.json");
 /** The repro track's macro (on 0) and the stream track's (on 127). */
 const REPRO = "live_set tracks 6 devices 0 parameters 1";
 const STREAM = "live_set tracks 7 devices 0 chains 0 devices 0 parameters 1";
-/** Live's two macros when every target is on, or off. */
-const ON = [0, 127];
-const OFF = [127, 0];
+/** Why the hub refuses a tap and AUTOTUNE AUT on until #140 PR 3. */
+const REFUSED = "keys only until #140 PR 3";
 
 /** The fixture with the AUTOTUNE button where the FOH rail's AUTOTUNE toggle stood. */
 function withAutotuneButton(): any {
@@ -51,11 +52,6 @@ function withAutotuneButton(): any {
 /** Live's two macros (repro, stream). */
 async function macros(live: LiveClient): Promise<number[]> {
   return [await live.get("band", REPRO, "value"), await live.get("band", STREAM, "value")];
-}
-
-/** Waits until Live's two macros read `want`. */
-async function macrosAre(live: LiveClient, want: number[], what: string) {
-  await until(() => macros(live), (v) => v[0] === want[0] && v[1] === want[1], what);
 }
 
 /** The page clock (the flight recorder's `t`) now. */
@@ -93,16 +89,26 @@ async function fits(button: Locator, text: string) {
   expect(row[0], `its label and pill side by side with "${text}"`).toBeLessThanOrEqual(row[1]);
 }
 
-/** A 1 s hold, full at 1.2 s (read in the page before the lift), then its lift. */
-async function hold(button: Locator, line: string, live: LiveClient, aut: boolean) {
-  const press = await dispatchSnapped(button, [{ type: "pointerdown" }, { wait: 1200 }, { snap: true }]);
-  expect(press.snaps[0]).toMatchObject({ holding: "true", full: "true", sub: line, failed: false });
-  await expect(button).toHaveAttribute("data-full", "true");
-  await fits(button, line);
-  expect(live.autotune.aut, "nothing before the lift").toBe(!aut);
-  await dispatchPointer(button, [{ type: "pointerup" }]);
-  await until(async () => live.autotune.aut, (v: boolean) => v === aut, `AUTOTUNE AUT ${aut ? "on" : "off"}`);
-  await expect(button).toHaveAttribute("data-full", "false");
+/** The hub's `refused` records since `since`, once there are `n`: what each refused. */
+async function refusals(since: number, n: number): Promise<string[]> {
+  const records = await until(
+    () => autotuneRecords(since),
+    (r) => r.filter((x) => x.step === "refused").length >= n,
+    `${n} refusals in the event log`,
+    15_000,
+  );
+  for (const r of records.filter((x) => x.step === "refused")) expect(r.why).toBe(REFUSED);
+  return records.filter((x) => x.step === "refused").map((x) => x.what);
+}
+
+/** Waits until the hub heard the band's transport `playing` since `since` (its `transport` record). */
+async function transportHeard(since: number, playing: boolean) {
+  await until(
+    async () => (await hubEvents()).some((r: any) => r.ev === "transport" && r.instance === "band" && r.playing === playing && r.ts >= since),
+    (v: boolean) => v,
+    `the hub heard Live ${playing ? "start" : "stop"}`,
+    10_000,
+  );
 }
 
 /** Waits until the hub found every one of `count` targets (a path or a problem each). */
@@ -224,124 +230,58 @@ test.describe("AUTOTUNE and AUTOTUNE AUT", () => {
     ]);
   });
 
-  test("a tap turns every target off from mixed, the next one on", async ({ page }) => {
+  test("a tap is refused: both macros stay as they were", async ({ page }) => {
     const button = await setUp(page);
     await expect(button).toHaveAttribute("data-state", "mixed");
     const since = Date.now();
     const sincePage = await pageNow(page);
     await button.click();
-    await macrosAre(live, OFF, "both off");
-    await expect(button).toHaveAttribute("data-state", "off");
-    await expect(button).not.toHaveClass(/\bon\b/);
-    await expect(button).toHaveAttribute("data-mixed", "false");
-    await expect(button.getByTestId("btn-sub")).toHaveText("");
+    expect(await refusals(since, 1)).toEqual(["tap"]);
     await button.click();
-    await macrosAre(live, ON, "both on");
-    await expect(button).toHaveAttribute("data-state", "on");
-    await expect(button).toHaveClass(/\bon\b/);
-    await expect(button.getByTestId("btn-sub")).toHaveText("");
+    expect(await refusals(since, 2)).toEqual(["tap", "tap"]);
+    // Nothing was written: Live's macros and the button as they were.
+    expect(await macros(live)).toEqual([0, 0]);
+    await expect(button).toHaveAttribute("data-state", "mixed");
+    await expect(button).toHaveAttribute("data-mixed", "true");
+    await fits(button, "1/2 zap.");
     expect(await railSteps(sincePage, (s) => s.filter((w) => w === "tap").length >= 2)).toEqual(["press", "tap", "press", "tap"]);
-    const records = await until(
-      () => autotuneRecords(since),
-      (r) => r.filter((x) => x.step === "write").length >= 2,
-      "the taps' writes in the event log",
-      15_000,
-    );
-    expect(records.map((r) => [r.step, r.on, r.why ?? null])).toEqual([
-      ["tap", false, null],
-      ["write", false, "tap"],
-      ["tap", true, null],
-      ["write", true, "tap"],
-    ]);
-    expect((await hubStatus()).autotune.taps).toBeGreaterThanOrEqual(2);
+    const steps = (await autotuneRecords(since)).map((r) => r.step);
+    expect(steps).not.toContain("write");
+    expect(steps).not.toContain("tap");
+    expect((await hubStatus()).autotune.taps).toBe(0);
   });
 
-  test("a 1 s hold turns AUTOTUNE AUT on at its lift; the rule follows Live's start and stop", async ({ page }) => {
+  test("a 1 s hold leaves AUT off; a start writes nothing", async ({ page }) => {
     const button = await setUp(page);
     const since = Date.now();
     const sincePage = await pageNow(page);
-    await hold(button, "pusť — zapne AUT", live, true);
-    // Live stands: every target off at once.
-    await macrosAre(live, OFF, "off while Live stands");
-    await expect(button).toHaveAttribute("data-aut", "run");
-    await expect(button.getByTestId("aut-badge")).toHaveText("AUT");
-    await expect(button).toHaveAttribute("data-state", "off");
-    await fits(button, "stojí · vypnutý");
-    // Live plays: every target on.
-    await live.call("band", "live_set", "start_playing");
-    await macrosAre(live, ON, "on while Live plays");
-    await expect(button).toHaveAttribute("data-state", "on");
-    await expect(button).toHaveClass(/\bon\b/);
-    await fits(button, "hrá · zapnutý");
-    await expect(button).toHaveAttribute("data-aut", "run");
-    // Live stops: off again.
-    await live.call("band", "live_set", "stop_playing");
-    await macrosAre(live, OFF, "off at the stop");
-    await fits(button, "stojí · vypnutý");
-    // A second hold turns it off at its lift; Live's autotune stays.
-    await hold(button, "pusť — vypne AUT", live, false);
+    // The page offers AUT on as before (mockup v2 waits) and asks at the lift.
+    const press = await dispatchSnapped(button, [{ type: "pointerdown" }, { wait: 1200 }, { snap: true }]);
+    expect(press.snaps[0]).toMatchObject({ holding: "true", full: "true", sub: "pusť — zapne AUT", failed: false });
+    await dispatchPointer(button, [{ type: "pointerup" }]);
+    // The hub refuses it: AUT stays off.
+    expect(await refusals(since, 1)).toEqual(["aut"]);
+    await expect(button).toHaveAttribute("data-full", "false");
     await expect(button).toHaveAttribute("data-aut", "off");
     await expect(button.getByTestId("aut-badge")).toHaveCount(0);
-    await expect(button.getByTestId("btn-sub")).toHaveText("");
-    expect(await macros(live)).toEqual(OFF);
-    const records = await until(
-      () => autotuneRecords(since),
-      (r) => r.filter((x) => x.step === "flag").length >= 2,
-      "the flags in the event log",
-      15_000,
-    );
-    expect(records.map((r) => [r.step, r.on, r.why ?? null])).toEqual([
-      ["flag", true, null],
-      ["write", false, "flag"],
-      ["write", true, "transport"],
-      ["write", false, "transport"],
-      ["flag", false, null],
-    ]);
-    expect(await railSteps(sincePage, (s) => s.filter((w) => w === "hold").length >= 2)).toEqual([
-      "press",
-      "full",
-      "hold",
-      "press",
-      "full",
-      "hold",
-    ]);
-  });
-
-  test("a tap overrides the rule until the next stop or start; Live's own switch shows mixed", async ({ page }) => {
-    const button = await setUp(page);
+    expect(live.autotune.aut).toBe(false);
+    expect((await hubStatus()).autotune.aut).toBe(false);
+    // Live plays, then stops: nothing is written.
     await live.call("band", "live_set", "start_playing");
-    live.setHub("autotune_aut", true);
-    await until(async () => live.autotune?.aut, (v: boolean) => v === true, "AUTOTUNE AUT on");
-    await macrosAre(live, ON, "on while Live plays");
-    await fits(button, "hrá · zapnutý");
-    // A tap during the song: off by hand until the stop (outlined).
-    await button.click();
-    await macrosAre(live, OFF, "off by the tap");
-    await expect(button).toHaveAttribute("data-aut", "held");
-    await fits(button, "ručne vyp. · do zast.");
-    // A song switches the stream track on by itself (its CC36): mixed.
-    await live.set("band", STREAM, "value", 127);
-    await expect(button).toHaveAttribute("data-state", "mixed");
-    await expect(button).toHaveAttribute("data-aut", "held");
-    await fits(button, "zmiešané · 1/2 zap.");
-    // Live stops: the rule turns every target off.
+    await transportHeard(since, true);
     await live.call("band", "live_set", "stop_playing");
-    await macrosAre(live, OFF, "off at the stop");
-    await expect(button).toHaveAttribute("data-aut", "run");
-    await fits(button, "stojí · vypnutý");
-    // A tap while Live stands: on by hand until the start (outlined).
-    await button.click();
-    await macrosAre(live, ON, "on by the tap");
-    await expect(button).toHaveAttribute("data-aut", "held");
-    await fits(button, "ručne zap. · do štartu");
-    // Live plays: the rule's own again.
-    await live.call("band", "live_set", "start_playing");
-    await expect(button).toHaveAttribute("data-aut", "run");
-    await fits(button, "hrá · zapnutý");
-    expect(await macros(live)).toEqual(ON);
+    await transportHeard(since, false);
+    await page.waitForTimeout(300);
+    expect(await macros(live)).toEqual([0, 0]);
+    await expect(button).toHaveAttribute("data-state", "mixed");
+    const steps = (await autotuneRecords(since)).map((r) => r.step);
+    expect(steps).not.toContain("write");
+    expect(steps).not.toContain("flag");
+    expect((await hubStatus()).autotune.writes).toBe(0);
+    expect(await railSteps(sincePage, (s) => s.includes("hold"))).toEqual(["press", "full", "hold"]);
   });
 
-  test("a track without a Latencies rack shows the problem corner; the others still switch", async ({ page }) => {
+  test("a track without a Latencies rack shows the problem corner", async ({ page }) => {
     const button = await setUp(page);
     expect(await hostLine("band", "tuner track 8 set '+AUTOTUNE'")).toBe("TUNER 1");
     const targets = await targetsFound(3);
@@ -366,11 +306,6 @@ test.describe("AUTOTUNE and AUTOTUNE AUT", () => {
     expect(place.flag.top).toBeGreaterThanOrEqual(place.box.top);
     expect(place.flag.right, "the corner left of the label").toBeLessThanOrEqual(place.text.left);
     await fits(button, "1/2 zap.");
-    // A tap still switches the two found targets.
-    await button.click();
-    await macrosAre(live, OFF, "both off");
-    await expect(button).toHaveAttribute("data-state", "off");
-    await expect(button).toHaveAttribute("data-problem", "true");
     expect(await clipped(button)).toEqual([]);
   });
 
@@ -381,7 +316,7 @@ test.describe("AUTOTUNE and AUTOTUNE AUT", () => {
     test.describe(`on a phone, ${width} × ${height}`, () => {
       test.use({ viewport: { width, height } });
 
-      test("the AUTOTUNE button fits the phone's rail: its AUT dot and problem corner inside it, no second line, every rail button whole", async ({ page }) => {
+      test("the AUTOTUNE button fits the phone's rail: its problem corner inside it, no second line, every rail button whole", async ({ page }) => {
         await live.call("band", "live_set", "start_playing");
         layouts = watchLayouts(page);
         await openSurface(page);
@@ -392,38 +327,31 @@ test.describe("AUTOTUNE and AUTOTUNE AUT", () => {
         expect(await hostLine("band", "tuner track 8 set '+AUTOTUNE'")).toBe("TUNER 1");
         await targetsFound(3);
         await showsServedLayout(layouts);
-        // AUTOTUNE AUT on while Live plays: every target on.
-        live.setHub("autotune_aut", true);
-        await until(async () => live.autotune?.aut, (v: boolean) => v === true, "AUTOTUNE AUT on");
-        await macrosAre(live, ON, "on while Live plays");
+        // (AUTOTUNE AUT cannot be on until #140 PR 3, so no AUT dot: its
+        // place is mockup v2's.)
         // The phone's column behind ☰ (#63).
         await page.getByTestId("thin-burger").dispatchEvent("pointerdown");
         await expect(page.getByTestId("page")).toHaveAttribute("data-column-open", "true");
         await expect(page.getByTestId("column")).toBeVisible();
-        await expect(button).toHaveAttribute("data-aut", "run");
+        await expect(button).toHaveAttribute("data-aut", "off");
+        await expect(button.getByTestId("aut-badge")).toHaveCount(0);
         await expect(button).toHaveAttribute("data-problem", "true");
         const place = await button.evaluate((el) => {
           const range = document.createRange();
           range.selectNodeContents(el.querySelector(".btn-text")!);
           return {
             box: el.getBoundingClientRect(),
-            dot: el.querySelector(".aut-badge")!.getBoundingClientRect(),
             flag: el.querySelector(".rule-flag")!.getBoundingClientRect(),
             text: range.getBoundingClientRect(),
           };
         });
-        for (const [name, mark] of [
-          ["the AUT dot", place.dot],
-          ["the problem corner", place.flag],
-        ] as const) {
-          expect(mark.width, `${name}: 6 px`).toBeCloseTo(6, 0);
-          expect(mark.height, `${name}: 6 px`).toBeCloseTo(6, 0);
-          expect(mark.left, `${name} inside the button`).toBeGreaterThanOrEqual(place.box.left);
-          expect(mark.right, `${name} inside the button`).toBeLessThanOrEqual(place.box.right);
-          expect(mark.top, `${name} inside the button`).toBeGreaterThanOrEqual(place.box.top);
-          expect(mark.bottom, `${name} inside the button`).toBeLessThanOrEqual(place.box.bottom);
-        }
-        expect(place.dot.left, "the dot right of the label's text").toBeGreaterThanOrEqual(place.text.right);
+        const mark = place.flag;
+        expect(mark.width, "the problem corner: 6 px").toBeCloseTo(6, 0);
+        expect(mark.height, "the problem corner: 6 px").toBeCloseTo(6, 0);
+        expect(mark.left, "the problem corner inside the button").toBeGreaterThanOrEqual(place.box.left);
+        expect(mark.right, "the problem corner inside the button").toBeLessThanOrEqual(place.box.right);
+        expect(mark.top, "the problem corner inside the button").toBeGreaterThanOrEqual(place.box.top);
+        expect(mark.bottom, "the problem corner inside the button").toBeLessThanOrEqual(place.box.bottom);
         expect(place.flag.right, "the corner left of the label's text").toBeLessThanOrEqual(place.text.left);
         await expect(button.getByTestId("btn-sub")).toBeHidden();
         // Every rail button whole, inside the rail's part that holds it, on screen.

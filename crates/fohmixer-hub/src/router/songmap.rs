@@ -773,6 +773,8 @@ impl Router {
                 self.songmap.stale.remove(instance);
                 let names = listing.clips.iter().map(|c| c.name.clone()).collect();
                 self.songmap_follow_clips(instance, listing.track.as_deref(), names);
+                // AUTOTUNE's key in force follows the new map (#140 PR 2).
+                self.autotune_map_read(instance);
                 fields
             }
             Err(error) => {

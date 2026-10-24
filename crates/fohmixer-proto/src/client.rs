@@ -624,10 +624,30 @@ pub struct AutotuneState {
     pub targets: Vec<AutotuneTargetState>,
 }
 
+/// One AUTOTUNE target's key device in `GET /api/status` (#140 PR 2): which
+/// device holds its Key and Scale (`auto_tune`, `gridder`) and its path,
+/// their values as last heard (both), the key they show (`F#m`; none for a
+/// scale step other than Major or Minor), or why it has none (`problem`).
+/// Every field is absent in an older hub's answer.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct KeyTargetStatus {
+    #[serde(default)]
+    pub device: Option<String>,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub values: Option<[f64; 2]>,
+    #[serde(default)]
+    pub shows: Option<String>,
+    #[serde(default)]
+    pub problem: Option<String>,
+}
+
 /// One AUTOTUNE target in `GET /api/status` (#104): its Live set, track
 /// (LOM target) and label, its on value, its state, the path of the macro
-/// the hub found, or why it found none.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// the hub found, or why it found none, and its key device once its rack
+/// was found (#140 PR 2).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AutotuneTargetStatus {
     pub instance: String,
     pub track: String,
@@ -638,16 +658,41 @@ pub struct AutotuneTargetStatus {
     pub path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub problem: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<KeyTargetStatus>,
+}
+
+/// A Live set's key in force in `GET /api/status` (#140 PR 2): the song
+/// and its key (`F#m`) the playhead is in, none outside every song or in a
+/// keyless one, and the position it was judged at: the playhead (beats),
+/// the transport and the tempo as last heard.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct KeyInForce {
+    #[serde(default)]
+    pub instance: String,
+    #[serde(default)]
+    pub song: Option<u16>,
+    #[serde(default)]
+    pub key: Option<String>,
+    #[serde(default)]
+    pub time: Option<f64>,
+    #[serde(default)]
+    pub playing: Option<bool>,
+    #[serde(default)]
+    pub tempo: Option<f64>,
 }
 
 /// AUTOTUNE in `GET /api/status` (#104, D19): AUTOTUNE AUT, the rule's
-/// writes, the taps, and each target.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// writes, the taps, each target, and each Live set's key in force (#140
+/// PR 2; none in an older hub's answer).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct AutotuneStatus {
     pub aut: bool,
     pub writes: u64,
     pub taps: u64,
     pub targets: Vec<AutotuneTargetStatus>,
+    #[serde(default)]
+    pub keys: Vec<KeyInForce>,
 }
 
 /// One Live set's song map in `GET /api/status` (#140): its counts, which

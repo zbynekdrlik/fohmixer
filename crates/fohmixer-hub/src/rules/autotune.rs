@@ -6,7 +6,9 @@
 //!
 //! Pure: the router's glue (`router/autotune.rs`) finds each target's
 //! `Latencies` rack ([`find`]), writes its first macro through its `$ref`
-//! and records every [`Step`].
+//! and records every [`Step`]. The keys (#140 PR 2) are [`keys`]: until
+//! #140 PR 3 a page can neither turn AUTOTUNE AUT on nor tap AUTOTUNE
+//! ([`Step::Refused`]), so nothing writes the macros.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -14,6 +16,7 @@ use fohmixer_proto::client::TargetState;
 use serde::Serialize;
 
 use super::stage_rule;
+use keys::{KeyDevice, KeyWhy};
 
 #[path = "autotune/find.rs"]
 pub mod find;
@@ -251,6 +254,42 @@ pub enum Step {
         on: bool,
         why: String,
     },
+    /// The key in force of a Live set changed (#140 PR 2): its song and key
+    /// (none: no key in force), and why.
+    Key {
+        instance: String,
+        song: Option<u16>,
+        key: Option<String>,
+        why: KeyWhy,
+    },
+    /// A target's key device found: which device and its path.
+    KeyDevice {
+        instance: String,
+        target: String,
+        device: KeyDevice,
+        path: String,
+    },
+    /// A target's rack has no key device, and why (its macro is found).
+    KeyMissing {
+        instance: String,
+        target: String,
+        problem: String,
+    },
+    /// A page's AUTOTUNE AUT on (`what` `aut`) or tap (`tap`) refused, and
+    /// why ([`REFUSED_WHY`]).
+    Refused { what: String, why: String },
+}
+
+/// Why a page's AUTOTUNE AUT on and tap are refused (#140 PR 2: the keys
+/// first, nothing switches).
+pub const REFUSED_WHY: &str = "keys only until #140 PR 3";
+
+/// A key in force in words: its song and key, or none.
+fn key_words(song: Option<u16>, key: Option<&str>) -> String {
+    match (song, key) {
+        (Some(song), Some(key)) => format!("song {song} {key}"),
+        _ => "no key".to_string(),
+    }
 }
 
 fn on_off(on: bool) -> &'static str {
@@ -296,12 +335,41 @@ pub fn step_line(step: &Step) -> String {
         Step::Held { instance, why, .. } => {
             format!("AUTOTUNE writes {instance} again: its markers are settled ({why})")
         }
+        Step::Key {
+            instance,
+            song,
+            key,
+            why,
+        } => format!(
+            "AUTOTUNE key in force in {instance}: {} ({})",
+            key_words(*song, key.as_deref()),
+            why.word()
+        ),
+        Step::KeyDevice {
+            instance,
+            target,
+            device,
+            path,
+        } => format!(
+            "AUTOTUNE found {instance} {target}'s key device ({}): {path}",
+            device.name()
+        ),
+        Step::KeyMissing {
+            instance,
+            target,
+            problem,
+        } => format!("AUTOTUNE has no key device for {instance} {target}: {problem}"),
+        Step::Refused { what, why } => format!("AUTOTUNE refuses a page's {what}: {why}"),
     }
 }
 
-/// Whether a step is logged as a warning: a failed write, a missing rack.
+/// Whether a step is logged as a warning: a failed write, a missing rack,
+/// a missing key device.
 pub fn step_warn(step: &Step) -> bool {
-    matches!(step, Step::Failed { .. } | Step::Missing { .. })
+    matches!(
+        step,
+        Step::Failed { .. } | Step::Missing { .. } | Step::KeyMissing { .. }
+    )
 }
 
 #[cfg(test)]
